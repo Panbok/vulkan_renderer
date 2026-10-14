@@ -3,13 +3,19 @@
 
 #if defined(PLATFORM_WINDOWS)
 
+/* This unit's own Win32 include: renderer and runtime builds keep
+   <windows.h> out of lib headers (ADR-118). */
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <windowsx.h>
 #ifndef COBJMACROS
 #define COBJMACROS
 #endif
 #include <dxgi1_6.h>
 #include <shellapi.h>
 
-#include <math.h>
 #include <wchar.h>
 
 enum { VKR_WIN32_DISPLAY_PATH_MAX = 32u, VKR_WIN32_DISPLAY_MODE_MAX = 64u };
@@ -272,7 +278,7 @@ vkr_internal bool8_t vkr_win32_sdr_white_nits(
   if (DisplayConfigGetDeviceInfo(&white_level.header) != ERROR_SUCCESS)
     return false_v;
   const float32_t nits = (float32_t)white_level.SDRWhiteLevel * 0.08f;
-  if (!isfinite(nits) || nits <= 0.0f)
+  if (!vkr_is_finite_f32(nits) || nits <= 0.0f)
     return false_v;
   *out_nits = nits;
   return true_v;
@@ -360,13 +366,14 @@ vkr_win32_query_display_output(IDXGIFactory1 *factory, HMONITOR monitor) {
       float32_t sdr_white_nits = 0.0f;
       if (queried && vkr_win32_sdr_white_nits(&target, &sdr_white_nits) &&
           desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 &&
-          isfinite(desc1.MaxFullFrameLuminance) &&
-          isfinite(desc1.MaxLuminance) && desc1.MaxFullFrameLuminance > 0.0f &&
+          vkr_is_finite_f32(desc1.MaxFullFrameLuminance) &&
+          vkr_is_finite_f32(desc1.MaxLuminance) &&
+          desc1.MaxFullFrameLuminance > 0.0f &&
           desc1.MaxLuminance >= desc1.MaxFullFrameLuminance) {
         const float32_t headroom = desc1.MaxFullFrameLuminance / sdr_white_nits;
         const float32_t output_scale = sdr_white_nits / 80.0f;
-        if (isfinite(headroom) && isfinite(output_scale) && headroom > 1.0f &&
-            output_scale > 0.0f) {
+        if (vkr_is_finite_f32(headroom) && vkr_is_finite_f32(output_scale) &&
+            headroom > 1.0f && output_scale > 0.0f) {
           result = (VkrDisplayOutputSnapshot){
               .headroom = headroom,
               .output_scale = output_scale,
@@ -430,7 +437,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   window->input_state = input_init(event_manager);
   vkr_window_content_scale_init(window);
 
-  PlatformState *state = (PlatformState *)malloc(sizeof(PlatformState));
+  PlatformState *state = (PlatformState *)vkr_heap_alloc(sizeof(PlatformState));
   if (!state) {
     log_error("Failed to allocate PlatformState");
     window->platform_state = NULL;
@@ -494,7 +501,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     log_error("Failed to register window class");
     MessageBoxA(NULL, "Failed to register window class", "Error",
                 MB_ICONEXCLAMATION | MB_OK);
-    free(state);
+    vkr_heap_free(state);
     window->platform_state = NULL;
     return false_v;
   }
@@ -512,7 +519,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     log_error("Failed to create window");
     MessageBoxA(NULL, "Failed to create window", "Error",
                 MB_ICONEXCLAMATION | MB_OK);
-    free(state);
+    vkr_heap_free(state);
     window->platform_state = NULL;
     return false_v;
   }
@@ -520,7 +527,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   if (!initial_dpi) {
     log_error("Failed to query initial native window DPI");
     DestroyWindow(state->window);
-    free(state);
+    vkr_heap_free(state);
     window->platform_state = NULL;
     return false_v;
   }
@@ -543,7 +550,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   }
   if (!vkr_window_resize(window, width, height)) {
     DestroyWindow(state->window);
-    free(state);
+    vkr_heap_free(state);
     window->platform_state = NULL;
     return false_v;
   }
@@ -557,7 +564,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
               "%lu)",
               (unsigned long)GetLastError());
     DestroyWindow(state->window);
-    free(state);
+    vkr_heap_free(state);
     window->platform_state = NULL;
     return false_v;
   }
@@ -593,7 +600,7 @@ void vkr_window_destroy(VkrWindow *window) {
   }
 
   input_shutdown(state->input_state);
-  free(state);
+  vkr_heap_free(state);
   window->platform_state = NULL;
 }
 

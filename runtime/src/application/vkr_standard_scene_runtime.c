@@ -9,12 +9,6 @@
 #include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_rooms.h"
 
-#include <assert.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 /* The tiled pipeline's bounded dynamic lights (ADR-087): the point and spot
    lights it draws, nearest the camera first, and how many of them cast
    shadows. */
@@ -459,12 +453,14 @@ vkr_internal void vkr_standard_scene_runtime_rendering_shutdown(
 bool8_t
 vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
                                   VkrStandardSceneRuntimeConfig *config) {
-  assert(config != NULL && "VkrStandardSceneRuntime config is NULL");
-  assert(config->title != NULL && "VkrStandardSceneRuntime title is NULL");
-  assert(config->app_arena_size > 0 &&
-         "VkrStandardSceneRuntime arena size is 0");
-  assert(config->width > 0 && "VkrStandardSceneRuntime width is less than 0");
-  assert(config->height > 0 && "VkrStandardSceneRuntime height is less than 0");
+  vkr_assert(config != NULL && "VkrStandardSceneRuntime config is NULL");
+  vkr_assert(config->title != NULL && "VkrStandardSceneRuntime title is NULL");
+  vkr_assert(config->app_arena_size > 0 &&
+             "VkrStandardSceneRuntime arena size is 0");
+  vkr_assert(config->width > 0 &&
+             "VkrStandardSceneRuntime width is less than 0");
+  vkr_assert(config->height > 0 &&
+             "VkrStandardSceneRuntime height is less than 0");
 
   MemZero(application, sizeof(*application));
   bool8_t log_ready = false_v;
@@ -488,13 +484,13 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   application->app_arena = arena_create(
       config->app_arena_size, config->app_arena_size, app_arena_flags);
   if (!application->app_arena) {
-    fprintf(stderr, "Failed to create app arena\n");
+    vkr_platform_stderr_write("Failed to create app arena\n");
     goto cleanup;
   }
 
   application->app_allocator = (VkrAllocator){.ctx = application->app_arena};
   if (!vkr_allocator_arena(&application->app_allocator)) {
-    fprintf(stderr, "Failed to initialize app allocator\n");
+    vkr_platform_stderr_write("Failed to initialize app allocator\n");
     goto cleanup;
   }
 
@@ -502,12 +498,12 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
   bitset8_set(&log_arena_flags, ARENA_FLAG_LARGE_PAGES);
   application->log_arena = arena_create(MB(5), MB(5), log_arena_flags);
   if (!application->log_arena) {
-    fprintf(stderr, "Failed to create log arena\n");
+    vkr_platform_stderr_write("Failed to create log arena\n");
     goto cleanup;
   }
 
   if (!log_init(application->log_arena)) {
-    fprintf(stderr, "Failed to initialize logging\n");
+    vkr_platform_stderr_write("Failed to initialize logging\n");
     goto cleanup;
   }
 
@@ -584,36 +580,43 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
     goto cleanup;
   }
   renderer_ready = true_v;
-  const char *local_shadow_feedback = getenv("VKR_LOCAL_SHADOW_FEEDBACK");
   application->disable_local_shadow_feedback =
-      local_shadow_feedback && strcmp(local_shadow_feedback, "0") == 0;
+      vkr_platform_environment_equals("VKR_LOCAL_SHADOW_FEEDBACK", "0");
   /* Diagnostic: VKR_DRAW_DISTANCE=0 draws every object at any distance and
      size, as before per-object draw distances. */
-  const char *draw_distance = getenv("VKR_DRAW_DISTANCE");
   application->draw_distance_off =
-      draw_distance && strcmp(draw_distance, "0") == 0;
-  const char *rooms = getenv("VKR_ROOMS");
-  application->rooms_off = rooms && strcmp(rooms, "0") == 0;
-  const char *proxies = getenv("VKR_PROXIES");
-  application->proxies_off = proxies && strcmp(proxies, "0") == 0;
-  const char *local_shadow_fade = getenv("VKR_LOCAL_SHADOW_FADE_DISTANCE");
+      vkr_platform_environment_equals("VKR_DRAW_DISTANCE", "0");
+  application->rooms_off = vkr_platform_environment_equals("VKR_ROOMS", "0");
+  application->proxies_off =
+      vkr_platform_environment_equals("VKR_PROXIES", "0");
+  char local_shadow_fade[64];
   const float32_t fade_distance =
-      local_shadow_fade ? strtof(local_shadow_fade, NULL) : 0.0f;
+      vkr_platform_environment_variable("VKR_LOCAL_SHADOW_FADE_DISTANCE",
+                                        local_shadow_fade,
+                                        sizeof(local_shadow_fade)) &&
+              local_shadow_fade[0] != '\0'
+          ? string_parse_f32(local_shadow_fade, NULL)
+          : 0.0f;
   application->local_shadow_fade_distance_override =
-      isfinite(fade_distance) && fade_distance > 0.0f ? fade_distance : 0.0f;
-  const char *local_shadow_layers = getenv("VKR_LOCAL_SHADOW_ATLAS_LAYERS");
-  const long atlas_layers =
-      local_shadow_layers ? strtol(local_shadow_layers, NULL, 10) : 0;
+      vkr_is_finite_f32(fade_distance) && fade_distance > 0.0f ? fade_distance
+                                                               : 0.0f;
+  char local_shadow_layers[32];
+  const int64_t atlas_layers =
+      vkr_platform_environment_variable("VKR_LOCAL_SHADOW_ATLAS_LAYERS",
+                                        local_shadow_layers,
+                                        sizeof(local_shadow_layers)) &&
+              local_shadow_layers[0] != '\0'
+          ? string_parse_i64(local_shadow_layers, NULL)
+          : 0;
   application->local_shadow_atlas_layer_override =
       atlas_layers > 0 && atlas_layers <= VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX
           ? (uint32_t)atlas_layers
           : 0u;
   /* The editor presents through the presenter where the renderer has one
      (ADR-111); VKR_EDITOR_PRESENTER=0 keeps one presentation per Scene. */
-  const char *presenter = getenv("VKR_EDITOR_PRESENTER");
   application->presenter_enabled =
       vkr_renderer_presenter_supported(&application->renderer) &&
-      !(presenter && strcmp(presenter, "0") == 0);
+      !vkr_platform_environment_equals("VKR_EDITOR_PRESENTER", "0");
   application->refresh_interval = 1.0 / 60.0;
   vkr_atomic_uint64_store(&application->pending_resize_mailbox, 0u,
                           VKR_MEMORY_ORDER_RELAXED);
@@ -706,7 +709,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_editor_viewport_panel_rect(
     if (vkr_standard_scene_runtime_is_windowed(application)) {
       const VkrWindowContentScale scale =
           vkr_window_get_content_scale(&application->host.window);
-      if (isfinite(scale.value) && scale.value > 0.0f)
+      if (vkr_is_finite_f32(scale.value) && scale.value > 0.0f)
         content_scale = scale.value;
     }
     /* Dock geometry follows the UI's interface zoom. */
@@ -1308,7 +1311,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     const VkrShadowConfig *shadow_config = &application->shadow_system.config;
     const float32_t inverse_map_size =
         1.0f / (float32_t)shadow_config->shadow_map_size;
-    const float32_t sun_tan_half_angle = tanf(
+    const float32_t sun_tan_half_angle = vkr_tan_f32(
         (input->soft_disabled ? 0.0f : input->sun_angular_diameter_degrees) *
         0.008726646259971648f);
     shadow_payload->cascade_count = shadow_cascade_count;
@@ -1499,15 +1502,15 @@ vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
     VkrStandardSceneRuntime *application, float64_t delta) {
   const VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
   if (!scene || !scene->atmosphere.active_revision ||
-      !scene->atmosphere.active_clouds.enabled || !isfinite(delta) ||
+      !scene->atmosphere.active_clouds.enabled || !vkr_is_finite_f64(delta) ||
       delta <= 0.0)
     return;
   const float64_t period = (float64_t)VKR_CLOUD_WIND_PERIOD_M;
   const float64_t wind[2] = {scene->atmosphere.active_clouds.wind_mps.x,
                              scene->atmosphere.active_clouds.wind_mps.y};
   for (uint32_t i = 0; i < 2u; ++i) {
-    const float64_t offset =
-        fmod(application->cloud_wind_offset_m[i] + wind[i] * delta, period);
+    const float64_t offset = vkr_fmod_f64(
+        application->cloud_wind_offset_m[i] + wind[i] * delta, period);
     application->cloud_wind_offset_m[i] =
         offset < 0.0 ? offset + period : offset;
   }
@@ -1520,7 +1523,7 @@ vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
 vkr_internal float32_t
 vkr_standard_scene_runtime_cloud_offset(float64_t offset, float32_t origin) {
   const float64_t period = (float64_t)VKR_CLOUD_WIND_PERIOD_M;
-  float64_t wrapped = fmod(offset + (float64_t)origin, period);
+  float64_t wrapped = vkr_fmod_f64(offset + (float64_t)origin, period);
   wrapped = wrapped < 0.0 ? wrapped + period : wrapped;
   const float32_t narrowed = (float32_t)wrapped;
   return narrowed < VKR_CLOUD_WIND_PERIOD_M ? narrowed : 0.0f;
@@ -1780,7 +1783,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_selection_outline(
   /* Orange reads against both the blue accent and most scene colors. */
   draw->editor_payload.selection_color = (Vec4){1.0f, 0.26f, 0.01f, 1.0f};
   draw->editor_payload.selection_width_px = (uint32_t)vkr_clamp_f32(
-      roundf(2.0f * (scale > 0.0f ? scale : 1.0f)), 1.0f, 8.0f);
+      vkr_round_f32(2.0f * (scale > 0.0f ? scale : 1.0f)), 1.0f, 8.0f);
 }
 
 vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
@@ -1820,9 +1823,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
 vkr_internal float32_t vkr_standard_scene_runtime_probe_distance(
     const VkrFrameIblProbe *probe, Vec3 position) {
   const Vec3 offset = vec3_sub(position, probe->center);
-  const Vec3 outside = {Max(fabsf(offset.x) - probe->extents.x, 0.0f),
-                        Max(fabsf(offset.y) - probe->extents.y, 0.0f),
-                        Max(fabsf(offset.z) - probe->extents.z, 0.0f)};
+  const Vec3 outside = {Max(vkr_abs_f32(offset.x) - probe->extents.x, 0.0f),
+                        Max(vkr_abs_f32(offset.y) - probe->extents.y, 0.0f),
+                        Max(vkr_abs_f32(offset.z) - probe->extents.z, 0.0f)};
   return vec3_length(outside);
 }
 
@@ -2016,8 +2019,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_dynamic_volume_traced(
   if (!vkr_renderer_dynamic_volume_supported(&application->renderer)) {
     return false_v;
   }
-  const char *disabled = getenv("VKR_DYNAMIC_VOLUME_DISABLED");
-  return !(disabled && disabled[0] && disabled[0] != '0');
+  char disabled[64];
+  return !(vkr_platform_environment_variable("VKR_DYNAMIC_VOLUME_DISABLED",
+                                             disabled, sizeof(disabled)) &&
+           disabled[0] && disabled[0] != '0');
 }
 
 vkr_internal void vkr_standard_scene_runtime_prepare_dynamic_volume(
@@ -2861,10 +2866,10 @@ vkr_standard_scene_runtime_can_decouple(VkrStandardSceneRuntime *application) {
 
 void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
                                            float64_t delta) {
-  assert(application != NULL && "VkrStandardSceneRuntime is NULL");
-  assert(bitset8_is_set(&application->host.flags,
-                        VKR_APPLICATION_HOST_FLAG_RUNNING) &&
-         "VkrStandardSceneRuntime is not running");
+  vkr_assert(application != NULL && "VkrStandardSceneRuntime is NULL");
+  vkr_assert(bitset8_is_set(&application->host.flags,
+                            VKR_APPLICATION_HOST_FLAG_RUNNING) &&
+             "VkrStandardSceneRuntime is not running");
 
   const bool8_t render_thread =
       vkr_renderer_render_thread_enabled(&application->renderer);
@@ -3444,12 +3449,12 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_event(void *state,
 void vkr_standard_scene_runtime_set_callbacks(
     VkrStandardSceneRuntime *application,
     const VkrStandardSceneRuntimeCallbacks *callbacks) {
-  assert(application && callbacks);
+  vkr_assert(application && callbacks);
   application->callbacks = *callbacks;
 }
 
 void vkr_standard_scene_runtime_run(VkrStandardSceneRuntime *application) {
-  assert(application);
+  vkr_assert(application);
   const VkrApplicationHostCallbacks callbacks = {
       .state = application,
       .frame = vkr_standard_scene_runtime_host_frame,

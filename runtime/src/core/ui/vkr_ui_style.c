@@ -1,27 +1,27 @@
 #include "core/ui/vkr_ui_style.h"
 
-#include <math.h>
-
 static bool8_t vkr_ui_edges_valid(VkrUiEdges edges) {
-  return isfinite(edges.top) && isfinite(edges.right) &&
-         isfinite(edges.bottom) && isfinite(edges.left) && edges.top >= 0.0f &&
-         edges.right >= 0.0f && edges.bottom >= 0.0f && edges.left >= 0.0f;
+  return vkr_is_finite_f32(edges.top) && vkr_is_finite_f32(edges.right) &&
+         vkr_is_finite_f32(edges.bottom) && vkr_is_finite_f32(edges.left) &&
+         edges.top >= 0.0f && edges.right >= 0.0f && edges.bottom >= 0.0f &&
+         edges.left >= 0.0f;
 }
 
 static bool8_t vkr_ui_vec2_nonnegative(Vec2 value) {
-  return isfinite(value.x) && isfinite(value.y) && value.x >= 0.0f &&
-         value.y >= 0.0f;
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         value.x >= 0.0f && value.y >= 0.0f;
 }
 
 static bool8_t vkr_ui_vec4_nonnegative(Vec4 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
-         isfinite(value.w) && value.x >= 0.0f && value.y >= 0.0f &&
-         value.z >= 0.0f && value.w >= 0.0f;
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z) && vkr_is_finite_f32(value.w) &&
+         value.x >= 0.0f && value.y >= 0.0f && value.z >= 0.0f &&
+         value.w >= 0.0f;
 }
 
 static bool8_t vkr_ui_vec4_finite(Vec4 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
-         isfinite(value.w);
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z) && vkr_is_finite_f32(value.w);
 }
 
 static VkrUiEdges vkr_ui_edges_scale(VkrUiEdges edges, float32_t scale) {
@@ -108,7 +108,7 @@ VkrUiStyle vkr_ui_style_default(void) {
 
 bool8_t vkr_ui_style_resolve(const VkrUiStyle *style, float32_t content_scale,
                              VkrUiResolvedStyle *out_style) {
-  if (!style || !out_style || !isfinite(content_scale) ||
+  if (!style || !out_style || !vkr_is_finite_f32(content_scale) ||
       content_scale <= 0.0f || !vkr_ui_edges_valid(style->margin_pt) ||
       !vkr_ui_edges_valid(style->border_pt) ||
       !vkr_ui_edges_valid(style->padding_pt) ||
@@ -119,17 +119,17 @@ bool8_t vkr_ui_style_resolve(const VkrUiStyle *style, float32_t content_scale,
        style->max_size_pt.x < style->min_size_pt.x) ||
       (style->max_size_pt.y > 0.0f &&
        style->max_size_pt.y < style->min_size_pt.y) ||
-      !isfinite(style->gap_pt) || style->gap_pt < 0.0f ||
-      !isfinite(style->font_size_pt) || style->font_size_pt < 0.0f ||
+      !vkr_is_finite_f32(style->gap_pt) || style->gap_pt < 0.0f ||
+      !vkr_is_finite_f32(style->font_size_pt) || style->font_size_pt < 0.0f ||
       !vkr_ui_vec4_finite(style->background_color) ||
       !vkr_ui_vec4_finite(style->border_color) ||
       !vkr_ui_vec4_finite(style->text_color) ||
       !vkr_ui_vec4_finite(style->hover_background_color) ||
       !vkr_ui_vec4_finite(style->active_background_color) ||
       !vkr_ui_vec4_finite(style->shadow_color) ||
-      !isfinite(style->shadow_offset_pt.x) ||
-      !isfinite(style->shadow_offset_pt.y) ||
-      !isfinite(style->shadow_blur_pt) || style->shadow_blur_pt < 0.0f)
+      !vkr_is_finite_f32(style->shadow_offset_pt.x) ||
+      !vkr_is_finite_f32(style->shadow_offset_pt.y) ||
+      !vkr_is_finite_f32(style->shadow_blur_pt) || style->shadow_blur_pt < 0.0f)
     return false_v;
 
   *out_style = (VkrUiResolvedStyle){

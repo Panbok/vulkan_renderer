@@ -13,11 +13,6 @@
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #define TERRAIN_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 #define TERRAIN_TILES_MAX                                                      \
   (VKR_SCENE_TERRAIN_TILES_MAX * VKR_SCENE_TERRAIN_TILES_MAX)
@@ -391,8 +386,8 @@ static void terrain_release(VkrScene *scene, TerrainRecord *record) {
 /* The layers a terrain material is built from, as one comparable string. */
 static void terrain_material_key(const SceneTerrain *terrain, char *out,
                                  uint32_t capacity) {
-  snprintf(out, capacity, "%s|%s|%s|%s", terrain->layer0, terrain->layer1,
-           terrain->layer2, terrain->layer3);
+  string_format(out, capacity, "%s|%s|%s|%s", terrain->layer0, terrain->layer1,
+                terrain->layer2, terrain->layer3);
 }
 
 static void terrain_mark_all(TerrainRecord *record) {
@@ -463,8 +458,10 @@ static TerrainCutout terrain_cutout_make(VkrEntityId entity, Mat4 world,
   const float32_t height =
       vec3_length(vec3_new(world.cols[1].x, world.cols[1].y, world.cols[1].z));
   cut.margin_box = height > 1.0e-6f ? margin / height : 0.0f;
-  cut.min = vec3_new(INFINITY, INFINITY, INFINITY);
-  cut.max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  cut.min =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  cut.max =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   const float32_t y = 0.5f + cut.margin_box;
   for (uint32_t corner = 0; corner < 8u; ++corner) {
     const Vec3 p = mat4_mul_vec3(world, vec3_new(corner & 1u ? 0.5f : -0.5f,
@@ -488,8 +485,8 @@ static bool8_t terrain_cutout_at(const VkrSceneTerrains *state, Vec3 at) {
       continue;
     }
     const Vec3 q = mat4_mul_vec3(cut->to_box, at);
-    if (fabsf(q.x) < 0.5f && fabsf(q.z) < 0.5f &&
-        fabsf(q.y) < 0.5f + cut->margin_box) {
+    if (vkr_abs_f32(q.x) < 0.5f && vkr_abs_f32(q.z) < 0.5f &&
+        vkr_abs_f32(q.y) < 0.5f + cut->margin_box) {
       return true_v;
     }
   }
@@ -684,9 +681,9 @@ bool8_t vkr_scene_terrain_resolve(const VkrScene *scene, const char *relative,
   const bool8_t absolute =
       relative[0] == '/' || (relative[0] && relative[1] == ':');
   const int written = absolute || !scene->physics_asset_root[0]
-                          ? snprintf(out, capacity, "%s", relative)
-                          : snprintf(out, capacity, "%s/%s",
-                                     scene->physics_asset_root, relative);
+                          ? string_format(out, capacity, "%s", relative)
+                          : string_format(out, capacity, "%s/%s",
+                                          scene->physics_asset_root, relative);
   return written > 0 && (uint32_t)written < capacity;
 }
 
@@ -709,7 +706,7 @@ static uint32_t s_terrain_staged_count;
 
 static TerrainStaged *terrain_staged_find(const char *path) {
   for (uint32_t i = 0; i < s_terrain_staged_count; ++i) {
-    if (strcmp(s_terrain_staged[i].path, path) == 0) {
+    if (string_equals(s_terrain_staged[i].path, path)) {
       return &s_terrain_staged[i];
     }
   }
@@ -719,7 +716,7 @@ static TerrainStaged *terrain_staged_find(const char *path) {
 bool8_t vkr_scene_terrain_stage(const char *path, uint32_t cells,
                                 float32_t spacing, float32_t height_min,
                                 float32_t height_max, float32_t height) {
-  if (!path || strlen(path) >= sizeof(s_terrain_staged[0].path) ||
+  if (!path || string_length(path) >= sizeof(s_terrain_staged[0].path) ||
       cells > VKR_HEIGHTFIELD_RESIDENT_CELLS) {
     return false_v;
   }
@@ -737,7 +734,7 @@ bool8_t vkr_scene_terrain_stage(const char *path, uint32_t cells,
                             .height_min = height_min,
                             .height_max = height_max,
                             .height = height};
-  snprintf(staged->path, sizeof(staged->path), "%s", path);
+  string_format(staged->path, sizeof(staged->path), "%s", path);
   return true_v;
 }
 
@@ -751,13 +748,14 @@ static void terrain_unstage(const char *path) {
 static void terrain_load(VkrScene *scene, TerrainRecord *record,
                          const SceneTerrain *terrain) {
   terrain_release(scene, record);
-  snprintf(record->source, sizeof(record->source), "%s", terrain->heightfield);
+  string_format(record->source, sizeof(record->source), "%s",
+                terrain->heightfield);
   record->unsaved = false_v;
   char path[1100];
   if (!vkr_scene_terrain_resolve(scene, terrain->heightfield, path,
                                  sizeof(path))) {
-    snprintf(record->status, sizeof(record->status),
-             "The terrain names no heightfield file");
+    string_format(record->status, sizeof(record->status),
+                  "The terrain names no heightfield file");
     return;
   }
   /* A staged terrain starts in memory and is unsaved until its scene
@@ -767,8 +765,8 @@ static void terrain_load(VkrScene *scene, TerrainRecord *record,
     if (!vkr_heightfield_create(&record->field, staged->cells, staged->spacing,
                                 staged->height_min, staged->height_max,
                                 staged->height, scene->alloc)) {
-      snprintf(record->status, sizeof(record->status),
-               "The new terrain could not be created");
+      string_format(record->status, sizeof(record->status),
+                    "The new terrain could not be created");
       return;
     }
     record->unsaved = true_v;
@@ -805,7 +803,7 @@ void vkr_scene_terrain_changed(VkrScene *scene, VkrEntityId entity) {
     MemZero(record, sizeof(*record));
     record->entity = entity;
   }
-  if (!record->loaded || strcmp(record->source, terrain->heightfield) != 0) {
+  if (!record->loaded || !string_equals(record->source, terrain->heightfield)) {
     terrain_load(scene, record, terrain);
     return;
   }
@@ -818,7 +816,7 @@ void vkr_scene_terrain_changed(VkrScene *scene, VkrEntityId entity) {
   /* A new layer material or texture size rebuilds every tile. */
   char key[sizeof(record->material_key)];
   terrain_material_key(terrain, key, sizeof(key));
-  if (strcmp(record->material_key, key) != 0 ||
+  if (!string_equals(record->material_key, key) ||
       record->texture_size != terrain->texture_size) {
     terrain_mark_all(record);
   }
@@ -1018,18 +1016,18 @@ bool8_t vkr_scene_terrain_save(const VkrScene *scene, char *error,
     if (staged) {
       /* The directory of a staged file may not exist yet. */
       char directory[1100];
-      snprintf(directory, sizeof(directory), "%s", path);
-      char *slash = strrchr(directory, '/');
-      char *backslash = strrchr(directory, '\\');
+      string_format(directory, sizeof(directory), "%s", path);
+      char *slash = string_get_last_char_occurrence(directory, '/');
+      char *backslash = string_get_last_char_occurrence(directory, '\\');
       if (backslash && (!slash || backslash > slash)) {
         slash = backslash;
       }
       if (slash) {
         *slash = '\0';
         const String8 text = string8_create_from_cstr(
-            (const uint8_t *)directory, strlen(directory));
+            (const uint8_t *)directory, string_length(directory));
         if (!file_ensure_directory(scene->alloc, &text)) {
-          snprintf(error, capacity, "Could not create %s", directory);
+          string_format(error, capacity, "Could not create %s", directory);
           return false_v;
         }
       }
@@ -1194,7 +1192,8 @@ static float32_t terrain_level_error(const VkrVertex3d *vertices, uint32_t side,
       const float32_t surface =
           u + v <= 1.0f ? ha + u * (hb - ha) + v * (hc - ha)
                         : hd + (1.0f - u) * (hc - hd) + (1.0f - v) * (hb - hd);
-      error = Max(error, fabsf(vertices[z * side + x].position.y - surface));
+      error =
+          Max(error, vkr_abs_f32(vertices[z * side + x].position.y - surface));
     }
   }
   return error;
@@ -1369,10 +1368,11 @@ static float32_t terrain_skirt(const TerrainRecord *record) {
 static void terrain_geometry_name(const TerrainRecord *record, const char *kind,
                                   uint32_t tx, uint32_t tz, char *out,
                                   uint32_t capacity) {
-  snprintf(out, capacity, "terrain_%s_%u_%u_%u_%u_%u_%u", kind,
-           (unsigned)record->entity.parts.world,
-           (unsigned)record->entity.parts.index,
-           (unsigned)record->entity.parts.generation, record->serial, tx, tz);
+  string_format(out, capacity, "terrain_%s_%u_%u_%u_%u_%u_%u", kind,
+                (unsigned)record->entity.parts.world,
+                (unsigned)record->entity.parts.index,
+                (unsigned)record->entity.parts.generation, record->serial, tx,
+                tz);
 }
 
 /* One fine or overview tile of a batch (TerrainBatch). The main thread
@@ -1415,8 +1415,10 @@ static void terrain_tile_prepare(void *context, uint32_t item) {
   const uint32_t vertex_grid = side * side;
   const uint32_t x0 = work->tx * VKR_HEIGHTFIELD_TILE_CELLS;
   const uint32_t z0 = work->tz * VKR_HEIGHTFIELD_TILE_CELLS;
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t z = 0; z < side; ++z) {
     for (uint32_t x = 0; x < side; ++x) {
       const VkrVertex3d v =
@@ -1504,8 +1506,10 @@ static VkrGeometryHandle terrain_seam_geometry(VkrScene *scene,
   const uint32_t z0 = tz * cells;
   const float32_t uv_scale = 1.0f / Max(0.01f, record->texture_size);
   const float32_t skirt = terrain_skirt(record);
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   uint32_t vertex_count = 0u;
   uint32_t index_count = 0u;
   for (uint32_t z = 0; z < cells; ++z) {
@@ -1568,8 +1572,8 @@ static VkrMaterialHandle terrain_material_create(VkrScene *scene,
   struct VkrRenderAssets *assets = scene->assets;
   static uint32_t serial = 0u;
   char name[64];
-  snprintf(name, sizeof(name), "terrain/%016llx/%u",
-           (unsigned long long)record->entity.u64, ++serial);
+  string_format(name, sizeof(name), "terrain/%016llx/%u",
+                (unsigned long long)record->entity.u64, ++serial);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   const VkrMaterialHandle handle = vkr_material_system_create_colored(
       &assets->material_system, name, vec4_new(1.0f, 1.0f, 1.0f, 1.0f), &error);
@@ -1616,8 +1620,8 @@ static VkrMaterialHandle terrain_material_create(VkrScene *scene,
       terrain->layer1, terrain->layer2, terrain->layer3};
   String8 paths[VKR_MATERIAL_TERRAIN_LAYERS];
   for (uint32_t i = 0; i < VKR_MATERIAL_TERRAIN_LAYERS; ++i) {
-    paths[i] =
-        string8_create_from_cstr((const uint8_t *)layers[i], strlen(layers[i]));
+    paths[i] = string8_create_from_cstr((const uint8_t *)layers[i],
+                                        string_length(layers[i]));
   }
   VkrAllocatorScope scope =
       vkr_allocator_begin_scope(&assets->scratch_allocator);
@@ -1826,10 +1830,10 @@ static void terrain_batch_poll(VkrScene *scene, TerrainRecord *record,
   }
   batch->count = 0u;
   if (!ok) {
-    snprintf(record->status, sizeof(record->status), "%s",
-             batch->kind == TERRAIN_BATCH_LOADS
-                 ? "A terrain tile could not be streamed in"
-                 : "The terrain mesh failed");
+    string_format(record->status, sizeof(record->status), "%s",
+                  batch->kind == TERRAIN_BATCH_LOADS
+                      ? "A terrain tile could not be streamed in"
+                      : "The terrain mesh failed");
   }
 }
 
@@ -1855,11 +1859,12 @@ static bool8_t terrain_begin_build(VkrScene *scene, TerrainRecord *record) {
   }
   char key[sizeof(record->material_key)];
   terrain_material_key(terrain, key, sizeof(key));
-  if (strcmp(record->material_key, key) != 0 || !record->material.id) {
+  if (!string_equals(record->material_key, key) || !record->material.id) {
     if (record->material.id) {
       vkr_material_system_release(&assets->material_system, record->material);
     }
-    snprintf(record->material_key, sizeof(record->material_key), "%s", key);
+    string_format(record->material_key, sizeof(record->material_key), "%s",
+                  key);
     record->material = terrain_material_create(scene, record, terrain);
   }
   record->texture_size = terrain->texture_size;
@@ -2238,8 +2243,8 @@ static bool8_t terrain_body_window(const TerrainRecord *record,
   bool8_t any = false_v;
   VkrHeightfieldRect first = {0};
   for (uint32_t i = 0; i < count; ++i) {
-    const int32_t tx = (int32_t)floorf(sources[i].x / size);
-    const int32_t tz = (int32_t)floorf(sources[i].y / size);
+    const int32_t tx = (int32_t)vkr_floor_f32(sources[i].x / size);
+    const int32_t tz = (int32_t)vkr_floor_f32(sources[i].y / size);
     if (tx < -reach || tz < -reach || tx >= tiles + reach ||
         tz >= tiles + reach) {
       continue;
@@ -2282,8 +2287,8 @@ static bool8_t terrain_body_covers(const TerrainRecord *record,
   const int32_t z1 =
       (int32_t)body.z1 - ((int32_t)body.z1 < tiles - 1 ? margin : 0);
   for (uint32_t i = 0; i < count; ++i) {
-    const int32_t tx = (int32_t)floorf(sources[i].x / size);
-    const int32_t tz = (int32_t)floorf(sources[i].y / size);
+    const int32_t tx = (int32_t)vkr_floor_f32(sources[i].x / size);
+    const int32_t tz = (int32_t)vkr_floor_f32(sources[i].y / size);
     const bool8_t over = tx >= 0 && tz >= 0 && tx < tiles && tz < tiles;
     if (over && (tx < x0 || tx > x1 || tz < z0 || tz > z1)) {
       return false_v;
@@ -2297,13 +2302,13 @@ static bool8_t terrain_body_covers(const TerrainRecord *record,
 static float32_t terrain_source_distance(const Vec2 *sources, uint32_t count,
                                          float32_t x, float32_t z,
                                          float32_t size) {
-  float32_t best = INFINITY;
+  float32_t best = VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < count; ++i) {
     const float32_t dx =
         Max(0.0f, Max(x - sources[i].x, sources[i].x - (x + size)));
     const float32_t dz =
         Max(0.0f, Max(z - sources[i].y, sources[i].y - (z + size)));
-    best = Min(best, sqrtf(dx * dx + dz * dz));
+    best = Min(best, vkr_sqrt_f32(dx * dx + dz * dz));
   }
   return best;
 }
@@ -2328,10 +2333,10 @@ static uint32_t terrain_candidates(const TerrainRecord *record,
   int32_t x1 = -1;
   int32_t z1 = -1;
   for (uint32_t s = 0; s < count; ++s) {
-    x0 = Min(x0, (int32_t)floorf((sources[s].x - radius) / size));
-    z0 = Min(z0, (int32_t)floorf((sources[s].y - radius) / size));
-    x1 = Max(x1, (int32_t)floorf((sources[s].x + radius) / size));
-    z1 = Max(z1, (int32_t)floorf((sources[s].y + radius) / size));
+    x0 = Min(x0, (int32_t)vkr_floor_f32((sources[s].x - radius) / size));
+    z0 = Min(z0, (int32_t)vkr_floor_f32((sources[s].y - radius) / size));
+    x1 = Max(x1, (int32_t)vkr_floor_f32((sources[s].x + radius) / size));
+    z1 = Max(z1, (int32_t)vkr_floor_f32((sources[s].y + radius) / size));
   }
   uint32_t found = 0u;
   for (int32_t tz = Max(z0, 0); tz <= Min(z1, tiles - 1); ++tz) {
@@ -2437,8 +2442,8 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
     if (!vkr_heightfield_load_rect(field, reach) ||
         !terrain_batch_add(scene, record, index % tiles, index / tiles, false_v,
                            NULL)) {
-      snprintf(record->status, sizeof(record->status),
-               "A terrain tile could not be streamed in");
+      string_format(record->status, sizeof(record->status),
+                    "A terrain tile could not be streamed in");
       break;
     }
     if (record->batch.count == TERRAIN_BATCH_MAX) {
@@ -2510,8 +2515,8 @@ void vkr_scene_terrain_update(VkrScene *scene) {
     }
     if (record->attach_pending && terrain_mesh_settled(scene, record) &&
         !terrain_attach_mesh(scene, record)) {
-      snprintf(record->status, sizeof(record->status),
-               "The terrain mesh failed");
+      string_format(record->status, sizeof(record->status),
+                    "The terrain mesh failed");
     }
     /* Changed tiles build a batch at a time and show together once
        uploaded; changes meanwhile wait for the next build, which starts in
@@ -2520,8 +2525,8 @@ void vkr_scene_terrain_update(VkrScene *scene) {
         !record->batch.active) {
       record->mesh_dirty = false_v;
       if (!terrain_begin_build(scene, record)) {
-        snprintf(record->status, sizeof(record->status),
-                 "The terrain mesh failed");
+        string_format(record->status, sizeof(record->status),
+                      "The terrain mesh failed");
       }
     }
     /* A small build publishes each batch as it starts, so it steps on
@@ -2532,8 +2537,8 @@ void vkr_scene_terrain_update(VkrScene *scene) {
          ++step) {
       bool8_t done = false_v;
       if (!terrain_build_step(scene, record, &done)) {
-        snprintf(record->status, sizeof(record->status),
-                 "The terrain mesh failed");
+        string_format(record->status, sizeof(record->status),
+                      "The terrain mesh failed");
         done = true_v;
       }
       record->building = !done;

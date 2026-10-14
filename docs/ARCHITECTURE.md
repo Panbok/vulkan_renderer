@@ -28,10 +28,12 @@ provides common containers, memory, math and platform support from `lib/src/`.
 `vkr_render_contracts` owns shared rendering values and CPU packing, tangent
 and color-transfer helpers used by the renderer and offline tools. `renderer_lib` owns rendering and native backend work only: it
 accepts frame data and an optional `VkrNativeSurface`, but has no window, input,
-event, scene, loader or cooking owner. It reaches the C library and the
-operating system only through `vkr_foundation`: its targets compile behind
-`VKR_LIBC_BOUNDARY`, and `tools/checks/check_renderer_libc.py` rejects
-direct calls ([ADR-118](adr/118-renderer-libc-boundary.md)).
+event, scene, loader or cooking owner. The renderer, the runtime and its
+asset readers reach the C library and the operating system only through
+`vkr_foundation`: their C targets compile behind `VKR_LIBC_BOUNDARY`,
+`runtime/src/platform/` alone calls window-system APIs, and
+`tools/checks/check_libc_boundary.py` rejects direct calls
+([ADR-118](adr/118-renderer-libc-boundary.md)).
 
 `vkr_asset_formats` reads versioned cooked artifacts. It contains runtime
 decoding, not source import or artifact encoding. `vkr_runtime` builds on the

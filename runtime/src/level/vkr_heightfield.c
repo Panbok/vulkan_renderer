@@ -3,10 +3,6 @@
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 #define HEIGHTFIELD_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* Version 1 holds tiles; version 2 adds the overview after them. */
 #define HEIGHTFIELD_VERSION 2u
@@ -32,7 +28,7 @@ static const char s_heightfield_magic[8] = {'V', 'K', 'R', 'H',
 static bool8_t heightfield_fail(char *error, uint32_t capacity,
                                 const char *message) {
   if (error && capacity) {
-    snprintf(error, capacity, "%s", message);
+    string_format(error, capacity, "%s", message);
   }
   return false_v;
 }
@@ -59,8 +55,9 @@ static bool8_t heightfield_valid(uint32_t cells, float32_t spacing,
          cells <= VKR_HEIGHTFIELD_CELLS_MAX &&
          (cells <= VKR_HEIGHTFIELD_RESIDENT_CELLS ||
           cells % VKR_HEIGHTFIELD_STREAMED_CELLS == 0u) &&
-         spacing > 0.0f && isfinite(spacing) && isfinite(height_min) &&
-         isfinite(height_max) && height_max > height_min;
+         spacing > 0.0f && vkr_is_finite_f32(spacing) &&
+         vkr_is_finite_f32(height_min) && vkr_is_finite_f32(height_max) &&
+         height_max > height_min;
 }
 
 static uint16_t *heightfield_height_ref(VkrHeightfield *field, uint32_t x,
@@ -222,9 +219,7 @@ void vkr_heightfield_destroy(VkrHeightfield *field, VkrAllocator *allocator) {
     vkr_allocator_free(allocator, field->overview_weights,
                        overview * sizeof(uint32_t), HEIGHTFIELD_TAG);
   }
-  if (field->file) {
-    fclose((FILE *)field->file);
-  }
+  file_close(&field->file);
   MemZero(field, sizeof(*field));
 }
 
@@ -238,7 +233,7 @@ uint16_t vkr_heightfield_quantize(const VkrHeightfield *field,
   const float32_t t =
       (metres - field->height_min) / (field->height_max - field->height_min);
   const float32_t clamped = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
-  return (uint16_t)lroundf(clamped * 65535.0f);
+  return (uint16_t)vkr_round_i64_f32(clamped * 65535.0f);
 }
 
 float32_t vkr_heightfield_at(const VkrHeightfield *field, uint32_t x,
@@ -344,10 +339,10 @@ static bool8_t heightfield_rect(const VkrHeightfield *field, Vec2 min, Vec2 max,
                                 VkrHeightfieldRect *out) {
   const float32_t half = vkr_heightfield_half_size(field);
   const float32_t last = (float32_t)field->cells;
-  const float32_t x0 = ceilf((min.x + half) / field->spacing);
-  const float32_t z0 = ceilf((min.y + half) / field->spacing);
-  const float32_t x1 = floorf((max.x + half) / field->spacing);
-  const float32_t z1 = floorf((max.y + half) / field->spacing);
+  const float32_t x0 = vkr_ceil_f32((min.x + half) / field->spacing);
+  const float32_t z0 = vkr_ceil_f32((min.y + half) / field->spacing);
+  const float32_t x1 = vkr_floor_f32((max.x + half) / field->spacing);
+  const float32_t z1 = vkr_floor_f32((max.y + half) / field->spacing);
   if (!(x1 >= 0.0f) || !(z1 >= 0.0f) || !(x0 <= last) || !(z0 <= last) ||
       x0 > x1 || z0 > z1) {
     return false_v;
@@ -477,7 +472,7 @@ static void heightfield_paint(VkrHeightfield *field, uint32_t x, uint32_t z,
   uint32_t bytes[VKR_HEIGHTFIELD_LAYERS];
   uint32_t total = 0u;
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
-    bytes[i] = (uint32_t)lroundf(w[i] * 255.0f);
+    bytes[i] = (uint32_t)vkr_round_i64_f32(w[i] * 255.0f);
     total += bytes[i];
   }
   /* Rounding drift goes to the painted layer. */
@@ -505,7 +500,7 @@ static void heightfield_weights_set(VkrHeightfield *field, uint32_t x,
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
     const float32_t share =
         sum > 0.0f ? Max(0.0f, w[i]) / sum : (i == 0u ? 1.0f : 0.0f);
-    bytes[i] = (uint32_t)lroundf(share * 255.0f);
+    bytes[i] = (uint32_t)vkr_round_i64_f32(share * 255.0f);
     total += bytes[i];
     largest = bytes[i] > bytes[largest] ? i : largest;
   }
@@ -533,9 +528,9 @@ bool8_t vkr_heightfield_brush(VkrHeightfield *field, VkrHeightfieldBrush brush,
                               float32_t height, uint32_t layer,
                               VkrAllocator *scratch,
                               VkrHeightfieldRect *touched) {
-  if (!(radius > 0.0f) || !isfinite(falloff) || !isfinite(strength) ||
-      !isfinite(height) || brush >= VKR_HEIGHTFIELD_BRUSH_COUNT ||
-      layer >= VKR_HEIGHTFIELD_LAYERS ||
+  if (!(radius > 0.0f) || !vkr_is_finite_f32(falloff) ||
+      !vkr_is_finite_f32(strength) || !vkr_is_finite_f32(height) ||
+      brush >= VKR_HEIGHTFIELD_BRUSH_COUNT || layer >= VKR_HEIGHTFIELD_LAYERS ||
       !vkr_heightfield_rect_around(field, x, z, radius, touched)) {
     return false_v;
   }
@@ -628,8 +623,8 @@ bool8_t vkr_heightfield_flatten(VkrHeightfield *field, Vec2 min, Vec2 max,
                                 float32_t height, float32_t falloff,
                                 VkrHeightfieldRect *touched) {
   falloff = Max(0.0f, falloff);
-  if (!isfinite(height) || !isfinite(falloff) || min.x > max.x ||
-      min.y > max.y ||
+  if (!vkr_is_finite_f32(height) || !vkr_is_finite_f32(falloff) ||
+      min.x > max.x || min.y > max.y ||
       !heightfield_rect(field, vec2_new(min.x - falloff, min.y - falloff),
                         vec2_new(max.x + falloff, max.y + falloff), touched)) {
     return false_v;
@@ -639,7 +634,7 @@ bool8_t vkr_heightfield_flatten(VkrHeightfield *field, Vec2 min, Vec2 max,
       const Vec2 at = heightfield_local(field, sx, sz);
       const float32_t dx = Max(0.0f, Max(min.x - at.x, at.x - max.x));
       const float32_t dz = Max(0.0f, Max(min.y - at.y, at.y - max.y));
-      const float32_t d = sqrtf(dx * dx + dz * dz);
+      const float32_t d = vkr_sqrt_f32(dx * dx + dz * dz);
       const float32_t t =
           d <= 0.0f ? 1.0f
                     : (falloff > 0.0f ? 1.0f - heightfield_smooth01(d / falloff)
@@ -661,8 +656,8 @@ bool8_t vkr_heightfield_ramp(VkrHeightfield *field, Vec3 a, Vec3 b,
   const Vec2 along = vec2_sub(b2, a2);
   const float32_t length_sq = vec2_dot(along, along);
   const float32_t reach = 0.5f * width + falloff;
-  if (!(width > 0.0f) || !(length_sq > 1.0e-6f) || !isfinite(a.y) ||
-      !isfinite(b.y) ||
+  if (!(width > 0.0f) || !(length_sq > 1.0e-6f) || !vkr_is_finite_f32(a.y) ||
+      !vkr_is_finite_f32(b.y) ||
       !heightfield_rect(
           field, vec2_new(Min(a.x, b.x) - reach, Min(a.z, b.z) - reach),
           vec2_new(Max(a.x, b.x) + reach, Max(a.z, b.z) + reach), touched)) {
@@ -718,15 +713,15 @@ bool8_t vkr_heightfield_op_rect(const VkrHeightfield *field,
       return false_v;
     }
     const float32_t reach = 0.5f * op->width + Max(0.0f, op->falloff);
-    Vec2 lo = vec2_new(INFINITY, INFINITY);
-    Vec2 hi = vec2_new(-INFINITY, -INFINITY);
+    Vec2 lo = vec2_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    Vec2 hi = vec2_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     for (uint32_t i = 0; i < op->path_count; ++i) {
       const Vec3 p = vec3_add(op->path[i], op->a);
       lo = vec2_new(Min(lo.x, p.x), Min(lo.y, p.z));
       hi = vec2_new(Max(hi.x, p.x), Max(hi.y, p.z));
     }
-    return isfinite(lo.x) && isfinite(lo.y) && isfinite(hi.x) &&
-           isfinite(hi.y) &&
+    return vkr_is_finite_f32(lo.x) && vkr_is_finite_f32(lo.y) &&
+           vkr_is_finite_f32(hi.x) && vkr_is_finite_f32(hi.y) &&
            heightfield_rect(field, vec2_new(lo.x - reach, lo.y - reach),
                             vec2_new(hi.x + reach, hi.y + reach), out);
   }
@@ -768,8 +763,8 @@ static bool8_t heightfield_op_run(VkrHeightfield *field,
     vkr_heightfield_write_rect(field, *touched, op->heights, op->weights);
     return true_v;
   case VKR_HEIGHTFIELD_OP_STAMP: {
-    if (!vkr_heightfield_op_rect(field, op, touched) || !isfinite(op->height) ||
-        !isfinite(op->strength)) {
+    if (!vkr_heightfield_op_rect(field, op, touched) ||
+        !vkr_is_finite_f32(op->height) || !vkr_is_finite_f32(op->strength)) {
       return false_v;
     }
     const float32_t w = (float32_t)(op->image_width - 1u);
@@ -867,7 +862,36 @@ bool8_t vkr_heightfield_op_apply(VkrHeightfield *field,
 // Files
 // =============================================================================
 
-static bool8_t heightfield_write_header(FILE *file, uint32_t cells,
+#define HEIGHTFIELD_READ_MODE (FILE_MODE_READ | FILE_MODE_BINARY)
+#define HEIGHTFIELD_UPDATE_MODE                                                \
+  (FILE_MODE_READ | FILE_MODE_WRITE | FILE_MODE_BINARY)
+#define HEIGHTFIELD_CREATE_MODE                                                \
+  (FILE_MODE_WRITE | FILE_MODE_CREATE | FILE_MODE_TRUNCATE | FILE_MODE_BINARY)
+
+static bool8_t heightfield_open(const char *path, uint8_t mode,
+                                FileHandle *out_file) {
+  const FilePath file_path = file_path_view(path);
+  return file_open(&file_path, (FileMode){.set = mode}, out_file) ==
+         FILE_ERROR_NONE;
+}
+
+/* Writes all `size` bytes at the file's position. */
+static bool8_t heightfield_write(FileHandle *file, const void *bytes,
+                                 uint64_t size) {
+  uint64_t written = 0u;
+  return size == 0u ||
+         (file_write(file, size, bytes, &written) == FILE_ERROR_NONE &&
+          written == size);
+}
+
+/* Reads exactly `size` bytes at the file's position. */
+static bool8_t heightfield_read(FileHandle *file, void *bytes, uint64_t size) {
+  uint64_t read = 0u;
+  return file_read_into(file, bytes, size, &read) == FILE_ERROR_NONE &&
+         read == size;
+}
+
+static bool8_t heightfield_write_header(FileHandle *file, uint32_t cells,
                                         float32_t spacing, float32_t height_min,
                                         float32_t height_max) {
   HeightfieldHeader header = {.version = HEIGHTFIELD_VERSION,
@@ -880,18 +904,18 @@ static bool8_t heightfield_write_header(FILE *file, uint32_t cells,
                               .overview_stride =
                                   VKR_HEIGHTFIELD_OVERVIEW_STRIDE};
   MemCopy(header.magic, s_heightfield_magic, sizeof(header.magic));
-  return fwrite(&header, sizeof(header), 1u, file) == 1u;
+  return heightfield_write(file, &header, sizeof(header));
 }
 
 /* Replaces `path` with the written temporary file `temp`. */
 static bool8_t heightfield_commit(const char *temp, const char *path,
                                   bool8_t ok, char *error, uint32_t capacity) {
-  FilePath from = {
-      .path = string8_create_from_cstr((const uint8_t *)temp, strlen(temp)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
-  FilePath to = {
-      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath from = {.path = string8_create_from_cstr((const uint8_t *)temp,
+                                                    string_length(temp)),
+                   .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath to = {.path = string8_create_from_cstr((const uint8_t *)path,
+                                                  string_length(path)),
+                 .type = FILE_PATH_TYPE_ABSOLUTE};
   if (!ok || file_rename(&from, &to, true_v) != FILE_ERROR_NONE) {
     (void)file_remove(&from);
     return heightfield_fail(error, capacity,
@@ -908,11 +932,11 @@ bool8_t vkr_heightfield_create_file(const char *path, uint32_t cells,
     return heightfield_fail(error, capacity, "The terrain size is invalid");
   }
   char temp[1100];
-  if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
+  if (string_format(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
     return heightfield_fail(error, capacity, "The terrain path is too long");
   }
-  FILE *file = file_fopen(temp, "wb");
-  if (!file) {
+  FileHandle file = {0};
+  if (!heightfield_open(temp, HEIGHTFIELD_CREATE_MODE, &file)) {
     return heightfield_fail(error, capacity,
                             "The terrain file could not be created");
   }
@@ -922,40 +946,40 @@ bool8_t vkr_heightfield_create_file(const char *path, uint32_t cells,
   heightfield_tile_fill(&tile, value);
   const uint32_t tiles = heightfield_tiles(cells + 1u);
   bool8_t ok =
-      heightfield_write_header(file, cells, spacing, height_min, height_max);
+      heightfield_write_header(&file, cells, spacing, height_min, height_max);
   for (uint32_t i = 0; ok && i < tiles * tiles; ++i) {
-    ok = fwrite(&tile, sizeof(tile), 1u, file) == 1u;
+    ok = heightfield_write(&file, &tile, sizeof(tile));
   }
   /* The overview, heights then weights, a tile's worth at a time. */
   const uint64_t overview = heightfield_overview_count(cells);
   const uint32_t chunk = ArrayCount(tile.heights);
   for (uint64_t i = 0; ok && i < overview; i += chunk) {
-    const size_t count = (size_t)Min((uint64_t)chunk, overview - i);
-    ok = fwrite(tile.heights, sizeof(uint16_t), count, file) == count;
+    const uint64_t count = Min((uint64_t)chunk, overview - i);
+    ok = heightfield_write(&file, tile.heights, count * sizeof(uint16_t));
   }
   for (uint64_t i = 0; ok && i < overview; i += chunk) {
-    const size_t count = (size_t)Min((uint64_t)chunk, overview - i);
-    ok = fwrite(tile.weights, sizeof(uint32_t), count, file) == count;
+    const uint64_t count = Min((uint64_t)chunk, overview - i);
+    ok = heightfield_write(&file, tile.weights, count * sizeof(uint32_t));
   }
-  ok = fflush(file) == 0 && ok;
-  ok = fclose(file) == 0 && ok;
+  file_close(&file);
   return heightfield_commit(temp, path, ok, error, capacity);
 }
 
 static bool8_t heightfield_write_overview(const VkrHeightfield *field,
-                                          FILE *file) {
+                                          FileHandle *file) {
   const uint64_t overview = heightfield_overview_count(field->cells);
-  return fwrite(field->overview_heights, sizeof(uint16_t), overview, file) ==
-             overview &&
-         fwrite(field->overview_weights, sizeof(uint32_t), overview, file) ==
-             overview;
+  return heightfield_write(file, field->overview_heights,
+                           overview * sizeof(uint16_t)) &&
+         heightfield_write(file, field->overview_weights,
+                           overview * sizeof(uint32_t));
 }
 
 /* Writes resident tile `index` of a streamed field at its offset. */
 static bool8_t heightfield_store_tile(VkrHeightfield *field, uint32_t index) {
-  FILE *file = field->file;
-  if (FSEEK64(file, (int64_t)heightfield_tile_offset(index), SEEK_SET) != 0 ||
-      fwrite(field->tiles[index], sizeof(VkrHeightfieldTile), 1u, file) != 1u) {
+  if (file_seek(&field->file, heightfield_tile_offset(index)) !=
+          FILE_ERROR_NONE ||
+      !heightfield_write(&field->file, field->tiles[index],
+                         sizeof(VkrHeightfieldTile))) {
     return false_v;
   }
   field->tile_dirty[index] = 0u;
@@ -988,9 +1012,9 @@ static const char s_journal_end[8] = {'V', 'K', 'R', 'H', 'F', 'J', 'N', 'E'};
 #define HEIGHTFIELD_FNV_PRIME 0x100000001b3ull
 
 static uint64_t heightfield_hash(uint64_t hash, const void *bytes,
-                                 size_t size) {
+                                 uint64_t size) {
   const uint8_t *at = bytes;
-  for (size_t i = 0; i < size; ++i) {
+  for (uint64_t i = 0; i < size; ++i) {
     hash = (hash ^ at[i]) * HEIGHTFIELD_FNV_PRIME;
   }
   return hash;
@@ -998,22 +1022,22 @@ static uint64_t heightfield_hash(uint64_t hash, const void *bytes,
 
 static bool8_t heightfield_journal_path(const char *path, char *out,
                                         uint32_t capacity) {
-  const int written = snprintf(out, capacity, "%s.journal", path);
+  const int written = string_format(out, capacity, "%s.journal", path);
   return written > 0 && (uint32_t)written < capacity;
 }
 
 static void heightfield_remove(const char *path) {
-  const FilePath file = {
-      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
+  const FilePath file = {.path = string8_create_from_cstr((const uint8_t *)path,
+                                                          string_length(path)),
+                         .type = FILE_PATH_TYPE_ABSOLUTE};
   (void)file_remove(&file);
 }
 
 /* Writes `size` bytes and folds them into `hash`. */
-static bool8_t heightfield_journal_put(FILE *file, uint64_t *hash,
-                                       const void *bytes, size_t size) {
+static bool8_t heightfield_journal_put(FileHandle *file, uint64_t *hash,
+                                       const void *bytes, uint64_t size) {
   *hash = heightfield_hash(*hash, bytes, size);
-  return fwrite(bytes, 1u, size, file) == size;
+  return heightfield_write(file, bytes, size);
 }
 
 bool8_t vkr_heightfield_journal_write(const VkrHeightfield *field,
@@ -1031,30 +1055,30 @@ bool8_t vkr_heightfield_journal_write(const VkrHeightfield *field,
   for (uint32_t i = 0; i < tiles; ++i) {
     header.tile_count += field->tiles[i] && field->tile_dirty[i];
   }
-  FILE *file = file_fopen(journal, "wb");
-  if (!file) {
+  FileHandle file = {0};
+  if (!heightfield_open(journal, HEIGHTFIELD_CREATE_MODE, &file)) {
     return heightfield_fail(error, capacity,
                             "The terrain journal could not be created");
   }
   uint64_t hash = HEIGHTFIELD_FNV_OFFSET;
-  bool8_t ok = heightfield_journal_put(file, &hash, &header, sizeof(header));
+  bool8_t ok = heightfield_journal_put(&file, &hash, &header, sizeof(header));
   for (uint32_t i = 0; ok && i < tiles; ++i) {
     if (field->tiles[i] && field->tile_dirty[i]) {
-      ok = heightfield_journal_put(file, &hash, &i, sizeof(i)) &&
-           heightfield_journal_put(file, &hash, field->tiles[i],
+      ok = heightfield_journal_put(&file, &hash, &i, sizeof(i)) &&
+           heightfield_journal_put(&file, &hash, field->tiles[i],
                                    sizeof(VkrHeightfieldTile));
     }
   }
   ok = ok &&
-       heightfield_journal_put(file, &hash, field->overview_heights,
+       heightfield_journal_put(&file, &hash, field->overview_heights,
                                header.overview_count * sizeof(uint16_t)) &&
-       heightfield_journal_put(file, &hash, field->overview_weights,
+       heightfield_journal_put(&file, &hash, field->overview_weights,
                                header.overview_count * sizeof(uint32_t));
   HeightfieldJournalFooter footer = {.checksum = hash};
   MemCopy(footer.magic, s_journal_end, sizeof(footer.magic));
-  ok = ok && fwrite(&footer, sizeof(footer), 1u, file) == 1u;
-  ok = file_flush_durable(file) && ok;
-  ok = fclose(file) == 0 && ok;
+  ok = ok && heightfield_write(&file, &footer, sizeof(footer));
+  ok = file_sync(&file) == FILE_ERROR_NONE && ok;
+  file_close(&file);
   if (!ok) {
     heightfield_remove(journal);
     return heightfield_fail(error, capacity,
@@ -1064,9 +1088,9 @@ bool8_t vkr_heightfield_journal_write(const VkrHeightfield *field,
 }
 
 /* Reads `size` bytes and folds them into `hash`. */
-static bool8_t heightfield_journal_take(FILE *file, uint64_t *hash, void *bytes,
-                                        size_t size) {
-  if (fread(bytes, 1u, size, file) != size) {
+static bool8_t heightfield_journal_take(FileHandle *file, uint64_t *hash,
+                                        void *bytes, uint64_t size) {
+  if (!heightfield_read(file, bytes, size)) {
     return false_v;
   }
   *hash = heightfield_hash(*hash, bytes, size);
@@ -1076,7 +1100,8 @@ static bool8_t heightfield_journal_take(FILE *file, uint64_t *hash, void *bytes,
 /* Whether the journal `file` is whole and belongs to a file of
    `tiles_per_side` tiles and `overview_count` overview samples: its size,
    magic numbers and checksum agree. Leaves `file` at its first entry. */
-static bool8_t heightfield_journal_whole(FILE *file, uint32_t tiles_per_side,
+static bool8_t heightfield_journal_whole(FileHandle *file,
+                                         uint32_t tiles_per_side,
                                          uint64_t overview_count,
                                          HeightfieldJournalHeader *header) {
   uint64_t hash = HEIGHTFIELD_FNV_OFFSET;
@@ -1090,54 +1115,53 @@ static bool8_t heightfield_journal_whole(FILE *file, uint32_t tiles_per_side,
   const uint64_t body = (uint64_t)header->tile_count *
                             (sizeof(uint32_t) + sizeof(VkrHeightfieldTile)) +
                         overview_count * (sizeof(uint16_t) + sizeof(uint32_t));
-  if (FSEEK64(file, 0, SEEK_END) != 0 ||
-      FTELL64(file) != (int64_t)(sizeof(*header) + body +
-                                 sizeof(HeightfieldJournalFooter)) ||
-      FSEEK64(file, (int64_t)sizeof(*header), SEEK_SET) != 0) {
+  /* The header is read, so the rest is the body and the footer. */
+  uint64_t remaining = 0u;
+  if (file_remaining_size(file, &remaining) != FILE_ERROR_NONE ||
+      remaining != body + sizeof(HeightfieldJournalFooter)) {
     return false_v;
   }
   uint8_t chunk[4096];
   for (uint64_t left = body; left;) {
-    const size_t size = (size_t)Min(left, (uint64_t)sizeof(chunk));
+    const uint64_t size = Min(left, (uint64_t)sizeof(chunk));
     if (!heightfield_journal_take(file, &hash, chunk, size)) {
       return false_v;
     }
     left -= size;
   }
   HeightfieldJournalFooter footer;
-  return fread(&footer, sizeof(footer), 1u, file) == 1u &&
+  return heightfield_read(file, &footer, sizeof(footer)) &&
          MemCompare(footer.magic, s_journal_end, sizeof(footer.magic)) == 0 &&
          footer.checksum == hash &&
-         FSEEK64(file, (int64_t)sizeof(*header), SEEK_SET) == 0;
+         file_seek(file, sizeof(*header)) == FILE_ERROR_NONE;
 }
 
 /* Writes whole `journal`'s tiles and overview into `target`. */
 static bool8_t
-heightfield_journal_apply(FILE *journal, FILE *target,
+heightfield_journal_apply(FileHandle *journal, FileHandle *target,
                           const HeightfieldJournalHeader *header) {
   const uint32_t tiles = header->tiles_per_side * header->tiles_per_side;
   VkrHeightfieldTile tile;
   bool8_t ok = true_v;
   for (uint32_t i = 0; ok && i < header->tile_count; ++i) {
     uint32_t index = 0u;
-    ok = fread(&index, sizeof(index), 1u, journal) == 1u && index < tiles &&
-         fread(&tile, sizeof(tile), 1u, journal) == 1u &&
-         FSEEK64(target, (int64_t)heightfield_tile_offset(index), SEEK_SET) ==
-             0 &&
-         fwrite(&tile, sizeof(tile), 1u, target) == 1u;
+    ok = heightfield_read(journal, &index, sizeof(index)) && index < tiles &&
+         heightfield_read(journal, &tile, sizeof(tile)) &&
+         file_seek(target, heightfield_tile_offset(index)) == FILE_ERROR_NONE &&
+         heightfield_write(target, &tile, sizeof(tile));
   }
   /* The overview, heights then weights, sit right after the tiles in both. */
   ok = ok &&
-       FSEEK64(target, (int64_t)heightfield_tile_offset(tiles), SEEK_SET) == 0;
+       file_seek(target, heightfield_tile_offset(tiles)) == FILE_ERROR_NONE;
   const uint64_t bytes =
       header->overview_count * (sizeof(uint16_t) + sizeof(uint32_t));
   for (uint64_t left = bytes; ok && left;) {
-    const size_t size = (size_t)Min(left, (uint64_t)sizeof(tile));
-    ok = fread(&tile, 1u, size, journal) == size &&
-         fwrite(&tile, 1u, size, target) == size;
+    const uint64_t size = Min(left, (uint64_t)sizeof(tile));
+    ok = heightfield_read(journal, &tile, size) &&
+         heightfield_write(target, &tile, size);
     left -= size;
   }
-  return ok && file_flush_durable(target);
+  return ok && file_sync(target) == FILE_ERROR_NONE;
 }
 
 /* Finishes or drops the journal a streamed save of `path` left behind.
@@ -1147,33 +1171,31 @@ static bool8_t heightfield_journal_recover(const char *path) {
   if (!heightfield_journal_path(path, journal_path, sizeof(journal_path))) {
     return true_v;
   }
-  FILE *journal = file_fopen(journal_path, "rb");
-  if (!journal) {
+  FileHandle journal = {0};
+  if (!heightfield_open(journal_path, HEIGHTFIELD_READ_MODE, &journal)) {
     return true_v;
   }
-  FILE *target = file_fopen(path, "r+b");
-  const bool8_t writable = target != NULL;
-  if (!target) {
-    target = file_fopen(path, "rb");
-  }
+  FileHandle target = {0};
+  const bool8_t writable =
+      heightfield_open(path, HEIGHTFIELD_UPDATE_MODE, &target);
+  const bool8_t opened =
+      writable || heightfield_open(path, HEIGHTFIELD_READ_MODE, &target);
   HeightfieldHeader file_header;
   const bool8_t target_ok =
-      target && fread(&file_header, sizeof(file_header), 1u, target) == 1u &&
+      opened && heightfield_read(&target, &file_header, sizeof(file_header)) &&
       file_header.version == HEIGHTFIELD_VERSION &&
       file_header.cells <= VKR_HEIGHTFIELD_CELLS_MAX;
   HeightfieldJournalHeader header;
   const bool8_t whole =
       target_ok && heightfield_journal_whole(
-                       journal, file_header.tiles_per_side,
+                       &journal, file_header.tiles_per_side,
                        heightfield_overview_count(file_header.cells), &header);
   /* A torn journal was written before the file was touched. */
   const bool8_t ok =
       !whole ||
-      (writable && heightfield_journal_apply(journal, target, &header));
-  fclose(journal);
-  if (target) {
-    fclose(target);
-  }
+      (writable && heightfield_journal_apply(&journal, &target, &header));
+  file_close(&journal);
+  file_close(&target);
   if (ok) {
     heightfield_remove(journal_path);
     log_warn("Terrain: %s %s", path,
@@ -1186,7 +1208,7 @@ static bool8_t heightfield_journal_recover(const char *path) {
 bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
                              char *error, uint32_t capacity) {
   const uint32_t tiles = field->tiles_per_side * field->tiles_per_side;
-  if (field->file) {
+  if (field->file.handle) {
     if (field->read_only) {
       return heightfield_fail(error, capacity, "The terrain file is read-only");
     }
@@ -1202,10 +1224,10 @@ bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
       }
     }
     ok = ok &&
-         FSEEK64(field->file, (int64_t)heightfield_tile_offset(tiles),
-                 SEEK_SET) == 0 &&
-         heightfield_write_overview(field, field->file) &&
-         file_flush_durable(field->file);
+         file_seek(&field->file, heightfield_tile_offset(tiles)) ==
+             FILE_ERROR_NONE &&
+         heightfield_write_overview(field, &field->file) &&
+         file_sync(&field->file) == FILE_ERROR_NONE;
     if (!ok) {
       return heightfield_fail(error, capacity,
                               "The terrain file could not be written");
@@ -1217,23 +1239,22 @@ bool8_t vkr_heightfield_save(VkrHeightfield *field, const char *path,
     return true_v;
   }
   char temp[1100];
-  if (snprintf(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
+  if (string_format(temp, sizeof(temp), "%s.tmp", path) >= (int)sizeof(temp)) {
     return heightfield_fail(error, capacity, "The terrain path is too long");
   }
-  FILE *file = file_fopen(temp, "wb");
-  if (!file) {
+  FileHandle file = {0};
+  if (!heightfield_open(temp, HEIGHTFIELD_CREATE_MODE, &file)) {
     return heightfield_fail(error, capacity,
                             "The terrain file could not be created");
   }
-  bool8_t ok = heightfield_write_header(file, field->cells, field->spacing,
+  bool8_t ok = heightfield_write_header(&file, field->cells, field->spacing,
                                         field->height_min, field->height_max);
   for (uint32_t i = 0; ok && i < tiles; ++i) {
     ok = field->tiles[i] &&
-         fwrite(field->tiles[i], sizeof(VkrHeightfieldTile), 1u, file) == 1u;
+         heightfield_write(&file, field->tiles[i], sizeof(VkrHeightfieldTile));
   }
-  ok = ok && heightfield_write_overview(field, file);
-  ok = fflush(file) == 0 && ok;
-  ok = fclose(file) == 0 && ok;
+  ok = ok && heightfield_write_overview(field, &file);
+  file_close(&file);
   if (ok) {
     MemZero(field->tile_dirty, tiles * sizeof(uint8_t));
   }
@@ -1249,14 +1270,14 @@ bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
                             "The terrain file holds a save cut short that "
                             "could not be finished");
   }
-  FILE *file = file_fopen(path, "rb");
-  if (!file) {
+  FileHandle file = {0};
+  if (!heightfield_open(path, HEIGHTFIELD_READ_MODE, &file)) {
     return heightfield_fail(error, capacity,
                             "The terrain file could not be opened");
   }
   HeightfieldHeader header;
   bool8_t ok =
-      fread(&header, sizeof(header), 1u, file) == 1u &&
+      heightfield_read(&file, &header, sizeof(header)) &&
       MemCompare(header.magic, s_heightfield_magic, sizeof(header.magic)) ==
           0 &&
       (header.version == 1u ||
@@ -1271,7 +1292,7 @@ bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
       heightfield_arrays(out, header.cells, header.spacing, header.height_min,
                          header.height_max, allocator);
   if (!ok) {
-    fclose(file);
+    file_close(&file);
     vkr_heightfield_destroy(out, allocator);
     return heightfield_fail(error, capacity,
                             "The terrain file is not a supported heightfield");
@@ -1281,28 +1302,28 @@ bool8_t vkr_heightfield_load(VkrHeightfield *out, const char *path,
   if (out->cells <= VKR_HEIGHTFIELD_RESIDENT_CELLS) {
     for (uint32_t i = 0; ok && i < tiles; ++i) {
       VkrHeightfieldTile *tile = heightfield_tile_new(out, i);
-      ok = tile && fread(tile, sizeof(*tile), 1u, file) == 1u;
+      ok = tile && heightfield_read(&file, tile, sizeof(*tile));
     }
     /* Version 1 has no overview; the samples give it. */
     heightfield_overview_refresh(
         out, (VkrHeightfieldRect){0u, 0u, out->cells, out->cells});
-    fclose(file);
+    file_close(&file);
   } else {
     /* A streamed field reads its overview now and its tiles on demand. */
-    ok =
-        FSEEK64(file, (int64_t)heightfield_tile_offset(tiles), SEEK_SET) == 0 &&
-        fread(out->overview_heights, sizeof(uint16_t), overview, file) ==
-            overview &&
-        fread(out->overview_weights, sizeof(uint32_t), overview, file) ==
-            overview;
-    fclose(file);
-    out->file = ok ? file_fopen(path, "r+b") : NULL;
-    if (ok && !out->file) {
+    ok = file_seek(&file, heightfield_tile_offset(tiles)) == FILE_ERROR_NONE &&
+         heightfield_read(&file, out->overview_heights,
+                          overview * sizeof(uint16_t)) &&
+         heightfield_read(&file, out->overview_weights,
+                          overview * sizeof(uint32_t));
+    file_close(&file);
+    bool8_t opened =
+        ok && heightfield_open(path, HEIGHTFIELD_UPDATE_MODE, &out->file);
+    if (ok && !opened) {
       /* A packaged game may not write its terrain; it still streams. */
-      out->file = file_fopen(path, "rb");
-      out->read_only = out->file != NULL;
+      opened = heightfield_open(path, HEIGHTFIELD_READ_MODE, &out->file);
+      out->read_only = opened;
     }
-    ok = ok && out->file;
+    ok = ok && opened;
   }
   if (!ok) {
     vkr_heightfield_destroy(out, allocator);
@@ -1317,14 +1338,14 @@ bool8_t vkr_heightfield_tile_load(VkrHeightfield *field, uint32_t tx,
   if (field->tiles[index]) {
     return true_v;
   }
-  if (!field->file) {
+  if (!field->file.handle) {
     return false_v;
   }
   VkrHeightfieldTile *tile = heightfield_tile_new(field, index);
   if (!tile ||
-      FSEEK64(field->file, (int64_t)heightfield_tile_offset(index), SEEK_SET) !=
-          0 ||
-      fread(tile, sizeof(*tile), 1u, field->file) != 1u) {
+      file_seek(&field->file, heightfield_tile_offset(index)) !=
+          FILE_ERROR_NONE ||
+      !heightfield_read(&field->file, tile, sizeof(*tile))) {
     if (tile) {
       heightfield_tile_free(field, index);
     }
@@ -1337,7 +1358,7 @@ bool8_t vkr_heightfield_tile_release(VkrHeightfield *field, uint32_t tx,
                                      uint32_t tz) {
   const uint32_t index = tz * field->tiles_per_side + tx;
   /* Unsaved samples stay until a save writes them. */
-  if (!field->tiles[index] || !field->file || field->tile_dirty[index]) {
+  if (!field->tiles[index] || !field->file.handle || field->tile_dirty[index]) {
     return false_v;
   }
   heightfield_tile_free(field, index);

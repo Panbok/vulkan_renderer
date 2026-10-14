@@ -1,10 +1,8 @@
 #include "renderer/systems/vkr_scene_partition.h"
 
+#include "containers/vkr_sort.h"
 #include "core/vkr_type_desc.h"
 #include "renderer/systems/vkr_scene_types.h"
-
-#include <math.h>
-#include <stdlib.h>
 
 #define PARTITION_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* Cells stay loaded this far past the load radius, in cells, so a source
@@ -101,8 +99,9 @@ bool8_t vkr_scene_partition_settings(const VkrScene *scene,
   const SceneWorldPartition *partition =
       vkr_scene_get_typed(scene, entity, &vkr_scene_world_partition_type);
   if (!partition || !(partition->cell_size >= 1.0f) ||
-      !isfinite(partition->cell_size) || !isfinite(partition->load_radius) ||
-      !isfinite(partition->proxy_radius)) {
+      !vkr_is_finite_f32(partition->cell_size) ||
+      !vkr_is_finite_f32(partition->load_radius) ||
+      !vkr_is_finite_f32(partition->proxy_radius)) {
     return false_v;
   }
   *out = *partition;
@@ -115,8 +114,8 @@ bool8_t vkr_scene_partition_settings(const VkrScene *scene,
 VkrScenePartitionCell
 vkr_scene_partition_cell_at(const SceneWorldPartition *settings, Vec3 world) {
   return (VkrScenePartitionCell){
-      .x = (int32_t)floorf(world.x / settings->cell_size),
-      .z = (int32_t)floorf(world.z / settings->cell_size)};
+      .x = (int32_t)vkr_floor_f32(world.x / settings->cell_size),
+      .z = (int32_t)vkr_floor_f32(world.z / settings->cell_size)};
 }
 
 /* Whether root `entity` belongs to the persistent layer: a document entity,
@@ -253,12 +252,12 @@ static float32_t partition_distance(const VkrScene *scene,
   const float32_t size = settings->cell_size;
   const float32_t x0 = (float32_t)cell.x * size;
   const float32_t z0 = (float32_t)cell.z * size;
-  float32_t best = INFINITY;
+  float32_t best = VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < scene->stream_source_count; ++i) {
     const Vec3 at = vec3_add(scene->stream_sources[i], scene->origin_offset);
     const float32_t dx = Max(0.0f, Max(x0 - at.x, at.x - (x0 + size)));
     const float32_t dz = Max(0.0f, Max(z0 - at.z, at.z - (z0 + size)));
-    best = Min(best, sqrtf(dx * dx + dz * dz));
+    best = Min(best, vkr_sqrt_f32(dx * dx + dz * dz));
   }
   return best;
 }
@@ -297,7 +296,7 @@ void vkr_scene_partition_plan(const VkrScene *scene,
       partition_candidate_offer(loads, &load_count, candidate, false_v);
     }
   }
-  qsort(loads, load_count, sizeof(*loads), partition_candidate_compare);
+  vkr_sort(loads, load_count, sizeof(*loads), partition_candidate_compare);
   /* A load past the budget waits until farther cells leave. */
   const uint32_t staying = loaded - Min(loaded, unload_count);
   const uint32_t room =
@@ -306,7 +305,8 @@ void vkr_scene_partition_plan(const VkrScene *scene,
   for (uint32_t i = 0; i < load_count; ++i) {
     out->load[out->load_count++] = loads[i].cell;
   }
-  qsort(unloads, unload_count, sizeof(*unloads), partition_candidate_compare);
+  vkr_sort(unloads, unload_count, sizeof(*unloads),
+           partition_candidate_compare);
   for (uint32_t i = unload_count; i > 0u; --i) {
     out->unload[out->unload_count++] = unloads[i - 1u].cell;
   }
@@ -328,8 +328,8 @@ void vkr_scene_partition_plan(const VkrScene *scene,
                                   true_v);
       }
     }
-    qsort(farthest, farthest_count, sizeof(*farthest),
-          partition_candidate_compare);
+    vkr_sort(farthest, farthest_count, sizeof(*farthest),
+             partition_candidate_compare);
     for (uint32_t i = farthest_count;
          i > 0u && excess && out->unload_count < VKR_SCENE_PARTITION_PLAN_MAX;
          --i, --excess) {

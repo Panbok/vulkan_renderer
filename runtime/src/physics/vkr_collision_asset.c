@@ -3,9 +3,6 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 
-#include <stdio.h>
-#include <string.h>
-
 struct s_VkrCollisionAsset {
   Arena *arena;
   VkrAllocator allocator;
@@ -18,7 +15,7 @@ VkrCollisionAsset *vkr_collision_asset_open(String8 path, const char **error) {
     *error = NULL;
   }
   if (!path.str || !path.length || path.length >= 32768 ||
-      memchr(path.str, 0, path.length)) {
+      MemFindByte(path.str, 0, path.length)) {
     if (error) {
       *error = "Invalid collision asset path";
     }
@@ -42,43 +39,46 @@ VkrCollisionAsset *vkr_collision_asset_open(String8 path, const char **error) {
   }
   VkrCollisionAsset *asset = vkr_allocator_alloc(
       &allocator, sizeof(*asset), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-  FILE *file = NULL;
+  FileHandle file = {0};
   const char *message = "Collision asset could not be opened";
   String8 filename = string8_duplicate(&allocator, &path);
   if (!asset || !filename.str) {
     goto cleanup;
   }
-  file = file_fopen(string8_cstr(&filename), "rb");
-  if (!file || fseek(file, 0, SEEK_END)) {
+  const FilePath file_path = file_path_view(string8_cstr(&filename));
+  uint64_t size = 0u;
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     goto cleanup;
   }
-  const long size = ftell(file);
-  if (size < 48 || (uint64_t)size > VKR_COLLISION_COOKED_MAX_BYTES ||
-      fseek(file, 0, SEEK_SET)) {
+  if (file_remaining_size(&file, &size) != FILE_ERROR_NONE || size < 48u ||
+      size > VKR_COLLISION_COOKED_MAX_BYTES) {
     message = "Collision asset file size is invalid";
     goto cleanup;
   }
-  uint8_t *bytes = vkr_allocator_alloc(&allocator, (uint64_t)size,
-                                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  if (!bytes || fread(bytes, 1, (size_t)size, file) != (size_t)size) {
+  uint8_t *bytes =
+      vkr_allocator_alloc(&allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  uint64_t bytes_read = 0u;
+  if (!bytes ||
+      file_read_into(&file, bytes, size, &bytes_read) != FILE_ERROR_NONE ||
+      bytes_read != size) {
     message = "Collision asset read failed";
     goto cleanup;
   }
   VkrCollisionGeometry geometry;
-  if (!vkr_collision_cooked_decode(&allocator, bytes, (uint64_t)size, &geometry,
+  if (!vkr_collision_cooked_decode(&allocator, bytes, size, &geometry,
                                    &message)) {
     goto cleanup;
   }
-  fclose(file);
+  file_close(&file);
   *asset = (VkrCollisionAsset){.arena = arena,
                                .allocator = allocator,
                                .geometry = geometry,
                                .references = 1};
   return asset;
 cleanup:
-  if (file) {
-    fclose(file);
-  }
+  file_close(&file);
   if (error) {
     *error = message;
   }

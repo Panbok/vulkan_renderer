@@ -2,10 +2,7 @@
 
 #include "math/vkr_quat.h"
 
-#include <math.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
 
 #define TYPE_DEGREES 57.29577951308232
 #define TYPE_RADIANS 0.017453292519943295
@@ -15,14 +12,14 @@ static bool8_t type_fail(char *error, uint32_t capacity, const char *format,
   if (error && capacity) {
     va_list args;
     va_start(args, format);
-    vsnprintf(error, capacity, format, args);
+    string_format_v(error, capacity, format, args);
     va_end(args);
   }
   return false_v;
 }
 
 static bool8_t type_name_equals(const char *name, String8 text) {
-  const uint64_t length = strlen(name);
+  const uint64_t length = string_length(name);
   return length == text.length && MemCompare(name, text.str, length) == 0;
 }
 
@@ -171,7 +168,7 @@ bool8_t vkr_property_get_number(const VkrPropertyDesc *property,
 
 bool8_t vkr_property_set_number(const VkrPropertyDesc *property, void *value,
                                 float64_t number) {
-  if (!isfinite(number)) {
+  if (!vkr_is_finite_f64(number)) {
     return false_v;
   }
   uint8_t *address = (uint8_t *)value + property->offset;
@@ -180,7 +177,7 @@ bool8_t vkr_property_set_number(const VkrPropertyDesc *property, void *value,
     *(bool8_t *)address = number != 0.0 ? true_v : false_v;
     return true_v;
   case VKR_PROPERTY_I32: {
-    const float64_t rounded = round(number);
+    const float64_t rounded = vkr_round_f64(number);
     if (rounded < (float64_t)INT32_MIN || rounded > (float64_t)INT32_MAX) {
       return false_v;
     }
@@ -189,7 +186,7 @@ bool8_t vkr_property_set_number(const VkrPropertyDesc *property, void *value,
   }
   case VKR_PROPERTY_U32:
   case VKR_PROPERTY_ENUM: {
-    const float64_t rounded = round(number);
+    const float64_t rounded = vkr_round_f64(number);
     if (rounded < 0.0 || rounded > (float64_t)UINT32_MAX) {
       return false_v;
     }
@@ -203,7 +200,7 @@ bool8_t vkr_property_set_number(const VkrPropertyDesc *property, void *value,
   case VKR_PROPERTY_F32:
   case VKR_PROPERTY_ANGLE: {
     const float32_t narrowed = (float32_t)number;
-    if (!isfinite(narrowed)) {
+    if (!vkr_is_finite_f32(narrowed)) {
       return false_v;
     }
     *(float32_t *)address = narrowed;
@@ -235,7 +232,7 @@ bool8_t vkr_property_set_floats(const VkrPropertyDesc *property, void *value,
   }
   const uint32_t count = vkr_property_components(property);
   for (uint32_t i = 0u; i < count; ++i) {
-    if (!isfinite(in[i])) {
+    if (!vkr_is_finite_f32(in[i])) {
       return false_v;
     }
   }
@@ -247,18 +244,20 @@ bool8_t vkr_property_set_floats(const VkrPropertyDesc *property, void *value,
 
 void vkr_property_direction_angles(Vec3 direction, float32_t *yaw_degrees,
                                    float32_t *elevation_degrees) {
-  const float32_t horizontal = hypotf(direction.x, direction.z);
-  *yaw_degrees = (float32_t)(atan2f(direction.x, -direction.z) * TYPE_DEGREES);
+  const float32_t horizontal = vkr_hypot_f32(direction.x, direction.z);
+  *yaw_degrees =
+      (float32_t)(vkr_atan2_f32(direction.x, -direction.z) * TYPE_DEGREES);
   *elevation_degrees =
-      (float32_t)(atan2f(direction.y, horizontal) * TYPE_DEGREES);
+      (float32_t)(vkr_atan2_f32(direction.y, horizontal) * TYPE_DEGREES);
 }
 
 Vec3 vkr_property_direction_from_angles(float32_t yaw_degrees,
                                         float32_t elevation_degrees) {
   const float32_t yaw = (float32_t)(yaw_degrees * TYPE_RADIANS);
   const float32_t elevation = (float32_t)(elevation_degrees * TYPE_RADIANS);
-  return (Vec3){sinf(yaw) * cosf(elevation), sinf(elevation),
-                -cosf(yaw) * cosf(elevation), 0.0f};
+  return (Vec3){vkr_sin_f32(yaw) * vkr_cos_f32(elevation),
+                vkr_sin_f32(elevation),
+                -vkr_cos_f32(yaw) * vkr_cos_f32(elevation), 0.0f};
 }
 
 void vkr_property_quat_euler(Vec4 rotation, float32_t out_degrees[3]) {
@@ -302,7 +301,7 @@ static bool8_t property_validate(const VkrPropertyDesc *property,
   }
   case VKR_PROPERTY_STRING:
     if (!property->capacity ||
-        !memchr(address, 0, (size_t)property->capacity)) {
+        !MemFindByte(address, 0, (size_t)property->capacity)) {
       return type_fail(error, capacity, "%s is too long", property->label);
     }
     return true_v;
@@ -330,7 +329,7 @@ static bool8_t property_validate(const VkrPropertyDesc *property,
   MemCopy(components, address, sizeof(float32_t) * count);
   float64_t length_squared = 0.0;
   for (uint32_t i = 0u; i < count; ++i) {
-    if (!isfinite(components[i])) {
+    if (!vkr_is_finite_f32(components[i])) {
       return type_fail(error, capacity, "%s must be finite", property->label);
     }
     length_squared += (float64_t)components[i] * components[i];
@@ -374,7 +373,7 @@ bool8_t vkr_type_validate(const VkrTypeDesc *type, const void *value,
     }
     if (!type->validate(value, error, capacity)) {
       if (error && capacity && !error[0]) {
-        snprintf(error, capacity, "Invalid %s", type->label);
+        string_format(error, capacity, "Invalid %s", type->label);
       }
       return false_v;
     }
@@ -449,9 +448,9 @@ void vkr_type_reset_transient(const VkrTypeDesc *type, void *value) {
 bool8_t vkr_property_equal(const VkrPropertyDesc *property, const void *a,
                            const void *b) {
   if (property->kind == VKR_PROPERTY_STRING) {
-    return strncmp((const char *)property_address(property, a),
-                   (const char *)property_address(property, b),
-                   property->capacity) == 0;
+    return string_n_equals((const char *)property_address(property, a),
+                           (const char *)property_address(property, b),
+                           property->capacity);
   }
   return MemCompare(property_address(property, a),
                     property_address(property, b),
@@ -535,7 +534,7 @@ void vkr_type_migrate(const VkrTypeDesc *from, const void *from_value,
     const VkrPropertyDesc *property = &to->properties[i];
     const uint32_t index = vkr_type_find_property(
         from, string8_create_from_cstr((const uint8_t *)property->name,
-                                       strlen(property->name)));
+                                       string_length(property->name)));
     if (index == UINT32_MAX) {
       continue;
     }
@@ -572,7 +571,7 @@ bool8_t vkr_type_write_json(VkrJsonWriter *writer, const VkrTypeDesc *type,
     const uint8_t *address = property_address(property, value);
     if (!vkr_json_writer_name(
             writer, string8_create_from_cstr((const uint8_t *)property->name,
-                                             strlen(property->name)))) {
+                                             string_length(property->name)))) {
       return false_v;
     }
     bool8_t written = false_v;
@@ -590,7 +589,7 @@ bool8_t vkr_type_write_json(VkrJsonWriter *writer, const VkrTypeDesc *type,
       const char *name = property->names[*(const uint32_t *)address];
       written = vkr_json_writer_string(
           writer,
-          string8_create_from_cstr((const uint8_t *)name, strlen(name)));
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)));
       break;
     }
     case VKR_PROPERTY_F32:
@@ -599,8 +598,8 @@ bool8_t vkr_type_write_json(VkrJsonWriter *writer, const VkrTypeDesc *type,
       break;
     case VKR_PROPERTY_STRING:
       written = vkr_json_writer_string(
-          writer,
-          string8_create_from_cstr(address, strlen((const char *)address)));
+          writer, string8_create_from_cstr(
+                      address, string_length((const char *)address)));
       break;
     case VKR_PROPERTY_ENTITY: {
       char text[37] = {0};
@@ -609,7 +608,7 @@ bool8_t vkr_type_write_json(VkrJsonWriter *writer, const VkrTypeDesc *type,
       }
       written = vkr_json_writer_string(
           writer,
-          string8_create_from_cstr((const uint8_t *)text, strlen(text)));
+          string8_create_from_cstr((const uint8_t *)text, string_length(text)));
       break;
     }
     default: {
@@ -694,7 +693,8 @@ static bool8_t json_read_property(VkrJsonReader *reader,
   case VKR_PROPERTY_I32:
   case VKR_PROPERTY_U32: {
     float64_t number = 0.0;
-    if (!vkr_json_parse_double(reader, &number) || number != floor(number) ||
+    if (!vkr_json_parse_double(reader, &number) ||
+        number != vkr_floor_f64(number) ||
         !vkr_property_set_number(property, candidate, number)) {
       return type_fail(error, capacity, "%s expects an integer",
                        property->name);
@@ -774,7 +774,7 @@ static bool8_t json_read_property(VkrJsonReader *reader,
     float64_t number = 0.0;
     if ((i && !json_take(reader, ',')) ||
         !vkr_json_parse_double(reader, &number) ||
-        !isfinite((float32_t)number)) {
+        !vkr_is_finite_f32((float32_t)number)) {
       return type_fail(error, capacity, "%s expects an array of %u numbers",
                        property->name, count);
     }

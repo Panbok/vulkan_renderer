@@ -9,7 +9,7 @@ void vkr_file_dialog_result_destroy(VkrAllocator *allocator,
   for (uint32_t i = 0; i < result->path_count; ++i) {
     if (result->paths[i]) {
       vkr_allocator_free(allocator, result->paths[i],
-                         strlen(result->paths[i]) + 1,
+                         string_length(result->paths[i]) + 1,
                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
     }
   }
@@ -37,6 +37,18 @@ bool8_t vkr_file_dialog_allocate_paths(VkrAllocator *allocator,
   return true_v;
 }
 
+/* An extension filter holds ASCII letters and digits only. */
+vkr_internal bool8_t vkr_file_dialog_extension_valid(const char *extension) {
+  for (const char *at = extension; *at; ++at) {
+    const char c = *at;
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9'))) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 void vkr_file_dialog_show(VkrWindow *window,
                           const VkrFileDialogRequest *request,
                           VkrAllocator *allocator,
@@ -51,19 +63,16 @@ void vkr_file_dialog_show(VkrWindow *window,
       (request->multiple && request->kind != VKR_FILE_DIALOG_OPEN_FILE) ||
       request->extension_count > 64 ||
       (request->extension_count && !request->extensions)) {
-    snprintf(result->diagnostic, sizeof(result->diagnostic),
-             "Invalid native file dialog request.");
+    string_format(result->diagnostic, sizeof(result->diagnostic),
+                  "Invalid native file dialog request.");
     return;
   }
   for (uint32_t i = 0; i < request->extension_count; ++i) {
     const char *extension = request->extensions[i];
-    if (!extension || !extension[0] || strlen(extension) > 32 ||
-        strspn(
-            extension,
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") !=
-            strlen(extension)) {
-      snprintf(result->diagnostic, sizeof(result->diagnostic),
-               "Invalid file extension filter.");
+    if (!extension || !extension[0] || string_length(extension) > 32 ||
+        !vkr_file_dialog_extension_valid(extension)) {
+      string_format(result->diagnostic, sizeof(result->diagnostic),
+                    "Invalid file extension filter.");
       return;
     }
   }

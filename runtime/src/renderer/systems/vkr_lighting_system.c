@@ -4,8 +4,6 @@
 #include "math/vkr_quat.h"
 #include "vkr_temporal.h"
 
-#include <math.h>
-
 // ============================================================================
 // Internal Types
 // ============================================================================
@@ -167,7 +165,7 @@ vkr_internal VkrPointLightRankKey point_light_rank_key(
     const VkrPointLight *light, Vec3 camera_position, bool8_t incumbent) {
   float32_t center_distance =
       vec3_length(vec3_sub(light->position, camera_position));
-  if (!isfinite(center_distance)) {
+  if (!vkr_is_finite_f32(center_distance)) {
     return (VkrPointLightRankKey){
         .range_distance = VKR_FLOAT_MAX,
         .center_distance = VKR_FLOAT_MAX,
@@ -271,7 +269,8 @@ vkr_internal void point_light_selection_store(VkrPointLightSelection *state,
 vkr_internal bool8_t
 point_light_selection_snaps(const VkrPointLightSelection *state,
                             Vec3 camera_position, float32_t delta_seconds) {
-  return !state->valid || !isfinite(delta_seconds) || delta_seconds < 0.0f ||
+  return !state->valid || !vkr_is_finite_f32(delta_seconds) ||
+         delta_seconds < 0.0f ||
          vkr_temporal_is_camera_cut(state->camera, mat4_identity(),
                                     camera_position, mat4_identity());
 }
@@ -901,20 +900,26 @@ void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
       continue;
     }
     int32_t min_cell[3] = {
-        (int32_t)floorf((light->position.x - light->range - grid->origin.x) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.y - light->range - grid->origin.y) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.z - light->range - grid->origin.z) /
-                        grid->cell_size),
+        (int32_t)vkr_floor_f32(
+            (light->position.x - light->range - grid->origin.x) /
+            grid->cell_size),
+        (int32_t)vkr_floor_f32(
+            (light->position.y - light->range - grid->origin.y) /
+            grid->cell_size),
+        (int32_t)vkr_floor_f32(
+            (light->position.z - light->range - grid->origin.z) /
+            grid->cell_size),
     };
     int32_t max_cell[3] = {
-        (int32_t)floorf((light->position.x + light->range - grid->origin.x) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.y + light->range - grid->origin.y) /
-                        grid->cell_size),
-        (int32_t)floorf((light->position.z + light->range - grid->origin.z) /
-                        grid->cell_size),
+        (int32_t)vkr_floor_f32(
+            (light->position.x + light->range - grid->origin.x) /
+            grid->cell_size),
+        (int32_t)vkr_floor_f32(
+            (light->position.y + light->range - grid->origin.y) /
+            grid->cell_size),
+        (int32_t)vkr_floor_f32(
+            (light->position.z + light->range - grid->origin.z) /
+            grid->cell_size),
     };
     for (uint32_t axis = 0u; axis < 3u; ++axis) {
       min_cell[axis] =
@@ -960,9 +965,12 @@ vkr_lighting_system_point_light_mask_at(const VkrLightingSystem *system,
     return result;
   }
   const int32_t cell[3] = {
-      (int32_t)floorf((world_position.x - grid->origin.x) / grid->cell_size),
-      (int32_t)floorf((world_position.y - grid->origin.y) / grid->cell_size),
-      (int32_t)floorf((world_position.z - grid->origin.z) / grid->cell_size),
+      (int32_t)vkr_floor_f32((world_position.x - grid->origin.x) /
+                             grid->cell_size),
+      (int32_t)vkr_floor_f32((world_position.y - grid->origin.y) /
+                             grid->cell_size),
+      (int32_t)vkr_floor_f32((world_position.z - grid->origin.z) /
+                             grid->cell_size),
   };
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
     if (cell[axis] < 0 || cell[axis] >= (int32_t)grid->dimensions[axis]) {

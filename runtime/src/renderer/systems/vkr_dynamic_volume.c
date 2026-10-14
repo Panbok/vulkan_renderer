@@ -2,15 +2,11 @@
 
 #include "core/logger.h"
 #include "math/vkr_quat.h"
+#include "memory/vkr_heap.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_texture_system.h"
-
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Lights and emitters reach probes within these spheres. */
 typedef struct DynamicVolumeSphere {
@@ -51,8 +47,9 @@ typedef struct DynamicVolumeGather {
 /* Distance at which a source of `luminous` (intensity times luminance,
    inverse-square) falls below the irradiance floor. */
 vkr_internal float32_t dynamic_volume_reach(float32_t luminous) {
-  return Min(sqrtf(Max(luminous, 0.0f) / DYNAMIC_VOLUME_IRRADIANCE_FLOOR),
-             DYNAMIC_VOLUME_REACH_MAX);
+  return Min(
+      vkr_sqrt_f32(Max(luminous, 0.0f) / DYNAMIC_VOLUME_IRRADIANCE_FLOOR),
+      DYNAMIC_VOLUME_REACH_MAX);
 }
 
 vkr_internal float32_t dynamic_volume_luminance(Vec3 color) {
@@ -72,8 +69,8 @@ vkr_internal void dynamic_volume_add_sphere(DynamicVolumeGather *gather,
 vkr_internal float32_t dynamic_volume_group_factor(const VkrScene *scene,
                                                    const char *name) {
   for (uint32_t i = 0u; i < scene->light_groups.count; ++i) {
-    if (strncmp(scene->light_groups.names[i], name,
-                VKR_LIGHT_GROUP_NAME_BYTES) == 0) {
+    if (string_n_equals(scene->light_groups.names[i], name,
+                        VKR_LIGHT_GROUP_NAME_BYTES)) {
       return scene->light_groups.factors[i];
     }
   }
@@ -81,7 +78,8 @@ vkr_internal float32_t dynamic_volume_group_factor(const VkrScene *scene,
 }
 
 vkr_internal bool8_t dynamic_volume_close(float32_t a, float32_t b) {
-  return fabsf(a - b) <= 1e-3f * Max(Max(fabsf(a), fabsf(b)), 1.0f);
+  return vkr_abs_f32(a - b) <=
+         1e-3f * Max(Max(vkr_abs_f32(a), vkr_abs_f32(b)), 1.0f);
 }
 
 vkr_internal bool8_t dynamic_volume_close3(Vec3 a, Vec3 b) {
@@ -452,9 +450,9 @@ void vkr_dynamic_volume_selection_destroy(
   if (!selection) {
     return;
   }
-  free(selection->active_bricks);
-  free(selection->next_bricks);
-  free(selection->active_probes);
+  vkr_heap_free(selection->active_bricks);
+  vkr_heap_free(selection->next_bricks);
+  vkr_heap_free(selection->active_probes);
   MemZero(selection, sizeof(*selection));
 }
 
@@ -468,8 +466,10 @@ vkr_internal bool8_t dynamic_volume_follow(
   }
   vkr_dynamic_volume_selection_destroy(selection);
   const uint32_t words = (volume->brick_count + 63u) / 64u;
-  selection->active_bricks = calloc(Max(words, 1u), sizeof(uint64_t));
-  selection->next_bricks = calloc(Max(words, 1u), sizeof(uint64_t));
+  selection->active_bricks =
+      vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
+  selection->next_bricks =
+      vkr_heap_alloc_zeroed(Max(words, 1u), sizeof(uint64_t));
   if (!selection->active_bricks || !selection->next_bricks) {
     vkr_dynamic_volume_selection_destroy(selection);
     return false_v;
@@ -489,8 +489,8 @@ vkr_internal bool8_t dynamic_volume_reserve_probes(
   while (capacity < count) {
     capacity *= 2u;
   }
-  uint32_t *probes =
-      realloc(selection->active_probes, (size_t)capacity * sizeof(uint32_t));
+  uint32_t *probes = vkr_heap_realloc(selection->active_probes,
+                                      (size_t)capacity * sizeof(uint32_t));
   if (!probes) {
     return false_v;
   }
@@ -650,8 +650,10 @@ vkr_internal bool8_t dynamic_volume_static_bounds(
   if (!world || !world->gpu_candidates || !world->static_candidate_count) {
     return false_v;
   }
-  Vec3 low = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 high = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 low =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 high =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t i = 0u; i < world->static_candidate_count; ++i) {
     const VkrWorldDrawCandidate *candidate = &world->gpu_candidates[i];
     const Mat4 model = candidate->instance.model;
@@ -662,15 +664,15 @@ vkr_internal bool8_t dynamic_volume_static_bounds(
                                      model.m12 * sphere.z + model.m13,
                                  model.m20 * sphere.x + model.m21 * sphere.y +
                                      model.m22 * sphere.z + model.m23);
-    const float32_t scale = sqrtf(Max(
+    const float32_t scale = vkr_sqrt_f32(Max(
         Max(model.m00 * model.m00 + model.m10 * model.m10 +
                 model.m20 * model.m20,
             model.m01 * model.m01 + model.m11 * model.m11 +
                 model.m21 * model.m21),
         model.m02 * model.m02 + model.m12 * model.m12 + model.m22 * model.m22));
     const float32_t radius = sphere.w * scale;
-    if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z) ||
-        !isfinite(radius)) {
+    if (!vkr_is_finite_f32(center.x) || !vkr_is_finite_f32(center.y) ||
+        !vkr_is_finite_f32(center.z) || !vkr_is_finite_f32(radius)) {
       continue;
     }
     low = vec3_new(Min(low.x, center.x - radius), Min(low.y, center.y - radius),
@@ -708,8 +710,8 @@ vkr_internal bool8_t dynamic_volume_grid_texture(
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   const bool8_t created = vkr_texture_system_finalize_prepared_load(
       &assets->texture_system,
-      string8_create_from_cstr((const uint8_t *)name, strlen(name)), prepared,
-      out_handle, &error);
+      string8_create_from_cstr((const uint8_t *)name, string_length(name)),
+      prepared, out_handle, &error);
   vkr_texture_system_release_prepared_load(prepared);
   if (!created) {
     String8 error_text = vkr_renderer_get_error_string(error);
@@ -750,7 +752,7 @@ vkr_internal bool8_t dynamic_volume_grid_writable(
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_texture_system_create_writable(
           &assets->texture_system,
-          string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)),
           &description, out_handle, &error)) {
     String8 error_text = vkr_renderer_get_error_string(error);
     log_error("Dynamic volume: grid texture '%s' failed: %.*s", name,
@@ -801,16 +803,17 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
   const Vec3 extent = vec3_sub(high, low);
   /* The finest spacing whose level-0 entries, 3 spacings wide, number at
      most the cap. */
-  float32_t spacing = Max(cbrtf(extent.x * extent.y * extent.z /
-                                (float32_t)DYNAMIC_VOLUME_GRID_BRICKS_MAX) /
-                              3.0f,
-                          DYNAMIC_VOLUME_GRID_SPACING_MIN);
+  float32_t spacing =
+      Max(vkr_cbrt_f32(extent.x * extent.y * extent.z /
+                       (float32_t)DYNAMIC_VOLUME_GRID_BRICKS_MAX) /
+              3.0f,
+          DYNAMIC_VOLUME_GRID_SPACING_MIN);
   uint32_t dimensions[3] = {0u, 0u, 0u};
   for (;;) {
     const float32_t span = 3.0f * spacing;
-    dimensions[0] = Max((uint32_t)ceilf(extent.x / span), 1u);
-    dimensions[1] = Max((uint32_t)ceilf(extent.y / span), 1u);
-    dimensions[2] = Max((uint32_t)ceilf(extent.z / span), 1u);
+    dimensions[0] = Max((uint32_t)vkr_ceil_f32(extent.x / span), 1u);
+    dimensions[1] = Max((uint32_t)vkr_ceil_f32(extent.y / span), 1u);
+    dimensions[2] = Max((uint32_t)vkr_ceil_f32(extent.z / span), 1u);
     if ((uint64_t)dimensions[0] * dimensions[1] * dimensions[2] <=
         DYNAMIC_VOLUME_GRID_BRICKS_MAX) {
       break;
@@ -828,25 +831,26 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
   if (scene->diffuse_volume) {
     vkr_scene_reset_diffuse_volume(scene, assets);
   }
-  VkrSceneDiffuseVolume *volume = calloc(1u, sizeof(*volume));
-  uint32_t *entries = calloc(brick_count, sizeof(uint32_t));
-  uint32_t *bricks =
-      calloc((size_t)rows * VKR_DIFFUSE_VOLUME_ROW_PROBES, sizeof(uint32_t));
-  uint32_t *brick_entries = calloc(brick_count, sizeof(uint32_t));
-  uint8_t *probe_valid = malloc(probe_count);
+  VkrSceneDiffuseVolume *volume = vkr_heap_alloc_zeroed(1u, sizeof(*volume));
+  uint32_t *entries = vkr_heap_alloc_zeroed(brick_count, sizeof(uint32_t));
+  uint32_t *bricks = vkr_heap_alloc_zeroed(
+      (size_t)rows * VKR_DIFFUSE_VOLUME_ROW_PROBES, sizeof(uint32_t));
+  uint32_t *brick_entries =
+      vkr_heap_alloc_zeroed(brick_count, sizeof(uint32_t));
+  uint8_t *probe_valid = vkr_heap_alloc(probe_count);
   /* One empty sun-key layer: the binding needs a layer, and the dynamic
      layer holds all of the grid's light. */
   const uint64_t layer_bytes = (uint64_t)rows * VKR_DIFFUSE_VOLUME_ROW_PROBES *
                                3u * 4u * sizeof(uint16_t);
-  uint8_t *layer_sh = calloc(1u, layer_bytes);
+  uint8_t *layer_sh = vkr_heap_alloc_zeroed(1u, layer_bytes);
   if (!volume || !entries || !bricks || !brick_entries || !probe_valid ||
       !layer_sh) {
-    free(volume);
-    free(entries);
-    free(bricks);
-    free(brick_entries);
-    free(probe_valid);
-    free(layer_sh);
+    vkr_heap_free(volume);
+    vkr_heap_free(entries);
+    vkr_heap_free(bricks);
+    vkr_heap_free(brick_entries);
+    vkr_heap_free(probe_valid);
+    vkr_heap_free(layer_sh);
     return false_v;
   }
   /* Entry (x, y, z) is brick x + nx (y + ny z), whose level-0 bits are its
@@ -888,14 +892,15 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
      ones a failure leaves unclaimed are freed here. */
   VkrTexturePreparedLoad prepared;
   bool8_t ready = false_v;
-  snprintf(name, sizeof(name), "diffuse_volume#grid#%u#indirection", serial);
+  string_format(name, sizeof(name), "diffuse_volume#grid#%u#indirection",
+                serial);
   const bool8_t entries_ready = vkr_texture_prepared_load_2d(
       (uint8_t *)entries, (uint64_t)brick_count * sizeof(uint32_t),
       dimensions[0], dimensions[1] * dimensions[2], VKR_TEXTURE_FORMAT_R32_UINT,
       1u, false_v, &prepared);
   if (entries_ready && dynamic_volume_grid_texture(assets, name, &prepared,
                                                    &volume->indirection)) {
-    snprintf(name, sizeof(name), "diffuse_volume#grid#%u#bricks", serial);
+    string_format(name, sizeof(name), "diffuse_volume#grid#%u#bricks", serial);
     const bool8_t bricks_ready = vkr_texture_prepared_load_2d(
         (uint8_t *)bricks,
         (uint64_t)rows * VKR_DIFFUSE_VOLUME_ROW_PROBES * sizeof(uint32_t),
@@ -904,7 +909,8 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
     bricks = NULL;
     if (bricks_ready &&
         dynamic_volume_grid_texture(assets, name, &prepared, &volume->bricks)) {
-      snprintf(name, sizeof(name), "diffuse_volume#grid#%u#layers", serial);
+      string_format(name, sizeof(name), "diffuse_volume#grid#%u#layers",
+                    serial);
       const bool8_t layers_ready = vkr_texture_prepared_load_2d(
           layer_sh, layer_bytes, VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u, rows,
           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, 4u, false_v, &prepared);
@@ -913,14 +919,14 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
                                   assets, name, &prepared, &volume->layer_sh);
     }
   }
-  free(bricks);
-  free(layer_sh);
-  snprintf(name, sizeof(name), "diffuse_volume#grid#%u#probes", serial);
+  vkr_heap_free(bricks);
+  vkr_heap_free(layer_sh);
+  string_format(name, sizeof(name), "diffuse_volume#grid#%u#probes", serial);
   ready = ready && dynamic_volume_grid_writable(
                        assets, name, VKR_DIFFUSE_VOLUME_ROW_PROBES, rows,
                        VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, 4u, false_v,
                        &volume->probes);
-  snprintf(name, sizeof(name), "diffuse_volume#grid#%u#moments", serial);
+  string_format(name, sizeof(name), "diffuse_volume#grid#%u#moments", serial);
   ready =
       ready &&
       dynamic_volume_grid_writable(
@@ -928,7 +934,7 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
           VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES * VKR_DIFFUSE_VOLUME_MOMENT_TILE,
           tile_rows * VKR_DIFFUSE_VOLUME_MOMENT_TILE,
           VKR_TEXTURE_FORMAT_R16G16_SFLOAT, 2u, true_v, &volume->moments);
-  snprintf(name, sizeof(name), "diffuse_volume#grid#%u#sh", serial);
+  string_format(name, sizeof(name), "diffuse_volume#grid#%u#sh", serial);
   ready = ready &&
           dynamic_volume_grid_writable(
               assets, name, VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u, 2u * rows,

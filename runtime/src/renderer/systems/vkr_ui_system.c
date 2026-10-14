@@ -7,9 +7,6 @@
 #include "vkr_color_transfer.h"
 #include "vkr_frame_input.h"
 
-#include <float.h>
-#include <math.h>
-
 typedef enum VkrUiNodeKind {
   VKR_UI_NODE_ROOT = 0,
   VKR_UI_NODE_PANEL,
@@ -239,7 +236,7 @@ vkr_ui_system_content_scale(VkrWindow *window, const VkrUiSystem *system) {
 }
 
 void vkr_ui_system_set_user_scale(VkrUiSystem *system, float32_t scale) {
-  if (!system || !isfinite(scale))
+  if (!system || !vkr_is_finite_f32(scale))
     return;
   scale = vkr_clamp_f32(scale, VKR_UI_USER_SCALE_MIN, VKR_UI_USER_SCALE_MAX);
   if (scale == system->user_scale)
@@ -489,7 +486,7 @@ void vkr_ui_system_set_offscreen_size(VkrUiSystem *system, bool8_t enabled,
 
 void vkr_ui_system_set_offscreen_content_scale(VkrUiSystem *system,
                                                float32_t content_scale) {
-  if (!system || !isfinite(content_scale) || content_scale <= 0.0f ||
+  if (!system || !vkr_is_finite_f32(content_scale) || content_scale <= 0.0f ||
       system->offscreen_content_scale == content_scale)
     return;
   system->offscreen_content_scale = content_scale;
@@ -630,7 +627,7 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
     if (node->disabled && config->icon_color.w > 0.0f)
       node->icon_color.w *= 0.45f;
     node->icon_size_px =
-        (isfinite(config->icon_size_pt) && config->icon_size_pt > 0.0f
+        (vkr_is_finite_f32(config->icon_size_pt) && config->icon_size_pt > 0.0f
              ? config->icon_size_pt
              : 14.0f) *
         system->content_scale;
@@ -646,11 +643,12 @@ vkr_internal bool8_t vkr_ui_widget_prepare(VkrUiSystem *system,
       config->trailing_icon > VKR_UI_ICON_NONE &&
       config->trailing_icon < VKR_UI_ICON_COUNT) {
     node->trailing_icon = config->trailing_icon;
-    node->trailing_icon_size_px = (isfinite(config->trailing_icon_size_pt) &&
-                                           config->trailing_icon_size_pt > 0.0f
-                                       ? config->trailing_icon_size_pt
-                                       : 10.0f) *
-                                  system->content_scale;
+    node->trailing_icon_size_px =
+        (vkr_is_finite_f32(config->trailing_icon_size_pt) &&
+                 config->trailing_icon_size_pt > 0.0f
+             ? config->trailing_icon_size_pt
+             : 10.0f) *
+        system->content_scale;
     node->intrinsic_size.x += node->trailing_icon_size_px +
                               VKR_UI_TRAILING_GAP_PT * system->content_scale;
   }
@@ -755,10 +753,10 @@ vkr_internal float32_t vkr_ui_animate(VkrUiSystem *system, float32_t value,
                                       float32_t target) {
   if (system->reduce_motion)
     return target;
-  const float32_t step =
-      1.0f - expf(-vkr_ui_theme()->motion_rate * (float32_t)system->delta_time);
+  const float32_t step = 1.0f - vkr_exp_f32(-vkr_ui_theme()->motion_rate *
+                                            (float32_t)system->delta_time);
   value += (target - value) * vkr_clamp_f32(step, 0.0f, 1.0f);
-  if (fabsf(target - value) < 0.004f)
+  if (vkr_abs_f32(target - value) < 0.004f)
     return target;
   system->animating = true_v;
   return value;
@@ -801,7 +799,7 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
                      bool8_t mouse_captured, float64_t delta_time,
                      const VkrUiPanelConfig *root_config) {
   if (!scratch || !system || !system->initialized || !input ||
-      system->frame_open || !isfinite(delta_time) || delta_time < 0.0)
+      system->frame_open || !vkr_is_finite_f64(delta_time) || delta_time < 0.0)
     return false_v;
   uint32_t width = 0u;
   uint32_t height = 0u;
@@ -809,7 +807,7 @@ bool8_t vkr_ui_begin(VkrUiSystem *system, VkrAllocator *scratch,
                                 &width, &height))
     return false_v;
   VkrWindowContentScale scale = vkr_ui_system_content_scale(window, system);
-  if (!isfinite(scale.value) || scale.value <= 0.0f)
+  if (!vkr_is_finite_f32(scale.value) || scale.value <= 0.0f)
     scale = (VkrWindowContentScale){.value = 1.0f, .revision = 0u};
   if (system->content_scale != scale.value ||
       system->content_scale_revision != scale.revision)
@@ -1028,7 +1026,7 @@ void vkr_ui_image(VkrUiSystem *system, String8 id_label,
                   VkrUiTextureRef texture, Vec2 source_size,
                   const VkrUiWidgetConfig *source_config) {
   if (!system || !system->frame_open || !texture.id ||
-      !isfinite(source_size.x) || !isfinite(source_size.y) ||
+      !vkr_is_finite_f32(source_size.x) || !vkr_is_finite_f32(source_size.y) ||
       source_size.x <= 0.0f || source_size.y <= 0.0f) {
     return;
   }
@@ -1051,12 +1049,12 @@ void vkr_ui_image(VkrUiSystem *system, String8 id_label,
 
 void vkr_ui_bezier(VkrUiSystem *system, String8 id_label, const Vec2 points[4],
                    float32_t width_pt, const VkrUiWidgetConfig *source_config) {
-  if (!system || !system->frame_open || !points || !isfinite(width_pt) ||
-      width_pt <= 0) {
+  if (!system || !system->frame_open || !points ||
+      !vkr_is_finite_f32(width_pt) || width_pt <= 0) {
     return;
   }
   for (uint32_t i = 0; i < 4; ++i) {
-    if (!isfinite(points[i].x) || !isfinite(points[i].y)) {
+    if (!vkr_is_finite_f32(points[i].x) || !vkr_is_finite_f32(points[i].y)) {
       return;
     }
   }
@@ -1108,8 +1106,9 @@ bool8_t vkr_ui_slider_f32(VkrUiSystem *system, String8 id_label,
                           float32_t *value, float32_t minimum,
                           float32_t maximum,
                           const VkrUiWidgetConfig *source_config) {
-  if (!system || !system->frame_open || !value || !isfinite(*value) ||
-      !isfinite(minimum) || !isfinite(maximum) || maximum <= minimum)
+  if (!system || !system->frame_open || !value || !vkr_is_finite_f32(*value) ||
+      !vkr_is_finite_f32(minimum) || !vkr_is_finite_f32(maximum) ||
+      maximum <= minimum)
     return false_v;
   VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
   fallback.style.min_size_pt = (Vec2){120.0f, 20.0f};
@@ -1280,7 +1279,7 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
       node->retained->scroll_moved = true_v;
     } else if (vkr_ui_key_pressed(system, KEY_END)) {
       // Layout clamps this request to the current declared row extent.
-      node->retained->scroll_offset.y = FLT_MAX;
+      node->retained->scroll_offset.y = VKR_FLOAT_MAX;
       node->retained->scroll_moved = true_v;
     } else {
       const int32_t direction = (int32_t)vkr_ui_key_pressed(system, KEY_NEXT) -
@@ -1296,7 +1295,7 @@ bool8_t vkr_ui_scroll_area_begin(VkrUiSystem *system, String8 id_label,
 
 bool8_t vkr_ui_scroll_area_offset(VkrUiSystem *system, float32_t *offset_pt) {
   if (!system || !system->frame_open || !system->container_count ||
-      !offset_pt || !isfinite(*offset_pt) || *offset_pt < 0)
+      !offset_pt || !vkr_is_finite_f32(*offset_pt) || *offset_pt < 0)
     return false_v;
   VkrUiFrameNode *node =
       &system
@@ -1428,7 +1427,7 @@ vkr_internal Vec2 vkr_ui_text_cursor_position(const VkrUiText *text,
 vkr_internal uint32_t vkr_ui_text_mouse_cursor(const VkrUiText *text,
                                                Vec2 mouse) {
   uint32_t best = 0u, glyph = 0u;
-  float32_t distance = INFINITY;
+  float32_t distance = VKR_FLOAT_INFINITY;
   Vec2 caret = {0};
   const float32_t height = vkr_ui_text_line_height(text);
   for (uint32_t offset = 0u; offset <= text->content.length;) {
@@ -1445,7 +1444,7 @@ vkr_internal uint32_t vkr_ui_text_mouse_cursor(const VkrUiText *text,
                          : mouse.y > caret.y + height
                              ? mouse.y - caret.y - height
                              : 0.0f;
-    const float32_t cost = dy * 10000.0f + fabsf(mouse.x - caret.x);
+    const float32_t cost = dy * 10000.0f + vkr_abs_f32(mouse.x - caret.x);
     if (cost < distance) {
       distance = cost;
       best = offset;
@@ -2056,7 +2055,8 @@ vkr_internal VkrUiTrack vkr_ui_track_resolve_points(VkrUiTrack track,
 
 /* The caret blinks at about 1 Hz while its field keeps focus. */
 vkr_internal bool8_t vkr_ui_caret_visible(const VkrUiSystem *system) {
-  return system->reduce_motion || fmod(system->time_seconds, 1.06) < 0.62;
+  return system->reduce_motion ||
+         vkr_fmod_f64(system->time_seconds, 1.06) < 0.62;
 }
 
 vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
@@ -2835,7 +2835,7 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
     geometry_max_y =
         text->layout.baseline.y - text->bounds.ascent + text->bounds.size.y;
   } else {
-    top = roundf(top + bounds.ascent) - bounds.ascent;
+    top = vkr_round_f32(top + bounds.ascent) - bounds.ascent;
   }
   const VkrUiDrawMode mode = font->type == VKR_FONT_TYPE_MTSDF
                                  ? VKR_UI_DRAW_MODE_MTSDF_TEXT
@@ -2846,7 +2846,7 @@ vkr_internal void vkr_ui_emit_text(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
   const Vec2 unit_range =
       mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ? font->mtsdf_unit_range : (Vec2){0};
   const VkrUiTextureRef atlas = {font->atlas.id, font->atlas.generation};
-  float32_t cut = FLT_MAX;
+  float32_t cut = VKR_FLOAT_MAX;
   const VkrFontGlyphId *ellipsis = NULL;
   uint32_t ellipsis_count = 0u;
   float32_t em = 0.0f;
@@ -3214,12 +3214,12 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
     return;
   const float32_t scale = system->content_scale;
   const float32_t em = view->font_size_pt * scale;
-  const float32_t line_height = roundf(view->line_height_pt * scale);
+  const float32_t line_height = vkr_round_f32(view->line_height_pt * scale);
   const Vec2 cell =
       vkr_ui_code_cell_size(system, view->font, view->font_size_pt);
   const float32_t advance = cell.x * scale;
-  const float32_t gutter = roundf(view->gutter_width_pt * scale);
-  const float32_t pad = roundf(4.0f * scale);
+  const float32_t gutter = vkr_round_f32(view->gutter_width_pt * scale);
+  const float32_t pad = vkr_round_f32(4.0f * scale);
   const float32_t em_size = font->em_size > 0.0f ? font->em_size : 1.0f;
   const float32_t screen_range =
       font->sdf_distance_range * view->font_size_pt * scale / em_size;
@@ -3239,14 +3239,14 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
     const float32_t top = content.y + line_height * (float32_t)i;
     if (top >= content.y + content.height)
       break;
-    const float32_t baseline =
-        roundf(top + (line_height - glyph_box) * 0.5f + font->em_ascender * em);
+    const float32_t baseline = vkr_round_f32(
+        top + (line_height - glyph_box) * 0.5f + font->em_ascender * em);
     if (line->current)
       vkr_ui_emit_rect(buffer,
                        (VkrUiRect){content.x, top, content.width, line_height},
                        current, (Vec4){0});
     if (line->marker_color.w > 0.0f) {
-      const float32_t size = roundf(line_height * 0.4f);
+      const float32_t size = vkr_round_f32(line_height * 0.4f);
       vkr_ui_emit_rect(
           buffer,
           (VkrUiRect){content.x + pad, top + (line_height - size) * 0.5f, size,
@@ -3257,7 +3257,7 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
     if (line->number) {
       char digits[12];
       const int32_t count =
-          snprintf(digits, sizeof(digits), "%u", line->number);
+          string_format(digits, sizeof(digits), "%u", line->number);
       float32_t x = content.x + gutter - pad - advance * (float32_t)count;
       for (int32_t d = 0; d < count; ++d, x += advance)
         vkr_ui_code_glyph(buffer, font, (uint32_t)digits[d], x, baseline, em,
@@ -3310,7 +3310,7 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
       const float32_t x1 =
           origin_x + advance * (float32_t)vkr_ui_code_column(
                                    line->text, line->underline_end);
-      const float32_t thickness = Max(1.0f, roundf(scale));
+      const float32_t thickness = Max(1.0f, vkr_round_f32(scale));
       vkr_ui_emit_rect(buffer,
                        (VkrUiRect){x0, baseline + thickness * 2.0f,
                                    Max(x1 - x0, advance), thickness},
@@ -3320,8 +3320,8 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
       const float32_t x = origin_x + advance * (float32_t)vkr_ui_code_column(
                                                    line->text, line->caret);
       vkr_ui_emit_rect(buffer,
-                       (VkrUiRect){roundf(x), top + scale,
-                                   Max(1.0f, roundf(2.0f * scale)),
+                       (VkrUiRect){vkr_round_f32(x), top + scale,
+                                   Max(1.0f, vkr_round_f32(2.0f * scale)),
                                    line_height - 2.0f * scale},
                        caret, (Vec4){0});
     }
@@ -3351,7 +3351,7 @@ vkr_internal void vkr_ui_emit_bezier(const VkrUiSystem *system,
     }
     const float32_t dx = (next.x - previous.x) * scale;
     const float32_t dy = (next.y - previous.y) * scale;
-    const float32_t length = sqrtf(dx * dx + dy * dy);
+    const float32_t length = vkr_sqrt_f32(dx * dx + dy * dy);
     if (length > 0.001f) {
       const Vec2 normal = {-dy * half_width / length, dx * half_width / length};
       const Vec2 a = {content.x + previous.x * scale,
@@ -4134,7 +4134,7 @@ bool8_t vkr_ui_bezier_set_points(VkrUiSystem *system, VkrUiId id,
     return false_v;
   }
   for (uint32_t i = 0; i < 4; ++i) {
-    if (!isfinite(points[i].x) || !isfinite(points[i].y)) {
+    if (!vkr_is_finite_f32(points[i].x) || !vkr_is_finite_f32(points[i].y)) {
       return false_v;
     }
   }
@@ -4162,7 +4162,7 @@ bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,
   VkrUiFrameNode *node = &system->frame_nodes[retained->frame_node_index];
   const Vec2 size_px = {rect_pt.width * system->content_scale,
                         rect_pt.height * system->content_scale};
-  if (!isfinite(size_px.x) || !isfinite(size_px.y))
+  if (!vkr_is_finite_f32(size_px.x) || !vkr_is_finite_f32(size_px.y))
     return false_v;
   node->placement.margin_pt.left = rect_pt.x;
   node->placement.margin_pt.top = rect_pt.y;

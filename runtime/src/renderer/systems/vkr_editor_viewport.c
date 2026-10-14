@@ -2,8 +2,6 @@
 
 #include "math/vkr_math.h"
 
-#include <math.h>
-
 static Vec4 vkr_editor_viewport_compute_panel_rect(uint32_t width,
                                                    uint32_t height) {
   const uint32_t top_bar =
@@ -44,10 +42,10 @@ bool8_t vkr_editor_viewport_compute_mapping(uint32_t window_width,
 bool8_t vkr_editor_viewport_mapping_from_panel_rect(
     Vec4 panel, VkrViewportFitMode fit_mode, float32_t render_scale,
     VkrViewportMapping *out_mapping) {
-  if (!out_mapping || !isfinite(panel.x) || !isfinite(panel.y) ||
-      !isfinite(panel.z) || !isfinite(panel.w) || panel.z <= 0.0f ||
-      panel.w <= 0.0f || fit_mode > VKR_VIEWPORT_FIT_CONTAIN ||
-      !isfinite(render_scale))
+  if (!out_mapping || !vkr_is_finite_f32(panel.x) ||
+      !vkr_is_finite_f32(panel.y) || !vkr_is_finite_f32(panel.z) ||
+      !vkr_is_finite_f32(panel.w) || panel.z <= 0.0f || panel.w <= 0.0f ||
+      fit_mode > VKR_VIEWPORT_FIT_CONTAIN || !vkr_is_finite_f32(render_scale))
     return false_v;
   const float32_t clamped_scale = vkr_clamp_f32(render_scale, 0.25f, 2.0f);
   const float32_t panel_w = vkr_max_f32(1.0f, panel.z);
@@ -63,10 +61,10 @@ bool8_t vkr_editor_viewport_mapping_from_panel_rect(
 bool8_t vkr_editor_viewport_mapping_from_panel_rect_and_target(
     Vec4 panel, VkrViewportFitMode fit_mode, uint32_t target_w,
     uint32_t target_h, VkrViewportMapping *out_mapping) {
-  if (!out_mapping || !isfinite(panel.x) || !isfinite(panel.y) ||
-      !isfinite(panel.z) || !isfinite(panel.w) || panel.z <= 0.0f ||
-      panel.w <= 0.0f || fit_mode > VKR_VIEWPORT_FIT_CONTAIN ||
-      target_w == 0u || target_h == 0u)
+  if (!out_mapping || !vkr_is_finite_f32(panel.x) ||
+      !vkr_is_finite_f32(panel.y) || !vkr_is_finite_f32(panel.z) ||
+      !vkr_is_finite_f32(panel.w) || panel.z <= 0.0f || panel.w <= 0.0f ||
+      fit_mode > VKR_VIEWPORT_FIT_CONTAIN || target_w == 0u || target_h == 0u)
     return false_v;
   const float32_t panel_w = vkr_max_f32(1.0f, panel.z);
   const float32_t panel_h = vkr_max_f32(1.0f, panel.w);

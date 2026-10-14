@@ -1,11 +1,10 @@
 #include "core/ui/vkr_ui_grid.h"
 
-#include <math.h>
-
 static bool8_t vkr_ui_grid_track_valid(VkrUiTrack track) {
-  if (track.unit >= VKR_UI_TRACK_UNIT_COUNT || !isfinite(track.value) ||
-      !isfinite(track.min_px) || !isfinite(track.max_px) ||
-      track.min_px < 0.0f || track.max_px < 0.0f ||
+  if (track.unit >= VKR_UI_TRACK_UNIT_COUNT ||
+      !vkr_is_finite_f32(track.value) || !vkr_is_finite_f32(track.min_px) ||
+      !vkr_is_finite_f32(track.max_px) || track.min_px < 0.0f ||
+      track.max_px < 0.0f ||
       (track.max_px > 0.0f && track.max_px < track.min_px))
     return false_v;
   if (track.unit == VKR_UI_TRACK_FR)
@@ -25,8 +24,8 @@ bool8_t vkr_ui_grid_resolve_tracks(const VkrUiTrack *tracks,
                                    VkrUiGridAxisOutput *out_axis) {
   if (!tracks || track_count == 0u || !out_axis || !out_axis->offsets_px ||
       !out_axis->sizes_px || out_axis->capacity < track_count ||
-      !isfinite(available_px) || available_px < 0.0f || !isfinite(gap_px) ||
-      gap_px < 0.0f)
+      !vkr_is_finite_f32(available_px) || available_px < 0.0f ||
+      !vkr_is_finite_f32(gap_px) || gap_px < 0.0f)
     return false_v;
 
   bool8_t has_auto = false_v;
@@ -53,7 +52,8 @@ bool8_t vkr_ui_grid_resolve_tracks(const VkrUiTrack *tracks,
       resolved = track.value * available_px;
       break;
     case VKR_UI_TRACK_AUTO:
-      if (!isfinite(auto_intrinsic_px[i]) || auto_intrinsic_px[i] < 0.0f)
+      if (!vkr_is_finite_f32(auto_intrinsic_px[i]) ||
+          auto_intrinsic_px[i] < 0.0f)
         return false_v;
       resolved = auto_intrinsic_px[i];
       break;
@@ -122,9 +122,10 @@ bool8_t vkr_ui_grid_resolve_tracks(const VkrUiTrack *tracks,
 }
 
 static bool8_t vkr_ui_grid_edges_valid(VkrUiEdges edges) {
-  return isfinite(edges.top) && isfinite(edges.right) &&
-         isfinite(edges.bottom) && isfinite(edges.left) && edges.top >= 0.0f &&
-         edges.right >= 0.0f && edges.bottom >= 0.0f && edges.left >= 0.0f;
+  return vkr_is_finite_f32(edges.top) && vkr_is_finite_f32(edges.right) &&
+         vkr_is_finite_f32(edges.bottom) && vkr_is_finite_f32(edges.left) &&
+         edges.top >= 0.0f && edges.right >= 0.0f && edges.bottom >= 0.0f &&
+         edges.left >= 0.0f;
 }
 
 static bool8_t vkr_ui_grid_item_valid(VkrUiGridItem item, uint32_t columns,
@@ -137,12 +138,12 @@ static bool8_t vkr_ui_grid_item_valid(VkrUiGridItem item, uint32_t columns,
          (item.row == VKR_UI_GRID_AUTO ||
           (item.row < rows && item.row_span <= rows - item.row)) &&
          item.justify < VKR_UI_ALIGN_COUNT && item.align < VKR_UI_ALIGN_COUNT &&
-         isfinite(item.intrinsic_size_px.x) &&
-         isfinite(item.intrinsic_size_px.y) &&
+         vkr_is_finite_f32(item.intrinsic_size_px.x) &&
+         vkr_is_finite_f32(item.intrinsic_size_px.y) &&
          item.intrinsic_size_px.x >= 0.0f && item.intrinsic_size_px.y >= 0.0f &&
-         isfinite(item.max_size_px.x) && isfinite(item.max_size_px.y) &&
-         item.max_size_px.x >= 0.0f && item.max_size_px.y >= 0.0f &&
-         vkr_ui_grid_edges_valid(item.margin_px);
+         vkr_is_finite_f32(item.max_size_px.x) &&
+         vkr_is_finite_f32(item.max_size_px.y) && item.max_size_px.x >= 0.0f &&
+         item.max_size_px.y >= 0.0f && vkr_ui_grid_edges_valid(item.margin_px);
 }
 
 static bool8_t vkr_ui_grid_cells_free(const uint8_t *occupancy,
@@ -282,7 +283,7 @@ bool8_t vkr_ui_grid_measure_intrinsic(
     uint32_t column_size_capacity, float32_t *row_sizes_px,
     uint32_t row_size_capacity, VkrUiGridIntrinsicOutput *out_intrinsic) {
   if (!columns || !rows || column_count == 0u || row_count == 0u ||
-      !isfinite(gap_px) || gap_px < 0.0f ||
+      !vkr_is_finite_f32(gap_px) || gap_px < 0.0f ||
       (item_count > 0u && (!items || !cells)) || !column_sizes_px ||
       column_size_capacity < column_count || !row_sizes_px ||
       row_size_capacity < row_count || !out_intrinsic)

@@ -1,6 +1,4 @@
 #include "animation/vkr_animation_graph.h"
-#include <float.h>
-#include <math.h>
 
 static bool8_t graph_error(const char **error, const char *message) {
   if (error) {
@@ -54,14 +52,14 @@ bool8_t vkr_animation_graph_validate(const VkrAnimationGraph *graph,
       graph->parameter_count > VKR_ANIMATION_GRAPH_PARAMETERS ||
       graph->state_count > VKR_ANIMATION_GRAPH_STATES ||
       graph->transition_count > VKR_ANIMATION_GRAPH_TRANSITIONS ||
-      !isfinite(graph->cycle_seconds) || graph->cycle_seconds <= 0.0 ||
+      !vkr_is_finite_f64(graph->cycle_seconds) || graph->cycle_seconds <= 0.0 ||
       (graph->state_count && graph->initial_state >= graph->state_count) ||
       (!graph->state_count && graph->transition_count)) {
     return graph_error(error,
                        "Animation graph counts, root or cycle are invalid");
   }
   for (uint32_t i = 0; i < graph->parameter_count; ++i) {
-    if (!isfinite(graph->parameters[i])) {
+    if (!vkr_is_finite_f32(graph->parameters[i])) {
       return graph_error(error, "Non-finite graph parameter");
     }
   }
@@ -101,7 +99,7 @@ bool8_t vkr_animation_graph_validate(const VkrAnimationGraph *graph,
     }
     for (uint32_t j = 0; j < node->sample_count; ++j) {
       const VkrAnimationGraphSample *sample = &node->samples[j];
-      if (!isfinite(sample->x) || !isfinite(sample->y) ||
+      if (!vkr_is_finite_f32(sample->x) || !vkr_is_finite_f32(sample->y) ||
           (asset && sample->clip >= asset->clip_count)) {
         return graph_error(error, "Blend space sample is invalid");
       }
@@ -124,8 +122,8 @@ bool8_t vkr_animation_graph_validate(const VkrAnimationGraph *graph,
         if (t[0] >= node->sample_count || t[1] >= node->sample_count ||
             t[2] >= node->sample_count || t[0] == t[1] || t[0] == t[2] ||
             t[1] == t[2] ||
-            fabs(graph_area(&node->samples[t[0]], &node->samples[t[1]],
-                            &node->samples[t[2]])) <= 1e-12) {
+            vkr_abs_f64(graph_area(&node->samples[t[0]], &node->samples[t[1]],
+                                   &node->samples[t[2]])) <= 1e-12) {
           return graph_error(
               error,
               "2D blend triangle is degenerate or references a missing sample");
@@ -147,7 +145,7 @@ bool8_t vkr_animation_graph_validate(const VkrAnimationGraph *graph,
   }
   for (uint32_t i = 0; i < graph->state_count; ++i) {
     if (graph->states[i].root >= graph->node_count ||
-        !isfinite(graph->states[i].cycle_seconds) ||
+        !vkr_is_finite_f64(graph->states[i].cycle_seconds) ||
         graph->states[i].cycle_seconds <= 0.0) {
       return graph_error(error, "Graph state is invalid");
     }
@@ -158,8 +156,9 @@ bool8_t vkr_animation_graph_validate(const VkrAnimationGraph *graph,
         t->from == t->to || t->parameter >= graph->parameter_count ||
         (t->comparison != VKR_ANIMATION_GRAPH_GREATER_EQUAL &&
          t->comparison != VKR_ANIMATION_GRAPH_LESS_EQUAL) ||
-        !isfinite(t->threshold) || !isfinite(t->duration) ||
-        t->duration < 0.0 || !isfinite(t->exit_time) || t->exit_time > 1.0 ||
+        !vkr_is_finite_f32(t->threshold) || !vkr_is_finite_f64(t->duration) ||
+        t->duration < 0.0 || !vkr_is_finite_f64(t->exit_time) ||
+        t->exit_time > 1.0 ||
         leaves[graph->states[t->from].root] +
                 leaves[graph->states[t->to].root] >
             VKR_ANIMATION_BLEND_SAMPLE_CAPACITY) {
@@ -199,7 +198,8 @@ bool8_t vkr_animation_graph_initialize(VkrAnimationGraphInstance *instance,
 bool8_t vkr_animation_graph_set_parameter(VkrAnimationGraphInstance *instance,
                                           uint32_t parameter, float32_t value) {
   if (!instance || !instance->asset ||
-      parameter >= instance->graph.parameter_count || !isfinite(value)) {
+      parameter >= instance->graph.parameter_count ||
+      !vkr_is_finite_f32(value)) {
     return false_v;
   }
   instance->parameters[parameter] = value;
@@ -240,7 +240,7 @@ static bool8_t graph_node(const VkrAnimationGraphInstance *instance,
   }
   float64_t x = instance->parameters[node->parameter_x];
   if (node->kind == VKR_ANIMATION_GRAPH_BLEND2) {
-    float64_t blend = fmin(1.0, fmax(0.0, x));
+    float64_t blend = vkr_fmin_f64(1.0, vkr_fmax_f64(0.0, x));
     return graph_node(instance, node->inputs[0], phase, weight * (1.0 - blend),
                       samples, count) &&
            graph_node(instance, node->inputs[1], phase, weight * blend, samples,
@@ -248,7 +248,7 @@ static bool8_t graph_node(const VkrAnimationGraphInstance *instance,
   }
   if (node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE1D) {
     uint32_t low = 0u, high = 0u;
-    float64_t low_x = -DBL_MAX, high_x = DBL_MAX;
+    float64_t low_x = -VKR_DOUBLE_MAX, high_x = VKR_DOUBLE_MAX;
     for (uint32_t i = 0; i < node->sample_count; ++i) {
       float64_t coordinate = node->samples[i].x;
       if (coordinate <= x && coordinate > low_x) {
@@ -260,10 +260,10 @@ static bool8_t graph_node(const VkrAnimationGraphInstance *instance,
         high_x = coordinate;
       }
     }
-    if (low_x == -DBL_MAX) {
+    if (low_x == -VKR_DOUBLE_MAX) {
       low = high;
     }
-    if (high_x == DBL_MAX) {
+    if (high_x == VKR_DOUBLE_MAX) {
       high = low;
     }
     float64_t blend =
@@ -280,7 +280,7 @@ static bool8_t graph_node(const VkrAnimationGraphInstance *instance,
   float64_t y = instance->parameters[node->parameter_y];
   uint32_t selected[3] = {0};
   float64_t barycentric[3] = {0};
-  float64_t nearest = DBL_MAX;
+  float64_t nearest = VKR_DOUBLE_MAX;
   for (uint32_t i = 0; i < node->triangle_count; ++i) {
     const uint32_t *t = node->triangles[i].samples;
     const VkrAnimationGraphSample *a = &node->samples[t[0]],
@@ -306,9 +306,9 @@ static bool8_t graph_node(const VkrAnimationGraphInstance *instance,
       const VkrAnimationGraphSample *p = &node->samples[t[edge]],
                                     *q = &node->samples[t[end]];
       float64_t dx = (float64_t)q->x - p->x, dy = (float64_t)q->y - p->y;
-      float64_t alpha =
-          fmin(1.0, fmax(0.0, ((x - p->x) * dx + (y - p->y) * dy) /
-                                  (dx * dx + dy * dy)));
+      float64_t alpha = vkr_fmin_f64(
+          1.0, vkr_fmax_f64(0.0, ((x - p->x) * dx + (y - p->y) * dy) /
+                                     (dx * dx + dy * dy)));
       float64_t ex = x - (p->x + alpha * dx), ey = y - (p->y + alpha * dy);
       float64_t distance = ex * ex + ey * ey;
       if (distance < nearest) {
@@ -362,9 +362,10 @@ static GraphClock graph_clock(const VkrAnimationGraphInstance *instance) {
 static bool8_t graph_publish(VkrAnimationGraphInstance *instance,
                              VkrAnimationPlayer *player, GraphClock clock,
                              bool8_t discontinuity) {
-  if (!isfinite(clock.time) || !isfinite(clock.state_time) ||
-      !isfinite(clock.target_time) || !isfinite(clock.transition_time) ||
-      !instance || !instance->asset || !player ||
+  if (!vkr_is_finite_f64(clock.time) || !vkr_is_finite_f64(clock.state_time) ||
+      !vkr_is_finite_f64(clock.target_time) ||
+      !vkr_is_finite_f64(clock.transition_time) || !instance ||
+      !instance->asset || !player ||
       vkr_animation_player_asset(player) != instance->asset) {
     return false_v;
   }
@@ -380,7 +381,7 @@ static bool8_t graph_publish(VkrAnimationGraphInstance *instance,
                         ? clock.transition_time /
                               graph->transitions[clock.transition].duration
                         : 0.0;
-  if (!graph_node(instance, root, fmod(clock.state_time, cycle) / cycle,
+  if (!graph_node(instance, root, vkr_fmod_f64(clock.state_time, cycle) / cycle,
                   1.0 - blend, samples, &count)) {
     return false_v;
   }
@@ -388,8 +389,8 @@ static bool8_t graph_publish(VkrAnimationGraphInstance *instance,
     uint32_t target = graph->transitions[clock.transition].to;
     cycle = graph->states[target].cycle_seconds;
     if (!graph_node(instance, graph->states[target].root,
-                    fmod(clock.target_time, cycle) / cycle, blend, samples,
-                    &count)) {
+                    vkr_fmod_f64(clock.target_time, cycle) / cycle, blend,
+                    samples, &count)) {
       return false_v;
     }
   }
@@ -422,9 +423,9 @@ static void graph_add_time(float64_t *time, float64_t *compensation,
 
 static void graph_tick(float64_t *time, float64_t *compensation, float64_t dt,
                        float64_t cycle, bool8_t *discontinuity) {
-  float64_t old_phase = fmod(*time, cycle);
+  float64_t old_phase = vkr_fmod_f64(*time, cycle);
   graph_add_time(time, compensation, dt);
-  if (dt > 0.0 && (dt >= cycle || fmod(*time, cycle) < old_phase)) {
+  if (dt > 0.0 && (dt >= cycle || vkr_fmod_f64(*time, cycle) < old_phase)) {
     *discontinuity = true_v;
   }
 }
@@ -433,8 +434,10 @@ static bool8_t graph_advance_clock(const VkrAnimationGraphInstance *instance,
                                    GraphClock *clock, float64_t dt,
                                    bool8_t *discontinuity) {
   const VkrAnimationGraph *graph = &instance->graph;
-  if (!isfinite(dt) || dt < 0.0 || !isfinite(clock->time + dt) ||
-      !isfinite(clock->state_time + dt) || !isfinite(clock->target_time + dt)) {
+  if (!vkr_is_finite_f64(dt) || dt < 0.0 ||
+      !vkr_is_finite_f64(clock->time + dt) ||
+      !vkr_is_finite_f64(clock->state_time + dt) ||
+      !vkr_is_finite_f64(clock->target_time + dt)) {
     return false_v;
   }
   graph_add_time(&clock->time, &clock->time_compensation, dt);
@@ -449,7 +452,7 @@ static bool8_t graph_advance_clock(const VkrAnimationGraphInstance *instance,
       const VkrAnimationGraphTransition *t =
           &graph->transitions[clock->transition];
       float64_t consumed =
-          fmin(remaining, t->duration - clock->transition_time);
+          vkr_fmin_f64(remaining, t->duration - clock->transition_time);
       graph_tick(&clock->state_time, &clock->state_compensation, consumed,
                  graph->states[clock->state].cycle_seconds, discontinuity);
       graph_tick(&clock->target_time, &clock->target_compensation, consumed,
@@ -479,9 +482,10 @@ static bool8_t graph_advance_clock(const VkrAnimationGraphInstance *instance,
       float64_t delay =
           t->exit_time < 0.0
               ? 0.0
-              : fmax(0.0,
-                     t->exit_time * graph->states[clock->state].cycle_seconds -
-                         clock->state_time);
+              : vkr_fmax_f64(0.0,
+                             t->exit_time *
+                                     graph->states[clock->state].cycle_seconds -
+                                 clock->state_time);
       if (delay <= remaining && (selected == UINT32_MAX || delay < earliest)) {
         selected = i;
         earliest = delay;
@@ -563,13 +567,13 @@ static bool8_t graph_json_char(VkrJsonReader *reader, char value) {
 }
 
 static bool8_t graph_json_number(VkrJsonReader *reader, float64_t *value) {
-  return vkr_json_parse_double(reader, value) && isfinite(*value);
+  return vkr_json_parse_double(reader, value) && vkr_is_finite_f64(*value);
 }
 
 static bool8_t graph_json_uint(VkrJsonReader *reader, uint32_t *value) {
   float64_t number;
   if (!graph_json_number(reader, &number) || number < 0.0 ||
-      number > UINT32_MAX || floor(number) != number) {
+      number > UINT32_MAX || vkr_floor_f64(number) != number) {
     return false_v;
   }
   *value = (uint32_t)number;
@@ -578,7 +582,8 @@ static bool8_t graph_json_uint(VkrJsonReader *reader, uint32_t *value) {
 
 static bool8_t graph_json_float(VkrJsonReader *reader, float32_t *value) {
   float64_t number;
-  if (!graph_json_number(reader, &number) || fabs(number) > FLT_MAX) {
+  if (!graph_json_number(reader, &number) ||
+      vkr_abs_f64(number) > VKR_FLOAT_MAX) {
     return false_v;
   }
   *value = (float32_t)number;

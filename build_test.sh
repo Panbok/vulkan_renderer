@@ -4,7 +4,7 @@ set -e # Exit early if any commands fail
 
 python3 "$(dirname "$0")/tools/checks/check_format.py"
 python3 "$(dirname "$0")/tools/checks/check_path_boundaries.py"
-python3 "$(dirname "$0")/tools/checks/check_renderer_libc.py"
+python3 "$(dirname "$0")/tools/checks/check_libc_boundary.py"
 python3 "$(dirname "$0")/tools/checks/report_long_functions.py" --quiet \
   --max-lines 300
 

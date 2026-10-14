@@ -14,7 +14,7 @@ if errorlevel 1 (
     popd
     exit /b 1
 )
-python tools/checks/check_renderer_libc.py
+python tools/checks/check_libc_boundary.py
 if errorlevel 1 (
     popd
     exit /b 1

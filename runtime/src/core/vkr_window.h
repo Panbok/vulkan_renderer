@@ -42,7 +42,6 @@
 #include "math/vkr_math.h"
 #include "platform/vkr_platform.h"
 #include "vkr_native_surface.h"
-#include "vkr_pch.h"
 
 /**
  * @brief Represents a platform window and its associated state.

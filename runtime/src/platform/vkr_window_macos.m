@@ -1,4 +1,5 @@
 #include "core/vkr_window.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_window_internal.h"
 
 #if defined(PLATFORM_APPLE)
@@ -7,7 +8,6 @@
 #include <IOKit/hidsystem/IOLLEvent.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include <math.h>
 
 bool8_t vkr_platform_clipboard_read_text(uint8_t *buffer, uint32_t capacity,
                                          uint32_t *out_length) {
@@ -132,7 +132,7 @@ static uint64_t vkr_window_display_output_pack(uint32_t revision,
 static void vkr_window_publish_display_output(PlatformState *state,
                                               float32_t current_headroom,
                                               bool8_t available) {
-  if (!isfinite(current_headroom) || current_headroom < 1.0f)
+  if (!vkr_is_finite_f32(current_headroom) || current_headroom < 1.0f)
     current_headroom = 1.0f;
   const uint32_t bits = vkr_window_display_output_float_bits(current_headroom);
   uint64_t expected = vkr_atomic_uint64_load(&state->display_output_state,
@@ -171,7 +171,7 @@ static void vkr_window_refresh_display_output(PlatformState *state) {
       screen ? (float32_t)screen.maximumExtendedDynamicRangeColorComponentValue
              : 1.0f;
   vkr_window_publish_display_output(state, current_headroom,
-                                    isfinite(potential_headroom) &&
+                                    vkr_is_finite_f32(potential_headroom) &&
                                         potential_headroom > 1.0f);
 }
 
@@ -522,7 +522,8 @@ static void vkr_window_enter_borderless(PlatformState *state);
   for (NSURL *url in urls) {
     const char *path = url.fileSystemRepresentation;
     if (path) {
-      vkr_window_file_drop_add(platform_state->owner, path, strlen(path));
+      vkr_window_file_drop_add(platform_state->owner, path,
+                               string_length(path));
     }
   }
   vkr_window_file_drop_publish(platform_state->owner);
@@ -718,7 +719,7 @@ static void vkr_window_enter_borderless(PlatformState *state);
   if ([event hasPreciseScrollingDeltas]) {
     platform_state->scroll_remainder_lines +=
         lines / VKR_WINDOW_SCROLL_LINE_POINTS;
-    lines = trunc(platform_state->scroll_remainder_lines);
+    lines = vkr_trunc_f64(platform_state->scroll_remainder_lines);
     platform_state->scroll_remainder_lines -= lines;
   }
   if (lines != 0.0)
@@ -904,7 +905,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   window->input_state = input_init(event_manager);
   vkr_window_content_scale_init(window);
 
-  PlatformState *state = (PlatformState *)malloc(sizeof(PlatformState));
+  PlatformState *state = (PlatformState *)vkr_heap_alloc(sizeof(PlatformState));
   if (!state) {
     log_error("Failed to allocate PlatformState");
     window->platform_state = NULL;
@@ -1046,17 +1047,20 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     if (!window->hidden) {
       [NSApp activateIgnoringOtherApps:YES];
       [state->window makeKeyAndOrderFront:nil];
-      if (getenv("VKR_WINDOW_DIAGNOSTICS")) {
+      char diagnostics[64];
+      if (vkr_platform_environment_variable("VKR_WINDOW_DIAGNOSTICS",
+                                            diagnostics, sizeof(diagnostics)) &&
+          diagnostics[0] != '\0') {
         // Requested explicitly, so it bypasses the Release-compiled-out logger.
         NSRect frame = [state->window frame];
-        fprintf(stderr,
-                "VKR window pid=%d visible=%d key=%d miniaturized=%d "
-                "policy=%ld frame=%.0f,%.0f %.0fx%.0f screen=%p\n",
-                getpid(), [state->window isVisible],
-                [state->window isKeyWindow], [state->window isMiniaturized],
-                (long)[NSApp activationPolicy], frame.origin.x, frame.origin.y,
-                frame.size.width, frame.size.height,
-                (void *)[state->window screen]);
+        vkr_platform_stderr_writef(
+            "VKR window pid=%u visible=%d key=%d miniaturized=%d "
+            "policy=%ld frame=%.0f,%.0f %.0fx%.0f screen=%p\n",
+            vkr_platform_get_process_id(), [state->window isVisible],
+            [state->window isKeyWindow], [state->window isMiniaturized],
+            (long)[NSApp activationPolicy], frame.origin.x, frame.origin.y,
+            frame.size.width, frame.size.height,
+            (void *)[state->window screen]);
       }
     }
 
@@ -1107,7 +1111,7 @@ void vkr_window_destroy(VkrWindow *window) {
   }
 
   input_shutdown(state->input_state);
-  free(state);
+  vkr_heap_free(state);
   window->platform_state = NULL;
 }
 
@@ -1241,7 +1245,8 @@ VkrDisplayOutputSnapshot vkr_window_get_display_output(VkrWindow *window) {
   const float32_t headroom =
       vkr_window_display_output_bits_float((uint32_t)packed);
   return (VkrDisplayOutputSnapshot){
-      .headroom = isfinite(headroom) && headroom >= 1.0f ? headroom : 1.0f,
+      .headroom =
+          vkr_is_finite_f32(headroom) && headroom >= 1.0f ? headroom : 1.0f,
       .output_scale = 1.0f,
       .revision = state_bits & 0x7fffffffu,
       .available = (state_bits & 0x80000000u) != 0u,

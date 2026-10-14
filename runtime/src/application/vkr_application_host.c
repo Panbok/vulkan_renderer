@@ -3,9 +3,6 @@
 #include "core/input.h"
 #include "platform/vkr_platform.h"
 
-#include <assert.h>
-#include <math.h>
-
 vkr_internal bool8_t vkr_application_host_event(Event *event,
                                                 UserData user_data) {
   VkrApplicationHost *host = user_data;
@@ -46,7 +43,7 @@ bool8_t vkr_application_host_create(VkrApplicationHost *host,
                                     const VkrApplicationHostConfig *config,
                                     VkrAllocator *allocator) {
   if (!host || !config || !allocator || !config->title || config->width == 0u ||
-      config->height == 0u || !isfinite(config->fixed_delta_seconds) ||
+      config->height == 0u || !vkr_is_finite_f64(config->fixed_delta_seconds) ||
       config->fixed_delta_seconds < 0.0) {
     return false_v;
   }
@@ -102,14 +99,15 @@ cleanup:
 
 void vkr_application_host_set_callbacks(
     VkrApplicationHost *host, const VkrApplicationHostCallbacks *callbacks) {
-  assert(host && callbacks);
+  vkr_assert(host && callbacks);
   host->callbacks = *callbacks;
 }
 
 void vkr_application_host_run(VkrApplicationHost *host) {
-  assert(host);
-  assert(bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED));
-  assert(host->callbacks.frame);
+  vkr_assert(host);
+  vkr_assert(
+      bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED));
+  vkr_assert(host->callbacks.frame);
   bitset8_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING);
   if (!bitset8_is_set(&host->flags,
                       VKR_APPLICATION_HOST_FLAG_INIT_DISPATCHED)) {
@@ -192,27 +190,27 @@ void vkr_application_host_run(VkrApplicationHost *host) {
 }
 
 void vkr_application_host_stop(VkrApplicationHost *host) {
-  assert(host &&
-         bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING));
+  vkr_assert(host &&
+             bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING));
   bitset8_set(&host->flags, VKR_APPLICATION_HOST_FLAG_SUSPENDED);
   vkr_application_host_dispatch_lifecycle(host, EVENT_TYPE_APPLICATION_STOP);
 }
 
 void vkr_application_host_resume(VkrApplicationHost *host) {
-  assert(host &&
-         bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_SUSPENDED));
+  vkr_assert(host &&
+             bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_SUSPENDED));
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_SUSPENDED);
   vkr_application_host_dispatch_lifecycle(host, EVENT_TYPE_APPLICATION_RESUME);
 }
 
 void vkr_application_host_close(VkrApplicationHost *host) {
-  assert(host);
+  vkr_assert(host);
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING);
 }
 
 void vkr_application_host_shutdown(VkrApplicationHost *host) {
-  assert(host);
-  assert(!bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING));
+  vkr_assert(host);
+  vkr_assert(!bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING));
   if (!bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED))
     return;
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED);
@@ -223,8 +221,8 @@ void vkr_application_host_shutdown(VkrApplicationHost *host) {
 }
 
 void vkr_application_host_destroy(VkrApplicationHost *host) {
-  assert(host);
-  assert(!bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING));
+  vkr_assert(host);
+  vkr_assert(!bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING));
   vkr_application_host_shutdown(host);
   if (host->config.windowed) {
     vkr_gamepad_shutdown(&host->gamepad);

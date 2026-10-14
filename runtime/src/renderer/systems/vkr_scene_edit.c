@@ -5,6 +5,7 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_hash.h"
 #include "core/vkr_json.h"
@@ -12,12 +13,7 @@
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
-#include <errno.h>
-#include <math.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define EDIT_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* World components one object or overlay record carries. */
@@ -25,7 +21,7 @@
 
 static bool8_t finite_vector(const float32_t *v, uint32_t count) {
   for (uint32_t i = 0; i < count; ++i)
-    if (!isfinite(v[i]))
+    if (!vkr_is_finite_f32(v[i]))
       return false_v;
   return true_v;
 }
@@ -86,21 +82,23 @@ bool8_t vkr_scene_edit_validate(const VkrSceneEditValues *v) {
       (!v->component_type ||
        vkr_scene_world_type_named(string8_create_from_cstr(
            (const uint8_t *)v->component_type->name,
-           strlen(v->component_type->name))) != v->component_type ||
+           string_length(v->component_type->name))) != v->component_type ||
        !vkr_type_validate(v->component_type, v->component, NULL, 0u)))
     return false_v;
   if ((v->fields & VKR_SCENE_EDIT_PHYSICS) &&
       !vkr_scene_physics_snapshot_validate(&v->physics, NULL)) {
     return false_v;
   }
-  if ((v->fields & VKR_SCENE_EDIT_NAME) && !memchr(v->name, 0, sizeof(v->name)))
+  if ((v->fields & VKR_SCENE_EDIT_NAME) &&
+      !MemFindByte(v->name, 0, sizeof(v->name)))
     return false_v;
   if (v->fields & VKR_SCENE_EDIT_TRANSFORM) {
     if (!finite_vector(&v->position.x, 3) ||
         !finite_vector(&v->rotation.x, 4) || !finite_vector(&v->scale.x, 3) ||
-        fabsf(v->scale.x) < 0.000001f || fabsf(v->scale.y) < 0.000001f ||
-        fabsf(v->scale.z) < 0.000001f ||
-        !isfinite(vec4_dot(v->rotation, v->rotation)) ||
+        vkr_abs_f32(v->scale.x) < 0.000001f ||
+        vkr_abs_f32(v->scale.y) < 0.000001f ||
+        vkr_abs_f32(v->scale.z) < 0.000001f ||
+        !vkr_is_finite_f32(vec4_dot(v->rotation, v->rotation)) ||
         vec4_dot(v->rotation, v->rotation) < 0.000001f)
       return false_v;
   }
@@ -343,8 +341,9 @@ static bool8_t edit_prepare(VkrScene *scene, VkrEntityId entity,
       !vkr_scene_physics_is_paused(scene)) {
     return false_v;
   }
-  if ((v->fields & VKR_SCENE_EDIT_NAME) && strcmp(current.name, v->name)) {
-    uint64_t length = strlen(v->name);
+  if ((v->fields & VKR_SCENE_EDIT_NAME) &&
+      !string_equals(current.name, v->name)) {
+    uint64_t length = string_length(v->name);
     uint8_t *name = vkr_allocator_alloc(scene->alloc, length + 1u,
                                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!name)
@@ -468,9 +467,9 @@ static bool8_t edit_write(VkrScene *scene, VkrEntityId entity,
 static void *edit_journal_prepare(VkrSceneEditState *s, VkrEntityId entity,
                                   uint64_t payload_size) {
   if (s->group_open && s->group_entries >= VKR_SCENE_EDIT_GROUP_MAX) {
-    snprintf(s->status, sizeof(s->status),
-             "The edit group exceeds %u undo entries.",
-             VKR_SCENE_EDIT_GROUP_MAX);
+    string_format(s->status, sizeof(s->status),
+                  "The edit group exceeds %u undo entries.",
+                  VKR_SCENE_EDIT_GROUP_MAX);
     return NULL;
   }
   if (!s->undo) {
@@ -582,8 +581,8 @@ static void edit_journal_append(VkrSceneEditState *s, VkrSceneEditEntry entry) {
   }
   s->revision++;
   s->gesture = 0u;
-  snprintf(s->status, sizeof(s->status),
-           "Edited. Save writes scene overrides.");
+  string_format(s->status, sizeof(s->status),
+                "Edited. Save writes scene overrides.");
 }
 
 bool8_t vkr_scene_edit_apply(VkrSceneEditState *s, VkrScene *scene,
@@ -594,13 +593,13 @@ bool8_t vkr_scene_edit_apply(VkrSceneEditState *s, VkrScene *scene,
       (v->physics.present || vkr_scene_physics_owner(scene, entity).u64)) {
     const char *error = NULL;
     if (!vkr_scene_physics_is_paused(scene)) {
-      snprintf(s->status, sizeof(s->status),
-               "Pause simulation before editing physics.");
+      string_format(s->status, sizeof(s->status),
+                    "Pause simulation before editing physics.");
       return false_v;
     }
     if (!vkr_scene_physics_validate(scene, entity, &v->physics, &error)) {
-      snprintf(s->status, sizeof(s->status), "%s",
-               error ? error : "Invalid physics settings.");
+      string_format(s->status, sizeof(s->status), "%s",
+                    error ? error : "Invalid physics settings.");
       return false_v;
     }
   }
@@ -609,15 +608,15 @@ bool8_t vkr_scene_edit_apply(VkrSceneEditState *s, VkrScene *scene,
        !vkr_scene_edit_read_component(scene, entity, v->component_type,
                                       &before)) ||
       !edit_prepare(scene, entity, v, &prepared)) {
-    snprintf(s->status, sizeof(s->status),
-             "Invalid values or stale selection.");
+    string_format(s->status, sizeof(s->status),
+                  "Invalid values or stale selection.");
     return false_v;
   }
   if (!edit_prepare_physics(scene, &prepared) ||
       !vkr_scene_physics_prepare_complete(scene, NULL)) {
     edit_discard(scene, &prepared);
-    snprintf(s->status, sizeof(s->status), "%s",
-             vkr_scene_physics_error(scene));
+    string_format(s->status, sizeof(s->status), "%s",
+                  vkr_scene_physics_error(scene));
     return false_v;
   }
   VkrSceneEditValues *payload =
@@ -660,15 +659,15 @@ bool8_t vkr_scene_edit_apply_gesture(VkrSceneEditState *s, VkrScene *scene,
   }
   EditPrepared prepared;
   if (!edit_prepare(scene, entity, v, &prepared)) {
-    snprintf(s->status, sizeof(s->status),
-             "Invalid values or stale selection.");
+    string_format(s->status, sizeof(s->status),
+                  "Invalid values or stale selection.");
     return false_v;
   }
   if (!edit_prepare_physics(scene, &prepared) ||
       !vkr_scene_physics_prepare_complete(scene, NULL)) {
     edit_discard(scene, &prepared);
-    snprintf(s->status, sizeof(s->status), "%s",
-             vkr_scene_physics_error(scene));
+    string_format(s->status, sizeof(s->status), "%s",
+                  vkr_scene_physics_error(scene));
     return false_v;
   }
   edit_commit(scene, &prepared);
@@ -713,8 +712,8 @@ vkr_scene_edit_apply_collision_layers(VkrSceneEditState *s, VkrScene *scene,
                                       const VkrSceneCollisionLayers *settings) {
   const char *error = NULL;
   if (!vkr_scene_collision_layers_validate(settings, &error)) {
-    snprintf(s->status, sizeof(s->status), "%s",
-             error ? error : "Invalid collision settings.");
+    string_format(s->status, sizeof(s->status), "%s",
+                  error ? error : "Invalid collision settings.");
     return false_v;
   }
   VkrSceneCollisionLayers *payload =
@@ -726,8 +725,8 @@ vkr_scene_edit_apply_collision_layers(VkrSceneEditState *s, VkrScene *scene,
   payload[1] = *settings;
   if (!vkr_scene_collision_layers_apply(scene, settings, &error)) {
     vkr_allocator_free(s->allocator, payload, 2u * sizeof(*payload), EDIT_TAG);
-    snprintf(s->status, sizeof(s->status), "%s",
-             error ? error : "Collision settings failed.");
+    string_format(s->status, sizeof(s->status), "%s",
+                  error ? error : "Collision settings failed.");
     return false_v;
   }
   edit_journal_append(
@@ -822,13 +821,13 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
   VkrHeightfieldOp local;
   const VkrHeightfield *field = edit_terrain_local(scene, entity, op, &local);
   if (!field) {
-    snprintf(s->status, sizeof(s->status),
-             "That object has no loaded terrain.");
+    string_format(s->status, sizeof(s->status),
+                  "That object has no loaded terrain.");
     return false_v;
   }
   VkrHeightfieldRect rect;
   if (!vkr_heightfield_op_rect(field, &local, &rect)) {
-    snprintf(s->status, sizeof(s->status), "The edit misses the terrain.");
+    string_format(s->status, sizeof(s->status), "The edit misses the terrain.");
     return false_v;
   }
   /* A stroke's next step folds into its entry: the entry grows to cover both
@@ -862,8 +861,8 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
   EditTerrainPayload *previous = fold ? last->payload : NULL;
   /* A streamed terrain loads the samples the entry keeps. */
   if (!vkr_scene_terrain_require(scene, entity, whole)) {
-    snprintf(s->status, sizeof(s->status),
-             "The terrain samples could not be read.");
+    string_format(s->status, sizeof(s->status),
+                  "The terrain samples could not be read.");
     return false_v;
   }
   const uint64_t size = edit_terrain_size(whole);
@@ -873,7 +872,7 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
       previous ? vkr_allocator_alloc(s->allocator, size, EDIT_TAG)
                : edit_journal_prepare(s, entity, size);
   if (!payload) {
-    snprintf(s->status, sizeof(s->status), "Out of edit memory.");
+    string_format(s->status, sizeof(s->status), "Out of edit memory.");
     return false_v;
   }
   payload->rect = whole;
@@ -904,7 +903,7 @@ bool8_t vkr_scene_edit_terrain(VkrSceneEditState *s, VkrScene *scene,
   VkrHeightfieldRect touched;
   if (!vkr_scene_terrain_apply(scene, entity, &local, s->allocator, &touched)) {
     vkr_allocator_free(s->allocator, payload, size, EDIT_TAG);
-    snprintf(s->status, sizeof(s->status), "The terrain edit failed.");
+    string_format(s->status, sizeof(s->status), "The terrain edit failed.");
     return false_v;
   }
   vkr_heightfield_read_rect(vkr_scene_terrain_field(scene, entity), whole,
@@ -964,8 +963,8 @@ failed:
   for (uint32_t i = 0; i < prepared_count; ++i) {
     vkr_scene_physics_discard(pending[i]);
   }
-  snprintf(s->status, sizeof(s->status), "%s",
-           error ? error : "Physics batch could not be staged.");
+  string_format(s->status, sizeof(s->status), "%s",
+                error ? error : "Physics batch could not be staged.");
   return false_v;
 }
 
@@ -1295,9 +1294,9 @@ static VkrEntityId edit_object_restore(VkrScene *scene, const EditObject *o,
   }
   bool8_t ok = true_v;
   if (o->parts & EDIT_OBJECT_NAME) {
-    ok = vkr_scene_set_name(
-        scene, entity,
-        string8_create_from_cstr((const uint8_t *)o->name, strlen(o->name)));
+    ok = vkr_scene_set_name(scene, entity,
+                            string8_create_from_cstr((const uint8_t *)o->name,
+                                                     string_length(o->name)));
   }
   if (ok && (o->parts & EDIT_OBJECT_TRANSFORM)) {
     ok = vkr_scene_set_transform(scene, entity, o->transform.position,
@@ -1470,7 +1469,8 @@ static bool8_t edit_structure_append(VkrSceneEditState *s, VkrEntityId entity,
                                      const EditStructure *structure) {
   EditStructure *payload = edit_journal_prepare(s, entity, sizeof(*payload));
   if (!payload) {
-    snprintf(s->status, sizeof(s->status), "Out of memory for undo history.");
+    string_format(s->status, sizeof(s->status),
+                  "Out of memory for undo history.");
     return false_v;
   }
   *payload = *structure;
@@ -1491,12 +1491,12 @@ bool8_t vkr_scene_edit_add_component(VkrSceneEditState *s, VkrScene *scene,
                                      const VkrTypeDesc *type,
                                      const void *value) {
   if (!edit_world_type(type) || !vkr_scene_entity_alive(scene, entity)) {
-    snprintf(s->status, sizeof(s->status), "Unknown component or object.");
+    string_format(s->status, sizeof(s->status), "Unknown component or object.");
     return false_v;
   }
   if (vkr_scene_get_typed(scene, entity, type)) {
-    snprintf(s->status, sizeof(s->status), "The object already has %s.",
-             type->label);
+    string_format(s->status, sizeof(s->status), "The object already has %s.",
+                  type->label);
     return false_v;
   }
   EditStructure *structure = &s_edit_structure;
@@ -1511,15 +1511,15 @@ bool8_t vkr_scene_edit_add_component(VkrSceneEditState *s, VkrScene *scene,
   char error[160] = {0};
   if (!vkr_type_validate(type, structure->component, error, sizeof(error)) ||
       !vkr_scene_set_typed(scene, entity, type, structure->component)) {
-    snprintf(s->status, sizeof(s->status), "%s",
-             error[0] ? error : "The component could not be added.");
+    string_format(s->status, sizeof(s->status), "%s",
+                  error[0] ? error : "The component could not be added.");
     return false_v;
   }
   if (!edit_structure_append(s, entity, structure)) {
     (void)vkr_scene_remove_typed(scene, entity, type);
     return false_v;
   }
-  snprintf(s->status, sizeof(s->status), "Added %s.", type->label);
+  string_format(s->status, sizeof(s->status), "Added %s.", type->label);
   return true_v;
 }
 
@@ -1529,7 +1529,7 @@ bool8_t vkr_scene_edit_remove_component(VkrSceneEditState *s, VkrScene *scene,
   const void *value =
       edit_world_type(type) ? vkr_scene_get_typed(scene, entity, type) : NULL;
   if (!value) {
-    snprintf(s->status, sizeof(s->status), "No such component.");
+    string_format(s->status, sizeof(s->status), "No such component.");
     return false_v;
   }
   EditStructure *structure = &s_edit_structure;
@@ -1542,7 +1542,7 @@ bool8_t vkr_scene_edit_remove_component(VkrSceneEditState *s, VkrScene *scene,
     return false_v;
   }
   (void)vkr_scene_remove_typed(scene, entity, type);
-  snprintf(s->status, sizeof(s->status), "Removed %s.", type->label);
+  string_format(s->status, sizeof(s->status), "Removed %s.", type->label);
   return true_v;
 }
 
@@ -1555,12 +1555,12 @@ bool8_t vkr_scene_edit_replace_component(VkrSceneEditState *s, VkrScene *scene,
                             ? vkr_scene_get_typed(scene, entity, replaced)
                             : NULL;
   if (!current || !edit_world_type(type) || type == replaced) {
-    snprintf(s->status, sizeof(s->status), "No such component.");
+    string_format(s->status, sizeof(s->status), "No such component.");
     return false_v;
   }
   if (vkr_scene_get_typed(scene, entity, type)) {
-    snprintf(s->status, sizeof(s->status), "The object already has %s.",
-             type->label);
+    string_format(s->status, sizeof(s->status), "The object already has %s.",
+                  type->label);
     return false_v;
   }
   EditStructure *structure = &s_edit_structure;
@@ -1577,8 +1577,8 @@ bool8_t vkr_scene_edit_replace_component(VkrSceneEditState *s, VkrScene *scene,
   char error[160] = {0};
   if (!vkr_type_validate(type, structure->component, error, sizeof(error)) ||
       !vkr_scene_set_typed(scene, entity, type, structure->component)) {
-    snprintf(s->status, sizeof(s->status), "%s",
-             error[0] ? error : "The component could not be added.");
+    string_format(s->status, sizeof(s->status), "%s",
+                  error[0] ? error : "The component could not be added.");
     return false_v;
   }
   if (!edit_structure_append(s, entity, structure)) {
@@ -1587,8 +1587,8 @@ bool8_t vkr_scene_edit_replace_component(VkrSceneEditState *s, VkrScene *scene,
   }
   /* Removal cannot fail once the component exists. */
   (void)vkr_scene_remove_typed(scene, entity, replaced);
-  snprintf(s->status, sizeof(s->status), "Replaced %s with %s.",
-           replaced->label, type->label);
+  string_format(s->status, sizeof(s->status), "Replaced %s with %s.",
+                replaced->label, type->label);
   return true_v;
 }
 
@@ -1661,7 +1661,8 @@ static VkrEntityId edit_create_object(VkrSceneEditState *s, VkrScene *scene,
   const VkrEntityId entity =
       edit_object_restore(scene, &structure->object, parent);
   if (!entity.u64) {
-    snprintf(s->status, sizeof(s->status), "The object could not be created.");
+    string_format(s->status, sizeof(s->status),
+                  "The object could not be created.");
     return VKR_ENTITY_ID_INVALID;
   }
   if (!edit_created_add(s, entity, structure->object.created_id) ||
@@ -1683,7 +1684,7 @@ VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
   MemZero(structure, sizeof(*structure));
   if ((parent.u64 && !vkr_scene_get_transform(scene, parent)) ||
       !edit_object_from_values(values, &structure->object)) {
-    snprintf(s->status, sizeof(s->status), "Invalid object values.");
+    string_format(s->status, sizeof(s->status), "Invalid object values.");
     return VKR_ENTITY_ID_INVALID;
   }
   /* Every created entity gets its own id, even a copy of another, unless
@@ -1696,8 +1697,9 @@ VkrEntityId vkr_scene_edit_create(VkrSceneEditState *s, VkrScene *scene,
   }
   const VkrEntityId entity = edit_create_object(s, scene, parent, structure);
   if (entity.u64) {
-    snprintf(s->status, sizeof(s->status), "Created %s.",
-             structure->object.name[0] ? structure->object.name : "an object");
+    string_format(s->status, sizeof(s->status), "Created %s.",
+                  structure->object.name[0] ? structure->object.name
+                                            : "an object");
   }
   return entity;
 }
@@ -1748,7 +1750,7 @@ bool8_t vkr_scene_edit_can_duplicate(const VkrScene *scene, VkrEntityId entity,
 
 /* Whether an entity of `scene` is named `name`. */
 static bool8_t edit_name_taken(const VkrScene *scene, const char *name) {
-  const uint64_t length = strlen(name);
+  const uint64_t length = string_length(name);
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
     const VkrEntityId other = vkr_entity_id_from_index(scene->world, i);
     const String8 taken = vkr_scene_get_name(scene, other);
@@ -1763,7 +1765,7 @@ static bool8_t edit_name_taken(const VkrScene *scene, const char *name) {
    Unity numbers duplicates. */
 static void edit_duplicate_name(const VkrScene *scene, const char *name,
                                 char *out, uint32_t capacity) {
-  uint64_t stem = strlen(name);
+  uint64_t stem = string_length(name);
   if (stem >= 4u && name[stem - 1u] == ')') {
     uint64_t open = stem - 1u;
     while (open > 0u && name[open - 1u] >= '0' && name[open - 1u] <= '9') {
@@ -1775,7 +1777,7 @@ static void edit_duplicate_name(const VkrScene *scene, const char *name,
     }
   }
   for (uint32_t n = 1u; n < 10000u; ++n) {
-    snprintf(out, capacity, "%.*s (%u)", (int)stem, name, n);
+    string_format(out, capacity, "%.*s (%u)", (int)stem, name, n);
     if (!edit_name_taken(scene, out)) {
       return;
     }
@@ -1836,8 +1838,8 @@ static VkrEntityId edit_duplicate_subtree(VkrSceneEditState *s, VkrScene *scene,
   }
   *ordinal += 1u;
   if (name) {
-    snprintf(structure->object.name, sizeof(structure->object.name), "%s",
-             name);
+    string_format(structure->object.name, sizeof(structure->object.name), "%s",
+                  name);
     structure->object.parts |= EDIT_OBJECT_NAME;
   }
   const VkrEntityId copy = edit_create_object(s, scene, parent, structure);
@@ -1865,13 +1867,13 @@ VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *s, VkrScene *scene,
                                      const VkrEntityRef *seed) {
   const char *reason = NULL;
   if (!vkr_scene_edit_can_duplicate(scene, entity, &reason)) {
-    snprintf(s->status, sizeof(s->status), "%s", reason);
+    string_format(s->status, sizeof(s->status), "%s", reason);
     return VKR_ENTITY_ID_INVALID;
   }
   char source_name[VKR_SCENE_EDIT_NAME_CAPACITY] = {0};
   const String8 current = vkr_scene_get_name(scene, entity);
-  snprintf(source_name, sizeof(source_name), "%.*s", (int)current.length,
-           current.str);
+  string_format(source_name, sizeof(source_name), "%.*s", (int)current.length,
+                current.str);
   char name[VKR_SCENE_EDIT_NAME_CAPACITY] = {0};
   edit_duplicate_name(scene, source_name[0] ? source_name : "Object", name,
                       sizeof(name));
@@ -1889,14 +1891,14 @@ VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *s, VkrScene *scene,
       vkr_scene_edit_group_end(s);
     } else {
       char status[sizeof(s->status)];
-      snprintf(status, sizeof(status), "%s", s->status);
+      string_format(status, sizeof(status), "%s", s->status);
       (void)vkr_scene_edit_group_rollback(s, scene);
-      snprintf(s->status, sizeof(s->status), "%s", status);
+      string_format(s->status, sizeof(s->status), "%s", status);
     }
   }
   if (copy.u64) {
-    snprintf(s->status, sizeof(s->status), "Duplicated %s as %s.",
-             source_name[0] ? source_name : "the object", name);
+    string_format(s->status, sizeof(s->status), "Duplicated %s as %s.",
+                  source_name[0] ? source_name : "the object", name);
   }
   return copy;
 }
@@ -1908,7 +1910,7 @@ bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
                               VkrEntityId entity) {
   const char *reason = NULL;
   if (!vkr_scene_edit_can_delete(scene, entity, &reason)) {
-    snprintf(s->status, sizeof(s->status), "%s", reason);
+    string_format(s->status, sizeof(s->status), "%s", reason);
     return false_v;
   }
   if (!edit_has_children(scene, entity)) {
@@ -1936,9 +1938,9 @@ bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
       vkr_scene_edit_group_end(s);
     } else {
       char status[sizeof(s->status)];
-      snprintf(status, sizeof(status), "%s", s->status);
+      string_format(status, sizeof(status), "%s", s->status);
       (void)vkr_scene_edit_group_rollback(s, scene);
-      snprintf(s->status, sizeof(s->status), "%s", status);
+      string_format(s->status, sizeof(s->status), "%s", status);
     }
   }
   return ok;
@@ -1960,8 +1962,9 @@ static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,
     return false_v;
   }
   vkr_scene_destroy_entity(scene, entity);
-  snprintf(s->status, sizeof(s->status), "Deleted %s.",
-           structure->object.name[0] ? structure->object.name : "the object");
+  string_format(s->status, sizeof(s->status), "Deleted %s.",
+                structure->object.name[0] ? structure->object.name
+                                          : "the object");
   return true_v;
 }
 
@@ -1995,15 +1998,15 @@ bool8_t vkr_scene_edit_reparent(VkrSceneEditState *s, VkrScene *scene,
   if (!transform || !transform->trs_editable ||
       (parent.u64 && (!vkr_scene_get_transform(scene, parent) ||
                       parent.parts.world != entity.parts.world))) {
-    snprintf(s->status, sizeof(s->status),
-             "Only placed objects in the same scene can be parented.");
+    string_format(s->status, sizeof(s->status),
+                  "Only placed objects in the same scene can be parented.");
     return false_v;
   }
   for (VkrEntityId at = parent; at.u64;) {
     const SceneTransform *link = vkr_scene_get_transform(scene, at);
     if (at.u64 == entity.u64) {
-      snprintf(s->status, sizeof(s->status),
-               "An object cannot be parented under itself.");
+      string_format(s->status, sizeof(s->status),
+                    "An object cannot be parented under itself.");
       return false_v;
     }
     at = link ? link->parent : VKR_ENTITY_ID_INVALID;
@@ -2032,7 +2035,8 @@ bool8_t vkr_scene_edit_reparent(VkrSceneEditState *s, VkrScene *scene,
     (void)edit_set_parent(scene, entity, structure->parent[0],
                           structure->position[0], structure->rotation[0],
                           structure->scale[0]);
-    snprintf(s->status, sizeof(s->status), "The object cannot move there.");
+    string_format(s->status, sizeof(s->status),
+                  "The object cannot move there.");
     return false_v;
   }
   if (!edit_structure_append(s, entity, structure)) {
@@ -2041,7 +2045,7 @@ bool8_t vkr_scene_edit_reparent(VkrSceneEditState *s, VkrScene *scene,
                           structure->scale[0]);
     return false_v;
   }
-  snprintf(s->status, sizeof(s->status), "Moved.");
+  string_format(s->status, sizeof(s->status), "Moved.");
   return true_v;
 }
 
@@ -2079,8 +2083,8 @@ static bool8_t edit_structure_write(VkrSceneEditState *s, VkrScene *scene,
     if (!present) {
       if (!vkr_scene_entity_alive(scene, entity) ||
           !vkr_scene_edit_can_delete(scene, entity, NULL)) {
-        snprintf(s->status, sizeof(s->status),
-                 "The object changed; it cannot be removed again.");
+        string_format(s->status, sizeof(s->status),
+                      "The object changed; it cannot be removed again.");
         return false_v;
       }
       if (document && !edit_deleted_add(s, &object->source)) {
@@ -2094,7 +2098,8 @@ static bool8_t edit_structure_write(VkrSceneEditState *s, VkrScene *scene,
         scene, object,
         vkr_scene_entity_alive(scene, parent) ? parent : VKR_ENTITY_ID_INVALID);
     if (!restored.u64) {
-      snprintf(s->status, sizeof(s->status), "The object could not return.");
+      string_format(s->status, sizeof(s->status),
+                    "The object could not return.");
       return false_v;
     }
     if (document) {
@@ -2138,7 +2143,7 @@ static bool8_t edit_entry_write(VkrSceneEditState *s, VkrScene *scene,
     edit_terrain_arrays(payload, redo ? 1u : 0u, &heights, &weights);
     if (!vkr_scene_terrain_write(scene, entry->entity, payload->rect, heights,
                                  weights)) {
-      snprintf(s->status, sizeof(s->status), "The terrain is gone.");
+      string_format(s->status, sizeof(s->status), "The terrain is gone.");
       return false_v;
     }
   } else if (entry->kind == VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS) {
@@ -2146,8 +2151,8 @@ static bool8_t edit_entry_write(VkrSceneEditState *s, VkrScene *scene,
     const char *error = NULL;
     if (!vkr_scene_collision_layers_apply(scene, &payload[redo ? 1 : 0],
                                           &error)) {
-      snprintf(s->status, sizeof(s->status), "%s",
-               error ? error : "Collision settings undo failed.");
+      string_format(s->status, sizeof(s->status), "%s",
+                    error ? error : "Collision settings undo failed.");
       return false_v;
     }
   } else {
@@ -2194,7 +2199,8 @@ bool8_t vkr_scene_edit_undo(VkrSceneEditState *s, VkrScene *scene,
                           : s->undo_cursor > 0u &&
                                 s->undo[s->undo_cursor - 1u].group == group));
   s->revision++;
-  snprintf(s->status, sizeof(s->status), "%s", redo ? "Redone." : "Undone.");
+  string_format(s->status, sizeof(s->status), "%s",
+                redo ? "Redone." : "Undone.");
   return true_v;
 }
 
@@ -2325,8 +2331,8 @@ bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *s, VkrScene *scene,
       /* Physics batches change bodies across the scene; a group holding one
          reverts only as the newest step. */
       if (end != s->undo_cursor) {
-        snprintf(s->status, sizeof(s->status),
-                 "Physics edits revert only as the newest step.");
+        string_format(s->status, sizeof(s->status),
+                      "Physics edits revert only as the newest step.");
         return false_v;
       }
     }
@@ -2337,8 +2343,8 @@ bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *s, VkrScene *scene,
         edit_entry_entities(&s->undo[i], true_v, named);
     if (s->undo[i].kind == VKR_SCENE_EDIT_ENTRY_PHYSICS_BATCH ||
         s->undo[i].kind == VKR_SCENE_EDIT_ENTRY_COLLISION_LAYERS) {
-      snprintf(s->status, sizeof(s->status),
-               "A later physics edit may depend on this group.");
+      string_format(s->status, sizeof(s->status),
+                    "A later physics edit may depend on this group.");
       return false_v;
     }
     for (uint32_t n = 0; n < named_count; ++n) {
@@ -2346,8 +2352,8 @@ bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *s, VkrScene *scene,
         if (out_conflict) {
           *out_conflict = named[n];
         }
-        snprintf(s->status, sizeof(s->status),
-                 "A later edit changed what this group touched.");
+        string_format(s->status, sizeof(s->status),
+                      "A later edit changed what this group touched.");
         return false_v;
       }
     }
@@ -2364,13 +2370,14 @@ bool8_t vkr_scene_edit_group_revert(VkrSceneEditState *s, VkrScene *scene,
   }
   edit_journal_remove(s, first, count);
   s->revision++;
-  snprintf(s->status, sizeof(s->status), "Reverted.");
+  string_format(s->status, sizeof(s->status), "Reverted.");
   return true_v;
 }
 
 static bool8_t json_floats(VkrJsonWriter *w, const char *name,
                            const float32_t *values, uint32_t count) {
-  if (!vkr_json_writer_name(w, string8_create((uint8_t *)name, strlen(name))) ||
+  if (!vkr_json_writer_name(
+          w, string8_create((uint8_t *)name, string_length(name))) ||
       !vkr_json_writer_begin_array(w))
     return false_v;
   for (uint32_t i = 0; i < count; ++i)
@@ -2382,8 +2389,8 @@ static bool8_t json_floats(VkrJsonWriter *w, const char *name,
 static bool8_t write_source(VkrJsonWriter *w,
                             const SceneSourceIdentity *source) {
   char fingerprint[17];
-  snprintf(fingerprint, sizeof(fingerprint), "%016llx",
-           (unsigned long long)source->source_fingerprint);
+  string_format(fingerprint, sizeof(fingerprint), "%016llx",
+                (unsigned long long)source->source_fingerprint);
   return vkr_json_writer_begin_object(w) &&
          vkr_json_writer_name(w, string8_lit("scene_entity")) &&
          vkr_json_writer_i64(w, source->scene_entity_index) &&
@@ -2419,7 +2426,8 @@ write_attachment_and_joints(VkrJsonWriter *w,
   for (uint32_t i = 0; i < body->joint_count; ++i) {
     const VkrSceneJointConfig *joint = &body->joints[i];
     char id[17];
-    snprintf(id, sizeof(id), "%016llx", (unsigned long long)joint->authored_id);
+    string_format(id, sizeof(id), "%016llx",
+                  (unsigned long long)joint->authored_id);
     const float32_t limits[] = {joint->min_limit, joint->max_limit,
                                 joint->swing_normal_limit,
                                 joint->swing_plane_limit};
@@ -2458,7 +2466,7 @@ static bool8_t write_collision_layers(VkrJsonWriter *w,
   for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
     if (!vkr_json_writer_string(
             w, string8_create_from_cstr((const uint8_t *)settings->names[i],
-                                        strlen(settings->names[i])))) {
+                                        string_length(settings->names[i])))) {
       return false_v;
     }
   }
@@ -2483,7 +2491,7 @@ static bool8_t write_collision_layers(VkrJsonWriter *w,
         !vkr_json_writer_name(w, string8_lit("name")) ||
         !vkr_json_writer_string(
             w, string8_create_from_cstr((const uint8_t *)preset->name,
-                                        strlen(preset->name))) ||
+                                        string_length(preset->name))) ||
         !vkr_json_writer_name(w, string8_lit("membership")) ||
         !vkr_json_writer_i64(w, preset->membership) ||
         !vkr_json_writer_name(w, string8_lit("mask")) ||
@@ -2527,7 +2535,7 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
       !(vkr_json_writer_name(w, string8_lit("name")) &&
         vkr_json_writer_string(
             w, string8_create_from_cstr((const uint8_t *)v->name,
-                                        strlen(v->name)))))
+                                        string_length(v->name)))))
     return false_v;
   if ((v->fields & VKR_SCENE_EDIT_TRANSFORM) &&
       !(json_floats(w, "position", &v->position.x, 3) &&
@@ -2554,7 +2562,7 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !vkr_json_writer_name(w, string8_lit("point_group")) ||
         !vkr_json_writer_string(
             w, string8_create_from_cstr((const uint8_t *)p->light_group,
-                                        strlen(p->light_group))))
+                                        string_length(p->light_group))))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_DIRECTIONAL_LIGHT) {
@@ -2581,7 +2589,7 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
         !vkr_json_writer_name(w, string8_lit("rectangle_group")) ||
         !vkr_json_writer_string(
             w, string8_create_from_cstr((const uint8_t *)p->light_group,
-                                        strlen(p->light_group))))
+                                        string_length(p->light_group))))
       return false_v;
   }
   if (v->fields & VKR_SCENE_EDIT_PHYSICS) {
@@ -2609,7 +2617,8 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
     for (uint32_t i = 0; i < p->collider_count; ++i) {
       const VkrSceneColliderConfig *c = &p->colliders[i];
       char id[17];
-      snprintf(id, sizeof(id), "%016llx", (unsigned long long)c->authored_id);
+      string_format(id, sizeof(id), "%016llx",
+                    (unsigned long long)c->authored_id);
       const float32_t dimensions[] = {c->half_extent.x, c->half_extent.y,
                                       c->half_extent.z, c->radius,
                                       c->half_height};
@@ -2622,9 +2631,9 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
           !json_floats(w, "dimensions", dimensions, ArrayCount(dimensions)) ||
           !json_floats(w, "scale", &c->scale.x, 3) ||
           !vkr_json_writer_name(w, string8_lit("asset")) ||
-          !vkr_json_writer_string(w,
-                                  (String8){.str = (uint8_t *)c->asset_path,
-                                            .length = strlen(c->asset_path)}) ||
+          !vkr_json_writer_string(
+              w, (String8){.str = (uint8_t *)c->asset_path,
+                           .length = string_length(c->asset_path)}) ||
           !WRITE_INT("fit", c->fit) ||
           !json_floats(w, "fit_offset", &c->fit_offset.x, 3) ||
           !json_floats(w, "padding", &c->padding.x, 3) ||
@@ -2678,7 +2687,7 @@ static bool8_t write_components(VkrJsonWriter *w, const VkrScene *scene,
     }
     if (!vkr_json_writer_name(
             w, string8_create_from_cstr((const uint8_t *)type->name,
-                                        strlen(type->name))) ||
+                                        string_length(type->name))) ||
         !vkr_type_write_json(w, type, value)) {
       return false_v;
     }
@@ -2721,8 +2730,8 @@ static bool8_t write_parent(VkrJsonWriter *w, const VkrSceneEditState *s,
 static bool8_t write_identity(VkrJsonWriter *w,
                               const SceneSourceIdentity *source) {
   char hash[17];
-  snprintf(hash, sizeof(hash), "%016llx",
-           (unsigned long long)source->source_fingerprint);
+  string_format(hash, sizeof(hash), "%016llx",
+                (unsigned long long)source->source_fingerprint);
   return WRITE_INT("scene_entity", source->scene_entity_index) &&
          WRITE_INT("gltf_node", (int32_t)source->gltf_node_index) &&
          vkr_json_writer_name(w, string8_lit("source_fingerprint")) &&
@@ -2881,7 +2890,7 @@ static bool8_t edit_cells_commit(VkrSceneEditState *s, VkrScene *scene,
 bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
                             String8 path) {
   if (s->sidecar_conflict) {
-    snprintf(
+    string_format(
         s->status, sizeof(s->status),
         "Save blocked: resolve or move the conflicting sidecar, then reload.");
     return false_v;
@@ -2889,23 +2898,24 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
   /* A rebased world (ADR-086) holds positions the documents do not. */
   if (scene->origin_offset.x != 0.0f || scene->origin_offset.y != 0.0f ||
       scene->origin_offset.z != 0.0f) {
-    snprintf(s->status, sizeof(s->status),
-             "Save blocked: reset the simulation; the origin is rebased.");
+    string_format(s->status, sizeof(s->status),
+                  "Save blocked: reset the simulation; the origin is rebased.");
     return false_v;
   }
   /* Objects in a cell whose document has not loaded join it first, so the
      cell's document keeps what it held. */
   if (!vkr_scene_edit_cells_track(s, scene)) {
-    snprintf(s->status, sizeof(s->status),
-             "Save blocked: a cell document could not be read.");
+    string_format(s->status, sizeof(s->status),
+                  "Save blocked: a cell document could not be read.");
     return false_v;
   }
   const uint32_t created = edit_overlay_created_count(s, scene);
   if (created > VKR_SCENE_EDIT_CREATED_MAX) {
-    snprintf(s->status, sizeof(s->status),
-             "Save blocked: %u created objects; a scene file loads at most %u "
-             "(world partition cells hold more).",
-             created, VKR_SCENE_EDIT_CREATED_MAX);
+    string_format(
+        s->status, sizeof(s->status),
+        "Save blocked: %u created objects; a scene file loads at most %u "
+        "(world partition cells hold more).",
+        created, VKR_SCENE_EDIT_CREATED_MAX);
     return false_v;
   }
   /* Terrain samples live in their own files, written with the edits. */
@@ -2956,15 +2966,15 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
     goto failed;
   /* A load reads at most VKR_SCENE_EDIT_OVERLAY_BYTES, so a larger overlay
      never replaces the last one that loads. */
-  const long written = vkr_json_writer_flush(w) && fflush(file.file) == 0
-                           ? ftell(file.file)
-                           : -1;
-  if (written < 0 || (uint64_t)written > VKR_SCENE_EDIT_OVERLAY_BYTES) {
+  uint64_t written = 0u;
+  if (!vkr_json_file_writer_size(&file, &written) ||
+      written > VKR_SCENE_EDIT_OVERLAY_BYTES) {
     vkr_json_file_writer_abort(&file);
-    snprintf(s->status, sizeof(s->status),
-             "Save blocked: the scene's edits pass %llu MiB; move objects into "
-             "world partition cells or another scene.",
-             (unsigned long long)(VKR_SCENE_EDIT_OVERLAY_BYTES / MB(1)));
+    string_format(
+        s->status, sizeof(s->status),
+        "Save blocked: the scene's edits pass %llu MiB; move objects into "
+        "world partition cells or another scene.",
+        (unsigned long long)(VKR_SCENE_EDIT_OVERLAY_BYTES / MB(1)));
     log_error("Editor override save blocked: %.*s", (int)path.length, path.str);
     return false_v;
   }
@@ -2984,20 +2994,20 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
   }
   s->saved_revision = s->revision;
   if (unsaved_blocks) {
-    snprintf(s->status, sizeof(s->status),
-             "Saved %u node overrides; %u load-baked objects keep their "
-             "document values.",
-             s->touched_count - unsaved_blocks, unsaved_blocks);
+    string_format(s->status, sizeof(s->status),
+                  "Saved %u node overrides; %u load-baked objects keep their "
+                  "document values.",
+                  s->touched_count - unsaved_blocks, unsaved_blocks);
   } else {
-    snprintf(s->status, sizeof(s->status), "Saved %u node overrides.",
-             s->touched_count);
+    string_format(s->status, sizeof(s->status), "Saved %u node overrides.",
+                  s->touched_count);
   }
   log_info("Saved editor overrides to %.*s", (int)path.length, path.str);
   return true_v;
 failed:
   vkr_json_file_writer_abort(&file);
-  snprintf(s->status, sizeof(s->status),
-           "Save failed: file or source identity unavailable.");
+  string_format(s->status, sizeof(s->status),
+                "Save failed: file or source identity unavailable.");
   log_error("Editor override save failed: %.*s", (int)path.length, path.str);
   return false_v;
 }
@@ -3210,9 +3220,9 @@ static bool8_t edit_json_number(EditJson *j, float64_t *out, bool8_t integer) {
     return false_v;
   MemCopy(number, start, length);
   number[length] = 0;
-  char *end;
-  *out = strtod(number, &end);
-  return end == number + length && isfinite(*out);
+  const char *end = NULL;
+  *out = string_parse_f64(number, &end);
+  return end == number + length && vkr_is_finite_f64(*out);
 }
 
 static bool8_t edit_json_int(EditJson *j, int64_t min, int64_t max,
@@ -3248,7 +3258,7 @@ static bool8_t edit_json_floats(EditJson *j, float32_t *out, uint32_t count) {
     if ((i && !edit_json_take(j, ',')) || !edit_json_number(j, &value, false_v))
       return false_v;
     out[i] = (float32_t)value;
-    if (!isfinite(out[i]))
+    if (!vkr_is_finite_f32(out[i]))
       return false_v;
   }
   return edit_json_take(j, ']');
@@ -3257,8 +3267,8 @@ static bool8_t edit_json_floats(EditJson *j, float32_t *out, uint32_t count) {
 static bool8_t edit_json_key(EditJson *j, const char *expected, bool8_t comma) {
   char key[32];
   return (!comma || edit_json_take(j, ',')) &&
-         edit_json_string(j, key, sizeof(key)) && !strcmp(key, expected) &&
-         edit_json_take(j, ':');
+         edit_json_string(j, key, sizeof(key)) &&
+         string_equals(key, expected) && edit_json_take(j, ':');
 }
 
 /* `scene_settings`: `inherit_world`, then an optional `texture_max_extent`
@@ -3283,7 +3293,7 @@ static bool8_t edit_json_scene_settings(EditJson *j, VkrSceneSettings *out) {
 
 static bool8_t edit_json_u64_hex(EditJson *j, uint64_t *value) {
   char text[17];
-  if (!edit_json_string(j, text, sizeof(text)) || strlen(text) != 16) {
+  if (!edit_json_string(j, text, sizeof(text)) || string_length(text) != 16) {
     return false_v;
   }
   *value = 0;
@@ -3510,7 +3520,7 @@ static bool8_t edit_json_physics(EditJson *j, VkrScenePhysicsSnapshot *p) {
       char id[17];
       float32_t dimensions[5];
       if (!edit_json_take(j, '{') || !edit_json_key(j, "id", false_v) ||
-          !edit_json_string(j, id, sizeof(id)) || strlen(id) != 16) {
+          !edit_json_string(j, id, sizeof(id)) || string_length(id) != 16) {
         return false_v;
       }
       for (uint32_t i = 0; i < 16; ++i) {
@@ -3598,7 +3608,7 @@ static bool8_t edit_json_components(EditJson *j, VkrAllocator *allocator,
         out->count == EDIT_COMPONENT_MAX)
       return false_v;
     const VkrTypeDesc *type = vkr_scene_world_type_named(
-        string8_create_from_cstr((const uint8_t *)key, strlen(key)));
+        string8_create_from_cstr((const uint8_t *)key, string_length(key)));
     if (!type)
       return false_v;
     for (uint32_t i = 0; i < out->count; ++i)
@@ -3662,7 +3672,7 @@ static bool8_t edit_json_parent(EditJson *j, EditParentRef *out) {
       !edit_json_take(j, ':')) {
     return false_v;
   }
-  if (!strcmp(key, "created")) {
+  if (string_equals(key, "created")) {
     if (!edit_json_int(j, 1, UINT32_MAX, &value)) {
       return false_v;
     }
@@ -3670,7 +3680,8 @@ static bool8_t edit_json_parent(EditJson *j, EditParentRef *out) {
     out->created = (uint32_t)value;
     return edit_json_take(j, '}');
   }
-  if (strcmp(key, "scene_entity") || !edit_json_int(j, 0, UINT32_MAX, &value)) {
+  if (!string_equals(key, "scene_entity") ||
+      !edit_json_int(j, 0, UINT32_MAX, &value)) {
     return false_v;
   }
   out->wrapper = edit_json_document_index(j, value);
@@ -3745,7 +3756,7 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     if (!edit_json_string(j, key, sizeof(key)) || !edit_json_take(j, ':'))
       return false_v;
     uint32_t k = 0;
-    while (k < sizeof(keys) / sizeof(*keys) && strcmp(keys[k], key))
+    while (k < sizeof(keys) / sizeof(*keys) && !string_equals(keys[k], key))
       k++;
     if (k == sizeof(keys) / sizeof(*keys) || (seen & (1ull << k)))
       return false_v;
@@ -3761,7 +3772,7 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       break;
     case 2: {
       char hash[17];
-      if (!edit_json_string(j, hash, sizeof(hash)) || strlen(hash) != 16)
+      if (!edit_json_string(j, hash, sizeof(hash)) || string_length(hash) != 16)
         return false_v;
       *fingerprint = 0;
       for (uint32_t i = 0; i < 16; ++i) {
@@ -3889,7 +3900,7 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 33: {
       char text[40];
       ok = created && edit_json_string(j, text, sizeof(text)) &&
-           vkr_entity_ref_parse(text, strlen(text), &extra->ref);
+           vkr_entity_ref_parse(text, string_length(text), &extra->ref);
       extra->has_ref = ok;
       break;
     }
@@ -3901,10 +3912,11 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
       v->point_light.mobility = (VkrLightMobility)integer;
       break;
     case 36:
-      ok = edit_json_string(j, v->point_light.light_group,
-                            sizeof(v->point_light.light_group)) &&
-           vkr_light_group_name_valid(v->point_light.light_group,
-                                      strlen(v->point_light.light_group));
+      ok =
+          edit_json_string(j, v->point_light.light_group,
+                           sizeof(v->point_light.light_group)) &&
+          vkr_light_group_name_valid(v->point_light.light_group,
+                                     string_length(v->point_light.light_group));
       break;
     case 37:
       ok = edit_json_int(j, 0, 1, &integer);
@@ -3913,8 +3925,9 @@ static bool8_t edit_json_record(EditJson *j, VkrSceneEditValues *v,
     case 38:
       ok = edit_json_string(j, v->rectangle_light.light_group,
                             sizeof(v->rectangle_light.light_group)) &&
-           vkr_light_group_name_valid(v->rectangle_light.light_group,
-                                      strlen(v->rectangle_light.light_group));
+           vkr_light_group_name_valid(
+               v->rectangle_light.light_group,
+               string_length(v->rectangle_light.light_group));
       break;
     }
     if (!ok)
@@ -4009,49 +4022,53 @@ edit_sidecar_reject_status(VkrSceneEditState *s,
                            const EditSidecarDiagnostic *diagnostic) {
   switch (diagnostic->failure) {
   case EDIT_SIDECAR_FAILURE_SCHEMA:
-    snprintf(s->status, sizeof(s->status),
-             "Override file is malformed or uses an unsupported schema.");
+    string_format(s->status, sizeof(s->status),
+                  "Override file is malformed or uses an unsupported schema.");
     break;
   case EDIT_SIDECAR_FAILURE_ALLOC:
-    snprintf(s->status, sizeof(s->status),
-             "Override file could not stage all changes.");
+    string_format(s->status, sizeof(s->status),
+                  "Override file could not stage all changes.");
     break;
   case EDIT_SIDECAR_FAILURE_SOURCE_MISSING:
-    snprintf(s->status, sizeof(s->status),
-             "Override %u targets missing source %u/%d.", diagnostic->record,
-             diagnostic->wrapper, (int32_t)diagnostic->node);
+    string_format(s->status, sizeof(s->status),
+                  "Override %u targets missing source %u/%d.",
+                  diagnostic->record, diagnostic->wrapper,
+                  (int32_t)diagnostic->node);
     break;
   case EDIT_SIDECAR_FAILURE_SOURCE_AMBIGUOUS:
-    snprintf(s->status, sizeof(s->status),
-             "Override %u targets ambiguous source %u/%d.", diagnostic->record,
-             diagnostic->wrapper, (int32_t)diagnostic->node);
+    string_format(s->status, sizeof(s->status),
+                  "Override %u targets ambiguous source %u/%d.",
+                  diagnostic->record, diagnostic->wrapper,
+                  (int32_t)diagnostic->node);
     break;
   case EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE:
-    snprintf(s->status, sizeof(s->status), "Override %u repeats source %u/%d.",
-             diagnostic->record, diagnostic->wrapper,
-             (int32_t)diagnostic->node);
+    string_format(s->status, sizeof(s->status),
+                  "Override %u repeats source %u/%d.", diagnostic->record,
+                  diagnostic->wrapper, (int32_t)diagnostic->node);
     break;
   case EDIT_SIDECAR_FAILURE_FINGERPRINT:
-    snprintf(s->status, sizeof(s->status),
-             "Override %u source %u/%d fingerprint differs: saved %016llx, "
-             "current %016llx.",
-             diagnostic->record, diagnostic->wrapper, (int32_t)diagnostic->node,
-             (unsigned long long)diagnostic->saved_fingerprint,
-             (unsigned long long)diagnostic->current_fingerprint);
+    string_format(
+        s->status, sizeof(s->status),
+        "Override %u source %u/%d fingerprint differs: saved %016llx, "
+        "current %016llx.",
+        diagnostic->record, diagnostic->wrapper, (int32_t)diagnostic->node,
+        (unsigned long long)diagnostic->saved_fingerprint,
+        (unsigned long long)diagnostic->current_fingerprint);
     break;
   case EDIT_SIDECAR_FAILURE_FIELDS:
-    snprintf(s->status, sizeof(s->status),
-             "Override %u fields no longer match source %u/%d.",
-             diagnostic->record, diagnostic->wrapper,
-             (int32_t)diagnostic->node);
+    string_format(s->status, sizeof(s->status),
+                  "Override %u fields no longer match source %u/%d.",
+                  diagnostic->record, diagnostic->wrapper,
+                  (int32_t)diagnostic->node);
     break;
   case EDIT_SIDECAR_FAILURE_READ:
-    snprintf(s->status, sizeof(s->status), "Override file could not be read.");
+    string_format(s->status, sizeof(s->status),
+                  "Override file could not be read.");
     break;
   case EDIT_SIDECAR_FAILURE_CREATED_LIMIT:
-    snprintf(s->status, sizeof(s->status),
-             "Override file creates more than %u objects.",
-             VKR_SCENE_EDIT_CREATED_MAX);
+    string_format(s->status, sizeof(s->status),
+                  "Override file creates more than %u objects.",
+                  VKR_SCENE_EDIT_CREATED_MAX);
     break;
   }
 }
@@ -4153,7 +4170,7 @@ static bool8_t edit_load_same_name(const VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   const String8 name = vkr_scene_get_name(scene, entity);
-  const uint64_t length = strlen(values->name);
+  const uint64_t length = string_length(values->name);
   return name.length == length &&
          MemCompare(name.str, values->name, length) == 0;
 }
@@ -4211,7 +4228,7 @@ static bool8_t edit_source_index_build(VkrAllocator *allocator,
                             .fingerprint = source->source_fingerprint};
   }
   if (count > 1u) {
-    qsort(index, count, sizeof(*index), edit_source_compare);
+    vkr_sort(index, count, sizeof(*index), edit_source_compare);
     for (uint32_t i = 1; i < count; ++i)
       if (edit_source_compare(&index[i - 1u], &index[i]) == 0)
         index[i - 1u].ambiguous = index[i].ambiguous = true_v;
@@ -4474,7 +4491,7 @@ static bool8_t edit_json_document_ids(EditJson *j, VkrAllocator *allocator,
       char text[40];
       VkrEntityRef id;
       if (!edit_json_string(j, text, sizeof(text)) ||
-          !vkr_entity_ref_parse(text, strlen(text), &id)) {
+          !vkr_entity_ref_parse(text, string_length(text), &id)) {
         ok = false_v;
         break;
       }
@@ -4542,9 +4559,9 @@ static bool8_t edit_document_remap(VkrAllocator *allocator,
   for (uint32_t i = 0; i < current; ++i) {
     keys[i] = (EditDocumentKey){.id = scene->document_ids[i], .index = i};
   }
-  qsort(keys, current, sizeof(*keys), edit_document_key_compare);
+  vkr_sort(keys, current, sizeof(*keys), edit_document_key_compare);
   for (uint32_t i = 0; i < count; ++i) {
-    const EditDocumentKey *match = bsearch(
+    const EditDocumentKey *match = vkr_binary_search(
         &ids[i], keys, current, sizeof(*keys), edit_document_key_compare);
     remap[i] = match ? match->index : UINT32_MAX;
   }
@@ -4577,7 +4594,7 @@ static bool8_t edit_created_ids_unique(VkrAllocator *allocator,
   for (uint32_t i = 0; i < load->object_count; ++i) {
     ids[i] = load->objects[i].created_id;
   }
-  qsort(ids, load->object_count, sizeof(*ids), edit_u32_compare);
+  vkr_sort(ids, load->object_count, sizeof(*ids), edit_u32_compare);
   bool8_t unique = true_v;
   for (uint32_t i = 1; i < load->object_count && unique; ++i) {
     unique = ids[i] != ids[i - 1u];
@@ -4707,7 +4724,7 @@ static VkrEntityId edit_created_lookup(const VkrSceneEditState *s,
     return edit_created_entity(s, id);
   }
   const VkrSceneEditCreated key = {.id = id};
-  const VkrSceneEditCreated *found = bsearch(
+  const VkrSceneEditCreated *found = vkr_binary_search(
       &key, sorted, sorted_count, sizeof(*sorted), edit_created_compare);
   return found ? found->entity : VKR_ENTITY_ID_INVALID;
 }
@@ -4725,7 +4742,7 @@ static VkrSceneEditCreated *edit_created_sorted(const VkrSceneEditState *s,
       size ? vkr_allocator_alloc(allocator, size, EDIT_TAG) : NULL;
   if (sorted) {
     MemCopy(sorted, s->created, size);
-    qsort(sorted, s->created_count, sizeof(*sorted), edit_created_compare);
+    vkr_sort(sorted, s->created_count, sizeof(*sorted), edit_created_compare);
   }
   return sorted;
 }
@@ -4960,10 +4977,10 @@ static void edit_overlay_release(VkrSceneEditOverlay *o) {
 void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
                                  const VkrAtomicBool *cancel) {
   VkrAllocator *allocator = &o->allocator;
-  FILE *file = NULL;
+  FileHandle file = {0};
   uint8_t *bytes = NULL;
   EditRecordComponents *components = NULL;
-  long length = 0;
+  uint64_t length = 0u;
   const uint8_t *overrides_at = NULL;
   const uint8_t *overrides_end = NULL;
   uint32_t records = 0u;
@@ -4982,32 +4999,37 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
   if (path.length >= sizeof(o->path)) {
     goto done;
   }
-  file = file_fopen(o->path, "rb");
-  if (!file && errno == ENOENT) {
+  const FilePath file_path = file_path_view(o->path);
+  const FileError open_error = file_open(
+      &file_path, (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY}, &file);
+  if (open_error == FILE_ERROR_NOT_FOUND) {
     o->missing = true_v;
     return;
   }
-  if (!file || fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
-      (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES ||
-      fseek(file, 0, SEEK_SET) != 0) {
+  if (open_error != FILE_ERROR_NONE ||
+      file_remaining_size(&file, &length) != FILE_ERROR_NONE || length == 0u ||
+      length > VKR_SCENE_EDIT_OVERLAY_BYTES) {
+    length = 0u;
     goto done;
   }
-  bytes = vkr_allocator_alloc(allocator, (uint64_t)length, EDIT_TAG);
+  bytes = vkr_allocator_alloc(allocator, length, EDIT_TAG);
   components = vkr_allocator_alloc(allocator, sizeof(*components), EDIT_TAG);
   if (!bytes || !components) {
     diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
     goto done;
   }
-  for (uint64_t at = 0u; at < (uint64_t)length;) {
-    const uint64_t part = Min((uint64_t)length - at, EDIT_OVERLAY_READ_PART);
+  for (uint64_t at = 0u; at < length;) {
+    const uint64_t part = Min(length - at, EDIT_OVERLAY_READ_PART);
+    uint64_t part_read = 0u;
     if (edit_overlay_cancelled(cancel) ||
-        fread(bytes + at, 1, (size_t)part, file) != (size_t)part) {
+        file_read_into(&file, bytes + at, part, &part_read) !=
+            FILE_ERROR_NONE ||
+        part_read != part) {
       goto done;
     }
     at += part;
   }
-  fclose(file);
-  file = NULL;
+  file_close(&file);
 
   /* Every member parses and is checked here. The overrides are only
      checked: binding them needs the scene, so begin parses them again. */
@@ -5023,13 +5045,13 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
       diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
       goto done;
     }
-    if (strcmp(key, "version") == 0) {
+    if (string_equals(key, "version")) {
       if ((o->root_seen & 1u) || !edit_json_int(&json, 1, 5, &o->version)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
         goto done;
       }
       o->root_seen |= 1u;
-    } else if (strcmp(key, "overrides") == 0) {
+    } else if (string_equals(key, "overrides")) {
       o->overrides_version = o->version;
       edit_json_space(&json);
       overrides_at = json.at;
@@ -5069,7 +5091,7 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
         }
       }
       overrides_end = json.at;
-    } else if (!strcmp(key, "document_ids")) {
+    } else if (string_equals(key, "document_ids")) {
       /* Records bind through the map, so it precedes every record. */
       if ((o->root_seen & (32u | 2u | 8u)) ||
           !edit_json_document_ids(
@@ -5081,7 +5103,7 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
         goto done;
       }
       o->root_seen |= 32u;
-    } else if (!strcmp(key, "scene_settings")) {
+    } else if (string_equals(key, "scene_settings")) {
       if ((o->root_seen & 16u) ||
           !edit_json_scene_settings(&json, &o->scene_settings)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
@@ -5089,7 +5111,7 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
       }
       o->root_seen |= 16u;
       o->structure.version4 = true_v;
-    } else if (!strcmp(key, "created")) {
+    } else if (string_equals(key, "created")) {
       if ((o->root_seen & 8u) ||
           !edit_json_created(&json, allocator, &o->structure, components,
                              cancel, &diagnostic.failure)) {
@@ -5097,7 +5119,7 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
         goto done;
       }
       o->root_seen |= 8u;
-    } else if (!strcmp(key, "collision_settings")) {
+    } else if (string_equals(key, "collision_settings")) {
       if ((o->root_seen & 4u) ||
           !edit_json_collision_layers(&json, &o->collision_settings)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
@@ -5136,11 +5158,9 @@ void vkr_scene_edit_overlay_read(VkrSceneEditOverlay *o, String8 path,
   ok = true_v;
 
 done:
-  if (file) {
-    fclose(file);
-  }
+  file_close(&file);
   if (bytes) {
-    vkr_allocator_free(allocator, bytes, (uint64_t)length, EDIT_TAG);
+    vkr_allocator_free(allocator, bytes, length, EDIT_TAG);
   }
   if (components) {
     vkr_allocator_free(allocator, components, sizeof(*components), EDIT_TAG);
@@ -5473,8 +5493,8 @@ static void edit_overlay_finish(VkrSceneEditState *s, VkrScene *scene,
     log_warn("Collision settings could not reach every loaded scene: %s",
              share_error ? share_error : "unknown error");
   }
-  snprintf(s->status, sizeof(s->status), "Loaded %u node overrides.",
-           o->prepared_count);
+  string_format(s->status, sizeof(s->status), "Loaded %u node overrides.",
+                o->prepared_count);
   s->sidecar_conflict = false_v;
 }
 
@@ -5637,26 +5657,31 @@ bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
   }
   MemCopy(cpath, path.str, path.length);
   cpath[path.length] = 0;
-  FILE *file = file_fopen(cpath, "rb");
-  if (!file) {
-    return errno == ENOENT;
+  const FilePath file_path = file_path_view(cpath);
+  FileHandle file = {0};
+  const FileError open_error = file_open(
+      &file_path, (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY}, &file);
+  if (open_error != FILE_ERROR_NONE) {
+    return open_error == FILE_ERROR_NOT_FOUND;
   }
 
   bool8_t success = false_v;
   uint8_t *bytes = NULL;
   uint64_t capacity = 0u;
-  long length = 0;
-  if (fseek(file, 0, SEEK_END) != 0 || (length = ftell(file)) <= 0 ||
-      (uint64_t)length > VKR_SCENE_EDIT_OVERLAY_BYTES) {
+  uint64_t length = 0u;
+  uint64_t bytes_read = 0u;
+  if (file_remaining_size(&file, &length) != FILE_ERROR_NONE || length == 0u ||
+      length > VKR_SCENE_EDIT_OVERLAY_BYTES) {
     goto cleanup;
   }
   /* The last bytes first: a saved overlay ends with its settings, so a
      large level's overlay is not read whole on the frame thread. */
-  const uint64_t tail = Min((uint64_t)length, EDIT_PEEK_TAIL_BYTES);
+  const uint64_t tail = Min(length, EDIT_PEEK_TAIL_BYTES);
   bytes = vkr_allocator_alloc(allocator, tail, EDIT_TAG);
   capacity = bytes ? tail : 0u;
-  if (!bytes || fseek(file, length - (long)tail, SEEK_SET) != 0 ||
-      fread(bytes, 1, (size_t)tail, file) != (size_t)tail) {
+  if (!bytes || file_seek(&file, length - tail) != FILE_ERROR_NONE ||
+      file_read_into(&file, bytes, tail, &bytes_read) != FILE_ERROR_NONE ||
+      bytes_read != tail) {
     goto cleanup;
   }
   if (edit_peek_tail(bytes, tail, out_settings)) {
@@ -5664,22 +5689,23 @@ bool8_t vkr_scene_edit_peek_settings(VkrAllocator *allocator, String8 path,
     goto cleanup;
   }
   *out_settings = (VkrSceneSettings){.inherit_world = true_v};
-  if (tail < (uint64_t)length) {
-    uint8_t *whole = vkr_allocator_realloc(allocator, bytes, capacity,
-                                           (uint64_t)length, EDIT_TAG);
+  if (tail < length) {
+    uint8_t *whole =
+        vkr_allocator_realloc(allocator, bytes, capacity, length, EDIT_TAG);
     if (!whole) {
       goto cleanup;
     }
     bytes = whole;
-    capacity = (uint64_t)length;
-    if (fseek(file, 0, SEEK_SET) != 0 ||
-        fread(bytes, 1, (size_t)length, file) != (size_t)length) {
+    capacity = length;
+    if (file_seek(&file, 0u) != FILE_ERROR_NONE ||
+        file_read_into(&file, bytes, length, &bytes_read) != FILE_ERROR_NONE ||
+        bytes_read != length) {
       goto cleanup;
     }
   }
 
   /* vkr_scene_edit_load validates the whole file; this reads one object. */
-  VkrJsonReader root = vkr_json_reader_create(bytes, (uint64_t)length);
+  VkrJsonReader root = vkr_json_reader_create(bytes, length);
   VkrJsonReader object = {0};
   success = true_v;
   if (vkr_json_find_root_field(&root, "scene_settings") &&
@@ -5701,7 +5727,7 @@ cleanup:
   if (bytes) {
     vkr_allocator_free(allocator, bytes, capacity, EDIT_TAG);
   }
-  fclose(file);
+  file_close(&file);
   return success;
 }
 
@@ -5748,22 +5774,27 @@ static void edit_buffer_free(EditBuffer *buffer) {
 static bool8_t edit_read_file(VkrSceneEditState *s, const char *path,
                               EditBuffer *out) {
   *out = (EditBuffer){.allocator = s->allocator};
-  FILE *file = file_fopen(path, "rb");
-  long length = 0;
-  if (!file) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  uint64_t length = 0u;
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return false_v;
   }
-  bool8_t ok = fseek(file, 0, SEEK_END) == 0 && (length = ftell(file)) > 0 &&
-               (uint64_t)length <= VKR_SCENE_EDIT_OVERLAY_BYTES &&
-               fseek(file, 0, SEEK_SET) == 0;
+  bool8_t ok = file_remaining_size(&file, &length) == FILE_ERROR_NONE &&
+               length > 0u && length <= VKR_SCENE_EDIT_OVERLAY_BYTES;
   if (ok) {
-    out->bytes = vkr_allocator_alloc(s->allocator, (uint64_t)length, EDIT_TAG);
-    out->capacity = out->bytes ? (uint64_t)length : 0u;
+    out->bytes = vkr_allocator_alloc(s->allocator, length, EDIT_TAG);
+    out->capacity = out->bytes ? length : 0u;
+    uint64_t bytes_read = 0u;
     ok = out->bytes &&
-         fread(out->bytes, 1u, (size_t)length, file) == (size_t)length;
-    out->length = ok ? (uint64_t)length : 0u;
+         file_read_into(&file, out->bytes, length, &bytes_read) ==
+             FILE_ERROR_NONE &&
+         bytes_read == length;
+    out->length = ok ? length : 0u;
   }
-  fclose(file);
+  file_close(&file);
   if (!ok) {
     edit_buffer_free(out);
   }
@@ -5784,14 +5815,8 @@ static bool8_t edit_file_holds(VkrSceneEditState *s, const char *path,
   return same;
 }
 
-static FilePath edit_file_path(const char *path) {
-  return (FilePath){
-      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
-}
-
 static bool8_t edit_temp_path(const char *path, char *out, uint32_t capacity) {
-  const int written = snprintf(out, capacity, "%s.tmp", path);
+  const int written = string_format(out, capacity, "%s.tmp", path);
   return written > 0 && (uint32_t)written < capacity;
 }
 
@@ -5808,16 +5833,23 @@ static bool8_t edit_stage_file(VkrSceneEditState *s, const char *path,
   if (!edit_temp_path(path, temp, sizeof(temp))) {
     return false_v;
   }
-  FILE *file = file_fopen(temp, "wb");
-  if (!file) {
+  const FilePath temp_path = file_path_view(temp);
+  FileHandle file = {0};
+  if (file_open(&temp_path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return false_v;
   }
-  bool8_t ok = fwrite(buffer->bytes, 1u, (size_t)buffer->length, file) ==
-               (size_t)buffer->length;
-  ok = file_flush_durable(file) && ok;
-  ok = fclose(file) == 0 && ok;
+  uint64_t written = 0u;
+  bool8_t ok = buffer->length == 0u ||
+               (file_write(&file, buffer->length, buffer->bytes, &written) ==
+                    FILE_ERROR_NONE &&
+                written == buffer->length);
+  ok = file_sync(&file) == FILE_ERROR_NONE && ok;
+  file_close(&file);
   if (!ok) {
-    const FilePath staged = edit_file_path(temp);
+    const FilePath staged = file_path_view(temp);
     (void)file_remove(&staged);
     return false_v;
   }
@@ -5831,8 +5863,8 @@ static bool8_t edit_promote_file(const char *path) {
   if (!edit_temp_path(path, temp, sizeof(temp))) {
     return false_v;
   }
-  const FilePath from = edit_file_path(temp);
-  const FilePath to = edit_file_path(path);
+  const FilePath from = file_path_view(temp);
+  const FilePath to = file_path_view(path);
   if (file_rename(&from, &to, true_v) != FILE_ERROR_NONE) {
     (void)file_remove(&from);
     return false_v;
@@ -5844,7 +5876,7 @@ static bool8_t edit_promote_file(const char *path) {
 static void edit_discard_file(const char *path) {
   char temp[1100];
   if (edit_temp_path(path, temp, sizeof(temp))) {
-    const FilePath staged = edit_file_path(temp);
+    const FilePath staged = file_path_view(temp);
     (void)file_remove(&staged);
   }
 }
@@ -5852,8 +5884,8 @@ static void edit_discard_file(const char *path) {
 static bool8_t edit_cell_path(const VkrSceneEditState *s,
                               VkrScenePartitionCell cell, char *out,
                               uint32_t capacity) {
-  const int written =
-      snprintf(out, capacity, "%s/%d_%d.json", s->cells_root, cell.x, cell.z);
+  const int written = string_format(out, capacity, "%s/%d_%d.json",
+                                    s->cells_root, cell.x, cell.z);
   return written > 0 && (uint32_t)written < capacity;
 }
 
@@ -5876,7 +5908,7 @@ bool8_t vkr_scene_edit_cells_open(VkrSceneEditState *s, VkrScene *scene) {
   }
   s->cell_size = settings.cell_size;
   char path[1100];
-  snprintf(path, sizeof(path), "%s/index.json", s->cells_root);
+  string_format(path, sizeof(path), "%s/index.json", s->cells_root);
   EditBuffer bytes;
   if (!edit_read_file(s, path, &bytes)) {
     return true_v;
@@ -5927,7 +5959,8 @@ bool8_t vkr_scene_edit_cells_open(VkrSceneEditState *s, VkrScene *scene) {
   edit_buffer_free(&bytes);
   if (!ok) {
     vkr_scene_partition_reset(scene);
-    snprintf(s->status, sizeof(s->status), "The cell index is unreadable.");
+    string_format(s->status, sizeof(s->status),
+                  "The cell index is unreadable.");
     log_error("World partition: %s is not a cell index", path);
     return false_v;
   }
@@ -5953,15 +5986,15 @@ static void edit_cell_remap_ids(VkrSceneEditState *s, EditStructureLoad *load) {
     for (uint32_t c = 0; c < s->created_count; ++c) {
       loaded[c] = s->created[c].id;
     }
-    qsort(loaded, s->created_count, sizeof(*loaded), edit_u32_compare);
+    vkr_sort(loaded, s->created_count, sizeof(*loaded), edit_u32_compare);
   }
 
   for (uint32_t i = 0; i < load->object_count; ++i) {
     const uint32_t from = load->objects[i].created_id;
     bool8_t taken = false_v;
     if (loaded) {
-      taken = bsearch(&from, loaded, s->created_count, sizeof(*loaded),
-                      edit_u32_compare) != NULL;
+      taken = vkr_binary_search(&from, loaded, s->created_count,
+                                sizeof(*loaded), edit_u32_compare) != NULL;
     }
     for (uint32_t c = 0; !loaded && c < s->created_count && !taken; ++c) {
       taken = s->created[c].id == from;
@@ -6035,15 +6068,16 @@ static void edit_cell_rebase(VkrSceneEditState *s, EditStructureLoad *load,
     }
   }
   if (children) {
-    qsort(children, child_count, sizeof(*children), edit_u32_compare);
+    vkr_sort(children, child_count, sizeof(*children), edit_u32_compare);
   }
 
   for (uint32_t i = 0; i < load->object_count; ++i) {
     const uint32_t id = load->objects[i].created_id;
     const bool8_t child =
-        children ? bsearch(&id, children, child_count, sizeof(*children),
-                           edit_u32_compare) != NULL
-                 : edit_staged_child(load, id);
+        children
+            ? vkr_binary_search(&id, children, child_count, sizeof(*children),
+                                edit_u32_compare) != NULL
+            : edit_staged_child(load, id);
     if (!child) {
       /* The packed fields keep EditObject's layout. */
       uint8_t *at = load->packed + load->objects[i].offset +
@@ -6070,7 +6104,7 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
   if (record->flags & VKR_SCENE_PARTITION_CELL_LOADED) {
     return true_v;
   }
-  const FilePath document = edit_file_path(path);
+  const FilePath document = file_path_view(path);
   if ((record->flags & VKR_SCENE_PARTITION_CELL_ON_DISK) &&
       !file_exists(&document)) {
     /* The index outlived the document, as after a save cut short between
@@ -6088,8 +6122,8 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
   }
   if (!edit_read_file(s, path, &bytes)) {
     record->flags |= VKR_SCENE_PARTITION_CELL_UNREADABLE;
-    snprintf(s->status, sizeof(s->status), "Cell %d,%d is unreadable.", cell.x,
-             cell.z);
+    string_format(s->status, sizeof(s->status), "Cell %d,%d is unreadable.",
+                  cell.x, cell.z);
     log_error("World partition: %s could not be read", path);
     return false_v;
   }
@@ -6123,8 +6157,8 @@ bool8_t vkr_scene_edit_cell_load(VkrSceneEditState *s, VkrScene *scene,
         VKR_SCENE_PARTITION_CELL_LOADED;
   } else {
     record->flags |= VKR_SCENE_PARTITION_CELL_UNREADABLE;
-    snprintf(s->status, sizeof(s->status), "Cell %d,%d is unreadable.", cell.x,
-             cell.z);
+    string_format(s->status, sizeof(s->status), "Cell %d,%d is unreadable.",
+                  cell.x, cell.z);
     log_error("World partition: %s is not a cell document", path);
   }
   edit_structure_load_free(s->allocator, &load);
@@ -6246,7 +6280,7 @@ void vkr_scene_edit_cell_unload(VkrSceneEditState *s, VkrScene *scene,
     return;
   }
   s->created_count = kept;
-  qsort(doomed, count, sizeof(*doomed), edit_cell_doomed_compare);
+  vkr_sort(doomed, count, sizeof(*doomed), edit_cell_doomed_compare);
   for (uint32_t i = 0; i < count; ++i) {
     vkr_scene_destroy_entity(scene, doomed[i].entity);
   }
@@ -6436,7 +6470,7 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
   }
   save->active = true_v;
   const String8 root = string8_create_from_cstr((const uint8_t *)s->cells_root,
-                                                strlen(s->cells_root));
+                                                string_length(s->cells_root));
   VkrAllocator *allocator = s->allocator;
   uint32_t record_count = 0u;
   const VkrScenePartitionCellRecord *records =
@@ -6464,7 +6498,7 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
       members[count++] = (EditCellMember){cell, i};
     }
   }
-  qsort(members, count, sizeof(*members), edit_cell_member_compare);
+  vkr_sort(members, count, sizeof(*members), edit_cell_member_compare);
   /* An object in a cell that did not load would be dropped by the save. */
   bool8_t blocked = false_v;
   for (uint32_t i = 0; ok && i < count; ++i) {
@@ -6472,10 +6506,10 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
         vkr_scene_partition_cell(scene, members[i].cell, false_v);
     if (!record || !(record->flags & (VKR_SCENE_PARTITION_CELL_LOADED |
                                       VKR_SCENE_PARTITION_CELL_STALE))) {
-      snprintf(s->status, sizeof(s->status),
-               "Save blocked: cell %d,%d holds an object but its document "
-               "did not load.",
-               members[i].cell.x, members[i].cell.z);
+      string_format(s->status, sizeof(s->status),
+                    "Save blocked: cell %d,%d holds an object but its document "
+                    "did not load.",
+                    members[i].cell.x, members[i].cell.z);
       blocked = true_v;
       ok = false_v;
     }
@@ -6487,11 +6521,11 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
       end++;
     }
     if (end - i > VKR_SCENE_EDIT_CREATED_MAX) {
-      snprintf(s->status, sizeof(s->status),
-               "Save blocked: cell %d,%d holds %u created objects; a cell "
-               "loads at most %u.",
-               members[i].cell.x, members[i].cell.z, end - i,
-               VKR_SCENE_EDIT_CREATED_MAX);
+      string_format(s->status, sizeof(s->status),
+                    "Save blocked: cell %d,%d holds %u created objects; a cell "
+                    "loads at most %u.",
+                    members[i].cell.x, members[i].cell.z, end - i,
+                    VKR_SCENE_EDIT_CREATED_MAX);
       blocked = true_v;
       ok = false_v;
     }
@@ -6561,7 +6595,7 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
       sorted[listed++] = records[r];
     }
   }
-  qsort(sorted, listed, sizeof(*sorted), edit_cell_record_compare);
+  vkr_sort(sorted, listed, sizeof(*sorted), edit_cell_record_compare);
   EditBuffer index = {.allocator = allocator};
   VkrJsonWriter writer;
   VkrJsonWriter *w = &writer;
@@ -6578,11 +6612,12 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
          vkr_json_writer_i64(w, sorted[i].cell.z) &&
          vkr_json_writer_end_array(w);
   }
-  ok = ok && vkr_json_writer_end_array(w) && vkr_json_writer_end_object(w) &&
-       vkr_json_writer_complete(w) &&
-       snprintf(save->index_path, sizeof(save->index_path), "%s/index.json",
-                s->cells_root) < (int)sizeof(save->index_path) &&
-       edit_stage_file(s, save->index_path, &index, &save->index_staged);
+  ok =
+      ok && vkr_json_writer_end_array(w) && vkr_json_writer_end_object(w) &&
+      vkr_json_writer_complete(w) &&
+      string_format(save->index_path, sizeof(save->index_path), "%s/index.json",
+                    s->cells_root) < (int)sizeof(save->index_path) &&
+      edit_stage_file(s, save->index_path, &index, &save->index_staged);
   edit_buffer_free(&index);
   if (sorted) {
     vkr_allocator_free(allocator, sorted, record_count * sizeof(*sorted),
@@ -6590,8 +6625,8 @@ static bool8_t edit_cells_stage(VkrSceneEditState *s, VkrScene *scene,
   }
   if (!ok) {
     if (!blocked) {
-      snprintf(s->status, sizeof(s->status),
-               "Save failed: a cell document could not be written.");
+      string_format(s->status, sizeof(s->status),
+                    "Save failed: a cell document could not be written.");
     }
     edit_cells_discard(s, scene, save);
   }
@@ -6624,7 +6659,7 @@ static bool8_t edit_cells_commit(VkrSceneEditState *s, VkrScene *scene,
       continue;
     }
     if (change->remove) {
-      const FilePath file = edit_file_path(path);
+      const FilePath file = file_path_view(path);
       (void)file_remove(&file);
     }
     record->flags = change->flags;
@@ -6632,8 +6667,8 @@ static bool8_t edit_cells_commit(VkrSceneEditState *s, VkrScene *scene,
   ok = (!save->index_staged || edit_promote_file(save->index_path)) && ok;
   edit_cells_save_free(s, save);
   if (!ok) {
-    snprintf(s->status, sizeof(s->status),
-             "Save failed: a cell document could not be replaced.");
+    string_format(s->status, sizeof(s->status),
+                  "Save failed: a cell document could not be replaced.");
   }
   return ok;
 }

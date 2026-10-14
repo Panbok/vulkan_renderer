@@ -1,7 +1,5 @@
 #include "assets/vkr_mesh_skin.h"
 
-#include <math.h>
-
 bool8_t vkr_mesh_skin_validate(const VkrMeshSkinData *skin,
                                const VkrMeshSource *source,
                                const VkrGeometryUploadRange *ranges,
@@ -30,14 +28,14 @@ bool8_t vkr_mesh_skin_validate(const VkrMeshSkinData *skin,
     float64_t sum = 0.0;
     for (uint32_t j = 0; j < ArrayCount(vertex->weights); ++j) {
       const float32_t weight = vertex->weights[j];
-      if (!isfinite(weight) || weight < 0.0f || weight > 1.0f ||
+      if (!vkr_is_finite_f32(weight) || weight < 0.0f || weight > 1.0f ||
           (weight == 0.0f && vertex->joints[j] != 0u) ||
           vertex->joints[j] >= source->nodes.length) {
         return false_v;
       }
       sum += weight;
     }
-    if (sum != 0.0 && fabs(sum - 1.0) > 0.00001) {
+    if (sum != 0.0 && vkr_abs_f64(sum - 1.0) > 0.00001) {
       return false_v;
     }
   }

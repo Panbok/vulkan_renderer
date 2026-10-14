@@ -10,8 +10,6 @@
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_simulation.h"
 #include "renderer/systems/vkr_scene_types.h"
-#include <stdio.h>
-#include <string.h>
 
 _Static_assert(sizeof(VkrEntity) == sizeof(VkrEntityId),
                "VkrEntity holds a VkrEntityId");
@@ -215,10 +213,10 @@ static void sdk_fail(VkrCtx *ctx, VkrStr message) {
   if (message.data) {
     (void)sdk_text(script, message, &text);
   }
-  snprintf(script->host->error, sizeof(script->host->error), "%s: %.*s",
-           sdk_module_name(script),
-           (int)Min(text.length, (uint64_t)VKR_SCRIPT_ERROR_CAPACITY),
-           (const char *)text.str);
+  string_format(script->host->error, sizeof(script->host->error), "%s: %.*s",
+                sdk_module_name(script),
+                (int)Min(text.length, (uint64_t)VKR_SCRIPT_ERROR_CAPACITY),
+                (const char *)text.str);
   script->instance->failed = true_v;
 }
 
@@ -1038,7 +1036,7 @@ static bool8_t sdk_playing(VkrCtx *ctx) {
 
 static void sdk_set_time_step(VkrCtx *ctx, float64_t dt) {
   VkrScriptHost *host = sdk_ctx(ctx)->host;
-  if (isfinite(dt) && dt >= 0.0) {
+  if (vkr_is_finite_f64(dt) && dt >= 0.0) {
     host->time_step = dt;
     host->time_step_set = true_v;
   }
@@ -1118,10 +1116,10 @@ static void sdk_hud_text(VkrCtx *ctx, VkrStr text) {
   if (!sdk_text(script, text, &line) || !line.length) {
     return;
   }
-  const uint32_t length = (uint32_t)strlen(view->hud);
-  snprintf(view->hud + length, sizeof(view->hud) - length, "%s%.*s",
-           length ? "\n" : "", (int)Min(line.length, sizeof(view->hud)),
-           (const char *)line.str);
+  const uint32_t length = (uint32_t)string_length(view->hud);
+  string_format(view->hud + length, sizeof(view->hud) - length, "%s%.*s",
+                length ? "\n" : "", (int)Min(line.length, sizeof(view->hud)),
+                (const char *)line.str);
 }
 
 // =============================================================================

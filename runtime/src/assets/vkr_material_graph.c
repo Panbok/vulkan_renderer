@@ -4,10 +4,7 @@
 #include "core/vkr_json.h"
 #include "filesystem/vkr_asset_path.h"
 
-#include <math.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
 
 // =============================================================================
 // Node registry
@@ -325,7 +322,7 @@ const VkrMaterialNodeDesc *vkr_material_node_desc(VkrMaterialNodeKind kind) {
 }
 
 static bool8_t graph_equals(String8 a, const char *b) {
-  const uint64_t length = strlen(b);
+  const uint64_t length = string_length(b);
   return a.length == length &&
          (length == 0 || MemCompare(a.str, b, length) == 0);
 }
@@ -369,7 +366,7 @@ static bool8_t graph_fail(char *error, uint32_t capacity, const char *format,
   if (error && capacity) {
     va_list args;
     va_start(args, format);
-    vsnprintf(error, capacity, format, args);
+    string_format_v(error, capacity, format, args);
     va_end(args);
   }
   return false_v;
@@ -396,7 +393,7 @@ uint32_t vkr_material_graph_find(const VkrMaterialGraph *graph, String8 id) {
 
 /* Whether `name` is 1 to 31 of [a-z0-9_]. */
 static bool8_t graph_name_valid(const char *name) {
-  const uint64_t length = strlen(name);
+  const uint64_t length = string_length(name);
   if (length == 0 || length >= VKR_MATERIAL_GRAPH_ID_CAPACITY) {
     return false_v;
   }
@@ -482,7 +479,7 @@ bool8_t vkr_material_graph_validate(const VkrMaterialGraph *graph, char *error,
                         node->id);
     }
     for (uint32_t j = 0; j < i; ++j) {
-      if (strcmp(graph->nodes[j].id, node->id) == 0) {
+      if (string_equals(graph->nodes[j].id, node->id)) {
         return graph_fail(error, capacity, "Node id '%s' repeats", node->id);
       }
     }
@@ -503,7 +500,7 @@ bool8_t vkr_material_graph_validate(const VkrMaterialGraph *graph, char *error,
                           node->id, node->parameter);
       }
       for (uint32_t j = 0; j < i; ++j) {
-        if (strcmp(graph->nodes[j].parameter, node->parameter) == 0) {
+        if (string_equals(graph->nodes[j].parameter, node->parameter)) {
           return graph_fail(error, capacity, "Parameter '%s' repeats",
                             node->parameter);
         }
@@ -606,18 +603,18 @@ uint32_t vkr_material_graph_add(VkrMaterialGraph *graph,
     return UINT32_MAX;
   }
   char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-  snprintf(id, sizeof(id), "%s", base);
+  string_format(id, sizeof(id), "%s", base);
   for (uint32_t n = 2u;
        vkr_material_graph_find(
-           graph, string8_create_from_cstr((const uint8_t *)id, strlen(id))) !=
-       UINT32_MAX;
+           graph, string8_create_from_cstr((const uint8_t *)id,
+                                           string_length(id))) != UINT32_MAX;
        ++n) {
-    snprintf(id, sizeof(id), "%.24s_%u", base, n);
+    string_format(id, sizeof(id), "%.24s_%u", base, n);
   }
   VkrMaterialNode *node = &graph->nodes[graph->node_count];
   MemZero(node, sizeof(*node));
   node->kind = kind;
-  snprintf(node->id, sizeof(node->id), "%s", id);
+  string_format(node->id, sizeof(node->id), "%s", id);
   if (kind == VKR_MATERIAL_NODE_COLOR) {
     node->value = vec4_new(1.0f, 1.0f, 1.0f, 0.0f);
   } else if (kind == VKR_MATERIAL_NODE_SCALAR) {
@@ -696,7 +693,7 @@ static void text_append(GraphText *text, const char *format, ...) {
   va_list args;
   va_start(args, format);
   char line[1024];
-  const int written = vsnprintf(line, sizeof(line), format, args);
+  const int written = string_format_v(line, sizeof(line), format, args);
   va_end(args);
   if (written < 0 || (uint64_t)written >= sizeof(line)) {
     text->failed = true_v;
@@ -783,7 +780,7 @@ static bool8_t json_floats(VkrJsonReader *reader, float32_t *out,
       }
       reader->pos++;
     }
-    if (!vkr_json_parse_float(reader, &out[i]) || !isfinite(out[i])) {
+    if (!vkr_json_parse_float(reader, &out[i]) || !vkr_is_finite_f32(out[i])) {
       return false_v;
     }
   }
@@ -799,7 +796,7 @@ static bool8_t json_text(const VkrJsonReader *object, const char *name,
     return true_v;
   }
   if (!vkr_json_parse_string(&member, &text) || text.length >= capacity ||
-      memchr(text.str, '\\', text.length)) {
+      MemFindByte(text.str, '\\', text.length)) {
     return false_v;
   }
   MemCopy(out, text.str, text.length);
@@ -833,7 +830,7 @@ static bool8_t json_number(const VkrJsonReader *object, const char *name,
   if (!json_member(object, name, &member)) {
     return true_v;
   }
-  return vkr_json_parse_float(&member, out) && isfinite(*out);
+  return vkr_json_parse_float(&member, out) && vkr_is_finite_f32(*out);
 }
 
 /* A link written "node" (its first output) or "node.port". */
@@ -887,7 +884,7 @@ bool8_t vkr_material_graph_read(String8 json, VkrMaterialGraph *out,
         !json_number(&settings, "roughness_max",
                      &out->settings.roughness_max) ||
         !json_number(&settings, "subsurface_profile", &profile) ||
-        profile < 0.0f || profile > 7.0f || profile != floorf(profile)) {
+        profile < 0.0f || profile > 7.0f || profile != vkr_floor_f32(profile)) {
       return graph_fail(error, capacity, "The graph's settings are malformed");
     }
     out->settings.alpha_mode = (VkrMaterialGraphAlpha)alpha;
@@ -968,7 +965,7 @@ bool8_t vkr_material_graph_read(String8 json, VkrMaterialGraph *out,
                          : node->kind == VKR_MATERIAL_NODE_TILE_OFFSET
                              ? json_floats(&member, &node->value.x, 4u)
                              : vkr_json_parse_float(&member, &node->value.x) &&
-                                   isfinite(node->value.x);
+                                   vkr_is_finite_f32(node->value.x);
       if (!ok) {
         return graph_fail(error, capacity,
                           "Node '%s': a scalar's value is a number, a "
@@ -1125,10 +1122,10 @@ static bool8_t lower_fail(LowerContext *context, const VkrMaterialNode *node,
                           const char *format, ...) {
   VkrMaterialLowering *result = context->result;
   result->tier = VKR_MATERIAL_TIER_UNSUPPORTED;
-  snprintf(result->node, sizeof(result->node), "%s", node ? node->id : "");
+  string_format(result->node, sizeof(result->node), "%s", node ? node->id : "");
   va_list args;
   va_start(args, format);
-  vsnprintf(result->reason, sizeof(result->reason), format, args);
+  string_format_v(result->reason, sizeof(result->reason), format, args);
   va_end(args);
   return false_v;
 }
@@ -1140,7 +1137,7 @@ static const char *lower_override(const LowerContext *context,
     return NULL;
   }
   for (uint32_t i = 0; i < context->param_count; ++i) {
-    if (strcmp(context->params[i].name, node->parameter) == 0) {
+    if (string_equals(context->params[i].name, node->parameter)) {
       return context->params[i].value;
     }
   }
@@ -1156,9 +1153,9 @@ static bool8_t lower_constant(LowerContext *context,
     return true_v;
   }
   const String8 value =
-      string8_create_from_cstr((const uint8_t *)text, strlen(text));
+      string8_create_from_cstr((const uint8_t *)text, string_length(text));
   if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
-    if (!string8_to_f32(&value, &out->x) || !isfinite(out->x)) {
+    if (!string8_to_f32(&value, &out->x) || !vkr_is_finite_f32(out->x)) {
       return lower_fail(context, node,
                         "Parameter '%s' needs a number, not '%s'",
                         node->parameter, text);
@@ -1166,8 +1163,8 @@ static bool8_t lower_constant(LowerContext *context,
     return true_v;
   }
   Vec3 color = {0};
-  if (!string8_to_vec3(&value, &color) || !isfinite(color.x) ||
-      !isfinite(color.y) || !isfinite(color.z)) {
+  if (!string8_to_vec3(&value, &color) || !vkr_is_finite_f32(color.x) ||
+      !vkr_is_finite_f32(color.y) || !vkr_is_finite_f32(color.z)) {
     return lower_fail(context, node, "Parameter '%s' needs r,g,b, not '%s'",
                       node->parameter, text);
   }
@@ -1184,8 +1181,8 @@ static const char *lower_texture_path(LowerContext *context,
   if (text) {
     return text;
   }
-  const String8 raw =
-      string8_create_from_cstr((const uint8_t *)node->path, strlen(node->path));
+  const String8 raw = string8_create_from_cstr((const uint8_t *)node->path,
+                                               string_length(node->path));
   const String8 resolved =
       vkr_asset_path_resolve(context->allocator, context->graph_path, raw);
   return resolved.str ? (const char *)resolved.str : NULL;
@@ -1297,7 +1294,7 @@ static bool8_t lower_source(LowerContext *context, VkrMaterialLink link,
 static void lower_sampled(LowerContext *context, const VkrMaterialNode *node) {
   for (uint32_t i = 0; i < context->sampled_count; ++i) {
     if (context->sampled[i] == node ||
-        strcmp(context->sampled[i]->path, node->path) == 0) {
+        string_equals(context->sampled[i]->path, node->path)) {
       return;
     }
   }
@@ -1308,7 +1305,7 @@ static void lower_sampled(LowerContext *context, const VkrMaterialNode *node) {
    "base_color_texture". */
 static void lower_color_space(GraphText *text, const char *texture_key,
                               const VkrMaterialNode *node, bool8_t srgb) {
-  const uint64_t stem = strlen(texture_key) - strlen("_texture");
+  const uint64_t stem = string_length(texture_key) - string_length("_texture");
   const VkrMaterialColorSpace space =
       node->color_space != VKR_MATERIAL_COLOR_SPACE_AUTO
           ? node->color_space
@@ -1362,7 +1359,7 @@ static bool8_t lower_layers(LowerContext *context, GraphText *text,
   }
   if (blend->mask == VKR_MATERIAL_GRAPH_MASK_TEXTURE) {
     const String8 raw = string8_create_from_cstr((const uint8_t *)blend->path,
-                                                 strlen(blend->path));
+                                                 string_length(blend->path));
     const String8 resolved =
         raw.length ? vkr_asset_path_resolve(context->allocator,
                                             context->graph_path, raw)
@@ -1418,7 +1415,7 @@ static bool8_t lower_custom(const VkrMaterialGraph *graph, String8 graph_path,
   for (uint32_t i = 0; i < param_count; ++i) {
     bool8_t found = false_v;
     for (uint32_t n = 0; n < graph->node_count && !found; ++n) {
-      found = strcmp(graph->nodes[n].parameter, params[i].name) == 0;
+      found = string_equals(graph->nodes[n].parameter, params[i].name);
     }
     if (!found) {
       return lower_fail(&context, NULL, "The graph has no parameter '%s'",
@@ -1549,11 +1546,11 @@ bool8_t vkr_material_graph_lower(const VkrMaterialGraph *graph,
                    out_definition, out)) {
     /* Why the graph costs a shader: what the Standard tier refused. */
     if (!graph_needs_custom(graph)) {
-      snprintf(out->reason, sizeof(out->reason), "%s", standard.reason);
-      snprintf(out->node, sizeof(out->node), "%s", standard.node);
+      string_format(out->reason, sizeof(out->reason), "%s", standard.reason);
+      string_format(out->node, sizeof(out->node), "%s", standard.node);
     } else {
-      snprintf(out->reason, sizeof(out->reason),
-               "It uses nodes only a Custom graph evaluates");
+      string_format(out->reason, sizeof(out->reason),
+                    "It uses nodes only a Custom graph evaluates");
       out->node[0] = '\0';
     }
     return true_v;
@@ -1585,7 +1582,7 @@ static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
   for (uint32_t i = 0; i < param_count; ++i) {
     bool8_t found = false_v;
     for (uint32_t n = 0; n < graph->node_count && !found; ++n) {
-      found = strcmp(graph->nodes[n].parameter, params[i].name) == 0;
+      found = string_equals(graph->nodes[n].parameter, params[i].name);
     }
     if (!found) {
       return lower_fail(&context, NULL, "The graph has no parameter '%s'",
@@ -1676,8 +1673,9 @@ static bool8_t lower_standard(const VkrMaterialGraph *graph, String8 graph_path,
        read the one metallic-roughness texture. */
     bool8_t written = false_v;
     for (uint32_t s = 0; s < context.slot_count; ++s) {
-      if (strcmp(context.slot_keys[s], spec->texture) == 0) {
-        if (strcmp(context.slot_nodes[s]->path, source->texture->path) != 0 ||
+      if (string_equals(context.slot_keys[s], spec->texture)) {
+        if (!string_equals(context.slot_nodes[s]->path,
+                           source->texture->path) ||
             lower_override(&context, context.slot_nodes[s]) !=
                 lower_override(&context, source->texture)) {
           return lower_fail(&context, source->texture,
@@ -1840,7 +1838,7 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
     if (graph_equals(key, s_definition_aliases[i].alias)) {
       key =
           string8_create_from_cstr((const uint8_t *)s_definition_aliases[i].key,
-                                   strlen(s_definition_aliases[i].key));
+                                   string_length(s_definition_aliases[i].key));
     }
   }
   for (uint32_t i = 0; s_definition_ignored[i]; ++i) {
@@ -1892,7 +1890,7 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
       : graph_equals(key, "roughness_max") ? &settings->roughness_max
                                            : NULL;
   if (setting) {
-    if (!string8_to_f32(&value, setting) || !isfinite(*setting)) {
+    if (!string8_to_f32(&value, setting) || !vkr_is_finite_f32(*setting)) {
       return graph_fail(context->error, context->capacity,
                         "%.*s '%.*s' is not a number", (int)key.length, key.str,
                         (int)value.length, value.str);
@@ -1958,11 +1956,12 @@ static bool8_t raise_key(void *opaque, String8 key, String8 value) {
       return true_v;
     }
     if (spec->texture) {
-      const uint64_t stem = strlen(spec->texture) - strlen("_texture");
-      if (key.length == stem + strlen("_colorspace") &&
+      const uint64_t stem =
+          string_length(spec->texture) - string_length("_texture");
+      if (key.length == stem + string_length("_colorspace") &&
           MemCompare(key.str, spec->texture, stem) == 0 &&
-          MemCompare(key.str + stem, "_colorspace", strlen("_colorspace")) ==
-              0) {
+          MemCompare(key.str + stem, "_colorspace",
+                     string_length("_colorspace")) == 0) {
         context->spaces[i] = value;
         return true_v;
       }
@@ -2011,7 +2010,7 @@ static uint32_t raise_node(VkrMaterialGraph *graph, VkrMaterialNodeKind kind,
   VkrMaterialNode *node = &graph->nodes[graph->node_count];
   MemZero(node, sizeof(*node));
   node->kind = kind;
-  snprintf(node->id, sizeof(node->id), "%s", id);
+  string_format(node->id, sizeof(node->id), "%s", id);
   node->position = position;
   return graph->node_count++;
 }
@@ -2021,7 +2020,7 @@ static bool8_t raise_constant(RaiseContext *context, uint32_t input,
   const SurfaceInput *spec = &s_surface[input];
   const bool8_t color = spec->port.type == VKR_MATERIAL_VALUE_COLOR;
   char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-  snprintf(id, sizeof(id), "%s_value", spec->port.name);
+  string_format(id, sizeof(id), "%s_value", spec->port.name);
   *out = raise_node(context->graph,
                     color ? VKR_MATERIAL_NODE_COLOR : VKR_MATERIAL_NODE_SCALAR,
                     id, position);
@@ -2076,7 +2075,7 @@ static bool8_t raise_texture(RaiseContext *context, uint32_t input,
     }
   }
   char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-  snprintf(id, sizeof(id), "%s_map", spec->port.name);
+  string_format(id, sizeof(id), "%s_map", spec->port.name);
   *out = raise_node(graph, VKR_MATERIAL_NODE_TEXTURE, id, position);
   if (*out == UINT32_MAX) {
     return graph_fail(context->error, context->capacity, "Too many nodes");
@@ -2144,7 +2143,7 @@ static bool8_t raise_layers(RaiseContext *context, uint32_t output,
       continue;
     }
     char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-    snprintf(id, sizeof(id), "layer%u", i + 1u);
+    string_format(id, sizeof(id), "layer%u", i + 1u);
     const uint32_t layer =
         raise_node(graph, VKR_MATERIAL_NODE_LAYER, id,
                    vec2_new(100.0f, row + (float32_t)i * 110.0f));
@@ -2212,7 +2211,7 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
     if (constant) {
       if (shared) {
         char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-        snprintf(id, sizeof(id), "%s_value", spec->port.name);
+        string_format(id, sizeof(id), "%s_value", spec->port.name);
         constant_node =
             raise_node(out,
                        input == SURFACE_BASE_COLOR ? VKR_MATERIAL_NODE_COLOR
@@ -2232,7 +2231,7 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
     VkrMaterialLink link = {.node = (uint16_t)(constant_node + 1u)};
     if (!textured && spec->port.type == VKR_MATERIAL_VALUE_NORMAL) {
       char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-      snprintf(id, sizeof(id), "%s", spec->port.name);
+      string_format(id, sizeof(id), "%s", spec->port.name);
       const uint32_t normal = raise_node(out, VKR_MATERIAL_NODE_NORMAL_MAP, id,
                                          vec2_new(380.0f, position.y));
       if (normal == UINT32_MAX) {
@@ -2253,7 +2252,7 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
                                       .port = port};
       if (spec->port.type == VKR_MATERIAL_VALUE_NORMAL) {
         char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-        snprintf(id, sizeof(id), "%s", spec->port.name);
+        string_format(id, sizeof(id), "%s", spec->port.name);
         const uint32_t normal = raise_node(out, VKR_MATERIAL_NODE_NORMAL_MAP,
                                            id, vec2_new(380.0f, position.y));
         if (normal == UINT32_MAX) {
@@ -2266,7 +2265,7 @@ bool8_t vkr_material_graph_from_definition(String8 definition,
         link = (VkrMaterialLink){.node = (uint16_t)(normal + 1u)};
       } else if (constant_node != UINT32_MAX && input != SURFACE_OPACITY) {
         char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-        snprintf(id, sizeof(id), "%s", spec->port.name);
+        string_format(id, sizeof(id), "%s", spec->port.name);
         const uint32_t multiply = raise_node(out, VKR_MATERIAL_NODE_MULTIPLY,
                                              id, vec2_new(380.0f, position.y));
         if (multiply == UINT32_MAX) {

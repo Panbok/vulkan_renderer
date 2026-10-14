@@ -2,8 +2,6 @@
 
 #include "core/vkr_byte_io.h"
 
-#include <math.h>
-
 /* Unit-length tolerance for a sun key's direction. */
 #define VKR_LIGHT_LAYER_UNIT_TOLERANCE 1.0e-3f
 
@@ -33,7 +31,8 @@ static uint64_t vkr_light_layer_name_length(const char *name) {
 
 static bool8_t vkr_light_layer_valid(const VkrLightLayer *layer) {
   const Vec3 d = layer->sun_direction;
-  if (!isfinite(d.x) || !isfinite(d.y) || !isfinite(d.z)) {
+  if (!vkr_is_finite_f32(d.x) || !vkr_is_finite_f32(d.y) ||
+      !vkr_is_finite_f32(d.z)) {
     return false_v;
   }
   const uint64_t name_length = vkr_light_layer_name_length(layer->name);
@@ -41,9 +40,9 @@ static bool8_t vkr_light_layer_valid(const VkrLightLayer *layer) {
     return false_v;
   }
   if (layer->kind == VKR_LIGHT_LAYER_SUN_KEY) {
-    const float32_t length = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+    const float32_t length = vkr_sqrt_f32(d.x * d.x + d.y * d.y + d.z * d.z);
     return name_length == 0u &&
-           fabsf(length - 1.0f) <= VKR_LIGHT_LAYER_UNIT_TOLERANCE;
+           vkr_abs_f32(length - 1.0f) <= VKR_LIGHT_LAYER_UNIT_TOLERANCE;
   }
   if (layer->kind == VKR_LIGHT_LAYER_LAMP_GROUP) {
     return name_length != 0u && d.x == 0.0f && d.y == 0.0f && d.z == 0.0f;
@@ -131,9 +130,10 @@ void vkr_light_layers_sun_weights(const VkrLightLayer *layers, uint32_t count,
     out_weights[nearest] = 1.0f;
     return;
   }
-  const float32_t to_nearest = acosf(fminf(fmaxf(nearest_cosine, -1.0f), 1.0f));
+  const float32_t to_nearest =
+      vkr_acos_f32(vkr_fmin_f32(vkr_fmax_f32(nearest_cosine, -1.0f), 1.0f));
   const float32_t to_neighbour =
-      acosf(fminf(fmaxf(neighbour_cosine, -1.0f), 1.0f));
+      vkr_acos_f32(vkr_fmin_f32(vkr_fmax_f32(neighbour_cosine, -1.0f), 1.0f));
   const float32_t span = to_nearest + to_neighbour;
   const float32_t t = span > 0.0f ? to_nearest / span : 0.0f;
   out_weights[nearest] = 1.0f - t;

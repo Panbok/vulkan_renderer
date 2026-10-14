@@ -1,8 +1,5 @@
 #include "vkr_animation.h"
 
-#include <float.h>
-#include <math.h>
-
 static bool8_t animation_fail(const char **error, const char *message) {
   if (error) {
     *error = message;
@@ -14,27 +11,29 @@ static bool8_t animation_name_valid(String8 name) {
   if (name.length > UINT32_MAX || (name.length && !name.str)) {
     return false_v;
   }
-  return !name.length || !memchr(name.str, 0, (size_t)name.length);
+  return !name.length || !MemFindByte(name.str, 0, (size_t)name.length);
 }
 
 static bool8_t animation_vec3_finite(Vec3 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z);
 }
 
 static bool8_t animation_vec4_finite(Vec4 value) {
-  return animation_vec3_finite(vec4_to_vec3(value)) && isfinite(value.w);
+  return animation_vec3_finite(vec4_to_vec3(value)) &&
+         vkr_is_finite_f32(value.w);
 }
 
 static bool8_t animation_rotation_valid(Vec4 value) {
   const float64_t squared =
       (float64_t)value.x * value.x + (float64_t)value.y * value.y +
       (float64_t)value.z * value.z + (float64_t)value.w * value.w;
-  return isfinite(squared) && fabs(squared - 1.0) <= 0.0001;
+  return vkr_is_finite_f64(squared) && vkr_abs_f64(squared - 1.0) <= 0.0001;
 }
 
 static bool8_t animation_matrix_finite(Mat4 value) {
   for (uint32_t i = 0; i < ArrayCount(value.elements); ++i) {
-    if (!isfinite(value.elements[i])) {
+    if (!vkr_is_finite_f32(value.elements[i])) {
       return false_v;
     }
   }
@@ -132,8 +131,9 @@ static bool8_t animation_validate_contents(const VkrAnimationAsset *asset,
   uint64_t total_keys = 0;
   for (uint32_t i = 0; i < asset->clip_count; ++i) {
     const VkrAnimationClip *clip = &asset->clips[i];
-    if (!animation_name_valid(clip->name) || !isfinite(clip->duration) ||
-        clip->duration < 0.0f || !clip->channel_count ||
+    if (!animation_name_valid(clip->name) ||
+        !vkr_is_finite_f32(clip->duration) || clip->duration < 0.0f ||
+        !clip->channel_count ||
         clip->channel_count > (uint64_t)asset->node_count * 3u ||
         !clip->channels) {
       return animation_fail(error, "Invalid clip metadata");
@@ -166,7 +166,7 @@ static bool8_t animation_validate_contents(const VkrAnimationAsset *asset,
           channel->interpolation == VKR_ANIMATION_CUBIC_SPLINE ? 3u : 1u;
       for (uint32_t k = 0; k < channel->key_count; ++k) {
         const float32_t time = channel->times[k];
-        if (!isfinite(time) || time < 0.0f ||
+        if (!vkr_is_finite_f32(time) || time < 0.0f ||
             (k && time <= channel->times[k - 1u])) {
           return animation_fail(error,
                                 "Animation times must strictly increase");
@@ -294,10 +294,10 @@ static bool8_t animation_sample_channel(const VkrAnimationChannel *channel,
     components[i] = a_weight * a.elements[i] + b_weight * b.elements[i] +
                     out_weight * out_tangent.elements[i] +
                     in_weight * in_tangent.elements[i];
-    if (!isfinite(components[i])) {
+    if (!vkr_is_finite_f64(components[i])) {
       return false_v;
     }
-    const float64_t absolute = fabs(components[i]);
+    const float64_t absolute = vkr_abs_f64(components[i]);
     magnitude = Max(magnitude, absolute);
   }
   if (channel->path == VKR_ANIMATION_ROTATION) {
@@ -311,7 +311,7 @@ static bool8_t animation_sample_channel(const VkrAnimationChannel *channel,
     }
     *sample = vkr_quat_normalize(*sample);
   } else {
-    if (magnitude > FLT_MAX) {
+    if (magnitude > VKR_FLOAT_MAX) {
       return false_v;
     }
     for (uint32_t i = 0; i < ArrayCount(components); ++i) {
@@ -324,7 +324,7 @@ static bool8_t animation_sample_channel(const VkrAnimationChannel *channel,
 bool8_t vkr_animation_sample(const VkrAnimationAsset *asset, uint32_t clip,
                              float64_t seconds, VkrAnimationTrs *local_pose) {
   if (!asset || clip >= asset->clip_count || !local_pose ||
-      !isfinite(seconds)) {
+      !vkr_is_finite_f64(seconds)) {
     return false_v;
   }
   for (uint32_t i = 0; i < asset->node_count; ++i) {

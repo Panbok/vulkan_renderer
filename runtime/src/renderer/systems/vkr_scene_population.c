@@ -9,10 +9,6 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 #define POPULATION_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* Metres terrain samples must lie above a ray's hit to replace it, past the
    gap between a height field body's triangles and the bilinear samples. */
@@ -377,15 +373,15 @@ static Mat4 population_frame(Vec3 position, Vec3 right, Vec3 up, Vec3 forward,
 /* Right and forward axes perpendicular to `up`, forward turned by `yaw`. */
 static void population_axes(Vec3 up, float32_t yaw, Vec3 *out_right,
                             Vec3 *out_forward) {
-  const Vec3 reference = fabsf(up.y) < 0.99f ? vec3_new(0.0f, 1.0f, 0.0f)
-                                             : vec3_new(0.0f, 0.0f, 1.0f);
+  const Vec3 reference = vkr_abs_f32(up.y) < 0.99f ? vec3_new(0.0f, 1.0f, 0.0f)
+                                                   : vec3_new(0.0f, 0.0f, 1.0f);
   Vec3 forward = vec3_normalize(vec3_cross(vec3_cross(up, reference), up));
-  if (fabsf(up.y) >= 0.99f) {
+  if (vkr_abs_f32(up.y) >= 0.99f) {
     forward = vec3_new(0.0f, 0.0f, up.y > 0.0f ? 1.0f : -1.0f);
   }
   const Vec3 side = vec3_normalize(vec3_cross(up, forward));
-  forward =
-      vec3_add(vec3_scale(forward, cosf(yaw)), vec3_scale(side, sinf(yaw)));
+  forward = vec3_add(vec3_scale(forward, vkr_cos_f32(yaw)),
+                     vec3_scale(side, vkr_sin_f32(yaw)));
   *out_forward = forward;
   *out_right = vec3_normalize(vec3_cross(up, forward));
 }
@@ -556,8 +552,10 @@ static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
   }
   PopulationSurfaces surfaces = {0};
   if (rule->render_surfaces) {
-    Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-    Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    Vec3 lo =
+        vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    Vec3 hi =
+        vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     for (uint32_t corner = 0; corner < 8u; ++corner) {
       const Vec3 point = mat4_mul_vec3(
           transform->world,
@@ -594,7 +592,7 @@ static uint32_t population_scatter_models(VkrScene *scene, VkrEntityId entity,
 static uint32_t population_area_count(const SceneScatterArea *area) {
   const float32_t expected =
       area->density * 3.14159265f * area->radius * area->radius;
-  const float32_t whole = floorf(expected);
+  const float32_t whole = vkr_floor_f32(expected);
   return (uint32_t)whole +
          (population_random(area->seed, 0xFFFFu, 7u) < expected - whole ? 1u
                                                                         : 0u);
@@ -643,8 +641,10 @@ static uint32_t population_area_models(VkrScene *scene, VkrEntityId entity,
   }
   PopulationSurfaces surfaces = {0};
   if (rule->render_surfaces) {
-    Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-    Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    Vec3 lo =
+        vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    Vec3 hi =
+        vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     for (uint32_t a = 0; a < area_count; ++a) {
       const VkrEntityId child = children[sorted[a]];
       const SceneScatterArea *area =
@@ -684,9 +684,10 @@ static uint32_t population_area_models(VkrScene *scene, VkrEntityId entity,
       const float32_t angle =
           population_random(area->seed, i, 0u) * 6.28318530718f;
       const float32_t distance =
-          area->radius * sqrtf(population_random(area->seed, i, 1u));
-      const Vec3 column = vec3_new(center.x + cosf(angle) * distance, center.y,
-                                   center.z + sinf(angle) * distance);
+          area->radius * vkr_sqrt_f32(population_random(area->seed, i, 1u));
+      const Vec3 column =
+          vec3_new(center.x + vkr_cos_f32(angle) * distance, center.y,
+                   center.z + vkr_sin_f32(angle) * distance);
       /* An area painted onto one model drops only through that model's
          box, so what hangs above it cannot catch the copy, and a column
          beside the box drops none. */
@@ -792,7 +793,7 @@ static bool8_t population_create(VkrScene *scene, PopulationRule *rule,
                                  uint32_t count) {
   struct VkrRenderAssets *assets = scene->assets;
   const String8 path =
-      string8_create_from_cstr((const uint8_t *)mesh, strlen(mesh));
+      string8_create_from_cstr((const uint8_t *)mesh, string_length(mesh));
   VkrResourceHandleInfo request = {0};
   VkrResourceHandleInfo resolved = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -804,15 +805,15 @@ static bool8_t population_create(VkrScene *scene, PopulationRule *rule,
                                      &error) ||
       !vkr_resource_system_try_get_resolved(&request, &resolved) ||
       !resolved.as.mesh) {
-    snprintf(rule->status, sizeof(rule->status), "The mesh '%s' did not load",
-             mesh);
+    string_format(rule->status, sizeof(rule->status),
+                  "The mesh '%s' did not load", mesh);
     goto cleanup;
   }
   const VkrMeshSource *source = &resolved.as.mesh->source;
   if (mesh_index >= source->meshes.length ||
       !source->meshes.data[mesh_index].range_count) {
-    snprintf(rule->status, sizeof(rule->status),
-             "'%s' has no mesh %u with geometry", mesh, mesh_index);
+    string_format(rule->status, sizeof(rule->status),
+                  "'%s' has no mesh %u with geometry", mesh, mesh_index);
     goto cleanup;
   }
   uint32_t render_id = 0u;
@@ -831,8 +832,8 @@ static bool8_t population_create(VkrScene *scene, PopulationRule *rule,
             &assets->mesh_manager, &desc, &resolved, picking_id, rule->visible,
             &error);
     if (!instance.id) {
-      snprintf(rule->status, sizeof(rule->status),
-               "Only %u of %u copies fit the mesh manager", i, count);
+      string_format(rule->status, sizeof(rule->status),
+                    "Only %u of %u copies fit the mesh manager", i, count);
       break;
     }
     (void)vkr_mesh_manager_instance_set_shadow_mobility(
@@ -840,7 +841,7 @@ static bool8_t population_create(VkrScene *scene, PopulationRule *rule,
     rule->instances[rule->instance_count++] = instance;
     scene->population->instance_total++;
   }
-  snprintf(rule->mesh, sizeof(rule->mesh), "%s", mesh);
+  string_format(rule->mesh, sizeof(rule->mesh), "%s", mesh);
   rule->mesh_index = mesh_index;
   ok = true_v;
 
@@ -905,8 +906,8 @@ static void population_apply_draw_cull(VkrScene *scene, PopulationRule *rule,
    cell's packed grid coordinates. */
 static uint32_t population_cell_of(PopulationRule *rule, int32_t *keys,
                                    float32_t x, float32_t z) {
-  const int32_t cx = (int32_t)floorf(x / POPULATION_CELL_SIZE);
-  const int32_t cz = (int32_t)floorf(z / POPULATION_CELL_SIZE);
+  const int32_t cx = (int32_t)vkr_floor_f32(x / POPULATION_CELL_SIZE);
+  const int32_t cz = (int32_t)vkr_floor_f32(z / POPULATION_CELL_SIZE);
   for (uint32_t i = 0; i < rule->cell_count; ++i) {
     if (keys[i * 2u] == cx && keys[i * 2u + 1u] == cz) {
       return i;
@@ -983,7 +984,7 @@ static void population_build_cells(VkrScene *scene, PopulationRule *rule) {
         scene->alloc, sizeof(uint16_t) * VKR_SCENE_POPULATION_RULE_INSTANCE_MAX,
         POPULATION_TAG);
     if (!rule->cells || !rule->copy_cells) {
-      snprintf(rule->status, sizeof(rule->status), "Out of memory");
+      string_format(rule->status, sizeof(rule->status), "Out of memory");
       return;
     }
   }
@@ -1011,8 +1012,8 @@ static void population_build_cells(VkrScene *scene, PopulationRule *rule) {
   uint32_t *cell_copies = vkr_allocator_alloc(
       scratch, sizeof(uint32_t) * POPULATION_CELL_MAX, POPULATION_TAG);
   if (!submesh_count || !keys || !cell_copies) {
-    snprintf(rule->status, sizeof(rule->status),
-             "The far proxies could not read the mesh's levels");
+    string_format(rule->status, sizeof(rule->status),
+                  "The far proxies could not read the mesh's levels");
     vkr_allocator_end_scope(&scope, POPULATION_TAG);
     return;
   }
@@ -1096,9 +1097,10 @@ static void population_build_cells(VkrScene *scene, PopulationRule *rule) {
           .min_extents = vec3_sub(rule->cells[c].center, extent),
           .max_extents = vec3_add(rule->cells[c].center, extent),
       };
-      snprintf(config.name, sizeof(config.name), "scatter_cell_%u_%u_%u_%u",
-               (unsigned)rule->entity.parts.index,
-               (unsigned)rule->entity.parts.generation, c, s);
+      string_format(config.name, sizeof(config.name),
+                    "scatter_cell_%u_%u_%u_%u",
+                    (unsigned)rule->entity.parts.index,
+                    (unsigned)rule->entity.parts.generation, c, s);
       VkrRendererError error = VKR_RENDERER_ERROR_NONE;
       const VkrGeometryHandle geometry =
           vertices && indices && index_count
@@ -1161,7 +1163,7 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
         sizeof(VkrMeshInstanceHandle) * VKR_SCENE_POPULATION_RULE_INSTANCE_MAX,
         POPULATION_TAG);
     if (!rule->instances) {
-      snprintf(rule->status, sizeof(rule->status), "Out of memory");
+      string_format(rule->status, sizeof(rule->status), "Out of memory");
       return;
     }
   }
@@ -1181,7 +1183,7 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
   }
   if (!mesh || !mesh[0]) {
     population_release_instances(scene, rule);
-    snprintf(rule->status, sizeof(rule->status), "No mesh is named");
+    string_format(rule->status, sizeof(rule->status), "No mesh is named");
     return;
   }
 
@@ -1210,21 +1212,21 @@ static void population_build(VkrScene *scene, PopulationRule *rule,
                                       &assets->scratch_allocator, models, room);
   }
   if (painted && count < Min(wanted, room)) {
-    snprintf(rule->status, sizeof(rule->status),
-             "%u of %u copies found ground in the areas and room by their "
-             "spacing",
-             count, wanted);
+    string_format(rule->status, sizeof(rule->status),
+                  "%u of %u copies found ground in the areas and room by their "
+                  "spacing",
+                  count, wanted);
   } else if (scatter && count < Min(wanted, room)) {
-    snprintf(rule->status, sizeof(rule->status),
-             "%u of %u copies found ground below the box", count, wanted);
+    string_format(rule->status, sizeof(rule->status),
+                  "%u of %u copies found ground below the box", count, wanted);
   } else if (wanted > room || (spline_mesh && count == room)) {
-    snprintf(rule->status, sizeof(rule->status),
-             "Capped at %u copies by the scene's population bound", room);
+    string_format(rule->status, sizeof(rule->status),
+                  "Capped at %u copies by the scene's population bound", room);
   }
 
   /* The same mesh and count only move; anything else starts over. */
   const bool8_t same = rule->instance_count == count &&
-                       strcmp(rule->mesh, mesh) == 0 &&
+                       string_equals(rule->mesh, mesh) &&
                        rule->mesh_index == mesh_index;
   if (!same) {
     population_release_instances(scene, rule);

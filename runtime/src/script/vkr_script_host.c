@@ -1,14 +1,12 @@
 #include "script/vkr_script_internal.h"
 
+#include "containers/vkr_sort.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_simulation.h"
 #include "renderer/systems/vkr_scene_types.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Instance data, ledgers and bindings live in the host's own freeable
    memory; temp memory rewinds after every hook. */
@@ -39,7 +37,7 @@ static char *script_copy_text(VkrScriptHost *host, const char *text) {
   if (!text) {
     return NULL;
   }
-  const uint64_t length = strlen(text);
+  const uint64_t length = string_length(text);
   char *copy = vkr_allocator_alloc(host->allocator, length + 1u,
                                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (copy) {
@@ -180,7 +178,7 @@ static bool8_t script_ports_valid(const VkrIoPortDesc *ports, bool8_t inputs) {
  * reloaded type must store the same fields at the same places. */
 static bool8_t script_type_same_layout(const VkrTypeDesc *left,
                                        const VkrComponentDesc *right) {
-  if (strcmp(left->name, right->name) || left->size != right->size ||
+  if (!string_equals(left->name, right->name) || left->size != right->size ||
       left->align != right->align ||
       left->property_count != right->field_count) {
     return false_v;
@@ -188,7 +186,7 @@ static bool8_t script_type_same_layout(const VkrTypeDesc *left,
   for (uint32_t i = 0; i < left->property_count; ++i) {
     const VkrPropertyDesc *a = &left->properties[i];
     const VkrFieldDesc *b = &right->fields[i];
-    if (strcmp(a->name, b->name) || a->kind != s_field_kinds[b->kind] ||
+    if (!string_equals(a->name, b->name) || a->kind != s_field_kinds[b->kind] ||
         a->offset != b->offset) {
       return false_v;
     }
@@ -209,7 +207,7 @@ static uint32_t script_module_components(const VkrModuleDesc *desc,
                                  : desc->behaviors[i - components]->component;
     bool8_t seen = false_v;
     for (uint32_t j = 0; j < count; ++j) {
-      seen = seen || out[j] == type || !strcmp(out[j]->name, type->name);
+      seen = seen || out[j] == type || string_equals(out[j]->name, type->name);
     }
     if (!seen) {
       if (count < VKR_SDK_EXPORT_MAX) {
@@ -230,9 +228,10 @@ const VkrTypeDesc *script_resolve_type(VkrScriptHost *host,
   if (type->host_binding) {
     return type->host_binding;
   }
-  return type->name ? vkr_scene_world_type_named(string8_create_from_cstr(
-                          (const uint8_t *)type->name, strlen(type->name)))
-                    : NULL;
+  return type->name
+             ? vkr_scene_world_type_named(string8_create_from_cstr(
+                   (const uint8_t *)type->name, string_length(type->name)))
+             : NULL;
 }
 
 // =============================================================================
@@ -259,8 +258,8 @@ uint32_t script_container_slot(ScriptCtx *ctx, VkrContainer container) {
 }
 
 bool8_t script_ctx_error(ScriptCtx *ctx, const char *message) {
-  snprintf(ctx->last_error, sizeof(ctx->last_error), "%s",
-           message ? message : "Script call failed");
+  string_format(ctx->last_error, sizeof(ctx->last_error), "%s",
+                message ? message : "Script call failed");
   return false_v;
 }
 
@@ -609,9 +608,10 @@ static const char *script_host_fail(VkrScriptHost *host, const char *module,
                                     const char *error) {
   if (error != host->error) {
     char message[VKR_SCRIPT_ERROR_CAPACITY];
-    snprintf(message, sizeof(message), "%s", error ? error : "script failed");
-    snprintf(host->error, sizeof(host->error), "%s: %s",
-             module ? module : "script", message);
+    string_format(message, sizeof(message), "%s",
+                  error ? error : "script failed");
+    string_format(host->error, sizeof(host->error), "%s: %s",
+                  module ? module : "script", message);
   }
   return host->error;
 }
@@ -809,7 +809,7 @@ static bool8_t script_instance_sync(VkrScriptHost *host,
     }
   }
   if (found_count > 1u) {
-    qsort(found, found_count, sizeof(*found), script_found_compare);
+    vkr_sort(found, found_count, sizeof(*found), script_found_compare);
   }
 
   /* Stop bindings whose entity no longer carries the component. */
@@ -1006,7 +1006,8 @@ static bool8_t script_host_before_physics(VkrScene *scene, uint64_t tick,
   /* Movers move first, so behaviors and physics see this tick's poses. */
   if (!host->faulted &&
       !vkr_io_router_step(&host->io, VKR_SCENE_SIMULATION_FIXED_DT)) {
-    snprintf(host->error, sizeof(host->error), "Entity IO: %s", host->io.error);
+    string_format(host->error, sizeof(host->error), "Entity IO: %s",
+                  host->io.error);
     host->faulted = true_v;
     scene->simulation.error = host->error;
     return false_v;
@@ -1284,7 +1285,8 @@ static void script_host_after_tick(VkrScene *scene, uint64_t tick,
   host->phase = VKR_SCRIPT_PHASE_FRAME;
   if (!host->faulted &&
       !vkr_io_router_tick(&host->io, scene, script_sim_time(host))) {
-    snprintf(host->error, sizeof(host->error), "Entity IO: %s", host->io.error);
+    string_format(host->error, sizeof(host->error), "Entity IO: %s",
+                  host->io.error);
     host->faulted = true_v;
     vkr_scene_physics_set_paused(host->session.active, true_v);
   }
@@ -1353,26 +1355,32 @@ static void script_host_input(const VkrInputTransition *transition,
 /* Loads a byte copy, so the build can be replaced while this one runs and a
  * reload never reuses a cached image of the same path. */
 static bool8_t script_copy_file(const char *from, const char *to) {
-  FILE *source = file_fopen(from, "rb");
-  FILE *target = source ? file_fopen(to, "wb") : NULL;
-  bool8_t ok = source && target;
+  const FilePath source_path = file_path_view(from);
+  const FilePath target_path = file_path_view(to);
+  FileHandle source = {0};
+  FileHandle target = {0};
+  bool8_t ok =
+      file_open(&source_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &source) == FILE_ERROR_NONE &&
+      file_open(&target_path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &target) == FILE_ERROR_NONE;
   uint8_t buffer[64u * 1024u];
   while (ok) {
-    const size_t read = fread(buffer, 1u, sizeof(buffer), source);
-    if (read && fwrite(buffer, 1u, read, target) != read) {
-      ok = false_v;
-    }
-    if (read < sizeof(buffer)) {
-      ok = ok && !ferror(source);
+    uint64_t read = 0u;
+    uint64_t written = 0u;
+    ok = file_read_into(&source, buffer, sizeof(buffer), &read) ==
+         FILE_ERROR_NONE;
+    if (!ok || read == 0u) {
       break;
     }
+    ok = file_write(&target, read, buffer, &written) == FILE_ERROR_NONE &&
+         written == read;
   }
-  if (target && fclose(target) != 0) {
-    ok = false_v;
-  }
-  if (source) {
-    fclose(source);
-  }
+  file_close(&target);
+  file_close(&source);
   return ok;
 }
 
@@ -1410,7 +1418,8 @@ static bool8_t script_retire_handle(VkrScriptHost *host,
   }
   VkrScriptRetiredLibrary *retired = &host->retired[host->retired_count++];
   retired->library = library->handle;
-  snprintf(retired->path, sizeof(retired->path), "%s", library->loaded_path);
+  string_format(retired->path, sizeof(retired->path), "%s",
+                library->loaded_path);
   library->handle = (VkrPlatformLibrary){0};
   library->loaded_path[0] = '\0';
   return true_v;
@@ -1427,7 +1436,7 @@ static void script_close_retired(VkrScriptHost *host) {
  * the same name adopts its modules; UINT32_MAX when none is free. */
 static uint32_t script_library_slot(VkrScriptHost *host, const char *name) {
   for (uint32_t i = 0; i < host->library_count; ++i) {
-    if (!strcmp(host->libraries[i].name, name)) {
+    if (string_equals(host->libraries[i].name, name)) {
       return i;
     }
   }
@@ -1436,7 +1445,7 @@ static uint32_t script_library_slot(VkrScriptHost *host, const char *name) {
   }
   VkrScriptLibrary *library = &host->libraries[host->library_count];
   *library = (VkrScriptLibrary){0};
-  snprintf(library->name, sizeof(library->name), "%s", name);
+  string_format(library->name, sizeof(library->name), "%s", name);
   return host->library_count++;
 }
 
@@ -1529,7 +1538,7 @@ static const char *script_type_taken(const VkrScriptHost *host,
   for (uint32_t i = 0; i < type_count; ++i) {
     const VkrTypeDesc *registered =
         vkr_scene_world_type_named(string8_create_from_cstr(
-            (const uint8_t *)types[i]->name, strlen(types[i]->name)));
+            (const uint8_t *)types[i]->name, string_length(types[i]->name)));
     if (!registered) {
       continue;
     }
@@ -1560,7 +1569,7 @@ static const char *script_register(VkrScriptHost *host, const char *name,
   *module = (VkrScriptModule){.desc = desc,
                               .library = library,
                               .dynamic = library != VKR_SCRIPT_LIBRARY_NONE};
-  snprintf(module->name, sizeof(module->name), "%s", name);
+  string_format(module->name, sizeof(module->name), "%s", name);
   for (uint32_t i = 0; i < type_count; ++i) {
     VkrTypeDesc *copy = vkr_allocator_alloc(host->allocator, sizeof(*copy),
                                             VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
@@ -1629,7 +1638,7 @@ bool8_t vkr_script_host_add_module(VkrScriptHost *host, VkrModuleEntry entry,
 const VkrScriptModule *vkr_script_host_module(const VkrScriptHost *host,
                                               const char *name) {
   for (uint32_t i = 0; name && i < host->module_count; ++i) {
-    if (!strcmp(host->modules[i].name, name)) {
+    if (string_equals(host->modules[i].name, name)) {
       return &host->modules[i];
     }
   }
@@ -1681,8 +1690,8 @@ static bool8_t script_same_shape(const VkrModuleDesc *old,
     return false_v;
   }
   for (uint32_t i = 0; i < desc->behavior_count; ++i) {
-    if (strcmp(old->behaviors[i]->component->name,
-               desc->behaviors[i]->component->name)) {
+    if (!string_equals(old->behaviors[i]->component->name,
+                       desc->behaviors[i]->component->name)) {
       return false_v;
     }
   }
@@ -1734,7 +1743,7 @@ static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
       return invalid;
     }
     for (uint32_t j = 0; j < i; ++j) {
-      if (!strcmp(listed[j].name, entry->name)) {
+      if (string_equals(listed[j].name, entry->name)) {
         return "The library lists one module name twice";
       }
     }
@@ -1748,8 +1757,8 @@ static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
     }
     const char *taken = script_type_taken(host, entry->desc, entry->module);
     if (taken) {
-      snprintf(host->error, sizeof(host->error),
-               "Component %s belongs to another module", taken);
+      string_format(host->error, sizeof(host->error),
+                    "Component %s belongs to another module", taken);
       return host->error;
     }
     if (!known) {
@@ -1758,24 +1767,24 @@ static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
     }
     VkrComponentDesc *types[VKR_SDK_EXPORT_MAX];
     if (script_module_components(entry->desc, types) != known->type_count) {
-      snprintf(host->error, sizeof(host->error),
-               "%s changed its component types; reopen the project",
-               known->name);
+      string_format(host->error, sizeof(host->error),
+                    "%s changed its component types; reopen the project",
+                    known->name);
       return host->error;
     }
     for (uint32_t t = 0; t < known->type_count; ++t) {
-      if (strcmp(known->types[t]->name, types[t]->name)) {
-        snprintf(host->error, sizeof(host->error),
-                 "%s changed its component types; reopen the project",
-                 known->name);
+      if (!string_equals(known->types[t]->name, types[t]->name)) {
+        string_format(host->error, sizeof(host->error),
+                      "%s changed its component types; reopen the project",
+                      known->name);
         return host->error;
       }
       if (!host->migrate &&
           !script_type_same_layout(known->types[t], types[t])) {
-        snprintf(host->error, sizeof(host->error),
-                 "Component %s changed its fields; reopen the project to "
-                 "apply it",
-                 known->types[t]->name);
+        string_format(host->error, sizeof(host->error),
+                      "Component %s changed its fields; reopen the project to "
+                      "apply it",
+                      known->types[t]->name);
         return host->error;
       }
     }
@@ -1804,7 +1813,7 @@ static const char *script_load_check(VkrScriptHost *host, uint32_t slot,
 
 static bool8_t script_prepare_fail(VkrScriptPrepared *prepared,
                                    const char *message) {
-  snprintf(prepared->error, sizeof(prepared->error), "%s", message);
+  string_format(prepared->error, sizeof(prepared->error), "%s", message);
   return false_v;
 }
 
@@ -1817,20 +1826,20 @@ bool8_t vkr_script_host_prepare(VkrScriptHost *host,
     return script_prepare_fail(prepared,
                                "A script library needs a name and a path");
   }
-  if (strlen(name) >= sizeof(prepared->name) ||
-      strlen(library_path) + 32u >= sizeof(prepared->path)) {
+  if (string_length(name) >= sizeof(prepared->name) ||
+      string_length(library_path) + 32u >= sizeof(prepared->path)) {
     return script_prepare_fail(prepared,
                                "The script library's name or path is too "
                                "long");
   }
-  snprintf(prepared->name, sizeof(prepared->name), "%s", name);
-  snprintf(prepared->path, sizeof(prepared->path), "%s", library_path);
+  string_format(prepared->name, sizeof(prepared->name), "%s", name);
+  string_format(prepared->path, sizeof(prepared->path), "%s", library_path);
   /* A unique copy per load: the build can be replaced, and a reload never
      reuses a cached image. */
   if (!in_place) {
-    snprintf(prepared->loaded_path, sizeof(prepared->loaded_path),
-             "%s.%u-%u.loaded", library_path, vkr_platform_get_process_id(),
-             ++host->load_serial);
+    string_format(prepared->loaded_path, sizeof(prepared->loaded_path),
+                  "%s.%u-%u.loaded", library_path,
+                  vkr_platform_get_process_id(), ++host->load_serial);
   }
   return true_v;
 }
@@ -1875,7 +1884,8 @@ void vkr_script_prepare_run(VkrScriptPrepared *prepared) {
     prepared->count = count;
   } else {
     char entry_name[VKR_SCRIPT_MODULE_NAME_CAPACITY + 32u];
-    snprintf(entry_name, sizeof(entry_name), "vkr_module_%s", prepared->name);
+    string_format(entry_name, sizeof(entry_name), "vkr_module_%s",
+                  prepared->name);
     const VkrModuleEntry single =
         (VkrModuleEntry)(uintptr_t)vkr_platform_library_symbol(library,
                                                                entry_name);
@@ -1959,8 +1969,8 @@ VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
     library->handle = prepared->handle;
     library->project = prepared->project;
     library->generation++;
-    snprintf(library->loaded_path, sizeof(library->loaded_path), "%s",
-             prepared->loaded_path);
+    string_format(library->loaded_path, sizeof(library->loaded_path), "%s",
+                  prepared->loaded_path);
     prepared->handle = (VkrPlatformLibrary){0};
     prepared->loaded_path[0] = '\0';
     /* Changed layouts, recorded before the swap rewrites their copies. Their
@@ -2031,7 +2041,7 @@ VkrScriptReload vkr_script_host_commit(VkrScriptHost *host,
   arena_reset_to(host->temp, temp_position, ARENA_MEMORY_TAG_UNKNOWN);
   if (failure) {
     if (failure != host->error) {
-      snprintf(host->error, sizeof(host->error), "%s", failure);
+      string_format(host->error, sizeof(host->error), "%s", failure);
     }
     vkr_script_host_discard(host, prepared);
     if (error) {
@@ -2048,7 +2058,7 @@ static VkrScriptReload script_load(VkrScriptHost *host, const char *name,
   VkrScriptPrepared prepared;
   if (!vkr_script_host_prepare(host, &prepared, name, library_path, project,
                                false_v)) {
-    snprintf(host->error, sizeof(host->error), "%s", prepared.error);
+    string_format(host->error, sizeof(host->error), "%s", prepared.error);
     if (error) {
       *error = host->error;
     }
@@ -2330,7 +2340,7 @@ bool8_t vkr_script_host_start(VkrScriptHost *host,
   const char *failure = script_session_begin(host);
   if (failure) {
     if (failure != host->error) {
-      snprintf(host->error, sizeof(host->error), "%s", failure);
+      string_format(host->error, sizeof(host->error), "%s", failure);
     }
     script_session_teardown(host);
     host->started = false_v;
@@ -2503,7 +2513,7 @@ void *vkr_script_host_instance_data(VkrScriptHost *host, const char *module,
   for (uint32_t i = 0; host->started && i < host->instance_count; ++i) {
     VkrScriptInstance *instance = host->instances[i];
     if (instance->module != SCRIPT_MODULE_NONE &&
-        !strcmp(host->modules[instance->module].name, module) &&
+        string_equals(host->modules[instance->module].name, module) &&
         host->containers[instance->container].scene == scene) {
       return instance->data;
     }

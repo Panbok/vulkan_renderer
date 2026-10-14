@@ -4,16 +4,18 @@ updated: 2026-10-14
 authority: adr
 ---
 
-# ADR-118: Renderer libc and platform boundary
+# ADR-118: Renderer and runtime libc and platform boundary
 
 ## Status
 
-Accepted. `renderer_lib` and `vkr_render_contracts` reach the C library and
-the operating system only through `vkr_foundation` (`lib/src/`). The
-compiler enforces the boundary for stdio, stdlib, string, POSIX and Win32
-declarations; a source guard covers `<math.h>` and Objective-C translation
-units. macOS (Metal) has native evidence; the Windows (Vulkan) build and its
-Win32 surface path are unrun.
+Accepted. `renderer_lib`, `vkr_render_contracts`, `vkr_runtime`,
+`vkr_sample_runtime`, `vkr_asset_formats` and `vkr_image_decode` reach the
+C library and the operating system only through `vkr_foundation`
+(`lib/src/`). The compiler enforces the boundary for stdio, stdlib, string,
+POSIX and Win32 declarations in their C and Objective-C units; a source
+guard covers `<math.h>`, Objective-C, vendor headers and C++ units. macOS
+(Metal) has native evidence; the Windows build, the Win32 surface and the
+runtime's Windows platform units are unrun.
 
 ## Context
 
@@ -25,21 +27,25 @@ found 494 such lines in 46 files: `<math.h>` calls, `snprintf`, `getenv`,
 stdio and POSIX file I/O, `malloc`, `CACurrentMediaTime`, GCD and
 `NSFileManager`. Two were Windows defects. `getenv` and `fopen` read the
 pipeline cache and shader catalog paths in the active code page
-([ADR-070](070-portable-path-boundaries.md)).
+([ADR-070](070-portable-path-boundaries.md)). The runtime had the same
+pattern on a larger scale: 2,351 uses across `isfinite`, `snprintf`,
+`strcmp`, `malloc`, stdio file I/O, `getenv`, `qsort` and the `strto*`
+parsers.
 
 ## Decision
 
-1. **Freestanding includes.** Renderer targets define `VKR_LIBC_BOUNDARY`
-   and no longer precompile `vkr_pch.h`. Under that define
+1. **Freestanding includes.** Renderer and runtime targets define
+   `VKR_LIBC_BOUNDARY` for their C and Objective-C sources, and the renderer
+   no longer precompiles `vkr_pch.h`. Under that define
    [defines.h](../../lib/src/defines.h) includes only `<stdarg.h>`,
    `<stdbool.h>`, `<stddef.h>`, `<stdint.h>` and the SIMD intrinsic headers,
    and `vkr_pch.h` is an error. `MemCopy`, `MemSet`, `MemZero` and
    `MemCompare` use compiler builtins on Clang and GCC; MSVC `cl` includes
    `<string.h>` for them. Lib headers that the renderer includes carry no
    stdio or OS declaration: `file_fopen` and `file_flush_durable` are
-   hidden, `VkrJsonFileWriter` holds its stream as `void *`, and header
-   assertions use `vkr_assert`. Other targets keep `vkr_pch.h` through
-   `defines.h`.
+   hidden with the `FSEEK64` macros, `VkrJsonFileWriter` holds its stream
+   as `void *`, and header assertions use `vkr_assert`. Other targets (the
+   editor, app, tools and tests) keep `vkr_pch.h` through `defines.h`.
 2. **Math.** [vkr_math.h](../../lib/src/math/vkr_math.h) is the one lib
    header that includes `<math.h>`, for its inline wrappers. Each wrapper
    calls the libm function of the same precision and semantics, so a
@@ -48,16 +54,23 @@ pipeline cache and shader catalog paths in the active code page
    `vec3_is_finite`, `vec4_is_finite` and `mat4_is_finite` replace
    `isfinite`. `VKR_FLOAT_INFINITY` and `VKR_FLOAT_NAN` replace the C macros,
    and the `INFINITY` fallback of `1e30f` is gone.
-3. **Lib owners.** Renderer code uses `string_format`, `string_equals` and
-   `string_length` for text; `vkr_platform_environment_variable` and
-   `vkr_platform_environment_flag` for the environment; `FileHandle`,
-   `file_path_view`, `file_truncate` and `file_remove_directory` for files;
-   `vkr_platform_get_absolute_time` for time; `vkr_platform_stderr_write`
-   and `vkr_platform_exit_immediate` for the Metal completion-timeout exit;
-   and [vkr_heap.h](../../lib/src/memory/vkr_heap.h) for texture upload
-   payloads. Those payloads cross modules and threads, and vendor decoders
-   allocate them with `malloc`, so `vkr_heap_alloc` and `vkr_heap_free` are
-   the C heap itself.
+3. **Lib owners.** Code behind the boundary uses `string_format`,
+   `string_equals`, `string_compare`, `string_length` and
+   `string_length_bounded` for text, and `string_parse_f64`/`_f32`/`_i64`/
+   `_u64` where the C library's leading-number semantics and end pointer
+   matter; `vkr_platform_environment_variable`, `_flag` and `_equals` for
+   the environment; `FileHandle` with `file_path_view`, `file_seek`,
+   `file_remaining_size`, `file_truncate` and `file_remove_directory` for
+   files; `vkr_platform_get_absolute_time` for time;
+   `vkr_platform_stdout_write`, `vkr_platform_stderr_write` and their `f`
+   forms for process output; `vkr_platform_exit_immediate`; `vkr_sort` and
+   `vkr_binary_search`; `MemFindByte`; and
+   [vkr_heap.h](../../lib/src/memory/vkr_heap.h) for blocks whose owner
+   changes across modules and threads. Texture upload payloads are such
+   blocks, and vendor decoders allocate them with `malloc`, so the heap
+   functions are the C heap itself. `VKR_CHAR_BITS` and
+   `VKR_F32_LIMITS_BINARY32` in `vkr_byte_io.h` state the cooked formats'
+   byte and float assumptions.
 4. **Background pipeline creation.** Custom graph and tiled BRDF variant
    pipelines are jobs on the runtime's job system, passed as
    `VkrRendererBackendConfig.job_system`. Without one, or with no free job
@@ -70,21 +83,33 @@ pipeline cache and shader catalog paths in the active code page
    the Metal backend, beside `NSString`, `NSURL` and `NSError` at Metal API
    calls. [vkr_vulkan_wsi.c](../../renderer/src/vulkan/vkr_vulkan_wsi.c) is
    the only renderer file that includes `<windows.h>`, for the Win32
-   surface. `PLATFORM_APPLE` and `PLATFORM_WINDOWS` remain build switches
-   that select a backend; they are not OS calls.
-6. **Guard.** [check_renderer_libc.py](../../tools/checks/check_renderer_libc.py)
-   runs in `build_test.sh` and `build_test.bat`. It rejects libc and OS
-   identifiers and non-freestanding includes in `renderer/src`, after it
-   strips comments and literals. Its exception table names each
-   API-required GCD call and the WSI includes.
+   surface. `runtime/src/platform/` is the runtime's window, gamepad and
+   file-dialog layer: it includes AppKit, GameController, Win32, XInput and
+   DXGI headers and calls their APIs, its Windows units add `<windows.h>`
+   and `<wchar.h>` for themselves, and its C library calls go through the
+   lib. `PLATFORM_APPLE` and `PLATFORM_WINDOWS` remain build switches that
+   select a backend or platform unit; they are not OS calls.
+6. **C++ adapters.** `vkr_physics.cpp` (Jolt) and `vkr_mesh_decode.cpp`
+   keep the C++ standard library, which their vendor APIs need, and stay
+   outside `VKR_LIBC_BOUNDARY`. Their C library calls use the lib
+   wrappers.
+7. **Guard.** [check_libc_boundary.py](../../tools/checks/check_libc_boundary.py)
+   runs in `build_test.sh` and `build_test.bat` over `renderer/src` and
+   `runtime/src`, skipping vendor implementation units. After it strips
+   comments and literals, it rejects C library calls and limit macros,
+   C library headers, and operating-system headers and calls outside the
+   platform units. Its exception table names each API-required GCD call
+   and the WSI and Windows platform includes.
 
 ## Consequences
 
-- A new renderer use of stdio, stdlib, string, POSIX or Win32 fails to
-  compile on Clang. A new `<math.h>` call or a Foundation-provided call in
-  an Objective-C unit fails the guard.
-- A renderer need for a new C library or OS service adds a lib function
-  first.
+- A new renderer or runtime use of stdio, stdlib, string, POSIX or Win32
+  fails to compile on Clang. A new `<math.h>` call, a Foundation-provided
+  call in an Objective-C unit, or a C library call in a C++ adapter fails
+  the guard.
+- A need for a new C library or OS service adds a lib function first.
+- An environment variable set to an empty string reads as unset, since
+  `vkr_platform_environment_variable` cannot tell them apart.
 - Metal diagnostics directories and segments take the lib's default
   permissions (0755 and 0644) instead of 0700 and 0600.
 
@@ -100,6 +125,19 @@ a BRDF-extension cube built the tiled extension variant through the job
 system and matched the GCD build after 150 warm-up frames. The guard
 reported 651 hits on the unmigrated sources and none after.
 
+The runtime change ran on the same machine and configuration from base
+`3dba57ab`. All 115 runtime units compiled under `VKR_LIBC_BOUNDARY`, and
+every target built with warnings as errors. The tester passed the same 789
+named tests with the same logged errors and warnings, including the
+heightfield file, journal and streamed tests, the scene-edit overlay and
+the collision asset tests. `bistro_retained_shadow_snapshot`,
+`bistro_editor_views` and `bistro_windowed_snapshot` gave identical
+`data_sha256` for all ten captures before and after. A headless Bistro
+editor session with `VKR_EDITOR_LAYOUT_PATH` and
+`VKR_GRAPHICS_SETTINGS_PATH` set wrote its dock layout, and a second
+session loaded it. The guard reported 2,351 runtime hits before and none
+after.
+
 ## Alternatives considered
 
 - **Out-of-line math on MSVC to drop `<math.h>`.** This adds a call per
@@ -112,5 +150,5 @@ reported 651 hits on the unmigrated sources and none after.
 
 ## Revisit when
 
-The editor, runtime or tools take the same boundary, or the Windows build
+The editor, app or tools take the same boundary, or the Windows build
 shows a header that `VKR_LIBC_BOUNDARY` misses under MSVC or clang-cl.

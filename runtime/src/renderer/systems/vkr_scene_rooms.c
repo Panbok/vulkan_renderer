@@ -1,8 +1,5 @@
 #include "renderer/systems/vkr_scene_rooms.h"
 
-#include <math.h>
-#include <stdio.h>
-
 #include "math/vkr_frustum.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -119,9 +116,9 @@ struct s_VkrSceneRooms {
 static bool8_t room_box_contains(const RoomBox *box, Vec3 point,
                                  float32_t epsilon) {
   const Vec3 local = mat4_mul_vec3(box->inverse, point);
-  return fabsf(local.x) * box->size.x <= 0.5f * box->size.x + epsilon &&
-         fabsf(local.y) * box->size.y <= 0.5f * box->size.y + epsilon &&
-         fabsf(local.z) * box->size.z <= 0.5f * box->size.z + epsilon;
+  return vkr_abs_f32(local.x) * box->size.x <= 0.5f * box->size.x + epsilon &&
+         vkr_abs_f32(local.y) * box->size.y <= 0.5f * box->size.y + epsilon &&
+         vkr_abs_f32(local.z) * box->size.z <= 0.5f * box->size.z + epsilon;
 }
 
 /* Distance in metres from `point` to the box, zero inside. */
@@ -138,7 +135,7 @@ static float32_t room_box_distance(const RoomBox *box, Vec3 point) {
 static uint32_t room_at_boxes(const RoomBox *boxes, uint32_t count, Vec3 point,
                               float32_t epsilon) {
   uint32_t found = VKR_SCENE_ROOM_OUTSIDE;
-  float32_t volume = INFINITY;
+  float32_t volume = VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < count; ++i) {
     const RoomBox *box = &boxes[i];
     if (box->volume < volume && room_box_contains(box, point, epsilon)) {
@@ -275,8 +272,10 @@ static bool8_t rooms_rebuild_graph(VkrScene *scene, VkrSceneRooms *rooms) {
     box->size = vec3_new(vec3_length(world.cols[0]), vec3_length(world.cols[1]),
                          vec3_length(world.cols[2]));
     box->volume = box->size.x * box->size.y * box->size.z;
-    box->min = vec3_new(INFINITY, INFINITY, INFINITY);
-    box->max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    box->min =
+        vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    box->max =
+        vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     for (uint32_t corner = 0; corner < 8u; ++corner) {
       const Vec3 point =
           mat4_mul_vec3(world, vec3_new(corner & 1u ? 0.5f : -0.5f,
@@ -356,8 +355,10 @@ static uint32_t rooms_of_box(const VkrSceneRooms *rooms, Mat4 model, Vec3 min,
                              Vec3 max) {
   uint32_t entries[2];
   uint32_t entry_count = 0u;
-  Vec3 world_min = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 world_max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 world_min =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 world_max =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   bool8_t outside = false_v;
   for (uint32_t corner = 0; corner < 9u; ++corner) {
     const Vec3 local = corner == 8u ? vec3_scale(vec3_add(min, max), 0.5f)
@@ -624,7 +625,8 @@ static bool8_t rooms_portal_rect(const RoomPortal *portal, Mat4 view_projection,
     const Vec3 p = portal->corners[i];
     clip[i] = mat4_mul_vec4(view_projection, vec4_new(p.x, p.y, p.z, 1.0f));
   }
-  Vec4 covered = vec4_new(INFINITY, INFINITY, -INFINITY, -INFINITY);
+  Vec4 covered = vec4_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY,
+                          -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   uint32_t kept = 0u;
   for (uint32_t i = 0; i < 4u; ++i) {
     const Vec4 a = clip[i];
@@ -661,16 +663,18 @@ static bool8_t rooms_portal_rect(const RoomPortal *portal, Mat4 view_projection,
 static bool8_t rooms_in_opening(const RoomPortal *portal, Vec3 camera) {
   const Vec3 offset = vec3_sub(camera, portal->center);
   const float32_t reach = 0.5f;
-  return fabsf(vec3_dot(offset, portal->normal)) <= reach &&
-         fabsf(vec3_dot(offset, portal->axis_u)) <= portal->half_u + reach &&
-         fabsf(vec3_dot(offset, portal->axis_v)) <= portal->half_v + reach;
+  return vkr_abs_f32(vec3_dot(offset, portal->normal)) <= reach &&
+         vkr_abs_f32(vec3_dot(offset, portal->axis_u)) <=
+             portal->half_u + reach &&
+         vkr_abs_f32(vec3_dot(offset, portal->axis_v)) <=
+             portal->half_v + reach;
 }
 
 /* Whether two poses match within ROOM_DOOR_REST_EPSILON on every
    element. */
 static bool8_t rooms_pose_equal(Mat4 a, Mat4 b) {
   for (uint32_t i = 0; i < 16u; ++i) {
-    if (fabsf(a.elements[i] - b.elements[i]) > ROOM_DOOR_REST_EPSILON) {
+    if (vkr_abs_f32(a.elements[i] - b.elements[i]) > ROOM_DOOR_REST_EPSILON) {
       return false_v;
     }
   }
@@ -708,7 +712,8 @@ static void rooms_walk(VkrSceneRooms *rooms, uint32_t start, Vec3 camera,
                        Mat4 view_projection) {
   const VkrFrustum frustum = vkr_frustum_from_matrix(view_projection);
   for (uint32_t i = 0; i <= rooms->room_count; ++i) {
-    rooms->explored[i] = vec4_new(INFINITY, INFINITY, -INFINITY, -INFINITY);
+    rooms->explored[i] = vec4_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY,
+                                  -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   }
   uint32_t top = 0u;
   uint32_t steps = 0u;
@@ -897,9 +902,9 @@ static bool8_t rooms_sphere_inside(const VkrSceneRooms *rooms, uint32_t room,
     const float32_t sx = vec3_length(box->world.cols[0]);
     const float32_t sy = vec3_length(box->world.cols[1]);
     const float32_t sz = vec3_length(box->world.cols[2]);
-    if ((0.5f - fabsf(local.x)) * sx >= radius &&
-        (0.5f - fabsf(local.y)) * sy >= radius &&
-        (0.5f - fabsf(local.z)) * sz >= radius) {
+    if ((0.5f - vkr_abs_f32(local.x)) * sx >= radius &&
+        (0.5f - vkr_abs_f32(local.y)) * sy >= radius &&
+        (0.5f - vkr_abs_f32(local.z)) * sz >= radius) {
       return true_v;
     }
   }
@@ -909,7 +914,7 @@ static bool8_t rooms_sphere_inside(const VkrSceneRooms *rooms, uint32_t room,
 bool8_t vkr_scene_rooms_light_hidden(const VkrSceneRoomFrame *frame,
                                      Vec3 position, float32_t range) {
   const VkrSceneRooms *rooms = frame ? frame->owner : NULL;
-  if (!rooms || !(range > 0.0f) || !isfinite(range)) {
+  if (!rooms || !(range > 0.0f) || !vkr_is_finite_f32(range)) {
     return false_v;
   }
   const uint32_t room = room_at(rooms, position, 0.0f);
@@ -955,8 +960,10 @@ uint32_t vkr_scene_rooms_list(const VkrScene *scene, VkrEntityId *out_entities,
         continue;
       }
       out_entities[room] = owner;
-      out_min[room] = vec3_new(INFINITY, INFINITY, INFINITY);
-      out_max[room] = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+      out_min[room] =
+          vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+      out_max[room] = vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                               -VKR_FLOAT_INFINITY);
       room_count++;
     }
     const Mat4 world = rooms_entity_world(scene, boxes[i]);
@@ -990,8 +997,9 @@ static bool8_t rooms_in_any_portal(const RoomCheckPortal *portals,
                                    uint32_t count, Vec3 point) {
   for (uint32_t i = 0; i < count; ++i) {
     const Vec3 local = mat4_mul_vec3(portals[i].inverse, point);
-    if (fabsf(local.x) <= 0.5f && fabsf(local.y) <= 0.5f &&
-        fabsf(local.z) * portals[i].normal_scale <= ROOM_CHECK_PORTAL_DEPTH) {
+    if (vkr_abs_f32(local.x) <= 0.5f && vkr_abs_f32(local.y) <= 0.5f &&
+        vkr_abs_f32(local.z) * portals[i].normal_scale <=
+            ROOM_CHECK_PORTAL_DEPTH) {
       return true_v;
     }
   }

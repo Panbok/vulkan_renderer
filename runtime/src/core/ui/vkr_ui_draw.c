@@ -1,10 +1,8 @@
 #include "core/ui/vkr_ui_draw.h"
 
-#include <math.h>
-
 static bool8_t vkr_ui_draw_vec4_finite(Vec4 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
-         isfinite(value.w);
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z) && vkr_is_finite_f32(value.w);
 }
 
 static bool8_t vkr_ui_draw_texture_equal(VkrUiTextureRef a, VkrUiTextureRef b) {
@@ -98,14 +96,14 @@ bool8_t vkr_ui_draw_buffer_polygon(VkrUiDrawBuffer *buffer,
   for (uint32_t i = 0u; i < count; ++i) {
     const Vec2 a = corners_px[i], b = corners_px[(i + 1u) % count];
     const float32_t dx = b.x - a.x, dy = b.y - a.y;
-    const float32_t length = sqrtf(dx * dx + dy * dy);
-    if (!isfinite(length) || length == 0.0f)
+    const float32_t length = vkr_sqrt_f32(dx * dx + dy * dy);
+    if (!vkr_is_finite_f32(length) || length == 0.0f)
       return false_v;
     normals[i] = (Vec2){dy / length, -dx / length};
     area += (a.x - corners_px[0].x) * (b.y - corners_px[0].y) -
             (a.y - corners_px[0].y) * (b.x - corners_px[0].x);
   }
-  if (!isfinite(area) || area == 0.0f)
+  if (!vkr_is_finite_f32(area) || area == 0.0f)
     return false_v;
   const float32_t half_fringe = area > 0.0f ? 0.5f : -0.5f;
   for (uint32_t i = 0u; i < count; ++i) {
@@ -190,21 +188,22 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
       !vkr_ui_draw_vec4_finite(command.color) ||
       !vkr_ui_draw_vec4_finite(command.corner_radius_px) ||
       !vkr_ui_draw_vec4_finite(command.border_color) ||
-      !isfinite(command.border_px) || command.border_px < 0.0f ||
-      !isfinite(command.softness_px) || command.softness_px < 0.0f ||
+      !vkr_is_finite_f32(command.border_px) || command.border_px < 0.0f ||
+      !vkr_is_finite_f32(command.softness_px) || command.softness_px < 0.0f ||
       command.mode >= VKR_UI_DRAW_MODE_COUNT ||
       command.gradient > VKR_UI_DRAW_GRADIENT_VERTICAL ||
       (command.gradient &&
        (command.mode != VKR_UI_DRAW_MODE_QUAD || command.corner_count)) ||
-      !isfinite(command.screen_px_range) || command.screen_px_range < 0.0f)
+      !vkr_is_finite_f32(command.screen_px_range) ||
+      command.screen_px_range < 0.0f)
     return false_v;
   if (command.corner_count) {
     if (command.mode != VKR_UI_DRAW_MODE_QUAD || command.texture.id != 0u ||
         (command.corner_count != 3u && command.corner_count != 4u))
       return false_v;
     for (uint32_t i = 0u; i < command.corner_count * 2u; ++i)
-      if (!isfinite(command.corners_px[i].x) ||
-          !isfinite(command.corners_px[i].y))
+      if (!vkr_is_finite_f32(command.corners_px[i].x) ||
+          !vkr_is_finite_f32(command.corners_px[i].y))
         return false_v;
   }
   if ((command.mode == VKR_UI_DRAW_MODE_MTSDF_TEXT ||
@@ -217,8 +216,9 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
       command.texture.id != 0u)
     return false_v;
   if (command.mode == VKR_UI_DRAW_MODE_MTSDF_TEXT &&
-      (command.screen_px_range <= 0.0f || !isfinite(command.sdf_unit_range.x) ||
-       !isfinite(command.sdf_unit_range.y) ||
+      (command.screen_px_range <= 0.0f ||
+       !vkr_is_finite_f32(command.sdf_unit_range.x) ||
+       !vkr_is_finite_f32(command.sdf_unit_range.y) ||
        command.sdf_unit_range.x <= 0.0f || command.sdf_unit_range.y <= 0.0f))
     return false_v;
   if (command.mode == VKR_UI_DRAW_MODE_BOX &&
@@ -236,10 +236,10 @@ static VkrUiRect vkr_ui_draw_integral_scissor(VkrUiRect clip,
       .height = (float32_t)target_height,
   };
   clip = vkr_ui_rect_intersect(clip, target);
-  const float32_t right = ceilf(clip.x + clip.width);
-  const float32_t bottom = ceilf(clip.y + clip.height);
-  clip.x = floorf(clip.x);
-  clip.y = floorf(clip.y);
+  const float32_t right = vkr_ceil_f32(clip.x + clip.width);
+  const float32_t bottom = vkr_ceil_f32(clip.y + clip.height);
+  clip.x = vkr_floor_f32(clip.x);
+  clip.y = vkr_floor_f32(clip.y);
   clip.width = right - clip.x;
   clip.height = bottom - clip.y;
   return vkr_ui_rect_intersect(clip, target);

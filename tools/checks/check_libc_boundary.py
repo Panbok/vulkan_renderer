@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Reject direct libc and operating-system use in renderer sources.
+"""Reject direct libc and operating-system use in renderer and runtime sources.
 
-The renderer reaches libc and operating-system services only through lib/.
-The compiler enforces most of this boundary: renderer targets define
-VKR_LIBC_BOUNDARY, so lib headers expose no stdio, stdlib, string, POSIX or
-Win32 declarations. Two gaps remain, and this guard covers them: vkr_math.h
-keeps <math.h> visible for its inline wrappers, and Objective-C translation
-units import Foundation, which brings the whole C library with it.
+The renderer and runtime reach libc and operating-system services only through
+lib/ (ADR-118). The compiler enforces most of this boundary: their targets
+define VKR_LIBC_BOUNDARY, so lib headers expose no stdio, stdlib, string,
+POSIX or Win32 declarations. This guard covers what the compiler cannot:
+vkr_math.h keeps <math.h> visible for its inline wrappers, Objective-C units
+import Foundation, vendor headers such as stb_image.h include stdio, and C++
+units see the C library through the C++ standard library.
 
 Usage:
-  python3 tools/checks/check_renderer_libc.py
+  python3 tools/checks/check_libc_boundary.py
 """
 
 from pathlib import Path
@@ -17,24 +18,25 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-RENDERER = ROOT / 'renderer' / 'src'
-SUFFIXES = ('.c', '.h', '.m', '.inc')
+SUFFIXES = ('.c', '.h', '.m', '.inc', '.cpp')
 
-# Headers a renderer source may include directly: freestanding C headers and
-# the graphics APIs the backends program against.
-ALLOWED_INCLUDES = {
-    'stdarg.h', 'stdbool.h', 'stddef.h', 'stdint.h',
-    'vulkan/vulkan.h', 'spirv_reflect.h',
-}
-# The Vulkan backend's window-system unit owns the Win32 surface types.
-FILE_INCLUDES = {
-    'vulkan/vkr_vulkan_wsi.c': {'windows.h', 'vulkan/vulkan_win32.h'},
-}
-METAL_INCLUDES = {
-    'Metal/Metal.h', 'Foundation/Foundation.h', 'QuartzCore/CAMetalLayer.h',
-    'QuartzCore/CATransaction.h', 'simd/simd.h', 'dispatch/dispatch.h',
-    'Block.h',
-}
+# C library and operating-system headers. Freestanding headers (stdarg.h,
+# stdbool.h, stddef.h, stdint.h), compiler intrinsics, graphics APIs, vendor
+# libraries and the C++ standard library outside its C wrappers stay allowed.
+C_LIBRARY_HEADERS = set('''
+assert.h complex.h ctype.h errno.h fenv.h float.h inttypes.h limits.h locale.h
+math.h setjmp.h signal.h stdatomic.h stdio.h stdlib.h string.h tgmath.h
+threads.h time.h uchar.h wchar.h wctype.h
+cassert cctype cerrno cfenv cfloat cinttypes climits clocale cmath csetjmp
+csignal cstdio cstdlib cstring ctime cuchar cwchar cwctype
+'''.split())
+OS_HEADER = re.compile(
+    r'^(unistd\.h|fcntl\.h|pthread\.h|dlfcn\.h|dirent\.h|poll\.h|sched\.h|'
+    r'sys/|mach/|mach-o/|os/|windows\.h|windowsx\.h|io\.h|shellapi\.h|'
+    r'shlobj\.h|shobjidl\.h|objbase\.h|combaseapi\.h|dxgi|xinput\.h|'
+    r'winsock|ws2tcpip\.h|timeapi\.h|Block\.h|dispatch/|TargetConditionals\.h|'
+    r'(AppKit|Cocoa|CoreFoundation|CoreGraphics|Foundation|GameController|'
+    r'Metal|QuartzCore|UniformTypeIdentifiers|simd)/)')
 
 MATH = '''
 acos acosf acosh acoshf asin asinf asinh asinhf atan atanf atan2 atan2f atanh
@@ -51,7 +53,7 @@ HUGE_VALF M_PI M_PI_2 M_PI_4 M_E M_SQRT2
 STRING = '''
 memcpy memmove memset memcmp memchr strlen strnlen strcmp strncmp strcpy strncpy
 strcat strncat strchr strrchr strstr strtok strdup strndup strerror strcasecmp
-strncasecmp
+strncasecmp strpbrk strspn strcspn
 '''
 STDIO = '''
 printf fprintf sprintf snprintf vprintf vfprintf vsprintf vsnprintf puts fputs
@@ -70,6 +72,8 @@ isdigit isalpha isalnum isspace isupper islower isxdigit tolower toupper time
 clock difftime mktime localtime gmtime strftime errno assert setjmp longjmp
 signal raise
 FLT_MAX FLT_MIN FLT_EPSILON FLT_TRUE_MIN DBL_MAX DBL_MIN DBL_EPSILON
+FLT_RADIX FLT_MANT_DIG FLT_MAX_EXP CHAR_BIT INT_MAX INT_MIN UINT_MAX LONG_MAX
+LONG_MIN LLONG_MAX ULONG_MAX SHRT_MAX USHRT_MAX
 PRId32 PRIu32 PRIx32 PRId64 PRIu64 PRIx64
 '''
 OPERATING_SYSTEM = '''
@@ -105,13 +109,56 @@ METAL_API_GCD = {
     'dispatch_queue_create', 'dispatch_sync', 'dispatch_async',
     'dispatch_release', 'dispatch_once', 'Block_copy', 'Block_release',
 }
-EXCEPTIONS = {
-    'metal/vkr_metal_packet_renderer.m': METAL_API_GCD,
-    'metal/internal/vkr_metal_packet_present.inc': METAL_API_GCD,
-    'metal/internal/vkr_metal_packet_setup.inc': METAL_API_GCD,
-    'metal/internal/vkr_metal_packet_lifecycle.inc': METAL_API_GCD,
-    'metal/internal/vkr_metal_packet_commands.inc': METAL_API_GCD,
-}
+METAL_HEADER = re.compile(
+    r'^(Metal/|Foundation/|QuartzCore/|simd/|dispatch/|Block\.h$)')
+
+
+class Tree:
+    """One source tree, its skipped files and its platform units.
+
+    A platform unit may include operating-system headers and call
+    operating-system functions; its C library calls still go through lib/.
+    """
+
+    def __init__(self, root, skip, platform_units, header_exceptions,
+                 identifier_exceptions):
+        self.root = root
+        self.skip = skip
+        self.platform_units = platform_units
+        self.header_exceptions = header_exceptions
+        self.identifier_exceptions = identifier_exceptions
+
+
+TREES = (
+    Tree('renderer/src',
+         skip=lambda rel: rel.startswith('shaders/') or
+         rel.endswith('_data.inc'),
+         platform_units=lambda rel: False,
+         # The Vulkan window-system unit owns the Win32 surface types, and the
+         # Metal backend programs against Metal and its Apple frameworks.
+         header_exceptions=lambda rel, header: (
+             rel == 'vulkan/vkr_vulkan_wsi.c' and
+             header in ('windows.h', 'vulkan/vulkan_win32.h')) or (
+             rel.startswith('metal/') and bool(METAL_HEADER.match(header))),
+         identifier_exceptions={
+             'metal/vkr_metal_packet_renderer.m': METAL_API_GCD,
+             'metal/internal/vkr_metal_packet_present.inc': METAL_API_GCD,
+             'metal/internal/vkr_metal_packet_setup.inc': METAL_API_GCD,
+             'metal/internal/vkr_metal_packet_lifecycle.inc': METAL_API_GCD,
+             'metal/internal/vkr_metal_packet_commands.inc': METAL_API_GCD,
+         }),
+    # runtime/src/platform/ is the runtime's window, gamepad and file-dialog
+    # layer over AppKit, GameController, Win32, XInput and DXGI.
+    Tree('runtime/src',
+         skip=lambda rel: rel.startswith('vendor/') or
+         rel == 'assets/stb_image_impl.c',
+         platform_units=lambda rel: rel.startswith('platform/'),
+         # Win32 wide-string APIs take wchar_t text in the Windows units.
+         header_exceptions=lambda rel, header: (
+             rel.startswith('platform/') and rel.endswith('_windows.c') and
+             header == 'wchar.h'),
+         identifier_exceptions={}),
+)
 
 # Types, macros and objects match any use; functions match only calls, since
 # names such as read, write or remainder are also ordinary variables.
@@ -155,26 +202,35 @@ def strip_comments_and_strings(text):
 
 
 def sources():
-    for path in sorted(RENDERER.rglob('*')):
-        relative = path.relative_to(RENDERER)
-        if path.suffix not in SUFFIXES or not path.is_file():
-            continue
-        if relative.parts[0] == 'shaders' or path.name.endswith('_data.inc'):
-            continue
-        yield path, relative.as_posix()
+    for tree in TREES:
+        root = ROOT / tree.root
+        for path in sorted(root.rglob('*')):
+            if path.suffix not in SUFFIXES or not path.is_file():
+                continue
+            relative = path.relative_to(root).as_posix()
+            if not tree.skip(relative):
+                yield tree, path, relative
 
 
-def check(path, relative):
+def header_allowed(tree, relative, header):
+    if tree.header_exceptions(relative, header):
+        return True
+    if header in C_LIBRARY_HEADERS:
+        return False
+    return tree.platform_units(relative) or not OS_HEADER.match(header)
+
+
+def check(tree, path, relative):
     failures = []
+    shown = f'{tree.root}/{relative}'
     raw = path.read_text(encoding='utf-8')
-    allowed_includes = ALLOWED_INCLUDES | FILE_INCLUDES.get(relative, set()) | (
-        METAL_INCLUDES if relative.startswith('metal/') else set())
     for number, line in enumerate(raw.splitlines(), 1):
         match = INCLUDE.match(line)
-        if match and match.group(1) not in allowed_includes:
-            failures.append(f'renderer/src/{relative}:{number}: '
-                            f'<{match.group(1)}> is outside the lib boundary')
-    exceptions = EXCEPTIONS.get(relative, set())
+        if match and not header_allowed(tree, relative, match.group(1)):
+            failures.append(f'{shown}:{number}: <{match.group(1)}> is outside '
+                            'the lib boundary')
+    exceptions = tree.identifier_exceptions.get(relative, set())
+    platform_unit = tree.platform_units(relative)
     text = strip_comments_and_strings(raw)
     for number, line in enumerate(text.splitlines(), 1):
         if INCLUDE.match(line) or line.lstrip().startswith('#'):
@@ -184,10 +240,14 @@ def check(path, relative):
             group = BANNED.get(word)
             if not group or word in exceptions:
                 continue
+            if platform_unit and group == 'platform':
+                continue
             before = line[:match.start()].rstrip()
-            # Members, Objective-C selectors and designated fields share
-            # names such as close or write with the C library.
+            # Members, Objective-C selectors, designated fields and C++
+            # qualified names share names such as close or write with libc.
             if before.endswith(('.', '->')):
+                continue
+            if before.endswith('::') and not before.endswith('std::'):
                 continue
             after = line[match.end():].lstrip()
             if after.startswith(':') and not after.startswith('::'):
@@ -196,21 +256,21 @@ def check(path, relative):
             if not is_macro and word not in ANY_USE and \
                     not after.startswith('('):
                 continue
-            failures.append(f'renderer/src/{relative}:{number}: {word} '
-                            f'({group}) has a lib owner')
+            failures.append(f'{shown}:{number}: {word} ({group}) has a lib '
+                            'owner')
     return failures
 
 
 def main():
     failures = []
-    for path, relative in sources():
-        failures.extend(check(path, relative))
+    for tree, path, relative in sources():
+        failures.extend(check(tree, path, relative))
     if failures:
         print('\n'.join(failures))
-        print(f'check_renderer_libc: {len(failures)} direct libc or platform '
-              'uses in renderer/src; use the lib API')
+        print(f'check_libc_boundary: {len(failures)} direct libc or platform '
+              'uses; use the lib API')
         return 1
-    print('Renderer libc boundary guard passed')
+    print('libc boundary guard passed (renderer, runtime)')
     return 0
 
 

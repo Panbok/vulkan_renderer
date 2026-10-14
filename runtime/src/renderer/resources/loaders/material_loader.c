@@ -4,7 +4,6 @@
 #include "filesystem/vkr_asset_path.h"
 #include "level/vkr_surface.h"
 #include "renderer/systems/vkr_material_system.h"
-#include <math.h>
 
 #define VKR_MATERIAL_EXTENSION "mt"
 
@@ -1753,8 +1752,8 @@ vkr_internal bool8_t vkr_material_parse_bounded_f32(String8 value,
                                                     float32_t max,
                                                     float32_t *out) {
   float32_t parsed = 0.0f;
-  if (!string8_to_f32(&value, &parsed) || !isfinite(parsed) || parsed < min ||
-      parsed > max) {
+  if (!string8_to_f32(&value, &parsed) || !vkr_is_finite_f32(parsed) ||
+      parsed < min || parsed > max) {
     return false_v;
   }
   *out = parsed;
@@ -1785,9 +1784,9 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_brdf_key(
         &pbr->dual_specular_roughness_scale);
   } else if (vkr_string8_equals_cstr_i(&key, "specular_f82_tint")) {
     Vec3 tint = vec3_zero();
-    valid = string8_to_vec3(&value, &tint) && isfinite(tint.x) &&
-            tint.x >= 0.0f && tint.x <= 1.0f && isfinite(tint.y) &&
-            tint.y >= 0.0f && tint.y <= 1.0f && isfinite(tint.z) &&
+    valid = string8_to_vec3(&value, &tint) && vkr_is_finite_f32(tint.x) &&
+            tint.x >= 0.0f && tint.x <= 1.0f && vkr_is_finite_f32(tint.y) &&
+            tint.y >= 0.0f && tint.y <= 1.0f && vkr_is_finite_f32(tint.z) &&
             tint.z >= 0.0f && tint.z <= 1.0f;
     if (valid) {
       pbr->specular_f82_tint = tint;
@@ -1813,7 +1812,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   if (vkr_string8_equals_cstr_i(&key, "subsurface_strength")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.subsurface_strength) ||
-        !isfinite(out_data->pbr.subsurface_strength) ||
+        !vkr_is_finite_f32(out_data->pbr.subsurface_strength) ||
         out_data->pbr.subsurface_strength < 0.0f ||
         out_data->pbr.subsurface_strength > 1.0f) {
       log_error("Material: invalid subsurface_strength");
@@ -1823,8 +1822,9 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "subsurface_profile")) {
     float32_t profile;
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
-    if (!string8_to_f32(&value, &profile) || !isfinite(profile) ||
-        profile < 0.0f || profile >= 8.0f || floorf(profile) != profile) {
+    if (!string8_to_f32(&value, &profile) || !vkr_is_finite_f32(profile) ||
+        profile < 0.0f || profile >= 8.0f ||
+        vkr_floor_f32(profile) != profile) {
       log_error("Material: subsurface_profile must be an integer in [0,7]");
       out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       return VKR_MATERIAL_KEY_INVALID;
@@ -1833,7 +1833,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "diffuse_transmission_strength")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.diffuse_transmission_strength) ||
-        !isfinite(out_data->pbr.diffuse_transmission_strength) ||
+        !vkr_is_finite_f32(out_data->pbr.diffuse_transmission_strength) ||
         out_data->pbr.diffuse_transmission_strength < 0.0f ||
         out_data->pbr.diffuse_transmission_strength > 1.0f) {
       log_error("Material: invalid diffuse_transmission_strength in '%.*s'",
@@ -1844,13 +1844,13 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "diffuse_transmission_color")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_vec3(&value, &out_data->pbr.diffuse_transmission_color) ||
-        !isfinite(out_data->pbr.diffuse_transmission_color.x) ||
+        !vkr_is_finite_f32(out_data->pbr.diffuse_transmission_color.x) ||
         out_data->pbr.diffuse_transmission_color.x < 0.0f ||
         out_data->pbr.diffuse_transmission_color.x > 1.0f ||
-        !isfinite(out_data->pbr.diffuse_transmission_color.y) ||
+        !vkr_is_finite_f32(out_data->pbr.diffuse_transmission_color.y) ||
         out_data->pbr.diffuse_transmission_color.y < 0.0f ||
         out_data->pbr.diffuse_transmission_color.y > 1.0f ||
-        !isfinite(out_data->pbr.diffuse_transmission_color.z) ||
+        !vkr_is_finite_f32(out_data->pbr.diffuse_transmission_color.z) ||
         out_data->pbr.diffuse_transmission_color.z < 0.0f ||
         out_data->pbr.diffuse_transmission_color.z > 1.0f) {
       log_error("Material: invalid diffuse_transmission_color in '%.*s'",
@@ -1861,7 +1861,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "anisotropy_strength")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.anisotropy_strength) ||
-        !isfinite(out_data->pbr.anisotropy_strength) ||
+        !vkr_is_finite_f32(out_data->pbr.anisotropy_strength) ||
         out_data->pbr.anisotropy_strength < 0.0f ||
         out_data->pbr.anisotropy_strength > 1.0f) {
       log_error("Material: invalid anisotropy_strength in '%.*s'",
@@ -1872,7 +1872,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "anisotropy_rotation")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.anisotropy_rotation) ||
-        !isfinite(out_data->pbr.anisotropy_rotation)) {
+        !vkr_is_finite_f32(out_data->pbr.anisotropy_rotation)) {
       log_error("Material: invalid anisotropy_rotation in '%.*s'",
                 (int)path.length, path.str);
       out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -1881,13 +1881,13 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "sheen_color")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_vec3(&value, &out_data->pbr.sheen_color) ||
-        !isfinite(out_data->pbr.sheen_color.x) ||
+        !vkr_is_finite_f32(out_data->pbr.sheen_color.x) ||
         out_data->pbr.sheen_color.x < 0.0f ||
         out_data->pbr.sheen_color.x > 1.0f ||
-        !isfinite(out_data->pbr.sheen_color.y) ||
+        !vkr_is_finite_f32(out_data->pbr.sheen_color.y) ||
         out_data->pbr.sheen_color.y < 0.0f ||
         out_data->pbr.sheen_color.y > 1.0f ||
-        !isfinite(out_data->pbr.sheen_color.z) ||
+        !vkr_is_finite_f32(out_data->pbr.sheen_color.z) ||
         out_data->pbr.sheen_color.z < 0.0f ||
         out_data->pbr.sheen_color.z > 1.0f) {
       log_error("Material: invalid sheen_color in '%.*s'", (int)path.length,
@@ -1898,7 +1898,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "sheen_roughness")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.sheen_roughness) ||
-        !isfinite(out_data->pbr.sheen_roughness) ||
+        !vkr_is_finite_f32(out_data->pbr.sheen_roughness) ||
         out_data->pbr.sheen_roughness < 0.0f ||
         out_data->pbr.sheen_roughness > 1.0f) {
       log_error("Material: invalid sheen_roughness in '%.*s'", (int)path.length,
@@ -1909,7 +1909,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "clearcoat_factor")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.clearcoat_factor) ||
-        !isfinite(out_data->pbr.clearcoat_factor) ||
+        !vkr_is_finite_f32(out_data->pbr.clearcoat_factor) ||
         out_data->pbr.clearcoat_factor < 0.0f ||
         out_data->pbr.clearcoat_factor > 1.0f) {
       log_error("Material: invalid clearcoat_factor in '%.*s'",
@@ -1920,7 +1920,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "clearcoat_roughness")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.clearcoat_roughness) ||
-        !isfinite(out_data->pbr.clearcoat_roughness) ||
+        !vkr_is_finite_f32(out_data->pbr.clearcoat_roughness) ||
         out_data->pbr.clearcoat_roughness < 0.0f ||
         out_data->pbr.clearcoat_roughness > 1.0f) {
       log_error("Material: invalid clearcoat_roughness in '%.*s'",
@@ -1931,7 +1931,7 @@ vkr_internal VkrMaterialKeyResult vkr_material_loader_parse_layer_key(
   } else if (vkr_string8_equals_cstr_i(&key, "clearcoat_normal_scale")) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
     if (!string8_to_f32(&value, &out_data->pbr.clearcoat_normal_scale) ||
-        !isfinite(out_data->pbr.clearcoat_normal_scale)) {
+        !vkr_is_finite_f32(out_data->pbr.clearcoat_normal_scale)) {
       log_error("Material: invalid clearcoat_normal_scale in '%.*s'",
                 (int)path.length, path.str);
       out_data->parse_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -2052,8 +2052,9 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
       size = string8_to_f32(&value, &uniform) ? vec2_new(uniform, uniform)
                                               : vec2_new(-1.0f, -1.0f);
     }
-    if (!isfinite(size.x) || !isfinite(size.y) || size.x < 0.01f ||
-        size.y < 0.01f || size.x > 1000.0f || size.y > 1000.0f) {
+    if (!vkr_is_finite_f32(size.x) || !vkr_is_finite_f32(size.y) ||
+        size.x < 0.01f || size.y < 0.01f || size.x > 1000.0f ||
+        size.y > 1000.0f) {
       log_error("Material: world_size must be one or two sizes from 0.01 to "
                 "1000 m in '%.*s'",
                 (int)path.length, path.str);
@@ -2142,7 +2143,7 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
   /* Layer files and the mask of a layered material. */
   for (uint32_t layer = 1u; layer < VKR_MATERIAL_TERRAIN_LAYERS; ++layer) {
     char layer_key[8];
-    snprintf(layer_key, sizeof(layer_key), "layer%u", layer);
+    string_format(layer_key, sizeof(layer_key), "layer%u", layer);
     if (vkr_string8_equals_cstr_i(&key, layer_key)) {
       if (!value.length || value.length >= VKR_MATERIAL_PATH_MAX) {
         log_error("Material: %s names a layer .mt file in '%.*s'", layer_key,
@@ -2172,8 +2173,8 @@ vkr_internal bool8_t vkr_material_loader_parse_key(
   }
   if (vkr_string8_equals_cstr_i(&key, "layer_mask_range")) {
     Vec2 range = {0};
-    if (!string8_to_vec2(&value, &range) || !isfinite(range.x) ||
-        !isfinite(range.y) || !(range.x < range.y)) {
+    if (!string8_to_vec2(&value, &range) || !vkr_is_finite_f32(range.x) ||
+        !vkr_is_finite_f32(range.y) || !(range.x < range.y)) {
       log_error("Material: layer_mask_range is two increasing numbers in "
                 "'%.*s'",
                 (int)path.length, path.str);
@@ -2380,7 +2381,7 @@ vkr_material_loader_validate_parsed(VkrParsedMaterialData *out_data) {
     return false_v;
   }
   out_data->pbr.anisotropy_rotation =
-      remainderf(out_data->pbr.anisotropy_rotation, 6.283185307179586f);
+      vkr_remainder_f32(out_data->pbr.anisotropy_rotation, 6.283185307179586f);
   return true_v;
 }
 
@@ -2433,7 +2434,7 @@ vkr_internal bool8_t vkr_material_loader_expand_graph(
   const String8 graph_path = vkr_asset_path_resolve(
       allocator, path,
       string8_create_from_cstr((const uint8_t *)instance->graph,
-                               strlen(instance->graph)));
+                               string_length(instance->graph)));
   FilePath file_path = vkr_asset_path_file(allocator, graph_path);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -2467,7 +2468,7 @@ vkr_internal bool8_t vkr_material_loader_expand_graph(
     return false_v;
   }
   if (instance->name[0]) {
-    snprintf(out_data->name, sizeof(out_data->name), "%s", instance->name);
+    string_format(out_data->name, sizeof(out_data->name), "%s", instance->name);
   }
   /* The instance's own art-pass lines follow the graph's, so they win. */
   if (instance->world_size[0] || instance->surface[0]) {
@@ -2481,12 +2482,13 @@ vkr_internal bool8_t vkr_material_loader_expand_graph(
     MemCopy(joined, definition.str, definition.length);
     uint64_t length = definition.length;
     if (instance->world_size[0]) {
-      length += (uint64_t)snprintf(joined + length, capacity - length,
-                                   "world_size=%s\n", instance->world_size);
+      length +=
+          (uint64_t)string_format(joined + length, capacity - length,
+                                  "world_size=%s\n", instance->world_size);
     }
     if (instance->surface[0]) {
-      length += (uint64_t)snprintf(joined + length, capacity - length,
-                                   "surface=%s\n", instance->surface);
+      length += (uint64_t)string_format(joined + length, capacity - length,
+                                        "surface=%s\n", instance->surface);
     }
     definition = (String8){.str = (uint8_t *)joined, .length = length};
   }

@@ -159,21 +159,22 @@ void vkr_camera_set_pose(VkrCamera *camera, Vec3 position,
 
 bool8_t vkr_camera_set_basis(VkrCamera *camera, Vec3 position, Vec3 forward,
                              Vec3 up) {
-  if (!camera || !isfinite(position.x) || !isfinite(position.y) ||
-      !isfinite(position.z) || !isfinite(forward.x) || !isfinite(forward.y) ||
-      !isfinite(forward.z) || !isfinite(up.x) || !isfinite(up.y) ||
-      !isfinite(up.z)) {
+  if (!camera || !vkr_is_finite_f32(position.x) ||
+      !vkr_is_finite_f32(position.y) || !vkr_is_finite_f32(position.z) ||
+      !vkr_is_finite_f32(forward.x) || !vkr_is_finite_f32(forward.y) ||
+      !vkr_is_finite_f32(forward.z) || !vkr_is_finite_f32(up.x) ||
+      !vkr_is_finite_f32(up.y) || !vkr_is_finite_f32(up.z)) {
     return false_v;
   }
   const float32_t forward_length_squared = vec3_length_squared(forward);
-  if (!isfinite(forward_length_squared) ||
+  if (!vkr_is_finite_f32(forward_length_squared) ||
       forward_length_squared <= VKR_FLOAT_EPSILON) {
     return false_v;
   }
   const Vec3 normalized_forward = vec3_normalize(forward);
   const Vec3 right = vec3_cross(normalized_forward, up);
   const float32_t right_length_squared = vec3_length_squared(right);
-  if (!isfinite(right_length_squared) ||
+  if (!vkr_is_finite_f32(right_length_squared) ||
       right_length_squared <= VKR_FLOAT_EPSILON) {
     return false_v;
   }

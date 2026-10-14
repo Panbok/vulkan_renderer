@@ -132,7 +132,7 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
 
   MemZero(system, sizeof(*system));
   system->config = config ? *config : VKR_GIZMO_CONFIG_DEFAULT;
-  if (!isfinite(system->config.screen_size) ||
+  if (!vkr_is_finite_f32(system->config.screen_size) ||
       system->config.screen_size <= 0.0f)
     return false_v;
   system->mode = VKR_GIZMO_MODE_TRANSLATE;
@@ -262,20 +262,20 @@ uint32_t vkr_gizmo_system_build_draws(
       mat4_mul_vec4(view, vec4_new(system->position.x, system->position.y,
                                    system->position.z, 1.0f));
   const Vec4 clip = mat4_mul_vec4(projection, center);
-  const float32_t projection_y = fabsf(projection.elements[5]);
-  if (!isfinite(clip.w) || clip.w <= VKR_FLOAT_EPSILON || clip.z < 0.0f ||
-      clip.z > clip.w || projection_y <= VKR_FLOAT_EPSILON)
+  const float32_t projection_y = vkr_abs_f32(projection.elements[5]);
+  if (!vkr_is_finite_f32(clip.w) || clip.w <= VKR_FLOAT_EPSILON ||
+      clip.z < 0.0f || clip.z > clip.w || projection_y <= VKR_FLOAT_EPSILON)
     return 0u;
   const float32_t pixels =
       system->config.screen_size *
       (system->pixel_scale > 0.0f ? system->pixel_scale : 1.0f);
   const float32_t scale =
       2.0f * pixels * clip.w / (projection_y * mapping->image_rect_px.w);
-  if (!isfinite(scale) || scale <= 0.0f)
+  if (!vkr_is_finite_f32(scale) || scale <= 0.0f)
     return 0u;
   /* The view ray through the center, in view space: toward the center for
      perspective, straight ahead for orthographic. */
-  const bool8_t orthographic = fabsf(projection.elements[11]) < 0.5f;
+  const bool8_t orthographic = vkr_abs_f32(projection.elements[11]) < 0.5f;
   const Vec3 center_view = vec3_new(center.x, center.y, center.z);
   const Vec3 ray = orthographic || vec3_length(center_view) < VKR_FLOAT_EPSILON
                        ? vec3_new(0.0f, 0.0f, -1.0f)
@@ -296,7 +296,7 @@ uint32_t vkr_gizmo_system_build_draws(
       const Vec3 axis = vkr_gizmo_system_axis(system, mode, shape->axis);
       const Vec4 axis_view4 =
           mat4_mul_vec4(view, vec4_new(axis.x, axis.y, axis.z, 0.0f));
-      const float32_t facing = fabsf(
+      const float32_t facing = vkr_abs_f32(
           vec3_dot(vec3_new(axis_view4.x, axis_view4.y, axis_view4.z), ray));
       /* An axis seen end-on and a plane seen edge-on cannot be dragged
          precisely; the dragged handle stays. */

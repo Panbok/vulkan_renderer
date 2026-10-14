@@ -4,8 +4,6 @@
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 
-#include <stdio.h>
-
 vkr_internal bool8_t animation_loader_can_load(VkrResourceLoader *self,
                                                String8 name) {
   (void)self;
@@ -35,7 +33,7 @@ vkr_internal bool8_t animation_loader_load(VkrResourceLoader *self,
   if (!vkr_allocator_scope_is_valid(&scope)) {
     return false_v;
   }
-  FILE *file = NULL;
+  FileHandle file = {0};
   Arena *arena = NULL;
   VkrAllocator allocator = {0};
   bool8_t success = false_v;
@@ -47,26 +45,27 @@ vkr_internal bool8_t animation_loader_load(VkrResourceLoader *self,
   }
   MemCopy(path, name.str, name.length);
   path[name.length] = 0;
-  file = file_fopen(path, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(path);
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
     goto cleanup;
   }
-  if (fseek(file, 0, SEEK_END) != 0) {
+  uint64_t size = 0u;
+  if (file_remaining_size(&file, &size) != FILE_ERROR_NONE || size < 48u ||
+      size > VKR_ANIMATION_COOKED_MAX_BYTES) {
     goto cleanup;
   }
-  const long size = ftell(file);
-  if (size < 48 || (uint64_t)size > VKR_ANIMATION_COOKED_MAX_BYTES ||
-      fseek(file, 0, SEEK_SET) != 0) {
-    goto cleanup;
-  }
-  uint8_t *bytes = vkr_allocator_alloc(scratch, (uint64_t)size,
-                                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  uint8_t *bytes =
+      vkr_allocator_alloc(scratch, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
   if (!bytes) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     goto cleanup;
   }
-  if (fread(bytes, 1u, (size_t)size, file) != (size_t)size) {
+  uint64_t bytes_read = 0u;
+  if (file_read_into(&file, bytes, size, &bytes_read) != FILE_ERROR_NONE ||
+      bytes_read != size) {
     goto cleanup;
   }
   arena = arena_create(GB(2), KB(64));
@@ -84,7 +83,7 @@ vkr_internal bool8_t animation_loader_load(VkrResourceLoader *self,
   }
   *result = (VkrAnimationLoaderResult){.arena = arena};
   const char *decode_error = NULL;
-  if (!vkr_animation_cooked_decode(&allocator, scratch, bytes, (uint64_t)size,
+  if (!vkr_animation_cooked_decode(&allocator, scratch, bytes, size,
                                    &result->asset, &decode_error)) {
     goto cleanup;
   }
@@ -106,9 +105,7 @@ vkr_internal bool8_t animation_loader_load(VkrResourceLoader *self,
   *out_error = VKR_RENDERER_ERROR_NONE;
   success = true_v;
 cleanup:
-  if (file) {
-    fclose(file);
-  }
+  file_close(&file);
   if (!success && arena) {
     vkr_allocator_release_global_accounting(&allocator);
     arena_destroy(arena);

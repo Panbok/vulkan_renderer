@@ -1,14 +1,11 @@
 #include "renderer/systems/vkr_scene_simulation.h"
 
 #include "renderer/systems/vkr_scene_physics.h"
-#include <assert.h>
-#include <math.h>
-#include <string.h>
 
 static bool8_t simulation_fail(VkrScene *scene, const char **error,
                                const char *message) {
   const uint64_t length =
-      Min(strlen(message), sizeof(scene->simulation.error_storage) - 1);
+      Min(string_length(message), sizeof(scene->simulation.error_storage) - 1);
   MemCopy(scene->simulation.error_storage, message, length);
   scene->simulation.error_storage[length] = 0;
   scene->simulation.error = scene->simulation.error_storage;
@@ -124,13 +121,13 @@ bool8_t vkr_scene_simulation_tick(VkrScene *scene, const char **error) {
 void vkr_scene_simulation_update(VkrScene *scene, float64_t dt) {
   VkrSceneSimulation *simulation = &scene->simulation;
   if (simulation->active || simulation->faulted || scene->physics_paused ||
-      scene->physics_disabled || !isfinite(dt) || dt < 0.0 ||
+      scene->physics_disabled || !vkr_is_finite_f64(dt) || dt < 0.0 ||
       (!simulation->enabled &&
        !vkr_scene_physics_simulated_body_count(scene))) {
     return;
   }
   const float64_t elapsed = simulation->accumulator + dt;
-  if (!isfinite(elapsed)) {
+  if (!vkr_is_finite_f64(elapsed)) {
     simulation_fail(scene, NULL,
                     "Simulation elapsed-time accumulator overflow");
     return;
@@ -174,7 +171,7 @@ void vkr_scene_simulation_reset_state(VkrScene *scene) {
   if (simulation->callbacks.reset) {
     simulation->active = true_v;
     const bool8_t locked = vkr_entity_structural_read_begin(scene->world);
-    assert(locked);
+    vkr_assert(locked);
     if (!locked) {
       simulation->active = false_v;
       simulation_fail(scene, NULL, "Cannot acquire reset ECS barrier");

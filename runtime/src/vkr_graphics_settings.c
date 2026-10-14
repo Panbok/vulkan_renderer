@@ -1,10 +1,7 @@
 #include "vkr_graphics_settings.h"
 #include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
-#include <errno.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <string.h>
 
 static const char *const s_shadow_quality_names[] = {"off", "balanced", "high",
                                                      "ultra", NULL};
@@ -399,13 +396,18 @@ bool8_t vkr_graphics_settings_load(const char *path,
                                    VkrGraphicsSettings *settings) {
   if (!path || !path[0])
     return true_v;
-  FILE *file = file_fopen(path, "rb");
-  if (!file)
-    return errno == ENOENT;
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  const FileError open_error = file_open(
+      &file_path, (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY}, &file);
+  if (open_error != FILE_ERROR_NONE)
+    return open_error == FILE_ERROR_NOT_FOUND;
   uint8_t bytes[4096];
-  const size_t length = fread(bytes, 1, sizeof(bytes), file);
-  const bool8_t read_ok = !ferror(file) && length < sizeof(bytes);
-  fclose(file);
+  uint64_t length = 0u;
+  const bool8_t read_ok =
+      file_read_into(&file, bytes, sizeof(bytes), &length) == FILE_ERROR_NONE &&
+      length < sizeof(bytes);
+  file_close(&file);
   if (!read_ok)
     return false_v;
   return vkr_graphics_settings_read_json(string8_create(bytes, length),
@@ -437,8 +439,8 @@ bool8_t vkr_graphics_settings_save(const char *path,
   }
   VkrJsonFileWriter writer = {0};
   if (!vkr_json_file_writer_begin(
-          &writer,
-          string8_create_from_cstr((const uint8_t *)path, strlen(path)))) {
+          &writer, string8_create_from_cstr((const uint8_t *)path,
+                                            string_length(path)))) {
     return false_v;
   }
   if (!vkr_graphics_settings_write_json(&writer.writer, settings) ||

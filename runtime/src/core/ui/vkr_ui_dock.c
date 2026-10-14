@@ -4,8 +4,6 @@
 #include "filesystem/filesystem.h"
 #include "math/vkr_math.h"
 
-#include <math.h>
-
 static bool8_t vkr_ui_dock_point_in_rect(int32_t x, int32_t y, VkrUiRect rect) {
   return (float32_t)x >= rect.x && (float32_t)x < rect.x + rect.width &&
          (float32_t)y >= rect.y && (float32_t)y < rect.y + rect.height;
@@ -88,8 +86,8 @@ static bool8_t vkr_ui_dock_validate_node(const VkrUiDockTree *tree,
     return false_v;
   if (node->kind == VKR_UI_DOCK_NODE_SPLIT) {
     return node->as.split.axis <= VKR_UI_DOCK_SPLIT_Y &&
-           isfinite(node->as.split.ratio) && node->as.split.ratio >= 0.05f &&
-           node->as.split.ratio <= 0.95f &&
+           vkr_is_finite_f32(node->as.split.ratio) &&
+           node->as.split.ratio >= 0.05f && node->as.split.ratio <= 0.95f &&
            vkr_ui_dock_validate_node(tree, node->as.split.first, index, visited,
                                      scene_count) &&
            vkr_ui_dock_validate_node(tree, node->as.split.second, index,
@@ -162,13 +160,14 @@ static Vec2 vkr_ui_dock_measure_minimum(const VkrUiDockTree *tree,
   Vec2 size;
   if (node->kind == VKR_UI_DOCK_NODE_TABS) {
     size = (Vec2){
-        ceilf(VKR_UI_DOCK_PANEL_MIN_WIDTH_PT * scale),
+        vkr_ceil_f32(VKR_UI_DOCK_PANEL_MIN_WIDTH_PT * scale),
         vkr_ui_dock_node_is_toolbar(node)
-            ? roundf((tree->toolbar_pt > 0.0f ? tree->toolbar_pt
-                                              : VKR_UI_DOCK_TOOLBAR_PT) *
-                     scale)
+            ? vkr_round_f32((tree->toolbar_pt > 0.0f ? tree->toolbar_pt
+                                                     : VKR_UI_DOCK_TOOLBAR_PT) *
+                            scale)
             : tree->tab_bar_px +
-                  ceilf(VKR_UI_DOCK_PANEL_MIN_CONTENT_HEIGHT_PT * scale)};
+                  vkr_ceil_f32(VKR_UI_DOCK_PANEL_MIN_CONTENT_HEIGHT_PT *
+                               scale)};
   } else {
     const Vec2 first =
         vkr_ui_dock_measure_minimum(tree, node->as.split.first, minimum);
@@ -197,12 +196,12 @@ static float32_t vkr_ui_dock_first_extent(const VkrUiDockTree *tree,
   const float32_t minimum_sum = first_min + second_min;
   /* Undersized windows share the shortage; neither side disappears first. */
   if (available < minimum_sum)
-    return Min(available, roundf(available * first_min / minimum_sum));
+    return Min(available, vkr_round_f32(available * first_min / minimum_sum));
   if (!horizontal && vkr_ui_dock_split_has_toolbar(tree, node))
     return vkr_ui_dock_node_is_toolbar(&tree->nodes[node->as.split.first])
                ? first_min
                : available - second_min;
-  return vkr_clamp_f32(roundf(available * ratio), first_min,
+  return vkr_clamp_f32(vkr_round_f32(available * ratio), first_min,
                        available - second_min);
 }
 
@@ -236,8 +235,8 @@ static void vkr_ui_dock_layout_node(VkrUiDockTree *tree, uint32_t index,
 bool8_t vkr_ui_dock_layout(VkrUiDockTree *tree, VkrUiRect target_rect_px,
                            float32_t splitter_px, float32_t tab_bar_px) {
   if (!vkr_ui_dock_validate(tree) || !vkr_ui_rect_has_area(target_rect_px) ||
-      !isfinite(splitter_px) || splitter_px < 0.0f || !isfinite(tab_bar_px) ||
-      tab_bar_px < 0.0f)
+      !vkr_is_finite_f32(splitter_px) || splitter_px < 0.0f ||
+      !vkr_is_finite_f32(tab_bar_px) || tab_bar_px < 0.0f)
     return false_v;
   tree->splitter_px = splitter_px;
   tree->tab_bar_px = tab_bar_px;
@@ -308,7 +307,8 @@ String8 vkr_ui_dock_panel_label(VkrUiDockPanelKind panel_kind) {
 bool8_t vkr_ui_dock_set_split_ratio(VkrUiDockTree *tree, uint32_t split,
                                     float32_t ratio) {
   if (!tree || split >= tree->node_high_water || !tree->nodes[split].used ||
-      tree->nodes[split].kind != VKR_UI_DOCK_NODE_SPLIT || !isfinite(ratio) ||
+      tree->nodes[split].kind != VKR_UI_DOCK_NODE_SPLIT ||
+      !vkr_is_finite_f32(ratio) ||
       vkr_ui_dock_split_has_toolbar(tree, &tree->nodes[split]))
     return false_v;
   float32_t normalized = vkr_clamp_f32(ratio, 0.05f, 0.95f);
@@ -555,8 +555,8 @@ VkrUiRect vkr_ui_dock_tab_rect(const VkrUiDockTree *tree, uint32_t leaf,
   const float32_t scale = Min(tree->tab_bar_px / VKR_UI_DOCK_TAB_BAR_PT,
                               node->rect_px.width / total);
   const float32_t width = widths_pt[node->as.leaf.tabs[tab].panel_kind];
-  const float32_t left = roundf(preceding * scale);
-  const float32_t right = roundf((preceding + width) * scale);
+  const float32_t left = vkr_round_f32(preceding * scale);
+  const float32_t right = vkr_round_f32((preceding + width) * scale);
   return (VkrUiRect){node->rect_px.x + left, node->rect_px.y, right - left,
                      Min(tree->tab_bar_px, node->rect_px.height)};
 }
@@ -826,7 +826,7 @@ static String8 vkr_ui_dock_panel_name(VkrUiDockPanelKind kind) {
 static bool8_t vkr_ui_dock_write_tab(VkrJsonWriter *writer, VkrUiDockTab tab) {
   char id[17];
   const int length =
-      snprintf(id, sizeof(id), "%016llx", (unsigned long long)tab.id);
+      string_format(id, sizeof(id), "%016llx", (unsigned long long)tab.id);
   return length == 16 && vkr_json_writer_begin_object(writer) &&
          vkr_ui_dock_json_name(writer, "id") &&
          vkr_json_writer_string(
@@ -1042,18 +1042,24 @@ bool8_t vkr_ui_dock_save_file(const VkrUiDockTree *tree, String8 path) {
 bool8_t vkr_ui_dock_load_file(VkrUiDockTree *tree, String8 path) {
   if (!tree || !path.str || path.length == 0u ||
       path.length > VKR_JSON_WRITER_PATH_MAX ||
-      memchr(path.str, '\0', path.length))
+      MemFindByte(path.str, '\0', path.length))
     return false_v;
   char cpath[VKR_JSON_WRITER_PATH_MAX + 1u];
   MemCopy(cpath, path.str, path.length);
   cpath[path.length] = '\0';
-  FILE *file = file_fopen(cpath, "rb");
-  if (!file)
+  const FilePath file_path = file_path_view(cpath);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE)
     return false_v;
   uint8_t json[VKR_UI_DOCK_JSON_CAPACITY];
-  const size_t length = fread(json, 1u, sizeof(json), file);
-  const bool8_t complete = !ferror(file) && feof(file);
-  fclose(file);
+  uint64_t length = 0u;
+  /* A file that fills the buffer may continue past it: refuse it. */
+  const bool8_t complete =
+      file_read_into(&file, json, sizeof(json), &length) == FILE_ERROR_NONE &&
+      length < sizeof(json);
+  file_close(&file);
   return complete && length > 0u &&
          vkr_ui_dock_read_json(string8_create(json, length), tree);
 }

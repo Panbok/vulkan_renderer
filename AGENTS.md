@@ -44,16 +44,18 @@ duplicate a defective primitive instead of fixing its owner. Aggregate zero
 initialization remains valid.
 
 C library, POSIX, Win32 and Apple platform services belong to `lib/` (ADR-118).
-Renderer code must call the lib API (`vkr_math.h` wrappers, `str.h`,
-`filesystem.h`, `vkr_platform.h`, `vkr_heap.h`, threads, atomics, job system)
-and include only freestanding C and graphics-API headers. When the lib lacks a
-service, add it to the owning lib module first; a math wrapper keeps the libm
-function's precision and NaN behavior. Metal-required GCD/Blocks calls and the
-Win32 surface in `vkr_vulkan_wsi.c` are the only exceptions, listed in
-`tools/checks/check_renderer_libc.py`; extend that list only for an API that
-takes the platform type. A renderer change is done when the renderer builds
-behind `VKR_LIBC_BOUNDARY` and that check passes. Other modules use an existing
-lib abstraction instead of a new direct libc or OS call.
+Renderer and runtime code (`renderer/src`, `runtime/src`) must call the lib API
+(`vkr_math.h` wrappers, `str.h`, `filesystem.h`, `vkr_platform.h`, `vkr_heap.h`,
+`vkr_sort.h`, threads, atomics, job system) and include only freestanding C,
+graphics-API and vendor headers. When the lib lacks a service, add it to the
+owning lib module first; a wrapper keeps the C function's precision, NaN and
+parse semantics. The only OS units are the Metal backend's API-required
+GCD/Blocks calls, `vkr_vulkan_wsi.c` and `runtime/src/platform/`, listed in
+`tools/checks/check_libc_boundary.py`; extend that list only for an API that
+takes the platform type. C++ adapters keep the C++ standard library but not C
+calls. A change there is done when the targets build behind
+`VKR_LIBC_BOUNDARY` and that check passes. Other modules use an existing lib
+abstraction instead of a new direct libc or OS call.
 
 Extend the existing owner by default. A new source/header needs an independent
 responsibility, lifetime, reusable contract, or backend/build boundary. File

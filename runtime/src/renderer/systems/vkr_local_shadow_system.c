@@ -4,9 +4,6 @@
 #include "renderer/systems/vkr_shadow_system.h"
 #include "vkr_temporal.h"
 
-#include <float.h>
-#include <math.h>
-
 /* A light that has the full filter or transmission layers keeps them until a
  * competitor outscores it by this factor, so they do not flip while scores
  * cross. */
@@ -127,19 +124,21 @@ vkr_internal bool8_t vkr_local_shadow_light_valid(const VkrPointLight *light,
                                                   float32_t *out_half_fov) {
   const bool8_t spot = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
   const uint32_t face_count = spot ? 1u : 6u;
-  if (!light->casts_shadow || !isfinite(light->range) || light->range <= 0.0f ||
-      !isfinite(light->position.x) || !isfinite(light->position.y) ||
-      !isfinite(light->position.z)) {
+  if (!light->casts_shadow || !vkr_is_finite_f32(light->range) ||
+      light->range <= 0.0f || !vkr_is_finite_f32(light->position.x) ||
+      !vkr_is_finite_f32(light->position.y) ||
+      !vkr_is_finite_f32(light->position.z)) {
     return false_v;
   }
 
   const float32_t half_fov = spot ? light->outer_cone_angle : 0.78539816339f;
-  if (!isfinite(half_fov) || half_fov <= 0.0f || half_fov >= 1.57079632679f) {
+  if (!vkr_is_finite_f32(half_fov) || half_fov <= 0.0f ||
+      half_fov >= 1.57079632679f) {
     return false_v;
   }
   if (spot) {
     const float32_t direction_length = vec3_length(light->direction);
-    if (!isfinite(direction_length) || direction_length < 0.000001f)
+    if (!vkr_is_finite_f32(direction_length) || direction_length < 0.000001f)
       return false_v;
   }
 
@@ -156,7 +155,8 @@ vkr_internal void vkr_local_shadow_face_basis(const VkrPointLight *light,
   const Vec3 forward = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
                            ? vec3_normalize(light->direction)
                            : s_face_direction[face];
-  const Vec3 up = fabsf(forward.y) > 0.99f ? (Vec3){0, 0, 1} : (Vec3){0, 1, 0};
+  const Vec3 up =
+      vkr_abs_f32(forward.y) > 0.99f ? (Vec3){0, 0, 1} : (Vec3){0, 1, 0};
   const Vec3 right = vec3_normalize(vec3_cross(forward, up));
   *out_right = right;
   *out_up = vec3_cross(right, forward);
@@ -170,8 +170,9 @@ uint32_t vkr_local_shadow_sphere_faces(const VkrPointLight *light, Vec3 center,
   if (!vkr_local_shadow_light_valid(light, &face_count, &half_fov))
     return 0u;
   const uint32_t all_faces = (UINT32_C(1) << face_count) - 1u;
-  if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z) ||
-      !isfinite(radius) || radius < 0.0f)
+  if (!vkr_is_finite_f32(center.x) || !vkr_is_finite_f32(center.y) ||
+      !vkr_is_finite_f32(center.z) || !vkr_is_finite_f32(radius) ||
+      radius < 0.0f)
     return all_faces;
 
   /* A side plane of a face's square pyramid keeps the points whose
@@ -179,8 +180,8 @@ uint32_t vkr_local_shadow_sphere_faces(const VkrPointLight *light, Vec3 center,
      least their side component times its cosine; the sphere may meet the
      pyramid while its center lies within `radius` of every side plane. */
   const Vec3 delta = vec3_sub(center, light->position);
-  const float32_t sine = sinf(half_fov);
-  const float32_t cosine = cosf(half_fov);
+  const float32_t sine = vkr_sin_f32(half_fov);
+  const float32_t cosine = vkr_cos_f32(half_fov);
   uint32_t faces = 0u;
   for (uint32_t face = 0u; face < face_count; ++face) {
     Vec3 right;
@@ -188,8 +189,8 @@ uint32_t vkr_local_shadow_sphere_faces(const VkrPointLight *light, Vec3 center,
     Vec3 forward;
     vkr_local_shadow_face_basis(light, face, &right, &up, &forward);
     const float32_t reach = vec3_dot(delta, forward) * sine + radius;
-    if (reach >= fabsf(vec3_dot(delta, right)) * cosine &&
-        reach >= fabsf(vec3_dot(delta, up)) * cosine)
+    if (reach >= vkr_abs_f32(vec3_dot(delta, right)) * cosine &&
+        reach >= vkr_abs_f32(vec3_dot(delta, up)) * cosine)
       faces |= UINT32_C(1) << face;
   }
   return faces;
@@ -202,7 +203,7 @@ vkr_internal uint32_t vkr_local_shadow_visible_faces(const VkrPointLight *light,
                                                      uint32_t face_count,
                                                      float32_t half_fov,
                                                      const VkrFrustum *camera) {
-  const float32_t extent = light->range * tanf(half_fov);
+  const float32_t extent = light->range * vkr_tan_f32(half_fov);
   uint32_t faces = 0u;
   for (uint32_t face = 0u; face < face_count; ++face) {
     Vec3 right;
@@ -366,7 +367,7 @@ vkr_internal uint32_t vkr_local_shadow_fit_budget(
       const float32_t reach =
           (input->fade_distance + light->range) *
           (candidate->previous != 0u ? VKR_LOCAL_SHADOW_INCUMBENT_BONUS : 1.0f);
-      const float32_t distance = sqrtf(vec3_length_squared(
+      const float32_t distance = vkr_sqrt_f32(vec3_length_squared(
           vec3_sub(light->position, input->camera->position)));
       if (!(distance <= reach)) {
         continue;
@@ -589,7 +590,7 @@ vkr_internal void vkr_local_shadow_write_views(
     float32_t strength, bool8_t reduced, float32_t source_radius,
     VkrLocalShadowView *out_views) {
   const float32_t near_clip = Min(0.05f, light->range * 0.01f);
-  const float32_t tan_half_fov = tanf(candidate->half_fov);
+  const float32_t tan_half_fov = vkr_tan_f32(candidate->half_fov);
   const float32_t source_radius_uv =
       reduced ? 0.0f : source_radius / (2.0f * tan_half_fov);
   const Mat4 projection = mat4_perspective(2.0f * candidate->half_fov, 1.0f,
@@ -599,7 +600,7 @@ vkr_internal void vkr_local_shadow_write_views(
                                ? vec3_normalize(light->direction)
                                : s_face_direction[face];
     const Vec3 up =
-        fabsf(direction.y) > 0.99f ? (Vec3){0, 0, 1} : (Vec3){0, 1, 0};
+        vkr_abs_f32(direction.y) > 0.99f ? (Vec3){0, 0, 1} : (Vec3){0, 1, 0};
     const Mat4 view =
         mat4_look_at(light->position, vec3_add(light->position, direction), up);
     const uint32_t cell = candidate->face_cells[face];
@@ -732,11 +733,12 @@ vkr_local_shadow_adopt_new_pool(VkrLocalShadowCache *cache,
  * pixel filters; a faded light stays resident and fades back in. */
 vkr_internal float32_t vkr_local_shadow_distance_fade(
     const VkrLocalShadowCacheInput *input, const VkrPointLight *light) {
-  const float32_t distance = sqrtf(
+  const float32_t distance = vkr_sqrt_f32(
       vec3_length_squared(vec3_sub(light->position, input->camera->position)));
   const float32_t distance_fade =
       (input->fade_distance - distance) / VKR_LOCAL_SHADOW_FADE_BAND_METRES;
-  return isfinite(distance_fade) ? Clamp(distance_fade, 0.0f, 1.0f) : 0.0f;
+  return vkr_is_finite_f32(distance_fade) ? Clamp(distance_fade, 0.0f, 1.0f)
+                                          : 0.0f;
 }
 
 /* Scores every valid light and sizes its faces by range. With `feedback`,
@@ -772,19 +774,19 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
                                     ? input->unfaded_intensity[i]
                                     : light->intensity;
     float32_t size_score =
-        baked ? FLT_MAX
+        baked ? VKR_FLOAT_MAX
               : Max(luminance, 0.0f) * Max(intensity, 0.0f) * light->range *
                     light->range /
                     Max(distance_squared, near_distance * near_distance);
-    if (!isfinite(size_score) || size_score < 0.0f) {
+    if (!vkr_is_finite_f32(size_score) || size_score < 0.0f) {
       size_score = 0.0f;
     }
     float32_t score =
-        baked ? FLT_MAX
+        baked ? VKR_FLOAT_MAX
         : feedback
             ? vkr_local_shadow_feedback_score(feedback, i, light->render_id)
             : size_score;
-    if (!isfinite(score) || score < 0.0f)
+    if (!vkr_is_finite_f32(score) || score < 0.0f)
       score = 0.0f;
     candidates[candidate_count++] = (VkrLocalShadowCandidate){
         .light_index = i,
@@ -1108,7 +1110,7 @@ vkr_internal void vkr_local_shadow_publish(
               sizeof(candidate->transmission_layers));
     const uint32_t first_view = out->view_count;
     const float32_t source_radius =
-        input->soft_shadows && isfinite(light->source_radius) &&
+        input->soft_shadows && vkr_is_finite_f32(light->source_radius) &&
                 light->source_radius > 0.0f
             ? Min(light->source_radius, VKR_POINT_LIGHT_SOURCE_RADIUS_MAX)
             : 0.0f;
@@ -1461,7 +1463,7 @@ vkr_internal void vkr_local_shadow_resolve_strengths(
     if (candidate->leaving) {
       strengths[i] =
           candidate->opaque_valid ? Max(previous->strength - step, 0.0f) : 0.0f;
-      keys[i] = -FLT_MAX;
+      keys[i] = -VKR_FLOAT_MAX;
       continue;
     }
     const bool8_t shown = candidate->opaque_valid || candidate->render;
@@ -1471,7 +1473,7 @@ vkr_internal void vkr_local_shadow_resolve_strengths(
         previous && previous->strength * previous->distance_fade > 0.0f &&
         !previous->reduced;
     keys[i] = !shown || candidate->distance_fade <= 0.0f || candidate->baked
-                  ? -FLT_MAX
+                  ? -VKR_FLOAT_MAX
               : incumbent_full
                   ? candidate->score * VKR_LOCAL_SHADOW_INCUMBENT_BONUS
                   : candidate->score;
@@ -1507,8 +1509,9 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
   out->map_size = input->map_size;
   if (!input->lights || !camera || !face_budget ||
       !vkr_local_shadow_map_size_valid(input->map_size) ||
-      !isfinite(camera->position.x) || !isfinite(camera->position.y) ||
-      !isfinite(camera->position.z)) {
+      !vkr_is_finite_f32(camera->position.x) ||
+      !vkr_is_finite_f32(camera->position.y) ||
+      !vkr_is_finite_f32(camera->position.z)) {
     MemZero(cache, sizeof(*cache));
     return;
   }
@@ -1519,7 +1522,8 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
    * otherwise they fade in. */
   const bool8_t snap =
       !cache->valid || cache->face_budget != face_budget ||
-      !isfinite(camera->delta_seconds) || camera->delta_seconds < 0.0f ||
+      !vkr_is_finite_f32(camera->delta_seconds) ||
+      camera->delta_seconds < 0.0f ||
       vkr_temporal_is_camera_cut(cache->camera_position, cache->camera_view,
                                  camera->position, camera->view);
   const float32_t step =

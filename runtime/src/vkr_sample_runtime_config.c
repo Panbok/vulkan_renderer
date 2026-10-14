@@ -4,9 +4,6 @@
 #include "core/vkr_window.h"
 #include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define SCENE_PATH "assets/scenes/bistro.scene.json"
 
@@ -27,8 +24,9 @@ vkr_internal bool8_t sample_env_flag(const char *name, bool8_t default_value) {
     return default_value;
   }
 
-  const char *value = getenv(name);
-  if (!value || value[0] == '\0') {
+  char value[64];
+  if (!vkr_platform_environment_variable(name, value, sizeof(value)) ||
+      value[0] == '\0') {
     return default_value;
   }
 
@@ -55,13 +53,15 @@ vkr_internal bool8_t sample_env_flag(const char *name, bool8_t default_value) {
 vkr_internal float64_t sample_env_seconds(const char *name,
                                           const char **out_rejected) {
   *out_rejected = NULL;
-  const char *value = getenv(name);
-  if (!value || value[0] == '\0') {
+  /* The rejected text outlives this call for the caller's warning. */
+  static char value[64];
+  if (!vkr_platform_environment_variable(name, value, sizeof(value)) ||
+      value[0] == '\0') {
     return 0.0;
   }
 
-  char *end = NULL;
-  const float64_t seconds = strtod(value, &end);
+  const char *end = NULL;
+  const float64_t seconds = string_parse_f64(value, &end);
   if (end == value || !(seconds > 0.0)) {
     *out_rejected = value;
     return 0.0;
@@ -72,33 +72,33 @@ vkr_internal float64_t sample_env_seconds(const char *name,
 vkr_internal bool8_t sample_parse_arguments(int argc, char **argv,
                                             VkrSampleRuntimeOptions *options) {
   for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--gameplay") == 0) {
+    if (string_equals(argv[i], "--gameplay")) {
       options->gameplay_enabled = true_v;
-    } else if (strcmp(argv[i], "--scene") == 0) {
+    } else if (string_equals(argv[i], "--scene")) {
       if (i + 1 >= argc || !argv[i + 1][0]) {
-        fprintf(stderr, "--scene requires a scene JSON path\n");
+        vkr_platform_stderr_write("--scene requires a scene JSON path\n");
         return false_v;
       }
       options->scene_path = argv[++i];
       options->scene_requested = true_v;
-    } else if (strcmp(argv[i], "--metrics-json") == 0) {
+    } else if (string_equals(argv[i], "--metrics-json")) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
-        fprintf(stderr, "--metrics-json requires an output path\n");
+        vkr_platform_stderr_write("--metrics-json requires an output path\n");
         return false_v;
       }
       options->metrics_json_path = argv[++i];
-    } else if (strcmp(argv[i], "--renderer") == 0) {
+    } else if (string_equals(argv[i], "--renderer")) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
-        fprintf(stderr, "--renderer requires 'vulkan' or 'metal'\n");
+        vkr_platform_stderr_write("--renderer requires 'vulkan' or 'metal'\n");
         return false_v;
       }
       const char *renderer_name = argv[++i];
-      if (strcmp(renderer_name, "vulkan") == 0) {
+      if (string_equals(renderer_name, "vulkan")) {
         options->renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
-      } else if (strcmp(renderer_name, "metal") == 0) {
+      } else if (string_equals(renderer_name, "metal")) {
         options->renderer_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
       } else {
-        fprintf(stderr, "unknown renderer '%s'\n", renderer_name);
+        vkr_platform_stderr_writef("unknown renderer '%s'\n", renderer_name);
         return false_v;
       }
     }
@@ -111,11 +111,11 @@ vkr_internal bool8_t sample_parse_arguments(int argc, char **argv,
 vkr_internal bool8_t sample_bootstrap_font_directory(char *path,
                                                      uint64_t capacity) {
   if (!vkr_platform_executable_path(path, (uint32_t)capacity)) {
-    fprintf(stderr, "Cannot locate installed editor resources\n");
+    vkr_platform_stderr_write("Cannot locate installed editor resources\n");
     return false_v;
   }
 
-  char *separator = strrchr(path, '/');
+  char *separator = string_get_last_char_occurrence(path, '/');
   return separator &&
          vkr_string_copy_bounded(separator + 1,
                                  capacity - (uint64_t)(separator + 1 - path),
@@ -129,24 +129,31 @@ vkr_internal bool8_t
 sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
                      VkrSampleRuntimeOptions *options) {
   const bool8_t project_managed = runtime_config->project_managed;
-  const char *graphics_path = project_managed
-                                  ? runtime_config->graphics_settings_path
-                                  : getenv("VKR_GRAPHICS_SETTINGS_PATH");
+  /* The options keep these pointers for the process's lifetime. */
+  static char graphics_env[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+  const char *graphics_path = runtime_config->graphics_settings_path;
+  if (!project_managed) {
+    if (!vkr_platform_environment_variable(
+            "VKR_GRAPHICS_SETTINGS_PATH", graphics_env, sizeof(graphics_env))) {
+      vkr_platform_stderr_write("Graphics settings path is too long\n");
+      return false_v;
+    }
+    graphics_path = graphics_env[0] != '\0' ? graphics_env : NULL;
+  }
   if (project_managed && !graphics_path) {
     graphics_path = "";
   }
   if (!graphics_path) {
     graphics_path = runtime_config->graphics_settings_path;
   }
-  /* The options keep this pointer for the process's lifetime. */
   static char default_path[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
   if (!graphics_path) {
-    snprintf(default_path, sizeof(default_path),
-             "%s.vkr-graphics-settings.json", vkr_content_root());
+    string_format(default_path, sizeof(default_path),
+                  "%s.vkr-graphics-settings.json", vkr_content_root());
     graphics_path = default_path;
   }
-  if (strlen(graphics_path) >= VKR_SAMPLE_RUNTIME_PATH_CAPACITY) {
-    fprintf(stderr, "Graphics settings path is too long\n");
+  if (string_length(graphics_path) >= VKR_SAMPLE_RUNTIME_PATH_CAPACITY) {
+    vkr_platform_stderr_write("Graphics settings path is too long\n");
     return false_v;
   }
 
@@ -155,13 +162,14 @@ sample_load_graphics(const VkrSampleRuntimeConfig *runtime_config,
   if (runtime_config->graphics_defaults.length &&
       !vkr_graphics_settings_read_json(runtime_config->graphics_defaults,
                                        &settings)) {
-    fprintf(stderr, "Ignoring invalid default Graphics settings\n");
+    vkr_platform_stderr_write("Ignoring invalid default Graphics settings\n");
     settings = vkr_graphics_settings_defaults(backend);
   }
   options->graphics_loaded =
       vkr_graphics_settings_load(graphics_path, &settings);
   if (!options->graphics_loaded) {
-    fprintf(stderr, "Ignoring invalid Graphics settings: %s\n", graphics_path);
+    vkr_platform_stderr_writef("Ignoring invalid Graphics settings: %s\n",
+                               graphics_path);
   }
 
   const bool8_t dynamic_available = backend == VKR_RENDERER_BACKEND_TYPE_METAL;
@@ -203,12 +211,19 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
   if (!runtime_config || !runtime_config->title ||
       !runtime_config->ui.initialize || !runtime_config->ui.handle_input ||
       !runtime_config->ui.build || !runtime_config->ui.shutdown) {
-    fprintf(stderr, "Invalid sample runtime configuration\n");
+    vkr_platform_stderr_write("Invalid sample runtime configuration\n");
     return false_v;
   }
 
+  /* The options keep the scene path for the process's lifetime. */
+  static char scene_env[VKR_SAMPLE_RUNTIME_PATH_CAPACITY];
+  if (!vkr_platform_environment_variable("VKR_SCENE_PATH", scene_env,
+                                         sizeof(scene_env))) {
+    vkr_platform_stderr_write("Scene path is too long\n");
+    return false_v;
+  }
   *options = (VkrSampleRuntimeOptions){
-      .scene_path = getenv("VKR_SCENE_PATH"),
+      .scene_path = scene_env[0] != '\0' ? scene_env : NULL,
 #if defined(_WIN32)
       .renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN,
 #else
@@ -228,10 +243,10 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
     return false_v;
   }
   // The runtime copies the scene path and derives `<path>.editor.json`.
-  if (strlen(vkr_content_root()) + strlen(options->scene_path) +
+  if (string_length(vkr_content_root()) + string_length(options->scene_path) +
           sizeof(".editor.json") >
       VKR_SAMPLE_RUNTIME_PATH_CAPACITY) {
-    fprintf(stderr, "Scene path is too long\n");
+    vkr_platform_stderr_write("Scene path is too long\n");
     return false_v;
   }
 

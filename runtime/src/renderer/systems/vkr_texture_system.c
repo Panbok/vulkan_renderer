@@ -8,10 +8,8 @@
 #include "renderer/systems/vkr_resource_system.h"
 
 #include "ktx.h"
+#include "memory/vkr_heap.h"
 #include "stb_image.h"
-
-#include <ctype.h>
-#include <limits.h>
 
 // =============================================================================
 // Texture Cache Format
@@ -337,7 +335,7 @@ vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
     for (uint64_t j = 0; j < token.length; ++j) {
       const unsigned char a = (unsigned char)name.str[i + j];
       const unsigned char b = (unsigned char)token.str[j];
-      if (tolower(a) != tolower(b)) {
+      if (vkr_char_to_lower(a) != vkr_char_to_lower(b)) {
         match = false_v;
         break;
       }
@@ -1506,11 +1504,11 @@ vkr_texture_decode_result_release(VkrTextureDecodeResult *result) {
     result->decoded_pixels = NULL;
   }
   if (result->upload_data) {
-    free(result->upload_data);
+    vkr_heap_free(result->upload_data);
     result->upload_data = NULL;
   }
   if (result->upload_regions) {
-    free(result->upload_regions);
+    vkr_heap_free(result->upload_regions);
     result->upload_regions = NULL;
   }
   result->upload_data_size = 0;
@@ -1641,9 +1639,10 @@ vkr_texture_ktx2_decode_direct(VkrTextureKtx2Decode *decode) {
   }
 
   const uint32_t direct_region_count = (uint32_t)direct_region_count_u64;
-  uint8_t *upload_data = (uint8_t *)malloc((size_t)direct_data_size);
-  VkrTextureUploadRegion *upload_regions = (VkrTextureUploadRegion *)malloc(
-      sizeof(VkrTextureUploadRegion) * direct_region_count);
+  uint8_t *upload_data = (uint8_t *)vkr_heap_alloc((size_t)direct_data_size);
+  VkrTextureUploadRegion *upload_regions =
+      (VkrTextureUploadRegion *)vkr_heap_alloc(sizeof(VkrTextureUploadRegion) *
+                                               direct_region_count);
   decode->upload_data = upload_data;
   decode->upload_regions = upload_regions;
   if (!upload_data || !upload_regions) {
@@ -1740,9 +1739,10 @@ vkr_internal bool8_t vkr_texture_ktx2_copy_upload(VkrTextureKtx2Decode *decode,
   }
   const uint32_t region_count = (uint32_t)region_count_u64;
 
-  uint8_t *upload_data = (uint8_t *)malloc((size_t)ktx_data_size);
-  VkrTextureUploadRegion *upload_regions = (VkrTextureUploadRegion *)malloc(
-      sizeof(VkrTextureUploadRegion) * region_count);
+  uint8_t *upload_data = (uint8_t *)vkr_heap_alloc((size_t)ktx_data_size);
+  VkrTextureUploadRegion *upload_regions =
+      (VkrTextureUploadRegion *)vkr_heap_alloc(sizeof(VkrTextureUploadRegion) *
+                                               region_count);
   decode->upload_data = upload_data;
   decode->upload_regions = upload_regions;
   if (!upload_data || !upload_regions) {
@@ -1949,8 +1949,8 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
   }
 
   FilePath fp = vkr_asset_path_file(
-      allocator,
-      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
+      allocator, string8_create_from_cstr((const uint8_t *)path_cstr,
+                                          string_length(path_cstr)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -2021,10 +2021,10 @@ cleanup:
   }
   if (!success) {
     if (decode.upload_data) {
-      free(decode.upload_data);
+      vkr_heap_free(decode.upload_data);
     }
     if (decode.upload_regions) {
-      free(decode.upload_regions);
+      vkr_heap_free(decode.upload_regions);
     }
   }
   return success;
@@ -2070,8 +2070,8 @@ vkr_internal bool8_t vkr_texture_path_exists(VkrAllocator *allocator,
   }
 
   FilePath fp = vkr_asset_path_file(
-      allocator,
-      string8_create_from_cstr((const uint8_t *)path_cstr, strlen(path_cstr)));
+      allocator, string8_create_from_cstr((const uint8_t *)path_cstr,
+                                          string_length(path_cstr)));
   return file_exists(&fp);
 }
 
@@ -2090,7 +2090,7 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
 
   FilePath source_fp = vkr_asset_path_file(
       allocator, string8_create_from_cstr((const uint8_t *)source_cstr,
-                                          strlen(source_cstr)));
+                                          string_length(source_cstr)));
 
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -2113,7 +2113,7 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
     return false_v;
   }
 
-  if (file_size > INT_MAX) {
+  if (file_size > INT32_MAX) {
     log_error("Texture file is too large for stb_image: %s", source_cstr);
     out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
@@ -2337,7 +2337,8 @@ vkr_internal void vkr_texture_decode_result_cap_extent(
   result->upload_data_size = cursor;
   result->width = (int32_t)Max(1u, width >> skip);
   result->height = (int32_t)Max(1u, height >> skip);
-  uint8_t *shrunk = (uint8_t *)realloc(result->upload_data, (size_t)cursor);
+  uint8_t *shrunk =
+      (uint8_t *)vkr_heap_realloc(result->upload_data, (size_t)cursor);
   if (shrunk) {
     result->upload_data = shrunk;
   }
@@ -2364,10 +2365,10 @@ bool8_t vkr_texture_prepared_load_2d(uint8_t *pixels, uint64_t byte_size,
                                      VkrTexturePreparedLoad *out_prepared) {
   MemZero(out_prepared, sizeof(*out_prepared));
   VkrTextureUploadRegion *region =
-      (VkrTextureUploadRegion *)malloc(sizeof(*region));
+      (VkrTextureUploadRegion *)vkr_heap_alloc(sizeof(*region));
   if (!pixels || !region) {
-    free(region);
-    free(pixels);
+    vkr_heap_free(region);
+    vkr_heap_free(pixels);
     return false_v;
   }
   *region = (VkrTextureUploadRegion){
@@ -2422,11 +2423,11 @@ void vkr_texture_system_release_prepared_load(
   }
 
   if (prepared->upload_data) {
-    free(prepared->upload_data);
+    vkr_heap_free(prepared->upload_data);
     prepared->upload_data = NULL;
   }
   if (prepared->upload_regions) {
-    free(prepared->upload_regions);
+    vkr_heap_free(prepared->upload_regions);
     prepared->upload_regions = NULL;
   }
 
@@ -2581,15 +2582,16 @@ bool8_t vkr_texture_system_prepare_load_from_file(
     uint64_t loaded_image_size = pixel_count * (uint64_t)loaded_channels;
     uint64_t upload_size = pixel_count * (uint64_t)actual_channels;
 
-    uint8_t *upload_data = (uint8_t *)malloc((size_t)upload_size);
+    uint8_t *upload_data = (uint8_t *)vkr_heap_alloc((size_t)upload_size);
     VkrTextureUploadRegion *upload_region =
-        (VkrTextureUploadRegion *)malloc(sizeof(VkrTextureUploadRegion));
+        (VkrTextureUploadRegion *)vkr_heap_alloc(
+            sizeof(VkrTextureUploadRegion));
     if (!upload_data || !upload_region) {
       if (upload_data) {
-        free(upload_data);
+        vkr_heap_free(upload_data);
       }
       if (upload_region) {
-        free(upload_region);
+        vkr_heap_free(upload_region);
       }
       vkr_texture_decode_result_release(&decode_result);
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -2825,7 +2827,8 @@ vkr_internal uint8_t *vkr_texture_load_cube_face(VkrAllocator *allocator,
   assert_log(out_height != NULL, "Out height is NULL");
 
   FilePath fp = vkr_asset_path_file(
-      allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+      allocator,
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -2875,8 +2878,8 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
-  snprintf(key_buffer, key_buffer_size, "%.*s_cube", (int)base_path.length,
-           base_path.str);
+  string_format(key_buffer, key_buffer_size, "%.*s_cube", (int)base_path.length,
+                base_path.str);
 
   VkrTextureEntry *existing_entry =
       vkr_hash_table_get_VkrTextureEntry(&system->texture_map, key_buffer);
@@ -2906,9 +2909,9 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   }
 
   // Load first face to get dimensions
-  snprintf(path_buffer, path_buffer_size, "%.*s%s.%.*s", (int)base_path.length,
-           base_path.str, face_suffixes[0], (int)extension.length,
-           extension.str);
+  string_format(path_buffer, path_buffer_size, "%.*s%s.%.*s",
+                (int)base_path.length, base_path.str, face_suffixes[0],
+                (int)extension.length, extension.str);
 
   int32_t width = 0, height = 0;
   uint8_t *first_face =
@@ -2949,9 +2952,9 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
 
   // Load remaining 5 faces
   for (uint32_t face = 1; face < 6; face++) {
-    snprintf(path_buffer, path_buffer_size, "%.*s%s.%.*s",
-             (int)base_path.length, base_path.str, face_suffixes[face],
-             (int)extension.length, extension.str);
+    string_format(path_buffer, path_buffer_size, "%.*s%s.%.*s",
+                  (int)base_path.length, base_path.str, face_suffixes[face],
+                  (int)extension.length, extension.str);
 
     int32_t face_width = 0, face_height = 0;
     uint8_t *face_data = vkr_texture_load_cube_face(temp_alloc, path_buffer,
@@ -3017,8 +3020,8 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
-  snprintf(stable_key, base_path.length + 16, "%.*s_cube",
-           (int)base_path.length, base_path.str);
+  string_format(stable_key, base_path.length + 16, "%.*s_cube",
+                (int)base_path.length, base_path.str);
 
   // Store texture in system
   VkrTexture *texture = &system->textures.data[free_slot_index];

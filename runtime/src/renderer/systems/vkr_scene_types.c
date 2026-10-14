@@ -1,10 +1,6 @@
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <float.h>
-#include <math.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "core/vkr_atomic.h"
 #include "core/vkr_text.h"
@@ -42,8 +38,8 @@ static bool8_t transform_validate(const void *value, char *error,
                                   uint32_t capacity) {
   const SceneTransform *transform = value;
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
-    if (fabsf(transform->scale.elements[axis]) < 0.000001f) {
-      snprintf(error, capacity, "Scale components must not be zero.");
+    if (vkr_abs_f32(transform->scale.elements[axis]) < 0.000001f) {
+      string_format(error, capacity, "Scale components must not be zero.");
       return false_v;
     }
   }
@@ -118,9 +114,9 @@ _Static_assert(sizeof(VkrLightMobility) == sizeof(uint32_t),
 /* A group name the validators accept, or the reason it is not. */
 static bool8_t scene_light_baking_validate(const char *group, char *error,
                                            uint32_t capacity) {
-  if (!vkr_light_group_name_valid(group, strlen(group))) {
-    snprintf(error, capacity,
-             "Name light groups with letters, digits, '_' or '-'.");
+  if (!vkr_light_group_name_valid(group, string_length(group))) {
+    string_format(error, capacity,
+                  "Name light groups with letters, digits, '_' or '-'.");
     return false_v;
   }
   return true_v;
@@ -162,14 +158,14 @@ static const VkrPropertyDesc s_point_light_properties[] = {
      .offset = TYPE_OFFSET(ScenePointLight, color),
      .kind = VKR_PROPERTY_COLOR,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.005f},
     {.name = "intensity",
      .label = "Intensity",
      .offset = TYPE_OFFSET(ScenePointLight, intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "range",
      .label = "Range",
@@ -179,7 +175,7 @@ static const VkrPropertyDesc s_point_light_properties[] = {
      .offset = TYPE_OFFSET(ScenePointLight, range),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "direction",
      .label = "Direction",
@@ -213,21 +209,21 @@ static const VkrPropertyDesc s_point_light_properties[] = {
      .kind = VKR_PROPERTY_F32,
      .flags = VKR_PROPERTY_FLAG_HIDDEN,
      .min = 0.0f,
-     .max = FLT_MAX},
+     .max = VKR_FLOAT_MAX},
     {.name = "linear",
      .label = "Linear attenuation",
      .offset = TYPE_OFFSET(ScenePointLight, linear),
      .kind = VKR_PROPERTY_F32,
      .flags = VKR_PROPERTY_FLAG_HIDDEN,
      .min = 0.0f,
-     .max = FLT_MAX},
+     .max = VKR_FLOAT_MAX},
     {.name = "quadratic",
      .label = "Quadratic attenuation",
      .offset = TYPE_OFFSET(ScenePointLight, quadratic),
      .kind = VKR_PROPERTY_F32,
      .flags = VKR_PROPERTY_FLAG_HIDDEN,
      .min = 0.0f,
-     .max = FLT_MAX},
+     .max = VKR_FLOAT_MAX},
     SCENE_LIGHT_MOBILITY_PROPERTY(ScenePointLight),
     SCENE_LIGHT_GROUP_PROPERTY(ScenePointLight),
 };
@@ -238,24 +234,27 @@ static bool8_t point_light_validate(const void *value, char *error,
   const bool8_t spot = light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT;
   if (light->outer_cone_angle < light->inner_cone_angle ||
       light->outer_cone_angle > 1.5707964f ||
-      !(cosf(light->inner_cone_angle) > cosf(light->outer_cone_angle))) {
-    snprintf(error, capacity,
-             "Use 0 <= inner < outer <= 90 degrees; increase the gap between "
-             "cone angles.");
+      !(vkr_cos_f32(light->inner_cone_angle) >
+        vkr_cos_f32(light->outer_cone_angle))) {
+    string_format(
+        error, capacity,
+        "Use 0 <= inner < outer <= 90 degrees; increase the gap between "
+        "cone angles.");
     return false_v;
   }
   if (light->casts_shadow &&
       (light->range <= 0.0f ||
        (spot && (light->outer_cone_angle <= 0.0f ||
                  light->outer_cone_angle >= 1.57079632679f)))) {
-    snprintf(error, capacity,
-             "Shadows require positive range and a spot outer angle below 90 "
-             "degrees.");
+    string_format(
+        error, capacity,
+        "Shadows require positive range and a spot outer angle below 90 "
+        "degrees.");
     return false_v;
   }
   if (spot && !(vec3_dot(light->direction_local, light->direction_local) >=
                 0.000001f)) {
-    snprintf(error, capacity, "A spot light needs a nonzero direction.");
+    string_format(error, capacity, "A spot light needs a nonzero direction.");
     return false_v;
   }
   return scene_light_baking_validate(light->light_group, error, capacity);
@@ -339,14 +338,14 @@ static const VkrPropertyDesc s_directional_light_properties[] = {
      .offset = TYPE_OFFSET(SceneDirectionalLight, color),
      .kind = VKR_PROPERTY_COLOR,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.005f},
     {.name = "intensity",
      .label = "Intensity",
      .offset = TYPE_OFFSET(SceneDirectionalLight, intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "direction",
      .label = "Direction",
@@ -383,12 +382,13 @@ static bool8_t directional_light_validate(const void *value, char *error,
   const SceneDirectionalLight *light = value;
   if (!(vec3_dot(light->direction_local, light->direction_local) >=
         0.000001f)) {
-    snprintf(error, capacity, "A directional light needs a nonzero direction.");
+    string_format(error, capacity,
+                  "A directional light needs a nonzero direction.");
     return false_v;
   }
   if (light->temperature_kelvin != 0.0f &&
       light->temperature_kelvin < VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K) {
-    snprintf(error, capacity, "Temperature must be 0 or 1000..40000 K.");
+    string_format(error, capacity, "Temperature must be 0 or 1000..40000 K.");
     return false_v;
   }
   return true_v;
@@ -452,14 +452,14 @@ static const VkrPropertyDesc s_rectangle_light_properties[] = {
      .offset = TYPE_OFFSET(SceneRectangleLight, color),
      .kind = VKR_PROPERTY_COLOR,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.005f},
     {.name = "radiance",
      .label = "Radiance",
      .offset = TYPE_OFFSET(SceneRectangleLight, radiance),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "size",
      .label = "Size",
@@ -468,7 +468,7 @@ static const VkrPropertyDesc s_rectangle_light_properties[] = {
      .offset = TYPE_OFFSET(SceneRectangleLight, size),
      .kind = VKR_PROPERTY_VEC2,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     SCENE_LIGHT_MOBILITY_PROPERTY(SceneRectangleLight),
     SCENE_LIGHT_GROUP_PROPERTY(SceneRectangleLight),
@@ -478,7 +478,7 @@ static bool8_t rectangle_light_validate(const void *value, char *error,
                                         uint32_t capacity) {
   const SceneRectangleLight *light = value;
   if (!(light->size.x > 0.0f) || !(light->size.y > 0.0f)) {
-    snprintf(error, capacity, "Rectangle size must be positive.");
+    string_format(error, capacity, "Rectangle size must be positive.");
     return false_v;
   }
   return scene_light_baking_validate(light->light_group, error, capacity);
@@ -544,21 +544,21 @@ static const VkrPropertyDesc s_environment_properties[] = {
      .offset = TYPE_OFFSET(SceneEnvironmentSettings, intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "diffuse_intensity",
      .label = "Diffuse intensity",
      .offset = TYPE_OFFSET(SceneEnvironmentSettings, diffuse_intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "specular_intensity",
      .label = "Specular intensity",
      .offset = TYPE_OFFSET(SceneEnvironmentSettings, specular_intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "sh_deringing",
      .label = "SH deringing",
@@ -567,7 +567,7 @@ static const VkrPropertyDesc s_environment_properties[] = {
      .kind = VKR_PROPERTY_F32,
      .flags = VKR_PROPERTY_FLAG_READ_ONLY,
      .min = 0.0f,
-     .max = FLT_MAX},
+     .max = VKR_FLOAT_MAX},
 };
 
 static void environment_defaults(void *value) {
@@ -689,7 +689,7 @@ static const VkrPropertyDesc s_atmosphere_properties[] = {
 static bool8_t atmosphere_validate(const void *value, char *error,
                                    uint32_t capacity) {
   if (!vkr_atmosphere_settings_valid(value)) {
-    snprintf(error, capacity, "The atmosphere rejects these values.");
+    string_format(error, capacity, "The atmosphere rejects these values.");
     return false_v;
   }
   return true_v;
@@ -767,9 +767,9 @@ static const VkrPropertyDesc s_cloud_properties[] = {
 static bool8_t clouds_validate(const void *value, char *error,
                                uint32_t capacity) {
   if (!vkr_cloud_settings_valid(value)) {
-    snprintf(error, capacity,
-             "Clouds need a top at least %.0f m above their base.",
-             VKR_CLOUD_THICKNESS_MIN_M);
+    string_format(error, capacity,
+                  "Clouds need a top at least %.0f m above their base.",
+                  VKR_CLOUD_THICKNESS_MIN_M);
     return false_v;
   }
   return true_v;
@@ -800,14 +800,14 @@ static const VkrPropertyDesc s_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFogSettings, color),
      .kind = VKR_PROPERTY_COLOR,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.005f},
     {.name = "density",
      .label = "Density",
      .offset = TYPE_OFFSET(VkrFogSettings, density),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.0005f},
     {.name = "base_height",
      .label = "Base height",
@@ -820,7 +820,7 @@ static const VkrPropertyDesc s_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFogSettings, height_falloff),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.001f},
     {.name = "max_distance",
      .label = "Max distance",
@@ -828,7 +828,7 @@ static const VkrPropertyDesc s_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFogSettings, max_distance),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 1.0f},
     {.name = "sky_distance",
      .label = "Sky distance",
@@ -837,7 +837,7 @@ static const VkrPropertyDesc s_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFogSettings, sky_distance),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 1.0f},
     {.name = "sky_lighting",
      .label = "Sky lighting",
@@ -860,9 +860,10 @@ static const VkrPropertyDesc s_fog_properties[] = {
 
 static bool8_t fog_validate(const void *value, char *error, uint32_t capacity) {
   if (!vkr_fog_settings_valid(value)) {
-    snprintf(error, capacity,
-             "Fog needs positive distances with the sky distance at most the "
-             "max distance.");
+    string_format(
+        error, capacity,
+        "Fog needs positive distances with the sky distance at most the "
+        "max distance.");
     return false_v;
   }
   return true_v;
@@ -899,7 +900,7 @@ static const VkrPropertyDesc s_froxel_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFroxelFogSettings, density),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.0005f},
     {.name = "base_height",
      .label = "Base height",
@@ -912,7 +913,7 @@ static const VkrPropertyDesc s_froxel_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFroxelFogSettings, height_falloff),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.001f},
     {.name = "max_distance",
      .label = "Max distance",
@@ -920,7 +921,7 @@ static const VkrPropertyDesc s_froxel_fog_properties[] = {
      .offset = TYPE_OFFSET(VkrFroxelFogSettings, max_distance),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.5f},
     {.name = "sky_lighting",
      .label = "Sky lighting",
@@ -944,9 +945,10 @@ static bool8_t froxel_fog_validate(const void *value, char *error,
                                    uint32_t capacity) {
   const VkrFroxelFogSettings *fog = value;
   if (fog->box_count != 0u || !vkr_froxel_fog_settings_valid(fog)) {
-    snprintf(error, capacity,
-             "Volumetric fog needs a positive max distance; density boxes are "
-             "their own components.");
+    string_format(
+        error, capacity,
+        "Volumetric fog needs a positive max distance; density boxes are "
+        "their own components.");
     return false_v;
   }
   return true_v;
@@ -990,7 +992,7 @@ static const VkrPropertyDesc s_fog_box_properties[] = {
      .offset = TYPE_OFFSET(VkrFroxelDensityBox, density_multiplier),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
 };
 
@@ -1000,7 +1002,7 @@ static bool8_t fog_box_validate(const void *value, char *error,
   if (!(box->minimum.x < box->maximum.x) ||
       !(box->minimum.y < box->maximum.y) ||
       !(box->minimum.z < box->maximum.z)) {
-    snprintf(error, capacity, "Each minimum must be below its maximum.");
+    string_format(error, capacity, "Each minimum must be below its maximum.");
     return false_v;
   }
   return true_v;
@@ -1102,7 +1104,7 @@ static const VkrPropertyDesc s_post_process_properties[] = {
      .offset = TYPE_OFFSET(ScenePostProcess, bloom_threshold),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "bloom_knee",
      .label = "Knee",
@@ -1221,7 +1223,7 @@ static const VkrPropertyDesc s_probe_properties[] = {
      .offset = TYPE_OFFSET(SceneReflectionProbeSettings, extents),
      .kind = VKR_PROPERTY_VEC3,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "blend_distance",
      .label = "Blend distance",
@@ -1229,28 +1231,28 @@ static const VkrPropertyDesc s_probe_properties[] = {
      .offset = TYPE_OFFSET(SceneReflectionProbeSettings, blend_distance),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "intensity",
      .label = "Intensity",
      .offset = TYPE_OFFSET(SceneReflectionProbeSettings, intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "diffuse_intensity",
      .label = "Diffuse intensity",
      .offset = TYPE_OFFSET(SceneReflectionProbeSettings, diffuse_intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     {.name = "specular_intensity",
      .label = "Specular intensity",
      .offset = TYPE_OFFSET(SceneReflectionProbeSettings, specular_intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
     PROPERTY_BOOL(SceneReflectionProbeSettings, box_projection,
                   "box_projection", "Box projection",
@@ -1262,7 +1264,7 @@ static const VkrPropertyDesc s_probe_properties[] = {
      .kind = VKR_PROPERTY_F32,
      .flags = VKR_PROPERTY_FLAG_READ_ONLY,
      .min = 0.0f,
-     .max = FLT_MAX},
+     .max = VKR_FLOAT_MAX},
     {.name = "cubemap",
      .label = "Cubemap",
      .tooltip = "Captured source; empty uses the scene's sky. Applies on the "
@@ -1288,7 +1290,7 @@ static bool8_t probe_validate(const void *value, char *error,
   const SceneReflectionProbeSettings *probe = value;
   if (!(probe->extents.x > 0.0f) || !(probe->extents.y > 0.0f) ||
       !(probe->extents.z > 0.0f)) {
-    snprintf(error, capacity, "Probe extents must be positive.");
+    string_format(error, capacity, "Probe extents must be positive.");
     return false_v;
   }
   return true_v;
@@ -1522,7 +1524,7 @@ static const char *const s_text_retired[] = {"font_size", NULL};
 static void text_defaults(void *value) {
   SceneTextSettings *text = value;
   MemZero(text, sizeof(*text));
-  snprintf(text->content, sizeof(text->content), "Text");
+  string_format(text->content, sizeof(text->content), "Text");
   text->size = 0.5f;
   text->color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
   text->align = VKR_TEXT_ALIGN_CENTER;
@@ -1773,8 +1775,8 @@ static bool8_t time_of_day_validate(const void *value, char *error,
   uint32_t cursor = 0u;
   while (vkr_scene_night_group_next(time->night_groups, &cursor, &name)) {
     if (!vkr_light_group_name_valid((const char *)name.str, name.length)) {
-      snprintf(error, capacity,
-               "Night groups are light group names separated by commas.");
+      string_format(error, capacity,
+                    "Night groups are light group names separated by commas.");
       return false_v;
     }
   }
@@ -1899,14 +1901,14 @@ static bool8_t decal_validate(const void *value, char *error,
   const SceneDecal *decal = value;
   if (!(decal->opacity >= 0.0f && decal->opacity <= 1.0f) ||
       !(decal->depth_fade >= 0.0f && decal->depth_fade <= 1.0f)) {
-    snprintf(error, capacity, "Opacity and depth fade lie in [0, 1].");
+    string_format(error, capacity, "Opacity and depth fade lie in [0, 1].");
     return false_v;
   }
   if (!(decal->fade_angle_start >= 0.0f &&
         decal->fade_angle_start < decal->fade_angle_end &&
         decal->fade_angle_end <= VKR_PI)) {
-    snprintf(error, capacity,
-             "The fade angles lie in [0, 180] degrees, start below end.");
+    string_format(error, capacity,
+                  "The fade angles lie in [0, 180] degrees, start below end.");
     return false_v;
   }
   return true_v;
@@ -1947,7 +1949,7 @@ static const VkrPropertyDesc s_look_volume_properties[] = {
      .offset = TYPE_OFFSET(SceneLookVolume, blend_distance),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "override_exposure",
      .label = "Override exposure",
@@ -2065,7 +2067,7 @@ static const VkrPropertyDesc s_look_volume_properties[] = {
      .offset = TYPE_OFFSET(SceneLookVolume, fog_density),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.0005f},
     {.name = "override_sky_light",
      .label = "Override sky light",
@@ -2077,7 +2079,7 @@ static const VkrPropertyDesc s_look_volume_properties[] = {
      .offset = TYPE_OFFSET(SceneLookVolume, sky_light_intensity),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.01f},
 };
 
@@ -2108,12 +2110,14 @@ static bool8_t look_volume_validate(const void *value, char *error,
   const SceneLookVolume *volume = value;
   if (!(volume->blend_distance >= 0.0f) || !(volume->fog_density >= 0.0f) ||
       !(volume->sky_light_intensity >= 0.0f)) {
-    snprintf(error, capacity,
-             "Blend distance, fog density and sky light are not negative.");
+    string_format(
+        error, capacity,
+        "Blend distance, fog density and sky light are not negative.");
     return false_v;
   }
   if (!(volume->metering_min_ev < volume->metering_max_ev)) {
-    snprintf(error, capacity, "The metering minimum lies below its maximum.");
+    string_format(error, capacity,
+                  "The metering minimum lies below its maximum.");
     return false_v;
   }
   return true_v;
@@ -2318,7 +2322,7 @@ static bool8_t brush_face_validate(const void *value, char *error,
   const SceneBrushFace *face = value;
   if (vec3_length(face->normal) < 1.0e-4f) {
     if (error) {
-      snprintf(error, capacity, "A face normal must not be zero");
+      string_format(error, capacity, "A face normal must not be zero");
     }
     return false_v;
   }
@@ -2418,8 +2422,9 @@ static void terrain_migrate(void *value) {
     VkrSurface surface = VKR_SURFACE_NONE;
     VkrSurfaceMark mark = VKR_SURFACE_MARK_NONE;
     if (vkr_surface_from_legacy_material(layers[i], &surface, &mark)) {
-      snprintf(layers[i], SCENE_TERRAIN_MATERIAL_CAPACITY, "%s",
-               vkr_surface_greybox_material(surface, mark, VKR_SURFACE_FLOOR));
+      string_format(
+          layers[i], SCENE_TERRAIN_MATERIAL_CAPACITY, "%s",
+          vkr_surface_greybox_material(surface, mark, VKR_SURFACE_FLOOR));
     }
   }
 }
@@ -3143,7 +3148,7 @@ static bool8_t counter_validate(const void *value, char *error,
   if (counter->min > counter->max || counter->start < counter->min ||
       counter->start > counter->max) {
     if (error) {
-      snprintf(error, capacity, "A counter needs min <= start <= max");
+      string_format(error, capacity, "A counter needs min <= start <= max");
     }
     return false_v;
   }
@@ -3327,28 +3332,29 @@ static bool8_t mover_validate(const void *value, char *error,
   const SceneMover *mover = value;
   const bool8_t turns = mover->angle != 0.0f || mover->spin;
   const Vec3 along = turns ? mover->axis : mover->direction;
-  if (!isfinite(mover->acceleration) || mover->acceleration < 0.0f) {
+  if (!vkr_is_finite_f32(mover->acceleration) || mover->acceleration < 0.0f) {
     if (error) {
-      snprintf(error, capacity, "A mover's acceleration is zero or more");
+      string_format(error, capacity, "A mover's acceleration is zero or more");
     }
     return false_v;
   }
   if (mover->activation >= VKR_SCENE_MOVER_ACTIVATION_COUNT ||
-      !isfinite(mover->reach) || mover->reach < 0.0f ||
-      !isfinite(mover->delay) || mover->delay < 0.0f) {
+      !vkr_is_finite_f32(mover->reach) || mover->reach < 0.0f ||
+      !vkr_is_finite_f32(mover->delay) || mover->delay < 0.0f) {
     if (error) {
-      snprintf(error, capacity,
-               "A mover's activation is scripted, use, auto or ride, and "
-               "its reach and delay are zero or more");
+      string_format(error, capacity,
+                    "A mover's activation is scripted, use, auto or ride, and "
+                    "its reach and delay are zero or more");
     }
     return false_v;
   }
-  if (!isfinite(vec3_length(along)) || vec3_length(along) < 1.0e-4f ||
-      !isfinite(mover->angle) || !isfinite(vec3_length(mover->pivot))) {
+  if (!vkr_is_finite_f32(vec3_length(along)) || vec3_length(along) < 1.0e-4f ||
+      !vkr_is_finite_f32(mover->angle) ||
+      !vkr_is_finite_f32(vec3_length(mover->pivot))) {
     if (error) {
-      snprintf(error, capacity,
-               turns ? "A turning mover needs an axis and a finite pivot"
-                     : "A mover needs a direction");
+      string_format(error, capacity,
+                    turns ? "A turning mover needs an axis and a finite pivot"
+                          : "A mover needs a direction");
     }
     return false_v;
   }
@@ -3485,14 +3491,15 @@ bool8_t vkr_scene_tags_parse(String8 text, SceneTags *out, char *error,
     const uint64_t name_length = end - start;
     if (!name_length) {
       if (error) {
-        snprintf(error, capacity, "A tag needs a name after '#'");
+        string_format(error, capacity, "A tag needs a name after '#'");
       }
       return false_v;
     }
     if (name_length > SCENE_TAG_LENGTH_MAX) {
       if (error) {
-        snprintf(error, capacity, "Tag '%.*s' is longer than %u characters",
-                 (int)word.length, word.str, SCENE_TAG_LENGTH_MAX);
+        string_format(error, capacity,
+                      "Tag '%.*s' is longer than %u characters",
+                      (int)word.length, word.str, SCENE_TAG_LENGTH_MAX);
       }
       return false_v;
     }
@@ -3505,9 +3512,10 @@ bool8_t vkr_scene_tags_parse(String8 text, SceneTags *out, char *error,
       }
       if (!tags_character(c)) {
         if (error) {
-          snprintf(error, capacity,
-                   "Tag '%.*s' may hold only a-z, 0-9, _ and - after its '#'",
-                   (int)word.length, word.str);
+          string_format(
+              error, capacity,
+              "Tag '%.*s' may hold only a-z, 0-9, _ and - after its '#'",
+              (int)word.length, word.str);
         }
         return false_v;
       }
@@ -3521,8 +3529,8 @@ bool8_t vkr_scene_tags_parse(String8 text, SceneTags *out, char *error,
     }
     if (count == SCENE_TAG_COUNT_MAX) {
       if (error) {
-        snprintf(error, capacity, "An object holds at most %u tags",
-                 SCENE_TAG_COUNT_MAX);
+        string_format(error, capacity, "An object holds at most %u tags",
+                      SCENE_TAG_COUNT_MAX);
       }
       return false_v;
     }
@@ -3544,16 +3552,16 @@ static bool8_t tags_validate(const void *value, char *error,
   SceneTags canonical;
   if (!vkr_scene_tags_parse(
           string8_create_from_cstr((const uint8_t *)tags->text,
-                                   strlen(tags->text)),
+                                   string_length(tags->text)),
           &canonical, error, capacity)) {
     return false_v;
   }
-  if (strcmp(canonical.text, tags->text) != 0) {
+  if (!string_equals(canonical.text, tags->text)) {
     if (error) {
-      snprintf(error, capacity,
-               "Tags are stored lowercase with a '#', one space apart and "
-               "without repeats, as \"%s\"",
-               canonical.text);
+      string_format(error, capacity,
+                    "Tags are stored lowercase with a '#', one space apart and "
+                    "without repeats, as \"%s\"",
+                    canonical.text);
     }
     return false_v;
   }
@@ -4265,7 +4273,7 @@ const VkrTypeDesc *vkr_scene_world_type(uint32_t index) {
 const VkrTypeDesc *vkr_scene_world_type_named(String8 name) {
   const VkrTypeDesc *type = NULL;
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
-    const uint64_t length = strlen(type->name);
+    const uint64_t length = string_length(type->name);
     if (length == name.length &&
         MemCompare(type->name, name.str, length) == 0) {
       return type;
@@ -4294,7 +4302,7 @@ bool8_t vkr_scene_register_world_type(const VkrTypeDesc *type) {
       type->size > VKR_TYPE_VALUE_MAX || !type->align ||
       count == VKR_SCENE_REGISTERED_TYPE_MAX ||
       vkr_scene_world_type_named(string8_create_from_cstr(
-          (const uint8_t *)type->name, strlen(type->name)))) {
+          (const uint8_t *)type->name, string_length(type->name)))) {
     return false_v;
   }
   s_registered_types[count] = type;

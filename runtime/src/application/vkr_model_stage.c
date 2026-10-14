@@ -155,8 +155,10 @@ static void model_stage_copy_scatter(VkrModelStage *stage,
                                      VkrRenderAssets *assets,
                                      const VkrScene *source, Vec3 offset) {
   VkrMeshManager *manager = &assets->mesh_manager;
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t i = 0; i < stage->copy_count; ++i) {
     const VkrMeshInstance *instance =
         vkr_mesh_manager_get_instance(manager, stage->sources[i]);

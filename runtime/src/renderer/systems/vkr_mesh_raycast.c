@@ -11,8 +11,6 @@
 #include "platform/vkr_platform.h"
 #include "vkr_packed_geometry.h"
 
-#include <math.h>
-
 /* Triangles a leaf holds before the build splits it. */
 #define VKR_MESH_RAYCAST_LEAF_TRIANGLES 4u
 
@@ -339,7 +337,8 @@ vkr_internal bool8_t mesh_raycast_build_entry(
   }
   for (uint32_t i = 0u; i < position_count; ++i) {
     const VkrPackedVec3 p = positions[i];
-    if (!isfinite(p.x) || !isfinite(p.y) || !isfinite(p.z)) {
+    if (!vkr_is_finite_f32(p.x) || !vkr_is_finite_f32(p.y) ||
+        !vkr_is_finite_f32(p.z)) {
       return false_v;
     }
   }
@@ -808,7 +807,7 @@ vkr_internal bool8_t mesh_raycast_triangle(Vec3 origin, Vec3 delta, Vec3 a,
     return false_v;
   }
   const float32_t inverse_det = 1.0f / det;
-  if (!isfinite(inverse_det)) {
+  if (!vkr_is_finite_f32(inverse_det)) {
     return false_v;
   }
 
@@ -922,7 +921,7 @@ vkr_internal bool8_t mesh_raycast_traverse(const VkrMeshRaycastEntry *entry,
 /* `v` at unit length, or zero when it has none. */
 vkr_internal Vec3 mesh_raycast_unit(Vec3 v) {
   const float32_t length_sq = vec3_length_squared(v);
-  if (!(length_sq > 0.0f) || !isfinite(length_sq)) {
+  if (!(length_sq > 0.0f) || !vkr_is_finite_f32(length_sq)) {
     return vec3_zero();
   }
   return vec3_scale(v, 1.0f / vkr_sqrt_f32(length_sq));
@@ -1025,7 +1024,8 @@ bool8_t vkr_mesh_raycast_instance(VkrMeshRaycastCache *cache,
   const float32_t determinant = vec3_dot(column0, vec3_cross(column1, column2));
   const float32_t scale =
       vec3_length(column0) * vec3_length(column1) * vec3_length(column2);
-  if (!isfinite(determinant) || !(fabsf(determinant) > 1e-6f * scale)) {
+  if (!vkr_is_finite_f32(determinant) ||
+      !(vkr_abs_f32(determinant) > 1e-6f * scale)) {
     return false_v;
   }
 

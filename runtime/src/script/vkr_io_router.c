@@ -1,15 +1,12 @@
 #include "script/vkr_io_router.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <math.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Parents a trigger looks up through for the body that carries it. */
 #define IO_HOLD_DEPTH 16u
@@ -236,10 +233,10 @@ static bool8_t io_value_convert(const VkrIoValue *value, VkrIoKind kind,
     break;
   case VKR_IO_I32:
   case VKR_IO_ENUM:
-    out->i32 = (int32_t)llround(number);
+    out->i32 = (int32_t)vkr_round_i64_f64(number);
     break;
   case VKR_IO_U32:
-    out->u32 = number > 0.0 ? (uint32_t)llround(number) : 0u;
+    out->u32 = number > 0.0 ? (uint32_t)vkr_round_i64_f64(number) : 0u;
     break;
   default:
     out->f32 = (float32_t)number;
@@ -249,7 +246,7 @@ static bool8_t io_value_convert(const VkrIoValue *value, VkrIoKind kind,
 }
 
 static bool8_t io_names_equal(const char *name, String8 text) {
-  return strlen(name) == text.length &&
+  return string_length(name) == text.length &&
          MemCompare(name, text.str, text.length) == 0;
 }
 
@@ -326,7 +323,7 @@ static const VkrIoPort *io_output_port(VkrIoEndpoint endpoint) {
 /* The one entity of `scene` named exactly `name`. */
 static VkrEntityId io_named(const VkrScene *scene, const char *name) {
   const String8 word =
-      string8_create_from_cstr((const uint8_t *)name, strlen(name));
+      string8_create_from_cstr((const uint8_t *)name, string_length(name));
   VkrEntityId found = VKR_ENTITY_ID_INVALID;
   uint32_t count = 0u;
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
@@ -348,37 +345,38 @@ bool8_t vkr_io_parse_value(const VkrScene *scene, uint32_t kind,
                            const char *text, VkrIoValue *out) {
   const VkrIoKind io = vkr_io_kind(kind);
   *out = (VkrIoValue){.kind = io};
-  char *end = NULL;
+  const char *end = NULL;
   switch (io) {
   case VKR_IO_NONE:
     return true_v;
   case VKR_IO_BOOL:
-    if (!strcmp(text, "true") || !strcmp(text, "1")) {
+    if (string_equals(text, "true") || string_equals(text, "1")) {
       out->boolean = true_v;
       return true_v;
     }
     out->boolean = false_v;
-    return !strcmp(text, "false") || !strcmp(text, "0");
+    return string_equals(text, "false") || string_equals(text, "0");
   case VKR_IO_I32:
   case VKR_IO_ENUM: {
-    const long number = strtol(text, &end, 10);
+    const int64_t number = string_parse_i64(text, &end);
     out->i32 = (int32_t)number;
     return end != text && !*end && number >= INT32_MIN && number <= INT32_MAX;
   }
   case VKR_IO_U32: {
-    const long long number = strtoll(text, &end, 10);
+    const int64_t number = string_parse_i64(text, &end);
     out->u32 = (uint32_t)number;
     return end != text && !*end && number >= 0 && number <= UINT32_MAX;
   }
   case VKR_IO_F32:
   case VKR_IO_ANGLE:
-    out->f32 = strtof(text, &end);
-    return end != text && !*end && isfinite(out->f32);
+    out->f32 = string_parse_f32(text, &end);
+    return end != text && !*end && vkr_is_finite_f32(out->f32);
   case VKR_IO_ENTITY: {
     VkrEntityRef ref = {0};
-    const VkrEntityId entity = vkr_entity_ref_parse(text, strlen(text), &ref)
-                                   ? vkr_scene_find_entity_ref(scene, &ref)
-                                   : io_named(scene, text);
+    const VkrEntityId entity =
+        vkr_entity_ref_parse(text, string_length(text), &ref)
+            ? vkr_scene_find_entity_ref(scene, &ref)
+            : io_named(scene, text);
     out->entity = (VkrEntity){.id = entity.u64};
     return entity.u64 != 0u;
   }
@@ -389,8 +387,8 @@ bool8_t vkr_io_parse_value(const VkrScene *scene, uint32_t kind,
                                                                     : 3u;
     const char *at = text;
     for (uint32_t i = 0; i < count; ++i) {
-      out->vector.elements[i] = strtof(at, &end);
-      if (end == at || !isfinite(out->vector.elements[i])) {
+      out->vector.elements[i] = string_parse_f32(at, &end);
+      if (end == at || !vkr_is_finite_f32(out->vector.elements[i])) {
         return false_v;
       }
       at = end;
@@ -415,38 +413,38 @@ static bool8_t io_connection_resolve(const VkrScene *scene, VkrEntityId entity,
                  : NULL;
   *out = (IoConnection){.entity = entity};
   if (!connection) {
-    snprintf(error, capacity, "Not a connection");
+    string_format(error, capacity, "Not a connection");
     return false_v;
   }
   out->source = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
   if (!vkr_scene_entity_alive(scene, out->source)) {
-    snprintf(error, capacity, "A connection needs its source as parent");
+    string_format(error, capacity, "A connection needs its source as parent");
     return false_v;
   }
   const String8 output = string8_create_from_cstr(
-      (const uint8_t *)connection->output, strlen(connection->output));
+      (const uint8_t *)connection->output, string_length(connection->output));
   if (!vkr_io_find_output(scene, out->source, output, &out->output)) {
-    snprintf(error, capacity, "The source has no output '%s'",
-             connection->output);
+    string_format(error, capacity, "The source has no output '%s'",
+                  connection->output);
     return false_v;
   }
   out->target = vkr_scene_find_entity_ref(scene, &connection->target);
   if (!out->target.u64) {
-    snprintf(error, capacity, "%s",
-             vkr_entity_ref_empty(&connection->target)
-                 ? "The connection has no target"
-                 : "The target is missing from this scene");
+    string_format(error, capacity, "%s",
+                  vkr_entity_ref_empty(&connection->target)
+                      ? "The connection has no target"
+                      : "The target is missing from this scene");
     return false_v;
   }
   const String8 input = string8_create_from_cstr(
-      (const uint8_t *)connection->input, strlen(connection->input));
+      (const uint8_t *)connection->input, string_length(connection->input));
   if (!input.length) {
-    snprintf(error, capacity, "The connection has no input");
+    string_format(error, capacity, "The connection has no input");
     return false_v;
   }
   if (!vkr_io_find_input(scene, out->target, input, &out->input)) {
-    snprintf(error, capacity, "The target has no input '%s'",
-             connection->input);
+    string_format(error, capacity, "The target has no input '%s'",
+                  connection->input);
     return false_v;
   }
   const VkrIoPort *in = vkr_io_endpoint_port(out->input);
@@ -455,16 +453,16 @@ static bool8_t io_connection_resolve(const VkrScene *scene, VkrEntityId entity,
   if (connection->value[0]) {
     out->has_value = true_v;
     if (!vkr_io_parse_value(scene, in->kind, connection->value, &out->value)) {
-      snprintf(error, capacity, "'%s' is not a value for '%s'",
-               connection->value, in->name);
+      string_format(error, capacity, "'%s' is not a value for '%s'",
+                    connection->value, in->name);
       return false_v;
     }
   } else if (wanted != VKR_IO_NONE) {
     VkrIoValue probe = {.kind = vkr_io_kind(from->kind)};
     VkrIoValue converted;
     if (!io_value_convert(&probe, wanted, &converted)) {
-      snprintf(error, capacity, "'%s' needs a value '%s' does not carry",
-               in->name, from->name);
+      string_format(error, capacity, "'%s' needs a value '%s' does not carry",
+                    in->name, from->name);
       return false_v;
     }
   }
@@ -642,8 +640,9 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
                              .enabled = trigger->enabled,
                              .once = trigger->once};
         if (trigger->filter[0]) {
-          state->filter = vkr_scene_world_type_named(string8_create_from_cstr(
-              (const uint8_t *)trigger->filter, strlen(trigger->filter)));
+          state->filter = vkr_scene_world_type_named(
+              string8_create_from_cstr((const uint8_t *)trigger->filter,
+                                       string_length(trigger->filter)));
           state->filter_missing = state->filter == NULL;
           if (state->filter_missing) {
             const String8 name = io_name(scene, entity);
@@ -666,7 +665,7 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
             (IoButton){.entity = entity,
                        .wait = button->wait,
                        .locked = button->locked,
-                       .ready_at = -INFINITY};
+                       .ready_at = -VKR_FLOAT_INFINITY};
       }
       const SceneTimer *timer =
           vkr_scene_get_typed(scene, entity, &vkr_scene_timer_type);
@@ -755,8 +754,8 @@ static bool8_t io_router_lists(VkrIoRouter *router) {
       }
     }
   }
-  qsort(router->connections, router->connection_count, sizeof(IoConnection),
-        io_connection_compare);
+  vkr_sort(router->connections, router->connection_count, sizeof(IoConnection),
+           io_connection_compare);
   io_warn_cycles(router);
   return true_v;
 }
@@ -842,9 +841,9 @@ bool8_t vkr_io_mover_travel(const VkrScene *scene, VkrEntityId entity,
   Vec3 hi = vec3_zero();
   if (distance <= 0.0f &&
       vkr_scene_entity_local_bounds(scene, entity, &lo, &hi)) {
-    const float32_t extent = fabsf(local.x) * (hi.x - lo.x) +
-                             fabsf(local.y) * (hi.y - lo.y) +
-                             fabsf(local.z) * (hi.z - lo.z);
+    const float32_t extent = vkr_abs_f32(local.x) * (hi.x - lo.x) +
+                             vkr_abs_f32(local.y) * (hi.y - lo.y) +
+                             vkr_abs_f32(local.z) * (hi.z - lo.z);
     distance = Max(0.0f, extent * stretch - mover->lip);
   }
   *out = vec3_scale(along, Max(0.0f, distance) / stretch);
@@ -1171,7 +1170,7 @@ static bool8_t io_fault(VkrIoRouter *router, const char *format, ...) {
   if (!router->faulted) {
     va_list args;
     va_start(args, format);
-    (void)vsnprintf(router->error, sizeof(router->error), format, args);
+    (void)string_format_v(router->error, sizeof(router->error), format, args);
     va_end(args);
     router->faulted = true_v;
     log_error("[io] %s", router->error);
@@ -1188,26 +1187,26 @@ static void io_value_text(const VkrIoRouter *router, const VkrIoValue *value,
   case VKR_IO_ENTITY: {
     const VkrEntityId entity = {.u64 = value->entity.id};
     const String8 name = io_name(io_scene_of(router, entity), entity);
-    snprintf(out, capacity, "%.*s", (int)name.length, name.str);
+    string_format(out, capacity, "%.*s", (int)name.length, name.str);
     break;
   }
   case VKR_IO_BOOL:
-    snprintf(out, capacity, "%s", value->boolean ? "true" : "false");
+    string_format(out, capacity, "%s", value->boolean ? "true" : "false");
     break;
   case VKR_IO_I32:
   case VKR_IO_ENUM:
-    snprintf(out, capacity, "%d", value->i32);
+    string_format(out, capacity, "%d", value->i32);
     break;
   case VKR_IO_U32:
-    snprintf(out, capacity, "%u", value->u32);
+    string_format(out, capacity, "%u", value->u32);
     break;
   case VKR_IO_F32:
   case VKR_IO_ANGLE:
-    snprintf(out, capacity, "%g", value->f32);
+    string_format(out, capacity, "%g", value->f32);
     break;
   default:
-    snprintf(out, capacity, "%g %g %g", value->vector.x, value->vector.y,
-             value->vector.z);
+    string_format(out, capacity, "%g %g %g", value->vector.x, value->vector.y,
+                  value->vector.z);
     break;
   }
 }
@@ -1369,9 +1368,9 @@ static IoMover *io_mover(VkrIoRouter *router, VkrEntityId entity) {
 static VkrIoEndpoint io_out(const VkrTypeDesc *type, const char *name) {
   return (VkrIoEndpoint){
       .type = type,
-      .port = vkr_io_port_find(
-          type->outputs,
-          string8_create_from_cstr((const uint8_t *)name, strlen(name)))};
+      .port = vkr_io_port_find(type->outputs,
+                               string8_create_from_cstr((const uint8_t *)name,
+                                                        string_length(name)))};
 }
 
 /* Seconds a mover rests at the end it reached before it turns back, or
@@ -1460,9 +1459,9 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
   if (type == &vkr_scene_trigger_type) {
     IoTrigger *trigger = io_trigger(router, delivery->target);
     if (trigger) {
-      trigger->enabled = !strcmp(name, "enable")    ? true_v
-                         : !strcmp(name, "disable") ? false_v
-                                                    : !trigger->enabled;
+      trigger->enabled = string_equals(name, "enable")    ? true_v
+                         : string_equals(name, "disable") ? false_v
+                                                          : !trigger->enabled;
     }
     return true_v;
   }
@@ -1471,12 +1470,12 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     if (!relay) {
       return true_v;
     }
-    if (!strcmp(name, "trigger")) {
+    if (string_equals(name, "trigger")) {
       return !relay->enabled ||
              io_emit(router, delivery->target, io_out(type, "on_trigger"), NULL,
                      depth);
     }
-    relay->enabled = !strcmp(name, "enable");
+    relay->enabled = string_equals(name, "enable");
     return true_v;
   }
   if (type == &vkr_scene_button_type) {
@@ -1484,8 +1483,8 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     if (!button) {
       return true_v;
     }
-    if (!strcmp(name, "lock") || !strcmp(name, "unlock")) {
-      button->locked = !strcmp(name, "lock");
+    if (string_equals(name, "lock") || string_equals(name, "unlock")) {
+      button->locked = string_equals(name, "lock");
       return true_v;
     }
     /* A press passes its activator on; one while it waits does nothing. */
@@ -1499,7 +1498,7 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
       return true_v;
     }
     button->ready_at =
-        button->wait < 0.0f ? INFINITY : router->now + button->wait;
+        button->wait < 0.0f ? VKR_FLOAT_INFINITY : router->now + button->wait;
     return io_emit(router, delivery->target, io_out(type, "on_pressed"),
                    activator, depth);
   }
@@ -1508,10 +1507,10 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     if (!timer) {
       return true_v;
     }
-    if (!strcmp(name, "set_interval")) {
+    if (string_equals(name, "set_interval")) {
       timer->interval = Max(0.01f, delivery->value.f32);
     } else {
-      timer->running = !strcmp(name, "start");
+      timer->running = string_equals(name, "start");
     }
     timer->next = router->now + timer->interval;
     return true_v;
@@ -1522,9 +1521,9 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
       return true_v;
     }
     const int64_t amount = delivery->value.i32;
-    int64_t next = !strcmp(name, "add")        ? counter->value + amount
-                   : !strcmp(name, "subtract") ? counter->value - amount
-                                               : amount;
+    int64_t next = string_equals(name, "add")        ? counter->value + amount
+                   : string_equals(name, "subtract") ? counter->value - amount
+                                                     : amount;
     next = Max((int64_t)counter->min, Min((int64_t)counter->max, next));
     if (next == counter->value) {
       return true_v;
@@ -1550,28 +1549,29 @@ static bool8_t io_engine_input(VkrIoRouter *router, VkrScene *scene,
     if (!mover) {
       return true_v;
     }
-    if (!strcmp(name, "lock") || !strcmp(name, "unlock")) {
-      mover->locked = !strcmp(name, "lock");
+    if (string_equals(name, "lock") || string_equals(name, "unlock")) {
+      mover->locked = string_equals(name, "lock");
       return true_v;
     }
     /* A locked mover still closes; it refuses everything else. */
-    if (mover->locked && strcmp(name, "close")) {
+    if (mover->locked && !string_equals(name, "close")) {
       return true_v;
     }
     /* The use key moves only a mover that takes it. */
-    if (!strcmp(name, "use") && mover->activation != VKR_SCENE_MOVER_USE &&
+    if (string_equals(name, "use") &&
+        mover->activation != VKR_SCENE_MOVER_USE &&
         mover->activation != VKR_SCENE_MOVER_RIDE) {
       return true_v;
     }
     float64_t target = 0.0;
-    if (!strcmp(name, "open")) {
+    if (string_equals(name, "open")) {
       target = 1.0;
-    } else if (!strcmp(name, "toggle") || !strcmp(name, "use")) {
+    } else if (string_equals(name, "toggle") || string_equals(name, "use")) {
       /* Heading open or resting open closes; anything else opens. */
       const bool8_t open =
           mover->target > mover->progress || mover->target == 1.0;
       target = open ? 0.0 : 1.0;
-    } else if (!strcmp(name, "set_position")) {
+    } else if (string_equals(name, "set_position")) {
       target = Clamp((float64_t)delivery->value.f32, 0.0, 1.0);
     }
     return io_mover_request(router, mover, target, depth);
@@ -1770,13 +1770,13 @@ static bool8_t io_sense(VkrIoRouter *router, VkrScene *scene,
 static void io_mover_advance(IoMover *mover, float64_t dt) {
   /* A full travel takes its length over the speed, a turn its angle;
      none takes one tick. */
-  const float64_t length =
-      mover->turns ? fabs((float64_t)mover->angle) : vec3_length(mover->travel);
+  const float64_t length = mover->turns ? vkr_abs_f64((float64_t)mover->angle)
+                                        : vec3_length(mover->travel);
   const float64_t remaining = mover->target - mover->progress;
   if (length <= 0.0 || mover->acceleration <= 0.0f) {
     const float64_t step =
         length > 0.0 ? (float64_t)mover->speed * dt / length : 1.0;
-    if (fabs(remaining) <= step * (1.0 + 1.0e-9)) {
+    if (vkr_abs_f64(remaining) <= step * (1.0 + 1.0e-9)) {
       mover->progress = mover->target;
     } else {
       mover->progress += remaining > 0.0 ? step : -step;
@@ -1788,9 +1788,11 @@ static void io_mover_advance(IoMover *mover, float64_t dt) {
   const float64_t top = (float64_t)mover->speed / length;
   const float64_t acceleration = (float64_t)mover->acceleration / length;
   const float64_t change = acceleration * dt;
-  const float64_t brake = sqrt(2.0 * acceleration * fabs(remaining));
+  const float64_t brake =
+      vkr_sqrt_f64(2.0 * acceleration * vkr_abs_f64(remaining));
   const float64_t wanted = (remaining > 0.0 ? 1.0 : -1.0) * Min(top, brake);
-  if (mover->rate * wanted > 0.0 && fabs(wanted) < fabs(mover->rate)) {
+  if (mover->rate * wanted > 0.0 &&
+      vkr_abs_f64(wanted) < vkr_abs_f64(mover->rate)) {
     /* Braking along its way follows the curve that stops at the target. */
     mover->rate = wanted;
   } else {
@@ -1798,8 +1800,8 @@ static void io_mover_advance(IoMover *mover, float64_t dt) {
   }
   const float64_t step = mover->rate * dt;
   if ((step * remaining > 0.0 &&
-       fabs(step) >= fabs(remaining) * (1.0 - 1.0e-9)) ||
-      fabs(remaining) <= 0.5 * change * dt) {
+       vkr_abs_f64(step) >= vkr_abs_f64(remaining) * (1.0 - 1.0e-9)) ||
+      vkr_abs_f64(remaining) <= 0.5 * change * dt) {
     mover->progress = mover->target;
     mover->rate = 0.0;
     return;
@@ -1839,7 +1841,7 @@ static Vec3 io_unmove(Vec3 point, VkrQuat turn, Vec3 shift) {
 static float32_t io_box_reach(Vec3 point, Vec3 lo, Vec3 hi) {
   const float32_t dx = Max(Max(lo.x - point.x, point.x - hi.x), 0.0f);
   const float32_t dz = Max(Max(lo.z - point.z, point.z - hi.z), 0.0f);
-  return sqrtf(dx * dx + dz * dz);
+  return vkr_sqrt_f32(dx * dx + dz * dz);
 }
 
 /* Finds the mover's box at rest once its brushes built; a mover without
@@ -1983,7 +1985,7 @@ bool8_t vkr_io_router_step(VkrIoRouter *router, float64_t dt) {
         mover->rate = wanted;
       }
       if (mover->rate != 0.0) {
-        mover->progress = fmod(mover->progress + mover->rate * dt, 1.0);
+        mover->progress = vkr_fmod_f64(mover->progress + mover->rate * dt, 1.0);
         mover->pose_due = true_v;
       }
       continue;

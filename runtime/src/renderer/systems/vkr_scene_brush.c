@@ -15,10 +15,6 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_packed_geometry.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 #define BRUSH_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* Updates a moved brush waits, unmoved, before it rebuilds. */
 #define BRUSH_SETTLE_UPDATES 2u
@@ -290,7 +286,7 @@ static void brush_mark(VkrScene *scene, VkrEntityId entity) {
     BrushRecord *record = &state->records[index];
     MemZero(record, sizeof(*record));
     record->entity = entity;
-    snprintf(record->status, sizeof(record->status), "pending");
+    string_format(record->status, sizeof(record->status), "pending");
     state->record_slots[entity.parts.index] = (uint32_t)index + 1u;
   }
   BrushRecord *record = &state->records[index];
@@ -516,14 +512,14 @@ static VkrMaterialHandle brush_material(VkrScene *scene, VkrSceneBrushes *state,
                                         Vec2 *out_world_size) {
   struct VkrRenderAssets *assets = scene->assets;
   for (uint32_t i = 0; i < state->material_count; ++i) {
-    if (strcmp(state->materials[i].path, path) == 0) {
+    if (string_equals(state->materials[i].path, path)) {
       *out_owned = state->materials[i].owned;
       *out_world_size = state->materials[i].world_size;
       return state->materials[i].handle;
     }
   }
   BrushMaterial entry = {0};
-  snprintf(entry.path, sizeof(entry.path), "%s", path);
+  string_format(entry.path, sizeof(entry.path), "%s", path);
   entry.handle = vkr_scene_material_load(scene, path, &entry.owned);
   entry.world_size = brush_world_size(vkr_material_system_get_by_handle(
       &assets->material_system, entry.handle));
@@ -632,9 +628,9 @@ static Vec3 brush_direction(const Mat4 *m, Vec3 v) {
 }
 
 static uint64_t brush_cell_key(Vec3 point) {
-  const int64_t x = (int64_t)floorf(point.x / VKR_SCENE_BRUSH_CELL_SIZE);
-  const int64_t y = (int64_t)floorf(point.y / VKR_SCENE_BRUSH_CELL_SIZE);
-  const int64_t z = (int64_t)floorf(point.z / VKR_SCENE_BRUSH_CELL_SIZE);
+  const int64_t x = (int64_t)vkr_floor_f32(point.x / VKR_SCENE_BRUSH_CELL_SIZE);
+  const int64_t y = (int64_t)vkr_floor_f32(point.y / VKR_SCENE_BRUSH_CELL_SIZE);
+  const int64_t z = (int64_t)vkr_floor_f32(point.z / VKR_SCENE_BRUSH_CELL_SIZE);
   const uint64_t mask = (UINT64_C(1) << 18) - 1u;
   return (UINT64_C(1) << 63) | (((uint64_t)x & mask) << 44) |
          (((uint64_t)y & mask) << 26) | (((uint64_t)z & mask) << 8);
@@ -664,8 +660,8 @@ static void brush_write_face(const VkrBrushGeometry *geometry, uint32_t face,
   Vec3 u = {0};
   Vec3 v = {0};
   vkr_brush_texture_axes(projection_normal, &u, &v);
-  const float32_t c = cosf(settings->uv_rotation);
-  const float32_t s = sinf(settings->uv_rotation);
+  const float32_t c = vkr_cos_f32(settings->uv_rotation);
+  const float32_t s = vkr_sin_f32(settings->uv_rotation);
   Vec3 tangent = vec3_sub(vec3_scale(u, c), vec3_scale(v, s));
   Vec3 bitangent = vec3_add(vec3_scale(u, s), vec3_scale(v, c));
   if (world_uv) {
@@ -774,7 +770,7 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
         brush_face_look(state, role, faces[face], normal.y, &greybox);
     face_uvs[face] = greybox ? &s_greybox_uv : faces[face];
     uint32_t group = 0u;
-    while (group < group_count && strcmp(group_paths[group], path) != 0) {
+    while (group < group_count && !string_equals(group_paths[group], path)) {
       group++;
     }
     if (group == group_count) {
@@ -854,10 +850,11 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
         .min_extents = geometry->min,
         .max_extents = geometry->max,
     };
-    snprintf(config.name, sizeof(config.name), "brush_%u_%u_%u_%u_%u",
-             (unsigned)record->entity.parts.world,
-             (unsigned)record->entity.parts.index,
-             (unsigned)record->entity.parts.generation, record->serial, group);
+    string_format(config.name, sizeof(config.name), "brush_%u_%u_%u_%u_%u",
+                  (unsigned)record->entity.parts.world,
+                  (unsigned)record->entity.parts.index,
+                  (unsigned)record->entity.parts.generation, record->serial,
+                  group);
     const VkrGeometryHandle handle =
         brush_geometry_create(scene, &config, lightmap_uvs);
     if (!handle.id) {
@@ -966,7 +963,7 @@ static void brush_pending_attach(VkrScene *scene, VkrSceneBrushes *state) {
     if (!ok && index >= 0) {
       BrushRecord *record = &state->records[index];
       brush_clear(scene, state, record);
-      snprintf(record->status, sizeof(record->status), "the mesh failed");
+      string_format(record->status, sizeof(record->status), "the mesh failed");
     }
   }
 }
@@ -985,9 +982,9 @@ static bool8_t brush_store_hull(VkrScene *scene, BrushRecord *record,
     bool8_t duplicate = false_v;
     for (uint32_t j = 0; j < record->hull_count && !duplicate; ++j) {
       const float32_t *q = record->hull + j * 3u;
-      duplicate = fabsf(q[0] - p.x) < VKR_BRUSH_WELD &&
-                  fabsf(q[1] - p.y) < VKR_BRUSH_WELD &&
-                  fabsf(q[2] - p.z) < VKR_BRUSH_WELD;
+      duplicate = vkr_abs_f32(q[0] - p.x) < VKR_BRUSH_WELD &&
+                  vkr_abs_f32(q[1] - p.y) < VKR_BRUSH_WELD &&
+                  vkr_abs_f32(q[2] - p.z) < VKR_BRUSH_WELD;
     }
     if (!duplicate) {
       float32_t *out = record->hull + record->hull_count++ * 3u;
@@ -1062,8 +1059,8 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
   if (!count || chunks * 2u > BRUSH_MATERIAL_GROUPS) {
     vkr_allocator_end_scope(&scope, BRUSH_TAG);
     brush_clear(scene, state, record);
-    snprintf(record->status, sizeof(record->status), "%s",
-             count ? "the shape has too many pieces" : error);
+    string_format(record->status, sizeof(record->status), "%s",
+                  count ? "the shape has too many pieces" : error);
     return;
   }
 
@@ -1146,8 +1143,10 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
       }
       uint32_t vertex_count = 0u;
       uint32_t index_count = 0u;
-      Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-      Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+      Vec3 lo =
+          vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+      Vec3 hi = vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                         -VKR_FLOAT_INFINITY);
       for (uint32_t i = first; i < last && ok; ++i) {
         const uint32_t piece_material =
             pieces[i].kind == VKR_BLOCKOUT_PIECE_FLOOR ? 1u : 0u;
@@ -1185,11 +1184,11 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
           .min_extents = lo,
           .max_extents = hi,
       };
-      snprintf(config.name, sizeof(config.name), "shape_%u_%u_%u_%u_%u",
-               (unsigned)record->entity.parts.world,
-               (unsigned)record->entity.parts.index,
-               (unsigned)record->entity.parts.generation, record->serial,
-               chunk * 2u + material);
+      string_format(config.name, sizeof(config.name), "shape_%u_%u_%u_%u_%u",
+                    (unsigned)record->entity.parts.world,
+                    (unsigned)record->entity.parts.index,
+                    (unsigned)record->entity.parts.generation, record->serial,
+                    chunk * 2u + material);
       const VkrGeometryHandle handle =
           brush_geometry_create(scene, &config, lightmap_uvs);
       if (!handle.id) {
@@ -1212,7 +1211,7 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
   vkr_allocator_end_scope(&scope, BRUSH_TAG);
   if (!brush_publish_mesh(scene, state, record, submeshes, submesh_count, ok)) {
     brush_clear(scene, state, record);
-    snprintf(record->status, sizeof(record->status), "the mesh failed");
+    string_format(record->status, sizeof(record->status), "the mesh failed");
     return;
   }
   const VkrPhysicsColliderDesc collider = {
@@ -1271,7 +1270,8 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
       scene->world, record->entity, scene->comp_transform);
   if (!stored || !transform) {
     brush_clear(scene, state, record);
-    snprintf(record->status, sizeof(record->status), "no brush or transform");
+    string_format(record->status, sizeof(record->status),
+                  "no brush or transform");
     return;
   }
   const SceneBrushSettings settings = *stored;
@@ -1297,18 +1297,18 @@ static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
   if (error != VKR_BRUSH_OK) {
     brush_clear(scene, state, record);
     if (failed_face != UINT32_MAX) {
-      snprintf(record->status, sizeof(record->status), "%s (face %u)",
-               vkr_brush_error_text(error),
-               (unsigned)face_entities[failed_face].parts.index);
+      string_format(record->status, sizeof(record->status), "%s (face %u)",
+                    vkr_brush_error_text(error),
+                    (unsigned)face_entities[failed_face].parts.index);
     } else {
-      snprintf(record->status, sizeof(record->status), "%s",
-               vkr_brush_error_text(error));
+      string_format(record->status, sizeof(record->status), "%s",
+                    vkr_brush_error_text(error));
     }
     return;
   }
   if (!brush_build_mesh(scene, state, record, settings.role, faces, &world)) {
     brush_clear(scene, state, record);
-    snprintf(record->status, sizeof(record->status), "the mesh failed");
+    string_format(record->status, sizeof(record->status), "the mesh failed");
     return;
   }
   /* Collision: solid and clip join their cell, or their mover's kinematic
@@ -1499,8 +1499,10 @@ bool8_t vkr_scene_brush_mover_bounds(const VkrScene *scene, VkrEntityId mover,
   if (!state) {
     return false_v;
   }
-  Vec3 lower = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lower =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 upper =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   bool8_t found = false_v;
   for (uint32_t i = 0; i < state->record_count; ++i) {
     const BrushRecord *record = &state->records[i];
@@ -1553,7 +1555,8 @@ static void brush_theme_read(VkrScene *scene, const char *path,
   VkrAllocator *scratch = &scene->assets->scratch_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   FilePath file_path = vkr_asset_path_file(
-      scratch, string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+      scratch,
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle file = {0};
@@ -1583,14 +1586,14 @@ static void brush_themes_sync(VkrScene *scene, VkrSceneBrushes *state) {
   if (root && root != scene) {
     paths[1] = root->world_state.surface_theme.theme;
   }
-  if (!state->theme_reload && strcmp(paths[0], state->theme_paths[0]) == 0 &&
-      strcmp(paths[1], state->theme_paths[1]) == 0) {
+  if (!state->theme_reload && string_equals(paths[0], state->theme_paths[0]) &&
+      string_equals(paths[1], state->theme_paths[1])) {
     return;
   }
   state->theme_reload = false_v;
   for (uint32_t i = 0; i < 2u; ++i) {
-    snprintf(state->theme_paths[i], sizeof(state->theme_paths[i]), "%s",
-             paths[i]);
+    string_format(state->theme_paths[i], sizeof(state->theme_paths[i]), "%s",
+                  paths[i]);
     brush_theme_read(scene, state->theme_paths[i], &state->themes[i]);
   }
   brush_dirty_all(scene, state);

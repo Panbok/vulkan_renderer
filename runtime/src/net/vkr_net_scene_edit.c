@@ -4,9 +4,6 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_net_type.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #define NET_EDIT_ACTION_BITS 5u
 #define NET_EDIT_TYPE_NAME_MAX 64u
 /* Raw arrays start on this boundary from the start of the encoded bytes,
@@ -65,13 +62,13 @@ static const VkrScene *net_edit_container(const VkrNetSceneEditScenes *scenes,
 /* A component type by the name both peers register. */
 static const VkrTypeDesc *net_edit_type_named(const char *name) {
   const String8 key =
-      string8_create_from_cstr((const uint8_t *)name, strlen(name));
+      string8_create_from_cstr((const uint8_t *)name, string_length(name));
   const VkrTypeDesc *type = vkr_scene_world_type_named(key);
   if (type) {
     return type;
   }
   for (uint32_t i = 0u; (type = vkr_scene_edit_component_type(i)); ++i) {
-    if (strcmp(type->name, name) == 0) {
+    if (string_equals(type->name, name)) {
       return type;
     }
   }
@@ -80,7 +77,7 @@ static const VkrTypeDesc *net_edit_type_named(const char *name) {
 
 static bool8_t net_edit_write_type_name(VkrBitWriter *writer,
                                         const VkrTypeDesc *type) {
-  const uint32_t length = type ? (uint32_t)strlen(type->name) : 0u;
+  const uint32_t length = type ? (uint32_t)string_length(type->name) : 0u;
   if (!type || length == 0u || length >= NET_EDIT_TYPE_NAME_MAX) {
     return false_v;
   }
@@ -93,20 +90,20 @@ static const VkrTypeDesc *
 net_edit_read_type_name(VkrBitReader *reader, char *error, uint32_t capacity) {
   const uint64_t length = vkr_bit_read_varuint(reader);
   if (length == 0u || length >= NET_EDIT_TYPE_NAME_MAX) {
-    snprintf(error, capacity, "malformed component type name");
+    string_format(error, capacity, "malformed component type name");
     return NULL;
   }
   const uint8_t *bytes = vkr_bit_read_bytes(reader, (uint32_t)length);
   if (!bytes) {
-    snprintf(error, capacity, "edit ends early");
+    string_format(error, capacity, "edit ends early");
     return NULL;
   }
   char name[NET_EDIT_TYPE_NAME_MAX];
-  memcpy(name, bytes, (size_t)length);
+  MemCopy(name, bytes, (size_t)length);
   name[length] = '\0';
   const VkrTypeDesc *type = net_edit_type_named(name);
   if (!type) {
-    snprintf(error, capacity, "unknown component type %s", name);
+    string_format(error, capacity, "unknown component type %s", name);
   }
   return type;
 }
@@ -128,8 +125,8 @@ static bool8_t net_edit_write_entity(VkrBitWriter *writer,
   VkrEntityRef ref;
   if (!scene || !vkr_scene_entity_ref(scene, entity, &ref) ||
       vkr_entity_ref_empty(&ref)) {
-    snprintf(error, capacity, "entity %u:%u has no document id",
-             entity.parts.world, entity.parts.index);
+    string_format(error, capacity, "entity %u:%u has no document id",
+                  entity.parts.world, entity.parts.index);
     return false_v;
   }
   vkr_bit_write(writer, NET_EDIT_ENTITY_REF, 2u);
@@ -153,14 +150,14 @@ static bool8_t net_edit_read_entity(VkrBitReader *reader,
   if (form == NET_EDIT_ENTITY_BATCH) {
     const uint64_t index = vkr_bit_read_varuint(reader);
     if (index >= INT32_MAX) {
-      snprintf(error, capacity, "batch reference out of range");
+      string_format(error, capacity, "batch reference out of range");
       return false_v;
     }
     *out_batch_ref = (int32_t)index;
     return true_v;
   }
   if (form != NET_EDIT_ENTITY_REF) {
-    snprintf(error, capacity, "malformed entity reference");
+    string_format(error, capacity, "malformed entity reference");
     return false_v;
   }
   const uint32_t world = (uint32_t)vkr_bit_read(reader, 16u);
@@ -173,7 +170,7 @@ static bool8_t net_edit_read_entity(VkrBitReader *reader,
   if (!entity.u64) {
     char text[37];
     vkr_entity_ref_format(&ref, text);
-    snprintf(error, capacity, "no entity %s in container %u", text, world);
+    string_format(error, capacity, "no entity %s in container %u", text, world);
     return false_v;
   }
   *out_entity = entity;
@@ -193,9 +190,9 @@ static bool8_t net_edit_write_values(VkrBitWriter *writer,
   const uint32_t fields = values->fields;
   vkr_bit_write(writer, fields, 8u);
   if (fields & VKR_SCENE_EDIT_NAME) {
-    const uint8_t *end = memchr(values->name, 0, sizeof(values->name));
+    const uint8_t *end = MemFindByte(values->name, 0, sizeof(values->name));
     if (!end) {
-      snprintf(error, capacity, "name has no terminator");
+      string_format(error, capacity, "name has no terminator");
       return false_v;
     }
     const uint32_t length = (uint32_t)(end - (const uint8_t *)values->name);
@@ -237,12 +234,12 @@ static bool8_t net_edit_write_values(VkrBitWriter *writer,
          vkr_net_type_write(writer, values->component_type, values->component);
   }
   if (!ok) {
-    snprintf(error, capacity, "a value cannot travel");
+    string_format(error, capacity, "a value cannot travel");
     return false_v;
   }
   if (create) {
     if (vkr_entity_ref_empty(&values->ref)) {
-      snprintf(error, capacity, "a creation needs its document id");
+      string_format(error, capacity, "a creation needs its document id");
       return false_v;
     }
     vkr_bit_write(writer, vkr_load_le_u64(values->ref.bytes), 64u);
@@ -256,7 +253,7 @@ static bool8_t net_edit_read_values(VkrBitReader *reader,
                                     char *error, uint32_t capacity) {
   values->fields = (uint32_t)vkr_bit_read(reader, 8u);
   if (values->fields & ~net_edit_value_fields) {
-    snprintf(error, capacity, "unsupported edit fields");
+    string_format(error, capacity, "unsupported edit fields");
     return false_v;
   }
   if (values->fields & VKR_SCENE_EDIT_NAME) {
@@ -264,11 +261,11 @@ static bool8_t net_edit_read_values(VkrBitReader *reader,
     const uint8_t *bytes = length < sizeof(values->name)
                                ? vkr_bit_read_bytes(reader, (uint32_t)length)
                                : NULL;
-    if (!bytes || memchr(bytes, 0, (size_t)length)) {
-      snprintf(error, capacity, "malformed name");
+    if (!bytes || MemFindByte(bytes, 0, (size_t)length)) {
+      string_format(error, capacity, "malformed name");
       return false_v;
     }
-    memcpy(values->name, bytes, (size_t)length);
+    MemCopy(values->name, bytes, (size_t)length);
     values->name[length] = '\0';
   }
   if (values->fields & VKR_SCENE_EDIT_TRANSFORM) {
@@ -317,12 +314,12 @@ static bool8_t net_edit_read_values(VkrBitReader *reader,
     vkr_store_le_u64(values->ref.bytes, vkr_bit_read(reader, 64u));
     vkr_store_le_u64(values->ref.bytes + 8, vkr_bit_read(reader, 64u));
     if (vkr_entity_ref_empty(&values->ref)) {
-      snprintf(error, capacity, "a creation needs its document id");
+      string_format(error, capacity, "a creation needs its document id");
       return false_v;
     }
   }
   if (reader->overflow) {
-    snprintf(error, capacity, "edit ends early");
+    string_format(error, capacity, "edit ends early");
     return false_v;
   }
   return vkr_scene_edit_validate(values);
@@ -452,7 +449,7 @@ static bool8_t net_edit_read_terrain(VkrBitReader *reader,
       image_width > NET_EDIT_IMAGE_SIDE_MAX ||
       image_height > NET_EDIT_IMAGE_SIDE_MAX ||
       (image_width == 0u) != (image_height == 0u)) {
-    snprintf(error, capacity, "a malformed terrain edit");
+    string_format(error, capacity, "a malformed terrain edit");
     return false_v;
   }
   if (image_width) {
@@ -464,7 +461,7 @@ static bool8_t net_edit_read_terrain(VkrBitReader *reader,
   }
   const uint64_t path = vkr_bit_read_varuint(reader);
   if (path > NET_EDIT_PATH_MAX) {
-    snprintf(error, capacity, "a terrain road with too many points");
+    string_format(error, capacity, "a terrain road with too many points");
     return false_v;
   }
   if (path) {
@@ -474,7 +471,7 @@ static bool8_t net_edit_read_terrain(VkrBitReader *reader,
   }
   if (reader->overflow || (image_width && !out->image) ||
       (path && !out->path)) {
-    snprintf(error, capacity, "a truncated terrain edit");
+    string_format(error, capacity, "a truncated terrain edit");
     return false_v;
   }
   return true_v;
@@ -607,7 +604,7 @@ static bool8_t net_edit_read_physics(VkrBitReader *reader,
   attachment->rotation = net_edit_read_quat(reader);
   const uint64_t joints = vkr_bit_read_varuint(reader);
   if (joints > VKR_SCENE_PHYSICS_MAX_JOINTS) {
-    snprintf(error, capacity, "too many joints");
+    string_format(error, capacity, "too many joints");
     return false_v;
   }
   out->joint_count = (uint32_t)joints;
@@ -630,7 +627,7 @@ static bool8_t net_edit_read_physics(VkrBitReader *reader,
   }
   const uint64_t colliders = vkr_bit_read_varuint(reader);
   if (colliders > VKR_SCENE_PHYSICS_MAX_COLLIDERS) {
-    snprintf(error, capacity, "too many colliders");
+    string_format(error, capacity, "too many colliders");
     return false_v;
   }
   out->collider_count = (uint32_t)colliders;
@@ -645,8 +642,8 @@ static bool8_t net_edit_read_physics(VkrBitReader *reader,
   }
   const char *invalid = NULL;
   if (reader->overflow || !vkr_scene_physics_snapshot_validate(out, &invalid)) {
-    snprintf(error, capacity, "%s",
-             invalid ? invalid : "physics settings end early");
+    string_format(error, capacity, "%s",
+                  invalid ? invalid : "physics settings end early");
     return false_v;
   }
   return true_v;
@@ -655,7 +652,8 @@ static bool8_t net_edit_read_physics(VkrBitReader *reader,
 static void net_edit_write_layers(VkrBitWriter *writer,
                                   const VkrSceneCollisionLayers *layers) {
   for (uint32_t i = 0u; i < VKR_COLLISION_LAYER_COUNT; ++i) {
-    const uint8_t *end = memchr(layers->names[i], 0, sizeof(layers->names[i]));
+    const uint8_t *end =
+        MemFindByte(layers->names[i], 0, sizeof(layers->names[i]));
     const uint32_t length =
         end ? (uint32_t)(end - (const uint8_t *)layers->names[i]) : 0u;
     vkr_bit_write_varuint(writer, length);
@@ -667,7 +665,7 @@ static void net_edit_write_layers(VkrBitWriter *writer,
   vkr_bit_write_varuint(writer, presets);
   for (uint32_t i = 0u; i < presets; ++i) {
     const VkrSceneCollisionPreset *preset = &layers->presets[i];
-    const uint8_t *end = memchr(preset->name, 0, sizeof(preset->name));
+    const uint8_t *end = MemFindByte(preset->name, 0, sizeof(preset->name));
     const uint32_t length =
         end ? (uint32_t)(end - (const uint8_t *)preset->name) : 0u;
     vkr_bit_write_varuint(writer, length);
@@ -683,7 +681,7 @@ static bool8_t net_edit_read_text(VkrBitReader *reader, char *out,
   const uint64_t length = vkr_bit_read_varuint(reader);
   const uint8_t *bytes =
       length < capacity ? vkr_bit_read_bytes(reader, (uint32_t)length) : NULL;
-  if (!bytes || memchr(bytes, 0, (size_t)length)) {
+  if (!bytes || MemFindByte(bytes, 0, (size_t)length)) {
     return false_v;
   }
   MemCopy(out, bytes, length);
@@ -697,21 +695,21 @@ static bool8_t net_edit_read_layers(VkrBitReader *reader,
   MemZero(out, sizeof(*out));
   for (uint32_t i = 0u; i < VKR_COLLISION_LAYER_COUNT; ++i) {
     if (!net_edit_read_text(reader, out->names[i], sizeof(out->names[i]))) {
-      snprintf(error, capacity, "malformed collision layer name");
+      string_format(error, capacity, "malformed collision layer name");
       return false_v;
     }
     out->matrix[i] = (uint16_t)vkr_bit_read(reader, 16u);
   }
   const uint64_t presets = vkr_bit_read_varuint(reader);
   if (presets > VKR_COLLISION_PRESET_CAPACITY) {
-    snprintf(error, capacity, "too many collision presets");
+    string_format(error, capacity, "too many collision presets");
     return false_v;
   }
   out->preset_count = (uint32_t)presets;
   for (uint32_t i = 0u; i < out->preset_count; ++i) {
     VkrSceneCollisionPreset *preset = &out->presets[i];
     if (!net_edit_read_text(reader, preset->name, sizeof(preset->name))) {
-      snprintf(error, capacity, "malformed collision preset name");
+      string_format(error, capacity, "malformed collision preset name");
       return false_v;
     }
     preset->membership = (uint16_t)vkr_bit_read(reader, 16u);
@@ -720,8 +718,8 @@ static bool8_t net_edit_read_layers(VkrBitReader *reader,
   }
   const char *invalid = NULL;
   if (reader->overflow || !vkr_scene_collision_layers_validate(out, &invalid)) {
-    snprintf(error, capacity, "%s",
-             invalid ? invalid : "collision layers end early");
+    string_format(error, capacity, "%s",
+                  invalid ? invalid : "collision layers end early");
     return false_v;
   }
   return true_v;
@@ -733,7 +731,7 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
                                  int32_t entity_ref, int32_t parent_ref,
                                  char *error, uint32_t capacity) {
   if (!vkr_net_scene_edit_supported(request)) {
-    snprintf(error, capacity, "this edit cannot travel in a session yet");
+    string_format(error, capacity, "this edit cannot travel in a session yet");
     return false_v;
   }
   const VkrSceneEditAction action = request->action;
@@ -763,10 +761,11 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
     return (net_edit_write_type_name(writer, request->values.component_type) &&
             vkr_net_type_write(writer, request->values.component_type,
                                request->values.component)) ||
-           (snprintf(error, capacity, "a component cannot travel"), false_v);
+           (string_format(error, capacity, "a component cannot travel"),
+            false_v);
   case VKR_SCENE_EDIT_REMOVE_COMPONENT:
     return net_edit_write_type_name(writer, request->values.component_type) ||
-           (snprintf(error, capacity, "a component type cannot travel"),
+           (string_format(error, capacity, "a component type cannot travel"),
             false_v);
   case VKR_SCENE_EDIT_TERRAIN:
     net_edit_write_terrain(writer, &request->terrain);
@@ -778,14 +777,14 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
     return true_v;
   case VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS:
     if (!request->collision_layers) {
-      snprintf(error, capacity, "collision layers without values");
+      string_format(error, capacity, "collision layers without values");
       return false_v;
     }
     net_edit_write_layers(writer, request->collision_layers);
     return true_v;
   case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH:
     if (!request->physics_batch && request->physics_batch_count) {
-      snprintf(error, capacity, "a physics batch without values");
+      string_format(error, capacity, "a physics batch without values");
       return false_v;
     }
     vkr_bit_write_varuint(writer, request->physics_batch_count);
@@ -796,7 +795,7 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
           !net_edit_write_physics(writer,
                                   &request->physics_batch[i].snapshot)) {
         if (!error[0]) {
-          snprintf(error, capacity, "a physics change cannot travel");
+          string_format(error, capacity, "a physics change cannot travel");
         }
         return false_v;
       }
@@ -805,7 +804,8 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
   case VKR_SCENE_EDIT_DUPLICATE:
     /* Every editor derives the copies' ids from this seed. */
     if (vkr_entity_ref_empty(&request->values.ref)) {
-      snprintf(error, capacity, "a duplicate travels with the seed of its ids");
+      string_format(error, capacity,
+                    "a duplicate travels with the seed of its ids");
       return false_v;
     }
     vkr_bit_write(writer, vkr_load_le_u64(request->values.ref.bytes), 64u);
@@ -816,7 +816,8 @@ bool8_t vkr_net_scene_edit_write(VkrBitWriter *writer,
             net_edit_write_type_name(writer, request->values.component_type) &&
             vkr_net_type_write(writer, request->values.component_type,
                                request->values.component)) ||
-           (snprintf(error, capacity, "a component cannot travel"), false_v);
+           (string_format(error, capacity, "a component cannot travel"),
+            false_v);
   default:
     return true_v;
   }
@@ -839,7 +840,7 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
   /* Fields are not read yet, so APPLY and CREATE pass here; their values
      are checked when read. */
   if (!vkr_net_scene_edit_supported(request)) {
-    snprintf(error, capacity, "unsupported edit action %u", action);
+    string_format(error, capacity, "unsupported edit action %u", action);
     return false_v;
   }
   const bool8_t has_entity = net_edit_has_entity(action);
@@ -850,7 +851,7 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
     return false_v;
   }
   if (has_entity && !request->entity.u64 && *out_entity_ref < 0) {
-    snprintf(error, capacity, "the edit names no entity");
+    string_format(error, capacity, "the edit names no entity");
     return false_v;
   }
   if (has_parent && !net_edit_read_entity(reader, scenes, &request->parent,
@@ -904,13 +905,13 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
                               capacity);
     request->collision_layers = ok ? storage->collision_layers : NULL;
     if (!storage || !storage->collision_layers) {
-      snprintf(error, capacity, "collision layers need room to read into");
+      string_format(error, capacity, "collision layers need room to read into");
     }
     break;
   case VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH: {
     const uint64_t count = vkr_bit_read_varuint(reader);
     if (!storage || count > storage->physics_capacity) {
-      snprintf(error, capacity, "a physics batch needs room to read into");
+      string_format(error, capacity, "a physics batch needs room to read into");
       return false_v;
     }
     for (uint32_t i = 0u; ok && i < count; ++i) {
@@ -930,14 +931,14 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
     vkr_store_le_u64(request->values.ref.bytes + 8, vkr_bit_read(reader, 64u));
     ok = !vkr_entity_ref_empty(&request->values.ref);
     if (!ok) {
-      snprintf(error, capacity, "a duplicate without the seed of its ids");
+      string_format(error, capacity, "a duplicate without the seed of its ids");
     }
     break;
   default:
     break;
   }
   if (ok && reader->overflow) {
-    snprintf(error, capacity, "edit ends early");
+    string_format(error, capacity, "edit ends early");
     ok = false_v;
   }
   return ok;

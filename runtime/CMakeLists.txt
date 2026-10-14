@@ -14,6 +14,10 @@ if(APPLE)
 endif()
 add_library(vkr_runtime STATIC ${VKR_RUNTIME_SOURCES})
 vkr_configure_library(vkr_runtime)
+# Runtime C sources reach libc and the operating system only through the lib
+# (ADR-118); runtime/src/platform/ adds its own OS headers.
+target_compile_definitions(vkr_runtime PRIVATE
+    $<$<COMPILE_LANGUAGE:C,OBJC>:VKR_LIBC_BOUNDARY=1>)
 target_include_directories(vkr_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # The script SDK (ADR-079): sdk.h for modules and the host that fills it.
 target_include_directories(vkr_runtime PUBLIC "${CMAKE_SOURCE_DIR}/sdk")
@@ -33,5 +37,7 @@ if(VKR_BUILD_APP OR VKR_BUILD_EDITOR OR VKR_BUILD_TESTS)
     add_library(vkr_sample_runtime STATIC src/vkr_sample_runtime.c
                 src/vkr_sample_runtime_config.c)
     vkr_configure_library(vkr_sample_runtime)
+    target_compile_definitions(vkr_sample_runtime PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:VKR_LIBC_BOUNDARY=1>)
     target_link_libraries(vkr_sample_runtime PUBLIC vkr_runtime)
 endif()

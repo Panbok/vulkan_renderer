@@ -1,6 +1,12 @@
 #include "core/vkr_window.h"
 #include "platform/vkr_file_dialog_internal.h"
 #if defined(PLATFORM_WINDOWS)
+/* This unit's own Win32 include: renderer and runtime builds keep
+   <windows.h> out of lib headers (ADR-118). */
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #ifndef COBJMACROS
 #define COBJMACROS
 #endif
@@ -67,16 +73,16 @@ void vkr_file_dialog_native_show(VkrWindow *window,
                                  VkrFileDialogResult *result) {
   HWND owner = (HWND)vkr_window_get_win32_handle(window);
   if (GetWindowThreadProcessId(owner, NULL) != GetCurrentThreadId()) {
-    snprintf(result->diagnostic, sizeof(result->diagnostic),
-             "Native file dialogs must run on the window UI thread.");
+    string_format(result->diagnostic, sizeof(result->diagnostic),
+                  "Native file dialogs must run on the window UI thread.");
     return;
   }
   HRESULT hr =
       CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   if (FAILED(hr)) {
-    snprintf(result->diagnostic, sizeof(result->diagnostic),
-             "Cannot initialize file dialog COM apartment (0x%08lx).",
-             (unsigned long)hr);
+    string_format(result->diagnostic, sizeof(result->diagnostic),
+                  "Cannot initialize file dialog COM apartment (0x%08lx).",
+                  (unsigned long)hr);
     return;
   }
   IFileDialog *dialog = NULL;
@@ -213,8 +219,8 @@ void vkr_file_dialog_native_show(VkrWindow *window,
   result->status = VKR_FILE_DIALOG_SELECTED;
 cleanup:
   if (result->status == VKR_FILE_DIALOG_ERROR) {
-    snprintf(result->diagnostic, sizeof(result->diagnostic),
-             "Native file dialog failed (0x%08lx).", (unsigned long)hr);
+    string_format(result->diagnostic, sizeof(result->diagnostic),
+                  "Native file dialog failed (0x%08lx).", (unsigned long)hr);
   }
   if (item) {
     IShellItem_Release(item);

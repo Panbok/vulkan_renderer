@@ -2,9 +2,6 @@
 
 #include "core/vkr_json.h"
 
-#include <stdio.h>
-#include <string.h>
-
 const char *const vkr_surface_names[] = {
     "none", "concrete", "metal", "wood",   "tile",  "plaster",  "brick", "rock",
     "dirt", "grass",    "glass", "fabric", "water", "emissive", NULL};
@@ -67,7 +64,7 @@ static bool8_t surface_name_index(const char *const *names, const char *name,
     return false_v;
   }
   for (uint32_t i = 0; names[i]; ++i) {
-    if (strcmp(names[i], name) == 0) {
+    if (string_equals(names[i], name)) {
       *out = i;
       return true_v;
     }
@@ -125,14 +122,14 @@ const char *vkr_surface_greybox_material(VkrSurface surface,
 static void theme_error(char *error, uint32_t capacity, const char *format,
                         const char *name) {
   if (error && capacity > 0u) {
-    snprintf(error, capacity, format, name);
+    string_format(error, capacity, format, name);
   }
 }
 
 /* The tag whose name is `text`, or VKR_SURFACE_COUNT. */
 static uint32_t theme_tag(String8 text) {
   for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
-    const uint64_t length = strlen(vkr_surface_names[tag]);
+    const uint64_t length = string_length(vkr_surface_names[tag]);
     if (text.length == length &&
         MemCompare(text.str, vkr_surface_names[tag], length) == 0) {
       return tag;
@@ -203,7 +200,7 @@ bool8_t vkr_surface_theme_read(String8 json, VkrSurfaceTheme *out, char *error,
     }
     if (!vkr_json_parse_string(&materials, &path) ||
         path.length >= VKR_SURFACE_THEME_PATH_CAPACITY ||
-        memchr(path.str, '\\', path.length)) {
+        MemFindByte(path.str, '\\', path.length)) {
       theme_error(error, capacity,
                   "materials.%s must be a material path under 128 bytes", name);
       return false_v;
@@ -218,8 +215,8 @@ bool8_t vkr_surface_theme_write(const VkrSurfaceTheme *theme,
                                 VkrAllocator *allocator, String8 *out_json) {
   uint64_t capacity = 64u;
   for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
-    capacity +=
-        strlen(vkr_surface_names[tag]) + strlen(theme->materials[tag]) + 16u;
+    capacity += string_length(vkr_surface_names[tag]) +
+                string_length(theme->materials[tag]) + 16u;
   }
   char *text =
       vkr_allocator_alloc(allocator, capacity, VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -227,7 +224,7 @@ bool8_t vkr_surface_theme_write(const VkrSurfaceTheme *theme,
     return false_v;
   }
 
-  uint64_t length = (uint64_t)snprintf(
+  uint64_t length = (uint64_t)string_format(
       text, capacity, "{\n  \"version\": %u,\n  \"materials\": {",
       VKR_SURFACE_THEME_VERSION);
   bool8_t first = true_v;
@@ -235,13 +232,13 @@ bool8_t vkr_surface_theme_write(const VkrSurfaceTheme *theme,
     if (!theme->materials[tag][0]) {
       continue;
     }
-    length += (uint64_t)snprintf(text + length, capacity - length,
-                                 "%s\n    \"%s\": \"%s\"", first ? "" : ",",
-                                 vkr_surface_names[tag], theme->materials[tag]);
+    length += (uint64_t)string_format(
+        text + length, capacity - length, "%s\n    \"%s\": \"%s\"",
+        first ? "" : ",", vkr_surface_names[tag], theme->materials[tag]);
     first = false_v;
   }
-  length += (uint64_t)snprintf(text + length, capacity - length, "%s}\n}\n",
-                               first ? "" : "\n  ");
+  length += (uint64_t)string_format(text + length, capacity - length,
+                                    "%s}\n}\n", first ? "" : "\n  ");
   *out_json = (String8){.str = (uint8_t *)text, .length = length};
   return true_v;
 }
@@ -311,19 +308,19 @@ bool8_t vkr_surface_from_legacy_material(const char *material,
                                          VkrSurfaceMark *out_mark) {
   static const char prefix[] = "assets/materials/dev/dev_";
   static const char suffix[] = ".mt";
-  if (!material || strncmp(material, prefix, sizeof(prefix) - 1u) != 0) {
+  if (!material || !string_n_equals(material, prefix, sizeof(prefix) - 1u)) {
     return false_v;
   }
   const char *name = material + sizeof(prefix) - 1u;
-  const size_t length = strlen(name);
+  const size_t length = string_length(name);
   if (length <= sizeof(suffix) - 1u ||
-      strcmp(name + length - (sizeof(suffix) - 1u), suffix) != 0) {
+      !string_equals(name + length - (sizeof(suffix) - 1u), suffix)) {
     return false_v;
   }
   const size_t name_length = length - (sizeof(suffix) - 1u);
   for (uint32_t i = 0; i < ArrayCount(s_legacy_materials); ++i) {
-    if (strlen(s_legacy_materials[i].name) == name_length &&
-        strncmp(s_legacy_materials[i].name, name, name_length) == 0) {
+    if (string_length(s_legacy_materials[i].name) == name_length &&
+        string_n_equals(s_legacy_materials[i].name, name, name_length)) {
       *out_surface = s_legacy_materials[i].surface;
       *out_mark = s_legacy_materials[i].mark;
       return true_v;

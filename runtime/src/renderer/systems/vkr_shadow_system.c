@@ -25,7 +25,8 @@ vkr_internal void vkr_shadow_compute_cascade_splits(VkrShadowSystem *system,
   working_far = vkr_max_f32(working_far, working_near + 0.001f);
   for (uint32_t i = 0; i < count; ++i) {
     float32_t p = (float32_t)i / (float32_t)count;
-    float32_t log_split = working_near * powf(working_far / working_near, p);
+    float32_t log_split =
+        working_near * vkr_pow_f32(working_far / working_near, p);
     float32_t linear_split = working_near + (working_far - working_near) * p;
     system->cascade_splits[i] =
         lambda * log_split + (1.0f - lambda) * linear_split;
@@ -178,11 +179,12 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
       sample.source_projection_generation != projection_generation ||
       sample.source_scene_generation != system->sdsm_current_scene_generation ||
       lag > system->config.sdsm_max_source_lag_frames ||
-      !isfinite(sample.source_near) || !isfinite(sample.source_far) ||
-      sample.source_near <= 0.0f || sample.source_far <= sample.source_near ||
-      !isfinite(sample.min_device_z) || !isfinite(sample.max_device_z) ||
-      sample.min_device_z < 0.0f || sample.max_device_z > 1.0f ||
-      sample.min_device_z > sample.max_device_z) {
+      !vkr_is_finite_f32(sample.source_near) ||
+      !vkr_is_finite_f32(sample.source_far) || sample.source_near <= 0.0f ||
+      sample.source_far <= sample.source_near ||
+      !vkr_is_finite_f32(sample.min_device_z) ||
+      !vkr_is_finite_f32(sample.max_device_z) || sample.min_device_z < 0.0f ||
+      sample.max_device_z > 1.0f || sample.min_device_z > sample.max_device_z) {
     vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
     return;
   }
@@ -201,15 +203,15 @@ vkr_internal void vkr_shadow_consume_sdsm(VkrShadowSystem *system,
   const float32_t b = sample.source_depth_linearize.y;
   const float32_t near_denominator = sample.max_device_z + a;
   const float32_t far_denominator = sample.min_device_z + a;
-  if (!isfinite(a) || !isfinite(b) || near_denominator == 0.0f ||
-      far_denominator == 0.0f) {
+  if (!vkr_is_finite_f32(a) || !vkr_is_finite_f32(b) ||
+      near_denominator == 0.0f || far_denominator == 0.0f) {
     vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
     return;
   }
   float32_t linear_near = b / near_denominator;
   float32_t linear_far = b / far_denominator;
-  if (!isfinite(linear_near) || !isfinite(linear_far) || linear_near <= 0.0f ||
-      linear_far < linear_near) {
+  if (!vkr_is_finite_f32(linear_near) || !vkr_is_finite_f32(linear_far) ||
+      linear_near <= 0.0f || linear_far < linear_near) {
     vkr_shadow_sdsm_use_fixed(system, camera, fixed_far, VKR_SHADOW_SDSM_STALE);
     return;
   }
@@ -720,9 +722,9 @@ float32_t vkr_shadow_quantize_extent_up(float32_t extent,
   // Bracketing the extent up to the next power of two gives a step that only
   // changes when the extent crosses a binade, so the derived texel size takes
   // discrete values across ordinary camera motion instead of sliding with it.
-  int exponent = 0;
-  (void)frexpf(extent, &exponent);
-  const float32_t bracket = ldexpf(1.0f, exponent);
+  int32_t exponent = 0;
+  (void)vkr_frexp_f32(extent, &exponent);
+  const float32_t bracket = vkr_ldexp_f32(1.0f, exponent);
   const float32_t quantum = bracket / (float32_t)shadow_map_size;
   return vkr_ceil_f32(extent / quantum) * quantum;
 }
@@ -1852,13 +1854,14 @@ vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
   Vec3 center = vec3_zero();
   float32_t radius = 0.0f;
   vkr_shadow_candidate_world_sphere(candidate, &center, &radius);
-  if (!isfinite(center.x) || !isfinite(center.y) || !isfinite(center.z) ||
-      !isfinite(radius) || radius < 0.0f)
+  if (!vkr_is_finite_f32(center.x) || !vkr_is_finite_f32(center.y) ||
+      !vkr_is_finite_f32(center.z) || !vkr_is_finite_f32(radius) ||
+      radius < 0.0f)
     return true_v;
   const Vec3 delta = vec3_sub(center, light->position);
   const float32_t distance_squared = vec3_length_squared(delta);
   const float32_t reach = light->range + radius;
-  return !isfinite(distance_squared) || !isfinite(reach) ||
+  return !vkr_is_finite_f32(distance_squared) || !vkr_is_finite_f32(reach) ||
          distance_squared <= reach * reach;
 }
 
@@ -1873,7 +1876,7 @@ vkr_internal float32_t
 vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
   const Vec3 to_light = vec3_sub(light->position, point);
   const float32_t distance_squared = vec3_length_squared(to_light);
-  const float32_t distance = sqrtf(distance_squared);
+  const float32_t distance = vkr_sqrt_f32(distance_squared);
   float32_t attenuation = 0.0f;
   float32_t cone = 1.0f;
   if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL) {
@@ -1892,8 +1895,8 @@ vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
     }
     attenuation = window / Max(distance_squared, 1e-4f);
     if (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT && distance > 1e-6f) {
-      const float32_t outer = cosf(light->outer_cone_angle);
-      const float32_t inner = cosf(light->inner_cone_angle);
+      const float32_t outer = vkr_cos_f32(light->outer_cone_angle);
+      const float32_t inner = vkr_cos_f32(light->inner_cone_angle);
       const float32_t cosine = vec3_dot(vec3_scale(to_light, -1.0f / distance),
                                         vec3_normalize(light->direction));
       const float32_t t =
@@ -1907,7 +1910,7 @@ vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
                               light->color.z * 0.0722f;
   const float32_t value =
       Max(luminance, 0.0f) * Max(light->intensity, 0.0f) * attenuation * cone;
-  return isfinite(value) ? value : 0.0f;
+  return vkr_is_finite_f32(value) ? value : 0.0f;
 }
 
 /* Selects the baked lamps whose moving-caster shadows the frame shows: at

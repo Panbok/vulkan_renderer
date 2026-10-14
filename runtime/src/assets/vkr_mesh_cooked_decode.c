@@ -9,7 +9,6 @@
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
 #include "platform/vkr_platform.h"
-#include <math.h>
 
 typedef struct VkrMeshCookedDependencyView {
   String8 path;
@@ -123,7 +122,7 @@ static bool8_t vkr_mesh_cooked_validate_packed_range_vertices(
     const VkrGpuGeometryDecodeRecord *decode, Vec3 expected_center,
     Vec3 expected_min, Vec3 expected_max, float32_t tolerance) {
   if (!vkr_packed_geometry_vertices_are_valid(vertices, count, decode) ||
-      !isfinite(tolerance) || tolerance < 0.0f) {
+      !vkr_is_finite_f32(tolerance) || tolerance < 0.0f) {
     return false_v;
   }
   Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
@@ -141,15 +140,15 @@ static bool8_t vkr_mesh_cooked_validate_packed_range_vertices(
   }
   const Vec3 center = vec3_scale(vec3_add(min, max), 0.5f);
   const float32_t epsilon = tolerance + 1.0e-6f;
-  return fabsf(min.x - expected_min.x) <= epsilon &&
-         fabsf(min.y - expected_min.y) <= epsilon &&
-         fabsf(min.z - expected_min.z) <= epsilon &&
-         fabsf(max.x - expected_max.x) <= epsilon &&
-         fabsf(max.y - expected_max.y) <= epsilon &&
-         fabsf(max.z - expected_max.z) <= epsilon &&
-         fabsf(center.x - expected_center.x) <= epsilon &&
-         fabsf(center.y - expected_center.y) <= epsilon &&
-         fabsf(center.z - expected_center.z) <= epsilon;
+  return vkr_abs_f32(min.x - expected_min.x) <= epsilon &&
+         vkr_abs_f32(min.y - expected_min.y) <= epsilon &&
+         vkr_abs_f32(min.z - expected_min.z) <= epsilon &&
+         vkr_abs_f32(max.x - expected_max.x) <= epsilon &&
+         vkr_abs_f32(max.y - expected_max.y) <= epsilon &&
+         vkr_abs_f32(max.z - expected_max.z) <= epsilon &&
+         vkr_abs_f32(center.x - expected_center.x) <= epsilon &&
+         vkr_abs_f32(center.y - expected_center.y) <= epsilon &&
+         vkr_abs_f32(center.z - expected_center.z) <= epsilon;
 }
 
 bool8_t vkr_mesh_cooked_source_validate(VkrAllocator *scratch_allocator,
@@ -178,16 +177,17 @@ bool8_t vkr_mesh_cooked_source_validate(VkrAllocator *scratch_allocator,
         (node->mesh_variant != UINT32_MAX &&
          node->mesh_variant >= source->meshes.length) ||
         (node->mesh == UINT32_MAX) != (node->mesh_variant == UINT32_MAX) ||
-        node->punctual.kind > 3u || !isfinite(node->punctual.color.x) ||
-        !isfinite(node->punctual.color.y) ||
-        !isfinite(node->punctual.color.z) ||
-        !isfinite(node->punctual.intensity) ||
-        !isfinite(node->punctual.range) ||
-        !isfinite(node->punctual.inner_cone) ||
-        !isfinite(node->punctual.outer_cone))
+        node->punctual.kind > 3u ||
+        !vkr_is_finite_f32(node->punctual.color.x) ||
+        !vkr_is_finite_f32(node->punctual.color.y) ||
+        !vkr_is_finite_f32(node->punctual.color.z) ||
+        !vkr_is_finite_f32(node->punctual.intensity) ||
+        !vkr_is_finite_f32(node->punctual.range) ||
+        !vkr_is_finite_f32(node->punctual.inner_cone) ||
+        !vkr_is_finite_f32(node->punctual.outer_cone))
       return false_v;
     for (uint32_t f = 0; f < 16u; ++f)
-      if (!isfinite(node->local.elements[f]))
+      if (!vkr_is_finite_f32(node->local.elements[f]))
         return false_v;
     if ((node->mesh_variant != UINT32_MAX &&
          source->meshes.data[node->mesh_variant].source_mesh_index !=
@@ -348,16 +348,16 @@ vkr_internal bool8_t vkr_mesh_cooked_header_valid(
       header->directory_offset != VKR_MESH_COOKED_HEADER_SIZE) {
     return false_v;
   }
-  if (!isfinite(header->budgets.position_relative) ||
-      !isfinite(header->budgets.normal_degrees) ||
-      !isfinite(header->budgets.tangent_degrees) ||
-      !isfinite(header->budgets.uv_absolute) ||
-      !isfinite(header->budgets.color_absolute) ||
-      !isfinite(header->quantization.position_max) ||
-      !isfinite(header->quantization.normal_degrees_max) ||
-      !isfinite(header->quantization.tangent_degrees_max) ||
-      !isfinite(header->quantization.uv_max) ||
-      !isfinite(header->quantization.color_max) ||
+  if (!vkr_is_finite_f32(header->budgets.position_relative) ||
+      !vkr_is_finite_f32(header->budgets.normal_degrees) ||
+      !vkr_is_finite_f32(header->budgets.tangent_degrees) ||
+      !vkr_is_finite_f32(header->budgets.uv_absolute) ||
+      !vkr_is_finite_f32(header->budgets.color_absolute) ||
+      !vkr_is_finite_f32(header->quantization.position_max) ||
+      !vkr_is_finite_f32(header->quantization.normal_degrees_max) ||
+      !vkr_is_finite_f32(header->quantization.tangent_degrees_max) ||
+      !vkr_is_finite_f32(header->quantization.uv_max) ||
+      !vkr_is_finite_f32(header->quantization.color_max) ||
       header->budgets.position_relative <= 0.0f ||
       header->budgets.normal_degrees <= 0.0f ||
       header->budgets.tangent_degrees <= 0.0f ||
@@ -503,7 +503,8 @@ vkr_internal bool8_t vkr_mesh_cooked_read_lightmap(
     if (atlas->width == 0u || atlas->height == 0u ||
         atlas->width > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
         atlas->height > VKR_MESH_COOKED_MAX_LIGHTMAP_SIZE ||
-        !isfinite(atlas->texels_per_unit) || atlas->texels_per_unit <= 0.0f) {
+        !vkr_is_finite_f32(atlas->texels_per_unit) ||
+        atlas->texels_per_unit <= 0.0f) {
       return false_v;
     }
   }
@@ -546,8 +547,8 @@ vkr_internal bool8_t vkr_mesh_cooked_read_lods(
         }
         continue;
       }
-      if (index_count == 0u || index_count % 3u != 0u || !isfinite(error) ||
-          error < previous_error) {
+      if (index_count == 0u || index_count % 3u != 0u ||
+          !vkr_is_finite_f32(error) || error < previous_error) {
         return false_v;
       }
       range->lod_index_counts[level] = index_count;
@@ -598,7 +599,7 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
     for (uint32_t f = 0; f < 16u; ++f)
       ok = ok &&
            vkr_byte_reader_f32(&source_reader, &node->local.elements[f]) &&
-           isfinite(node->local.elements[f]);
+           vkr_is_finite_f32(node->local.elements[f]);
     ok = ok && vkr_byte_reader_f32(&source_reader, &node->punctual.color.x) &&
          vkr_byte_reader_f32(&source_reader, &node->punctual.color.y) &&
          vkr_byte_reader_f32(&source_reader, &node->punctual.color.z) &&
@@ -607,13 +608,14 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
          vkr_byte_reader_f32(&source_reader, &node->punctual.inner_cone) &&
          vkr_byte_reader_f32(&source_reader, &node->punctual.outer_cone) &&
          vkr_byte_reader_u32(&source_reader, &node->punctual.kind);
-    if (node->punctual.kind > 3u || !isfinite(node->punctual.color.x) ||
-        !isfinite(node->punctual.color.y) ||
-        !isfinite(node->punctual.color.z) ||
-        !isfinite(node->punctual.intensity) ||
-        !isfinite(node->punctual.range) ||
-        !isfinite(node->punctual.inner_cone) ||
-        !isfinite(node->punctual.outer_cone))
+    if (node->punctual.kind > 3u ||
+        !vkr_is_finite_f32(node->punctual.color.x) ||
+        !vkr_is_finite_f32(node->punctual.color.y) ||
+        !vkr_is_finite_f32(node->punctual.color.z) ||
+        !vkr_is_finite_f32(node->punctual.intensity) ||
+        !vkr_is_finite_f32(node->punctual.range) ||
+        !vkr_is_finite_f32(node->punctual.inner_cone) ||
+        !vkr_is_finite_f32(node->punctual.outer_cone))
       return false_v;
     ok = ok && vkr_byte_reader_u32(&source_reader, &name_length);
     if (!ok || node_flags > 1u ||
@@ -774,7 +776,7 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
     const float32_t range_sy = range->decode.position_scale[1];
     const float32_t range_sz = range->decode.position_scale[2];
     const float32_t range_position_budget =
-        Max(hypotf(hypotf(range_sx, range_sy), range_sz) *
+        Max(vkr_hypot_f32(vkr_hypot_f32(range_sx, range_sy), range_sz) *
                 header->budgets.position_relative,
             1.0e-7f);
     if ((i == 0u && !vkr_mesh_cooked_decode_equal(&header->geometry_decode,
@@ -787,12 +789,12 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
         !vkr_packed_geometry_decode_is_valid(&range->decode) ||
         ((range->decode.flags & VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u) !=
             ((header->flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u) ||
-        !isfinite(range_position_budget) ||
-        !isfinite(range->quantization.position_max) ||
-        !isfinite(range->quantization.normal_degrees_max) ||
-        !isfinite(range->quantization.tangent_degrees_max) ||
-        !isfinite(range->quantization.uv_max) ||
-        !isfinite(range->quantization.color_max) ||
+        !vkr_is_finite_f32(range_position_budget) ||
+        !vkr_is_finite_f32(range->quantization.position_max) ||
+        !vkr_is_finite_f32(range->quantization.normal_degrees_max) ||
+        !vkr_is_finite_f32(range->quantization.tangent_degrees_max) ||
+        !vkr_is_finite_f32(range->quantization.uv_max) ||
+        !vkr_is_finite_f32(range->quantization.color_max) ||
         range->quantization.position_max > range_position_budget ||
         range->quantization.normal_degrees_max >
             header->budgets.normal_degrees ||
@@ -825,11 +827,15 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
         !vkr_mesh_cooked_string_view(
             data, header->string_offset, header->string_size, shader_offset,
             shader_length, true_v, &range->shader_override) ||
-        !isfinite(range->center.x) || !isfinite(range->center.y) ||
-        !isfinite(range->center.z) || !isfinite(range->min_extents.x) ||
-        !isfinite(range->min_extents.y) || !isfinite(range->min_extents.z) ||
-        !isfinite(range->max_extents.x) || !isfinite(range->max_extents.y) ||
-        !isfinite(range->max_extents.z) ||
+        !vkr_is_finite_f32(range->center.x) ||
+        !vkr_is_finite_f32(range->center.y) ||
+        !vkr_is_finite_f32(range->center.z) ||
+        !vkr_is_finite_f32(range->min_extents.x) ||
+        !vkr_is_finite_f32(range->min_extents.y) ||
+        !vkr_is_finite_f32(range->min_extents.z) ||
+        !vkr_is_finite_f32(range->max_extents.x) ||
+        !vkr_is_finite_f32(range->max_extents.y) ||
+        !vkr_is_finite_f32(range->max_extents.z) ||
         range->min_extents.x > range->max_extents.x ||
         range->min_extents.y > range->max_extents.y ||
         range->min_extents.z > range->max_extents.z ||

@@ -2,6 +2,7 @@
 #include "filesystem/vkr_asset_path.h"
 
 #include "containers/str.h"
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_text.h"
 #include "filesystem/filesystem.h"
@@ -460,8 +461,8 @@ vkr_internal bool8_t vkr_system_font_build_result(
     }
     MemCopy(out_font->kernings.data, state->kernings.data,
             state->kernings.length * sizeof(VkrFontKerning));
-    qsort(out_font->kernings.data, (size_t)out_font->kernings.length,
-          sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
+    vkr_sort(out_font->kernings.data, (size_t)out_font->kernings.length,
+             sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
   }
 
   VkrFontGlyph *space = NULL;

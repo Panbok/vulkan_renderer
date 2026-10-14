@@ -1,7 +1,6 @@
 #include "vkr_animation_player.h"
 
 #include "memory/arena.h"
-#include <math.h>
 
 typedef struct VkrAnimationBlendAccumulator {
   float64_t translation[3];
@@ -142,11 +141,12 @@ static bool8_t animation_player_finish_blend(VkrAnimationPlayer *player,
       continue;
     }
     const VkrAnimationBlendAccumulator *blend = &player->blend[node];
-    const float64_t length = sqrt(blend->rotation[0] * blend->rotation[0] +
-                                  blend->rotation[1] * blend->rotation[1] +
-                                  blend->rotation[2] * blend->rotation[2] +
-                                  blend->rotation[3] * blend->rotation[3]);
-    if (!isfinite(length) || length <= 0.0) {
+    const float64_t length =
+        vkr_sqrt_f64(blend->rotation[0] * blend->rotation[0] +
+                     blend->rotation[1] * blend->rotation[1] +
+                     blend->rotation[2] * blend->rotation[2] +
+                     blend->rotation[3] * blend->rotation[3]);
+    if (!vkr_is_finite_f64(length) || length <= 0.0) {
       return false_v;
     }
     local[node] = (VkrAnimationTrs){
@@ -172,7 +172,8 @@ VkrAnimationPlayer *vkr_animation_player_create(const VkrAnimationAsset *asset,
   if (error) {
     *error = NULL;
   }
-  if (!isfinite(rate) || !vkr_animation_validate(asset, scratch, error)) {
+  if (!vkr_is_finite_f64(rate) ||
+      !vkr_animation_validate(asset, scratch, error)) {
     if (error && !*error) {
       *error = "animation player requires a finite rate";
     }
@@ -279,7 +280,8 @@ static bool8_t animation_player_step_clock(const VkrAnimationPlayer *player,
                                            bool8_t *discontinuity) {
   float64_t corrected = delta - *compensation;
   float64_t next = *time + corrected;
-  if (!isfinite(delta) || !isfinite(corrected) || !isfinite(next)) {
+  if (!vkr_is_finite_f64(delta) || !vkr_is_finite_f64(corrected) ||
+      !vkr_is_finite_f64(next)) {
     return false_v;
   }
   float64_t remainder = (next - *time) - corrected;
@@ -287,7 +289,7 @@ static bool8_t animation_player_step_clock(const VkrAnimationPlayer *player,
   if (loop && duration > 0.0) {
     if (next < 0.0 || next >= duration) {
       *discontinuity = true_v;
-      next = fmod(next, duration);
+      next = vkr_fmod_f64(next, duration);
       if (next < 0.0) {
         next += duration;
       }
@@ -319,13 +321,13 @@ bool8_t vkr_animation_player_sample_blend(VkrAnimationPlayer *player,
   float64_t total = 0.0;
   for (uint32_t i = 0u; i < count; ++i) {
     if (samples[i].clip >= player->asset->clip_count ||
-        !isfinite(samples[i].time) || !isfinite(samples[i].weight) ||
-        samples[i].weight < 0.0f) {
+        !vkr_is_finite_f64(samples[i].time) ||
+        !vkr_is_finite_f32(samples[i].weight) || samples[i].weight < 0.0f) {
       return false_v;
     }
     total += samples[i].weight;
   }
-  if (total <= 0.0 || !isfinite(total)) {
+  if (total <= 0.0 || !vkr_is_finite_f64(total)) {
     return false_v;
   }
   bool8_t first = true_v;
@@ -355,8 +357,8 @@ bool8_t vkr_animation_player_crossfade(VkrAnimationPlayer *player,
   if (player && player->checkpoint_active) {
     return false_v;
   }
-  if (!player || clip >= player->asset->clip_count || !isfinite(duration) ||
-      duration < 0.0) {
+  if (!player || clip >= player->asset->clip_count ||
+      !vkr_is_finite_f64(duration) || duration < 0.0) {
     return false_v;
   }
   if (duration == 0.0) {
@@ -396,7 +398,7 @@ bool8_t vkr_animation_player_advance(VkrAnimationPlayer *player, float64_t dt) {
   if (player && player->checkpoint_active) {
     return false_v;
   }
-  if (!player || !isfinite(dt) || dt < 0.0) {
+  if (!player || !vkr_is_finite_f64(dt) || dt < 0.0) {
     return false_v;
   }
   if (!player->playing || dt == 0.0 ||
@@ -423,7 +425,7 @@ bool8_t vkr_animation_player_advance(VkrAnimationPlayer *player, float64_t dt) {
   const float64_t corrected = dt - fade.compensation;
   const float64_t elapsed = fade.elapsed + corrected;
   fade.compensation = (elapsed - fade.elapsed) - corrected;
-  if (!isfinite(elapsed) || elapsed >= fade.duration) {
+  if (!vkr_is_finite_f64(elapsed) || elapsed >= fade.duration) {
     fade.elapsed = fade.duration;
     fade.compensation = 0.0;
   } else {
@@ -468,7 +470,7 @@ bool8_t vkr_animation_player_seek(VkrAnimationPlayer *player,
   if (player && player->checkpoint_published) {
     return false_v;
   }
-  if (!player || !isfinite(seconds)) {
+  if (!player || !vkr_is_finite_f64(seconds)) {
     return false_v;
   }
   float64_t duration = player->asset->clips[player->clip].duration;
@@ -507,7 +509,7 @@ void vkr_animation_player_set_playing(VkrAnimationPlayer *player,
 
 bool8_t vkr_animation_player_set_rate(VkrAnimationPlayer *player,
                                       float64_t rate) {
-  if (!player || !isfinite(rate)) {
+  if (!player || !vkr_is_finite_f64(rate)) {
     return false_v;
   }
   player->rate = rate;
@@ -605,14 +607,14 @@ bool8_t vkr_animation_player_override_globals(VkrAnimationPlayer *player,
       }
     }
     for (uint32_t j = 0; j < 16; ++j) {
-      if (!isfinite(matrices[i].elements[j])) {
+      if (!vkr_is_finite_f32(matrices[i].elements[j])) {
         return false_v;
       }
     }
-    if (fabsf(matrices[i].elements[3]) > 1e-6f ||
-        fabsf(matrices[i].elements[7]) > 1e-6f ||
-        fabsf(matrices[i].elements[11]) > 1e-6f ||
-        fabsf(matrices[i].elements[15] - 1) > 1e-6f) {
+    if (vkr_abs_f32(matrices[i].elements[3]) > 1e-6f ||
+        vkr_abs_f32(matrices[i].elements[7]) > 1e-6f ||
+        vkr_abs_f32(matrices[i].elements[11]) > 1e-6f ||
+        vkr_abs_f32(matrices[i].elements[15] - 1) > 1e-6f) {
       return false_v;
     }
   }
@@ -641,7 +643,7 @@ bool8_t vkr_animation_player_override_globals(VkrAnimationPlayer *player,
               : mat4_mul(player->global[next][node->parent], local);
     }
     for (uint32_t j = 0; j < 16; ++j) {
-      if (!isfinite(player->global[next][n].elements[j])) {
+      if (!vkr_is_finite_f32(player->global[next][n].elements[j])) {
         return false_v;
       }
     }

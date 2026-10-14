@@ -5,8 +5,6 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <math.h>
-
 #define DECAL_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 
 typedef struct DecalRecord {
@@ -161,8 +159,8 @@ static bool8_t decal_lower(const Mat4 *world, const SceneDecal *value,
   *out = (VkrDecal){
       .material = material,
       .opacity = Clamp(value->opacity, 0.0f, 1.0f),
-      .fade_cos_start = cosf(value->fade_angle_start),
-      .fade_cos_end = cosf(value->fade_angle_end),
+      .fade_cos_start = vkr_cos_f32(value->fade_angle_start),
+      .fade_cos_end = vkr_cos_f32(value->fade_angle_end),
       .depth_fade = Clamp(value->depth_fade, 0.0f, 1.0f),
   };
   return vkr_decal_set_box(out, *world) && vkr_decal_valid(out);

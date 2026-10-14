@@ -1,8 +1,6 @@
 #include "vkr_scene_collision_layers.h"
 
 #include "vkr_scene_physics.h"
-#include <stdio.h>
-#include <string.h>
 
 #define LAYERS_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 
@@ -21,7 +19,8 @@ static bool8_t layers_fail(const char **error, const char *message) {
 VkrSceneCollisionLayers vkr_scene_collision_layers_default(void) {
   VkrSceneCollisionLayers settings = {0};
   for (uint32_t i = 0; i < VKR_COLLISION_LAYER_COUNT; ++i) {
-    snprintf(settings.names[i], sizeof(settings.names[i]), "Layer %u", i + 1u);
+    string_format(settings.names[i], sizeof(settings.names[i]), "Layer %u",
+                  i + 1u);
     settings.matrix[i] = UINT16_MAX;
   }
   settings.preset_count = 3;
@@ -42,7 +41,7 @@ void vkr_scene_collision_layers_read(const VkrScene *scene,
 }
 
 static bool8_t layers_name_valid(const char *name) {
-  if (!name[0] || !memchr(name, 0, VKR_COLLISION_LAYER_NAME_CAPACITY)) {
+  if (!name[0] || !MemFindByte(name, 0, VKR_COLLISION_LAYER_NAME_CAPACITY)) {
     return false_v;
   }
   for (uint32_t i = 0; name[i]; ++i) {
@@ -69,7 +68,7 @@ vkr_scene_collision_layers_validate(const VkrSceneCollisionLayers *settings,
           "Layer names must be nonempty single-line strings under 48 bytes.");
     }
     for (uint32_t j = 0; j < VKR_COLLISION_LAYER_COUNT; ++j) {
-      if (j < i && !strcmp(settings->names[i], settings->names[j])) {
+      if (j < i && string_equals(settings->names[i], settings->names[j])) {
         return layers_fail(error, "Layer names must be unique.");
       }
       if (((settings->matrix[i] >> j) & 1u) !=
@@ -85,7 +84,7 @@ vkr_scene_collision_layers_validate(const VkrSceneCollisionLayers *settings,
                          "Invalid collision preset name or sensor flag.");
     }
     for (uint32_t j = 0; j < i; ++j) {
-      if (!strcmp(preset->name, settings->presets[j].name)) {
+      if (string_equals(preset->name, settings->presets[j].name)) {
         return layers_fail(error, "Collision preset names must be unique.");
       }
     }

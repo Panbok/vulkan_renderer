@@ -3,12 +3,10 @@
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
 
-#include <limits.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
-_Static_assert(CHAR_BIT == 8, "VKLM requires 8-bit bytes");
+_Static_assert(VKR_CHAR_BITS == 8, "VKLM requires 8-bit bytes");
 _Static_assert(sizeof(float32_t) == 4u, "VKLM requires 32-bit float32_t");
 
 #define VKR_LIGHTMAP_SET_H_MAGIC 0u
@@ -306,13 +304,14 @@ static bool8_t vkr_lightmap_set_instance_before(const VkrLightmapInstance *a,
 }
 
 static bool8_t vkr_lightmap_set_tables_valid(const VkrLightmapSet *set) {
-  if (!isfinite(set->texels_per_unit) || !(set->texels_per_unit > 0.0f) ||
+  if (!vkr_is_finite_f32(set->texels_per_unit) ||
+      !(set->texels_per_unit > 0.0f) ||
       (set->layer_count != 0u && !set->layers) ||
       (set->instance_count != 0u && !set->instances)) {
     return false_v;
   }
   if (set->direct_page_count != 0u) {
-    if (!isfinite(set->direct_texels_per_unit) ||
+    if (!vkr_is_finite_f32(set->direct_texels_per_unit) ||
         !(set->direct_texels_per_unit > 0.0f) ||
         (set->instance_count != 0u && !set->direct_rects)) {
       return false_v;

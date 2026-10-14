@@ -1,8 +1,6 @@
 #include "assets/vkr_material_codegen.h"
 
 #include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
 
 /* A float literal Metal reads exactly: nine significant digits, a decimal
    point, and the `f` suffix. */
@@ -12,12 +10,13 @@ typedef struct CodegenLiteral {
 
 static CodegenLiteral codegen_literal(float32_t value) {
   CodegenLiteral literal;
-  snprintf(literal.text, sizeof(literal.text), "%.9g", (double)value);
-  if (!strpbrk(literal.text, ".eE")) {
-    strncat(literal.text, ".0",
-            sizeof(literal.text) - strlen(literal.text) - 1u);
-  }
-  strncat(literal.text, "f", sizeof(literal.text) - strlen(literal.text) - 1u);
+  string_format(literal.text, sizeof(literal.text), "%.9g", (double)value);
+  const bool8_t has_point = string_find_char(literal.text, '.') ||
+                            string_find_char(literal.text, 'e') ||
+                            string_find_char(literal.text, 'E');
+  const uint64_t length = string_length(literal.text);
+  string_format(literal.text + length, sizeof(literal.text) - length, "%s",
+                has_point ? "f" : ".0f");
   return literal;
 }
 
@@ -40,7 +39,7 @@ static void codegen_append(CodegenText *text, const char *format, ...) {
   char line[1024];
   va_list args;
   va_start(args, format);
-  const int written = vsnprintf(line, sizeof(line), format, args);
+  const int written = string_format_v(line, sizeof(line), format, args);
   va_end(args);
   if (written < 0 || (uint64_t)written >= sizeof(line)) {
     text->failed = true_v;
@@ -93,10 +92,10 @@ static bool8_t codegen_fail(Codegen *codegen, const VkrMaterialNode *node,
                             const char *format, ...) {
   VkrMaterialLowering *result = codegen->result;
   result->tier = VKR_MATERIAL_TIER_UNSUPPORTED;
-  snprintf(result->node, sizeof(result->node), "%s", node ? node->id : "");
+  string_format(result->node, sizeof(result->node), "%s", node ? node->id : "");
   va_list args;
   va_start(args, format);
-  vsnprintf(result->reason, sizeof(result->reason), format, args);
+  string_format_v(result->reason, sizeof(result->reason), format, args);
   va_end(args);
   return false_v;
 }
@@ -121,11 +120,12 @@ static bool8_t codegen_widen(Codegen *codegen, const VkrMaterialNode *node,
                              const CodegenValue *value, uint32_t components,
                              char *out, uint64_t capacity) {
   if (value->components == components) {
-    snprintf(out, capacity, "%s", value->text);
+    string_format(out, capacity, "%s", value->text);
     return true_v;
   }
   if (value->components == 1u) {
-    snprintf(out, capacity, "%s(%s)", codegen_type(components), value->text);
+    string_format(out, capacity, "%s(%s)", codegen_type(components),
+                  value->text);
     return true_v;
   }
   return codegen_fail(codegen, node,
@@ -257,7 +257,7 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
       if (a.components != 2u) {
         return codegen_fail(codegen, node, "A texture's UV is two-component");
       }
-      snprintf(uv, sizeof(uv), "%s", a.text);
+      string_format(uv, sizeof(uv), "%s", a.text);
     }
     codegen_append(body,
                    "    const float4 n%u = custom.textures[%u].sample("
@@ -282,7 +282,7 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
       if (!codegen_scalar_input(codegen, node, 1u, &b)) {
         return false_v;
       }
-      snprintf(strength, sizeof(strength), "%s", b.text);
+      string_format(strength, sizeof(strength), "%s", b.text);
     }
     codegen_append(
         body, "    const float3 n%u = vkr_normal_map_decode(n%u.xyz, %s);\n",
@@ -379,12 +379,12 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
   case VKR_MATERIAL_NODE_COMBINE: {
     char parts[3][192];
     for (uint32_t i = 0; i < 3u; ++i) {
-      snprintf(parts[i], sizeof(parts[i]), "0.0f");
+      string_format(parts[i], sizeof(parts[i]), "0.0f");
       if (node->inputs[i].node) {
         if (!codegen_scalar_input(codegen, node, i, &a)) {
           return false_v;
         }
-        snprintf(parts[i], sizeof(parts[i]), "%s", a.text);
+        string_format(parts[i], sizeof(parts[i]), "%s", a.text);
       }
     }
     codegen_append(body, "    const float3 n%u = float3(%s, %s, %s);\n", index,
@@ -400,7 +400,7 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
       if (a.components != 2u) {
         return codegen_fail(codegen, node, "Tile and offset takes UVs");
       }
-      snprintf(uv, sizeof(uv), "%s", a.text);
+      string_format(uv, sizeof(uv), "%s", a.text);
     }
     codegen_append(body,
                    "    const float2 n%u = %s * float2(%s, %s) + "
@@ -437,41 +437,41 @@ static bool8_t codegen_link(Codegen *codegen, VkrMaterialLink link,
   case VKR_MATERIAL_NODE_TEXTURE:
     if (link.port == 0u) {
       codegen->feeds_color[index] = true_v;
-      snprintf(out->text, sizeof(out->text), "n%u.rgb", index);
+      string_format(out->text, sizeof(out->text), "n%u.rgb", index);
       out->components = 3u;
     } else {
-      snprintf(out->text, sizeof(out->text), "n%u%s", index,
-               channels[link.port]);
+      string_format(out->text, sizeof(out->text), "n%u%s", index,
+                    channels[link.port]);
       out->components = 1u;
     }
     return true_v;
   case VKR_MATERIAL_NODE_NORMAL_MAP:
-    snprintf(out->text, sizeof(out->text), "n%u", index);
+    string_format(out->text, sizeof(out->text), "n%u", index);
     out->components = 0u;
     return true_v;
   case VKR_MATERIAL_NODE_UV:
-    snprintf(out->text, sizeof(out->text), "in.texcoord");
+    string_format(out->text, sizeof(out->text), "in.texcoord");
     out->components = 2u;
     return true_v;
   case VKR_MATERIAL_NODE_VERTEX_COLOR:
-    snprintf(out->text, sizeof(out->text), "%s",
-             link.port == 0u ? "in.color.rgb" : "in.color.a");
+    string_format(out->text, sizeof(out->text), "%s",
+                  link.port == 0u ? "in.color.rgb" : "in.color.a");
     out->components = link.port == 0u ? 3u : 1u;
     return true_v;
   case VKR_MATERIAL_NODE_WORLD_POSITION:
-    snprintf(out->text, sizeof(out->text), "in.world_position");
+    string_format(out->text, sizeof(out->text), "in.world_position");
     out->components = 3u;
     return true_v;
   case VKR_MATERIAL_NODE_WORLD_NORMAL:
-    snprintf(out->text, sizeof(out->text), "in.world_normal");
+    string_format(out->text, sizeof(out->text), "in.world_normal");
     out->components = 3u;
     return true_v;
   case VKR_MATERIAL_NODE_TIME:
-    snprintf(out->text, sizeof(out->text), "in.time");
+    string_format(out->text, sizeof(out->text), "in.time");
     out->components = 1u;
     return true_v;
   case VKR_MATERIAL_NODE_CAMERA_DISTANCE:
-    snprintf(out->text, sizeof(out->text), "in.camera_distance");
+    string_format(out->text, sizeof(out->text), "in.camera_distance");
     out->components = 1u;
     return true_v;
   case VKR_MATERIAL_NODE_SPLIT: {
@@ -483,13 +483,13 @@ static bool8_t codegen_link(Codegen *codegen, VkrMaterialLink link,
     if (!codegen_widen(codegen, node, &rgb, 3u, wide, sizeof(wide))) {
       return false_v;
     }
-    snprintf(out->text, sizeof(out->text), "(%s)%s", wide,
-             channels[link.port + 1u]);
+    string_format(out->text, sizeof(out->text), "(%s)%s", wide,
+                  channels[link.port + 1u]);
     out->components = 1u;
     return true_v;
   }
   default: {
-    snprintf(out->text, sizeof(out->text), "n%u", index);
+    string_format(out->text, sizeof(out->text), "n%u", index);
     out->components = codegen_components(
         vkr_material_graph_output_type(codegen->graph, index, link.port));
     return true_v;
@@ -555,11 +555,11 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
   for (uint32_t port = 0; port < surface->input_count; ++port) {
     bool8_t core = false_v;
     for (uint32_t i = 0; i < ArrayCount(s_outputs) && !core; ++i) {
-      core = strcmp(surface->inputs[port].name, s_outputs[i].input) == 0;
+      core = string_equals(surface->inputs[port].name, s_outputs[i].input);
     }
     bool8_t brdf = false_v;
     for (uint32_t i = 0; i < ArrayCount(s_brdf_inputs) && !brdf; ++i) {
-      brdf = strcmp(surface->inputs[port].name, s_brdf_inputs[i]) == 0;
+      brdf = string_equals(surface->inputs[port].name, s_brdf_inputs[i]);
     }
     const VkrMaterialLink link = output->inputs[port];
     if (brdf && link.node) {
@@ -585,7 +585,7 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
     const uint32_t port = vkr_material_node_input(
         output->kind,
         string8_create_from_cstr((const uint8_t *)s_outputs[i].input,
-                                 strlen(s_outputs[i].input)));
+                                 string_length(s_outputs[i].input)));
     const VkrMaterialLink link = output->inputs[port];
     if (!link.node) {
       continue;
@@ -641,8 +641,8 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
                  writes.data ? writes.data : "");
   const uint64_t hash =
       codegen_hash(source.data ? source.data : "", source.length);
-  snprintf(out->function, sizeof(out->function), "vkr_custom_%016llx",
-           (unsigned long long)hash);
+  string_format(out->function, sizeof(out->function), "vkr_custom_%016llx",
+                (unsigned long long)hash);
   CodegenText text = {.allocator = allocator};
   codegen_append(&text,
                  "struct %s {\n"

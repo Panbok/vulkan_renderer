@@ -1,10 +1,8 @@
 #include "core/ui/vkr_ui_types.h"
 
-#include <math.h>
-
 bool8_t vkr_ui_rect_is_finite(VkrUiRect rect) {
-  return isfinite(rect.x) && isfinite(rect.y) && isfinite(rect.width) &&
-         isfinite(rect.height);
+  return vkr_is_finite_f32(rect.x) && vkr_is_finite_f32(rect.y) &&
+         vkr_is_finite_f32(rect.width) && vkr_is_finite_f32(rect.height);
 }
 
 bool8_t vkr_ui_rect_has_area(VkrUiRect rect) {

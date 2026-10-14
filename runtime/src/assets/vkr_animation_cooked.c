@@ -1,8 +1,7 @@
 #include "assets/vkr_animation_cooked.h"
+#include "core/vkr_byte_io.h"
 
-#include <float.h>
-
-_Static_assert(sizeof(float32_t) == 4 && FLT_RADIX == 2 && FLT_MANT_DIG == 24,
+_Static_assert(sizeof(float32_t) == 4 && VKR_F32_LIMITS_BINARY32,
                "VKA requires IEEE binary32");
 
 typedef struct s_VkrAnimationReader {

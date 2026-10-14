@@ -11,9 +11,6 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "vkr_packed_geometry.h"
 
-#include <float.h>
-#include <math.h>
-
 typedef struct SceneAnimationBox {
   Vec3 min;
   Vec3 max;
@@ -60,9 +57,9 @@ static bool8_t scene_animation_box_transform(const SceneAnimationBox *source,
         const float64_t term =
             (float64_t)matrix.elements[column * 4u + axis] * p[column];
         value += term;
-        magnitude += fabs(term);
+        magnitude += vkr_abs_f64(term);
       }
-      if (!isfinite(value) || magnitude > FLT_MAX * 0.5) {
+      if (!vkr_is_finite_f64(value) || magnitude > VKR_FLOAT_MAX * 0.5) {
         return false_v;
       }
       terms[axis] = Max(terms[axis], magnitude);
@@ -88,13 +85,16 @@ static bool8_t scene_animation_box_expand(SceneAnimationBox *box,
      * Cover its source sum error, affine/weighted float32 operation ordering,
      * and the final conversion, even when large terms cancel near zero. */
     const float64_t margin =
-        terms[axis] * (weight_error + 64.0 * FLT_EPSILON) + 1e-6;
-    if (lower[axis] - margin < -FLT_MAX || upper[axis] + margin > FLT_MAX) {
+        terms[axis] * (weight_error + 64.0 * VKR_FLOAT_EPSILON) + 1e-6;
+    if (lower[axis] - margin < -VKR_FLOAT_MAX ||
+        upper[axis] + margin > VKR_FLOAT_MAX) {
       return false_v;
     }
-    min[axis] = nextafterf((float32_t)(lower[axis] - margin), -INFINITY);
-    max[axis] = nextafterf((float32_t)(upper[axis] + margin), INFINITY);
-    if (!isfinite(min[axis]) || !isfinite(max[axis])) {
+    min[axis] = vkr_next_after_f32((float32_t)(lower[axis] - margin),
+                                   -VKR_FLOAT_INFINITY);
+    max[axis] = vkr_next_after_f32((float32_t)(upper[axis] + margin),
+                                   VKR_FLOAT_INFINITY);
+    if (!vkr_is_finite_f32(min[axis]) || !vkr_is_finite_f32(max[axis])) {
       return false_v;
     }
   }
@@ -199,7 +199,7 @@ static bool8_t scene_animation_init_bounds(VkrSceneAnimation *animation,
           }
         }
         binding->weight_error =
-            Max(binding->weight_error, fabs(weight_sum - 1.0));
+            Max(binding->weight_error, vkr_abs_f64(weight_sum - 1.0));
       }
     }
   }
@@ -588,7 +588,7 @@ vkr_scene_animation_settings_valid(const VkrScene *scene, VkrEntityId wrapper,
       vkr_scene_animation_get_player(scene, wrapper);
   return player && value &&
          value->clip < vkr_animation_player_asset(player)->clip_count &&
-         isfinite(value->rate);
+         vkr_is_finite_f32(value->rate);
 }
 
 void vkr_scene_animation_settings_changed(VkrScene *scene,
@@ -743,7 +743,8 @@ bool8_t vkr_scene_animation_set_parameter(const VkrScene *scene,
       continue;
     }
     VkrAnimationGraphInstance *controller = animation->controller;
-    if (parameter >= controller->graph.parameter_count || !isfinite(value)) {
+    if (parameter >= controller->graph.parameter_count ||
+        !vkr_is_finite_f32(value)) {
       return false_v;
     }
     float32_t previous = controller->parameters[parameter];
@@ -763,7 +764,7 @@ void vkr_scene_animation_update(VkrScene *scene, float64_t dt) {
   if (!vkr_scene_physics_mutations_allowed(scene)) {
     return;
   }
-  if (!scene || !isfinite(dt) || dt < 0.0) {
+  if (!scene || !vkr_is_finite_f64(dt) || dt < 0.0) {
     return;
   }
   /* The World's animation settings scale every player's clock. */
@@ -782,7 +783,7 @@ void vkr_scene_animation_update(VkrScene *scene, float64_t dt) {
     if (animation->controller_enabled) {
       if (vkr_animation_player_playing(animation->player)) {
         float64_t elapsed = dt * vkr_animation_player_rate(animation->player);
-        if (!isfinite(elapsed)) {
+        if (!vkr_is_finite_f64(elapsed)) {
           advanced = false_v;
         } else if (elapsed < 0.0) {
           advanced = vkr_animation_graph_seek(
@@ -928,8 +929,8 @@ bool8_t vkr_scene_animation_build_preview(
     float32_t distance, VkrAllocator *scratch, VkrWorldPassPayload *world,
     VkrAnimationPreviewInput *preview) {
   if (!scene || !scene->assets || !player || !scratch || !world || !preview ||
-      !isfinite(yaw) || !isfinite(pitch) || !isfinite(distance) ||
-      distance <= 0.0f) {
+      !vkr_is_finite_f32(yaw) || !vkr_is_finite_f32(pitch) ||
+      !vkr_is_finite_f32(distance) || distance <= 0.0f) {
     return false_v;
   }
   const VkrSceneAnimation *animation = scene->animations;
@@ -1035,18 +1036,19 @@ bool8_t vkr_scene_animation_build_preview(
   const float64_t dx = (float64_t)max.x - center.x;
   const float64_t dy = (float64_t)max.y - center.y;
   const float64_t dz = (float64_t)max.z - center.z;
-  const float64_t extent = sqrt(dx * dx + dy * dy + dz * dz);
+  const float64_t extent = vkr_sqrt_f64(dx * dx + dy * dy + dz * dz);
   const float64_t camera_radius = Max(extent, 0.01);
-  if (!isfinite(camera_radius) ||
-      camera_radius * (distance + 20.0) > FLT_MAX * 0.5 ||
-      fabs(center.x) + camera_radius * distance > FLT_MAX * 0.5 ||
-      fabs(center.y) + camera_radius * distance > FLT_MAX * 0.5 ||
-      fabs(center.z) + camera_radius * distance > FLT_MAX * 0.5) {
+  if (!vkr_is_finite_f64(camera_radius) ||
+      camera_radius * (distance + 20.0) > VKR_FLOAT_MAX * 0.5 ||
+      vkr_abs_f64(center.x) + camera_radius * distance > VKR_FLOAT_MAX * 0.5 ||
+      vkr_abs_f64(center.y) + camera_radius * distance > VKR_FLOAT_MAX * 0.5 ||
+      vkr_abs_f64(center.z) + camera_radius * distance > VKR_FLOAT_MAX * 0.5) {
     return false_v;
   }
   float32_t radius = (float32_t)camera_radius;
   Vec3 direction =
-      vec3_new(cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw));
+      vec3_new(vkr_cos_f32(pitch) * vkr_sin_f32(yaw), vkr_sin_f32(pitch),
+               vkr_cos_f32(pitch) * vkr_cos_f32(yaw));
   Vec3 eye = vec3_add(center, vec3_scale(direction, radius * distance));
   Mat4 view = mat4_look_at(eye, center, vec3_new(0, 1, 0));
   Mat4 projection = mat4_perspective_reversed(

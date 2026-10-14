@@ -1,14 +1,10 @@
 #include "renderer/systems/vkr_material_system.h"
-#include <math.h>
 
 #include "containers/vkr_sort.h"
 #include "defines.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
-
-#include <stdio.h>
-#include <stdlib.h>
 
 #define VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_INITIAL MB(1)
 /* Every material load in flight holds a payload of about 56 KB (its parsed
@@ -234,7 +230,7 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
   }
 
   VkrMaterial *material = &system->materials.data[handle.id - 1];
-  if (!isfinite(material->pbr.subsurface_strength) ||
+  if (!vkr_is_finite_f32(material->pbr.subsurface_strength) ||
       material->pbr.subsurface_strength < 0.0f ||
       material->pbr.subsurface_strength > 1.0f ||
       material->pbr.subsurface_profile >= 8u ||
@@ -243,45 +239,45 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
         material->pbr.transmission_factor > 0.0f ||
         material->pbr.thickness_factor > 0.0f ||
         material->pbr.diffuse_transmission_strength > 0.0f)) ||
-      !isfinite(material->pbr.diffuse_transmission_strength) ||
+      !vkr_is_finite_f32(material->pbr.diffuse_transmission_strength) ||
       material->pbr.diffuse_transmission_strength < 0.0f ||
       material->pbr.diffuse_transmission_strength > 1.0f ||
-      !isfinite(material->pbr.diffuse_transmission_color.x) ||
+      !vkr_is_finite_f32(material->pbr.diffuse_transmission_color.x) ||
       material->pbr.diffuse_transmission_color.x < 0.0f ||
       material->pbr.diffuse_transmission_color.x > 1.0f ||
-      !isfinite(material->pbr.diffuse_transmission_color.y) ||
+      !vkr_is_finite_f32(material->pbr.diffuse_transmission_color.y) ||
       material->pbr.diffuse_transmission_color.y < 0.0f ||
       material->pbr.diffuse_transmission_color.y > 1.0f ||
-      !isfinite(material->pbr.diffuse_transmission_color.z) ||
+      !vkr_is_finite_f32(material->pbr.diffuse_transmission_color.z) ||
       material->pbr.diffuse_transmission_color.z < 0.0f ||
       material->pbr.diffuse_transmission_color.z > 1.0f ||
       (material->pbr.diffuse_transmission_strength > 0.0f &&
        (material->material_type != VKR_MATERIAL_TYPE_PBR ||
         material->pbr.transmission_factor > 0.0f ||
         material->pbr.thickness_factor > 0.0f)) ||
-      !isfinite(material->pbr.anisotropy_strength) ||
+      !vkr_is_finite_f32(material->pbr.anisotropy_strength) ||
       material->pbr.anisotropy_strength < 0.0f ||
       material->pbr.anisotropy_strength > 1.0f ||
-      !isfinite(material->pbr.anisotropy_rotation) ||
+      !vkr_is_finite_f32(material->pbr.anisotropy_rotation) ||
       (material->pbr.anisotropy_strength > 0.0f &&
        material->pbr.transmission_factor > 0.0f) ||
-      !isfinite(material->pbr.clearcoat_factor) ||
+      !vkr_is_finite_f32(material->pbr.clearcoat_factor) ||
       material->pbr.clearcoat_factor < 0.0f ||
       material->pbr.clearcoat_factor > 1.0f ||
-      !isfinite(material->pbr.clearcoat_roughness) ||
+      !vkr_is_finite_f32(material->pbr.clearcoat_roughness) ||
       material->pbr.clearcoat_roughness < 0.0f ||
       material->pbr.clearcoat_roughness > 1.0f ||
-      !isfinite(material->pbr.clearcoat_normal_scale) ||
-      !isfinite(material->pbr.sheen_color.x) ||
+      !vkr_is_finite_f32(material->pbr.clearcoat_normal_scale) ||
+      !vkr_is_finite_f32(material->pbr.sheen_color.x) ||
       material->pbr.sheen_color.x < 0.0f ||
       material->pbr.sheen_color.x > 1.0f ||
-      !isfinite(material->pbr.sheen_color.y) ||
+      !vkr_is_finite_f32(material->pbr.sheen_color.y) ||
       material->pbr.sheen_color.y < 0.0f ||
       material->pbr.sheen_color.y > 1.0f ||
-      !isfinite(material->pbr.sheen_color.z) ||
+      !vkr_is_finite_f32(material->pbr.sheen_color.z) ||
       material->pbr.sheen_color.z < 0.0f ||
       material->pbr.sheen_color.z > 1.0f ||
-      !isfinite(material->pbr.sheen_roughness) ||
+      !vkr_is_finite_f32(material->pbr.sheen_roughness) ||
       material->pbr.sheen_roughness < 0.0f ||
       material->pbr.sheen_roughness > 1.0f ||
       !vkr_pbr_brdf_extensions_valid(&material->pbr)) {
@@ -412,7 +408,7 @@ static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
     for (uint32_t i = 0u; i < stream->path_length && !has_query; ++i) {
       has_query = stream->path[i] == '?';
     }
-    length += (uint32_t)snprintf(
+    length += (uint32_t)string_format(
         stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
         "%cmax_extent=%u", has_query ? '&' : '?', system->texture_extent_limit);
   }
@@ -1662,10 +1658,12 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->generation_counter = 1;
   system->texture_stream_budget_bytes =
       VKR_MATERIAL_TEXTURE_STREAM_DEFAULT_BUDGET;
-  const char *budget_mb_env = getenv("VKR_TEXTURE_STREAM_BUDGET_MB");
-  if (budget_mb_env && budget_mb_env[0] != '\0') {
-    char *end = NULL;
-    const unsigned long long budget_mb = strtoull(budget_mb_env, &end, 10);
+  char budget_mb_env[64];
+  if (vkr_platform_environment_variable("VKR_TEXTURE_STREAM_BUDGET_MB",
+                                        budget_mb_env, sizeof(budget_mb_env)) &&
+      budget_mb_env[0] != '\0') {
+    const char *end = NULL;
+    const uint64_t budget_mb = string_parse_u64(budget_mb_env, &end);
     if (end && *end == '\0' && budget_mb <= UINT64_MAX / MB(1)) {
       system->texture_stream_budget_bytes = (uint64_t)budget_mb * MB(1);
       system->texture_stream_budget_user_configured = true_v;

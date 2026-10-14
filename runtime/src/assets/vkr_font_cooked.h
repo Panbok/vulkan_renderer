@@ -1,11 +1,8 @@
 #pragma once
 
 #include "containers/str.h"
+#include "core/vkr_byte_io.h"
 #include "memory/vkr_allocator.h"
-
-#include <float.h>
-#include <limits.h>
-#include <math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,14 +55,13 @@ enum {
 };
 
 #if !defined(__cplusplus)
-_Static_assert(CHAR_BIT == 8, "VKFA requires 8-bit bytes");
+_Static_assert(VKR_CHAR_BITS == 8, "VKFA requires 8-bit bytes");
 _Static_assert(sizeof(float32_t) == 4u, "VKFA requires 32-bit float32_t");
-_Static_assert(FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128,
-               "VKFA requires binary32 arithmetic");
+_Static_assert(VKR_F32_LIMITS_BINARY32, "VKFA requires binary32 arithmetic");
 #endif
 
 static inline VKR_MAYBE_UNUSED bool8_t vkr_font_cooked_finite(float32_t value) {
-  return isfinite(value) ? true_v : false_v;
+  return vkr_is_finite_f32(value) ? true_v : false_v;
 }
 
 typedef enum VkrFontCookedFieldKind {

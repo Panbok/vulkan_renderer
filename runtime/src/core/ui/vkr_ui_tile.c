@@ -1,7 +1,5 @@
 #include "core/ui/vkr_ui_tile.h"
 
-#include <math.h>
-
 #define VKR_UI_TILE_FNV_OFFSET UINT64_C(14695981039346656037)
 #define VKR_UI_TILE_FNV_PRIME UINT64_C(1099511628211)
 
@@ -100,13 +98,14 @@ static VkrUiTileRange vkr_ui_tile_range(VkrUiRect aabb, uint32_t columns,
   if (!vkr_ui_rect_has_area(aabb) || columns == 0u || rows == 0u ||
       tile_size_px == 0u)
     return (VkrUiTileRange){0};
-  const float32_t right_pixel = ceilf(aabb.x + aabb.width) - 1.0f;
-  const float32_t bottom_pixel = ceilf(aabb.y + aabb.height) - 1.0f;
+  const float32_t right_pixel = vkr_ceil_f32(aabb.x + aabb.width) - 1.0f;
+  const float32_t bottom_pixel = vkr_ceil_f32(aabb.y + aabb.height) - 1.0f;
   return (VkrUiTileRange){
-      .min_column = Min((uint32_t)floorf(aabb.x) / tile_size_px, columns - 1u),
+      .min_column =
+          Min((uint32_t)vkr_floor_f32(aabb.x) / tile_size_px, columns - 1u),
       .max_column =
           Min((uint32_t)Max(right_pixel, 0.0f) / tile_size_px, columns - 1u),
-      .min_row = Min((uint32_t)floorf(aabb.y) / tile_size_px, rows - 1u),
+      .min_row = Min((uint32_t)vkr_floor_f32(aabb.y) / tile_size_px, rows - 1u),
       .max_row =
           Min((uint32_t)Max(bottom_pixel, 0.0f) / tile_size_px, rows - 1u),
       .valid = true_v,

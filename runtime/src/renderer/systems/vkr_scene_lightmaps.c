@@ -2,10 +2,10 @@
  * instances and weighing the set's layers for the frame. */
 #include "renderer/systems/vkr_scene_system.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
+#include "memory/vkr_heap.h"
 #include "renderer/systems/vkr_render_assets.h"
-
-#include <stdlib.h>
 
 /* A drawn entity: its mesh instance or generated mesh and, when it has a
  * source identity, its document entity index and the source node it draws
@@ -40,7 +40,7 @@ vkr_internal bool8_t scene_lightmap_grow(void **items, uint32_t *capacity,
     return true_v;
   }
   const uint32_t grown = *capacity ? *capacity * 2u : 256u;
-  void *resized = realloc(*items, (size_t)grown * item_size);
+  void *resized = vkr_heap_realloc(*items, (size_t)grown * item_size);
   if (!resized) {
     return false_v;
   }
@@ -189,7 +189,7 @@ vkr_internal const SceneLightmapTarget *scene_lightmap_find_target(
     SceneLightmapRef ref_key = {0};
     MemCopy(ref_key.ref.bytes, instance->document_id,
             sizeof(ref_key.ref.bytes));
-    const SceneLightmapRef *ref = (const SceneLightmapRef *)bsearch(
+    const SceneLightmapRef *ref = (const SceneLightmapRef *)vkr_binary_search(
         &ref_key, gather->refs, gather->ref_count, sizeof(SceneLightmapRef),
         scene_lightmap_ref_compare);
     if (!ref) {
@@ -197,9 +197,11 @@ vkr_internal const SceneLightmapTarget *scene_lightmap_find_target(
     }
     if (instance->instance_index == 0u) {
       const SceneLightmapTarget entity_key = {.entity = ref->entity};
-      const SceneLightmapTarget *target = (const SceneLightmapTarget *)bsearch(
-          &entity_key, by_entity, gather->target_count,
-          sizeof(SceneLightmapTarget), scene_lightmap_target_entity_compare);
+      const SceneLightmapTarget *target =
+          (const SceneLightmapTarget *)vkr_binary_search(
+              &entity_key, by_entity, gather->target_count,
+              sizeof(SceneLightmapTarget),
+              scene_lightmap_target_entity_compare);
       if (target) {
         return target;
       }
@@ -211,7 +213,7 @@ vkr_internal const SceneLightmapTarget *scene_lightmap_find_target(
     }
     key.entity_index = identity->scene_entity_index;
   }
-  return (const SceneLightmapTarget *)bsearch(
+  return (const SceneLightmapTarget *)vkr_binary_search(
       &key, gather->targets, gather->target_count, sizeof(SceneLightmapTarget),
       scene_lightmap_target_key_compare);
 }
@@ -241,11 +243,11 @@ void vkr_scene_reset_lightmaps(VkrScene *scene,
     vkr_texture_system_release_by_handle(&assets->texture_system,
                                          lightmaps->lamp_direct);
   }
-  free(lightmaps->direct_rects);
-  free(lightmaps->instances);
-  free(lightmaps->rects);
-  free(lightmaps->bound);
-  free(lightmaps);
+  vkr_heap_free(lightmaps->direct_rects);
+  vkr_heap_free(lightmaps->instances);
+  vkr_heap_free(lightmaps->rects);
+  vkr_heap_free(lightmaps->bound);
+  vkr_heap_free(lightmaps);
   scene->lightmaps = NULL;
 }
 
@@ -277,24 +279,24 @@ uint32_t vkr_scene_bind_lightmaps(VkrScene *scene) {
   const uint64_t capacity =
       (uint64_t)lightmaps->bound_count + lightmaps->instance_count;
   SceneLightmapTarget *by_entity =
-      gather.failed
-          ? NULL
-          : (SceneLightmapTarget *)malloc((size_t)Max(gather.target_count, 1u) *
-                                          sizeof(SceneLightmapTarget));
+      gather.failed ? NULL
+                    : (SceneLightmapTarget *)vkr_heap_alloc(
+                          (size_t)Max(gather.target_count, 1u) *
+                          sizeof(SceneLightmapTarget));
   VkrMeshLightmapSlot *writes =
-      by_entity ? (VkrMeshLightmapSlot *)malloc((size_t)Max(capacity, 1u) *
-                                                sizeof(VkrMeshLightmapSlot))
+      by_entity ? (VkrMeshLightmapSlot *)vkr_heap_alloc(
+                      (size_t)Max(capacity, 1u) * sizeof(VkrMeshLightmapSlot))
                 : NULL;
   VkrMeshLightmapSlot *bound =
-      writes ? (VkrMeshLightmapSlot *)malloc(
+      writes ? (VkrMeshLightmapSlot *)vkr_heap_alloc(
                    (size_t)Max(lightmaps->instance_count, 1u) *
                    sizeof(VkrMeshLightmapSlot))
              : NULL;
   if (!bound) {
-    free(by_entity);
-    free(writes);
-    free(gather.targets);
-    free(gather.refs);
+    vkr_heap_free(by_entity);
+    vkr_heap_free(writes);
+    vkr_heap_free(gather.targets);
+    vkr_heap_free(gather.refs);
     log_error("Scene lightmaps: binding allocation failed");
     return lightmaps->bound_count;
   }
@@ -302,12 +304,12 @@ uint32_t vkr_scene_bind_lightmaps(VkrScene *scene) {
     MemCopy(by_entity, gather.targets,
             gather.target_count * sizeof(SceneLightmapTarget));
   }
-  qsort(gather.targets, gather.target_count, sizeof(SceneLightmapTarget),
-        scene_lightmap_target_key_compare);
-  qsort(by_entity, gather.target_count, sizeof(SceneLightmapTarget),
-        scene_lightmap_target_entity_compare);
-  qsort(gather.refs, gather.ref_count, sizeof(SceneLightmapRef),
-        scene_lightmap_ref_compare);
+  vkr_sort(gather.targets, gather.target_count, sizeof(SceneLightmapTarget),
+           scene_lightmap_target_key_compare);
+  vkr_sort(by_entity, gather.target_count, sizeof(SceneLightmapTarget),
+           scene_lightmap_target_entity_compare);
+  vkr_sort(gather.refs, gather.ref_count, sizeof(SceneLightmapRef),
+           scene_lightmap_ref_compare);
 
   uint32_t write_count = 0u;
   for (uint32_t i = 0u; i < lightmaps->bound_count; ++i) {
@@ -328,15 +330,15 @@ uint32_t vkr_scene_bind_lightmaps(VkrScene *scene) {
   }
   (void)vkr_mesh_manager_set_lightmap_slots(&scene->assets->mesh_manager,
                                             writes, write_count);
-  free(by_entity);
-  free(writes);
-  free(gather.targets);
-  free(gather.refs);
+  vkr_heap_free(by_entity);
+  vkr_heap_free(writes);
+  vkr_heap_free(gather.targets);
+  vkr_heap_free(gather.refs);
   if (!lightmaps->binding_current || bound_count != lightmaps->bound_count) {
     log_info("Scene lightmaps: %u of %u instances bound", bound_count,
              lightmaps->instance_count);
   }
-  free(lightmaps->bound);
+  vkr_heap_free(lightmaps->bound);
   lightmaps->bound = bound;
   lightmaps->bound_count = bound_count;
   lightmaps->bound_structure_revision = scene->structure_revision;

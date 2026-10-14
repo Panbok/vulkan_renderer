@@ -2,6 +2,7 @@
 #include "filesystem/vkr_asset_path.h"
 
 #include "containers/str.h"
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_text.h"
 #include "filesystem/filesystem.h"
@@ -459,8 +460,8 @@ vkr_bitmap_font_cache_write(VkrAllocator *allocator, String8 cache_path,
   for (uint32_t i = 0; ok && i < page_count; ++i) {
     VkrBitmapFontPage *page = array_get_VkrBitmapFontPage(
         (Array_VkrBitmapFontPage *)&state->pages, i);
-    uint64_t file_len =
-        strnlen(page->file, sizeof(((VkrBitmapFontPage *)0)->file));
+    uint64_t file_len = string_length_bounded(
+        page->file, sizeof(((VkrBitmapFontPage *)0)->file));
     if (file_len > UINT32_MAX) {
       ok = false_v;
       break;
@@ -947,7 +948,7 @@ vkr_bitmap_font_unload_pages(const Array_VkrBitmapFontPage *pages,
     }
 
     String8 path = string8_create_from_cstr((const uint8_t *)page->file,
-                                            strlen(page->file));
+                                            string_length(page->file));
     VkrResourceHandleInfo atlas_info = {
         .type = VKR_RESOURCE_TYPE_TEXTURE,
         .loader_id = VKR_INVALID_ID,
@@ -1013,7 +1014,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
       return false_v;
     }
     String8 raw = string8_create_from_cstr((const uint8_t *)page->file,
-                                           strlen(page->file));
+                                           string_length(page->file));
     if (!(raw.length >= 2 && raw.str[0] == '.' && raw.str[1] == '/') &&
         !(raw.length >= 3 && raw.str[0] == '.' && raw.str[1] == '.' &&
           raw.str[2] == '/') &&
@@ -1042,7 +1043,7 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
 
     const char *resolved_file = out_pages->data[page->id].file;
     String8 atlas_path = string8_create_from_cstr(
-        (const uint8_t *)resolved_file, strlen(resolved_file));
+        (const uint8_t *)resolved_file, string_length(resolved_file));
 
     VkrResourceHandleInfo texture_info = {0};
     VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
@@ -1150,8 +1151,8 @@ vkr_internal bool8_t vkr_bitmap_font_build_result(
     }
     MemCopy(out_font->kernings.data, state->kernings.data,
             state->kernings.length * sizeof(VkrFontKerning));
-    qsort(out_font->kernings.data, (size_t)out_font->kernings.length,
-          sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
+    vkr_sort(out_font->kernings.data, (size_t)out_font->kernings.length,
+             sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
   }
 
   VkrFontGlyph *space = NULL;

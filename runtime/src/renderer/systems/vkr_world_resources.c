@@ -5,9 +5,6 @@
 
 #include "renderer/systems/vkr_world_resources.h"
 
-#include <math.h>
-#include <stdio.h>
-
 #include "containers/str.h"
 #include "core/logger.h"
 #include "math/mat.h"
@@ -238,9 +235,9 @@ vkr_internal bool8_t vkr_world_resources_create_constant_source(
   };
 
   char name_storage[160];
-  snprintf(name_storage, sizeof(name_storage),
-           "__ibl.scene.%p.constant.%04x%04x%04x", (const void *)scene,
-           texel[0], texel[1], texel[2]);
+  string_format(name_storage, sizeof(name_storage),
+                "__ibl.scene.%p.constant.%04x%04x%04x", (const void *)scene,
+                texel[0], texel[1], texel[2]);
   const String8 name = string8_create_from_cstr((const uint8_t *)name_storage,
                                                 string_length(name_storage));
   VkrRendererError texture_err = VKR_RENDERER_ERROR_NONE;
@@ -266,8 +263,8 @@ vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
   environment->source_mip_count = 1u;
 
   char prefilter_name_storage[128];
-  snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
-           "__ibl.scene.%p.prefilter", (void *)scene);
+  string_format(prefilter_name_storage, sizeof(prefilter_name_storage),
+                "__ibl.scene.%p.prefilter", (void *)scene);
   const String8 prefilter_name =
       string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                string_length(prefilter_name_storage));
@@ -465,7 +462,7 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
   }
   if (!vkr_atmosphere_settings_valid(&atmosphere->requested_settings) ||
       !vkr_cloud_settings_valid(&atmosphere->requested_clouds) ||
-      !isfinite(atmosphere->requested_sh_deringing) ||
+      !vkr_is_finite_f32(atmosphere->requested_sh_deringing) ||
       atmosphere->requested_sh_deringing < 0.0f ||
       !vkr_world_resources_has_atmosphere_publisher(assets)) {
     atmosphere->bake_state = VKR_SCENE_ATMOSPHERE_BAKE_STATE_FAILED;
@@ -492,10 +489,10 @@ bool8_t vkr_world_resources_prepare_scene_atmosphere(
   };
   for (uint32_t i = 0; i < ArrayCount(textures); ++i) {
     char name_storage[160];
-    snprintf(name_storage, sizeof(name_storage),
-             "__atmosphere.scene.%p.%llu.%s", (void *)scene,
-             (unsigned long long)atmosphere->requested_revision,
-             textures[i].suffix);
+    string_format(name_storage, sizeof(name_storage),
+                  "__atmosphere.scene.%p.%llu.%s", (void *)scene,
+                  (unsigned long long)atmosphere->requested_revision,
+                  textures[i].suffix);
     const String8 name = string8_create_from_cstr((const uint8_t *)name_storage,
                                                   string_length(name_storage));
     if (!vkr_world_resources_create_writable_texture(
@@ -650,8 +647,8 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
     }
 
     char prefilter_name_storage[160];
-    snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
-             "__ibl.scene.%p.probe.%u.prefilter", (void *)scene, i);
+    string_format(prefilter_name_storage, sizeof(prefilter_name_storage),
+                  "__ibl.scene.%p.probe.%u.prefilter", (void *)scene, i);
     String8 prefilter_name =
         string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
                                  string_length(prefilter_name_storage));

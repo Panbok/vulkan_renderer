@@ -3,9 +3,6 @@
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
 
-#include <float.h>
-#include <limits.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 

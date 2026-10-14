@@ -3,12 +3,10 @@
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
 
-#include <limits.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
-_Static_assert(CHAR_BIT == 8, "DVOL requires 8-bit bytes");
+_Static_assert(VKR_CHAR_BITS == 8, "DVOL requires 8-bit bytes");
 _Static_assert(sizeof(float32_t) == 4u, "DVOL requires 32-bit float32_t");
 _Static_assert(VKR_DIFFUSE_VOLUME_MOMENT_BYTES ==
                    VKR_DIFFUSE_VOLUME_MOMENT_TEXELS * 2u * sizeof(uint16_t),
@@ -69,7 +67,8 @@ static uint32_t vkr_diffuse_volume_header_crc(const uint8_t *header) {
 }
 
 static bool8_t vkr_diffuse_volume_finite_vec3(Vec3 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z);
 }
 
 static uint32_t vkr_diffuse_volume_level_span(uint32_t level) {
@@ -196,7 +195,7 @@ bool8_t vkr_diffuse_volume_layer_luminance(
   const float32_t entry_size = 3.0f * volume->spacing;
   uint32_t entry[3];
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
-    const float32_t cell = floorf(
+    const float32_t cell = vkr_floor_f32(
         (position.elements[axis] - volume->origin.elements[axis]) / entry_size);
     if (!(cell >= 0.0f) || cell >= (float32_t)volume->dimensions[axis]) {
       return false_v;
@@ -224,7 +223,7 @@ bool8_t vkr_diffuse_volume_layer_luminance(
         entry_size * (float32_t)(entry[axis] - entry[axis] % span);
     const float32_t offset = (position.elements[axis] - brick_origin) / step;
     const float32_t local = Clamp(offset, 0.0f, 3.0f);
-    base[axis] = Min((uint32_t)floorf(local), 2u);
+    base[axis] = Min((uint32_t)vkr_floor_f32(local), 2u);
     fraction[axis] = local - (float32_t)base[axis];
   }
 
@@ -339,7 +338,7 @@ static bool8_t vkr_diffuse_volume_probes_valid(const VkrDiffuseVolume *volume) {
     for (uint32_t axis = 0u; axis < 3u; ++axis) {
       const uint16_t half = vkr_diffuse_volume_load_half(aux + axis * 2u);
       if (!vkr_diffuse_volume_half_finite(half) ||
-          fabsf(vkr_float16_to_float32(half)) > limit) {
+          vkr_abs_f32(vkr_float16_to_float32(half)) > limit) {
         return false_v;
       }
     }
@@ -371,8 +370,9 @@ static bool8_t vkr_diffuse_volume_probes_valid(const VkrDiffuseVolume *volume) {
 
 /* A positive, finite power of two, so scaling halves loses no precision. */
 static bool8_t vkr_diffuse_volume_scale_valid(float32_t scale) {
-  int exponent = 0;
-  return isfinite(scale) && scale > 0.0f && frexpf(scale, &exponent) == 0.5f;
+  int32_t exponent = 0;
+  return vkr_is_finite_f32(scale) && scale > 0.0f &&
+         vkr_frexp_f32(scale, &exponent) == 0.5f;
 }
 
 static bool8_t vkr_diffuse_volume_valid(const VkrDiffuseVolume *volume) {
@@ -388,7 +388,7 @@ static bool8_t vkr_diffuse_volume_valid(const VkrDiffuseVolume *volume) {
       !vkr_light_layers_valid(volume->layers, volume->layer_count) ||
       !vkr_diffuse_volume_direct_valid(volume) ||
       !vkr_diffuse_volume_finite_vec3(volume->origin) ||
-      !isfinite(volume->spacing) || !(volume->spacing > 0.0f) ||
+      !vkr_is_finite_f32(volume->spacing) || !(volume->spacing > 0.0f) ||
       !vkr_diffuse_volume_scale_valid(volume->sh_scale)) {
     return false_v;
   }

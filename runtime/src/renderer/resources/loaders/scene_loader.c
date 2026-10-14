@@ -10,6 +10,7 @@
 #include "assets/vkr_diffuse_volume.h"
 #include "assets/vkr_lightmap_set.h"
 #include "assets/vkr_probe_capture.h"
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_json.h"
@@ -18,14 +19,12 @@
 #include "math/vkr_quat.h"
 #include "math/vkr_transform.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_heap.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_world_resources.h"
 #include "vkr_subsurface.h"
-
-#include <stdio.h>
-#include <stdlib.h>
 
 typedef struct SceneText3DImport {
   String8 text;
@@ -701,7 +700,7 @@ scene_directional_light_import_defaults(void) {
 vkr_internal bool8_t scene_loader_constant_radiance_valid(Vec3 radiance) {
   const float32_t channels[] = {radiance.x, radiance.y, radiance.z};
   for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
-    if (!isfinite(channels[i]) || channels[i] < 0.0f ||
+    if (!vkr_is_finite_f32(channels[i]) || channels[i] < 0.0f ||
         channels[i] > VKR_SCENE_ENVIRONMENT_CONSTANT_MAX) {
       return false_v;
     }
@@ -761,7 +760,8 @@ scene_loader_parse_environment_import(String8 json) {
      value (ADR-038). A bad value is a load-time error naming its path. */
   if (scene_json_read_float_field(&environment_object, "sh_deringing",
                                   &result.sh_deringing) &&
-      !(isfinite(result.sh_deringing) && result.sh_deringing >= 0.0f)) {
+      !(vkr_is_finite_f32(result.sh_deringing) &&
+        result.sh_deringing >= 0.0f)) {
     log_error("Scene loader: $.environment.sh_deringing must be finite and "
               "greater than or equal to zero");
     result.valid = false_v;
@@ -1361,9 +1361,9 @@ scene_loader_release_diffuse_volume(SceneDiffuseVolumePrepared *prepared) {
     vkr_texture_system_release_prepared_load(&prepared->textures[i]);
   }
   /* A volume the scene took owns these; apply clears them first. */
-  free(prepared->volume.brick_entries);
-  free(prepared->volume.probe_valid);
-  free(prepared->volume.baked_lights);
+  vkr_heap_free(prepared->volume.brick_entries);
+  vkr_heap_free(prepared->volume.probe_valid);
+  vkr_heap_free(prepared->volume.baked_lights);
   prepared->volume.brick_entries = NULL;
   prepared->volume.probe_valid = NULL;
   prepared->volume.baked_lights = NULL;
@@ -1396,13 +1396,14 @@ vkr_internal bool8_t scene_loader_volume_textures(
 
   const uint64_t indirection_bytes =
       (uint64_t)volume->entry_count * sizeof(uint32_t);
-  uint8_t *indirection = (uint8_t *)malloc((size_t)indirection_bytes);
+  uint8_t *indirection = (uint8_t *)vkr_heap_alloc((size_t)indirection_bytes);
   if (indirection) {
     MemCopy(indirection, volume->entries, indirection_bytes);
   }
   const uint64_t probe_row_bytes =
       (uint64_t)row_probes * VKR_DIFFUSE_VOLUME_AUX_BYTES;
-  uint8_t *probes = (uint8_t *)calloc(rows, (size_t)probe_row_bytes);
+  uint8_t *probes =
+      (uint8_t *)vkr_heap_alloc_zeroed(rows, (size_t)probe_row_bytes);
   if (probes) {
     MemCopy(probes, volume->probe_aux,
             (uint64_t)probe_count * VKR_DIFFUSE_VOLUME_AUX_BYTES);
@@ -1411,7 +1412,8 @@ vkr_internal bool8_t scene_loader_volume_textures(
                                     VKR_DIFFUSE_VOLUME_MOMENT_SIZE * 2u *
                                     sizeof(uint16_t);
   const uint32_t moment_height = tile_rows * VKR_DIFFUSE_VOLUME_MOMENT_SIZE;
-  uint8_t *moments = (uint8_t *)calloc(moment_height, (size_t)moment_row_bytes);
+  uint8_t *moments =
+      (uint8_t *)vkr_heap_alloc_zeroed(moment_height, (size_t)moment_row_bytes);
   if (moments) {
     const uint64_t tile_row_bytes =
         VKR_DIFFUSE_VOLUME_MOMENT_BYTES / VKR_DIFFUSE_VOLUME_MOMENT_SIZE;
@@ -1432,7 +1434,8 @@ vkr_internal bool8_t scene_loader_volume_textures(
   const uint64_t sh_row_bytes =
       (uint64_t)row_probes * VKR_DIFFUSE_VOLUME_SH_BYTES;
   const uint64_t band_bytes = (uint64_t)rows * sh_row_bytes;
-  uint8_t *layer_sh = (uint8_t *)calloc(bands, (size_t)band_bytes);
+  uint8_t *layer_sh =
+      (uint8_t *)vkr_heap_alloc_zeroed(bands, (size_t)band_bytes);
   if (layer_sh) {
     for (uint32_t band = 0u; band < bands; ++band) {
       MemCopy(layer_sh + band * band_bytes,
@@ -1466,7 +1469,7 @@ vkr_internal bool8_t scene_loader_volume_textures(
       Max((volume->brick_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
               VKR_DIFFUSE_VOLUME_ROW_PROBES,
           1u);
-  uint32_t *bricks = (uint32_t *)calloc(
+  uint32_t *bricks = (uint32_t *)vkr_heap_alloc_zeroed(
       (size_t)brick_rows * VKR_DIFFUSE_VOLUME_ROW_PROBES, sizeof(uint32_t));
   bool8_t bricks_fit = volume->dimensions[0] <= 1024u &&
                        volume->dimensions[1] <= 1024u &&
@@ -1487,7 +1490,7 @@ vkr_internal bool8_t scene_loader_volume_textures(
                         VKR_TEXTURE_FORMAT_R32_UINT, 1u, false_v,
                         &textures[SCENE_DIFFUSE_VOLUME_BRICKS]);
   if (!bricks_fit) {
-    free(bricks);
+    vkr_heap_free(bricks);
   }
   /* A volume too wide to pack its bricks loads without a dynamic layer. */
   if (!indirection_ready || !probes_ready || !moments_ready ||
@@ -1508,11 +1511,11 @@ scene_loader_volume_baked_lights(String8 path, VkrAllocator *temp_alloc,
   if (path.length + 11u > sizeof(sidecar)) {
     return;
   }
-  snprintf(sidecar, sizeof(sidecar), "%.*s.bake.json", (int)path.length,
-           path.str);
+  string_format(sidecar, sizeof(sidecar), "%.*s.bake.json", (int)path.length,
+                path.str);
   FilePath file_path = vkr_asset_path_file(
-      temp_alloc,
-      string8_create_from_cstr((const uint8_t *)sidecar, strlen(sidecar)));
+      temp_alloc, string8_create_from_cstr((const uint8_t *)sidecar,
+                                           string_length(sidecar)));
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle handle = {0};
@@ -1545,8 +1548,8 @@ scene_loader_volume_baked_lights(String8 path, VkrAllocator *temp_alloc,
     }
     ++count;
   }
-  VkrSceneBakedLight *lights =
-      (VkrSceneBakedLight *)calloc(Max(count, 1u), sizeof(*lights));
+  VkrSceneBakedLight *lights = (VkrSceneBakedLight *)vkr_heap_alloc_zeroed(
+      Max(count, 1u), sizeof(*lights));
   if (!lights) {
     return;
   }
@@ -1570,7 +1573,7 @@ scene_loader_volume_baked_lights(String8 path, VkrAllocator *temp_alloc,
         !scene_json_read_vec3_field(&object, "color", &light->color) ||
         !scene_json_read_string_field(&object, "group", &group) ||
         group.length >= VKR_LIGHT_GROUP_NAME_BYTES) {
-      free(lights);
+      vkr_heap_free(lights);
       return;
     }
     light->kind = (uint32_t)kind;
@@ -1591,14 +1594,14 @@ scene_loader_volume_baked_lights(String8 path, VkrAllocator *temp_alloc,
     for (uint32_t i = 0u; i < ArrayCount(floats); ++i) {
       field = object;
       if (!vkr_json_get_float(&field, floats[i].name, floats[i].value)) {
-        free(lights);
+        vkr_heap_free(lights);
         return;
       }
     }
     ++parsed;
   }
   if (parsed != count) {
-    free(lights);
+    vkr_heap_free(lights);
     return;
   }
   out_volume->baked_lights = lights;
@@ -1688,10 +1691,10 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
   /* CPU copies for the dynamic layer's selection (ADR-119): packed bricks
      and each probe's validity, the sign and magnitude of its record's w. */
   placement->brick_count = volume.brick_count;
-  placement->brick_entries = (uint32_t *)malloc(
+  placement->brick_entries = (uint32_t *)vkr_heap_alloc(
       (size_t)Max(volume.brick_count, 1u) * sizeof(uint32_t));
   placement->probe_valid =
-      (uint8_t *)malloc((size_t)Max(volume.probe_count, 1u));
+      (uint8_t *)vkr_heap_alloc((size_t)Max(volume.probe_count, 1u));
   if (!placement->brick_entries || !placement->probe_valid) {
     scene_loader_release_diffuse_volume(out_prepared);
     arena_destroy(decode_arena);
@@ -1738,7 +1741,7 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
   }
 
   VkrSceneDiffuseVolume *volume =
-      (VkrSceneDiffuseVolume *)malloc(sizeof(*volume));
+      (VkrSceneDiffuseVolume *)vkr_heap_alloc(sizeof(*volume));
   if (!volume) {
     log_error("Scene loader: diffuse volume '%.*s' allocation failed",
               (int)import->path.length, import->path.str);
@@ -1764,12 +1767,13 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
         prepared->textures[i].description.width == 0u) {
       continue;
     }
-    snprintf(name, sizeof(name), "%.*s#%s", (int)import->path.length,
-             import->path.str, suffixes[i]);
+    string_format(name, sizeof(name), "%.*s#%s", (int)import->path.length,
+                  import->path.str, suffixes[i]);
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
     if (!vkr_texture_system_finalize_prepared_load(
             &assets->texture_system,
-            string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+            string8_create_from_cstr((const uint8_t *)name,
+                                     string_length(name)),
             &prepared->textures[i], handles[i], &error)) {
       String8 error_text = vkr_renderer_get_error_string(error);
       log_error("Scene loader: diffuse volume upload failed for '%s': %.*s",
@@ -1781,8 +1785,8 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
   }
 
   static uint32_t s_volume_serial = 0u;
-  snprintf(name, sizeof(name), "%.*s#sh#%u", (int)import->path.length,
-           import->path.str, ++s_volume_serial);
+  string_format(name, sizeof(name), "%.*s#sh#%u", (int)import->path.length,
+                import->path.str, ++s_volume_serial);
   const uint32_t rows =
       (volume->probe_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
       VKR_DIFFUSE_VOLUME_ROW_PROBES;
@@ -1810,7 +1814,7 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_texture_system_create_writable(
           &assets->texture_system,
-          string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)),
           &sh_description, &volume->sh, &error)) {
     String8 error_text = vkr_renderer_get_error_string(error);
     log_error("Scene loader: diffuse volume SH texture failed for '%s': %.*s",
@@ -1992,12 +1996,13 @@ vkr_internal bool8_t scene_loader_lightmap_directions(
   const uint64_t plane_bytes =
       vkr_lightmap_set_plane_bytes(format, set->page_size);
   const uint32_t slice_count = set->page_count * lightmaps->slice_layer_count;
-  uint8_t *bytes = (uint8_t *)malloc((size_t)(plane_bytes * slice_count));
+  uint8_t *bytes =
+      (uint8_t *)vkr_heap_alloc((size_t)(plane_bytes * slice_count));
   VkrTextureUploadRegion *regions =
-      (VkrTextureUploadRegion *)malloc(slice_count * sizeof(*regions));
+      (VkrTextureUploadRegion *)vkr_heap_alloc(slice_count * sizeof(*regions));
   if (!bytes || !regions) {
-    free(bytes);
-    free(regions);
+    vkr_heap_free(bytes);
+    vkr_heap_free(regions);
     return false_v;
   }
   for (uint32_t slice = 0u; slice < slice_count; ++slice) {
@@ -2082,14 +2087,15 @@ vkr_internal bool8_t scene_loader_lightmap_lamp_direct(
       VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, set->page_size);
   const uint32_t slice_count =
       set->direct_page_count * lightmaps->direct_layer_count;
-  uint8_t *bytes = (uint8_t *)malloc((size_t)(plane_bytes * slice_count));
+  uint8_t *bytes =
+      (uint8_t *)vkr_heap_alloc((size_t)(plane_bytes * slice_count));
   VkrTextureUploadRegion *regions =
-      (VkrTextureUploadRegion *)malloc(slice_count * sizeof(*regions));
-  lightmaps->direct_rects = (VkrLightmapRect *)malloc(
+      (VkrTextureUploadRegion *)vkr_heap_alloc(slice_count * sizeof(*regions));
+  lightmaps->direct_rects = (VkrLightmapRect *)vkr_heap_alloc(
       (size_t)Max(set->instance_count, 1u) * sizeof(VkrLightmapRect));
   if (!bytes || !regions || !lightmaps->direct_rects) {
-    free(bytes);
-    free(regions);
+    vkr_heap_free(bytes);
+    vkr_heap_free(regions);
     return false_v;
   }
   for (uint32_t slice = 0u; slice < slice_count; ++slice) {
@@ -2253,7 +2259,7 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   /* The prepared upload owns the file bytes (malloc, see
      VkrTexturePreparedLoad) until scene_loader_apply_lightmaps() hands them
      to the publication queue or the payload releases them. */
-  uint8_t *bytes = (uint8_t *)malloc((size_t)stats.size);
+  uint8_t *bytes = (uint8_t *)vkr_heap_alloc((size_t)stats.size);
   if (bytes) {
     MemCopy(bytes, prefix, prefix_size);
   }
@@ -2268,7 +2274,7 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   }
   file_close(&handle);
   if (!bytes || byte_count != stats.size) {
-    free(bytes);
+    vkr_heap_free(bytes);
     arena_destroy(decode_arena);
     log_error("Scene loader: lightmap set read failed for '%.*s'",
               (int)path.length, path.str);
@@ -2278,7 +2284,7 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   if (!vkr_lightmap_set_decode(bytes, byte_count, decode_arena, &set) ||
       set.instance_count >= VKR_SCENE_LIGHTMAP_MAX_INSTANCES) {
     arena_destroy(decode_arena);
-    free(bytes);
+    vkr_heap_free(bytes);
     log_error("Scene loader: lightmap set validation failed for '%.*s'",
               (int)path.length, path.str);
     return false_v;
@@ -2286,15 +2292,15 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
 
   const uint64_t payload_offset = (uint64_t)(set.payload - bytes);
   VkrSceneLightmaps *lightmaps =
-      (VkrSceneLightmaps *)calloc(1u, sizeof(*lightmaps));
+      (VkrSceneLightmaps *)vkr_heap_alloc_zeroed(1u, sizeof(*lightmaps));
   uint32_t planes[VKR_LIGHTMAP_SET_MAX_LAYERS];
   if (lightmaps &&
       (!scene_loader_lightmap_slices(&set, desktop, lightmaps, planes) ||
        (uint64_t)set.page_count * lightmaps->slice_layer_count >
            VKR_TEXTURE_MAX_ARRAY_LAYERS)) {
-    free(lightmaps);
+    vkr_heap_free(lightmaps);
     arena_destroy(decode_arena);
-    free(bytes);
+    vkr_heap_free(bytes);
     log_warn("Scene loader: lightmap set '%.*s' has no irradiance planes the "
              "%s pipeline samples; it stays off",
              (int)path.length, path.str, desktop ? "desktop" : "tiled");
@@ -2303,22 +2309,22 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
   const uint32_t slice_count =
       lightmaps ? set.page_count * lightmaps->slice_layer_count : 0u;
   VkrTextureUploadRegion *regions =
-      (VkrTextureUploadRegion *)malloc(slice_count * sizeof(*regions));
+      (VkrTextureUploadRegion *)vkr_heap_alloc(slice_count * sizeof(*regions));
   if (lightmaps) {
-    lightmaps->instances = (VkrLightmapInstance *)malloc(
+    lightmaps->instances = (VkrLightmapInstance *)vkr_heap_alloc(
         (size_t)Max(set.instance_count, 1u) * sizeof(VkrLightmapInstance));
-    lightmaps->rects = (VkrLightmapRect *)malloc(
+    lightmaps->rects = (VkrLightmapRect *)vkr_heap_alloc(
         (size_t)Max(set.instance_count, 1u) * sizeof(VkrLightmapRect));
   }
   if (!lightmaps || !lightmaps->instances || !lightmaps->rects || !regions) {
     if (lightmaps) {
-      free(lightmaps->instances);
-      free(lightmaps->rects);
-      free(lightmaps);
+      vkr_heap_free(lightmaps->instances);
+      vkr_heap_free(lightmaps->rects);
+      vkr_heap_free(lightmaps);
     }
-    free(regions);
+    vkr_heap_free(regions);
     arena_destroy(decode_arena);
-    free(bytes);
+    vkr_heap_free(bytes);
     log_error("Scene loader: lightmap set allocation failed for '%.*s'",
               (int)path.length, path.str);
     return false_v;
@@ -2372,13 +2378,13 @@ vkr_internal bool8_t scene_loader_prepare_lightmaps(
      (ADR-108). */
   if (!desktop &&
       !scene_loader_lightmap_lamp_direct(&set, lightmaps, &out_prepared[1])) {
-    free(lightmaps->direct_rects);
-    free(lightmaps->instances);
-    free(lightmaps->rects);
-    free(lightmaps);
-    free(regions);
+    vkr_heap_free(lightmaps->direct_rects);
+    vkr_heap_free(lightmaps->instances);
+    vkr_heap_free(lightmaps->rects);
+    vkr_heap_free(lightmaps);
+    vkr_heap_free(regions);
     arena_destroy(decode_arena);
-    free(bytes);
+    vkr_heap_free(bytes);
     log_error("Scene loader: lightmap set '%.*s' lamp-direct allocation "
               "failed",
               (int)path.length, path.str);
@@ -2465,12 +2471,13 @@ scene_loader_apply_lightmaps(VkrScene *scene, struct VkrRenderAssets *assets,
   const bool8_t lamp_direct = (*lightmaps)->direct_layer_count != 0u;
   if (prepared[1].upload_data) {
     char name[512];
-    snprintf(name, sizeof(name), "%.*s#%s", (int)import->path.length,
-             import->path.str, lamp_direct ? "lamp_direct" : "direction");
+    string_format(name, sizeof(name), "%.*s#%s", (int)import->path.length,
+                  import->path.str, lamp_direct ? "lamp_direct" : "direction");
     VkrTextureHandle second = VKR_TEXTURE_HANDLE_INVALID;
     if (vkr_texture_system_finalize_prepared_load(
             &assets->texture_system,
-            string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+            string8_create_from_cstr((const uint8_t *)name,
+                                     string_length(name)),
             &prepared[1], &second, &error)) {
       vkr_texture_system_add_ref_by_handle(&assets->texture_system, second);
       if (lamp_direct) {
@@ -2508,8 +2515,8 @@ vkr_internal bool8_t scene_loader_subsurface_texture_key(
   if (!import || !storage || !out_key)
     return false_v;
 
-  int32_t written =
-      snprintf(storage, 256u, "__scene_subsurface_%u", import->profile_count);
+  int32_t written = string_format(storage, 256u, "__scene_subsurface_%u",
+                                  import->profile_count);
   if (written < 0 || (uint32_t)written >= 256u)
     return false_v;
   uint32_t length = (uint32_t)written;
@@ -2520,7 +2527,7 @@ vkr_internal bool8_t scene_loader_subsurface_texture_key(
          ++component) {
       uint32_t bits = 0u;
       MemCopy(&bits, &components[component], sizeof(bits));
-      written = snprintf(storage + length, 256u - length, "_%08x", bits);
+      written = string_format(storage + length, 256u - length, "_%08x", bits);
       if (written < 0 || (uint32_t)written >= 256u - length)
         return false_v;
       length += (uint32_t)written;
@@ -2724,7 +2731,8 @@ vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
     import.sh_deringing_authored = scene_json_read_float_field(
         &probe_object, "sh_deringing", &import.sh_deringing);
     if (import.sh_deringing_authored &&
-        !(isfinite(import.sh_deringing) && import.sh_deringing >= 0.0f)) {
+        !(vkr_is_finite_f32(import.sh_deringing) &&
+          import.sh_deringing >= 0.0f)) {
       log_error("Scene loader: $.reflection_probes[%u].sh_deringing must be "
                 "finite and greater than or equal to zero",
                 input_index);
@@ -3279,7 +3287,7 @@ vkr_internal bool8_t scene_json_parse_transform(
       if (!vkr_json_next_array_element(&matrix_reader) ||
           !vkr_json_parse_float(&matrix_reader,
                                 &out_entity->matrix.elements[i]) ||
-          !isfinite(out_entity->matrix.elements[i])) {
+          !vkr_is_finite_f32(out_entity->matrix.elements[i])) {
         return false_v;
       }
     }
@@ -3471,7 +3479,7 @@ static bool8_t scene_json_parse_animation(const VkrJsonReader *entity_reader,
     } else if (key.length == 4 && MemCompare(key.str, "rate", 4) == 0) {
       bit = 4;
       valid = vkr_json_parse_double(&object, &out_entity->animation.rate) &&
-              isfinite(out_entity->animation.rate);
+              vkr_is_finite_f64(out_entity->animation.rate);
     } else if (key.length == 4 && MemCompare(key.str, "loop", 4) == 0) {
       bit = 8;
       valid = vkr_json_parse_bool(&object, &out_entity->animation.loop);
@@ -3711,7 +3719,7 @@ vkr_internal bool8_t scene_json_parse_point_light(
   if (vkr_json_find_field(&source_radius_reader, "source_radius")) {
     float32_t source_radius = 0.0f;
     if (!vkr_json_parse_float(&source_radius_reader, &source_radius) ||
-        !isfinite(source_radius) || source_radius < 0.0f) {
+        !vkr_is_finite_f32(source_radius) || source_radius < 0.0f) {
       log_error("Scene loader: entity %u point_light source_radius must be "
                 "finite and non-negative",
                 entity_index);
@@ -3795,11 +3803,11 @@ vkr_internal bool8_t scene_json_parse_rectangle_light(
                                      &light.mobility, light.light_group)) {
     return false_v;
   }
-  if (light.enabled > 1u || !isfinite(light.color.x) ||
-      !isfinite(light.color.y) || !isfinite(light.color.z) ||
+  if (light.enabled > 1u || !vkr_is_finite_f32(light.color.x) ||
+      !vkr_is_finite_f32(light.color.y) || !vkr_is_finite_f32(light.color.z) ||
       light.color.x < 0.0f || light.color.y < 0.0f || light.color.z < 0.0f ||
-      !isfinite(light.radiance) || light.radiance < 0.0f ||
-      !isfinite(light.size.x) || !isfinite(light.size.y) ||
+      !vkr_is_finite_f32(light.radiance) || light.radiance < 0.0f ||
+      !vkr_is_finite_f32(light.size.x) || !vkr_is_finite_f32(light.size.y) ||
       light.size.x <= 0.0f || light.size.y <= 0.0f)
     goto invalid;
   out_entity->has_rectangle_light = true_v;
@@ -3880,7 +3888,7 @@ vkr_internal bool8_t scene_json_parse_directional_light(
   if (vkr_json_find_field(&sun_reader, "sun_angular_diameter_degrees")) {
     float32_t sun_angular_diameter_degrees = 0.0f;
     if (!vkr_json_parse_float(&sun_reader, &sun_angular_diameter_degrees) ||
-        !isfinite(sun_angular_diameter_degrees) ||
+        !vkr_is_finite_f32(sun_angular_diameter_degrees) ||
         sun_angular_diameter_degrees < 0.0f ||
         sun_angular_diameter_degrees >= 180.0f) {
       log_error("Scene loader: entity %u directional_light "
@@ -3932,7 +3940,7 @@ vkr_internal const VkrTypeDesc *scene_document_component(String8 name) {
       &vkr_scene_point_light_type, &vkr_scene_directional_light_type,
       &vkr_scene_rectangle_light_type, &vkr_scene_visibility_type};
   for (uint32_t i = 0; i < ArrayCount(others); ++i) {
-    if (name.length == strlen(others[i]->name) &&
+    if (name.length == string_length(others[i]->name) &&
         MemCompare(name.str, others[i]->name, name.length) == 0) {
       return others[i];
     }
@@ -4129,7 +4137,7 @@ vkr_internal bool8_t scene_loader_document_ids_valid(
   for (uint32_t i = 0; i < count; ++i) {
     sorted[i] = imports[i].document_id;
   }
-  qsort(sorted, count, sizeof(*sorted), scene_loader_document_id_compare);
+  vkr_sort(sorted, count, sizeof(*sorted), scene_loader_document_id_compare);
   bool8_t unique = true_v;
   for (uint32_t i = 1; i < count && unique; ++i) {
     unique = MemCompare(&sorted[i - 1u], &sorted[i], sizeof(*sorted)) != 0;
@@ -4240,9 +4248,10 @@ bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
         goto cleanup;
     } else if (node->punctual.kind == 2u || node->punctual.kind == 3u) {
       const bool8_t casts_shadow =
-          isfinite(node->punctual.range) && node->punctual.range > 0.0f &&
+          vkr_is_finite_f32(node->punctual.range) &&
+          node->punctual.range > 0.0f &&
           (node->punctual.kind == 2u ||
-           (isfinite(node->punctual.outer_cone) &&
+           (vkr_is_finite_f32(node->punctual.outer_cone) &&
             node->punctual.outer_cone > 0.0f &&
             node->punctual.outer_cone < 1.57079632679f));
       ScenePointLight light = {.casts_shadow = casts_shadow,
@@ -4513,7 +4522,7 @@ bool8_t vkr_scene_loader_request_container(struct VkrRenderAssets *assets,
   uint32_t free_slot = UINT32_MAX;
   for (uint32_t i = 0; i < ArrayCount(assets->scene_container_requests); ++i) {
     char *entry = assets->scene_container_requests[i].path;
-    if (strlen(entry) == path.length &&
+    if (string_length(entry) == path.length &&
         MemCompare(entry, path.str, path.length) == 0) {
       if (!world_id) {
         entry[0] = '\0';
@@ -4543,7 +4552,7 @@ vkr_internal uint16_t scene_loader_container_world(
     const struct VkrRenderAssets *assets, String8 name) {
   for (uint32_t i = 0; i < ArrayCount(assets->scene_container_requests); ++i) {
     const char *entry = assets->scene_container_requests[i].path;
-    if (entry[0] && strlen(entry) == name.length &&
+    if (entry[0] && string_length(entry) == name.length &&
         MemCompare(entry, name.str, name.length) == 0) {
       return assets->scene_container_requests[i].world_id;
     }
@@ -5586,7 +5595,8 @@ vkr_internal bool8_t scene_loader_world_entity(
     return true_v;
   }
   const VkrEntityId entity = vkr_scene_create_typed_entity(
-      scene, string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+      scene,
+      string8_create_from_cstr((const uint8_t *)name, string_length(name)),
       type, value);
   if (!entity.u64) {
     log_error("Scene loader: could not create the %s entity", type->name);
@@ -5750,7 +5760,7 @@ scene_loader_create_world_entities(VkrSceneLoaderAsyncPayload *payload) {
     }
     for (uint32_t i = 0; i < froxel->settings.box_count; ++i) {
       char name[48];
-      snprintf(name, sizeof(name), "Fog Density Box %u", i + 1u);
+      string_format(name, sizeof(name), "Fog Density Box %u", i + 1u);
       if (!scene_loader_world_entity(payload, &ordinal, name,
                                      &vkr_scene_fog_box_type,
                                      &froxel->settings.boxes[i])) {
@@ -5793,7 +5803,7 @@ scene_loader_create_world_entities(VkrSceneLoaderAsyncPayload *payload) {
     if (import->name.length) {
       scene_loader_copy_text(name, sizeof(name), import->name);
     } else {
-      snprintf(name, sizeof(name), "Reflection Probe %u", i + 1u);
+      string_format(name, sizeof(name), "Reflection Probe %u", i + 1u);
     }
     if (!scene_loader_world_entity(payload, &ordinal, name,
                                    &vkr_scene_reflection_probe_type, &probe)) {
@@ -6196,9 +6206,9 @@ vkr_internal void scene_loader_destroy_async_payload_contents(
     payload->lightmap_prepared_ready = false_v;
   }
   if (payload->lightmaps) {
-    free(payload->lightmaps->instances);
-    free(payload->lightmaps->rects);
-    free(payload->lightmaps);
+    vkr_heap_free(payload->lightmaps->instances);
+    vkr_heap_free(payload->lightmaps->rects);
+    vkr_heap_free(payload->lightmaps);
     payload->lightmaps = NULL;
   }
   for (uint32_t i = 0u; i < payload->reflection_probe_import_count; ++i) {

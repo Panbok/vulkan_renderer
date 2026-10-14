@@ -41,8 +41,6 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
 #include "vkr_renderer.h"
-#include <math.h>
-#include <stdio.h>
 
 #define VKR_FPS_UPDATE_INTERVAL 0.25
 #define VKR_MEMORY_UPDATE_INTERVAL 1.0
@@ -561,8 +559,8 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
           ? vkr_graphics_settings_defaults(application->renderer.backend_type)
           : request->settings;
   if (!vkr_graphics_settings_valid(&settings)) {
-    snprintf(state->graphics_message, sizeof(state->graphics_message),
-             "These settings could not be applied.");
+    string_format(state->graphics_message, sizeof(state->graphics_message),
+                  "These settings could not be applied.");
     return;
   }
   const VkrGraphicsSettings old = state->graphics.settings;
@@ -596,8 +594,8 @@ static void sample_graphics_save(void) {
     return;
   if (!vkr_graphics_settings_save(state->graphics_path,
                                   &state->graphics.settings)) {
-    snprintf(state->graphics_message, sizeof(state->graphics_message),
-             "Settings are applied, but could not be saved.");
+    string_format(state->graphics_message, sizeof(state->graphics_message),
+                  "Settings are applied, but could not be saved.");
     log_warn("Unable to save Graphics settings to %s", state->graphics_path);
     return;
   }
@@ -672,8 +670,9 @@ vkr_internal void vkr_standard_scene_runtime_update_ibl_validation_controls(
      otherwise the scene's own values, edits and the enable a later
      atmosphere bake makes included, stand. Ending an override restores the
      values it replaced. F9 and F10 step by 0.1, so 1.0 compares loosely. */
-  const bool8_t override = state->ibl_validation_mode != 0u ||
-                           fabsf(state->ibl_validation_scalar - 1.0f) > 1e-3f;
+  const bool8_t override =
+      state->ibl_validation_mode != 0u ||
+      vkr_abs_f32(state->ibl_validation_scalar - 1.0f) > 1e-3f;
   if (!override) {
     if (state->ibl_validation_defaults_captured &&
         state->ibl_validation_scene == scene) {
@@ -838,7 +837,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_memory_text_append(
     char **write, size_t *remaining, const char *text) {
   if (!write || !*write || !remaining || !text)
     return false_v;
-  const size_t length = strlen(text);
+  const size_t length = string_length(text);
   if (length >= *remaining)
     return false_v;
   MemCopy(*write, text, length);
@@ -972,8 +971,8 @@ vkr_internal void vkr_standard_scene_runtime_dump_periodic_metrics(
   }
 
   char label[64];
-  snprintf(label, sizeof(label), "tick%u@%.1fs", state->metrics_dump_index,
-           application->host.clock.elapsed);
+  string_format(label, sizeof(label), "tick%u@%.1fs", state->metrics_dump_index,
+                application->host.clock.elapsed);
   state->metrics_dump_index++;
 
   vkr_standard_scene_runtime_log_device_memory_stats(application, label);
@@ -1468,17 +1467,17 @@ vkr_internal bool8_t vkr_standard_scene_runtime_restore_gizmo_edit(
     const char *error = NULL;
     if (!vkr_scene_physics_apply(scene, state->gizmo_edit_entity,
                                  &state->gizmo_before.physics, &error)) {
-      snprintf(edits->status, sizeof(edits->status),
-               "Could not restore collider drag: %s",
-               error ? error : "allocation failed");
+      string_format(edits->status, sizeof(edits->status),
+                    "Could not restore collider drag: %s",
+                    error ? error : "allocation failed");
       return false_v;
     }
   } else {
     if (!vkr_scene_set_transform(
             scene, state->gizmo_drag.entity, state->gizmo_before.position,
             state->gizmo_before.rotation, state->gizmo_before.scale)) {
-      snprintf(edits->status, sizeof(edits->status),
-               "Could not restore the authored transform.");
+      string_format(edits->status, sizeof(edits->status),
+                    "Could not restore the authored transform.");
       return false_v;
     }
     gizmo_companions_move(scene, vec3_zero());
@@ -1508,8 +1507,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
       const char *error = NULL;
       if (!vkr_scene_physics_apply(scene, state->gizmo_edit_entity, &snapshot,
                                    &error)) {
-        snprintf(edits->status, sizeof(edits->status), "%s",
-                 error ? error : "Collider edit failed.");
+        string_format(edits->status, sizeof(edits->status), "%s",
+                      error ? error : "Collider edit failed.");
         return false_v;
       }
       return true_v;
@@ -1525,8 +1524,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_apply_gizmo_pose(
                                             transform->parent, &error) ||
       !vkr_scene_set_transform(scene, state->gizmo_drag.entity, position,
                                rotation, scale)) {
-    snprintf(edits->status, sizeof(edits->status), "%s",
-             error ? error : "Transform edit failed.");
+    string_format(edits->status, sizeof(edits->status), "%s",
+                  error ? error : "Transform edit failed.");
     return false_v;
   }
   return true_v;
@@ -1606,8 +1605,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_gizmo_parent_frame(
     VkrScene *scene, const SceneTransform *transform, Mat4 *out_inverse,
     VkrQuat *out_rotation) {
   if (!transform || !transform->trs_editable ||
-      fabsf(transform->scale.x) < 1e-6f || fabsf(transform->scale.y) < 1e-6f ||
-      fabsf(transform->scale.z) < 1e-6f)
+      vkr_abs_f32(transform->scale.x) < 1e-6f ||
+      vkr_abs_f32(transform->scale.y) < 1e-6f ||
+      vkr_abs_f32(transform->scale.z) < 1e-6f)
     return false_v;
   *out_inverse = mat4_identity();
   *out_rotation = vkr_quat_identity();
@@ -1624,7 +1624,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_gizmo_parent_frame(
     const Vec3 z =
         vec3_new(world.elements[8], world.elements[9], world.elements[10]);
     const float32_t determinant = vec3_dot(x, vec3_cross(y, z));
-    if (!isfinite(determinant) || fabsf(determinant) < 1e-6f)
+    if (!vkr_is_finite_f32(determinant) || vkr_abs_f32(determinant) < 1e-6f)
       return false_v;
     *out_inverse = mat4_inverse_affine(world);
   }
@@ -1939,12 +1939,12 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
     if (axis_index >= 0) {
       /* One component follows the pointer's distance along its axis. */
       const float32_t start_distance = state->gizmo_drag.start_distance;
-      if (fabsf(start_distance) > VKR_FLOAT_EPSILON) {
+      if (vkr_abs_f32(start_distance) > VKR_FLOAT_EPSILON) {
         const float32_t start = new_scale.elements[axis_index];
         const float32_t factor =
             vec3_dot(offset, state->gizmo_drag.axis) / start_distance;
         float32_t next = start * factor;
-        if (fabsf(next) < 0.001f) {
+        if (vkr_abs_f32(next) < 0.001f) {
           next = start < 0.0f ? -0.001f : 0.001f;
         }
         new_scale.elements[axis_index] = next;
@@ -1953,7 +1953,8 @@ vkr_internal void vkr_standard_scene_runtime_update_gizmo_drag(
       const float32_t radius = vec3_length(offset);
       const Vec3 start = state->gizmo_drag.start_scale;
       const float32_t smallest =
-          Min(fabsf(start.x), Min(fabsf(start.y), fabsf(start.z)));
+          Min(vkr_abs_f32(start.x),
+              Min(vkr_abs_f32(start.y), vkr_abs_f32(start.z)));
       const float32_t scale_factor =
           Max(0.001f / smallest, radius / state->gizmo_drag.start_radius);
       new_scale = vec3_scale(start, scale_factor);
@@ -2181,7 +2182,8 @@ static bool8_t sample_overlay_read_job(VkrJobContext *context, void *payload) {
   SampleOverlayLoad *load = job->load;
   vkr_scene_edit_overlay_read(
       load->overlay,
-      string8_create_from_cstr((const uint8_t *)load->path, strlen(load->path)),
+      string8_create_from_cstr((const uint8_t *)load->path,
+                               string_length(load->path)),
       &load->cancel);
   vkr_atomic_bool_store(&load->done, true_v, VKR_MEMORY_ORDER_RELEASE);
   return true_v;
@@ -2231,7 +2233,7 @@ static void sample_overlay_start(VkrStandardSceneRuntime *application) {
   if (!load->overlay) {
     return;
   }
-  snprintf(load->path, sizeof(load->path), "%s", state->sidecar_path);
+  string_format(load->path, sizeof(load->path), "%s", state->sidecar_path);
   load->ticket = load->ticket == UINT32_MAX ? 1u : load->ticket + 1u;
   load->skipped = false_v;
   load->type_count = sample_registered_type_count();
@@ -2291,20 +2293,21 @@ static bool8_t sample_overlay_apply(VkrStandardSceneRuntime *application,
     if (!vkr_scene_physics_set_asset_root(
             scene,
             string8_create((uint8_t *)state->physics_asset_root,
-                           strlen(state->physics_asset_root)),
+                           string_length(state->physics_asset_root)),
             &physics_root_error)) {
-      snprintf(state->edits.status, sizeof(state->edits.status), "%s",
-               physics_root_error ? physics_root_error
-                                  : "Invalid physics asset root");
+      string_format(state->edits.status, sizeof(state->edits.status), "%s",
+                    physics_root_error ? physics_root_error
+                                       : "Invalid physics asset root");
     } else if (load->overlay) {
       /* A rejected overlay has set the journal's status; steps then find
          nothing to apply. */
       (void)vkr_scene_edit_overlay_begin(&state->edits, scene, load->overlay);
     } else if (state->sidecar_path[0]) {
       /* No worker took the read. */
-      (void)vkr_scene_edit_load(&state->edits, scene,
-                                string8_create((uint8_t *)state->sidecar_path,
-                                               strlen(state->sidecar_path)));
+      (void)vkr_scene_edit_load(
+          &state->edits, scene,
+          string8_create((uint8_t *)state->sidecar_path,
+                         string_length(state->sidecar_path)));
     }
   }
   if (load->overlay &&
@@ -2348,8 +2351,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
       }
       log_error("Scene load failed for '%s': %s", string8_cstr(&scene_path),
                 string8_cstr(&err));
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Scene load failed: %.*s", (int)err.length, err.str);
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "Scene load failed: %.*s", (int)err.length, err.str);
       state->scene_load_terminal_logged = true_v;
     }
     return false_v;
@@ -2381,8 +2384,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
         log_error("Scene handle resolve failed for '%s'",
                   string8_cstr(&scene_path));
         /* The status ends the editor's wait for the scene. */
-        snprintf(state->scene_status, sizeof(state->scene_status),
-                 "Scene load failed: the loaded scene could not be resolved");
+        string_format(
+            state->scene_status, sizeof(state->scene_status),
+            "Scene load failed: the loaded scene could not be resolved");
         state->scene_load_terminal_logged = true_v;
       }
       return false_v;
@@ -2396,8 +2400,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_try_activate_scene_resource(
     if (!state->scene_load_terminal_logged) {
       log_error("Scene '%s' is marked ready but scene pointer is null",
                 string8_cstr(&scene_path));
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Scene load failed: the loaded scene holds no scene");
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "Scene load failed: the loaded scene holds no scene");
       state->scene_load_terminal_logged = true_v;
     }
     return false_v;
@@ -2504,8 +2508,8 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
       vkr_allocator_begin_scope(application->frame_allocator);
   if (!vkr_allocator_scope_is_valid(&load_scope)) {
     log_error("Failed to create scene load scratch scope");
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Scene load failed: no scratch memory to start it");
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Scene load failed: no scratch memory to start it");
     return;
   }
 
@@ -2516,7 +2520,7 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
   (void)vkr_scene_edit_peek_settings(
       application->frame_allocator,
       string8_create_from_cstr((const uint8_t *)state->sidecar_path,
-                               strlen(state->sidecar_path)),
+                               string_length(state->sidecar_path)),
       &scene_settings);
   state->scene_texture_extent = scene_settings.texture_max_extent;
   sample_apply_texture_limit(application);
@@ -2530,8 +2534,8 @@ vkr_internal void vkr_standard_scene_runtime_init_scene_system(
     log_error("Failed to load scene '%s': %s", string8_cstr(&scene_path),
               string8_cstr(&err_str));
     /* The status ends the editor's wait for the scene. */
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Scene load failed: %.*s", (int)err_str.length, err_str.str);
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Scene load failed: %.*s", (int)err_str.length, err_str.str);
     sample_overlay_discard();
     vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return;
@@ -2679,8 +2683,8 @@ vkr_internal void vkr_standard_scene_runtime_update_memory_text(
   char ram[64] = "RAM (resident): unavailable";
   char vram[64] = "GPU memory (managed): unavailable";
   if (vkr_platform_get_process_resident_memory(&resident_bytes))
-    snprintf(ram, sizeof(ram), "RAM (resident): %.1f MiB",
-             (float64_t)resident_bytes / MB(1));
+    string_format(ram, sizeof(ram), "RAM (resident): %.1f MiB",
+                  (float64_t)resident_bytes / MB(1));
   if (have_gpu) {
     /* Metal charges native heaps, external resources and transfer rings to
        one managed budget. Vulkan heap usage is device-wide; use this
@@ -2688,12 +2692,12 @@ vkr_internal void vkr_standard_scene_runtime_update_memory_text(
     const bool8_t metal =
         application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
     const uint64_t gpu_bytes = metal ? gpu.heap_usage_bytes[0] : gpu.live_bytes;
-    snprintf(vram, sizeof(vram), "GPU memory (managed): %s%.1f MiB",
-             (metal || gpu.live_totals_exact) ? "" : "~",
-             (float64_t)gpu_bytes / MB(1));
+    string_format(vram, sizeof(vram), "GPU memory (managed): %s%.1f MiB",
+                  (metal || gpu.live_totals_exact) ? "" : "~",
+                  (float64_t)gpu_bytes / MB(1));
   }
-  snprintf(state->system_text, sizeof(state->system_text), "%s\n%s\n%s",
-           state->hardware_text, ram, vram);
+  string_format(state->system_text, sizeof(state->system_text), "%s\n%s\n%s",
+                state->hardware_text, ram, vram);
   if (complete && have_gpu) {
     uint64_t logical_live = 0u;
     for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner)
@@ -2826,7 +2830,7 @@ static void sample_orthographic_input(VkrStandardSceneRuntime *application,
   if (wheel != 0 && (hovered || captured)) {
     const float32_t old_height = camera->top_clip - camera->bottom_clip;
     const float32_t new_height = vkr_clamp_f32(
-        old_height * expf(-(float32_t)wheel * 0.12f), 0.01f, 100000.0f);
+        old_height * vkr_exp_f32(-(float32_t)wheel * 0.12f), 0.01f, 100000.0f);
     const float32_t ratio = new_height / old_height;
     camera->left_clip *= ratio;
     camera->right_clip *= ratio;
@@ -2905,8 +2909,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_handle_hotkeys(
       input_is_key_up(state->input_state, KEY_U) &&
       input_was_key_down(state->input_state, KEY_U)) {
     if (state->edits.revision != state->edits.saved_revision) {
-      snprintf(state->edits.status, sizeof(state->edits.status),
-               "Save edits before unloading the scene.");
+      string_format(state->edits.status, sizeof(state->edits.status),
+                    "Save edits before unloading the scene.");
       log_warn("Save editor overrides before unloading the scene");
     } else {
       sample_warm_hold_release(application, false_v);
@@ -3251,7 +3255,7 @@ static void sample_track_context_click(VkrStandardSceneRuntime *application,
   int32_t dx = 0;
   int32_t dy = 0;
   input_get_mouse_delta(input, &dx, &dy);
-  state->context_motion += abs(dx) + abs(dy);
+  state->context_motion += vkr_abs_i32(dx) + vkr_abs_i32(dy);
   static const Keys flight[] = {KEY_W, KEY_A, KEY_S, KEY_D, KEY_Q, KEY_E};
   for (uint32_t i = 0; i < ArrayCount(flight); ++i) {
     if (input_is_key_down(input, flight[i])) {
@@ -3577,29 +3581,31 @@ static void sample_io_request(VkrStandardSceneRuntime *application,
   VkrIoValue value = {0};
   const VkrIoPort *port = NULL;
   if (!state->scripts.started) {
-    snprintf(result->message, sizeof(result->message),
-             "Inputs reach entities only while the game plays");
+    string_format(result->message, sizeof(result->message),
+                  "Inputs reach entities only while the game plays");
   } else if (!scene ||
              !vkr_io_find_input(
                  scene, request->target,
                  string8_create_from_cstr((const uint8_t *)request->input,
-                                          strlen(request->input)),
+                                          string_length(request->input)),
                  &input) ||
              !(port = vkr_io_endpoint_port(input))) {
-    snprintf(result->message, sizeof(result->message),
-             "The entity has no input '%s'", request->input);
+    string_format(result->message, sizeof(result->message),
+                  "The entity has no input '%s'", request->input);
   } else if (request->value[0] &&
              !vkr_io_parse_value(scene, port->kind, request->value, &value)) {
-    snprintf(result->message, sizeof(result->message),
-             "'%s' is not a value for '%s'", request->value, port->name);
+    string_format(result->message, sizeof(result->message),
+                  "'%s' is not a value for '%s'", request->value, port->name);
   } else if (!vkr_script_host_io_send(&state->scripts, request->target, input,
                                       request->value[0] ? &value : NULL)) {
-    snprintf(result->message, sizeof(result->message), "%s",
-             state->scripts.io.faulted ? state->scripts.io.error
-                                       : "The input could not be delivered");
+    string_format(result->message, sizeof(result->message), "%s",
+                  state->scripts.io.faulted
+                      ? state->scripts.io.error
+                      : "The input could not be delivered");
   } else {
     result->ok = true_v;
-    snprintf(result->message, sizeof(result->message), "Sent %s", port->name);
+    string_format(result->message, sizeof(result->message), "Sent %s",
+                  port->name);
   }
 }
 
@@ -3624,8 +3630,9 @@ static void sample_scripts_start(VkrStandardSceneRuntime *application) {
                                             state->gameplay_enabled};
   if (!scene || !vkr_script_host_start(&state->scripts, &session, &error)) {
     application->editor_viewport.simulation_running = false_v;
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Scripts failed to start: %s", error ? error : "unknown error");
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Scripts failed to start: %s",
+                  error ? error : "unknown error");
     log_error("%s", state->scene_status);
     return;
   }
@@ -3649,8 +3656,8 @@ static void sample_script_result(VkrStandardSceneRuntime *application,
         &state->script_results[state->script_result_count++];
     *out = (VkrSampleScriptResult){.serial = ++state->script_result_serial,
                                    .result = result};
-    snprintf(out->name, sizeof(out->name), "%s", name);
-    snprintf(out->message, sizeof(out->message), "%s", error ? error : "");
+    string_format(out->name, sizeof(out->name), "%s", name);
+    string_format(out->message, sizeof(out->message), "%s", error ? error : "");
   }
   if (result != VKR_SCRIPT_RELOAD_FAILED) {
     /* Scenes already loaded learn the component types of modules the load
@@ -3734,7 +3741,7 @@ static void sample_scripts_join(void) {
 static bool8_t sample_script_library_open(const char *name) {
   for (uint32_t i = 0; i < state->scripts.library_count; ++i) {
     const VkrScriptLibrary *library = &state->scripts.libraries[i];
-    if (!strcmp(library->name, name)) {
+    if (string_equals(library->name, name)) {
       return library->handle.handle != NULL;
     }
   }
@@ -3824,7 +3831,8 @@ static void sample_script_request(VkrStandardSceneRuntime *application,
     SampleScriptPending *slot = NULL;
     for (uint32_t p = 0; p < VKR_SAMPLE_SCRIPT_LOAD_MAX && !slot; ++p) {
       SampleScriptPending *pending = &state->script_pending[p];
-      if (pending->active && !strcmp(pending->prepared.name, load->name)) {
+      if (pending->active &&
+          string_equals(pending->prepared.name, load->name)) {
         /* The newest request replaces any queued one. */
         pending->queued = true_v;
         pending->next = *load;
@@ -3918,8 +3926,8 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
     if (!reason) {
       reason = vkr_scene_physics_error(scene);
     }
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Simulation stopped: %s", reason ? reason : "paused");
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Simulation stopped: %s", reason ? reason : "paused");
     log_error("%s", state->scene_status);
   }
   frame.simulation_running = application->editor_viewport.simulation_running;
@@ -3953,24 +3961,24 @@ static void sample_partition_open(VkrScene *scene) {
   char root[1024];
   const char *path = state->scene_path_storage;
   const bool8_t absolute = path[0] == '/' || path[0] == '\\' ||
-                           (strlen(path) > 1u && path[1] == ':');
-  size_t length = strlen(path);
-  if (length > 5u && strcmp(path + length - 5u, ".json") == 0) {
+                           (string_length(path) > 1u && path[1] == ':');
+  size_t length = string_length(path);
+  if (length > 5u && string_equals(path + length - 5u, ".json")) {
     length -= 5u;
   }
   const int written =
-      snprintf(root, sizeof(root), "%s%.*s.cells",
-               absolute ? "" : vkr_content_root(), (int)length, path);
+      string_format(root, sizeof(root), "%s%.*s.cells",
+                    absolute ? "" : vkr_content_root(), (int)length, path);
   vkr_scene_edit_set_cells_root(
       &state->edits,
       length && written > 0 && (size_t)written < sizeof(root)
-          ? string8_create_from_cstr((const uint8_t *)root, strlen(root))
+          ? string8_create_from_cstr((const uint8_t *)root, string_length(root))
           : (String8){0});
   state->partition_revision = UINT64_MAX;
   state->partition_proxy_stamp = 0u;
   if (!vkr_scene_edit_cells_open(&state->edits, scene)) {
-    snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-             state->edits.status);
+    string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                  state->edits.status);
   }
 }
 
@@ -3990,10 +3998,12 @@ static void sample_partition_routed(bool8_t changed) {
 static void sample_partition_proxies(VkrScene *scene,
                                      const SceneWorldPartition *settings) {
   char directory[1100];
-  snprintf(directory, sizeof(directory), "%s/proxies", state->edits.cells_root);
-  const FilePath proxies = {.path = string8_create_from_cstr(
-                                (const uint8_t *)directory, strlen(directory)),
-                            .type = FILE_PATH_TYPE_ABSOLUTE};
+  string_format(directory, sizeof(directory), "%s/proxies",
+                state->edits.cells_root);
+  const FilePath proxies = {
+      .path = string8_create_from_cstr((const uint8_t *)directory,
+                                       string_length(directory)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
   FileStats stats = {0};
   const uint64_t stamp = file_stats(&proxies, &stats) == FILE_ERROR_NONE
                              ? stats.last_modified + 1u
@@ -4018,25 +4028,26 @@ static void sample_partition_proxies(VkrScene *scene,
       continue;
     }
     char path[1100];
-    snprintf(path, sizeof(path), "%s/proxies/%d_%d/proxy.vkb",
-             state->edits.cells_root, record->cell.x, record->cell.z);
-    FILE *file = file_fopen(path, "rb");
-    if (!file) {
+    string_format(path, sizeof(path), "%s/proxies/%d_%d/proxy.vkb",
+                  state->edits.cells_root, record->cell.x, record->cell.z);
+    const FilePath proxy_file = file_path_view(path);
+    if (!file_exists(&proxy_file)) {
       record->flags |= VKR_SCENE_PARTITION_CELL_NO_PROXY;
       continue;
     }
-    fclose(file);
     const VkrEntityId proxy = vkr_scene_create_entity(scene, NULL);
     const char *error = NULL;
-    const VkrSceneModelDesc desc = {.mesh_path = string8_create_from_cstr(
-                                        (const uint8_t *)path, strlen(path))};
+    const VkrSceneModelDesc desc = {
+        .mesh_path = string8_create_from_cstr((const uint8_t *)path,
+                                              string_length(path))};
     char name[64];
-    snprintf(name, sizeof(name), "Proxy %d,%d", record->cell.x, record->cell.z);
+    string_format(name, sizeof(name), "Proxy %d,%d", record->cell.x,
+                  record->cell.z);
     const bool8_t ok =
         proxy.u64 && vkr_scene_set_transient(scene, proxy) &&
-        vkr_scene_set_name(
-            scene, proxy,
-            string8_create_from_cstr((const uint8_t *)name, strlen(name))) &&
+        vkr_scene_set_name(scene, proxy,
+                           string8_create_from_cstr((const uint8_t *)name,
+                                                    string_length(name))) &&
         vkr_scene_set_transform(
             scene, proxy,
             vec3_sub(vec3_new((float32_t)record->cell.x * settings->cell_size,
@@ -4073,8 +4084,8 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
   if (state->partition_revision != edits->revision ||
       state->partition_structure != scene->structure_revision) {
     if (!vkr_scene_edit_cells_track(edits, scene)) {
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               edits->status);
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    edits->status);
     }
     state->partition_revision = edits->revision;
     state->partition_structure = scene->structure_revision;
@@ -4102,8 +4113,8 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
     if (!vkr_scene_edit_cell_load(edits, scene, plan.load[i])) {
       /* An unreadable document stays unloaded, and listed, rather than
          retried each frame; the status says which. */
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               edits->status);
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    edits->status);
     }
   }
   sample_partition_routed(structure != scene->structure_revision);
@@ -4120,8 +4131,8 @@ static void sample_partition_request(VkrScene *scene,
   VkrSceneEditState *edits = &state->edits;
   SceneWorldPartition settings;
   if (!vkr_scene_partition_settings(scene, &settings)) {
-    snprintf(edits->status, sizeof(edits->status),
-             "The scene has no world partition.");
+    string_format(edits->status, sizeof(edits->status),
+                  "The scene has no world partition.");
     return;
   }
   const int32_t *range = request->partition_cells;
@@ -4133,9 +4144,9 @@ static void sample_partition_request(VkrScene *scene,
         ((int64_t)range[2] - range[0] + 1) * ((int64_t)range[3] - range[1] + 1);
     if (range[2] < range[0] || range[3] < range[1] ||
         area > VKR_SAMPLE_PARTITION_REQUEST_MAX) {
-      snprintf(edits->status, sizeof(edits->status),
-               "Load at most %u cells at once.",
-               VKR_SAMPLE_PARTITION_REQUEST_MAX);
+      string_format(edits->status, sizeof(edits->status),
+                    "Load at most %u cells at once.",
+                    VKR_SAMPLE_PARTITION_REQUEST_MAX);
       return;
     }
     for (int32_t z = range[1]; z <= range[3]; ++z) {
@@ -4151,9 +4162,9 @@ static void sample_partition_request(VkrScene *scene,
         }
       }
     }
-    snprintf(edits->status, sizeof(edits->status),
-             "Loaded %u cells for editing%s.", changed,
-             kept ? "; some documents are unreadable" : "");
+    string_format(edits->status, sizeof(edits->status),
+                  "Loaded %u cells for editing%s.", changed,
+                  kept ? "; some documents are unreadable" : "");
   } else {
     uint32_t count = 0u;
     vkr_scene_partition_cells(scene, &count);
@@ -4175,9 +4186,9 @@ static void sample_partition_request(VkrScene *scene,
         kept++;
       }
     }
-    snprintf(edits->status, sizeof(edits->status),
-             "Unloaded %u cells; %u keep unsaved or undoable edits.", changed,
-             kept);
+    string_format(edits->status, sizeof(edits->status),
+                  "Unloaded %u cells; %u keep unsaved or undoable edits.",
+                  changed, kept);
   }
   sample_partition_routed(structure != scene->structure_revision);
 }
@@ -4290,15 +4301,15 @@ static void sample_rebase(VkrStandardSceneRuntime *application) {
       &application->camera_system, application->active_camera);
   if (!camera || !application->active_scene ||
       !application->editor_viewport.simulation_running ||
-      (fabsf(camera->position.x) <= VKR_SAMPLE_REBASE_DISTANCE &&
-       fabsf(camera->position.z) <= VKR_SAMPLE_REBASE_DISTANCE)) {
+      (vkr_abs_f32(camera->position.x) <= VKR_SAMPLE_REBASE_DISTANCE &&
+       vkr_abs_f32(camera->position.z) <= VKR_SAMPLE_REBASE_DISTANCE)) {
     return;
   }
   const Vec3 shift =
-      vec3_new(roundf(camera->position.x / VKR_SAMPLE_REBASE_STEP) *
+      vec3_new(vkr_round_f32(camera->position.x / VKR_SAMPLE_REBASE_STEP) *
                    VKR_SAMPLE_REBASE_STEP,
                0.0f,
-               roundf(camera->position.z / VKR_SAMPLE_REBASE_STEP) *
+               vkr_round_f32(camera->position.z / VKR_SAMPLE_REBASE_STEP) *
                    VKR_SAMPLE_REBASE_STEP);
   sample_rebase_shift(application, shift);
   const Vec3 offset = application->active_scene->origin_offset;
@@ -4446,9 +4457,9 @@ vkr_standard_scene_runtime_update_scene(VkrStandardSceneRuntime *application,
                                        state->physics_sensor_events,
                                        ArrayCount(state->physics_sensor_events),
                                        &state->physics_sensor_event_count)) {
-    snprintf(state->edits.status, sizeof(state->edits.status),
-             "Physics sensor event drain failed: %s",
-             vkr_scene_physics_error(application->active_scene));
+    string_format(state->edits.status, sizeof(state->edits.status),
+                  "Physics sensor event drain failed: %s",
+                  vkr_scene_physics_error(application->active_scene));
   }
 
   /* The outline follows the selection even where the gizmo cannot edit;
@@ -4653,8 +4664,8 @@ static void sample_grid_fit_begin(VkrStandardSceneRuntime *application,
   if (!camera || !info.has_target_coords ||
       !vkr_standard_scene_runtime_build_view_ray(camera, info.position, &origin,
                                                  &direction)) {
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "The Scene view is not available");
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "The Scene view is not available");
     log_info("Grid fit: %s", state->grid_status);
     return;
   }
@@ -4682,8 +4693,8 @@ static void sample_grid_fit_begin(VkrStandardSceneRuntime *application,
   }
   if (found) {
     state->view_state.grid_height = vkr_clamp_f32(height, -10000.0f, 10000.0f);
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "Grid at %.2f m from collision", (double)height);
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "Grid at %.2f m from collision", (double)height);
     log_info("Grid fit: %s", state->grid_status);
     return;
   }
@@ -4691,8 +4702,8 @@ static void sample_grid_fit_begin(VkrStandardSceneRuntime *application,
   VkrPickingContext *picking = &application->picking;
   if (!picking->initialized || state->gizmo_drag.pending_pick ||
       state->grid_fit_pending) {
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "Picking is busy; try again");
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "Picking is busy; try again");
     log_info("Grid fit: %s", state->grid_status);
     return;
   }
@@ -4706,8 +4717,8 @@ static void sample_grid_fit_begin(VkrStandardSceneRuntime *application,
     vkr_picking_resize(picking, info.target_width, info.target_height);
   }
   if (info.target_x >= picking->width || info.target_y >= picking->height) {
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "The Scene view is not available");
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "The Scene view is not available");
     log_info("Grid fit: %s", state->grid_status);
     return;
   }
@@ -4720,8 +4731,8 @@ static void sample_grid_fit_begin(VkrStandardSceneRuntime *application,
   state->grid_fit_started = vkr_platform_get_absolute_time();
   vkr_picking_request(picking, info.target_x, info.target_y);
   state->grid_fit_pending = true_v;
-  snprintf(state->grid_status, sizeof(state->grid_status),
-           "Reading the surface under the view");
+  string_format(state->grid_status, sizeof(state->grid_status),
+                "Reading the surface under the view");
   log_info("Grid fit: %s", state->grid_status);
 }
 
@@ -4741,16 +4752,16 @@ static bool8_t sample_grid_fit_update(VkrStandardSceneRuntime *application) {
     }
     vkr_picking_cancel(picking);
     state->grid_fit_pending = false_v;
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "The surface read timed out; try again");
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "The surface read timed out; try again");
     log_info("Grid fit: %s", state->grid_status);
     return true_v;
   }
   state->grid_fit_pending = false_v;
   /* Reversed depth 0 is the far plane: the pixel shows only sky. */
   if (!result.has_depth || !(result.depth > 0.0f && result.depth <= 1.0f)) {
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "No surface under the view centre");
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "No surface under the view centre");
     log_info("Grid fit: %s", state->grid_status);
     return true_v;
   }
@@ -4758,17 +4769,18 @@ static bool8_t sample_grid_fit_update(VkrStandardSceneRuntime *application) {
       mat4_mul_vec4(state->grid_fit_inverse_view_projection,
                     vec4_new(state->grid_fit_ndc.x, state->grid_fit_ndc.y,
                              result.depth, 1.0f));
-  const float32_t height =
-      vkr_abs_f32(world.w) > VKR_FLOAT_EPSILON ? world.y / world.w : NAN;
-  if (!isfinite(height)) {
-    snprintf(state->grid_status, sizeof(state->grid_status),
-             "No surface under the view centre");
+  const float32_t height = vkr_abs_f32(world.w) > VKR_FLOAT_EPSILON
+                               ? world.y / world.w
+                               : VKR_FLOAT_NAN;
+  if (!vkr_is_finite_f32(height)) {
+    string_format(state->grid_status, sizeof(state->grid_status),
+                  "No surface under the view centre");
     log_info("Grid fit: %s", state->grid_status);
     return true_v;
   }
   state->view_state.grid_height = vkr_clamp_f32(height, -10000.0f, 10000.0f);
-  snprintf(state->grid_status, sizeof(state->grid_status),
-           "Grid at %.2f m from the visible surface", (double)height);
+  string_format(state->grid_status, sizeof(state->grid_status),
+                "Grid at %.2f m from the visible surface", (double)height);
   log_info("Grid fit: %s", state->grid_status);
   return true_v;
 }
@@ -5296,7 +5308,7 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
     grid.height = plane == VKR_EDITOR_GRID_PLANE_ZY ? focus.x : focus.z;
   }
   if (grid.enabled && view->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE) {
-    const float32_t height = fabsf(camera->position.y - grid.height);
+    const float32_t height = vkr_abs_f32(camera->position.y - grid.height);
     grid.fade_end = Max(grid.cell_size * 150.0f, height * 60.0f);
     grid.fade_start = grid.fade_end * 0.35f;
   }
@@ -5305,18 +5317,20 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
 
 float32_t vkr_sample_camera_speed_fraction(float32_t speed) {
   return vkr_clamp_f32(
-      logf(Max(speed, 1e-6f) / VKR_SAMPLE_CAMERA_SPEED_MIN) /
-          logf(VKR_SAMPLE_CAMERA_SPEED_MAX / VKR_SAMPLE_CAMERA_SPEED_MIN),
+      vkr_log_f32(Max(speed, 1e-6f) / VKR_SAMPLE_CAMERA_SPEED_MIN) /
+          vkr_log_f32(VKR_SAMPLE_CAMERA_SPEED_MAX /
+                      VKR_SAMPLE_CAMERA_SPEED_MIN),
       0.0f, 1.0f);
 }
 
 float32_t vkr_sample_camera_speed_value(float32_t fraction) {
   const float32_t speed =
       VKR_SAMPLE_CAMERA_SPEED_MIN *
-      powf(VKR_SAMPLE_CAMERA_SPEED_MAX / VKR_SAMPLE_CAMERA_SPEED_MIN,
-           vkr_clamp_f32(fraction, 0.0f, 1.0f));
-  const float32_t unit = powf(10.0f, floorf(log10f(speed)) - 1.0f);
-  return roundf(speed / unit) * unit;
+      vkr_pow_f32(VKR_SAMPLE_CAMERA_SPEED_MAX / VKR_SAMPLE_CAMERA_SPEED_MIN,
+                  vkr_clamp_f32(fraction, 0.0f, 1.0f));
+  const float32_t unit =
+      vkr_pow_f32(10.0f, vkr_floor_f32(vkr_log10_f32(speed)) - 1.0f);
+  return vkr_round_f32(speed / unit) * unit;
 }
 
 float32_t vkr_sample_camera_speed_step(float32_t speed, float32_t wheel_lines) {
@@ -5332,12 +5346,14 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
   VkrSampleViewState next = request->value;
   if ((uint32_t)next.camera_view >= VKR_SAMPLE_CAMERA_VIEW_COUNT ||
       (uint32_t)next.render_mode >= VKR_RENDER_MODE_COUNT ||
-      !isfinite(next.grid_spacing) || next.grid_spacing <= 0.0f ||
-      !isfinite(next.grid_height) || next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
+      !vkr_is_finite_f32(next.grid_spacing) || next.grid_spacing <= 0.0f ||
+      !vkr_is_finite_f32(next.grid_height) ||
+      next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
       next.gizmo_space > VKR_GIZMO_SPACE_LOCAL || next.collision_display > 2u ||
       (next.hidden_kinds & ~VKR_SCENE_SHOW_HIDE_ALL) ||
-      !isfinite(next.camera_speed) || next.camera_speed <= 0.0f ||
-      !isfinite(next.camera_sensitivity) || next.camera_sensitivity <= 0.0f) {
+      !vkr_is_finite_f32(next.camera_speed) || next.camera_speed <= 0.0f ||
+      !vkr_is_finite_f32(next.camera_sensitivity) ||
+      next.camera_sensitivity <= 0.0f) {
     return;
   }
   next.grid_spacing = vkr_clamp_f32(next.grid_spacing, 0.001f, 10000.0f);
@@ -5565,8 +5581,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .cull_report_request = &requests->cull_report_request,
       .cull_report = application->cull_report,
       .cull_report_serial = application->cull_report_serial,
-      .grid_status = string8_create_from_cstr(
-          (const uint8_t *)state->grid_status, strlen(state->grid_status)),
+      .grid_status =
+          string8_create_from_cstr((const uint8_t *)state->grid_status,
+                                   string_length(state->grid_status)),
       .scene_generation = application->scene_generation,
       .scene_frames = application->scene_frames_submitted,
       .present_frames = application->present_frames_submitted,
@@ -5583,8 +5600,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .world = application->world_scene,
       .world_edits = &state->world_edits,
       .world_request = &requests->world_request,
-      .world_status = string8_create_from_cstr(
-          (const uint8_t *)state->world_status, strlen(state->world_status)),
+      .world_status =
+          string8_create_from_cstr((const uint8_t *)state->world_status,
+                                   string_length(state->world_status)),
       .world_loading = state->world_pending,
       .runtime_preferences = sample_preferences_snapshot(application),
       .scene_recall = sample_recall_snapshot(application),
@@ -5593,8 +5611,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .close_response = &requests->close_response,
       .quit_request = &requests->quit,
       .scene_path = state->scene_path,
-      .scene_status = string8_create_from_cstr(
-          (const uint8_t *)state->scene_status, strlen(state->scene_status)),
+      .scene_status =
+          string8_create_from_cstr((const uint8_t *)state->scene_status,
+                                   string_length(state->scene_status)),
       /* A scene whose Custom material graphs are still creating their
          pipelines draws their fallback, so it still loads (ADR-096). */
       .scene_loading = (state->scene_load_timer_active &&
@@ -5622,7 +5641,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       frame.additive_edits[i] = &state->additive_edits[i];
       frame.additive_names[i] =
           string8_create_from_cstr((const uint8_t *)state->additive_paths[i],
-                                   strlen(state->additive_paths[i]));
+                                   string_length(state->additive_paths[i]));
     }
   }
   if (application->editor_viewport.enabled) {
@@ -5660,7 +5679,7 @@ static bool8_t sample_world_dirty(void) {
 
 static String8 sample_world_document(void) {
   return string8_create_from_cstr((const uint8_t *)state->world_path,
-                                  strlen(state->world_path));
+                                  string_length(state->world_path));
 }
 
 /* Waits for GPU work before release: with no scene loaded the World renders
@@ -5714,7 +5733,7 @@ vkr_internal void sample_world_activate(VkrStandardSceneRuntime *application,
     (void)vkr_scene_edit_load(
         &state->world_edits, world,
         string8_create_from_cstr((const uint8_t *)state->world_sidecar,
-                                 strlen(state->world_sidecar)));
+                                 string_length(state->world_sidecar)));
   }
   /* The World owns collision layers: loaded scenes take its settings. */
   (void)vkr_scene_collision_layers_share(world, NULL);
@@ -5737,8 +5756,8 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
                                        bool8_t reload) {
   if (path.length >= sizeof(state->world_path) ||
       sidecar.length >= sizeof(state->world_sidecar)) {
-    snprintf(state->world_status, sizeof(state->world_status),
-             "World path is too long.");
+    string_format(state->world_status, sizeof(state->world_status),
+                  "World path is too long.");
     return false_v;
   }
   sample_world_unload(application);
@@ -5756,8 +5775,8 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
         vkr_scene_handle_create(&application->assets.allocator,
                                 VKR_SCENE_WORLD_ROOT_ID, 64u, 64u, &error);
     if (!handle) {
-      snprintf(state->world_status, sizeof(state->world_status),
-               "World could not be created (%d).", (int)error);
+      string_format(state->world_status, sizeof(state->world_status),
+                    "World could not be created (%d).", (int)error);
       return false_v;
     }
     sample_world_activate(application, handle);
@@ -5765,8 +5784,8 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
   }
   if (!vkr_scene_loader_request_container(&application->assets, document,
                                           VKR_SCENE_WORLD_ROOT_ID)) {
-    snprintf(state->world_status, sizeof(state->world_status),
-             "Too many scene container requests to load the World.");
+    string_format(state->world_status, sizeof(state->world_status),
+                  "Too many scene container requests to load the World.");
     return false_v;
   }
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -5777,9 +5796,9 @@ vkr_internal bool8_t sample_world_load(VkrStandardSceneRuntime *application,
                                              0u);
     state->world_resource = (VkrResourceHandleInfo){0};
     const String8 message = vkr_renderer_get_error_string(error);
-    snprintf(state->world_status, sizeof(state->world_status),
-             "World document could not be loaded: %.*s", (int)message.length,
-             message.str);
+    string_format(state->world_status, sizeof(state->world_status),
+                  "World document could not be loaded: %.*s",
+                  (int)message.length, message.str);
     return false_v;
   }
   state->world_pending = true_v;
@@ -5800,9 +5819,9 @@ vkr_internal void sample_world_update(VkrStandardSceneRuntime *application,
         load == VKR_RESOURCE_LOAD_STATE_CANCELED) {
       const String8 message = vkr_renderer_get_error_string(error);
       sample_world_unload(application);
-      snprintf(state->world_status, sizeof(state->world_status),
-               "World document could not be loaded: %.*s", (int)message.length,
-               message.str);
+      string_format(state->world_status, sizeof(state->world_status),
+                    "World document could not be loaded: %.*s",
+                    (int)message.length, message.str);
     } else if (load == VKR_RESOURCE_LOAD_STATE_READY &&
                vkr_resource_system_try_get_resolved(&state->world_resource,
                                                     &resolved) &&
@@ -5827,9 +5846,9 @@ vkr_internal void sample_world_save(void) {
   if (!vkr_scene_edit_save(
           &state->world_edits, vkr_scene_handle_get_scene(state->world_handle),
           string8_create_from_cstr((const uint8_t *)state->world_sidecar,
-                                   strlen(state->world_sidecar)))) {
-    snprintf(state->world_status, sizeof(state->world_status), "%s",
-             state->world_edits.status);
+                                   string_length(state->world_sidecar)))) {
+    string_format(state->world_status, sizeof(state->world_status), "%s",
+                  state->world_edits.status);
   }
 }
 
@@ -5840,8 +5859,8 @@ vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
   }
   if ((request->load || request->unload) && sample_world_dirty() &&
       !request->discard_edits) {
-    snprintf(state->world_status, sizeof(state->world_status),
-             "Save or discard World edits first.");
+    string_format(state->world_status, sizeof(state->world_status),
+                  "Save or discard World edits first.");
     return;
   }
   /* Closing a project closes every container: added scenes go with the
@@ -5849,8 +5868,8 @@ vkr_internal void sample_world_request(VkrStandardSceneRuntime *application,
   if (request->unload || (request->load && !request->reload)) {
     for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
       if (sample_additive_dirty(i) && !request->discard_edits) {
-        snprintf(state->world_status, sizeof(state->world_status),
-                 "Save or discard added scene edits first.");
+        string_format(state->world_status, sizeof(state->world_status),
+                      "Save or discard added scene edits first.");
         return;
       }
     }
@@ -5927,7 +5946,7 @@ static uint32_t sample_additive_slot(VkrEntityId entity) {
 
 static String8 sample_additive_path(uint32_t slot) {
   return string8_create_from_cstr((const uint8_t *)state->additive_paths[slot],
-                                  strlen(state->additive_paths[slot]));
+                                  string_length(state->additive_paths[slot]));
 }
 
 /* Releases a slot's scene and resource after GPU work that may use its
@@ -5966,10 +5985,10 @@ vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     const bool8_t used =
         state->additive_handles[i] || state->additive_pending[i];
-    if (used && strlen(state->additive_paths[i]) == path.length &&
+    if (used && string_length(state->additive_paths[i]) == path.length &&
         MemCompare(state->additive_paths[i], path.str, path.length) == 0) {
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "That scene is already added.");
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "That scene is already added.");
       return false_v;
     }
     if (!used && slot == VKR_SCENE_ADDITIVE_MAX) {
@@ -5977,8 +5996,8 @@ vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
     }
   }
   if (slot == VKR_SCENE_ADDITIVE_MAX) {
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "At most %u scenes can be added.", VKR_SCENE_ADDITIVE_MAX);
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "At most %u scenes can be added.", VKR_SCENE_ADDITIVE_MAX);
     return false_v;
   }
   /* A path is one resource: the active scene cannot also be added. */
@@ -5986,8 +6005,8 @@ vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
       sidecar.length >= sizeof(state->additive_sidecars[slot]) ||
       (state->scene_path.length == path.length &&
        MemCompare(state->scene_path.str, path.str, path.length) == 0)) {
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Invalid additive scene path, or it is the active scene.");
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Invalid additive scene path, or it is the active scene.");
     return false_v;
   }
   MemZero(state->additive_paths[slot], sizeof(state->additive_paths[slot]));
@@ -5999,8 +6018,8 @@ vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
   if (!vkr_scene_loader_request_container(&application->assets, stored,
                                           (uint16_t)(slot + 1u))) {
     state->additive_paths[slot][0] = '\0';
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Too many additive scene requests.");
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Too many additive scene requests.");
     return false_v;
   }
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -6010,9 +6029,9 @@ vkr_internal bool8_t sample_additive_add(VkrStandardSceneRuntime *application,
     (void)vkr_scene_loader_request_container(&application->assets, stored, 0u);
     state->additive_paths[slot][0] = '\0';
     const String8 message = vkr_renderer_get_error_string(error);
-    snprintf(state->scene_status, sizeof(state->scene_status),
-             "Additive scene load failed: %.*s", (int)message.length,
-             message.str);
+    string_format(state->scene_status, sizeof(state->scene_status),
+                  "Additive scene load failed: %.*s", (int)message.length,
+                  message.str);
     return false_v;
   }
   state->additive_pending[slot] = true_v;
@@ -6031,9 +6050,9 @@ vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application) {
     if (load == VKR_RESOURCE_LOAD_STATE_FAILED ||
         load == VKR_RESOURCE_LOAD_STATE_CANCELED) {
       const String8 message = vkr_renderer_get_error_string(error);
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Additive scene load failed: %.*s", (int)message.length,
-               message.str);
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "Additive scene load failed: %.*s", (int)message.length,
+                    message.str);
       sample_additive_remove(application, slot);
       continue;
     }
@@ -6058,7 +6077,7 @@ vkr_internal void sample_additive_poll(VkrStandardSceneRuntime *application) {
           &state->additive_edits[slot], scene,
           string8_create_from_cstr(
               (const uint8_t *)state->additive_sidecars[slot],
-              strlen(state->additive_sidecars[slot])));
+              string_length(state->additive_sidecars[slot])));
     }
     sample_additive_publish(application);
   }
@@ -6071,7 +6090,7 @@ vkr_internal void sample_additive_save(void) {
           &state->additive_edits[i],
           vkr_scene_handle_get_scene(state->additive_handles[i]),
           string8_create_from_cstr((const uint8_t *)state->additive_sidecars[i],
-                                   strlen(state->additive_sidecars[i])));
+                                   string_length(state->additive_sidecars[i])));
     }
   }
 }
@@ -6093,8 +6112,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
       return;
     }
     if (sample_additive_dirty(slot) && !scene_request->discard_edits) {
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Save or discard that scene's edits before removing it.");
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "Save or discard that scene's edits before removing it.");
       return;
     }
     sample_additive_remove(application, slot);
@@ -6104,8 +6123,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
     vkr_standard_scene_runtime_finish_gizmo_edit(application);
     if (!scene_request->discard_edits &&
         state->edits.revision != state->edits.saved_revision) {
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Save or discard scene edits before switching.");
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "Save or discard scene edits before switching.");
     } else if (scene_request->path.length >=
                    sizeof(state->scene_path_storage) ||
                (scene_request->asset_root.length &&
@@ -6115,8 +6134,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
                scene_request->sidecar_path.length >=
                    sizeof(state->sidecar_path) ||
                (scene_request->select && !scene_request->path.length)) {
-      snprintf(state->scene_status, sizeof(state->scene_status),
-               "Invalid scene selection or path is too long.");
+      string_format(state->scene_status, sizeof(state->scene_status),
+                    "Invalid scene selection or path is too long.");
     } else {
       /* Snapshot borrowed paths before unloading resets scene-owned storage. */
       char next_path[1024] = {0};
@@ -6126,8 +6145,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
         MemCopy(next_asset_root, scene_request->asset_root.str,
                 scene_request->asset_root.length);
       } else {
-        snprintf(next_asset_root, sizeof(next_asset_root), "%s",
-                 vkr_content_root());
+        string_format(next_asset_root, sizeof(next_asset_root), "%s",
+                      vkr_content_root());
       }
       if (scene_request->path.length) {
         MemCopy(next_path, scene_request->path.str, scene_request->path.length);
@@ -6145,7 +6164,7 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_request(
       MemCopy(state->physics_asset_root, next_asset_root,
               sizeof(next_asset_root));
       state->scene_path = string8_create_from_cstr(
-          (const uint8_t *)state->scene_path_storage, strlen(next_path));
+          (const uint8_t *)state->scene_path_storage, string_length(next_path));
       state->scene_status[0] = '\0';
       scene_edit->action = VKR_SCENE_EDIT_NONE;
       if (scene_request->select) {
@@ -6387,8 +6406,8 @@ static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
     return vkr_scene_edit_terrain(edits, scene, request->entity,
                                   &request->terrain, 0u);
   default:
-    snprintf(edits->status, sizeof(edits->status),
-             "This edit cannot join a batch.");
+    string_format(edits->status, sizeof(edits->status),
+                  "This edit cannot join a batch.");
     return false_v;
   }
 }
@@ -6413,14 +6432,14 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
   VkrScene *scene = NULL;
   VkrSceneEditState *edits = NULL;
   if (!sample_container_edits(application, batch->container, &scene, &edits)) {
-    snprintf(result->message, sizeof(result->message),
-             "That scene is not loaded.");
+    string_format(result->message, sizeof(result->message),
+                  "That scene is not loaded.");
     return;
   }
   if (application->editor_viewport.simulation_running ||
       sample_origin_rebased(application)) {
-    snprintf(result->message, sizeof(result->message),
-             "Stop the simulation before editing the scene.");
+    string_format(result->message, sizeof(result->message),
+                  "Stop the simulation before editing the scene.");
     return;
   }
   if (state->gizmo_drag.active) {
@@ -6437,18 +6456,19 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
       state->selected_entity = VKR_ENTITY_ID_INVALID;
       state->has_selection = false_v;
     }
-    snprintf(result->message, sizeof(result->message), "%s", edits->status);
+    string_format(result->message, sizeof(result->message), "%s",
+                  edits->status);
     return;
   }
   if (batch->count > VKR_SAMPLE_EDIT_BATCH_MAX || !batch->items) {
-    snprintf(result->message, sizeof(result->message),
-             "A batch holds at most %u edits.", VKR_SAMPLE_EDIT_BATCH_MAX);
+    string_format(result->message, sizeof(result->message),
+                  "A batch holds at most %u edits.", VKR_SAMPLE_EDIT_BATCH_MAX);
     return;
   }
   result->group = vkr_scene_edit_group_begin(edits);
   if (!result->group) {
-    snprintf(result->message, sizeof(result->message),
-             "Another edit group is open.");
+    string_format(result->message, sizeof(result->message),
+                  "Another edit group is open.");
     return;
   }
   for (uint32_t i = 0; i < batch->count; ++i) {
@@ -6458,8 +6478,8 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
     /* References name earlier creations only. */
     if ((entity_ref >= 0 && (uint32_t)entity_ref >= i) ||
         (parent_ref >= 0 && (uint32_t)parent_ref >= i)) {
-      snprintf(edits->status, sizeof(edits->status),
-               "Edit %u refers to a later edit.", i);
+      string_format(edits->status, sizeof(edits->status),
+                    "Edit %u refers to a later edit.", i);
       result->failed_index = i;
       break;
     }
@@ -6471,8 +6491,8 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
     }
     if ((entity_ref >= 0 && !request.entity.u64) ||
         (parent_ref >= 0 && !request.parent.u64)) {
-      snprintf(edits->status, sizeof(edits->status),
-               "Edit %u refers to an edit that created nothing.", i);
+      string_format(edits->status, sizeof(edits->status),
+                    "Edit %u refers to an edit that created nothing.", i);
       result->failed_index = i;
       break;
     }
@@ -6483,15 +6503,16 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
     }
   }
   if (result->failed_index != UINT32_MAX) {
-    snprintf(result->message, sizeof(result->message), "%s", edits->status);
+    string_format(result->message, sizeof(result->message), "%s",
+                  edits->status);
     (void)vkr_scene_edit_group_rollback(edits, scene);
     MemZero(result->created, sizeof(result->created));
     return;
   }
   vkr_scene_edit_group_end(edits);
   result->ok = true_v;
-  snprintf(result->message, sizeof(result->message), "Applied %u edits.",
-           batch->count);
+  string_format(result->message, sizeof(result->message), "Applied %u edits.",
+                batch->count);
 }
 
 /* Moves `camera` so the box fills the view: back along its forward axis in
@@ -6503,9 +6524,9 @@ static void sample_frame_box(VkrCamera *camera, Vec3 lower, Vec3 upper) {
                          ? (float32_t)camera->cached_window_width /
                                camera->cached_window_height
                          : 1.0f;
-  float32_t half_angle =
-      atanf(tanf(camera->zoom * 0.0087266463f) * Min(1.0f, aspect));
-  float32_t distance = radius / Max(0.01f, sinf(half_angle)) * 1.1f;
+  float32_t half_angle = vkr_atan_f32(
+      vkr_tan_f32(camera->zoom * 0.0087266463f) * Min(1.0f, aspect));
+  float32_t distance = radius / Max(0.01f, vkr_sin_f32(half_angle)) * 1.1f;
   if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC) {
     const float32_t half_height = radius * 1.1f / Min(1.0f, aspect);
     camera->left_clip = -half_height * aspect;
@@ -6527,8 +6548,9 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
       scene_edit->action != VKR_SCENE_EDIT_SELECT &&
       scene_edit->action != VKR_SCENE_EDIT_FRAME &&
       sample_origin_rebased(application)) {
-    snprintf(state->edits.status, sizeof(state->edits.status),
-             "Reset the simulation to edit or save; the origin is rebased.");
+    string_format(
+        state->edits.status, sizeof(state->edits.status),
+        "Reset the simulation to edit or save; the origin is rebased.");
     return;
   }
   if (sample_structure_edit(application, scene_edit)) {
@@ -6663,9 +6685,10 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
         (void)state->ui.save_scene_edits(state->ui.state, &state->edits, scene,
                                          state->scene_path);
       } else {
-        (void)vkr_scene_edit_save(&state->edits, scene,
-                                  string8_create((uint8_t *)state->sidecar_path,
-                                                 strlen(state->sidecar_path)));
+        (void)vkr_scene_edit_save(
+            &state->edits, scene,
+            string8_create((uint8_t *)state->sidecar_path,
+                           string_length(state->sidecar_path)));
       }
       break;
     case VKR_SCENE_EDIT_FRAME: {
@@ -6740,8 +6763,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     }
     if (!application->editor_viewport.simulation_running && simulated &&
         !vkr_scene_physics_step(simulated, &error)) {
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               error ? error : "Physics step failed.");
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    error ? error : "Physics step failed.");
     }
     break;
   }
@@ -6757,8 +6780,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     sample_rebase_restore(application);
     sample_partition_session(application, false_v);
     if (simulated && !vkr_scene_physics_reset(simulated, &error)) {
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               error ? error : "Physics reset failed.");
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    error ? error : "Physics reset failed.");
     } else {
       application->editor_viewport.simulation_time = 0.0;
     }
@@ -6770,8 +6793,8 @@ vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     if (simulated &&
         !vkr_scene_physics_set_disabled(
             simulated, !vkr_scene_physics_is_disabled(simulated), &error)) {
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               error ? error : "Physics override failed.");
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    error ? error : "Physics override failed.");
     }
     break;
   }
@@ -6896,7 +6919,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
      is the one that preserves it. */
   state->graphics.message =
       string8_create_from_cstr((const uint8_t *)state->graphics_message,
-                               strlen(state->graphics_message));
+                               string_length(state->graphics_message));
   sample_capture_poll(application);
   VkrSampleUiRequests requests = {
       .transport_action = VKR_SAMPLE_TRANSPORT_NONE,
@@ -7020,8 +7043,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   if (requests.scene_edit.action == VKR_SCENE_EDIT_UNLOAD ||
       requests.scene_edit.action == VKR_SCENE_EDIT_RELOAD) {
     if (state->edits.revision != state->edits.saved_revision) {
-      snprintf(state->edits.status, sizeof(state->edits.status),
-               "Save edits before reloading or unloading.");
+      string_format(state->edits.status, sizeof(state->edits.status),
+                    "Save edits before reloading or unloading.");
       log_warn("Save editor overrides before reloading or unloading");
     } else {
       if (requests.scene_edit.action == VKR_SCENE_EDIT_RELOAD) {
@@ -7048,8 +7071,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     if (!vkr_scene_physics_set_body_disabled(
             application->active_scene, requests.physics_request.entity,
             requests.physics_request.body_disabled, &error)) {
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               error ? error : "Body session mute rejected.");
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    error ? error : "Body session mute rejected.");
     }
   }
   sample_io_request(application, &requests.io_request);
@@ -7062,8 +7085,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                                        ? &requests.physics_request.world_point
                                        : NULL,
                                    &error)) {
-      snprintf(state->scene_status, sizeof(state->scene_status), "%s",
-               error ? error : "Impulse rejected.");
+      string_format(state->scene_status, sizeof(state->scene_status), "%s",
+                    error ? error : "Impulse rejected.");
     }
   }
 }
@@ -7167,11 +7190,11 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   state->graphics_dirty = false_v;
   state->graphics_changed_at = 0.0;
   state->graphics_message[0] = '\0';
-  snprintf(state->graphics_path, sizeof(state->graphics_path), "%s",
-           options->graphics_path);
+  string_format(state->graphics_path, sizeof(state->graphics_path), "%s",
+                options->graphics_path);
   if (!options->graphics_loaded)
-    snprintf(state->graphics_message, sizeof(state->graphics_message),
-             "Saved settings were invalid. Defaults are in use.");
+    string_format(state->graphics_message, sizeof(state->graphics_message),
+                  "Saved settings were invalid. Defaults are in use.");
   sample_graphics_apply_live(application, &state->graphics.settings);
   state->stats_arena = arena_create(KB(1), KB(1));
   /* A headless run has no window to initialize input; synthetic input
@@ -7206,23 +7229,25 @@ vkr_internal bool8_t vkr_sample_runtime_initialize_state(
   state->ui = runtime_config->ui;
   application->project_ui =
       state->ui.project_scene ? vkr_standard_scene_runtime_project_ui : NULL;
-  snprintf(state->scene_path_storage, sizeof(state->scene_path_storage), "%s",
-           runtime_config->project_managed ? "" : options->scene_path);
+  string_format(state->scene_path_storage, sizeof(state->scene_path_storage),
+                "%s",
+                runtime_config->project_managed ? "" : options->scene_path);
   state->scene_path =
       string8_create_from_cstr((const uint8_t *)state->scene_path_storage,
-                               strlen(state->scene_path_storage));
+                               string_length(state->scene_path_storage));
   state->sidecar_path[0] = '\0';
   state->scene_status[0] = '\0';
-  snprintf(state->physics_asset_root, sizeof(state->physics_asset_root), "%s",
-           vkr_content_root());
+  string_format(state->physics_asset_root, sizeof(state->physics_asset_root),
+                "%s", vkr_content_root());
   state->modal = runtime_config->project_managed;
   if (!runtime_config->project_managed) {
     const char *scene_path = options->scene_path;
-    const bool8_t absolute = scene_path[0] == '/' || scene_path[0] == '\\' ||
-                             (strlen(scene_path) > 1u && scene_path[1] == ':');
-    snprintf(state->sidecar_path, sizeof(state->sidecar_path),
-             "%s%s.editor.json", absolute ? "" : vkr_content_root(),
-             scene_path);
+    const bool8_t absolute =
+        scene_path[0] == '/' || scene_path[0] == '\\' ||
+        (string_length(scene_path) > 1u && scene_path[1] == ':');
+    string_format(state->sidecar_path, sizeof(state->sidecar_path),
+                  "%s%s.editor.json", absolute ? "" : vkr_content_root(),
+                  scene_path);
   }
   /* Address space for the journals that grow (the primary's and the
      World's at their byte budget); pages commit as journals grow, and a
@@ -7343,13 +7368,13 @@ vkr_internal void vkr_sample_runtime_log_device_information(
   VkrPlatformSystemInfo system_info = {0};
   (void)vkr_platform_get_system_info(&system_info);
   const String8 gpu_name = device_information.device_name;
-  snprintf(state->hardware_text, sizeof(state->hardware_text),
-           "CPU: %s\nGPU: %.*s",
-           system_info.cpu[0] ? system_info.cpu : "unavailable",
-           (int32_t)gpu_name.length, gpu_name.str);
-  snprintf(state->system_text, sizeof(state->system_text),
-           "%s\nRAM (resident): pending\nGPU memory (managed): pending",
-           state->hardware_text);
+  string_format(state->hardware_text, sizeof(state->hardware_text),
+                "CPU: %s\nGPU: %.*s",
+                system_info.cpu[0] ? system_info.cpu : "unavailable",
+                (int32_t)gpu_name.length, gpu_name.str);
+  string_format(state->system_text, sizeof(state->system_text),
+                "%s\nRAM (resident): pending\nGPU memory (managed): pending",
+                state->hardware_text);
   state->anisotropy_supported = bitset8_is_set(
       &device_information.sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
   state->max_sampler_anisotropy = device_information.max_sampler_anisotropy;
@@ -7372,7 +7397,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
   /* A bundle's content mounts before any path resolves (ADR-077). */
   vkr_content_codec_install();
   if (!vkr_vfs_mount_startup()) {
-    fprintf(stderr, "Cannot mount the bundled content\n");
+    vkr_platform_stderr_write("Cannot mount the bundled content\n");
     return 1;
   }
   VkrSampleRuntimeOptions options;
@@ -7386,7 +7411,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
       vkr_sample_runtime_scene_config(runtime_config, &options);
   VkrStandardSceneRuntime application = {0};
   if (!vkr_standard_scene_runtime_create(&application, &scene_runtime_config)) {
-    fprintf(stderr, "VkrStandardSceneRuntime creation failed\n");
+    vkr_platform_stderr_write("VkrStandardSceneRuntime creation failed\n");
     return 1;
   }
   if (vkr_vfs_pack_count()) {
@@ -7532,14 +7557,13 @@ int vkr_sample_runtime_run(int argc, char **argv,
              (unsigned long long)state->upload_wait_queue_idle_total,
              (unsigned long long)state->upload_wait_device_idle_total,
              state->upload_wait_violation_seen ? "true" : "false");
-    fprintf(stdout,
-            "UPLOAD_WAIT_SUMMARY fence=%llu queue_idle=%llu device_idle=%llu "
-            "violation=%s\n",
-            (unsigned long long)state->upload_wait_fence_total,
-            (unsigned long long)state->upload_wait_queue_idle_total,
-            (unsigned long long)state->upload_wait_device_idle_total,
-            state->upload_wait_violation_seen ? "true" : "false");
-    fflush(stdout);
+    vkr_platform_stdout_writef(
+        "UPLOAD_WAIT_SUMMARY fence=%llu queue_idle=%llu device_idle=%llu "
+        "violation=%s\n",
+        (unsigned long long)state->upload_wait_fence_total,
+        (unsigned long long)state->upload_wait_queue_idle_total,
+        (unsigned long long)state->upload_wait_device_idle_total,
+        state->upload_wait_violation_seen ? "true" : "false");
   }
 
   if (options.metrics_json_path) {
@@ -7551,8 +7575,7 @@ int vkr_sample_runtime_run(int argc, char **argv,
       log_error("Failed to write metrics JSON to '%s'", metrics_json_path);
       exit_code = 5;
     } else {
-      fprintf(stdout, "METRICS_JSON status=pass\n");
-      fflush(stdout);
+      vkr_platform_stdout_write("METRICS_JSON status=pass\n");
     }
   }
 
@@ -7593,30 +7616,34 @@ sample_preferences_valid(const VkrSampleRuntimePreferences *value) {
   return value && value->filter_mode < ArrayCount(FILTER_MODES) &&
          value->gizmo_mode <= VKR_GIZMO_MODE_SCALE &&
          value->gizmo_space <= VKR_GIZMO_SPACE_VIEW &&
-         isfinite(value->gizmo_size) && value->gizmo_size >= 16 &&
-         value->gizmo_size <= 1024 && isfinite(value->camera_speed) &&
+         vkr_is_finite_f32(value->gizmo_size) && value->gizmo_size >= 16 &&
+         value->gizmo_size <= 1024 && vkr_is_finite_f32(value->camera_speed) &&
          value->camera_speed > 0 && value->camera_speed <= 10000 &&
-         isfinite(value->camera_sensitivity) && value->camera_sensitivity > 0 &&
-         value->camera_sensitivity <= 100 && isfinite(value->move_multiplier) &&
+         vkr_is_finite_f32(value->camera_sensitivity) &&
+         value->camera_sensitivity > 0 && value->camera_sensitivity <= 100 &&
+         vkr_is_finite_f32(value->move_multiplier) &&
          value->move_multiplier > 0 && value->move_multiplier <= 10000 &&
-         isfinite(value->rotation_multiplier) &&
+         vkr_is_finite_f32(value->rotation_multiplier) &&
          value->rotation_multiplier > 0 &&
          value->rotation_multiplier <= 10000 && value->ibl_debug_mode < 4 &&
-         isfinite(value->ibl_debug_scalar) && value->ibl_debug_scalar >= 0 &&
-         value->ibl_debug_scalar <= 2;
+         vkr_is_finite_f32(value->ibl_debug_scalar) &&
+         value->ibl_debug_scalar >= 0 && value->ibl_debug_scalar <= 2;
 }
 
 static bool8_t sample_recall_valid(const VkrSampleSceneRecall *value) {
-  return value && isfinite(value->grid_height) &&
-         fabsf(value->grid_height) <= 10000.0f &&
+  return value && vkr_is_finite_f32(value->grid_height) &&
+         vkr_abs_f32(value->grid_height) <= 10000.0f &&
          (!value->camera_valid ||
-          (isfinite(value->position.x) && isfinite(value->position.y) &&
-           isfinite(value->position.z) && isfinite(value->yaw) &&
-           isfinite(value->pitch) && value->pitch >= -89 &&
-           value->pitch <= 89 && isfinite(value->field_of_view) &&
+          (vkr_is_finite_f32(value->position.x) &&
+           vkr_is_finite_f32(value->position.y) &&
+           vkr_is_finite_f32(value->position.z) &&
+           vkr_is_finite_f32(value->yaw) && vkr_is_finite_f32(value->pitch) &&
+           value->pitch >= -89 && value->pitch <= 89 &&
+           vkr_is_finite_f32(value->field_of_view) &&
            value->field_of_view > 0 && value->field_of_view < 180 &&
-           isfinite(value->near_plane) && isfinite(value->far_plane) &&
-           value->near_plane > 0 && value->far_plane > value->near_plane));
+           vkr_is_finite_f32(value->near_plane) &&
+           vkr_is_finite_f32(value->far_plane) && value->near_plane > 0 &&
+           value->far_plane > value->near_plane));
 }
 
 #define SAMPLE_JSON_FLOAT(name, member)                                        \
@@ -7659,8 +7686,9 @@ static bool8_t sample_read_uint(String8 json, const char *name,
                                 uint32_t *value) {
   VkrJsonReader reader = vkr_json_reader_from_string(json);
   float64_t number;
-  if (!vkr_json_get_double(&reader, name, &number) || !isfinite(number) ||
-      number < 0 || number > UINT32_MAX || floor(number) != number) {
+  if (!vkr_json_get_double(&reader, name, &number) ||
+      !vkr_is_finite_f64(number) || number < 0 || number > UINT32_MAX ||
+      vkr_floor_f64(number) != number) {
     return false_v;
   }
   *value = (uint32_t)number;
@@ -7755,8 +7783,8 @@ bool8_t
 vkr_sample_entity_identity_write_json(const VkrSampleEntityIdentity *value,
                                       VkrJsonWriter *writer) {
   char fingerprint[17];
-  snprintf(fingerprint, sizeof(fingerprint), "%016llx",
-           (unsigned long long)value->source_fingerprint);
+  string_format(fingerprint, sizeof(fingerprint), "%016llx",
+                (unsigned long long)value->source_fingerprint);
   return vkr_json_writer_begin_object(writer) &&
          SAMPLE_JSON_UINT("scene_entity", scene_entity) &&
          SAMPLE_JSON_UINT("gltf_node", gltf_node) &&

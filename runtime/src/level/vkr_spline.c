@@ -1,11 +1,9 @@
 #include "level/vkr_spline.h"
 
-#include <math.h>
-
 /* Knot spacing of centripetal Catmull-Rom between two points; a floor keeps
    coincident points from dividing by zero. */
 static float32_t spline_knot(Vec3 a, Vec3 b) {
-  return Max(sqrtf(vec3_length(vec3_sub(b, a))), 1.0e-4f);
+  return Max(vkr_sqrt_f32(vec3_length(vec3_sub(b, a))), 1.0e-4f);
 }
 
 static Vec3 spline_lerp(Vec3 a, Vec3 b, float32_t t0, float32_t t1,

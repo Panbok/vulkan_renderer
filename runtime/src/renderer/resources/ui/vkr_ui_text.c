@@ -8,8 +8,6 @@
 #include "renderer/systems/vkr_font_system.h"
 #include "vkr_color_transfer.h"
 
-#include <math.h>
-
 #define VKR_UI_TEXT_QUAD_COUNT 4
 #define VKR_UI_TEXT_INDEX_COUNT 6
 #define VKR_UI_TEXT_VERTEX_GROWTH_COUNT 64
@@ -536,7 +534,7 @@ void vkr_ui_text_set_config(VkrUiText *text, const VkrUiTextConfig *config) {
 }
 
 void vkr_ui_text_set_content_scale(VkrUiText *text, float32_t content_scale) {
-  if (!text || !isfinite(content_scale) || content_scale <= 0.0f ||
+  if (!text || !vkr_is_finite_f32(content_scale) || content_scale <= 0.0f ||
       text->content_scale == content_scale) {
     return;
   }

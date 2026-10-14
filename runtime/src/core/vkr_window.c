@@ -2,8 +2,6 @@
 
 #include "platform/vkr_window_internal.h"
 
-#include <math.h>
-
 static uint32_t vkr_window_float_bits(float32_t value) {
   uint32_t bits = 0u;
   MemCopy(&bits, &value, sizeof(bits));
@@ -31,7 +29,7 @@ void vkr_window_content_scale_init(VkrWindow *window) {
 bool8_t vkr_window_content_scale_publish(VkrWindow *window,
                                          float32_t content_scale) {
   assert_log(window != NULL, "Window is NULL");
-  if (!isfinite(content_scale) || content_scale <= 0.0f) {
+  if (!vkr_is_finite_f32(content_scale) || content_scale <= 0.0f) {
     return false_v;
   }
 
@@ -60,7 +58,7 @@ VkrWindowContentScale vkr_window_get_content_scale(const VkrWindow *window) {
   const uint64_t packed = vkr_atomic_uint64_load(&window->content_scale_state,
                                                  VKR_MEMORY_ORDER_ACQUIRE);
   const float32_t value = vkr_window_bits_float((uint32_t)packed);
-  if (!isfinite(value) || value <= 0.0f) {
+  if (!vkr_is_finite_f32(value) || value <= 0.0f) {
     return (VkrWindowContentScale){.value = 1.0f, .revision = 0u};
   }
   return (VkrWindowContentScale){

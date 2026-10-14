@@ -1,9 +1,7 @@
 #include "assets/vkr_probe_capture.h"
 
+#include "containers/str.h"
 #include "core/vkr_byte_io.h"
-
-#include <math.h>
-#include <string.h>
 
 /* KTX2 file identifier and the header offsets of its key/value data. */
 static const uint8_t vkr_probe_capture_ktx2_identifier[12] = {
@@ -13,7 +11,8 @@ static const uint8_t vkr_probe_capture_ktx2_identifier[12] = {
 #define VKR_PROBE_CAPTURE_KTX2_KVD_LENGTH 60u
 
 static bool8_t vkr_probe_capture_finite_vec3(Vec3 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z);
 }
 
 float32_t vkr_probe_capture_light(const VkrProbeCapture *capture,
@@ -34,8 +33,8 @@ bool8_t vkr_probe_capture_valid(const VkrProbeCapture *capture) {
   for (uint32_t layer = 0u; layer < capture->layer_count; ++layer) {
     const float32_t luminance = capture->luminance[layer];
     const float32_t weight = capture->weights[layer];
-    if (!isfinite(luminance) || luminance < 0.0f || !isfinite(weight) ||
-        weight < 0.0f) {
+    if (!vkr_is_finite_f32(luminance) || luminance < 0.0f ||
+        !vkr_is_finite_f32(weight) || weight < 0.0f) {
       return false_v;
     }
   }
@@ -160,8 +159,8 @@ bool8_t vkr_probe_capture_matches(const VkrProbeCapture *capture,
     if (recorded->kind != current->kind || recorded->index != current->index ||
         MemCompare(&recorded->sun_direction, &current->sun_direction,
                    sizeof(recorded->sun_direction)) != 0 ||
-        strncmp(recorded->name, current->name, VKR_LIGHT_GROUP_NAME_BYTES) !=
-            0) {
+        !string_n_equals(recorded->name, current->name,
+                         VKR_LIGHT_GROUP_NAME_BYTES)) {
       return false_v;
     }
   }
@@ -178,7 +177,7 @@ float32_t vkr_probe_capture_ratio(const VkrProbeCapture *capture,
     return 1.0f;
   }
   const float32_t ratio = vkr_probe_capture_light(capture, weights) / captured;
-  if (!isfinite(ratio)) {
+  if (!vkr_is_finite_f32(ratio)) {
     return VKR_PROBE_CAPTURE_RATIO_MAX;
   }
   return Clamp(ratio, VKR_PROBE_CAPTURE_RATIO_MIN, VKR_PROBE_CAPTURE_RATIO_MAX);

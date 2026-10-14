@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "filesystem/filesystem.h"
 #include "math/vec.h"
 #include "memory/vkr_allocator.h"
 
@@ -65,8 +66,8 @@ typedef struct VkrHeightfield {
   uint32_t *overview_weights;
   /* Owns the tiles and arrays. */
   VkrAllocator *allocator;
-  /* The open file of a streamed field (FILE *), NULL otherwise. */
-  void *file;
+  /* The open file of a streamed field; a zero handle otherwise. */
+  FileHandle file;
   /* A streamed field whose file could only be opened for reading, as in a
      packaged game; saving it fails. */
   bool8_t read_only;
@@ -108,7 +109,7 @@ vkr_heightfield_overview_samples(const VkrHeightfield *field) {
 
 /* Whether the field streams its tiles. */
 static inline bool8_t vkr_heightfield_streamed(const VkrHeightfield *field) {
-  return field->file != NULL;
+  return field->file.handle != NULL;
 }
 
 static inline VkrHeightfieldTile *

@@ -1,7 +1,6 @@
 #include "renderer/systems/vkr_scene_frame.h"
 
-#include <stdlib.h>
-
+#include "containers/vkr_sort.h"
 #include "math/vkr_frustum.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -800,8 +799,9 @@ VkrRendererError vkr_scene_build_world_draws(
   }
 
   if (transparent_draw_count > 1u)
-    qsort(transparent_candidates, transparent_draw_count,
-          sizeof(*transparent_candidates), vkr_transparent_draw_depth_compare);
+    vkr_sort(transparent_candidates, transparent_draw_count,
+             sizeof(*transparent_candidates),
+             vkr_transparent_draw_depth_compare);
   vkr_transparent_draw_emit(transparent_candidates, transparent_draw_count,
                             transparent_draws, transparent_instances);
 

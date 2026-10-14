@@ -3,8 +3,6 @@
 #include "core/logger.h"
 #include "vkr_renderer.h"
 
-#include <math.h>
-
 vkr_internal bool8_t picking_set_target_size(VkrPickingContext *ctx,
                                              uint32_t width, uint32_t height) {
   if (!ctx || width == 0 || height == 0) {
@@ -86,7 +84,7 @@ VkrPickResult vkr_picking_get_result(struct VkrRenderer *renderer,
       result.object_id = readback.data;
       result.hit = readback.data != 0;
       result.depth = readback.depth;
-      result.has_depth = isfinite(readback.depth);
+      result.has_depth = vkr_is_finite_f32(readback.depth);
     }
     ctx->state = VKR_PICKING_STATE_IDLE;
   } else if (readback.status == VKR_READBACK_STATUS_ERROR) {

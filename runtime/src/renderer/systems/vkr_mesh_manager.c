@@ -348,8 +348,9 @@ vkr_internal bool8_t vkr_mesh_world_box(const VkrMesh *mesh, Vec3 *out_min,
                                         Vec3 *out_max) {
   const Vec3 center = mesh->bounds_world_center;
   const float32_t radius = mesh->bounds_world_radius;
-  if (!mesh->bounds_valid || !isfinite(center.x) || !isfinite(center.y) ||
-      !isfinite(center.z) || !isfinite(radius) || radius < 0.0f) {
+  if (!mesh->bounds_valid || !vkr_is_finite_f32(center.x) ||
+      !vkr_is_finite_f32(center.y) || !vkr_is_finite_f32(center.z) ||
+      !vkr_is_finite_f32(radius) || radius < 0.0f) {
     return false_v;
   }
   const Vec3 extent = vec3_new(radius, radius, radius);
@@ -3769,9 +3770,10 @@ bool8_t vkr_mesh_manager_instance_set_draw_cull(VkrMeshManager *manager,
     return true_v;
   const Vec3 center = inst->bounds_world_center;
   const float32_t radius = inst->bounds_world_radius;
-  const bool8_t bounded = inst->bounds_valid && isfinite(center.x) &&
-                          isfinite(center.y) && isfinite(center.z) &&
-                          isfinite(radius) && radius >= 0.0f;
+  const bool8_t bounded = inst->bounds_valid && vkr_is_finite_f32(center.x) &&
+                          vkr_is_finite_f32(center.y) &&
+                          vkr_is_finite_f32(center.z) &&
+                          vkr_is_finite_f32(radius) && radius >= 0.0f;
   const Vec3 extent = vec3_new(radius, radius, radius);
   vkr_mesh_manager_note_topology_change_within(
       manager, bounded, bounded ? vec3_sub(center, extent) : vec3_zero(),

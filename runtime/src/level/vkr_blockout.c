@@ -2,9 +2,6 @@
 
 #include "math/vkr_math.h"
 
-#include <math.h>
-#include <stdio.h>
-
 const char *const vkr_blockout_stairs_kinds[] = {"straight", "l",      "u",
                                                  "curved",   "spiral", NULL};
 
@@ -33,7 +30,7 @@ static void layout_prism(VkrBlockoutPiece *piece, VkrBlockoutPieceKind kind,
 }
 
 static uint32_t layout_fail(char *error, uint64_t size, const char *message) {
-  snprintf(error, size, "%s", message);
+  string_format(error, size, "%s", message);
   return 0u;
 }
 
@@ -52,13 +49,15 @@ static Vec3 layout_arc_beside(Vec3 center, float32_t side, float32_t a,
                               float32_t r) {
   /* From a center beside the stairs: at a = 0 the step lies across the
      start line and the stairs head along +Z. */
-  return vec3_add(center, vec3_new(-side * cosf(a) * r, 0.0f, sinf(a) * r));
+  return vec3_add(
+      center, vec3_new(-side * vkr_cos_f32(a) * r, 0.0f, vkr_sin_f32(a) * r));
 }
 
 static Vec3 layout_arc_around(Vec3 center, float32_t side, float32_t a,
                               float32_t r) {
   /* Around a pole at the origin, starting along +Z. */
-  return vec3_add(center, vec3_new(side * sinf(a) * r, 0.0f, cosf(a) * r));
+  return vec3_add(
+      center, vec3_new(side * vkr_sin_f32(a) * r, 0.0f, vkr_cos_f32(a) * r));
 }
 
 static uint32_t layout_arc_steps(VkrBlockoutPiece *out, uint32_t count,
@@ -90,12 +89,12 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
   const float32_t w = shape->width;
   const float32_t h = shape->height;
   if (!(w > 0.0f) || !(h > 0.0f) || !(shape->step_height > 0.0f) ||
-      !isfinite(w + h + shape->length + shape->radius + shape->turn)) {
+      !vkr_is_finite_f32(w + h + shape->length + shape->radius + shape->turn)) {
     return layout_fail(error, error_size,
                        "Stairs need a positive height, width and step "
                        "height");
   }
-  const float32_t steps_needed = ceilf(h / shape->step_height - 1.0e-4f);
+  const float32_t steps_needed = vkr_ceil_f32(h / shape->step_height - 1.0e-4f);
   if (steps_needed > (float32_t)VKR_BLOCKOUT_STEP_MAX) {
     return layout_fail(error, error_size,
                        "Stairs have at most 4096 steps; raise the step "
@@ -213,7 +212,8 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
       const float32_t pole_top = h + 1.125f;
       for (uint32_t k = 0; k < 12u; ++k) {
         const float32_t a = 6.28318530718f * (float32_t)k / 12.0f;
-        const Vec3 at = vec3_new(sinf(a) * inner, 0.0f, cosf(a) * inner);
+        const Vec3 at =
+            vec3_new(vkr_sin_f32(a) * inner, 0.0f, vkr_cos_f32(a) * inner);
         piece->points[k] = at;
         piece->points[k + 12u] = vec3_new(at.x, pole_top, at.z);
       }
@@ -221,7 +221,8 @@ static uint32_t layout_stairs(const SceneBlockout *shape, VkrBlockoutPiece *out,
          turn, so the climb ends on a tread as wide as it is deep rather
          than off the top step's narrow inner end. */
       const Vec3 radial = layout_arc_around(vec3_zero(), side, sweep, 1.0f);
-      const Vec3 tangent = vec3_new(side * cosf(sweep), 0.0f, -sinf(sweep));
+      const Vec3 tangent =
+          vec3_new(side * vkr_cos_f32(sweep), 0.0f, -vkr_sin_f32(sweep));
       const Vec3 near_inner = vec3_scale(radial, Max(inner, 0.01f));
       const Vec3 near_outer = vec3_scale(radial, outer);
       const Vec3 corners[4] = {near_inner, near_outer,
@@ -274,11 +275,11 @@ static uint32_t layout_corridor_path(const SceneBlockout *shape, Vec3 *path,
     if (vec3_length(d0) < 1.0e-3f || vec3_length(d1) < 1.0e-3f) {
       continue;
     }
-    angles[i] = acosf(vkr_clamp_f32(
+    angles[i] = vkr_acos_f32(vkr_clamp_f32(
         vec3_dot(vec3_normalize(d0), vec3_normalize(d1)), -1.0f, 1.0f));
     if (angles[i] > 0.0175f) {
-      samples[i] =
-          (uint32_t)vkr_clamp_f32(ceilf(angles[i] / 0.1745329f), 1.0f, 12.0f);
+      samples[i] = (uint32_t)vkr_clamp_f32(vkr_ceil_f32(angles[i] / 0.1745329f),
+                                           1.0f, 12.0f);
       total += samples[i];
     }
   }
@@ -317,7 +318,7 @@ static uint32_t layout_corridor_path(const SceneBlockout *shape, Vec3 *path,
     d1 = vec3_scale(d1, 1.0f / len1);
     /* The arc meets each stretch `reach` from the corner, at most half the
        stretch so neighbouring arcs do not overlap. */
-    const float32_t tangent = tanf(angles[i] * 0.5f);
+    const float32_t tangent = vkr_tan_f32(angles[i] * 0.5f);
     const float32_t reach =
         Min(layout_corner_radius(shape, i) * tangent, Min(len0, len1) * 0.5f);
     const float32_t radius = reach / tangent;
@@ -334,21 +335,21 @@ static uint32_t layout_corridor_path(const SceneBlockout *shape, Vec3 *path,
     const Vec3 from = vec3_sub(start, center);
     /* The arc turns the way whose full sweep reaches its end. */
     const Vec3 to = vec3_sub(end, center);
-    const float32_t cs_full = cosf(angles[i]);
-    const float32_t sn_full = sinf(angles[i]);
+    const float32_t cs_full = vkr_cos_f32(angles[i]);
+    const float32_t sn_full = vkr_sin_f32(angles[i]);
     const float32_t sign =
-        fabsf(from.x * cs_full + from.z * sn_full - to.x) +
-                    fabsf(-from.x * sn_full + from.z * cs_full - to.z) <
-                fabsf(from.x * cs_full - from.z * sn_full - to.x) +
-                    fabsf(from.x * sn_full + from.z * cs_full - to.z)
+        vkr_abs_f32(from.x * cs_full + from.z * sn_full - to.x) +
+                    vkr_abs_f32(-from.x * sn_full + from.z * cs_full - to.z) <
+                vkr_abs_f32(from.x * cs_full - from.z * sn_full - to.x) +
+                    vkr_abs_f32(from.x * sn_full + from.z * cs_full - to.z)
             ? 1.0f
             : -1.0f;
     path[count++] = start;
     for (uint32_t k = 1; k < samples[i]; ++k) {
       const float32_t t = (float32_t)k / (float32_t)samples[i];
       const float32_t angle = sign * angles[i] * t;
-      const float32_t cs = cosf(angle);
-      const float32_t sn = sinf(angle);
+      const float32_t cs = vkr_cos_f32(angle);
+      const float32_t sn = vkr_sin_f32(angle);
       Vec3 at = vec3_add(center, vec3_new(from.x * cs + from.z * sn, 0.0f,
                                           -from.x * sn + from.z * cs));
       at.y = start.y + (end.y - start.y) * t;
@@ -574,7 +575,7 @@ bool8_t vkr_blockout_corridor_wall_at(const SceneBlockout *shape, Vec3 local,
   }
   const uint32_t count =
       layout_corridor_path(shape, path, error, sizeof(error));
-  float32_t best = INFINITY;
+  float32_t best = VKR_FLOAT_INFINITY;
   for (uint32_t k = 0; k + 1u < count; ++k) {
     Vec3 along = vec3_sub(path[k + 1u], path[k]);
     along.y = 0.0f;
@@ -591,8 +592,9 @@ bool8_t vkr_blockout_corridor_wall_at(const SceneBlockout *shape, Vec3 local,
     const float32_t across = vec3_dot(offset, side);
     /* The point lies in a wall: as far across as the wall from the path. */
     const float32_t miss =
-        fabsf(fabsf(across) - (shape->width * 0.5f + shape->thickness * 0.5f)) +
-        fabsf(at - clamped);
+        vkr_abs_f32(vkr_abs_f32(across) -
+                    (shape->width * 0.5f + shape->thickness * 0.5f)) +
+        vkr_abs_f32(at - clamped);
     if (miss < best) {
       best = miss;
       *out_wall = k * 2u + (across >= 0.0f ? 0u : 1u);
@@ -608,12 +610,12 @@ bool8_t vkr_blockout_corridor_wall_at(const SceneBlockout *shape, Vec3 local,
    positive or finite. */
 static uint32_t layout_step_count(const SceneBlockout *shape) {
   if (!(shape->height > 0.0f) || !(shape->step_height > 0.0f) ||
-      !isfinite(shape->height / shape->step_height)) {
+      !vkr_is_finite_f32(shape->height / shape->step_height)) {
     return 0u;
   }
-  return (uint32_t)Max(1.0f,
-                       Min(ceilf(shape->height / shape->step_height - 1.0e-4f),
-                           (float32_t)VKR_BLOCKOUT_STEP_MAX + 1.0f));
+  return (uint32_t)Max(
+      1.0f, Min(vkr_ceil_f32(shape->height / shape->step_height - 1.0e-4f),
+                (float32_t)VKR_BLOCKOUT_STEP_MAX + 1.0f));
 }
 
 uint32_t vkr_blockout_piece_capacity(const SceneBlockout *shape) {

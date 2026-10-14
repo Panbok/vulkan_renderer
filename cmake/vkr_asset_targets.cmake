@@ -14,6 +14,10 @@ add_library(vkr_asset_formats STATIC
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_probe_capture.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_decode.cpp")
 vkr_configure_library(vkr_asset_formats)
+# The C readers stay behind the libc boundary (ADR-118); the meshoptimizer
+# adapter is C++ and keeps its standard library.
+target_compile_definitions(vkr_asset_formats PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:VKR_LIBC_BOUNDARY=1>)
 target_include_directories(vkr_asset_formats PUBLIC "${CMAKE_SOURCE_DIR}/runtime/src")
 target_link_libraries(vkr_asset_formats PUBLIC vkr_render_contracts)
 
@@ -140,6 +144,7 @@ add_library(vkr_image_decode STATIC
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/stb_image_impl.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_image_decode.c")
 vkr_configure_library(vkr_image_decode)
+target_compile_definitions(vkr_image_decode PRIVATE VKR_LIBC_BOUNDARY=1)
 vkr_configure_cooker_target(vkr_image_decode)
 target_include_directories(vkr_image_decode
     PRIVATE "${CMAKE_SOURCE_DIR}/vendor" "${CMAKE_SOURCE_DIR}/lib/src"

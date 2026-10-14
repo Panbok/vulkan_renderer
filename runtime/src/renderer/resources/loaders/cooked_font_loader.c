@@ -11,8 +11,6 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
-#include <math.h>
-
 typedef struct VkrCookedFontRequest {
   String8 file_path;
   uint32_t size;

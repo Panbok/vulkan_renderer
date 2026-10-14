@@ -1,11 +1,11 @@
 #include "assets/vkr_image_decode.h"
 
 #include "defines.h"
+#include "math/vkr_math.h"
+#include "memory/vkr_heap.h"
 
 #include <libdeflate.h>
 #include <stb_image.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* SSSE3 (every x86-64-v2 and later core, and the builds' -march/arch levels)
  * reverses the per-pixel PNG filters with every channel in one register. */
@@ -22,9 +22,9 @@ vkr_internal uint32_t vkr_png_u32(const uint8_t *bytes) {
 
 vkr_internal uint8_t vkr_png_paeth(uint8_t a, uint8_t b, uint8_t c) {
   const int32_t p = (int32_t)a + (int32_t)b - (int32_t)c;
-  const int32_t pa = abs(p - (int32_t)a);
-  const int32_t pb = abs(p - (int32_t)b);
-  const int32_t pc = abs(p - (int32_t)c);
+  const int32_t pa = vkr_abs_i32(p - (int32_t)a);
+  const int32_t pb = vkr_abs_i32(p - (int32_t)b);
+  const int32_t pc = vkr_abs_i32(p - (int32_t)c);
   if (pa <= pb && pa <= pc) {
     return a;
   }
@@ -286,8 +286,8 @@ typedef struct VkrImageDecodeMalloc {
 vkr_internal uint8_t *
 vkr_image_decode_malloc_pixels(void *context, uint32_t width, uint32_t height) {
   VkrImageDecodeMalloc *decoded = context;
-  free(decoded->pixels);
-  decoded->pixels = (uint8_t *)malloc((size_t)width * height * 4u);
+  vkr_heap_free(decoded->pixels);
+  decoded->pixels = (uint8_t *)vkr_heap_alloc((size_t)width * height * 4u);
   decoded->width = width;
   decoded->height = height;
   return decoded->pixels;
@@ -295,14 +295,14 @@ vkr_image_decode_malloc_pixels(void *context, uint32_t width, uint32_t height) {
 
 vkr_internal void *vkr_image_decode_malloc(void *context, size_t size) {
   (void)context;
-  return malloc(size);
+  return vkr_heap_alloc(size);
 }
 
 vkr_internal void vkr_image_decode_free(void *context, void *memory,
                                         size_t size) {
   (void)context;
   (void)size;
-  free(memory);
+  vkr_heap_free(memory);
 }
 
 uint8_t *vkr_image_decode_rgba8(const uint8_t *bytes, size_t size, int flip,
@@ -318,7 +318,7 @@ uint8_t *vkr_image_decode_rgba8(const uint8_t *bytes, size_t size, int flip,
       .context = &decoded,
   };
   if (!vkr_image_decode_rgba8_into(bytes, size, flip, &target)) {
-    free(decoded.pixels);
+    vkr_heap_free(decoded.pixels);
     return NULL;
   }
   *out_width = decoded.width;

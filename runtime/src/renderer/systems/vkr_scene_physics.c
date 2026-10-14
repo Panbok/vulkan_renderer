@@ -5,9 +5,6 @@
 #include "physics/vkr_collision_asset.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
-#include <float.h>
-#include <math.h>
-#include <stdio.h>
 
 typedef struct ScenePhysicsBody {
   struct ScenePhysicsBody *next;
@@ -166,16 +163,16 @@ static bool8_t physics_follower(const VkrScene *scene) {
 }
 
 static bool8_t physics_vec_finite(Vec3 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
-         fabsf(value.x) <= 1.0e7f && fabsf(value.y) <= 1.0e7f &&
-         fabsf(value.z) <= 1.0e7f;
+  return vkr_is_finite_f32(value.x) && vkr_is_finite_f32(value.y) &&
+         vkr_is_finite_f32(value.z) && vkr_abs_f32(value.x) <= 1.0e7f &&
+         vkr_abs_f32(value.y) <= 1.0e7f && vkr_abs_f32(value.z) <= 1.0e7f;
 }
 
 static bool8_t physics_rotation_valid(VkrQuat value) {
   const float64_t length =
       (float64_t)value.x * value.x + (float64_t)value.y * value.y +
       (float64_t)value.z * value.z + (float64_t)value.w * value.w;
-  return isfinite(length) && fabs(length - 1.0) < 0.0001;
+  return vkr_is_finite_f64(length) && vkr_abs_f64(length - 1.0) < 0.0001;
 }
 
 bool8_t vkr_scene_physics_pose_valid(Vec3 position, VkrQuat rotation) {
@@ -234,7 +231,7 @@ static Mat4 physics_trs(Vec3 position, VkrQuat rotation, Vec3 scale) {
 static bool8_t physics_decompose(Mat4 matrix, Vec3 *position, VkrQuat *rotation,
                                  Vec3 *scale, const char **error) {
   for (uint32_t i = 0; i < 16; ++i) {
-    if (!isfinite(matrix.elements[i])) {
+    if (!vkr_is_finite_f32(matrix.elements[i])) {
       return physics_fail(error,
                           "Physics world matrix contains nonfinite values");
     }
@@ -247,9 +244,10 @@ static bool8_t physics_decompose(Mat4 matrix, Vec3 *position, VkrQuat *rotation,
   *position =
       vec3_new(matrix.elements[12], matrix.elements[13], matrix.elements[14]);
   if (!physics_positive_scale(*scale) || !physics_vec_finite(*position) ||
-      fabsf(matrix.elements[3]) > 1e-6f || fabsf(matrix.elements[7]) > 1e-6f ||
-      fabsf(matrix.elements[11]) > 1e-6f ||
-      fabsf(matrix.elements[15] - 1) > 1e-6f) {
+      vkr_abs_f32(matrix.elements[3]) > 1e-6f ||
+      vkr_abs_f32(matrix.elements[7]) > 1e-6f ||
+      vkr_abs_f32(matrix.elements[11]) > 1e-6f ||
+      vkr_abs_f32(matrix.elements[15] - 1) > 1e-6f) {
     return physics_fail(
         error,
         "Physics requires finite affine transforms and positive nonzero scale");
@@ -257,8 +255,10 @@ static bool8_t physics_decompose(Mat4 matrix, Vec3 *position, VkrQuat *rotation,
   x = vec3_scale(x, 1.0f / scale->x);
   y = vec3_scale(y, 1.0f / scale->y);
   z = vec3_scale(z, 1.0f / scale->z);
-  if (fabsf(vec3_dot(x, y)) > 1e-4f || fabsf(vec3_dot(y, z)) > 1e-4f ||
-      fabsf(vec3_dot(z, x)) > 1e-4f || vec3_dot(vec3_cross(x, y), z) < 0.999f) {
+  if (vkr_abs_f32(vec3_dot(x, y)) > 1e-4f ||
+      vkr_abs_f32(vec3_dot(y, z)) > 1e-4f ||
+      vkr_abs_f32(vec3_dot(z, x)) > 1e-4f ||
+      vec3_dot(vec3_cross(x, y), z) < 0.999f) {
     return physics_fail(error, "Physics rejects shear and reflected "
                                "transforms; bake geometry instead");
   }
@@ -417,8 +417,8 @@ physics_validate_scaled_shapes(const VkrScenePhysicsSnapshot *snapshot,
     }
     if ((shape->shape == VKR_PHYSICS_SPHERE ||
          shape->shape == VKR_PHYSICS_CAPSULE) &&
-        (fabsf(scale.x - scale.y) > 1e-5f * scale.x ||
-         fabsf(scale.x - scale.z) > 1e-5f * scale.x)) {
+        (vkr_abs_f32(scale.x - scale.y) > 1e-5f * scale.x ||
+         vkr_abs_f32(scale.x - scale.z) > 1e-5f * scale.x)) {
       return physics_fail(
           error, "Sphere and capsule collision require uniform composed scale; "
                  "use a convex asset for anisotropic round geometry");
@@ -503,7 +503,7 @@ static const VkrPropertyDesc s_physics_body_properties[] = {
      .offset = PHYSICS_OFFSET(VkrScenePhysicsBody, mass),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,
-     .max = FLT_MAX,
+     .max = VKR_FLOAT_MAX,
      .step = 0.05f},
     {.name = "friction",
      .label = "Friction",
@@ -552,7 +552,7 @@ static bool8_t physics_body_validate(const void *value, char *error,
   const VkrScenePhysicsBody *body = value;
   if (body->mass <= 0.0f) {
     if (error && capacity) {
-      snprintf(error, capacity, "Mass must be greater than zero");
+      string_format(error, capacity, "Mass must be greater than zero");
     }
     return false_v;
   }
@@ -712,13 +712,16 @@ static bool8_t physics_collider_validate(const void *value, char *error,
   } else if (physics_collider_cooked(shape->shape) && !shape->asset_path[0]) {
     message = "Convex hulls and triangle meshes need a collision asset";
   } else if ((uint32_t)shape->fit >= VKR_SCENE_COLLIDER_FIT_COUNT ||
-             !isfinite(shape->fit_offset.x) || !isfinite(shape->fit_offset.y) ||
-             !isfinite(shape->fit_offset.z) || !isfinite(shape->padding.x) ||
-             !isfinite(shape->padding.y) || !isfinite(shape->padding.z)) {
+             !vkr_is_finite_f32(shape->fit_offset.x) ||
+             !vkr_is_finite_f32(shape->fit_offset.y) ||
+             !vkr_is_finite_f32(shape->fit_offset.z) ||
+             !vkr_is_finite_f32(shape->padding.x) ||
+             !vkr_is_finite_f32(shape->padding.y) ||
+             !vkr_is_finite_f32(shape->padding.z)) {
     message = "Collider fit, offset and padding must be valid";
   }
   if (message && error && capacity) {
-    snprintf(error, capacity, "%s", message);
+    string_format(error, capacity, "%s", message);
   }
   return message == NULL;
 }
@@ -887,15 +890,16 @@ vkr_scene_physics_snapshot_validate(const VkrScenePhysicsSnapshot *snapshot,
         !physics_vec_finite(joint->axis_b) ||
         !physics_vec_finite(joint->normal_a) ||
         !physics_vec_finite(joint->normal_b) ||
-        fabsf(vec3_length_squared(joint->axis_a) - 1) > 1e-4f ||
-        fabsf(vec3_length_squared(joint->axis_b) - 1) > 1e-4f ||
-        fabsf(vec3_length_squared(joint->normal_a) - 1) > 1e-4f ||
-        fabsf(vec3_length_squared(joint->normal_b) - 1) > 1e-4f ||
-        fabsf(vec3_dot(joint->axis_a, joint->normal_a)) > 1e-4f ||
-        fabsf(vec3_dot(joint->axis_b, joint->normal_b)) > 1e-4f ||
-        !isfinite(joint->min_limit) || !isfinite(joint->max_limit) ||
-        !isfinite(joint->swing_normal_limit) ||
-        !isfinite(joint->swing_plane_limit) ||
+        vkr_abs_f32(vec3_length_squared(joint->axis_a) - 1) > 1e-4f ||
+        vkr_abs_f32(vec3_length_squared(joint->axis_b) - 1) > 1e-4f ||
+        vkr_abs_f32(vec3_length_squared(joint->normal_a) - 1) > 1e-4f ||
+        vkr_abs_f32(vec3_length_squared(joint->normal_b) - 1) > 1e-4f ||
+        vkr_abs_f32(vec3_dot(joint->axis_a, joint->normal_a)) > 1e-4f ||
+        vkr_abs_f32(vec3_dot(joint->axis_b, joint->normal_b)) > 1e-4f ||
+        !vkr_is_finite_f32(joint->min_limit) ||
+        !vkr_is_finite_f32(joint->max_limit) ||
+        !vkr_is_finite_f32(joint->swing_normal_limit) ||
+        !vkr_is_finite_f32(joint->swing_plane_limit) ||
         joint->min_limit > joint->max_limit ||
         (joint->enabled != false_v && joint->enabled != true_v)) {
       return physics_fail(error, "Invalid joint identity, frames or limits");
@@ -1146,13 +1150,14 @@ static bool8_t physics_character_authored(const VkrScene *scene,
   Vec3 position, scale;
   VkrQuat rotation;
   if (!physics_decompose(local, &position, &rotation, &scale, error) ||
-      fabsf(scale.x - 1) > 1e-5f || fabsf(scale.y - 1) > 1e-5f ||
-      fabsf(scale.z - 1) > 1e-5f) {
+      vkr_abs_f32(scale.x - 1) > 1e-5f || vkr_abs_f32(scale.y - 1) > 1e-5f ||
+      vkr_abs_f32(scale.z - 1) > 1e-5f) {
     return physics_fail(error, "Character transform must have unit scale");
   }
   if (spawn_foot) {
-    if (!isfinite(spawn_foot->x) || !isfinite(spawn_foot->y) ||
-        !isfinite(spawn_foot->z)) {
+    if (!vkr_is_finite_f32(spawn_foot->x) ||
+        !vkr_is_finite_f32(spawn_foot->y) ||
+        !vkr_is_finite_f32(spawn_foot->z)) {
       return physics_fail(error, "Character spawn must be finite");
     }
     position = *spawn_foot;
@@ -2084,9 +2089,9 @@ static bool8_t physics_sync_authored(VkrScene *scene, const char **error) {
     if (MemCompare(&world, &body->authored_world, sizeof(world)) == 0) {
       continue;
     }
-    if (fabsf(scale.x - body->world_scale.x) > 1e-5f ||
-        fabsf(scale.y - body->world_scale.y) > 1e-5f ||
-        fabsf(scale.z - body->world_scale.z) > 1e-5f) {
+    if (vkr_abs_f32(scale.x - body->world_scale.x) > 1e-5f ||
+        vkr_abs_f32(scale.y - body->world_scale.y) > 1e-5f ||
+        vkr_abs_f32(scale.z - body->world_scale.z) > 1e-5f) {
       if (!physics_paused(scene)) {
         return physics_fail(
             error,
@@ -3550,8 +3555,8 @@ bool8_t vkr_scene_physics_sweep_sphere(VkrScene *scene, Vec3 origin,
                                        const VkrPhysicsQueryFilter *filter,
                                        VkrPhysicsRayHit *hit, bool8_t *found) {
   if (!scene || !hit || !found || !physics_vec_finite(origin) ||
-      !physics_vec_finite(displacement) || !isfinite(radius) || radius <= 0 ||
-      radius > VKR_PHYSICS_MAX_COORDINATE ||
+      !physics_vec_finite(displacement) || !vkr_is_finite_f32(radius) ||
+      radius <= 0 || radius > VKR_PHYSICS_MAX_COORDINATE ||
       (filter && (filter->ignored_count > VKR_PHYSICS_MAX_QUERY_IGNORES ||
                   (filter->ignored_count && !filter->ignored_entities)))) {
     return false_v;

@@ -1,7 +1,5 @@
 #include "assets/vkr_collision_cooked.h"
 
-#include <math.h>
-
 static bool8_t collision_fail(const char **error, const char *message) {
   if (error) {
     *error = message;
@@ -61,7 +59,8 @@ bool8_t vkr_collision_geometry_validate(const VkrCollisionGeometry *g,
     return collision_fail(error, "Invalid collision geometry kind or capacity");
   }
   for (uint32_t i = 0; i < g->vertex_count * 3; ++i) {
-    if (!isfinite(g->positions[i]) || fabsf(g->positions[i]) > 1.0e7f) {
+    if (!vkr_is_finite_f32(g->positions[i]) ||
+        vkr_abs_f32(g->positions[i]) > 1.0e7f) {
       return collision_fail(error, "Invalid collision vertex coordinate");
     }
   }
@@ -103,8 +102,8 @@ bool8_t vkr_collision_geometry_validate(const VkrCollisionGeometry *g,
                                    ab[2] * ac[0] - ab[0] * ac[2],
                                    ab[0] * ac[1] - ab[1] * ac[0]};
       const float64_t length =
-          sqrt(normal[0] * normal[0] + normal[1] * normal[1] +
-               normal[2] * normal[2]);
+          vkr_sqrt_f64(normal[0] * normal[0] + normal[1] * normal[1] +
+                       normal[2] * normal[2]);
       for (uint32_t v = 0; v < g->vertex_count; ++v) {
         float64_t distance = 0;
         for (uint32_t j = 0; j < 3; ++j) {
@@ -173,7 +172,7 @@ bool8_t vkr_collision_cooked_decode(VkrAllocator *result, const uint8_t *bytes,
   /* Validate serialized numeric values and indices before allocating. */
   for (uint32_t i = 0; i < vertices * 3; ++i) {
     const float32_t value = collision_float(bytes + 48 + i * 4);
-    if (!isfinite(value) || fabsf(value) > 1.0e7f) {
+    if (!vkr_is_finite_f32(value) || vkr_abs_f32(value) > 1.0e7f) {
       return collision_fail(error, "Invalid collision asset vertex");
     }
   }

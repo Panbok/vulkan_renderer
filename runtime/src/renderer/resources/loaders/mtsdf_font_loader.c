@@ -10,10 +10,9 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
+#include "containers/vkr_sort.h"
 #include "core/vkr_text.h"
 #include "vkr_renderer.h"
-
-#include <math.h>
 
 typedef struct VkrMtsdfFontRequest {
   String8 file_path;
@@ -96,7 +95,8 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
   atlas_reader.pos = 0;
   if (!vkr_json_find_field(&atlas_reader, "distanceRange") ||
       !vkr_json_parse_float(&atlas_reader, &metadata->distance_range) ||
-      !isfinite(metadata->distance_range) || metadata->distance_range <= 0.0f) {
+      !vkr_is_finite_f32(metadata->distance_range) ||
+      metadata->distance_range <= 0.0f) {
     log_error("MtsdfFontLoader: distanceRange must be finite and positive");
     return false_v;
   }
@@ -104,7 +104,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
   atlas_reader.pos = 0;
   if (!vkr_json_find_field(&atlas_reader, "distanceRangeMiddle") ||
       !vkr_json_parse_float(&atlas_reader, &metadata->distance_range_middle) ||
-      !isfinite(metadata->distance_range_middle) ||
+      !vkr_is_finite_f32(metadata->distance_range_middle) ||
       metadata->distance_range_middle != 0.0f) {
     log_error("MtsdfFontLoader: only symmetric distance ranges are supported");
     return false_v;
@@ -113,7 +113,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
   atlas_reader.pos = 0;
   if (!vkr_json_find_field(&atlas_reader, "size") ||
       !vkr_json_parse_float(&atlas_reader, &metadata->size) ||
-      !isfinite(metadata->size) || metadata->size <= 0.0f) {
+      !vkr_is_finite_f32(metadata->size) || metadata->size <= 0.0f) {
     log_error("MtsdfFontLoader: atlas size must be finite and positive");
     return false_v;
   }
@@ -181,7 +181,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_metrics(VkrJsonReader *reader,
   metrics_reader.pos = 0;                                                      \
   if (!vkr_json_find_field(&metrics_reader, field_name) ||                     \
       !vkr_json_parse_float(&metrics_reader, destination) ||                   \
-      !isfinite(*(destination))) {                                             \
+      !vkr_is_finite_f32(*(destination))) {                                    \
     log_error("MtsdfFontLoader: invalid metric '%s'", field_name);             \
     return false_v;                                                            \
   }
@@ -235,7 +235,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyph_bounds(
   bounds_reader.pos = 0;                                                       \
   if (!vkr_json_find_field(&bounds_reader, field_name) ||                      \
       !vkr_json_parse_float(&bounds_reader, destination) ||                    \
-      !isfinite(*(destination))) {                                             \
+      !vkr_is_finite_f32(*(destination))) {                                    \
     log_error("MtsdfFontLoader: invalid %s.%s", bounds_name, field_name);      \
     return false_v;                                                            \
   }
@@ -287,7 +287,7 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyphs(
     glyph_reader.pos = 0;
     if (vkr_json_find_field(&glyph_reader, "advance")) {
       if (!vkr_json_parse_float(&glyph_reader, &glyph.advance) ||
-          !isfinite(glyph.advance) || glyph.advance < 0.0f) {
+          !vkr_is_finite_f32(glyph.advance) || glyph.advance < 0.0f) {
         log_error("MtsdfFontLoader: invalid advance for U+%04X", glyph.unicode);
         return false_v;
       }
@@ -445,8 +445,8 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
     }
     MemCopy(out_font->kernings.data, metadata->kernings.data,
             metadata->kernings.length * sizeof(VkrFontKerning));
-    qsort(out_font->kernings.data, (size_t)out_font->kernings.length,
-          sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
+    vkr_sort(out_font->kernings.data, (size_t)out_font->kernings.length,
+             sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
   }
 
   VkrFontGlyph *space = NULL;

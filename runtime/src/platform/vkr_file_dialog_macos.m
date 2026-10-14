@@ -9,8 +9,8 @@ void vkr_file_dialog_native_show(VkrWindow *window,
                                  VkrAllocator *allocator,
                                  VkrFileDialogResult *result) {
   if (![NSThread isMainThread]) {
-    snprintf(result->diagnostic, sizeof(result->diagnostic),
-             "Native file dialogs must run on the main UI thread.");
+    string_format(result->diagnostic, sizeof(result->diagnostic),
+                  "Native file dialogs must run on the main UI thread.");
     return;
   }
   @autoreleasepool {
@@ -30,8 +30,8 @@ void vkr_file_dialog_native_show(VkrWindow *window,
     if (request->title) {
       NSString *title = [NSString stringWithUTF8String:request->title];
       if (!title) {
-        snprintf(result->diagnostic, sizeof(result->diagnostic),
-                 "Dialog title is not UTF-8.");
+        string_format(result->diagnostic, sizeof(result->diagnostic),
+                      "Dialog title is not UTF-8.");
         return;
       }
       [panel setTitle:title];
@@ -40,8 +40,8 @@ void vkr_file_dialog_native_show(VkrWindow *window,
       NSString *directory =
           [NSString stringWithUTF8String:request->initial_directory];
       if (!directory) {
-        snprintf(result->diagnostic, sizeof(result->diagnostic),
-                 "Initial directory is not UTF-8.");
+        string_format(result->diagnostic, sizeof(result->diagnostic),
+                      "Initial directory is not UTF-8.");
         return;
       }
       [panel setDirectoryURL:[NSURL fileURLWithPath:directory isDirectory:YES]];
@@ -49,8 +49,8 @@ void vkr_file_dialog_native_show(VkrWindow *window,
     if (request->suggested_name) {
       NSString *name = [NSString stringWithUTF8String:request->suggested_name];
       if (!name) {
-        snprintf(result->diagnostic, sizeof(result->diagnostic),
-                 "Suggested name is not UTF-8.");
+        string_format(result->diagnostic, sizeof(result->diagnostic),
+                      "Suggested name is not UTF-8.");
         return;
       }
       [panel setNameFieldStringValue:name];
@@ -100,23 +100,23 @@ void vkr_file_dialog_native_show(VkrWindow *window,
     if ([urls count] > UINT32_MAX ||
         !vkr_file_dialog_allocate_paths(allocator, result,
                                         (uint32_t)[urls count])) {
-      snprintf(result->diagnostic, sizeof(result->diagnostic),
-               "Cannot allocate selected paths.");
+      string_format(result->diagnostic, sizeof(result->diagnostic),
+                    "Cannot allocate selected paths.");
       return;
     }
     for (uint32_t i = 0; i < result->path_count; ++i) {
       const char *path = [[[urls objectAtIndex:i] path] UTF8String];
       if (!path) {
-        snprintf(result->diagnostic, sizeof(result->diagnostic),
-                 "Selected path cannot be represented as UTF-8.");
+        string_format(result->diagnostic, sizeof(result->diagnostic),
+                      "Selected path cannot be represented as UTF-8.");
         return;
       }
-      size_t size = strlen(path) + 1;
+      size_t size = string_length(path) + 1;
       result->paths[i] =
           vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       if (!result->paths[i]) {
-        snprintf(result->diagnostic, sizeof(result->diagnostic),
-                 "Cannot allocate selected path.");
+        string_format(result->diagnostic, sizeof(result->diagnostic),
+                      "Cannot allocate selected path.");
         return;
       }
       MemCopy(result->paths[i], path, size);

@@ -7,6 +7,9 @@
 extern "C" {
 #include "core/logger.h"
 }
+// Static inline wrappers need no C linkage, and <math.h> must not sit in an
+// extern "C" block.
+#include "math/vkr_math.h"
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/FixedSizeFreeList.h>
 #include <Jolt/Core/JobSystemSingleThreaded.h>
@@ -39,7 +42,6 @@ extern "C" {
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cmath>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -131,7 +133,8 @@ bool finite_vector(const float32_t *v, uint32_t count) {
     return false;
   }
   for (uint32_t i = 0; i < count; ++i) {
-    if (!std::isfinite(v[i]) || std::abs(v[i]) > VKR_PHYSICS_MAX_COORDINATE) {
+    if (!vkr_is_finite_f32(v[i]) ||
+        vkr_abs_f32(v[i]) > VKR_PHYSICS_MAX_COORDINATE) {
       return false;
     }
   }
@@ -527,16 +530,17 @@ vkr_physics_character_create(VkrPhysicsWorld *world,
   if (!world || world->faulted || world->dispatching ||
       world->reserved_destructions || !desc || !out_character ||
       !desc->entity_id || !finite_vector(desc->foot_position, 3) ||
-      !std::isfinite(desc->radius) || desc->radius <= 0 || desc->radius > 100 ||
-      !std::isfinite(desc->half_height) || desc->half_height <= 0 ||
-      desc->half_height > 100 || !std::isfinite(desc->max_slope_radians) ||
+      !vkr_is_finite_f32(desc->radius) || desc->radius <= 0 ||
+      desc->radius > 100 || !vkr_is_finite_f32(desc->half_height) ||
+      desc->half_height <= 0 || desc->half_height > 100 ||
+      !vkr_is_finite_f32(desc->max_slope_radians) ||
       desc->max_slope_radians < 0 ||
       desc->max_slope_radians >= JPH::JPH_PI / 2 ||
-      !std::isfinite(desc->step_up) || desc->step_up < 0 ||
-      desc->step_up > 100 || !std::isfinite(desc->step_down) ||
+      !vkr_is_finite_f32(desc->step_up) || desc->step_up < 0 ||
+      desc->step_up > 100 || !vkr_is_finite_f32(desc->step_down) ||
       desc->step_down < 0 || desc->step_down > 100 ||
-      !std::isfinite(desc->mass) || desc->mass <= 0 || desc->mass > 10000 ||
-      !std::isfinite(desc->max_strength) || desc->max_strength < 0 ||
+      !vkr_is_finite_f32(desc->mass) || desc->mass <= 0 || desc->mass > 10000 ||
+      !vkr_is_finite_f32(desc->max_strength) || desc->max_strength < 0 ||
       desc->max_strength > 1.0e7f || !desc->collision_layer ||
       next_character_generation > UINT32_MAX) {
     return fail(world,
@@ -688,7 +692,7 @@ vkr_physics_character_step(VkrPhysicsWorld *world, VkrPhysicsCharacter handle,
                            VkrPhysicsCharacterState *state) {
   if (!world || world->dispatching || world->reserved_destructions || !input ||
       !state || !finite_vector(input->velocity, 3) ||
-      !finite_vector(input->gravity, 3) || !std::isfinite(input->dt) ||
+      !finite_vector(input->gravity, 3) || !vkr_is_finite_f32(input->dt) ||
       input->dt <= 0 || input->dt > 0.1f) {
     return fail(world, "Invalid character step or mutation boundary");
   }
@@ -804,9 +808,9 @@ static bool8_t build_shape(const VkrPhysicsColliderDesc &c,
     break;
   case VKR_PHYSICS_SPHERE:
   case VKR_PHYSICS_CAPSULE:
-    if (!std::isfinite(c.radius) || c.radius <= 0 ||
+    if (!vkr_is_finite_f32(c.radius) || c.radius <= 0 ||
         c.radius > VKR_PHYSICS_MAX_COORDINATE ||
-        !std::isfinite(c.half_height) || c.half_height < 0 ||
+        !vkr_is_finite_f32(c.half_height) || c.half_height < 0 ||
         c.half_height > VKR_PHYSICS_MAX_COORDINATE ||
         c.scale[0] != c.scale[1] || c.scale[0] != c.scale[2]) {
       return shape_fail(
@@ -879,11 +883,11 @@ static bool8_t build_shape(const VkrPhysicsColliderDesc &c,
     const uint32_t samples = g.height_samples;
     if (!g.positions || samples < 4 || samples > 8192 || samples % 4 ||
         g.vertex_count != samples * samples ||
-        !std::isfinite(g.height_spacing) || g.height_spacing <= 0) {
+        !vkr_is_finite_f32(g.height_spacing) || g.height_spacing <= 0) {
       return shape_fail(error, "Invalid height field size or spacing");
     }
     for (uint32_t i = 0; i < g.vertex_count; ++i) {
-      if (!std::isfinite(g.positions[i]) &&
+      if (!vkr_is_finite_f32(g.positions[i]) &&
           g.positions[i] != VKR_PHYSICS_HEIGHT_HOLE) {
         return shape_fail(error, "Invalid height field sample");
       }
@@ -911,7 +915,8 @@ static bool8_t build_shape(const VkrPhysicsColliderDesc &c,
   }
   const auto bounds = shape->GetLocalBounds();
   for (uint32_t axis = 0; axis < 3; ++axis) {
-    if (std::max(std::abs(bounds.mMin[axis]), std::abs(bounds.mMax[axis])) *
+    if (std::max(vkr_abs_f32(bounds.mMin[axis]),
+                 vkr_abs_f32(bounds.mMax[axis])) *
             c.scale[axis] >
         VKR_PHYSICS_MAX_COORDINATE) {
       return shape_fail(error,
@@ -997,14 +1002,14 @@ extern "C" bool8_t vkr_physics_body_create(VkrPhysicsWorld *world,
       desc->collider_count > VKR_PHYSICS_MAX_COLLIDERS ||
       desc->motion < VKR_PHYSICS_STATIC || desc->motion > VKR_PHYSICS_DYNAMIC ||
       !finite_vector(desc->position, 3) || !valid_rotation(desc->rotation) ||
-      !std::isfinite(desc->mass) || desc->mass <= 0 ||
-      !std::isfinite(desc->friction) || desc->friction < 0 ||
-      desc->friction > 1 || !std::isfinite(desc->restitution) ||
+      !vkr_is_finite_f32(desc->mass) || desc->mass <= 0 ||
+      !vkr_is_finite_f32(desc->friction) || desc->friction < 0 ||
+      desc->friction > 1 || !vkr_is_finite_f32(desc->restitution) ||
       desc->restitution < 0 || desc->restitution > 1 ||
-      !std::isfinite(desc->gravity_factor) ||
-      std::abs(desc->gravity_factor) > 100 ||
-      !std::isfinite(desc->linear_damping) || desc->linear_damping < 0 ||
-      desc->linear_damping > 1 || !std::isfinite(desc->angular_damping) ||
+      !vkr_is_finite_f32(desc->gravity_factor) ||
+      vkr_abs_f32(desc->gravity_factor) > 100 ||
+      !vkr_is_finite_f32(desc->linear_damping) || desc->linear_damping < 0 ||
+      desc->linear_damping > 1 || !vkr_is_finite_f32(desc->angular_damping) ||
       desc->angular_damping < 0 || desc->angular_damping > 1) {
     return fail(world, "Invalid physics body description");
   }
@@ -1283,7 +1288,7 @@ extern "C" bool8_t vkr_physics_body_move_kinematic(VkrPhysicsWorld *world,
   if (!slot || slot->destroy_reserved ||
       slot->motion != VKR_PHYSICS_KINEMATIC || !slot->enabled ||
       !finite_vector(position, 3) || !valid_rotation(rotation) ||
-      !std::isfinite(dt) || dt <= 0 || dt > 0.1f) {
+      !vkr_is_finite_f32(dt) || dt <= 0 || dt > 0.1f) {
     return fail(world, "Invalid kinematic target");
   }
   world->system.GetBodyInterface().MoveKinematic(slot->id, vec(position),
@@ -1350,8 +1355,8 @@ extern "C" bool8_t vkr_physics_world_set_gravity(VkrPhysicsWorld *world,
     return fail(world, "Physics mutation or drain during event dispatch");
   }
   if (!world || !gravity || !finite_vector(gravity, 3) ||
-      std::abs(gravity[0]) > 1000.0f || std::abs(gravity[1]) > 1000.0f ||
-      std::abs(gravity[2]) > 1000.0f) {
+      vkr_abs_f32(gravity[0]) > 1000.0f || vkr_abs_f32(gravity[1]) > 1000.0f ||
+      vkr_abs_f32(gravity[2]) > 1000.0f) {
     return fail(world, "Gravity must be finite and within 1000 m/s^2");
   }
   try {
@@ -1452,7 +1457,7 @@ extern "C" bool8_t vkr_physics_step(VkrPhysicsWorld *world, float32_t dt) {
   }
 
   if (!world || world->faulted || world->reserved_destructions ||
-      !std::isfinite(dt) || dt <= 0 || dt > 0.1f) {
+      !vkr_is_finite_f32(dt) || dt <= 0 || dt > 0.1f) {
     return fail(world, "Invalid physics timestep or faulted world");
   }
   try {
@@ -1614,7 +1619,7 @@ vkr_physics_overlap_sphere(VkrPhysicsWorld *world, const float32_t center[3],
     *out_count = 0;
   }
   if (!world || world->faulted || !out_count || (!hits && capacity) ||
-      !finite_vector(center, 3) || !std::isfinite(radius) || radius <= 0 ||
+      !finite_vector(center, 3) || !vkr_is_finite_f32(radius) || radius <= 0 ||
       radius > 1.0e7f) {
     return fail(world, "Invalid sphere overlap query");
   }
@@ -1990,7 +1995,7 @@ vkr_physics_sweep_sphere(VkrPhysicsWorld *world, const float32_t origin[3],
                          const VkrPhysicsQueryFilter *filter,
                          VkrPhysicsRayHit *hit, bool8_t *found) {
   if (!world || world->faulted || !hit || !found || !finite_vector(origin, 3) ||
-      !finite_vector(displacement, 3) || !std::isfinite(radius) ||
+      !finite_vector(displacement, 3) || !vkr_is_finite_f32(radius) ||
       radius <= 0 || radius > VKR_PHYSICS_MAX_COORDINATE ||
       !valid_query_filter(filter)) {
     return fail(world, "Invalid sphere sweep");
@@ -2075,9 +2080,9 @@ static void remove_attached_joints(VkrPhysicsWorld *world,
 static bool valid_joint_axes(const float32_t axis[3],
                              const float32_t normal[3]) {
   return finite_vector(axis, 3) && finite_vector(normal, 3) &&
-         std::abs(vec(axis).LengthSq() - 1) < 0.0001f &&
-         std::abs(vec(normal).LengthSq() - 1) < 0.0001f &&
-         std::abs(vec(axis).Dot(vec(normal))) < 0.0001f;
+         vkr_abs_f32(vec(axis).LengthSq() - 1) < 0.0001f &&
+         vkr_abs_f32(vec(normal).LengthSq() - 1) < 0.0001f &&
+         vkr_abs_f32(vec(axis).Dot(vec(normal))) < 0.0001f;
 }
 
 static void joint_body_changed(VkrPhysicsWorld *world, VkrPhysicsBody handle) {
@@ -2117,7 +2122,8 @@ extern "C" bool8_t vkr_physics_joint_create(VkrPhysicsWorld *world,
     return fail(world, "Joint needs live bodies and at least one dynamic body");
   }
   if (desc->type != VKR_PHYSICS_JOINT_FIXED &&
-      (!std::isfinite(desc->min_limit) || !std::isfinite(desc->max_limit) ||
+      (!vkr_is_finite_f32(desc->min_limit) ||
+       !vkr_is_finite_f32(desc->max_limit) ||
        desc->min_limit > desc->max_limit ||
        (desc->type == VKR_PHYSICS_JOINT_DISTANCE
             ? (desc->min_limit < 0 ||
@@ -2127,8 +2133,8 @@ extern "C" bool8_t vkr_physics_joint_create(VkrPhysicsWorld *world,
     return fail(world, "Invalid joint limits");
   }
   if (desc->type == VKR_PHYSICS_JOINT_SWING_TWIST &&
-      (!std::isfinite(desc->swing_normal_limit) ||
-       !std::isfinite(desc->swing_plane_limit) ||
+      (!vkr_is_finite_f32(desc->swing_normal_limit) ||
+       !vkr_is_finite_f32(desc->swing_plane_limit) ||
        desc->swing_normal_limit < 0 || desc->swing_normal_limit > JPH::JPH_PI ||
        desc->swing_plane_limit < 0 || desc->swing_plane_limit > JPH::JPH_PI)) {
     return fail(world, "Invalid swing cone limits");

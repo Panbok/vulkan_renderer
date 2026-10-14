@@ -1,6 +1,12 @@
 #include "core/vkr_gamepad.h"
 #if defined(PLATFORM_WINDOWS)
+/* This unit's own Win32 include: renderer and runtime builds keep
+   <windows.h> out of lib headers (ADR-118). */
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <Xinput.h>
+#include <windows.h>
 #endif
 
 // todo: we should re-work our windows impl from XInput to GameInput API,

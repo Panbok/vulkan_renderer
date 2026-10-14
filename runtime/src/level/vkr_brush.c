@@ -2,8 +2,6 @@
 
 #include "containers/vkr_sort.h"
 
-#include <math.h>
-
 /* Clipping works in double precision: a face starts as a square
    VKR_BRUSH_EXTENT meters wide, and float error at that size would exceed
    the weld distance. */
@@ -39,7 +37,9 @@ static BrushPoint brush_scale(BrushPoint a, float64_t s) {
   return (BrushPoint){a.x * s, a.y * s, a.z * s};
 }
 
-static float64_t brush_length(BrushPoint a) { return sqrt(brush_dot(a, a)); }
+static float64_t brush_length(BrushPoint a) {
+  return vkr_sqrt_f64(brush_dot(a, a));
+}
 
 /* Keeps the part of `in` inside `plane` (Sutherland-Hodgman). */
 static uint32_t brush_clip(const BrushPoint *in, uint32_t count,
@@ -113,7 +113,8 @@ static VkrBrushError brush_build(const VkrBrushPlane *planes, uint32_t count,
     const BrushPoint normal = {planes[i].normal.x, planes[i].normal.y,
                                planes[i].normal.z};
     const float64_t length = brush_length(normal);
-    if (!isfinite(length) || length < 1.0e-6 || !isfinite(planes[i].distance)) {
+    if (!vkr_is_finite_f64(length) || length < 1.0e-6 ||
+        !vkr_is_finite_f32(planes[i].distance)) {
       if (out_face) {
         *out_face = i;
       }
@@ -124,15 +125,18 @@ static VkrBrushError brush_build(const VkrBrushPlane *planes, uint32_t count,
   }
   out->face_count = count;
   out->vertex_count = 0u;
-  out->min = vec3_new(INFINITY, INFINITY, INFINITY);
-  out->max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  out->min =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  out->max =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   float64_t volume = 0.0;
   for (uint32_t face = 0; face < count; ++face) {
     const BrushPoint n = normalized[face].normal;
     /* u x v = n, so the square, and every clip of it, winds
        counterclockwise seen from outside. */
-    const BrushPoint helper = fabs(n.y) < 0.9 ? (BrushPoint){0.0, 1.0, 0.0}
-                                              : (BrushPoint){1.0, 0.0, 0.0};
+    const BrushPoint helper = vkr_abs_f64(n.y) < 0.9
+                                  ? (BrushPoint){0.0, 1.0, 0.0}
+                                  : (BrushPoint){1.0, 0.0, 0.0};
     BrushPoint u = brush_cross(helper, n);
     u = brush_scale(u, 1.0 / brush_length(u));
     const BrushPoint v = brush_cross(n, u);
@@ -196,7 +200,8 @@ static VkrBrushError brush_build(const VkrBrushPlane *planes, uint32_t count,
         vec3_new((float32_t)n.x, (float32_t)n.y, (float32_t)n.z);
     for (uint32_t i = 0; i < welded_count; ++i) {
       const BrushPoint p = welded[i];
-      if (fabs(p.x) > r * 0.5 || fabs(p.y) > r * 0.5 || fabs(p.z) > r * 0.5) {
+      if (vkr_abs_f64(p.x) > r * 0.5 || vkr_abs_f64(p.y) > r * 0.5 ||
+          vkr_abs_f64(p.z) > r * 0.5) {
         if (out_face) {
           *out_face = face;
         }
@@ -225,9 +230,9 @@ static VkrBrushError brush_build(const VkrBrushPlane *planes, uint32_t count,
 }
 
 void vkr_brush_texture_axes(Vec3 normal, Vec3 *out_u, Vec3 *out_v) {
-  const float32_t ax = fabsf(normal.x);
-  const float32_t ay = fabsf(normal.y);
-  const float32_t az = fabsf(normal.z);
+  const float32_t ax = vkr_abs_f32(normal.x);
+  const float32_t ay = vkr_abs_f32(normal.y);
+  const float32_t az = vkr_abs_f32(normal.z);
   if (ay >= ax && ay >= az) {
     /* Floors and ceilings: north (-Z) is up in the texture. */
     *out_u = vec3_new(1.0f, 0.0f, 0.0f);
@@ -249,10 +254,10 @@ Vec2 vkr_brush_uv(Vec3 point, Vec3 normal, Vec2 offset, Vec2 scale,
   vkr_brush_texture_axes(normal, &u, &v);
   const float32_t s = vec3_dot(point, u);
   const float32_t t = vec3_dot(point, v);
-  const float32_t c = cosf(rotation);
-  const float32_t sn = sinf(rotation);
-  const float32_t su = fabsf(scale.x) > 1.0e-6f ? scale.x : 1.0f;
-  const float32_t sv = fabsf(scale.y) > 1.0e-6f ? scale.y : 1.0f;
+  const float32_t c = vkr_cos_f32(rotation);
+  const float32_t sn = vkr_sin_f32(rotation);
+  const float32_t su = vkr_abs_f32(scale.x) > 1.0e-6f ? scale.x : 1.0f;
+  const float32_t sv = vkr_abs_f32(scale.y) > 1.0e-6f ? scale.y : 1.0f;
   return vec2_new((s * c - t * sn) / su + offset.x,
                   (s * sn + t * c) / sv + offset.y);
 }
@@ -260,8 +265,9 @@ Vec2 vkr_brush_uv(Vec3 point, Vec3 normal, Vec2 offset, Vec2 scale,
 /* An orthonormal basis of the plane with unit normal `normal`: u is
    perpendicular to the world axis least aligned with the normal. */
 static void brush_lightmap_basis(Vec3 normal, Vec3 *out_u, Vec3 *out_v) {
-  const Vec3 reference = fabsf(normal.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
-                                                : vec3_new(1.0f, 0.0f, 0.0f);
+  const Vec3 reference = vkr_abs_f32(normal.y) < 0.9f
+                             ? vec3_new(0.0f, 1.0f, 0.0f)
+                             : vec3_new(1.0f, 0.0f, 0.0f);
   *out_u = vec3_normalize(vec3_cross(reference, normal));
   *out_v = vec3_cross(normal, *out_u);
 }
@@ -276,10 +282,10 @@ VkrBrushLightmapChart vkr_brush_lightmap_chart(const VkrBrushGeometry *geometry,
   Vec3 u;
   Vec3 v;
   brush_lightmap_basis(geometry->normals[face], &u, &v);
-  float32_t min_u = INFINITY;
-  float32_t min_v = INFINITY;
-  float32_t max_u = -INFINITY;
-  float32_t max_v = -INFINITY;
+  float32_t min_u = VKR_FLOAT_INFINITY;
+  float32_t min_v = VKR_FLOAT_INFINITY;
+  float32_t max_u = -VKR_FLOAT_INFINITY;
+  float32_t max_v = -VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < polygon.count; ++i) {
     const Vec3 p = geometry->vertices[polygon.first + i];
     const float32_t s = vec3_dot(p, u);
@@ -304,7 +310,7 @@ VkrBrushLightmapChart vkr_brush_lightmap_chart(const VkrBrushGeometry *geometry,
 /* A chart's size in texels at `texels_per_unit`, padding included. */
 static uint32_t brush_lightmap_chart_texels(float32_t low, float32_t high,
                                             float32_t texels_per_unit) {
-  return Max(1u, (uint32_t)ceilf((high - low) * texels_per_unit)) +
+  return Max(1u, (uint32_t)vkr_ceil_f32((high - low) * texels_per_unit)) +
          2u * VKR_BRUSH_LIGHTMAP_PADDING;
 }
 
@@ -345,7 +351,7 @@ static bool8_t brush_lightmap_pack_at(VkrBrushLightmapChart *charts,
     widest = Max(widest, width);
   }
   const uint32_t atlas_width =
-      Max(widest, (uint32_t)ceil(sqrt((float64_t)area)));
+      Max(widest, (uint32_t)vkr_ceil_f64(vkr_sqrt_f64((float64_t)area)));
   uint32_t x = 0u;
   uint32_t y = 0u;
   uint32_t row = 0u;
@@ -452,7 +458,7 @@ uint32_t vkr_brush_wedge_planes(Vec3 min, Vec3 max, uint32_t slope_axis,
   out[count++] = brush_plane(0.0f, -1.0f, 0.0f, -min.y);
   if (slope_axis <= 1u) {
     const float32_t run = max.x - min.x;
-    const float32_t length = sqrtf(run * run + height * height);
+    const float32_t length = vkr_sqrt_f32(run * run + height * height);
     const float32_t sign = slope_axis == 0u ? 1.0f : -1.0f;
     const Vec3 normal = vec3_new(sign * height / length, run / length, 0.0f);
     /* The slope meets the floor along the low side's bottom edge. */
@@ -465,7 +471,7 @@ uint32_t vkr_brush_wedge_planes(Vec3 min, Vec3 max, uint32_t slope_axis,
     out[count++] = brush_plane(0.0f, 0.0f, -1.0f, -min.z);
   } else {
     const float32_t run = max.z - min.z;
-    const float32_t length = sqrtf(run * run + height * height);
+    const float32_t length = vkr_sqrt_f32(run * run + height * height);
     const float32_t sign = slope_axis == 2u ? 1.0f : -1.0f;
     const Vec3 normal = vec3_new(0.0f, run / length, sign * height / length);
     const Vec3 low = vec3_new(0.0f, min.y, slope_axis == 2u ? max.z : min.z);
@@ -487,11 +493,11 @@ uint32_t vkr_brush_cylinder_planes(Vec3 center, float32_t radius,
      side k faces 2*pi*k/sides, which keeps a 4- or 8-sided prism aligned to
      the axes. */
   const float32_t inscribed =
-      radius * cosf(3.14159265358979f / (float32_t)sides);
+      radius * vkr_cos_f32(3.14159265358979f / (float32_t)sides);
   uint32_t count = 0u;
   for (uint32_t k = 0; k < sides; ++k) {
     const float32_t angle = 6.28318530717959f * (float32_t)k / (float32_t)sides;
-    const Vec3 normal = vec3_new(cosf(angle), 0.0f, sinf(angle));
+    const Vec3 normal = vec3_new(vkr_cos_f32(angle), 0.0f, vkr_sin_f32(angle));
     out[count++] = brush_plane(normal.x, 0.0f, normal.z,
                                vec3_dot(normal, center) + inscribed);
   }
@@ -658,7 +664,7 @@ bool8_t vkr_brush_merge(const VkrBrushPlane *const *planes,
       }
       for (uint32_t k = 0; k < out->count && bounding; ++k) {
         bounding = vec3_dot(out->planes[k].normal, n) < 0.9999f ||
-                   fabsf(out->planes[k].distance - d) > 1.0e-3f;
+                   vkr_abs_f32(out->planes[k].distance - d) > 1.0e-3f;
       }
       if (bounding && !brush_piece_push(out, (VkrBrushPlane){n, d}, source)) {
         return false_v;
@@ -669,7 +675,7 @@ bool8_t vkr_brush_merge(const VkrBrushPlane *const *planes,
     return false_v;
   }
   /* Overlapping or non-convex inputs change the volume. */
-  return fabsf(scratch->volume - volume) <= 1.0e-3f * Max(volume, 1.0f);
+  return vkr_abs_f32(scratch->volume - volume) <= 1.0e-3f * Max(volume, 1.0f);
 }
 
 // =============================================================================
@@ -737,8 +743,8 @@ uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
         }
         normal = brush_scale(normal, 1.0 / length);
         float64_t distance = brush_dot(normal, a);
-        float64_t above = -INFINITY;
-        float64_t below = INFINITY;
+        float64_t above = -VKR_FLOAT_INFINITY;
+        float64_t below = VKR_FLOAT_INFINITY;
         for (uint32_t m = 0; m < n; ++m) {
           const float64_t s =
               brush_dot(normal, brush_point(unique[m])) - distance;
@@ -763,7 +769,7 @@ uint32_t vkr_brush_hull(const Vec3 *points, uint32_t count, VkrBrushPlane *out,
         bool8_t repeated = false_v;
         for (uint32_t p = 0; p < written && !repeated; ++p) {
           repeated = vec3_dot(out[p].normal, plane.normal) > 1.0f - 1.0e-5f &&
-                     fabsf(out[p].distance - plane.distance) < 1.0e-3f;
+                     vkr_abs_f32(out[p].distance - plane.distance) < 1.0e-3f;
         }
         if (repeated) {
           continue;
@@ -808,11 +814,11 @@ static int32_t brush_slot_compare(const void *lhs, const void *rhs) {
    positive direction, the next bit the negative. */
 static uint32_t brush_normal_classes(Vec3 normal, float32_t slack) {
   const float32_t components[3] = {normal.x, normal.y, normal.z};
-  const float32_t largest =
-      Max(fabsf(normal.x), Max(fabsf(normal.y), fabsf(normal.z)));
+  const float32_t largest = Max(
+      vkr_abs_f32(normal.x), Max(vkr_abs_f32(normal.y), vkr_abs_f32(normal.z)));
   uint32_t classes = 0u;
   for (uint32_t axis = 0; axis < 3u; ++axis) {
-    if (fabsf(components[axis]) >= largest - slack) {
+    if (vkr_abs_f32(components[axis]) >= largest - slack) {
       classes |= 1u << (2u * axis + (components[axis] < 0.0f ? 1u : 0u));
     }
   }
@@ -892,7 +898,7 @@ static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
     perimeter += vec3_length(vec3_sub(next, in[k]));
   }
   *out_center = vec3_add(origin, vec3_scale(sum, 1.0f / (float32_t)count));
-  const float32_t area = 0.5f * fabsf(vec3_dot(twice, a->normal));
+  const float32_t area = 0.5f * vkr_abs_f32(vec3_dot(twice, a->normal));
   /* A strip about 2 * area / perimeter wide: narrower than the tolerance,
      the faces only touch along an edge, as float error leaves between ring
      pieces sharing a plane, and no pixel shows both. */
@@ -909,12 +915,16 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
                                      VkrBrushFaceOverlap *out,
                                      uint32_t capacity) {
   /* The faces' common center keeps every plane distance small. */
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t i = 0; i < count; ++i) {
     VkrBrushFaceRef *face = &faces[i];
-    face->lo = vec3_new(INFINITY, INFINITY, INFINITY);
-    face->hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    face->lo =
+        vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    face->hi =
+        vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     if (face->count < 3u || face->count > VKR_BRUSH_POLYGON_MAX) {
       continue;
     }
@@ -934,7 +944,7 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
   float32_t reach_max = 0.0f;
   for (uint32_t i = 0; i < count; ++i) {
     VkrBrushFaceRef *face = &faces[i];
-    face->key = INFINITY;
+    face->key = VKR_FLOAT_INFINITY;
     face->reach = 0.0f;
     if (face->count < 3u || face->count > VKR_BRUSH_POLYGON_MAX) {
       continue;
@@ -946,7 +956,7 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
     }
     const float32_t key =
         vec3_dot(face->normal, vec3_sub(vertices[face->first], center));
-    if (isfinite(key) && isfinite(reach)) {
+    if (vkr_is_finite_f32(key) && vkr_is_finite_f32(reach)) {
       face->key = key;
       face->reach = reach;
       reach_max = Max(reach_max, reach);
@@ -961,8 +971,8 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
      bucket. A pair meets only in the first bucket they share: never as two
      echoes, and only in the lowest class both take. */
   const float32_t radians = VKR_BRUSH_COPLANAR_DEGREES * 0.01745329252f;
-  const float32_t spread = 2.0f * sinf(0.5f * radians);
-  const float32_t cos_min = cosf(radians);
+  const float32_t spread = 2.0f * vkr_sin_f32(0.5f * radians);
+  const float32_t cos_min = vkr_cos_f32(radians);
   const float32_t margin = Max(gap, VKR_BRUSH_COPLANAR_DISTANCE);
   const float32_t window = margin + spread * reach_max;
   /* Within a bucket, faces sweep along an axis no common face is
@@ -971,10 +981,10 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
   uint32_t slot_count = 0u;
   for (uint32_t i = 0; i < count; ++i) {
     const VkrBrushFaceRef *face = &faces[i];
-    if (face->key == INFINITY) {
+    if (face->key == VKR_FLOAT_INFINITY) {
       continue;
     }
-    const int64_t cell = (int64_t)floorf(face->key / window);
+    const int64_t cell = (int64_t)vkr_floor_f32(face->key / window);
     const uint32_t classes =
         brush_normal_classes(face->normal, 2.0f * spread + 1.0e-5f);
     for (uint32_t c = 0; c < BRUSH_SLOT_CLASSES; ++c) {
@@ -1015,7 +1025,8 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
       const VkrBrushFaceRef *a = &faces[first->face];
       const VkrBrushFaceRef *b = &faces[second->face];
       if (b->owner == a->owner || vec3_dot(a->normal, b->normal) < cos_min ||
-          fabsf(b->key - a->key) > margin + spread * Min(a->reach, b->reach)) {
+          vkr_abs_f32(b->key - a->key) >
+              margin + spread * Min(a->reach, b->reach)) {
         continue;
       }
       /* The overlap lies in both boxes: its area is at most their common
@@ -1028,9 +1039,9 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
           Max(0.0f, Min(a->hi.y, b->hi.y) - Max(a->lo.y, b->lo.y));
       const float32_t ez =
           Max(0.0f, Min(a->hi.z, b->hi.z) - Max(a->lo.z, b->lo.z));
-      const float32_t nx = fabsf(n.x);
-      const float32_t ny = fabsf(n.y);
-      const float32_t nz = fabsf(n.z);
+      const float32_t nx = vkr_abs_f32(n.x);
+      const float32_t ny = vkr_abs_f32(n.y);
+      const float32_t nz = vkr_abs_f32(n.z);
       const float32_t bound = nx >= ny && nx >= nz ? ey * ez / nx
                               : ny >= nz           ? ex * ez / ny
                                                    : ex * ey / nz;
@@ -1071,8 +1082,8 @@ static uint32_t brush_reshape_source(const VkrBrushPiece *input,
     const float32_t length = vec3_length(input->planes[i].normal);
     const Vec3 n = vec3_scale(input->planes[i].normal, 1.0f / length);
     const float32_t facing = vec3_dot(n, plane.normal);
-    if (facing > 0.9999f &&
-        fabsf(input->planes[i].distance / length - plane.distance) < 1.0e-3f) {
+    if (facing > 0.9999f && vkr_abs_f32(input->planes[i].distance / length -
+                                        plane.distance) < 1.0e-3f) {
       return input->source[i];
     }
     if (facing > best) {
@@ -1154,7 +1165,7 @@ static bool8_t brush_dent_plane(const Vec3 *corners, uint32_t count,
   for (uint32_t i = 0; i < count; ++i) {
     *out_deviation =
         Max(*out_deviation,
-            fabs(brush_dot(out->normal, points[i]) - out->distance));
+            vkr_abs_f64(brush_dot(out->normal, points[i]) - out->distance));
   }
   return true_v;
 }
@@ -1262,8 +1273,8 @@ static uint32_t brush_dent_fragment(const BrushDentSolid *solid, uint32_t face,
   }
   for (uint32_t c = 0; c < cell->count && count; ++c) {
     const BrushPlaneD *plane = &cell->planes[c];
-    float64_t above = -INFINITY;
-    float64_t below = INFINITY;
+    float64_t above = -VKR_FLOAT_INFINITY;
+    float64_t below = VKR_FLOAT_INFINITY;
     for (uint32_t i = 0; i < count; ++i) {
       const float64_t s =
           brush_dot(plane->normal, polygon[current][i]) - plane->distance;
@@ -1307,7 +1318,8 @@ static bool8_t brush_dent_push(VkrBrushPiece *piece, BrushPlaneD plane,
   };
   for (uint32_t i = 0; i < piece->count; ++i) {
     if (vec3_dot(piece->planes[i].normal, value.normal) > 1.0f - 1.0e-6f &&
-        fabsf(piece->planes[i].distance - value.distance) < VKR_BRUSH_WELD) {
+        vkr_abs_f32(piece->planes[i].distance - value.distance) <
+            VKR_BRUSH_WELD) {
       return true_v;
     }
   }
@@ -1404,8 +1416,8 @@ static VkrBrushError brush_dent_cut(const BrushDentSolid *solid,
           continue;
         }
         const BrushPlaneD *plane = &solid->faces[f].plane;
-        float64_t above = -INFINITY;
-        float64_t below = INFINITY;
+        float64_t above = -VKR_FLOAT_INFINITY;
+        float64_t below = VKR_FLOAT_INFINITY;
         for (uint32_t i = 0; i < count; ++i) {
           const float64_t s =
               brush_dot(plane->normal, fragment[i]) - plane->distance;
@@ -1470,7 +1482,7 @@ static VkrBrushError brush_dent_cut(const BrushDentSolid *solid,
     pieces_volume += scratch->volume;
     out[(*written)++] = piece;
   }
-  if (!(fabs(pieces_volume - volume) <= 1.0e-3 * Max(volume, 1.0e-3))) {
+  if (!(vkr_abs_f64(pieces_volume - volume) <= 1.0e-3 * Max(volume, 1.0e-3))) {
     return VKR_BRUSH_ERROR_CONCAVE;
   }
   return VKR_BRUSH_OK;
@@ -1553,7 +1565,7 @@ VkrBrushError vkr_brush_reshape(const VkrBrushPlane *planes, uint32_t count,
       if (!moved[c]) {
         continue;
       }
-      float32_t outside = -INFINITY;
+      float32_t outside = -VKR_FLOAT_INFINITY;
       for (uint32_t h = 0; h < hull_count; ++h) {
         outside = Max(outside,
                       vec3_dot(hull[h].normal, corners[c]) - hull[h].distance);
@@ -1651,7 +1663,7 @@ bool8_t vkr_brush_patch_prism(const VkrBrushPlane *planes, uint32_t count,
   for (uint32_t i = 0; i < count; ++i) {
     const float32_t side_length = vec3_length(planes[i].normal);
     const Vec3 side = vec3_scale(planes[i].normal, 1.0f / side_length);
-    if (i != face && fabsf(vec3_dot(side, normal)) < 0.05f) {
+    if (i != face && vkr_abs_f32(vec3_dot(side, normal)) < 0.05f) {
       sides[side_count++] =
           (VkrBrushPlane){side, planes[i].distance / side_length};
     }

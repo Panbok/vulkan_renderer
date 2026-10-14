@@ -14,12 +14,12 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
-#include <math.h>
-#include <stdlib.h>
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/world/vkr_text_3d.h"
@@ -189,10 +189,10 @@ void vkr_scene_reset_diffuse_volume(VkrScene *scene,
   for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
     scene_release_owned_texture_handle((VkrRenderAssets *)assets, textures[i]);
   }
-  free(volume->brick_entries);
-  free(volume->probe_valid);
-  free(volume->baked_lights);
-  free(volume);
+  vkr_heap_free(volume->brick_entries);
+  vkr_heap_free(volume->probe_valid);
+  vkr_heap_free(volume->baked_lights);
+  vkr_heap_free(volume);
   scene->diffuse_volume = NULL;
   /* Probe light ratios refer to the volume's layers and composition. */
   for (uint32_t i = 0u; i < scene->reflection_probe_count; ++i) {
@@ -235,8 +235,8 @@ bool8_t vkr_scene_request_atmosphere(VkrScene *scene,
   if (!scene || !settings || !clouds ||
       !vkr_atmosphere_settings_valid(settings) ||
       !vkr_cloud_settings_valid(clouds) ||
-      (clouds->enabled && !settings->enabled) || !isfinite(sh_deringing) ||
-      sh_deringing < 0.0f) {
+      (clouds->enabled && !settings->enabled) ||
+      !vkr_is_finite_f32(sh_deringing) || sh_deringing < 0.0f) {
     return false_v;
   }
   const VkrAtmosphereSettings normalized =
@@ -562,7 +562,7 @@ bool8_t vkr_scene_migrate_world_type(VkrScene *scene, const VkrTypeDesc *type,
   char name[160];
   VkrComponentTypeId id = VKR_COMPONENT_TYPE_INVALID;
   for (uint32_t n = 1u; n < 4096u && id == VKR_COMPONENT_TYPE_INVALID; ++n) {
-    snprintf(name, sizeof(name), "%s#%u", type->name, n);
+    string_format(name, sizeof(name), "%s#%u", type->name, n);
     if (vkr_entity_find_component(world, name) == VKR_COMPONENT_TYPE_INVALID) {
       id = vkr_entity_register_component(world, name, type->size, type->align);
       break;
@@ -877,10 +877,10 @@ bool8_t vkr_scene_mesh_info(const VkrScene *scene, VkrEntityId entity,
     }
   }
   if (first && others) {
-    snprintf(out->material, sizeof(out->material), "%s (+%u)", first->name,
-             others);
+    string_format(out->material, sizeof(out->material), "%s (+%u)", first->name,
+                  others);
   } else if (first) {
-    snprintf(out->material, sizeof(out->material), "%s", first->name);
+    string_format(out->material, sizeof(out->material), "%s", first->name);
   }
   return true_v;
 }
@@ -2568,7 +2568,7 @@ vkr_internal float64_t scene_clock_hour(const VkrScene *scene,
         (float64_t)(ticks - start) * VKR_SCENE_SIMULATION_FIXED_DT;
     hour += seconds * 24.0 / ((float64_t)time->day_minutes * 60.0);
   }
-  hour = fmod(hour, 24.0);
+  hour = vkr_fmod_f64(hour, 24.0);
   return hour < 0.0 ? hour + 24.0 : hour;
 }
 
@@ -2595,7 +2595,7 @@ vkr_internal float32_t scene_night(const VkrSceneSun *sun) {
     return 1.0f;
   }
   const float32_t height = Clamp(-sun->light.direction.y / length, -1.0f, 1.0f);
-  const float32_t elevation = vkr_to_degrees(asinf(height));
+  const float32_t elevation = vkr_to_degrees(vkr_asin_f32(height));
   const float32_t t = Clamp(elevation / 5.0f, 0.0f, 1.0f);
   return 1.0f - t * t * (3.0f - 2.0f * t);
 }
@@ -2629,7 +2629,7 @@ vkr_internal uint8_t scene_light_group_slot(VkrScene *scene, const char *name) {
   const char *group = name[0] ? name : VKR_LIGHT_GROUP_DEFAULT;
   VkrSceneLightGroups *groups = &scene->light_groups;
   for (uint32_t i = 0u; i < groups->count; ++i) {
-    if (strcmp(groups->names[i], group) == 0) {
+    if (string_equals(groups->names[i], group)) {
       return (uint8_t)i;
     }
   }
@@ -2640,7 +2640,7 @@ vkr_internal uint8_t scene_light_group_slot(VkrScene *scene, const char *name) {
     return VKR_SCENE_LIGHT_GROUP_NONE;
   }
   const uint32_t slot = groups->count++;
-  snprintf(groups->names[slot], sizeof(groups->names[slot]), "%s", group);
+  string_format(groups->names[slot], sizeof(groups->names[slot]), "%s", group);
   groups->intensities[slot] = 1.0f;
   groups->factors[slot] = 1.0f;
   return (uint8_t)slot;
@@ -2651,7 +2651,8 @@ vkr_internal uint8_t scene_light_group_slot(VkrScene *scene, const char *name) {
 vkr_internal bool8_t scene_light_slot(VkrScene *scene,
                                       VkrLightMobility mobility,
                                       const char *group, uint8_t *out_slot) {
-  const uint64_t length = strnlen(group, VKR_LIGHT_GROUP_NAME_BYTES);
+  const uint64_t length =
+      string_length_bounded(group, VKR_LIGHT_GROUP_NAME_BYTES);
   if (mobility > VKR_LIGHT_MOBILITY_DYNAMIC ||
       !vkr_light_group_name_valid(group, length)) {
     return false_v;
@@ -2663,10 +2664,10 @@ vkr_internal bool8_t scene_light_slot(VkrScene *scene,
 }
 
 bool8_t vkr_scene_set_time_of_day_hour(VkrScene *scene, float64_t hour) {
-  if (!scene || !isfinite(hour)) {
+  if (!scene || !vkr_is_finite_f64(hour)) {
     return false_v;
   }
-  hour = fmod(hour, 24.0);
+  hour = vkr_fmod_f64(hour, 24.0);
   scene->clock.set = true_v;
   scene->clock.set_hour = hour < 0.0 ? hour + 24.0 : hour;
   scene->clock.set_tick = scene->simulation.completed_ticks;
@@ -2675,10 +2676,11 @@ bool8_t vkr_scene_set_time_of_day_hour(VkrScene *scene, float64_t hour) {
 
 bool8_t vkr_scene_set_light_group_intensity(VkrScene *scene, const char *name,
                                             float32_t intensity) {
-  if (!scene || !name || !isfinite(intensity) || intensity < 0.0f) {
+  if (!scene || !name || !vkr_is_finite_f32(intensity) || intensity < 0.0f) {
     return false_v;
   }
-  const uint64_t length = strnlen(name, VKR_LIGHT_GROUP_NAME_BYTES);
+  const uint64_t length =
+      string_length_bounded(name, VKR_LIGHT_GROUP_NAME_BYTES);
   if (!vkr_light_group_name_valid(name, length)) {
     return false_v;
   }
@@ -2695,7 +2697,7 @@ void vkr_scene_update_light_groups(VkrScene *scene, float32_t night,
   VkrSceneLightGroups *groups = &scene->light_groups;
   for (uint32_t i = 0u; i < groups->count; ++i) {
     float32_t factor = groups->intensities[i];
-    const uint64_t length = strlen(groups->names[i]);
+    const uint64_t length = string_length(groups->names[i]);
     uint32_t cursor = 0u;
     String8 name = {0};
     while (night_groups &&
@@ -2724,7 +2726,7 @@ void vkr_scene_light_layer_weights(const VkrScene *scene,
     }
     out_weights[layer] = 1.0f;
     for (uint32_t slot = 0u; slot < groups->count; ++slot) {
-      if (strcmp(groups->names[slot], layers[layer].name) == 0) {
+      if (string_equals(groups->names[slot], layers[layer].name)) {
         /* A group that left the bake lights live instead. */
         out_weights[layer] =
             (groups->left_bake & (1u << slot)) ? 0.0f : groups->factors[slot];
@@ -2739,7 +2741,7 @@ void vkr_scene_update_diffuse_volume(VkrScene *scene, float64_t delta_seconds) {
   if (!volume) {
     return;
   }
-  if (isfinite(delta_seconds) && delta_seconds > 0.0) {
+  if (vkr_is_finite_f64(delta_seconds) && delta_seconds > 0.0) {
     volume->since_compose += delta_seconds;
   }
   float32_t weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
@@ -2747,7 +2749,7 @@ void vkr_scene_update_diffuse_volume(VkrScene *scene, float64_t delta_seconds) {
                                 weights);
   float32_t moved = 0.0f;
   for (uint32_t layer = 0u; layer < volume->layer_count; ++layer) {
-    moved = Max(moved, fabsf(weights[layer] - volume->weights[layer]));
+    moved = Max(moved, vkr_abs_f32(weights[layer] - volume->weights[layer]));
   }
   if (moved <= 0.01f || volume->since_compose < VKR_SCENE_SUN_REFRESH_SECONDS) {
     return;
@@ -2823,7 +2825,8 @@ vkr_scene_ensure_dynamic_volume_texture(VkrScene *scene,
   }
   static uint32_t s_dynamic_serial = 0u;
   char name[64];
-  snprintf(name, sizeof(name), "diffuse_volume#dynamic#%u", ++s_dynamic_serial);
+  string_format(name, sizeof(name), "diffuse_volume#dynamic#%u",
+                ++s_dynamic_serial);
   const VkrTextureDescription description = {
       .width = VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u,
       .height = (volume->probe_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
@@ -2847,7 +2850,7 @@ vkr_scene_ensure_dynamic_volume_texture(VkrScene *scene,
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_texture_system_create_writable(
           &assets->texture_system,
-          string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)),
           &description, &volume->dynamic_sh, &error)) {
     String8 error_text = vkr_renderer_get_error_string(error);
     log_error("Scene: diffuse volume dynamic texture failed: %.*s",
@@ -3046,7 +3049,7 @@ void vkr_scene_sync_sun(VkrScene *scene, float64_t delta_seconds) {
   }
 
   atmosphere->live_settings = scene_normalized_atmosphere(&effective);
-  if (isfinite(delta_seconds) && delta_seconds > 0.0) {
+  if (vkr_is_finite_f64(delta_seconds) && delta_seconds > 0.0) {
     atmosphere->sun_refresh_elapsed += delta_seconds;
   }
   if (atmosphere->requested_settings.enabled &&
@@ -3552,7 +3555,7 @@ bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,
   }
   if (matrix) {
     for (uint32_t i = 0; i < 16; ++i) {
-      if (!isfinite(matrix->elements[i])) {
+      if (!vkr_is_finite_f32(matrix->elements[i])) {
         return false_v;
       }
     }
@@ -3750,13 +3753,17 @@ bool8_t vkr_scene_entity_local_bounds(const VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   const Mat4 to_local = mat4_inverse_affine(root->world);
-  Vec3 lower = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lower =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 upper =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   bool8_t found = false_v;
   if (!scene_bounds_walk_children(scene, entity, &to_local, &lower, &upper,
                                   &found)) {
-    lower = vec3_new(INFINITY, INFINITY, INFINITY);
-    upper = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    lower =
+        vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    upper =
+        vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     found = false_v;
     for (uint32_t i = 0; i < scene->topo_count; ++i) {
       const VkrEntityId candidate = scene->topo_order[i];
@@ -3966,15 +3973,16 @@ bool8_t vkr_scene_set_point_light(VkrScene *scene, VkrEntityId entity,
     return false_v;
   light = &value;
 
-  if (!isfinite(light->source_radius) || light->source_radius < 0.0f ||
+  if (!vkr_is_finite_f32(light->source_radius) || light->source_radius < 0.0f ||
       light->source_radius > VKR_POINT_LIGHT_SOURCE_RADIUS_MAX)
     return false_v;
 
-  if (light->casts_shadow && (!isfinite(light->range) || light->range <= 0.0f ||
-                              (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
-                               (!isfinite(light->outer_cone_angle) ||
-                                light->outer_cone_angle <= 0.0f ||
-                                light->outer_cone_angle >= 1.57079632679f))))
+  if (light->casts_shadow &&
+      (!vkr_is_finite_f32(light->range) || light->range <= 0.0f ||
+       (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT &&
+        (!vkr_is_finite_f32(light->outer_cone_angle) ||
+         light->outer_cone_angle <= 0.0f ||
+         light->outer_cone_angle >= 1.57079632679f))))
     return false_v;
 
   // Ensure render ID for picking
@@ -4014,12 +4022,13 @@ ScenePointLight *vkr_scene_get_point_light(VkrScene *scene,
 
 bool8_t vkr_scene_set_rectangle_light(VkrScene *scene, VkrEntityId entity,
                                       const SceneRectangleLight *light) {
-  if (!scene || !scene->world || !light || !isfinite(light->radiance) ||
-      light->radiance < 0.0f || !isfinite(light->size.x) ||
-      !isfinite(light->size.y) || light->size.x <= 0.0f ||
-      light->size.y <= 0.0f || light->enabled > 1u ||
-      !isfinite(light->color.x) || !isfinite(light->color.y) ||
-      !isfinite(light->color.z) || light->color.x < 0.0f ||
+  if (!scene || !scene->world || !light ||
+      !vkr_is_finite_f32(light->radiance) || light->radiance < 0.0f ||
+      !vkr_is_finite_f32(light->size.x) || !vkr_is_finite_f32(light->size.y) ||
+      light->size.x <= 0.0f || light->size.y <= 0.0f || light->enabled > 1u ||
+      !vkr_is_finite_f32(light->color.x) ||
+      !vkr_is_finite_f32(light->color.y) ||
+      !vkr_is_finite_f32(light->color.z) || light->color.x < 0.0f ||
       light->color.y < 0.0f || light->color.z < 0.0f ||
       !vkr_entity_has_component(scene->world, entity, scene->comp_transform))
     return false_v;
@@ -4060,7 +4069,7 @@ SceneRectangleLight *vkr_scene_get_rectangle_light(VkrScene *scene,
 bool8_t vkr_scene_set_directional_light(VkrScene *scene, VkrEntityId entity,
                                         const SceneDirectionalLight *light) {
   if (!scene || !scene->world || !light ||
-      !isfinite(light->sun_angular_diameter_degrees) ||
+      !vkr_is_finite_f32(light->sun_angular_diameter_degrees) ||
       light->sun_angular_diameter_degrees < 0.0f ||
       light->sun_angular_diameter_degrees >
           VKR_DIRECTIONAL_LIGHT_MAX_SUN_ANGULAR_DIAMETER_DEGREES ||
@@ -4403,7 +4412,7 @@ bool8_t vkr_scene_set_editor_hidden(VkrScene *scene,
       return false_v;
     }
     MemCopy(sorted, entities, count * sizeof(*sorted));
-    qsort(sorted, count, sizeof(*sorted), scene_entity_id_compare);
+    vkr_sort(sorted, count, sizeof(*sorted), scene_entity_id_compare);
     same =
         MemCompare(sorted, scene->editor_hidden, count * sizeof(*sorted)) == 0;
   }
@@ -4419,8 +4428,8 @@ bool8_t vkr_scene_set_editor_hidden(VkrScene *scene,
   }
   if (count) {
     MemCopy(scene->editor_hidden, entities, count * sizeof(VkrEntityId));
-    qsort(scene->editor_hidden, count, sizeof(VkrEntityId),
-          scene_entity_id_compare);
+    vkr_sort(scene->editor_hidden, count, sizeof(VkrEntityId),
+             scene_entity_id_compare);
   }
   scene->editor_hidden_count = count;
   scene->editor_isolate = isolate;
@@ -4437,8 +4446,9 @@ bool8_t vkr_scene_editor_shown(const VkrScene *scene, VkrEntityId entity) {
      bounds its own, so a parent cycle cannot loop. */
   const uint32_t max_depth = scene->world->dir.capacity;
   for (uint32_t depth = 0; entity.u64 && depth < max_depth; ++depth) {
-    if (bsearch(&entity, scene->editor_hidden, scene->editor_hidden_count,
-                sizeof(VkrEntityId), scene_entity_id_compare)) {
+    if (vkr_binary_search(&entity, scene->editor_hidden,
+                          scene->editor_hidden_count, sizeof(VkrEntityId),
+                          scene_entity_id_compare)) {
       return scene->editor_isolate;
     }
     const SceneTransform *transform =
@@ -5105,10 +5115,10 @@ vkr_internal void scene_shape_rebuild(VkrScene *scene, VkrEntityId entity) {
   config.color = settings->color;
   config.material_name =
       string8_create_from_cstr((const uint8_t *)settings->material_name,
-                               strlen(settings->material_name));
+                               string_length(settings->material_name));
   config.material_path =
       string8_create_from_cstr((const uint8_t *)settings->material_path,
-                               strlen(settings->material_path));
+                               string_length(settings->material_path));
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
   if (!vkr_scene_set_shape(scene, scene->assets, entity, &config, &error)) {
     log_warn("Scene: shape rebuild failed (%d)", (int)error);
@@ -5144,11 +5154,11 @@ vkr_internal VkrFontHandle scene_text_font(VkrScene *scene, uint32_t font) {
     return scene->text_fonts[font];
   }
   const String8 key =
-      string8_create_from_cstr((const uint8_t *)name, strlen(name));
+      string8_create_from_cstr((const uint8_t *)name, string_length(name));
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_font_system_get_by_name(fonts, key)) {
     char file[96];
-    snprintf(file, sizeof(file), "%s.fontcfg", name);
+    string_format(file, sizeof(file), "%s.fontcfg", name);
     VkrAllocator *scratch = &scene->assets->scratch_allocator;
     VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
     const bool8_t loaded = vkr_font_system_load_from_file(
@@ -5186,7 +5196,7 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
     return;
   }
   const String8 content = string8_create_from_cstr(
-      (const uint8_t *)settings->content, strlen(settings->content));
+      (const uint8_t *)settings->content, string_length(settings->content));
   const SceneText3D *text = vkr_entity_get_component_if_alive_const(
       scene->world, entity, scene->comp_text3d);
   VkrWorldResources *resources = &scene->assets->world_resources;
@@ -5277,8 +5287,8 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
 
   // Create cube geometry
   char shape_name[64];
-  snprintf(shape_name, sizeof(shape_name), "scene_cube_%u_%u",
-           entity.parts.index, entity.parts.generation);
+  string_format(shape_name, sizeof(shape_name), "scene_cube_%u_%u",
+                entity.parts.index, entity.parts.generation);
 
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
   VkrGeometryHandle geom = vkr_geometry_system_create_box(
@@ -5349,8 +5359,8 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct VkrRenderAssets *assets,
   } else {
     // No material specified - create a colored material for this shape
     char mat_name[64];
-    snprintf(mat_name, sizeof(mat_name), "__shape_mat_%u_%u",
-             entity.parts.index, entity.parts.generation);
+    string_format(mat_name, sizeof(mat_name), "__shape_mat_%u_%u",
+                  entity.parts.index, entity.parts.generation);
 
     VkrRendererError mat_err = VKR_RENDERER_ERROR_NONE;
     VkrMaterialHandle colored_mat = vkr_material_system_create_colored(
@@ -5698,12 +5708,12 @@ bool8_t vkr_scene_texture_material_apply(struct VkrRenderAssets *assets,
                                          const char *texture_path) {
   /* A base color texture is sRGB color, as a cooked material names it. */
   char definition[VKR_MATERIAL_PATH_MAX + 256u];
-  const int32_t length = snprintf(
+  const int32_t length = string_format(
       definition, sizeof(definition),
       "name=%s\ntype=pbr\nbase_color_colorspace=srgb\nbase_color=1,1,1,1\n"
       "metallic=0\nroughness=0.5\nbase_color_texture=%s%s\n",
       ref, texture_path,
-      strchr(texture_path, '?') ? "" : "?cs=srgb&tc=color_srgb");
+      string_find_char(texture_path, '?') ? "" : "?cs=srgb&tc=color_srgb");
   if (length <= 0 || (uint64_t)length >= sizeof(definition)) {
     return false_v;
   }
@@ -5713,7 +5723,7 @@ bool8_t vkr_scene_texture_material_apply(struct VkrRenderAssets *assets,
   const bool8_t applied = vkr_material_loader_replace_live(
       &assets->material_system,
       string8_create_from_cstr((const uint8_t *)texture_path,
-                               strlen(texture_path)),
+                               string_length(texture_path)),
       string8_create((uint8_t *)definition, (uint64_t)length),
       &assets->scratch_allocator, &error);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -5729,7 +5739,7 @@ VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
      file, or a texture drawn as a material. */
   char resolved[VKR_MATERIAL_PATH_MAX];
   const String8 value =
-      string8_create_from_cstr((const uint8_t *)path, strlen(path));
+      string8_create_from_cstr((const uint8_t *)path, string_length(path));
   if (vkr_asset_ref_is(value)) {
     if (!vkr_render_assets_resolve_asset_ref(assets, value, resolved,
                                              sizeof(resolved))) {
@@ -5738,8 +5748,8 @@ VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
                path);
       return handle;
     }
-    const uint64_t length = strlen(resolved);
-    if (length < 3u || strcmp(resolved + length - 3u, ".mt") != 0) {
+    const uint64_t length = string_length(resolved);
+    if (length < 3u || !string_equals(resolved + length - 3u, ".mt")) {
       return scene_texture_material_load(scene, path, resolved, out_owned);
     }
     path = resolved;
@@ -5747,7 +5757,7 @@ VkrMaterialHandle vkr_scene_material_load(VkrScene *scene, const char *path,
   VkrResourceHandleInfo info = {0};
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   const String8 name =
-      string8_create_from_cstr((const uint8_t *)path, strlen(path));
+      string8_create_from_cstr((const uint8_t *)path, string_length(path));
   VkrAllocatorScope scope =
       vkr_allocator_begin_scope(&assets->scratch_allocator);
   if (vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_MATERIAL, name,
@@ -5815,7 +5825,7 @@ bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   for (uint32_t i = 0; i < 16u; ++i)
-    if (!isfinite(local.elements[i]))
+    if (!vkr_is_finite_f32(local.elements[i]))
       return false_v;
   Vec3 position =
       vec3_new(local.elements[12], local.elements[13], local.elements[14]);
@@ -5833,8 +5843,8 @@ bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
     const Mat4 reconstructed =
         scene_compute_local_matrix(position, rotation, scale);
     for (uint32_t i = 0; i < 16u; ++i)
-      editable &= fabsf(reconstructed.elements[i] - local.elements[i]) <=
-                  1e-5f * fmaxf(1.0f, fabsf(local.elements[i]));
+      editable &= vkr_abs_f32(reconstructed.elements[i] - local.elements[i]) <=
+                  1e-5f * vkr_fmax_f32(1.0f, vkr_abs_f32(local.elements[i]));
   }
   if (!vkr_scene_set_transform(scene, entity, position, rotation, scale))
     return false_v;

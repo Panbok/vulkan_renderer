@@ -5,8 +5,6 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 
-#include <math.h>
-
 #define VKR_TEXT_DEFAULT_FONT_SIZE 16.0f
 
 /////////////////////
@@ -176,7 +174,7 @@ bool8_t vkr_string8_is_valid_utf8(const String8 *str) {
 
 Vec2 vkr_text_mtsdf_unit_range(float32_t distance_range, uint32_t atlas_width,
                                uint32_t atlas_height) {
-  assert_log(isfinite(distance_range) && distance_range > 0.0f,
+  assert_log(vkr_is_finite_f32(distance_range) && distance_range > 0.0f,
              "MTSDF distance range must be finite and positive");
   assert_log(atlas_width > 0 && atlas_height > 0,
              "MTSDF atlas extent must be nonzero");
@@ -607,7 +605,7 @@ VkrText vkr_text_from_copy(VkrAllocator *allocator, String8 content,
 VkrText vkr_text_from_cstr(const char *cstr, const VkrTextStyle *style) {
   assert_log(cstr != NULL, "Input C-string is NULL");
 
-  uint64_t len = (uint64_t)strlen(cstr);
+  uint64_t len = (uint64_t)string_length(cstr);
   String8 view = {(uint8_t *)cstr, len};
   return vkr_text_from_view(view, style);
 }

@@ -2,10 +2,6 @@
 
 #include "core/vkr_byte_io.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 static uint32_t net_type_float_count(const VkrPropertyDesc *property) {
   switch (property->kind) {
   case VKR_PROPERTY_F32:
@@ -42,8 +38,8 @@ bool8_t vkr_net_type_write(VkrBitWriter *writer, const VkrTypeDesc *type,
     if (floats > 0u) {
       for (uint32_t k = 0u; k < floats; ++k) {
         float32_t component = 0.0f;
-        memcpy(&component, field + k * sizeof(float32_t), sizeof(component));
-        if (!isfinite(component)) {
+        MemCopy(&component, field + k * sizeof(float32_t), sizeof(component));
+        if (!vkr_is_finite_f32(component)) {
           return false_v;
         }
         vkr_bit_write(writer, vkr_f32_bits(component), 32u);
@@ -56,7 +52,7 @@ bool8_t vkr_net_type_write(VkrBitWriter *writer, const VkrTypeDesc *type,
       break;
     case VKR_PROPERTY_I32: {
       int32_t number = 0;
-      memcpy(&number, field, sizeof(number));
+      MemCopy(&number, field, sizeof(number));
       const uint32_t zigzag =
           ((uint32_t)number << 1) ^ (uint32_t)(number >> 31);
       vkr_bit_write_varuint(writer, zigzag);
@@ -65,12 +61,12 @@ bool8_t vkr_net_type_write(VkrBitWriter *writer, const VkrTypeDesc *type,
     case VKR_PROPERTY_U32:
     case VKR_PROPERTY_ENUM: {
       uint32_t number = 0u;
-      memcpy(&number, field, sizeof(number));
+      MemCopy(&number, field, sizeof(number));
       vkr_bit_write_varuint(writer, number);
       break;
     }
     case VKR_PROPERTY_STRING: {
-      const uint8_t *end = memchr(field, 0, property->capacity);
+      const uint8_t *end = MemFindByte(field, 0, property->capacity);
       if (!end) {
         return false_v;
       }
@@ -105,12 +101,12 @@ bool8_t vkr_net_type_read(VkrBitReader *reader, const VkrTypeDesc *type,
       for (uint32_t k = 0u; k < floats; ++k) {
         const float32_t component =
             vkr_f32_from_bits((uint32_t)vkr_bit_read(reader, 32u));
-        if (!isfinite(component)) {
-          snprintf(error, capacity, "%s.%s is not finite", type->name,
-                   property->name);
+        if (!vkr_is_finite_f32(component)) {
+          string_format(error, capacity, "%s.%s is not finite", type->name,
+                        property->name);
           return false_v;
         }
-        memcpy(field + k * sizeof(float32_t), &component, sizeof(component));
+        MemCopy(field + k * sizeof(float32_t), &component, sizeof(component));
       }
       continue;
     }
@@ -121,41 +117,41 @@ bool8_t vkr_net_type_read(VkrBitReader *reader, const VkrTypeDesc *type,
     case VKR_PROPERTY_I32: {
       const uint64_t zigzag = vkr_bit_read_varuint(reader);
       if (zigzag > UINT32_MAX) {
-        snprintf(error, capacity, "%s.%s is out of range", type->name,
-                 property->name);
+        string_format(error, capacity, "%s.%s is out of range", type->name,
+                      property->name);
         return false_v;
       }
       const uint32_t bits = (uint32_t)zigzag;
       const int32_t number = (int32_t)(bits >> 1) ^ -(int32_t)(bits & 1u);
-      memcpy(field, &number, sizeof(number));
+      MemCopy(field, &number, sizeof(number));
       break;
     }
     case VKR_PROPERTY_U32:
     case VKR_PROPERTY_ENUM: {
       const uint64_t number = vkr_bit_read_varuint(reader);
       if (number > UINT32_MAX) {
-        snprintf(error, capacity, "%s.%s is out of range", type->name,
-                 property->name);
+        string_format(error, capacity, "%s.%s is out of range", type->name,
+                      property->name);
         return false_v;
       }
       const uint32_t stored = (uint32_t)number;
-      memcpy(field, &stored, sizeof(stored));
+      MemCopy(field, &stored, sizeof(stored));
       break;
     }
     case VKR_PROPERTY_STRING: {
       const uint64_t length = vkr_bit_read_varuint(reader);
       if (length >= property->capacity) {
-        snprintf(error, capacity, "%s.%s is too long", type->name,
-                 property->name);
+        string_format(error, capacity, "%s.%s is too long", type->name,
+                      property->name);
         return false_v;
       }
       const uint8_t *bytes = vkr_bit_read_bytes(reader, (uint32_t)length);
-      if (!bytes || memchr(bytes, 0, (size_t)length)) {
-        snprintf(error, capacity, "%s.%s is malformed", type->name,
-                 property->name);
+      if (!bytes || MemFindByte(bytes, 0, (size_t)length)) {
+        string_format(error, capacity, "%s.%s is malformed", type->name,
+                      property->name);
         return false_v;
       }
-      memcpy(field, bytes, (size_t)length);
+      MemCopy(field, bytes, (size_t)length);
       field[length] = 0u;
       break;
     }
@@ -164,8 +160,8 @@ bool8_t vkr_net_type_read(VkrBitReader *reader, const VkrTypeDesc *type,
       vkr_store_le_u64(field + 8, vkr_bit_read(reader, 64u));
       break;
     default:
-      snprintf(error, capacity, "%s.%s has no wire form", type->name,
-               property->name);
+      string_format(error, capacity, "%s.%s has no wire form", type->name,
+                    property->name);
       return false_v;
     }
     if (reader->overflow) {
@@ -173,7 +169,7 @@ bool8_t vkr_net_type_read(VkrBitReader *reader, const VkrTypeDesc *type,
     }
   }
   if (reader->overflow) {
-    snprintf(error, capacity, "%s ends early", type->name);
+    string_format(error, capacity, "%s ends early", type->name);
     return false_v;
   }
   return vkr_type_validate(type, out, error, capacity);
