@@ -457,6 +457,21 @@ bool8_t vkr_json_file_writer_begin(VkrJsonFileWriter *file_writer,
   return true_v;
 }
 
+bool8_t vkr_json_file_writer_size(VkrJsonFileWriter *file_writer,
+                                  uint64_t *out_bytes) {
+  if (!file_writer || !file_writer->active || !file_writer->file ||
+      !out_bytes || !vkr_json_writer_flush(&file_writer->writer) ||
+      fflush(file_writer->file) != 0) {
+    return false_v;
+  }
+  const long position = ftell(file_writer->file);
+  if (position < 0) {
+    return false_v;
+  }
+  *out_bytes = (uint64_t)position;
+  return true_v;
+}
+
 bool8_t vkr_json_file_writer_commit(VkrJsonFileWriter *file_writer) {
   if (!file_writer || !file_writer->active || !file_writer->file ||
       !vkr_json_writer_complete(&file_writer->writer) ||

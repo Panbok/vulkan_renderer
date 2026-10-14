@@ -145,6 +145,9 @@
 /** @brief IEEE positive infinity for float32_t. */
 #define VKR_FLOAT_INFINITY INFINITY
 
+/** @brief The largest finite float64_t. */
+#define VKR_DOUBLE_MAX 1.7976931348623157e+308
+
 /** @brief A quiet IEEE NaN for float32_t. */
 #define VKR_FLOAT_NAN NAN
 
@@ -582,6 +585,64 @@ vkr_internal INLINE float32_t vkr_ldexp_f32(float32_t value, int32_t exponent) {
 /** @brief Returns value * 2^exponent without computing the power. */
 vkr_internal INLINE float64_t vkr_ldexp_f64(float64_t value, int32_t exponent) {
   return ldexp(value, exponent);
+}
+
+/** @brief Rounds half away from zero. */
+vkr_internal INLINE float64_t vkr_round_f64(float64_t value) {
+  return round(value);
+}
+
+/** @brief Rounds half away from zero to an integer; out-of-range values are
+ * undefined, as for llround. */
+vkr_internal INLINE int64_t vkr_round_i64_f64(float64_t value) {
+  return (int64_t)llround(value);
+}
+
+/** @brief Rounds half away from zero to an integer; out-of-range values are
+ * undefined, as for llroundf. */
+vkr_internal INLINE int64_t vkr_round_i64_f32(float32_t value) {
+  return (int64_t)llroundf(value);
+}
+
+/** @brief Rounds up to the nearest integer. */
+vkr_internal INLINE float64_t vkr_ceil_f64(float64_t value) {
+  return ceil(value);
+}
+
+/** @brief Rounds toward zero. */
+vkr_internal INLINE float64_t vkr_trunc_f64(float64_t value) {
+  return trunc(value);
+}
+
+/** @brief Splits `value` into a mantissa in [0.5, 1) and a power of two. */
+vkr_internal INLINE float32_t vkr_frexp_f32(float32_t value,
+                                            int32_t *out_exponent) {
+  int exponent = 0;
+  const float32_t mantissa = frexpf(value, &exponent);
+  *out_exponent = (int32_t)exponent;
+  return mantissa;
+}
+
+/** @brief Base-10 logarithm. */
+vkr_internal INLINE float32_t vkr_log10_f32(float32_t value) {
+  return log10f(value);
+}
+
+/** @brief Cube root. */
+vkr_internal INLINE float32_t vkr_cbrt_f32(float32_t value) {
+  return cbrtf(value);
+}
+
+/** @brief IEEE minimum: a NaN operand yields the other operand, unlike
+ * vkr_min_f64. */
+vkr_internal INLINE float64_t vkr_fmin_f64(float64_t a, float64_t b) {
+  return fmin(a, b);
+}
+
+/** @brief Absolute value of an int32_t; INT32_MIN is undefined, as for abs.
+ */
+vkr_internal INLINE int32_t vkr_abs_i32(int32_t value) {
+  return value < 0 ? -value : value;
 }
 
 /** @brief Returns 2^value. */

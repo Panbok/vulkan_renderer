@@ -3,6 +3,15 @@
 #include "defines.h"
 
 #include <float.h>
+#include <limits.h>
+
+/** Bits in a byte; cooked formats require 8. */
+#define VKR_CHAR_BITS CHAR_BIT
+
+/** Compile-time half of vkr_f32_is_binary32(): the float limits of IEEE
+ * binary32, for static assertions in cooked-format code. */
+#define VKR_F32_LIMITS_BINARY32                                                \
+  (FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MAX_EXP == 128)
 
 /**
  * Little-endian fixed-width encoding shared by cooked asset formats, caches

@@ -140,6 +140,22 @@ bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
  */
 bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes);
 
+/** True when the variable `name` is set to exactly `expected`, such as an
+ * off switch spelled "0". A value longer than 63 bytes never matches. */
+vkr_internal INLINE bool8_t
+vkr_platform_environment_equals(const char *name, const char *expected) {
+  char value[64];
+  if (!name || !expected ||
+      !vkr_platform_environment_variable(name, value, sizeof(value))) {
+    return false_v;
+  }
+  uint64_t i = 0u;
+  while (value[i] != '\0' && value[i] == expected[i]) {
+    ++i;
+  }
+  return value[i] == expected[i] ? true_v : false_v;
+}
+
 /** Ends the process at once with `exit_code`: no exit handlers run and no
  * buffered C streams are flushed. For a state where normal teardown is unsafe,
  * such as GPU work whose completion cannot be proven. */
@@ -148,6 +164,19 @@ void vkr_platform_exit_immediate(int32_t exit_code);
 /** Raw, uncoloured process output suitable for machine-readable tools. */
 void vkr_platform_stdout_write(const char *message);
 void vkr_platform_stderr_write(const char *message);
+
+/* printf-formatted forms of the writers above. A message longer than 4 KiB
+ * is truncated there. */
+#if defined(__clang__) || defined(__GNUC__)
+#define VKR_PLATFORM_PRINTF(format_index, args_index)                          \
+  __attribute__((format(printf, format_index, args_index)))
+#else
+#define VKR_PLATFORM_PRINTF(format_index, args_index)
+#endif
+void vkr_platform_stdout_writef(const char *format, ...)
+    VKR_PLATFORM_PRINTF(1, 2);
+void vkr_platform_stderr_writef(const char *format, ...)
+    VKR_PLATFORM_PRINTF(1, 2);
 
 /**
  * Launches one process, redirects output, enforces timeout, and waits.

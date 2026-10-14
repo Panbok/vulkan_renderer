@@ -88,12 +88,14 @@
 #define MemZero(dst, size) __builtin_memset((dst), 0, (size))
 #define MemSet(dst, value, size) __builtin_memset((dst), (value), (size))
 #define MemCompare(a, b, size) __builtin_memcmp((a), (b), (size))
+#define MemFindByte(ptr, byte, size) __builtin_memchr((ptr), (byte), (size))
 #else
 #include <string.h>
 #define MemCopy(dst, src, size) memmove((dst), (src), (size))
 #define MemZero(dst, size) memset((dst), 0, (size))
 #define MemSet(dst, value, size) memset((dst), (value), (size))
 #define MemCompare(a, b, size) memcmp((a), (b), (size))
+#define MemFindByte(ptr, byte, size) memchr((ptr), (byte), (size))
 #endif
 
 #if !defined(NDEBUG) // Often debug_break is only active in debug builds

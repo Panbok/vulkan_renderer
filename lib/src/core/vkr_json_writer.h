@@ -64,4 +64,8 @@ bool8_t vkr_json_writer_null(VkrJsonWriter *writer);
 bool8_t vkr_json_file_writer_begin(VkrJsonFileWriter *file_writer,
                                    String8 final_path);
 bool8_t vkr_json_file_writer_commit(VkrJsonFileWriter *file_writer);
+/** Flushes the document written so far and reports its size in bytes;
+ * false when the writer is inactive or the flush fails. */
+bool8_t vkr_json_file_writer_size(VkrJsonFileWriter *file_writer,
+                                  uint64_t *out_bytes);
 void vkr_json_file_writer_abort(VkrJsonFileWriter *file_writer);

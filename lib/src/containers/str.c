@@ -375,6 +375,54 @@ uint64_t string_length(const char *str) {
   return strlen(str);
 }
 
+uint64_t string_length_bounded(const char *str, uint64_t max_length) {
+  assert(str != NULL && "String is NULL");
+  const char *end = memchr(str, '\0', (size_t)max_length);
+  return end ? (uint64_t)(end - str) : max_length;
+}
+
+int32_t string_n_compare(const char *str1, const char *str2, uint64_t length) {
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
+  return (int32_t)strncmp(str1, str2, (size_t)length);
+}
+
+float64_t string_parse_f64(const char *s, const char **out_end) {
+  char *end = NULL;
+  const float64_t value = strtod(s, &end);
+  if (out_end) {
+    *out_end = end;
+  }
+  return value;
+}
+
+float32_t string_parse_f32(const char *s, const char **out_end) {
+  char *end = NULL;
+  const float32_t value = strtof(s, &end);
+  if (out_end) {
+    *out_end = end;
+  }
+  return value;
+}
+
+int64_t string_parse_i64(const char *s, const char **out_end) {
+  char *end = NULL;
+  const int64_t value = (int64_t)strtoll(s, &end, 10);
+  if (out_end) {
+    *out_end = end;
+  }
+  return value;
+}
+
+uint64_t string_parse_u64(const char *s, const char **out_end) {
+  char *end = NULL;
+  const uint64_t value = (uint64_t)strtoull(s, &end, 10);
+  if (out_end) {
+    *out_end = end;
+  }
+  return value;
+}
+
 char *string_duplicate(const char *str) {
   assert(str != NULL && "String is NULL");
 #if defined(PLATFORM_WINDOWS)

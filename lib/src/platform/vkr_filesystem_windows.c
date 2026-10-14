@@ -551,6 +551,27 @@ FileError file_truncate(FileHandle *handle) {
              : fs_windows_error(GetLastError());
 }
 
+FileError file_seek(FileHandle *handle, uint64_t offset) {
+  if (!handle || !handle->handle) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  if (handle->memory) {
+    if (offset > handle->memory_size) {
+      return FILE_ERROR_IO_ERROR;
+    }
+    handle->memory_position = offset;
+    return FILE_ERROR_NONE;
+  }
+  if (offset > (uint64_t)INT64_MAX) {
+    return FILE_ERROR_IO_ERROR;
+  }
+  LARGE_INTEGER position = {0};
+  position.QuadPart = (LONGLONG)offset;
+  return SetFilePointerEx((HANDLE)handle->handle, position, NULL, FILE_BEGIN)
+             ? FILE_ERROR_NONE
+             : fs_windows_error(GetLastError());
+}
+
 FileError file_remove_directory(const FilePath *path) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!file_windows_native_path(path, native)) {

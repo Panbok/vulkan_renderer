@@ -259,6 +259,15 @@ bool8_t string_n_equals(const char *str1, const char *str2, uint64_t length);
  */
 bool8_t string_n_equalsi(const char *str1, const char *str2, uint64_t length);
 
+/** Lexicographically compares at most `length` bytes of two null-terminated
+ * strings, as strncmp does. */
+int32_t string_n_compare(const char *str1, const char *str2, uint64_t length);
+
+/** The ASCII lower-case form of `ch`; other values return unchanged. */
+static inline char vkr_char_to_lower(char ch) {
+  return ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
+}
+
 /**
  * @brief Alias for case-insensitive equality on C-strings (ASCII only)
  */
@@ -272,6 +281,10 @@ static inline bool8_t string_equali(const char *a, const char *b) {
  * @return The length of the string.
  */
 uint64_t string_length(const char *str);
+
+/** The length of `str`, or `max_length` when no terminator occurs within
+ * that many bytes; the bytes past a terminator are never read. */
+uint64_t string_length_bounded(const char *str, uint64_t max_length);
 
 /**
  * @brief Duplicate a string.
@@ -425,6 +438,18 @@ bool8_t string_to_i64(const char *s, int64_t *out);
  * @return True if the conversion was successful, false otherwise.
  */
 bool8_t string_to_u64(const char *s, uint64_t *out);
+
+/*
+ * Leading-number parsers with the C library's semantics (strtod, strtof,
+ * strtoll and strtoull in base 10): leading space is skipped, the longest
+ * valid prefix is read, and `*out_end` receives the first unread character,
+ * or `s` when no number starts there. Out-of-range values saturate.
+ * Use string_to_* when the whole string must be one number.
+ */
+float64_t string_parse_f64(const char *s, const char **out_end);
+float32_t string_parse_f32(const char *s, const char **out_end);
+int64_t string_parse_i64(const char *s, const char **out_end);
+uint64_t string_parse_u64(const char *s, const char **out_end);
 
 /*
  * @brief Convert a string to a int32_t

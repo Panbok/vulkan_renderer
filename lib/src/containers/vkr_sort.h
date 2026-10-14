@@ -12,3 +12,8 @@ typedef int32_t (*VkrSortCompare)(const void *lhs, const void *rhs);
  */
 void vkr_sort(void *records, uint64_t count, uint64_t record_size,
               VkrSortCompare compare);
+
+/** Finds a record equal to `key` in `records`, sorted by `compare`; NULL when
+ * none is. `compare` receives `key` first, as bsearch passes it. */
+void *vkr_binary_search(const void *key, const void *records, uint64_t count,
+                        uint64_t record_size, VkrSortCompare compare);

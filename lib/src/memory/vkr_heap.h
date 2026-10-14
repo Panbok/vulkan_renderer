@@ -17,6 +17,13 @@
 /** Returns `size` bytes of uninitialized storage, or NULL. */
 void *vkr_heap_alloc(uint64_t size);
 
+/** Returns `count * size` zeroed bytes, or NULL on overflow or failure. */
+void *vkr_heap_alloc_zeroed(uint64_t count, uint64_t size);
+
+/** Resizes `block` (NULL allocates) and keeps its leading bytes; on failure
+ * returns NULL and leaves `block` valid, as realloc does. */
+void *vkr_heap_realloc(void *block, uint64_t size);
+
 /** Releases a block from vkr_heap_alloc or from vendor code that uses malloc.
  * A NULL block is ignored. */
 void vkr_heap_free(void *block);

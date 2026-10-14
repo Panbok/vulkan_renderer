@@ -392,6 +392,25 @@ FileError file_truncate(FileHandle *handle) {
              : FILE_ERROR_IO_ERROR;
 }
 
+FileError file_seek(FileHandle *handle, uint64_t offset) {
+  if (!handle || !handle->handle) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  if (handle->memory) {
+    if (offset > handle->memory_size) {
+      return FILE_ERROR_IO_ERROR;
+    }
+    handle->memory_position = offset;
+    return FILE_ERROR_NONE;
+  }
+  if (offset > (uint64_t)INT64_MAX) {
+    return FILE_ERROR_IO_ERROR;
+  }
+  return lseek(fs_file_descriptor(handle), (off_t)offset, SEEK_SET) >= 0
+             ? FILE_ERROR_NONE
+             : FILE_ERROR_IO_ERROR;
+}
+
 bool8_t file_flush_durable(FILE *file) {
   return file && fflush(file) == 0 && fsync(fileno(file)) == 0;
 }

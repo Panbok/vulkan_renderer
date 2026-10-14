@@ -128,12 +128,15 @@ FILE *file_fopen(const char *utf8_path, const char *mode);
  * ```
  */
 
+/* 64-bit stdio positioning for the stdio bridge's callers. */
+#if !defined(VKR_LIBC_BOUNDARY)
 #if defined(_WIN32) || defined(_WIN64)
 #define FSEEK64 _fseeki64
 #define FTELL64 _ftelli64
 #else
 #define FSEEK64 fseeko
 #define FTELL64 ftello
+#endif
 #endif
 
 /**
@@ -579,6 +582,13 @@ FileError file_sync(FileHandle *handle);
 
 /** Empties an open, writable file and moves its position to the start. */
 FileError file_truncate(FileHandle *handle);
+
+/** Bytes between the handle's current position and the end of its file. */
+FileError file_remaining_size(FileHandle *handle, uint64_t *out_size);
+
+/** Moves the read and write position to `offset` bytes from the start. An
+ * archive entry fails with FILE_ERROR_IO_ERROR past its end. */
+FileError file_seek(FileHandle *handle, uint64_t offset);
 
 /** Removes one file. Missing files report FILE_ERROR_NOT_FOUND. */
 FileError file_remove(const FilePath *path);
