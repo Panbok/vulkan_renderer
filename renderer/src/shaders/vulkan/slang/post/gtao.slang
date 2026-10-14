@@ -9,7 +9,9 @@ struct VkrVkGtaoRoot
     uint point_sampler;
     uint2 source_extent;
     uint2 destination_extent;
-    uint2 reserved;
+    // Nonzero for the second denoise pass (vk_gtao_denoise).
+    uint denoise_final;
+    uint reserved;
 };
 
 struct VkrVkGtaoPush
@@ -244,6 +246,13 @@ float vkr_vk_gtao_edge_weight(float edge0, float edge1, float beta)
     return pow(saturate(edge0 * edge1), beta);
 }
 
+// Two edge-aware passes remove the 4x4 noise tile (vkr_gtao_spatial_noise).
+// The first weighs the 3x3 neighbourhood by a (1, 2, 1) tent per axis, the
+// second takes only the diagonal taps, a (1, 0, 1) kernel per axis: their
+// product is (1, 2, 2, 2, 1), which weighs every phase of a 4-pixel period
+// alike, so on a flat surface the tile averages out exactly. Edge weights
+// cut both at depth and normal edges; a final-pass pixel whose diagonals are
+// all cut keeps its own value.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_gtao_denoise(uint3 thread_id : SV_DispatchThreadID)
@@ -305,6 +314,19 @@ void vk_gtao_denoise(uint3 thread_id : SV_DispatchThreadID)
                          center_edges.y, bottom_right_edges.x, center_edges.w,
                          bottom_right_edges.z)),
                      beta);
+
+    // Tent (1, 2, 1) x (1, 2, 1), or the diagonals of (1, 0, 1) x (1, 0, 1).
+    bool final_pass = root.denoise_final != 0u;
+    [unroll] for (uint tap = 0u; tap < 9u; ++tap)
+    {
+        uint axis_x = tap % 3u == 1u ? 1u : 0u;
+        uint axis_y = tap / 3u == 1u ? 1u : 0u;
+        float tent = float((1u + axis_x) * (1u + axis_y));
+        float diagonal = axis_x == 0u && axis_y == 0u ? 1.0f : 0.0f;
+        weights[tap] *= final_pass ? diagonal : tent;
+    }
+    if (final_pass && weights[0] + weights[2] + weights[6] + weights[8] <= 1e-4f)
+        weights[4] = 1.0f;
 
     float visibility = 0.0f;
     float3 bent_direction = 0.0f;

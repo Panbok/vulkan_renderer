@@ -2059,7 +2059,11 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_GTAO_EVALUATE:
     return vkr_vk_prepare_gtao_evaluate(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_GTAO_DENOISE:
-    return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass);
+    return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass,
+                                       false_v);
+  case VKR_RG_EXECUTOR_GTAO_DENOISE_FINAL:
+    return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass,
+                                       true_v);
   case VKR_RG_EXECUTOR_SMAA_EDGES:
     return vkr_vk_prepare_smaa_edges(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SMAA_WEIGHTS:

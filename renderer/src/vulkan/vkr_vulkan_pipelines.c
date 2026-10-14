@@ -1006,6 +1006,7 @@ vkr_vk_validate_gtao_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, point_sampler),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, source_extent),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, destination_extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, denoise_final),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanGtaoRoot, reserved),
   };
   static const VkrVulkanReflectedField param_fields[] = {

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-13
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -72,7 +72,12 @@ horizon evaluation and two edge-aware 3x3 denoise passes (`AO.Denoise` into
 noise is one fixed spatial pattern (`vkr_gtao_spatial_noise`), the same every
 frame whether or not TAA runs, so no temporal filter has to average it; the two
 passes remove it ([Short-history rendering](../proposals/short-history-rendering.md),
-section 3). Raw, intermediate and denoised outputs are RGBA8: RGB encodes a
+section 3). Since 2026-10-14 the pattern is a 4x4 Bayer order over an R2
+sequence, and the passes weigh their taps so that together they average one
+4-pixel period exactly: the first by a (1, 2, 1) tent per axis, the second
+(`pass.gtao.denoise_final`) only by its diagonals, (1, 0, 1) per axis, whose
+product is (1, 2, 2, 2, 1). The earlier Hilbert order over a 64x64 tile left
+curved streaks under T2x, which averages two frames only. Raw, intermediate and denoised outputs are RGBA8: RGB encodes a
 world-space bent normal, and alpha holds scalar visibility. The existing R8
 edge image remains separate. The graph owns these transient images per
 in-flight image; the three RGBA8 images take 10.5 MiB at 1280x720, or 31.6 MiB
@@ -135,6 +140,11 @@ café (`win_bistro_cafe_gtao_on`, 1280×720), `local-offscreen.json`:
   measured frames, two alternated rounds: `AO.Denoise` and `AO.DenoiseFinal`
   each take 0.205 ms (p50; σ ≤ 0.012 ms); `AO.Evaluate` 0.92 ms and
   `AO.PrefilterDepth` 0.073 ms, so the chain costs about 1.40 ms.
+- 4x4 noise with the exact-period passes (2026-10-14, same cases): the fine
+  grain on the café's counter and floor is gone and edges stay; the mean
+  absolute difference of `gtao_visibility`'s alpha from its 9x9 mean fell
+  from 10.72 to 9.53 (café) and 11.44 to 10.54 (street), 95th percentile
+  42.3 to 37.7 and 42.9 to 39.5; the pass count and taps are unchanged.
 - Bistro's materials carry no AO (the café's G-buffer AO is never below
   248/255), so `min(material AO, GTAO)` and the product give the same image
   there; the product stays until a scene with authored AO decides it.

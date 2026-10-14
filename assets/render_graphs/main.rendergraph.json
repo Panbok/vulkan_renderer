@@ -4016,7 +4016,7 @@
           "binding": 2
         }
       ],
-      "execute": "pass.gtao.denoise"
+      "execute": "pass.gtao.denoise_final"
     },
     {
       "name": "Sky.ViewLut",

@@ -11,7 +11,6 @@
 
 #define VKR_GTAO_PI 3.14159265358979323846f
 #define VKR_GTAO_HALF_PI 1.57079632679489661923f
-#define VKR_GTAO_HILBERT_WIDTH 64u
 #define VKR_GTAO_VIEW_DEPTH_MAX 65504.0f
 
 struct VkrGtaoParams
@@ -152,37 +151,21 @@ float4 vkr_gtao_unpack_edges(float packed_edges)
            3.0f;
 }
 
-uint vkr_gtao_hilbert_index(uint2 position)
+// Fixed spatial noise: the same pattern every frame, so no temporal filter
+// has to average it away. A 4x4 Bayer index orders an R2 sequence, so each
+// 2x2 block spans it and each 4x4 block holds all 16 slice rotations and step
+// offsets; the denoise passes reach 5x5 pixels and average a whole block. A
+// space-filling order over a larger tile left curved streaks the denoise
+// could not reach.
+uint vkr_gtao_bayer2(uint x, uint y)
 {
-    uint index = 0u;
-    for (uint level = VKR_GTAO_HILBERT_WIDTH / 2u; level > 0u;
-         level /= 2u)
-    {
-        uint region_x = (position.x & level) != 0u ? 1u : 0u;
-        uint region_y = (position.y & level) != 0u ? 1u : 0u;
-        index += level * level * ((3u * region_x) ^ region_y);
-        if (region_y == 0u)
-        {
-            if (region_x != 0u)
-            {
-                position.x = VKR_GTAO_HILBERT_WIDTH - 1u - position.x;
-                position.y = VKR_GTAO_HILBERT_WIDTH - 1u - position.y;
-            }
-            uint temporary = position.x;
-            position.x = position.y;
-            position.y = temporary;
-        }
-    }
-    return index;
+    return 2u * ((x ^ y) & 1u) + (y & 1u);
 }
 
-// Fixed spatial noise: the same pattern every frame, so no temporal filter
-// has to average it away. The denoise passes remove it.
 float2 vkr_gtao_spatial_noise(uint2 pixel)
 {
-    uint index = vkr_gtao_hilbert_index(
-        uint2(pixel.x % VKR_GTAO_HILBERT_WIDTH,
-              pixel.y % VKR_GTAO_HILBERT_WIDTH));
+    uint index = 4u * vkr_gtao_bayer2(pixel.x, pixel.y) +
+                 vkr_gtao_bayer2(pixel.x >> 1u, pixel.y >> 1u);
     float2 sequence =
         0.5f + float(index) *
                    float2(0.75487766624669276005f, 0.56984029099805326591f);

@@ -436,6 +436,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GTAO_DENOISE] = {"pass.gtao.denoise",
                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GTAO_DENOISE_FINAL] = {"pass.gtao.denoise_final",
+                                            VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SMAA_EDGES] = {"pass.smaa.edges",
                                     VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SMAA_WEIGHTS] = {"pass.smaa.weights",

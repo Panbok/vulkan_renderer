@@ -3539,11 +3539,12 @@ bool8_t vkr_vk_prepare_smaa_resolve(VkrVulkanRenderer *renderer,
 
 bool8_t vkr_vk_prepare_gtao_denoise(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass) {
+                                    const VkrRgPass *pass, bool8_t final_pass) {
   VkrVulkanGtaoRoot root = {0};
   if (!vkr_vk_gtao_root(renderer, pass, 0u, 2u, &root) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &root.edges_texture))
     return false_v;
+  root.denoise_final = final_pass ? 1u : 0u;
   return vkr_vk_prepare_dispatch_gtao(
       renderer, prepared, &root, VKR_VULKAN_DEFERRED_PIPELINE_GTAO_DENOISE);
 }

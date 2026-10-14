@@ -1278,7 +1278,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanGtaoRoot {
   uint32_t point_sampler;
   uint32_t source_extent[2];
   uint32_t destination_extent[2];
-  uint32_t reserved[2];
+  /* Nonzero for the second denoise pass, which takes the diagonal taps
+     that complete the first pass's tent (vk_gtao_denoise). */
+  uint32_t denoise_final;
+  uint32_t reserved;
 } VkrVulkanGtaoRoot;
 
 /** Mirrors VkrVkSmaaRoot in shaders/vulkan/slang/post/smaa.slang. Each SMAA
@@ -2020,7 +2023,7 @@ _Static_assert(offsetof(VkrVulkanGtaoRoot, source_texture) == 192u,
                "Vulkan GTAO resource ABI offset drift");
 _Static_assert(offsetof(VkrVulkanGtaoRoot, source_extent) == 216u,
                "Vulkan GTAO extent ABI offset drift");
-_Static_assert(offsetof(VkrVulkanGtaoRoot, reserved) == 232u,
+_Static_assert(offsetof(VkrVulkanGtaoRoot, denoise_final) == 232u,
                "Vulkan GTAO root tail ABI offset drift");
 _Static_assert(sizeof(VkrVulkanSmaaRoot) == 64u,
                "Vulkan SMAA root ABI size drift");
@@ -3791,7 +3794,7 @@ bool8_t vkr_vk_prepare_gtao_evaluate(VkrVulkanRenderer *renderer,
                                      const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_gtao_denoise(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass);
+                                    const VkrRgPass *pass, bool8_t final_pass);
 bool8_t vkr_vk_prepare_smaa_edges(VkrVulkanRenderer *renderer,
                                   VkrVulkanPreparedCompute *prepared,
                                   const VkrRgPass *pass);
