@@ -1,4 +1,5 @@
 #include "core/vkr_window.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_window_internal.h"
 
 #if defined(PLATFORM_WINDOWS)

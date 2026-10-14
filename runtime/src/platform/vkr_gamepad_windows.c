@@ -5,8 +5,11 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <Xinput.h>
 #include <windows.h>
+
+/* Xinput.h needs the architecture macros <windows.h> defines; a separate
+   block keeps include sorting from moving it first. */
+#include <Xinput.h>
 #endif
 
 // todo: we should re-work our windows impl from XInput to GameInput API,
