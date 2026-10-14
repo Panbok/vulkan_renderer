@@ -23,6 +23,8 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_EDITOR,
   VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN,
   VKR_RG_JSON_CONDITION_SMAA_ENABLED,
+  VKR_RG_JSON_CONDITION_MSAA_ENABLED,
+  VKR_RG_JSON_CONDITION_MSAA_DISABLED,
   VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA,
   VKR_RG_JSON_CONDITION_SMAA_EDITOR,
   VKR_RG_JSON_CONDITION_SMAA_FULLSCREEN,
@@ -215,6 +217,7 @@ typedef struct VkrRgJsonImageDesc {
   bool8_t mip_levels_is_set;  // Whether an explicit mip count was authored.
   bool8_t mip_levels_full;    // Whether the full chain was requested.
   uint32_t mip_levels;        // Explicit mip level count.
+  uint32_t samples;           // Samples per pixel; one unless authored.
   VkrRgJsonExtent extent;     // The extent of the image.
 } VkrRgJsonImageDesc;
 

@@ -133,6 +133,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->scene_rendering = packet->scene_rendering;
   frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
   frame->smaa_enabled = packet->smaa_enabled;
+  frame->msaa_enabled = packet->msaa_enabled;
   /* The dynamic volume layer traces on frames that carry its update and
      a bound volume; the device's ray queries gate it in the backend
      (ADR-119). */
@@ -438,6 +439,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_GTAO_DENOISE_FINAL] = {"pass.gtao.denoise_final",
                                             VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_VBUFFER_SPLIT] = {"pass.vbuffer.split",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH] = {"pass.vbuffer.split_depth",
+                                             VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_SMAA_EDGES] = {"pass.smaa.edges",
                                     VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SMAA_WEIGHTS] = {"pass.smaa.weights",

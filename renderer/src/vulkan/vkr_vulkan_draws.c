@@ -1691,6 +1691,40 @@ void vkr_vk_record_selection_outline(
 }
 
 /* The grid's rays use the unjittered camera, like the editor handles. */
+bool8_t
+vkr_vk_prepare_vbuffer_split_depth(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedVbufferSplitDepth *out,
+                                   uint32_t ms_depth_texture) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t address = 0u;
+  VkrVulkanVbufferSplitDepthRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanVbufferSplitDepthRoot), &address,
+      NULL);
+  if (!root) {
+    return false_v;
+  }
+  *root =
+      (VkrVulkanVbufferSplitDepthRoot){.ms_depth_texture = ms_depth_texture};
+  *out = (VkrVulkanPreparedVbufferSplitDepth){.root_address = address};
+  return true_v;
+}
+
+void vkr_vk_record_vbuffer_split_depth(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPreparedVbufferSplitDepth *split) {
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+      renderer
+          ->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_VBUFFER_SPLIT_DEPTH]);
+  const VkrVulkanPushConstants push = {.root = split->root_address};
+  vkCmdPushConstants(command, renderer->pipeline_layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                         VK_SHADER_STAGE_COMPUTE_BIT,
+                     0u, sizeof(push), &push);
+  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+}
+
 bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
                                    VkrVulkanPreparedEditorGrid *out,
                                    uint32_t depth_texture, uint32_t width,

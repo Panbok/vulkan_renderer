@@ -650,6 +650,80 @@
       ]
     },
     {
+      "name": "opaque_vbuffer_ms",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R32G32_UINT",
+      "samples": 2,
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "opaque_vbuffer_depth_ms",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "SWAPCHAIN_DEPTH",
+      "samples": 2,
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "opaque_vbuffer_s1",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R32G32_UINT",
+      "usage": [
+        "SAMPLED",
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "opaque_vbuffer_depth_s1",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R32_SFLOAT",
+      "usage": [
+        "SAMPLED",
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "hzb_history",
       "condition": "scene_rendering",
       "type": "image",
@@ -2984,7 +3058,7 @@
     },
     {
       "name": "VBuffer.Opaque",
-      "condition": "scene_rendering",
+      "condition": "scene_rendering && !msaa_enabled",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
@@ -3042,6 +3116,127 @@
         }
       },
       "execute": "pass.vbuffer.opaque"
+    },
+    {
+      "name": "VBuffer.Opaque.MSAA2",
+      "condition": "scene_rendering && msaa_enabled",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "opaque_vbuffer_ms",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            }
+          }
+        ],
+        "depth": {
+          "image": "opaque_vbuffer_depth_ms",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 0.0,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.vbuffer.opaque"
+    },
+    {
+      "name": "VBuffer.Split",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_ms",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth_ms",
+          "access": "SAMPLED",
+          "binding": 1
+        }
+      ],
+      "writes": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        },
+        {
+          "image": "opaque_vbuffer_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 3
+        },
+        {
+          "image": "opaque_vbuffer_depth_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 4
+        }
+      ],
+      "execute": "pass.vbuffer.split"
+    },
+    {
+      "name": "VBuffer.SplitDepth",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering && msaa_enabled",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth_ms",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "opaque_vbuffer_depth",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 0.0,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.vbuffer.split_depth"
     },
     {
       "name": "SDSM.Reduce",

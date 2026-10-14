@@ -1144,6 +1144,83 @@ vk_visibility_opaque_fragment(VkrVkVisibilityOutput input,
     return output;
 }
 
+// SMAA S2x: the camera's visibility raster samples each pixel twice. Sample
+// zero becomes the single-sample visibility image every consumer reads; the
+// second sample's identity and depth go to their own images, where the
+// second sample is shaded. Mirrors VkrVulkanVbufferSplitRoot.
+struct VkrVkVbufferSplitRoot
+{
+    uint ms_vbuffer_texture;
+    uint ms_depth_texture;
+    uint vbuffer_storage;
+    uint vbuffer_s1_storage;
+    uint depth_s1_storage;
+    uint reserved;
+    uint2 extent;
+};
+
+struct VkrVkVbufferSplitPush
+{
+    VkrVkVbufferSplitRoot *root;
+    uint2 reserved;
+};
+
+[[vk::push_constant]] ConstantBuffer<VkrVkVbufferSplitPush> g_vbuffer_split_push;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_vbuffer_split(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkVbufferSplitRoot root =
+        vkr_vk_uniform_root(*g_vbuffer_split_push.root);
+    if (any(thread_id.xy >= root.extent))
+        return;
+    int2 pixel = int2(thread_id.xy);
+    Texture2DMS<uint2> vbuffer = g_ms_uint2_textures[root.ms_vbuffer_texture];
+    g_storage_uint2_2d[root.vbuffer_storage][thread_id.xy] =
+        vbuffer.Load(pixel, 0);
+    g_storage_uint2_2d[root.vbuffer_s1_storage][thread_id.xy] =
+        vbuffer.Load(pixel, 1);
+    g_storage_2d[root.depth_s1_storage][thread_id.xy] = float4(
+        g_ms_depth_textures[root.ms_depth_texture].Load(pixel, 1), 0.0f, 0.0f,
+        0.0f);
+}
+
+// Sample zero's depth, written into the single-sample depth image that
+// later passes depth-test against or copy. Mirrors
+// VkrVulkanVbufferSplitDepthRoot.
+struct VkrVkVbufferSplitDepthRoot
+{
+    uint ms_depth_texture;
+    uint3 reserved;
+};
+
+struct VkrVkVbufferSplitDepthPush
+{
+    VkrVkVbufferSplitDepthRoot *root;
+    uint2 reserved;
+};
+
+[[vk::push_constant]] ConstantBuffer<VkrVkVbufferSplitDepthPush>
+    g_vbuffer_split_depth_push;
+
+[shader("vertex")]
+float4 vk_vbuffer_split_depth_vertex(uint vertex_id : SV_VertexID)
+    : SV_Position
+{
+    float2 uv = float2(float((vertex_id << 1u) & 2u), float(vertex_id & 2u));
+    return float4(uv * 2.0f - 1.0f, 0.0f, 1.0f);
+}
+
+[shader("fragment")]
+float vk_vbuffer_split_depth_fragment(float4 position : SV_Position)
+    : SV_Depth
+{
+    VkrVkVbufferSplitDepthRoot *root = g_vbuffer_split_depth_push.root;
+    return g_ms_depth_textures[root.ms_depth_texture].Load(
+        int2(position.xy), 0);
+}
+
 [shader("fragment")]
 void vk_visibility_shadow_fragment(VkrVkVisibilityOutput input)
 {

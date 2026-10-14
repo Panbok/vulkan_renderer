@@ -34,6 +34,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"post_transform_cache_enabled && !editor_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_FULLSCREEN},
     {"smaa_enabled", VKR_RG_JSON_CONDITION_SMAA_ENABLED},
+    {"msaa_enabled", VKR_RG_JSON_CONDITION_MSAA_ENABLED},
+    {"!msaa_enabled", VKR_RG_JSON_CONDITION_MSAA_DISABLED},
     {"post_transform_cache_enabled && !smaa_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA},
     {"smaa_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SMAA_EDITOR},
@@ -749,6 +751,7 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
   out_desc->format_source = VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT;
   out_desc->type = VKR_TEXTURE_TYPE_2D;
   out_desc->depth = 1u;
+  out_desc->samples = 1u;
 
   VkrJsonReader import_reader = *obj;
   if (vkr_json_find_field(&import_reader, "import")) {
@@ -861,6 +864,27 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
   if (!vkr_rg_json_parse_texture_usage(ctx, obj, field_path,
                                        &out_desc->usage)) {
     return false_v;
+  }
+
+  /* Multisampled images are single-mip, single-layer 2D attachments that
+     shaders read sample by sample. */
+  VkrJsonReader samples_reader = *obj;
+  int32_t samples = 0;
+  if (vkr_json_get_int(&samples_reader, "samples", &samples)) {
+    if (samples != 1 && samples != 2 && samples != 4 && samples != 8) {
+      return vkr_rg_json_error(ctx, field_path, "samples must be 1, 2, 4 or 8");
+    }
+    out_desc->samples = (uint32_t)samples;
+  }
+  if (out_desc->samples > 1u &&
+      (out_desc->is_import || out_desc->type != VKR_TEXTURE_TYPE_2D ||
+       out_desc->layers_is_set || out_desc->layers_source.length > 0 ||
+       out_desc->mip_levels_is_set || out_desc->mip_levels_full ||
+       (out_desc->usage.set & VKR_TEXTURE_USAGE_STORAGE) != 0u)) {
+    return vkr_rg_json_error(
+        ctx, field_path,
+        "multisampled images are 2d, unimported, with one layer and mip "
+        "and no storage usage");
   }
 
   if (!out_desc->is_import &&
@@ -2024,6 +2048,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->post_transform_cache_enabled && !frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_SMAA_ENABLED:
     return frame->smaa_enabled;
+  case VKR_RG_JSON_CONDITION_MSAA_ENABLED:
+    return frame->msaa_enabled;
+  case VKR_RG_JSON_CONDITION_MSAA_DISABLED:
+    return !frame->msaa_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA:
     return frame->post_transform_cache_enabled && !frame->smaa_enabled;
   case VKR_RG_JSON_CONDITION_SMAA_EDITOR:
@@ -2727,6 +2755,7 @@ vkr_internal bool8_t vkr_rg_json_import_image(
   desc.mip_levels = vkr_rg_json_mip_levels(&resource->image, desc.width,
                                            desc.height, desc.depth);
   desc.usage = resource->image.usage;
+  desc.samples = (VkrSampleCount)resource->image.samples;
   uint32_t layers = 1;
   if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
     return false_v;
@@ -2787,6 +2816,7 @@ vkr_internal bool8_t vkr_rg_json_create_image(
   desc.mip_levels =
       vkr_rg_json_mip_levels(&resource->image, width, height, desc.depth);
   desc.usage = resource->image.usage;
+  desc.samples = (VkrSampleCount)resource->image.samples;
   desc.flags = vkr_rg_json_resource_flags(resource->flags);
   if (resource->image.layers_is_set ||
       resource->image.layers_source.length > 0) {

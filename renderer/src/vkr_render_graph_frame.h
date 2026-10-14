@@ -60,6 +60,10 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_GTAO_EVALUATE,
   VKR_RG_EXECUTOR_GTAO_DENOISE,
   VKR_RG_EXECUTOR_GTAO_DENOISE_FINAL,
+  /* SMAA S2x: the multisampled visibility raster's samples, split into the
+     single-sample images, and its sample zero's depth. */
+  VKR_RG_EXECUTOR_VBUFFER_SPLIT,
+  VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH,
   VKR_RG_EXECUTOR_SMAA_EDGES,
   VKR_RG_EXECUTOR_SMAA_WEIGHTS,
   VKR_RG_EXECUTOR_SMAA_BLEND,

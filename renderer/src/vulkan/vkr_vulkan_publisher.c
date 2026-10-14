@@ -260,7 +260,8 @@ vkr_internal bool8_t vkr_vk_upload_prepared_texture(
           (cube || cube_array) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
           VK_IMAGE_TYPE_2D, view_type,
           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-          prepared->description.allocation_owner, out_image, out_error)) {
+          VK_SAMPLE_COUNT_1_BIT, prepared->description.allocation_owner,
+          out_image, out_error)) {
     log_error("Vulkan failed to create prepared texture image "
               "(%ux%u, format=%u, mips=%u, layers=%u, bytes=%llu)",
               prepared->description.width, prepared->description.height, format,
@@ -2229,7 +2230,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_writable_texture(
       VK_IMAGE_TYPE_2D, cube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D,
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-      description->allocation_owner, &pending.image, NULL);
+      VK_SAMPLE_COUNT_1_BIT, description->allocation_owner, &pending.image,
+      NULL);
   const bool8_t sampler_acquired =
       image_created && vkr_vk_acquire_sampler(renderer, description, mip_levels,
                                               &pending.sampler_record_index);

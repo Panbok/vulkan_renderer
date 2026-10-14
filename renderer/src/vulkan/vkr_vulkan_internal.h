@@ -181,6 +181,11 @@
 #define VKR_VULKAN_PACKET_SMAA_WEIGHTS_COMP_SPV "packet.smaa_weights.comp.spv"
 #define VKR_VULKAN_PACKET_SMAA_BLEND_COMP_SPV "packet.smaa_blend.comp.spv"
 #define VKR_VULKAN_PACKET_SMAA_RESOLVE_COMP_SPV "packet.smaa_resolve.comp.spv"
+#define VKR_VULKAN_PACKET_VBUFFER_SPLIT_COMP_SPV "packet.vbuffer_split.comp.spv"
+#define VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_VERT_SPV                         \
+  "packet.vbuffer_split_depth.vert.spv"
+#define VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_FRAG_SPV                         \
+  "packet.vbuffer_split_depth.frag.spv"
 /* Texture LOD bias of published material samplers under SMAA T2x. */
 #define VKR_VULKAN_MATERIAL_LOD_BIAS -0.5f
 #define VKR_VULKAN_PACKET_FOG_APPLY_COMP_SPV "packet.fog_apply.comp.spv"
@@ -310,6 +315,9 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
+  /* The camera's visibility raster into 2x multisampled targets (SMAA S2x). */
+  VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_MSAA2,
+  VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE_MSAA2,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW,
   VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE,
   /* Local shadow faces render into the D16 atlas (ADR-019). */
@@ -325,6 +333,9 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
   /* A planar reflection's mirrored view, shaded forward (ADR-087). */
   VKR_VULKAN_PACKET_PIPELINE_REFLECTION,
+  /* Writes the multisampled visibility raster's sample zero depth into the
+     single-sample depth image (SMAA S2x). */
+  VKR_VULKAN_PACKET_PIPELINE_VBUFFER_SPLIT_DEPTH,
   VKR_VULKAN_PACKET_PIPELINE_COUNT,
 } VkrVulkanPacketPipeline;
 
@@ -368,6 +379,8 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_REFLECTION_VERTEX,
   VKR_VULKAN_PACKET_SHADER_REFLECTION_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_VERTEX,
+  VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_COUNT,
 } VkrVulkanPacketShader;
 
@@ -465,6 +478,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_SMAA_WEIGHTS,
   VKR_VULKAN_DEFERRED_PIPELINE_SMAA_BLEND,
   VKR_VULKAN_DEFERRED_PIPELINE_SMAA_RESOLVE,
+  VKR_VULKAN_DEFERRED_PIPELINE_VBUFFER_SPLIT,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -1677,6 +1691,30 @@ _Static_assert(sizeof(VkrVulkanSelectionOutlineRoot) == 48u &&
 
 /** Full-screen editor ground grid root; `depth_texture` indexes the opaque
     depth in the depth-texture table. */
+/** Mirrors VkrVkVbufferSplitRoot in world/deferred.slang: the
+    multisampled visibility raster's sampled slots, the storage slots its
+    samples split into, and the extent. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanVbufferSplitRoot {
+  uint32_t ms_vbuffer_texture;
+  uint32_t ms_depth_texture;
+  uint32_t vbuffer_storage;
+  uint32_t vbuffer_s1_storage;
+  uint32_t depth_s1_storage;
+  uint32_t reserved;
+  uint32_t extent[2];
+} VkrVulkanVbufferSplitRoot;
+_Static_assert(sizeof(VkrVulkanVbufferSplitRoot) == 32u &&
+                   offsetof(VkrVulkanVbufferSplitRoot, extent) == 24u,
+               "Visibility split root ABI drift");
+
+/** Mirrors VkrVkVbufferSplitDepthRoot in world/deferred.slang. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanVbufferSplitDepthRoot {
+  uint32_t ms_depth_texture;
+  uint32_t reserved[3];
+} VkrVulkanVbufferSplitDepthRoot;
+_Static_assert(sizeof(VkrVulkanVbufferSplitDepthRoot) == 16u,
+               "Visibility split depth root ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanEditorGridRoot {
   Mat4 inverse_view_projection;
   Vec4 camera_position;
@@ -2217,6 +2255,7 @@ typedef struct VkrVulkanImage {
   uint32_t mip_levels;
   uint32_t array_layers;
   VkFormat format;
+  VkSampleCountFlagBits samples;
 } VkrVulkanImage;
 
 typedef struct VkrVulkanDirtyRange {
@@ -2400,6 +2439,10 @@ typedef struct VkrVulkanPreparedEditorGrid {
   uint64_t root_address;
   bool8_t enabled;
 } VkrVulkanPreparedEditorGrid;
+
+typedef struct VkrVulkanPreparedVbufferSplitDepth {
+  uint64_t root_address;
+} VkrVulkanPreparedVbufferSplitDepth;
 
 typedef struct VkrVulkanPreparedTextDraw VkrVulkanPreparedTextDraw;
 typedef struct VkrVulkanPreparedUiDraw VkrVulkanPreparedUiDraw;
@@ -3513,8 +3556,9 @@ bool8_t vkr_vk_create_image_ex(
     VkrVulkanRenderer *renderer, uint32_t width, uint32_t height,
     uint32_t depth, uint32_t mip_levels, uint32_t array_layers, VkFormat format,
     VkImageCreateFlags flags, VkImageType image_type, VkImageViewType view_type,
-    VkImageUsageFlags usage, VkrGpuAllocationOwner owner,
-    VkrVulkanImage *out_image, VkrRendererError *out_error);
+    VkImageUsageFlags usage, VkSampleCountFlagBits samples,
+    VkrGpuAllocationOwner owner, VkrVulkanImage *out_image,
+    VkrRendererError *out_error);
 bool8_t vkr_vk_create_target_set(VkrVulkanRenderer *renderer, uint32_t width,
                                  uint32_t height, uint32_t image_count,
                                  VkFormat format,
@@ -3855,6 +3899,16 @@ bool8_t vkr_vk_prepare_selection_outline(VkrVulkanRenderer *renderer,
 void vkr_vk_record_selection_outline(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrVulkanPreparedSelectionOutline *outline);
+bool8_t vkr_vk_prepare_vbuffer_split(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass);
+bool8_t
+vkr_vk_prepare_vbuffer_split_depth(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedVbufferSplitDepth *out,
+                                   uint32_t ms_depth_texture);
+void vkr_vk_record_vbuffer_split_depth(
+    VkrVulkanRenderer *renderer, VkCommandBuffer command,
+    const VkrVulkanPreparedVbufferSplitDepth *split);
 bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
                                    VkrVulkanPreparedEditorGrid *out,
                                    uint32_t depth_texture, uint32_t width,

@@ -20,6 +20,7 @@ struct VkrVulkanPreparedGraphPass {
   VkrVulkanPreparedOverlay overlay;
   VkrVulkanPreparedSelectionOutline selection_outline;
   VkrVulkanPreparedEditorGrid editor_grid;
+  VkrVulkanPreparedVbufferSplitDepth vbuffer_split_depth;
   VkrVulkanPreparedText text;
   VkrVulkanPreparedUi ui;
   VkrVulkanPreparedFullscreen fullscreen;
@@ -226,15 +227,26 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
     checked_usage.set |= VKR_TEXTURE_USAGE_TRANSFER_SRC;
   const VkImageUsageFlags usage = vkr_vk_graph_image_usage(checked_usage);
   const bool8_t volume = desc->type == VKR_TEXTURE_TYPE_3D;
+  /* A multisampled image is a single-mip, single-layer 2D attachment that
+     shaders read sample by sample; it is never a storage image. */
+  const bool8_t multisampled = desc->samples > 1u;
+  if (multisampled &&
+      (desc->samples != 2u && desc->samples != 4u && desc->samples != 8u ||
+       volume || desc->mip_levels != 1u || desc->layers != 1u ||
+       (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) ||
+       (checked_usage.set & VKR_TEXTURE_USAGE_STORAGE))) {
+    return false_v;
+  }
   if (format == VK_FORMAT_UNDEFINED || usage == 0u ||
       !vkr_vk_graph_format_supports(renderer, format, checked_usage) ||
-      desc->samples != 1u || !desc->depth || desc->layers == 0u ||
+      desc->samples == 0u || !desc->depth || desc->layers == 0u ||
       desc->layers > VKR_VULKAN_GRAPH_LAYER_MAX || desc->mip_levels == 0u ||
       desc->mip_levels > VKR_VULKAN_TEXTURE_MIP_MAX ||
       (volume && (desc->layers != 1u ||
                   (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY))) ||
-      (!volume && desc->depth != 1u))
+      (!volume && desc->depth != 1u)) {
     return false_v;
+  }
   const bool8_t array_view =
       desc->layers > 1u || (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY);
   if (!vkr_vk_create_image_ex(renderer, desc->width, desc->height, desc->depth,
@@ -243,9 +255,11 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
                               volume ? VK_IMAGE_VIEW_TYPE_3D
                                      : (array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                                                    : VK_IMAGE_VIEW_TYPE_2D),
-                              usage, VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
-                              &out_instance->image, NULL))
+                              usage, (VkSampleCountFlagBits)desc->samples,
+                              VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+                              &out_instance->image, NULL)) {
     return false_v;
+  }
   const VkImageAspectFlags aspects = vkr_vk_format_aspects(format);
   for (uint32_t mip = 0u; mip < desc->mip_levels; ++mip) {
     const VkImageViewCreateInfo mip_view_info = {
@@ -1541,6 +1555,14 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     return vkr_vk_prepare_selection_outline(
         renderer, &prepared->selection_outline, mask_texture);
   }
+  case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH: {
+    uint32_t depth_texture = 0u;
+    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &depth_texture)) {
+      return false_v;
+    }
+    return vkr_vk_prepare_vbuffer_split_depth(
+        renderer, &prepared->vbuffer_split_depth, depth_texture);
+  }
   case VKR_RG_EXECUTOR_EDITOR_GRID: {
     uint32_t depth_texture = 0u;
     if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &depth_texture))
@@ -1889,6 +1911,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
   case VKR_RG_EXECUTOR_EDITOR_GRID:
+  case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH:
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_RG_EXECUTOR_UI:
     return vkr_vk_prepare_graph_graphics_pass(renderer, prepared, pass, kind);
@@ -2061,6 +2084,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_GTAO_DENOISE:
     return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass,
                                        false_v);
+  case VKR_RG_EXECUTOR_VBUFFER_SPLIT:
+    return vkr_vk_prepare_vbuffer_split(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_GTAO_DENOISE_FINAL:
     return vkr_vk_prepare_gtao_denoise(renderer, &prepared->compute, pass,
                                        true_v);
@@ -2244,6 +2269,10 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   case VKR_RG_EXECUTOR_EDITOR_GRID:
     vkr_vk_record_editor_grid(renderer, command, &prepared->editor_grid);
     break;
+  case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH:
+    vkr_vk_record_vbuffer_split_depth(renderer, command,
+                                      &prepared->vbuffer_split_depth);
+    break;
   case VKR_RG_EXECUTOR_TONEMAP_PREPARE:
   case VKR_RG_EXECUTOR_TONEMAP:
   case VKR_RG_EXECUTOR_EDITOR:
@@ -2308,6 +2337,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
     case VKR_RG_EXECUTOR_EDITOR_GRID:
+    case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH:
     case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     case VKR_RG_EXECUTOR_UI:
       vkr_vk_record_graph_graphics_pass(renderer, command, prepared);

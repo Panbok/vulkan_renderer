@@ -920,6 +920,14 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
   const uint32_t local_first =
       vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
   const bool8_t local_shadow = shadow && view_index >= local_first;
+  /* The camera's opaque raster into 2x multisampled targets (SMAA S2x)
+     needs the pipelines that rasterize two samples. */
+  const VkrVulkanGraphImageInstance *depth_target =
+      pass->desc.has_depth_attachment
+          ? vkr_vk_deferred_image(renderer, pass->desc.depth_attachment.image)
+          : NULL;
+  const bool8_t msaa2 =
+      depth_target && depth_target->image.samples == VK_SAMPLE_COUNT_2_BIT;
   const Mat4 view_projection =
       reflection     ? mat4_mul(packet->input.globals.projection,
                                 packet->input.planar_reflection->view)
@@ -1014,6 +1022,9 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
         : shadow ? (opaque_bucket
                         ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW_OPAQUE
                         : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_SHADOW)
+        : msaa2  ? ((early_z_opaque && opaque_bucket)
+                        ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE_MSAA2
+                        : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_MSAA2)
         : (early_z_opaque && opaque_bucket)
             ? VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE
             : VKR_VULKAN_PACKET_PIPELINE_VISIBILITY;
@@ -3538,6 +3549,47 @@ bool8_t vkr_vk_prepare_smaa_resolve(VkrVulkanRenderer *renderer,
     return false_v;
   prepared->pipelines[prepared->dispatch_count] =
       renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SMAA_RESOLVE];
+  prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
+/* SMAA S2x: sample zero of the multisampled visibility raster becomes the
+   single-sample visibility image every consumer reads; sample one and its
+   depth go to their own images for the second sample's shading. */
+bool8_t vkr_vk_prepare_vbuffer_split(VkrVulkanRenderer *renderer,
+                                     VkrVulkanPreparedCompute *prepared,
+                                     const VkrRgPass *pass) {
+  VkrVulkanVbufferSplitRoot root = {0};
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
+  VkrVulkanGraphImageInstance *destination =
+      destination_use ? vkr_vk_deferred_image(renderer, destination_use->image)
+                      : NULL;
+  if (!destination ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 0u,
+                                     &root.ms_vbuffer_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u,
+                                     &root.ms_depth_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u,
+                                     &root.vbuffer_storage) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 3u,
+                                     &root.vbuffer_s1_storage) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u,
+                                     &root.depth_s1_storage)) {
+    return false_v;
+  }
+  root.extent[0] = destination->image.width;
+  root.extent[1] = destination->image.height;
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanVbufferSplitRoot),
+                                 &prepared->root_address)) {
+    return false_v;
+  }
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_VBUFFER_SPLIT];
   prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][2] = 1u;

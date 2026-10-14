@@ -556,6 +556,9 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t post_transform_cache_enabled;
   /** SMAA antialiases the display-linear image before the final pass. */
   bool8_t smaa_enabled;
+  /** The camera's visibility raster takes two samples a pixel (SMAA S2x);
+      a split pass hands sample zero to the single-sample consumers. */
+  bool8_t msaa_enabled;
   /** The frame draws a planar reflector's mirrored view (desktop pipeline)
       into an image `planar_reflection_divisor` times smaller than the
       viewport on each axis, inside the half-size reflection target. */

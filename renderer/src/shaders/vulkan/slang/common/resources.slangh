@@ -569,6 +569,10 @@ struct VkrVulkanUiOutput
 // Scalar-typed alias of the same sampled-image heap. SampleCmpLevelZero is only
 // defined on a single-channel texture, and the shadow array is D32.
 [[vk::binding(0, 0)]] Texture2DArray<float> g_depth_array_textures[];
+// Multisampled views of the same sampled-image heap (SMAA S2x's visibility
+// raster), read sample by sample.
+[[vk::binding(0, 0)]] Texture2DMS<uint2> g_ms_uint2_textures[];
+[[vk::binding(0, 0)]] Texture2DMS<float> g_ms_depth_textures[];
 [[vk::binding(0, 1)]] SamplerState g_samplers[];
 // Aliases the same sampler heap by type, exactly as the texture arrays alias
 // binding (0, 0). A comparison sampler is still a VkSampler descriptor; only

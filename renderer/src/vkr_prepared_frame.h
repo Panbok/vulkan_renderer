@@ -15,6 +15,9 @@ typedef struct VkrPreparedFrame {
   /** SMAA antialiases the display-linear image: enabled, desktop pipeline,
       default render mode and no temporal reconstruction. */
   bool8_t smaa_enabled;
+  /** The visibility raster takes two samples a pixel: with SMAA, unless
+      VKR_MSAA_DISABLED is set (SMAA S2x). */
+  bool8_t msaa_enabled;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its

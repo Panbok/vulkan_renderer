@@ -2185,6 +2185,19 @@ vkr_vk_packet_pipeline_shadow_depth(VkrVulkanPacketPipeline pipeline) {
   }
 }
 
+/* Samples each packet pipeline rasterizes: two for the camera's
+   multisampled visibility raster, one elsewhere. */
+vkr_internal VkSampleCountFlagBits
+vkr_vk_packet_pipeline_samples(VkrVulkanPacketPipeline pipeline) {
+  switch (pipeline) {
+  case VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_MSAA2:
+  case VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE_MSAA2:
+    return VK_SAMPLE_COUNT_2_BIT;
+  default:
+    return VK_SAMPLE_COUNT_1_BIT;
+  }
+}
+
 vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
     VkrVulkanRenderer *renderer, VkrVulkanPacketPipeline pipeline,
     VkrVulkanPacketShader vertex_shader, VkrVulkanPacketShader fragment_shader,
@@ -2217,6 +2230,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "selection_outline_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX
                   ? "editor_grid_vertex"
+              : vertex_shader ==
+                      VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_VERTEX
+                  ? "vk_vbuffer_split_depth_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX
                   ? "text_vertex"
               : vertex_shader == VKR_VULKAN_PACKET_SHADER_UI_VERTEX
@@ -2258,6 +2274,9 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "selection_outline_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT
                   ? "editor_grid_fragment"
+              : fragment_shader ==
+                      VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_FRAGMENT
+                  ? "vk_vbuffer_split_depth_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT
                   ? "text_fragment"
               : fragment_shader ==
@@ -2306,7 +2325,7 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
   };
   const VkPipelineMultisampleStateCreateInfo multisample = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-      .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+      .rasterizationSamples = vkr_vk_packet_pipeline_samples(pipeline),
   };
   const bool8_t shadow_depth = vkr_vk_packet_pipeline_shadow_depth(pipeline);
   const VkCompareOp depth_compare =
@@ -2507,6 +2526,8 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_EDITOR_GRID_FRAG_SPV,
       VKR_VULKAN_PACKET_REFLECTION_VERT_SPV,
       VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV,
+      VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_VERT_SPV,
+      VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_FRAG_SPV,
   };
   for (uint32_t i = 0u; i < VKR_VULKAN_PACKET_SHADER_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],
@@ -2604,6 +2625,24 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              true_v, false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
+             VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
+             false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VBUFFER_SPLIT_DEPTH,
+             VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_FRAGMENT,
+             VK_FORMAT_UNDEFINED, VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v,
+             false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_MSAA2,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_VISIBILITY_FRAGMENT,
+             VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
+             false_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY_OPAQUE_MSAA2,
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_OPAQUE_FRAGMENT,
              VK_FORMAT_R32G32_UINT, VK_FORMAT_D32_SFLOAT, true_v, true_v,
@@ -2790,6 +2829,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_SMAA_WEIGHTS_COMP_SPV,
       VKR_VULKAN_PACKET_SMAA_BLEND_COMP_SPV,
       VKR_VULKAN_PACKET_SMAA_RESOLVE_COMP_SPV,
+      VKR_VULKAN_PACKET_VBUFFER_SPLIT_COMP_SPV,
   };
   vkr_local_persist const char *const entries[] = {
       "vk_gpu_draw_classify",
@@ -2866,6 +2906,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_smaa_weights",
       "vk_smaa_blend",
       "vk_smaa_resolve",
+      "vk_vbuffer_split",
   };
   _Static_assert(ArrayCount(paths) == VKR_VULKAN_DEFERRED_PIPELINE_COUNT &&
                      ArrayCount(entries) == ArrayCount(paths),

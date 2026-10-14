@@ -181,6 +181,21 @@
       "stage": "fragment"
     },
     {
+      "name": "packet.vbuffer_split.comp",
+      "entry": "vk_vbuffer_split",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.vbuffer_split_depth.vert",
+      "entry": "vk_vbuffer_split_depth_vertex",
+      "stage": "vertex"
+    },
+    {
+      "name": "packet.vbuffer_split_depth.frag",
+      "entry": "vk_vbuffer_split_depth_fragment",
+      "stage": "fragment"
+    },
+    {
       "name": "packet.visibility_shadow.frag",
       "entry": "vk_visibility_shadow_fragment",
       "stage": "fragment"

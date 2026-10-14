@@ -927,6 +927,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->bloom_forced_disabled =
       vkr_platform_environment_flag("VKR_BLOOM_DISABLED");
   renderer->smaa_enabled = !vkr_platform_environment_flag("VKR_SMAA_DISABLED");
+  renderer->msaa_enabled = !vkr_platform_environment_flag("VKR_MSAA_DISABLED");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
   char post_transform_cache[8];
@@ -1071,6 +1072,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.smaa_enabled = rf->smaa_enabled && !tiled && default_output &&
                                  rf->post_transform_cache_enabled;
+  /* SMAA S2x samples the camera's visibility raster twice a pixel. */
+  prepared->frame.msaa_enabled =
+      prepared->frame.smaa_enabled && rf->msaa_enabled;
   /* SMAA T2x: the two-subsample jitter and its resolve run with SMAA. The
      motion and history views keep them to show the resolve's inputs. */
   const bool8_t temporal_view =
