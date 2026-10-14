@@ -2462,6 +2462,10 @@ typedef struct VkrVulkanRayRow {
   uint32_t submesh_index;
   uint32_t flags;
   float32_t transform[12];
+  /* Scratch of the TLAS instance pass: the BLAS of instance i is kept in
+     row i, which the pass has read already, so the instance addresses are
+     written without reading back the mapped instance buffer. */
+  VkrVulkanBlas *instance_blas;
 } VkrVulkanRayRow;
 /* The row's material is opaque; otherwise rays test its alpha. */
 #define VKR_VULKAN_RAY_ROW_OPAQUE 1u
@@ -3205,7 +3209,7 @@ struct VkrVulkanRenderer {
   VkrDMemory publication_staging_memory;
   VkrDMemory capture_storage_memory;
   /* The dynamic volume layer's CPU records (ADR-119): each frame slot's ray
-     rows, up to VKR_GPU_DRAW_CANDIDATE_CAPACITY of 64 bytes, and its BLAS
+     rows, up to VKR_GPU_DRAW_CANDIDATE_CAPACITY of 72 bytes, and its BLAS
      work lists. Created on the first frame that traces, so scenes without
      the layer reserve nothing, and kept apart from the renderer's bounded
      allocator, which a large level's rows would fill. */

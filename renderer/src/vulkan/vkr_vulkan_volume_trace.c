@@ -494,22 +494,27 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
       blas->queued = true_v;
     }
     geometry->last_use_submit_value = renderer->submit_value + 1u;
-    VkAccelerationStructureInstanceKHR *instance = &instances[count++];
-    MemCopy(instance->transform.matrix, ray->transform,
-            sizeof(instance->transform.matrix));
-    instance->instanceCustomIndex = row;
-    instance->mask = 0xFFu;
-    /* Ray queries use no binding table; the offset tells the trace a
-       double-sided material. */
-    instance->instanceShaderBindingTableRecordOffset =
-        (ray->flags & VKR_VULKAN_RAY_ROW_DOUBLE_SIDED) ? 1u : 0u;
-    instance->flags =
-        VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
-        ((ray->flags & VKR_VULKAN_RAY_ROW_OPAQUE)
-             ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR
-             : VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR);
-    /* The reference is the BLAS's address, filled once jobs exist. */
-    instance->accelerationStructureReference = (uint64_t)(uintptr_t)blas;
+    /* The instance is composed here and stored whole: its packed fields
+       are bitfields, and assigning one in mapped memory reads it back. */
+    VkAccelerationStructureInstanceKHR instance = {
+        .instanceCustomIndex = row,
+        .mask = 0xFFu,
+        /* Ray queries use no binding table; the offset tells the trace a
+           double-sided material. */
+        .instanceShaderBindingTableRecordOffset =
+            (ray->flags & VKR_VULKAN_RAY_ROW_DOUBLE_SIDED) ? 1u : 0u,
+        .flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
+                 ((ray->flags & VKR_VULKAN_RAY_ROW_OPAQUE)
+                      ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR
+                      : VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR),
+    };
+    MemCopy(instance.transform.matrix, ray->transform,
+            sizeof(instance.transform.matrix));
+    instances[count++] = instance;
+    /* The reference is the BLAS's address, filled once jobs exist. The
+       instance buffer is mapped device memory, slow to read back, so the
+       BLAS waits in row `count - 1`, read already (count <= row + 1). */
+    slot->ray_rows[count - 1u].instance_blas = blas;
   }
   const bool8_t jobs_ready = vkr_vk_prepare_blas_jobs(renderer, slot);
   if (slot->blas_job_count) {
@@ -522,9 +527,8 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
     return false_v;
   }
   for (uint32_t i = 0u; i < count; ++i) {
-    const VkrVulkanBlas *blas = (const VkrVulkanBlas *)(uintptr_t)instances[i]
-                                    .accelerationStructureReference;
-    instances[i].accelerationStructureReference = blas->address;
+    instances[i].accelerationStructureReference =
+        slot->ray_rows[i].instance_blas->address;
   }
   slot->tlas_instance_count = count;
   return vkr_vk_flush(renderer, &slot->tlas_instances.allocation, 0u,
@@ -1176,7 +1180,7 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   bricks->last_use_submit_value = renderer->submit_value + 1u;
   slot->volume_trace_root = root_address;
   slot->volume_relight_count = relight_count;
-  slot->probe_relight = root->probe_relight;
+  slot->probe_relight = relight_count ? slot->volume_probe_relight.address : 0u;
   slot->volume_trace_count = input->trace_probe_count;
   slot->volume_clear_count = input->clear_probe_count;
   slot->volume_dynamic_image = dynamic->image.handle;
@@ -1192,7 +1196,7 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
     slot->volume_grid_probes_image = grid_probes->image.handle;
     slot->volume_grid_moments_image = grid_moments->image.handle;
     slot->volume_grid_handle = volume->probes;
-    slot->volume_grid_moment_clamp = root->moment_clamp;
+    slot->volume_grid_moment_clamp = 2.0f * volume->spacing;
     slot->volume_grid_clear =
         renderer->volume_grid_cleared.id != volume->probes.id ||
         renderer->volume_grid_cleared.generation != volume->probes.generation;

@@ -166,8 +166,8 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
   rose from 201 MB to 317 MB live (764 MB at peak while building, at the
   earlier 2048-probe settings).
 - The CPU records take their own reserve of 80 MiB, made on the first
-  traced frame: each frame slot's ray rows (64 bytes per packed opaque row,
-  16 MiB at the 262,144-row cap) and BLAS work lists. In the renderer's
+  traced frame: each frame slot's ray rows (72 bytes per packed opaque row,
+  18 MiB at the 262,144-row cap) and BLAS work lists. In the renderer's
   128 MiB allocator a large level's rows left too little for the editor's
   viewport image, and frames without the layer held them too.
 - Rectangle lights are approximated by their centre; spot cones use the
@@ -237,6 +237,14 @@ Windows, RX 6700 XT, Adrenalin 26.6.3.
   (`sha256:ac51b819…`) and the changed night case (`sha256:72d145cf…`,
   which logged the group leaving: `0x0 -> 0x1`) reported no validation
   message.
+- **A large level.** A copy of the editor's Level Design Test scene
+  (20,792 packed rows, 12,934 bricks), headless Release editor at
+  910 × 557: the frame took 150 to 195 ms with the layer and 12.8 ms
+  without it. Preparing the TLAS instances read each instance back from
+  the mapped instance buffer, device memory on this GPU, and assigned its
+  bitfields in place, which also reads: 130 ms of CPU a frame. Writing each
+  instance whole and keeping its BLAS on the CPU took the preparation to
+  1.5 ms and the frame to 14.4 ms.
 - **CPU tests.** `build_test.bat` (format, path and libc guards, Debug
   build): 804 passed, with `test_changed_lamp_group_leaves_bake`.
 - **The hang.** Until the megabuffer bases were passed in, any frame whose
