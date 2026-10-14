@@ -320,7 +320,8 @@ char *string_substring(VkrAllocator *allocator, const char *str, int32_t start,
 
 /**
  * @brief Format a string into a destination buffer.
- * @param dest The destination buffer to write the formatted string to.
+ * @param dest The destination buffer to write the formatted string to, or
+ * NULL with a dest_size of 0 to only measure, as with snprintf.
  * @param dest_size The size of the destination buffer in bytes (including space
  * for NUL).
  * @param format The format string.
@@ -332,7 +333,8 @@ int32_t string_format(char *dest, uint64_t dest_size, const char *format, ...);
 
 /**
  * @brief Format a string from a va_list into a destination buffer.
- * @param dest The destination buffer to write the formatted string to.
+ * @param dest The destination buffer to write the formatted string to, or
+ * NULL with a dest_size of 0 to only measure, as with snprintf.
  * @param dest_size The size of the destination buffer in bytes (including space
  * for NUL).
  * @param format The format string.

@@ -483,8 +483,8 @@ char *string_substring(VkrAllocator *allocator, const char *str, int32_t start,
 }
 
 int32_t string_format(char *dest, uint64_t dest_size, const char *format, ...) {
-  assert(dest != NULL && "Destination is NULL");
-  assert(dest_size > 0 && "Destination size must be > 0");
+  assert((dest != NULL || dest_size == 0) &&
+         "Destination is NULL with a nonzero size");
   assert(format != NULL && "Format is NULL");
 
   va_list args;
@@ -496,8 +496,8 @@ int32_t string_format(char *dest, uint64_t dest_size, const char *format, ...) {
 
 int32_t string_format_v(char *dest, uint64_t dest_size, const char *format,
                         va_list args) {
-  assert(dest != NULL && "Destination is NULL");
-  assert(dest_size > 0 && "Destination size must be > 0");
+  assert((dest != NULL || dest_size == 0) &&
+         "Destination is NULL with a nonzero size");
   assert(format != NULL && "Format is NULL");
 
   va_list args_copy;
