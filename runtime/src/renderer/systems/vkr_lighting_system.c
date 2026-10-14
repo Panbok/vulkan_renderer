@@ -445,8 +445,10 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     if (!lights[i].enabled || group <= 0.0f ||
         !vkr_scene_entity_visible(scene, entities[i]))
       continue;
-    const bool8_t baked = ctx->system->static_lights_baked &&
-                          lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC;
+    const bool8_t baked =
+        ctx->system->static_lights_baked &&
+        lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC &&
+        !vkr_scene_light_group_left_bake(scene, lights[i].light_group_slot);
     VkrLightingSystem *system = ctx->system;
     if (baked && !lights[i].casts_shadow) {
       continue;
@@ -509,9 +511,11 @@ vkr_internal void sync_rectangle_lights_cb(const VkrArchetype *arch,
         vkr_scene_light_group_factor(scene, lights[i].light_group_slot);
     if (!lights[i].enabled || group <= 0.0f ||
         (ctx->system->static_lights_baked &&
-         lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC) ||
-        !vkr_scene_entity_visible(scene, entities[i]))
+         lights[i].mobility == VKR_LIGHT_MOBILITY_STATIC &&
+         !vkr_scene_light_group_left_bake(scene, lights[i].light_group_slot)) ||
+        !vkr_scene_entity_visible(scene, entities[i])) {
       continue;
+    }
     VkrQuat world_rotation;
     if (!rectangle_light_world_rotation(scene, &transforms[i], &world_rotation))
       continue;

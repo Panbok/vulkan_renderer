@@ -154,7 +154,8 @@ struct VkrVulkanIblProbe
     float4 center_blend;
     float4 extents_weight;
     float4 intensity_box;
-    // xyz: capture origin that box projection aims from; w: reserved.
+    // xyz: capture origin that box projection aims from; w: the baked light
+    // there that the dynamic layer relights against, or zero (ADR-119).
     float4 capture_origin;
 };
 // Mirrors VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV in vkr_gpu_abi.h.
@@ -339,7 +340,10 @@ struct VkrVulkanPacketFrameRoot
     // signed L1 SH of E/pi in the SH texture's probe layout, unscaled; zero
     // without one.
     uint diffuse_volume_dynamic_texture;
-    uint3 diffuse_volume_reserved;
+    uint diffuse_volume_reserved;
+    // One factor per IBL probe row on its brightness for the dynamic
+    // layer's light at its capture origin; null when no trace relit them.
+    float* probe_relight;
 };
 
 #include "../../../shared/gpu_draw.slangh"

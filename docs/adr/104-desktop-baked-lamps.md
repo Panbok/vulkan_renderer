@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -150,7 +150,12 @@ Owner decisions:
 ## Consequences
 
 - Static lamps change only through their group factor. A lamp that moves,
-  flickers or switches on its own must be `dynamic`.
+  flickers or switches on its own must be `dynamic`. On a desktop renderer
+  with ray queries, a static lamp changed since the volume's bake takes its
+  whole group out of the bake instead: the group's lightmap and volume
+  layers weigh nothing and its lamps light live, their bounce traced by the
+  volume's dynamic layer
+  ([ADR-119](119-dynamic-diffuse-volume-layer.md)).
 - Baked lamp light is soft at 8 texels per metre: hard lantern and bracket
   shadows that runtime shadow maps draw on Bistro's walls come out softer or
   weaker. The directed share gives an approximate highlight, not one per lamp.

@@ -201,6 +201,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.volume_probe_relight.comp",
+      "entry": "vk_volume_probe_relight",
+      "stage": "compute"
+    },
+    {
       "name": "packet.reflection.vert",
       "entry": "vk_reflection_vertex",
       "stage": "vertex"

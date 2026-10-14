@@ -98,6 +98,12 @@ bool8_t vkr_probe_capture_matches(const VkrProbeCapture *capture,
                                   const VkrLightLayer *layers,
                                   uint32_t layer_count);
 
+/* The light the record's layers compose under `weights` (layer_count of
+   the matching table): the sum of each layer's weight times its luminance
+   at the capture origin. */
+float32_t vkr_probe_capture_light(const VkrProbeCapture *capture,
+                                  const float32_t *weights);
+
 /* The factor on the probe's radiance for the volume's current layer
    `weights` (layer_count of the matching table): the light they compose at
    the capture origin over the light the capture weights composed, clamped

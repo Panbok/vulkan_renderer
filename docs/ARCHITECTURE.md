@@ -1130,8 +1130,11 @@ pixels take that image in place of the probes where it covers them
 a reflector's `probe` binds a baked plane probe that its draws use instead
 (same ADR). With ray queries, a dynamic layer of the diffuse volume traces
 the bounce the bake lacks, from dynamic lights, emissive movers and changed
-static lights, within a 1.0 ms GPU budget; a scene whose volume is not baked
-yet gets a uniform runtime grid that traces all of its light
+static lights, within a 1.0 ms GPU budget. Where lamp lightmaps hold the
+static lamps, a changed lamp takes its whole group out of the bake and the
+layer lights it; baked reflection probes scale by the layer's light at their
+capture origins. A scene whose volume is not baked yet gets a uniform
+runtime grid that traces all of its light
 ([ADR-119](adr/119-dynamic-diffuse-volume-layer.md)).
 
 Scenes may author analytic height fog. Frame preparation uploads one 48-byte

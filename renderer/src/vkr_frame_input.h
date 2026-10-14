@@ -47,6 +47,11 @@ typedef struct VkrFrameIblProbe {
       projection aims from it, so a box moved after its bake keeps correct
       parallax. Equal to `center` for a probe without a capture record. */
   Vec3 capture_origin;
+  /** The baked diffuse light at `capture_origin` under the current layer
+      weights: the luminance of E/pi, physical, as the capture record counts
+      it. Positive, the desktop pipeline relights the probe by the dynamic
+      layer's light there (ADR-119); zero leaves it as it is. */
+  float32_t baked_light;
   Vec3 extents;
   float32_t blend_distance;
   float32_t weight;
@@ -865,7 +870,7 @@ typedef struct VkrPlanarReflectionPayload {
 #define VKR_DYNAMIC_VOLUME_RAY_COUNT 128u
 /** Probes one frame clears at most, and lights one frame traces at most. */
 #define VKR_DYNAMIC_VOLUME_CLEAR_PROBES_MAX 16384u
-#define VKR_DYNAMIC_VOLUME_LIGHTS_MAX 64u
+#define VKR_DYNAMIC_VOLUME_LIGHTS_MAX 128u
 #define VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX 8u
 
 /**

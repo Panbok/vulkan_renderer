@@ -50,7 +50,8 @@ struct VkrVkVolumeTraceRoot
     float blend;
     float ray_length;
     // VKR_VOLUME_TRACE_GRID for a runtime grid, which traces all of its
-    // light and owns its probe records and moments.
+    // light and owns its probe records and moments;
+    // VKR_VOLUME_TRACE_DIRECT_BANDS for a bake with lamp direct bands.
     uint flags;
     uint probe_storage;
     uint moment_storage;
@@ -64,9 +65,17 @@ struct VkrVkVolumeTraceRoot
     float4 sun_direction;
     float4 sun_radiance;
     VkrShL2Packed *sky_sh;
-    uint2 reserved1;
+    // The frame's IBL probe rows, whose capture origins the relight reads,
+    // and the factors it writes, one per row.
+    VkrVulkanIblProbe *ibl_probes;
+    float *probe_relight;
+    uint ibl_probe_count;
+    uint reserved1;
 };
 #define VKR_VOLUME_TRACE_GRID 1u
+// The bake's lamp groups keep their direct light in bands, which a probe's
+// baked light holds (ADR-054).
+#define VKR_VOLUME_TRACE_DIRECT_BANDS 2u
 
 struct VkrVkVolumeTracePush
 {
@@ -665,4 +674,129 @@ void vk_volume_clear(uint3 id : SV_DispatchThreadID)
     [unroll] for (uint channel = 0u; channel < 3u; ++channel)
         g_storage_2d[root.dynamic_storage][
             vkr_diffuse_volume_sh_texel(probe, channel, 0u)] = float4(0.0f);
+}
+
+// Bounds of a probe's relight factor, as VKR_PROBE_CAPTURE_RATIO_MIN and
+// VKR_PROBE_CAPTURE_RATIO_MAX bound its time-of-day ratio.
+#define VKR_VOLUME_RELIGHT_MIN (1.0f / 64.0f)
+#define VKR_VOLUME_RELIGHT_MAX 16.0f
+
+// The layer's luminance of E/pi at a point, physical: the constant terms of
+// the eight corner probes, weighed by validity and trilinear position as
+// vkr_diffuse_volume_layer_luminance weighs the bake's layers for a probe's
+// capture record.
+float vk_volume_dynamic_luminance(VkrVkVolumeTraceRoot *root, float3 position)
+{
+    float3 origin = root.origin_spacing.xyz;
+    float spacing = root.origin_spacing.w;
+    uint3 dimensions = root.dimensions.xyz;
+    uint3 entry = vkr_diffuse_volume_entry(position, origin, spacing,
+                                           dimensions);
+    if (!vkr_diffuse_volume_entry_inside(entry, dimensions))
+        return 0.0f;
+    uint value = g_uint_textures[root.indirection_texture].Load(
+        int3(int2(vkr_diffuse_volume_entry_texel(entry, dimensions)), 0));
+    if (value == VKR_DIFFUSE_VOLUME_ENTRY_EMPTY)
+        return 0.0f;
+    VkrDiffuseVolumeCell cell = vkr_diffuse_volume_brick_cell(
+        value, entry, position, origin, spacing);
+    float3 constant = 0.0f;
+    float total = 0.0f;
+    [unroll] for (uint corner = 0u; corner < 8u; ++corner)
+    {
+        uint probe = vkr_diffuse_volume_corner_probe(cell, corner);
+        float4 record = g_textures[root.probe_texture].Load(
+            int3(int2(vkr_diffuse_volume_probe_texel(probe)), 0));
+        float weight = max(record.w, 0.0f) *
+                       vkr_diffuse_volume_trilinear(corner, cell.fraction);
+        if (weight <= 0.0f)
+            continue;
+        constant += weight * float3(
+            g_storage_2d[root.dynamic_storage][
+                vkr_diffuse_volume_sh_texel(probe, 0u, 0u)].w,
+            g_storage_2d[root.dynamic_storage][
+                vkr_diffuse_volume_sh_texel(probe, 1u, 0u)].w,
+            g_storage_2d[root.dynamic_storage][
+                vkr_diffuse_volume_sh_texel(probe, 2u, 0u)].w);
+        total += weight;
+    }
+    if (total <= 0.0f)
+        return 0.0f;
+    return dot(constant / total, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+// The signed light sources' direct E/pi at a point, shadowed, averaged over
+// normals as a probe's constant term holds it: a clamped cosine averages to
+// a quarter, so a source adds its irradiance at normal incidence over 4 pi.
+// The bake's lamp direct bands hold the same measure (ADR-054), which the
+// layer, holding only bounce, does not; without them the baked light is
+// bounce alone, and so is the layer's.
+float vk_volume_direct_luminance(VkrVkVolumeTraceRoot *root,
+                                 RaytracingAccelerationStructure scene,
+                                 float3 position)
+{
+    float3 irradiance = 0.0f;
+    for (uint i = 0u; i < root.light_count; ++i)
+    {
+        VkrGpuPointLightRow light = root.lights[i];
+        VkrPunctualLightTerm term = vkr_punctual_light_term(
+            light.p0, light.p1, light.p2, light.p3, position);
+        if (!term.in_range || term.cone <= 0.0f)
+            continue;
+        float distance = length(light.p0.xyz - position);
+        if (!vk_volume_visible(scene, position, term.direction, distance))
+            continue;
+        irradiance += light.p1.rgb * light.p2.x * term.attenuation * term.cone;
+    }
+    for (uint i = 0u; i < root.rectangle_light_count; ++i)
+    {
+        // A point at the rectangle's centre with its area's form factor, as
+        // vk_volume_direct_irradiance takes it.
+        VkrGpuRectangleLightRow light = root.rectangle_lights[i];
+        float3 to_light = light.center_half_width.xyz - position;
+        float distance_squared = max(dot(to_light, to_light), 1.0e-4f);
+        float distance = sqrt(distance_squared);
+        float3 direction = to_light / distance;
+        float3 emitter_normal = normalize(cross(light.right_half_height.xyz,
+                                                light.up_radiance.xyz));
+        float emitter_cosine = abs(dot(emitter_normal, direction));
+        if (emitter_cosine <= 0.0f)
+            continue;
+        float area = 4.0f * light.center_half_width.w *
+                     light.right_half_height.w;
+        if (!vk_volume_visible(scene, position, direction, distance))
+            continue;
+        irradiance += light.color.rgb * light.up_radiance.w * area *
+                      emitter_cosine /
+                      max(distance_squared, area * 0.31830989f);
+    }
+    return dot(irradiance, float3(0.2126f, 0.7152f, 0.0722f)) *
+           (0.25f * 0.31830989f);
+}
+
+// One thread per IBL probe row: the factor on a baked probe's brightness
+// that adds the layer's light at its capture origin, its bounce and its
+// sources' direct light, to the baked light there, so a reflection follows
+// a light the bake lacks or lost. A row without baked light keeps its
+// brightness.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_volume_probe_relight(uint3 id : SV_DispatchThreadID)
+{
+    VkrVkVolumeTraceRoot *root = g_volume_trace_push.root;
+    if (id.x >= root.ibl_probe_count)
+        return;
+    float4 origin_light = root.ibl_probes[id.x].capture_origin;
+    float relight = 1.0f;
+    if (origin_light.w > 0.0f)
+    {
+        RaytracingAccelerationStructure scene = g_volume_tlas[root.tlas_slot];
+        float dynamic = vk_volume_dynamic_luminance(root, origin_light.xyz);
+        if ((root.flags & VKR_VOLUME_TRACE_DIRECT_BANDS) != 0u)
+            dynamic += vk_volume_direct_luminance(root, scene,
+                                                  origin_light.xyz);
+        relight = clamp((origin_light.w + dynamic) / origin_light.w,
+                        VKR_VOLUME_RELIGHT_MIN, VKR_VOLUME_RELIGHT_MAX);
+    }
+    root.probe_relight[id.x] = relight;
 }

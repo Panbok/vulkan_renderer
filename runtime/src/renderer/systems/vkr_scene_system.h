@@ -942,6 +942,11 @@ typedef struct VkrSceneReflectionProbe {
   bool8_t light_resolved;
   uint32_t light_composition;
   float32_t light_ratio;
+  /** The light the current layer weights compose at the capture origin
+      (vkr_probe_capture_light), valid with `light_ratio`; zero without a
+      matching record. The desktop pipeline's dynamic layer relights the
+      probe against it (ADR-119). */
+  float32_t light_baked;
 } VkrSceneReflectionProbe;
 
 /**
@@ -1153,6 +1158,11 @@ typedef struct VkrSceneLightGroups {
   float32_t intensities[VKR_SCENE_LIGHT_GROUP_MAX];
   float32_t factors[VKR_SCENE_LIGHT_GROUP_MAX];
   uint32_t count;
+  /* Groups that left the bake, one bit per slot: a static light of the
+     group changed since the bake, so the group's baked layers weigh nothing
+     and its lights run live, traced by the volume's dynamic layer (ADR-119,
+     vkr_dynamic_volume_update_baked_groups). */
+  uint32_t left_bake;
 } VkrSceneLightGroups;
 
 /** A scene's sparse diffuse volume (ADR-054, ADR-090): its published
@@ -1717,6 +1727,15 @@ bool8_t vkr_scene_singleton_active(const VkrScene *scene, VkrEntityId entity,
     sampling. */
 void vkr_scene_reset_diffuse_volume(VkrScene *scene,
                                     struct VkrRenderAssets *assets);
+
+/** Whether the light group in `slot` left the bake (left_bake). */
+vkr_internal INLINE bool8_t
+vkr_scene_light_group_left_bake(const VkrScene *scene, uint8_t slot) {
+  if (slot >= VKR_SCENE_LIGHT_GROUP_MAX) {
+    return false_v;
+  }
+  return (scene->light_groups.left_bake & (1u << slot)) != 0u;
+}
 
 /** The weights of `layers` for the scene's current sun and light group
     factors: sun keys by vkr_light_layers_sun_weights, lamp groups by their

@@ -482,6 +482,7 @@ vkr_internal void vkr_vk_reset_packet_tables(VkrVulkanFrameSlot *slot) {
   MemZero(slot->diffuse_volume_dimensions,
           sizeof(slot->diffuse_volume_dimensions));
   slot->diffuse_volume_dynamic_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  slot->probe_relight = 0u;
   slot->ltc = 0u;
   slot->sheen = 0u;
   slot->anisotropy = 0u;
@@ -709,7 +710,7 @@ vkr_internal bool8_t vkr_vk_resolve_ibl(VkrVulkanRenderer *renderer,
                             probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
           .capture_origin = {probe->capture_origin.x, probe->capture_origin.y,
-                             probe->capture_origin.z, 0.0f},
+                             probe->capture_origin.z, probe->baked_light},
       };
       /* A probe carries its own pre-exposed radiance scale: the
          environment's intensity and gains scale only the global share
@@ -1453,6 +1454,7 @@ void vkr_vk_fill_packet_frame_root(
   MemCopy(root->diffuse_volume_dimensions, slot->diffuse_volume_dimensions,
           sizeof(root->diffuse_volume_dimensions));
   root->diffuse_volume_dynamic_texture = slot->diffuse_volume_dynamic_texture;
+  root->probe_relight = slot->probe_relight;
   root->flags = vkr_packet_derive_frame_flags(renderer->graph->packet,
                                               lighting_pass, slot->ibl_ready);
   root->point_light_data = slot->point_light_data;

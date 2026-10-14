@@ -188,9 +188,10 @@ void vkr_vk_destroy_volume_slot(VkrVulkanRenderer *renderer,
                                               slot->tlas, NULL);
   }
   slot->tlas = VK_NULL_HANDLE;
-  VkrVulkanBuffer *buffers[] = {&slot->tlas_buffer, &slot->tlas_instances,
-                                &slot->tlas_scratch, &slot->blas_positions,
-                                &slot->blas_scratch};
+  VkrVulkanBuffer *buffers[] = {
+      &slot->tlas_buffer,  &slot->tlas_instances,
+      &slot->tlas_scratch, &slot->blas_positions,
+      &slot->blas_scratch, &slot->volume_probe_relight};
   for (uint32_t i = 0u; i < ArrayCount(buffers); ++i) {
     if (buffers[i]->handle) {
       vkr_vk_destroy_buffer(renderer, buffers[i]);
@@ -968,6 +969,8 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   slot->volume_grid_clear = false_v;
   slot->volume_grid_probes_image = VK_NULL_HANDLE;
   slot->volume_grid_moments_image = VK_NULL_HANDLE;
+  slot->volume_relight_count = 0u;
+  slot->probe_relight = 0u;
   if (!slot->volume_build_ready) {
     return true_v;
   }
@@ -1024,6 +1027,17 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
       (uint64_t)Max(input->rectangle_light_count, 1u) * sizeof(*rectangle_rows),
       16u, &rectangle_lights, NULL);
   if (!trace || !clear || !light_rows || !rectangle_rows) {
+    return false_v;
+  }
+  /* Baked reflection probes take the layer's light at their capture
+     origins; a grid's probes have no baked light to relight against. */
+  const uint32_t relight_count = grid ? 0u : slot->ibl_probe_count;
+  if (relight_count &&
+      !vkr_vk_ensure_volume_buffer(
+          renderer, &slot->volume_probe_relight, VKR_VULKAN_MEMORY_CLASS_DEVICE,
+          VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+          (VkDeviceSize)relight_count * sizeof(float32_t),
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
     return false_v;
   }
   MemCopy(trace, input->trace_probes,
@@ -1090,13 +1104,19 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
                      volume->dimensions[2], tile_rows},
       .blend = input->blend,
       .ray_length = VKR_VULKAN_VOLUME_RAY_LENGTH,
-      .flags = grid ? VKR_VULKAN_VOLUME_TRACE_GRID : 0u,
+      .flags = (grid ? VKR_VULKAN_VOLUME_TRACE_GRID : 0u) |
+               (volume->band_count > volume->layer_count
+                    ? VKR_VULKAN_VOLUME_TRACE_DIRECT_BANDS
+                    : 0u),
       .probe_storage = grid ? grid_probes->storage_slots[0].index : 0u,
       .moment_storage = grid ? grid_moments->storage_slots[0].index : 0u,
       .sky_slot = slot->sh_global_slot,
       .sky_scale = lighting->ibl_intensity * lighting->ibl_diffuse_intensity,
       .moment_clamp = 2.0f * volume->spacing,
       .sky_sh = renderer->sh_coefficients.address,
+      .ibl_probes = relight_count ? slot->ibl_probes : 0u,
+      .probe_relight = relight_count ? slot->volume_probe_relight.address : 0u,
+      .ibl_probe_count = relight_count,
   };
   /* The sun and sky are a bake's; a grid traces them (physical, unlike the
      pre-exposed frame constants). */
@@ -1112,6 +1132,8 @@ bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
   dynamic->last_use_submit_value = renderer->submit_value + 1u;
   bricks->last_use_submit_value = renderer->submit_value + 1u;
   slot->volume_trace_root = root_address;
+  slot->volume_relight_count = relight_count;
+  slot->probe_relight = root->probe_relight;
   slot->volume_trace_count = input->trace_probe_count;
   slot->volume_clear_count = input->clear_probe_count;
   slot->volume_dynamic_image = dynamic->image.handle;
@@ -1260,6 +1282,20 @@ void vkr_vk_record_volume_trace(VkrVulkanRenderer *renderer,
                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
                                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+  }
+  /* The probes' relight reads the layer the trace wrote; this frame's
+     lighting reads the factors. */
+  if (slot->volume_relight_count) {
+    vkCmdBindPipeline(
+        command, VK_PIPELINE_BIND_POINT_COMPUTE,
+        renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_PROBE_RELIGHT]);
+    vkCmdDispatch(command, (slot->volume_relight_count + 63u) / 64u, 1u, 1u);
+    vkr_vk_volume_memory_barrier(command,
+                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
   }
 }
 

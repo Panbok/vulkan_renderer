@@ -2725,7 +2725,9 @@ void vkr_scene_light_layer_weights(const VkrScene *scene,
     out_weights[layer] = 1.0f;
     for (uint32_t slot = 0u; slot < groups->count; ++slot) {
       if (strcmp(groups->names[slot], layers[layer].name) == 0) {
-        out_weights[layer] = groups->factors[slot];
+        /* A group that left the bake lights live instead. */
+        out_weights[layer] =
+            (groups->left_bake & (1u << slot)) ? 0.0f : groups->factors[slot];
         break;
       }
     }
@@ -2787,6 +2789,7 @@ void vkr_scene_update_reflection_probe_light(VkrScene *scene) {
     probe->light_resolved = true_v;
     probe->light_composition = composition;
     probe->light_ratio = 1.0f;
+    probe->light_baked = 0.0f;
     if (!volume || probe->capture.layer_count == 0u) {
       continue;
     }
@@ -2803,6 +2806,8 @@ void vkr_scene_update_reflection_probe_light(VkrScene *scene) {
     }
     probe->light_ratio =
         vkr_probe_capture_ratio(&probe->capture, volume->weights);
+    probe->light_baked =
+        vkr_probe_capture_light(&probe->capture, volume->weights);
   }
 }
 

@@ -70,3 +70,16 @@ bool8_t vkr_dynamic_volume_select(VkrDynamicVolumeSelection *selection,
 bool8_t vkr_dynamic_volume_grid_update(struct VkrScene *scene,
                                        struct VkrRenderAssets *assets,
                                        const VkrWorldPassPayload *world);
+
+/**
+ * Sets the scene's light groups that left the bake
+ * (`VkrSceneLightGroups.left_bake`): those with a static light that differs
+ * from the volume's bake record of it, a static light the bake did not hold,
+ * or a record no light matches. Groups leave only where lamp lightmaps hold
+ * the static lamps, which cannot take one lamp's light away, and only from
+ * a `traced` volume, one the dynamic layer updates, since nothing else would
+ * light them instead. Call before the frame weighs its layers and gathers
+ * its lights.
+ */
+void vkr_dynamic_volume_update_baked_groups(struct VkrScene *scene,
+                                            bool8_t traced);

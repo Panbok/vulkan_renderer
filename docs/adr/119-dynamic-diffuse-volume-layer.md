@@ -12,14 +12,17 @@ Accepted (partial). On the desktop pipeline (Vulkan) with ray queries, a
 dynamic layer of the sparse diffuse volume
 ([ADR-054](054-baked-diffuse-volumes.md)) traces the light the bake lacks
 each frame: dynamic point, spot and rectangle lights, emissive movers, and
-static lights changed since the bake. A scene whose volume is not baked yet
-gets a uniform runtime grid whose layer traces all of its light. Two parts are
-not done:
+static lights changed since the bake. Where lamp lightmaps hold the static
+lamps, a changed lamp takes its whole light group out of the bake, and the
+layer lights the group instead. Baked reflection probes take the layer's light
+at their capture origins. A scene whose volume is not baked yet gets a uniform
+runtime grid whose layer traces all of its light. Two parts are not done:
 
 - **Changed static lights** need the bake's light records
   (`baker_manifest.baked_lights` in the volume's `.bake.json`). The diffuse
-  baker writes them from this change on; the committed Bistro bake predates
-  them, so its static lights are not compared yet.
+  baker writes them; a volume baked before 2026-10-14 has none, and its
+  static lights count as unchanged. Bistro volumes are local, untracked
+  files, so each host rebakes its own.
 - **The runtime grid** is opted into by the scene document; the editor and
   the project lowering do not emit `runtime_grid` for an unbaked volume yet.
 
@@ -41,7 +44,11 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
   acceleration structures hold static and rigid moving geometry, not skinned
   meshes; 128 rays a probe;
 - (2026-10-14) when 2048 probes a frame measured 3.6 ms, the budget wins and
-  the probe count adapts to it.
+  the probe count adapts to it;
+- (2026-10-14, lightmaps with the baked volume and the layer) a static lamp
+  changed in a group that lamp lightmaps hold takes the whole group out of
+  the bake, since a lightmap cannot take one lamp away; baked reflection
+  probes take the layer's light at their capture origins.
 
 ## Decision
 
@@ -82,7 +89,8 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
    - Sources: dynamic point and rectangle lights (sign +1); static lights
      matched to the bake's records by kind and position within 1 cm, a
      changed one adding itself (+1) and taking its record away (−1); records
-     with no light (−1); emissive rows past the static candidates.
+     with no light (−1); emissive rows past the static candidates. A light's
+     empty group name and a record's `default` name the same group.
    - Each source reaches a sphere where its irradiance falls to 0.05
      (32 m at most); the bricks it touches are active, and the bricks it
      left clear. Active probes take turns.
@@ -121,7 +129,33 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
    texel (cosine to the 50th power), border copies across the octahedral
    seams, a move through the closest back face when more than a quarter of
    the rays see back faces, else away from a front face within a tenth of
-   the spacing, within 0.45 spacings.
+   the spacing, within 0.45 spacings. A scene whose lamp lightmaps hold its
+   static lamps gets no grid: the grid's layer would add those lamps a
+   second time.
+8. **Groups that leave the bake**
+   (`vkr_dynamic_volume_update_baked_groups`). Lamp lightmaps
+   ([ADR-104](104-desktop-baked-lamps.md)) hold light per group, so with
+   them and a traced volume a group leaves the bake when one of its static
+   lights differs from its record, has none, or a record of the group has no
+   light (`VkrSceneLightGroups.left_bake`). The group's lamp layers then
+   weigh nothing in the lightmaps and the volume
+   (`vkr_scene_light_layer_weights`), its static lamps return to the
+   runtime light lists, and the selection adds them whole (+1) and takes no
+   record of the group away. Without lamp lightmaps a changed light keeps
+   the signed path of decision 4; without the trace no group leaves.
+9. **Reflection probes.** A baked probe's brightness follows the time of
+   day by the ratio of the baked light at its capture origin
+   ([ADR-019](019-bounded-forward-spatial-lighting.md)). The frame passes
+   that light under the current weights (`light_baked`) in the probe row,
+   and after the trace `vk_volume_probe_relight` writes one factor per
+   probe: the baked light plus the layer's light there, over the baked
+   light, clamped to [1/64, 16]. The layer's light is its constant term,
+   weighed by probe validity and trilinear position as the capture record
+   weighs the bake's layers, plus the signed sources' shadowed direct light
+   averaged over normals, which a lamp group's baked light holds in its
+   direct band ([ADR-054](054-baked-diffuse-volumes.md)). The probe loops
+   multiply the probe's intensity by it (`packet_probe_relight`); a frame
+   without a trace binds none, and probes keep their baked brightness.
 
 ## Consequences
 
@@ -136,6 +170,12 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
 - The grid on a scene as large as Bistro is coarse (4.88 m spacing for
   10 × 10 × 10 bricks); it serves blockout, not final lighting.
 - Without records, a bake's static lights count as unchanged.
+- A group that leaves the bake runs every lamp it has live: Bistro's 72
+  lamps share the group `default`, so one changed lamp returns all 72 to
+  the point-light lists. The group's bounce then builds up over the layer's
+  turns.
+- A probe's relight scales its whole cube by one number, like the time of
+  day ratio: the cube still shows the room as it was lit at capture.
 
 ## Evidence
 
@@ -163,8 +203,37 @@ Windows, RX 6700 XT, Adrenalin 26.6.3.
   identical and `indirect_diffuse` differs on 13 pixels by at most 10/255,
   as two runs with the layer off differ on 15 pixels by at most 10/255
   (`sha256:ff668d5e…`, `sha256:58f11cac…`, `sha256:cbc41c93…`).
+- **A changed lamp leaves the bake with its group.** The Bistro volume
+  rebaked on 2026-10-14 records 72 static lamps in group `default`
+  (`sha256:907a7e03…`). Release, `local-offscreen`, 1920 × 1080:
+  - `bistro_lamps_baked_volume_night_capture`, nothing changed:
+    `lighting.point.selected` 0, the lamps stay baked
+    (`sha256:7e83ba77…`);
+  - `bistro_lamps_baked_volume_night_changed_capture`, one static lamp the
+    bake does not hold: 73 lamps run live and the added lamp lights the
+    street (`sha256:765641c1…`);
+  - the same case with `VKR_DYNAMIC_VOLUME_DISABLED=1`: 0 lamps live, and
+    the added lamp does not light at all, as before this change
+    (`sha256:91920115…`).
+
+  The first run of the unchanged case selected all 72 lamps: a record
+  named `default` did not match a lamp's empty group name, so every Bistro
+  lamp counted as changed, in the signed path of decision 4 as well. The
+  comparison now resolves the empty name.
+- **Probes follow the layer.** `dynamic_volume_bistro_cafe_capture`, the
+  relight against a shader catalog whose relight writes 1
+  (`VKR_SHADER_CATALOG`): at frame 0 `final_color` changed on 27.9 % of
+  pixels by more than 8/255, mean 50.5 to 60.8, in the café's reflections;
+  `indirect_diffuse` changed on 0.14 %. Two runs with the relight differ on
+  0.03 % and 0.13 % (`sha256:8d6d768c…` on, `sha256:912ed1f8…` off,
+  `sha256:e6d45f08…` repeat).
+- **Validation of the relight and the fallback.** Debug with
+  `VK_LAYER_KHRONOS_validation` and synchronization: the café case
+  (`sha256:ac51b819…`) and the changed night case (`sha256:72d145cf…`,
+  which logged the group leaving: `0x0 -> 0x1`) reported no validation
+  message.
 - **CPU tests.** `build_test.bat` (format, path and libc guards, Debug
-  build): 803 passed.
+  build): 804 passed, with `test_changed_lamp_group_leaves_bake`.
 - **The hang.** Until the megabuffer bases were passed in, any frame whose
   rays hit geometry lost the device. Radeon GPU Detective showed waves
   stalled on the index loads with no page fault, and the disassembly the
@@ -181,8 +250,8 @@ Windows, RX 6700 XT, Adrenalin 26.6.3.
 
 ## Revisit when
 
-- A rebaked Bistro volume carries light records: a changed static light's
-  case then needs its own capture.
+- A scene's lamps need groups of their own: with Bistro's one group, any
+  changed lamp runs all 72 live.
 - The editor bakes a volume: it should write `runtime_grid` until then.
 - A scene needs a finer grid than 1024 bricks allow, or the all-light layer
   should replace the bake for time of day.

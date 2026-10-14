@@ -3,6 +3,7 @@
 #include "math/vkr_math.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/systems/vkr_dynamic_volume.h"
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_scene_types.h"
 
@@ -484,6 +485,143 @@ static bool32_t test_baked_lamps_past_capacity_keep_nearest(void) {
   vkr_scene_shutdown(&scene, NULL);
   vkr_dmemory_destroy(&memory);
   printf("  test_baked_lamps_past_capacity_keep_nearest PASSED\n");
+  return true_v;
+}
+
+/* The slot of light group `name`, or VKR_SCENE_LIGHT_GROUP_NONE. */
+static uint8_t lighting_test_group_slot(const VkrScene *scene,
+                                        const char *name) {
+  for (uint32_t i = 0u; i < scene->light_groups.count; ++i) {
+    if (strcmp(scene->light_groups.names[i], name) == 0) {
+      return (uint8_t)i;
+    }
+  }
+  return VKR_SCENE_LIGHT_GROUP_NONE;
+}
+
+/* Lamp lightmaps cannot take one lamp's light away, so a static lamp
+   changed since the bake takes its whole group out of the bake: the
+   group's layers weigh nothing and its lamps light live, while the other
+   groups stay baked (ADR-119). The second lamp has the empty group name,
+   which its bake record spells in full. */
+static bool32_t test_changed_lamp_group_leaves_bake(void) {
+  printf("  Running test_changed_lamp_group_leaves_bake...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(4), MB(8), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(
+      vkr_scene_init(&scene, &allocator, VKR_SCENE_WORLD_ROOT_ID, 8u, &error));
+  static VkrLightingSystem system;
+  assert(vkr_lighting_system_init(&system));
+
+  const char *const groups[2] = {"street", ""};
+  const char *const recorded_groups[2] = {"street", VKR_LIGHT_GROUP_DEFAULT};
+  VkrEntityId lamps[2];
+  ScenePointLight lights[2];
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    lamps[i] = vkr_scene_create_entity(&scene, &error);
+    assert(lamps[i].u64 != VKR_ENTITY_ID_INVALID.u64);
+    assert(vkr_scene_set_transform(&scene, lamps[i],
+                                   vec3_new(5.0f * (float32_t)i, 1.0f, 0.0f),
+                                   vkr_quat_identity(), vec3_one()));
+    lights[i] = (ScenePointLight){
+        .color = vec3_one(),
+        .intensity = 2.0f,
+        .range = 3.0f,
+        .kind = VKR_POINT_LIGHT_KIND_GLTF_POINT,
+        .enabled = true_v,
+        .mobility = VKR_LIGHT_MOBILITY_STATIC,
+    };
+    snprintf(lights[i].light_group, sizeof(lights[i].light_group), "%s",
+             groups[i]);
+    assert(vkr_scene_set_point_light(&scene, lamps[i], &lights[i]));
+  }
+  vkr_scene_update(&scene, 0.0);
+  (void)vkr_scene_resolve_world(&scene);
+  const uint8_t street = lighting_test_group_slot(&scene, "street");
+  const uint8_t default_group =
+      lighting_test_group_slot(&scene, VKR_LIGHT_GROUP_DEFAULT);
+  assert(street != VKR_SCENE_LIGHT_GROUP_NONE &&
+         default_group != VKR_SCENE_LIGHT_GROUP_NONE);
+
+  /* The bake recorded both lamps as they stand; lamp lightmaps hold them. */
+  VkrSceneBakedLight records[2];
+  MemZero(records, sizeof(records));
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    records[i] = (VkrSceneBakedLight){
+        .kind = 1u,
+        .position = vec3_new(5.0f * (float32_t)i, 1.0f, 0.0f),
+        .color = vec3_one(),
+        .intensity = 2.0f,
+        .range = 3.0f,
+    };
+    snprintf(records[i].group, sizeof(records[i].group), "%s",
+             recorded_groups[i]);
+  }
+  VkrSceneDiffuseVolume volume = {
+      .baked_lights = records,
+      .baked_light_count = 2u,
+      .baked_lights_known = true_v,
+  };
+  VkrSceneLightmaps lightmaps = {.texture = {.id = 1u}, .lamps_baked = true_v};
+  scene.diffuse_volume = &volume;
+  scene.lightmaps = &lightmaps;
+  system.static_lights_baked = true_v;
+
+  vkr_dynamic_volume_update_baked_groups(&scene, true_v);
+  assert(scene.light_groups.left_bake == 0u);
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
+  assert(system.point_light_count == 0u);
+
+  /* The street lamp brightens: its group leaves, the default group stays. */
+  lights[0].intensity = 4.0f;
+  assert(vkr_scene_set_point_light(&scene, lamps[0], &lights[0]));
+  vkr_scene_update(&scene, 0.0);
+  vkr_dynamic_volume_update_baked_groups(&scene, true_v);
+  assert(scene.light_groups.left_bake == (1u << street));
+  vkr_lighting_system_sync_from_scene(&system, &scene, vec3_zero(),
+                                      1.0f / 60.0f);
+  assert(system.point_light_count == 1u &&
+         fabsf(system.point_lights[0].position.x) < 1.0e-4f);
+  VkrLightLayer layers[2];
+  MemZero(layers, sizeof(layers));
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    layers[i].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+    layers[i].index = i;
+    snprintf(layers[i].name, sizeof(layers[i].name), "%s", recorded_groups[i]);
+  }
+  float32_t weights[2];
+  vkr_scene_light_layer_weights(&scene, layers, 2u, weights);
+  assert(weights[0] == 0.0f && weights[1] == 1.0f);
+
+  /* Nothing lights a group live without the dynamic layer's trace, and a
+     volume without lamp lightmaps takes one lamp away by itself. */
+  vkr_dynamic_volume_update_baked_groups(&scene, false_v);
+  assert(scene.light_groups.left_bake == 0u);
+  scene.lightmaps = NULL;
+  vkr_dynamic_volume_update_baked_groups(&scene, true_v);
+  assert(scene.light_groups.left_bake == 0u);
+
+  /* A recorded lamp that is gone takes its group out too. */
+  scene.lightmaps = &lightmaps;
+  lights[0].intensity = 2.0f;
+  assert(vkr_scene_set_point_light(&scene, lamps[0], &lights[0]));
+  lights[1].enabled = false_v;
+  assert(vkr_scene_set_point_light(&scene, lamps[1], &lights[1]));
+  vkr_scene_update(&scene, 0.0);
+  vkr_dynamic_volume_update_baked_groups(&scene, true_v);
+  assert(scene.light_groups.left_bake == (1u << default_group));
+
+  scene.diffuse_volume = NULL;
+  scene.lightmaps = NULL;
+  vkr_lighting_system_shutdown(&system);
+  vkr_scene_shutdown(&scene, NULL);
+  vkr_dmemory_destroy(&memory);
+  printf("  test_changed_lamp_group_leaves_bake PASSED\n");
   return true_v;
 }
 
@@ -1216,6 +1354,7 @@ bool32_t run_lighting_system_tests(void) {
   passed &= test_point_light_table_holds_and_fades();
   passed &= test_point_light_table_without_competition_snaps();
   passed &= test_baked_lamps_past_capacity_keep_nearest();
+  passed &= test_changed_lamp_group_leaves_bake();
   passed &= test_point_light_gpu_row_packing();
   passed &= test_rectangle_light_uses_rigid_parent_rotation();
   passed &= test_time_of_day_turns_sun_and_switches_night_groups();

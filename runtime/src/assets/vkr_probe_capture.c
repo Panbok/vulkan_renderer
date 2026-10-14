@@ -16,9 +16,8 @@ static bool8_t vkr_probe_capture_finite_vec3(Vec3 value) {
   return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
 }
 
-/* The light the record's layers compose under `weights`. */
-static float32_t vkr_probe_capture_light(const VkrProbeCapture *capture,
-                                         const float32_t *weights) {
+float32_t vkr_probe_capture_light(const VkrProbeCapture *capture,
+                                  const float32_t *weights) {
   float32_t light = 0.0f;
   for (uint32_t layer = 0u; layer < capture->layer_count; ++layer) {
     light += weights[layer] * capture->luminance[layer];

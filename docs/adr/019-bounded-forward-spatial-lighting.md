@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-13
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -35,7 +35,10 @@ capture renders only the static world in supersampled faces, and its cube
 records where it was captured (audits B4, B5 and B7). Since 2026-10-13 box
 projection aims from that capture origin on both pipelines, and a probe an
 edit moved off it is marked for recapture. B4 and B5 are host-side; B7 adds
-a field to both pipelines' probe record. The Metal side was not run.
+a field to both pipelines' probe record. The Metal side was not run. Since
+2026-10-14 the desktop pipeline with ray queries also scales a probe by the
+diffuse volume's dynamic layer at its capture origin
+([ADR-119](119-dynamic-diffuse-volume-layer.md)).
 
 ## Context
 

@@ -247,6 +247,7 @@ vkr_global const VkrVulkanReflectedField s_vk_packet_frame_root_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketFrameRoot, diffuse_volume_params),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketFrameRoot,
                                diffuse_volume_dimensions),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketFrameRoot, probe_relight),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketFrameRoot, ltc),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketFrameRoot, sheen),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPacketFrameRoot, anisotropy),
@@ -2125,12 +2126,14 @@ bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_VOLUME_BLAS_DECODE_COMP_SPV,
           VKR_VULKAN_PACKET_VOLUME_TRACE_COMP_SPV,
           VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV,
+          VKR_VULKAN_PACKET_VOLUME_PROBE_RELIGHT_COMP_SPV,
       };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_VOLUME_PIPELINE_COUNT] = {
           "vk_volume_blas_decode",
           "vk_volume_trace",
           "vk_volume_clear",
+          "vk_volume_probe_relight",
       };
   for (uint32_t i = 0u; i < VKR_VULKAN_VOLUME_PIPELINE_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],

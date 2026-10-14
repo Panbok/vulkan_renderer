@@ -1942,6 +1942,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
           .capture_origin = vec3_sub(probe->has_capture ? probe->capture.origin
                                                         : probe->center,
                                      active_scene->origin_offset),
+          .baked_light = probe->light_resolved ? probe->light_baked : 0.0f,
           .extents = probe->extents,
           .blend_distance = probe->blend_distance,
           .weight = 1.0f,
@@ -2010,16 +2011,21 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
    desktop renderer with ray queries (ADR-119). The layer's texture is
    created the first time; it joins the binding once published. Setting
    VKR_DYNAMIC_VOLUME_DISABLED leaves the volume baked. */
+vkr_internal bool8_t vkr_standard_scene_runtime_dynamic_volume_traced(
+    VkrStandardSceneRuntime *application) {
+  if (!vkr_renderer_dynamic_volume_supported(&application->renderer)) {
+    return false_v;
+  }
+  const char *disabled = getenv("VKR_DYNAMIC_VOLUME_DISABLED");
+  return !(disabled && disabled[0] && disabled[0] != '0');
+}
+
 vkr_internal void vkr_standard_scene_runtime_prepare_dynamic_volume(
     VkrStandardSceneRuntime *application,
     VkrStandardSceneRuntimeDrawContext *draw) {
   draw->has_dynamic_volume = false_v;
   if (draw->scene_stopped ||
-      !vkr_renderer_dynamic_volume_supported(&application->renderer)) {
-    return;
-  }
-  const char *disabled = getenv("VKR_DYNAMIC_VOLUME_DISABLED");
-  if (disabled && disabled[0] && disabled[0] != '0') {
+      !vkr_standard_scene_runtime_dynamic_volume_traced(application)) {
     return;
   }
   VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
@@ -3240,6 +3246,11 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   if (render_scene) {
     (void)vkr_scene_resolve_world(render_scene);
     vkr_scene_sync_sun(render_scene, delta);
+    /* A lamp group with a changed static light leaves the bake while the
+       dynamic layer can light it instead (ADR-119). */
+    vkr_dynamic_volume_update_baked_groups(
+        render_scene,
+        vkr_standard_scene_runtime_dynamic_volume_traced(application));
     /* The volume's sun keys and lamp groups follow the turned sun and the
        light group factors (ADR-090). */
     vkr_scene_update_diffuse_volume(render_scene, delta);

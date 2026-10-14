@@ -106,6 +106,8 @@
   "packet.volume_blas_decode.comp.spv"
 #define VKR_VULKAN_PACKET_VOLUME_TRACE_COMP_SPV "packet.volume_trace.comp.spv"
 #define VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV "packet.volume_clear.comp.spv"
+#define VKR_VULKAN_PACKET_VOLUME_PROBE_RELIGHT_COMP_SPV                        \
+  "packet.volume_probe_relight.comp.spv"
 #define VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV "packet.reflection.frag.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
   "packet.local_shadow_transmission.vert.spv"
@@ -1487,7 +1489,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketIblProbe {
   Vec4 center_blend;
   Vec4 extents_weight;
   Vec4 intensity_box;
-  /** xyz: capture origin that box projection aims from; w: reserved. */
+  /** xyz: capture origin that box projection aims from; w: the baked light
+      there that the dynamic layer relights against, or zero (ADR-119). */
   Vec4 capture_origin;
 } VkrVulkanPacketIblProbe;
 
@@ -1608,9 +1611,12 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint64_t local_shadow_transmission;
   uint64_t sky;
   /* The diffuse volume's dynamic layer (ADR-119): sampled slot of its
-     signed L1 SH, zero without one. */
+     signed L1 SH, zero without one; and one factor per IBL probe row on its
+     brightness for the layer's light at its capture origin, null when no
+     trace relit them this frame. */
   uint32_t diffuse_volume_dynamic_texture;
-  uint32_t diffuse_volume_reserved[3];
+  uint32_t diffuse_volume_reserved;
+  uint64_t probe_relight;
 } VkrVulkanPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -2141,7 +2147,8 @@ _Static_assert(offsetof(VkrVulkanPacketFrameRoot, local_shadow_transmission) ==
                "Vulkan local shadow transmission address ABI drift");
 _Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 640u &&
                    offsetof(VkrVulkanPacketFrameRoot,
-                            diffuse_volume_dynamic_texture) == 624u,
+                            diffuse_volume_dynamic_texture) == 624u &&
+                   offsetof(VkrVulkanPacketFrameRoot, probe_relight) == 632u,
                "Packet frame-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, sh_coefficients) == 88u,
                "Packet frame-root SH-buffer ABI offset drift");
@@ -2582,7 +2589,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeTraceRoot {
   float32_t blend;
   float32_t ray_length;
   /* VKR_VULKAN_VOLUME_TRACE_GRID for a runtime grid, which traces all of
-     its light and owns its probe records and moments. */
+     its light and owns its probe records and moments;
+     VKR_VULKAN_VOLUME_TRACE_DIRECT_BANDS for a bake with lamp direct
+     bands. */
   uint32_t flags;
   /* A grid's probe records and moment atlas, as storage slots. */
   uint32_t probe_storage;
@@ -2598,20 +2607,31 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeTraceRoot {
   /* The sun's colour times its intensity, physical. */
   Vec4 sun_radiance;
   uint64_t sky_sh;
-  uint32_t reserved1[2];
+  /* The frame's IBL probe rows, whose capture origins the relight reads,
+     and the factors it writes, one per row. */
+  uint64_t ibl_probes;
+  uint64_t probe_relight;
+  uint32_t ibl_probe_count;
+  uint32_t reserved1;
 } VkrVulkanVolumeTraceRoot;
-_Static_assert(sizeof(VkrVulkanVolumeTraceRoot) == 256u &&
+_Static_assert(sizeof(VkrVulkanVolumeTraceRoot) == 272u &&
                    offsetof(VkrVulkanVolumeTraceRoot, origin_spacing) == 144u &&
                    offsetof(VkrVulkanVolumeTraceRoot, blend) == 176u &&
                    offsetof(VkrVulkanVolumeTraceRoot, sun_direction) == 208u &&
-                   offsetof(VkrVulkanVolumeTraceRoot, sky_sh) == 240u,
+                   offsetof(VkrVulkanVolumeTraceRoot, sky_sh) == 240u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, ibl_probes) == 248u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, ibl_probe_count) == 264u,
                "Vulkan volume trace root ABI drift");
 #define VKR_VULKAN_VOLUME_TRACE_GRID 1u
+/* The bake stores its lamp groups' direct light in bands, so the light a
+   probe's relight measures against holds it (ADR-054). */
+#define VKR_VULKAN_VOLUME_TRACE_DIRECT_BANDS 2u
 
 typedef enum VkrVulkanVolumePipeline {
   VKR_VULKAN_VOLUME_PIPELINE_BLAS_DECODE = 0,
   VKR_VULKAN_VOLUME_PIPELINE_TRACE,
   VKR_VULKAN_VOLUME_PIPELINE_CLEAR,
+  VKR_VULKAN_VOLUME_PIPELINE_PROBE_RELIGHT,
   VKR_VULKAN_VOLUME_PIPELINE_COUNT,
 } VkrVulkanVolumePipeline;
 
@@ -2747,6 +2767,8 @@ typedef struct VkrVulkanFrameSlot {
   /* The dynamic layer's sampled slot once its texture has been cleared
      whole, else the sentinel (ADR-119). */
   uint32_t diffuse_volume_dynamic_texture;
+  /* The IBL probe relight factors this frame's trace writes, else zero. */
+  uint64_t probe_relight;
   uint64_t ltc;
   uint64_t sheen;
   uint64_t anisotropy;
@@ -2871,6 +2893,10 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t volume_grid_clear;
   float32_t volume_grid_moment_clamp;
   VkrTextureHandle volume_grid_handle;
+  /* The IBL probe relight factors (ADR-119), one float per probe row,
+     written after the trace and read by this frame's lighting. */
+  VkrVulkanBuffer volume_probe_relight;
+  uint32_t volume_relight_count;
   /* Lowered once from the selected temporal consumer's predecessor. */
   Mat4 temporal_previous_view_projection;
   uint64_t temporal_previous_frame_index;

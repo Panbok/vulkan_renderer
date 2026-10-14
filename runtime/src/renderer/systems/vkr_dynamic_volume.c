@@ -89,6 +89,59 @@ vkr_internal bool8_t dynamic_volume_close3(Vec3 a, Vec3 b) {
          dynamic_volume_close(a.z, b.z);
 }
 
+/* Whether two light group names name one group: an empty name is the
+   group VKR_LIGHT_GROUP_DEFAULT, which a bake record names in full. */
+vkr_internal bool8_t dynamic_volume_same_group(const char *a, const char *b) {
+  return string_equals(a[0] != '\0' ? a : VKR_LIGHT_GROUP_DEFAULT,
+                       b[0] != '\0' ? b : VKR_LIGHT_GROUP_DEFAULT);
+}
+
+/* Whether a static point, spot or polynomial light is still the light the
+   bake recorded, its spot direction `direction`. */
+vkr_internal bool8_t
+dynamic_volume_point_unchanged(const VkrSceneBakedLight *record,
+                               const ScenePointLight *light, Vec3 direction) {
+  return dynamic_volume_close3(record->color, light->color) &&
+         dynamic_volume_close(record->intensity, light->intensity) &&
+         dynamic_volume_close(record->range, light->range) &&
+         dynamic_volume_close(record->constant, light->constant) &&
+         dynamic_volume_close(record->linear, light->linear) &&
+         dynamic_volume_close(record->quadratic, light->quadratic) &&
+         dynamic_volume_close(record->inner_cone_angle,
+                              light->inner_cone_angle) &&
+         dynamic_volume_close(record->outer_cone_angle,
+                              light->outer_cone_angle) &&
+         (record->kind != DYNAMIC_VOLUME_BAKED_SPOT ||
+          vec3_dot(record->direction, direction) > 0.9999f) &&
+         dynamic_volume_same_group(record->group, light->light_group);
+}
+
+/* Whether a static rectangle light is still the light the bake recorded. */
+vkr_internal bool8_t dynamic_volume_rectangle_unchanged(
+    const VkrSceneBakedLight *record, const SceneRectangleLight *light,
+    const VkrRectangleLight *rectangle) {
+  return dynamic_volume_close3(record->color, light->color) &&
+         dynamic_volume_close(record->radiance, light->radiance) &&
+         dynamic_volume_close(record->half_width, rectangle->half_width) &&
+         dynamic_volume_close(record->half_height, rectangle->half_height) &&
+         vec3_dot(record->right, rectangle->right) > 0.9999f &&
+         vec3_dot(record->up, rectangle->up) > 0.9999f &&
+         dynamic_volume_same_group(record->group, light->light_group);
+}
+
+/* The slot of the light group a bake record names; the default group for
+   an empty name, NONE for a group the scene has not registered. */
+vkr_internal uint8_t dynamic_volume_record_slot(const VkrScene *scene,
+                                                const char *name) {
+  const char *group = name[0] != '\0' ? name : VKR_LIGHT_GROUP_DEFAULT;
+  for (uint32_t i = 0u; i < scene->light_groups.count; ++i) {
+    if (string_equals(scene->light_groups.names[i], group)) {
+      return (uint8_t)i;
+    }
+  }
+  return VKR_SCENE_LIGHT_GROUP_NONE;
+}
+
 /* Adds a point, spot or polynomial light, signed, with its reach. */
 vkr_internal void dynamic_volume_add_point(DynamicVolumeGather *gather,
                                            const VkrPointLight *point,
@@ -234,27 +287,17 @@ vkr_internal void dynamic_volume_point_lights_cb(const VkrArchetype *arch,
         .kind = light->kind,
         .source_radius = light->source_radius,
     };
-    if (!dynamic) {
+    /* A group that left the bake weighs nothing in the baked layers, so its
+       lights join whole and its records take nothing away. */
+    if (!dynamic &&
+        !vkr_scene_light_group_left_bake(scene, light->light_group_slot)) {
       const uint32_t record_index = dynamic_volume_match(
           gather, dynamic_volume_baked_kind(light->kind), position);
       if (record_index != UINT32_MAX) {
         const VkrSceneBakedLight *record =
             &gather->volume->baked_lights[record_index];
         /* Unchanged since the bake: its light is baked. */
-        if (dynamic_volume_close3(record->color, light->color) &&
-            dynamic_volume_close(record->intensity, light->intensity) &&
-            dynamic_volume_close(record->range, light->range) &&
-            dynamic_volume_close(record->constant, light->constant) &&
-            dynamic_volume_close(record->linear, light->linear) &&
-            dynamic_volume_close(record->quadratic, light->quadratic) &&
-            dynamic_volume_close(record->inner_cone_angle,
-                                 light->inner_cone_angle) &&
-            dynamic_volume_close(record->outer_cone_angle,
-                                 light->outer_cone_angle) &&
-            (record->kind != DYNAMIC_VOLUME_BAKED_SPOT ||
-             vec3_dot(record->direction, point.direction) > 0.9999f) &&
-            strncmp(record->group, light->light_group,
-                    VKR_LIGHT_GROUP_NAME_BYTES) == 0) {
+        if (dynamic_volume_point_unchanged(record, light, point.direction)) {
           continue;
         }
         /* Changed: its baked light leaves and its current light joins. */
@@ -307,20 +350,14 @@ vkr_internal void dynamic_volume_rectangle_lights_cb(const VkrArchetype *arch,
     if (!vkr_rectangle_light_valid(&rectangle)) {
       continue;
     }
-    if (!dynamic) {
+    if (!dynamic &&
+        !vkr_scene_light_group_left_bake(scene, light->light_group_slot)) {
       const uint32_t record_index = dynamic_volume_match(
           gather, DYNAMIC_VOLUME_BAKED_RECTANGLE, rectangle.position);
       if (record_index != UINT32_MAX) {
         const VkrSceneBakedLight *record =
             &gather->volume->baked_lights[record_index];
-        if (dynamic_volume_close3(record->color, light->color) &&
-            dynamic_volume_close(record->radiance, light->radiance) &&
-            dynamic_volume_close(record->half_width, rectangle.half_width) &&
-            dynamic_volume_close(record->half_height, rectangle.half_height) &&
-            vec3_dot(record->right, rectangle.right) > 0.9999f &&
-            vec3_dot(record->up, rectangle.up) > 0.9999f &&
-            strncmp(record->group, light->light_group,
-                    VKR_LIGHT_GROUP_NAME_BYTES) == 0) {
+        if (dynamic_volume_rectangle_unchanged(record, light, &rectangle)) {
           continue;
         }
         const VkrRectangleLight baked =
@@ -336,10 +373,13 @@ vkr_internal void dynamic_volume_rectangle_lights_cb(const VkrArchetype *arch,
    moved since the bake, whose baked light leaves. */
 vkr_internal void dynamic_volume_removed_records(DynamicVolumeGather *gather) {
   for (uint32_t i = 0u; i < gather->record_count; ++i) {
-    if (gather->matched[i]) {
+    const VkrSceneBakedLight *record = &gather->volume->baked_lights[i];
+    if (gather->matched[i] ||
+        vkr_scene_light_group_left_bake(
+            gather->scene,
+            dynamic_volume_record_slot(gather->scene, record->group))) {
       continue;
     }
-    const VkrSceneBakedLight *record = &gather->volume->baked_lights[i];
     if (record->kind == DYNAMIC_VOLUME_BAKED_RECTANGLE) {
       const VkrRectangleLight baked =
           dynamic_volume_record_rectangle(gather, record);
@@ -726,6 +766,17 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
       !scene->diffuse_volume_unbaked) {
     return false_v;
   }
+  /* The grid traces every lamp; lamp lightmaps would add the baked lamps a
+     second time (ADR-119). */
+  if (scene->lightmaps && scene->lightmaps->lamps_baked) {
+    static bool8_t s_warned = false_v;
+    if (!s_warned) {
+      log_warn("Dynamic volume: the runtime grid needs a scene without baked "
+               "lamp lightmaps; the volume stays off");
+      s_warned = true_v;
+    }
+    return false_v;
+  }
   if (scene->diffuse_volume && !scene->diffuse_volume->runtime_grid) {
     return false_v;
   }
@@ -895,4 +946,156 @@ bool8_t vkr_dynamic_volume_grid_update(VkrScene *scene, VkrRenderAssets *assets,
            dimensions[0], dimensions[1], dimensions[2], (double)spacing,
            probe_count);
   return true_v;
+}
+
+/* -------------------------------------------------------------------------
+   Groups that left the bake (ADR-119): lamp lightmaps hold light per group
+   and cannot take one lamp away, so with them a group with any changed
+   static light leaves the bake whole. Without them, the layer takes a
+   changed light's baked light away by itself.
+   ------------------------------------------------------------------------- */
+
+typedef struct DynamicVolumeGroupScan {
+  const VkrScene *scene;
+  const VkrSceneDiffuseVolume *volume;
+  uint8_t *matched;
+  uint32_t record_count;
+  uint32_t changed;
+} DynamicVolumeGroupScan;
+
+/* The first unmatched record of `kind` at `render_position`, marked. */
+vkr_internal uint32_t dynamic_volume_scan_match(DynamicVolumeGroupScan *scan,
+                                                uint32_t kind,
+                                                Vec3 render_position) {
+  const Vec3 position = vec3_add(render_position, scan->scene->origin_offset);
+  for (uint32_t i = 0u; i < scan->record_count; ++i) {
+    const VkrSceneBakedLight *record = &scan->volume->baked_lights[i];
+    if (scan->matched[i] || record->kind != kind ||
+        vec3_distance(record->position, position) >
+            DYNAMIC_VOLUME_MATCH_DISTANCE) {
+      continue;
+    }
+    scan->matched[i] = 1u;
+    return i;
+  }
+  return UINT32_MAX;
+}
+
+vkr_internal void dynamic_volume_scan_mark(DynamicVolumeGroupScan *scan,
+                                           uint8_t slot) {
+  if (slot < VKR_SCENE_LIGHT_GROUP_MAX) {
+    scan->changed |= 1u << slot;
+  }
+}
+
+vkr_internal void dynamic_volume_scan_points_cb(const VkrArchetype *arch,
+                                                VkrChunk *chunk, void *user) {
+  (void)arch;
+  DynamicVolumeGroupScan *scan = user;
+  const VkrScene *scene = scan->scene;
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  SceneTransform *transforms =
+      (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
+  ScenePointLight *lights = (ScenePointLight *)vkr_entity_chunk_column(
+      chunk, scene->comp_point_light);
+  if (!transforms || !lights) {
+    return;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    const ScenePointLight *light = &lights[i];
+    if (light->mobility != VKR_LIGHT_MOBILITY_STATIC || !light->enabled) {
+      continue;
+    }
+    const uint32_t record_index =
+        dynamic_volume_scan_match(scan, dynamic_volume_baked_kind(light->kind),
+                                  mat4_position(transforms[i].world));
+    const Vec3 direction =
+        vkr_quat_rotate_vec3(transforms[i].rotation, light->direction_local);
+    if (record_index == UINT32_MAX ||
+        !dynamic_volume_point_unchanged(
+            &scan->volume->baked_lights[record_index], light, direction)) {
+      dynamic_volume_scan_mark(scan, light->light_group_slot);
+    }
+  }
+}
+
+vkr_internal void dynamic_volume_scan_rectangles_cb(const VkrArchetype *arch,
+                                                    VkrChunk *chunk,
+                                                    void *user) {
+  (void)arch;
+  DynamicVolumeGroupScan *scan = user;
+  const VkrScene *scene = scan->scene;
+  const uint32_t count = vkr_entity_chunk_count(chunk);
+  SceneTransform *transforms =
+      (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
+  SceneRectangleLight *lights = (SceneRectangleLight *)vkr_entity_chunk_column(
+      chunk, scene->comp_rectangle_light);
+  if (!transforms || !lights) {
+    return;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    const SceneRectangleLight *light = &lights[i];
+    if (light->mobility != VKR_LIGHT_MOBILITY_STATIC || !light->enabled) {
+      continue;
+    }
+    const Mat4 world = transforms[i].world;
+    const VkrRectangleLight rectangle = {
+        .position = mat4_position(world),
+        .right = vec3_normalize(vec3_new(world.m00, world.m10, world.m20)),
+        .up = vec3_normalize(vec3_new(world.m01, world.m11, world.m21)),
+        .color = light->color,
+        .half_width = 0.5f * light->size.x,
+        .half_height = 0.5f * light->size.y,
+        .radiance = light->radiance,
+    };
+    const uint32_t record_index = dynamic_volume_scan_match(
+        scan, DYNAMIC_VOLUME_BAKED_RECTANGLE, rectangle.position);
+    if (record_index == UINT32_MAX ||
+        !dynamic_volume_rectangle_unchanged(
+            &scan->volume->baked_lights[record_index], light, &rectangle)) {
+      dynamic_volume_scan_mark(scan, light->light_group_slot);
+    }
+  }
+}
+
+void vkr_dynamic_volume_update_baked_groups(VkrScene *scene, bool8_t traced) {
+  if (!scene) {
+    return;
+  }
+  const VkrSceneDiffuseVolume *volume = scene->diffuse_volume;
+  const bool8_t lamp_lightmaps = scene->lightmaps &&
+                                 scene->lightmaps->texture.id != 0u &&
+                                 scene->lightmaps->lamps_baked;
+  uint32_t changed = 0u;
+  if (traced && lamp_lightmaps && volume && volume->baked_lights_known &&
+      !volume->runtime_grid && scene->world && scene->queries_valid) {
+    uint8_t matched[DYNAMIC_VOLUME_RECORDS_MAX] = {0};
+    DynamicVolumeGroupScan scan = {
+        .scene = scene,
+        .volume = volume,
+        .matched = matched,
+        .record_count =
+            Min(volume->baked_light_count, DYNAMIC_VOLUME_RECORDS_MAX),
+    };
+    vkr_entity_query_compiled_each_chunk(
+        (VkrQueryCompiled *)&scene->query_point_lights,
+        dynamic_volume_scan_points_cb, &scan);
+    vkr_entity_query_compiled_each_chunk(
+        (VkrQueryCompiled *)&scene->query_rectangle_lights,
+        dynamic_volume_scan_rectangles_cb, &scan);
+    /* A record no current light matched was removed or moved. */
+    for (uint32_t i = 0u; i < scan.record_count; ++i) {
+      if (!matched[i]) {
+        dynamic_volume_scan_mark(
+            &scan,
+            dynamic_volume_record_slot(scene, volume->baked_lights[i].group));
+      }
+    }
+    changed = scan.changed;
+  }
+  if (changed != scene->light_groups.left_bake) {
+    log_info("Dynamic volume: light groups that left the bake 0x%x -> 0x%x",
+             scene->light_groups.left_bake, changed);
+  }
+  scene->light_groups.left_bake = changed;
 }

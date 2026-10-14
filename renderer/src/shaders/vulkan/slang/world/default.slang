@@ -869,6 +869,13 @@ float packet_probe_influence(VkrVulkanIblProbe probe, float3 world_position)
                                           probe.center_blend.w);
 }
 
+// The factor on probe row `index`'s brightness for the dynamic layer's
+// light at its capture origin (ADR-119); one when no trace relit the rows.
+float packet_probe_relight(VkrVulkanPacketFrameRoot *frame, uint index)
+{
+    return frame.probe_relight != nullptr ? frame.probe_relight[index] : 1.0f;
+}
+
 // The cube direction of `dominant`, the lobe's dominant reflection, in one
 // probe: box-projected unless the probe turns that off.
 float3 packet_probe_direction(VkrVulkanIblProbe probe, float3 dominant,
@@ -1633,10 +1640,11 @@ packet_environment_terms_with_diffuse_normal(
                                                     world_position, alpha),
                              lod)
                 .rgb;
-        irradiance += probe_irradiance * probe.intensity_box.x *
-                      probe.intensity_box.y * weight;
-        specular += probe_prefiltered * probe.intensity_box.x *
-                    probe.intensity_box.z * weight;
+        float intensity = probe.intensity_box.x * packet_probe_relight(frame, i);
+        irradiance += probe_irradiance * intensity * probe.intensity_box.y *
+                      weight;
+        specular += probe_prefiltered * intensity * probe.intensity_box.z *
+                    weight;
     }
     float global_weight = saturate(1.0f - covered);
     // Global results are consumed after the local sum, so do not keep them
@@ -1703,7 +1711,8 @@ float3 packet_environment_specular_radiance(
                                                             alpha),
                                      lod)
                         .rgb *
-                    probe.intensity_box.x * probe.intensity_box.z * weight;
+                    probe.intensity_box.x * packet_probe_relight(frame, i) *
+                    probe.intensity_box.z * weight;
     }
     float global_weight = saturate(1.0f - covered);
     if (global_weight <= 0.0f)
