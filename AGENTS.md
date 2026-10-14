@@ -43,6 +43,18 @@ Do not replace shader intrinsics with host macros, force-inline by habit, or
 duplicate a defective primitive instead of fixing its owner. Aggregate zero
 initialization remains valid.
 
+C library, POSIX, Win32 and Apple platform services belong to `lib/` (ADR-118).
+Renderer code must call the lib API (`vkr_math.h` wrappers, `str.h`,
+`filesystem.h`, `vkr_platform.h`, `vkr_heap.h`, threads, atomics, job system)
+and include only freestanding C and graphics-API headers. When the lib lacks a
+service, add it to the owning lib module first; a math wrapper keeps the libm
+function's precision and NaN behavior. Metal-required GCD/Blocks calls and the
+Win32 surface in `vkr_vulkan_wsi.c` are the only exceptions, listed in
+`tools/checks/check_renderer_libc.py`; extend that list only for an API that
+takes the platform type. A renderer change is done when the renderer builds
+behind `VKR_LIBC_BOUNDARY` and that check passes. Other modules use an existing
+lib abstraction instead of a new direct libc or OS call.
+
 Extend the existing owner by default. A new source/header needs an independent
 responsibility, lifetime, reusable contract, or backend/build boundary. File
 length alone never justifies a split or merge. Prefer a local function or typed
