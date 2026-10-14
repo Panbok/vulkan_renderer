@@ -256,10 +256,10 @@ vkr_internal Vec4 vkr_metal_packet_presenter_fit(Vec4 rect, uint32_t width,
   const float32_t scale =
       Min(rect.z / (float32_t)width, rect.w / (float32_t)height);
   Vec4 output = rect;
-  output.z = Max(1.0f, floorf((float32_t)width * scale));
-  output.w = Max(1.0f, floorf((float32_t)height * scale));
-  output.x += floorf((rect.z - output.z) * 0.5f);
-  output.y += floorf((rect.w - output.w) * 0.5f);
+  output.z = Max(1.0f, vkr_floor_f32((float32_t)width * scale));
+  output.w = Max(1.0f, vkr_floor_f32((float32_t)height * scale));
+  output.x += vkr_floor_f32((rect.z - output.z) * 0.5f);
+  output.y += vkr_floor_f32((rect.w - output.w) * 0.5f);
   return output;
 }
 

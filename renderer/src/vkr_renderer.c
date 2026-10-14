@@ -22,8 +22,6 @@
 #include "vkr_shader_catalog.h"
 #include "vulkan/vkr_vulkan_renderer.h"
 
-#include <math.h>
-
 /* The render graph of a pipeline class (ADR-087) ships in the build tree
  * beside the renderer; a mounted bundle or an installed program carries it as
  * content instead (ADR-077). */
@@ -34,8 +32,8 @@ vkr_renderer_graph_path(VkrGraphicsPipelineClass graphics, char *storage,
   if (!vkr_vfs_pack_count() && vkr_content_root_is_repository()) {
     return tiled ? VKR_TILED_RENDER_GRAPH_PATH : VKR_RENDER_GRAPH_PATH;
   }
-  snprintf(storage, capacity, "%sassets/render_graphs/%s.rendergraph.json",
-           vkr_content_root(), tiled ? "tiled" : "main");
+  string_format(storage, capacity, "%sassets/render_graphs/%s.rendergraph.json",
+                vkr_content_root(), tiled ? "tiled" : "main");
   return storage;
 }
 
@@ -61,12 +59,6 @@ vkr_graphics_pipeline_draws_render_mode(VkrGraphicsPipelineClass graphics,
          mode == VKR_RENDER_MODE_LIGHTING_ONLY ||
          mode == VKR_RENDER_MODE_WIREFRAME || mode == VKR_RENDER_MODE_NORMAL ||
          mode >= VKR_RENDER_MODE_BASE_COLOR;
-}
-
-vkr_internal bool8_t vkr_renderer_env_enabled(const char *name) {
-  const char *value = name ? getenv(name) : NULL;
-  return value && value[0] != '\0' && strcmp(value, "0") != 0 ? true_v
-                                                              : false_v;
 }
 
 // =============================================================================
@@ -193,7 +185,7 @@ vkr_internal bool8_t vkr_renderer_worker_create(VkrRenderer *renderer) {
 vkr_internal uint32_t vkr_renderer_scaled_extent(uint32_t extent,
                                                  float32_t render_scale) {
   const float64_t scaled = (float64_t)extent * (float64_t)render_scale;
-  return ClampBot((uint32_t)floor(scaled + 0.5), 1u);
+  return ClampBot((uint32_t)vkr_floor_f64(scaled + 0.5), 1u);
 }
 
 vkr_internal VkrMetricReason
@@ -483,7 +475,7 @@ vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
 vkr_internal void vkr_renderer_observe_exposure(VkrRenderer *renderer) {
   const VkrExposureDebugSample *sample = &renderer->timing_result.exposure;
   if (renderer->timing_completed_ready && sample->valid &&
-      isfinite(sample->state.exposure_multiplier) &&
+      vkr_is_finite_f32(sample->state.exposure_multiplier) &&
       sample->state.exposure_multiplier > 0.0f)
     renderer->observed_exposure = sample->state.exposure_multiplier;
 }
@@ -511,10 +503,13 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   const uint32_t frame_slot_count = 2u;
   /* Zero lets the Metal renderer size the cap from its device. */
   uint64_t managed_budget_mb = 0u;
-  const char *budget_env = getenv("VKR_METAL_MEMORY_BUDGET_MB");
-  if (budget_env &&
-      (!string_to_u64(budget_env, &managed_budget_mb) ||
-       managed_budget_mb == 0u || managed_budget_mb > UINT64_MAX / MB(1))) {
+  char budget_env[32];
+  const bool8_t budget_read = vkr_platform_environment_variable(
+      "VKR_METAL_MEMORY_BUDGET_MB", budget_env, sizeof(budget_env));
+  if (!budget_read ||
+      (budget_env[0] != '\0' &&
+       (!string_to_u64(budget_env, &managed_budget_mb) ||
+        managed_budget_mb == 0u || managed_budget_mb > UINT64_MAX / MB(1)))) {
     log_error("VKR_METAL_MEMORY_BUDGET_MB must be a positive integer in MiB");
     if (out_error)
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -554,10 +549,21 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   }
   const bool8_t use_metallib =
       slang_precompiled && fragment_precompiled &&
-      !vkr_renderer_env_enabled("VKR_METAL_COMPILE_SOURCE");
-  const char *pipeline_archive_path = getenv("VKR_PIPELINE_CACHE_PATH");
-  if (!pipeline_archive_path || pipeline_archive_path[0] == '\0')
-    pipeline_archive_path = archive_default;
+      !vkr_platform_environment_flag("VKR_METAL_COMPILE_SOURCE");
+  /* A path: the wide Windows environment keeps non-ASCII names (ADR-070). */
+  char pipeline_archive_env[4096];
+  const char *pipeline_archive_path = archive_default;
+  if (!vkr_platform_environment_variable("VKR_PIPELINE_CACHE_PATH",
+                                         pipeline_archive_env,
+                                         sizeof(pipeline_archive_env))) {
+    log_error("VKR_PIPELINE_CACHE_PATH does not fit %llu bytes",
+              (unsigned long long)sizeof(pipeline_archive_env) - 1u);
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+  if (pipeline_archive_env[0] != '\0')
+    pipeline_archive_path = pipeline_archive_env;
   VkrMetalPacketRendererConfig metal_config = {
       .allocator = &renderer->render_graph_allocator,
       .graph_path = vkr_renderer_graph_path(renderer->graphics_pipeline,
@@ -568,6 +574,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .fragment_metallib_path = use_metallib ? fragment_metallib : NULL,
       .pipeline_archive_path = pipeline_archive_path,
       .custom_library_path = custom_library,
+      .job_system = backend_config ? backend_config->job_system : NULL,
       .target_kind =
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN
@@ -589,12 +596,12 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .capture_ring_capacity = capture_capacity,
       .capture_max_batch_bytes = capture_bytes,
       .synchronous_validation_readback =
-          vkr_renderer_env_enabled("VKR_METAL_SYNCHRONOUS_VALIDATION"),
+          vkr_platform_environment_flag("VKR_METAL_SYNCHRONOUS_VALIDATION"),
       .srgb_output = true_v,
-      .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
+      .tonemap_enabled = !vkr_platform_environment_flag("VKR_TONEMAP_DISABLED"),
       .convert_vulkan_clip_y = true_v,
-      .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
-      .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
+      .hzb_enabled = !vkr_platform_environment_flag("VKR_HZB_DISABLED"),
+      .frustum_enabled = !vkr_platform_environment_flag("VKR_FRUSTUM_DISABLED"),
       .max_images = 128,
       .max_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
       .max_material_rows = 8192,
@@ -678,11 +685,11 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .max_graph_images = 128u,
       .max_graph_buffers = 128u,
       .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
-      .tonemap_enabled = !vkr_renderer_env_enabled("VKR_TONEMAP_DISABLED"),
-      .hzb_enabled = !vkr_renderer_env_enabled("VKR_HZB_DISABLED"),
-      .frustum_enabled = !vkr_renderer_env_enabled("VKR_FRUSTUM_DISABLED"),
+      .tonemap_enabled = !vkr_platform_environment_flag("VKR_TONEMAP_DISABLED"),
+      .hzb_enabled = !vkr_platform_environment_flag("VKR_HZB_DISABLED"),
+      .frustum_enabled = !vkr_platform_environment_flag("VKR_FRUSTUM_DISABLED"),
       .transmission_compact_enabled =
-          !vkr_renderer_env_enabled("VKR_TRANSMISSION_COMPACT_DISABLED"),
+          !vkr_platform_environment_flag("VKR_TRANSMISSION_COMPACT_DISABLED"),
 #if !defined(NDEBUG)
       .enable_validation = true_v,
 #endif
@@ -765,11 +772,14 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   VkrDisplayOutputMode requested_display_output =
       backend_config ? backend_config->display_output_mode
                      : VKR_DISPLAY_OUTPUT_SDR;
-  const char *display_output_env = getenv("VKR_DISPLAY_OUTPUT");
-  if (display_output_env && display_output_env[0] != '\0') {
-    if (strcmp(display_output_env, "sdr") == 0)
+  char display_output_env[64];
+  const bool8_t display_output_read = vkr_platform_environment_variable(
+      "VKR_DISPLAY_OUTPUT", display_output_env, sizeof(display_output_env));
+  if (!display_output_read || display_output_env[0] != '\0') {
+    if (display_output_read && string_equals(display_output_env, "sdr"))
       requested_display_output = VKR_DISPLAY_OUTPUT_SDR;
-    else if (strcmp(display_output_env, "auto_extended_linear") == 0)
+    else if (display_output_read &&
+             string_equals(display_output_env, "auto_extended_linear"))
       requested_display_output = VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR;
     else {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -789,8 +799,8 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   VkrDynamicResolutionConfig requested_dynamic_resolution =
       backend_config ? backend_config->dynamic_resolution
                      : (VkrDynamicResolutionConfig){0};
-  if (!isfinite(requested_render_scale) || requested_render_scale <= 0.0f ||
-      requested_render_scale > 1.0f) {
+  if (!vkr_is_finite_f32(requested_render_scale) ||
+      requested_render_scale <= 0.0f || requested_render_scale > 1.0f) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     log_error("Renderer render scale must be finite and in (0, 1]");
     return false_v;
@@ -886,34 +896,42 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->editor_image_height = 0u;
   renderer->temporal_state = (VkrTemporalState){0};
   renderer->temporal_reset_reasons = 0u;
-  renderer->temporal_enabled = !vkr_renderer_env_enabled("VKR_TAA_DISABLED");
+  renderer->temporal_enabled =
+      !vkr_platform_environment_flag("VKR_TAA_DISABLED");
   renderer->exposure_state = (VkrExposureState){0};
   renderer->exposure_reset_reasons = 0u;
   /* Diagnostic: a forced pre-exposure exponent. Pre-exposure is exact, so
      any forced scale must leave displayed output unchanged. */
   {
-    const char *stops = getenv("VKR_PRE_EXPOSURE_FORCE_STOPS");
-    renderer->pre_exposure_forced = stops != NULL && stops[0] != '\0';
-    renderer->pre_exposure_forced_stops =
-        renderer->pre_exposure_forced
-            ? (int32_t)Clamp(strtol(stops, NULL, 10),
-                             -VKR_PRE_EXPOSURE_MAX_STOPS,
-                             VKR_PRE_EXPOSURE_MAX_STOPS)
-            : 0;
+    char stops[32];
+    int32_t forced_stops = 0;
+    renderer->pre_exposure_forced =
+        vkr_platform_environment_variable("VKR_PRE_EXPOSURE_FORCE_STOPS", stops,
+                                          sizeof(stops)) &&
+        stops[0] != '\0';
+    if (renderer->pre_exposure_forced && !string_to_i32(stops, &forced_stops)) {
+      log_warn("VKR_PRE_EXPOSURE_FORCE_STOPS is not an integer; forcing 0");
+      forced_stops = 0;
+    }
+    renderer->pre_exposure_forced_stops = (int32_t)Clamp(
+        forced_stops, -VKR_PRE_EXPOSURE_MAX_STOPS, VKR_PRE_EXPOSURE_MAX_STOPS);
   }
   /* Production enables bloom, and the environment override exists for the same
      reason `VKR_TAA_DISABLED` does: a matched capture of the same frame with
      and without it must not require a rebuild. */
   renderer->bloom_forced_disabled =
-      vkr_renderer_env_enabled("VKR_BLOOM_DISABLED");
-  renderer->smaa_enabled = !vkr_renderer_env_enabled("VKR_SMAA_DISABLED");
+      vkr_platform_environment_flag("VKR_BLOOM_DISABLED");
+  renderer->smaa_enabled = !vkr_platform_environment_flag("VKR_SMAA_DISABLED");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
-  const char *post_transform_cache = getenv("VKR_POST_TRANSFORM_CACHE");
+  char post_transform_cache[8];
   renderer->post_transform_cache_enabled =
-      !post_transform_cache || strcmp(post_transform_cache, "0") != 0;
+      !vkr_platform_environment_variable("VKR_POST_TRANSFORM_CACHE",
+                                         post_transform_cache,
+                                         sizeof(post_transform_cache)) ||
+      !string_equals(post_transform_cache, "0");
   renderer->gtao_forced_disabled =
-      vkr_renderer_env_enabled("VKR_GTAO_DISABLED");
+      vkr_platform_environment_flag("VKR_GTAO_DISABLED");
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->boot_metrics = (VkrRendererBootMetrics){0};
   renderer->frame_number = 0;
@@ -975,9 +993,11 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   }
 
   bool8_t render_thread = !backend_config || !backend_config->inline_rendering;
-  const char *render_thread_env = getenv("VKR_RENDER_THREAD");
-  if (render_thread_env && render_thread_env[0] != '\0') {
-    render_thread = strcmp(render_thread_env, "0") != 0;
+  char render_thread_env[8];
+  if (vkr_platform_environment_variable("VKR_RENDER_THREAD", render_thread_env,
+                                        sizeof(render_thread_env)) &&
+      render_thread_env[0] != '\0') {
+    render_thread = !string_equals(render_thread_env, "0");
   }
   if (!vkr_publication_queue_create(&renderer->publications)) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1093,10 +1113,10 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     if (!rendering && prepared->frame.editor_image_available) {
       const float32_t scale =
           Min(rect.z / (float32_t)width, rect.w / (float32_t)height);
-      output.z = Max(1.0f, floorf((float32_t)width * scale));
-      output.w = Max(1.0f, floorf((float32_t)height * scale));
-      output.x += floorf((rect.z - output.z) * 0.5f);
-      output.y += floorf((rect.w - output.w) * 0.5f);
+      output.z = Max(1.0f, vkr_floor_f32((float32_t)width * scale));
+      output.w = Max(1.0f, vkr_floor_f32((float32_t)height * scale));
+      output.x += vkr_floor_f32((rect.z - output.z) * 0.5f);
+      output.y += vkr_floor_f32((rect.w - output.w) * 0.5f);
     }
     prepared->frame.editor_image_rect_px = output;
   }
@@ -1232,7 +1252,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   if (rf->pre_exposure_forced) {
     prepared->frame.exposure.pre_exposure_stops = rf->pre_exposure_forced_stops;
     prepared->frame.exposure.pre_exposure =
-        ldexpf(1.0f, rf->pre_exposure_forced_stops);
+        vkr_ldexp_f32(1.0f, rf->pre_exposure_forced_stops);
   }
   /* Inspection modes write albedo, normals and other non-radiance values
      into the HDR target, which a 1/P tonemap would distort. */
@@ -1281,8 +1301,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     prepared->frame.subsurface = (VkrSubsurfaceGpuParams){
         .projection = {mat4_perspective_reversed_near(projection),
                        mat4_perspective_reversed_far(projection),
-                       0.5f * fabsf(projection.m00) * temporal_width,
-                       0.5f * fabsf(projection.m11) * temporal_height},
+                       0.5f * vkr_abs_f32(projection.m00) * temporal_width,
+                       0.5f * vkr_abs_f32(projection.m11) * temporal_height},
         .dimensions = {temporal_width, temporal_height,
                        packet->lighting->subsurface.profile_count, 0u}};
   }
@@ -1298,8 +1318,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
         prepared->frame.scene_output_width, prepared->frame.scene_output_height,
         temporal_width, temporal_height);
   prepared->frame.motion_blur_delta_seconds = packet->frame.delta_time;
-  rf->clock_seconds =
-      fmod(rf->clock_seconds + Max(packet->frame.delta_time, 0.0), 3600.0);
+  rf->clock_seconds = vkr_fmod_f64(
+      rf->clock_seconds + Max(packet->frame.delta_time, 0.0), 3600.0);
   prepared->frame.clock_seconds = (float32_t)rf->clock_seconds;
   prepared->frame.motion_blur_enabled =
       prepared->frame.scene_rendering && packet->globals.motion_blur_enabled &&
@@ -1435,12 +1455,12 @@ vkr_internal void vkr_renderer_backend_get_device_information(
   *device_information = (VkrDeviceInformation){
       .device_name = selected ? string8_create_from_cstr(
                                     (const uint8_t *)selected->device_name,
-                                    strlen(selected->device_name))
+                                    string_length(selected->device_name))
                               : string8_lit("Vulkan 1.4 GPU"),
       .vendor_name = string8_lit("Vulkan"),
       .driver_version = selected ? string8_create_from_cstr(
                                        (const uint8_t *)selected->driver_info,
-                                       strlen(selected->driver_info))
+                                       string_length(selected->driver_info))
                                  : string8_lit("unknown"),
       .api_version = string8_lit("Vulkan 1.4"),
       .vram_size = vram_size,
@@ -1935,6 +1955,15 @@ vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer) {
 #endif
   (void)renderer;
   return stats;
+}
+
+void vkr_renderer_detach_jobs(VkrRenderer *renderer) {
+  vkr_renderer_join_render_thread(renderer);
+#if defined(PLATFORM_APPLE)
+  if (renderer && renderer->metal_renderer)
+    vkr_metal_packet_renderer_detach_jobs(renderer->metal_renderer);
+#endif
+  (void)renderer;
 }
 
 void vkr_renderer_reload_custom_materials(VkrRenderer *renderer) {
@@ -2960,7 +2989,7 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
                                                float32_t render_scale,
                                                bool8_t dynamic_resolution) {
   vkr_renderer_join_render_thread(renderer);
-  if (!renderer || !isfinite(render_scale) ||
+  if (!renderer || !vkr_is_finite_f32(render_scale) ||
       render_scale < renderer->render_scale_min - 1e-4f ||
       render_scale > renderer->render_scale_max + 1e-4f)
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;

@@ -1,11 +1,10 @@
 #include "vkr_publication_queue.h"
 
 #include "core/logger.h"
+#include "memory/vkr_heap.h"
 #include "vkr_ibl_math.h"
 #include "vkr_render_resources.h"
 #include "vkr_renderer_internal.h"
-
-#include <stdlib.h>
 
 struct VkrPublicationCommand {
   VkrPublicationCommand *next;
@@ -73,7 +72,7 @@ bool8_t vkr_publication_queue_create(VkrPublicationQueue *queue) {
 /* Frees the batch's heap copies and empties it for recording. */
 vkr_internal void vkr_publication_batch_reset(VkrPublicationBatch *batch) {
   for (VkrPublicationBlock *block = batch->blocks; block; block = block->next) {
-    free(block->bytes);
+    vkr_heap_free(block->bytes);
   }
   if (batch->arena) {
     arena_clear(batch->arena, ARENA_MEMORY_TAG_RENDERER);
@@ -152,7 +151,7 @@ vkr_internal void *vkr_publication_copy_bulk(VkrRenderer *renderer,
   VkrPublicationBatch *batch = renderer->publications.recording;
   VkrPublicationBlock *block =
       arena_alloc(batch->arena, sizeof(*block), ARENA_MEMORY_TAG_RENDERER);
-  void *copy = block ? malloc(bytes) : NULL;
+  void *copy = block ? vkr_heap_alloc(bytes) : NULL;
   if (!copy) {
     log_error("Publication queue could not copy %llu bytes",
               (unsigned long long)bytes);
@@ -165,7 +164,7 @@ vkr_internal void *vkr_publication_copy_bulk(VkrRenderer *renderer,
   return copy;
 }
 
-/* Takes `count` malloc-owned blocks into the recording batch, which frees
+/* Takes `count` vkr_heap blocks into the recording batch, which frees
    them once it has run, or none of them when the batch is out of memory. */
 vkr_internal bool8_t vkr_publication_adopt_bulk(VkrRenderer *renderer,
                                                 void *const *blocks,

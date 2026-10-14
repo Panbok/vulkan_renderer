@@ -2,6 +2,16 @@
 
 #include "containers/str.h"
 
+/* The Vulkan backend's only platform include: the Win32 surface types. */
+#if defined(PLATFORM_WINDOWS)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <vulkan/vulkan_win32.h>
+#endif
+
 VkrVulkanPresentResult vkr_vulkan_present_result_classify(VkResult result) {
   switch (result) {
   case VK_SUCCESS:
@@ -69,4 +79,34 @@ bool8_t vkr_vulkan_instance_extension_is_surface(const char *name) {
                         VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) ||
           string_equals(name, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME) ||
           string_equals(name, "VK_KHR_win32_surface"));
+}
+
+const char *vkr_vulkan_platform_surface_extension(void) {
+#if defined(PLATFORM_WINDOWS)
+  return VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
+#else
+  return NULL;
+#endif
+}
+
+bool8_t vkr_vulkan_create_platform_surface(VkInstance instance,
+                                           const VkrNativeSurface *surface,
+                                           VkSurfaceKHR *out_surface) {
+#if defined(PLATFORM_WINDOWS)
+  const VkWin32SurfaceCreateInfoKHR surface_info = {
+      .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+      .hinstance = (HINSTANCE)surface->win32_instance,
+      .hwnd = (HWND)surface->win32_window,
+  };
+  return surface_info.hinstance && surface_info.hwnd &&
+                 vkCreateWin32SurfaceKHR(instance, &surface_info, NULL,
+                                         out_surface) == VK_SUCCESS
+             ? true_v
+             : false_v;
+#else
+  (void)instance;
+  (void)surface;
+  (void)out_surface;
+  return false_v;
+#endif
 }

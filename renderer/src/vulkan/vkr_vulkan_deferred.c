@@ -111,8 +111,9 @@ vkr_internal float32_t vkr_vk_history_pre_exposure_scale(
     const VkrVulkanPreExposureRecord *record =
         &renderer->pre_exposure_history[i];
     if (record->submit_value == producer_submit_value)
-      return ldexpf(1.0f, renderer->graph->packet->exposure.pre_exposure_stops -
-                              record->stops);
+      return vkr_ldexp_f32(
+          1.0f,
+          renderer->graph->packet->exposure.pre_exposure_stops - record->stops);
   }
   return 1.0f;
 }
@@ -2236,7 +2237,7 @@ bool8_t vkr_vk_prepare_cloud_sky_light(VkrVulkanRenderer *renderer,
       .source_texture = source->ibl_sh_texel_slot.index,
       .source_mip = mip,
       .face_size = extent,
-      .cloud_to_source_scale = ldexpf(1.0f, source->radiance_stops) /
+      .cloud_to_source_scale = vkr_ldexp_f32(1.0f, source->radiance_stops) /
                                Max(constants.pre_exposure, 1e-20f),
       .window_band_0 = vkr_ibl_sh_window_factor(0u, source->ibl_sh_deringing),
       .window_band_1 = vkr_ibl_sh_window_factor(1u, source->ibl_sh_deringing),

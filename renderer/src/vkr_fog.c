@@ -1,7 +1,5 @@
 #include "vkr_fog.h"
 
-#include <math.h>
-
 VkrFogSettings vkr_fog_settings_defaults(void) {
   return (VkrFogSettings){.color = {.x = 0.5f, .y = 0.6f, .z = 0.7f},
                           .density = 0.01f,
@@ -15,14 +13,16 @@ bool8_t vkr_fog_settings_valid(const VkrFogSettings *settings) {
     return false_v;
   if (!settings->enabled)
     return true_v;
-  return isfinite(settings->color.x) && settings->color.x >= 0.0f &&
-         isfinite(settings->color.y) && settings->color.y >= 0.0f &&
-         isfinite(settings->color.z) && settings->color.z >= 0.0f &&
-         isfinite(settings->density) && settings->density >= 0.0f &&
-         isfinite(settings->base_height) &&
-         isfinite(settings->height_falloff) &&
-         settings->height_falloff >= 0.0f && isfinite(settings->max_distance) &&
-         settings->max_distance > 0.0f && isfinite(settings->sky_distance) &&
+  return vkr_is_finite_f32(settings->color.x) && settings->color.x >= 0.0f &&
+         vkr_is_finite_f32(settings->color.y) && settings->color.y >= 0.0f &&
+         vkr_is_finite_f32(settings->color.z) && settings->color.z >= 0.0f &&
+         vkr_is_finite_f32(settings->density) && settings->density >= 0.0f &&
+         vkr_is_finite_f32(settings->base_height) &&
+         vkr_is_finite_f32(settings->height_falloff) &&
+         settings->height_falloff >= 0.0f &&
+         vkr_is_finite_f32(settings->max_distance) &&
+         settings->max_distance > 0.0f &&
+         vkr_is_finite_f32(settings->sky_distance) &&
          settings->sky_distance > 0.0f &&
          settings->sky_distance <= settings->max_distance &&
          settings->sky_lighting >= 0.0f && settings->sky_lighting <= 1.0f &&

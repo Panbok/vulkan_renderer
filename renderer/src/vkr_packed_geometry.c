@@ -1,27 +1,11 @@
 #include "vkr_packed_geometry.h"
 
-#include <math.h>
-
-static float32_t vkr_packed_clamp(float32_t value, float32_t low,
-                                  float32_t high) {
-  return value < low ? low : (value > high ? high : value);
-}
-
-static uint32_t vkr_packed_float_bits(float32_t value) {
-  uint32_t bits = 0;
-  MemCopy(&bits, &value, sizeof(bits));
-  return bits;
-}
-
-static float32_t vkr_packed_bits_float(uint32_t bits) {
-  float32_t value = 0.0f;
-  MemCopy(&value, &bits, sizeof(value));
-  return value;
-}
+#include "core/vkr_byte_io.h"
+#include "math/vkr_math.h"
 
 static uint16_t vkr_packed_unorm16(float32_t value) {
-  const float32_t clamped = vkr_packed_clamp(value, 0.0f, 1.0f);
-  return (uint16_t)roundf(clamped * 65535.0f);
+  const float32_t clamped = vkr_clamp_f32(value, 0.0f, 1.0f);
+  return (uint16_t)vkr_round_f32(clamped * 65535.0f);
 }
 
 static float32_t vkr_packed_unorm16_decode(uint16_t value) {
@@ -29,13 +13,13 @@ static float32_t vkr_packed_unorm16_decode(uint16_t value) {
 }
 
 static uint16_t vkr_packed_snorm16(float32_t value) {
-  const float32_t clamped = vkr_packed_clamp(value, -1.0f, 1.0f);
-  return (uint16_t)(int16_t)roundf(clamped * 32767.0f);
+  const float32_t clamped = vkr_clamp_f32(value, -1.0f, 1.0f);
+  return (uint16_t)(int16_t)vkr_round_f32(clamped * 32767.0f);
 }
 
 static float32_t vkr_packed_snorm16_decode(uint16_t value) {
   const int16_t signed_value = (int16_t)value;
-  return vkr_packed_clamp((float32_t)signed_value / 32767.0f, -1.0f, 1.0f);
+  return vkr_clamp_f32((float32_t)signed_value / 32767.0f, -1.0f, 1.0f);
 }
 
 static Vec3 vkr_packed_normalize(Vec3 value) {
@@ -44,7 +28,7 @@ static Vec3 vkr_packed_normalize(Vec3 value) {
   if (length_squared <= 1.0e-20f) {
     return vec3_new(0.0f, 0.0f, 1.0f);
   }
-  const float32_t inverse_length = 1.0f / sqrtf(length_squared);
+  const float32_t inverse_length = 1.0f / vkr_sqrt_f32(length_squared);
   return vec3_scale(value, inverse_length);
 }
 
@@ -52,8 +36,8 @@ static Vec3 vkr_packed_resolve_tangent(Vec3 normal, Vec3 tangent) {
   normal = vkr_packed_normalize(normal);
   tangent = vec3_sub(tangent, vec3_scale(normal, vec3_dot(normal, tangent)));
   if (vec3_length_squared(tangent) <= 1.0e-20f) {
-    tangent = fabsf(normal.x) > 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
-                                     : vec3_new(1.0f, 0.0f, 0.0f);
+    tangent = vkr_abs_f32(normal.x) > 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
+                                           : vec3_new(1.0f, 0.0f, 0.0f);
     tangent = vec3_sub(tangent, vec3_scale(normal, vec3_dot(normal, tangent)));
   }
   return vkr_packed_normalize(tangent);
@@ -62,13 +46,13 @@ static Vec3 vkr_packed_resolve_tangent(Vec3 normal, Vec3 tangent) {
 static uint32_t vkr_packed_oct_encode(Vec3 value) {
   value = vkr_packed_normalize(value);
   const float32_t denominator =
-      fabsf(value.x) + fabsf(value.y) + fabsf(value.z);
+      vkr_abs_f32(value.x) + vkr_abs_f32(value.y) + vkr_abs_f32(value.z);
   float32_t x = value.x / denominator;
   float32_t y = value.y / denominator;
   if (value.z < 0.0f) {
     const float32_t old_x = x;
-    x = (1.0f - fabsf(y)) * (old_x < 0.0f ? -1.0f : 1.0f);
-    y = (1.0f - fabsf(old_x)) * (y < 0.0f ? -1.0f : 1.0f);
+    x = (1.0f - vkr_abs_f32(y)) * (old_x < 0.0f ? -1.0f : 1.0f);
+    y = (1.0f - vkr_abs_f32(old_x)) * (y < 0.0f ? -1.0f : 1.0f);
   }
   return (uint32_t)vkr_packed_snorm16(x) |
          ((uint32_t)vkr_packed_snorm16(y) << 16u);
@@ -77,17 +61,17 @@ static uint32_t vkr_packed_oct_encode(Vec3 value) {
 static Vec3 vkr_packed_oct_decode(uint32_t value) {
   float32_t x = vkr_packed_snorm16_decode((uint16_t)value);
   float32_t y = vkr_packed_snorm16_decode((uint16_t)(value >> 16u));
-  Vec3 result = vec3_new(x, y, 1.0f - fabsf(x) - fabsf(y));
+  Vec3 result = vec3_new(x, y, 1.0f - vkr_abs_f32(x) - vkr_abs_f32(y));
   if (result.z < 0.0f) {
     const float32_t old_x = result.x;
-    result.x = (1.0f - fabsf(result.y)) * (old_x < 0.0f ? -1.0f : 1.0f);
-    result.y = (1.0f - fabsf(old_x)) * (result.y < 0.0f ? -1.0f : 1.0f);
+    result.x = (1.0f - vkr_abs_f32(result.y)) * (old_x < 0.0f ? -1.0f : 1.0f);
+    result.y = (1.0f - vkr_abs_f32(old_x)) * (result.y < 0.0f ? -1.0f : 1.0f);
   }
   return vkr_packed_normalize(result);
 }
 
 static uint8_t vkr_packed_unorm8(float32_t value) {
-  return (uint8_t)roundf(vkr_packed_clamp(value, 0.0f, 1.0f) * 255.0f);
+  return (uint8_t)vkr_round_f32(vkr_clamp_f32(value, 0.0f, 1.0f) * 255.0f);
 }
 
 static float32_t vkr_packed_unorm8_decode(uint8_t value) {
@@ -98,16 +82,17 @@ static float32_t vkr_packed_angle_degrees(Vec3 a, Vec3 b) {
   a = vkr_packed_normalize(a);
   b = vkr_packed_normalize(b);
   const float32_t cosine =
-      vkr_packed_clamp(a.x * b.x + a.y * b.y + a.z * b.z, -1.0f, 1.0f);
-  return acosf(cosine) * (180.0f / 3.14159265358979323846f);
+      vkr_clamp_f32(a.x * b.x + a.y * b.y + a.z * b.z, -1.0f, 1.0f);
+  return vkr_acos_f32(cosine) * (180.0f / 3.14159265358979323846f);
 }
 
 static bool8_t
 vkr_packed_budgets_are_valid(const VkrGeometryQuantizationBudgets *budgets) {
-  return budgets && isfinite(budgets->position_relative) &&
-         isfinite(budgets->normal_degrees) &&
-         isfinite(budgets->tangent_degrees) && isfinite(budgets->uv_absolute) &&
-         isfinite(budgets->color_absolute) &&
+  return budgets && vkr_is_finite_f32(budgets->position_relative) &&
+         vkr_is_finite_f32(budgets->normal_degrees) &&
+         vkr_is_finite_f32(budgets->tangent_degrees) &&
+         vkr_is_finite_f32(budgets->uv_absolute) &&
+         vkr_is_finite_f32(budgets->color_absolute) &&
          budgets->position_relative > 0.0f && budgets->normal_degrees > 0.0f &&
          budgets->tangent_degrees > 0.0f && budgets->uv_absolute > 0.0f &&
          budgets->color_absolute > 0.0f;
@@ -119,16 +104,16 @@ static bool8_t vkr_packed_source_vertex_is_valid(const VkrVertex3d *vertex) {
       vec3_new(vertex->tangent.x, vertex->tangent.y, vertex->tangent.z);
   const float32_t normal_length_squared =
       normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
-  return isfinite(vertex->position.x) && isfinite(vertex->position.y) &&
-         isfinite(vertex->position.z) && isfinite(normal.x) &&
-         isfinite(normal.y) && isfinite(normal.z) &&
-         isfinite(vertex->texcoord.x) && isfinite(vertex->texcoord.y) &&
-         isfinite(vertex->colour.x) && isfinite(vertex->colour.y) &&
-         isfinite(vertex->colour.z) && isfinite(vertex->colour.w) &&
-         isfinite(tangent.x) && isfinite(tangent.y) && isfinite(tangent.z) &&
-         isfinite(vertex->tangent.w) && isfinite(normal_length_squared) &&
+  return vkr_is_finite_f32(vertex->position.x) &&
+         vkr_is_finite_f32(vertex->position.y) &&
+         vkr_is_finite_f32(vertex->position.z) && vec3_is_finite(normal) &&
+         vkr_is_finite_f32(vertex->texcoord.x) &&
+         vkr_is_finite_f32(vertex->texcoord.y) &&
+         vec4_is_finite(vertex->colour) && vec3_is_finite(tangent) &&
+         vkr_is_finite_f32(vertex->tangent.w) &&
+         vkr_is_finite_f32(normal_length_squared) &&
          normal_length_squared > 1.0e-20f &&
-         fabsf(fabsf(vertex->tangent.w) - 1.0f) <= 1.0e-6f;
+         vkr_abs_f32(vkr_abs_f32(vertex->tangent.w) - 1.0f) <= 1.0e-6f;
 }
 
 VkrGeometryQuantizationBudgets vkr_packed_geometry_default_budgets(void) {
@@ -150,10 +135,11 @@ vkr_packed_geometry_decode_is_valid(const VkrGpuGeometryDecodeRecord *decode) {
     return false_v;
   }
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
-    if (!isfinite(decode->position_bias[axis]) ||
-        !isfinite(decode->position_scale[axis]) ||
+    if (!vkr_is_finite_f32(decode->position_bias[axis]) ||
+        !vkr_is_finite_f32(decode->position_scale[axis]) ||
         decode->position_scale[axis] < 0.0f ||
-        !isfinite(decode->position_bias[axis] + decode->position_scale[axis])) {
+        !vkr_is_finite_f32(decode->position_bias[axis] +
+                           decode->position_scale[axis])) {
       return false_v;
     }
   }
@@ -207,7 +193,7 @@ vkr_packed_geometry_metadata_is_valid(const VkrGpuGeometryDecodeRecord *records,
     float32_t previous = 0.0f;
     for (uint32_t level = 0u; level < row->level_count; ++level) {
       const float32_t error = row->levels[level].error;
-      if (!isfinite(error) || error < previous ||
+      if (!vkr_is_finite_f32(error) || error < previous ||
           row->levels[level].index_count == 0u ||
           row->levels[level].index_count % 3u != 0u) {
         return false_v;
@@ -270,8 +256,8 @@ bool8_t vkr_packed_geometry_vertices_are_valid(
   for (uint32_t i = 0u; i < vertex_count; ++i) {
     if ((vertices[i].words[1] & 0xfffe0000u) != 0u ||
         (!lightmap_uv && vertices[i].words[7] != 0u) ||
-        !isfinite(vkr_packed_bits_float(vertices[i].words[4])) ||
-        !isfinite(vkr_packed_bits_float(vertices[i].words[5]))) {
+        !vkr_is_finite_f32(vkr_f32_from_bits(vertices[i].words[4])) ||
+        !vkr_is_finite_f32(vkr_f32_from_bits(vertices[i].words[5]))) {
       return false_v;
     }
   }
@@ -324,8 +310,8 @@ void vkr_packed_geometry_unpack(const VkrPackedStaticVertex *source,
     const uint16_t tangent_flags = (uint16_t)(packed->words[1] >> 16u);
     const Vec3 normal = vkr_packed_oct_decode(packed->words[2]);
     const Vec3 tangent = vkr_packed_oct_decode(packed->words[3]);
-    const float32_t u = vkr_packed_bits_float(packed->words[4]);
-    const float32_t v = vkr_packed_bits_float(packed->words[5]);
+    const float32_t u = vkr_f32_from_bits(packed->words[4]);
+    const float32_t v = vkr_f32_from_bits(packed->words[5]);
     const uint32_t color = packed->words[6];
     destination[i] = (VkrVertex3d){
         .position = {bias.x + px * scale.x, bias.y + py * scale.y,
@@ -351,9 +337,7 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
                                  VkrGeometryQuantizationMetrics *out_metrics) {
   if (!source || vertex_count == 0 || !destination || !out_decode ||
       !out_metrics || !vkr_packed_budgets_are_valid(budgets) ||
-      !isfinite(min_extents.x) || !isfinite(min_extents.y) ||
-      !isfinite(min_extents.z) || !isfinite(max_extents.x) ||
-      !isfinite(max_extents.y) || !isfinite(max_extents.z) ||
+      !vec3_is_finite(min_extents) || !vec3_is_finite(max_extents) ||
       min_extents.x > max_extents.x || min_extents.y > max_extents.y ||
       min_extents.z > max_extents.z) {
     return false_v;
@@ -399,8 +383,8 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
                 (uint32_t)qz | ((uint32_t)tangent_flags << 16u),
                 vkr_packed_oct_encode(normal),
                 vkr_packed_oct_encode(tangent),
-                vkr_packed_float_bits(source[i].texcoord.x),
-                vkr_packed_float_bits(source[i].texcoord.y),
+                vkr_f32_bits(source[i].texcoord.x),
+                vkr_f32_bits(source[i].texcoord.y),
                 (uint32_t)vkr_packed_unorm8(source[i].colour.x) |
                     ((uint32_t)vkr_packed_unorm8(source[i].colour.y) << 8u) |
                     ((uint32_t)vkr_packed_unorm8(source[i].colour.z) << 16u) |
@@ -418,7 +402,8 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
     const Vec3 delta = vec3_sub(decoded_position, position);
     out_metrics->position_max =
         Max(out_metrics->position_max,
-            sqrtf(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z));
+            vkr_sqrt_f32(delta.x * delta.x + delta.y * delta.y +
+                         delta.z * delta.z));
     out_metrics->normal_degrees_max =
         Max(out_metrics->normal_degrees_max,
             vkr_packed_angle_degrees(vkr_vertex_unpack_vec3(source[i].normal),
@@ -433,19 +418,20 @@ bool8_t vkr_packed_geometry_pack(const VkrVertex3d *source,
             vec3_new(decoded.tangent.x, decoded.tangent.y, decoded.tangent.z)));
     out_metrics->uv_max =
         Max(out_metrics->uv_max,
-            Max(fabsf(decoded.texcoord.x - source[i].texcoord.x),
-                fabsf(decoded.texcoord.y - source[i].texcoord.y)));
+            Max(vkr_abs_f32(decoded.texcoord.x - source[i].texcoord.x),
+                vkr_abs_f32(decoded.texcoord.y - source[i].texcoord.y)));
     out_metrics->color_max =
         Max(out_metrics->color_max,
-            Max(Max(fabsf(decoded.colour.x - source[i].colour.x),
-                    fabsf(decoded.colour.y - source[i].colour.y)),
-                Max(fabsf(decoded.colour.z - source[i].colour.z),
-                    fabsf(decoded.colour.w - source[i].colour.w))));
+            Max(Max(vkr_abs_f32(decoded.colour.x - source[i].colour.x),
+                    vkr_abs_f32(decoded.colour.y - source[i].colour.y)),
+                Max(vkr_abs_f32(decoded.colour.z - source[i].colour.z),
+                    vkr_abs_f32(decoded.colour.w - source[i].colour.w))));
   }
-  const float32_t diagonal = hypotf(hypotf(scale.x, scale.y), scale.z);
+  const float32_t diagonal =
+      vkr_hypot_f32(vkr_hypot_f32(scale.x, scale.y), scale.z);
   const float32_t position_budget =
       Max(diagonal * budgets->position_relative, 1.0e-7f);
-  return isfinite(position_budget) &&
+  return vkr_is_finite_f32(position_budget) &&
          vkr_packed_geometry_vertices_are_valid(destination, vertex_count,
                                                 out_decode) &&
          out_metrics->position_max <= position_budget &&

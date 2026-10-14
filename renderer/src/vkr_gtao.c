@@ -1,7 +1,5 @@
 #include "vkr_gtao.h"
 
-#include <math.h>
-
 #define VKR_GTAO_RADIUS_MULTIPLIER_MIN 0.3f
 #define VKR_GTAO_RADIUS_MULTIPLIER_MAX 3.0f
 #define VKR_GTAO_FALLOFF_RANGE_MIN 0.01f
@@ -12,14 +10,10 @@
 #define VKR_GTAO_DENOISE_BETA_MAX 10000.0f
 #define VKR_GTAO_DEPTH_FILTER_RADIUS_SCALE 0.75f
 
-static float32_t gtao_clamp(float32_t value, float32_t minimum,
-                            float32_t maximum) {
-  return value < minimum ? minimum : (value > maximum ? maximum : value);
-}
-
 static float32_t gtao_normalize_float(float32_t value, float32_t fallback,
                                       float32_t minimum, float32_t maximum) {
-  return gtao_clamp(isfinite(value) ? value : fallback, minimum, maximum);
+  return vkr_clamp_f32(vkr_is_finite_f32(value) ? value : fallback, minimum,
+                       maximum);
 }
 
 VkrGtaoConfig vkr_gtao_config_default(void) {

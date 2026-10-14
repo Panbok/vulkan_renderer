@@ -1024,6 +1024,10 @@ typedef struct VkrRendererBackendConfig {
    * renderer-owned render thread; see vkr_renderer_submit_frame.
    * VKR_RENDER_THREAD=0 or 1 overrides it. */
   bool8_t inline_rendering;
+  /** Optional borrowed job system for background pipeline creation. The
+   * owner calls vkr_renderer_detach_jobs before shutting it down; NULL
+   * creates those pipelines on the rendering thread. */
+  VkrJobSystem *job_system;
 } VkrRendererBackendConfig;
 
 typedef enum VkrPresentTargetAttachment {
@@ -1208,6 +1212,12 @@ vkr_renderer_get_asset_publisher(VkrRenderer *renderer);
 String8 vkr_renderer_get_error_string(VkrRendererError error);
 bool32_t vkr_renderer_is_frame_active(VkrRenderer *renderer);
 VkrRendererError vkr_renderer_wait_idle(VkrRenderer *renderer);
+
+/** Waits for the renderer's background jobs and stops using the job system
+ * from VkrRendererBackendConfig, so its owner can shut it down; later
+ * pipeline creations run on the rendering thread. Call with no frame in
+ * flight. */
+void vkr_renderer_detach_jobs(VkrRenderer *renderer);
 
 /** One completed GPU queue submission, associated with its source frame. */
 typedef struct VkrGpuSubmissionTiming {

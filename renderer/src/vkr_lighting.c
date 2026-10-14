@@ -1,15 +1,14 @@
 #include "vkr_lighting.h"
-#include <math.h>
 
 void vkr_point_light_pack(const VkrPointLight *light, float32_t radiance_scale,
                           VkrGpuPointLightRow *row) {
   row->p0 = (Vec4){light->position.x, light->position.y, light->position.z,
                    light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                       ? cosf(light->inner_cone_angle)
+                       ? vkr_cos_f32(light->inner_cone_angle)
                        : light->constant};
   row->p1 = (Vec4){light->color.x, light->color.y, light->color.z,
                    light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
-                       ? cosf(light->outer_cone_angle)
+                       ? vkr_cos_f32(light->outer_cone_angle)
                        : light->linear};
   row->p2 = (Vec4){light->intensity * radiance_scale, light->quadratic,
                    light->range, (float32_t)light->kind};
@@ -21,17 +20,16 @@ bool8_t vkr_rectangle_light_valid(const VkrRectangleLight *light) {
   const Vec3 vectors[] = {light->position, light->right, light->up,
                           light->color};
   for (uint32_t i = 0u; i < 4u; ++i)
-    if (!isfinite(vectors[i].x) || !isfinite(vectors[i].y) ||
-        !isfinite(vectors[i].z))
+    if (!vec3_is_finite(vectors[i]))
       return false_v;
-  return isfinite(light->half_width) && light->half_width > 0.0f &&
-         isfinite(light->half_height) && light->half_height > 0.0f &&
-         isfinite(light->radiance) && light->radiance >= 0.0f &&
+  return vkr_is_finite_f32(light->half_width) && light->half_width > 0.0f &&
+         vkr_is_finite_f32(light->half_height) && light->half_height > 0.0f &&
+         vkr_is_finite_f32(light->radiance) && light->radiance >= 0.0f &&
          light->color.x >= 0.0f && light->color.y >= 0.0f &&
          light->color.z >= 0.0f &&
-         fabsf(vec3_dot(light->right, light->right) - 1.0f) < 1e-4f &&
-         fabsf(vec3_dot(light->up, light->up) - 1.0f) < 1e-4f &&
-         fabsf(vec3_dot(light->right, light->up)) < 1e-4f;
+         vkr_abs_f32(vec3_dot(light->right, light->right) - 1.0f) < 1e-4f &&
+         vkr_abs_f32(vec3_dot(light->up, light->up) - 1.0f) < 1e-4f &&
+         vkr_abs_f32(vec3_dot(light->right, light->up)) < 1e-4f;
 }
 
 void vkr_rectangle_light_pack(const VkrRectangleLight *light,
@@ -47,7 +45,7 @@ void vkr_rectangle_light_pack(const VkrRectangleLight *light,
 }
 
 static uint32_t world_grid_dimension(float32_t extent, float32_t cell_size) {
-  return Max((uint32_t)ceilf(Max(extent, 0.0f) / cell_size), 1u);
+  return Max((uint32_t)vkr_ceil_f32(Max(extent, 0.0f) / cell_size), 1u);
 }
 
 static uint64_t world_grid_dimensions_for_size(Vec3 extent, float32_t cell_size,

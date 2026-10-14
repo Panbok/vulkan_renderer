@@ -3,6 +3,7 @@
 #include "vulkan/vkr_vulkan_renderer.h"
 
 #include "core/logger.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_metrics.h"
 #include "filesystem/filesystem.h"
 #include "vkr_anisotropy_lut.h"
@@ -43,9 +44,6 @@
 
 #include <spirv_reflect.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* SPIR-V file names in the shader catalog (vkr_shader_catalog.h). The
  * entry table lives in renderer/src/shaders/vulkan/slang/library.recipe.json
@@ -3559,7 +3557,6 @@ bool8_t vkr_vk_window_presents_complete(VkrVulkanRenderer *renderer,
                                         VkrVulkanWindowTarget *target,
                                         bool8_t wait);
 uint64_t vkr_vk_refresh_completed(VkrVulkanRenderer *renderer);
-uint64_t vkr_vk_align_up(uint64_t value, uint64_t alignment);
 void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
                                        uint64_t completed);
 void vkr_vk_collect_retired_targets(VkrVulkanRenderer *renderer,

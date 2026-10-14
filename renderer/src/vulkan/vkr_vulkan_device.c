@@ -1,10 +1,7 @@
 #include "vulkan/vkr_vulkan_device.h"
 
 #include "core/logger.h"
-
-#include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
+#include "vulkan/vkr_vulkan_wsi.h"
 
 enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
 /* Queue families queried per candidate device. A device reporting more keeps
@@ -122,7 +119,7 @@ VkSurfaceFormatKHR vkr_vulkan_device_choose_surface_format(
 vkr_internal bool8_t vkr_vk_extension_present(
     const VkExtensionProperties *extensions, uint32_t count, const char *name) {
   for (uint32_t i = 0; i < count; ++i) {
-    if (strcmp(extensions[i].extensionName, name) == 0) {
+    if (string_equals(extensions[i].extensionName, name)) {
       return true_v;
     }
   }
@@ -140,7 +137,7 @@ vkr_internal bool8_t vkr_vk_layer_present(const char *name) {
     return false_v;
   }
   for (uint32_t i = 0; i < count; ++i) {
-    if (strcmp(layers[i].layerName, name) == 0) {
+    if (string_equals(layers[i].layerName, name)) {
       return true_v;
     }
   }
@@ -160,16 +157,17 @@ vkr_internal void vkr_vk_report_add(VkrVulkanCandidateReport *report,
   entry->kind = kind;
   entry->required = required;
   entry->present = present;
-  snprintf(entry->name, sizeof(entry->name), "%s", name ? name : "");
-  snprintf(entry->detail, sizeof(entry->detail), "%s", detail ? detail : "");
+  string_format(entry->name, sizeof(entry->name), "%s", name ? name : "");
+  string_format(entry->detail, sizeof(entry->detail), "%s",
+                detail ? detail : "");
 }
 
 vkr_internal void vkr_vk_report_limit(VkrVulkanCandidateReport *report,
                                       const char *name, uint64_t actual,
                                       uint64_t minimum) {
   char detail[VKR_VULKAN_REPORT_DETAIL_CAPACITY];
-  snprintf(detail, sizeof(detail), "actual=%" PRIu64 " minimum=%" PRIu64,
-           actual, minimum);
+  string_format(detail, sizeof(detail), "actual=%llu minimum=%llu",
+                (unsigned long long)actual, (unsigned long long)minimum);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT, name, true_v,
                     actual >= minimum, detail);
 }
@@ -178,7 +176,8 @@ vkr_internal void vkr_vk_report_record_limit(VkrVulkanCandidateReport *report,
                                              const char *name,
                                              uint64_t actual) {
   char detail[VKR_VULKAN_REPORT_DETAIL_CAPACITY];
-  snprintf(detail, sizeof(detail), "actual=%" PRIu64, actual);
+  string_format(detail, sizeof(detail), "actual=%llu",
+                (unsigned long long)actual);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT, name, false_v, true_v,
                     detail);
 }
@@ -281,8 +280,8 @@ vkr_vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
   const bool8_t gpuav_setup_notice =
       device->config.enable_gpu_assisted && callback_data &&
       callback_data->pMessageIdName &&
-      strcmp(callback_data->pMessageIdName, "WARNING-Setting-Limit-Adjusted") ==
-          0;
+      string_equals(callback_data->pMessageIdName,
+                    "WARNING-Setting-Limit-Adjusted");
   if (validation_message &&
       (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
     log_error("Vulkan validation: %s", message);
@@ -337,23 +336,12 @@ vkr_internal void vkr_vk_load_debug_label_functions(VkrVulkanDevice *device) {
 }
 
 vkr_internal bool8_t vkr_vk_create_window_surface(VkrVulkanDevice *device) {
-  if (device->config.windowed) {
-#if defined(PLATFORM_WINDOWS)
-    VkWin32SurfaceCreateInfoKHR surface_info = {
-        .sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-        .hinstance = device->config.surface.win32_instance,
-        .hwnd = device->config.surface.win32_window,
-    };
-    if (!surface_info.hinstance || !surface_info.hwnd ||
-        vkCreateWin32SurfaceKHR(device->instance, &surface_info, NULL,
-                                &device->surface) != VK_SUCCESS) {
-      return false_v;
-    }
-#else
-    return false_v;
-#endif
-  }
-  return true_v;
+  return !device->config.windowed ||
+                 vkr_vulkan_create_platform_surface(device->instance,
+                                                    &device->config.surface,
+                                                    &device->surface)
+             ? true_v
+             : false_v;
 }
 
 vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
@@ -379,13 +367,13 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
   const char *enabled_extensions[6];
   uint32_t enabled_extension_count = 0;
   if (device->config.windowed) {
+    const char *platform_extension = vkr_vulkan_platform_surface_extension();
     const char *window_extensions[] = {
         VK_KHR_SURFACE_EXTENSION_NAME,
-#if defined(PLATFORM_WINDOWS)
-        VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-#endif
+        platform_extension,
     };
-    for (uint32_t i = 0; i < ArrayCount(window_extensions); ++i) {
+    const uint32_t window_extension_count = platform_extension ? 2u : 1u;
+    for (uint32_t i = 0; i < window_extension_count; ++i) {
       if (!vkr_vk_extension_present(available, available_count,
                                     window_extensions[i])) {
         log_error("Vulkan window profile missing instance extension: "
@@ -517,12 +505,12 @@ vkr_vk_query_candidate_properties(VkrVulkanCandidate *candidate,
   vkGetPhysicalDeviceMemoryProperties(candidate->physical,
                                       &candidate->memory_properties);
 
-  snprintf(report->device_name, sizeof(report->device_name), "%s",
-           candidate->properties.properties.deviceName);
-  snprintf(report->driver_name, sizeof(report->driver_name), "%s",
-           candidate->driver.driverName);
-  snprintf(report->driver_info, sizeof(report->driver_info), "%s",
-           candidate->driver.driverInfo);
+  string_format(report->device_name, sizeof(report->device_name), "%s",
+                candidate->properties.properties.deviceName);
+  string_format(report->driver_name, sizeof(report->driver_name), "%s",
+                candidate->driver.driverName);
+  string_format(report->driver_info, sizeof(report->driver_info), "%s",
+                candidate->driver.driverInfo);
   report->api_version = candidate->properties.properties.apiVersion;
   report->driver_id = candidate->driver.driverID;
   report->conformance_version = candidate->driver.conformanceVersion;
@@ -625,10 +613,10 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
   const bool8_t api_present =
       candidate->properties.properties.apiVersion >= VK_API_VERSION_1_4;
   char api_detail[64];
-  snprintf(api_detail, sizeof(api_detail), "actual=%u.%u.%u minimum=1.4.0",
-           VK_API_VERSION_MAJOR(report->api_version),
-           VK_API_VERSION_MINOR(report->api_version),
-           VK_API_VERSION_PATCH(report->api_version));
+  string_format(api_detail, sizeof(api_detail), "actual=%u.%u.%u minimum=1.4.0",
+                VK_API_VERSION_MAJOR(report->api_version),
+                VK_API_VERSION_MINOR(report->api_version),
+                VK_API_VERSION_PATCH(report->api_version));
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_API_VERSION, "apiVersion", true_v,
                     api_present, api_detail);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
@@ -716,8 +704,9 @@ vkr_vk_select_candidate_queue(const VkrVulkanDevice *device,
     }
   }
   char queue_detail[64];
-  snprintf(queue_detail, sizeof(queue_detail), "family=%u flags=G|C|T%s",
-           candidate->queue_family_index, device->config.windowed ? "|P" : "");
+  string_format(queue_detail, sizeof(queue_detail), "family=%u flags=G|C|T%s",
+                candidate->queue_family_index,
+                device->config.windowed ? "|P" : "");
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_QUEUE,
                     "graphics+compute+transfer", true_v,
                     candidate->queue_family_index != UINT32_MAX, queue_detail);
@@ -899,13 +888,13 @@ vkr_internal bool8_t vkr_vk_report_candidate_presentation(
     VkrVulkanCandidateReport *report,
     const VkExtensionProperties *instance_extensions,
     uint32_t instance_extension_count) {
+  const char *platform_extension = vkr_vulkan_platform_surface_extension();
   const char *window_instance_extensions[] = {
       VK_KHR_SURFACE_EXTENSION_NAME,
-#if defined(PLATFORM_WINDOWS)
-      VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-#endif
+      platform_extension,
   };
-  for (uint32_t i = 0; i < ArrayCount(window_instance_extensions); ++i) {
+  const uint32_t window_extension_count = platform_extension ? 2u : 1u;
+  for (uint32_t i = 0; i < window_extension_count; ++i) {
     const bool8_t present =
         vkr_vk_extension_present(instance_extensions, instance_extension_count,
                                  window_instance_extensions[i]);
@@ -1159,21 +1148,23 @@ vkr_internal bool8_t vkr_vk_create_layouts(VkrVulkanDevice *device,
           properties->descriptorBufferAddressSpaceSize -
               device->sampler_layout.size;
   char detail[VKR_VULKAN_REPORT_DETAIL_CAPACITY];
-  snprintf(detail, sizeof(detail), "actual=%" PRIu64 " maximum=%" PRIu64,
-           (uint64_t)device->resource_layout.size,
-           (uint64_t)properties->maxResourceDescriptorBufferRange);
+  string_format(
+      detail, sizeof(detail), "actual=%llu maximum=%llu",
+      (unsigned long long)device->resource_layout.size,
+      (unsigned long long)properties->maxResourceDescriptorBufferRange);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT,
                     "resource descriptor layout bytes", true_v,
                     resource_range && resource_space, detail);
-  snprintf(detail, sizeof(detail), "actual=%" PRIu64 " maximum=%" PRIu64,
-           (uint64_t)device->sampler_layout.size,
-           (uint64_t)properties->maxSamplerDescriptorBufferRange);
+  string_format(
+      detail, sizeof(detail), "actual=%llu maximum=%llu",
+      (unsigned long long)device->sampler_layout.size,
+      (unsigned long long)properties->maxSamplerDescriptorBufferRange);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT,
                     "sampler descriptor layout bytes", true_v,
                     sampler_range && sampler_space, detail);
-  snprintf(detail, sizeof(detail), "resource=%" PRIu64 " sampler=%" PRIu64,
-           (uint64_t)device->resource_layout.size,
-           (uint64_t)device->sampler_layout.size);
+  string_format(detail, sizeof(detail), "resource=%llu sampler=%llu",
+                (unsigned long long)device->resource_layout.size,
+                (unsigned long long)device->sampler_layout.size);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_LIMIT,
                     "descriptor buffer address spaces", true_v, combined_space,
                     detail);
@@ -1272,7 +1263,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   const VkResult result =
       vkCreateDevice(candidate->physical, &create_info, NULL, &device->device);
   char detail[96];
-  snprintf(detail, sizeof(detail), "VkResult=%d", result);
+  string_format(detail, sizeof(detail), "VkResult=%d", result);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE, "vkCreateDevice",
                     true_v, result == VK_SUCCESS, detail);
   if (result != VK_SUCCESS) {

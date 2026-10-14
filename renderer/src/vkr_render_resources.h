@@ -347,12 +347,12 @@ vkr_pbr_brdf_extensions_valid(const VkrPbrProperties *pbr) {
       pbr->specular_f82_tint.z,
   };
   for (uint32_t i = 0; i < ArrayCount(unit); ++i) {
-    if (!isfinite(unit[i]) || unit[i] < 0.0f || unit[i] > 1.0f) {
+    if (!vkr_is_finite_f32(unit[i]) || unit[i] < 0.0f || unit[i] > 1.0f) {
       return false_v;
     }
   }
   const float32_t scale = pbr->dual_specular_roughness_scale;
-  return isfinite(scale) && scale >= 0.0f &&
+  return vkr_is_finite_f32(scale) && scale >= 0.0f &&
          scale <= VKR_MATERIAL_DUAL_SPECULAR_ROUGHNESS_SCALE_MAX;
 }
 

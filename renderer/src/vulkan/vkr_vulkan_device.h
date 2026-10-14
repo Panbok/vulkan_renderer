@@ -5,10 +5,6 @@
 
 #include <vulkan/vulkan.h>
 
-#if defined(PLATFORM_WINDOWS)
-#include <vulkan/vulkan_win32.h>
-#endif
-
 enum {
   VKR_VULKAN_MAX_CANDIDATES = 16,
   VKR_VULKAN_MAX_REPORT_ENTRIES = 128,

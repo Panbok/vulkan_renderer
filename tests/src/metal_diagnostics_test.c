@@ -137,11 +137,10 @@ vkr_internal void test_metal_diagnostics_json_and_rotation(void) {
   VkrMetalDiagnostics failed = {0};
   assert(vkr_metal_diagnostics_open(&failed, failure_directory));
   const uint32_t failed_active = failed.active_segment;
-  const int remaining_fd = failed.segment_fds[1u - failed_active];
-  assert(close(failed.segment_fds[failed_active]) == 0);
+  file_close(&failed.segments[failed_active]);
   vkr_metal_diagnostics_record(&failed, "failure", 0u, 0u, "forced write");
   assert(!failed.enabled);
-  assert(fcntl(remaining_fd, F_GETFD) == -1 && errno == EBADF);
+  assert(failed.segments[1u - failed_active].handle == NULL);
   for (uint32_t segment = 0u; segment < 2u; ++segment) {
     metal_diagnostics_test_path(path, sizeof(path), failure_directory, segment);
     assert(unlink(path) == 0);

@@ -107,7 +107,7 @@ vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
   /* A mipmapped texture's own levels bound its LOD, so one sampler serves
      every mip count. */
   descriptor.lodMaxClamp =
-      description->mip_filter == VKR_MIP_FILTER_NONE ? 0.0f : FLT_MAX;
+      description->mip_filter == VKR_MIP_FILTER_NONE ? 0.0f : VKR_FLOAT_MAX;
   descriptor.maxAnisotropy = description->anisotropy_enable ? 16u : 1u;
   descriptor.borderColor = MTLSamplerBorderColorOpaqueBlack;
   id<MTLSamplerState> state =
@@ -1370,9 +1370,9 @@ VkrRendererError vkr_metal_packet_renderer_publish_prepared_texture(
         payload.data_size > VKR_METAL_PACKET_TEXTURE_UPLOAD_CHUNK_BYTES;
     const bool8_t requested_batch =
         renderer->texture_upload_batch.enabled && !chunked;
-    const uint64_t aligned_upload_size = vkr_metal_packet_align_up(
-        vkr_metal_packet_texture_upload_peak_bytes(&payload),
-        VKR_METAL_PACKET_ROOT_ALIGNMENT);
+    const uint64_t aligned_upload_size =
+        vkr_align_up_u64(vkr_metal_packet_texture_upload_peak_bytes(&payload),
+                         VKR_METAL_PACKET_ROOT_ALIGNMENT);
     const uint64_t upload_capacity =
         requested_batch && aligned_upload_size <
                                VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES
@@ -2526,7 +2526,7 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       (uint64_t)plan->picking_count * sizeof(VkrPreparedInstanceGPU);
   const uint64_t retained_instance_bytes =
       plan->world_bytes + shadow_bytes + picking_bytes;
-  plan->gpu_draw_instances_offset = vkr_metal_packet_align_up(
+  plan->gpu_draw_instances_offset = vkr_align_up_u64(
       retained_instance_bytes, AlignOf(VkrPreparedInstanceGPU));
   const uint64_t gpu_draw_instances_bytes =
       (uint64_t)plan->gpu_draw_stage_count * sizeof(VkrPreparedInstanceGPU);
@@ -2539,32 +2539,32 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
           ? packet->input.lighting->point_light_grid->cell_count
           : 0;
   plan->point_light_offset =
-      vkr_metal_packet_align_up(instance_bytes, AlignOf(VkrGpuPointLightRow));
+      vkr_align_up_u64(instance_bytes, AlignOf(VkrGpuPointLightRow));
   const uint64_t point_light_bytes =
       (uint64_t)plan->point_light_count * sizeof(VkrGpuPointLightRow);
-  plan->point_light_masks_offset = vkr_metal_packet_align_up(
+  plan->point_light_masks_offset = vkr_align_up_u64(
       plan->point_light_offset + point_light_bytes, AlignOf(VkrPointLightMask));
   plan->point_light_masks_bytes =
       (uint64_t)point_light_cell_count * sizeof(VkrPointLightMask);
   plan->shadow_cascade_count =
       packet->input.shadow ? packet->input.shadow->cascade_count : 0;
-  plan->shadow_cascades_offset = vkr_metal_packet_align_up(
+  plan->shadow_cascades_offset = vkr_align_up_u64(
       plan->point_light_masks_offset + plan->point_light_masks_bytes,
       AlignOf(VkrMetalPacketShadowCascade));
   const uint64_t shadow_cascades_bytes = (uint64_t)plan->shadow_cascade_count *
                                          sizeof(VkrMetalPacketShadowCascade);
   plan->local_shadow_view_count =
       renderer->prepared_frame.local_shadow_view_count;
-  plan->local_shadow_views_offset = vkr_metal_packet_align_up(
-      plan->shadow_cascades_offset + shadow_cascades_bytes,
-      AlignOf(VkrLocalShadowView));
+  plan->local_shadow_views_offset =
+      vkr_align_up_u64(plan->shadow_cascades_offset + shadow_cascades_bytes,
+                       AlignOf(VkrLocalShadowView));
   plan->local_shadow_views_bytes =
       (uint64_t)plan->local_shadow_view_count * sizeof(VkrLocalShadowView);
   plan->ibl_probe_count =
       packet->input.lighting ? packet->input.lighting->ibl_probe_count : 0;
-  plan->ibl_probes_offset = vkr_metal_packet_align_up(
-      plan->local_shadow_views_offset + plan->local_shadow_views_bytes,
-      AlignOf(VkrMetalPacketIblProbe));
+  plan->ibl_probes_offset = vkr_align_up_u64(plan->local_shadow_views_offset +
+                                                 plan->local_shadow_views_bytes,
+                                             AlignOf(VkrMetalPacketIblProbe));
   const uint64_t ibl_probes_bytes =
       (uint64_t)plan->ibl_probe_count * sizeof(VkrMetalPacketIblProbe);
   const VkrDiffuseVolumeBinding *diffuse_volume =
@@ -2573,8 +2573,8 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       diffuse_volume && diffuse_volume->indirection.id != 0u &&
       diffuse_volume->indirection.generation != VKR_INVALID_ID;
   plan->diffuse_volume_offset =
-      vkr_metal_packet_align_up(plan->ibl_probes_offset + ibl_probes_bytes,
-                                AlignOf(VkrMetalPacketDiffuseVolume));
+      vkr_align_up_u64(plan->ibl_probes_offset + ibl_probes_bytes,
+                       AlignOf(VkrMetalPacketDiffuseVolume));
   const uint64_t diffuse_volume_bytes =
       diffuse_volume_enabled ? sizeof(VkrMetalPacketDiffuseVolume) : 0u;
   plan->rectangle_light_count =
@@ -2585,34 +2585,34 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
   plan->lightmap_rect_count = vkr_metal_packet_lightmap_sampled(packet)
                                   ? packet->input.lighting->lightmap.rect_count
                                   : 0u;
-  plan->lightmap_offset = vkr_metal_packet_align_up(
-      plan->diffuse_volume_offset + diffuse_volume_bytes,
-      AlignOf(VkrMetalPacketLightmap));
-  plan->lightmap_rects_offset = vkr_metal_packet_align_up(
-      plan->lightmap_offset + sizeof(VkrMetalPacketLightmap),
-      AlignOf(VkrLightmapRect));
+  plan->lightmap_offset =
+      vkr_align_up_u64(plan->diffuse_volume_offset + diffuse_volume_bytes,
+                       AlignOf(VkrMetalPacketLightmap));
+  plan->lightmap_rects_offset =
+      vkr_align_up_u64(plan->lightmap_offset + sizeof(VkrMetalPacketLightmap),
+                       AlignOf(VkrLightmapRect));
   const uint64_t lightmap_rects_bytes =
       (uint64_t)plan->lightmap_rect_count * sizeof(VkrLightmapRect);
   plan->lightmap_direct =
       plan->lightmap_rect_count != 0u &&
       packet->input.lighting->lightmap.direct_layer_count != 0u;
-  plan->lightmap_direct_rects_offset = vkr_metal_packet_align_up(
-      plan->lightmap_rects_offset + lightmap_rects_bytes,
-      AlignOf(VkrLightmapRect));
-  plan->ltc_offset = vkr_metal_packet_align_up(
-      plan->lightmap_direct_rects_offset +
-          (plan->lightmap_direct ? lightmap_rects_bytes : 0u),
-      AlignOf(VkrMetalPacketLtc));
+  plan->lightmap_direct_rects_offset =
+      vkr_align_up_u64(plan->lightmap_rects_offset + lightmap_rects_bytes,
+                       AlignOf(VkrLightmapRect));
+  plan->ltc_offset =
+      vkr_align_up_u64(plan->lightmap_direct_rects_offset +
+                           (plan->lightmap_direct ? lightmap_rects_bytes : 0u),
+                       AlignOf(VkrMetalPacketLtc));
   plan->rectangle_lights_offset = plan->ltc_offset + sizeof(VkrMetalPacketLtc);
   const uint64_t rectangle_lights_bytes =
       (uint64_t)plan->rectangle_light_count * sizeof(VkrGpuRectangleLightRow);
-  plan->sheen_offset = vkr_metal_packet_align_up(plan->rectangle_lights_offset +
-                                                     rectangle_lights_bytes,
-                                                 AlignOf(VkrMetalPacketSheen));
-  plan->fog_offset = vkr_metal_packet_align_up(plan->sheen_offset +
-                                                   sizeof(VkrMetalPacketSheen),
-                                               AlignOf(VkrFogGpuParams));
-  plan->sky_offset = vkr_metal_packet_align_up(
+  plan->sheen_offset =
+      vkr_align_up_u64(plan->rectangle_lights_offset + rectangle_lights_bytes,
+                       AlignOf(VkrMetalPacketSheen));
+  plan->fog_offset =
+      vkr_align_up_u64(plan->sheen_offset + sizeof(VkrMetalPacketSheen),
+                       AlignOf(VkrFogGpuParams));
+  plan->sky_offset = vkr_align_up_u64(
       plan->fog_offset + sizeof(VkrFogGpuParams), AlignOf(VkrMetalPacketSky));
   plan->gpu_draw_view_count =
       vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
@@ -2626,50 +2626,50 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
   const VkrWorldPassPayload *world = packet->input.world;
   plan->decal_count = world ? world->decal_count : 0u;
   plan->decals_offset =
-      vkr_metal_packet_align_up(plan->sky_offset + sizeof(VkrMetalPacketSky),
-                                AlignOf(VkrMetalPacketDecals));
+      vkr_align_up_u64(plan->sky_offset + sizeof(VkrMetalPacketSky),
+                       AlignOf(VkrMetalPacketDecals));
   const uint64_t decals_bytes =
       plan->decal_count > 0u ? sizeof(VkrMetalPacketDecals) : 0u;
-  plan->decal_rows_offset = vkr_metal_packet_align_up(
-      plan->decals_offset + decals_bytes, AlignOf(VkrMetalPacketDecal));
+  plan->decal_rows_offset = vkr_align_up_u64(plan->decals_offset + decals_bytes,
+                                             AlignOf(VkrMetalPacketDecal));
   const uint64_t decal_rows_bytes =
       (uint64_t)plan->decal_count * sizeof(VkrMetalPacketDecal);
-  plan->decal_masks_offset = vkr_metal_packet_align_up(
+  plan->decal_masks_offset = vkr_align_up_u64(
       plan->decal_rows_offset + decal_rows_bytes, AlignOf(VkrDecalMask));
   plan->decal_masks_bytes =
       plan->decal_count > 0u
           ? (uint64_t)world->decal_grid->cell_count * sizeof(VkrDecalMask)
           : 0u;
   /* The cloud-lit sky light's cloud chain, written and read on the GPU. */
-  plan->cloud_sky_light_offset = vkr_metal_packet_align_up(
-      plan->decal_masks_offset + plan->decal_masks_bytes, 16u);
+  plan->cloud_sky_light_offset =
+      vkr_align_up_u64(plan->decal_masks_offset + plan->decal_masks_bytes, 16u);
   plan->cloud_sky_light_bytes =
       renderer->prepared_frame.clouds_enabled
           ? VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t)
           : 0u;
-  plan->gpu_draw_views_offset = vkr_metal_packet_align_up(
+  plan->gpu_draw_views_offset = vkr_align_up_u64(
       plan->cloud_sky_light_offset + plan->cloud_sky_light_bytes,
       AlignOf(VkrMetalPacketGpuDrawView));
   const uint64_t gpu_draw_views_bytes =
       (uint64_t)plan->gpu_draw_view_count * sizeof(VkrMetalPacketGpuDrawView);
-  plan->gpu_draw_lod_views_offset = vkr_metal_packet_align_up(
-      plan->gpu_draw_views_offset + gpu_draw_views_bytes,
-      AlignOf(VkrGpuLodView));
+  plan->gpu_draw_lod_views_offset =
+      vkr_align_up_u64(plan->gpu_draw_views_offset + gpu_draw_views_bytes,
+                       AlignOf(VkrGpuLodView));
   const uint64_t gpu_draw_lod_view_bytes =
       (uint64_t)plan->gpu_draw_view_count * sizeof(VkrGpuLodView);
-  plan->gpu_draw_candidates_offset = vkr_metal_packet_align_up(
+  plan->gpu_draw_candidates_offset = vkr_align_up_u64(
       plan->gpu_draw_lod_views_offset + gpu_draw_lod_view_bytes,
       AlignOf(VkrGpuCandidateDrawRow));
   const uint64_t gpu_draw_candidate_bytes =
       (uint64_t)plan->gpu_draw_stage_count * sizeof(VkrGpuCandidateDrawRow);
-  plan->gpu_draw_geometry_rows_offset = vkr_metal_packet_align_up(
+  plan->gpu_draw_geometry_rows_offset = vkr_align_up_u64(
       plan->gpu_draw_candidates_offset + gpu_draw_candidate_bytes,
       AlignOf(VkrGpuGeometryRow));
   plan->gpu_draw_geometry_rows_bytes =
       plan->source_gpu_draw_count > 0u
           ? (uint64_t)renderer->max_meshes * sizeof(VkrGpuGeometryRow)
           : 0u;
-  plan->gpu_draw_state_zero_offset = vkr_metal_packet_align_up(
+  plan->gpu_draw_state_zero_offset = vkr_align_up_u64(
       plan->gpu_draw_geometry_rows_offset + plan->gpu_draw_geometry_rows_bytes,
       AlignOf(VkrGpuDrawCompactionState));
   plan->gpu_draw_state_zero_bytes =
@@ -2678,12 +2678,12 @@ vkr_metal_packet_plan_upload_regions(VkrMetalPacketRenderer *renderer,
       plan->source_gpu_draw_count > 0u
           ? renderer->gpu_draw_icb_argument_encoder.alignment
           : 1u;
-  plan->gpu_draw_icb_argument_offset = vkr_metal_packet_align_up(
+  plan->gpu_draw_icb_argument_offset = vkr_align_up_u64(
       plan->gpu_draw_state_zero_offset + plan->gpu_draw_state_zero_bytes,
       gpu_draw_icb_argument_alignment);
-  plan->gpu_draw_icb_argument_stride = vkr_metal_packet_align_up(
-      renderer->gpu_draw_icb_argument_encoder.encodedLength,
-      gpu_draw_icb_argument_alignment);
+  plan->gpu_draw_icb_argument_stride =
+      vkr_align_up_u64(renderer->gpu_draw_icb_argument_encoder.encodedLength,
+                       gpu_draw_icb_argument_alignment);
   plan->gpu_draw_icb_argument_bytes =
       plan->source_gpu_draw_count > 0u
           ? plan->gpu_draw_icb_argument_stride * plan->gpu_draw_icb_group_count
@@ -2703,12 +2703,11 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_geometry(
         (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
     const uint64_t index_bytes = (uint64_t)draw->index_count * sizeof(uint32_t);
     text_geometry_end =
-        vkr_metal_packet_align_up(text_geometry_end, AlignOf(VkrTextVertex));
+        vkr_align_up_u64(text_geometry_end, AlignOf(VkrTextVertex));
     if (text_geometry_end > UINT64_MAX - vertex_bytes)
       return false_v;
     text_geometry_end += vertex_bytes;
-    text_geometry_end =
-        vkr_metal_packet_align_up(text_geometry_end, AlignOf(uint32_t));
+    text_geometry_end = vkr_align_up_u64(text_geometry_end, AlignOf(uint32_t));
     if (text_geometry_end > UINT64_MAX - index_bytes)
       return false_v;
     text_geometry_end += index_bytes;
@@ -2723,21 +2722,19 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_geometry(
       plan->ui_draw_list
           ? (uint64_t)plan->ui_draw_list->index_count * sizeof(uint32_t)
           : 0u;
-  ui_geometry_end =
-      vkr_metal_packet_align_up(ui_geometry_end, AlignOf(VkrUiVertex));
+  ui_geometry_end = vkr_align_up_u64(ui_geometry_end, AlignOf(VkrUiVertex));
   if (ui_geometry_end > UINT64_MAX - plan->ui_vertex_bytes)
     return false_v;
   ui_geometry_end += plan->ui_vertex_bytes;
-  ui_geometry_end =
-      vkr_metal_packet_align_up(ui_geometry_end, AlignOf(uint32_t));
+  ui_geometry_end = vkr_align_up_u64(ui_geometry_end, AlignOf(uint32_t));
   if (ui_geometry_end > UINT64_MAX - plan->ui_index_bytes)
     return false_v;
   ui_geometry_end += plan->ui_index_bytes;
-  plan->display_output_offset = vkr_metal_packet_align_up(
-      ui_geometry_end, AlignOf(VkrDisplayOutputParams));
+  plan->display_output_offset =
+      vkr_align_up_u64(ui_geometry_end, AlignOf(VkrDisplayOutputParams));
   if (plan->display_output_offset > UINT64_MAX - sizeof(VkrDisplayOutputParams))
     return false_v;
-  plan->direct_draw_offset = vkr_metal_packet_align_up(
+  plan->direct_draw_offset = vkr_align_up_u64(
       plan->display_output_offset + sizeof(VkrDisplayOutputParams),
       AlignOf(VkrMetalPacketPreparedDraw));
   const uint64_t direct_draw_bytes =
@@ -2745,14 +2742,14 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_geometry(
   if (plan->direct_draw_offset > UINT64_MAX - direct_draw_bytes)
     return false_v;
   plan->selection_draw_offset =
-      vkr_metal_packet_align_up(plan->direct_draw_offset + direct_draw_bytes,
-                                AlignOf(VkrMetalPacketPreparedDraw));
+      vkr_align_up_u64(plan->direct_draw_offset + direct_draw_bytes,
+                       AlignOf(VkrMetalPacketPreparedDraw));
   const uint64_t selection_draw_bytes =
       (uint64_t)plan->selection_count * sizeof(VkrMetalPacketPreparedDraw);
   if (plan->selection_draw_offset > UINT64_MAX - selection_draw_bytes)
     return false_v;
-  plan->skinning_offset = vkr_metal_packet_align_up(
-      plan->selection_draw_offset + selection_draw_bytes, 16u);
+  plan->skinning_offset =
+      vkr_align_up_u64(plan->selection_draw_offset + selection_draw_bytes, 16u);
   uint64_t skinning_bytes = 0u;
   if (plan->world) {
     plan->root_count += plan->world->skinning_count;
@@ -2767,8 +2764,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_geometry(
   if (plan->root_count > renderer->max_draws) {
     return false_v;
   }
-  plan->root_offset = vkr_metal_packet_align_up(
-      plan->skinning_offset + skinning_bytes, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+  plan->root_offset = vkr_align_up_u64(plan->skinning_offset + skinning_bytes,
+                                       VKR_METAL_PACKET_ROOT_ALIGNMENT);
   if (plan->root_count >
       (UINT64_MAX - plan->root_offset) / VKR_METAL_PACKET_DRAW_ROOT_STRIDE)
     return false_v;
@@ -3296,9 +3293,8 @@ vkr_internal bool8_t vkr_metal_packet_write_upload_environment(
           /* A probe carries its own pre-exposed radiance scale: the
              environment's intensity and gains scale only the global share
              (ADR-019). */
-          .intensity_box = {probe->intensity *
-                                packet->exposure.pre_exposure *
-                                ldexpf(1.0f, -prefilter->radiance_stops),
+          .intensity_box = {probe->intensity * packet->exposure.pre_exposure *
+                                vkr_ldexp_f32(1.0f, -prefilter->radiance_stops),
                             probe->diffuse_intensity, probe->specular_intensity,
                             probe->box_projection_enabled ? 1.0f : 0.0f},
           .capture_origin = {probe->capture_origin.x, probe->capture_origin.y,
@@ -3385,29 +3381,28 @@ vkr_internal void vkr_metal_packet_write_upload_text_and_ui(
     const uint64_t vertex_bytes =
         (uint64_t)draw->vertex_count * sizeof(VkrTextVertex);
     const uint64_t index_bytes = (uint64_t)draw->index_count * sizeof(uint32_t);
-    text_offset =
-        vkr_metal_packet_align_up(text_offset, AlignOf(VkrTextVertex));
+    text_offset = vkr_align_up_u64(text_offset, AlignOf(VkrTextVertex));
     MemCopy(cpu + text_offset, draw->vertices, vertex_bytes);
     vkr_packet_pre_expose_text_vertices((VkrTextVertex *)(cpu + text_offset),
                                         draw->vertex_count,
                                         packet->exposure.pre_exposure);
     text_upload->vertices_gpu = gpu + text_offset;
     text_offset += vertex_bytes;
-    text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(uint32_t));
+    text_offset = vkr_align_up_u64(text_offset, AlignOf(uint32_t));
     MemCopy(cpu + text_offset, draw->indices, index_bytes);
     text_upload->indices_gpu = gpu + text_offset;
     text_upload->indices_length = index_bytes;
     text_offset += index_bytes;
   }
   if (plan->ui_vertex_bytes > 0u) {
-    text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(VkrUiVertex));
+    text_offset = vkr_align_up_u64(text_offset, AlignOf(VkrUiVertex));
     MemCopy(cpu + text_offset, plan->ui_draw_list->vertices,
             plan->ui_vertex_bytes);
     upload->ui_vertices_gpu = gpu + text_offset;
     text_offset += plan->ui_vertex_bytes;
   }
   if (plan->ui_index_bytes > 0u) {
-    text_offset = vkr_metal_packet_align_up(text_offset, AlignOf(uint32_t));
+    text_offset = vkr_align_up_u64(text_offset, AlignOf(uint32_t));
     MemCopy(cpu + text_offset, plan->ui_draw_list->indices,
             plan->ui_index_bytes);
     upload->ui_indices_gpu = gpu + text_offset;

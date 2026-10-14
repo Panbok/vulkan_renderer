@@ -1,7 +1,5 @@
 #include "vkr_atmosphere.h"
 
-#include <math.h>
-
 VkrAtmosphereSettings vkr_atmosphere_settings_defaults(void) {
   return (VkrAtmosphereSettings){
       .sun_direction = {.x = 0.0f, .y = 0.70710678f, .z = -0.70710678f},
@@ -33,47 +31,49 @@ bool8_t vkr_atmosphere_settings_valid(const VkrAtmosphereSettings *settings) {
   const Vec3 lunar = settings->lunar_irradiance;
   const Vec3 pole = settings->celestial_pole;
   const Vec3 ground = settings->ground_albedo;
-  return isfinite(sun.x) && isfinite(sun.y) && isfinite(sun.z) &&
+  return vec3_is_finite(sun) &&
          (sun.x != 0.0f || sun.y != 0.0f || sun.z != 0.0f) &&
-         isfinite(solar.x) && solar.x >= 0.0f && isfinite(solar.y) &&
-         solar.y >= 0.0f && isfinite(solar.z) && solar.z >= 0.0f &&
-         isfinite(moon.x) && isfinite(moon.y) && isfinite(moon.z) &&
+         vkr_is_finite_f32(solar.x) && solar.x >= 0.0f &&
+         vkr_is_finite_f32(solar.y) && solar.y >= 0.0f &&
+         vkr_is_finite_f32(solar.z) && solar.z >= 0.0f &&
+         vec3_is_finite(moon) &&
          (moon.x != 0.0f || moon.y != 0.0f || moon.z != 0.0f) &&
-         isfinite(lunar.x) && lunar.x >= 0.0f && isfinite(lunar.y) &&
-         lunar.y >= 0.0f && isfinite(lunar.z) && lunar.z >= 0.0f &&
-         isfinite(settings->moon_angular_diameter_degrees) &&
+         vkr_is_finite_f32(lunar.x) && lunar.x >= 0.0f &&
+         vkr_is_finite_f32(lunar.y) && lunar.y >= 0.0f &&
+         vkr_is_finite_f32(lunar.z) && lunar.z >= 0.0f &&
+         vkr_is_finite_f32(settings->moon_angular_diameter_degrees) &&
          settings->moon_angular_diameter_degrees >= 1e-16f &&
          settings->moon_angular_diameter_degrees <= 5.0f &&
-         isfinite(settings->star_intensity) &&
+         vkr_is_finite_f32(settings->star_intensity) &&
          settings->star_intensity >= 0.0f &&
          settings->star_intensity <= VKR_ATMOSPHERE_STAR_INTENSITY_MAX &&
-         isfinite(pole.x) && isfinite(pole.y) && isfinite(pole.z) &&
+         vec3_is_finite(pole) &&
          (pole.x != 0.0f || pole.y != 0.0f || pole.z != 0.0f) &&
-         isfinite(ground.x) && ground.x >= 0.0f && ground.x <= 1.0f &&
-         isfinite(ground.y) && ground.y >= 0.0f && ground.y <= 1.0f &&
-         isfinite(ground.z) && ground.z >= 0.0f && ground.z <= 1.0f &&
-         isfinite(settings->observer_altitude_m) &&
+         vkr_is_finite_f32(ground.x) && ground.x >= 0.0f && ground.x <= 1.0f &&
+         vkr_is_finite_f32(ground.y) && ground.y >= 0.0f && ground.y <= 1.0f &&
+         vkr_is_finite_f32(ground.z) && ground.z >= 0.0f && ground.z <= 1.0f &&
+         vkr_is_finite_f32(settings->observer_altitude_m) &&
          settings->observer_altitude_m >= 0.0f &&
          settings->observer_altitude_m <= 100000.0f &&
-         isfinite(settings->sun_angular_diameter_degrees) &&
+         vkr_is_finite_f32(settings->sun_angular_diameter_degrees) &&
          settings->sun_angular_diameter_degrees > 0.0f &&
          settings->sun_angular_diameter_degrees <= 5.0f &&
          settings->sun_angular_diameter_degrees >= 1e-16f &&
-         isfinite(settings->sun_glow) && settings->sun_glow >= 0.0f &&
+         vkr_is_finite_f32(settings->sun_glow) && settings->sun_glow >= 0.0f &&
          settings->sun_glow <= VKR_ATMOSPHERE_SUN_GLOW_MAX &&
-         isfinite(settings->rayleigh_density_scale) &&
+         vkr_is_finite_f32(settings->rayleigh_density_scale) &&
          settings->rayleigh_density_scale >= 0.0f &&
          settings->rayleigh_density_scale <= 100.0f &&
-         isfinite(settings->mie_density_scale) &&
+         vkr_is_finite_f32(settings->mie_density_scale) &&
          settings->mie_density_scale >= 0.0f &&
          settings->mie_density_scale <= 100.0f &&
-         isfinite(settings->ozone_density_scale) &&
+         vkr_is_finite_f32(settings->ozone_density_scale) &&
          settings->ozone_density_scale >= 0.0f &&
          settings->ozone_density_scale <= 100.0f &&
-         isfinite(settings->mie_anisotropy) &&
+         vkr_is_finite_f32(settings->mie_anisotropy) &&
          settings->mie_anisotropy >= -0.95f &&
          settings->mie_anisotropy <= 0.95f &&
-         isfinite(settings->metres_per_world_unit) &&
+         vkr_is_finite_f32(settings->metres_per_world_unit) &&
          settings->metres_per_world_unit >=
              VKR_ATMOSPHERE_METRES_PER_UNIT_MIN &&
          settings->metres_per_world_unit <= VKR_ATMOSPHERE_METRES_PER_UNIT_MAX;
@@ -92,7 +92,7 @@ vkr_internal float64_t vkr_atmosphere_cie_lobe(float64_t wavelength_nm,
   const float64_t inverse_width =
       wavelength_nm < mean_nm ? below_inverse_width : above_inverse_width;
   const float64_t t = (wavelength_nm - mean_nm) * inverse_width;
-  return exp(-0.5 * t * t);
+  return vkr_exp_f64(-0.5 * t * t);
 }
 
 vkr_internal float64_t vkr_atmosphere_cie_x(float64_t nm) {
@@ -123,7 +123,7 @@ Vec3 vkr_atmosphere_blackbody_rgb(float32_t kelvin) {
     const float64_t exponent =
         second_radiation_constant / (wavelength_m * (float64_t)kelvin);
     const float64_t radiance =
-        1.0 / (pow(wavelength_m, 5.0) * (exp(exponent) - 1.0));
+        1.0 / (vkr_pow_f64(wavelength_m, 5.0) * (vkr_exp_f64(exponent) - 1.0));
     x += radiance * vkr_atmosphere_cie_x((float64_t)nm);
     y += radiance * vkr_atmosphere_cie_y((float64_t)nm);
     z += radiance * vkr_atmosphere_cie_z((float64_t)nm);
@@ -148,12 +148,14 @@ vkr_atmosphere_apply_sun_authoring(VkrAtmosphereSettings *settings,
 
   const float32_t kelvin = authoring->temperature_kelvin;
   if (authoring->has_temperature &&
-      !(isfinite(kelvin) && kelvin >= VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K &&
+      !(vkr_is_finite_f32(kelvin) &&
+        kelvin >= VKR_ATMOSPHERE_SUN_TEMPERATURE_MIN_K &&
         kelvin <= VKR_ATMOSPHERE_SUN_TEMPERATURE_MAX_K)) {
     return false_v;
   }
   if (authoring->has_illuminance &&
-      !(isfinite(authoring->illuminance) && authoring->illuminance >= 0.0f)) {
+      !(vkr_is_finite_f32(authoring->illuminance) &&
+        authoring->illuminance >= 0.0f)) {
     return false_v;
   }
 
@@ -247,17 +249,18 @@ vkr_internal VkrAtmosphereBody vkr_atmosphere_body(Vec3 direction,
   const float64_t x = direction.x;
   const float64_t y = direction.y;
   const float64_t z = direction.z;
-  const float64_t length = sqrt(x * x + y * y + z * z);
+  const float64_t length = vkr_sqrt_f64(x * x + y * y + z * z);
   const float64_t radius = diameter_degrees * 3.14159265358979323846 / 360.0;
   const float32_t projected_solid_angle =
-      (float32_t)(3.14159265358979323846 * sin(radius) * sin(radius));
+      (float32_t)(3.14159265358979323846 * vkr_sin_f64(radius) *
+                  vkr_sin_f64(radius));
   const float32_t irradiance_limit = 60000.0f * projected_solid_angle;
   const float32_t peak = Max(irradiance.x, Max(irradiance.y, irradiance.z));
   const float32_t calibration =
       peak > irradiance_limit ? irradiance_limit / peak : 1.0f;
   return (VkrAtmosphereBody){
       .direction = {(float32_t)(x / length), (float32_t)(y / length),
-                    (float32_t)(z / length), (float32_t)cos(radius)},
+                    (float32_t)(z / length), (float32_t)vkr_cos_f64(radius)},
       .irradiance = {irradiance.x * calibration, irradiance.y * calibration,
                      irradiance.z * calibration, projected_solid_angle},
   };
@@ -312,8 +315,8 @@ vkr_atmosphere_dark_depression_degrees(const VkrAtmosphereGpuParams *params) {
   const float64_t planet = params->planet.x;
   const float64_t top = params->planet.y;
   const float64_t observer = planet + params->planet.z;
-  const float64_t top_dip = acos(planet / top);
-  const float64_t observer_dip = acos(planet / Min(observer, top));
+  const float64_t top_dip = vkr_acos_f64(planet / top);
+  const float64_t observer_dip = vkr_acos_f64(planet / Min(observer, top));
   return (float32_t)((observer_dip + 4.0 * top_dip) *
                      (180.0 / 3.14159265358979323846));
 }
@@ -325,7 +328,7 @@ vkr_internal bool8_t vkr_atmosphere_light_dark(
   if (irradiance.x <= 0.0f && irradiance.y <= 0.0f && irradiance.z <= 0.0f)
     return true_v;
   const float64_t elevation_degrees =
-      asin(Clamp((float64_t)direction.y, -1.0, 1.0)) *
+      vkr_asin_f64(Clamp((float64_t)direction.y, -1.0, 1.0)) *
       (180.0 / 3.14159265358979323846);
   return -elevation_degrees >= vkr_atmosphere_dark_depression_degrees(params)
              ? true_v
@@ -360,8 +363,9 @@ vkr_atmosphere_prepare_stars(const VkrAtmosphereSettings *settings,
                             sky->atmosphere.sun.z);
   Vec3 axis = vec3_sub(sun, vec3_scale(pole, vec3_dot(sun, pole)));
   if (vec3_dot(axis, axis) < 1e-8f) {
-    const Vec3 reference = fabsf(pole.x) < 0.9f ? vec3_new(1.0f, 0.0f, 0.0f)
-                                                : vec3_new(0.0f, 0.0f, 1.0f);
+    const Vec3 reference = vkr_abs_f32(pole.x) < 0.9f
+                               ? vec3_new(1.0f, 0.0f, 0.0f)
+                               : vec3_new(0.0f, 0.0f, 1.0f);
     axis = vec3_cross(reference, pole);
   }
   axis = vec3_normalize(axis);
@@ -369,7 +373,7 @@ vkr_atmosphere_prepare_stars(const VkrAtmosphereSettings *settings,
       settings->star_intensity *
       vkr_atmosphere_luminance(
           vkr_atmosphere_settings_defaults().solar_irradiance) *
-      powf(10.0f, 0.4f * VKR_ATMOSPHERE_SUN_MAGNITUDE);
+      vkr_pow_f32(10.0f, 0.4f * VKR_ATMOSPHERE_SUN_MAGNITUDE);
   const bool8_t visible =
       magnitude_zero > 0.0f &&
       !vkr_atmosphere_light_lights_observer(
@@ -422,7 +426,7 @@ vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
 
 vkr_internal float32_t vkr_atmosphere_density_exponential(float32_t height,
                                                           float32_t scale) {
-  return scale > 1e-6f ? expf(-Max(height, 0.0f) / scale) : 0.0f;
+  return scale > 1e-6f ? vkr_exp_f32(-Max(height, 0.0f) / scale) : 0.0f;
 }
 
 VkrAtmosphereMedium vkr_atmosphere_medium(const VkrAtmosphereGpuParams *params,
@@ -432,7 +436,7 @@ VkrAtmosphereMedium vkr_atmosphere_medium(const VkrAtmosphereGpuParams *params,
       vkr_atmosphere_density_exponential(height, params->rayleigh.w);
   const float32_t mie =
       vkr_atmosphere_density_exponential(height, params->mie_scattering.w);
-  const float32_t ozone = Clamp(1.0f - fabsf(height - params->ozone.w) /
+  const float32_t ozone = Clamp(1.0f - vkr_abs_f32(height - params->ozone.w) /
                                            Max(params->ground.w, 1e-6f),
                                 0.0f, 1.0f);
 
@@ -469,7 +473,7 @@ vkr_internal float32_t vkr_atmosphere_ray_sphere_nearest(Vec3 origin,
     return -1.0f;
   }
 
-  const float32_t root = sqrtf(discriminant);
+  const float32_t root = vkr_sqrt_f32(discriminant);
   const float32_t near_hit = -b - root;
   const float32_t far_hit = -b + root;
   return near_hit >= 0.0f ? near_hit : (far_hit >= 0.0f ? far_hit : -1.0f);
@@ -488,9 +492,9 @@ float32_t vkr_atmosphere_segment_limit(const VkrAtmosphereGpuParams *params,
   }
 
   const float32_t top =
-      Max(-b + sqrtf(Max(b * b - origin_squared +
-                             params->planet.y * params->planet.y,
-                         0.0f)),
+      Max(-b + vkr_sqrt_f32(Max(b * b - origin_squared +
+                                    params->planet.y * params->planet.y,
+                                0.0f)),
           0.0f);
   const float32_t bottom =
       vkr_atmosphere_ray_sphere_nearest(origin, direction, params->planet.x);
@@ -525,9 +529,9 @@ Vec3 vkr_atmosphere_transmittance(const VkrAtmosphereGpuParams *params,
         vec3_scale(vkr_atmosphere_medium(params, sample).extinction, step));
   }
   return vec3_new(
-      expf(-Min(optical_depth.x, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)),
-      expf(-Min(optical_depth.y, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)),
-      expf(-Min(optical_depth.z, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)));
+      vkr_exp_f32(-Min(optical_depth.x, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)),
+      vkr_exp_f32(-Min(optical_depth.y, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)),
+      vkr_exp_f32(-Min(optical_depth.z, VKR_ATMOSPHERE_MAX_OPTICAL_DEPTH)));
 }
 
 /* A light's irradiance attenuated to the observer altitude, or zero below its

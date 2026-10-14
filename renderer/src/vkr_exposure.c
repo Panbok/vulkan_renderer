@@ -1,7 +1,5 @@
 #include "vkr_exposure.h"
 
-#include <math.h>
-
 /** Log2-luminance window the histogram may span, in stops. */
 #define VKR_EXPOSURE_LOG_LUMINANCE_SPAN_MIN 1.0f
 #define VKR_EXPOSURE_LOG_LUMINANCE_SPAN_MAX 40.0f
@@ -12,7 +10,7 @@
 #define VKR_EXPOSURE_EV_MAX 127.0f
 
 static float32_t vkr_exposure_finite_or(float32_t value, float32_t fallback) {
-  return isfinite(value) ? value : fallback;
+  return vkr_is_finite_f32(value) ? value : fallback;
 }
 
 VkrExposureMeteringConfig vkr_exposure_metering_config_default(void) {
@@ -115,7 +113,7 @@ vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
       .min_luminance = config->min_luminance * frame->pre_exposure,
       .low_percentile = config->low_percentile,
       .high_percentile = config->high_percentile,
-      .log_middle_gray = log2f(config->middle_gray) + stops,
+      .log_middle_gray = vkr_log2_f32(config->middle_gray) + stops,
       .min_ev = frame->min_ev < frame->max_ev ? frame->min_ev : config->min_ev,
       .max_ev = frame->min_ev < frame->max_ev ? frame->max_ev : config->max_ev,
       .brighten_rate_per_second = config->brighten_rate_per_second,
@@ -126,8 +124,8 @@ vkr_exposure_gpu_metering(const VkrExposureMeteringConfig *config,
          exp2 fallback is infinite. Keep the logarithmic fallback inside the
          finite output domain even though manual tonemapping retains the exact
          caller-provided multiplier. */
-      .manual_ev =
-          Clamp(log2f(frame->manual), VKR_EXPOSURE_EV_MIN, VKR_EXPOSURE_EV_MAX),
+      .manual_ev = Clamp(vkr_log2_f32(frame->manual), VKR_EXPOSURE_EV_MIN,
+                         VKR_EXPOSURE_EV_MAX),
       .bin_count = VKR_EXPOSURE_HISTOGRAM_BIN_COUNT,
       .history_valid = frame->history_valid ? 1u : 0u,
   };
@@ -157,7 +155,7 @@ VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
      not move it by the whole hitch: both publish an exposure the scene never
      justified. */
   const float32_t delta = (float32_t)input->delta_time;
-  frame.delta_seconds = isfinite(delta) && delta > 0.0f
+  frame.delta_seconds = vkr_is_finite_f32(delta) && delta > 0.0f
                             ? ClampTop(delta, VKR_EXPOSURE_MAX_DELTA_SECONDS)
                             : 0.0f;
 
@@ -171,32 +169,34 @@ VkrExposureFrame vkr_exposure_prepare(const VkrExposureState *state,
 
   /* Automatic mode follows the newest completed exposure; until one
      completes, and in manual mode, the manual multiplier is the exposure. */
-  const float32_t exposure = input->mode == VKR_EXPOSURE_MODE_AUTOMATIC &&
-                                     isfinite(input->observed_exposure) &&
-                                     input->observed_exposure > 0.0f
-                                 ? input->observed_exposure
-                                 : input->manual_exposure;
+  const float32_t exposure =
+      input->mode == VKR_EXPOSURE_MODE_AUTOMATIC &&
+              vkr_is_finite_f32(input->observed_exposure) &&
+              input->observed_exposure > 0.0f
+          ? input->observed_exposure
+          : input->manual_exposure;
   frame.pre_exposure_stops = vkr_pre_exposure_select(
       state->valid ? state->pre_exposure_stops : 0, exposure);
-  frame.pre_exposure = ldexpf(1.0f, frame.pre_exposure_stops);
+  frame.pre_exposure = vkr_ldexp_f32(1.0f, frame.pre_exposure_stops);
   frame.display_exposure = exposure;
   return frame;
 }
 
 int32_t vkr_pre_exposure_select(int32_t current_stops,
                                 float32_t exposure_multiplier) {
-  if (!isfinite(exposure_multiplier) || exposure_multiplier <= 0.0f)
+  if (!vkr_is_finite_f32(exposure_multiplier) || exposure_multiplier <= 0.0f)
     return current_stops;
-  const float32_t stops = log2f(exposure_multiplier);
+  const float32_t stops = vkr_log2_f32(exposure_multiplier);
   const float32_t neutral = (float32_t)VKR_PRE_EXPOSURE_NEUTRAL_STOPS;
-  if (current_stops == 0 && fabsf(stops) <= neutral + 0.5f)
+  if (current_stops == 0 && vkr_abs_f32(stops) <= neutral + 0.5f)
     return 0;
-  if (current_stops != 0 && fabsf(stops - (float32_t)current_stops) <= 1.0f)
+  if (current_stops != 0 &&
+      vkr_abs_f32(stops - (float32_t)current_stops) <= 1.0f)
     return current_stops;
-  if (fabsf(stops) <= neutral)
+  if (vkr_abs_f32(stops) <= neutral)
     return 0;
   const float32_t limit = (float32_t)VKR_PRE_EXPOSURE_MAX_STOPS;
-  return (int32_t)lroundf(Clamp(stops, -limit, limit));
+  return (int32_t)vkr_round_f32(Clamp(stops, -limit, limit));
 }
 
 void vkr_exposure_commit(VkrExposureState *state,

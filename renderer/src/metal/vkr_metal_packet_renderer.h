@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/vkr_job_system.h"
 #include "metal/vkr_metal_material_table.h"
 #include "metal/vkr_metal_memory_device.h"
 #include "vkr_asset_publisher.h"
@@ -25,6 +26,11 @@ VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
 /** Custom material graphs whose pipelines are still being created, and the
     late Custom draws of every completed frame so far (ADR-096). Atomic
     reads, safe beside the render thread. */
+/** Waits for every background pipeline creation and stops using the job
+    system, so its owner can shut it down. Later creations run on the
+    requesting thread. Call with no frame in flight. */
+void vkr_metal_packet_renderer_detach_jobs(VkrMetalPacketRenderer *renderer);
+
 /** Asks the next frame preparation to load the project library again after
     `vkr_bakery materials` rewrote it, and to recreate every Custom graph's
     pipelines in the background. That frame waits for the GPU first: an
@@ -73,6 +79,10 @@ typedef struct VkrMetalPacketRendererConfig {
   const char *pipeline_archive_path;
   /** Optional project library of Custom material graphs (ADR-096). */
   const char *custom_library_path;
+  /** Optional borrowed job system that creates Custom graph and tiled BRDF
+   * variant pipelines in the background; NULL creates them on the
+   * requesting thread. */
+  VkrJobSystem *job_system;
   VkrMetalPacketTargetKind target_kind;
   uint32_t target_width;
   uint32_t target_height;

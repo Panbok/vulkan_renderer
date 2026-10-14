@@ -2,8 +2,6 @@
 
 #include "containers/str.h"
 
-#include <math.h>
-
 vkr_internal VkrRendererError vkr_renderer_validation_fail(
     VkrValidationError *out_error, VkrRendererError code,
     const char *field_path, const char *message) {
@@ -63,20 +61,6 @@ vkr_internal VkrRendererError vkr_renderer_validate_text_draws(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-vkr_internal bool8_t vkr_renderer_matrix_finite(const Mat4 *matrix) {
-  for (uint32_t i = 0u; i < ArrayCount(matrix->elements); ++i) {
-    if (!isfinite(matrix->elements[i])) {
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-vkr_internal bool8_t vkr_renderer_ui_vec4_finite(Vec4 value) {
-  return isfinite(value.x) && isfinite(value.y) && isfinite(value.z) &&
-         isfinite(value.w);
-}
-
 vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
     const VkrPreparedUiDrawList *list, uint32_t target_width,
     uint32_t target_height, VkrValidationError *out_error) {
@@ -110,15 +94,19 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
 
   for (uint32_t i = 0u; i < list->vertex_count; ++i) {
     const VkrUiVertex *vertex = &list->vertices[i];
-    if (!isfinite(vertex->position.x) || !isfinite(vertex->position.y) ||
-        !isfinite(vertex->texcoord.x) || !isfinite(vertex->texcoord.y) ||
-        !vkr_renderer_ui_vec4_finite(vertex->color) ||
-        !vkr_renderer_ui_vec4_finite(vertex->border_color) ||
-        !vkr_renderer_ui_vec4_finite(vertex->corner_radius_px) ||
-        !isfinite(vertex->local_px.x) || !isfinite(vertex->local_px.y) ||
-        !isfinite(vertex->half_extent_px.x) ||
-        !isfinite(vertex->half_extent_px.y) || !isfinite(vertex->border_px) ||
-        !isfinite(vertex->softness_px))
+    if (!vkr_is_finite_f32(vertex->position.x) ||
+        !vkr_is_finite_f32(vertex->position.y) ||
+        !vkr_is_finite_f32(vertex->texcoord.x) ||
+        !vkr_is_finite_f32(vertex->texcoord.y) ||
+        !vec4_is_finite(vertex->color) ||
+        !vec4_is_finite(vertex->border_color) ||
+        !vec4_is_finite(vertex->corner_radius_px) ||
+        !vkr_is_finite_f32(vertex->local_px.x) ||
+        !vkr_is_finite_f32(vertex->local_px.y) ||
+        !vkr_is_finite_f32(vertex->half_extent_px.x) ||
+        !vkr_is_finite_f32(vertex->half_extent_px.y) ||
+        !vkr_is_finite_f32(vertex->border_px) ||
+        !vkr_is_finite_f32(vertex->softness_px))
       return vkr_renderer_validation_fail(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.vertices", "contains a non-finite vertex");
@@ -151,12 +139,14 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
     expected_first_index += batch->index_count;
 
     const VkrUiRect scissor = batch->scissor_rect_px;
-    if (!(isfinite(scissor.x) && isfinite(scissor.y) &&
-          isfinite(scissor.width) && isfinite(scissor.height) &&
-          scissor.width > 0.0f && scissor.height > 0.0f) ||
-        truncf(scissor.x) != scissor.x || truncf(scissor.y) != scissor.y ||
-        truncf(scissor.width) != scissor.width ||
-        truncf(scissor.height) != scissor.height || scissor.x < 0.0f ||
+    if (!(vkr_is_finite_f32(scissor.x) && vkr_is_finite_f32(scissor.y) &&
+          vkr_is_finite_f32(scissor.width) &&
+          vkr_is_finite_f32(scissor.height) && scissor.width > 0.0f &&
+          scissor.height > 0.0f) ||
+        vkr_trunc_f32(scissor.x) != scissor.x ||
+        vkr_trunc_f32(scissor.y) != scissor.y ||
+        vkr_trunc_f32(scissor.width) != scissor.width ||
+        vkr_trunc_f32(scissor.height) != scissor.height || scissor.x < 0.0f ||
         scissor.y < 0.0f ||
         scissor.x + scissor.width > (float32_t)target_width ||
         scissor.y + scissor.height > (float32_t)target_height)
@@ -164,8 +154,8 @@ vkr_internal VkrRendererError vkr_renderer_validate_ui_draw_list(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches.scissor_rect_px",
           "must contain integral bounds within the UI attachment");
-    if (!isfinite(batch->sdf_unit_range.x) ||
-        !isfinite(batch->sdf_unit_range.y))
+    if (!vkr_is_finite_f32(batch->sdf_unit_range.x) ||
+        !vkr_is_finite_f32(batch->sdf_unit_range.y))
       return vkr_renderer_validation_fail(
           out_error, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
           "packet.ui.draw_list.batches", "contains non-finite root data");
@@ -220,17 +210,17 @@ vkr_internal VkrRendererError vkr_frame_input_validate_exposure_and_grading(
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.exposure_mode",
                       "must be a supported VkrExposureMode");
-  if (!isfinite(packet->globals.manual_exposure) ||
+  if (!vkr_is_finite_f32(packet->globals.manual_exposure) ||
       packet->globals.manual_exposure <= 0.0f)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.manual_exposure",
                       "must be finite and greater than zero");
-  if (!isfinite(packet->globals.exposure_compensation_ev))
+  if (!vkr_is_finite_f32(packet->globals.exposure_compensation_ev))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.exposure_compensation_ev",
                       "must be finite");
-  if (!isfinite(packet->globals.exposure_min_ev) ||
-      !isfinite(packet->globals.exposure_max_ev) ||
+  if (!vkr_is_finite_f32(packet->globals.exposure_min_ev) ||
+      !vkr_is_finite_f32(packet->globals.exposure_max_ev) ||
       packet->globals.exposure_min_ev > packet->globals.exposure_max_ev)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.exposure_min_ev",
@@ -239,32 +229,32 @@ vkr_internal VkrRendererError vkr_frame_input_validate_exposure_and_grading(
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.display_transform",
                       "must be a supported VkrDisplayTransform");
-  if (!isfinite(packet->globals.white_balance_temperature) ||
+  if (!vkr_is_finite_f32(packet->globals.white_balance_temperature) ||
       packet->globals.white_balance_temperature < -1.0f ||
       packet->globals.white_balance_temperature > 1.0f)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.white_balance_temperature",
                       "must be finite and within [-1, 1]");
-  if (!isfinite(packet->globals.white_balance_tint) ||
+  if (!vkr_is_finite_f32(packet->globals.white_balance_tint) ||
       packet->globals.white_balance_tint < -1.0f ||
       packet->globals.white_balance_tint > 1.0f)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.white_balance_tint",
                       "must be finite and within [-1, 1]");
-  if (!isfinite(packet->globals.color_contrast) ||
+  if (!vkr_is_finite_f32(packet->globals.color_contrast) ||
       packet->globals.color_contrast < 0.5f ||
       packet->globals.color_contrast > 1.5f)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.color_contrast",
                       "must be finite and within [0.5, 1.5]");
-  if (!isfinite(packet->globals.color_saturation) ||
+  if (!vkr_is_finite_f32(packet->globals.color_saturation) ||
       packet->globals.color_saturation < 0.0f ||
       packet->globals.color_saturation > 1.5f)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.color_saturation",
                       "must be finite and within [0, 1.5]");
 
-  if (!isfinite(packet->globals.image_sharpness) ||
+  if (!vkr_is_finite_f32(packet->globals.image_sharpness) ||
       packet->globals.image_sharpness < 0.0f ||
       packet->globals.image_sharpness > 1.0f)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
@@ -300,18 +290,19 @@ vkr_internal VkrRendererError vkr_frame_input_validate_effects(
                       "requires finite perspective depth, positive f-stop and "
                       "focus beyond the focal length");
   if (packet->globals.bloom_enabled &&
-      (!isfinite(packet->globals.bloom_threshold) ||
+      (!vkr_is_finite_f32(packet->globals.bloom_threshold) ||
        packet->globals.bloom_threshold < 0.0f))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_threshold",
                       "must be finite and non-negative when bloom is enabled");
-  if (packet->globals.bloom_enabled && (!isfinite(packet->globals.bloom_knee) ||
-                                        packet->globals.bloom_knee < 0.0f))
+  if (packet->globals.bloom_enabled &&
+      (!vkr_is_finite_f32(packet->globals.bloom_knee) ||
+       packet->globals.bloom_knee < 0.0f))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_knee",
                       "must be finite and non-negative when bloom is enabled");
   if (packet->globals.bloom_enabled &&
-      (!isfinite(packet->globals.bloom_intensity) ||
+      (!vkr_is_finite_f32(packet->globals.bloom_intensity) ||
        packet->globals.bloom_intensity < 0.0f))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.bloom_intensity",
@@ -334,14 +325,15 @@ vkr_internal VkrRendererError vkr_frame_input_validate_effects(
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.gtao_enabled", "must be zero or one");
   if (packet->globals.gtao_enabled &&
-      (!isfinite(packet->globals.gtao_radius) ||
+      (!vkr_is_finite_f32(packet->globals.gtao_radius) ||
        packet->globals.gtao_radius < VKR_GTAO_RADIUS_MIN ||
        packet->globals.gtao_radius > VKR_GTAO_RADIUS_MAX))
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.gtao_radius",
                       "must be finite and within the supported GTAO range");
-  if (packet->globals.gtao_enabled && (!isfinite(packet->globals.gtao_power) ||
-                                       packet->globals.gtao_power <= 0.0f))
+  if (packet->globals.gtao_enabled &&
+      (!vkr_is_finite_f32(packet->globals.gtao_power) ||
+       packet->globals.gtao_power <= 0.0f))
     VKR_REJECT_PACKET(
         VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.globals.gtao_power",
         "must be finite and greater than zero when GTAO is enabled");
@@ -439,7 +431,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_world(
                           "incomplete deformation input");
       }
       for (uint32_t j = 0; j < skin->joint_count; ++j) {
-        if (!vkr_renderer_matrix_finite(&skin->palette[j])) {
+        if (!mat4_is_finite(&skin->palette[j])) {
           VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                             "packet.world.skinning.palette", "non-finite pose");
         }
@@ -575,7 +567,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_animation_preview(
   const VkrWorldPassPayload *world = packet->world;
   if (packet->animation_preview) {
     const VkrAnimationPreviewInput *preview = packet->animation_preview;
-    if (!vkr_renderer_matrix_finite(&preview->view_projection)) {
+    if (!mat4_is_finite(&preview->view_projection)) {
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.animation_preview.view_projection",
                         "must contain only finite values");
@@ -589,7 +581,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_animation_preview(
     }
     for (uint32_t i = 0; i < preview->draw_count; ++i) {
       const VkrAnimationPreviewDraw *draw = &preview->draws[i];
-      if (!vkr_renderer_matrix_finite(&draw->model)) {
+      if (!mat4_is_finite(&draw->model)) {
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.animation_preview.draws.model",
                           "must contain only finite values");
@@ -624,7 +616,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_planar_reflection(
   if (!reflection) {
     return VKR_RENDERER_ERROR_NONE;
   }
-  if (!vkr_renderer_matrix_finite(&reflection->view)) {
+  if (!mat4_is_finite(&reflection->view)) {
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.planar_reflection.view",
                       "must contain only finite values");
@@ -632,13 +624,14 @@ vkr_internal VkrRendererError vkr_frame_input_validate_planar_reflection(
   const Vec4 plane = reflection->plane;
   const float32_t normal_length_squared =
       plane.x * plane.x + plane.y * plane.y + plane.z * plane.z;
-  if (!isfinite(plane.w) || !(fabsf(normal_length_squared - 1.0f) < 1e-3f)) {
+  if (!vkr_is_finite_f32(plane.w) ||
+      !(vkr_abs_f32(normal_length_squared - 1.0f) < 1e-3f)) {
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.planar_reflection.plane",
                       "must hold a unit normal and a finite offset");
   }
   const Vec3 eye = reflection->view_position;
-  if (!isfinite(eye.x) || !isfinite(eye.y) || !isfinite(eye.z)) {
+  if (!vec3_is_finite(eye)) {
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.planar_reflection.view_position",
                       "must be finite");
@@ -670,21 +663,22 @@ vkr_internal uint32_t vkr_frame_input_local_shadow_face_size(
     uint32_t atlas_layer_count) {
   const float32_t atlas = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
   const Vec4 rect = view->atlas_rect;
-  if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.z) ||
-      !isfinite(rect.w))
+  if (!vec4_is_finite(rect))
     return 0u;
   const float32_t side = rect.z * atlas;
   if (!(side >= (float32_t)VKR_LOCAL_SHADOW_FACE_SIZE_MIN) ||
-      side > (float32_t)map_size || side != floorf(side))
+      side > (float32_t)map_size || side != vkr_floor_f32(side))
     return 0u;
   const uint32_t size = (uint32_t)side;
   const float32_t x = rect.x * atlas;
   const float32_t y = rect.y * atlas;
   if ((size & (size - 1u)) != 0u || !(x >= 0.0f) || !(y >= 0.0f) ||
-      x != floorf(x) || y != floorf(y) || (uint32_t)x % size != 0u ||
-      (uint32_t)y % size != 0u || x + side > atlas || y + side > atlas ||
-      !(rect.w >= 0.0f) || rect.w >= (float32_t)atlas_layer_count ||
-      rect.w != floorf(rect.w) || view->projection_params.y != 1.0f / side)
+      x != vkr_floor_f32(x) || y != vkr_floor_f32(y) ||
+      (uint32_t)x % size != 0u || (uint32_t)y % size != 0u ||
+      x + side > atlas || y + side > atlas || !(rect.w >= 0.0f) ||
+      rect.w >= (float32_t)atlas_layer_count ||
+      rect.w != vkr_floor_f32(rect.w) ||
+      view->projection_params.y != 1.0f / side)
     return 0u;
   return size;
 }
@@ -718,9 +712,9 @@ vkr_internal bool8_t vkr_frame_input_own_light_views(
                                      direction.y * direction.y +
                                      direction.z * direction.z;
     if (position.x != light->position.x || position.y != light->position.y ||
-        position.z != light->position.z || !isfinite(position.x) ||
-        !isfinite(position.y) || !isfinite(position.z) ||
-        !isfinite(length_squared) || fabsf(length_squared - 1.0f) > 0.0001f ||
+        position.z != light->position.z || !vec3_is_finite(position) ||
+        !vkr_is_finite_f32(length_squared) ||
+        vkr_abs_f32(length_squared - 1.0f) > 0.0001f ||
         (count == 6u && (direction.x != face_directions[face].x ||
                          direction.y != face_directions[face].y ||
                          direction.z != face_directions[face].z)))
@@ -914,7 +908,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
     const float32_t transmission = view->shadow_params.y;
     if (!(transmission >= 0.0f) ||
         transmission > (float32_t)local->transmission_layer_count ||
-        transmission != floorf(transmission))
+        transmission != vkr_floor_f32(transmission))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.local_shadow.views",
                         "requires a transmission layer inside the arrays");
@@ -929,19 +923,19 @@ vkr_internal VkrRendererError vkr_frame_input_validate_local_shadow(
       transmission_layers |= layer_bit;
     }
     for (uint32_t j = 0; j < 16u; ++j)
-      if (!isfinite(view->light_view_projection.elements[j]))
+      if (!vkr_is_finite_f32(view->light_view_projection.elements[j]))
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.local_shadow.views",
                           "requires finite projection matrices");
-    if (!isfinite(view->light_position_near.w) ||
+    if (!vkr_is_finite_f32(view->light_position_near.w) ||
         view->light_position_near.w <= 0.0f ||
-        !isfinite(view->light_direction_far.w) ||
+        !vkr_is_finite_f32(view->light_direction_far.w) ||
         view->light_direction_far.w <= view->light_position_near.w ||
-        !isfinite(view->projection_params.x) ||
+        !vkr_is_finite_f32(view->projection_params.x) ||
         view->projection_params.x <= 0.0f ||
-        !isfinite(view->projection_params.z) ||
+        !vkr_is_finite_f32(view->projection_params.z) ||
         view->projection_params.z < 0.0f ||
-        !isfinite(view->projection_params.w) ||
+        !vkr_is_finite_f32(view->projection_params.w) ||
         view->projection_params.w < 0.0f ||
         !(view->shadow_params.x >= 0.0f && view->shadow_params.x <= 1.0f) ||
         (view->shadow_params.z != 0.0f && view->shadow_params.z != 1.0f))
@@ -1078,38 +1072,39 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver.pcf_uniform_early_out",
                         "must be zero or one");
-    if (!isfinite(receiver->pcf_radius_texels) ||
+    if (!vkr_is_finite_f32(receiver->pcf_radius_texels) ||
         receiver->pcf_radius_texels < 0.0f)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver.pcf_radius_texels",
                         "must be finite and non-negative");
-    if (!isfinite(receiver->receiver_bias_texels) ||
+    if (!vkr_is_finite_f32(receiver->receiver_bias_texels) ||
         receiver->receiver_bias_texels < 0.0f ||
-        !isfinite(receiver->slope_bias_texels) ||
+        !vkr_is_finite_f32(receiver->slope_bias_texels) ||
         receiver->slope_bias_texels < 0.0f ||
-        !isfinite(receiver->normal_offset_texels) ||
+        !vkr_is_finite_f32(receiver->normal_offset_texels) ||
         receiver->normal_offset_texels < 0.0f)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver",
                         "bias texel counts must be finite and non-negative");
-    if (!isfinite(receiver->cascade_blend_fraction) ||
+    if (!vkr_is_finite_f32(receiver->cascade_blend_fraction) ||
         receiver->cascade_blend_fraction < 0.0f ||
         receiver->cascade_blend_fraction > 0.5f)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver.cascade_blend_fraction",
                         "must be finite and within [0, 0.5]");
-    if (!isfinite(receiver->fade_start) || receiver->fade_start < 0.0f)
+    if (!vkr_is_finite_f32(receiver->fade_start) || receiver->fade_start < 0.0f)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver.fade_start",
                         "must be finite and non-negative");
-    if (!isfinite(receiver->fade_end) ||
+    if (!vkr_is_finite_f32(receiver->fade_end) ||
         receiver->fade_end < receiver->fade_start)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.shadow.receiver.fade_end",
                         "must be finite and not precede fade_start");
     for (uint32_t i = 0; i < shadow->cascade_count; ++i) {
       const Vec4 slice = shadow->cascades[i].split_near_far_texel_depth;
-      if (!isfinite(slice.x) || !isfinite(slice.y) || slice.y <= slice.x)
+      if (!vkr_is_finite_f32(slice.x) || !vkr_is_finite_f32(slice.y) ||
+          slice.y <= slice.x)
         VKR_REJECT_PACKET(
             VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
             "packet.shadow.cascades.split_near_far_texel_depth",
@@ -1117,14 +1112,14 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
       /* Both must be strictly positive: the receiver divides the light-space
          origin by the texel size to build its rotation cell, and divides the
          texel-denominated bias by the depth span. */
-      if (!isfinite(slice.z) || slice.z <= 0.0f || !isfinite(slice.w) ||
-          slice.w <= 0.0f)
+      if (!vkr_is_finite_f32(slice.z) || slice.z <= 0.0f ||
+          !vkr_is_finite_f32(slice.w) || slice.w <= 0.0f)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.shadow.cascades.split_near_far_texel_depth",
                           "texel size and depth span must be positive");
       const Vec4 origin = shadow->cascades[i].origin_inv_size_sun;
-      if (!isfinite(origin.x) || !isfinite(origin.y) || !isfinite(origin.z) ||
-          origin.z <= 0.0f || !isfinite(origin.w) || origin.w < 0.0f)
+      if (!vec3_is_finite(origin) || origin.z <= 0.0f ||
+          !vkr_is_finite_f32(origin.w) || origin.w < 0.0f)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.shadow.cascades.origin_inv_size_sun",
                           "origin must be finite, inverse map size positive "
@@ -1138,16 +1133,18 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
                         "must not extend beyond the final cascade split");
     const VkrShadowConfigOverride *bias = shadow->config_override;
     if (bias) {
-      if (!isfinite(bias->depth_bias_constant) ||
+      if (!vkr_is_finite_f32(bias->depth_bias_constant) ||
           bias->depth_bias_constant < 0.0f)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.shadow.config_override.depth_bias_constant",
                           "must be finite and non-negative");
-      if (!isfinite(bias->depth_bias_slope) || bias->depth_bias_slope < 0.0f)
+      if (!vkr_is_finite_f32(bias->depth_bias_slope) ||
+          bias->depth_bias_slope < 0.0f)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.shadow.config_override.depth_bias_slope",
                           "must be finite and non-negative");
-      if (!isfinite(bias->depth_bias_clamp) || bias->depth_bias_clamp < 0.0f)
+      if (!vkr_is_finite_f32(bias->depth_bias_clamp) ||
+          bias->depth_bias_clamp < 0.0f)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.shadow.config_override.depth_bias_clamp",
                           "must be finite and non-negative");
@@ -1175,7 +1172,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
     for (uint32_t i = 0u; i < editor->overlay_draw_count; ++i) {
       const VkrEditorOverlayDraw *draw = &editor->overlay_draws[i];
       if (!draw->geometry.id || !draw->object_id ||
-          !vkr_renderer_ui_vec4_finite(draw->color) || draw->color.x < 0.0f ||
+          !vec4_is_finite(draw->color) || draw->color.x < 0.0f ||
           draw->color.x > 1.0f || draw->color.y < 0.0f ||
           draw->color.y > 1.0f || draw->color.z < 0.0f ||
           draw->color.z > 1.0f || draw->color.w != 1.0f)
@@ -1183,7 +1180,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
             VKR_RENDERER_ERROR_UNSUPPORTED_INPUT, "packet.editor.overlay_draws",
             "requires geometry, a pick ID and opaque linear color");
       for (uint32_t component = 0u; component < 16u; ++component) {
-        if (!isfinite(draw->model.elements[component]))
+        if (!vkr_is_finite_f32(draw->model.elements[component]))
           VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                             "packet.editor.overlay_draws.model",
                             "must be finite");
@@ -1201,14 +1198,14 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                           "packet.editor.selection_draws", "requires geometry");
       for (uint32_t component = 0u; component < 16u; ++component) {
-        if (!isfinite(draw->model.elements[component]))
+        if (!vkr_is_finite_f32(draw->model.elements[component]))
           VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                             "packet.editor.selection_draws.model",
                             "must be finite");
       }
     }
     if (editor->selection_draw_count &&
-        (!vkr_renderer_ui_vec4_finite(editor->selection_color) ||
+        (!vec4_is_finite(editor->selection_color) ||
          editor->selection_color.x < 0.0f || editor->selection_color.y < 0.0f ||
          editor->selection_color.z < 0.0f || editor->selection_color.w < 0.0f ||
          editor->selection_color.w > 1.0f || editor->selection_width_px < 1u ||
@@ -1221,9 +1218,10 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
     if (grid->enabled > true_v || grid->through_geometry > true_v ||
         (grid->enabled &&
          ((uint32_t)grid->plane >= VKR_EDITOR_GRID_PLANE_COUNT ||
-          !isfinite(grid->cell_size) || grid->cell_size <= 0.0f ||
-          !isfinite(grid->fade_start) || !isfinite(grid->fade_end) ||
-          grid->fade_start < 0.0f || grid->fade_end < grid->fade_start)))
+          !vkr_is_finite_f32(grid->cell_size) || grid->cell_size <= 0.0f ||
+          !vkr_is_finite_f32(grid->fade_start) ||
+          !vkr_is_finite_f32(grid->fade_end) || grid->fade_start < 0.0f ||
+          grid->fade_end < grid->fade_start)))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.grid",
                         "requires a plane, a positive cell and ordered "
@@ -1271,11 +1269,10 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
       }
     }
     const Vec4 rect = editor->image_rect_px;
-    if (!isfinite(rect.x) || !isfinite(rect.y) || !isfinite(rect.z) ||
-        !isfinite(rect.w) || rect.x < 0.0f || rect.y < 0.0f || rect.z <= 0.0f ||
-        rect.w <= 0.0f || truncf(rect.x) != rect.x ||
-        truncf(rect.y) != rect.y || truncf(rect.z) != rect.z ||
-        truncf(rect.w) != rect.w)
+    if (!vec4_is_finite(rect) || rect.x < 0.0f || rect.y < 0.0f ||
+        rect.z <= 0.0f || rect.w <= 0.0f || vkr_trunc_f32(rect.x) != rect.x ||
+        vkr_trunc_f32(rect.y) != rect.y || vkr_trunc_f32(rect.z) != rect.z ||
+        vkr_trunc_f32(rect.w) != rect.w)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.image_rect_px",
                         "must contain finite integral pixel bounds");
@@ -1308,8 +1305,9 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
          (lighting->subsurface.texture.id == 0u ||
           lighting->subsurface.texture.generation == VKR_INVALID_ID ||
           subsurface_projection.m32 != -1.0f ||
-          subsurface_projection.m33 != 0.0f || !isfinite(subsurface_near) ||
-          subsurface_near <= 0.0f || !isfinite(subsurface_far) ||
+          subsurface_projection.m33 != 0.0f ||
+          !vkr_is_finite_f32(subsurface_near) || subsurface_near <= 0.0f ||
+          !vkr_is_finite_f32(subsurface_far) ||
           subsurface_far <= subsurface_near)))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.lighting.subsurface",
@@ -1335,15 +1333,14 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
           volume->band_count - volume->layer_count <=
               VKR_DIFFUSE_VOLUME_MAX_DIRECT_BANDS &&
           volume->active_layer_count <= VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS &&
-          isfinite(volume->origin.x) && isfinite(volume->origin.y) &&
-          isfinite(volume->origin.z) && isfinite(volume->spacing) &&
-          volume->spacing > 0.0f && isfinite(volume->sh_scale) &&
-          volume->sh_scale > 0.0f;
+          vec3_is_finite(volume->origin) &&
+          vkr_is_finite_f32(volume->spacing) && volume->spacing > 0.0f &&
+          vkr_is_finite_f32(volume->sh_scale) && volume->sh_scale > 0.0f;
       for (uint32_t i = 0u; valid && i < volume->active_layer_count; ++i) {
         const uint32_t direct = volume->active_direct_bands[i];
         valid =
             volume->active_layers[i] < volume->layer_count &&
-            isfinite(volume->active_weights[i]) &&
+            vkr_is_finite_f32(volume->active_weights[i]) &&
             volume->active_weights[i] >= 0.0f &&
             (direct == VKR_DIFFUSE_VOLUME_NO_BAND ||
              ((volume->active_lamp_mask & (1u << i)) != 0u &&
@@ -1362,7 +1359,7 @@ vkr_internal VkrRendererError vkr_frame_input_validate_lighting(
       for (uint32_t i = 0u; layers_valid && i < lightmap->active_layer_count;
            ++i)
         layers_valid = lightmap->active_layers[i] < lightmap->layer_count &&
-                       isfinite(lightmap->active_weights[i]) &&
+                       vkr_is_finite_f32(lightmap->active_weights[i]) &&
                        lightmap->active_weights[i] >= 0.0f;
       for (uint32_t i = 0u; layers_valid && i < lightmap->active_layer_count;
            ++i)
@@ -1438,7 +1435,8 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
                       "packet.version",
                       "does not match VKR_FRAME_INPUT_VERSION");
-  if (!isfinite(packet->frame.delta_time) || packet->frame.delta_time < 0.0)
+  if (!vkr_is_finite_f64(packet->frame.delta_time) ||
+      packet->frame.delta_time < 0.0)
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.frame.delta_time",
                       "must be finite and nonnegative");

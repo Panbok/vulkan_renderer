@@ -2,7 +2,10 @@
 vkr_internal void vkr_metal_packet_print_error(const char *step,
                                                NSError *error) {
   (void)error;
-  fprintf(stderr, "metal.packet.%s: Metal compilation failed\n", step);
+  char message[256];
+  string_format(message, sizeof(message),
+                "metal.packet.%s: Metal compilation failed\n", step);
+  vkr_platform_stderr_write(message);
 }
 
 /* Explicit native resources outside placement heaps share the same managed
@@ -58,8 +61,11 @@ vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
                                        options:nil
                                          error:&diagnostic_error];
     if (!diagnostic && diagnostic_error) {
-      fprintf(stderr, "metal.packet.library_diagnostic: %s\n",
-              diagnostic_error.localizedDescription.UTF8String);
+      char message[4096];
+      string_format(message, sizeof(message),
+                    "metal.packet.library_diagnostic: %s\n",
+                    diagnostic_error.localizedDescription.UTF8String);
+      vkr_platform_stderr_write(message);
     }
     [diagnostic release];
     vkr_metal_packet_print_error("library_compile", error);
@@ -928,37 +934,50 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
   return complete;
 }
 
-/* Starts creating the extended variant's tiled shading pipelines on the
-   custom group's background queue the first time a published material uses
-   a BRDF extension (ADR-113). Frames take the variant once it is READY;
-   until then, and after a failure, extended materials shade with the base
-   model. Material publication runs on the rendering thread (ADR-082). */
+/* Creates the extended variant's tiled shading pipelines, then publishes
+   READY or FAILED. Runs as a background build (vkr_metal_packet_custom.inc).
+ */
+vkr_internal void
+vkr_metal_packet_build_tiled_brdf_pipelines(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  @autoreleasepool {
+    const bool8_t ok = vkr_metal_packet_create_tiled_shading_pipelines(
+        renderer, renderer->fragment_library, 1u);
+    if (!ok)
+      log_error("Metal: tiled BRDF extension pipelines failed; "
+                "extended materials shade with the base model");
+    vkr_atomic_uint32_store(&renderer->tiled_brdf_state,
+                            ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                               : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                            VKR_MEMORY_ORDER_RELEASE);
+  }
+}
+
+/* Creates pipelines on the job system (vkr_metal_packet_custom.inc): Custom
+   graph `slot` in BRDF variant `brdf`, or the tiled BRDF extension variant
+   when `slot` is 0. */
+vkr_internal void vkr_metal_packet_background_build(
+    VkrMetalPacketRenderer *renderer, uint32_t slot, uint32_t brdf,
+    VkrJobHandle *out_job) API_AVAILABLE(macos(26.0));
+
+/* Starts creating the extended variant's tiled shading pipelines in the
+   background the first time a published material uses a BRDF extension
+   (ADR-113). Frames take the variant once it is READY; until then, and after
+   a failure, extended materials shade with the base model. Material
+   publication runs on the rendering thread (ADR-082). */
 vkr_internal void vkr_metal_packet_request_tiled_brdf_pipelines(
     VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   if (vkr_atomic_uint32_load(&renderer->tiled_brdf_state,
                              VKR_MEMORY_ORDER_ACQUIRE) !=
           VKR_METAL_CUSTOM_GRAPH_EMPTY ||
-      !renderer->custom_group || !renderer->fragment_library)
+      !renderer->custom_loaded || !renderer->fragment_library)
     return;
   vkr_atomic_uint32_store(&renderer->tiled_brdf_state,
                           VKR_METAL_CUSTOM_GRAPH_PENDING,
                           VKR_MEMORY_ORDER_RELAXED);
   log_info("Metal: creating the tiled BRDF extension pipelines");
-  dispatch_group_async(
-      renderer->custom_group,
-      dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        @autoreleasepool {
-          const bool8_t ok = vkr_metal_packet_create_tiled_shading_pipelines(
-              renderer, renderer->fragment_library, 1u);
-          if (!ok)
-            log_error("Metal: tiled BRDF extension pipelines failed; "
-                      "extended materials shade with the base model");
-          vkr_atomic_uint32_store(&renderer->tiled_brdf_state,
-                                  ok ? VKR_METAL_CUSTOM_GRAPH_READY
-                                     : VKR_METAL_CUSTOM_GRAPH_FAILED,
-                                  VKR_MEMORY_ORDER_RELEASE);
-        }
-      });
+  vkr_metal_packet_background_build(renderer, 0u, 1u,
+                                    &renderer->tiled_brdf_job);
 }
 
 /* Whether this frame buckets its extended Standard draws for the tiled
@@ -1525,12 +1544,8 @@ vkr_internal bool8_t vkr_metal_packet_create_gpu_draw_icb_residencies(
     VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
   if (!renderer)
     return false_v;
-  const char *shader_validation = getenv("MTL_SHADER_VALIDATION");
-  const bool8_t validation_enabled = shader_validation &&
-                                             shader_validation[0] != '\0' &&
-                                             strcmp(shader_validation, "0") != 0
-                                         ? true_v
-                                         : false_v;
+  const bool8_t validation_enabled =
+      vkr_platform_environment_flag("MTL_SHADER_VALIDATION");
   renderer->gpu_draw_icb_view_group_size =
       validation_enabled ? 1u : VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX;
   renderer->gpu_draw_icb_group_count =
@@ -1673,9 +1688,7 @@ vkr_internal bool8_t vkr_metal_packet_create_compiler(
      archive conversion path while installing lookupArchives. Validation runs
      intentionally compile from source, which is also the stronger shader
      validation path; normal runs retain cold/warm archive behavior. */
-  const char *shader_validation = getenv("MTL_SHADER_VALIDATION");
-  if (shader_validation && shader_validation[0] != '\0' &&
-      strcmp(shader_validation, "0") != 0) {
+  if (vkr_platform_environment_flag("MTL_SHADER_VALIDATION")) {
     archive_path = NULL;
     log_info(
         "Metal shader validation enabled; pipeline archive lookup disabled");
@@ -1683,7 +1696,8 @@ vkr_internal bool8_t vkr_metal_packet_create_compiler(
   if (archive_path) {
     NSString *path = [NSString stringWithUTF8String:archive_path];
     archive_url = [NSURL fileURLWithPath:path];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+    const FilePath archive_file = file_path_view(archive_path);
+    if (file_exists(&archive_file)) {
       renderer->pipeline_archive =
           [renderer->device newArchiveWithURL:archive_url error:&error];
       if (!renderer->pipeline_archive) {
@@ -1879,7 +1893,7 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture_batched(
 
   VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
   uint64_t offset =
-      vkr_metal_packet_align_up(batch->used, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+      vkr_align_up_u64(batch->used, VKR_METAL_PACKET_ROOT_ALIGNMENT);
   const bool8_t full =
       batch->active &&
       (batch->texture_count == VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_MAX ||
@@ -1890,8 +1904,8 @@ vkr_internal bool8_t vkr_metal_packet_upload_texture_batched(
 
   batch = &renderer->texture_upload_batch;
   if (!batch->active) {
-    const uint64_t aligned_size = vkr_metal_packet_align_up(
-        payload->data_size, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+    const uint64_t aligned_size =
+        vkr_align_up_u64(payload->data_size, VKR_METAL_PACKET_ROOT_ALIGNMENT);
     const uint64_t capacity =
         aligned_size > VKR_METAL_PACKET_TEXTURE_UPLOAD_BATCH_BYTES
             ? aligned_size
@@ -2347,7 +2361,7 @@ vkr_internal bool8_t vkr_metal_packet_upload_buffer_batched(
   VkrMetalPacketTextureUploadBatch *batch = &renderer->texture_upload_batch;
   for (uint64_t offset = 0; offset < size;) {
     uint64_t at =
-        vkr_metal_packet_align_up(batch->used, VKR_METAL_PACKET_ROOT_ALIGNMENT);
+        vkr_align_up_u64(batch->used, VKR_METAL_PACKET_ROOT_ALIGNMENT);
     if (batch->active && at >= batch->capacity) {
       if (!vkr_metal_packet_texture_upload_batch_flush(renderer, false_v))
         return false_v;
@@ -2467,12 +2481,12 @@ vkr_internal bool8_t vkr_metal_packet_create_capacities(
   const VkrMetalPacketReadbackLayout maximum_readback =
       vkr_metal_packet_readback_layout(true_v, true_v,
                                        VKR_SHADOW_CASCADE_COUNT_MAX);
-  const uint64_t readback_prefix_size = vkr_metal_packet_align_up(
+  const uint64_t readback_prefix_size = vkr_align_up_u64(
       maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);
   if (config->capture_max_batch_bytes > UINT64_MAX - 3u)
     return false_v;
   const uint64_t aligned_capture_size =
-      vkr_metal_packet_align_up(config->capture_max_batch_bytes, 4u);
+      vkr_align_up_u64(config->capture_max_batch_bytes, 4u);
   if (aligned_capture_size > UINT64_MAX - readback_prefix_size)
     return false_v;
   uint64_t readback_ring_max_size = 0u;
@@ -2514,8 +2528,13 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
                                     const VkrMetalPacketRendererConfig *config)
     API_AVAILABLE(macos(26.0)) {
   renderer->allocator = config->allocator;
-  const char *diagnostics_directory = getenv("VKR_METAL_DIAGNOSTICS_DIR");
-  if (diagnostics_directory && diagnostics_directory[0]) {
+  renderer->job_system = config->job_system;
+  /* A path: the wide Windows environment keeps non-ASCII names (ADR-070). */
+  char diagnostics_directory[1024];
+  if (vkr_platform_environment_variable("VKR_METAL_DIAGNOSTICS_DIR",
+                                        diagnostics_directory,
+                                        sizeof(diagnostics_directory)) &&
+      diagnostics_directory[0]) {
     (void)vkr_metal_diagnostics_open(&renderer->diagnostics,
                                      diagnostics_directory);
     VKR_METAL_DIAGNOSTIC(renderer, "renderer_create",
@@ -2870,8 +2889,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       if (![renderer->device.name getCString:renderer->device_name
                                    maxLength:sizeof(renderer->device_name)
                                     encoding:NSUTF8StringEncoding])
-        snprintf(renderer->device_name, sizeof(renderer->device_name),
-                 "unavailable");
+        string_format(renderer->device_name, sizeof(renderer->device_name),
+                      "unavailable");
       MTL4CommandQueueDescriptor *queue_descriptor =
           [MTL4CommandQueueDescriptor new];
       queue_descriptor.feedbackQueue = vkr_metal_packet_feedback_queue();

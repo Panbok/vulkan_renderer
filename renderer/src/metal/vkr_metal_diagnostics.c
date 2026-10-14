@@ -1,6 +1,6 @@
 #include "metal/vkr_metal_diagnostics.h"
 
-#if defined(PLATFORM_APPLE)
+#include "core/logger.h"
 
 enum {
   VKR_METAL_DIAGNOSTIC_PATH_BYTES = 1024,
@@ -15,52 +15,57 @@ typedef struct VkrMetalDiagnosticText {
   bool8_t overflowed;
 } VkrMetalDiagnosticText;
 
+/* Reports the first failure, then closes both segments and disables the sink.
+ */
 vkr_internal void vkr_metal_diagnostic_fail(VkrMetalDiagnostics *diagnostics,
                                             const char *operation,
-                                            int error_number) {
+                                            const char *reason) {
   if (!diagnostics->error_reported) {
-    fprintf(stderr, "metal.diagnostics: %s: %s\n", operation,
-            strerror(error_number));
+    log_error("metal.diagnostics: %s: %s", operation, reason);
     diagnostics->error_reported = true_v;
   }
 
-  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segment_fds); ++i) {
-    if (diagnostics->segment_fds[i] >= 0) {
-      close(diagnostics->segment_fds[i]);
-      diagnostics->segment_fds[i] = -1;
-    }
+  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segments); ++i) {
+    file_close(&diagnostics->segments[i]);
   }
   diagnostics->enabled = false_v;
 }
 
-vkr_internal bool8_t vkr_metal_diagnostic_path(char *path, size_t path_size,
-                                               const char *directory,
-                                               uint32_t segment) {
-  const int written = snprintf(path, path_size, "%s/metal-diagnostics.%u.jsonl",
-                               directory, segment);
-  if (written < 0 || (size_t)written >= path_size) {
-    errno = ENAMETOOLONG;
-    return false_v;
-  }
-  return true_v;
+vkr_internal void
+vkr_metal_diagnostic_fail_file(VkrMetalDiagnostics *diagnostics,
+                               const char *operation, FileError error) {
+  const String8 reason = file_get_error_string(error);
+  char text[128];
+  string_format(text, sizeof(text), "%.*s", (int)reason.length,
+                (const char *)reason.str);
+  vkr_metal_diagnostic_fail(diagnostics, operation, text);
 }
 
+vkr_internal bool8_t vkr_metal_diagnostic_path(char *path, uint64_t path_size,
+                                               const char *directory,
+                                               uint32_t segment) {
+  const int32_t written = string_format(
+      path, path_size, "%s/metal-diagnostics.%u.jsonl", directory, segment);
+  return written >= 0 && (uint64_t)written < path_size;
+}
+
+/* Removes what a failed open created: the owned segments and the directory.
+ */
 vkr_internal void
 vkr_metal_diagnostic_discard_open(VkrMetalDiagnostics *diagnostics,
                                   const char *directory) {
   char path[VKR_METAL_DIAGNOSTIC_PATH_BYTES];
-  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segment_fds); ++i) {
-    const bool8_t owns_segment = diagnostics->segment_fds[i] >= 0;
-    if (owns_segment) {
-      close(diagnostics->segment_fds[i]);
-      diagnostics->segment_fds[i] = -1;
-    }
+  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segments); ++i) {
+    const bool8_t owns_segment = diagnostics->segments[i].handle != NULL;
+    file_close(&diagnostics->segments[i]);
     if (owns_segment &&
         vkr_metal_diagnostic_path(path, sizeof(path), directory, i)) {
-      unlink(path);
+      const FilePath segment_path = file_path_view(path);
+      (void)file_remove(&segment_path);
     }
   }
-  rmdir(directory);
+  const FilePath directory_path = file_path_view(directory);
+  (void)file_remove_directory(&directory_path);
 }
 
 vkr_internal void vkr_metal_diagnostic_text_append(VkrMetalDiagnosticText *text,
@@ -82,8 +87,8 @@ vkr_internal void vkr_metal_diagnostic_text_format(VkrMetalDiagnosticText *text,
   }
   va_list args;
   va_start(args, format);
-  const int written = vsnprintf(text->data + text->count,
-                                text->capacity - text->count, format, args);
+  const int written = string_format_v(
+      text->data + text->count, text->capacity - text->count, format, args);
   va_end(args);
   if (written < 0 || (uint32_t)written >= text->capacity - text->count) {
     text->overflowed = true_v;
@@ -176,32 +181,14 @@ vkr_internal bool8_t vkr_metal_diagnostic_escape(VkrMetalDiagnosticText *text,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_metal_diagnostic_write(int fd, const char *data,
-                                                uint32_t data_size) {
-  uint32_t written = 0u;
-  while (written < data_size) {
-    const ssize_t result = write(fd, data + written, data_size - written);
-    if (result > 0) {
-      written += (uint32_t)result;
-      continue;
-    }
-    if (result < 0 && errno == EINTR) {
-      continue;
-    }
-    if (result == 0) {
-      errno = EIO;
-    }
-    return false_v;
-  }
-  return true_v;
-}
-
 vkr_internal bool8_t
 vkr_metal_diagnostics_rotate(VkrMetalDiagnostics *diagnostics) {
   diagnostics->active_segment = 1u - diagnostics->active_segment;
-  const int fd = diagnostics->segment_fds[diagnostics->active_segment];
-  if (ftruncate(fd, 0) != 0 || lseek(fd, 0, SEEK_SET) < 0) {
-    vkr_metal_diagnostic_fail(diagnostics, "rotate diagnostic segment", errno);
+  const FileError error =
+      file_truncate(&diagnostics->segments[diagnostics->active_segment]);
+  if (error != FILE_ERROR_NONE) {
+    vkr_metal_diagnostic_fail_file(diagnostics, "rotate diagnostic segment",
+                                   error);
     return false_v;
   }
   diagnostics->active_bytes = 0u;
@@ -218,29 +205,33 @@ bool8_t vkr_metal_diagnostics_open(VkrMetalDiagnostics *diagnostics,
     vkr_metal_diagnostics_close(diagnostics);
   }
   MemZero(diagnostics, sizeof(*diagnostics));
-  diagnostics->segment_fds[0] = -1;
-  diagnostics->segment_fds[1] = -1;
-  if (mkdir(directory, 0700) != 0) {
-    vkr_metal_diagnostic_fail(diagnostics, "create diagnostic directory",
-                              errno);
+  const FilePath directory_path = file_path_view(directory);
+  FileError error = file_create_directory_exclusive(&directory_path);
+  if (error != FILE_ERROR_NONE) {
+    vkr_metal_diagnostic_fail_file(diagnostics, "create diagnostic directory",
+                                   error);
     return false_v;
   }
 
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_CREATE);
+  bitset8_set(&mode, FILE_MODE_EXCLUSIVE);
+  bitset8_set(&mode, FILE_MODE_BINARY);
   char path[VKR_METAL_DIAGNOSTIC_PATH_BYTES];
-  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segment_fds); ++i) {
+  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segments); ++i) {
     if (!vkr_metal_diagnostic_path(path, sizeof(path), directory, i)) {
-      const int error_number = errno;
       vkr_metal_diagnostic_discard_open(diagnostics, directory);
       vkr_metal_diagnostic_fail(diagnostics, "form diagnostic segment path",
-                                error_number);
+                                "path too long");
       return false_v;
     }
-    diagnostics->segment_fds[i] = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (diagnostics->segment_fds[i] < 0) {
-      const int error_number = errno;
+    const FilePath segment_path = file_path_view(path);
+    error = file_open(&segment_path, mode, &diagnostics->segments[i]);
+    if (error != FILE_ERROR_NONE) {
       vkr_metal_diagnostic_discard_open(diagnostics, directory);
-      vkr_metal_diagnostic_fail(diagnostics, "create diagnostic segment",
-                                error_number);
+      vkr_metal_diagnostic_fail_file(diagnostics, "create diagnostic segment",
+                                     error);
       return false_v;
     }
   }
@@ -260,7 +251,8 @@ void vkr_metal_diagnostics_record(VkrMetalDiagnostics *diagnostics,
   if (format) {
     va_list args;
     va_start(args, format);
-    const int detail_length = vsnprintf(detail, sizeof(detail), format, args);
+    const int detail_length =
+        string_format_v(detail, sizeof(detail), format, args);
     va_end(args);
     truncated = detail_length < 0 || (size_t)detail_length >= sizeof(detail);
   } else {
@@ -294,7 +286,7 @@ void vkr_metal_diagnostics_record(VkrMetalDiagnostics *diagnostics,
   vkr_metal_diagnostic_text_append(&text, "}\n", 2u);
   if (text.overflowed) {
     vkr_metal_diagnostic_fail(diagnostics, "format diagnostic record",
-                              EOVERFLOW);
+                              "record exceeds its buffer");
     return;
   }
 
@@ -304,10 +296,16 @@ void vkr_metal_diagnostics_record(VkrMetalDiagnostics *diagnostics,
       return;
     }
   }
-  if (!vkr_metal_diagnostic_write(
-          diagnostics->segment_fds[diagnostics->active_segment], record,
-          text.count)) {
-    vkr_metal_diagnostic_fail(diagnostics, "write diagnostic record", errno);
+  /* FileHandle writes are unbuffered, so each record reaches the kernel
+     before this returns, even when the process then exits at once. */
+  uint64_t written = 0u;
+  const FileError error =
+      file_write(&diagnostics->segments[diagnostics->active_segment],
+                 text.count, (const uint8_t *)record, &written);
+  if (error != FILE_ERROR_NONE || written != text.count) {
+    vkr_metal_diagnostic_fail_file(
+        diagnostics, "write diagnostic record",
+        error != FILE_ERROR_NONE ? error : FILE_ERROR_IO_ERROR);
     return;
   }
   diagnostics->active_bytes += text.count;
@@ -317,9 +315,11 @@ void vkr_metal_diagnostics_flush(VkrMetalDiagnostics *diagnostics) {
   if (!diagnostics || !diagnostics->enabled) {
     return;
   }
-  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segment_fds); ++i) {
-    if (fsync(diagnostics->segment_fds[i]) != 0) {
-      vkr_metal_diagnostic_fail(diagnostics, "flush diagnostic segment", errno);
+  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segments); ++i) {
+    const FileError error = file_sync(&diagnostics->segments[i]);
+    if (error != FILE_ERROR_NONE) {
+      vkr_metal_diagnostic_fail_file(diagnostics, "flush diagnostic segment",
+                                     error);
       return;
     }
   }
@@ -329,49 +329,8 @@ void vkr_metal_diagnostics_close(VkrMetalDiagnostics *diagnostics) {
   if (!diagnostics || !diagnostics->enabled) {
     return;
   }
-  int error_number = 0;
-  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segment_fds); ++i) {
-    if (diagnostics->segment_fds[i] >= 0 &&
-        close(diagnostics->segment_fds[i]) != 0 && error_number == 0) {
-      error_number = errno;
-    }
+  for (uint32_t i = 0u; i < ArrayCount(diagnostics->segments); ++i) {
+    file_close(&diagnostics->segments[i]);
   }
   MemZero(diagnostics, sizeof(*diagnostics));
-  if (error_number != 0) {
-    fprintf(stderr, "metal.diagnostics: close diagnostic segment: %s\n",
-            strerror(error_number));
-  }
 }
-
-#else
-
-bool8_t vkr_metal_diagnostics_open(VkrMetalDiagnostics *diagnostics,
-                                   const char *directory) {
-  (void)directory;
-  if (diagnostics) {
-    MemZero(diagnostics, sizeof(*diagnostics));
-  }
-  return false_v;
-}
-
-void vkr_metal_diagnostics_record(VkrMetalDiagnostics *diagnostics,
-                                  const char *event, uint64_t submitted,
-                                  uint64_t completed, const char *format, ...) {
-  (void)diagnostics;
-  (void)event;
-  (void)submitted;
-  (void)completed;
-  (void)format;
-}
-
-void vkr_metal_diagnostics_flush(VkrMetalDiagnostics *diagnostics) {
-  (void)diagnostics;
-}
-
-void vkr_metal_diagnostics_close(VkrMetalDiagnostics *diagnostics) {
-  if (diagnostics) {
-    MemZero(diagnostics, sizeof(*diagnostics));
-  }
-}
-
-#endif

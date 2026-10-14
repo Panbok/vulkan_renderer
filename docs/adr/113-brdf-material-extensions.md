@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-13
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -122,7 +122,8 @@ extension code therefore runs only where an extended material shades:
   `vkr_tiled_brdf_extension_constant` (index 0) gates the extension block
   in `vkr_metal_tiled_shade`. The forward, alpha-tested and blend pipelines
   gain a BRDF dimension. The first publication of an extended material
-  starts creating the extended set on the custom group's background queue.
+  starts creating the extended set as a background job, like a Custom graph
+  ([ADR-096](096-custom-material-graphs.md)).
   `vkr_renderer_get_pipeline_stats` counts the pending set as one graph, so
   harness and runtime readiness wait for it; until it is READY, and after a
   failure, extended materials shade with the base model. A frame whose

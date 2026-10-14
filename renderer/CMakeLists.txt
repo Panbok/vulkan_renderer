@@ -12,6 +12,7 @@ add_library(vkr_render_contracts STATIC src/vkr_packed_geometry.c
 vkr_configure_library(vkr_render_contracts)
 target_include_directories(vkr_render_contracts PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(vkr_render_contracts PUBLIC vkr_foundation)
+target_compile_definitions(vkr_render_contracts PRIVATE VKR_LIBC_BOUNDARY=1)
 
 find_program(VKR_SLANGC_EXECUTABLE NAMES slangc REQUIRED)
 
@@ -195,4 +196,5 @@ target_compile_definitions(renderer_lib PRIVATE
     $<$<CONFIG:Debug>:VKR_ALLOCATOR_ENABLE_LOGGING=0>
 )
 
-target_precompile_headers(renderer_lib PRIVATE "${CMAKE_SOURCE_DIR}/lib/src/vkr_pch.h")
+# Renderer sources reach libc and the operating system only through the lib.
+target_compile_definitions(renderer_lib PRIVATE VKR_LIBC_BOUNDARY=1)

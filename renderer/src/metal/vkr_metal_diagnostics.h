@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "filesystem/filesystem.h"
 
 #define VKR_METAL_DIAGNOSTIC_SEGMENT_BYTES MB(4)
 #define VKR_METAL_DIAGNOSTIC_RECORD_BYTES 4096u
@@ -8,7 +9,7 @@
 /** Renderer-owned, single-writer diagnostic output. Zero initialization is a
  * disabled sink and may be closed safely. */
 typedef struct VkrMetalDiagnostics {
-  int segment_fds[2];
+  FileHandle segments[2];
   uint64_t sequence;
   uint64_t active_bytes;
   uint32_t active_segment;
@@ -38,5 +39,5 @@ void vkr_metal_diagnostics_record(VkrMetalDiagnostics *diagnostics,
  * This does not guarantee persistence after a sudden system failure. */
 void vkr_metal_diagnostics_flush(VkrMetalDiagnostics *diagnostics);
 
-/** Closes every owned descriptor. Safe for a zero-initialized sink. */
+/** Closes both segments. Safe for a zero-initialized sink. */
 void vkr_metal_diagnostics_close(VkrMetalDiagnostics *diagnostics);

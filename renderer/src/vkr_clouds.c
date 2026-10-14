@@ -1,7 +1,5 @@
 #include "vkr_clouds.h"
 
-#include <math.h>
-
 /* Near the horizon the sun-projected shadow offset grows without bound. The
    projection holds the sun at this elevation sine instead. */
 #define VKR_CLOUD_SHADOW_SUN_Y_MIN 0.1f
@@ -19,18 +17,19 @@ bool8_t vkr_cloud_settings_valid(const VkrCloudSettings *settings) {
     return false_v;
   if (!settings->enabled)
     return true_v;
-  return isfinite(settings->base_altitude_m) &&
+  return vkr_is_finite_f32(settings->base_altitude_m) &&
          settings->base_altitude_m >= 0.0f &&
-         isfinite(settings->top_altitude_m) &&
+         vkr_is_finite_f32(settings->top_altitude_m) &&
          settings->top_altitude_m <= VKR_CLOUD_ALTITUDE_MAX_M &&
          settings->top_altitude_m - settings->base_altitude_m >=
              VKR_CLOUD_THICKNESS_MIN_M &&
          settings->coverage >= 0.0f && settings->coverage <= 1.0f &&
          settings->density >= 0.0f &&
          settings->density <= VKR_CLOUD_DENSITY_MAX &&
-         isfinite(settings->wind_mps.x) && isfinite(settings->wind_mps.y) &&
-         fabsf(settings->wind_mps.x) <= VKR_CLOUD_WIND_MAX_MPS &&
-         fabsf(settings->wind_mps.y) <= VKR_CLOUD_WIND_MAX_MPS;
+         vkr_is_finite_f32(settings->wind_mps.x) &&
+         vkr_is_finite_f32(settings->wind_mps.y) &&
+         vkr_abs_f32(settings->wind_mps.x) <= VKR_CLOUD_WIND_MAX_MPS &&
+         vkr_abs_f32(settings->wind_mps.y) <= VKR_CLOUD_WIND_MAX_MPS;
 }
 
 vkr_internal uint64_t vkr_cloud_hash_bytes(uint64_t hash, const void *data,
@@ -44,7 +43,7 @@ vkr_internal uint64_t vkr_cloud_hash_bytes(uint64_t hash, const void *data,
 }
 
 vkr_internal float32_t vkr_cloud_wrap_km(float32_t offset_m) {
-  const float32_t wrapped = fmodf(offset_m, VKR_CLOUD_WIND_PERIOD_M);
+  const float32_t wrapped = vkr_fmod_f32(offset_m, VKR_CLOUD_WIND_PERIOD_M);
   return (wrapped < 0.0f ? wrapped + VKR_CLOUD_WIND_PERIOD_M : wrapped) *
          0.001f;
 }
@@ -62,9 +61,9 @@ VkrCloudGpuParams vkr_cloud_prepare(const VkrCloudSettings *settings,
   const float32_t texel_km =
       VKR_CLOUD_SHADOW_EXTENT_KM / (float32_t)VKR_CLOUD_SHADOW_SIZE;
   const float32_t centre_x =
-      floorf((camera_km.x + sun.x * reach) / texel_km + 0.5f) * texel_km;
+      vkr_floor_f32((camera_km.x + sun.x * reach) / texel_km + 0.5f) * texel_km;
   const float32_t centre_z =
-      floorf((camera_km.z + sun.z * reach) / texel_km + 0.5f) * texel_km;
+      vkr_floor_f32((camera_km.z + sun.z * reach) / texel_km + 0.5f) * texel_km;
 
   return (VkrCloudGpuParams){
       .layer = {.x = bottom_radius_km + base_km,

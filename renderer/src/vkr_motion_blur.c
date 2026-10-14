@@ -1,17 +1,15 @@
 #include "vkr_motion_blur.h"
 
-#include <math.h>
-
 bool8_t vkr_motion_blur_controls_valid(float32_t shutter_angle,
                                        Mat4 projection) {
-  if (!isfinite(shutter_angle) || shutter_angle < 0.0f ||
+  if (!vkr_is_finite_f32(shutter_angle) || shutter_angle < 0.0f ||
       shutter_angle > 360.0f)
     return false_v;
   const float32_t near_distance = mat4_perspective_reversed_near(projection);
   const float32_t far_distance = mat4_perspective_reversed_far(projection);
   return projection.m32 == -1.0f && projection.m33 == 0.0f &&
-         isfinite(near_distance) && near_distance > 0.0f &&
-         isfinite(far_distance) && far_distance > near_distance;
+         vkr_is_finite_f32(near_distance) && near_distance > 0.0f &&
+         vkr_is_finite_f32(far_distance) && far_distance > near_distance;
 }
 
 VkrMotionBlurGpuParams

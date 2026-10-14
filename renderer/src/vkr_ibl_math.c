@@ -2,8 +2,6 @@
 
 #include "math/vkr_math.h"
 
-#include <math.h>
-
 uint16_t vkr_float32_to_float16(float32_t value) {
   uint32_t bits = 0;
   MemCopy(&bits, &value, sizeof(bits));
@@ -64,11 +62,12 @@ float32_t vkr_float16_to_float32(uint16_t value) {
   const uint32_t mantissa = value & 0x03ffu;
   float32_t result = 0.0f;
   if (exponent == 0u) {
-    result = ldexpf((float32_t)mantissa, -24);
+    result = vkr_ldexp_f32((float32_t)mantissa, -24);
   } else if (exponent == 0x1fu) {
-    result = mantissa == 0u ? INFINITY : NAN;
+    result = mantissa == 0u ? VKR_FLOAT_INFINITY : VKR_FLOAT_NAN;
   } else {
-    result = ldexpf((float32_t)(1024u + mantissa), (int32_t)exponent - 25);
+    result =
+        vkr_ldexp_f32((float32_t)(1024u + mantissa), (int32_t)exponent - 25);
   }
   return negative ? -result : result;
 }
@@ -91,15 +90,15 @@ uint32_t vkr_rgb9e5_from_float3(float32_t r, float32_t g, float32_t b) {
   if (brightest <= 0.0) {
     return 0u;
   }
-  int32_t exponent = (int32_t)floor(log2(brightest));
+  int32_t exponent = (int32_t)vkr_floor_f64(vkr_log2_f64(brightest));
   if (exponent < -VKR_RGB9E5_EXPONENT_BIAS - 1) {
     exponent = -VKR_RGB9E5_EXPONENT_BIAS - 1;
   }
   exponent += 1 + VKR_RGB9E5_EXPONENT_BIAS;
-  float64_t scale = ldexp(1.0, exponent - VKR_RGB9E5_EXPONENT_BIAS -
-                                   VKR_RGB9E5_MANTISSA_BITS);
+  float64_t scale = vkr_ldexp_f64(1.0, exponent - VKR_RGB9E5_EXPONENT_BIAS -
+                                           VKR_RGB9E5_MANTISSA_BITS);
   /* Rounding the brightest channel up to 2^9 needs the next exponent. */
-  if (floor(brightest / scale + 0.5) >=
+  if (vkr_floor_f64(brightest / scale + 0.5) >=
       (float64_t)(1u << VKR_RGB9E5_MANTISSA_BITS)) {
     exponent += 1;
     scale *= 2.0;
@@ -109,7 +108,7 @@ uint32_t vkr_rgb9e5_from_float3(float32_t r, float32_t g, float32_t b) {
   }
   uint32_t packed = (uint32_t)exponent << 27u;
   for (uint32_t i = 0u; i < 3u; ++i) {
-    uint32_t mantissa = (uint32_t)floor(clamped[i] / scale + 0.5);
+    uint32_t mantissa = (uint32_t)vkr_floor_f64(clamped[i] / scale + 0.5);
     mantissa = mantissa > 511u ? 511u : mantissa;
     packed |= mantissa << (9u * i);
   }
@@ -118,8 +117,8 @@ uint32_t vkr_rgb9e5_from_float3(float32_t r, float32_t g, float32_t b) {
 
 void vkr_rgb9e5_to_float3(uint32_t packed, float32_t out_rgb[3]) {
   const int32_t exponent = (int32_t)(packed >> 27u);
-  const float64_t scale = ldexp(1.0, exponent - VKR_RGB9E5_EXPONENT_BIAS -
-                                         VKR_RGB9E5_MANTISSA_BITS);
+  const float64_t scale = vkr_ldexp_f64(
+      1.0, exponent - VKR_RGB9E5_EXPONENT_BIAS - VKR_RGB9E5_MANTISSA_BITS);
   for (uint32_t i = 0u; i < 3u; ++i) {
     out_rgb[i] = (float32_t)((float64_t)((packed >> (9u * i)) & 511u) * scale);
   }
@@ -130,14 +129,14 @@ static float32_t vkr_ibl_sinc_pi(float32_t x) {
     return 1.0f;
   }
   const float32_t argument = VKR_PI * x;
-  return sinf(argument) / argument;
+  return vkr_sin_f32(argument) / argument;
 }
 
 float32_t vkr_ibl_sh_window_factor(uint32_t band, float32_t deringing) {
   if (deringing == 0.0f) {
     return 1.0f;
   }
-  return powf(vkr_ibl_sinc_pi((float32_t)band / 3.0f), deringing);
+  return vkr_pow_f32(vkr_ibl_sinc_pi((float32_t)band / 3.0f), deringing);
 }
 
 bool8_t vkr_ibl_sh_projection_mip(uint32_t source_face_size,

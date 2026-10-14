@@ -1,7 +1,5 @@
 #include "vkr_dynamic_resolution.h"
 
-#include <math.h>
-
 #define VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON 1e-5f
 
 /* Samples over budget per step down, and samples with headroom per step up.
@@ -17,20 +15,21 @@
 #define VKR_DYNAMIC_RESOLUTION_FAR_OVER_BUDGET_RATIO 1.25
 
 static float32_t vkr_dynamic_resolution_canonical_scale(float32_t scale) {
-  return roundf(scale * 1000.0f) / 1000.0f;
+  return vkr_round_f32(scale * 1000.0f) / 1000.0f;
 }
 
 static float32_t vkr_dynamic_resolution_nearest_scale(float32_t scale,
                                                       float32_t min_scale,
                                                       float32_t max_scale) {
   const float32_t clamped = Max(min_scale, Min(scale, max_scale));
-  const float32_t steps =
-      floorf((max_scale - clamped) / VKR_DYNAMIC_RESOLUTION_SCALE_STEP + 0.5f);
+  const float32_t steps = vkr_floor_f32(
+      (max_scale - clamped) / VKR_DYNAMIC_RESOLUTION_SCALE_STEP + 0.5f);
   const float32_t lattice = Max(
       min_scale, vkr_dynamic_resolution_canonical_scale(
                      max_scale - steps * VKR_DYNAMIC_RESOLUTION_SCALE_STEP));
-  return fabsf(clamped - min_scale) < fabsf(clamped - lattice) ? min_scale
-                                                               : lattice;
+  return vkr_abs_f32(clamped - min_scale) < vkr_abs_f32(clamped - lattice)
+             ? min_scale
+             : lattice;
 }
 
 static float32_t
@@ -42,9 +41,10 @@ vkr_dynamic_resolution_next_scale(const VkrDynamicResolutionState *state,
                    state->current_scale - VKR_DYNAMIC_RESOLUTION_SCALE_STEP));
   if (state->current_scale <=
       state->min_scale + VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
-    const float32_t steps = floorf((state->max_scale - state->min_scale) /
-                                       VKR_DYNAMIC_RESOLUTION_SCALE_STEP +
-                                   VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON);
+    const float32_t steps =
+        vkr_floor_f32((state->max_scale - state->min_scale) /
+                          VKR_DYNAMIC_RESOLUTION_SCALE_STEP +
+                      VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON);
     float32_t next = vkr_dynamic_resolution_canonical_scale(
         state->max_scale - steps * VKR_DYNAMIC_RESOLUTION_SCALE_STEP);
     if (next <= state->min_scale + VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON)
@@ -60,7 +60,8 @@ bool8_t vkr_dynamic_resolution_config_normalize(
     const VkrDynamicResolutionConfig *config, float32_t initial_scale,
     VkrDynamicResolutionConfig *out_config, float32_t *out_initial_scale) {
   if (!config || !out_config || !out_initial_scale ||
-      !isfinite(initial_scale) || initial_scale <= 0.0f || initial_scale > 1.0f)
+      !vkr_is_finite_f32(initial_scale) || initial_scale <= 0.0f ||
+      initial_scale > 1.0f)
     return false_v;
 
   VkrDynamicResolutionConfig normalized = *config;
@@ -75,9 +76,10 @@ bool8_t vkr_dynamic_resolution_config_normalize(
     normalized.max_scale = VKR_DYNAMIC_RESOLUTION_DEFAULT_MAX_SCALE;
   if (normalized.target_frame_ms == 0.0f)
     normalized.target_frame_ms = VKR_DYNAMIC_RESOLUTION_DEFAULT_TARGET_FRAME_MS;
-  if (!isfinite(normalized.min_scale) || !isfinite(normalized.max_scale) ||
-      !isfinite(normalized.target_frame_ms) || normalized.min_scale <= 0.0f ||
-      normalized.max_scale > 1.0f ||
+  if (!vkr_is_finite_f32(normalized.min_scale) ||
+      !vkr_is_finite_f32(normalized.max_scale) ||
+      !vkr_is_finite_f32(normalized.target_frame_ms) ||
+      normalized.min_scale <= 0.0f || normalized.max_scale > 1.0f ||
       normalized.min_scale > normalized.max_scale ||
       normalized.target_frame_ms <= 0.0f ||
       (float64_t)normalized.target_frame_ms > (float64_t)UINT64_MAX / 1000000.0)
@@ -128,7 +130,7 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
                                       float32_t *out_scale) {
   if (!state || !out_scale || !state->enabled || submit_value == 0u ||
       submit_value <= state->last_submit_value || gpu_frame_ns == 0u ||
-      fabsf(source_scale - state->current_scale) > 0.001f)
+      vkr_abs_f32(source_scale - state->current_scale) > 0.001f)
     return false_v;
   state->last_submit_value = submit_value;
   state->sample_frame_ns = (float64_t)gpu_frame_ns;
@@ -151,7 +153,7 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
   // it on a timer: unchanged work would start probing the same failure again.
   const bool8_t failed_upshift_has_headroom =
       state->failed_upshift_cost_ratio == 0.0 ||
-      fabsf(state->current_scale - state->failed_upshift_lower_scale) >
+      vkr_abs_f32(state->current_scale - state->failed_upshift_lower_scale) >
           VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON ||
       state->sample_frame_ns * state->failed_upshift_cost_ratio <
           under_threshold;
@@ -177,7 +179,7 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
   if (state->under_budget_samples >= VKR_DYNAMIC_RESOLUTION_UPSHIFT_SAMPLES) {
     // Sustained headroom at the upper tier completes its probe successfully.
     state->upshift_source_frame_ns = 0.0;
-    if (fabsf(state->current_scale - state->failed_upshift_upper_scale) <=
+    if (vkr_abs_f32(state->current_scale - state->failed_upshift_upper_scale) <=
         VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON)
       state->failed_upshift_cost_ratio = 0.0;
   }
@@ -194,7 +196,7 @@ bool8_t vkr_dynamic_resolution_update(VkrDynamicResolutionState *state,
       state->current_scale = current_scale;
     }
     if (state->upshift_source_frame_ns > 0.0 &&
-        fabsf(lower_scale - state->upshift_source_scale) <=
+        vkr_abs_f32(lower_scale - state->upshift_source_scale) <=
             VKR_DYNAMIC_RESOLUTION_SCALE_EPSILON) {
       state->failed_upshift_lower_scale = lower_scale;
       state->failed_upshift_upper_scale = state->current_scale;

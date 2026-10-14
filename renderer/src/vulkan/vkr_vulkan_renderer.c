@@ -1,6 +1,5 @@
 #include "vkr_render_graph_frame.h"
 #include "vulkan/vkr_vulkan_internal.h"
-#include <math.h>
 
 vkr_internal VkrTextureFormat vkr_vk_present_texture_format(VkFormat format) {
   if (format == VK_FORMAT_R16G16B16A16_SFLOAT)
@@ -1486,8 +1485,8 @@ vkr_vk_decode_sdsm_result(const VkrVulkanFrameSlot *slot,
   MemCopy(&out_sample->max_device_z, &state.max_device_z_bits,
           sizeof(float32_t));
   out_sample->valid =
-      isfinite(out_sample->min_device_z) &&
-              isfinite(out_sample->max_device_z) &&
+      vkr_is_finite_f32(out_sample->min_device_z) &&
+              vkr_is_finite_f32(out_sample->max_device_z) &&
               out_sample->min_device_z >= 0.0f &&
               out_sample->max_device_z <= 1.0f &&
               out_sample->min_device_z <= out_sample->max_device_z

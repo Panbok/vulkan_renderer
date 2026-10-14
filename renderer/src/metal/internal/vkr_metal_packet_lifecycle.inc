@@ -116,9 +116,9 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
           return false_v;
       }
       if (renderer->commit_feedback_records) {
-        const CFTimeInterval deadline =
-            CACurrentMediaTime() +
-            (CFTimeInterval)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
+        const float64_t deadline =
+            vkr_platform_get_absolute_time() +
+            (float64_t)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
         bool8_t feedback_complete = false_v;
         do {
           dispatch_sync(vkr_metal_packet_feedback_queue(), ^{
@@ -135,7 +135,8 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
               break;
             }
           }
-        } while (!feedback_complete && CACurrentMediaTime() < deadline);
+        } while (!feedback_complete &&
+                 vkr_platform_get_absolute_time() < deadline);
         if (!feedback_complete)
           return false_v;
       }

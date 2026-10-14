@@ -19,10 +19,11 @@ typedef enum VkrTextureUploadOwnership {
 } VkrTextureUploadOwnership;
 
 /** Prepared bytes for one texture publication; `upload_ownership` says how
- * the publication holds them. `upload_data` and `upload_regions` are
- * malloc-owned: decode workers produce them in parallel without a shared
- * allocator lock, payloads reach hundreds of MB, and freeing returns those
- * pages, which VkrDMemory never decommits. While the caller owns them,
+ * the publication holds them. `upload_data` and `upload_regions` are process
+ * heap blocks (memory/vkr_heap.h, the C library's malloc): decode workers
+ * produce them in parallel without a shared allocator lock, payloads reach
+ * hundreds of MB, and freeing returns those pages, which VkrDMemory never
+ * decommits. While the caller owns them,
  * vkr_texture_system_release_prepared_load() frees them. */
 typedef struct VkrTexturePreparedLoad {
   VkrTextureDescription description;

@@ -5,7 +5,6 @@
 #include "vkr_render_resources.h"
 #include "vkr_subsurface.h"
 
-#include <math.h>
 #include <stddef.h>
 
 #define VKR_GPU_ABI_FIELD(TYPE, HOST, SHADER, OFFSET)                          \
@@ -38,7 +37,7 @@ vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source) {
   const float32_t handedness = determinant < 0.0 ? -1.0f : 1.0f;
   float64_t magnitude = 0.0;
   for (uint32_t i = 0u; i < ArrayCount(cofactor); ++i)
-    magnitude = Max(magnitude, fabs(cofactor[i]));
+    magnitude = Max(magnitude, vkr_abs_f64(cofactor[i]));
   const float64_t scale = magnitude > 0.0 ? handedness / magnitude : 0.0;
   for (uint32_t i = 0u; i < ArrayCount(cofactor); ++i)
     cofactor[i] *= scale;
@@ -290,9 +289,9 @@ bool8_t vkr_gpu_abi_validate_host(void) {
 
 Vec4 vkr_gpu_material_anisotropy(float32_t strength, float32_t rotation) {
   const float32_t normalized_rotation =
-      remainderf(rotation, 6.28318530717958647692f);
-  return (Vec4){strength, cosf(normalized_rotation), sinf(normalized_rotation),
-                0.0f};
+      vkr_remainder_f32(rotation, 6.28318530717958647692f);
+  return (Vec4){strength, vkr_cos_f32(normalized_rotation),
+                vkr_sin_f32(normalized_rotation), 0.0f};
 }
 
 VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
@@ -302,12 +301,13 @@ VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
      x, y and z for an orthographic projection. */
   const Mat4 m = view_projection;
   const float32_t row1 =
-      sqrtf(m.cols[0].y * m.cols[0].y + m.cols[1].y * m.cols[1].y +
-            m.cols[2].y * m.cols[2].y);
-  const bool8_t constant =
-      fabsf(m.cols[0].w) + fabsf(m.cols[1].w) + fabsf(m.cols[2].w) < 1e-6f;
+      vkr_sqrt_f32(m.cols[0].y * m.cols[0].y + m.cols[1].y * m.cols[1].y +
+                   m.cols[2].y * m.cols[2].y);
+  const bool8_t constant = vkr_abs_f32(m.cols[0].w) + vkr_abs_f32(m.cols[1].w) +
+                               vkr_abs_f32(m.cols[2].w) <
+                           1e-6f;
   float32_t scale = 0.5f * image_rows * row1 / VKR_GPU_LOD_THRESHOLD;
-  if (!isfinite(scale) || scale < 0.0f) {
+  if (!vkr_is_finite_f32(scale) || scale < 0.0f) {
     scale = 0.0f;
   }
   return (VkrGpuLodView){
@@ -321,21 +321,21 @@ VkrGpuLodView vkr_gpu_lod_view(Mat4 view_projection, float32_t image_rows,
 }
 
 uint32_t vkr_gpu_draw_cull_code(float32_t metres) {
-  if (!(metres > 0.0f) || !isfinite(metres)) {
+  if (!(metres > 0.0f) || !vkr_is_finite_f32(metres)) {
     return 0u;
   }
-  const float32_t code =
-      ceilf(log2f(Max(metres, 1.0f)) * VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE) +
-      1.0f;
+  const float32_t code = vkr_ceil_f32(vkr_log2_f32(Max(metres, 1.0f)) *
+                                      VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE) +
+                         1.0f;
   return code >= (float32_t)VKR_GPU_DRAW_CULL_CODE_MASK
              ? VKR_GPU_DRAW_CULL_CODE_MASK
              : (uint32_t)code;
 }
 
 float32_t vkr_gpu_draw_cull_metres(uint32_t code) {
-  return code == 0u ? INFINITY
-                    : exp2f((float32_t)(code - 1u) /
-                            VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE);
+  return code == 0u ? VKR_FLOAT_INFINITY
+                    : vkr_exp2_f32((float32_t)(code - 1u) /
+                                   VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE);
 }
 
 uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
@@ -345,7 +345,7 @@ uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
   if (min_screen_pixels > 0.0f) {
     half_pixels = min_screen_pixels >= 7.5f
                       ? VKR_GPU_DRAW_CULL_PIXELS_MASK
-                      : (uint32_t)ceilf(min_screen_pixels * 2.0f);
+                      : (uint32_t)vkr_ceil_f32(min_screen_pixels * 2.0f);
   }
   return vkr_gpu_draw_cull_code(draw_distance) |
          (half_pixels << VKR_GPU_DRAW_CULL_PIXELS_SHIFT) |
@@ -393,10 +393,9 @@ bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
   const VkrPbrProperties *pbr = &material->pbr;
   const float32_t strength = pbr->diffuse_transmission_strength;
   const Vec3 tint = pbr->diffuse_transmission_color;
-  if (!isfinite(strength) || !isfinite(tint.x) || !isfinite(tint.y) ||
-      !isfinite(tint.z) || strength < 0.0f || strength > 1.0f ||
-      tint.x < 0.0f || tint.x > 1.0f || tint.y < 0.0f || tint.y > 1.0f ||
-      tint.z < 0.0f || tint.z > 1.0f) {
+  if (!vkr_is_finite_f32(strength) || !vec3_is_finite(tint) ||
+      strength < 0.0f || strength > 1.0f || tint.x < 0.0f || tint.x > 1.0f ||
+      tint.y < 0.0f || tint.y > 1.0f || tint.z < 0.0f || tint.z > 1.0f) {
     return false_v;
   }
   if (strength > 0.0f &&
@@ -405,8 +404,8 @@ bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
        pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f)) {
     return false_v;
   }
-  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
-      pbr->subsurface_strength > 1.0f ||
+  if (!vkr_is_finite_f32(pbr->subsurface_strength) ||
+      pbr->subsurface_strength < 0.0f || pbr->subsurface_strength > 1.0f ||
       pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT) {
     return false_v;
   }
@@ -432,11 +431,11 @@ bool8_t vkr_gpu_material_extensions_valid(const VkrMaterial *material) {
     }
     for (uint32_t i = 0; i < ArrayCount(material->layers); ++i) {
       const VkrMaterialLayer *layer = &material->layers[i];
-      if (!isfinite(layer->base_color.x) || !isfinite(layer->base_color.y) ||
-          !isfinite(layer->base_color.z) || !isfinite(layer->base_color.w) ||
-          !isfinite(layer->metallic) || !isfinite(layer->roughness) ||
-          !isfinite(layer->normal_scale) ||
-          !isfinite(layer->occlusion_strength)) {
+      if (!vec4_is_finite(layer->base_color) ||
+          !vkr_is_finite_f32(layer->metallic) ||
+          !vkr_is_finite_f32(layer->roughness) ||
+          !vkr_is_finite_f32(layer->normal_scale) ||
+          !vkr_is_finite_f32(layer->occlusion_strength)) {
         return false_v;
       }
     }

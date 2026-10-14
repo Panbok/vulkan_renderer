@@ -1,7 +1,5 @@
 #include "vulkan/vkr_vulkan_internal.h"
 
-#include <math.h>
-
 void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer) {
   if (renderer->radiance_revision == UINT64_MAX) {
     renderer->terminal_failure = true_v;
@@ -439,7 +437,7 @@ vkr_vk_stage_next_buffer_batch(VkrVulkanRenderer *renderer) {
     if (initialization->next_offset >= initialization->size) {
       continue;
     }
-    const VkDeviceSize offset = vkr_vk_align_up(chunk_size, 16u);
+    const VkDeviceSize offset = vkr_align_up_u64(chunk_size, 16u);
     if (offset >= capacity) {
       break;
     }
@@ -515,7 +513,7 @@ vkr_vk_stage_next_texture_batch(VkrVulkanRenderer *renderer) {
          batch_index < initialization->batch_count; ++batch_index) {
       const VkrVulkanTextureUploadBatch *batch =
           &initialization->batches[batch_index];
-      const uint64_t offset = vkr_vk_align_up(staging_size, 16u);
+      const uint64_t offset = vkr_align_up_u64(staging_size, 16u);
       if (offset > renderer->config.upload_buffer_block_size ||
           batch->source_size >
               renderer->config.upload_buffer_block_size - offset)
@@ -538,7 +536,7 @@ vkr_vk_stage_next_texture_batch(VkrVulkanRenderer *renderer) {
          ++batch_offset) {
       VkrVulkanTextureUploadBatch *batch =
           &initialization->batches[initialization->next_batch + batch_offset];
-      destination_offset = vkr_vk_align_up(destination_offset, 16u);
+      destination_offset = vkr_align_up_u64(destination_offset, 16u);
       batch->region.bufferOffset = destination_offset;
       MemCopy((uint8_t *)initialization->staging.allocation.mapped +
                   destination_offset,

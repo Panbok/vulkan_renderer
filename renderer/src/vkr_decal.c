@@ -2,12 +2,10 @@
 
 #include "vkr_lighting.h"
 
-#include <math.h>
-
 bool8_t vkr_decal_set_box(VkrDecal *decal, Mat4 box_to_world) {
   const Mat4 *m = &box_to_world;
   for (uint32_t i = 0u; i < 16u; ++i) {
-    if (!isfinite(m->elements[i])) {
+    if (!vkr_is_finite_f32(m->elements[i])) {
       return false_v;
     }
   }
@@ -20,21 +18,22 @@ bool8_t vkr_decal_set_box(VkrDecal *decal, Mat4 box_to_world) {
   };
   const float32_t determinant =
       m->m00 * cofactor[0] + m->m01 * cofactor[1] + m->m02 * cofactor[2];
-  const float32_t determinant_terms = fabsf(m->m00 * cofactor[0]) +
-                                      fabsf(m->m01 * cofactor[1]) +
-                                      fabsf(m->m02 * cofactor[2]);
-  if (!isfinite(determinant) || !isfinite(determinant_terms) ||
-      fabsf(determinant) <= 1e-6f * determinant_terms) {
+  const float32_t determinant_terms = vkr_abs_f32(m->m00 * cofactor[0]) +
+                                      vkr_abs_f32(m->m01 * cofactor[1]) +
+                                      vkr_abs_f32(m->m02 * cofactor[2]);
+  if (!vkr_is_finite_f32(determinant) ||
+      !vkr_is_finite_f32(determinant_terms) ||
+      vkr_abs_f32(determinant) <= 1e-6f * determinant_terms) {
     return false_v;
   }
 
   /* The box's corners lie at its centre plus or minus half of each column,
      so its bounds reach half the absolute column sum along each axis. */
   const Vec3 centre = vec3_new(m->m03, m->m13, m->m23);
-  const Vec3 reach =
-      vec3_new(0.5f * (fabsf(m->m00) + fabsf(m->m01) + fabsf(m->m02)),
-               0.5f * (fabsf(m->m10) + fabsf(m->m11) + fabsf(m->m12)),
-               0.5f * (fabsf(m->m20) + fabsf(m->m21) + fabsf(m->m22)));
+  const Vec3 reach = vec3_new(
+      0.5f * (vkr_abs_f32(m->m00) + vkr_abs_f32(m->m01) + vkr_abs_f32(m->m02)),
+      0.5f * (vkr_abs_f32(m->m10) + vkr_abs_f32(m->m11) + vkr_abs_f32(m->m12)),
+      0.5f * (vkr_abs_f32(m->m20) + vkr_abs_f32(m->m21) + vkr_abs_f32(m->m22)));
   decal->world_to_box = mat4_inverse_affine(box_to_world);
   decal->bounds_min = vec3_sub(centre, reach);
   decal->bounds_max = vec3_add(centre, reach);
@@ -43,7 +42,7 @@ bool8_t vkr_decal_set_box(VkrDecal *decal, Mat4 box_to_world) {
 
 bool8_t vkr_decal_valid(const VkrDecal *decal) {
   for (uint32_t i = 0u; i < 16u; ++i) {
-    if (!isfinite(decal->world_to_box.elements[i])) {
+    if (!vkr_is_finite_f32(decal->world_to_box.elements[i])) {
       return false_v;
     }
   }
@@ -52,10 +51,9 @@ bool8_t vkr_decal_valid(const VkrDecal *decal) {
                                 m->m01 * (m->m10 * m->m22 - m->m12 * m->m20) +
                                 m->m02 * (m->m10 * m->m21 - m->m11 * m->m20);
   return m->m30 == 0.0f && m->m31 == 0.0f && m->m32 == 0.0f && m->m33 == 1.0f &&
-         determinant != 0.0f && isfinite(determinant) &&
-         isfinite(decal->bounds_min.x) && isfinite(decal->bounds_min.y) &&
-         isfinite(decal->bounds_min.z) && isfinite(decal->bounds_max.x) &&
-         isfinite(decal->bounds_max.y) && isfinite(decal->bounds_max.z) &&
+         determinant != 0.0f && vkr_is_finite_f32(determinant) &&
+         vec3_is_finite(decal->bounds_min) &&
+         vec3_is_finite(decal->bounds_max) &&
          decal->bounds_min.x <= decal->bounds_max.x &&
          decal->bounds_min.y <= decal->bounds_max.y &&
          decal->bounds_min.z <= decal->bounds_max.z && decal->opacity >= 0.0f &&
@@ -85,7 +83,8 @@ static uint32_t decal_mask_count(VkrDecalMask mask) {
 /* The cell along one axis that holds `position`, clamped into the grid. */
 static int32_t decal_grid_cell(const VkrDecalGrid *grid, uint32_t axis,
                                float32_t position, float32_t origin) {
-  const int32_t cell = (int32_t)floorf((position - origin) / grid->cell_size);
+  const int32_t cell =
+      (int32_t)vkr_floor_f32((position - origin) / grid->cell_size);
   return Clamp(cell, 0, (int32_t)grid->dimensions[axis] - 1);
 }
 
@@ -155,8 +154,8 @@ VkrDecalMask vkr_decal_grid_mask_at(const VkrDecalGrid *grid,
   const float32_t origin[3] = {grid->origin.x, grid->origin.y, grid->origin.z};
   uint32_t cell[3];
   for (uint32_t axis = 0u; axis < 3u; ++axis) {
-    const int32_t index =
-        (int32_t)floorf((position[axis] - origin[axis]) / grid->cell_size);
+    const int32_t index = (int32_t)vkr_floor_f32(
+        (position[axis] - origin[axis]) / grid->cell_size);
     if (index < 0 || index >= (int32_t)grid->dimensions[axis]) {
       return result;
     }

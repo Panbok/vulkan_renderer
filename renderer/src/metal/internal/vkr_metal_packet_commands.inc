@@ -7,17 +7,18 @@ vkr_metal_packet_wait_timeout_exit(VkrMetalPacketRenderer *renderer,
                        "queue=%s wait=%llu timeout_ms=%u", queue,
                        (unsigned long long)value, VKR_METAL_PACKET_TIMEOUT_MS);
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
-  fprintf(stderr,
-          "[FATAL]: Metal GPU completion timed out after %u ms "
-          "(%s wait=%llu completed=%llu submitted=%llu). "
-          "Exiting without GPU teardown; unsaved edits are lost.\n",
-          VKR_METAL_PACKET_TIMEOUT_MS, queue, (unsigned long long)value,
-          (unsigned long long)renderer->completion.signaledValue,
-          (unsigned long long)renderer->submit_value);
-  fflush(stderr);
+  char message[512];
+  string_format(message, sizeof(message),
+                "[FATAL]: Metal GPU completion timed out after %u ms "
+                "(%s wait=%llu completed=%llu submitted=%llu). "
+                "Exiting without GPU teardown; unsaved edits are lost.\n",
+                VKR_METAL_PACKET_TIMEOUT_MS, queue, (unsigned long long)value,
+                (unsigned long long)renderer->completion.signaledValue,
+                (unsigned long long)renderer->submit_value);
+  vkr_platform_stderr_write(message);
   /* Completion is unproven. Neither another wait nor normal teardown may
      recycle resources still referenced by the GPU. Skip exit handlers too. */
-  _Exit(EXIT_FAILURE);
+  vkr_platform_exit_immediate(1);
 }
 
 /* Waits until resources used up to frame-queue value `value` are free: the
@@ -145,9 +146,9 @@ vkr_metal_packet_harvest_commit_feedback(VkrMetalPacketRenderer *renderer) {
     VkrMetalPacketResult *result = &record->result;
     const CFTimeInterval duration =
         record->gpu_end_time - record->gpu_start_time;
-    if (!record->has_error && isfinite(record->gpu_start_time) &&
-        isfinite(record->gpu_end_time) && record->gpu_start_time > 0.0 &&
-        duration > 0.0 &&
+    if (!record->has_error && vkr_is_finite_f64(record->gpu_start_time) &&
+        vkr_is_finite_f64(record->gpu_end_time) &&
+        record->gpu_start_time > 0.0 && duration > 0.0 &&
         duration <= (CFTimeInterval)UINT64_MAX / 1000000000.0) {
       result->gpu_submission_ns = (uint64_t)(duration * 1000000000.0 + 0.5);
       result->gpu_submission_valid = true_v;
@@ -242,12 +243,11 @@ vkr_metal_packet_find_completed_timing(const VkrMetalPacketRenderer *renderer,
    dynamic resolution alone tolerates a late sample. */
 vkr_internal void vkr_metal_packet_wait_commit_feedback(
     const VkrMetalPacketCommitFeedbackRecord *record) {
-  const CFTimeInterval deadline =
-      CACurrentMediaTime() +
-      (CFTimeInterval)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
+  const float64_t deadline = vkr_platform_get_absolute_time() +
+                             (float64_t)VKR_METAL_PACKET_TIMEOUT_MS / 1000.0;
   while (!vkr_atomic_bool_load(&record->feedback_ready,
                                VKR_MEMORY_ORDER_ACQUIRE) &&
-         CACurrentMediaTime() < deadline) {
+         vkr_platform_get_absolute_time() < deadline) {
     dispatch_sync(vkr_metal_packet_feedback_queue(), ^{
                   });
   }

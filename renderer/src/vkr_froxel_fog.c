@@ -1,17 +1,11 @@
 #include "vkr_froxel_fog.h"
 #include "vkr_frame_input.h"
 
-#include <math.h>
-
 VkrFroxelFogSettings vkr_froxel_fog_settings_defaults(void) {
   return (VkrFroxelFogSettings){.color = {1.0f, 1.0f, 1.0f},
                                 .density = 0.01f,
                                 .height_falloff = 0.1f,
                                 .max_distance = 200.0f};
-}
-
-static bool8_t finite_vec3(Vec3 v) {
-  return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
 }
 
 bool8_t vkr_froxel_fog_settings_valid(const VkrFroxelFogSettings *settings) {
@@ -20,22 +14,25 @@ bool8_t vkr_froxel_fog_settings_valid(const VkrFroxelFogSettings *settings) {
     return false_v;
   if (!settings->enabled)
     return true_v;
-  if (!finite_vec3(settings->color) || settings->color.x < 0.0f ||
+  if (!vec3_is_finite(settings->color) || settings->color.x < 0.0f ||
       settings->color.y < 0.0f || settings->color.z < 0.0f ||
       settings->color.x > 1.0f || settings->color.y > 1.0f ||
-      settings->color.z > 1.0f || !isfinite(settings->density) ||
-      settings->density < 0.0f || !isfinite(settings->base_height) ||
-      !isfinite(settings->height_falloff) || settings->height_falloff < 0.0f ||
-      !isfinite(settings->max_distance) || settings->max_distance <= 0.0f ||
+      settings->color.z > 1.0f || !vkr_is_finite_f32(settings->density) ||
+      settings->density < 0.0f || !vkr_is_finite_f32(settings->base_height) ||
+      !vkr_is_finite_f32(settings->height_falloff) ||
+      settings->height_falloff < 0.0f ||
+      !vkr_is_finite_f32(settings->max_distance) ||
+      settings->max_distance <= 0.0f ||
       !(settings->sky_lighting >= 0.0f && settings->sky_lighting <= 1.0f) ||
       !(settings->anisotropy >= -0.95f && settings->anisotropy <= 0.95f))
     return false_v;
   for (uint32_t i = 0; i < settings->box_count; ++i) {
     const VkrFroxelDensityBox *box = &settings->boxes[i];
-    if (!finite_vec3(box->minimum) || !finite_vec3(box->maximum) ||
+    if (!vec3_is_finite(box->minimum) || !vec3_is_finite(box->maximum) ||
         box->minimum.x >= box->maximum.x || box->minimum.y >= box->maximum.y ||
         box->minimum.z >= box->maximum.z ||
-        !isfinite(box->density_multiplier) || box->density_multiplier < 0.0f)
+        !vkr_is_finite_f32(box->density_multiplier) ||
+        box->density_multiplier < 0.0f)
       return false_v;
   }
   return true_v;
@@ -49,8 +46,8 @@ bool8_t vkr_froxel_fog_projection_valid(const VkrFroxelFogSettings *settings,
      boundary constrains the authored fog range. */
   const float32_t near_distance = mat4_perspective_reversed_near(projection);
   const float32_t ratio = settings->max_distance / near_distance;
-  return isfinite(near_distance) && near_distance > 0.0f && isfinite(ratio) &&
-         ratio > 1.0f;
+  return vkr_is_finite_f32(near_distance) && near_distance > 0.0f &&
+         vkr_is_finite_f32(ratio) && ratio > 1.0f;
 }
 
 static void select_local_lights(const VkrFrameInput *input,
@@ -63,8 +60,9 @@ static void select_local_lights(const VkrFrameInput *input,
   /* Bound the entire fog frustum once, then rank upper-bound illumination at
      the closest point in that box. View motion changes ranking, not ownership.
    */
-  Vec3 minimum = {INFINITY, INFINITY, INFINITY};
-  Vec3 maximum = {-INFINITY, -INFINITY, -INFINITY};
+  Vec3 minimum = {VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY};
+  Vec3 maximum = {-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                  -VKR_FLOAT_INFINITY};
   for (uint32_t corner = 0; corner < 4u; ++corner) {
     /* Reversed camera depth: device depth 1 is the near plane. */
     const Vec4 ndc = {(corner & 1u) ? 1.0f : -1.0f,
@@ -117,7 +115,7 @@ static void select_local_lights(const VkrFrameInput *input,
     float64_t denominator = Max(distance_squared, 0.01);
     if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL)
       denominator = Max((float64_t)Max(light->constant, 1.0f) +
-                            light->linear * sqrt(distance_squared) +
+                            light->linear * vkr_sqrt_f64(distance_squared) +
                             light->quadratic * distance_squared,
                         0.0001);
     const float64_t score = light->intensity *
@@ -153,7 +151,7 @@ VkrFroxelFogGpuParams vkr_froxel_fog_prepare(const VkrFrameInput *input,
     return (VkrFroxelFogGpuParams){0};
   const float32_t near_distance =
       mat4_perspective_reversed_near(input->globals.projection);
-  const float32_t log_range = logf(s->max_distance / near_distance);
+  const float32_t log_range = vkr_log_f32(s->max_distance / near_distance);
   const Mat4 view_projection =
       mat4_mul(input->globals.projection, input->globals.view);
   VkrFroxelFogGpuParams params = {

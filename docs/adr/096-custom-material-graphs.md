@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-13
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -90,9 +90,12 @@ The owner settled three points on 2026-10-09:
 6. **Slots and pipelines.** The first time a published material names a
    function, the renderer gives it a slot from 1 to 32 and carries the slot
    in row flag bits 24 to 29. Each published row holds a reference to its
-   slot. A background queue then creates the graph's forward and
-   alpha-tested pipelines for every tiled variant (lighting, inspection,
-   probes and decals): 40 pipeline states a graph.
+   slot. A job on the runtime's job system then creates the graph's forward
+   and alpha-tested pipelines for every tiled variant (lighting, inspection,
+   probes and decals): 40 pipeline states a graph. Without a job system, or
+   with no free job slot, the rendering thread creates them; the runtime
+   calls `vkr_renderer_detach_jobs` before it shuts the job system down
+   ([ADR-118](118-renderer-libc-boundary.md)).
    `vkr_renderer_get_pipeline_stats` reports the graphs still pending.
 7. **Drawing.** Each frame takes a ready mask of the slots whose pipelines
    exist and allocates one `VkrMetalCustomCompaction` table (8,480 bytes)

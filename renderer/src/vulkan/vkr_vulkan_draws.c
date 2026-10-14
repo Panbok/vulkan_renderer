@@ -47,9 +47,9 @@ vkr_internal uint64_t vkr_vk_text_draw_upload_size(
   uint64_t size = (uint64_t)draw_count * sizeof(VkrVulkanPreparedTextDraw);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     size +=
-        vkr_vk_align_up(
+        vkr_align_up_u64(
             (uint64_t)draws[i].vertex_count * sizeof(*draws[i].vertices), 16u) +
-        vkr_vk_align_up(
+        vkr_align_up_u64(
             (uint64_t)draws[i].index_count * sizeof(*draws[i].indices), 16u);
     if (size > VKR_VULKAN_FRAME_UPLOAD_SIZE)
       return VKR_VULKAN_FRAME_UPLOAD_SIZE + 1ull;
@@ -98,14 +98,11 @@ vkr_internal uint64_t vkr_vk_candidate_epoch(const VkrWorldPassPayload *world) {
   return hash;
 }
 
-uint64_t vkr_vk_align_up(uint64_t value, uint64_t alignment) {
-  return (value + alignment - 1u) & ~(alignment - 1u);
-}
-
 void *vkr_vk_frame_upload_allocate(VkrVulkanFrameSlot *slot, uint64_t size,
                                    uint64_t alignment, uint64_t *out_address,
                                    uint64_t *out_offset) {
-  const uint64_t offset = vkr_vk_align_up(slot->frame_upload_cursor, alignment);
+  const uint64_t offset =
+      vkr_align_up_u64(slot->frame_upload_cursor, alignment);
   if (offset > slot->frame_upload.size ||
       size > slot->frame_upload.size - offset) {
     /* Exhaustion fails the whole frame at the call site. Count it so the
@@ -719,8 +716,8 @@ vkr_internal bool8_t vkr_vk_resolve_ibl(VkrVulkanRenderer *renderer,
           vkr_vk_published_texture(renderer, probe->prefilter, NULL);
       packed.intensity_box.x *=
           renderer->graph->packet->exposure.pre_exposure *
-          ldexpf(1.0f,
-                 -(probe_prefilter ? probe_prefilter->radiance_stops : 0));
+          vkr_ldexp_f32(
+              1.0f, -(probe_prefilter ? probe_prefilter->radiance_stops : 0));
       if (!vkr_vk_resolve_sampled_pair(renderer, probe->prefilter,
                                        &packed.prefilter_texture,
                                        &packed.prefilter_sampler)) {
@@ -1455,7 +1452,7 @@ void vkr_vk_fill_packet_frame_root(
   root->view_position = frame->view_position;
   root->prefilter_mip_count = frame->prefilter_mip_count;
   root->ibl_controls = frame->ibl_controls;
-  root->ibl_controls.x *= ldexpf(1.0f, -slot->ibl_radiance_stops);
+  root->ibl_controls.x *= vkr_ldexp_f32(1.0f, -slot->ibl_radiance_stops);
   root->pre_exposure = frame->pre_exposure;
   root->directional_direction_enabled = frame->directional_direction_enabled;
   root->directional_color_intensity = frame->directional_color_intensity;
@@ -1896,9 +1893,9 @@ bool8_t vkr_vk_prepare_text_draws(VkrVulkanRenderer *renderer,
     const uint64_t index_bytes =
         (uint64_t)draw->index_count * sizeof(*draw->indices);
     const uint64_t vertex_offset = cursor;
-    cursor += vkr_vk_align_up(vertex_bytes, 16u);
+    cursor += vkr_align_up_u64(vertex_bytes, 16u);
     const uint64_t index_offset = cursor;
-    cursor += vkr_vk_align_up(index_bytes, 16u);
+    cursor += vkr_align_up_u64(index_bytes, 16u);
     MemCopy((uint8_t *)prepared + vertex_offset, draw->vertices, vertex_bytes);
     vkr_packet_pre_expose_text_vertices(
         (VkrTextVertex *)((uint8_t *)prepared + vertex_offset),

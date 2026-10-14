@@ -698,7 +698,7 @@ vkr_internal bool8_t vkr_renderer_metrics_register_shadows(
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     char name[64];
 #define VKR_REGISTER_CASCADE(FIELD, SUFFIX)                                    \
-  snprintf(name, sizeof(name), "draw.shadow.cascade%u." SUFFIX, i);            \
+  string_format(name, sizeof(name), "draw.shadow.cascade%u." SUFFIX, i);       \
   if (!vkr_renderer_metric_register(                                           \
           metrics, name, VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_KIND_GAUGE,        \
           VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64, &ids->FIELD[i]))       \
@@ -896,9 +896,9 @@ vkr_internal bool8_t vkr_renderer_metrics_register_gpu_memory(
   for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
     for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
       char name[64];
-      snprintf(name, sizeof(name), "memory.gpu.owner.%s.%s",
-               vkr_gpu_allocation_owner_names[owner],
-               vkr_gpu_owner_metric_rows[row].suffix);
+      string_format(name, sizeof(name), "memory.gpu.owner.%s.%s",
+                    vkr_gpu_allocation_owner_names[owner],
+                    vkr_gpu_owner_metric_rows[row].suffix);
       if (!vkr_renderer_metric_register(
               metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU,
               vkr_gpu_owner_metric_rows[row].kind,
@@ -941,7 +941,7 @@ vkr_internal bool8_t vkr_renderer_metrics_register_cpu_memory(
   };
   for (uint32_t i = 0; i < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++i) {
     char name[64];
-    snprintf(name, sizeof(name), "memory.cpu.tag.%s.bytes", tag_names[i]);
+    string_format(name, sizeof(name), "memory.cpu.tag.%s.bytes", tag_names[i]);
     if (!vkr_renderer_metric_register(
             metrics, name, VKR_METRIC_DOMAIN_MEMORY_CPU, VKR_METRIC_KIND_GAUGE,
             VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64,
@@ -1092,7 +1092,7 @@ bool8_t vkr_renderer_metrics_register_device_memory(
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
   char name[64];
   for (uint32_t i = 0; i < type_count; ++i) {
-    snprintf(name, sizeof(name), "memory.gpu.type.%u.bytes.live", i);
+    string_format(name, sizeof(name), "memory.gpu.type.%u.bytes.live", i);
     if (!vkr_renderer_metric_register(
             metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_KIND_GAUGE,
             VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64,
@@ -1101,7 +1101,7 @@ bool8_t vkr_renderer_metrics_register_device_memory(
       heap_count = 0;
       break;
     }
-    snprintf(name, sizeof(name), "memory.gpu.type.%u.allocations.live", i);
+    string_format(name, sizeof(name), "memory.gpu.type.%u.allocations.live", i);
     if (!vkr_renderer_metric_register(
             metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_KIND_GAUGE,
             VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
@@ -1113,7 +1113,7 @@ bool8_t vkr_renderer_metrics_register_device_memory(
   }
   for (uint32_t i = 0; i < heap_count; ++i) {
 #define VKR_REGISTER_HEAP_ROW(FIELD, SUFFIX)                                   \
-  snprintf(name, sizeof(name), "memory.gpu.heap.%u." SUFFIX, i);               \
+  string_format(name, sizeof(name), "memory.gpu.heap.%u." SUFFIX, i);          \
   if (!vkr_renderer_metric_register(                                           \
           metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_KIND_GAUGE,  \
           VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64, &ids->FIELD[i])) {     \
@@ -1207,8 +1207,8 @@ vkr_renderer_metrics_log_slow_frame(const VkrRendererMetrics *renderer_metrics,
     if (slowest[rank] != UINT32_MAX) {
       const VkrRendererMetricsPassSample *sample =
           &table->samples[slowest[rank]];
-      snprintf(passes[rank], sizeof(passes[rank]), " %.*s %.2f",
-               (int)sample->name_length, sample->name, sample->gpu_ms);
+      string_format(passes[rank], sizeof(passes[rank]), " %.*s %.2f",
+                    (int)sample->name_length, sample->name, sample->gpu_ms);
     }
   }
   log_warn("Slow GPU frame %llu: passes %.2f ms;%s%s%s",
@@ -1233,9 +1233,9 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
         result->pass_timing_count <= VKR_RENDERER_IMPL_MAX_PASS_TIMINGS;
     for (uint32_t i = 0; valid && i < result->pass_timing_count; ++i) {
       const VkrRendererImplPassTiming *source = &result->pass_timings[i];
-      valid = isfinite(source->cpu_ms) && source->cpu_ms >= 0.0 &&
+      valid = vkr_is_finite_f64(source->cpu_ms) && source->cpu_ms >= 0.0 &&
               (!source->valid ||
-               (isfinite(source->gpu_ms) && source->gpu_ms >= 0.0));
+               (vkr_is_finite_f64(source->gpu_ms) && source->gpu_ms >= 0.0));
       if (!valid) {
         break;
       }

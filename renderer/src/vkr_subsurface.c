@@ -1,13 +1,12 @@
 #include "vkr_subsurface.h"
 
-#include <math.h>
-
 #define VKR_SUBSURFACE_PI 3.14159265358979323846264338327950288
 
 bool8_t vkr_subsurface_profile_valid(VkrSubsurfaceProfile profile) {
   const Vec3 distance = profile.diffusion_distance;
-  return isfinite(distance.r) && distance.r > 0.0f && isfinite(distance.g) &&
-         distance.g > 0.0f && isfinite(distance.b) && distance.b > 0.0f;
+  return vkr_is_finite_f32(distance.r) && distance.r > 0.0f &&
+         vkr_is_finite_f32(distance.g) && distance.g > 0.0f &&
+         vkr_is_finite_f32(distance.b) && distance.b > 0.0f;
 }
 
 /* Christensen and Burley, Approximate Reflectance Profiles (2015):
@@ -23,13 +22,13 @@ float64_t vkr_subsurface_profile_evaluate(float64_t radius,
 float64_t vkr_subsurface_profile_radial_pdf(float64_t radius,
                                             float64_t diffusion_distance) {
   const float64_t x = radius / diffusion_distance;
-  return (exp(-x) + exp(-x / 3.0)) / (4.0 * diffusion_distance);
+  return (vkr_exp_f64(-x) + vkr_exp_f64(-x / 3.0)) / (4.0 * diffusion_distance);
 }
 
 float64_t vkr_subsurface_profile_radial_cdf(float64_t radius,
                                             float64_t diffusion_distance) {
   const float64_t x = radius / diffusion_distance;
-  return -0.25 * expm1(-x) - 0.75 * expm1(-x / 3.0);
+  return -0.25 * vkr_expm1_f64(-x) - 0.75 * vkr_expm1_f64(-x / 3.0);
 }
 
 float64_t vkr_subsurface_profile_sample_radius(float64_t diffusion_distance,
@@ -40,14 +39,16 @@ float64_t vkr_subsurface_profile_sample_radius(float64_t diffusion_distance,
      * Stable CDF/PDF Newton steps retain the small positive radial mass. */
     x = 2.0 * u;
     for (uint32_t iteration = 0u; iteration < 4u; ++iteration) {
-      const float64_t cdf = -0.25 * expm1(-x) - 0.75 * expm1(-x / 3.0);
-      const float64_t pdf = (exp(-x) + exp(-x / 3.0)) * 0.25;
+      const float64_t cdf =
+          -0.25 * vkr_expm1_f64(-x) - 0.75 * vkr_expm1_f64(-x / 3.0);
+      const float64_t pdf = (vkr_exp_f64(-x) + vkr_exp_f64(-x / 3.0)) * 0.25;
       x -= (cdf - u) / pdf;
     }
   } else {
     /* t=exp(-x/3) turns the CDF inversion into t^3+3t=4(1-u). */
-    const float64_t t = 2.0 * sinh(asinh(2.0 * (1.0 - u)) / 3.0);
-    x = -3.0 * log(t);
+    const float64_t t =
+        2.0 * vkr_sinh_f64(vkr_asinh_f64(2.0 * (1.0 - u)) / 3.0);
+    x = -3.0 * vkr_log_f64(t);
   }
   return diffusion_distance * x;
 }
@@ -70,7 +71,8 @@ bool8_t vkr_subsurface_table_build(const VkrSubsurfaceProfile *profiles,
   for (uint32_t profile = 0u; profile < profile_count; ++profile) {
     const Vec3 authored = profiles[profile].diffusion_distance;
     const float64_t distance[3] = {authored.r, authored.g, authored.b};
-    const float64_t largest = fmax(distance[0], fmax(distance[1], distance[2]));
+    const float64_t largest =
+        vkr_fmax_f64(distance[0], vkr_fmax_f64(distance[1], distance[2]));
     float64_t weights[VKR_SUBSURFACE_TAP_COUNT][3];
     float64_t weight_sums[3] = {0.0, 0.0, 0.0};
     float64_t maximum_radius = 0.0;
@@ -81,10 +83,12 @@ bool8_t vkr_subsurface_table_build(const VkrSubsurfaceProfile *profiles,
         const float64_t radius =
             vkr_subsurface_profile_sample_radius(distance[channel], u);
         const float64_t relative_radius = radius / largest;
-        maximum_radius = fmax(maximum_radius, relative_radius);
+        maximum_radius = vkr_fmax_f64(maximum_radius, relative_radius);
         const float64_t angle = (float64_t)pair * 2.39996322972865332;
-        const float32_t offset_x = (float32_t)(relative_radius * cos(angle));
-        const float32_t offset_y = (float32_t)(relative_radius * sin(angle));
+        const float32_t offset_x =
+            (float32_t)(relative_radius * vkr_cos_f64(angle));
+        const float32_t offset_y =
+            (float32_t)(relative_radius * vkr_sin_f64(angle));
         float64_t pdf[3];
         float64_t mixture_pdf = 0.0;
         for (uint32_t component = 0u; component < 3u; ++component) {
@@ -114,9 +118,9 @@ bool8_t vkr_subsurface_table_build(const VkrSubsurfaceProfile *profiles,
       out_table->texels[profile][2u * tap + 1u].x =
           (float32_t)(weights[tap][2] / weight_sums[2]);
     }
-    out_table->texels[profile][64] =
-        vec4_new(authored.r, authored.g, authored.b,
-                 nextafterf((float32_t)maximum_radius, INFINITY));
+    out_table->texels[profile][64] = vec4_new(
+        authored.r, authored.g, authored.b,
+        vkr_next_after_f32((float32_t)maximum_radius, VKR_FLOAT_INFINITY));
   }
   return true_v;
 }

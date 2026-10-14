@@ -1,6 +1,6 @@
 #include "vkr_bloom.h"
 
-#include <math.h>
+#include "math/vkr_math.h"
 
 /** Keeps the soft-knee divisor away from zero when `knee` is zero. */
 #define VKR_BLOOM_KNEE_EPSILON 1e-4f
@@ -31,7 +31,7 @@ VkrBloomConfig vkr_bloom_config_normalize(const VkrBloomConfig *config) {
   result.max_mip_count =
       Clamp(config->max_mip_count, 2u, VKR_BLOOM_MAX_MIP_COUNT);
   result.min_mip_extent = ClampBot(config->min_mip_extent, 1u);
-  const float32_t firefly_clamp = isfinite(config->firefly_clamp)
+  const float32_t firefly_clamp = vkr_is_finite_f32(config->firefly_clamp)
                                       ? config->firefly_clamp
                                       : defaults.firefly_clamp;
   result.firefly_clamp =

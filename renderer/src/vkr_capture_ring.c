@@ -1,7 +1,5 @@
 #include "vkr_capture_ring.h"
 
-#include <math.h>
-
 vkr_internal void vkr_capture_slot_reset(VkrCaptureSlot *slot) {
   uint8_t *storage = slot->storage;
   MemZero(slot, sizeof(*slot));
@@ -116,7 +114,7 @@ bool8_t vkr_capture_ring_set_display_exposure(VkrCaptureRing *ring,
                                               uint64_t submit_serial,
                                               float32_t display_exposure) {
   if (!ring || !ring->initialized || submit_serial == 0u ||
-      !isfinite(display_exposure) || display_exposure <= 0.0f)
+      !vkr_is_finite_f32(display_exposure) || display_exposure <= 0.0f)
     return false_v;
   for (uint32_t i = 0u; i < ring->capacity; ++i) {
     VkrCaptureSlot *slot = &ring->slots[i];

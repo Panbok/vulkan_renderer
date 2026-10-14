@@ -1484,11 +1484,12 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     /* Only the reflector's screen rectangle is drawn; the cleared rest
        leaves its pixels to the probes. */
     const Vec4 rect = packet->input.planar_reflection->screen_rect;
-    const uint32_t x0 = (uint32_t)floorf(rect.x * (float32_t)width);
-    const uint32_t y0 = (uint32_t)floorf(rect.y * (float32_t)height);
-    const uint32_t x1 = Min((uint32_t)ceilf(rect.z * (float32_t)width), width);
+    const uint32_t x0 = (uint32_t)vkr_floor_f32(rect.x * (float32_t)width);
+    const uint32_t y0 = (uint32_t)vkr_floor_f32(rect.y * (float32_t)height);
+    const uint32_t x1 =
+        Min((uint32_t)vkr_ceil_f32(rect.z * (float32_t)width), width);
     const uint32_t y1 =
-        Min((uint32_t)ceilf(rect.w * (float32_t)height), height);
+        Min((uint32_t)vkr_ceil_f32(rect.w * (float32_t)height), height);
     prepared->scissor = (VkRect2D){
         .offset = {(int32_t)x0, (int32_t)y0},
         .extent = {Max(x1, x0 + 1u) - x0, Max(y1, y0 + 1u) - y0},

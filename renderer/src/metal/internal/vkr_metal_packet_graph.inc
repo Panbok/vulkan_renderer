@@ -1507,15 +1507,10 @@ vkr_internal bool8_t vkr_metal_packet_named_texture_info(
   return false_v;
 }
 
-vkr_internal uint64_t vkr_metal_packet_align_up(uint64_t value,
-                                                uint64_t alignment) {
-  return (value + alignment - 1) & ~(alignment - 1);
-}
-
 vkr_internal bool8_t vkr_metal_packet_material_info_valid(
     const VkrMetalPacketMaterialCreateInfo *create_info) {
   if (!create_info || create_info->alpha_mode > VKR_MATERIAL_ALPHA_BLEND ||
-      !isfinite(create_info->alpha_cutoff) ||
+      !vkr_is_finite_f32(create_info->alpha_cutoff) ||
       create_info->alpha_cutoff < 0.0f || create_info->alpha_cutoff > 1.0f)
     return false_v;
   const VkrPbrProperties *pbr = &create_info->pbr;
@@ -1553,7 +1548,7 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
       pbr->diffuse_transmission_color.z,
   };
   for (uint32_t i = 0; i < ArrayCount(values); ++i) {
-    if (!isfinite(values[i]))
+    if (!vkr_is_finite_f32(values[i]))
       return false_v;
   }
   if (pbr->clearcoat_factor < 0.0f || pbr->clearcoat_factor > 1.0f ||
@@ -1572,8 +1567,9 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
        (create_info->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
         pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f)))
     return false_v;
-  if (!isfinite(pbr->subsurface_strength) || pbr->subsurface_strength < 0.0f ||
-      pbr->subsurface_strength > 1.0f || pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT ||
+  if (!vkr_is_finite_f32(pbr->subsurface_strength) ||
+      pbr->subsurface_strength < 0.0f || pbr->subsurface_strength > 1.0f ||
+      pbr->subsurface_profile >= VKR_SUBSURFACE_PROFILE_COUNT ||
       (pbr->subsurface_strength > 0.0f &&
        (create_info->alpha_mode == VKR_MATERIAL_ALPHA_BLEND ||
         pbr->transmission_factor > 0.0f || pbr->thickness_factor > 0.0f ||
@@ -1582,7 +1578,7 @@ vkr_internal bool8_t vkr_metal_packet_material_info_valid(
   if (!vkr_pbr_brdf_extensions_valid(pbr))
     return false_v;
   for (uint32_t i = 0; i < ArrayCount(create_info->tint); ++i) {
-    if (!isfinite(create_info->tint[i]))
+    if (!vkr_is_finite_f32(create_info->tint[i]))
       return false_v;
   }
   for (uint32_t i = 0; i < ArrayCount(create_info->textures); ++i) {
@@ -1662,12 +1658,12 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
         (uint64_t)texture.width * format_info.bytes_per_block;
     if (tight_pitch > UINT64_MAX - 255u)
       return false_v;
-    const uint64_t row_pitch = vkr_metal_packet_align_up(tight_pitch, 256);
+    const uint64_t row_pitch = vkr_align_up_u64(tight_pitch, 256);
     if (texture.height > UINT64_MAX / row_pitch ||
         offset > UINT64_MAX - (VKR_CAPTURE_BUFFER_ALIGNMENT - 1u))
       return false_v;
     const uint64_t data_size = row_pitch * texture.height;
-    offset = vkr_metal_packet_align_up(offset, VKR_CAPTURE_BUFFER_ALIGNMENT);
+    offset = vkr_align_up_u64(offset, VKR_CAPTURE_BUFFER_ALIGNMENT);
     if (data_size == 0 || offset > UINT64_MAX - data_size)
       return false_v;
 

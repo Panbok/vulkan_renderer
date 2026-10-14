@@ -12,10 +12,10 @@
 
 #include <Block.h>
 #include <dispatch/dispatch.h>
-#include <float.h>
 
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
+#include "core/vkr_byte_io.h"
 #include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
@@ -41,10 +41,6 @@
 #include "vkr_rg_json.h"
 #include "vkr_sheen_lut.h"
 #include "vkr_visibility.h"
-
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
@@ -110,9 +106,6 @@ _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
                    VKR_SHADOW_CASCADE_COUNT_MAX <=
                        VKR_METAL_PACKET_MAX_TEXTURE_LAYERS,
                "a layered shadow graph image exceeds the graph layers");
-
-vkr_internal uint64_t vkr_metal_packet_align_up(uint64_t value,
-                                                uint64_t alignment);
 
 /** Converts the renderer's Vulkan-oriented clip-Y convention to Metal. */
 vkr_internal Mat4 vkr_metal_packet_clip_matrix(bool8_t convert, Mat4 matrix) {
@@ -457,13 +450,13 @@ vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
   /* The camera's late Custom draws (ADR-096). */
   const uint64_t custom_late_offset = picking_depth_offset + sizeof(float32_t);
   const uint64_t fixed_size = 32u;
-  const uint64_t deferred_offset = vkr_metal_packet_align_up(fixed_size, 16u);
+  const uint64_t deferred_offset = vkr_align_up_u64(fixed_size, 16u);
   const uint64_t deferred_bytes =
       deferred_diagnostics
           ? (uint64_t)gpu_draw_view_count * sizeof(VkrGpuDrawCompactionState)
           : 0u;
   const uint64_t exposure_offset =
-      vkr_metal_packet_align_up(deferred_offset + deferred_bytes, 16u);
+      vkr_align_up_u64(deferred_offset + deferred_bytes, 16u);
   const uint64_t exposure_bytes =
       exposure ? sizeof(VkrExposureGpuState) + sizeof(VkrExposureGpuHistogram)
                : 0u;
@@ -636,6 +629,8 @@ typedef struct VkrMetalCustomGraph {
   /* Published material rows naming the graph; a reload frees the slot at
      zero. Render-thread owned. */
   uint32_t references;
+  /* The job creating each BRDF variant; a zero handle ran inline. */
+  VkrJobHandle jobs[VKR_METAL_TILED_BRDF_VARIANT_COUNT];
 } VkrMetalCustomGraph;
 
 /* The editor's presenter (ADR-111) composites the newest finished Scene image
@@ -842,15 +837,22 @@ struct VkrMetalPacketRenderer {
      until a scene first publishes an extended material, then PENDING while
      the custom group creates them, READY or FAILED with release order. */
   VkrAtomicUint32 tiled_brdf_state;
+  VkrJobHandle tiled_brdf_job;
   id<MTLRenderPipelineState> tiled_text_pipeline;
   /* Custom material graphs (ADR-096): the project library, each slot's
-     pipelines (slot 0 stays empty) and the queue group creating them. */
+     pipelines (slot 0 stays empty) and the jobs creating them. */
   id<MTLLibrary> custom_library;
   /* Where the library loads from, kept for reloads, and whether the next
      frame preparation reloads it. */
   char custom_library_path[VKR_METAL_CUSTOM_LIBRARY_PATH];
   VkrAtomicBool custom_reload_requested;
-  dispatch_group_t custom_group;
+  /* Borrowed job system for background pipeline creation; NULL creates
+     pipelines on the requesting thread. Detached before its owner shuts it
+     down (vkr_metal_packet_renderer_detach_jobs). */
+  VkrJobSystem *job_system;
+  /* Background creations requested and not yet finished. */
+  VkrAtomicUint32 background_builds;
+  bool8_t custom_loaded;
   VkrMetalCustomGraph custom_graphs[VKR_METAL_CUSTOM_GRAPH_SLOTS];
   /* Slots given to graphs; slots stay given until the pipelines release. */
   uint32_t custom_graph_count;
@@ -1241,7 +1243,7 @@ VkrRendererError vkr_metal_packet_renderer_get_pixel_readback_result(
 String8
 vkr_metal_packet_renderer_device_name(const VkrMetalPacketRenderer *renderer) {
   return string8_create_from_cstr((const uint8_t *)renderer->device_name,
-                                  strlen(renderer->device_name));
+                                  string_length(renderer->device_name));
 }
 
 VkrPresentMode

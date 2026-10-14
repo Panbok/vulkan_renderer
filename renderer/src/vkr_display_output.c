@@ -1,6 +1,6 @@
 #include "vkr_display_output.h"
 
-#include <math.h>
+#include "math/vkr_math.h"
 
 VkrDisplayOutputParams
 vkr_display_output_resolve(VkrDisplayOutputMode mode,
@@ -8,8 +8,8 @@ vkr_display_output_resolve(VkrDisplayOutputMode mode,
                            bool8_t windowed) {
   VkrDisplayOutputParams result = {.headroom = 1.0f, .output_scale = 1.0f};
   if (mode != VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR || !windowed ||
-      !snapshot.available || !isfinite(snapshot.headroom) ||
-      !isfinite(snapshot.output_scale) || snapshot.headroom < 1.0f ||
+      !snapshot.available || !vkr_is_finite_f32(snapshot.headroom) ||
+      !vkr_is_finite_f32(snapshot.output_scale) || snapshot.headroom < 1.0f ||
       snapshot.output_scale <= 0.0f ||
       (float64_t)snapshot.headroom * snapshot.output_scale > 65504.0)
     return result;

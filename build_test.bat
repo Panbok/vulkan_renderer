@@ -14,6 +14,11 @@ if errorlevel 1 (
     popd
     exit /b 1
 )
+python tools/checks/check_renderer_libc.py
+if errorlevel 1 (
+    popd
+    exit /b 1
+)
 
 rem The tester target cooks the fixture textures it reads (vkr_engine_textures).
 set "VKR_BUILD_TARGET=vulkan_renderer_tester"

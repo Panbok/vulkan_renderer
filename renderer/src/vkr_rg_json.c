@@ -966,7 +966,7 @@ vkr_rg_json_parse_resource(VkrRgJsonParseContext *ctx, VkrJsonReader *obj,
   *out_resource = (VkrRgJsonResource){0};
 
   char field_path[128];
-  snprintf(field_path, sizeof(field_path), "resources[%u]", index);
+  string_format(field_path, sizeof(field_path), "resources[%u]", index);
 
   VkrJsonReader name_reader = *obj;
   if (!vkr_json_get_string(&name_reader, "name", &out_resource->name)) {
@@ -1352,8 +1352,8 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
 
       VkrRgJsonAttachment attachment = {0};
       char color_path[128];
-      snprintf(color_path, sizeof(color_path), "%s.color[%u]", field_path,
-               color_index);
+      string_format(color_path, sizeof(color_path), "%s.color[%u]", field_path,
+                    color_index);
       if (!vkr_rg_json_parse_attachment(ctx, &color_obj, color_path,
                                         &attachment, NULL)) {
         return false_v;
@@ -1486,7 +1486,7 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
   out_pass->writes = (Array_VkrRgJsonResourceUse){.allocator = ctx->allocator};
 
   char field_path[128];
-  snprintf(field_path, sizeof(field_path), "passes[%u]", index);
+  string_format(field_path, sizeof(field_path), "passes[%u]", index);
 
   VkrJsonReader name_reader = *obj;
   if (!vkr_json_get_string(&name_reader, "name", &out_pass->name)) {
@@ -1578,8 +1578,8 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
 
       VkrRgJsonResourceUse use = {0};
       char use_path[128];
-      snprintf(use_path, sizeof(use_path), "%s.reads[%u]", field_path,
-               read_index);
+      string_format(use_path, sizeof(use_path), "%s.reads[%u]", field_path,
+                    read_index);
       if (!vkr_rg_json_parse_use(ctx, &use_obj, use_path, &use)) {
         ok = false_v;
         goto cleanup;
@@ -1618,8 +1618,8 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
 
       VkrRgJsonResourceUse use = {0};
       char use_path[128];
-      snprintf(use_path, sizeof(use_path), "%s.writes[%u]", field_path,
-               write_index);
+      string_format(use_path, sizeof(use_path), "%s.writes[%u]", field_path,
+                    write_index);
       if (!vkr_rg_json_parse_use(ctx, &use_obj, use_path, &use)) {
         ok = false_v;
         goto cleanup;
@@ -1880,7 +1880,8 @@ bool8_t vkr_rg_json_load_file(VkrAllocator *allocator, const char *path,
   *out_graph = (VkrRgJsonGraph){0};
 
   FilePath file_path = {
-      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      .path =
+          string8_create_from_cstr((const uint8_t *)path, string_length(path)),
       .type = FILE_PATH_TYPE_RELATIVE,
   };
 
@@ -2547,7 +2548,7 @@ vkr_internal bool8_t vkr_rg_expand_name(VkrAllocator *allocator, String8 name,
   }
 
   char index_buf[32] = {0};
-  int32_t index_len = snprintf(index_buf, sizeof(index_buf), "%u", index);
+  int32_t index_len = string_format(index_buf, sizeof(index_buf), "%u", index);
   if (index_len <= 0) {
     return false_v;
   }

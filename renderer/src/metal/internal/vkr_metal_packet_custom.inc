@@ -5,7 +5,7 @@
 // A Custom material names the surface function its graph generated. The
 // project library (`vkr_bakery materials`) holds every function with its
 // tiled forward entries; the renderer gives each function a slot the first
-// time a material names it and creates its pipelines on a background queue.
+// time a material names it and creates its pipelines on the job system.
 // A material's row carries its slot from then on; the frame's ready mask
 // tells the camera classifier which slots shade with their own pipelines,
 // and a draw of another slot takes its material's Standard fallback and
@@ -16,10 +16,11 @@ vkr_internal void vkr_metal_packet_custom_open(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
   if (!renderer->custom_library_path[0])
     return;
+  const FilePath library_file = file_path_view(renderer->custom_library_path);
+  if (!file_exists(&library_file))
+    return;
   NSString *file =
       [NSString stringWithUTF8String:renderer->custom_library_path];
-  if (![[NSFileManager defaultManager] fileExistsAtPath:file])
-    return;
   NSError *error = nil;
   renderer->custom_library =
       [renderer->device newLibraryWithURL:[NSURL fileURLWithPath:file]
@@ -32,90 +33,153 @@ vkr_internal void vkr_metal_packet_custom_open(VkrMetalPacketRenderer *renderer)
 }
 
 /* The project library at `path`; Custom materials draw their fallback
-   without it, so only the queue group can fail. */
+   without it. */
 vkr_internal bool8_t
 vkr_metal_packet_custom_load(VkrMetalPacketRenderer *renderer, const char *path)
     API_AVAILABLE(macos(26.0)) {
-  renderer->custom_group = dispatch_group_create();
-  if (!renderer->custom_group)
-    return false_v;
-  if (path && strlen(path) < sizeof(renderer->custom_library_path))
-    snprintf(renderer->custom_library_path,
-             sizeof(renderer->custom_library_path), "%s", path);
+  if (path && string_length(path) < sizeof(renderer->custom_library_path))
+    string_format(renderer->custom_library_path,
+                  sizeof(renderer->custom_library_path), "%s", path);
   vkr_metal_packet_custom_open(renderer);
+  renderer->custom_loaded = true_v;
   return true_v;
 }
 
 /* Creates slot `slot`'s forward and alpha-tested pipelines of BRDF variant
-   `brdf` (ADR-113) for every tiled variant on a background queue, then
-   marks that variant ready or failed. */
+   `brdf` (ADR-113) for every tiled variant, then marks that variant ready or
+   failed. Runs as a background build. */
+vkr_internal void
+vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
+                               uint32_t brdf) API_AVAILABLE(macos(26.0)) {
+  VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
+  MTLFunctionConstantValues *constants = renderer->tiled_brdf_constants[brdf];
+  @autoreleasepool {
+    const float64_t start = vkr_platform_get_absolute_time();
+    bool8_t ok = renderer->custom_library != nil;
+    NSString *label = [NSString stringWithUTF8String:graph->function];
+    for (uint32_t decals = 0;
+         ok && decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT; ++decals) {
+      for (uint32_t probes = 0;
+           ok && probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT; ++probes) {
+        for (uint32_t i = 0; ok && i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+          char name[192];
+          string_format(name, sizeof(name), "%s_%s", graph->function,
+                        tiled_lighting[i].forward[decals][probes]);
+          graph->forward[brdf][decals][probes][i] =
+              vkr_metal_packet_create_pipeline_with_targets(
+                  renderer, renderer->custom_library, "vkr_metal_tiled_vertex",
+                  renderer->custom_library, name, MTLPixelFormatRGBA16Float,
+                  VKR_METAL_PACKET_BLEND_NONE,
+                  VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+                  VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                  VKR_METAL_TILED_SAMPLE_COUNT, constants, label);
+          string_format(name, sizeof(name), "%s_%s", graph->function,
+                        tiled_lighting[i].coverage[decals][probes]);
+          graph->coverage[brdf][decals][probes][i] =
+              vkr_metal_packet_create_pipeline_with_targets(
+                  renderer, renderer->custom_library, "vkr_metal_tiled_vertex",
+                  renderer->custom_library, name, MTLPixelFormatRGBA16Float,
+                  VKR_METAL_PACKET_BLEND_COVERAGE,
+                  VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+                  VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                  VKR_METAL_TILED_SAMPLE_COUNT, constants, label);
+          ok = graph->forward[brdf][decals][probes][i] != nil &&
+               graph->coverage[brdf][decals][probes][i] != nil;
+        }
+      }
+    }
+    graph->create_seconds = vkr_platform_get_absolute_time() - start;
+    vkr_atomic_uint32_store(&graph->state[brdf],
+                            ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                               : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                            VKR_MEMORY_ORDER_RELEASE);
+    if (ok)
+      log_info("Metal: Custom graph %s%s ready in %.1f ms (slot %u)",
+               graph->function, brdf ? " BRDF extension variant" : "",
+               graph->create_seconds * 1.0e3, slot);
+    else if (brdf)
+      log_warn("Metal: Custom graph %s has no BRDF extension "
+               "pipelines; its extended materials draw without them",
+               graph->function);
+    else
+      log_warn("Metal: Custom graph %s has no pipelines; its materials "
+               "draw their Standard fallback",
+               graph->function);
+  }
+}
+
+/* One background pipeline creation: Custom graph `slot` in BRDF variant
+   `brdf`, or the tiled BRDF extension variant when `slot` is 0. */
+typedef struct VkrMetalBackgroundBuild {
+  VkrMetalPacketRenderer *renderer;
+  uint32_t slot;
+  uint32_t brdf;
+} VkrMetalBackgroundBuild;
+
+vkr_internal void
+vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
+    API_AVAILABLE(macos(26.0)) {
+  if (build->slot == 0u)
+    vkr_metal_packet_build_tiled_brdf_pipelines(build->renderer);
+  else
+    vkr_metal_packet_custom_create(build->renderer, build->slot, build->brdf);
+  vkr_atomic_uint32_fetch_sub(&build->renderer->background_builds, 1u,
+                              VKR_MEMORY_ORDER_RELEASE);
+}
+
+vkr_internal bool8_t vkr_metal_packet_background_job(VkrJobContext *context,
+                                                     void *payload)
+    API_AVAILABLE(macos(26.0)) {
+  (void)context;
+  vkr_metal_packet_background_run(payload);
+  return true_v;
+}
+
+vkr_internal void vkr_metal_packet_background_build(
+    VkrMetalPacketRenderer *renderer, uint32_t slot, uint32_t brdf,
+    VkrJobHandle *out_job) API_AVAILABLE(macos(26.0)) {
+  const VkrMetalBackgroundBuild build = {
+      .renderer = renderer, .slot = slot, .brdf = brdf};
+  vkr_atomic_uint32_fetch_add(&renderer->background_builds, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+  *out_job = (VkrJobHandle){0};
+  if (renderer->job_system) {
+    Bitset8 type_mask = bitset8_create();
+    bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+    const VkrJobDesc desc = {
+        .priority = VKR_JOB_PRIORITY_NORMAL,
+        .type_mask = type_mask,
+        .run = vkr_metal_packet_background_job,
+        .payload = &build,
+        .payload_size = sizeof(build),
+    };
+    if (vkr_job_try_submit(renderer->job_system, &desc, out_job))
+      return;
+  }
+  /* No job system, or no free job slot: create the pipelines here. */
+  vkr_metal_packet_background_run(&build);
+}
+
+/* Waits until every background creation has finished. */
+vkr_internal void
+vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  if (!renderer->job_system)
+    return;
+  for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+    for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf)
+      (void)vkr_job_wait(renderer->job_system,
+                         renderer->custom_graphs[slot].jobs[brdf]);
+  }
+  (void)vkr_job_wait(renderer->job_system, renderer->tiled_brdf_job);
+}
+
+/* Starts creating slot `slot`'s pipelines of BRDF variant `brdf`. */
 vkr_internal void
 vkr_metal_packet_custom_build(VkrMetalPacketRenderer *renderer, uint32_t slot,
                               uint32_t brdf) API_AVAILABLE(macos(26.0)) {
-  VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
-  MTLFunctionConstantValues *constants = renderer->tiled_brdf_constants[brdf];
-  dispatch_group_async(
-      renderer->custom_group,
-      dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        @autoreleasepool {
-          const float64_t start = vkr_platform_get_absolute_time();
-          bool8_t ok = renderer->custom_library != nil;
-          NSString *label = [NSString stringWithUTF8String:graph->function];
-          for (uint32_t decals = 0;
-               ok && decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT; ++decals) {
-            for (uint32_t probes = 0;
-                 ok && probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT; ++probes) {
-              for (uint32_t i = 0; ok && i < VKR_METAL_TILED_LIGHTING_COUNT;
-                   ++i) {
-                char name[192];
-                snprintf(name, sizeof(name), "%s_%s", graph->function,
-                         tiled_lighting[i].forward[decals][probes]);
-                graph->forward[brdf][decals][probes][i] =
-                    vkr_metal_packet_create_pipeline_with_targets(
-                        renderer, renderer->custom_library,
-                        "vkr_metal_tiled_vertex", renderer->custom_library,
-                        name, MTLPixelFormatRGBA16Float,
-                        VKR_METAL_PACKET_BLEND_NONE,
-                        VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-                        VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                        VKR_METAL_TILED_SAMPLE_COUNT,
-                        constants, label);
-                snprintf(name, sizeof(name), "%s_%s", graph->function,
-                         tiled_lighting[i].coverage[decals][probes]);
-                graph->coverage[brdf][decals][probes][i] =
-                    vkr_metal_packet_create_pipeline_with_targets(
-                        renderer, renderer->custom_library,
-                        "vkr_metal_tiled_vertex", renderer->custom_library,
-                        name, MTLPixelFormatRGBA16Float,
-                        VKR_METAL_PACKET_BLEND_COVERAGE,
-                        VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-                        VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                        VKR_METAL_TILED_SAMPLE_COUNT,
-                        constants, label);
-                ok = graph->forward[brdf][decals][probes][i] != nil &&
-                     graph->coverage[brdf][decals][probes][i] != nil;
-              }
-            }
-          }
-          graph->create_seconds = vkr_platform_get_absolute_time() - start;
-          vkr_atomic_uint32_store(&graph->state[brdf],
-                                  ok ? VKR_METAL_CUSTOM_GRAPH_READY
-                                     : VKR_METAL_CUSTOM_GRAPH_FAILED,
-                                  VKR_MEMORY_ORDER_RELEASE);
-          if (ok)
-            log_info("Metal: Custom graph %s%s ready in %.1f ms (slot %u)",
-                     graph->function, brdf ? " BRDF extension variant" : "",
-                     graph->create_seconds * 1.0e3, slot);
-          else if (brdf)
-            log_warn("Metal: Custom graph %s has no BRDF extension "
-                     "pipelines; its extended materials draw without them",
-                     graph->function);
-          else
-            log_warn("Metal: Custom graph %s has no pipelines; its materials "
-                     "draw their Standard fallback",
-                     graph->function);
-        }
-      });
+  vkr_metal_packet_background_build(renderer, slot, brdf,
+                                    &renderer->custom_graphs[slot].jobs[brdf]);
 }
 
 /* The slot of Custom function `function`, given and built the first time a
@@ -130,7 +194,7 @@ vkr_internal uint32_t vkr_metal_packet_custom_slot(
     VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
     if (!graph->function[0]) {
       free_slot = free_slot ? free_slot : slot;
-    } else if (strcmp(graph->function, function) == 0) {
+    } else if (string_equals(graph->function, function)) {
       return slot;
     }
   }
@@ -141,7 +205,7 @@ vkr_internal uint32_t vkr_metal_packet_custom_slot(
     return 0u;
   }
   VkrMetalCustomGraph *graph = &renderer->custom_graphs[free_slot];
-  snprintf(graph->function, sizeof(graph->function), "%s", function);
+  string_format(graph->function, sizeof(graph->function), "%s", function);
   ++renderer->custom_graph_count;
   vkr_atomic_uint32_store(&graph->state[0], VKR_METAL_CUSTOM_GRAPH_PENDING,
                           VKR_MEMORY_ORDER_RELEASE);
@@ -243,11 +307,8 @@ vkr_metal_packet_custom_release_pipelines(VkrMetalCustomGraph *graph,
 vkr_internal void
 vkr_metal_packet_custom_release(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
-  if (renderer->custom_group) {
-    dispatch_group_wait(renderer->custom_group, DISPATCH_TIME_FOREVER);
-    dispatch_release(renderer->custom_group);
-    renderer->custom_group = NULL;
-  }
+  vkr_metal_packet_background_wait(renderer);
+  renderer->custom_loaded = false_v;
   for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
     for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf)
       vkr_metal_packet_custom_release_pipelines(&renderer->custom_graphs[slot],
@@ -275,10 +336,11 @@ void vkr_metal_packet_renderer_request_custom_reload(
    when a reload was requested; false asks the next frame to try again. */
 vkr_internal bool8_t vkr_metal_packet_custom_reload(
     VkrMetalPacketRenderer *renderer) API_AVAILABLE(macos(26.0)) {
-  if (!renderer->custom_group)
+  if (!renderer->custom_loaded)
     return true_v;
   /* Creations read the library; never block the render thread on them. */
-  if (dispatch_group_wait(renderer->custom_group, DISPATCH_TIME_NOW) != 0)
+  if (vkr_atomic_uint32_load(&renderer->background_builds,
+                             VKR_MEMORY_ORDER_ACQUIRE) != 0u)
     return false_v;
   bool8_t unused = false_v;
   for (uint32_t slot = 1u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
@@ -326,4 +388,12 @@ vkr_internal bool8_t vkr_metal_packet_custom_reload(
            "%u unused freed",
            rebuilt, freed);
   return true_v;
+}
+
+void vkr_metal_packet_renderer_detach_jobs(VkrMetalPacketRenderer *renderer) {
+  if (!renderer)
+    return;
+  if (@available(macOS 26.0, *))
+    vkr_metal_packet_background_wait(renderer);
+  renderer->job_system = NULL;
 }

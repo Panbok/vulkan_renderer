@@ -1,7 +1,5 @@
 #include "vkr_temporal.h"
 
-#include <math.h>
-
 #define VKR_TEMPORAL_CAMERA_CUT_DISTANCE 10.0f
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
 

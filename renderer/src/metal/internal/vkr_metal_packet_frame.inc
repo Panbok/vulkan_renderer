@@ -83,7 +83,8 @@ vkr_internal float32_t vkr_metal_packet_history_pre_exposure_scale(
         &renderer->pre_exposure_history[i];
     if (record->submit_value == producer_submit_value &&
         producer_submit_value != 0u)
-      return ldexpf(1.0f, packet->exposure.pre_exposure_stops - record->stops);
+      return vkr_ldexp_f32(1.0f,
+                           packet->exposure.pre_exposure_stops - record->stops);
   }
   return 1.0f;
 }
@@ -161,12 +162,14 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
       .flags = *out_frame_flags,
       /* The shared constants pre-expose the IBL gain; the global source's
          own bake scale is removed here. */
-      .ibl_controls =
-          {frame_constants.ibl_controls.x *
-               (has_global_ibl ? ldexpf(1.0f, -global_prefilter->radiance_stops)
-                               : 1.0f),
-           frame_constants.ibl_controls.y, frame_constants.ibl_controls.z,
-           frame_constants.ibl_controls.w},
+      .ibl_controls = {frame_constants.ibl_controls.x *
+                           (has_global_ibl
+                                ? vkr_ldexp_f32(
+                                      1.0f, -global_prefilter->radiance_stops)
+                                : 1.0f),
+                       frame_constants.ibl_controls.y,
+                       frame_constants.ibl_controls.z,
+                       frame_constants.ibl_controls.w},
       .directional_direction_enabled =
           frame_constants.directional_direction_enabled,
       .directional_color_intensity =
@@ -1581,8 +1584,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_sky_light(
       .source_mip = mip,
       .face_size = extent,
       .cloud_to_source_scale =
-          ldexpf(1.0f,
-                 vkr_metal_packet_global_radiance_stops(renderer, packet)) /
+          vkr_ldexp_f32(
+              1.0f, vkr_metal_packet_global_radiance_stops(renderer, packet)) /
           Max(constants.pre_exposure, 1e-20f),
       .window_band_0 = vkr_ibl_sh_window_factor(0u, source->ibl_sh_deringing),
       .window_band_1 = vkr_ibl_sh_window_factor(1u, source->ibl_sh_deringing),
@@ -3062,7 +3065,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
                       submission->prepared_passes != NULL);
   for (uint64_t order = 0u; passed && order < submission->prepared_count;
        ++order) {
-    const CFTimeInterval preparation_cpu_begin = CACurrentMediaTime();
+    const float64_t preparation_cpu_begin = vkr_platform_get_absolute_time();
     const uint32_t index = renderer->graph->execution_order.data[order];
     const VkrRgPass *pass = &renderer->graph->passes.data[index];
     VkrMetalPacketPreparedPass *prepared = &submission->prepared_passes[order];
@@ -3106,7 +3109,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
       break;
     }
     prepared->preparation_cpu_ms =
-        (CACurrentMediaTime() - preparation_cpu_begin) * 1000.0;
+        (vkr_platform_get_absolute_time() - preparation_cpu_begin) * 1000.0;
   }
   if (passed)
     vkr_metal_packet_mark_last_shadow_writer(
@@ -3144,7 +3147,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
 vkr_internal void vkr_metal_packet_record_pass_timing(
     const VkrMetalPacketFrameSubmission *submission,
     const VkrMetalPacketPreparedPass *prepared, bool8_t encoder_timing_pass,
-    CFTimeInterval pass_cpu_begin, VkrMetalPacketResult *out_result)
+    float64_t pass_cpu_begin, VkrMetalPacketResult *out_result)
     API_AVAILABLE(macos(26.0)) {
   const VkrRgPass *pass = prepared->source;
   if (out_result->pass_timing_count < VKR_METAL_PACKET_MAX_PASS_TIMINGS) {
@@ -3159,8 +3162,9 @@ vkr_internal void vkr_metal_packet_record_pass_timing(
     timing->pass_index = prepared->index;
     timing->starts_after_previous =
         pass->desc.type == VKR_RG_PASS_TYPE_GRAPHICS;
-    timing->cpu_ms = prepared->preparation_cpu_ms +
-                     (CACurrentMediaTime() - pass_cpu_begin) * 1000.0;
+    timing->cpu_ms =
+        prepared->preparation_cpu_ms +
+        (vkr_platform_get_absolute_time() - pass_cpu_begin) * 1000.0;
     timing->valid = false_v;
     timing->unavailable_reason =
         encoder_timing_pass
@@ -3194,7 +3198,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
     VkrMetalPacketResult *out_result) API_AVAILABLE(macos(26.0)) {
   const VkrRgPass *pass = prepared->source;
   const bool8_t encoder_timing_pass = submission->pass_timing_requested;
-  const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
+  const float64_t pass_cpu_begin = vkr_platform_get_absolute_time();
   id<MTL4RenderCommandEncoder> encoder = [renderer->command_buffer
       renderCommandEncoderWithDescriptor:renderer
                                              ->render_passes[prepared->index]];
@@ -3302,7 +3306,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
     const bool8_t transfer = pass->desc.type == VKR_RG_PASS_TYPE_TRANSFER;
     const bool8_t encoder_timing_pass =
         submission->pass_timing_requested && !transfer;
-    const CFTimeInterval pass_cpu_begin = CACurrentMediaTime();
+    const float64_t pass_cpu_begin = vkr_platform_get_absolute_time();
     if (!first_pass && prepared->consumer_count > 0u) {
       VkrMetalDependency ordering = {0};
       for (uint32_t i = 0u; i < prepared->consumer_count; ++i)

@@ -1,10 +1,5 @@
 #include "vulkan/vkr_vulkan_internal.h"
 
-vkr_internal uint64_t vkr_vk_capture_align(uint64_t value) {
-  return (value + VKR_CAPTURE_BUFFER_ALIGNMENT - 1u) &
-         ~(uint64_t)(VKR_CAPTURE_BUFFER_ALIGNMENT - 1u);
-}
-
 vkr_internal bool8_t vkr_vk_capture_source(
     const VkrCaptureChannelDescription *channel, const VkrPreparedFrame *packet,
     const char **out_name, uint32_t *out_layer) {
@@ -95,7 +90,7 @@ bool8_t vkr_vk_plan_capture(VkrVulkanRenderer *renderer,
     const uint64_t row_pitch =
         (uint64_t)instance->image.width * format_info.bytes_per_block;
     const uint64_t data_size = row_pitch * instance->image.height;
-    offset = vkr_vk_capture_align(offset);
+    offset = vkr_align_up_u64(offset, VKR_CAPTURE_BUFFER_ALIGNMENT);
     if (data_size == 0u || offset > UINT64_MAX - data_size ||
         offset + data_size > renderer->config.capture_max_batch_bytes)
       return false_v;

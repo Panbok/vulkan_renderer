@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "vkr_native_surface.h"
 
 #include <vulkan/vulkan.h>
 
@@ -52,3 +53,13 @@ vkr_vulkan_reacquire_complete(VkrVulkanReacquireState *state,
 
 /** True only for instance extensions omitted by a strictly offscreen target. */
 bool8_t vkr_vulkan_instance_extension_is_surface(const char *name);
+
+/** The host's window-surface instance extension, or NULL on a host where the
+ * Vulkan backend presents to no window. */
+const char *vkr_vulkan_platform_surface_extension(void);
+
+/** Creates the window surface for the borrowed native handles in `surface`.
+ * False on a host without a window surface or when creation fails. */
+bool8_t vkr_vulkan_create_platform_surface(VkInstance instance,
+                                           const VkrNativeSurface *surface,
+                                           VkSurfaceKHR *out_surface);

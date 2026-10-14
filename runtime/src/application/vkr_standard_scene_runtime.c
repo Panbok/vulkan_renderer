@@ -565,6 +565,7 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .capture_ring_capacity = config->capture_ring_capacity,
       .capture_max_batch_bytes = config->capture_max_batch_bytes,
       .inline_rendering = config->inline_rendering,
+      .job_system = &application->job_system,
   };
   VkrNativeSurface native_surface = {0};
   const VkrNativeSurface *surface = NULL;
@@ -665,6 +666,9 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
 
 cleanup:
   if (jobs_ready) {
+    if (renderer_ready) {
+      vkr_renderer_detach_jobs(&application->renderer);
+    }
     vkr_physics_set_jobs(NULL);
     vkr_job_system_shutdown(&application->job_system);
   }
@@ -3479,6 +3483,7 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
    * threads before renderer teardown so those allocators remain valid for the
    * entire worker lifetime. Physics lets go of the workers first.
    */
+  vkr_renderer_detach_jobs(&application->renderer);
   vkr_physics_set_jobs(NULL);
   vkr_job_system_shutdown(&application->job_system);
 
