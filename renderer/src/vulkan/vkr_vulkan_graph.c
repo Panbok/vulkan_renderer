@@ -1823,6 +1823,19 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
       bytes += sizeof(VkrVulkanDiffuseVolumeComposeRoot);
       break;
+    case VKR_RG_EXECUTOR_VOLUME_BUILD:
+      bytes += VKR_VULKAN_BLAS_BUILDS_PER_FRAME *
+               (sizeof(VkrVulkanVolumeDecodeRoot) + 16u);
+      break;
+    case VKR_RG_EXECUTOR_VOLUME_TRACE:
+      bytes += sizeof(VkrVulkanVolumeTraceRoot) + 5u * 16u +
+               (VKR_DYNAMIC_VOLUME_TRACE_PROBES_MAX +
+                VKR_DYNAMIC_VOLUME_CLEAR_PROBES_MAX) *
+                   sizeof(uint32_t) +
+               VKR_DYNAMIC_VOLUME_LIGHTS_MAX * sizeof(VkrGpuPointLightRow) +
+               VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX *
+                   sizeof(VkrGpuRectangleLightRow);
+      break;
     case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
       /* The cloud chain, plus a frame root. */
       bytes += VKR_CLOUD_SKY_LIGHT_TEXELS * 4u * sizeof(float32_t) +
@@ -1974,6 +1987,10 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
     return vkr_vk_prepare_diffuse_volume_compose(renderer, &prepared->compute,
                                                  pass);
+  case VKR_RG_EXECUTOR_VOLUME_BUILD:
+    return vkr_vk_prepare_volume_build(renderer, pass);
+  case VKR_RG_EXECUTOR_VOLUME_TRACE:
+    return vkr_vk_prepare_volume_trace(renderer, pass);
   case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_SAMPLE:
     return vkr_vk_prepare_diffuse_volume_sample(
         renderer, &prepared->compute, pass, VKR_VULKAN_DIFFUSE_VOLUME_SAMPLE);
@@ -2323,6 +2340,12 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
       vkr_vk_record_diffuse_volume_compose(renderer, command,
                                            &prepared->compute);
+      break;
+    case VKR_RG_EXECUTOR_VOLUME_BUILD:
+      vkr_vk_record_volume_build(renderer, command);
+      break;
+    case VKR_RG_EXECUTOR_VOLUME_TRACE:
+      vkr_vk_record_volume_trace(renderer, command);
       break;
     default:
       vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);

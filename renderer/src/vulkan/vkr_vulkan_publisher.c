@@ -1705,6 +1705,7 @@ void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
     if (!geometry->pending_retire ||
         geometry->last_use_submit_value > completed)
       continue;
+    vkr_vk_destroy_geometry_blas(renderer, geometry);
     if (geometry->submeshes)
       vkr_allocator_free(renderer->allocator, geometry->submeshes,
                          geometry->submeshes_size,
@@ -1716,6 +1717,7 @@ void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
     if (!geometry->pending_retire ||
         geometry->last_use_submit_value > completed)
       continue;
+    vkr_vk_destroy_geometry_blas(renderer, geometry);
     if (geometry->submeshes)
       vkr_allocator_free(renderer->allocator, geometry->submeshes,
                          geometry->submeshes_size,

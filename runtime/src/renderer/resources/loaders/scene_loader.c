@@ -124,6 +124,8 @@ typedef struct SceneDiffuseVolumeImport {
   bool8_t has_block;
   bool8_t valid;
   String8 path;
+  /* No bake yet: the runtime grid stands in (ADR-119). */
+  bool8_t runtime_grid;
 } SceneDiffuseVolumeImport;
 
 /* The immutable textures of a diffuse volume, in VkrSceneDiffuseVolume
@@ -133,6 +135,7 @@ typedef enum SceneDiffuseVolumeTexture {
   SCENE_DIFFUSE_VOLUME_PROBES,
   SCENE_DIFFUSE_VOLUME_MOMENTS,
   SCENE_DIFFUSE_VOLUME_LAYER_SH,
+  SCENE_DIFFUSE_VOLUME_BRICKS,
   SCENE_DIFFUSE_VOLUME_TEXTURE_COUNT,
 } SceneDiffuseVolumeTexture;
 
@@ -1255,8 +1258,29 @@ scene_loader_parse_diffuse_volume_import(String8 json) {
     return result;
 
   VkrJsonReader volume_object = {0};
-  if (!vkr_json_enter_object(&volume_reader, &volume_object) ||
-      !scene_json_read_string_field(&volume_object, "path", &result.path) ||
+  if (!vkr_json_enter_object(&volume_reader, &volume_object)) {
+    result.valid = false_v;
+    log_error("Scene loader: $.diffuse_volume must be an object");
+    return result;
+  }
+  /* A volume not baked yet names no file: the runtime grid stands in. */
+  VkrJsonReader grid_reader = volume_object;
+  if (vkr_json_find_field(&grid_reader, "runtime_grid") &&
+      !vkr_json_parse_bool(&grid_reader, &result.runtime_grid)) {
+    result.valid = false_v;
+    log_error("Scene loader: $.diffuse_volume.runtime_grid must be a bool");
+    return result;
+  }
+  if (result.runtime_grid) {
+    VkrJsonReader path_reader = volume_object;
+    if (vkr_json_find_field(&path_reader, "path")) {
+      result.valid = false_v;
+      log_error("Scene loader: $.diffuse_volume names a path or the runtime "
+                "grid, not both");
+    }
+    return result;
+  }
+  if (!scene_json_read_string_field(&volume_object, "path", &result.path) ||
       result.path.length == 0u ||
       !scene_string8_ends_with_cstr_i(result.path, ".vkdv")) {
     result.valid = false_v;
@@ -1336,66 +1360,13 @@ scene_loader_release_diffuse_volume(SceneDiffuseVolumePrepared *prepared) {
   for (uint32_t i = 0u; i < SCENE_DIFFUSE_VOLUME_TEXTURE_COUNT; ++i) {
     vkr_texture_system_release_prepared_load(&prepared->textures[i]);
   }
-}
-
-/* One immutable, unfiltered 2D volume texture of `width` x `height` texels
-   whose malloc'd `pixels` the publication takes. False when the region
-   cannot be allocated; `pixels` is then freed. */
-vkr_internal bool8_t scene_loader_volume_texture(
-    uint8_t *pixels, uint64_t byte_size, uint32_t width, uint32_t height,
-    VkrTextureFormat format, uint32_t channels, bool8_t filtered,
-    VkrTexturePreparedLoad *out_prepared) {
-  MemZero(out_prepared, sizeof(*out_prepared));
-  VkrTextureUploadRegion *region =
-      (VkrTextureUploadRegion *)malloc(sizeof(*region));
-  if (!pixels || !region) {
-    free(region);
-    free(pixels);
-    return false_v;
-  }
-  *region = (VkrTextureUploadRegion){
-      .mip_level = 0u,
-      .array_layer = 0u,
-      .width = width,
-      .height = height,
-      .depth = 1u,
-      .byte_offset = 0u,
-      .byte_size = byte_size,
-  };
-  const VkrFilter filter = filtered ? VKR_FILTER_LINEAR : VKR_FILTER_NEAREST;
-  *out_prepared = (VkrTexturePreparedLoad){
-      .description =
-          {
-              .width = width,
-              .height = height,
-              .channels = channels,
-              .mip_levels = 1u,
-              .array_layers = 1u,
-              .type = VKR_TEXTURE_TYPE_2D,
-              .format = format,
-              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-              .sample_count = VKR_SAMPLE_COUNT_1,
-              .properties = vkr_texture_property_flags_create(),
-              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-              .min_filter = filter,
-              .mag_filter = filter,
-              .mip_filter = VKR_MIP_FILTER_NONE,
-              .anisotropy_enable = false_v,
-          },
-      .upload_data = pixels,
-      .upload_data_size = byte_size,
-      .upload_regions = region,
-      .upload_region_count = 1u,
-      .upload_mip_levels = 1u,
-      .upload_array_layers = 1u,
-      .upload_is_compressed = false_v,
-      /* Bistro's layers and moments reach a hundred MB; the publication
-         takes them rather than holding a second copy. */
-      .upload_ownership = VKR_TEXTURE_UPLOAD_TRANSFERRED,
-  };
-  return true_v;
+  /* A volume the scene took owns these; apply clears them first. */
+  free(prepared->volume.brick_entries);
+  free(prepared->volume.probe_valid);
+  free(prepared->volume.baked_lights);
+  prepared->volume.brick_entries = NULL;
+  prepared->volume.probe_valid = NULL;
+  prepared->volume.baked_lights = NULL;
 }
 
 /* Lays a decoded volume out as its four immutable textures (see
@@ -1472,29 +1443,167 @@ vkr_internal bool8_t scene_loader_volume_textures(
   }
 
   VkrTexturePreparedLoad *textures = out_prepared->textures;
-  const bool8_t indirection_ready = scene_loader_volume_texture(
+  const bool8_t indirection_ready = vkr_texture_prepared_load_2d(
       indirection, indirection_bytes, volume->dimensions[0], indirection_height,
       VKR_TEXTURE_FORMAT_R32_UINT, 1u, false_v,
       &textures[SCENE_DIFFUSE_VOLUME_INDIRECTION]);
-  const bool8_t probes_ready = scene_loader_volume_texture(
+  const bool8_t probes_ready = vkr_texture_prepared_load_2d(
       probes, (uint64_t)rows * probe_row_bytes, row_probes, rows,
       VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, 4u, false_v,
       &textures[SCENE_DIFFUSE_VOLUME_PROBES]);
-  const bool8_t moments_ready = scene_loader_volume_texture(
+  const bool8_t moments_ready = vkr_texture_prepared_load_2d(
       moments, (uint64_t)moment_height * moment_row_bytes,
       tile_columns * VKR_DIFFUSE_VOLUME_MOMENT_SIZE, moment_height,
       VKR_TEXTURE_FORMAT_R16G16_SFLOAT, 2u, true_v,
       &textures[SCENE_DIFFUSE_VOLUME_MOMENTS]);
-  const bool8_t layer_sh_ready = scene_loader_volume_texture(
+  const bool8_t layer_sh_ready = vkr_texture_prepared_load_2d(
       layer_sh, band_bytes * bands, row_probes * 3u, rows * bands,
       VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, 4u, false_v,
       &textures[SCENE_DIFFUSE_VOLUME_LAYER_SH]);
+  /* Each brick's lowest entry and level, packed for the dynamic layer's
+     tracer (VkrDiffuseVolumeBinding); entries fit ten bits per axis. */
+  const uint32_t brick_rows =
+      Max((volume->brick_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
+              VKR_DIFFUSE_VOLUME_ROW_PROBES,
+          1u);
+  uint32_t *bricks = (uint32_t *)calloc(
+      (size_t)brick_rows * VKR_DIFFUSE_VOLUME_ROW_PROBES, sizeof(uint32_t));
+  bool8_t bricks_fit = volume->dimensions[0] <= 1024u &&
+                       volume->dimensions[1] <= 1024u &&
+                       volume->dimensions[2] <= 1024u;
+  if (bricks) {
+    for (uint32_t b = 0u; b < volume->brick_count; ++b) {
+      const VkrDiffuseVolumeBrick *brick = &volume->bricks[b];
+      bricks[b] = brick->entry[0] | brick->entry[1] << 10u |
+                  brick->entry[2] << 20u | brick->level << 30u;
+    }
+  }
+  const bool8_t bricks_ready =
+      bricks_fit && vkr_texture_prepared_load_2d(
+                        (uint8_t *)bricks,
+                        (uint64_t)brick_rows * VKR_DIFFUSE_VOLUME_ROW_PROBES *
+                            sizeof(uint32_t),
+                        VKR_DIFFUSE_VOLUME_ROW_PROBES, brick_rows,
+                        VKR_TEXTURE_FORMAT_R32_UINT, 1u, false_v,
+                        &textures[SCENE_DIFFUSE_VOLUME_BRICKS]);
+  if (!bricks_fit) {
+    free(bricks);
+  }
+  /* A volume too wide to pack its bricks loads without a dynamic layer. */
   if (!indirection_ready || !probes_ready || !moments_ready ||
-      !layer_sh_ready) {
+      !layer_sh_ready || (bricks_fit && !bricks_ready)) {
     scene_loader_release_diffuse_volume(out_prepared);
     return false_v;
   }
   return true_v;
+}
+
+/* The static lights `path`'s bake held, from its sidecar's baker manifest
+   (ADR-119). A volume baked before the records, or without a sidecar,
+   leaves them unknown. */
+vkr_internal void
+scene_loader_volume_baked_lights(String8 path, VkrAllocator *temp_alloc,
+                                 VkrSceneDiffuseVolume *out_volume) {
+  char sidecar[1024];
+  if (path.length + 11u > sizeof(sidecar)) {
+    return;
+  }
+  snprintf(sidecar, sizeof(sidecar), "%.*s.bake.json", (int)path.length,
+           path.str);
+  FilePath file_path = vkr_asset_path_file(
+      temp_alloc,
+      string8_create_from_cstr((const uint8_t *)sidecar, strlen(sidecar)));
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle handle = {0};
+  if (file_open(&file_path, mode, &handle) != FILE_ERROR_NONE) {
+    return;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t byte_count = 0u;
+  const FileError read_error =
+      file_read_all(&handle, temp_alloc, &bytes, &byte_count);
+  file_close(&handle);
+  if (read_error != FILE_ERROR_NONE || !bytes) {
+    return;
+  }
+  VkrJsonReader root = {.data = bytes, .length = byte_count};
+  VkrJsonReader manifest = {0};
+  if (!vkr_json_find_root_field(&root, "baker_manifest") ||
+      !vkr_json_enter_object(&root, &manifest)) {
+    return;
+  }
+  VkrJsonReader counter = manifest;
+  if (!vkr_json_find_array(&counter, "baked_lights")) {
+    return;
+  }
+  uint32_t count = 0u;
+  while (vkr_json_next_array_element(&counter)) {
+    VkrJsonReader skipped = {0};
+    if (!vkr_json_enter_object(&counter, &skipped)) {
+      return;
+    }
+    ++count;
+  }
+  VkrSceneBakedLight *lights =
+      (VkrSceneBakedLight *)calloc(Max(count, 1u), sizeof(*lights));
+  if (!lights) {
+    return;
+  }
+  VkrJsonReader array = manifest;
+  (void)vkr_json_find_array(&array, "baked_lights");
+  uint32_t parsed = 0u;
+  while (parsed < count && vkr_json_next_array_element(&array)) {
+    VkrJsonReader object = {0};
+    if (!vkr_json_enter_object(&array, &object)) {
+      break;
+    }
+    VkrSceneBakedLight *light = &lights[parsed];
+    int32_t kind = 0;
+    VkrJsonReader field = object;
+    String8 group = {0};
+    if (!vkr_json_get_int(&field, "kind", &kind) || kind < 1 || kind > 4 ||
+        !scene_json_read_vec3_field(&object, "position", &light->position) ||
+        !scene_json_read_vec3_field(&object, "direction", &light->direction) ||
+        !scene_json_read_vec3_field(&object, "right", &light->right) ||
+        !scene_json_read_vec3_field(&object, "up", &light->up) ||
+        !scene_json_read_vec3_field(&object, "color", &light->color) ||
+        !scene_json_read_string_field(&object, "group", &group) ||
+        group.length >= VKR_LIGHT_GROUP_NAME_BYTES) {
+      free(lights);
+      return;
+    }
+    light->kind = (uint32_t)kind;
+    MemCopy(light->group, group.str, group.length);
+    struct {
+      const char *name;
+      float32_t *value;
+    } floats[] = {{"intensity", &light->intensity},
+                  {"range", &light->range},
+                  {"constant", &light->constant},
+                  {"linear", &light->linear},
+                  {"quadratic", &light->quadratic},
+                  {"inner_cone_angle", &light->inner_cone_angle},
+                  {"outer_cone_angle", &light->outer_cone_angle},
+                  {"half_width", &light->half_width},
+                  {"half_height", &light->half_height},
+                  {"radiance", &light->radiance}};
+    for (uint32_t i = 0u; i < ArrayCount(floats); ++i) {
+      field = object;
+      if (!vkr_json_get_float(&field, floats[i].name, floats[i].value)) {
+        free(lights);
+        return;
+      }
+    }
+    ++parsed;
+  }
+  if (parsed != count) {
+    free(lights);
+    return;
+  }
+  out_volume->baked_lights = lights;
+  out_volume->baked_light_count = count;
+  out_volume->baked_lights_known = true_v;
 }
 
 vkr_internal bool8_t
@@ -1576,6 +1685,31 @@ scene_loader_prepare_diffuse_volume(String8 path, VkrAllocator *temp_alloc,
   placement->probe_count = volume.probe_count;
   placement->layer_count = volume.layer_count;
   placement->lamp_direct_count = volume.lamp_direct_count;
+  /* CPU copies for the dynamic layer's selection (ADR-119): packed bricks
+     and each probe's validity, the sign and magnitude of its record's w. */
+  placement->brick_count = volume.brick_count;
+  placement->brick_entries = (uint32_t *)malloc(
+      (size_t)Max(volume.brick_count, 1u) * sizeof(uint32_t));
+  placement->probe_valid =
+      (uint8_t *)malloc((size_t)Max(volume.probe_count, 1u));
+  if (!placement->brick_entries || !placement->probe_valid) {
+    scene_loader_release_diffuse_volume(out_prepared);
+    arena_destroy(decode_arena);
+    return false_v;
+  }
+  for (uint32_t b = 0u; b < volume.brick_count; ++b) {
+    const VkrDiffuseVolumeBrick *brick = &volume.bricks[b];
+    placement->brick_entries[b] = brick->entry[0] | brick->entry[1] << 10u |
+                                  brick->entry[2] << 20u | brick->level << 30u;
+  }
+  for (uint32_t p = 0u; p < volume.probe_count; ++p) {
+    uint16_t w = 0u;
+    MemCopy(&w,
+            volume.probe_aux + (uint64_t)p * VKR_DIFFUSE_VOLUME_AUX_BYTES + 6u,
+            sizeof(w));
+    placement->probe_valid[p] = (w & 0x8000u) == 0u && (w & 0x7fffu) != 0u;
+  }
+  scene_loader_volume_baked_lights(path, temp_alloc, placement);
   MemCopy(placement->layers, volume.layers,
           volume.layer_count * sizeof(VkrLightLayer));
   arena_destroy(decode_arena);
@@ -1590,8 +1724,13 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
   if (!scene)
     return;
   vkr_scene_reset_diffuse_volume(scene, assets);
+  scene->diffuse_volume_unbaked = false_v;
   if (!import || !import->has_block || !import->valid)
     return;
+  if (import->runtime_grid) {
+    scene->diffuse_volume_unbaked = true_v;
+    return;
+  }
   if (!assets || !prepared) {
     log_error("Scene loader: diffuse volume '%.*s' is unavailable",
               (int)import->path.length, import->path.str);
@@ -1607,16 +1746,24 @@ scene_loader_apply_diffuse_volume_import(VkrScene *scene,
   }
   *volume = prepared->volume;
   scene->diffuse_volume = volume;
+  /* The scene owns the CPU copies now. */
+  prepared->volume.brick_entries = NULL;
+  prepared->volume.probe_valid = NULL;
+  prepared->volume.baked_lights = NULL;
 
   /* Texture names follow the volume's path; the composed texture's name
      stays unique across reloads while a released one awaits destruction. */
   static const char *const suffixes[SCENE_DIFFUSE_VOLUME_TEXTURE_COUNT] = {
-      "indirection", "probes", "moments", "layers"};
+      "indirection", "probes", "moments", "layers", "bricks"};
   VkrTextureHandle *handles[SCENE_DIFFUSE_VOLUME_TEXTURE_COUNT] = {
       &volume->indirection, &volume->probes, &volume->moments,
-      &volume->layer_sh};
+      &volume->layer_sh, &volume->bricks};
   char name[512];
   for (uint32_t i = 0u; i < SCENE_DIFFUSE_VOLUME_TEXTURE_COUNT; ++i) {
+    if (i == SCENE_DIFFUSE_VOLUME_BRICKS &&
+        prepared->textures[i].description.width == 0u) {
+      continue;
+    }
     snprintf(name, sizeof(name), "%.*s#%s", (int)import->path.length,
              import->path.str, suffixes[i]);
     VkrRendererError error = VKR_RENDERER_ERROR_NONE;
@@ -5252,7 +5399,8 @@ vkr_internal bool8_t scene_loader_prepare_payload(
     return false_v;
   }
   if (payload->diffuse_volume_import.has_block &&
-      payload->diffuse_volume_import.valid) {
+      payload->diffuse_volume_import.valid &&
+      !payload->diffuse_volume_import.runtime_grid) {
     payload->diffuse_volume_prepared_ready =
         scene_loader_prepare_diffuse_volume(payload->diffuse_volume_import.path,
                                             temp_alloc,

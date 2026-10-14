@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.vulkan.dynamic_volume_bistro_cafe_timing",
+  "suite": "local",
+  "description": "Vulkan Bistro caf\u00e9 at 2560 x 1440 with a dynamic lamp sliding past the bar, timed: the volume's dynamic layer builds and traces each frame (ADR-119).",
+  "scene": "assets/scenes/fixtures/bistro_dynamic_volume_local.scene.json",
+  "seed": 20,
+  "resolution": [
+    2560,
+    1440
+  ],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 5,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 480,
+    "measure": 300
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 30.0,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "dynamic_resolution": false,
+    "motion_blur_entity": "Moving Lamp Rail",
+    "motion_blur_entity_velocity": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -5.19214678,
+      2.89391732,
+      11.0450354
+    ],
+    "yaw": 364.375854,
+    "pitch": -12.6190548,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

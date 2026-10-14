@@ -362,6 +362,18 @@ bool8_t vkr_texture_system_finalize_prepared_load(
     VkrTextureHandle *out_handle, VkrRendererError *out_error);
 
 /**
+ * @brief Prepares one immutable 2D texture of `width` x `height` texels,
+ * clamped, with one level, filtered linearly or not at all, whose malloc'd
+ * `pixels` the publication takes (VKR_TEXTURE_UPLOAD_TRANSFERRED). False when
+ * the region cannot be allocated; `pixels` is then freed.
+ */
+bool8_t vkr_texture_prepared_load_2d(uint8_t *pixels, uint64_t byte_size,
+                                     uint32_t width, uint32_t height,
+                                     VkrTextureFormat format, uint32_t channels,
+                                     bool8_t filtered,
+                                     VkrTexturePreparedLoad *out_prepared);
+
+/**
  * @brief Releases CPU memory owned by a prepared texture payload.
  */
 void vkr_texture_system_release_prepared_load(VkrTexturePreparedLoad *prepared);

@@ -27,6 +27,10 @@ typedef enum VkrVulkanMemoryClass {
 typedef enum VkrVulkanMemoryKind {
   VKR_VULKAN_MEMORY_KIND_BUFFER = 0,
   VKR_VULKAN_MEMORY_KIND_IMAGE,
+  /* Acceleration-structure storage: a scene's thousands of BLASes in large
+     blocks of their own, so they do not spend the bounded block count in
+     small buffer blocks (ADR-119). */
+  VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE,
   VKR_VULKAN_MEMORY_KIND_COUNT,
 } VkrVulkanMemoryKind;
 

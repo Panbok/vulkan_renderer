@@ -1373,6 +1373,12 @@ bool packet_diffuse_volume_lookup(VkrVulkanPacketFrameRoot *frame,
     float4 lamp_red = 0.0f;
     float4 lamp_green = 0.0f;
     float4 lamp_blue = 0.0f;
+    // The dynamic layer's light the bake lacks (ADR-119), signed: a light
+    // changed since the bake takes its baked light away.
+    uint dynamic_texture = frame.diffuse_volume_dynamic_texture;
+    float4 dynamic_red = 0.0f;
+    float4 dynamic_green = 0.0f;
+    float4 dynamic_blue = 0.0f;
     float total = 0.0f;
     [unroll] for (uint corner = 0u; corner < 8u; ++corner)
     {
@@ -1411,17 +1417,32 @@ bool packet_diffuse_volume_lookup(VkrVulkanPacketFrameRoot *frame,
             lamp_blue += weight * g_textures[textures.w].Load(
                 int3(int2(vkr_diffuse_volume_sh_texel(probe, 2u, lamp_rows)), 0));
         }
+        if (dynamic_texture != 0u)
+        {
+            dynamic_red += weight * g_textures[dynamic_texture].Load(
+                int3(int2(vkr_diffuse_volume_sh_texel(probe, 0u, 0u)), 0));
+            dynamic_green += weight * g_textures[dynamic_texture].Load(
+                int3(int2(vkr_diffuse_volume_sh_texel(probe, 1u, 0u)), 0));
+            dynamic_blue += weight * g_textures[dynamic_texture].Load(
+                int3(int2(vkr_diffuse_volume_sh_texel(probe, 2u, 0u)), 0));
+        }
         total += weight;
     }
     if (total < VKR_DIFFUSE_VOLUME_MIN_WEIGHT)
         return false;
     float scale = frame.diffuse_volume_params.x / total;
     float3 sky = vkr_diffuse_volume_l1(red, green, blue, normal) * scale;
+    // The dynamic layer is stored unscaled; it joins the sum before the
+    // clamp, so its negative part takes light away but never below zero.
+    float dynamic_scale = 1.0f / max(frame.diffuse_volume_params.x, 1.0e-20f);
+    float4 extra_red = lamp_red + dynamic_red * dynamic_scale;
+    float4 extra_green = lamp_green + dynamic_green * dynamic_scale;
+    float4 extra_blue = lamp_blue + dynamic_blue * dynamic_scale;
     response = sky;
-    if (lamp_rows != 0u)
+    if (lamp_rows != 0u || dynamic_texture != 0u)
     {
-        response = vkr_diffuse_volume_l1(red + lamp_red, green + lamp_green,
-                                         blue + lamp_blue, normal) *
+        response = vkr_diffuse_volume_l1(red + extra_red, green + extra_green,
+                                         blue + extra_blue, normal) *
                    scale;
         const float3 luminance = float3(0.2126f, 0.7152f, 0.0722f);
         float response_luminance = dot(response, luminance);

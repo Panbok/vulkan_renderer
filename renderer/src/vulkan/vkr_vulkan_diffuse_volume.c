@@ -77,6 +77,13 @@ bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
                                       VkrVulkanFrameSlot *slot) {
   if (!vkr_vk_diffuse_volume_ready(renderer, volume))
     return true_v;
+  /* A runtime grid's probe records and moments hold nothing until the
+     volume trace clears them (ADR-119). */
+  if (volume->runtime_grid &&
+      (renderer->volume_grid_cleared.id != volume->probes.id ||
+       renderer->volume_grid_cleared.generation != volume->probes.generation)) {
+    return true_v;
+  }
   const uint32_t rows = vkr_vk_diffuse_volume_rows(volume->probe_count);
   const uint32_t tile_rows =
       (volume->probe_count + VKR_DIFFUSE_VOLUME_MOMENT_ROW_PROBES - 1u) /
@@ -117,6 +124,20 @@ bool8_t vkr_vk_resolve_diffuse_volume(VkrVulkanRenderer *renderer,
   slot->diffuse_volume_dimensions[2] = volume->dimensions[2];
   /* The moment atlas is the only filtered read. */
   slot->diffuse_volume_dimensions[3] = samplers[2];
+  /* The dynamic layer joins lookups once its texture has been cleared
+     whole (ADR-119). */
+  const VkrVulkanPublishedTexture *dynamic =
+      volume->dynamic_sh.id != 0u
+          ? vkr_vk_published_texture(renderer, volume->dynamic_sh, NULL)
+          : NULL;
+  if (dynamic && !dynamic->initialization_pending &&
+      renderer->volume_dynamic_cleared.id == volume->dynamic_sh.id &&
+      renderer->volume_dynamic_cleared.generation ==
+          volume->dynamic_sh.generation &&
+      dynamic->image.width == VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u &&
+      dynamic->image.height == rows) {
+    slot->diffuse_volume_dynamic_texture = dynamic->sampled_slot.index;
+  }
   return true_v;
 }
 

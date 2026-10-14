@@ -1,6 +1,7 @@
 #include "vulkan/vkr_vulkan_device.h"
 
 #include "core/logger.h"
+#include "platform/vkr_platform.h"
 #include "vulkan/vkr_vulkan_wsi.h"
 
 enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
@@ -36,6 +37,8 @@ typedef struct VkrVulkanFeatureSet {
   bool8_t descriptor_buffer_image_layout_ignored;
   bool8_t descriptor_buffer_push_descriptors;
   bool8_t swapchain_maintenance1;
+  bool8_t acceleration_structure;
+  bool8_t ray_query;
 } VkrVulkanFeatureSet;
 
 typedef struct VkrVulkanCandidate {
@@ -52,6 +55,10 @@ typedef struct VkrVulkanCandidate {
   bool8_t has_descriptor_buffer_extension;
   bool8_t has_swapchain_extension;
   bool8_t has_swapchain_maintenance_extension;
+  /* VK_KHR_acceleration_structure needs VK_KHR_deferred_host_operations. */
+  bool8_t has_ray_query_extensions;
+  VkPhysicalDeviceAccelerationStructurePropertiesKHR
+      acceleration_structure_properties;
 } VkrVulkanCandidate;
 
 struct VkrVulkanDevice {
@@ -80,6 +87,9 @@ struct VkrVulkanDevice {
   // validation because Release GPU captures also need graph pass names.
   PFN_vkCmdBeginDebugUtilsLabelEXT cmd_begin_debug_label;
   PFN_vkCmdEndDebugUtilsLabelEXT cmd_end_debug_label;
+  /* Loaded only when ray queries are enabled. */
+  VkrVulkanRayQueryFunctions ray_query_functions;
+  bool8_t ray_query_enabled;
   bool8_t swapchain_colorspace_enabled;
   bool8_t ready;
 };
@@ -601,7 +611,57 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
     candidate->has_swapchain_maintenance_extension =
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    candidate->has_ray_query_extensions =
+        vkr_vk_extension_present(
+            extensions, extension_count,
+            VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+        vkr_vk_extension_present(
+            extensions, extension_count,
+            VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
   }
+  /* The ray-query structures may chain only for a device that names their
+     extensions. */
+  if (candidate->has_ray_query_extensions) {
+    VkPhysicalDeviceRayQueryFeaturesKHR ray_query = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+    };
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration = {
+        .sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+        .pNext = &ray_query,
+    };
+    VkPhysicalDeviceFeatures2 features2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &acceleration,
+    };
+    vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
+    candidate->features.acceleration_structure =
+        acceleration.accelerationStructure;
+    candidate->features.ray_query = ray_query.rayQuery;
+    candidate->acceleration_structure_properties =
+        (VkPhysicalDeviceAccelerationStructurePropertiesKHR){
+            .sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
+        };
+    VkPhysicalDeviceProperties2 properties2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &candidate->acceleration_structure_properties,
+    };
+    vkGetPhysicalDeviceProperties2(candidate->physical, &properties2);
+  }
+}
+
+/* Ray queries run the desktop pipeline's dynamic volume layer; without
+   them, or with VKR_RAY_QUERY_DISABLED set, the volume stays baked
+   (ADR-083, ADR-119). */
+vkr_internal bool8_t
+vkr_vk_candidate_ray_query_usable(const VkrVulkanCandidate *candidate) {
+  return candidate->has_ray_query_extensions &&
+         candidate->features.acceleration_structure &&
+         candidate->features.ray_query &&
+         !vkr_platform_environment_flag("VKR_RAY_QUERY_DISABLED");
 }
 
 /* Reports the API version, the descriptor-buffer extension, and the feature
@@ -930,6 +990,11 @@ vkr_internal bool8_t vkr_vk_report_candidate_presentation(
                             candidate->features.swapchain_maintenance1
                         ? "optional present-fence path enabled"
                         : "reacquisition completion path");
+  const bool8_t ray_query = vkr_vk_candidate_ray_query_usable(candidate);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
+                    VK_KHR_RAY_QUERY_EXTENSION_NAME, false_v, ray_query,
+                    ray_query ? "dynamic diffuse volume layer"
+                              : "baked diffuse volume only");
   return encoded_present_supported;
 }
 
@@ -1029,6 +1094,44 @@ vkr_internal bool8_t vkr_vk_load_descriptor_functions(VkrVulkanDevice *device) {
          device->cmd_set_descriptor_offsets;
 }
 
+vkr_internal bool8_t vkr_vk_load_ray_query_functions(
+    VkrVulkanDevice *device, const VkrVulkanCandidate *candidate) {
+  VkrVulkanRayQueryFunctions *functions = &device->ray_query_functions;
+  functions->create_acceleration_structure =
+      (PFN_vkCreateAccelerationStructureKHR)vkGetDeviceProcAddr(
+          device->device, "vkCreateAccelerationStructureKHR");
+  functions->destroy_acceleration_structure =
+      (PFN_vkDestroyAccelerationStructureKHR)vkGetDeviceProcAddr(
+          device->device, "vkDestroyAccelerationStructureKHR");
+  functions->get_build_sizes =
+      (PFN_vkGetAccelerationStructureBuildSizesKHR)vkGetDeviceProcAddr(
+          device->device, "vkGetAccelerationStructureBuildSizesKHR");
+  functions->cmd_build =
+      (PFN_vkCmdBuildAccelerationStructuresKHR)vkGetDeviceProcAddr(
+          device->device, "vkCmdBuildAccelerationStructuresKHR");
+  functions->get_device_address =
+      (PFN_vkGetAccelerationStructureDeviceAddressKHR)vkGetDeviceProcAddr(
+          device->device, "vkGetAccelerationStructureDeviceAddressKHR");
+  functions->cmd_write_properties =
+      (PFN_vkCmdWriteAccelerationStructuresPropertiesKHR)vkGetDeviceProcAddr(
+          device->device, "vkCmdWriteAccelerationStructuresPropertiesKHR");
+  functions->cmd_copy =
+      (PFN_vkCmdCopyAccelerationStructureKHR)vkGetDeviceProcAddr(
+          device->device, "vkCmdCopyAccelerationStructureKHR");
+  functions->scratch_alignment =
+      Max(candidate->acceleration_structure_properties
+              .minAccelerationStructureScratchOffsetAlignment,
+          1u);
+  functions->descriptor_size =
+      (uint32_t)
+          candidate->descriptor_properties.accelerationStructureDescriptorSize;
+  return functions->create_acceleration_structure &&
+         functions->destroy_acceleration_structure &&
+         functions->get_build_sizes && functions->cmd_build &&
+         functions->get_device_address && functions->cmd_write_properties &&
+         functions->cmd_copy;
+}
+
 vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   if (!device->device) {
     return;
@@ -1071,6 +1174,13 @@ vkr_internal bool8_t vkr_vk_create_layouts(VkrVulkanDevice *device,
           .stageFlags =
               VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
       },
+      /* Each frame slot's TLAS for the dynamic volume layer (ADR-119). */
+      {
+          .binding = 2u,
+          .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+          .descriptorCount = VKR_VULKAN_ACCELERATION_STRUCTURE_SLOTS,
+          .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+      },
   };
   VkDescriptorSetLayoutBinding sampler_binding = {
       .binding = 0u,
@@ -1081,7 +1191,8 @@ vkr_internal bool8_t vkr_vk_create_layouts(VkrVulkanDevice *device,
   VkDescriptorSetLayoutCreateInfo resource_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
       .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
-      .bindingCount = ArrayCount(resource_bindings),
+      .bindingCount =
+          ArrayCount(resource_bindings) - (device->ray_query_enabled ? 0u : 1u),
       .pBindings = resource_bindings,
   };
   VkDescriptorSetLayoutCreateInfo sampler_info = {
@@ -1126,6 +1237,11 @@ vkr_internal bool8_t vkr_vk_create_layouts(VkrVulkanDevice *device,
                              &device->resource_layout.sampled_image_offset);
   device->get_binding_offset(device->device, device->resource_layout.handle, 1u,
                              &device->resource_layout.storage_image_offset);
+  if (device->ray_query_enabled) {
+    device->get_binding_offset(
+        device->device, device->resource_layout.handle, 2u,
+        &device->resource_layout.acceleration_structure_offset);
+  }
   device->get_binding_offset(device->device, device->sampler_layout.handle, 0u,
                              &device->sampler_layout.sampler_offset);
 
@@ -1202,8 +1318,21 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       .swapchainMaintenance1 =
           enable_swapchain_maintenance ? VK_TRUE : VK_FALSE,
   };
-  descriptor.pNext =
-      enable_swapchain_maintenance ? &swapchain_maintenance : NULL;
+  const bool8_t enable_ray_query = vkr_vk_candidate_ray_query_usable(candidate);
+  VkPhysicalDeviceRayQueryFeaturesKHR ray_query = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
+      .rayQuery = VK_TRUE,
+  };
+  VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
+      .pNext = &ray_query,
+      .accelerationStructure = VK_TRUE,
+  };
+  swapchain_maintenance.pNext = enable_ray_query ? &acceleration : NULL;
+  descriptor.pNext = enable_swapchain_maintenance ? &swapchain_maintenance
+                     : enable_ray_query           ? (void *)&acceleration
+                                                  : NULL;
   VkPhysicalDeviceVulkan14Features features14 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
       .pNext = &descriptor,
@@ -1245,13 +1374,20 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                    .independentBlend = VK_TRUE,
                    .samplerAnisotropy = candidate->features.sampler_anisotropy},
   };
-  const char *extensions[3] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  const char *extensions[6] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
   if (device->config.windowed)
     extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
   if (enable_swapchain_maintenance)
     extensions[extension_count++] =
         VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
+  if (enable_ray_query) {
+    extensions[extension_count++] =
+        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+    extensions[extension_count++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
+    extensions[extension_count++] =
+        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+  }
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1271,6 +1407,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   }
   vkGetDeviceQueue(device->device, candidate->queue_family_index, 0u,
                    &device->queue);
+  device->ray_query_enabled =
+      enable_ray_query && vkr_vk_load_ray_query_functions(device, candidate);
   const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
                     "descriptor-buffer function table", true_v,
@@ -1418,6 +1556,12 @@ bool8_t vkr_vulkan_device_extended_linear_present_enabled(
 bool8_t vkr_vulkan_device_astc_hdr_enabled(const VkrVulkanDevice *device) {
   return device && device->selected &&
          device->selected->features.texture_compression_astc_hdr;
+}
+
+const VkrVulkanRayQueryFunctions *
+vkr_vulkan_device_ray_query_functions(const VkrVulkanDevice *device) {
+  return device && device->ray_query_enabled ? &device->ray_query_functions
+                                             : NULL;
 }
 
 bool8_t

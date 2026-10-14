@@ -335,6 +335,11 @@ struct VkrVulkanPacketFrameRoot
     VkrVulkanAnisotropy* anisotropy;
     VkrVulkanLocalShadowTransmission* local_shadow_transmission;
     VkrVulkanSky* sky;
+    // The diffuse volume's dynamic layer (ADR-119): sampled slot of its
+    // signed L1 SH of E/pi in the SH texture's probe layout, unscaled; zero
+    // without one.
+    uint diffuse_volume_dynamic_texture;
+    uint3 diffuse_volume_reserved;
 };
 
 #include "../../../shared/gpu_draw.slangh"

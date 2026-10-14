@@ -838,8 +838,10 @@ post controls and the temporal consumer. The main dataflow is:
 3. Resolve the G-buffer, which for lightmapped draws also writes the baked
    static lamps' irradiance and dominant direction when the scene's set holds
    them ([ADR-104](adr/104-desktop-baked-lamps.md)); evaluate GTAO; sample a
-   bound sparse diffuse volume at half resolution, upsample it with an exact
-   fallback for unmatched pixels ([ADR-054](adr/054-baked-diffuse-volumes.md)),
+   bound sparse diffuse volume at half resolution, adding its ray-traced
+   dynamic layer after `Volume.Build` and `Volume.Trace` update it
+   ([ADR-119](adr/119-dynamic-diffuse-volume-layer.md)), upsample it with an
+   exact fallback for unmatched pixels ([ADR-054](adr/054-baked-diffuse-volumes.md)),
    and compute HDR lighting. Optional profiled surface diffusion gathers the
    diffuse source. The graph then injects/reprojects local froxel scattering, integrates the current-camera
    froxel volume and applies it, then applies analytic fog before the opaque
@@ -1126,8 +1128,11 @@ view and a forward-shaded image at half or quarter resolution, and its
 pixels take that image in place of the probes where it covers them
 ([ADR-117](adr/117-desktop-planar-reflections.md)). On the tiled pipeline
 a reflector's `probe` binds a baked plane probe that its draws use instead
-(same ADR). DDGI-style volume updates are proposed work
-([Short-history rendering](proposals/short-history-rendering.md)).
+(same ADR). With ray queries, a dynamic layer of the diffuse volume traces
+the bounce the bake lacks, from dynamic lights, emissive movers and changed
+static lights, within a 1.0 ms GPU budget; a scene whose volume is not baked
+yet gets a uniform runtime grid that traces all of its light
+([ADR-119](adr/119-dynamic-diffuse-volume-layer.md)).
 
 Scenes may author analytic height fog. Frame preparation uploads one 48-byte
 record per frame slot; a zero record bypasses fog. Fog in-scatters its authored

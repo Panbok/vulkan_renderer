@@ -2357,6 +2357,64 @@ bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
          texture->limit_source_mip_levels;
 }
 
+bool8_t vkr_texture_prepared_load_2d(uint8_t *pixels, uint64_t byte_size,
+                                     uint32_t width, uint32_t height,
+                                     VkrTextureFormat format, uint32_t channels,
+                                     bool8_t filtered,
+                                     VkrTexturePreparedLoad *out_prepared) {
+  MemZero(out_prepared, sizeof(*out_prepared));
+  VkrTextureUploadRegion *region =
+      (VkrTextureUploadRegion *)malloc(sizeof(*region));
+  if (!pixels || !region) {
+    free(region);
+    free(pixels);
+    return false_v;
+  }
+  *region = (VkrTextureUploadRegion){
+      .mip_level = 0u,
+      .array_layer = 0u,
+      .width = width,
+      .height = height,
+      .depth = 1u,
+      .byte_offset = 0u,
+      .byte_size = byte_size,
+  };
+  const VkrFilter filter = filtered ? VKR_FILTER_LINEAR : VKR_FILTER_NEAREST;
+  *out_prepared = (VkrTexturePreparedLoad){
+      .description =
+          {
+              .width = width,
+              .height = height,
+              .channels = channels,
+              .mip_levels = 1u,
+              .array_layers = 1u,
+              .type = VKR_TEXTURE_TYPE_2D,
+              .format = format,
+              .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+              .sample_count = VKR_SAMPLE_COUNT_1,
+              .properties = vkr_texture_property_flags_create(),
+              .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+              .min_filter = filter,
+              .mag_filter = filter,
+              .mip_filter = VKR_MIP_FILTER_NONE,
+              .anisotropy_enable = false_v,
+          },
+      .upload_data = pixels,
+      .upload_data_size = byte_size,
+      .upload_regions = region,
+      .upload_region_count = 1u,
+      .upload_mip_levels = 1u,
+      .upload_array_layers = 1u,
+      .upload_is_compressed = false_v,
+      /* A baked volume's layers and moments reach a hundred MB; the
+         publication takes them rather than holding a second copy. */
+      .upload_ownership = VKR_TEXTURE_UPLOAD_TRANSFERRED,
+  };
+  return true_v;
+}
+
 void vkr_texture_system_release_prepared_load(
     VkrTexturePreparedLoad *prepared) {
   if (!prepared) {

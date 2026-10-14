@@ -81,6 +81,9 @@ typedef struct VkrStandardSceneRuntimeDrawContext {
   /* The mirrored view of the frame's planar reflector (desktop pipeline). */
   VkrPlanarReflectionPayload planar_reflection;
   bool8_t has_planar_reflection;
+  /* The diffuse volume's dynamic layer update (ADR-119). */
+  VkrDynamicVolumeFrame dynamic_volume;
+  bool8_t has_dynamic_volume;
   VkrAnimationPreviewInput animation_preview;
   bool8_t has_animation_preview;
 } VkrStandardSceneRuntimeDrawContext;
@@ -2003,6 +2006,44 @@ vkr_internal void vkr_standard_scene_runtime_prepare_frame_lighting(
   }
 }
 
+/* The light the bake lacks, traced into the render scene's volume on a
+   desktop renderer with ray queries (ADR-119). The layer's texture is
+   created the first time; it joins the binding once published. Setting
+   VKR_DYNAMIC_VOLUME_DISABLED leaves the volume baked. */
+vkr_internal void vkr_standard_scene_runtime_prepare_dynamic_volume(
+    VkrStandardSceneRuntime *application,
+    VkrStandardSceneRuntimeDrawContext *draw) {
+  draw->has_dynamic_volume = false_v;
+  if (draw->scene_stopped ||
+      !vkr_renderer_dynamic_volume_supported(&application->renderer)) {
+    return;
+  }
+  const char *disabled = getenv("VKR_DYNAMIC_VOLUME_DISABLED");
+  if (disabled && disabled[0] && disabled[0] != '0') {
+    return;
+  }
+  VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
+  /* A volume enabled but never baked gets the runtime grid, which a later
+     frame binds. */
+  if (scene) {
+    vkr_dynamic_volume_grid_update(scene, &application->assets,
+                                   &draw->world_payload);
+  }
+  if (!scene || !scene->diffuse_volume ||
+      !vkr_scene_ensure_dynamic_volume_texture(scene, &application->assets)) {
+    return;
+  }
+  /* Until the frame binds the layer, its texture holds nothing to keep. */
+  if (draw->frame_lighting.diffuse_volume.dynamic_sh.id == 0u) {
+    return;
+  }
+  draw->has_dynamic_volume = vkr_dynamic_volume_select(
+      &application->dynamic_volume_selection, scene, &draw->world_payload,
+      &application->assets.material_system,
+      vkr_renderer_dynamic_volume_probe_budget(&application->renderer),
+      &draw->dynamic_volume);
+}
+
 /* The reflection about `plane` (unit normal xyz, offset w):
    x' = x - 2 (n . x + w) n. */
 vkr_internal Mat4 vkr_standard_scene_runtime_plane_reflection(Vec4 plane) {
@@ -2218,6 +2259,8 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
           draw->has_animation_preview ? &draw->animation_preview : NULL,
       .planar_reflection =
           draw->has_planar_reflection ? &draw->planar_reflection : NULL,
+      .dynamic_volume =
+          draw->has_dynamic_volume ? &draw->dynamic_volume.input : NULL,
       .version = VKR_FRAME_INPUT_VERSION,
       .frame =
           {
@@ -2937,6 +2980,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   vkr_standard_scene_runtime_prepare_debug_payload(application, draw);
   vkr_standard_scene_runtime_prepare_frame_lighting(application, draw);
   vkr_standard_scene_runtime_prepare_planar_reflection(application, draw);
+  vkr_standard_scene_runtime_prepare_dynamic_volume(application, draw);
 
   if (draw->has_editor && !draw->scene_stopped) {
     application->gizmo_system.pixel_scale =
@@ -3459,6 +3503,7 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
              "VkrStandardSceneRuntime is still running");
 
   log_info("VkrStandardSceneRuntime shutting down...");
+  vkr_dynamic_volume_selection_destroy(&application->dynamic_volume_selection);
   if (vkr_renderer_render_thread_enabled(&application->renderer)) {
     log_info("Render thread acquired %llu of %llu submitted frames",
              (unsigned long long)application->frames_decoupled,

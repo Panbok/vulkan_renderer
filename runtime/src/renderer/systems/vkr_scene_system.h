@@ -1160,6 +1160,29 @@ typedef struct VkrSceneLightGroups {
  * `layer_sh` with `weights` whenever `composition` advances, which happens
  * when the sun turns or a light group factor changes. Heap-owned by the
  * scene; the scene holds one reference to each texture. */
+/** A static light as a volume's bake held it, from the bake's sidecar
+ * (ADR-119): document space, its own intensity, and its group. `kind` is
+ * the bake's: 1 point, 2 spot, 3 polynomial, 4 rectangle. */
+typedef struct VkrSceneBakedLight {
+  uint32_t kind;
+  Vec3 position;
+  Vec3 direction;
+  Vec3 right;
+  Vec3 up;
+  Vec3 color;
+  float32_t intensity;
+  float32_t range;
+  float32_t constant;
+  float32_t linear;
+  float32_t quadratic;
+  float32_t inner_cone_angle;
+  float32_t outer_cone_angle;
+  float32_t half_width;
+  float32_t half_height;
+  float32_t radiance;
+  char group[VKR_LIGHT_GROUP_NAME_BYTES];
+} VkrSceneBakedLight;
+
 typedef struct VkrSceneDiffuseVolume {
   VkrTextureHandle indirection;
   VkrTextureHandle probes;
@@ -1180,6 +1203,26 @@ typedef struct VkrSceneDiffuseVolume {
   float32_t weights[VKR_DIFFUSE_VOLUME_MAX_LAYERS];
   float64_t since_compose;
   uint32_t composition;
+  /** Brick b's lowest entry and level as the `bricks` texture packs them
+      (VkrDiffuseVolumeBinding), and probe p's bake validity: malloc'd CPU
+      copies the dynamic layer's selection reads (ADR-119). */
+  VkrTextureHandle bricks;
+  uint32_t *brick_entries;
+  uint32_t brick_count;
+  uint8_t *probe_valid;
+  /** The dynamic layer's texture, created once a desktop renderer with ray
+      queries traces the volume; invalid elsewhere. */
+  VkrTextureHandle dynamic_sh;
+  /** The static lights the bake held (malloc'd), when its sidecar records
+      them; without the record the layer cannot tell a changed static light
+      and traces dynamic lights alone. */
+  VkrSceneBakedLight *baked_lights;
+  uint32_t baked_light_count;
+  bool8_t baked_lights_known;
+  /** No bake: the runtime's uniform grid over a scene without one
+      (vkr_dynamic_volume_grid_update). Its layer is empty and the dynamic
+      layer traces all of its light. */
+  bool8_t runtime_grid;
 } VkrSceneDiffuseVolume;
 
 /** Lightmap instances one scene binds: slots travel as exact floats in the
@@ -1556,6 +1599,9 @@ typedef struct VkrScene {
   VkrSceneSettings settings;
   /** The scene's baked diffuse volume, or NULL; see VkrSceneDiffuseVolume. */
   VkrSceneDiffuseVolume *diffuse_volume;
+  /** The document's volume is not baked yet (`runtime_grid`): the runtime
+      grid stands in (ADR-119). */
+  bool8_t diffuse_volume_unbaked;
   /** The scene's lightmap set, or NULL; see VkrSceneLightmaps. */
   VkrSceneLightmaps *lightmaps;
   /** Advances whenever an entity gains a mesh renderer or a generated mesh,
@@ -1699,6 +1745,10 @@ void vkr_scene_update_reflection_probe_light(VkrScene *scene);
     one is published, its placement in document space, and the layers of its
     current composition with nonzero weight. Empty without a volume or
     before its textures are confirmed. */
+/** Creates the scene volume's dynamic-layer texture (ADR-119) when it has
+ * none. False when the volume is absent or the texture cannot be created. */
+bool8_t vkr_scene_ensure_dynamic_volume_texture(VkrScene *scene,
+                                                struct VkrRenderAssets *assets);
 void vkr_scene_diffuse_volume_binding(const VkrScene *scene,
                                       struct VkrTextureSystem *texture_system,
                                       VkrDiffuseVolumeBinding *out_binding);

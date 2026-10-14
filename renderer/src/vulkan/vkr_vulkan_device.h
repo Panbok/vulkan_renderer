@@ -67,12 +67,18 @@ typedef struct VkrVulkanDeviceConfig {
   bool8_t enable_gpu_assisted;
 } VkrVulkanDeviceConfig;
 
+/* Acceleration-structure descriptors of the resource layout's binding 2,
+   one per frame slot's TLAS, present only with ray queries (ADR-119). */
+#define VKR_VULKAN_ACCELERATION_STRUCTURE_SLOTS 4u
+
 typedef struct VkrVulkanDescriptorLayout {
   VkDescriptorSetLayout handle;
   VkDeviceSize size;
   VkDeviceSize sampled_image_offset;
   VkDeviceSize storage_image_offset;
   VkDeviceSize sampler_offset;
+  /* Binding 2's offset; zero without ray queries. */
+  VkDeviceSize acceleration_structure_offset;
 } VkrVulkanDescriptorLayout;
 
 typedef struct VkrVulkanDevice VkrVulkanDevice;
@@ -123,6 +129,27 @@ PFN_vkCmdBindDescriptorBuffersEXT
 vkr_vulkan_device_cmd_bind_descriptor_buffers(const VkrVulkanDevice *device);
 PFN_vkCmdSetDescriptorBufferOffsetsEXT
 vkr_vulkan_device_cmd_set_descriptor_offsets(const VkrVulkanDevice *device);
+
+/** Acceleration-structure entry points of an enabled VK_KHR_ray_query. */
+typedef struct VkrVulkanRayQueryFunctions {
+  PFN_vkCreateAccelerationStructureKHR create_acceleration_structure;
+  PFN_vkDestroyAccelerationStructureKHR destroy_acceleration_structure;
+  PFN_vkGetAccelerationStructureBuildSizesKHR get_build_sizes;
+  PFN_vkCmdBuildAccelerationStructuresKHR cmd_build;
+  PFN_vkGetAccelerationStructureDeviceAddressKHR get_device_address;
+  /* Compaction: a built structure's compacted size, and the copy into it. */
+  PFN_vkCmdWriteAccelerationStructuresPropertiesKHR cmd_write_properties;
+  PFN_vkCmdCopyAccelerationStructureKHR cmd_copy;
+  /** minAccelerationStructureScratchOffsetAlignment, at least one. */
+  uint32_t scratch_alignment;
+  /** accelerationStructureDescriptorSize of the descriptor buffer. */
+  uint32_t descriptor_size;
+} VkrVulkanRayQueryFunctions;
+
+/** Null unless the device enabled ray queries (ADR-083: an optional
+ * capability; the desktop pipeline's volume stays baked without it). */
+const VkrVulkanRayQueryFunctions *
+vkr_vulkan_device_ray_query_functions(const VkrVulkanDevice *device);
 
 /** Null when VK_EXT_debug_utils is absent; callers skip labelling. */
 PFN_vkCmdBeginDebugUtilsLabelEXT

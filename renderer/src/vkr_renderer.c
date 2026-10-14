@@ -693,7 +693,12 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
 #if !defined(NDEBUG)
       .enable_validation = true_v,
 #endif
-      .enable_gpu_assisted = backend_config->gpu_assisted_validation,
+      /* VKR_VULKAN_GPU_VALIDATION turns on GPU-assisted validation, which
+         reports out-of-bounds shader accesses; it replaces synchronization
+         validation for the run. */
+      .enable_gpu_assisted =
+          backend_config->gpu_assisted_validation ||
+          vkr_platform_environment_flag("VKR_VULKAN_GPU_VALIDATION"),
   };
   config.enable_validation = config.enable_validation ||
                              backend_config->validation_enabled ||
@@ -2805,6 +2810,20 @@ void vkr_renderer_flush_publications(VkrRenderer *renderer) {
 
 bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer) {
   return renderer && renderer->worker;
+}
+
+bool8_t vkr_renderer_dynamic_volume_supported(const VkrRenderer *renderer) {
+  return renderer && renderer->vulkan_renderer &&
+         renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED &&
+         vkr_vulkan_renderer_dynamic_volume_supported(
+             renderer->vulkan_renderer);
+}
+
+uint32_t vkr_renderer_dynamic_volume_probe_budget(const VkrRenderer *renderer) {
+  return vkr_renderer_dynamic_volume_supported(renderer)
+             ? vkr_vulkan_renderer_dynamic_volume_probe_budget(
+                   renderer->vulkan_renderer)
+             : 0u;
 }
 
 bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer) {

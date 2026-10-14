@@ -123,7 +123,19 @@ typedef struct VkrLightmapBinding {
  * in the second `rows` (ADR-054). SH is stored divided by `sh_scale`.
  * `indirection` is R32_UINT, dimensions[0] wide and dimensions[1] *
  * dimensions[2] high, with one entry per level-0 brick span of 3 * spacing
- * from `origin`. */
+ * from `origin`.
+ *
+ * On the desktop pipeline with ray queries (ADR-119), `dynamic_sh` (RGBA16F,
+ * `sh`'s width, `rows` high, written by the renderer) holds the dynamic
+ * layer's L1 SH of E/pi in `sh`'s probe layout, unscaled and signed: light
+ * the bake lacks, added to the composed layers at lookup. `bricks` (R32_UINT,
+ * 1024 wide, ceil(brick_count / 1024) high) holds brick b's lowest entry and
+ * level as x | y << 10 | z << 20 | level << 30. Both are invalid elsewhere.
+ *
+ * A `runtime_grid` volume is no bake: a uniform level-0 grid the runtime
+ * lays over a scene without one. Its layers hold nothing, `dynamic_sh` holds
+ * all of its light, and the renderer owns `probes` and `moments` (writable,
+ * relocated and updated as it traces) from their first frame. */
 typedef struct VkrDiffuseVolumeBinding {
   VkrTextureHandle indirection;
   VkrTextureHandle probes;
@@ -143,6 +155,10 @@ typedef struct VkrDiffuseVolumeBinding {
   uint32_t active_direct_bands[VKR_DIFFUSE_VOLUME_MAX_ACTIVE_LAYERS];
   uint32_t active_lamp_mask;
   uint32_t composition;
+  VkrTextureHandle dynamic_sh;
+  VkrTextureHandle bricks;
+  uint32_t brick_count;
+  bool8_t runtime_grid;
 } VkrDiffuseVolumeBinding;
 
 /** Borrowed scene-owned 65-by-8 RGBA32F diffusion bank; zero count disables. */

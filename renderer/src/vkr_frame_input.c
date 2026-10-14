@@ -655,6 +655,68 @@ vkr_internal VkrRendererError vkr_frame_input_validate_planar_reflection(
   return VKR_RENDERER_ERROR_NONE;
 }
 
+/* The dynamic volume update's lists fit their caps, its probes name the
+   bound volume's slots, and its lights are valid with a unit sign. */
+vkr_internal VkrRendererError vkr_frame_input_validate_dynamic_volume(
+    const VkrFrameInput *packet, VkrValidationError *out_validation_error) {
+  const VkrDynamicVolumeInput *input = packet->dynamic_volume;
+  if (!input) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  const uint32_t probe_count =
+      packet->lighting ? packet->lighting->diffuse_volume.probe_count : 0u;
+  if (input->trace_probe_count > VKR_DYNAMIC_VOLUME_TRACE_PROBES_MAX ||
+      input->clear_probe_count > VKR_DYNAMIC_VOLUME_CLEAR_PROBES_MAX ||
+      input->point_light_count > VKR_DYNAMIC_VOLUME_LIGHTS_MAX ||
+      input->rectangle_light_count > VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX ||
+      (input->trace_probe_count && !input->trace_probes) ||
+      (input->clear_probe_count && !input->clear_probes) ||
+      (input->point_light_count &&
+       (!input->point_lights || !input->point_light_signs)) ||
+      (input->rectangle_light_count &&
+       (!input->rectangle_lights || !input->rectangle_light_signs))) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.dynamic_volume",
+                      "lists must be present and within their caps");
+  }
+  if (!(input->blend > 0.0f && input->blend <= 1.0f)) {
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.dynamic_volume.blend", "must lie in (0, 1]");
+  }
+  for (uint32_t i = 0u; i < input->trace_probe_count; ++i) {
+    if (input->trace_probes[i] >= probe_count) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.dynamic_volume.trace_probes",
+                        "names a probe outside the volume");
+    }
+  }
+  for (uint32_t i = 0u; i < input->clear_probe_count; ++i) {
+    if (input->clear_probes[i] >= probe_count) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.dynamic_volume.clear_probes",
+                        "names a probe outside the volume");
+    }
+  }
+  for (uint32_t i = 0u; i < input->point_light_count; ++i) {
+    const float32_t sign = input->point_light_signs[i];
+    if (sign != 1.0f && sign != -1.0f) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.dynamic_volume.point_light_signs",
+                        "must be 1 or -1");
+    }
+  }
+  for (uint32_t i = 0u; i < input->rectangle_light_count; ++i) {
+    const float32_t sign = input->rectangle_light_signs[i];
+    if ((sign != 1.0f && sign != -1.0f) ||
+        !vkr_rectangle_light_valid(&input->rectangle_lights[i])) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.dynamic_volume.rectangle_lights",
+                        "must be valid with a sign of 1 or -1");
+    }
+  }
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 /* A face's atlas square is a power-of-two side from the smallest face to the
  * map size, aligned to its own size inside one atlas layer, and its texel
  * size matches that side. Returns the side in texels, or zero. */
@@ -1494,6 +1556,10 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
   }
   error =
       vkr_frame_input_validate_planar_reflection(packet, out_validation_error);
+  if (error != VKR_RENDERER_ERROR_NONE) {
+    return error;
+  }
+  error = vkr_frame_input_validate_dynamic_volume(packet, out_validation_error);
   if (error != VKR_RENDERER_ERROR_NONE) {
     return error;
   }

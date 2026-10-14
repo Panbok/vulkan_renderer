@@ -183,11 +183,15 @@ void vkr_scene_reset_diffuse_volume(VkrScene *scene,
     return;
   VkrSceneDiffuseVolume *volume = scene->diffuse_volume;
   VkrTextureHandle *textures[] = {&volume->indirection, &volume->probes,
-                                  &volume->moments, &volume->layer_sh,
-                                  &volume->sh};
+                                  &volume->moments,     &volume->layer_sh,
+                                  &volume->sh,          &volume->bricks,
+                                  &volume->dynamic_sh};
   for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
     scene_release_owned_texture_handle((VkrRenderAssets *)assets, textures[i]);
   }
+  free(volume->brick_entries);
+  free(volume->probe_valid);
+  free(volume->baked_lights);
   free(volume);
   scene->diffuse_volume = NULL;
   /* Probe light ratios refer to the volume's layers and composition. */
@@ -2802,6 +2806,52 @@ void vkr_scene_update_reflection_probe_light(VkrScene *scene) {
   }
 }
 
+bool8_t
+vkr_scene_ensure_dynamic_volume_texture(VkrScene *scene,
+                                        struct VkrRenderAssets *assets) {
+  VkrSceneDiffuseVolume *volume = scene ? scene->diffuse_volume : NULL;
+  if (!volume || !assets || !volume->bricks.id) {
+    return false_v;
+  }
+  if (volume->dynamic_sh.id) {
+    return true_v;
+  }
+  static uint32_t s_dynamic_serial = 0u;
+  char name[64];
+  snprintf(name, sizeof(name), "diffuse_volume#dynamic#%u", ++s_dynamic_serial);
+  const VkrTextureDescription description = {
+      .width = VKR_DIFFUSE_VOLUME_ROW_PROBES * 3u,
+      .height = (volume->probe_count + VKR_DIFFUSE_VOLUME_ROW_PROBES - 1u) /
+                VKR_DIFFUSE_VOLUME_ROW_PROBES,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .min_filter = VKR_FILTER_NEAREST,
+      .mag_filter = VKR_FILTER_NEAREST,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+  };
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_texture_system_create_writable(
+          &assets->texture_system,
+          string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+          &description, &volume->dynamic_sh, &error)) {
+    String8 error_text = vkr_renderer_get_error_string(error);
+    log_error("Scene: diffuse volume dynamic texture failed: %.*s",
+              (int)error_text.length, error_text.str);
+    return false_v;
+  }
+  return true_v;
+}
+
 void vkr_scene_diffuse_volume_binding(const VkrScene *scene,
                                       struct VkrTextureSystem *texture_system,
                                       VkrDiffuseVolumeBinding *out_binding) {
@@ -2833,6 +2883,17 @@ void vkr_scene_diffuse_volume_binding(const VkrScene *scene,
   out_binding->layer_count = volume->layer_count;
   out_binding->band_count = volume->layer_count + volume->lamp_direct_count;
   out_binding->composition = volume->composition;
+  /* The dynamic layer binds once both of its textures are published. */
+  if (volume->bricks.id && volume->dynamic_sh.id &&
+      vkr_texture_system_publication_confirmed(texture_system,
+                                               volume->bricks) &&
+      vkr_texture_system_publication_confirmed(texture_system,
+                                               volume->dynamic_sh)) {
+    out_binding->bricks = volume->bricks;
+    out_binding->dynamic_sh = volume->dynamic_sh;
+    out_binding->brick_count = volume->brick_count;
+  }
+  out_binding->runtime_grid = volume->runtime_grid;
   /* At most two sun keys weigh anything, and a volume holds at most
      VKR_LIGHT_LAYER_MAX_LAMP_GROUPS lamp groups. */
   /* Lamp group g's direct band follows the layers in lamp-group order. */

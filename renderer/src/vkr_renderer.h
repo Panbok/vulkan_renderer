@@ -1375,6 +1375,14 @@ bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer);
 /** True when the editor payload may use the presenter (ADR-111): Metal
  * window targets. Fixed once the renderer is created; never waits. */
 bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer);
+/** True when frames may carry a dynamic volume update (ADR-119): the
+ * desktop pipeline on a device with ray queries. Fixed once the renderer is
+ * created. */
+bool8_t vkr_renderer_dynamic_volume_supported(const VkrRenderer *renderer);
+/** Probes the dynamic volume layer may trace next frame: as many as its GPU
+    time budget affords at the cost the renderer last measured, zero where
+    the layer is unsupported (ADR-119). */
+uint32_t vkr_renderer_dynamic_volume_probe_budget(const VkrRenderer *renderer);
 /**
  * Frames carrying a Scene that the GPU has finished, counted since creation,
  * and when the last one finished (vkr_platform_get_absolute_time()

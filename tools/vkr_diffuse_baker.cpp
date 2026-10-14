@@ -174,6 +174,49 @@ std::string json_string(const std::string &value) {
   return result + "\"";
 }
 
+/* The static point, spot and rectangle lights the volume holds, as the
+   runtime reads them to trace what has changed since (ADR-119): document
+   space, each light's own intensity and its group. Sun keys cover the
+   directional lights. */
+std::string baked_light_records(const VkrBakeScene &scene) {
+  std::ostringstream out;
+  out << '[';
+  bool first = true;
+  const auto vec = [&out](Vec3 v) {
+    out << '[' << v.x << ',' << v.y << ',' << v.z << ']';
+  };
+  for (const VkrBakeSceneLight &light : scene.lights) {
+    if (light.kind == VkrBakeSceneLightKind::Directional || !light.enabled) {
+      continue;
+    }
+    if (!first) {
+      out << ',';
+    }
+    first = false;
+    out << "{\"kind\":" << (unsigned)light.kind << ",\"position\":";
+    vec(light.position);
+    out << ",\"direction\":";
+    vec(light.direction);
+    out << ",\"right\":";
+    vec(light.right);
+    out << ",\"up\":";
+    vec(light.up);
+    out << ",\"color\":";
+    vec(light.color);
+    out << ",\"intensity\":" << light.intensity << ",\"range\":" << light.range
+        << ",\"constant\":" << light.constant << ",\"linear\":" << light.linear
+        << ",\"quadratic\":" << light.quadratic
+        << ",\"inner_cone_angle\":" << light.inner_cone_angle
+        << ",\"outer_cone_angle\":" << light.outer_cone_angle
+        << ",\"half_width\":" << light.half_width
+        << ",\"half_height\":" << light.half_height
+        << ",\"radiance\":" << light.radiance
+        << ",\"group\":" << json_string(light.group) << '}';
+  }
+  out << ']';
+  return out.str();
+}
+
 bool write_atomic(const char *path, const void *bytes, uint64_t size) {
   fs::path target = vkr_filesystem_native_utf8_path(path);
   fs::path temporary = target;
@@ -1247,6 +1290,7 @@ int inspect_scene(const Options &options, VkrAllocator *allocator,
              << ",\"materials\":" << scene.materials.size()
              << ",\"zero_area_triangles\":" << scene.zero_area_triangle_count
              << ",\"lights\":" << scene.lights.size()
+             << ",\"baked_lights\":" << baked_light_records(scene)
              << ",\"bricks\":" << layout.brick_count
              << ",\"probes\":" << layout.probe_count
              << ",\"entries\":" << layout.entry_count << ",\"level_bricks\":["

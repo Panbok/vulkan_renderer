@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.vulkan.runtime_grid_bistro_cafe_capture",
+  "suite": "local",
+  "description": "Vulkan Bistro caf\u00e9 whose diffuse volume was never baked, at manual exposure: the runtime grid traces all of its light, with the dynamic lamp sliding past the bar (ADR-119).",
+  "scene": "assets/scenes/fixtures/bistro_runtime_grid_local.scene.json",
+  "seed": 20,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 900000,
+  "asset_ready_timeout_ms": 600000,
+  "frames": {
+    "warmup": 300,
+    "measure": 401
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": false,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 30.0,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "dynamic_resolution": false,
+    "motion_blur_entity": "Moving Lamp Rail",
+    "motion_blur_entity_velocity": [
+      0.0,
+      0.0,
+      1.0
+    ]
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      -5.19214678,
+      2.89391732,
+      11.0450354
+    ],
+    "yaw": 364.375854,
+    "pitch": -12.6190548,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "indirect_diffuse"
+      ]
+    },
+    {
+      "at_frame": 200,
+      "channels": [
+        "final_color",
+        "indirect_diffuse"
+      ]
+    },
+    {
+      "at_frame": 400,
+      "channels": [
+        "final_color",
+        "indirect_diffuse"
+      ]
+    }
+  ],
+  "assertions": [
+    {
+      "metric": "draw.world.opaque_draws",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "packet.publication_omitted_candidates",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}

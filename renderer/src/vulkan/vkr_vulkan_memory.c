@@ -287,9 +287,9 @@ bool8_t vkr_vulkan_memory_pool_allocate(
       (key.kind == VKR_VULKAN_MEMORY_KIND_IMAGE && key.device_address_required))
     return false_v;
   MemZero(out_allocation, sizeof(*out_allocation));
-  const uint32_t gpu_kind = key.kind == VKR_VULKAN_MEMORY_KIND_BUFFER
-                                ? VKR_GPU_MEMORY_CLASS_BUFFER
-                                : VKR_GPU_MEMORY_CLASS_TEXTURE;
+  const uint32_t gpu_kind = key.kind == VKR_VULKAN_MEMORY_KIND_IMAGE
+                                ? VKR_GPU_MEMORY_CLASS_TEXTURE
+                                : VKR_GPU_MEMORY_CLASS_BUFFER;
   for (uint32_t i = 0; i < manager->block_count; ++i) {
     VkrVulkanMemoryBlock *candidate = &manager->blocks[i];
     if (!vkr_vulkan_memory_pool_key_equal(candidate->key, key))
@@ -413,9 +413,9 @@ bool8_t vkr_vulkan_memory_pool_retire(VkrVulkanMemoryPoolManager *manager,
 vkr_internal VkrGpuMemoryClassMetrics *
 vkr_vk_dedicated_class_metrics(VkrGpuMemoryMetrics *metrics,
                                VkrVulkanMemoryPoolKey key) {
-  const uint32_t gpu_kind = key.kind == VKR_VULKAN_MEMORY_KIND_BUFFER
-                                ? VKR_GPU_MEMORY_CLASS_BUFFER
-                                : VKR_GPU_MEMORY_CLASS_TEXTURE;
+  const uint32_t gpu_kind = key.kind == VKR_VULKAN_MEMORY_KIND_IMAGE
+                                ? VKR_GPU_MEMORY_CLASS_TEXTURE
+                                : VKR_GPU_MEMORY_CLASS_BUFFER;
   return &metrics->classes[gpu_kind];
 }
 

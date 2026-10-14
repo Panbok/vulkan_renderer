@@ -102,6 +102,10 @@
 #define VKR_VULKAN_PACKET_VISIBILITY_SHADOW_FRAG_SPV                           \
   "packet.visibility_shadow.frag.spv"
 #define VKR_VULKAN_PACKET_REFLECTION_VERT_SPV "packet.reflection.vert.spv"
+#define VKR_VULKAN_PACKET_VOLUME_BLAS_DECODE_COMP_SPV                          \
+  "packet.volume_blas_decode.comp.spv"
+#define VKR_VULKAN_PACKET_VOLUME_TRACE_COMP_SPV "packet.volume_trace.comp.spv"
+#define VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV "packet.volume_clear.comp.spv"
 #define VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV "packet.reflection.frag.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
   "packet.local_shadow_transmission.vert.spv"
@@ -1603,6 +1607,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanPacketFrameRoot {
   uint64_t anisotropy;
   uint64_t local_shadow_transmission;
   uint64_t sky;
+  /* The diffuse volume's dynamic layer (ADR-119): sampled slot of its
+     signed L1 SH, zero without one. */
+  uint32_t diffuse_volume_dynamic_texture;
+  uint32_t diffuse_volume_reserved[3];
 } VkrVulkanPacketFrameRoot;
 
 /** The only record written per indexed packet draw. */
@@ -2131,7 +2139,9 @@ _Static_assert(offsetof(VkrVulkanPacketFrameRoot, anisotropy) == 600u,
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, local_shadow_transmission) ==
                    608u,
                "Vulkan local shadow transmission address ABI drift");
-_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 624u,
+_Static_assert(sizeof(VkrVulkanPacketFrameRoot) == 640u &&
+                   offsetof(VkrVulkanPacketFrameRoot,
+                            diffuse_volume_dynamic_texture) == 624u,
                "Packet frame-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanPacketFrameRoot, sh_coefficients) == 88u,
                "Packet frame-root SH-buffer ABI offset drift");
@@ -2422,6 +2432,189 @@ typedef struct VkrVulkanPreparedReadback {
   uint32_t count;
 } VkrVulkanPreparedReadback;
 
+/* Dynamic diffuse volume layer (ADR-119). */
+
+/** The bottom-level acceleration structure of one submesh's level-0
+    triangles, built from positions decoded for it. */
+typedef struct VkrVulkanBlas {
+  VkAccelerationStructureKHR handle;
+  VkrVulkanBuffer buffer;
+  VkDeviceAddress address;
+  /* Set once the frame that builds it has submitted; a handle without it
+     belongs to a frame that never did and is rebuilt. */
+  bool8_t built;
+  /* Queued by the frame being prepared. */
+  bool8_t queued;
+} VkrVulkanBlas;
+
+/** A packed candidate row's ray-tracing record, written as the row is
+    packed: the row's BLAS is its geometry's submesh, placed by `transform`
+    (row-major 3 x 4). */
+typedef struct VkrVulkanRayRow {
+  VkrGeometryHandle geometry;
+  uint32_t submesh_index;
+  uint32_t flags;
+  float32_t transform[12];
+} VkrVulkanRayRow;
+/* The row's material is opaque; otherwise rays test its alpha. */
+#define VKR_VULKAN_RAY_ROW_OPAQUE 1u
+/* The row deforms (skinning) and stays out of the acceleration structure. */
+#define VKR_VULKAN_RAY_ROW_SKIP 2u
+/* The row's material is double-sided: a ray reaching its back is not
+   inside geometry. */
+#define VKR_VULKAN_RAY_ROW_DOUBLE_SIDED 4u
+
+/* GPU time the dynamic volume layer's build and trace may take a frame, and
+   the probe counts its budget moves within (ADR-119). */
+#define VKR_VULKAN_VOLUME_BUDGET_MS 1.0f
+#define VKR_VULKAN_VOLUME_PROBES_MIN 64u
+#define VKR_VULKAN_VOLUME_PROBES_START 512u
+/* Uses of a frame slot's TLAS between full rebuilds. */
+#define VKR_VULKAN_TLAS_REBUILD_INTERVAL 30u
+
+/* BLAS builds one frame queues at most, and the triangles they hold: each
+   frame slot keeps positions and scratch for that many, so Bistro's few
+   million triangles build over a dozen frames rather than holding three
+   slots' worth of a whole scene. */
+#define VKR_VULKAN_BLAS_BUILDS_PER_FRAME 256u
+#define VKR_VULKAN_BLAS_TRIANGLES_PER_FRAME (1u << 17u)
+
+/** One BLAS a frame builds: the submesh decoded into `positions_offset` of
+    the slot's position buffer, built with `scratch_offset` of its scratch. */
+typedef struct VkrVulkanBlasJob {
+  VkrVulkanBlas *blas;
+  VkrGeometryHandle geometry;
+  uint32_t submesh_index;
+  uint32_t geometry_index;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+  uint32_t decode_index;
+  VkDeviceSize positions_offset;
+  VkDeviceSize scratch_offset;
+  uint64_t decode_root;
+} VkrVulkanBlasJob;
+
+/* A built BLAS compacted into `handle` by a frame's copy; the frame's commit
+   swaps it in for `source` (ADR-119). */
+typedef struct VkrVulkanBlasCompaction {
+  VkrGeometryHandle geometry;
+  uint32_t submesh_index;
+  VkAccelerationStructureKHR source;
+  VkAccelerationStructureKHR handle;
+  VkrVulkanBuffer buffer;
+  VkDeviceAddress address;
+} VkrVulkanBlasCompaction;
+
+/* An acceleration structure no later frame names, destroyed once the frame
+   slot that retired it comes round again. */
+typedef struct VkrVulkanRetiredBlas {
+  VkAccelerationStructureKHR handle;
+  VkrVulkanBuffer buffer;
+} VkrVulkanRetiredBlas;
+
+/* A frame slot's BLAS work lists, some 120 KB, kept off the frame slot so
+   that the renderer stays small: this frame's builds; the BLASes whose
+   compacted sizes the slot's query pool holds; the compaction copies this
+   frame records; and the structures they replaced, which go when the slot
+   comes round again. */
+typedef struct VkrVulkanVolumeSlotLists {
+  VkrVulkanBlasJob blas_jobs[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+  VkrGeometryHandle blas_size_geometry[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+  uint32_t blas_size_submesh[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+  VkAccelerationStructureKHR blas_size_source[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+  VkrVulkanBlasCompaction blas_compactions[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+  VkrVulkanRetiredBlas blas_retired[2u * VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+} VkrVulkanVolumeSlotLists;
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeDecodeRoot {
+  uint64_t geometry_rows;
+  uint64_t positions;
+  /* The geometry megabuffer's bases, for the reason the trace root names. */
+  uint64_t indices;
+  uint64_t vertices;
+  uint32_t geometry_index;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+  uint32_t decode_index;
+  uint32_t reserved;
+} VkrVulkanVolumeDecodeRoot;
+_Static_assert(sizeof(VkrVulkanVolumeDecodeRoot) == 64u,
+               "Vulkan volume decode root ABI drift");
+
+_Static_assert(VKR_VULKAN_FRAME_SLOT_COUNT <=
+                   VKR_VULKAN_ACCELERATION_STRUCTURE_SLOTS,
+               "One acceleration-structure descriptor per frame slot");
+
+typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeTraceRoot {
+  /* The frame slot's acceleration-structure descriptor. */
+  uint32_t tlas_slot;
+  uint32_t tlas_reserved;
+  uint64_t candidates;
+  uint64_t instances;
+  uint64_t geometry_rows;
+  uint64_t materials;
+  uint64_t trace_probes;
+  uint64_t clear_probes;
+  uint64_t lights;
+  uint64_t rectangle_lights;
+  /* The geometry megabuffer's index and vertex bases. A geometry row's own
+     index pointer, loaded from the row, miscompiles on the RX 6700 XT
+     (Adrenalin 26.6.3): the address takes its low word as its high word. */
+  uint64_t indices;
+  uint64_t vertices;
+  uint32_t indirection_texture;
+  uint32_t probe_texture;
+  uint32_t moment_texture;
+  uint32_t moment_sampler;
+  uint32_t bricks_texture;
+  uint32_t dynamic_storage;
+  uint32_t trace_count;
+  uint32_t clear_count;
+  uint32_t light_count;
+  uint32_t rectangle_light_count;
+  uint32_t static_candidate_count;
+  uint32_t sequence;
+  uint32_t reserved0[2];
+  Vec4 origin_spacing;
+  uint32_t dimensions[4];
+  float32_t blend;
+  float32_t ray_length;
+  /* VKR_VULKAN_VOLUME_TRACE_GRID for a runtime grid, which traces all of
+     its light and owns its probe records and moments. */
+  uint32_t flags;
+  /* A grid's probe records and moment atlas, as storage slots. */
+  uint32_t probe_storage;
+  uint32_t moment_storage;
+  /* The environment's diffuse response a grid's missed rays see:
+     sky_sh[sky_slot] times sky_scale, physical. */
+  uint32_t sky_slot;
+  float32_t sky_scale;
+  /* A grid's moments clamp at, and count a miss as, this distance. */
+  float32_t moment_clamp;
+  /* Unit direction toward the sun; w is one when it shines on a grid. */
+  Vec4 sun_direction;
+  /* The sun's colour times its intensity, physical. */
+  Vec4 sun_radiance;
+  uint64_t sky_sh;
+  uint32_t reserved1[2];
+} VkrVulkanVolumeTraceRoot;
+_Static_assert(sizeof(VkrVulkanVolumeTraceRoot) == 256u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, origin_spacing) == 144u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, blend) == 176u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, sun_direction) == 208u &&
+                   offsetof(VkrVulkanVolumeTraceRoot, sky_sh) == 240u,
+               "Vulkan volume trace root ABI drift");
+#define VKR_VULKAN_VOLUME_TRACE_GRID 1u
+
+typedef enum VkrVulkanVolumePipeline {
+  VKR_VULKAN_VOLUME_PIPELINE_BLAS_DECODE = 0,
+  VKR_VULKAN_VOLUME_PIPELINE_TRACE,
+  VKR_VULKAN_VOLUME_PIPELINE_CLEAR,
+  VKR_VULKAN_VOLUME_PIPELINE_COUNT,
+} VkrVulkanVolumePipeline;
+
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
   VkCommandBuffer command_buffer;
@@ -2551,6 +2744,9 @@ typedef struct VkrVulkanFrameSlot {
   Vec4 diffuse_volume_origin;
   Vec4 diffuse_volume_params;
   uint32_t diffuse_volume_dimensions[4];
+  /* The dynamic layer's sampled slot once its texture has been cleared
+     whole, else the sentinel (ADR-119). */
+  uint32_t diffuse_volume_dynamic_texture;
   uint64_t ltc;
   uint64_t sheen;
   uint64_t anisotropy;
@@ -2623,6 +2819,58 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t diffuse_volume_compose_revision;
   bool8_t diffuse_volume_compose_split;
   VkImage diffuse_volume_compose_image;
+  /* Dynamic volume layer (ADR-119): the ray record of each packed
+     candidate row, this slot's top-level acceleration structure with its
+     instance and scratch buffers, and the BLAS builds it records. */
+  VkrVulkanRayRow *ray_rows;
+  uint32_t ray_row_capacity;
+  VkAccelerationStructureKHR tlas;
+  VkrVulkanBuffer tlas_buffer;
+  VkDeviceAddress tlas_address;
+  VkrVulkanBuffer tlas_instances;
+  VkrVulkanBuffer tlas_scratch;
+  uint32_t tlas_instance_count;
+  /* The TLAS refits in place while its instance count and the scene's BLAS
+     generation hold, and is rebuilt every VKR_VULKAN_TLAS_REBUILD_INTERVAL
+     uses so that refits do not degrade it. */
+  bool8_t tlas_update;
+  uint32_t tlas_built_count;
+  uint64_t tlas_built_generation;
+  uint32_t tlas_uses_since_build;
+  /* GPU timestamps around Volume.Build and Volume.Trace, readable once the
+     frame has submitted and completed, and the probes it traced. */
+  VkQueryPool volume_timing_pool;
+  bool8_t volume_timing_recorded;
+  bool8_t volume_timing_submitted;
+  uint32_t volume_timing_probes;
+  VkrVulkanBuffer blas_positions;
+  VkrVulkanBuffer blas_scratch;
+  /* The slot's BLAS work lists (VkrVulkanVolumeSlotLists), allocated on its
+     first volume frame and freed with the slot. */
+  VkrVulkanVolumeSlotLists *volume_lists;
+  uint32_t blas_job_count;
+  /* BLAS compaction: the compacted sizes of the BLASes this slot last
+     built, readable once its frame has submitted and completed; the copies
+     this frame records; and the structures they replaced. */
+  VkQueryPool blas_size_pool;
+  uint32_t blas_size_count;
+  bool8_t blas_sizes_submitted;
+  uint32_t blas_compaction_count;
+  uint32_t blas_retired_count;
+  bool8_t volume_build_ready;
+  uint64_t volume_trace_root;
+  uint32_t volume_trace_count;
+  uint32_t volume_clear_count;
+  VkImage volume_dynamic_image;
+  bool8_t volume_dynamic_clear;
+  VkrTextureHandle volume_dynamic_handle;
+  /* A runtime grid's probe records and moments, written by the trace, and
+     whether this frame clears them first. */
+  VkImage volume_grid_probes_image;
+  VkImage volume_grid_moments_image;
+  bool8_t volume_grid_clear;
+  float32_t volume_grid_moment_clamp;
+  VkrTextureHandle volume_grid_handle;
   /* Lowered once from the selected temporal consumer's predecessor. */
   Mat4 temporal_previous_view_projection;
   uint64_t temporal_previous_frame_index;
@@ -2843,6 +3091,8 @@ typedef struct VkrVulkanPublishedGeometry {
   uint32_t submesh_count;
   uint64_t last_use_submit_value;
   uint32_t pending_initialization_count;
+  /* One per submesh once a frame traces it; a null handle is unbuilt. */
+  VkrVulkanBlas *blas;
   bool8_t live;
   bool8_t pending_retire;
 } VkrVulkanPublishedGeometry;
@@ -3058,6 +3308,21 @@ struct VkrVulkanRenderer {
   VkrTextureHandle diffuse_volume_composed_sh;
   uint32_t diffuse_volume_composition;
   bool8_t diffuse_volume_composed_split;
+  /* The dynamic volume layer's pipelines, created only with ray queries,
+     and the dynamic texture last cleared whole (ADR-119). */
+  VkPipeline volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_COUNT];
+  VkShaderModule volume_shaders[VKR_VULKAN_VOLUME_PIPELINE_COUNT];
+  VkrTextureHandle volume_dynamic_cleared;
+  /* The runtime grid whose probe records and moments were last cleared;
+     lookups bind a grid only after. */
+  VkrTextureHandle volume_grid_cleared;
+  /* Advances whenever a BLAS appears, moves or goes, so a TLAS refit sees
+     only the instances it was built over. */
+  uint64_t blas_generation;
+  /* Probes a frame may trace within VKR_VULKAN_VOLUME_BUDGET_MS, from the
+     measured cost of the layer's passes (ADR-119). Written on the render
+     thread; the runtime reads it once a frame. */
+  float32_t volume_probe_budget;
   /** Immutable matrix/amplitude RGBA16F tables. One shared staging buffer
       retires after their first successful upload; descriptor rows and images
       remain renderer-owned for the device lifetime. */
@@ -3334,6 +3599,30 @@ void vkr_vk_record_diffuse_volume_compose(
     const VkrVulkanPreparedCompute *prepared);
 void vkr_vk_commit_diffuse_volume_compose(VkrVulkanRenderer *renderer,
                                           VkrVulkanFrameSlot *slot);
+/* Dynamic diffuse volume layer (vkr_vulkan_volume_trace.c, ADR-119). */
+bool8_t vkr_vk_volume_trace_enabled(const VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer);
+void vkr_vk_destroy_volume_pipelines(VkrVulkanRenderer *renderer,
+                                     VkDevice device);
+bool8_t vkr_vk_reserve_ray_rows(VkrVulkanRenderer *renderer,
+                                VkrVulkanFrameSlot *slot, uint32_t count);
+void vkr_vk_record_ray_row(VkrVulkanFrameSlot *slot, uint32_t row,
+                           const VkrWorldDrawCandidate *candidate,
+                           const VkrVulkanPublishedMaterial *material);
+void vkr_vk_destroy_geometry_blas(VkrVulkanRenderer *renderer,
+                                  VkrVulkanPublishedGeometry *geometry);
+void vkr_vk_destroy_volume_slot(VkrVulkanRenderer *renderer,
+                                VkrVulkanFrameSlot *slot);
+bool8_t vkr_vk_prepare_volume_build(VkrVulkanRenderer *renderer,
+                                    const VkrRgPass *pass);
+void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
+                                VkCommandBuffer command);
+bool8_t vkr_vk_prepare_volume_trace(VkrVulkanRenderer *renderer,
+                                    const VkrRgPass *pass);
+void vkr_vk_record_volume_trace(VkrVulkanRenderer *renderer,
+                                VkCommandBuffer command);
+void vkr_vk_commit_volume_trace(VkrVulkanRenderer *renderer,
+                                VkrVulkanFrameSlot *slot);
 bool8_t vkr_vk_prepare_cloud_sky_light(VkrVulkanRenderer *renderer,
                                        VkrVulkanPreparedCompute *prepared,
                                        const VkrRgPass *pass);

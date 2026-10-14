@@ -561,6 +561,8 @@ typedef struct VkrRenderGraphFrameInfo {
       viewport on each axis, inside the half-size reflection target. */
   bool8_t planar_reflection_active;
   uint32_t planar_reflection_divisor;
+  /** The frame updates the diffuse volume's dynamic layer (ADR-119). */
+  bool8_t dynamic_volume_active;
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;
   bool8_t anisotropy_enabled;

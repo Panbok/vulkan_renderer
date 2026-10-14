@@ -225,6 +225,13 @@ bool8_t vkr_vulkan_renderer_wait_idle(VkrVulkanRenderer *renderer);
  * the next frame. False for an offscreen target. */
 bool8_t vkr_vulkan_renderer_set_present_mode(VkrVulkanRenderer *renderer,
                                              VkrPresentMode mode);
+/** True when the device traces the diffuse volume's dynamic layer. */
+bool8_t
+vkr_vulkan_renderer_dynamic_volume_supported(const VkrVulkanRenderer *renderer);
+/* Probes the dynamic volume layer may trace next frame within its GPU
+   budget (ADR-119). */
+uint32_t vkr_vulkan_renderer_dynamic_volume_probe_budget(
+    const VkrVulkanRenderer *renderer);
 uint64_t vkr_vulkan_renderer_submit_value(const VkrVulkanRenderer *renderer);
 uint64_t vkr_vulkan_renderer_completed_value(const VkrVulkanRenderer *renderer);
 bool8_t

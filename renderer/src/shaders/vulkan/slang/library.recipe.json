@@ -1,6 +1,6 @@
 {
   "library": "library.slang",
-  "profile": "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT+spvGroupNonUniformArithmetic",
+  "profile": "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT+spvGroupNonUniformArithmetic+spvRayQueryKHR",
   "arguments": [
     "-fvk-use-entrypoint-name",
     "-fvk-use-scalar-layout",
@@ -184,6 +184,21 @@
       "name": "packet.visibility_shadow.frag",
       "entry": "vk_visibility_shadow_fragment",
       "stage": "fragment"
+    },
+    {
+      "name": "packet.volume_blas_decode.comp",
+      "entry": "vk_volume_blas_decode",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.volume_trace.comp",
+      "entry": "vk_volume_trace",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.volume_clear.comp",
+      "entry": "vk_volume_clear",
+      "stage": "compute"
     },
     {
       "name": "packet.reflection.vert",

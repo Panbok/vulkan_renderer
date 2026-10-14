@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-13
+updated: 2026-10-14
 authority: proposal
 ---
 
@@ -390,65 +390,15 @@ shader-side fix (R1, R4, R5, R11) needs a matched Release timing of
 
 ## 6. DDGI-style volume updates on the desktop pipeline
 
-### Baseline
-
-The sparse diffuse volume ([ADR-054](../adr/054-baked-diffuse-volumes.md))
-holds 4 × 4 × 4 probe bricks over three levels, distance moments, and one L1
-SH set per sun key and per lamp group. `DiffuseVolume.Compose` weighs the
-layers into a composed SH texture each time the weights move; the lookup
-weighs eight corners by trilinear, back-face and Chebyshev visibility. The
-Bistro volume holds 194,463 valid probes. The runtime renderer uses no ray
-queries and builds no acceleration structures; only the bakers do
-([ADR-083](../adr/083-supported-hardware-matrix.md): RDNA 2+ and Ampere+
-support `VK_KHR_ray_query` in hardware).
-
-### Design
-
-Runtime ray-traced updates write into the existing volume so the lookup,
-visibility and composition stay unchanged:
-
-1. **Acceleration structures.** One BLAS per static mesh or brush batch
-   built at scene activation, refitted or rebuilt for movers; one TLAS per
-   frame. Build work runs outside per-draw loops and stays within a frame
-   budget.
-2. **Probe selection.** Each frame updates a bounded set of probes: those in
-   cells the camera sees, those inside a changed light's range, then a
-   round-robin of the rest. 194,463 probes cannot all update in one frame.
-3. **Tracing.** Each selected probe traces a fixed number of rays with a
-   rotated spherical Fibonacci set. A hit shades its surface: material
-   albedo and emission through the bindless tables, direct light from the
-   sun and the ranked local lights with a shadow ray each, and indirect light
-   read from the volume itself for multi-bounce. A miss returns the sky.
-4. **Storage.** Results project into L1 SH and blend into a dynamic layer
-   with a hysteresis in probe space. History lives per probe, not per
-   pixel: no reprojection, no motion vectors, no disocclusion. A light
-   change shows as a short lag, not as a trail.
-5. **Composition.** The dynamic layer joins `DiffuseVolume.Compose` as one
-   more band. Distance moments stay baked unless geometry moved.
-
-### Decisions (owner, 2026-10-12)
-
-- **The dynamic layer first holds only light the bake lacks:** dynamic
-  lights, emissive movers and changed lights, added to the baked layers. It
-  traces less, leaves baked quality where nothing changed, and keeps the
-  baked layers as the authority. A layer holding all light, replacing the
-  baked layers for time of day without sun keys, follows once this one is
-  stable.
-- **Scenes without a bake** use a uniform runtime grid over the scene bounds
-  with runtime relocation for blockout; the baked brick layout replaces it
-  after a bake, because brick placement needs one.
-- **Budget:** 1.0 ms of GPU time at 2560 × 1440 on an RX 6700 XT for build,
-  trace and update together, measured on Bistro.
-
-### Evidence
-
-- A Bistro case with a moving dynamic light inside the café: its bounce
-  appears on nearby walls within the hysteresis time and leaves no light
-  after the light moves away.
-- Bistro still captures with the dynamic layer on and no light change match
-  the baked result within a stated tolerance.
-- Release timing of the build, trace and update passes against the budget.
-- A Vulkan validation run of the case with zero messages.
+Done 2026-10-14 on the desktop pipeline
+([ADR-119](../adr/119-dynamic-diffuse-volume-layer.md)): with ray queries, a
+dynamic layer traces the light the bake lacks into the sparse volume within
+the 1.0 ms budget, and a scene whose volume is not baked yet gets a uniform
+runtime grid. The owner's decisions of 2026-10-12, 2026-10-13 and
+2026-10-14 and the evidence are recorded there. Open: a rebaked Bistro
+volume with light records and a capture of a changed static light; the
+editor writing `runtime_grid` for an unbaked volume; the all-light layer for
+time of day ([Sparse diffuse volumes](sparse-diffuse-volumes.md), item 2).
 
 ## Order
 
@@ -466,7 +416,8 @@ visibility and composition stay unchanged:
    to 4). Desktop planar water done 2026-10-13 (ADR-117); the tiled
    plane probe and per-pixel probe choice are open on the Mac, and room
    probe capture with the large-level work.
-7. DDGI-style updates (section 6).
+7. DDGI-style updates (section 6). Done 2026-10-14 on the desktop
+   pipeline (ADR-119).
 
 ## Documents to update when each step lands
 
@@ -478,7 +429,7 @@ visibility and composition stay unchanged:
 | 4 | ADR-043, 044, 061 and 087 (colour pipeline), ADR-099 |
 | 5 | ADR-037 rewritten for SMAA T2x; ADR-043 (FXAA) |
 | 6 | Desktop planar water done 2026-10-13: ADR-117, ADR-044, ADR-087, `ARCHITECTURE.md`, [Planar reflections](planar-reflections.md), [Large-level rendering](large-level-rendering.md). With the tiled work: [Tiled graphics pipeline](tiled-pipeline.md) |
-| 7 | ADR-054 or a new ADR; [Sparse diffuse volumes](sparse-diffuse-volumes.md) item 2 |
+| 7 | Done 2026-10-14: ADR-119, ADR-054, ADR-044, ADR-087, `ARCHITECTURE.md`, [Sparse diffuse volumes](sparse-diffuse-volumes.md) item 2 |
 
 ## Sources
 

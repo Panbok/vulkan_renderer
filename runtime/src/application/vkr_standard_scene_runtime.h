@@ -16,6 +16,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
+#include "renderer/systems/vkr_dynamic_volume.h"
 #include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_lighting_system.h"
@@ -201,6 +202,8 @@ typedef struct VkrStandardSceneRuntime {
      while the other is built. `frame` is the one being built and
      `frame_in_flight` the submitted one awaiting completion, or NULL. */
   VkrStandardSceneRuntimeFrame *frames[2];
+  /* The render scene's dynamic volume layer selection (ADR-119). */
+  VkrDynamicVolumeSelection dynamic_volume_selection;
   VkrStandardSceneRuntimeFrame *frame;
   VkrStandardSceneRuntimeFrame *frame_in_flight;
   /* The last completed frame's renderer metrics. */

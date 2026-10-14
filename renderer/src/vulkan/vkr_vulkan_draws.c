@@ -60,8 +60,9 @@ vkr_internal uint64_t vkr_vk_text_draw_upload_size(
 vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
-    uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
-    uint32_t *out_packed_count, uint32_t *out_omitted_count,
+    uint32_t destination_first, bool8_t trace_rows,
+    VkrVulkanCandidateCopyRange *out_range, uint32_t *out_packed_count,
+    uint32_t *out_omitted_count,
     uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT]);
 
 vkr_internal VkrVulkanPublishedMaterial *
@@ -480,6 +481,7 @@ vkr_internal void vkr_vk_reset_packet_tables(VkrVulkanFrameSlot *slot) {
   slot->diffuse_volume_params = (Vec4){0};
   MemZero(slot->diffuse_volume_dimensions,
           sizeof(slot->diffuse_volume_dimensions));
+  slot->diffuse_volume_dynamic_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   slot->ltc = 0u;
   slot->sheen = 0u;
   slot->anisotropy = 0u;
@@ -1113,7 +1115,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
                 sizeof(slot->gpu_static_bucket_counts));
         packed = vkr_vk_pack_gpu_candidate_range(
             renderer, slot, world->gpu_candidates, source_static_count, 0u,
-            range, &packed_static_count, &omitted_static_count,
+            true_v, range, &packed_static_count, &omitted_static_count,
             slot->gpu_static_bucket_counts);
         if (packed && range->count > 0u) {
           slot->gpu_candidate_copy_count++;
@@ -1138,7 +1140,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
         uint32_t omitted_dynamic_count = 0u;
         packed = vkr_vk_pack_gpu_candidate_range(
             renderer, slot, world->gpu_candidates + source_static_count,
-            source_dynamic_count, packed_static_count, range,
+            source_dynamic_count, packed_static_count, true_v, range,
             &packed_dynamic_count, &omitted_dynamic_count, bucket_counts);
         if (packed && range->count > 0u) {
           slot->gpu_candidate_copy_count++;
@@ -1160,7 +1162,7 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT] = {0};
       packed = vkr_vk_pack_gpu_candidate_range(
           renderer, slot, world->transmission_gpu_candidates,
-          world->transmission_gpu_candidate_count, 0u, &range,
+          world->transmission_gpu_candidate_count, 0u, false_v, &range,
           &slot->transmission_gpu_candidate_count, &omitted_transmission_count,
           bucket_counts);
       slot->transmission_gpu_candidate_upload_offset =
@@ -1278,8 +1280,9 @@ bool8_t vkr_vk_prepare_direct_draws(VkrVulkanRenderer *renderer,
 vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     VkrVulkanRenderer *renderer, VkrVulkanFrameSlot *slot,
     const VkrWorldDrawCandidate *source, uint32_t count,
-    uint32_t destination_first, VkrVulkanCandidateCopyRange *out_range,
-    uint32_t *out_packed_count, uint32_t *out_omitted_count,
+    uint32_t destination_first, bool8_t trace_rows,
+    VkrVulkanCandidateCopyRange *out_range, uint32_t *out_packed_count,
+    uint32_t *out_omitted_count,
     uint32_t bucket_counts[VKR_WORLD_DRAW_STATE_BUCKET_COUNT]) {
   *out_range = (VkrVulkanCandidateCopyRange){0};
   *out_packed_count = 0u;
@@ -1306,6 +1309,13 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
                                  instance_source_offset);
   slot->candidate_upload_cursor =
       instance_source_offset + (uint64_t)count * sizeof(*instances);
+  /* The dynamic volume layer's TLAS needs each opaque row's BLAS and
+     transform (ADR-119). Transmission rows live in their own buffer, so
+     only the opaque streams' rows name ray rows. */
+  const bool8_t ray_rows =
+      trace_rows && vkr_vk_volume_trace_enabled(renderer) &&
+      destination_first + count <= VKR_GPU_DRAW_CANDIDATE_CAPACITY &&
+      vkr_vk_reserve_ray_rows(renderer, slot, destination_first + count);
   uint32_t packed_count = 0u;
   uint32_t unpublished_geometry_count = 0u;
   uint32_t unpublished_material_count = 0u;
@@ -1331,6 +1341,10 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
     }
     const VkrVulkanSubmeshRange *submesh =
         &geometry->submeshes[candidate->submesh_index];
+    if (ray_rows) {
+      vkr_vk_record_ray_row(slot, destination_first + packed_count, candidate,
+                            material);
+    }
     instances[packed_count] =
         vkr_vk_prepare_skinning_instance(slot, &candidate->instance);
     const uint32_t state_bucket =
@@ -1438,6 +1452,7 @@ void vkr_vk_fill_packet_frame_root(
   root->diffuse_volume_params = slot->diffuse_volume_params;
   MemCopy(root->diffuse_volume_dimensions, slot->diffuse_volume_dimensions,
           sizeof(root->diffuse_volume_dimensions));
+  root->diffuse_volume_dynamic_texture = slot->diffuse_volume_dynamic_texture;
   root->flags = vkr_packet_derive_frame_flags(renderer->graph->packet,
                                               lighting_pass, slot->ibl_ready);
   root->point_light_data = slot->point_light_data;

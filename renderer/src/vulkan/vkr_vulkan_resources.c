@@ -406,14 +406,20 @@ bool8_t vkr_vk_create_buffer(VkrVulkanRenderer *renderer,
   }
   const bool8_t has_address =
       (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
+  const bool8_t acceleration_structure =
+      (usage & VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR) != 0;
   allocation->pool_key = (VkrVulkanMemoryPoolKey){
       .memory_class = memory_class,
-      .kind = VKR_VULKAN_MEMORY_KIND_BUFFER,
+      .kind = acceleration_structure
+                  ? VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE
+                  : VKR_VULKAN_MEMORY_KIND_BUFFER,
       .memory_type_index = allocation->memory_type_index,
       .device_address_required = has_address,
   };
   const uint64_t pool_block_size =
-      memory_class == VKR_VULKAN_MEMORY_CLASS_UPLOAD ||
+      acceleration_structure && memory_class == VKR_VULKAN_MEMORY_CLASS_DEVICE
+          ? renderer->config.device_image_block_size
+      : memory_class == VKR_VULKAN_MEMORY_CLASS_UPLOAD ||
               memory_class == VKR_VULKAN_MEMORY_CLASS_PUBLICATION ||
               memory_class == VKR_VULKAN_MEMORY_CLASS_STAGING
           ? renderer->config.upload_buffer_block_size
@@ -1741,6 +1747,7 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
   VkDevice device = vkr_vk_renderer_device(renderer);
   for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
     VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
+    vkr_vk_destroy_volume_slot(renderer, slot);
     vkr_vk_destroy_buffer(renderer, &slot->frame_upload);
     vkr_vk_destroy_buffer(renderer, &slot->candidate_upload);
     vkr_vk_destroy_buffer(renderer, &slot->capture_readback);

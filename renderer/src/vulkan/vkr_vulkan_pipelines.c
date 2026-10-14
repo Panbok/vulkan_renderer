@@ -2109,7 +2109,57 @@ bool8_t vkr_vk_create_pipelines(VkrVulkanRenderer *renderer) {
   return vkr_vk_create_packet_pipelines(renderer) &&
          vkr_vk_create_ibl_pipelines(renderer) &&
          vkr_vk_create_atmosphere_pipelines(renderer) &&
-         vkr_vk_create_deferred_pipelines(renderer);
+         vkr_vk_create_deferred_pipelines(renderer) &&
+         vkr_vk_create_volume_pipelines(renderer);
+}
+
+/* The dynamic volume layer's compute pipelines (ADR-119). Their modules
+   declare the ray-query capability, so a device without it creates none
+   and the volume stays baked. */
+bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer) {
+  if (!vkr_vulkan_device_ray_query_functions(renderer->device)) {
+    return true_v;
+  }
+  vkr_local_persist const char *const paths[VKR_VULKAN_VOLUME_PIPELINE_COUNT] =
+      {
+          VKR_VULKAN_PACKET_VOLUME_BLAS_DECODE_COMP_SPV,
+          VKR_VULKAN_PACKET_VOLUME_TRACE_COMP_SPV,
+          VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV,
+      };
+  vkr_local_persist const char
+      *const entries[VKR_VULKAN_VOLUME_PIPELINE_COUNT] = {
+          "vk_volume_blas_decode",
+          "vk_volume_trace",
+          "vk_volume_clear",
+      };
+  for (uint32_t i = 0u; i < VKR_VULKAN_VOLUME_PIPELINE_COUNT; ++i) {
+    if (!vkr_vk_create_shader_module(renderer, paths[i],
+                                     &renderer->volume_shaders[i])) {
+      log_error("Vulkan volume shader %s did not load", paths[i]);
+      return false_v;
+    }
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
+        .stage =
+            {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = renderer->volume_shaders[i],
+                .pName = entries[i],
+            },
+        .layout = renderer->pipeline_layout,
+    };
+    const VkResult result = vkCreateComputePipelines(
+        vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u, &info,
+        NULL, &renderer->volume_pipelines[i]);
+    if (result != VK_SUCCESS) {
+      log_error("Vulkan volume pipeline %s creation failed: %d", entries[i],
+                result);
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 /* Shadow maps keep near at depth 0 and test LESS; every camera depth

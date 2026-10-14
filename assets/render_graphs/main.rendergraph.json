@@ -2102,6 +2102,36 @@
       "execute": "pass.gpu_draw_upload"
     },
     {
+      "name": "Volume.Build",
+      "type": "compute",
+      "condition": "dynamic_volume_active",
+      "flags": [
+        "NO_CULL"
+      ],
+      "execute": "pass.volume.build"
+    },
+    {
+      "name": "Volume.Trace",
+      "type": "compute",
+      "condition": "dynamic_volume_active",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.volume.trace"
+    },
+    {
       "name": "Animation.Skinning",
       "condition": "skinning_enabled",
       "type": "compute",

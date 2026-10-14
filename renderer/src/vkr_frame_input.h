@@ -860,8 +860,47 @@ typedef struct VkrPlanarReflectionPayload {
   uint32_t divisor;
 } VkrPlanarReflectionPayload;
 
+/** Probes one frame traces at most, and rays each traces. */
+#define VKR_DYNAMIC_VOLUME_TRACE_PROBES_MAX 2048u
+#define VKR_DYNAMIC_VOLUME_RAY_COUNT 128u
+/** Probes one frame clears at most, and lights one frame traces at most. */
+#define VKR_DYNAMIC_VOLUME_CLEAR_PROBES_MAX 16384u
+#define VKR_DYNAMIC_VOLUME_LIGHTS_MAX 64u
+#define VKR_DYNAMIC_VOLUME_RECTANGLE_LIGHTS_MAX 8u
+
+/**
+ * One frame's update of the diffuse volume's dynamic layer (ADR-119): the
+ * desktop pipeline traces `trace_probes` with ray queries and blends their
+ * new light into `lighting.diffuse_volume.dynamic_sh`, and zeroes
+ * `clear_probes`. The light sources are the light the bake lacks, in
+ * physical units: each light's contribution is multiplied by its sign, so a
+ * light changed since the bake adds its current state (+1) and takes its
+ * bake-time state away (-1). Hits on rows at or past the frame's static
+ * candidates add their material's emission. All arrays are borrowed for the
+ * render call.
+ */
+typedef struct VkrDynamicVolumeInput {
+  const uint32_t *trace_probes;
+  uint32_t trace_probe_count;
+  const uint32_t *clear_probes;
+  uint32_t clear_probe_count;
+  const VkrPointLight *point_lights;
+  const float32_t *point_light_signs;
+  uint32_t point_light_count;
+  const VkrRectangleLight *rectangle_lights;
+  const float32_t *rectangle_light_signs;
+  uint32_t rectangle_light_count;
+  /** Share of a traced probe's new light that replaces its stored light,
+      in (0, 1]. */
+  float32_t blend;
+  /** Rotates the ray set from frame to frame. */
+  uint32_t sequence;
+} VkrDynamicVolumeInput;
+
 typedef struct VkrFrameInput {
   const VkrAnimationPreviewInput *animation_preview;
+  /** Optional; absent leaves the dynamic volume layer as it is. */
+  const VkrDynamicVolumeInput *dynamic_volume;
   /** Optional; absent renders no planar reflection. */
   const VkrPlanarReflectionPayload *planar_reflection;
   uint32_t version;

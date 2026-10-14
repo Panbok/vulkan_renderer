@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-13
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -359,8 +359,11 @@ These are source counts; the cost is not measured.
 - Static geometry, material, light or layer changes need a rebake.
 - The desktop lookup interpolates at half resolution. It is exact only at
   silhouettes and on thin geometry.
-- The volume does not supply dynamic indirect light, sharp caustics or runtime
-  glass transport.
+- The baked layers hold no dynamic light. On the desktop pipeline with ray
+  queries, a dynamic layer adds the bounce of dynamic lights, emissive movers
+  and changed static lights, and a runtime grid stands in for a volume not
+  baked yet ([ADR-119](119-dynamic-diffuse-volume-layer.md)). Neither
+  supplies sharp caustics or runtime glass transport.
 - L1 loses the quadratic band's directional detail.
 - Baked sky light scales a reflection by one number per pixel. A mirror in a
   half-open place loses sky detail in the directions that do see the sky, and

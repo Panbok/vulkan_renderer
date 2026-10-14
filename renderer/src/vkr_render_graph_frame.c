@@ -133,6 +133,14 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->scene_rendering = packet->scene_rendering;
   frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
   frame->smaa_enabled = packet->smaa_enabled;
+  /* The dynamic volume layer traces on frames that carry its update and
+     a bound volume; the device's ray queries gate it in the backend
+     (ADR-119). */
+  frame->dynamic_volume_active =
+      packet->scene_rendering && !packet->tiled_pipeline &&
+      packet->input.dynamic_volume != NULL && packet->input.lighting &&
+      packet->input.lighting->diffuse_volume.indirection.id != 0u &&
+      packet->input.lighting->diffuse_volume.dynamic_sh.id != 0u;
   /* The tiled pipeline takes a baked plane probe instead (ADR-087). */
   frame->planar_reflection_active = packet->scene_rendering &&
                                     !packet->tiled_pipeline &&
@@ -459,6 +467,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                      VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT] = {"pass.clouds.sky_light",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_VOLUME_BUILD] = {"pass.volume.build",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_VOLUME_TRACE] = {"pass.volume.trace",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE] = {"pass.diffuse_volume.compose",
                                                 VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_DIFFUSE_VOLUME_SAMPLE] = {"pass.diffuse_volume.sample",

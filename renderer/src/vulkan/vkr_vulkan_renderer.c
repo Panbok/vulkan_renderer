@@ -266,12 +266,16 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
                           config->device_buffer_block_size,
                       [VKR_VULKAN_MEMORY_KIND_IMAGE] =
                           config->device_image_block_size,
+                      [VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE] =
+                          config->device_image_block_size,
                   },
               [VKR_VULKAN_MEMORY_CLASS_UPLOAD] =
                   {
                       [VKR_VULKAN_MEMORY_KIND_BUFFER] =
                           config->upload_buffer_block_size,
                       [VKR_VULKAN_MEMORY_KIND_IMAGE] =
+                          config->upload_buffer_block_size,
+                      [VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE] =
                           config->upload_buffer_block_size,
                   },
               [VKR_VULKAN_MEMORY_CLASS_PUBLICATION] =
@@ -280,6 +284,8 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
                           config->upload_buffer_block_size,
                       [VKR_VULKAN_MEMORY_KIND_IMAGE] =
                           config->upload_buffer_block_size,
+                      [VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE] =
+                          config->upload_buffer_block_size,
                   },
               [VKR_VULKAN_MEMORY_CLASS_STAGING] =
                   {
@@ -287,12 +293,16 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
                           config->upload_buffer_block_size,
                       [VKR_VULKAN_MEMORY_KIND_IMAGE] =
                           config->upload_buffer_block_size,
+                      [VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE] =
+                          config->upload_buffer_block_size,
                   },
               [VKR_VULKAN_MEMORY_CLASS_READBACK] =
                   {
                       [VKR_VULKAN_MEMORY_KIND_BUFFER] =
                           config->readback_buffer_block_size,
                       [VKR_VULKAN_MEMORY_KIND_IMAGE] =
+                          config->readback_buffer_block_size,
+                      [VKR_VULKAN_MEMORY_KIND_ACCELERATION_STRUCTURE] =
                           config->readback_buffer_block_size,
                   },
           },
@@ -1109,6 +1119,7 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
                                     "the SMAA table upload could not retire");
   vkr_vk_commit_cloud_noise(renderer, slot);
   vkr_vk_commit_diffuse_volume_compose(renderer, slot);
+  vkr_vk_commit_volume_trace(renderer, slot);
   if (slot->candidate_residency_pending) {
     slot->candidate_residency = slot->pending_candidate_residency;
     slot->candidate_residency_pending = false_v;
@@ -1694,6 +1705,19 @@ bool8_t vkr_vulkan_renderer_wait_idle(VkrVulkanRenderer *renderer) {
   return true_v;
 }
 
+bool8_t vkr_vulkan_renderer_dynamic_volume_supported(
+    const VkrVulkanRenderer *renderer) {
+  return vkr_vk_volume_trace_enabled(renderer);
+}
+
+uint32_t vkr_vulkan_renderer_dynamic_volume_probe_budget(
+    const VkrVulkanRenderer *renderer) {
+  if (!renderer || renderer->volume_probe_budget <= 0.0f) {
+    return VKR_VULKAN_VOLUME_PROBES_START;
+  }
+  return (uint32_t)renderer->volume_probe_budget;
+}
+
 uint64_t vkr_vulkan_renderer_submit_value(const VkrVulkanRenderer *renderer) {
   return renderer ? renderer->submit_value : 0u;
 }
@@ -2044,6 +2068,7 @@ vkr_internal void vkr_vk_destroy_pipelines(VkrVulkanRenderer *renderer,
     if (renderer->deferred_shaders[i])
       vkDestroyShaderModule(device, renderer->deferred_shaders[i], NULL);
   }
+  vkr_vk_destroy_volume_pipelines(renderer, device);
   for (uint32_t i = 0u; i < VKR_VULKAN_IBL_PIPELINE_COUNT; ++i) {
     if (renderer->ibl_pipelines[i])
       vkDestroyPipeline(device, renderer->ibl_pipelines[i], NULL);

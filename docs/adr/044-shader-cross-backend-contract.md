@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-13
+updated: 2026-10-14
 authority: adr
 ---
 
@@ -735,6 +735,7 @@ domain under the [evidence rules](#evidence-rules).
 | Projected decals | Shared semantics, one implementation per backend | — | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
 | Planar reflection: mirrored view shaded forward, reflector lookup | Desktop | the material, light, shadow and probe kernels below | — | `vulkan/slang/world/deferred.slang` (`vk_reflection_vertex`, `vk_reflection_fragment`, `vk_planar_reflection_specular`), `world/default.slang` (`packet_world_shade_surface`) |
+| Diffuse volume dynamic layer: BLAS decode, ray-query probe trace, runtime grid moments and relocation, lookup add ([ADR-119](119-dynamic-diffuse-volume-layer.md)) | Desktop, with ray queries | `shared/diffuse_volume_kernel.slangh`, `gpu_draw.slangh`, `punctual_light_kernel.slangh`, `sh_l2_kernel.slangh` | — | `vulkan/slang/world/volume_trace.slang` (`vk_volume_blas_decode`, `vk_volume_trace`, `vk_volume_clear`), `world/default.slang` (`packet_diffuse_volume_lookup`); Vulkan native: Debug validation clean, Release capture and timing on Bistro |
 | Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission composition | Shared | `shared/transmission_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
