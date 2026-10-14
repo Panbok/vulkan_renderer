@@ -1,6 +1,24 @@
 #pragma once
 
+#if defined(VKR_LIBC_BOUNDARY)
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#else
 #include "vkr_pch.h"
+#endif
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#define VKR_SIMD_ARM_NEON 1
+#include <arm_neon.h>
+// The x86 path emits FMA, so AVX alone (Sandy/Ivy Bridge) takes the scalar
+// path. MSVC enables FMA with /arch:AVX2 but never defines __FMA__.
+#elif defined(__FMA__) ||                                                      \
+    (defined(_MSC_VER) && !defined(__clang__) && defined(__AVX2__))
+#define VKR_SIMD_X86_AVX 1
+#include <immintrin.h>
+#endif
 
 // Only define these if not already defined by CMake
 #ifndef LOG_LEVEL
@@ -65,10 +83,18 @@
 #define SingleListAppend(f, n, next) ((n)->next = (f), (f) = (n))
 #define SingleListPop(f, n) ((f) = (n)->next)
 
+#if defined(__clang__) || defined(__GNUC__)
+#define MemCopy(dst, src, size) __builtin_memmove((dst), (src), (size))
+#define MemZero(dst, size) __builtin_memset((dst), 0, (size))
+#define MemSet(dst, value, size) __builtin_memset((dst), (value), (size))
+#define MemCompare(a, b, size) __builtin_memcmp((a), (b), (size))
+#else
+#include <string.h>
 #define MemCopy(dst, src, size) memmove((dst), (src), (size))
 #define MemZero(dst, size) memset((dst), 0, (size))
 #define MemSet(dst, value, size) memset((dst), (value), (size))
 #define MemCompare(a, b, size) memcmp((a), (b), (size))
+#endif
 
 #if !defined(NDEBUG) // Often debug_break is only active in debug builds
 #if defined(__has_builtin) && !defined(__ibmxl__)
@@ -101,6 +127,16 @@
 #endif
 #else                           // NDEBUG is defined (release build)
 #define debug_break() ((void)0) // No-op in release builds
+#endif
+
+/* Debug-build invariant for lib headers and boundary code: reports the
+ * expression and location on stderr, then aborts, as assert() does. NDEBUG
+ * discards the check without evaluating the expression. */
+#if defined(NDEBUG)
+#define vkr_assert(expr) ((void)sizeof((expr) ? 1 : 0))
+#else
+#define vkr_assert(expr)                                                       \
+  ((expr) ? (void)0 : vkr_assert_fail(#expr, __FILE__, (uint32_t)__LINE__))
 #endif
 
 #define true_v (uint8_t)1
@@ -240,3 +276,6 @@ typedef double float64_t;
 typedef int bool32_t;
 /** @brief 8-bit boolean type */
 typedef char bool8_t;
+
+/** Reports a failed vkr_assert() and aborts the process. */
+void vkr_assert_fail(const char *expression, const char *file, uint32_t line);

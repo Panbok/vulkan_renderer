@@ -1,7 +1,6 @@
 #pragma once
 
 #include "defines.h"
-#include "vkr_pch.h"
 
 typedef struct VkrTime {
   int32_t seconds;  // seconds after the minute [0-60]
@@ -121,6 +120,17 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
 bool8_t vkr_platform_environment_variable(const char *name, char *value,
                                           uint32_t capacity);
 
+/** True when the variable `name` is set to a value other than empty or "0".
+ * A value longer than 63 bytes is not a flag and reads as false. */
+vkr_internal INLINE bool8_t vkr_platform_environment_flag(const char *name) {
+  char value[64];
+  if (!name || !vkr_platform_environment_variable(name, value, sizeof(value))) {
+    return false_v;
+  }
+  return value[0] != '\0' && !(value[0] == '0' && value[1] == '\0') ? true_v
+                                                                    : false_v;
+}
+
 bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
 
 /**
@@ -129,6 +139,11 @@ bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
  * or dedicated GPU usage. Clears `out_bytes` and returns false on failure.
  */
 bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes);
+
+/** Ends the process at once with `exit_code`: no exit handlers run and no
+ * buffered C streams are flushed. For a state where normal teardown is unsafe,
+ * such as GPU work whose completion cannot be proven. */
+void vkr_platform_exit_immediate(int32_t exit_code);
 
 /** Raw, uncoloured process output suitable for machine-readable tools. */
 void vkr_platform_stdout_write(const char *message);

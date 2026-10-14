@@ -116,6 +116,16 @@ static INLINE Mat4 mat4_identity(void) {
   };
 }
 
+/** Returns whether all sixteen elements are finite (not NaN or infinite). */
+static INLINE bool8_t mat4_is_finite(const Mat4 *matrix) {
+  for (uint32_t i = 0u; i < ArrayCount(matrix->elements); ++i) {
+    if (!vkr_is_finite_f32(matrix->elements[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* OpenGL depth convention: maps z = -near..-far to [-1, 1] with Y up. Renderer
  * cameras use mat4_ortho_zo_yinv_reversed and shadows mat4_ortho_zo_yinv. */
 static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,

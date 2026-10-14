@@ -13,7 +13,6 @@
 
 #include "defines.h"
 #include "vkr_math.h"
-#include "vkr_pch.h"
 
 // =============================================================================
 // SIMD Type Definitions
@@ -370,10 +369,10 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z,
                                                           int32_t w) {
-  assert(x >= 0 && x < 4);
-  assert(y >= 0 && y < 4);
-  assert(z >= 0 && z < 4);
-  assert(w >= 0 && w < 4);
+  vkr_assert(x >= 0 && x < 4);
+  vkr_assert(y >= 0 && y < 4);
+  vkr_assert(z >= 0 && z < 4);
+  vkr_assert(w >= 0 && w < 4);
   // ARM NEON doesn't have arbitrary shuffle, so we use element access
   VKR_SIMD_F32X4 result;
   result.elements[0] = v.elements[x];
@@ -677,10 +676,10 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z,
                                                           int32_t w) {
-  assert(x >= 0 && x < 4);
-  assert(y >= 0 && y < 4);
-  assert(z >= 0 && z < 4);
-  assert(w >= 0 && w < 4);
+  vkr_assert(x >= 0 && x < 4);
+  vkr_assert(y >= 0 && y < 4);
+  vkr_assert(z >= 0 && z < 4);
+  vkr_assert(w >= 0 && w < 4);
   // _mm_shuffle_ps requires a compile-time constant for the control mask,
   // so we must do the shuffle manually for variable indices.
   VKR_SIMD_F32X4 result;
@@ -961,10 +960,10 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z,
                                                           int32_t w) {
-  assert(x >= 0 && x < 4);
-  assert(y >= 0 && y < 4);
-  assert(z >= 0 && z < 4);
-  assert(w >= 0 && w < 4);
+  vkr_assert(x >= 0 && x < 4);
+  vkr_assert(y >= 0 && y < 4);
+  vkr_assert(z >= 0 && z < 4);
+  vkr_assert(w >= 0 && w < 4);
   VKR_SIMD_F32X4 result = {
       {v.elements[x], v.elements[y], v.elements[z], v.elements[w]}};
   return result;

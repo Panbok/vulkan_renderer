@@ -1,5 +1,12 @@
 #pragma once
 
+/* libc and operating-system headers for the lib's own sources and for
+ * consumers outside the renderer. Renderer translation units define
+ * VKR_LIBC_BOUNDARY and see only the freestanding headers from defines.h. */
+#if defined(VKR_LIBC_BOUNDARY)
+#error "vkr_pch.h is outside the renderer's libc boundary"
+#endif
+
 #if defined(_MSC_VER) && !defined(NDEBUG)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
@@ -48,14 +55,3 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 // clang-format on
-
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
-#define VKR_SIMD_ARM_NEON 1
-#include <arm_neon.h>
-// The x86 path emits FMA, so AVX alone (Sandy/Ivy Bridge) takes the scalar
-// path. MSVC enables FMA with /arch:AVX2 but never defines __FMA__.
-#elif defined(__FMA__) ||                                                      \
-    (defined(_MSC_VER) && !defined(__clang__) && defined(__AVX2__))
-#define VKR_SIMD_X86_AVX 1
-#include <immintrin.h>
-#endif

@@ -503,6 +503,8 @@ vkr_internal void vkr_platform_stream_write(DWORD stream, const char *message) {
   }
 }
 
+void vkr_platform_exit_immediate(int32_t exit_code) { _Exit(exit_code); }
+
 void vkr_platform_stdout_write(const char *message) {
   vkr_platform_stream_write(STD_OUTPUT_HANDLE, message);
 }

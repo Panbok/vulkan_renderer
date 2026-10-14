@@ -382,6 +382,16 @@ FileError file_sync(FileHandle *handle) {
                                                 : FILE_ERROR_IO_ERROR;
 }
 
+FileError file_truncate(FileHandle *handle) {
+  if (!handle || !handle->handle || handle->memory) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  const int fd = fs_file_descriptor(handle);
+  return ftruncate(fd, 0) == 0 && lseek(fd, 0, SEEK_SET) == 0
+             ? FILE_ERROR_NONE
+             : FILE_ERROR_IO_ERROR;
+}
+
 bool8_t file_flush_durable(FILE *file) {
   return file && fflush(file) == 0 && fsync(fileno(file)) == 0;
 }
@@ -391,6 +401,16 @@ FileError file_remove(const FilePath *path) {
     return FILE_ERROR_INVALID_PATH;
   }
   if (unlink((const char *)path->path.str) == 0) {
+    return FILE_ERROR_NONE;
+  }
+  return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_remove_directory(const FilePath *path) {
+  if (!path || !path->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (rmdir((const char *)path->path.str) == 0) {
     return FILE_ERROR_NONE;
   }
   return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;

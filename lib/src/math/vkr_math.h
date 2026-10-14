@@ -66,6 +66,10 @@
 
 #include "defines.h"
 
+/* The only libc header a renderer translation unit sees: these inline
+ * wrappers own every <math.h> call, so callers use the vkr_ names. */
+#include <math.h>
+
 /** @brief Mathematical constant π (pi) with high precision
  *  @note Value: 3.14159265358979323846...
  *  @note Uses 17 significant digits for optimal float32_t accuracy */
@@ -138,13 +142,11 @@
  *  @note Value: 0.001f (1 millisecond = 0.001 seconds) */
 #define VKR_MS_TO_SEC_MULTIPLIER 0.001f
 
-/** @brief Large value representing positive infinity for float32_t
- *  @note Value: 1e30f (1 × 10^30)
- *  @note Use for bounds checking and initialization of minimum values
- *  @note Should be larger than any realistic value in your application */
-#ifndef INFINITY
-#define INFINITY 1e30f
-#endif
+/** @brief IEEE positive infinity for float32_t. */
+#define VKR_FLOAT_INFINITY INFINITY
+
+/** @brief A quiet IEEE NaN for float32_t. */
+#define VKR_FLOAT_NAN NAN
 
 /** @brief Machine epsilon for float32_t precision
  *  @note Smallest positive number where 1.0f + FLOAT_EPSILON != 1.0f
@@ -404,6 +406,12 @@ vkr_internal INLINE bool8_t vkr_is_finite_f64(float64_t value) {
   return isfinite(value) ? true_v : false_v;
 }
 
+/** @brief Returns whether a float32_t value is finite (not NaN or infinite).
+ */
+vkr_internal INLINE bool8_t vkr_is_finite_f32(float32_t value) {
+  return isfinite(value) ? true_v : false_v;
+}
+
 /**
  * @brief Rounds a float32_t value down to the nearest integer
  * @param value Input floating-point value
@@ -561,32 +569,137 @@ vkr_internal INLINE float32_t vkr_atan2_f32(float32_t y, float32_t x) {
   return atan2f(y, x);
 }
 
-/**
- * @brief Generates a random float32_t value in the range [0.0, 1.0]
- * @return Random float32_t value between 0.0 (inclusive) and 1.0 (inclusive)
- * @note Uses the standard C rand() sequence; vkr_rand_seed() selects it
- * @note NOT thread-safe due to global state in rand()
- */
-vkr_internal INLINE float32_t vkr_rand_f32() {
-  return (float32_t)rand() / (float32_t)RAND_MAX;
+/** @brief Rounds toward zero. */
+vkr_internal INLINE float32_t vkr_trunc_f32(float32_t value) {
+  return truncf(value);
 }
+
+/** @brief Returns value * 2^exponent without computing the power. */
+vkr_internal INLINE float32_t vkr_ldexp_f32(float32_t value, int32_t exponent) {
+  return ldexpf(value, exponent);
+}
+
+/** @brief Returns value * 2^exponent without computing the power. */
+vkr_internal INLINE float64_t vkr_ldexp_f64(float64_t value, int32_t exponent) {
+  return ldexp(value, exponent);
+}
+
+/** @brief Returns 2^value. */
+vkr_internal INLINE float32_t vkr_exp2_f32(float32_t value) {
+  return exp2f(value);
+}
+
+/** @brief Returns e^value - 1, accurate for value near zero. */
+vkr_internal INLINE float64_t vkr_expm1_f64(float64_t value) {
+  return expm1(value);
+}
+
+/** @brief Hyperbolic sine. */
+vkr_internal INLINE float64_t vkr_sinh_f64(float64_t value) {
+  return sinh(value);
+}
+
+/** @brief Inverse hyperbolic sine. */
+vkr_internal INLINE float64_t vkr_asinh_f64(float64_t value) {
+  return asinh(value);
+}
+
+/** @brief IEEE remainder: numerator - n * denominator for n rounded to the
+ * nearest integer, so the result lies in [-denominator/2, denominator/2]. */
+vkr_internal INLINE float32_t vkr_remainder_f32(float32_t numerator,
+                                                float32_t denominator) {
+  return remainderf(numerator, denominator);
+}
+
+/** @brief Base-2 logarithm. */
+vkr_internal INLINE float32_t vkr_log2_f32(float32_t value) {
+  return log2f(value);
+}
+
+/** @brief Base-2 logarithm. */
+vkr_internal INLINE float64_t vkr_log2_f64(float64_t value) {
+  return log2(value);
+}
+
+/** @brief sqrt(x * x + y * y) without intermediate overflow or underflow. */
+vkr_internal INLINE float32_t vkr_hypot_f32(float32_t x, float32_t y) {
+  return hypotf(x, y);
+}
+
+/** @brief The next representable float32_t after `from` toward `to`. */
+vkr_internal INLINE float32_t vkr_next_after_f32(float32_t from, float32_t to) {
+  return nextafterf(from, to);
+}
+
+/** @brief IEEE minimum: a NaN operand yields the other operand, unlike
+ * vkr_min_f32. */
+vkr_internal INLINE float32_t vkr_fmin_f32(float32_t a, float32_t b) {
+  return fminf(a, b);
+}
+
+/** @brief IEEE maximum: a NaN operand yields the other operand, unlike
+ * vkr_max_f32. */
+vkr_internal INLINE float32_t vkr_fmax_f32(float32_t a, float32_t b) {
+  return fmaxf(a, b);
+}
+
+/** @brief IEEE maximum: a NaN operand yields the other operand, unlike
+ * vkr_max_f64. */
+vkr_internal INLINE float64_t vkr_fmax_f64(float64_t a, float64_t b) {
+  return fmax(a, b);
+}
+
+/** @brief Computes the floating-point remainder of numerator/denominator. */
+vkr_internal INLINE float64_t vkr_fmod_f64(float64_t numerator,
+                                           float64_t denominator) {
+  return fmod(numerator, denominator);
+}
+
+/** @brief Raises base to exponent. */
+vkr_internal INLINE float64_t vkr_pow_f64(float64_t base, float64_t exponent) {
+  return pow(base, exponent);
+}
+
+/** @brief Natural exponential. */
+vkr_internal INLINE float64_t vkr_exp_f64(float64_t value) {
+  return exp(value);
+}
+
+/** @brief Natural logarithm. */
+vkr_internal INLINE float64_t vkr_log_f64(float64_t value) {
+  return log(value);
+}
+
+/** @brief Sine of an angle in radians. */
+vkr_internal INLINE float64_t vkr_sin_f64(float64_t value) {
+  return sin(value);
+}
+
+/** @brief Cosine of an angle in radians. */
+vkr_internal INLINE float64_t vkr_cos_f64(float64_t value) {
+  return cos(value);
+}
+
+/** @brief Arc sine in radians, range [-π/2, π/2]. */
+vkr_internal INLINE float64_t vkr_asin_f64(float64_t value) {
+  return asin(value);
+}
+
+/** @brief Arc cosine in radians, range [0, π]. */
+vkr_internal INLINE float64_t vkr_acos_f64(float64_t value) {
+  return acos(value);
+}
+
+/** @brief Returns a random float32_t value in [0.0, 1.0] from the C library
+ * rand() sequence that vkr_rand_seed() selects. Not thread-safe. */
+float32_t vkr_rand_f32(void);
 
 /** @brief Seeds the standard pseudo-random number source; until a seed, it
  * runs the C library's default sequence. */
-vkr_internal INLINE void vkr_rand_seed(uint64_t seed) { srand((uint32_t)seed); }
+void vkr_rand_seed(uint64_t seed);
 
-/**
- * @brief Generates a random float32_t value within a specified range
- * @param min Minimum value (inclusive)
- * @param max Maximum value (inclusive)
- * @return Random float32_t value in the range [min, max]
- * @note If min > max, behavior is undefined
- * @note NOT thread-safe due to dependency on vkr_rand_f32()
- * @example vkr_rand_range_f32(1.5f, 10.5f) might return 7.23f
- */
-vkr_internal INLINE float32_t vkr_rand_range_f32(float32_t min, float32_t max) {
-  return min + vkr_rand_f32() * (max - min);
-}
+/** @brief Returns a random float32_t value in [min, max]. Not thread-safe. */
+float32_t vkr_rand_range_f32(float32_t min, float32_t max);
 
 /**
  * @brief Divides a value by another value and rounds up to the nearest integer
@@ -609,7 +722,7 @@ vkr_internal INLINE uint32_t vkr_ceil_div_u32(uint32_t a, uint32_t b) {
  * @note a must be a power of 2 and non-zero, otherwise behavior is undefined
  */
 vkr_internal INLINE uint32_t vkr_align_up_u32(uint32_t v, uint32_t a) {
-  assert(a != 0u && (a & (a - 1u)) == 0u);
+  vkr_assert(a != 0u && (a & (a - 1u)) == 0u);
   uint32_t m = a - 1u;
   return (v + m) & ~m;
 }
@@ -665,23 +778,9 @@ vkr_internal INLINE char *vkr_write_u32_dec(char *p, uint32_t v) {
   return p + n;
 }
 
-/**
- * @brief Generates a random int32_t value
- * @return Random int32_t value in the range [0, RAND_MAX]
- * @note Uses the standard C rand() sequence; vkr_rand_seed() selects it
- * @note NOT thread-safe due to global state in rand()
+/** @brief Returns a random int32_t value in [0, RAND_MAX]. Not thread-safe.
  */
-vkr_internal INLINE int32_t vkr_rand_i32() { return rand(); }
+int32_t vkr_rand_i32(void);
 
-/**
- * @brief Generates a random int32_t value within a specified range
- * @param min Minimum value (inclusive)
- * @param max Maximum value (inclusive)
- * @return Random int32_t value in the range [min, max]
- * @note If min > max, behavior is undefined
- * @note NOT thread-safe due to dependency on vkr_rand_i32()
- * @example vkr_rand_range_i32(1, 6) simulates a dice roll (returns 1-6)
- */
-vkr_internal INLINE int32_t vkr_rand_range_i32(int32_t min, int32_t max) {
-  return (vkr_rand_i32() % (max - min + 1)) + min;
-}
+/** @brief Returns a random int32_t value in [min, max]. Not thread-safe. */
+int32_t vkr_rand_range_i32(int32_t min, int32_t max);

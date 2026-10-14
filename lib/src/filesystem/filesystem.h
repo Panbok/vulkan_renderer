@@ -1,5 +1,8 @@
 #pragma once
 
+/* The stdio bridge for vendor code and tools (ADR-070). Renderer translation
+ * units sit behind the libc boundary and use FileHandle instead. */
+#if !defined(VKR_LIBC_BOUNDARY)
 #include <stdio.h>
 
 /* UTF-8 host path; caller owns the returned stream and closes it with fclose.
@@ -10,6 +13,7 @@ extern "C" {
 FILE *file_fopen(const char *utf8_path, const char *mode);
 #ifdef __cplusplus
 }
+#endif
 #endif
 
 #include "containers/bitset.h"
@@ -233,7 +237,8 @@ typedef struct FilePath {
  * and mode information for debugging and error reporting.
  */
 typedef struct FileHandle {
-  void *handle;         /**< Platform-specific file handle (FILE* on POSIX) */
+  void *handle; /**< Native handle: a file descriptor on POSIX, a HANDLE on
+                   Windows. Writes are unbuffered on both. */
   const FilePath *path; /**< Pointer to the file path used to open this file */
   FileMode mode;        /**< Copy of the mode flags used to open this file */
   /** Non-null when a mounted content archive serves a read-only open
@@ -343,6 +348,7 @@ void file_close(FileHandle *handle);
  */
 bool8_t file_exists(const FilePath *path);
 
+#if !defined(VKR_LIBC_BOUNDARY)
 /**
  * @brief Flushes a stream's buffered writes and asks the system to store
  * them on the disk, as a writer does before a rename makes its file
@@ -352,6 +358,7 @@ bool8_t file_exists(const FilePath *path);
  * @return `true` when both the flush and the store succeed.
  */
 bool8_t file_flush_durable(FILE *file);
+#endif
 
 /**
  * @brief Retrieves file statistics without opening the
@@ -570,8 +577,15 @@ FileError file_create_directory_exclusive(const FilePath *path);
 /** Flushes file contents to durable storage before publication. */
 FileError file_sync(FileHandle *handle);
 
+/** Empties an open, writable file and moves its position to the start. */
+FileError file_truncate(FileHandle *handle);
+
 /** Removes one file. Missing files report FILE_ERROR_NOT_FOUND. */
 FileError file_remove(const FilePath *path);
+
+/** Removes one empty directory. Missing directories report
+ * FILE_ERROR_NOT_FOUND. */
+FileError file_remove_directory(const FilePath *path);
 
 /**
  * Atomically renames a file on the same filesystem. Without `overwrite`, an

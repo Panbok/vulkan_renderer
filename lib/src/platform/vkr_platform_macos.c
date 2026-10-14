@@ -285,6 +285,8 @@ bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes) {
   return true_v;
 }
 
+void vkr_platform_exit_immediate(int32_t exit_code) { _Exit(exit_code); }
+
 void vkr_platform_stdout_write(const char *message) {
   if (message) {
     fputs(message, stdout);

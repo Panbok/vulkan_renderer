@@ -278,13 +278,13 @@ vkr_internal INLINE uint32_t vkr_metrics_writer_slot(VkrMetrics *metrics,
                                                      VkrMetricScalar scalar) {
   const uint32_t index = vkr_metric_id_index(id);
 #ifndef NDEBUG
-  assert(metrics != NULL && metrics->sealed && index < metrics->slot_count);
-  assert(vkr_metric_id_generation(id) == metrics->registry_generation);
+  vkr_assert(metrics != NULL && metrics->sealed && index < metrics->slot_count);
+  vkr_assert(vkr_metric_id_generation(id) == metrics->registry_generation);
   const VkrMetricCatalogEntry *entry = &metrics->catalog[index];
-  assert(entry->kind == kind && entry->scalar == scalar);
+  vkr_assert(entry->kind == kind && entry->scalar == scalar);
   if (entry->writer == VKR_METRIC_WRITER_RENDER_THREAD) {
-    assert(metrics->render_thread_id == vkr_thread_current_id());
-    assert(metrics->frame_active);
+    vkr_assert(metrics->render_thread_id == vkr_thread_current_id());
+    vkr_assert(metrics->frame_active);
   }
 #else
   (void)kind;
@@ -326,7 +326,7 @@ vkr_internal INLINE void vkr_metrics_gauge_set_f64(VkrMetrics *metrics,
                                                    float64_t value) {
   const uint32_t index = vkr_metrics_writer_slot(
       metrics, id, VKR_METRIC_KIND_GAUGE, VKR_METRIC_SCALAR_F64);
-  assert(metrics->catalog[index].writer == VKR_METRIC_WRITER_RENDER_THREAD);
+  vkr_assert(metrics->catalog[index].writer == VKR_METRIC_WRITER_RENDER_THREAD);
   metrics->active[index].value.f64 = value;
   metrics->active[index].availability = VKR_METRIC_AVAILABILITY_VALID;
   metrics->active[index].reason = VKR_METRIC_REASON_NONE;
@@ -363,11 +363,11 @@ vkr_internal INLINE void vkr_metrics_mark(VkrMetrics *metrics, VkrMetricId id,
                                           VkrMetricReason reason) {
   const uint32_t index = vkr_metric_id_index(id);
 #ifndef NDEBUG
-  assert(metrics != NULL && metrics->sealed && metrics->frame_active);
-  assert(metrics->render_thread_id == vkr_thread_current_id());
-  assert(index < metrics->slot_count);
-  assert(vkr_metric_id_generation(id) == metrics->registry_generation);
-  assert(metrics->catalog[index].writer == VKR_METRIC_WRITER_RENDER_THREAD);
+  vkr_assert(metrics != NULL && metrics->sealed && metrics->frame_active);
+  vkr_assert(metrics->render_thread_id == vkr_thread_current_id());
+  vkr_assert(index < metrics->slot_count);
+  vkr_assert(vkr_metric_id_generation(id) == metrics->registry_generation);
+  vkr_assert(metrics->catalog[index].writer == VKR_METRIC_WRITER_RENDER_THREAD);
 #endif
   metrics->active[index].availability = availability;
   metrics->active[index].reason = reason;

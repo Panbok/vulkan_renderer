@@ -6,6 +6,10 @@
 
 #include "defines.h"
 
+#if !defined(__cplusplus)
+#include <stdatomic.h>
+#endif
+
 typedef memory_order VkrMemoryOrder;
 
 #define VKR_MEMORY_ORDER_RELAXED memory_order_relaxed

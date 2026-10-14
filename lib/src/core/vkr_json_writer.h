@@ -38,7 +38,7 @@ typedef struct VkrJsonWriter {
 
 typedef struct VkrJsonFileWriter {
   VkrJsonWriter writer;
-  FILE *file;
+  void *file; /**< The writer's stdio stream (FILE *). */
   char final_path[VKR_JSON_WRITER_PATH_MAX + 1u];
   char temp_path[VKR_JSON_WRITER_PATH_MAX + 1u];
   bool8_t active;

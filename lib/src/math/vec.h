@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include "math.h"
+#include "vkr_math.h"
 #include "vkr_simd.h"
 
 // =============================================================================
@@ -193,6 +193,11 @@ static INLINE bool8_t vec2_not_equal(Vec2 a, Vec2 b, float32_t epsilon) {
   return vkr_abs_f32(a.x - b.x) > epsilon || vkr_abs_f32(a.y - b.y) > epsilon;
 }
 
+/** Returns whether both components are finite (not NaN or infinite). */
+static INLINE bool8_t vec2_is_finite(Vec2 v) {
+  return vkr_is_finite_f32(v.x) && vkr_is_finite_f32(v.y) ? true_v : false_v;
+}
+
 // =============================================================================
 // Vec3 Operations (SIMD-accelerated using Vec4 with W=0)
 // =============================================================================
@@ -270,6 +275,14 @@ static INLINE bool8_t vec3_not_equal(Vec3 a, Vec3 b, float32_t epsilon) {
       VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON, epsilon);
 }
 
+/** Returns whether x, y and z are finite (not NaN or infinite). */
+static INLINE bool8_t vec3_is_finite(Vec3 v) {
+  return vkr_is_finite_f32(v.x) && vkr_is_finite_f32(v.y) &&
+                 vkr_is_finite_f32(v.z)
+             ? true_v
+             : false_v;
+}
+
 // =============================================================================
 // Vec4 Operations (SIMD-optimized)
 // =============================================================================
@@ -325,6 +338,14 @@ static INLINE bool8_t vec4_equal(Vec4 a, Vec4 b, float32_t epsilon) {
 static INLINE bool8_t vec4_not_equal(Vec4 a, Vec4 b, float32_t epsilon) {
   return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
                                 epsilon);
+}
+
+/** Returns whether all four components are finite (not NaN or infinite). */
+static INLINE bool8_t vec4_is_finite(Vec4 v) {
+  return vkr_is_finite_f32(v.x) && vkr_is_finite_f32(v.y) &&
+                 vkr_is_finite_f32(v.z) && vkr_is_finite_f32(v.w)
+             ? true_v
+             : false_v;
 }
 
 // =============================================================================

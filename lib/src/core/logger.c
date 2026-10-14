@@ -277,3 +277,15 @@ allocation_failed:
   log_unlock();
   vkr_platform_stderr_write("Log formatting allocation failed\n");
 }
+
+void vkr_assert_fail(const char *expression, const char *file, uint32_t line) {
+  /* Fixed storage: an assertion can fail inside the allocator or before the
+     logger exists. */
+  char message[1024];
+  (void)snprintf(message, sizeof(message),
+                 "[FATAL]: Assertion failed: %s (%s:%u)\n", expression, file,
+                 line);
+  vkr_platform_stderr_write(message);
+  debug_break();
+  abort();
+}

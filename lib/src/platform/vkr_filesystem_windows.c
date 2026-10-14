@@ -540,6 +540,26 @@ bool8_t file_flush_durable(FILE *file) {
   return file && fflush(file) == 0 && _commit(_fileno(file)) == 0;
 }
 
+FileError file_truncate(FileHandle *handle) {
+  if (!handle || !handle->handle || handle->memory) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  const LARGE_INTEGER start = {0};
+  return SetFilePointerEx((HANDLE)handle->handle, start, NULL, FILE_BEGIN) &&
+                 SetEndOfFile((HANDLE)handle->handle)
+             ? FILE_ERROR_NONE
+             : fs_windows_error(GetLastError());
+}
+
+FileError file_remove_directory(const FilePath *path) {
+  wchar_t native[VKR_WINDOWS_PATH_WCHARS];
+  if (!file_windows_native_path(path, native)) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  return RemoveDirectoryW(native) ? FILE_ERROR_NONE
+                                  : fs_windows_error(GetLastError());
+}
+
 FileError file_remove(const FilePath *path) {
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!file_windows_native_path(path, native)) {
