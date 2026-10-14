@@ -295,15 +295,26 @@ static void view_chip_text(const VkrEditorUi *editor,
     const VkrGraphicsSettings settings = view_graphics(editor, frame);
     const char *preset =
         vkr_graphics_preset_name(vkr_graphics_settings_preset(&settings));
-    if (settings.dynamic_resolution &&
-        frame->graphics->dynamic_resolution_available)
+    const bool8_t dynamic = settings.dynamic_resolution &&
+                            frame->graphics->dynamic_resolution_available;
+    /* The scale the Scene rendered at, which an editor scale, dynamic
+       resolution or a memory fallback can set below the setting's. */
+    float32_t scale =
+        dynamic
+            ? settings.render_scale
+            : vkr_graphics_settings_render_scale(frame->graphics, &settings);
+    if (frame->mapping_valid && frame->scene_render_width != 0u &&
+        frame->mapping.image_rect_px.z >= 1.0f) {
+      scale =
+          (float32_t)frame->scene_render_width / frame->mapping.image_rect_px.z;
+    }
+    if (dynamic) {
       snprintf(text[4], 48, "%s \xc2\xb7 Dynamic %.0f%%", preset,
-               (double)(settings.render_scale * 100.0f));
-    else
+               (double)(scale * 100.0f));
+    } else {
       snprintf(text[4], 48, "%s \xc2\xb7 %.0f%%", preset,
-               (double)(vkr_graphics_settings_render_scale(frame->graphics,
-                                                           &settings) *
-                        100.0f));
+               (double)(scale * 100.0f));
+    }
   } else {
     snprintf(text[4], 48, "Quality");
   }

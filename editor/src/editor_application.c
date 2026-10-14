@@ -50,15 +50,18 @@ static bool8_t editor_env_flag(const char *name, bool8_t default_value) {
   }
 }
 
+/* The Scene renders at full resolution unless VKR_EDITOR_RENDER_SCALE asks
+   for less; a reduced scale stretches the image, softening it and stepping
+   its edges unevenly. */
 static float32_t editor_env_render_scale(void) {
   const char *value = getenv("VKR_EDITOR_RENDER_SCALE");
   if (!value || value[0] == '\0')
-    return 0.8f;
+    return 1.0f;
 
   char *end = NULL;
   const float32_t parsed = strtof(value, &end);
   if (end == value || *end != '\0' || !isfinite(parsed))
-    return 0.8f;
+    return 1.0f;
   return vkr_clamp_f32(parsed, 0.25f, 1.0f);
 }
 
