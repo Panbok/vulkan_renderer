@@ -437,13 +437,24 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
   /* Companion programs and per-user state are fixed before anything runs. */
   vkr_editor_install_resolve();
   *editor = (VkrEditorApplication){
-      .layout_path = getenv("VKR_EDITOR_LAYOUT_PATH"),
+      .layout_path = ".vkr-editor-layout.json",
       .argc = argc,
       .argv = argv,
       .project_managed = true_v,
   };
-  if (!editor->layout_path)
-    editor->layout_path = ".vkr-editor-layout.json";
+  /* Set to an empty value, the variable turns layout saving off (ADR-027).
+     getenv only tells whether it is set: its value is in the active code
+     page on Windows, which turns a non-ASCII path into another (ADR-070). */
+  if (getenv("VKR_EDITOR_LAYOUT_PATH")) {
+    if (!vkr_platform_environment_variable(
+            "VKR_EDITOR_LAYOUT_PATH", editor->layout_path_storage,
+            sizeof(editor->layout_path_storage))) {
+      log_warn("VKR_EDITOR_LAYOUT_PATH does not fit %u bytes; the editor "
+               "layout is not saved",
+               VKR_EDITOR_PROJECT_PATH_CAPACITY - 1u);
+    }
+    editor->layout_path = editor->layout_path_storage;
+  }
   /* The Console lists this session's records from the first one. */
   log_capture_request(LOG_LEVEL_INFO);
   bool8_t scene_only = editor_env_flag("VKR_EDITOR_SCENE_ONLY", false_v);

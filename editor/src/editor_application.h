@@ -7,6 +7,8 @@
 typedef struct VkrEditorApplication {
   VkrEditorUi ui;
   const char *layout_path;
+  /** UTF-8 copy of $VKR_EDITOR_LAYOUT_PATH that `layout_path` borrows. */
+  char layout_path_storage[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   int argc;
   char **argv;
   bool8_t project_managed;
