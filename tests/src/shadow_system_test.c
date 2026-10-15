@@ -273,6 +273,48 @@ vkr_internal void test_explicit_invalidation_clears_history(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* A static world point keeps its sub-texel position in every cascade as the
+ * camera translates: the cascades' texel grids are fixed in world space. A
+ * light view anchored to the camera in coarse steps shifted every grid by a
+ * fraction of a texel at each step, and static shadow edges jumped while the
+ * camera rode a mover. */
+vkr_internal void test_cascade_texel_grid_is_fixed_in_world(void) {
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  const Vec3 light = vec3_normalize(vec3_new(-0.35f, -0.55f, -0.75f));
+  const Vec3 point = vec3_new(103.7f, -6.2f, 24.9f);
+  const float32_t map_size = (float32_t)config.shadow_map_size;
+  VkrShadowSystem systems[2] = {0};
+  const Vec3 positions[2] = {vec3_new(100.0f, -4.0f, 30.0f),
+                             vec3_new(107.3f, -4.4f, 33.1f)};
+  for (uint32_t i = 0u; i < ArrayCount(systems); ++i) {
+    assert(vkr_shadow_system_init(&systems[i], &config));
+    VkrCamera camera = test_camera();
+    camera.position = positions[i];
+    vkr_shadow_system_update(&systems[i], &camera, true_v, light, NULL);
+  }
+  for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade) {
+    const VkrCascadeData *a = &systems[0].cascades[cascade];
+    const VkrCascadeData *b = &systems[1].cascades[cascade];
+    assert(a->world_units_per_texel == b->world_units_per_texel);
+    const Vec4 clip_a =
+        mat4_mul_vec4(a->view_projection, vec3_to_vec4(point, 1.0f));
+    const Vec4 clip_b =
+        mat4_mul_vec4(b->view_projection, vec3_to_vec4(point, 1.0f));
+    const float32_t texel_ax = (clip_a.x * 0.5f + 0.5f) * map_size;
+    const float32_t texel_ay = (clip_a.y * 0.5f + 0.5f) * map_size;
+    const float32_t texel_bx = (clip_b.x * 0.5f + 0.5f) * map_size;
+    const float32_t texel_by = (clip_b.y * 0.5f + 0.5f) * map_size;
+    const float32_t phase_x =
+        (texel_ax - texel_bx) - vkr_round_f32(texel_ax - texel_bx);
+    const float32_t phase_y =
+        (texel_ay - texel_by) - vkr_round_f32(texel_ay - texel_by);
+    assert(vkr_abs_f32(phase_x) < 0.01f && vkr_abs_f32(phase_y) < 0.01f);
+  }
+  for (uint32_t i = 0u; i < ArrayCount(systems); ++i) {
+    vkr_shadow_system_shutdown(&systems[i]);
+  }
+}
+
 vkr_internal void test_disabled_stabilization_does_not_publish_history(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
@@ -3260,6 +3302,7 @@ bool32_t run_shadow_system_tests(void) {
   printf("  test_explicit_invalidation_clears_history PASSED\n");
   printf("  Running test_disabled_stabilization_does_not_publish_history...\n");
   test_disabled_stabilization_does_not_publish_history();
+  test_cascade_texel_grid_is_fixed_in_world();
   printf("  test_disabled_stabilization_does_not_publish_history PASSED\n");
   printf("  Running retained cascade reuse tests...\n");
   test_local_shadow_cache_lifecycle_and_invalidation();

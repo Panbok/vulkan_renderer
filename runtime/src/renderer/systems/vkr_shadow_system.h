@@ -156,7 +156,7 @@ typedef struct VkrShadowCasterDepthBounds {
  * | z_extension_factor, cascade_z_extension_factor_per | light-space Z range |
  * | use_constant_cascade_size | selects sphere-radius extent over corner AABB |
  * | stabilize_cascades | extent quantization and texel snapping |
- * | anchor_snap_texels | light-view anchor snap |
+ * | world_anchored_light_view | light-space XY anchored at the world origin |
  * | light_direction_tolerance_degrees | per-cascade retained light direction
  *   in vkr_shadow_system_update() |
  * | scene_bounds | vkr_shadow_fit_relevant_caster_z(), off by default |
@@ -250,7 +250,9 @@ typedef struct VkrShadowConfig {
   float32_t sdsm_temporal_blend;
   float32_t sdsm_max_contraction_fraction;
   bool8_t use_constant_cascade_size;
-  float32_t anchor_snap_texels;
+  /** The light view's X and Y stay at the world origin, so each cascade's
+      texel snap fixes its grid in world space; off, they follow the camera. */
+  bool8_t world_anchored_light_view;
   /** While the light keeps moving, cascade 0 keeps its fitted direction until
       the light turns past this angle; each farther cascade doubles it. A light
       that stops is adopted exactly once VKR_SHADOW_LIGHT_SETTLE_UPDATES pass.
@@ -351,7 +353,7 @@ typedef struct VkrShadowConfig {
       .sdsm_max_source_lag_frames = 4u,                                        \
       .sdsm_temporal_blend = 0.85f,                                            \
       .sdsm_max_contraction_fraction = 0.10f,                                  \
-      .anchor_snap_texels = 16.0f,                                             \
+      .world_anchored_light_view = true_v,                                     \
       .light_direction_tolerance_degrees =                                     \
           VKR_SHADOW_LIGHT_DIRECTION_TOLERANCE_DEGREES_DEFAULT,                \
       .stabilize_cascades = true_v,                                            \
@@ -394,7 +396,7 @@ typedef struct VkrShadowConfig {
       .cascade_blend_fraction = 0.08f,                                         \
       .shadow_distance_fade_range = 12.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \
-      .anchor_snap_texels = 8.0f,                                              \
+      .world_anchored_light_view = true_v,                                     \
       .light_direction_tolerance_degrees =                                     \
           VKR_SHADOW_LIGHT_DIRECTION_TOLERANCE_DEGREES_DEFAULT,                \
       .stabilize_cascades = true_v,                                            \

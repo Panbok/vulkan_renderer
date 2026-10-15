@@ -528,7 +528,7 @@ vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
 vkr_internal Mat4 vkr_shadow_compute_light_view(
     const VkrCamera *camera, const VkrShadowSceneBounds *scene_bounds,
     Vec3 light_direction, float32_t max_shadow_distance,
-    uint32_t shadow_map_size, float32_t snap_texels) {
+    bool8_t world_anchored) {
   Vec3 dir = light_direction;
   if (vec3_length(dir) < 0.001f) {
     dir = vec3_new(0.0f, -1.0f, 0.0f);
@@ -570,20 +570,15 @@ vkr_internal Mat4 vkr_shadow_compute_light_view(
     radius = 0.001f;
   }
 
-  if (shadow_map_size > 0 && snap_texels > 0.0f) {
-    // Snap anchor in light space to reduce long-range drift.
-    float32_t texel_size = (radius * 2.0f) / (float32_t)shadow_map_size;
-    if (texel_size > 0.0f) {
-      float32_t snap = vkr_max_f32(texel_size * snap_texels, 0.001f);
-      float32_t anchor_x = vec3_dot(anchor, right);
-      float32_t anchor_y = vec3_dot(anchor, up);
-      float32_t anchor_z = vec3_dot(anchor, dir);
-      anchor_x = vkr_floor_f32(anchor_x / snap) * snap;
-      anchor_y = vkr_floor_f32(anchor_y / snap) * snap;
-      anchor = vec3_add(
-          vec3_add(vec3_scale(right, anchor_x), vec3_scale(up, anchor_y)),
-          vec3_scale(dir, anchor_z));
-    }
+  if (world_anchored) {
+    // The light-space X and Y of the anchor sit at the world origin, so every
+    // cascade's texel snap (vkr_shadow_compute_cascade_matrix) lays its grid at
+    // whole texels of world space, fixed however the camera moves. Snapping
+    // the camera's anchor in steps of the whole frustum's texels moved each
+    // cascade's grid by a fraction of its own texel at every step, a few times
+    // a second at riding speed, and every shadow edge jumped. Only the depth
+    // along the light follows the camera.
+    anchor = vec3_scale(dir, vec3_dot(anchor, dir));
   }
 
   float32_t light_distance = vkr_max_f32(radius * 2.0f, 1.0f);
@@ -1082,9 +1077,6 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
   if (system->config.z_extension_factor < 0.0f) {
     system->config.z_extension_factor = 0.0f;
   }
-  if (!(system->config.anchor_snap_texels >= 0.0f)) {
-    system->config.anchor_snap_texels = 0.0f;
-  }
   // Raster depth bias reaches both native encoders. Normalize it once here.
   if (!(system->config.depth_bias_constant_factor >= 0.0f)) {
     system->config.depth_bias_constant_factor = 0.0f;
@@ -1217,8 +1209,8 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
       vkr_shadow_config_get_max_map_size(&system->config);
   const Mat4 light_view = vkr_shadow_compute_light_view(
       camera, &system->config.scene_bounds, light_direction,
-      system->config.max_shadow_distance, shadow_map_size,
-      system->config.anchor_snap_texels);
+      system->config.max_shadow_distance,
+      system->config.world_anchored_light_view);
 
   uint32_t cascade_count = system->config.cascade_count;
   bool8_t has_guard_per = vkr_shadow_has_any_per_cascade(
@@ -1263,8 +1255,8 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
             ? light_view
             : vkr_shadow_compute_light_view(
                   camera, &system->config.scene_bounds, cascade_direction,
-                  system->config.max_shadow_distance, shadow_map_size,
-                  system->config.anchor_snap_texels);
+                  system->config.max_shadow_distance,
+                  system->config.world_anchored_light_view);
     float32_t split_near = system->cascade_splits[i];
     float32_t split_far = system->cascade_splits[i + 1];
 

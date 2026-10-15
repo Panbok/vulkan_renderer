@@ -31,7 +31,13 @@ lies on the slice axis where the near and far corners are equally distant, at
 most at the far plane. The corners' mean, used before 2026-10-15, sits nearer
 the camera and wastes up to a quarter of the radius on a long slice. Both
 depend on the projection alone, so the extent stays constant while the camera
-turns.
+turns. The light view's X and Y sit at the world origin
+(`world_anchored_light_view`), and only its depth follows the camera, so each
+cascade's texel snap lays its grid at whole texels of world space. Until
+2026-10-15 the anchor followed the camera in steps of sixteen texels of the
+whole shadow frustum (about 4–6 m), a fraction of a texel of each cascade, and
+every shadow edge jumped a few times a second while the camera rode a mover;
+`test_cascade_texel_grid_is_fixed_in_world` holds the world grid.
 
 Track static/dynamic caster and publication generations. Pack static candidate
 and instance rows per completion-protected slot; refresh on publication changes
