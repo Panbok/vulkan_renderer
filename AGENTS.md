@@ -123,6 +123,16 @@ This is standing user authorization to spawn subagents without asking when
 those criteria hold. Run at most 6 subagents at once, and at most one of them
 may build, cook, or use the GPU.
 
+The machine may be a 16 GB Mac shared with the user and peer sessions. Before
+any heavy step (an editor on a large level or Bistro, a build, a full test
+run, a harness or GPU run), check memory pressure and the heavy processes
+already running, and ask peer sessions what they run. Run one heavy job at a
+time; a peer's announced build or GPU work is load on the whole machine, so
+pause or agree on turns and say so. Every run cleans up after itself: quit
+each editor, tool and helper process and confirm it exited before the next
+step, never leave one running, and delete the logs, captures, sockets and
+temporary files the run wrote once their results are recorded.
+
 ## Evidence and completion
 
 Use Bistro for every scene-based task. Never select a Sponza scene, case,
