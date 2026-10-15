@@ -5,6 +5,7 @@
 
 #include "core/logger.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
@@ -599,3 +600,38 @@ cleanup:
 }
 
 #endif
+
+FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
+                              void *context) {
+  if (!path || !path->path.str || !visit) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  const char *directory_path = (const char *)path->path.str;
+  DIR *directory = opendir(directory_path);
+  if (!directory) {
+    return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_OPEN_FAILED;
+  }
+  struct dirent *entry = NULL;
+  while ((entry = readdir(directory))) {
+    const char *name = entry->d_name;
+    if (name[0] == '.' &&
+        (name[1] == '\0' || (name[1] == '.' && name[2] == '\0'))) {
+      continue;
+    }
+    bool8_t is_directory = entry->d_type == DT_DIR;
+    /* Links and file systems without a type follow the entry to its target.
+     */
+    if (entry->d_type == DT_LNK || entry->d_type == DT_UNKNOWN) {
+      char child[PATH_MAX];
+      struct stat info;
+      is_directory = snprintf(child, sizeof(child), "%s/%s", directory_path,
+                              name) < (int)sizeof(child) &&
+                     stat(child, &info) == 0 && S_ISDIR(info.st_mode);
+    }
+    if (!visit(context, name, is_directory)) {
+      break;
+    }
+  }
+  closedir(directory);
+  return FILE_ERROR_NONE;
+}

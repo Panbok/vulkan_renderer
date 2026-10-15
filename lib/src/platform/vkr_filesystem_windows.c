@@ -855,4 +855,50 @@ cleanup:
   return error;
 }
 
+FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
+                              void *context) {
+  wchar_t pattern[VKR_WINDOWS_PATH_WCHARS];
+  if (!path || !visit || !file_windows_native_path(path, pattern)) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  const size_t length = wcslen(pattern);
+  if (length + 3u > VKR_WINDOWS_PATH_WCHARS) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (length && pattern[length - 1u] != L'\\') {
+    pattern[length] = L'\\';
+    pattern[length + 1u] = L'*';
+    pattern[length + 2u] = L'\0';
+  } else {
+    pattern[length] = L'*';
+    pattern[length + 1u] = L'\0';
+  }
+  WIN32_FIND_DATAW entry;
+  HANDLE search = FindFirstFileW(pattern, &entry);
+  if (search == INVALID_HANDLE_VALUE) {
+    const DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+               ? FILE_ERROR_NOT_FOUND
+               : fs_windows_error(error);
+  }
+  do {
+    const wchar_t *wide = entry.cFileName;
+    if (wide[0] == L'.' &&
+        (wide[1] == L'\0' || (wide[1] == L'.' && wide[2] == L'\0'))) {
+      continue;
+    }
+    char name[MAX_PATH * 4];
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1, name,
+                             (int)sizeof(name), NULL, NULL)) {
+      continue;
+    }
+    if (!visit(context, name,
+               (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
+      break;
+    }
+  } while (FindNextFileW(search, &entry));
+  FindClose(search);
+  return FILE_ERROR_NONE;
+}
+
 #endif

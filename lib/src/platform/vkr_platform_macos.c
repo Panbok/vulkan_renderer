@@ -60,6 +60,14 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
   if (!home || !home[0]) {
     return false_v;
   }
+  if (kind == VKR_PLATFORM_USER_HOME) {
+    const uint64_t length = strlen(home);
+    if (length >= capacity) {
+      return false_v;
+    }
+    MemCopy(path, home, length + 1u);
+    return true_v;
+  }
   const char *leaf = kind == VKR_PLATFORM_USER_CACHE
                          ? "Library/Caches"
                          : "Library/Application Support";
@@ -89,6 +97,36 @@ bool8_t vkr_platform_environment_variable(const char *name, char *value,
     return false_v;
   }
   MemCopy(value, variable, length + 1u);
+  return true_v;
+}
+
+bool8_t vkr_platform_environment_is_set(const char *name) {
+  return name && getenv(name) ? true_v : false_v;
+}
+
+bool8_t vkr_platform_random_bytes(void *out, uint64_t size) {
+  if (!out && size) {
+    return false_v;
+  }
+  arc4random_buf(out, (size_t)size);
+  return true_v;
+}
+
+bool8_t vkr_platform_file_manager_command(const char *path, bool8_t select,
+                                          VkrPlatformFileManagerCommand *out) {
+  if (!path || !out) {
+    return false_v;
+  }
+  *out = (VkrPlatformFileManagerCommand){.executable = "/usr/bin/open"};
+  const uint64_t length = strlen(path);
+  if (length >= sizeof(out->argument_storage)) {
+    return false_v;
+  }
+  MemCopy(out->argument_storage, path, length + 1u);
+  if (select) {
+    out->arguments[out->argument_count++] = "-R";
+  }
+  out->arguments[out->argument_count++] = out->argument_storage;
   return true_v;
 }
 

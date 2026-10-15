@@ -90,6 +90,9 @@ VkrTime vkr_platform_get_local_time();
 /** Returns wall-clock UTC with millisecond precision. */
 bool8_t vkr_platform_get_utc_time(VkrTime *out_time);
 
+/** Whole seconds since 1970-01-01 UTC. */
+int64_t vkr_platform_get_unix_time(void);
+
 uint32_t vkr_platform_get_process_id(void);
 /** Canonical UTF-8 executable path, including a terminator, independent of CWD.
  */
@@ -103,6 +106,8 @@ typedef enum VkrPlatformUserDirectory {
   VKR_PLATFORM_USER_CACHE,
   /** GetTempPathW (%TMP% or %TEMP%) on Windows; $TMPDIR or /tmp on macOS. */
   VKR_PLATFORM_USER_TEMP,
+  /** %USERPROFILE% on Windows; $HOME on macOS. */
+  VKR_PLATFORM_USER_HOME,
 } VkrPlatformUserDirectory;
 
 /** UTF-8 path of a per-user base directory with '/' separators and no
@@ -119,6 +124,10 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
  * non-ASCII path into another one. POSIX values are copied as bytes. */
 bool8_t vkr_platform_environment_variable(const char *name, char *value,
                                           uint32_t capacity);
+
+/** True when the variable `name` is set, to any value including the empty
+ * string; a caller that gives "set but empty" its own meaning asks this. */
+bool8_t vkr_platform_environment_is_set(const char *name);
 
 /** True when the variable `name` is set to a value other than empty or "0".
  * A value longer than 63 bytes is not a flag and reads as false. */
@@ -214,6 +223,24 @@ bool8_t vkr_platform_process_lock_acquire(const char *name,
                                           const char *lock_directory,
                                           VkrPlatformProcessLock *out_lock);
 void vkr_platform_process_lock_release(VkrPlatformProcessLock *lock);
+
+/** Fills `out` with `size` bytes from the system's cryptographic random
+ * source; false when the source fails. */
+bool8_t vkr_platform_random_bytes(void *out, uint64_t size);
+
+/** The system file manager's command for `path`: it opens a folder or file,
+ * or with `select` shows the item selected in its folder. Run it with
+ * vkr_platform_process_run; the arguments point into this record. */
+typedef struct VkrPlatformFileManagerCommand {
+  const char *executable;
+  const char *arguments[2];
+  uint32_t argument_count;
+  char argument_storage[4112];
+} VkrPlatformFileManagerCommand;
+
+/** False when `path` does not fit the record. */
+bool8_t vkr_platform_file_manager_command(const char *path, bool8_t select,
+                                          VkrPlatformFileManagerCommand *out);
 
 /** Clipboard UTF-8 access on the UI thread, only for an explicit user action.
  * Read returns a complete-codepoint prefix fitting capacity, including NUL.

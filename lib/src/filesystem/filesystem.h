@@ -597,6 +597,18 @@ FileError file_remove(const FilePath *path);
  * FILE_ERROR_NOT_FOUND. */
 FileError file_remove_directory(const FilePath *path);
 
+/** Called once per directory entry other than "." and ".."; `name` is UTF-8
+ * and valid only during the call. A symbolic link to a directory counts as a
+ * directory. Return false to stop the listing. */
+typedef bool8_t (*FileDirectoryVisit)(void *context, const char *name,
+                                      bool8_t is_directory);
+
+/** Lists the entries of directory `path` in the order the system returns
+ * them. A missing directory reports FILE_ERROR_NOT_FOUND; a visitor that
+ * stops early still reports FILE_ERROR_NONE. */
+FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
+                              void *context);
+
 /**
  * Atomically renames a file on the same filesystem. Without `overwrite`, an
  * existing destination fails with FILE_ERROR_ALREADY_EXISTS as part of the same

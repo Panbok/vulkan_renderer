@@ -414,6 +414,15 @@ int64_t string_parse_i64(const char *s, const char **out_end) {
   return value;
 }
 
+uint64_t string_parse_u64_hex(const char *s, const char **out_end) {
+  char *end = NULL;
+  const uint64_t value = (uint64_t)strtoull(s, &end, 16);
+  if (out_end) {
+    *out_end = end;
+  }
+  return value;
+}
+
 uint64_t string_parse_u64(const char *s, const char **out_end) {
   char *end = NULL;
   const uint64_t value = (uint64_t)strtoull(s, &end, 10);

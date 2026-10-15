@@ -8,6 +8,7 @@
 #include <stdio.h>
 
 #define PSAPI_VERSION 2
+#include <bcrypt.h>
 #include <psapi.h>
 
 #if defined(_M_IX86) || defined(_M_X64)
@@ -60,7 +61,9 @@ bool8_t vkr_platform_user_directory(VkrPlatformUserDirectory kind, char *path,
       kind == VKR_PLATFORM_USER_TEMP
           ? GetTempPathW(ArrayCount(directory), directory)
           : GetEnvironmentVariableW(
-                kind == VKR_PLATFORM_USER_CACHE ? L"LOCALAPPDATA" : L"APPDATA",
+                kind == VKR_PLATFORM_USER_CACHE  ? L"LOCALAPPDATA"
+                : kind == VKR_PLATFORM_USER_HOME ? L"USERPROFILE"
+                                                 : L"APPDATA",
                 directory, ArrayCount(directory));
   if (!length || length >= ArrayCount(directory) ||
       !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, directory, -1, path,
@@ -107,6 +110,53 @@ bool8_t vkr_platform_environment_variable(const char *name, char *value,
     value[0] = '\0';
     return false_v;
   }
+  return true_v;
+}
+
+bool8_t vkr_platform_environment_is_set(const char *name) {
+  wchar_t wide_name[256];
+  if (!name || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name, -1,
+                                    wide_name, (int)ArrayCount(wide_name))) {
+    return false_v;
+  }
+  /* A set variable reports at least its terminator, even when empty. */
+  SetLastError(ERROR_SUCCESS);
+  return GetEnvironmentVariableW(wide_name, NULL, 0u) != 0u ||
+                 GetLastError() != ERROR_ENVVAR_NOT_FOUND
+             ? true_v
+             : false_v;
+}
+
+bool8_t vkr_platform_random_bytes(void *out, uint64_t size) {
+  if (!out && size) {
+    return false_v;
+  }
+  uint8_t *bytes = out;
+  while (size) {
+    const ULONG chunk = size > 0x10000000u ? 0x10000000u : (ULONG)size;
+    if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, bytes, chunk,
+                                        BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+      return false_v;
+    }
+    bytes += chunk;
+    size -= chunk;
+  }
+  return true_v;
+}
+
+bool8_t vkr_platform_file_manager_command(const char *path, bool8_t select,
+                                          VkrPlatformFileManagerCommand *out) {
+  if (!path || !out) {
+    return false_v;
+  }
+  *out = (VkrPlatformFileManagerCommand){.executable = "explorer.exe"};
+  const int written =
+      snprintf(out->argument_storage, sizeof(out->argument_storage), "%s%s",
+               select ? "/select," : "", path);
+  if (written < 0 || (size_t)written >= sizeof(out->argument_storage)) {
+    return false_v;
+  }
+  out->arguments[out->argument_count++] = out->argument_storage;
   return true_v;
 }
 

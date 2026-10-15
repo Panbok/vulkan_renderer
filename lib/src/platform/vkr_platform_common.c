@@ -21,3 +21,5 @@ void vkr_platform_stderr_writef(const char *format, ...) {
   va_end(args);
   vkr_platform_stderr_write(message);
 }
+
+int64_t vkr_platform_get_unix_time(void) { return (int64_t)time(NULL); }

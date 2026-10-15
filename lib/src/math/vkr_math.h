@@ -628,6 +628,16 @@ vkr_internal INLINE float32_t vkr_log10_f32(float32_t value) {
   return log10f(value);
 }
 
+/** @brief Base-10 logarithm. */
+vkr_internal INLINE float64_t vkr_log10_f64(float64_t value) {
+  return log10(value);
+}
+
+/** @brief Returns 2^value. */
+vkr_internal INLINE float64_t vkr_exp2_f64(float64_t value) {
+  return exp2(value);
+}
+
 /** @brief Cube root. */
 vkr_internal INLINE float32_t vkr_cbrt_f32(float32_t value) {
   return cbrtf(value);

@@ -268,6 +268,38 @@ static inline char vkr_char_to_lower(char ch) {
   return ch >= 'A' && ch <= 'Z' ? (char)(ch - 'A' + 'a') : ch;
 }
 
+/** The ASCII upper-case form of `ch`; other values return unchanged. */
+static inline char vkr_char_to_upper(char ch) {
+  return ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
+}
+
+/* ASCII character classes, as the C library's in the "C" locale. A byte
+ * outside ASCII is in no class. */
+static inline bool8_t vkr_char_is_upper(char ch) {
+  return ch >= 'A' && ch <= 'Z' ? true_v : false_v;
+}
+
+static inline bool8_t vkr_char_is_lower(char ch) {
+  return ch >= 'a' && ch <= 'z' ? true_v : false_v;
+}
+
+static inline bool8_t vkr_char_is_digit(char ch) {
+  return ch >= '0' && ch <= '9' ? true_v : false_v;
+}
+
+static inline bool8_t vkr_char_is_alpha(char ch) {
+  return vkr_char_is_upper(ch) || vkr_char_is_lower(ch) ? true_v : false_v;
+}
+
+static inline bool8_t vkr_char_is_alnum(char ch) {
+  return vkr_char_is_alpha(ch) || vkr_char_is_digit(ch) ? true_v : false_v;
+}
+
+/** Space, tab, newline, vertical tab, form feed and carriage return. */
+static inline bool8_t vkr_char_is_space(char ch) {
+  return ch == ' ' || (ch >= '\t' && ch <= '\r') ? true_v : false_v;
+}
+
 /**
  * @brief Alias for case-insensitive equality on C-strings (ASCII only)
  */
@@ -452,6 +484,8 @@ float64_t string_parse_f64(const char *s, const char **out_end);
 float32_t string_parse_f32(const char *s, const char **out_end);
 int64_t string_parse_i64(const char *s, const char **out_end);
 uint64_t string_parse_u64(const char *s, const char **out_end);
+/** As string_parse_u64 in base 16, as strtoull(s, end, 16) parses. */
+uint64_t string_parse_u64_hex(const char *s, const char **out_end);
 
 /*
  * @brief Convert a string to a int32_t
