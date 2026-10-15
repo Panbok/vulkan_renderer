@@ -421,8 +421,10 @@ static uint vkr_metal_packet_probe_sphere_reach(
 // the host's smaller-box-first order, whose influence reaches one half over
 // the whole bounding sphere. A draw that an earlier unbound probe's half-
 // influence surface cuts takes VKR_GPU_DRAW_PROBE_PER_PIXEL, and its pixels
-// choose by the same rule (vkr_metal_tiled_pixel_probe). A bound probe
-// serves its owner only. Zero takes the global environment.
+// choose by the same rule (vkr_metal_tiled_pixel_probe). A mover's draw
+// tests its lighting origin as a point instead (ADR-120), so it never
+// chooses per pixel. A bound probe serves its owner only. Zero takes the
+// global environment.
 static uint vkr_metal_packet_draw_probe(
     constant VkrMetalPacketFrameRoot *frame,
     const device VkrMetalPacketInstance &instance, float4 local_sphere) {
@@ -434,8 +436,14 @@ static uint vkr_metal_packet_draw_probe(
         frame->ibl_probes[i].owner_object_id == instance.object_id)
       return i + 1u;
   }
-  const float3 center = (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
-  const float radius = max(local_sphere.w * instance.normal_column1.w, 0.0f);
+  const bool lit_at_origin = instance.lighting_origin.w != 0.0f;
+  const float3 center =
+      lit_at_origin
+          ? instance.lighting_origin.xyz
+          : (instance.model * float4(local_sphere.xyz, 1.0f)).xyz;
+  const float radius =
+      lit_at_origin ? 0.0f
+                    : max(local_sphere.w * instance.normal_column1.w, 0.0f);
   for (uint i = 0u; i < count; ++i) {
     if (frame->ibl_probes[i].owner_object_id != 0u)
       continue;

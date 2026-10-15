@@ -140,7 +140,7 @@
       "size": {
         "mode": "draw_elements",
         "count_source": "gpu_draw_candidate_capacity",
-        "bytes_per_element": 144
+        "bytes_per_element": 160
       },
       "usage": [
         "STORAGE",

@@ -2423,6 +2423,29 @@ bool8_t vkr_mesh_manager_set_draw_cull(VkrMeshManager *manager, uint32_t index,
   return true_v;
 }
 
+bool8_t vkr_mesh_manager_set_lighting_origin(VkrMeshManager *manager,
+                                             uint32_t index, Vec4 origin) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (index >= manager->meshes.length)
+    return false_v;
+
+  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
+  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
+    return false_v;
+
+  if (MemCompare(&mesh->lighting_origin, &origin, sizeof(origin)) == 0)
+    return true_v;
+
+  /* Retained static draws hold their instance rows, so a change is a content
+     change, as a moved model is. */
+  mesh->lighting_origin = origin;
+  if (mesh->visible)
+    vkr_mesh_manager_note_content_change(manager, mesh->shadow_mobility);
+
+  return true_v;
+}
+
 bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
                                        uint32_t render_id) {
   assert_log(manager != NULL, "Manager is NULL");

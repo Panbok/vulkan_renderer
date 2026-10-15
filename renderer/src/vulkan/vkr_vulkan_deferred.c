@@ -1335,6 +1335,10 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
       vkr_vk_deferred_buffer(renderer, pass, 22u);
   VkrVulkanGraphBufferInstance *pixels =
       fallback || upsample ? vkr_vk_deferred_buffer(renderer, pass, 23u) : NULL;
+  /* The camera rows name each pixel's instance, whose lighting origin places
+     a mover's lookup (ADR-120). */
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
@@ -1345,7 +1349,7 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
        !vkr_vk_deferred_storage_index(renderer, pass, 20u, &half)) ||
       (vkr_rg_pass_find_image_use(&pass->desc, 18u, 0u) &&
        !vkr_vk_deferred_storage_index(renderer, pass, 18u, &baked_lamps)) ||
-      !arguments || ((fallback || upsample) && !pixels))
+      !arguments || ((fallback || upsample) && !pixels) || !visible)
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
@@ -1379,6 +1383,7 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
       .half_texture = half,
       .fallback_arguments = arguments->buffer.address,
       .fallback_pixels = pixels ? pixels->buffer.address : 0u,
+      .visible_rows = visible->buffer.address,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanDiffuseVolumeSampleRoot),

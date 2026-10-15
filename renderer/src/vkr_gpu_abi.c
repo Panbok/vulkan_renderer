@@ -55,6 +55,7 @@ vkr_gpu_prepare_instance(const VkrInstanceDataGPU *source) {
       .normal_column2 = {(float32_t)cofactor[6], (float32_t)cofactor[7],
                          (float32_t)cofactor[8],
                          (float32_t)source->lightmap_slot},
+      .lighting_origin = source->lighting_origin,
   };
 }
 
@@ -117,6 +118,8 @@ vkr_global const VkrGpuAbiField vkr_gpu_instance_fields[] = {
                       "deformation_address", 128),
     VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, previous_deformation_address,
                       "previous_deformation_address", 136),
+    VKR_GPU_ABI_FIELD(VkrPreparedInstanceGPU, lighting_origin,
+                      "lighting_origin", 144),
 };
 
 vkr_global const VkrGpuAbiField vkr_gpu_text_vertex_fields[] = {
@@ -234,7 +237,7 @@ vkr_global const VkrGpuAbiRecord
             vkr_gpu_geometry_decode_record_fields),
         [VKR_GPU_ABI_INSTANCE] =
             VKR_GPU_ABI_RECORD(VkrPreparedInstanceGPU, "VkrMetalPacketInstance",
-                               144, 16, vkr_gpu_instance_fields),
+                               160, 16, vkr_gpu_instance_fields),
         [VKR_GPU_ABI_TEXT_VERTEX] =
             VKR_GPU_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32,
                                16, vkr_gpu_text_vertex_fields),

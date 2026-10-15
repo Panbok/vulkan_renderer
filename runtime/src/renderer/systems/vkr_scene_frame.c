@@ -79,6 +79,9 @@ typedef struct VkrSceneWorldSource {
   uint32_t temporal_generation;
   uint32_t skinning_index;
   uint32_t lightmap_slot;
+  /* World point with w one where a mover's draws take baked light and
+     probes (ADR-120), or zero. */
+  Vec4 lighting_origin;
   uint32_t draw_cull;
   bool8_t bounds_valid;
   bool8_t transmissive;
@@ -124,6 +127,7 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
               .temporal_generation = source->temporal_generation,
               .skinning_index = source->skinning_index,
               .lightmap_slot = source->lightmap_slot,
+              .lighting_origin = source->lighting_origin,
           },
       .local_bounding_sphere = {source->center.x, source->center.y,
                                 source->center.z, vec3_length(half_extents)},
@@ -534,6 +538,13 @@ vkr_internal void vkr_scene_emit_world_sources(
         mesh->render_id
             ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
             : 0u;
+    /* A mover's mesh keeps its lighting origin in its own space, so the
+       origin moves with the model (ADR-120). */
+    const Vec4 lighting_origin =
+        mesh->lighting_origin.w != 0.0f
+            ? vec3_to_vec4(mat4_mul_vec3(mesh->model, mesh->lighting_origin),
+                           1.0f)
+            : vec4_zero();
     const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
     for (uint32_t s = 0; s < submesh_count; ++s) {
       VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(meshes, mesh_slot, s);
@@ -562,6 +573,7 @@ vkr_internal void vkr_scene_emit_world_sources(
           .temporal_index = mesh_slot,
           .temporal_generation = mesh->temporal_generation,
           .lightmap_slot = mesh->lightmap_slot,
+          .lighting_origin = lighting_origin,
           .draw_cull =
               mesh->draw_cull |
               vkr_scene_gate_bits(gate, false_v, mesh_slot, s, mesh->render_id),

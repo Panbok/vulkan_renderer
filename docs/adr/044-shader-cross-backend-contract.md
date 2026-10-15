@@ -467,13 +467,16 @@ forward for shadow maps ([ADR-109](109-reversed-camera-depth.md)), and
 projection/viewport Y lowering is backend aware. Rounded dispatches retain guards required for valid edges. Material
 normal decode reconstructs positive tangent Z; output transfer follows ADR-043.
 
-The frame input's source instance is 96 bytes, including a CPU skinning index. Native publication/upload
-lowers it once into a 144-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
+The frame input's source instance is 112 bytes, including a CPU skinning index. Native publication/upload
+lowers it once into a 160-byte `VkrPreparedInstanceGPU` with three prepared normal-transform
 columns. Their common positive scale preserves inverse-transpose direction under
 normalization; the first column's w carries model handedness for mirrored tangent
 bases. The second column's w carries an outward-rounded conservative affine
 sphere stretch. Current and previous deformation addresses occupy bytes 128 and
-136 of the prepared record; zero selects static geometry.
+136 of the prepared record; zero selects static geometry. Bytes 144 to 159
+carry the lighting origin ([ADR-120](120-mover-lighting-origin.md)): a world
+point with w one where a mover's draws take baked diffuse light and probes,
+zero w for per-pixel lookups; the source instance carries it at byte 96.
 Eight raster buckets partition material state by reflection parity; the shared
 compaction record is 144 bytes. Direct draws preserve order through contiguous
 parity runs. Shaders transform tangents with the model's linear part and normals with
@@ -920,6 +923,22 @@ Bistro snapshots and Black Mesa captures (2026-10-11, ADR-054); Vulkan is
 compiled and passes `spirv-val` only, and
 has no native run of the lamp band or of lamp light in lightmapped
 reflections.
+
+A mover's draws look the volume and their reflection probes up at its
+lighting origin ([ADR-120](120-mover-lighting-origin.md)), the prepared
+instance's `lighting_origin` at byte 144, with their own normals. Tiled:
+`vkr_metal_tiled_lighting_position` in `tiled.metal` feeds the volume lookup
+and the probe box projection of `vkr_metal_tiled_shade`, the blend pass's
+pixel probe, and `vkr_metal_packet_draw_probe` in `gpu_draws.metal` tests the
+origin as a point. Desktop: `packet_lighting_position` in `default.slang`
+feeds the forward blend path, the deferred lighting kernel's probes, the
+transmission shade, and `vk_diffuse_volume_lookup`, whose 160-byte root adds
+the camera `visible_rows` at byte 144 (binding 13 in the three
+`DiffuseVolume` passes). The ADR-119 dynamic layer is read in the same lookup,
+so a mover takes it at the origin too. Native evidence: none yet; Metal
+library compilation, Vulkan module compilation with `spirv-val`, reflection
+of the instance record and the sample root, and a Level Design Test tram
+capture on each pipeline are pending.
 
 Rectangle LTC is shared and appends a 32-byte light/table block after those
 volume fields: the Metal frame pointer is at 496 and the Vulkan block pointer

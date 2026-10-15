@@ -371,7 +371,7 @@
       "size": {
         "mode": "draw_elements",
         "count_source": "gpu_draw_candidate_capacity",
-        "bytes_per_element": 144
+        "bytes_per_element": 160
       },
       "usage": [
         "STORAGE",
@@ -499,7 +499,7 @@
       "size": {
         "mode": "draw_elements",
         "count_source": "transmission_gpu_draw_candidate_capacity",
-        "bytes_per_element": 144
+        "bytes_per_element": 160
       },
       "usage": [
         "STORAGE",
@@ -4236,6 +4236,11 @@
           "binding": 4
         },
         {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        },
+        {
           "image": "baked_lamp_irradiance",
           "access": "STORAGE_READ",
           "binding": 18,
@@ -4283,6 +4288,11 @@
           "image": "gbuffer_normal",
           "access": "STORAGE_READ",
           "binding": 4
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
         },
         {
           "image": "baked_lamp_irradiance",
@@ -4342,6 +4352,11 @@
           "image": "gbuffer_normal",
           "access": "STORAGE_READ",
           "binding": 4
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
         },
         {
           "image": "baked_lamp_irradiance",

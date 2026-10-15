@@ -855,6 +855,16 @@ float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
     return sample.valid != 0u ? sample.factor : 1.0f;
 }
 
+// Where a draw takes its baked diffuse light and its reflection probes: its
+// mover's lighting origin (ADR-120), else the shaded point. A mover's draws
+// keep their own normals, so only the sampled position is shared.
+float3 packet_lighting_position(VkrVulkanPacketFrameRoot *frame,
+                                uint instance_index, float3 world_position)
+{
+    float4 origin = frame.instances[instance_index].lighting_origin;
+    return origin.w != 0.0f ? origin.xyz : world_position;
+}
+
 float packet_probe_influence(VkrVulkanIblProbe probe, float3 world_position)
 {
     return max(probe.extents_weight.w, 0.0f) *
@@ -2177,11 +2187,14 @@ float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
     float3 clearcoat_indirect = 0.0f;
     float3 sheen_indirect = 0.0f;
     // A covered pixel takes its diffuse light from the volume, which also
-    // scales its environment reflections.
+    // scales its environment reflections. A mover's draws take both at its
+    // lighting origin.
+    float3 lighting_position = packet_lighting_position(
+        frame, input.instance_index, input.world_position);
     float3 volume_diffuse;
     VkrVulkanBakedLight baked;
     bool volume_valid = packet_diffuse_volume_terms(
-        frame, input.world_position, normal, base.rgb, metallic, ao, true,
+        frame, lighting_position, normal, base.rgb, metallic, ao, true,
         energy, volume_diffuse, baked);
     if ((frame.flags & 2u) != 0u)
     {
@@ -2189,24 +2202,24 @@ float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
         {
             indirect_diffuse = volume_diffuse;
             indirect_specular = packet_environment_specular(
-                frame, input.world_position, normal, geometric_normal, view,
+                frame, lighting_position, normal, geometric_normal, view,
                 roughness, ao, energy, baked);
         }
         else
         {
             VkrVulkanEnvironmentResult environment = packet_environment_terms(
-                frame, input.world_position, normal, geometric_normal, view,
+                frame, lighting_position, normal, geometric_normal, view,
                 base.rgb, metallic, roughness, ao, energy);
             indirect_diffuse = environment.diffuse;
             indirect_specular = environment.specular;
         }
         if (clearcoat_active)
             clearcoat_indirect = clearcoat.factor * packet_environment_specular(
-                frame, input.world_position, clearcoat.normal, clearcoat.normal, view,
+                frame, lighting_position, clearcoat.normal, clearcoat.normal, view,
                 clearcoat.roughness, ao, clearcoat.energy, baked);
         if (sheen_active)
             sheen_indirect = packet_sheen_environment(
-                frame, input.world_position, normal, view, ao, 1.0f, sheen,
+                frame, lighting_position, normal, view, ao, 1.0f, sheen,
                 baked);
     }
     else

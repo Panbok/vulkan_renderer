@@ -3317,6 +3317,15 @@ static const VkrPropertyDesc s_mover_properties[] = {
      .tooltip = "Refuse open, toggle and set position until unlocked",
      .offset = TYPE_OFFSET(SceneMover, locked),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "lighting_offset",
+     .label = "Lighting offset",
+     .tooltip = "Where what it moves takes baked light and reflections, in "
+                "its own space from the centre of what it moves; the whole "
+                "load is lit from that one point",
+     .unit = "m",
+     .offset = TYPE_OFFSET(SceneMover, lighting_offset),
+     .kind = VKR_PROPERTY_VEC3,
+     .step = 0.05f},
 };
 
 static void mover_defaults(void *value) {
@@ -3345,6 +3354,12 @@ static bool8_t mover_validate(const void *value, char *error,
       string_format(error, capacity,
                     "A mover's activation is scripted, use, auto or ride, and "
                     "its reach and delay are zero or more");
+    }
+    return false_v;
+  }
+  if (!vkr_is_finite_f32(vec3_length(mover->lighting_offset))) {
+    if (error) {
+      string_format(error, capacity, "A mover's lighting offset is finite");
     }
     return false_v;
   }

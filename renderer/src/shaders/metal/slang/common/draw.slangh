@@ -29,6 +29,9 @@ struct VkrMetalPacketInstance
     float4 normal_column2;
     uint64_t deformation_address;
     uint64_t previous_deformation_address;
+    // A mover's lighting origin, a world point with w one, or zero w to take
+    // baked light and probes per pixel (ADR-120).
+    float4 lighting_origin;
 };
 
 struct VkrMetalPacketShadowCascade

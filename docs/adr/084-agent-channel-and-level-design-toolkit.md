@@ -1315,7 +1315,8 @@ rebuilding. Copies pick as their rule's entity, through the render bridge.
 A scene holds at most 64 rules and 12,288 copies, three quarters of the mesh
 manager's 16,384 instances; a rule asking for more gets the remainder and a
 status saying so. A copy costs 184 bytes of CPU memory and, per frame, a
-144-byte instance row and a 48-byte candidate per submesh, so the bound
+160-byte instance row ([ADR-120](120-mover-lighting-origin.md)) and a
+48-byte candidate per submesh, so the bound
 stays near 2 MB of rows on the 16 GB floor
 ([ADR-083](083-supported-hardware-matrix.md)). It was 4,096 until
 2026-10-11, when an Alpine valley of 2 km needed denser forest: at 4,096

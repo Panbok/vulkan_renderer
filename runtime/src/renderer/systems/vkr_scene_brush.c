@@ -40,6 +40,10 @@ typedef struct BrushRecord {
   VkrEntityId mover;
   /* Its hull did not fit in the mover's body. */
   bool8_t mover_overflow;
+  /* Where its mesh's draws take baked light under that mover (ADR-120): a
+     point in the brush's own space with w one, or zero without a mover
+     (brush_light_mover). */
+  Vec4 lighting_origin;
   /* World-space hull points of a solid or clip brush, xyz packed. */
   float32_t *hull;
   uint32_t hull_count;
@@ -112,6 +116,12 @@ struct s_VkrSceneBrushes {
   VkrEntityId *dirty_movers;
   uint32_t dirty_mover_count;
   uint32_t dirty_mover_capacity;
+  /* Movers whose lighting origin (ADR-120) is found again at the end of the
+     next update: what they move was built, cleared or attached, or their
+     settings changed. */
+  VkrEntityId *lit_movers;
+  uint32_t lit_mover_count;
+  uint32_t lit_mover_capacity;
   BrushCell *cells;
   uint32_t cell_count;
   uint32_t cell_capacity;
@@ -231,21 +241,34 @@ static void brush_mark_cell(VkrScene *scene, VkrSceneBrushes *state,
   }
 }
 
-static void brush_mark_mover(VkrScene *scene, VkrSceneBrushes *state,
+/* Adds `mover` once to a list of movers the next update visits. */
+static void brush_list_mover(VkrScene *scene, VkrEntityId **movers,
+                             uint32_t *count, uint32_t *capacity,
                              VkrEntityId mover) {
   if (!mover.u64) {
     return;
   }
-  for (uint32_t i = 0; i < state->dirty_mover_count; ++i) {
-    if (state->dirty_movers[i].u64 == mover.u64) {
+  for (uint32_t i = 0; i < *count; ++i) {
+    if ((*movers)[i].u64 == mover.u64) {
       return;
     }
   }
-  if (brush_grow(scene->alloc, (void **)&state->dirty_movers,
-                 &state->dirty_mover_capacity, state->dirty_mover_count + 1u,
-                 sizeof(*state->dirty_movers))) {
-    state->dirty_movers[state->dirty_mover_count++] = mover;
+  if (brush_grow(scene->alloc, (void **)movers, capacity, *count + 1u,
+                 sizeof(**movers))) {
+    (*movers)[(*count)++] = mover;
   }
+}
+
+static void brush_mark_mover(VkrScene *scene, VkrSceneBrushes *state,
+                             VkrEntityId mover) {
+  brush_list_mover(scene, &state->dirty_movers, &state->dirty_mover_count,
+                   &state->dirty_mover_capacity, mover);
+}
+
+static void brush_mark_lit_mover(VkrScene *scene, VkrSceneBrushes *state,
+                                 VkrEntityId mover) {
+  brush_list_mover(scene, &state->lit_movers, &state->lit_mover_count,
+                   &state->lit_mover_capacity, mover);
 }
 
 /* Whether `entity` is built here: a brush or a blockout shape. */
@@ -344,6 +367,8 @@ static void brush_clear(VkrScene *scene, VkrSceneBrushes *state,
   if (record->mover.u64 && record->hull_count) {
     brush_mark_mover(scene, state, record->mover);
   }
+  /* What the mover moves lost this brush's mesh, so its box changed. */
+  brush_mark_lit_mover(scene, state, record->mover);
   record->hull_count = 0u;
   if (record->trigger_body) {
     vkr_scene_physics_generated_remove(scene,
@@ -458,6 +483,11 @@ void vkr_scene_brush_changed(VkrScene *scene, VkrEntityId entity,
   }
   if (type == &vkr_scene_mover_type) {
     brush_mark_mover_changes(scene, entity);
+    /* Its lighting offset may have changed. */
+    VkrSceneBrushes *state = brush_state(scene, false_v);
+    if (state) {
+      brush_mark_lit_mover(scene, state, entity);
+    }
   }
 }
 
@@ -748,6 +778,17 @@ static void brush_set_mobility(VkrScene *scene, VkrEntityId entity) {
                                              shape->mesh_index, mobility);
 }
 
+/* Gives the brush's mesh its lighting origin (ADR-120). */
+static void brush_apply_lighting(VkrScene *scene, const BrushRecord *record) {
+  const SceneShape *shape = vkr_entity_get_component_if_alive_const(
+      scene->world, record->entity, scene->comp_shape);
+  if (!shape || shape->mesh_index == VKR_INVALID_ID) {
+    return;
+  }
+  (void)vkr_mesh_manager_set_lighting_origin(
+      &scene->assets->mesh_manager, shape->mesh_index, record->lighting_origin);
+}
+
 /* Builds the brush's mesh, one submesh per distinct face material. */
 static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
                                 BrushRecord *record, SceneBrushRole role,
@@ -960,6 +1001,13 @@ static void brush_pending_attach(VkrScene *scene, VkrSceneBrushes *state) {
     brush_pending_release(scene, pending);
     state->pending[i] = state->pending[--state->pending_count];
     const int32_t index = brush_find(state, entity);
+    /* A new mesh takes the brush's lighting origin, and its mover's box
+       takes the new mesh at the end of this update. */
+    if (ok && index >= 0) {
+      const BrushRecord *record = &state->records[index];
+      brush_apply_lighting(scene, record);
+      brush_mark_lit_mover(scene, state, record->mover);
+    }
     if (!ok && index >= 0) {
       BrushRecord *record = &state->records[index];
       brush_clear(scene, state, record);
@@ -1242,12 +1290,19 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
 static void brush_rebuild(VkrScene *scene, VkrSceneBrushes *state,
                           BrushRecord *record) {
   brush_set_dirty(state, record, false_v);
-  /* A brush that left its mover leaves that mover's body. */
+  /* A brush that left its mover leaves that mover's body and its lighting
+     origin (ADR-120); the one it builds under finds its origin again. A
+     brush without a mover takes baked light per pixel. */
   const VkrEntityId mover = brush_mover_of(scene, record->entity);
   if (mover.u64 != record->mover.u64) {
     brush_mark_mover(scene, state, record->mover);
+    brush_mark_lit_mover(scene, state, record->mover);
     record->mover = mover;
   }
+  if (!record->mover.u64) {
+    record->lighting_origin = vec4_zero();
+  }
+  brush_mark_lit_mover(scene, state, record->mover);
   const SceneBlockout *shape =
       vkr_scene_get_typed(scene, record->entity, &vkr_scene_blockout_type);
   const SceneTransform *shape_transform =
@@ -1473,6 +1528,93 @@ static void brush_rebuild_mover(VkrScene *scene, VkrSceneBrushes *state,
   }
 }
 
+/* Grows a world box by a local box under `world`, through its corners. */
+static void brush_grow_box(Vec3 *lower, Vec3 *upper, const Mat4 *world,
+                           Vec3 local_min, Vec3 local_max) {
+  for (uint32_t corner = 0u; corner < 8u; ++corner) {
+    const Vec3 local = vec3_new((corner & 1u) ? local_max.x : local_min.x,
+                                (corner & 2u) ? local_max.y : local_min.y,
+                                (corner & 4u) ? local_max.z : local_min.z);
+    const Vec3 p = mat4_mul_vec3(*world, local);
+    *lower =
+        vec3_new(Min(lower->x, p.x), Min(lower->y, p.y), Min(lower->z, p.z));
+    *upper =
+        vec3_new(Max(upper->x, p.x), Max(upper->y, p.y), Max(upper->z, p.z));
+  }
+}
+
+/* Finds a mover's lighting origin (ADR-120): the centre of the box of the
+   meshes it moves, as they stand, plus its lighting offset in its own
+   space, or its own origin with no mesh. Each brush under it keeps the
+   origin in its own space and gives it to its mesh, whose model carries it
+   wherever the mover goes, so its draws take baked light and probes at
+   one point instead of sweeping the static world's light through it.
+   Brushes under a mover that is gone rebuild without one. */
+static void brush_light_mover(VkrScene *scene, VkrSceneBrushes *state,
+                              VkrEntityId mover) {
+  const SceneMover *settings =
+      vkr_scene_get_typed(scene, mover, &vkr_scene_mover_type);
+  const SceneTransform *mover_transform =
+      vkr_entity_get_component_if_alive_const(scene->world, mover,
+                                              scene->comp_transform);
+  if (!settings || !mover_transform) {
+    return;
+  }
+  const Vec3 offset = settings->lighting_offset;
+  const Mat4 mover_world = mover_transform->world;
+  VkrMeshManager *meshes = &scene->assets->mesh_manager;
+  Vec3 lower =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 upper =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
+  bool8_t found = false_v;
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    const BrushRecord *record = &state->records[i];
+    if (record->mover.u64 != mover.u64) {
+      continue;
+    }
+    const SceneShape *shape = vkr_entity_get_component_if_alive_const(
+        scene->world, record->entity, scene->comp_shape);
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, record->entity, scene->comp_transform);
+    const VkrMesh *mesh = shape && shape->mesh_index != VKR_INVALID_ID
+                              ? vkr_mesh_manager_get(meshes, shape->mesh_index)
+                              : NULL;
+    if (!mesh || !transform) {
+      continue;
+    }
+    const uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      const VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(meshes, shape->mesh_index, s);
+      if (submesh) {
+        brush_grow_box(&lower, &upper, &transform->world, submesh->min_extents,
+                       submesh->max_extents);
+        found = true_v;
+      }
+    }
+  }
+  const Vec3 center = found ? vec3_scale(vec3_add(lower, upper), 0.5f)
+                            : mat4_position(mover_world);
+  const Vec3 origin = vec3_add(
+      center,
+      vec4_to_vec3(mat4_mul_vec4(mover_world, vec3_to_vec4(offset, 0.0f))));
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    BrushRecord *record = &state->records[i];
+    if (record->mover.u64 != mover.u64) {
+      continue;
+    }
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, record->entity, scene->comp_transform);
+    if (!transform) {
+      continue;
+    }
+    record->lighting_origin = vec3_to_vec4(
+        mat4_mul_vec3(mat4_inverse_affine(transform->world), origin), 1.0f);
+    brush_apply_lighting(scene, record);
+  }
+}
+
 void vkr_scene_brush_mover_move(VkrScene *scene, VkrEntityId mover, Vec3 offset,
                                 VkrQuat rotation, Vec3 pivot) {
   /* A mover without solid brushes has no body; nothing collides to move. */
@@ -1690,6 +1832,11 @@ void vkr_scene_brush_update(VkrScene *scene) {
     brush_rebuild_mover(scene, state, state->dirty_movers[i]);
   }
   state->dirty_mover_count = 0u;
+  /* After the attaches, so the box holds this update's meshes. */
+  for (uint32_t i = 0; i < state->lit_mover_count; ++i) {
+    brush_light_mover(scene, state, state->lit_movers[i]);
+  }
+  state->lit_mover_count = 0u;
 }
 
 void vkr_scene_brush_shutdown(VkrScene *scene) {
@@ -1737,6 +1884,11 @@ void vkr_scene_brush_shutdown(VkrScene *scene) {
     vkr_allocator_free(
         scene->alloc, state->dirty_movers,
         state->dirty_mover_capacity * sizeof(*state->dirty_movers), BRUSH_TAG);
+  }
+  if (state->lit_movers) {
+    vkr_allocator_free(scene->alloc, state->lit_movers,
+                       state->lit_mover_capacity * sizeof(*state->lit_movers),
+                       BRUSH_TAG);
   }
   if (state->materials) {
     vkr_allocator_free(scene->alloc, state->materials,

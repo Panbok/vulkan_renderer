@@ -24,6 +24,9 @@ struct VkrMetalPacketInstance {
   float4 normal_column2;
   ulong deformation_address;
   ulong previous_deformation_address;
+  // A mover's lighting origin, a world point with w one, or zero w to take
+  // baked light and probes per pixel (ADR-120).
+  float4 lighting_origin;
 };
 
 struct VkrTemporalTransform {
@@ -661,8 +664,8 @@ static_assert(sizeof(VkrPackedStaticVertex) == 32,
               "Packed static vertex ABI must remain 32 bytes");
 static_assert(sizeof(VkrGpuGeometryDecodeRecord) == 32,
               "Geometry decode record ABI must remain 32 bytes");
-static_assert(sizeof(VkrMetalPacketInstance) == 144,
-              "Prepared instance Metal ABI must remain 144 bytes");
+static_assert(sizeof(VkrMetalPacketInstance) == 160,
+              "Prepared instance Metal ABI must remain 160 bytes");
 static_assert(sizeof(VkrMetalPacketMaterial) == 384,
               "Metal material row ABI must remain 384 bytes");
 static_assert(sizeof(VkrMetalPacketTransmissionMaterial) == 32,

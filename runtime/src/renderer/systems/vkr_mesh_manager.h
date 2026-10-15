@@ -385,6 +385,18 @@ bool8_t vkr_mesh_manager_set_draw_cull(VkrMeshManager *manager, uint32_t index,
                                        uint32_t cull, bool8_t shadowless);
 
 /**
+ * @brief Set where a mesh's draws take baked diffuse light and reflection
+ * probes (ADR-120).
+ *
+ * `origin` is a point in the mesh's own space with w one, which the frame
+ * moves with the mesh's model, or zero to take them per pixel. A mover
+ * publishes it for the meshes it moves.
+ * @return true if the mesh exists, false otherwise.
+ */
+bool8_t vkr_mesh_manager_set_lighting_origin(VkrMeshManager *manager,
+                                             uint32_t index, Vec4 origin);
+
+/**
  * @brief Set mesh visibility flag used by view/picking systems.
  * @param manager The mesh manager.
  * @param index The index of the mesh.

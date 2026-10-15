@@ -1422,6 +1422,7 @@ vkr_global const VkrVulkanReflectedField s_vk_diffuse_volume_sample_fields[] = {
                                fallback_arguments),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanDiffuseVolumeSampleRoot,
                                fallback_pixels),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanDiffuseVolumeSampleRoot, visible_rows),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {

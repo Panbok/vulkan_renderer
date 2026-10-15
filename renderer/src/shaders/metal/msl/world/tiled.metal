@@ -603,6 +603,16 @@ static uint vkr_metal_tiled_pixel_probe(constant VkrMetalPacketFrameRoot *frame,
   return 0u;
 }
 
+// Where a draw takes its baked diffuse light and its reflection probe: its
+// mover's lighting origin (ADR-120), else the shaded point. A mover's draws
+// keep their own normals, so only the sampled position is shared.
+static float3
+vkr_metal_tiled_lighting_position(constant VkrMetalPacketFrameRoot *frame,
+                                  uint instance_index, float3 world_position) {
+  const float4 origin = frame->instances[instance_index].lighting_origin;
+  return origin.w != 0.0f ? origin.xyz : world_position;
+}
+
 // The irradiance the moving casters take from a lightmapped surface
 // (ADR-104, ADR-108): per selected baked lamp, its light at the surface
 // times the share its static shadow passes and its composite shadow stops,
@@ -664,14 +674,15 @@ constant bool vkr_tiled_brdf_extension =
 // lightmap, the diffuse volume or the environment, and environment specular.
 // The environment is `probe` (frame probe index + 1) or, for zero, the global
 // environment: one per surface, where the desktop pipeline blends its probes
-// per pixel.
+// per pixel. `instance_index` names the draw's instance, whose lighting
+// origin places the volume lookup and the probe's box projection.
 template <VkrMetalTiledLighting Lighting>
 static VkrMetalTiledSurfaceLight
 vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
                       constant VkrMetalPacketFrameRoot *frame,
                       const device VkrMetalPacketMaterial &material,
                       thread const VkrMetalTiledSurface &surface,
-                      bool front_facing, uint probe) {
+                      bool front_facing, uint probe, uint instance_index) {
   // Detail lighting and lighting only shade a neutral grey dielectric
   // without emission; lighting only also leaves out normal maps.
   const bool neutral = Lighting == VKR_METAL_TILED_LIGHTING_INSPECT &&
@@ -797,6 +808,9 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   // The lightmap's diffuse light already holds its occlusion; its baked
   // ambient visibility only occludes environment specular.
   float baked_occlusion = 1.0f;
+  // Read after the direct light, so the light loops keep no more live state.
+  const float3 lighting_position = vkr_metal_tiled_lighting_position(
+      frame, instance_index, input.world_position);
   if (input.lightmap_page != ~0u) {
     float sky_luminance;
     float4 lightmap = vkr_metal_tiled_lightmap_irradiance(
@@ -818,7 +832,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   } else {
     float sky_luminance;
     float4 volume =
-        vkr_metal_packet_diffuse_volume(frame, input.world_position, normal,
+        vkr_metal_packet_diffuse_volume(frame, lighting_position, normal,
                                         view, sky_luminance);
     diffuse_light = volume.rgb;
     // A grey of that luminance: Rec. 709 weights sum to one.
@@ -851,7 +865,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
       float3 direction =
           local.intensity_box.w > 0.5f
               ? vkr_reflection_probe_direction(
-                    dominant, input.world_position, local.center_blend.xyz,
+                    dominant, lighting_position, local.center_blend.xyz,
                     max(local.extents_weight.xyz, 0.0f),
                     local.capture_origin.xyz, alpha)
               : dominant;
@@ -905,7 +919,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
         float3 direction =
             local.intensity_box.w > 0.5f
                 ? vkr_reflection_probe_direction(
-                      dual_dominant, input.world_position,
+                      dual_dominant, lighting_position,
                       local.center_blend.xyz,
                       max(local.extents_weight.xyz, 0.0f),
                       local.capture_origin.xyz, dual_alpha)
@@ -1191,11 +1205,13 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
                            VKR_GPU_DRAW_PROBE_MASK
                      : 0u;
   // A draw that straddles a probe boundary chooses per pixel
-  // (vkr_metal_packet_draw_probe).
+  // (vkr_metal_packet_draw_probe); a mover's draw chose at its lighting
+  // origin, so never does.
   if (Probes && probe == VKR_GPU_DRAW_PROBE_PER_PIXEL)
     probe = vkr_metal_tiled_pixel_probe(frame, input.world_position);
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
-      input, frame, material, surface, front_facing, probe);
+      input, frame, material, surface, front_facing, probe,
+      visible.instance_index);
   return float4(light.diffuse + light.specular + light.emissive, coverage);
 }
 
@@ -1594,7 +1610,12 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
   }
   VkrMetalTiledSurfaceLight light = vkr_metal_tiled_shade<Lighting>(
       input, frame, material, surface, front_facing,
-      Probes ? vkr_metal_tiled_pixel_probe(frame, input.world_position) : 0u);
+      Probes ? vkr_metal_tiled_pixel_probe(
+                   frame, vkr_metal_tiled_lighting_position(
+                              frame, visible.instance_index,
+                              input.world_position))
+             : 0u,
+      visible.instance_index);
   // The light behind a volume or rough glass, when this frame has the copy.
   bool refracted = false;
   float3 refracted_light = float3(0.0f);

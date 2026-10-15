@@ -150,6 +150,10 @@ typedef struct VkrMesh {
   uint32_t draw_cull;
   /** Casts no shadow: its draw distance settings turn shadows off. */
   bool8_t shadowless;
+  /** Where its draws take baked diffuse light and reflection probes while a
+      mover moves it (ADR-120): a point in its own space with w one, or zero
+      to take them per pixel (vkr_mesh_manager_set_lighting_origin). */
+  Vec4 lighting_origin;
 } VkrMesh;
 Array(VkrMesh);
 

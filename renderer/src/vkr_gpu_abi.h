@@ -173,10 +173,13 @@ typedef struct VkrInstanceDataGPU {
       rects[slot - 1] (ADR-088). */
   uint32_t lightmap_slot;
   uint32_t reserved[2];
+  /** Where a mover's draws take baked diffuse light and reflection probes
+      (ADR-120): a world point with w one; zero w takes them per pixel. */
+  Vec4 lighting_origin;
 } VkrInstanceDataGPU;
 
-_Static_assert(sizeof(VkrInstanceDataGPU) == 96,
-               "VkrInstanceDataGPU must be 96 bytes");
+_Static_assert(sizeof(VkrInstanceDataGPU) == 112,
+               "VkrInstanceDataGPU must be 112 bytes");
 _Static_assert(sizeof(VkrInstanceDataGPU) % 16 == 0,
                "VkrInstanceDataGPU must be 16-byte aligned");
 
@@ -197,10 +200,14 @@ typedef struct VkrPreparedInstanceGPU {
   Vec4 normal_column2;
   uint64_t deformation_address;
   uint64_t previous_deformation_address;
+  /** The source's lighting origin (ADR-120): a world point with w one, or
+      zero w to take baked light and probes per pixel. */
+  Vec4 lighting_origin;
 } VkrPreparedInstanceGPU;
 
-_Static_assert(sizeof(VkrPreparedInstanceGPU) == 144,
-               "Native prepared instance must be 144 bytes");
+_Static_assert(sizeof(VkrPreparedInstanceGPU) == 160 &&
+                   offsetof(VkrPreparedInstanceGPU, lighting_origin) == 144,
+               "Native prepared instance must be 160 bytes");
 
 /** Computes normal transport and bounds once at native publication/upload. */
 VkrPreparedInstanceGPU

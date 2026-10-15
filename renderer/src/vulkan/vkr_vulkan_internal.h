@@ -900,14 +900,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanDiffuseVolumeSampleRoot {
      upsample appends. */
   uint64_t fallback_arguments;
   uint64_t fallback_pixels;
+  /* The camera view's visible rows, which name a pixel's instance and so its
+     lighting origin (ADR-120). */
+  uint64_t visible_rows;
 } VkrVulkanDiffuseVolumeSampleRoot;
-_Static_assert(sizeof(VkrVulkanDiffuseVolumeSampleRoot) == 144u &&
-                   offsetof(VkrVulkanDiffuseVolumeSampleRoot,
-                            vbuffer_texture) == 80u &&
-                   offsetof(VkrVulkanDiffuseVolumeSampleRoot, extent) == 96u &&
-                   offsetof(VkrVulkanDiffuseVolumeSampleRoot, output_texture) ==
-                       112u,
-               "Vulkan diffuse-volume sample root ABI drift");
+_Static_assert(
+    sizeof(VkrVulkanDiffuseVolumeSampleRoot) == 160u &&
+        offsetof(VkrVulkanDiffuseVolumeSampleRoot, visible_rows) == 144u &&
+        offsetof(VkrVulkanDiffuseVolumeSampleRoot, vbuffer_texture) == 80u &&
+        offsetof(VkrVulkanDiffuseVolumeSampleRoot, extent) == 96u &&
+        offsetof(VkrVulkanDiffuseVolumeSampleRoot, output_texture) == 112u,
+    "Vulkan diffuse-volume sample root ABI drift");
 
 /** A baked lamp whose moving casters Shadow.LocalMask shadows: its light
  * row, pre-exposed as the table's, and its static and composite first

@@ -188,7 +188,7 @@ demand. A packet supports 64 jobs, at most 2,097,152 submitted vertices in total
 and 65,536 joints per job; capacity overflow rejects the frame. At 32 bytes per
 vertex, the maximum output is 64 MiB per history instance, allocated from actual
 demand rather than committed unconditionally. Preview jobs consume this same
-capacity. Source instance records are 96 bytes; native prepared instances are 144
+capacity. Source instance records are 112 bytes; native prepared instances are 160
 bytes with current and previous deformation addresses at offsets 128 and 136.
 
 Previous positions come from the actual selected transform/color history producer,

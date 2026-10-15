@@ -630,6 +630,11 @@ typedef struct SceneMover {
   /* Seconds from a request at rest to setting off; `on_depart` fires at
      the request, so a lift closes its doors first. */
   float32_t delay;
+  /* Where the draws of what it moves take baked diffuse light and their
+     reflection probe (ADR-120): metres in its own space from the centre of
+     what it moves, so a closed car does not sweep the static world's light
+     through its inside. */
+  Vec3 lighting_offset;
 } SceneMover;
 
 /* What moves a mover besides its inputs (SceneMover.activation). Its box is
