@@ -345,6 +345,29 @@ background and TAA's sky history).
   `spirv-val`, reflection and a Windows Release capture on the desktop
   pipeline.
 
+## Cloud history read evidence state
+
+The cloud trace read its history through one bilinear sample and rejected it
+only when the filtered alpha exceeded one, so an untraced tap (alpha 2)
+blended with traced taps passed and leaked its marker into radiance and
+transmittance. The change is shared (`vkr_cloud_history_footprint`,
+`vkr_cloud_history_resolve` and `VKR_CLOUD_TRACED_ALPHA_MAX` in
+`shared/cloud_kernel.slangh`) and read by both trace entries.
+
+- **Changed contracts.**
+  - Each trace gathers the four channels at the footprint's shared corner,
+    `gather` with a component on Metal and `GatherRed` through `GatherAlpha`
+    on Vulkan. Both return the taps in the same order, and the corner fixes
+    the footprint whatever the sampler's sub-texel precision.
+  - The footprint takes the history texture's own extent. The texture is not
+    required to match the output size.
+  - Untraced taps get no weight, and the traced taps renormalise; a footprint
+    without a traced tap returns the marker, and the blend rejects it.
+  - Roots, bindings and samplers are unchanged.
+- **Missing gates.** Metal shader library compilation and a Bistro capture on
+  the tiled pipeline; Vulkan module compilation, `spirv-val` and a Windows
+  Release capture on the desktop pipeline.
+
 ## Editor inspection views
 
 `VkrRenderMode` retains Lit (`DEFAULT`, 0) and Unlit (3), and adds Detail lighting
@@ -1071,8 +1094,9 @@ Vulkan renders the sky natively (see
 
 Volumetric clouds are shared and share `shared/cloud_kernel.slangh`: tileable
 noise synthesis, density shaping, the phase and multiple-scattering octaves,
-step integration, the layer segment, screen and sun-projected coordinates and
-the history blend. Native files own the march loops and every sample and
+step integration, the layer segment, screen and sun-projected coordinates,
+the history footprint, its traced-tap resolve and the history blend. Native
+files own the march loops and every sample and
 write. Noise synthesis uses one root (32 bytes on Metal, 16 on Vulkan), the
 shadow builder the 16-byte sky builder root, and the trace a 128-byte root on
 both backends with the previous canonical view-projection, sky and frame

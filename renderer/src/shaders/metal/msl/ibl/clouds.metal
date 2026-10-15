@@ -296,12 +296,23 @@ kernel void vkr_metal_packet_cloud_trace(
       previous_clip.xy / max(previous_clip.w, 1e-6f) * 0.5f + 0.5f;
   bool history_valid = root.history_valid != 0u && previous_clip.w > 0.0f &&
                        all(previous_uv >= 0.0f) && all(previous_uv <= 1.0f);
-  float4 history =
-      history_valid
-          ? root.history.sample(vkr_metal_cloud_history_sampler, previous_uv)
-          : current;
-  if (history_valid)
+  float4 history = current;
+  if (history_valid) {
+    VkrCloudHistoryFootprint footprint = vkr_cloud_history_footprint(
+        previous_uv,
+        float2(root.history.get_width(), root.history.get_height()));
+    history = vkr_cloud_history_resolve(
+        root.history.gather(vkr_metal_cloud_history_sampler,
+                            footprint.gather_uv, int2(0), component::x),
+        root.history.gather(vkr_metal_cloud_history_sampler,
+                            footprint.gather_uv, int2(0), component::y),
+        root.history.gather(vkr_metal_cloud_history_sampler,
+                            footprint.gather_uv, int2(0), component::z),
+        root.history.gather(vkr_metal_cloud_history_sampler,
+                            footprint.gather_uv, int2(0), component::w),
+        footprint.blend);
     history.rgb *= root.history_pre_exposure_scale;
+  }
   root.output.write(vkr_cloud_history_blend(current, history, history_valid),
                     texel);
 }

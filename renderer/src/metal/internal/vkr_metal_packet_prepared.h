@@ -126,6 +126,11 @@ typedef struct VkrMetalPacketPreparedPass {
       MTLSize groups;
     } histogram;
     struct {
+      VkrMetalPacketDispatch dispatch;
+      /* The history's producer was not known complete at preparation. */
+      bool8_t history_in_flight;
+    } cloud_trace;
+    struct {
       uint64_t root;
       uint32_t extent;
     } cloud_sky_light;

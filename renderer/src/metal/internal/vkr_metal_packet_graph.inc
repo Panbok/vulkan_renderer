@@ -908,9 +908,12 @@ vkr_metal_packet_graph_buffer_instance(VkrMetalPacketRenderer *renderer,
 }
 
 /* Cloud radiance history holds camera-independent sky radiance; its stored
-   view-projection reprojects it (ADR-074). The tiled pipeline has no temporal
-   antialiasing, so the newest completed producer of the same traced layer
-   and grid seeds the trace. */
+   view-projection reprojects it (ADR-074). The newest submitted producer of
+   the same traced layer and grid seeds the trace even in flight, so every
+   frame accumulates into one chain whatever the GPU timing; Clouds.Trace
+   then waits on the queue for that producer's dispatches. This frame's
+   output index never matches the source, and the source's last use keeps it
+   from becoming an output until this frame completes. */
 vkr_internal bool8_t
 vkr_metal_packet_select_cloud_history(VkrMetalPacketRenderer *renderer) {
   renderer->selected_cloud_history_instance = UINT32_MAX;
@@ -928,7 +931,6 @@ vkr_metal_packet_select_cloud_history(VkrMetalPacketRenderer *renderer) {
 
   const uint64_t signature = vkr_cloud_history_signature(
       &packet->sky.clouds, packet->sky.camera_position.w);
-  const uint64_t completed = vkr_metal_packet_completed(renderer);
   const uint64_t frame_index = packet->input.frame.frame_index;
   uint64_t newest_submit = 0u;
   for (uint32_t i = 0u; i < history->instance_count; ++i) {
@@ -940,7 +942,6 @@ vkr_metal_packet_select_cloud_history(VkrMetalPacketRenderer *renderer) {
         frame_index - candidate->frame_index <= history->instance_count;
     if (i == renderer->history_output_index || !candidate->valid ||
         !image->live || !image->history_valid || !source_age_in_ring ||
-        candidate->producer_submit_value > completed ||
         image->history_producer_submit_value !=
             candidate->producer_submit_value ||
         candidate->signature != signature ||

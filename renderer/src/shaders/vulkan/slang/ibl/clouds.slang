@@ -318,13 +318,23 @@ void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
     bool history_valid = root.history_valid != 0u &&
                          previous_clip.w > 0.0f && all(previous_uv >= 0.0f) &&
                          all(previous_uv <= 1.0f);
-    float4 history =
-        history_valid
-            ? g_textures[root.history_texture].SampleLevel(
-                  g_samplers[root.history_sampler], previous_uv, 0.0f)
-            : current;
+    float4 history = current;
     if (history_valid)
+    {
+        Texture2D<float4> history_texture = g_textures[root.history_texture];
+        SamplerState history_sampler = g_samplers[root.history_sampler];
+        uint2 history_extent;
+        history_texture.GetDimensions(history_extent.x, history_extent.y);
+        VkrCloudHistoryFootprint footprint =
+            vkr_cloud_history_footprint(previous_uv, float2(history_extent));
+        history = vkr_cloud_history_resolve(
+            history_texture.GatherRed(history_sampler, footprint.gather_uv),
+            history_texture.GatherGreen(history_sampler, footprint.gather_uv),
+            history_texture.GatherBlue(history_sampler, footprint.gather_uv),
+            history_texture.GatherAlpha(history_sampler, footprint.gather_uv),
+            footprint.blend);
         history.rgb *= root.history_pre_exposure_scale;
+    }
     g_storage_2d[root.output_texture][texel] =
         vkr_cloud_history_blend(current, history, history_valid);
 }

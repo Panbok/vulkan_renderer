@@ -1439,7 +1439,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_shadow(
 }
 
 /* Half-resolution cloud trace into this frame's history output. A selected
-   history carries the view-projection that reprojects it. */
+   history carries the view-projection that reprojects it; one whose producer
+   may still run makes the trace wait for it on the queue. */
 vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -1497,12 +1498,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cloud_trace(
       .frame_index = (uint32_t)packet->input.frame.frame_index,
       .history_valid = history_valid ? 1u : 0u,
   };
-  prepared->dispatch = (VkrMetalPacketDispatch){
+  prepared->cloud_trace.dispatch = (VkrMetalPacketDispatch){
       .pipeline = renderer->cloud_trace_pipeline,
       .root = root_gpu,
       .threads = MTLSizeMake(output.width, output.height, 1u),
       .group_size = MTLSizeMake(8u, 8u, 1u),
   };
+  prepared->cloud_trace.history_in_flight =
+      history_valid && renderer->cloud_history[selected].producer_submit_value >
+                           vkr_metal_packet_completed(renderer);
   prepared->active = true_v;
   return true_v;
 }

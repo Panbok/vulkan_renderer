@@ -1554,9 +1554,11 @@ These are limits of current code or retained acceptance, not scheduled promises:
   their own matched Vulkan evidence. No tiled-pipeline Bistro baseline is
   accepted yet.
 - SMAA T2x and motion blur read the immediately preceding frame's
-  history, but cloud history without T2x and froxel fog history still take
-  the newest completed producer, so their history age follows GPU timing
-  ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
+  history and cloud history the newest submitted producer, even in flight,
+  but froxel fog history still takes the newest completed producer, so its
+  history age follows GPU timing
+  ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md),
+  [ADR-074](adr/074-volumetric-cloud-layer.md)).
 - Native evidence for the 2026-10-12 removal of SSR, SSGI and FSR 3.1
   (builds, Bistro captures and timing) is pending.
 - The temporal shader corrections and stationary coverage support pass

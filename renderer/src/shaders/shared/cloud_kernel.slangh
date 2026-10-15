@@ -50,6 +50,9 @@
 #define VKR_CLOUD_HISTORY_CURRENT_WEIGHT 0.1f
 // History alpha above one marks a texel that was not traced.
 #define VKR_CLOUD_UNTRACED_ALPHA 2.0f
+// Largest history alpha of a traced texel: its transmittance, with RGBA16F
+// rounding headroom.
+#define VKR_CLOUD_TRACED_ALPHA_MAX 1.001f
 // Forward and backward phase lobes and the forward share.
 #define VKR_CLOUD_PHASE_FORWARD_G 0.8f
 #define VKR_CLOUD_PHASE_BACKWARD_G -0.3f
@@ -524,12 +527,53 @@ float2 vkr_cloud_ray_jitter(uint frame_index)
            0.5f;
 }
 
-// Blends the current trace into reprojected history. History alpha above one
-// marks an untraced texel, which cannot seed the accumulation.
+// The four history texels a bilinear read at `uv` blends, on a history of
+// `extent` texels. `gather_uv` is their shared corner, where a gather selects
+// exactly those texels whatever the sampler's sub-texel precision; `blend` is
+// the weight toward the second column (x) and the second row (y).
+struct VkrCloudHistoryFootprint
+{
+    float2 gather_uv;
+    float2 blend;
+};
+
+VkrCloudHistoryFootprint vkr_cloud_history_footprint(float2 uv, float2 extent)
+{
+    float2 position = uv * extent - 0.5f;
+    float2 first = floor(position);
+    VkrCloudHistoryFootprint footprint;
+    footprint.gather_uv = (first + 1.0f) / extent;
+    footprint.blend = position - first;
+    return footprint;
+}
+
+// Bilinear history over the traced texels of a footprint, from one gather per
+// channel. Gathers return (first column, second row), (second column, second
+// row), (second column, first row), (first column, first row) on both
+// backends. An untraced texel (alpha above one) gets no weight and the traced
+// ones renormalise, so the marker never mixes into radiance or transmittance;
+// a footprint without a traced texel returns the marker.
+float4 vkr_cloud_history_resolve(float4 red, float4 green, float4 blue,
+                                 float4 alpha, float2 blend)
+{
+    float4 weights = float4((1.0f - blend.x) * blend.y, blend.x * blend.y,
+                            blend.x * (1.0f - blend.y),
+                            (1.0f - blend.x) * (1.0f - blend.y));
+    weights *= step(alpha, float4(VKR_CLOUD_TRACED_ALPHA_MAX));
+    float weight_sum = dot(weights, float4(1.0f));
+    if (weight_sum <= 0.0f)
+        return float4(0.0f, 0.0f, 0.0f, VKR_CLOUD_UNTRACED_ALPHA);
+    return float4(dot(red, weights), dot(green, weights), dot(blue, weights),
+                  dot(alpha, weights)) /
+           weight_sum;
+}
+
+// Blends the current trace into reprojected history. A resolved history that
+// carries the untraced marker cannot seed the accumulation.
 float4 vkr_cloud_history_blend(float4 current, float4 history,
                                bool history_valid)
 {
-    if (!history_valid || history.a > 1.0f + 1e-3f)
+    if (!history_valid || history.a > VKR_CLOUD_TRACED_ALPHA_MAX)
         return current;
     return VKR_CLOUD_LERP(history, current, VKR_CLOUD_HISTORY_CURRENT_WEIGHT);
 }

@@ -2021,10 +2021,10 @@ bool8_t vkr_vk_prepare_cloud_shadow(VkrVulkanRenderer *renderer,
 
 /* Cloud radiance history holds camera-independent sky radiance; its stored
    view-projection reprojects it. With temporal antialiasing only the exact
-   temporal-transform predecessor is eligible: its dependency and same-queue
-   barriers order its writes even in flight, so accumulation never depends on
-   GPU timing. Without it, the newest completed producer of the same traced
-   layer and grid seeds the trace. */
+   temporal-transform predecessor is eligible. Without it, the newest
+   submitted producer of the same traced layer and grid seeds the trace. Either
+   may still be in flight: the trace's same-queue image barrier orders its
+   writes, so accumulation never depends on GPU timing. */
 vkr_internal VkrVulkanGraphImageInstance *
 vkr_vk_select_cloud_history(VkrVulkanRenderer *renderer,
                             VkrVulkanGraphImage *history, uint32_t *out_index) {
@@ -2049,14 +2049,13 @@ vkr_vk_select_cloud_history(VkrVulkanRenderer *renderer,
     const bool8_t source_age_in_ring =
         candidate->frame_index < frame_index &&
         frame_index - candidate->frame_index <= history->instance_count;
-    const bool8_t ordered =
-        packet->temporal.enabled
-            ? slot->temporal_history_valid && transforms &&
-                  i < transforms->instance_count &&
-                  slot->temporal_transform_input == &transforms->instances[i]
-            : candidate->producer_submit_value <= renderer->completed_value;
+    const bool8_t predecessor =
+        !packet->temporal.enabled ||
+        (slot->temporal_history_valid && transforms &&
+         i < transforms->instance_count &&
+         slot->temporal_transform_input == &transforms->instances[i]);
     if (i == current || !candidate->valid || !image->history_valid ||
-        !image->has_sampled_slot || !source_age_in_ring || !ordered ||
+        !image->has_sampled_slot || !source_age_in_ring || !predecessor ||
         candidate->producer_submit_value !=
             image->history_producer_submit_value ||
         candidate->signature != signature ||

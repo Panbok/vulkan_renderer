@@ -201,6 +201,17 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                      visibilityOptions:MTL4VisibilityOptionDevice];
     break;
   }
+  case VKR_RG_EXECUTOR_CLOUD_TRACE:
+    /* The history can be the previous frame's output, written by its trace in
+       an earlier command buffer that may still run; Metal 4 does not order
+       command buffers, so wait for the queue's earlier dispatches. */
+    if (pass->cloud_trace.history_in_flight)
+      [encoder barrierAfterQueueStages:MTLStageDispatch
+                          beforeStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    vkr_metal_packet_record_dispatch(renderer, encoder,
+                                     &pass->cloud_trace.dispatch);
+    break;
   case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
     /* The composed SH is rewritten in place while earlier frames' shading
        may still read it, and the layers can come from an earlier

@@ -121,13 +121,18 @@ The trace blends 10% of the current sample into history reprojected by
 direction through the producer's canonical view-projection. Clouds lie
 kilometres away, so camera translation parallax is ignored. History requires
 the same traced layer (layer, noise, march distance and world scale), grid and
-graph generation, a producer inside the ring, no temporal reset, and no
-untraced marker among the bilinear taps. With temporal antialiasing only its
-exact predecessor is eligible, even in flight: the submission already orders
-it, and accumulation never depends on GPU timing. Without temporal
-antialiasing the newest completed producer seeds the trace. The harness
-resets the wind clock with its other phase clocks, so bootstrap duration does
-not move the layer in captures.
+graph generation, a producer inside the ring, and no temporal reset. The
+history read gathers the four bilinear taps and weights out any untraced
+marker; the traced taps renormalise, and a footprint with no traced tap
+rejects the history. With temporal antialiasing only its exact predecessor
+is eligible. Without it, which includes every tiled frame, the newest
+submitted producer seeds the trace. Either may still be in flight: on Vulkan
+the trace's same-queue image barrier orders the producer's writes, and on
+Metal the trace waits on the queue for earlier dispatches when the producer
+was not known complete. Accumulation therefore never depends on GPU timing,
+and consecutive frames continue one chain through all eight jitter phases.
+The harness resets the wind clock with its other phase clocks, so bootstrap
+duration does not move the layer in captures.
 
 In the desktop pipeline, deferred lighting composites sky pixels as
 `L_sky * T + S` from the current history instance; the tiled pipeline's
