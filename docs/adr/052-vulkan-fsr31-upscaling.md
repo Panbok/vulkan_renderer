@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-15
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -51,8 +51,9 @@ SMAA T2x runs.
   ([`vkr_vulkan_fsr_sdk.cpp`](../../renderer/src/vulkan/vkr_vulkan_fsr_sdk.cpp)).
   The device requests `shaderStorageImageExtendedFormats`; without it the
   renderer reports FSR unavailable and runs SMAA T2x.
-- **Jitter.** FSR frames take FSR's eight-phase Halton (2, 3) sequence in
+- **Jitter.** FSR frames take a 16-phase Halton (2, 3) sequence in
   [−0.5, 0.5) pixels (`vkr_temporal_fsr_jitter`) instead of T2x's two phases.
+  The SDK's phase count at render scale 1 is 8; 16 measured better (below).
 - **Passes.** `FSR31.Prepare` writes FSR's depth, reactive mask (transmission
   and blended layers) and composition mask from the Scene's HDR colour, its
   colour before transmission, temporal validity and depth
@@ -101,6 +102,28 @@ Timing, `profile` with `local-offscreen-gpu-repeated.json` at 2560 × 1440,
 (`Temporal.Resolve` 0.57 plus the display-linear, SMAA and resolve passes).
 Debug with synchronization validation on the street view: no messages.
 
+Tuning, 2026-10-16, same oracle (references rendered again, so values
+differ slightly from the table above), FSR's defaults first; still edge /
+thin, pan edge / instability / trail, strafe edge:
+
+| Variant | Still | Pan | Strafe |
+|---|---|---|---|
+| 8 phases (SDK default) | 9.58 / 8.59 | 10.41 / 7.70 / 13.13 | 10.29 |
+| **16 phases (kept)** | 9.43 / 8.53 | 10.42 / 7.64 / 12.92 | 10.29 |
+| 32 phases | 9.34 / 8.50 | 10.45 / 7.68 / 12.90 | 10.30 |
+| RCAS sharpening 0.25 / 0.5 | 9.78 / 9.90 edge | 10.47 / 10.53 edge | 10.35 / 10.40 |
+| velocity factor 0 | 9.58 / 8.59 | 11.22 / 8.60 / 14.20 | 11.04 |
+| minimum disocclusion accumulation 0 | unchanged | unchanged | unchanged |
+| + SMAA 1x on FSR's output | 9.70 / 8.56 | 10.52 / 7.98 / 13.53 | 10.39 |
+| + FXAA on FSR's output | 9.99 / 8.44 | 10.95 / 8.41 / 13.87 | 10.74 |
+| 2x MSAA edge samples averaged into FSR's input | 10.50 / 8.67 | 10.83 / 7.88 / 12.44 | 10.52 |
+
+Sharpening and velocity factor 0 trade error for apparent crispness or
+stillness (velocity 0 halves edge flicker by lagging). Morphological or
+FXAA filtering after FSR blurs what FSR already resolved, and a
+pre-averaged MSAA input is blurred twice. Only the longer phase sequence
+helps; it costs nothing. The experiment code is not kept.
+
 The default changes the image of every desktop frame with temporal
 antialiasing. Accepted harness baselines recorded with SMAA T2x no longer
 match until the owner accepts new ones; a case selects either mode with
@@ -118,6 +141,8 @@ read back as `smaa_t2x`.
   owner rejected; native AA without it is measured above.
 - **DLSS or XeSS**: vendor-specific; FSR runs on every desktop GPU this
   renderer supports.
+- **Post antialiasing, RCAS, SDK constants or MSAA on top of FSR**: measured
+  above; none improved FSR's output against the supersampled reference.
 
 ## Revisit when
 

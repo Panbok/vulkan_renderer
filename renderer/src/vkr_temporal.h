@@ -50,7 +50,7 @@ typedef struct VkrTemporalFrameInput {
   /** The visibility raster samples each pixel twice (SMAA 4x = S2x + T2x):
       the jitter and subsample rows follow the 4x table. */
   bool8_t msaa;
-  /** FSR 3.1 native AA: the jitter follows FSR's eight-phase Halton (2, 3)
+  /** FSR 3.1 native AA: the jitter follows a 16-phase Halton (2, 3)
       sequence, and no SMAA rows apply. */
   bool8_t fsr;
 } VkrTemporalFrameInput;

@@ -63,10 +63,11 @@ Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index, bool8_t msaa) {
   return first ? (Vec2){0.25f, 0.25f} : (Vec2){-0.25f, -0.25f};
 }
 
-/* FSR 3.1's jitter at render scale 1: ffxFsr3GetJitterPhaseCount gives
-   8 * (output / render)^2 = 8 phases of the Halton (2, 3) sequence, offset
-   to [-0.5, 0.5) pixels. */
-#define VKR_TEMPORAL_FSR_SEQUENCE_LENGTH 8u
+/* FSR 3.1's jitter: the Halton (2, 3) sequence offset to [-0.5, 0.5) pixels.
+   At render scale 1 ffxFsr3GetJitterPhaseCount gives 8 * (output / render)^2
+   = 8 phases; 16 lowered the Bistro street's still edge error 9.58 -> 9.43
+   and its trail error in motion 13.13 -> 12.92 at no cost (ADR-052). */
+#define VKR_TEMPORAL_FSR_SEQUENCE_LENGTH 16u
 
 vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
   float32_t result = 0.0f;

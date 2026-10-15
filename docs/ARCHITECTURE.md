@@ -1222,7 +1222,7 @@ dependencies, output reuse still proves completion, and resets exclude every
 pre-reset producer. Retained shadow images converge to a common submitted
 projection so cached per-image fits cannot prevent convergence after camera
 movement. The G-buffer writes sky rotation motion for the resolve. FSR 3.1
-native antialiasing replaces SMAA and T2x by default: an eight-phase Halton
+native antialiasing replaces SMAA and T2x by default: a 16-phase Halton
 jitter, the FidelityFX SDK's own history, and a reset whenever the mode
 changes ([ADR-052](adr/052-vulkan-fsr31-upscaling.md)). Opt-in
 SMAA 4x (`VKR_MSAA_ENABLED`) adds S2x: the camera's visibility raster is 2x multisampled, the second
