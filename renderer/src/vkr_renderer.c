@@ -3050,6 +3050,25 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
   return VKR_RENDERER_ERROR_NONE;
 }
 
+VkrRendererError
+vkr_renderer_set_dynamic_resolution_budget(VkrRenderer *renderer,
+                                           float32_t target_frame_ms) {
+  vkr_renderer_join_render_thread(renderer);
+  if (!renderer || !vkr_is_finite_f32(target_frame_ms) ||
+      target_frame_ms <= 0.0f)
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (renderer->frame_active)
+    return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+  renderer->dynamic_resolution_request.target_frame_ms = target_frame_ms;
+  if (!renderer->dynamic_resolution_config.enabled)
+    return VKR_RENDERER_ERROR_NONE;
+  renderer->dynamic_resolution_config.target_frame_ms = target_frame_ms;
+  renderer->dynamic_resolution_state.target_frame_ns =
+      (uint64_t)((float64_t)target_frame_ms * 1000000.0 + 0.5);
+  vkr_dynamic_resolution_reset_feedback(&renderer->dynamic_resolution_state);
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 void vkr_renderer_invalidate_exposure_history(VkrRenderer *renderer) {
   vkr_renderer_join_render_thread(renderer);
   assert_log(renderer != NULL, "Renderer is NULL");

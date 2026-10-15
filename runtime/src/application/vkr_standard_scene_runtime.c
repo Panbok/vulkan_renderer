@@ -3139,6 +3139,27 @@ vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
   application->scene_completed_at = completed_at;
 }
 
+/* The dynamic-resolution budget follows the display: a frame that runs past
+   the refresh interval waits for the next refresh and shows for two, so the
+   controller keeps this share of the interval as headroom, as adaptive-quality
+   controllers for VR do. The renderer takes it only when it changes. */
+#define VKR_DYNAMIC_RESOLUTION_REFRESH_SHARE 0.9
+
+vkr_internal void vkr_standard_scene_runtime_follow_display_budget(
+    VkrStandardSceneRuntime *application) {
+  const float32_t budget_ms =
+      (float32_t)(application->refresh_interval *
+                  VKR_DYNAMIC_RESOLUTION_REFRESH_SHARE * 1000.0);
+  if (vkr_abs_f32(budget_ms - application->dynamic_resolution_budget_ms) <
+      0.01f) {
+    return;
+  }
+  if (vkr_renderer_set_dynamic_resolution_budget(
+          &application->renderer, budget_ms) == VKR_RENDERER_ERROR_NONE) {
+    application->dynamic_resolution_budget_ms = budget_ms;
+  }
+}
+
 /* Chooses how the editor presents this frame (ADR-111). With the presenter,
    a frame renders a Scene when the GPU should be ready for it: the frame
    commits about one display interval after it is built, behind the frame
@@ -3158,6 +3179,7 @@ vkr_internal void vkr_standard_scene_runtime_choose_presentation(
   const float32_t refresh = vkr_window_refresh_rate(&application->host.window);
   application->refresh_interval =
       refresh >= 24.0f ? 1.0 / (float64_t)refresh : 1.0 / 60.0;
+  vkr_standard_scene_runtime_follow_display_budget(application);
   if (!application->presenter_enabled ||
       !application->editor_viewport.enabled ||
       vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||

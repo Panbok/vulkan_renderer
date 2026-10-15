@@ -370,7 +370,7 @@ pipeline rather than a backend mechanism.
 12. Adaptive quality (owner decision, 2026-10-06, after Valve's VR adaptive
     quality): with dynamic resolution on, the tiled pipeline steps its
     internal render scale ([ADR-039](039-metal-internal-render-scale.md))
-    between 0.65 and native by 0.05 to hold a 16 ms GPU frame, and its
+    between 0.65 and native by 0.05 to hold its GPU frame budget, and its
     tonemap pass upscales the scene spatially to the output. Native
     resolution stays the target whenever the frame fits. The controller
     ([`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c))
@@ -385,12 +385,24 @@ pipeline rather than a backend mechanism.
     probe the same failure again; sustained headroom at the upper scale
     clears the ratio, and a change of the Scene output extent clears all
     learned timing but keeps the scale. A step recreates the viewport-sized
-    graph images, so the cloud and HZB histories restart, and the memoryless
+    graph images, so the HZB history restarts; the cloud history is sized
+    from the Scene output and kept (ADR-074). A step marks the frame with its
+    own temporal reset reason, which every history but the clouds' treats
+    as a reset. The memoryless
     multisampled targets retire until the GPU completes the frames that drew
     into them instead of stalling it. The sample's tiled settings use 0.65
-    to 1 and 16 ms
-    ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c));
-    the dynamic-resolution setting turns it off. Vulkan has no dynamic
+    to 1 ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c)),
+    and the dynamic-resolution setting turns it off. The budget follows the
+    display (owner decision, 2026-10-15): 90% of the refresh interval of the
+    display showing the window, so a frame finishes inside one refresh
+    instead of waiting for the next and showing for two. The 60 Hz budget
+    holds until the runtime first reads the refresh rate, and the renderer
+    takes a new budget only when the rate changes
+    (`vkr_renderer_set_dynamic_resolution_budget`). On a 120 Hz M1 Pro the
+    Level Design Test held 8.33 ms frames at the 0.65 floor in the editor's
+    2061×1062 Scene panel (deck view, sky view and a tram ride, Release,
+    2026-10-15); with the earlier 16 ms budget the same panel showed 10–18 ms
+    frames at higher scales. Vulkan has no dynamic
     resolution and renders the Scene at render scale 1; the FSR 3.1
     upscaler was removed on 2026-10-12
     ([ADR-052](052-vulkan-fsr31-upscaling.md)).

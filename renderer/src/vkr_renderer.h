@@ -1445,6 +1445,15 @@ VkrRendererError vkr_renderer_set_render_scale(VkrRenderer *renderer,
                                                float32_t render_scale,
                                                bool8_t dynamic_resolution);
 /**
+ * Sets the dynamic-resolution controller's GPU frame budget in milliseconds
+ * outside an active frame. The scale holds; the controller restarts its
+ * sample counts against the new budget. Call it when the budget changes, not
+ * every frame: it waits for the render thread.
+ */
+VkrRendererError
+vkr_renderer_set_dynamic_resolution_budget(VkrRenderer *renderer,
+                                           float32_t target_frame_ms);
+/**
  * @brief Invalidates exposure adaptation before the next submitted frame.
  *
  * Separate from temporal invalidation because the two chains answer different
