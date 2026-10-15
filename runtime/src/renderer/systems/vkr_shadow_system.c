@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_shadow_system.h"
 
 #include "core/logger.h"
+#include "math/vkr_frustum.h"
 #include "math/vkr_math.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_local_shadow_system.h"
@@ -1887,25 +1888,41 @@ vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
          distance_squared <= reach * reach;
 }
 
-/* A baked lamp keeps its place until a competitor's light at the moving
-   casters is this factor stronger, so the shadowed lamps do not flip while
-   their light crosses. */
-#define VKR_BAKED_LAMP_INCUMBENT_BONUS 1.15f
+/* A selected baked lamp keeps its place until an outsider's score is this
+   factor higher, and for this many seconds; it then fades its shadow out
+   before the outsider takes the place, so the shadowed lamps neither flip
+   while scores cross nor pop. */
+#define VKR_BAKED_LAMP_CHALLENGE_FACTOR 1.5f
+#define VKR_BAKED_LAMP_CHALLENGE_SECONDS 0.5f
+/* A lamp lights a moving caster as it would at this fraction of its range,
+   or the caster's radius, when nearer, so a caster touching a lamp does not
+   outweigh every other. */
+#define VKR_BAKED_LAMP_NEAR_RANGE_FRACTION 0.1f
+/* A moving caster's shadow may show this far beyond its bounding sphere:
+   this fraction of the lamp's range, at most the metres. */
+#define VKR_BAKED_LAMP_SHADOW_REACH_FRACTION 0.25f
+#define VKR_BAKED_LAMP_SHADOW_REACH_METRES 4.0f
+/* Moving casters nearer the camera than this score alike; farther ones
+   score by inverse-square camera distance. */
+#define VKR_BAKED_LAMP_CAMERA_NEAR_METRES 2.0f
 
 /* The luminance `light` sends to `point`: intensity times its distance
-   falloff and spot cone, as the shared punctual kernel shades it. */
-vkr_internal float32_t
-vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
+   falloff and spot cone, as the shared punctual kernel shades it, with the
+   distance falloff held at `near_distance` nearer than it. */
+vkr_internal float32_t vkr_shadow_baked_lamp_light_at(
+    const VkrPointLight *light, Vec3 point, float32_t near_distance) {
   const Vec3 to_light = vec3_sub(light->position, point);
   const float32_t distance_squared = vec3_length_squared(to_light);
   const float32_t distance = vkr_sqrt_f32(distance_squared);
+  const float32_t falloff_distance = Max(distance, near_distance);
+  const float32_t falloff_squared = falloff_distance * falloff_distance;
   float32_t attenuation = 0.0f;
   float32_t cone = 1.0f;
   if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL) {
-    attenuation =
-        1.0f / Max(Max(light->constant, 1.0f) + light->linear * distance +
-                       light->quadratic * distance_squared,
-                   1e-6f);
+    attenuation = 1.0f / Max(Max(light->constant, 1.0f) +
+                                 light->linear * falloff_distance +
+                                 light->quadratic * falloff_squared,
+                             1e-6f);
   } else {
     if (light->range > 0.0f && distance >= light->range)
       return 0.0f;
@@ -1915,7 +1932,7 @@ vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
       window = Clamp(1.0f - ratio * ratio * ratio * ratio, 0.0f, 1.0f);
       window *= window;
     }
-    attenuation = window / Max(distance_squared, 1e-4f);
+    attenuation = window / Max(falloff_squared, 1e-4f);
     if (light->kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT && distance > 1e-6f) {
       const float32_t outer = vkr_cos_f32(light->outer_cone_angle);
       const float32_t inner = vkr_cos_f32(light->inner_cone_angle);
@@ -1935,44 +1952,146 @@ vkr_shadow_baked_lamp_light_at(const VkrPointLight *light, Vec3 point) {
   return vkr_is_finite_f32(value) ? value : 0.0f;
 }
 
-/* Selects the baked lamps whose moving-caster shadows the frame shows: at
-   most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX, by `light`, each lamp's
-   strongest light at a moving caster that meets its range on a face the
-   camera may see, incumbents' light raised by the bonus. Writes their
-   indices strongest first and returns their count; `out_candidates`
-   receives the lamps considered. */
+/* Whether the sphere at `center` of `radius` may meet the camera's view:
+   not wholly outside one of its side planes, which also hold the space
+   behind the camera out, as the local-shadow camera faces test them. */
+vkr_internal bool8_t vkr_shadow_sphere_in_camera_sides(
+    const VkrFrustum *frustum, Vec3 center, float32_t radius) {
+  for (uint32_t plane = VKR_FRUSTUM_PLANE_LEFT; plane <= VKR_FRUSTUM_PLANE_TOP;
+       ++plane) {
+    const VkrPlane *side = &frustum->planes[plane];
+    if (vec3_dot(side->normal, center) + side->d < -radius)
+      return false_v;
+  }
+  return true_v;
+}
+
+/* Index of the first lamp with `render_id`; `lamp_count` for none. */
+vkr_internal uint32_t vkr_shadow_find_baked_lamp(const VkrPointLight *lamps,
+                                                 uint32_t lamp_count,
+                                                 uint32_t render_id) {
+  for (uint32_t lamp = 0u; lamp < lamp_count; ++lamp) {
+    if (lamps[lamp].render_id == render_id)
+      return lamp;
+  }
+  return lamp_count;
+}
+
+/* The lamp of the highest positive `score` whose render id no lamp of
+   `selected` has; `lamp_count` for none. */
+vkr_internal uint32_t vkr_shadow_best_baked_outsider(const VkrPointLight *lamps,
+                                                     const float32_t *score,
+                                                     uint32_t lamp_count,
+                                                     const uint32_t *selected,
+                                                     uint32_t selected_count) {
+  uint32_t best = lamp_count;
+  for (uint32_t lamp = 0u; lamp < lamp_count; ++lamp) {
+    if (!(score[lamp] > 0.0f) || lamps[lamp].render_id == 0u ||
+        (best != lamp_count && score[lamp] <= score[best]))
+      continue;
+    bool8_t inside = false_v;
+    for (uint32_t i = 0u; i < selected_count; ++i) {
+      if (lamps[selected[i]].render_id == lamps[lamp].render_id)
+        inside = true_v;
+    }
+    if (!inside)
+      best = lamp;
+  }
+  return best;
+}
+
+/* Selects the baked lamps whose moving-caster shadows the frame shows, at
+   most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX, by `score`, and stores the
+   selection. A selected lamp stays while a moving caster meets its range;
+   free places take the strongest outsiders at once. With every place
+   taken, the weakest lamp gives its place to an outsider that has
+   outscored it by the challenge factor for the hold time: it fades out,
+   and the outsider takes the place once its shadow has faded. A fading
+   lamp that no outsider outscores any more fades back in. One place changes
+   hands at a time. Writes the lamp indices, sets bit i of
+   `out_fading_mask` for a fading i-th lamp and returns the count;
+   `out_candidates` receives the lamps that scored. */
 vkr_internal uint32_t vkr_shadow_select_baked_lamps(
-    const VkrShadowSystem *system, const VkrPointLight *lamps,
-    const float32_t *light, uint32_t lamp_count, uint32_t *out_selected,
+    VkrShadowSystem *system, const VkrPointLight *lamps, const float32_t *score,
+    const uint8_t *lamp_faces, uint32_t lamp_count, float32_t delta_seconds,
+    uint32_t *out_selected, uint32_t *out_fading_mask,
     uint32_t *out_candidates) {
-  float32_t keys[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
-  uint32_t selected_count = 0u;
   *out_candidates = 0u;
   for (uint32_t lamp = 0u; lamp < lamp_count; ++lamp) {
-    if (!(light[lamp] > 0.0f) || lamps[lamp].render_id == 0u)
-      continue;
-    ++*out_candidates;
-    float32_t key = light[lamp];
-    for (uint32_t i = 0u; i < system->baked_lamp_selected_count; ++i) {
-      if (system->baked_lamp_render_ids[i] == lamps[lamp].render_id)
-        key *= VKR_BAKED_LAMP_INCUMBENT_BONUS;
-    }
-    uint32_t insert = selected_count;
-    while (insert > 0u && keys[insert - 1u] < key)
-      --insert;
-    if (insert >= VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
-      continue;
-    const uint32_t last =
-        Min(selected_count, VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX - 1u);
-    for (uint32_t i = last; i > insert; --i) {
-      keys[i] = keys[i - 1u];
-      out_selected[i] = out_selected[i - 1u];
-    }
-    keys[insert] = key;
-    out_selected[insert] = lamp;
-    selected_count =
-        Min(selected_count + 1u, VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX);
+    if (score[lamp] > 0.0f && lamps[lamp].render_id != 0u)
+      ++*out_candidates;
   }
+
+  uint32_t selected_count = 0u;
+  uint32_t fading_mask = 0u;
+  for (uint32_t i = 0u; i < system->baked_lamp_selected_count; ++i) {
+    const uint32_t render_id = system->baked_lamp_render_ids[i];
+    const uint32_t lamp =
+        vkr_shadow_find_baked_lamp(lamps, lamp_count, render_id);
+    if (lamp == lamp_count || lamp_faces[lamp] == 0u)
+      continue;
+    const bool8_t fading =
+        (system->baked_lamp_fading_mask & (UINT32_C(1) << i)) != 0u;
+    if (fading &&
+        !vkr_local_shadow_cache_shows(&system->local_cache, render_id))
+      continue;
+    if (fading)
+      fading_mask |= UINT32_C(1) << selected_count;
+    out_selected[selected_count++] = lamp;
+  }
+
+  while (selected_count < VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX) {
+    const uint32_t best = vkr_shadow_best_baked_outsider(
+        lamps, score, lamp_count, out_selected, selected_count);
+    if (best == lamp_count)
+      break;
+    out_selected[selected_count++] = best;
+  }
+
+  const uint32_t challenger = vkr_shadow_best_baked_outsider(
+      lamps, score, lamp_count, out_selected, selected_count);
+  for (uint32_t i = 0u; i < selected_count; ++i) {
+    if ((fading_mask & (UINT32_C(1) << i)) != 0u &&
+        (challenger == lamp_count ||
+         !(score[challenger] > score[out_selected[i]])))
+      fading_mask &= ~(UINT32_C(1) << i);
+  }
+  uint32_t weakest = selected_count;
+  for (uint32_t i = 0u; i < selected_count; ++i) {
+    if ((fading_mask & (UINT32_C(1) << i)) == 0u &&
+        (weakest == selected_count ||
+         score[out_selected[i]] < score[out_selected[weakest]]))
+      weakest = i;
+  }
+  const bool8_t challenged =
+      selected_count == VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX &&
+      fading_mask == 0u && challenger != lamp_count &&
+      weakest != selected_count &&
+      score[challenger] >
+          score[out_selected[weakest]] * VKR_BAKED_LAMP_CHALLENGE_FACTOR;
+  if (!challenged) {
+    system->baked_lamp_challenger_render_id = 0u;
+    system->baked_lamp_challenge_seconds = 0.0f;
+  } else {
+    if (system->baked_lamp_challenger_render_id !=
+        lamps[challenger].render_id) {
+      system->baked_lamp_challenger_render_id = lamps[challenger].render_id;
+      system->baked_lamp_challenge_seconds = 0.0f;
+    }
+    system->baked_lamp_challenge_seconds += delta_seconds;
+    if (system->baked_lamp_challenge_seconds >=
+        VKR_BAKED_LAMP_CHALLENGE_SECONDS) {
+      fading_mask |= UINT32_C(1) << weakest;
+      system->baked_lamp_challenger_render_id = 0u;
+      system->baked_lamp_challenge_seconds = 0.0f;
+    }
+  }
+
+  for (uint32_t i = 0u; i < selected_count; ++i)
+    system->baked_lamp_render_ids[i] = lamps[out_selected[i]].render_id;
+  system->baked_lamp_selected_count = selected_count;
+  system->baked_lamp_fading_mask = fading_mask;
+  *out_fading_mask = fading_mask;
   return selected_count;
 }
 
@@ -2004,10 +2123,17 @@ void vkr_shadow_system_resolve_local_shadows(
   const uint32_t bounded_lamp_count =
       baked_lamps ? Min(baked_lamp_count, VKR_MAX_SCENE_POINT_LIGHTS) : 0u;
   uint8_t lamp_faces[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
-  /* Each baked lamp's strongest light at a moving caster on a face the
-     camera may see; the selection ranks the lamps by it. */
+  /* Each baked lamp's score: its light at the moving casters the camera may
+     see on a face it may see, each weighted by its nearness to the camera.
+     A caster whose rooms are hidden from the camera scores nothing. */
   uint8_t lamp_visible_faces[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
-  float32_t lamp_light[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  float32_t lamp_score[VKR_MAX_SCENE_POINT_LIGHTS] = {0};
+  const bool8_t camera_projection =
+      camera && MemCompare(&camera->projection, &(Mat4){0}, sizeof(Mat4)) != 0;
+  const VkrFrustum camera_frustum =
+      camera_projection
+          ? vkr_frustum_from_view_projection(camera->view, camera->projection)
+          : (VkrFrustum){0};
   for (uint32_t lamp = 0u; camera && lamp < bounded_lamp_count; ++lamp)
     lamp_visible_faces[lamp] = (uint8_t)vkr_local_shadow_camera_faces(
         &baked_lamps[lamp], camera->view, camera->projection);
@@ -2032,42 +2158,71 @@ void vkr_shadow_system_resolve_local_shadows(
       dynamic_faces[light] |= (uint8_t)faces;
       dynamic_refractive[light] |= refractive && faces != 0u;
     }
+
+    const bool8_t scored =
+        camera && (candidate->cull & VKR_GPU_DRAW_CULL_HIDDEN_BIT) == 0u;
+    float32_t camera_weight = 0.0f;
+    if (scored) {
+      const float32_t camera_distance =
+          Max(vec3_length(vec3_sub(center, camera->position)) - radius, 0.0f);
+      camera_weight = 1.0f / Max(camera_distance * camera_distance,
+                                 VKR_BAKED_LAMP_CAMERA_NEAR_METRES *
+                                     VKR_BAKED_LAMP_CAMERA_NEAR_METRES);
+    }
     for (uint32_t lamp = 0u; lamp < bounded_lamp_count; ++lamp) {
-      if (!baked_lamps[lamp].casts_shadow ||
-          !vkr_shadow_local_dynamic_overlaps_light(candidate,
-                                                   &baked_lamps[lamp]))
+      const VkrPointLight *baked_lamp = &baked_lamps[lamp];
+      if (!baked_lamp->casts_shadow ||
+          !vkr_shadow_local_dynamic_overlaps_light(candidate, baked_lamp))
         continue;
       const uint32_t faces =
-          vkr_local_shadow_sphere_faces(&baked_lamps[lamp], center, radius);
+          vkr_local_shadow_sphere_faces(baked_lamp, center, radius);
       lamp_faces[lamp] |= (uint8_t)faces;
-      if ((faces & lamp_visible_faces[lamp]) != 0u)
-        lamp_light[lamp] =
-            Max(lamp_light[lamp],
-                vkr_shadow_baked_lamp_light_at(&baked_lamps[lamp], center));
+      if (!scored || (faces & lamp_visible_faces[lamp]) == 0u)
+        continue;
+      const float32_t shadow_reach =
+          Min(baked_lamp->range * VKR_BAKED_LAMP_SHADOW_REACH_FRACTION,
+              VKR_BAKED_LAMP_SHADOW_REACH_METRES);
+      if (camera_projection &&
+          !vkr_shadow_sphere_in_camera_sides(&camera_frustum, center,
+                                             radius + shadow_reach))
+        continue;
+      const float32_t near_distance =
+          Max(radius, baked_lamp->range * VKR_BAKED_LAMP_NEAR_RANGE_FRACTION);
+      const float32_t contribution =
+          camera_weight *
+          vkr_shadow_baked_lamp_light_at(baked_lamp, center, near_distance);
+      if (vkr_is_finite_f32(contribution) && contribution > 0.0f)
+        lamp_score[lamp] += contribution;
     }
   }
 
-  /* Moving casters shadow the baked lamps that light them most; their
-     shadow is the difference of static and composite squares, so unknown
-     casters or contents select none. */
+  /* Moving casters shadow the selected baked lamps; their shadow is the
+     difference of static and composite squares, which needs every face the
+     moving casters reach, so an unavailable scan shows none and leaves the
+     selection for the next frame. An asset publication in flight keeps the
+     selection: the static squares hold the static casters only and the
+     composite ones copy them, so the difference stays the moving casters'. */
   const bool8_t contents_unstable =
       dynamic_scan_failed || candidates->publication_pending;
   uint32_t selected[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX] = {0};
+  uint32_t fading_mask = 0u;
   uint32_t baked_candidates = 0u;
+  float32_t delta_seconds = 0.0f;
+  if (camera && vkr_is_finite_f32(camera->delta_seconds))
+    delta_seconds =
+        Clamp(camera->delta_seconds, 0.0f, VKR_BAKED_LAMP_CHALLENGE_SECONDS);
   const uint32_t selected_count =
-      contents_unstable || !camera
+      dynamic_scan_failed || !camera
           ? 0u
-          : vkr_shadow_select_baked_lamps(system, baked_lamps, lamp_light,
-                                          bounded_lamp_count, selected,
-                                          &baked_candidates);
-  system->baked_lamp_selected_count = selected_count;
+          : vkr_shadow_select_baked_lamps(
+                system, baked_lamps, lamp_score, lamp_faces, bounded_lamp_count,
+                delta_seconds, selected, &fading_mask, &baked_candidates);
   VkrPointLight combined[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   if (selected_count != 0u) {
     MemCopy(combined, lights, bounded_light_count * sizeof(*lights));
     for (uint32_t i = 0u; i < selected_count; ++i) {
       combined[bounded_light_count + i] = baked_lamps[selected[i]];
       dynamic_faces[bounded_light_count + i] = lamp_faces[selected[i]];
-      system->baked_lamp_render_ids[i] = baked_lamps[selected[i]].render_id;
     }
   }
 
@@ -2077,6 +2232,7 @@ void vkr_shadow_system_resolve_local_shadows(
                                           : light_count,
       .unfaded_intensity = unfaded_intensity,
       .baked_light_count = selected_count,
+      .baked_fading_mask = fading_mask,
       .baked_lamps_possible = bounded_lamp_count != 0u,
       .baked_lamp_candidates = baked_candidates,
       .camera = camera,
@@ -2095,6 +2251,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .publication_generation =
           vkr_world_content_publication_generation(candidates),
       .contents_unstable = contents_unstable,
+      .dynamic_faces_unknown = dynamic_scan_failed,
       .refractive_casters = candidates->transmission_gpu_candidate_count > 0u,
       .contact_shadows = system->config.local_shadow_contact,
       .full_filter_all = system->config.local_shadow_full_filter_all,

@@ -31,6 +31,9 @@ typedef struct VkrLocalShadowCacheInput {
   /** The last this many lights are baked lamps whose moving-caster shadows
    * the frame subtracts from their baked light. */
   uint32_t baked_light_count;
+  /** Bit i: the i-th baked lamp gives its place up, so its shadow fades
+   * out instead of in. */
+  uint32_t baked_fading_mask;
   /** The scene has baked lamps the frame may shadow, so the atlas keeps a
    * layer for their static squares before the dynamic band. */
   bool8_t baked_lamps_possible;
@@ -52,6 +55,9 @@ typedef struct VkrLocalShadowCacheInput {
   /** A dynamic-caster scan was unavailable or an asset publication is in
    * flight, so drawn content may change without a generation change. */
   bool8_t contents_unstable;
+  /** The dynamic-caster scan was unavailable, so `dynamic_faces` may miss
+   * faces a moving caster reaches and no baked lamp can show. */
+  bool8_t dynamic_faces_unknown;
   bool8_t refractive_casters;
   /** Receivers apply contact shadows to the full-filter lights. */
   bool8_t contact_shadows;
@@ -82,6 +88,11 @@ void vkr_local_shadow_cache_resolve(
 void vkr_local_shadow_cache_commit(
     struct VkrLocalShadowCache *cache,
     const struct VkrLocalShadowPendingHistory *pending, uint64_t submit_value);
+
+/** Whether the cache light with `render_id` showed a shadow at the last
+ * resolve: nonzero strength and distance fade. */
+bool8_t vkr_local_shadow_cache_shows(const struct VkrLocalShadowCache *cache,
+                                     uint32_t render_id);
 
 /** Power-of-two face side for a light range, clamped to [128, map_size]. */
 uint32_t vkr_local_shadow_face_size_for_range(float32_t range,

@@ -1391,9 +1391,10 @@ vkr_internal void test_local_shadow_bistro_lamps_fit_every_preset(void) {
 /* Moving casters shadow the two baked lamps whose light is strongest at a
  * caster they reach on a visible face: each publishes a composite block
  * (dynamic squares where the caster reaches) and a static block, never a
- * light of the table. A lamp keeps its place until a competitor's light is
- * 1.15 times stronger; without a moving caster in range, or with unknown
- * casters, no lamp is selected. */
+ * light of the table. A lamp keeps its place until a competitor has scored
+ * 1.5 times higher for half a second; it then fades out before the
+ * competitor takes the place. Without a moving caster in range, or with
+ * unknown casters, no lamp is selected. */
 vkr_internal void test_local_shadow_baked_lamp_selection(void) {
   VkrShadowSystem system = {0};
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
@@ -1468,7 +1469,8 @@ vkr_internal void test_local_shadow_baked_lamp_selection(void) {
   vkr_shadow_system_commit_frame(&system, 51u);
 
   /* The third lamp's light at the caster now exceeds the second's, but by
-     less than the bonus; the committed lamps draw only dynamic squares. */
+     less than the challenge factor; the committed lamps draw only dynamic
+     squares. */
   caster.local_bounding_sphere.x = -0.6f;
   payload.dynamic_generation++;
   vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &no_light,
@@ -1480,15 +1482,29 @@ vkr_internal void test_local_shadow_baked_lamp_selection(void) {
   assert(local.render_count == local.dynamic_render_count);
   vkr_shadow_system_commit_frame(&system, 52u);
 
-  /* Past the bonus the third lamp takes the second's place. */
+  /* Past the challenge factor the third lamp takes the second's place, but
+     only after the hold time and the second lamp's fade-out: at 60 frames a
+     second the second lamp stays for the first 29 frames, and the third
+     appears within a second. */
   caster.local_bounding_sphere.x = -2.0f;
-  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &no_light,
-                                          0u, NULL, lamps, ArrayCount(lamps),
-                                          &camera, &local);
-  assert(local.baked_lamp_count == 2u &&
-         local.baked_lamps[0].light.render_id == 30u &&
-         local.baked_lamps[1].light.render_id == 32u);
-  vkr_shadow_system_discard_frame(&system);
+  uint32_t handover_frame = 0u;
+  for (uint32_t frame = 0u; frame < 60u && handover_frame == 0u; ++frame) {
+    vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &no_light,
+                                            0u, NULL, lamps, ArrayCount(lamps),
+                                            &camera, &local);
+    /* The frame the faded lamp leaves, the new one starts at zero strength
+       and publishes nothing yet. */
+    assert(local.baked_lamp_count >= 1u &&
+           local.baked_lamps[0].light.render_id == 30u);
+    if (local.baked_lamp_count == 2u &&
+        local.baked_lamps[1].light.render_id == 32u) {
+      handover_frame = frame + 1u;
+    } else if (local.baked_lamp_count == 2u) {
+      assert(local.baked_lamps[1].light.render_id == 31u);
+    }
+    vkr_shadow_system_commit_frame(&system, 53u + frame);
+  }
+  assert(handover_frame >= 30u);
 
   /* Unknown casters select no lamp. */
   caster.flags &= ~VKR_WORLD_DRAW_CANDIDATE_BOUNDS_VALID;

@@ -111,6 +111,9 @@ typedef struct VkrLocalShadowCandidate {
    * and takes no transmission or filter place, and it publishes as a baked
    * lamp instead of a light of the table. */
   bool8_t baked;
+  /** A baked lamp that gives its place up: it keeps its squares and draws
+   * as before while its shadow fades out. */
+  bool8_t fading;
   /** First receiver view the light publishes. */
   uint32_t first_view;
 } VkrLocalShadowCandidate;
@@ -768,6 +771,10 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
     /* A baked lamp the frame shadows draws first: the selection only
        picks lamps whose moving casters show. */
     const bool8_t baked = i + input->baked_light_count >= input->light_count;
+    const bool8_t fading =
+        baked && ((input->baked_fading_mask >>
+                   (i + input->baked_light_count - input->light_count)) &
+                  1u) != 0u;
     /* The light table's fade scales `intensity`; a light fading out keeps
        its size while it still shows, and one fading in starts at it. */
     const float32_t intensity = !baked && input->unfaded_intensity
@@ -800,6 +807,7 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
         .face_size =
             vkr_local_shadow_face_size_for_range(light->range, input->map_size),
         .baked = baked,
+        .fading = fading,
     };
   }
   return candidate_count;
@@ -1447,9 +1455,10 @@ vkr_internal uint32_t vkr_local_shadow_assign_transmission_layers(
 }
 
 /* Shadow strength rises once every face of a light is valid, and a
- * leaving light's falls while its faces stay valid. The most important
- * shown lights keep the full filter, a light that had it with the
- * incumbent bonus; a leaving light keeps its filter and takes no place. */
+ * leaving light's or fading baked lamp's falls while its faces stay valid.
+ * The most important shown lights keep the full filter, a light that had it
+ * with the incumbent bonus; a leaving light keeps its filter and takes no
+ * place. */
 vkr_internal void vkr_local_shadow_resolve_strengths(
     const VkrLocalShadowCache *cache, const VkrLocalShadowCacheInput *input,
     const VkrLocalShadowCandidate *candidates, uint32_t candidate_count,
@@ -1463,6 +1472,13 @@ vkr_internal void vkr_local_shadow_resolve_strengths(
     if (candidate->leaving) {
       strengths[i] =
           candidate->opaque_valid ? Max(previous->strength - step, 0.0f) : 0.0f;
+      keys[i] = -VKR_FLOAT_MAX;
+      continue;
+    }
+    if (candidate->fading) {
+      strengths[i] = candidate->opaque_valid && previous
+                         ? Max(previous->strength - step, 0.0f)
+                         : 0.0f;
       keys[i] = -VKR_FLOAT_MAX;
       continue;
     }
@@ -1602,10 +1618,15 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
   const bool8_t split = dynamic_layer_count != 0u && !input->contents_unstable;
 
   /* A baked lamp shows its moving casters' shadow as the difference of its
-     static and composite squares, which needs the split and its layer;
-     without them it leaves the frame. */
+     static and composite squares, which needs the band, its layer and the
+     faces its moving casters reach; without them it leaves the frame. Its
+     static squares always draw the static casters only and its composite
+     squares copy them whenever they draw, so an asset publication in flight
+     leaves the difference to the moving casters: the lamp stays while its
+     squares redraw as stale. */
   const bool8_t baked_shown =
-      split && baked_layer_count != 0u &&
+      dynamic_layer_count != 0u && !input->dynamic_faces_unknown &&
+      baked_layer_count != 0u &&
       vkr_local_shadow_place_baked(cache, candidates, candidate_count,
                                    static_layer_count);
   if (!baked_shown) {
@@ -1667,16 +1688,19 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
 
   /* Faces a dynamic caster may reach and the camera may see take dynamic
    * squares, by light importance, up to the cap; the rest show their static
-   * squares. Their render slots come first out of the slot capacity. */
+   * squares. Their render slots come first out of the slot capacity. Without
+   * the split only the baked lamps take them: every other light draws every
+   * caster. */
   float32_t keys[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   uint32_t order[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX];
   for (uint32_t i = 0u; i < candidate_count; ++i)
     keys[i] = candidates[i].score;
   vkr_local_shadow_order_by_key(keys, candidate_count, order);
   const uint32_t dynamic_faces =
-      split ? vkr_local_shadow_select_dynamic_faces(camera, input, candidates,
-                                                    candidate_count, order, out)
-            : 0u;
+      split || baked_shown
+          ? vkr_local_shadow_select_dynamic_faces(camera, input, candidates,
+                                                  candidate_count, order, out)
+          : 0u;
   const uint32_t render_budget =
       Min(face_budget, VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX - dynamic_faces);
   vkr_local_shadow_select_render(candidates, candidate_count, order,
@@ -1756,4 +1780,16 @@ void vkr_local_shadow_cache_commit(VkrLocalShadowCache *cache,
     history->last_submit_value = submit_value;
   }
   cache->transmission_layer_count = pending->transmission_layer_count;
+}
+
+bool8_t vkr_local_shadow_cache_shows(const VkrLocalShadowCache *cache,
+                                     uint32_t render_id) {
+  if (!cache->valid || render_id == 0u)
+    return false_v;
+  for (uint32_t i = 0u; i < cache->light_count; ++i) {
+    const VkrLocalShadowCacheLight *light = &cache->lights[i];
+    if (light->render_id == render_id)
+      return light->strength * light->distance_fade > 0.0f;
+  }
+  return false_v;
 }

@@ -699,10 +699,19 @@ typedef struct VkrShadowSystem {
   VkrLocalLightContributionSample light_contribution;
   /** Diagnostic: rank by distance even when contribution is measured. */
   bool8_t light_contribution_ranking_disabled;
-  /** Render ids of the baked lamps the last resolve selected; they keep
-   * their place against stronger lamps by the incumbent bonus. */
+  /** Render ids of the baked lamps the last resolve selected. A lamp keeps
+   * its place until an outsider has outscored it by the challenge factor
+   * for the hold time; it then fades out, and the outsider takes its place
+   * once its shadow has faded. */
   uint32_t baked_lamp_render_ids[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
   uint32_t baked_lamp_selected_count;
+  /** Bit i: the lamp of baked_lamp_render_ids[i] fades out to give its
+   * place up. */
+  uint32_t baked_lamp_fading_mask;
+  /** Render id of the outsider that outscores the weakest selected lamp by
+   * the challenge factor, zero for none, and the seconds it has done so. */
+  uint32_t baked_lamp_challenger_render_id;
+  float32_t baked_lamp_challenge_seconds;
 
   VkrShadowDepthRangeSample pending_sdsm_sample;
   float32_t sdsm_linear_near;
@@ -764,8 +773,10 @@ void vkr_shadow_system_set_light_contribution_sample(
  * `baked_lamps` are the static lamps the desktop pipeline lights through
  * its lightmap (ADR-104), or NULL. The resolve shadows
  * the moving casters of at most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX of
- * them: those whose light is strongest at a moving caster that meets their
- * range on a face the camera may see.
+ * them: those whose light at the moving casters the camera may see, on
+ * faces it may see, weighted by the casters' nearness to the camera, is
+ * strongest. A selected lamp keeps its place against a stronger one for a
+ * hold time and fades its shadow out before it gives the place up.
  */
 void vkr_shadow_system_resolve_local_shadows(
     VkrShadowSystem *system, VkrRetainedLocalShadowToken retained_token,
