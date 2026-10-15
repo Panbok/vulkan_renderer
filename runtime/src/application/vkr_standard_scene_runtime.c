@@ -809,9 +809,14 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_scene_output_request(
       application->editor_viewport.enabled &&
       vkr_subsystem_plan_includes(&application->subsystem_plan,
                                   VKR_RENDERER_SUBSYSTEM_EDITOR);
-  /* Unit-scale editor scenes already use the packet's mapped viewport. */
+  /* Unit-scale editor scenes already use the packet's mapped viewport. Under
+     dynamic resolution the Scene keeps its own output even at unit scale: the
+     controller trains only on frames whose rendered extent is the Scene
+     output's at their scale, and the mapped panel never is the window's, so
+     it would never step down from 100%. */
   if ((paneled && application->renderer.render_scale == 1.0f &&
-       application->scene_output_scale == 1.0f) ||
+       application->scene_output_scale == 1.0f &&
+       !application->renderer.dynamic_resolution_state.enabled) ||
       (!paneled && application->scene_output_scale == 1.0f)) {
     out_request->mode = VKR_STANDARD_SCENE_RUNTIME_SCENE_OUTPUT_RESTORE;
     return VKR_RENDERER_ERROR_NONE;

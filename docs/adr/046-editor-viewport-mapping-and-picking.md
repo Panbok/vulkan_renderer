@@ -174,6 +174,15 @@ Render Stop latches a visible error until explicit retry or unload. UI-only fram
 continue instead of retrying an impossible allocation every frame. Both native
 backends preserve graph-allocation OOM status for this policy.
 
+With dynamic resolution on, the docked Scene keeps its own panel-sized output
+even at unit scale, as it does below it. The controller learns only from frames
+whose rendered extent equals the Scene output's at their scale; a unit-scale
+frame drawn into the mapped panel of the window target never matched the
+window, so until 2026-10-15 every sample was rejected and the Scene stayed at
+100% however long its frames took (measured on the Level Design Test, Metal,
+2061×1062 panel: 9–20 ms GPU frames without a step; after the change a ride
+stepped between 65% and 100% and held 8.3 ms frames).
+
 The user approved bounded texture recovery in the paneled editor and its
 extension to the standalone Metal app. Only typed
 out-of-memory publication failures retain the existing material/slot/path record;
