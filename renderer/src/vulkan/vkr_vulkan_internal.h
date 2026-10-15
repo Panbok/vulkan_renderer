@@ -1342,6 +1342,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSmaaRoot {
   /** Blend pass: nonzero for SMAA S2x's second sample, which averages its
       result with the first sample's in the destination. */
   uint32_t blend_half;
+  /** Edges pass: the camera's visibility image for predication; zero
+      without it. */
+  uint32_t predication_texture;
+  uint32_t predication_reserved[3];
   Vec4 subsample_indices;
 } VkrVulkanSmaaRoot;
 
@@ -2120,11 +2124,11 @@ _Static_assert(offsetof(VkrVulkanGtaoRoot, source_extent) == 216u,
                "Vulkan GTAO extent ABI offset drift");
 _Static_assert(offsetof(VkrVulkanGtaoRoot, denoise_final) == 232u,
                "Vulkan GTAO root tail ABI offset drift");
-_Static_assert(sizeof(VkrVulkanSmaaRoot) == 64u,
+_Static_assert(sizeof(VkrVulkanSmaaRoot) == 80u,
                "Vulkan SMAA root ABI size drift");
 _Static_assert(offsetof(VkrVulkanSmaaRoot, extent) == 32u,
                "Vulkan SMAA extent ABI offset drift");
-_Static_assert(offsetof(VkrVulkanSmaaRoot, subsample_indices) == 48u,
+_Static_assert(offsetof(VkrVulkanSmaaRoot, subsample_indices) == 64u,
                "Vulkan SMAA subsample ABI offset drift");
 _Static_assert(sizeof(VkrVulkanSmaaResolveRoot) == 48u,
                "Vulkan SMAA resolve root ABI size drift");

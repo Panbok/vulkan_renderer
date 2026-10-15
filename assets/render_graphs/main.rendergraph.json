@@ -11380,6 +11380,11 @@
           "image": "post_display_linear_fullscreen",
           "access": "SAMPLED",
           "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 2
         }
       ],
       "writes": [
@@ -11479,6 +11484,11 @@
           "image": "post_display_linear_fullscreen_s1",
           "access": "SAMPLED",
           "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_s1",
+          "access": "STORAGE_READ",
+          "binding": 2
         }
       ],
       "writes": [
@@ -11683,6 +11693,11 @@
           "image": "post_display_linear_editor",
           "access": "SAMPLED",
           "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 2
         }
       ],
       "writes": [
@@ -11782,6 +11797,11 @@
           "image": "post_display_linear_editor_s1",
           "access": "SAMPLED",
           "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_s1",
+          "access": "STORAGE_READ",
+          "binding": 2
         }
       ],
       "writes": [

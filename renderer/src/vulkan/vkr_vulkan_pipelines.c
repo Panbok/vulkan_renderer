@@ -932,6 +932,8 @@ vkr_vk_validate_smaa_root_abi(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSmaaRoot, extent),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSmaaRoot, motion_texture),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSmaaRoot, blend_half),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSmaaRoot, predication_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSmaaRoot, predication_reserved),
       VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSmaaRoot, subsample_indices),
   };
   static const VkrVulkanReflectedField resolve_fields[] = {

@@ -1727,6 +1727,13 @@ VkrTerrainSurface vkr_vk_terrain_surface(VkrTerrainSurface layer0,
     return vkr_terrain_finish(sum);
 }
 
+// The material samplers' -0.5 LOD bias sharpens colour for SMAA T2x's
+// jitter. Normal and roughness maps carry each mip's normal variance in
+// roughness (vkr_vkt_pack_normal_roughness), which only the mip matching the
+// pixel footprint holds, so their fetches scale the gradients by sqrt(2):
+// +0.5 LOD cancels the bias.
+#define VKR_VK_SPECULAR_FOOTPRINT_SCALE 1.41421356f
+
 // Returns false for a row this pass must not shade, counting it as an invalid
 // resolve first. The caller owns the fallback, because the G-buffer writes
 // defaults while a transmission layer keeps its background.
@@ -1927,7 +1934,8 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
             g_textures[NonUniformResourceIndex(material.orm_texture)]
                 .SampleGrad(
                     g_samplers[NonUniformResourceIndex(material.orm_sampler)],
-                    uv, uv_dx, uv_dy)
+                    uv, uv_dx * VKR_VK_SPECULAR_FOOTPRINT_SCALE,
+                    uv_dy * VKR_VK_SPECULAR_FOOTPRINT_SCALE)
                 .rgb;
         ao *= orm.r;
         feedback_roughness = saturate(feedback_roughness * orm.g);
@@ -1953,7 +1961,8 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
             g_textures[NonUniformResourceIndex(material.normal_texture)]
                 .SampleGrad(g_samplers[NonUniformResourceIndex(
                                 material.normal_sampler)],
-                            uv, uv_dx, uv_dy)
+                            uv, uv_dx * VKR_VK_SPECULAR_FOOTPRINT_SCALE,
+                            uv_dy * VKR_VK_SPECULAR_FOOTPRINT_SCALE)
                 .xyz,
             material.material_surface.z);
         surface.normal_mapped = 1u;
@@ -2568,6 +2577,13 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot root, uint2 pixel,
         g_storage_float2_2d[root.normal_texture][pixel_y]);
     float same_x = visible_x == visible_index ? 1.0f : 0.0f;
     float same_y = visible_y == visible_index ? 1.0f : 0.0f;
+    if (root.edge_mask_texture != 0u)
+    {
+        // SMAA S2x's second sample: only listed pixels hold a resolved
+        // second-sample normal.
+        same_x *= g_storage_2d[root.edge_mask_texture][pixel_x].x;
+        same_y *= g_storage_2d[root.edge_mask_texture][pixel_y].x;
+    }
     float3 normal_dx = (normal_x - normal) * same_x;
     float3 normal_dy = (normal_y - normal) * same_y;
     float normal_variance =

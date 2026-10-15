@@ -3480,6 +3480,12 @@ bool8_t vkr_vk_prepare_smaa_edges(VkrVulkanRenderer *renderer,
   if (!vkr_vk_smaa_root(renderer, pass, 1u, &root) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &root.source_texture))
     return false_v;
+  /* Binding 2: the camera's visibility image, which predicates the edges. */
+  if (vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u,
+                                     &root.predication_texture)) {
+    return false_v;
+  }
   return vkr_vk_prepare_dispatch_smaa(renderer, prepared, &root,
                                       VKR_VULKAN_DEFERRED_PIPELINE_SMAA_EDGES);
 }

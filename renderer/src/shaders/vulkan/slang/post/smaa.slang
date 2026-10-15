@@ -68,6 +68,10 @@ struct VkrVkSmaaRoot
     // Blend pass: nonzero for SMAA S2x's second sample, which averages its
     // result with the first sample's already in the destination.
     uint blend_half;
+    // Edges pass: the camera's visibility image (draw id in x) for
+    // predication; zero without it.
+    uint predication_texture;
+    uint3 predication_reserved;
     // The area texture's subpixel rows for the frame's jitter (the
     // reference's @SUBSAMPLE_INDICES); zero without temporal jitter.
     float4 subsample_indices;
@@ -136,6 +140,46 @@ float vkr_vk_smaa_luma(VkrVkSmaaRoot root, float2 uv)
     return dot(sqrt(max(color, 0.0f)), float3(0.2126f, 0.7152f, 0.0722f));
 }
 
+// Predication from the visibility buffer: where a pixel's draw differs from
+// its left or upper neighbour's, a geometric edge, the luma threshold drops to
+// this share of the HIGH preset's, so silhouettes of low luma contrast (a dark
+// railing before a dark wall) are detected. Elsewhere the threshold stays.
+// The reference's predication also doubles it elsewhere, which keeps texture
+// edges unblended but does not help those silhouettes.
+#define VKR_SMAA_PREDICATED_THRESHOLD_SCALE 0.5f
+
+// The draw id under `uv` in the visibility image, which may be smaller than
+// the display-linear source under dynamic resolution; the overlay bit is
+// cleared.
+uint vkr_vk_smaa_predication_draw(VkrVkSmaaRoot root, float2 uv, uint2 extent)
+{
+    uint2 pixel = min(uint2(max(uv, 0.0f) * float2(extent)), extent - 1u);
+    return g_storage_uint2_2d[NonUniformResourceIndex(
+               root.predication_texture)][pixel].x &
+           0x7fffffffu;
+}
+
+float2 vkr_vk_smaa_threshold(VkrVkSmaaRoot root, float2 texcoord,
+                             float4 offset0)
+{
+    float2 threshold = float2(VKR_SMAA_THRESHOLD, VKR_SMAA_THRESHOLD);
+    if (root.predication_texture == 0u)
+        return threshold;
+    uint2 extent;
+    g_storage_uint2_2d[NonUniformResourceIndex(root.predication_texture)]
+        .GetDimensions(extent.x, extent.y);
+    uint draw = vkr_vk_smaa_predication_draw(root, texcoord, extent);
+    float2 geometric =
+        float2(draw != vkr_vk_smaa_predication_draw(root, offset0.xy, extent)
+                   ? 1.0f
+                   : 0.0f,
+               draw != vkr_vk_smaa_predication_draw(root, offset0.zw, extent)
+                   ? 1.0f
+                   : 0.0f);
+    return threshold *
+           (1.0f - (1.0f - VKR_SMAA_PREDICATED_THRESHOLD_SCALE) * geometric);
+}
+
 // SMAALumaEdgeDetectionPS with SMAAEdgeDetectionVS's offsets. A pixel without
 // an edge stores zero, where the reference discards into a cleared target.
 float2 vkr_vk_smaa_luma_edges(VkrVkSmaaRoot root, float2 texcoord)
@@ -148,7 +192,7 @@ float2 vkr_vk_smaa_luma_edges(VkrVkSmaaRoot root, float2 texcoord)
     float4 offset2 = metrics.xyxy * float4(-2.0f, 0.0f, 0.0f, -2.0f) +
                      texcoord.xyxy;
 
-    float2 threshold = float2(VKR_SMAA_THRESHOLD, VKR_SMAA_THRESHOLD);
+    float2 threshold = vkr_vk_smaa_threshold(root, texcoord, offset0);
     float luma = vkr_vk_smaa_luma(root, texcoord);
     float luma_left = vkr_vk_smaa_luma(root, offset0.xy);
     float luma_top = vkr_vk_smaa_luma(root, offset0.zw);

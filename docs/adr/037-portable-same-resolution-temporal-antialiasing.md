@@ -51,7 +51,12 @@ The desktop pipeline runs SMAA T2x (Jimenez et al. 2012) from the reference
   weights with diagonal and corner detection, and neighbourhood blending, which
   stores `sqrt(5·|v|)` of the antialiased motion in alpha. The area
   (160 × 560 R8G8) and search (64 × 16 R8) tables upload once at device
-  creation as permanent sampled rows.
+  creation as permanent sampled rows. Edge detection is predicated on the
+  visibility image (since 2026-10-15): where a pixel's draw differs from its
+  left or upper neighbour's, the luma threshold halves (0.1 to 0.05), so
+  silhouettes of low luma contrast are found; elsewhere it stays. The
+  reference's predication also doubles the threshold elsewhere, which does
+  not help such silhouettes.
 - **Resolve.** `Post.SMAA.Resolve` blends this frame's antialiased subsample
   with last frame's at `uv + motion`, weight
   `0.5 · saturate(1 − 30 · sqrt(|a²−b²| / 5)) · accept`, the reference's
@@ -90,7 +95,11 @@ The desktop pipeline runs SMAA T2x (Jimenez et al. 2012) from the reference
   the jittered raster image and its depth with no offset. Vulkan material
   samplers take a −0.5 texture LOD bias for the jitter's blur, as the
   reference recommends; it applies to explicit-gradient and implicit
-  sampling alike.
+  sampling alike. The G-buffer resolve's normal and ORM fetches scale their
+  gradients by √2 to cancel it (since 2026-10-15): the packer bakes each
+  mip's normal variance into roughness, which only the mip matching the
+  footprint holds. Removing the bias from every sampler instead raised the
+  street view's still error by 9 % for 10 % less flicker away from edges.
 
 ### SMAA 4x
 
@@ -220,6 +229,20 @@ non-authoritative (dirty tree; warmup stability not met):
   edge-mask early-out 2.14 ms.
 - Debug with synchronization validation on the street view: no messages.
   804 CPU tests pass.
+
+Predication and the normal/ORM footprint, same oracle and day, T2x: still
+geometric edges 10.28 and 10.27 (before 10.24), thin features 8.66 and 8.64
+(8.62); moving geometric edges 11.46 and 11.41 (11.44), frame-to-frame
+flicker (mean absolute second difference over three consecutive frames;
+the reference's own motion gives 12.61 and 3.32) on edges 12.89 and 12.79
+(13.02) and elsewhere 3.28 and 3.27 (3.40). Predication changes 1.8 % of the
+pixels and costs 0.06 ms in `Post.SMAA.Edges` at 2560 × 1440 (0.074 to
+0.136 ms p50, `local-offscreen-gpu-repeated.json`, frame wall 20.31 and
+20.40 ms within its 0.4–0.5 ms spread). On the specular-only channel (`direct_specular` against a 2 × 2
+no-filter reference) the footprint lowers flicker away from edges from 1.49
+to 1.33. A geometric specular filter from the barycentric derivatives of the
+vertex normals (Tokuyoshi and Kaplanyan 2019) raised silhouette flicker
+there (9.49 to 9.99) and was not kept.
 
 The tiled pipeline has not changed. A Bistro case with a skinned or
 procedurally moving object has not been captured, so deformation remains an
