@@ -542,9 +542,13 @@ enum VkrMetalTiledLighting : uint {
   // Every light, and the editor's inspection modes (VkrRenderMode): unlit,
   // detail lighting, lighting only and wireframe.
   VKR_METAL_TILED_LIGHTING_INSPECT = 4u,
-  // Moving casters' shadows of the baked lamps besides every dynamic light
-  // (ADR-108).
+  // Moving casters' shadows of the baked lamps besides shadowed point and
+  // spot lights (ADR-108).
   VKR_METAL_TILED_LIGHTING_CASTERS = 5u,
+  // Moving casters' shadows besides every dynamic light, rectangle lights
+  // included. Frames without rectangle lights take CASTERS: the rectangle
+  // code's registers cost every pixel of the opaque pass.
+  VKR_METAL_TILED_LIGHTING_CASTERS_ALL = 6u,
 };
 
 // The tiled pipeline's local shadows: four hardware-filtered taps on the
@@ -614,10 +618,25 @@ static float3 vkr_metal_tiled_moving_shadow(
     const float facing = dot(normal, term.direction);
     if (!term.in_range || term.cone <= 0.0f || facing <= 0.0f)
       continue;
+    // A face without a dynamic square holds no moving caster: its static and
+    // composite views name one square, so the difference is zero and neither
+    // is read. A moving caster that shadows the pixel lies on its ray, in the
+    // same face.
+    const uint face =
+        term.kind == 2u
+            ? 0u
+            : vkr_local_shadow_face(world_position - lamp.light.p0.xyz);
+    if (all(frame->local_shadow_views[lamp.static_first_view + face]
+                .atlas_rect ==
+            frame->local_shadow_views[lamp.composite_first_view + face]
+                .atlas_rect))
+      continue;
     const float passed = vkr_metal_packet_local_shadow_sample<false, false, true>(
                              frame, lamp.static_first_view + 1u, term.kind,
                              world_position, normal)
                              .x;
+    if (passed <= 0.0f)
+      continue;
     const float kept = vkr_metal_packet_local_shadow_sample<false, false, true>(
                            frame, lamp.composite_first_view + 1u, term.kind,
                            world_position, normal)
@@ -755,7 +774,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     }
     if (Lighting == VKR_METAL_TILED_LIGHTING_ALL ||
         Lighting == VKR_METAL_TILED_LIGHTING_INSPECT ||
-        Lighting == VKR_METAL_TILED_LIGHTING_CASTERS) {
+        Lighting == VKR_METAL_TILED_LIGHTING_CASTERS_ALL) {
       VkrMetalPacketDirectResult rectangles =
           vkr_metal_packet_layered_rectangle_lights<true, true>(
               frame, input.world_position, normal, view, base, metallic,
@@ -786,6 +805,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     baked_occlusion = lightmap.a;
     // Moving casters shadow the baked lamps that light them most (ADR-108).
     if (Lighting == VKR_METAL_TILED_LIGHTING_CASTERS ||
+        Lighting == VKR_METAL_TILED_LIGHTING_CASTERS_ALL ||
         Lighting == VKR_METAL_TILED_LIGHTING_INSPECT)
       diffuse_light = max(diffuse_light -
                               vkr_metal_tiled_moving_shadow(
@@ -1709,8 +1729,8 @@ fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_all_probes_fragment(
       input, root, front_facing, float3(0.0f));
 }
 
-// The moving-caster variants (ADR-108): every dynamic light, and the moving
-// casters' shadows of the baked lamps, for frames that select any.
+// The moving-caster variants (ADR-108): shadowed point and spot lights, and
+// the moving casters' shadows of the baked lamps, for frames that select any.
 
 fragment float4 vkr_metal_tiled_forward_casters_fragment(
     VkrMetalTiledVertexOutput input [[stage_in]],
@@ -1789,5 +1809,88 @@ fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_probes_fragment(
     constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
     bool front_facing [[front_facing]]) {
   return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+// The moving-caster variants with rectangle lights, for frames that select
+// baked lamps and have rectangle lights.
+
+fragment float4 vkr_metal_tiled_forward_casters_all_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, false, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_probes_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, true, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_coverage_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, false, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_coverage_probes_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, true, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_coverage_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, false, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment float4 vkr_metal_tiled_forward_casters_all_coverage_probes_decals_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_forward<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true, true, true>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_all_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, false>(
+      input, root, front_facing, float3(0.0f));
+}
+
+fragment VkrMetalTiledBlendOutput vkr_metal_tiled_blend_casters_all_probes_fragment(
+    VkrMetalTiledVertexOutput input [[stage_in]],
+    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],
+    bool front_facing [[front_facing]]) {
+  return vkr_metal_tiled_blend<VKR_METAL_TILED_LIGHTING_CASTERS_ALL, true>(
       input, root, front_facing, float3(0.0f));
 }

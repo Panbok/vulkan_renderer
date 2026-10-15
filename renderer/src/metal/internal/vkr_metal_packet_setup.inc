@@ -877,6 +877,31 @@ static const VkrMetalTiledEntries
                 .blend_label =
                     @"VKR tiled blend with moving casters' lamp shadows",
             },
+        [VKR_METAL_TILED_LIGHTING_CASTERS_ALL] =
+            {
+                .forward =
+                    {{"vkr_metal_tiled_forward_casters_all_fragment",
+                      "vkr_metal_tiled_forward_casters_all_probes_fragment"},
+                     {"vkr_metal_tiled_forward_casters_all_decals_fragment",
+                      "vkr_metal_tiled_forward_casters_all_probes_decals_"
+                      "fragment"}},
+                .coverage =
+                    {{"vkr_metal_tiled_forward_casters_all_coverage_fragment",
+                      "vkr_metal_tiled_forward_casters_all_coverage_probes_"
+                      "fragment"},
+                     {"vkr_metal_tiled_forward_casters_all_coverage_decals_"
+                      "fragment",
+                      "vkr_metal_tiled_forward_casters_all_coverage_probes_"
+                      "decals_fragment"}},
+                .blend = {"vkr_metal_tiled_blend_casters_all_fragment",
+                          "vkr_metal_tiled_blend_casters_all_probes_fragment"},
+                .forward_label = @"VKR tiled forward with all lights and "
+                                 @"moving casters' lamp shadows",
+                .coverage_label = @"VKR tiled alpha-tested forward with all "
+                                  @"lights and moving casters' lamp shadows",
+                .blend_label = @"VKR tiled blend with all lights and moving "
+                               @"casters' lamp shadows",
+            },
 };
 
 /* Creates one BRDF variant's tiled shading pipelines (ADR-113): forward

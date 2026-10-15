@@ -575,10 +575,13 @@ typedef enum VkrMetalTiledLighting {
   VKR_METAL_TILED_LIGHTING_ALL = 3,
   /* Every light, and the editor's inspection modes. */
   VKR_METAL_TILED_LIGHTING_INSPECT = 4,
-  /* Moving casters' shadows of the baked lamps besides every dynamic light
-     (ADR-108). */
+  /* Moving casters' shadows of the baked lamps besides shadowed point and
+     spot lights (ADR-108). */
   VKR_METAL_TILED_LIGHTING_CASTERS = 5,
-  VKR_METAL_TILED_LIGHTING_COUNT = 6,
+  /* Moving casters' shadows besides every dynamic light, rectangle lights
+     included; their code's registers cost frames without them. */
+  VKR_METAL_TILED_LIGHTING_CASTERS_ALL = 6,
+  VKR_METAL_TILED_LIGHTING_COUNT = 7,
 } VkrMetalTiledLighting;
 
 /* Each shading variant without and with reflection probes (ADR-087): probe

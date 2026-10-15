@@ -2098,7 +2098,9 @@ vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
       packet->input.local_shadow->view_count > 0u &&
       packet->input.local_shadow->baked_lamp_count > 0u &&
       vkr_metal_packet_lightmap_sampled(packet)) {
-    return VKR_METAL_TILED_LIGHTING_CASTERS;
+    return lighting->rectangle_light_count > 0u
+               ? VKR_METAL_TILED_LIGHTING_CASTERS_ALL
+               : VKR_METAL_TILED_LIGHTING_CASTERS;
   }
   if (lighting->rectangle_light_count > 0u) {
     return VKR_METAL_TILED_LIGHTING_ALL;
