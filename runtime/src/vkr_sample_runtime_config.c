@@ -348,13 +348,14 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .render_scale =
           vkr_graphics_settings_render_scale(&options->graphics, graphics),
       /* The tiled pipeline's adaptive quality upscales spatially, so it
-         keeps 0.65 of each axis at least (ADR-087). The 60 Hz budget holds
-         until the runtime knows the display's refresh rate and follows it. */
+         keeps 0.65 of each axis at least (ADR-087); its budget follows the
+         target frame rate setting. */
       .dynamic_resolution =
           {
               .min_scale = 0.65f,
               .max_scale = 1.0f,
-              .target_frame_ms = 16.0f,
+              .target_frame_ms =
+                  vkr_graphics_settings_dynamic_resolution_budget_ms(graphics),
               .enabled = graphics->dynamic_resolution,
           },
       /* The UI may capture the window (VkrSampleCaptureRequest), one capture

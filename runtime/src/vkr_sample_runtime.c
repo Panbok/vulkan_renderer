@@ -548,6 +548,16 @@ static void sample_graphics_apply_display(VkrStandardSceneRuntime *application,
     state->graphics_started.dynamic_resolution = settings->dynamic_resolution;
     state->graphics_scale_live = true_v;
   }
+  /* The target frame rate retunes the controller between frames; the
+     renderer keeps it across render scale and dynamic-resolution changes. */
+  if (settings->dynamic_resolution_target_fps !=
+          state->graphics_started.dynamic_resolution_target_fps &&
+      vkr_renderer_set_dynamic_resolution_budget(
+          renderer, vkr_graphics_settings_dynamic_resolution_budget_ms(
+                        settings)) == VKR_RENDERER_ERROR_NONE) {
+    state->graphics_started.dynamic_resolution_target_fps =
+        settings->dynamic_resolution_target_fps;
+  }
 }
 
 static void sample_graphics_request(VkrStandardSceneRuntime *application,

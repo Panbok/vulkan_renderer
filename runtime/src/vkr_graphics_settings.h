@@ -15,6 +15,9 @@ typedef struct VkrGraphicsSettings {
   bool8_t high_dpi;
   float32_t render_scale;
   uint32_t frame_limit;
+  /* The frame rate dynamic resolution holds: the controller's GPU budget is
+   * VKR_GRAPHICS_DYNAMIC_RESOLUTION_BUDGET_SHARE of its frame time. */
+  uint32_t dynamic_resolution_target_fps;
   /* 0 off, 1 balanced, 2 high, 3 ultra: ten shadowed local lights on Vulkan,
    * High on Metal. */
   uint32_t shadow_quality;
@@ -90,6 +93,14 @@ bool8_t vkr_graphics_settings_valid(const VkrGraphicsSettings *settings);
 /* The multiplier of objects' draw distances that `settings` selects. */
 float32_t
 vkr_graphics_settings_draw_distance_scale(const VkrGraphicsSettings *settings);
+/* A frame that runs past its interval waits for the next one, so dynamic
+   resolution keeps this share of the target frame time as headroom, as
+   adaptive-quality controllers for VR do. */
+#define VKR_GRAPHICS_DYNAMIC_RESOLUTION_BUDGET_SHARE 0.9f
+/* The dynamic-resolution GPU budget in milliseconds that `settings` selects:
+   VKR_GRAPHICS_DYNAMIC_RESOLUTION_BUDGET_SHARE of the target frame time. */
+float32_t vkr_graphics_settings_dynamic_resolution_budget_ms(
+    const VkrGraphicsSettings *settings);
 /* The texture load limit in texels that `settings` selects; zero is none. */
 uint32_t vkr_graphics_settings_texture_max_dimension(
     const VkrGraphicsSettings *settings);

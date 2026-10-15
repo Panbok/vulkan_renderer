@@ -392,17 +392,18 @@ pipeline rather than a backend mechanism.
     multisampled targets retire until the GPU completes the frames that drew
     into them instead of stalling it. The sample's tiled settings use 0.65
     to 1 ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c)),
-    and the dynamic-resolution setting turns it off. The budget follows the
-    display (owner decision, 2026-10-15): 90% of the refresh interval of the
-    display showing the window, so a frame finishes inside one refresh
-    instead of waiting for the next and showing for two. The 60 Hz budget
-    holds until the runtime first reads the refresh rate, and the renderer
-    takes a new budget only when the rate changes
-    (`vkr_renderer_set_dynamic_resolution_budget`). On a 120 Hz M1 Pro the
-    Level Design Test held 8.33 ms frames at the 0.65 floor in the editor's
-    2061×1062 Scene panel (deck view, sky view and a tram ride, Release,
-    2026-10-15); with the earlier 16 ms budget the same panel showed 10–18 ms
-    frames at higher scales. Vulkan has no dynamic
+    and the dynamic-resolution setting turns it off. The budget is 90% of the
+    frame time of the Target frame rate setting
+    (`dynamic_resolution_target_fps`, 30 to 240, default 60; Cmd
+    `gfx.target_fps`), so a frame keeps headroom inside its interval as VR
+    adaptive-quality controllers do; a change retunes the controller
+    between frames without moving the scale
+    (`vkr_renderer_set_dynamic_resolution_budget`). Owner decision,
+    2026-10-15: the target is a manual setting, not the display's refresh
+    rate. A budget that followed the 120 Hz refresh (7.5 ms) held the Level
+    Design Test at the 0.65 floor everywhere in the editor's 2061×1062 Scene
+    panel on an M1 Pro (Release); the earlier fixed 16 ms budget let 10–18 ms
+    frames alternate between one and two refreshes. Vulkan has no dynamic
     resolution and renders the Scene at render scale 1; the FSR 3.1
     upscaler was removed on 2026-10-12
     ([ADR-052](052-vulkan-fsr31-upscaling.md)).

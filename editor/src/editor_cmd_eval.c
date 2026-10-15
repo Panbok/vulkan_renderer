@@ -111,15 +111,12 @@ static const char *const eval_ui_members[] = {
     "zoom",           "reduce_motion", "workbench",   "selected",
     "maximized",      "icons",         "icons_shown", "icons_occluded",
     "resolve_fights", "view",          NULL};
-static const char *const eval_gfx_members[] = {"render_scale",
-                                               "dynamic",
-                                               "vsync",
-                                               "preset",
-                                               "restart",
-                                               "invert_mouse_y",
-                                               "high_dpi",
-                                               "texture_resolution",
-                                               NULL};
+static const char *const eval_gfx_members[] = {
+    "render_scale", "dynamic",
+    "vsync",        "preset",
+    "restart",      "invert_mouse_y",
+    "high_dpi",     "texture_resolution",
+    "target_fps",   NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
 static const char *const eval_sim_members[] = {"running", "time", NULL};
@@ -693,6 +690,9 @@ static bool8_t eval_gfx_member(Eval *eval, String8 name, Value *out) {
   case 7:
     /* Texels; zero is full resolution. */
     *out = eval_number(vkr_graphics_settings_texture_max_dimension(settings));
+    return true_v;
+  case 8:
+    *out = eval_number(settings->dynamic_resolution_target_fps);
     return true_v;
   default:
     break;
@@ -1571,6 +1571,14 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       if (!found)
         return eval_fail(eval, "Use 1024, 2048 or 0 for full resolution");
       settings.texture_resolution = choice.texture_resolution;
+    } else if (index == 8 &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member)) {
+      /* The frame rate dynamic resolution holds, within the setting's
+         range. */
+      if (!(value->number >= 30.0 && value->number <= 240.0))
+        return eval_fail(eval, "Use a target frame rate from 30 to 240");
+      settings.dynamic_resolution_target_fps =
+          (uint32_t)vkr_round_f64(value->number);
     } else {
       return eval->error[0] ? false_v
                             : eval_fail(eval, "Cannot assign gfx.%.*s",

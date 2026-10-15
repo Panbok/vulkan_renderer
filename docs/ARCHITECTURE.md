@@ -810,8 +810,8 @@ four-comparison tent each, holding the set with an incumbent bonus and fading
 lights in and out over 0.25 s, and no FXAA, screen-space effects or temporal
 history. Its
 adaptive quality lowers the internal render scale to as little as 0.65 while
-frames miss a GPU budget of 90% of the display's refresh interval and
-upscales spatially
+frames miss a GPU budget of 90% of the Target frame rate setting's frame
+time and upscales spatially
 ([ADR-039](adr/039-metal-internal-render-scale.md)). ADR-087 owns its passes,
 evidence and budget. The rest of this section describes the desktop
 pipeline, which only Vulkan runs.

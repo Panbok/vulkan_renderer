@@ -57,6 +57,17 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Adjust internal resolution to keep frame pacing stable",
      .offset = GRAPHICS_OFFSET(dynamic_resolution),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "dynamic_resolution_target_fps",
+     .label = "Target frame rate",
+     .tooltip = "Dynamic resolution lowers the render scale until the GPU "
+                "keeps this frame rate, with headroom",
+     .unit = "FPS",
+     .offset = GRAPHICS_OFFSET(dynamic_resolution_target_fps),
+     .kind = VKR_PROPERTY_U32,
+     .flags = VKR_PROPERTY_FLAG_SLIDER,
+     .min = 30.0f,
+     .max = 240.0f,
+     .step = 1.0f},
     {.name = "render_scale",
      .label = "Render scale",
      .tooltip = "Lower values render fewer pixels",
@@ -210,6 +221,12 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
     if (state && !state->dynamic_resolution_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
+  } else if (offset ==
+             offsetof(VkrGraphicsSettings, dynamic_resolution_target_fps)) {
+    if (!settings->dynamic_resolution ||
+        (state && !state->dynamic_resolution_available)) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
   } else if (offset == offsetof(VkrGraphicsSettings, render_scale)) {
     if (state && !state->spatial_render_scale_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
@@ -257,6 +274,7 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .hdr = false_v,
       .high_dpi = true_v,
       .dynamic_resolution = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
+      .dynamic_resolution_target_fps = 60u,
       .anti_aliasing = true_v,
       /* With dynamic resolution the scale caps the controller, so Metal
          starts uncapped and lets it choose. */
@@ -366,6 +384,13 @@ void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
   settings->hdr = running->hdr;
   settings->dynamic_resolution = running->dynamic_resolution;
   settings->render_scale = running->render_scale;
+}
+
+float32_t vkr_graphics_settings_dynamic_resolution_budget_ms(
+    const VkrGraphicsSettings *settings) {
+  const uint32_t fps = Max(settings->dynamic_resolution_target_fps, 1u);
+  return VKR_GRAPHICS_DYNAMIC_RESOLUTION_BUDGET_SHARE * 1000.0f /
+         (float32_t)fps;
 }
 
 float32_t

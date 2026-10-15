@@ -241,9 +241,6 @@ typedef struct VkrStandardSceneRuntime {
   float64_t scene_duration;
   /* Display refresh interval in seconds, sampled each frame. */
   float64_t refresh_interval;
-  /* The dynamic-resolution GPU budget last given to the renderer, in
-     milliseconds; zero until the first is applied. */
-  float32_t dynamic_resolution_budget_ms;
   /* Frames that rendered a Scene and frames that only presented the UI. */
   uint64_t scene_frames_submitted;
   uint64_t present_frames_submitted;
