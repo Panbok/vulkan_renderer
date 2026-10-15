@@ -2025,7 +2025,8 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
 }
 
 /* The sky draws' root: the frame, the sky-view lookup at `sky_view_binding`
-   and the sky mode. */
+   and the sky mode. The sky's view directions come from the camera-relative
+   `view_rays`; the world inverse only places resolved surfaces. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketFrameUpload *upload,
@@ -2044,10 +2045,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
     return false_v;
   uint64_t frame_root_gpu = 0u;
   uint32_t frame_flags = 0u;
-  const Mat4 view_projection = vkr_metal_packet_clip_matrix(
-      renderer->convert_vulkan_clip_y,
-      mat4_mul(packet->temporal.jittered_projection,
-               packet->input.globals.view));
+  const Mat4 projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
+  const Mat4 view_projection =
+      mat4_mul(projection, packet->input.globals.view);
   if (!vkr_metal_packet_create_frame_root(
           renderer, packet, upload, upload->gpu_draw_instances_gpu, width,
           height, view_projection, true_v, &frame_root_gpu, &frame_flags))
@@ -2061,6 +2062,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
       .frame = frame_root_gpu,
       .sky_view_texture_id = sky_view ? sky_view.gpuResourceID._impl : 0u,
       .inverse_view_projection = mat4_inverse(view_projection),
+      .view_rays =
+          vkr_atmosphere_view_rays(projection, packet->input.globals.view),
       .extent = {width, height},
       .sky_mode = sky_mode,
       .clouds_enabled = renderer->prepared_frame.clouds_enabled ? 1u : 0u,

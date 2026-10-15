@@ -1189,8 +1189,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
     const VkrSkyPassPayload *sky = prepared->frame.input.sky;
     prepared->frame.sky = vkr_atmosphere_prepare_sky(
         &sky->atmosphere, &sky->clouds, sky->cloud_wind_offset_m,
-        packet->globals.view_position,
-        mat4_mul(packet->globals.projection, packet->globals.view),
+        packet->globals.view_position, packet->globals.projection,
+        packet->globals.view,
         packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT &&
             !orthographic);
   } else {

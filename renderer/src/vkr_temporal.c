@@ -6,16 +6,31 @@
 Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
                                    Mat4 previous_view_projection,
                                    Vec3 current_view_position) {
-  /* Convert a reconstructed homogeneous world point into a direction from
-     the current eye. A zero w removes the previous camera's translation. */
-  Mat4 world_direction = mat4_identity();
-  world_direction.m03 = -current_view_position.x;
-  world_direction.m13 = -current_view_position.y;
-  world_direction.m23 = -current_view_position.z;
-  world_direction.m33 = 0.0f;
-  Mat4 reprojection = mat4_mul(
-      previous_view_projection,
-      mat4_mul(world_direction, mat4_inverse(current_view_projection)));
+  /* Move the current eye to the origin before inverting, so a reconstructed
+     homogeneous point is already relative to the eye. Inverting the world
+     view-projection and subtracting the eye afterwards loses the direction's
+     precision hundreds of metres from the origin. The eye's clip position is
+     accumulated in float64 so its cancellation leaves only the matrix's own
+     rounding. */
+  Mat4 current_relative = current_view_projection;
+  const float64_t eye[3] = {current_view_position.x, current_view_position.y,
+                            current_view_position.z};
+  for (uint32_t row = 0u; row < 4u; ++row) {
+    float64_t clip = current_view_projection.elements[12u + row];
+    for (uint32_t column = 0u; column < 3u; ++column) {
+      clip += (float64_t)current_view_projection.elements[column * 4u + row] *
+              eye[column];
+    }
+    current_relative.elements[12u + row] = (float32_t)clip;
+  }
+
+  /* A zero w turns the eye-relative point into a direction, which removes
+     the previous camera's translation. */
+  Mat4 direction = mat4_identity();
+  direction.m33 = 0.0f;
+  Mat4 reprojection =
+      mat4_mul(previous_view_projection,
+               mat4_mul(direction, mat4_inverse(current_relative)));
   if (current_view_projection.m30 == 0.0f &&
       current_view_projection.m31 == 0.0f &&
       current_view_projection.m32 == 0.0f) {
@@ -24,11 +39,9 @@ Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
        depth (ADR-109), where the resolve shader places sky pixels. History
        reuse proves equal projections, so the eye has the same clip
        coordinates in both frames. For projected direction d and eye e,
-       q = d - e*d.z/e.z lies on q.z == 0. */
-    const Vec4 eye_clip =
-        mat4_mul_vec4(current_view_projection,
-                      vec4_new(current_view_position.x, current_view_position.y,
-                               current_view_position.z, 1.0f));
+       q = d - e*d.z/e.z lies on q.z == 0. The eye-relative matrix places
+       the eye at the origin, so its clip position is the last column. */
+    const Vec4 eye_clip = current_relative.cols[3];
     const Vec4 far_eye = vec4_scale(eye_clip, 1.0f / eye_clip.z);
     Mat4 far_plane = mat4_identity();
     far_plane.cols[2] = vec4_sub(far_plane.cols[2], far_eye);

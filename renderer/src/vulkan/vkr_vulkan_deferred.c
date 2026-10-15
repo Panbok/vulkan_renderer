@@ -1620,6 +1620,8 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   const VkrVulkanLightingRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
+      .view_rays = vkr_atmosphere_view_rays(
+          packet->temporal.jittered_projection, packet->input.globals.view),
       .vbuffer_texture = vbuffer,
       .depth_texture = depth,
       .albedo_texture = albedo,

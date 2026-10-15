@@ -445,16 +445,14 @@ float2 vkr_cloud_view_uv(VkrSkyParams sky, float3 direction)
     return clip.xy / max(clip.w, 1e-6f) * 0.5f + 0.5f;
 }
 
-// Camera depth is reversed (ADR-109): device depth 1 is the near plane, and
-// 0.5 lies beyond it for every finite or infinite far plane.
+// Camera depth is reversed (ADR-109): device depth 1 is the near plane.
+// `view_rays` leaves out the camera translation, so the direction keeps its
+// precision however far the eye is from the origin.
 float3 vkr_cloud_view_direction(VkrSkyParams sky, float2 uv)
 {
     float2 ndc = uv * 2.0f - 1.0f;
-    float4 near_world = VKR_CLOUD_MUL(sky.inverse_view_projection,
-                                      float4(ndc.x, ndc.y, 1.0f, 1.0f));
-    float4 far_world = VKR_CLOUD_MUL(sky.inverse_view_projection,
-                                     float4(ndc.x, ndc.y, 0.5f, 1.0f));
-    float3 ray = far_world.xyz / far_world.w - near_world.xyz / near_world.w;
+    float3 ray =
+        VKR_CLOUD_MUL(sky.view_rays, float4(ndc.x, ndc.y, 1.0f, 1.0f)).xyz;
     return ray * rsqrt(max(dot(ray, ray), 1e-20f));
 }
 

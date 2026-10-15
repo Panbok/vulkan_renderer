@@ -333,10 +333,8 @@ aerial_perspective_compute(uint3 id : SV_DispatchThreadID) {
   float2 ndc =
       (float2(id.xy) + 0.5f) / float(VKR_ATMOSPHERE_AERIAL_SIZE) * 2.0f -
       1.0f;
-  float4 ray_point =
-      mul(frame.inverse_view_projection, float4(ndc, 0.5f, 1.0f));
   float3 direction = vkr_atmosphere_safe_normalize(
-      ray_point.xyz / ray_point.w - frame.camera_position.xyz,
+      mul(frame.view_rays, float4(ndc, 1.0f, 1.0f)).xyz,
       float3(0.0f, 0.0f, -1.0f));
   float3 origin = float3(0.0f, params.planet.x + params.planet.z, 0.0f);
   VkrVkAtmosphereLight sun =

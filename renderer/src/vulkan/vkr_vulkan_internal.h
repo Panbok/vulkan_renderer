@@ -855,6 +855,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   float32_t planar_reflection_uv_scale[2];
   uint32_t planar_reflection_object_id;
   uint32_t planar_reserved;
+  /** The background's camera-relative view directions: the
+      vkr_atmosphere_view_rays matrix of the jittered projection. */
+  Mat4 view_rays;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -1918,7 +1921,8 @@ _Static_assert(offsetof(VkrVulkanTemporalResolveRoot, extent) == 68u &&
                             transmission_visible_rows) == 88u &&
                    offsetof(VkrVulkanTemporalResolveRoot, reserved) == 116u,
                "Temporal resolve-root ABI offset drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 256u &&
+_Static_assert(sizeof(VkrVulkanLightingRoot) == 320u &&
+                   offsetof(VkrVulkanLightingRoot, view_rays) == 256u &&
                    offsetof(VkrVulkanLightingRoot, planar_reflection_texture) ==
                        216u &&
                    offsetof(VkrVulkanLightingRoot, planar_reflection_plane) ==
@@ -1944,7 +1948,7 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
                        164u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
                        192u &&
-                   sizeof(VkrVulkanLightingRoot) == 256u,
+                   sizeof(VkrVulkanLightingRoot) == 320u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");

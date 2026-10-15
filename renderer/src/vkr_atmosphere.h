@@ -101,22 +101,24 @@ typedef enum VkrSkyMode {
 
 /** Per-frame camera-dependent sky record owned by frame-slot storage.
  * `atmosphere.planet.z` holds the camera altitude in kilometres and
- * `atmosphere.mie_extinction.w` the sun glow, which the bake ignores. The
- * matrices are the unjittered packet view-projection and its inverse; both
- * native backends use them only to map world positions to aerial-perspective
- * froxels, so the raster clip convention does not matter. `camera_position.w`
- * is kilometres per world unit. `aerial` holds kilometres per slice, the
- * slice count, its reciprocal, and 1 when aerial perspective applies.
- * `clouds` is zero unless the cloud layer renders this frame. `key_light`
- * points toward the light that drives direct lighting, cascaded and cloud
- * shadows; `w` is 1 when it is the moon. The star field's celestial frame is
- * `star_pole` and `star_axis`, the sun's hour-angle direction about the pole;
- * `star_pole.w` is the irradiance of a magnitude-zero star and `star_axis.w` 1
- * while the sun is below the horizon and the field draws. */
+ * `atmosphere.mie_extinction.w` the sun glow, which the bake ignores.
+ * `view_projection` is the unjittered packet view-projection; both native
+ * backends use it only to map world directions and positions to cloud and
+ * aerial-perspective screen coordinates, so the raster clip convention does
+ * not matter. `view_rays` is its vkr_atmosphere_view_rays matrix, from which
+ * the cloud trace and aerial perspective take their view directions.
+ * `camera_position.w` is kilometres per world unit. `aerial` holds kilometres
+ * per slice, the slice count, its reciprocal, and 1 when aerial perspective
+ * applies. `clouds` is zero unless the cloud layer renders this frame.
+ * `key_light` points toward the light that drives direct lighting, cascaded and
+ * cloud shadows; `w` is 1 when it is the moon. The star field's celestial frame
+ * is `star_pole` and `star_axis`, the sun's hour-angle direction about the
+ * pole; `star_pole.w` is the irradiance of a magnitude-zero star and
+ * `star_axis.w` 1 while the sun is below the horizon and the field draws. */
 typedef struct VkrSkyGpuParams {
   VkrAtmosphereGpuParams atmosphere;
   Mat4 view_projection;
-  Mat4 inverse_view_projection;
+  Mat4 view_rays;
   Vec4 camera_position;
   Vec4 aerial;
   VkrCloudGpuParams clouds;
@@ -253,11 +255,22 @@ vkr_atmosphere_dark_depression_degrees(const VkrAtmosphereGpuParams *params);
  * irradiance or lies beyond the dark depression. */
 bool8_t vkr_atmosphere_bake_dark(const VkrAtmosphereGpuParams *params);
 
+/** The camera-relative view-ray matrix of a camera `projection` (in the
+ * consumer's clip convention, jittered or not) and world-to-view `view`. It
+ * maps the near-plane clip position (x, y, 1, 1) of a reversed-depth camera
+ * (ADR-109) to a homogeneous vector whose xyz is the world-space direction
+ * from the eye through (x, y), unnormalized, and whose w is positive. It
+ * leaves out the camera translation, so a direction keeps its precision
+ * however far the eye is from the origin, which unprojecting the near plane
+ * through the inverse view-projection and subtracting the eye does not. An
+ * orthographic projection maps every position to its forward axis. */
+Mat4 vkr_atmosphere_view_rays(Mat4 projection, Mat4 view);
+
 /** Prepares the camera-dependent sky from validated enabled settings. The
  * camera altitude is clamped to the supported observer-altitude domain.
- * Clouds render only where aerial perspective applies. */
-VkrSkyGpuParams
-vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
-                           const VkrCloudSettings *clouds,
-                           Vec2 cloud_wind_offset_m, Vec3 camera_position,
-                           Mat4 view_projection, bool8_t aerial_perspective);
+ * Clouds render only where aerial perspective applies. `projection` is the
+ * unjittered camera projection and `view` its world-to-view matrix. */
+VkrSkyGpuParams vkr_atmosphere_prepare_sky(
+    const VkrAtmosphereSettings *settings, const VkrCloudSettings *clouds,
+    Vec2 cloud_wind_offset_m, Vec3 camera_position, Mat4 projection, Mat4 view,
+    bool8_t aerial_perspective);

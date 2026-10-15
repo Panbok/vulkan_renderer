@@ -382,15 +382,34 @@ vkr_atmosphere_prepare_stars(const VkrAtmosphereSettings *settings,
   sky->star_axis = (Vec4){axis.x, axis.y, axis.z, visible ? 1.0f : 0.0f};
 }
 
-VkrSkyGpuParams
-vkr_atmosphere_prepare_sky(const VkrAtmosphereSettings *settings,
-                           const VkrCloudSettings *clouds,
-                           Vec2 cloud_wind_offset_m, Vec3 camera_position,
-                           Mat4 view_projection, bool8_t aerial_perspective) {
+Mat4 vkr_atmosphere_view_rays(Mat4 projection, Mat4 view) {
+  /* An orthographic camera's rays all run along its forward axis, the
+     negated third row of the view's rotation. */
+  if (projection.m30 == 0.0f && projection.m31 == 0.0f &&
+      projection.m32 == 0.0f) {
+    const Vec3 forward =
+        vec3_normalize(vec3_new(-view.m20, -view.m21, -view.m22));
+    Mat4 rays = {0};
+    rays.cols[3] = vec4_new(forward.x, forward.y, forward.z, 1.0f);
+    return rays;
+  }
+
+  /* Without the translation the inverse maps a clip position to a point
+     relative to the eye, whose w is the positive reciprocal of the near
+     distance at the near plane. */
+  Mat4 rotation = view;
+  rotation.cols[3] = vec4_new(0.0f, 0.0f, 0.0f, 1.0f);
+  return mat4_inverse(mat4_mul(projection, rotation));
+}
+
+VkrSkyGpuParams vkr_atmosphere_prepare_sky(
+    const VkrAtmosphereSettings *settings, const VkrCloudSettings *clouds,
+    Vec2 cloud_wind_offset_m, Vec3 camera_position, Mat4 projection, Mat4 view,
+    bool8_t aerial_perspective) {
   VkrSkyGpuParams sky = {
       .atmosphere = vkr_atmosphere_prepare(settings),
-      .view_projection = view_projection,
-      .inverse_view_projection = mat4_inverse(view_projection),
+      .view_projection = mat4_mul(projection, view),
+      .view_rays = vkr_atmosphere_view_rays(projection, view),
       .camera_position = {camera_position.x, camera_position.y,
                           camera_position.z,
                           settings->metres_per_world_unit * 0.001f},

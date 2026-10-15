@@ -294,8 +294,7 @@ vkr_global const VkrMetalPacketAbiField vkr_sky_fields[] = {
 vkr_global const VkrMetalPacketAbiField vkr_sky_params_fields[] = {
     VKR_ABI_FIELD(VkrSkyGpuParams, atmosphere, "atmosphere", 0),
     VKR_ABI_FIELD(VkrSkyGpuParams, view_projection, "view_projection", 160),
-    VKR_ABI_FIELD(VkrSkyGpuParams, inverse_view_projection,
-                  "inverse_view_projection", 224),
+    VKR_ABI_FIELD(VkrSkyGpuParams, view_rays, "view_rays", 224),
     VKR_ABI_FIELD(VkrSkyGpuParams, camera_position, "camera_position", 288),
     VKR_ABI_FIELD(VkrSkyGpuParams, aerial, "aerial", 304),
     VKR_ABI_FIELD(VkrSkyGpuParams, clouds, "clouds", 320),
@@ -493,11 +492,12 @@ vkr_global const VkrMetalPacketAbiField vkr_tiled_sky_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_view_texture_id, "sky_view", 8),
     VKR_ABI_FIELD(VkrMetalTiledSkyRoot, inverse_view_projection,
                   "inverse_view_projection", 16),
-    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, extent, "extent", 80),
-    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_mode, "sky_mode", 88),
-    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, clouds_enabled, "clouds_enabled", 92),
-    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_radiance, "sky_radiance", 96),
-    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, depth_texture_id, "depth", 112),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, view_rays, "view_rays", 80),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, extent, "extent", 144),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_mode, "sky_mode", 152),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, clouds_enabled, "clouds_enabled", 156),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_radiance, "sky_radiance", 160),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, depth_texture_id, "depth", 176),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
@@ -882,7 +882,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketDecal, "VkrMetalPacketDecal", 80, 16,
                            vkr_decal_fields),
         [VKR_METAL_PACKET_ABI_TILED_SKY_ROOT] =
-            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 128,
+            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 192,
                            16, vkr_tiled_sky_root_fields),
         [VKR_METAL_PACKET_ABI_IBL_PROBE] =
             VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 80,

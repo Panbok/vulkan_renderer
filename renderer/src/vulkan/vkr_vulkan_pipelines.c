@@ -1495,6 +1495,7 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                planar_reflection_object_id),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, planar_reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, view_rays),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {

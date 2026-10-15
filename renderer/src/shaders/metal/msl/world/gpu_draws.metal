@@ -620,16 +620,15 @@ static VkrTerrainSurface vkr_metal_packet_terrain_surface(
   return vkr_terrain_finish(sum);
 }
 
-// The view direction through a pixel's center. Depth 1 is the near plane
-// under reversed camera depth; only the direction from the eye is used, and
-// the near plane stays finite for any far plane.
-static float3 vkr_metal_packet_sky_direction(
-    constant VkrMetalPacketFrameRoot *frame, float4x4 inverse_view_projection,
-    uint2 extent, float2 pixel_center) {
+// The world-space view direction through a pixel's center. Depth 1 is the
+// near plane under reversed camera depth. `view_rays` leaves out the camera
+// translation (vkr_atmosphere_view_rays), so the direction keeps its
+// precision however far the eye is from the origin; an orthographic camera's
+// matrix returns its forward axis for every pixel.
+static float3 vkr_metal_packet_sky_direction(float4x4 view_rays, uint2 extent,
+                                             float2 pixel_center) {
   float2 ndc = vkr_metal_packet_resolve_ndc(pixel_center, extent);
-  float4 plane_world = inverse_view_projection * float4(ndc, 1.0, 1.0);
-  return -vkr_metal_packet_view_direction(frame,
-      plane_world.xyz / max(abs(plane_world.w), 1e-7) * sign(plane_world.w));
+  return normalize((view_rays * float4(ndc, 1.0, 1.0)).xyz);
 }
 
 // The atmosphere's transmittance from the observer along `direction`.
@@ -658,7 +657,7 @@ static float3 vkr_metal_packet_sky_discs(constant VkrMetalPacketSky &sky,
 // below the horizon).
 static float3 vkr_metal_packet_sky_clear(
     constant VkrMetalPacketFrameRoot *frame,
-    texture2d<float, access::sample> sky_view, float4x4 inverse_view_projection,
+    texture2d<float, access::sample> sky_view, float4x4 view_rays,
     uint2 extent, uint sky_mode, float4 sky_radiance, uint2 pixel,
     thread float3 &disc) {
   disc = float3(0.0);
@@ -666,8 +665,8 @@ static float3 vkr_metal_packet_sky_clear(
     return float3(0.02, 0.02, 0.03) * frame->pre_exposure;
   if (sky_mode == VKR_SKY_MODE_CONSTANT)
     return sky_radiance.rgb;
-  float3 direction = vkr_metal_packet_sky_direction(
-      frame, inverse_view_projection, extent, float2(pixel) + 0.5);
+  float3 direction =
+      vkr_metal_packet_sky_direction(view_rays, extent, float2(pixel) + 0.5);
   // The sky-view lookup already integrates to the top of the atmosphere, so
   // sky pixels take no aerial perspective. Its sun and moon tables add; the
   // discs and their glows are analytic; clouds carry aerial perspective at
@@ -698,8 +697,7 @@ static float3 vkr_metal_packet_sky_clear(
     // sets each star's footprint.
     if (sky.params.star_axis.w > 0.0f) {
       float3 next = vkr_metal_packet_sky_direction(
-          frame, inverse_view_projection, extent,
-          float2(pixel) + float2(1.5, 0.5));
+          view_rays, extent, float2(pixel) + float2(1.5, 0.5));
       radiance += vkr_atmosphere_stars(sky.params, direction,
                                        length(cross(direction, next))) *
                   view_transmittance;
@@ -713,12 +711,12 @@ static float3 vkr_metal_packet_sky_clear(
 // split the same composition between them (ADR-087).
 static float3 vkr_metal_packet_sky_background(
     constant VkrMetalPacketFrameRoot *frame,
-    texture2d<float, access::sample> sky_view, float4x4 inverse_view_projection,
+    texture2d<float, access::sample> sky_view, float4x4 view_rays,
     uint2 extent, uint sky_mode, float4 sky_radiance, uint2 pixel) {
   float3 disc;
   float3 radiance =
-      vkr_metal_packet_sky_clear(frame, sky_view, inverse_view_projection,
-                                 extent, sky_mode, sky_radiance, pixel, disc);
+      vkr_metal_packet_sky_clear(frame, sky_view, view_rays, extent, sky_mode,
+                                 sky_radiance, pixel, disc);
   if (sky_mode != VKR_SKY_MODE_ATMOSPHERE)
     return radiance;
   constant VkrMetalPacketSky &sky = *frame->sky;

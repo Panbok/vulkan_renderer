@@ -141,19 +141,23 @@ _Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
                "Metal decal record ABI drift");
 
 /** The tiled pipeline's sky draws (ADR-087); mirrors VkrMetalTiledSkyRoot in
-    world/tiled.metal. `depth_texture_id` is the resolved depth the cloud
-    draw reads, zero for the clear sky. */
+    world/tiled.metal. `inverse_view_projection` reconstructs the resolved
+    surfaces' world positions and `view_rays`, the vkr_atmosphere_view_rays
+    matrix of the same jittered projection, the sky's view directions.
+    `depth_texture_id` is the resolved depth the cloud draw reads, zero for
+    the clear sky. */
 typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint64_t frame;
   uint64_t sky_view_texture_id;
   Mat4 inverse_view_projection;
+  Mat4 view_rays;
   uint32_t extent[2];
   uint32_t sky_mode;
   uint32_t clouds_enabled;
   Vec4 sky_radiance;
   uint64_t depth_texture_id;
 } VkrMetalTiledSkyRoot;
-_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 128u,
+_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 192u,
                "Metal tiled sky root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLtc {

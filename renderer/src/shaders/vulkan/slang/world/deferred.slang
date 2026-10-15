@@ -299,6 +299,10 @@ struct VkrVkLightingRoot
     float2 planar_reflection_uv_scale;
     uint planar_reflection_object_id;
     uint planar_reserved;
+    // The background's camera-relative view directions
+    // (vkr_atmosphere_view_rays): no camera translation, so a direction
+    // keeps its precision however far the eye is from the origin.
+    float4x4 view_rays;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -2162,15 +2166,14 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot root, uint2 pixel)
     if (root.sky_mode == VKR_SKY_MODE_CONSTANT)
         return root.sky_radiance.rgb;
     // Framebuffer-derived NDC needs no Y flip here: the pipeline's viewport
-    // already owns that flip, so inverting the view-projection alone lands in
-    // world space. The resolve flips because it performs the viewport
-    // transform by hand instead of inverting a matrix.
-    // Depth 1 is the near plane under reversed camera depth (ADR-109); only
-    // the direction from the eye is used, and the near plane stays finite.
+    // already owns that flip, so the view-ray matrix of the projection alone
+    // lands in world space. The resolve flips because it performs the
+    // viewport transform by hand instead of inverting a matrix.
+    // Depth 1 is the near plane under reversed camera depth (ADR-109). An
+    // orthographic camera's matrix returns its forward axis for every pixel.
     float2 ndc = (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
-    float3 plane_world = vkr_vk_deferred_homogeneous(
-        mul(root.inverse_view_projection, float4(ndc, 1.0f, 1.0f)));
-    float3 direction = -packet_view_direction(root.frame, plane_world);
+    float3 direction =
+        normalize(mul(root.view_rays, float4(ndc, 1.0f, 1.0f)).xyz);
     // The sky-view lookup already integrates to the top of the atmosphere, so
     // sky pixels take no aerial perspective. Its sun and moon tables add; the
     // discs and their glows are analytic. Pass-root descriptor indices are
@@ -2216,9 +2219,8 @@ float3 vkr_vk_deferred_sky(VkrVkLightingRoot root, uint2 pixel)
                 (float2(pixel) + float2(1.5f, 0.5f)) / float2(root.extent) *
                     2.0f -
                 1.0f;
-            float3 next_world = vkr_vk_deferred_homogeneous(mul(
-                root.inverse_view_projection, float4(next_ndc, 1.0f, 1.0f)));
-            float3 next = -packet_view_direction(root.frame, next_world);
+            float3 next = normalize(
+                mul(root.view_rays, float4(next_ndc, 1.0f, 1.0f)).xyz);
             radiance += vkr_atmosphere_stars(sky.params, direction,
                                              length(cross(direction, next))) *
                         view_transmittance;

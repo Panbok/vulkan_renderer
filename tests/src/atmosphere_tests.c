@@ -151,8 +151,9 @@ vkr_internal bool32_t test_atmosphere_camera_altitude(void) {
   const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
   const Vec2 wind = {0};
 
-  VkrSkyGpuParams sky = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_new(5.0f, 15.0f, -3.0f), identity, true_v);
+  VkrSkyGpuParams sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
+                                                   vec3_new(5.0f, 15.0f, -3.0f),
+                                                   identity, identity, true_v);
   assert(fabsf(sky.atmosphere.planet.z - 1.03f) < 1e-5f);
   assert(fabsf(sky.camera_position.w - 0.002f) < 1e-9f);
   assert(sky.aerial.w == 1.0f);
@@ -160,17 +161,18 @@ vkr_internal bool32_t test_atmosphere_camera_altitude(void) {
   /* Horizontal position does not change the altitude. */
   VkrSkyGpuParams moved = vkr_atmosphere_prepare_sky(
       &settings, &clouds, wind, vec3_new(-400.0f, 15.0f, 900.0f), identity,
-      true_v);
+      identity, true_v);
   assert(moved.atmosphere.planet.z == sky.atmosphere.planet.z);
 
   /* Below the planet surface and above the atmosphere both clamp. */
   sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
                                    vec3_new(0.0f, -900.0f, 0.0f), identity,
-                                   false_v);
+                                   identity, false_v);
   assert(sky.atmosphere.planet.z == 0.0f);
   assert(sky.aerial.w == 0.0f);
-  sky = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_new(0.0f, 1.0e6f, 0.0f), identity, true_v);
+  sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
+                                   vec3_new(0.0f, 1.0e6f, 0.0f), identity,
+                                   identity, true_v);
   assert(fabsf(sky.atmosphere.planet.z - 100.0f) < 1e-4f);
 
   /* The world scale is authorable only inside its documented range. */
@@ -207,8 +209,9 @@ vkr_internal bool32_t test_atmosphere_cloud_layer(void) {
 
   /* From 100 m east at ground level, a 45-degree sun ray rises 1.5 km and
      travels 1.5 km east: 1.6 km snaps to texel 102 of 0.015625 km. */
-  VkrSkyGpuParams sky = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_new(100.0f, 0.0f, 0.0f), identity, true_v);
+  VkrSkyGpuParams sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
+                                                   vec3_new(100.0f, 0.0f, 0.0f),
+                                                   identity, identity, true_v);
   assert(fabsf(sky.clouds.shadow.x - 1.59375f) < 1e-5f);
   assert(fabsf(sky.clouds.shadow.y) < 1e-6f);
   assert(fabsf(sky.clouds.shadow.w - 8.0f) < 1e-6f);
@@ -223,16 +226,17 @@ vkr_internal bool32_t test_atmosphere_cloud_layer(void) {
   /* Above the base the map centres on the camera itself. */
   sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
                                    vec3_new(100.0f, 2000.0f, 0.0f), identity,
-                                   true_v);
+                                   identity, true_v);
   assert(fabsf(sky.clouds.shadow.x - 0.09375f) < 1e-5f);
 
   sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
                                    vec3_new(100.0f, 0.0f, 0.0f), identity,
-                                   false_v);
+                                   identity, false_v);
   assert(sky.clouds.noise.w == 0.0f);
   clouds.enabled = false_v;
-  sky = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_new(100.0f, 0.0f, 0.0f), identity, true_v);
+  sky = vkr_atmosphere_prepare_sky(&settings, &clouds, wind,
+                                   vec3_new(100.0f, 0.0f, 0.0f), identity,
+                                   identity, true_v);
   assert(sky.clouds.noise.w == 0.0f);
 
   clouds.enabled = true_v;
@@ -313,9 +317,9 @@ vkr_internal bool32_t test_atmosphere_sun_glow(void) {
   const VkrAtmosphereGpuParams bake = vkr_atmosphere_prepare(&settings);
   assert(bake.mie_extinction.w == 0.0f);
   const VkrCloudSettings clouds = vkr_cloud_settings_defaults();
-  const VkrSkyGpuParams sky =
-      vkr_atmosphere_prepare_sky(&settings, &clouds, vec2_new(0.0f, 0.0f),
-                                 vec3_zero(), mat4_identity(), true_v);
+  const VkrSkyGpuParams sky = vkr_atmosphere_prepare_sky(
+      &settings, &clouds, vec2_new(0.0f, 0.0f), vec3_zero(), mat4_identity(),
+      mat4_identity(), true_v);
   assert(sky.atmosphere.mie_extinction.w == 3.0f);
 
   const float32_t invalid[] = {-0.5f, 101.0f, NAN};
@@ -346,10 +350,10 @@ vkr_internal bool32_t test_atmosphere_stars_turn_with_the_sun(void) {
   // the pole later toward +Z.
   settings.sun_direction = vec3_new(0.8660254f, -0.5f, 0.0f);
   const VkrSkyGpuParams evening = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+      &settings, &clouds, wind, vec3_zero(), identity, identity, true_v);
   settings.sun_direction = vec3_new(0.0f, -0.5f, 0.8660254f);
   const VkrSkyGpuParams midnight = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+      &settings, &clouds, wind, vec3_zero(), identity, identity, true_v);
   assert(evening.star_axis.w == 1.0f && midnight.star_axis.w == 1.0f);
   assert(fabsf(evening.star_axis.x - 1.0f) < 1e-5f &&
          fabsf(evening.star_axis.y) < 1e-5f &&
@@ -362,12 +366,12 @@ vkr_internal bool32_t test_atmosphere_stars_turn_with_the_sun(void) {
   // In daylight the field is hidden; without intensity it never draws.
   settings.sun_direction = vec3_new(0.0f, 0.5f, 0.8660254f);
   const VkrSkyGpuParams day = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+      &settings, &clouds, wind, vec3_zero(), identity, identity, true_v);
   assert(day.star_axis.w == 0.0f);
   settings.sun_direction = vec3_new(0.0f, -0.5f, 0.8660254f);
   settings.star_intensity = 0.0f;
   const VkrSkyGpuParams starless = vkr_atmosphere_prepare_sky(
-      &settings, &clouds, wind, vec3_zero(), identity, true_v);
+      &settings, &clouds, wind, vec3_zero(), identity, identity, true_v);
   assert(starless.star_axis.w == 0.0f);
   printf("  test_atmosphere_stars_turn_with_the_sun PASSED\n");
   return true_v;

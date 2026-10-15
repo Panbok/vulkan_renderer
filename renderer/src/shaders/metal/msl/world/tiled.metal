@@ -99,7 +99,10 @@ vkr_metal_tiled_vertex(uint vertex_id [[vertex_id]],
 struct VkrMetalTiledSkyRoot {
   constant VkrMetalPacketFrameRoot *frame;
   texture2d<float, access::sample> sky_view;
+  // Places the resolved surfaces in the world.
   float4x4 inverse_view_projection;
+  // The sky's camera-relative view directions (vkr_atmosphere_view_rays).
+  float4x4 view_rays;
   uint2 extent;
   // VKR_SKY_MODE_*: fallback colour, uniform radiance or the atmosphere.
   uint sky_mode;
@@ -131,8 +134,8 @@ vkr_metal_tiled_sky_background(constant VkrMetalTiledSkyRoot &root,
                                uint2 pixel) {
   float3 disc;
   float3 radiance = vkr_metal_packet_sky_clear(
-      root.frame, root.sky_view, root.inverse_view_projection, root.extent,
-      root.sky_mode, root.sky_radiance, pixel, disc);
+      root.frame, root.sky_view, root.view_rays, root.extent, root.sky_mode,
+      root.sky_radiance, pixel, disc);
   return radiance + (root.clouds_enabled != 0u ? 0.0f : disc);
 }
 
@@ -171,7 +174,7 @@ vkr_metal_tiled_sky_media(constant VkrMetalTiledSkyRoot &root, uint2 pixel) {
   constant VkrMetalPacketFrameRoot *frame = root.frame;
   VkrMetalTiledMedia media = {float3(0.0f), 1.0f};
   const float3 direction = vkr_metal_packet_sky_direction(
-      frame, root.inverse_view_projection, root.extent, float2(pixel) + 0.5);
+      root.view_rays, root.extent, float2(pixel) + 0.5);
   if (root.clouds_enabled != 0u) {
     constant VkrMetalPacketSky &sky = *frame->sky;
     float3 disc = float3(0.0f);
