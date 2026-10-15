@@ -186,6 +186,16 @@
       "stage": "compute"
     },
     {
+      "name": "packet.msaa_compose.comp",
+      "entry": "vk_msaa_compose",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.msaa_sample1_list_reset.comp",
+      "entry": "vk_msaa_sample1_list_reset",
+      "stage": "compute"
+    },
+    {
       "name": "packet.vbuffer_split_depth.vert",
       "entry": "vk_vbuffer_split_depth_vertex",
       "stage": "vertex"

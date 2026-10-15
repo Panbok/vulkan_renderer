@@ -65,7 +65,9 @@ struct VkrVkSmaaRoot
     uint2 extent;
     // Blend pass: the scene's motion, previous_uv - current_uv in UV units.
     uint motion_texture;
-    uint reserved;
+    // Blend pass: nonzero for SMAA S2x's second sample, which averages its
+    // result with the first sample's already in the destination.
+    uint blend_half;
     // The area texture's subpixel rows for the frame's jitter (the
     // reference's @SUBSAMPLE_INDICES); zero without temporal jitter.
     float4 subsample_indices;
@@ -737,7 +739,14 @@ void vk_smaa_blend(uint3 thread_id : SV_DispatchThreadID)
     VkrVkSmaaRoot root = vkr_vk_uniform_root(*g_smaa_push.root);
     if (any(thread_id.xy >= root.extent))
         return;
+    float4 blended = vkr_vk_smaa_neighborhood_blend(
+        root, vkr_vk_smaa_texcoord(thread_id.xy, root.extent));
+    // S2x: "the second run should alpha blend with the existing final
+    // buffer using a blending factor of 0.5" (SMAA.hlsl).
+    if (root.blend_half != 0u)
+        blended = 0.5f * (blended +
+                          g_storage_2d[NonUniformResourceIndex(
+                              root.destination_texture)][thread_id.xy]);
     g_storage_2d[NonUniformResourceIndex(root.destination_texture)]
-        [thread_id.xy] = vkr_vk_smaa_neighborhood_blend(
-            root, vkr_vk_smaa_texcoord(thread_id.xy, root.extent));
+        [thread_id.xy] = blended;
 }

@@ -927,7 +927,9 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->bloom_forced_disabled =
       vkr_platform_environment_flag("VKR_BLOOM_DISABLED");
   renderer->smaa_enabled = !vkr_platform_environment_flag("VKR_SMAA_DISABLED");
-  renderer->msaa_enabled = !vkr_platform_environment_flag("VKR_MSAA_DISABLED");
+  /* SMAA 4x is opt-in: on the Bistro street view it cost 2.7 ms at
+     2560 x 1440 for about 9 % less edge shimmer in motion (ADR-037). */
+  renderer->msaa_enabled = vkr_platform_environment_flag("VKR_MSAA_ENABLED");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
   char post_transform_cache[8];
@@ -1072,9 +1074,14 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
   prepared->frame.smaa_enabled = rf->smaa_enabled && !tiled && default_output &&
                                  rf->post_transform_cache_enabled;
-  /* SMAA S2x samples the camera's visibility raster twice a pixel. */
+  /* SMAA S2x samples the camera's visibility raster twice a pixel. Depth of
+     field and motion blur replace a pixel with its blurred surroundings, where
+     a second sample's edge has no meaning; their frames keep T2x alone. */
   prepared->frame.msaa_enabled =
-      prepared->frame.smaa_enabled && rf->msaa_enabled;
+      prepared->frame.smaa_enabled && rf->msaa_enabled &&
+      !packet->globals.dof_enabled &&
+      !(packet->globals.motion_blur_enabled &&
+        packet->globals.motion_blur_shutter_angle > 0.0f);
   /* SMAA T2x: the two-subsample jitter and its resolve run with SMAA. The
      motion and history views keep them to show the resolve's inputs. */
   const bool8_t temporal_view =
@@ -1226,6 +1233,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
           rf->temporal_reset_reasons |
           (fog_changed ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u),
       .enabled = temporal_frame,
+      .msaa = prepared->frame.msaa_enabled,
   };
   prepared->frame.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);

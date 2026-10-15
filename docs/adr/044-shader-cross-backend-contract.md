@@ -32,7 +32,7 @@ Each domain below names the backends that run it:
   light arithmetic that forward and deferred shading both call.
 - **Desktop**: only Vulkan runs it. This covers the visibility buffer,
   G-buffer resolve, deferred lighting, the local shadow mask, transmission
-  layers, SMAA T2x, GTAO, depth of field, motion blur, froxel
+  layers, SMAA 4x and T2x, GTAO, depth of field, motion blur, froxel
   fog, profiled surface diffusion and the clearcoat, sheen, anisotropy
   and thin-sheet diffuse transmission material layers.
 - **Tiled**: only Metal runs it: the tiled forward, atmosphere, blend and
@@ -818,7 +818,7 @@ domain under the [evidence rules](#evidence-rules).
 | Temporal accept mask | Desktop | native visibility/identity helpers | — | `vulkan/slang/world/deferred.slang` |
 | Depth of field, motion blur, surface diffusion | Desktop | `shared/dof_kernel.slangh`, `motion_blur_kernel.slangh`, `subsurface_kernel.slangh` | — | `vulkan/slang/post/dof.slang`, `motion_blur.slang`, `subsurface.slang` |
 | Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `gt7_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
-| SMAA T2x | Desktop | — | — | `vulkan/slang/post/smaa.slang` |
+| SMAA 4x and T2x | Desktop | — | — | `vulkan/slang/post/smaa.slang`; S2x's visibility split, second-sample resolve and lighting, and compose in `world/deferred.slang` |
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
@@ -1200,8 +1200,10 @@ modules validate; native Vulkan before/after captures are pending (checklist).
 
 The display-linear post target is the default whenever SMAA or sharpening
 filters the final draw ([ADR-043](043-presentation-dpi-and-color-transfer.md)).
-SMAA T2x runs on desktop frames in the default render mode; the frontend
-decides it once per frame, and the tiled class draws no SMAA
+SMAA T2x runs on desktop frames in the default render mode, with opt-in S2x
+(SMAA 4x, `VKR_MSAA_ENABLED`) unless depth of field or motion blur is
+enabled; the frontend decides
+both once per frame, and the tiled class draws no SMAA
 ([ADR-037](037-portable-same-resolution-temporal-antialiasing.md)).
 
 ## Windows Vulkan native feature sweep

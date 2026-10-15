@@ -203,7 +203,13 @@ struct VkrVkResolveRoot
     float4 lightmap_active_weights[2];
     // Dominant direction and directionality for deferred lighting.
     uint baked_direction_texture;
-    uint3 lightmap_reserved;
+    // SMAA S2x's edge mask, nonzero for the second sample's resolve: only
+    // pixels whose two samples name different surfaces resolve, and the
+    // temporal outputs stay the first sample's.
+    uint edge_mask_texture;
+    // SMAA S2x's listed pixels (x | y << 16) for the second sample's
+    // resolve, one per thread of the indirect dispatch; null otherwise.
+    uint *sample1_pixels;
 };
 
 #ifndef VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
@@ -290,7 +296,9 @@ struct VkrVkLightingRoot
     // Shadow.LocalMask's pre-exposed irradiance of the selected baked lamps
     // that their moving casters hide; zero without a selected lamp.
     uint baked_lamp_shadow_texture;
-    uint baked_reserved;
+    // SMAA S2x's edge mask, nonzero when lighting the second sample: only
+    // its edge pixels shade.
+    uint edge_mask_texture;
     // Reflection.Raster's mirrored view (zero without a planar reflection),
     // its plane, the drawn part of its target and its reflector's object id.
     uint planar_reflection_texture;
@@ -298,11 +306,18 @@ struct VkrVkLightingRoot
     float4 planar_reflection_plane;
     float2 planar_reflection_uv_scale;
     uint planar_reflection_object_id;
-    uint planar_reserved;
+    // SMAA S2x's first-sample visibility when lighting the second sample,
+    // which takes its per-pixel inputs from a pixel whose first sample lies
+    // on its draw; zero otherwise.
+    uint side_vbuffer_texture;
     // The background's camera-relative view directions
     // (vkr_atmosphere_view_rays): no camera translation, so a direction
     // keeps its precision however far the eye is from the origin.
     float4x4 view_rays;
+    // SMAA S2x's listed pixels for the second sample's lighting; null
+    // otherwise.
+    uint *sample1_pixels;
+    uint2 sample1_reserved;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -1155,8 +1170,13 @@ struct VkrVkVbufferSplitRoot
     uint vbuffer_storage;
     uint vbuffer_s1_storage;
     uint depth_s1_storage;
-    uint reserved;
+    // One where the second sample is shaded, else zero.
+    uint edge_mask_storage;
     uint2 extent;
+    // The listed pixels' indirect dispatch (groups of 64, 1, 1, then the
+    // count) and the pixels, x | y << 16.
+    uint *sample1_arguments;
+    uint *sample1_pixels;
 };
 
 struct VkrVkVbufferSplitPush
@@ -1167,6 +1187,98 @@ struct VkrVkVbufferSplitPush
 
 [[vk::push_constant]] ConstantBuffer<VkrVkVbufferSplitPush> g_vbuffer_split_push;
 
+// Whether a pixel's two depth samples can lie on one continuous surface, for
+// VBuffer.SplitDepth's pixel-centre depth. Two triangles of a surface (a
+// tessellation edge) differ by well under the tolerance across a pixel up to
+// about 86 degrees of incidence at a 70 degree field of view and 720 rows; a
+// silhouette over a depth gap exceeds it.
+bool vkr_vk_msaa_depth_continuous(float sample0, float sample1)
+{
+    const float continuity_tolerance = 0.02f;
+    return abs(sample0 - sample1) <=
+           continuity_tolerance * max(sample0, sample1);
+}
+
+// Empties the list of pixels whose second sample is shaded, before the split
+// appends to it.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void vk_msaa_sample1_list_reset()
+{
+    VkrVkVbufferSplitRoot root =
+        vkr_vk_uniform_root(*g_vbuffer_split_push.root);
+    root.sample1_arguments[0] = 0u;
+    root.sample1_arguments[1] = 1u;
+    root.sample1_arguments[2] = 1u;
+    root.sample1_arguments[3] = 0u;
+}
+
+// The depth step, per pixel along `step`, of the surface that pixel's first
+// sample hit, from a neighbouring first sample on the same draw at a
+// continuous depth: on dense meshes the neighbour is rarely on the same
+// triangle. False without one on either side.
+bool vk_msaa_depth_step(Texture2DMS<uint2> vbuffer, Texture2DMS<float> depth,
+                        int2 pixel, int2 step, int2 extent, uint draw,
+                        float depth0, out float gradient)
+{
+    gradient = 0.0f;
+    int2 before = pixel - step;
+    if (all(before >= 0) && vbuffer.Load(before, 0).x == draw)
+    {
+        float neighbour = depth.Load(before, 0);
+        if (vkr_vk_msaa_depth_continuous(depth0, neighbour))
+        {
+            gradient = depth0 - neighbour;
+            return true;
+        }
+    }
+    int2 after = pixel + step;
+    if (all(after < extent) && vbuffer.Load(after, 0).x == draw)
+    {
+        float neighbour = depth.Load(after, 0);
+        if (vkr_vk_msaa_depth_continuous(depth0, neighbour))
+        {
+            gradient = neighbour - depth0;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Whether the second sample, on another triangle of the first sample's draw,
+// continues the first sample's surface: its depth lies on the first
+// sample's surface extrapolated half a pixel up and left, within 0.1 %. A
+// tessellation edge stays far inside it; a railing 5 cm before a wall 10 m
+// away departs by 0.5 %.
+bool vk_msaa_sample1_continues(Texture2DMS<uint2> vbuffer,
+                               Texture2DMS<float> depth, int2 pixel,
+                               int2 extent, uint2 sample0, uint2 sample1,
+                               float depth1)
+{
+    const float plane_tolerance = 0.001f;
+    if (sample0.x != sample1.x)
+        return false;
+    float depth0 = depth.Load(pixel, 0);
+    float gradient_x;
+    float gradient_y;
+    if (!vk_msaa_depth_step(vbuffer, depth, pixel, int2(1, 0), extent,
+                            sample0.x, depth0, gradient_x) ||
+        !vk_msaa_depth_step(vbuffer, depth, pixel, int2(0, 1), extent,
+                            sample0.x, depth0, gradient_y))
+        return false;
+    float predicted = depth0 - 0.5f * (gradient_x + gradient_y);
+    return abs(depth1 - predicted) <= plane_tolerance * max(depth0, depth1);
+}
+
+// The second sample is shaded where it names another triangle than the first
+// and does not continue the first's surface: silhouettes, thin geometry and
+// draw borders, including railings a few centimetres before a wall in the
+// wall's draw. Shading every triangle change cost 2.6 ms at 2560 x 1440 on
+// the Bistro street view, and depth continuity alone (2 %) missed those
+// railings, so both SMAA runs filtered the first sample's image with
+// different area rows. Each listed pixel joins the list once, so the list,
+// one entry per viewport pixel, cannot overflow; one atomic per wave appends
+// its lanes.
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void vk_vbuffer_split(uint3 thread_id : SV_DispatchThreadID)
@@ -1177,22 +1289,110 @@ void vk_vbuffer_split(uint3 thread_id : SV_DispatchThreadID)
         return;
     int2 pixel = int2(thread_id.xy);
     Texture2DMS<uint2> vbuffer = g_ms_uint2_textures[root.ms_vbuffer_texture];
-    g_storage_uint2_2d[root.vbuffer_storage][thread_id.xy] =
-        vbuffer.Load(pixel, 0);
-    g_storage_uint2_2d[root.vbuffer_s1_storage][thread_id.xy] =
-        vbuffer.Load(pixel, 1);
-    g_storage_2d[root.depth_s1_storage][thread_id.xy] = float4(
-        g_ms_depth_textures[root.ms_depth_texture].Load(pixel, 1), 0.0f, 0.0f,
-        0.0f);
+    uint2 sample0 = vbuffer.Load(pixel, 0);
+    uint2 sample1 = vbuffer.Load(pixel, 1);
+    g_storage_uint2_2d[root.vbuffer_storage][thread_id.xy] = sample0;
+    g_storage_uint2_2d[root.vbuffer_s1_storage][thread_id.xy] = sample1;
+    Texture2DMS<float> depth = g_ms_depth_textures[root.ms_depth_texture];
+    float depth1 = depth.Load(pixel, 1);
+    bool shade_sample1 =
+        any(sample0 != sample1) &&
+        !vk_msaa_sample1_continues(vbuffer, depth, pixel, int2(root.extent),
+                                   sample0, sample1, depth1);
+    g_storage_2d[root.edge_mask_storage][thread_id.xy] =
+        float4(shade_sample1 ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    g_storage_2d[root.depth_s1_storage][thread_id.xy] =
+        float4(depth1, 0.0f, 0.0f, 0.0f);
+    uint wave_count = WaveActiveCountBits(shade_sample1);
+    if (wave_count == 0u)
+        return;
+    uint base = 0u;
+    if (WaveIsFirstLane())
+    {
+        InterlockedAdd(root.sample1_arguments[3], wave_count, base);
+        uint groups;
+        InterlockedMax(root.sample1_arguments[0],
+                       (base + wave_count + 63u) / 64u, groups);
+    }
+    base = WaveReadLaneFirst(base);
+    if (shade_sample1)
+        root.sample1_pixels[base + WavePrefixCountBits(shade_sample1)] =
+            thread_id.x | (thread_id.y << 16u);
 }
 
-// Sample zero's depth, written into the single-sample depth image that
-// later passes depth-test against or copy. Mirrors
+// SMAA S2x: the pixel a listed thread shades. The list's indirect dispatch
+// runs 64-thread groups along x; the last group's slots past the count hold
+// stale pixels, which the edge mask rejects or which shade their own correct
+// result again.
+uint3 vk_msaa_sample1_pixel(uint *pixels, uint3 group_id, uint group_index)
+{
+    uint packed = pixels[group_id.x * 64u + group_index];
+    return uint3(packed & 0xffffu, packed >> 16u, 0u);
+}
+
+// SMAA S2x: the second sample's colour for display: the first sample's
+// post-processed colour plus, where VBuffer.Split marked the second sample,
+// the difference between their lit colours. Bloom is additive, so the sum
+// equals the second sample bloomed by the first sample's halo. A pixel a
+// blended overlay or transmission layer covers keeps the first sample's,
+// which alone carries that layer. Mirrors VkrVulkanMsaaComposeRoot.
+struct VkrVkMsaaComposeRoot
+{
+    uint sample0_texture;
+    uint sample1_texture;
+    uint edge_mask_texture;
+    uint vbuffer_texture;
+    uint transmission_vbuffer_texture;
+    uint destination_texture;
+    uint2 extent;
+    // The first sample's bloomed colour, zero without bloom.
+    uint post_texture;
+    uint3 reserved;
+};
+
+struct VkrVkMsaaComposePush
+{
+    VkrVkMsaaComposeRoot *root;
+    uint2 reserved;
+};
+
+[[vk::push_constant]] ConstantBuffer<VkrVkMsaaComposePush> g_msaa_compose_push;
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_msaa_compose(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkMsaaComposeRoot root = vkr_vk_uniform_root(*g_msaa_compose_push.root);
+    if (any(thread_id.xy >= root.extent))
+        return;
+    uint2 pixel = thread_id.xy;
+    bool own = g_storage_2d[root.edge_mask_texture][pixel].x != 0.0f &&
+               (g_storage_uint2_2d[root.vbuffer_texture][pixel].x &
+                0x80000000u) == 0u;
+    if (own && root.transmission_vbuffer_texture != 0u)
+        own = g_storage_uint2_images[root.transmission_vbuffer_texture]
+                                    [uint3(pixel, 0u)].x == 0u;
+    float4 sample0 = g_storage_2d[root.sample0_texture][pixel];
+    float4 post =
+        root.post_texture != 0u ? g_storage_2d[root.post_texture][pixel]
+                                : sample0;
+    if (own)
+        post.rgb += g_storage_2d[root.sample1_texture][pixel].rgb - sample0.rgb;
+    g_storage_2d[root.destination_texture][pixel] = post;
+}
+
+// The single-sample depth image that later passes depth-test against, copy,
+// or reconstruct positions from at pixel centres. The standard 2x positions
+// lie symmetric about the centre, and device depth is affine across a
+// triangle, so where both samples hit one triangle their mean is the centre's
+// depth, and across a continuous surface's triangle edge nearly so;
+// elsewhere sample zero's stays. Mirrors
 // VkrVulkanVbufferSplitDepthRoot.
 struct VkrVkVbufferSplitDepthRoot
 {
     uint ms_depth_texture;
-    uint3 reserved;
+    uint ms_vbuffer_texture;
+    uint2 reserved;
 };
 
 struct VkrVkVbufferSplitDepthPush
@@ -1217,8 +1417,16 @@ float vk_vbuffer_split_depth_fragment(float4 position : SV_Position)
     : SV_Depth
 {
     VkrVkVbufferSplitDepthRoot *root = g_vbuffer_split_depth_push.root;
-    return g_ms_depth_textures[root.ms_depth_texture].Load(
-        int2(position.xy), 0);
+    int2 pixel = int2(position.xy);
+    Texture2DMS<float> depth = g_ms_depth_textures[root.ms_depth_texture];
+    Texture2DMS<uint2> vbuffer = g_ms_uint2_textures[root.ms_vbuffer_texture];
+    float sample0 = depth.Load(pixel, 0);
+    float sample1 = depth.Load(pixel, 1);
+    bool same_triangle =
+        all(vbuffer.Load(pixel, 0) == vbuffer.Load(pixel, 1));
+    if (!same_triangle && !vkr_vk_msaa_depth_continuous(sample0, sample1))
+        return sample0;
+    return 0.5f * (sample0 + sample1);
 }
 
 [shader("fragment")]
@@ -1332,6 +1540,7 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot root, uint2 pixel, float marker)
     g_storage_2d[root.albedo_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_2d[root.specular_texture][pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     g_storage_float2_2d[root.normal_texture][pixel] = 0.0f;
+    bool first_sample = root.edge_mask_texture == 0u;
     if (root.clearcoat_texture != 0u)
     {
         g_storage_2d[root.clearcoat_texture][pixel] = 0.0f;
@@ -1351,8 +1560,11 @@ void vkr_vk_resolve_defaults(VkrVkResolveRoot root, uint2 pixel, float marker)
     g_storage_2d[root.debug_texture][pixel] = float4(0.0f, 0.0f, 0.0f, marker);
 #endif
     g_storage_2d[root.scene_texture][pixel] = 0.0f;
-    g_storage_float2_2d[root.motion_texture][pixel] = 0.0f;
-    g_storage_float2_2d[root.validity_texture][pixel] = 0.0f;
+    if (first_sample)
+    {
+        g_storage_float2_2d[root.motion_texture][pixel] = 0.0f;
+        g_storage_float2_2d[root.validity_texture][pixel] = 0.0f;
+    }
     if (root.baked_lamps_texture != 0u)
     {
         g_storage_2d[root.baked_lamps_texture][pixel] = 0.0f;
@@ -1518,8 +1730,10 @@ VkrTerrainSurface vkr_vk_terrain_surface(VkrTerrainSurface layer0,
 // Returns false for a row this pass must not shade, counting it as an invalid
 // resolve first. The caller owns the fallback, because the G-buffer writes
 // defaults while a transmission layer keeps its background.
+// `position` is the raster position in pixels the surface is resolved at:
+// the pixel centre, or SMAA S2x's second sample.
 bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
-                            uint2 pixel, out VkrVkSurface surface)
+                            float2 position, out VkrVkSurface surface)
 {
     surface = (VkrVkSurface)0;
     // The visibility buffer, the compacted visible rows, and the geometry table
@@ -1571,7 +1785,7 @@ bool vkr_vk_resolve_surface(VkrVkSurfaceSource source, uint2 encoded,
     float4 ca = mul(source.view_projection, wa);
     float4 cb = mul(source.view_projection, wb);
     float4 cc = mul(source.view_projection, wc);
-    float2 p = float2(pixel) + 0.5f;
+    float2 p = position;
     float3 perspective;
     float3 perspective_dx;
     float3 perspective_dy;
@@ -1974,16 +2188,28 @@ VkrVkBakedLamps vkr_vk_baked_lamps(VkrVkLightmapSource root,
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
+void vk_gbuffer_resolve(uint3 dispatch_id : SV_DispatchThreadID,
+                        uint3 group_id : SV_GroupID,
+                        uint group_index : SV_GroupIndex)
 {
     VkrVkResolveRoot root = vkr_vk_uniform_root(*g_resolve_push.root);
+    uint3 thread_id =
+        root.sample1_pixels != nullptr
+            ? vk_msaa_sample1_pixel(root.sample1_pixels, group_id, group_index)
+            : dispatch_id;
     if (any(thread_id.xy >= root.extent))
+        return;
+    // SMAA S2x's second sample resolves only where it names another
+    // surface than the first.
+    bool first_sample = root.edge_mask_texture == 0u;
+    if (!first_sample &&
+        g_storage_2d[root.edge_mask_texture][thread_id.xy].x == 0.0f)
         return;
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
     if (encoded.x == 0u)
     {
         vkr_vk_resolve_defaults(root, thread_id.xy, 0.0f);
-        if (root.history_valid != 0u)
+        if (first_sample && root.history_valid != 0u)
         {
             // Sky pixels lie on the far plane, reversed depth 0 (ADR-109).
             float2 uv = (float2(thread_id.xy) + 0.5f) / float2(root.extent);
@@ -2009,8 +2235,12 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
         root.terrain_materials, root.decal_grid_dimensions_count.w,
         root.lightmap_rect_count,
     };
+    // SMAA S2x's second sample lies at (0.25, 0.25) in the pixel, where its
+    // visibility and depth were rasterized.
+    float2 position =
+        float2(thread_id.xy) + (first_sample ? 0.5f : 0.25f);
     VkrVkSurface surface;
-    if (!vkr_vk_resolve_surface(source, encoded, thread_id.xy, surface))
+    if (!vkr_vk_resolve_surface(source, encoded, position, surface))
     {
         vkr_vk_resolve_defaults(root, thread_id.xy, -1.0f);
         return;
@@ -2070,8 +2300,11 @@ void vk_gbuffer_resolve(uint3 thread_id : SV_DispatchThreadID)
             }
         }
     }
-    g_storage_float2_2d[root.motion_texture][thread_id.xy] = motion;
-    g_storage_float2_2d[root.validity_texture][thread_id.xy] = validity;
+    if (first_sample)
+    {
+        g_storage_float2_2d[root.motion_texture][thread_id.xy] = motion;
+        g_storage_float2_2d[root.validity_texture][thread_id.xy] = validity;
+    }
     if (root.baked_lamps_texture != 0u)
     {
         // The lightmap's surface: its interpolated normal, before normal
@@ -2346,8 +2579,10 @@ float3 vkr_vk_deferred_pixel_world(VkrVkLightingRoot root, uint2 pixel,
                                    float depth)
 {
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
-    float2 ndc_xy =
-        (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
+    // SMAA S2x's second sample's depth lies at (0.25, 0.25) in the pixel.
+    float sample_position = root.edge_mask_texture != 0u ? 0.25f : 0.5f;
+    float2 uv = (float2(pixel) + sample_position) / float2(root.extent);
+    float2 ndc_xy = uv * 2.0f - 1.0f;
     return vkr_vk_deferred_homogeneous(
         mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
 }
@@ -2934,6 +3169,28 @@ bool vk_deferred_tile_layered(VkrVkLightingRoot root, uint2 pixel,
     return g_deferred_tile_layered != 0u;
 }
 
+// SMAA S2x's second sample takes its per-pixel lighting inputs (GTAO, the
+// local shadow mask, the diffuse volume, baked lamps and their shadow) from
+// the nearest pixel whose first sample lies on the same draw, since those
+// inputs belong to each pixel's first-sample surface. The second sample at
+// (0.25, 0.25) is nearest the left and upper pixels. Without such a pixel it
+// keeps its own pixel's.
+uint2 vk_msaa_side_pixel(VkrVkLightingRoot root, uint2 pixel, uint visible)
+{
+    const int2 offsets[5] = {int2(-1, 0), int2(0, -1), int2(-1, -1),
+                             int2(1, 0), int2(0, 1)};
+    for (uint i = 0u; i < 5u; ++i)
+    {
+        int2 neighbour = int2(pixel) + offsets[i];
+        if (any(neighbour < 0) || any(neighbour >= int2(root.extent)))
+            continue;
+        if (g_storage_uint2_2d[root.side_vbuffer_texture][uint2(neighbour)]
+                .x == visible)
+            return uint2(neighbour);
+    }
+    return pixel;
+}
+
 // Layered selects the clearcoat, sheen and anisotropy paths at compile time;
 // without them the kernel needs fewer registers.
 void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
@@ -2941,10 +3198,17 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (any(thread_id.xy >= root.extent))
         return;
+    // SMAA S2x's second sample shades only its edge pixels.
+    if (root.edge_mask_texture != 0u &&
+        g_storage_2d[root.edge_mask_texture][thread_id.xy].x == 0.0f)
+        return;
     VkrVulkanPacketFrameRoot *frame = root.frame;
     if (root.subsurface_profile_count != 0u)
         g_storage_2d[root.subsurface_source_texture][thread_id.xy] = float4(0.0f);
     uint2 encoded = g_storage_uint2_2d[root.vbuffer_texture][thread_id.xy];
+    uint2 side_pixel = root.side_vbuffer_texture != 0u
+                           ? vk_msaa_side_pixel(root, thread_id.xy, encoded.x)
+                           : thread_id.xy;
     if (encoded.x == 0u)
     {
         // The indirect-diffuse channel carries only surface environment
@@ -3110,7 +3374,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
         true, clearcoat_active, clearcoat, sheen_active, sheen,
         sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
-        root.local_shadow_mask_texture, thread_id.xy, root.light_contribution);
+        root.local_shadow_mask_texture, side_pixel, root.light_contribution);
     diffuse_irradiance += punctual.irradiance;
     analytic_diffuse += punctual.diffuse;
     analytic_specular += punctual.specular;
@@ -3130,12 +3394,12 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     float3 baked_lamp_irradiance = 0.0f;
     if (root.baked_lamps_texture != 0u)
     {
-        float4 baked = g_storage_2d[root.baked_lamps_texture][thread_id.xy];
-        float4 dominant = g_storage_2d[root.baked_direction_texture][thread_id.xy];
+        float4 baked = g_storage_2d[root.baked_lamps_texture][side_pixel];
+        float4 dominant = g_storage_2d[root.baked_direction_texture][side_pixel];
         // The selected baked lamps' moving casters hide part of their baked
         // light (Shadow.LocalMask); it leaves before the split.
         float3 irradiance = vk_baked_lamp_irradiance(
-            frame, baked, root.baked_lamp_shadow_texture, thread_id.xy);
+            frame, baked, root.baked_lamp_shadow_texture, side_pixel);
         baked_lamp_irradiance = irradiance;
         // The undirected share shades as diffuse light; the directed share
         // as a light from the dominant direction, at the irradiance a
@@ -3171,8 +3435,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         g_storage_2d[root.scene_texture][thread_id.xy] = float4(debug, 1.0f);
         return;
     }
-    float2 gtao_uv =
-        (float2(thread_id.xy) + 0.5f) / float2(root.extent);
+    float2 gtao_uv = (float2(side_pixel) + 0.5f) / float2(root.extent);
     float4 gtao =
         g_textures[root.gtao_visibility_texture]
             .SampleLevel(g_samplers[0], gtao_uv, 0.0f);
@@ -3194,7 +3457,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     if (root.diffuse_volume_texture != 0u)
     {
         baked = vk_diffuse_volume_baked_light(
-            frame, g_storage_2d[root.diffuse_volume_texture][thread_id.xy]);
+            frame, g_storage_2d[root.diffuse_volume_texture][side_pixel]);
         volume_valid = baked.valid;
         volume_irradiance = baked.response * ao;
         volume_diffuse =
@@ -3303,10 +3566,18 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
+void vk_deferred_lighting(uint3 dispatch_id : SV_DispatchThreadID,
+                          uint3 group_id : SV_GroupID,
                           uint group_index : SV_GroupIndex)
 {
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
+    if (root.sample1_pixels != nullptr)
+    {
+        vk_deferred_shade<false>(
+            vk_msaa_sample1_pixel(root.sample1_pixels, group_id, group_index));
+        return;
+    }
+    uint3 thread_id = dispatch_id;
     if (root.layered_tiles != 0u &&
         vk_deferred_tile_layered(root, thread_id.xy, group_index))
         return;
@@ -3773,7 +4044,8 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         nullptr, 0u, root.lightmap_rect_count,
     };
     VkrVkSurface surface;
-    if (!vkr_vk_resolve_surface(source, encoded, pixel, surface))
+    if (!vkr_vk_resolve_surface(source, encoded, float2(pixel) + 0.5f,
+                                surface))
     {
         g_storage_2d[root.output_texture][pixel] =
             g_textures[root.feedback_texture].SampleLevel(

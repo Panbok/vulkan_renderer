@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-14
+updated: 2026-10-15
 authority: proposal
 ---
 
@@ -162,8 +162,9 @@ T2x needs these inputs changed first:
   after the two-frame resolve, which reintroduces long history.
 - **Decima's FXAA plus two-frame TAA** publishes no rejection details, and
   FXAA is softer than SMAA.
-- **Visibility-buffer MSAA** stays a separate proposal
-  ([Visibility-buffer MSAA](visibility-buffer-msaa.md)).
+- **Visibility-buffer MSAA** was not part of this step; SMAA 4x added it on
+  2026-10-15
+  ([ADR-037](../adr/037-portable-same-resolution-temporal-antialiasing.md)).
 
 ### Evidence
 

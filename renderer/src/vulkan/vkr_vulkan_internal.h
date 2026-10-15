@@ -182,6 +182,9 @@
 #define VKR_VULKAN_PACKET_SMAA_BLEND_COMP_SPV "packet.smaa_blend.comp.spv"
 #define VKR_VULKAN_PACKET_SMAA_RESOLVE_COMP_SPV "packet.smaa_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_VBUFFER_SPLIT_COMP_SPV "packet.vbuffer_split.comp.spv"
+#define VKR_VULKAN_PACKET_MSAA_SAMPLE1_LIST_RESET_COMP_SPV                     \
+  "packet.msaa_sample1_list_reset.comp.spv"
+#define VKR_VULKAN_PACKET_MSAA_COMPOSE_COMP_SPV "packet.msaa_compose.comp.spv"
 #define VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_VERT_SPV                         \
   "packet.vbuffer_split_depth.vert.spv"
 #define VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_FRAG_SPV                         \
@@ -479,6 +482,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_SMAA_BLEND,
   VKR_VULKAN_DEFERRED_PIPELINE_SMAA_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_VBUFFER_SPLIT,
+  VKR_VULKAN_DEFERRED_PIPELINE_MSAA_COMPOSE,
+  VKR_VULKAN_DEFERRED_PIPELINE_MSAA_SAMPLE1_LIST_RESET,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -778,7 +783,13 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   float32_t lightmap_active_weights[8];
   /** The resolve's dominant-direction output for deferred lighting. */
   uint32_t baked_direction_texture;
-  uint32_t lightmap_reserved[3];
+  /** SMAA S2x's edge mask, nonzero for the second sample's resolve: only
+      the listed pixels resolve, and the temporal outputs stay the first
+      sample's. */
+  uint32_t edge_mask_texture;
+  /** SMAA S2x's listed pixels (x | y << 16), one per thread of the second
+      sample's indirect dispatch; zero otherwise. */
+  uint64_t sample1_pixels;
 } VkrVulkanResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
@@ -857,7 +868,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
       casters hide, subtracted from the baked lamp light; the sentinel slot
       without a selected lamp. */
   uint32_t baked_lamp_shadow_texture;
-  uint32_t baked_reserved;
+  /** SMAA S2x's edge mask, nonzero when lighting the second sample: only
+      its edge pixels shade. */
+  uint32_t edge_mask_texture;
   /** Reflection.Raster's mirrored view and its linear sampler, or the
       sentinel slot without a planar reflection. */
   uint32_t planar_reflection_texture;
@@ -868,10 +881,17 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
       top-left quarter. */
   float32_t planar_reflection_uv_scale[2];
   uint32_t planar_reflection_object_id;
-  uint32_t planar_reserved;
+  /** SMAA S2x's first-sample visibility when lighting the second sample,
+      whose per-pixel inputs come from a pixel whose first sample lies on its
+      draw; zero otherwise. */
+  uint32_t side_vbuffer_texture;
   /** The background's camera-relative view directions: the
       vkr_atmosphere_view_rays matrix of the jittered projection. */
   Mat4 view_rays;
+  /** SMAA S2x's listed pixels for the second sample's lighting; zero
+      otherwise. */
+  uint64_t sample1_pixels;
+  uint32_t sample1_reserved[2];
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -1319,7 +1339,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSmaaRoot {
   uint32_t extent[2];
   /** Blend pass: the scene's motion, whose length rides in alpha for T2x. */
   uint32_t motion_texture;
-  uint32_t reserved;
+  /** Blend pass: nonzero for SMAA S2x's second sample, which averages its
+      result with the first sample's in the destination. */
+  uint32_t blend_half;
   Vec4 subsample_indices;
 } VkrVulkanSmaaRoot;
 
@@ -1700,17 +1722,44 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanVbufferSplitRoot {
   uint32_t vbuffer_storage;
   uint32_t vbuffer_s1_storage;
   uint32_t depth_s1_storage;
-  uint32_t reserved;
+  /* One where the second sample is shaded, else zero. */
+  uint32_t edge_mask_storage;
   uint32_t extent[2];
+  /* The listed pixels' indirect dispatch (groups of 64, 1, 1, then the
+     count) and the pixels, x | y << 16. */
+  uint64_t sample1_arguments;
+  uint64_t sample1_pixels;
 } VkrVulkanVbufferSplitRoot;
-_Static_assert(sizeof(VkrVulkanVbufferSplitRoot) == 32u &&
-                   offsetof(VkrVulkanVbufferSplitRoot, extent) == 24u,
+_Static_assert(sizeof(VkrVulkanVbufferSplitRoot) == 48u &&
+                   offsetof(VkrVulkanVbufferSplitRoot, extent) == 24u &&
+                   offsetof(VkrVulkanVbufferSplitRoot, sample1_pixels) == 40u,
                "Visibility split root ABI drift");
+
+/** Mirrors VkrVkMsaaComposeRoot in world/deferred.slang: SMAA S2x's
+    second sample's scene colour, its own where it names another surface
+    than the first and no overlay or transmission layer covers the pixel,
+    else the first sample's. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanMsaaComposeRoot {
+  uint32_t sample0_texture;
+  uint32_t sample1_texture;
+  uint32_t edge_mask_texture;
+  uint32_t vbuffer_texture;
+  /* The first transmission layer's visibility, zero without one. */
+  uint32_t transmission_vbuffer_texture;
+  uint32_t destination_texture;
+  uint32_t extent[2];
+  /* The first sample's bloomed colour, zero without bloom. */
+  uint32_t post_texture;
+  uint32_t reserved[3];
+} VkrVulkanMsaaComposeRoot;
+_Static_assert(sizeof(VkrVulkanMsaaComposeRoot) == 48u,
+               "MSAA compose root ABI drift");
 
 /** Mirrors VkrVkVbufferSplitDepthRoot in world/deferred.slang. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanVbufferSplitDepthRoot {
   uint32_t ms_depth_texture;
-  uint32_t reserved[3];
+  uint32_t ms_vbuffer_texture;
+  uint32_t reserved[2];
 } VkrVulkanVbufferSplitDepthRoot;
 _Static_assert(sizeof(VkrVulkanVbufferSplitDepthRoot) == 16u,
                "Visibility split depth root ABI drift");
@@ -1962,8 +2011,9 @@ _Static_assert(offsetof(VkrVulkanTemporalResolveRoot, extent) == 68u &&
                             transmission_visible_rows) == 88u &&
                    offsetof(VkrVulkanTemporalResolveRoot, reserved) == 116u,
                "Temporal resolve-root ABI offset drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 320u &&
+_Static_assert(sizeof(VkrVulkanLightingRoot) == 336u &&
                    offsetof(VkrVulkanLightingRoot, view_rays) == 256u &&
+                   offsetof(VkrVulkanLightingRoot, sample1_pixels) == 320u &&
                    offsetof(VkrVulkanLightingRoot, planar_reflection_texture) ==
                        216u &&
                    offsetof(VkrVulkanLightingRoot, planar_reflection_plane) ==
@@ -1989,7 +2039,7 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
                        164u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
                        192u &&
-                   sizeof(VkrVulkanLightingRoot) == 320u,
+                   sizeof(VkrVulkanLightingRoot) == 336u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
@@ -3763,7 +3813,8 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                                        uint32_t view_index);
 bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
-                                        const VkrRgPass *pass);
+                                        const VkrRgPass *pass,
+                                        bool8_t sample_one);
 bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
                                           VkrVulkanPreparedCompute *prepared,
                                           const VkrRgPass *pass);
@@ -3784,8 +3835,8 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
-                                         const VkrRgPass *pass,
-                                         bool8_t layered);
+                                         const VkrRgPass *pass, bool8_t layered,
+                                         bool8_t sample_one);
 bool8_t vkr_vk_prepare_temporal_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
@@ -3851,10 +3902,10 @@ bool8_t vkr_vk_prepare_smaa_edges(VkrVulkanRenderer *renderer,
                                   const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_smaa_weights(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass);
+                                    const VkrRgPass *pass, bool8_t sample_one);
 bool8_t vkr_vk_prepare_smaa_blend(VkrVulkanRenderer *renderer,
                                   VkrVulkanPreparedCompute *prepared,
-                                  const VkrRgPass *pass);
+                                  const VkrRgPass *pass, bool8_t sample_one);
 bool8_t vkr_vk_prepare_smaa_resolve(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
                                     const VkrRgPass *pass);
@@ -3902,10 +3953,12 @@ void vkr_vk_record_selection_outline(
 bool8_t vkr_vk_prepare_vbuffer_split(VkrVulkanRenderer *renderer,
                                      VkrVulkanPreparedCompute *prepared,
                                      const VkrRgPass *pass);
-bool8_t
-vkr_vk_prepare_vbuffer_split_depth(VkrVulkanRenderer *renderer,
-                                   VkrVulkanPreparedVbufferSplitDepth *out,
-                                   uint32_t ms_depth_texture);
+bool8_t vkr_vk_prepare_msaa_compose(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_vbuffer_split_depth(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedVbufferSplitDepth *out,
+    uint32_t ms_depth_texture, uint32_t ms_vbuffer_texture);
 void vkr_vk_record_vbuffer_split_depth(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrVulkanPreparedVbufferSplitDepth *split);

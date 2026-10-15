@@ -47,6 +47,9 @@ typedef struct VkrTemporalFrameInput {
   uint32_t render_mode;
   uint32_t explicit_reset_reasons;
   bool8_t enabled;
+  /** The visibility raster samples each pixel twice (SMAA 4x = S2x + T2x):
+      the jitter and subsample rows follow the 4x table. */
+  bool8_t msaa;
 } VkrTemporalFrameInput;
 
 typedef struct VkrTemporalFrame {
@@ -56,19 +59,24 @@ typedef struct VkrTemporalFrame {
       without history. */
   Vec3 previous_view_position;
   Vec2 jitter_pixels;
-  /** SMAA's area-texture rows for `jitter_pixels`; zero without jitter. */
+  /** SMAA's area-texture rows for `jitter_pixels`; zero without jitter or
+      MSAA. With MSAA they are sample zero's, and
+      `smaa_subsample_indices_sample1` sample one's. */
   Vec4 smaa_subsample_indices;
+  Vec4 smaa_subsample_indices_sample1;
   uint32_t reset_reasons;
   bool8_t history_valid;
   bool8_t enabled;
 } VkrTemporalFrame;
 
 /** Raster shift in pixels (y down) of an enabled temporal frame's SMAA T2x
- * subsample. */
-Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index);
+ * subsample, or of SMAA 4x's when `msaa`. */
+Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index, bool8_t msaa);
 
-/** SMAA's area-texture subsample rows for the frame's jitter. */
-Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index);
+/** SMAA's area-texture subsample rows for the frame's jitter and, with
+ * `msaa`, the 2x multisample `sample` (SMAA 4x). */
+Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index, uint32_t sample,
+                                         bool8_t msaa);
 
 /** True when the camera moved or turned too far between two frames for history
  * to follow it. Other camera-driven transitions snap on the same frames. */

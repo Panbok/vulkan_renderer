@@ -837,7 +837,10 @@ post controls and the temporal consumer. The main dataflow is:
    shadows raster opaque depth and, when refractive casters exist, two RGB
    transmission crossings plus a blocking overflow depth.
 2. Raster opaque/cutout visibility and depth, build HZB, and peel four ordered
-   transmission visibility layers.
+   transmission visibility layers. With SMAA 4x the camera's opaque raster
+   samples each pixel twice (opt-in); a split keeps sample 0 as the single-sample
+   visibility, writes the pixel-centre depth and lists the pixels whose
+   second sample lies on another surface.
 3. Resolve the G-buffer, which for lightmapped draws also writes the baked
    static lamps' irradiance and dominant direction when the scene's set holds
    them ([ADR-104](adr/104-desktop-baked-lamps.md)); evaluate GTAO; sample a
@@ -850,10 +853,12 @@ post controls and the temporal consumer. The main dataflow is:
    froxel volume and applies it, then applies analytic fog before the opaque
    transmission pyramid. Transmission and ordinary blend sample the current
    integrated volume when froxel fog is enabled. Shade transmission from deepest
-   to nearest, resolve requested picking, then draw ordinary blend.
+   to nearest, resolve requested picking, then draw ordinary blend. With
+   SMAA 4x the listed pixels' second samples are resolved and lit as well.
 4. Compose the jittered Scene HDR and SMAA T2x's history accept mask.
-5. Meter exposure, produce/combine bloom, tonemap, run SMAA T2x on the
-   display-linear image and compose native UI.
+5. Meter exposure, produce/combine bloom, tonemap, run SMAA (S2x per sample
+   with SMAA 4x) and T2x's resolve on the display-linear image, and compose
+   native UI.
 
 Optional profiled surface diffusion uses eight scene-authored RGB distance
 profiles, 32 samples and a 32 internal-pixel radius cap. Two graph-owned RGBA16F
@@ -1123,7 +1128,8 @@ were removed from the desktop pipeline on 2026-10-12
 from the global environment and box-projected reflection probes on both
 lobes of a coated material, and diffuse indirect light from lightmaps,
 diffuse volumes and the environment. SMAA T2x replaced portable TAA and
-FXAA on 2026-10-13
+FXAA on 2026-10-13; SMAA 4x (S2x plus T2x) became an opt-in path on
+2026-10-15
 ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
 On the desktop pipeline, a `planar_reflector` entity's surface on its plane
 reflects the scene mirrored about it: one reflector a frame gets a culling
@@ -1209,7 +1215,11 @@ colour history remains; history uses the preceding submitted frame with GPU
 dependencies, output reuse still proves completion, and resets exclude every
 pre-reset producer. Retained shadow images converge to a common submitted
 projection so cached per-image fits cannot prevent convergence after camera
-movement. The G-buffer writes sky rotation motion for the resolve
+movement. The G-buffer writes sky rotation motion for the resolve. Opt-in
+SMAA 4x (`VKR_MSAA_ENABLED`) adds S2x: the camera's visibility raster is 2x multisampled, the second
+sample is shaded only at pixels where it lies on another surface,
+and SMAA runs on each sample's display-linear image before T2x; frames with
+depth of field or motion blur keep T2x alone
 ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
 
 Automatic exposure adapts over elapsed time since its selected completed state,
@@ -1485,8 +1495,12 @@ These are limits of current code or retained acceptance, not scheduled promises:
   for the distinct failure and memory evidence.
 - Deformation/procedural/particle motion and broad animation/disocclusion coverage
   remain outside the completed rigid-motion temporal contract.
-- Visibility-buffer MSAA, a general effects system, asynchronous graph queues
-  and fully graph-declared IBL baking are not production features.
+- A general effects system, asynchronous graph queues and fully
+  graph-declared IBL baking are not production features.
+- SMAA 4x's second sample gets no fog, blended overlay, transmission layer
+  or layered-material lobes of its own, and takes its per-pixel lighting
+  inputs from a neighbouring first sample
+  ([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
 - Sparse baked diffuse volumes bake on Vulkan ray queries, Metal ray
   tracing or the CPU and light both pipeline classes; light paths are traced
   per layer; see

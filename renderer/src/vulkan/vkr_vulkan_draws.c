@@ -1690,11 +1690,9 @@ void vkr_vk_record_selection_outline(
   vkCmdDraw(command, 3u, 1u, 0u, 0u);
 }
 
-/* The grid's rays use the unjittered camera, like the editor handles. */
-bool8_t
-vkr_vk_prepare_vbuffer_split_depth(VkrVulkanRenderer *renderer,
-                                   VkrVulkanPreparedVbufferSplitDepth *out,
-                                   uint32_t ms_depth_texture) {
+bool8_t vkr_vk_prepare_vbuffer_split_depth(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedVbufferSplitDepth *out,
+    uint32_t ms_depth_texture, uint32_t ms_vbuffer_texture) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint64_t address = 0u;
@@ -1704,8 +1702,10 @@ vkr_vk_prepare_vbuffer_split_depth(VkrVulkanRenderer *renderer,
   if (!root) {
     return false_v;
   }
-  *root =
-      (VkrVulkanVbufferSplitDepthRoot){.ms_depth_texture = ms_depth_texture};
+  *root = (VkrVulkanVbufferSplitDepthRoot){
+      .ms_depth_texture = ms_depth_texture,
+      .ms_vbuffer_texture = ms_vbuffer_texture,
+  };
   *out = (VkrVulkanPreparedVbufferSplitDepth){.root_address = address};
   return true_v;
 }
@@ -1725,6 +1725,7 @@ void vkr_vk_record_vbuffer_split_depth(
   vkCmdDraw(command, 3u, 1u, 0u, 0u);
 }
 
+/* The grid's rays use the unjittered camera, like the editor handles. */
 bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
                                    VkrVulkanPreparedEditorGrid *out,
                                    uint32_t depth_texture, uint32_t width,

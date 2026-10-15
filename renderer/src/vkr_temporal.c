@@ -50,19 +50,34 @@ Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
   return reprojection;
 }
 
-Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index) {
+Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index, bool8_t msaa) {
   /* SMAA T2x's two subsamples (Jimenez et al. 2012, @SUBSAMPLE_INDICES):
      (0.25, -0.25) and (-0.25, 0.25) with y up are right-down and left-up
-     shifts, which VKR's raster pixels, y down, write as below. */
-  return frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u
-             ? (Vec2){0.25f, 0.25f}
-             : (Vec2){-0.25f, -0.25f};
+     shifts, which VKR's raster pixels, y down, write as below. SMAA 4x
+     jitters the 2x multisample pattern by (0.125, 0.125) and
+     (-0.125, -0.125) with y up. */
+  const bool8_t first = frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u;
+  if (msaa) {
+    return first ? (Vec2){0.125f, -0.125f} : (Vec2){-0.125f, 0.125f};
+  }
+  return first ? (Vec2){0.25f, 0.25f} : (Vec2){-0.25f, -0.25f};
 }
 
-Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index) {
-  return frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u
-             ? (Vec4){1.0f, 1.0f, 1.0f, 0.0f}
-             : (Vec4){2.0f, 2.0f, 2.0f, 0.0f};
+Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index, uint32_t sample,
+                                         bool8_t msaa) {
+  const bool8_t first = frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u;
+  if (msaa) {
+    /* SMAA 4x's table: frame zero's samples zero and one, then frame
+       one's. */
+    if (first) {
+      return sample == 0u ? (Vec4){5.0f, 3.0f, 1.0f, 3.0f}
+                          : (Vec4){4.0f, 6.0f, 2.0f, 3.0f};
+    }
+    return sample == 0u ? (Vec4){3.0f, 5.0f, 1.0f, 4.0f}
+                        : (Vec4){6.0f, 4.0f, 2.0f, 4.0f};
+  }
+  return first ? (Vec4){1.0f, 1.0f, 1.0f, 0.0f}
+               : (Vec4){2.0f, 2.0f, 2.0f, 0.0f};
 }
 
 vkr_internal Vec3 vkr_temporal_view_forward(Mat4 view) {
@@ -147,11 +162,19 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
       frame.reset_reasons |= VKR_TEMPORAL_RESET_CAMERA_CUT;
   }
   if (input->enabled && input->width > 0u && input->height > 0u) {
-    frame.jitter_pixels = vkr_temporal_jitter_for_frame(input->frame_index);
-    frame.smaa_subsample_indices =
-        vkr_temporal_smaa_subsample_indices(input->frame_index);
+    frame.jitter_pixels =
+        vkr_temporal_jitter_for_frame(input->frame_index, input->msaa);
+    frame.smaa_subsample_indices = vkr_temporal_smaa_subsample_indices(
+        input->frame_index, 0u, input->msaa);
+    frame.smaa_subsample_indices_sample1 = vkr_temporal_smaa_subsample_indices(
+        input->frame_index, 1u, input->msaa);
     frame.jittered_projection = vkr_temporal_jitter_projection(
         input->projection, frame.jitter_pixels, input->width, input->height);
+  } else if (input->msaa) {
+    /* SMAA S2x without T2x: the reference's rows for the two samples of the
+       unjittered 2x multisample pattern. */
+    frame.smaa_subsample_indices = (Vec4){1.0f, 1.0f, 1.0f, 0.0f};
+    frame.smaa_subsample_indices_sample1 = (Vec4){2.0f, 2.0f, 2.0f, 0.0f};
   }
   frame.history_valid = input->enabled && frame.reset_reasons == 0u;
   return frame;

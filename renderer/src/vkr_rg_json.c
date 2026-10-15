@@ -36,6 +36,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"smaa_enabled", VKR_RG_JSON_CONDITION_SMAA_ENABLED},
     {"msaa_enabled", VKR_RG_JSON_CONDITION_MSAA_ENABLED},
     {"!msaa_enabled", VKR_RG_JSON_CONDITION_MSAA_DISABLED},
+    {"msaa_enabled && editor_enabled", VKR_RG_JSON_CONDITION_MSAA_EDITOR},
+    {"msaa_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_MSAA_FULLSCREEN},
     {"post_transform_cache_enabled && !smaa_enabled",
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA},
     {"smaa_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SMAA_EDITOR},
@@ -2052,6 +2054,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->msaa_enabled;
   case VKR_RG_JSON_CONDITION_MSAA_DISABLED:
     return !frame->msaa_enabled;
+  case VKR_RG_JSON_CONDITION_MSAA_EDITOR:
+    return frame->msaa_enabled && frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_MSAA_FULLSCREEN:
+    return frame->msaa_enabled && !frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA:
     return frame->post_transform_cache_enabled && !frame->smaa_enabled;
   case VKR_RG_JSON_CONDITION_SMAA_EDITOR:

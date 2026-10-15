@@ -64,6 +64,15 @@ typedef enum VkrRgExecutorKind {
      single-sample images, and its sample zero's depth. */
   VKR_RG_EXECUTOR_VBUFFER_SPLIT,
   VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH,
+  /* SMAA S2x: the second sample's G-buffer and lighting at the pixels whose
+     two samples name different surfaces. */
+  VKR_RG_EXECUTOR_GBUFFER_RESOLVE_SAMPLE1,
+  VKR_RG_EXECUTOR_LIGHTING_DEFERRED_SAMPLE1,
+  /* SMAA S2x's second sample through post: its scene colour composed with
+     the first's, and its SMAA weights and blend at half weight. */
+  VKR_RG_EXECUTOR_MSAA_COMPOSE,
+  VKR_RG_EXECUTOR_SMAA_WEIGHTS_SAMPLE1,
+  VKR_RG_EXECUTOR_SMAA_BLEND_SAMPLE1,
   VKR_RG_EXECUTOR_SMAA_EDGES,
   VKR_RG_EXECUTOR_SMAA_WEIGHTS,
   VKR_RG_EXECUTOR_SMAA_BLEND,

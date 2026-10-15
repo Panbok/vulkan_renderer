@@ -724,6 +724,185 @@
       ]
     },
     {
+      "name": "gbuffer_albedo_s1",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "gbuffer_specular_s1",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8G8B8A8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "gbuffer_normal_s1",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16_SNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "scene_color_s1",
+      "type": "image",
+      "condition": "msaa_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "msaa_edge_mask",
+      "condition": "msaa_enabled",
+      "type": "image",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "SAMPLED",
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "msaa_sample1_pixels",
+      "type": "buffer",
+      "condition": "msaa_enabled",
+      "size": {
+        "mode": "viewport_pixels",
+        "bytes_per_pixel": 4
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "msaa_sample1_arguments",
+      "type": "buffer",
+      "condition": "msaa_enabled",
+      "size": 32,
+      "usage": [
+        "STORAGE",
+        "INDIRECT"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
+      "name": "scene_resolved_s1",
+      "type": "image",
+      "condition": "msaa_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "post_display_linear_fullscreen_s1",
+      "type": "image",
+      "condition": "msaa_enabled && !editor_enabled",
+      "extent": {
+        "mode": "window"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "post_display_linear_editor_s1",
+      "type": "image",
+      "condition": "msaa_enabled && editor_enabled",
+      "extent": {
+        "mode": "editor_image"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "PER_IMAGE",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "hzb_history",
       "condition": "scene_rendering",
       "type": "image",
@@ -3209,6 +3388,21 @@
           "image": "opaque_vbuffer_depth_s1",
           "access": "STORAGE_WRITE",
           "binding": 4
+        },
+        {
+          "image": "msaa_edge_mask",
+          "access": "STORAGE_WRITE",
+          "binding": 5
+        },
+        {
+          "buffer": "msaa_sample1_arguments",
+          "access": "STORAGE_WRITE",
+          "binding": 6
+        },
+        {
+          "buffer": "msaa_sample1_pixels",
+          "access": "STORAGE_WRITE",
+          "binding": 7
         }
       ],
       "execute": "pass.vbuffer.split"
@@ -3223,6 +3417,11 @@
           "image": "opaque_vbuffer_depth_ms",
           "access": "SAMPLED",
           "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_ms",
+          "access": "SAMPLED",
+          "binding": 1
         }
       ],
       "attachments": {
@@ -5572,6 +5771,311 @@
         }
       ],
       "execute": "pass.lighting.deferred.layered"
+    },
+    {
+      "name": "GBuffer.Resolve.Sample1",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer_s1",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "temporal_transform_history",
+          "access": "STORAGE_READ",
+          "binding": 10
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        },
+        {
+          "image": "msaa_edge_mask",
+          "access": "STORAGE_READ",
+          "binding": 18
+        },
+        {
+          "buffer": "msaa_sample1_pixels",
+          "access": "STORAGE_READ",
+          "binding": 24
+        },
+        {
+          "buffer": "msaa_sample1_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 25
+        }
+      ],
+      "writes": [
+        {
+          "image": "gbuffer_albedo_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        },
+        {
+          "image": "gbuffer_specular_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 3
+        },
+        {
+          "image": "gbuffer_normal_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 4
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 7
+        },
+        {
+          "image": "scene_color_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 8
+        }
+      ],
+      "dispatch": {
+        "type": "indirect",
+        "binding": 25,
+        "offset": 0
+      },
+      "execute": "pass.gbuffer.resolve.sample1"
+    },
+    {
+      "name": "Lighting.Deferred.Sample1",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
+        },
+        {
+          "image": "opaque_vbuffer_s1",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth_s1",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_albedo_s1",
+          "access": "STORAGE_READ",
+          "binding": 2
+        },
+        {
+          "image": "gbuffer_specular_s1",
+          "access": "STORAGE_READ",
+          "binding": 3
+        },
+        {
+          "image": "gbuffer_normal_s1",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "shadow_moments",
+          "access": "SAMPLED",
+          "binding": 17,
+          "when": "shadow_evsm_active"
+        },
+        {
+          "image": "scene_color_s1",
+          "access": "STORAGE_READ",
+          "binding": 6
+        },
+        {
+          "image": "gtao_visibility",
+          "access": "SAMPLED",
+          "binding": 7,
+          "when": "gtao_enabled"
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        },
+        {
+          "image": "local_shadow_transmission_depth0",
+          "access": "SAMPLED",
+          "binding": 40,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_layer_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color0",
+          "access": "SAMPLED",
+          "binding": 41,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_layer_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_depth1",
+          "access": "SAMPLED",
+          "binding": 42,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_layer_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_color1",
+          "access": "SAMPLED",
+          "binding": 43,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_layer_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "local_shadow_transmission_overflow",
+          "access": "SAMPLED",
+          "binding": 44,
+          "when": "local_shadow_transmission_active",
+          "repeat": {
+            "count_source": "local_shadow_transmission_layer_count"
+          },
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "cloud_history",
+          "access": "SAMPLED",
+          "binding": 34,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_mask",
+          "access": "STORAGE_READ",
+          "binding": 16,
+          "when": "local_shadow_mask_active"
+        },
+        {
+          "image": "planar_reflection_color",
+          "access": "SAMPLED",
+          "binding": 45,
+          "when": "planar_reflection_active"
+        },
+        {
+          "image": "baked_lamp_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 18,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "baked_lamp_direction",
+          "access": "STORAGE_READ",
+          "binding": 19,
+          "when": "baked_lamps_enabled"
+        },
+        {
+          "image": "diffuse_volume_irradiance",
+          "access": "STORAGE_READ",
+          "binding": 20,
+          "when": "diffuse_volume_enabled"
+        },
+        {
+          "image": "baked_lamp_shadow",
+          "access": "STORAGE_READ",
+          "binding": 21,
+          "when": "baked_lamp_shadows_active"
+        },
+        {
+          "image": "msaa_edge_mask",
+          "access": "STORAGE_READ",
+          "binding": 22
+        },
+        {
+          "buffer": "msaa_sample1_pixels",
+          "access": "STORAGE_READ",
+          "binding": 24
+        },
+        {
+          "buffer": "msaa_sample1_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 25
+        },
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 26
+        }
+      ],
+      "writes": [
+        {
+          "image": "scene_color_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 6
+        }
+      ],
+      "dispatch": {
+        "type": "indirect",
+        "binding": 25,
+        "offset": 0
+      },
+      "execute": "pass.lighting.deferred.sample1"
     },
     {
       "name": "Subsurface.Gather",
@@ -10765,6 +11269,57 @@
       "execute": "pass.bloom.combine"
     },
     {
+      "name": "MSAA.Compose",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled",
+      "reads": [
+        {
+          "image": "scene_resolved_color",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "scene_color_s1",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "image": "msaa_edge_mask",
+          "access": "STORAGE_READ",
+          "binding": 2
+        },
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 3
+        },
+        {
+          "image": "transmission_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 4,
+          "subresource": {
+            "base_layer": 0,
+            "layer_count": 1
+          },
+          "when": "transmission_pending"
+        },
+        {
+          "image": "bloom_combined",
+          "access": "STORAGE_READ",
+          "binding": 6,
+          "when": "bloom_enabled"
+        }
+      ],
+      "writes": [
+        {
+          "image": "scene_resolved_s1",
+          "access": "STORAGE_WRITE",
+          "binding": 5
+        }
+      ],
+      "execute": "pass.msaa.compose"
+    },
+    {
       "name": "Post.DisplayLinear.Fullscreen",
       "type": "graphics",
       "domain": "POST",
@@ -10885,6 +11440,105 @@
         }
       ],
       "execute": "pass.smaa.blend"
+    },
+    {
+      "name": "Post.DisplayLinear.Sample1.Fullscreen",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering && msaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "scene_resolved_s1",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "post_display_linear_fullscreen_s1",
+            "load": "DONT_CARE",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.tonemap.prepare"
+    },
+    {
+      "name": "Post.SMAA.Edges.Sample1.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_fullscreen_s1",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_edges_fullscreen",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.edges"
+    },
+    {
+      "name": "Post.SMAA.Weights.Sample1.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "smaa_edges_fullscreen",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_weights_fullscreen",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.weights.sample1"
+    },
+    {
+      "name": "Post.SMAA.Blend.Sample1.Fullscreen",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled && !editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_fullscreen_s1",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "smaa_weights_fullscreen",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 3
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_output_fullscreen",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.smaa.blend.sample1"
     },
     {
       "name": "Post.SMAA.Resolve.Fullscreen",
@@ -11089,6 +11743,105 @@
         }
       ],
       "execute": "pass.smaa.blend"
+    },
+    {
+      "name": "Post.DisplayLinear.Sample1.Editor",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "scene_rendering && msaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "scene_resolved_s1",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "post_display_linear_editor_s1",
+            "load": "DONT_CARE",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.tonemap.prepare"
+    },
+    {
+      "name": "Post.SMAA.Edges.Sample1.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_editor_s1",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_edges_editor",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.edges"
+    },
+    {
+      "name": "Post.SMAA.Weights.Sample1.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "smaa_edges_editor",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_weights_editor",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.smaa.weights.sample1"
+    },
+    {
+      "name": "Post.SMAA.Blend.Sample1.Editor",
+      "type": "compute",
+      "condition": "scene_rendering && msaa_enabled && editor_enabled",
+      "reads": [
+        {
+          "image": "post_display_linear_editor_s1",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "smaa_weights_editor",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 3
+        }
+      ],
+      "writes": [
+        {
+          "image": "smaa_output_editor",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.smaa.blend.sample1"
     },
     {
       "name": "Post.SMAA.Resolve.Editor",

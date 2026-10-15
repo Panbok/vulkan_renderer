@@ -1557,11 +1557,14 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
   }
   case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH: {
     uint32_t depth_texture = 0u;
-    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &depth_texture)) {
+    uint32_t vbuffer_texture = 0u;
+    if (!vkr_vk_graph_sampled_index(renderer, pass, 0u, &depth_texture) ||
+        !vkr_vk_graph_sampled_index(renderer, pass, 1u, &vbuffer_texture)) {
       return false_v;
     }
-    return vkr_vk_prepare_vbuffer_split_depth(
-        renderer, &prepared->vbuffer_split_depth, depth_texture);
+    return vkr_vk_prepare_vbuffer_split_depth(renderer,
+                                              &prepared->vbuffer_split_depth,
+                                              depth_texture, vbuffer_texture);
   }
   case VKR_RG_EXECUTOR_EDITOR_GRID: {
     uint32_t depth_texture = 0u;
@@ -1974,15 +1977,22 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
                                         VKR_VULKAN_DEFERRED_PIPELINE_ENCODE,
                                         true_v);
   case VKR_RG_EXECUTOR_GBUFFER_RESOLVE:
-    return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass);
+    return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass,
+                                           false_v);
+  case VKR_RG_EXECUTOR_GBUFFER_RESOLVE_SAMPLE1:
+    return vkr_vk_prepare_deferred_gbuffer(renderer, &prepared->compute, pass,
+                                           true_v);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK:
     return vkr_vk_prepare_local_shadow_mask(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
     return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
-                                            false_v);
+                                            false_v, false_v);
   case VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED:
     return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
-                                            true_v);
+                                            true_v, false_v);
+  case VKR_RG_EXECUTOR_LIGHTING_DEFERRED_SAMPLE1:
+    return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
+                                            false_v, true_v);
   case VKR_RG_EXECUTOR_TEMPORAL_RESOLVE:
     return vkr_vk_prepare_temporal_resolve(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_HZB_BUILD:
@@ -2092,9 +2102,19 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_SMAA_EDGES:
     return vkr_vk_prepare_smaa_edges(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SMAA_WEIGHTS:
-    return vkr_vk_prepare_smaa_weights(renderer, &prepared->compute, pass);
+    return vkr_vk_prepare_smaa_weights(renderer, &prepared->compute, pass,
+                                       false_v);
+  case VKR_RG_EXECUTOR_SMAA_WEIGHTS_SAMPLE1:
+    return vkr_vk_prepare_smaa_weights(renderer, &prepared->compute, pass,
+                                       true_v);
   case VKR_RG_EXECUTOR_SMAA_BLEND:
-    return vkr_vk_prepare_smaa_blend(renderer, &prepared->compute, pass);
+    return vkr_vk_prepare_smaa_blend(renderer, &prepared->compute, pass,
+                                     false_v);
+  case VKR_RG_EXECUTOR_SMAA_BLEND_SAMPLE1:
+    return vkr_vk_prepare_smaa_blend(renderer, &prepared->compute, pass,
+                                     true_v);
+  case VKR_RG_EXECUTOR_MSAA_COMPOSE:
+    return vkr_vk_prepare_msaa_compose(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SMAA_RESOLVE:
     return vkr_vk_prepare_smaa_resolve(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_TRANSMISSION_SHADE:

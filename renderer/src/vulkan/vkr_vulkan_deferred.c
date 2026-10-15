@@ -1157,9 +1157,14 @@ bool8_t vkr_vk_prepare_local_shadow_transmission(
   return true_v;
 }
 
+/* `sample_one`: SMAA S2x's second sample, resolved only at the pixels
+   VBuffer.Split listed (binding 24, counted at 25 for the indirect dispatch;
+   the edge mask at 18 rejects stale slots) into its own G-buffer; the motion
+   and validity images stay the first sample's, so its pass binds none. */
 bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
-                                        const VkrRgPass *pass) {
+                                        const VkrRgPass *pass,
+                                        bool8_t sample_one) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   VkrVulkanGraphBufferInstance *visible =
@@ -1171,7 +1176,9 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
     return false_v;
   const uint32_t bindings[] = {0u, 2u, 3u, 4u, 8u, 11u, 12u, 13u, 14u, 15u};
   for (uint32_t i = 0u; i < ArrayCount(bindings); ++i) {
-    if (i >= 7u && !vkr_rg_pass_find_image_use(&pass->desc, bindings[i], 0u)) {
+    if ((i >= 7u || (sample_one && i >= 5u)) &&
+        !vkr_rg_pass_find_image_use(&pass->desc, bindings[i], 0u)) {
+      indices[i] = VKR_VULKAN_SENTINEL_SLOT_INDEX;
       continue;
     }
     if (!vkr_vk_deferred_storage_index(renderer, pass, bindings[i],
@@ -1266,6 +1273,18 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
   root.baked_lamps_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   root.baked_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   root.lightmap_direction_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  VkrVulkanGraphBufferInstance *sample1_arguments = NULL;
+  if (sample_one) {
+    VkrVulkanGraphBufferInstance *sample1_pixels =
+        vkr_vk_deferred_buffer(renderer, pass, 24u);
+    sample1_arguments = vkr_vk_deferred_buffer(renderer, pass, 25u);
+    if (!sample1_pixels || !sample1_arguments ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 18u,
+                                       &root.edge_mask_texture)) {
+      return false_v;
+    }
+    root.sample1_pixels = sample1_pixels->buffer.address;
+  }
   if (vkr_rg_pass_find_image_use(&pass->desc, 16u, 0u)) {
     if (!vkr_vk_deferred_storage_index(renderer, pass, 16u,
                                        &root.baked_lamps_texture) ||
@@ -1302,7 +1321,8 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                  &prepared->root_address))
     return false_v;
   const VkrVulkanDeferredPipeline pipeline =
-      emissive_capture
+      sample_one ? VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE
+      : emissive_capture
           ? (resolve_debug_capture
                  ? VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE_DEBUG
                  : VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_EMISSIVE)
@@ -1310,6 +1330,12 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                                    : VKR_VULKAN_DEFERRED_PIPELINE_GBUFFER_NONE);
   prepared->pipelines[prepared->dispatch_count] =
       renderer->deferred_pipelines[pipeline];
+  if (sample1_arguments) {
+    prepared->indirect_buffer = sample1_arguments->buffer.handle;
+    prepared->indirect_offset = pass->desc.dispatch.indirect_offset;
+    prepared->dispatch_count = 1u;
+    return true_v;
+  }
   {
     prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
     prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
@@ -1533,10 +1559,15 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
 
 /* The base kernel shades every tile unless the frame has layered materials;
    then the layered pass owns tiles that carry layer data. */
+/* `sample_one`: SMAA S2x's second sample, lit at the pixels VBuffer.Split
+   listed (binding 24, counted at 25; the edge mask at 22 rejects stale
+   slots) from its own G-buffer and depth with the base kernel. Its per-pixel
+   inputs (GTAO, shadow masks, volume, baked lamps) come from a neighbour
+   whose first sample (visibility at 26) lies on its draw. */
 bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
-                                         const VkrRgPass *pass,
-                                         bool8_t layered) {
+                                         const VkrRgPass *pass, bool8_t layered,
+                                         bool8_t sample_one) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint32_t vbuffer = 0u, depth = 0u, albedo = 0u, specular = 0u, normal = 0u,
@@ -1617,9 +1648,23 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                 shadow_texture, VKR_VULKAN_SENTINEL_SLOT_INDEX,
                                 local_shadow_texture, true_v);
   uint32_t subsurface_source = scene;
-  if (renderer->prepared_frame.subsurface_enabled &&
-      !vkr_vk_deferred_storage_index(renderer, pass, 14u, &subsurface_source))
+  if (!sample_one && renderer->prepared_frame.subsurface_enabled &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 14u, &subsurface_source)) {
     return false_v;
+  }
+  uint32_t edge_mask = 0u;
+  uint32_t side_vbuffer = 0u;
+  VkrVulkanGraphBufferInstance *sample1_pixels = NULL;
+  VkrVulkanGraphBufferInstance *sample1_arguments = NULL;
+  if (sample_one) {
+    sample1_pixels = vkr_vk_deferred_buffer(renderer, pass, 24u);
+    sample1_arguments = vkr_vk_deferred_buffer(renderer, pass, 25u);
+    if (!sample1_pixels || !sample1_arguments ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 22u, &edge_mask) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 26u, &side_vbuffer)) {
+      return false_v;
+    }
+  }
   /* Deferred lighting measures every frame it shades; the readback publishes
    * the counters only for such frames. */
   slot->light_contribution_written = slot->light_contribution_requested;
@@ -1661,8 +1706,11 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .sheen_texture = sheen,
       .anisotropy_texture = anisotropy,
       .layered_tiles =
-          (renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u) |
-          (renderer->prepared_frame.brdf_extensions_enabled ? 2u : 0u),
+          sample_one
+              ? 0u
+              : (renderer->prepared_frame.lighting_layers_enabled ? 1u : 0u) |
+                    (renderer->prepared_frame.brdf_extensions_enabled ? 2u
+                                                                      : 0u),
       .local_shadow_mask_texture = local_shadow_mask,
       .shadow_moments_texture = shadow_moments,
       .baked_lamps_texture = baked_lamps,
@@ -1670,7 +1718,7 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .diffuse_volume_texture = diffuse_volume,
       .baked_lamp_shadow_texture = baked_lamp_shadow,
       .visible_rows = visible->buffer.address,
-      .light_contribution = slot->light_contribution_requested
+      .light_contribution = slot->light_contribution_requested && !sample_one
                                 ? slot->light_contribution.address
                                 : 0u,
       .shadow_moments_sampler = renderer->transmission_sampler_slot,
@@ -1692,10 +1740,13 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
               : 0u,
       .subsurface_source_texture = subsurface_source,
       .subsurface_profile_count =
-          renderer->prepared_frame.subsurface_enabled &&
+          !sample_one && renderer->prepared_frame.subsurface_enabled &&
                   slot->subsurface_texture != VKR_VULKAN_SENTINEL_SLOT_INDEX
               ? packet->subsurface.dimensions[2]
               : 0u,
+      .edge_mask_texture = edge_mask,
+      .side_vbuffer_texture = side_vbuffer,
+      .sample1_pixels = sample1_pixels ? sample1_pixels->buffer.address : 0u,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),
@@ -1705,6 +1756,12 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       renderer->deferred_pipelines
           [layered ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED
                    : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING];
+  if (sample1_arguments) {
+    prepared->indirect_buffer = sample1_arguments->buffer.handle;
+    prepared->indirect_offset = pass->desc.dispatch.indirect_offset;
+    prepared->dispatch_count = 1u;
+    return true_v;
+  }
   {
     prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
     prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
@@ -3427,24 +3484,28 @@ bool8_t vkr_vk_prepare_smaa_edges(VkrVulkanRenderer *renderer,
                                       VKR_VULKAN_DEFERRED_PIPELINE_SMAA_EDGES);
 }
 
+/* `sample_one`: SMAA S2x's second sample, whose area-texture rows differ
+   from the first's (SMAA 4x). */
 bool8_t vkr_vk_prepare_smaa_weights(VkrVulkanRenderer *renderer,
                                     VkrVulkanPreparedCompute *prepared,
-                                    const VkrRgPass *pass) {
+                                    const VkrRgPass *pass, bool8_t sample_one) {
   VkrVulkanSmaaRoot root = {0};
   if (!vkr_vk_smaa_root(renderer, pass, 1u, &root) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 0u, &root.edges_texture))
     return false_v;
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  root.subsample_indices = packet->temporal.enabled
-                               ? packet->temporal.smaa_subsample_indices
-                               : (Vec4){0};
+  root.subsample_indices = sample_one
+                               ? packet->temporal.smaa_subsample_indices_sample1
+                               : packet->temporal.smaa_subsample_indices;
   return vkr_vk_prepare_dispatch_smaa(
       renderer, prepared, &root, VKR_VULKAN_DEFERRED_PIPELINE_SMAA_WEIGHTS);
 }
 
+/* `sample_one`: SMAA S2x's second sample, averaged at half weight into the
+   first sample's antialiased image (the reference's 0.5 alpha blend). */
 bool8_t vkr_vk_prepare_smaa_blend(VkrVulkanRenderer *renderer,
                                   VkrVulkanPreparedCompute *prepared,
-                                  const VkrRgPass *pass) {
+                                  const VkrRgPass *pass, bool8_t sample_one) {
   VkrVulkanSmaaRoot root = {0};
   if (!vkr_vk_smaa_root(renderer, pass, 2u, &root) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 0u,
@@ -3452,6 +3513,7 @@ bool8_t vkr_vk_prepare_smaa_blend(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &root.blend_texture) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 3u, &root.motion_texture))
     return false_v;
+  root.blend_half = sample_one ? 1u : 0u;
   return vkr_vk_prepare_dispatch_smaa(renderer, prepared, &root,
                                       VKR_VULKAN_DEFERRED_PIPELINE_SMAA_BLEND);
 }
@@ -3578,18 +3640,90 @@ bool8_t vkr_vk_prepare_vbuffer_split(VkrVulkanRenderer *renderer,
       !vkr_vk_deferred_storage_index(renderer, pass, 3u,
                                      &root.vbuffer_s1_storage) ||
       !vkr_vk_deferred_storage_index(renderer, pass, 4u,
-                                     &root.depth_s1_storage)) {
+                                     &root.depth_s1_storage) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 5u,
+                                     &root.edge_mask_storage)) {
+    return false_v;
+  }
+  VkrVulkanGraphBufferInstance *arguments =
+      vkr_vk_deferred_buffer(renderer, pass, 6u);
+  VkrVulkanGraphBufferInstance *pixels =
+      vkr_vk_deferred_buffer(renderer, pass, 7u);
+  if (!arguments || !pixels) {
     return false_v;
   }
   root.extent[0] = destination->image.width;
   root.extent[1] = destination->image.height;
+  root.sample1_arguments = arguments->buffer.address;
+  root.sample1_pixels = pixels->buffer.address;
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanVbufferSplitRoot),
                                  &prepared->root_address)) {
     return false_v;
   }
+  /* The list empties before the split appends to it; the record path orders
+     the two dispatches. */
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines
+          [VKR_VULKAN_DEFERRED_PIPELINE_MSAA_SAMPLE1_LIST_RESET];
+  prepared->groups[prepared->dispatch_count][0] = 1u;
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
   prepared->pipelines[prepared->dispatch_count] =
       renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_VBUFFER_SPLIT];
+  prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
+/* SMAA S2x: the second sample's colour for display. Bindings: the first
+   sample's resolved colour (0), the second's lit colour (1), the edge mask
+   (2), the visibility image after the blended overlays (3), the first
+   transmission layer (4, when transmission is pending), the output (5) and
+   the first sample's bloomed colour (6, with bloom). */
+bool8_t vkr_vk_prepare_msaa_compose(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass) {
+  VkrVulkanMsaaComposeRoot root = {0};
+  const VkrRgImageUse *destination_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 5u, 0u);
+  VkrVulkanGraphImageInstance *destination =
+      destination_use ? vkr_vk_deferred_image(renderer, destination_use->image)
+                      : NULL;
+  if (!destination ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 0u,
+                                     &root.sample0_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 1u,
+                                     &root.sample1_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 2u,
+                                     &root.edge_mask_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 3u,
+                                     &root.vbuffer_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 5u,
+                                     &root.destination_texture)) {
+    return false_v;
+  }
+  if (vkr_rg_pass_find_image_use(&pass->desc, 4u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u,
+                                     &root.transmission_vbuffer_texture)) {
+    return false_v;
+  }
+  if (vkr_rg_pass_find_image_use(&pass->desc, 6u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 6u, &root.post_texture)) {
+    return false_v;
+  }
+  root.extent[0] = destination->image.width;
+  root.extent[1] = destination->image.height;
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanMsaaComposeRoot),
+                                 &prepared->root_address)) {
+    return false_v;
+  }
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_MSAA_COMPOSE];
   prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][2] = 1u;
