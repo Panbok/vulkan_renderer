@@ -2035,7 +2035,8 @@ vkr_vk_select_cloud_history(VkrVulkanRenderer *renderer,
                             VkrVulkanGraphImage *history, uint32_t *out_index) {
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const uint32_t current = renderer->history_output_index;
-  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE)
+  if ((packet->temporal.reset_reasons & ~VKR_CLOUD_HISTORY_KEPT_RESETS) !=
+      VKR_TEMPORAL_RESET_NONE)
     return NULL;
   const uint64_t signature = vkr_cloud_history_signature(
       &packet->sky.clouds, packet->sky.camera_position.w);
@@ -2291,7 +2292,8 @@ void vkr_vk_mark_cloud_submitted(VkrVulkanRenderer *renderer,
       current >= VKR_VULKAN_HISTORY_INSTANCE_COUNT)
     return;
   const VkrPreparedFrame *packet = renderer->graph->packet;
-  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE) {
+  if ((packet->temporal.reset_reasons & ~VKR_CLOUD_HISTORY_KEPT_RESETS) !=
+      VKR_TEMPORAL_RESET_NONE) {
     for (uint32_t i = 0u; i < VKR_VULKAN_HISTORY_INSTANCE_COUNT; ++i)
       renderer->cloud_histories[i].valid = false_v;
   }

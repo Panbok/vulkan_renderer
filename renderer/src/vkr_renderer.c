@@ -2145,7 +2145,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_prepare_frame(
             renderer->timing_result.gpu_submission_ns,
             renderer->timing_result.source_render_scale, &next_scale)) {
       renderer->render_scale = next_scale;
-      renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_EXPLICIT;
+      renderer->temporal_reset_reasons |= VKR_TEMPORAL_RESET_RESOLUTION_STEP;
     }
   }
   renderer->render_width = vkr_renderer_scaled_extent(

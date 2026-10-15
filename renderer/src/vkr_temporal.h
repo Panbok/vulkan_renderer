@@ -17,6 +17,10 @@ typedef enum VkrTemporalResetReason {
   VKR_TEMPORAL_RESET_PROJECTION_CHANGE = 1u << 5u,
   VKR_TEMPORAL_RESET_CAMERA_CUT = 1u << 6u,
   VKR_TEMPORAL_RESET_EXPLICIT = 1u << 7u,
+  /* Dynamic resolution stepped the render scale. Resolution-independent
+     histories, such as the clouds' view-direction history, keep their
+     content; every other consumer resets as for any reason. */
+  VKR_TEMPORAL_RESET_RESOLUTION_STEP = 1u << 8u,
 } VkrTemporalResetReason;
 
 typedef struct VkrTemporalState {

@@ -926,7 +926,8 @@ vkr_metal_packet_select_cloud_history(VkrMetalPacketRenderer *renderer) {
       history->desc.type != VKR_TEXTURE_TYPE_2D ||
       renderer->history_output_index >= history->instance_count)
     return false_v;
-  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE)
+  if ((packet->temporal.reset_reasons & ~VKR_CLOUD_HISTORY_KEPT_RESETS) !=
+      VKR_TEMPORAL_RESET_NONE)
     return true_v;
 
   const uint64_t signature = vkr_cloud_history_signature(
@@ -1390,7 +1391,8 @@ vkr_metal_packet_mark_cloud_history_submitted(VkrMetalPacketRenderer *renderer,
   if (!history || history->instance_count != renderer->history_instance_count ||
       current >= history->instance_count)
     return;
-  if (packet->temporal.reset_reasons != VKR_TEMPORAL_RESET_NONE) {
+  if ((packet->temporal.reset_reasons & ~VKR_CLOUD_HISTORY_KEPT_RESETS) !=
+      VKR_TEMPORAL_RESET_NONE) {
     for (uint32_t i = 0u; i < history->instance_count; ++i)
       renderer->cloud_history[i].valid = false_v;
   }

@@ -259,7 +259,8 @@ kernel void vkr_metal_packet_cloud_trace(
     uint2 texel [[thread_position_in_grid]]) {
   if (any(texel >= root.extent))
     return;
-  int2 origin = int2(texel) * 2 - 1;
+  int2 origin =
+      vkr_cloud_depth_window_origin(texel, root.extent, root.depth_extent);
   int2 limit = int2(root.depth_extent) - 1;
   bool sky_visible = false;
   for (int y = 0; y < 4 && !sky_visible; ++y) {
@@ -281,17 +282,20 @@ kernel void vkr_metal_packet_cloud_trace(
   VkrSkyParams params = root.sky->params;
   float2 texel_size = 1.0f / float2(root.extent);
   float2 centre_uv = (float2(texel) + 0.5f) * texel_size;
-  float3 direction = vkr_cloud_view_direction(
-      params, centre_uv + vkr_cloud_ray_jitter(root.frame_index) * texel_size);
+  // The tiled pipeline has no temporal resolve (ADR-087), so each ray runs
+  // through its texel's centre and the march's start noise keeps one phase:
+  // per-frame offsets left the history's slow blend wobbling at their rate,
+  // which read as jittering clouds. The fixed march noise stays as a still
+  // fine grain.
+  float3 direction = vkr_cloud_view_direction(params, centre_uv);
   float4 current = vkr_metal_cloud_march(
       root.sky, root.frame, direction, VKR_CLOUD_PRIMARY_STEPS,
-      vkr_cloud_march_offset(texel, root.frame_index), true);
+      vkr_cloud_march_offset(texel, 0u), true);
 
   // Clouds lie kilometres away, so the previous camera saw this texel's
   // centre along the same direction.
-  float3 centre_direction = vkr_cloud_view_direction(params, centre_uv);
   float4 previous_clip =
-      root.previous_view_projection * float4(centre_direction, 0.0f);
+      root.previous_view_projection * float4(direction, 0.0f);
   float2 previous_uv =
       previous_clip.xy / max(previous_clip.w, 1e-6f) * 0.5f + 0.5f;
   bool history_valid = root.history_valid != 0u && previous_clip.w > 0.0f &&

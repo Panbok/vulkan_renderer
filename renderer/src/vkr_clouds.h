@@ -2,10 +2,19 @@
 
 #include "defines.h"
 #include "math/vec.h"
+#include "vkr_temporal.h"
 
 /** Noise the renderer generates once at startup. Every texture tiles: the
  * base volume holds a precombined Perlin-Worley shape, the detail volume a
  * Worley erosion field and the weather map a coverage field. */
+/* Temporal resets the cloud history survives: it is reprojected by view
+   direction and read with normalized coordinates, so a new viewport or a
+   dynamic-resolution step changes nothing it holds (ADR-074). Its own
+   image's size and generation still gate it. */
+#define VKR_CLOUD_HISTORY_KEPT_RESETS                                          \
+  ((uint32_t)VKR_TEMPORAL_RESET_EXTENT_CHANGE |                                \
+   (uint32_t)VKR_TEMPORAL_RESET_RESOLUTION_STEP)
+
 #define VKR_CLOUD_BASE_NOISE_SIZE 128u
 #define VKR_CLOUD_DETAIL_NOISE_SIZE 32u
 /* Frames before the cloud march offset repeats (frame_index % 64u in

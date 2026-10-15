@@ -92,12 +92,21 @@ that drives direct lighting ([ADR-081](081-physical-night-sky.md)). At night
 that light is the moon, so the map, its centre and every sun term above use
 the moon's ray instead.
 
-`Clouds.Trace` marches a half-resolution history instance. A texel traces when
-any full-resolution pixel within one pixel of its 2x2 footprint shows sky, so
+`Clouds.Trace` marches a half-resolution history instance, half of the
+viewport on the desktop pipeline and half of the unscaled Scene output on the
+tiled one, so a dynamic-resolution step keeps it. A texel traces when any
+full-resolution pixel within one pixel of its footprint shows sky
+(`vkr_cloud_depth_window_origin` maps it into the depth image at any render
+scale), so
 every bilinear tap that composition reads is traced; other texels write an
 untraced marker (alpha 2). Rays use canonical clip coordinates, which equal
-screen coordinates on both backends, with an eight-frame Halton sub-texel
-jitter and a per-frame interleaved-gradient march offset. Each ray takes 48
+screen coordinates on both backends. On the desktop pipeline rays take an
+eight-frame Halton sub-texel jitter and a per-frame interleaved-gradient march
+offset that temporal antialiasing resolves. The tiled pipeline has no temporal
+resolve, so its rays run through texel centres with one fixed march offset:
+per-frame phases left the slow history blend wobbling at their rate, which
+read as jittering clouds, and the fixed offset stays as a still grain. Each
+ray takes 48
 steps over its segment through the spherical layer, clipped at 60 km with a
 fade over the last third, and stops below 1% transmittance.
 
@@ -121,7 +130,10 @@ The trace blends 10% of the current sample into history reprojected by
 direction through the producer's canonical view-projection. Clouds lie
 kilometres away, so camera translation parallax is ignored. History requires
 the same traced layer (layer, noise, march distance and world scale), grid and
-graph generation, a producer inside the ring, and no temporal reset. The
+graph generation, a producer inside the ring, and no temporal reset other
+than a viewport extent change or a dynamic-resolution step
+(`VKR_CLOUD_HISTORY_KEPT_RESETS`), which leave a direction-indexed history
+valid; its own image's size and generation still gate it. The
 history read gathers the four bilinear taps and weights out any untraced
 marker; the traced taps renormalise, and a footprint with no traced tap
 rejects the history. With temporal antialiasing only its exact predecessor
@@ -130,7 +142,8 @@ submitted producer seeds the trace. Either may still be in flight: on Vulkan
 the trace's same-queue image barrier orders the producer's writes, and on
 Metal the trace waits on the queue for earlier dispatches when the producer
 was not known complete. Accumulation therefore never depends on GPU timing,
-and consecutive frames continue one chain through all eight jitter phases.
+and consecutive frames continue one chain, through all eight jitter phases
+on the desktop pipeline.
 The harness resets the wind clock with its other phase clocks, so bootstrap
 duration does not move the layer in captures.
 

@@ -413,7 +413,7 @@
       "type": "image",
       "condition": "scene_rendering && clouds_enabled",
       "extent": {
-        "mode": "viewport",
+        "mode": "scene_output",
         "divisor": 2
       },
       "format": "R16G16B16A16_SFLOAT",

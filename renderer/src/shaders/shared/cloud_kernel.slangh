@@ -518,6 +518,17 @@ float vkr_cloud_halton(uint index, uint base)
     return result;
 }
 
+// First depth pixel of the 4x4 window the trace tests for sky around a cloud
+// texel: the texel's footprint in a depth image at most twice the cloud
+// grid's size, which the window covers at any render scale. At exactly twice
+// the size it starts one pixel before the texel's 2x2 footprint.
+int2 vkr_cloud_depth_window_origin(uint2 texel, uint2 extent,
+                                   uint2 depth_extent)
+{
+    float2 scale = float2(depth_extent) / float2(extent);
+    return int2(floor((float2(texel) + 0.5f) * scale - scale));
+}
+
 // Sub-texel ray offset in [-0.5, 0.5) texels; eight frames cover the 2x2
 // full-resolution footprint of one half-resolution texel.
 float2 vkr_cloud_ray_jitter(uint frame_index)

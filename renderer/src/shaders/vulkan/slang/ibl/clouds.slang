@@ -274,7 +274,8 @@ void cloud_trace_compute(uint3 id : SV_DispatchThreadID)
     uint2 texel = id.xy;
     if (any(texel >= root.extent))
         return;
-    int2 origin = int2(texel) * 2 - 1;
+    int2 origin =
+        vkr_cloud_depth_window_origin(texel, root.extent, root.depth_extent);
     int2 limit = int2(root.depth_extent) - 1;
     bool sky_visible = false;
     for (int y = 0; y < 4 && !sky_visible; ++y)
