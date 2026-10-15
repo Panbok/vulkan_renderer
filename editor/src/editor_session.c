@@ -2,6 +2,7 @@
 
 #include "editor_internal.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_byte_io.h"
@@ -10,6 +11,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "memory/vkr_heap.h"
 #include "net/vkr_net_scene_edit.h"
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "vkr_bakery_os.h"
@@ -21,9 +23,6 @@
 #include "vkr_net_session.h"
 
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* The collaboration service, version 1 (docs/proposals/network-protocol.md,
  * "Editor collaboration"). The schema hash names this file's message layout;
@@ -490,7 +489,7 @@ static float32_t session_read_float(VkrBitReader *reader) {
 }
 
 static void session_write_text(VkrBitWriter *writer, const char *text) {
-  const uint32_t length = (uint32_t)strlen(text);
+  const uint32_t length = (uint32_t)string_length(text);
   vkr_bit_write_varuint(writer, length);
   vkr_bit_write_bytes(writer, text, length);
 }
@@ -531,7 +530,7 @@ static void session_hex(const uint8_t *bytes, uint32_t size, char *out) {
 
 static bool8_t session_parse_hex(const char *text, uint8_t *out,
                                  uint32_t size) {
-  if (!text || strlen(text) != 2u * size) {
+  if (!text || string_length(text) != 2u * size) {
     return false_v;
   }
   for (uint32_t i = 0u; i < 2u * size; ++i) {
@@ -557,11 +556,11 @@ static bool8_t session_address(const char *text, VkrNetAddress *out) {
     return true_v;
   }
   char host[256];
-  const char *colon = strrchr(text, ':');
+  const char *colon = string_get_last_char_occurrence(text, ':');
   uint32_t port = VKR_EDITOR_SESSION_PORT;
-  size_t length = strlen(text);
+  size_t length = string_length(text);
   if (colon) {
-    port = (uint32_t)strtoul(colon + 1, NULL, 10);
+    port = (uint32_t)string_parse_u64(colon + 1, NULL);
     length = (size_t)(colon - text);
   }
   if (length == 0u || length >= sizeof(host) || port == 0u || port > 65535u) {
@@ -577,7 +576,7 @@ static bool8_t session_buffer_grow(SessionBuffer *buffer) {
   if (capacity > SESSION_MESSAGE_MAX) {
     return false_v;
   }
-  uint8_t *grown = realloc(buffer->data, capacity);
+  uint8_t *grown = vkr_heap_realloc(buffer->data, capacity);
   if (!grown) {
     return false_v;
   }
@@ -645,7 +644,7 @@ static int session_digest_compare(const void *a, const void *b) {
   if (left->container != right->container) {
     return left->container < right->container ? -1 : 1;
   }
-  return memcmp(left->ref, right->ref, sizeof(left->ref));
+  return MemCompare(left->ref, right->ref, sizeof(left->ref));
 }
 
 /* One entity's identity, name, pose and parent. */
@@ -680,7 +679,7 @@ static bool8_t session_digest_entity(const VkrScene *scene, VkrEntityId entity,
   }
   VkrSha256 hash;
   vkr_sha256_init(&hash);
-  vkr_sha256_update(&hash, values.name, strlen(values.name) + 1u);
+  vkr_sha256_update(&hash, values.name, string_length(values.name) + 1u);
   vkr_sha256_update(&hash, bytes, sizeof(bytes));
   vkr_sha256_update(&hash, parent_ref.bytes, sizeof(parent_ref.bytes));
   vkr_sha256_final(&hash, out->digest);
@@ -697,7 +696,7 @@ void vkr_editor_session_digest(const VkrSampleUiFrame *frame,
     capacity += scene ? scene->world->dir.living : 0u;
   }
   SessionDigestRecord *records =
-      capacity ? malloc(capacity * sizeof(*records)) : NULL;
+      capacity ? vkr_heap_alloc(capacity * sizeof(*records)) : NULL;
   uint64_t count = 0u;
   for (uint32_t w = 0u; records && w < ArrayCount(worlds); ++w) {
     const VkrScene *scene = session_container(frame, worlds[w]);
@@ -710,7 +709,7 @@ void vkr_editor_session_digest(const VkrSampleUiFrame *frame,
     }
   }
   if (count) {
-    qsort(records, count, sizeof(*records), session_digest_compare);
+    vkr_sort(records, count, sizeof(*records), session_digest_compare);
   }
   VkrSha256 hash;
   vkr_sha256_init(&hash);
@@ -722,7 +721,7 @@ void vkr_editor_session_digest(const VkrSampleUiFrame *frame,
     vkr_sha256_update(&hash, records[i].digest, sizeof(records[i].digest));
   }
   vkr_sha256_final(&hash, out_digest);
-  free(records);
+  vkr_heap_free(records);
 }
 
 // =============================================================================
@@ -805,9 +804,10 @@ static bool8_t session_encode_payload(VkrEditorSession *session,
       const uint32_t size = vkr_bit_writer_finish(&writer);
       if (size || (!writer.overflow && writer.bytes == 0u)) {
         *out_size = size;
-        *out_bytes = malloc(Max(size, 1u));
+        *out_bytes = vkr_heap_alloc(Max(size, 1u));
         if (!*out_bytes) {
-          snprintf(payload->error, sizeof(payload->error), "Out of memory.");
+          string_format(payload->error, sizeof(payload->error),
+                        "Out of memory.");
           return false_v;
         }
         if (size) {
@@ -817,17 +817,17 @@ static bool8_t session_encode_payload(VkrEditorSession *session,
       }
     }
     if (!session_buffer_grow(&session->payload)) {
-      snprintf(payload->error, sizeof(payload->error),
-               "The edit is larger than a session message.");
+      string_format(payload->error, sizeof(payload->error),
+                    "The edit is larger than a session message.");
       return false_v;
     }
   }
 }
 
 static void session_edit_release(SessionEdit *edit) {
-  free(edit->payload);
-  free(edit->results);
-  free(edit->stages);
+  vkr_heap_free(edit->payload);
+  vkr_heap_free(edit->results);
+  vkr_heap_free(edit->stages);
   MemZero(edit, sizeof(*edit));
 }
 
@@ -835,14 +835,14 @@ static bool8_t session_queue_push(VkrEditorSession *session,
                                   const SessionEdit *edit) {
   if (session->queue_head + session->queue_count == session->queue_capacity) {
     if (session->queue_head) {
-      memmove(session->queue, session->queue + session->queue_head,
+      MemCopy(session->queue, session->queue + session->queue_head,
               session->queue_count * sizeof(*session->queue));
       session->queue_head = 0u;
     } else {
       const uint32_t capacity =
           session->queue_capacity ? session->queue_capacity * 2u : 64u;
       SessionEdit *grown =
-          realloc(session->queue, capacity * sizeof(*session->queue));
+          vkr_heap_realloc(session->queue, capacity * sizeof(*session->queue));
       if (!grown) {
         return false_v;
       }
@@ -872,7 +872,7 @@ static void session_group_add(VkrEditorSession *session, uint64_t seq,
     const uint32_t capacity =
         session->group_capacity ? session->group_capacity * 2u : 64u;
     SessionGroup *grown =
-        realloc(session->groups, capacity * sizeof(*session->groups));
+        vkr_heap_realloc(session->groups, capacity * sizeof(*session->groups));
     if (!grown) {
       return;
     }
@@ -882,8 +882,8 @@ static void session_group_add(VkrEditorSession *session, uint64_t seq,
   SessionGroup *entry = &session->groups[session->group_count++];
   *entry = (SessionGroup){.seq = seq, .group = group, .container = container};
   if (edit) {
-    snprintf(entry->agent, sizeof(entry->agent), "%s", edit->agent);
-    snprintf(entry->label, sizeof(entry->label), "%s", edit->label);
+    string_format(entry->agent, sizeof(entry->agent), "%s", edit->agent);
+    string_format(entry->label, sizeof(entry->label), "%s", edit->label);
   }
 }
 
@@ -915,7 +915,7 @@ static bool8_t session_reserve_items(VkrEditorSession *session,
     return true_v;
   }
   VkrSampleEditBatchItem *grown =
-      realloc(session->items, count * sizeof(*grown));
+      vkr_heap_realloc(session->items, count * sizeof(*grown));
   if (!grown) {
     return false_v;
   }
@@ -1010,7 +1010,7 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
     return false_v;
   }
   if (stages) {
-    out->stages = calloc(stages, sizeof(*out->stages));
+    out->stages = vkr_heap_alloc_zeroed(stages, sizeof(*out->stages));
     if (!out->stages) {
       return false_v;
     }
@@ -1038,7 +1038,7 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
     session_edit_release(out);
     return false_v;
   }
-  out->payload = malloc(Max((uint32_t)size, 1u));
+  out->payload = vkr_heap_alloc(Max((uint32_t)size, 1u));
   if (!out->payload) {
     return false_v;
   }
@@ -1056,7 +1056,7 @@ static bool8_t session_read_edit(VkrBitReader *reader, uint8_t type,
     }
     /* Copied apart, so its raw arrays start aligned (vkr_net_read_array). */
     if (results) {
-      out->results = malloc(results);
+      out->results = vkr_heap_alloc(results);
       if (!out->results) {
         session_edit_release(out);
         return false_v;
@@ -1311,7 +1311,7 @@ static bool8_t session_cursor_valid(Vec3 origin, Vec3 *direction,
                                direction->x, direction->y, direction->z,
                                distance};
   for (uint32_t i = 0u; i < ArrayCount(values); ++i) {
-    if (!isfinite(values[i])) {
+    if (!vkr_is_finite_f32(values[i])) {
       return false_v;
     }
   }
@@ -1446,7 +1446,7 @@ static void session_note_refused(VkrEditorSession *session,
   }
   uint32_t kept = 0u;
   for (uint32_t i = 0u; i < session->refused_count; ++i) {
-    if (strcmp(session->refusals[i].key, refused.key) != 0) {
+    if (!string_equals(session->refusals[i].key, refused.key)) {
       session->refusals[kept++] = session->refusals[i];
     }
   }
@@ -1548,7 +1548,7 @@ static void session_host_hello(VkrEditorSession *session, SessionLink *link,
                        session->shared_bytes, session->shared_size);
   }
   VkrEditorSessionPeer peer = {.id = id};
-  snprintf(peer.name, sizeof(peer.name), "%s", name);
+  string_format(peer.name, sizeof(peer.name), "%s", name);
   session_peer_set(session, &peer);
   log_info("%s joined the session", name);
 }
@@ -1706,11 +1706,12 @@ static void session_host_commit(VkrEditorSession *session, SessionEdit *edit,
   }
   session_group_add(session, edit->seq, container, group, edit);
   const uint32_t size = session_encode_edit(session, SESSION_MSG_APPLIED, edit);
-  uint8_t *bytes = size ? malloc(size) : NULL;
+  uint8_t *bytes = size ? vkr_heap_alloc(size) : NULL;
   if (session->log_count == session->log_capacity) {
     const uint32_t capacity =
         session->log_capacity ? session->log_capacity * 2u : 256u;
-    SessionBytes *grown = realloc(session->log, capacity * sizeof(*grown));
+    SessionBytes *grown =
+        vkr_heap_realloc(session->log, capacity * sizeof(*grown));
     if (grown) {
       session->log = grown;
       session->log_capacity = capacity;
@@ -1718,11 +1719,11 @@ static void session_host_commit(VkrEditorSession *session, SessionEdit *edit,
   }
   if (!bytes || session->log_count == session->log_capacity) {
     /* The participants can no longer follow the session. */
-    free(bytes);
+    vkr_heap_free(bytes);
     log_error("The session could not record edit %llu; it ends",
               (unsigned long long)edit->seq);
-    snprintf(session->error, sizeof(session->error),
-             "Out of memory for the session's history.");
+    string_format(session->error, sizeof(session->error),
+                  "Out of memory for the session's history.");
     session->leave_pending = true_v;
     return;
   }
@@ -1772,7 +1773,7 @@ static void session_host_send_log(VkrEditorSession *session) {
          session->log_first < lowest) {
     SessionBytes *entry = &session->log[session->log_first++];
     session->log_bytes -= entry->size;
-    free(entry->data);
+    vkr_heap_free(entry->data);
     entry->data = NULL;
   }
 }
@@ -1823,7 +1824,7 @@ static void session_review_accepted(VkrEditorSession *session, uint64_t seq,
 static void session_fail(VkrEditorSession *session, const char *format, ...) {
   va_list arguments;
   va_start(arguments, format);
-  vsnprintf(session->error, sizeof(session->error), format, arguments);
+  string_format_v(session->error, sizeof(session->error), format, arguments);
   va_end(arguments);
   log_error("Collaborative session: %s", session->error);
   session->leave_pending = true_v;
@@ -2187,8 +2188,8 @@ static void session_answer_batch(VkrEditorSession *session,
                                  const char *message) {
   MemZero(&session->refused, sizeof(session->refused));
   session->refused.failed_index = UINT32_MAX;
-  snprintf(session->refused.message, sizeof(session->refused.message), "%s",
-           message);
+  string_format(session->refused.message, sizeof(session->refused.message),
+                "%s", message);
   *frame->edit_batch = (VkrSampleEditBatchRequest){
       .token = token, .forced_result = &session->refused};
 }
@@ -2203,13 +2204,13 @@ static bool8_t session_submit(VkrEditorSession *session,
                       .local = true_v,
                       .token = token};
   if (note) {
-    snprintf(edit.agent, sizeof(edit.agent), "%s", note->author);
-    snprintf(edit.label, sizeof(edit.label), "%s", note->label);
+    string_format(edit.agent, sizeof(edit.agent), "%s", note->author);
+    string_format(edit.label, sizeof(edit.label), "%s", note->label);
     edit.review = note->review;
     if (note->stage_count) {
-      edit.stages = malloc(note->stage_count * sizeof(*edit.stages));
+      edit.stages = vkr_heap_alloc(note->stage_count * sizeof(*edit.stages));
       if (!edit.stages) {
-        snprintf(payload->error, sizeof(payload->error), "Out of memory.");
+        string_format(payload->error, sizeof(payload->error), "Out of memory.");
         return false_v;
       }
       MemCopy(edit.stages, note->stages,
@@ -2223,7 +2224,7 @@ static bool8_t session_submit(VkrEditorSession *session,
   if (session->mode == VKR_EDITOR_SESSION_HOST) {
     if (!session_queue_push(session, &edit)) {
       session_edit_release(&edit);
-      snprintf(payload->error, sizeof(payload->error), "Out of memory.");
+      string_format(payload->error, sizeof(payload->error), "Out of memory.");
       return false_v;
     }
     return true_v;
@@ -2234,8 +2235,8 @@ static bool8_t session_submit(VkrEditorSession *session,
                            session->message.data, size);
   session_edit_release(&edit);
   if (!sent) {
-    snprintf(payload->error, sizeof(payload->error),
-             "The edit could not be sent to the host.");
+    string_format(payload->error, sizeof(payload->error),
+                  "The edit could not be sent to the host.");
   }
   return sent;
 }
@@ -2331,19 +2332,20 @@ static void session_intercept(VkrEditorSession *session,
       if (action == VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS ||
           action == VKR_SCENE_EDIT_APPLY_PHYSICS_BATCH) {
         char message[192];
-        snprintf(message, sizeof(message),
-                 "Edit %u: collision layers and physics batches travel in a "
-                 "collaborative session only as edits of their own.",
-                 i);
+        string_format(
+            message, sizeof(message),
+            "Edit %u: collision layers and physics batches travel in a "
+            "collaborative session only as edits of their own.",
+            i);
         session_answer_batch(session, frame, token, message);
         return;
       }
       if (!vkr_net_scene_edit_supported(&payload.items[i].request)) {
         char message[192];
-        snprintf(message, sizeof(message),
-                 "Edit %u: %s edits do not reach a collaborative session "
-                 "yet.",
-                 i, session_action_name(payload.items[i].request.action));
+        string_format(message, sizeof(message),
+                      "Edit %u: %s edits do not reach a collaborative session "
+                      "yet.",
+                      i, session_action_name(payload.items[i].request.action));
         session_answer_batch(session, frame, token, message);
         return;
       }
@@ -2455,7 +2457,7 @@ static bool8_t session_terrain_note(VkrEditorSession *session,
     const uint32_t capacity =
         session->terrain_capacity ? session->terrain_capacity * 2u : 16u;
     SessionTerrain *grown =
-        realloc(session->terrain, capacity * sizeof(*grown));
+        vkr_heap_realloc(session->terrain, capacity * sizeof(*grown));
     if (!grown) {
       return false_v;
     }
@@ -2488,10 +2490,12 @@ static void session_put_results(VkrBitWriter *writer, const void *context) {
     const VkrHeightfield *field =
         scene ? vkr_scene_terrain_field(scene, terrain->entity) : NULL;
     const uint32_t samples = vkr_heightfield_rect_count(terrain->rect);
-    uint16_t *heights = field ? malloc(samples * sizeof(uint16_t)) : NULL;
-    uint32_t *weights = heights ? malloc(samples * sizeof(uint32_t)) : NULL;
+    uint16_t *heights =
+        field ? vkr_heap_alloc(samples * sizeof(uint16_t)) : NULL;
+    uint32_t *weights =
+        heights ? vkr_heap_alloc(samples * sizeof(uint32_t)) : NULL;
     if (!weights) {
-      free(heights);
+      vkr_heap_free(heights);
       results->ok = false_v;
       return;
     }
@@ -2503,8 +2507,8 @@ static void session_put_results(VkrBitWriter *writer, const void *context) {
     vkr_bit_write_varuint(writer, terrain->rect.z1);
     vkr_net_write_array(writer, heights, samples * (uint32_t)sizeof(uint16_t));
     vkr_net_write_array(writer, weights, samples * (uint32_t)sizeof(uint32_t));
-    free(heights);
-    free(weights);
+    vkr_heap_free(heights);
+    vkr_heap_free(weights);
   }
 }
 
@@ -2530,7 +2534,7 @@ static bool8_t session_terrain_results(VkrEditorSession *session,
       break;
     }
   }
-  edit->results = size ? malloc(size) : NULL;
+  edit->results = size ? vkr_heap_alloc(size) : NULL;
   if (!edit->results) {
     return false_v;
   }
@@ -2608,17 +2612,18 @@ static bool8_t session_stage_terrains(const VkrSampleUiFrame *frame,
     char absolute[1100];
     if (!scene || !vkr_scene_terrain_resolve(scene, stage->path, absolute,
                                              sizeof(absolute))) {
-      snprintf(error, capacity, "A new terrain has no place here.");
+      string_format(error, capacity, "A new terrain has no place here.");
       return false_v;
     }
-    const FilePath path = {.path = string8_create_from_cstr(
-                               (const uint8_t *)absolute, strlen(absolute)),
-                           .type = FILE_PATH_TYPE_ABSOLUTE};
+    const FilePath path = {
+        .path = string8_create_from_cstr((const uint8_t *)absolute,
+                                         string_length(absolute)),
+        .type = FILE_PATH_TYPE_ABSOLUTE};
     if (!file_exists(&path) &&
         !vkr_scene_terrain_stage(absolute, stage->cells, stage->spacing,
                                  stage->height_min, stage->height_max,
                                  stage->height)) {
-      snprintf(error, capacity, "A new terrain could not be staged.");
+      string_format(error, capacity, "A new terrain could not be staged.");
       return false_v;
     }
   }
@@ -2635,7 +2640,7 @@ static bool8_t session_terrain_place(VkrEditorSession *session,
   session->inflight.terrain_count = 0u;
   if (session->mode != VKR_EDITOR_SESSION_HOST) {
     if (!session_terrain_apply_results(session, frame, edit, item_count)) {
-      snprintf(error, capacity, "Terrain results do not match the edit.");
+      string_format(error, capacity, "Terrain results do not match the edit.");
       return false_v;
     }
     return true_v;
@@ -2647,8 +2652,8 @@ static bool8_t session_terrain_place(VkrEditorSession *session,
     if (request->action == VKR_SCENE_EDIT_TERRAIN &&
         (!request->entity.u64 ||
          !session_terrain_note(session, frame, request, i))) {
-      snprintf(error, capacity,
-               "Terrain edit %u misses a terrain loaded on the host.", i);
+      string_format(error, capacity,
+                    "Terrain edit %u misses a terrain loaded on the host.", i);
       return false_v;
     }
     if (edit->kind == SESSION_EDIT_SINGLE) {
@@ -2678,8 +2683,8 @@ static bool8_t session_place(VkrEditorSession *session,
     int32_t parent_ref = -1;
     VkrSceneEditRequest *request = frame->scene_edit;
     if (!session->edit_physics) {
-      session->edit_physics =
-          calloc(SESSION_PHYSICS_CHANGE_MAX, sizeof(*session->edit_physics));
+      session->edit_physics = vkr_heap_alloc_zeroed(
+          SESSION_PHYSICS_CHANGE_MAX, sizeof(*session->edit_physics));
     }
     const VkrNetSceneEditStorage storage = {
         .collision_layers = &session->edit_layers,
@@ -2704,7 +2709,7 @@ static bool8_t session_place(VkrEditorSession *session,
     }
     if (!session_reserve_items(session, 1u)) {
       MemZero(request, sizeof(*request));
-      snprintf(error, capacity, "Out of memory.");
+      string_format(error, capacity, "Out of memory.");
       return false_v;
     }
     session->items[0] = (VkrSampleEditBatchItem){
@@ -2729,11 +2734,11 @@ static bool8_t session_place(VkrEditorSession *session,
       return false_v;
     }
     if (count == 0u || count > VKR_SAMPLE_EDIT_BATCH_MAX) {
-      snprintf(error, capacity, "Malformed batch.");
+      string_format(error, capacity, "Malformed batch.");
       return false_v;
     }
     if (!session_reserve_items(session, (uint32_t)count)) {
-      snprintf(error, capacity, "Out of memory.");
+      string_format(error, capacity, "Out of memory.");
       return false_v;
     }
     for (uint32_t i = 0u; i < count; ++i) {
@@ -2746,7 +2751,7 @@ static bool8_t session_place(VkrEditorSession *session,
       item->request.gesture = 0u;
     }
     if (!vkr_bit_reader_at_end(&reader)) {
-      snprintf(error, capacity, "Malformed batch.");
+      string_format(error, capacity, "Malformed batch.");
       return false_v;
     }
     if (!session_terrain_place(session, frame, edit, (uint32_t)count, error,
@@ -2773,8 +2778,8 @@ static bool8_t session_place(VkrEditorSession *session,
     const uint64_t seq = vkr_bit_read_varuint(&reader);
     const uint64_t group = session_group_of_seq(session, container, seq);
     if (!vkr_bit_reader_at_end(&reader) || !group) {
-      snprintf(error, capacity, "No batch %llu to revert.",
-               (unsigned long long)seq);
+      string_format(error, capacity, "No batch %llu to revert.",
+                    (unsigned long long)seq);
       return false_v;
     }
     *out_container = container;
@@ -2783,7 +2788,7 @@ static bool8_t session_place(VkrEditorSession *session,
     return true_v;
   }
   default:
-    snprintf(error, capacity, "Unknown edit.");
+    string_format(error, capacity, "Unknown edit.");
     return false_v;
   }
 }
@@ -2821,7 +2826,7 @@ static void session_inject(VkrEditorSession *session,
         session_group_add(session, head->seq, session->speculative[0].container,
                           session->speculative[0].group, head);
         session->speculative_count -= 1u;
-        memmove(session->speculative, session->speculative + 1,
+        MemCopy(session->speculative, session->speculative + 1,
                 session->speculative_count * sizeof(session->speculative[0]));
         session->apply_seq += 1u;
         SessionEdit adopted = session_queue_pop(session);
@@ -2834,8 +2839,9 @@ static void session_inject(VkrEditorSession *session,
     SessionEdit edit = session_queue_pop(session);
     if (edit.kind == SESSION_EDIT_REFUSED) {
       char message[192];
-      snprintf(message, sizeof(message),
-               "The session host refused this edit (reason %u).", edit.refusal);
+      string_format(message, sizeof(message),
+                    "The session host refused this edit (reason %u).",
+                    edit.refusal);
       session_answer_batch(session, frame, edit.token, message);
       session_edit_release(&edit);
       return;
@@ -2919,8 +2925,8 @@ static void session_note_applied(VkrEditorSession *session,
   }
   *notice = (VkrEditorSessionApplied){
       .container = container, .review = edit->review, .group = result->group};
-  snprintf(notice->author, sizeof(notice->author), "%s", edit->agent);
-  snprintf(notice->label, sizeof(notice->label), "%s", edit->label);
+  string_format(notice->author, sizeof(notice->author), "%s", edit->agent);
+  string_format(notice->label, sizeof(notice->label), "%s", edit->label);
   for (uint32_t i = 0u;
        i < item_count &&
        notice->entity_count < VKR_EDITOR_SESSION_APPLIED_ENTITIES;
@@ -2971,8 +2977,8 @@ static void session_note_reverted(VkrEditorSession *session,
   }
   *notice = (VkrEditorSessionApplied){
       .container = container, .reverted = true_v, .group = reverted->group};
-  snprintf(notice->author, sizeof(notice->author), "%s", reverted->agent);
-  snprintf(notice->label, sizeof(notice->label), "%s", reverted->label);
+  string_format(notice->author, sizeof(notice->author), "%s", reverted->agent);
+  string_format(notice->label, sizeof(notice->label), "%s", reverted->label);
 }
 
 /* Checks the edit injected in the last build against the journals, then
@@ -3065,8 +3071,8 @@ static void session_presence(VkrEditorSession *session,
       session->now + (frame->gizmo_edit_pending ? SESSION_PRESENCE_DRAG_US
                                                 : SESSION_PRESENCE_US);
   VkrEditorSessionPeer self = {.id = session->self_id};
-  snprintf(self.name, sizeof(self.name), "%s", session->name);
-  snprintf(self.tool, sizeof(self.tool), "%s", session->tool);
+  string_format(self.name, sizeof(self.name), "%s", session->name);
+  string_format(self.tool, sizeof(self.tool), "%s", session->tool);
   self.has_camera = frame->scene_recall.camera_valid;
   self.camera_position = frame->scene_recall.position;
   self.camera_yaw = frame->scene_recall.yaw;
@@ -3135,11 +3141,11 @@ static void *session_depot_worker(void *argument) {
   }
   VkrDepotWorkspace workspace;
   if (!memory_ok) {
-    snprintf(job->error, sizeof(job->error), "out of memory");
+    string_format(job->error, sizeof(job->error), "out of memory");
   } else if (!vkr_depot_workspace_open(&workspace, job->directory,
                                        vkr_depot_zstd_codec())) {
-    snprintf(job->error, sizeof(job->error), "no depot working copy at %s",
-             job->directory);
+    string_format(job->error, sizeof(job->error), "no depot working copy at %s",
+                  job->directory);
   } else {
     /* A commit snapshots before it connects: hashing a large scene outlasts
        the idle timeout of an open connection. */
@@ -3185,8 +3191,8 @@ static bool8_t session_depot_start(VkrEditorSession *session, uint8_t kind) {
   job->kind = kind;
   job->ok = false_v;
   job->error[0] = '\0';
-  snprintf(job->directory, sizeof(job->directory), "%s",
-           session->depot_directory);
+  string_format(job->directory, sizeof(job->directory), "%s",
+                session->depot_directory);
   vkr_atomic_bool_store(&job->done, false_v, VKR_MEMORY_ORDER_RELAXED);
   if (!vkr_thread_create(session->allocator, &job->thread, session_depot_worker,
                          job)) {
@@ -3213,17 +3219,18 @@ static bool8_t session_depot_finished(VkrEditorSession *session) {
 static bool8_t session_depot_find(const VkrSampleUiFrame *frame, char *out,
                                   uint32_t capacity) {
   char directory[1024];
-  snprintf(directory, sizeof(directory), "%.*s", (int)frame->scene_path.length,
-           (const char *)frame->scene_path.str);
-  char *slash = strrchr(directory, '/');
-  char *backslash = strrchr(directory, '\\');
+  string_format(directory, sizeof(directory), "%.*s",
+                (int)frame->scene_path.length,
+                (const char *)frame->scene_path.str);
+  char *slash = string_get_last_char_occurrence(directory, '/');
+  char *backslash = string_get_last_char_occurrence(directory, '\\');
   if (backslash && (!slash || backslash > slash)) {
     slash = backslash;
   }
   if (slash) {
     *slash = '\0';
   } else {
-    snprintf(directory, sizeof(directory), ".");
+    string_format(directory, sizeof(directory), ".");
   }
   VkrDepotWorkspace workspace;
   if (!directory[0] || !vkr_depot_workspace_open(&workspace, directory,
@@ -3231,7 +3238,7 @@ static bool8_t session_depot_find(const VkrSampleUiFrame *frame, char *out,
     return false_v;
   }
   vkr_depot_workspace_close(&workspace);
-  snprintf(out, capacity, "%s", directory);
+  string_format(out, capacity, "%s", directory);
   return true_v;
 }
 
@@ -3451,9 +3458,10 @@ static void session_rebase_step(VkrEditorSession *session,
   job->publish = false_v;
   job->parent = session->depot_head;
   job->expected = session->depot_base_tip;
-  snprintf(job->branch, sizeof(job->branch), "%s", session->depot_base_branch);
-  snprintf(job->message, sizeof(job->message), "Session base at edit %llu",
-           (unsigned long long)session->rebase_seq);
+  string_format(job->branch, sizeof(job->branch), "%s",
+                session->depot_base_branch);
+  string_format(job->message, sizeof(job->message), "Session base at edit %llu",
+                (unsigned long long)session->rebase_seq);
   if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
     session->rebase = SESSION_REBASE_FAILED;
     log_warn("The commit of a new session base could not start");
@@ -3496,9 +3504,10 @@ static void session_depot_update(VkrEditorSession *session,
       job->from_base = true_v;
       job->publish = false_v;
       MemZero(&job->expected, sizeof(job->expected));
-      snprintf(job->branch, sizeof(job->branch), "%s", session->depot_branch);
-      snprintf(job->message, sizeof(job->message), "Session base by %s",
-               session->name);
+      string_format(job->branch, sizeof(job->branch), "%s",
+                    session->depot_branch);
+      string_format(job->message, sizeof(job->message), "Session base by %s",
+                    session->name);
       if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
         session_fail(session, "The depot commit could not start.");
         return;
@@ -3527,9 +3536,10 @@ static void session_depot_update(VkrEditorSession *session,
     session->depot_base_parent = job->commit;
     session->depot_phase = SESSION_DEPOT_READY;
     /* Newer bases go to `<branch>.base`, cut so the suffix fits. */
-    snprintf(session->depot_base_branch, sizeof(session->depot_base_branch),
-             "%.*s.base", (int)(sizeof(session->depot_base_branch) - 6u),
-             session->depot_branch);
+    string_format(session->depot_base_branch,
+                  sizeof(session->depot_base_branch), "%.*s.base",
+                  (int)(sizeof(session->depot_base_branch) - 6u),
+                  session->depot_branch);
     /* Saved now; the scene is what the base holds. */
     vkr_editor_session_digest(frame, session->digest);
     vkr_depot_id_hex(&session->depot_head, hex);
@@ -3579,8 +3589,8 @@ static void session_depot_update(VkrEditorSession *session,
   } else if (finished && job->kind == SESSION_DEPOT_COMMIT) {
     if (!job->ok) {
       log_warn("Publishing to the depot failed: %s", job->error);
-      snprintf(session->error, sizeof(session->error), "Publish: %s",
-               job->error);
+      string_format(session->error, sizeof(session->error), "Publish: %s",
+                    job->error);
     } else {
       session->depot_head = job->commit;
       vkr_depot_id_hex(&session->depot_head, hex);
@@ -3591,7 +3601,8 @@ static void session_depot_update(VkrEditorSession *session,
   } else if (finished) {
     if (!job->ok) {
       log_warn("Fetching from the depot failed: %s", job->error);
-      snprintf(session->error, sizeof(session->error), "Fetch: %s", job->error);
+      string_format(session->error, sizeof(session->error), "Fetch: %s",
+                    job->error);
     } else {
       session->depot_head = job->commit;
       vkr_depot_id_hex(&session->depot_head, hex);
@@ -3605,7 +3616,7 @@ static void session_depot_update(VkrEditorSession *session,
   if (!job->running && session->fetch_count) {
     job->commit = session->fetches[0];
     session->fetch_count -= 1u;
-    memmove(session->fetches, session->fetches + 1,
+    MemCopy(session->fetches, session->fetches + 1,
             session->fetch_count * sizeof(session->fetches[0]));
     if (!session_depot_start(session, SESSION_DEPOT_CHECKOUT)) {
       log_warn("A depot fetch could not start");
@@ -3618,24 +3629,24 @@ bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
                                          uint32_t capacity) {
   if (!session || session->depot_phase != SESSION_DEPOT_READY ||
       (session->mode == VKR_EDITOR_SESSION_PARTICIPANT && !session->welcomed)) {
-    snprintf(error, capacity,
-             "Publishing needs a joined session on a depot working copy.");
+    string_format(error, capacity,
+                  "Publishing needs a joined session on a depot working copy.");
     return false_v;
   }
   SessionDepotJob *job = &session->job;
   if (job->running) {
-    snprintf(error, capacity, "Another depot step is running; try again.");
+    string_format(error, capacity, "Another depot step is running; try again.");
     return false_v;
   }
   job->from_base = false_v;
   job->publish = true_v;
   job->parent = session->depot_head;
   job->expected = session->depot_head;
-  snprintf(job->branch, sizeof(job->branch), "%s", session->depot_branch);
-  snprintf(job->message, sizeof(job->message), "%s",
-           message && message[0] ? message : "Session files");
+  string_format(job->branch, sizeof(job->branch), "%s", session->depot_branch);
+  string_format(job->message, sizeof(job->message), "%s",
+                message && message[0] ? message : "Session files");
   if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
-    snprintf(error, capacity, "The depot commit could not start.");
+    string_format(error, capacity, "The depot commit could not start.");
     return false_v;
   }
   return true_v;
@@ -3646,12 +3657,13 @@ bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
 // =============================================================================
 
 VkrEditorSession *vkr_editor_session_create(VkrAllocator *allocator) {
-  VkrEditorSession *session = calloc(1u, sizeof(VkrEditorSession));
+  VkrEditorSession *session =
+      vkr_heap_alloc_zeroed(1u, sizeof(VkrEditorSession));
   if (session) {
     session->allocator = allocator;
-    snprintf(session->form_name, sizeof(session->form_name), "editor");
-    snprintf(session->form_bind, sizeof(session->form_bind), "[::]:%u",
-             VKR_EDITOR_SESSION_PORT);
+    string_format(session->form_name, sizeof(session->form_name), "editor");
+    string_format(session->form_bind, sizeof(session->form_bind), "[::]:%u",
+                  VKR_EDITOR_SESSION_PORT);
   }
   return session;
 }
@@ -3683,22 +3695,22 @@ static void session_reset(VkrEditorSession *session) {
   vkr_net_session_destroy(session->net);
   vkr_net_host_destroy(session->host);
   for (uint32_t i = session->log_first; i < session->log_count; ++i) {
-    free(session->log[i].data);
+    vkr_heap_free(session->log[i].data);
   }
-  free(session->log);
+  vkr_heap_free(session->log);
   for (uint32_t i = 0u; i < session->queue_count; ++i) {
     session_edit_release(&session->queue[session->queue_head + i]);
   }
-  free(session->queue);
-  free(session->groups);
-  free(session->items);
-  free(session->terrain);
-  free(session->results.data);
-  free(session->edit_physics);
-  free(session->payload.data);
-  free(session->message.data);
+  vkr_heap_free(session->queue);
+  vkr_heap_free(session->groups);
+  vkr_heap_free(session->items);
+  vkr_heap_free(session->terrain);
+  vkr_heap_free(session->results.data);
+  vkr_heap_free(session->edit_physics);
+  vkr_heap_free(session->payload.data);
+  vkr_heap_free(session->message.data);
   session_edit_release(&session->inflight.edit);
-  free(session->shared_bytes);
+  vkr_heap_free(session->shared_bytes);
   VkrAllocator *allocator = session->allocator;
   const uint64_t epoch = session->epoch;
   char error[sizeof(session->error)];
@@ -3714,18 +3726,19 @@ static void session_reset(VkrEditorSession *session) {
   MemCopy(identity, session->identity, sizeof(identity));
   const bool8_t identity_read = session->identity_read;
   char form[4][128];
-  snprintf(form[0], sizeof(form[0]), "%s", session->form_name);
-  snprintf(form[1], sizeof(form[1]), "%s", session->form_bind);
-  snprintf(form[2], sizeof(form[2]), "%s", session->form_address);
-  snprintf(form[3], sizeof(form[3]), "%s", session->form_key);
+  string_format(form[0], sizeof(form[0]), "%s", session->form_name);
+  string_format(form[1], sizeof(form[1]), "%s", session->form_bind);
+  string_format(form[2], sizeof(form[2]), "%s", session->form_address);
+  string_format(form[3], sizeof(form[3]), "%s", session->form_key);
   MemZero(session, sizeof(*session));
   session->allocator = allocator;
   session->epoch = epoch;
   MemCopy(session->error, error, sizeof(error));
-  snprintf(session->form_name, sizeof(session->form_name), "%s", form[0]);
-  snprintf(session->form_bind, sizeof(session->form_bind), "%s", form[1]);
-  snprintf(session->form_address, sizeof(session->form_address), "%s", form[2]);
-  snprintf(session->form_key, sizeof(session->form_key), "%s", form[3]);
+  string_format(session->form_name, sizeof(session->form_name), "%s", form[0]);
+  string_format(session->form_bind, sizeof(session->form_bind), "%s", form[1]);
+  string_format(session->form_address, sizeof(session->form_address), "%s",
+                form[2]);
+  string_format(session->form_key, sizeof(session->form_key), "%s", form[3]);
   session->restricted = restricted;
   session->allowed_count = allowed_count;
   MemCopy(session->allowed, allowed, sizeof(allowed));
@@ -3759,7 +3772,7 @@ void vkr_editor_session_destroy(VkrEditorSession *session) {
     return;
   }
   session_reset(session);
-  free(session);
+  vkr_heap_free(session);
 }
 
 void vkr_editor_session_leave(VkrEditorSession *session) {
@@ -3774,17 +3787,17 @@ static bool8_t session_begin(VkrEditorSession *session,
                              const char *fallback, char *error,
                              uint32_t capacity) {
   if (session->mode != VKR_EDITOR_SESSION_NONE) {
-    snprintf(error, capacity, "Leave the current session first.");
+    string_format(error, capacity, "Leave the current session first.");
     return false_v;
   }
   if (!frame->scene || frame->scene_loading || frame->additive_loading ||
       frame->world_loading) {
-    snprintf(error, capacity, "Open a scene and let it load first.");
+    string_format(error, capacity, "Open a scene and let it load first.");
     return false_v;
   }
   session->error[0] = '\0';
-  snprintf(session->name, sizeof(session->name), "%s",
-           name && name[0] ? name : fallback);
+  string_format(session->name, sizeof(session->name), "%s",
+                name && name[0] ? name : fallback);
   session->scene_generation = frame->scene_generation;
   session->epoch += 1u;
   session->apply_seq = 1u;
@@ -3803,11 +3816,11 @@ bool8_t vkr_editor_session_host(VkrEditorSession *session,
   VkrNetHostConfig config = {
       .socket = {.receive_buffer = 4u << 20, .send_buffer = 4u << 20}};
   if (!session_address(bind && bind[0] ? bind : "[::]", &config.bind)) {
-    snprintf(error, capacity, "Invalid address %s.", bind);
+    string_format(error, capacity, "Invalid address %s.", bind);
     return false_v;
   }
   if (!vkr_net_crypto_init()) {
-    snprintf(error, capacity, "The network cryptography did not start.");
+    string_format(error, capacity, "The network cryptography did not start.");
     return false_v;
   }
   vkr_net_keypair_generate(&config.core.static_keys);
@@ -3818,8 +3831,8 @@ bool8_t vkr_editor_session_host(VkrEditorSession *session,
   session->mode = VKR_EDITOR_SESSION_HOST;
   if (!session_start_network(session, &config)) {
     session_reset(session);
-    snprintf(error, capacity, "Could not listen on %s.",
-             bind && bind[0] ? bind : "every interface");
+    string_format(error, capacity, "Could not listen on %s.",
+                  bind && bind[0] ? bind : "every interface");
     return false_v;
   }
   VkrNetAddress local;
@@ -3835,9 +3848,9 @@ bool8_t vkr_editor_session_host(VkrEditorSession *session,
   if (session_depot_find(frame, session->depot_directory,
                          sizeof(session->depot_directory))) {
     /* Branch names take letters, digits, '.', '_' and '-'. */
-    snprintf(session->depot_branch, sizeof(session->depot_branch),
-             "session-%s-%llu", session->name,
-             (unsigned long long)vkr_bakery_unix_seconds());
+    string_format(session->depot_branch, sizeof(session->depot_branch),
+                  "session-%s-%llu", session->name,
+                  (unsigned long long)vkr_bakery_unix_seconds());
     for (char *c = session->depot_branch; *c; ++c) {
       const bool8_t kept =
           (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
@@ -3859,11 +3872,11 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
   uint8_t server_key[32];
   VkrNetAddress server;
   if (!address || !session_address(address, &server)) {
-    snprintf(error, capacity, "Invalid address.");
+    string_format(error, capacity, "Invalid address.");
     return false_v;
   }
   if (!session_parse_hex(key_hex, server_key, sizeof(server_key))) {
-    snprintf(error, capacity, "The key must be 64 hexadecimal digits.");
+    string_format(error, capacity, "The key must be 64 hexadecimal digits.");
     return false_v;
   }
   if (!session_begin(session, frame, name, "guest", error, capacity)) {
@@ -3873,7 +3886,7 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
       .socket = {.receive_buffer = 4u << 20, .send_buffer = 4u << 20}};
   config.bind = vkr_net_address_any((VkrNetAddressFamily)server.family, 0u);
   if (!vkr_net_crypto_init()) {
-    snprintf(error, capacity, "The network cryptography did not start.");
+    string_format(error, capacity, "The network cryptography did not start.");
     return false_v;
   }
   /* The identity key is what a restricted host allows; the name goes as
@@ -3885,17 +3898,18 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
   }
   session->mode = VKR_EDITOR_SESSION_PARTICIPANT;
   if (!session_start_network(session, &config) ||
-      !vkr_net_core_connect(
-          vkr_net_host_core(session->host), &server, server_key,
-          (const uint8_t *)session->name, (uint32_t)strlen(session->name),
-          vkr_net_host_now(session->host), &session->connection)) {
+      !vkr_net_core_connect(vkr_net_host_core(session->host), &server,
+                            server_key, (const uint8_t *)session->name,
+                            (uint32_t)string_length(session->name),
+                            vkr_net_host_now(session->host),
+                            &session->connection)) {
     session_reset(session);
-    snprintf(error, capacity, "Could not start the connection.");
+    string_format(error, capacity, "Could not start the connection.");
     return false_v;
   }
   vkr_net_random(config.core.static_keys.secret_key,
                  sizeof(config.core.static_keys.secret_key));
-  snprintf(session->address, sizeof(session->address), "%s", address);
+  string_format(session->address, sizeof(session->address), "%s", address);
   session_hex(server_key, 32u, session->key);
   (void)session_depot_find(frame, session->depot_directory,
                            sizeof(session->depot_directory));
@@ -3917,8 +3931,8 @@ void vkr_editor_session_update(VkrEditorSession *session,
     session->scene_generation = frame->scene_generation;
   }
   if (frame->scene_generation != session->scene_generation) {
-    snprintf(session->error, sizeof(session->error),
-             "The scene was replaced; the session ended.");
+    string_format(session->error, sizeof(session->error),
+                  "The scene was replaced; the session ended.");
     log_warn("The scene was replaced; the collaborative session ended");
     session_reset(session);
     return;
@@ -3961,21 +3975,22 @@ void vkr_editor_session_status(const VkrEditorSession *session,
   out_status->sequence = session->apply_seq;
   out_status->pending =
       session->queue_count + (session->inflight.active ? 1u : 0u);
-  snprintf(out_status->address, sizeof(out_status->address), "%s",
-           session->address);
-  snprintf(out_status->key, sizeof(out_status->key), "%s", session->key);
-  snprintf(out_status->error, sizeof(out_status->error), "%s", session->error);
+  string_format(out_status->address, sizeof(out_status->address), "%s",
+                session->address);
+  string_format(out_status->key, sizeof(out_status->key), "%s", session->key);
+  string_format(out_status->error, sizeof(out_status->error), "%s",
+                session->error);
   out_status->peer_count = session->peer_count;
   if (session->depot_phase != SESSION_DEPOT_OFF) {
-    snprintf(out_status->depot_branch, sizeof(out_status->depot_branch), "%s",
-             session->depot_branch);
+    string_format(out_status->depot_branch, sizeof(out_status->depot_branch),
+                  "%s", session->depot_branch);
     vkr_depot_id_hex(&session->depot_head, out_status->depot_head);
   }
   out_status->depot_busy = session->job.running;
   MemCopy(out_status->peers, session->peers,
           session->peer_count * sizeof(session->peers[0]));
-  snprintf(out_status->identity, sizeof(out_status->identity), "%s",
-           session->identity);
+  string_format(out_status->identity, sizeof(out_status->identity), "%s",
+                session->identity);
   out_status->restricted = session->restricted;
   out_status->allowed_count = session->allowed_count;
   for (uint32_t i = 0u; i < session->allowed_count; ++i) {
@@ -4023,7 +4038,7 @@ static bool8_t session_allow_key(VkrEditorSession *session,
     session_hex(key, 32u, hex);
     uint32_t left = 0u;
     for (uint32_t i = 0u; i < session->refused_count; ++i) {
-      if (strcmp(session->refusals[i].key, hex) != 0) {
+      if (!string_equals(session->refusals[i].key, hex)) {
         session->refusals[left++] = session->refusals[i];
       }
     }
@@ -4059,11 +4074,11 @@ void vkr_editor_session_author(const VkrEditorSession *session,
                                const char *local, char *out,
                                uint32_t capacity) {
   char copy[VKR_EDITOR_AUTHOR_CAPACITY];
-  snprintf(copy, sizeof(copy), "%s", local);
+  string_format(copy, sizeof(copy), "%s", local);
   if (session && session->mode != VKR_EDITOR_SESSION_NONE && copy[0]) {
-    snprintf(out, capacity, "%s@%s", copy, session->name);
+    string_format(out, capacity, "%s@%s", copy, session->name);
   } else {
-    snprintf(out, capacity, "%s", copy);
+    string_format(out, capacity, "%s", copy);
   }
 }
 
@@ -4075,8 +4090,8 @@ void vkr_editor_session_note_batch(VkrEditorSession *session, uint64_t token,
   }
   SessionNote *note = &session->notes[session->note_next++ % SESSION_NOTE_MAX];
   note->token = token;
-  snprintf(note->author, sizeof(note->author), "%s", author ? author : "");
-  snprintf(note->label, sizeof(note->label), "%s", label ? label : "");
+  string_format(note->author, sizeof(note->author), "%s", author ? author : "");
+  string_format(note->label, sizeof(note->label), "%s", label ? label : "");
   note->review = review;
   /* The terrains noted this build belong to this batch. */
   MemCopy(note->stages, session->stages,
@@ -4099,7 +4114,7 @@ void vkr_editor_session_note_terrain(VkrEditorSession *session,
                           .height_min = height_min,
                           .height_max = height_max,
                           .height = height};
-  snprintf(stage->path, sizeof(stage->path), "%s", relative);
+  string_format(stage->path, sizeof(stage->path), "%s", relative);
 }
 
 bool8_t vkr_editor_session_take_applied(VkrEditorSession *session,
@@ -4197,7 +4212,7 @@ void vkr_editor_session_publish(VkrEditorSession *session,
                                 .tasks = tasks,
                                 .task_count = task_count};
   const uint32_t size = session_build(session, session_put_shared, &shared);
-  uint8_t *bytes = size ? realloc(session->shared_bytes, size) : NULL;
+  uint8_t *bytes = size ? vkr_heap_realloc(session->shared_bytes, size) : NULL;
   if (!bytes) {
     log_warn("The session could not send its claims and tasks");
     return;
@@ -4449,7 +4464,7 @@ void vkr_editor_session_names_build(VkrEditorUi *editor,
     (void)vkr_ui_push_id_u64(ui, peer->id);
     vkr_ui_label(ui, string8_lit("name"),
                  string8_create_from_cstr((const uint8_t *)peer->name,
-                                          strlen(peer->name)),
+                                          string_length(peer->name)),
                  &chip);
     (void)vkr_ui_pop_id(ui);
   }
@@ -4457,7 +4472,7 @@ void vkr_editor_session_names_build(VkrEditorUi *editor,
 }
 
 static String8 session_string(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 /* A widget at (x, y) points inside the window body, as the Build window
@@ -4492,10 +4507,10 @@ static void session_field(VkrUiSystem *ui, const char *id, const char *label,
   session_label(ui, id, label, 12, y, 90, vkr_ui_theme()->text_secondary);
   VkrUiWidgetConfig c = session_widget(102, y, width - 114, 24);
   vkr_editor_field_style(&c);
-  VkrUiTextEditBuffer buffer = {(uint8_t *)text, (uint32_t)strlen(text),
+  VkrUiTextEditBuffer buffer = {(uint8_t *)text, (uint32_t)string_length(text),
                                 capacity};
   char field_id[64];
-  snprintf(field_id, sizeof(field_id), "%s.field", id);
+  string_format(field_id, sizeof(field_id), "%s.field", id);
   (void)vkr_ui_text_field(ui, session_string(field_id), &buffer, &c);
 }
 
@@ -4519,10 +4534,11 @@ static void session_window_access(VkrEditorUi *editor, VkrUiSystem *ui,
   const VkrUiTheme *theme = vkr_ui_theme();
   char text[160];
   if (session->restricted) {
-    snprintf(text, sizeof(text), "Only %u allowed editor%s join",
-             session->allowed_count, session->allowed_count == 1u ? "" : "s");
+    string_format(text, sizeof(text), "Only %u allowed editor%s join",
+                  session->allowed_count,
+                  session->allowed_count == 1u ? "" : "s");
   } else {
-    snprintf(text, sizeof(text), "Anyone with the key joins");
+    string_format(text, sizeof(text), "Anyone with the key joins");
   }
   session_label(ui, "access", text, 12, *y, width - 160, theme->text);
   if (session_button(editor, ui, "access.toggle",
@@ -4534,8 +4550,8 @@ static void session_window_access(VkrEditorUi *editor, VkrUiSystem *ui,
   for (uint32_t i = 0u; i < session->refused_count; ++i) {
     const VkrEditorSessionRefused refused = session->refusals[i];
     (void)vkr_ui_push_id_u64(ui, i);
-    snprintf(text, sizeof(text), "Refused %s (%.12s...)", refused.name,
-             refused.key);
+    string_format(text, sizeof(text), "Refused %s (%.12s...)", refused.name,
+                  refused.key);
     session_label(ui, "refused", text, 12, *y, width - 160, theme->warning);
     if (session_button(editor, ui, "allow", "Allow", width - 136, *y, 124,
                        false_v)) {
@@ -4553,8 +4569,8 @@ static void session_window_peers(VkrEditorUi *editor,
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   char text[160];
-  snprintf(text, sizeof(text), "%u other editor%s", session->peer_count,
-           session->peer_count == 1u ? "" : "s");
+  string_format(text, sizeof(text), "%u other editor%s", session->peer_count,
+                session->peer_count == 1u ? "" : "s");
   session_label(ui, "peers.title", text, 12, *y, width - 24, theme->text);
   *y += 28;
   for (uint32_t i = 0u; i < session->peer_count; ++i) {
@@ -4565,11 +4581,11 @@ static void session_window_peers(VkrEditorUi *editor,
     swatch.style.corner_radius_pt = (Vec4){6, 6, 6, 6};
     vkr_ui_label(ui, string8_lit("swatch"), (String8){0}, &swatch);
     if (peer.has_camera) {
-      snprintf(text, sizeof(text), "%s  %s  (%.1f, %.1f, %.1f)", peer.name,
-               peer.tool, peer.camera_position.x, peer.camera_position.y,
-               peer.camera_position.z);
+      string_format(text, sizeof(text), "%s  %s  (%.1f, %.1f, %.1f)", peer.name,
+                    peer.tool, peer.camera_position.x, peer.camera_position.y,
+                    peer.camera_position.z);
     } else {
-      snprintf(text, sizeof(text), "%s  %s", peer.name, peer.tool);
+      string_format(text, sizeof(text), "%s  %s", peer.name, peer.tool);
     }
     session_label(ui, "name", text, 32, *y, width - 150, theme->text);
     if (peer.has_camera && frame->editor_state_request &&
@@ -4617,7 +4633,7 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
                        true_v) &&
         !vkr_editor_session_host(session, frame, session->form_bind,
                                  session->form_name, error, sizeof(error))) {
-      snprintf(session->error, sizeof(session->error), "%s", error);
+      string_format(session->error, sizeof(session->error), "%s", error);
     }
     y += 42;
     session_field(ui, "address", "Address", session->form_address,
@@ -4630,7 +4646,7 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
         !vkr_editor_session_join(session, frame, session->form_address,
                                  session->form_key, session->form_name, error,
                                  sizeof(error))) {
-      snprintf(session->error, sizeof(session->error), "%s", error);
+      string_format(session->error, sizeof(session->error), "%s", error);
     }
     y += 36;
     /* A restricted host allows this key. */
@@ -4638,44 +4654,45 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
       (void)session_identity(session, NULL);
     }
     if (session->identity[0]) {
-      snprintf(text, sizeof(text), "Your key %.16s...", session->identity);
+      string_format(text, sizeof(text), "Your key %.16s...", session->identity);
       session_label(ui, "identity", text, 12, y, width - 160,
                     theme->text_secondary);
       if (session_button(editor, ui, "identity.copy", "Copy your key",
                          width - 136, y, 124, false_v)) {
         (void)vkr_platform_clipboard_write_text(
             (const uint8_t *)session->identity,
-            (uint32_t)strlen(session->identity));
+            (uint32_t)string_length(session->identity));
       }
       y += 34;
     }
   } else {
     const bool8_t host = session->mode == VKR_EDITOR_SESSION_HOST;
     if (host) {
-      snprintf(text, sizeof(text), "Hosting on %s as %s", session->address,
-               session->name);
+      string_format(text, sizeof(text), "Hosting on %s as %s", session->address,
+                    session->name);
     } else if (session->welcomed) {
-      snprintf(text, sizeof(text), "Joined %s as %s; edit %llu applied",
-               session->address, session->name,
-               (unsigned long long)(session->apply_seq - 1u));
+      string_format(text, sizeof(text), "Joined %s as %s; edit %llu applied",
+                    session->address, session->name,
+                    (unsigned long long)(session->apply_seq - 1u));
     } else {
-      snprintf(text, sizeof(text), "Joining %s...", session->address);
+      string_format(text, sizeof(text), "Joining %s...", session->address);
     }
     session_label(ui, "state", text, 12, y, width - 24, theme->text);
     y += 28;
-    snprintf(text, sizeof(text), "Key %.16s...", session->key);
+    string_format(text, sizeof(text), "Key %.16s...", session->key);
     session_label(ui, "key", text, 12, y, width - 160, theme->text_secondary);
     if (host && session_button(editor, ui, "copy", "Copy key", width - 136, y,
                                124, false_v)) {
-      (void)vkr_platform_clipboard_write_text((const uint8_t *)session->key,
-                                              (uint32_t)strlen(session->key));
+      (void)vkr_platform_clipboard_write_text(
+          (const uint8_t *)session->key, (uint32_t)string_length(session->key));
     }
     y += 34;
     if (session->depot_phase != SESSION_DEPOT_OFF) {
       char head[VKR_DEPOT_ID_HEX];
       vkr_depot_id_hex(&session->depot_head, head);
-      snprintf(text, sizeof(text), "Depot %s at %.12s%s", session->depot_branch,
-               head, session->job.running ? "  (working...)" : "");
+      string_format(text, sizeof(text), "Depot %s at %.12s%s",
+                    session->depot_branch, head,
+                    session->job.running ? "  (working...)" : "");
       session_label(ui, "depot", text, 12, y, width - 160,
                     theme->text_secondary);
       char publish_error[192];
@@ -4684,7 +4701,8 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
                          124, false_v) &&
           !vkr_editor_session_publish_files(session, NULL, publish_error,
                                             sizeof(publish_error))) {
-        snprintf(session->error, sizeof(session->error), "%s", publish_error);
+        string_format(session->error, sizeof(session->error), "%s",
+                      publish_error);
       }
       y += 34;
     }
@@ -4751,7 +4769,7 @@ bool8_t vkr_editor_session_take_accepted(VkrEditorSession *session,
 
 void vkr_editor_session_set_tool(VkrEditorSession *session, const char *tool) {
   if (session) {
-    snprintf(session->tool, sizeof(session->tool), "%s", tool ? tool : "");
+    string_format(session->tool, sizeof(session->tool), "%s", tool ? tool : "");
   }
 }
 

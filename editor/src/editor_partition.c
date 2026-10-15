@@ -4,8 +4,6 @@
 #include "editor_internal.h"
 #include "renderer/systems/vkr_scene_partition.h"
 
-#include <stdio.h>
-
 #define PARTITION_PAD_PT 10.0f
 #define PARTITION_ROW_PT 26.0f
 /* Cells a side of the map, centred on the camera's cell. */
@@ -18,7 +16,7 @@ bool8_t vkr_editor_partition_request(const VkrSampleUiFrame *frame,
   SceneWorldPartition settings;
   if (!frame->scene || !frame->scene_edit ||
       !vkr_scene_partition_settings(frame->scene, &settings)) {
-    snprintf(message, capacity, "The open scene has no world partition");
+    string_format(message, capacity, "The open scene has no world partition");
     return false_v;
   }
   VkrSceneEditRequest request = {.action = VKR_SCENE_EDIT_PARTITION,
@@ -27,11 +25,11 @@ bool8_t vkr_editor_partition_request(const VkrSampleUiFrame *frame,
   MemCopy(request.partition_cells, cells, sizeof(request.partition_cells));
   *frame->scene_edit = request;
   if (all) {
-    snprintf(message, capacity, "Unloading every loaded cell");
+    string_format(message, capacity, "Unloading every loaded cell");
   } else {
-    snprintf(message, capacity, "%s cells %d,%d to %d,%d",
-             unload ? "Unloading" : "Loading", cells[0], cells[1], cells[2],
-             cells[3]);
+    string_format(message, capacity, "%s cells %d,%d to %d,%d",
+                  unload ? "Unloading" : "Loading", cells[0], cells[1],
+                  cells[2], cells[3]);
   }
   return true_v;
 }

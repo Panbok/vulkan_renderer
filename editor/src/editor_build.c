@@ -11,14 +11,12 @@
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_file_dialog.h"
 #include "platform/vkr_platform.h"
 #include "vkr_graphics_settings.h"
 
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Owns the Build workflow of docs/proposals/project-packaging.md. The
  * package job itself is `vkr_bakery bundle <project> --profile <name>` on
@@ -134,14 +132,14 @@ struct VkrEditorBuild {
 };
 
 static String8 build_text(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 static void build_log_line(VkrEditorBuild *build, const char *format, ...) {
   char text[768];
   va_list args;
   va_start(args, format);
-  int length = vsnprintf(text, sizeof(text), format, args);
+  int length = string_format_v(text, sizeof(text), format, args);
   va_end(args);
   if (length <= 0) {
     return;
@@ -157,7 +155,7 @@ static void build_log_line(VkrEditorBuild *build, const char *format, ...) {
     while (cut < build->log_length && build->log[cut - 1u] != '\n') {
       ++cut;
     }
-    memmove(build->log, build->log + cut, build->log_length - cut);
+    MemCopy(build->log, build->log + cut, build->log_length - cut);
     build->log_length -= cut;
   }
   MemCopy(build->log + build->log_length, text, (uint32_t)length);
@@ -199,16 +197,17 @@ void vkr_editor_build_destroy(VkrEditorBuild *build) {
 // =============================================================================
 
 static void build_fields_load(VkrEditorBuild *build) {
-  snprintf(build->width_text, sizeof(build->width_text), "%u",
-           build->draft.window_width);
-  snprintf(build->height_text, sizeof(build->height_text), "%u",
-           build->draft.window_height);
+  string_format(build->width_text, sizeof(build->width_text), "%u",
+                build->draft.window_width);
+  string_format(build->height_text, sizeof(build->height_text), "%u",
+                build->draft.window_height);
   const VkrEditorGameProfile *profile = &build->draft.profiles[build->profile];
   build->include_text[0] = '\0';
   for (uint32_t i = 0; i < profile->include_count; ++i) {
-    const uint32_t used = (uint32_t)strlen(build->include_text);
-    snprintf(build->include_text + used, sizeof(build->include_text) - used,
-             "%s%s", i ? ", " : "", profile->include[i]);
+    const uint32_t used = (uint32_t)string_length(build->include_text);
+    string_format(build->include_text + used,
+                  sizeof(build->include_text) - used, "%s%s", i ? ", " : "",
+                  profile->include[i]);
   }
   build->fields_profile = build->profile;
   build->fields_valid = true_v;
@@ -232,8 +231,9 @@ static void build_includes_store(VkrEditorBuild *build) {
     }
     if (end > start && profile->include_count < VKR_EDITOR_GAME_INCLUDE_MAX &&
         (uint64_t)(end - start) < sizeof(profile->include[0])) {
-      snprintf(profile->include[profile->include_count++],
-               sizeof(profile->include[0]), "%.*s", (int)(end - start), start);
+      string_format(profile->include[profile->include_count++],
+                    sizeof(profile->include[0]), "%.*s", (int)(end - start),
+                    start);
     }
     if (!*c) {
       break;
@@ -247,16 +247,17 @@ static void build_load(VkrEditorBuild *build, const VkrEditorProject *project,
   VkrEditorProjectError error = {0};
   bool8_t exists = false_v;
   if (!vkr_editor_game_load(project, scratch, &build->draft, &exists, &error)) {
-    snprintf(build->message, sizeof(build->message),
-             "game.json is invalid (%s); the defaults are shown.",
-             error.message);
+    string_format(build->message, sizeof(build->message),
+                  "game.json is invalid (%s); the defaults are shown.",
+                  error.message);
   } else {
     build->message[0] = '\0';
   }
   build->saved = build->draft;
   build->profile = 0u;
   build_fields_load(build);
-  snprintf(build->project_id, sizeof(build->project_id), "%s", project->id);
+  string_format(build->project_id, sizeof(build->project_id), "%s",
+                project->id);
 }
 
 static bool8_t build_dirty(const VkrEditorBuild *build) {
@@ -270,13 +271,13 @@ static bool8_t build_save(VkrEditorBuild *build,
     return true_v;
   }
   if (read_only) {
-    snprintf(build->message, sizeof(build->message),
-             "Read-only workspace: build settings are not saved.");
+    string_format(build->message, sizeof(build->message),
+                  "Read-only workspace: build settings are not saved.");
     return false_v;
   }
   VkrEditorProjectError error = {0};
   if (!vkr_editor_game_save(project, &build->draft, scratch, &error)) {
-    snprintf(build->message, sizeof(build->message), "%s", error.message);
+    string_format(build->message, sizeof(build->message), "%s", error.message);
     return false_v;
   }
   build->saved = build->draft;
@@ -320,7 +321,7 @@ static float64_t build_event_number(VkrJsonReader line, const char *field) {
 
 static uint32_t build_stage_index(const char *name) {
   for (uint32_t i = 0; i < BUILD_STAGE_COUNT; ++i) {
-    if (!strcmp(build_stage_names[i], name)) {
+    if (string_equals(build_stage_names[i], name)) {
       return i;
     }
   }
@@ -335,7 +336,7 @@ static void build_apply_event(VkrEditorBuild *build, String8 bytes) {
   if (!build_event_text(line, "ev", event, sizeof(event))) {
     return;
   }
-  if (!strcmp(event, "start")) {
+  if (string_equals(event, "start")) {
     char source[64];
     (void)build_event_text(line, "source", source, sizeof(source));
     const uint32_t stage = build_stage_index(source);
@@ -345,23 +346,23 @@ static void build_apply_event(VkrEditorBuild *build, String8 bytes) {
       build->fraction = -1.0;
       build->detail[0] = '\0';
     }
-  } else if (!strcmp(event, "progress")) {
+  } else if (string_equals(event, "progress")) {
     build->fraction = build_event_number(line, "fraction");
     (void)build_event_text(line, "detail", build->detail,
                            sizeof(build->detail));
-  } else if (!strcmp(event, "done")) {
+  } else if (string_equals(event, "done")) {
     char status[16];
     (void)build_event_text(line, "status", status, sizeof(status));
     if (build->stage < BUILD_STAGE_COUNT) {
       BuildStage *stage = &build->stages[build->stage];
       stage->status =
-          strcmp(status, "ok") ? BUILD_STAGE_FAILED : BUILD_STAGE_DONE;
+          !string_equals(status, "ok") ? BUILD_STAGE_FAILED : BUILD_STAGE_DONE;
       stage->seconds = build_event_number(line, "wall_ms") / 1000.0;
       build_log_line(build, "%s  %s  %.2f s",
-                     strcmp(status, "ok") ? status : "done",
+                     !string_equals(status, "ok") ? status : "done",
                      build_stage_names[build->stage], stage->seconds);
     }
-  } else if (!strcmp(event, "diag")) {
+  } else if (string_equals(event, "diag")) {
     char code[32];
     char severity[16];
     char source[256];
@@ -373,30 +374,32 @@ static void build_apply_event(VkrEditorBuild *build, String8 bytes) {
     if (build->diagnostic_count < BUILD_DIAGNOSTIC_MAX) {
       BuildDiagnostic *diagnostic =
           &build->diagnostics[build->diagnostic_count++];
-      snprintf(diagnostic->severity, sizeof(diagnostic->severity), "%s",
-               severity);
-      snprintf(diagnostic->code, sizeof(diagnostic->code), "%s", code);
-      snprintf(diagnostic->source, sizeof(diagnostic->source), "%s", source);
-      snprintf(diagnostic->message, sizeof(diagnostic->message), "%s", text);
+      string_format(diagnostic->severity, sizeof(diagnostic->severity), "%s",
+                    severity);
+      string_format(diagnostic->code, sizeof(diagnostic->code), "%s", code);
+      string_format(diagnostic->source, sizeof(diagnostic->source), "%s",
+                    source);
+      string_format(diagnostic->message, sizeof(diagnostic->message), "%s",
+                    text);
     }
-    if (!strcmp(severity, "error")) {
+    if (string_equals(severity, "error")) {
       log_error("Build %s %s: %s", code, source, text);
     } else {
       log_warn("Build %s %s: %s", code, source, text);
     }
-  } else if (!strcmp(event, "log")) {
+  } else if (string_equals(event, "log")) {
     char level[16];
     (void)build_event_text(line, "level", level, sizeof(level));
     (void)build_event_text(line, "text", text, sizeof(text));
-    const uint64_t length = strlen(text);
+    const uint64_t length = string_length(text);
     /* The report path is the job's last log line. */
-    if (length > 5u && !strcmp(text + length - 5u, ".json") &&
-        strstr(text, "/logs/builds/")) {
-      snprintf(build->report_path, sizeof(build->report_path), "%s", text);
+    if (length > 5u && string_equals(text + length - 5u, ".json") &&
+        string_find(text, "/logs/builds/")) {
+      string_format(build->report_path, sizeof(build->report_path), "%s", text);
     } else {
-      build_log_line(build, "%s%s", strcmp(level, "warn") ? "" : "warn  ",
-                     text);
-      if (!strcmp(level, "warn")) {
+      build_log_line(build, "%s%s",
+                     !string_equals(level, "warn") ? "" : "warn  ", text);
+      if (string_equals(level, "warn")) {
         log_warn("Build: %s", text);
       }
     }
@@ -405,17 +408,22 @@ static void build_apply_event(VkrEditorBuild *build, String8 bytes) {
 
 /* Applies the complete event lines appended since the last read. */
 static void build_read_events(VkrEditorBuild *build) {
-  FILE *file = file_fopen(build->events_path, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(build->events_path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return;
   }
   uint8_t *data = NULL;
   uint64_t length = 0u;
-  if (FSEEK64(file, (int64_t)build->events_offset, SEEK_SET) == 0) {
-    data = malloc(BUILD_READ_LIMIT + 1u);
-    length = data ? fread(data, 1u, BUILD_READ_LIMIT, file) : 0u;
+  if (file_seek(&file, build->events_offset) == FILE_ERROR_NONE) {
+    data = vkr_heap_alloc(BUILD_READ_LIMIT + 1u);
+    if (data) {
+      (void)file_read_into(&file, data, BUILD_READ_LIMIT, &length);
+    }
   }
-  fclose(file);
+  file_close(&file);
   uint64_t start = 0u;
   for (uint64_t i = 0; i < length; ++i) {
     if (data[i] != '\n') {
@@ -428,7 +436,7 @@ static void build_read_events(VkrEditorBuild *build) {
     start = i + 1u;
   }
   build->events_offset += start;
-  free(data);
+  vkr_heap_free(data);
 }
 
 /* The report names the package; its archives give the package size.
@@ -450,7 +458,7 @@ static String8 build_read_report(VkrEditorBuild *build, VkrAllocator *scratch) {
   const bool8_t complete =
       vkr_editor_project_json_string(bytes, "status", status, sizeof(status),
                                      &error) &&
-      !strcmp(status, "complete") &&
+      string_equals(status, "complete") &&
       vkr_editor_project_json_string(bytes, "output", output, sizeof(output),
                                      &error) &&
       vkr_editor_project_json_string(bytes, "executable", executable,
@@ -467,9 +475,9 @@ static String8 build_read_report(VkrEditorBuild *build, VkrAllocator *scratch) {
     }
   }
   if (complete) {
-    snprintf(build->output, sizeof(build->output), "%s", output);
-    snprintf(build->executable, sizeof(build->executable), "%s/%s", output,
-             executable);
+    string_format(build->output, sizeof(build->output), "%s", output);
+    string_format(build->executable, sizeof(build->executable), "%s/%s", output,
+                  executable);
     build->package_bytes = 0u;
     reader = vkr_json_reader_from_string(bytes);
     VkrJsonReader package = {0};
@@ -521,16 +529,19 @@ static void *build_game_worker(void *argument) {
 
 /* Forwards the running game's new output lines to the Console. */
 static void build_forward_game(VkrEditorBuild *build) {
-  FILE *file = file_fopen(build->game_log, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(build->game_log);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return;
   }
   uint8_t chunk[8192];
-  size_t length = 0u;
-  if (FSEEK64(file, (int64_t)build->game_log_offset, SEEK_SET) == 0) {
-    length = fread(chunk, 1u, sizeof(chunk) - 1u, file);
+  uint64_t length = 0u;
+  if (file_seek(&file, build->game_log_offset) == FILE_ERROR_NONE) {
+    (void)file_read_into(&file, chunk, sizeof(chunk) - 1u, &length);
   }
-  fclose(file);
+  file_close(&file);
   uint64_t start = 0u;
   for (uint64_t i = 0; i < length; ++i) {
     if (chunk[i] != '\n') {
@@ -552,18 +563,19 @@ static void build_forward_game(VkrEditorBuild *build) {
 static bool8_t build_run_game(VkrEditorBuild *build, const char *workspace,
                               char *message, uint32_t capacity) {
   if (!build->executable[0]) {
-    snprintf(message, capacity, "Build the game first.");
+    string_format(message, capacity, "Build the game first.");
     return false_v;
   }
   if (build->game) {
-    snprintf(message, capacity, "The game is already running.");
+    string_format(message, capacity, "The game is already running.");
     return false_v;
   }
-  snprintf(build->game_path, sizeof(build->game_path), "%s", build->executable);
-  snprintf(build->game_directory, sizeof(build->game_directory), "%s",
-           build->output);
-  snprintf(build->game_log, sizeof(build->game_log), "%s/logs/builds/game.log",
-           workspace);
+  string_format(build->game_path, sizeof(build->game_path), "%s",
+                build->executable);
+  string_format(build->game_directory, sizeof(build->game_directory), "%s",
+                build->output);
+  string_format(build->game_log, sizeof(build->game_log),
+                "%s/logs/builds/game.log", workspace);
   FilePath log_file = {.path = build_text(build->game_log),
                        .type = FILE_PATH_TYPE_ABSOLUTE};
   (void)file_remove(&log_file);
@@ -573,11 +585,11 @@ static bool8_t build_run_game(VkrEditorBuild *build, const char *workspace,
   if (!vkr_thread_create(build->allocator, &build->game, build_game_worker,
                          build)) {
     build->game = NULL;
-    snprintf(message, capacity, "The game could not start.");
+    string_format(message, capacity, "The game could not start.");
     return false_v;
   }
   log_info("Build: running %s", build->game_path);
-  snprintf(message, capacity, "Running the game");
+  string_format(message, capacity, "Running the game");
   return true_v;
 }
 
@@ -592,12 +604,13 @@ static void build_finish(VkrEditorBuild *build, VkrEditorUi *editor,
   if (build->succeeded) {
     const float64_t mib = (float64_t)build->package_bytes / (1024.0 * 1024.0);
     if (build->warning_count) {
-      snprintf(build->result, sizeof(build->result),
-               "Built %s, %.1f MiB, %u warning%s", build->output, mib,
-               build->warning_count, build->warning_count == 1u ? "" : "s");
+      string_format(build->result, sizeof(build->result),
+                    "Built %s, %.1f MiB, %u warning%s", build->output, mib,
+                    build->warning_count,
+                    build->warning_count == 1u ? "" : "s");
     } else {
-      snprintf(build->result, sizeof(build->result), "Built %s, %.1f MiB",
-               build->output, mib);
+      string_format(build->result, sizeof(build->result), "Built %s, %.1f MiB",
+                    build->output, mib);
     }
     log_info("Build: %s", build->result);
     /* A shipping build that finalized project assets returns their new
@@ -618,11 +631,11 @@ static void build_finish(VkrEditorBuild *build, VkrEditorUi *editor,
                            message, sizeof(message));
     }
   } else {
-    snprintf(build->result, sizeof(build->result), "%s",
-             status == VKR_EDITOR_PROJECT_JOB_CANCELLED
-                 ? "Build cancelled; the previous package is unchanged."
-                 : "Build failed; the previous package is unchanged. See "
-                   "the log.");
+    string_format(build->result, sizeof(build->result), "%s",
+                  status == VKR_EDITOR_PROJECT_JOB_CANCELLED
+                      ? "Build cancelled; the previous package is unchanged."
+                      : "Build failed; the previous package is unchanged. See "
+                        "the log.");
     log_error("Build: %s", build->result);
     vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
                      status == VKR_EDITOR_PROJECT_JOB_CANCELLED
@@ -637,25 +650,25 @@ static bool8_t build_begin_job(VkrEditorBuild *build, VkrEditorUi *editor,
       vkr_editor_projects_project(editor->projects);
   const char *workspace = vkr_editor_projects_workspace_root(editor->projects);
   if (!vkr_editor_project_directory(project, build->project_directory)) {
-    snprintf(build->result, sizeof(build->result), "No project is open.");
+    string_format(build->result, sizeof(build->result), "No project is open.");
     return false_v;
   }
   char directory[BUILD_PATH];
-  snprintf(directory, sizeof(directory), "%s/logs/builds", workspace);
+  string_format(directory, sizeof(directory), "%s/logs/builds", workspace);
   String8 directory_text = build_text(directory);
-  snprintf(build->events_path, sizeof(build->events_path),
-           "%s/last.events.jsonl", directory);
+  string_format(build->events_path, sizeof(build->events_path),
+                "%s/last.events.jsonl", directory);
   if (!file_ensure_directory(frame->ui->frame_allocator, &directory_text)) {
-    snprintf(build->result, sizeof(build->result),
-             "Cannot create the build log folder.");
+    string_format(build->result, sizeof(build->result),
+                  "Cannot create the build log folder.");
     return false_v;
   }
   build->job_id =
       vkr_editor_bakery_package_start(editor->bakery, build->project_directory,
                                       build->profile_name, build->events_path);
   if (!build->job_id) {
-    snprintf(build->result, sizeof(build->result),
-             "Bakery's queue is full; try again when a job finishes.");
+    string_format(build->result, sizeof(build->result),
+                  "Bakery's queue is full; try again when a job finishes.");
     return false_v;
   }
   vkr_sha256(project->assets.str, project->assets.length, build->assets_digest);
@@ -674,7 +687,7 @@ void vkr_editor_build_update(VkrEditorBuild *build, VkrEditorUi *editor,
   }
   const VkrEditorProject *project =
       vkr_editor_projects_project(editor->projects);
-  if (project && strcmp(build->project_id, project->id) != 0 &&
+  if (project && !string_equals(build->project_id, project->id) &&
       build->phase != BUILD_RUNNING) {
     build_load(build, project, frame->ui->frame_allocator);
   }
@@ -696,7 +709,7 @@ void vkr_editor_build_update(VkrEditorBuild *build, VkrEditorUi *editor,
       }
     } else if (preflight != VKR_EDITOR_BUILD_PREFLIGHT_WAITING) {
       build->phase = BUILD_IDLE;
-      snprintf(build->result, sizeof(build->result), "Build cancelled.");
+      string_format(build->result, sizeof(build->result), "Build cancelled.");
     }
     return;
   }
@@ -720,11 +733,11 @@ bool8_t vkr_editor_build_start(VkrEditorBuild *build, VkrEditorUi *editor,
   const VkrEditorProject *project =
       build ? vkr_editor_projects_project(editor->projects) : NULL;
   if (!project) {
-    snprintf(message, capacity, "Open a project to build it.");
+    string_format(message, capacity, "Open a project to build it.");
     return false_v;
   }
   if (build->phase == BUILD_PREFLIGHT || build->phase == BUILD_RUNNING) {
-    snprintf(message, capacity, "A build is already running.");
+    string_format(message, capacity, "A build is already running.");
     return false_v;
   }
   if (!build->fields_valid) {
@@ -733,13 +746,13 @@ bool8_t vkr_editor_build_start(VkrEditorBuild *build, VkrEditorUi *editor,
   build_includes_store(build);
   VkrEditorProjectError error = {0};
   if (!vkr_editor_game_validate(&build->draft, project, &error)) {
-    snprintf(message, capacity, "%s", error.message);
+    string_format(message, capacity, "%s", error.message);
     return false_v;
   }
   const VkrEditorGameProfile *profile = &build->draft.profiles[build->profile];
   if (!profile->output[0]) {
-    snprintf(message, capacity,
-             "Choose an output folder in Build Settings first.");
+    string_format(message, capacity,
+                  "Choose an output folder in Build Settings first.");
     vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_BUILD, true_v);
     return false_v;
   }
@@ -755,12 +768,13 @@ bool8_t vkr_editor_build_start(VkrEditorBuild *build, VkrEditorUi *editor,
     arena_destroy(arena);
   }
   if (!saved) {
-    snprintf(message, capacity, "%s",
-             build->message[0] ? build->message : "Cannot save game.json.");
+    string_format(message, capacity, "%s",
+                  build->message[0] ? build->message
+                                    : "Cannot save game.json.");
     return false_v;
   }
-  snprintf(build->profile_name, sizeof(build->profile_name), "%s",
-           profile->name);
+  string_format(build->profile_name, sizeof(build->profile_name), "%s",
+                profile->name);
   build->run_after = run;
   build->phase = BUILD_PREFLIGHT;
   build->succeeded = false_v;
@@ -772,8 +786,8 @@ bool8_t vkr_editor_build_start(VkrEditorBuild *build, VkrEditorUi *editor,
   build->fraction = -1.0;
   build->detail[0] = '\0';
   MemZero(build->stages, sizeof(build->stages));
-  snprintf(message, capacity, "Building %s (%s)", build->draft.name,
-           profile->name);
+  string_format(message, capacity, "Building %s (%s)", build->draft.name,
+                profile->name);
   return true_v;
 }
 
@@ -791,28 +805,27 @@ void vkr_editor_build_cancel(VkrEditorBuild *build, VkrEditorUi *editor) {
 bool8_t vkr_editor_build_open_last(VkrEditorBuild *build, char *message,
                                    uint32_t capacity) {
   if (!build || !build->output[0]) {
-    snprintf(message, capacity, "No build yet in this session.");
+    string_format(message, capacity, "No build yet in this session.");
     return false_v;
   }
-#if defined(PLATFORM_WINDOWS)
-  const char *executable = "explorer.exe";
-  const char *arguments[] = {build->output};
-#else
-  const char *executable = "/usr/bin/open";
-  const char *arguments[] = {build->output};
-#endif
-  const VkrPlatformProcessConfig config = {.executable = executable,
-                                           .arguments = arguments,
-                                           .argument_count = 1u,
+  VkrPlatformFileManagerCommand open = {0};
+  if (!vkr_platform_file_manager_command(build->output, false_v, &open)) {
+    string_format(message, capacity, "Cannot open %s", build->output);
+    return false_v;
+  }
+  const VkrPlatformProcessConfig config = {.executable = open.executable,
+                                           .arguments = open.arguments,
+                                           .argument_count =
+                                               open.argument_count,
                                            .timeout_ms = 5000u,
                                            .termination_grace_ms = 250u};
   int32_t code = -1;
   bool8_t timed_out = false_v;
   if (!vkr_platform_process_run(&config, &code, &timed_out)) {
-    snprintf(message, capacity, "Cannot open %s", build->output);
+    string_format(message, capacity, "Cannot open %s", build->output);
     return false_v;
   }
-  snprintf(message, capacity, "Opened %s", build->output);
+  string_format(message, capacity, "Opened %s", build->output);
   return true_v;
 }
 
@@ -834,7 +847,7 @@ bool8_t vkr_editor_build_has_package(const VkrEditorBuild *build) {
 bool8_t vkr_editor_build_select_profile(VkrEditorBuild *build,
                                         const char *name) {
   for (uint32_t i = 0; build && i < build->draft.profile_count; ++i) {
-    if (!strcmp(build->draft.profiles[i].name, name)) {
+    if (string_equals(build->draft.profiles[i].name, name)) {
       if (build->fields_valid) {
         build_includes_store(build);
       }
@@ -900,17 +913,17 @@ static bool8_t build_field(VkrUiSystem *ui, const char *id, const char *label,
   VkrUiWidgetConfig c =
       build_widget(12 + label_width, y, width - 24 - label_width, 24);
   vkr_editor_field_style(&c);
-  VkrUiTextEditBuffer buffer = {(uint8_t *)text, (uint32_t)strlen(text),
+  VkrUiTextEditBuffer buffer = {(uint8_t *)text, (uint32_t)string_length(text),
                                 capacity};
   char field_id[64];
-  snprintf(field_id, sizeof(field_id), "%s.field", id);
+  string_format(field_id, sizeof(field_id), "%s.field", id);
   return vkr_ui_text_field(ui, build_text(field_id), &buffer, &c);
 }
 
 static const char *build_scene_name(const VkrEditorProject *project,
                                     const char *id) {
   for (uint32_t i = 0; i < project->scene_count; ++i) {
-    if (!strcmp(project->scenes[i].id, id)) {
+    if (string_equals(project->scenes[i].id, id)) {
       return project->scenes[i].name;
     }
   }
@@ -920,7 +933,7 @@ static const char *build_scene_name(const VkrEditorProject *project,
 static uint32_t build_scene_included(const VkrEditorGame *game,
                                      const char *id) {
   for (uint32_t i = 0; i < game->scene_count; ++i) {
-    if (!strcmp(game->scenes[i], id)) {
+    if (string_equals(game->scenes[i], id)) {
       return i;
     }
   }
@@ -936,7 +949,7 @@ static void build_settings_profiles(VkrEditorBuild *build, VkrUiSystem *ui,
   for (uint32_t i = 0; i < game->profile_count; ++i) {
     const bool8_t selected = build->profile == i;
     const float32_t w =
-        Min(160.0f, 20.0f + 7.5f * strlen(game->profiles[i].name));
+        Min(160.0f, 20.0f + 7.5f * string_length(game->profiles[i].name));
     if (x + w > width - 120) {
       break;
     }
@@ -969,16 +982,16 @@ static void build_settings_profiles(VkrEditorBuild *build, VkrUiSystem *ui,
       if (i == 0u) {
         vkr_editor_game_profile_default("",
                                         &game->profiles[game->profile_count]);
-        snprintf(game->profiles[game->profile_count].name,
-                 sizeof(game->profiles[0].name), "Profile %u",
-                 game->profile_count + 1u);
+        string_format(game->profiles[game->profile_count].name,
+                      sizeof(game->profiles[0].name), "Profile %u",
+                      game->profile_count + 1u);
         build->profile = game->profile_count++;
       } else if (i == 1u) {
         game->profiles[game->profile_count] = game->profiles[build->profile];
         char *name = game->profiles[game->profile_count].name;
-        const uint32_t length = (uint32_t)strlen(name);
-        snprintf(name + Min(length, 56u), sizeof(game->profiles[0].name) - 56u,
-                 " copy");
+        const uint32_t length = (uint32_t)string_length(name);
+        string_format(name + Min(length, 56u),
+                      sizeof(game->profiles[0].name) - 56u, " copy");
         build->profile = game->profile_count++;
       } else {
         MemCopy(&game->profiles[build->profile],
@@ -1023,20 +1036,20 @@ static void build_settings_game(VkrEditorBuild *build, VkrUiSystem *ui,
   VkrUiWidgetConfig c = build_widget(132, *y, half, 24);
   vkr_editor_field_style(&c);
   VkrUiTextEditBuffer w = {(uint8_t *)build->width_text,
-                           (uint32_t)strlen(build->width_text),
+                           (uint32_t)string_length(build->width_text),
                            sizeof(build->width_text)};
   if (vkr_ui_text_field(ui, string8_lit("window.width"), &w, &c)) {
-    game->window_width = (uint32_t)strtoul(build->width_text, NULL, 10);
+    game->window_width = (uint32_t)string_parse_u64(build->width_text, NULL);
   }
   build_label(ui, "window.by", string8_lit("\xc3\x97"), 136 + half, *y, 16,
               true_v);
   c = build_widget(156 + half, *y, half, 24);
   vkr_editor_field_style(&c);
   VkrUiTextEditBuffer h = {(uint8_t *)build->height_text,
-                           (uint32_t)strlen(build->height_text),
+                           (uint32_t)string_length(build->height_text),
                            sizeof(build->height_text)};
   if (vkr_ui_text_field(ui, string8_lit("window.height"), &h, &c)) {
-    game->window_height = (uint32_t)strtoul(build->height_text, NULL, 10);
+    game->window_height = (uint32_t)string_parse_u64(build->height_text, NULL);
   }
   *y += 30;
   build_label(ui, "mode.label", string8_lit("Display"), 12, *y, 120, true_v);
@@ -1047,14 +1060,15 @@ static void build_settings_game(VkrEditorBuild *build, VkrUiSystem *ui,
       "The platform's fullscreen: its own Space on macOS",
       "A borderless window covering the display"};
   for (uint32_t i = 0; i < ArrayCount(modes); ++i) {
-    const bool8_t selected = !strcmp(game->window_mode, modes[i]);
+    const bool8_t selected = string_equals(game->window_mode, modes[i]);
     c = build_widget(132 + i * 124, *y, 120, 24);
     vkr_editor_toggle_style(&c, selected);
     c.tooltip = build_text(mode_tips[i]);
     (void)vkr_ui_push_id_u64(ui, i);
     if (vkr_ui_button(ui, string8_lit("mode"), build_text(mode_labels[i]),
                       &c)) {
-      snprintf(game->window_mode, sizeof(game->window_mode), "%s", modes[i]);
+      string_format(game->window_mode, sizeof(game->window_mode), "%s",
+                    modes[i]);
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -1091,24 +1105,24 @@ static void build_settings_scenes(VkrEditorBuild *build, VkrUiSystem *ui,
                           build_text(build_scene_name(project, id)), &included,
                           &c)) {
         if (included && game->scene_count < VKR_EDITOR_PROJECT_MAX_SCENES) {
-          snprintf(game->scenes[game->scene_count++], sizeof(game->scenes[0]),
-                   "%s", id);
+          string_format(game->scenes[game->scene_count++],
+                        sizeof(game->scenes[0]), "%s", id);
           if (!game->startup_scene[0]) {
-            snprintf(game->startup_scene, sizeof(game->startup_scene), "%s",
-                     id);
+            string_format(game->startup_scene, sizeof(game->startup_scene),
+                          "%s", id);
           }
         } else if (!included && index != UINT32_MAX) {
           MemCopy(game->scenes[index], game->scenes[index + 1u],
                   (game->scene_count - index - 1u) * sizeof(game->scenes[0]));
           --game->scene_count;
-          if (!strcmp(game->startup_scene, id)) {
-            snprintf(game->startup_scene, sizeof(game->startup_scene), "%s",
-                     game->scene_count ? game->scenes[0] : "");
+          if (string_equals(game->startup_scene, id)) {
+            string_format(game->startup_scene, sizeof(game->startup_scene),
+                          "%s", game->scene_count ? game->scenes[0] : "");
           }
         }
       }
       if (!pass) {
-        const bool8_t startup = !strcmp(game->startup_scene, id);
+        const bool8_t startup = string_equals(game->startup_scene, id);
         c = build_widget(width - 174, *y, 90, 24);
         vkr_editor_toggle_style(&c, startup);
         c.style.font_size_pt = theme->font_caption;
@@ -1117,7 +1131,8 @@ static void build_settings_scenes(VkrEditorBuild *build, VkrUiSystem *ui,
         c.tooltip = string8_lit("The scene the game starts in");
         if (vkr_ui_button(ui, string8_lit("scene.startup"),
                           string8_lit("Startup"), &c)) {
-          snprintf(game->startup_scene, sizeof(game->startup_scene), "%s", id);
+          string_format(game->startup_scene, sizeof(game->startup_scene), "%s",
+                        id);
         }
         const VkrUiIcon arrows[] = {VKR_UI_ICON_ARROW_UP,
                                     VKR_UI_ICON_ARROW_DOWN};
@@ -1170,13 +1185,13 @@ static void build_settings_target(VkrEditorBuild *build, VkrEditorUi *editor,
   const char *tips[] = {"Info logging and the F6 debug overlay",
                         "Errors only and no developer UI"};
   for (uint32_t i = 0; i < 2; ++i) {
-    const bool8_t selected = !strcmp(profile->config, configs[i]);
+    const bool8_t selected = string_equals(profile->config, configs[i]);
     c = build_widget(132 + i * 124, *y, 120, 24);
     vkr_editor_toggle_style(&c, selected);
     c.tooltip = build_text(tips[i]);
     (void)vkr_ui_push_id_u64(ui, i);
     if (vkr_ui_button(ui, string8_lit("config"), build_text(labels[i]), &c)) {
-      snprintf(profile->config, sizeof(profile->config), "%s", configs[i]);
+      string_format(profile->config, sizeof(profile->config), "%s", configs[i]);
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -1186,7 +1201,7 @@ static void build_settings_target(VkrEditorBuild *build, VkrEditorUi *editor,
   c = build_widget(132, *y, width - 144 - 92, 24);
   vkr_editor_field_style(&c);
   VkrUiTextEditBuffer output = {(uint8_t *)profile->output,
-                                (uint32_t)strlen(profile->output),
+                                (uint32_t)string_length(profile->output),
                                 sizeof(profile->output)};
   (void)vkr_ui_text_field(ui, string8_lit("output.field"), &output, &c);
   c = build_widget(width - 100, *y, 88, 24);
@@ -1200,11 +1215,12 @@ static void build_settings_target(VkrEditorBuild *build, VkrEditorUi *editor,
     VkrFileDialogResult result = {0};
     vkr_file_dialog_show(frame->window, &request, build->allocator, &result);
     if (result.status == VKR_FILE_DIALOG_SELECTED && result.path_count == 1u &&
-        strlen(result.paths[0]) + 1u + strlen(build->draft.executable) <
+        string_length(result.paths[0]) + 1u +
+                string_length(build->draft.executable) <
             sizeof(profile->output)) {
       /* The package is its own folder inside the chosen one. */
-      snprintf(profile->output, sizeof(profile->output), "%s/%s",
-               result.paths[0], build->draft.executable);
+      string_format(profile->output, sizeof(profile->output), "%s/%s",
+                    result.paths[0], build->draft.executable);
     }
     vkr_file_dialog_result_destroy(build->allocator, &result);
     *out_dialog = true_v;
@@ -1218,9 +1234,10 @@ static void build_settings_target(VkrEditorBuild *build, VkrEditorUi *editor,
   c.tooltip = string8_lit("A code signing certificate, such as \"Developer ID "
                           "Application: Name (TEAM)\"; empty signs the "
                           "application ad hoc, for this computer");
-  VkrUiTextEditBuffer signing = {(uint8_t *)profile->signing_identity,
-                                 (uint32_t)strlen(profile->signing_identity),
-                                 sizeof(profile->signing_identity)};
+  VkrUiTextEditBuffer signing = {
+      (uint8_t *)profile->signing_identity,
+      (uint32_t)string_length(profile->signing_identity),
+      sizeof(profile->signing_identity)};
   (void)vkr_ui_text_field(ui, string8_lit("signing.field"), &signing, &c);
   *y += 30;
 #endif
@@ -1232,7 +1249,7 @@ static void build_settings_target(VkrEditorBuild *build, VkrEditorUi *editor,
                           "project directory that ship even when no scene "
                           "names them");
   VkrUiTextEditBuffer include = {(uint8_t *)build->include_text,
-                                 (uint32_t)strlen(build->include_text),
+                                 (uint32_t)string_length(build->include_text),
                                  sizeof(build->include_text)};
   if (vkr_ui_text_field(ui, string8_lit("include.field"), &include, &c)) {
     build_includes_store(build);
@@ -1291,15 +1308,15 @@ static void build_settings_options(VkrEditorBuild *build, VkrUiSystem *ui,
     if (vkr_graphics_settings_write_json(&writer, &frame->graphics->settings) &&
         vkr_json_writer_complete(&writer)) {
       text[sink.length] = '\0';
-      snprintf(build->draft.graphics, sizeof(build->draft.graphics), "%s",
-               text);
+      string_format(build->draft.graphics, sizeof(build->draft.graphics), "%s",
+                    text);
     }
   }
   c = build_widget(270, *y, width - 282, 24);
   c.style.text_color = vkr_ui_theme()->text_secondary;
   c.style.font_size_pt = vkr_ui_theme()->font_caption;
   vkr_ui_label(ui, string8_lit("option.graphics.state"),
-               strcmp(build->draft.graphics, "{\"version\":1}")
+               !string_equals(build->draft.graphics, "{\"version\":1}")
                    ? string8_lit("The game starts with saved Graphics "
                                  "settings")
                    : string8_lit("The game starts with the default Graphics "
@@ -1323,9 +1340,9 @@ static bool8_t build_set_startup_camera(VkrEditorBuild *build,
   VkrSampleSceneRecall view;
   if (!vkr_editor_projects_scene_view(editor->projects, frame,
                                       game->startup_scene, &view)) {
-    snprintf(message, capacity,
-             "Open the startup scene to use its Scene view as the startup "
-             "camera.");
+    string_format(message, capacity,
+                  "Open the startup scene to use its Scene view as the startup "
+                  "camera.");
     return false_v;
   }
   view.selection_valid = false_v;
@@ -1336,11 +1353,11 @@ static bool8_t build_set_startup_camera(VkrEditorBuild *build,
   vkr_json_writer_init(&writer, build_text_sink, &sink);
   if (!vkr_sample_scene_recall_write_json(&view, &writer) ||
       !vkr_json_writer_complete(&writer)) {
-    snprintf(message, capacity, "The Scene view cannot be stored.");
+    string_format(message, capacity, "The Scene view cannot be stored.");
     return false_v;
   }
   text[sink.length] = '\0';
-  snprintf(game->startup_camera, sizeof(game->startup_camera), "%s", text);
+  string_format(game->startup_camera, sizeof(game->startup_camera), "%s", text);
   return true_v;
 }
 
@@ -1351,8 +1368,9 @@ bool8_t vkr_editor_build_startup_camera(VkrEditorBuild *build,
                                         uint32_t capacity) {
   const VkrEditorProject *project =
       vkr_editor_projects_project(editor->projects);
-  if (!project || strcmp(build->project_id, project->id)) {
-    snprintf(message, capacity, "Open a project to set its startup camera.");
+  if (!project || !string_equals(build->project_id, project->id)) {
+    string_format(message, capacity,
+                  "Open a project to set its startup camera.");
     return false_v;
   }
   if (!build_set_startup_camera(build, editor, frame, clear, message,
@@ -1362,12 +1380,12 @@ bool8_t vkr_editor_build_startup_camera(VkrEditorBuild *build,
   if (!build_save(build, project,
                   vkr_editor_projects_read_only(editor->projects),
                   frame->ui->frame_allocator)) {
-    snprintf(message, capacity, "%s", build->message);
+    string_format(message, capacity, "%s", build->message);
     return false_v;
   }
-  snprintf(message, capacity,
-           clear ? "The game starts at the default camera."
-                 : "The game starts at the startup scene's Scene view.");
+  string_format(message, capacity,
+                clear ? "The game starts at the default camera."
+                      : "The game starts at the startup scene's Scene view.");
   return true_v;
 }
 
@@ -1566,14 +1584,14 @@ static bool8_t build_source_path(const VkrEditorBuild *build,
                                  const char *workspace, const char *source,
                                  char out[BUILD_PATH]) {
   int32_t written = -1;
-  if (!strncmp(source, "project/", 8u) && build->project_directory[0]) {
-    written = snprintf(out, BUILD_PATH, "%s/%s", build->project_directory,
-                       source + 8u);
-  } else if (!strncmp(source, "editor/", 7u) && workspace[0]) {
-    written = snprintf(out, BUILD_PATH, "%s/editor/bundles/1/%s", workspace,
-                       source + 7u);
+  if (string_n_equals(source, "project/", 8u) && build->project_directory[0]) {
+    written = string_format(out, BUILD_PATH, "%s/%s", build->project_directory,
+                            source + 8u);
+  } else if (string_n_equals(source, "editor/", 7u) && workspace[0]) {
+    written = string_format(out, BUILD_PATH, "%s/editor/bundles/1/%s",
+                            workspace, source + 7u);
   } else if (source[0] == '/' || (source[0] && source[1] == ':')) {
-    written = snprintf(out, BUILD_PATH, "%s", source);
+    written = string_format(out, BUILD_PATH, "%s", source);
   }
   return written > 0 && (uint32_t)written < BUILD_PATH;
 }
@@ -1651,7 +1669,7 @@ void vkr_editor_build_panel(VkrEditorBuild *build, VkrEditorUi *editor,
             message, sizeof(message));
       } else {
         (void)vkr_platform_clipboard_write_text(build->log, build->log_length);
-        snprintf(message, sizeof(message), "Copied the build log");
+        string_format(message, sizeof(message), "Copied the build log");
       }
       vkr_editor_toast(editor, icons[i], theme->accent_hover, message);
     }
@@ -1708,7 +1726,7 @@ void vkr_editor_build_panel(VkrEditorBuild *build, VkrEditorUi *editor,
   const char *workspace = vkr_editor_projects_workspace_root(editor->projects);
   for (uint32_t i = 0; i < build->diagnostic_count; ++i) {
     const BuildDiagnostic *diagnostic = &build->diagnostics[i];
-    const bool8_t error = !strcmp(diagnostic->severity, "error");
+    const bool8_t error = string_equals(diagnostic->severity, "error");
     char path[BUILD_PATH];
     const bool8_t file =
         build_source_path(build, workspace, diagnostic->source, path);

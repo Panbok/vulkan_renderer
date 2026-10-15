@@ -8,16 +8,12 @@
 #include "editor_scene_panels.h"
 
 #include "core/vkr_json_writer.h"
+#include "memory/vkr_heap.h"
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_gpu_abi.h"
 
-#include <float.h>
-#include <math.h>
 #include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 // =============================================================================
 // Bake settings
@@ -43,7 +39,7 @@
    .offset = TYPE_OFFSET(type, field),                                         \
    .kind = VKR_PROPERTY_F32,                                                   \
    .min = 0.0f,                                                                \
-   .max = FLT_MAX,                                                             \
+   .max = VKR_FLOAT_MAX,                                                       \
    .step = step_}
 
 static const char *const s_denoise_names[] = {"default", "on", "off", NULL};
@@ -142,9 +138,10 @@ static bool8_t diffuse_settings_validate(const void *value, char *error,
       MemCompare(&settings->bounds_min, &zero, sizeof(zero)) == 0 &&
       MemCompare(&settings->bounds_max, &zero, sizeof(zero)) == 0;
   if (!empty && !vkr_editor_diffuse_bounds_set(settings)) {
-    snprintf(error, capacity,
-             "The box needs max above min on every axis; both zero cover the "
-             "whole scene.");
+    string_format(
+        error, capacity,
+        "The box needs max above min on every axis; both zero cover the "
+        "whole scene.");
     return false_v;
   }
   return true_v;
@@ -185,7 +182,7 @@ static bool8_t bake_group_write(VkrJsonWriter *writer, const char *name,
     const VkrPropertyDesc *property = &type->properties[i];
     const uint8_t *field = (const uint8_t *)value + property->offset;
     const bool8_t is_samples =
-        samples && strcmp(property->name, "samples") == 0;
+        samples && string_equals(property->name, "samples");
     if (property->kind == VKR_PROPERTY_VEC3) {
       /* The diffuse box goes as one `bounds` list below. */
       continue;
@@ -204,14 +201,14 @@ static bool8_t bake_group_write(VkrJsonWriter *writer, const char *name,
     }
     if (!written) {
       ok = vkr_json_writer_name(
-               writer,
-               string8_create_from_cstr((const uint8_t *)name, strlen(name))) &&
+               writer, string8_create_from_cstr((const uint8_t *)name,
+                                                string_length(name))) &&
            vkr_json_writer_begin_object(writer);
     }
     written++;
     ok = ok && vkr_json_writer_name(writer, string8_create_from_cstr(
                                                 (const uint8_t *)property->name,
-                                                strlen(property->name)));
+                                                string_length(property->name)));
     if (property->kind == VKR_PROPERTY_ENUM) {
       /* `denoise` is a JSON boolean. */
       ok = ok && vkr_json_writer_bool(writer, number == 1.0);
@@ -227,8 +224,8 @@ static bool8_t bake_group_write(VkrJsonWriter *writer, const char *name,
     /* `bounds`: min x, y, z then max x, y, z, as Bakery's --bounds. */
     if (!written) {
       ok = vkr_json_writer_name(
-               writer,
-               string8_create_from_cstr((const uint8_t *)name, strlen(name))) &&
+               writer, string8_create_from_cstr((const uint8_t *)name,
+                                                string_length(name))) &&
            vkr_json_writer_begin_object(writer);
     }
     written++;
@@ -303,7 +300,7 @@ void vkr_editor_bake_settings_window_build(VkrEditorUi *editor,
     if (vkr_editor_details_section(
             ui, string8_lit("group"), width, &y, groups[i].icon, theme->accent,
             string8_create_from_cstr((const uint8_t *)groups[i].type->label,
-                                     strlen(groups[i].type->label)),
+                                     string_length(groups[i].type->label)),
             editor->heading_font, &editor->bake_settings_collapsed[i])) {
       (void)vkr_editor_details_type(details, ui, frame->input, width, &y,
                                     groups[i].type, groups[i].value, NULL,
@@ -397,15 +394,17 @@ const SceneTimeOfDay *vkr_editor_lighting_clock(const VkrSampleUiFrame *frame,
 
 void vkr_editor_lighting_hour_text(float64_t hour, char out[8]) {
   const uint32_t minutes =
-      (uint32_t)(fmod(fmod(hour, 24.0) + 24.0, 24.0) * 60.0 + 0.5) %
+      (uint32_t)(vkr_fmod_f64(vkr_fmod_f64(hour, 24.0) + 24.0, 24.0) * 60.0 +
+                 0.5) %
       (24u * 60u);
-  snprintf(out, 8, "%02u:%02u", minutes / 60u, minutes % 60u);
+  string_format(out, 8, "%02u:%02u", minutes / 60u, minutes % 60u);
 }
 
 void vkr_editor_lighting_scrub(const VkrSampleUiFrame *frame, float64_t hour) {
-  if (frame->time_of_day_request && isfinite(hour)) {
+  if (frame->time_of_day_request && vkr_is_finite_f64(hour)) {
     frame->time_of_day_request->set_hour = true_v;
-    frame->time_of_day_request->hour = fmod(fmod(hour, 24.0) + 24.0, 24.0);
+    frame->time_of_day_request->hour =
+        vkr_fmod_f64(vkr_fmod_f64(hour, 24.0) + 24.0, 24.0);
   }
 }
 
@@ -416,7 +415,7 @@ void vkr_editor_lighting_keep_hour(const VkrSampleUiFrame *frame) {
     return;
   }
   SceneTimeOfDay next = *authored;
-  next.hour = (float32_t)fmod(frame->scene->clock.hour, 24.0);
+  next.hour = (float32_t)vkr_fmod_f64(frame->scene->clock.hour, 24.0);
   vkr_editor_request_component(frame, clock, &vkr_scene_time_of_day_type,
                                &next);
 }
@@ -564,8 +563,8 @@ static void lighting_circle(LightingLines *lines, Vec3 center, Vec3 u, Vec3 v,
         (float32_t)i *
         (2.0f * 3.14159265f / (float32_t)LIGHTING_CIRCLE_SEGMENTS);
     const Vec3 point =
-        vec3_add(center, vec3_add(vec3_scale(u, cosf(angle) * radius),
-                                  vec3_scale(v, sinf(angle) * radius)));
+        vec3_add(center, vec3_add(vec3_scale(u, vkr_cos_f32(angle) * radius),
+                                  vec3_scale(v, vkr_sin_f32(angle) * radius)));
     lighting_line(lines, previous, point, color);
     previous = point;
   }
@@ -594,7 +593,7 @@ static void lighting_box(LightingLines *lines, Vec3 center, const Vec3 half[3],
 static void lighting_arrow(LightingLines *lines, Vec3 from, Vec3 direction,
                            float32_t length, Vec4 color) {
   const Vec3 tip = vec3_add(from, vec3_scale(direction, length));
-  const Vec3 side = fabsf(direction.y) < 0.9f
+  const Vec3 side = vkr_abs_f32(direction.y) < 0.9f
                         ? vec3_normalize(vec3_cross(direction, vec3_up()))
                         : vec3_normalize(vec3_cross(direction, vec3_right()));
   const Vec3 back = vec3_scale(direction, -length * 0.15f);
@@ -610,7 +609,7 @@ static void lighting_arrow(LightingLines *lines, Vec3 from, Vec3 direction,
 /* Two unit axes perpendicular to unit `axis`. */
 static void lighting_basis(Vec3 axis, Vec3 *u, Vec3 *v) {
   *u = vec3_normalize(
-      vec3_cross(axis, fabsf(axis.y) < 0.9f ? vec3_up() : vec3_right()));
+      vec3_cross(axis, vkr_abs_f32(axis.y) < 0.9f ? vec3_up() : vec3_right()));
   *v = vec3_cross(axis, *u);
 }
 
@@ -725,8 +724,8 @@ static void lighting_entity_lines(LightingLines *lines, const VkrScene *scene,
       for (uint32_t c = 0; c < ArrayCount(cones); ++c) {
         const float32_t angle = Min(cones[c].angle, 1.55f);
         const Vec3 center =
-            vec3_add(position, vec3_scale(axis, length * cosf(angle)));
-        const float32_t radius = length * sinf(angle);
+            vec3_add(position, vec3_scale(axis, length * vkr_cos_f32(angle)));
+        const float32_t radius = length * vkr_sin_f32(angle);
         lighting_circle(lines, center, u, v, radius, cones[c].color);
         if (c == 0) {
           for (uint32_t side = 0; side < 4; ++side) {
@@ -830,7 +829,7 @@ static float32_t lighting_draw_reach(const VkrSampleUiFrame *frame,
     rows *= vkr_graphics_settings_render_scale(frame->graphics, settings);
   }
 
-  float32_t reach = INFINITY;
+  float32_t reach = VKR_FLOAT_INFINITY;
   const uint32_t far_code = cull & VKR_GPU_DRAW_CULL_CODE_MASK;
   if (far_code) {
     reach = vkr_gpu_draw_cull_metres(far_code) * scale;
@@ -887,7 +886,7 @@ static void lighting_draw_distance_ring(LightingLines *lines,
   const Vec3 center = vec3_scale(vec3_add(lo, hi), 0.5f);
   const float32_t radius = 0.5f * vec3_length(vec3_sub(hi, lo));
   const float32_t reach = lighting_draw_reach(frame, cull, radius);
-  if (!isfinite(reach)) {
+  if (!vkr_is_finite_f32(reach)) {
     return;
   }
   lighting_circle(lines, vec3_new(center.x, lo.y, center.z), vec3_right(),
@@ -1086,8 +1085,8 @@ static float32_t lights_groups(const VkrSampleUiFrame *frame, float32_t y,
                           &slider) &&
         frame->time_of_day_request) {
       frame->time_of_day_request->set_group = true_v;
-      snprintf(frame->time_of_day_request->group,
-               sizeof(frame->time_of_day_request->group), "%s", group);
+      string_format(frame->time_of_day_request->group,
+                    sizeof(frame->time_of_day_request->group), "%s", group);
       frame->time_of_day_request->intensity = value;
     }
     (void)vkr_ui_pop_id(ui);
@@ -1307,7 +1306,7 @@ static bool8_t handles_axis_param(Vec3 anchor, Vec3 axis, Vec3 origin,
     return false_v;
   }
   *out = (b * vec3_dot(direction, w) - vec3_dot(axis, w)) / denominator;
-  return isfinite(*out);
+  return vkr_is_finite_f32(*out);
 }
 
 static void handles_add(VkrEditorLightingHandles *state, HandleKind kind,
@@ -1404,11 +1403,12 @@ static void handles_build(VkrEditorLightingHandles *state,
     const float32_t angle = Min(point->outer_cone_angle, 1.55f);
     handles_add(state, HANDLE_RANGE, 0u,
                 vec3_add(position, vec3_scale(axis, point->range)), axis);
-    handles_add(state, HANDLE_CONE, 0u,
-                vec3_add(position,
-                         vec3_add(vec3_scale(axis, point->range * cosf(angle)),
-                                  vec3_scale(u, point->range * sinf(angle)))),
-                u);
+    handles_add(
+        state, HANDLE_CONE, 0u,
+        vec3_add(position,
+                 vec3_add(vec3_scale(axis, point->range * vkr_cos_f32(angle)),
+                          vec3_scale(u, point->range * vkr_sin_f32(angle)))),
+        u);
     return;
   }
   if (type == &vkr_scene_rectangle_light_type) {
@@ -1492,9 +1492,10 @@ static bool8_t handles_drag_values(const VkrEditorLightingHandles *state,
     /* The rim's distance from the axis over its distance along it. */
     ScenePointLight *point = (ScenePointLight *)value;
     const float32_t angle = Min(point->outer_cone_angle, 1.55f);
-    const float32_t along = point->range * cosf(angle);
-    const float32_t across = Max(0.0f, point->range * sinf(angle) + delta);
-    point->outer_cone_angle = Clamp(atan2f(across, Max(along, 1.0e-3f)),
+    const float32_t along = point->range * vkr_cos_f32(angle);
+    const float32_t across =
+        Max(0.0f, point->range * vkr_sin_f32(angle) + delta);
+    point->outer_cone_angle = Clamp(vkr_atan2_f32(across, Max(along, 1.0e-3f)),
                                     point->inner_cone_angle + 0.01f, 1.5707f);
     break;
   }
@@ -1610,7 +1611,7 @@ static int32_t handles_pick(const VkrEditorLightingHandles *state,
     }
     const float32_t dx = pixel.x - (float32_t)frame->ui->mouse_x;
     const float32_t dy = pixel.y - (float32_t)frame->ui->mouse_y;
-    const float32_t gap = sqrtf(dx * dx + dy * dy);
+    const float32_t gap = vkr_sqrt_f32(dx * dx + dy * dy);
     if (gap < best_gap) {
       best_gap = gap;
       best = (int32_t)i;
@@ -1639,7 +1640,7 @@ void vkr_editor_lighting_handles_update(VkrEditorUi *editor,
       vkr_editor_diffuse_bounds_set(&settings->diffuse);
   VkrEditorLightingHandles *state = editor->lighting_handles;
   if (!state && (type || bounds)) {
-    state = calloc(1u, sizeof(*state));
+    state = vkr_heap_alloc_zeroed(1u, sizeof(*state));
     editor->lighting_handles = state;
   }
   if (!state) {
@@ -1766,7 +1767,7 @@ const char *vkr_editor_lighting_handles_hint(const VkrEditorUi *editor) {
 }
 
 void vkr_editor_lighting_handles_destroy(VkrEditorUi *editor) {
-  free(editor->lighting_handles);
+  vkr_heap_free(editor->lighting_handles);
   editor->lighting_handles = NULL;
 }
 
@@ -1795,9 +1796,9 @@ void vkr_editor_lighting_create_probe(VkrEditorUi *editor,
     return;
   }
   char line[320];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"probe\",\"op\":\"probe.create\",\"args\":{"
-           "\"center\":[%g,%g,%g],\"review\":false,\"select\":true}}",
-           pose.position.x, pose.position.y, pose.position.z);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"probe\",\"op\":\"probe.create\",\"args\":{"
+                "\"center\":[%g,%g,%g],\"review\":false,\"select\":true}}",
+                pose.position.x, pose.position.y, pose.position.z);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }

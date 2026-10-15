@@ -8,10 +8,6 @@
 #include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 #define TERRAIN_PAD_PT 10.0f
 #define TERRAIN_ROW_PT 28.0f
 /* Terrains one ray tests per scene. */
@@ -102,7 +98,7 @@ static bool8_t terrain_march(const VkrHeightfield *field, Vec3 origin,
   const float32_t o[2] = {origin.x, origin.z};
   const float32_t d[2] = {direction.x, direction.z};
   for (uint32_t axis = 0; axis < 2u; ++axis) {
-    if (fabsf(d[axis]) < 1.0e-8f) {
+    if (vkr_abs_f32(d[axis]) < 1.0e-8f) {
       if (o[axis] < -half || o[axis] > half) {
         return false_v;
       }
@@ -324,9 +320,9 @@ uint32_t vkr_editor_terrain_brush_outline(const VkrEditorUi *editor,
     const float32_t radius = ring ? inner : editor->terrain_radius;
     for (uint32_t i = 0; i < capacity; ++i) {
       const float32_t angle = 6.28318531f * (float32_t)i / (float32_t)capacity;
-      Vec3 p =
-          vec3_add(editor->terrain_hit,
-                   vec3_new(cosf(angle) * radius, 0.0f, sinf(angle) * radius));
+      Vec3 p = vec3_add(editor->terrain_hit,
+                        vec3_new(vkr_cos_f32(angle) * radius, 0.0f,
+                                 vkr_sin_f32(angle) * radius));
       float32_t ground = 0.0f;
       if (vkr_heightfield_sample(field, p.x + offset.x, p.z + offset.z,
                                  &ground)) {
@@ -374,15 +370,16 @@ static float32_t terrain_slider(VkrUiSystem *ui, String8 id, String8 label,
   slider.tooltip = tooltip;
   (void)vkr_ui_slider_f32(ui, id, &value, minimum, maximum, &slider);
   char text[32];
-  snprintf(text, sizeof(text), format, value * display);
+  string_format(text, sizeof(text), format, value * display);
   VkrUiWidgetConfig shown = vkr_editor_details_widget(
       width - TERRAIN_PAD_PT - 52.0f, y, 52.0f, TERRAIN_ROW_PT - 4.0f);
   shown.style.font_size_pt = vkr_ui_theme()->font_body;
-  vkr_ui_label(ui,
-               string8_create_formatted(ui->frame_allocator, "%.*s.value",
-                                        (int)id.length, id.str),
-               string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-               &shown);
+  vkr_ui_label(
+      ui,
+      string8_create_formatted(ui->frame_allocator, "%.*s.value",
+                               (int)id.length, id.str),
+      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
+      &shown);
   return value;
 }
 
@@ -413,14 +410,14 @@ static void terrain_layer_name(const SceneTerrain *terrain, uint32_t index,
       terrain ? terrain->layer0 : "", terrain ? terrain->layer1 : "",
       terrain ? terrain->layer2 : "", terrain ? terrain->layer3 : ""};
   const char *path = paths[index];
-  const char *slash = strrchr(path, '/');
+  const char *slash = string_get_last_char_occurrence(path, '/');
   const char *name = slash ? slash + 1 : path;
-  const char *dot = strrchr(name, '.');
-  const int length = dot ? (int)(dot - name) : (int)strlen(name);
+  const char *dot = string_get_last_char_occurrence(name, '.');
+  const int length = dot ? (int)(dot - name) : (int)string_length(name);
   if (length > 0) {
-    snprintf(out, size, "%u  %.*s", index + 1u, length, name);
+    string_format(out, size, "%u  %.*s", index + 1u, length, name);
   } else {
-    snprintf(out, size, "Layer %u", index + 1u);
+    string_format(out, size, "Layer %u", index + 1u);
   }
 }
 
@@ -465,10 +462,10 @@ static float32_t terrain_body(VkrEditorUi *editor,
     if (vkr_editor_palette_button(
             &palette,
             string8_create_from_cstr((const uint8_t *)info->id,
-                                     strlen(info->id)),
+                                     string_length(info->id)),
             info->label, info->icon,
             string8_create_from_cstr((const uint8_t *)info->tooltip,
-                                     strlen(info->tooltip)),
+                                     string_length(info->tooltip)),
             (editor->terrain_tool ? applied : editor->terrain_mode) == i,
             false_v)) {
       editor->terrain_mode = i;
@@ -598,14 +595,14 @@ static float32_t terrain_body(VkrEditorUi *editor,
     } else {
       const VkrEntityId selected = frame->selected_entity;
       char line[256];
-      snprintf(line, sizeof(line),
-               "{\"v\":1,\"id\":\"road\",\"op\":\"terrain.road\",\"args\":"
-               "{\"terrain\":\"%u:%u:%u\",\"spline\":\"%u:%u:%u\","
-               "\"review\":false}}",
-               (unsigned)terrain.parts.world, (unsigned)terrain.parts.index,
-               (unsigned)terrain.parts.generation,
-               (unsigned)selected.parts.world, (unsigned)selected.parts.index,
-               (unsigned)selected.parts.generation);
+      string_format(
+          line, sizeof(line),
+          "{\"v\":1,\"id\":\"road\",\"op\":\"terrain.road\",\"args\":"
+          "{\"terrain\":\"%u:%u:%u\",\"spline\":\"%u:%u:%u\","
+          "\"review\":false}}",
+          (unsigned)terrain.parts.world, (unsigned)terrain.parts.index,
+          (unsigned)terrain.parts.generation, (unsigned)selected.parts.world,
+          (unsigned)selected.parts.index, (unsigned)selected.parts.generation);
       (void)vkr_editor_agent_submit(editor->agent, line);
     }
   }

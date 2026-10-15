@@ -14,8 +14,6 @@
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_scene_brush.h"
 
-#include <stdio.h>
-
 _Static_assert(VKR_EDITOR_WINDOW_COUNT <= 32u,
                "A workbench keeps its open windows in one 32-bit mask");
 
@@ -187,8 +185,8 @@ void vkr_editor_workbench_init(VkrEditorWorkbenches *workbenches) {
   for (uint32_t i = 0u; i < VKR_EDITOR_WORKBENCH_COUNT; ++i) {
     VkrEditorWorkbench *item = &workbenches->items[i];
     item->kind = (VkrEditorWorkbenchKind)i;
-    snprintf(item->id, sizeof(item->id), "%s", s_workbenches[i].id);
-    snprintf(item->name, sizeof(item->name), "%s", s_workbenches[i].name);
+    string_format(item->id, sizeof(item->id), "%s", s_workbenches[i].id);
+    string_format(item->name, sizeof(item->name), "%s", s_workbenches[i].name);
     workbench_builtin_layout(i, &item->layout);
     item->views = vkr_editor_views_builtin(item->kind);
     item->view = vkr_editor_view_builtin(item->kind);
@@ -235,7 +233,7 @@ const char *vkr_editor_workbench_name(const VkrEditorWorkbenches *workbenches,
 }
 
 static bool8_t workbench_word_is(String8 word, const char *text) {
-  const uint64_t length = strlen(text);
+  const uint64_t length = string_length(text);
   if (word.length != length) {
     return false_v;
   }
@@ -304,24 +302,25 @@ bool8_t vkr_editor_workbench_request(VkrEditorUi *editor,
     capacity = sizeof(unused);
   }
   if (index >= editor->workbenches.count) {
-    snprintf(message, capacity, "No such workbench");
+    string_format(message, capacity, "No such workbench");
     return false_v;
   }
   if (frame->scene_maximized) {
-    snprintf(message, capacity, "Restore the maximized Scene first");
+    string_format(message, capacity, "Restore the maximized Scene first");
     return false_v;
   }
   if (frame->scene_only) {
-    snprintf(message, capacity, "The Scene-only view has no workbenches");
+    string_format(message, capacity, "The Scene-only view has no workbenches");
     return false_v;
   }
   if (workbench_gesture(editor, frame)) {
-    snprintf(message, capacity, "Finish the drag before switching workbenches");
+    string_format(message, capacity,
+                  "Finish the drag before switching workbenches");
     return false_v;
   }
   editor->workbenches.requested = index;
-  snprintf(message, capacity, "Switching to %s",
-           editor->workbenches.items[index].name);
+  string_format(message, capacity, "Switching to %s",
+                editor->workbenches.items[index].name);
   return true_v;
 }
 
@@ -437,8 +436,8 @@ void vkr_editor_workbench_update(VkrEditorUi *editor,
   if (workbench_scene_settled(editor, frame)) {
     VkrEditorWorkbench *active = &workbenches->items[workbenches->active];
     const String8 id = vkr_editor_projects_scene_id(editor->projects);
-    snprintf(active->scene_id, sizeof(active->scene_id), "%.*s", (int)id.length,
-             (const char *)id.str);
+    string_format(active->scene_id, sizeof(active->scene_id), "%.*s",
+                  (int)id.length, (const char *)id.str);
     active->scene_known = true_v;
   }
   const uint32_t target = workbenches->requested;
@@ -450,7 +449,7 @@ void vkr_editor_workbench_update(VkrEditorUi *editor,
     const VkrEditorWorkbench *next = &workbenches->items[target];
     if (next->scene_known && workbench_scene_settled(editor, frame)) {
       const String8 shown = vkr_editor_projects_scene_id(editor->projects);
-      if (shown.length != strlen(next->scene_id) ||
+      if (shown.length != string_length(next->scene_id) ||
           MemCompare(shown.str, next->scene_id, shown.length) != 0) {
         (void)vkr_editor_projects_show_scene(editor->projects, editor, frame,
                                              next->scene_id);
@@ -514,7 +513,7 @@ void vkr_editor_workbench_reset_index(VkrEditorUi *editor,
 static bool8_t workbench_name_taken(const VkrEditorWorkbenches *workbenches,
                                     const char *name, uint32_t except) {
   for (uint32_t i = 0u; i < workbenches->count; ++i) {
-    if (i != except && strcmp(workbenches->items[i].name, name) == 0) {
+    if (i != except && string_equals(workbenches->items[i].name, name)) {
       return true_v;
     }
   }
@@ -527,13 +526,13 @@ bool8_t vkr_editor_workbench_duplicate(VkrEditorUi *editor,
                                        uint64_t capacity) {
   VkrEditorWorkbenches *workbenches = &editor->workbenches;
   if (index >= workbenches->count) {
-    snprintf(message, capacity, "No such workbench");
+    string_format(message, capacity, "No such workbench");
     return false_v;
   }
   if (workbenches->count == VKR_EDITOR_WORKBENCH_MAX) {
-    snprintf(message, capacity,
-             "The row holds %u workbenches; delete one first",
-             VKR_EDITOR_WORKBENCH_MAX);
+    string_format(message, capacity,
+                  "The row holds %u workbenches; delete one first",
+                  VKR_EDITOR_WORKBENCH_MAX);
     return false_v;
   }
   VkrEditorWorkbench copy = workbenches->items[index];
@@ -543,11 +542,12 @@ bool8_t vkr_editor_workbench_duplicate(VkrEditorUi *editor,
     copy.mode = workbench_current_mode(editor, frame);
   }
   copy.custom = true_v;
-  snprintf(copy.id, sizeof(copy.id), "custom_%u", workbenches->next_custom++);
+  string_format(copy.id, sizeof(copy.id), "custom_%u",
+                workbenches->next_custom++);
   /* "Level Design (1)", as duplicated objects are numbered. */
   for (uint32_t n = 1u; n < 100u; ++n) {
-    snprintf(copy.name, sizeof(copy.name), "%.24s (%u)",
-             workbenches->items[index].name, n);
+    string_format(copy.name, sizeof(copy.name), "%.24s (%u)",
+                  workbenches->items[index].name, n);
     if (!workbench_name_taken(workbenches, copy.name, UINT32_MAX)) {
       break;
     }
@@ -562,7 +562,7 @@ bool8_t vkr_editor_workbench_duplicate(VkrEditorUi *editor,
     workbenches->active++;
   }
   workbenches->renaming = UINT32_MAX;
-  snprintf(message, capacity, "Created %s", copy.name);
+  string_format(message, capacity, "Created %s", copy.name);
   (void)vkr_editor_workbench_request(editor, frame, at, NULL, 0u);
   return true_v;
 }
@@ -573,12 +573,12 @@ bool8_t vkr_editor_workbench_delete(VkrEditorUi *editor,
                                     uint64_t capacity) {
   VkrEditorWorkbenches *workbenches = &editor->workbenches;
   if (index >= workbenches->count) {
-    snprintf(message, capacity, "No such workbench");
+    string_format(message, capacity, "No such workbench");
     return false_v;
   }
   if (!workbenches->items[index].custom) {
-    snprintf(message, capacity,
-             "Built-in workbenches stay; Reset panel layout restores one");
+    string_format(message, capacity,
+                  "Built-in workbenches stay; Reset panel layout restores one");
     return false_v;
   }
   /* The tab before takes over, else the one after. */
@@ -586,7 +586,7 @@ bool8_t vkr_editor_workbench_delete(VkrEditorUi *editor,
     workbench_switch(editor, frame, index > 0u ? index - 1u : index + 1u);
   }
   char name[VKR_EDITOR_WORKBENCH_NAME_CAPACITY];
-  snprintf(name, sizeof(name), "%s", workbenches->items[index].name);
+  string_format(name, sizeof(name), "%s", workbenches->items[index].name);
   for (uint32_t i = index; i + 1u < workbenches->count; ++i) {
     workbenches->items[i] = workbenches->items[i + 1u];
   }
@@ -596,7 +596,7 @@ bool8_t vkr_editor_workbench_delete(VkrEditorUi *editor,
   }
   workbenches->requested = UINT32_MAX;
   workbenches->renaming = UINT32_MAX;
-  snprintf(message, capacity, "Deleted %s", name);
+  string_format(message, capacity, "Deleted %s", name);
   return true_v;
 }
 
@@ -607,7 +607,7 @@ bool8_t vkr_editor_workbench_move(VkrEditorUi *editor, uint32_t index,
   const int64_t target = (int64_t)index + step;
   if (index >= workbenches->count || target < 0 ||
       target >= (int64_t)workbenches->count) {
-    snprintf(message, capacity, "That tab cannot move further");
+    string_format(message, capacity, "That tab cannot move further");
     return false_v;
   }
   const uint32_t other = (uint32_t)target;
@@ -621,8 +621,8 @@ bool8_t vkr_editor_workbench_move(VkrEditorUi *editor, uint32_t index,
   }
   workbenches->requested = UINT32_MAX;
   workbenches->renaming = UINT32_MAX;
-  snprintf(message, capacity, "Moved %s to position %u",
-           workbenches->items[other].name, other + 1u);
+  string_format(message, capacity, "Moved %s to position %u",
+                workbenches->items[other].name, other + 1u);
   return true_v;
 }
 
@@ -638,25 +638,26 @@ bool8_t vkr_editor_workbench_rename(VkrEditorUi *editor, uint32_t index,
     name.length--;
   }
   if (index >= workbenches->count) {
-    snprintf(message, capacity, "No such workbench");
+    string_format(message, capacity, "No such workbench");
     return false_v;
   }
   if (!name.length || name.length >= VKR_EDITOR_WORKBENCH_NAME_CAPACITY ||
-      memchr(name.str, '"', name.length) ||
-      memchr(name.str, '\\', name.length)) {
-    snprintf(message, capacity,
-             "A workbench name has 1 to %u bytes and no quotes or backslashes",
-             VKR_EDITOR_WORKBENCH_NAME_CAPACITY - 1u);
+      MemFindByte(name.str, '"', name.length) ||
+      MemFindByte(name.str, '\\', name.length)) {
+    string_format(
+        message, capacity,
+        "A workbench name has 1 to %u bytes and no quotes or backslashes",
+        VKR_EDITOR_WORKBENCH_NAME_CAPACITY - 1u);
     return false_v;
   }
   char text[VKR_EDITOR_WORKBENCH_NAME_CAPACITY];
-  snprintf(text, sizeof(text), "%.*s", (int)name.length, name.str);
+  string_format(text, sizeof(text), "%.*s", (int)name.length, name.str);
   if (workbench_name_taken(workbenches, text, index)) {
-    snprintf(message, capacity, "Another workbench is named %s", text);
+    string_format(message, capacity, "Another workbench is named %s", text);
     return false_v;
   }
   MemCopy(workbenches->items[index].name, text, sizeof(text));
-  snprintf(message, capacity, "Renamed to %s", text);
+  string_format(message, capacity, "Renamed to %s", text);
   return true_v;
 }
 
@@ -667,8 +668,8 @@ void vkr_editor_workbench_rename_begin(VkrEditorUi *editor, uint32_t index) {
   }
   workbenches->renaming = index;
   workbenches->rename_focus = true_v;
-  snprintf(workbenches->rename_text, sizeof(workbenches->rename_text), "%s",
-           workbenches->items[index].name);
+  string_format(workbenches->rename_text, sizeof(workbenches->rename_text),
+                "%s", workbenches->items[index].name);
 }
 
 void vkr_editor_workbench_reset(VkrEditorUi *editor,
@@ -707,9 +708,10 @@ static void workbench_rename_field(VkrEditorUi *editor,
   field.style.border_pt = (VkrUiEdges){1.0f, 1.0f, 1.0f, 1.0f};
   field.style.border_color = theme->accent;
   field.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
-  VkrUiTextEditBuffer buffer = {(uint8_t *)workbenches->rename_text,
-                                (uint32_t)strlen(workbenches->rename_text),
-                                sizeof(workbenches->rename_text)};
+  VkrUiTextEditBuffer buffer = {
+      (uint8_t *)workbenches->rename_text,
+      (uint32_t)string_length(workbenches->rename_text),
+      sizeof(workbenches->rename_text)};
   (void)vkr_ui_push_id_u64(ui, index);
   const VkrUiId id =
       vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("rename"));
@@ -739,7 +741,7 @@ static void workbench_rename_field(VkrEditorUi *editor,
     if (!vkr_editor_workbench_rename(
             editor, index,
             string8_create_from_cstr((const uint8_t *)workbenches->rename_text,
-                                     strlen(workbenches->rename_text)),
+                                     string_length(workbenches->rename_text)),
             message, sizeof(message))) {
       vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
                        vkr_ui_theme()->warning, message);
@@ -837,18 +839,19 @@ void vkr_editor_workbench_build_row(VkrEditorUi *editor,
     char other[96] = "";
     if (!active && item->scene_known && editor->projects) {
       const String8 shown = vkr_editor_projects_scene_id(editor->projects);
-      if (shown.length != strlen(item->scene_id) ||
+      if (shown.length != string_length(item->scene_id) ||
           MemCompare(shown.str, item->scene_id, shown.length) != 0) {
         const String8 name = item->scene_id[0]
                                  ? vkr_editor_projects_scene_name_of(
                                        editor->projects, item->scene_id)
                                  : string8_lit("World");
-        snprintf(other, sizeof(other), "%.*s", (int)name.length,
-                 (const char *)name.str);
+        string_format(other, sizeof(other), "%.*s", (int)name.length,
+                      (const char *)name.str);
       }
     }
     char tip[160];
-    snprintf(tip, sizeof(tip), other[0] ? "%s: %s" : "%s%s", item->name, other);
+    string_format(tip, sizeof(tip), other[0] ? "%s: %s" : "%s%s", item->name,
+                  other);
     tab.tooltip = vkr_editor_command_tooltip(
         ui, (EditorCommand)(CMD_WORKBENCH_1 + i), tip);
     (void)vkr_ui_push_id_u64(ui, i);
@@ -857,10 +860,10 @@ void vkr_editor_workbench_build_row(VkrEditorUi *editor,
     /* A click switches, a second click within 0.4 s renames the tab and a
        right click opens its menu. */
     const char *label = !labels ? "" : active ? scene : other;
-    if (vkr_ui_button(
-            ui, string8_lit("workbench"),
-            string8_create_from_cstr((const uint8_t *)label, strlen(label)),
-            &tab)) {
+    if (vkr_ui_button(ui, string8_lit("workbench"),
+                      string8_create_from_cstr((const uint8_t *)label,
+                                               string_length(label)),
+                      &tab)) {
       const float64_t now = vkr_platform_get_absolute_time();
       if (workbenches->click_tab == i && now - workbenches->click_time < 0.4) {
         vkr_editor_workbench_rename_begin(editor, i);
@@ -1034,7 +1037,7 @@ bool8_t vkr_editor_palette_button(VkrEditorPalette *palette, String8 id,
   button.icon = icon;
   button.icon_size_pt = 14.0f;
   const String8 text =
-      string8_create_from_cstr((const uint8_t *)label, strlen(label));
+      string8_create_from_cstr((const uint8_t *)label, string_length(label));
   button.tooltip = tooltip.length ? tooltip : text;
   /* An icon alone does not say which of a group it is, so its tooltip
      leads with the label. */
@@ -1076,7 +1079,7 @@ void vkr_editor_palette_create(VkrEditorPalette *palette, String8 id,
     return;
   }
   for (uint32_t kind = 0; kind < vkr_editor_object_kind_count(); ++kind) {
-    if (strcmp(vkr_editor_object_kind_word(kind), word) == 0) {
+    if (string_equals(vkr_editor_object_kind_word(kind), word)) {
       (void)vkr_editor_request_create(palette->editor, palette->frame, kind,
                                       container, NULL);
       return;
@@ -1204,7 +1207,7 @@ static void workbench_selected_material(const VkrSampleUiFrame *frame,
   const SceneBrushFace *face = vkr_scene_get_typed(
       scene, frame->selected_entity, &vkr_scene_brush_face_type);
   if (face) {
-    snprintf(out, capacity, "%s", face->material);
+    string_format(out, capacity, "%s", face->material);
     return;
   }
   VkrEntityId faces[VKR_BRUSH_FACE_MAX];
@@ -1215,7 +1218,7 @@ static void workbench_selected_material(const VkrSampleUiFrame *frame,
   for (uint32_t i = 0; i < count && !out[0]; ++i) {
     face = vkr_scene_get_typed(scene, faces[i], &vkr_scene_brush_face_type);
     if (face && face->material[0]) {
-      snprintf(out, capacity, "%s", face->material);
+      string_format(out, capacity, "%s", face->material);
     }
   }
 }
@@ -1247,14 +1250,14 @@ static void workbench_assign(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     return;
   }
   char line[512];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"palette\",\"op\":\"face.set_material\","
-           "\"args\":{\"%s\":\"%u:%u:%u\",\"material\":\"%s\","
-           "\"review\":false}}",
-           face ? "face" : "brush",
-           (unsigned)frame->selected_entity.parts.world,
-           (unsigned)frame->selected_entity.parts.index,
-           (unsigned)frame->selected_entity.parts.generation, material);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"palette\",\"op\":\"face.set_material\","
+                "\"args\":{\"%s\":\"%u:%u:%u\",\"material\":\"%s\","
+                "\"review\":false}}",
+                face ? "face" : "brush",
+                (unsigned)frame->selected_entity.parts.world,
+                (unsigned)frame->selected_entity.parts.index,
+                (unsigned)frame->selected_entity.parts.generation, material);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -1291,11 +1294,11 @@ static void workbench_selected_container(const VkrSampleUiFrame *frame,
                                          char *out, uint64_t capacity) {
   const uint32_t world = frame->selected_entity.parts.world;
   if (world == VKR_SCENE_WORLD_ROOT_ID) {
-    snprintf(out, capacity, "world");
+    string_format(out, capacity, "world");
   } else if (world == 0u) {
-    snprintf(out, capacity, "primary");
+    string_format(out, capacity, "primary");
   } else {
-    snprintf(out, capacity, "%u", world);
+    string_format(out, capacity, "%u", world);
   }
 }
 
@@ -1351,9 +1354,9 @@ static void workbench_model_scatters(VkrEditorUi *editor,
     }
     const uint32_t at = model->scatter_count++;
     const String8 name = vkr_scene_get_name(scene, entity);
-    snprintf(model->scatter_names[at], sizeof(model->scatter_names[at]), "%.*s",
-             (int)Min(name.length, 63u),
-             name.length ? (const char *)name.str : "Scatter");
+    string_format(model->scatter_names[at], sizeof(model->scatter_names[at]),
+                  "%.*s", (int)Min(name.length, 63u),
+                  name.length ? (const char *)name.str : "Scatter");
     model->scatter_ids[at] = entity;
     model->scatter_named[at] = scatter->mesh[0] != '\0';
   }
@@ -1405,7 +1408,7 @@ static void workbench_model_scatters(VkrEditorUi *editor,
                               "the model");
   if (vkr_ui_button(
           ui, string8_lit("art.model_scatter_pick"),
-          string8_create_from_cstr((const uint8_t *)text, strlen(text)),
+          string8_create_from_cstr((const uint8_t *)text, string_length(text)),
           &field)) {
     VkrUiRect rect = {0};
     (void)vkr_ui_widget_rect(ui, id, &rect);
@@ -1482,12 +1485,12 @@ static float32_t workbench_art_palette(VkrEditorUi *editor,
     workbench_selected_container(frame, container, sizeof(container));
     const bool8_t slot = container[0] >= '0' && container[0] <= '9';
     char line[640];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"surface.theme.bind\","
-             "\"args\":{\"container\":%s%s%s,\"tag\":\"%s\","
-             "\"material\":\"%s\",\"review\":false}}",
-             slot ? "" : "\"", container, slot ? "" : "\"",
-             vkr_surface_names[tag], open);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"palette\",\"op\":\"surface.theme.bind\","
+                  "\"args\":{\"container\":%s%s%s,\"tag\":\"%s\","
+                  "\"material\":\"%s\",\"review\":false}}",
+                  slot ? "" : "\"", container, slot ? "" : "\"",
+                  vkr_surface_names[tag], open);
     if (editor->agent) {
       (void)vkr_editor_agent_submit(editor->agent, line);
     }
@@ -1626,15 +1629,16 @@ void vkr_editor_workbench_tools_build(VkrEditorUi *editor,
 
 static bool8_t workbench_name(VkrJsonWriter *writer, const char *name) {
   return vkr_json_writer_name(
-      writer, string8_create_from_cstr((const uint8_t *)name, strlen(name)));
+      writer,
+      string8_create_from_cstr((const uint8_t *)name, string_length(name)));
 }
 
 static bool8_t workbench_text(VkrJsonWriter *writer, const char *name,
                               const char *value) {
   return workbench_name(writer, name) &&
-         vkr_json_writer_string(
-             writer,
-             string8_create_from_cstr((const uint8_t *)value, strlen(value)));
+         vkr_json_writer_string(writer,
+                                string8_create_from_cstr((const uint8_t *)value,
+                                                         string_length(value)));
 }
 
 bool8_t vkr_editor_workbench_write_json(const VkrEditorUi *editor,
@@ -1650,7 +1654,8 @@ bool8_t vkr_editor_workbench_write_json(const VkrEditorUi *editor,
   for (uint32_t i = 0u; ok && i < workbenches->count; ++i) {
     const char *id = workbenches->items[i].id;
     ok = vkr_json_writer_string(
-        writer, string8_create_from_cstr((const uint8_t *)id, strlen(id)));
+        writer,
+        string8_create_from_cstr((const uint8_t *)id, string_length(id)));
   }
   ok = ok && vkr_json_writer_end_array(writer);
   for (uint32_t i = 0u; ok && i < workbenches->count; ++i) {
@@ -1673,8 +1678,8 @@ bool8_t vkr_editor_workbench_write_json(const VkrEditorUi *editor,
       if ((item->views >> v) & 1u) {
         const char *view = vkr_editor_view_id((VkrEditorView)v);
         ok = vkr_json_writer_string(
-            writer,
-            string8_create_from_cstr((const uint8_t *)view, strlen(view)));
+            writer, string8_create_from_cstr((const uint8_t *)view,
+                                             string_length(view)));
       }
     }
     ok = ok && vkr_json_writer_end_array(writer) &&
@@ -1763,8 +1768,8 @@ static void workbench_read_item(String8 json, VkrEditorWorkbench *item) {
   if (vkr_json_find_root_field(&scene_reader, "scene") &&
       vkr_json_parse_string(&scene_reader, &scene) &&
       scene.length < sizeof(item->scene_id)) {
-    snprintf(item->scene_id, sizeof(item->scene_id), "%.*s", (int)scene.length,
-             scene.str);
+    string_format(item->scene_id, sizeof(item->scene_id), "%.*s",
+                  (int)scene.length, scene.str);
     item->scene_known = true_v;
   }
   VkrJsonReader name_reader = vkr_json_reader_from_string(json);
@@ -1772,8 +1777,8 @@ static void workbench_read_item(String8 json, VkrEditorWorkbench *item) {
   if (vkr_json_find_root_field(&name_reader, "name") &&
       vkr_json_parse_string(&name_reader, &name) && name.length &&
       name.length < sizeof(item->name)) {
-    snprintf(item->name, sizeof(item->name), "%.*s", (int)name.length,
-             name.str);
+    string_format(item->name, sizeof(item->name), "%.*s", (int)name.length,
+                  name.str);
   }
   VkrUiDockTree tree;
   const String8 layout = workbench_member(json, "layout");
@@ -1859,10 +1864,10 @@ static void workbench_read_order(VkrEditorWorkbenches *workbenches,
       continue;
     }
     char key[VKR_EDITOR_WORKBENCH_ID_CAPACITY];
-    snprintf(key, sizeof(key), "%.*s", (int)id.length, id.str);
+    string_format(key, sizeof(key), "%.*s", (int)id.length, id.str);
     uint32_t builtin = UINT32_MAX;
     for (uint32_t i = 0u; i < VKR_EDITOR_WORKBENCH_COUNT; ++i) {
-      if (strcmp(key, s_workbenches[i].id) == 0) {
+      if (string_equals(key, s_workbenches[i].id)) {
         builtin = i;
       }
     }
@@ -1885,11 +1890,15 @@ static void workbench_read_order(VkrEditorWorkbenches *workbenches,
     VkrEditorWorkbench *item = &workbenches->items[count++];
     *item = builtins.items[kind];
     item->custom = true_v;
-    snprintf(item->id, sizeof(item->id), "%s", key);
-    uint32_t number = 0u;
-    if (sscanf(key, "custom_%u", &number) == 1 &&
-        number >= workbenches->next_custom) {
-      workbenches->next_custom = number + 1u;
+    string_format(item->id, sizeof(item->id), "%s", key);
+    /* `custom_` and a decimal number, as sscanf's "custom_%u" reads it. */
+    if (string_n_equals(key, "custom_", 7u)) {
+      const char *digits = key + 7u;
+      const char *end = digits;
+      const uint32_t number = (uint32_t)string_parse_u64(digits, &end);
+      if (end != digits && number >= workbenches->next_custom) {
+        workbenches->next_custom = number + 1u;
+      }
     }
   }
   for (uint32_t i = 0u; i < VKR_EDITOR_WORKBENCH_COUNT; ++i) {
@@ -1936,21 +1945,27 @@ bool8_t vkr_editor_workbench_load_file(VkrEditorUi *editor, VkrUiDockTree *live,
                                        String8 path) {
   if (!path.str || path.length == 0u ||
       path.length > VKR_JSON_WRITER_PATH_MAX ||
-      memchr(path.str, '\0', path.length)) {
+      MemFindByte(path.str, '\0', path.length)) {
     return false_v;
   }
   char cpath[VKR_JSON_WRITER_PATH_MAX + 1u];
   MemCopy(cpath, path.str, path.length);
   cpath[path.length] = '\0';
-  FILE *file = file_fopen(cpath, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(cpath);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return false_v;
   }
   /* Read once at startup; five full trees fit. */
   static uint8_t json[KB(64)];
-  const size_t length = fread(json, 1u, sizeof(json), file);
-  const bool8_t complete = !ferror(file) && feof(file);
-  fclose(file);
+  uint64_t length = 0u;
+  /* A short read reached the end; a full buffer may have more to come. */
+  const bool8_t complete =
+      file_read_into(&file, json, sizeof(json), &length) == FILE_ERROR_NONE &&
+      length < sizeof(json);
+  file_close(&file);
   if (!complete || length == 0u) {
     return false_v;
   }

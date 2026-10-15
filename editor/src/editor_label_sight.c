@@ -5,8 +5,6 @@
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_physics.h"
 
-#include <math.h>
-
 /* Seconds an icon takes to fade fully in or out. */
 #define EDITOR_LABEL_FADE_SECONDS 0.12f
 /* Opacity of an icon collision hides. */
@@ -31,7 +29,7 @@ static void label_scenes(const VkrSampleUiFrame *frame,
 }
 
 float32_t vkr_editor_label_distance(float32_t metres) {
-  if (!isfinite(metres)) {
+  if (!vkr_is_finite_f32(metres)) {
     return VKR_EDITOR_LABEL_DISTANCE_DEFAULT;
   }
   return vkr_clamp_f32(metres, 0.0f, VKR_EDITOR_LABEL_DISTANCE_MAX);
@@ -57,14 +55,14 @@ bool8_t vkr_editor_label_occluded(const VkrSampleUiFrame *frame,
                                   Mat4 inverse_view_projection, Vec3 point,
                                   const VkrScene *owner, VkrEntityId entity) {
   const Vec4 clip = mat4_mul_vec4(view_projection, vec3_to_vec4(point, 1.0f));
-  if (!isfinite(clip.w) || clip.w <= 1.0e-6f) {
+  if (!vkr_is_finite_f32(clip.w) || clip.w <= 1.0e-6f) {
     return false_v;
   }
   /* Reversed camera depth: device depth 1 is the near plane. */
   const Vec4 near_point =
       mat4_mul_vec4(inverse_view_projection,
                     (Vec4){clip.x / clip.w, clip.y / clip.w, 1.0f, 1.0f});
-  if (!isfinite(near_point.w) || fabsf(near_point.w) < 1.0e-9f) {
+  if (!vkr_is_finite_f32(near_point.w) || vkr_abs_f32(near_point.w) < 1.0e-9f) {
     return false_v;
   }
   const Vec3 origin =
@@ -72,7 +70,7 @@ bool8_t vkr_editor_label_occluded(const VkrSampleUiFrame *frame,
                near_point.z / near_point.w);
   const Vec3 displacement = vec3_sub(point, origin);
   const float32_t length = vec3_length(displacement);
-  if (!isfinite(length) || length < 1.0e-3f) {
+  if (!vkr_is_finite_f32(length) || length < 1.0e-3f) {
     return false_v;
   }
   /* A point on a surface stays visible; the length term covers float
@@ -153,10 +151,12 @@ void vkr_editor_label_sights_begin(VkrEditorLabelSights *sights,
   sights->occluded_count = 0u;
 
   sights->occlusion = occlusion && vkr_editor_label_occlusion_available(frame);
-  sights->max_distance =
-      isfinite(max_distance) && max_distance > 0.0f ? max_distance : 0.0f;
+  sights->max_distance = vkr_is_finite_f32(max_distance) && max_distance > 0.0f
+                             ? max_distance
+                             : 0.0f;
   sights->delta_seconds =
-      isfinite(delta_seconds) && delta_seconds > 0.0f ? delta_seconds : 0.0f;
+      vkr_is_finite_f32(delta_seconds) && delta_seconds > 0.0f ? delta_seconds
+                                                               : 0.0f;
   sights->instant = instant;
   const Mat4 view_projection = frame->view_projection;
   sights->inverse_view_projection = mat4_inverse(view_projection);
@@ -231,9 +231,10 @@ float32_t vkr_editor_label_sight(VkrEditorLabelSights *sights,
   bool8_t on_screen = false_v;
   if (placed) {
     clip = mat4_mul_vec4(frame->view_projection, vec3_to_vec4(position, 1.0f));
-    on_screen = isfinite(clip.w) && clip.w > 1.0e-6f &&
-                fabsf(clip.x) <= clip.w && fabsf(clip.y) <= clip.w &&
-                clip.z >= 0.0f && clip.z <= clip.w;
+    on_screen = vkr_is_finite_f32(clip.w) && clip.w > 1.0e-6f &&
+                vkr_abs_f32(clip.x) <= clip.w &&
+                vkr_abs_f32(clip.y) <= clip.w && clip.z >= 0.0f &&
+                clip.z <= clip.w;
   }
   /* Clip w is the view depth of a perspective camera. */
   const float32_t depth = sights->perspective ? clip.w : 0.0f;

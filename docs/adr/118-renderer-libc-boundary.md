@@ -1,21 +1,22 @@
 ---
 status: implemented
-updated: 2026-10-14
+updated: 2026-10-15
 authority: adr
 ---
 
-# ADR-118: Renderer and runtime libc and platform boundary
+# ADR-118: Renderer, runtime and editor libc and platform boundary
 
 ## Status
 
 Accepted. `renderer_lib`, `vkr_render_contracts`, `vkr_runtime`,
-`vkr_sample_runtime`, `vkr_asset_formats` and `vkr_image_decode` reach the
-C library and the operating system only through `vkr_foundation`
+`vkr_sample_runtime`, `vkr_asset_formats`, `vkr_image_decode` and
+`vkr_editor` reach the C library and the operating system only through `vkr_foundation`
 (`lib/src/`). The compiler enforces the boundary for stdio, stdlib, string,
 POSIX and Win32 declarations in their C and Objective-C units; a source
 guard covers `<math.h>`, Objective-C, vendor headers and C++ units. macOS
 (Metal) has native evidence; the Windows build, the Win32 surface and the
-runtime's Windows platform units are unrun.
+runtime's Windows platform units and the lib's new Windows services are
+unrun.
 
 ## Context
 
@@ -30,11 +31,14 @@ pipeline cache and shader catalog paths in the active code page
 ([ADR-070](070-portable-path-boundaries.md)). The runtime had the same
 pattern on a larger scale: 2,351 uses across `isfinite`, `snprintf`,
 `strcmp`, `malloc`, stdio file I/O, `getenv`, `qsort` and the `strto*`
-parsers.
+parsers. The editor had 3,292 across 78 files, led by `snprintf`,
+`strlen` and `strcmp`, and its own operating-system code: directory
+listing through `opendir` and `FindFirstFileW`, `realpath`, `time`,
+`mkdir`, `arc4random` and `CoCreateGuid`, and the file-manager commands.
 
 ## Decision
 
-1. **Freestanding includes.** Renderer and runtime targets define
+1. **Freestanding includes.** Renderer, runtime and editor targets define
    `VKR_LIBC_BOUNDARY` for their C and Objective-C sources, and the renderer
    no longer precompiles `vkr_pch.h`. Under that define
    [defines.h](../../lib/src/defines.h) includes only `<stdarg.h>`,
@@ -44,8 +48,11 @@ parsers.
    `<string.h>` for them. Lib headers that the renderer includes carry no
    stdio or OS declaration: `file_fopen` and `file_flush_durable` are
    hidden with the `FSEEK64` macros, `VkrJsonFileWriter` holds its stream
-   as `void *`, and header assertions use `vkr_assert`. Other targets (the
-   editor, app, tools and tests) keep `vkr_pch.h` through `defines.h`.
+   as `void *`, and header assertions use `vkr_assert`.
+   [sdk.h](../../sdk/sdk.h) hides its stdio formatting helpers under the
+   define, since engine units use only its types and call table, and
+   script modules still get them. Other targets (the app, player, tools
+   and tests) keep `vkr_pch.h` through `defines.h`.
 2. **Math.** [vkr_math.h](../../lib/src/math/vkr_math.h) is the one lib
    header that includes `<math.h>`, for its inline wrappers. Each wrapper
    calls the libm function of the same precision and semantics, so a
@@ -70,7 +77,14 @@ parsers.
    blocks, and vendor decoders allocate them with `malloc`, so the heap
    functions are the C heap itself. `VKR_CHAR_BITS` and
    `VKR_F32_LIMITS_BINARY32` in `vkr_byte_io.h` state the cooked formats'
-   byte and float assumptions.
+   byte and float assumptions. The editor adds `file_list_directory`,
+   `file_create_directory` and `file_path_resolve` for directories;
+   `vkr_platform_environment_is_set`; `vkr_platform_get_unix_time`;
+   `vkr_platform_user_directory` with `VKR_PLATFORM_USER_HOME`;
+   `vkr_platform_random_bytes` for project ids;
+   `vkr_platform_file_manager_command`, which names the program and
+   arguments that open or reveal a path; the `vkr_char_*` ASCII classes;
+   and `string_parse_u64_hex`.
 4. **Background pipeline creation.** Custom graph and tiled BRDF variant
    pipelines are jobs on the runtime's job system, passed as
    `VkrRendererBackendConfig.job_system`. Without one, or with no free job
@@ -88,14 +102,15 @@ parsers.
    DXGI headers and calls their APIs, its Windows units add `<windows.h>`
    and `<wchar.h>` for themselves, and its C library calls go through the
    lib. `PLATFORM_APPLE` and `PLATFORM_WINDOWS` remain build switches that
-   select a backend or platform unit; they are not OS calls.
+   select a backend or platform unit; they are not OS calls. The editor has
+   no platform unit.
 6. **C++ adapters.** `vkr_physics.cpp` (Jolt) and `vkr_mesh_decode.cpp`
    keep the C++ standard library, which their vendor APIs need, and stay
    outside `VKR_LIBC_BOUNDARY`. Their C library calls use the lib
    wrappers.
 7. **Guard.** [check_libc_boundary.py](../../tools/checks/check_libc_boundary.py)
-   runs in `build_test.sh` and `build_test.bat` over `renderer/src` and
-   `runtime/src`, skipping vendor implementation units. After it strips
+   runs in `build_test.sh` and `build_test.bat` over `renderer/src`,
+   `runtime/src` and `editor/src`, skipping vendor implementation units. After it strips
    comments and literals, it rejects C library calls and limit macros,
    C library headers, and operating-system headers and calls outside the
    platform units. Its exception table names each API-required GCD call
@@ -103,7 +118,7 @@ parsers.
 
 ## Consequences
 
-- A new renderer or runtime use of stdio, stdlib, string, POSIX or Win32
+- A new renderer, runtime or editor use of stdio, stdlib, string, POSIX or Win32
   fails to compile on Clang. A new `<math.h>` call, a Foundation-provided
   call in an Objective-C unit, or a C library call in a C++ adapter fails
   the guard.
@@ -111,7 +126,11 @@ parsers.
 - An environment variable set to an empty string reads as unset, since
   `vkr_platform_environment_variable` cannot tell them apart.
 - Metal diagnostics directories and segments take the lib's default
-  permissions (0755 and 0644) instead of 0700 and 0600.
+  permissions (0755 and 0644) instead of 0700 and 0600. Editor workspace
+  and script directories likewise change from 0700 to 0755.
+- Editor workspace discovery accepts only directory entries on macOS, as
+  it already did on Windows, and the editor parses integers at 64 bits on
+  every platform, where Windows `strtol` read 32.
 
 ## Evidence
 
@@ -138,6 +157,16 @@ editor session with `VKR_EDITOR_LAYOUT_PATH` and
 session loaded it. The guard reported 2,351 runtime hits before and none
 after.
 
+The editor change ran on the same machine and configuration from base
+`d8eca553`. All 45 editor units compiled under `VKR_LIBC_BOUNDARY`, and
+every target built with warnings as errors. The tester passed the same 790
+named tests with the same logged errors and warnings.
+`check_editor_session.py` passed before and after. A headless Bistro
+editor run of 25 `--exec` commands (selection, light, time, grid, view
+mode, cube creation and undo, camera and render statistics) printed the
+same `[cmd]` results and no errors before and after. The guard reported
+3,292 editor hits before and none after.
+
 ## Alternatives considered
 
 - **Out-of-line math on MSVC to drop `<math.h>`.** This adds a call per
@@ -150,5 +179,5 @@ after.
 
 ## Revisit when
 
-The editor, app or tools take the same boundary, or the Windows build
+The app, player or tools take the same boundary, or the Windows build
 shows a header that `VKR_LIBC_BOUNDARY` misses under MSVC or clang-cl.

@@ -4,9 +4,6 @@
 #include "editor_level.h"
 #include "editor_material.h"
 
-#include <math.h>
-#include <stdio.h>
-
 typedef struct ViewInfo {
   const char *id;
   const char *name;
@@ -67,11 +64,11 @@ String8 vkr_editor_view_tooltip(VkrEditorView view) {
     return (String8){0};
   }
   return string8_create_from_cstr((const uint8_t *)s_views[view].tooltip,
-                                  strlen(s_views[view].tooltip));
+                                  string_length(s_views[view].tooltip));
 }
 
 static bool8_t view_word_is(String8 word, const char *text) {
-  const uint64_t length = strlen(text);
+  const uint64_t length = string_length(text);
   if (word.length != length) {
     return false_v;
   }
@@ -174,7 +171,8 @@ static void model_apply(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   const float32_t yaw = vkr_to_radians(model->yaw);
   const float32_t pitch = vkr_to_radians(model->pitch);
   const Vec3 forward =
-      vec3_new(cosf(pitch) * cosf(yaw), sinf(pitch), cosf(pitch) * sinf(yaw));
+      vec3_new(vkr_cos_f32(pitch) * vkr_cos_f32(yaw), vkr_sin_f32(pitch),
+               vkr_cos_f32(pitch) * vkr_sin_f32(yaw));
   VkrSampleEditorStateRequest *request = frame->editor_state_request;
   request->move_camera = true_v;
   request->camera_position =
@@ -219,8 +217,10 @@ static void model_frame(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrBrushGeometry *scratch =
       vkr_allocator_alloc(frame->ui->frame_allocator, sizeof(*scratch),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   const bool8_t found =
       model_grow_box(frame, model->subject, scratch, &lo, &hi);
   if (!found) {
@@ -237,8 +237,8 @@ static void model_frame(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
                             ? frame->scene_recall.field_of_view
                             : 60.0f;
   const float32_t half_angle =
-      atanf(tanf(vkr_to_radians(fov) * 0.5f) * Min(1.0f, aspect));
-  model->distance = radius / Max(0.01f, sinf(half_angle)) * 1.15f;
+      vkr_atan_f32(vkr_tan_f32(vkr_to_radians(fov) * 0.5f) * Min(1.0f, aspect));
+  model->distance = radius / Max(0.01f, vkr_sin_f32(half_angle)) * 1.15f;
   if (!model->framed) {
     /* The first subject keeps the Scene's heading, seen from a little
        above; later ones keep the orbit's angles. */
@@ -413,7 +413,7 @@ static VkrEntityId model_pick_decal(const VkrEditorUi *editor,
   /* The stage stands the level's subject at an offset. */
   origin = vec3_sub(origin, editor->model.offset);
   VkrEntityId nearest_entity = VKR_ENTITY_ID_INVALID;
-  float32_t nearest = INFINITY;
+  float32_t nearest = VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < scene->topo_count; ++i) {
     const VkrEntityId entity = scene->topo_order[i];
     if (!vkr_scene_get_typed(scene, entity, &vkr_scene_decal_type) ||
@@ -430,11 +430,11 @@ static VkrEntityId model_pick_decal(const VkrEditorUi *editor,
     const Vec4 o = mat4_mul_vec4(inverse, vec3_to_vec4(origin, 1.0f));
     const Vec4 d = mat4_mul_vec4(inverse, vec3_to_vec4(direction, 0.0f));
     float32_t enter = 0.0f;
-    float32_t leave = INFINITY;
+    float32_t leave = VKR_FLOAT_INFINITY;
     const float32_t from[3] = {o.x, o.y, o.z};
     const float32_t step[3] = {d.x, d.y, d.z};
     for (uint32_t axis = 0; axis < 3u && enter <= leave; ++axis) {
-      if (fabsf(step[axis]) < 1.0e-8f) {
+      if (vkr_abs_f32(step[axis]) < 1.0e-8f) {
         if (from[axis] < -0.5f || from[axis] > 0.5f) {
           leave = -1.0f;
         }
@@ -483,15 +483,17 @@ static void model_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     /* The stage copies meshes; brushes, shapes and terrain stay in the
        level. */
     const String8 name = vkr_scene_get_name(scene, model->subject);
-    snprintf(caption, sizeof(caption), "%.*s%s", (int)Min(name.length, 96u),
-             name.length ? (const char *)name.str : "Object",
-             frame->model_stage_copies
-                 ? ""
-                 : " has no meshes to show; brushes and terrain show in "
-                   "the Scene");
+    string_format(caption, sizeof(caption), "%.*s%s",
+                  (int)Min(name.length, 96u),
+                  name.length ? (const char *)name.str : "Object",
+                  frame->model_stage_copies
+                      ? ""
+                      : " has no meshes to show; brushes and terrain show in "
+                        "the Scene");
   } else {
-    snprintf(caption, sizeof(caption),
-             "Select an object in the Outliner or the Scene to see it alone");
+    string_format(
+        caption, sizeof(caption),
+        "Select an object in the Outliner or the Scene to see it alone");
   }
   /* The caption sits at the bottom centre, clear of the orientation gizmo
      on the left; the ring and Frame stand above the frame-time chip on the
@@ -510,10 +512,10 @@ static void model_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   label.icon_size_pt = 13.0f;
   label.icon_color = theme->accent;
   label.tooltip = vkr_editor_view_tooltip(VKR_EDITOR_VIEW_MODEL);
-  vkr_ui_label(
-      ui, string8_lit("model.caption"),
-      string8_create_from_cstr((const uint8_t *)caption, strlen(caption)),
-      &label);
+  vkr_ui_label(ui, string8_lit("model.caption"),
+               string8_create_from_cstr((const uint8_t *)caption,
+                                        string_length(caption)),
+               &label);
   if (!subject) {
     return;
   }
@@ -593,8 +595,8 @@ static void model_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   if (over_image && ui->mouse_wheel != 0) {
     model->distance = vkr_clamp_f32(
-        model->distance * expf(-(float32_t)ui->mouse_wheel * 0.12f), 0.05f,
-        5000.0f);
+        model->distance * vkr_exp_f32(-(float32_t)ui->mouse_wheel * 0.12f),
+        0.05f, 5000.0f);
     moved = true_v;
     ui->capture.mouse = true_v;
   }

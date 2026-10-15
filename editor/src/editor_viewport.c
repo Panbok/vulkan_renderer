@@ -9,16 +9,12 @@
 #include "editor_projects.h"
 #include "editor_terrain.h"
 
+#include "memory/vkr_heap.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_mesh_raycast.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
-
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* These controls own editor interaction only. The runtime validates and applies
  * camera/render requests; grid geometry follows its final unjittered camera. */
@@ -194,7 +190,7 @@ typedef struct ViewRow {
 } ViewRow;
 
 static String8 view_string(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 static const char *view_render_name(VkrRenderMode mode) {
@@ -207,7 +203,7 @@ static const char *view_render_name(VkrRenderMode mode) {
 }
 
 static void view_speed_text(float32_t speed, char text[24]) {
-  snprintf(text, 24, "%.3g", (double)speed);
+  string_format(text, 24, "%.3g", (double)speed);
 }
 
 Vec2 vkr_editor_text_size(const VkrUiSystem *ui, VkrFontHandle font_handle,
@@ -280,17 +276,18 @@ static void view_chip_text(const VkrEditorUi *editor,
                            char text[VIEW_LEFT_CHIPS][48]) {
   const VkrSampleViewState *state = &frame->view_state;
   const uint32_t camera = (uint32_t)state->camera_view;
-  snprintf(text[0], 48, "%s",
-           camera < ArrayCount(view_camera_names) ? view_camera_names[camera]
-                                                  : "Perspective");
-  snprintf(text[1], 48, "%s", view_render_name(state->render_mode));
+  string_format(text[0], 48, "%s",
+                camera < ArrayCount(view_camera_names)
+                    ? view_camera_names[camera]
+                    : "Perspective");
+  string_format(text[1], 48, "%s", view_render_name(state->render_mode));
   if (state->grid_enabled)
-    snprintf(text[2], 48, "%.4g",
-             (double)(editor->grid_spacing > 0 ? editor->grid_spacing
-                                               : state->grid_spacing));
+    string_format(text[2], 48, "%.4g",
+                  (double)(editor->grid_spacing > 0 ? editor->grid_spacing
+                                                    : state->grid_spacing));
   else
-    snprintf(text[2], 48, "Off");
-  snprintf(text[3], 48, "Show");
+    string_format(text[2], 48, "Off");
+  string_format(text[3], 48, "Show");
   if (frame->graphics) {
     const VkrGraphicsSettings settings = view_graphics(editor, frame);
     const char *preset =
@@ -309,16 +306,16 @@ static void view_chip_text(const VkrEditorUi *editor,
           (float32_t)frame->scene_render_width / frame->mapping.image_rect_px.z;
     }
     if (dynamic) {
-      snprintf(text[4], 48, "%s \xc2\xb7 Dynamic %.0f%%", preset,
-               (double)(scale * 100.0f));
+      string_format(text[4], 48, "%s \xc2\xb7 Dynamic %.0f%%", preset,
+                    (double)(scale * 100.0f));
     } else {
-      snprintf(text[4], 48, "%s \xc2\xb7 %.0f%%", preset,
-               (double)(scale * 100.0f));
+      string_format(text[4], 48, "%s \xc2\xb7 %.0f%%", preset,
+                    (double)(scale * 100.0f));
     }
   } else {
-    snprintf(text[4], 48, "Quality");
+    string_format(text[4], 48, "Quality");
   }
-  snprintf(text[5], 48, "%s", state->draw_distance_off ? "All" : "Game");
+  string_format(text[5], 48, "%s", state->draw_distance_off ? "All" : "Game");
 }
 
 /* The chip's content: padding, icon, gap, text, gap and caret. */
@@ -328,9 +325,9 @@ static float32_t view_chip_width(const VkrUiSystem *ui, const char *text,
       VIEW_CHIP_PAD_PT * 2.0f + VIEW_CHIP_ICON_PT + 6.0f + VIEW_CHIP_CARET_PT;
   if (compact)
     return frame;
-  return ceilf(vkr_editor_text_size(ui, VKR_FONT_HANDLE_INVALID, text,
-                                    vkr_ui_theme()->font_body)
-                   .x) +
+  return vkr_ceil_f32(vkr_editor_text_size(ui, VKR_FONT_HANDLE_INVALID, text,
+                                           vkr_ui_theme()->font_body)
+                          .x) +
          frame + 6.0f;
 }
 
@@ -415,29 +412,100 @@ static uint32_t view_distance_rows(VkrEditorUi *editor,
   uint32_t count = 0;
   ViewRow *game = &rows[count++];
   *game = (ViewRow){.checked = !state->draw_distance_off};
-  snprintf(game->text, sizeof(game->text), "Game draw distances");
+  string_format(game->text, sizeof(game->text), "Game draw distances");
   ViewRow *all = &rows[count++];
   *all = (ViewRow){.checked = state->draw_distance_off};
-  snprintf(all->text, sizeof(all->text), "Draw every object");
+  string_format(all->text, sizeof(all->text), "Draw every object");
   if (!frame->graphics) {
     return count;
   }
   const VkrGraphicsSettings settings = view_graphics(editor, frame);
   rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-  snprintf(rows[count++].text, sizeof(rows[0].text), "View distance");
+  string_format(rows[count++].text, sizeof(rows[0].text), "View distance");
   for (uint32_t i = 0; i < ArrayCount(view_distance_names); ++i) {
     VkrGraphicsSettings option = settings;
     option.view_distance = i;
     ViewRow *row = &rows[count++];
     *row = (ViewRow){.checked = settings.view_distance == i,
                      .disabled = !frame->graphics_request};
-    snprintf(row->text, sizeof(row->text), "%s  %.2gx", view_distance_names[i],
-             (double)vkr_graphics_settings_draw_distance_scale(&option));
+    string_format(row->text, sizeof(row->text), "%s  %.2gx",
+                  view_distance_names[i],
+                  (double)vkr_graphics_settings_draw_distance_scale(&option));
   }
   return count;
 }
 
 /* Fill `rows` for `popup`; returns how many. */
+/* The Quality popup: scalability presets, screen percentage, dynamic
+   resolution and the scene's texture limit. */
+static uint32_t view_quality_rows(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame,
+                                  ViewRow *rows) {
+  uint32_t count = 0;
+  if (!frame->graphics) {
+    return 0u;
+  }
+  const VkrGraphicsSettings settings = view_graphics(editor, frame);
+  const VkrGraphicsPreset preset = vkr_graphics_settings_preset(&settings);
+  rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+  string_format(rows[count++].text, sizeof(rows[0].text), "Scalability");
+  for (uint32_t i = 0; i < VKR_GRAPHICS_PRESET_CUSTOM; ++i) {
+    ViewRow *row = &rows[count++];
+    *row = (ViewRow){.checked = (uint32_t)preset == i};
+    string_format(row->text, sizeof(row->text), "%s",
+                  vkr_graphics_preset_name((VkrGraphicsPreset)i));
+  }
+  ViewRow *custom = &rows[count++];
+  *custom = (ViewRow){.checked = preset == VKR_GRAPHICS_PRESET_CUSTOM,
+                      .icon = VKR_UI_ICON_SETTINGS};
+  string_format(custom->text, sizeof(custom->text), "Custom settings...");
+  /* With dynamic resolution the percentage caps the scale it chooses; a
+     backend that cannot scale renders at 100%. */
+  const bool8_t automatic = settings.dynamic_resolution &&
+                            frame->graphics->dynamic_resolution_available;
+  const float32_t render_scale =
+      vkr_graphics_settings_render_scale(frame->graphics, &settings);
+  const bool8_t fixed = !frame->graphics->spatial_render_scale_available;
+  rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+  string_format(rows[count++].text, sizeof(rows[0].text),
+                automatic ? "Screen percentage  up to %.0f%%"
+                          : "Screen percentage  %.0f%%",
+                (double)(render_scale * 100.0f));
+  rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
+                            .disabled = fixed,
+                            .value = render_scale,
+                            .minimum = 1.0f / 3.0f,
+                            .maximum = 1.0f};
+  ViewRow *dynamic = &rows[count++];
+  *dynamic =
+      (ViewRow){.checked = settings.dynamic_resolution,
+                .disabled = !frame->graphics->dynamic_resolution_available};
+  string_format(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
+
+  /* The scene's texture limit; the Graphics limit still caps it. */
+  const VkrScene *scene = view_texture_scene(frame);
+  const uint32_t graphics_limit =
+      vkr_graphics_settings_texture_max_dimension(&settings);
+  rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+  if (graphics_limit) {
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Scene textures  (Graphics limit %u)", graphics_limit);
+  } else {
+    string_format(rows[count++].text, sizeof(rows[0].text), "Scene textures");
+  }
+  for (uint32_t i = 0; i < ArrayCount(view_texture_limits); ++i) {
+    ViewRow *row = &rows[count++];
+    *row = (ViewRow){
+        .checked = scene && scene->settings.texture_max_extent ==
+                                view_texture_limits[i].extent,
+        .disabled = !scene,
+    };
+    string_format(row->text, sizeof(row->text), "%s",
+                  view_texture_limits[i].name);
+  }
+  return count;
+}
+
 static uint32_t view_popup_rows(VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame, uint32_t popup,
                                 ViewRow *rows) {
@@ -448,8 +516,8 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     for (uint32_t i = 0; i < ArrayCount(view_camera_names); ++i) {
       ViewRow *row = &rows[count++];
       *row = (ViewRow){.checked = (uint32_t)state->camera_view == i};
-      snprintf(row->text, sizeof(row->text), "%s%s", view_camera_names[i],
-               i ? "  (orthographic)" : "");
+      string_format(row->text, sizeof(row->text), "%s%s", view_camera_names[i],
+                    i ? "  (orthographic)" : "");
     }
     break;
   case VIEW_POPUP_RENDER: {
@@ -457,21 +525,22 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
       ViewRow *row = &rows[count++];
       *row =
           (ViewRow){.checked = state->render_mode == view_render_modes[i].mode};
-      snprintf(row->text, sizeof(row->text), "%s", view_render_modes[i].name);
+      string_format(row->text, sizeof(row->text), "%s",
+                    view_render_modes[i].name);
     }
     /* Brush faces in their surfaces' greybox looks, over any material. */
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Level design");
+    string_format(rows[count++].text, sizeof(rows[0].text), "Level design");
     ViewRow *greybox = &rows[count++];
     *greybox = (ViewRow){.checked = state->greybox_view};
-    snprintf(greybox->text, sizeof(greybox->text), "Greybox");
+    string_format(greybox->text, sizeof(greybox->text), "Greybox");
     break;
   }
   case VIEW_POPUP_GRID:
     for (uint32_t i = 0; i < ArrayCount(view_grid_rows); ++i) {
       ViewRow *row = &rows[count++];
       *row = (ViewRow){0};
-      snprintf(row->text, sizeof(row->text), "%s", view_grid_rows[i]);
+      string_format(row->text, sizeof(row->text), "%s", view_grid_rows[i]);
       if (i == 0) {
         row->checked = state->grid_enabled;
       } else if (i == 1) {
@@ -481,17 +550,17 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
         row->disabled = state->camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE;
       } else if (i == 3) {
         row->kind = VIEW_ROW_HEADER;
-        snprintf(row->text, sizeof(row->text), "Cell size  %.4g u",
-                 (double)state->grid_spacing);
+        string_format(row->text, sizeof(row->text), "Cell size  %.4g u",
+                      (double)state->grid_spacing);
       } else if (i == 6) {
         /* The last fit's outcome while it is fresh, else the height. */
         row->kind = VIEW_ROW_HEADER;
         if (frame->grid_status.length)
-          snprintf(row->text, sizeof(row->text), "%.*s",
-                   (int)frame->grid_status.length, frame->grid_status.str);
+          string_format(row->text, sizeof(row->text), "%.*s",
+                        (int)frame->grid_status.length, frame->grid_status.str);
         else
-          snprintf(row->text, sizeof(row->text), "Height  %.2f m",
-                   (double)state->grid_height);
+          string_format(row->text, sizeof(row->text), "Height  %.2f m",
+                        (double)state->grid_height);
       } else if (i == 7) {
         row->disabled = !frame->grid_fit_request;
       } else if (i == 8) {
@@ -505,7 +574,7 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     for (uint32_t i = 0; i < ArrayCount(view_show_rows); ++i) {
       ViewRow *row = &rows[count++];
       *row = (ViewRow){0};
-      snprintf(row->text, sizeof(row->text), "%s", view_show_rows[i].name);
+      string_format(row->text, sizeof(row->text), "%s", view_show_rows[i].name);
       const uint32_t value = view_show_rows[i].value;
       switch (view_show_rows[i].target) {
       case VIEW_SHOW_HEADER:
@@ -524,8 +593,8 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
       case VIEW_SHOW_ICON_OCCLUSION:
         /* Rays test collision: with physics off nothing hides an icon. */
         if (!vkr_editor_label_occlusion_available(frame)) {
-          snprintf(row->text, sizeof(row->text), "%s  (needs physics)",
-                   view_show_rows[i].name);
+          string_format(row->text, sizeof(row->text), "%s  (needs physics)",
+                        view_show_rows[i].name);
         }
         row->checked = editor->labels_occlusion;
         row->disabled = !editor->labels_enabled;
@@ -533,11 +602,12 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
       case VIEW_SHOW_ICON_DISTANCE:
         row->kind = VIEW_ROW_HEADER;
         if (editor->labels_max_distance > 0.0f) {
-          snprintf(row->text, sizeof(row->text), "%s  %.0f m",
-                   view_show_rows[i].name, (double)editor->labels_max_distance);
+          string_format(row->text, sizeof(row->text), "%s  %.0f m",
+                        view_show_rows[i].name,
+                        (double)editor->labels_max_distance);
         } else {
-          snprintf(row->text, sizeof(row->text), "%s  unlimited",
-                   view_show_rows[i].name);
+          string_format(row->text, sizeof(row->text), "%s  unlimited",
+                        view_show_rows[i].name);
         }
         break;
       case VIEW_SHOW_ICON_DISTANCE_SLIDER:
@@ -568,112 +638,54 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
       }
     }
     break;
-  case VIEW_POPUP_QUALITY: {
-    if (!frame->graphics) {
-      break;
-    }
-    const VkrGraphicsSettings settings = view_graphics(editor, frame);
-    const VkrGraphicsPreset preset = vkr_graphics_settings_preset(&settings);
-    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Scalability");
-    for (uint32_t i = 0; i < VKR_GRAPHICS_PRESET_CUSTOM; ++i) {
-      ViewRow *row = &rows[count++];
-      *row = (ViewRow){.checked = (uint32_t)preset == i};
-      snprintf(row->text, sizeof(row->text), "%s",
-               vkr_graphics_preset_name((VkrGraphicsPreset)i));
-    }
-    ViewRow *custom = &rows[count++];
-    *custom = (ViewRow){.checked = preset == VKR_GRAPHICS_PRESET_CUSTOM,
-                        .icon = VKR_UI_ICON_SETTINGS};
-    snprintf(custom->text, sizeof(custom->text), "Custom settings...");
-    /* With dynamic resolution the percentage caps the scale it chooses; a
-       backend that cannot scale renders at 100%. */
-    const bool8_t automatic = settings.dynamic_resolution &&
-                              frame->graphics->dynamic_resolution_available;
-    const float32_t render_scale =
-        vkr_graphics_settings_render_scale(frame->graphics, &settings);
-    const bool8_t fixed = !frame->graphics->spatial_render_scale_available;
-    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text),
-             automatic ? "Screen percentage  up to %.0f%%"
-                       : "Screen percentage  %.0f%%",
-             (double)(render_scale * 100.0f));
-    rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
-                              .disabled = fixed,
-                              .value = render_scale,
-                              .minimum = 1.0f / 3.0f,
-                              .maximum = 1.0f};
-    ViewRow *dynamic = &rows[count++];
-    *dynamic =
-        (ViewRow){.checked = settings.dynamic_resolution,
-                  .disabled = !frame->graphics->dynamic_resolution_available};
-    snprintf(dynamic->text, sizeof(dynamic->text), "Dynamic resolution");
-
-    /* The scene's texture limit; the Graphics limit still caps it. */
-    const VkrScene *scene = view_texture_scene(frame);
-    const uint32_t graphics_limit =
-        vkr_graphics_settings_texture_max_dimension(&settings);
-    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    if (graphics_limit) {
-      snprintf(rows[count++].text, sizeof(rows[0].text),
-               "Scene textures  (Graphics limit %u)", graphics_limit);
-    } else {
-      snprintf(rows[count++].text, sizeof(rows[0].text), "Scene textures");
-    }
-    for (uint32_t i = 0; i < ArrayCount(view_texture_limits); ++i) {
-      ViewRow *row = &rows[count++];
-      *row = (ViewRow){
-          .checked = scene && scene->settings.texture_max_extent ==
-                                  view_texture_limits[i].extent,
-          .disabled = !scene,
-      };
-      snprintf(row->text, sizeof(row->text), "%s", view_texture_limits[i].name);
-    }
+  case VIEW_POPUP_QUALITY:
+    count = view_quality_rows(editor, frame, rows);
     break;
-  }
   case VIEW_POPUP_SNAP: {
     const VkrEditorPlacement *place = &editor->placement;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Place new objects");
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Place new objects");
     static const char *const targets[VKR_EDITOR_SNAP_COUNT] = {
         "Free, on the ground plane", "On surfaces", "On the grid"};
     for (uint32_t i = 0; i < VKR_EDITOR_SNAP_COUNT; ++i) {
       ViewRow *row = &rows[count++];
       *row = (ViewRow){.checked = (uint32_t)place->target == i};
-      snprintf(row->text, sizeof(row->text), "%s", targets[i]);
+      string_format(row->text, sizeof(row->text), "%s", targets[i]);
     }
     ViewRow *centers = &rows[count++];
     *centers = (ViewRow){.checked = place->cell_centers,
                          .disabled = place->target != VKR_EDITOR_SNAP_GRID};
-    snprintf(centers->text, sizeof(centers->text), "Snap to cell centers");
+    string_format(centers->text, sizeof(centers->text), "Snap to cell centers");
     ViewRow *align = &rows[count++];
     *align = (ViewRow){.checked = place->align_to_normal,
                        .disabled = place->target != VKR_EDITOR_SNAP_SURFACE};
-    snprintf(align->text, sizeof(align->text), "Align to surface normal");
+    string_format(align->text, sizeof(align->text), "Align to surface normal");
     ViewRow *magnet = &rows[count++];
     *magnet = (ViewRow){.checked = place->magnet};
-    snprintf(magnet->text, sizeof(magnet->text),
-             "Snap brushes to nearby brushes");
+    string_format(magnet->text, sizeof(magnet->text),
+                  "Snap brushes to nearby brushes");
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Move and rotate");
+    string_format(rows[count++].text, sizeof(rows[0].text), "Move and rotate");
     ViewRow *grid = &rows[count++];
     *grid = (ViewRow){.checked = place->move_grid};
-    snprintf(grid->text, sizeof(grid->text), "Snap moves to the %.4g m grid",
-             (double)state->grid_spacing);
+    string_format(grid->text, sizeof(grid->text),
+                  "Snap moves to the %.4g m grid", (double)state->grid_spacing);
     ViewRow *turn = &rows[count++];
     *turn = (ViewRow){.checked = place->turn_steps};
-    snprintf(turn->text, sizeof(turn->text), "Rotate in %.0f\xc2\xb0 steps",
-             (double)VKR_EDITOR_TURN_STEP_DEGREES);
+    string_format(turn->text, sizeof(turn->text),
+                  "Rotate in %.0f\xc2\xb0 steps",
+                  (double)VKR_EDITOR_TURN_STEP_DEGREES);
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Rotation  %.0f\xc2\xb0",
-             (double)place->yaw_degrees);
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Rotation  %.0f\xc2\xb0", (double)place->yaw_degrees);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
                               .value = place->yaw_degrees,
                               .minimum = 0.0f,
                               .maximum = 360.0f};
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Offset  %.2f m",
-             (double)place->offset);
+    string_format(rows[count++].text, sizeof(rows[0].text), "Offset  %.2f m",
+                  (double)place->offset);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
                               .value = place->offset,
                               .minimum = -2.0f,
@@ -690,33 +702,34 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     char text[8];
     vkr_editor_lighting_hour_text(hour, text);
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text),
-             "Time of day  %s  (starts %.2f h)", text, (double)authored->hour);
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Time of day  %s  (starts %.2f h)", text,
+                  (double)authored->hour);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
-                              .value = (float32_t)fmod(hour, 24.0),
+                              .value = (float32_t)vkr_fmod_f64(hour, 24.0),
                               .minimum = 0.0f,
                               .maximum = 24.0f};
     rows[count] = (ViewRow){.icon = VKR_UI_ICON_CHECK};
-    snprintf(rows[count++].text, sizeof(rows[0].text),
-             "Keep %s as the World's starting hour", text);
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Keep %s as the World's starting hour", text);
     rows[count] = (ViewRow){.icon = VKR_UI_ICON_RESET};
-    snprintf(rows[count++].text, sizeof(rows[0].text),
-             "Back to the starting hour");
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Back to the starting hour");
     break;
   }
   case VIEW_POPUP_SPEED: {
     const float32_t speed = state->camera_speed;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text), "Camera speed  %.3g u/s",
-             (double)speed);
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Camera speed  %.3g u/s", (double)speed);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
                               .value = vkr_sample_camera_speed_fraction(speed),
                               .minimum = 0.0f,
                               .maximum = 1.0f};
     const float32_t sensitivity = state->camera_sensitivity;
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
-    snprintf(rows[count++].text, sizeof(rows[0].text),
-             "Mouse sensitivity  %.1f", (double)sensitivity);
+    string_format(rows[count++].text, sizeof(rows[0].text),
+                  "Mouse sensitivity  %.1f", (double)sensitivity);
     rows[count++] = (ViewRow){.kind = VIEW_ROW_SLIDER,
                               .value = sensitivity,
                               .minimum = VIEW_SENSITIVITY_MIN,
@@ -724,7 +737,7 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     if (frame->graphics) {
       ViewRow *invert = &rows[count++];
       *invert = (ViewRow){.checked = frame->graphics->settings.invert_mouse_y};
-      snprintf(invert->text, sizeof(invert->text), "Invert mouse Y");
+      string_format(invert->text, sizeof(invert->text), "Invert mouse Y");
     }
     break;
   }
@@ -758,10 +771,10 @@ static void view_popup_layout(VkrEditorUi *editor,
   for (uint32_t i = 0; i < count; ++i) {
     height += view_row_height(&rows[i]);
     if (rows[i].kind == VIEW_ROW_OPTION) {
-      const float32_t text =
-          ceilf(vkr_editor_text_size(frame->ui, VKR_FONT_HANDLE_INVALID,
-                                     rows[i].text, vkr_ui_theme()->font_body)
-                    .x);
+      const float32_t text = vkr_ceil_f32(
+          vkr_editor_text_size(frame->ui, VKR_FONT_HANDLE_INVALID, rows[i].text,
+                               vkr_ui_theme()->font_body)
+              .x);
       width = Max(width, text + 10.0f + 16.0f + 14.0f + 12.0f);
     }
   }
@@ -818,7 +831,7 @@ static bool8_t brush_plane_point(const VkrSampleUiFrame *frame, Vec2 pixel,
   Vec3 origin = {0};
   Vec3 direction = {0};
   if (!viewport_ray(frame, pixel, &origin, &direction) ||
-      fabsf(direction.y) < 1.0e-5f) {
+      vkr_abs_f32(direction.y) < 1.0e-5f) {
     return false_v;
   }
   const float32_t t = (height - origin.y) / direction.y;
@@ -830,8 +843,8 @@ static bool8_t brush_plane_point(const VkrSampleUiFrame *frame, Vec2 pixel,
     const float32_t cell = frame->view_state.grid_spacing > 0.0f
                                ? frame->view_state.grid_spacing
                                : 1.0f;
-    point.x = roundf(point.x / cell) * cell;
-    point.z = roundf(point.z / cell) * cell;
+    point.x = vkr_round_f32(point.x / cell) * cell;
+    point.z = vkr_round_f32(point.z / cell) * cell;
   }
   point.y = height;
   *out = point;
@@ -922,7 +935,7 @@ static void brush_draw_depth(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                  frame,
                  (Vec2){image.x + image.z * 0.5f, image.y + image.w * 0.5f},
                  0.5f, &focus)) {
-    *out_lo = roundf(focus.elements[axis] / step) * step;
+    *out_lo = vkr_round_f32(focus.elements[axis] / step) * step;
   }
   *out_hi = *out_lo + 1.0f;
 }
@@ -945,7 +958,7 @@ static void viewport_brush_draw_flat(VkrEditorUi *editor,
   Vec3 point = origin;
   for (uint32_t a = 0; a < 3u; ++a) {
     if (a != axis) {
-      point.elements[a] = roundf(point.elements[a] / step) * step;
+      point.elements[a] = vkr_round_f32(point.elements[a] / step) * step;
     }
   }
   if (!editor->brush_dragging) {
@@ -982,8 +995,8 @@ static void viewport_brush_draw_flat(VkrEditorUi *editor,
   }
   editor->brush_dragging = false_v;
   const Vec3 size = vec3_sub(editor->brush_draw_end, editor->brush_draw_start);
-  if (fabsf(size.x) < 1.0e-3f || fabsf(size.y) < 1.0e-3f ||
-      fabsf(size.z) < 1.0e-3f) {
+  if (vkr_abs_f32(size.x) < 1.0e-3f || vkr_abs_f32(size.y) < 1.0e-3f ||
+      vkr_abs_f32(size.z) < 1.0e-3f) {
     return;
   }
   viewport_brush_create(editor, frame);
@@ -1052,7 +1065,8 @@ static void viewport_brush_draw(VkrEditorUi *editor,
   if (editor->brush_raising) {
     if (on_axis) {
       editor->brush_draw_height = Max(
-          step, roundf((along - editor->brush_draw_raise_start + step) / step) *
+          step, vkr_round_f32((along - editor->brush_draw_raise_start + step) /
+                              step) *
                     step);
       /* The top levels with nearby brushes' tops and bottoms. */
       const float32_t top = a.y + editor->brush_draw_height;
@@ -1105,8 +1119,8 @@ static void viewport_brush_draw(VkrEditorUi *editor,
     return;
   }
   editor->brush_dragging = false_v;
-  if (fabsf(editor->brush_draw_end.x - a.x) < 1.0e-3f ||
-      fabsf(editor->brush_draw_end.z - a.z) < 1.0e-3f) {
+  if (vkr_abs_f32(editor->brush_draw_end.x - a.x) < 1.0e-3f ||
+      vkr_abs_f32(editor->brush_draw_end.z - a.z) < 1.0e-3f) {
     return;
   }
   /* The base is set; the box rises from one step with the pointer. */
@@ -1130,19 +1144,20 @@ void vkr_editor_brush_style(const VkrEditorUi *editor, char *out,
                             uint64_t size) {
   const uint32_t role = editor->brush_role;
   int written =
-      snprintf(out, size, "\"role\":\"%s\"", vkr_editor_brush_roles[role]);
+      string_format(out, size, "\"role\":\"%s\"", vkr_editor_brush_roles[role]);
   if (editor->brush_surface != VKR_SURFACE_NONE &&
       (uint32_t)editor->brush_surface < VKR_SURFACE_COUNT && written > 0 &&
       (uint64_t)written < size) {
-    written +=
-        snprintf(out + written, size - (uint64_t)written, ",\"surface\":\"%s\"",
-                 vkr_surface_names[editor->brush_surface]);
+    written += string_format(out + written, size - (uint64_t)written,
+                             ",\"surface\":\"%s\"",
+                             vkr_surface_names[editor->brush_surface]);
   }
   if (editor->brush_mark != VKR_SURFACE_MARK_NONE &&
       (uint32_t)editor->brush_mark < VKR_SURFACE_MARK_COUNT && written > 0 &&
       (uint64_t)written < size) {
-    (void)snprintf(out + written, size - (uint64_t)written, ",\"mark\":\"%s\"",
-                   vkr_surface_mark_names[editor->brush_mark]);
+    (void)string_format(out + written, size - (uint64_t)written,
+                        ",\"mark\":\"%s\"",
+                        vkr_surface_mark_names[editor->brush_mark]);
   }
 }
 
@@ -1208,11 +1223,11 @@ static bool8_t viewport_target(const VkrSampleUiFrame *frame, char *out,
     return false_v;
   }
   if (container == VKR_SCENE_WORLD_ROOT_ID) {
-    snprintf(out, size, "\"world\"");
+    string_format(out, size, "\"world\"");
   } else if (container == 0u) {
-    snprintf(out, size, "\"primary\"");
+    string_format(out, size, "\"primary\"");
   } else {
-    snprintf(out, size, "%u", (unsigned)container);
+    string_format(out, size, "%u", (unsigned)container);
   }
   return true_v;
 }
@@ -1246,11 +1261,11 @@ static void viewport_brush_create(VkrEditorUi *editor,
   char style[160];
   vkr_editor_brush_style(editor, style, sizeof(style));
   char line[480];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
-           "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-           "%s,\"grid\":0,\"review\":false,\"select\":true}}",
-           lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, target, style);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"draw\",\"op\":\"brush.box\",\"args\":{"
+                "\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
+                "%s,\"grid\":0,\"review\":false,\"select\":true}}",
+                lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, target, style);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -1293,7 +1308,8 @@ static bool8_t face_axis_closest(Vec3 point, Vec3 axis, Vec3 origin,
   const Vec3 on_axis = vec3_add(point, vec3_scale(axis, s));
   const Vec3 on_ray = vec3_add(origin, vec3_scale(direction, t));
   *out_s = s;
-  *out_gap = t > 0.0f ? vec3_length(vec3_sub(on_axis, on_ray)) : INFINITY;
+  *out_gap =
+      t > 0.0f ? vec3_length(vec3_sub(on_axis, on_ray)) : VKR_FLOAT_INFINITY;
   return true_v;
 }
 
@@ -1364,10 +1380,10 @@ static void viewport_face_handles(VkrEditorUi *editor,
     }
   } else {
     editor->face_handle_hot = -1;
-    float32_t best = INFINITY;
+    float32_t best = VKR_FLOAT_INFINITY;
     for (uint32_t i = 0; has_ray && i < editor->face_handle_count; ++i) {
       float32_t s = 0.0f;
-      float32_t gap = INFINITY;
+      float32_t gap = VKR_FLOAT_INFINITY;
       if (face_axis_closest(editor->face_handle_centers[i],
                             editor->face_handle_normals[i], mouse_origin,
                             mouse_direction, &s, &gap) &&
@@ -1390,7 +1406,7 @@ static void viewport_face_handles(VkrEditorUi *editor,
     return;
   }
   float32_t s = 0.0f;
-  float32_t gap = INFINITY;
+  float32_t gap = VKR_FLOAT_INFINITY;
   const bool8_t on_axis =
       has_ray && face_axis_closest(editor->face_handle_centers[hot],
                                    editor->face_handle_normals[hot],
@@ -1411,7 +1427,7 @@ static void viewport_face_handles(VkrEditorUi *editor,
                                     : 1.0f);
   if (on_axis) {
     editor->face_drag_distance =
-        roundf((s - editor->face_drag_start) / step) * step;
+        vkr_round_f32((s - editor->face_drag_start) / step) * step;
   }
   if (input_key_just_pressed(frame->input, KEY_ESCAPE)) {
     editor->face_dragging = false_v;
@@ -1421,17 +1437,17 @@ static void viewport_face_handles(VkrEditorUi *editor,
     return;
   }
   editor->face_dragging = false_v;
-  if (fabsf(editor->face_drag_distance) < 1.0e-3f) {
+  if (vkr_abs_f32(editor->face_drag_distance) < 1.0e-3f) {
     return;
   }
   const VkrEntityId face = editor->face_drag_face;
   char line[256];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
-           "\"args\":{\"face\":\"%u:%u:%u\",\"distance\":%g,"
-           "\"review\":false}}",
-           (unsigned)face.parts.world, (unsigned)face.parts.index,
-           (unsigned)face.parts.generation, editor->face_drag_distance);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
+                "\"args\":{\"face\":\"%u:%u:%u\",\"distance\":%g,"
+                "\"review\":false}}",
+                (unsigned)face.parts.world, (unsigned)face.parts.index,
+                (unsigned)face.parts.generation, editor->face_drag_distance);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -1439,8 +1455,8 @@ static void viewport_face_handles(VkrEditorUi *editor,
 static Vec3 nudge_axis(Vec3 direction, bool8_t level) {
   uint32_t best = 0u;
   for (uint32_t axis = 1u; axis < 3u; ++axis) {
-    if ((!level || axis != 1u) &&
-        fabsf(direction.elements[axis]) > fabsf(direction.elements[best])) {
+    if ((!level || axis != 1u) && vkr_abs_f32(direction.elements[axis]) >
+                                      vkr_abs_f32(direction.elements[best])) {
       best = axis;
     }
   }
@@ -1526,27 +1542,28 @@ static void viewport_nudge(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     }
   }
   char line[8192];
-  int32_t length = snprintf(line, sizeof(line),
-                            "{\"v\":1,\"id\":\"nudge\",\"op\":\"batch\","
-                            "\"args\":{\"label\":\"Nudge\",\"review\":false,"
-                            "\"ops\":[");
+  int32_t length =
+      string_format(line, sizeof(line),
+                    "{\"v\":1,\"id\":\"nudge\",\"op\":\"batch\","
+                    "\"args\":{\"label\":\"Nudge\",\"review\":false,"
+                    "\"ops\":[");
   uint32_t moved = 0u;
   for (uint32_t i = 0; i < count; ++i) {
     if (vkr_scene_get_typed(scene, selection[i], &vkr_scene_brush_face_type) ||
         nudge_carried(scene, selection[i], selection, count)) {
       continue;
     }
-    length +=
-        snprintf(line + length, sizeof(line) - (size_t)length,
-                 "%s{\"op\":\"entity.move\",\"args\":{\"entity\":\"%u:%u:%u\","
-                 "\"offset\":[%g,%g,%g]}}",
-                 moved ? "," : "", (unsigned)selection[i].parts.world,
-                 (unsigned)selection[i].parts.index,
-                 (unsigned)selection[i].parts.generation, (double)offset.x,
-                 (double)offset.y, (double)offset.z);
+    length += string_format(
+        line + length, sizeof(line) - (size_t)length,
+        "%s{\"op\":\"entity.move\",\"args\":{\"entity\":\"%u:%u:%u\","
+        "\"offset\":[%g,%g,%g]}}",
+        moved ? "," : "", (unsigned)selection[i].parts.world,
+        (unsigned)selection[i].parts.index,
+        (unsigned)selection[i].parts.generation, (double)offset.x,
+        (double)offset.y, (double)offset.z);
     moved++;
   }
-  snprintf(line + length, sizeof(line) - (size_t)length, "]}}");
+  string_format(line + length, sizeof(line) - (size_t)length, "]}}");
   if (moved) {
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
@@ -1682,12 +1699,13 @@ static void viewport_face_tools(VkrEditorUi *editor,
     const float32_t step =
         (modifiers & VKR_INPUT_MOD_SHIFT) != 0 ? 1.0f : 0.25f;
     char line[256];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
-             "\"args\":{\"face\":\"%u:%u:%u\",\"distance\":%g,"
-             "\"review\":false}}",
-             (unsigned)selected.parts.world, (unsigned)selected.parts.index,
-             (unsigned)selected.parts.generation, i == 0u ? step : -step);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"face\",\"op\":\"brush.move_face\","
+                  "\"args\":{\"face\":\"%u:%u:%u\",\"distance\":%g,"
+                  "\"review\":false}}",
+                  (unsigned)selected.parts.world,
+                  (unsigned)selected.parts.index,
+                  (unsigned)selected.parts.generation, i == 0u ? step : -step);
     (void)vkr_editor_agent_submit(editor->agent, line);
     ui->capture.keyboard = true_v;
   }
@@ -1705,8 +1723,9 @@ static void viewport_plane_missed(VkrEditorUi *editor,
   }
   Vec3 origin = {0};
   Vec3 direction = {0};
-  const bool8_t level = viewport_ray(frame, mouse, &origin, &direction) &&
-                        fabsf(origin.y - frame->view_state.grid_height) < 0.05f;
+  const bool8_t level =
+      viewport_ray(frame, mouse, &origin, &direction) &&
+      vkr_abs_f32(origin.y - frame->view_state.grid_height) < 0.05f;
   vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
                    level ? "The camera is level with the ground grid; raise "
                            "it (hold the right button and press E) to click "
@@ -1762,8 +1781,9 @@ static SceneBlockout viewport_stairs_shape(const VkrEditorUi *editor, Vec3 from,
         Max(reach,
             shape.stairs == SCENE_STAIRS_STRAIGHT ? 0.5f : shape.width + 1.0f);
   }
-  *out_yaw =
-      vec3_length(run) > 1.0e-4f ? atan2f(run.x, run.z) * 57.2957795f : 0.0f;
+  *out_yaw = vec3_length(run) > 1.0e-4f
+                 ? vkr_atan2_f32(run.x, run.z) * 57.2957795f
+                 : 0.0f;
   return shape;
 }
 
@@ -1856,12 +1876,13 @@ static void viewport_path_tool(VkrEditorUi *editor,
     }
     const Vec3 at = editor->path_points[0];
     char line[4608];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"path\",\"op\":\"blockout.create\",\"args\":{"
-             "\"shape\":\"stairs\",\"position\":[%g,%g,%g],\"yaw\":%g,"
-             "\"values\":%s,\"container\":%s,%s,\"grid\":0,"
-             "\"review\":false,\"select\":true}}",
-             at.x, at.y, at.z, yaw, values, target, style);
+    string_format(
+        line, sizeof(line),
+        "{\"v\":1,\"id\":\"path\",\"op\":\"blockout.create\",\"args\":{"
+        "\"shape\":\"stairs\",\"position\":[%g,%g,%g],\"yaw\":%g,"
+        "\"values\":%s,\"container\":%s,%s,\"grid\":0,"
+        "\"review\":false,\"select\":true}}",
+        at.x, at.y, at.z, yaw, values, target, style);
     (void)vkr_editor_agent_submit(editor->agent, line);
     return;
   }
@@ -1908,20 +1929,20 @@ static void viewport_path_tool(VkrEditorUi *editor,
     return;
   }
   char line[2048];
-  int used = snprintf(line, sizeof(line),
-                      "{\"v\":1,\"id\":\"path\",\"op\":"
-                      "\"blockout.corridor\",\"args\":{\"points\":[");
+  int used = string_format(line, sizeof(line),
+                           "{\"v\":1,\"id\":\"path\",\"op\":"
+                           "\"blockout.corridor\",\"args\":{\"points\":[");
   for (uint32_t i = 0;
        i < editor->path_count && used > 0 && (size_t)used < sizeof(line); ++i) {
     const Vec3 at = editor->path_points[i];
-    used += snprintf(line + used, sizeof(line) - (size_t)used, "%s[%g,%g,%g]",
-                     i ? "," : "", at.x, at.y, at.z);
+    used += string_format(line + used, sizeof(line) - (size_t)used,
+                          "%s[%g,%g,%g]", i ? "," : "", at.x, at.y, at.z);
   }
   if (used > 0 && (size_t)used < sizeof(line)) {
-    snprintf(line + used, sizeof(line) - (size_t)used,
-             "],\"curved\":%s,\"container\":%s,\"grid\":0,"
-             "\"review\":false,\"select\":true}}",
-             editor->corridor_curved ? "true" : "false", target);
+    string_format(line + used, sizeof(line) - (size_t)used,
+                  "],\"curved\":%s,\"container\":%s,\"grid\":0,"
+                  "\"review\":false,\"select\":true}}",
+                  editor->corridor_curved ? "true" : "false", target);
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   editor->path_count = 0u;
@@ -1953,7 +1974,7 @@ static bool8_t viewport_surface_point(const VkrSampleUiFrame *frame, Vec2 pixel,
                                ? frame->view_state.grid_spacing
                                : 1.0f;
     for (uint32_t a = 0; a < 3u; ++a) {
-      point.elements[a] = roundf(point.elements[a] / cell) * cell;
+      point.elements[a] = vkr_round_f32(point.elements[a] / cell) * cell;
     }
   }
   *out = point;
@@ -2115,16 +2136,16 @@ static void viewport_decal_tool(VkrEditorUi *editor,
   char target[48];
   if (model) {
     const VkrEntityId subject = editor->model.subject;
-    snprintf(target, sizeof(target), "\"parent\":\"%u:%u:%u\"",
-             (unsigned)subject.parts.world, (unsigned)subject.parts.index,
-             (unsigned)subject.parts.generation);
+    string_format(target, sizeof(target), "\"parent\":\"%u:%u:%u\"",
+                  (unsigned)subject.parts.world, (unsigned)subject.parts.index,
+                  (unsigned)subject.parts.generation);
   } else {
     char container[16];
     if (!viewport_target(frame, container, sizeof(container))) {
       return;
     }
-    snprintf(target, sizeof(target), "\"container\":%s,\"select\":true",
-             container);
+    string_format(target, sizeof(target), "\"container\":%s,\"select\":true",
+                  container);
   }
   /* Faces, meshes and decals take material files, not graphs. */
   const char *open = vkr_editor_material_open_path(editor->materials);
@@ -2134,14 +2155,15 @@ static void viewport_decal_tool(VkrEditorUi *editor,
   const bool8_t material = kind == VKR_EDITOR_MATERIAL_INSTANCE ||
                            kind == VKR_EDITOR_MATERIAL_DEFINITION;
   char line[768];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"decal\",\"op\":\"decal.place\",\"args\":{"
-           "\"position\":[%g,%g,%g],\"normal\":[%g,%g,%g],"
-           "\"facing\":[%g,%g,%g],\"size\":%g,\"depth\":%g,\"angle\":%g,"
-           "\"material\":\"%s\",%s,\"review\":false}}",
-           point.x, point.y, point.z, normal.x, normal.y, normal.z, direction.x,
-           direction.y, direction.z, editor->decal_size, editor->decal_depth,
-           editor->decal_angle, material ? open : "", target);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"decal\",\"op\":\"decal.place\",\"args\":{"
+                "\"position\":[%g,%g,%g],\"normal\":[%g,%g,%g],"
+                "\"facing\":[%g,%g,%g],\"size\":%g,\"depth\":%g,\"angle\":%g,"
+                "\"material\":\"%s\",%s,\"review\":false}}",
+                point.x, point.y, point.z, normal.x, normal.y, normal.z,
+                direction.x, direction.y, direction.z, editor->decal_size,
+                editor->decal_depth, editor->decal_angle, material ? open : "",
+                target);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -2186,11 +2208,11 @@ static void viewport_scatter_send(VkrEditorUi *editor,
                            scatter && !scatter->render_surfaces &&
                            !editor->scatter_erasing;
   int32_t written =
-      snprintf(line, capacity,
-               "{\"v\":1,\"id\":\"scatter\",\"op\":\"batch\",\"args\":{"
-               "\"review\":false,\"ops\":[");
+      string_format(line, capacity,
+                    "{\"v\":1,\"id\":\"scatter\",\"op\":\"batch\",\"args\":{"
+                    "\"review\":false,\"ops\":[");
   if (surfaces && written > 0) {
-    written += snprintf(
+    written += string_format(
         line + written, capacity - (uint64_t)written,
         "{\"op\":\"component.set\",\"args\":{\"entity\":\"%u:%u:%u\","
         "\"type\":\"scatter\",\"values\":{\"render_surfaces\":true}}},",
@@ -2214,31 +2236,31 @@ static void viewport_scatter_send(VkrEditorUi *editor,
       vkr_editor_entity_world_box(subject_scene, editor->model.subject,
                                   geometry, &lo, &hi)) {
     const float32_t margin = 0.05f;
-    snprintf(within, sizeof(within),
-             ",\"within\":{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g]}",
-             lo.x - margin, lo.y - margin, lo.z - margin, hi.x + margin,
-             hi.y + margin, hi.z + margin);
+    string_format(within, sizeof(within),
+                  ",\"within\":{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g]}",
+                  lo.x - margin, lo.y - margin, lo.z - margin, hi.x + margin,
+                  hi.y + margin, hi.z + margin);
   }
   if (written > 0) {
-    written +=
-        snprintf(line + written, capacity - (uint64_t)written,
-                 "{\"op\":\"scatter.paint\",\"args\":{"
-                 "\"scatter\":\"%u:%u:%u\",\"radius\":%g,\"density\":%g,"
-                 "\"spacing\":%g,\"erase\":%s%s,\"points\":[",
-                 (unsigned)target.parts.world, (unsigned)target.parts.index,
-                 (unsigned)target.parts.generation, editor->scatter_radius,
-                 editor->scatter_density, editor->scatter_spacing,
-                 editor->scatter_erasing ? "true" : "false", within);
+    written += string_format(
+        line + written, capacity - (uint64_t)written,
+        "{\"op\":\"scatter.paint\",\"args\":{"
+        "\"scatter\":\"%u:%u:%u\",\"radius\":%g,\"density\":%g,"
+        "\"spacing\":%g,\"erase\":%s%s,\"points\":[",
+        (unsigned)target.parts.world, (unsigned)target.parts.index,
+        (unsigned)target.parts.generation, editor->scatter_radius,
+        editor->scatter_density, editor->scatter_spacing,
+        editor->scatter_erasing ? "true" : "false", within);
   }
   for (uint32_t i = 0; i < editor->scatter_dab_count && written > 0 &&
                        (uint64_t)written < capacity;
        ++i) {
     const Vec3 dab = editor->scatter_dabs[i];
-    written += snprintf(line + written, capacity - (uint64_t)written,
-                        "%s[%g,%g,%g]", i ? "," : "", dab.x, dab.y, dab.z);
+    written += string_format(line + written, capacity - (uint64_t)written,
+                             "%s[%g,%g,%g]", i ? "," : "", dab.x, dab.y, dab.z);
   }
   if (written > 0 && (uint64_t)written + 8u < capacity) {
-    (void)snprintf(line + written, capacity - (uint64_t)written, "]}}]}}");
+    (void)string_format(line + written, capacity - (uint64_t)written, "]}}]}}");
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
 }
@@ -2475,9 +2497,10 @@ static void viewport_tool_hint(const VkrEditorUi *editor,
   chip.icon = VKR_UI_ICON_INFO_FILL;
   chip.icon_size_pt = 13.0f;
   chip.icon_color = theme->accent_hover;
-  vkr_ui_label(ui, string8_lit("viewport.tool_hint"),
-               string8_create_from_cstr((const uint8_t *)hint, strlen(hint)),
-               &chip);
+  vkr_ui_label(
+      ui, string8_lit("viewport.tool_hint"),
+      string8_create_from_cstr((const uint8_t *)hint, string_length(hint)),
+      &chip);
 }
 
 void vkr_editor_viewport_update(VkrEditorUi *editor,
@@ -2790,26 +2813,26 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   if (popup == VIEW_POPUP_SNAP) {
     /* Rotation in 15 degree steps, offset in centimetres. */
     if (index == VKR_EDITOR_SNAP_COUNT + 8u)
-      editor->placement.yaw_degrees = roundf(value / 15.0f) * 15.0f;
+      editor->placement.yaw_degrees = vkr_round_f32(value / 15.0f) * 15.0f;
     else
-      editor->placement.offset = roundf(value * 100.0f) / 100.0f;
+      editor->placement.offset = vkr_round_f32(value * 100.0f) / 100.0f;
     return;
   }
   if (popup == VIEW_POPUP_SHOW) {
     /* The icon distance, the Show menu's one slider, in 5 m steps. */
     editor->labels_max_distance =
-        vkr_editor_label_distance(roundf(value / 5.0f) * 5.0f);
+        vkr_editor_label_distance(vkr_round_f32(value / 5.0f) * 5.0f);
     return;
   }
   if (popup == VIEW_POPUP_TIME) {
     /* Whole minutes. */
-    vkr_editor_lighting_scrub(frame, roundf(value * 60.0f) / 60.0f);
+    vkr_editor_lighting_scrub(frame, vkr_round_f32(value * 60.0f) / 60.0f);
     return;
   }
   if (popup == VIEW_POPUP_SPEED) {
     /* Rows: speed header and slider, then sensitivity header and slider. */
     if (index == 3u)
-      next->camera_sensitivity = roundf(value * 10.0f) / 10.0f;
+      next->camera_sensitivity = vkr_round_f32(value * 10.0f) / 10.0f;
     else
       next->camera_speed = vkr_sample_camera_speed_value(value);
     return;
@@ -2818,7 +2841,7 @@ static void view_popup_slide(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     return;
   }
   /* Whole percents read cleanly beside the slider. */
-  editor->view_scale_draft = roundf(value * 100.0f) / 100.0f;
+  editor->view_scale_draft = vkr_round_f32(value * 100.0f) / 100.0f;
   if (done) {
     VkrGraphicsSettings settings = frame->graphics->settings;
     settings.render_scale =
@@ -2944,7 +2967,8 @@ static void view_time_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   const float64_t hour = frame->scene->clock.hour;
   char text[8];
   vkr_editor_lighting_hour_text(hour, text);
-  const float64_t gap = fabs(fmod(hour - (float64_t)authored->hour, 24.0));
+  const float64_t gap =
+      vkr_abs_f64(vkr_fmod_f64(hour - (float64_t)authored->hour, 24.0));
   (void)vkr_ui_push_id_label(ui, string8_lit("time"));
   const VkrUiId chip_id =
       vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("chip"));
@@ -2958,7 +2982,8 @@ static void view_time_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                   VIEW_POPUP_TIME);
   if (!disabled && ui->mouse_wheel && ui->hot_id == chip_id) {
     const float64_t step = 0.25 * (float64_t)ui->mouse_wheel;
-    vkr_editor_lighting_scrub(frame, floor(hour * 4.0 + 0.5) / 4.0 + step);
+    vkr_editor_lighting_scrub(frame,
+                              vkr_floor_f64(hour * 4.0 + 0.5) / 4.0 + step);
   }
 }
 
@@ -3184,13 +3209,14 @@ static bool8_t grid_plane_point(const VkrSampleUiFrame *frame, Vec2 ndc,
   const float64_t x = ndc.x * origin.w - origin.x;
   const float64_t y = ndc.y * origin.w - origin.y;
   const float64_t determinant = a * d - b * c;
-  if (!isfinite(determinant) ||
-      fabs(determinant) <= 1.0e-8 * (fabs(a * d) + fabs(b * c))) {
+  if (!vkr_is_finite_f64(determinant) ||
+      vkr_abs_f64(determinant) <=
+          1.0e-8 * (vkr_abs_f64(a * d) + vkr_abs_f64(b * c))) {
     return false_v;
   }
   *point = (Vec2){(float32_t)((d * x - b * y) / determinant),
                   (float32_t)((a * y - c * x) / determinant)};
-  return isfinite(point->x) && isfinite(point->y);
+  return vkr_is_finite_f32(point->x) && vkr_is_finite_f32(point->y);
 }
 
 static Vec3 grid_world(Vec2 point, uint32_t plane) {
@@ -3207,27 +3233,27 @@ bool8_t vkr_editor_viewport_pixel(const VkrSampleUiFrame *frame, Vec3 world,
                                   Vec2 *out) {
   const Vec4 clip =
       mat4_mul_vec4(frame->view_projection, vec3_to_vec4(world, 1.0f));
-  if (!isfinite(clip.w) || clip.w <= 1.0e-6f) {
+  if (!vkr_is_finite_f32(clip.w) || clip.w <= 1.0e-6f) {
     return false_v;
   }
   const Vec4 image = frame->mapping.image_rect_px;
   *out = (Vec2){image.x + (clip.x / clip.w * 0.5f + 0.5f) * image.z,
                 image.y + (clip.y / clip.w * 0.5f + 0.5f) * image.w};
-  return isfinite(out->x) && isfinite(out->y);
+  return vkr_is_finite_f32(out->x) && vkr_is_finite_f32(out->y);
 }
 
 static bool8_t grid_screen(const VkrSampleUiFrame *frame, Vec3 world,
                            Vec2 *point) {
   const Vec4 clip =
       mat4_mul_vec4(frame->view_projection, vec3_to_vec4(world, 1));
-  if (!isfinite(clip.w) || clip.w <= 0.000001f) {
+  if (!vkr_is_finite_f32(clip.w) || clip.w <= 0.000001f) {
     return false_v;
   }
   const Vec4 image = frame->mapping.image_rect_px;
   const float32_t scale = frame->ui->content_scale;
   *point = (Vec2){(clip.x / clip.w * 0.5f + 0.5f) * image.z / scale,
                   (clip.y / clip.w * 0.5f + 0.5f) * image.w / scale};
-  return isfinite(point->x) && isfinite(point->y);
+  return vkr_is_finite_f32(point->x) && vkr_is_finite_f32(point->y);
 }
 
 static float32_t grid_clip_distance(Vec4 point, uint32_t plane) {
@@ -3254,7 +3280,8 @@ static bool8_t grid_project_line(const VkrSampleUiFrame *frame, Vec3 from,
   for (uint32_t plane = 0; plane < 6; ++plane) {
     const float32_t da = grid_clip_distance(a, plane);
     const float32_t db = grid_clip_distance(b, plane);
-    if (!isfinite(da) || !isfinite(db) || (da < 0 && db < 0)) {
+    if (!vkr_is_finite_f32(da) || !vkr_is_finite_f32(db) ||
+        (da < 0 && db < 0)) {
       return false_v;
     }
     if ((da < 0) != (db < 0)) {
@@ -3283,7 +3310,7 @@ static bool8_t grid_project_line(const VkrSampleUiFrame *frame, Vec3 from,
  * has exactly one label and denser grids simply use longer labels. */
 static void grid_label_text(char text[24], uint32_t ordinal, bool8_t number) {
   if (number) {
-    snprintf(text, 24, "%u", ordinal);
+    string_format(text, 24, "%u", ordinal);
     return;
   }
   char reverse[16];
@@ -3306,7 +3333,7 @@ static Vec2 grid_label_size(const VkrEditorUi *editor, const VkrUiSystem *ui,
   grid_label_text(text, Max(1u, ordinal), number);
   const Vec2 measured =
       vkr_editor_text_size(ui, editor->heading_font, text, 10);
-  return (Vec2){ceilf(measured.x) + 8, ceilf(measured.y) + 4};
+  return (Vec2){vkr_ceil_f32(measured.x) + 8, vkr_ceil_f32(measured.y) + 4};
 }
 
 /* Places a label where its cell-center line meets the top or right image edge.
@@ -3331,7 +3358,7 @@ static bool8_t grid_label_rect(const VkrEditorUi *editor,
   const Vec2 reserved = editor->grid_reserved_pt;
   const Vec2 delta = {b.x - a.x, b.y - a.y};
   const float32_t along = line->top_label ? delta.y : delta.x;
-  if (fabsf(along) <= 0.0001f) {
+  if (vkr_abs_f32(along) <= 0.0001f) {
     return false_v;
   }
   const float32_t t =
@@ -3375,7 +3402,7 @@ static bool8_t grid_eye(const VkrSampleUiFrame *frame, Vec3 *eye) {
   const float64_t det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
                         a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
                         a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-  if (!isfinite(det) || fabs(det) < 1e-12) {
+  if (!vkr_is_finite_f64(det) || vkr_abs_f64(det) < 1e-12) {
     return false_v;
   }
   float64_t solution[3];
@@ -3396,7 +3423,8 @@ static bool8_t grid_eye(const VkrSampleUiFrame *frame, Vec3 *eye) {
   }
   *eye = vec3_new((float32_t)solution[0], (float32_t)solution[1],
                   (float32_t)solution[2]);
-  return isfinite(eye->x) && isfinite(eye->y) && isfinite(eye->z);
+  return vkr_is_finite_f32(eye->x) && vkr_is_finite_f32(eye->y) &&
+         vkr_is_finite_f32(eye->z);
 }
 
 /* The world point under a viewport pixel at clip depth `depth`. */
@@ -3410,11 +3438,12 @@ static bool8_t viewport_unproject(const VkrSampleUiFrame *frame, Vec2 pixel,
   const Vec4 ndc = {(pixel.x - image.x) / image.z * 2.0f - 1.0f,
                     (pixel.y - image.y) / image.w * 2.0f - 1.0f, depth, 1.0f};
   const Vec4 world = mat4_mul_vec4(mat4_inverse(frame->view_projection), ndc);
-  if (!isfinite(world.w) || fabsf(world.w) < 1e-9f) {
+  if (!vkr_is_finite_f32(world.w) || vkr_abs_f32(world.w) < 1e-9f) {
     return false_v;
   }
   *out = vec3_new(world.x / world.w, world.y / world.w, world.z / world.w);
-  return isfinite(out->x) && isfinite(out->y) && isfinite(out->z);
+  return vkr_is_finite_f32(out->x) && vkr_is_finite_f32(out->y) &&
+         vkr_is_finite_f32(out->z);
 }
 
 /* The ray under a viewport pixel: perspective rays leave the eye;
@@ -3438,7 +3467,7 @@ static bool8_t viewport_ray(const VkrSampleUiFrame *frame, Vec2 pixel,
   }
   const Vec3 ray = vec3_sub(target, *origin);
   const float32_t length = vec3_length(ray);
-  if (!isfinite(length) || length < 1e-6f) {
+  if (!vkr_is_finite_f32(length) || length < 1e-6f) {
     return false_v;
   }
   *direction = vec3_scale(ray, 1.0f / length);
@@ -3454,10 +3483,11 @@ static VkrQuat place_tilt(Vec3 from, Vec3 to) {
   Vec3 axis = vec3_cross(from, to);
   if (cosine <= -0.9999f) {
     /* Opposite vectors turn about any axis perpendicular to them. */
-    axis = vec3_cross(from, fabsf(from.x) < 0.9f ? vec3_new(1.0f, 0.0f, 0.0f)
-                                                 : vec3_new(0.0f, 0.0f, 1.0f));
+    axis = vec3_cross(from, vkr_abs_f32(from.x) < 0.9f
+                                ? vec3_new(1.0f, 0.0f, 0.0f)
+                                : vec3_new(0.0f, 0.0f, 1.0f));
   }
-  return vkr_quat_from_axis_angle(vec3_normalize(axis), acosf(cosine));
+  return vkr_quat_from_axis_angle(vec3_normalize(axis), vkr_acos_f32(cosine));
 }
 
 /* Rotation turning +Y onto `normal`, then `yaw` radians about it. */
@@ -3473,7 +3503,7 @@ VkrQuat vkr_editor_decal_orientation(Vec3 normal, Vec3 facing,
                                                : vec3_new(0.0f, 1.0f, 0.0f);
   /* The image's top (local +Z) points up a wall; on a floor or ceiling it
      points along `facing`, else -Z. */
-  Vec3 top = fabsf(n.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f) : facing;
+  Vec3 top = vkr_abs_f32(n.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f) : facing;
   top = vec3_sub(top, vec3_scale(n, vec3_dot(top, n)));
   if (vec3_length(top) < 1.0e-3f) {
     top = vec3_sub(vec3_new(0.0f, 0.0f, -1.0f),
@@ -3510,7 +3540,7 @@ static float32_t place_exit(const VkrScene *scene, VkrEntityId entity,
   VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
   const uint32_t count =
       vkr_editor_brush_world_planes(scene, entity, planes, ArrayCount(planes));
-  float32_t exit = INFINITY;
+  float32_t exit = VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < count; ++i) {
     const float32_t toward = vec3_dot(planes[i].normal, direction);
     if (toward > 1.0e-6f) {
@@ -3520,25 +3550,25 @@ static float32_t place_exit(const VkrScene *scene, VkrEntityId entity,
     }
   }
   if (count) {
-    return isfinite(exit) ? exit : -1.0f;
+    return vkr_is_finite_f32(exit) ? exit : -1.0f;
   }
-  VkrBrushGeometry *scratch = malloc(sizeof(*scratch));
+  VkrBrushGeometry *scratch = vkr_heap_alloc(sizeof(*scratch));
   Vec3 lo = {0};
   Vec3 hi = {0};
   const bool8_t boxed =
       scratch && vkr_editor_entity_world_box(scene, entity, scratch, &lo, &hi);
-  free(scratch);
+  vkr_heap_free(scratch);
   if (!boxed) {
     return -1.0f;
   }
   for (uint32_t axis = 0; axis < 3u; ++axis) {
     const float32_t d = direction.elements[axis];
-    if (fabsf(d) > 1.0e-6f) {
+    if (vkr_abs_f32(d) > 1.0e-6f) {
       const float32_t side = d > 0.0f ? hi.elements[axis] : lo.elements[axis];
       exit = Min(exit, (side - origin.elements[axis]) / d);
     }
   }
-  return isfinite(exit) ? exit : -1.0f;
+  return vkr_is_finite_f32(exit) ? exit : -1.0f;
 }
 
 /* The first solid collision surface along a segment, past `skip` and its
@@ -3633,8 +3663,8 @@ static Vec3 place_grid_point(const VkrEditorPlacement *placement,
                              ? frame->view_state.grid_spacing
                              : 1.0f;
   const float32_t shift = placement->cell_centers ? 0.5f : 0.0f;
-  position.x = (floorf(position.x / cell - shift + 0.5f) + shift) * cell;
-  position.z = (floorf(position.z / cell - shift + 0.5f) + shift) * cell;
+  position.x = (vkr_floor_f32(position.x / cell - shift + 0.5f) + shift) * cell;
+  position.z = (vkr_floor_f32(position.z / cell - shift + 0.5f) + shift) * cell;
   return position;
 }
 
@@ -3673,8 +3703,9 @@ bool8_t vkr_editor_viewport_place(const VkrEditorUi *editor,
   /* The ground plane at the grid's height, which Fit to surface lifts onto a
      floor modelled above the origin when the scene has no collision. */
   const float32_t ground_y = frame->view_state.grid_height;
-  const float32_t t =
-      fabsf(direction.y) > 1e-4f ? (ground_y - origin.y) / direction.y : -1.0f;
+  const float32_t t = vkr_abs_f32(direction.y) > 1e-4f
+                          ? (ground_y - origin.y) / direction.y
+                          : -1.0f;
   const bool8_t ground = t > 0.0f && t < 500.0f;
   Vec3 position = vec3_add(origin, vec3_scale(direction, ground ? t : 8.0f));
   if (ground) {
@@ -3698,7 +3729,7 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
   VkrSceneEditValues values;
   if (!scene || !vkr_scene_entity_alive(scene, entity) ||
       !vkr_scene_edit_read(scene, entity, &values)) {
-    snprintf(message, message_size, "Nothing to snap");
+    string_format(message, message_size, "Nothing to snap");
     return false_v;
   }
   const String8 name = vkr_scene_get_name(scene, entity);
@@ -3707,12 +3738,12 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
   if (!transform || !(values.fields & VKR_SCENE_EDIT_TRANSFORM) ||
       vkr_entity_get_component(scene->world, entity,
                                scene->comp_physics_collider)) {
-    snprintf(message, message_size, "'%.*s' has no transform to snap",
-             (int)name.length, name.str);
+    string_format(message, message_size, "'%.*s' has no transform to snap",
+                  (int)name.length, name.str);
     return false_v;
   }
   if (frame->scene_edit->action != VKR_SCENE_EDIT_NONE) {
-    snprintf(message, message_size, "Another scene edit is pending");
+    string_format(message, message_size, "Another scene edit is pending");
     return false_v;
   }
 
@@ -3724,7 +3755,7 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
   const Vec3 pivot = mat4_position(transform->world);
   Vec3 corners[8];
   Vec3 centre = vec3_zero();
-  float32_t top = -INFINITY;
+  float32_t top = -VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < ArrayCount(corners); ++i) {
     const Vec3 corner =
         vec3_new(i & 1 ? upper.x : lower.x, i & 2 ? upper.y : lower.y,
@@ -3765,7 +3796,7 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
   const VkrQuat tilt =
       align ? place_tilt(object_up, normal) : vkr_quat_identity();
   const Vec3 tilted_centre = vkr_quat_rotate_vec3(tilt, centre);
-  float32_t bottom = INFINITY;
+  float32_t bottom = VKR_FLOAT_INFINITY;
   for (uint32_t i = 0; i < ArrayCount(corners); ++i) {
     bottom =
         Min(bottom, vec3_dot(vkr_quat_rotate_vec3(tilt, corners[i]), normal));
@@ -3798,13 +3829,13 @@ bool8_t vkr_editor_viewport_snap(const VkrEditorUi *editor,
                                 vkr_quat_mul(tilt, parent_rotation)),
                    values.rotation));
   if (!vkr_scene_edit_validate(&values)) {
-    snprintf(message, message_size, "The scene rejected the snapped pose");
+    string_format(message, message_size, "The scene rejected the snapped pose");
     return false_v;
   }
   *frame->scene_edit = (VkrSceneEditRequest){
       .action = VKR_SCENE_EDIT_APPLY, .entity = entity, .values = values};
-  snprintf(message, message_size, "Snapped %.*s to %s", (int)name.length,
-           name.str, onto);
+  string_format(message, message_size, "Snapped %.*s to %s", (int)name.length,
+                name.str, onto);
   return true_v;
 }
 
@@ -3834,9 +3865,9 @@ static bool8_t grid_fit_orthographic(const VkrEditorUi *editor,
     return false_v;
   }
   const float32_t pixel_world = Max(extent.x / image.z, extent.y / image.w);
-  const float32_t level =
-      Max(0.0f, log10f(pixel_world * VIEW_GRID_MIN_SPACING_PX / *spacing));
-  *spacing *= powf(10.0f, floorf(level) + 1.0f);
+  const float32_t level = Max(
+      0.0f, vkr_log10_f32(pixel_world * VIEW_GRID_MIN_SPACING_PX / *spacing));
+  *spacing *= vkr_pow_f32(10.0f, vkr_floor_f32(level) + 1.0f);
   (void)editor;
   return true_v;
 }
@@ -3854,8 +3885,8 @@ static bool8_t grid_first_axis_top(const VkrSampleUiFrame *frame,
         grid_screen(frame, vec3_add(center, (Vec3){0, 0, spacing}), &along_v)) {
       const Vec2 u = {along_u.x - origin.x, along_u.y - origin.y};
       const Vec2 v = {along_v.x - origin.x, along_v.y - origin.y};
-      first_axis_top =
-          fabsf(v.y) * hypotf(u.x, u.y) >= fabsf(u.y) * hypotf(v.x, v.y);
+      first_axis_top = vkr_abs_f32(v.y) * vkr_hypot_f32(u.x, u.y) >=
+                       vkr_abs_f32(u.y) * vkr_hypot_f32(v.x, v.y);
     }
   }
   return first_axis_top;
@@ -3950,8 +3981,8 @@ static void grid_orthographic_lines(VkrEditorUi *editor, uint32_t plane,
   for (uint32_t axis = 0; axis < 2; ++axis) {
     const float32_t low = axis ? minimum.y : minimum.x;
     const float32_t high = axis ? maximum.y : maximum.x;
-    const int64_t first = (int64_t)floorf(low / spacing);
-    const int64_t last = (int64_t)ceilf(high / spacing);
+    const int64_t first = (int64_t)vkr_floor_f32(low / spacing);
+    const int64_t last = (int64_t)vkr_ceil_f32(high / spacing);
     for (int64_t cell = first;
          cell <= last && editor->grid_line_count < capacity; ++cell) {
       const float32_t coordinate = (float32_t)cell * spacing;
@@ -3991,20 +4022,20 @@ void vkr_editor_grid_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrUiSystem *ui = frame->ui;
   const uint32_t plane = grid_view_plane(frame->view_state.camera_view);
   float32_t spacing = frame->view_state.grid_spacing;
-  if (!isfinite(spacing) || spacing <= 0) {
+  if (!vkr_is_finite_f32(spacing) || spacing <= 0) {
     return;
   }
-  Vec2 minimum = {INFINITY, INFINITY};
-  Vec2 maximum = {-INFINITY, -INFINITY};
+  Vec2 minimum = {VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY};
+  Vec2 maximum = {-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY};
   Vec2 center_plane;
   if (!grid_plane_point(frame, (Vec2){0, 0}, plane, &center_plane) ||
       !grid_fit_orthographic(editor, frame, plane, &spacing, &minimum,
                              &maximum) ||
-      !isfinite(spacing) || spacing <= 0 ||
-      fabsf(minimum.x / spacing) > 1000000000 ||
-      fabsf(minimum.y / spacing) > 1000000000 ||
-      fabsf(maximum.x / spacing) > 1000000000 ||
-      fabsf(maximum.y / spacing) > 1000000000) {
+      !vkr_is_finite_f32(spacing) || spacing <= 0 ||
+      vkr_abs_f32(minimum.x / spacing) > 1000000000 ||
+      vkr_abs_f32(minimum.y / spacing) > 1000000000 ||
+      vkr_abs_f32(maximum.x / spacing) > 1000000000 ||
+      vkr_abs_f32(maximum.y / spacing) > 1000000000) {
     return;
   }
   const Vec3 center = grid_world(center_plane, plane);
@@ -4101,24 +4132,24 @@ static bool8_t view_gizmo_axes(const VkrSampleUiFrame *frame,
                                ViewGizmoAxis out_axes[3]) {
   const Mat4 inverse = mat4_inverse(frame->view_projection);
   Vec4 center = mat4_mul_vec4(inverse, (Vec4){0.0f, 0.0f, 0.5f, 1.0f});
-  if (!isfinite(center.w) || fabsf(center.w) < 1e-6f)
+  if (!vkr_is_finite_f32(center.w) || vkr_abs_f32(center.w) < 1e-6f)
     return false_v;
   const Vec3 origin = {center.x / center.w, center.y / center.w,
                        center.z / center.w};
   const Vec4 base =
       mat4_mul_vec4(frame->view_projection, vec3_to_vec4(origin, 1.0f));
-  if (!isfinite(base.w) || fabsf(base.w) < 1e-6f)
+  if (!vkr_is_finite_f32(base.w) || vkr_abs_f32(base.w) < 1e-6f)
     return false_v;
   const Vec2 base_ndc = {base.x / base.w, base.y / base.w};
   /* A step proportional to the view distance keeps the probe near-linear. */
-  const float32_t step = Max(0.01f, fabsf(base.w) * 0.05f);
+  const float32_t step = Max(0.01f, vkr_abs_f32(base.w) * 0.05f);
   static const Vec3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
   float32_t lengths[3] = {0};
   for (uint32_t i = 0; i < 3; ++i) {
     const Vec3 tip = vec3_add(origin, vec3_scale(axes[i], step));
     const Vec4 clip =
         mat4_mul_vec4(frame->view_projection, vec3_to_vec4(tip, 1.0f));
-    if (!isfinite(clip.w) || fabsf(clip.w) < 1e-6f)
+    if (!vkr_is_finite_f32(clip.w) || vkr_abs_f32(clip.w) < 1e-6f)
       return false_v;
     /* NDC is Y-down in this convention, matching UI space. */
     Vec2 delta = {clip.x / clip.w - base_ndc.x, clip.y / clip.w - base_ndc.y};
@@ -4127,7 +4158,8 @@ static bool8_t view_gizmo_axes(const VkrSampleUiFrame *frame,
             ? frame->mapping.image_rect_px.z / frame->mapping.image_rect_px.w
             : 1.0f;
     delta.x *= aspect;
-    const float32_t length = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    const float32_t length =
+        vkr_sqrt_f32(delta.x * delta.x + delta.y * delta.y);
     lengths[i] = length;
     out_axes[i].direction = length > 1e-6f
                                 ? (Vec2){delta.x / length, delta.y / length}
@@ -4139,11 +4171,11 @@ static bool8_t view_gizmo_axes(const VkrSampleUiFrame *frame,
      projected unit axes, whose squares sum to twice it squared. */
   const bool8_t orthographic =
       frame->view_state.camera_view != VKR_SAMPLE_CAMERA_PERSPECTIVE;
-  const float32_t full =
-      orthographic
-          ? sqrtf(0.5f * (lengths[0] * lengths[0] + lengths[1] * lengths[1] +
-                          lengths[2] * lengths[2]))
-          : step / Max(fabsf(base.w), 1e-6f);
+  const float32_t full = orthographic
+                             ? vkr_sqrt_f32(0.5f * (lengths[0] * lengths[0] +
+                                                    lengths[1] * lengths[1] +
+                                                    lengths[2] * lengths[2]))
+                             : step / Max(vkr_abs_f32(base.w), 1e-6f);
   for (uint32_t i = 0; i < 3; ++i) {
     const float32_t scale = Min(1.0f, lengths[i] / Max(full, 1e-6f));
     out_axes[i].direction.x *= scale;
@@ -4272,8 +4304,8 @@ void vkr_editor_scene_label(const VkrEditorUi *editor,
                             uint64_t size) {
   if (frame->world && editor->projects) {
     const String8 name = vkr_editor_projects_scene_name(editor->projects);
-    snprintf(out, size, "%.*s", (int)(name.length ? name.length : 5u),
-             name.length ? (const char *)name.str : "World");
+    string_format(out, size, "%.*s", (int)(name.length ? name.length : 5u),
+                  name.length ? (const char *)name.str : "World");
     return;
   }
   /* The file name without its directory and .scene.json. */
@@ -4287,6 +4319,6 @@ void vkr_editor_scene_label(const VkrEditorUi *editor,
       MemCompare(path.str + path.length - suffix.length, suffix.str,
                  suffix.length) == 0)
     length -= suffix.length;
-  snprintf(out, size, "%.*s", (int)(length ? length : 5u),
-           length ? (const char *)path.str + start : "Scene");
+  string_format(out, size, "%.*s", (int)(length ? length : 5u),
+                length ? (const char *)path.str + start : "Scene");
 }

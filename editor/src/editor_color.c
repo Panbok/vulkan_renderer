@@ -1,11 +1,6 @@
 #include "editor_internal.h"
 #include "vkr_color_transfer.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 /* The color picker popup: a saturation-value square, a hue bar, an alpha bar
  * for RGBA properties, the old and new colors with a hex field, a palette
  * and the session's recent colors. It edits the display-encoded color and
@@ -137,14 +132,15 @@ static void color_format_hex(VkrEditorColorPicker *picker) {
   const Vec4 display = color_current(picker);
   uint32_t bytes[4];
   for (uint32_t i = 0; i < 4; ++i) {
-    bytes[i] = (uint32_t)lroundf(Clamp(display.elements[i], 0.0f, 1.0f) * 255);
+    bytes[i] = (uint32_t)vkr_round_i64_f32(
+        Clamp(display.elements[i], 0.0f, 1.0f) * 255);
   }
   if (color_has_alpha(picker)) {
-    snprintf(picker->hex, sizeof(picker->hex), "#%02X%02X%02X%02X", bytes[0],
-             bytes[1], bytes[2], bytes[3]);
+    string_format(picker->hex, sizeof(picker->hex), "#%02X%02X%02X%02X",
+                  bytes[0], bytes[1], bytes[2], bytes[3]);
   } else {
-    snprintf(picker->hex, sizeof(picker->hex), "#%02X%02X%02X", bytes[0],
-             bytes[1], bytes[2]);
+    string_format(picker->hex, sizeof(picker->hex), "#%02X%02X%02X", bytes[0],
+                  bytes[1], bytes[2]);
   }
 }
 
@@ -154,7 +150,7 @@ static bool8_t color_parse_hex(const char *text, Vec4 *display) {
   if (text[0] == '#') {
     ++text;
   }
-  const uint64_t length = strlen(text);
+  const uint64_t length = string_length(text);
   if (length != 6u && length != 8u) {
     return false_v;
   }
@@ -167,7 +163,7 @@ static bool8_t color_parse_hex(const char *text, Vec4 *display) {
   }
   for (uint32_t i = 0; i < length / 2u; ++i) {
     char pair[3] = {text[i * 2u], text[i * 2u + 1u], 0};
-    display->elements[i] = (float32_t)strtoul(pair, NULL, 16) / 255.0f;
+    display->elements[i] = (float32_t)string_parse_u64_hex(pair, NULL) / 255.0f;
   }
   return true_v;
 }
@@ -481,7 +477,7 @@ void vkr_editor_color_picker_build(VkrEditorUi *editor,
   hex.tooltip = string8_lit("Display sRGB as #RRGGBB, or #RRGGBBAA");
   vkr_editor_field_style(&hex);
   VkrUiTextEditBuffer buffer = {(uint8_t *)picker->hex,
-                                (uint32_t)strlen(picker->hex),
+                                (uint32_t)string_length(picker->hex),
                                 sizeof(picker->hex)};
   if (vkr_ui_text_field(ui, string8_lit("hex"), &buffer, &hex)) {
     Vec4 display = current;

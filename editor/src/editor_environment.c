@@ -11,9 +11,6 @@
 #include "renderer/systems/vkr_scene_edit.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #define ENVIRONMENT_VERSION 1u
 /* Bytes of one preset's text; nine parts of a few hundred bytes each. */
 #define ENVIRONMENT_TEXT_CAPACITY (32u * 1024u)
@@ -246,9 +243,9 @@ bool8_t vkr_editor_environment_write(const VkrEditorEnvironmentPreset *preset,
     }
     const VkrEditorEnvironmentPart part = (VkrEditorEnvironmentPart)i;
     const char *key = vkr_editor_environment_key(part);
-    ok = vkr_json_writer_name(
-             &writer,
-             string8_create_from_cstr((const uint8_t *)key, strlen(key))) &&
+    ok = vkr_json_writer_name(&writer,
+                              string8_create_from_cstr((const uint8_t *)key,
+                                                       string_length(key))) &&
          vkr_type_write_json(&writer, vkr_editor_environment_type(part),
                              preset->values[i]);
   }
@@ -274,9 +271,10 @@ bool8_t vkr_editor_environment_read(String8 text, Arena *arena,
   if (!root || !vkr_bakery_json_get_int(root, "version", &version) ||
       version != ENVIRONMENT_VERSION || !parts ||
       parts->type != VKR_BAKERY_JSON_OBJECT) {
-    snprintf(error, capacity,
-             "An environment preset is {\"version\": %u, \"parts\": {...}}",
-             ENVIRONMENT_VERSION);
+    string_format(
+        error, capacity,
+        "An environment preset is {\"version\": %u, \"parts\": {...}}",
+        ENVIRONMENT_VERSION);
     return false_v;
   }
   VkrAllocator scratch = {.ctx = arena};
@@ -286,7 +284,7 @@ bool8_t vkr_editor_environment_read(String8 text, Arena *arena,
     uint32_t index = VKR_EDITOR_ENVIRONMENT_PART_COUNT;
     for (uint32_t i = 0; i < VKR_EDITOR_ENVIRONMENT_PART_COUNT; ++i) {
       const char *key = vkr_editor_environment_key((VkrEditorEnvironmentPart)i);
-      if (member->key.length == strlen(key) &&
+      if (member->key.length == string_length(key) &&
           MemCompare(member->key.str, key, member->key.length) == 0) {
         index = i;
       }
@@ -295,10 +293,11 @@ bool8_t vkr_editor_environment_read(String8 text, Arena *arena,
     if (index == VKR_EDITOR_ENVIRONMENT_PART_COUNT ||
         !vkr_bakery_json_write(arena, member, VKR_BAKERY_JSON_COMPACT,
                                &values)) {
-      snprintf(error, capacity,
-               "'%.*s' is no part; parts are environment, atmosphere, clouds, "
-               "fog, volumetric_fog, post_process, time_of_day, sun and moon",
-               (int)member->key.length, (const char *)member->key.str);
+      string_format(
+          error, capacity,
+          "'%.*s' is no part; parts are environment, atmosphere, clouds, "
+          "fog, volumetric_fog, post_process, time_of_day, sun and moon",
+          (int)member->key.length, (const char *)member->key.str);
       return false_v;
     }
     const VkrTypeDesc *type =
@@ -307,9 +306,9 @@ bool8_t vkr_editor_environment_read(String8 text, Arena *arena,
     char message[128] = {0};
     if (!vkr_type_read_json_document(values, type, out->values[index], &scratch,
                                      message, sizeof(message))) {
-      snprintf(error, capacity, "%.*s: %s", (int)member->key.length,
-               (const char *)member->key.str,
-               message[0] ? message : "invalid values");
+      string_format(error, capacity, "%.*s: %s", (int)member->key.length,
+                    (const char *)member->key.str,
+                    message[0] ? message : "invalid values");
       return false_v;
     }
     out->parts |= 1u << index;
@@ -368,8 +367,8 @@ uint32_t vkr_editor_environment_apply_items(
       request->action = VKR_SCENE_EDIT_CREATE;
       vkr_scene_entity_ref_generate(&values->ref);
       values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM;
-      snprintf(values->name, sizeof(values->name), "%s",
-               vkr_editor_environment_label(part));
+      string_format(values->name, sizeof(values->name), "%s",
+                    vkr_editor_environment_label(part));
       values->rotation = vkr_quat_identity();
       values->scale = vec3_one();
     }
@@ -395,10 +394,10 @@ typedef struct EnvironmentListing {
 } EnvironmentListing;
 
 static bool8_t environment_ends_with(const char *text, const char *suffix) {
-  const size_t length = strlen(text);
-  const size_t suffix_length = strlen(suffix);
+  const size_t length = string_length(text);
+  const size_t suffix_length = string_length(suffix);
   return length > suffix_length &&
-         strcmp(text + length - suffix_length, suffix) == 0;
+         string_equals(text + length - suffix_length, suffix);
 }
 
 static void environment_list_entry(void *context, const char *name,
@@ -411,9 +410,9 @@ static void environment_list_entry(void *context, const char *name,
     return;
   }
   char *out = editor->environment_presets[editor->environment_preset_count];
-  if (snprintf(out, sizeof(editor->environment_presets[0]), "%s/%s",
-               VKR_EDITOR_ENVIRONMENT_DIRECTORY,
-               name) < (int)sizeof(editor->environment_presets[0])) {
+  if (string_format(out, sizeof(editor->environment_presets[0]), "%s/%s",
+                    VKR_EDITOR_ENVIRONMENT_DIRECTORY,
+                    name) < (int)sizeof(editor->environment_presets[0])) {
     editor->environment_preset_count++;
   }
 }
@@ -435,8 +434,8 @@ static void environment_list_presets(VkrEditorUi *editor,
       scratch, string8_lit(VKR_EDITOR_ENVIRONMENT_DIRECTORY));
   if (root.path.length && root.path.length < 1024u) {
     char absolute[1024];
-    snprintf(absolute, sizeof(absolute), "%.*s", (int)root.path.length,
-             (const char *)root.path.str);
+    string_format(absolute, sizeof(absolute), "%.*s", (int)root.path.length,
+                  (const char *)root.path.str);
     EnvironmentListing listing = {.editor = editor};
     vkr_editor_directory_list(absolute, environment_list_entry, &listing);
   }
@@ -461,12 +460,13 @@ static void environment_save(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       !vkr_editor_material_write(editor->materials, frame, path, text, false_v,
                                  vkr_editor_material_group(), NULL, error,
                                  sizeof(error))) {
-    snprintf(editor->environment_message, sizeof(editor->environment_message),
-             "Not saved: %s", error[0] ? error : "out of memory");
+    string_format(editor->environment_message,
+                  sizeof(editor->environment_message), "Not saved: %s",
+                  error[0] ? error : "out of memory");
     return;
   }
-  snprintf(editor->environment_message, sizeof(editor->environment_message),
-           "Saved %s", path);
+  string_format(editor->environment_message,
+                sizeof(editor->environment_message), "Saved %s", path);
   editor->environment_listed_at = 0.0;
 }
 
@@ -485,17 +485,18 @@ static void environment_apply(VkrEditorUi *editor,
   String8 text = {0};
   char error[192] = {0};
   if (!preset) {
-    snprintf(editor->environment_message, sizeof(editor->environment_message),
-             "Out of memory");
+    string_format(editor->environment_message,
+                  sizeof(editor->environment_message), "Out of memory");
   } else {
     vkr_allocator_arena(&allocator);
     if (!vkr_editor_material_read(&allocator, path, &text)) {
-      snprintf(editor->environment_message, sizeof(editor->environment_message),
-               "%s does not open", path);
+      string_format(editor->environment_message,
+                    sizeof(editor->environment_message), "%s does not open",
+                    path);
     } else if (!vkr_editor_environment_read(text, arena, preset, error,
                                             sizeof(error))) {
-      snprintf(editor->environment_message, sizeof(editor->environment_message),
-               "%s", error);
+      string_format(editor->environment_message,
+                    sizeof(editor->environment_message), "%s", error);
     } else {
       uint32_t skipped = 0u;
       const uint32_t count = vkr_editor_environment_apply_items(
@@ -509,9 +510,10 @@ static void environment_apply(VkrEditorUi *editor,
             .container = container,
         };
       }
-      snprintf(editor->environment_message, sizeof(editor->environment_message),
-               "Applied %s: %u parts%s", path, count,
-               skipped ? "; the sky light or time of day stays" : "");
+      string_format(editor->environment_message,
+                    sizeof(editor->environment_message),
+                    "Applied %s: %u parts%s", path, count,
+                    skipped ? "; the sky light or time of day stays" : "");
     }
   }
   if (arena) {
@@ -528,8 +530,8 @@ static void environment_create(const VkrSampleUiFrame *frame,
   VkrSceneEditValues values;
   MemZero(&values, sizeof(values));
   values.fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM;
-  snprintf(values.name, sizeof(values.name), "%s",
-           vkr_editor_environment_label(part));
+  string_format(values.name, sizeof(values.name), "%s",
+                vkr_editor_environment_label(part));
   values.rotation = vkr_quat_identity();
   values.scale = vec3_one();
   const uint32_t field = vkr_scene_edit_component_field(type);
@@ -634,13 +636,14 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
           break;
         }
       }
-      snprintf(name, sizeof(name), "%.*s", (int)(end - start),
-               (const char *)scene_path.str + start);
+      string_format(name, sizeof(name), "%.*s", (int)(end - start),
+                    (const char *)scene_path.str + start);
       stem = name;
     }
     char path[256];
-    snprintf(path, sizeof(path), "%s/%s%s", VKR_EDITOR_ENVIRONMENT_DIRECTORY,
-             stem, VKR_EDITOR_ENVIRONMENT_EXTENSION);
+    string_format(path, sizeof(path), "%s/%s%s",
+                  VKR_EDITOR_ENVIRONMENT_DIRECTORY, stem,
+                  VKR_EDITOR_ENVIRONMENT_EXTENSION);
     environment_save(editor, frame, sources, path);
   }
   y += 30.0f;
@@ -651,9 +654,10 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
         VKR_EDITOR_DETAILS_PAD_PT, y, width - 110.0f, 24.0f);
     label.icon = VKR_UI_ICON_PALETTE;
     label.icon_size_pt = 12.0f;
-    vkr_ui_label(ui, string8_lit("preset"),
-                 string8_create_from_cstr((const uint8_t *)path, strlen(path)),
-                 &label);
+    vkr_ui_label(
+        ui, string8_lit("preset"),
+        string8_create_from_cstr((const uint8_t *)path, string_length(path)),
+        &label);
     if (environment_button(editor, ui, string8_lit("apply"),
                            string8_lit("Apply"), VKR_UI_ICON_CHECK,
                            width - 96.0f, y, 86.0f,
@@ -668,7 +672,7 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
     y = environment_note(
         ui, string8_lit("environment.message"), y, width,
         string8_create_from_cstr((const uint8_t *)editor->environment_message,
-                                 strlen(editor->environment_message)),
+                                 string_length(editor->environment_message)),
         theme->text_secondary);
   }
   y += 4.0f;

@@ -2,10 +2,6 @@
 #include "editor_internal.h"
 #include "renderer/systems/vkr_scene_animation.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 static VkrEditorAnimationDocument animation_default_document(void) {
   VkrEditorAnimationDocument document = {
       .graph = {.node_count = 1, .parameter_count = 2, .cycle_seconds = 1},
@@ -42,8 +38,9 @@ static bool8_t animation_button(VkrUiSystem *ui, const char *id,
                                 bool8_t disabled) {
   VkrUiWidgetConfig widget = animation_widget(column, row);
   widget.disabled = disabled;
-  return vkr_ui_button(ui, string8_create((uint8_t *)id, strlen(id)),
-                       string8_create((uint8_t *)text, strlen(text)), &widget);
+  return vkr_ui_button(ui, string8_create((uint8_t *)id, string_length(id)),
+                       string8_create((uint8_t *)text, string_length(text)),
+                       &widget);
 }
 
 static void animation_label(VkrUiSystem *ui, const char *id, const char *text,
@@ -52,8 +49,8 @@ static void animation_label(VkrUiSystem *ui, const char *id, const char *text,
   widget.style.background_color = (Vec4){0};
   widget.style.border_pt = (VkrUiEdges){0};
   widget.style.text_color = vkr_ui_theme()->text_secondary;
-  vkr_ui_label(ui, string8_create((uint8_t *)id, strlen(id)),
-               string8_create((uint8_t *)text, strlen(text)), &widget);
+  vkr_ui_label(ui, string8_create((uint8_t *)id, string_length(id)),
+               string8_create((uint8_t *)text, string_length(text)), &widget);
 }
 
 static void animation_remember(VkrEditorAnimation *animation) {
@@ -156,7 +153,7 @@ animation_document_valid(const VkrEditorAnimationDocument *document,
       document->graph.root >= document->graph.node_count) {
     return false_v;
   }
-  if (!isfinite(document->crossfade_seconds) ||
+  if (!vkr_is_finite_f32(document->crossfade_seconds) ||
       document->crossfade_seconds < 0 || document->crossfade_seconds > 5 ||
       !vkr_animation_graph_validate(&document->graph, NULL, NULL)) {
     return false_v;
@@ -339,7 +336,7 @@ void vkr_editor_animation_update(VkrEditorUi *editor,
           animation, vkr_animation_player_asset(animation->player));
       animation->time += frame->ui->delta_time * animation->rate;
       if (animation->loop && duration > 0) {
-        animation->time = fmod(animation->time, duration);
+        animation->time = vkr_fmod_f64(animation->time, duration);
         if (animation->time < 0) {
           animation->time += duration;
         }
@@ -407,8 +404,8 @@ static void animation_graph(VkrEditorUi *editor,
         vkr_clamp_f32(mouse.y - origin.y - animation->graph_drag_grab.y, 0,
                       extent.y - 36)};
     if (animation->graph_drag_modified ||
-        fabsf(next.x - animation->graph_drag_origin.x) +
-                fabsf(next.y - animation->graph_drag_origin.y) >
+        vkr_abs_f32(next.x - animation->graph_drag_origin.x) +
+                vkr_abs_f32(next.y - animation->graph_drag_origin.y) >
             3) {
       if (!animation->graph_drag_modified) {
         const bool8_t dirty = animation->graph_dirty;
@@ -518,17 +515,17 @@ static void animation_graph(VkrEditorUi *editor,
     if (vkr_ui_panel_begin(ui, string8_lit("card"), &card)) {
       char title[128];
       if (output) {
-        snprintf(title, sizeof(title), "Output Pose");
+        string_format(title, sizeof(title), "Output Pose");
       } else {
         const VkrAnimationGraphNode *node = &animation->document.graph.nodes[i];
         const char *names[] = {"Clip", "Blend 2", "Space 1D", "Space 2D"};
         if (node->kind == VKR_ANIMATION_GRAPH_CLIP) {
-          snprintf(title, sizeof(title), "%u Clip: %.*s", i,
-                   (int)Min(asset->clips[node->clip].name.length, 70u),
-                   asset->clips[node->clip].name.str);
+          string_format(title, sizeof(title), "%u Clip: %.*s", i,
+                        (int)Min(asset->clips[node->clip].name.length, 70u),
+                        asset->clips[node->clip].name.str);
         } else {
-          snprintf(title, sizeof(title), "%u %s [P%u]", i, names[node->kind],
-                   node->parameter_x);
+          string_format(title, sizeof(title), "%u %s [P%u]", i,
+                        names[node->kind], node->parameter_x);
         }
       }
       VkrUiWidgetConfig header = animation_widget(0, 0);
@@ -543,7 +540,7 @@ static void animation_graph(VkrEditorUi *editor,
                       "connect; edit inputs in Properties");
       bool8_t connect = vkr_ui_button(
           ui, string8_lit("header"),
-          string8_create((uint8_t *)title, strlen(title)), &header);
+          string8_create((uint8_t *)title, string_length(title)), &header);
       connect &= !animation->graph_drag_modified;
       VkrUiWidgetConfig port = animation_widget(output ? 0 : 1, 1);
       port.placement.justify = port.placement.align = VKR_UI_ALIGN_CENTER;
@@ -619,8 +616,8 @@ static bool8_t animation_property_float(VkrEditorAnimation *animation,
                                         uint32_t row) {
   float32_t next = *value;
   VkrUiWidgetConfig config = animation_widget(column, row);
-  if (!vkr_ui_slider_f32(ui, string8_create((uint8_t *)id, strlen(id)), &next,
-                         min, max, &config)) {
+  if (!vkr_ui_slider_f32(ui, string8_create((uint8_t *)id, string_length(id)),
+                         &next, min, max, &config)) {
     return false_v;
   }
   if (!animation->property_edit_active) {
@@ -650,7 +647,7 @@ static bool8_t animation_index(VkrEditorAnimation *animation, VkrUiSystem *ui,
                                uint32_t *value, uint32_t count, uint32_t column,
                                uint32_t row) {
   char text[96];
-  snprintf(text, sizeof(text), "%s: %u >", label, *value);
+  string_format(text, sizeof(text), "%s: %u >", label, *value);
   if (!animation_button(ui, id, text, column, row, count < 2) || count < 2) {
     return false_v;
   }
@@ -716,12 +713,12 @@ static void animation_node_page(VkrEditorAnimation *animation, VkrUiSystem *ui,
     animation_label(ui, "space.help", "Samples: page 3; triangles: page 4", 0,
                     2);
   }
-  snprintf(text, sizeof(text), "Cycle %.2fs", graph->cycle_seconds);
+  string_format(text, sizeof(text), "Cycle %.2fs", graph->cycle_seconds);
   animation_label(ui, "cycle.label", text, 0, 3);
   animation_property_double(animation, ui, "cycle", &graph->cycle_seconds,
                             0.05f, 10, 1, 3);
-  snprintf(text, sizeof(text), "Clip / series fade %.2fs",
-           animation->document.crossfade_seconds);
+  string_format(text, sizeof(text), "Clip / series fade %.2fs",
+                animation->document.crossfade_seconds);
   animation_label(ui, "fade.label", text, 2, 3);
   animation_property_float(animation, ui, "fade",
                            &animation->document.crossfade_seconds, 0, 5, 3, 3);
@@ -800,19 +797,19 @@ static void animation_sample_page(VkrEditorAnimation *animation,
     }
     VkrAnimationGraphSample *sample =
         &node->samples[animation->selected_sample];
-    snprintf(text, sizeof(text), "Sample %u clip %u",
-             animation->selected_sample, sample->clip);
+    string_format(text, sizeof(text), "Sample %u clip %u",
+                  animation->selected_sample, sample->clip);
     animation_label(ui, "sample.label", text, 0, 2);
     if (animation_button(ui, "sample.clip", "Use browser clip", 1, 2,
                          false_v)) {
       animation_remember(animation);
       sample->clip = animation->selected_clip;
     }
-    snprintf(text, sizeof(text), "X %.2f", sample->x);
+    string_format(text, sizeof(text), "X %.2f", sample->x);
     animation_label(ui, "sample.x.label", text, 0, 3);
     animation_property_float(animation, ui, "sample.x", &sample->x, -5, 5, 1,
                              3);
-    snprintf(text, sizeof(text), "Y %.2f", sample->y);
+    string_format(text, sizeof(text), "Y %.2f", sample->y);
     animation_label(ui, "sample.y.label", text, 2, 3);
     if (node->kind == VKR_ANIMATION_GRAPH_BLENDSPACE2D) {
       animation_property_float(animation, ui, "sample.y", &sample->y, -5, 5, 3,
@@ -851,7 +848,8 @@ static void animation_triangle_page(VkrEditorAnimation *animation,
         animation->selected_triangle =
             (animation->selected_triangle + 1u) % node->triangle_count;
       }
-      snprintf(text, sizeof(text), "Triangle %u", animation->selected_triangle);
+      string_format(text, sizeof(text), "Triangle %u",
+                    animation->selected_triangle);
       animation_label(ui, "triangle.index", text, 3, 1);
       VkrAnimationGraphTriangle *triangle =
           &node->triangles[animation->selected_triangle];
@@ -901,7 +899,7 @@ static void animation_state_page(VkrEditorAnimation *animation,
       animation->selected_state =
           (animation->selected_state + 1u) % graph->state_count;
     }
-    snprintf(text, sizeof(text), "State %u", animation->selected_state);
+    string_format(text, sizeof(text), "State %u", animation->selected_state);
     animation_label(ui, "state.index", text, 3, 0);
     VkrAnimationGraphState *state = &graph->states[animation->selected_state];
     animation_index(animation, ui, "state.root", "Root node", &state->root,
@@ -911,18 +909,18 @@ static void animation_state_page(VkrEditorAnimation *animation,
       animation_remember(animation);
       graph->initial_state = animation->selected_state;
     }
-    snprintf(text, sizeof(text), "Cycle %.2fs", state->cycle_seconds);
+    string_format(text, sizeof(text), "Cycle %.2fs", state->cycle_seconds);
     animation_label(ui, "state.cycle.label", text, 2, 1);
     animation_property_double(animation, ui, "state.cycle",
                               &state->cycle_seconds, 0.05f, 10, 3, 1);
   }
-  snprintf(text, sizeof(text), "Active state %u; initial %u",
-           animation->graph_instance.state, graph->initial_state);
+  string_format(text, sizeof(text), "Active state %u; initial %u",
+                animation->graph_instance.state, graph->initial_state);
   animation_label(ui, "state.active", text, 0, 3);
   if (animation->graph_instance.transitioning) {
-    snprintf(text, sizeof(text), "Transition %u: %.2fs",
-             animation->graph_instance.transition,
-             animation->graph_instance.transition_time);
+    string_format(text, sizeof(text), "Transition %u: %.2fs",
+                  animation->graph_instance.transition,
+                  animation->graph_instance.transition_time);
     animation_label(ui, "state.transition", text, 1, 3);
   }
   animation_label(ui, "state.help", "Transitions page: ordered conditions", 0,
@@ -960,8 +958,8 @@ static void animation_transition_page(VkrEditorAnimation *animation,
       animation->selected_transition =
           (animation->selected_transition + 1u) % graph->transition_count;
     }
-    snprintf(text, sizeof(text), "Transition %u",
-             animation->selected_transition);
+    string_format(text, sizeof(text), "Transition %u",
+                  animation->selected_transition);
     animation_label(ui, "transition.index", text, 3, 0);
     VkrAnimationGraphTransition *transition =
         &graph->transitions[animation->selected_transition];
@@ -983,11 +981,11 @@ static void animation_transition_page(VkrEditorAnimation *animation,
               ? VKR_ANIMATION_GRAPH_LESS_EQUAL
               : VKR_ANIMATION_GRAPH_GREATER_EQUAL;
     }
-    snprintf(text, sizeof(text), "Threshold %.2f", transition->threshold);
+    string_format(text, sizeof(text), "Threshold %.2f", transition->threshold);
     animation_label(ui, "threshold.label", text, 0, 2);
     animation_property_float(animation, ui, "threshold", &transition->threshold,
                              -5, 5, 1, 2);
-    snprintf(text, sizeof(text), "Fade %.2fs", transition->duration);
+    string_format(text, sizeof(text), "Fade %.2fs", transition->duration);
     animation_label(ui, "transition.fade.label", text, 2, 2);
     animation_property_double(animation, ui, "transition.fade",
                               &transition->duration, 0, 5, 3, 2);
@@ -999,7 +997,8 @@ static void animation_transition_page(VkrEditorAnimation *animation,
       transition->exit_time = transition->exit_time < 0 ? 0.8 : -1;
     }
     if (transition->exit_time >= 0) {
-      snprintf(text, sizeof(text), "Exit phase %.2f", transition->exit_time);
+      string_format(text, sizeof(text), "Exit phase %.2f",
+                    transition->exit_time);
       animation_label(ui, "exit.label", text, 1, 3);
       animation_property_double(animation, ui, "exit", &transition->exit_time,
                                 0, 1, 2, 3);
@@ -1016,10 +1015,10 @@ static void animation_parameter_page(VkrEditorAnimation *animation,
   char text[160];
   for (uint32_t i = 0; i < graph->parameter_count; ++i) {
     char id[32];
-    snprintf(id, sizeof(id), "parameter.%u.label", i);
-    snprintf(text, sizeof(text), "P%u: %.3f", i, graph->parameters[i]);
+    string_format(id, sizeof(id), "parameter.%u.label", i);
+    string_format(text, sizeof(text), "P%u: %.3f", i, graph->parameters[i]);
     animation_label(ui, id, text, (i % 2u) * 2u, i / 2u);
-    snprintf(id, sizeof(id), "parameter.%u", i);
+    string_format(id, sizeof(id), "parameter.%u", i);
     const bool8_t applied = animation->graph_applied;
     const bool8_t dirty = animation->graph_dirty;
     const bool8_t seek = animation->pose_seek;
@@ -1089,8 +1088,8 @@ static void animation_properties(VkrEditorUi *editor,
       --animation->selected_node;
       animation->selected_sample = animation->selected_triangle = 0;
     }
-    snprintf(text, sizeof(text), "Node %u / %u", animation->selected_node,
-             graph->node_count);
+    string_format(text, sizeof(text), "Node %u / %u", animation->selected_node,
+                  graph->node_count);
     animation_label(ui, "node.index", text, 1, 0);
     if (animation_button(ui, "node.next", "Next node", 2, 0,
                          animation->selected_node + 1u >= graph->node_count)) {
@@ -1232,7 +1231,8 @@ static void animation_build_transport(VkrEditorAnimation *animation,
       animation->graph_instance.state < animation->document.graph.state_count) {
     graph_clock = animation->graph_instance.state_time;
   }
-  const float64_t graph_phase = duration > 0 ? fmod(graph_clock, duration) : 0;
+  const float64_t graph_phase =
+      duration > 0 ? vkr_fmod_f64(graph_clock, duration) : 0;
   float32_t time = (float32_t)(graph_mode ? graph_phase : animation->time);
   if (vkr_ui_slider_f32(ui, string8_lit("scrub"), &time, 0, (float32_t)duration,
                         &scrub)) {
@@ -1241,26 +1241,27 @@ static void animation_build_transport(VkrEditorAnimation *animation,
     animation->pose_seek = true_v;
   }
   char status[160];
-  snprintf(status, sizeof(status), "%s %.3f / %.3fs",
-           animation->clip_preview ? "Clip"
-           : animation->sequence   ? "Series"
-                                   : "Graph",
-           animation->time, duration);
+  string_format(status, sizeof(status), "%s %.3f / %.3fs",
+                animation->clip_preview ? "Clip"
+                : animation->sequence   ? "Series"
+                                        : "Graph",
+                animation->time, duration);
   if (graph_mode) {
-    snprintf(status, sizeof(status), "%.1fs | phase %.2f / %.2fs%s",
-             animation->time, graph_phase, duration,
-             animation->graph_instance.transitioning ? " fade" : "");
+    string_format(status, sizeof(status), "%.1fs | phase %.2f / %.2fs%s",
+                  animation->time, graph_phase, duration,
+                  animation->graph_instance.transitioning ? " fade" : "");
     if (animation->document.graph.state_count) {
-      snprintf(status, sizeof(status), "S%u %.1fs | phase %.2f/%.2f%s",
-               animation->graph_instance.state, animation->time, graph_phase,
-               duration,
-               animation->graph_instance.transitioning ? " fade" : "");
+      string_format(status, sizeof(status), "S%u %.1fs | phase %.2f/%.2f%s",
+                    animation->graph_instance.state, animation->time,
+                    graph_phase, duration,
+                    animation->graph_instance.transitioning ? " fade" : "");
     }
   } else if (animation->clip_preview &&
              vkr_animation_player_crossfade_active(animation->player)) {
-    snprintf(status, sizeof(status), "Clip fade %.0f%% %.2fs",
-             100 * vkr_animation_player_crossfade_progress(animation->player),
-             animation->time);
+    string_format(
+        status, sizeof(status), "Clip fade %.0f%% %.2fs",
+        100 * vkr_animation_player_crossfade_progress(animation->player),
+        animation->time);
   }
   animation_label(ui, "time", status, 0, 3);
   VkrUiWidgetConfig loop = animation_widget(1, 3);
@@ -1278,7 +1279,7 @@ static void animation_build_transport(VkrEditorAnimation *animation,
   VkrUiWidgetConfig rate = animation_widget(2, 3);
   (void)vkr_ui_slider_f32(ui, string8_lit("speed"), &animation->rate, -2, 2,
                           &rate);
-  snprintf(status, sizeof(status), "Speed %.2fx", animation->rate);
+  string_format(status, sizeof(status), "Speed %.2fx", animation->rate);
   animation_label(ui, "rate", status, 3, 3);
 }
 
@@ -1368,12 +1369,13 @@ static void animation_build_clip_browser(VkrEditorAnimation *animation,
           clip == animation->selected_clip
               ? vkr_ui_color_alpha(vkr_ui_theme()->accent, 0.24f)
               : vkr_ui_theme()->raised;
-      snprintf(status, sizeof(status), "%u  %.*s", clip,
-               (int)Min(asset->clips[clip].name.length, 100u),
-               asset->clips[clip].name.str);
-      if (vkr_ui_button(ui, string8_lit("clip"),
-                        string8_create((uint8_t *)status, strlen(status)),
-                        &item)) {
+      string_format(status, sizeof(status), "%u  %.*s", clip,
+                    (int)Min(asset->clips[clip].name.length, 100u),
+                    asset->clips[clip].name.str);
+      if (vkr_ui_button(
+              ui, string8_lit("clip"),
+              string8_create((uint8_t *)status, string_length(status)),
+              &item)) {
         animation->selected_clip = clip;
         if (!animation->sequence) {
           animation->clip_preview = true_v;
@@ -1482,8 +1484,8 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
       const float64_t end = start + asset->clips[clip].duration;
       (void)vkr_ui_push_id_u64(ui, i);
       const float64_t fade = animation_overlap(&animation->document, asset, i);
-      snprintf(status, sizeof(status), "%u\n%.2f - %.2fs\nFade %.2fs", clip,
-               start, end, fade);
+      string_format(status, sizeof(status), "%u\n%.2f - %.2fs\nFade %.2fs",
+                    clip, start, end, fade);
       VkrUiWidgetConfig block = animation_widget(0, 0);
       block.placement.justify = VKR_UI_ALIGN_START;
       block.placement.align = VKR_UI_ALIGN_START;
@@ -1505,9 +1507,10 @@ static void animation_build_timeline(VkrEditorUi *editor, VkrUiSystem *ui,
               ? vkr_ui_color_alpha(vkr_ui_theme()->accent, 0.35f)
               : (Vec4){0.16f, 0.26f, 0.42f, 1};
       block.tooltip = asset->clips[clip].name;
-      if (vkr_ui_button(ui, string8_lit("block"),
-                        string8_create((uint8_t *)status, strlen(status)),
-                        &block)) {
+      if (vkr_ui_button(
+              ui, string8_lit("block"),
+              string8_create((uint8_t *)status, string_length(status)),
+              &block)) {
         animation->selected_block = i;
         animation->time = start;
         animation->pose_seek = true_v;
@@ -1542,8 +1545,8 @@ static void animation_build_sequence(VkrEditorUi *editor, VkrUiSystem *ui,
                                      const VkrAnimationAsset *asset) {
   VkrEditorAnimation *animation = &editor->animation;
   char status[160];
-  snprintf(status, sizeof(status), "Overlap fade %.2fs",
-           animation->document.crossfade_seconds);
+  string_format(status, sizeof(status), "Overlap fade %.2fs",
+                animation->document.crossfade_seconds);
   animation_label(ui, "sequence.fade.label", status, 2, 5);
   animation_property_float(animation, ui, "sequence.fade",
                            &animation->document.crossfade_seconds, 0, 5, 3, 5);
@@ -1590,12 +1593,14 @@ static void animation_build_sequence(VkrEditorUi *editor, VkrUiSystem *ui,
         Min(animation->selected_block, animation->document.block_count - 1u);
     const VkrAnimationClip *clip =
         &asset->clips[animation->document.blocks[selected]];
-    snprintf(status, sizeof(status), "Block %u: %.*s (%.3fs)", selected + 1u,
-             (int)Min(clip->name.length, 90u), clip->name.str, clip->duration);
+    string_format(status, sizeof(status), "Block %u: %.*s (%.3fs)",
+                  selected + 1u, (int)Min(clip->name.length, 90u),
+                  clip->name.str, clip->duration);
     VkrUiWidgetConfig detail = animation_widget(0, 7);
     detail.placement.column_span = 2;
     vkr_ui_label(ui, string8_lit("selected.block"),
-                 string8_create((uint8_t *)status, strlen(status)), &detail);
+                 string8_create((uint8_t *)status, string_length(status)),
+                 &detail);
   }
 }
 
@@ -1640,7 +1645,8 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
             ? animation->error
             : "Select a character with an animation bank in the Hierarchy.";
     vkr_ui_label(ui, string8_lit("empty"),
-                 string8_create((uint8_t *)message, strlen(message)), &empty);
+                 string8_create((uint8_t *)message, string_length(message)),
+                 &empty);
     (void)vkr_ui_panel_end(ui);
     return;
   }
@@ -1696,10 +1702,10 @@ void vkr_editor_animation_build(VkrEditorUi *editor,
     VkrUiWidgetConfig error = animation_widget(0, 8);
     error.placement.column_span = 4;
     error.style.text_color = vkr_ui_theme()->error;
-    vkr_ui_label(
-        ui, string8_lit("error"),
-        string8_create((uint8_t *)animation->error, strlen(animation->error)),
-        &error);
+    vkr_ui_label(ui, string8_lit("error"),
+                 string8_create((uint8_t *)animation->error,
+                                string_length(animation->error)),
+                 &error);
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -1715,13 +1721,14 @@ bool8_t vkr_editor_animation_write_settings(const VkrEditorAnimation *animation,
            vkr_json_writer_end_object(writer);
   }
   char fingerprint[17];
-  snprintf(fingerprint, sizeof(fingerprint), "%016llx",
-           (unsigned long long)animation->fingerprint);
+  string_format(fingerprint, sizeof(fingerprint), "%016llx",
+                (unsigned long long)animation->fingerprint);
   bool8_t ok =
       vkr_json_writer_begin_object(writer) &&
       vkr_json_writer_name(writer, string8_lit("fingerprint")) &&
-      vkr_json_writer_string(writer, string8_create((uint8_t *)fingerprint,
-                                                    strlen(fingerprint))) &&
+      vkr_json_writer_string(
+          writer,
+          string8_create((uint8_t *)fingerprint, string_length(fingerprint))) &&
       vkr_json_writer_name(writer, string8_lit("graph")) &&
       vkr_animation_graph_write_json(writer, &animation->document.graph) &&
       vkr_json_writer_name(writer, string8_lit("crossfade")) &&
@@ -1819,8 +1826,8 @@ void vkr_editor_animation_read_settings(VkrEditorAnimation *animation,
     while (vkr_json_next_array_element(&reader)) {
       float64_t value = 0;
       if (count >= (document.graph.node_count + 1u) * 2u ||
-          !vkr_json_parse_double(&reader, &value) || !isfinite(value) ||
-          value < 0 || value > 10000) {
+          !vkr_json_parse_double(&reader, &value) ||
+          !vkr_is_finite_f64(value) || value < 0 || value > 10000) {
         return;
       }
       Vec2 *position = count / 2u == document.graph.node_count

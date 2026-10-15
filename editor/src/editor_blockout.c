@@ -5,12 +5,9 @@
 #include "editor_level.h"
 #include "editor_ops.h"
 #include "level/vkr_brush.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_types.h"
-
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 /* Most overlay segments a frame: the shape a drag previews and the
    handles. */
@@ -83,7 +80,7 @@ static const Vec4 BLOCKOUT_INSERT_COLOR = {0.4f, 1.0f, 0.45f, 1.0f};
 
 static VkrEditorBlockout *blockout_state(VkrEditorUi *editor) {
   if (!editor->blockout) {
-    editor->blockout = calloc(1u, sizeof(*editor->blockout));
+    editor->blockout = vkr_heap_alloc_zeroed(1u, sizeof(*editor->blockout));
   }
   return editor->blockout;
 }
@@ -125,10 +122,11 @@ static Vec3 blockout_arc_point(const SceneBlockout *shape, float32_t degrees,
   const float32_t a = degrees * 0.0174532925f;
   const Vec3 center = blockout_arc_center(shape);
   if (shape->stairs == SCENE_STAIRS_SPIRAL) {
-    return vec3_new(side * sinf(a) * radius, 0.0f, cosf(a) * radius);
+    return vec3_new(side * vkr_sin_f32(a) * radius, 0.0f,
+                    vkr_cos_f32(a) * radius);
   }
-  return vec3_add(center,
-                  vec3_new(-side * cosf(a) * radius, 0.0f, sinf(a) * radius));
+  return vec3_add(center, vec3_new(-side * vkr_cos_f32(a) * radius, 0.0f,
+                                   vkr_sin_f32(a) * radius));
 }
 
 /* Corner `i` of a corridor: its half-turn's secant, 1 / cos(angle / 2), and
@@ -151,8 +149,9 @@ static bool8_t blockout_corner(const SceneBlockout *shape, uint32_t i,
   }
   /* The angle between the stretches is the turn; half of it sets how far
      the arc's middle lies from the corner. */
-  const float32_t half_turn = acosf(vkr_clamp_f32(cosine, -1.0f, 1.0f)) * 0.5f;
-  *out_secant = 1.0f / Max(cosf(half_turn), 0.05f);
+  const float32_t half_turn =
+      vkr_acos_f32(vkr_clamp_f32(cosine, -1.0f, 1.0f)) * 0.5f;
+  *out_secant = 1.0f / Max(vkr_cos_f32(half_turn), 0.05f);
   *out_inward = vec3_normalize(inward);
   return true_v;
 }
@@ -165,7 +164,7 @@ static float32_t blockout_corner_bulge(const SceneBlockout *shape, uint32_t i,
       vec3_length(vec3_sub(shape->points[i], shape->points[i - 1u]));
   const float32_t len1 =
       vec3_length(vec3_sub(shape->points[i + 1u], shape->points[i]));
-  const float32_t tangent = sqrtf(Max(secant * secant - 1.0f, 0.0f));
+  const float32_t tangent = vkr_sqrt_f32(Max(secant * secant - 1.0f, 0.0f));
   const float32_t reach = Min(radius * tangent, Min(len0, len1) * 0.5f);
   const float32_t fitted = tangent > 1.0e-4f ? reach / tangent : radius;
   return fitted * (secant - 1.0f);
@@ -285,13 +284,13 @@ static bool8_t blockout_axis_param(Vec3 anchor, Vec3 axis, Vec3 origin,
     return false_v;
   }
   *out = (b * vec3_dot(direction, w) - vec3_dot(axis, w)) / denominator;
-  return isfinite(*out);
+  return vkr_is_finite_f32(*out);
 }
 
 /* Where the ray meets the horizontal plane at `height`. */
 static bool8_t blockout_ray_level(Vec3 origin, Vec3 direction, float32_t height,
                                   Vec3 *out) {
-  if (fabsf(direction.y) < 1.0e-6f) {
+  if (vkr_abs_f32(direction.y) < 1.0e-6f) {
     return false_v;
   }
   const float32_t t = (height - origin.y) / direction.y;
@@ -343,8 +342,8 @@ static void blockout_drag(VkrEditorUi *editor, VkrEditorBlockout *state,
       return;
     }
     if (editor->placement.target != VKR_EDITOR_SNAP_FREE) {
-      hit.x = roundf(hit.x / step) * step;
-      hit.z = roundf(hit.z / step) * step;
+      hit.x = vkr_round_f32(hit.x / step) * step;
+      hit.z = vkr_round_f32(hit.z / step) * step;
     }
     Vec3 local = mat4_mul_vec3(state->inverse, hit);
     local.y = state->start.points[handle->index].y;
@@ -369,7 +368,7 @@ static void blockout_drag(VkrEditorUi *editor, VkrEditorBlockout *state,
     const Vec3 before = state->turn_previous;
     const float32_t crossed = before.z * now.x - before.x * now.z;
     const float32_t delta =
-        atan2f(crossed, vec3_dot(before, now)) * 57.2957795f;
+        vkr_atan2_f32(crossed, vec3_dot(before, now)) * 57.2957795f;
     state->turn_previous = now;
     /* Increasing turn moves the end the way the arc runs. */
     const Vec3 a0 =
@@ -385,7 +384,8 @@ static void blockout_drag(VkrEditorUi *editor, VkrEditorBlockout *state,
         editor->placement.target == VKR_EDITOR_SNAP_FREE ? 1.0f : 15.0f;
     const bool8_t spiral = state->start.stairs == SCENE_STAIRS_SPIRAL;
     state->draft.turn = vkr_clamp_f32(
-        roundf((state->start.turn + state->turn_accumulated) / snap) * snap,
+        vkr_round_f32((state->start.turn + state->turn_accumulated) / snap) *
+            snap,
         15.0f, spiral ? VKR_BLOCKOUT_TURN_MAX : 360.0f);
     /* A spiral's end climbs as it turns on, at the same pitch. */
     if (spiral && state->start.turn > 1.0e-3f) {
@@ -417,7 +417,7 @@ static void blockout_drag(VkrEditorUi *editor, VkrEditorBlockout *state,
         (param - state->press_param);
     const float32_t radius = Max(bulge, 0.0f) / Max(secant - 1.0f, 1.0e-3f);
     state->draft.corners[handle->index] =
-        Min(roundf(radius / (step * 0.5f)) * (step * 0.5f), 64.0f);
+        Min(vkr_round_f32(radius / (step * 0.5f)) * (step * 0.5f), 64.0f);
     return;
   }
   default: {
@@ -431,10 +431,11 @@ static void blockout_drag(VkrEditorUi *editor, VkrEditorBlockout *state,
     }
     const float32_t lowest = handle->kind == HANDLE_RADIUS ? 0.0f : 0.25f;
     const float32_t moved = (param - state->press_param) * handle->rate;
-    *value = Max(
-        lowest,
-        roundf((*blockout_value(&state->start, handle->kind) + moved) / step) *
-            step);
+    *value =
+        Max(lowest,
+            vkr_round_f32(
+                (*blockout_value(&state->start, handle->kind) + moved) / step) *
+                step);
     if (handle->kind == HANDLE_HEIGHT) {
       *value = Min(*value, VKR_BLOCKOUT_HEIGHT_MAX);
     }
@@ -560,11 +561,12 @@ void vkr_editor_blockout_submit(VkrEditorUi *editor, VkrEntityId group,
     return;
   }
   char line[4352];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"blockout\",\"op\":\"blockout.build\",\"args\":{"
-           "\"entity\":\"%u:%u:%u\",\"values\":%s,\"review\":false}}",
-           (unsigned)group.parts.world, (unsigned)group.parts.index,
-           (unsigned)group.parts.generation, values);
+  string_format(
+      line, sizeof(line),
+      "{\"v\":1,\"id\":\"blockout\",\"op\":\"blockout.build\",\"args\":{"
+      "\"entity\":\"%u:%u:%u\",\"values\":%s,\"review\":false}}",
+      (unsigned)group.parts.world, (unsigned)group.parts.index,
+      (unsigned)group.parts.generation, values);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -594,7 +596,7 @@ static int32_t blockout_pick(const VkrEditorBlockout *state,
     }
     const float32_t dx = pixel.x - (float32_t)frame->ui->mouse_x;
     const float32_t dy = pixel.y - (float32_t)frame->ui->mouse_y;
-    const float32_t gap = sqrtf(dx * dx + dy * dy);
+    const float32_t gap = vkr_sqrt_f32(dx * dx + dy * dy);
     if (gap < best_gap) {
       best_gap = gap;
       best = (int32_t)i;
@@ -787,6 +789,6 @@ uint32_t vkr_editor_blockout_lines(const VkrEditorUi *editor,
 }
 
 void vkr_editor_blockout_destroy(VkrEditorUi *editor) {
-  free(editor->blockout);
+  vkr_heap_free(editor->blockout);
   editor->blockout = NULL;
 }

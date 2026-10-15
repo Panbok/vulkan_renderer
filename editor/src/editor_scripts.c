@@ -12,17 +12,6 @@
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <ctype.h>
-#include <stdio.h>
-#include <string.h>
-
-#if defined(PLATFORM_WINDOWS)
-#include <windows.h>
-#else
-#include <dirent.h>
-#include <sys/stat.h>
-#endif
-
 #define SCRIPTS_NONE UINT32_MAX
 /* The runtime's name for the open project's library; one project is open at
    a time and closing it retires the library. */
@@ -91,56 +80,74 @@ struct VkrEditorScripts {
 static bool8_t scripts_join(char *out, const char *directory,
                             const char *name) {
   const int32_t written =
-      snprintf(out, VKR_EDITOR_SCRIPT_PATH, "%s/%s", directory, name);
+      string_format(out, VKR_EDITOR_SCRIPT_PATH, "%s/%s", directory, name);
   return written > 0 && written < (int32_t)VKR_EDITOR_SCRIPT_PATH;
 }
 
 static bool8_t scripts_is_file(const char *path) {
-  FILE *file = file_fopen(path, "rb");
-  if (file) {
-    fclose(file);
-  }
-  return file != NULL;
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  const bool8_t opened =
+      file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) == FILE_ERROR_NONE;
+  file_close(&file);
+  return opened;
 }
 
 /* Whole file into allocator memory with a trailing NUL, or NULL. */
 static uint8_t *scripts_read(VkrAllocator *allocator, const char *path,
                              uint64_t *out_length) {
-  FILE *file = file_fopen(path, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return NULL;
   }
   uint8_t *data = NULL;
   uint64_t length = 0u;
-  if (fseek(file, 0, SEEK_END) == 0) {
-    const long size = ftell(file);
-    if (size >= 0 && size < (long)(64u << 20) &&
-        fseek(file, 0, SEEK_SET) == 0) {
-      data = vkr_allocator_alloc(allocator, (uint64_t)size + 1u,
+  uint64_t size = 0u;
+  if (file_remaining_size(&file, &size) == FILE_ERROR_NONE) {
+    if (size < (uint64_t)(64u << 20)) {
+      data = vkr_allocator_alloc(allocator, size + 1u,
                                  VKR_ALLOCATOR_MEMORY_TAG_FILE);
-      if (data && fread(data, 1u, (size_t)size, file) == (size_t)size) {
+      uint64_t read = 0u;
+      if (data && file_read_into(&file, data, size, &read) == FILE_ERROR_NONE &&
+          read == size) {
         data[size] = 0;
-        length = (uint64_t)size;
+        length = size;
       } else if (data) {
-        vkr_allocator_free(allocator, data, (uint64_t)size + 1u,
+        vkr_allocator_free(allocator, data, size + 1u,
                            VKR_ALLOCATOR_MEMORY_TAG_FILE);
         data = NULL;
       }
     }
   }
-  fclose(file);
+  file_close(&file);
   *out_length = length;
   return data;
 }
 
 static bool8_t scripts_write(const char *path, const char *text) {
-  FILE *file = file_fopen(path, "wb");
-  if (!file) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return false_v;
   }
-  const size_t length = strlen(text);
-  const bool8_t written = fwrite(text, 1u, length, file) == length;
-  return fclose(file) == 0 && written;
+  const uint64_t length = string_length(text);
+  bool8_t written = true_v;
+  if (length > 0u) {
+    uint64_t bytes_written = 0u;
+    written = file_write(&file, length, (const uint8_t *)text,
+                         &bytes_written) == FILE_ERROR_NONE &&
+              bytes_written == length;
+  }
+  file_close(&file);
+  return written;
 }
 
 /* The directory helper borrows a scoped arena for its path copies. */
@@ -156,7 +163,7 @@ static bool8_t scripts_make_directory(VkrAllocator *allocator,
     return false_v;
   }
   const String8 directory =
-      string8_create_from_cstr((const uint8_t *)path, strlen(path));
+      string8_create_from_cstr((const uint8_t *)path, string_length(path));
   const bool8_t made = file_ensure_directory(&scratch, &directory);
   vkr_allocator_release_global_accounting(&scratch);
   arena_destroy(arena);
@@ -179,60 +186,36 @@ static uint64_t scripts_fingerprint(VkrAllocator *allocator, const char *path) {
   return hash ? hash : 1u;
 }
 
+/* Forwards the lib's directory entries, skipping names that begin with '.'. */
+typedef struct EditorDirectoryList {
+  VkrEditorDirectoryVisit visit;
+  void *context;
+} EditorDirectoryList;
+
+static bool8_t editor_directory_list_visit(void *context, const char *name,
+                                           bool8_t is_directory) {
+  const EditorDirectoryList *list = context;
+  if (name[0] != '.') {
+    list->visit(list->context, name, is_directory);
+  }
+  return true_v;
+}
+
 void vkr_editor_directory_list(const char *path, VkrEditorDirectoryVisit visit,
                                void *context) {
-#if defined(PLATFORM_WINDOWS)
-  char pattern[VKR_EDITOR_SCRIPT_PATH];
-  wchar_t wide[VKR_EDITOR_SCRIPT_PATH];
-  if (!scripts_join(pattern, path, "*") ||
-      !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pattern, -1, wide,
-                           ArrayCount(wide))) {
-    return;
-  }
-  WIN32_FIND_DATAW entry;
-  HANDLE search = FindFirstFileW(wide, &entry);
-  if (search == INVALID_HANDLE_VALUE) {
-    return;
-  }
-  do {
-    char name[256];
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, entry.cFileName, -1,
-                            name, sizeof(name), NULL, NULL) &&
-        name[0] != '.') {
-      visit(context, name,
-            (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
-    }
-  } while (FindNextFileW(search, &entry));
-  FindClose(search);
-#else
-  DIR *directory = opendir(path);
-  if (!directory) {
-    return;
-  }
-  struct dirent *entry;
-  while ((entry = readdir(directory))) {
-    if (entry->d_name[0] == '.') {
-      continue;
-    }
-    char child[VKR_EDITOR_SCRIPT_PATH];
-    struct stat info;
-    const bool8_t is_directory = scripts_join(child, path, entry->d_name) &&
-                                 stat(child, &info) == 0 &&
-                                 S_ISDIR(info.st_mode);
-    visit(context, entry->d_name, is_directory);
-  }
-  closedir(directory);
-#endif
+  const FilePath directory = file_path_view(path);
+  EditorDirectoryList list = {.visit = visit, .context = context};
+  (void)file_list_directory(&directory, editor_directory_list_visit, &list);
 }
 
 static bool8_t scripts_name_valid(const char *name) {
-  const size_t length = strlen(name);
+  const size_t length = string_length(name);
   if (!length || length >= VKR_EDITOR_SCRIPT_NAME ||
-      !(isalpha((unsigned char)name[0]) || name[0] == '_')) {
+      !(vkr_char_is_alpha((unsigned char)name[0]) || name[0] == '_')) {
     return false_v;
   }
   for (size_t i = 0; i < length; ++i) {
-    if (!(isalnum((unsigned char)name[i]) || name[i] == '_')) {
+    if (!(vkr_char_is_alnum((unsigned char)name[i]) || name[i] == '_')) {
       return false_v;
     }
   }
@@ -249,9 +232,9 @@ typedef struct ScriptsScan {
 } ScriptsScan;
 
 static bool8_t scripts_source_name(const char *name) {
-  const char *dot = strrchr(name, '.');
-  return dot &&
-         (!strcmp(dot, ".c") || !strcmp(dot, ".h") || !strcmp(dot, ".json"));
+  const char *dot = string_get_last_char_occurrence(name, '.');
+  return dot && (string_equals(dot, ".c") || string_equals(dot, ".h") ||
+                 string_equals(dot, ".json"));
 }
 
 static void scripts_visit_file(void *context, const char *name,
@@ -267,7 +250,7 @@ static void scripts_visit_file(void *context, const char *name,
                     name)) {
     return;
   }
-  snprintf(file->name, sizeof(file->name), "%s", name);
+  string_format(file->name, sizeof(file->name), "%s", name);
   file->module = scan->module;
   scripts->file_count++;
 }
@@ -283,19 +266,20 @@ static void scripts_read_description(VkrEditorScripts *scripts,
     return;
   }
   const char *text = (const char *)data;
-  const char *kind = strstr(text, "\"kind\"");
+  const char *kind = string_find(text, "\"kind\"");
   if (kind) {
-    const char *value = strchr(kind + 6, '"');
-    module->library_kind = value && !strncmp(value, "\"library\"", 9);
+    const char *value = string_find_char(kind + 6, '"');
+    module->library_kind = value && string_n_equals(value, "\"library\"", 9);
   }
-  const char *dependencies = strstr(text, "\"dependencies\"");
-  const char *open = dependencies ? strchr(dependencies, '[') : NULL;
-  const char *close = open ? strchr(open, ']') : NULL;
+  const char *dependencies = string_find(text, "\"dependencies\"");
+  const char *open = dependencies ? string_find_char(dependencies, '[') : NULL;
+  const char *close = open ? string_find_char(open, ']') : NULL;
   for (const char *at = open;
        at && at < close &&
        module->dependency_count < VKR_EDITOR_SCRIPT_DEPENDENCY_MAX;) {
-    const char *start = strchr(at, '"');
-    const char *end = start && start < close ? strchr(start + 1, '"') : NULL;
+    const char *start = string_find_char(at, '"');
+    const char *end =
+        start && start < close ? string_find_char(start + 1, '"') : NULL;
     if (!end || end > close) {
       break;
     }
@@ -321,9 +305,9 @@ static void scripts_visit_module(void *context, const char *name,
     return;
   }
   VkrEditorScriptModule module = {.watch = 0u};
-  snprintf(module.name, sizeof(module.name), "%s", name);
+  string_format(module.name, sizeof(module.name), "%s", name);
   char description[VKR_EDITOR_SCRIPT_PATH];
-  snprintf(description, sizeof(description), "%s.script.json", name);
+  string_format(description, sizeof(description), "%s.script.json", name);
   if (!scripts_join(module.directory, scripts->scripts_directory, name) ||
       !scripts_join(module.description, module.directory, description) ||
       !scripts_is_file(module.description)) {
@@ -340,11 +324,11 @@ static void scripts_set_status(VkrEditorScripts *scripts,
                                VkrEditorScriptStatus status,
                                const char *message) {
   scripts->status = status;
-  snprintf(scripts->message, sizeof(scripts->message), "%s", message);
+  string_format(scripts->message, sizeof(scripts->message), "%s", message);
   for (uint32_t i = 0; i < scripts->module_count; ++i) {
     scripts->modules[i].status = status;
-    snprintf(scripts->modules[i].message, sizeof(scripts->modules[i].message),
-             "%s", message);
+    string_format(scripts->modules[i].message,
+                  sizeof(scripts->modules[i].message), "%s", message);
   }
 }
 
@@ -363,9 +347,10 @@ static void scripts_scan(VkrEditorScripts *scripts,
   for (uint32_t i = 0; i < scripts->module_count; ++i) {
     VkrEditorScriptModule *module = &scripts->modules[i];
     module->status = scripts->status;
-    snprintf(module->message, sizeof(module->message), "%s", scripts->message);
+    string_format(module->message, sizeof(module->message), "%s",
+                  scripts->message);
     for (uint32_t p = 0; p < previous_count; ++p) {
-      if (!strcmp(previous[p].name, module->name)) {
+      if (string_equals(previous[p].name, module->name)) {
         module->watch = previous[p].watch;
         previous[p].watch = 0u;
       }
@@ -386,8 +371,8 @@ static void scripts_scan(VkrEditorScripts *scripts,
 static uint32_t scripts_index_of(const VkrEditorScripts *scripts,
                                  const char *path) {
   for (uint32_t i = 0; path && i < scripts->module_count; ++i) {
-    const size_t length = strlen(scripts->modules[i].directory);
-    if (!strncmp(path, scripts->modules[i].directory, length) &&
+    const size_t length = string_length(scripts->modules[i].directory);
+    if (string_n_equals(path, scripts->modules[i].directory, length) &&
         (path[length] == '/' || path[length] == '\\' || !path[length])) {
       return i;
     }
@@ -469,13 +454,15 @@ static void scripts_read_diagnostics(VkrEditorScripts *scripts,
     char *line = (char *)events;
     while (line && *line &&
            scripts->diagnostic_count < VKR_EDITOR_SCRIPT_DIAGNOSTIC_MAX) {
-      char *end = strchr(line, '\n');
+      const char *newline = string_find_char(line, '\n');
+      char *end = newline ? line + (newline - line) : NULL;
       if (end) {
         *end = '\0';
       }
-      if (line[0] == '{' && strstr(line, "\"ev\":\"diag\"")) {
-        const VkrJsonReader root = vkr_json_reader_from_string(
-            string8_create_from_cstr((const uint8_t *)line, strlen(line)));
+      if (line[0] == '{' && string_find(line, "\"ev\":\"diag\"")) {
+        const VkrJsonReader root =
+            vkr_json_reader_from_string(string8_create_from_cstr(
+                (const uint8_t *)line, string_length(line)));
         VkrJsonReader field = root;
         String8 source = {0};
         String8 message = {0};
@@ -511,16 +498,16 @@ static void scripts_read_diagnostics(VkrEditorScripts *scripts,
         if (has_source && source.length &&
             (source.str[0] == '/' ||
              (source.length > 1u && source.str[1] == ':'))) {
-          snprintf(diagnostic->path, sizeof(diagnostic->path), "%.*s",
-                   (int32_t)source.length, (const char *)source.str);
+          string_format(diagnostic->path, sizeof(diagnostic->path), "%.*s",
+                        (int32_t)source.length, (const char *)source.str);
         } else if (has_source) {
-          snprintf(diagnostic->path, sizeof(diagnostic->path), "%s/%.*s",
-                   scripts->scripts_directory, (int32_t)source.length,
-                   (const char *)source.str);
+          string_format(diagnostic->path, sizeof(diagnostic->path), "%s/%.*s",
+                        scripts->scripts_directory, (int32_t)source.length,
+                        (const char *)source.str);
         }
         diagnostic->module = scripts_index_of(scripts, diagnostic->path);
-        snprintf(diagnostic->message, sizeof(diagnostic->message), "%.*s",
-                 (int32_t)message.length, (const char *)message.str);
+        string_format(diagnostic->message, sizeof(diagnostic->message), "%.*s",
+                      (int32_t)message.length, (const char *)message.str);
         scripts->diagnostic_count++;
       }
       line = end ? end + 1 : NULL;
@@ -547,11 +534,12 @@ static void scripts_build_finished(VkrEditorScripts *scripts,
       errors += scripts->diagnostics[i].error;
     }
     char message[256];
-    snprintf(message, sizeof(message),
-             process_ok ? "Build failed with %u error%s; the previous code "
-                          "keeps running"
-                        : "Bakery could not run the build",
-             errors, errors == 1u ? "" : "s");
+    string_format(message, sizeof(message),
+                  process_ok
+                      ? "Build failed with %u error%s; the previous code "
+                        "keeps running"
+                      : "Bakery could not run the build",
+                  errors, errors == 1u ? "" : "s");
     scripts_set_status(scripts, VKR_EDITOR_SCRIPT_BUILD_FAILED, message);
     log_error("Scripts: %s", message);
     return;
@@ -569,8 +557,8 @@ static void scripts_build_finished(VkrEditorScripts *scripts,
   }
   VkrSampleScriptLoad *load = &request->loads[request->load_count++];
   *load = (VkrSampleScriptLoad){.project = true_v};
-  snprintf(load->name, sizeof(load->name), "%s", SCRIPTS_PROJECT_LIBRARY);
-  snprintf(load->path, sizeof(load->path), "%s", scripts->library);
+  string_format(load->name, sizeof(load->name), "%s", SCRIPTS_PROJECT_LIBRARY);
+  string_format(load->path, sizeof(load->path), "%s", scripts->library);
   scripts->pending_fingerprint = fingerprint;
   scripts_set_status(scripts, VKR_EDITOR_SCRIPT_LOADING, "Loading");
 }
@@ -624,13 +612,13 @@ void vkr_editor_scripts_open(VkrEditorScripts *scripts,
                              EditorBakeryService *service,
                              const VkrSampleUiFrame *frame) {
   vkr_editor_scripts_close_project(scripts, service, frame);
-  snprintf(scripts->scripts_directory, sizeof(scripts->scripts_directory), "%s",
-           scripts_directory);
-  snprintf(scripts->output_root, sizeof(scripts->output_root), "%s",
-           output_root);
+  string_format(scripts->scripts_directory, sizeof(scripts->scripts_directory),
+                "%s", scripts_directory);
+  string_format(scripts->output_root, sizeof(scripts->output_root), "%s",
+                output_root);
   char library[VKR_EDITOR_SCRIPT_NAME + 16u];
-  snprintf(library, sizeof(library), "%s%s%s", SCRIPTS_LIBRARY_PREFIX,
-           SCRIPTS_PROJECT_LIBRARY, SCRIPTS_LIBRARY_SUFFIX);
+  string_format(library, sizeof(library), "%s%s%s", SCRIPTS_LIBRARY_PREFIX,
+                SCRIPTS_PROJECT_LIBRARY, SCRIPTS_LIBRARY_SUFFIX);
   if (!scripts_join(scripts->library, scripts->output_root, library)) {
     scripts->library[0] = '\0';
   }
@@ -722,7 +710,7 @@ void vkr_editor_scripts_update(VkrEditorScripts *scripts,
   for (uint32_t r = 0; r < frame->script_result_count; ++r) {
     const VkrSampleScriptResult *result = &frame->script_results[r];
     if (result->serial <= scripts->result_serial ||
-        strcmp(result->name, SCRIPTS_PROJECT_LIBRARY)) {
+        !string_equals(result->name, SCRIPTS_PROJECT_LIBRARY)) {
       continue;
     }
     scripts->result_serial = result->serial;
@@ -817,7 +805,7 @@ uint32_t vkr_editor_scripts_header_folders(const VkrEditorScripts *scripts,
           seen = order[k] == m;
         }
         if (!seen && count < ArrayCount(order) &&
-            !strcmp(scripts->modules[m].name, module->dependencies[d])) {
+            string_equals(scripts->modules[m].name, module->dependencies[d])) {
           order[count++] = m;
         }
       }
@@ -883,17 +871,17 @@ static bool8_t scripts_expand(const char *name, const char *lower,
   for (const char *at = s_template; *at;) {
     const char *value = NULL;
     uint32_t skip = 0u;
-    if (!strncmp(at, "{Name}", 6)) {
+    if (string_n_equals(at, "{Name}", 6)) {
       value = name;
       skip = 6u;
-    } else if (!strncmp(at, "{name}", 6)) {
+    } else if (string_n_equals(at, "{name}", 6)) {
       value = lower;
       skip = 6u;
-    } else if (!strncmp(at, "{NAME}", 6)) {
+    } else if (string_n_equals(at, "{NAME}", 6)) {
       value = upper;
       skip = 6u;
     }
-    const uint64_t count = value ? strlen(value) : 1u;
+    const uint64_t count = value ? string_length(value) : 1u;
     if (length + count + 1u > capacity) {
       return false_v;
     }
@@ -918,18 +906,18 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
     failure = "Use a C identifier: letters, digits and underscores";
   }
   for (uint32_t i = 0; !failure && i < scripts->module_count; ++i) {
-    if (!strcmp(scripts->modules[i].name, name)) {
+    if (string_equals(scripts->modules[i].name, name)) {
       failure = "A script module with that name exists";
     }
   }
   if (!failure) {
-    const size_t length = strlen(name);
+    const size_t length = string_length(name);
     for (size_t i = 0; i <= length; ++i) {
-      type[i] = (char)tolower((unsigned char)name[i]);
-      upper[i] = (char)toupper((unsigned char)name[i]);
+      type[i] = (char)vkr_char_to_lower((unsigned char)name[i]);
+      upper[i] = (char)vkr_char_to_upper((unsigned char)name[i]);
     }
-    if (vkr_scene_world_type_named(
-            string8_create_from_cstr((const uint8_t *)type, strlen(type)))) {
+    if (vkr_scene_world_type_named(string8_create_from_cstr(
+            (const uint8_t *)type, string_length(type)))) {
       failure = "A component type with that name exists";
     }
   }
@@ -938,12 +926,12 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
   char source[VKR_EDITOR_SCRIPT_PATH];
   char file_name[VKR_EDITOR_SCRIPT_NAME + 16u];
   if (!failure) {
-    snprintf(file_name, sizeof(file_name), "%s.script.json", name);
+    string_format(file_name, sizeof(file_name), "%s.script.json", name);
     if (!scripts_join(directory, scripts->scripts_directory, name) ||
         !scripts_join(description, directory, file_name)) {
       failure = "The script path is too long";
     }
-    snprintf(file_name, sizeof(file_name), "%s.c", type);
+    string_format(file_name, sizeof(file_name), "%s.c", type);
     if (!failure && !scripts_join(source, directory, file_name)) {
       failure = "The script path is too long";
     }
@@ -953,10 +941,10 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
   }
   if (!failure) {
     char json[256];
-    snprintf(json, sizeof(json),
-             "{\n  \"language\": \"c\",\n  \"sources\": [\"%s.c\"],\n"
-             "  \"standard\": \"c11\"\n}\n",
-             type);
+    string_format(json, sizeof(json),
+                  "{\n  \"language\": \"c\",\n  \"sources\": [\"%s.c\"],\n"
+                  "  \"standard\": \"c11\"\n}\n",
+                  type);
     const uint64_t capacity = sizeof(s_template) + 16u * 64u;
     char *text = vkr_allocator_alloc(scripts->allocator, capacity,
                                      VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -972,7 +960,7 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
     }
   }
   if (failure) {
-    snprintf(error, error_capacity, "%s", failure);
+    string_format(error, error_capacity, "%s", failure);
     return false_v;
   }
   /* List and build it now rather than waiting for the folder watch. */
@@ -980,7 +968,7 @@ bool8_t vkr_editor_scripts_create_module(VkrEditorScripts *scripts,
   if (scripts_index_of(scripts, source) != SCRIPTS_NONE) {
     scripts->rebuild = true_v;
   }
-  snprintf(out_path, out_capacity, "%s", source);
+  string_format(out_path, out_capacity, "%s", source);
   return true_v;
 }
 

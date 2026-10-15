@@ -6,10 +6,6 @@
 #include "editor_project_store.h"
 #include "editor_projects.h"
 #include "renderer/systems/vkr_gizmo_system.h"
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Cmd bar: a typed command line in the top bar, modeled on the Unreal
  * Editor's Cmd field. Typed lines and startup scripts share one interpreter
@@ -227,7 +223,51 @@ static String8 cmd_trim(String8 text) {
 }
 
 static String8 cmd_cstr(const char *text) {
-  return (String8){.str = (uint8_t *)text, .length = strlen(text)};
+  return (String8){.str = (uint8_t *)text, .length = string_length(text)};
+}
+
+/* Leading-number and word readers for argument lists, as sscanf's %f, %d
+   and %s conversions read them: each skips leading whitespace, and a failed
+   read leaves `*at` unchanged. */
+static bool8_t cmd_scan_f32(const char **at, float32_t *out) {
+  const char *end = NULL;
+  const float32_t value = string_parse_f32(*at, &end);
+  if (end == *at) {
+    return false_v;
+  }
+  *out = value;
+  *at = end;
+  return true_v;
+}
+
+static bool8_t cmd_scan_i32(const char **at, int32_t *out) {
+  const char *end = NULL;
+  const int64_t value = string_parse_i64(*at, &end);
+  if (end == *at) {
+    return false_v;
+  }
+  *out = (int32_t)value;
+  *at = end;
+  return true_v;
+}
+
+static bool8_t cmd_scan_word(const char **at, char *out, uint64_t capacity) {
+  const char *from = *at;
+  while (vkr_char_is_space(*from)) {
+    ++from;
+  }
+  uint64_t length = 0u;
+  while (from[length] && !vkr_char_is_space(from[length]) &&
+         length + 1u < capacity) {
+    out[length] = from[length];
+    ++length;
+  }
+  if (!length) {
+    return false_v;
+  }
+  out[length] = '\0';
+  *at = from + length;
+  return true_v;
 }
 
 static bool8_t cmd_equals(String8 a, String8 b) {
@@ -291,9 +331,9 @@ static bool8_t cmd_number(String8 word, float64_t *out) {
     return false_v;
   MemCopy(buffer, word.str, word.length);
   buffer[word.length] = '\0';
-  char *end = NULL;
-  const float64_t value = strtod(buffer, &end);
-  if (end != buffer + word.length || !isfinite(value))
+  const char *end = NULL;
+  const float64_t value = string_parse_f64(buffer, &end);
+  if (end != buffer + word.length || !vkr_is_finite_f64(value))
     return false_v;
   *out = value;
   return true_v;
@@ -304,9 +344,9 @@ static bool8_t cmd_switch(CmdContext *ctx, String8 word, bool8_t current,
                           bool8_t *out) {
   const int32_t index = word.length ? cmd_word_index(cmd_switches, word) : 2;
   if (index < 0) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Expected on, off or toggle, not '%.*s'", (int)word.length,
-             word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Expected on, off or toggle, not '%.*s'", (int)word.length,
+                  word.str);
     return false_v;
   }
   *out = index == 0 ? true_v : index == 1 ? false_v : !current;
@@ -318,14 +358,13 @@ static bool8_t cmd_switch(CmdContext *ctx, String8 word, bool8_t current,
  * and, for failures, a toast. Release builds without editor logging compile
  * info and warning logs out, so stdout is the dependable channel. */
 static void cmd_report(VkrEditorUi *editor, bool8_t ok, const char *text) {
-  fprintf(stdout, "[cmd] %s%s\n", ok ? "" : "error: ", text);
-  fflush(stdout);
+  vkr_platform_stdout_writef("[cmd] %s%s\n", ok ? "" : "error: ", text);
   /* The agent's `cmd` operation collects the lines its statement prints. */
   if (editor->cmd_capture && editor->cmd_capture_capacity) {
     const int written =
-        snprintf(editor->cmd_capture + editor->cmd_capture_length,
-                 editor->cmd_capture_capacity - editor->cmd_capture_length,
-                 "%s%s\n", ok ? "" : "error: ", text);
+        string_format(editor->cmd_capture + editor->cmd_capture_length,
+                      editor->cmd_capture_capacity - editor->cmd_capture_length,
+                      "%s%s\n", ok ? "" : "error: ", text);
     if (written > 0) {
       editor->cmd_capture_length =
           Min(editor->cmd_capture_length + (uint32_t)written,
@@ -364,8 +403,8 @@ static bool8_t cmd_run_brush_draw(CmdContext *ctx, const CmdDef *def,
   }
   vkr_editor_scene_tool_set(ctx->editor,
                             next ? tool : VKR_EDITOR_SCENE_TOOL_NONE);
-  snprintf(ctx->message, sizeof(ctx->message), "%s %s", names[def->value],
-           next ? "on" : "off");
+  string_format(ctx->message, sizeof(ctx->message), "%s %s", names[def->value],
+                next ? "on" : "off");
   return true_v;
 }
 
@@ -373,8 +412,8 @@ static bool8_t cmd_run_command(CmdContext *ctx, const CmdDef *def,
                                String8 arg) {
   (void)arg;
   if (!vkr_editor_command_enabled(def->command, ctx->editor, ctx->frame)) {
-    snprintf(ctx->message, sizeof(ctx->message), "%s is unavailable right now",
-             def->name);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "%s is unavailable right now", def->name);
     return false_v;
   }
   vkr_editor_command_execute(def->command, ctx->editor, ctx->frame);
@@ -392,11 +431,11 @@ static bool8_t cmd_run_build(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   if (name.length) {
     char text[64];
-    snprintf(text, sizeof(text), "%.*s", (int)Min(name.length, 63u),
-             (const char *)name.str);
+    string_format(text, sizeof(text), "%.*s", (int)Min(name.length, 63u),
+                  (const char *)name.str);
     if (!vkr_editor_build_select_profile(ctx->editor->build, text)) {
-      snprintf(ctx->message, sizeof(ctx->message), "No build profile '%s'",
-               text);
+      string_format(ctx->message, sizeof(ctx->message), "No build profile '%s'",
+                    text);
       return false_v;
     }
   }
@@ -416,7 +455,8 @@ static bool8_t cmd_run_build_camera(CmdContext *ctx, const CmdDef *def,
   const String8 option = cmd_trim(arg);
   const bool8_t clear = vkr_string8_equals_cstr(&option, "clear");
   if (option.length && !clear) {
-    snprintf(ctx->message, sizeof(ctx->message), "Usage: build.camera [clear]");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Usage: build.camera [clear]");
     return false_v;
   }
   return vkr_editor_build_startup_camera(ctx->editor->build, ctx->editor,
@@ -427,7 +467,7 @@ static bool8_t cmd_run_build_camera(CmdContext *ctx, const CmdDef *def,
 static bool8_t cmd_require_scene(CmdContext *ctx) {
   if (ctx->frame->scene || ctx->frame->world)
     return true_v;
-  snprintf(ctx->message, sizeof(ctx->message), "No scene is loaded");
+  string_format(ctx->message, sizeof(ctx->message), "No scene is loaded");
   return false_v;
 }
 
@@ -468,16 +508,16 @@ static bool8_t cmd_run_select(CmdContext *ctx, const CmdDef *def, String8 arg) {
   const String8 name = cmd_unquote(arg);
   const VkrEntityId entity = cmd_find_any(ctx->frame, name);
   if (!entity.u64) {
-    snprintf(ctx->message, sizeof(ctx->message), "No entity named '%.*s'",
-             (int)name.length, name.str);
+    string_format(ctx->message, sizeof(ctx->message), "No entity named '%.*s'",
+                  (int)name.length, name.str);
     return false_v;
   }
   *ctx->frame->scene_edit =
       (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_SELECT, .entity = entity};
   const String8 selected =
       vkr_scene_get_name(vkr_editor_entity_scene(ctx->frame, entity), entity);
-  snprintf(ctx->message, sizeof(ctx->message), "Selected %.*s",
-           (int)selected.length, selected.str);
+  string_format(ctx->message, sizeof(ctx->message), "Selected %.*s",
+                (int)selected.length, selected.str);
   return true_v;
 }
 
@@ -493,8 +533,8 @@ static bool8_t cmd_run_io_trace(CmdContext *ctx, const CmdDef *def,
   }
   ctx->frame->io_request->set_trace = true_v;
   ctx->frame->io_request->trace = next;
-  snprintf(ctx->message, sizeof(ctx->message), "IO trace %s",
-           next ? "on" : "off");
+  string_format(ctx->message, sizeof(ctx->message), "IO trace %s",
+                next ? "on" : "off");
   return true_v;
 }
 
@@ -525,21 +565,21 @@ static bool8_t cmd_run_io_fire(CmdContext *ctx, const CmdDef *def,
   VkrSampleIoRequest *request = ctx->frame->io_request;
   if (!entity.u64 || !input.length || input.length >= sizeof(request->input) ||
       value.length >= sizeof(request->value) || !request) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "io.fire needs an object, one of its inputs and an optional "
-             "value");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "io.fire needs an object, one of its inputs and an optional "
+                  "value");
     return false_v;
   }
   if (!ctx->frame->io_running) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Inputs reach objects only while the game plays");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Inputs reach objects only while the game plays");
     return false_v;
   }
   *request = (VkrSampleIoRequest){.target = entity, .send = true_v};
   MemCopy(request->input, input.str, input.length);
   MemCopy(request->value, value.str, value.length);
-  snprintf(ctx->message, sizeof(ctx->message), "Sent %.*s to %.*s",
-           (int)input.length, input.str, (int)name.length, name.str);
+  string_format(ctx->message, sizeof(ctx->message), "Sent %.*s to %.*s",
+                (int)input.length, input.str, (int)name.length, name.str);
   return true_v;
 }
 
@@ -552,7 +592,7 @@ static bool8_t cmd_run_visibility(CmdContext *ctx, const CmdDef *def,
   if (!vkr_scene_entity_alive(
           vkr_editor_entity_scene(ctx->frame, ctx->frame->selected_entity),
           ctx->frame->selected_entity)) {
-    snprintf(ctx->message, sizeof(ctx->message), "Nothing is selected");
+    string_format(ctx->message, sizeof(ctx->message), "Nothing is selected");
     return false_v;
   }
   vkr_editor_toggle_visibility(ctx->frame, ctx->frame->selected_entity);
@@ -565,9 +605,9 @@ static bool8_t cmd_run_panel(CmdContext *ctx, const CmdDef *def, String8 arg) {
   const int32_t index = cmd_word_index(
       def->arg == CMD_ARG_PANEL ? cmd_panels : cmd_windows, name);
   if (index < 0) {
-    snprintf(ctx->message, sizeof(ctx->message), "Unknown %s '%.*s'",
-             def->arg == CMD_ARG_PANEL ? "panel" : "window", (int)name.length,
-             name.str);
+    string_format(ctx->message, sizeof(ctx->message), "Unknown %s '%.*s'",
+                  def->arg == CMD_ARG_PANEL ? "panel" : "window",
+                  (int)name.length, name.str);
     return false_v;
   }
   if (def->arg == CMD_ARG_PANEL) {
@@ -588,8 +628,8 @@ static bool8_t cmd_run_panel(CmdContext *ctx, const CmdDef *def, String8 arg) {
       ((vkr_editor_views_offered(ctx->editor) >> view) & 1u)) {
     vkr_editor_view_show(ctx->editor, ctx->frame,
                          ctx->editor->workbenches.active, view);
-    snprintf(ctx->message, sizeof(ctx->message),
-             "%s is a view here; showing it", vkr_editor_view_name(view));
+    string_format(ctx->message, sizeof(ctx->message),
+                  "%s is a view here; showing it", vkr_editor_view_name(view));
     return true_v;
   }
   /* A docked panel hosts the window's body: show its tab. */
@@ -598,8 +638,8 @@ static bool8_t cmd_run_panel(CmdContext *ctx, const CmdDef *def, String8 arg) {
       vkr_editor_dock_has(ctx->frame->dock, docked)) {
     vkr_editor_dock_show(ctx->frame->dock, docked);
     const String8 tab = vkr_ui_dock_panel_label(docked);
-    snprintf(ctx->message, sizeof(ctx->message),
-             "%.*s is docked; showing its tab", (int)tab.length, tab.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "%.*s is docked; showing its tab", (int)tab.length, tab.str);
     return true_v;
   }
   bool8_t want = false_v;
@@ -622,9 +662,9 @@ static bool8_t cmd_run_workbench_edit(CmdContext *ctx, const CmdDef *def,
   if (def->value == 2u) {
     const bool8_t left = cmd_equals(word, cmd_cstr("left"));
     if (!left && !cmd_equals(word, cmd_cstr("right"))) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "Usage: workbench.move "
-               "<left|right>");
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Usage: workbench.move "
+                    "<left|right>");
       return false_v;
     }
     return vkr_editor_workbench_move(ctx->editor, workbenches->active,
@@ -635,8 +675,8 @@ static bool8_t cmd_run_workbench_edit(CmdContext *ctx, const CmdDef *def,
                              ? vkr_editor_workbench_find(workbenches, word)
                              : workbenches->active;
   if (index == UINT32_MAX) {
-    snprintf(ctx->message, sizeof(ctx->message), "Unknown workbench '%.*s'",
-             (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Unknown workbench '%.*s'", (int)word.length, word.str);
     return false_v;
   }
   return def->value == 0u
@@ -657,7 +697,7 @@ static bool8_t cmd_run_workbench(CmdContext *ctx, const CmdDef *def,
   if (!word.length) {
     uint64_t used = 0u;
     for (uint32_t i = 0; i < workbenches->count; ++i) {
-      used += (uint64_t)snprintf(
+      used += (uint64_t)string_format(
           ctx->message + used, sizeof(ctx->message) - used, "%s%u %s [%s]%s",
           i ? ", " : "", i + 1u, vkr_editor_workbench_name(workbenches, i),
           vkr_editor_workbench_id(workbenches, i),
@@ -669,8 +709,8 @@ static bool8_t cmd_run_workbench(CmdContext *ctx, const CmdDef *def,
   }
   const uint32_t index = vkr_editor_workbench_find(workbenches, word);
   if (index == UINT32_MAX) {
-    snprintf(ctx->message, sizeof(ctx->message), "Unknown workbench '%.*s'",
-             (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Unknown workbench '%.*s'", (int)word.length, word.str);
     return false_v;
   }
   return vkr_editor_workbench_request(ctx->editor, ctx->frame, index,
@@ -690,7 +730,7 @@ static bool8_t cmd_run_views(CmdContext *ctx, const CmdDef *def, String8 arg) {
       if (!((offered >> view) & 1u)) {
         continue;
       }
-      used += (uint64_t)snprintf(
+      used += (uint64_t)string_format(
           ctx->message + used, sizeof(ctx->message) - used, "%s%s%s",
           used ? ", " : "", vkr_editor_view_id((VkrEditorView)view),
           vkr_editor_view_active(ctx->editor) == view ? " (shown)" : "");
@@ -706,14 +746,15 @@ static bool8_t cmd_run_views(CmdContext *ctx, const CmdDef *def, String8 arg) {
   const VkrEditorView view = vkr_editor_view_find(word);
   if (view == VKR_EDITOR_VIEW_COUNT ||
       (remove && view == VKR_EDITOR_VIEW_SCENE)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Unknown view '%.*s'; scene, model, graph or script%s",
-             (int)word.length, word.str, remove ? " other than scene" : "");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Unknown view '%.*s'; scene, model, graph or script%s",
+                  (int)word.length, word.str,
+                  remove ? " other than scene" : "");
     return false_v;
   }
   if (ctx->frame->scene_only) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "The Scene-only view has no Views panel");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "The Scene-only view has no Views panel");
     return false_v;
   }
   if (remove) {
@@ -722,16 +763,16 @@ static bool8_t cmd_run_views(CmdContext *ctx, const CmdDef *def, String8 arg) {
     vkr_editor_view_show(ctx->editor, ctx->frame,
                          ctx->editor->workbenches.active, view);
   }
-  snprintf(ctx->message, sizeof(ctx->message), "%s %s",
-           remove ? "Removed" : "Showing", vkr_editor_view_name(view));
+  string_format(ctx->message, sizeof(ctx->message), "%s %s",
+                remove ? "Removed" : "Showing", vkr_editor_view_name(view));
   return true_v;
 }
 
 /* Viewport commands copy the runtime's current view and submit one change. */
 static bool8_t cmd_view_request(CmdContext *ctx, VkrSampleViewState next) {
   if (!ctx->frame->view_request) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "The Scene view is not available");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "The Scene view is not available");
     return false_v;
   }
   *ctx->frame->view_request =
@@ -747,9 +788,9 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
   if (words) {
     const int32_t index = cmd_word_index(words, word);
     if (def->arg != CMD_ARG_SWITCH && index < 0) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "Unknown value '%.*s'; try Tab for choices", (int)word.length,
-               word.str);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Unknown value '%.*s'; try Tab for choices",
+                    (int)word.length, word.str);
       return false_v;
     }
     if (def->arg == CMD_ARG_CAMERA_VIEW)
@@ -765,8 +806,8 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
       if (!cmd_switch(ctx, word, next.greybox_view, &next.greybox_view)) {
         return false_v;
       }
-      snprintf(ctx->message, sizeof(ctx->message), "Greybox view %s",
-               next.greybox_view ? "on" : "off");
+      string_format(ctx->message, sizeof(ctx->message), "Greybox view %s",
+                    next.greybox_view ? "on" : "off");
     } else if (def->value == 4u) {
       /* On applies the game's draw distances; off draws every object. */
       bool8_t game = !next.draw_distance_off;
@@ -774,15 +815,15 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
         return false_v;
       }
       next.draw_distance_off = !game;
-      snprintf(ctx->message, sizeof(ctx->message), "Draw distances %s",
-               game ? "on" : "off");
+      string_format(ctx->message, sizeof(ctx->message), "Draw distances %s",
+                    game ? "on" : "off");
     } else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
       return false_v;
   } else {
     if (!cmd_number(word, &number) || number <= 0.0) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "Expected a positive number, not '%.*s'", (int)word.length,
-               word.str);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Expected a positive number, not '%.*s'", (int)word.length,
+                    word.str);
       return false_v;
     }
     if (def->value == 0u) {
@@ -801,8 +842,8 @@ static bool8_t cmd_run_grid_height(CmdContext *ctx, const CmdDef *def,
                                    String8 arg) {
   if (def->value == 1u) {
     if (!ctx->frame->grid_fit_request) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "The Scene view is not available");
+      string_format(ctx->message, sizeof(ctx->message),
+                    "The Scene view is not available");
       return false_v;
     }
     vkr_editor_view_fit_grid(ctx->frame);
@@ -811,9 +852,9 @@ static bool8_t cmd_run_grid_height(CmdContext *ctx, const CmdDef *def,
   const String8 word = cmd_split(arg, NULL);
   float64_t number = 0.0;
   if (!cmd_number(word, &number)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Expected a height in world units, not '%.*s'", (int)word.length,
-             word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Expected a height in world units, not '%.*s'",
+                  (int)word.length, word.str);
     return false_v;
   }
   VkrSampleViewState next = ctx->frame->view_state;
@@ -839,18 +880,19 @@ static bool8_t cmd_run_labels_distance(CmdContext *ctx, const CmdDef *def,
   const String8 word = cmd_split(arg, NULL);
   float64_t number = 0.0;
   if (!cmd_number(word, &number) || number < 0.0) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Expected a distance in metres, 0 for no limit, not '%.*s'",
-             (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Expected a distance in metres, 0 for no limit, not '%.*s'",
+                  (int)word.length, word.str);
     return false_v;
   }
   VkrEditorUi *editor = ctx->editor;
   editor->labels_max_distance = vkr_editor_label_distance((float32_t)number);
   if (editor->labels_max_distance > 0.0f) {
-    snprintf(ctx->message, sizeof(ctx->message), "Icon distance %.4g m",
-             (double)editor->labels_max_distance);
+    string_format(ctx->message, sizeof(ctx->message), "Icon distance %.4g m",
+                  (double)editor->labels_max_distance);
   } else {
-    snprintf(ctx->message, sizeof(ctx->message), "Icon distance unlimited");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Icon distance unlimited");
   }
   return true_v;
 }
@@ -868,13 +910,13 @@ static bool8_t cmd_run_zoom(CmdContext *ctx, const CmdDef *def, String8 arg) {
   else if (index == 2)
     scale = 1.0;
   else if (!cmd_number(word, &scale)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Expected a scale, in, out or reset");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Expected a scale, in, out or reset");
     return false_v;
   }
   vkr_ui_system_set_user_scale(ui, (float32_t)scale);
-  snprintf(ctx->message, sizeof(ctx->message), "Interface zoom %.0f%%",
-           (double)(ui->user_scale * 100.0f));
+  string_format(ctx->message, sizeof(ctx->message), "Interface zoom %.0f%%",
+                (double)(ui->user_scale * 100.0f));
   return true_v;
 }
 
@@ -896,24 +938,24 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg) {
   rest = cmd_trim(rest);
   if (!name.length || name.length > 64u ||
       (rest.length && rest.str[0] != '{')) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Usage: op <operation> [json object]");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Usage: op <operation> [json object]");
     return false_v;
   }
   char line[1400];
-  const int length =
-      snprintf(line, sizeof(line),
-               "{\"v\":1,\"id\":\"cmd\",\"op\":\"%.*s\",\"args\":%.*s}",
-               (int)name.length, name.str, rest.length ? (int)rest.length : 2,
-               rest.length ? (const char *)rest.str : "{}");
+  const int length = string_format(
+      line, sizeof(line),
+      "{\"v\":1,\"id\":\"cmd\",\"op\":\"%.*s\",\"args\":%.*s}",
+      (int)name.length, name.str, rest.length ? (int)rest.length : 2,
+      rest.length ? (const char *)rest.str : "{}");
   if (length <= 0 || (size_t)length >= sizeof(line) ||
       !vkr_editor_agent_submit(ctx->editor->agent, line)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "The operation could not be queued");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "The operation could not be queued");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Queued %.*s", (int)name.length,
-           name.str);
+  string_format(ctx->message, sizeof(ctx->message), "Queued %.*s",
+                (int)name.length, name.str);
   /* The next statement sees the operation's effect. The `cmd` operation
      itself waits for this queue to go idle, so it cannot hold it. */
   if (!vkr_string8_equals_cstr(&name, "cmd")) {
@@ -925,8 +967,8 @@ static bool8_t cmd_run_op(CmdContext *ctx, const CmdDef *def, String8 arg) {
 
 static bool8_t cmd_run_echo(CmdContext *ctx, const CmdDef *def, String8 arg) {
   (void)def;
-  snprintf(ctx->message, sizeof(ctx->message), "%.*s", (int)arg.length,
-           arg.str);
+  string_format(ctx->message, sizeof(ctx->message), "%.*s", (int)arg.length,
+                arg.str);
   return true_v;
 }
 
@@ -940,25 +982,25 @@ static bool8_t cmd_run_scene_add(CmdContext *ctx, const CmdDef *def,
   VkrEditorUi *editor = ctx->editor;
   if (vkr_editor_projects_add_scene(editor->projects, editor, ctx->frame,
                                     path)) {
-    snprintf(ctx->message, sizeof(ctx->message), "Adding %.*s",
-             (int)path.length, path.str);
+    string_format(ctx->message, sizeof(ctx->message), "Adding %.*s",
+                  (int)path.length, path.str);
     return true_v;
   }
   if (!path.length || path.length >= sizeof(editor->cmd_scene_path) ||
       path.length + 13u >= sizeof(editor->cmd_scene_sidecar)) {
-    snprintf(ctx->message, sizeof(ctx->message), "scene.add needs a path");
+    string_format(ctx->message, sizeof(ctx->message), "scene.add needs a path");
     return false_v;
   }
-  snprintf(editor->cmd_scene_path, sizeof(editor->cmd_scene_path), "%.*s",
-           (int)path.length, path.str);
-  snprintf(editor->cmd_scene_sidecar, sizeof(editor->cmd_scene_sidecar),
-           "%.*s.editor.json", (int)path.length, path.str);
+  string_format(editor->cmd_scene_path, sizeof(editor->cmd_scene_path), "%.*s",
+                (int)path.length, path.str);
+  string_format(editor->cmd_scene_sidecar, sizeof(editor->cmd_scene_sidecar),
+                "%.*s.editor.json", (int)path.length, path.str);
   *ctx->frame->scene_request = (VkrSampleSceneRequest){
       .add = true_v,
       .path = cmd_cstr(editor->cmd_scene_path),
       .sidecar_path = cmd_cstr(editor->cmd_scene_sidecar)};
-  snprintf(ctx->message, sizeof(ctx->message), "Adding %.*s", (int)path.length,
-           path.str);
+  string_format(ctx->message, sizeof(ctx->message), "Adding %.*s",
+                (int)path.length, path.str);
   return true_v;
 }
 
@@ -970,7 +1012,7 @@ static uint16_t cmd_added_container(const CmdContext *ctx, String8 word) {
     if (!frame->additive[i])
       continue;
     char slot[8];
-    snprintf(slot, sizeof(slot), "%u", i + 1u);
+    string_format(slot, sizeof(slot), "%u", i + 1u);
     const String8 name = vkr_editor_projects_added_name(
         ctx->editor->projects, frame->additive_names[i]);
     if (cmd_equals(word, cmd_cstr(slot)) ||
@@ -989,13 +1031,13 @@ static bool8_t cmd_run_scene_instantiate(CmdContext *ctx, const CmdDef *def,
   const String8 name = cmd_unquote(arg);
   if (!vkr_editor_projects_instantiate_scene(ctx->editor->projects, ctx->editor,
                                              ctx->frame, name, vec3_zero())) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "No other project scene '%.*s', or no scene can change now",
-             (int)name.length, name.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "No other project scene '%.*s', or no scene can change now",
+                  (int)name.length, name.str);
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Instantiating %.*s",
-           (int)name.length, name.str);
+  string_format(ctx->message, sizeof(ctx->message), "Instantiating %.*s",
+                (int)name.length, name.str);
   return true_v;
 }
 
@@ -1007,19 +1049,19 @@ static bool8_t cmd_run_scene_primary(CmdContext *ctx, const CmdDef *def,
   const String8 word = cmd_unquote(arg);
   const uint16_t container = cmd_added_container(ctx, word);
   if (!container) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "No added scene matches '%.*s'", (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "No added scene matches '%.*s'", (int)word.length, word.str);
     return false_v;
   }
   if (!vkr_editor_projects_set_primary(ctx->editor->projects, ctx->editor,
                                        ctx->frame, container)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Only an added project scene can become primary, once no job "
-             "is running");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Only an added project scene can become primary, once no job "
+                  "is running");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Making scene %u primary",
-           container);
+  string_format(ctx->message, sizeof(ctx->message), "Making scene %u primary",
+                container);
   return true_v;
 }
 
@@ -1031,13 +1073,14 @@ static bool8_t cmd_run_scene_remove(CmdContext *ctx, const CmdDef *def,
   const bool8_t discard = cmd_contains(arg, cmd_cstr(" discard")) != 0;
   const uint16_t container = cmd_added_container(ctx, word);
   if (!container) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "No added scene matches '%.*s'", (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "No added scene matches '%.*s'", (int)word.length, word.str);
     return false_v;
   }
   *ctx->frame->scene_request = (VkrSampleSceneRequest){
       .remove = true_v, .container = container, .discard_edits = discard};
-  snprintf(ctx->message, sizeof(ctx->message), "Removing scene %u", container);
+  string_format(ctx->message, sizeof(ctx->message), "Removing scene %u",
+                container);
   return true_v;
 }
 
@@ -1050,7 +1093,8 @@ static bool8_t cmd_run_script_new(CmdContext *ctx, const CmdDef *def,
   char text[64];
   char path[VKR_EDITOR_SCRIPT_PATH];
   if (!name.length || name.length >= sizeof(text)) {
-    snprintf(ctx->message, sizeof(ctx->message), "script.new needs a name");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "script.new needs a name");
     return false_v;
   }
   MemCopy(text, name.str, name.length);
@@ -1064,11 +1108,11 @@ static bool8_t cmd_run_script_new(CmdContext *ctx, const CmdDef *def,
      this module's script once it loads. */
   VkrEditorUi *editor = ctx->editor;
   if (editor->script_attach_entity.u64 && !editor->script_attach_module[0]) {
-    snprintf(editor->script_attach_module, sizeof(editor->script_attach_module),
-             "%s", text);
+    string_format(editor->script_attach_module,
+                  sizeof(editor->script_attach_module), "%s", text);
   }
   (void)vkr_editor_code_open(ctx->editor->code, ctx->editor, path);
-  snprintf(ctx->message, sizeof(ctx->message), "Created %s", path);
+  string_format(ctx->message, sizeof(ctx->message), "Created %s", path);
   return true_v;
 }
 
@@ -1079,15 +1123,16 @@ static bool8_t cmd_run_script_open(CmdContext *ctx, const CmdDef *def,
   const VkrEditorScripts *scripts = ctx->editor->scripts;
   for (uint32_t i = 0; i < vkr_editor_scripts_file_count(scripts); ++i) {
     const VkrEditorScriptFile *file = vkr_editor_scripts_file(scripts, i);
-    if (strlen(file->name) == name.length &&
+    if (string_length(file->name) == name.length &&
         !MemCompare(file->name, name.str, name.length) &&
         vkr_editor_code_open(ctx->editor->code, ctx->editor, file->path)) {
-      snprintf(ctx->message, sizeof(ctx->message), "Opened %s", file->path);
+      string_format(ctx->message, sizeof(ctx->message), "Opened %s",
+                    file->path);
       return true_v;
     }
   }
-  snprintf(ctx->message, sizeof(ctx->message), "No script file '%.*s'",
-           (int)name.length, name.str);
+  string_format(ctx->message, sizeof(ctx->message), "No script file '%.*s'",
+                (int)name.length, name.str);
   return false_v;
 }
 
@@ -1104,14 +1149,25 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
   float32_t y = 0.0f;
   int32_t count = 1;
   char button[16] = {0};
-  const int32_t read = sscanf(text, "%f %f %d %15s", &x, &y, &count, button);
-  const bool8_t right = !strcmp(button, "right");
-  const bool8_t alt = !strcmp(button, "alt");
-  const bool8_t ctrl = !strcmp(button, "ctrl");
-  if (read < 2 || count < 1 || count > 3 || !isfinite(x) || !isfinite(y) ||
-      (read == 4 && !right && !alt && !ctrl)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "ui.click needs <x> <y> [count] [right|alt|ctrl] in points");
+  const char *at = text;
+  int32_t read = 0;
+  if (cmd_scan_f32(&at, &x)) {
+    ++read;
+    if (cmd_scan_f32(&at, &y)) {
+      ++read;
+      if (cmd_scan_i32(&at, &count)) {
+        ++read;
+        read += cmd_scan_word(&at, button, sizeof(button)) ? 1 : 0;
+      }
+    }
+  }
+  const bool8_t right = string_equals(button, "right");
+  const bool8_t alt = string_equals(button, "alt");
+  const bool8_t ctrl = string_equals(button, "ctrl");
+  if (read < 2 || count < 1 || count > 3 || !vkr_is_finite_f32(x) ||
+      !vkr_is_finite_f32(y) || (read == 4 && !right && !alt && !ctrl)) {
+    string_format(ctx->message, sizeof(ctx->message),
+                  "ui.click needs <x> <y> [count] [right|alt|ctrl] in points");
     return false_v;
   }
 #if defined(PLATFORM_APPLE)
@@ -1155,11 +1211,11 @@ static bool8_t cmd_run_ui_click(CmdContext *ctx, const CmdDef *def,
     step[2] = py;
     step[3] = held;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "%s at (%.0f, %.0f)",
-           right        ? "Right click"
-           : count == 2 ? "Double click"
-                        : "Click",
-           x, y);
+  string_format(ctx->message, sizeof(ctx->message), "%s at (%.0f, %.0f)",
+                right        ? "Right click"
+                : count == 2 ? "Double click"
+                             : "Click",
+                x, y);
   return true_v;
 }
 
@@ -1175,11 +1231,13 @@ static bool8_t cmd_run_ui_drag(CmdContext *ctx, const CmdDef *def,
   float32_t from_y = 0.0f;
   float32_t to_x = 0.0f;
   float32_t to_y = 0.0f;
-  if (sscanf(text, "%f %f %f %f", &from_x, &from_y, &to_x, &to_y) != 4 ||
-      !isfinite(from_x) || !isfinite(from_y) || !isfinite(to_x) ||
-      !isfinite(to_y)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "ui.drag needs <x0> <y0> <x1> <y1> in points");
+  const char *at = text;
+  if (!cmd_scan_f32(&at, &from_x) || !cmd_scan_f32(&at, &from_y) ||
+      !cmd_scan_f32(&at, &to_x) || !cmd_scan_f32(&at, &to_y) ||
+      !vkr_is_finite_f32(from_x) || !vkr_is_finite_f32(from_y) ||
+      !vkr_is_finite_f32(to_x) || !vkr_is_finite_f32(to_y)) {
+    string_format(ctx->message, sizeof(ctx->message),
+                  "ui.drag needs <x0> <y0> <x1> <y1> in points");
     return false_v;
   }
   VkrEditorUi *editor = ctx->editor;
@@ -1196,9 +1254,9 @@ static bool8_t cmd_run_ui_drag(CmdContext *ctx, const CmdDef *def,
     step[2] = (int32_t)((from_y + (to_y - from_y) * t) * scale);
     step[3] = BUTTON_LEFT;
   }
-  snprintf(ctx->message, sizeof(ctx->message),
-           "Drag from (%.0f, %.0f) to (%.0f, %.0f)", from_x, from_y, to_x,
-           to_y);
+  string_format(ctx->message, sizeof(ctx->message),
+                "Drag from (%.0f, %.0f) to (%.0f, %.0f)", from_x, from_y, to_x,
+                to_y);
   return true_v;
 }
 
@@ -1238,7 +1296,7 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
     int32_t phase;
   } halves[] = {{" down", 3}, {" up", 4}};
   for (uint32_t h = 0; h < ArrayCount(halves); ++h) {
-    const uint64_t length = strlen(halves[h].suffix);
+    const uint64_t length = string_length(halves[h].suffix);
     if (word.length > length &&
         !MemCompare(halves[h].suffix, word.str + word.length - length,
                     length)) {
@@ -1251,7 +1309,7 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   for (bool8_t found = true_v; found;) {
     found = false_v;
     for (uint32_t m = 0; m < ArrayCount(modifiers); ++m) {
-      const uint64_t length = strlen(modifiers[m].prefix);
+      const uint64_t length = string_length(modifiers[m].prefix);
       if (word.length > length &&
           !MemCompare(modifiers[m].prefix, word.str, length) &&
           held_count < ArrayCount(held)) {
@@ -1265,7 +1323,7 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
   /* A named key, then any letter or digit, space, or f1 to f12. */
   Keys key = KEY_MAX_KEYS;
   for (uint32_t i = 0; i < ArrayCount(keys) && key == KEY_MAX_KEYS; ++i) {
-    if (strlen(keys[i].name) == word.length &&
+    if (string_length(keys[i].name) == word.length &&
         !MemCompare(keys[i].name, word.str, word.length)) {
       key = keys[i].key;
     }
@@ -1312,14 +1370,15 @@ static bool8_t cmd_run_ui_key(CmdContext *ctx, const CmdDef *def, String8 arg) {
       step[0] = 4;
       step[3] = (int32_t)held[m];
     }
-    snprintf(ctx->message, sizeof(ctx->message), "Key %.*s",
-             (int32_t)arg.length, (const char *)arg.str);
+    string_format(ctx->message, sizeof(ctx->message), "Key %.*s",
+                  (int32_t)arg.length, (const char *)arg.str);
     return true_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message),
-           "ui.key needs [cmd+|alt+|ctrl+|shift+] and up, down, left, right, "
-           "enter, escape, tab, backspace, delete, home, end, space, shift, "
-           "ctrl, alt, a letter, a digit or f1 to f12, then [down|up]");
+  string_format(
+      ctx->message, sizeof(ctx->message),
+      "ui.key needs [cmd+|alt+|ctrl+|shift+] and up, down, left, right, "
+      "enter, escape, tab, backspace, delete, home, end, space, shift, "
+      "ctrl, alt, a letter, a digit or f1 to f12, then [down|up]");
   return false_v;
 }
 
@@ -1332,9 +1391,10 @@ static bool8_t cmd_run_ui_look(CmdContext *ctx, const CmdDef *def,
   MemCopy(text, arg.str, Min(arg.length, (uint64_t)sizeof(text) - 1u));
   int32_t dx = 0;
   int32_t dy = 0;
-  if (sscanf(text, "%d %d", &dx, &dy) != 2) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "ui.look needs <dx> <dy> in points");
+  const char *at = text;
+  if (!cmd_scan_i32(&at, &dx) || !cmd_scan_i32(&at, &dy)) {
+    string_format(ctx->message, sizeof(ctx->message),
+                  "ui.look needs <dx> <dy> in points");
     return false_v;
   }
   VkrEditorUi *editor = ctx->editor;
@@ -1343,7 +1403,7 @@ static bool8_t cmd_run_ui_look(CmdContext *ctx, const CmdDef *def,
   step[0] = 6;
   step[1] = dx;
   step[2] = dy;
-  snprintf(ctx->message, sizeof(ctx->message), "Look %d %d", dx, dy);
+  string_format(ctx->message, sizeof(ctx->message), "Look %d %d", dx, dy);
   return true_v;
 }
 
@@ -1355,9 +1415,9 @@ static bool8_t cmd_run_ui_type(CmdContext *ctx, const CmdDef *def,
   const String8 text = cmd_unquote(arg);
   VkrEditorUi *editor = ctx->editor;
   if (!text.length || text.length > ArrayCount(editor->cmd_pointer_steps)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "ui.type needs 1 to %u characters",
-             (uint32_t)ArrayCount(editor->cmd_pointer_steps));
+    string_format(ctx->message, sizeof(ctx->message),
+                  "ui.type needs 1 to %u characters",
+                  (uint32_t)ArrayCount(editor->cmd_pointer_steps));
     return false_v;
   }
   editor->cmd_pointer_count = editor->cmd_pointer_next = 0u;
@@ -1366,8 +1426,8 @@ static bool8_t cmd_run_ui_type(CmdContext *ctx, const CmdDef *def,
     step[0] = 5;
     step[3] = (int32_t)text.str[i];
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Typed %u characters",
-           (uint32_t)text.length);
+  string_format(ctx->message, sizeof(ctx->message), "Typed %u characters",
+                (uint32_t)text.length);
   return true_v;
 }
 
@@ -1402,13 +1462,13 @@ static bool8_t cmd_run_script_goto(CmdContext *ctx, const CmdDef *def,
   (void)def;
   char text[16] = {0};
   MemCopy(text, arg.str, Min(arg.length, (uint64_t)sizeof(text) - 1u));
-  const long line = strtol(text, NULL, 10);
+  const int64_t line = string_parse_i64(text, NULL);
   if (line <= 0 || !vkr_editor_code_goto(ctx->editor->code, (uint32_t)line)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "script.goto needs a line and an open script");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "script.goto needs a line and an open script");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Line %ld", line);
+  string_format(ctx->message, sizeof(ctx->message), "Line %ld", line);
   return true_v;
 }
 
@@ -1418,17 +1478,17 @@ static bool8_t cmd_run_script_type(CmdContext *ctx, const CmdDef *def,
   const String8 value = cmd_unquote(arg);
   char text[256];
   if (!value.length || value.length >= sizeof(text)) {
-    snprintf(ctx->message, sizeof(ctx->message), "script.type needs text");
+    string_format(ctx->message, sizeof(ctx->message), "script.type needs text");
     return false_v;
   }
   MemCopy(text, value.str, value.length);
   text[value.length] = '\0';
   if (!vkr_editor_code_type(ctx->editor->code, text)) {
-    snprintf(ctx->message, sizeof(ctx->message), "No script tab is open");
+    string_format(ctx->message, sizeof(ctx->message), "No script tab is open");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Typed %u characters",
-           (uint32_t)value.length);
+  string_format(ctx->message, sizeof(ctx->message), "Typed %u characters",
+                (uint32_t)value.length);
   return true_v;
 }
 
@@ -1437,10 +1497,10 @@ static bool8_t cmd_run_script_save(CmdContext *ctx, const CmdDef *def,
   (void)def;
   (void)arg;
   if (!vkr_editor_code_save_active(ctx->editor->code, ctx->editor)) {
-    snprintf(ctx->message, sizeof(ctx->message), "No script tab to save");
+    string_format(ctx->message, sizeof(ctx->message), "No script tab to save");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Saved; rebuilding");
+  string_format(ctx->message, sizeof(ctx->message), "Saved; rebuilding");
   return true_v;
 }
 
@@ -1455,14 +1515,14 @@ static bool8_t cmd_run_script_status(CmdContext *ctx, const CmdDef *def,
   const uint32_t count = vkr_editor_scripts_module_count(scripts);
   for (uint32_t i = 0; i < count && length < sizeof(ctx->message); ++i) {
     const VkrEditorScriptModule *module = vkr_editor_scripts_module(scripts, i);
-    length += (uint32_t)snprintf(
+    length += (uint32_t)string_format(
         ctx->message + length, sizeof(ctx->message) - length, "%s%s: %s (%s)",
         i ? "; " : "", module->name, statuses[module->status], module->message);
   }
   if (length < sizeof(ctx->message)) {
-    snprintf(ctx->message + length, sizeof(ctx->message) - length,
-             "%s%u diagnostics", count ? "; " : "no modules; ",
-             vkr_editor_scripts_diagnostic_count(scripts));
+    string_format(ctx->message + length, sizeof(ctx->message) - length,
+                  "%s%u diagnostics", count ? "; " : "no modules; ",
+                  vkr_editor_scripts_diagnostic_count(scripts));
   }
   return true_v;
 }
@@ -1474,18 +1534,19 @@ static bool8_t cmd_run_scene_create(CmdContext *ctx, const CmdDef *def,
   const String8 name = cmd_unquote(arg);
   char text[VKR_EDITOR_PROJECT_NAME_CAPACITY];
   if (!name.length || name.length >= sizeof(text)) {
-    snprintf(ctx->message, sizeof(ctx->message), "scene.create needs a name");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "scene.create needs a name");
     return false_v;
   }
   MemCopy(text, name.str, name.length);
   text[name.length] = '\0';
   if (!vkr_editor_projects_create_scene(ctx->editor->projects, ctx->editor,
                                         ctx->frame, text)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "No writable project can create a scene now");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "No writable project can create a scene now");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Creating scene %s", text);
+  string_format(ctx->message, sizeof(ctx->message), "Creating scene %s", text);
   return true_v;
 }
 
@@ -1512,22 +1573,22 @@ static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
     samples = samples * 10u + (uint32_t)(rest.str[i] - '0');
   }
   if (!valid || (rest.length && (samples < 1u || samples > 4096u))) {
-    snprintf(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
-             def->usage);
+    string_format(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
+                  def->usage);
     return false_v;
   }
   const bool8_t lightmap =
       word.length != 0u || vkr_editor_bakery_lightmap(ctx->editor->bakery);
   if (!vkr_editor_projects_bake_lighting(ctx->editor->projects, ctx->editor,
                                          ctx->frame, lightmap, samples)) {
-    snprintf(ctx->message, sizeof(ctx->message), "%s",
-             vkr_editor_projects_message(ctx->editor->projects));
+    string_format(ctx->message, sizeof(ctx->message), "%s",
+                  vkr_editor_projects_message(ctx->editor->projects));
     return false_v;
   }
   ctx->editor->cmd_holding_bake = true_v;
-  snprintf(ctx->message, sizeof(ctx->message),
-           "Baking the diffuse volume%s, then reflection probes",
-           lightmap ? ", this machine's pipeline's lightmaps" : "");
+  string_format(ctx->message, sizeof(ctx->message),
+                "Baking the diffuse volume%s, then reflection probes",
+                lightmap ? ", this machine's pipeline's lightmaps" : "");
   return true_v;
 }
 
@@ -1539,13 +1600,13 @@ static bool8_t cmd_run_scene_open(CmdContext *ctx, const CmdDef *def,
   bool8_t current = false_v;
   if (!vkr_editor_projects_open_scene(ctx->editor->projects, ctx->editor,
                                       ctx->frame, name, &current)) {
-    snprintf(ctx->message, sizeof(ctx->message), "No project scene '%.*s'",
-             (int)name.length, name.str);
+    string_format(ctx->message, sizeof(ctx->message), "No project scene '%.*s'",
+                  (int)name.length, name.str);
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message),
-           current ? "%.*s is already open or loading" : "Opening %.*s",
-           (int)name.length, name.str);
+  string_format(ctx->message, sizeof(ctx->message),
+                current ? "%.*s is already open or loading" : "Opening %.*s",
+                (int)name.length, name.str);
   return true_v;
 }
 
@@ -1556,18 +1617,19 @@ static bool8_t cmd_run_scene_import(CmdContext *ctx, const CmdDef *def,
   const String8 path = cmd_unquote(arg);
   char text[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!path.length || path.length >= sizeof(text)) {
-    snprintf(ctx->message, sizeof(ctx->message), "scene.import needs a path");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "scene.import needs a path");
     return false_v;
   }
   MemCopy(text, path.str, path.length);
   text[path.length] = '\0';
   if (!vkr_editor_projects_import_scene_form(ctx->editor->projects, ctx->editor,
                                              text)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Importing a scene needs a writable project");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Importing a scene needs a writable project");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Inspecting %s", text);
+  string_format(ctx->message, sizeof(ctx->message), "Inspecting %s", text);
   return true_v;
 }
 
@@ -1592,7 +1654,8 @@ static bool8_t cmd_run_content_import(CmdContext *ctx, const CmdDef *def,
   }
   char text[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   if (!path.length || path.length >= sizeof(text)) {
-    snprintf(ctx->message, sizeof(ctx->message), "content.import needs a path");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "content.import needs a path");
     return false_v;
   }
   MemCopy(text, path.str, path.length);
@@ -1603,21 +1666,21 @@ static bool8_t cmd_run_content_import(CmdContext *ctx, const CmdDef *def,
     if (!vkr_editor_projects_import_to(ctx->editor->projects, ctx->editor,
                                        ctx->frame, text, target,
                                        cmd_unquote(name))) {
-      snprintf(ctx->message, sizeof(ctx->message), "%s",
-               vkr_editor_projects_message(ctx->editor->projects));
+      string_format(ctx->message, sizeof(ctx->message), "%s",
+                    vkr_editor_projects_message(ctx->editor->projects));
       return false_v;
     }
-    snprintf(ctx->message, sizeof(ctx->message), "Importing %s to %.*s", text,
-             (int)target.length, (const char *)target.str);
+    string_format(ctx->message, sizeof(ctx->message), "Importing %s to %.*s",
+                  text, (int)target.length, (const char *)target.str);
     return true_v;
   }
   if (!vkr_editor_projects_import_asset(ctx->editor->projects, ctx->editor,
                                         ctx->frame, text)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "No writable, idle project can import now");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "No writable, idle project can import now");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Importing %s", text);
+  string_format(ctx->message, sizeof(ctx->message), "Importing %s", text);
   return true_v;
 }
 
@@ -1628,8 +1691,8 @@ static bool8_t cmd_run_scene_inherit(CmdContext *ctx, const CmdDef *def,
   const VkrScene *scene = ctx->frame->scene;
   bool8_t inherit = false_v;
   if (!scene || !ctx->frame->world) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Open a project scene beside its World");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Open a project scene beside its World");
     return false_v;
   }
   if (!cmd_switch(ctx, cmd_split(arg, NULL), scene->settings.inherit_world,
@@ -1640,8 +1703,8 @@ static bool8_t cmd_run_scene_inherit(CmdContext *ctx, const CmdDef *def,
   request.scene_settings = scene->settings;
   request.scene_settings.inherit_world = inherit;
   *ctx->frame->scene_edit = request;
-  snprintf(ctx->message, sizeof(ctx->message), "Scene %s the World",
-           inherit ? "inherits" : "no longer inherits");
+  string_format(ctx->message, sizeof(ctx->message), "Scene %s the World",
+                inherit ? "inherits" : "no longer inherits");
   return true_v;
 }
 
@@ -1653,7 +1716,8 @@ static bool8_t cmd_run_scene_textures(CmdContext *ctx, const CmdDef *def,
   const VkrScene *scene =
       ctx->frame->scene ? ctx->frame->scene : ctx->frame->world;
   if (!scene) {
-    snprintf(ctx->message, sizeof(ctx->message), "No scene or World is open");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "No scene or World is open");
     return false_v;
   }
   const char *owner = ctx->frame->scene ? "Scene" : "World";
@@ -1661,11 +1725,11 @@ static bool8_t cmd_run_scene_textures(CmdContext *ctx, const CmdDef *def,
   if (!value.length) {
     const uint32_t extent = scene->settings.texture_max_extent;
     if (extent) {
-      snprintf(ctx->message, sizeof(ctx->message), "%s textures: %u", owner,
-               extent);
+      string_format(ctx->message, sizeof(ctx->message), "%s textures: %u",
+                    owner, extent);
     } else {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "%s textures: full resolution", owner);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "%s textures: full resolution", owner);
     }
     return true_v;
   }
@@ -1674,9 +1738,9 @@ static bool8_t cmd_run_scene_textures(CmdContext *ctx, const CmdDef *def,
   if (!string8_equalsi(&value, &full) &&
       (!string8_to_u32(&value, &extent) || extent == 0u ||
        !vkr_scene_texture_extent_valid(extent))) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Use full or a power of two from %u to %u",
-             VKR_SCENE_TEXTURE_EXTENT_MIN, VKR_SCENE_TEXTURE_EXTENT_MAX);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Use full or a power of two from %u to %u",
+                  VKR_SCENE_TEXTURE_EXTENT_MIN, VKR_SCENE_TEXTURE_EXTENT_MAX);
     return false_v;
   }
   VkrSceneEditRequest request = {
@@ -1687,11 +1751,11 @@ static bool8_t cmd_run_scene_textures(CmdContext *ctx, const CmdDef *def,
   request.scene_settings.texture_max_extent = extent;
   *ctx->frame->scene_edit = request;
   if (extent) {
-    snprintf(ctx->message, sizeof(ctx->message), "%s textures load at %u",
-             owner, extent);
+    string_format(ctx->message, sizeof(ctx->message), "%s textures load at %u",
+                  owner, extent);
   } else {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "%s textures load at full resolution", owner);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "%s textures load at full resolution", owner);
   }
   return true_v;
 }
@@ -1702,12 +1766,12 @@ static bool8_t cmd_run_content_search(CmdContext *ctx, const CmdDef *def,
   (void)def;
   const String8 query = cmd_unquote(arg);
   if (!ctx->editor->content) {
-    snprintf(ctx->message, sizeof(ctx->message), "Content is unavailable");
+    string_format(ctx->message, sizeof(ctx->message), "Content is unavailable");
     return false_v;
   }
   vkr_editor_content_search(ctx->editor->content, query);
-  snprintf(ctx->message, sizeof(ctx->message), "Content search '%.*s'",
-           (int)query.length, query.str);
+  string_format(ctx->message, sizeof(ctx->message), "Content search '%.*s'",
+                (int)query.length, query.str);
   return true_v;
 }
 
@@ -1716,7 +1780,7 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
                                       String8 arg) {
   VkrEditorContent *content = ctx->editor->content;
   if (!content) {
-    snprintf(ctx->message, sizeof(ctx->message), "Content is unavailable");
+    string_format(ctx->message, sizeof(ctx->message), "Content is unavailable");
     return false_v;
   }
   /* The first argument may be quoted to hold spaces, as in "Level One". */
@@ -1735,13 +1799,13 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
   }
   const String8 second = cmd_unquote(rest);
   bool8_t ok = false_v;
-  if (!strcmp(def->name, "content.open")) {
+  if (string_equals(def->name, "content.open")) {
     ok = vkr_editor_content_open_folder(content, cmd_unquote(arg));
-  } else if (!strcmp(def->name, "content.mkdir")) {
+  } else if (string_equals(def->name, "content.mkdir")) {
     ok = vkr_editor_content_new_folder(content, cmd_unquote(arg));
-  } else if (!strcmp(def->name, "content.move")) {
+  } else if (string_equals(def->name, "content.move")) {
     ok = vkr_editor_content_move(content, first, second);
-  } else if (!strcmp(def->name, "content.drop")) {
+  } else if (string_equals(def->name, "content.drop")) {
     /* As if the file were dropped from the OS on the current folder. */
     VkrWindowFileDrop *drop =
         vkr_allocator_alloc(ctx->frame->ui->frame_allocator, sizeof(*drop),
@@ -1756,7 +1820,7 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
                                             drop,
                                             vkr_editor_content_folder(content));
     }
-  } else if (!strcmp(def->name, "content.command")) {
+  } else if (string_equals(def->name, "content.command")) {
     static const char *const commands[] = {"load", "open", "place", "rename",
                                            "delete"};
     ok = false_v;
@@ -1766,7 +1830,7 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
                                         (VkrEditorContentCommand)i);
       }
     }
-  } else if (!strcmp(def->name, "content.reveal")) {
+  } else if (string_equals(def->name, "content.reveal")) {
     char path[1024];
     const String8 text = cmd_unquote(arg);
     ok = text.length < sizeof(path);
@@ -1777,14 +1841,14 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
     }
     if (ok) {
       vkr_editor_dock_show(ctx->frame->dock, VKR_UI_DOCK_PANEL_CONTENT);
-      snprintf(ctx->message, sizeof(ctx->message), "Revealed %s in %s",
-               vkr_editor_content_selected_name(content),
-               vkr_editor_content_folder(content)[0]
-                   ? vkr_editor_content_folder(content)
-                   : "Content");
+      string_format(ctx->message, sizeof(ctx->message), "Revealed %s in %s",
+                    vkr_editor_content_selected_name(content),
+                    vkr_editor_content_folder(content)[0]
+                        ? vkr_editor_content_folder(content)
+                        : "Content");
       return true_v;
     }
-  } else if (!strcmp(def->name, "content.place")) {
+  } else if (string_equals(def->name, "content.place")) {
     /* The drop lands at the viewport's centre. */
     const Vec4 image = ctx->frame->mapping.image_rect_px;
     ok = vkr_editor_content_place(
@@ -1797,8 +1861,9 @@ static bool8_t cmd_run_content_folder(CmdContext *ctx, const CmdDef *def,
       vkr_editor_content_set_list(content, list);
     }
   }
-  snprintf(ctx->message, sizeof(ctx->message), "%s %s", def->name,
-           ok ? "done" : "failed: check the folder, item and write access");
+  string_format(ctx->message, sizeof(ctx->message), "%s %s", def->name,
+                ok ? "done"
+                   : "failed: check the folder, item and write access");
   return ok;
 }
 
@@ -1807,7 +1872,7 @@ static bool8_t cmd_selection(CmdContext *ctx, VkrEntityId *out) {
   const VkrEntityId entity = ctx->frame->selected_entity;
   if (!vkr_scene_entity_alive(vkr_editor_entity_scene(ctx->frame, entity),
                               entity)) {
-    snprintf(ctx->message, sizeof(ctx->message), "Nothing is selected");
+    string_format(ctx->message, sizeof(ctx->message), "Nothing is selected");
     return false_v;
   }
   *out = entity;
@@ -1821,19 +1886,19 @@ static bool8_t cmd_run_create(CmdContext *ctx, const CmdDef *def, String8 arg) {
   const String8 word = cmd_split(arg, NULL);
   const int32_t kind = cmd_word_index(cmd_arg_words(CMD_ARG_OBJECT), word);
   if (kind < 0) {
-    snprintf(ctx->message, sizeof(ctx->message), "Unknown object '%.*s'",
-             (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message), "Unknown object '%.*s'",
+                  (int)word.length, word.str);
     return false_v;
   }
   if (!vkr_editor_request_create(ctx->editor, ctx->frame, (uint32_t)kind,
                                  vkr_editor_create_container(ctx->frame),
                                  NULL)) {
-    snprintf(ctx->message, sizeof(ctx->message), "No %s is loaded",
-             ctx->frame->scene || ctx->frame->world ? "World" : "scene");
+    string_format(ctx->message, sizeof(ctx->message), "No %s is loaded",
+                  ctx->frame->scene || ctx->frame->world ? "World" : "scene");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Creating %s",
-           vkr_editor_object_kind_label((uint32_t)kind));
+  string_format(ctx->message, sizeof(ctx->message), "Creating %s",
+                vkr_editor_object_kind_label((uint32_t)kind));
   return true_v;
 }
 
@@ -1867,14 +1932,14 @@ static bool8_t cmd_run_delete(CmdContext *ctx, const CmdDef *def, String8 arg) {
   const VkrScene *scene = vkr_editor_entity_scene(ctx->frame, entity);
   const char *reason = "No such object";
   if (!entity.u64 || !vkr_scene_edit_can_delete(scene, entity, &reason)) {
-    snprintf(ctx->message, sizeof(ctx->message), "%s", reason);
+    string_format(ctx->message, sizeof(ctx->message), "%s", reason);
     return false_v;
   }
   *ctx->frame->scene_edit =
       (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_DELETE, .entity = entity};
   const String8 label = vkr_scene_get_name(scene, entity);
-  snprintf(ctx->message, sizeof(ctx->message), "Deleting %.*s",
-           (int)label.length, label.str);
+  string_format(ctx->message, sizeof(ctx->message), "Deleting %.*s",
+                (int)label.length, label.str);
   return true_v;
 }
 
@@ -1884,12 +1949,12 @@ static bool8_t cmd_run_select_toggle(CmdContext *ctx, const CmdDef *def,
   (void)def;
   const VkrEntityId entity = cmd_find_any(ctx->frame, cmd_unquote(arg));
   if (!entity.u64) {
-    snprintf(ctx->message, sizeof(ctx->message), "No such object");
+    string_format(ctx->message, sizeof(ctx->message), "No such object");
     return false_v;
   }
   vkr_editor_selection_toggle(ctx->editor, ctx->frame, entity);
-  snprintf(ctx->message, sizeof(ctx->message), "Toggled %.*s", (int)arg.length,
-           arg.str);
+  string_format(ctx->message, sizeof(ctx->message), "Toggled %.*s",
+                (int)arg.length, arg.str);
   return true_v;
 }
 
@@ -1912,14 +1977,14 @@ static bool8_t cmd_run_duplicate(CmdContext *ctx, const CmdDef *def,
   const VkrScene *scene = vkr_editor_entity_scene(ctx->frame, entity);
   const char *reason = "No such object";
   if (!entity.u64 || !vkr_scene_edit_can_duplicate(scene, entity, &reason)) {
-    snprintf(ctx->message, sizeof(ctx->message), "%s", reason);
+    string_format(ctx->message, sizeof(ctx->message), "%s", reason);
     return false_v;
   }
   *ctx->frame->scene_edit = (VkrSceneEditRequest){
       .action = VKR_SCENE_EDIT_DUPLICATE, .entity = entity};
   const String8 label = vkr_scene_get_name(scene, entity);
-  snprintf(ctx->message, sizeof(ctx->message), "Duplicating %.*s",
-           (int)label.length, label.str);
+  string_format(ctx->message, sizeof(ctx->message), "Duplicating %.*s",
+                (int)label.length, label.str);
   return true_v;
 }
 
@@ -1927,7 +1992,7 @@ static bool8_t cmd_run_duplicate(CmdContext *ctx, const CmdDef *def,
    cells of the open scene's world partition (ADR-086). */
 static bool8_t cmd_run_partition(CmdContext *ctx, const CmdDef *def,
                                  String8 arg) {
-  const bool8_t unload = strcmp(def->name, "partition.unload") == 0;
+  const bool8_t unload = string_equals(def->name, "partition.unload");
   String8 rest = arg;
   String8 word = cmd_split(rest, &rest);
   const int32_t none[4] = {0, 0, 0, 0};
@@ -1942,8 +2007,8 @@ static bool8_t cmd_run_partition(CmdContext *ctx, const CmdDef *def,
     word = cmd_split(rest, &rest);
   }
   if ((count != 2u && count != 4u) || word.length) {
-    snprintf(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
-             def->usage);
+    string_format(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
+                  def->usage);
     return false_v;
   }
   if (count == 2u) {
@@ -1952,7 +2017,7 @@ static bool8_t cmd_run_partition(CmdContext *ctx, const CmdDef *def,
   }
   int32_t cells[4];
   for (uint32_t i = 0; i < 4u; ++i) {
-    cells[i] = (int32_t)floor(values[i]);
+    cells[i] = (int32_t)vkr_floor_f64(values[i]);
   }
   return vkr_editor_partition_request(ctx->frame, unload, false_v, cells,
                                       ctx->message, sizeof(ctx->message));
@@ -1961,7 +2026,7 @@ static bool8_t cmd_run_partition(CmdContext *ctx, const CmdDef *def,
 /* component.add and component.remove on the selection. */
 static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
                                  String8 arg) {
-  const bool8_t add = strcmp(def->name, "component.add") == 0;
+  const bool8_t add = string_equals(def->name, "component.add");
   const String8 word = cmd_split(arg, NULL);
   const VkrTypeDesc *type = vkr_scene_world_type_named(word);
   VkrEntityId entity = VKR_ENTITY_ID_INVALID;
@@ -1971,18 +2036,18 @@ static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
       return false_v;
     }
     if (!vkr_editor_request_physics_body(ctx->frame, entity, add)) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               add ? "The selection already has a physics body"
-                   : "The selection has no physics body");
+      string_format(ctx->message, sizeof(ctx->message),
+                    add ? "The selection already has a physics body"
+                        : "The selection has no physics body");
       return false_v;
     }
-    snprintf(ctx->message, sizeof(ctx->message), "%s physics body",
-             add ? "Adding" : "Removing");
+    string_format(ctx->message, sizeof(ctx->message), "%s physics body",
+                  add ? "Adding" : "Removing");
     return true_v;
   }
   if (!type || !vkr_scene_world_type_live(type)) {
-    snprintf(ctx->message, sizeof(ctx->message), "Unknown component '%.*s'",
-             (int)word.length, word.str);
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Unknown component '%.*s'", (int)word.length, word.str);
     return false_v;
   }
   if (!cmd_selection(ctx, &entity)) {
@@ -1990,8 +2055,8 @@ static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
   }
   if (add && !vkr_scene_type_allowed(
                  vkr_editor_entity_scene(ctx->frame, entity), type)) {
-    snprintf(ctx->message, sizeof(ctx->message), "%s belongs to the World",
-             type->label);
+    string_format(ctx->message, sizeof(ctx->message), "%s belongs to the World",
+                  type->label);
     return false_v;
   }
   VkrSceneEditRequest request = {.action =
@@ -2003,8 +2068,8 @@ static bool8_t cmd_run_component(CmdContext *ctx, const CmdDef *def,
     vkr_type_defaults(type, request.values.component);
   }
   *ctx->frame->scene_edit = request;
-  snprintf(ctx->message, sizeof(ctx->message), "%s %s",
-           add ? "Adding" : "Removing", type->label);
+  string_format(ctx->message, sizeof(ctx->message), "%s %s",
+                add ? "Adding" : "Removing", type->label);
   return true_v;
 }
 
@@ -2025,20 +2090,20 @@ static bool8_t cmd_run_script_attach(CmdContext *ctx, const CmdDef *def,
     const uint32_t count =
         vkr_editor_script_types(ctx->frame, types, ArrayCount(types));
     for (uint32_t i = 0; i < count && !type; ++i) {
-      if (strlen(types[i]->name) == word.length &&
+      if (string_length(types[i]->name) == word.length &&
           !MemCompare(types[i]->name, word.str, word.length)) {
         type = types[i];
       }
     }
     if (!type) {
-      snprintf(ctx->message, sizeof(ctx->message), "No script type '%.*s'",
-               (int)word.length, word.str);
+      string_format(ctx->message, sizeof(ctx->message), "No script type '%.*s'",
+                    (int)word.length, word.str);
       return false_v;
     }
   }
   vkr_editor_request_script(ctx->frame, entity, type);
-  snprintf(ctx->message, sizeof(ctx->message), "Script %s",
-           type ? type->label : "removed");
+  string_format(ctx->message, sizeof(ctx->message), "Script %s",
+                type ? type->label : "removed");
   return true_v;
 }
 
@@ -2052,11 +2117,11 @@ static bool8_t cmd_run_script_edit(CmdContext *ctx, const CmdDef *def,
     return false_v;
   }
   if (!vkr_editor_open_entity_script(ctx->editor, ctx->frame, entity)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "The selection has no script with a project source");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "The selection has no script with a project source");
     return false_v;
   }
-  snprintf(ctx->message, sizeof(ctx->message), "Opened the script");
+  string_format(ctx->message, sizeof(ctx->message), "Opened the script");
   return true_v;
 }
 
@@ -2080,23 +2145,24 @@ static bool8_t cmd_run_physics_motion(CmdContext *ctx, const CmdDef *def,
   if (!vkr_scene_edit_read(vkr_editor_entity_scene(ctx->frame, entity), entity,
                            &values) ||
       !values.physics.present) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "The selection has no physics body");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "The selection has no physics body");
     return false_v;
   }
   for (uint32_t i = 0; i < ArrayCount(motions); ++i) {
-    if (strlen(motions[i].name) == word.length &&
+    if (string_length(motions[i].name) == word.length &&
         !MemCompare(motions[i].name, word.str, word.length)) {
       values.physics.body.motion = motions[i].motion;
       values.fields = VKR_SCENE_EDIT_PHYSICS;
       *ctx->frame->scene_edit = (VkrSceneEditRequest){
           .action = VKR_SCENE_EDIT_APPLY, .entity = entity, .values = values};
-      snprintf(ctx->message, sizeof(ctx->message), "Body %s", motions[i].name);
+      string_format(ctx->message, sizeof(ctx->message), "Body %s",
+                    motions[i].name);
       return true_v;
     }
   }
-  snprintf(ctx->message, sizeof(ctx->message),
-           "physics.motion needs static, kinematic or dynamic");
+  string_format(ctx->message, sizeof(ctx->message),
+                "physics.motion needs static, kinematic or dynamic");
   return false_v;
 }
 
@@ -2107,8 +2173,8 @@ static bool8_t cmd_run_time_of_day(CmdContext *ctx, const CmdDef *def,
                                    String8 arg) {
   VkrSampleTimeOfDayRequest *request = ctx->frame->time_of_day_request;
   if (!request) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "The time of day is not available");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "The time of day is not available");
     return false_v;
   }
   String8 rest = {0};
@@ -2116,30 +2182,32 @@ static bool8_t cmd_run_time_of_day(CmdContext *ctx, const CmdDef *def,
   float64_t number = 0.0;
   if (def->value == 0u) {
     if (!cmd_number(word, &number)) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "Expected an hour, not '%.*s'", (int)word.length, word.str);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Expected an hour, not '%.*s'", (int)word.length, word.str);
       return false_v;
     }
     request->set_hour = true_v;
     request->hour = number;
-    snprintf(ctx->message, sizeof(ctx->message), "Hour %.2f", number);
+    string_format(ctx->message, sizeof(ctx->message), "Hour %.2f", number);
     return true_v;
   }
   const String8 value = cmd_split(rest, NULL);
   if (word.length >= sizeof(request->group) ||
       !vkr_light_group_name_valid((const char *)word.str, word.length) ||
-      !cmd_number(value, &number) || !(number >= 0.0) || !isfinite(number)) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "light.group needs a group name and an intensity of 0 or more");
+      !cmd_number(value, &number) || !(number >= 0.0) ||
+      !vkr_is_finite_f64(number)) {
+    string_format(
+        ctx->message, sizeof(ctx->message),
+        "light.group needs a group name and an intensity of 0 or more");
     return false_v;
   }
   request->set_group = true_v;
   MemCopy(request->group, word.str, word.length);
   request->group[word.length] = '\0';
   request->intensity = (float32_t)number;
-  snprintf(ctx->message, sizeof(ctx->message), "Light group %s at %.2f",
-           request->group[0] ? request->group : VKR_LIGHT_GROUP_DEFAULT,
-           number);
+  string_format(ctx->message, sizeof(ctx->message), "Light group %s at %.2f",
+                request->group[0] ? request->group : VKR_LIGHT_GROUP_DEFAULT,
+                number);
   return true_v;
 }
 
@@ -2154,17 +2222,17 @@ static bool8_t cmd_run_preset(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   VkrEditorContent *content = ctx->editor->content;
   _Alignas(16) uint8_t value[VKR_TYPE_VALUE_MAX];
-  if (!strcmp(def->name, "preset.save")) {
+  if (string_equals(def->name, "preset.save")) {
     const VkrTypeDesc *type = vkr_editor_preset_type(word);
     if (!type || !vkr_editor_component_read(ctx->frame, entity, type, value) ||
         !vkr_editor_content_save_preset(content, type, value)) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "Cannot save a '%.*s' preset from the selection",
-               (int)word.length, word.str);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Cannot save a '%.*s' preset from the selection",
+                    (int)word.length, word.str);
       return false_v;
     }
-    snprintf(ctx->message, sizeof(ctx->message), "Saved a %s preset",
-             type->label);
+    string_format(ctx->message, sizeof(ctx->message), "Saved a %s preset",
+                  type->label);
     return true_v;
   }
   for (uint32_t i = 0; i < vkr_editor_content_preset_count(content); ++i) {
@@ -2173,14 +2241,14 @@ static bool8_t cmd_run_preset(CmdContext *ctx, const CmdDef *def, String8 arg) {
         vkr_editor_component_read(ctx->frame, entity, preset->type, value)) {
       vkr_editor_request_component(ctx->frame, entity, preset->type,
                                    preset->value);
-      snprintf(ctx->message, sizeof(ctx->message), "Applying preset %s",
-               preset->name);
+      string_format(ctx->message, sizeof(ctx->message), "Applying preset %s",
+                    preset->name);
       return true_v;
     }
   }
-  snprintf(ctx->message, sizeof(ctx->message),
-           "No preset '%.*s' for a component of the selection",
-           (int)word.length, word.str);
+  string_format(ctx->message, sizeof(ctx->message),
+                "No preset '%.*s' for a component of the selection",
+                (int)word.length, word.str);
   return false_v;
 }
 
@@ -2198,16 +2266,16 @@ static bool8_t cmd_run_parent(CmdContext *ctx, const CmdDef *def, String8 arg) {
     /* Parents come from the selection's own container. */
     parent = cmd_find_entity(vkr_editor_entity_scene(ctx->frame, entity), name);
     if (!parent.u64) {
-      snprintf(ctx->message, sizeof(ctx->message),
-               "No object named '%.*s' in the selection's scene",
-               (int)name.length, name.str);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "No object named '%.*s' in the selection's scene",
+                    (int)name.length, name.str);
       return false_v;
     }
   }
   *ctx->frame->scene_edit = (VkrSceneEditRequest){
       .action = VKR_SCENE_EDIT_REPARENT, .entity = entity, .parent = parent};
-  snprintf(ctx->message, sizeof(ctx->message), "Parenting to %.*s",
-           (int)name.length, name.str);
+  string_format(ctx->message, sizeof(ctx->message), "Parenting to %.*s",
+                (int)name.length, name.str);
   return true_v;
 }
 
@@ -2218,21 +2286,22 @@ static bool8_t cmd_run_quit(CmdContext *ctx, const CmdDef *def, String8 arg) {
   const String8 word = cmd_split(arg, NULL);
   const bool8_t discard = cmd_equals(word, cmd_cstr("discard"));
   if (word.length && !discard) {
-    snprintf(ctx->message, sizeof(ctx->message), "Usage: quit [discard]");
+    string_format(ctx->message, sizeof(ctx->message), "Usage: quit [discard]");
     return false_v;
   }
   if (!discard && frame->scene && frame->edits &&
       frame->edits->revision != frame->edits->saved_revision) {
-    snprintf(ctx->message, sizeof(ctx->message),
-             "Unsaved scene edits; save them or use quit discard");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Unsaved scene edits; save them or use quit discard");
     return false_v;
   }
   if (!frame->quit_request) {
-    snprintf(ctx->message, sizeof(ctx->message), "Quit is unavailable here");
+    string_format(ctx->message, sizeof(ctx->message),
+                  "Quit is unavailable here");
     return false_v;
   }
   *frame->quit_request = true_v;
-  snprintf(ctx->message, sizeof(ctx->message), "Quitting");
+  string_format(ctx->message, sizeof(ctx->message), "Quitting");
   return true_v;
 }
 
@@ -2243,7 +2312,7 @@ static bool8_t cmd_run_wait(CmdContext *ctx, const CmdDef *def, String8 arg) {
   }
   float64_t seconds = 0.0;
   if (!cmd_number(cmd_split(arg, NULL), &seconds) || seconds < 0.0) {
-    snprintf(ctx->message, sizeof(ctx->message), "Expected seconds");
+    string_format(ctx->message, sizeof(ctx->message), "Expected seconds");
     return false_v;
   }
   ctx->editor->cmd_wait_seconds = Min(seconds, 600.0);
@@ -2590,23 +2659,23 @@ static bool8_t cmd_run_help(CmdContext *ctx, const CmdDef *def, String8 arg) {
   if (name.length) {
     const CmdDef *found = cmd_find(name);
     if (!found) {
-      snprintf(ctx->message, sizeof(ctx->message), "Unknown command '%.*s'",
-               (int)name.length, name.str);
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Unknown command '%.*s'", (int)name.length, name.str);
       return false_v;
     }
-    snprintf(ctx->message, sizeof(ctx->message), "%s %s  -  %s", found->name,
-             found->usage, found->help);
+    string_format(ctx->message, sizeof(ctx->message), "%s %s  -  %s",
+                  found->name, found->usage, found->help);
     return true_v;
   }
   for (uint32_t i = 0; i < ArrayCount(cmd_defs); ++i) {
     char line[256];
-    snprintf(line, sizeof(line), "  %s %s  -  %s", cmd_defs[i].name,
-             cmd_defs[i].usage, cmd_defs[i].help);
+    string_format(line, sizeof(line), "  %s %s  -  %s", cmd_defs[i].name,
+                  cmd_defs[i].usage, cmd_defs[i].help);
     cmd_report(ctx->editor, true_v, line);
   }
-  snprintf(ctx->message, sizeof(ctx->message),
-           "%u commands; separate several with ';'",
-           (uint32_t)ArrayCount(cmd_defs));
+  string_format(ctx->message, sizeof(ctx->message),
+                "%u commands; separate several with ';'",
+                (uint32_t)ArrayCount(cmd_defs));
   return true_v;
 }
 
@@ -2618,7 +2687,8 @@ static bool8_t cmd_execute_line(VkrEditorUi *editor,
   if (!line.length || line.str[0] == '#')
     return true_v;
   char echo[300];
-  snprintf(echo, sizeof(echo), "> %.*s", (int)Min(line.length, 280u), line.str);
+  string_format(echo, sizeof(echo), "> %.*s", (int)Min(line.length, 280u),
+                line.str);
   cmd_report(editor, true_v, echo);
   String8 arg = {0};
   const String8 name = cmd_split(line, &arg);
@@ -2635,8 +2705,8 @@ static bool8_t cmd_execute_line(VkrEditorUi *editor,
     ok = vkr_editor_cmd_eval(editor, frame, line, ctx.message,
                              sizeof(ctx.message));
     if (!ok)
-      snprintf(ctx.message, sizeof(ctx.message), "Usage: %s %s", def->name,
-               def->usage);
+      string_format(ctx.message, sizeof(ctx.message), "Usage: %s %s", def->name,
+                    def->usage);
   } else {
     ok = def->run(&ctx, def, arg);
     if (ok && def->holds) {
@@ -2685,7 +2755,7 @@ bool8_t vkr_editor_cmd_enqueue(VkrEditorUi *editor, const char *script) {
     return false_v;
   if (editor->cmd_queue_offset >= editor->cmd_queue_length)
     editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
-  const size_t length = strlen(script);
+  const size_t length = string_length(script);
   if (editor->cmd_queue_length + length + 2u > sizeof(editor->cmd_queue)) {
     cmd_report(editor, false_v, "Cmd queue is full; dropped a script");
     return false_v;
@@ -2734,10 +2804,10 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       /* The load failed and nothing loads until another request, so the
          commands that need the scene go. */
       char text[640];
-      snprintf(text, sizeof(text),
-               "wait.scene: the scene did not load: %.*s; dropped the "
-               "remaining commands",
-               (int)frame->scene_status.length, frame->scene_status.str);
+      string_format(text, sizeof(text),
+                    "wait.scene: the scene did not load: %.*s; dropped the "
+                    "remaining commands",
+                    (int)frame->scene_status.length, frame->scene_status.str);
       cmd_report(editor, false_v, text);
       editor->cmd_wait_scene_seconds = 0.0;
       editor->cmd_queue_offset = editor->cmd_queue_length = 0u;
@@ -2778,8 +2848,8 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       return;
     }
     char text[64];
-    snprintf(text, sizeof(text), "Settled after %.2f s",
-             editor->cmd_hold_seconds);
+    string_format(text, sizeof(text), "Settled after %.2f s",
+                  editor->cmd_hold_seconds);
     cmd_report(editor, true_v, text);
     if (editor->cmd_holding_build) {
       editor->cmd_holding_build = false_v;
@@ -2796,8 +2866,9 @@ void vkr_editor_cmd_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
          the Projects status line. */
       if (succeeded && !frame->scene) {
         char reopen[640];
-        snprintf(reopen, sizeof(reopen), "%s, but the scene did not reopen: %s",
-                 result, vkr_editor_projects_message(editor->projects));
+        string_format(reopen, sizeof(reopen),
+                      "%s, but the scene did not reopen: %s", result,
+                      vkr_editor_projects_message(editor->projects));
         cmd_report(editor, false_v, reopen);
       } else {
         cmd_report(editor, succeeded, result);
@@ -2846,14 +2917,14 @@ static void cmd_add_suggestion(VkrEditorUi *editor, const char *text,
     return;
   /* Entities may share a name; `select` resolves the first either way. */
   for (uint32_t i = 0; i < editor->cmd_suggestion_count; ++i) {
-    if (strcmp(editor->cmd_suggestions[i], text) == 0)
+    if (string_equals(editor->cmd_suggestions[i], text))
       return;
   }
   const uint32_t i = editor->cmd_suggestion_count++;
-  snprintf(editor->cmd_suggestions[i], sizeof(editor->cmd_suggestions[i]), "%s",
-           text);
-  snprintf(editor->cmd_suggestion_hints[i],
-           sizeof(editor->cmd_suggestion_hints[i]), "%s", hint);
+  string_format(editor->cmd_suggestions[i], sizeof(editor->cmd_suggestions[i]),
+                "%s", text);
+  string_format(editor->cmd_suggestion_hints[i],
+                sizeof(editor->cmd_suggestion_hints[i]), "%s", hint);
 }
 
 static void cmd_suggest_commands(VkrEditorUi *editor, String8 typed) {
@@ -2868,11 +2939,11 @@ static void cmd_suggest_commands(VkrEditorUi *editor, String8 typed) {
                                   cmd_contains(cmd_cstr(def->help), typed)))
         continue;
       char text[96];
-      snprintf(text, sizeof(text), "%s%s", def->name,
-               def->arg == CMD_ARG_NONE ? "" : " ");
+      string_format(text, sizeof(text), "%s%s", def->name,
+                    def->arg == CMD_ARG_NONE ? "" : " ");
       char hint[96];
-      snprintf(hint, sizeof(hint), "%s%s%s", def->usage,
-               def->usage[0] ? "  " : "", def->help);
+      string_format(hint, sizeof(hint), "%s%s%s", def->usage,
+                    def->usage[0] ? "  " : "", def->help);
       cmd_add_suggestion(editor, text, hint);
     }
   }
@@ -2898,9 +2969,9 @@ static void cmd_suggest_entities(VkrEditorUi *editor, const VkrScene *scene,
       for (uint64_t c = 0; c < name.length; ++c)
         spaced |= cmd_space(name.str[c]);
       char text[96];
-      snprintf(text, sizeof(text), "%.*s%s%.*s%s", (int)head.length, head.str,
-               spaced ? "\"" : "", (int)Min(name.length, 60u), name.str,
-               spaced ? "\"" : "");
+      string_format(text, sizeof(text), "%.*s%s%.*s%s", (int)head.length,
+                    head.str, spaced ? "\"" : "", (int)Min(name.length, 60u),
+                    name.str, spaced ? "\"" : "");
       cmd_add_suggestion(editor, text, "entity");
     }
   }
@@ -2971,8 +3042,8 @@ static void cmd_suggest(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
       if (!cmd_starts_with(cmd_cstr(cmd_defs[i].name), word))
         continue;
       char text[96];
-      snprintf(text, sizeof(text), "%.*s%s", (int)head.length, head.str,
-               cmd_defs[i].name);
+      string_format(text, sizeof(text), "%.*s%s", (int)head.length, head.str,
+                    cmd_defs[i].name);
       cmd_add_suggestion(editor, text, cmd_defs[i].help);
     }
     return;
@@ -2982,8 +3053,8 @@ static void cmd_suggest(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     if (!cmd_starts_with(cmd_cstr(words[i]), word))
       continue;
     char text[96];
-    snprintf(text, sizeof(text), "%.*s%s", (int)head.length, head.str,
-             words[i]);
+    string_format(text, sizeof(text), "%.*s%s", (int)head.length, head.str,
+                  words[i]);
     cmd_add_suggestion(editor, text, def->usage);
   }
 }
@@ -2992,7 +3063,7 @@ static void cmd_suggest(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
 
 static void cmd_set_text(VkrEditorUi *editor, VkrUiSystem *ui,
                          const char *text) {
-  const size_t length = Min(strlen(text), sizeof(editor->cmd_text) - 1u);
+  const size_t length = Min(string_length(text), sizeof(editor->cmd_text) - 1u);
   MemCopy(editor->cmd_text, text, length);
   editor->cmd_text[length] = 0u;
   editor->cmd_length = (uint32_t)length;
@@ -3009,14 +3080,15 @@ static void cmd_submit(VkrEditorUi *editor, VkrUiSystem *ui) {
   /* History keeps the newest distinct lines, oldest first. */
   const uint32_t capacity = ArrayCount(editor->cmd_history);
   if (!editor->cmd_history_count ||
-      strcmp(editor->cmd_history[editor->cmd_history_count - 1u], line) != 0) {
+      !string_equals(editor->cmd_history[editor->cmd_history_count - 1u],
+                     line)) {
     if (editor->cmd_history_count == capacity) {
       MemCopy(editor->cmd_history[0], editor->cmd_history[1],
               sizeof(editor->cmd_history[0]) * (capacity - 1u));
       --editor->cmd_history_count;
     }
-    snprintf(editor->cmd_history[editor->cmd_history_count++],
-             sizeof(editor->cmd_history[0]), "%s", line);
+    string_format(editor->cmd_history[editor->cmd_history_count++],
+                  sizeof(editor->cmd_history[0]), "%s", line);
   }
   editor->cmd_history_cursor = editor->cmd_history_count;
   (void)vkr_editor_cmd_enqueue(editor, line);
@@ -3027,7 +3099,7 @@ static void cmd_submit(VkrEditorUi *editor, VkrUiSystem *ui) {
 static void cmd_accept(VkrEditorUi *editor, VkrUiSystem *ui, uint32_t index,
                        bool8_t run) {
   cmd_set_text(editor, ui, editor->cmd_suggestions[index]);
-  const size_t length = strlen(editor->cmd_suggestions[index]);
+  const size_t length = string_length(editor->cmd_suggestions[index]);
   if (run && length && editor->cmd_suggestions[index][length - 1u] != ' ')
     cmd_submit(editor, ui);
 }

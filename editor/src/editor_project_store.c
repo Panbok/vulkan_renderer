@@ -10,18 +10,7 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_bakery_json.h"
 
-#include <ctype.h>
-#include <errno.h>
-#include <math.h>
 #include <stdarg.h>
-#include <stdlib.h>
-#if defined(PLATFORM_WINDOWS)
-#include <objbase.h>
-#include <windows.h>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
 
 #define PROJECT_JSON_DEPTH 32u
 
@@ -55,14 +44,14 @@ static bool8_t project_error(VkrEditorProjectError *error, const char *format,
   if (error) {
     va_list args;
     va_start(args, format);
-    vsnprintf(error->message, sizeof(error->message), format, args);
+    string_format_v(error->message, sizeof(error->message), format, args);
     va_end(args);
   }
   return false_v;
 }
 
 static String8 project_string(const char *text) {
-  return (String8){.str = (uint8_t *)text, .length = strlen(text)};
+  return (String8){.str = (uint8_t *)text, .length = string_length(text)};
 }
 
 static FilePath project_path(const char *text) {
@@ -71,13 +60,13 @@ static FilePath project_path(const char *text) {
 }
 
 static bool8_t project_join(char *out, const char *root, const char *relative) {
-  int32_t length =
-      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%s/%s", root, relative);
+  int32_t length = string_format(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%s/%s",
+                                 root, relative);
   return length > 0 && length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
 }
 
 static bool8_t project_id_valid(const char *id) {
-  if (!id || strlen(id) != 36) {
+  if (!id || string_length(id) != 36) {
     return false_v;
   }
   for (uint32_t i = 0; i < 36; ++i) {
@@ -96,18 +85,12 @@ static bool8_t project_id_valid(const char *id) {
 bool8_t vkr_editor_project_id_generate(char id[37],
                                        VkrEditorProjectError *error) {
   uint8_t bytes[16];
-#if defined(PLATFORM_WINDOWS)
-  GUID guid;
-  if (FAILED(CoCreateGuid(&guid))) {
+  if (!vkr_platform_random_bytes(bytes, sizeof(bytes))) {
     return project_error(error, "Unable to generate project identity");
   }
-  MemCopy(bytes, &guid, sizeof(bytes));
-#else
-  arc4random_buf(bytes, sizeof(bytes));
-#endif
   bytes[6] = (bytes[6] & 15u) | 64u;
   bytes[8] = (bytes[8] & 63u) | 128u;
-  snprintf(
+  string_format(
       id, 37,
       "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
       bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
@@ -156,11 +139,12 @@ static bool8_t project_utf8(const uint8_t *bytes, uint32_t length,
 
 bool8_t vkr_editor_project_name_valid(const char *name,
                                       VkrEditorProjectError *error) {
-  if (!name || !name[0] || strlen(name) >= VKR_EDITOR_PROJECT_NAME_CAPACITY) {
+  if (!name || !name[0] ||
+      string_length(name) >= VKR_EDITOR_PROJECT_NAME_CAPACITY) {
     return project_error(error,
                          "Name must contain 1 to 128 Unicode characters");
   }
-  uint32_t length = (uint32_t)strlen(name);
+  uint32_t length = (uint32_t)string_length(name);
   uint32_t position = 0;
   uint32_t count = 0;
   bool8_t visible = false_v;
@@ -376,7 +360,7 @@ static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
           if (json->tokens[previous].key_hash == hash) {
             char prior[256];
             if (!project_json_decode(json, previous, prior, sizeof(prior)) ||
-                strcmp(name, prior) == 0) {
+                string_equals(name, prior)) {
               return false_v;
             }
           }
@@ -405,7 +389,7 @@ static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
   } else {
     uint32_t start = json->pos;
     while (json->pos < json->bytes.length &&
-           !strchr(" \t\r\n,}]", json->bytes.str[json->pos])) {
+           !string_find_char(" \t\r\n,}]", json->bytes.str[json->pos])) {
       ++json->pos;
     }
     uint32_t length = json->pos - start;
@@ -415,8 +399,8 @@ static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
     }
     MemCopy(value, json->bytes.str + start, length);
     value[length] = '\0';
-    if (strcmp(value, "true") && strcmp(value, "false") &&
-        strcmp(value, "null")) {
+    if (!string_equals(value, "true") && !string_equals(value, "false") &&
+        !string_equals(value, "null")) {
       uint32_t p = value[0] == '-' ? 1 : 0;
       if (value[p] == '0') {
         ++p;
@@ -424,16 +408,16 @@ static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
         if (value[p] < '1' || value[p] > '9') {
           return false_v;
         }
-        while (isdigit((unsigned char)value[p])) {
+        while (vkr_char_is_digit((unsigned char)value[p])) {
           ++p;
         }
       }
       if (value[p] == '.') {
         ++p;
-        if (!isdigit((unsigned char)value[p])) {
+        if (!vkr_char_is_digit((unsigned char)value[p])) {
           return false_v;
         }
-        while (isdigit((unsigned char)value[p])) {
+        while (vkr_char_is_digit((unsigned char)value[p])) {
           ++p;
         }
       }
@@ -442,14 +426,14 @@ static bool8_t project_json_value(s_ProjectJson *json, uint32_t depth) {
         if (value[p] == '+' || value[p] == '-') {
           ++p;
         }
-        if (!isdigit((unsigned char)value[p])) {
+        if (!vkr_char_is_digit((unsigned char)value[p])) {
           return false_v;
         }
-        while (isdigit((unsigned char)value[p])) {
+        while (vkr_char_is_digit((unsigned char)value[p])) {
           ++p;
         }
       }
-      if (p != length || !isfinite(strtod(value, NULL))) {
+      if (p != length || !vkr_is_finite_f64(string_parse_f64(value, NULL))) {
         return false_v;
       }
     }
@@ -516,7 +500,7 @@ static uint32_t project_json_field(s_ProjectJson *json, uint32_t object,
     char text[256];
     if (json->tokens[key].key_hash == hash &&
         project_json_decode(json, key, text, sizeof(text)) &&
-        !strcmp(text, name)) {
+        string_equals(text, name)) {
       return key + 1;
     }
   }
@@ -643,8 +627,9 @@ bool8_t vkr_editor_project_parse(String8 bytes, VkrEditorProject *project,
                                                project->scene_count + 1));
     }
     char expected[128];
-    snprintf(expected, sizeof(expected), "scenes/%s/scene.json", scene->id);
-    if (strcmp(scene->path, expected)) {
+    string_format(expected, sizeof(expected), "scenes/%s/scene.json",
+                  scene->id);
+    if (!string_equals(scene->path, expected)) {
       return project_json_finish(
           &json,
           project_error(error,
@@ -652,7 +637,7 @@ bool8_t vkr_editor_project_parse(String8 bytes, VkrEditorProject *project,
                         expected));
     }
     for (uint32_t i = 0; i < project->scene_count; ++i) {
-      if (!strcmp(scene->id, project->scenes[i].id)) {
+      if (string_equals(scene->id, project->scenes[i].id)) {
         return project_json_finish(
             &json,
             project_error(error, "Duplicate scene identity: %s", scene->id));
@@ -698,7 +683,7 @@ bool8_t vkr_editor_project_resolve_within(
     return project_error(error, "Managed path is missing or inaccessible: %s",
                          combined);
   }
-  size_t root_length = strlen(root);
+  size_t root_length = string_length(root);
   if (!file_path_starts_with(out_path, root) ||
       (out_path[root_length] != '/' && out_path[root_length] != '\\')) {
     return project_error(error, "Managed path escapes its owner: %s", relative);
@@ -715,7 +700,7 @@ vkr_editor_project_scene_path(const VkrEditorProject *project, uint32_t index,
     return project_error(error, "Invalid project scene selection");
   }
   char owner[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  size_t length = strlen(project->manifest_path);
+  size_t length = string_length(project->manifest_path);
   size_t parent = 0;
   for (size_t i = 0; i < length; ++i) {
     if (project->manifest_path[i] == '/'
@@ -843,7 +828,7 @@ bool8_t vkr_editor_project_load(const VkrEditorWorkspace *workspace,
   }
   char relative[128];
   char absolute[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  snprintf(relative, sizeof(relative), "projects/%s/project.json", id);
+  string_format(relative, sizeof(relative), "projects/%s/project.json", id);
   if (!vkr_editor_project_resolve(workspace->root, relative, absolute, error)) {
     return false_v;
   }
@@ -852,7 +837,7 @@ bool8_t vkr_editor_project_load(const VkrEditorWorkspace *workspace,
     return false_v;
   }
   bool8_t parsed = vkr_editor_project_parse(bytes, project, error);
-  if (!parsed || strcmp(project->id, id)) {
+  if (!parsed || !string_equals(project->id, id)) {
     if (parsed) {
       project_error(error, "Project directory identity mismatch: %s", absolute);
     }
@@ -879,7 +864,7 @@ static bool8_t project_write_sink(void *context, const uint8_t *bytes,
 }
 
 static bool8_t project_write_text(FileHandle *file, const char *text) {
-  return project_write_sink(file, (const uint8_t *)text, strlen(text));
+  return project_write_sink(file, (const uint8_t *)text, string_length(text));
 }
 
 static bool8_t project_write_quote(FileHandle *file, const char *text) {
@@ -932,7 +917,7 @@ static bool8_t project_write_extensions(FileHandle *file, String8 document,
     }
     bool8_t recognized = false_v;
     for (uint32_t i = 0; i < ArrayCount(known); ++i) {
-      recognized |= strcmp(name, known[i]) == 0;
+      recognized |= string_equals(name, known[i]);
     }
     if (!recognized) {
       uint32_t start = json.tokens[key].start;
@@ -1006,15 +991,16 @@ static bool8_t project_write_manifest(FileHandle *file,
   for (uint32_t i = 0; i < project->scene_count; ++i) {
     VkrEditorProjectScene *scene = &project->scenes[i];
     char expected[128];
-    snprintf(expected, sizeof(expected), "scenes/%s/scene.json", scene->id);
+    string_format(expected, sizeof(expected), "scenes/%s/scene.json",
+                  scene->id);
     if (!project_id_valid(scene->id) ||
         !vkr_editor_project_name_valid(scene->name, error) ||
-        strcmp(scene->path, expected)) {
+        !string_equals(scene->path, expected)) {
       return project_error(error, "Invalid scene membership at entry %u",
                            i + 1);
     }
     for (uint32_t j = 0; j < i; ++j) {
-      if (!strcmp(project->scenes[j].id, scene->id)) {
+      if (string_equals(project->scenes[j].id, scene->id)) {
         return project_error(error, "Duplicate scene identity: %s", scene->id);
       }
     }
@@ -1052,8 +1038,8 @@ bool8_t vkr_editor_project_save(VkrEditorProject *project,
   if (!vkr_editor_project_id_generate(transaction, error)) {
     return false_v;
   }
-  int32_t temp_length = snprintf(temporary, sizeof(temporary), "%s.tmp.%s",
-                                 project->manifest_path, transaction);
+  int32_t temp_length = string_format(temporary, sizeof(temporary), "%s.tmp.%s",
+                                      project->manifest_path, transaction);
   if (temp_length < 0 || temp_length >= sizeof(temporary)) {
     return project_error(error,
                          "Project manifest path exceeds supported length");
@@ -1063,9 +1049,9 @@ bool8_t vkr_editor_project_save(VkrEditorProject *project,
     return project_error(error,
                          "Project manifest path exceeds supported length");
   }
-  char *separator = strrchr(lock_directory, '/');
+  char *separator = string_get_last_char_occurrence(lock_directory, '/');
 #if defined(PLATFORM_WINDOWS)
-  char *backslash = strrchr(lock_directory, '\\');
+  char *backslash = string_get_last_char_occurrence(lock_directory, '\\');
   if (backslash && (!separator || backslash > separator)) {
     separator = backslash;
   }
@@ -1075,7 +1061,7 @@ bool8_t vkr_editor_project_save(VkrEditorProject *project,
                          "Project manifest needs an absolute owner path");
   }
   *separator = '\0';
-  snprintf(lock_name, sizeof(lock_name), "project-%s", project->id);
+  string_format(lock_name, sizeof(lock_name), "project-%s", project->id);
   VkrPlatformProcessLock lock = {0};
   if (!vkr_platform_process_lock_acquire(lock_name, lock_directory, &lock)) {
     return project_error(error,
@@ -1225,7 +1211,8 @@ bool8_t vkr_editor_workspace_open(const char *directory, bool8_t create,
     }
     char staging[VKR_EDITOR_PROJECT_PATH_CAPACITY];
     char filename[80];
-    snprintf(filename, sizeof(filename), "workspace.%s.tmp", workspace->id);
+    string_format(filename, sizeof(filename), "workspace.%s.tmp",
+                  workspace->id);
     if (!project_join(staging, workspace->root, filename)) {
       return project_error(error, "Workspace path exceeds supported length");
     }
@@ -1237,8 +1224,8 @@ bool8_t vkr_editor_workspace_open(const char *directory, bool8_t create,
       return project_error(error, "Cannot stage workspace manifest");
     }
     char json[128];
-    snprintf(json, sizeof(json), "{\"version\":1,\"id\":\"%s\"}\n",
-             workspace->id);
+    string_format(json, sizeof(json), "{\"version\":1,\"id\":\"%s\"}\n",
+                  workspace->id);
     bool8_t written = project_write_text(&output, json) &&
                       file_sync(&output) == FILE_ERROR_NONE;
     file_close(&output);
@@ -1307,9 +1294,9 @@ static bool8_t project_begin(VkrEditorWorkspace *workspace, const char *name,
     if (!vkr_string_copy_bounded(chosen, sizeof(chosen), workspace->root)) {
       return project_error(error, "Workspace path exceeds supported length");
     }
-    char *separator = strrchr(chosen, '/');
+    char *separator = string_get_last_char_occurrence(chosen, '/');
 #if defined(PLATFORM_WINDOWS)
-    char *backslash = strrchr(chosen, '\\');
+    char *backslash = string_get_last_char_occurrence(chosen, '\\');
     if (backslash && (!separator || backslash > separator)) {
       separator = backslash;
     }
@@ -1378,17 +1365,17 @@ bool8_t vkr_editor_project_unpublish(const VkrEditorWorkspace *workspace,
   char relative[128];
   char manifest[VKR_EDITOR_PROJECT_PATH_CAPACITY];
   char lock_directory[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  snprintf(relative, sizeof(relative), "projects/%s/project.json", id);
+  string_format(relative, sizeof(relative), "projects/%s/project.json", id);
   if (!vkr_editor_project_resolve(workspace->root, relative, manifest, error)) {
     return false_v;
   }
-  snprintf(relative, sizeof(relative), "projects/%s", id);
+  string_format(relative, sizeof(relative), "projects/%s", id);
   if (!vkr_editor_project_resolve(workspace->root, relative, lock_directory,
                                   error)) {
     return false_v;
   }
   char lock_name[64];
-  snprintf(lock_name, sizeof(lock_name), "project-%s", id);
+  string_format(lock_name, sizeof(lock_name), "project-%s", id);
   VkrPlatformProcessLock lock = {0};
   if (!vkr_platform_process_lock_acquire(lock_name, lock_directory, &lock)) {
     return project_error(error,
@@ -1403,6 +1390,30 @@ bool8_t vkr_editor_project_unpublish(const VkrEditorWorkspace *workspace,
                          (const char *)file_get_error_string(removed).str);
   }
   return true_v;
+}
+
+/* One workspace discovery: the projects directory and the caller's visitor.
+ */
+typedef struct ProjectDiscovery {
+  const char *projects;
+  VkrEditorProjectVisitor visitor;
+  void *context;
+} ProjectDiscovery;
+
+/* Visits one project directory, named by its id, whose manifest path
+   resolves; false stops the listing when the caller's visitor asks to. */
+static bool8_t project_discovery_visit(void *context, const char *name,
+                                       bool8_t is_directory) {
+  ProjectDiscovery *discovery = context;
+  if (!is_directory || !project_id_valid(name)) {
+    return true_v;
+  }
+  char relative[128];
+  char manifest[VKR_EDITOR_PROJECT_PATH_CAPACITY];
+  string_format(relative, sizeof(relative), "%s/project.json", name);
+  return !vkr_editor_project_resolve(discovery->projects, relative, manifest,
+                                     NULL) ||
+         discovery->visitor(name, discovery->context);
 }
 
 bool8_t vkr_editor_workspace_visit(const VkrEditorWorkspace *workspace,
@@ -1420,54 +1431,13 @@ bool8_t vkr_editor_workspace_visit(const VkrEditorWorkspace *workspace,
                                   error)) {
     return false_v;
   }
-#if defined(PLATFORM_WINDOWS)
-  char pattern[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  wchar_t wide[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  if (!project_join(pattern, projects, "*") ||
-      !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, pattern, -1, wide,
-                           ArrayCount(wide))) {
-    return project_error(error, "Invalid workspace discovery path");
-  }
-  WIN32_FIND_DATAW entry;
-  HANDLE search = FindFirstFileW(wide, &entry);
-  if (search == INVALID_HANDLE_VALUE) {
-    return project_error(error, "Cannot list workspace projects");
-  }
-  do {
-    char id[37];
-    if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, entry.cFileName, -1,
-                            id, sizeof(id), NULL, NULL) &&
-        project_id_valid(id)) {
-      char relative[128];
-      char manifest[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-      snprintf(relative, sizeof(relative), "%s/project.json", id);
-      if (vkr_editor_project_resolve(projects, relative, manifest, NULL) &&
-          !visitor(id, context)) {
-        break;
-      }
-    }
-  } while (FindNextFileW(search, &entry));
-  FindClose(search);
-#else
-  DIR *directory = opendir(projects);
-  if (!directory) {
+  ProjectDiscovery discovery = {
+      .projects = projects, .visitor = visitor, .context = context};
+  const FilePath projects_path = file_path_view(projects);
+  if (file_list_directory(&projects_path, project_discovery_visit,
+                          &discovery) != FILE_ERROR_NONE) {
     return project_error(error, "Cannot list workspace projects: %s", projects);
   }
-  struct dirent *entry;
-  while ((entry = readdir(directory))) {
-    if (project_id_valid(entry->d_name)) {
-      char relative[128];
-      char manifest[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-      snprintf(relative, sizeof(relative), "%s/project.json", entry->d_name);
-      if (vkr_editor_project_resolve(projects, relative, manifest, NULL) &&
-          !visitor(entry->d_name, context)) {
-        break;
-      }
-    }
-  }
-  closedir(directory);
-#endif
   return true_v;
 }
 
@@ -1493,7 +1463,7 @@ bool8_t vkr_editor_workspace_lease_acquire(const VkrEditorWorkspace *workspace,
         error, "Initialize the workspace before acquiring its write lease");
   }
   char name[64];
-  snprintf(name, sizeof(name), "workspace-%s", workspace->id);
+  string_format(name, sizeof(name), "workspace-%s", workspace->id);
   if (!vkr_platform_process_lock_acquire(name, workspace->root, &lease->lock)) {
     return project_error(
         error, "Workspace is open in another editor; using read-only access");
@@ -1517,23 +1487,19 @@ static bool8_t project_locator_path(const char *override,
     }
     return true_v;
   }
+  /* %LOCALAPPDATA% on Windows, ~/Library/Application Support on macOS. */
+  char base[VKR_EDITOR_PROJECT_PATH_CAPACITY];
 #if defined(PLATFORM_WINDOWS)
-  wchar_t wide[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  char local[VKR_EDITOR_PROJECT_PATH_CAPACITY];
-  DWORD count =
-      GetEnvironmentVariableW(L"LOCALAPPDATA", wide, ArrayCount(wide));
-  if (!count || count >= ArrayCount(wide) ||
-      !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1, local,
-                           sizeof(local), NULL, NULL) ||
-      !project_join(path, local, "VKR/editor.json")) {
+  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_CACHE, base,
+                                   sizeof(base)) ||
+      !project_join(path, base, "VKR/editor.json")) {
     return project_error(
         error, "LOCALAPPDATA is unavailable for the workspace locator");
   }
 #else
-  const char *home_directory = getenv("HOME");
-  if (!home_directory || !home_directory[0] ||
-      !project_join(path, home_directory,
-                    "Library/Application Support/VKR/editor.json")) {
+  if (!vkr_platform_user_directory(VKR_PLATFORM_USER_SETTINGS, base,
+                                   sizeof(base)) ||
+      !project_join(path, base, "VKR/editor.json")) {
     return project_error(
         error, "Home directory is unavailable for the workspace locator");
   }
@@ -1616,9 +1582,9 @@ bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
   if (!vkr_string_copy_bounded(parent, sizeof(parent), path)) {
     return project_error(error, "Workspace locator path exceeds capacity");
   }
-  char *separator = strrchr(parent, '/');
+  char *separator = string_get_last_char_occurrence(parent, '/');
 #if defined(PLATFORM_WINDOWS)
-  char *backslash = strrchr(parent, '\\');
+  char *backslash = string_get_last_char_occurrence(parent, '\\');
   if (backslash && (!separator || backslash > separator)) {
     separator = backslash;
   }
@@ -1651,7 +1617,7 @@ bool8_t vkr_editor_workspace_locator_save(const char *locator_path,
     return false_v;
   }
   int32_t length =
-      snprintf(temporary, sizeof(temporary), "%s.%s.tmp", path, id);
+      string_format(temporary, sizeof(temporary), "%s.%s.tmp", path, id);
   if (length <= 0 || length >= sizeof(temporary)) {
     return project_error(
         error, "Local workspace locator path exceeds supported length");
@@ -1700,15 +1666,15 @@ bool8_t vkr_editor_project_json_replace_member(VkrAllocator *allocator,
                                                String8 object, const char *key,
                                                String8 value, String8 *out,
                                                VkrEditorProjectError *error) {
-  if (!allocator || !out || !key || strlen(key) > 255) {
+  if (!allocator || !out || !key || string_length(key) > 255) {
     return project_error(error, "Invalid JSON member replacement");
   }
   *out = (String8){0};
   uint32_t position = 0;
-  while (position < strlen(key)) {
+  while (position < string_length(key)) {
     uint32_t scalar;
-    if (!project_utf8((const uint8_t *)key, (uint32_t)strlen(key), &position,
-                      &scalar)) {
+    if (!project_utf8((const uint8_t *)key, (uint32_t)string_length(key),
+                      &position, &scalar)) {
       return project_error(error, "JSON member name contains invalid Unicode");
     }
   }
@@ -1792,7 +1758,7 @@ bool8_t vkr_editor_project_remove_scene(VkrEditorProject *project,
       return project_json_finish(
           &json, project_error(error, "Invalid scene recall identity"));
     }
-    if (!strcmp(name, removed.id)) {
+    if (string_equals(name, removed.id)) {
       start = json.tokens[key].start;
       end = json.tokens[key + 1].end;
       if (json.tokens[key + 1].next < json.tokens[0].next) {
@@ -1873,7 +1839,7 @@ typedef bool8_t (*s_ProjectDocumentWriter)(FileHandle *file,
 /* Replaces the document at `path` through a synced staged file, so a failure
    leaves the previous document. */
 static bool8_t project_publish_stream(const char *path,
-                                      s_ProjectDocumentWriter write,
+                                      s_ProjectDocumentWriter write_document,
                                       const void *context,
                                       VkrEditorProjectError *error) {
   char transaction[37];
@@ -1881,8 +1847,8 @@ static bool8_t project_publish_stream(const char *path,
   if (!vkr_editor_project_id_generate(transaction, error)) {
     return false_v;
   }
-  const int32_t length = snprintf(staged_path, sizeof(staged_path), "%s.tmp.%s",
-                                  path, transaction);
+  const int32_t length = string_format(staged_path, sizeof(staged_path),
+                                       "%s.tmp.%s", path, transaction);
   if (length < 0 || (uint32_t)length >= sizeof(staged_path)) {
     return project_error(error, "Document path exceeds supported length: %s",
                          path);
@@ -1895,8 +1861,8 @@ static bool8_t project_publish_stream(const char *path,
   if (file_open(&staged, exclusive, &output) != FILE_ERROR_NONE) {
     return project_error(error, "Cannot stage document: %s", path);
   }
-  const bool8_t written =
-      write(&output, context, error) && file_sync(&output) == FILE_ERROR_NONE;
+  const bool8_t written = write_document(&output, context, error) &&
+                          file_sync(&output) == FILE_ERROR_NONE;
   file_close(&output);
   if (!written ||
       file_rename(&staged, &destination, true_v) != FILE_ERROR_NONE) {
@@ -1927,9 +1893,9 @@ static bool8_t project_ensure_directory(const char *path);
 
 /* Cuts `path` at its last separator and returns the removed name. */
 static const char *project_path_cut(char *path) {
-  char *separator = strrchr(path, '/');
+  char *separator = string_get_last_char_occurrence(path, '/');
 #if defined(PLATFORM_WINDOWS)
-  char *backslash = strrchr(path, '\\');
+  char *backslash = string_get_last_char_occurrence(path, '\\');
   if (backslash && (!separator || backslash > separator)) {
     separator = backslash;
   }
@@ -1953,13 +1919,14 @@ vkr_editor_project_local_path(const VkrEditorProject *project,
   const char *manifest = project_path_cut(root);
   const char *directory = manifest ? project_path_cut(root) : NULL;
   const char *projects = directory ? project_path_cut(root) : NULL;
-  if (!projects || strcmp(manifest, "project.json") ||
-      strcmp(directory, project->id) || strcmp(projects, "projects")) {
+  if (!projects || !string_equals(manifest, "project.json") ||
+      !string_equals(directory, project->id) ||
+      !string_equals(projects, "projects")) {
     return false_v;
   }
   const int32_t length =
-      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY,
-               "%s/local/projects/%s.json", root, project->id);
+      string_format(out, VKR_EDITOR_PROJECT_PATH_CAPACITY,
+                    "%s/local/projects/%s.json", root, project->id);
   return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
 }
 
@@ -1993,7 +1960,7 @@ bool8_t vkr_editor_project_local_load(VkrEditorProject *project,
       json.tokens[version].end - json.tokens[version].start == 1 &&
       bytes.str[json.tokens[version].start] == '1' &&
       project_json_text(&json, 0, "id", id, sizeof(id)) &&
-      strcmp(id, project->id) == 0 &&
+      string_equals(id, project->id) &&
       project_json_optional_object(&json, "editor_settings", &settings) &&
       project_json_optional_object(&json, "scene_editor_state", &recall);
   (void)project_json_finish(&json, true_v);
@@ -2037,7 +2004,7 @@ static bool8_t project_write_local(FileHandle *file, const void *context,
        key = json.tokens[key + 1].next) {
     char name[256];
     ok = project_json_decode(&json, key, name, sizeof(name));
-    if (!ok || !strcmp(name, "animation")) {
+    if (!ok || string_equals(name, "animation")) {
       continue;
     }
     const uint32_t start = json.tokens[key].start;
@@ -2080,15 +2047,15 @@ static bool8_t project_world_mesh(s_ProjectJson *assets, const char *id,
     char text[64];
     if (assets->tokens[item].kind != '{' ||
         !project_json_text(assets, item, "id", text, sizeof(text)) ||
-        strcmp(text, id)) {
+        !string_equals(text, id)) {
       continue;
     }
     if (!project_json_text(assets, item, "kind", text, sizeof(text)) ||
-        strcmp(text, "mesh")) {
+        !string_equals(text, "mesh")) {
       return false_v;
     }
     if (!project_json_text(assets, item, "name", name, name_capacity)) {
-      snprintf(name, name_capacity, "Mesh");
+      string_format(name, name_capacity, "Mesh");
     }
     const uint32_t artifacts = project_json_field(assets, item, "artifacts");
     if (artifacts == UINT32_MAX || assets->tokens[artifacts].kind != '[') {
@@ -2099,7 +2066,7 @@ static bool8_t project_world_mesh(s_ProjectJson *assets, const char *id,
          artifact = assets->tokens[artifact].next) {
       if (assets->tokens[artifact].kind == '{' &&
           project_json_text(assets, artifact, "role", text, sizeof(text)) &&
-          !strcmp(text, "mesh") &&
+          string_equals(text, "mesh") &&
           project_json_text(assets, artifact, "path", path,
                             VKR_EDITOR_PROJECT_PATH_CAPACITY)) {
         return project_relative_valid(path);
@@ -2116,7 +2083,7 @@ static bool8_t
 project_world_runtime_path(const char *artifact,
                            char out[VKR_EDITOR_PROJECT_PATH_CAPACITY]) {
   const int32_t length =
-      snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "./%s", artifact);
+      string_format(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "./%s", artifact);
   return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
 }
 
@@ -2341,12 +2308,12 @@ bool8_t vkr_editor_project_world_refresh(const char *world_path, String8 assets,
     if (asset == UINT32_MAX || world.tokens[asset].kind != '{' ||
         field == UINT32_MAX || world.tokens[field].kind != '"' ||
         !project_json_text(&world, asset, "scope", scope, sizeof(scope)) ||
-        strcmp(scope, "project") ||
+        !string_equals(scope, "project") ||
         !project_json_text(&world, asset, "id", id, sizeof(id)) ||
         !project_json_decode(&world, field, previous, sizeof(previous)) ||
         !project_world_mesh(&inventory, id, name, sizeof(name), artifact) ||
         !project_world_runtime_path(artifact, current) ||
-        !strcmp(previous, current)) {
+        string_equals(previous, current)) {
       continue;
     }
     VkrJsonWriter writer;
@@ -2412,7 +2379,7 @@ uint32_t vkr_editor_project_world_meshes(const char *world_path,
       char scope[16];
       if (asset != UINT32_MAX && world.tokens[asset].kind == '{' &&
           project_json_text(&world, asset, "scope", scope, sizeof(scope)) &&
-          !strcmp(scope, "project") &&
+          string_equals(scope, "project") &&
           project_json_text(&world, asset, "id", ids[count], sizeof(ids[0]))) {
         ++count;
       }
@@ -2616,9 +2583,9 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
   if (!vkr_string_copy_bounded(root, sizeof(root), manifest_path)) {
     return project_error(error, "Managed scene path exceeds supported length");
   }
-  char *separator = strrchr(root, '/');
+  char *separator = string_get_last_char_occurrence(root, '/');
 #if defined(PLATFORM_WINDOWS)
-  char *backslash = strrchr(root, '\\');
+  char *backslash = string_get_last_char_occurrence(root, '\\');
   if (backslash && (!separator || backslash > separator)) {
     separator = backslash;
   }
@@ -2666,7 +2633,7 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
     goto cleanup;
   }
   char lock_name[64];
-  snprintf(lock_name, sizeof(lock_name), "scene-%s", scene_id);
+  string_format(lock_name, sizeof(lock_name), "scene-%s", scene_id);
   if (!vkr_platform_process_lock_acquire(lock_name, root, &lock)) {
     project_error(error, "Scene is currently being saved by another editor");
     goto cleanup;
@@ -2678,7 +2645,7 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
       !vkr_editor_project_id_generate(revision_id, error)) {
     goto cleanup;
   }
-  snprintf(relative, sizeof(relative), "edits/%s.json", revision_id);
+  string_format(relative, sizeof(relative), "edits/%s.json", revision_id);
   if (!project_join(overlay_path, root, relative)) {
     project_error(error, "Authored overlay path exceeds supported length");
     goto cleanup;
@@ -2714,8 +2681,8 @@ bool8_t vkr_editor_project_save_scene_overlay(const char *manifest_path,
     }
     updated = with_probes;
   }
-  int32_t length = snprintf(staged_path, sizeof(staged_path), "%s.tmp.%s",
-                            manifest_path, revision_id);
+  int32_t length = string_format(staged_path, sizeof(staged_path), "%s.tmp.%s",
+                                 manifest_path, revision_id);
   if (length <= 0 || length >= sizeof(staged_path)) {
     project_error(error, "Staged scene manifest path exceeds supported length");
     goto cleanup;
@@ -2757,7 +2724,7 @@ cleanup:
   if (!success) {
     edits->saved_revision = saved_revision;
     if (error && error->message[0]) {
-      snprintf(edits->status, sizeof(edits->status), "%s", error->message);
+      string_format(edits->status, sizeof(edits->status), "%s", error->message);
     }
     if (overlay_published) {
       FilePath overlay = project_path(overlay_path);
@@ -2916,9 +2883,9 @@ project_local_directory(char out[VKR_EDITOR_PROJECT_PATH_CAPACITY],
   if (!project_locator_path(NULL, out, error)) {
     return false_v;
   }
-  char *separator = strrchr(out, '/');
+  char *separator = string_get_last_char_occurrence(out, '/');
 #if defined(PLATFORM_WINDOWS)
-  char *backslash = strrchr(out, '\\');
+  char *backslash = string_get_last_char_occurrence(out, '\\');
   if (backslash && (!separator || backslash > separator)) {
     separator = backslash;
   }
@@ -3012,8 +2979,8 @@ vkr_editor_folder_normalize(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY]) {
 }
 
 bool8_t vkr_editor_folder_within(const char *path, const char *ancestor) {
-  const uint64_t length = strlen(ancestor);
-  return !length || (!strncmp(path, ancestor, length) &&
+  const uint64_t length = string_length(ancestor);
+  return !length || (string_n_equals(path, ancestor, length) &&
                      (path[length] == '\0' || path[length] == '/'));
 }
 
@@ -3044,7 +3011,7 @@ const char *vkr_editor_folder_name(const char *path) {
 static uint32_t folders_find(const VkrEditorContentLabels *doc,
                              const char *path) {
   for (uint32_t i = 0u; i < doc->folder_count; ++i) {
-    if (!strcmp(doc->folders[i].path, path)) {
+    if (string_equals(doc->folders[i].path, path)) {
       return i;
     }
   }
@@ -3053,10 +3020,10 @@ static uint32_t folders_find(const VkrEditorContentLabels *doc,
 
 bool8_t vkr_editor_folders_add(VkrEditorContentLabels *doc, const char *path) {
   char current[VKR_EDITOR_FOLDER_PATH_CAPACITY];
-  if (strlen(path) >= sizeof(current)) {
+  if (string_length(path) >= sizeof(current)) {
     return false_v;
   }
-  MemCopy(current, path, strlen(path) + 1u);
+  MemCopy(current, path, string_length(path) + 1u);
   if (!vkr_editor_folder_normalize(current)) {
     return false_v;
   }
@@ -3085,8 +3052,8 @@ bool8_t vkr_editor_folders_add(VkrEditorContentLabels *doc, const char *path) {
 static bool8_t folders_rebase(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY],
                               const char *from, const char *to) {
   char moved[VKR_EDITOR_FOLDER_PATH_CAPACITY];
-  const int length =
-      snprintf(moved, sizeof(moved), "%s%s", to, path + strlen(from));
+  const int length = string_format(moved, sizeof(moved), "%s%s", to,
+                                   path + string_length(from));
   if (length < 0 || length >= (int)sizeof(moved)) {
     return false_v;
   }
@@ -3097,10 +3064,10 @@ static bool8_t folders_rebase(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY],
 bool8_t vkr_editor_folders_rename(VkrEditorContentLabels *doc, const char *from,
                                   const char *to) {
   char target[VKR_EDITOR_FOLDER_PATH_CAPACITY];
-  if (!from[0] || strlen(to) >= sizeof(target)) {
+  if (!from[0] || string_length(to) >= sizeof(target)) {
     return false_v;
   }
-  MemCopy(target, to, strlen(to) + 1u);
+  MemCopy(target, to, string_length(to) + 1u);
   if (!vkr_editor_folder_normalize(target) || !target[0] ||
       vkr_editor_folder_within(target, from) ||
       folders_find(doc, target) != UINT32_MAX ||
@@ -3110,7 +3077,8 @@ bool8_t vkr_editor_folders_rename(VkrEditorContentLabels *doc, const char *from,
   /* Prove every moved path fits before changing any. */
   for (uint32_t i = 0u; i < doc->folder_count; ++i) {
     if (vkr_editor_folder_within(doc->folders[i].path, from) &&
-        strlen(target) + strlen(doc->folders[i].path) - strlen(from) >=
+        string_length(target) + string_length(doc->folders[i].path) -
+                string_length(from) >=
             VKR_EDITOR_FOLDER_PATH_CAPACITY) {
       return false_v;
     }
@@ -3118,7 +3086,8 @@ bool8_t vkr_editor_folders_rename(VkrEditorContentLabels *doc, const char *from,
   for (uint32_t i = 0u; i < doc->label_count; ++i) {
     if (doc->labels[i].folder[0] &&
         vkr_editor_folder_within(doc->labels[i].folder, from) &&
-        strlen(target) + strlen(doc->labels[i].folder) - strlen(from) >=
+        string_length(target) + string_length(doc->labels[i].folder) -
+                string_length(from) >=
             VKR_EDITOR_FOLDER_PATH_CAPACITY) {
       return false_v;
     }
@@ -3151,7 +3120,7 @@ bool8_t vkr_editor_folders_remove(VkrEditorContentLabels *doc,
     }
   }
   for (uint32_t i = 0u; i < doc->label_count; ++i) {
-    if (!strcmp(doc->labels[i].folder, path)) {
+    if (string_equals(doc->labels[i].folder, path)) {
       return false_v;
     }
   }
@@ -3225,7 +3194,7 @@ bool8_t vkr_editor_labels_parse(String8 bytes, VkrEditorContentLabels *doc,
 }
 
 static String8 labels_text(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 bool8_t vkr_editor_labels_write(VkrJsonWriter *writer,
@@ -3267,7 +3236,7 @@ const VkrTypeDesc *vkr_editor_preset_type(String8 name) {
       &vkr_scene_point_light_type, &vkr_scene_directional_light_type,
       &vkr_scene_rectangle_light_type, &vkr_scene_physics_body_type};
   for (uint32_t i = 0; i < ArrayCount(others); ++i) {
-    if (name.length == strlen(others[i]->name) &&
+    if (name.length == string_length(others[i]->name) &&
         !MemCompare(name.str, others[i]->name, name.length)) {
       return others[i];
     }
@@ -3293,7 +3262,7 @@ static bool8_t presets_parse_record(String8 record, VkrEditorPreset *preset,
     return false_v;
   }
   preset->type = vkr_editor_preset_type(
-      string8_create((uint8_t *)type_name, strlen(type_name)));
+      string8_create((uint8_t *)type_name, string_length(type_name)));
   if (!preset->type) {
     return false_v;
   }
@@ -3365,7 +3334,7 @@ bool8_t vkr_editor_presets_write(VkrJsonWriter *writer,
 #define PROJECT_GAME_DEFAULT_GRAPHICS "{\"version\":1}"
 
 static void game_copy(char *out, uint32_t capacity, const char *text) {
-  snprintf(out, capacity, "%s", text ? text : "");
+  string_format(out, capacity, "%s", text ? text : "");
 }
 
 void vkr_editor_game_profile_default(const char *name,
@@ -3427,9 +3396,9 @@ static bool8_t game_number(s_ProjectJson *json, uint32_t object,
   }
   MemCopy(text, view.str, view.length);
   text[view.length] = '\0';
-  char *end = NULL;
-  *out = strtod(text, &end);
-  return end == text + view.length && isfinite(*out);
+  const char *end = NULL;
+  *out = string_parse_f64(text, &end);
+  return end == text + view.length && vkr_is_finite_f64(*out);
 }
 
 static bool8_t game_bool(s_ProjectJson *json, uint32_t object, const char *name,
@@ -3605,7 +3574,7 @@ static bool8_t game_raw_object(VkrJsonWriter *writer, const char *text) {
                view.length < sizeof(scalar)) {
       MemCopy(scalar, view.str, view.length);
       scalar[view.length] = '\0';
-      ok = vkr_json_writer_f64(writer, strtod(scalar, NULL));
+      ok = vkr_json_writer_f64(writer, string_parse_f64(scalar, NULL));
     } else {
       /* Graphics settings and cameras are flat; nested values are not
          kept. */
@@ -3682,7 +3651,7 @@ bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
   if (!game->name[0]) {
     return project_error(error, "The game needs a name");
   }
-  const uint64_t length = strlen(game->executable);
+  const uint64_t length = string_length(game->executable);
   bool8_t executable = length && game->executable[0] != ' ' &&
                        game->executable[length - 1u] != ' ';
   for (uint64_t i = 0; executable && i < length; ++i) {
@@ -3696,9 +3665,9 @@ bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
       game->window_width > 16384u || game->window_height > 16384u) {
     return project_error(error, "The window must be 320x240 to 16384x16384");
   }
-  if (strcmp(game->window_mode, "windowed") &&
-      strcmp(game->window_mode, "fullscreen") &&
-      strcmp(game->window_mode, "borderless")) {
+  if (!string_equals(game->window_mode, "windowed") &&
+      !string_equals(game->window_mode, "fullscreen") &&
+      !string_equals(game->window_mode, "borderless")) {
     return project_error(error,
                          "The window mode must be windowed, fullscreen or "
                          "borderless");
@@ -3707,12 +3676,12 @@ bool8_t vkr_editor_game_validate(const VkrEditorGame *game,
   for (uint32_t i = 0; i < game->scene_count; ++i) {
     bool8_t listed = false_v;
     for (uint32_t j = 0; project && j < project->scene_count; ++j) {
-      listed |= strcmp(game->scenes[i], project->scenes[j].id) == 0;
+      listed |= string_equals(game->scenes[i], project->scenes[j].id);
     }
     if (project && !listed) {
       return project_error(error, "An included scene is not in the project");
     }
-    startup |= strcmp(game->scenes[i], game->startup_scene) == 0;
+    startup |= string_equals(game->scenes[i], game->startup_scene);
   }
   if (!startup) {
     return project_error(error, "The startup scene must be included");
@@ -3736,9 +3705,9 @@ vkr_editor_project_directory(const VkrEditorProject *project,
   if (!separator) {
     return false_v;
   }
-  const int32_t length = snprintf(out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%.*s",
-                                  (int)(separator - project->manifest_path),
-                                  project->manifest_path);
+  const int32_t length = string_format(
+      out, VKR_EDITOR_PROJECT_PATH_CAPACITY, "%.*s",
+      (int)(separator - project->manifest_path), project->manifest_path);
   return length > 0 && (uint32_t)length < VKR_EDITOR_PROJECT_PATH_CAPACITY;
 }
 

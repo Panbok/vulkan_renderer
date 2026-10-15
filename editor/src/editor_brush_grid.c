@@ -5,12 +5,9 @@
 #include "editor_internal.h"
 #include "editor_level.h"
 #include "level/vkr_brush.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_brush.h"
-
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 /* At most this many grid cells along a face side; a larger face doubles its
    grid step until it fits, so the overlay stays readable and in budget. */
@@ -164,8 +161,8 @@ static void grid_face_axes(const VkrEditorBrushGrid *grid, uint32_t face,
                            float32_t base, Vec3 *u, Vec3 *v, float32_t *step) {
   vkr_brush_grid_axes(grid->geometry.normals[face], u, v);
   const VkrBrushPolygon polygon = grid->geometry.polygons[face];
-  float32_t lo[2] = {INFINITY, INFINITY};
-  float32_t hi[2] = {-INFINITY, -INFINITY};
+  float32_t lo[2] = {VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY};
+  float32_t hi[2] = {-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY};
   for (uint32_t c = 0; c < polygon.count; ++c) {
     const Vec3 corner = grid->geometry.vertices[polygon.first + c];
     const float32_t s = vec3_dot(corner, *u);
@@ -195,7 +192,7 @@ static bool8_t grid_clip(const VkrEditorBrushGrid *grid, uint32_t face,
         grid->geometry.vertices[polygon.first + (c + 1u) % polygon.count];
     const float32_t sa = vec3_dot(a, axis) - value;
     const float32_t sb = vec3_dot(b, axis) - value;
-    if (fabsf(sa) < 1.0e-4f && fabsf(sb) < 1.0e-4f) {
+    if (vkr_abs_f32(sa) < 1.0e-4f && vkr_abs_f32(sb) < 1.0e-4f) {
       return false_v;
     }
     if ((sa < 0.0f) == (sb < 0.0f)) {
@@ -228,7 +225,7 @@ static Vec3 grid_plane_point(Vec3 normal, float32_t plane, Vec3 u, Vec3 v,
 static bool8_t grid_ray_plane(Vec3 origin, Vec3 direction, Vec3 normal,
                               float32_t plane, Vec3 *out) {
   const float32_t facing = vec3_dot(normal, direction);
-  if (fabsf(facing) < 1.0e-6f) {
+  if (vkr_abs_f32(facing) < 1.0e-6f) {
     return false_v;
   }
   const float32_t t = (plane - vec3_dot(normal, origin)) / facing;
@@ -250,7 +247,7 @@ static bool8_t grid_axis_param(Vec3 anchor, Vec3 axis, Vec3 origin,
     return false_v;
   }
   *out = (b * vec3_dot(direction, w) - vec3_dot(axis, w)) / denominator;
-  return isfinite(*out);
+  return vkr_is_finite_f32(*out);
 }
 
 /* The parameter in [0, 1] of the point of segment a-b closest to the
@@ -286,14 +283,14 @@ static float32_t grid_ray_segment(Vec3 origin, Vec3 direction, Vec3 a, Vec3 b,
 /* The first face the ray enters and how far along, else UINT32_MAX. */
 static uint32_t grid_ray_face(const VkrEditorBrushGrid *grid, Vec3 origin,
                               Vec3 direction, float32_t *out_distance) {
-  float32_t enter = -INFINITY;
-  float32_t leave = INFINITY;
+  float32_t enter = -VKR_FLOAT_INFINITY;
+  float32_t leave = VKR_FLOAT_INFINITY;
   uint32_t entered = UINT32_MAX;
   for (uint32_t i = 0; i < grid->plane_count; ++i) {
     const float32_t facing = vec3_dot(grid->planes[i].normal, direction);
     const float32_t gap =
         grid->planes[i].distance - vec3_dot(grid->planes[i].normal, origin);
-    if (fabsf(facing) < 1.0e-6f) {
+    if (vkr_abs_f32(facing) < 1.0e-6f) {
       if (gap < 0.0f) {
         return UINT32_MAX;
       }
@@ -328,7 +325,7 @@ static float32_t grid_pointer_gap(const VkrSampleUiFrame *frame, Vec3 a,
   Vec2 pb = {0};
   if (!vkr_editor_viewport_pixel(frame, a, &pa) ||
       !vkr_editor_viewport_pixel(frame, b, &pb)) {
-    return INFINITY;
+    return VKR_FLOAT_INFINITY;
   }
   const Vec2 mouse = {(float32_t)frame->ui->mouse_x,
                       (float32_t)frame->ui->mouse_y};
@@ -340,7 +337,8 @@ static float32_t grid_pointer_gap(const VkrSampleUiFrame *frame, Vec3 a,
   s = Min(Max(s, 0.0f), 1.0f);
   const float32_t dx = pa.x + e.x * s - mouse.x;
   const float32_t dy = pa.y + e.y * s - mouse.y;
-  return sqrtf(dx * dx + dy * dy) / Max(frame->ui->content_scale, 1.0e-3f);
+  return vkr_sqrt_f32(dx * dx + dy * dy) /
+         Max(frame->ui->content_scale, 1.0e-3f);
 }
 
 static float32_t grid_base_step(const VkrSampleUiFrame *frame) {
@@ -377,8 +375,8 @@ static GridTarget grid_cell(const VkrEditorBrushGrid *grid,
       .u = u,
       .v = v,
       .step = step,
-      .cell = {floorf(vec3_dot(point, u) / step) * step,
-               floorf(vec3_dot(point, v) / step) * step},
+      .cell = {vkr_floor_f32(vec3_dot(point, u) / step) * step,
+               vkr_floor_f32(vec3_dot(point, v) / step) * step},
       .at = point,
   };
 }
@@ -388,7 +386,7 @@ static GridTarget grid_pick(const VkrEditorBrushGrid *grid,
                             Vec3 direction, bool8_t cells) {
   GridTarget target = {.hit = GRID_HIT_NONE};
   const VkrBrushGeometry *geometry = &grid->geometry;
-  float32_t hit_distance = INFINITY;
+  float32_t hit_distance = VKR_FLOAT_INFINITY;
   const uint32_t hit_face =
       grid_ray_face(grid, origin, direction, &hit_distance);
   /* On a shape's wall only cells answer: its tiles cut openings. */
@@ -399,8 +397,9 @@ static GridTarget grid_pick(const VkrEditorBrushGrid *grid,
                : target;
   }
   /* Hidden corners and edges lie behind the face the ray enters. */
-  const float32_t reach =
-      hit_face != UINT32_MAX ? hit_distance * 1.02f + 1.0e-3f : INFINITY;
+  const float32_t reach = hit_face != UINT32_MAX
+                              ? hit_distance * 1.02f + 1.0e-3f
+                              : VKR_FLOAT_INFINITY;
 
   if (grid->patch) {
     Vec3 from = {0};
@@ -412,7 +411,7 @@ static GridTarget grid_pick(const VkrEditorBrushGrid *grid,
     }
   }
 
-  float32_t best = INFINITY;
+  float32_t best = VKR_FLOAT_INFINITY;
   for (uint32_t f = 0; f < geometry->face_count; ++f) {
     const Vec3 normal = geometry->normals[f];
     if (vec3_dot(normal, direction) >= 0.0f) {
@@ -478,7 +477,7 @@ static GridTarget grid_pick(const VkrEditorBrushGrid *grid,
   const float32_t coordinates[2] = {vec3_dot(point, u), vec3_dot(point, v)};
   const Vec3 axes[2] = {u, v};
   for (uint32_t axis = 0; axis < 2u; ++axis) {
-    const float32_t value = roundf(coordinates[axis] / step) * step;
+    const float32_t value = vkr_round_f32(coordinates[axis] / step) * step;
     Vec3 a = {0};
     Vec3 b = {0};
     if (grid_clip(grid, hit_face, axes[axis], value, &a, &b) &&
@@ -516,13 +515,15 @@ static Vec3 grid_edge_point(const GridTarget *target, Vec3 u, Vec3 v,
   const float32_t s =
       grid_segment_param(origin, direction, a, target->points[1]);
   /* The grid axis the edge runs along most. */
-  const Vec3 axis = fabsf(vec3_dot(e, u)) >= fabsf(vec3_dot(e, v)) ? u : v;
+  const Vec3 axis =
+      vkr_abs_f32(vec3_dot(e, u)) >= vkr_abs_f32(vec3_dot(e, v)) ? u : v;
   const float32_t run = vec3_dot(e, axis);
-  if (fabsf(run) < 1.0e-6f) {
+  if (vkr_abs_f32(run) < 1.0e-6f) {
     return vec3_add(a, vec3_scale(e, s));
   }
   const float32_t value =
-      roundf(vec3_dot(vec3_add(a, vec3_scale(e, s)), axis) / step) * step;
+      vkr_round_f32(vec3_dot(vec3_add(a, vec3_scale(e, s)), axis) / step) *
+      step;
   const float32_t snapped = (value - vec3_dot(a, axis)) / run;
   return vec3_add(a, vec3_scale(e, Min(Max(snapped, 0.0f), 1.0f)));
 }
@@ -550,8 +551,8 @@ static GridTarget grid_pick_clip(const VkrEditorBrushGrid *grid,
   case GRID_HIT_CELL: {
     const float32_t s = vec3_dot(target.at, target.u);
     const float32_t t = vec3_dot(target.at, target.v);
-    const float32_t cs = roundf(s / target.step) * target.step;
-    const float32_t ct = roundf(t / target.step) * target.step;
+    const float32_t cs = vkr_round_f32(s / target.step) * target.step;
+    const float32_t ct = vkr_round_f32(t / target.step) * target.step;
     const Vec3 crossing =
         vec3_add(target.at, vec3_add(vec3_scale(target.u, cs - s),
                                      vec3_scale(target.v, ct - t)));
@@ -629,8 +630,8 @@ static bool8_t grid_clip_cut(VkrEditorBrushGrid *grid, const Vec3 *points,
   for (uint32_t f = 0; f < grid->geometry.face_count; ++f) {
     const float32_t plane = grid_face_plane(grid, f);
     const Vec3 normal = grid->geometry.normals[f];
-    if (fabsf(vec3_dot(normal, points[0]) - plane) < 1.0e-3f &&
-        fabsf(vec3_dot(normal, points[1]) - plane) < 1.0e-3f) {
+    if (vkr_abs_f32(vec3_dot(normal, points[0]) - plane) < 1.0e-3f &&
+        vkr_abs_f32(vec3_dot(normal, points[1]) - plane) < 1.0e-3f) {
       faces[face_count++] = normal;
     }
   }
@@ -666,8 +667,9 @@ static float32_t grid_move_step(const VkrEditorUi *editor,
 }
 
 static void grid_entity_text(VkrEntityId entity, char *out, size_t capacity) {
-  snprintf(out, capacity, "%u:%u:%u", (unsigned)entity.parts.world,
-           (unsigned)entity.parts.index, (unsigned)entity.parts.generation);
+  string_format(out, capacity, "%u:%u:%u", (unsigned)entity.parts.world,
+                (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation);
 }
 
 /* Submits `op` with the members `args`. */
@@ -675,10 +677,10 @@ static void grid_send(VkrEditorUi *editor, const VkrEditorBrushGrid *grid,
                       const char *op, const char *args) {
   (void)grid;
   char line[GRID_GATHER_MAX * 48u + 1024u];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"grid\",\"op\":\"%s\",\"args\":{%s,"
-           "\"review\":false,\"select\":true}}",
-           op, args);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"grid\",\"op\":\"%s\",\"args\":{%s,"
+                "\"review\":false,\"select\":true}}",
+                op, args);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -687,11 +689,11 @@ static void grid_submit_patch(VkrEditorUi *editor,
   char face[48];
   grid_entity_text(grid->patch_face, face, sizeof(face));
   char args[384];
-  snprintf(args, sizeof(args),
-           "\"face\":\"%s\",\"min\":[%.9g,%.9g],\"max\":[%.9g,%.9g],"
-           "\"distance\":%.9g",
-           face, grid->patch_min[0], grid->patch_min[1], grid->patch_max[0],
-           grid->patch_max[1], grid->distance);
+  string_format(args, sizeof(args),
+                "\"face\":\"%s\",\"min\":[%.9g,%.9g],\"max\":[%.9g,%.9g],"
+                "\"distance\":%.9g",
+                face, grid->patch_min[0], grid->patch_min[1],
+                grid->patch_max[0], grid->patch_max[1], grid->distance);
   grid_send(editor, grid, "brush.patch", args);
 }
 
@@ -703,25 +705,26 @@ static void grid_submit_reshape(VkrEditorUi *editor,
   char points[GRID_GATHER_MAX * 48u] = {0};
   size_t used = 0u;
   for (uint32_t i = 0; i < target->point_count && used < sizeof(points); ++i) {
-    used += (size_t)snprintf(points + used, sizeof(points) - used,
-                             "%s[%.9g,%.9g,%.9g]", i ? "," : "",
-                             target->points[i].x, target->points[i].y,
-                             target->points[i].z);
+    used += (size_t)string_format(points + used, sizeof(points) - used,
+                                  "%s[%.9g,%.9g,%.9g]", i ? "," : "",
+                                  target->points[i].x, target->points[i].y,
+                                  target->points[i].z);
   }
   char split[256] = {0};
   if (target->split) {
     const Vec3 on_plane =
         vec3_scale(target->split_normal, target->split_distance);
-    snprintf(split, sizeof(split),
-             ",\"split\":{\"point\":[%.9g,%.9g,%.9g],"
-             "\"normal\":[%.9g,%.9g,%.9g]}",
-             on_plane.x, on_plane.y, on_plane.z, target->split_normal.x,
-             target->split_normal.y, target->split_normal.z);
+    string_format(split, sizeof(split),
+                  ",\"split\":{\"point\":[%.9g,%.9g,%.9g],"
+                  "\"normal\":[%.9g,%.9g,%.9g]}",
+                  on_plane.x, on_plane.y, on_plane.z, target->split_normal.x,
+                  target->split_normal.y, target->split_normal.z);
   }
   char args[GRID_GATHER_MAX * 48u + 512u];
-  snprintf(args, sizeof(args),
-           "\"brush\":\"%s\",\"points\":[%s],\"delta\":[%.9g,%.9g,%.9g]%s",
-           brush, points, grid->delta.x, grid->delta.y, grid->delta.z, split);
+  string_format(args, sizeof(args),
+                "\"brush\":\"%s\",\"points\":[%s],\"delta\":[%.9g,%.9g,%.9g]%s",
+                brush, points, grid->delta.x, grid->delta.y, grid->delta.z,
+                split);
   grid_send(editor, grid, "brush.reshape", args);
 }
 
@@ -732,11 +735,11 @@ static void grid_submit_clip(VkrEditorUi *editor,
   const VkrBrushPlane plane = grid->clip_plane;
   const Vec3 point = vec3_scale(plane.normal, plane.distance);
   char args[384];
-  snprintf(args, sizeof(args),
-           "\"brush\":\"%s\",\"point\":[%.9g,%.9g,%.9g],"
-           "\"normal\":[%.9g,%.9g,%.9g],\"keep\":\"both\"",
-           brush, point.x, point.y, point.z, plane.normal.x, plane.normal.y,
-           plane.normal.z);
+  string_format(args, sizeof(args),
+                "\"brush\":\"%s\",\"point\":[%.9g,%.9g,%.9g],"
+                "\"normal\":[%.9g,%.9g,%.9g],\"keep\":\"both\"",
+                brush, point.x, point.y, point.z, plane.normal.x,
+                plane.normal.y, plane.normal.z);
   grid_send(editor, grid, "brush.clip", args);
 }
 
@@ -762,8 +765,8 @@ static void grid_preview_reshape(VkrEditorBrushGrid *grid) {
   grid->valid = error == VKR_BRUSH_OK;
   if (!grid->valid) {
     grid->preview_count = 0u;
-    snprintf(grid->message, sizeof(grid->message), "Can't: %s",
-             vkr_brush_error_text(error));
+    string_format(grid->message, sizeof(grid->message), "Can't: %s",
+                  vkr_brush_error_text(error));
   }
 }
 
@@ -788,10 +791,10 @@ static void grid_drag(VkrEditorUi *editor, VkrEditorBrushGrid *grid,
     if (has_ray && grid_ray_plane(origin, direction, grid->patch_normal,
                                   grid->patch_plane, &point)) {
       const float32_t s =
-          floorf(vec3_dot(point, grid->patch_u) / grid->patch_step) *
+          vkr_floor_f32(vec3_dot(point, grid->patch_u) / grid->patch_step) *
           grid->patch_step;
       const float32_t t =
-          floorf(vec3_dot(point, grid->patch_v) / grid->patch_step) *
+          vkr_floor_f32(vec3_dot(point, grid->patch_v) / grid->patch_step) *
           grid->patch_step;
       grid->patch_min[0] = Min(grid->patch_anchor[0], s);
       grid->patch_min[1] = Min(grid->patch_anchor[1], t);
@@ -810,11 +813,11 @@ static void grid_drag(VkrEditorUi *editor, VkrEditorBrushGrid *grid,
     float32_t param = 0.0f;
     if (has_ray &&
         grid_axis_param(from, grid->patch_normal, origin, direction, &param)) {
-      grid->distance = roundf((param - grid->press_param) / step) * step;
+      grid->distance = vkr_round_f32((param - grid->press_param) / step) * step;
     }
     if (released) {
       grid->drag = GRID_HIT_NONE;
-      if (fabsf(grid->distance) >= 1.0e-4f) {
+      if (vkr_abs_f32(grid->distance) >= 1.0e-4f) {
         grid_submit_patch(editor, grid);
         grid->patch = false_v;
       }
@@ -835,16 +838,17 @@ static void grid_drag(VkrEditorUi *editor, VkrEditorBrushGrid *grid,
       Vec3 v = {0};
       vkr_brush_grid_axes(target->normal, &u, &v);
       const Vec3 move = vec3_sub(point, grid->press_point);
-      grid->delta =
-          vec3_add(vec3_scale(u, roundf(vec3_dot(move, u) / step) * step),
-                   vec3_scale(v, roundf(vec3_dot(move, v) / step) * step));
+      grid->delta = vec3_add(
+          vec3_scale(u, vkr_round_f32(vec3_dot(move, u) / step) * step),
+          vec3_scale(v, vkr_round_f32(vec3_dot(move, v) / step) * step));
     }
   } else if (has_ray) {
     float32_t param = 0.0f;
     if (grid_axis_param(target->points[0], target->normal, origin, direction,
                         &param)) {
-      grid->delta = vec3_scale(
-          target->normal, roundf((param - grid->press_param) / step) * step);
+      grid->delta =
+          vec3_scale(target->normal,
+                     vkr_round_f32((param - grid->press_param) / step) * step);
     }
   }
   grid_preview_reshape(grid);
@@ -954,8 +958,8 @@ static void grid_press(VkrEditorBrushGrid *grid, const VkrSampleUiFrame *frame,
       const VkrBrushPolygon polygon = grid->geometry.polygons[hot.face];
       for (uint32_t axis = 0; axis < 2u; ++axis) {
         const Vec3 face_axis = axis ? hot.v : hot.u;
-        grid->patch_min[axis] = INFINITY;
-        grid->patch_max[axis] = -INFINITY;
+        grid->patch_min[axis] = VKR_FLOAT_INFINITY;
+        grid->patch_max[axis] = -VKR_FLOAT_INFINITY;
         for (uint32_t c = 0; c < polygon.count; ++c) {
           const float32_t value =
               vec3_dot(grid->geometry.vertices[polygon.first + c], face_axis);
@@ -1036,8 +1040,8 @@ static void grid_clip_pointer(VkrEditorUi *editor, VkrEditorBrushGrid *grid,
         grid_clip_cut(grid, points, normals, grid->clip_count + 1u, &plane);
   }
   if (plane && !grid->clip_valid) {
-    snprintf(grid->message, sizeof(grid->message),
-             "Can't: the cut misses the brush");
+    string_format(grid->message, sizeof(grid->message),
+                  "Can't: the cut misses the brush");
   }
 
   if (grid->hot.hit != GRID_HIT_NONE || grid->clip_count) {
@@ -1150,15 +1154,15 @@ static void grid_build_lines(VkrEditorBrushGrid *grid,
     float32_t step = 1.0f;
     grid_face_axes(grid, f, base, &axes[0], &axes[1], &step);
     for (uint32_t axis = 0; axis < 2u; ++axis) {
-      float32_t lo = INFINITY;
-      float32_t hi = -INFINITY;
+      float32_t lo = VKR_FLOAT_INFINITY;
+      float32_t hi = -VKR_FLOAT_INFINITY;
       for (uint32_t c = 0; c < polygon.count; ++c) {
         const float32_t s =
             vec3_dot(geometry->vertices[polygon.first + c], axes[axis]);
         lo = Min(lo, s);
         hi = Max(hi, s);
       }
-      for (float32_t value = ceilf(lo / step) * step; value < hi;
+      for (float32_t value = vkr_ceil_f32(lo / step) * step; value < hi;
            value += step) {
         Vec3 a = {0};
         Vec3 b = {0};
@@ -1277,7 +1281,7 @@ static bool8_t grid_shape_wall(VkrEditorBrushGrid *grid, const VkrScene *scene,
   const bool8_t keep = grid->patch || grid->drag != GRID_HIT_NONE;
   uint32_t chosen =
       keep && grid->shape_piece < count ? grid->shape_piece : UINT32_MAX;
-  float32_t nearest = INFINITY;
+  float32_t nearest = VKR_FLOAT_INFINITY;
   VkrBrushPlane planes[VKR_BRUSH_FACE_MAX];
   for (uint32_t i = 0; i < count && !keep && has_ray; ++i) {
     if (pieces[i].kind != VKR_BLOCKOUT_PIECE_WALL) {
@@ -1287,13 +1291,13 @@ static bool8_t grid_shape_wall(VkrEditorBrushGrid *grid, const VkrScene *scene,
         pieces[i].points, pieces[i].point_count, planes, VKR_BRUSH_FACE_MAX);
     /* Where the ray enters and leaves the wall's half-spaces. */
     float32_t enter = 0.0f;
-    float32_t leave = INFINITY;
+    float32_t leave = VKR_FLOAT_INFINITY;
     bool8_t hit = plane_count >= VKR_BRUSH_FACE_MIN;
     for (uint32_t p = 0; p < plane_count && hit; ++p) {
       const float32_t facing = vec3_dot(planes[p].normal, direction);
       const float32_t gap =
           planes[p].distance - vec3_dot(planes[p].normal, origin);
-      if (fabsf(facing) < 1.0e-8f) {
+      if (vkr_abs_f32(facing) < 1.0e-8f) {
         hit = gap >= 0.0f;
         continue;
       }
@@ -1323,13 +1327,13 @@ static bool8_t grid_shape_wall(VkrEditorBrushGrid *grid, const VkrScene *scene,
                                             ((uint64_t)chosen << 8) | f};
     }
   }
-  free(pieces);
+  vkr_heap_free(pieces);
   return ok;
 }
 
 static VkrEditorBrushGrid *grid_state(VkrEditorUi *editor) {
   if (!editor->brush_grid) {
-    editor->brush_grid = calloc(1u, sizeof(*editor->brush_grid));
+    editor->brush_grid = vkr_heap_alloc_zeroed(1u, sizeof(*editor->brush_grid));
   }
   return editor->brush_grid;
 }
@@ -1467,7 +1471,7 @@ static bool8_t grid_cut_opening(VkrEditorUi *editor,
                                        scene->comp_transform)
             : NULL;
   if (!group || shape->shape != SCENE_BLOCKOUT_CORRIDOR ||
-      fabsf(grid->patch_normal.y) > 0.5f ||
+      vkr_abs_f32(grid->patch_normal.y) > 0.5f ||
       shape->opening_count >= SCENE_BLOCKOUT_OPENING_MAX) {
     return false_v;
   }
@@ -1477,7 +1481,8 @@ static bool8_t grid_cut_opening(VkrEditorUi *editor,
   const float32_t s[2] = {grid->patch_min[0], grid->patch_max[0]};
   const float32_t t[2] = {grid->patch_min[1], grid->patch_max[1]};
   uint32_t wall = UINT32_MAX;
-  Vec4 opening = vec4_new(INFINITY, -INFINITY, INFINITY, -INFINITY);
+  Vec4 opening = vec4_new(VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                          VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t c = 0; c < 4u; ++c) {
     const Vec3 world =
         grid_plane_point(grid->patch_normal, grid->patch_plane, grid->patch_u,
@@ -1528,9 +1533,9 @@ bool8_t vkr_editor_brush_grid_patch_cut(VkrEditorUi *editor) {
   }
   /* A shape's tiles cut only as openings of a corridor's wall. */
   if (grid->shape_group.u64) {
-    snprintf(grid->message, sizeof(grid->message),
-             "These tiles do not cut: select them on one wall, and below "
-             "eight openings");
+    string_format(grid->message, sizeof(grid->message),
+                  "These tiles do not cut: select them on one wall, and below "
+                  "eight openings");
     return true_v;
   }
   grid->distance = -(deepest + 0.05f);
@@ -1603,10 +1608,10 @@ const char *vkr_editor_brush_grid_hint(const VkrEditorUi *editor) {
   }
   if (grid->gathered_count && grid->drag == GRID_HIT_NONE) {
     VkrEditorBrushGrid *hint = editor->brush_grid;
-    snprintf(hint->patch_hint, sizeof(hint->patch_hint),
-             "%u corners gathered: drag one to move them together. "
-             "Ctrl+click adds or takes out corners and edges; Esc clears.",
-             grid->gathered_count);
+    string_format(hint->patch_hint, sizeof(hint->patch_hint),
+                  "%u corners gathered: drag one to move them together. "
+                  "Ctrl+click adds or takes out corners and edges; Esc clears.",
+                  grid->gathered_count);
     return hint->patch_hint;
   }
   switch (grid->hot.hit) {
@@ -1630,14 +1635,15 @@ const char *vkr_editor_brush_grid_hint(const VkrEditorUi *editor) {
   }
   if (grid->patch) {
     VkrEditorBrushGrid *hint = editor->brush_grid;
-    snprintf(hint->patch_hint, sizeof(hint->patch_hint),
-             grid->shape_group.u64
-                 ? "Tiles %g x %g m: Delete cuts them out as an opening. Esc "
-                   "clears them."
-                 : "Tiles %g x %g m: Delete cuts them out, or drag the arrow "
-                   "to pull or push them. Esc clears them.",
-             grid->patch_max[0] - grid->patch_min[0],
-             grid->patch_max[1] - grid->patch_min[1]);
+    string_format(
+        hint->patch_hint, sizeof(hint->patch_hint),
+        grid->shape_group.u64
+            ? "Tiles %g x %g m: Delete cuts them out as an opening. Esc "
+              "clears them."
+            : "Tiles %g x %g m: Delete cuts them out, or drag the arrow "
+              "to pull or push them. Esc clears them.",
+        grid->patch_max[0] - grid->patch_min[0],
+        grid->patch_max[1] - grid->patch_min[1]);
     return hint->patch_hint;
   }
   return grid->shape_group.u64
@@ -1658,6 +1664,6 @@ uint32_t vkr_editor_brush_grid_lines(const VkrEditorUi *editor,
 }
 
 void vkr_editor_brush_grid_destroy(VkrEditorUi *editor) {
-  free(editor->brush_grid);
+  vkr_heap_free(editor->brush_grid);
   editor->brush_grid = NULL;
 }

@@ -624,8 +624,8 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
     const char *scene_ids[1 + VKR_SCENE_ADDITIVE_MAX] = {0};
     const String8 primary = vkr_editor_projects_scene_id(editor->projects);
     char primary_id[37] = {0};
-    snprintf(primary_id, sizeof(primary_id), "%.*s", (int)primary.length,
-             (const char *)primary.str);
+    string_format(primary_id, sizeof(primary_id), "%.*s", (int)primary.length,
+                  (const char *)primary.str);
     scene_ids[0] = primary_id;
     for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
       scene_ids[1 + i] = frame->additive[i]

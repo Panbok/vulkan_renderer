@@ -14,9 +14,6 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_edit.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #define MATERIAL_TAG VKR_ALLOCATOR_MEMORY_TAG_STRING
 /* Directories the index walks below assets/ at most. */
 #define MATERIAL_INDEX_DEPTH 12u
@@ -116,14 +113,14 @@ VkrEditorMaterials *vkr_editor_material_create(VkrAllocator *allocator) {
 }
 
 static String8 material_str(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 static bool8_t material_ends_with(const char *text, const char *suffix) {
-  const size_t length = strlen(text);
-  const size_t suffix_length = strlen(suffix);
+  const size_t length = string_length(text);
+  const size_t suffix_length = string_length(suffix);
   return length >= suffix_length &&
-         strcmp(text + length - suffix_length, suffix) == 0;
+         string_equals(text + length - suffix_length, suffix);
 }
 
 /* Rewrites `path` without "." segments and with each "name/.." removed,
@@ -132,14 +129,26 @@ static void material_normal_path(char *path) {
   char *segments[64];
   uint32_t count = 0u;
   char copy[VKR_EDITOR_MATERIAL_PATH];
-  snprintf(copy, sizeof(copy), "%s", path);
-  for (char *segment = strtok(copy, "/"); segment;
-       segment = strtok(NULL, "/")) {
-    if (strcmp(segment, ".") == 0) {
+  string_format(copy, sizeof(copy), "%s", path);
+  /* Each non-empty run between '/' separators is a segment, as strtok
+     splits; the copy is cut at the separators. */
+  for (char *at = copy; *at;) {
+    if (*at == '/') {
+      ++at;
       continue;
     }
-    if (strcmp(segment, "..") == 0 && count > 0u &&
-        strcmp(segments[count - 1u], "..") != 0) {
+    char *segment = at;
+    while (*at && *at != '/') {
+      ++at;
+    }
+    if (*at) {
+      *at++ = '\0';
+    }
+    if (string_equals(segment, ".")) {
+      continue;
+    }
+    if (string_equals(segment, "..") && count > 0u &&
+        !string_equals(segments[count - 1u], "..")) {
       count--;
       continue;
     }
@@ -150,14 +159,14 @@ static void material_normal_path(char *path) {
   char out[VKR_EDITOR_MATERIAL_PATH] = {0};
   uint64_t length = 0u;
   for (uint32_t i = 0; i < count; ++i) {
-    const int written = snprintf(out + length, sizeof(out) - length, "%s%s",
-                                 i ? "/" : "", segments[i]);
+    const int written = string_format(out + length, sizeof(out) - length,
+                                      "%s%s", i ? "/" : "", segments[i]);
     if (written < 0 || (uint64_t)written >= sizeof(out) - length) {
       return;
     }
     length += (uint64_t)written;
   }
-  snprintf(path, VKR_EDITOR_MATERIAL_PATH, "%s", out);
+  string_format(path, VKR_EDITOR_MATERIAL_PATH, "%s", out);
 }
 
 bool8_t vkr_editor_material_read(VkrAllocator *scratch, const char *path,
@@ -208,7 +217,7 @@ static bool8_t material_store(VkrAllocator *scratch, const char *path,
                               uint32_t capacity) {
   FilePath target = vkr_asset_path_file(scratch, material_str(path));
   if (!target.path.length) {
-    snprintf(error, capacity, "'%s' is not a content path", path);
+    string_format(error, capacity, "'%s' is not a content path", path);
     return false_v;
   }
   char workspace_path[1100];
@@ -221,19 +230,21 @@ static bool8_t material_store(VkrAllocator *scratch, const char *path,
   if (remove) {
     const FileError removed = file_remove(&target);
     if (removed != FILE_ERROR_NONE && removed != FILE_ERROR_NOT_FOUND) {
-      snprintf(error, capacity, "'%s' could not be removed", path);
+      string_format(error, capacity, "'%s' could not be removed", path);
       return false_v;
     }
     return true_v;
   }
   String8 directory = file_path_get_directory(scratch, target.path);
   if (directory.length && !file_ensure_directory(scratch, &directory)) {
-    snprintf(error, capacity, "The folder of '%s' could not be made", path);
+    string_format(error, capacity, "The folder of '%s' could not be made",
+                  path);
     return false_v;
   }
   char temp_text[1100];
-  snprintf(temp_text, sizeof(temp_text), "%.*s.tmp.%u", (int)target.path.length,
-           (const char *)target.path.str, vkr_platform_get_process_id());
+  string_format(temp_text, sizeof(temp_text), "%.*s.tmp.%u",
+                (int)target.path.length, (const char *)target.path.str,
+                vkr_platform_get_process_id());
   FilePath temp = {.path = material_str(temp_text), .type = target.type};
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_WRITE);
@@ -242,7 +253,7 @@ static bool8_t material_store(VkrAllocator *scratch, const char *path,
   bitset8_set(&mode, FILE_MODE_BINARY);
   FileHandle file = {0};
   if (file_open(&temp, mode, &file) != FILE_ERROR_NONE) {
-    snprintf(error, capacity, "'%s' could not be written", path);
+    string_format(error, capacity, "'%s' could not be written", path);
     return false_v;
   }
   uint64_t written = 0u;
@@ -252,7 +263,7 @@ static bool8_t material_store(VkrAllocator *scratch, const char *path,
   file_close(&file);
   if (!ok || file_rename(&temp, &target, true_v) != FILE_ERROR_NONE) {
     (void)file_remove(&temp);
-    snprintf(error, capacity, "'%s' could not be written", path);
+    string_format(error, capacity, "'%s' could not be written", path);
     return false_v;
   }
   return true_v;
@@ -277,7 +288,8 @@ static void material_instance_graph(VkrAllocator *scratch, const char *path,
   const String8 resolved = vkr_asset_path_resolve(
       scratch, material_str(path), material_str(instance->graph));
   if (resolved.str && resolved.length < VKR_EDITOR_MATERIAL_PATH) {
-    snprintf(out, VKR_EDITOR_MATERIAL_PATH, "%s", (const char *)resolved.str);
+    string_format(out, VKR_EDITOR_MATERIAL_PATH, "%s",
+                  (const char *)resolved.str);
     material_normal_path(out);
   }
 }
@@ -289,7 +301,7 @@ static void material_index_set(VkrEditorMaterials *materials,
                                const String8 *text) {
   uint32_t at = 0u;
   while (at < materials->index_count &&
-         strcmp(materials->index[at].path, path) != 0) {
+         !string_equals(materials->index[at].path, path)) {
     at++;
   }
   if (!text) {
@@ -305,7 +317,7 @@ static void material_index_set(VkrEditorMaterials *materials,
     materials->index_count++;
   }
   MaterialIndexEntry *entry = &materials->index[at];
-  snprintf(entry->path, sizeof(entry->path), "%s", path);
+  string_format(entry->path, sizeof(entry->path), "%s", path);
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   material_instance_graph(scratch, path, *text, entry->graph);
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
@@ -322,14 +334,14 @@ typedef struct MaterialScan {
 static void material_scan_entry(void *context, const char *name,
                                 bool8_t directory) {
   MaterialScan *scan = context;
-  const size_t absolute_length = strlen(scan->absolute);
-  const size_t relative_length = strlen(scan->relative);
-  if (snprintf(scan->absolute + absolute_length,
-               sizeof(scan->absolute) - absolute_length, "/%s",
-               name) >= (int)(sizeof(scan->absolute) - absolute_length) ||
-      snprintf(scan->relative + relative_length,
-               sizeof(scan->relative) - relative_length, "/%s",
-               name) >= (int)(sizeof(scan->relative) - relative_length)) {
+  const size_t absolute_length = string_length(scan->absolute);
+  const size_t relative_length = string_length(scan->relative);
+  if (string_format(scan->absolute + absolute_length,
+                    sizeof(scan->absolute) - absolute_length, "/%s",
+                    name) >= (int)(sizeof(scan->absolute) - absolute_length) ||
+      string_format(scan->relative + relative_length,
+                    sizeof(scan->relative) - relative_length, "/%s",
+                    name) >= (int)(sizeof(scan->relative) - relative_length)) {
     scan->absolute[absolute_length] = '\0';
     scan->relative[relative_length] = '\0';
     return;
@@ -363,16 +375,17 @@ static void material_index_build(VkrEditorMaterials *materials,
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   const FilePath root = vkr_asset_path_file(scratch, material_str("assets"));
   if (root.path.length && root.path.length < sizeof(scan.absolute)) {
-    snprintf(scan.absolute, sizeof(scan.absolute), "%.*s",
-             (int)root.path.length, (const char *)root.path.str);
-    snprintf(scan.relative, sizeof(scan.relative), "assets");
+    string_format(scan.absolute, sizeof(scan.absolute), "%.*s",
+                  (int)root.path.length, (const char *)root.path.str);
+    string_format(scan.relative, sizeof(scan.relative), "assets");
     vkr_editor_directory_list(scan.absolute, material_scan_entry, &scan);
   }
   /* A shared project's workspace keeps its own materials. */
   const char *workspace = vkr_vfs_overlay_root();
-  if (workspace && snprintf(scan.absolute, sizeof(scan.absolute), "%sassets",
-                            workspace) < (int)sizeof(scan.absolute)) {
-    snprintf(scan.relative, sizeof(scan.relative), "assets");
+  if (workspace &&
+      string_format(scan.absolute, sizeof(scan.absolute), "%sassets",
+                    workspace) < (int)sizeof(scan.absolute)) {
+    string_format(scan.relative, sizeof(scan.relative), "assets");
     vkr_editor_directory_list(scan.absolute, material_scan_entry, &scan);
   }
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
@@ -445,10 +458,10 @@ void vkr_editor_material_refresh(VkrEditorMaterials *materials,
   }
   material_index_build(materials, frame->ui->frame_allocator);
   char graph[VKR_EDITOR_MATERIAL_PATH];
-  snprintf(graph, sizeof(graph), "%s", path);
+  string_format(graph, sizeof(graph), "%s", path);
   material_normal_path(graph);
   for (uint32_t i = 0; i < materials->index_count; ++i) {
-    if (strcmp(materials->index[i].graph, graph) == 0) {
+    if (string_equals(materials->index[i].graph, graph)) {
       material_replace_live(frame, materials->index[i].path);
     }
   }
@@ -462,8 +475,8 @@ void vkr_editor_material_refresh(VkrEditorMaterials *materials,
 static void material_panel_touched(VkrEditorMaterials *materials,
                                    const char *path) {
   MaterialPanel *panel = &materials->panel;
-  if (panel->path[0] && (strcmp(panel->path, path) == 0 ||
-                         strcmp(panel->graph_path, path) == 0)) {
+  if (panel->path[0] && (string_equals(panel->path, path) ||
+                         string_equals(panel->graph_path, path))) {
     panel->reload = true_v;
   }
 }
@@ -516,9 +529,10 @@ bool8_t vkr_editor_material_write(VkrEditorMaterials *materials,
                                   bool8_t remove, uint64_t group,
                                   const char *author, char *error,
                                   uint32_t capacity) {
-  if (strlen(path) >= VKR_EDITOR_MATERIAL_PATH ||
+  if (string_length(path) >= VKR_EDITOR_MATERIAL_PATH ||
       text.length > VKR_EDITOR_MATERIAL_TEXT_MAX) {
-    snprintf(error, capacity, "The document is too large or its path long");
+    string_format(error, capacity,
+                  "The document is too large or its path long");
     return false_v;
   }
   VkrAllocator *scratch = frame->ui->frame_allocator;
@@ -548,8 +562,8 @@ bool8_t vkr_editor_material_write(VkrEditorMaterials *materials,
   MemZero(step, sizeof(*step));
   step->sequence = vkr_scene_edit_take_sequence();
   step->group = group ? group : vkr_editor_material_group();
-  snprintf(step->path, sizeof(step->path), "%s", path);
-  snprintf(step->author, sizeof(step->author), "%s", author ? author : "");
+  string_format(step->path, sizeof(step->path), "%s", path);
+  string_format(step->author, sizeof(step->author), "%s", author ? author : "");
   step->before = existed ? material_copy(materials, before) : NULL;
   step->before_length = existed ? before.length : 0u;
   step->after = remove ? NULL : material_copy(materials, text);
@@ -688,15 +702,16 @@ bool8_t vkr_editor_material_group_revert(VkrEditorMaterials *materials,
     first = Min(first, i);
     for (uint32_t later = i + 1u; later < materials->cursor; ++later) {
       if (materials->steps[later].group != group &&
-          strcmp(materials->steps[later].path, materials->steps[i].path) == 0) {
-        snprintf(problem, capacity, "A later change edited '%s'",
-                 materials->steps[i].path);
+          string_equals(materials->steps[later].path,
+                        materials->steps[i].path)) {
+        string_format(problem, capacity, "A later change edited '%s'",
+                      materials->steps[i].path);
         return false_v;
       }
     }
   }
   if (first == UINT32_MAX) {
-    snprintf(problem, capacity, "The change is no longer in the journal");
+    string_format(problem, capacity, "The change is no longer in the journal");
     return false_v;
   }
   /* The redo steps lose their place once history changes. */
@@ -749,8 +764,8 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
   MaterialPanel *panel = &materials->panel;
   VkrAllocator *scratch = frame->ui->frame_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
-  const bool8_t same = strcmp(panel->path, path) == 0;
-  snprintf(panel->path, sizeof(panel->path), "%s", path);
+  const bool8_t same = string_equals(panel->path, path);
+  string_format(panel->path, sizeof(panel->path), "%s", path);
   panel->kind = vkr_editor_material_kind(scratch, path);
   panel->problem[0] = '\0';
   panel->reload = false_v;
@@ -758,12 +773,12 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
   vkr_material_graph_init(panel->graph);
   MemZero(panel->instance, sizeof(*panel->instance));
   MemZero(panel->theme, sizeof(*panel->theme));
-  snprintf(panel->graph_path, sizeof(panel->graph_path), "%s", path);
+  string_format(panel->graph_path, sizeof(panel->graph_path), "%s", path);
   String8 text = {0};
   char *problem = panel->problem;
   const uint32_t capacity = sizeof(panel->problem);
   if (!vkr_editor_material_read(scratch, path, &text)) {
-    snprintf(problem, capacity, "'%s' does not open", path);
+    string_format(problem, capacity, "'%s' does not open", path);
   } else if (panel->kind == VKR_EDITOR_MATERIAL_GRAPH) {
     (void)vkr_material_graph_read(text, panel->graph, problem, capacity);
   } else if (panel->kind == VKR_EDITOR_MATERIAL_INSTANCE) {
@@ -771,12 +786,12 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
     if (vkr_material_instance_read(text, panel->instance, problem, capacity)) {
       const String8 resolved = vkr_asset_path_resolve(
           scratch, material_str(path), material_str(panel->instance->graph));
-      snprintf(panel->graph_path, sizeof(panel->graph_path), "%s",
-               resolved.str ? (const char *)resolved.str : "");
+      string_format(panel->graph_path, sizeof(panel->graph_path), "%s",
+                    resolved.str ? (const char *)resolved.str : "");
       material_normal_path(panel->graph_path);
       if (!vkr_editor_material_read(scratch, panel->graph_path, &graph_text)) {
-        snprintf(problem, capacity, "Its graph '%s' does not open",
-                 panel->graph_path);
+        string_format(problem, capacity, "Its graph '%s' does not open",
+                      panel->graph_path);
       } else {
         (void)vkr_material_graph_read(graph_text, panel->graph, problem,
                                       capacity);
@@ -788,7 +803,7 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
   } else if (panel->kind == VKR_EDITOR_MATERIAL_THEME) {
     (void)vkr_surface_theme_read(text, panel->theme, problem, capacity);
   } else {
-    snprintf(problem, capacity, "'%s' is no material or graph", path);
+    string_format(problem, capacity, "'%s' is no material or graph", path);
   }
   if (!problem[0] && panel->kind != VKR_EDITOR_MATERIAL_THEME) {
     panel_lower(panel, scratch);
@@ -815,7 +830,7 @@ static void panel_save_graph(VkrEditorUi *editor,
   MaterialPanel *panel = &materials->panel;
   char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
   if (!vkr_material_graph_validate(panel->graph, error, sizeof(error))) {
-    snprintf(panel->problem, sizeof(panel->problem), "%s", error);
+    string_format(panel->problem, sizeof(panel->problem), "%s", error);
     (void)vkr_editor_material_open(materials, frame, panel->path);
     vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
                      error);
@@ -861,11 +876,11 @@ static void panel_select_theme(VkrEditorUi *editor, const char *path,
   char line[512];
   /* A slot number goes bare; "primary" and "world" are strings. */
   const bool8_t slot = container[0] >= '0' && container[0] <= '9';
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"theme\",\"op\":\"surface.theme.select\","
-           "\"args\":{\"theme\":\"%s\",\"container\":%s%s%s,"
-           "\"review\":false}}",
-           path, slot ? "" : "\"", container, slot ? "" : "\"");
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"theme\",\"op\":\"surface.theme.select\","
+                "\"args\":{\"theme\":\"%s\",\"container\":%s%s%s,"
+                "\"review\":false}}",
+                path, slot ? "" : "\"", container, slot ? "" : "\"");
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -879,7 +894,7 @@ void vkr_editor_material_new_theme(VkrEditorUi *editor,
   String8 existing = {0};
   uint32_t n = 1u;
   do {
-    snprintf(path, sizeof(path), "assets/surfaces/theme_%u.surfaces", n++);
+    string_format(path, sizeof(path), "assets/surfaces/theme_%u.surfaces", n++);
   } while (vkr_editor_material_read(scratch, path, &existing) && n < 1000u);
   const VkrSurfaceTheme empty = {0};
   String8 text = {0};
@@ -925,8 +940,8 @@ static void panel_convert(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrEditorMaterials *materials = editor->materials;
   MaterialPanel *panel = &materials->panel;
   char graph_path[VKR_EDITOR_MATERIAL_PATH];
-  snprintf(graph_path, sizeof(graph_path), "%.*sg", (int)strlen(panel->path),
-           panel->path);
+  string_format(graph_path, sizeof(graph_path), "%.*sg",
+                (int)string_length(panel->path), panel->path);
   VkrAllocator *scratch = frame->ui->frame_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   /* Texture paths were relative to the definition; the graph sits in the
@@ -939,17 +954,17 @@ static void panel_convert(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     const String8 resolved = vkr_asset_path_resolve(
         scratch, material_str(panel->path), material_str(node->path));
     if (resolved.str && resolved.length < sizeof(node->path)) {
-      snprintf(node->path, sizeof(node->path), "%s",
-               (const char *)resolved.str);
+      string_format(node->path, sizeof(node->path), "%s",
+                    (const char *)resolved.str);
     }
   }
-  const char *slash = strrchr(graph_path, '/');
+  const char *slash = string_get_last_char_occurrence(graph_path, '/');
   char text[1024];
   String8 graph_text = {0};
   char error[160] = {0};
   const uint64_t group = vkr_editor_material_group();
-  const int length = snprintf(text, sizeof(text), "graph=./%s\n",
-                              slash ? slash + 1 : graph_path);
+  const int length = string_format(text, sizeof(text), "graph=./%s\n",
+                                   slash ? slash + 1 : graph_path);
   if (!vkr_material_graph_write(panel->graph, scratch, &graph_text) ||
       !vkr_editor_material_write(materials, frame, graph_path, graph_text,
                                  false_v, group, NULL, error, sizeof(error)) ||
@@ -975,8 +990,8 @@ static void panel_new_graph(VkrEditorUi *editor,
   String8 existing = {0};
   uint32_t n = 1u;
   do {
-    snprintf(path, sizeof(path), "assets/materials/graphs/material_%u.mtg",
-             n++);
+    string_format(path, sizeof(path), "assets/materials/graphs/material_%u.mtg",
+                  n++);
   } while (vkr_editor_material_read(scratch, path, &existing) && n < 1000u);
   VkrMaterialGraph *graph = materials->panel.graph;
   vkr_material_graph_init(graph);
@@ -990,8 +1005,8 @@ static void panel_new_graph(VkrEditorUi *editor,
   graph->nodes[roughness].value.x = 0.5f;
   graph->nodes[roughness].position = vec2_new(0.0f, 140.0f);
   graph->nodes[output].position = vec2_new(320.0f, 0.0f);
-  snprintf(graph->nodes[base].parameter, sizeof(graph->nodes[base].parameter),
-           "base_color");
+  string_format(graph->nodes[base].parameter,
+                sizeof(graph->nodes[base].parameter), "base_color");
   char error[160] = {0};
   (void)vkr_material_graph_connect(graph, base, 0u, output, 0u, error,
                                    sizeof(error));
@@ -1016,18 +1031,19 @@ static void panel_new_instance(VkrEditorUi *editor,
   VkrAllocator *scratch = frame->ui->frame_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   char stem[VKR_EDITOR_MATERIAL_PATH];
-  snprintf(stem, sizeof(stem), "%.*s", (int)(strlen(panel->graph_path) - 4u),
-           panel->graph_path);
+  string_format(stem, sizeof(stem), "%.*s",
+                (int)(string_length(panel->graph_path) - 4u),
+                panel->graph_path);
   char path[VKR_EDITOR_MATERIAL_PATH];
   String8 existing = {0};
   uint32_t n = 1u;
   do {
-    snprintf(path, sizeof(path), "%.240s_%u.mt", stem, n++);
+    string_format(path, sizeof(path), "%.240s_%u.mt", stem, n++);
   } while (vkr_editor_material_read(scratch, path, &existing) && n < 1000u);
-  const char *slash = strrchr(panel->graph_path, '/');
+  const char *slash = string_get_last_char_occurrence(panel->graph_path, '/');
   char text[512];
-  const int length = snprintf(text, sizeof(text), "graph=./%s\n",
-                              slash ? slash + 1 : panel->graph_path);
+  const int length = string_format(text, sizeof(text), "graph=./%s\n",
+                                   slash ? slash + 1 : panel->graph_path);
   char error[160] = {0};
   if (!vkr_editor_material_write(
           materials, frame, path,
@@ -1311,9 +1327,10 @@ static void panel_label(VkrUiSystem *ui, String8 id, float32_t x, float32_t y,
   VkrUiWidgetConfig label = vkr_editor_details_widget(x, y, width, 20.0f);
   label.style.text_color = color;
   label.text.font = font;
-  vkr_ui_label(ui, id,
-               string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-               &label);
+  vkr_ui_label(
+      ui, id,
+      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
+      &label);
 }
 
 static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
@@ -1343,8 +1360,8 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     y += 24.0f;
     for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
       MaterialThemeRowEdit edit = {0};
-      snprintf(edit.path, sizeof(edit.path), "%s",
-               panel->theme->materials[tag]);
+      string_format(edit.path, sizeof(edit.path), "%s",
+                    panel->theme->materials[tag]);
       const VkrPropertyDesc property = {
           .name = vkr_surface_names[tag],
           .label = vkr_surface_labels[tag],
@@ -1364,8 +1381,8 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
           details, ui, frame->input, width, &y, &type, &edit, NULL, false_v);
       (void)vkr_ui_pop_id(ui);
       if (result.changed && !result.gesture) {
-        snprintf(panel->theme->materials[tag],
-                 sizeof(panel->theme->materials[tag]), "%s", edit.path);
+        string_format(panel->theme->materials[tag],
+                      sizeof(panel->theme->materials[tag]), "%s", edit.path);
         panel_save_theme(editor, frame);
       }
     }
@@ -1384,7 +1401,7 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       VkrMaterialInstance *instance = panel->instance;
       uint32_t at = 0u;
       while (at < instance->param_count &&
-             strcmp(instance->params[at].name, node->parameter) != 0) {
+             !string_equals(instance->params[at].name, node->parameter)) {
         at++;
       }
       const char *override =
@@ -1392,12 +1409,12 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       MaterialParamEdit edit = {
           .value = node->value.x,
           .color = vec3_new(node->value.x, node->value.y, node->value.z)};
-      snprintf(edit.path, sizeof(edit.path), "%s", node->path);
+      string_format(edit.path, sizeof(edit.path), "%s", node->path);
       if (override) {
         const String8 text = material_str(override);
         (void)string8_to_f32(&text, &edit.value);
         (void)string8_to_vec3(&text, &edit.color);
-        snprintf(edit.path, sizeof(edit.path), "%s", override);
+        string_format(edit.path, sizeof(edit.path), "%s", override);
       }
       VkrPropertyDesc property = {
           .name = node->parameter,
@@ -1434,18 +1451,18 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
           continue;
         }
         instance->param_count++;
-        snprintf(instance->params[at].name, sizeof(instance->params[at].name),
-                 "%s", node->parameter);
+        string_format(instance->params[at].name,
+                      sizeof(instance->params[at].name), "%s", node->parameter);
       }
       char *value = instance->params[at].value;
       const size_t capacity = sizeof(instance->params[at].value);
       if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
-        snprintf(value, capacity, "%.9g", (double)edit.value);
+        string_format(value, capacity, "%.9g", (double)edit.value);
       } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
-        snprintf(value, capacity, "%.9g,%.9g,%.9g", (double)edit.color.x,
-                 (double)edit.color.y, (double)edit.color.z);
+        string_format(value, capacity, "%.9g,%.9g,%.9g", (double)edit.color.x,
+                      (double)edit.color.y, (double)edit.color.z);
       } else {
-        snprintf(value, capacity, "%s", edit.path);
+        string_format(value, capacity, "%s", edit.path);
       }
       panel_save_instance(editor, frame);
     }
@@ -1471,13 +1488,14 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                 &s_art_edit_type, &art, NULL, false_v);
     if (art_result.changed && !art_result.gesture) {
       if (art.world_size.x > 0.0f && art.world_size.y > 0.0f) {
-        snprintf(instance->world_size, sizeof(instance->world_size), "%g,%g",
-                 (double)art.world_size.x, (double)art.world_size.y);
+        string_format(instance->world_size, sizeof(instance->world_size),
+                      "%g,%g", (double)art.world_size.x,
+                      (double)art.world_size.y);
       } else {
         instance->world_size[0] = '\0';
       }
-      snprintf(instance->surface, sizeof(instance->surface), "%s",
-               art.surface ? vkr_surface_names[art.surface] : "");
+      string_format(instance->surface, sizeof(instance->surface), "%s",
+                    art.surface ? vkr_surface_names[art.surface] : "");
       panel_save_instance(editor, frame);
     }
   } else if (selected != UINT32_MAX) {
@@ -1490,9 +1508,10 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         .range = vec2_new(node->value.x, node->value.y),
         .tile = node->value,
     };
-    snprintf(edit.id, sizeof(edit.id), "%s", node->id);
-    snprintf(edit.parameter, sizeof(edit.parameter), "%s", node->parameter);
-    snprintf(edit.path, sizeof(edit.path), "%s", node->path);
+    string_format(edit.id, sizeof(edit.id), "%s", node->id);
+    string_format(edit.parameter, sizeof(edit.parameter), "%s",
+                  node->parameter);
+    string_format(edit.path, sizeof(edit.path), "%s", node->path);
     panel_label(ui, string8_lit("material.node"), VKR_EDITOR_DETAILS_PAD_PT, y,
                 width, vkr_material_node_desc(node->kind)->label,
                 vkr_ui_theme()->text_secondary, editor->heading_font);
@@ -1502,9 +1521,10 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         details, ui, frame->input, width, &y, &s_node_edit_type, &edit, &kind,
         panel->read_only);
     if (result.changed && !result.gesture && !panel->read_only) {
-      snprintf(node->id, sizeof(node->id), "%s", edit.id);
-      snprintf(node->parameter, sizeof(node->parameter), "%s", edit.parameter);
-      snprintf(node->path, sizeof(node->path), "%s", edit.path);
+      string_format(node->id, sizeof(node->id), "%s", edit.id);
+      string_format(node->parameter, sizeof(node->parameter), "%s",
+                    edit.parameter);
+      string_format(node->path, sizeof(node->path), "%s", edit.path);
       node->color_space = (VkrMaterialColorSpace)edit.color_space;
       node->mask = (VkrMaterialGraphMask)edit.mask;
       node->value =
@@ -1551,8 +1571,8 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       settings->world_size = art.world_size.x > 0.0f && art.world_size.y > 0.0f
                                  ? art.world_size
                                  : vec2_new(0.0f, 0.0f);
-      snprintf(settings->surface, sizeof(settings->surface), "%s",
-               art.surface ? vkr_surface_names[art.surface] : "");
+      string_format(settings->surface, sizeof(settings->surface), "%s",
+                    art.surface ? vkr_surface_names[art.surface] : "");
       panel_save_graph(editor, frame);
     }
   }
@@ -1574,7 +1594,8 @@ static void panel_button(VkrEditorUi *editor, VkrUiSystem *ui, String8 id,
   button.icon = icon;
   button.icon_size_pt = 13.0f;
   *out = vkr_ui_button(
-      ui, id, string8_create_from_cstr((const uint8_t *)text, strlen(text)),
+      ui, id,
+      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
       &button);
 }
 
@@ -1603,9 +1624,9 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
   char title[VKR_EDITOR_MATERIAL_PATH + 32];
   static const char *const kinds[] = {"", "Graph", "Instance", "Material",
                                       "Theme"};
-  snprintf(title, sizeof(title), "%s%s%s",
-           panel->path[0] ? kinds[panel->kind] : "No material open",
-           panel->path[0] ? "  " : "", panel->path);
+  string_format(title, sizeof(title), "%s%s%s",
+                panel->path[0] ? kinds[panel->kind] : "No material open",
+                panel->path[0] ? "  " : "", panel->path);
   panel_label(ui, string8_lit("material.title"), 10.0f, 6.0f,
               Max(40.0f, width - actions - 16.0f), title, theme->text,
               editor->heading_font);
@@ -1627,7 +1648,7 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
                  &clicked);
     if (clicked) {
       char graph[VKR_EDITOR_MATERIAL_PATH];
-      snprintf(graph, sizeof(graph), "%s", panel->graph_path);
+      string_format(graph, sizeof(graph), "%s", panel->graph_path);
       (void)vkr_editor_material_open(materials, frame, graph);
     }
   } else if (panel->kind == VKR_EDITOR_MATERIAL_DEFINITION &&
@@ -1663,43 +1684,44 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
   char status[VKR_MATERIAL_GRAPH_ERROR_CAPACITY + 64];
   Vec4 status_color = theme->text_secondary;
   if (panel->problem[0]) {
-    snprintf(status, sizeof(status), "%s", panel->problem);
+    string_format(status, sizeof(status), "%s", panel->problem);
     status_color = theme->error;
   } else if (!panel->path[0]) {
-    snprintf(status, sizeof(status),
-             "Open a material from Content, or make a new graph");
+    string_format(status, sizeof(status),
+                  "Open a material from Content, or make a new graph");
   } else if (panel->kind == VKR_EDITOR_MATERIAL_THEME) {
     uint32_t bound = 0u;
     for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
       bound += panel->theme->materials[tag][0] ? 1u : 0u;
     }
-    snprintf(status, sizeof(status),
-             "Binds %u of %u surface tags \xc2\xb7 faces of a bound tag "
-             "show its material unless they have their own",
-             bound, VKR_SURFACE_COUNT - 1u);
+    string_format(status, sizeof(status),
+                  "Binds %u of %u surface tags \xc2\xb7 faces of a bound tag "
+                  "show its material unless they have their own",
+                  bound, VKR_SURFACE_COUNT - 1u);
   } else if (panel->lowered &&
              panel->lowering.tier == VKR_MATERIAL_TIER_CUSTOM) {
-    snprintf(status, sizeof(status),
-             "Custom \xc2\xb7 %u sample%s \xc2\xb7 %s \xc2\xb7 %s",
-             panel->lowering.samples, panel->lowering.samples == 1u ? "" : "s",
-             panel->lowering.function, panel->lowering.reason);
+    string_format(status, sizeof(status),
+                  "Custom \xc2\xb7 %u sample%s \xc2\xb7 %s \xc2\xb7 %s",
+                  panel->lowering.samples,
+                  panel->lowering.samples == 1u ? "" : "s",
+                  panel->lowering.function, panel->lowering.reason);
     status_color = theme->warning;
   } else if (panel->lowered) {
-    snprintf(status, sizeof(status),
-             "Standard \xc2\xb7 %u sample%s \xc2\xb7 %u layer%s \xc2\xb7 +0 "
-             "pipelines%s",
-             panel->lowering.samples, panel->lowering.samples == 1u ? "" : "s",
-             panel->lowering.layers, panel->lowering.layers == 1u ? "" : "s",
-             panel->read_only && panel->kind != VKR_EDITOR_MATERIAL_INSTANCE
-                 ? " \xc2\xb7 read only until converted"
-                 : "");
+    string_format(
+        status, sizeof(status),
+        "Standard \xc2\xb7 %u sample%s \xc2\xb7 %u layer%s \xc2\xb7 +0 "
+        "pipelines%s",
+        panel->lowering.samples, panel->lowering.samples == 1u ? "" : "s",
+        panel->lowering.layers, panel->lowering.layers == 1u ? "" : "s",
+        panel->read_only && panel->kind != VKR_EDITOR_MATERIAL_INSTANCE
+            ? " \xc2\xb7 read only until converted"
+            : "");
   } else {
-    snprintf(status, sizeof(status), "Does not lower: %s%s%s",
-             panel->lowering.reason, panel->lowering.node[0] ? " (node " : "",
-             panel->lowering.node[0] ? panel->lowering.node : "");
-    if (panel->lowering.node[0]) {
-      strncat(status, ")", sizeof(status) - strlen(status) - 1u);
-    }
+    string_format(status, sizeof(status), "Does not lower: %s%s%s%s",
+                  panel->lowering.reason,
+                  panel->lowering.node[0] ? " (node " : "",
+                  panel->lowering.node[0] ? panel->lowering.node : "",
+                  panel->lowering.node[0] ? ")" : "");
     status_color = theme->warning;
   }
   panel_label(ui, string8_lit("material.status"), 10.0f, 34.0f, width - 20.0f,
@@ -1920,9 +1942,10 @@ static bool8_t panel_event(VkrEditorUi *editor, MaterialPanel *panel,
         break;
       }
       char id[VKR_MATERIAL_GRAPH_ID_CAPACITY];
-      snprintf(id, sizeof(id), "%s", graph->nodes[copy].id);
+      string_format(id, sizeof(id), "%s", graph->nodes[copy].id);
       graph->nodes[copy] = source;
-      snprintf(graph->nodes[copy].id, sizeof(graph->nodes[copy].id), "%s", id);
+      string_format(graph->nodes[copy].id, sizeof(graph->nodes[copy].id), "%s",
+                    id);
       graph->nodes[copy].parameter[0] = '\0';
       graph->nodes[copy].position =
           vec2_add(source.position, vec2_new(40.0f, 40.0f));
@@ -1982,23 +2005,24 @@ void vkr_editor_material_canvas_build(VkrEditorUi *editor,
     char *detail = panel->details_text[i];
     detail[0] = '\0';
     if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
-      snprintf(detail, 64, "%.3g", (double)node->value.x);
+      string_format(detail, 64, "%.3g", (double)node->value.x);
     } else if (node->kind == VKR_MATERIAL_NODE_COLOR) {
-      snprintf(detail, 64, "%.2f, %.2f, %.2f", (double)node->value.x,
-               (double)node->value.y, (double)node->value.z);
+      string_format(detail, 64, "%.2f, %.2f, %.2f", (double)node->value.x,
+                    (double)node->value.y, (double)node->value.z);
     } else if (node->kind == VKR_MATERIAL_NODE_TEXTURE) {
-      const char *slash = strrchr(node->path, '/');
-      snprintf(detail, 64, "%s",
-               node->path[0] ? (slash ? slash + 1 : node->path) : "(no file)");
+      const char *slash = string_get_last_char_occurrence(node->path, '/');
+      string_format(detail, 64, "%s",
+                    node->path[0] ? (slash ? slash + 1 : node->path)
+                                  : "(no file)");
     }
     char *badge = panel->badge_text[i];
     badge[0] = '\0';
     const bool8_t error =
-        !panel->lowered && strcmp(panel->lowering.node, node->id) == 0;
+        !panel->lowered && string_equals(panel->lowering.node, node->id);
     if (error) {
-      snprintf(badge, 40, "not Standard");
+      string_format(badge, 40, "not Standard");
     } else if (node->parameter[0]) {
-      snprintf(badge, 40, "%s", node->parameter);
+      string_format(badge, 40, "%s", node->parameter);
     }
     nodes[i] = (VkrEditorGraphNode){
         .id = panel_node_key(node),
@@ -2051,12 +2075,12 @@ void vkr_editor_material_assign(VkrEditorUi *editor,
     return;
   }
   char line[640];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"assign\",\"op\":\"material.assign\","
-           "\"args\":{\"entity\":\"%u:%u:%u\",\"material\":\"%s\","
-           "\"review\":false}}",
-           (unsigned)entity.parts.world, (unsigned)entity.parts.index,
-           (unsigned)entity.parts.generation, material);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"assign\",\"op\":\"material.assign\","
+                "\"args\":{\"entity\":\"%u:%u:%u\",\"material\":\"%s\","
+                "\"review\":false}}",
+                (unsigned)entity.parts.world, (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation, material);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -2064,12 +2088,13 @@ void vkr_editor_material_drop(VkrEditorMaterials *materials,
                               const VkrSampleUiFrame *frame, const char *path,
                               Vec2 drop_px) {
   const bool8_t reference = vkr_asset_ref_is(
-      string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)));
   if (!materials || !frame->pick_request ||
       (!reference && !material_ends_with(path, ".mt"))) {
     return;
   }
-  snprintf(materials->panel.drop, sizeof(materials->panel.drop), "%s", path);
+  string_format(materials->panel.drop, sizeof(materials->panel.drop), "%s",
+                path);
   *frame->pick_request =
       (VkrSamplePickRequest){.request = true_v,
                              .position_px = drop_px,

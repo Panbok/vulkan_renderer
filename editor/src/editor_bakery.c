@@ -9,12 +9,10 @@
 #include "core/vkr_threads.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "vkr_shader_catalog.h"
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define EDITOR_BAKERY_JOB_CAPACITY 16u
 #define EDITOR_BAKERY_PATH_CAPACITY 1024u
@@ -133,7 +131,7 @@ struct VkrEditorBakery {
    dot has no extension. Both call sites below pass "" for exactly that case,
    so this needs the empty-tolerant constructor. */
 static String8 editor_bakery_string(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 static const char *editor_bakery_status(EditorBakeStatus status) {
@@ -259,7 +257,8 @@ static void *editor_bakery_worker(void *argument) {
     arguments[count++] = "--result";
     arguments[count++] = job->output;
   } else if (job->kind == EDITOR_BAKE_DIFFUSE_VOLUME) {
-    (void)snprintf(manifest, sizeof(manifest), "%s.manifest.json", job->output);
+    (void)string_format(manifest, sizeof(manifest), "%s.manifest.json",
+                        job->output);
     arguments[count++] = "bake";
     arguments[count++] = "diffuse";
     arguments[count++] = "--scene";
@@ -353,20 +352,20 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
       "assets/textures/bistro_cafe_probe.vkt"};
   for (uint32_t i = 0u; i < ArrayCount(sources); ++i)
     bakery->source_lengths[i] =
-        (uint32_t)snprintf((char *)bakery->source_paths[i],
-                           EDITOR_BAKERY_PATH_CAPACITY, "%s", sources[i]);
+        (uint32_t)string_format((char *)bakery->source_paths[i],
+                                EDITOR_BAKERY_PATH_CAPACITY, "%s", sources[i]);
   for (uint32_t i = 0u; i < ArrayCount(outputs); ++i)
     bakery->output_lengths[i] =
-        (uint32_t)snprintf((char *)bakery->output_paths[i],
-                           EDITOR_BAKERY_PATH_CAPACITY, "%s", outputs[i]);
+        (uint32_t)string_format((char *)bakery->output_paths[i],
+                                EDITOR_BAKERY_PATH_CAPACITY, "%s", outputs[i]);
   /* Until a workspace opens, job logs go below the repository's build tree,
      or below a per-user directory when the editor is installed. */
   char artifacts[EDITOR_BAKERY_PATH_CAPACITY];
   bool8_t artifacts_ok = false_v;
   if (vkr_content_root_is_repository()) {
     const int written =
-        snprintf(artifacts, sizeof(artifacts), "%sbuild/_artifacts/bakery",
-                 vkr_content_root());
+        string_format(artifacts, sizeof(artifacts), "%sbuild/_artifacts/bakery",
+                      vkr_content_root());
     artifacts_ok = written > 0 && (uint32_t)written < sizeof(artifacts);
   } else {
     artifacts_ok = vkr_editor_user_path(VKR_PLATFORM_USER_CACHE, "bakery",
@@ -374,8 +373,8 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
   }
   const int directory_length =
       artifacts_ok
-          ? snprintf(bakery->log_directory, sizeof(bakery->log_directory),
-                     "%s/%u", artifacts, vkr_platform_get_process_id())
+          ? string_format(bakery->log_directory, sizeof(bakery->log_directory),
+                          "%s/%u", artifacts, vkr_platform_get_process_id())
           : -1;
   /* Keep room for each job's /<slot>.stdout.log or .stderr.log suffix. */
   if (directory_length < 0 ||
@@ -384,8 +383,8 @@ VkrEditorBakery *vkr_editor_bakery_create(VkrAllocator *allocator) {
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
     return NULL;
   }
-  snprintf(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
-           artifacts);
+  string_format(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
+                artifacts);
   bakery->service = editor_bakery_service_create(allocator);
   return bakery;
 }
@@ -413,23 +412,30 @@ static void editor_bakery_remove_log(const char *path) {
 
 static uint32_t editor_bakery_tail(const char *path, uint8_t *bytes,
                                    uint32_t capacity) {
-  FILE *file = file_fopen(path, "rb");
-  if (!file)
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return 0u;
-  uint32_t length = 0u;
-  if (FSEEK64(file, 0, SEEK_END) == 0) {
-    const int64_t size = FTELL64(file);
-    if (size > 0 &&
-        FSEEK64(file, size > capacity ? size - capacity : 0, SEEK_SET) == 0)
-      length = (uint32_t)fread(bytes, 1u, capacity, file);
   }
-  fclose(file);
+  uint32_t length = 0u;
+  uint64_t size = 0u;
+  if (file_remaining_size(&file, &size) == FILE_ERROR_NONE) {
+    if (size > 0u && file_seek(&file, size > capacity ? size - capacity : 0u) ==
+                         FILE_ERROR_NONE) {
+      uint64_t bytes_read = 0u;
+      (void)file_read_into(&file, bytes, capacity, &bytes_read);
+      length = (uint32_t)bytes_read;
+    }
+  }
+  file_close(&file);
   /* A tail may begin inside a multibyte codepoint. */
   uint32_t skip = 0u;
   while (skip < length && (bytes[skip] & 0xc0u) == 0x80u)
     ++skip;
   if (skip > 0u) {
-    memmove(bytes, bytes + skip, length - skip);
+    MemCopy(bytes, bytes + skip, length - skip);
     length -= skip;
   }
   return length;
@@ -517,7 +523,7 @@ static void editor_bakery_display_line(EditorBakeDisplay *display,
   char text[768];
   va_list args;
   va_start(args, format);
-  int length = vsnprintf(text, sizeof(text), format, args);
+  int length = string_format_v(text, sizeof(text), format, args);
   va_end(args);
   if (length <= 0)
     return;
@@ -530,7 +536,7 @@ static void editor_bakery_display_line(EditorBakeDisplay *display,
     uint32_t cut = display->lines_length / 4u;
     while (cut < display->lines_length && display->lines[cut - 1u] != '\n')
       ++cut;
-    memmove(display->lines, display->lines + cut, display->lines_length - cut);
+    MemCopy(display->lines, display->lines + cut, display->lines_length - cut);
     display->lines_length -= cut;
   }
   if ((uint32_t)length <= display->lines_capacity) {
@@ -549,11 +555,11 @@ static void editor_bakery_apply_event(EditorBakeDisplay *display,
     return;
   char text[512];
   char source[256];
-  if (!strcmp(event, "graph")) {
+  if (string_equals(event, "graph")) {
     display->total = (uint32_t)editor_bakery_event_int(line, length, "actions");
     display->cached = (uint32_t)editor_bakery_event_int(line, length, "cached");
     display->finished = display->cached;
-  } else if (!strcmp(event, "start")) {
+  } else if (string_equals(event, "start")) {
     for (uint32_t i = 0u; i < ArrayCount(display->running); ++i) {
       EditorBakeRunning *slot = &display->running[i];
       if (slot->id)
@@ -564,7 +570,7 @@ static void editor_bakery_apply_event(EditorBakeDisplay *display,
                                      sizeof(slot->label));
       break;
     }
-  } else if (!strcmp(event, "progress")) {
+  } else if (string_equals(event, "progress")) {
     const int64_t id = editor_bakery_event_int(line, length, "id");
     for (uint32_t i = 0u; i < ArrayCount(display->running); ++i) {
       if (display->running[i].id == id) {
@@ -576,12 +582,13 @@ static void editor_bakery_apply_event(EditorBakeDisplay *display,
           display->running[i].fraction = fraction;
       }
     }
-  } else if (!strcmp(event, "done")) {
+  } else if (string_equals(event, "done")) {
     const int64_t id = editor_bakery_event_int(line, length, "id");
-    (void)snprintf(source, sizeof(source), "action %lld", (long long)id);
+    (void)string_format(source, sizeof(source), "action %lld", (long long)id);
     for (uint32_t i = 0u; i < ArrayCount(display->running); ++i) {
       if (display->running[i].id == id) {
-        (void)snprintf(source, sizeof(source), "%s", display->running[i].label);
+        (void)string_format(source, sizeof(source), "%s",
+                            display->running[i].label);
         display->running[i] = (EditorBakeRunning){0};
       }
     }
@@ -589,7 +596,7 @@ static void editor_bakery_apply_event(EditorBakeDisplay *display,
     (void)editor_bakery_event_text(line, length, "status", status,
                                    sizeof(status));
     display->finished += 1u;
-    if (strcmp(status, "ok")) {
+    if (!string_equals(status, "ok")) {
       display->failed += 1u;
       editor_bakery_display_line(display, "%s  %s", status, source);
       if (console)
@@ -600,7 +607,7 @@ static void editor_bakery_apply_event(EditorBakeDisplay *display,
           (float64_t)editor_bakery_event_int(line, length, "wall_ms") / 1000.0,
           (long long)editor_bakery_event_int(line, length, "peak_rss_mib"));
     }
-  } else if (!strcmp(event, "diag")) {
+  } else if (string_equals(event, "diag")) {
     char code[32];
     char severity[16];
     char hint[256];
@@ -614,26 +621,26 @@ static void editor_bakery_apply_event(EditorBakeDisplay *display,
     const int64_t line_number = editor_bakery_event_int(line, length, "line");
     char location[300];
     if (line_number > 0)
-      (void)snprintf(location, sizeof(location), "%s:%lld", source,
-                     (long long)line_number);
+      (void)string_format(location, sizeof(location), "%s:%lld", source,
+                          (long long)line_number);
     else
-      (void)snprintf(location, sizeof(location), "%s", source);
+      (void)string_format(location, sizeof(location), "%s", source);
     editor_bakery_display_line(display, "%s %s %s%s%s%s%s", severity, code,
                                location, location[0] ? ": " : "", text,
                                hint[0] ? "\n  hint: " : "", hint);
     if (console) {
-      if (!strcmp(severity, "error"))
+      if (string_equals(severity, "error"))
         log_error("Bakery %s %s: %s", code, location, text);
       else
         log_warn("Bakery %s %s: %s", code, location, text);
     }
-  } else if (!strcmp(event, "log")) {
+  } else if (string_equals(event, "log")) {
     char level[16];
     (void)editor_bakery_event_text(line, length, "level", level, sizeof(level));
     (void)editor_bakery_event_text(line, length, "text", text, sizeof(text));
-    editor_bakery_display_line(display, "%s%s",
-                               strcmp(level, "warn") ? "" : "warn ", text);
-  } else if (!strcmp(event, "summary")) {
+    editor_bakery_display_line(
+        display, "%s%s", !string_equals(level, "warn") ? "" : "warn ", text);
+  } else if (string_equals(event, "summary")) {
     display->summary = true_v;
     editor_bakery_display_line(
         display, "%lld ok, %lld failed, %lld cancelled, %lld cached in %.2fs",
@@ -651,26 +658,30 @@ static uint8_t *editor_bakery_read_events(const char *path, uint64_t offset,
                                           uint64_t *out_start) {
   *out_length = 0u;
   *out_start = offset;
-  FILE *file = file_fopen(path, "rb");
-  if (!file)
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return NULL;
+  }
   uint8_t *data = NULL;
-  if (FSEEK64(file, 0, SEEK_END) == 0) {
-    const int64_t size = FTELL64(file);
+  uint64_t size = 0u;
+  if (file_remaining_size(&file, &size) == FILE_ERROR_NONE) {
     uint64_t start = offset;
-    if (size > 0 && (uint64_t)size > start + MB(1))
-      start = (uint64_t)size - MB(1);
-    if (size > 0 && (uint64_t)size > start &&
-        FSEEK64(file, (int64_t)start, SEEK_SET) == 0) {
-      data = malloc((size_t)((uint64_t)size - start) + 1u);
+    if (size > 0u && size > start + MB(1))
+      start = size - MB(1);
+    if (size > 0u && size > start &&
+        file_seek(&file, start) == FILE_ERROR_NONE) {
+      data = vkr_heap_alloc((size_t)(size - start) + 1u);
       if (data) {
-        *out_length = fread(data, 1u, (size_t)((uint64_t)size - start), file);
+        (void)file_read_into(&file, data, size - start, out_length);
         data[*out_length] = 0u;
         *out_start = start;
       }
     }
   }
-  fclose(file);
+  file_close(&file);
   return data;
 }
 
@@ -720,14 +731,14 @@ static void editor_bakery_forward_console(EditorBakeJob *job) {
   job->actions_total = display.total;
   job->actions_finished = display.finished;
   job->actions_failed = display.failed;
-  free(data);
+  vkr_heap_free(data);
 }
 
 static void editor_bakery_read_log(VkrEditorBakery *bakery) {
   if (bakery->selected == EDITOR_BAKERY_NONE)
     return;
   const EditorBakeJob *job = &bakery->jobs[bakery->selected];
-  uint32_t length = (uint32_t)snprintf(
+  uint32_t length = (uint32_t)string_format(
       (char *)bakery->log, sizeof(bakery->log),
       "%s | %s | exit %d%s\nSource: %s\nOutput: %s\n",
       editor_bakery_kind_names[job->kind], editor_bakery_status(job->status),
@@ -756,9 +767,9 @@ static void editor_bakery_read_log(VkrEditorBakery *bakery) {
   if (data) {
     (void)editor_bakery_for_lines(data, events_length, start != 0u, &display,
                                   false_v);
-    free(data);
+    vkr_heap_free(data);
   }
-  length += (uint32_t)snprintf(
+  length += (uint32_t)string_format(
       (char *)bakery->log + length, sizeof(bakery->log) - length,
       "Progress: %u/%u actions, %u cached, %u failed\n", display.finished,
       display.total, display.cached, display.failed);
@@ -766,7 +777,7 @@ static void editor_bakery_read_log(VkrEditorBakery *bakery) {
     const EditorBakeRunning *running = &display.running[i];
     if (!running->id || length + 160u >= sizeof(bakery->log))
       continue;
-    length += (uint32_t)snprintf(
+    length += (uint32_t)string_format(
         (char *)bakery->log + length, sizeof(bakery->log) - length,
         running->fraction >= 0.0 ? "Running: %s %.0f%%\n" : "Running: %s\n",
         running->label, running->fraction * 100.0);
@@ -804,8 +815,8 @@ static void editor_bakery_watch_shaders(VkrEditorBakery *bakery) {
         !vkr_shader_catalog_root(catalog, sizeof(catalog))) {
       return;
     }
-    (void)snprintf(sources, sizeof(sources), "%srenderer/src/shaders",
-                   vkr_content_root());
+    (void)string_format(sources, sizeof(sources), "%srenderer/src/shaders",
+                        vkr_content_root());
     const char *paths[] = {sources};
     const char *arguments[] = {"shaders", "--out", catalog, "--root",
                                vkr_content_root()};
@@ -849,8 +860,9 @@ static void editor_bakery_watch_materials(VkrEditorBakery *bakery) {
     if (!vkr_shader_catalog_root(catalog, sizeof(catalog))) {
       return;
     }
-    (void)snprintf(assets, sizeof(assets), "%sassets", vkr_content_root());
-    (void)snprintf(engine, sizeof(engine), "%s/metal/library.metal", catalog);
+    (void)string_format(assets, sizeof(assets), "%sassets", vkr_content_root());
+    (void)string_format(engine, sizeof(engine), "%s/metal/library.metal",
+                        catalog);
     const char *paths[] = {assets, engine};
     const char *arguments[] = {"materials", "--shaders", catalog, "--root",
                                vkr_content_root()};
@@ -941,8 +953,9 @@ void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
                                              &bakery->process_lock)) {
         bakery->running = EDITOR_BAKERY_NONE;
         job->status = EDITOR_BAKE_QUEUED;
-        snprintf(bakery->message, sizeof(bakery->message),
-                 "Waiting for the current asset worker to finish or cancel.");
+        string_format(
+            bakery->message, sizeof(bakery->message),
+            "Waiting for the current asset worker to finish or cancel.");
         break;
       }
       if (!vkr_thread_create(bakery->allocator, &bakery->worker,
@@ -950,8 +963,8 @@ void vkr_editor_bakery_update(VkrEditorBakery *bakery) {
         vkr_platform_process_lock_release(&bakery->process_lock);
         bakery->running = EDITOR_BAKERY_NONE;
         job->status = EDITOR_BAKE_FAILED;
-        snprintf(bakery->message, sizeof(bakery->message),
-                 "Unable to start baker; another editor may be baking.");
+        string_format(bakery->message, sizeof(bakery->message),
+                      "Unable to start baker; another editor may be baking.");
         log_error("Bakery: unable to launch %s", job->input);
       } else {
         log_info("Bakery: started %s", job->input);
@@ -982,18 +995,18 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
   if (kind == EDITOR_BAKE_SHADERS) {
     /* Compile into the catalog this editor's renderer loads. */
     if (!vkr_shader_catalog_root(catalog, sizeof(catalog))) {
-      snprintf(bakery->message, sizeof(bakery->message),
-               "The shader catalog path is too long.");
+      string_format(bakery->message, sizeof(bakery->message),
+                    "The shader catalog path is too long.");
       return;
     }
     input = catalog;
   }
   if (!input[0]) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Enter a source path or font configuration first.");
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Enter a source path or font configuration first.");
     return;
   }
-  const char *extension = strrchr(input, '.');
+  const char *extension = string_get_last_char_occurrence(input, '.');
   const String8 source_extension =
       editor_bakery_string(extension ? extension : "");
   const String8 gltf = string8_lit(".gltf"), glb = string8_lit(".glb"),
@@ -1001,24 +1014,25 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
   if (kind == EDITOR_BAKE_MESH && !string8_equalsi(&source_extension, &gltf) &&
       !string8_equalsi(&source_extension, &glb) &&
       !string8_equalsi(&source_extension, &obj)) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Mesh source must end in .gltf, .glb or .obj.");
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Mesh source must end in .gltf, .glb or .obj.");
     return;
   }
   if ((kind == EDITOR_BAKE_COLLISION_HULL ||
        kind == EDITOR_BAKE_COLLISION_MESH) &&
       !string8_equalsi(&source_extension, &gltf) &&
       !string8_equalsi(&source_extension, &glb)) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Collision source must end in .gltf or .glb.");
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Collision source must end in .gltf or .glb.");
     return;
   }
   if (editor_bakery_uses_explicit_output(kind) && !output[0]) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Enter an output path before adding this bake.");
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Enter an output path before adding this bake.");
     return;
   }
-  const char *output_dot = output ? strrchr(output, '.') : NULL;
+  const char *output_dot =
+      output ? string_get_last_char_occurrence(output, '.') : NULL;
   const String8 output_extension =
       editor_bakery_string(output_dot ? output_dot : "");
   const String8 vkdv = string8_lit(".vkdv"), vkt = string8_lit(".vkt");
@@ -1026,7 +1040,7 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
        !string8_equalsi(&output_extension, &vkdv)) ||
       (kind == EDITOR_BAKE_REFLECTION_PROBE &&
        !string8_equalsi(&output_extension, &vkt))) {
-    snprintf(
+    string_format(
         bakery->message, sizeof(bakery->message), "%s output must end in %s.",
         kind == EDITOR_BAKE_DIFFUSE_VOLUME ? "Diffuse volume" : "Reflection",
         kind == EDITOR_BAKE_DIFFUSE_VOLUME ? ".vkdv" : ".vkt");
@@ -1034,20 +1048,20 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
   }
   if ((kind == EDITOR_BAKE_COLLISION_HULL ||
        kind == EDITOR_BAKE_COLLISION_MESH) &&
-      (!output_dot || strcmp(output_dot, ".vkc"))) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Collision output must end in .vkc.");
+      (!output_dot || !string_equals(output_dot, ".vkc"))) {
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Collision output must end in .vkc.");
     return;
   }
   if (bakery->job_count == EDITOR_BAKERY_JOB_CAPACITY) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Queue full; clear finished jobs first.");
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Queue full; clear finished jobs first.");
     return;
   }
   String8 log_directory = editor_bakery_string(bakery->log_directory);
   if (!file_ensure_directory(bakery->allocator, &log_directory)) {
-    snprintf(bakery->message, sizeof(bakery->message),
-             "Cannot create bake log directory.");
+    string_format(bakery->message, sizeof(bakery->message),
+                  "Cannot create bake log directory.");
     return;
   }
   const uint32_t index = bakery->job_count++;
@@ -1058,27 +1072,27 @@ static void editor_bakery_enqueue(VkrEditorBakery *bakery, EditorBakeKind kind,
       .status = EDITOR_BAKE_QUEUED,
       .force = editor_bakery_supports_force(kind) ? bakery->force : false_v,
       .exit_code = -1};
-  snprintf(job->input, sizeof(job->input), "%s", input);
+  string_format(job->input, sizeof(job->input), "%s", input);
   if (kind == EDITOR_BAKE_SHADERS) {
-    snprintf(job->output, sizeof(job->output), "%s", input);
+    string_format(job->output, sizeof(job->output), "%s", input);
   } else if (editor_bakery_is_static_table(kind)) {
-    snprintf(job->input, sizeof(job->input), "%s",
-             editor_bakery_table_output(kind));
-    snprintf(job->output, sizeof(job->output), "%s",
-             editor_bakery_table_output(kind));
+    string_format(job->input, sizeof(job->input), "%s",
+                  editor_bakery_table_output(kind));
+    string_format(job->output, sizeof(job->output), "%s",
+                  editor_bakery_table_output(kind));
   } else if (kind == EDITOR_BAKE_MESH)
-    snprintf(job->output, sizeof(job->output), "%.*s.vkb",
-             (int)(extension - input), input);
+    string_format(job->output, sizeof(job->output), "%.*s.vkb",
+                  (int)(extension - input), input);
   else if (kind == EDITOR_BAKE_TEXTURE)
-    snprintf(job->output, sizeof(job->output), "%s.vkt", input);
+    string_format(job->output, sizeof(job->output), "%s.vkt", input);
   else if (editor_bakery_uses_explicit_output(kind))
-    snprintf(job->output, sizeof(job->output), "%s", output);
-  snprintf(job->stdout_path, sizeof(job->stdout_path),
-           editor_bakery_streams_events(kind) ? "%s/%u.events.jsonl"
-                                              : "%s/%u.stdout.log",
-           bakery->log_directory, index);
-  snprintf(job->stderr_path, sizeof(job->stderr_path), "%s/%u.stderr.log",
-           bakery->log_directory, index);
+    string_format(job->output, sizeof(job->output), "%s", output);
+  string_format(job->stdout_path, sizeof(job->stdout_path),
+                editor_bakery_streams_events(kind) ? "%s/%u.events.jsonl"
+                                                   : "%s/%u.stdout.log",
+                bakery->log_directory, index);
+  string_format(job->stderr_path, sizeof(job->stderr_path), "%s/%u.stderr.log",
+                bakery->log_directory, index);
   editor_bakery_remove_log(job->stdout_path);
   editor_bakery_remove_log(job->stderr_path);
   bakery->selected = index;
@@ -1091,8 +1105,9 @@ uint64_t vkr_editor_bakery_project_start(VkrEditorBakery *bakery,
                                          const char *request_path,
                                          const char *result_path) {
   if (!bakery || !request_path || !result_path || !request_path[0] ||
-      !result_path[0] || strlen(request_path) >= EDITOR_BAKERY_PATH_CAPACITY ||
-      strlen(result_path) + 12u >= EDITOR_BAKERY_PATH_CAPACITY) {
+      !result_path[0] ||
+      string_length(request_path) >= EDITOR_BAKERY_PATH_CAPACITY ||
+      string_length(result_path) + 12u >= EDITOR_BAKERY_PATH_CAPACITY) {
     return 0;
   }
   uint32_t slot = bakery->job_count;
@@ -1113,12 +1128,12 @@ uint64_t vkr_editor_bakery_project_start(VkrEditorBakery *bakery,
                          .kind = EDITOR_BAKE_PROJECT,
                          .status = EDITOR_BAKE_QUEUED,
                          .exit_code = -1};
-  snprintf(job->input, sizeof(job->input), "%s", request_path);
-  snprintf(job->output, sizeof(job->output), "%s", result_path);
-  snprintf(job->stdout_path, sizeof(job->stdout_path), "%s.stdout.log",
-           result_path);
-  snprintf(job->stderr_path, sizeof(job->stderr_path), "%s.stderr.log",
-           result_path);
+  string_format(job->input, sizeof(job->input), "%s", request_path);
+  string_format(job->output, sizeof(job->output), "%s", result_path);
+  string_format(job->stdout_path, sizeof(job->stdout_path), "%s.stdout.log",
+                result_path);
+  string_format(job->stderr_path, sizeof(job->stderr_path), "%s.stderr.log",
+                result_path);
   bakery->selected = slot;
   bakery->next_log_read = 0;
   return job->id;
@@ -1130,9 +1145,9 @@ uint64_t vkr_editor_bakery_package_start(VkrEditorBakery *bakery,
                                          const char *events_path) {
   if (!bakery || !project_directory || !profile || !events_path ||
       !project_directory[0] || !profile[0] ||
-      strlen(project_directory) >= EDITOR_BAKERY_PATH_CAPACITY ||
-      strlen(profile) >= EDITOR_BAKERY_PATH_CAPACITY ||
-      strlen(events_path) + 12u >= EDITOR_BAKERY_PATH_CAPACITY) {
+      string_length(project_directory) >= EDITOR_BAKERY_PATH_CAPACITY ||
+      string_length(profile) >= EDITOR_BAKERY_PATH_CAPACITY ||
+      string_length(events_path) + 12u >= EDITOR_BAKERY_PATH_CAPACITY) {
     return 0;
   }
   const uint64_t id =
@@ -1143,10 +1158,11 @@ uint64_t vkr_editor_bakery_package_start(VkrEditorBakery *bakery,
       continue;
     }
     job->kind = EDITOR_BAKE_PACKAGE;
-    snprintf(job->output, sizeof(job->output), "%s", profile);
-    snprintf(job->stdout_path, sizeof(job->stdout_path), "%s", events_path);
-    snprintf(job->stderr_path, sizeof(job->stderr_path), "%s.stderr.log",
-             events_path);
+    string_format(job->output, sizeof(job->output), "%s", profile);
+    string_format(job->stdout_path, sizeof(job->stdout_path), "%s",
+                  events_path);
+    string_format(job->stderr_path, sizeof(job->stderr_path), "%s.stderr.log",
+                  events_path);
     editor_bakery_remove_log(job->stdout_path);
     editor_bakery_remove_log(job->stderr_path);
   }
@@ -1436,7 +1452,7 @@ static void editor_bakery_setup(VkrEditorBakery *bakery, VkrUiSystem *ui,
               string8_lit("Fill the source with an editor font configuration");
           if (vkr_ui_button(ui, editor_bakery_string(names[i]),
                             editor_bakery_string(names[i]), &config)) {
-            bakery->source_lengths[EDITOR_BAKE_FONT] = (uint32_t)snprintf(
+            bakery->source_lengths[EDITOR_BAKE_FONT] = (uint32_t)string_format(
                 (char *)bakery->source_paths[EDITOR_BAKE_FONT],
                 EDITOR_BAKERY_PATH_CAPACITY, "%s", paths[i]);
             bakery->message[0] = '\0';
@@ -1532,16 +1548,16 @@ static void editor_bakery_jobs(VkrEditorBakery *bakery, VkrUiSystem *ui,
       for (const char *p = name; *p; ++p)
         if (*p == '/' || *p == '\\')
           name = p + 1;
-      const uint32_t name_length = (uint32_t)strlen(name);
+      const uint32_t name_length = (uint32_t)string_length(name);
       uint32_t shown_length = Min(name_length, 72u);
       while (shown_length < name_length &&
              ((uint8_t)name[shown_length] & 0xc0u) == 0x80u)
         --shown_length;
       char progress[48] = "";
       if (job->actions_total) {
-        snprintf(progress, sizeof(progress), "  \xc2\xb7  %u/%u%s",
-                 job->actions_finished, job->actions_total,
-                 job->actions_failed ? " (failures)" : "");
+        string_format(progress, sizeof(progress), "  \xc2\xb7  %u/%u%s",
+                      job->actions_finished, job->actions_total,
+                      job->actions_failed ? " (failures)" : "");
       }
       const String8 text = string8_create_formatted(
           ui->frame_allocator, "%s  \xc2\xb7  %s%s  \xc2\xb7  %.*s%s",
@@ -1807,10 +1823,10 @@ void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
   bakery->managed = enabled;
   bakery->writable_scene = writable_scene;
   if (enabled && workspace && workspace[0]) {
-    snprintf(bakery->log_directory, sizeof(bakery->log_directory), "%s/jobs",
-             workspace);
-    snprintf(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
-             workspace);
+    string_format(bakery->log_directory, sizeof(bakery->log_directory),
+                  "%s/jobs", workspace);
+    string_format(bakery->lock_directory, sizeof(bakery->lock_directory), "%s",
+                  workspace);
   }
 }
 

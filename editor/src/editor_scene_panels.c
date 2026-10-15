@@ -13,11 +13,6 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_types.h"
-#include <ctype.h>
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define PANEL_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* Text drafts for attachment and joint numbers; body and collider rows come
@@ -199,13 +194,13 @@ static bool8_t pressed(const InputState *input, Keys key) {
 }
 
 static bool8_t contains(String8 text, const char *needle) {
-  size_t n = strlen(needle);
+  size_t n = string_length(needle);
   if (!n)
     return true_v;
   for (uint64_t i = 0; i + n <= text.length; ++i) {
     size_t j = 0;
-    while (j < n && tolower((unsigned char)text.str[i + j]) ==
-                        tolower((unsigned char)needle[j]))
+    while (j < n && vkr_char_to_lower((unsigned char)text.str[i + j]) ==
+                        vkr_char_to_lower((unsigned char)needle[j]))
       ++j;
     if (j == n)
       return true_v;
@@ -292,10 +287,12 @@ static bool8_t tree_type_matches(const VkrScene *scene, VkrEntityId entity,
   const VkrTypeDesc *type = NULL;
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
     if (vkr_scene_get_typed(scene, entity, type) &&
-        (contains(string8_create((uint8_t *)type->label, strlen(type->label)),
-                  search) ||
-         contains(string8_create((uint8_t *)type->name, strlen(type->name)),
-                  search)))
+        (contains(
+             string8_create((uint8_t *)type->label, string_length(type->label)),
+             search) ||
+         contains(
+             string8_create((uint8_t *)type->name, string_length(type->name)),
+             search)))
       return true_v;
   }
   const struct {
@@ -308,7 +305,7 @@ static bool8_t tree_type_matches(const VkrScene *scene, VkrEntityId entity,
   for (uint32_t i = 0; i < ArrayCount(lights); ++i) {
     if (vkr_entity_has_component(scene->world, entity, lights[i].id) &&
         contains(string8_create((uint8_t *)lights[i].type->label,
-                                strlen(lights[i].type->label)),
+                                string_length(lights[i].type->label)),
                  search))
       return true_v;
   }
@@ -341,7 +338,7 @@ static bool8_t tree_tags_match(const VkrScene *scene, VkrEntityId entity,
     while (!found && vkr_scene_tags_next(tags, &cursor, &tag)) {
       found = tag.length >= length;
       for (uint64_t i = 0; found && i < length; ++i) {
-        found = tag.str[i] == tolower((unsigned char)at[i]);
+        found = tag.str[i] == vkr_char_to_lower((unsigned char)at[i]);
       }
     }
     if (!found) {
@@ -960,7 +957,7 @@ bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
   /* The module's `<Name>.c`, else its first C source. */
   const char *found = NULL;
   char wanted[VKR_EDITOR_SCRIPT_NAME + 2u];
-  snprintf(wanted, sizeof(wanted), "%s.c", module_name);
+  string_format(wanted, sizeof(wanted), "%s.c", module_name);
   const uint32_t files =
       editor->scripts ? vkr_editor_scripts_file_count(editor->scripts) : 0u;
   for (uint32_t i = 0; i < files; ++i) {
@@ -968,17 +965,17 @@ bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
         vkr_editor_scripts_file(editor->scripts, i);
     const VkrEditorScriptModule *module =
         vkr_editor_scripts_module(editor->scripts, file->module);
-    const size_t length = strlen(file->name);
-    if (!module || strcmp(module->name, module_name) || length < 2u ||
-        strcmp(file->name + length - 2u, ".c")) {
+    const size_t length = string_length(file->name);
+    if (!module || !string_equals(module->name, module_name) || length < 2u ||
+        !string_equals(file->name + length - 2u, ".c")) {
       continue;
     }
-    if (!found || !strcmp(file->name, wanted)) {
+    if (!found || string_equals(file->name, wanted)) {
       found = file->path;
     }
   }
   if (found) {
-    snprintf(out, capacity, "%s", found);
+    string_format(out, capacity, "%s", found);
     return true_v;
   }
   /* A module linked into the editor, such as the FPS sample, keeps its
@@ -986,13 +983,13 @@ bool8_t vkr_editor_script_source(const VkrEditorUi *editor,
 #if defined(VKR_EDITOR_SCRIPT_SDK_ROOT)
   char linked[VKR_EDITOR_SCRIPT_PATH];
   const int32_t length =
-      snprintf(linked, sizeof(linked), "%s/scripts/%s/src/%s_module.c",
-               VKR_EDITOR_SCRIPT_SDK_ROOT, module_name, module_name);
-  const FilePath path = {
-      .path = string8_create_from_cstr((const uint8_t *)linked, strlen(linked)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
+      string_format(linked, sizeof(linked), "%s/scripts/%s/src/%s_module.c",
+                    VKR_EDITOR_SCRIPT_SDK_ROOT, module_name, module_name);
+  const FilePath path = {.path = string8_create_from_cstr(
+                             (const uint8_t *)linked, string_length(linked)),
+                         .type = FILE_PATH_TYPE_ABSOLUTE};
   if (length > 0 && (uint32_t)length < sizeof(linked) && file_exists(&path)) {
-    snprintf(out, capacity, "%s", linked);
+    string_format(out, capacity, "%s", linked);
     return true_v;
   }
 #endif
@@ -1013,17 +1010,17 @@ bool8_t vkr_editor_open_entity_script(VkrEditorUi *editor,
     /* A linked module's edits apply once the editor is rebuilt. */
     if (!vkr_editor_scripts_module_of(editor->scripts, path)) {
       char text[160];
-      snprintf(text, sizeof(text),
-               "%s is built into the editor; saved changes apply after a "
-               "rebuild",
-               type->label);
+      string_format(text, sizeof(text),
+                    "%s is built into the editor; saved changes apply after a "
+                    "rebuild",
+                    type->label);
       vkr_editor_toast(editor, VKR_UI_ICON_INFO_FILL, vkr_ui_theme()->accent,
                        text);
     }
     return true_v;
   }
   char text[160];
-  snprintf(text, sizeof(text), "%s has no source to open", type->label);
+  string_format(text, sizeof(text), "%s has no source to open", type->label);
   vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
                    text);
   return false_v;
@@ -1049,15 +1046,15 @@ bool8_t vkr_editor_attach_script(VkrEditorUi *editor,
   }
   const String8 name = vkr_scene_get_name(scene, entity);
   if (vkr_scene_get_typed(scene, entity, type)) {
-    snprintf(text, sizeof(text), "%.*s already runs %s", (int)name.length,
-             name.str, type->label);
+    string_format(text, sizeof(text), "%.*s already runs %s", (int)name.length,
+                  name.str, type->label);
     vkr_editor_toast(editor, VKR_UI_ICON_INFO_FILL, theme->accent, text);
     return false_v;
   }
   if (!vkr_scene_type_allowed(scene, type) ||
       !vkr_entity_get_component(scene->world, entity, scene->comp_transform)) {
-    snprintf(text, sizeof(text), "%.*s cannot run scripts", (int)name.length,
-             name.str);
+    string_format(text, sizeof(text), "%.*s cannot run scripts",
+                  (int)name.length, name.str);
     vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, theme->warning, text);
     return false_v;
   }
@@ -1067,8 +1064,8 @@ bool8_t vkr_editor_attach_script(VkrEditorUi *editor,
   vkr_type_defaults(type, request.values.component);
   *frame->scene_edit = request;
   /* The object becomes the selection so Details shows its new script. */
-  snprintf(text, sizeof(text), "Attached %s to %.*s", type->label,
-           (int)name.length, name.str);
+  string_format(text, sizeof(text), "Attached %s to %.*s", type->label,
+                (int)name.length, name.str);
   vkr_editor_toast(editor, VKR_UI_ICON_CODE, theme->accent, text);
   return true_v;
 }
@@ -1078,8 +1075,9 @@ void vkr_editor_drop_script(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   const VkrTypeDesc *type = vkr_editor_module_script(frame, module);
   if (!type) {
     char text[160];
-    snprintf(text, sizeof(text), "%s has not built yet; see the Script editor",
-             module ? module : "The script");
+    string_format(text, sizeof(text),
+                  "%s has not built yet; see the Script editor",
+                  module ? module : "The script");
     vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING, vkr_ui_theme()->warning,
                      text);
     return;
@@ -1169,8 +1167,8 @@ static void editor_place_text(VkrSceneEditValues *values,
   const Vec3 to_eye =
       vkr_quat_rotate_vec3(inverse, vec3_sub(pose->eye, pose->position));
   if (to_eye.x * to_eye.x + to_eye.z * to_eye.z > 1e-6f) {
-    const VkrQuat face = vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f),
-                                                  atan2f(to_eye.x, to_eye.z));
+    const VkrQuat face = vkr_quat_from_axis_angle(
+        vec3_new(0.0f, 1.0f, 0.0f), vkr_atan2_f32(to_eye.x, to_eye.z));
     values->rotation = vkr_quat_normalize(vkr_quat_mul(pose->rotation, face));
   }
   const VkrSceneText3DConfig box = VKR_SCENE_TEXT3D_CONFIG_DEFAULT;
@@ -1198,74 +1196,78 @@ static bool8_t editor_request_brush(const VkrEditorUi *editor,
   if (!vkr_editor_viewport_place(editor, frame, pixel, 0.0f, &pose)) {
     return false_v;
   }
-  const Vec3 p = vec3_new(roundf(pose.position.x * 4.0f) * 0.25f,
-                          roundf(pose.position.y * 4.0f) * 0.25f,
-                          roundf(pose.position.z * 4.0f) * 0.25f);
+  const Vec3 p = vec3_new(vkr_round_f32(pose.position.x * 4.0f) * 0.25f,
+                          vkr_round_f32(pose.position.y * 4.0f) * 0.25f,
+                          vkr_round_f32(pose.position.z * 4.0f) * 0.25f);
   char target[16];
   if (container == VKR_SCENE_WORLD_ROOT_ID) {
-    snprintf(target, sizeof(target), "\"world\"");
+    string_format(target, sizeof(target), "\"world\"");
   } else if (container == 0u) {
-    snprintf(target, sizeof(target), "\"primary\"");
+    string_format(target, sizeof(target), "\"primary\"");
   } else {
-    snprintf(target, sizeof(target), "%u", (unsigned)container);
+    string_format(target, sizeof(target), "%u", (unsigned)container);
   }
   char style[160];
   vkr_editor_brush_style(editor, style, sizeof(style));
   char line[640];
   if (brush == 7u) {
     /* A three-point spline running along X through the placement point. */
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"spline.create\","
-             "\"args\":{\"points\":[[%g,%g,%g],[%g,%g,%g],[%g,%g,%g]],"
-             "\"container\":%s,\"review\":false,\"select\":true}}",
-             p.x - 5.0f, p.y, p.z, p.x, p.y, p.z + 2.0f, p.x + 5.0f, p.y, p.z,
-             target);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"create\",\"op\":\"spline.create\","
+                  "\"args\":{\"points\":[[%g,%g,%g],[%g,%g,%g],[%g,%g,%g]],"
+                  "\"container\":%s,\"review\":false,\"select\":true}}",
+                  p.x - 5.0f, p.y, p.z, p.x, p.y, p.z + 2.0f, p.x + 5.0f, p.y,
+                  p.z, target);
   } else if (brush == 8u) {
     /* A scatter box standing on the placement point; it places copies once
        it names a mesh. */
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"scatter.create\","
-             "\"args\":{\"position\":[%g,%g,%g],\"container\":%s,"
-             "\"review\":false,\"select\":true}}",
-             p.x, p.y + 5.0f, p.z, target);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"create\",\"op\":\"scatter.create\","
+                  "\"args\":{\"position\":[%g,%g,%g],\"container\":%s,"
+                  "\"review\":false,\"select\":true}}",
+                  p.x, p.y + 5.0f, p.z, target);
   } else if (brush == 6u) {
     /* A 256 m terrain centred where the view looks. */
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"terrain.create\","
-             "\"args\":{\"position\":[%g,%g,%g],\"size\":256,"
-             "\"container\":%s,\"review\":false,\"select\":true}}",
-             p.x, p.y, p.z, target);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"create\",\"op\":\"terrain.create\","
+                  "\"args\":{\"position\":[%g,%g,%g],\"size\":256,"
+                  "\"container\":%s,\"review\":false,\"select\":true}}",
+                  p.x, p.y, p.z, target);
   } else if (brush == 5u) {
     /* A trigger brush that reports what enters it. */
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"batch\",\"args\":{"
-             "\"review\":false,\"select\":true,\"ops\":[{\"op\":"
-             "\"brush.box\",\"args\":{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],"
-             "\"role\":\"trigger\",\"name\":\"Trigger\",\"container\":%s}},"
-             "{\"op\":\"component.add\",\"args\":{\"entity\":\"$0\","
-             "\"type\":\"trigger\"}}]}}",
-             p.x - 1.0f, p.y, p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f,
-             target);
+    string_format(
+        line, sizeof(line),
+        "{\"v\":1,\"id\":\"create\",\"op\":\"batch\",\"args\":{"
+        "\"review\":false,\"select\":true,\"ops\":[{\"op\":"
+        "\"brush.box\",\"args\":{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],"
+        "\"role\":\"trigger\",\"name\":\"Trigger\",\"container\":%s}},"
+        "{\"op\":\"component.add\",\"args\":{\"entity\":\"$0\","
+        "\"type\":\"trigger\"}}]}}",
+        p.x - 1.0f, p.y, p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f,
+        target);
   } else if (brush == 4u) {
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"blockout.room\",\"args\":"
-             "{\"min\":[%g,%g,%g],\"size\":[6,3,6],\"container\":%s,"
-             "\"review\":false,\"select\":true}}",
-             p.x - 3.0f, p.y, p.z - 3.0f, target);
+    string_format(
+        line, sizeof(line),
+        "{\"v\":1,\"id\":\"create\",\"op\":\"blockout.room\",\"args\":"
+        "{\"min\":[%g,%g,%g],\"size\":[6,3,6],\"container\":%s,"
+        "\"review\":false,\"select\":true}}",
+        p.x - 3.0f, p.y, p.z - 3.0f, target);
   } else if (brush == 3u) {
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"brush.cylinder\",\"args\":"
-             "{\"center\":[%g,%g,%g],\"radius\":1,\"height\":2,"
-             "\"sides\":12,\"container\":%s,%s,"
-             "\"review\":false,\"select\":true}}",
-             p.x, p.y, p.z, target, style);
+    string_format(
+        line, sizeof(line),
+        "{\"v\":1,\"id\":\"create\",\"op\":\"brush.cylinder\",\"args\":"
+        "{\"center\":[%g,%g,%g],\"radius\":1,\"height\":2,"
+        "\"sides\":12,\"container\":%s,%s,"
+        "\"review\":false,\"select\":true}}",
+        p.x, p.y, p.z, target, style);
   } else {
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"create\",\"op\":\"%s\",\"args\":"
-             "{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
-             "%s,\"review\":false,\"select\":true}}",
-             brush == 2u ? "brush.wedge" : "brush.box", p.x - 1.0f, p.y,
-             p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target, style);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"create\",\"op\":\"%s\",\"args\":"
+                  "{\"min\":[%g,%g,%g],\"max\":[%g,%g,%g],\"container\":%s,"
+                  "%s,\"review\":false,\"select\":true}}",
+                  brush == 2u ? "brush.wedge" : "brush.box", p.x - 1.0f, p.y,
+                  p.z - 1.0f, p.x + 1.0f, p.y + 2.0f, p.z + 1.0f, target,
+                  style);
   }
   return vkr_editor_agent_submit(editor->agent, line);
 }
@@ -1292,7 +1294,7 @@ bool8_t vkr_editor_request_create(const VkrEditorUi *editor,
   VkrSceneEditValues values;
   MemZero(&values, sizeof(values));
   values.fields = VKR_SCENE_EDIT_NAME;
-  snprintf(values.name, sizeof(values.name), "%s", object->label);
+  string_format(values.name, sizeof(values.name), "%s", object->label);
   if (object->type == &vkr_scene_point_light_type) {
     vkr_type_defaults(object->type, &values.point_light);
     if (object->spot) {
@@ -1364,8 +1366,8 @@ void vkr_editor_apply_content_object(const VkrSampleUiFrame *frame,
     }
     request.action = VKR_SCENE_EDIT_APPLY;
     request.values.fields = VKR_SCENE_EDIT_NAME;
-    snprintf(request.values.name, sizeof(request.values.name), "%s",
-             action->name);
+    string_format(request.values.name, sizeof(request.values.name), "%s",
+                  action->name);
     break;
   case VKR_EDITOR_CONTENT_ACTION_DELETE_ENTITY:
     /* The journal refuses what cannot be deleted; the reason shows in the
@@ -1739,7 +1741,7 @@ static String8 hierarchy_type_label(const VkrScene *scene, VkrEntityId entity,
         type != &vkr_scene_tags_type &&
         vkr_scene_get_typed(scene, entity, type))
       return string8_create_from_cstr((const uint8_t *)type->label,
-                                      strlen(type->label));
+                                      string_length(type->label));
   }
   return has_child ? string8_lit("Group") : string8_lit("Empty");
 }
@@ -1766,7 +1768,8 @@ static float32_t hierarchy_opening_pulse(const VkrUiSystem *ui) {
     return 1.0f;
   }
   return 0.55f +
-         0.45f * sinf((float32_t)vkr_platform_get_absolute_time() * 4.0f);
+         0.45f *
+             vkr_sin_f32((float32_t)vkr_platform_get_absolute_time() * 4.0f);
 }
 
 /* What an opening scene runs now and for how long, such as "Building
@@ -1953,8 +1956,9 @@ static void hierarchy_toolbar(VkrEditorUi *editor,
   tools.style.gap_pt = theme->space_sm;
   tools.style.min_size_pt = tools.style.max_size_pt = (Vec2){w - 16, 26};
   if (vkr_ui_panel_begin(ui, string8_lit("hierarchy.tools"), &tools)) {
-    VkrUiTextEditBuffer search = {
-        (uint8_t *)p->search, (uint32_t)strlen(p->search), sizeof(p->search)};
+    VkrUiTextEditBuffer search = {(uint8_t *)p->search,
+                                  (uint32_t)string_length(p->search),
+                                  sizeof(p->search)};
     VkrUiPlacement placement = VKR_UI_PLACEMENT_DEFAULT;
     placement.column = placement.row = 0u;
     p->rebuild |= vkr_editor_search_field(
@@ -2041,12 +2045,12 @@ bool8_t vkr_editor_selection_apply(VkrEditorUi *editor,
   const uint32_t selected =
       vkr_editor_selection_list(editor, frame, list, ArrayCount(list));
   if (!selected || !frame->edit_batch) {
-    snprintf(message, capacity, "Nothing is selected");
+    string_format(message, capacity, "Nothing is selected");
     return false_v;
   }
   if (frame->edit_batch->count || frame->edit_batch->revert_group ||
       editor->selection_batch_token) {
-    snprintf(message, capacity, "Another edit is applying; try again");
+    string_format(message, capacity, "Another edit is applying; try again");
     return false_v;
   }
   const VkrScene *scene = vkr_editor_entity_scene(frame, list[0]);
@@ -2068,8 +2072,8 @@ bool8_t vkr_editor_selection_apply(VkrEditorUi *editor,
     const char *reason = NULL;
     if (duplicate && !vkr_scene_edit_can_duplicate(scene, list[i], &reason)) {
       const String8 name = vkr_scene_get_name(scene, list[i]);
-      snprintf(message, capacity, "%.*s: %s", (int)name.length, name.str,
-               reason);
+      string_format(message, capacity, "%.*s: %s", (int)name.length, name.str,
+                    reason);
       return false_v;
     }
     targets[count++] = list[i];
@@ -2104,9 +2108,9 @@ bool8_t vkr_editor_selection_apply(VkrEditorUi *editor,
       .count = count,
       .container = container,
   };
-  snprintf(message, capacity, "%s %u objects%s",
-           duplicate ? "Duplicating" : "Deleting", count,
-           skipped ? "; others in another scene stay" : "");
+  string_format(message, capacity, "%s %u objects%s",
+                duplicate ? "Duplicating" : "Deleting", count,
+                skipped ? "; others in another scene stay" : "");
   return true_v;
 }
 
@@ -2296,8 +2300,9 @@ static float32_t hierarchy_script_chip(VkrUiSystem *ui, const VkrScene *scene,
                                        float32_t room, bool8_t selected) {
   const VkrTypeDesc *script = vkr_editor_entity_script(scene, entity);
   const float32_t width =
-      script ? Min(120.0f, (float32_t)strlen(script->label) * 6.4f + 28.0f)
-             : 0.0f;
+      script
+          ? Min(120.0f, (float32_t)string_length(script->label) * 6.4f + 28.0f)
+          : 0.0f;
   if (!script || room - width <= 90.0f) {
     return 0.0f;
   }
@@ -2318,7 +2323,7 @@ static float32_t hierarchy_script_chip(VkrUiSystem *ui, const VkrScene *scene,
   c.tooltip = string8_lit("The script this object runs");
   vkr_ui_label(ui, string8_lit("node.script"),
                string8_create_from_cstr((const uint8_t *)script->label,
-                                        strlen(script->label)),
+                                        string_length(script->label)),
                &c);
   return width + 4.0f;
 }
@@ -2474,7 +2479,7 @@ static bool8_t hierarchy_entity_row(
     c.icon = VKR_UI_ICON_SPINNER;
     c.icon_color = vkr_ui_color_alpha(
         selected ? theme->text_on_accent : theme->accent_hover,
-        0.55f + 0.45f * sinf((float32_t)now * 4.0f));
+        0.55f + 0.45f * vkr_sin_f32((float32_t)now * 4.0f));
     c.tooltip = string8_lit(
         "Cooking full-quality textures in the background; locked until "
         "they are ready");
@@ -2522,7 +2527,7 @@ static void hierarchy_column_header(VkrUiSystem *ui, HierarchyColumns cols,
     c.icon_size_pt = 12.0f;
     c.icon_color = theme->text_secondary;
     c.tooltip = string8_create_from_cstr((const uint8_t *)toggles[i].tooltip,
-                                         strlen(toggles[i].tooltip));
+                                         string_length(toggles[i].tooltip));
     (void)vkr_ui_push_id_u64(ui, i);
     vkr_ui_label(ui, string8_lit("column.toggle"), (String8){0}, &c);
     (void)vkr_ui_pop_id(ui);
@@ -2651,17 +2656,17 @@ static void hierarchy_drag_finish(VkrEditorUi *editor, VkrEditorScenePanels *p,
   }
   char parent[48] = "null";
   if (target.u64) {
-    snprintf(parent, sizeof(parent), "\"%u:%u:%u\"",
-             (unsigned)target.parts.world, (unsigned)target.parts.index,
-             (unsigned)target.parts.generation);
+    string_format(parent, sizeof(parent), "\"%u:%u:%u\"",
+                  (unsigned)target.parts.world, (unsigned)target.parts.index,
+                  (unsigned)target.parts.generation);
   }
   char line[256];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"outliner\",\"op\":\"entity.parent\","
-           "\"args\":{\"entity\":\"%u:%u:%u\",\"parent\":%s,"
-           "\"snap\":true,\"review\":false}}",
-           (unsigned)entity.parts.world, (unsigned)entity.parts.index,
-           (unsigned)entity.parts.generation, parent);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"outliner\",\"op\":\"entity.parent\","
+                "\"args\":{\"entity\":\"%u:%u:%u\",\"parent\":%s,"
+                "\"snap\":true,\"review\":false}}",
+                (unsigned)entity.parts.world, (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation, parent);
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -2926,8 +2931,8 @@ static void physics_numbers_read(VkrEditorScenePanels *p) {
     values[21] = joint->swing_plane_limit;
   }
   for (uint32_t i = 0; i < PHYSICS_NUMBER_COUNT; ++i) {
-    snprintf(p->physics_numbers[i], sizeof(p->physics_numbers[i]), "%.7g",
-             numbers[i]);
+    string_format(p->physics_numbers[i], sizeof(p->physics_numbers[i]), "%.7g",
+                  numbers[i]);
   }
   MemCopy(p->physics_original_numbers, p->physics_numbers,
           sizeof(p->physics_numbers));
@@ -2941,14 +2946,14 @@ static bool8_t physics_numbers_parse(VkrEditorScenePanels *p,
   bool8_t attachment_rotation_changed = false_v;
   for (uint32_t i = PHYSICS_ATTACHMENT_BASE;
        i < PHYSICS_JOINT_BASE + body->joint_count * 22u; ++i) {
-    if (!strcmp(p->physics_numbers[i], p->physics_original_numbers[i])) {
+    if (string_equals(p->physics_numbers[i], p->physics_original_numbers[i])) {
       continue;
     }
-    char *end;
-    const float32_t value = strtof(p->physics_numbers[i], &end);
-    if (end == p->physics_numbers[i] || *end || !isfinite(value)) {
-      snprintf(p->error, sizeof(p->error),
-               "Attachment and joint values must be finite.");
+    const char *end = NULL;
+    const float32_t value = string_parse_f32(p->physics_numbers[i], &end);
+    if (end == p->physics_numbers[i] || *end || !vkr_is_finite_f32(value)) {
+      string_format(p->error, sizeof(p->error),
+                    "Attachment and joint values must be finite.");
       return false_v;
     }
     if (i < PHYSICS_JOINT_BASE) {
@@ -2992,8 +2997,8 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   (void)vkr_scene_edit_read(f->scene, f->selected_entity, &p->values);
   physics_numbers_read(p);
   for (uint32_t i = 0; i < 6; ++i) {
-    snprintf(p->impulse_numbers[i], sizeof(p->impulse_numbers[i]), "%u",
-             i == 1 ? 5u : 0u);
+    string_format(p->impulse_numbers[i], sizeof(p->impulse_numbers[i]), "%u",
+                  i == 1 ? 5u : 0u);
   }
   const String8 full_name = vkr_scene_get_name(f->scene, f->selected_entity);
   const uint32_t name_capacity =
@@ -3025,7 +3030,7 @@ static void inspector_read(VkrEditorScenePanels *p, const VkrSampleUiFrame *f) {
   if (!keep_tags) {
     const SceneTags *tags =
         vkr_scene_get_typed(f->scene, f->selected_entity, &vkr_scene_tags_type);
-    snprintf(p->tags, sizeof(p->tags), "%s", tags ? tags->text : "");
+    string_format(p->tags, sizeof(p->tags), "%s", tags ? tags->text : "");
     p->tags_changed = false_v;
     p->tags_apply = false_v;
   }
@@ -3044,7 +3049,7 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
   *out = p->original_values;
   out->fields = 0;
   if ((p->original_values.fields & VKR_SCENE_EDIT_NAME) &&
-      strcmp(p->values.name, p->original_values.name)) {
+      !string_equals(p->values.name, p->original_values.name)) {
     MemCopy(out->name, p->values.name, sizeof(out->name));
     out->fields |= VKR_SCENE_EDIT_NAME;
   }
@@ -3066,12 +3071,13 @@ static bool8_t inspector_parse(VkrEditorScenePanels *p,
   const char *physics_error = NULL;
   if ((out->fields & VKR_SCENE_EDIT_PHYSICS) &&
       !vkr_scene_physics_snapshot_validate(&out->physics, &physics_error)) {
-    snprintf(p->error, sizeof(p->error), "%s",
-             physics_error ? physics_error : "Invalid physics values.");
+    string_format(p->error, sizeof(p->error), "%s",
+                  physics_error ? physics_error : "Invalid physics values.");
     return false_v;
   }
   if (out->fields && !vkr_scene_edit_validate(out)) {
-    snprintf(p->error, sizeof(p->error), "Invalid name or physics values.");
+    string_format(p->error, sizeof(p->error),
+                  "Invalid name or physics values.");
     return false_v;
   }
   return true_v;
@@ -3084,7 +3090,8 @@ static void inspector_clear_focus(VkrUiSystem *ui) {
                           "frame", "undo",       "redo",    "save",  "tags"};
   for (uint32_t i = 0; i < ArrayCount(labels); ++i) {
     VkrUiId id = vkr_ui_id_stack_widget_label(
-        &ui->id_stack, string8_create((uint8_t *)labels[i], strlen(labels[i])));
+        &ui->id_stack,
+        string8_create((uint8_t *)labels[i], string_length(labels[i])));
     if (ui->focused_id == id)
       ui->focused_id = 0;
     if (ui->active_id == id)
@@ -3101,13 +3108,14 @@ static bool8_t physics_number_widget(VkrEditorScenePanels *p, VkrUiSystem *ui,
   (void)vkr_ui_push_id_u64(ui, index);
   VkrUiWidgetConfig c = widget_at(INSPECTOR_PAD_PT, *y, w * 0.53f - 11, 24);
   vkr_ui_label(ui, string8_lit("label"),
-               string8_create((uint8_t *)label, strlen(label)), &c);
+               string8_create((uint8_t *)label, string_length(label)), &c);
   c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
   c.disabled = disabled;
   vkr_editor_field_style(&c);
-  VkrUiTextEditBuffer buffer = {(uint8_t *)p->physics_numbers[index],
-                                (uint32_t)strlen(p->physics_numbers[index]),
-                                sizeof(p->physics_numbers[index])};
+  VkrUiTextEditBuffer buffer = {
+      (uint8_t *)p->physics_numbers[index],
+      (uint32_t)string_length(p->physics_numbers[index]),
+      sizeof(p->physics_numbers[index])};
   p->changed |= vkr_ui_text_field(ui, string8_lit("number"), &buffer, &c);
   bool8_t focused = ui->focused_id == vkr_ui_id_stack_widget_label(
                                           &ui->id_stack, string8_lit("number"));
@@ -3144,7 +3152,7 @@ static bool8_t physics_fit_collider(VkrEditorScenePanels *p,
   Vec3 upper = vec3_zero();
   if (!vkr_scene_entity_local_bounds(f->scene, f->selected_entity, &lower,
                                      &upper)) {
-    snprintf(p->error, sizeof(p->error), "No loaded geometry to fit.");
+    string_format(p->error, sizeof(p->error), "No loaded geometry to fit.");
     return false_v;
   }
   const Vec3 half = vec3_scale(vec3_sub(upper, lower), 0.5f);
@@ -3392,7 +3400,7 @@ static bool8_t physics_attachment_widgets(VkrEditorScenePanels *p,
       string8_lit("Search bones by name; up to 16 matching nodes are shown.");
   vkr_editor_field_style(&c);
   VkrUiTextEditBuffer filter = {(uint8_t *)p->bone_filter,
-                                (uint32_t)strlen(p->bone_filter),
+                                (uint32_t)string_length(p->bone_filter),
                                 sizeof(p->bone_filter)};
   (void)vkr_ui_text_field(ui, string8_lit("bone.filter"), &filter, &c);
   if (ui->focused_id ==
@@ -3653,15 +3661,16 @@ static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
     (void)vkr_ui_push_id_u64(ui, i);
     if (inspector_button(
             ui, string8_lit("ragdoll.action"),
-            string8_create((uint8_t *)actions[i], strlen(actions[i])), &c)) {
+            string8_create((uint8_t *)actions[i], string_length(actions[i])),
+            &c)) {
       uint32_t count = 0;
       const char *error = NULL;
       if (!vkr_scene_physics_ragdoll_plan(f->scene, f->selected_entity,
                                           (VkrSceneRagdollOperation)i, NULL, 0,
                                           &count, &error) ||
           !count || count > VKR_SCENE_PHYSICS_MAX_BODIES) {
-        snprintf(p->error, sizeof(p->error), "%s",
-                 error ? error : "No matching ragdoll bodies.");
+        string_format(p->error, sizeof(p->error), "%s",
+                      error ? error : "No matching ragdoll bodies.");
       } else {
         VkrScenePhysicsChange *changes = vkr_allocator_alloc(
             ui->frame_allocator, count * sizeof(*changes), PANEL_TAG);
@@ -3674,8 +3683,8 @@ static void physics_ragdoll_widgets(VkrEditorScenePanels *p,
               .physics_batch = changes,
               .physics_batch_count = count};
         } else {
-          snprintf(p->error, sizeof(p->error), "%s",
-                   error ? error : "Ragdoll draft allocation failed.");
+          string_format(p->error, sizeof(p->error), "%s",
+                        error ? error : "Ragdoll draft allocation failed.");
         }
       }
     }
@@ -3824,12 +3833,14 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
     (void)vkr_ui_push_id_u64(ui, i);
     c = widget_at(INSPECTOR_PAD_PT, *y, w * 0.53f - 11, 24);
     vkr_ui_label(ui, string8_lit("impulse.label"),
-                 string8_create((uint8_t *)labels[i], strlen(labels[i])), &c);
+                 string8_create((uint8_t *)labels[i], string_length(labels[i])),
+                 &c);
     c = widget_at(w * 0.53f, *y, w * 0.47f - 6, 24);
     vkr_editor_field_style(&c);
-    VkrUiTextEditBuffer buffer = {(uint8_t *)p->impulse_numbers[i],
-                                  (uint32_t)strlen(p->impulse_numbers[i]),
-                                  sizeof(p->impulse_numbers[i])};
+    VkrUiTextEditBuffer buffer = {
+        (uint8_t *)p->impulse_numbers[i],
+        (uint32_t)string_length(p->impulse_numbers[i]),
+        sizeof(p->impulse_numbers[i])};
     (void)vkr_ui_text_field(ui, string8_lit("impulse.value"), &buffer, &c);
     if (ui->focused_id == vkr_ui_id_stack_widget_label(
                               &ui->id_stack, string8_lit("impulse.value"))) {
@@ -3845,9 +3856,10 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
     float32_t values[6] = {0};
     bool8_t valid = true_v;
     for (uint32_t i = 0; i < (p->impulse_at_point ? 6u : 3u); ++i) {
-      char *end;
-      values[i] = strtof(p->impulse_numbers[i], &end);
-      valid &= end != p->impulse_numbers[i] && !*end && isfinite(values[i]);
+      const char *end = NULL;
+      values[i] = string_parse_f32(p->impulse_numbers[i], &end);
+      valid &=
+          end != p->impulse_numbers[i] && !*end && vkr_is_finite_f32(values[i]);
     }
     if (valid) {
       *f->physics_request = (VkrSamplePhysicsRequest){
@@ -3857,8 +3869,8 @@ static void physics_impulse_widgets(VkrEditorScenePanels *p,
           .apply_impulse = true_v,
           .at_point = p->impulse_at_point};
     } else {
-      snprintf(p->error, sizeof(p->error),
-               "Impulse and world point must be finite.");
+      string_format(p->error, sizeof(p->error),
+                    "Impulse and world point must be finite.");
     }
   }
   *y += 28;
@@ -3897,7 +3909,7 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
       : !enabled_colliders  ? "No enabled colliders: body suspended."
                             : "Collider children form one compound body.";
   vkr_ui_label(ui, string8_lit("status"),
-               string8_create((uint8_t *)status, strlen(status)), &c);
+               string8_create((uint8_t *)status, string_length(status)), &c);
   *y += 46;
   const bool8_t disabled = !paused || !eligible;
   if (body->present) {
@@ -3917,7 +3929,8 @@ static bool8_t physics_inspector_build(VkrEditorScenePanels *p,
     (void)vkr_ui_push_id_u64(ui, i);
     if (inspector_button(
             ui, string8_lit("add"),
-            string8_create((uint8_t *)shapes[i], strlen(shapes[i])), &c) &&
+            string8_create((uint8_t *)shapes[i], string_length(shapes[i])),
+            &c) &&
         physics_numbers_parse(p, body)) {
       if (!body->present) {
         *body = vkr_scene_physics_default();
@@ -4006,7 +4019,7 @@ static bool8_t inspector_section(VkrEditorScenePanels *p, VkrUiSystem *ui,
   (void)vkr_ui_push_id_u64(ui, 0x5ec70000u + section);
   const bool8_t expanded = vkr_editor_details_section(
       ui, string8_lit("section"), w, y, icon, icon_color,
-      string8_create((uint8_t *)title, strlen(title)), heading,
+      string8_create((uint8_t *)title, string_length(title)), heading,
       &p->section_collapsed[section]);
   (void)vkr_ui_pop_id(ui);
   return expanded;
@@ -4027,7 +4040,7 @@ static void inspector_checkbox_row(VkrEditorScenePanels *p, VkrUiSystem *ui,
   c.tooltip = tooltip;
   (void)vkr_ui_push_id_label(ui, id);
   vkr_ui_label(ui, string8_lit("label"),
-               string8_create((uint8_t *)label, strlen(label)), &c);
+               string8_create((uint8_t *)label, string_length(label)), &c);
   c = widget_at(INSPECTOR_PAD_PT + label_w, *y + 2, INSPECTOR_ROW_PT - 4,
                 INSPECTOR_ROW_PT - 4);
   c.placement.align = VKR_UI_ALIGN_START;
@@ -4080,7 +4093,7 @@ static bool8_t inspector_header(VkrEditorScenePanels *p,
                                 "select and copy its full text")
                   : string8_lit("Rename (Enter applies, Escape reverts)");
   VkrUiTextEditBuffer name = {(uint8_t *)p->values.name,
-                              (uint32_t)strlen(p->values.name),
+                              (uint32_t)string_length(p->values.name),
                               sizeof(p->values.name)};
   if (p->long_name)
     name = (VkrUiTextEditBuffer){p->long_name, p->long_name_capacity - 1u,
@@ -4427,8 +4440,8 @@ static bool8_t inspector_world_sections(VkrEditorScenePanels *p,
     const bool8_t expanded = vkr_editor_details_section(
         ui, string8_lit("world"), w, y, vkr_editor_world_type_icon(type),
         (Vec4){0.62f, 0.78f, 0.98f, 1.0f},
-        string8_create((uint8_t *)type->label, strlen(type->label)), heading,
-        &p->world_collapsed[i]);
+        string8_create((uint8_t *)type->label, string_length(type->label)),
+        heading, &p->world_collapsed[i]);
     /* Live components can be removed and hold presets; load-baked ones keep
      * their document block. */
     if (vkr_scene_world_type_live(type)) {
@@ -4535,7 +4548,8 @@ static void inspector_script_row(VkrEditorUi *editor, VkrEditorScenePanels *p,
   const char *name = script ? script->label : "None";
   picker.trailing_icon = VKR_UI_ICON_CHEVRON_DOWN;
   if (vkr_ui_button(ui, string8_lit("script.pick"),
-                    string8_create((uint8_t *)name, strlen(name)), &picker)) {
+                    string8_create((uint8_t *)name, string_length(name)),
+                    &picker)) {
     p->script_menu = true_v;
     p->script_menu_pt = (Vec2){(float32_t)ui->mouse_x / ui->content_scale,
                                (float32_t)ui->mouse_y / ui->content_scale};
@@ -4578,8 +4592,8 @@ static bool8_t inspector_tags_row(VkrEditorScenePanels *p,
   field.tooltip = string8_lit("Tags to find this object by, such as #labs "
                               "#chair; search the Outliner with #chair "
                               "(Enter applies, Escape reverts)");
-  VkrUiTextEditBuffer text = {(uint8_t *)p->tags, (uint32_t)strlen(p->tags),
-                              sizeof(p->tags)};
+  VkrUiTextEditBuffer text = {
+      (uint8_t *)p->tags, (uint32_t)string_length(p->tags), sizeof(p->tags)};
   p->tags_changed |= vkr_ui_text_field(ui, string8_lit("tags"), &text, &field);
   const bool8_t focused =
       ui->focused_id ==
@@ -4605,16 +4619,16 @@ static bool8_t inspector_tags_request(VkrEditorScenePanels *p,
                                       const VkrSampleUiFrame *f,
                                       VkrSceneEditRequest *out) {
   SceneTags tags;
-  if (!vkr_scene_tags_parse(
-          string8_create_from_cstr((const uint8_t *)p->tags, strlen(p->tags)),
-          &tags, p->error, sizeof(p->error))) {
+  if (!vkr_scene_tags_parse(string8_create_from_cstr((const uint8_t *)p->tags,
+                                                     string_length(p->tags)),
+                            &tags, p->error, sizeof(p->error))) {
     return false_v;
   }
   p->error[0] = 0;
   const SceneTags *current =
       vkr_scene_get_typed(f->scene, f->selected_entity, &vkr_scene_tags_type);
-  snprintf(p->tags, sizeof(p->tags), "%s", tags.text);
-  if (current ? strcmp(current->text, tags.text) == 0 : !tags.text[0]) {
+  string_format(p->tags, sizeof(p->tags), "%s", tags.text);
+  if (current ? string_equals(current->text, tags.text) : !tags.text[0]) {
     return false_v;
   }
   *out = (VkrSceneEditRequest){.entity = f->selected_entity};
@@ -4672,9 +4686,9 @@ static void inspector_debug_section(VkrEditorScenePanels *p,
         source->gltf_light_index};
     for (uint32_t i = 0; i < 5; ++i) {
       if (indices[i] == UINT32_MAX)
-        snprintf(index_text[i], sizeof(index_text[i]), "none");
+        string_format(index_text[i], sizeof(index_text[i]), "none");
       else
-        snprintf(index_text[i], sizeof(index_text[i]), "%u", indices[i]);
+        string_format(index_text[i], sizeof(index_text[i]), "%u", indices[i]);
     }
   }
   VkrUiWidgetConfig c =
@@ -4857,9 +4871,10 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
     c.icon = VKR_UI_ICON_WARNING_FILL;
     c.icon_size_pt = 14.0f;
     c.icon_color = theme->error;
-    vkr_ui_label(
-        ui, string8_lit("error"),
-        (String8){.str = (uint8_t *)p->error, .length = strlen(p->error)}, &c);
+    vkr_ui_label(ui, string8_lit("error"),
+                 (String8){.str = (uint8_t *)p->error,
+                           .length = string_length(p->error)},
+                 &c);
     y += 42;
   }
   vkr_editor_details_error(&p->details, ui, w, &y);
@@ -5002,7 +5017,7 @@ bool8_t vkr_editor_scene_panels_write_json(const VkrEditorScenePanels *panels,
          vkr_json_writer_name(writer, string8_lit("search")) &&
          vkr_json_writer_string(
              writer, string8_create_from_cstr((const uint8_t *)panels->search,
-                                              strlen(panels->search))) &&
+                                              string_length(panels->search))) &&
          vkr_json_writer_name(writer, string8_lit("inspector_scroll")) &&
          vkr_json_writer_f64(writer, panels->inspector_scroll) &&
          vkr_json_writer_end_object(writer);
@@ -5019,7 +5034,7 @@ bool8_t vkr_editor_scene_panels_read_json(VkrEditorScenePanels *panels,
   char search[sizeof(panels->search)];
   if (!vkr_json_get_int(&reader, "version", &version) || version != 1 ||
       !vkr_json_get_float(&reader, "inspector_scroll", &scroll) ||
-      !isfinite(scroll) || scroll < 0 ||
+      !vkr_is_finite_f32(scroll) || scroll < 0 ||
       !vkr_editor_project_json_string(json, "search", search, sizeof(search),
                                       NULL)) {
     return false_v;
@@ -5158,7 +5173,7 @@ bool8_t vkr_editor_scene_panels_read_scene_json(VkrEditorScenePanels *panels,
   static const char *const members[3] = {"expanded", "pinned", "icons_hidden"};
   if (!vkr_json_get_int(&reader, "version", &version) || version != 1 ||
       !vkr_json_get_float(&reader, "hierarchy_scroll", &scroll) ||
-      !isfinite(scroll) || scroll < 0 ||
+      !vkr_is_finite_f32(scroll) || scroll < 0 ||
       !vkr_editor_project_json_member(json, "expanded", &arrays[0], NULL) ||
       !rebuild_tree(panels, frame)) {
     return false_v;

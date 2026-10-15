@@ -3,11 +3,6 @@
 #include "editor_internal.h"
 #include "vkr_color_transfer.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #define DETAILS_ROW_PT VKR_EDITOR_DETAILS_ROW_PT
 #define DETAILS_PAD_PT VKR_EDITOR_DETAILS_PAD_PT
 
@@ -45,7 +40,8 @@ float32_t vkr_editor_details_label_width(float32_t width) {
 }
 
 static String8 details_cstr(const char *text) {
-  return text ? string8_create((uint8_t *)text, strlen(text)) : (String8){0};
+  return text ? string8_create((uint8_t *)text, string_length(text))
+              : (String8){0};
 }
 
 void vkr_editor_details_begin(VkrEditorDetails *details) {
@@ -140,7 +136,7 @@ static float64_t details_get(const VkrPropertyDesc *property, const void *value,
 
 static bool8_t details_set(const VkrPropertyDesc *property, void *value,
                            uint32_t component, float64_t display) {
-  if (!isfinite(display)) {
+  if (!vkr_is_finite_f64(display)) {
     return false_v;
   }
   float32_t floats[4] = {0};
@@ -205,29 +201,29 @@ static void details_format(const VkrPropertyDesc *property, float64_t display,
                            uint32_t capacity) {
   const char *unit = with_unit ? property->unit : NULL;
   const bool8_t tight =
-      unit && (strcmp(unit, "%") == 0 || strcmp(unit, "x") == 0);
+      unit && (string_equals(unit, "%") || string_equals(unit, "x"));
   if (details_integer(property)) {
-    snprintf(out, capacity, "%.0f%s%s", display, unit && !tight ? " " : "",
-             unit ? unit : "");
+    string_format(out, capacity, "%.0f%s%s", display, unit && !tight ? " " : "",
+                  unit ? unit : "");
   } else {
-    snprintf(out, capacity, "%.*g%s%s", with_unit ? digits : 9, display,
-             unit && !tight ? " " : "", unit ? unit : "");
+    string_format(out, capacity, "%.*g%s%s", with_unit ? digits : 9, display,
+                  unit && !tight ? " " : "", unit ? unit : "");
   }
 }
 
 /* A number optionally followed by the property's unit. */
 static bool8_t details_parse(const VkrPropertyDesc *property, const char *text,
                              float64_t *out) {
-  char *end = NULL;
-  const float64_t number = strtod(text, &end);
-  if (end == text || !isfinite(number)) {
+  const char *end = NULL;
+  const float64_t number = string_parse_f64(text, &end);
+  if (end == text || !vkr_is_finite_f64(number)) {
     return false_v;
   }
   while (*end == ' ' || *end == '\t') {
     ++end;
   }
-  if (*end && property->unit && strcmp(end, property->unit) == 0) {
-    end += strlen(end);
+  if (*end && property->unit && string_equals(end, property->unit)) {
+    end += string_length(end);
   }
   while (*end == ' ' || *end == '\t') {
     ++end;
@@ -292,7 +288,7 @@ static void details_entity_text(const VkrEditorDetails *details,
                                 const VkrEntityRef *ref, char *out,
                                 uint64_t capacity) {
   if (vkr_entity_ref_empty(ref)) {
-    snprintf(out, capacity, "None");
+    string_format(out, capacity, "None");
     return;
   }
   const VkrEntityId entity =
@@ -301,12 +297,12 @@ static void details_entity_text(const VkrEditorDetails *details,
                            ? vkr_scene_get_name(details->entity_scene, entity)
                            : (String8){0};
   if (name.length) {
-    snprintf(out, capacity, "%.*s", (int)name.length, name.str);
+    string_format(out, capacity, "%.*s", (int)name.length, name.str);
     return;
   }
   char id[37];
   vkr_entity_ref_format(ref, id);
-  snprintf(out, capacity, "%s%s", entity.u64 ? "" : "Missing ", id);
+  string_format(out, capacity, "%s%s", entity.u64 ? "" : "Missing ", id);
 }
 
 /* Typed ENTITY text: empty or "None" clears it, an id sets it, and otherwise
@@ -315,8 +311,8 @@ static bool8_t details_entity_parse(const VkrEditorDetails *details,
                                     const char *text, VkrEntityRef *out) {
   MemZero(out, sizeof(*out));
   const String8 word =
-      string8_create_from_cstr((const uint8_t *)text, strlen(text));
-  if (!word.length || strcmp(text, "None") == 0 ||
+      string8_create_from_cstr((const uint8_t *)text, string_length(text));
+  if (!word.length || string_equals(text, "None") ||
       vkr_entity_ref_parse(text, word.length, out)) {
     return true_v;
   }
@@ -342,7 +338,7 @@ static bool8_t details_entity_parse(const VkrEditorDetails *details,
 static void details_commit_text(DetailsBuild *build, uint32_t index,
                                 uint32_t component) {
   const VkrPropertyDesc *property = &build->type->properties[index];
-  if (strcmp(build->details->edit_text, build->details->edit_original) == 0) {
+  if (string_equals(build->details->edit_text, build->details->edit_original)) {
     return;
   }
   if (property->kind == VKR_PROPERTY_ENTITY) {
@@ -350,29 +346,29 @@ static void details_commit_text(DetailsBuild *build, uint32_t index,
     if (details_entity_parse(build->details, build->details->edit_text, &ref)) {
       MemCopy((uint8_t *)build->value + property->offset, &ref, sizeof(ref));
     } else {
-      snprintf(build->details->error, sizeof(build->details->error),
-               "%s needs the name of one object here, or an id.",
-               property->label);
+      string_format(build->details->error, sizeof(build->details->error),
+                    "%s needs the name of one object here, or an id.",
+                    property->label);
     }
     return;
   }
   if (property->kind == VKR_PROPERTY_STRING) {
     char *target = (char *)build->value + property->offset;
-    const uint64_t length = strlen(build->details->edit_text);
+    const uint64_t length = string_length(build->details->edit_text);
     if (length < property->capacity) {
       MemCopy(target, build->details->edit_text, length + 1u);
     } else {
-      snprintf(build->details->error, sizeof(build->details->error),
-               "%s is longer than %u bytes.", property->label,
-               property->capacity - 1u);
+      string_format(build->details->error, sizeof(build->details->error),
+                    "%s is longer than %u bytes.", property->label,
+                    property->capacity - 1u);
     }
     return;
   }
   float64_t display = 0.0;
   if (!details_parse(property, build->details->edit_text, &display) ||
       !details_set(property, build->value, component, display)) {
-    snprintf(build->details->error, sizeof(build->details->error),
-             "Enter a number for %s.", property->label);
+    string_format(build->details->error, sizeof(build->details->error),
+                  "Enter a number for %s.", property->label);
   }
 }
 
@@ -381,8 +377,8 @@ static void details_edit_text_reset(DetailsBuild *build, uint32_t index,
   const VkrPropertyDesc *property = &build->type->properties[index];
   VkrEditorDetails *details = build->details;
   if (property->kind == VKR_PROPERTY_STRING) {
-    snprintf(details->edit_text, sizeof(details->edit_text), "%s",
-             (const char *)build->value + property->offset);
+    string_format(details->edit_text, sizeof(details->edit_text), "%s",
+                  (const char *)build->value + property->offset);
   } else if (property->kind == VKR_PROPERTY_ENTITY) {
     details_entity_text(details,
                         (const VkrEntityRef *)((const uint8_t *)build->value +
@@ -428,12 +424,12 @@ static void details_text_field(DetailsBuild *build, uint32_t index,
   VkrUiTextEditBuffer buffer;
   if (details->edit_field == id) {
     buffer = (VkrUiTextEditBuffer){(uint8_t *)details->edit_text,
-                                   (uint32_t)strlen(details->edit_text),
+                                   (uint32_t)string_length(details->edit_text),
                                    sizeof(details->edit_text)};
   } else {
     if (property->kind == VKR_PROPERTY_STRING) {
-      snprintf(display, sizeof(display), "%s",
-               (const char *)build->value + property->offset);
+      string_format(display, sizeof(display), "%s",
+                    (const char *)build->value + property->offset);
     } else if (property->kind == VKR_PROPERTY_ENTITY) {
       details_entity_text(details,
                           (const VkrEntityRef *)((const uint8_t *)build->value +
@@ -443,15 +439,15 @@ static void details_text_field(DetailsBuild *build, uint32_t index,
       const float64_t shown = details_get(property, build->value, component);
       if (shown == 0.0 && property->zero_label &&
           vkr_property_components(property) == 1u) {
-        snprintf(display, sizeof(display), "%s", property->zero_label);
+        string_format(display, sizeof(display), "%s", property->zero_label);
       } else {
         /* Narrow vector cells keep four digits visible. */
         details_format(property, shown, true_v, width < 80.0f ? 4 : 5, display,
                        sizeof(display));
       }
     }
-    buffer = (VkrUiTextEditBuffer){(uint8_t *)display,
-                                   (uint32_t)strlen(display), sizeof(display)};
+    buffer = (VkrUiTextEditBuffer){
+        (uint8_t *)display, (uint32_t)string_length(display), sizeof(display)};
   }
   VkrUiWidgetConfig config =
       vkr_editor_details_widget(x, y + 1.0f, width, DETAILS_ROW_PT - 4.0f);
@@ -516,11 +512,11 @@ static bool8_t details_scalar_row(DetailsBuild *build, uint32_t index,
   const float32_t available = Max(60.0f, w - left - DETAILS_PAD_PT);
   float64_t low = 0.0;
   float64_t high = 0.0;
-  const bool8_t slider = !read_only &&
-                         details_bounds(property, component, &low, &high) &&
-                         (property->kind == VKR_PROPERTY_DIRECTION ||
-                          (property->flags & VKR_PROPERTY_FLAG_SLIDER)) &&
-                         isfinite(low) && isfinite(high) && low < high;
+  const bool8_t slider =
+      !read_only && details_bounds(property, component, &low, &high) &&
+      (property->kind == VKR_PROPERTY_DIRECTION ||
+       (property->flags & VKR_PROPERTY_FLAG_SLIDER)) &&
+      vkr_is_finite_f64(low) && vkr_is_finite_f64(high) && low < high;
   const float32_t field_w = slider ? Min(78.0f, available * 0.42f) : available;
   (void)vkr_ui_push_id_u64(ui, 0x5ca10000u + component);
   /* The label itself scrubs, as in UE5 and Unity. */
@@ -538,7 +534,7 @@ static bool8_t details_scalar_row(DetailsBuild *build, uint32_t index,
                           (float32_t)low, (float32_t)high, &bar)) {
       float64_t next = slider_value;
       if (details_integer(property)) {
-        next = round(next);
+        next = vkr_round_f64(next);
       }
       (void)details_set(property, build->value, component, next);
     }
@@ -823,7 +819,7 @@ static void details_text_area(DetailsBuild *build, uint32_t index,
   if (focused && details->edit_field == id &&
       input_key_just_pressed(build->input, KEY_ESCAPE)) {
     MemCopy(target, details->edit_original,
-            strlen(details->edit_original) + 1u);
+            string_length(details->edit_original) + 1u);
     (void)details_gesture(details, id);
     details->edit_field = 0;
     ui->focused_id = 0;
@@ -838,12 +834,12 @@ static void details_text_area(DetailsBuild *build, uint32_t index,
   VkrUiTextEditBuffer buffer;
   if (details->edit_field == id) {
     buffer = (VkrUiTextEditBuffer){(uint8_t *)details->edit_text,
-                                   (uint32_t)strlen(details->edit_text),
+                                   (uint32_t)string_length(details->edit_text),
                                    sizeof(details->edit_text)};
   } else {
-    snprintf(display, sizeof(display), "%s", target);
-    buffer = (VkrUiTextEditBuffer){(uint8_t *)display,
-                                   (uint32_t)strlen(display), sizeof(display)};
+    string_format(display, sizeof(display), "%s", target);
+    buffer = (VkrUiTextEditBuffer){
+        (uint8_t *)display, (uint32_t)string_length(display), sizeof(display)};
   }
   uint32_t lines = 1u;
   for (uint32_t i = 0; i < buffer.length; ++i) {
@@ -872,9 +868,9 @@ static void details_text_area(DetailsBuild *build, uint32_t index,
       if (buffer.length < property->capacity) {
         MemCopy(target, details->edit_text, buffer.length + 1u);
       } else {
-        snprintf(details->error, sizeof(details->error),
-                 "%s is longer than %u bytes.", property->label,
-                 property->capacity - 1u);
+        string_format(details->error, sizeof(details->error),
+                      "%s is longer than %u bytes.", property->label,
+                      property->capacity - 1u);
       }
     }
   }
@@ -1004,7 +1000,7 @@ vkr_editor_details_type(VkrEditorDetails *details, VkrUiSystem *ui,
     char error[sizeof(details->error)] = {0};
     if (!vkr_type_validate(type, value, error, sizeof(error))) {
       MemCopy(value, before, type->size);
-      snprintf(details->error, sizeof(details->error), "%s", error);
+      string_format(details->error, sizeof(details->error), "%s", error);
     } else {
       details->error[0] = 0;
       result.changed = true_v;

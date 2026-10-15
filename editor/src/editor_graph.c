@@ -1,9 +1,6 @@
 #include "editor_graph.h"
 #include "editor_internal.h"
 
-#include <math.h>
-#include <string.h>
-
 /* Card geometry in canvas points; the view's zoom scales all of it. */
 #define GRAPH_CARD_WIDTH 180.0f
 #define GRAPH_HEADER 26.0f
@@ -343,7 +340,7 @@ static bool8_t graph_text_matches(const char *text, const char *filter,
   if (!text) {
     return false_v;
   }
-  const size_t length = strlen(text);
+  const size_t length = string_length(text);
   for (size_t start = 0; start + filter_length <= length; ++start) {
     uint32_t i = 0;
     while (i < filter_length) {
@@ -367,7 +364,7 @@ static bool8_t graph_same_category(const VkrEditorGraphChoice *a,
                                    const VkrEditorGraphChoice *b) {
   const char *left = a->category ? a->category : "";
   const char *right = b->category ? b->category : "";
-  return strcmp(left, right) == 0;
+  return string_equals(left, right);
 }
 
 /* Fills `entries` with the choices matching the popup's search text, grouped
@@ -538,8 +535,8 @@ static void graph_drag_start(VkrEditorGraphView *view, GraphDrag drag,
 static VkrUiRect graph_box_rect(const GraphFrame *g) {
   const Vec2 a = g->view->drag_press;
   const Vec2 b = g->mouse;
-  return (VkrUiRect){Min(a.x, b.x), Min(a.y, b.y), fabsf(b.x - a.x),
-                     fabsf(b.y - a.y)};
+  return (VkrUiRect){Min(a.x, b.x), Min(a.y, b.y), vkr_abs_f32(b.x - a.x),
+                     vkr_abs_f32(b.y - a.y)};
 }
 
 /* A press on a card: Shift or Primary toggles it, a plain press selects it
@@ -819,7 +816,8 @@ static void graph_drag_update(GraphFrame *g) {
   const Vec2 travel = {g->mouse.x - view->drag_press.x,
                        g->mouse.y - view->drag_press.y};
   if (!view->drag_moved &&
-      sqrtf(travel.x * travel.x + travel.y * travel.y) > GRAPH_DRAG_THRESHOLD) {
+      vkr_sqrt_f32(travel.x * travel.x + travel.y * travel.y) >
+          GRAPH_DRAG_THRESHOLD) {
     view->drag_moved = true_v;
   }
   if (view->drag_moved) {
@@ -845,7 +843,7 @@ static void graph_wheel(GraphFrame *g) {
   }
   ui->capture.mouse = true_v;
   const float32_t next =
-      vkr_clamp_f32(view->zoom * powf(1.1f, (float32_t)ui->mouse_wheel),
+      vkr_clamp_f32(view->zoom * vkr_pow_f32(1.1f, (float32_t)ui->mouse_wheel),
                     VKR_EDITOR_GRAPH_ZOOM_MIN, VKR_EDITOR_GRAPH_ZOOM_MAX);
   if (next == view->zoom) {
     return;
@@ -1063,7 +1061,8 @@ static void graph_text(VkrUiSystem *ui, String8 id, const char *text,
   config.placement.margin_pt = (VkrUiEdges){rect.y, 0, 0, rect.x};
   config.style.min_size_pt = (Vec2){0, rect.height};
   config.style.max_size_pt = (Vec2){rect.width, rect.height};
-  vkr_ui_label(ui, id, string8_create((uint8_t *)text, strlen(text)), &config);
+  vkr_ui_label(ui, id, string8_create((uint8_t *)text, string_length(text)),
+               &config);
 }
 
 /* One line of text ending `right` points before the container's right content
@@ -1087,7 +1086,8 @@ static void graph_text_end(VkrUiSystem *ui, String8 id, const char *text,
     config.style.background_color = background;
     config.style.corner_radius_pt = (Vec4){pad, pad, pad, pad};
   }
-  vkr_ui_label(ui, id, string8_create((uint8_t *)text, strlen(text)), &config);
+  vkr_ui_label(ui, id, string8_create((uint8_t *)text, string_length(text)),
+               &config);
 }
 
 /* A cubic wire between two container-local points, bowed horizontally, or
@@ -1095,7 +1095,7 @@ static void graph_text_end(VkrUiSystem *ui, String8 id, const char *text,
 static void graph_wire(GraphFrame *g, String8 id, Vec2 from, Vec2 to,
                        Vec4 color) {
   const float32_t zoom = g->view->zoom;
-  const float32_t bow = Max(fabsf(to.x - from.x) * 0.5f, 30.0f * zoom);
+  const float32_t bow = Max(vkr_abs_f32(to.x - from.x) * 0.5f, 30.0f * zoom);
   const Vec2 points[4] = {from, {from.x + bow, from.y}, {to.x - bow, to.y}, to};
   const float32_t left = Min(from.x, to.x - bow);
   const float32_t right = Max(to.x, from.x + bow);
@@ -1130,7 +1130,7 @@ static void graph_draw_grid(GraphFrame *g) {
   }
   const Vec4 color = vkr_ui_color_alpha(vkr_ui_theme()->text, 0.045f);
   uint32_t line = 0;
-  for (float32_t x = ceilf(view->pan.x / step) * step;
+  for (float32_t x = vkr_ceil_f32(view->pan.x / step) * step;
        line < GRAPH_GRID_LINE_MAX; x += step) {
     const float32_t local = (x - view->pan.x) * view->zoom;
     if (local >= g->bounds.width) {
@@ -1142,7 +1142,7 @@ static void graph_draw_grid(GraphFrame *g) {
               (Vec4){0});
     (void)vkr_ui_pop_id(g->ui);
   }
-  for (float32_t y = ceilf(view->pan.y / step) * step;
+  for (float32_t y = vkr_ceil_f32(view->pan.y / step) * step;
        line < GRAPH_GRID_LINE_MAX; y += step) {
     const float32_t local = (y - view->pan.y) * view->zoom;
     if (local >= g->bounds.height) {
@@ -1537,10 +1537,10 @@ static void graph_popup_rows(GraphFrame *g, uint32_t *picked) {
       heading.placement.row = 1u + row;
       heading.placement.align = VKR_UI_ALIGN_END;
       heading.placement.margin_pt = (VkrUiEdges){0, 0, 3.0f, 8.0f};
-      vkr_ui_label(
-          ui, string8_lit("heading"),
-          string8_create((uint8_t *)choice->category, strlen(choice->category)),
-          &heading);
+      vkr_ui_label(ui, string8_lit("heading"),
+                   string8_create((uint8_t *)choice->category,
+                                  string_length(choice->category)),
+                   &heading);
       (void)vkr_ui_pop_id(ui);
       continue;
     }
@@ -1571,7 +1571,7 @@ static void graph_popup_rows(GraphFrame *g, uint32_t *picked) {
     label.placement.margin_pt.right = 8.0f;
     const char *text = choice->label ? choice->label : "";
     vkr_ui_label(ui, string8_lit("label"),
-                 string8_create((uint8_t *)text, strlen(text)), &label);
+                 string8_create((uint8_t *)text, string_length(text)), &label);
     (void)vkr_ui_pop_id(ui);
   }
   if (moved) {
@@ -1685,12 +1685,12 @@ uint32_t vkr_editor_graph_build(
     return 0;
   }
   VkrUiSystem *ui = frame->ui;
-  if (!isfinite(view->zoom) || view->zoom <= 0.0f) {
+  if (!vkr_is_finite_f32(view->zoom) || view->zoom <= 0.0f) {
     view->zoom = 1.0f;
   }
   view->zoom = vkr_clamp_f32(view->zoom, VKR_EDITOR_GRAPH_ZOOM_MIN,
                              VKR_EDITOR_GRAPH_ZOOM_MAX);
-  if (!isfinite(view->pan.x) || !isfinite(view->pan.y)) {
+  if (!vkr_is_finite_f32(view->pan.x) || !vkr_is_finite_f32(view->pan.y)) {
     view->pan = (Vec2){0};
   }
   GraphFrame g = {

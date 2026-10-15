@@ -2,8 +2,6 @@
 #include "editor_internal.h"
 #include "renderer/systems/vkr_scene_types.h"
 
-#include <math.h>
-
 #define EDITOR_LABEL_SIZE_PT 26.0f
 #define EDITOR_LABEL_GAP_PT 4.0f
 
@@ -13,9 +11,9 @@ static Vec4 editor_label_tint(Vec3 linear) {
   const float32_t peak = Max(linear.x, Max(linear.y, linear.z));
   if (!(peak > 0.0f))
     return (Vec4){1.0f, 1.0f, 1.0f, 1.0f};
-  Vec4 tint = {powf(linear.x / peak, 1.0f / 2.2f),
-               powf(linear.y / peak, 1.0f / 2.2f),
-               powf(linear.z / peak, 1.0f / 2.2f), 1.0f};
+  Vec4 tint = {vkr_pow_f32(linear.x / peak, 1.0f / 2.2f),
+               vkr_pow_f32(linear.y / peak, 1.0f / 2.2f),
+               vkr_pow_f32(linear.z / peak, 1.0f / 2.2f), 1.0f};
   return vkr_ui_color_mix(tint, (Vec4){1.0f, 1.0f, 1.0f, 1.0f}, 0.25f);
 }
 

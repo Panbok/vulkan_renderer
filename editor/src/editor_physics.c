@@ -10,15 +10,12 @@
 #include "editor_session.h"
 #include "editor_terrain.h"
 #include "editor_ui.h"
+#include "memory/vkr_heap.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_population.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define PHYSICS_LINE_MAX 512u
 #define PHYSICS_RESERVED_NODES 256u
@@ -139,8 +136,8 @@ static void physics_shape(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       for (uint32_t endpoint = 0; endpoint < 2; ++endpoint) {
         const uint32_t sample = (segment + endpoint) % 24u;
         const float32_t angle = (float32_t)sample * (6.28318530718f / 24.0f);
-        const float32_t x = c->radius * cosf(angle);
-        const float32_t y = c->radius * sinf(angle);
+        const float32_t x = c->radius * vkr_cos_f32(angle);
+        const float32_t y = c->radius * vkr_sin_f32(angle);
         Vec3 p = circle == 0   ? (Vec3){x, y, 0}
                  : circle == 1 ? (Vec3){0, y, x}
                                : (Vec3){x, 0, y};
@@ -167,7 +164,8 @@ static void physics_capsule(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                             float32_t half, Vec4 color, uint32_t capacity) {
   for (uint32_t side = 0; side < 4; ++side) {
     const float32_t angle = (float32_t)side * 1.57079632679f;
-    const Vec3 edge = {radius * cosf(angle), 0.0f, radius * sinf(angle)};
+    const Vec3 edge = {radius * vkr_cos_f32(angle), 0.0f,
+                       radius * vkr_sin_f32(angle)};
     physics_line(editor, frame, entity,
                  vec3_add(center, vec3_new(edge.x, -half, edge.z)),
                  vec3_add(center, vec3_new(edge.x, half, edge.z)), color,
@@ -179,8 +177,8 @@ static void physics_capsule(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       for (uint32_t endpoint = 0; endpoint < 2; ++endpoint) {
         const uint32_t sample = (segment + endpoint) % 24u;
         const float32_t angle = (float32_t)sample * (6.28318530718f / 24.0f);
-        const float32_t x = radius * cosf(angle);
-        const float32_t y = radius * sinf(angle);
+        const float32_t x = radius * vkr_cos_f32(angle);
+        const float32_t y = radius * vkr_sin_f32(angle);
         Vec3 p = circle == 0   ? (Vec3){x, y, 0}
                  : circle == 1 ? (Vec3){0, y, x}
                                : (Vec3){x, 0, y};
@@ -267,7 +265,7 @@ static const PhysicsTypedList *physics_typed_list(PhysicsTypedList *list,
       vkr_scene_find_typed(scene, type, list->entities, list->capacity);
   if (count > list->capacity) {
     VkrEntityId *grown =
-        realloc(list->entities, (size_t)count * sizeof(*grown));
+        vkr_heap_realloc(list->entities, (size_t)count * sizeof(*grown));
     if (grown) {
       list->entities = grown;
       list->capacity = count;
@@ -284,13 +282,13 @@ static const PhysicsTypedList *physics_typed_list(PhysicsTypedList *list,
 void vkr_editor_physics_destroy(VkrEditorUi *editor) {
   VkrEditorPhysicsCache *cache = editor->physics_cache;
   if (cache) {
-    free(cache->splines.entities);
-    free(cache->connections.entities);
+    vkr_heap_free(cache->splines.entities);
+    vkr_heap_free(cache->connections.entities);
     for (uint32_t c = 0; c < ArrayCount(cache->starts); ++c) {
-      free(cache->starts[c].entities);
+      vkr_heap_free(cache->starts[c].entities);
     }
   }
-  free(cache);
+  vkr_heap_free(cache);
   editor->physics_cache = NULL;
 }
 
@@ -534,7 +532,7 @@ static uint32_t physics_mover_lines(VkrEditorUi *editor,
   if (!scene || !mover.u64 ||
       !vkr_io_mover_open_motion(scene, mover, &motion) ||
       (vec3_length(motion.offset) <= 0.0f &&
-       fabsf(motion.rotation.w) >= 0.99999f)) {
+       vkr_abs_f32(motion.rotation.w) >= 0.99999f)) {
     return 0u;
   }
   if (!draw) {
@@ -698,7 +696,7 @@ static void physics_brush_hulls(VkrEditorUi *editor,
       drawn++;
       physics_pieces(editor, frame, pieces, piece_count, vec3_zero(),
                      vkr_quat_identity(), color, capacity);
-      free(pieces);
+      vkr_heap_free(pieces);
       continue;
     }
     const SceneBrushSettings *brush =
@@ -849,11 +847,12 @@ static void physics_ring(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   for (uint32_t segment = 0; segment < 24u; ++segment) {
     const float32_t a = (float32_t)segment * (6.28318530718f / 24.0f);
     const float32_t b = (float32_t)(segment + 1u) * (6.28318530718f / 24.0f);
-    physics_line(
-        editor, frame, VKR_ENTITY_ID_INVALID,
-        vec3_add(center, vec3_new(radius * cosf(a), 0.0f, radius * sinf(a))),
-        vec3_add(center, vec3_new(radius * cosf(b), 0.0f, radius * sinf(b))),
-        color, capacity);
+    physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
+                 vec3_add(center, vec3_new(radius * vkr_cos_f32(a), 0.0f,
+                                           radius * vkr_sin_f32(a))),
+                 vec3_add(center, vec3_new(radius * vkr_cos_f32(b), 0.0f,
+                                           radius * vkr_sin_f32(b))),
+                 color, capacity);
   }
 }
 
@@ -866,20 +865,21 @@ static void physics_surface_ring(VkrEditorUi *editor,
                                  uint32_t capacity) {
   const Vec3 up = vec3_length(normal) > 1.0e-4f ? vec3_normalize(normal)
                                                 : vec3_new(0.0f, 1.0f, 0.0f);
-  const Vec3 helper = fabsf(up.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
-                                         : vec3_new(1.0f, 0.0f, 0.0f);
+  const Vec3 helper = vkr_abs_f32(up.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f)
+                                               : vec3_new(1.0f, 0.0f, 0.0f);
   const Vec3 u = vec3_normalize(vec3_cross(helper, up));
   const Vec3 v = vec3_cross(up, u);
   const Vec3 lifted = vec3_add(center, vec3_scale(up, 0.02f));
   for (uint32_t segment = 0; segment < 32u; ++segment) {
     const float32_t a = (float32_t)segment * (6.28318530718f / 32.0f);
     const float32_t b = (float32_t)(segment + 1u) * (6.28318530718f / 32.0f);
-    physics_line(editor, frame, VKR_ENTITY_ID_INVALID,
-                 vec3_add(lifted, vec3_add(vec3_scale(u, radius * cosf(a)),
-                                           vec3_scale(v, radius * sinf(a)))),
-                 vec3_add(lifted, vec3_add(vec3_scale(u, radius * cosf(b)),
-                                           vec3_scale(v, radius * sinf(b)))),
-                 color, capacity);
+    physics_line(
+        editor, frame, VKR_ENTITY_ID_INVALID,
+        vec3_add(lifted, vec3_add(vec3_scale(u, radius * vkr_cos_f32(a)),
+                                  vec3_scale(v, radius * vkr_sin_f32(a)))),
+        vec3_add(lifted, vec3_add(vec3_scale(u, radius * vkr_cos_f32(b)),
+                                  vec3_scale(v, radius * vkr_sin_f32(b)))),
+        color, capacity);
   }
   physics_line(editor, frame, VKR_ENTITY_ID_INVALID, lifted,
                vec3_add(lifted, vec3_scale(up, Min(radius * 0.4f, 0.5f))),
@@ -1007,7 +1007,7 @@ static void physics_measure_lines(VkrEditorUi *editor,
   physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, b, line, capacity);
   const Vec3 corner = vec3_new(b.x, a.y, b.z);
   if (vec3_length(vec3_sub(corner, a)) > 1.0e-3f &&
-      fabsf(b.y - a.y) > 1.0e-3f) {
+      vkr_abs_f32(b.y - a.y) > 1.0e-3f) {
     physics_line(editor, frame, VKR_ENTITY_ID_INVALID, a, corner, legs,
                  capacity);
     physics_line(editor, frame, VKR_ENTITY_ID_INVALID, corner, b, legs,
@@ -1017,20 +1017,21 @@ static void physics_measure_lines(VkrEditorUi *editor,
 
 /* `value` with at most three decimals and no trailing zeros. */
 static void physics_metres(char *out, uint64_t size, float32_t value) {
-  snprintf(out, size, "%.3f", (double)value);
-  char *dot = strchr(out, '.');
-  if (!dot) {
+  string_format(out, size, "%.3f", (double)value);
+  const char *found = string_find_char(out, '.');
+  if (!found) {
     return;
   }
-  char *end = out + strlen(out);
+  char *dot = out + (found - out);
+  char *end = out + string_length(out);
   while (end > dot + 1 && end[-1] == '0') {
     *--end = '\0';
   }
   if (end == dot + 1) {
     *dot = '\0';
   }
-  if (strcmp(out, "-0") == 0) {
-    snprintf(out, size, "0");
+  if (string_equals(out, "-0")) {
+    string_format(out, size, "0");
   }
 }
 
@@ -1046,7 +1047,8 @@ static void physics_measure_label(VkrEditorUi *editor,
   const float32_t font_size = 12.0f;
   const Vec2 measured =
       vkr_editor_text_size(ui, VKR_FONT_HANDLE_INVALID, text, font_size);
-  const Vec2 size = {ceilf(measured.x) + 14.0f, ceilf(measured.y) + 6.0f};
+  const Vec2 size = {vkr_ceil_f32(measured.x) + 14.0f,
+                     vkr_ceil_f32(measured.y) + 6.0f};
   VkrUiWidgetConfig label =
       physics_widget(100000.0f, 100000.0f, size.x, size.y);
   label.style.padding_pt = (VkrUiEdges){3, 7, 3, 7};
@@ -1056,9 +1058,10 @@ static void physics_measure_label(VkrEditorUi *editor,
   label.style.corner_radius_pt = (Vec4){3, 3, 3, 3};
   const uint32_t index = editor->measure_label_count++;
   (void)vkr_ui_push_id_u64(ui, index);
-  vkr_ui_label(ui, string8_lit("size"),
-               string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-               &label);
+  vkr_ui_label(
+      ui, string8_lit("size"),
+      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
+      &label);
   editor->measure_labels[index] = (VkrEditorMeasureLabel){
       .widget =
           vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("size")),
@@ -1079,8 +1082,8 @@ static void physics_box_label(VkrEditorUi *editor,
   physics_metres(depth, sizeof(depth), hi.z - lo.z);
   physics_metres(height, sizeof(height), hi.y - lo.y);
   char text[96];
-  snprintf(text, sizeof(text), "%s \xc3\x97 %s \xc3\x97 %s m", width, depth,
-           height);
+  string_format(text, sizeof(text), "%s \xc3\x97 %s \xc3\x97 %s m", width,
+                depth, height);
   physics_measure_label(
       editor, frame, vec3_new((lo.x + hi.x) * 0.5f, hi.y, (lo.z + hi.z) * 0.5f),
       text);
@@ -1118,8 +1121,10 @@ static bool8_t physics_solid_box(const VkrSampleUiFrame *frame,
   const uint32_t count = pieces ? vkr_blockout_layout(shape, pieces, capacity,
                                                       error, sizeof(error))
                                 : 0u;
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t i = 0; i < count; ++i) {
     for (uint32_t p = 0; p < pieces[i].point_count; ++p) {
       const Vec3 point = mat4_mul_vec3(transform->world, pieces[i].points[p]);
@@ -1199,15 +1204,16 @@ static void physics_measure_labels(VkrEditorUi *editor,
   }
   const Vec3 a = editor->measure_points[0];
   const Vec3 delta = vec3_sub(b, a);
-  const float32_t run = sqrtf(delta.x * delta.x + delta.z * delta.z);
-  const float32_t slope = run > 1.0e-6f || fabsf(delta.y) > 1.0e-6f
-                              ? atan2f(delta.y, run) * (180.0f / 3.14159265f)
-                              : 0.0f;
+  const float32_t run = vkr_sqrt_f32(delta.x * delta.x + delta.z * delta.z);
+  const float32_t slope =
+      run > 1.0e-6f || vkr_abs_f32(delta.y) > 1.0e-6f
+          ? vkr_atan2_f32(delta.y, run) * (180.0f / 3.14159265f)
+          : 0.0f;
   char text[96];
-  snprintf(text, sizeof(text),
-           "%.2f m \xc2\xb7 run %.2f \xc2\xb7 rise %.2f \xc2\xb7 %.1f\xc2\xb0",
-           (double)vec3_length(delta), (double)run, (double)delta.y,
-           (double)slope);
+  string_format(
+      text, sizeof(text),
+      "%.2f m \xc2\xb7 run %.2f \xc2\xb7 rise %.2f \xc2\xb7 %.1f\xc2\xb0",
+      (double)vec3_length(delta), (double)run, (double)delta.y, (double)slope);
   physics_measure_label(editor, frame, vec3_scale(vec3_add(a, b), 0.5f), text);
 }
 
@@ -1481,7 +1487,8 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
      decal and scatter tools' previews over its subject. */
   const bool8_t model = editor->view_shown == VKR_EDITOR_VIEW_MODEL;
   if (!editor->physics_cache) {
-    editor->physics_cache = calloc(1u, sizeof(*editor->physics_cache));
+    editor->physics_cache =
+        vkr_heap_alloc_zeroed(1u, sizeof(*editor->physics_cache));
     if (!editor->physics_cache) {
       editor->physics_lines_truncated = true_v;
       return;
@@ -1679,7 +1686,7 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
     label.icon_color = theme->error;
     vkr_ui_label(
         ui, string8_lit("status"),
-        string8_create_from_cstr((const uint8_t *)error, strlen(error)),
+        string8_create_from_cstr((const uint8_t *)error, string_length(error)),
         &label);
   }
   (void)vkr_ui_panel_end(ui);
@@ -1754,7 +1761,8 @@ void vkr_editor_physics_project(VkrEditorUi *editor,
       for (uint32_t plane = 0; plane < 6; ++plane) {
         const float32_t da = physics_clip_distance(a, plane);
         const float32_t db = physics_clip_distance(b, plane);
-        if (!isfinite(da) || !isfinite(db) || (da < 0 && db < 0)) {
+        if (!vkr_is_finite_f32(da) || !vkr_is_finite_f32(db) ||
+            (da < 0 && db < 0)) {
           visible = false_v;
           break;
         }

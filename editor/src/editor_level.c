@@ -4,7 +4,9 @@
 #include "editor_brush_grid.h"
 #include "editor_internal.h"
 
+#include "containers/vkr_sort.h"
 #include "level/vkr_brush.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_lighting_system.h"
@@ -13,10 +15,6 @@
 #include "renderer/systems/vkr_scene_rooms.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
-
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Floors one grid cell holds at most. */
 #define LEVEL_LAYER_MAX 4u
@@ -104,7 +102,7 @@ const char *vkr_editor_level_issue_name(VkrEditorLevelIssueKind kind) {
 VkrEditorLevelIssueKind vkr_editor_level_issue_kind(String8 name) {
   for (uint32_t kind = 0; kind < VKR_EDITOR_LEVEL_ISSUE_COUNT; ++kind) {
     const char *known = vkr_editor_level_issue_name(kind);
-    if (name.length == strlen(known) &&
+    if (name.length == string_length(known) &&
         MemCompare(name.str, known, name.length) == 0) {
       return kind;
     }
@@ -208,7 +206,8 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
         vec3_new(hit.position[0], hit.position[1], hit.position[2]);
     bool8_t known = false_v;
     for (uint32_t i = 0; i < *count && !known; ++i) {
-      known = fabsf(level_node(grid, x, z, i)->position.y - point.y) < 0.05f;
+      known =
+          vkr_abs_f32(level_node(grid, x, z, i)->position.y - point.y) < 0.05f;
     }
     if (known || point.y < grid->min.y) {
       continue;
@@ -220,7 +219,7 @@ static void level_sample_cell(LevelGrid *grid, uint32_t x, uint32_t z) {
                                               : hit.entity_id},
                         .normal_y = hit.normal[1],
                         .parent = -1};
-    if (hit.normal[1] < cosf(capsule->max_slope_radians)) {
+    if (hit.normal[1] < vkr_cos_f32(capsule->max_slope_radians)) {
       node->state = LEVEL_STEEP;
       continue;
     }
@@ -316,9 +315,9 @@ static float32_t level_grid_size(Vec3 min, Vec3 max,
   const float32_t depth = Max(max.z - min.z, 0.01f);
   const float32_t edge =
       Max(Max(capsule->radius, cell),
-          sqrtf(width * depth / (float32_t)VKR_EDITOR_LEVEL_CELL_MAX));
-  *out_nx = (uint32_t)Max(1.0f, ceilf(width / edge));
-  *out_nz = (uint32_t)Max(1.0f, ceilf(depth / edge));
+          vkr_sqrt_f32(width * depth / (float32_t)VKR_EDITOR_LEVEL_CELL_MAX));
+  *out_nx = (uint32_t)Max(1.0f, vkr_ceil_f32(width / edge));
+  *out_nz = (uint32_t)Max(1.0f, vkr_ceil_f32(depth / edge));
   return edge;
 }
 
@@ -330,19 +329,20 @@ static bool8_t level_grid_alloc(LevelGrid *grid, Vec3 min, Vec3 max,
   *grid = (LevelGrid){.capsule = capsule, .min = min, .max = max};
   grid->cell = level_grid_size(min, max, capsule, cell, &grid->nx, &grid->nz);
   const size_t cells = (size_t)grid->nx * grid->nz;
-  grid->nodes = calloc(cells * LEVEL_LAYER_MAX, sizeof(*grid->nodes));
-  grid->layers = calloc(cells, sizeof(*grid->layers));
+  grid->nodes =
+      vkr_heap_alloc_zeroed(cells * LEVEL_LAYER_MAX, sizeof(*grid->nodes));
+  grid->layers = vkr_heap_alloc_zeroed(cells, sizeof(*grid->layers));
   if (!grid->nodes || !grid->layers) {
-    free(grid->nodes);
-    free(grid->layers);
+    vkr_heap_free(grid->nodes);
+    vkr_heap_free(grid->layers);
     return false_v;
   }
   return true_v;
 }
 
 static void level_grid_free(LevelGrid *grid) {
-  free(grid->nodes);
-  free(grid->layers);
+  vkr_heap_free(grid->nodes);
+  vkr_heap_free(grid->layers);
 }
 
 /* A check's grid and how far its sampling came. The job owns the grid's
@@ -355,13 +355,13 @@ struct VkrEditorLevelJob {
 
 VkrEditorLevelJob *vkr_editor_level_job_begin(
     Vec3 min, Vec3 max, const VkrEditorLevelCapsule *capsule, float32_t cell) {
-  VkrEditorLevelJob *job = calloc(1u, sizeof(*job));
+  VkrEditorLevelJob *job = vkr_heap_alloc_zeroed(1u, sizeof(*job));
   if (!job) {
     return NULL;
   }
   job->capsule = *capsule;
   if (!level_grid_alloc(&job->grid, min, max, &job->capsule, cell)) {
-    free(job);
+    vkr_heap_free(job);
     return NULL;
   }
   return job;
@@ -397,7 +397,7 @@ void vkr_editor_level_job_end(VkrEditorLevelJob *job) {
     return;
   }
   level_grid_free(&job->grid);
-  free(job);
+  vkr_heap_free(job);
 }
 
 /* Whether a capsule stands or crouches on `node`. */
@@ -518,17 +518,17 @@ static int32_t level_ladder_end(const LevelGrid *grid, Vec3 lo, Vec3 hi,
                                 float32_t margin, float32_t y_min,
                                 float32_t y_max, bool8_t highest) {
   const int32_t x0 =
-      (int32_t)floorf((lo.x - margin - grid->min.x) / grid->cell);
+      (int32_t)vkr_floor_f32((lo.x - margin - grid->min.x) / grid->cell);
   const int32_t x1 =
-      (int32_t)floorf((hi.x + margin - grid->min.x) / grid->cell);
+      (int32_t)vkr_floor_f32((hi.x + margin - grid->min.x) / grid->cell);
   const int32_t z0 =
-      (int32_t)floorf((lo.z - margin - grid->min.z) / grid->cell);
+      (int32_t)vkr_floor_f32((lo.z - margin - grid->min.z) / grid->cell);
   const int32_t z1 =
-      (int32_t)floorf((hi.z + margin - grid->min.z) / grid->cell);
+      (int32_t)vkr_floor_f32((hi.z + margin - grid->min.z) / grid->cell);
   const Vec2 center = {(lo.x + hi.x) * 0.5f, (lo.z + hi.z) * 0.5f};
   int32_t best = -1;
   float32_t best_y = 0.0f;
-  float32_t best_distance = INFINITY;
+  float32_t best_distance = VKR_FLOAT_INFINITY;
   for (int32_t z = Max(z0, 0); z <= Min(z1, (int32_t)grid->nz - 1); ++z) {
     for (int32_t x = Max(x0, 0); x <= Min(x1, (int32_t)grid->nx - 1); ++x) {
       const uint8_t layers = grid->layers[(size_t)z * grid->nx + x];
@@ -539,8 +539,8 @@ static int32_t level_ladder_end(const LevelGrid *grid, Vec3 lo, Vec3 hi,
             node->position.y > y_max) {
           continue;
         }
-        const float32_t distance =
-            hypotf(node->position.x - center.x, node->position.z - center.y);
+        const float32_t distance = vkr_hypot_f32(node->position.x - center.x,
+                                                 node->position.z - center.y);
         const bool8_t higher = highest && node->position.y > best_y + 0.05f;
         const bool8_t level = !highest || node->position.y > best_y - 0.05f;
         if (best < 0 || higher || (level && distance < best_distance)) {
@@ -567,10 +567,11 @@ static void level_ladders(LevelGrid *grid) {
                                                      ArrayCount(ladders))
                               : 0u;
   const uint32_t count = Min(found, (uint32_t)ArrayCount(ladders));
-  VkrBrushGeometry *scratch = count ? malloc(sizeof(*scratch)) : NULL;
-  grid->links = scratch ? malloc(2u * count * sizeof(*grid->links)) : NULL;
+  VkrBrushGeometry *scratch = count ? vkr_heap_alloc(sizeof(*scratch)) : NULL;
+  grid->links =
+      scratch ? vkr_heap_alloc(2u * count * sizeof(*grid->links)) : NULL;
   if (!grid->links) {
-    free(scratch);
+    vkr_heap_free(scratch);
     return;
   }
   const float32_t margin = grid->capsule->radius + 1.0f;
@@ -593,15 +594,17 @@ static void level_ladders(LevelGrid *grid) {
       grid->link_count++;
     }
   }
-  free(scratch);
+  vkr_heap_free(scratch);
 }
 
 /* The walkable node nearest `point`, or -1. */
 static int32_t level_nearest(const LevelGrid *grid, Vec3 point) {
   int32_t best = -1;
   float32_t best_distance = 2.0f;
-  const int32_t cx = (int32_t)floorf((point.x - grid->min.x) / grid->cell);
-  const int32_t cz = (int32_t)floorf((point.z - grid->min.z) / grid->cell);
+  const int32_t cx =
+      (int32_t)vkr_floor_f32((point.x - grid->min.x) / grid->cell);
+  const int32_t cz =
+      (int32_t)vkr_floor_f32((point.z - grid->min.z) / grid->cell);
   for (int32_t z = cz - 3; z <= cz + 3; ++z) {
     for (int32_t x = cx - 3; x <= cx + 3; ++x) {
       if (x < 0 || z < 0 || x >= (int32_t)grid->nx || z >= (int32_t)grid->nz) {
@@ -715,7 +718,7 @@ static bool8_t level_near_walkable(LevelGrid *grid, uint32_t x, uint32_t z,
         const LevelNode *other =
             level_node(grid, (uint32_t)nx, (uint32_t)nz, l);
         if (other->state == LEVEL_WALKABLE &&
-            fabsf(other->position.y - node->position.y) <=
+            vkr_abs_f32(other->position.y - node->position.y) <=
                 grid->capsule->step_up) {
           return true_v;
         }
@@ -768,18 +771,18 @@ static void level_lint_floor(LevelGrid *grid, LevelIssues *issues) {
             const LevelNode *b =
                 level_node(grid, (uint32_t)nx, (uint32_t)nz, m);
             const float32_t rise = b->position.y - a->position.y;
-            reachable |= fabsf(rise) < VKR_EDITOR_LEVEL_DROP_MAX;
+            reachable |= vkr_abs_f32(rise) < VKR_EDITOR_LEVEL_DROP_MAX;
             const Vec3 middle =
                 vec3_scale(vec3_add(a->position, b->position), 0.5f);
             if (b->state == LEVEL_WALKABLE && rise > grid->capsule->step_up &&
                 rise <= 1.25f) {
               level_issue(issues, VKR_EDITOR_LEVEL_STEP_TOO_HIGH, middle,
                           b->entity, rise);
-            } else if (b->state == LEVEL_STEEP && fabsf(rise) < 1.0f) {
-              level_issue(issues, VKR_EDITOR_LEVEL_TOO_STEEP, b->position,
-                          b->entity,
-                          acosf(vkr_clamp_f32(b->normal_y, -1.0f, 1.0f)) *
-                              57.29577951f);
+            } else if (b->state == LEVEL_STEEP && vkr_abs_f32(rise) < 1.0f) {
+              level_issue(
+                  issues, VKR_EDITOR_LEVEL_TOO_STEEP, b->position, b->entity,
+                  vkr_acos_f32(vkr_clamp_f32(b->normal_y, -1.0f, 1.0f)) *
+                      57.29577951f);
             }
           }
           if (!reachable) {
@@ -911,9 +914,9 @@ static bool8_t level_enclosed(VkrScene *scene, Vec3 center, Vec3 half) {
   for (uint32_t d = 0; d < 5u; ++d) {
     const Vec3 direction =
         vec3_new(directions[d][0], directions[d][1], directions[d][2]);
-    const float32_t clear = fabsf(direction.x) * half.x +
-                            fabsf(direction.y) * half.y +
-                            fabsf(direction.z) * half.z + 0.05f;
+    const float32_t clear = vkr_abs_f32(direction.x) * half.x +
+                            vkr_abs_f32(direction.y) * half.y +
+                            vkr_abs_f32(direction.z) * half.z + 0.05f;
     VkrPhysicsRayHit hit = {0};
     if (!level_ray(scene, vec3_add(center, vec3_scale(direction, clear)),
                    vec3_scale(direction, LEVEL_ENCLOSED_REACH), &hit)) {
@@ -949,8 +952,10 @@ static void level_lint_unroomed(LevelGrid *grid, LevelIssues *issues) {
         !vkr_scene_entity_local_bounds(scene, entity, &lo, &hi)) {
       continue;
     }
-    Vec3 wlo = vec3_new(INFINITY, INFINITY, INFINITY);
-    Vec3 whi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+    Vec3 wlo =
+        vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+    Vec3 whi =
+        vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
     for (uint32_t c = 0; c < 8u; ++c) {
       const Vec3 p =
           mat4_mul_vec3(transform->world,
@@ -992,7 +997,7 @@ static void level_lint_rooms(LevelGrid *grid, LevelIssues *issues) {
    (vkr_io_router's io_mover_advance). A spinning mover never arrives. */
 static float32_t level_mover_seconds(const VkrScene *scene, VkrEntityId entity,
                                      const SceneMover *mover) {
-  float32_t length = fabsf(mover->angle);
+  float32_t length = vkr_abs_f32(mover->angle);
   if (mover->angle == 0.0f) {
     Vec3 travel = vec3_zero();
     if (!vkr_io_mover_travel(scene, entity, &travel)) {
@@ -1011,12 +1016,12 @@ static float32_t level_mover_seconds(const VkrScene *scene, VkrEntityId entity,
   if (length >= ramps) {
     return length / mover->speed + mover->speed / mover->acceleration;
   }
-  return 2.0f * sqrtf(length / mover->acceleration);
+  return 2.0f * vkr_sqrt_f32(length / mover->acceleration);
 }
 
 /* A port name without its component, as `mover.open` -> `open`. */
 static const char *level_port_name(const char *name) {
-  const char *dot = strrchr(name, '.');
+  const char *dot = string_get_last_char_occurrence(name, '.');
   return dot ? dot + 1 : name;
 }
 
@@ -1067,10 +1072,11 @@ static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
     const char *output = level_port_name(connection->output);
     const char *input = level_port_name(connection->input);
     const bool8_t arrival =
-        (!strcmp(output, "on_opened") || !strcmp(output, "on_closed")) &&
-        (!strcmp(input, "open") || !strcmp(input, "toggle"));
+        (string_equals(output, "on_opened") ||
+         string_equals(output, "on_closed")) &&
+        (string_equals(input, "open") || string_equals(input, "toggle"));
     const bool8_t departure =
-        !strcmp(output, "on_depart") && !strcmp(input, "close");
+        string_equals(output, "on_depart") && string_equals(input, "close");
     if (!(looping && arrival) && !(requested && (arrival || departure))) {
       continue;
     }
@@ -1107,14 +1113,15 @@ static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
     /* A door left open overruns the whole departure. */
     const float32_t open_for =
         settings->wait < 0.0f
-            ? INFINITY
+            ? VKR_FLOAT_INFINITY
             : Max(0.0f, connection->delay) +
                   2.0f * level_mover_seconds(scene, door, settings) +
                   settings->wait;
     if (open_for > vehicle->wait + 1.0e-3f) {
-      level_issue_pair(
-          issues, VKR_EDITOR_LEVEL_MOVER_TIMING, at, door, transform->parent,
-          isfinite(open_for) ? open_for - vehicle->wait : vehicle->wait);
+      level_issue_pair(issues, VKR_EDITOR_LEVEL_MOVER_TIMING, at, door,
+                       transform->parent,
+                       vkr_is_finite_f32(open_for) ? open_for - vehicle->wait
+                                                   : vehicle->wait);
     }
   }
 }
@@ -1123,10 +1130,10 @@ static void level_lint_movers(LevelGrid *grid, LevelIssues *issues) {
 static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
   const VkrScene *scene = grid->scene;
   enum { LEVEL_BRUSH_MAX = 512 };
-  VkrEntityId *brushes = malloc(LEVEL_BRUSH_MAX * sizeof(*brushes));
-  Vec3 *bounds = malloc(2u * LEVEL_BRUSH_MAX * sizeof(*bounds));
-  VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
-  VkrBrushPiece *piece = malloc(sizeof(*piece));
+  VkrEntityId *brushes = vkr_heap_alloc(LEVEL_BRUSH_MAX * sizeof(*brushes));
+  Vec3 *bounds = vkr_heap_alloc(2u * LEVEL_BRUSH_MAX * sizeof(*bounds));
+  VkrBrushGeometry *geometry = vkr_heap_alloc(sizeof(*geometry));
+  VkrBrushPiece *piece = vkr_heap_alloc(sizeof(*piece));
   uint32_t count = 0u;
   for (uint32_t i = 0; brushes && bounds && geometry && piece &&
                        i < scene->world->dir.living && count < LEVEL_BRUSH_MAX;
@@ -1160,8 +1167,10 @@ static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
          brush->role == SCENE_BRUSH_ROLE_CLIP) &&
         vkr_scene_entity_local_bounds(scene, entity, &lo, &hi)) {
       /* World bounds of the local box's corners. */
-      Vec3 wlo = vec3_new(INFINITY, INFINITY, INFINITY);
-      Vec3 whi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+      Vec3 wlo =
+          vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+      Vec3 whi = vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                          -VKR_FLOAT_INFINITY);
       for (uint32_t c = 0; c < 8u; ++c) {
         const Vec3 p =
             mat4_mul_vec3(transform->world, vec3_new((c & 1u) ? hi.x : lo.x,
@@ -1212,10 +1221,10 @@ static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
       }
     }
   }
-  free(brushes);
-  free(bounds);
-  free(geometry);
-  free(piece);
+  vkr_heap_free(brushes);
+  vkr_heap_free(bounds);
+  vkr_heap_free(geometry);
+  vkr_heap_free(piece);
 }
 
 /* The smallest shared area that counts as z-fighting, one square
@@ -1273,7 +1282,7 @@ static bool8_t level_reserve(void **items, uint32_t *capacity, uint64_t needed,
     return false_v;
   }
   const uint32_t grown = Max(Max(*capacity * 2u, (uint32_t)needed), 256u);
-  void *moved = realloc(*items, (size_t)grown * size);
+  void *moved = vkr_heap_realloc(*items, (size_t)grown * size);
   if (!moved) {
     return false_v;
   }
@@ -1483,7 +1492,7 @@ static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
                         planes, count);
       }
     }
-    free(pieces);
+    vkr_heap_free(pieces);
   }
 }
 
@@ -1507,15 +1516,16 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
   const Vec3 lo = vec3_new(grid->min.x, grid->min.y - 4.0f, grid->min.z);
   const Vec3 hi = vec3_new(grid->max.x, grid->max.y + 4.0f, grid->max.z);
   LevelFightSet set = {0};
-  VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
+  VkrBrushGeometry *geometry = vkr_heap_alloc(sizeof(*geometry));
   VkrBrushFaceSlot *slots = NULL;
-  VkrBrushFaceOverlap *fights = malloc(LEVEL_FIGHT_MAX * sizeof(*fights));
+  VkrBrushFaceOverlap *fights =
+      vkr_heap_alloc(LEVEL_FIGHT_MAX * sizeof(*fights));
   if (!geometry || !fights) {
     goto cleanup;
   }
   level_fight_gather(grid->scene, lo, hi, geometry, &set);
-  slots =
-      malloc((size_t)set.face_count * VKR_BRUSH_FACE_SLOT_MAX * sizeof(*slots));
+  slots = vkr_heap_alloc((size_t)set.face_count * VKR_BRUSH_FACE_SLOT_MAX *
+                         sizeof(*slots));
   if (set.failed || !slots) {
     goto cleanup;
   }
@@ -1552,13 +1562,13 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
   }
 
 cleanup:
-  free(set.faces);
-  free(set.vertices);
-  free(set.solids);
-  free(set.planes);
-  free(geometry);
-  free(slots);
-  free(fights);
+  vkr_heap_free(set.faces);
+  vkr_heap_free(set.vertices);
+  vkr_heap_free(set.solids);
+  vkr_heap_free(set.planes);
+  vkr_heap_free(geometry);
+  vkr_heap_free(slots);
+  vkr_heap_free(fights);
 }
 
 /* The extent of a gathered solid along `normal`: how far apart its faces
@@ -1566,8 +1576,8 @@ cleanup:
 static float32_t level_fight_thickness(const LevelFightSet *set,
                                        const LevelFightSolid *solid,
                                        Vec3 normal) {
-  float32_t lo = INFINITY;
-  float32_t hi = -INFINITY;
+  float32_t lo = VKR_FLOAT_INFINITY;
+  float32_t hi = -VKR_FLOAT_INFINITY;
   for (uint32_t f = solid->first_face;
        f < solid->first_face + solid->face_count; ++f) {
     const VkrBrushFaceRef *face = &set->faces[f];
@@ -1613,7 +1623,7 @@ static void level_fight_move_add(const VkrScene *scene,
   for (uint32_t i = 0; i < *count; ++i) {
     if (out[i].face.u64 == faces[index].u64) {
       if ((out[i].distance > 0.0f) == (distance > 0.0f) &&
-          fabsf(distance) > fabsf(out[i].distance)) {
+          vkr_abs_f32(distance) > vkr_abs_f32(out[i].distance)) {
         out[i].distance = distance;
       }
       return;
@@ -1633,17 +1643,18 @@ uint32_t vkr_editor_level_fight_moves(const VkrScene *scene, Vec3 lo, Vec3 hi,
   LevelFightSet set = {0};
   uint32_t moves = 0u;
   uint32_t found = 0u;
-  VkrBrushGeometry *geometry = malloc(sizeof(*geometry));
+  VkrBrushGeometry *geometry = vkr_heap_alloc(sizeof(*geometry));
   VkrBrushFaceSlot *slots = NULL;
-  VkrBrushFaceOverlap *fights = malloc(LEVEL_FIGHT_MAX * sizeof(*fights));
+  VkrBrushFaceOverlap *fights =
+      vkr_heap_alloc(LEVEL_FIGHT_MAX * sizeof(*fights));
   if (!geometry || !fights) {
     goto cleanup;
   }
   const Vec3 margin = vec3_new(gap, gap, gap);
   level_fight_gather(scene, vec3_sub(lo, margin), vec3_add(hi, margin),
                      geometry, &set);
-  slots =
-      malloc((size_t)set.face_count * VKR_BRUSH_FACE_SLOT_MAX * sizeof(*slots));
+  slots = vkr_heap_alloc((size_t)set.face_count * VKR_BRUSH_FACE_SLOT_MAX *
+                         sizeof(*slots));
   if (set.failed || !slots) {
     goto cleanup;
   }
@@ -1673,7 +1684,7 @@ uint32_t vkr_editor_level_fight_moves(const VkrScene *scene, Vec3 lo, Vec3 hi,
         vkr_scene_get_typed(scene, rear->entity, &vkr_scene_brush_type) != NULL;
     /* Moves part the pair half a gap past where they count as fighting,
        so a check after the move finds them apart. */
-    const float32_t apart = fabsf(fight->separation);
+    const float32_t apart = vkr_abs_f32(fight->separation);
     const float32_t need = 1.5f * gap - apart;
     if (need <= 0.0f) {
       continue;
@@ -1706,13 +1717,13 @@ cleanup:
   if (out_fights) {
     *out_fights = found;
   }
-  free(set.faces);
-  free(set.vertices);
-  free(set.solids);
-  free(set.planes);
-  free(geometry);
-  free(slots);
-  free(fights);
+  vkr_heap_free(set.faces);
+  vkr_heap_free(set.vertices);
+  vkr_heap_free(set.solids);
+  vkr_heap_free(set.planes);
+  vkr_heap_free(geometry);
+  vkr_heap_free(slots);
+  vkr_heap_free(fights);
   return moves;
 }
 
@@ -1755,7 +1766,7 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
     level_lint_rooms(&grid, &issues);
   }
   uint32_t reachable = 0u;
-  int32_t *queue = malloc(total * sizeof(*queue));
+  int32_t *queue = vkr_heap_alloc(total * sizeof(*queue));
   const int32_t origin = start && queue ? level_nearest(&grid, *start) : -1;
   if (origin >= 0) {
     reachable = level_walk(&grid, origin, queue);
@@ -1772,8 +1783,8 @@ uint32_t vkr_editor_level_job_lint(VkrEditorLevelJob *job,
       }
     }
   }
-  free(queue);
-  free(grid.links);
+  vkr_heap_free(queue);
+  vkr_heap_free(grid.links);
   if (stats) {
     *stats = (VkrEditorLevelStats){.cell = grid.cell,
                                    .samples = samples,
@@ -1973,7 +1984,7 @@ static void level_room_portal(LevelGrid *grid, VkrEditorRoomDerive *out,
       continue;
     }
     const VkrEditorDerivedRoom *derived = &out->rooms[room];
-    float32_t best = INFINITY;
+    float32_t best = VKR_FLOAT_INFINITY;
     for (uint32_t b = 0; b < derived->box_count; ++b) {
       const Vec3 lo = derived->min[b];
       const Vec3 hi = derived->max[b];
@@ -1985,11 +1996,11 @@ static void level_room_portal(LevelGrid *grid, VkrEditorRoomDerive *out,
       /* Side 0 lies before the boundary, so its box's far side faces it. */
       const float32_t side =
           s == 0u ? (axis == 0u ? hi.x : hi.z) : (axis == 0u ? lo.x : lo.z);
-      if (fabsf(side - plane) < fabsf(best - plane)) {
+      if (vkr_abs_f32(side - plane) < vkr_abs_f32(best - plane)) {
         best = side;
       }
     }
-    if (best != INFINITY) {
+    if (best != VKR_FLOAT_INFINITY) {
       sides[s] = best;
       found[s] = true_v;
     }
@@ -2057,7 +2068,7 @@ static void level_room_join(VkrEditorDerivedRoom *room,
       const bool8_t plus = face == 1u || face == 3u;
       float32_t *side =
           plus ? &room->max[b].elements[axis] : &room->min[b].elements[axis];
-      float32_t best = INFINITY;
+      float32_t best = VKR_FLOAT_INFINITY;
       for (uint32_t o = 0; o < room->box_count; ++o) {
         if (o == b ||
             room->min[o].elements[other_axis] >=
@@ -2071,11 +2082,11 @@ static void level_room_join(VkrEditorDerivedRoom *room,
             plus ? room->min[o].elements[axis] : room->max[o].elements[axis];
         const float32_t ahead = plus ? facing - *side : *side - facing;
         if (ahead > 0.0f && ahead <= LEVEL_ROOM_JOIN_REACH &&
-            ahead < fabsf(best - *side)) {
+            ahead < vkr_abs_f32(best - *side)) {
           best = facing;
         }
       }
-      if (best != INFINITY) {
+      if (best != VKR_FLOAT_INFINITY) {
         *side = best;
       }
     }
@@ -2133,8 +2144,8 @@ static void level_room_boxes(const LevelRoomWork *work,
           (float32_t)area * grid->cell * grid->cell < LEVEL_ROOM_BOX_AREA_MIN) {
         break;
       }
-      float32_t floor_y = INFINITY;
-      float32_t top = INFINITY;
+      float32_t floor_y = VKR_FLOAT_INFINITY;
+      float32_t top = VKR_FLOAT_INFINITY;
       for (uint32_t z = rect[2]; z <= rect[3]; ++z) {
         for (uint32_t x = rect[0]; x <= rect[1]; ++x) {
           const uint32_t c = z * grid->nx + x;
@@ -2195,7 +2206,7 @@ static void level_room_portals(const LevelRoomWork *work,
       };
     }
   }
-  qsort(edges, edge_count, sizeof(*edges), level_room_edge_order);
+  vkr_sort(edges, edge_count, sizeof(*edges), level_room_edge_order);
   for (uint32_t e = 0; e < edge_count;) {
     uint32_t end = e;
     float32_t floor_y = edges[e].floor;
@@ -2222,14 +2233,14 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
   grid.scene = (VkrScene *)scene;
   const uint32_t cells = grid.nx * grid.nz;
   const size_t total = (size_t)cells * LEVEL_LAYER_MAX;
-  float32_t *ceiling = calloc(total, sizeof(*ceiling));
-  int32_t *next = malloc(total * 4u * sizeof(*next));
-  int32_t *depth = malloc(total * sizeof(*depth));
-  uint32_t *label = malloc(total * sizeof(*label));
-  int32_t *queue = malloc(total * sizeof(*queue));
-  LevelRoomEdge *edges = malloc(total * sizeof(*edges));
-  uint8_t *mask = calloc(cells, sizeof(*mask));
-  uint32_t *heights = calloc(grid.nx, sizeof(*heights));
+  float32_t *ceiling = vkr_heap_alloc_zeroed(total, sizeof(*ceiling));
+  int32_t *next = vkr_heap_alloc(total * 4u * sizeof(*next));
+  int32_t *depth = vkr_heap_alloc(total * sizeof(*depth));
+  uint32_t *label = vkr_heap_alloc(total * sizeof(*label));
+  int32_t *queue = vkr_heap_alloc(total * sizeof(*queue));
+  LevelRoomEdge *edges = vkr_heap_alloc(total * sizeof(*edges));
+  uint8_t *mask = vkr_heap_alloc_zeroed(cells, sizeof(*mask));
+  uint32_t *heights = vkr_heap_alloc_zeroed(grid.nx, sizeof(*heights));
   bool8_t done = false_v;
   if (!ceiling || !next || !depth || !label || !queue || !edges || !mask ||
       !heights) {
@@ -2310,7 +2321,8 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
      from its jambs). Each connected core is a room. */
   const float32_t free_cells =
       (opening - 2.0f * grid.capsule->radius) / grid.cell;
-  const int32_t core = Max((int32_t)floorf((free_cells - 1.0f) * 0.5f) + 1, 1);
+  const int32_t core =
+      Max((int32_t)vkr_floor_f32((free_cells - 1.0f) * 0.5f) + 1, 1);
   uint32_t labels = 0u;
   head = tail = 0u;
   for (size_t i = 0; i < total; ++i) {
@@ -2367,13 +2379,15 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
 
   /* Keep the spaces that are rooms: enough floor, mostly closed edges.
      `depth` is reused as each label's new index. */
-  uint32_t *floor_count = calloc(Max(labels, 1u), sizeof(*floor_count));
-  uint32_t *open_edges = calloc(Max(labels, 1u), sizeof(*open_edges));
-  int32_t *keep = malloc(Max(labels, 1u) * sizeof(*keep));
+  uint32_t *floor_count =
+      vkr_heap_alloc_zeroed(Max(labels, 1u), sizeof(*floor_count));
+  uint32_t *open_edges =
+      vkr_heap_alloc_zeroed(Max(labels, 1u), sizeof(*open_edges));
+  int32_t *keep = vkr_heap_alloc(Max(labels, 1u) * sizeof(*keep));
   if (!floor_count || !open_edges || !keep) {
-    free(floor_count);
-    free(open_edges);
-    free(keep);
+    vkr_heap_free(floor_count);
+    vkr_heap_free(open_edges);
+    vkr_heap_free(keep);
     goto cleanup;
   }
   for (size_t i = 0; i < total; ++i) {
@@ -2391,7 +2405,7 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
     const float32_t area = (float32_t)floor_count[l] * grid.cell * grid.cell;
     /* The open share is of the floor's rim, about four times the side of
        a square of its area in cells. */
-    const float32_t rim = 4.0f * sqrtf((float32_t)floor_count[l]);
+    const float32_t rim = 4.0f * vkr_sqrt_f32((float32_t)floor_count[l]);
     if (area < LEVEL_ROOM_AREA_MIN ||
         (float32_t)open_edges[l] > LEVEL_ROOM_OPEN_SHARE * rim) {
       continue;
@@ -2409,9 +2423,9 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
           keep[label[i]] >= 0 ? (uint32_t)keep[label[i]] : LEVEL_ROOM_NONE;
     }
   }
-  free(floor_count);
-  free(open_edges);
-  free(keep);
+  vkr_heap_free(floor_count);
+  vkr_heap_free(open_edges);
+  vkr_heap_free(keep);
 
   const LevelRoomWork work = {.grid = &grid,
                               .cells = cells,
@@ -2427,14 +2441,14 @@ bool8_t vkr_editor_level_job_rooms(VkrEditorLevelJob *job,
   done = true_v;
 
 cleanup:
-  free(ceiling);
-  free(next);
-  free(depth);
-  free(label);
-  free(queue);
-  free(edges);
-  free(mask);
-  free(heights);
+  vkr_heap_free(ceiling);
+  vkr_heap_free(next);
+  vkr_heap_free(depth);
+  vkr_heap_free(label);
+  vkr_heap_free(queue);
+  vkr_heap_free(edges);
+  vkr_heap_free(mask);
+  vkr_heap_free(heights);
   return done;
 }
 
@@ -2460,7 +2474,7 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
   grid.scene = (VkrScene *)scene;
   level_ladders(&grid);
   const size_t total = (size_t)grid.nx * grid.nz * LEVEL_LAYER_MAX;
-  int32_t *queue = malloc(total * sizeof(*queue));
+  int32_t *queue = vkr_heap_alloc(total * sizeof(*queue));
   const int32_t start = level_nearest(&grid, from);
   const int32_t goal = level_nearest(&grid, to);
   route->from_found = start >= 0;
@@ -2485,7 +2499,7 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
     end = reached ? goal : start;
     /* A failed route ends at the reached floor nearest `to`, to show where
        the way stops. */
-    float32_t best = INFINITY;
+    float32_t best = VKR_FLOAT_INFINITY;
     for (uint32_t i = 0; !reached && i < visited; ++i) {
       const float32_t distance =
           vec3_length(vec3_sub(grid.nodes[queue[i]].position, to));
@@ -2513,8 +2527,8 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
       if (parent >= 0) {
         *length += vec3_length(
             vec3_sub(grid.nodes[at].position, grid.nodes[parent].position));
-        changes += fabsf(grid.nodes[at].position.y -
-                         grid.nodes[parent].position.y) > step_up
+        changes += vkr_abs_f32(grid.nodes[at].position.y -
+                               grid.nodes[parent].position.y) > step_up
                        ? 2u
                        : 0u;
       }
@@ -2532,8 +2546,8 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
          at = grid.nodes[at].parent, from_start--) {
       const int32_t parent = grid.nodes[at].parent;
       const bool8_t change_before =
-          parent >= 0 && fabsf(grid.nodes[at].position.y -
-                               grid.nodes[parent].position.y) > step_up;
+          parent >= 0 && vkr_abs_f32(grid.nodes[at].position.y -
+                                     grid.nodes[parent].position.y) > step_up;
       if (from_start % stride == 0u || from_start == steps - 1u ||
           change_before || change_after) {
         path[count++] = grid.nodes[at].position;
@@ -2547,8 +2561,8 @@ bool8_t vkr_editor_level_job_reachable(VkrEditorLevelJob *job,
     }
     *path_count = count;
   }
-  free(queue);
-  free(grid.links);
+  vkr_heap_free(queue);
+  vkr_heap_free(grid.links);
   return reached;
 }
 
@@ -2572,14 +2586,14 @@ bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
   }
   level_ladders(&grid);
   const size_t total = cells * LEVEL_LAYER_MAX;
-  int32_t *queue = start ? malloc(total * sizeof(*queue)) : NULL;
+  int32_t *queue = start ? vkr_heap_alloc(total * sizeof(*queue)) : NULL;
   const int32_t origin = queue ? level_nearest(&grid, *start) : -1;
   uint32_t reachable = 0u;
   if (origin >= 0) {
     reachable = level_walk(&grid, origin, queue);
   }
-  free(queue);
-  free(grid.links);
+  vkr_heap_free(queue);
+  vkr_heap_free(grid.links);
   uint32_t samples = 0u;
   uint32_t walkable = 0u;
   for (size_t c = 0; c < cells; ++c) {
@@ -2612,7 +2626,7 @@ bool8_t vkr_editor_level_job_map(VkrEditorLevelJob *job, const VkrScene *scene,
     }
     text[c] = mark;
     if (heights) {
-      heights[c] = shown ? shown->position.y : NAN;
+      heights[c] = shown ? shown->position.y : VKR_FLOAT_NAN;
     }
   }
   if (origin >= 0) {
@@ -2643,14 +2657,14 @@ bool8_t vkr_editor_brush_ray(const VkrScene *scene, VkrEntityId brush,
   }
   /* Slab test: enter at the last plane facing the ray, leave at the first
      facing away. */
-  float32_t enter = -INFINITY;
+  float32_t enter = -VKR_FLOAT_INFINITY;
   float32_t leave = max_distance;
   uint32_t entered = UINT32_MAX;
   for (uint32_t i = 0; i < count; ++i) {
     const float32_t facing = vec3_dot(planes[i].normal, direction);
     const float32_t gap =
         planes[i].distance - vec3_dot(planes[i].normal, origin);
-    if (fabsf(facing) < 1.0e-6f) {
+    if (vkr_abs_f32(facing) < 1.0e-6f) {
       if (gap < 0.0f) {
         return false_v;
       }
@@ -2760,7 +2774,7 @@ typedef struct VkrEditorMagnet {
 
 static VkrEditorMagnet *magnet_state(VkrEditorUi *editor) {
   if (!editor->magnet) {
-    editor->magnet = calloc(1u, sizeof(*editor->magnet));
+    editor->magnet = vkr_heap_alloc_zeroed(1u, sizeof(*editor->magnet));
   }
   return editor->magnet;
 }
@@ -2802,13 +2816,13 @@ uint32_t vkr_editor_shape_pieces(const VkrScene *scene, VkrEntityId entity,
     return 0u;
   }
   const uint32_t capacity = vkr_blockout_piece_capacity(shape);
-  VkrBlockoutPiece *pieces = malloc((size_t)capacity * sizeof(*pieces));
+  VkrBlockoutPiece *pieces = vkr_heap_alloc((size_t)capacity * sizeof(*pieces));
   char error[8];
   const uint32_t count = pieces ? vkr_blockout_layout(shape, pieces, capacity,
                                                       error, sizeof(error))
                                 : 0u;
   if (!count) {
-    free(pieces);
+    vkr_heap_free(pieces);
     return 0u;
   }
   for (uint32_t i = 0; i < count; ++i) {
@@ -2855,8 +2869,10 @@ static void level_entity_solids(const VkrScene *scene, VkrEntityId entity,
   for (uint32_t k = 0; k < count; ++k) {
     LevelSolid solid = {
         .entity = entity,
-        .lo = vec3_new(INFINITY, INFINITY, INFINITY),
-        .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
+        .lo = vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY,
+                       VKR_FLOAT_INFINITY),
+        .hi = vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                       -VKR_FLOAT_INFINITY),
     };
     for (uint32_t p = 0; p < pieces[k].point_count; ++p) {
       const Vec3 at = pieces[k].points[p];
@@ -2867,7 +2883,7 @@ static void level_entity_solids(const VkrScene *scene, VkrEntityId entity,
     }
     visit(context, &solid);
   }
-  free(pieces);
+  vkr_heap_free(pieces);
 }
 
 /* Visits every solid of `scene`; `scratch` holds the last brush built. */
@@ -2959,7 +2975,7 @@ static void level_solids_within(const VkrScene *scene, VkrEntityId root,
   }
   /* Entity index order, as the scan visits, so sums over the solids match
      it bit for bit. */
-  qsort(subtree, count, sizeof(*subtree), level_entity_order);
+  vkr_sort(subtree, count, sizeof(*subtree), level_entity_order);
   for (uint32_t i = 0u; i < count; ++i) {
     level_entity_solids(scene, subtree[i], scratch, faces, visit, context);
   }
@@ -2989,8 +3005,10 @@ bool8_t vkr_editor_entity_world_box(const VkrScene *scene, VkrEntityId entity,
     return false_v;
   }
   LevelBox box = {
-      .lo = vec3_new(INFINITY, INFINITY, INFINITY),
-      .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY),
+      .lo =
+          vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY),
+      .hi = vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                     -VKR_FLOAT_INFINITY),
   };
   level_solids_within(scene, entity, scratch, level_box_visit, &box);
   Vec3 lo = box.lo;
@@ -3075,13 +3093,13 @@ static void magnet_gather_visit(void *context, const LevelSolid *solid) {
   if (magnet->count == magnet->capacity) {
     const uint32_t capacity = Max(64u, magnet->capacity * 2u);
     Vec3 *grown =
-        realloc(magnet->boxes, 2u * (size_t)capacity * sizeof(*grown));
+        vkr_heap_realloc(magnet->boxes, 2u * (size_t)capacity * sizeof(*grown));
     if (!grown) {
       return;
     }
     magnet->boxes = grown;
     float32_t *floors =
-        realloc(magnet->floors, (size_t)capacity * sizeof(*floors));
+        vkr_heap_realloc(magnet->floors, (size_t)capacity * sizeof(*floors));
     if (!floors) {
       return;
     }
@@ -3157,7 +3175,7 @@ Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
     for (uint32_t axis = 0; axis < 3u; ++axis) {
       const float32_t corner =
           magnet->moving_lo.elements[axis] + to.elements[axis];
-      to.elements[axis] += roundf(corner / step) * step - corner;
+      to.elements[axis] += vkr_round_f32(corner / step) * step - corner;
     }
   }
   if (!magnet->moving || !editor->placement.magnet) {
@@ -3209,8 +3227,8 @@ Vec3 vkr_editor_magnet_move(VkrEditorUi *editor, const VkrScene *scene,
         end = 3u;
       }
       for (uint32_t c = first; c < end; ++c) {
-        if (fabsf(candidates[c]) < best[axis]) {
-          best[axis] = fabsf(candidates[c]);
+        if (vkr_abs_f32(candidates[c]) < best[axis]) {
+          best[axis] = vkr_abs_f32(candidates[c]);
           shift.elements[axis] = candidates[c];
         }
       }
@@ -3255,8 +3273,8 @@ float32_t vkr_editor_magnet_value(const VkrEditorUi *editor, uint32_t axis,
     }
     const float32_t sides[2] = {blo.elements[axis], bhi.elements[axis]};
     for (uint32_t i = 0; i < 2u; ++i) {
-      if (fabsf(sides[i] - value) < best) {
-        best = fabsf(sides[i] - value);
+      if (vkr_abs_f32(sides[i] - value) < best) {
+        best = vkr_abs_f32(sides[i] - value);
         snapped = sides[i];
       }
     }
@@ -3266,10 +3284,10 @@ float32_t vkr_editor_magnet_value(const VkrEditorUi *editor, uint32_t axis,
 
 void vkr_editor_magnet_destroy(VkrEditorUi *editor) {
   if (editor->magnet) {
-    free(editor->magnet->boxes);
-    free(editor->magnet->floors);
+    vkr_heap_free(editor->magnet->boxes);
+    vkr_heap_free(editor->magnet->floors);
   }
-  free(editor->magnet);
+  vkr_heap_free(editor->magnet);
   editor->magnet = NULL;
 }
 
@@ -3315,7 +3333,8 @@ static const char *level_issue_label(VkrEditorLevelIssueKind kind) {
 
 VkrEditorLevelReport *vkr_editor_level_report(VkrEditorUi *editor) {
   if (!editor->level_report) {
-    editor->level_report = calloc(1u, sizeof(*editor->level_report));
+    editor->level_report =
+        vkr_heap_alloc_zeroed(1u, sizeof(*editor->level_report));
   }
   return editor->level_report;
 }
@@ -3447,7 +3466,7 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
   /* The rows that fit below the header; the summary counts the rest. */
   const float32_t body_pt = bounds.height / ui->content_scale - 52.0f;
   const uint32_t shown =
-      Min(report->count, (uint32_t)Max(1.0f, floorf(body_pt / 30.0f)));
+      Min(report->count, (uint32_t)Max(1.0f, vkr_floor_f32(body_pt / 30.0f)));
   VkrUiTrack rows[VKR_EDITOR_LEVEL_SHOWN_MAX + 2u];
   rows[0] = (VkrUiTrack){.value = 36.0f, .unit = VKR_UI_TRACK_PX};
   for (uint32_t i = 0; i < shown; ++i) {
@@ -3483,15 +3502,17 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
   if (vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
     char text[200];
     if (report->job) {
-      snprintf(text, sizeof(text), "Checking 40 m around the view... %.0f%%",
-               100.0f * vkr_editor_level_job_progress(report->job));
+      string_format(text, sizeof(text),
+                    "Checking 40 m around the view... %.0f%%",
+                    100.0f * vkr_editor_level_job_progress(report->job));
     } else if (report->checked) {
-      snprintf(text, sizeof(text),
-               "%u issue%s in 40 m around the view, nearest first",
-               report->found, report->found == 1u ? "" : "s");
+      string_format(text, sizeof(text),
+                    "%u issue%s in 40 m around the view, nearest first",
+                    report->found, report->found == 1u ? "" : "s");
     } else {
-      snprintf(text, sizeof(text),
-               "Checks the floor around the view against the player capsule");
+      string_format(
+          text, sizeof(text),
+          "Checks the floor around the view against the player capsule");
     }
     VkrUiWidgetConfig label =
         vkr_editor_text_config(theme->font_body, theme->text_secondary);
@@ -3501,9 +3522,10 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
                                        .row_span = 1u,
                                        .justify = VKR_UI_ALIGN_START,
                                        .align = VKR_UI_ALIGN_CENTER};
-    vkr_ui_label(ui, string8_lit("summary"),
-                 string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-                 &label);
+    vkr_ui_label(
+        ui, string8_lit("summary"),
+        string8_create_from_cstr((const uint8_t *)text, string_length(text)),
+        &label);
     if (level_button(editor, ui, string8_lit("check"),
                      report->job ? string8_lit("Checking")
                                  : string8_lit("Check"),
@@ -3535,25 +3557,26 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
       char value[32] = {0};
       String8 other = {0};
       if (issue->kind == VKR_EDITOR_LEVEL_TOO_STEEP) {
-        snprintf(value, sizeof(value), "%.0f deg", issue->value);
+        string_format(value, sizeof(value), "%.0f deg", issue->value);
       } else if (issue->kind <= VKR_EDITOR_LEVEL_TOO_NARROW) {
-        snprintf(value, sizeof(value), "%.2f m", issue->value);
+        string_format(value, sizeof(value), "%.2f m", issue->value);
       } else if (issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT ||
                  issue->kind == VKR_EDITOR_LEVEL_MOVER_TIMING) {
-        snprintf(value, sizeof(value),
-                 issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT ? "%.3g m2" : "%.2f s",
-                 issue->value);
+        string_format(value, sizeof(value),
+                      issue->kind == VKR_EDITOR_LEVEL_Z_FIGHT ? "%.3g m2"
+                                                              : "%.2f s",
+                      issue->value);
         if (issue->other.u64 != issue->entity.u64 && scene &&
             vkr_scene_entity_alive(scene, issue->other)) {
           other = vkr_scene_get_name(scene, issue->other);
         }
       }
       char text[200];
-      snprintf(text, sizeof(text), "%s  %s  %.*s%s%.*s",
-               level_issue_label(issue->kind), value,
-               (int)Min(name.length, 60u), (const char *)name.str,
-               other.length ? " / " : "", (int)Min(other.length, 60u),
-               other.length ? (const char *)other.str : "");
+      string_format(text, sizeof(text), "%s  %s  %.*s%s%.*s",
+                    level_issue_label(issue->kind), value,
+                    (int)Min(name.length, 60u), (const char *)name.str,
+                    other.length ? " / " : "", (int)Min(other.length, 60u),
+                    other.length ? (const char *)other.str : "");
       VkrUiWidgetConfig label =
           vkr_editor_text_config(theme->font_body, theme->text);
       label.placement = (VkrUiPlacement){.column = 0u,
@@ -3564,7 +3587,7 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
                                          .align = VKR_UI_ALIGN_CENTER};
       vkr_ui_label(
           ui, string8_lit("label"),
-          string8_create_from_cstr((const uint8_t *)text, strlen(text)),
+          string8_create_from_cstr((const uint8_t *)text, string_length(text)),
           &label);
       if (level_button(editor, ui, string8_lit("focus"), string8_lit("Focus"),
                        1u, false_v, false_v) &&
@@ -3587,8 +3610,9 @@ void vkr_editor_level_window_build(VkrEditorUi *editor,
 // =============================================================================
 
 static void palette_entity(VkrEntityId entity, char *out, uint64_t size) {
-  snprintf(out, size, "%u:%u:%u", (unsigned)entity.parts.world,
-           (unsigned)entity.parts.index, (unsigned)entity.parts.generation);
+  string_format(out, size, "%u:%u:%u", (unsigned)entity.parts.world,
+                (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation);
 }
 
 /* Runs one brush operation on the selection through the agent queue, as
@@ -3598,10 +3622,11 @@ static void palette_op(VkrEditorUi *editor, const char *op, const char *key,
   char id[48];
   palette_entity(entity, id, sizeof(id));
   char line[512];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"palette\",\"op\":\"%s\",\"args\":{\"%s\":\"%s\""
-           "%s,\"review\":false}}",
-           op, key, id, extra ? extra : "");
+  string_format(
+      line, sizeof(line),
+      "{\"v\":1,\"id\":\"palette\",\"op\":\"%s\",\"args\":{\"%s\":\"%s\""
+      "%s,\"review\":false}}",
+      op, key, id, extra ? extra : "");
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
@@ -3638,7 +3663,7 @@ static void palette_paint(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     request.values.component_type = &vkr_scene_brush_face_type;
     SceneBrushFace *value = (SceneBrushFace *)request.values.component;
     *value = *face;
-    if (strcmp(key, "surface") == 0) {
+    if (string_equals(key, "surface")) {
       (void)vkr_surface_find(name, &value->surface);
     } else {
       (void)vkr_surface_mark_find(name, &value->mark);
@@ -3648,7 +3673,7 @@ static void palette_paint(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   if (brush.u64) {
     char extra[64];
-    snprintf(extra, sizeof(extra), ",\"%s\":\"%s\"", key, name);
+    string_format(extra, sizeof(extra), ",\"%s\":\"%s\"", key, name);
     palette_op(editor, "brush.set_surface", "brush", brush, extra);
   }
 }
@@ -3746,17 +3771,18 @@ static void palette_build_selection_ops(VkrEditorUi *editor,
   for (uint32_t i = 0u; i < selected; ++i) {
     const VkrScene *owner = vkr_editor_entity_scene(frame, selection[i]);
     char id[32];
-    snprintf(id, sizeof(id), "\"%u:%u:%u\"", (unsigned)selection[i].parts.world,
-             (unsigned)selection[i].parts.index,
-             (unsigned)selection[i].parts.generation);
-    objects_used += (uint64_t)snprintf(objects + objects_used,
-                                       sizeof(objects) - objects_used, "%s%s",
-                                       i ? "," : "", id);
+    string_format(id, sizeof(id), "\"%u:%u:%u\"",
+                  (unsigned)selection[i].parts.world,
+                  (unsigned)selection[i].parts.index,
+                  (unsigned)selection[i].parts.generation);
+    objects_used += (uint64_t)string_format(objects + objects_used,
+                                            sizeof(objects) - objects_used,
+                                            "%s%s", i ? "," : "", id);
     free_count += vkr_editor_entity_free(owner, selection[i]) ? 1u : 0u;
     if (owner &&
         vkr_scene_get_typed(owner, selection[i], &vkr_scene_brush_type)) {
-      used += (uint64_t)snprintf(brushes + used, sizeof(brushes) - used, "%s%s",
-                                 brush_count ? "," : "", id);
+      used += (uint64_t)string_format(brushes + used, sizeof(brushes) - used,
+                                      "%s%s", brush_count ? "," : "", id);
       brush_count++;
     }
   }
@@ -3769,10 +3795,11 @@ static void palette_build_selection_ops(VkrEditorUi *editor,
                       "colliding as they go; Details sets how"),
           false_v, !ops || !selected)) {
     char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"mover.create\",\"args\":"
-             "{\"objects\":[%s],\"review\":false,\"select\":true}}",
-             objects);
+    string_format(
+        line, sizeof(line),
+        "{\"v\":1,\"id\":\"palette\",\"op\":\"mover.create\",\"args\":"
+        "{\"objects\":[%s],\"review\":false,\"select\":true}}",
+        objects);
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   if (vkr_editor_palette_button(
@@ -3781,10 +3808,10 @@ static void palette_build_selection_ops(VkrEditorUi *editor,
                       "their union is convex; Ctrl+click selects more"),
           false_v, !ops || brush_count < 2u || brush_count > 8u)) {
     char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.merge\",\"args\":"
-             "{\"brushes\":[%s],\"review\":false,\"select\":true}}",
-             brushes);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.merge\",\"args\":"
+                  "{\"brushes\":[%s],\"review\":false,\"select\":true}}",
+                  brushes);
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   if (vkr_editor_palette_button(
@@ -3795,10 +3822,10 @@ static void palette_build_selection_ops(VkrEditorUi *editor,
                       "Ctrl+click selects more"),
           false_v, !ops || selected < 2u)) {
     char line[VKR_EDITOR_SELECTION_MAX * 32u + 160u];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.snap\",\"args\":"
-             "{\"brushes\":[%s],\"review\":false}}",
-             objects);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"palette\",\"op\":\"brush.snap\",\"args\":"
+                  "{\"brushes\":[%s],\"review\":false}}",
+                  objects);
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   /* Free marks the selection to stay out of every snap, or clears it. */
@@ -3809,9 +3836,9 @@ static void palette_build_selection_ops(VkrEditorUi *editor,
                       "parenting in the Outliner leave them where they are"),
           all_free, !ops || !selected)) {
     char line[VKR_EDITOR_SELECTION_MAX * 120u + 160u];
-    int written = snprintf(line, sizeof(line),
-                           "{\"v\":1,\"id\":\"palette\",\"op\":\"batch\","
-                           "\"args\":{\"review\":false,\"ops\":[");
+    int written = string_format(line, sizeof(line),
+                                "{\"v\":1,\"id\":\"palette\",\"op\":\"batch\","
+                                "\"args\":{\"review\":false,\"ops\":[");
     uint32_t added = 0u;
     for (uint32_t i = 0u;
          i < selected && written > 0 && (size_t)written < sizeof(line); ++i) {
@@ -3827,18 +3854,18 @@ static void palette_build_selection_ops(VkrEditorUi *editor,
       if (all_free && !has) {
         continue;
       }
-      written +=
-          snprintf(line + written, sizeof(line) - (size_t)written,
-                   "%s{\"op\":\"%s\",\"args\":{\"entity\":\"%u:%u:%u\","
-                   "\"type\":\"free_placement\"%s}}",
-                   added ? "," : "", op, (unsigned)selection[i].parts.world,
-                   (unsigned)selection[i].parts.index,
-                   (unsigned)selection[i].parts.generation,
-                   has && !all_free ? ",\"values\":{\"enabled\":true}" : "");
+      written += string_format(
+          line + written, sizeof(line) - (size_t)written,
+          "%s{\"op\":\"%s\",\"args\":{\"entity\":\"%u:%u:%u\","
+          "\"type\":\"free_placement\"%s}}",
+          added ? "," : "", op, (unsigned)selection[i].parts.world,
+          (unsigned)selection[i].parts.index,
+          (unsigned)selection[i].parts.generation,
+          has && !all_free ? ",\"values\":{\"enabled\":true}" : "");
       added++;
     }
     if (added && written > 0 && (size_t)written < sizeof(line)) {
-      snprintf(line + written, sizeof(line) - (size_t)written, "]}}");
+      string_format(line + written, sizeof(line) - (size_t)written, "]}}");
       (void)vkr_editor_agent_submit(editor->agent, line);
     }
   }
@@ -3943,10 +3970,10 @@ static void palette_build_snapping(VkrEditorUi *editor,
     editor->placement.magnet = !editor->placement.magnet;
   }
   char step[48];
-  snprintf(step, sizeof(step), "GRID STEP %g M", grid);
+  string_format(step, sizeof(step), "GRID STEP %g M", grid);
   vkr_editor_palette_heading(
       palette, string8_lit("palette.grid_step"),
-      string8_create_from_cstr((const uint8_t *)step, strlen(step)));
+      string8_create_from_cstr((const uint8_t *)step, string_length(step)));
   if (vkr_editor_palette_button(
           palette, string8_lit("palette.grid"), "Show grid", VKR_UI_ICON_EYE,
           string8_lit("Show or hide the grid"), frame->view_state.grid_enabled,
@@ -4066,7 +4093,8 @@ float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
                       "face)"),
           false_v, !ops || !face)) {
     char extra[48];
-    snprintf(extra, sizeof(extra), ",\"distance\":%g,\"select\":true", grid);
+    string_format(extra, sizeof(extra), ",\"distance\":%g,\"select\":true",
+                  grid);
     palette_op(editor, "brush.extrude", "face", frame->selected_entity, extra);
   }
   if (vkr_editor_palette_button(
@@ -4107,12 +4135,12 @@ float32_t vkr_editor_level_palette_build(VkrEditorUi *editor,
                       "go"),
           false_v, !ops || !shape_selected)) {
     char line[256];
-    snprintf(line, sizeof(line),
-             "{\"v\":1,\"id\":\"palette\",\"op\":\"blockout.bake\","
-             "\"args\":{\"entity\":\"%u:%u:%u\",\"review\":false}}",
-             (unsigned)frame->selected_entity.parts.world,
-             (unsigned)frame->selected_entity.parts.index,
-             (unsigned)frame->selected_entity.parts.generation);
+    string_format(line, sizeof(line),
+                  "{\"v\":1,\"id\":\"palette\",\"op\":\"blockout.bake\","
+                  "\"args\":{\"entity\":\"%u:%u:%u\",\"review\":false}}",
+                  (unsigned)frame->selected_entity.parts.world,
+                  (unsigned)frame->selected_entity.parts.index,
+                  (unsigned)frame->selected_entity.parts.generation);
     (void)vkr_editor_agent_submit(editor->agent, line);
   }
   vkr_editor_palette_command(&palette, string8_lit("palette.duplicate"),

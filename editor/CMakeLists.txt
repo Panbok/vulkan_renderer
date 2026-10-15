@@ -52,6 +52,10 @@ add_executable(vkr_editor
 target_include_directories(vkr_editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_SOURCE_DIR}/vendor")
 vkr_configure_application_target(vkr_editor)
+# Editor C sources reach libc and the operating system only through the lib
+# (ADR-118).
+target_compile_definitions(vkr_editor PRIVATE
+    $<$<COMPILE_LANGUAGE:C,OBJC>:VKR_LIBC_BOUNDARY=1>)
 # The agent channel parses requests with Bakery's JSON tree and writes
 # captures as PNG (docs/proposals/level-design-toolkit.md).
 target_link_libraries(vkr_editor PRIVATE vkr_bakery_json vkr_image_write)

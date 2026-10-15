@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Reject direct libc and operating-system use in renderer and runtime sources.
+"""Reject direct libc and operating-system use in renderer, runtime and editor
+sources.
 
-The renderer and runtime reach libc and operating-system services only through
-lib/ (ADR-118). The compiler enforces most of this boundary: their targets
-define VKR_LIBC_BOUNDARY, so lib headers expose no stdio, stdlib, string,
-POSIX or Win32 declarations. This guard covers what the compiler cannot:
+The renderer, runtime and editor reach libc and operating-system services
+only through lib/ (ADR-118). The compiler enforces most of this boundary:
+their targets define VKR_LIBC_BOUNDARY, so lib headers expose no stdio,
+stdlib, string, POSIX or Win32 declarations. This guard covers what the compiler cannot:
 vkr_math.h keeps <math.h> visible for its inline wrappers, Objective-C units
 import Foundation, vendor headers such as stb_image.h include stdio, and C++
 units see the C library through the C++ standard library.
@@ -59,6 +60,7 @@ STDIO = '''
 printf fprintf sprintf snprintf vprintf vfprintf vsprintf vsnprintf puts fputs
 putchar fputc fopen freopen fclose fread fwrite fseek ftell rewind fflush fgets
 fgetc getc ferror feof perror remove rename tmpfile FILE stdin stdout stderr
+scanf sscanf fscanf vsscanf
 SEEK_SET SEEK_CUR SEEK_END
 '''
 STDLIB = '''
@@ -86,7 +88,13 @@ mach_absolute_time mach_timebase_info CACurrentMediaTime CFAbsoluteTimeGetCurren
 NSFileManager NSProcessInfo NSDate NSThread NSLog NSUserDefaults
 NSTemporaryDirectory os_log os_unfair_lock_lock os_unfair_lock_unlock
 Sleep GetTickCount QueryPerformanceCounter QueryPerformanceFrequency
-GetModuleHandleW LoadLibraryW GetProcAddress GetLastError
+GetModuleHandleW LoadLibraryW GetProcAddress GetLastError SetLastError
+DWORD HANDLE HRESULT GUID WCHAR LPCWSTR LPWSTR HWND HINSTANCE HMODULE
+INVALID_HANDLE_VALUE MAX_PATH CP_UTF8 WIN32_FIND_DATAW FILE_ATTRIBUTE_DIRECTORY
+MultiByteToWideChar WideCharToMultiByte FindFirstFileW FindNextFileW FindClose
+CreateFileW CloseHandle CoCreateGuid CoInitializeEx CoUninitialize
+GetEnvironmentVariableW ShellExecuteW arc4random arc4random_buf
+arc4random_uniform getentropy
 dispatch_queue_create dispatch_sync dispatch_async dispatch_release
 dispatch_once dispatch_group_create dispatch_group_async dispatch_group_wait
 dispatch_group_notify dispatch_get_global_queue dispatch_get_main_queue
@@ -133,9 +141,10 @@ TREES = (
     Tree('renderer/src',
          skip=lambda rel: rel.startswith('shaders/') or
          rel.endswith('_data.inc'),
-         platform_units=lambda rel: False,
-         # The Vulkan window-system unit owns the Win32 surface types, and the
-         # Metal backend programs against Metal and its Apple frameworks.
+         # The Vulkan window-system unit owns the Win32 surface types and
+         # calls, and the Metal backend programs against Metal and its Apple
+         # frameworks.
+         platform_units=lambda rel: rel == 'vulkan/vkr_vulkan_wsi.c',
          header_exceptions=lambda rel, header: (
              rel == 'vulkan/vkr_vulkan_wsi.c' and
              header in ('windows.h', 'vulkan/vulkan_win32.h')) or (
@@ -157,6 +166,12 @@ TREES = (
          header_exceptions=lambda rel, header: (
              rel.startswith('platform/') and rel.endswith('_windows.c') and
              header == 'wchar.h'),
+         identifier_exceptions={}),
+    # The editor has no platform unit: its OS services come from the lib.
+    Tree('editor/src',
+         skip=lambda rel: False,
+         platform_units=lambda rel: False,
+         header_exceptions=lambda rel, header: False,
          identifier_exceptions={}),
 )
 
@@ -270,7 +285,7 @@ def main():
         print(f'check_libc_boundary: {len(failures)} direct libc or platform '
               'uses; use the lib API')
         return 1
-    print('libc boundary guard passed (renderer, runtime)')
+    print('libc boundary guard passed (renderer, runtime, editor)')
     return 0
 
 

@@ -1,9 +1,6 @@
 #include "editor_console.h"
 #include "editor_internal.h"
 
-#include <math.h>
-#include <stdio.h>
-
 #define VKR_CONSOLE_POLL_CAPACITY 256u
 #define VKR_CONSOLE_VISIBLE_ROWS 48u
 #define VKR_CONSOLE_PREVIEW_BYTES 160u
@@ -183,7 +180,7 @@ static bool8_t console_selected(const VkrEditorConsole *console,
 static uint32_t console_format_record(const VkrLogRecord *record,
                                       uint8_t *buffer, uint32_t capacity) {
   const uint32_t ms = record->utc_time_ms;
-  const int length = snprintf(
+  const int length = string_format(
       (char *)buffer, capacity, "%02u:%02u:%02u.%03u UTC [%s] %.*s:%u\n%.*s%s",
       ms / 3600000u, ms / 60000u % 60u, ms / 1000u % 60u, ms % 1000u,
       s_level_names[record->level], record->source_length, record->source,
@@ -412,8 +409,8 @@ static bool8_t console_build_records(VkrEditorConsole *console, VkrUiSystem *ui,
   float32_t offset = console->first_row * VKR_CONSOLE_ROW_HEIGHT;
   (void)vkr_ui_scroll_area_offset(ui, &offset);
   if (offset != console->first_row * VKR_CONSOLE_ROW_HEIGHT) {
-    console->first_row =
-        Min(max_first, (uint32_t)roundf(offset / VKR_CONSOLE_ROW_HEIGHT));
+    console->first_row = Min(
+        max_first, (uint32_t)vkr_round_f32(offset / VKR_CONSOLE_ROW_HEIGHT));
     console->follow_tail = console->first_row == max_first;
     offset = console->first_row * VKR_CONSOLE_ROW_HEIGHT;
     (void)vkr_ui_scroll_area_offset(ui, &offset);

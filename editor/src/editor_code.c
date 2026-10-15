@@ -5,14 +5,10 @@
 #include "editor_scripts.h"
 
 #include "core/logger.h"
+#include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
-
-#include <ctype.h>
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
 
 #if !defined(VKR_EDITOR_SCRIPT_SDK_ROOT)
 #define VKR_EDITOR_SCRIPT_SDK_ROOT ""
@@ -163,7 +159,7 @@ struct VkrEditorCode {
 // =============================================================================
 
 static bool8_t code_word_byte(uint8_t c) {
-  return isalnum(c) || c == '_' || c >= 0x80u;
+  return vkr_char_is_alnum(c) || c == '_' || c >= 0x80u;
 }
 
 static uint32_t code_next_codepoint(const CodeDocument *doc, uint32_t at) {
@@ -465,7 +461,7 @@ static void code_insert(VkrEditorCode *code, CodeDocument *doc,
   code_begin_edit(code, doc, kind);
   (void)code_replace(code, doc, code_selection_begin(doc),
                      code_selection_end(doc), (const uint8_t *)text,
-                     (uint32_t)strlen(text));
+                     (uint32_t)string_length(text));
 }
 
 static uint32_t code_indent_of(const CodeDocument *doc, uint32_t line) {
@@ -651,18 +647,19 @@ static void code_document_free(VkrEditorCode *code, CodeDocument *doc) {
 
 /* Reads the file, dropping carriage returns; false keeps the buffer. */
 static bool8_t code_read_file(VkrEditorCode *code, CodeDocument *doc) {
-  FILE *file = file_fopen(doc->path, "rb");
-  if (!file) {
+  const FilePath path = file_path_view(doc->path);
+  FileHandle file = {0};
+  if (file_open(&path, (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return false_v;
   }
   bool8_t ok = false_v;
-  if (fseek(file, 0, SEEK_END) == 0) {
-    const long size = ftell(file);
-    if (size >= 0 && size <= (long)CODE_FILE_LIMIT &&
-        fseek(file, 0, SEEK_SET) == 0 &&
-        code_reserve(code, doc, (uint32_t)size)) {
-      const size_t read = fread(doc->text, 1u, (size_t)size, file);
-      if (read == (size_t)size) {
+  uint64_t size = 0u;
+  if (file_remaining_size(&file, &size) == FILE_ERROR_NONE) {
+    if (size <= CODE_FILE_LIMIT && code_reserve(code, doc, (uint32_t)size)) {
+      uint64_t read = 0u;
+      if (file_read_into(&file, doc->text, size, &read) == FILE_ERROR_NONE &&
+          read == size) {
         uint32_t length = 0u;
         for (uint32_t i = 0; i < (uint32_t)size; ++i) {
           if (doc->text[i] != '\r') {
@@ -675,7 +672,7 @@ static bool8_t code_read_file(VkrEditorCode *code, CodeDocument *doc) {
       }
     }
   }
-  fclose(file);
+  file_close(&file);
   if (ok) {
     doc->caret = Min(doc->caret, doc->length);
     doc->anchor = Min(doc->anchor, doc->length);
@@ -688,13 +685,23 @@ static bool8_t code_read_file(VkrEditorCode *code, CodeDocument *doc) {
 
 static bool8_t code_save(VkrEditorCode *code, VkrEditorUi *editor,
                          CodeDocument *doc) {
-  FILE *file = file_fopen(doc->path, "wb");
-  bool8_t ok = file && fwrite(doc->text, 1u, doc->length, file) == doc->length;
-  if (file && fclose(file) != 0) {
-    ok = false_v;
+  const FilePath path = file_path_view(doc->path);
+  FileHandle file = {0};
+  bool8_t ok =
+      file_open(&path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &file) == FILE_ERROR_NONE;
+  if (ok && doc->length > 0u) {
+    uint64_t written = 0u;
+    ok = file_write(&file, doc->length, (const uint8_t *)doc->text, &written) ==
+             FILE_ERROR_NONE &&
+         written == doc->length;
   }
+  file_close(&file);
   if (!ok) {
-    snprintf(code->status, sizeof(code->status), "Cannot save %s", doc->name);
+    string_format(code->status, sizeof(code->status), "Cannot save %s",
+                  doc->name);
     return false_v;
   }
   doc->dirty = false_v;
@@ -703,8 +710,8 @@ static bool8_t code_save(VkrEditorCode *code, VkrEditorUi *editor,
   vkr_editor_scripts_rebuild_file(editor->scripts, doc->path);
   /* A saved header may declare new names. */
   code->headers_loaded = false_v;
-  snprintf(code->status, sizeof(code->status), "Saved %s; rebuilding",
-           doc->name);
+  string_format(code->status, sizeof(code->status), "Saved %s; rebuilding",
+                doc->name);
   return true_v;
 }
 
@@ -731,21 +738,25 @@ static void code_poll_files(VkrEditorCode *code) {
   code->poll_time = now;
   for (uint32_t i = 0; i < code->document_count; ++i) {
     CodeDocument *doc = code->documents[i];
-    FILE *file = file_fopen(doc->path, "rb");
-    if (!file) {
+    const FilePath path = file_path_view(doc->path);
+    FileHandle file = {0};
+    if (file_open(&path, (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                  &file) != FILE_ERROR_NONE) {
       continue;
     }
     uint8_t buffer[64u * 1024u];
     uint64_t hash = UINT64_C(1469598103934665603);
-    size_t read;
-    while ((read = fread(buffer, 1u, sizeof(buffer), file)) > 0u) {
-      for (size_t b = 0; b < read; ++b) {
+    uint64_t read = 0u;
+    while (file_read_into(&file, buffer, sizeof(buffer), &read) ==
+               FILE_ERROR_NONE &&
+           read > 0u) {
+      for (uint64_t b = 0; b < read; ++b) {
         if (buffer[b] != '\r') {
           hash = (hash ^ buffer[b]) * UINT64_C(1099511628211);
         }
       }
     }
-    fclose(file);
+    file_close(&file);
     if (hash == doc->disk_fingerprint) {
       continue;
     }
@@ -807,7 +818,8 @@ static const Vec4 s_colors[CODE_COLOR_COUNT] = {
 static bool8_t code_in_list(const char *const *list, uint32_t count,
                             const uint8_t *word, uint32_t length) {
   for (uint32_t i = 0; i < count; ++i) {
-    if (strlen(list[i]) == length && !MemCompare(list[i], word, length)) {
+    if (string_length(list[i]) == length &&
+        !MemCompare(list[i], word, length)) {
       return true_v;
     }
   }
@@ -829,13 +841,13 @@ static int32_t code_identifier_color(const uint8_t *word, uint32_t length,
   bool8_t upper = false_v;
   bool8_t lower = false_v;
   for (uint32_t i = 0; i < length; ++i) {
-    upper |= isupper(word[i]) != 0;
-    lower |= islower(word[i]) != 0;
+    upper |= vkr_char_is_upper(word[i]) != 0;
+    lower |= vkr_char_is_lower(word[i]) != 0;
   }
   if (upper && !lower && length > 1u) {
     return CODE_COLOR_MACRO;
   }
-  if (isupper(word[0]) && lower) {
+  if (vkr_char_is_upper(word[0]) && lower) {
     return CODE_COLOR_TYPE;
   }
   if (length > 2u && !MemCompare(word + length - 2u, "_t", 2u)) {
@@ -875,7 +887,7 @@ static uint32_t code_tokenize(const uint8_t *text, uint32_t length,
     while (end < length && text[end] == ' ') {
       ++end;
     }
-    while (end < length && isalpha(text[end])) {
+    while (end < length && vkr_char_is_alpha(text[end])) {
       ++end;
     }
     CODE_SPAN(first, end, CODE_COLOR_PREPROCESSOR);
@@ -920,19 +932,20 @@ static uint32_t code_tokenize(const uint8_t *text, uint32_t length,
       i = end;
       continue;
     }
-    if (isdigit(c) || (c == '.' && isdigit(next))) {
+    if (vkr_char_is_digit(c) || (c == '.' && vkr_char_is_digit(next))) {
       uint32_t end = i + 1u;
-      while (end < length &&
-             (isalnum(text[end]) || text[end] == '.' || text[end] == '_')) {
+      while (end < length && (vkr_char_is_alnum(text[end]) ||
+                              text[end] == '.' || text[end] == '_')) {
         ++end;
       }
       CODE_SPAN(i, end, CODE_COLOR_NUMBER);
       i = end;
       continue;
     }
-    if (isalpha(c) || c == '_') {
+    if (vkr_char_is_alpha(c) || c == '_') {
       uint32_t end = i + 1u;
-      while (end < length && (isalnum(text[end]) || text[end] == '_')) {
+      while (end < length &&
+             (vkr_char_is_alnum(text[end]) || text[end] == '_')) {
         ++end;
       }
       uint32_t after = end;
@@ -977,10 +990,10 @@ static void code_symbols_add(CodeSymbols *symbols, const char *name,
   }
   for (uint32_t i = 0; i < symbols->count; ++i) {
     const CodeSymbol *symbol = &symbols->items[i];
-    if (strlen(symbol->name) == length &&
+    if (string_length(symbol->name) == length &&
         !MemCompare(symbol->name, name, length) &&
         (symbol->owner == owner ||
-         (symbol->owner && owner && !strcmp(symbol->owner, owner)))) {
+         (symbol->owner && owner && string_equals(symbol->owner, owner)))) {
       return;
     }
   }
@@ -1018,7 +1031,7 @@ static uint32_t code_squeeze(const uint8_t *text, uint32_t length, char *out,
   uint32_t count = 0u;
   bool8_t space = false_v;
   for (uint32_t i = 0; i < length && count + 1u < capacity; ++i) {
-    const bool8_t blank = isspace(text[i]) != 0;
+    const bool8_t blank = vkr_char_is_space(text[i]) != 0;
     if (blank && (space || !count)) {
       continue;
     }
@@ -1076,7 +1089,8 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
           ++at;
         }
         uint32_t end = at;
-        while (end < length && (isalnum(text[end]) || text[end] == '_')) {
+        while (end < length &&
+               (vkr_char_is_alnum(text[end]) || text[end] == '_')) {
           ++end;
         }
         uint32_t line_end = end;
@@ -1102,40 +1116,43 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
         const uint32_t head_length =
             code_squeeze(text + statement, i - statement, head, sizeof(head));
         head[head_length] = '\0';
-        const char *keyword = strstr(head, "struct ");
-        const char *enumeration = strstr(head, "enum ");
+        const char *keyword = string_find(head, "struct ");
+        const char *enumeration = string_find(head, "enum ");
         tag[0] = '\0';
         if (keyword || enumeration) {
           const char *name = keyword ? keyword + 7 : enumeration + 5;
           uint32_t n = 0u;
-          while (name[n] &&
-                 (isalnum((unsigned char)name[n]) || name[n] == '_') &&
-                 n + 1u < sizeof(tag)) {
+          while (
+              name[n] &&
+              (vkr_char_is_alnum((unsigned char)name[n]) || name[n] == '_') &&
+              n + 1u < sizeof(tag)) {
             tag[n] = name[n];
             ++n;
           }
           tag[n] = '\0';
         }
         in_enum = enumeration != NULL && keyword == NULL;
-        const char *paren = keyword || enumeration ? NULL : strchr(head, '(');
-        if (paren && !strchr(head, '=')) {
+        const char *paren =
+            keyword || enumeration ? NULL : string_find_char(head, '(');
+        if (paren && !string_find_char(head, '=')) {
           const char *name = paren;
           while (name > head && name[-1] == ' ') {
             --name;
           }
           const char *end = name;
-          while (name > head &&
-                 (isalnum((unsigned char)name[-1]) || name[-1] == '_')) {
+          while (name > head && (vkr_char_is_alnum((unsigned char)name[-1]) ||
+                                 name[-1] == '_')) {
             --name;
           }
           code_symbols_add(symbols, name, (uint32_t)(end - name), head,
                            head_length, NULL, CODE_SYMBOL_FUNCTION);
         }
-        owner = tag[0] ? code_symbols_copy(symbols, tag, (uint32_t)strlen(tag))
+        owner = tag[0] ? code_symbols_copy(symbols, tag,
+                                           (uint32_t)string_length(tag))
                        : NULL;
         if (tag[0]) {
-          code_symbols_add(symbols, tag, (uint32_t)strlen(tag), NULL, 0u, NULL,
-                           CODE_SYMBOL_TYPE);
+          code_symbols_add(symbols, tag, (uint32_t)string_length(tag), NULL, 0u,
+                           NULL, CODE_SYMBOL_TYPE);
         }
       }
       ++depth;
@@ -1149,11 +1166,11 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
     }
     if (depth == 1u && in_enum && (c == ',' || c == '}')) {
       uint32_t at = statement;
-      while (at < i && !(isalpha(text[at]) || text[at] == '_')) {
+      while (at < i && !(vkr_char_is_alpha(text[at]) || text[at] == '_')) {
         ++at;
       }
       uint32_t end = at;
-      while (end < i && (isalnum(text[end]) || text[end] == '_')) {
+      while (end < i && (vkr_char_is_alnum(text[end]) || text[end] == '_')) {
         ++end;
       }
       code_symbols_add(symbols, (const char *)text + at, end - at, NULL, 0u,
@@ -1171,43 +1188,52 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
     if (depth == 1u && owner && !in_enum) {
       /* A member: `(*name)(` for function pointers, else the last name
          before an array bound or bit field. */
-      const char *name = strstr(detail, "(*");
+      const char *name = string_find(detail, "(*");
       uint32_t name_length = 0u;
       if (name) {
         name += 2;
       } else {
-        const char *cut = strpbrk(detail, "[:");
+        /* The first '[' or ':', whichever comes earlier. */
+        const char *bracket = string_find_char(detail, '[');
+        const char *colon = string_find_char(detail, ':');
+        const char *cut = bracket;
+        if (!cut || (colon && colon < cut)) {
+          cut = colon;
+        }
         const char *limit = cut ? cut : detail + detail_length;
         name = limit;
-        while (name > detail &&
-               (isalnum((unsigned char)name[-1]) || name[-1] == '_')) {
+        while (name > detail && (vkr_char_is_alnum((unsigned char)name[-1]) ||
+                                 name[-1] == '_')) {
           --name;
         }
         while (name > detail && name[-1] == ' ' && name == limit) {
           --name;
         }
       }
-      while (name[name_length] && (isalnum((unsigned char)name[name_length]) ||
-                                   name[name_length] == '_')) {
+      while (name[name_length] &&
+             (vkr_char_is_alnum((unsigned char)name[name_length]) ||
+              name[name_length] == '_')) {
         ++name_length;
       }
       code_symbols_add(symbols, name, name_length, detail, detail_length, owner,
                        CODE_SYMBOL_MEMBER);
     } else if (depth == 0u) {
-      const char *paren = strchr(detail, '(');
-      if (!strncmp(detail, "typedef", 7) || (paren && strstr(detail, "(*"))) {
+      const char *paren = string_find_char(detail, '(');
+      if (string_n_equals(detail, "typedef", 7) ||
+          (paren && string_find(detail, "(*"))) {
         /* typedef ... Name; or `} Name;` after a struct body. */
         const char *end = detail + detail_length;
         const char *name = end;
-        if (paren && strstr(detail, "(*")) {
-          name = strstr(detail, "(*") + 2;
+        if (paren && string_find(detail, "(*")) {
+          name = string_find(detail, "(*") + 2;
           end = name;
-          while (*end && (isalnum((unsigned char)*end) || *end == '_')) {
+          while (*end &&
+                 (vkr_char_is_alnum((unsigned char)*end) || *end == '_')) {
             ++end;
           }
         } else {
-          while (name > detail &&
-                 (isalnum((unsigned char)name[-1]) || name[-1] == '_')) {
+          while (name > detail && (vkr_char_is_alnum((unsigned char)name[-1]) ||
+                                   name[-1] == '_')) {
             --name;
           }
         }
@@ -1219,8 +1245,8 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
           --name;
         }
         const char *end = name;
-        while (name > detail &&
-               (isalnum((unsigned char)name[-1]) || name[-1] == '_')) {
+        while (name > detail && (vkr_char_is_alnum((unsigned char)name[-1]) ||
+                                 name[-1] == '_')) {
           --name;
         }
         code_symbols_add(symbols, name, (uint32_t)(end - name), detail,
@@ -1232,7 +1258,7 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
         const char *name = detail;
         uint32_t name_length = 0u;
         while (name[name_length] &&
-               (isalnum((unsigned char)name[name_length]) ||
+               (vkr_char_is_alnum((unsigned char)name[name_length]) ||
                 name[name_length] == '_')) {
           ++name_length;
         }
@@ -1251,23 +1277,28 @@ static void code_symbols_parse(CodeSymbols *symbols, uint8_t *text,
 
 static void code_symbols_parse_file(VkrEditorCode *code, CodeSymbols *symbols,
                                     const char *path) {
-  FILE *file = file_fopen(path, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return;
   }
   uint8_t *text = NULL;
-  long size = 0;
-  if (fseek(file, 0, SEEK_END) == 0 && (size = ftell(file)) > 0 &&
-      size < (long)CODE_FILE_LIMIT && fseek(file, 0, SEEK_SET) == 0) {
-    text = vkr_allocator_alloc(code->allocator, (uint64_t)size + 1u,
+  uint64_t size = 0u;
+  if (file_remaining_size(&file, &size) == FILE_ERROR_NONE && size > 0u &&
+      size < CODE_FILE_LIMIT) {
+    text = vkr_allocator_alloc(code->allocator, size + 1u,
                                VKR_ALLOCATOR_MEMORY_TAG_FILE);
-    if (text && fread(text, 1u, (size_t)size, file) == (size_t)size) {
+    uint64_t read = 0u;
+    if (text && file_read_into(&file, text, size, &read) == FILE_ERROR_NONE &&
+        read == size) {
       code_symbols_parse(symbols, text, (uint32_t)size);
     }
   }
-  fclose(file);
+  file_close(&file);
   if (text) {
-    vkr_allocator_free(code->allocator, text, (uint64_t)size + 1u,
+    vkr_allocator_free(code->allocator, text, size + 1u,
                        VKR_ALLOCATOR_MEMORY_TAG_FILE);
   }
 }
@@ -1287,16 +1318,18 @@ static void code_load_sdk(VkrEditorCode *code) {
   const char *root = vkr_editor_script_sdk_dir();
   for (uint32_t i = 0; i < ArrayCount(headers); ++i) {
     char path[VKR_EDITOR_SCRIPT_PATH];
-    snprintf(path, sizeof(path), "%s/%s", root, headers[i]);
+    string_format(path, sizeof(path), "%s/%s", root, headers[i]);
     code_symbols_parse_file(code, &code->sdk, path);
   }
   for (uint32_t i = 0; i < ArrayCount(s_keywords); ++i) {
-    code_symbols_add(&code->sdk, s_keywords[i], (uint32_t)strlen(s_keywords[i]),
-                     NULL, 0u, NULL, CODE_SYMBOL_KEYWORD);
+    code_symbols_add(&code->sdk, s_keywords[i],
+                     (uint32_t)string_length(s_keywords[i]), NULL, 0u, NULL,
+                     CODE_SYMBOL_KEYWORD);
   }
   for (uint32_t i = 0; i < ArrayCount(s_types); ++i) {
-    code_symbols_add(&code->sdk, s_types[i], (uint32_t)strlen(s_types[i]), NULL,
-                     0u, NULL, CODE_SYMBOL_TYPE);
+    code_symbols_add(&code->sdk, s_types[i],
+                     (uint32_t)string_length(s_types[i]), NULL, 0u, NULL,
+                     CODE_SYMBOL_TYPE);
   }
 }
 
@@ -1315,9 +1348,9 @@ static const char *code_owner_of(const CodeDocument *doc, uint32_t before,
       {"move", "VkrCharacterMove"}, {"type", "VkrComponentDesc"},
   };
   for (uint32_t i = 0; i < ArrayCount(known); ++i) {
-    if (strlen(known[i][0]) == length &&
+    if (string_length(known[i][0]) == length &&
         !MemCompare(known[i][0], name, length)) {
-      snprintf(out, capacity, "%s", known[i][1]);
+      string_format(out, capacity, "%s", known[i][1]);
       return out;
     }
   }
@@ -1338,7 +1371,7 @@ static const char *code_owner_of(const CodeDocument *doc, uint32_t before,
       --start;
     }
     if (cursor > start && cursor - start < capacity &&
-        isupper(doc->text[start])) {
+        vkr_char_is_upper(doc->text[start])) {
       MemCopy(out, doc->text + start, cursor - start);
       out[cursor - start] = '\0';
       return out;
@@ -1350,7 +1383,8 @@ static const char *code_owner_of(const CodeDocument *doc, uint32_t before,
 static bool8_t code_prefix_match(const char *name, const uint8_t *prefix,
                                  uint32_t length) {
   for (uint32_t i = 0; i < length; ++i) {
-    if (!name[i] || tolower((unsigned char)name[i]) != tolower(prefix[i])) {
+    if (!name[i] || vkr_char_to_lower((unsigned char)name[i]) !=
+                        vkr_char_to_lower(prefix[i])) {
       return false_v;
     }
   }
@@ -1361,12 +1395,12 @@ static void code_completion_offer(CodeCompletion *completion,
                                   const CodeSymbol *symbol,
                                   const uint8_t *prefix, uint32_t length) {
   if (!code_prefix_match(symbol->name, prefix, length) ||
-      (strlen(symbol->name) == length &&
+      (string_length(symbol->name) == length &&
        !MemCompare(symbol->name, prefix, length))) {
     return;
   }
   for (uint32_t i = 0; i < completion->count; ++i) {
-    if (!strcmp(completion->items[i].name, symbol->name)) {
+    if (string_equals(completion->items[i].name, symbol->name)) {
       return;
     }
   }
@@ -1379,7 +1413,8 @@ static void code_completion_offer(CodeCompletion *completion,
     if (other_exact && !exact) {
       break;
     }
-    if (other_exact == exact && strlen(other->name) <= strlen(symbol->name)) {
+    if (other_exact == exact &&
+        string_length(other->name) <= string_length(symbol->name)) {
       break;
     }
     --at;
@@ -1399,12 +1434,12 @@ static void code_completion_offer(CodeCompletion *completion,
 static void code_load_headers(VkrEditorCode *code, const char *path) {
   const uint64_t revision = vkr_editor_scripts_revision(code->scripts);
   if (code->headers_loaded && revision == code->headers_revision &&
-      !strcmp(code->headers_path, path)) {
+      string_equals(code->headers_path, path)) {
     return;
   }
   code->headers_loaded = true_v;
   code->headers_revision = revision;
-  snprintf(code->headers_path, sizeof(code->headers_path), "%s", path);
+  string_format(code->headers_path, sizeof(code->headers_path), "%s", path);
   if (!code_symbols_reset(&code->headers)) {
     return;
   }
@@ -1414,13 +1449,13 @@ static void code_load_headers(VkrEditorCode *code, const char *path) {
   const uint32_t file_count = vkr_editor_scripts_file_count(code->scripts);
   for (uint32_t i = 0; i < file_count; ++i) {
     const VkrEditorScriptFile *file = vkr_editor_scripts_file(code->scripts, i);
-    const size_t length = strlen(file->name);
-    if (length < 3u || strcmp(file->name + length - 2u, ".h")) {
+    const size_t length = string_length(file->name);
+    if (length < 3u || !string_equals(file->name + length - 2u, ".h")) {
       continue;
     }
     for (uint32_t f = 0; f < folder_count; ++f) {
-      const size_t folder = strlen(folders[f]);
-      if (!strncmp(file->path, folders[f], folder) &&
+      const size_t folder = string_length(folders[f]);
+      if (string_n_equals(file->path, folders[f], folder) &&
           (file->path[folder] == '/' || file->path[folder] == '\\')) {
         code_symbols_parse_file(code, &code->headers, file->path);
         break;
@@ -1445,7 +1480,7 @@ static void code_complete(VkrEditorCode *code, CodeDocument *doc,
                         doc->text[start - 2u] == '-';
   const bool8_t dot = start >= 1u && doc->text[start - 1u] == '.';
   if ((!forced && !arrow && !dot && length < 2u) ||
-      (length && isdigit(prefix[0])) || doc->caret != doc->anchor) {
+      (length && vkr_char_is_digit(prefix[0])) || doc->caret != doc->anchor) {
     completion->open = false_v;
     return;
   }
@@ -1459,7 +1494,7 @@ static void code_complete(VkrEditorCode *code, CodeDocument *doc,
       code_symbols_parse(&code->local, copy, doc->length);
       /* Every identifier of the file, for locals the scan does not name. */
       for (uint32_t i = 0; i < doc->length;) {
-        if ((isalpha(doc->text[i]) || doc->text[i] == '_') &&
+        if ((vkr_char_is_alpha(doc->text[i]) || doc->text[i] == '_') &&
             (i == 0u || !code_word_byte(doc->text[i - 1u]))) {
           uint32_t end = i;
           while (end < doc->length && code_word_byte(doc->text[end])) {
@@ -1495,7 +1530,7 @@ static void code_complete(VkrEditorCode *code, CodeDocument *doc,
       for (uint32_t i = 0; i < sources[s]->count; ++i) {
         const CodeSymbol *symbol = &sources[s]->items[i];
         if (symbol->kind == CODE_SYMBOL_MEMBER &&
-            (!type || (symbol->owner && !strcmp(symbol->owner, type)))) {
+            (!type || (symbol->owner && string_equals(symbol->owner, type)))) {
           code_completion_offer(completion, symbol, prefix, length);
         }
       }
@@ -1521,7 +1556,7 @@ static void code_accept_completion(VkrEditorCode *code, CodeDocument *doc) {
   const char *name = completion->items[completion->selected].name;
   code_begin_edit(code, doc, CODE_EDIT_OTHER);
   (void)code_replace(code, doc, completion->start, doc->caret,
-                     (const uint8_t *)name, (uint32_t)strlen(name));
+                     (const uint8_t *)name, (uint32_t)string_length(name));
   completion->open = false_v;
 }
 
@@ -1805,8 +1840,8 @@ static void code_mouse(VkrEditorCode *code, CodeDocument *doc, VkrUiSystem *ui,
   const float32_t text_left = rect.x + gutter_px + 4.0f * ui->content_scale -
                               doc->scroll_x_pt * ui->content_scale;
   const float32_t y = (float32_t)ui->mouse_y - rect.y;
-  const int64_t line =
-      (int64_t)doc->first_line + (int64_t)floorf(y / Max(1.0f, cell_px.y));
+  const int64_t line = (int64_t)doc->first_line +
+                       (int64_t)vkr_floor_f32(y / Max(1.0f, cell_px.y));
   const uint32_t target_line =
       (uint32_t)Max((int64_t)0, Min((int64_t)doc->line_count - 1, line));
   const float32_t column_f =
@@ -1953,8 +1988,8 @@ static void code_build_tabs(VkrEditorCode *code, VkrEditorUi *editor,
     tab.icon = VKR_UI_ICON_CODE;
     tab.icon_size_pt = 13.0f;
     tab.icon_color = (Vec4){0.80f, 0.66f, 0.98f, active ? 1.0f : 0.7f};
-    tab.tooltip =
-        string8_create_from_cstr((const uint8_t *)doc->path, strlen(doc->path));
+    tab.tooltip = string8_create_from_cstr((const uint8_t *)doc->path,
+                                           string_length(doc->path));
     const String8 label =
         string8_create_formatted(ui->frame_allocator, "%s%s", doc->name,
                                  doc->dirty ? " \xe2\x80\xa2" : "");
@@ -2066,8 +2101,8 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
   if (vkr_ui_button(ui, string8_lit("create"), string8_lit("Create"), &ok) ||
       (enter && code->name_length)) {
     char name_text[64];
-    snprintf(name_text, sizeof(name_text), "%.*s", (int32_t)code->name_length,
-             (const char *)code->name_text);
+    string_format(name_text, sizeof(name_text), "%.*s",
+                  (int32_t)code->name_length, (const char *)code->name_text);
     char path[VKR_EDITOR_SCRIPT_PATH];
     char error[160];
     if (vkr_editor_scripts_create_module(editor->scripts, name_text, path,
@@ -2075,16 +2110,16 @@ static void code_build_naming(VkrEditorCode *code, VkrEditorUi *editor,
       /* An object waiting for a new script gets this one once it loads. */
       if (editor->script_attach_entity.u64 &&
           !editor->script_attach_module[0]) {
-        snprintf(editor->script_attach_module,
-                 sizeof(editor->script_attach_module), "%s", name_text);
+        string_format(editor->script_attach_module,
+                      sizeof(editor->script_attach_module), "%s", name_text);
       }
       code->naming = false_v;
       code->name_length = 0u;
-      snprintf(code->status, sizeof(code->status), "Created %s; building it",
-               name_text);
+      string_format(code->status, sizeof(code->status),
+                    "Created %s; building it", name_text);
       (void)vkr_editor_code_open(code, editor, path);
     } else {
-      snprintf(code->status, sizeof(code->status), "%s", error);
+      string_format(code->status, sizeof(code->status), "%s", error);
     }
   }
   VkrUiWidgetConfig cancel = code_button(3u, 0u);
@@ -2107,12 +2142,15 @@ static void code_build_view(VkrEditorCode *code, VkrEditorUi *editor,
   const Vec2 cell = vkr_ui_code_cell_size(ui, editor->mono_font, CODE_FONT_PT);
   const float32_t gutter_pt =
       cell.x *
-          (float32_t)Max(3u, (uint32_t)log10((double)doc->line_count) + 1u) +
+          (float32_t)Max(
+              3u, (uint32_t)vkr_log10_f64((float64_t)doc->line_count) + 1u) +
       22.0f;
   const float32_t height_pt = code->view_rect.height / ui->content_scale;
-  const uint32_t visible = Min(
-      CODE_VISIBLE_MAX, (uint32_t)Max(1.0f, ceilf(height_pt / CODE_LINE_PT)));
-  code->visible_lines = (uint32_t)Max(1.0f, floorf(height_pt / CODE_LINE_PT));
+  const uint32_t visible =
+      Min(CODE_VISIBLE_MAX,
+          (uint32_t)Max(1.0f, vkr_ceil_f32(height_pt / CODE_LINE_PT)));
+  code->visible_lines =
+      (uint32_t)Max(1.0f, vkr_floor_f32(height_pt / CODE_LINE_PT));
   code_reveal(doc, code->visible_lines,
               code->view_rect.width / ui->content_scale - gutter_pt - 8.0f,
               cell.x);
@@ -2133,7 +2171,8 @@ static void code_build_view(VkrEditorCode *code, VkrEditorUi *editor,
   const uint32_t caret_line = code_line_of(doc, doc->caret);
   const bool8_t blink =
       !code->focused ||
-      fmod(vkr_platform_get_absolute_time() - doc->last_edit_time, 1.06) < 0.62;
+      vkr_fmod_f64(vkr_platform_get_absolute_time() - doc->last_edit_time,
+                   1.06) < 0.62;
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t line = doc->first_line + i;
     const uint32_t start = doc->lines[line];
@@ -2212,8 +2251,8 @@ static void code_build_view(VkrEditorCode *code, VkrEditorUi *editor,
   if (mouse) {
     code_mouse(code, doc, ui,
                (Vec2){cell.x * ui->content_scale,
-                      roundf(CODE_LINE_PT * ui->content_scale)},
-               roundf(gutter_pt * ui->content_scale));
+                      vkr_round_f32(CODE_LINE_PT * ui->content_scale)},
+               vkr_round_f32(gutter_pt * ui->content_scale));
   }
 }
 
@@ -2235,7 +2274,8 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
   }
   const float32_t gutter_pt =
       cell.x *
-          (float32_t)Max(3u, (uint32_t)log10((double)doc->line_count) + 1u) +
+          (float32_t)Max(
+              3u, (uint32_t)vkr_log10_f64((float64_t)doc->line_count) + 1u) +
       22.0f;
   const float32_t scale = ui->content_scale;
   float32_t x_pt = (code->view_rect.x - origin.x) / scale + gutter_pt + 4.0f +
@@ -2271,9 +2311,9 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
   popup.style.padding_pt = (VkrUiEdges){5, 5, 5, 5};
   popup.style.gap_pt = 0.0f;
   /* Wide enough for the longest name or the signature, within bounds. */
-  size_t longest = detail ? strlen(detail) : 0u;
+  size_t longest = detail ? string_length(detail) : 0u;
   for (uint32_t i = 0; i < completion->count; ++i) {
-    longest = Max(longest, strlen(completion->items[i].name));
+    longest = Max(longest, string_length(completion->items[i].name));
   }
   const Vec2 size = {
       vkr_clamp_f32((float32_t)longest * cell.x + 58.0f, 220.0f, 520.0f),
@@ -2345,7 +2385,7 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
     vkr_ui_label(
         ui, string8_lit("name"),
         string8_create_from_cstr((const uint8_t *)completion->items[i].name,
-                                 strlen(completion->items[i].name)),
+                                 string_length(completion->items[i].name)),
         &name);
     if (clicked) {
       completion->selected = i;
@@ -2362,10 +2402,10 @@ static void code_build_completion(VkrEditorCode *code, VkrEditorUi *editor,
     hint.text.font = editor->mono_font;
     hint.placement.align = VKR_UI_ALIGN_CENTER;
     hint.placement.margin_pt.left = 8.0f;
-    vkr_ui_label(
-        ui, string8_lit("detail"),
-        string8_create_from_cstr((const uint8_t *)detail, strlen(detail)),
-        &hint);
+    vkr_ui_label(ui, string8_lit("detail"),
+                 string8_create_from_cstr((const uint8_t *)detail,
+                                          string_length(detail)),
+                 &hint);
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -2408,7 +2448,7 @@ static void code_build_problems(VkrEditorCode *code, VkrEditorUi *editor,
     item.style.text_color = diagnostic->error ? theme->error : theme->warning;
     item.icon = VKR_UI_ICON_WARNING_FILL;
     item.icon_size_pt = 11.0f;
-    const char *name = strrchr(diagnostic->path, '/');
+    const char *name = string_get_last_char_occurrence(diagnostic->path, '/');
     const String8 text = string8_create_formatted(
         ui->frame_allocator, "%s:%u:%u  %s", name ? name + 1 : diagnostic->path,
         diagnostic->line, diagnostic->column, diagnostic->message);
@@ -2459,7 +2499,7 @@ static void code_build_status(VkrEditorCode *code, VkrEditorUi *editor,
     }
   } else {
     text = string8_create_from_cstr((const uint8_t *)code->status,
-                                    strlen(code->status));
+                                    string_length(code->status));
   }
   VkrUiWidgetConfig status = vkr_editor_text_config(theme->font_caption, color);
   status.placement.column = 0u;
@@ -2619,11 +2659,12 @@ bool8_t vkr_editor_code_open(VkrEditorCode *code, VkrEditorUi *editor,
     return false_v;
   }
   MemZero(doc, sizeof(*doc));
-  snprintf(doc->path, sizeof(doc->path), "%s", path);
-  const char *name = strrchr(path, '/');
-  snprintf(doc->name, sizeof(doc->name), "%s", name ? name + 1 : path);
+  string_format(doc->path, sizeof(doc->path), "%s", path);
+  const char *name = string_get_last_char_occurrence(path, '/');
+  string_format(doc->name, sizeof(doc->name), "%s", name ? name + 1 : path);
   if (!code_reserve(code, doc, 0u) || !code_read_file(code, doc)) {
-    snprintf(code->status, sizeof(code->status), "Cannot open %s", doc->name);
+    string_format(code->status, sizeof(code->status), "Cannot open %s",
+                  doc->name);
     code_document_free(code, doc);
     return false_v;
   }

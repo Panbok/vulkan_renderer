@@ -8,10 +8,6 @@
 #include "platform/vkr_local_socket.h"
 #include "platform/vkr_platform.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #define EDITOR_BAKERY_SERVICE_WATCHES 16u
 #define EDITOR_BAKERY_SERVICE_PATHS 16u
 #define EDITOR_BAKERY_SERVICE_ARGUMENTS 24u
@@ -160,8 +156,8 @@ static uint32_t editor_bakery_service_quote(char *out, uint32_t capacity,
       out[length++] = '\\';
       out[length++] = *c;
     } else if ((uint8_t)*c < 0x20u) {
-      length += (uint32_t)snprintf(out + length, capacity - length, "\\u%04x",
-                                   (uint32_t)(uint8_t)*c);
+      length += (uint32_t)string_format(out + length, capacity - length,
+                                        "\\u%04x", (uint32_t)(uint8_t)*c);
     } else {
       out[length++] = *c;
     }
@@ -176,7 +172,8 @@ static uint32_t editor_bakery_service_quote(char *out, uint32_t capacity,
 static uint32_t editor_bakery_service_arguments(const EditorBakeryWatch *watch,
                                                 char *line, uint32_t capacity,
                                                 uint32_t length) {
-  length += (uint32_t)snprintf(line + length, capacity - length, ",\"argv\":[");
+  length +=
+      (uint32_t)string_format(line + length, capacity - length, ",\"argv\":[");
   for (uint32_t i = 0u; i < watch->argument_count && length < capacity; ++i) {
     if (i && length + 1u < capacity) {
       line[length++] = ',';
@@ -194,7 +191,7 @@ static void editor_bakery_service_register(EditorBakeryService *service,
                                            EditorBakeryWatch *watch) {
   static char line[64u * 1024u];
   watch->request = ++service->next_request;
-  uint32_t length = (uint32_t)snprintf(
+  uint32_t length = (uint32_t)string_format(
       line, sizeof(line), "{\"v\":1,\"id\":%llu,\"req\":\"watch\",\"paths\":[",
       (unsigned long long)watch->request);
   for (uint32_t i = 0u; i < watch->path_count; ++i) {
@@ -210,7 +207,8 @@ static void editor_bakery_service_register(EditorBakeryService *service,
   if (watch->argument_count) {
     length = editor_bakery_service_arguments(watch, line, sizeof(line), length);
   }
-  length += (uint32_t)snprintf(line + length, sizeof(line) - length, "}\n");
+  length +=
+      (uint32_t)string_format(line + length, sizeof(line) - length, "}\n");
   if (length >= sizeof(line) ||
       !editor_bakery_service_send(service, line, length)) {
     editor_bakery_service_disconnect(service);
@@ -222,11 +220,12 @@ static void editor_bakery_service_register(EditorBakeryService *service,
   /* The previous daemon stopped before this watch's rebuild replied. */
   watch->rerun = ++service->next_request;
   MemZero(&watch->building, sizeof(watch->building));
-  length = (uint32_t)snprintf(line, sizeof(line),
-                              "{\"v\":1,\"id\":%llu,\"req\":\"run\"",
-                              (unsigned long long)watch->rerun);
+  length = (uint32_t)string_format(line, sizeof(line),
+                                   "{\"v\":1,\"id\":%llu,\"req\":\"run\"",
+                                   (unsigned long long)watch->rerun);
   length = editor_bakery_service_arguments(watch, line, sizeof(line), length);
-  length += (uint32_t)snprintf(line + length, sizeof(line) - length, "}\n");
+  length +=
+      (uint32_t)string_format(line + length, sizeof(line) - length, "}\n");
   if (length >= sizeof(line) ||
       !editor_bakery_service_send(service, line, length)) {
     editor_bakery_service_disconnect(service);
@@ -256,10 +255,10 @@ static void editor_bakery_service_connect(EditorBakeryService *service) {
 static bool8_t editor_bakery_service_field(const char *line, uint32_t length,
                                            const char *name, int64_t *out) {
   char key[32];
-  const int key_length = snprintf(key, sizeof(key), "\"%s\":", name);
+  const int key_length = string_format(key, sizeof(key), "\"%s\":", name);
   const char *found = NULL;
   for (const char *c = line; c + key_length <= line + length; ++c) {
-    if (memcmp(c, key, (size_t)key_length) == 0) {
+    if (MemCompare(c, key, (size_t)key_length) == 0) {
       found = c + key_length;
       break;
     }
@@ -267,16 +266,17 @@ static bool8_t editor_bakery_service_field(const char *line, uint32_t length,
   if (!found || (*found != '-' && (*found < '0' || *found > '9'))) {
     return false_v;
   }
-  *out = strtoll(found, NULL, 10);
+  *out = string_parse_i64(found, NULL);
   return true_v;
 }
 
 static bool8_t editor_bakery_service_is(const char *line, uint32_t length,
                                         const char *event) {
   char key[48];
-  const int key_length = snprintf(key, sizeof(key), "\"ev\":\"%s\"", event);
+  const int key_length =
+      string_format(key, sizeof(key), "\"ev\":\"%s\"", event);
   for (const char *c = line; c + key_length <= line + length; ++c) {
-    if (memcmp(c, key, (size_t)key_length) == 0) {
+    if (MemCompare(c, key, (size_t)key_length) == 0) {
       return true_v;
     }
   }
@@ -300,12 +300,12 @@ static const char *editor_bakery_service_decode(const char *text,
                              : (uint8_t)escape;
       if (escape == 'u' && end - text >= 4) {
         char hex[5] = {text[0], text[1], text[2], text[3], 0};
-        code = (uint32_t)strtoul(hex, NULL, 16);
+        code = (uint32_t)string_parse_u64_hex(hex, NULL);
         text += 4;
         if (code >= 0xD800u && code < 0xDC00u && end - text >= 6 &&
             text[0] == '\\' && text[1] == 'u') {
           char low_hex[5] = {text[2], text[3], text[4], text[5], 0};
-          const uint32_t low = (uint32_t)strtoul(low_hex, NULL, 16);
+          const uint32_t low = (uint32_t)string_parse_u64_hex(low_hex, NULL);
           code = 0x10000u + ((code - 0xD800u) << 10) + (low - 0xDC00u);
           text += 6;
         }
@@ -366,7 +366,7 @@ editor_bakery_service_find(EditorBakeryService *service, const char *line,
 static void editor_bakery_service_changed(EditorBakeryWatch *watch,
                                           const char *line, uint32_t length) {
   const char *end = line + length;
-  const char *cursor = strstr(line, "\"paths\":[");
+  const char *cursor = string_find(line, "\"paths\":[");
   if (!cursor || cursor >= end) {
     return;
   }
@@ -379,8 +379,8 @@ static void editor_bakery_service_changed(EditorBakeryWatch *watch,
     char path[EDITOR_BAKERY_SERVICE_PATH];
     cursor = editor_bakery_service_decode(cursor + 1, end, path, sizeof(path));
     if (watch->change_count < EDITOR_BAKERY_SERVICE_CHANGES) {
-      snprintf(watch->changes[watch->change_count++],
-               EDITOR_BAKERY_SERVICE_PATH, "%s", path);
+      string_format(watch->changes[watch->change_count++],
+                    EDITOR_BAKERY_SERVICE_PATH, "%s", path);
     }
   }
 }
@@ -390,18 +390,18 @@ static void editor_bakery_service_changed(EditorBakeryWatch *watch,
 static void editor_bakery_service_diagnostic(const char *line,
                                              uint32_t length) {
   const char *end = line + length;
-  const char *severity = strstr(line, "\"severity\":\"error\"");
+  const char *severity = string_find(line, "\"severity\":\"error\"");
   if (!severity || severity >= end) {
     return;
   }
   char message[512] = {0};
   char source[512] = {0};
-  const char *field = strstr(line, "\"message\":\"");
+  const char *field = string_find(line, "\"message\":\"");
   if (field && field < end) {
     (void)editor_bakery_service_decode(field + 11, end, message,
                                        sizeof(message));
   }
-  field = strstr(line, "\"source\":\"");
+  field = string_find(line, "\"source\":\"");
   if (field && field < end) {
     (void)editor_bakery_service_decode(field + 10, end, source, sizeof(source));
   }
@@ -482,7 +482,7 @@ static void editor_bakery_service_read(EditorBakeryService *service) {
     for (;;) {
       const char *start = service->inbox + consumed;
       const char *newline =
-          memchr(start, '\n', service->inbox_length - consumed);
+          MemFindByte(start, '\n', service->inbox_length - consumed);
       if (!newline) {
         break;
       }
@@ -515,15 +515,15 @@ EditorBakeryService *editor_bakery_service_create(VkrAllocator *allocator) {
      the per-user directory beside the agent channel's socket. */
   const uint32_t pid = vkr_platform_get_process_id();
   char name[64];
-  snprintf(name, sizeof(name), "vkr-editor-%u.sock", pid);
+  string_format(name, sizeof(name), "vkr-editor-%u.sock", pid);
   const bool8_t socket_ok = vkr_local_socket_user_path(
       name, service->socket_path, sizeof(service->socket_path));
   char directory[EDITOR_BAKERY_SERVICE_PATH];
   const bool8_t directory_ok =
       vkr_local_socket_user_directory(directory, sizeof(directory));
   const int log_length =
-      snprintf(service->log_path, sizeof(service->log_path),
-               "%s/vkr-editor-%u.bakery.log", directory, pid);
+      string_format(service->log_path, sizeof(service->log_path),
+                    "%s/vkr-editor-%u.bakery.log", directory, pid);
   if (!socket_ok || !directory_ok || log_length <= 0 ||
       (uint64_t)log_length >= sizeof(service->log_path) ||
       !vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, service->root,
@@ -553,7 +553,7 @@ void editor_bakery_service_destroy(EditorBakeryService *service) {
   (void)vkr_local_socket_remove_path(service->socket_path);
   const FilePath log = {
       .path = string8_create_from_cstr((const uint8_t *)service->log_path,
-                                       strlen(service->log_path)),
+                                       string_length(service->log_path)),
       .type = FILE_PATH_TYPE_ABSOLUTE};
   (void)file_remove(&log);
   vkr_allocator_free(service->allocator, service, sizeof(*service),
@@ -669,10 +669,11 @@ uint32_t editor_bakery_service_watch(EditorBakeryService *service,
   }
   MemZero(watch, sizeof(*watch));
   for (uint32_t i = 0u; i < path_count; ++i) {
-    snprintf(watch->paths[i], EDITOR_BAKERY_SERVICE_PATH, "%s", paths[i]);
+    string_format(watch->paths[i], EDITOR_BAKERY_SERVICE_PATH, "%s", paths[i]);
   }
   for (uint32_t i = 0u; i < argument_count; ++i) {
-    snprintf(watch->arguments[i], EDITOR_BAKERY_SERVICE_PATH, "%s", argv[i]);
+    string_format(watch->arguments[i], EDITOR_BAKERY_SERVICE_PATH, "%s",
+                  argv[i]);
   }
   watch->path_count = path_count;
   watch->argument_count = argument_count;
@@ -702,7 +703,7 @@ void editor_bakery_service_unwatch(EditorBakeryService *service,
   }
   if (watch->daemon_watch && service->socket != VKR_LOCAL_SOCKET_INVALID) {
     char line[128];
-    const int length = snprintf(
+    const int length = string_format(
         line, sizeof(line),
         "{\"v\":1,\"id\":%llu,\"req\":\"unwatch\",\"watch\":%u}\n",
         (unsigned long long)++service->next_request, watch->daemon_watch);

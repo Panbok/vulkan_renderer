@@ -67,8 +67,12 @@
 
 #include <stdarg.h>
 #include <stddef.h>
+/* Engine units behind the libc boundary (ADR-118) see the SDK's types and
+ * call table only; the formatting helpers are for script modules. */
+#if !defined(VKR_LIBC_BOUNDARY)
 #include <stdio.h>
 #include <string.h>
+#endif
 
 /** Modules built for another SDK version are refused. */
 #define VKR_SDK_VERSION 9u
@@ -105,7 +109,11 @@ typedef struct VkrStr {
 
 /** A view of a NUL-terminated string; empty for NULL. */
 static inline VkrStr vkr_str_cstr(const char *text) {
-  return (VkrStr){.data = text, .length = text ? (uint64_t)strlen(text) : 0u};
+  uint64_t length = 0u;
+  while (text && text[length]) {
+    ++length;
+  }
+  return (VkrStr){.data = text, .length = length};
 }
 
 /** An entity in any loaded container. Zero is no entity. */
@@ -760,6 +768,7 @@ struct VkrCtx {
 
 #define VKR_SDK_MESSAGE_CAPACITY 512u
 
+#if !defined(VKR_LIBC_BOUNDARY)
 /* Formats into `buffer`, truncating to its capacity, and views the result. */
 static inline VkrStr vkr_sdk_vformat_(char *buffer, uint64_t capacity,
                                       const char *format, va_list args) {
@@ -794,6 +803,7 @@ static inline void vkr_fail(VkrCtx *ctx, const char *format, ...) {
   va_end(args);
   ctx->sdk->fail(ctx, text);
 }
+#endif
 
 /** Why the last failed SDK call failed; valid until the next call. */
 static inline VkrStr vkr_last_error(VkrCtx *ctx) {
@@ -814,6 +824,7 @@ static inline void *vkr_temp_alloc(VkrCtx *ctx, uint64_t size, uint64_t align) {
   ((Type *)vkr_temp_alloc((ctx), sizeof(Type) * (uint64_t)(count),             \
                           AlignOf(Type)))
 
+#if !defined(VKR_LIBC_BOUNDARY)
 /** A formatted string lasting until the hook returns; a NULL view when
  * exhausted. */
 static inline VkrStr vkr_format(VkrCtx *ctx, const char *format, ...) {
@@ -832,6 +843,7 @@ static inline VkrStr vkr_format(VkrCtx *ctx, const char *format, ...) {
   va_end(args);
   return (VkrStr){.data = text, .length = (uint64_t)length};
 }
+#endif
 
 /** A launch option, such as "gameplay" for the sample training content. */
 static inline bool8_t vkr_option(VkrCtx *ctx, VkrStr name) {
@@ -1172,6 +1184,7 @@ static inline void vkr_set_camera(VkrCtx *ctx, Vec3 position,
   ctx->sdk->set_camera(ctx, position, yaw_degrees, pitch_degrees);
 }
 
+#if !defined(VKR_LIBC_BOUNDARY)
 /** From late_update: adds formatted lines to this frame's overlay. */
 static inline void vkr_hud(VkrCtx *ctx, const char *format, ...) {
   char buffer[VKR_SDK_MESSAGE_CAPACITY];
@@ -1181,6 +1194,7 @@ static inline void vkr_hud(VkrCtx *ctx, const char *format, ...) {
   va_end(args);
   ctx->sdk->hud_text(ctx, text);
 }
+#endif
 
 // =============================================================================
 // Physics

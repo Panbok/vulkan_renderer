@@ -201,10 +201,10 @@ static void editor_dock_view_switcher(VkrEditorUi *editor,
       button.icon_color = selected ? theme->accent : theme->text_secondary;
       button.tooltip = vkr_editor_view_tooltip((VkrEditorView)view);
       const char *name = vkr_editor_view_name((VkrEditorView)view);
-      if (vkr_ui_button(
-              ui, string8_lit("select"),
-              string8_create_from_cstr((const uint8_t *)name, strlen(name)),
-              &button) &&
+      if (vkr_ui_button(ui, string8_lit("select"),
+                        string8_create_from_cstr((const uint8_t *)name,
+                                                 string_length(name)),
+                        &button) &&
           !selected) {
         vkr_editor_view_show(editor, frame, editor->workbenches.active,
                              (VkrEditorView)view);

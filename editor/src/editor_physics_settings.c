@@ -2,8 +2,6 @@
 
 #include "editor_internal.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
-#include <stdio.h>
-#include <string.h>
 
 #define SETTINGS_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 
@@ -39,7 +37,7 @@ static VkrUiWidgetConfig settings_widget(float32_t x, float32_t y,
 }
 
 static String8 settings_text(const char *text) {
-  return (String8){.str = (uint8_t *)text, .length = strlen(text)};
+  return (String8){.str = (uint8_t *)text, .length = string_length(text)};
 }
 
 VkrEditorPhysicsSettings *
@@ -171,8 +169,8 @@ void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
           (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_APPLY_COLLISION_LAYERS,
                                 .collision_layers = &p->draft};
     } else {
-      snprintf(p->error, sizeof(p->error), "%s",
-               error ? error : "Invalid settings.");
+      string_format(p->error, sizeof(p->error), "%s",
+                    error ? error : "Invalid settings.");
     }
   }
   y += 36;
@@ -203,7 +201,7 @@ void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
       c = settings_widget(42, y, width - 52, 24);
       vkr_editor_field_style(&c);
       VkrUiTextEditBuffer name = {(uint8_t *)p->draft.names[i],
-                                  (uint32_t)strlen(p->draft.names[i]),
+                                  (uint32_t)string_length(p->draft.names[i]),
                                   sizeof(p->draft.names[i])};
       p->changed |= vkr_ui_text_field(ui, string8_lit("name"), &name, &c);
       (void)vkr_ui_pop_id(ui);
@@ -295,7 +293,8 @@ void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
       p->preset = p->draft.preset_count++;
       VkrSceneCollisionPreset *preset = &p->draft.presets[p->preset];
       *preset = (VkrSceneCollisionPreset){.membership = 1, .mask = UINT16_MAX};
-      snprintf(preset->name, sizeof(preset->name), "Preset %u", p->preset + 1u);
+      string_format(preset->name, sizeof(preset->name), "Preset %u",
+                    p->preset + 1u);
       p->changed = true_v;
     }
     c = settings_widget(width / 2, y, width / 2 - 4, 24);
@@ -319,7 +318,7 @@ void vkr_editor_physics_settings_build(VkrEditorPhysicsSettings *p,
       c = settings_widget(4, y, width - 8, 24);
       vkr_editor_field_style(&c);
       VkrUiTextEditBuffer name = {(uint8_t *)preset->name,
-                                  (uint32_t)strlen(preset->name),
+                                  (uint32_t)string_length(preset->name),
                                   sizeof(preset->name)};
       p->changed |=
           vkr_ui_text_field(ui, string8_lit("preset.name"), &name, &c);

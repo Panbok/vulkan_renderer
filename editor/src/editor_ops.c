@@ -13,6 +13,7 @@
 
 #include "assets/vkr_light_layers.h"
 #include "assets/vkr_material_codegen.h"
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
@@ -20,6 +21,7 @@
 #include "filesystem/vkr_asset_path.h"
 #include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -37,15 +39,7 @@
 #include "stb_image.h"
 #include "stb_image_write.h"
 
-#include <math.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#endif
 
 #define OPS_MALFORMED "VKR-AGENT-0001"
 #define OPS_UNKNOWN "VKR-AGENT-0002"
@@ -274,7 +268,8 @@ static bool8_t ops_fail(OpsContext *ctx, const char *code, const char *format,
                         ...) {
   va_list arguments;
   va_start(arguments, format);
-  vsnprintf(ctx->call->error, sizeof(ctx->call->error), format, arguments);
+  string_format_v(ctx->call->error, sizeof(ctx->call->error), format,
+                  arguments);
   va_end(arguments);
   ctx->call->error_code = code;
   ctx->call->result = NULL;
@@ -289,7 +284,8 @@ static VkrEditorOpStatus ops_done(OpsContext *ctx) {
 static Arena *ops_arena(OpsContext *ctx) { return ctx->call->arena; }
 
 static VkrBakeryJson *ops_number(OpsContext *ctx, float64_t value) {
-  return vkr_bakery_json_float(ops_arena(ctx), isfinite(value) ? value : 0.0);
+  return vkr_bakery_json_float(ops_arena(ctx),
+                               vkr_is_finite_f64(value) ? value : 0.0);
 }
 
 static VkrBakeryJson *ops_vec3(OpsContext *ctx, Vec3 value) {
@@ -310,7 +306,7 @@ static void ops_set(OpsContext *ctx, VkrBakeryJson *object, const char *key,
 }
 
 static bool8_t ops_equals(String8 text, const char *word) {
-  const uint64_t length = strlen(word);
+  const uint64_t length = string_length(word);
   return text.length == length && MemCompare(text.str, word, length) == 0;
 }
 
@@ -340,7 +336,7 @@ static bool8_t ops_arg_floats(OpsContext *ctx, const VkrBakeryJson *args,
       return ops_fail(ctx, OPS_INVALID, "'%s' must be an array of %u numbers",
                       key, count);
     }
-    if (!isfinite(out[i])) {
+    if (!vkr_is_finite_f32(out[i])) {
       return ops_fail(ctx, OPS_INVALID, "'%s' must be finite", key);
     }
   }
@@ -455,7 +451,7 @@ static const char *ops_container_name(uint32_t world, char *buffer,
   if (world == 0u) {
     return "primary";
   }
-  snprintf(buffer, capacity, "%u", world);
+  string_format(buffer, capacity, "%u", world);
   return buffer;
 }
 
@@ -485,8 +481,9 @@ static bool8_t ops_arg_container(OpsContext *ctx, const VkrBakeryJson *args,
 }
 
 static void ops_id_text(VkrEntityId entity, char *out, uint32_t capacity) {
-  snprintf(out, capacity, "%u:%u:%u", (unsigned)entity.parts.world,
-           (unsigned)entity.parts.index, (unsigned)entity.parts.generation);
+  string_format(out, capacity, "%u:%u:%u", (unsigned)entity.parts.world,
+                (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation);
 }
 
 static VkrBakeryJson *ops_id(OpsContext *ctx, VkrEntityId entity) {
@@ -614,7 +611,7 @@ static bool8_t ops_ref(OpsContext *ctx, const OpsBatch *batch,
       const char *name = item->request.values.name;
       if (item->request.action == VKR_SCENE_EDIT_CREATE &&
           (item->request.values.fields & VKR_SCENE_EDIT_NAME) &&
-          strlen(name) == text.length &&
+          string_length(name) == text.length &&
           MemCompare(name, text.str, text.length) == 0) {
         made = (int32_t)i;
         found++;
@@ -666,8 +663,10 @@ static bool8_t ops_world_bounds(const VkrScene *scene, VkrEntityId entity,
       !vkr_scene_entity_local_bounds(scene, entity, &lower, &upper)) {
     return false_v;
   }
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t corner = 0; corner < 8u; ++corner) {
     const Vec3 local = vec3_new((corner & 1u) ? upper.x : lower.x,
                                 (corner & 2u) ? upper.y : lower.y,
@@ -738,7 +737,8 @@ static const VkrEditorClaim *ops_claim_hit(const VkrEditorOps *ops,
                                            Vec3 hi) {
   for (uint32_t i = 0; author[0] && i < ops->claim_count; ++i) {
     const VkrEditorClaim *claim = &ops->claims[i];
-    if (claim->container == container && strcmp(claim->author, author) &&
+    if (claim->container == container &&
+        !string_equals(claim->author, author) &&
         ops_boxes_overlap(lo, hi, claim->min, claim->max)) {
       return claim;
     }
@@ -769,15 +769,9 @@ static bool8_t ops_private_directory(const char *name, char *out,
   if (!vkr_editor_agent_directory(directory, sizeof(directory))) {
     return false_v;
   }
-  snprintf(out, capacity, "%s/%s", directory, name);
-#if !defined(_WIN32)
-  (void)mkdir(out, 0700);
-#else
-  const FilePath path = {
-      .path = string8_create_from_cstr((const uint8_t *)out, strlen(out)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
+  string_format(out, capacity, "%s/%s", directory, name);
+  const FilePath path = file_path_view(out);
   (void)file_create_directory(&path);
-#endif
   return true_v;
 }
 
@@ -796,8 +790,8 @@ static bool8_t ops_claims_path(const VkrSampleUiFrame *frame, char *out,
   for (uint64_t i = 0; i < frame->scene_path.length; ++i) {
     hash = (hash ^ frame->scene_path.str[i]) * 1099511628211ull;
   }
-  snprintf(out, capacity, "%s/%016llx.json", directory,
-           (unsigned long long)hash);
+  string_format(out, capacity, "%s/%016llx.json", directory,
+                (unsigned long long)hash);
   return true_v;
 }
 
@@ -811,9 +805,9 @@ static void ops_claims_save(const VkrEditorOps *ops,
   if (ops->mirroring || !ops_claims_path(frame, path, sizeof(path))) {
     return;
   }
-  const FilePath target = {
-      .path = string8_create_from_cstr((const uint8_t *)path, strlen(path)),
-      .type = FILE_PATH_TYPE_ABSOLUTE};
+  const FilePath target = {.path = string8_create_from_cstr(
+                               (const uint8_t *)path, string_length(path)),
+                           .type = FILE_PATH_TYPE_ABSOLUTE};
   if (!ops->claim_count) {
     (void)file_remove(&target);
     return;
@@ -855,19 +849,28 @@ static void ops_claims_save(const VkrEditorOps *ops,
   vkr_bakery_json_set(arena, root, "claims", claims);
   String8 text = {0};
   char temporary[520];
-  snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+  string_format(temporary, sizeof(temporary), "%s.tmp", path);
   bool8_t written = false_v;
-  FILE *file =
-      vkr_bakery_json_write(arena, root, VKR_BAKERY_JSON_COMPACT, &text)
-          ? file_fopen(temporary, "wb")
-          : NULL;
-  if (file) {
-    written = fwrite(text.str, 1u, text.length, file) == text.length;
-    written = fclose(file) == 0 && written;
+  const FilePath temporary_path = file_path_view(temporary);
+  FileHandle file = {0};
+  if (vkr_bakery_json_write(arena, root, VKR_BAKERY_JSON_COMPACT, &text) &&
+      file_open(&temporary_path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &file) == FILE_ERROR_NONE) {
+    written = true_v;
+    if (text.length > 0u) {
+      uint64_t bytes_written = 0u;
+      written = file_write(&file, text.length, text.str, &bytes_written) ==
+                    FILE_ERROR_NONE &&
+                bytes_written == text.length;
+    }
   }
-  const FilePath staged = {.path = string8_create_from_cstr(
-                               (const uint8_t *)temporary, strlen(temporary)),
-                           .type = FILE_PATH_TYPE_ABSOLUTE};
+  file_close(&file);
+  const FilePath staged = {
+      .path = string8_create_from_cstr((const uint8_t *)temporary,
+                                       string_length(temporary)),
+      .type = FILE_PATH_TYPE_ABSOLUTE};
   if (!written || file_rename(&staged, &target, true_v) != FILE_ERROR_NONE) {
     log_warn("Agent claims: could not write %s", path);
     (void)file_remove(&staged);
@@ -879,17 +882,24 @@ static void ops_claims_save(const VkrEditorOps *ops,
 static void ops_claims_load(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
   ops->claim_count = 0u;
   char path[512];
-  FILE *file = ops_claims_path(frame, path, sizeof(path))
-                   ? file_fopen(path, "rb")
-                   : NULL;
-  if (!file) {
+  if (!ops_claims_path(frame, path, sizeof(path))) {
+    return;
+  }
+  const FilePath claims_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&claims_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return;
   }
   Arena *arena = arena_create(KB(256), KB(64));
   uint8_t *text =
       arena ? arena_alloc(arena, KB(64), ARENA_MEMORY_TAG_STRING) : NULL;
-  const size_t length = text ? fread(text, 1u, KB(64), file) : 0u;
-  fclose(file);
+  uint64_t length = 0u;
+  if (text) {
+    (void)file_read_into(&file, text, KB(64), &length);
+  }
+  file_close(&file);
   const VkrBakeryJson *root =
       length && length < KB(64)
           ? vkr_bakery_json_parse(arena, text, length, 16u, NULL)
@@ -928,12 +938,12 @@ static void ops_claims_load(VkrEditorOps *ops, const VkrSampleUiFrame *frame) {
     (void)vkr_bakery_json_get_string(entry, "name", &name);
     VkrEditorClaim claim = {.id = (uint32_t)id,
                             .container = (uint16_t)container};
-    snprintf(claim.author, sizeof(claim.author), "%.*s",
-             (int)Min(author.length, (uint64_t)sizeof(claim.author) - 1u),
-             (const char *)author.str);
-    snprintf(claim.name, sizeof(claim.name), "%.*s",
-             (int)Min(name.length, (uint64_t)sizeof(claim.name) - 1u),
-             (const char *)name.str);
+    string_format(claim.author, sizeof(claim.author), "%.*s",
+                  (int)Min(author.length, (uint64_t)sizeof(claim.author) - 1u),
+                  (const char *)author.str);
+    string_format(claim.name, sizeof(claim.name), "%.*s",
+                  (int)Min(name.length, (uint64_t)sizeof(claim.name) - 1u),
+                  (const char *)name.str);
     float32_t *lo_values = &claim.min.x;
     float32_t *hi_values = &claim.max.x;
     const VkrBakeryJson *a = lo->first;
@@ -961,8 +971,8 @@ static OpsFeedEvent *ops_feed_add(VkrEditorOps *ops, OpsFeedKind kind,
   OpsFeedEvent *event = &ops->feed[sequence % OPS_FEED_MAX];
   *event = (OpsFeedEvent){
       .sequence = sequence, .kind = kind, .container = container};
-  snprintf(event->author, sizeof(event->author), "%s", author);
-  snprintf(event->label, sizeof(event->label), "%s", label);
+  string_format(event->author, sizeof(event->author), "%s", author);
+  string_format(event->label, sizeof(event->label), "%s", label);
   return event;
 }
 
@@ -1116,7 +1126,7 @@ static VkrSampleEditBatchItem *ops_batch_add(OpsContext *ctx, OpsBatch *batch,
     const uint32_t capacity =
         Min(ops->capacity * 2u, (uint32_t)VKR_SAMPLE_EDIT_BATCH_MAX);
     VkrSampleEditBatchItem *grown =
-        realloc(ops->items, (size_t)capacity * sizeof(*grown));
+        vkr_heap_realloc(ops->items, (size_t)capacity * sizeof(*grown));
     if (!grown) {
       ops_fail(ctx, OPS_LIMIT, "Out of memory for %u edits", capacity);
       return NULL;
@@ -1468,7 +1478,7 @@ static const VkrBakeryJson *ops_tag_vocabulary(OpsContext *ctx) {
     if (path.path.length && file_open(&path, mode, &file) == FILE_ERROR_NONE) {
       if (file_read_string(&file, &scratch, &text) == FILE_ERROR_NONE &&
           text.length) {
-        ops->tag_vocabulary = malloc(text.length);
+        ops->tag_vocabulary = vkr_heap_alloc(text.length);
         if (ops->tag_vocabulary) {
           MemCopy(ops->tag_vocabulary, text.str, text.length);
           ops->tag_vocabulary_length = text.length;
@@ -1523,17 +1533,18 @@ static void ops_tags_note_unknown(OpsContext *ctx, OpsBatch *batch,
       continue;
     }
     char word[SCENE_TAG_LENGTH_MAX + 4u];
-    snprintf(word, sizeof(word), " %.*s ", (int)tag.length,
-             (const char *)tag.str);
+    string_format(word, sizeof(word), " %.*s ", (int)tag.length,
+                  (const char *)tag.str);
     char padded[sizeof(batch->unknown_tags) + 2u];
-    snprintf(padded, sizeof(padded), " %s ", batch->unknown_tags);
-    const size_t used = strlen(batch->unknown_tags);
-    if (strstr(padded, word) ||
+    string_format(padded, sizeof(padded), " %s ", batch->unknown_tags);
+    const size_t used = string_length(batch->unknown_tags);
+    if (string_find(padded, word) ||
         used + tag.length + 2u > sizeof(batch->unknown_tags)) {
       continue;
     }
-    snprintf(batch->unknown_tags + used, sizeof(batch->unknown_tags) - used,
-             "%s%.*s", used ? " " : "", (int)tag.length, (const char *)tag.str);
+    string_format(batch->unknown_tags + used,
+                  sizeof(batch->unknown_tags) - used, "%s%.*s", used ? " " : "",
+                  (int)tag.length, (const char *)tag.str);
   }
 }
 
@@ -1608,7 +1619,7 @@ static bool8_t ops_tags_write(OpsContext *ctx, OpsBatch *batch,
   VkrSceneEditValues *holder =
       ops_tags_view(ctx, batch, ref, &current, &present);
   const bool8_t empty = !tags->text[0];
-  if (present ? !empty && strcmp(current.text, tags->text) == 0 : empty) {
+  if (present ? !empty && string_equals(current.text, tags->text) : empty) {
     return true_v;
   }
   if (holder && !empty) {
@@ -1686,7 +1697,7 @@ static bool8_t ops_tags_args(OpsContext *ctx, const VkrBakeryJson *args,
     /* Parsing both again drops repeats and applies the count limit. */
     char joined[2u * SCENE_TAGS_CAPACITY];
     const int32_t length =
-        snprintf(joined, sizeof(joined), "%s %s", tags.text, added.text);
+        string_format(joined, sizeof(joined), "%s %s", tags.text, added.text);
     char error[160] = {0};
     if (!vkr_scene_tags_parse(
             string8_create((uint8_t *)joined, (uint64_t)Max(length, 0)), &tags,
@@ -1791,7 +1802,7 @@ static bool8_t ops_build_create(OpsContext *ctx, const VkrBakeryJson *args,
   item->parent_ref = parent.item;
   VkrSceneEditValues *values = &item->request.values;
   values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM;
-  snprintf(values->name, sizeof(values->name), "Object");
+  string_format(values->name, sizeof(values->name), "Object");
   values->rotation = vkr_quat_identity();
   values->scale = vec3_one();
   if (!ops_read_pose(ctx, args, values)) {
@@ -2184,7 +2195,7 @@ typedef struct OpsBrushArgs {
 } OpsBrushArgs;
 
 static float32_t ops_snap(float32_t value, float32_t grid) {
-  return grid > 0.0f ? roundf(value / grid) * grid : value;
+  return grid > 0.0f ? vkr_round_f32(value / grid) * grid : value;
 }
 
 static Vec3 ops_snap3(Vec3 value, float32_t grid) {
@@ -2251,7 +2262,7 @@ static bool8_t ops_brush_args(OpsContext *ctx, const VkrBakeryJson *args,
   *out = (OpsBrushArgs){.parent = {.item = -1},
                         .role = SCENE_BRUSH_ROLE_SOLID,
                         .grid = OPS_BRUSH_GRID};
-  snprintf(out->name, sizeof(out->name), "%s", default_name);
+  string_format(out->name, sizeof(out->name), "%s", default_name);
   const VkrBakeryJson *parent = vkr_bakery_json_get(args, "parent");
   if (parent && parent->type != VKR_BAKERY_JSON_NULL) {
     if (!ops_ref(ctx, batch, parent, "parent", &out->parent)) {
@@ -2288,18 +2299,19 @@ static bool8_t ops_brush_args(OpsContext *ctx, const VkrBakeryJson *args,
 
 static void ops_face_name(Vec3 normal, uint32_t index, char *out,
                           uint32_t capacity) {
-  const float32_t ax = fabsf(normal.x);
-  const float32_t ay = fabsf(normal.y);
-  const float32_t az = fabsf(normal.z);
+  const float32_t ax = vkr_abs_f32(normal.x);
+  const float32_t ay = vkr_abs_f32(normal.y);
+  const float32_t az = vkr_abs_f32(normal.z);
   const float32_t largest = Max(ax, Max(ay, az));
   if (largest < 0.999f) {
-    snprintf(out, capacity, "Face %u", index + 1u);
+    string_format(out, capacity, "Face %u", index + 1u);
   } else if (ay == largest) {
-    snprintf(out, capacity, "%s", normal.y > 0.0f ? "Top" : "Bottom");
+    string_format(out, capacity, "%s", normal.y > 0.0f ? "Top" : "Bottom");
   } else if (ax == largest) {
-    snprintf(out, capacity, "%s", normal.x > 0.0f ? "East +X" : "West -X");
+    string_format(out, capacity, "%s", normal.x > 0.0f ? "East +X" : "West -X");
   } else {
-    snprintf(out, capacity, "%s", normal.z > 0.0f ? "South +Z" : "North -Z");
+    string_format(out, capacity, "%s",
+                  normal.z > 0.0f ? "South +Z" : "North -Z");
   }
 }
 
@@ -2317,7 +2329,7 @@ static bool8_t ops_group_add(OpsContext *ctx, OpsBatch *batch,
   item->parent_ref = brush->parent.item;
   VkrSceneEditValues *values = &item->request.values;
   values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM;
-  snprintf(values->name, sizeof(values->name), "%s", name);
+  string_format(values->name, sizeof(values->name), "%s", name);
   values->position = position;
   values->rotation = rotation;
   values->scale = vec3_one();
@@ -2364,7 +2376,7 @@ static bool8_t ops_brush_add(OpsContext *ctx, OpsBatch *batch,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "%s", name);
+  string_format(values->name, sizeof(values->name), "%s", name);
   values->position = position;
   values->rotation = rotation;
   values->scale = vec3_one();
@@ -2394,8 +2406,8 @@ static bool8_t ops_brush_add(OpsContext *ctx, OpsBatch *batch,
     const OpsFaceLook *look = looks ? &looks[i] : &brush->look;
     settings->surface = look->surface;
     settings->mark = look->mark;
-    snprintf(settings->material, sizeof(settings->material), "%s",
-             look->material ? look->material : "");
+    string_format(settings->material, sizeof(settings->material), "%s",
+                  look->material ? look->material : "");
   }
   *out_item = brush_item;
   return true_v;
@@ -2505,7 +2517,8 @@ static bool8_t ops_build_look_volume(OpsContext *ctx, const VkrBakeryJson *args,
   uint32_t known = 0u;
   for (uint32_t i = 0; i < ArrayCount(scalars); ++i) {
     if (vkr_bakery_json_get(look, scalars[i].key)) {
-      if (!ops_arg_number(look, scalars[i].key, &number) || !isfinite(number)) {
+      if (!ops_arg_number(look, scalars[i].key, &number) ||
+          !vkr_is_finite_f64(number)) {
         return ops_fail(ctx, OPS_INVALID, "'look.%s' must be a number",
                         scalars[i].key);
       }
@@ -2556,7 +2569,7 @@ static bool8_t ops_build_look_volume(OpsContext *ctx, const VkrBakeryJson *args,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "Look volume");
+  string_format(values->name, sizeof(values->name), "Look volume");
   if (!ops_arg_string(ctx, args, "name", values->name, sizeof(values->name))) {
     return false_v;
   }
@@ -2619,7 +2632,7 @@ static bool8_t ops_build_probe_create(OpsContext *ctx,
   }
   VkrSceneEditValues *values = &item->request.values;
   values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "Reflection Probe");
+  string_format(values->name, sizeof(values->name), "Reflection Probe");
   if (!ops_arg_string(ctx, args, "name", values->name, sizeof(values->name))) {
     return false_v;
   }
@@ -2705,7 +2718,7 @@ static bool8_t ops_build_room_probes(OpsContext *ctx, const VkrBakeryJson *args,
     VkrSceneEditValues *values = &item->request.values;
     values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_COMPONENT;
     const String8 room_name = vkr_scene_get_name(frame->scene, rooms[r]);
-    snprintf(
+    string_format(
         values->name, sizeof(values->name), "%.*s probe",
         (int)Min(room_name.length, (uint64_t)VKR_SCENE_EDIT_NAME_CAPACITY - 8u),
         room_name.length ? (const char *)room_name.str : "Room");
@@ -2806,9 +2819,9 @@ static bool8_t ops_build_decal_place(OpsContext *ctx, const VkrBakeryJson *args,
   float64_t angle = 0.0;
   (void)ops_arg_number(args, "depth", &depth);
   (void)ops_arg_number(args, "angle", &angle);
-  if (!(size[0] > 0.0f) || !(size[1] > 0.0f) || !isfinite(size[0]) ||
-      !isfinite(size[1]) || !(depth > 0.0) || !isfinite(depth) ||
-      !isfinite(angle)) {
+  if (!(size[0] > 0.0f) || !(size[1] > 0.0f) || !vkr_is_finite_f32(size[0]) ||
+      !vkr_is_finite_f32(size[1]) || !(depth > 0.0) ||
+      !vkr_is_finite_f64(depth) || !vkr_is_finite_f64(angle)) {
     return ops_fail(ctx, OPS_INVALID,
                     "'size' and 'depth' must be positive metres and 'angle' "
                     "finite degrees");
@@ -2829,7 +2842,7 @@ static bool8_t ops_build_decal_place(OpsContext *ctx, const VkrBakeryJson *args,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "Decal");
+  string_format(values->name, sizeof(values->name), "Decal");
   if (!ops_arg_string(ctx, args, "name", values->name, sizeof(values->name))) {
     return false_v;
   }
@@ -3030,7 +3043,7 @@ static bool8_t ops_build_brush_planes(OpsContext *ctx,
     const bool8_t has_distance = ops_arg_number(entry, "distance", &distance);
     const float32_t length = vec3_length(normal);
     if (!has_normal || has_point == has_distance || !(length > 1.0e-6f) ||
-        !isfinite(distance)) {
+        !vkr_is_finite_f64(distance)) {
       return ops_fail(ctx, OPS_INVALID,
                       "planes[%u] needs a nonzero outward 'normal' and either "
                       "'distance' (normal . p <= distance inside) or a "
@@ -3085,8 +3098,10 @@ static bool8_t ops_build_brush_hull(OpsContext *ctx, const VkrBakeryJson *args,
   if (!count) {
     return false_v;
   }
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t i = 0; i < count; ++i) {
     points[i] = ops_snap3(points[i], brush.grid);
     lo = vec3_new(Min(lo.x, points[i].x), Min(lo.y, points[i].y),
@@ -3121,7 +3136,7 @@ static bool8_t ops_build_brush_hull(OpsContext *ctx, const VkrBakeryJson *args,
 /* A rotation about +Y that turns local +Z toward the horizontal part of
    `direction`. */
 static VkrQuat ops_yaw_toward(Vec3 direction) {
-  const float32_t yaw = atan2f(direction.x, direction.z);
+  const float32_t yaw = vkr_atan2_f32(direction.x, direction.z);
   return vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), yaw);
 }
 
@@ -3160,8 +3175,8 @@ static bool8_t ops_pieces_add(OpsContext *ctx, OpsBatch *batch,
       looks[f] = *look;
     }
     char name[64];
-    snprintf(name, sizeof(name), "%s %u", names[piece->kind],
-             ++numbers[piece->kind]);
+    string_format(name, sizeof(name), "%s %u", names[piece->kind],
+                  ++numbers[piece->kind]);
     uint32_t item = 0u;
     if (!ops_brush_add(ctx, batch, brush, group, name, center,
                        vkr_quat_identity(), planes, plane_count, looks,
@@ -3449,7 +3464,7 @@ static bool8_t ops_build_brush_stairs(OpsContext *ctx,
   from = ops_snap3(from, brush.grid);
   to = ops_snap3(to, brush.grid);
   const Vec3 delta = vec3_sub(to, from);
-  const float32_t run = sqrtf(delta.x * delta.x + delta.z * delta.z);
+  const float32_t run = vkr_sqrt_f32(delta.x * delta.x + delta.z * delta.z);
   float64_t width = shape.width;
   float64_t step = shape.step_height;
   float64_t sweep = shape.turn;
@@ -3461,7 +3476,7 @@ static bool8_t ops_build_brush_stairs(OpsContext *ctx,
   /* A spiral turns at least once, 22.5 degrees a step, so a tall one keeps
      sixteen steps a turn. */
   if (shape.stairs == SCENE_STAIRS_SPIRAL && step > 0.0) {
-    sweep = Max(360.0, ceil(height / step - 1.0e-4) * 22.5);
+    sweep = Max(360.0, vkr_ceil_f64(height / step - 1.0e-4) * 22.5);
     sweep = Min(sweep, (float64_t)VKR_BLOCKOUT_TURN_MAX);
   }
   (void)ops_arg_number(args, "sweep", &sweep);
@@ -3489,7 +3504,7 @@ static bool8_t ops_build_brush_stairs(OpsContext *ctx,
       shape.width = Max(run - shape.radius, 0.25f);
     }
     const float32_t side = shape.left ? -1.0f : 1.0f;
-    const float32_t exit = run > 0.0f ? atan2f(delta.x, delta.z) : 0.0f;
+    const float32_t exit = run > 0.0f ? vkr_atan2_f32(delta.x, delta.z) : 0.0f;
     yaw = vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f),
                                    exit - side * shape.turn * 0.0174532925f);
   }
@@ -3523,7 +3538,7 @@ static bool8_t ops_marker_add(OpsContext *ctx, OpsBatch *batch,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "%s", name);
+  string_format(values->name, sizeof(values->name), "%s", name);
   values->position = position;
   values->rotation = rotation;
   values->scale = scale;
@@ -3553,8 +3568,8 @@ static bool8_t ops_room_shell(OpsContext *ctx, OpsBatch *batch,
                                       "Wall North -Z", "Wall South +Z"};
   char names[ArrayCount(parts)][VKR_SCENE_EDIT_NAME_CAPACITY];
   for (uint32_t i = 0; i < ArrayCount(parts); ++i) {
-    snprintf(names[i], sizeof(names[i]), "%s%s%s", prefix, prefix[0] ? "/" : "",
-             parts[i]);
+    string_format(names[i], sizeof(names[i]), "%s%s%s", prefix,
+                  prefix[0] ? "/" : "", parts[i]);
   }
   uint32_t item = 0u;
   const float32_t t = wall;
@@ -3629,8 +3644,8 @@ static bool8_t ops_build_room(OpsContext *ctx, const VkrBakeryJson *args,
   }
   /* The interior box is the room the camera's portal walk sees. */
   char room_name[VKR_SCENE_EDIT_NAME_CAPACITY];
-  snprintf(room_name, sizeof(room_name), "%s%sRoom", brush.name,
-           brush.name[0] ? "/" : "");
+  string_format(room_name, sizeof(room_name), "%s%sRoom", brush.name,
+                brush.name[0] ? "/" : "");
   const SceneRoom room = {.sealed = ops_arg_bool(args, "sealed", false_v)};
   if (!ops_marker_add(ctx, batch, &brush, (int32_t)group, room_name,
                       vec3_new(0.0f, size.y * 0.5f, 0.0f), vkr_quat_identity(),
@@ -3768,8 +3783,10 @@ static bool8_t ops_build_mover_create(OpsContext *ctx,
   OpsRef refs[OPS_MOVER_OBJECTS_MAX];
   const uint32_t count = (uint32_t)objects->count;
   OpsRef parent = {.item = -1};
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   VkrBrushGeometry *geometry =
       arena_alloc(ops_arena(ctx), sizeof(*geometry), ARENA_MEMORY_TAG_STRUCT);
   if (!geometry) {
@@ -3862,7 +3879,7 @@ static bool8_t ops_build_mover_create(OpsContext *ctx,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "%s", name);
+  string_format(values->name, sizeof(values->name), "%s", name);
   values->position = center;
   values->rotation = vkr_quat_identity();
   values->scale = vec3_one();
@@ -3921,7 +3938,7 @@ static bool8_t ops_face_matches(const SceneBrushFace *face,
         (vkr_bakery_json_is_string(s, "-x") && n.x < -0.7f) ||
         (vkr_bakery_json_is_string(s, "+z") && n.z > 0.7f) ||
         (vkr_bakery_json_is_string(s, "-z") && n.z < -0.7f) ||
-        (vkr_bakery_json_is_string(s, "sides") && fabsf(n.y) < 0.7f)) {
+        (vkr_bakery_json_is_string(s, "sides") && vkr_abs_f32(n.y) < 0.7f)) {
       return true_v;
     }
   }
@@ -3982,7 +3999,8 @@ static bool8_t ops_face_arg(OpsContext *ctx, OpsBatch *batch,
       continue;
     }
     const Vec3 n = vec3_normalize(brush->values[i].normal);
-    const float32_t score = Max(Max(fabsf(n.x), fabsf(n.y)), fabsf(n.z));
+    const float32_t score =
+        Max(Max(vkr_abs_f32(n.x), vkr_abs_f32(n.y)), vkr_abs_f32(n.z));
     if (score >= best) {
       best = score;
       *out_face = i;
@@ -4089,7 +4107,7 @@ ops_brush_replace(OpsContext *ctx, OpsBatch *batch, const OpsBrushRead *brush,
     ops_op_result(batch, &brush->ref);
   }
   const String8 base = string8_create_from_cstr((const uint8_t *)brush->name,
-                                                strlen(brush->name));
+                                                string_length(brush->name));
   for (uint32_t p = keep ? 1u : 0u; p < piece_count; ++p) {
     OpsFaceLook looks[VKR_BRUSH_FACE_MAX];
     const SceneBrushFace *sources[VKR_BRUSH_FACE_MAX];
@@ -4100,11 +4118,11 @@ ops_brush_replace(OpsContext *ctx, OpsBatch *batch, const OpsBrushRead *brush,
     }
     /* Pieces of one brush read as its parts unless the caller names them. */
     char name[96];
-    snprintf(name, sizeof(name), "%.*s%s", (int)Min(base.length, 80u),
-             (const char *)base.str,
-             suffix             ? suffix
-             : piece_count > 1u ? " part"
-                                : "");
+    string_format(name, sizeof(name), "%.*s%s", (int)Min(base.length, 80u),
+                  (const char *)base.str,
+                  suffix             ? suffix
+                  : piece_count > 1u ? " part"
+                                     : "");
     uint32_t item = 0u;
     if (!ops_brush_add(ctx, batch, &args, -1, name, brush->transform.position,
                        brush->transform.rotation, pieces[p].planes,
@@ -4204,7 +4222,7 @@ static bool8_t ops_build_face_look(OpsContext *ctx, const VkrBakeryJson *args,
     SceneBrushFace *value = (SceneBrushFace *)item->request.values.component;
     *value = brush->values[i];
     if (material) {
-      snprintf(value->material, sizeof(value->material), "%s", path);
+      string_format(value->material, sizeof(value->material), "%s", path);
     }
     if (has_surface) {
       value->surface = look.surface;
@@ -4239,8 +4257,10 @@ static bool8_t ops_brush_box_of(const OpsBrushRead *brush, Vec3 *out_min,
   if (brush->count != 6u) {
     return false_v;
   }
-  Vec3 lo = vec3_new(-INFINITY, -INFINITY, -INFINITY);
-  Vec3 hi = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 lo =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
   for (uint32_t i = 0; i < 6u; ++i) {
     const SceneBrushFace *face = &brush->values[i];
     const Vec3 n = vec3_normalize(face->normal);
@@ -4263,8 +4283,9 @@ static bool8_t ops_brush_box_of(const OpsBrushRead *brush, Vec3 *out_min,
   }
   *out_min = lo;
   *out_max = hi;
-  return isfinite(lo.x) && isfinite(lo.y) && isfinite(lo.z) && isfinite(hi.x) &&
-         isfinite(hi.y) && isfinite(hi.z);
+  return vkr_is_finite_f32(lo.x) && vkr_is_finite_f32(lo.y) &&
+         vkr_is_finite_f32(lo.z) && vkr_is_finite_f32(hi.x) &&
+         vkr_is_finite_f32(hi.y) && vkr_is_finite_f32(hi.z);
 }
 
 static bool8_t ops_build_doorway(OpsContext *ctx, const VkrBakeryJson *args,
@@ -4317,16 +4338,17 @@ static bool8_t ops_build_doorway(OpsContext *ctx, const VkrBakeryJson *args,
   Vec3 piece_hi[3];
   uint32_t pieces = 0u;
   /* The pieces keep the wall's name, so a prefix such as "lab/" stays. */
-  const String8 wall_name =
-      string8_create_from_cstr((const uint8_t *)wall->name, strlen(wall->name));
+  const String8 wall_name = string8_create_from_cstr(
+      (const uint8_t *)wall->name, string_length(wall->name));
   char names[3][VKR_SCENE_EDIT_NAME_CAPACITY];
   const char *suffixes[3] = {"left", "right", "lintel"};
   for (uint32_t i = 0; i < 3u; ++i) {
     if (wall_name.length) {
-      snprintf(names[i], sizeof(names[i]), "%.*s %s", (int)wall_name.length,
-               (const char *)wall_name.str, suffixes[i]);
+      string_format(names[i], sizeof(names[i]), "%.*s %s",
+                    (int)wall_name.length, (const char *)wall_name.str,
+                    suffixes[i]);
     } else {
-      snprintf(names[i], sizeof(names[i]), "Wall %s", suffixes[i]);
+      string_format(names[i], sizeof(names[i]), "Wall %s", suffixes[i]);
     }
   }
   if (along_x) {
@@ -4378,7 +4400,7 @@ static bool8_t ops_build_doorway(OpsContext *ctx, const VkrBakeryJson *args,
                          vkr_quat_from_axis_angle(vec3_up(), 1.57079632679f));
   char portal_name[VKR_SCENE_EDIT_NAME_CAPACITY] = "Doorway portal";
   if (wall_name.length) {
-    snprintf(
+    string_format(
         portal_name, sizeof(portal_name), "%.*s portal",
         (int)Min(wall_name.length, (uint64_t)VKR_SCENE_EDIT_NAME_CAPACITY - 8u),
         (const char *)wall_name.str);
@@ -4418,7 +4440,8 @@ static bool8_t ops_build_move_face(OpsContext *ctx, const VkrBakeryJson *args,
   if (!brush || !ops_face_arg(ctx, batch, args, brush, &face)) {
     return brush ? false_v : ops_fail(ctx, OPS_LIMIT, "Out of request memory");
   }
-  if (!ops_arg_number(args, "distance", &distance) || !isfinite(distance)) {
+  if (!ops_arg_number(args, "distance", &distance) ||
+      !vkr_is_finite_f64(distance)) {
     return ops_fail(ctx, OPS_INVALID,
                     "'distance' in meters moves the face along its normal");
   }
@@ -4620,8 +4643,10 @@ static bool8_t ops_brush_world_box(const OpsBrushRead *brush,
       VKR_BRUSH_OK) {
     return false_v;
   }
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   for (uint32_t i = 0; i < scratch->vertex_count; ++i) {
     const Vec3 p = mat4_mul_vec3(brush->transform.world, scratch->vertices[i]);
     lo = vec3_new(Min(lo.x, p.x), Min(lo.y, p.y), Min(lo.z, p.z));
@@ -4732,8 +4757,10 @@ static void ops_ref_box(OpsContext *ctx, const OpsBatch *batch,
                    lo, hi);
     return;
   }
-  OpsBoxUnion u = {.lo = vec3_new(INFINITY, INFINITY, INFINITY),
-                   .hi = vec3_new(-INFINITY, -INFINITY, -INFINITY)};
+  OpsBoxUnion u = {.lo = vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY,
+                                  VKR_FLOAT_INFINITY),
+                   .hi = vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY,
+                                  -VKR_FLOAT_INFINITY)};
   ops_ref_boxes(ctx, batch, ref, scratch, ops_box_union_visit, &u, 0u);
   if (u.found) {
     *lo = u.lo;
@@ -4753,7 +4780,7 @@ typedef struct OpsFloorVisit {
 
 static void ops_floor_visit(void *context, Vec3 lo, Vec3 hi) {
   OpsFloorVisit *f = context;
-  if (fabsf(lo.y - f->lo.y) < 0.01f && vkr_editor_box_slab(lo, hi)) {
+  if (vkr_abs_f32(lo.y - f->lo.y) < 0.01f && vkr_editor_box_slab(lo, hi)) {
     f->floor = Max(f->floor, hi.y);
   }
 }
@@ -4922,12 +4949,13 @@ static float32_t ops_snap_align(Vec3 lo, Vec3 hi, Vec3 plo, Vec3 phi,
   };
   float32_t best = candidates[0];
   for (uint32_t c = 1u; c < 3u; ++c) {
-    if (fabsf(candidates[c]) < fabsf(best)) {
+    if (vkr_abs_f32(candidates[c]) < vkr_abs_f32(best)) {
       best = candidates[c];
     }
   }
-  return fabsf(best) <= (hi.elements[axis] - lo.elements[axis]) * 0.5f ? best
-                                                                       : 0.0f;
+  return vkr_abs_f32(best) <= (hi.elements[axis] - lo.elements[axis]) * 0.5f
+             ? best
+             : 0.0f;
 }
 
 /* The shift that places box `lo`-`hi`, its floor at `floor`, against box
@@ -4949,14 +4977,14 @@ static Vec3 ops_snap_place(Vec3 lo, Vec3 hi, float32_t floor, Vec3 plo,
     return shift;
   }
   /* The side whose contact moves the box least. */
-  float32_t best = INFINITY;
+  float32_t best = VKR_FLOAT_INFINITY;
   for (uint32_t axis = 0; axis < 3u; axis += 2u) {
     for (uint32_t side = 0; side < 2u; ++side) {
       const float32_t move = side
                                  ? phi.elements[axis] + gap - lo.elements[axis]
                                  : plo.elements[axis] - gap - hi.elements[axis];
-      if (fabsf(move) < best) {
-        best = fabsf(move);
+      if (vkr_abs_f32(move) < best) {
+        best = vkr_abs_f32(move);
         shift = vec3_zero();
         shift.elements[axis] = move;
         shift.elements[2u - axis] = ops_snap_align(lo, hi, plo, phi, 2u - axis);
@@ -4973,7 +5001,7 @@ static Vec3 ops_snap_best(Vec3 lo, Vec3 hi, float32_t floor, const Vec3 *lows,
                           const Vec3 *highs, const float32_t *floors,
                           uint32_t count, float32_t gap) {
   Vec3 best = vec3_zero();
-  float32_t best_length = INFINITY;
+  float32_t best_length = VKR_FLOAT_INFINITY;
   for (uint32_t p = 0; p < count; ++p) {
     const Vec3 shift =
         ops_snap_place(lo, hi, floor, lows[p], highs[p], floors[p], gap);
@@ -5212,8 +5240,8 @@ static bool8_t ops_build_patch(OpsContext *ctx, const VkrBakeryJson *args,
                     "'min' and 'max' are the rectangle's [u, v] corners on "
                     "the face's grid axes, max above min");
   }
-  if (!ops_arg_number(args, "distance", &distance) || !isfinite(distance) ||
-      fabs(distance) < 1.0e-4) {
+  if (!ops_arg_number(args, "distance", &distance) ||
+      !vkr_is_finite_f64(distance) || vkr_abs_f64(distance) < 1.0e-4) {
     return ops_fail(ctx, OPS_INVALID,
                     "'distance' in meters pulls the patch out, or pushes it "
                     "in when negative");
@@ -5247,8 +5275,8 @@ static bool8_t ops_build_patch(OpsContext *ctx, const VkrBakeryJson *args,
                       "The rectangle does not lie on the face");
     }
     const VkrBrushPolygon polygon = geometry->polygons[face];
-    float32_t lo[2] = {INFINITY, INFINITY};
-    float32_t hi[2] = {-INFINITY, -INFINITY};
+    float32_t lo[2] = {VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY};
+    float32_t hi[2] = {-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY};
     for (uint32_t i = 0; i < polygon.count; ++i) {
       const Vec3 p = mat4_mul_vec3(brush->transform.world,
                                    geometry->vertices[polygon.first + i]);
@@ -5473,7 +5501,7 @@ static void ops_authored_add(VkrEditorOps *ops, uint64_t group,
                              uint16_t container, const char *author) {
   OpsAuthored *slot = &ops->authored[ops->authored_next % OPS_AUTHORED_MAX];
   *slot = (OpsAuthored){.group = group, .container = container};
-  snprintf(slot->author, sizeof(slot->author), "%s", author);
+  string_format(slot->author, sizeof(slot->author), "%s", author);
   ops->authored_next++;
 }
 
@@ -5559,8 +5587,9 @@ static bool8_t ops_claims_before(OpsContext *ctx, const OpsBatch *batch) {
     if (hit) {
       const String8 name = vkr_scene_get_name(scene, entity);
       char what[96];
-      snprintf(what, sizeof(what), "ops[%u] changes '%.*s', which", op,
-               (int)Min(name.length, (uint64_t)48u), (const char *)name.str);
+      string_format(what, sizeof(what), "ops[%u] changes '%.*s', which", op,
+                    (int)Min(name.length, (uint64_t)48u),
+                    (const char *)name.str);
       return ops_claim_fail(ctx, hit, what);
     }
   }
@@ -5654,9 +5683,9 @@ static VkrEditorOpStatus ops_submit(OpsContext *ctx, OpsBatch *batch,
   pending->settle = ops_arg_bool(call->args, "settle", false_v);
   {
     char label[96];
-    snprintf(label, sizeof(label), "%.*s",
-             (int)Min(batch->label.length, (uint64_t)95u),
-             batch->label.length ? (const char *)batch->label.str : "");
+    string_format(label, sizeof(label), "%.*s",
+                  (int)Min(batch->label.length, (uint64_t)95u),
+                  batch->label.length ? (const char *)batch->label.str : "");
     vkr_editor_session_note_batch(ctx->editor->session, pending->token,
                                   call->author, label, batch->review);
   }
@@ -5784,11 +5813,11 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     const VkrScene *where = ops_scene(ctx->frame, (uint32_t)batch->container);
     const String8 name = vkr_scene_get_name(where, offender);
     char what[96];
-    snprintf(what, sizeof(what), "'%.*s'", (int)Min(name.length, (uint64_t)48u),
-             (const char *)name.str);
+    string_format(what, sizeof(what), "'%.*s'",
+                  (int)Min(name.length, (uint64_t)48u), (const char *)name.str);
     (void)ops_claim_fail(ctx, claimed, what);
-    snprintf(pending->claim_error, sizeof(pending->claim_error), "%s",
-             call->error);
+    string_format(pending->claim_error, sizeof(pending->claim_error), "%s",
+                  call->error);
     call->error_code = NULL;
     call->error[0] = '\0';
     pending->reverting = true_v;
@@ -5806,7 +5835,7 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   VkrBakeryJson *results = vkr_bakery_json_array(call->arena);
   VkrEditorChange change = {.group = result->group,
                             .container = (uint16_t)batch->container};
-  snprintf(change.author, sizeof(change.author), "%s", call->author);
+  string_format(change.author, sizeof(change.author), "%s", call->author);
   change.created = vkr_platform_get_absolute_time();
   if (pending->settle) {
     pending->entities =
@@ -5870,9 +5899,9 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   }
   /* The feed names the batch's objects and the box around them. */
   char label[96];
-  snprintf(label, sizeof(label), "%.*s",
-           (int)Min(batch->label.length, (uint64_t)95u),
-           batch->label.length ? (const char *)batch->label.str : "");
+  string_format(label, sizeof(label), "%.*s",
+                (int)Min(batch->label.length, (uint64_t)95u),
+                batch->label.length ? (const char *)batch->label.str : "");
   OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_APPLIED, change.container,
                                      call->author, label);
   VkrBrushGeometry *scratch = arena_alloc(call->arena, sizeof(VkrBrushGeometry),
@@ -5885,18 +5914,20 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
   if (batch->review && ops->change_count < VKR_EDITOR_CHANGE_MAX) {
     ops->review_overflow = false_v;
     change.id = ++ops->next_change_id;
-    snprintf(change.label, sizeof(change.label), "%.*s",
-             (int)Min(batch->label.length, (uint64_t)95u),
-             batch->label.length ? (const char *)batch->label.str : "");
+    string_format(change.label, sizeof(change.label), "%.*s",
+                  (int)Min(batch->label.length, (uint64_t)95u),
+                  batch->label.length ? (const char *)batch->label.str : "");
     if (!change.label[0]) {
-      snprintf(change.label, sizeof(change.label), "Agent edit %u", change.id);
+      string_format(change.label, sizeof(change.label), "Agent edit %u",
+                    change.id);
     }
     ops->changes[ops->change_count++] = change;
     event->change = change.id;
     ops_set(ctx, call->result, "change",
             vkr_bakery_json_int(call->arena, change.id));
     char toast[160];
-    snprintf(toast, sizeof(toast), "Agent change to review: %s", change.label);
+    string_format(toast, sizeof(toast), "Agent change to review: %s",
+                  change.label);
     vkr_editor_toast(ctx->editor, VKR_UI_ICON_TERMINAL,
                      vkr_ui_theme()->accent_hover, toast);
   } else if (batch->review) {
@@ -5907,10 +5938,11 @@ static VkrEditorOpStatus ops_batch_wait(OpsContext *ctx) {
     if (!ops->review_overflow) {
       ops->review_overflow = true_v;
       char toast[160];
-      snprintf(toast, sizeof(toast),
-               "%u agent changes wait for review; new ones apply unreviewed "
-               "until some are accepted or rejected",
-               VKR_EDITOR_CHANGE_MAX);
+      string_format(
+          toast, sizeof(toast),
+          "%u agent changes wait for review; new ones apply unreviewed "
+          "until some are accepted or rejected",
+          VKR_EDITOR_CHANGE_MAX);
       vkr_editor_toast(ctx->editor, VKR_UI_ICON_TERMINAL,
                        vkr_ui_theme()->warning, toast);
     }
@@ -5977,9 +6009,9 @@ static VkrEditorOpStatus ops_run_batch(OpsContext *ctx) {
                        args ? args : vkr_bakery_json_object(call->arena),
                        batch)) {
       char message[sizeof(call->error)];
-      snprintf(message, sizeof(message), "ops[%u] %.*s: %s", index,
-               (int)name.length, name.str, call->error);
-      snprintf(call->error, sizeof(call->error), "%s", message);
+      string_format(message, sizeof(message), "ops[%u] %.*s: %s", index,
+                    (int)name.length, name.str, call->error);
+      string_format(call->error, sizeof(call->error), "%s", message);
       return VKR_EDITOR_OP_DONE;
     }
   }
@@ -6685,7 +6717,7 @@ static VkrEditorOpStatus ops_run_tag_list(OpsContext *ctx) {
   }
   /* Sorted, equal tags are neighbours: one entry per run. */
   if (count) {
-    qsort(held, count, sizeof(*held), ops_tag_compare);
+    vkr_sort(held, count, sizeof(*held), ops_tag_compare);
   }
   OpsTagCount *counts = count ? arena_alloc(arena, count * sizeof(*counts),
                                             ARENA_MEMORY_TAG_ARRAY)
@@ -6704,7 +6736,7 @@ static VkrEditorOpStatus ops_run_tag_list(OpsContext *ctx) {
     }
   }
   if (distinct) {
-    qsort(counts, distinct, sizeof(*counts), ops_tag_count_compare);
+    vkr_sort(counts, distinct, sizeof(*counts), ops_tag_count_compare);
   }
   const VkrBakeryJson *vocabulary = ops_tag_vocabulary(ctx);
   VkrBakeryJson *list = vkr_bakery_json_array(arena);
@@ -6838,7 +6870,7 @@ static VkrEditorOpStatus ops_run_measure(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   const Vec3 delta = vec3_sub(to, from);
-  const float32_t run = sqrtf(delta.x * delta.x + delta.z * delta.z);
+  const float32_t run = vkr_sqrt_f32(delta.x * delta.x + delta.z * delta.z);
   ctx->call->result = vkr_bakery_json_object(arena);
   ops_set(ctx, ctx->call->result, "distance",
           vkr_bakery_json_float(arena, vec3_length(delta)));
@@ -6847,8 +6879,8 @@ static VkrEditorOpStatus ops_run_measure(OpsContext *ctx) {
   ops_set(ctx, ctx->call->result, "rise",
           vkr_bakery_json_float(arena, delta.y));
   ops_set(ctx, ctx->call->result, "slope_degrees",
-          vkr_bakery_json_float(arena,
-                                atan2f(delta.y, run) * (180.0f / 3.14159265f)));
+          vkr_bakery_json_float(arena, vkr_atan2_f32(delta.y, run) *
+                                           (180.0f / 3.14159265f)));
   ops_set(ctx, ctx->call->result, "delta", ops_vec3(ctx, delta));
   return VKR_EDITOR_OP_DONE;
 }
@@ -7347,22 +7379,22 @@ static void ops_reject_reason(VkrEditorOps *ops, VkrEditorChange *change,
       if (later->entities[e].u64 != conflict.u64) {
         continue;
       }
-      snprintf(change->problem, sizeof(change->problem),
-               "Blocked by %s's later change '%s'%s%s; reject that one "
-               "first.",
-               later->author[0] ? later->author : "the editor", later->label,
-               name[0] ? " to " : "", name);
+      string_format(change->problem, sizeof(change->problem),
+                    "Blocked by %s's later change '%s'%s%s; reject that one "
+                    "first.",
+                    later->author[0] ? later->author : "the editor",
+                    later->label, name[0] ? " to " : "", name);
       return;
     }
   }
   if (name[0]) {
-    snprintf(change->problem, sizeof(change->problem),
-             "Blocked by a later edit to %s; undo or reject that edit "
-             "first.",
-             name);
+    string_format(change->problem, sizeof(change->problem),
+                  "Blocked by a later edit to %s; undo or reject that edit "
+                  "first.",
+                  name);
     return;
   }
-  snprintf(change->problem, sizeof(change->problem), "%s", message);
+  string_format(change->problem, sizeof(change->problem), "%s", message);
 }
 
 static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
@@ -7386,7 +7418,7 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
       if (!vkr_editor_material_group_revert(ctx->editor->materials, ctx->frame,
                                             target->group, problem,
                                             sizeof(problem))) {
-        snprintf(target->problem, sizeof(target->problem), "%s", problem);
+        string_format(target->problem, sizeof(target->problem), "%s", problem);
         target->rejecting = false_v;
         ops_fail(ctx, OPS_REJECTED, "%s", problem);
         return VKR_EDITOR_OP_DONE;
@@ -7400,9 +7432,9 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
     if (ctx->frame->simulation_running || !ctx->frame->edit_batch ||
         ctx->frame->edit_batch->token) {
       ops_fail(ctx, OPS_BUSY, "The scene cannot change now");
-      snprintf(target->problem, sizeof(target->problem),
-               "The scene cannot change now: the game plays or another "
-               "edit applies. Try again.");
+      string_format(target->problem, sizeof(target->problem),
+                    "The scene cannot change now: the game plays or another "
+                    "edit applies. Try again.");
       target->rejecting = false_v;
       return VKR_EDITOR_OP_DONE;
     }
@@ -7434,9 +7466,9 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
       ops_fail(ctx, OPS_BUSY, "The revert was not applied");
       const int32_t waiting = ops_change_find(ops, pending->change);
       if (waiting >= 0) {
-        snprintf(ops->changes[waiting].problem,
-                 sizeof(ops->changes[waiting].problem),
-                 "The revert was not applied; try again.");
+        string_format(ops->changes[waiting].problem,
+                      sizeof(ops->changes[waiting].problem),
+                      "The revert was not applied; try again.");
         ops->changes[waiting].rejecting = false_v;
       }
       return VKR_EDITOR_OP_DONE;
@@ -7454,8 +7486,9 @@ static VkrEditorOpStatus ops_run_changes_reject(OpsContext *ctx) {
                      : NULL;
       if (scene && vkr_scene_entity_alive(scene, result->conflict)) {
         const String8 text = vkr_scene_get_name(scene, result->conflict);
-        snprintf(name, sizeof(name), "%.*s",
-                 (int)Min(text.length, (uint64_t)48u), (const char *)text.str);
+        string_format(name, sizeof(name), "%.*s",
+                      (int)Min(text.length, (uint64_t)48u),
+                      (const char *)text.str);
       }
     }
     ops_fail(ctx, OPS_REJECTED, "%s%s%s%s%s%s", result->message,
@@ -7589,7 +7622,7 @@ static bool8_t ops_undo_own(OpsContext *ctx, bool8_t redo) {
         &best->undo[redo ? best->undo_cursor : best->undo_cursor - 1u];
     owner = ops_authored_find(ctx->ops, entry->group, (uint16_t)best_container);
   }
-  if (owner && strcmp(owner, ctx->call->author) == 0) {
+  if (owner && string_equals(owner, ctx->call->author)) {
     return true_v;
   }
   return ops_fail(ctx, OPS_NOT_OWNER,
@@ -7723,11 +7756,11 @@ static VkrEditorOpStatus ops_run_partition_change(OpsContext *ctx) {
     char line[160];
     if (unload && vkr_bakery_json_get_bool(ctx->call->args, "all", &all) &&
         all) {
-      snprintf(line, sizeof(line), "partition.unload all");
+      string_format(line, sizeof(line), "partition.unload all");
     } else if (ops_partition_region(ctx, &settings, range)) {
-      snprintf(line, sizeof(line), "%s %d %d %d %d",
-               unload ? "partition.unload" : "partition.load", range[0],
-               range[1], range[2], range[3]);
+      string_format(line, sizeof(line), "%s %d %d %d %d",
+                    unload ? "partition.unload" : "partition.load", range[0],
+                    range[1], range[2], range[3]);
     } else {
       ops_fail(ctx, OPS_INVALID, "'region' needs 'min' and 'max' points%s",
                unload ? ", or pass 'all'" : "");
@@ -7831,14 +7864,27 @@ static uint8_t ops_encode_srgb(float32_t linear) {
   if (linear >= 1.0f) {
     return 255u;
   }
-  const float32_t encoded = linear <= 0.0031308f
-                                ? linear * 12.92f
-                                : 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f;
+  const float32_t encoded =
+      linear <= 0.0031308f ? linear * 12.92f
+                           : 1.055f * vkr_pow_f32(linear, 1.0f / 2.4f) - 0.055f;
   return (uint8_t)(encoded * 255.0f + 0.5f);
 }
 
+/* The PNG writer's output file; a failed write fails the capture. */
+typedef struct OpsPngSink {
+  FileHandle *file;
+  bool8_t ok;
+} OpsPngSink;
+
 static void ops_png_sink(void *context, void *data, int size) {
-  (void)fwrite(data, 1, (size_t)size, (FILE *)context);
+  OpsPngSink *sink = context;
+  if (!sink->ok || size <= 0) {
+    return;
+  }
+  uint64_t written = 0u;
+  sink->ok = file_write(sink->file, (uint64_t)size, (const uint8_t *)data,
+                        &written) == FILE_ERROR_NONE &&
+             written == (uint64_t)size;
 }
 
 /* Writes the Scene image area of the captured window as an RGBA8 PNG. */
@@ -7875,7 +7921,7 @@ static uint8_t *ops_capture_rgba(OpsContext *ctx,
     (void)ops_fail(ctx, OPS_CAPTURE, "The Scene has no visible area");
     return NULL;
   }
-  uint8_t *pixels = malloc((size_t)width * height * 4u);
+  uint8_t *pixels = vkr_heap_alloc((size_t)width * height * 4u);
   if (!pixels) {
     (void)ops_fail(ctx, OPS_LIMIT, "Out of memory for the capture");
     return NULL;
@@ -7981,7 +8027,7 @@ static uint16_t ops_glyph(char c) {
   if (c >= 'a' && c <= 'z') {
     c = (char)(c - 'a' + 'A');
   }
-  const char *at = c ? strchr(s_ops_glyph_chars, c) : NULL;
+  const char *at = c ? string_find_char(s_ops_glyph_chars, c) : NULL;
   return at ? s_ops_glyphs[at - s_ops_glyph_chars] : 0u;
 }
 
@@ -8002,8 +8048,8 @@ static void ops_image_mark(uint8_t *pixels, uint32_t width, uint32_t height,
     }
     for (int32_t a = 0; a < 48; ++a) {
       const float32_t angle = (float32_t)a * (6.2831853f / 48.0f);
-      const int32_t rx = (int32_t)lroundf(cosf(angle) * 5.0f);
-      const int32_t ry = (int32_t)lroundf(sinf(angle) * 5.0f);
+      const int32_t rx = (int32_t)vkr_round_i64_f32(vkr_cos_f32(angle) * 5.0f);
+      const int32_t ry = (int32_t)vkr_round_i64_f32(vkr_sin_f32(angle) * 5.0f);
       for (int32_t t = -grow; t <= grow; ++t) {
         ops_image_dot(pixels, width, height, x + rx + t, y + ry, color);
         ops_image_dot(pixels, width, height, x + rx, y + ry + t, color);
@@ -8040,22 +8086,28 @@ static bool8_t ops_capture_png(OpsContext *ctx, OpsPendingCapture *pending,
   if (ops_private_directory("captures", captures, sizeof(captures))) {
     const int pid = (int)vkr_platform_get_process_id();
     const uint32_t serial = ++ctx->ops->capture_serial;
-    snprintf(pending->path, sizeof(pending->path), "%s/capture-%d-%u.png",
-             captures, pid, serial);
-    FILE *file = file_fopen(pending->path, "wb");
-    if (file) {
+    string_format(pending->path, sizeof(pending->path), "%s/capture-%d-%u.png",
+                  captures, pid, serial);
+    const FilePath capture_path = file_path_view(pending->path);
+    FileHandle file = {0};
+    if (file_open(&capture_path,
+                  (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                    FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                  &file) == FILE_ERROR_NONE) {
+      OpsPngSink sink = {.file = &file, .ok = true_v};
       written =
-          stbi_write_png_to_func(ops_png_sink, file, (int)width, (int)height, 4,
-                                 pixels, (int)width * 4) != 0;
-      written = fclose(file) == 0 && written;
+          stbi_write_png_to_func(ops_png_sink, &sink, (int)width, (int)height,
+                                 4, pixels, (int)width * 4) != 0;
+      written = sink.ok && written;
     }
+    file_close(&file);
     if (serial > OPS_CAPTURE_KEEP) {
       char old[512];
-      snprintf(old, sizeof(old), "%s/capture-%d-%u.png", captures, pid,
-               serial - OPS_CAPTURE_KEEP);
-      const FilePath old_path = {
-          .path = string8_create_from_cstr((const uint8_t *)old, strlen(old)),
-          .type = FILE_PATH_TYPE_ABSOLUTE};
+      string_format(old, sizeof(old), "%s/capture-%d-%u.png", captures, pid,
+                    serial - OPS_CAPTURE_KEEP);
+      const FilePath old_path = {.path = string8_create_from_cstr(
+                                     (const uint8_t *)old, string_length(old)),
+                                 .type = FILE_PATH_TYPE_ABSOLUTE};
       (void)file_remove(&old_path);
     }
   }
@@ -8357,7 +8409,7 @@ static bool8_t ops_derived_rooms_add(OpsContext *ctx, OpsBatch *batch,
     const VkrEditorDerivedRoom *room = &derive->rooms[r];
     const Vec3 size = vec3_sub(room->max[0], room->min[0]);
     const Vec3 center = vec3_scale(vec3_add(room->min[0], room->max[0]), 0.5f);
-    snprintf(item_name, sizeof(item_name), "%s/Room %u", name, r + 1u);
+    string_format(item_name, sizeof(item_name), "%s/Room %u", name, r + 1u);
     if (!ops_marker_add(ctx, batch, &brush, (int32_t)group, item_name,
                         vec3_sub(center, origin), vkr_quat_identity(), size,
                         &vkr_scene_room_type, &room_value)) {
@@ -8370,8 +8422,8 @@ static bool8_t ops_derived_rooms_add(OpsContext *ctx, OpsBatch *batch,
       const Vec3 box_size = vec3_sub(room->max[b], room->min[b]);
       const Vec3 offset = vec3_sub(
           vec3_scale(vec3_add(room->min[b], room->max[b]), 0.5f), center);
-      snprintf(item_name, sizeof(item_name), "%s/Room %u/Box %u", name, r + 1u,
-               b + 1u);
+      string_format(item_name, sizeof(item_name), "%s/Room %u/Box %u", name,
+                    r + 1u, b + 1u);
       if (!ops_marker_add(
               ctx, batch, &brush, (int32_t)room_item, item_name,
               vec3_new(offset.x / size.x, offset.y / size.y, offset.z / size.z),
@@ -8387,7 +8439,7 @@ static bool8_t ops_derived_rooms_add(OpsContext *ctx, OpsBatch *batch,
   const VkrQuat across_x = vkr_quat_from_axis_angle(vec3_up(), 1.57079632679f);
   for (uint32_t p = 0; p < derive->portal_count; ++p) {
     const VkrEditorDerivedPortal *portal = &derive->portals[p];
-    snprintf(item_name, sizeof(item_name), "%s/Portal %u", name, p + 1u);
+    string_format(item_name, sizeof(item_name), "%s/Portal %u", name, p + 1u);
     if (!ops_marker_add(ctx, batch, &brush, (int32_t)group, item_name,
                         vec3_sub(portal->center, origin),
                         portal->across_x ? across_x : vkr_quat_identity(),
@@ -8595,8 +8647,9 @@ static VkrEditorOpStatus ops_run_map(OpsContext *ctx) {
     for (uint32_t x = 0; x < columns; ++x) {
       const float32_t y = heights[(size_t)z * columns + x];
       vkr_bakery_json_append(
-          row, isfinite(y)
-                   ? ops_number(ctx, floor((float64_t)y * 100.0 + 0.5) / 100.0)
+          row, vkr_is_finite_f32(y)
+                   ? ops_number(ctx, vkr_floor_f64((float64_t)y * 100.0 + 0.5) /
+                                         100.0)
                    : vkr_bakery_json_null(arena));
     }
     vkr_bakery_json_append(floors, row);
@@ -8686,9 +8739,9 @@ static VkrEditorOpStatus ops_run_reachable(OpsContext *ctx) {
   const float32_t step_up = pending->level.capsule.step_up;
   for (uint32_t i = 0; i < count; ++i) {
     const bool8_t climbs_in =
-        i > 0u && fabsf(path[i].y - path[i - 1u].y) > step_up;
+        i > 0u && vkr_abs_f32(path[i].y - path[i - 1u].y) > step_up;
     const bool8_t climbs_out =
-        i + 1u < count && fabsf(path[i + 1u].y - path[i].y) > step_up;
+        i + 1u < count && vkr_abs_f32(path[i + 1u].y - path[i].y) > step_up;
     if (i % stride == 0u || i + 1u == count || climbs_in || climbs_out) {
       vkr_bakery_json_append(points, ops_vec3(ctx, path[i]));
     }
@@ -8747,8 +8800,8 @@ static VkrEditorOpStatus ops_run_camera(OpsContext *ctx) {
     request->move_camera = true_v;
     request->camera_position = eye;
     request->camera_pitch =
-        asinf(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
-    request->camera_yaw = atan2f(d.z, d.x) * 57.29577951f;
+        vkr_asin_f32(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
+    request->camera_yaw = vkr_atan2_f32(d.z, d.x) * 57.29577951f;
     ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
     ops_set(ctx, ctx->call->result, "eye", ops_vec3(ctx, eye));
     ops_set(ctx, ctx->call->result, "target", ops_vec3(ctx, target));
@@ -8758,8 +8811,9 @@ static VkrEditorOpStatus ops_run_camera(OpsContext *ctx) {
   request->recall = frame->scene_recall;
   request->recall.camera_valid = true_v;
   request->recall.position = eye;
-  request->recall.pitch = asinf(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
-  request->recall.yaw = atan2f(d.z, d.x) * 57.29577951f;
+  request->recall.pitch =
+      vkr_asin_f32(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
+  request->recall.yaw = vkr_atan2_f32(d.z, d.x) * 57.29577951f;
   request->recall.selection_valid = false_v;
   if (request->recall.field_of_view <= 0.0f) {
     request->recall.field_of_view = 60.0f;
@@ -8804,14 +8858,14 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
   MemZero(out, sizeof(*out));
   VkrSampleViewState next = frame->view_state;
   String8 view = {0};
-  snprintf(out->name, sizeof(out->name), "current");
+  string_format(out->name, sizeof(out->name), "current");
   if (vkr_bakery_json_get_string(spec, "view", &view) &&
       !ops_equals(view, "current")) {
     if (!ops_capture_view(ctx, view, &next.camera_view)) {
       return false_v;
     }
-    snprintf(out->name, sizeof(out->name), "%.*s",
-             (int)Min(view.length, (uint64_t)15u), (const char *)view.str);
+    string_format(out->name, sizeof(out->name), "%.*s",
+                  (int)Min(view.length, (uint64_t)15u), (const char *)view.str);
   }
   bool8_t labels = false_v;
   if (vkr_bakery_json_get_bool(spec, "grid_labels", &labels)) {
@@ -8873,7 +8927,7 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
   if (out->has_eye) {
     out->request.value.camera_view = VKR_SAMPLE_CAMERA_PERSPECTIVE;
     out->request.frame_box = false_v;
-    snprintf(out->name, sizeof(out->name), "eye");
+    string_format(out->name, sizeof(out->name), "eye");
   }
   return true_v;
 }
@@ -8937,8 +8991,8 @@ static void ops_capture_view_apply(const VkrSampleUiFrame *frame,
     state_request->recall.camera_valid = true_v;
     state_request->recall.position = view->eye;
     state_request->recall.pitch =
-        asinf(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
-    state_request->recall.yaw = atan2f(d.z, d.x) * 57.29577951f;
+        vkr_asin_f32(vkr_clamp_f32(d.y, -1.0f, 1.0f)) * 57.29577951f;
+    state_request->recall.yaw = vkr_atan2_f32(d.z, d.x) * 57.29577951f;
     state_request->recall.selection_valid = false_v;
     if (state_request->recall.field_of_view <= 0.0f) {
       state_request->recall.field_of_view = 60.0f;
@@ -8967,7 +9021,7 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
   view->pixels = ops_image_shrink(ops_arena(ctx), full, width, height, cell,
                                   &view->height);
   view->width = Min(cell, width);
-  free(full);
+  vkr_heap_free(full);
   if (!view->pixels) {
     return ops_fail(ctx, OPS_LIMIT, "Out of request memory for the capture");
   }
@@ -8979,7 +9033,7 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
   for (uint32_t i = 0; i < pending->mark_count; ++i) {
     const Vec4 clip = mat4_mul_vec4(view->view_projection,
                                     vec3_to_vec4(pending->marks[i], 1.0f));
-    if (!isfinite(clip.w) || clip.w <= 1.0e-6f) {
+    if (!vkr_is_finite_f32(clip.w) || clip.w <= 1.0e-6f) {
       continue;
     }
     Vec2 at = {(clip.x / clip.w * 0.5f + 0.5f) * image.z,
@@ -8988,8 +9042,9 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
       at = (Vec2){at.x + image.x, at.y + image.y};
     }
     at = (Vec2){at.x * scale, at.y * scale};
-    if (!isfinite(at.x) || !isfinite(at.y) || at.x < 0.0f || at.y < 0.0f ||
-        at.x >= (float32_t)view->width || at.y >= (float32_t)view->height) {
+    if (!vkr_is_finite_f32(at.x) || !vkr_is_finite_f32(at.y) || at.x < 0.0f ||
+        at.y < 0.0f || at.x >= (float32_t)view->width ||
+        at.y >= (float32_t)view->height) {
       continue;
     }
     view->marks[i] = at;
@@ -9003,10 +9058,12 @@ static bool8_t ops_capture_keep(OpsContext *ctx, OpsPendingCapture *pending,
     static const uint8_t seen[3] = {255u, 40u, 210u};
     static const uint8_t behind[3] = {70u, 170u, 255u};
     char text[24];
-    snprintf(text, sizeof(text), "%u%s%s", i + 1u,
-             pending->mark_labels[i][0] ? " " : "", pending->mark_labels[i]);
+    string_format(text, sizeof(text), "%u%s%s", i + 1u,
+                  pending->mark_labels[i][0] ? " " : "",
+                  pending->mark_labels[i]);
     ops_image_mark(view->pixels, view->width, view->height,
-                   (int32_t)lroundf(at.x), (int32_t)lroundf(at.y), text,
+                   (int32_t)vkr_round_i64_f32(at.x),
+                   (int32_t)vkr_round_i64_f32(at.y), text,
                    view->mark_hidden[i] ? behind : seen);
   }
   return true_v;
@@ -9067,11 +9124,11 @@ static bool8_t ops_capture_finish(OpsContext *ctx, OpsPendingCapture *pending) {
         VkrBakeryJson *mark = vkr_bakery_json_object(arena);
         VkrBakeryJson *at = vkr_bakery_json_array(arena);
         vkr_bakery_json_append(
-            at,
-            vkr_bakery_json_int(arena, x + (int64_t)lroundf(view->marks[m].x)));
+            at, vkr_bakery_json_int(
+                    arena, x + (int64_t)vkr_round_i64_f32(view->marks[m].x)));
         vkr_bakery_json_append(
-            at,
-            vkr_bakery_json_int(arena, y + (int64_t)lroundf(view->marks[m].y)));
+            at, vkr_bakery_json_int(
+                    arena, y + (int64_t)vkr_round_i64_f32(view->marks[m].y)));
         ops_set(ctx, mark, "at", at);
         ops_set(ctx, mark, "hidden",
                 vkr_bakery_json_bool(arena, view->mark_hidden[m]));
@@ -9126,11 +9183,13 @@ static VkrBakeryJson *ops_luminance_json(OpsContext *ctx, VkrBakeryJson *out,
   Arena *arena = ops_arena(ctx);
   const float64_t floor = 1.0e-9;
   ops_set(ctx, out, "luminance", vkr_bakery_json_float(arena, luminance));
-  ops_set(ctx, out, "ev100",
-          vkr_bakery_json_float(arena, log2(Max(luminance, floor) * 8.0)));
+  ops_set(
+      ctx, out, "ev100",
+      vkr_bakery_json_float(arena, vkr_log2_f64(Max(luminance, floor) * 8.0)));
   ops_set(ctx, out, "stops",
           vkr_bakery_json_float(
-              arena, log2(Max(luminance * (float64_t)exposure, floor) / 0.18)));
+              arena, vkr_log2_f64(Max(luminance * (float64_t)exposure, floor) /
+                                  0.18)));
   return out;
 }
 
@@ -9179,11 +9238,13 @@ static bool8_t ops_luminance_measure(OpsContext *ctx,
   const uint32_t x0 = (uint32_t)(pending->region[0] * (float32_t)item->width);
   const uint32_t y0 = (uint32_t)(pending->region[1] * (float32_t)item->height);
   const uint32_t x1 =
-      Max(x0 + 1u, Min(item->width, (uint32_t)ceilf(pending->region[2] *
-                                                    (float32_t)item->width)));
+      Max(x0 + 1u,
+          Min(item->width, (uint32_t)vkr_ceil_f32(pending->region[2] *
+                                                  (float32_t)item->width)));
   const uint32_t y1 =
-      Max(y0 + 1u, Min(item->height, (uint32_t)ceilf(pending->region[3] *
-                                                     (float32_t)item->height)));
+      Max(y0 + 1u,
+          Min(item->height, (uint32_t)vkr_ceil_f32(pending->region[3] *
+                                                   (float32_t)item->height)));
   float64_t sum = 0.0;
   float64_t log_sum = 0.0;
   float64_t peak = 0.0;
@@ -9192,7 +9253,7 @@ static bool8_t ops_luminance_measure(OpsContext *ctx,
     for (uint32_t x = x0; x < x1 && x < item->width; ++x) {
       const float64_t luminance = ops_luminance_at(item, x, y);
       sum += luminance;
-      log_sum += log2(Max(luminance, 1.0e-9));
+      log_sum += vkr_log2_f64(Max(luminance, 1.0e-9));
       peak = Max(peak, luminance);
       count++;
     }
@@ -9201,8 +9262,8 @@ static bool8_t ops_luminance_measure(OpsContext *ctx,
       ops_luminance_json(ctx, vkr_bakery_json_object(arena),
                          count ? sum / (float64_t)count : 0.0, exposure);
   ops_set(ctx, region, "log_average",
-          vkr_bakery_json_float(arena, count ? exp2(log_sum / (float64_t)count)
-                                             : 0.0));
+          vkr_bakery_json_float(
+              arena, count ? vkr_exp2_f64(log_sum / (float64_t)count) : 0.0));
   ops_set(ctx, region, "peak", vkr_bakery_json_float(arena, peak));
   ops_set(ctx, region, "pixels", vkr_bakery_json_int(arena, (int64_t)count));
   ctx->call->result = vkr_bakery_json_object(arena);
@@ -9308,9 +9369,10 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         point = vkr_bakery_json_get(mark, "point");
         (void)vkr_bakery_json_get_string(mark, "label", &label);
       }
-      snprintf(pending->mark_labels[pending->mark_count],
-               sizeof(pending->mark_labels[0]), "%.*s",
-               (int)Min(label.length, (uint64_t)15u), (const char *)label.str);
+      string_format(pending->mark_labels[pending->mark_count],
+                    sizeof(pending->mark_labels[0]), "%.*s",
+                    (int)Min(label.length, (uint64_t)15u),
+                    (const char *)label.str);
       float32_t xyz[3] = {0};
       uint32_t axis = 0u;
       for (const VkrBakeryJson *part =
@@ -9322,10 +9384,10 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         xyz[axis] = part->type == VKR_BAKERY_JSON_INT ? (float32_t)part->integer
                     : part->type == VKR_BAKERY_JSON_FLOAT
                         ? (float32_t)part->number
-                        : NAN;
+                        : VKR_FLOAT_NAN;
       }
-      if (axis != 3u || !isfinite(xyz[0]) || !isfinite(xyz[1]) ||
-          !isfinite(xyz[2])) {
+      if (axis != 3u || !vkr_is_finite_f32(xyz[0]) ||
+          !vkr_is_finite_f32(xyz[1]) || !vkr_is_finite_f32(xyz[2])) {
         ops_fail(ctx, OPS_INVALID,
                  "Each mark is a world point [x, y, z] or {\"point\": [x, y, "
                  "z], \"label\": \"text\"}");
@@ -9540,12 +9602,12 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   (void)ops_arg_number(args, "height_min", &height_min);
   (void)ops_arg_number(args, "height_max", &height_max);
   (void)ops_arg_number(args, "texture_size", &texture_size);
-  const float64_t cells = spacing > 0.0 ? round(size / spacing) : 0.0;
+  const float64_t cells = spacing > 0.0 ? vkr_round_f64(size / spacing) : 0.0;
   if (!(cells >= VKR_HEIGHTFIELD_TILE_CELLS) ||
       cells > VKR_HEIGHTFIELD_CELLS_MAX ||
-      fmod(cells, (float64_t)VKR_HEIGHTFIELD_TILE_CELLS) != 0.0 ||
+      vkr_fmod_f64(cells, (float64_t)VKR_HEIGHTFIELD_TILE_CELLS) != 0.0 ||
       (cells > VKR_HEIGHTFIELD_RESIDENT_CELLS &&
-       fmod(cells, (float64_t)VKR_HEIGHTFIELD_STREAMED_CELLS) != 0.0) ||
+       vkr_fmod_f64(cells, (float64_t)VKR_HEIGHTFIELD_STREAMED_CELLS) != 0.0) ||
       !(height_max > height_min) || height < height_min ||
       height > height_max || !(texture_size > 0.0)) {
     return ops_fail(ctx, OPS_INVALID,
@@ -9565,7 +9627,7 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   char relative[SCENE_TERRAIN_PATH_CAPACITY];
   char absolute[1100];
   char directory[1100];
-  snprintf(relative, sizeof(relative), "assets/terrain/%s.vkrhf", uuid);
+  string_format(relative, sizeof(relative), "assets/terrain/%s.vkrhf", uuid);
   if (!vkr_scene_terrain_resolve(scene, relative, absolute, sizeof(absolute)) ||
       !vkr_scene_terrain_resolve(scene, "assets/terrain", directory,
                                  sizeof(directory))) {
@@ -9587,8 +9649,8 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   } else {
     VkrAllocator scratch = {.ctx = ops_arena(ctx)};
     vkr_allocator_arena(&scratch);
-    const String8 directory_text =
-        string8_create_from_cstr((const uint8_t *)directory, strlen(directory));
+    const String8 directory_text = string8_create_from_cstr(
+        (const uint8_t *)directory, string_length(directory));
     char error[160] = {0};
     if (!file_ensure_directory(&scratch, &directory_text) ||
         !vkr_heightfield_create_file(absolute, (uint32_t)cells,
@@ -9608,7 +9670,7 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "Terrain");
+  string_format(values->name, sizeof(values->name), "Terrain");
   values->rotation = vkr_quat_identity();
   values->scale = vec3_one();
   bool8_t has_position = false_v;
@@ -9618,12 +9680,13 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
   }
   if (vkr_bakery_json_get_string(args, "name", &name) && name.length &&
       name.length < sizeof(values->name)) {
-    snprintf(values->name, sizeof(values->name), "%.*s", (int)name.length,
-             name.str);
+    string_format(values->name, sizeof(values->name), "%.*s", (int)name.length,
+                  name.str);
   }
   SceneTerrain terrain;
   vkr_type_defaults(&vkr_scene_terrain_type, &terrain);
-  snprintf(terrain.heightfield, sizeof(terrain.heightfield), "%s", relative);
+  string_format(terrain.heightfield, sizeof(terrain.heightfield), "%s",
+                relative);
   terrain.texture_size = (float32_t)texture_size;
   char *const layers[VKR_HEIGHTFIELD_LAYERS] = {terrain.layer0, terrain.layer1,
                                                 terrain.layer2, terrain.layer3};
@@ -9640,14 +9703,15 @@ static bool8_t ops_build_terrain_create(OpsContext *ctx,
                                    VKR_SURFACE_FLOOR)};
   for (uint32_t i = 0; i < VKR_HEIGHTFIELD_LAYERS; ++i) {
     char key[16];
-    snprintf(key, sizeof(key), "layer%u", i);
+    string_format(key, sizeof(key), "layer%u", i);
     String8 layer = {0};
     if (vkr_bakery_json_get_string(args, key, &layer) &&
         layer.length < SCENE_TERRAIN_MATERIAL_CAPACITY) {
       MemCopy(layers[i], layer.str, layer.length);
       layers[i][layer.length] = '\0';
     } else {
-      snprintf(layers[i], SCENE_TERRAIN_MATERIAL_CAPACITY, "%s", dev_layers[i]);
+      string_format(layers[i], SCENE_TERRAIN_MATERIAL_CAPACITY, "%s",
+                    dev_layers[i]);
     }
   }
   values->component_type = &vkr_scene_terrain_type;
@@ -9694,8 +9758,8 @@ static bool8_t ops_build_terrain_brush(OpsContext *ctx,
     op.layer = (uint32_t)Max(0.0, number - 1.0);
   }
   if (op.brush == VKR_HEIGHTFIELD_BRUSH_COUNT || !(op.radius > 0.0f) ||
-      op.layer >= VKR_HEIGHTFIELD_LAYERS || !isfinite(op.strength) ||
-      !isfinite(op.falloff)) {
+      op.layer >= VKR_HEIGHTFIELD_LAYERS || !vkr_is_finite_f32(op.strength) ||
+      !vkr_is_finite_f32(op.falloff)) {
     return ops_fail(ctx, OPS_INVALID,
                     "'mode' is raise, lower, smooth, flatten, paint, hole or "
                     "fill, with a "
@@ -9843,26 +9907,31 @@ static bool8_t ops_build_terrain_stamp(OpsContext *ctx,
   const uint32_t channels = paint ? VKR_HEIGHTFIELD_LAYERS : 1u;
   char path[1100];
   char relative[1024];
-  snprintf(relative, sizeof(relative), "%.*s", (int)image.length, image.str);
+  string_format(relative, sizeof(relative), "%.*s", (int)image.length,
+                image.str);
   if (!vkr_scene_terrain_resolve(ops_scene(ctx->frame, ref.container), relative,
                                  path, sizeof(path))) {
     return ops_fail(ctx, OPS_INVALID, "The image path is too long");
   }
   /* The engine's stb_image reads memory only. */
-  FILE *file = file_fopen(path, "rb");
-  long bytes = 0;
+  const FilePath image_path = file_path_view(path);
+  FileHandle file = {0};
+  uint64_t bytes = 0u;
   uint8_t *encoded = NULL;
-  if (file && fseek(file, 0, SEEK_END) == 0 && (bytes = ftell(file)) > 0 &&
-      bytes <= 256L * 1024L * 1024L && fseek(file, 0, SEEK_SET) == 0) {
-    encoded =
-        arena_alloc(ops_arena(ctx), (uint64_t)bytes, ARENA_MEMORY_TAG_ARRAY);
-    if (encoded && fread(encoded, 1u, (size_t)bytes, file) != (size_t)bytes) {
+  if (file_open(&image_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) == FILE_ERROR_NONE &&
+      file_remaining_size(&file, &bytes) == FILE_ERROR_NONE && bytes > 0u &&
+      bytes <= 256u * 1024u * 1024u) {
+    encoded = arena_alloc(ops_arena(ctx), bytes, ARENA_MEMORY_TAG_ARRAY);
+    uint64_t read = 0u;
+    if (encoded &&
+        (file_read_into(&file, encoded, bytes, &read) != FILE_ERROR_NONE ||
+         read != bytes)) {
       encoded = NULL;
     }
   }
-  if (file) {
-    fclose(file);
-  }
+  file_close(&file);
   int width = 0;
   int height = 0;
   int file_channels = 0;
@@ -9924,8 +9993,8 @@ static VkrBakeryJson *ops_terrain_height(OpsContext *ctx,
     return vkr_bakery_json_null(ops_arena(ctx));
   }
   const float64_t height = (float64_t)(h - origin.y);
-  return ops_number(ctx,
-                    rounded ? floor(height * 100.0 + 0.5) / 100.0 : height);
+  return ops_number(ctx, rounded ? vkr_floor_f64(height * 100.0 + 0.5) / 100.0
+                                 : height);
 }
 
 /* terrain.sample with `region`: rows of heights from min z to max z, each
@@ -9955,8 +10024,9 @@ static bool8_t ops_terrain_grid(OpsContext *ctx, const VkrHeightfield *field,
   if (!(step > 0.0)) {
     return ops_fail(ctx, OPS_INVALID, "'step' must be positive");
   }
-  const uint32_t columns = (uint32_t)floor((float64_t)width / step) + 1u;
-  const uint32_t rows = (uint32_t)floor((float64_t)depth / step) + 1u;
+  const uint32_t columns =
+      (uint32_t)vkr_floor_f64((float64_t)width / step) + 1u;
+  const uint32_t rows = (uint32_t)vkr_floor_f64((float64_t)depth / step) + 1u;
   if ((uint64_t)columns * rows > OPS_TERRAIN_SAMPLE_MAX) {
     return ops_fail(ctx, OPS_LIMIT,
                     "A grid of %u by %u heights passes %u; raise 'step' or "
@@ -10133,7 +10203,8 @@ static uint32_t ops_arg_points(OpsContext *ctx, const VkrBakeryJson *args,
                                    ? (float64_t)part->integer
                                    : part->number);
     }
-    if (!isfinite(parts[0]) || !isfinite(parts[1]) || !isfinite(parts[2])) {
+    if (!vkr_is_finite_f32(parts[0]) || !vkr_is_finite_f32(parts[1]) ||
+        !vkr_is_finite_f32(parts[2])) {
       ops_fail(ctx, OPS_INVALID, "Points of '%s' must be finite", key);
       return 0u;
     }
@@ -10192,12 +10263,12 @@ static bool8_t ops_build_spline_create(OpsContext *ctx,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "Spline");
+  string_format(values->name, sizeof(values->name), "Spline");
   String8 name = {0};
   if (vkr_bakery_json_get_string(args, "name", &name) && name.length &&
       name.length < sizeof(values->name)) {
-    snprintf(values->name, sizeof(values->name), "%.*s", (int)name.length,
-             name.str);
+    string_format(values->name, sizeof(values->name), "%.*s", (int)name.length,
+                  name.str);
   }
   values->position = points[0];
   values->rotation = vkr_quat_identity();
@@ -10215,8 +10286,8 @@ static bool8_t ops_build_spline_create(OpsContext *ctx,
     VkrSceneEditValues *point_values = &point->request.values;
     point_values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM |
                            VKR_SCENE_EDIT_COMPONENT;
-    snprintf(point_values->name, sizeof(point_values->name), "Point %u",
-             i + 1u);
+    string_format(point_values->name, sizeof(point_values->name), "Point %u",
+                  i + 1u);
     point_values->position = vec3_sub(points[i], points[0]);
     point_values->rotation = vkr_quat_identity();
     point_values->scale = vec3_one();
@@ -10354,13 +10425,13 @@ static bool8_t ops_build_scatter_paint(OpsContext *ctx,
     VkrSceneEditValues *values = &item->request.values;
     values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM |
                      VKR_SCENE_EDIT_COMPONENT;
-    snprintf(values->name, sizeof(values->name), "Area");
+    string_format(values->name, sizeof(values->name), "Area");
     values->position = mat4_mul_vec3(to_local, points[i]);
     values->rotation = vkr_quat_identity();
     values->scale = vec3_one();
-    const int32_t key[4] = {(int32_t)lroundf(points[i].x * 1000.0f),
-                            (int32_t)lroundf(points[i].y * 1000.0f),
-                            (int32_t)lroundf(points[i].z * 1000.0f),
+    const int32_t key[4] = {(int32_t)vkr_round_i64_f32(points[i].x * 1000.0f),
+                            (int32_t)vkr_round_i64_f32(points[i].y * 1000.0f),
+                            (int32_t)vkr_round_i64_f32(points[i].z * 1000.0f),
                             (int32_t)(child_count + i)};
     uint32_t seed = 2166136261u;
     const uint8_t *bytes = (const uint8_t *)key;
@@ -10397,12 +10468,12 @@ static bool8_t ops_build_scatter_create(OpsContext *ctx,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "Scatter");
+  string_format(values->name, sizeof(values->name), "Scatter");
   String8 name = {0};
   if (vkr_bakery_json_get_string(args, "name", &name) && name.length &&
       name.length < sizeof(values->name)) {
-    snprintf(values->name, sizeof(values->name), "%.*s", (int)name.length,
-             name.str);
+    string_format(values->name, sizeof(values->name), "%.*s", (int)name.length,
+                  name.str);
   }
   if (!ops_arg_vec3(ctx, args, "position", &values->position, NULL)) {
     return false_v;
@@ -10468,7 +10539,7 @@ static bool8_t ops_build_terrain_road(OpsContext *ctx,
   (void)ops_arg_number(args, "width", &width);
   (void)ops_arg_number(args, "falloff", &falloff);
   (void)ops_arg_number(args, "offset", &offset);
-  if (!(width > 0.0) || !(falloff >= 0.0) || !isfinite(offset)) {
+  if (!(width > 0.0) || !(falloff >= 0.0) || !vkr_is_finite_f64(offset)) {
     return ops_fail(ctx, OPS_INVALID,
                     "terrain.road needs a positive 'width' and a "
                     "non-negative 'falloff'");
@@ -10564,7 +10635,7 @@ static VkrBakeryJson *ops_io_ports(OpsContext *ctx, const VkrScene *scene,
     for (uint32_t p = 0; ports[p].name; ++p) {
       VkrBakeryJson *port = vkr_bakery_json_object(arena);
       char name[160];
-      snprintf(name, sizeof(name), "%s.%s", type->name, ports[p].name);
+      string_format(name, sizeof(name), "%s.%s", type->name, ports[p].name);
       ops_set(ctx, port, "name", vkr_bakery_json_cstr(arena, name));
       ops_set(ctx, port, "label", vkr_bakery_json_cstr(arena, ports[p].label));
       ops_set(ctx, port, "kind",
@@ -10694,9 +10765,9 @@ static bool8_t ops_build_connect(OpsContext *ctx, const VkrBakeryJson *args,
   VkrSceneEditValues *values = &item->request.values;
   values->fields =
       VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM | VKR_SCENE_EDIT_COMPONENT;
-  snprintf(values->name, sizeof(values->name), "%.*s",
-           (int)Min(output.length, (uint64_t)sizeof(values->name) - 1u),
-           output.str);
+  string_format(values->name, sizeof(values->name), "%.*s",
+                (int)Min(output.length, (uint64_t)sizeof(values->name) - 1u),
+                output.str);
   values->rotation = vkr_quat_identity();
   values->scale = vec3_one();
   values->component_type = &vkr_scene_io_connection_type;
@@ -10749,7 +10820,7 @@ static bool8_t ops_build_disconnect(OpsContext *ctx, const VkrBakeryJson *args,
             ? vkr_scene_get_typed(scene, child, &vkr_scene_io_connection_type)
             : NULL;
     if (!connection ||
-        (by_output && strlen(connection->output) != output.length) ||
+        (by_output && string_length(connection->output) != output.length) ||
         (by_output &&
          MemCompare(connection->output, output.str, output.length) != 0)) {
       continue;
@@ -10914,7 +10985,7 @@ static const char *ops_code_named(const char *code) {
       OPS_MALFORMED, OPS_UNKNOWN, OPS_INVALID, OPS_NOT_FOUND, OPS_REJECTED,
       OPS_BUSY,      OPS_CAPTURE, OPS_LIMIT,   OPS_NOT_OWNER, OPS_CLAIMED};
   for (uint32_t i = 0; i < ArrayCount(codes); ++i) {
-    if (strcmp(code, codes[i]) == 0) {
+    if (string_equals(code, codes[i])) {
       return codes[i];
     }
   }
@@ -10926,7 +10997,7 @@ static const char *ops_code_named(const char *code) {
 static VkrEditorOpStatus ops_ask_host(OpsContext *ctx,
                                       VkrEditorSessionAsk *ask) {
   if (!ask->author[0]) {
-    snprintf(ask->author, sizeof(ask->author), "%s", ctx->call->author);
+    string_format(ask->author, sizeof(ask->author), "%s", ctx->call->author);
   }
   const uint64_t token = vkr_editor_session_ask(ctx->editor->session, ask);
   if (!token) {
@@ -10971,10 +11042,10 @@ static bool8_t ops_claim_put(VkrEditorOps *ops, const char *author,
       ops_claim_hit(ops, author, want->container, want->min, want->max);
   if (other) {
     *code = OPS_CLAIMED;
-    snprintf(error, capacity,
-             "The box overlaps %s's claim '%s' (claim %u); claim beside it",
-             other->author, other->name[0] ? other->name : "unnamed",
-             other->id);
+    string_format(
+        error, capacity,
+        "The box overlaps %s's claim '%s' (claim %u); claim beside it",
+        other->author, other->name[0] ? other->name : "unnamed", other->id);
     return false_v;
   }
   VkrEditorClaim *claim = NULL;
@@ -10983,32 +11054,32 @@ static bool8_t ops_claim_put(VkrEditorOps *ops, const char *author,
       claim = &ops->claims[i];
     }
   }
-  if (want->id && (!claim || strcmp(claim->author, author))) {
+  if (want->id && (!claim || !string_equals(claim->author, author))) {
     *code = claim ? OPS_NOT_OWNER : OPS_NOT_FOUND;
     if (claim) {
-      snprintf(error, capacity, "Claim %u belongs to %s", want->id,
-               claim->author);
+      string_format(error, capacity, "Claim %u belongs to %s", want->id,
+                    claim->author);
     } else {
-      snprintf(error, capacity, "No claim %u", want->id);
+      string_format(error, capacity, "No claim %u", want->id);
     }
     return false_v;
   }
   if (!claim) {
     if (ops->claim_count == VKR_EDITOR_CLAIM_MAX) {
       *code = OPS_LIMIT;
-      snprintf(error, capacity, "The editor holds at most %u claims",
-               VKR_EDITOR_CLAIM_MAX);
+      string_format(error, capacity, "The editor holds at most %u claims",
+                    VKR_EDITOR_CLAIM_MAX);
       return false_v;
     }
     claim = &ops->claims[ops->claim_count++];
     *claim = (VkrEditorClaim){.id = ++ops->next_claim_id};
-    snprintf(claim->author, sizeof(claim->author), "%s", author);
+    string_format(claim->author, sizeof(claim->author), "%s", author);
   }
   claim->container = want->container;
   claim->min = want->min;
   claim->max = want->max;
   if (want->name[0]) {
-    snprintf(claim->name, sizeof(claim->name), "%s", want->name);
+    string_format(claim->name, sizeof(claim->name), "%s", want->name);
   }
   OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_CLAIMED, claim->container,
                                      claim->author, claim->name);
@@ -11063,8 +11134,8 @@ static VkrEditorOpStatus ops_run_claims_set(OpsContext *ctx) {
                 : 0u;
   String8 name = {0};
   if (vkr_bakery_json_get_string(args, "name", &name)) {
-    snprintf(want.name, sizeof(want.name), "%.*s",
-             (int)Min(name.length, (uint64_t)47u), (const char *)name.str);
+    string_format(want.name, sizeof(want.name), "%.*s",
+                  (int)Min(name.length, (uint64_t)47u), (const char *)name.str);
   }
   /* In a session the host keeps every editor's claims. */
   if (vkr_editor_session_forwards(ctx->editor->session)) {
@@ -11107,12 +11178,12 @@ static bool8_t ops_claim_drop(VkrEditorOps *ops, const char *author,
   *released_count = 0u;
   if (!id && !author[0] && !all) {
     *code = OPS_INVALID;
-    snprintf(error, capacity, "Name a 'claim', or release 'all'");
+    string_format(error, capacity, "Name a 'claim', or release 'all'");
     return false_v;
   }
   for (uint32_t i = 0; i < ops->claim_count;) {
     const VkrEditorClaim *claim = &ops->claims[i];
-    const bool8_t mine = !author[0] || strcmp(claim->author, author) == 0;
+    const bool8_t mine = !author[0] || string_equals(claim->author, author);
     const bool8_t named = id ? claim->id == id : (all || author[0]);
     if (!named) {
       ++i;
@@ -11121,7 +11192,8 @@ static bool8_t ops_claim_drop(VkrEditorOps *ops, const char *author,
     if (!mine) {
       if (id) {
         *code = OPS_NOT_OWNER;
-        snprintf(error, capacity, "Claim %u belongs to %s", id, claim->author);
+        string_format(error, capacity, "Claim %u belongs to %s", id,
+                      claim->author);
         return false_v;
       }
       ++i;
@@ -11132,7 +11204,7 @@ static bool8_t ops_claim_drop(VkrEditorOps *ops, const char *author,
   }
   if (id && !*released_count) {
     *code = OPS_NOT_FOUND;
-    snprintf(error, capacity, "No claim %u", id);
+    string_format(error, capacity, "No claim %u", id);
     return false_v;
   }
   return true_v;
@@ -11220,7 +11292,7 @@ static bool8_t ops_task_add(VkrEditorOps *ops, const VkrEditorTask *want,
                             uint32_t capacity) {
   if (!want->kind[0]) {
     *code = OPS_INVALID;
-    snprintf(error, capacity, "A task needs a 'kind'");
+    string_format(error, capacity, "A task needs a 'kind'");
     return false_v;
   }
   if (ops->task_count == VKR_EDITOR_TASK_MAX) {
@@ -11233,8 +11305,8 @@ static bool8_t ops_task_add(VkrEditorOps *ops, const VkrEditorTask *want,
     }
     if (oldest == UINT32_MAX) {
       *code = OPS_LIMIT;
-      snprintf(error, capacity, "The board holds %u unfinished tasks",
-               VKR_EDITOR_TASK_MAX);
+      string_format(error, capacity, "The board holds %u unfinished tasks",
+                    VKR_EDITOR_TASK_MAX);
       return false_v;
     }
     ops->tasks[oldest] = ops->tasks[--ops->task_count];
@@ -11255,7 +11327,7 @@ static bool8_t ops_task_kind_in(const char *kind, const char *kinds) {
   if (!kinds[0]) {
     return true_v;
   }
-  const uint64_t length = strlen(kind);
+  const uint64_t length = string_length(kind);
   for (const char *at = kinds; *at;) {
     while (*at == ' ' || *at == ',') {
       ++at;
@@ -11269,7 +11341,7 @@ static bool8_t ops_task_kind_in(const char *kind, const char *kinds) {
       --last;
     }
     if ((uint64_t)(last - at) == length && length &&
-        strncmp(at, kind, length) == 0) {
+        string_n_equals(at, kind, length)) {
       return true_v;
     }
     at = end;
@@ -11320,13 +11392,13 @@ static const char *ops_editor_capabilities(void) {
 /* The editor part of an author, `agent@editor`; empty for this editor's
    authors outside a session. */
 static const char *ops_author_editor(const char *author) {
-  const char *at = strchr(author, '@');
+  const char *at = string_find_char(author, '@');
   return at ? at + 1 : "";
 }
 
 static OpsTaskSlots *ops_task_slots(VkrEditorOps *ops, const char *editor) {
   for (uint32_t i = 0; i < ops->task_slot_count; ++i) {
-    if (strcmp(ops->task_slots[i].editor, editor) == 0) {
+    if (string_equals(ops->task_slots[i].editor, editor)) {
       return &ops->task_slots[i];
     }
   }
@@ -11342,12 +11414,12 @@ static bool8_t ops_task_set_slots(VkrEditorOps *ops, const char *editor,
   if (!entry) {
     if (ops->task_slot_count == ArrayCount(ops->task_slots)) {
       *code = OPS_LIMIT;
-      snprintf(error, capacity, "The board tracks %u editors",
-               (uint32_t)ArrayCount(ops->task_slots));
+      string_format(error, capacity, "The board tracks %u editors",
+                    (uint32_t)ArrayCount(ops->task_slots));
       return false_v;
     }
     entry = &ops->task_slots[ops->task_slot_count++];
-    snprintf(entry->editor, sizeof(entry->editor), "%s", editor);
+    string_format(entry->editor, sizeof(entry->editor), "%s", editor);
   }
   entry->slots = slots;
   return true_v;
@@ -11365,14 +11437,14 @@ static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
   *out_has = false_v;
   if (!author[0]) {
     *code = OPS_INVALID;
-    snprintf(error, capacity, "Only an agent takes a task");
+    string_format(error, capacity, "Only an agent takes a task");
     return false_v;
   }
   VkrEditorTask *pick = NULL;
   for (uint32_t i = 0; i < ops->task_count; ++i) {
     VkrEditorTask *task = &ops->tasks[i];
     if (task->state == VKR_EDITOR_TASK_ASSIGNED &&
-        strcmp(task->assignee, author) == 0) {
+        string_equals(task->assignee, author)) {
       *out = *task;
       *out_has = true_v;
       return true_v;
@@ -11392,14 +11464,14 @@ static bool8_t ops_task_take(VkrEditorOps *ops, const char *author,
   for (uint32_t i = 0; pick && slots && slots->slots && i < ops->task_count;
        ++i) {
     held += ops->tasks[i].state == VKR_EDITOR_TASK_ASSIGNED &&
-            strcmp(ops_author_editor(ops->tasks[i].assignee), editor) == 0;
+            string_equals(ops_author_editor(ops->tasks[i].assignee), editor);
   }
   if (pick && slots && slots->slots && held >= slots->slots) {
     pick = NULL;
   }
   if (pick) {
     pick->state = VKR_EDITOR_TASK_ASSIGNED;
-    snprintf(pick->assignee, sizeof(pick->assignee), "%s", author);
+    string_format(pick->assignee, sizeof(pick->assignee), "%s", author);
     ops->shared_revision++;
     *out = *pick;
     *out_has = true_v;
@@ -11416,21 +11488,21 @@ static bool8_t ops_task_finish(VkrEditorOps *ops, const char *author,
   VkrEditorTask *task = ops_task_find(ops, want->id);
   if (!task) {
     *code = OPS_NOT_FOUND;
-    snprintf(error, capacity, "No task %u", want->id);
+    string_format(error, capacity, "No task %u", want->id);
     return false_v;
   }
   if (task->state >= VKR_EDITOR_TASK_DONE ||
       (author[0] && (task->state != VKR_EDITOR_TASK_ASSIGNED ||
-                     strcmp(task->assignee, author)))) {
+                     !string_equals(task->assignee, author)))) {
     *code = OPS_NOT_OWNER;
-    snprintf(error, capacity, "Task %u is %s%s%s", task->id,
-             s_task_states[task->state], task->assignee[0] ? " by " : "",
-             task->assignee);
+    string_format(error, capacity, "Task %u is %s%s%s", task->id,
+                  s_task_states[task->state], task->assignee[0] ? " by " : "",
+                  task->assignee);
     return false_v;
   }
   task->state = want->state == VKR_EDITOR_TASK_FAILED ? VKR_EDITOR_TASK_FAILED
                                                       : VKR_EDITOR_TASK_DONE;
-  snprintf(task->note, sizeof(task->note), "%s", want->note);
+  string_format(task->note, sizeof(task->note), "%s", want->note);
   ops->shared_revision++;
   *out = *task;
   return true_v;
@@ -11507,14 +11579,14 @@ static bool8_t ops_arg_list(OpsContext *ctx, const char *key, char *out,
   }
   for (const VkrBakeryJson *entry = value ? value->first : NULL; entry;
        entry = entry->next) {
-    const uint64_t used = strlen(out);
+    const uint64_t used = string_length(out);
     if (entry->type != VKR_BAKERY_JSON_STRING ||
         used + entry->string.length + 2u > capacity) {
       return ops_fail(ctx, OPS_INVALID, "'%s' is a short array of strings",
                       key);
     }
-    snprintf(out + used, capacity - used, "%s%.*s", used ? "," : "",
-             (int)entry->string.length, (const char *)entry->string.str);
+    string_format(out + used, capacity - used, "%s%.*s", used ? "," : "",
+                  (int)entry->string.length, (const char *)entry->string.str);
   }
   return true_v;
 }
@@ -11568,15 +11640,17 @@ static VkrEditorOpStatus ops_run_task_next(OpsContext *ctx) {
   char kinds[128] = {0};
   char capabilities[160] = {0};
   /* The agent's own capabilities join its editor's. */
-  snprintf(capabilities, sizeof(capabilities), "%s", ops_editor_capabilities());
+  string_format(capabilities, sizeof(capabilities), "%s",
+                ops_editor_capabilities());
   if (!ops_arg_list(ctx, "kinds", kinds, sizeof(kinds)) ||
       !ops_arg_list(ctx, "capabilities", capabilities, sizeof(capabilities))) {
     return VKR_EDITOR_OP_DONE;
   }
   if (vkr_editor_session_forwards(ctx->editor->session)) {
     VkrEditorSessionAsk ask = {.kind = VKR_EDITOR_ASK_TASK_NEXT};
-    snprintf(ask.kinds, sizeof(ask.kinds), "%s", kinds);
-    snprintf(ask.capabilities, sizeof(ask.capabilities), "%s", capabilities);
+    string_format(ask.kinds, sizeof(ask.kinds), "%s", kinds);
+    string_format(ask.capabilities, sizeof(ask.capabilities), "%s",
+                  capabilities);
     return ops_ask_host(ctx, &ask);
   }
   VkrEditorTask task;
@@ -11957,10 +12031,10 @@ static bool8_t ops_allocator(OpsContext *ctx, VkrAllocator *out) {
 }
 
 static bool8_t ops_material_ends(const char *path, const char *suffix) {
-  const size_t length = strlen(path);
-  const size_t suffix_length = strlen(suffix);
+  const size_t length = string_length(path);
+  const size_t suffix_length = string_length(suffix);
   return length > suffix_length &&
-         strcmp(path + length - suffix_length, suffix) == 0;
+         string_equals(path + length - suffix_length, suffix);
 }
 
 /* A content-root relative path in `args[key]` naming a material file or,
@@ -11975,8 +12049,8 @@ static bool8_t ops_material_path(OpsContext *ctx, const VkrBakeryJson *args,
   const bool8_t kind_ok =
       graph ? ops_material_ends(out, ".mtg")
             : (ops_material_ends(out, ".mt") || ops_material_ends(out, ".mtg"));
-  if (!out[0] || out[0] == '/' || strstr(out, "..") || strchr(out, '\\') ||
-      strchr(out, ':') || !kind_ok) {
+  if (!out[0] || out[0] == '/' || string_find(out, "..") ||
+      string_find_char(out, '\\') || string_find_char(out, ':') || !kind_ok) {
     return ops_fail(ctx, OPS_INVALID,
                     "'%s' is a content-root relative path to a %s", key,
                     graph ? "graph (.mtg)" : "material (.mt) or graph (.mtg)");
@@ -12007,16 +12081,16 @@ static bool8_t ops_material_write(OpsContext *ctx, const char *path,
   change->id = ++ops->next_change_id;
   change->group = group;
   change->created = vkr_platform_get_absolute_time();
-  snprintf(change->label, sizeof(change->label), "%s", label);
-  snprintf(change->author, sizeof(change->author), "%s", call->author);
-  snprintf(change->document, sizeof(change->document), "%s", path);
+  string_format(change->label, sizeof(change->label), "%s", label);
+  string_format(change->author, sizeof(change->author), "%s", call->author);
+  string_format(change->document, sizeof(change->document), "%s", path);
   if (!call->result) {
     call->result = vkr_bakery_json_object(ops_arena(ctx));
   }
   ops_set(ctx, call->result, "change",
           vkr_bakery_json_int(ops_arena(ctx), change->id));
   char toast[160];
-  snprintf(toast, sizeof(toast), "Agent change to review: %s", label);
+  string_format(toast, sizeof(toast), "Agent change to review: %s", label);
   vkr_editor_toast(ctx->editor, VKR_UI_ICON_MATERIAL,
                    vkr_ui_theme()->accent_hover, toast);
   return true_v;
@@ -12065,7 +12139,8 @@ ops_material_lowering(OpsContext *ctx, const VkrMaterialGraph *graph,
   String8 text = {0};
   const bool8_t lowered = vkr_material_graph_lower(
       graph,
-      string8_create_from_cstr((const uint8_t *)graph_path, strlen(graph_path)),
+      string8_create_from_cstr((const uint8_t *)graph_path,
+                               string_length(graph_path)),
       params, param_count, &allocator, &text, &lowering);
   const bool8_t custom = lowered && lowering.tier == VKR_MATERIAL_TIER_CUSTOM;
   ops_set(ctx, report, "tier",
@@ -12132,17 +12207,17 @@ static bool8_t ops_material_param_text(OpsContext *ctx,
                                        const VkrBakeryJson *value, char *out,
                                        uint32_t capacity) {
   if (value->type == VKR_BAKERY_JSON_INT) {
-    snprintf(out, capacity, "%lld", (long long)value->integer);
+    string_format(out, capacity, "%lld", (long long)value->integer);
     return true_v;
   }
   if (value->type == VKR_BAKERY_JSON_FLOAT) {
-    snprintf(out, capacity, "%.9g", value->number);
+    string_format(out, capacity, "%.9g", value->number);
     return true_v;
   }
   if (value->type == VKR_BAKERY_JSON_STRING &&
       value->string.length < capacity && value->string.length) {
-    snprintf(out, capacity, "%.*s", (int)value->string.length,
-             (const char *)value->string.str);
+    string_format(out, capacity, "%.*s", (int)value->string.length,
+                  (const char *)value->string.str);
     return true_v;
   }
   if (value->type == VKR_BAKERY_JSON_ARRAY && value->count == 3u) {
@@ -12157,7 +12232,7 @@ static bool8_t ops_material_param_text(OpsContext *ctx,
         return ops_fail(ctx, OPS_INVALID, "A colour is three numbers");
       }
     }
-    snprintf(out, capacity, "%.9g,%.9g,%.9g", c[0], c[1], c[2]);
+    string_format(out, capacity, "%.9g,%.9g,%.9g", c[0], c[1], c[2]);
     return true_v;
   }
   return ops_fail(ctx, OPS_INVALID,
@@ -12192,11 +12267,11 @@ static bool8_t ops_material_apply_params(OpsContext *ctx,
     if (!item->key.length || item->key.length >= sizeof(name)) {
       return ops_fail(ctx, OPS_INVALID, "A parameter name is 1 to 31 bytes");
     }
-    snprintf(name, sizeof(name), "%.*s", (int)item->key.length,
-             (const char *)item->key.str);
+    string_format(name, sizeof(name), "%.*s", (int)item->key.length,
+                  (const char *)item->key.str);
     uint32_t at = 0u;
     while (at < instance->param_count &&
-           strcmp(instance->params[at].name, name) != 0) {
+           !string_equals(instance->params[at].name, name)) {
       at++;
     }
     if (item->type == VKR_BAKERY_JSON_NULL) {
@@ -12212,8 +12287,8 @@ static bool8_t ops_material_apply_params(OpsContext *ctx,
                         VKR_MATERIAL_GRAPH_PARAM_MAX);
       }
       instance->param_count++;
-      snprintf(instance->params[at].name, sizeof(instance->params[at].name),
-               "%s", name);
+      string_format(instance->params[at].name,
+                    sizeof(instance->params[at].name), "%s", name);
     }
     if (!ops_material_param_text(ctx, item, instance->params[at].value,
                                  sizeof(instance->params[at].value))) {
@@ -12241,14 +12316,15 @@ static bool8_t ops_material_instance_load(
                     error[0] ? ": " : "", error);
   }
   const String8 resolved = vkr_asset_path_resolve(
-      &allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      &allocator,
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)),
       string8_create_from_cstr((const uint8_t *)instance->graph,
-                               strlen(instance->graph)));
+                               string_length(instance->graph)));
   if (!resolved.str || resolved.length >= VKR_EDITOR_MATERIAL_PATH) {
     return ops_fail(ctx, OPS_INVALID, "'%s' names an invalid graph", path);
   }
-  snprintf(graph_path, VKR_EDITOR_MATERIAL_PATH, "%s",
-           (const char *)resolved.str);
+  string_format(graph_path, VKR_EDITOR_MATERIAL_PATH, "%s",
+                (const char *)resolved.str);
   return ops_material_graph_load(ctx, graph_path, graph);
 }
 
@@ -12268,7 +12344,8 @@ static VkrEditorOpStatus ops_run_material_list(OpsContext *ctx) {
   VkrBakeryJson *list = vkr_bakery_json_array(arena);
   uint32_t matched = 0u;
   for (uint32_t i = 0; i < Min(count, VKR_EDITOR_MATERIAL_INDEX_MAX); ++i) {
-    if (filter[0] && !strstr(paths[i], filter) && !strstr(graphs[i], filter)) {
+    if (filter[0] && !string_find(paths[i], filter) &&
+        !string_find(graphs[i], filter)) {
       continue;
     }
     if (++matched > LIST_MAX) {
@@ -12338,7 +12415,7 @@ static VkrEditorOpStatus ops_run_material_describe(OpsContext *ctx) {
             VKR_EDITOR_MATERIAL_INDEX_MAX);
     VkrBakeryJson *instances = vkr_bakery_json_array(arena);
     for (uint32_t i = 0; i < count; ++i) {
-      if (strcmp(graphs[i], path) == 0) {
+      if (string_equals(graphs[i], path)) {
         vkr_bakery_json_append(instances,
                                vkr_bakery_json_cstr(arena, paths[i]));
       }
@@ -12405,12 +12482,12 @@ static void ops_material_template(VkrMaterialGraph *graph) {
   const uint32_t output =
       vkr_material_graph_add(graph, VKR_MATERIAL_NODE_SURFACE_OUTPUT, "output");
   graph->nodes[base].value = vec4_new(0.8f, 0.8f, 0.8f, 0.0f);
-  snprintf(graph->nodes[base].parameter, sizeof(graph->nodes[base].parameter),
-           "base_color");
+  string_format(graph->nodes[base].parameter,
+                sizeof(graph->nodes[base].parameter), "base_color");
   graph->nodes[metallic].value.x = 0.0f;
   graph->nodes[roughness].value.x = 0.5f;
-  snprintf(graph->nodes[roughness].parameter,
-           sizeof(graph->nodes[roughness].parameter), "roughness");
+  string_format(graph->nodes[roughness].parameter,
+                sizeof(graph->nodes[roughness].parameter), "roughness");
   graph->nodes[base].position = vec2_new(0.0f, 0.0f);
   graph->nodes[metallic].position = vec2_new(0.0f, 120.0f);
   graph->nodes[roughness].position = vec2_new(0.0f, 240.0f);
@@ -12484,12 +12561,13 @@ static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
         }
         const String8 resolved = vkr_asset_path_resolve(
             &allocator,
-            string8_create_from_cstr((const uint8_t *)from, strlen(from)),
+            string8_create_from_cstr((const uint8_t *)from,
+                                     string_length(from)),
             string8_create_from_cstr((const uint8_t *)node->path,
-                                     strlen(node->path)));
+                                     string_length(node->path)));
         if (resolved.str && resolved.length < sizeof(node->path)) {
-          snprintf(node->path, sizeof(node->path), "%s",
-                   (const char *)resolved.str);
+          string_format(node->path, sizeof(node->path), "%s",
+                        (const char *)resolved.str);
         }
       }
     } else {
@@ -12521,7 +12599,7 @@ static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
     if (!vkr_material_graph_lower(
             graph,
             string8_create_from_cstr((const uint8_t *)instance->graph,
-                                     strlen(instance->graph)),
+                                     string_length(instance->graph)),
             instance->params, instance->param_count, &allocator, &definition,
             &lowering)) {
       ops_fail(ctx, OPS_INVALID, "The instance does not lower: %s%s%s",
@@ -12539,7 +12617,7 @@ static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
                        "roughness=0.5\n");
   }
   char label[96];
-  snprintf(label, sizeof(label), "Create %.80s", path);
+  string_format(label, sizeof(label), "Create %.80s", path);
   if (!ops_material_write(ctx, path, text, false_v, label)) {
     return VKR_EDITOR_OP_DONE;
   }
@@ -12602,7 +12680,8 @@ static bool8_t ops_material_node_fields(OpsContext *ctx,
   if (value) {
     if (node->kind == VKR_MATERIAL_NODE_SCALAR) {
       float64_t number = 0.0;
-      if (!ops_arg_number(edit, "value", &number) || !isfinite(number)) {
+      if (!ops_arg_number(edit, "value", &number) ||
+          !vkr_is_finite_f64(number)) {
         return ops_fail(ctx, OPS_INVALID, "A scalar's value is a number");
       }
       node->value.x = (float32_t)number;
@@ -12689,7 +12768,7 @@ static bool8_t ops_material_node_fields(OpsContext *ctx,
     return false_v;
   }
   if (rename[0]) {
-    snprintf(node->id, sizeof(node->id), "%s", rename);
+    string_format(node->id, sizeof(node->id), "%s", rename);
   }
   return true_v;
 }
@@ -12734,7 +12813,7 @@ static bool8_t ops_material_art_keys(OpsContext *ctx, const VkrBakeryJson *args,
       return ops_fail(ctx, OPS_INVALID,
                       "'surface' is a tag surface.list names, or empty");
     }
-    snprintf(surface, surface_capacity, "%s", name);
+    string_format(surface, surface_capacity, "%s", name);
   }
   return true_v;
 }
@@ -12766,7 +12845,7 @@ static bool8_t ops_material_settings(OpsContext *ctx, VkrMaterialGraph *graph,
     settings->roughness_max = (float32_t)number;
   }
   if (ops_arg_number(edit, "subsurface_profile", &number)) {
-    if (number < 0.0 || number > 7.0 || number != floor(number)) {
+    if (number < 0.0 || number > 7.0 || number != vkr_floor_f64(number)) {
       return ops_fail(ctx, OPS_INVALID, "'subsurface_profile' is 0 to 7");
     }
     settings->subsurface_profile = (uint32_t)number;
@@ -12803,8 +12882,8 @@ static bool8_t ops_material_edit(OpsContext *ctx, VkrMaterialGraph *graph,
     }
     if (id[0] &&
         vkr_material_graph_find(
-            graph, string8_create_from_cstr((const uint8_t *)id, strlen(id))) !=
-            UINT32_MAX) {
+            graph, string8_create_from_cstr((const uint8_t *)id,
+                                            string_length(id))) != UINT32_MAX) {
       return ops_fail(ctx, OPS_INVALID, "Node '%s' exists", id);
     }
     const uint32_t index = vkr_material_graph_add(
@@ -12884,9 +12963,9 @@ static VkrEditorOpStatus ops_run_material_patch(OpsContext *ctx) {
        edit = edit->next, ++index) {
     if (!ops_material_edit(ctx, graph, edit)) {
       char message[256];
-      snprintf(message, sizeof(message), "edits[%u]: %s", index,
-               ctx->call->error);
-      snprintf(ctx->call->error, sizeof(ctx->call->error), "%s", message);
+      string_format(message, sizeof(message), "edits[%u]: %s", index,
+                    ctx->call->error);
+      string_format(ctx->call->error, sizeof(ctx->call->error), "%s", message);
       return VKR_EDITOR_OP_DONE;
     }
   }
@@ -12905,10 +12984,11 @@ static VkrEditorOpStatus ops_run_material_patch(OpsContext *ctx) {
   String8 label = {0};
   char label_text[96];
   if (vkr_bakery_json_get_string(args, "label", &label) && label.length) {
-    snprintf(label_text, sizeof(label_text), "%.*s",
-             (int)Min(label.length, (uint64_t)95u), (const char *)label.str);
+    string_format(label_text, sizeof(label_text), "%.*s",
+                  (int)Min(label.length, (uint64_t)95u),
+                  (const char *)label.str);
   } else {
-    snprintf(label_text, sizeof(label_text), "Edit %.80s", path);
+    string_format(label_text, sizeof(label_text), "Edit %.80s", path);
   }
   if (!ops_material_write(ctx, path, text, false_v, label_text)) {
     return VKR_EDITOR_OP_DONE;
@@ -12943,8 +13023,9 @@ static VkrEditorOpStatus ops_run_material_set_param(OpsContext *ctx) {
   }
   /* The instance's own world size and surface, written as text. */
   if (instance->world_size[0]) {
-    const String8 current = string8_create_from_cstr(
-        (const uint8_t *)instance->world_size, strlen(instance->world_size));
+    const String8 current =
+        string8_create_from_cstr((const uint8_t *)instance->world_size,
+                                 string_length(instance->world_size));
     if (!string8_to_vec2(&current, &world_size) &&
         string8_to_f32(&current, &world_size.x)) {
       world_size.y = world_size.x;
@@ -12955,8 +13036,8 @@ static VkrEditorOpStatus ops_run_material_set_param(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   if (world_size.x > 0.0f) {
-    snprintf(instance->world_size, sizeof(instance->world_size), "%g,%g",
-             (double)world_size.x, (double)world_size.y);
+    string_format(instance->world_size, sizeof(instance->world_size), "%g,%g",
+                  (double)world_size.x, (double)world_size.y);
   } else {
     instance->world_size[0] = '\0';
   }
@@ -12972,7 +13053,7 @@ static VkrEditorOpStatus ops_run_material_set_param(OpsContext *ctx) {
   if (!vkr_material_graph_lower(
           graph,
           string8_create_from_cstr((const uint8_t *)graph_path,
-                                   strlen(graph_path)),
+                                   string_length(graph_path)),
           instance->params, instance->param_count, &allocator, &definition,
           &lowering)) {
     ops_fail(ctx, OPS_INVALID, "%s%s%s; nothing changed", lowering.reason,
@@ -12980,7 +13061,7 @@ static VkrEditorOpStatus ops_run_material_set_param(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   char label[96];
-  snprintf(label, sizeof(label), "Parameters of %.70s", path);
+  string_format(label, sizeof(label), "Parameters of %.70s", path);
   if (!ops_material_write(ctx, path, text, false_v, label)) {
     return VKR_EDITOR_OP_DONE;
   }
@@ -13035,7 +13116,8 @@ static VkrEditorOpStatus ops_run_material_compile(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   const bool8_t ok = vkr_material_loader_parse_definition(
-      &allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)),
+      &allocator,
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)),
       text, parsed);
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "tier",
@@ -13059,11 +13141,11 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
   }
   /* A managed asset reference names a project material or texture and
      follows its rebuilds (ADR-076). */
-  const bool8_t reference = vkr_asset_ref_is(
-      string8_create_from_cstr((const uint8_t *)material, strlen(material)));
+  const bool8_t reference = vkr_asset_ref_is(string8_create_from_cstr(
+      (const uint8_t *)material, string_length(material)));
   if (material[0] && !reference &&
       (!ops_material_ends(material, ".mt") || material[0] == '/' ||
-       strstr(material, ".."))) {
+       string_find(material, ".."))) {
     return ops_fail(ctx, OPS_INVALID,
                     "'material' is a content-root relative .mt, an "
                     "asset:<scope>/<id> reference, or empty to clear");
@@ -13076,7 +13158,8 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
     char resolved[VKR_MATERIAL_PATH_MAX];
     bool8_t known = vkr_render_assets_resolve_asset_ref(
         ctx->frame->assets,
-        string8_create_from_cstr((const uint8_t *)material, strlen(material)),
+        string8_create_from_cstr((const uint8_t *)material,
+                                 string_length(material)),
         resolved, sizeof(resolved));
     bool8_t accepted = false_v;
     for (uint32_t i = 0u; known && i < ArrayCount(drawable); ++i) {
@@ -13119,7 +13202,7 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
   float64_t slot = -1.0;
   if (ops_arg_number(args, "slot", &slot) &&
       (slot < 0.0 || slot >= (float64_t)VKR_MESH_MATERIAL_OVERRIDE_MAX ||
-       slot != floor(slot))) {
+       slot != vkr_floor_f64(slot))) {
     return ops_fail(ctx, OPS_INVALID, "'slot' is a submesh from 0 to %u",
                     VKR_MESH_MATERIAL_OVERRIDE_MAX - 1u);
   }
@@ -13131,7 +13214,7 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
   VkrBakeryJson *values = vkr_bakery_json_object(arena);
   for (uint32_t i = first; i < last; ++i) {
     char key[16];
-    snprintf(key, sizeof(key), "material_%u", i);
+    string_format(key, sizeof(key), "material_%u", i);
     ops_set(ctx, values, key, vkr_bakery_json_cstr(arena, material));
   }
   VkrBakeryJson *component = vkr_bakery_json_object(arena);
@@ -13202,9 +13285,10 @@ static VkrEditorOpStatus ops_run_material_open(OpsContext *ctx) {
    backslashes, colons or quotes, ending in `suffix`. */
 static bool8_t ops_content_path(const char *path, const char *suffix,
                                 uint32_t capacity) {
-  return path[0] && path[0] != '/' && !strstr(path, "..") &&
-         !strchr(path, '\\') && !strchr(path, ':') && !strchr(path, '"') &&
-         strlen(path) < capacity && ops_material_ends(path, suffix);
+  return path[0] && path[0] != '/' && !string_find(path, "..") &&
+         !string_find_char(path, '\\') && !string_find_char(path, ':') &&
+         !string_find_char(path, '"') && string_length(path) < capacity &&
+         ops_material_ends(path, suffix);
 }
 
 /* A theme path in `args[key]`; empty when absent. */
@@ -13274,9 +13358,9 @@ static bool8_t ops_theme_apply(OpsContext *ctx, const VkrBakeryJson *materials,
   for (const VkrBakeryJson *item = materials->first; item; item = item->next) {
     char tag_name[32];
     VkrSurface tag = VKR_SURFACE_NONE;
-    snprintf(tag_name, sizeof(tag_name), "%.*s",
-             (int)Min(item->key.length, (uint64_t)sizeof(tag_name) - 1u),
-             (const char *)item->key.str);
+    string_format(tag_name, sizeof(tag_name), "%.*s",
+                  (int)Min(item->key.length, (uint64_t)sizeof(tag_name) - 1u),
+                  (const char *)item->key.str);
     if (item->key.length >= sizeof(tag_name) ||
         !vkr_surface_find(tag_name, &tag) || tag == VKR_SURFACE_NONE) {
       return ops_fail(ctx, OPS_INVALID,
@@ -13294,9 +13378,9 @@ static bool8_t ops_theme_apply(OpsContext *ctx, const VkrBakeryJson *materials,
                       tag_name);
     }
     if (text.length) {
-      snprintf(path, sizeof(path), "%.*s",
-               (int)Min(text.length, (uint64_t)sizeof(path) - 1u),
-               (const char *)text.str);
+      string_format(path, sizeof(path), "%.*s",
+                    (int)Min(text.length, (uint64_t)sizeof(path) - 1u),
+                    (const char *)text.str);
       if (text.length >= sizeof(path) ||
           !ops_content_path(path, ".mt", sizeof(path))) {
         return ops_fail(ctx, OPS_INVALID,
@@ -13305,7 +13389,8 @@ static bool8_t ops_theme_apply(OpsContext *ctx, const VkrBakeryJson *materials,
                         tag_name, VKR_SURFACE_THEME_PATH_CAPACITY);
       }
     }
-    snprintf(theme->materials[tag], sizeof(theme->materials[tag]), "%s", path);
+    string_format(theme->materials[tag], sizeof(theme->materials[tag]), "%s",
+                  path);
   }
   return true_v;
 }
@@ -13519,7 +13604,7 @@ static VkrEditorOpStatus ops_run_env_preset_save(OpsContext *ctx) {
   }
   vkr_editor_environment_capture(sources, preset);
   char label[96];
-  snprintf(label, sizeof(label), "Save environment %.60s", path);
+  string_format(label, sizeof(label), "Save environment %.60s", path);
   if (!vkr_editor_environment_write(preset, &allocator, &text)) {
     ops_fail(ctx, OPS_LIMIT, "Out of request memory");
     return VKR_EDITOR_OP_DONE;
@@ -13608,7 +13693,8 @@ static bool8_t ops_build_env_preset_apply(OpsContext *ctx,
    until the simulation resets. */
 static VkrEditorOpStatus ops_run_lighting_time(OpsContext *ctx) {
   float64_t hour = 0.0;
-  if (!ops_arg_number(ctx->call->args, "hour", &hour) || !isfinite(hour)) {
+  if (!ops_arg_number(ctx->call->args, "hour", &hour) ||
+      !vkr_is_finite_f64(hour)) {
     ops_fail(ctx, OPS_INVALID, "'hour' is a number of hours");
     return VKR_EDITOR_OP_DONE;
   }
@@ -13619,9 +13705,10 @@ static VkrEditorOpStatus ops_run_lighting_time(OpsContext *ctx) {
   ctx->frame->time_of_day_request->set_hour = true_v;
   ctx->frame->time_of_day_request->hour = hour;
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
-  ops_set(ctx, ctx->call->result, "hour",
-          vkr_bakery_json_float(ops_arena(ctx),
-                                fmod(fmod(hour, 24.0) + 24.0, 24.0)));
+  ops_set(
+      ctx, ctx->call->result, "hour",
+      vkr_bakery_json_float(
+          ops_arena(ctx), vkr_fmod_f64(vkr_fmod_f64(hour, 24.0) + 24.0, 24.0)));
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -13685,12 +13772,12 @@ static VkrEditorOpStatus ops_run_lighting_group(OpsContext *ctx) {
   if (!ops_arg_string(ctx, args, "group", group, sizeof(group))) {
     return VKR_EDITOR_OP_DONE;
   }
-  if (!group[0] || !vkr_light_group_name_valid(group, strlen(group))) {
+  if (!group[0] || !vkr_light_group_name_valid(group, string_length(group))) {
     ops_fail(ctx, OPS_INVALID, "'group' is a light group name");
     return VKR_EDITOR_OP_DONE;
   }
-  if (!ops_arg_number(args, "intensity", &intensity) || !isfinite(intensity) ||
-      intensity < 0.0) {
+  if (!ops_arg_number(args, "intensity", &intensity) ||
+      !vkr_is_finite_f64(intensity) || intensity < 0.0) {
     ops_fail(ctx, OPS_INVALID, "'intensity' is a number of at least 0");
     return VKR_EDITOR_OP_DONE;
   }
@@ -13700,7 +13787,7 @@ static VkrEditorOpStatus ops_run_lighting_group(OpsContext *ctx) {
   }
   VkrSampleTimeOfDayRequest *request = ctx->frame->time_of_day_request;
   request->set_group = true_v;
-  snprintf(request->group, sizeof(request->group), "%s", group);
+  string_format(request->group, sizeof(request->group), "%s", group);
   request->intensity = (float32_t)intensity;
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "group",
@@ -13780,7 +13867,7 @@ static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
   }
   MemZero(theme, sizeof(*theme));
   char label[96];
-  snprintf(label, sizeof(label), "Create theme %.70s", path);
+  string_format(label, sizeof(label), "Create theme %.70s", path);
   if (!ops_theme_apply(ctx, vkr_bakery_json_get(args, "materials"), theme) ||
       !ops_theme_write(ctx, path, theme, label)) {
     return VKR_EDITOR_OP_DONE;
@@ -13814,7 +13901,7 @@ static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
                "surface.theme.select first");
       return VKR_EDITOR_OP_DONE;
     }
-    snprintf(path, sizeof(path), "%s", own);
+    string_format(path, sizeof(path), "%s", own);
   }
   VkrSurfaceTheme *theme =
       arena_alloc(ops_arena(ctx), sizeof(*theme), ARENA_MEMORY_TAG_STRUCT);
@@ -13835,9 +13922,9 @@ static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
       return VKR_EDITOR_OP_DONE;
     }
     char key[32];
-    snprintf(key, sizeof(key), "%.*s",
-             (int)Min(tag.length, (uint64_t)sizeof(key) - 1u),
-             (const char *)tag.str);
+    string_format(key, sizeof(key), "%.*s",
+                  (int)Min(tag.length, (uint64_t)sizeof(key) - 1u),
+                  (const char *)tag.str);
     ops_set(ctx, one, key, vkr_bakery_json_clone(ops_arena(ctx), material));
     materials = one;
   } else if (!materials) {
@@ -13845,7 +13932,7 @@ static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   char label[96];
-  snprintf(label, sizeof(label), "Bind tags in %.70s", path);
+  string_format(label, sizeof(label), "Bind tags in %.70s", path);
   if (!ops_theme_apply(ctx, materials, theme) ||
       !ops_theme_write(ctx, path, theme, label)) {
     return VKR_EDITOR_OP_DONE;
@@ -13880,7 +13967,7 @@ static bool8_t ops_build_theme_select(OpsContext *ctx,
       holder.u64 && holder.parts.world == scene->world_id &&
       vkr_scene_get_typed(scene, holder, &vkr_scene_surface_theme_type);
   SceneSurfaceTheme value = {0};
-  snprintf(value.theme, sizeof(value.theme), "%s", theme);
+  string_format(value.theme, sizeof(value.theme), "%s", theme);
   VkrSampleEditBatchItem *item =
       ops_batch_add(ctx, batch, container,
                     own ? VKR_SCENE_EDIT_APPLY : VKR_SCENE_EDIT_CREATE);
@@ -13895,7 +13982,7 @@ static bool8_t ops_build_theme_select(OpsContext *ctx,
   } else {
     values->fields = VKR_SCENE_EDIT_NAME | VKR_SCENE_EDIT_TRANSFORM |
                      VKR_SCENE_EDIT_COMPONENT;
-    snprintf(values->name, sizeof(values->name), "Surface theme");
+    string_format(values->name, sizeof(values->name), "Surface theme");
     values->rotation = vkr_quat_identity();
     values->scale = vec3_one();
   }
@@ -13929,12 +14016,12 @@ typedef struct OpsArtMaterial {
 static uint32_t ops_art_texture_width(VkrAllocator *allocator,
                                       const char *path) {
   char cooked[VKR_MATERIAL_PATH_MAX + 8u];
-  snprintf(cooked, sizeof(cooked), "%s.vkt", path);
+  string_format(cooked, sizeof(cooked), "%s.vkt", path);
   const char *candidates[2] = {cooked, path};
   for (uint32_t i = 0; i < 2u; ++i) {
     FilePath file_path = vkr_asset_path_file(
         allocator, string8_create_from_cstr((const uint8_t *)candidates[i],
-                                            strlen(candidates[i])));
+                                            string_length(candidates[i])));
     FileMode mode = bitset8_create();
     bitset8_set(&mode, FILE_MODE_READ);
     bitset8_set(&mode, FILE_MODE_BINARY);
@@ -13968,7 +14055,8 @@ static uint32_t ops_art_texture_width(VkrAllocator *allocator,
 
 static bool8_t ops_art_file_exists(VkrAllocator *allocator, const char *path) {
   FilePath file_path = vkr_asset_path_file(
-      allocator, string8_create_from_cstr((const uint8_t *)path, strlen(path)));
+      allocator,
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)));
   return file_path.path.length && file_exists(&file_path);
 }
 
@@ -13989,7 +14077,8 @@ static void ops_art_material_check(OpsContext *ctx, OpsArtMaterial *out) {
   MemZero(parsed, sizeof(*parsed));
   out->parses = vkr_material_loader_parse_definition(
       &allocator,
-      string8_create_from_cstr((const uint8_t *)out->path, strlen(out->path)),
+      string8_create_from_cstr((const uint8_t *)out->path,
+                               string_length(out->path)),
       text, parsed);
   if (!out->parses) {
     return;
@@ -14005,8 +14094,9 @@ static void ops_art_material_check(OpsContext *ctx, OpsArtMaterial *out) {
       parsed->texture_paths[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS][0] != '\0';
   for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; ++slot) {
     char texture[VKR_MATERIAL_PATH_MAX];
-    snprintf(texture, sizeof(texture), "%s", parsed->texture_paths[slot]);
-    char *query = strchr(texture, '?');
+    string_format(texture, sizeof(texture), "%s", parsed->texture_paths[slot]);
+    const char *mark = string_find_char(texture, '?');
+    char *query = mark ? texture + (mark - texture) : NULL;
     if (query) {
       *query = '\0';
     }
@@ -14015,13 +14105,13 @@ static void ops_art_material_check(OpsContext *ctx, OpsArtMaterial *out) {
     }
     if (!ops_art_file_exists(&allocator, texture)) {
       if (!out->missing_texture[0]) {
-        snprintf(out->missing_texture, sizeof(out->missing_texture), "%s",
-                 texture);
+        string_format(out->missing_texture, sizeof(out->missing_texture), "%s",
+                      texture);
       }
       continue;
     }
     char cooked[VKR_MATERIAL_PATH_MAX + 8u];
-    snprintf(cooked, sizeof(cooked), "%s.vkt", texture);
+    string_format(cooked, sizeof(cooked), "%s.vkt", texture);
     if (!ops_material_ends(texture, ".vkt") &&
         !ops_art_file_exists(&allocator, cooked)) {
       out->uncooked = true_v;
@@ -14116,7 +14206,7 @@ static void ops_art_material_issues(OpsArtLint *lint,
     const float32_t srgb =
         255.0f * (linear <= 0.0031308f
                       ? 12.92f * linear
-                      : 1.055f * powf(linear, 1.0f / 2.4f) - 0.055f);
+                      : 1.055f * vkr_pow_f32(linear, 1.0f / 2.4f) - 0.055f);
     if ((srgb < 30.0f || srgb > 240.0f) &&
         (issue = ops_art_issue(lint, OPS_ART_BASE_COLOR))) {
       ops_set(ctx, issue, "material",
@@ -14250,7 +14340,8 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
     }
     for (uint32_t p = 0; p < path_count; ++p) {
       uint32_t at = 0u;
-      while (at < material_count && strcmp(materials[at].path, paths[p]) != 0) {
+      while (at < material_count &&
+             !string_equals(materials[at].path, paths[p])) {
         at++;
       }
       if (at == material_count) {
@@ -14258,8 +14349,8 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
           continue;
         }
         MemZero(&materials[at], sizeof(materials[at]));
-        snprintf(materials[at].path, sizeof(materials[at].path), "%s",
-                 paths[p]);
+        string_format(materials[at].path, sizeof(materials[at].path), "%s",
+                      paths[p]);
         ops_art_material_check(ctx, &materials[at]);
         material_count++;
         ops_art_material_issues(&lint, &materials[at],
@@ -14271,7 +14362,8 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
       const OpsArtMaterial *material = &materials[at];
       VkrBakeryJson *issue = NULL;
       if (face && material->texture_width) {
-        const float32_t meters = fabsf(uv_scale.x) * material->world_size.x;
+        const float32_t meters =
+            vkr_abs_f32(uv_scale.x) * material->world_size.x;
         const float64_t density =
             meters > 0.0f ? (float64_t)material->texture_width / meters : 0.0;
         if ((density < texel_min || density > texel_max) &&
@@ -14301,14 +14393,14 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
       const char *path = themes[t].materials[tag];
       uint32_t at = 0u;
       while (path[0] && at < material_count &&
-             strcmp(materials[at].path, path) != 0) {
+             !string_equals(materials[at].path, path)) {
         at++;
       }
       if (!path[0] || at < material_count || material_count == ART_MATERIALS) {
         continue;
       }
       MemZero(&materials[at], sizeof(materials[at]));
-      snprintf(materials[at].path, sizeof(materials[at].path), "%s", path);
+      string_format(materials[at].path, sizeof(materials[at].path), "%s", path);
       ops_art_material_check(ctx, &materials[at]);
       material_count++;
       ops_art_material_issues(&lint, &materials[at], "theme",
@@ -14389,7 +14481,7 @@ static VkrBakeryJson *ops_session_status(OpsContext *ctx) {
   char digest_hex[65];
   vkr_editor_session_digest(ctx->frame, digest);
   for (uint32_t i = 0; i < 32u; ++i) {
-    snprintf(digest_hex + 2u * i, 3u, "%02x", digest[i]);
+    string_format(digest_hex + 2u * i, 3u, "%02x", digest[i]);
   }
   ops_set(ctx, result, "digest", vkr_bakery_json_cstr(arena, digest_hex));
   VkrBakeryJson *peers = vkr_bakery_json_array(arena);
@@ -15964,7 +16056,7 @@ static VkrEditorOpStatus ops_run_list(OpsContext *ctx) {
     VkrBakeryJsonError error = {0};
     VkrBakeryJson *schema =
         vkr_bakery_json_parse(arena, (const uint8_t *)s_ops[i].schema,
-                              strlen(s_ops[i].schema), 32u, &error);
+                              string_length(s_ops[i].schema), 32u, &error);
     if (!schema) {
       ops_fail(ctx, OPS_LIMIT, "Schema of %s is malformed: %s", s_ops[i].name,
                error.message);
@@ -15992,15 +16084,15 @@ static VkrEditorOpStatus ops_run_list(OpsContext *ctx) {
 // =============================================================================
 
 VkrEditorOps *vkr_editor_ops_create(VkrAllocator *allocator) {
-  VkrEditorOps *ops = calloc(1u, sizeof(*ops));
+  VkrEditorOps *ops = vkr_heap_alloc_zeroed(1u, sizeof(*ops));
   if (!ops) {
     return NULL;
   }
   ops->allocator = allocator;
   ops->capacity = 256u;
-  ops->items = calloc(ops->capacity, sizeof(*ops->items));
+  ops->items = vkr_heap_alloc_zeroed(ops->capacity, sizeof(*ops->items));
   if (!ops->items) {
-    free(ops);
+    vkr_heap_free(ops);
     return NULL;
   }
   return ops;
@@ -16011,9 +16103,9 @@ void vkr_editor_ops_destroy(VkrEditorOps *ops) {
     return;
   }
   ops_level_end(ops);
-  free(ops->tag_vocabulary);
-  free(ops->items);
-  free(ops);
+  vkr_heap_free(ops->tag_vocabulary);
+  vkr_heap_free(ops->items);
+  vkr_heap_free(ops);
 }
 
 VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
@@ -16023,7 +16115,7 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
   /* In a collaborative session an agent's name carries its editor's, so
      claims, tasks and the feed tell agents of different machines apart;
      agent names never hold `@` (editor_agent.c). */
-  if (call->author[0] && !strchr(call->author, '@')) {
+  if (call->author[0] && !string_find_char(call->author, '@')) {
     vkr_editor_session_author(editor->session, call->author, call->author,
                               sizeof(call->author));
   }
@@ -16108,8 +16200,8 @@ static void ops_serve(VkrEditorOps *ops, const VkrSampleUiFrame *frame,
                                &code, answer->error, sizeof(answer->error));
     if (!ask->author[0] || !ops_scene(frame, ask->claim.container)) {
       code = OPS_INVALID;
-      snprintf(answer->error, sizeof(answer->error),
-               "The claim needs an agent and a scene the host has loaded");
+      string_format(answer->error, sizeof(answer->error),
+                    "The claim needs an agent and a scene the host has loaded");
     }
     break;
   case VKR_EDITOR_ASK_CLAIM_RELEASE:
@@ -16139,11 +16231,11 @@ static void ops_serve(VkrEditorOps *ops, const VkrSampleUiFrame *frame,
     break;
   default:
     code = OPS_INVALID;
-    snprintf(answer->error, sizeof(answer->error), "Unknown request");
+    string_format(answer->error, sizeof(answer->error), "Unknown request");
     break;
   }
-  snprintf(answer->code, sizeof(answer->code), "%s",
-           !answer->ok && code ? code : "");
+  string_format(answer->code, sizeof(answer->code), "%s",
+                !answer->ok && code ? code : "");
 }
 
 /* Shows the session host's claims and tasks in place of this editor's,
@@ -16240,11 +16332,11 @@ static void ops_session_update(VkrEditorOps *ops, VkrEditorSession *session,
     const VkrScene *scene = ops_scene(frame, applied.container);
     OpsFeedEvent *event = ops_feed_add(ops, OPS_FEED_APPLIED, applied.container,
                                        applied.author, applied.label);
-    VkrBrushGeometry *scratch = malloc(sizeof(VkrBrushGeometry));
+    VkrBrushGeometry *scratch = vkr_heap_alloc(sizeof(VkrBrushGeometry));
     for (uint32_t i = 0; i < applied.entity_count; ++i) {
       ops_feed_entity(event, scene, applied.entities[i], scratch);
     }
-    free(scratch);
+    vkr_heap_free(scratch);
     /* Another editor's agent batch waits for review here too. */
     if (applied.review && applied.group &&
         ops->change_count < VKR_EDITOR_CHANGE_MAX) {
@@ -16252,11 +16344,11 @@ static void ops_session_update(VkrEditorOps *ops, VkrEditorSession *session,
                                 .group = applied.group,
                                 .container = applied.container,
                                 .created = vkr_platform_get_absolute_time()};
-      snprintf(change.author, sizeof(change.author), "%s", applied.author);
-      snprintf(change.label, sizeof(change.label), "%s", applied.label);
+      string_format(change.author, sizeof(change.author), "%s", applied.author);
+      string_format(change.label, sizeof(change.label), "%s", applied.label);
       if (!change.label[0]) {
-        snprintf(change.label, sizeof(change.label), "Agent edit %u",
-                 change.id);
+        string_format(change.label, sizeof(change.label), "Agent edit %u",
+                      change.id);
       }
       for (uint32_t i = 0; i < applied.entity_count; ++i) {
         ops_change_touch(&change, applied.entities[i]);
@@ -16301,20 +16393,20 @@ static void ops_resolve_auto(VkrEditorOps *ops, const VkrEditorUi *editor,
   const Vec3 hi = vec3_add(ops->resolve_max, vec3_new(0.05f, 0.05f, 0.05f));
   char container[16];
   if (ops->resolve_container == VKR_SCENE_WORLD_ROOT_ID) {
-    snprintf(container, sizeof(container), "\"world\"");
+    string_format(container, sizeof(container), "\"world\"");
   } else if (ops->resolve_container) {
-    snprintf(container, sizeof(container), "%u",
-             (unsigned)ops->resolve_container);
+    string_format(container, sizeof(container), "%u",
+                  (unsigned)ops->resolve_container);
   } else {
-    snprintf(container, sizeof(container), "\"primary\"");
+    string_format(container, sizeof(container), "\"primary\"");
   }
   char line[512];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"resolve\",\"op\":\"level.resolve\","
-           "\"args\":{\"region\":{\"min\":[%.4f,%.4f,%.4f],"
-           "\"max\":[%.4f,%.4f,%.4f]},\"container\":%s,\"review\":false}}",
-           (double)lo.x, (double)lo.y, (double)lo.z, (double)hi.x, (double)hi.y,
-           (double)hi.z, container);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"resolve\",\"op\":\"level.resolve\","
+                "\"args\":{\"region\":{\"min\":[%.4f,%.4f,%.4f],"
+                "\"max\":[%.4f,%.4f,%.4f]},\"container\":%s,\"review\":false}}",
+                (double)lo.x, (double)lo.y, (double)lo.z, (double)hi.x,
+                (double)hi.y, (double)hi.z, container);
   if (vkr_editor_agent_submit(editor->agent, line)) {
     ops->resolve_pending = false_v;
   }
@@ -16440,8 +16532,10 @@ const VkrEditorClaim *vkr_editor_ops_claim(const VkrEditorOps *ops,
 static void ops_change_focus(const VkrSampleUiFrame *frame,
                              const VkrEditorChange *change) {
   const VkrScene *scene = ops_scene(frame, change->container);
-  Vec3 lo = vec3_new(INFINITY, INFINITY, INFINITY);
-  Vec3 hi = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  Vec3 lo =
+      vec3_new(VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY);
+  Vec3 hi =
+      vec3_new(-VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY, -VKR_FLOAT_INFINITY);
   bool8_t any = false_v;
   for (uint32_t i = 0; scene && i < change->entity_count; ++i) {
     const VkrEntityId entity = change->entities[i];
@@ -16495,7 +16589,8 @@ static Vec4 changes_author_color(const ChangesAuthors *authors,
       vkr_ui_color_mix(theme->info, theme->success, 0.5f),
   };
   uint32_t index = 0u;
-  while (index < authors->count && strcmp(authors->names[index], author) != 0) {
+  while (index < authors->count &&
+         !string_equals(authors->names[index], author)) {
     ++index;
   }
   return colors[index % ArrayCount(colors)];
@@ -16504,7 +16599,7 @@ static Vec4 changes_author_color(const ChangesAuthors *authors,
 static String8 changes_author_name(const VkrEditorChange *change) {
   return change->author[0]
              ? string8_create_from_cstr((const uint8_t *)change->author,
-                                        strlen(change->author))
+                                        string_length(change->author))
              : string8_lit("Editor");
 }
 
@@ -16512,37 +16607,37 @@ static String8 changes_author_name(const VkrEditorChange *change) {
 static bool8_t changes_shown(const VkrEditorOps *ops,
                              const VkrEditorChange *change) {
   return !ops->changes_filter[0] ||
-         strcmp(ops->changes_filter, change->author) == 0;
+         string_equals(ops->changes_filter, change->author);
 }
 
 /* Whether a claim by `author` passes the window's author filter. */
 static bool8_t changes_claim_shown(const VkrEditorOps *ops,
                                    const VkrEditorClaim *claim) {
   return !ops->changes_filter[0] ||
-         strcmp(ops->changes_filter, claim->author) == 0;
+         string_equals(ops->changes_filter, claim->author);
 }
 
 /* The container a change edited, as the Outliner names it. */
 static void changes_container(uint16_t container, char *out,
                               uint32_t capacity) {
   if (container == VKR_SCENE_WORLD_ROOT_ID) {
-    snprintf(out, capacity, "World");
+    string_format(out, capacity, "World");
   } else if (container == 0u) {
-    snprintf(out, capacity, "Scene");
+    string_format(out, capacity, "Scene");
   } else {
-    snprintf(out, capacity, "Scene slot %u", (uint32_t)container);
+    string_format(out, capacity, "Scene slot %u", (uint32_t)container);
   }
 }
 
 static void changes_age(float64_t seconds, char *out, uint32_t capacity) {
   if (seconds < 5.0) {
-    snprintf(out, capacity, "just now");
+    string_format(out, capacity, "just now");
   } else if (seconds < 60.0) {
-    snprintf(out, capacity, "%.0f s ago", floor(seconds));
+    string_format(out, capacity, "%.0f s ago", vkr_floor_f64(seconds));
   } else if (seconds < 3600.0) {
-    snprintf(out, capacity, "%.0f min ago", floor(seconds / 60.0));
+    string_format(out, capacity, "%.0f min ago", vkr_floor_f64(seconds / 60.0));
   } else {
-    snprintf(out, capacity, "%.0f h ago", floor(seconds / 3600.0));
+    string_format(out, capacity, "%.0f h ago", vkr_floor_f64(seconds / 3600.0));
   }
 }
 
@@ -16589,15 +16684,15 @@ static bool8_t changes_button(VkrUiSystem *ui, VkrEditorUi *editor, String8 id,
    waits for the answer: a refusal shows there with its reason. */
 static void changes_reject(VkrEditorUi *editor, VkrEditorChange *change) {
   char request[160];
-  snprintf(request, sizeof(request),
-           "{\"v\":1,\"id\":\"changes\",\"op\":\"changes.reject\","
-           "\"args\":{\"change\":%u}}",
-           change->id);
+  string_format(request, sizeof(request),
+                "{\"v\":1,\"id\":\"changes\",\"op\":\"changes.reject\","
+                "\"args\":{\"change\":%u}}",
+                change->id);
   change->problem[0] = '\0';
   change->rejecting = vkr_editor_agent_submit(editor->agent, request);
   if (!change->rejecting) {
-    snprintf(change->problem, sizeof(change->problem),
-             "The request queue is full; try again.");
+    string_format(change->problem, sizeof(change->problem),
+                  "The request queue is full; try again.");
   }
 }
 
@@ -16645,16 +16740,17 @@ static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
   char text[160];
   char claims[32] = "";
   if (claims_shown) {
-    snprintf(claims, sizeof(claims), "  \xc2\xb7  %u claim%s", claims_shown,
-             claims_shown == 1u ? "" : "s");
+    string_format(claims, sizeof(claims), "  \xc2\xb7  %u claim%s",
+                  claims_shown, claims_shown == 1u ? "" : "s");
   }
   if (ops->changes_filter[0]) {
-    snprintf(text, sizeof(text), "%u change%s from %s%s", shown,
-             shown == 1u ? "" : "s", ops->changes_filter, claims);
+    string_format(text, sizeof(text), "%u change%s from %s%s", shown,
+                  shown == 1u ? "" : "s", ops->changes_filter, claims);
   } else {
-    snprintf(text, sizeof(text), "%u change%s to review from %u author%s%s",
-             shown, shown == 1u ? "" : "s", author_count,
-             author_count == 1u ? "" : "s", claims);
+    string_format(text, sizeof(text),
+                  "%u change%s to review from %u author%s%s", shown,
+                  shown == 1u ? "" : "s", author_count,
+                  author_count == 1u ? "" : "s", claims);
   }
   VkrUiWidgetConfig summary =
       vkr_editor_text_config(theme->font_body, theme->text);
@@ -16664,18 +16760,20 @@ static void changes_header(VkrEditorUi *editor, VkrEditorOps *ops,
   summary.icon = VKR_UI_ICON_TERMINAL;
   summary.icon_size_pt = 15.0f;
   summary.icon_color = theme->accent_hover;
-  vkr_ui_label(ui, string8_lit("summary"),
-               string8_create_from_cstr((const uint8_t *)text, strlen(text)),
-               &summary);
+  vkr_ui_label(
+      ui, string8_lit("summary"),
+      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
+      &summary);
   const float64_t now = vkr_platform_get_absolute_time();
   if (ops->changes_filter[0] && shown) {
     const bool8_t armed = now < ops->reject_all_armed_until;
     char label[48];
-    snprintf(label, sizeof(label), armed ? "Confirm reject %u" : "Reject %u",
-             shown);
+    string_format(label, sizeof(label),
+                  armed ? "Confirm reject %u" : "Reject %u", shown);
     if (changes_button(
             ui, editor, string8_lit("reject_all"),
-            string8_create_from_cstr((const uint8_t *)label, strlen(label)),
+            string8_create_from_cstr((const uint8_t *)label,
+                                     string_length(label)),
             VKR_UI_ICON_CLOSE, changes_cell(1u, 0u, 1u), CHANGES_BUTTON_DANGER,
             false_v,
             string8_lit("Revert every change of this author, newest first. "
@@ -16736,7 +16834,7 @@ static void changes_chips(VkrEditorOps *ops, VkrUiSystem *ui,
   }
   for (uint32_t i = 0; i <= author_count; ++i) {
     const char *author = i ? authors->names[i - 1u] : "";
-    const bool8_t selected = strcmp(ops->changes_filter, author) == 0;
+    const bool8_t selected = string_equals(ops->changes_filter, author);
     VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
     vkr_editor_ghost_style(&chip);
     chip.placement = changes_cell(i, 0u, 1u);
@@ -16764,7 +16862,8 @@ static void changes_chips(VkrEditorOps *ops, VkrUiSystem *ui,
                      : string8_lit("Show every author's changes");
     (void)vkr_ui_push_id_u64(ui, i);
     if (vkr_ui_button(ui, string8_lit("chip"), text, &chip)) {
-      snprintf(ops->changes_filter, sizeof(ops->changes_filter), "%s", author);
+      string_format(ops->changes_filter, sizeof(ops->changes_filter), "%s",
+                    author);
       ops->reject_all_armed_until = 0.0;
     }
     (void)vkr_ui_pop_id(ui);
@@ -16830,7 +16929,7 @@ static void changes_card(VkrEditorUi *editor, VkrEditorOps *ops,
     pill.center = true_v;
     vkr_ui_label(ui, string8_lit("author"), changes_author_name(change), &pill);
     const String8 label = string8_create_from_cstr(
-        (const uint8_t *)change->label, strlen(change->label));
+        (const uint8_t *)change->label, string_length(change->label));
     VkrUiWidgetConfig name =
         vkr_editor_text_config(theme->font_body, theme->text);
     name.placement = changes_cell(1u, 0u, 1u);
@@ -16857,7 +16956,7 @@ static void changes_card(VkrEditorUi *editor, VkrEditorOps *ops,
                &meta);
   if (change->problem[0]) {
     const String8 problem = string8_create_from_cstr(
-        (const uint8_t *)change->problem, strlen(change->problem));
+        (const uint8_t *)change->problem, string_length(change->problem));
     VkrUiWidgetConfig why =
         vkr_editor_text_config(theme->font_caption, theme->error);
     why.placement = changes_cell(0u, 2u, 1u);
@@ -16941,7 +17040,7 @@ static void changes_claim_card(VkrEditorUi *editor, VkrEditorOps *ops,
     pill.center = true_v;
     vkr_ui_label(ui, string8_lit("author"),
                  string8_create_from_cstr((const uint8_t *)claim.author,
-                                          strlen(claim.author)),
+                                          string_length(claim.author)),
                  &pill);
     VkrUiWidgetConfig name =
         vkr_editor_text_config(theme->font_body, theme->text);
@@ -17041,7 +17140,7 @@ static void changes_empty(VkrEditorUi *editor, VkrUiSystem *ui) {
   /* The socket path can be long; the tooltip holds all of it. */
   const char *status = vkr_editor_agent_status(editor->agent);
   const String8 text =
-      string8_create_from_cstr((const uint8_t *)status, strlen(status));
+      string8_create_from_cstr((const uint8_t *)status, string_length(status));
   body.placement.row = 4u;
   body.style.text_color = theme->text_disabled;
   body.tooltip = text;
@@ -17064,14 +17163,14 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
     const char *author = i < ops->change_count
                              ? ops->changes[i].author
                              : ops->claims[i - ops->change_count].author;
-    filter_found = filter_found || strcmp(ops->changes_filter, author) == 0;
+    filter_found = filter_found || string_equals(ops->changes_filter, author);
     uint32_t a = 0u;
-    while (a < authors.count && strcmp(authors.names[a], author) != 0) {
+    while (a < authors.count && !string_equals(authors.names[a], author)) {
       ++a;
     }
     if (a == authors.count && authors.count < CHANGES_AUTHOR_CHIPS) {
-      snprintf(authors.names[authors.count++], VKR_EDITOR_AUTHOR_CAPACITY, "%s",
-               author);
+      string_format(authors.names[authors.count++], VKR_EDITOR_AUTHOR_CAPACITY,
+                    "%s", author);
     }
     if (a < authors.count) {
       authors.counts[a]++;

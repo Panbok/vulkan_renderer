@@ -15,10 +15,8 @@
 
 #include "core/logger.h"
 #include "fps_module.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Launcher and editor client sizes in points. The editor request is clamped
  * to the screen's work area, so smaller displays open it full-screen. */
@@ -28,8 +26,9 @@
 #define EDITOR_WINDOW_HEIGHT_PT 1050u
 
 static bool8_t editor_env_flag(const char *name, bool8_t default_value) {
-  const char *value = getenv(name);
-  if (!value || value[0] == '\0')
+  char value[64];
+  if (!vkr_platform_environment_variable(name, value, sizeof(value)) ||
+      value[0] == '\0')
     return default_value;
 
   switch (value[0]) {
@@ -54,13 +53,15 @@ static bool8_t editor_env_flag(const char *name, bool8_t default_value) {
    for less; a reduced scale stretches the image, softening it and stepping
    its edges unevenly. */
 static float32_t editor_env_render_scale(void) {
-  const char *value = getenv("VKR_EDITOR_RENDER_SCALE");
-  if (!value || value[0] == '\0')
+  char value[64];
+  if (!vkr_platform_environment_variable("VKR_EDITOR_RENDER_SCALE", value,
+                                         sizeof(value)) ||
+      value[0] == '\0')
     return 1.0f;
 
-  char *end = NULL;
-  const float32_t parsed = strtof(value, &end);
-  if (end == value || *end != '\0' || !isfinite(parsed))
+  const char *end = NULL;
+  const float32_t parsed = string_parse_f32(value, &end);
+  if (end == value || *end != '\0' || !vkr_is_finite_f32(parsed))
     return 1.0f;
   return vkr_clamp_f32(parsed, 0.25f, 1.0f);
 }
@@ -116,8 +117,11 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
   editor->ui.headless = editor->headless;
-  const char *env_script = getenv("VKR_EDITOR_EXEC");
-  if (env_script && env_script[0])
+  /* Sized like the Cmd queue it is copied into. */
+  static char env_script[sizeof(editor->ui.cmd_queue)];
+  if (vkr_platform_environment_variable("VKR_EDITOR_EXEC", env_script,
+                                        sizeof(env_script)) &&
+      env_script[0])
     (void)vkr_editor_cmd_enqueue(&editor->ui, env_script);
   if (editor->exec_script && editor->exec_script[0])
     (void)vkr_editor_cmd_enqueue(&editor->ui, editor->exec_script);
@@ -350,7 +354,7 @@ static bool8_t editor_application_shutdown(void *state,
   if (editor->ui.level_report) {
     vkr_editor_level_job_end(editor->ui.level_report->job);
   }
-  free(editor->ui.level_report);
+  vkr_heap_free(editor->ui.level_report);
   editor->ui.level_report = NULL;
   vkr_editor_brush_grid_destroy(&editor->ui);
   vkr_editor_magnet_destroy(&editor->ui);
@@ -415,7 +419,7 @@ static float32_t editor_application_snap_turn(void *state, float32_t radians) {
     return radians;
   }
   const float32_t step = VKR_EDITOR_TURN_STEP_DEGREES * VKR_PI / 180.0f;
-  return roundf(radians / step) * step;
+  return vkr_round_f32(radians / step) * step;
 }
 
 /* A move of the primary selection carries the rest of the selection. */
@@ -446,9 +450,8 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       .project_managed = true_v,
   };
   /* Set to an empty value, the variable turns layout saving off (ADR-027).
-     getenv only tells whether it is set: its value is in the active code
-     page on Windows, which turns a non-ASCII path into another (ADR-070). */
-  if (getenv("VKR_EDITOR_LAYOUT_PATH")) {
+     Its value is read as UTF-8, so a non-ASCII path survives (ADR-070). */
+  if (vkr_platform_environment_is_set("VKR_EDITOR_LAYOUT_PATH")) {
     if (!vkr_platform_environment_variable(
             "VKR_EDITOR_LAYOUT_PATH", editor->layout_path_storage,
             sizeof(editor->layout_path_storage))) {
@@ -462,22 +465,22 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
   log_capture_request(LOG_LEVEL_INFO);
   bool8_t scene_only = editor_env_flag("VKR_EDITOR_SCENE_ONLY", false_v);
   for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--scene") == 0) {
+    if (string_equals(argv[i], "--scene")) {
       editor->project_managed = false_v;
     }
-    if (strcmp(argv[i], "--exec") == 0 && i + 1 < argc)
+    if (string_equals(argv[i], "--exec") && i + 1 < argc)
       editor->exec_script = argv[i + 1];
-    if (strcmp(argv[i], "--headless") == 0)
+    if (string_equals(argv[i], "--headless"))
       editor->headless = true_v;
-    if (strcmp(argv[i], "--agent-socket") == 0 && i + 1 < argc)
+    if (string_equals(argv[i], "--agent-socket") && i + 1 < argc)
       editor->agent_socket = argv[i + 1];
-    if (strcmp(argv[i], "--no-agent-socket") == 0)
+    if (string_equals(argv[i], "--no-agent-socket"))
       editor->agent_disabled = true_v;
-    if (strcmp(argv[i], "--scripts") == 0 && i + 1 < argc)
+    if (string_equals(argv[i], "--scripts") && i + 1 < argc)
       editor->scripts_directory = argv[i + 1];
-    if (strcmp(argv[i], "--scene-only") == 0)
+    if (string_equals(argv[i], "--scene-only"))
       scene_only = true_v;
-    else if (strcmp(argv[i], "--paneled") == 0)
+    else if (string_equals(argv[i], "--paneled"))
       scene_only = false_v;
   }
 

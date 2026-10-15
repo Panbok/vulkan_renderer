@@ -3,11 +3,7 @@
 #include "renderer/systems/vkr_render_assets.h"
 
 #include "math/vkr_quat.h"
-#include <math.h>
 #include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* Cmd expression evaluator. A statement is an expression, `name = expr` for a
  * session variable, or `path = expr` for editor or scene data:
@@ -152,14 +148,14 @@ static bool8_t eval_fail(Eval *eval, const char *format, ...) {
   if (!eval->error[0]) {
     va_list args;
     va_start(args, format);
-    vsnprintf(eval->error, sizeof(eval->error), format, args);
+    string_format_v(eval->error, sizeof(eval->error), format, args);
     va_end(args);
   }
   return false_v;
 }
 
 static bool8_t eval_is(String8 text, const char *word) {
-  const uint64_t length = strlen(word);
+  const uint64_t length = string_length(word);
   return text.length == length && MemCompare(text.str, word, length) == 0;
 }
 
@@ -187,7 +183,7 @@ static Value eval_string(const char *format, ...) {
   Value value = {.kind = VKR_EDITOR_CMD_VALUE_STRING};
   va_list args;
   va_start(args, format);
-  vsnprintf(value.text, sizeof(value.text), format, args);
+  string_format_v(value.text, sizeof(value.text), format, args);
   va_end(args);
   return value;
 }
@@ -245,9 +241,9 @@ static bool8_t eval_lex(Eval *eval, String8 line) {
         ++end;
       MemCopy(buffer, line.str + i, end - i);
       buffer[end - i] = '\0';
-      char *parsed = NULL;
-      token->number = strtod(buffer, &parsed);
-      if (parsed != buffer + (end - i) || !isfinite(token->number))
+      const char *parsed = NULL;
+      token->number = string_parse_f64(buffer, &parsed);
+      if (parsed != buffer + (end - i) || !vkr_is_finite_f64(token->number))
         return eval_fail(eval, "Bad number '%s'", buffer);
       token->kind = TOKEN_NUMBER;
       i = end;
@@ -275,7 +271,7 @@ static bool8_t eval_lex(Eval *eval, String8 line) {
       bool8_t pair = false_v;
       for (uint32_t p = 0; p < ArrayCount(pairs) && i + 1 < line.length; ++p)
         pair |= line.str[i] == pairs[p][0] && line.str[i + 1] == pairs[p][1];
-      if (!pair && !strchr("+-*/%(),.=<>!", c))
+      if (!pair && !string_find_char("+-*/%(),.=<>!", c))
         return eval_fail(eval, "Unexpected '%c'", c);
       i += pair ? 2u : 1u;
       token->kind = TOKEN_OP;
@@ -843,8 +839,9 @@ static bool8_t eval_member(Eval *eval, const Value *base, String8 name,
     const int32_t index = eval_word_index(eval_vec_members, name);
     if (index < 0)
       break;
-    *out = eval_number(index == 3 ? sqrt(vec3_dot(base->vector, base->vector))
-                                  : base->vector.elements[index]);
+    *out = eval_number(index == 3
+                           ? vkr_sqrt_f64(vec3_dot(base->vector, base->vector))
+                           : base->vector.elements[index]);
     return true_v;
   }
   case VKR_EDITOR_CMD_VALUE_ENTITY: {
@@ -1036,9 +1033,10 @@ static bool8_t eval_call(Eval *eval, const Node *node, Value *out) {
   if (eval_is(name, "min") || eval_is(name, "max") || eval_is(name, "pow")) {
     if (!eval_args(eval, node, 2, v) || !eval_numbers(eval, node, v, 2))
       return false_v;
-    *out = eval_number(eval_is(name, "min")   ? Min(v[0].number, v[1].number)
-                       : eval_is(name, "max") ? Max(v[0].number, v[1].number)
-                                              : pow(v[0].number, v[1].number));
+    *out = eval_number(eval_is(name, "min") ? Min(v[0].number, v[1].number)
+                       : eval_is(name, "max")
+                           ? Max(v[0].number, v[1].number)
+                           : vkr_pow_f64(v[0].number, v[1].number));
     return true_v;
   }
   if (eval_is(name, "clamp")) {
@@ -1085,12 +1083,12 @@ static bool8_t eval_call(Eval *eval, const Node *node, Value *out) {
     if (!eval_args(eval, node, 1, v))
       return false_v;
     if (eval_is(name, "len") && v[0].kind == VKR_EDITOR_CMD_VALUE_STRING) {
-      *out = eval_number((float64_t)strlen(v[0].text));
+      *out = eval_number((float64_t)string_length(v[0].text));
       return true_v;
     }
     if (v[0].kind != VKR_EDITOR_CMD_VALUE_VEC3)
       return eval_fail(eval, "%.*s needs a vector", (int)name.length, name.str);
-    const float64_t length = sqrt(vec3_dot(v[0].vector, v[0].vector));
+    const float64_t length = vkr_sqrt_f64(vec3_dot(v[0].vector, v[0].vector));
     *out = eval_is(name, "len")
                ? eval_number(length)
                : eval_vec(length > 0.0 ? vec3_scale(v[0].vector,
@@ -1106,7 +1104,7 @@ static bool8_t eval_call(Eval *eval, const Node *node, Value *out) {
     if (!eval->frame->scene && !eval->frame->world && !eval->frame->additive[0])
       return eval_fail(eval, "No scene is loaded");
     const String8 wanted = {.str = (uint8_t *)v[0].text,
-                            .length = strlen(v[0].text)};
+                            .length = string_length(v[0].text)};
     /* The scene's entities first, then the root World's. */
     VkrEntityId entity = eval->frame->scene
                              ? eval_find_entity(eval->frame->scene, wanted)
@@ -1183,7 +1181,7 @@ static bool8_t eval_binary(Eval *eval, String8 op, const Value *a,
   if (eval_is(op, "==") || eval_is(op, "!=")) {
     bool8_t equal = a->kind == b->kind;
     if (equal && a->kind == VKR_EDITOR_CMD_VALUE_STRING)
-      equal = strcmp(a->text, b->text) == 0;
+      equal = string_equals(a->text, b->text);
     else if (equal && a->kind == VKR_EDITOR_CMD_VALUE_VEC3)
       equal = MemCompare(&a->vector, &b->vector, sizeof(a->vector)) == 0;
     else if (equal && a->kind == VKR_EDITOR_CMD_VALUE_ENTITY)
@@ -1225,7 +1223,7 @@ static bool8_t eval_binary(Eval *eval, String8 op, const Value *a,
     case '%':
       if (y == 0.0)
         return eval_fail(eval, "Division by zero");
-      *out = eval_number(fmod(x, y));
+      *out = eval_number(vkr_fmod_f64(x, y));
       return true_v;
     case '<':
       *out = eval_bool(op.length == 2 ? x <= y : x < y);
@@ -1371,7 +1369,7 @@ static bool8_t eval_assign_entity(Eval *eval, VkrEntityId entity,
   case 0:
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
       return false_v;
-    snprintf(values.name, sizeof(values.name), "%s", value->text);
+    string_format(values.name, sizeof(values.name), "%s", value->text);
     values.fields = VKR_SCENE_EDIT_NAME;
     break;
   case 1:
@@ -1422,7 +1420,7 @@ static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
       return false_v;
     const String8 word = {.str = (uint8_t *)value->text,
-                          .length = strlen(value->text)};
+                          .length = string_length(value->text)};
     const int32_t choice = eval_word_index(property->names, word);
     if (choice < 0)
       return eval_fail(eval, "Unknown %.*s '%s'", (int)member.length,
@@ -1440,7 +1438,7 @@ static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
                          (int)member.length, member.str);
     } else if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member) ||
                (value->text[0] &&
-                !vkr_entity_ref_parse(value->text, strlen(value->text),
+                !vkr_entity_ref_parse(value->text, string_length(value->text),
                                       &ref))) {
       return eval->error[0] ? false_v
                             : eval_fail(eval, "'%.*s' takes an object or an id",
@@ -1452,7 +1450,7 @@ static bool8_t eval_property_write(Eval *eval, const VkrPropertyDesc *property,
   case VKR_PROPERTY_STRING: {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
       return false_v;
-    const uint64_t length = strlen(value->text);
+    const uint64_t length = string_length(value->text);
     if (length >= property->capacity)
       return eval_fail(eval, "'%.*s' is limited to %u bytes",
                        (int)member.length, member.str, property->capacity - 1u);
@@ -1555,7 +1553,7 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member)) {
       const int32_t preset = eval_word_index(
           eval_gfx_presets, (String8){.str = (uint8_t *)value->text,
-                                      .length = strlen(value->text)});
+                                      .length = string_length(value->text)});
       if (preset < 0 || preset >= (int32_t)VKR_GRAPHICS_PRESET_CUSTOM)
         return eval_fail(eval, "Unknown preset '%s'", value->text);
       vkr_graphics_settings_apply_preset(&settings, (VkrGraphicsPreset)preset);
@@ -1630,7 +1628,7 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
         return false_v;
       const int32_t target = eval_word_index(
           eval_snap_targets, (String8){.str = (uint8_t *)value->text,
-                                       .length = strlen(value->text)});
+                                       .length = string_length(value->text)});
       if (target < 0)
         return eval_fail(eval, "Unknown snap '%s'", value->text);
       place->target = (VkrEditorSnapTarget)target;
@@ -1662,7 +1660,7 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
       return false_v;
     const String8 word = {.str = (uint8_t *)value->text,
-                          .length = strlen(value->text)};
+                          .length = string_length(value->text)};
     const char *const *words = index == 0   ? vkr_editor_cmd_camera_views
                                : index == 1 ? vkr_editor_cmd_render_modes
                                             : vkr_editor_cmd_tools;
@@ -1742,8 +1740,8 @@ static bool8_t eval_assign(Eval *eval, int32_t target, const Value *value) {
         return eval_fail(eval, "No room for another variable");
       variable =
           &eval->editor->cmd_variables[eval->editor->cmd_variable_count++];
-      snprintf(variable->name, sizeof(variable->name), "%.*s",
-               (int)node->text.length, node->text.str);
+      string_format(variable->name, sizeof(variable->name), "%.*s",
+                    (int)node->text.length, node->text.str);
     }
     variable->value = *value;
     return true_v;
@@ -1782,36 +1780,38 @@ static uint32_t eval_format(const VkrEditorCmdValue *value, char *out,
   int written = 0;
   switch (value->kind) {
   case VKR_EDITOR_CMD_VALUE_NUMBER:
-    written = snprintf(out, capacity, "%.6g", value->number);
+    written = string_format(out, capacity, "%.6g", value->number);
     break;
   case VKR_EDITOR_CMD_VALUE_BOOL:
-    written = snprintf(out, capacity, "%s", value->number ? "true" : "false");
+    written =
+        string_format(out, capacity, "%s", value->number ? "true" : "false");
     break;
   case VKR_EDITOR_CMD_VALUE_STRING:
-    written = snprintf(out, capacity, "%s", value->text);
+    written = string_format(out, capacity, "%s", value->text);
     break;
   case VKR_EDITOR_CMD_VALUE_VEC3:
-    written =
-        snprintf(out, capacity, "(%.4g, %.4g, %.4g)", (double)value->vector.x,
-                 (double)value->vector.y, (double)value->vector.z);
+    written = string_format(out, capacity, "(%.4g, %.4g, %.4g)",
+                            (double)value->vector.x, (double)value->vector.y,
+                            (double)value->vector.z);
     break;
   case VKR_EDITOR_CMD_VALUE_ENTITY:
-    written = snprintf(out, capacity, "entity #%u", value->entity.parts.index);
+    written =
+        string_format(out, capacity, "entity #%u", value->entity.parts.index);
     break;
   case VKR_EDITOR_CMD_VALUE_COMPONENT:
-    written = snprintf(out, capacity, "%s of entity #%u", value->type->name,
-                       value->entity.parts.index);
+    written = string_format(out, capacity, "%s of entity #%u",
+                            value->type->name, value->entity.parts.index);
     break;
   case VKR_EDITOR_CMD_VALUE_OBJECT: {
     static const char *const names[] = {"",      "view",  "ui",    "sim",
                                         "scene", "world", "stats", "gfx"};
-    written =
-        snprintf(out, capacity, "%s (type %s. for members)",
-                 names[Min(value->object, 7u)], names[Min(value->object, 7u)]);
+    written = string_format(out, capacity, "%s (type %s. for members)",
+                            names[Min(value->object, 7u)],
+                            names[Min(value->object, 7u)]);
     break;
   }
   default:
-    written = snprintf(out, capacity, "nothing");
+    written = string_format(out, capacity, "nothing");
     break;
   }
   return written > 0 ? (uint32_t)written : 0u;
@@ -1838,18 +1838,18 @@ bool8_t vkr_editor_cmd_eval(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   if (ok && target >= 0)
     ok = eval_assign(&eval, target, &value);
   if (!ok) {
-    snprintf(message, capacity, "%s", eval.error);
+    string_format(message, capacity, "%s", eval.error);
     return false_v;
   }
   char text[160];
   (void)eval_format(&value, text, sizeof(text));
   if (target >= 0) {
     /* Echo the assigned path, everything before the '=', with the value. */
-    const uint8_t *equals = memchr(line.str, '=', line.length);
-    snprintf(message, capacity, "%.*s= %s",
-             equals ? (int)(equals - line.str) : 0, line.str, text);
+    const uint8_t *equals = MemFindByte(line.str, '=', line.length);
+    string_format(message, capacity, "%.*s= %s",
+                  equals ? (int)(equals - line.str) : 0, line.str, text);
   } else {
-    snprintf(message, capacity, "%s", text);
+    string_format(message, capacity, "%s", text);
   }
   return true_v;
 }
@@ -1949,27 +1949,27 @@ uint32_t vkr_editor_cmd_eval_complete(VkrEditorUi *editor,
        dot == start && i < editor->cmd_variable_count && count < capacity;
        ++i) {
     const char *name = editor->cmd_variables[i].name;
-    if (strncmp(name, (const char *)partial.str, partial.length) != 0)
+    if (!string_n_equals(name, (const char *)partial.str, partial.length))
       continue;
     char value[64];
     (void)eval_format(&editor->cmd_variables[i].value, value, sizeof(value));
-    snprintf(lines[count], 96, "%.*s%s", (int)dot, text.str, name);
-    snprintf(hints[count++], 96, "variable = %s", value);
+    string_format(lines[count], 96, "%.*s%s", (int)dot, text.str, name);
+    string_format(hints[count++], 96, "variable = %s", value);
   }
   for (uint32_t i = 0; names && names[i] && count < capacity; ++i) {
-    if (strncmp(names[i], (const char *)partial.str, partial.length) != 0)
+    if (!string_n_equals(names[i], (const char *)partial.str, partial.length))
       continue;
-    snprintf(lines[count], 96, "%.*s%s", (int)dot, text.str, names[i]);
+    string_format(lines[count], 96, "%.*s%s", (int)dot, text.str, names[i]);
     /* Members show their current value; failures fall back to a label. */
     Value member = {0};
     eval.error[0] = '\0';
     if (dot > start && eval_member(&eval, &base,
                                    (String8){.str = (uint8_t *)names[i],
-                                             .length = strlen(names[i])},
+                                             .length = string_length(names[i])},
                                    &member))
       (void)eval_format(&member, hints[count], 96);
     else
-      snprintf(hints[count], 96, "%s", dot > start ? "member" : "name");
+      string_format(hints[count], 96, "%s", dot > start ? "member" : "name");
     ++count;
   }
   return count;

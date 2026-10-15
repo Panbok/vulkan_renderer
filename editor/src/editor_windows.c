@@ -14,10 +14,6 @@
 #include "editor_graphics.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
-
 #define EDITOR_MENU_LAYER VKR_EDITOR_POPUP_LAYER
 #define EDITOR_MENU_WIDTH_PT 272.0f
 #define EDITOR_MENU_ROW_PT 26.0f
@@ -310,7 +306,7 @@ static const EditorKeyBinding s_keymap[] = {
    use. */
 static bool8_t editor_key_name(Keys key, char *out, uint64_t size) {
   if ((key >= KEY_A && key <= KEY_Z) || (key >= KEY_0 && key <= KEY_9)) {
-    snprintf(out, size, "%c", (char)key);
+    string_format(out, size, "%c", (char)key);
     return true_v;
   }
   const char *name = NULL;
@@ -366,7 +362,7 @@ static bool8_t editor_key_name(Keys key, char *out, uint64_t size) {
   default:
     return false_v;
   }
-  snprintf(out, size, "%s", name);
+  string_format(out, size, "%s", name);
   return true_v;
 }
 
@@ -383,15 +379,16 @@ static bool8_t editor_shortcut_text(EditorCommand command, char *out,
     }
     const uint8_t mods = binding->modifiers;
 #if defined(PLATFORM_APPLE)
-    snprintf(out, size, "%s%s%s%s%s",
-             mods & VKR_INPUT_MOD_CONTROL ? "\xe2\x8c\x83" : "",
-             mods & VKR_INPUT_MOD_ALT ? "\xe2\x8c\xa5" : "",
-             mods & VKR_INPUT_MOD_SHIFT ? "\xe2\x87\xa7" : "",
-             mods & VKR_INPUT_MOD_SUPER ? "\xe2\x8c\x98" : "", key);
+    string_format(out, size, "%s%s%s%s%s",
+                  mods & VKR_INPUT_MOD_CONTROL ? "\xe2\x8c\x83" : "",
+                  mods & VKR_INPUT_MOD_ALT ? "\xe2\x8c\xa5" : "",
+                  mods & VKR_INPUT_MOD_SHIFT ? "\xe2\x87\xa7" : "",
+                  mods & VKR_INPUT_MOD_SUPER ? "\xe2\x8c\x98" : "", key);
 #else
-    snprintf(out, size, "%s%s%s%s", mods & VKR_INPUT_MOD_CONTROL ? "Ctrl+" : "",
-             mods & VKR_INPUT_MOD_SHIFT ? "Shift+" : "",
-             mods & VKR_INPUT_MOD_ALT ? "Alt+" : "", key);
+    string_format(out, size, "%s%s%s%s",
+                  mods & VKR_INPUT_MOD_CONTROL ? "Ctrl+" : "",
+                  mods & VKR_INPUT_MOD_SHIFT ? "Shift+" : "",
+                  mods & VKR_INPUT_MOD_ALT ? "Alt+" : "", key);
 #endif
     return true_v;
   }
@@ -424,12 +421,13 @@ static String8 editor_help_text(VkrUiSystem *ui) {
     if (used < sizeof(text) &&
         editor_shortcut_text((EditorCommand)command, shortcut,
                              sizeof(shortcut))) {
-      used += (uint64_t)snprintf(text + used, sizeof(text) - used, "%s\t%s\n",
-                                 shortcut, s_commands[command].name);
+      used +=
+          (uint64_t)string_format(text + used, sizeof(text) - used, "%s\t%s\n",
+                                  shortcut, s_commands[command].name);
     }
   }
   if (used < sizeof(text)) {
-    snprintf(text + used, sizeof(text) - used, "%s", s_help_mouse_text);
+    string_format(text + used, sizeof(text) - used, "%s", s_help_mouse_text);
   }
   return string8_create_formatted(ui->frame_allocator, "%s", text);
 }
@@ -1193,7 +1191,8 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
     item.icon_size_pt = 14.0f;
     item.icon_color = checked > 0 ? theme->accent_hover : theme->text_secondary;
     item.disabled = !vkr_editor_command_enabled(entry->command, editor, frame);
-    String8 name = string8_create((uint8_t *)info->name, strlen(info->name));
+    String8 name =
+        string8_create((uint8_t *)info->name, string_length(info->name));
     /* Play enters and leaves play; the toggle pauses and resumes it. */
     const bool8_t playing =
         frame->simulation_running || frame->simulation_time > 0.0;
@@ -1236,10 +1235,10 @@ void vkr_editor_windows_build_menu(VkrEditorUi *editor, VkrUiSystem *ui,
       shortcut.placement.align = VKR_UI_ALIGN_CENTER;
       shortcut.placement.margin_pt.right = 10.0f;
       shortcut.disabled = item.disabled;
-      vkr_ui_label(
-          ui, string8_lit("shortcut"),
-          string8_create((uint8_t *)shortcut_text, strlen(shortcut_text)),
-          &shortcut);
+      vkr_ui_label(ui, string8_lit("shortcut"),
+                   string8_create((uint8_t *)shortcut_text,
+                                  string_length(shortcut_text)),
+                   &shortcut);
     }
     (void)vkr_ui_pop_id(ui);
     row++;
@@ -1288,7 +1287,7 @@ static void editor_caption_buttons_build(const VkrSampleUiFrame *frame,
         first_column + i, 0u, icons[i],
         string8_create_from_cstr(
             (const uint8_t *)(i == 1 && maximized ? "Restore" : tips[i]),
-            strlen(i == 1 && maximized ? "Restore" : tips[i])));
+            string_length(i == 1 && maximized ? "Restore" : tips[i])));
     button.style.min_size_pt = button.style.max_size_pt =
         (Vec2){40.0f, VKR_EDITOR_NAVIGATION_HEIGHT_PT - 8.0f};
     button.style.corner_radius_pt = (Vec4){0};
@@ -1511,7 +1510,7 @@ void vkr_editor_windows_build_navigation(VkrEditorUi *editor,
         2u + (menu - VKR_EDITOR_MENU_FILE), open, VKR_FONT_HANDLE_INVALID);
     button.style.text_color = open ? theme->text : theme->text_secondary;
     const String8 title = string8_create((uint8_t *)s_menus[menu].title,
-                                         strlen(s_menus[menu].title));
+                                         string_length(s_menus[menu].title));
     (void)vkr_ui_push_id_u64(ui, menu);
     const VkrUiId id =
         vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("menu"));
@@ -1784,7 +1783,8 @@ static void editor_scene_cooking_build(VkrEditorUi *editor,
   chip.style.hover_background_color = theme->popup;
   /* The spinner pulses so the work reads as alive. */
   const float32_t pulse =
-      0.55f + 0.45f * sinf((float32_t)vkr_platform_get_absolute_time() * 4.0f);
+      0.55f +
+      0.45f * vkr_sin_f32((float32_t)vkr_platform_get_absolute_time() * 4.0f);
   chip.icon = VKR_UI_ICON_SPINNER;
   chip.icon_size_pt = 12.0f;
   chip.icon_color = vkr_ui_color_alpha(theme->accent_hover, pulse);
@@ -2673,7 +2673,7 @@ static uint32_t editor_context_create_items(VkrEditorUi *editor,
       continue;
     }
     const char *kind_group = vkr_editor_object_kind_group(kind);
-    if (kind_group && (!group || strcmp(group, kind_group))) {
+    if (kind_group && (!group || !string_equals(group, kind_group))) {
       context_separator(items, &count);
       context_header(items, &count, kind_group);
       group = kind_group;
@@ -2756,19 +2756,19 @@ static uint32_t editor_context_component_items(VkrEditorUi *editor,
     bool8_t seen = false_v;
     for (uint32_t j = 0; j < i && !seen; ++j) {
       const char *other = vkr_scene_world_type(eligible[j])->category;
-      seen = category && other && !strcmp(category, other);
+      seen = category && other && string_equals(category, other);
     }
     if (seen) {
       continue;
     }
-    if (category && strcmp(category, "Physics")) {
+    if (category && !string_equals(category, "Physics")) {
       context_separator(items, &count);
       context_header(items, &count, category);
     }
     for (uint32_t j = i; j < eligible_count; ++j) {
       type = vkr_scene_world_type(eligible[j]);
       const bool8_t same =
-          category ? type->category && !strcmp(category, type->category)
+          category ? type->category && string_equals(category, type->category)
                    : !type->category;
       if (same) {
         context_push(items, &count,
@@ -3020,8 +3020,8 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
     const uint32_t workbench = editor->context_panel;
     if (workbench >= workbenches->count)
       return 0u;
-    snprintf(label, label_capacity, "%s",
-             vkr_editor_workbench_name(workbenches, workbench));
+    string_format(label, label_capacity, "%s",
+                  vkr_editor_workbench_name(workbenches, workbench));
     uint32_t count = 0u;
     context_push(items, &count,
                  (EditorContextItem){"Switch to this workbench",
@@ -3062,7 +3062,8 @@ static uint32_t editor_context_items(VkrEditorUi *editor,
         !vkr_ui_dock_find_panel(frame->dock, panel, NULL, NULL))
       return 0u;
     const String8 name = vkr_ui_dock_panel_label(panel);
-    snprintf(label, label_capacity, "Close %.*s", (int)name.length, name.str);
+    string_format(label, label_capacity, "Close %.*s", (int)name.length,
+                  name.str);
     uint32_t count = 0u;
     context_push(items, &count,
                  (EditorContextItem){label, VKR_UI_ICON_CLOSE, NULL, views,
@@ -3558,7 +3559,7 @@ static EditorContextPanel editor_context_panel(VkrUiSystem *ui, String8 id,
       heading.placement.margin_pt = (VkrUiEdges){0, 0, 3, 9};
       vkr_ui_label(
           ui, string8_lit("heading"),
-          string8_create((uint8_t *)entry->label, strlen(entry->label)),
+          string8_create((uint8_t *)entry->label, string_length(entry->label)),
           &heading);
       (void)vkr_ui_pop_id(ui);
       continue;
@@ -3599,9 +3600,10 @@ static EditorContextPanel editor_context_panel(VkrUiSystem *ui, String8 id,
     text.style.text_color = text_color;
     if (highlighted)
       text.icon_color = theme->text_on_accent;
-    vkr_ui_label(ui, string8_lit("label"),
-                 string8_create((uint8_t *)entry->label, strlen(entry->label)),
-                 &text);
+    vkr_ui_label(
+        ui, string8_lit("label"),
+        string8_create((uint8_t *)entry->label, string_length(entry->label)),
+        &text);
     /* Trailing marks: a submenu chevron, a check, then the shortcut. */
     float32_t trailing = 10.0f;
     if (entry->opens || entry->checked) {
@@ -3630,10 +3632,10 @@ static EditorContextPanel editor_context_panel(VkrUiSystem *ui, String8 id,
       shortcut.placement.justify = VKR_UI_ALIGN_END;
       shortcut.placement.align = VKR_UI_ALIGN_CENTER;
       shortcut.placement.margin_pt.right = trailing;
-      vkr_ui_label(
-          ui, string8_lit("shortcut"),
-          string8_create((uint8_t *)entry->shortcut, strlen(entry->shortcut)),
-          &shortcut);
+      vkr_ui_label(ui, string8_lit("shortcut"),
+                   string8_create((uint8_t *)entry->shortcut,
+                                  string_length(entry->shortcut)),
+                   &shortcut);
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -3834,7 +3836,7 @@ void vkr_editor_context_menu_build(VkrEditorUi *editor,
 
 void vkr_editor_toast(VkrEditorUi *editor, VkrUiIcon icon, Vec4 color,
                       const char *text) {
-  snprintf(editor->toast_text, sizeof(editor->toast_text), "%s", text);
+  string_format(editor->toast_text, sizeof(editor->toast_text), "%s", text);
   editor->toast_icon = icon;
   editor->toast_color = color;
   editor->toast_seconds = EDITOR_TOAST_SECONDS;
@@ -3901,8 +3903,8 @@ void vkr_editor_toasts_build(VkrEditorUi *editor,
   toast.icon = editor->toast_icon;
   toast.icon_size_pt = 16.0f;
   toast.icon_color = vkr_ui_color_alpha(editor->toast_color, opacity);
-  vkr_ui_label(
-      ui, string8_lit("editor.toast"),
-      string8_create((uint8_t *)editor->toast_text, strlen(editor->toast_text)),
-      &toast);
+  vkr_ui_label(ui, string8_lit("editor.toast"),
+               string8_create((uint8_t *)editor->toast_text,
+                              string_length(editor->toast_text)),
+               &toast);
 }

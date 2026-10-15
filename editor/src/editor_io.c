@@ -7,14 +7,11 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #define IO_PAD_PT 10.0f
 #define IO_ROW_PT 26.0f
 
 static String8 io_cstr(const char *text) {
-  return string8_create_from_cstr((const uint8_t *)text, strlen(text));
+  return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
 static String8 io_name(const VkrScene *scene, VkrEntityId entity) {
@@ -31,8 +28,9 @@ static VkrEntityId io_parent(const VkrScene *scene, VkrEntityId entity) {
 }
 
 static void io_id_text(VkrEntityId entity, char *out, uint64_t capacity) {
-  snprintf(out, capacity, "%u:%u:%u", (unsigned)entity.parts.world,
-           (unsigned)entity.parts.index, (unsigned)entity.parts.generation);
+  string_format(out, capacity, "%u:%u:%u", (unsigned)entity.parts.world,
+                (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation);
 }
 
 static void io_select(const VkrSampleUiFrame *frame, VkrEntityId entity) {
@@ -80,20 +78,21 @@ static void io_connection_text(const VkrScene *scene, VkrEntityId connection,
                                      : string8_lit("no target");
   char extra[64] = {0};
   if (value->delay > 0.0f && value->limit) {
-    snprintf(extra, sizeof(extra), "  (%.2g s, %u times)", value->delay,
-             value->limit);
+    string_format(extra, sizeof(extra), "  (%.2g s, %u times)", value->delay,
+                  value->limit);
   } else if (value->delay > 0.0f) {
-    snprintf(extra, sizeof(extra), "  (%.2g s)", value->delay);
+    string_format(extra, sizeof(extra), "  (%.2g s)", value->delay);
   } else if (value->limit) {
-    snprintf(extra, sizeof(extra), "  (%u times)", value->limit);
+    string_format(extra, sizeof(extra), "  (%u times)", value->limit);
   }
   if (incoming) {
-    snprintf(out, capacity, "%.*s . %s  ->  %s%s", (int)other.length, other.str,
-             value->output, value->input[0] ? value->input : "?", extra);
+    string_format(out, capacity, "%.*s . %s  ->  %s%s", (int)other.length,
+                  other.str, value->output,
+                  value->input[0] ? value->input : "?", extra);
   } else {
-    snprintf(out, capacity, "%s  ->  %.*s . %s%s", value->output,
-             (int)other.length, other.str, value->input[0] ? value->input : "?",
-             extra);
+    string_format(out, capacity, "%s  ->  %.*s . %s%s", value->output,
+                  (int)other.length, other.str,
+                  value->input[0] ? value->input : "?", extra);
   }
 }
 
@@ -109,18 +108,18 @@ static void io_ports_text(const VkrScene *scene, VkrEntityId entity,
       continue;
     }
     for (uint32_t p = 0; ports[p].name && length < capacity; ++p) {
-      length += (uint64_t)snprintf(out + length, capacity - length, "%s%s",
-                                   length ? ", " : "", ports[p].name);
+      length += (uint64_t)string_format(out + length, capacity - length, "%s%s",
+                                        length ? ", " : "", ports[p].name);
     }
   }
   for (uint32_t p = 0;
        inputs && vkr_io_builtin_inputs[p].name && length < capacity; ++p) {
-    length +=
-        (uint64_t)snprintf(out + length, capacity - length, "%s%s",
-                           length ? ", " : "", vkr_io_builtin_inputs[p].name);
+    length += (uint64_t)string_format(out + length, capacity - length, "%s%s",
+                                      length ? ", " : "",
+                                      vkr_io_builtin_inputs[p].name);
   }
   if (!length) {
-    snprintf(out, capacity, "none");
+    string_format(out, capacity, "none");
   }
 }
 
@@ -131,7 +130,7 @@ static bool8_t io_first_output(const VkrScene *scene, VkrEntityId entity,
     const VkrTypeDesc *type = scene->types[t].type;
     if (type->outputs && type->outputs[0].name &&
         vkr_scene_get_typed(scene, entity, type)) {
-      snprintf(out, capacity, "%s", type->outputs[0].name);
+      string_format(out, capacity, "%s", type->outputs[0].name);
       return true_v;
     }
   }
@@ -164,8 +163,8 @@ static void io_route_section(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       vkr_scene_get_typed(scene, connection, &vkr_scene_io_connection_type);
   const VkrEntityId target = vkr_scene_find_entity_ref(scene, &value->target);
   char text[320];
-  snprintf(text, sizeof(text), "Source: %.*s",
-           (int)io_name(scene, source).length, io_name(scene, source).str);
+  string_format(text, sizeof(text), "Source: %.*s",
+                (int)io_name(scene, source).length, io_name(scene, source).str);
   if (io_row(ui, string8_lit("io.source"), width, y, VKR_UI_ICON_ARROW_LEFT,
              theme->text_secondary, io_cstr(text),
              string8_lit("Select the source"))) {
@@ -173,8 +172,8 @@ static void io_route_section(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   const String8 target_name =
       target.u64 ? io_name(scene, target) : string8_lit("none");
-  snprintf(text, sizeof(text), "Target: %.*s", (int)target_name.length,
-           target_name.str);
+  string_format(text, sizeof(text), "Target: %.*s", (int)target_name.length,
+                target_name.str);
   if (io_row(ui, string8_lit("io.target"), width, y, VKR_UI_ICON_ARROW_RIGHT,
              theme->text_secondary, io_cstr(text),
              target.u64 ? string8_lit("Select the target")
@@ -194,11 +193,11 @@ static void io_route_section(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   char ports[256];
   io_ports_text(scene, source, false_v, ports, sizeof(ports));
-  snprintf(text, sizeof(text), "Outputs: %s", ports);
+  string_format(text, sizeof(text), "Outputs: %s", ports);
   io_note(ui, string8_lit("io.outputs"), width, y, io_cstr(text));
   if (target.u64) {
     io_ports_text(scene, target, true_v, ports, sizeof(ports));
-    snprintf(text, sizeof(text), "Inputs: %s", ports);
+    string_format(text, sizeof(text), "Inputs: %s", ports);
     io_note(ui, string8_lit("io.inputs"), width, y, io_cstr(text));
   }
   *y += 4.0f;
@@ -236,11 +235,11 @@ void vkr_editor_io_sections(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       char id[48];
       io_id_text(selected, id, sizeof(id));
       char line[320];
-      snprintf(line, sizeof(line),
-               "{\"v\":1,\"id\":\"io\",\"op\":\"io.connect\",\"args\":{"
-               "\"source\":\"%s\",\"output\":\"%s\",\"review\":false,"
-               "\"select\":true}}",
-               id, output);
+      string_format(line, sizeof(line),
+                    "{\"v\":1,\"id\":\"io\",\"op\":\"io.connect\",\"args\":{"
+                    "\"source\":\"%s\",\"output\":\"%s\",\"review\":false,"
+                    "\"select\":true}}",
+                    id, output);
       (void)vkr_editor_agent_submit(editor->agent, line);
     } else if (!fires) {
       vkr_editor_toast(editor, VKR_UI_ICON_INFO_FILL, theme->text_secondary,
@@ -348,11 +347,11 @@ void vkr_editor_io_update(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   io_id_text(connection, id, sizeof(id));
   vkr_entity_ref_format(&ref, uuid);
   char line[320];
-  snprintf(line, sizeof(line),
-           "{\"v\":1,\"id\":\"io\",\"op\":\"component.set\",\"args\":{"
-           "\"entity\":\"%s\",\"type\":\"io_connection\",\"values\":{"
-           "\"target\":\"%s\"},\"review\":false}}",
-           id, uuid);
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"io\",\"op\":\"component.set\",\"args\":{"
+                "\"entity\":\"%s\",\"type\":\"io_connection\",\"values\":{"
+                "\"target\":\"%s\"},\"review\":false}}",
+                id, uuid);
   (void)vkr_editor_agent_submit(editor->agent, line);
   io_select(frame, connection);
 }

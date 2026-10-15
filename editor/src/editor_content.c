@@ -15,11 +15,6 @@
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
-#include <ctype.h>
-#include <limits.h>
-#include <math.h>
-#include <stdlib.h>
-#include <time.h>
 
 #define CONTENT_MAX_ASSETS 8192u
 #define CONTENT_CACHE_COUNT 64u
@@ -373,15 +368,15 @@ static uint64_t content_hash(uint64_t hash, const void *data, uint64_t length) {
 }
 
 static String8 content_string(const char *value) {
-  return string8_create_from_cstr((const uint8_t *)value, strlen(value));
+  return string8_create_from_cstr((const uint8_t *)value, string_length(value));
 }
 
 static bool8_t content_copy(char *output, uint32_t capacity,
                             const char *input) {
-  if (!input || strlen(input) >= capacity) {
+  if (!input || string_length(input) >= capacity) {
     return false_v;
   }
-  MemCopy(output, input, strlen(input) + 1);
+  MemCopy(output, input, string_length(input) + 1);
   return true_v;
 }
 
@@ -412,26 +407,24 @@ static void *content_worker(void *context) {
     arguments[count++] = "--harness";
     arguments[count++] = vkr_editor_tool_path(VKR_EDITOR_TOOL_HARNESS);
   }
-#if defined(PLATFORM_WINDOWS)
-  char reveal_argument[CONTENT_PATH + 16];
-#endif
+  VkrPlatformFileManagerCommand reveal = {0};
   if (content->worker_reveal) {
-#if defined(PLATFORM_WINDOWS)
-    executable = "explorer.exe";
-    snprintf(reveal_argument, sizeof(reveal_argument), "/select,%s",
-             content->worker_input);
-    arguments[0] = reveal_argument;
-    count = 1;
-#else
-    executable = "/usr/bin/open";
-    arguments[0] = "-R";
-    arguments[1] = content->worker_input;
-    count = 2;
-#endif
+    if (!vkr_platform_file_manager_command(content->worker_input, true_v,
+                                           &reveal)) {
+      content->worker_ok = false_v;
+      vkr_atomic_bool_store(&content->complete, true_v,
+                            VKR_MEMORY_ORDER_RELEASE);
+      return NULL;
+    }
+    executable = reveal.executable;
+    count = 0;
+    for (uint32_t i = 0; i < reveal.argument_count; ++i) {
+      arguments[count++] = reveal.arguments[i];
+    }
   } else {
     char directory[CONTENT_PATH];
-    snprintf(directory, sizeof(directory), "%s/cache/thumbnails",
-             content->worker_workspace);
+    string_format(directory, sizeof(directory), "%s/cache/thumbnails",
+                  content->worker_workspace);
     const char *prune_arguments[] = {"preview", "prune", "--directory",
                                      directory};
     VkrPlatformProcessConfig prune = {
@@ -603,29 +596,29 @@ void vkr_editor_content_destroy(VkrEditorContent *content) {
 }
 
 static ContentKind content_kind(const char *name) {
-  if (!strcmp(name, "texture") || !strcmp(name, "image")) {
+  if (string_equals(name, "texture") || string_equals(name, "image")) {
     return CONTENT_TEXTURE;
   }
-  if (!strcmp(name, "material")) {
+  if (string_equals(name, "material")) {
     return CONTENT_MATERIAL;
   }
-  if (!strcmp(name, "mesh") || !strcmp(name, "model")) {
+  if (string_equals(name, "mesh") || string_equals(name, "model")) {
     return CONTENT_MESH;
   }
-  if (!strcmp(name, "font")) {
+  if (string_equals(name, "font")) {
     return CONTENT_FONT;
   }
-  if (!strcmp(name, "environment") || !strcmp(name, "hdr") ||
-      !strcmp(name, "skybox")) {
+  if (string_equals(name, "environment") || string_equals(name, "hdr") ||
+      string_equals(name, "skybox")) {
     return CONTENT_ENVIRONMENT;
   }
-  if (!strcmp(name, "scene")) {
+  if (string_equals(name, "scene")) {
     return CONTENT_SCENE;
   }
-  if (!strcmp(name, "probe") || !strcmp(name, "reflection_probe")) {
+  if (string_equals(name, "probe") || string_equals(name, "reflection_probe")) {
     return CONTENT_PROBE;
   }
-  if (!strcmp(name, "animation")) {
+  if (string_equals(name, "animation")) {
     return CONTENT_ANIMATION;
   }
   return CONTENT_OTHER;
@@ -663,8 +656,8 @@ static uint8_t *content_load_document(VkrEditorContent *content,
     return NULL;
   }
   if (!stats.size || stats.size > MB(16)) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Inventory is empty or exceeds 16 MiB: %.350s", manifest);
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Inventory is empty or exceeds 16 MiB: %.350s", manifest);
     return NULL;
   }
   FileMode mode = bitset8_create();
@@ -679,8 +672,8 @@ static uint8_t *content_load_document(VkrEditorContent *content,
       read == stats.size;
   file_close(&file);
   if (!loaded) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Cannot read inventory: %.350s", manifest);
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Cannot read inventory: %.350s", manifest);
     if (bytes) {
       vkr_allocator_free(content->allocator, bytes, stats.size + 1,
                          VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
@@ -728,8 +721,8 @@ static void content_read_scenes(VkrEditorContent *content, const char *root,
         (void)vkr_editor_project_resolve(root, relative, entry.path, &error);
       }
       /* The scene lists as its own folder, not as an item. */
-      snprintf(entry.home, sizeof(entry.home), "%c%s", CONTENT_SCENE_MARK,
-               entry.id);
+      string_format(entry.home, sizeof(entry.home), "%c%s", CONTENT_SCENE_MARK,
+                    entry.id);
       content->entries[content->count++] = entry;
     }
   }
@@ -760,8 +753,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     bytes = NULL;
     if (!vkr_editor_project_resolve(root, inventory_reference, inventory,
                                     &error)) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic), "%.450s",
-               error.message);
+      string_format(content->diagnostic, sizeof(content->diagnostic), "%.450s",
+                    error.message);
       return;
     }
     bytes = content_load_document(content, inventory, &size);
@@ -770,15 +763,15 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     }
     list = vkr_json_reader_from_string((String8){.str = bytes, .length = size});
     if (!vkr_json_find_array(&list, "assets")) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic),
-               "Scene inventory has no asset list: %.350s", inventory);
+      string_format(content->diagnostic, sizeof(content->diagnostic),
+                    "Scene inventory has no asset list: %.350s", inventory);
       goto cleanup;
     }
   } else {
     String8 assets = {0};
     if (!vkr_editor_project_json_member(document, "assets", &assets, &error)) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic), "%.450s",
-               error.message);
+      string_format(content->diagnostic, sizeof(content->diagnostic), "%.450s",
+                    error.message);
       goto cleanup;
     }
     if (!assets.length || assets.str[0] != '[') {
@@ -794,16 +787,17 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
                           .type = FILE_PATH_TYPE_ABSOLUTE};
   if (file_path_resolve(&owner, resolved_root, sizeof(resolved_root)) !=
       FILE_ERROR_NONE) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Inventory owner is inaccessible: %.400s", root);
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Inventory owner is inaccessible: %.400s", root);
     goto cleanup;
   }
   while (vkr_json_next_array_element(&list)) {
     VkrJsonReader object = {0};
     if (!vkr_json_enter_object(&list, &object) || !content_reserve(content)) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic),
-               "Content inventory exceeds the %u-asset limit or is invalid.",
-               CONTENT_MAX_ASSETS);
+      string_format(
+          content->diagnostic, sizeof(content->diagnostic),
+          "Content inventory exceeds the %u-asset limit or is invalid.",
+          CONTENT_MAX_ASSETS);
       break;
     }
     String8 record = {.str = (uint8_t *)object.data, .length = object.length};
@@ -817,15 +811,15 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
                                         sizeof(entry.name), &error) ||
         !vkr_editor_project_json_string(record, "kind", kind, sizeof(kind),
                                         &error)) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic),
-               "Invalid asset record: %.450s", error.message);
+      string_format(content->diagnostic, sizeof(content->diagnostic),
+                    "Invalid asset record: %.450s", error.message);
       continue;
     }
     entry.kind = content_kind(kind);
     if (content_type_folders[entry.kind]) {
-      snprintf(entry.type_folder, sizeof(entry.type_folder), "%s%s%s",
-               entry.home, entry.home[0] ? "/" : "",
-               content_type_folders[entry.kind]);
+      string_format(entry.type_folder, sizeof(entry.type_folder), "%s%s%s",
+                    entry.home, entry.home[0] ? "/" : "",
+                    content_type_folders[entry.kind]);
     }
     (void)vkr_editor_project_json_string(record, "fingerprint",
                                          entry.fingerprint,
@@ -842,7 +836,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
       VkrJsonReader reader = vkr_json_reader_from_string(recipe);
       (void)vkr_json_get_int(&reader, "version", &version);
       if (tool[0]) {
-        snprintf(entry.recipe, sizeof(entry.recipe), "%s %d", tool, version);
+        string_format(entry.recipe, sizeof(entry.recipe), "%s %d", tool,
+                      version);
       }
     }
     String8 closure = {0};
@@ -894,7 +889,7 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
             record_kind[0] &&
             vkr_editor_project_json_string(candidate, "role", role,
                                            sizeof(role), NULL) &&
-            !strcmp(role, record_kind);
+            string_equals(role, record_kind);
         if (!found || primary) {
           artifact_object = candidate;
           found = true_v;
@@ -908,8 +903,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
                                            sizeof(relative), &error)) {
           /* Artifacts live in builds/<revision>/ below their owner. */
           const char *revision =
-              !strncmp(relative, "builds/", 7u) ? relative + 7u : NULL;
-          const char *end = revision ? strchr(revision, '/') : NULL;
+              string_n_equals(relative, "builds/", 7u) ? relative + 7u : NULL;
+          const char *end = revision ? string_find_char(revision, '/') : NULL;
           if (end && (uint64_t)(end - revision) < sizeof(entry.revision)) {
             MemCopy(entry.revision, revision, (uint64_t)(end - revision));
             entry.revision[end - revision] = '\0';
@@ -917,8 +912,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
           entry.missing = !vkr_editor_project_resolve_within(
               resolved_root, relative, entry.path, &error);
           if (entry.missing) {
-            snprintf(entry.diagnostic, sizeof(entry.diagnostic),
-                     "Missing artifact: %.220s", relative);
+            string_format(entry.diagnostic, sizeof(entry.diagnostic),
+                          "Missing artifact: %.220s", relative);
           }
         }
         (void)vkr_editor_project_json_string(
@@ -927,14 +922,14 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     }
     if (!entry.path[0] && !entry.missing) {
       entry.stale = true_v;
-      snprintf(entry.diagnostic, sizeof(entry.diagnostic),
-               "No completed artifact. Build this asset.");
+      string_format(entry.diagnostic, sizeof(entry.diagnostic),
+                    "No completed artifact. Build this asset.");
     }
     char tier[16] = {0};
     entry.pending_tier =
         vkr_editor_project_json_string(record, "texture_tier", tier,
                                        sizeof(tier), &error) &&
-        (!strcmp(tier, "deferred") || !strcmp(tier, "preview"));
+        (string_equals(tier, "deferred") || string_equals(tier, "preview"));
     content->entries[content->count++] = entry;
   }
   /* A pending mesh's materials share its build revision and are rebuilt
@@ -946,7 +941,7 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
     }
     for (uint32_t j = first; j < content->count; ++j) {
       ContentAsset *entry = &content->entries[j];
-      entry->pending_tier |= !strcmp(entry->revision, pending->revision);
+      entry->pending_tier |= string_equals(entry->revision, pending->revision);
     }
   }
 cleanup:
@@ -961,14 +956,15 @@ cleanup:
 static bool8_t content_labels_path(const VkrEditorContent *content,
                                    char path[CONTENT_PATH]) {
   return content->workspace[0] && content->project[0] &&
-         snprintf(path, CONTENT_PATH, "%s/projects/%s/content.labels.json",
-                  content->workspace, content->project) < (int)CONTENT_PATH;
+         string_format(path, CONTENT_PATH, "%s/projects/%s/content.labels.json",
+                       content->workspace,
+                       content->project) < (int)CONTENT_PATH;
 }
 
 static const VkrEditorAssetLabel *content_label(const VkrEditorContent *content,
                                                 const char *id) {
   for (uint32_t i = 0; i < content->labels.label_count; ++i) {
-    if (!strcmp(content->labels.labels[i].id, id)) {
+    if (string_equals(content->labels.labels[i].id, id)) {
       return &content->labels.labels[i];
     }
   }
@@ -986,7 +982,7 @@ content_entry_label(const VkrEditorContent *content,
 
 /* A scene's own folder. */
 static bool8_t content_scene_folder(const char *path) {
-  return path[0] == CONTENT_SCENE_MARK && !strchr(path, '/');
+  return path[0] == CONTENT_SCENE_MARK && !string_find_char(path, '/');
 }
 
 /* A scene's folder or one of its type folders. */
@@ -998,7 +994,8 @@ static bool8_t content_in_scene(const char *path) {
 static bool8_t content_type_folder(const char *path) {
   const char *name = vkr_editor_folder_name(path);
   for (uint32_t i = 0; i < ArrayCount(content_type_folders); ++i) {
-    if (content_type_folders[i] && !strcmp(name, content_type_folders[i])) {
+    if (content_type_folders[i] &&
+        string_equals(name, content_type_folders[i])) {
       char parent[VKR_EDITOR_FOLDER_PATH_CAPACITY];
       vkr_editor_folder_parent(path, parent);
       return !parent[0] || content_scene_folder(parent);
@@ -1011,7 +1008,7 @@ static bool8_t content_type_folder(const char *path) {
    folder. They cannot be renamed, moved or deleted. */
 static bool8_t content_system_folder(const char *path) {
   for (uint32_t i = 0; i < ArrayCount(content_system_folders); ++i) {
-    if (!strcmp(path, content_system_folders[i])) {
+    if (string_equals(path, content_system_folders[i])) {
       return true_v;
     }
   }
@@ -1040,8 +1037,8 @@ static const char *content_default_folder(const ContentAsset *entry) {
     return CONTENT_SYSTEM "/Objects";
   }
   if (entry->scope == 2) {
-    return !strncmp(entry->id, "default-", 8) ? CONTENT_SYSTEM "/Assets"
-                                              : CONTENT_SYSTEM "/Editor";
+    return string_n_equals(entry->id, "default-", 8) ? CONTENT_SYSTEM "/Assets"
+                                                     : CONTENT_SYSTEM "/Editor";
   }
   return entry->type_folder[0] ? entry->type_folder : entry->home;
 }
@@ -1058,7 +1055,7 @@ static const char *content_item_folder(const VkrEditorContent *content,
   if (label && label->folder[0] && !content_in_system(label->folder)) {
     bool8_t retired = false_v;
     for (uint32_t i = 0; i < ArrayCount(content_retired_folders); ++i) {
-      retired |= !strcmp(label->folder, content_retired_folders[i]);
+      retired |= string_equals(label->folder, content_retired_folders[i]);
     }
     if (!retired) {
       return label->folder;
@@ -1082,7 +1079,7 @@ static bool8_t content_cooking(const VkrEditorContent *content,
   }
   return entry->scope == 0u && content->cooking_scene[0] &&
          entry->home[0] == CONTENT_SCENE_MARK &&
-         !strcmp(entry->home + 1, content->cooking_scene);
+         string_equals(entry->home + 1, content->cooking_scene);
 }
 
 /* The mesh streams into the World or the scene loading now. */
@@ -1093,7 +1090,7 @@ static bool8_t content_loading(const VkrEditorContent *content,
   }
   if (entry->scope == 1u) {
     for (uint32_t i = 0; i < content->loading_count; ++i) {
-      if (!strcmp(content->loading_ids[i], entry->id)) {
+      if (string_equals(content->loading_ids[i], entry->id)) {
         return true_v;
       }
     }
@@ -1101,14 +1098,14 @@ static bool8_t content_loading(const VkrEditorContent *content,
   }
   return entry->scope == 0u && content->loading_scene[0] &&
          entry->home[0] == CONTENT_SCENE_MARK &&
-         !strcmp(entry->home + 1, content->loading_scene);
+         string_equals(entry->home + 1, content->loading_scene);
 }
 
 /* The folder of the scene opening now, until it is usable (ADR-069). */
 static bool8_t content_folder_loading(const VkrEditorContent *content,
                                       const char *path) {
   return content->loading_scene[0] && content_scene_folder(path) &&
-         !strcmp(path + 1, content->loading_scene);
+         string_equals(path + 1, content->loading_scene);
 }
 
 /* The name of the scene opening now, from its folder, or NULL. */
@@ -1149,8 +1146,8 @@ static void content_labels_save(VkrEditorContent *content) {
   const bool8_t ok = vkr_editor_labels_write(&file.writer, &content->labels);
   if (!ok || !vkr_json_file_writer_commit(&file)) {
     vkr_json_file_writer_abort(&file);
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Content folders and labels could not be saved.");
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Content folders and labels could not be saved.");
   }
 }
 
@@ -1174,8 +1171,8 @@ static void content_labels_load(VkrEditorContent *content) {
   VkrEditorProjectError error = {0};
   if (!vkr_editor_labels_parse(string8_create(bytes, length), &content->labels,
                                &error)) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic), "%s",
-             error.message);
+    string_format(content->diagnostic, sizeof(content->diagnostic), "%s",
+                  error.message);
   }
   vkr_allocator_free(content->allocator, bytes, length + 1,
                      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
@@ -1186,13 +1183,13 @@ static bool8_t content_label_set(VkrEditorContent *content, const char *id,
                                  const char *folder, const char *tags) {
   VkrEditorContentLabels *labels = &content->labels;
   if (folder[0] && !vkr_editor_folders_add(labels, folder)) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Content holds at most %u folders.", CONTENT_FOLDER_MAX);
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Content holds at most %u folders.", CONTENT_FOLDER_MAX);
     return false_v;
   }
   uint32_t index = labels->label_count;
   for (uint32_t i = 0; i < labels->label_count; ++i) {
-    if (!strcmp(labels->labels[i].id, id)) {
+    if (string_equals(labels->labels[i].id, id)) {
       index = i;
       break;
     }
@@ -1245,14 +1242,15 @@ static bool8_t content_tags_next(const char **cursor, const char **name,
 
 /* True when the comma-separated `tags` contain `tag`, ignoring case. */
 static bool8_t content_tags_contain(const char *tags, const char *tag) {
-  const uint64_t wanted = strlen(tag);
+  const uint64_t wanted = string_length(tag);
   const char *cursor = tags;
   const char *name = NULL;
   uint64_t length = 0u;
   while (content_tags_next(&cursor, &name, &length)) {
     bool8_t same = length == wanted;
     for (uint64_t i = 0; same && i < length; ++i) {
-      same = tolower((uint8_t)name[i]) == tolower((uint8_t)tag[i]);
+      same = vkr_char_to_lower((uint8_t)name[i]) ==
+             vkr_char_to_lower((uint8_t)tag[i]);
     }
     if (same) {
       return true_v;
@@ -1277,7 +1275,7 @@ static void content_collect_tags(VkrEditorContent *content) {
       tag[length] = '\0';
       bool8_t seen = false_v;
       for (uint32_t t = 0; !seen && t < content->tag_count; ++t) {
-        seen = !strcmp(content->tags[t], tag);
+        seen = string_equals(content->tags[t], tag);
       }
       if (!seen && content->tag_count < CONTENT_TAG_MAX) {
         content_copy(content->tags[content->tag_count++],
@@ -1292,8 +1290,9 @@ static void content_collect_tags(VkrEditorContent *content) {
 static bool8_t content_presets_path(const VkrEditorContent *content,
                                     char path[CONTENT_PATH]) {
   return content->workspace[0] && content->project[0] &&
-         snprintf(path, CONTENT_PATH, "%s/projects/%s/presets.json",
-                  content->workspace, content->project) < (int)CONTENT_PATH;
+         string_format(path, CONTENT_PATH, "%s/projects/%s/presets.json",
+                       content->workspace,
+                       content->project) < (int)CONTENT_PATH;
 }
 
 static bool8_t content_presets_save(VkrEditorContent *content) {
@@ -1308,8 +1307,8 @@ static bool8_t content_presets_save(VkrEditorContent *content) {
   if (!vkr_editor_presets_write(&file.writer, &content->presets) ||
       !vkr_json_file_writer_commit(&file)) {
     vkr_json_file_writer_abort(&file);
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Presets could not be saved.");
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Presets could not be saved.");
     return false_v;
   }
   return true_v;
@@ -1338,8 +1337,8 @@ static void content_presets_load(VkrEditorContent *content) {
   if (!vkr_editor_presets_parse(string8_create(bytes, length),
                                 &content->presets, content->allocator,
                                 &error)) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic), "%s",
-             error.message);
+    string_format(content->diagnostic, sizeof(content->diagnostic), "%s",
+                  error.message);
   }
   vkr_allocator_free(content->allocator, bytes, length + 1,
                      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
@@ -1423,7 +1422,7 @@ static int32_t content_path_compare(const char *a, const char *b) {
 static uint32_t content_tree_find(const VkrEditorContent *content,
                                   const char *path) {
   for (uint32_t i = 0; i < content->tree_count; ++i) {
-    if (!strcmp(content->tree[i].path, path)) {
+    if (string_equals(content->tree[i].path, path)) {
       return i;
     }
   }
@@ -1433,7 +1432,7 @@ static uint32_t content_tree_find(const VkrEditorContent *content,
 static void content_tree_insert(ContentFolder *tree, uint32_t *count,
                                 const char *path, bool8_t system) {
   for (uint32_t i = 0; i < *count; ++i) {
-    if (!strcmp(tree[i].path, path)) {
+    if (string_equals(tree[i].path, path)) {
       tree[i].system |= system;
       return;
     }
@@ -1469,7 +1468,7 @@ static void content_folder_present(const VkrEditorContent *content,
       {"Presets", "Presets", VKR_UI_ICON_SPARKLE},
   };
   for (uint32_t i = 0; i < ArrayCount(named); ++i) {
-    if (!strcmp(folder->path, named[i].path)) {
+    if (string_equals(folder->path, named[i].path)) {
       content_copy(folder->label, sizeof(folder->label), named[i].label);
       folder->icon = named[i].icon;
       return;
@@ -1484,7 +1483,8 @@ static void content_folder_present(const VkrEditorContent *content,
   folder->icon = VKR_UI_ICON_SCENE;
   for (uint32_t i = 0; i < content->asset_count; ++i) {
     const ContentAsset *entry = &content->entries[i];
-    if (entry->kind == CONTENT_SCENE && !strcmp(entry->home, folder->path)) {
+    if (entry->kind == CONTENT_SCENE &&
+        string_equals(entry->home, folder->path)) {
       content_copy(folder->label, sizeof(folder->label), entry->name);
       return;
     }
@@ -1551,13 +1551,14 @@ static void content_tree_build(VkrEditorContent *content) {
   for (uint32_t i = 0; i < content->asset_count; ++i) {
     const ContentAsset *entry = &content->entries[i];
     if (entry->type_folder[0] && entry->scope < 2u &&
-        !strcmp(content_item_folder(content, entry), entry->type_folder)) {
+        string_equals(content_item_folder(content, entry),
+                      entry->type_folder)) {
       content_tree_insert(content->tree, &count, entry->type_folder, true_v);
     }
   }
   for (uint32_t i = 0; i < ArrayCount(content_system_folders); ++i) {
     /* Presets appear once the project has one. */
-    if (strcmp(content_system_folders[i], "Presets") ||
+    if (!string_equals(content_system_folders[i], "Presets") ||
         content->presets.count) {
       content_tree_insert(content->tree, &count, content_system_folders[i],
                           true_v);
@@ -1577,7 +1578,7 @@ static void content_tree_build(VkrEditorContent *content) {
   for (uint32_t i = 0; i < count; ++i) {
     ContentFolder *folder = &content->tree[i];
     /* System is a second root beside Content. */
-    const bool8_t root = !i || !strcmp(folder->path, CONTENT_SYSTEM);
+    const bool8_t root = !i || string_equals(folder->path, CONTENT_SYSTEM);
     char parent[VKR_EDITOR_FOLDER_PATH_CAPACITY];
     vkr_editor_folder_parent(folder->path, parent);
     folder->parent = root ? CONTENT_NONE : content_tree_find(content, parent);
@@ -1590,7 +1591,7 @@ static void content_tree_build(VkrEditorContent *content) {
         root || vkr_editor_folder_within(content->folder, folder->path);
     for (uint32_t p = 0; !folder->open && p < previous_count; ++p) {
       folder->open =
-          previous[p].open && !strcmp(previous[p].path, folder->path);
+          previous[p].open && string_equals(previous[p].path, folder->path);
     }
     if (folder->parent < count) {
       content->tree[folder->parent].has_children = true_v;
@@ -1621,8 +1622,8 @@ static void content_read_builtins(VkrEditorContent *content) {
     entry->label = CONTENT_NONE;
     entry->kind = CONTENT_OBJECT;
     entry->object = i;
-    snprintf(entry->id, sizeof(entry->id), "object.%.28s",
-             vkr_editor_object_kind_word(i));
+    string_format(entry->id, sizeof(entry->id), "object.%.28s",
+                  vkr_editor_object_kind_word(i));
     content_copy(entry->name, sizeof(entry->name),
                  vkr_editor_object_kind_label(i));
   }
@@ -1633,10 +1634,10 @@ static void content_read_builtins(VkrEditorContent *content) {
 static void content_watch_project(VkrEditorContent *content) {
   char root[CONTENT_PATH] = {0};
   if (content->service && content->project[0]) {
-    snprintf(root, sizeof(root), "%s/projects/%s", content->workspace,
-             content->project);
+    string_format(root, sizeof(root), "%s/projects/%s", content->workspace,
+                  content->project);
   }
-  if (!strcmp(root, content->watched)) {
+  if (string_equals(root, content->watched)) {
     return;
   }
   editor_bakery_service_unwatch(content->service, content->watch);
@@ -1658,8 +1659,11 @@ static bool8_t content_real_path(const char *path, char *out,
 #if defined(_WIN32)
   return content_copy(out, capacity, path);
 #else
-  char resolved[PATH_MAX];
-  if (realpath(path, resolved)) {
+  /* Larger than the host PATH_MAX, so only a failed resolve falls back. */
+  char resolved[4096];
+  const FilePath input = file_path_view(path);
+  if (file_path_resolve(&input, resolved, sizeof(resolved)) ==
+      FILE_ERROR_NONE) {
     return content_copy(out, capacity, resolved);
   }
   return content_copy(out, capacity, path);
@@ -1698,7 +1702,7 @@ static bool8_t content_rebuildable(const VkrEditorContent *content,
   char source[CONTENT_PATH];
   return entry->scope == 0u &&
          content_real_path(entry->source, source, sizeof(source)) &&
-         !strncmp(source, resolved_scene, strlen(resolved_scene));
+         string_n_equals(source, resolved_scene, string_length(resolved_scene));
 }
 
 /* Queues a rebuild of `entry` once; a full queue drops it with a warning,
@@ -1708,7 +1712,7 @@ static void content_queue_rebuild(VkrEditorContent *content,
                                   const ContentAsset *entry,
                                   const char *artifact) {
   for (uint32_t i = 0u; i < content->pending_rebuild_count; ++i) {
-    if (!strcmp(content->pending_rebuilds[i].id, entry->id)) {
+    if (string_equals(content->pending_rebuilds[i].id, entry->id)) {
       if (!artifact[0]) {
         content->pending_rebuilds[i].artifact[0] = '\0';
       }
@@ -1733,27 +1737,41 @@ static void content_queue_rebuild(VkrEditorContent *content,
 static bool8_t content_file_matches(const char *path, const char *fingerprint) {
   static const char prefix[] = "sha256:";
   const uint64_t prefix_length = sizeof(prefix) - 1u;
-  if (strncmp(fingerprint, prefix, prefix_length) != 0) {
+  if (!string_n_equals(fingerprint, prefix, prefix_length)) {
     return false_v;
   }
-  FILE *file = file_fopen(path, "rb");
-  if (!file) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
     return false_v;
   }
   VkrSha256 hash;
   vkr_sha256_init(&hash);
   uint8_t chunk[16384];
-  size_t read = 0u;
-  while ((read = fread(chunk, 1u, sizeof(chunk), file)) > 0u) {
-    vkr_sha256_update(&hash, chunk, read);
+  bool8_t failed = false_v;
+  for (;;) {
+    uint64_t read = 0u;
+    const FileError error = file_read_into(&file, chunk, sizeof(chunk), &read);
+    if (read > 0u) {
+      vkr_sha256_update(&hash, chunk, read);
+    }
+    if (error != FILE_ERROR_NONE) {
+      failed = true_v;
+      break;
+    }
+    /* A short read is the end of the file. */
+    if (read < sizeof(chunk)) {
+      break;
+    }
   }
-  const bool8_t failed = ferror(file) != 0;
-  fclose(file);
+  file_close(&file);
   uint8_t digest[VKR_SHA256_DIGEST_SIZE];
   vkr_sha256_final(&hash, digest);
   char hex[VKR_SHA256_HEX_SIZE];
   vkr_sha256_hex(digest, hex);
-  return !failed && strcmp(hex, fingerprint + prefix_length) == 0;
+  return !failed && string_equals(hex, fingerprint + prefix_length);
 }
 
 /* Marks the entries whose source or artifact the change names. An edited
@@ -1770,23 +1788,25 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
       exists && (int64_t)stats.last_modified <= content->listed_at;
   /* Real path of the open scene's directory with a trailing separator. */
   char scene_root[CONTENT_PATH];
-  snprintf(scene_root, sizeof(scene_root), "%s/scenes/%s", content->watched,
-           content->scene);
+  string_format(scene_root, sizeof(scene_root), "%s/scenes/%s",
+                content->watched, content->scene);
   char resolved_scene[CONTENT_PATH];
   (void)content_real_path(scene_root, resolved_scene,
                           sizeof(resolved_scene) - 1u);
-  strcat(resolved_scene, "/");
+  const uint64_t scene_length = string_length(resolved_scene);
+  string_format(resolved_scene + scene_length,
+                sizeof(resolved_scene) - scene_length, "/");
   for (uint32_t i = 0u; i < content->asset_count; ++i) {
     ContentAsset *entry = &content->entries[i];
     char source[CONTENT_PATH];
     char artifact[CONTENT_PATH];
     const bool8_t is_source =
         content_real_path(entry->source, source, sizeof(source)) &&
-        !strcmp(source, path);
+        string_equals(source, path);
     const bool8_t is_artifact =
         !is_source &&
         content_real_path(entry->path, artifact, sizeof(artifact)) &&
-        !strcmp(artifact, path);
+        string_equals(artifact, path);
     /* One report per file until the listing is read again: an editor can
        save one file as several writes. */
     if ((!is_source && !is_artifact) || entry->changed || entry->missing ||
@@ -1800,7 +1820,7 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
         exists && entry->fingerprint[0] &&
         (is_artifact ||
          (content_real_path(entry->path, artifact, sizeof(artifact)) &&
-          !strcmp(artifact, path)));
+          string_equals(artifact, path)));
     if (recorded ? content_file_matches(path, entry->fingerprint) : listed) {
       continue;
     }
@@ -1816,23 +1836,25 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
     entry->missing = is_artifact && !exists;
     entry->changed = !entry->missing;
     if (is_source && !exists) {
-      snprintf(entry->diagnostic, sizeof(entry->diagnostic),
-               "Source removed on disk. Reimport to update.");
+      string_format(entry->diagnostic, sizeof(entry->diagnostic),
+                    "Source removed on disk. Reimport to update.");
       continue;
     }
     if (!content_rebuildable(content, entry, resolved_scene)) {
-      snprintf(entry->diagnostic, sizeof(entry->diagnostic), "%s",
-               is_source ? "Source changed on disk. Rebuild to update."
-               : exists  ? "Artifact changed on disk. Rebuild or Reimport."
-                         : "Artifact removed on disk. Rebuild or Reimport.");
+      string_format(entry->diagnostic, sizeof(entry->diagnostic), "%s",
+                    is_source ? "Source changed on disk. Rebuild to update."
+                    : exists
+                        ? "Artifact changed on disk. Rebuild or Reimport."
+                        : "Artifact removed on disk. Rebuild or Reimport.");
       log_warn("Content: %s changed on disk; Rebuild to update it",
                entry->name);
       continue;
     }
-    snprintf(entry->diagnostic, sizeof(entry->diagnostic), "%s",
-             is_source ? "Source changed on disk; rebuilding."
-             : exists  ? "Artifact changed on disk; rebuilding from source."
-                       : "Artifact removed on disk; rebuilding from source.");
+    string_format(entry->diagnostic, sizeof(entry->diagnostic), "%s",
+                  is_source ? "Source changed on disk; rebuilding."
+                  : exists
+                      ? "Artifact changed on disk; rebuilding from source."
+                      : "Artifact removed on disk; rebuilding from source.");
     content_queue_rebuild(content, entry, is_artifact ? artifact : "");
   }
 }
@@ -1849,26 +1871,28 @@ static void content_start_pending_rebuild(VkrEditorContent *content) {
     for (uint32_t i = 0u; i < content->asset_count && !entry; ++i) {
       if (content->entries[i].scope ==
               content->pending_rebuilds[pending].scope &&
-          !strcmp(content->entries[i].id,
-                  content->pending_rebuilds[pending].id)) {
+          string_equals(content->entries[i].id,
+                        content->pending_rebuilds[pending].id)) {
         entry = &content->entries[i];
       }
     }
     /* The open scene may have changed since the report. */
     char scene_root[CONTENT_PATH];
-    snprintf(scene_root, sizeof(scene_root), "%s/scenes/%s", content->watched,
-             content->scene);
+    string_format(scene_root, sizeof(scene_root), "%s/scenes/%s",
+                  content->watched, content->scene);
     char resolved_scene[CONTENT_PATH];
     (void)content_real_path(scene_root, resolved_scene,
                             sizeof(resolved_scene) - 1u);
-    strcat(resolved_scene, "/");
+    const uint64_t scene_length = string_length(resolved_scene);
+    string_format(resolved_scene + scene_length,
+                  sizeof(resolved_scene) - scene_length, "/");
     bool8_t start =
         entry != NULL && content_rebuildable(content, entry, resolved_scene);
     const char *artifact = content->pending_rebuilds[pending].artifact;
     if (start && artifact[0]) {
       char current[CONTENT_PATH];
       start = content_real_path(entry->path, current, sizeof(current)) &&
-              !strcmp(current, artifact) &&
+              string_equals(current, artifact) &&
               !content_file_matches(artifact, entry->fingerprint);
     }
     if (start) {
@@ -1935,20 +1959,20 @@ static void content_read_scripts(VkrEditorContent *content) {
         vkr_editor_scripts_module(content->scripts, m);
     /* New modules name their source after the module in lower case. */
     char wanted[VKR_EDITOR_SCRIPT_NAME + 2u];
-    snprintf(wanted, sizeof(wanted), "%s.c", module->name);
+    string_format(wanted, sizeof(wanted), "%s.c", module->name);
     for (char *c = wanted; *c; ++c) {
-      *c = (char)tolower((unsigned char)*c);
+      *c = (char)vkr_char_to_lower((unsigned char)*c);
     }
     const VkrEditorScriptFile *source = NULL;
     for (uint32_t f = 0; f < files; ++f) {
       const VkrEditorScriptFile *file =
           vkr_editor_scripts_file(content->scripts, f);
-      const size_t length = strlen(file->name);
+      const size_t length = string_length(file->name);
       if (file->module != m || length < 2u ||
-          strcmp(file->name + length - 2u, ".c")) {
+          !string_equals(file->name + length - 2u, ".c")) {
         continue;
       }
-      if (!source || !strcmp(file->name, wanted)) {
+      if (!source || string_equals(file->name, wanted)) {
         source = file;
       }
     }
@@ -1957,10 +1981,10 @@ static void content_read_scripts(VkrEditorContent *content) {
     entry->scope = 1u;
     entry->label = CONTENT_NONE;
     entry->kind = CONTENT_SCRIPT;
-    snprintf(entry->id, sizeof(entry->id), "script-%016llx",
-             (unsigned long long)content_hash(UINT64_C(14695981039346656037),
-                                              module->directory,
-                                              strlen(module->directory)));
+    string_format(entry->id, sizeof(entry->id), "script-%016llx",
+                  (unsigned long long)content_hash(
+                      UINT64_C(14695981039346656037), module->directory,
+                      string_length(module->directory)));
     content_copy(entry->name, sizeof(entry->name), module->name);
     content_copy(entry->path, sizeof(entry->path),
                  source ? source->path : module->description);
@@ -1998,8 +2022,8 @@ static void content_publish_references(VkrEditorContent *content) {
     }
     char ref[VKR_ASSET_REF_CAPACITY];
     const int32_t length =
-        snprintf(ref, sizeof(ref), VKR_ASSET_REF_PREFIX "%s/%s",
-                 owners[entry->scope], entry->id);
+        string_format(ref, sizeof(ref), VKR_ASSET_REF_PREFIX "%s/%s",
+                      owners[entry->scope], entry->id);
     if (length <= 0 || (uint32_t)length >= sizeof(ref)) {
       continue;
     }
@@ -2045,14 +2069,14 @@ void vkr_editor_content_refresh(VkrEditorContent *content) {
     content_release_preview(&content->cache[i]);
   }
   content_read_builtins(content);
-  content->listed_at = (int64_t)time(NULL);
+  content->listed_at = vkr_platform_get_unix_time();
   content_watch_project(content);
   char root[CONTENT_PATH];
   char manifest[CONTENT_PATH];
   if (content->project[0]) {
-    snprintf(root, sizeof(root), "%s/projects/%s", content->workspace,
-             content->project);
-    snprintf(manifest, sizeof(manifest), "%s/project.json", root);
+    string_format(root, sizeof(root), "%s/projects/%s", content->workspace,
+                  content->project);
+    string_format(manifest, sizeof(manifest), "%s/project.json", root);
     content_read_inventory(content, root, manifest, 1, "");
     content_read_scripts(content);
     content->scripts_revision = vkr_editor_scripts_revision(content->scripts);
@@ -2063,15 +2087,17 @@ void vkr_editor_content_refresh(VkrEditorContent *content) {
     for (uint32_t i = first_scene; i < scene_end; ++i) {
       char home[sizeof(content->entries[i].home)];
       content_copy(home, sizeof(home), content->entries[i].home);
-      snprintf(root, sizeof(root), "%s/projects/%s/scenes/%s",
-               content->workspace, content->project, content->entries[i].id);
-      snprintf(manifest, sizeof(manifest), "%s/scene.json", root);
+      string_format(root, sizeof(root), "%s/projects/%s/scenes/%s",
+                    content->workspace, content->project,
+                    content->entries[i].id);
+      string_format(manifest, sizeof(manifest), "%s/scene.json", root);
       content_read_inventory(content, root, manifest, 0, home);
     }
   }
   if (content->workspace[0]) {
-    snprintf(root, sizeof(root), "%s/editor/bundles/1", content->workspace);
-    snprintf(manifest, sizeof(manifest), "%s/manifest.json", root);
+    string_format(root, sizeof(root), "%s/editor/bundles/1",
+                  content->workspace);
+    string_format(manifest, sizeof(manifest), "%s/manifest.json", root);
     content_read_inventory(content, root, manifest, 2, "");
   }
   content_presets_load(content);
@@ -2120,7 +2146,7 @@ content_visit_objects(VkrEditorContent *content, const VkrSampleUiFrame *frame,
     char home[40] = {0};
     const char *id = c ? scene_ids[c - 1u] : "";
     if (id && id[0]) {
-      snprintf(home, sizeof(home), "%c%s", CONTENT_SCENE_MARK, id);
+      string_format(home, sizeof(home), "%c%s", CONTENT_SCENE_MARK, id);
     }
     const VkrWorld *world = scene->world;
     for (uint32_t i = 0; i < world->dir.capacity; ++i) {
@@ -2143,7 +2169,7 @@ static void content_object_hash(VkrEditorContent *content,
   const String8 name = vkr_scene_get_name(scene, entity);
   *key = content_hash(*key, &entity, sizeof(entity));
   *key = content_hash(*key, name.str, name.length);
-  *key = content_hash(*key, home, strlen(home));
+  *key = content_hash(*key, home, string_length(home));
   *key = content_hash(*key, &scene->structure_revision,
                       sizeof(scene->structure_revision));
 }
@@ -2163,11 +2189,11 @@ static void content_object_add(VkrEditorContent *content, const VkrScene *scene,
   entry->entity = entity;
   Vec4 color;
   entry->entity_icon = vkr_editor_entity_icon(scene, entity, false_v, &color);
-  snprintf(entry->id, sizeof(entry->id), "entity.%016llx",
-           (unsigned long long)entity.u64);
+  string_format(entry->id, sizeof(entry->id), "entity.%016llx",
+                (unsigned long long)entity.u64);
   const String8 name = vkr_scene_get_name(scene, entity);
-  snprintf(entry->name, sizeof(entry->name), "%.*s", (int)name.length,
-           (const char *)name.str);
+  string_format(entry->name, sizeof(entry->name), "%.*s", (int)name.length,
+                (const char *)name.str);
   content_copy(entry->home, sizeof(entry->home), home);
 }
 
@@ -2271,7 +2297,7 @@ void vkr_editor_content_sync_objects(
                           sizeof(scenes[c]->structure_revision));
     }
     if (id) {
-      gate = content_hash(gate, id, strlen(id) + 1u);
+      gate = content_hash(gate, id, string_length(id) + 1u);
     }
   }
   if (gate == content->objects_gate) {
@@ -2317,14 +2343,14 @@ bool8_t vkr_editor_content_set_project(VkrEditorContent *content,
   if (!content || !workspace_root || !project_id || !scene_id) {
     return false_v;
   }
-  if (!strcmp(content->workspace, workspace_root) &&
-      !strcmp(content->project, project_id) &&
-      !strcmp(content->scene, scene_id)) {
+  if (string_equals(content->workspace, workspace_root) &&
+      string_equals(content->project, project_id) &&
+      string_equals(content->scene, scene_id)) {
     return false_v;
   }
   /* Queued rebuilds belong to the scene and project they were reported in. */
   content->pending_rebuild_count = 0u;
-  if (strcmp(content->project, project_id)) {
+  if (!string_equals(content->project, project_id)) {
     content->folder[0] = '\0';
     content->selected_folder[0] = '\0';
     content->tag_filter[0] = '\0';
@@ -2336,8 +2362,8 @@ bool8_t vkr_editor_content_set_project(VkrEditorContent *content,
                     workspace_root) ||
       !content_copy(content->project, sizeof(content->project), project_id) ||
       !content_copy(content->scene, sizeof(content->scene), scene_id)) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "Content context path or ID exceeds supported capacity.");
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "Content context path or ID exceeds supported capacity.");
     return false_v;
   }
   vkr_editor_content_refresh(content);
@@ -2399,9 +2425,9 @@ bool8_t vkr_editor_content_loading(const VkrEditorContent *content, char *label,
   }
   if (first && label && label_capacity) {
     if (count > 1u) {
-      snprintf(label, label_capacity, "%s and %u more", first, count - 1u);
+      string_format(label, label_capacity, "%s and %u more", first, count - 1u);
     } else {
-      snprintf(label, label_capacity, "%s", first);
+      string_format(label, label_capacity, "%s", first);
     }
   }
   return count != 0u;
@@ -2432,9 +2458,9 @@ uint32_t vkr_editor_content_cooking(const VkrEditorContent *content,
   }
   if (first && label && label_capacity) {
     if (count > 1u) {
-      snprintf(label, label_capacity, "%s and %u more", first, count - 1u);
+      string_format(label, label_capacity, "%s and %u more", first, count - 1u);
     } else {
-      snprintf(label, label_capacity, "%s", first);
+      string_format(label, label_capacity, "%s", first);
     }
   }
   return Min(count, capacity);
@@ -2487,9 +2513,9 @@ void vkr_editor_content_update(VkrEditorContent *content) {
       if (!content->suspended && (!content->worker_ok || content->worker_exit ||
                                   content->worker_timed_out)) {
         preview->failed = true_v;
-        snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-                 "Preview failed (exit %d). Retry preview.",
-                 content->worker_exit);
+        string_format(preview->diagnostic, sizeof(preview->diagnostic),
+                      "Preview failed (exit %d). Retry preview.",
+                      content->worker_exit);
         FilePath log = {.path = content_string(content->worker_log),
                         .type = FILE_PATH_TYPE_ABSOLUTE};
         FileHandle file = {0};
@@ -2621,7 +2647,7 @@ void vkr_editor_content_restore_settings(VkrEditorContent *content,
   (void)vkr_editor_project_json_string(settings, "search",
                                        (char *)content->query,
                                        sizeof(content->query), &error);
-  content->query_length = (uint32_t)strlen((char *)content->query);
+  content->query_length = (uint32_t)string_length((char *)content->query);
   if (!vkr_editor_project_json_string(settings, "folder", content->folder,
                                       sizeof(content->folder), &error) ||
       !vkr_editor_folder_normalize(content->folder)) {
@@ -2650,11 +2676,12 @@ static bool8_t content_matches(const char *text, const uint8_t *query,
   if (!length) {
     return true_v;
   }
-  uint64_t text_length = strlen(text);
+  uint64_t text_length = string_length(text);
   for (uint64_t start = 0; start + length <= text_length; ++start) {
     bool8_t match = true_v;
     for (uint32_t i = 0; i < length; ++i) {
-      if (tolower((uint8_t)text[start + i]) != tolower(query[i])) {
+      if (vkr_char_to_lower((uint8_t)text[start + i]) !=
+          vkr_char_to_lower(query[i])) {
         match = false_v;
         break;
       }
@@ -2668,8 +2695,8 @@ static bool8_t content_matches(const char *text, const uint8_t *query,
 
 static int32_t content_compare_text(const char *a, const char *b) {
   for (;; ++a, ++b) {
-    const int32_t left = tolower((uint8_t)*a);
-    const int32_t right = tolower((uint8_t)*b);
+    const int32_t left = vkr_char_to_lower((uint8_t)*a);
+    const int32_t right = vkr_char_to_lower((uint8_t)*b);
     if (left != right || !left) {
       return left - right;
     }
@@ -2769,7 +2796,7 @@ static void content_filter(VkrEditorContent *content) {
                    content_matches(folder, content->query,
                                    content->query_length) ||
                    content_matches(tags, content->query, content->query_length))
-            : !strcmp(folder, content->folder);
+            : string_equals(folder, content->folder);
     if (!shown) {
       continue;
     }
@@ -2826,8 +2853,9 @@ static ContentPreview *content_preview(VkrEditorContent *content,
     return NULL;
   }
   uint64_t key =
-      content_hash(content->inventory_key, entry->id, strlen(entry->id));
-  key = content_hash(key, entry->fingerprint, strlen(entry->fingerprint));
+      content_hash(content->inventory_key, entry->id, string_length(entry->id));
+  key =
+      content_hash(key, entry->fingerprint, string_length(entry->fingerprint));
   key = content_hash(key, &content->size, sizeof(content->size));
 #if defined(PLATFORM_APPLE)
   static const char recipe[] = "preview-v1-metal-" __DATE__ "-" __TIME__;
@@ -2858,13 +2886,13 @@ static ContentPreview *content_preview(VkrEditorContent *content,
     preview->asset = asset;
     preview->size = content->size;
     int32_t length =
-        snprintf(preview->path, sizeof(preview->path),
-                 "%s/cache/thumbnails/%016llx-%u.png", content->workspace,
-                 (unsigned long long)key, content->size);
+        string_format(preview->path, sizeof(preview->path),
+                      "%s/cache/thumbnails/%016llx-%u.png", content->workspace,
+                      (unsigned long long)key, content->size);
     if (length <= 0 || (uint32_t)length >= sizeof(preview->path)) {
       preview->failed = true_v;
-      snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-               "Thumbnail cache path exceeds supported capacity.");
+      string_format(preview->diagnostic, sizeof(preview->diagnostic),
+                    "Thumbnail cache path exceeds supported capacity.");
     }
   }
   preview->last_seen = content->frame;
@@ -2879,8 +2907,8 @@ static ContentPreview *content_preview(VkrEditorContent *content,
       if (state == VKR_RESOURCE_LOAD_STATE_FAILED ||
           state == VKR_RESOURCE_LOAD_STATE_CANCELED) {
         preview->failed = true_v;
-        snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-                 "Thumbnail decode/upload failed (%u).", (uint32_t)error);
+        string_format(preview->diagnostic, sizeof(preview->diagnostic),
+                      "Thumbnail decode/upload failed (%u).", (uint32_t)error);
       }
     }
   } else if (!preview->failed && !preview->queued && !content->suspended &&
@@ -2890,12 +2918,13 @@ static ContentPreview *content_preview(VkrEditorContent *content,
     if (file_exists(&path)) {
       if (!content_png_size(preview->path, &preview->width, &preview->height)) {
         preview->failed = true_v;
-        snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-                 "Cached preview is invalid or larger than 256 pixels. Retry "
-                 "preview.");
+        string_format(
+            preview->diagnostic, sizeof(preview->diagnostic),
+            "Cached preview is invalid or larger than 256 pixels. Retry "
+            "preview.");
       } else {
-        snprintf(preview->request_path, sizeof(preview->request_path),
-                 "%s?cs=srgb&source=only", preview->path);
+        string_format(preview->request_path, sizeof(preview->request_path),
+                      "%s?cs=srgb&source=only", preview->path);
         VkrRendererError error = VKR_RENDERER_ERROR_NONE;
         ++content->uploads_this_frame;
         if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_TEXTURE,
@@ -2903,8 +2932,8 @@ static ContentPreview *content_preview(VkrEditorContent *content,
                                       ui->frame_allocator, &preview->request,
                                       &error)) {
           preview->failed = true_v;
-          snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-                   "Cannot queue preview texture (%u).", (uint32_t)error);
+          string_format(preview->diagnostic, sizeof(preview->diagnostic),
+                        "Cannot queue preview texture (%u).", (uint32_t)error);
         }
       }
     } else {
@@ -2928,17 +2957,20 @@ static void content_start_preview(VkrEditorContent *content) {
     const char *input = entry->path;
     // Imported image source avoids decoding a target-specific GPU block format.
     if (entry->kind != CONTENT_MATERIAL && entry->source[0]) {
-      const char *extension = strrchr(entry->source, '.');
-      if (extension &&
-          (!strcmp(extension, ".png") || !strcmp(extension, ".jpg") ||
-           !strcmp(extension, ".jpeg") || !strcmp(extension, ".hdr") ||
-           !strcmp(extension, ".tga") || !strcmp(extension, ".bmp"))) {
+      const char *extension =
+          string_get_last_char_occurrence(entry->source, '.');
+      if (extension && (string_equals(extension, ".png") ||
+                        string_equals(extension, ".jpg") ||
+                        string_equals(extension, ".jpeg") ||
+                        string_equals(extension, ".hdr") ||
+                        string_equals(extension, ".tga") ||
+                        string_equals(extension, ".bmp"))) {
         input = entry->source;
       }
     }
     char directory[CONTENT_PATH];
-    int32_t length =
-        snprintf(directory, sizeof(directory), "%s/cache", content->workspace);
+    int32_t length = string_format(directory, sizeof(directory), "%s/cache",
+                                   content->workspace);
     if (length <= 0 || (uint32_t)length >= sizeof(directory)) {
       return;
     }
@@ -2947,8 +2979,8 @@ static void content_start_preview(VkrEditorContent *content) {
     if (!file_create_directory(&cache)) {
       return;
     }
-    length = snprintf(directory, sizeof(directory), "%s/cache/thumbnails",
-                      content->workspace);
+    length = string_format(directory, sizeof(directory), "%s/cache/thumbnails",
+                           content->workspace);
     if (length <= 0 || (uint32_t)length >= sizeof(directory)) {
       return;
     }
@@ -2962,8 +2994,8 @@ static void content_start_preview(VkrEditorContent *content) {
                                     canonical, &error)) {
       preview->failed = true_v;
       preview->queued = false_v;
-      snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-               "Cache is outside the workspace or unreadable.");
+      string_format(preview->diagnostic, sizeof(preview->diagnostic),
+                    "Cache is outside the workspace or unreadable.");
       return;
     }
     if (!vkr_platform_process_lock_acquire(
@@ -2975,8 +3007,8 @@ static void content_start_preview(VkrEditorContent *content) {
                  preview->path);
     content_copy(content->worker_workspace, sizeof(content->worker_workspace),
                  content->workspace);
-    snprintf(content->worker_log, sizeof(content->worker_log), "%.1000s.log",
-             preview->path);
+    string_format(content->worker_log, sizeof(content->worker_log),
+                  "%.1000s.log", preview->path);
     content->worker_size = preview->size;
     content->worker_material = entry->kind == CONTENT_MATERIAL;
     content->worker_reveal = false_v;
@@ -2994,8 +3026,8 @@ static void content_start_preview(VkrEditorContent *content) {
       content->running = CONTENT_NONE;
       preview->queued = false_v;
       preview->failed = true_v;
-      snprintf(preview->diagnostic, sizeof(preview->diagnostic),
-               "Cannot start the preview worker.");
+      string_format(preview->diagnostic, sizeof(preview->diagnostic),
+                    "Cannot start the preview worker.");
     }
     return;
   }
@@ -3092,7 +3124,7 @@ static uint32_t content_folder_scene(const VkrEditorContent *content,
   for (uint32_t i = 0; content_scene_folder(path) && i < content->asset_count;
        ++i) {
     if (content->entries[i].kind == CONTENT_SCENE &&
-        !strcmp(content->entries[i].home, path)) {
+        string_equals(content->entries[i].home, path)) {
       return i;
     }
   }
@@ -3145,14 +3177,14 @@ static void content_rebase(char path[VKR_EDITOR_FOLDER_PATH_CAPACITY],
   }
   char next[VKR_EDITOR_FOLDER_PATH_CAPACITY];
   const int32_t length =
-      snprintf(next, sizeof(next), "%s%s", to, path + strlen(from));
+      string_format(next, sizeof(next), "%s%s", to, path + string_length(from));
   if (length > 0 && (uint32_t)length < sizeof(next)) {
     MemCopy(path, next, (uint64_t)length + 1u);
   }
 }
 
 static void content_open_folder(VkrEditorContent *content, const char *path) {
-  if (!strcmp(content->folder, path)) {
+  if (string_equals(content->folder, path)) {
     return;
   }
   if (!content->history_count) {
@@ -3247,9 +3279,10 @@ static bool8_t content_move(VkrEditorContent *content, uint32_t shown,
     char to[VKR_EDITOR_FOLDER_PATH_CAPACITY];
     content_copy(from, sizeof(from), content->tree[index].path);
     const char *name = vkr_editor_folder_name(from);
-    const int32_t length =
-        snprintf(to, sizeof(to), "%s%s%s", folder, folder[0] ? "/" : "", name);
-    if (length <= 0 || (uint32_t)length >= sizeof(to) || !strcmp(from, to) ||
+    const int32_t length = string_format(to, sizeof(to), "%s%s%s", folder,
+                                         folder[0] ? "/" : "", name);
+    if (length <= 0 || (uint32_t)length >= sizeof(to) ||
+        string_equals(from, to) ||
         !vkr_editor_folders_rename(&content->labels, from, to)) {
       return false_v;
     }
@@ -3277,13 +3310,13 @@ static bool8_t content_move(VkrEditorContent *content, uint32_t shown,
   /* An empty label folder means the item's default folder. */
   const char *fallback = content_default_folder(entry);
   if (!folder[0] && fallback[0]) {
-    snprintf(content->diagnostic, sizeof(content->diagnostic),
-             "%s items stay in a folder, not at the root.",
-             content_kinds[entry->kind]);
+    string_format(content->diagnostic, sizeof(content->diagnostic),
+                  "%s items stay in a folder, not at the root.",
+                  content_kinds[entry->kind]);
     return false_v;
   }
-  return content_label_set(content, entry->id,
-                           strcmp(folder, fallback) ? folder : "", tags);
+  return content_label_set(
+      content, entry->id, !string_equals(folder, fallback) ? folder : "", tags);
 }
 
 /* A new empty folder in `parent`, named "New Folder" or the first free
@@ -3297,9 +3330,10 @@ static bool8_t content_new_folder(VkrEditorContent *content,
   char path[VKR_EDITOR_FOLDER_PATH_CAPACITY];
   for (uint32_t n = 1; n < 100u; ++n) {
     char name[24];
-    snprintf(name, sizeof(name), n == 1u ? "New Folder" : "New Folder %u", n);
-    const int32_t length = snprintf(path, sizeof(path), "%s%s%s", parent,
-                                    parent[0] ? "/" : "", name);
+    string_format(name, sizeof(name), n == 1u ? "New Folder" : "New Folder %u",
+                  n);
+    const int32_t length = string_format(path, sizeof(path), "%s%s%s", parent,
+                                         parent[0] ? "/" : "", name);
     if (length <= 0 || (uint32_t)length >= sizeof(path)) {
       return false_v;
     }
@@ -3307,8 +3341,8 @@ static bool8_t content_new_folder(VkrEditorContent *content,
       continue;
     }
     if (!vkr_editor_folders_add(&content->labels, path)) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic),
-               "Content holds at most %u folders.", CONTENT_FOLDER_MAX);
+      string_format(content->diagnostic, sizeof(content->diagnostic),
+                    "Content holds at most %u folders.", CONTENT_FOLDER_MAX);
       return false_v;
     }
     content_labels_save(content);
@@ -3326,11 +3360,11 @@ static bool8_t content_rename_folder(VkrEditorContent *content,
   char parent[VKR_EDITOR_FOLDER_PATH_CAPACITY];
   char to[VKR_EDITOR_FOLDER_PATH_CAPACITY];
   vkr_editor_folder_parent(from, parent);
-  const int32_t length =
-      snprintf(to, sizeof(to), "%s%s%s", parent, parent[0] ? "/" : "", name);
+  const int32_t length = string_format(to, sizeof(to), "%s%s%s", parent,
+                                       parent[0] ? "/" : "", name);
   if (content->read_only || content_system_folder(from) || !name[0] ||
-      strchr(name, '/') || length <= 0 || (uint32_t)length >= sizeof(to) ||
-      !content_project_folder(to) ||
+      string_find_char(name, '/') || length <= 0 ||
+      (uint32_t)length >= sizeof(to) || !content_project_folder(to) ||
       !vkr_editor_folders_rename(&content->labels, from, to)) {
     return false_v;
   }
@@ -3500,8 +3534,8 @@ static void content_drag_begin(VkrEditorContent *content, VkrUiSystem *ui,
     return;
   }
   const float32_t reach = 6.0f * ui->content_scale;
-  if (fabsf(mouse.x - content->drag_origin.x) > reach ||
-      fabsf(mouse.y - content->drag_origin.y) > reach) {
+  if (vkr_abs_f32(mouse.x - content->drag_origin.x) > reach ||
+      vkr_abs_f32(mouse.y - content->drag_origin.y) > reach) {
     content->dragging = true_v;
   }
 }
@@ -3524,7 +3558,7 @@ static String8 content_folder_tooltip(const ContentFolder *folder) {
     return string8_lit("A scene: its objects and assets. Drag it into the "
                        "viewport to load it");
   }
-  if (!strcmp(folder->path, CONTENT_SYSTEM)) {
+  if (string_equals(folder->path, CONTENT_SYSTEM)) {
     return string8_lit("What the editor ships");
   }
   return content_string(folder->label);
@@ -3601,13 +3635,13 @@ static void content_tree_panel(VkrEditorContent *content, VkrUiSystem *ui,
     if (!folder->shown) {
       continue;
     }
-    (void)vkr_ui_push_id_u64(ui,
-                             content_hash(UINT64_C(14695981039346656037),
-                                          folder->path, strlen(folder->path)));
+    (void)vkr_ui_push_id_u64(ui, content_hash(UINT64_C(14695981039346656037),
+                                              folder->path,
+                                              string_length(folder->path)));
     const float32_t indent = 14.0f * folder->depth;
     const bool8_t drop = content_drop_probe(content, ui, string8_lit("folder"),
                                             folder->path, area);
-    const bool8_t current = !strcmp(content->folder, folder->path);
+    const bool8_t current = string_equals(content->folder, folder->path);
     VkrUiWidgetConfig name = content_widget(0, row++);
     name.placement.margin_pt.left = indent + 18.0f;
     const bool8_t plain = folder->icon == VKR_UI_ICON_FOLDER;
@@ -3628,8 +3662,9 @@ static void content_tree_panel(VkrEditorContent *content, VkrUiSystem *ui,
           ui->reduce_motion
               ? 1.0f
               : 0.55f +
-                    0.45f * sinf((float32_t)vkr_platform_get_absolute_time() *
-                                 4.0f);
+                    0.45f *
+                        vkr_sin_f32(
+                            (float32_t)vkr_platform_get_absolute_time() * 4.0f);
       name.icon = VKR_UI_ICON_SPINNER;
       name.icon_color = vkr_ui_color_alpha(theme->accent_hover, pulse);
       name.tooltip = string8_create_formatted(
@@ -3674,7 +3709,7 @@ static void content_tree_panel(VkrEditorContent *content, VkrUiSystem *ui,
   }
   for (uint32_t i = 0; i < content->tag_count; ++i) {
     (void)vkr_ui_push_id_u64(ui, 0x7a900000u + i);
-    const bool8_t chosen = !strcmp(content->tag_filter, content->tags[i]);
+    const bool8_t chosen = string_equals(content->tag_filter, content->tags[i]);
     VkrUiWidgetConfig tag = content_widget(0, row++);
     tag.placement.justify = VKR_UI_ALIGN_STRETCH;
     tag.fill = true_v;
@@ -3914,13 +3949,14 @@ static bool8_t content_scene_reference(const ContentAsset *entry, char *out,
                                        uint32_t capacity) {
   static const char *const owners[] = {"scene", "project", "editor"};
   if (entry->scope < ArrayCount(owners)) {
-    const int32_t length = snprintf(out, capacity, VKR_ASSET_REF_PREFIX "%s/%s",
-                                    owners[entry->scope], entry->id);
+    const int32_t length =
+        string_format(out, capacity, VKR_ASSET_REF_PREFIX "%s/%s",
+                      owners[entry->scope], entry->id);
     return length > 0 && (uint32_t)length < capacity;
   }
   const char *root = vkr_content_root();
-  const uint64_t root_length = root ? strlen(root) : 0u;
-  if (root_length && !strncmp(entry->path, root, root_length)) {
+  const uint64_t root_length = root ? string_length(root) : 0u;
+  if (root_length && string_n_equals(entry->path, root, root_length)) {
     return content_copy(out, capacity, entry->path + root_length);
   }
   return entry->path[0] != '/' && content_copy(out, capacity, entry->path);
@@ -3975,8 +4011,8 @@ static void content_drag_update(VkrEditorContent *content, VkrUiSystem *ui) {
       content_action(content, VKR_EDITOR_CONTENT_ACTION_DROP_MATERIAL);
       if (!content_scene_reference(entry, content->action.source,
                                    sizeof(content->action.source))) {
-        snprintf(content->diagnostic, sizeof(content->diagnostic),
-                 "%.200s cannot be assigned from here.", entry->name);
+        string_format(content->diagnostic, sizeof(content->diagnostic),
+                      "%.200s cannot be assigned from here.", entry->name);
         content->action = (VkrEditorContentAction){0};
       }
       content->action.drop_px = (Vec2){x, y};
@@ -4089,18 +4125,19 @@ static void content_commit_rename(VkrEditorContent *content, uint32_t shown) {
       content_copy(content->action.name, sizeof(content->action.name), name);
       content->selected = selected;
     } else if (!content_rename_folder(content, folder->path, name)) {
-      snprintf(content->diagnostic, sizeof(content->diagnostic),
-               "A folder name cannot contain '/' or name a system folder.");
+      string_format(
+          content->diagnostic, sizeof(content->diagnostic),
+          "A folder name cannot contain '/' or name a system folder.");
     }
     return;
   }
   const ContentAsset *entry = &content->entries[shown];
-  if (!strcmp(name, entry->name)) {
+  if (string_equals(name, entry->name)) {
     return;
   }
   if (entry->kind == CONTENT_PRESET) {
     content_rename_preset(content, entry->object, (const uint8_t *)name,
-                          (uint32_t)strlen(name));
+                          (uint32_t)string_length(name));
     return;
   }
   content->selected = shown;
@@ -4120,7 +4157,7 @@ static void content_begin_rename(VkrEditorContent *content, uint32_t shown) {
                          : content->entries[shown].name;
   content->renaming = shown;
   content->rename_draft_length =
-      (uint32_t)Min(strlen(name), sizeof(content->rename_draft) - 1u);
+      (uint32_t)Min(string_length(name), sizeof(content->rename_draft) - 1u);
   MemCopy(content->rename_draft, name, content->rename_draft_length);
   content->rename_focus = true_v;
 }
@@ -4195,8 +4232,8 @@ static void content_item_button(VkrEditorContent *content, VkrUiSystem *ui,
 static bool8_t content_is_selected(const VkrEditorContent *content,
                                    uint32_t shown) {
   if (content_shown_folder(shown)) {
-    return !strcmp(content->selected_folder,
-                   content->tree[shown & ~CONTENT_FOLDER_BIT].path);
+    return string_equals(content->selected_folder,
+                         content->tree[shown & ~CONTENT_FOLDER_BIT].path);
   }
   return shown == content->selected;
 }
@@ -4532,7 +4569,8 @@ static void content_build_grid(VkrEditorContent *content, VkrUiSystem *ui,
   float32_t offset = content->first_row * pitch;
   (void)vkr_ui_scroll_area_offset(ui, &offset);
   if (offset != content->first_row * pitch) {
-    content->first_row = Min(max_first, (uint32_t)roundf(offset / pitch));
+    content->first_row =
+        Min(max_first, (uint32_t)vkr_round_f32(offset / pitch));
     offset = content->first_row * pitch;
     (void)vkr_ui_scroll_area_offset(ui, &offset);
   }
@@ -4583,7 +4621,7 @@ static void content_build_grid(VkrEditorContent *content, VkrUiSystem *ui,
     const char *key = folder ? content->tree[shown & ~CONTENT_FOLDER_BIT].path
                              : content->entries[shown].id;
     (void)vkr_ui_push_id_u64(
-        ui, content_hash(folder ? 0xf01du : 0x17e3u, key, strlen(key)));
+        ui, content_hash(folder ? 0xf01du : 0x17e3u, key, string_length(key)));
     if (list) {
       content_build_row(content, ui, shown, header + index - start, grid_id,
                         area);
@@ -4721,7 +4759,7 @@ static void content_build_asset_actions(VkrEditorContent *content,
    saves once neither field has focus. */
 static void content_build_labels(VkrEditorContent *content, VkrUiSystem *ui,
                                  const ContentAsset *entry) {
-  if (strcmp(content->label_asset, entry->id)) {
+  if (!string_equals(content->label_asset, entry->id)) {
     const VkrEditorAssetLabel *label = content_label(content, entry->id);
     content_copy(content->label_asset, sizeof(content->label_asset), entry->id);
     content_copy((char *)content->label_folder, sizeof(content->label_folder),
@@ -4729,8 +4767,9 @@ static void content_build_labels(VkrEditorContent *content, VkrUiSystem *ui,
     content_copy((char *)content->label_tags, sizeof(content->label_tags),
                  label ? label->tags : "");
     content->label_folder_length =
-        (uint32_t)strlen((char *)content->label_folder);
-    content->label_tags_length = (uint32_t)strlen((char *)content->label_tags);
+        (uint32_t)string_length((char *)content->label_folder);
+    content->label_tags_length =
+        (uint32_t)string_length((char *)content->label_tags);
     content->label_dirty = false_v;
   }
   const VkrUiTrack columns[] = {{52, VKR_UI_TRACK_PX}, {1, VKR_UI_TRACK_FR}};
@@ -4803,7 +4842,7 @@ static void content_build_labels(VkrEditorContent *content, VkrUiSystem *ui,
         !content_project_folder(folder)) {
       folder[0] = '\0';
     }
-    if (!strcmp(folder, fallback)) {
+    if (string_equals(folder, fallback)) {
       folder[0] = '\0';
     }
     (void)content_label_set(content, entry->id, folder, tags);
@@ -4897,8 +4936,8 @@ static void content_menu_run(VkrEditorContent *content, uint32_t shown,
       content->selected_folder[0] = '\0';
       content_labels_save(content);
     } else {
-      snprintf(content->diagnostic, sizeof(content->diagnostic),
-               "Only an empty folder can be deleted.");
+      string_format(content->diagnostic, sizeof(content->diagnostic),
+                    "Only an empty folder can be deleted.");
     }
     return;
   }
@@ -4952,8 +4991,8 @@ static void content_build_folder_details(VkrEditorContent *content,
   const ContentFolder *folder = &content->tree[index];
   /* The draft starts from the shown name: a scene's name, never the id its
      folder path carries. */
-  if (strcmp(content->folder_draft_path, folder->path) ||
-      strcmp(content->folder_draft_label, folder->label)) {
+  if (!string_equals(content->folder_draft_path, folder->path) ||
+      !string_equals(content->folder_draft_label, folder->label)) {
     content_copy(content->folder_draft_path, sizeof(content->folder_draft_path),
                  folder->path);
     content_copy(content->folder_draft_label,
@@ -4961,7 +5000,7 @@ static void content_build_folder_details(VkrEditorContent *content,
     content_copy((char *)content->folder_draft, sizeof(content->folder_draft),
                  folder->label);
     content->folder_draft_length =
-        (uint32_t)strlen((char *)content->folder_draft);
+        (uint32_t)string_length((char *)content->folder_draft);
   }
   VkrUiWidgetConfig path = content_widget(0, 1);
   path.style.text_color = vkr_ui_theme()->text_secondary;
@@ -5098,11 +5137,11 @@ static void content_build_preset_details(VkrEditorContent *content,
     content_delete_preset(content, entry->object);
     return;
   }
-  if (strcmp(content->rename_asset, entry->id)) {
+  if (!string_equals(content->rename_asset, entry->id)) {
     content_copy(content->rename_asset, sizeof(content->rename_asset),
                  entry->id);
     content_copy((char *)content->rename, sizeof(content->rename), entry->name);
-    content->rename_length = (uint32_t)strlen((char *)content->rename);
+    content->rename_length = (uint32_t)string_length((char *)content->rename);
   }
   content_build_rename(content, ui, entry);
 }
@@ -5207,12 +5246,13 @@ static void content_build_inspector(VkrEditorContent *content, VkrUiSystem *ui,
           size);
       provenance.tooltip = details;
       vkr_ui_label(ui, string8_lit("provenance"), details, &provenance);
-      if (strcmp(content->rename_asset, entry->id)) {
+      if (!string_equals(content->rename_asset, entry->id)) {
         content_copy(content->rename_asset, sizeof(content->rename_asset),
                      entry->id);
         content_copy((char *)content->rename, sizeof(content->rename),
                      entry->name);
-        content->rename_length = (uint32_t)strlen((char *)content->rename);
+        content->rename_length =
+            (uint32_t)string_length((char *)content->rename);
       }
       content_build_rename(content, ui, entry);
       content_build_asset_actions(content, ui, entry);
@@ -5403,7 +5443,8 @@ bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
       content->entries[content->drag_asset].kind != CONTENT_SCRIPT) {
     return false_v;
   }
-  snprintf(module, capacity, "%s", content->entries[content->drag_asset].role);
+  string_format(module, capacity, "%s",
+                content->entries[content->drag_asset].role);
   return true_v;
 }
 
@@ -5549,10 +5590,10 @@ void vkr_editor_content_menu_command(VkrEditorContent *content,
 /* Whether a folder's labels from Content down spell a shown path. */
 static bool8_t content_shown_path_matches(const VkrEditorContent *content,
                                           uint32_t index, const char *path) {
-  size_t end = strlen(path);
+  size_t end = string_length(path);
   while (index < content->tree_count && content->tree[index].path[0]) {
     const ContentFolder *folder = &content->tree[index];
-    const size_t length = strlen(folder->label);
+    const size_t length = string_length(folder->label);
     if (length > end ||
         MemCompare(path + end - length, folder->label, length)) {
       return false_v;
@@ -5589,14 +5630,14 @@ bool8_t vkr_editor_content_reveal_path(VkrEditorContent *content,
     if (!entry->path[0] || entry->kind == CONTENT_SCENE) {
       continue;
     }
-    if (!strcmp(entry->path, path)) {
+    if (string_equals(entry->path, path)) {
       found = i;
       continue;
     }
-    const char *builds = strstr(entry->path, "/builds/");
-    const char *end = builds ? strchr(builds + 8, '/') : NULL;
+    const char *builds = string_find(entry->path, "/builds/");
+    const char *end = builds ? string_find_char(builds + 8, '/') : NULL;
     if (end && revision_match == CONTENT_NONE &&
-        !strncmp(entry->path, path, (size_t)(end - entry->path + 1))) {
+        string_n_equals(entry->path, path, (size_t)(end - entry->path + 1))) {
       revision_match = i;
     }
   }
@@ -5633,7 +5674,7 @@ bool8_t vkr_editor_content_open_folder(VkrEditorContent *content,
      as "Bistro/Textures". */
   uint32_t index = content_tree_find(content, folder);
   for (uint32_t i = 0; index == CONTENT_NONE && i < content->tree_count; ++i) {
-    if (!strcmp(content->tree[i].label, folder) ||
+    if (string_equals(content->tree[i].label, folder) ||
         content_shown_path_matches(content, i, folder)) {
       index = i;
     }
@@ -5685,8 +5726,8 @@ bool8_t vkr_editor_content_move(VkrEditorContent *content, String8 item,
   } else {
     shown = CONTENT_NONE;
     for (uint32_t i = 0; i < content->count && shown == CONTENT_NONE; ++i) {
-      if (!strcmp(content->entries[i].id, name) ||
-          !strcmp(content->entries[i].name, name)) {
+      if (string_equals(content->entries[i].id, name) ||
+          string_equals(content->entries[i].name, name)) {
         shown = i;
       }
     }
@@ -5712,8 +5753,8 @@ bool8_t vkr_editor_content_command(VkrEditorContent *content, String8 item,
   /* A folder by path or shown name, else an item by id or name. */
   uint32_t shown = CONTENT_NONE;
   for (uint32_t i = 0; shown == CONTENT_NONE && i < content->tree_count; ++i) {
-    if (!strcmp(content->tree[i].path, name) ||
-        !strcmp(content->tree[i].label, name)) {
+    if (string_equals(content->tree[i].path, name) ||
+        string_equals(content->tree[i].label, name)) {
       shown = CONTENT_FOLDER_BIT | i;
     }
   }
@@ -5723,7 +5764,8 @@ bool8_t vkr_editor_content_command(VkrEditorContent *content, String8 item,
       const ContentAsset *entry = &content->entries[i];
       if (entry->kind != CONTENT_SCENE &&
           (entry->kind == CONTENT_OBJECT) == (pass == 1u) &&
-          (!strcmp(entry->id, name) || !strcmp(entry->name, name))) {
+          (string_equals(entry->id, name) ||
+           string_equals(entry->name, name))) {
         shown = i;
       }
     }
@@ -5746,7 +5788,8 @@ bool8_t vkr_editor_content_place(VkrEditorContent *content, String8 item,
   name[item.length] = '\0';
   for (uint32_t i = 0; i < content->count; ++i) {
     const ContentAsset *entry = &content->entries[i];
-    if ((strcmp(entry->id, name) && strcmp(entry->name, name)) ||
+    if ((!string_equals(entry->id, name) &&
+         !string_equals(entry->name, name)) ||
         !content_viewport_accepts(entry)) {
       continue;
     }
@@ -5825,7 +5868,7 @@ bool8_t vkr_editor_content_save_preset(VkrEditorContent *content,
   if (!content || content->read_only || !content->project[0] || !type ||
       !value ||
       vkr_editor_preset_type(string8_create_from_cstr(
-          (const uint8_t *)type->name, strlen(type->name))) != type ||
+          (const uint8_t *)type->name, string_length(type->name))) != type ||
       !vkr_type_validate(type, value, NULL, 0u) ||
       content->presets.count == content->presets.capacity) {
     return false_v;
@@ -5841,13 +5884,14 @@ bool8_t vkr_editor_content_save_preset(VkrEditorContent *content,
   /* "Post process", then "Post process 2" and on for the first free name. */
   for (uint32_t n = 1u; n < 1000u; ++n) {
     if (n == 1u) {
-      snprintf(preset->name, sizeof(preset->name), "%.48s", type->label);
+      string_format(preset->name, sizeof(preset->name), "%.48s", type->label);
     } else {
-      snprintf(preset->name, sizeof(preset->name), "%.48s %u", type->label, n);
+      string_format(preset->name, sizeof(preset->name), "%.48s %u", type->label,
+                    n);
     }
     bool8_t taken = false_v;
     for (uint32_t i = 0; !taken && i < content->presets.count; ++i) {
-      taken = !strcmp(content->presets.presets[i].name, preset->name);
+      taken = string_equals(content->presets.presets[i].name, preset->name);
     }
     if (!taken) {
       break;
