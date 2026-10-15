@@ -123,18 +123,9 @@ bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
 // 255 while costing 0.4 ms more transmission shading.
 #define VKR_LOCAL_SHADOW_INLINE_TAP_COUNT 4u
 
-// Tap rotation (cosine, sine) from interleaved gradient noise over the pixel,
-// shifted by the temporal noise index, which alternates with T2x's jitter.
-float2 vkr_local_shadow_tap_rotation(uint2 pixel, uint noise_index)
-{
-    float2 position = float2(pixel) + 5.588238f * float(noise_index);
-    float gradient = dot(position, float2(0.06711056f, 0.00583715f));
-    gradient -= floor(gradient);
-    float value = 52.9829189f * gradient;
-    value -= floor(value);
-    float angle = value * 6.28318530718f;
-    return float2(cos(angle), sin(angle));
-}
+// Per-pixel tap rotations come from vkr_shadow_kernel_rotation
+// (shadow_kernel.slangh), shifted by the temporal noise index, which
+// alternates with T2x's jitter.
 
 // Rotates one Poisson tap by a (cosine, sine) pair.
 float2 vkr_local_shadow_rotate_tap(float2 tap, float2 rotation)

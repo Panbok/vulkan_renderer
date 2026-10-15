@@ -2432,8 +2432,8 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
     uint blocker_count = VKR_LOCAL_SHADOW_PCSS_BLOCKER_COUNT;
     if (root.temporal_filter != 0u)
     {
-        tap_rotation = vkr_local_shadow_tap_rotation(thread_id.xy,
-                                                     root.contact_noise_index);
+        tap_rotation = vkr_shadow_kernel_rotation(thread_id.xy,
+                                                  root.contact_noise_index);
         tap_count = VKR_LOCAL_SHADOW_TEMPORAL_TAP_COUNT;
         blocker_count = VKR_LOCAL_SHADOW_PCSS_TEMPORAL_BLOCKER_COUNT;
     }
@@ -2980,8 +2980,12 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                         dot(normal, sun_direction) < 0.0f;
         float cloud_shadow = packet_cloud_shadow(frame, world);
+        // A fixed per-pixel kernel rotation: the lighting root carries no
+        // temporal phase for the sun's filter.
+        float2 shadow_rotation = vkr_shadow_kernel_rotation(thread_id.xy, 0u);
         float base_shadow =
             packet_directional_shadow(frame, world, back_lit ? -normal : normal,
+                                      shadow_rotation,
                                       root.shadow_moments_texture,
                                       root.shadow_moments_sampler) *
             cloud_shadow;
@@ -2989,6 +2993,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         if (back_lit && clearcoat_active)
             directional_shadow =
                 packet_directional_shadow(frame, world, normal,
+                                          shadow_rotation,
                                           root.shadow_moments_texture,
                                           root.shadow_moments_sampler) *
                 cloud_shadow;
@@ -3972,7 +3977,9 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         if (frame.directional_direction_enabled.w > 0.5f)
         {
             directional_shadow =
-                packet_directional_shadow(frame, world, surface.normal) *
+                packet_directional_shadow(
+                    frame, world, surface.normal,
+                    vkr_shadow_kernel_rotation(pixel, 0u)) *
                 packet_cloud_shadow(frame, world);
             float3 light =
                 normalize(-frame.directional_direction_enabled.xyz);

@@ -708,13 +708,17 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   light.reflectance = energy.reflectance;
   light.metallic = metallic;
 
-  // The sun, shadowed by its cascades and the cloud layer.
+  // The sun, shadowed by its cascades and the cloud layer. The cascades take
+  // the geometric normal: the receiver plane, normal offset and slope bias
+  // describe the surface the map rasterized, not its normal map. Without a
+  // temporal resolve the kernel's per-pixel rotation stays fixed.
   if (frame->directional_direction_enabled.w > 0.5f) {
     float3 sun = normalize(-frame->directional_direction_enabled.xyz);
     float shadow =
         dot(normal, sun) > 0.0f
             ? vkr_metal_packet_directional_shadow_sample(
-                  frame, input.world_position, normal)
+                  frame, input.world_position, geometric_normal,
+                  vkr_shadow_kernel_rotation(uint2(input.position.xy), 0u))
                       .factor *
                   vkr_metal_packet_cloud_shadow(frame, input.world_position)
             : 0.0f;

@@ -60,13 +60,82 @@ VKR_SHADOW_KERNEL_CONST float2 vkr_shadow_poisson[VKR_SHADOW_POISSON_COUNT] = {
     float2(-0.435902f, +0.170981f), float2(+0.458944f, +0.206565f),
 };
 
+// Receiver-plane depth bias for the directional cascades. A filter or blocker
+// tap a few texels from the receiver compares against the receiver plane's own
+// depth there, not against the centre depth: on ground tilted to the sun a
+// fixed bias cannot cover a widened PCSS kernel, and the plane would shadow
+// itself in a speckle inside every penumbra. The slope is the plane's depth
+// change per unit of lateral light-space distance, bounded so a receiver almost
+// parallel to the light does not push its far taps past real casters.
+#define VKR_SHADOW_RECEIVER_PLANE_SLOPE_MAX 4.0f
+
+// Normalized-depth change per unit of cascade UV across a receiver plane with
+// unit `normal`. `light_x`, `light_y` and `light_depth` are the unit world
+// directions of the cascade's UV axes and of increasing map depth (its
+// orthographic rows normalized); `extent_over_depth_span` is the cascade's world
+// width divided by its fitted depth span.
+float2 vkr_shadow_receiver_plane_gradient(float3 normal, float3 light_x,
+                                          float3 light_y, float3 light_depth,
+                                          float extent_over_depth_span)
+{
+    float along_depth = dot(normal, light_depth);
+    along_depth = along_depth >= 0.0f ? max(along_depth, 1e-4f)
+                                      : min(along_depth, -1e-4f);
+    float2 slope =
+        -float2(dot(normal, light_x), dot(normal, light_y)) / along_depth;
+    float slope_length = length(slope);
+    if (slope_length > VKR_SHADOW_RECEIVER_PLANE_SLOPE_MAX)
+        slope *= VKR_SHADOW_RECEIVER_PLANE_SLOPE_MAX / slope_length;
+    return slope * extent_over_depth_span;
+}
+
+// Kernel rotation (cosine, sine) from interleaved gradient noise over the
+// pixel. A per-pixel rotation turns the residual sampling error of a sparse
+// kernel into single-pixel grain; a rotation per shadow-map texel showed it as
+// blocks a shadow texel wide. `noise_index` shifts the pattern per frame where
+// a temporal resolve averages it, and stays zero elsewhere.
+float2 vkr_shadow_kernel_rotation(uint2 pixel, uint noise_index)
+{
+    float2 position = float2(pixel) + 5.588238f * float(noise_index);
+    float gradient = dot(position, float2(0.06711056f, 0.00583715f));
+    gradient -= floor(gradient);
+    float value = 52.9829189f * gradient;
+    value -= floor(value);
+    float angle = value * 6.28318530718f;
+    return float2(cos(angle), sin(angle));
+}
+
 // The nearest two directional cascades use a bounded PCSS estimate. Depths
 // are normalized orthographic-map depths; depth_span converts their difference
 // to world distance, and the final division expresses the footprint in texels.
 // A zero authored sun tangent preserves the existing PCF path exactly.
+//
+// The fitted depth span reaches every caster the cascade may hold, kilometres
+// for a level with backdrop terrain, so the distance to the map's near plane
+// does not bound the search. A blocker counts as at most
+// VKR_SHADOW_PCSS_BLOCKER_DISTANCE_MAX metres above the receiver, and no radius
+// passes VKR_SHADOW_PCSS_RADIUS_MAX_TEXELS: a search across the whole map
+// found unrelated far casters and gave every pixel a random penumbra width.
+#define VKR_SHADOW_PCSS_BLOCKER_DISTANCE_MAX 32.0f
+#define VKR_SHADOW_PCSS_RADIUS_MAX_TEXELS 8.0f
+
 uint vkr_shadow_pcss_enabled(uint cascade, float sun_tan_half_angle)
 {
     return cascade < VKR_SHADOW_PCSS_CASCADE_COUNT && sun_tan_half_angle > 0.0f;
+}
+
+// Penumbra radius in texels of a blocker `blocker_distance` metres above the
+// receiver, within the configured PCF radius and the PCSS bound.
+float vkr_shadow_pcss_radius_texels(float blocker_distance,
+                                    float sun_tan_half_angle,
+                                    float world_texel_size,
+                                    float pcf_radius_texels)
+{
+    float penumbra =
+        min(max(blocker_distance, 0.0f), VKR_SHADOW_PCSS_BLOCKER_DISTANCE_MAX) *
+        sun_tan_half_angle / world_texel_size;
+    return clamp(penumbra, pcf_radius_texels,
+                 max(pcf_radius_texels, VKR_SHADOW_PCSS_RADIUS_MAX_TEXELS));
 }
 
 float vkr_shadow_pcss_search_radius_texels(float reference_depth,
@@ -75,9 +144,9 @@ float vkr_shadow_pcss_search_radius_texels(float reference_depth,
                                            float world_texel_size,
                                            float pcf_radius_texels)
 {
-    float conservative_radius = max(reference_depth, 0.0f) * depth_span *
-                                sun_tan_half_angle / world_texel_size;
-    return max(pcf_radius_texels, conservative_radius);
+    return vkr_shadow_pcss_radius_texels(reference_depth * depth_span,
+                                         sun_tan_half_angle, world_texel_size,
+                                         pcf_radius_texels);
 }
 
 float vkr_shadow_pcss_filter_radius_texels(float reference_depth,
@@ -87,9 +156,9 @@ float vkr_shadow_pcss_filter_radius_texels(float reference_depth,
                                            float world_texel_size,
                                            float pcf_radius_texels)
 {
-    float penumbra = max(reference_depth - average_blocker_depth, 0.0f) *
-                     depth_span * sun_tan_half_angle / world_texel_size;
-    return max(pcf_radius_texels, penumbra);
+    return vkr_shadow_pcss_radius_texels(
+        (reference_depth - average_blocker_depth) * depth_span,
+        sun_tan_half_angle, world_texel_size, pcf_radius_texels);
 }
 
 // Optional exponential variance shadow maps for the far cascades. Cascades

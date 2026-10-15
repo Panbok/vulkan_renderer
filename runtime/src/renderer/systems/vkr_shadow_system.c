@@ -835,12 +835,34 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
     VkrShadowFit *out_fit, Vec2 *out_light_space_origin) {
   const Mat4 view = *light_view;
 
-  // Compute the slice center and its bounding sphere radius.
-  Vec3 center = vec3_zero();
-  for (int i = 0; i < 8; ++i) {
-    center = vec3_add(center, frustum_corners[i]);
+  // The slice's smallest bounding sphere centres on its axis where the near
+  // and far corners are equally distant, at most at the far plane. The
+  // corners' mean sits nearer the camera and wastes up to a quarter of the
+  // radius on a long slice. Like the mean, it depends on the projection
+  // alone, so the radius stays constant while the camera turns.
+  Vec3 near_center = vec3_zero();
+  Vec3 far_center = vec3_zero();
+  for (int i = 0; i < 4; ++i) {
+    near_center = vec3_add(near_center, frustum_corners[i]);
+    far_center = vec3_add(far_center, frustum_corners[i + 4]);
   }
-  center = vec3_scale(center, 1.0f / 8.0f);
+  near_center = vec3_scale(near_center, 0.25f);
+  far_center = vec3_scale(far_center, 0.25f);
+  const Vec3 axis = vec3_sub(far_center, near_center);
+  const float32_t axis_length = vec3_length(axis);
+  Vec3 center = vec3_scale(vec3_add(near_center, far_center), 0.5f);
+  if (axis_length > 0.001f) {
+    const float32_t near_half_diagonal_sq =
+        vec3_length_squared(vec3_sub(frustum_corners[0], near_center));
+    const float32_t far_half_diagonal_sq =
+        vec3_length_squared(vec3_sub(frustum_corners[4], far_center));
+    const float32_t along =
+        Clamp((axis_length * axis_length + far_half_diagonal_sq -
+               near_half_diagonal_sq) /
+                  (2.0f * axis_length),
+              0.0f, axis_length);
+    center = vec3_add(near_center, vec3_scale(axis, along / axis_length));
+  }
 
   float32_t radius_sq = 0.0f;
   for (int i = 0; i < 8; ++i) {

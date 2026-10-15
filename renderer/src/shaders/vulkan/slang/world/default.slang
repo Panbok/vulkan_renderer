@@ -485,51 +485,32 @@ uint4 packet_point_light_mask(VkrVulkanPacketFrameRoot *root,
 }
 
 /**
- * Stable rotation for the Poisson kernel.
- *
- * The cell index lives in the cascade's light-space texel grid, not in screen
- * space, so it does not swim as the camera moves: the fit snaps in whole texels
- * and `light_space_origin` cancels the remaining translation. A screen-space or
- * raw world-position hash would reintroduce the crawling the rotation exists to
- * hide.
- */
-float2 packet_shadow_kernel_rotation(float2 uv, float2 origin_texels,
-                                     float map_size)
-{
-    // `origin - uv * map_size`, not the sum. The fit anchor appears in both
-    // terms with the same sign, so subtracting cancels it and leaves the world
-    // point's own light-basis projection in texels. Adding would double it, and
-    // the cell would jump every time the cascade re-anchors -- the exact
-    // swimming this rotation exists to prevent.
-    int2 cell = int2(floor(origin_texels - uv * map_size));
-    uint hash = (uint(cell.x) * 73856093u) ^ (uint(cell.y) * 19349663u);
-    float angle = float(hash & 1023u) * (6.28318530718f / 1024.0f);
-    return float2(cos(angle), sin(angle));
-}
-
-/**
  * Accumulates rotated taps `[first, count)` of the shared progressive table.
+ * Each tap compares against the receiver plane's depth at its offset
+ * (`depth_gradient`).
  *
  * Frame-root descriptor indices are dynamically uniform: every invocation reads
  * the same push-constant-addressed root. Decorating them NonUniform costs a
  * waterfall loop and blocks scalarization for nothing.
  */
 float packet_shadow_kernel(VkrVulkanPacketFrameRoot *root, uint cascade,
-                           float2 uv, float reference, float2 rotation,
-                           float2 tap_scale, uint first, uint count)
+                           float2 uv, float reference, float2 depth_gradient,
+                           float2 rotation, float2 tap_scale, uint first,
+                           uint count)
 {
     float sum = 0.0f;
     for (uint i = first; i < count; ++i)
     {
-        float2 tap = vkr_shadow_poisson[i];
-        float2 rotated = float2(tap.x * rotation.x - tap.y * rotation.y,
-                                tap.x * rotation.y + tap.y * rotation.x);
+        float2 offset =
+            vkr_local_shadow_rotate_tap(vkr_shadow_poisson[i], rotation) *
+            tap_scale;
         // A comparison sampler makes every tap a hardware bilinear 2x2 PCF, so
         // a distant cascade degrades into softness instead of into crawling
         // staircase noise.
         sum += g_depth_array_textures[root.shadow_texture].SampleCmpLevelZero(
             g_comparison_samplers[root.shadow_comparison_sampler],
-            float3(uv + rotated * tap_scale, float(cascade)), reference);
+            float3(uv + offset, float(cascade)),
+            reference + dot(depth_gradient, offset));
     }
     return sum;
 }
@@ -550,19 +531,22 @@ float packet_shadow_raw_depth(VkrVulkanPacketFrameRoot *root, uint cascade,
         int4(pixel, int(cascade), 0));
 }
 
+// Blockers are stored depths in front of the receiver plane at each tap, so a
+// sloped receiver does not count itself.
 VkrVkPcssBlockers packet_shadow_pcss_blockers(
     VkrVulkanPacketFrameRoot *root, uint cascade, float2 uv, float reference,
-    float2 rotation, float2 search_tap_scale, float inv_size)
+    float2 depth_gradient, float2 rotation, float2 search_tap_scale,
+    float inv_size)
 {
     VkrVkPcssBlockers result = (VkrVkPcssBlockers)0;
     for (uint i = 0u; i < VKR_SHADOW_PCSS_BLOCKER_COUNT; ++i)
     {
-        float2 tap = vkr_shadow_poisson[i];
-        float2 rotated = float2(tap.x * rotation.x - tap.y * rotation.y,
-                                tap.x * rotation.y + tap.y * rotation.x);
-        float blocker_depth = packet_shadow_raw_depth(
-            root, cascade, uv + rotated * search_tap_scale, inv_size);
-        if (blocker_depth < reference)
+        float2 offset =
+            vkr_local_shadow_rotate_tap(vkr_shadow_poisson[i], rotation) *
+            search_tap_scale;
+        float blocker_depth =
+            packet_shadow_raw_depth(root, cascade, uv + offset, inv_size);
+        if (blocker_depth < reference + dot(depth_gradient, offset))
         {
             result.average_depth += blocker_depth;
             ++result.count;
@@ -573,12 +557,16 @@ VkrVkPcssBlockers packet_shadow_pcss_blockers(
     return result;
 }
 
-/** One cascade's visibility. Returns 1.0 where the receiver misses it. */
 // No far-cascade EVSM moments: every cascade filters its depth with PCF.
 #define VKR_VK_SHADOW_MOMENTS_NONE 0xFFFFFFFFu
 
+/**
+ * One cascade's visibility. Returns 1.0 where the receiver misses it.
+ * `rotation` turns the kernel per pixel (vkr_shadow_kernel_rotation).
+ */
 float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
                             float3 world_position, float3 normal, float n_dot_l,
+                            float2 rotation,
                             uint moments_texture = VKR_VK_SHADOW_MOMENTS_NONE,
                             uint moments_sampler = 0u)
 {
@@ -621,8 +609,10 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
     }
 
     float inv_size = data.origin_inv_size_sun.z;
-    float2 rotation = packet_shadow_kernel_rotation(
-        uv, data.origin_inv_size_sun.xy / texel, 1.0f / inv_size);
+    float4x4 light = data.light_view_projection;
+    float2 depth_gradient = vkr_shadow_receiver_plane_gradient(
+        normal, normalize(light[0].xyz), normalize(light[1].xyz),
+        normalize(light[2].xyz), texel / (inv_size * depth_span));
     float2 tap_scale = root.shadow_pcf_radius_texels * inv_size;
     uint count = root.shadow_pcf_sample_count;
 
@@ -636,8 +626,8 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
             reference, depth_span, sun_tan_half_angle, texel,
             root.shadow_pcf_radius_texels);
         VkrVkPcssBlockers blockers = packet_shadow_pcss_blockers(
-            root, cascade, uv, reference, rotation, search_radius * inv_size,
-            inv_size);
+            root, cascade, uv, reference, depth_gradient, rotation,
+            search_radius * inv_size, inv_size);
         // Sparse blockers do not prove an unoccluded receiver. With none,
         // retain the configured PCF radius; otherwise widen the bounded PCSS
         // filter.
@@ -654,21 +644,24 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
     {
         // Fully lit and fully shadowed regions are the common case and resolve
         // in nine taps. Only the penumbra pays for the full kernel.
-        float probe = packet_shadow_kernel(root, cascade, uv, reference,
-                                           rotation, tap_scale, 0u, 9u);
+        float probe =
+            packet_shadow_kernel(root, cascade, uv, reference, depth_gradient,
+                                 rotation, tap_scale, 0u, 9u);
         if (probe <= 0.0f || probe >= 9.0f)
             return probe * (1.0f / 9.0f);
         return (probe + packet_shadow_kernel(root, cascade, uv, reference,
-                                             rotation, tap_scale, 9u, count)) /
+                                             depth_gradient, rotation,
+                                             tap_scale, 9u, count)) /
                float(count);
     }
-    return packet_shadow_kernel(root, cascade, uv, reference, rotation,
-                                tap_scale, 0u, count) /
+    return packet_shadow_kernel(root, cascade, uv, reference, depth_gradient,
+                                rotation, tap_scale, 0u, count) /
            float(count);
 }
 
 float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
                                 float3 world_position, float3 normal,
+                                float2 rotation,
                                 uint moments_texture = VKR_VK_SHADOW_MOMENTS_NONE,
                                 uint moments_sampler = 0u)
 {
@@ -695,7 +688,7 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
     float n_dot_l =
         dot(normal, normalize(-root.directional_direction_enabled.xyz));
     float factor = packet_shadow_cascade(root, cascade, world_position, normal,
-                                         n_dot_l, moments_texture,
+                                         n_dot_l, rotation, moments_texture,
                                          moments_sampler);
 
     // Cross-fade over the last `blend_fraction` of this cascade's span. Outside
@@ -710,7 +703,7 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
             float t = saturate((view_depth - (slice.y - band)) / band);
             float next = packet_shadow_cascade(root, cascade + 1u,
                                                world_position, normal, n_dot_l,
-                                               moments_texture,
+                                               rotation, moments_texture,
                                                moments_sampler);
             factor = lerp(factor, next, t);
         }
@@ -796,8 +789,9 @@ packet_directional_shadow_debug(VkrVulkanPacketFrameRoot *root,
     }
     float n_dot_l =
         dot(normal, normalize(-root.directional_direction_enabled.xyz));
+    // The debug readout keeps one fixed kernel orientation.
     sample.factor = packet_shadow_cascade(root, sample.cascade, world_position,
-                                          normal, n_dot_l);
+                                          normal, n_dot_l, float2(1.0f, 0.0f));
     if (sample.cascade + 1u < root.shadow_cascade_count)
     {
         float4 slice =
@@ -806,8 +800,9 @@ packet_directional_shadow_debug(VkrVulkanPacketFrameRoot *root,
         if (band > 0.0f && view_depth > slice.y - band)
         {
             float t = saturate((view_depth - (slice.y - band)) / band);
-            float next = packet_shadow_cascade(root, sample.cascade + 1u,
-                                               world_position, normal, n_dot_l);
+            float next = packet_shadow_cascade(
+                root, sample.cascade + 1u, world_position, normal, n_dot_l,
+                float2(1.0f, 0.0f));
             sample.factor = lerp(sample.factor, next, t);
         }
     }
@@ -2130,15 +2125,20 @@ float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
         bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                         dot(normal, sun_direction) < 0.0f;
         float cloud_shadow = packet_cloud_shadow(frame, input.world_position);
+        // Blended draws have no temporal resolve, so the per-pixel kernel
+        // rotation stays fixed.
+        float2 shadow_rotation =
+            vkr_shadow_kernel_rotation(uint2(input.position.xy), 0u);
         float base_shadow = packet_directional_shadow(
                                 frame, input.world_position,
-                                back_lit ? -normal : normal) *
+                                back_lit ? -normal : normal, shadow_rotation) *
                             cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
-            directional_shadow = packet_directional_shadow(
-                                     frame, input.world_position, normal) *
-                                 cloud_shadow;
+            directional_shadow =
+                packet_directional_shadow(frame, input.world_position, normal,
+                                          shadow_rotation) *
+                cloud_shadow;
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
