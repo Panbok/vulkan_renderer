@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-14
+updated: 2026-10-15
 authority: adr
 ---
 
@@ -94,7 +94,7 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     of a 320-byte `VkrMetalPacketLightmap` (its lamp-direct fields from byte
     96 and two 80-byte baked lamp rows from byte 160,
     [ADR-108](108-baked-lamp-direct-pages.md)), `terrain_materials` at byte 552
-    and `transmission_materials` at byte 560; the tiled sky root is 128
+    and `transmission_materials` at byte 560; the tiled sky root is 192
     bytes. Both are pinned in
     `vkr_metal_packet_abi.c` and checked against reflection at pipeline
     creation.
@@ -139,13 +139,17 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     contribution bound through the `ContributionCutoff` parameter of
     `vkr_metal_packet_layered_rectangle_lights`; a receiver that no row faces
     skips the LTC table reads, which changes no result.
-  - The tiled `CASTERS` variant (`vkr_metal_tiled_moving_shadow`,
-    [ADR-108](108-baked-lamp-direct-pages.md)) subtracts from lightmapped
-    irradiance the light that moving casters hide from the two selected
-    baked lamps, `L · max(v_static − v_composite, 0)`, as the Vulkan
+  - The tiled `CASTERS` and `CASTERS_ALL` variants
+    (`vkr_metal_tiled_moving_shadow`,
+    [ADR-108](108-baked-lamp-direct-pages.md)) subtract from lightmapped
+    irradiance the light that moving casters hide from the selected baked
+    lamps, at most two, `L · max(v_static − v_composite, 0)`, as the Vulkan
     `Shadow.LocalMask` baked-lamp variants do (ADR-104), through the tiled
-    tent instead of the Poisson disk. Native evidence: one Metal Release
-    capture pair of the Level Design Test scene; no Metal validation run.
+    tent instead of the Poisson disk. Both skip a face whose static and
+    composite views name one square and stop where the static lookup is
+    fully shadowed, as the mask does. Native evidence: Metal Release
+    captures of the Level Design Test scene (a capture pair, and the
+    warehouse before and after on 2026-10-15); no Metal validation run.
   - GPU culling applies the static/dynamic caster filter to every view on
     both backends (`deferred.slang` before applied it to local views only),
     so the cascades' dynamic-caster views of ADR-041 take only dynamic
@@ -309,6 +313,37 @@ history (desktop). Shadow kernels are unchanged.
   `bistro_snapshot` against a before run of the same build, plus a focused
   Debug validation run with fog, depth of field, motion blur and
   transmission on.
+
+## Camera-relative sky ray evidence state
+
+Sky, cloud and aerial-perspective view directions come from
+`vkr_atmosphere_view_rays`: the inverse of the projection times the view's
+rotation, without the camera translation. It maps the near-plane clip
+position (x, y, 1, 1) to the unnormalized world direction from the eye in
+xyz with a positive w; an orthographic projection maps every position to its
+forward axis. Unprojecting the near plane, 0.1 m from the eye, through the
+float32 world inverse and subtracting the eye lost the direction's
+precision hundreds of metres from the origin, so the discs, stars, glows and
+clouds jittered as the camera moved. The change is shared (clouds and aerial
+perspective), tiled (the sky and atmosphere draws) and desktop (the deferred
+background and TAA's sky history).
+
+- **Changed contracts.**
+  - The shared `VkrSkyParams` record replaces `inverse_view_projection` with
+    `view_rays` at byte 224; its size stays 432 bytes.
+    `vkr_cloud_view_direction` and both aerial-perspective kernels read it.
+  - The Metal tiled sky root adds `view_rays` at byte 80 and grows to 192
+    bytes; `inverse_view_projection` stays at byte 16 for the resolved
+    surfaces' media.
+  - The Vulkan deferred lighting root appends `view_rays` at byte 256 and
+    grows to 320 bytes; `inverse_view_projection` still reconstructs
+    surfaces.
+  - `vkr_temporal_sky_reprojection` moves the current eye to the origin in
+    float64 before inverting; its result is unchanged in exact arithmetic.
+- **Missing gates.** Metal shader library compilation, startup reflection
+  and a Bistro capture on the tiled pipeline; Vulkan module compilation,
+  `spirv-val`, reflection and a Windows Release capture on the desktop
+  pipeline.
 
 ## Editor inspection views
 
@@ -570,8 +605,10 @@ slot, and filter inline when the slot is past `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT`
 or its tag names another light. Vulkan builds the mask kernel with and without
 contact shadows and selects the variant from the payload's `contact_shadows`
 (Ultra only). The shared `local_shadow.slangh` owns the contact-shadow step
-count, length, noise, start offset, occlusion test and fade, and the full and
-temporal tap counts, tap rotation and rotation of a Poisson tap. The receivers
+count, length, noise, start offset, occlusion test and fade, the full and
+temporal tap counts and the rotation of a Poisson tap; the mask's temporal
+tap rotation is the per-pixel `vkr_shadow_kernel_rotation` of
+`shadow_kernel.slangh`, which the directional receivers share. The receivers
 take an optional rotation and tap count that default to the fixed nine taps;
 only the mask passes the rotated four-tap kernel, and only when the temporal
 flag is set. Forward and transmission shading pass an inline visibility source
@@ -880,9 +917,18 @@ owns its authoring and transport policy.
 Directional PCSS is shared and retains the 96-byte cascade record, with
 `origin_inv_size_sun` at byte 80 and the sun half-angle tangent in its fourth
 component. Every receiver shares the nearest-two-cascade gate and
-world-to-texel radius equations, with eight raw blocker samples and at most
-sixteen comparison-filter samples. ADR-041 records the authored units,
-fallback and acceptance evidence.
+world-to-texel radius equations with their 32 m and 8-texel bounds, with
+eight raw blocker samples and at most sixteen comparison-filter samples.
+Every receiver also shares the receiver-plane depth gradient
+(`vkr_shadow_receiver_plane_gradient`, from the cascade's
+`light_view_projection` rows), which each PCF and blocker tap adds to its
+reference depth, and the per-pixel kernel rotation
+(`vkr_shadow_kernel_rotation`) at noise index 0. The tiled pipeline passes
+the geometric normal to the cascades; the desktop receivers pass their
+shading normal. Since 2026-10-15 no shader reads the first two lanes of
+`origin_inv_size_sun`, the light-space origin: the runtime still fills them,
+frame-input validation still requires them finite, and both backends copy
+them. ADR-041 records the authored units, fallback and acceptance evidence.
 
 Far-cascade EVSM shares its warp, tent weights and Chebyshev visibility through
 `shadow_kernel.slangh` (`vkr_shadow_evsm_*`). Only the desktop graph runs the

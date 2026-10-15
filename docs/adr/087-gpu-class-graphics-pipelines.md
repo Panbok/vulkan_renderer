@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-14
+updated: 2026-10-15
 authority: adr
 ---
 
@@ -308,8 +308,8 @@ pipeline rather than a backend mechanism.
     scene without one keeps them, so they draw with the dynamic lights until
     it is baked (owner decision, 2026-10-06). A set may hold each lamp
     group's direct light on denser lamp-direct pages, which the forward
-    shader samples bicubically, and moving casters shadow the two baked
-    lamps that light them most in the `CASTERS` variant
+    shader samples bicubically, and moving casters shadow at most two
+    selected baked lamps in the `CASTERS` and `CASTERS_ALL` variants
     ([ADR-108](108-baked-lamp-direct-pages.md)). Then
     `vkr_lighting_system_limit_point_lights`
     ([`vkr_lighting_system.h`](../../runtime/src/renderer/systems/vkr_lighting_system.h))

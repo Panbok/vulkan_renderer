@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-15
 authority: adr
 ---
 
@@ -11,9 +11,9 @@ authority: adr
 Accepted (partial). On the tiled pipeline (Metal), a lightmap set bakes each
 lamp group's direct light on its own pages at a higher texel density, and
 the forward shader samples them bicubically. Lamps with an emitter radius
-bake soft shadows on both bakers. Moving casters shadow the two baked lamps
-that light them most on the tiled pipeline as they do on the desktop
-pipeline ([ADR-104](104-desktop-baked-lamps.md)). The Metal bake and runtime
+bake soft shadows on both bakers. Moving casters shadow at most two selected
+baked lamps on the tiled pipeline as they do on the desktop pipeline
+([ADR-104](104-desktop-baked-lamps.md)). The Metal bake and runtime
 ran on the M1 Pro. The Vulkan kernel change compiles only. Entities that
 move at runtime (moving physics bodies, mover-driven brushes) cast as
 moving objects and stay out of the bake; the level's doors, lifts, tram and
@@ -89,13 +89,21 @@ take runtime shadows from the lamps that light them most.
    B-spline of four bilinear taps (`vkr_metal_tiled_lamp_direct` in
    [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)).
 5. **Moving casters.** The lighting system's baked shadow-casting lamps
-   reach the local shadow resolve on both pipeline classes, so the two that
-   light the moving casters most take static and composite shadow views
-   (ADR-104). Frames with such lamps take the tiled `CASTERS` variant (every
-   dynamic light, as the ALL variant), which subtracts from a lightmapped
-   surface's irradiance each lamp's light times its static view's
-   visibility minus its composite view's, through the tiled tent filter
-   (`vkr_metal_tiled_moving_shadow`); the inspection variant does too.
+   reach the local shadow resolve on both pipeline classes, so the selected
+   lamps, at most two, take static and composite shadow views (ADR-104).
+   Frames with such lamps take a tiled moving-caster variant, which
+   subtracts from a lightmapped surface's irradiance each lamp's light times
+   its static view's visibility minus its composite view's, through the
+   tiled tent filter (`vkr_metal_tiled_moving_shadow`); the inspection
+   variant does too. `CASTERS` shades the point and spot lights with their
+   local shadows, as `SHADOWED` does, without rectangle lights;
+   `CASTERS_ALL` adds rectangle lights, as `ALL` does, and is
+   taken only when the frame has rectangle lights, since the rectangle
+   code's registers cost every pixel of the opaque pass
+   (`vkr_metal_packet_tiled_lighting`). The subtraction skips a lamp face
+   whose static and composite views name one square, which holds no moving
+   caster, and stops at a pixel the static lookup shadows fully, as the
+   desktop `Shadow.LocalMask` does.
 6. **What moves.** An entity moves at runtime when it or an ancestor
    within 64 levels carries an enabled kinematic or dynamic physics body,
    or, for a brush or blockout shape, a `mover`
@@ -195,3 +203,18 @@ Release, M1 Pro, Metal, 2026-10-10; local and non-authoritative.
 - **Unavailable.** Metal shader validation aborts the editor on this level
   (a residency-set limit that predates this ADR); the Vulkan bake, the
   desktop runtime and the desktop cascade composition did not run.
+
+Release, M1-class Mac, Metal, 2026-10-15; local and non-authoritative.
+
+- **Selection and variants.** A headless editor captured the Level Design
+  Test warehouse before and after the camera-weighted lamp selection
+  (ADR-104) and the `CASTERS` split, with the user's graphics settings:
+  Shadow quality 3 (High on Metal), soft shadows and contact shadows. The
+  CPU suite (`vulkan_renderer_tester`, Release) passes, and the shaders
+  compile (`vkr_bakery shaders --backend all`).
+- **Variant cost.** `Tiled.Opaque` with `VKR_RG_GPU_TIMING`, median of 40
+  frames, 1146×595, near and far warehouse views: no lamp selected 2.29 and
+  1.72 ms; the former `CASTERS` with rectangle lights 3.31 and 3.46 ms;
+  `CASTERS` without rectangle-light code 2.61 and 2.71 ms. These are
+  diagnostic editor measurements, not authoritative harness timing.
+- **Unavailable.** No native Vulkan run (the Windows host was not used).

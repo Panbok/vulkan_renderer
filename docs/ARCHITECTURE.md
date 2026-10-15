@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-14
+updated: 2026-10-15
 authority: architecture
 ---
 
@@ -793,8 +793,8 @@ shades the culled opaque draws forward in one four-sample render pass
 resolved on chip, with baked lightmaps for static
 diffuse light; a scene without a lightmap set draws its static lights as
 dynamic lights. A lamp group's direct light may come from denser
-lamp-direct pages, sampled bicubically, and moving casters shadow the two
-baked lamps that light them most ([ADR-108](adr/108-baked-lamp-direct-pages.md)).
+lamp-direct pages, sampled bicubically, and moving casters shadow at most two
+selected baked lamps ([ADR-108](adr/108-baked-lamp-direct-pages.md)).
 `Tiled.Atmosphere` lays the clouds, aerial perspective and
 analytic height fog over the resolved image, splitting pixels that mix sky
 and surface samples between their media, and `Tiled.Blend` draws glass
@@ -1174,9 +1174,12 @@ average radiance. Production Vulkan SPIR-V and host compilation checks pass;
 native Vulkan froxel output is not recorded.
 
 Directional shadows default to four 2048² cascades with snapping, fit hysteresis,
-per-target-image reuse and shared PCF/bias units. The nearest two cascades add
-eight-sample PCSS blocker search and at most sixteen filter samples, with an
-authored 0.53-degree sun diameter by default. Farther cascades retain PCF,
+per-target-image reuse and shared PCF/bias units. Each cascade fits the
+smallest sphere around its view slice. Receivers turn the kernel per pixel
+and compare every tap against the receiver plane's depth at its offset. The
+nearest two cascades add eight-sample PCSS blocker search and at most sixteen
+filter samples, with radii bounded at 8 texels and an authored 0.53-degree sun
+diameter by default. Farther cascades retain PCF,
 or, with the **Filtered far shadows** setting that the High and Epic presets
 turn on for the desktop pipeline, take one bilinear fetch of exponential
 variance moments that a half-resolution pass rebuilds when the cascade redraws.
@@ -1498,8 +1501,10 @@ These are limits of current code or retained acceptance, not scheduled promises:
   The tiled pipeline samples every layer; the desktop pipeline samples the
   lamp groups' desktop planes in place of its static lamps in opaque and
   transmission shading, moving receivers take the volume's lamp light, and
-  only the two baked lamps strongest at the moving casters cast their
-  shadows; see [ADR-088](adr/088-baked-lightmap-sets.md) and
+  at most two baked lamps cast the moving casters' shadows, chosen by their
+  light at the moving casters the camera may see, weighted by the casters'
+  nearness to the camera, and kept until another lamp scores 1.5 times
+  higher for 0.5 s; see [ADR-088](adr/088-baked-lightmap-sets.md) and
   [ADR-104](adr/104-desktop-baked-lamps.md). The per-class references pass
   the Debug CPU suite; on native Vulkan a fixture loads its
   `lightmaps.desktop` set and a project scene that names only

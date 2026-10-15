@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-15
 authority: adr
 ---
 
@@ -25,7 +25,13 @@ Use cascaded directional depth maps with four cascades of 2048² by default.
 Every preset uses that size (`VKR_SHADOW_MAP_SIZE_DEFAULT`); the harness keeps
 1024 and 4096 as experiment sizes. CPU fitting
 owns light-space orientation/anchor, texel snapping, fit hysteresis and optional
-scene-bounds Z fitting clipped against each final cascade XY rectangle.
+scene-bounds Z fitting clipped against each final cascade XY rectangle. A
+cascade's XY extent is the smallest sphere around its view slice: the centre
+lies on the slice axis where the near and far corners are equally distant, at
+most at the far plane. The corners' mean, used before 2026-10-15, sits nearer
+the camera and wastes up to a quarter of the radius on a long slice. Both
+depend on the projection alone, so the extent stays constant while the camera
+turns.
 
 Track static/dynamic caster and publication generations. Pack static candidate
 and instance rows per completion-protected slot; refresh on publication changes
@@ -106,13 +112,33 @@ and distance fade. Constant/slope/normal-offset bias is authored in shadow texel
 and converted using each cascade's texel size and fitted depth span. Backend
 raster-bias lowering preserves those units. Cutout casters use alpha testing.
 
+The kernel turns per pixel by interleaved gradient noise
+(`vkr_shadow_kernel_rotation`, noise index 0 on both pipelines), so a sparse
+kernel's sampling error shows as single-pixel grain. Before 2026-10-15 the
+rotation was hashed per light-space shadow texel and showed as blocks one
+shadow texel wide; no receiver reads the light-space origin lanes of
+`origin_inv_size_sun` since then. Every PCF tap and PCSS blocker tap compares
+against the receiver plane's depth at its offset, not the centre depth
+(`vkr_shadow_receiver_plane_gradient`, from the receiver normal and the
+cascade's orthographic rows, slope bounded by
+`VKR_SHADOW_RECEIVER_PLANE_SLOPE_MAX`, 4). On ground tilted to the sun, a fixed
+bias could not cover a widened PCSS kernel, and the plane shadowed itself in a
+speckle inside the penumbrae. The tiled pipeline passes the geometric normal,
+not the normal-mapped one, because the plane, normal offset and slope bias
+describe the rasterized surface.
+
 The nearest two cascades use contact-hardening PCSS when the authored sun angular
 diameter is positive. Eight progressive nearest-depth samples, starting at the
-center, estimate the average blocker depth. Their search radius is the larger of
-the existing PCF radius and the receiver's distance from the fitted light near
-plane multiplied by `tan(diameter / 2)`. The filter radius uses the average
-blocker-to-receiver distance with the same tangent. Both distances convert from
-normalized depth through the fitted depth span, then into shadow texels.
+center, estimate the average blocker depth. The search radius takes the
+receiver's distance from the fitted light near plane, the filter radius the
+average blocker-to-receiver distance; both convert from normalized depth
+through the fitted depth span, multiply by `tan(diameter / 2)` and convert into
+shadow texels (`vkr_shadow_pcss_radius_texels`). The distance counts at most
+32 m (`VKR_SHADOW_PCSS_BLOCKER_DISTANCE_MAX`), and the radius lies between the
+PCF radius and 8 texels (`VKR_SHADOW_PCSS_RADIUS_MAX_TEXELS`). The fitted
+depth span reaches every caster, 16.5 km on the Level Design Test with its
+backdrop terrain, so the unbounded search covered the whole map, found
+unrelated far casters and gave each pixel a random penumbra width.
 
 PCSS filtering uses the configured tap count capped at sixteen, including the
 no-blocker fallback. An empty sparse search retains the existing PCF radius;
@@ -257,6 +283,21 @@ The near-contact region and every pixel outside the far-shadow region remained
 byte-identical; all three raw depth maps were identical. These are output
 checks, not a performance comparison. Neither native Vulkan nor the tiled
 pipeline has run them.
+
+## Receiver-plane bias and fit evidence
+
+Metal, Release, M1-class Mac, 2026-10-15, local and non-authoritative. A
+headless editor captured the Level Design Test deck and warehouse views
+before and after the receiver-plane bias, per-pixel rotation, PCSS bounds
+and fit change, with the user's graphics settings: Shadow quality 3 (High on
+Metal), soft shadows and contact shadows. At the deck view (1146×595,
+70-degree class field of view) the smallest-sphere fit lowered cascade 0's
+texel from 1.94 to 1.80 cm. A split lambda of 0.90 instead of the High
+preset's 0.80 measured cascade 0 at 0.96 cm against 1.80 cm per texel there;
+it was not adopted because it halves the camera travel before cascades 0 and
+1 redraw, and that motion cost was not measured. The CPU suite
+(`vulkan_renderer_tester`, Release) passes. Vulkan shaders compile
+(`vkr_bakery shaders --backend all`); native Vulkan has not run the change.
 
 ## Moving-light evidence
 

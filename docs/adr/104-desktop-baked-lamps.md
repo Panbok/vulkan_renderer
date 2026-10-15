@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-14
+updated: 2026-10-15
 authority: adr
 ---
 
@@ -12,8 +12,8 @@ Accepted (partial). The desktop pipeline (Vulkan) bakes static lamps
 into lamp-group lightmap layers with direction pages. It removes the lamps
 from runtime lighting and shades the baked light per pixel on opaque and
 transmissive surfaces. Moving receivers take lamp light from the sparse
-volume, and moving casters shadow the two baked lamps whose light at them is
-strongest. The tiled pipeline (Metal) runs the shared payload, validation and
+volume, and moving casters shadow at most two baked lamps, selected by their
+light at the moving casters the camera may see. The tiled pipeline (Metal) runs the shared payload, validation and
 atlas changes with native evidence since 2026-10-10. No timing here is
 authoritative. Of the 2026-10-11 changes, native Vulkan runs on 2026-10-12
 show a Bistro set named under `lightmaps.desktop` baking the static lamps,
@@ -124,13 +124,30 @@ Owner decisions:
    ([ADR-054](054-baked-diffuse-volumes.md#baked-sky-in-environment-reflections)).
 5. **Moving casters.** The lighting system keeps the static shadow-casting
    lamps it drops as baked candidates. Each frame the shadow system scores a
-   candidate by its light at the moving casters it reaches, colour luminance
-   × intensity × distance falloff × spot cone at the caster, over casters
-   whose bounds meet its range on a face the camera may see, and selects the
-   best two; an incumbent's score counts 1.15 times
-   ([`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c)).
-   No lamp is selected while the moving casters are unknown or a publication
-   is pending. A selected lamp's static squares take one atlas layer before
+   candidate by summing, over the moving casters the camera may see, its
+   light at the caster, colour luminance × intensity × distance falloff ×
+   spot cone, times `1 / max(d², 2 m²)` for the caster's distance `d` from
+   the camera. A caster counts when its bounds meet the lamp's range on a
+   face the camera may see, its rooms are not hidden from the camera, and its
+   sphere grown by `min(0.25 × range, 4 m)`, the reach of its shadow, lies
+   inside the camera's side planes. The falloff is held at
+   `max(caster radius, 0.1 × range)`, so a caster touching a lamp does not
+   outweigh every other. At most two lamps are selected
+   ([`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
+   `vkr_shadow_select_baked_lamps`). Free places take the best outsiders at
+   once. A selected lamp keeps its place while a moving caster meets its
+   range, until an outsider has scored 1.5 times higher than the weakest
+   selected lamp for 0.5 s; that lamp then fades out through the local
+   shadow fade, and the outsider takes the place after the fade. One place
+   changes hands at a time. Until 2026-10-15 the score was the strongest
+   light at one caster, without the camera weight, and an incumbent's score
+   counted 1.15 times: in the Level Design Test warehouse, boxes near the
+   camera cast no lamp shadow, and lamp shadows popped as the player walked
+   or turned. No lamp is shown while the dynamic-caster scan is unavailable,
+   and that frame keeps the selection for the next. A publication in flight
+   no longer drops the lamps: static squares hold static casters only and
+   composite squares copy them, so the difference stays the moving casters'.
+   A selected lamp's static squares take one atlas layer before
    the dynamic band, present only while the scene has baked lamps and moving
    casters, and its faces follow ADR-019's static and dynamic squares. It
    publishes two view blocks, the composite (the dynamic square where a
@@ -143,8 +160,8 @@ Owner decisions:
    lighting subtracts it from the baked irradiance, clamped at zero, before
    the undirected and directed split. Without a selected lamp the graph drops
    the image, and the default mask kernels carry no baked-lamp code. The
-   tiled pipeline selects and publishes the same two lamps; its forward
-   `CASTERS` variant subtracts the same term from the lightmap irradiance
+   tiled pipeline selects and publishes the same lamps; its forward
+   `CASTERS` variants subtract the same term from the lightmap irradiance
    ([ADR-108](108-baked-lamp-direct-pages.md)).
 
 ## Consequences
@@ -228,9 +245,12 @@ local and non-authoritative.
   on the pavement; about 14,500 pixels change by more than 6/255 against the
   plain baked night, where nearest-camera ranking changed 6,400. A Debug run
   with the validation layer's synchronization checks reports no message.
-  `test_local_shadow_baked_lamp_selection` covers the ranking, the incumbent
-  bonus, both view blocks, validation, and nothing selected out of range or
-  with unknown casters.
+  These captures predate the 2026-10-15 camera-weighted selection.
+  `test_local_shadow_baked_lamp_selection` covers the ranking, a competitor
+  below the 1.5 challenge factor that does not take a place, the handover
+  after the hold time and the fade-out (at 60 frames a second the replaced
+  lamp stays for the first 29 frames), both view blocks, validation, and
+  nothing selected out of range or with unknown casters.
 - **Cost.** `local-offscreen-gpu-repeated` (5 repetitions, 1,500 samples
   each) on an idle GPU, 2026-10-09 evening, after transmission sampling and
   the mask variants. Mean GPU times in ms:
@@ -299,7 +319,11 @@ Unavailable:
   `bistro_lamps_baked_volume_night_capture` ran with the change, but no
   capture without it was compared;
 - the moving-caster fixtures with the per-class reference, and the light
-  that moving casters hide.
+  that moving casters hide;
+- the 2026-10-15 camera-weighted selection on native Vulkan: the CPU suite
+  (`vulkan_renderer_tester`, Release) passes and the shaders compile
+  (`vkr_bakery shaders --backend all`); its Metal captures are in
+  [ADR-108](108-baked-lamp-direct-pages.md#evidence-and-remaining-checks).
 
 ## Revisit when
 

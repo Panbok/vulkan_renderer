@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-14
+updated: 2026-10-15
 authority: adr
 ---
 
@@ -276,7 +276,9 @@ square, and `draw.local_shadow.dynamic_faces_dropped` counts it. The frame
 falls back to the full redraw of every face a caster reaches, with static and
 dynamic casters together, when the dynamic scan is unavailable or a
 publication is pending (all lights), or when a refractive dynamic caster
-reaches a light (that light). Until 2026-10-11 static squares that filled all
+reaches a light (that light). While a publication is pending, the selected
+baked lamps (ADR-104) still take dynamic squares over their static ones,
+since a static square holds static casters only. Until 2026-10-11 static squares that filled all
 32 layers left no band and forced that redraw too.
 The preset's face budget bounds the faces drawn per frame: High 30, Balanced 12
 and Ultra 60. Complete lights draw in that budget, invalid lights first, then
