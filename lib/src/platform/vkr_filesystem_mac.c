@@ -599,8 +599,6 @@ cleanup:
   return error;
 }
 
-#endif
-
 FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
                               void *context) {
   if (!path || !path->path.str || !visit) {
@@ -635,3 +633,5 @@ FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
   closedir(directory);
   return FILE_ERROR_NONE;
 }
+
+#endif
