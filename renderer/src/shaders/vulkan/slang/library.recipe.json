@@ -166,6 +166,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.fsr31.prepare.comp",
+      "entry": "vk_fsr31_prepare",
+      "stage": "compute"
+    },
+    {
       "name": "packet.visibility.vert",
       "entry": "vk_visibility_vertex",
       "stage": "vertex"

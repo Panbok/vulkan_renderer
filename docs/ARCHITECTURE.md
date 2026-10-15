@@ -855,10 +855,13 @@ post controls and the temporal consumer. The main dataflow is:
    integrated volume when froxel fog is enabled. Shade transmission from deepest
    to nearest, resolve requested picking, then draw ordinary blend. With
    SMAA 4x the listed pixels' second samples are resolved and lit as well.
-4. Compose the jittered Scene HDR and SMAA T2x's history accept mask.
+4. With FSR 3.1 (the default), prepare its depth, reactive and composition
+   inputs and reconstruct the jittered Scene HDR at its own resolution.
+   Otherwise compose the jittered Scene HDR and SMAA T2x's history accept
+   mask.
 5. Meter exposure, produce/combine bloom, tonemap, run SMAA (S2x per sample
-   with SMAA 4x) and T2x's resolve on the display-linear image, and compose
-   native UI.
+   with SMAA 4x) and T2x's resolve on the display-linear image when FSR is
+   off, and compose native UI.
 
 Optional profiled surface diffusion uses eight scene-authored RGB distance
 profiles, 32 samples and a 32 internal-pixel radius cap. Two graph-owned RGBA16F
@@ -1120,17 +1123,20 @@ occlusion remains active. Invalid or uncovered cells keep the global/probe diffu
 fallback. [ADR-054](adr/054-baked-diffuse-volumes.md) owns offline room detection,
 artifact layout, lifetime and evidence limits.
 
-Screen-space reflections, screen-space diffuse indirect lighting and FSR 3.1
-were removed from the desktop pipeline on 2026-10-12
+Screen-space reflections and screen-space diffuse indirect lighting were
+removed from the desktop pipeline on 2026-10-12
 ([ADR-055](adr/055-screen-space-reflections.md),
-[ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md),
-[ADR-052](adr/052-vulkan-fsr31-upscaling.md)). Specular indirect light comes
+[ADR-060](adr/060-screen-space-diffuse-indirect-lighting.md)), with the FSR
+3.1 upscaler. Specular indirect light comes
 from the global environment and box-projected reflection probes on both
 lobes of a coated material, and diffuse indirect light from lightmaps,
 diffuse volumes and the environment. SMAA T2x replaced portable TAA and
 FXAA on 2026-10-13; SMAA 4x (S2x plus T2x) became an opt-in path on
 2026-10-15
-([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)).
+([ADR-037](adr/037-portable-same-resolution-temporal-antialiasing.md)), and
+FSR 3.1 native antialiasing at render scale 1 became the default the same
+day, with SMAA T2x as the selectable fallback
+([ADR-052](adr/052-vulkan-fsr31-upscaling.md)).
 On the desktop pipeline, a `planar_reflector` entity's surface on its plane
 reflects the scene mirrored about it: one reflector a frame gets a culling
 view and a forward-shaded image at half or quarter resolution, and its
@@ -1215,7 +1221,10 @@ colour history remains; history uses the preceding submitted frame with GPU
 dependencies, output reuse still proves completion, and resets exclude every
 pre-reset producer. Retained shadow images converge to a common submitted
 projection so cached per-image fits cannot prevent convergence after camera
-movement. The G-buffer writes sky rotation motion for the resolve. Opt-in
+movement. The G-buffer writes sky rotation motion for the resolve. FSR 3.1
+native antialiasing replaces SMAA and T2x by default: an eight-phase Halton
+jitter, the FidelityFX SDK's own history, and a reset whenever the mode
+changes ([ADR-052](adr/052-vulkan-fsr31-upscaling.md)). Opt-in
 SMAA 4x (`VKR_MSAA_ENABLED`) adds S2x: the camera's visibility raster is 2x multisampled, the second
 sample is shaded only at pixels where it lies on another surface,
 and SMAA runs on each sample's display-linear image before T2x; frames with
@@ -1289,7 +1298,7 @@ spatially ([ADR-039](adr/039-metal-internal-render-scale.md), ADR-087 decision
 12). Zero-initialized renderer API callers use unit scale, and the default
 render scale is 1.0 on both backends. Neither backend has a temporal
 upscaler. Vulkan renders the Scene at unit scale and rejects any other
-scale; FSR 3.1 was removed on 2026-10-12
+scale; FSR 3.1 reconstructs at that scale only
 ([ADR-052](adr/052-vulkan-fsr31-upscaling.md)).
 Forward/deferred specular antialiasing shares the perceptual-to-GGX
 roughness conversion on both backends; normal variance broadens squared GGX

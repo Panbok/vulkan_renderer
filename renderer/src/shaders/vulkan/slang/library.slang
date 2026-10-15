@@ -60,6 +60,7 @@
 #include "post/subsurface.slang"
 #include "post/fog.slang"
 #include "post/froxel_fog.slang"
+#include "post/fsr31.slang"
 #include "post/default.slang"
 #include "text/default.slang"
 #include "ui/default.slang"

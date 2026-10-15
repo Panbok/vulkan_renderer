@@ -63,6 +63,28 @@ Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index, bool8_t msaa) {
   return first ? (Vec2){0.25f, 0.25f} : (Vec2){-0.25f, -0.25f};
 }
 
+/* FSR 3.1's jitter at render scale 1: ffxFsr3GetJitterPhaseCount gives
+   8 * (output / render)^2 = 8 phases of the Halton (2, 3) sequence, offset
+   to [-0.5, 0.5) pixels. */
+#define VKR_TEMPORAL_FSR_SEQUENCE_LENGTH 8u
+
+vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
+  float32_t result = 0.0f;
+  float32_t fraction = 1.0f;
+  while (index > 0u) {
+    fraction /= (float32_t)base;
+    result += fraction * (float32_t)(index % base);
+    index /= base;
+  }
+  return result;
+}
+
+vkr_internal Vec2 vkr_temporal_fsr_jitter(uint32_t frame_index) {
+  const uint32_t index = frame_index % VKR_TEMPORAL_FSR_SEQUENCE_LENGTH + 1u;
+  return (Vec2){vkr_temporal_halton(index, 2u) - 0.5f,
+                vkr_temporal_halton(index, 3u) - 0.5f};
+}
+
 Vec4 vkr_temporal_smaa_subsample_indices(uint32_t frame_index, uint32_t sample,
                                          bool8_t msaa) {
   const bool8_t first = frame_index % VKR_TEMPORAL_SEQUENCE_LENGTH == 0u;
@@ -161,7 +183,11 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
     if (vkr_temporal_camera_cut(state, input))
       frame.reset_reasons |= VKR_TEMPORAL_RESET_CAMERA_CUT;
   }
-  if (input->enabled && input->width > 0u && input->height > 0u) {
+  if (input->enabled && input->width > 0u && input->height > 0u && input->fsr) {
+    frame.jitter_pixels = vkr_temporal_fsr_jitter(input->frame_index);
+    frame.jittered_projection = vkr_temporal_jitter_projection(
+        input->projection, frame.jitter_pixels, input->width, input->height);
+  } else if (input->enabled && input->width > 0u && input->height > 0u) {
     frame.jitter_pixels =
         vkr_temporal_jitter_for_frame(input->frame_index, input->msaa);
     frame.smaa_subsample_indices = vkr_temporal_smaa_subsample_indices(

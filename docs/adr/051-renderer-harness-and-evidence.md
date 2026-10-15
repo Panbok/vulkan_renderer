@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-13
+updated: 2026-10-15
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -95,6 +95,13 @@ texture load limit of [ADR-012](012-texture-compression-pipeline.md). Nonzero
 values enter the workload fingerprint; zero preserves existing identities.
 Capture-summary version 17 stores it in former padding before the camera;
 readers migrate versions 2–16 with the limit at zero, which loaded every mip.
+
+`renderer.antialiasing` (`fsr`, the default, or `smaa_t2x`) selects the
+desktop antialiasing of [ADR-052](052-vulkan-fsr31-upscaling.md) when
+`taa_enabled` is true; only then does it enter the workload fingerprint, so
+cases without temporal antialiasing keep their identities, and
+`effective_config` always reports it. Capture-summary version 19 stores it; readers migrate version 18
+and older as `smaa_t2x`, the only method they ran.
 
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible

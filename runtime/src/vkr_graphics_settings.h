@@ -3,6 +3,7 @@
 #include "containers/str.h"
 #include "core/vkr_json_writer.h"
 #include "core/vkr_type_desc.h"
+#include "vkr_frame_input.h"
 #include "vkr_renderer.h"
 
 /* Machine-local quality gates and presentation preferences. Art direction
@@ -10,6 +11,10 @@
  * post_process component (ADR-076). */
 typedef struct VkrGraphicsSettings {
   bool8_t vsync, hdr, dynamic_resolution, anti_aliasing;
+  /* VkrAntialiasingMode of the desktop pipeline's temporal anti-aliasing:
+   * FSR 3.1 native anti-aliasing (the default) or SMAA T2x. It applies only
+   * while anti_aliasing is on; the tiled pipeline ignores it (ADR-087). */
+  uint32_t antialiasing;
   /* Render the display's physical pixels; off renders one pixel per point,
    * a quarter of the pixels on a 2x Retina display. macOS only. */
   bool8_t high_dpi;

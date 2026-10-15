@@ -32,7 +32,7 @@ Each domain below names the backends that run it:
   light arithmetic that forward and deferred shading both call.
 - **Desktop**: only Vulkan runs it. This covers the visibility buffer,
   G-buffer resolve, deferred lighting, the local shadow mask, transmission
-  layers, SMAA 4x and T2x, GTAO, depth of field, motion blur, froxel
+  layers, FSR 3.1 native antialiasing, SMAA 4x and T2x, GTAO, depth of field, motion blur, froxel
   fog, profiled surface diffusion and the clearcoat, sheen, anisotropy
   and thin-sheet diffuse transmission material layers.
 - **Tiled**: only Metal runs it: the tiled forward, atmosphere, blend and
@@ -819,6 +819,7 @@ domain under the [evidence rules](#evidence-rules).
 | Depth of field, motion blur, surface diffusion | Desktop | `shared/dof_kernel.slangh`, `motion_blur_kernel.slangh`, `subsurface_kernel.slangh` | — | `vulkan/slang/post/dof.slang`, `motion_blur.slang`, `subsurface.slang` |
 | Tonemap/sharpening/display output | Shared | shared exposure state, `shared/sharpen_kernel.slangh`, `gt7_kernel.slangh`, `display_output_kernel.slangh`, `color_grading_kernel.slangh` | `metal/msl/post/tonemap.metal` | `vulkan/slang/post/default.slang`, `tonemap.slangh` |
 | SMAA 4x and T2x | Desktop | — | — | `vulkan/slang/post/smaa.slang`; S2x's visibility split, second-sample resolve and lighting, and compose in `world/deferred.slang` |
+| FSR 3.1 native antialiasing inputs | Desktop | — | — | `vulkan/slang/post/fsr31.slang` (`vk_fsr31_prepare`); the reconstruction is the FidelityFX SDK's own shaders (ADR-052) |
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode

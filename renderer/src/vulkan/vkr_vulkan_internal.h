@@ -182,6 +182,7 @@
 #define VKR_VULKAN_PACKET_SMAA_BLEND_COMP_SPV "packet.smaa_blend.comp.spv"
 #define VKR_VULKAN_PACKET_SMAA_RESOLVE_COMP_SPV "packet.smaa_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_VBUFFER_SPLIT_COMP_SPV "packet.vbuffer_split.comp.spv"
+#define VKR_VULKAN_PACKET_FSR31_PREPARE_COMP_SPV "packet.fsr31.prepare.comp.spv"
 #define VKR_VULKAN_PACKET_MSAA_SAMPLE1_LIST_RESET_COMP_SPV                     \
   "packet.msaa_sample1_list_reset.comp.spv"
 #define VKR_VULKAN_PACKET_MSAA_COMPOSE_COMP_SPV "packet.msaa_compose.comp.spv"
@@ -484,6 +485,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_VBUFFER_SPLIT,
   VKR_VULKAN_DEFERRED_PIPELINE_MSAA_COMPOSE,
   VKR_VULKAN_DEFERRED_PIPELINE_MSAA_SAMPLE1_LIST_RESET,
+  VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -1759,6 +1761,25 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanMsaaComposeRoot {
 _Static_assert(sizeof(VkrVulkanMsaaComposeRoot) == 48u,
                "MSAA compose root ABI drift");
 
+/** Mirrors the root of vk_fsr31_prepare in post/fsr31.slang: FSR 3.1's
+    depth, reactive and composition inputs. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanFsr31PrepareRoot {
+  uint32_t scene_texture;
+  uint32_t pre_transmission_texture;
+  uint32_t validity_texture;
+  uint32_t opaque_depth_texture;
+  uint32_t transmission_depth_texture;
+  uint32_t output_depth_texture;
+  uint32_t reactive_texture;
+  uint32_t composition_texture;
+  uint32_t extent[2];
+  uint32_t transmission_enabled;
+  /* Zero: the spike carries no static-convergence pass. */
+  uint32_t scene_stationary;
+} VkrVulkanFsr31PrepareRoot;
+_Static_assert(sizeof(VkrVulkanFsr31PrepareRoot) == 48u,
+               "FSR input preparation root must match its shader");
+
 /** Mirrors VkrVkVbufferSplitDepthRoot in world/deferred.slang. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanVbufferSplitDepthRoot {
   uint32_t ms_depth_texture;
@@ -2898,6 +2919,9 @@ typedef struct VkrVulkanFrameSlot {
   /** True only while this slot's command buffer contains the one-time SH
       sentinel clear. The renderer-wide state commits after queue submission. */
   bool8_t sh_coefficients_clear_recorded;
+  /** The SDK recorded into this slot's command buffer; its CPU-side state
+      advanced, so a cancelled submission recreates the context. */
+  bool8_t fsr31_recorded;
   /** True only while this slot's command buffer owns the immutable DFG upload.
    */
   bool8_t dfg_upload_recorded;
@@ -3298,6 +3322,12 @@ typedef struct VkrVulkanCloudHistory {
   bool8_t valid;
 } VkrVulkanCloudHistory;
 
+/* FSR 3.1's last recorded dispatch: an invalid one resets the SDK history. */
+typedef struct VkrVulkanFsr31History {
+  uint64_t submit_value;
+  bool8_t valid;
+} VkrVulkanFsr31History;
+
 struct VkrVulkanRenderer {
   VkrAllocator *allocator;
   VkrVulkanRendererConfig config;
@@ -3311,6 +3341,16 @@ struct VkrVulkanRenderer {
   VkrDisplayOutputParams display_output_requested;
   uint64_t display_output_snapshot_revision;
   VkrGtaoGpuParams gtao_params;
+  /* FSR 3.1 native antialiasing: the SDK context, created at the Scene's
+     output size, and its dispatch ring, independent of command slots:
+     cancelled SDK dispatches advance its rings. */
+  struct VkrVulkanFsrSdk *fsr31;
+  uint32_t fsr31_output_width;
+  uint32_t fsr31_output_height;
+  VkrVulkanFsr31History fsr31_history;
+  uint64_t fsr31_dispatch_uses[VKR_VULKAN_FRAME_SLOT_COUNT];
+  uint32_t fsr31_dispatch_slot;
+  bool8_t fsr31_recreate;
   VkrVulkanFroxelHistory froxel_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrVulkanCloudHistory cloud_histories[VKR_VULKAN_HISTORY_INSTANCE_COUNT];
   VkrDMemory publication_staging_memory;
@@ -4012,6 +4052,12 @@ bool8_t vkr_vk_window_presents_complete(VkrVulkanRenderer *renderer,
                                         VkrVulkanWindowTarget *target,
                                         bool8_t wait);
 uint64_t vkr_vk_refresh_completed(VkrVulkanRenderer *renderer);
+/* FSR 3.1 native AA (vkr_vulkan_fsr.c, vkr_vulkan_deferred.c). */
+bool8_t vkr_vk_prepare_fsr31_context(VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass);
+void vkr_vk_cancel_fsr31(VkrVulkanRenderer *renderer);
 void vkr_vk_collect_asset_publications(VkrVulkanRenderer *renderer,
                                        uint64_t completed);
 void vkr_vk_collect_retired_targets(VkrVulkanRenderer *renderer,

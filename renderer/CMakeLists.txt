@@ -20,7 +20,9 @@ if(APPLE)
 file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h src/*.m)
 enable_language(C OBJC)
 elseif(WIN32)
+enable_language(CXX)
 file(GLOB_RECURSE LIB_SOURCES CONFIGURE_DEPENDS src/*.c src/*.h)
+list(APPEND LIB_SOURCES src/vulkan/vkr_vulkan_fsr_sdk.cpp)
 endif()
 list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 
@@ -145,6 +147,20 @@ else()
     target_link_libraries(renderer_lib PRIVATE ${Vulkan_LIBRARIES})
 endif()
 target_link_libraries(renderer_lib PUBLIC vkr_render_contracts)
+
+if(WIN32)
+    include("${CMAKE_SOURCE_DIR}/cmake/vkr_fsr.cmake")
+    target_compile_features(renderer_lib PRIVATE cxx_std_17)
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/vkr_vulkan_fsr_sdk.cpp"
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+    target_link_libraries(renderer_lib PRIVATE
+        ${VKR_FSR3_UPSCALER_TARGET}
+        ${VKR_FSR3_VULKAN_BACKEND_TARGET})
+    target_compile_definitions(renderer_lib PRIVATE VKR_HAS_FSR3_UPSCALER=1)
+else()
+    target_compile_definitions(renderer_lib PRIVATE VKR_HAS_FSR3_UPSCALER=0)
+endif()
 
 # Set platform-specific definitions and link libraries
 if(APPLE)

@@ -216,6 +216,12 @@ struct VkrRenderer {
   uint64_t froxel_static_followed;
   bool8_t smaa_enabled;
   bool8_t msaa_enabled;
+  /* The build and device run FSR 3.1 (vkr_vulkan_renderer_fsr31_available);
+     without it VKR_ANTIALIASING_MODE_FSR_NATIVE frames use SMAA T2x. */
+  bool8_t fsr31_available;
+  /* The antialiasing of the last prepared desktop frame: a change resets
+     temporal history, whose producers differ between FSR and T2x. */
+  bool8_t fsr31_previous;
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;

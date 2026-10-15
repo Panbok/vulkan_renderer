@@ -1575,6 +1575,60 @@
       ]
     },
     {
+      "name": "fsr31_depth",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R32_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "fsr31_reactive",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "fsr31_composition",
+      "type": "image",
+      "condition": "scene_rendering && fsr31_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "exposure_histogram",
       "type": "buffer",
       "condition": "scene_rendering && exposure_automatic",
@@ -10537,7 +10591,7 @@
     {
       "name": "Temporal.Resolve.Fullscreen",
       "type": "compute",
-      "condition": "scene_rendering && !editor_enabled",
+      "condition": "scene_rendering && !editor_enabled && !fsr31_enabled",
       "flags": [
         "NO_CULL"
       ],
@@ -10640,9 +10694,137 @@
       "execute": "pass.temporal.resolve"
     },
     {
+      "name": "FSR31.Prepare",
+      "type": "compute",
+      "condition": "scene_rendering && fsr31_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "!editor_enabled"
+        },
+        {
+          "image": "scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "editor_enabled"
+        },
+        {
+          "image": "hdr_pre_transmission",
+          "access": "SAMPLED",
+          "binding": 1,
+          "when": "!subsurface_enabled && !editor_enabled"
+        },
+        {
+          "image": "subsurface_color",
+          "access": "SAMPLED",
+          "binding": 1,
+          "when": "subsurface_enabled"
+        },
+        {
+          "image": "scene_pre_transmission",
+          "access": "SAMPLED",
+          "binding": 1,
+          "when": "!subsurface_enabled && editor_enabled"
+        },
+        {
+          "image": "temporal_validity",
+          "access": "SAMPLED",
+          "binding": 2
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 3
+        },
+        {
+          "image": "transmission_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 4,
+          "subresource": {
+            "base_layer": 0,
+            "layer_count": 1
+          },
+          "when": "transmission_pending"
+        }
+      ],
+      "writes": [
+        {
+          "image": "fsr31_depth",
+          "access": "STORAGE_WRITE",
+          "binding": 5
+        },
+        {
+          "image": "fsr31_reactive",
+          "access": "STORAGE_WRITE",
+          "binding": 6
+        },
+        {
+          "image": "fsr31_composition",
+          "access": "STORAGE_WRITE",
+          "binding": 7
+        }
+      ],
+      "execute": "pass.fsr31.prepare"
+    },
+    {
+      "name": "FSR31.Upscale",
+      "type": "compute",
+      "condition": "scene_rendering && fsr31_enabled",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "!editor_enabled"
+        },
+        {
+          "image": "scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "editor_enabled"
+        },
+        {
+          "image": "fsr31_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "temporal_motion",
+          "access": "SAMPLED",
+          "binding": 2
+        },
+        {
+          "image": "fsr31_reactive",
+          "access": "SAMPLED",
+          "binding": 3
+        },
+        {
+          "image": "fsr31_composition",
+          "access": "SAMPLED",
+          "binding": 4
+        }
+      ],
+      "writes": [
+        {
+          "image": "scene_resolved_color",
+          "access": "STORAGE_WRITE",
+          "binding": 5
+        }
+      ],
+      "execute": "pass.fsr31.upscale"
+    },
+    {
       "name": "Temporal.Resolve.Editor",
       "type": "compute",
-      "condition": "scene_rendering && editor_enabled",
+      "condition": "scene_rendering && editor_enabled && !fsr31_enabled",
       "flags": [
         "NO_CULL"
       ],

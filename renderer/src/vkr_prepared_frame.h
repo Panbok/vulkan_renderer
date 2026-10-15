@@ -18,6 +18,10 @@ typedef struct VkrPreparedFrame {
   /** The visibility raster takes two samples a pixel: with SMAA when
       VKR_MSAA_ENABLED is set (SMAA S2x). */
   bool8_t msaa_enabled;
+  /** FSR 3.1 native antialiasing (VkrAntialiasingMode) replaces SMAA and T2x:
+      the scene's HDR colour is reconstructed at its own resolution before
+      post-processing. */
+  bool8_t fsr31_enabled;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its

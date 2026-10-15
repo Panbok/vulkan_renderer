@@ -13,6 +13,15 @@ static const char *const s_view_distance_names[] = {"near", "medium", "far",
                                                     "epic", NULL};
 /* Draw distance multipliers of `view_distance`. */
 static const float32_t s_view_distance_scales[] = {0.5f, 0.75f, 1.0f, 1.5f};
+/* Indexed by VkrAntialiasingMode. */
+static const char *const s_antialiasing_names[] = {"fsr", "smaa_t2x", NULL};
+static const char *const s_antialiasing_labels[] = {"FSR 3.1", "SMAA T2x",
+                                                    NULL};
+_Static_assert(ArrayCount(s_antialiasing_names) - 1u ==
+                       VKR_ANTIALIASING_MODE_COUNT &&
+                   ArrayCount(s_antialiasing_labels) - 1u ==
+                       VKR_ANTIALIASING_MODE_COUNT,
+               "Name every anti-aliasing mode");
 
 #define GRAPHICS_OFFSET(field) (uint32_t)offsetof(VkrGraphicsSettings, field)
 
@@ -85,6 +94,14 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .group = "Quality",
      .offset = GRAPHICS_OFFSET(anti_aliasing),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "anti_aliasing_method",
+     .label = "Anti-aliasing method",
+     .tooltip = "FSR 3.1 rebuilds edges and fine detail from many frames; "
+                "SMAA T2x costs less and blends two frames",
+     .names = s_antialiasing_names,
+     .labels = s_antialiasing_labels,
+     .offset = GRAPHICS_OFFSET(antialiasing),
+     .kind = VKR_PROPERTY_ENUM},
     {.name = "shadow_quality",
      .label = "Shadows",
      .tooltip = "Shadow map resolution and filtering",
@@ -205,6 +222,7 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
      edges need no anti-aliasing setting. */
   const bool8_t tiled_unused =
       offset == offsetof(VkrGraphicsSettings, anti_aliasing) ||
+      offset == offsetof(VkrGraphicsSettings, antialiasing) ||
       offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
       offset == offsetof(VkrGraphicsSettings, filtered_far_shadows) ||
       offset == offsetof(VkrGraphicsSettings, ambient_occlusion) ||
@@ -249,6 +267,10 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
     if (!settings->fog) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
+  } else if (offset == offsetof(VkrGraphicsSettings, antialiasing)) {
+    if (!settings->anti_aliasing) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
   }
   return result;
 }
@@ -276,6 +298,7 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .dynamic_resolution = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
       .dynamic_resolution_target_fps = 60u,
       .anti_aliasing = true_v,
+      .antialiasing = VKR_ANTIALIASING_MODE_FSR_NATIVE,
       /* With dynamic resolution the scale caps the controller, so Metal
          starts uncapped and lets it choose. */
       .render_scale = 1.0f,

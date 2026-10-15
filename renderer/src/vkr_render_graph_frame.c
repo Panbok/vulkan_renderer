@@ -134,6 +134,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->post_transform_cache_enabled = packet->post_transform_cache_enabled;
   frame->smaa_enabled = packet->smaa_enabled;
   frame->msaa_enabled = packet->msaa_enabled;
+  frame->fsr31_enabled = packet->fsr31_enabled;
   /* The dynamic volume layer traces on frames that carry its update and
      a bound volume; the device's ray queries gate it in the backend
      (ADR-119). */
@@ -498,6 +499,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                                  VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TEMPORAL_RESOLVE] = {"pass.temporal.resolve",
                                           VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FSR31_PREPARE] = {"pass.fsr31.prepare",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_FSR31_UPSCALE] = {"pass.fsr31.upscale",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM] = {"pass.exposure.histogram",
                                             VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EXPOSURE_RESOLVE] = {"pass.exposure.resolve",

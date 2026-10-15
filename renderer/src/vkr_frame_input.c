@@ -229,6 +229,10 @@ vkr_internal VkrRendererError vkr_frame_input_validate_exposure_and_grading(
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.globals.display_transform",
                       "must be a supported VkrDisplayTransform");
+  if (packet->globals.antialiasing_mode >= VKR_ANTIALIASING_MODE_COUNT)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.globals.antialiasing_mode",
+                      "must be a supported VkrAntialiasingMode");
   if (!vkr_is_finite_f32(packet->globals.white_balance_temperature) ||
       packet->globals.white_balance_temperature < -1.0f ||
       packet->globals.white_balance_temperature > 1.0f)

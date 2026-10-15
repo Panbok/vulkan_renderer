@@ -65,6 +65,9 @@ typedef struct VkrVulkanDeviceConfig {
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;
+  /** Requests shaderStorageImageExtendedFormats for FSR 3.1; a device
+      without it is still selected and reports FSR unavailable. */
+  bool8_t fsr31_enabled;
 } VkrVulkanDeviceConfig;
 
 /* Acceleration-structure descriptors of the resource layout's binding 2,
@@ -99,6 +102,9 @@ vkr_vulkan_device_profile(const VkrVulkanDevice *device);
 
 VkInstance vkr_vulkan_device_instance(const VkrVulkanDevice *device);
 VkPhysicalDevice vkr_vulkan_device_physical(const VkrVulkanDevice *device);
+/** True when FSR 3.1 was requested and the selected device enabled its
+    storage-image formats. */
+bool8_t vkr_vulkan_device_fsr31_supported(const VkrVulkanDevice *device);
 VkDevice vkr_vulkan_device_handle(const VkrVulkanDevice *device);
 VkQueue vkr_vulkan_device_queue(const VkrVulkanDevice *device);
 VkSurfaceKHR vkr_vulkan_device_surface(const VkrVulkanDevice *device);

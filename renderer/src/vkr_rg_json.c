@@ -42,6 +42,11 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_POST_TRANSFORM_CACHE_NO_SMAA},
     {"smaa_enabled && editor_enabled", VKR_RG_JSON_CONDITION_SMAA_EDITOR},
     {"smaa_enabled && !editor_enabled", VKR_RG_JSON_CONDITION_SMAA_FULLSCREEN},
+    {"fsr31_enabled", VKR_RG_JSON_CONDITION_FSR31_ENABLED},
+    {"editor_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_ENABLED_FSR31_DISABLED},
+    {"!editor_enabled && !fsr31_enabled",
+     VKR_RG_JSON_CONDITION_EDITOR_DISABLED_FSR31_DISABLED},
     {"planar_reflection_active",
      VKR_RG_JSON_CONDITION_PLANAR_REFLECTION_ACTIVE},
     {"dynamic_volume_active", VKR_RG_JSON_CONDITION_DYNAMIC_VOLUME_ACTIVE},
@@ -2064,6 +2069,12 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->smaa_enabled && frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_SMAA_FULLSCREEN:
     return frame->smaa_enabled && !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_FSR31_ENABLED:
+    return frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_ENABLED_FSR31_DISABLED:
+    return frame->editor_enabled && !frame->fsr31_enabled;
+  case VKR_RG_JSON_CONDITION_EDITOR_DISABLED_FSR31_DISABLED:
+    return !frame->editor_enabled && !frame->fsr31_enabled;
   case VKR_RG_JSON_CONDITION_PLANAR_REFLECTION_ACTIVE:
     return frame->planar_reflection_active;
   case VKR_RG_JSON_CONDITION_DYNAMIC_VOLUME_ACTIVE:

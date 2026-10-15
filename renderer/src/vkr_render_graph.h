@@ -559,6 +559,8 @@ typedef struct VkrRenderGraphFrameInfo {
   /** The camera's visibility raster takes two samples a pixel (SMAA S2x);
       a split pass hands sample zero to the single-sample consumers. */
   bool8_t msaa_enabled;
+  /** FSR 3.1 native antialiasing replaces SMAA and T2x on this frame. */
+  bool8_t fsr31_enabled;
   /** The frame draws a planar reflector's mirrored view (desktop pipeline)
       into an image `planar_reflection_divisor` times smaller than the
       viewport on each axis, inside the half-size reflection target. */

@@ -475,6 +475,7 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
   globals->gtao_enabled = settings->ambient_occlusion;
   globals->dof_enabled = settings->depth_of_field;
   globals->motion_blur_enabled = settings->motion_blur;
+  globals->antialiasing_mode = settings->antialiasing;
   application->disable_directional_shadows = settings->shadow_quality == 0;
   application->disable_local_shadows =
       settings->shadow_quality == 0 || !settings->local_shadows;
@@ -576,6 +577,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
   const VkrGraphicsSettings old = state->graphics.settings;
   const bool8_t lighting_changed =
       old.anti_aliasing != settings.anti_aliasing ||
+      old.antialiasing != settings.antialiasing ||
       old.shadow_quality != settings.shadow_quality ||
       old.soft_shadows != settings.soft_shadows ||
       old.filtered_far_shadows != settings.filtered_far_shadows ||

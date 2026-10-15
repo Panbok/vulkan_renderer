@@ -375,6 +375,8 @@ vkr_internal bool8_t vkr_harness_report_write_renderer_features(
     bool8_t post_transform_cache_enabled) {
   return vkr_harness_json_emit_bool(writer, "taa_enabled",
                                     renderer->taa_enabled) &&
+         vkr_harness_json_emit_string(writer, "antialiasing",
+                                      renderer->antialiasing) &&
          vkr_harness_json_emit_bool(writer, "tonemap_enabled",
                                     renderer->tonemap_enabled) &&
          vkr_harness_json_emit_bool(writer, "smaa_enabled",

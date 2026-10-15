@@ -567,6 +567,7 @@ void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");
   VKR_STRING_COPY_LITERAL(renderer->exposure_mode, "manual");
   VKR_STRING_COPY_LITERAL(renderer->display_transform, "gt7");
+  VKR_STRING_COPY_LITERAL(renderer->antialiasing, "fsr");
   renderer->color_contrast = 1.0f;
   renderer->color_saturation = 1.0f;
   VKR_STRING_COPY_LITERAL(renderer->upscaler, "spatial");
@@ -622,6 +623,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
                                  &renderer->physics_fixture, error) ||
       !vkr_harness_manifest_bool(doc, token, "taa_enabled", false_v,
                                  &renderer->taa_enabled, error) ||
+      !vkr_harness_manifest_string(doc, token, "antialiasing", false_v,
+                                   renderer->antialiasing,
+                                   sizeof(renderer->antialiasing), error) ||
       !vkr_harness_manifest_bool(doc, token, "tonemap_enabled", false_v,
                                  &renderer->tonemap_enabled, error) ||
       !vkr_harness_manifest_bool(
@@ -798,6 +802,9 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
   const bool8_t display_transform_valid =
       string_equals(renderer->display_transform, "gt7") ||
       string_equals(renderer->display_transform, "aces_fitted");
+  const bool8_t antialiasing_valid =
+      string_equals(renderer->antialiasing, "fsr") ||
+      string_equals(renderer->antialiasing, "smaa_t2x");
   const bool8_t automatic_exposure =
       string_equals(renderer->exposure_mode, "automatic");
   const bool8_t automatic_controls_valid =
@@ -848,10 +855,10 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
        renderer->motion_blur_entity_velocity_z == 0.0f);
   if (!preset_valid || !mode_valid || !backend_valid || !display_output_valid ||
       fields->cascades < 1u || fields->cascades > 8u || !exposure_mode_valid ||
-      !display_transform_valid || !automatic_controls_valid ||
-      !bloom_controls_valid || !gtao_controls_valid || !dof_focus_valid ||
-      !dof_f_stop_valid || !motion_blur_controls_valid ||
-      !motion_blur_entity_valid ||
+      !display_transform_valid || !antialiasing_valid ||
+      !automatic_controls_valid || !bloom_controls_valid ||
+      !gtao_controls_valid || !dof_focus_valid || !dof_f_stop_valid ||
+      !motion_blur_controls_valid || !motion_blur_entity_valid ||
       (fields->ibl_probe_limit_token >= 0 &&
        fields->ibl_probe_limit > VKR_FRAME_IBL_PROBE_MAX) ||
       !isfinite(fields->manual_exposure) || fields->manual_exposure <= 0.0 ||
@@ -873,7 +880,7 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
     vkr_harness_error_set(
         error, "renderer.config", "$.renderer",
         "Renderer backend, preset, "
-        "render/exposure/display-transform mode, "
+        "render/exposure/display-transform/anti-aliasing mode, "
         "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/"
         "image-sharpness controls, "
         "probe limit, or cascade count is invalid");
@@ -1042,6 +1049,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "text_fixture",
       "physics_fixture",
       "taa_enabled",
+      "antialiasing",
       "tonemap_enabled",
       "smaa_enabled",
       "transmission_depth_diagnostic_enabled",

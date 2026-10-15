@@ -699,6 +699,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .enable_gpu_assisted =
           backend_config->gpu_assisted_validation ||
           vkr_platform_environment_flag("VKR_VULKAN_GPU_VALIDATION"),
+      .fsr31_enabled = true_v,
   };
   config.enable_validation = config.enable_validation ||
                              backend_config->validation_enabled ||
@@ -713,6 +714,11 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   }
   vkr_vulkan_renderer_get_asset_publisher(renderer->vulkan_renderer,
                                           &renderer->native_publisher);
+  renderer->fsr31_available =
+      vkr_vulkan_renderer_fsr31_available(renderer->vulkan_renderer);
+  if (!renderer->fsr31_available)
+    log_info("FSR 3.1 is unavailable on this build or device; SMAA T2x "
+             "antialiases every desktop frame");
   *out_error = VKR_RENDERER_ERROR_NONE;
   log_info("Selected Vulkan 1.4 packet renderer");
   return true_v;
@@ -1072,8 +1078,20 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   const bool8_t default_output =
       prepared->frame.scene_rendering &&
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
+  /* FSR 3.1 native AA replaces SMAA and T2x on desktop frames with temporal
+     antialiasing and a perspective camera (the SDK's depth contract); the
+     SMAA T2x mode, or a build or device without FSR, keeps SMAA T2x. */
+  prepared->frame.fsr31_enabled =
+      packet->globals.antialiasing_mode == VKR_ANTIALIASING_MODE_FSR_NATIVE &&
+      rf->fsr31_available && rf->temporal_enabled && !tiled && default_output &&
+      !orthographic;
+  /* FSR and T2x keep different histories, so a change resets both. */
+  const bool8_t fsr31_changed =
+      prepared->frame.fsr31_enabled != rf->fsr31_previous;
+  rf->fsr31_previous = prepared->frame.fsr31_enabled;
   prepared->frame.smaa_enabled = rf->smaa_enabled && !tiled && default_output &&
-                                 rf->post_transform_cache_enabled;
+                                 rf->post_transform_cache_enabled &&
+                                 !prepared->frame.fsr31_enabled;
   /* SMAA S2x samples the camera's visibility raster twice a pixel. Depth of
      field and motion blur replace a pixel with its blurred surroundings, where
      a second sample's edge has no meaning; their frames keep T2x alone. */
@@ -1089,7 +1107,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY;
   const bool8_t temporal_frame =
       rf->temporal_enabled && !tiled && !orthographic &&
-      (prepared->frame.smaa_enabled || temporal_view);
+      (prepared->frame.smaa_enabled || prepared->frame.fsr31_enabled ||
+       temporal_view);
   /* The display-linear target only pays off when the final pass filters. */
   const bool8_t output_filtered =
       prepared->frame.smaa_enabled || packet->globals.image_sharpness > 0.0f;
@@ -1231,9 +1250,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       .render_mode = packet->globals.render_mode,
       .explicit_reset_reasons =
           rf->temporal_reset_reasons |
-          (fog_changed ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u),
+          (fog_changed ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u) |
+          (fsr31_changed ? VKR_TEMPORAL_RESET_MODE_CHANGE : 0u),
       .enabled = temporal_frame,
       .msaa = prepared->frame.msaa_enabled,
+      .fsr = prepared->frame.fsr31_enabled,
   };
   prepared->frame.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);

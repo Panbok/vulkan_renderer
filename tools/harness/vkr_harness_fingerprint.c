@@ -182,6 +182,10 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
     ADD("renderer.physics_fixture", "%u", 1u);
   }
   ADD("renderer.taa_enabled", "%u", renderer->taa_enabled);
+  /* The method runs only with temporal anti-aliasing; cases without it keep
+     the identity they had before the choice existed. */
+  if (renderer->taa_enabled)
+    ADD("renderer.antialiasing", "%s", renderer->antialiasing);
   /* Preserve fingerprints for manifests authored before these default-on
      controls existed. Only non-default state changes the workload identity. */
   if (!renderer->tonemap_enabled)

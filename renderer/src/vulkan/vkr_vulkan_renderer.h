@@ -42,6 +42,8 @@ typedef struct VkrVulkanRenderer VkrVulkanRenderer;
 
 typedef struct VkrVulkanRendererConfig {
   VkrAllocator *allocator;
+  /** Requests FSR 3.1's device feature (VkrAntialiasingMode). */
+  bool8_t fsr31_enabled;
   /** A zeroed record selects the production bloom defaults. */
   VkrBloomConfig bloom;
   /** A zeroed record selects the production GTAO defaults. */
@@ -179,6 +181,9 @@ void vkr_vulkan_renderer_geometry_megabuffer_metrics(
 /** On failure, releases partial state and leaves `*out_renderer` null. */
 bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
                                    VkrVulkanRenderer **out_renderer);
+/** True when this build carries the FSR 3.1 SDK and the device supports it;
+    otherwise FSR frames fall back to SMAA T2x. */
+bool8_t vkr_vulkan_renderer_fsr31_available(const VkrVulkanRenderer *renderer);
 void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer);
 /** Terminal submission/presentation faults prohibit further frame acquisition.
  */

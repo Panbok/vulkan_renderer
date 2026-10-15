@@ -1,4 +1,5 @@
 #include "vkr_render_graph_frame.h"
+#include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
 vkr_internal VkrTextureFormat vkr_vk_present_texture_format(VkFormat format) {
@@ -247,6 +248,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       .enable_synchronization_validation =
           config->enable_synchronization_validation,
       .enable_gpu_assisted = config->enable_gpu_assisted,
+      .fsr31_enabled = config->fsr31_enabled,
   };
   if (!vkr_vulkan_device_create(&device_config, &renderer->device) ||
       !vkr_vk_create_timeline(renderer) ||
@@ -935,6 +937,9 @@ vkr_internal bool8_t vkr_vk_realize_compiled_graph(
     log_error("Vulkan failed to validate the authored graph");
     return false_v;
   }
+  if (!vkr_vk_prepare_fsr31_context(renderer)) {
+    return false_v;
+  }
   if (!vkr_vk_realize_graph_images(renderer)) {
     log_error("Vulkan failed to realize authored graph images");
     return false_v;
@@ -1065,6 +1070,7 @@ vkr_internal VkResult vkr_vk_queue_submit_frame(VkrVulkanRenderer *renderer,
    leaves the renderer terminally failed. */
 vkr_internal void vkr_vk_unwind_rejected_submission(VkrVulkanRenderer *renderer,
                                                     VkrVulkanFrameSlot *slot) {
+  vkr_vk_cancel_fsr31(renderer);
   vkr_vk_fail_picking_readback(renderer, slot);
   vkr_vk_abandon_ibl_bake_recordings(renderer);
   vkr_vk_discard_unsubmitted_asset_uses(renderer);
@@ -2256,6 +2262,10 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
                         : VK_NULL_HANDLE;
   if (device) {
     vkr_vulkan_renderer_wait_idle(renderer);
+#if VKR_HAS_FSR3_UPSCALER
+    vkr_vulkan_fsr_sdk_destroy(renderer->fsr31);
+#endif
+    renderer->fsr31 = NULL;
     if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
       (void)vkDeviceWaitIdle(device);
     vkr_vk_discard_ibl_bakes(renderer);

@@ -650,6 +650,10 @@ bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
 
   const uint32_t current = renderer->history_output_index;
   slot->temporal_transform_output = output;
+  /* Motion and the transform tuple anchor on these instances on every
+     temporal frame. FSR frames do not write T2x's depth, identity and
+     surface; a change of antialiasing mode resets temporal history
+     (vkr_renderer_prepare_frame_data), so T2x never reads them. */
   slot->temporal_depth_output = &depths->instances[current];
   slot->temporal_identity_output = &identities->instances[current];
   slot->temporal_surface_output = &surfaces->instances[current];
@@ -795,6 +799,48 @@ bool8_t vkr_vk_prepare_temporal_transform(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* FSR 3.1's depth, reactive and composition inputs. Bindings: the Scene's
+   HDR colour (0), its colour before transmission (1), temporal validity (2),
+   opaque depth (3), the nearest transmission layer's depth (4, with
+   transmission), and the three outputs (5-7). */
+bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,
+                                    VkrVulkanPreparedCompute *prepared,
+                                    const VkrRgPass *pass) {
+  VkrVulkanFsr31PrepareRoot root = {
+      .extent = {renderer->prepared_frame.viewport_width,
+                 renderer->prepared_frame.viewport_height},
+      .transmission_enabled = renderer->prepared_frame.transmission_pending,
+  };
+  if (!vkr_vk_deferred_sampled_index(renderer, pass, 0u, &root.scene_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u,
+                                     &root.pre_transmission_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 2u,
+                                     &root.validity_texture) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 3u,
+                                     &root.opaque_depth_texture) ||
+      (root.transmission_enabled &&
+       !vkr_vk_deferred_sampled_index(renderer, pass, 4u,
+                                      &root.transmission_depth_texture)) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 5u,
+                                     &root.output_depth_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 6u,
+                                     &root.reactive_texture) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 7u,
+                                     &root.composition_texture) ||
+      !vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanFsr31PrepareRoot),
+                                 &prepared->root_address)) {
+    return false_v;
+  }
+  prepared->pipelines[0] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE];
+  prepared->groups[0][0] = (root.extent[0] + 7u) / 8u;
+  prepared->groups[0][1] = (root.extent[1] + 7u) / 8u;
+  prepared->groups[0][2] = 1u;
+  prepared->dispatch_count = 1u;
+  return true_v;
+}
+
 void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value) {
   VkrVulkanFrameSlot *slot =
@@ -840,6 +886,19 @@ void vkr_vk_mark_temporal_submitted(VkrVulkanRenderer *renderer,
     instance->history_valid = true_v;
   }
   renderer->motion_seconds += packet->motion_blur_delta_seconds;
+  /* A frame without FSR leaves its history stale. */
+  if (!renderer->prepared_frame.fsr31_enabled)
+    renderer->fsr31_history.valid = false_v;
+  if (slot->fsr31_recorded) {
+    renderer->fsr31_history = (VkrVulkanFsr31History){
+        .submit_value = submit_value,
+        .valid = true_v,
+    };
+    renderer->fsr31_dispatch_uses[renderer->fsr31_dispatch_slot] = submit_value;
+    renderer->fsr31_dispatch_slot =
+        (renderer->fsr31_dispatch_slot + 1u) % VKR_VULKAN_FRAME_SLOT_COUNT;
+    slot->fsr31_recorded = false_v;
+  }
   if (packet->temporal.reset_reasons != 0u &&
       vkr_rg_buffer_handle_valid(renderer->temporal_transform_history_handle)) {
     VkrVulkanGraphBuffer *transforms =

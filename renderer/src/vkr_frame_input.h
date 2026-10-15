@@ -89,6 +89,16 @@ typedef struct VkrFrameInfo {
   uint64_t scene_generation;
 } VkrFrameInfo;
 
+/** Antialiasing on the desktop pipeline (ADR-037, ADR-052). FSR 3.1
+ * reconstructs the Scene at its own resolution from many jittered frames;
+ * SMAA T2x is the cheaper two-frame fallback, and the only mode where the
+ * build or device lacks FSR. */
+typedef enum VkrAntialiasingMode {
+  VKR_ANTIALIASING_MODE_FSR_NATIVE = 0,
+  VKR_ANTIALIASING_MODE_SMAA_T2X = 1,
+  VKR_ANTIALIASING_MODE_COUNT,
+} VkrAntialiasingMode;
+
 /** Presentation transform applied after scene-linear exposure. */
 typedef enum VkrDisplayTransform {
   VKR_DISPLAY_TRANSFORM_GT7 = 0,
@@ -169,6 +179,9 @@ typedef struct VkrFrameGlobals {
   bool8_t motion_blur_enabled;
   /** Centred exposure angle in [0,360] degrees; zero also bypasses blur. */
   float32_t motion_blur_shutter_angle;
+  /** VkrAntialiasingMode for the desktop pipeline; zero selects FSR 3.1
+      native antialiasing (ADR-052). The tiled pipeline ignores it. */
+  uint32_t antialiasing_mode;
 } VkrFrameGlobals;
 
 /** Backend-neutral frame lighting controls consumed by world shading. */

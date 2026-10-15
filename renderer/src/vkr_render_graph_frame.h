@@ -96,6 +96,11 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_DIFFUSE_VOLUME_UPSAMPLE,
   VKR_RG_EXECUTOR_DIFFUSE_VOLUME_FALLBACK,
   VKR_RG_EXECUTOR_TEMPORAL_RESOLVE,
+  /* FSR 3.1 native antialiasing in place of the temporal resolve: its depth,
+     reactive and composition masks, then the SDK dispatch into the resolved
+     scene colour. */
+  VKR_RG_EXECUTOR_FSR31_PREPARE,
+  VKR_RG_EXECUTOR_FSR31_UPSCALE,
   VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM,
   VKR_RG_EXECUTOR_EXPOSURE_RESOLVE,
   VKR_RG_EXECUTOR_SUBSURFACE_GATHER,

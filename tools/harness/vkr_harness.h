@@ -355,6 +355,10 @@ typedef struct VkrHarnessRendererConfig {
       on this host. It fills the tail padding that stored version-17
       summaries left zero, so they read as desktop. */
   uint32_t graphics_pipeline;
+  /** VkrAntialiasingMode of the desktop pipeline's temporal anti-aliasing
+      while `taa_enabled` holds: `fsr` (FSR 3.1 native anti-aliasing, the
+      default) or `smaa_t2x`. */
+  char antialiasing[16];
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

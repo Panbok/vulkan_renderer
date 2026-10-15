@@ -304,6 +304,7 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.shadow_map_size == 2048u);
   assert(strcmp(parsed.renderer.exposure_mode, "manual") == 0);
   assert(strcmp(parsed.renderer.display_transform, "gt7") == 0);
+  assert(strcmp(parsed.renderer.antialiasing, "fsr") == 0);
   assert(parsed.renderer.manual_exposure == VKR_DEFAULT_EXPOSURE);
   assert(parsed.renderer.exposure_compensation_ev == 0.0f);
   assert(parsed.renderer.white_balance_temperature == 0.0f);
@@ -491,6 +492,18 @@ vkr_internal void test_harness_case_parser(void) {
            "%.*s\"upscaler\":\"spatial\",%s", (int)(dynamic_key - dynamic_case),
            dynamic_case, dynamic_key);
   assert(!vkr_harness_case_parse(retired_upscaler, strlen(retired_upscaler),
+                                 "memory", &parsed, &backend_error));
+  char antialiasing_case[2048];
+  snprintf(antialiasing_case, sizeof(antialiasing_case),
+           "%.*s\"antialiasing\":\"smaa_t2x\",%s",
+           (int)(dynamic_key - dynamic_case), dynamic_case, dynamic_key);
+  assert(vkr_harness_case_parse(antialiasing_case, strlen(antialiasing_case),
+                                "memory", &parsed, &backend_error));
+  assert(strcmp(parsed.renderer.antialiasing, "smaa_t2x") == 0);
+  snprintf(antialiasing_case, sizeof(antialiasing_case),
+           "%.*s\"antialiasing\":\"taa\",%s", (int)(dynamic_key - dynamic_case),
+           dynamic_case, dynamic_key);
+  assert(!vkr_harness_case_parse(antialiasing_case, strlen(antialiasing_case),
                                  "memory", &parsed, &backend_error));
   char editor_dynamic[2048];
   snprintf(editor_dynamic, sizeof(editor_dynamic), "%s", dynamic_case);
@@ -906,7 +919,23 @@ vkr_internal void test_harness_fingerprints(void) {
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
+  char taa_off_workload[VKR_HARNESS_DIGEST_MAX];
+  snprintf(taa_off_workload, sizeof(taa_off_workload), "%s", workload);
+  /* Without temporal anti-aliasing the method draws nothing, so it leaves
+     the workload alone; with it, the method is part of the workload. */
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.antialiasing, "smaa_t2x");
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(taa_off_workload, workload) == 0);
   case_manifest.renderer.taa_enabled = true_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  VKR_STRING_COPY_LITERAL(case_manifest.renderer.antialiasing, "fsr");
   case_manifest.renderer.shadow_pcf_early_out = false_v;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
@@ -1565,6 +1594,8 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.shadow_split_lambda = 0.25f;
   report.case_manifest.renderer.shadow_map_size = 4096u;
   report.case_manifest.renderer.taa_enabled = false_v;
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.antialiasing,
+                          "smaa_t2x");
   snprintf(report.case_manifest.renderer.exposure_mode,
            sizeof(report.case_manifest.renderer.exposure_mode), "automatic");
   snprintf(report.case_manifest.renderer.display_transform,
@@ -1650,6 +1681,7 @@ vkr_internal void test_harness_report_shape(void) {
   assert(strstr(json, "\"shadow_split_lambda\":0.25") != NULL);
   assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
   assert(strstr(json, "\"taa_enabled\":false") != NULL);
+  assert(strstr(json, "\"antialiasing\":\"smaa_t2x\"") != NULL);
   assert(strstr(json, "\"display_transform\":\"gt7\"") != NULL);
   assert(strstr(json, "\"white_balance_temperature\":-0.25") != NULL);
   assert(strstr(json, "\"white_balance_tint\":0.125") != NULL);
@@ -1824,6 +1856,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_v14_path[VKR_HARNESS_PATH_MAX];
   char legacy_v15_path[VKR_HARNESS_PATH_MAX];
   char legacy_v17_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v18_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
@@ -1839,6 +1872,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   snprintf(legacy_v15_path, sizeof(legacy_v15_path), "%s/legacy-v15.bin",
            directory);
   snprintf(legacy_v17_path, sizeof(legacy_v17_path), "%s/legacy-v17.bin",
+           directory);
+  snprintf(legacy_v18_path, sizeof(legacy_v18_path), "%s/legacy-v18.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3 *legacy = calloc(1u, sizeof(*legacy));
@@ -2213,6 +2248,31 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.content_scale == 1.5f);
   assert(strcmp(summary.profile.id, "legacy.v17.profile") == 0);
 
+  /* Version 19 added the anti-aliasing method after the pipeline class;
+   * version-18 summaries keep their class and ran SMAA T2x, not FSR. */
+  VkrHarnessCaptureSummaryHeaderV18 *legacy_v18 =
+      calloc(1u, sizeof(*legacy_v18));
+  assert(legacy_v18);
+  MemCopy(legacy_v18->magic, magic, sizeof(magic));
+  legacy_v18->version = 18u;
+  legacy_v18->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v18->exit_code = VKR_HARNESS_EXIT_PASS;
+  legacy_v18->case_manifest.renderer.v17.texture_max_load_dimension = 2048u;
+  legacy_v18->case_manifest.renderer.graphics_pipeline =
+      VKR_GRAPHICS_PIPELINE_TILED;
+  legacy_v18->case_manifest.content_scale = 1.25f;
+  VKR_STRING_COPY_LITERAL(legacy_v18->profile.id, "legacy.v18.profile");
+  assert(vkr_harness_atomic_write(legacy_v18_path, legacy_v18,
+                                  sizeof(*legacy_v18), &error));
+  free(legacy_v18);
+  assert(vkr_harness_capture_summary_read(legacy_v18_path, arena, &summary));
+  assert(summary.case_manifest.renderer.texture_max_load_dimension == 2048u);
+  assert(summary.case_manifest.renderer.graphics_pipeline ==
+         VKR_GRAPHICS_PIPELINE_TILED);
+  assert(strcmp(summary.case_manifest.renderer.antialiasing, "smaa_t2x") == 0);
+  assert(summary.case_manifest.content_scale == 1.25f);
+  assert(strcmp(summary.profile.id, "legacy.v18.profile") == 0);
+
   report.case_manifest.single_capture_session = true_v;
   report.case_manifest.capture_count = 1u;
   report.case_manifest.captures[0].at_frame = 8u;
@@ -2220,6 +2280,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.captures[0].camera_mode = VKR_HARNESS_CAMERA_CUBEMAP_NY;
   report.case_manifest.renderer.texture_max_load_dimension = 2048u;
   report.case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED;
+  VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.antialiasing, "fsr");
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2229,8 +2290,9 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 18u);
+  assert(current_version == 19u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
+  assert(strcmp(summary.case_manifest.renderer.antialiasing, "fsr") == 0);
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.single_capture_session);
   assert(summary.case_manifest.captures[0].at_frame == 8u);
@@ -2289,6 +2351,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(unlink(legacy_v14_path) == 0);
   assert(unlink(legacy_v15_path) == 0);
   assert(unlink(legacy_v17_path) == 0);
+  assert(unlink(legacy_v18_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);

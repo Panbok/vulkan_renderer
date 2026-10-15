@@ -14,8 +14,8 @@
 
 #include <stddef.h>
 
-/** Stored version the writer emits (VkrHarnessCaptureSummaryHeaderV18). */
-#define VKR_HARNESS_CAPTURE_SUMMARY_VERSION 18u
+/** Stored version the writer emits (VkrHarnessCaptureSummaryHeaderV19). */
+#define VKR_HARNESS_CAPTURE_SUMMARY_VERSION 19u
 
 /* Capture checkpoint of versions 2 through 15, before per-checkpoint cubemap
  * faces. */
@@ -1758,7 +1758,78 @@ typedef struct VkrHarnessCaptureSummaryHeaderV17 {
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeaderV17;
 
+/* Version 18's renderer config: version 17's and the graphics pipeline
+ * class, before the anti-aliasing method. */
+typedef struct VkrHarnessRendererConfigV18 {
+  VkrHarnessRendererConfigV17 v17;
+  uint32_t graphics_pipeline;
+} VkrHarnessRendererConfigV18;
+
+/* Version 18's case: the version-18 renderer config. */
+typedef struct VkrHarnessCaseV18 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char suite[64];
+  char description[VKR_HARNESS_TEXT_MAX];
+  char scene[VKR_HARNESS_PATH_MAX];
+  uint64_t seed;
+  uint32_t width;
+  uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
+  VkrHarnessBootProfile boot;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode present;
+  uint32_t target_image_count;
+  VkrHarnessCacheMode cache;
+  float64_t fixed_delta_seconds;
+  uint32_t warmup_frames;
+  uint32_t measure_frames;
+  uint32_t repetitions;
+  uint32_t repetition_timeout_ms;
+  uint32_t asset_ready_timeout_ms;
+  VkrHarnessRendererConfigV18 renderer;
+  VkrHarnessCamera camera;
+  VkrHarnessCapture captures[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t capture_count;
+  /** `capture_session: "single"`: one child takes every checkpoint in frame
+   * order instead of one child per checkpoint. */
+  bool8_t single_capture_session;
+  VkrHarnessAssertion assertions[VKR_HARNESS_MAX_ASSERTIONS];
+  uint32_t assertion_count;
+  VkrHarnessCompareConfig compare;
+  /** Explicit offscreen logical-UI scale; effective OS scale for reports. */
+  float32_t content_scale;
+  VkrHarnessAssetContext asset_context;
+} VkrHarnessCaseV18;
+
 typedef struct VkrHarnessCaptureSummaryHeaderV18 {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCaseV18 case_manifest;
+  VkrHarnessProfile profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV18;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV19 {
   uint8_t magic[8];
   uint32_t version;
   uint32_t capture_count;
@@ -1779,7 +1850,7 @@ typedef struct VkrHarnessCaptureSummaryHeaderV18 {
   VkrHarnessCase case_manifest;
   VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
-} VkrHarnessCaptureSummaryHeaderV18;
+} VkrHarnessCaptureSummaryHeaderV19;
 
 /* Stored summaries are an ABI, so their sizes are pinned. Every stored type
  * uses fixed-width members and Vec3 is explicitly 16-byte aligned, so the
@@ -1815,6 +1886,7 @@ VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV15, 78320u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV16, 78576u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV17, 78576u);
 VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV18, 78592u);
+VKR_HARNESS_SUMMARY_ABI(VkrHarnessCaptureSummaryHeaderV19, 78608u);
 _Static_assert(sizeof(VkrHarnessRendererConfigV16) ==
                    offsetof(VkrHarnessRendererConfig,
                             texture_max_load_dimension),
@@ -1822,6 +1894,9 @@ _Static_assert(sizeof(VkrHarnessRendererConfigV16) ==
 _Static_assert(sizeof(VkrHarnessRendererConfigV17) ==
                    offsetof(VkrHarnessRendererConfig, graphics_pipeline),
                "Version-17 renderer prefix drift");
+_Static_assert(sizeof(VkrHarnessRendererConfigV18) ==
+                   offsetof(VkrHarnessRendererConfig, antialiasing),
+               "Version-18 renderer prefix drift");
 _Static_assert(sizeof(VkrHarnessCaptureV15) == 1064u &&
                    sizeof(VkrHarnessCapture) == 1072u,
                "Capture checkpoint layout drift");

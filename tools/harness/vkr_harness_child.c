@@ -1694,6 +1694,10 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
   application->ibl_probe_limit = case_manifest->renderer.ibl_probe_limit;
   vkr_renderer_set_temporal_enabled(&application->renderer,
                                     case_manifest->renderer.taa_enabled);
+  application->globals.antialiasing_mode =
+      string_equals(case_manifest->renderer.antialiasing, "smaa_t2x")
+          ? VKR_ANTIALIASING_MODE_SMAA_T2X
+          : VKR_ANTIALIASING_MODE_FSR_NATIVE;
   application->globals.exposure_mode =
       string_equals(case_manifest->renderer.exposure_mode, "automatic")
           ? VKR_EXPOSURE_MODE_AUTOMATIC

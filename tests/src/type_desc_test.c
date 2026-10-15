@@ -309,6 +309,33 @@ static void test_graphics_preferences_type(void) {
       &settings));
   assert(settings.shadow_quality == 1u);
 
+  /* The anti-aliasing method defaults to FSR 3.1, is stored by name, and
+   * offers nothing while anti-aliasing is off. */
+  assert(settings.antialiasing == VKR_ANTIALIASING_MODE_FSR_NATIVE);
+  assert(vkr_graphics_settings_read_json(
+      string8_lit("{\"version\":1,\"anti_aliasing_method\":\"smaa_t2x\"}"),
+      &settings));
+  assert(settings.antialiasing == VKR_ANTIALIASING_MODE_SMAA_T2X);
+  assert(!vkr_graphics_settings_read_json(
+      string8_lit("{\"version\":1,\"anti_aliasing_method\":1}"), &settings));
+  assert(!vkr_graphics_settings_read_json(
+      string8_lit("{\"version\":1,\"anti_aliasing_method\":\"taa\"}"),
+      &settings));
+  assert(settings.antialiasing == VKR_ANTIALIASING_MODE_SMAA_T2X);
+  const uint32_t method = vkr_type_find_property(
+      &vkr_graphics_settings_type, string8_lit("anti_aliasing_method"));
+  assert(method != UINT32_MAX);
+  assert(!(vkr_type_property_state(&vkr_graphics_settings_type, &settings,
+                                   method, NULL)
+               .flags &
+           VKR_PROPERTY_STATE_DISABLED));
+  settings.anti_aliasing = false_v;
+  assert(vkr_type_property_state(&vkr_graphics_settings_type, &settings, method,
+                                 NULL)
+             .flags &
+         VKR_PROPERTY_STATE_DISABLED);
+  settings.anti_aliasing = true_v;
+
   /* Which backend offers dynamic resolution, and which effects the tiled
    * pipeline draws, follow the running renderer's state (ADR-087). */
   const uint32_t dynamic = vkr_type_find_property(

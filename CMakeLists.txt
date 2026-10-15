@@ -140,9 +140,12 @@ function(vkr_configure_cooker_dependencies)
     endforeach()
 endfunction()
 
-# Windows reserves 1 MiB of main-thread stack by default, which unoptimized
-# Debug frames can overflow. Reserve the 8 MiB the macOS main thread already
-# provides, so Debug stack headroom does not depend on the host.
+# Windows reserves 1 MiB of main-thread stack by default. An unoptimized
+# FidelityFX dispatch alone needs over 300 KiB in two frames
+# (fsr3upscalerDispatch reserves 232 KiB for its by-value job state and
+# scheduleDispatch a further 77 KiB), which overflows that default once the
+# renderer's own Debug frames sit below it. Reserve the 8 MiB the macOS main
+# thread already provides, so Debug stack headroom does not depend on the host.
 # This reserves address space; pages still commit on demand.
 function(vkr_set_main_stack_reserve target)
     if(NOT WIN32)

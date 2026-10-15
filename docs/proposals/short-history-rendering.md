@@ -9,10 +9,11 @@ authority: proposal
 The owner decided on 2026-10-12 to stop hiding stochastic shading behind long
 temporal history. This proposal records those decisions, the current baseline,
 the work in order, the open choices and the Bistro evidence each step needs.
-Section 1 is implemented (2026-10-12): [ADR-052](../adr/052-vulkan-fsr31-upscaling.md),
-[ADR-055](../adr/055-screen-space-reflections.md) and
-[ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md) record the
-removal as declined. Most of the section 5 probe audit is implemented
+Section 1 is implemented (2026-10-12): [ADR-055](../adr/055-screen-space-reflections.md)
+and [ADR-060](../adr/060-screen-space-diffuse-indirect-lighting.md) record the
+removal as declined. FSR 3.1 returned on 2026-10-15 as native antialiasing
+without its convergence pass, by the owner's decision after measurement
+([ADR-052](../adr/052-vulkan-fsr31-upscaling.md)). Most of the section 5 probe audit is implemented
 (2026-10-12; [ADR-019](../adr/019-bounded-forward-spatial-lighting.md)); its
 table marks the open rows. Sections 2 to 4 are implemented on the desktop
 pipeline (2026-10-13), and so are section 5's planar water reflections

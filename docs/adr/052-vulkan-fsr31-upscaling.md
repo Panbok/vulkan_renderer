@@ -1,75 +1,127 @@
 ---
-status: declined
-updated: 2026-10-12
+status: partial
+updated: 2026-10-15
 authority: adr
 ---
 
-# ADR-052: Vulkan FSR 3.1 temporal upscaling
+# ADR-052: Vulkan FSR 3.1 native antialiasing
 
 ## Status
 
-Declined (2026-10-12). FSR 3.1 temporal upscaling shipped as an opt-in mode
-on the desktop pipeline, which Vulkan implements, and was removed on
-2026-10-12 by the owner's decision in
-[Short-history rendering](../proposals/short-history-rendering.md), section 1.
-The tiled pipeline never had a temporal upscaler
-([ADR-087](087-gpu-class-graphics-pipelines.md)). This record keeps the
-reasons, so the design is not tried again without addressing them.
+Accepted (partial): FSR 3.1 native antialiasing is the default
+antialiasing of the desktop pipeline (Vulkan) since 2026-10-15, with SMAA
+T2x ([ADR-037](037-portable-same-resolution-temporal-antialiasing.md)) as
+the selectable fallback. The owner asked for it after SMAA T2x, SMAA 4x and
+specular filtering left thin geometry aliasing in motion. Partial: the Scene
+renders at scale 1 only (no upscaling), and the record below has local
+evidence from one Windows host. The tiled pipeline has no temporal
+reconstruction ([ADR-087](087-gpu-class-graphics-pipelines.md)).
+
+FSR 3.1 first shipped as an opt-in temporal upscaler and was removed on
+2026-10-12 ([Short-history rendering](../proposals/short-history-rendering.md),
+section 1): its still images needed a VKR 128-frame convergence pass and SSR
+settling rules, and a matched Bistro rotation did not show less thin-detail
+variation than portable TAA. The return keeps the SDK and bridge, drops the
+upscaling scale and the convergence pass, and replaces the evidence with the
+measurements below.
 
 ## Context
 
-Vulkan had only same-resolution portable TAA
-([ADR-037](037-portable-same-resolution-temporal-antialiasing.md)) and
-rejected non-unit spatial scale. FSR 3.1 was added to render the Scene at a
-scale in `[1/3, 1]` and reconstruct it at output resolution.
+Two-frame SMAA T2x leaves aliasing on thin geometry in motion: it has two
+samples per pixel. A second spatial sample (opt-in SMAA 4x) cost 2.7 ms at
+2560 × 1440 for about 9 % less edge shimmer, and filtering specular inputs
+changed little. More samples per pixel need a longer, validated temporal
+reconstruction.
 
-## Decision (removed)
+## Decision
 
-The `fsr31` upscale mode ran FidelityFX SDK `v1.1.4` (FSR 3.1.4) behind a C
-bridge, off by default (`temporal_upscaling`). A preparation pass wrote FSR
-depth, reactive and composition masks from raw HDR, temporal validity and
-transmission depth. The SDK upscaled scene-linear HDR before exposure,
-bloom and tonemap. A VKR static convergence pass averaged 128 stationary
-output samples per pixel to remove the SDK's residual edge variation, and
-with SSR enabled a settling counter kept normal masking for 128 frames
-first. The SDK kept its own resources, descriptors and pipelines; a
-FidelityFX patch changed its luma history format.
+`VkrFrameGlobals.antialiasing_mode` selects the desktop antialiasing:
+`VKR_ANTIALIASING_MODE_FSR_NATIVE` (zero, the default; graphics setting
+`anti_aliasing_method` = `fsr`, "Anti-aliasing method" in the editor's
+Preferences) or `VKR_ANTIALIASING_MODE_SMAA_T2X` (`smaa_t2x`). A
+frame runs FSR when that mode is selected, temporal antialiasing is on, the
+camera is a perspective one and the build and device support FSR; otherwise
+SMAA T2x runs.
 
-## Why it was removed
-
-FSR is a long-history temporal reconstruction. Its static images needed a
-VKR convergence pass and SSR settling rules on top of the SDK, and in a
-matched Bistro camera rotation at native and two-thirds scale it did not
-remove the variation of thin detail that moving TAA showed. It added a
-vendored SDK, a patch and a private resource model to the graph while it
-was off by default. The owner decided that the renderer must not hide
-stochastic shading behind long temporal history, and removed FSR with SSR
-and SSGI.
+- **SDK.** FidelityFX SDK `v1.1.4` (FSR 3.1.4, commit `c6efa6bf`) is fetched at
+  configure time on Windows and patched
+  ([`vendor/fidelityfx-sdk-1.1.4.md`](../../vendor/fidelityfx-sdk-1.1.4.md),
+  [`cmake/vkr_fsr.cmake`](../../cmake/vkr_fsr.cmake)). A C++ bridge owns the SDK
+  context, its scratch arena and shared images
+  ([`vkr_vulkan_fsr_sdk.cpp`](../../renderer/src/vulkan/vkr_vulkan_fsr_sdk.cpp)).
+  The device requests `shaderStorageImageExtendedFormats`; without it the
+  renderer reports FSR unavailable and runs SMAA T2x.
+- **Jitter.** FSR frames take FSR's eight-phase Halton (2, 3) sequence in
+  [−0.5, 0.5) pixels (`vkr_temporal_fsr_jitter`) instead of T2x's two phases.
+- **Passes.** `FSR31.Prepare` writes FSR's depth, reactive mask (transmission
+  and blended layers) and composition mask from the Scene's HDR colour, its
+  colour before transmission, temporal validity and depth
+  ([`post/fsr31.slang`](../../renderer/src/shaders/vulkan/slang/post/fsr31.slang)).
+  `FSR31.Upscale` records the SDK dispatch at render scale 1 into
+  `scene_resolved_color`, the image `Temporal.Resolve` writes on T2x frames,
+  so exposure, bloom, depth of field, motion blur and the display transform
+  read it unchanged. Both run in full-screen frames and in the editor
+  viewport. `Temporal.Resolve` and every SMAA pass are skipped; RCAS
+  sharpening stays off.
+- **History.** The SDK keeps its own history; a frame without valid temporal
+  history, an output resize and any frame without FSR reset it. A change of
+  mode resets temporal history, so T2x never reads the depth, identity and
+  surface history that FSR frames leave unwritten; motion still anchors on
+  those instances. A cancelled submission recreates
+  the SDK context, whose CPU state it advanced.
 
 ## Consequences
 
-Vulkan renders the Scene at native resolution: render scale 1 is the
-default on both backends, and Vulkan rejects any other scale. Only the
-tiled pipeline scales spatially, with its dynamic-resolution controller
-([ADR-039](039-metal-internal-render-scale.md),
-[ADR-087](087-gpu-class-graphics-pipelines.md)). If a desktop budget needs
-it, a spatial render scale like the tiled pipeline's comes first.
+Evidence, Vulkan Release, RX 6700 XT, 2026-10-15, local and
+non-authoritative (dirty tree; warmup stability not met), against the
+Bistro street view of `local_shadow_bistro_street_capture` at 1280 × 720 and
+the same frames rendered at 3840 × 2160 without antialiasing, box-filtered
+3 × 3 in linear light (mean absolute 8-bit error; the oracle is described in
+ADR-037):
 
-`VkrUpscaleMode`, the FSR sources, shaders, CMake module and SDK patch, the
-graph passes and the FSR cases were removed with the feature. The graphics
-setting `temporal_upscaling` is a retired key that still loads and has no
-effect. Former FSR cases that test other features
-(`sharpness_bistro_*`, `specular_aa_bistro_static`,
-`vulkan_texture_stream_features`) run at unit scale. Git keeps the old
-record and its evidence.
+| Case | Measure | SMAA T2x | FSR |
+|---|---|---|---|
+| Still | geometric edges / elsewhere | 10.27 / 4.37 | 9.66 / 4.05 |
+| Camera turning 2°/s | geometric edges | 11.41 | 10.48 |
+| | edge instability (σ of the error over 4 frames) | 8.63 | 7.73 |
+| | thin features | 9.08 | 8.41 |
+| | pixels an edge just crossed | 15.31 | 13.23 |
+| | edge flicker (mean second difference; reference 12.61) | 12.79 | 6.53 |
+| Strafing 1.5 m/s | geometric edges | 11.86 | 10.29 |
+| | pixels an edge just crossed | 9.49 | 8.04 |
+
+FSR flickers less than the reference's own motion, so part of its gain is
+temporal smoothing: motion is slightly softer, not only steadier. Crops of
+the strafe show no trails, and mean brightness matches.
+
+Timing, `profile` with `local-offscreen-gpu-repeated.json` at 2560 × 1440,
+5 × 60 frames, SMAA T2x then FSR within ten minutes: frame wall 20.40 →
+21.02 ms p50; pass sum 19.93 → 20.72 ms. FSR's chain (`FSR31.Prepare` 0.28,
+`FSR31.Upscale` 1.86, tonemap 0.20 ms) replaces T2x's 1.50 ms
+(`Temporal.Resolve` 0.57 plus the display-linear, SMAA and resolve passes).
+Debug with synchronization validation on the street view: no messages.
+
+The default changes the image of every desktop frame with temporal
+antialiasing. Accepted harness baselines recorded with SMAA T2x no longer
+match until the owner accepts new ones; a case selects either mode with
+`renderer.antialiasing` (`fsr` by default, or `smaa_t2x`), which joins the
+workload fingerprint only with temporal antialiasing on. Harness summaries are version 19; version 18 and older
+read back as `smaa_t2x`.
 
 ## Alternatives considered
 
-A spatial upscaler at a reduced render scale needs no history and matches
-the tiled pipeline's approach. A vendor upscaler (FSR, DLSS or XeSS) can
-return when a release needs one.
+- **SMAA 4x and a four-phase T2x** (ADR-037): S2x cost 2.7 ms for less gain;
+  the still-camera bound of four temporal phases was 8 % on edges, with
+  multi-frame reprojection still to build.
+- **The 2026-10-12 FSR upscaler with its convergence pass**: a 128-frame
+  stationary average hid stochastic shading behind long history, which the
+  owner rejected; native AA without it is measured above.
+- **DLSS or XeSS**: vendor-specific; FSR runs on every desktop GPU this
+  renderer supports.
 
 ## Revisit when
 
-A PC release expects vendor upscalers, or the desktop pipeline misses its
-budget at native resolution.
+Ghosting or smearing shows on moving objects (deformation and particles
+carry no motion contract yet), FSR's softness in motion outweighs its
+stability, the desktop budget needs a render scale below 1, or a release
+expects DLSS or XeSS.

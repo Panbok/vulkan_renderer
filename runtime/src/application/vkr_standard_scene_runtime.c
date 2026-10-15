@@ -400,6 +400,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
       .dof_focus_distance = VKR_DOF_DEFAULT_FOCUS_DISTANCE,
       .dof_f_stop = VKR_DOF_DEFAULT_F_STOP,
       .motion_blur_shutter_angle = VKR_MOTION_BLUR_DEFAULT_SHUTTER_ANGLE,
+      .antialiasing_mode = VKR_ANTIALIASING_MODE_FSR_NATIVE,
       .gtao_enabled = !application->renderer.gtao_forced_disabled,
       .gtao_radius = VKR_GTAO_DEFAULT_RADIUS,
       .gtao_power = VKR_GTAO_DEFAULT_POWER,
@@ -2316,6 +2317,7 @@ vkr_internal VkrFrameInput vkr_standard_scene_runtime_build_frame_input(
               .motion_blur_enabled = globals->motion_blur_enabled &&
                                      globals->projection.m33 == 0.0f,
               .motion_blur_shutter_angle = globals->motion_blur_shutter_angle,
+              .antialiasing_mode = globals->antialiasing_mode,
               .gtao_enabled = globals->gtao_enabled,
               .gtao_radius = globals->gtao_radius,
               .gtao_power = globals->gtao_power,

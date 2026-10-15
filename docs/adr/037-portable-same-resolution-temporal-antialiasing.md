@@ -11,7 +11,10 @@ authority: adr
 Accepted (partial): SMAA T2x on the desktop pipeline (Vulkan) since
 2026-10-13, replacing portable scene-linear TAA and FXAA (owner decision,
 [Short-history rendering](../proposals/short-history-rendering.md),
-section 2). SMAA 4x (S2x on a 2x multisampled visibility raster, plus T2x)
+section 2). Since 2026-10-15 FSR 3.1 native antialiasing is the default and
+SMAA T2x the selectable fallback (`anti_aliasing_method` = `smaa_t2x`), also used
+where the build or device lacks FSR
+([ADR-052](052-vulkan-fsr31-upscaling.md)). SMAA 4x (S2x on a 2x multisampled visibility raster, plus T2x)
 is an opt-in path since 2026-10-15 (owner decisions of 2026-10-14 and
 2026-10-15, after the owner reported aliasing on thin geometry in motion; it
 stays off by default because its measured gain did not repay its cost); it
