@@ -595,6 +595,32 @@ vkr_vk_retained_static_cascades(VkrVulkanRenderer *renderer,
   }
 }
 
+/* The far level's pending layer, which its tile slices draw before it is
+   published into the static layer: one instance of the shadow map's extent
+   and format. Without it the host keeps the far level's fit and never
+   rebuilds it in slices. */
+vkr_internal void
+vkr_vk_retained_far_pending(VkrVulkanRenderer *renderer,
+                            const VkrRgImageDesc *shadow_map,
+                            VkrRetainedShadowToken *out_token) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_far_pending"))
+      continue;
+    const VkrVulkanGraphImage *slot = &renderer->graph_images[i];
+    if (!slot->live || slot->graph_generation == 0u ||
+        slot->graph_generation != image->generation ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
+        slot->desc.width != shadow_map->width ||
+        slot->desc.height != shadow_map->height ||
+        slot->desc.format != shadow_map->format ||
+        !slot->instances[0].image.handle)
+      return;
+    out_token->far_pending_resource_generation = slot->graph_generation;
+    return;
+  }
+}
+
 void vkr_vulkan_renderer_retained_shadow_token(
     VkrVulkanRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token) {
@@ -624,6 +650,7 @@ void vkr_vulkan_renderer_retained_shadow_token(
     out_token->moments_valid_cascade_mask =
         vkr_vk_retained_moments_mask(renderer, image_index);
     vkr_vk_retained_static_cascades(renderer, &slot->desc, out_token);
+    vkr_vk_retained_far_pending(renderer, &slot->desc, out_token);
     return;
   }
 }
@@ -1378,6 +1405,36 @@ vkr_internal bool8_t vkr_vk_prepare_cascade_copy(
   return true_v;
 }
 
+/* Publishes the far level's finished pending layer into its cascade's
+   layer of the static image, which every frame in flight shares; the
+   cascade's copy then brings it into this target image's shadow map. */
+vkr_internal bool8_t vkr_vk_prepare_far_publish(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
+    const VkrRgPass *pass) {
+  const VkrShadowPassPayload *shadow = renderer->graph->packet->input.shadow;
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  const uint32_t cascade = pass->desc.repeat_index;
+  if (!shadow || cascade != shadow->far_cascade ||
+      (shadow->far_publish_mask & (UINT32_C(1) << cascade)) == 0u || !read ||
+      !write || !write->has_slice || write->slice.base_layer != cascade)
+    return false_v;
+  VkrVulkanGraphImageInstance *source = vkr_vk_graph_image(
+      renderer, read->image, renderer->prepared_frame.image_index);
+  VkrVulkanGraphImageInstance *destination = vkr_vk_graph_image(
+      renderer, write->image, renderer->prepared_frame.image_index);
+  if (!source || !destination ||
+      source->image.width != destination->image.width ||
+      source->image.height != destination->image.height ||
+      source->image.format != destination->image.format)
+    return false_v;
+  vkr_vk_prepare_depth_layer_copy(
+      prepared, &source->image, 0u, (VkOffset3D){0, 0, 0}, &destination->image,
+      cascade, (VkOffset3D){0, 0, 0},
+      (VkExtent3D){source->image.width, source->image.height, 1u});
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
     const VkrRgPass *pass, VkrRgExecutorKind kind, uint32_t target_width,
@@ -1446,6 +1503,44 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
             ? 1u + cascade
             : vkr_render_graph_cascade_dynamic_view(&renderer->prepared_frame,
                                                     cascade));
+  }
+  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE: {
+    /* One tile of the far level's rebuilt static layer, through the far
+       cascade's culling view, which culls and rasterizes with the tile's
+       matrix; it clears and draws only its texels (ADR-041). Receivers read
+       texel (clip xy * 0.5 + 0.5) * size, which Vulkan's viewport maps to
+       rows from the top. */
+    prepared->clear_depth_rect = false_v;
+    const VkrShadowPassPayload *shadow = packet->input.shadow;
+    if (!shadow || !shadow->far_slice_active ||
+        shadow->far_cascade >= shadow->cascade_count)
+      return false_v;
+    const uint32_t *rect = shadow->far_slice_rect;
+    if (rect[0] >= rect[2] || rect[1] >= rect[3] || rect[2] > target_width ||
+        rect[3] > target_height || target_width != target_height)
+      return false_v;
+    const uint32_t width = rect[2] - rect[0];
+    const uint32_t height = rect[3] - rect[1];
+    prepared->viewport = (VkViewport){
+        .x = (float32_t)rect[0],
+        .y = (float32_t)rect[1],
+        .width = (float32_t)width,
+        .height = (float32_t)height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    prepared->scissor = (VkRect2D){
+        .offset = {(int32_t)rect[0], (int32_t)rect[1]},
+        .extent = {width, height},
+    };
+    prepared->depth_clear_rect =
+        (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
+    prepared->clear_depth_rect = true_v;
+    prepared->depth_bias = shadow->config_override
+                               ? *shadow->config_override
+                               : (VkrShadowConfigOverride){0};
+    return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
+                                          false_v, 1u + shadow->far_cascade);
   }
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC: {
     /* Dynamic slot i draws the dynamic casters over the copy of its static
@@ -1961,6 +2056,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC:
+  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE:
   case VKR_RG_EXECUTOR_PICKING:
   case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
   case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
@@ -2204,6 +2300,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_local_shadow_copy(renderer, prepared, pass);
   case VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY:
     return vkr_vk_prepare_cascade_copy(renderer, prepared, pass);
+  case VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH:
+    return vkr_vk_prepare_far_publish(renderer, prepared, pass);
   case VKR_RG_EXECUTOR_PICKING_RESOLVE:
     return vkr_vk_prepare_deferred_picking(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_TRANSMISSION_COVERAGE:
@@ -2329,6 +2427,7 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC:
+  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE:
     if (prepared->clear_depth_rect) {
       const VkClearAttachment clear = {
           .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -2419,6 +2518,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
     case VKR_RG_EXECUTOR_SHADOW:
     case VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC:
+    case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE:
     case VKR_RG_EXECUTOR_PICKING:
     case VKR_RG_EXECUTOR_VBUFFER_OPAQUE:
     case VKR_RG_EXECUTOR_VBUFFER_TRANSMISSION:
@@ -2451,6 +2551,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
     case VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY:
     case VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY:
+    case VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH:
     case VKR_RG_EXECUTOR_SUN_RAY_HISTORY_COPY:
       if (prepared->transfer.regionCount)
         vkCmdCopyImage2(command, &prepared->transfer);

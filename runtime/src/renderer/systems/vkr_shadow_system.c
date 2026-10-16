@@ -1213,6 +1213,25 @@ void vkr_shadow_config_apply_tiled(VkrShadowConfig *config) {
       VKR_SHADOW_TILED_PROACTIVE_MARGIN_TEXELS;
 }
 
+void vkr_shadow_config_apply_desktop(VkrShadowConfig *config) {
+  if (config->cascade_count < 2u ||
+      config->cascade_count >= VKR_SHADOW_CASCADE_COUNT_MAX ||
+      config->far_cascade_distance > 0.0f ||
+      !(config->max_shadow_distance > 0.0f) ||
+      config->max_shadow_distance >= VKR_SHADOW_DESKTOP_FAR_DISTANCE) {
+    return;
+  }
+  /* The far level takes the last near cascade's guard band and depth
+     extension. */
+  const uint32_t far = config->cascade_count++;
+  config->cascade_guard_band_texels_per[far] =
+      config->cascade_guard_band_texels_per[far - 1u];
+  config->cascade_z_extension_factor_per[far] =
+      config->cascade_z_extension_factor_per[far - 1u];
+  config->far_cascade_distance = VKR_SHADOW_DESKTOP_FAR_DISTANCE;
+  config->shadow_distance_fade_range = VKR_SHADOW_TILED_FAR_FADE_RANGE;
+}
+
 bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
                                const VkrShadowConfig *config) {
   if (!system) {

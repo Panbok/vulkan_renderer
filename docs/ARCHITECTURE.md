@@ -1204,7 +1204,9 @@ per-target-image reuse and shared PCF/bias units. Each cascade fits the
 smallest sphere around its view slice, and every drawn map lies on one texel
 lattice fixed in world space. On the tiled pipeline three cascades split the
 nearest 80 m and the fourth is a far level to 1 km, rebuilt one tile of an
-8x8 grid a frame and retargeted that way to a moving sun. Desktop receivers
+8x8 grid a frame and retargeted that way to a moving sun. On the desktop
+pipeline four cascades keep the nearest 200 m and a fifth is the same far
+level. Desktop receivers
 turn the kernel per pixel; tiled receivers filter with a fixed bilinear grid,
 since that pipeline has no temporal resolve. Both compare every tap against
 the receiver plane's depth at its offset. The

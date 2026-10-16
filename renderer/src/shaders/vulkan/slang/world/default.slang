@@ -559,10 +559,12 @@ VkrVkPcssBlockers packet_shadow_pcss_blockers(
 
 // No far-cascade EVSM moments: every cascade filters its depth with PCF.
 #define VKR_VK_SHADOW_MOMENTS_NONE 0xFFFFFFFFu
+// packet_shadow_cascade's result for a receiver its cascade's map misses.
+#define VKR_VK_SHADOW_MISSED -1.0f
 
 /**
- * One cascade's visibility. Returns 1.0 where the receiver misses it.
- * `rotation` turns the kernel per pixel (vkr_shadow_kernel_rotation).
+ * One cascade's visibility, or VKR_VK_SHADOW_MISSED where its map misses the
+ * receiver. `rotation` turns the kernel per pixel (vkr_shadow_kernel_rotation).
  */
 float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
                             float3 world_position, float3 normal, float n_dot_l,
@@ -582,12 +584,17 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
     float4 clip =
         mul(data.light_view_projection, float4(offset_position, 1.0f));
     if (abs(clip.w) <= 1e-6f)
-        return 1.0f;
+        return VKR_VK_SHADOW_MISSED;
     float3 projected = clip.xyz / clip.w;
     float2 uv = projected.xy * 0.5f + 0.5f;
-    if (any(uv < 0.0f) || any(uv > 1.0f) || projected.z < 0.0f ||
-        projected.z > 1.0f)
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+        return VKR_VK_SHADOW_MISSED;
+    // Nothing the map holds lies nearer the light than its near plane; a
+    // receiver past its far plane lies behind every caster stored there, as
+    // valley floors below a far level's casters do.
+    if (projected.z < 0.0f)
         return 1.0f;
+    projected.z = min(projected.z, 1.0f);
 
     // Both biases are configured in texels and converted through *this*
     // cascade's own footprint and fitted depth span. That is what makes one
@@ -690,6 +697,18 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
     float factor = packet_shadow_cascade(root, cascade, world_position, normal,
                                          n_dot_l, rotation, moments_texture,
                                          moments_sampler);
+    // A receiver its cascade's map misses, pushed past an edge by the normal
+    // offset, takes the next cascade's map, which contains it, rather than
+    // full light.
+    if (factor < 0.0f && cascade + 1u < root.shadow_cascade_count)
+    {
+        cascade += 1u;
+        factor = packet_shadow_cascade(root, cascade, world_position, normal,
+                                       n_dot_l, rotation, moments_texture,
+                                       moments_sampler);
+    }
+    if (factor < 0.0f)
+        factor = 1.0f;
 
     // Cross-fade over the last `blend_fraction` of this cascade's span. Outside
     // the band exactly one cascade is sampled, so the seam cost is confined to
@@ -705,7 +724,9 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
                                                world_position, normal, n_dot_l,
                                                rotation, moments_texture,
                                                moments_sampler);
-            factor = lerp(factor, next, t);
+            // A next map that misses the receiver keeps this one's value.
+            if (next >= 0.0f)
+                factor = lerp(factor, next, t);
         }
     }
 
@@ -792,6 +813,15 @@ packet_directional_shadow_debug(VkrVulkanPacketFrameRoot *root,
     // The debug readout keeps one fixed kernel orientation.
     sample.factor = packet_shadow_cascade(root, sample.cascade, world_position,
                                           normal, n_dot_l, float2(1.0f, 0.0f));
+    if (sample.factor < 0.0f && sample.cascade + 1u < root.shadow_cascade_count)
+    {
+        sample.cascade += 1u;
+        sample.factor = packet_shadow_cascade(root, sample.cascade,
+                                              world_position, normal, n_dot_l,
+                                              float2(1.0f, 0.0f));
+    }
+    if (sample.factor < 0.0f)
+        sample.factor = 1.0f;
     if (sample.cascade + 1u < root.shadow_cascade_count)
     {
         float4 slice =
@@ -803,7 +833,8 @@ packet_directional_shadow_debug(VkrVulkanPacketFrameRoot *root,
             float next = packet_shadow_cascade(
                 root, sample.cascade + 1u, world_position, normal, n_dot_l,
                 float2(1.0f, 0.0f));
-            sample.factor = lerp(sample.factor, next, t);
+            if (next >= 0.0f)
+                sample.factor = lerp(sample.factor, next, t);
         }
     }
     sample.factor = lerp(1.0f, sample.factor, fade);
@@ -836,7 +867,8 @@ float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
 {
     if (mode == 1u)
     {
-        switch (sample.cascade & 3u)
+        // Cascades past the fourth, such as a far level, show magenta.
+        switch (min(sample.cascade, 4u))
         {
         case 0u:
             return float3(1.0f, 0.2f, 0.2f);
@@ -844,8 +876,10 @@ float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
             return float3(0.2f, 1.0f, 0.2f);
         case 2u:
             return float3(0.2f, 0.4f, 1.0f);
-        default:
+        case 3u:
             return float3(1.0f, 0.85f, 0.2f);
+        default:
+            return float3(1.0f, 0.2f, 1.0f);
         }
     }
     if (mode == 2u)

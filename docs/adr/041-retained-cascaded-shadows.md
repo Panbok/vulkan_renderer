@@ -60,7 +60,12 @@ A configuration may name a far level (`far_cascade_distance` above
 spans from `max_shadow_distance` to the far distance, one coarse map that its
 guard band keeps through long camera motion. The tiled pipeline uses it
 (`vkr_shadow_config_apply_tiled`: near cascades to 80 m, far level to 1 km,
-ADR-087); the desktop pipeline does not. A far level always composes from
+ADR-087). The desktop pipeline keeps its near cascades and adds one more
+cascade above them as a far level to 1 km
+(`vkr_shadow_config_apply_desktop`; `VKR_SHADOW_FAR_DISABLED` ends the sun's
+shadows at the near cascades instead). The frame's shadow map and the shadow
+system take the same configuration
+(`vkr_standard_scene_runtime_pipeline_shadow_config`). A far level always composes from
 its static layer, which it rebuilds over several frames instead of drawing
 every far caster in one: once the kept fit's margin falls below 64 of its
 texels, a rebuild takes a fresh guarded fit and draws one tile of an 8x8
@@ -180,6 +185,14 @@ taps, an optional uniform-region early-out at high tap counts, cascade cross-fad
 and distance fade. Constant/slope/normal-offset bias is authored in shadow texels
 and converted using each cascade's texel size and fitted depth span. Backend
 raster-bias lowering preserves those units. Cutout casters use alpha testing.
+
+On both pipelines a receiver its cascade's map misses, pushed past an edge
+by the normal offset, takes the next cascade's map instead of full light; a
+receiver past a map's far plane compares at depth 1, since it lies behind
+every caster stored there; and the cross-fade takes the next cascade only
+where that map holds the receiver. On the desktop pipeline these cost 0.14 ms
+of `Lighting.Deferred` in the Bistro street view at 2560×1440
+(`sha256:66f6787c…` against `a36f8426…`).
 
 The kernel turns per pixel by interleaved gradient noise
 (`vkr_shadow_kernel_rotation`), so a sparse kernel's sampling error shows as

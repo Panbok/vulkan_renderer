@@ -946,11 +946,36 @@ vkr_standard_scene_runtime_cancel_frame(VkrStandardSceneRuntime *application,
     vkr_application_host_close(&application->host);
 }
 
+/* The shadow configuration a frame of the renderer's graphics pipeline
+   uses: the cascades the frame acquires and the ones the shadow system fits
+   must agree. */
+vkr_internal VkrShadowConfig vkr_standard_scene_runtime_pipeline_shadow_config(
+    const VkrStandardSceneRuntime *app) {
+  VkrShadowConfig config = app->shadow_config;
+  /* The tiled pipeline filters every cascade with PCF and renders no
+     moments, so a far cascade must not wait for moments to be reused
+     (ADR-087). */
+  if (app->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
+    config.far_cascade_evsm = false_v;
+    /* Its dynamic-light limit bounds the shadowed lights, so each takes the
+       full filter (ADR-087). */
+    config.local_shadow_full_filter_all = true_v;
+    vkr_shadow_config_apply_tiled(&config);
+  } else if (!vkr_platform_environment_flag("VKR_SHADOW_FAR_DISABLED")) {
+    /* The desktop far level (shadow-quality D1); VKR_SHADOW_FAR_DISABLED
+       ends the sun's shadows at the near cascades for a matched capture. */
+    vkr_shadow_config_apply_desktop(&config);
+  }
+  return config;
+}
+
 /* Acquisition parameters from the frame-loop thread's shadow configuration. */
 vkr_internal VkrFrameConfig
 vkr_standard_scene_runtime_frame_config(const VkrStandardSceneRuntime *app) {
   const bool8_t shadows = app->shadow_system.initialized;
-  const VkrShadowConfig *config = &app->shadow_config;
+  const VkrShadowConfig pipeline_config =
+      vkr_standard_scene_runtime_pipeline_shadow_config(app);
+  const VkrShadowConfig *config = &pipeline_config;
   return (VkrFrameConfig){
       .shadow_map_size =
           shadows ? vkr_shadow_config_get_max_map_size(config) : 2048u,
@@ -2946,17 +2971,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
     return;
   }
-  frame->shadow.config = application->shadow_config;
-  /* The tiled pipeline filters every cascade with PCF and renders no
-     moments, so a far cascade must not wait for moments to be reused
-     (ADR-087). */
-  if (application->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
-    frame->shadow.config.far_cascade_evsm = false_v;
-    /* Its dynamic-light limit bounds the shadowed lights, so each takes the
-       full filter (ADR-087). */
-    frame->shadow.config.local_shadow_full_filter_all = true_v;
-    vkr_shadow_config_apply_tiled(&frame->shadow.config);
-  }
+  frame->shadow.config =
+      vkr_standard_scene_runtime_pipeline_shadow_config(application);
   frame->shadow.invalidate_fit =
       application->shadow_fit_invalidate_requested || target_changed;
   application->shadow_fit_invalidate_requested = false_v;

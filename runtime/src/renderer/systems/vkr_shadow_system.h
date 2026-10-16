@@ -942,6 +942,14 @@ void vkr_shadow_config_normalize(VkrShadowConfig *config);
 #define VKR_SHADOW_TILED_PROACTIVE_MARGIN_TEXELS 32.0f
 void vkr_shadow_config_apply_tiled(VkrShadowConfig *config);
 
+/** The desktop pipeline's sun cascades (shadow-quality proposal, D1): its
+ * near cascades keep their range and one more cascade above them becomes the
+ * far level to VKR_SHADOW_DESKTOP_FAR_DISTANCE, rebuilt one tile a frame as
+ * the tiled pipeline's is. A configuration that already names a far level,
+ * or holds no room for another cascade, keeps its cascades. */
+#define VKR_SHADOW_DESKTOP_FAR_DISTANCE 1000.0f
+void vkr_shadow_config_apply_desktop(VkrShadowConfig *config);
+
 /** Distance at which a normalized configuration's last shadow ends: its far
  * level's, else max_shadow_distance. */
 static inline float32_t

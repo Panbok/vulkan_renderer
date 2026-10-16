@@ -420,10 +420,10 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
                                      packet->input.globals.projection,
                                      packet->input.planar_reflection)
           : i < local_first
-              ? packet->input.shadow
-                    ->cascades[vkr_render_graph_view_cascade(
-                        &renderer->prepared_frame, i)]
-                    .light_view_projection
+              ? vkr_shadow_view_raster_projection(
+                    packet->input.shadow,
+                    vkr_render_graph_view_cascade(&renderer->prepared_frame, i),
+                    i)
               : packet->input.local_shadow
                     ->views[packet->input.local_shadow
                                 ->render_views[(i - local_first) %
@@ -996,10 +996,11 @@ bool8_t vkr_vk_prepare_deferred_raster(VkrVulkanRenderer *renderer,
                            ->views[packet->input.local_shadow
                                        ->render_views[view_index - local_first]]
                            .light_view_projection
-      : shadow ? packet->input.shadow
-                     ->cascades[vkr_render_graph_view_cascade(
-                         &renderer->prepared_frame, view_index)]
-                     .light_view_projection
+      : shadow ? vkr_shadow_view_raster_projection(
+                     packet->input.shadow,
+                     vkr_render_graph_view_cascade(&renderer->prepared_frame,
+                                                   view_index),
+                     view_index)
                : mat4_mul(packet->temporal.jittered_projection,
                           packet->input.globals.view);
   const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.bistro.shadow.sun_ray_plaza_validation",
   "suite": "local",
-  "description": "Bistro plaza looking down at sunlit paving, 2560x1440, High shadows with temporal AA, short warm-up: Debug Vulkan validation of the ray-query sun shadow passes (run with VKR_SUN_RAY_SHADOWS=1 under build_debug).",
+  "description": "Bistro plaza, 2560x1440, temporal AA, 200-frame warm-up past the far level's first tile rebuild and publish: Debug Vulkan validation of the sun ray and far shadow passes.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
@@ -18,7 +18,7 @@
   "repetition_timeout_ms": 1200000,
   "asset_ready_timeout_ms": 900000,
   "frames": {
-    "warmup": 60,
+    "warmup": 200,
     "measure": 1
   },
   "renderer": {

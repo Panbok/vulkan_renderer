@@ -299,8 +299,9 @@ desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
   occlusion test and end fade, through `vk_contact_shadow`. It runs where
   the rays' weight is below 1, because the rays find the contacts
   themselves. It follows the shadow settings' `contact_shadows` (the Epic
-  preset), as the tiled pipeline does. `VKR_SUN_CONTACT_SHADOWS` set to `0`
-  or `1` overrides the setting.
+  preset), as the tiled pipeline does; without rays it marches the whole
+  frame (see the cost below). `VKR_SUN_CONTACT_SHADOWS` set to `0` or `1`
+  overrides the setting.
 - **Defect 5, sun only.** The lighting, forward and transmission sun terms
   offset and bias the receiver along the geometric normal. Lighting
   reconstructs it from camera depth (`vkr_vk_depth_view_geometric_normal`) and
@@ -370,6 +371,47 @@ Production readiness: not yet. Each item below blocks the High preset:
 | Range | Fixed at 50 m. | Tie the range to the cascade splits or a preset value |
 | No-ray path | The contact march costs 1.18 ms in lighting on the sunlit plaza. | A half-resolution contact pass, timed against the 0.2 ms budget |
 
+
+### Desktop far level
+
+D1's distant level, implemented 2026-10-16: the desktop pipeline runs the
+tiled pipeline's far level as a fifth cascade above its four near cascades,
+from 200 m to 1 km, rebuilt one tile of an 8x8 grid a frame
+(`vkr_shadow_config_apply_desktop`, ADR-041). The Vulkan backend gained the
+pending image, the tile and publish passes, the tile's matrix in culling and
+raster, and the receivers' next-cascade fallback and far-plane clamp.
+
+- **Level Design Test valley.** Headless Release editor, Epic, rays off, at
+  15:30 and 18:30, far level on and off (`VKR_SHADOW_FAR_DISABLED`). With
+  it, ridge shadows reach the slopes 250–400 m along the valley, and the
+  cliffs and tree stands past 200 m cast shadows. Without it, everything
+  past 200 m is lit.
+- **Cost, Bistro, rays off.** Measured as in the prototype result. The far
+  level adds 0.12 ms in the street view (21.193 to 21.312 ms;
+  `sha256:66f6787c…`, `6fdf8c9a…`) and 0.085 ms in the plaza view (19.587
+  to 19.672 ms; `sha256:1d95b5ed…`, `3e2da6b4…`). Its tile and publish
+  passes average under 0.01 ms a frame; the rest is receivers sampling it
+  past 200 m. The receiver fallback adds 0.14 ms more, which ADR-041
+  records.
+- **Memory.** Render-graph images grow by 192 MiB in the street view, with
+  three target images (`rendergraph.image_bytes.live` 3.467 to 3.668 GB):
+  one more 2048² layer in each shadow map (48 MiB), the static image, which
+  the far level keeps alive with all five layers (80 MiB), the pending
+  image (16 MiB) and the far cascade's EVSM moments (48 MiB). That is above
+  D1's +64–128 MiB estimate and works against the 600 MiB desktop budget.
+  Dropping the far cascade's moments, as the tiled pipeline does, or a
+  static image that holds only the layers that use it would save 48 MiB
+  and up to 64 MiB.
+- **Validation.** Debug runs of the Bistro plaza with
+  `VK_LAYER_KHRONOS_validation` and synchronization checks, rays off and
+  on, after 60 and 200 warm-up frames (past the first 64-tile rebuild and
+  its publish), reported no validation messages (`sha256:43f4709d…`,
+  `82ec9d4e…`, `fea1c6c7…`).
+- **Open.** The far cascade takes EVSM moments like cascades 2 and 3, and
+  every frame that recomposes it recomputes them; dynamic casters within
+  1 km recompose it every frame they move. The valley captures are editor
+  captures, not harness reports, and the scene is the 2026-10-12 copy from
+  the depot.
 
 ## Tiled options
 
@@ -538,8 +580,9 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
 1. D0 and T0 on both pipelines.
 2. A scoped Bistro case that orbits across all four cascade borders and past
    54 m, captured and timed on each backend.
-3. Desktop: D1, with its distant levels and sun contact shadows, and the D2
-   prototype gate, which passed (see the prototype result). Tiled: T1 and
+3. Desktop: D1, with its distant levels (the far level is implemented)
+   and sun contact shadows, and the D2 prototype gate, which passed (see the
+   prototype result). Tiled: T1 and
    T2b, implemented.
 4. Tiled: T4, implemented.
 5. Desktop: D2 at one ray per 2×2 block. Tiled: the T5 prototype and gate.
