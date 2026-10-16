@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/vkr_codec.h"
 #include "vkr_depot_object.h"
 
 /* A content-addressed store of depot chunks and objects on disk
@@ -24,25 +25,15 @@
 #define VKR_DEPOT_OBJECT_MAX (32u * 1024u * 1024u)
 #define VKR_DEPOT_STORED_MAX (VKR_DEPOT_STORED_HEADER + VKR_DEPOT_OBJECT_MAX)
 
-/* The compressor a process installs (zstd); NULL stores raw only. */
-typedef struct VkrDepotCodec {
-  uint64_t (*bound)(uint64_t size);
-  /* Returns the compressed size, or zero on failure. */
-  uint64_t (*compress)(void *dst, uint64_t capacity, const void *src,
-                       uint64_t size, int32_t level);
-  /* Returns the decoded size, or UINT64_MAX on failure. */
-  uint64_t (*decompress)(void *dst, uint64_t capacity, const void *src,
-                         uint64_t size);
-} VkrDepotCodec;
-
 typedef struct VkrDepotStore {
   char root[VKR_DEPOT_PATH_CAPACITY];
-  const VkrDepotCodec *codec;
+  /* The compressor a process installs (zstd); NULL stores raw only. */
+  const VkrCodec *codec;
 } VkrDepotStore;
 
 /* Opens or creates a store at `root`. `codec` may be NULL. */
 bool8_t vkr_depot_store_open(VkrDepotStore *store, const char *root,
-                             const VkrDepotCodec *codec);
+                             const VkrCodec *codec);
 
 void vkr_depot_store_path(const VkrDepotStore *store, const VkrDepotId *id,
                           char *out, uint32_t capacity);
@@ -71,9 +62,9 @@ bool8_t vkr_depot_store_get_stored(const VkrDepotStore *store,
                                    uint64_t *out_size);
 
 /* Decodes a representation into malloc storage. */
-bool8_t vkr_depot_stored_decode(const VkrDepotCodec *codec,
-                                const uint8_t *stored, uint64_t size,
-                                uint8_t **out_bytes, uint64_t *out_size);
+bool8_t vkr_depot_stored_decode(const VkrCodec *codec, const uint8_t *stored,
+                                uint64_t size, uint8_t **out_bytes,
+                                uint64_t *out_size);
 
 /* Content-defined chunking (FastCDC with normalized chunking): the length
    of the chunk that starts `data`. Deterministic on every host. */

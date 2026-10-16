@@ -939,7 +939,7 @@ bool32_t run_gameplay_player_tests(void) {
   assert(player->render_yaw == 0.25f && player->render_pitch == 0);
   assert(state->yaw == 0.25f && state->pitch == 0);
   player_shutdown(&test);
-  assert(!input.observer && !scene.simulation.enabled);
+  assert(!input.observers[0].observer && !scene.simulation.enabled);
   assert(!vkr_scene_character_get_state(&scene, entity,
                                         &(VkrPhysicsCharacterState){0}, NULL));
   vkr_scene_shutdown(&scene, NULL);

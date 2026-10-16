@@ -24,10 +24,10 @@ static uint64_t depot_zstd_decompress(void *dst, uint64_t capacity,
   return ZSTD_isError(result) ? UINT64_MAX : (uint64_t)result;
 }
 
-static const VkrDepotCodec depot_zstd = {
+static const VkrCodec depot_zstd = {
     .bound = depot_zstd_bound,
     .compress = depot_zstd_compress,
     .decompress = depot_zstd_decompress,
 };
 
-const VkrDepotCodec *vkr_depot_zstd_codec(void) { return &depot_zstd; }
+const VkrCodec *vkr_depot_zstd_codec(void) { return &depot_zstd; }

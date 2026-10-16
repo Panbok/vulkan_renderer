@@ -29,27 +29,52 @@ InputState input_init(EventManager *event_manager) {
 
 bool8_t input_observe(InputState *input, VkrInputObserver observer,
                       void *context) {
-  if (!input || !observer || input->observer) {
+  if (!input || !observer) {
     return false_v;
   }
-  input->observer = observer;
-  input->observer_context = context;
+  VkrInputObserverSlot *free_slot = NULL;
+  for (uint32_t i = 0; i < VKR_INPUT_OBSERVER_MAX; ++i) {
+    VkrInputObserverSlot *slot = &input->observers[i];
+    if (slot->observer && slot->context == context) {
+      return false_v;
+    }
+    if (!slot->observer && !free_slot) {
+      free_slot = slot;
+    }
+  }
+  if (!free_slot) {
+    return false_v;
+  }
+  *free_slot = (VkrInputObserverSlot){.observer = observer, .context = context};
   return true_v;
 }
 
 bool8_t input_unobserve(InputState *input, void *context) {
-  if (!input || input->observer_context != context) {
+  if (!input) {
     return false_v;
   }
-  input->observer = NULL;
-  input->observer_context = NULL;
-  return true_v;
+  for (uint32_t i = 0; i < VKR_INPUT_OBSERVER_MAX; ++i) {
+    VkrInputObserverSlot *slot = &input->observers[i];
+    if (slot->observer && slot->context == context) {
+      *slot = (VkrInputObserverSlot){0};
+      return true_v;
+    }
+  }
+  return false_v;
 }
 
 static void input_notify(InputState *input, VkrInputTransition transition) {
-  if (input->observer) {
-    transition.time_seconds = vkr_platform_get_absolute_time();
-    input->observer(&transition, input->observer_context);
+  bool8_t stamped = false_v;
+  for (uint32_t i = 0; i < VKR_INPUT_OBSERVER_MAX; ++i) {
+    const VkrInputObserverSlot slot = input->observers[i];
+    if (!slot.observer) {
+      continue;
+    }
+    if (!stamped) {
+      transition.time_seconds = vkr_platform_get_absolute_time();
+      stamped = true_v;
+    }
+    slot.observer(&transition, slot.context);
   }
 }
 
@@ -61,8 +86,7 @@ void input_shutdown(InputState *input_state) {
       .data = NULL,
       .data_size = 0,
   };
-  input_state->observer = NULL;
-  input_state->observer_context = NULL;
+  MemZero(input_state->observers, sizeof(input_state->observers));
   input_state->is_initialized = false;
   event_manager_dispatch(input_state->event_manager, event);
   log_debug("Input system shutdown");

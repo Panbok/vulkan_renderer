@@ -176,6 +176,10 @@ bool32_t vkr_thread_set_interactive(void) {
   return pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) == 0;
 }
 
+bool32_t vkr_thread_set_utility(void) {
+  return pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0) == 0;
+}
+
 VkrThreadId vkr_thread_get_id(VkrThread thread) {
   if (thread == NULL) {
     return 0;

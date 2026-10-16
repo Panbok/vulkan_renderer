@@ -153,7 +153,7 @@ static void fuzz_depot_commit(const uint8_t *bytes, uint32_t size) {
 }
 
 static void fuzz_depot_stored(const uint8_t *bytes, uint32_t size) {
-  const VkrDepotCodec *codecs[2] = {NULL, vkr_depot_zstd_codec()};
+  const VkrCodec *codecs[2] = {NULL, vkr_depot_zstd_codec()};
   for (uint32_t i = 0u; i < ArrayCount(codecs); ++i) {
     uint8_t *decoded = NULL;
     uint64_t decoded_size = 0u;
@@ -376,7 +376,7 @@ static void fuzz_depot_seed_objects(FuzzSeedWriter *writer) {
   fuzz_depot_seed(writer, FUZZ_DEPOT_TREE, bytes, size);
 
   /* The tree's stored forms, raw and zstd, for the stored-form target. */
-  const VkrDepotCodec *codec = vkr_depot_zstd_codec();
+  const VkrCodec *codec = vkr_depot_zstd_codec();
   uint8_t stored[4096];
   FUZZ_CHECK(size + VKR_DEPOT_STORED_HEADER <= sizeof(stored));
   stored[0] = 0u;

@@ -124,6 +124,15 @@ void vkr_thread_yield(void);
 bool32_t vkr_thread_set_interactive(void);
 
 /**
+ * @brief Lowers the calling thread to the platform's utility class.
+ *
+ * For background work that must not take time from frame threads, such as a
+ * recording writer. On macOS the utility class also lowers I/O priority.
+ * @return true_v when the platform accepted the request.
+ */
+bool32_t vkr_thread_set_utility(void);
+
+/**
  * @brief Retrieves the id of the provided thread handle.
  * @param thread VkrThread to query.
  * @return Thread id on success, 0 on failure.

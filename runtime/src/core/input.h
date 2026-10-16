@@ -378,10 +378,18 @@ typedef struct VkrInputTransition {
 typedef void (*VkrInputObserver)(const VkrInputTransition *transition,
                                  void *context);
 
+/* Observers per InputState: the script host and a recorder. */
+#define VKR_INPUT_OBSERVER_MAX 2u
+
+typedef struct VkrInputObserverSlot {
+  VkrInputObserver observer;
+  void *context;
+} VkrInputObserverSlot;
+
 typedef struct InputState {
   EventManager *event_manager;
-  VkrInputObserver observer;
-  void *observer_context;
+  /* Called in slot order for each transition; empty slots have no observer. */
+  VkrInputObserverSlot observers[VKR_INPUT_OBSERVER_MAX];
   KeysState previous_keys;
   KeysState current_keys;
   ButtonsState previous_buttons;
@@ -431,7 +439,8 @@ void input_shutdown(InputState *input_state);
  * @param input_state Pointer to the `InputState` to update.
  */
 void input_update(InputState *input_state);
-/* One owner, no implicit replacement. Detach with the same context. */
+/* Registers an observer in a free slot. A context registers once and detaches
+   with the same context; nothing replaces an observer implicitly. */
 bool8_t input_observe(InputState *input, VkrInputObserver observer,
                       void *context);
 bool8_t input_unobserve(InputState *input, void *context);

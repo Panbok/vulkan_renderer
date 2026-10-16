@@ -78,10 +78,10 @@ const VkrDepotIndexEntry *vkr_depot_file_list_find(const VkrDepotFileList *list,
    the store inside it. */
 bool8_t vkr_depot_workspace_create(VkrDepotWorkspace *workspace,
                                    const char *root, const char *store_root,
-                                   const VkrDepotCodec *codec);
+                                   const VkrCodec *codec);
 /* Opens the working copy at `root` or one of its parents. */
 bool8_t vkr_depot_workspace_open(VkrDepotWorkspace *workspace, const char *root,
-                                 const VkrDepotCodec *codec);
+                                 const VkrCodec *codec);
 bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace);
 void vkr_depot_workspace_close(VkrDepotWorkspace *workspace);
 

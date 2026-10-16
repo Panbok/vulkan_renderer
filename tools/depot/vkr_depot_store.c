@@ -12,7 +12,7 @@
 #define STORE_COMPRESSION_LEVEL 3
 
 bool8_t vkr_depot_store_open(VkrDepotStore *store, const char *root,
-                             const VkrDepotCodec *codec) {
+                             const VkrCodec *codec) {
   MemZero(store, sizeof(*store));
   if (!root || strlen(root) >= sizeof(store->root)) {
     return false_v;
@@ -104,9 +104,9 @@ bool8_t vkr_depot_store_put(const VkrDepotStore *store, const VkrDepotId *id,
   return written;
 }
 
-bool8_t vkr_depot_stored_decode(const VkrDepotCodec *codec,
-                                const uint8_t *stored, uint64_t size,
-                                uint8_t **out_bytes, uint64_t *out_size) {
+bool8_t vkr_depot_stored_decode(const VkrCodec *codec, const uint8_t *stored,
+                                uint64_t size, uint8_t **out_bytes,
+                                uint64_t *out_size) {
   if (size < VKR_DEPOT_STORED_HEADER) {
     return false_v;
   }

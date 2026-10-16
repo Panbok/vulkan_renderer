@@ -37,7 +37,7 @@ typedef struct VkrDepotServiceConfig {
   /* Zero for VKR_DEPOT_DISCOVERY_PORT. A taken port leaves the service
      running without the responder. */
   uint16_t discovery_port;
-  const VkrDepotCodec *codec;
+  const VkrCodec *codec;
   /* Unknown keys write; for a trusted network only. */
   bool8_t open_access;
   /* A store without an access file makes the user's identity its admin,

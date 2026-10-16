@@ -640,7 +640,7 @@ static void test_input_synchronous_observer(void) {
   InputObservationTest other = {0};
   assert(!input_observe(&input, NULL, &observations));
   assert(input_observe(&input, observe_input_transition, &observations));
-  assert(!input_observe(&input, observe_input_transition, &other));
+  assert(!input_observe(&input, observe_input_transition, &observations));
 
   input_process_key(&input, KEY_W, true_v);
   assert(observations.count == 1); // Delivery precedes return, without a frame.
@@ -698,9 +698,21 @@ static void test_input_synchronous_observer(void) {
   input_process_mouse_move(&input, 9, 10);
   assert(other.count == 2 && other.transitions[1].delta_x == 2 &&
          other.transitions[1].delta_y == -6);
+  // A second observer, such as a recorder, sees each transition after the
+  // first; a third finds no free slot.
+  InputObservationTest third = {0};
+  assert(input_observe(&input, observe_input_transition, &observations));
+  assert(!input_observe(&input, observe_input_transition, &third));
+  input_process_key(&input, KEY_Q, true_v);
+  assert(other.count == 3 && observations.count == 9 && third.count == 0);
+  assert(other.transitions[2].code == KEY_Q &&
+         observations.transitions[8].code == KEY_Q &&
+         other.transitions[2].time_seconds ==
+             observations.transitions[8].time_seconds);
   input_shutdown(&input);
-  assert(input.observer == NULL && input.observer_context == NULL);
-  assert(other.count == 2);
+  assert(input.observers[0].observer == NULL &&
+         input.observers[1].observer == NULL);
+  assert(other.count == 3);
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_input_synchronous_observer PASSED\n");

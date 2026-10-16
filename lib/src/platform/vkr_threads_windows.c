@@ -163,6 +163,11 @@ bool32_t vkr_thread_set_interactive(void) {
          0;
 }
 
+bool32_t vkr_thread_set_utility(void) {
+  return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) !=
+         0;
+}
+
 VkrThreadId vkr_thread_get_id(VkrThread thread) {
   if (thread == NULL) {
     return 0;

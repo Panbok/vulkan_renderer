@@ -103,7 +103,7 @@ typedef struct VkrDepotCloneConfig {
   /* NULL for vkr_depot_display_name. */
   const char *name;
   /* The store's compressor; NULL stores raw only. */
-  const VkrDepotCodec *codec;
+  const VkrCodec *codec;
   /* Borrowed; NULL for none. */
   VkrDepotProgress *progress;
 } VkrDepotCloneConfig;

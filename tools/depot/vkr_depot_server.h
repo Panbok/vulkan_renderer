@@ -30,7 +30,7 @@
 
 typedef struct VkrDepotServerConfig {
   const char *store_root;
-  const VkrDepotCodec *codec;
+  const VkrCodec *codec;
   /* Unknown keys write; for a trusted network only. */
   bool8_t open_access;
 } VkrDepotServerConfig;

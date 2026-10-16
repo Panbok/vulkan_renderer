@@ -252,7 +252,7 @@ cleanup:
 
 bool8_t vkr_depot_workspace_create(VkrDepotWorkspace *workspace,
                                    const char *root, const char *store_root,
-                                   const VkrDepotCodec *codec) {
+                                   const VkrCodec *codec) {
   MemZero(workspace, sizeof(*workspace));
   if (!vkr_bakery_path_absolute(root, workspace->root,
                                 sizeof(workspace->root)) ||
@@ -284,7 +284,7 @@ bool8_t vkr_depot_workspace_create(VkrDepotWorkspace *workspace,
 }
 
 bool8_t vkr_depot_workspace_open(VkrDepotWorkspace *workspace, const char *root,
-                                 const VkrDepotCodec *codec) {
+                                 const VkrCodec *codec) {
   MemZero(workspace, sizeof(*workspace));
   char candidate[VKR_DEPOT_PATH_CAPACITY];
   if (!vkr_bakery_path_absolute(root, candidate, sizeof(candidate))) {

@@ -45,6 +45,9 @@ target_link_libraries(vkr_net_bench PRIVATE vkr_net vkr_sodium vkr_foundation)
 # The asset depot server, client and command (tools/depot).
 add_subdirectory(depot)
 
+# The offline recording reader (tools/recording); after depot for its zstd.
+add_subdirectory(recording)
+
 find_package(Vulkan REQUIRED)
 
 # Capture/export consumers and asset importers share one image writer object.

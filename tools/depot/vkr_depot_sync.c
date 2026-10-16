@@ -935,7 +935,7 @@ cleanup:
 /* Opens the working copy whose root is `directory` itself, not a parent. */
 static bool8_t depot_clone_resume(VkrDepotWorkspace *workspace,
                                   const char *directory,
-                                  const VkrDepotCodec *codec) {
+                                  const VkrCodec *codec) {
   char state[VKR_DEPOT_PATH_CAPACITY];
   return vkr_bakery_path_join(state, sizeof(state), directory,
                               VKR_DEPOT_META_DIR "/state") &&
