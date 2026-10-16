@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-12
+updated: 2026-10-16
 authority: proposal
 ---
 # Network protocol
@@ -15,16 +15,19 @@ the services that build on them:
 
 1. Asset streaming: assets fetched from a depot as the scene needs them and
    uploaded into GPU memory.
-2. Game sessions: lobbies of 10 to 20 players first, later persistent worlds
-   with 10,000 or more players and 200 to 400 in one place.
-3. Editor collaboration: the rest of several users in one editor session
+2. Editor collaboration: the rest of several users in one editor session
    whose edits, drags and clicks reach every participant.
-4. Agent federation: agents on several machines that work on one level
+3. Agent federation: agents on several machines that work on one level
    through their own editors, with work divided between them.
-5. View streaming: frames rendered on another machine and streamed back.
+4. View streaming: frames rendered on another machine and streamed back.
 
 It also keeps the gaps of phases 0 to 3. Names of types and functions are
 provisional until the phase that adds them.
+
+Game networking (multiplayer sessions, persistent worlds and their server
+scale) has its own proposal, [Game networking](game-networking.md), which
+will be tackled separately after the phases here. The owner moved it out
+on 2026-10-16.
 
 ## Current baseline
 
@@ -47,12 +50,6 @@ provisional until the phase that adds them.
   [vkr_sample_runtime.h](../../runtime/src/vkr_sample_runtime.h)). Journal
   sequences are process-wide, and requests refer to local `VkrEntityId`
   values.
-- **Simulation.** The scene ticks at a fixed 60 Hz. The FPS module orders
-  input commands by tick and sequence without a wire encoding
-  ([ADR-073](../adr/073-native-gameplay-foundation.md)). The
-  [entity behavior proposal](entity-behavior-system.md#preserving-a-multiplayer-path)
-  asks for network identities mapped to local handles and no speculative
-  replication descriptors on every field.
 - **Streaming inputs.** World partition supplies streaming sources and
   128 m cells ([ADR-086](../adr/086-world-partition.md)). Resource
   publication is an ordered queue with confirm-before-use
@@ -69,7 +66,6 @@ The use cases put different demands on one transport.
 | Use case | Traffic shape | Delivery needed | Metric that matters |
 |---|---|---|---|
 | Asset depot | Bulk, MB to GB per transfer | Reliable, any order, resumable | Throughput per core |
-| Game sessions | Small messages, 20 to 60 Hz | Unreliable state, reliable events | Latency, bytes per client, clients per server |
 | Editor collaboration | Low-rate edits, 60 Hz gestures | Reliable ordered edits, latest-value gestures | Edit round trip |
 | View streaming | 10 to 50 Mbps video | Retransmit only before a deadline | Glass-to-glass latency |
 | Asset streaming | Bulk with priorities | Reliable, any order, cancellable | Time to first visible mip |
@@ -89,9 +85,11 @@ Requirements that follow from the table:
 - A peer cannot make another peer allocate memory beyond fixed caps.
 - Every byte after the handshake is authenticated and encrypted.
 
-Non-goals: text formats on the wire, browser clients, lockstep or
-cross-platform deterministic simulation, peer-to-peer game meshes, voice,
-and a TCP fallback.
+Game sessions put their own demands on the transport; the game networking
+proposal lists them.
+
+Non-goals: text formats on the wire, browser clients, voice, and a TCP
+fallback.
 
 ## Owner decisions of 2026-10-09
 
@@ -100,7 +98,7 @@ and a TCP fallback.
 | Crypto library | A pinned libsodium release, vendored: X25519, Ed25519, BLAKE2b, ChaCha20-Poly1305 and AES-256-GCM | Built by `vkr_sodium` ([vendor/libsodium.md](../../vendor/libsodium.md)). The transport refuses to start without the AES-GCM hardware path, which every CPU of ADR-083 has. Monocypher (no AES hardware path) and AEGIS-128L (32 B tag in libsodium) were rejected. |
 | Transport | The custom transport of [ADR-105](../adr/105-network-transport-and-asset-depot.md), not a QUIC library | The project owns loss recovery, congestion control and the handshake, so the security review and the simulated-link tests are required gates. |
 | Depot versioning | Own commits, trees, refs and locks | Git LFS is excluded because its batch API is JSON over HTTPS. `vkr_depot` is the command (ADR-105); the collaborative session commits, publishes and checks out through it (ADR-106). |
-| Server platforms | Windows and macOS only; Linux later | Every server, including the phase 8 scale test, runs on Windows or macOS. Windows servers use Registered I/O in phase 8. A macOS server sends and receives one datagram per system call. A Linux server build is future work. |
+| Server platforms | Windows and macOS only; Linux later | Every server runs on Windows or macOS. A macOS server sends and receives one datagram per system call. Registered I/O for Windows game servers is in the game networking proposal. A Linux server build is future work. |
 
 ## Gaps of phases 0 to 3
 
@@ -108,35 +106,10 @@ and a TCP fallback.
 |---|---|---|
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
 | Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session still pumps on the UI thread | The session on the host thread; the frame time measured with the receiver on another machine |
-| Windows server I/O | Registered I/O per worker in phase 8 | Datagrams per second per core against the one-call baseline |
 | Sparse working copy | Files fetched when opened, through the remote content mount of asset streaming | A Bistro scene opens from a sparse working copy |
 | Shared Bakery cache | Action keys to output hashes in a depot; a cook downloads instead of re-encoding | A second machine's cook of Bistro hits the cache |
 | Security | An independent review; the fuzzers run under ASan and UBSan (ADR-105) | Review closed before use outside a trusted network |
 | Privacy | NAT traversal with a rendezvous and relay; packet numbers are already masked (ADR-105) | Decided by the owner before internet deployment |
-
-## Components on the wire
-
-Replication encodes components through their existing `VkrTypeDesc`, so a
-component is described once. A replicated type registers a
-`VkrNetComponentDesc` that names the type and, only where needed, a
-quantization per property. Every other property takes a default encoding
-from its kind:
-
-| Property kind | Default wire encoding |
-|---|---|
-| `BOOL` | 1 bit |
-| `I32`, `U32` | `VARUINT` (zigzag for `I32`) |
-| `F32`, `ANGLE` | `F32`, or `QFLOAT` when the property has a range and the net descriptor gives bits |
-| `VEC2`–`VEC4`, `COLOR`, `DIRECTION` | `F32` per component, or `QFLOAT` as above |
-| `QUAT` | `QUAT(15)` |
-| `ENUM` | `ENUM(count of names)` |
-| `STRING` | `UTF8(capacity)` |
-| `ENTITY` | `NETID` inside a session; `ENTITY_REF` in edit batches |
-
-`TRANSIENT` properties never travel. A component's change mask has one
-bit per property, which is at most 64 bits because `VKR_TYPE_PROPERTY_MAX`
-is 64. Opt-in registration keeps unreplicated types free of network
-descriptors, which the entity behavior proposal requires.
 
 ## Services
 
@@ -169,119 +142,6 @@ without a full download.
   any Vulkan transfer-queue path.
 - **Integrity.** The client checks the SHA-256 of each chunk before it
   publishes the resource.
-
-### Game sessions (use case 2)
-
-#### Topology
-
-The topology grows in two steps:
-
-```text
-Step A (10 to 20 players):
-  client ---- server (dedicated or listen)
-
-Step B (10,000+ players):
-  client ---- gateway ---- cell servers
-  client ---/        \---- cell servers
-```
-
-Step A is the target of this proposal. Step B is a research program that
-builds on the same transport. Its requirements on the transport are listed
-under [Step B](#step-b-persistent-worlds).
-
-#### Identity and state
-
-- **Network IDs.** The server assigns each replicated entity a session
-  `NetId`: a 20-bit index and a 12-bit generation. Each peer maps a
-  `NetId` to its local `VkrEntityId`. An entity from a level document is
-  named once by its `VkrEntityRef` in its spawn record, because both peers
-  load the same level.
-- **Replicated entities** carry a `net_replicated` component: owner,
-  priority, relevance radius and update-rate tiers. Only types with a
-  `VkrNetComponentDesc` travel.
-- **Server tick.** The server simulates at the existing 60 Hz and sends
-  snapshots at a per-session rate from 20 to 60 Hz.
-
-#### Snapshots and delta compression
-
-The server keeps a ring of quantized states for each replicated entity
-over the last 64 ticks. It keeps, per client and entity, the last tick
-that the client acknowledged. An update for a client is the difference
-between the current state and the acknowledged state:
-
-```text
-update = NetId
-       + component change mask
-       + per component: property change mask, changed values
-```
-
-- Clients that acknowledged the same tick receive the same bytes. The
-  server caches each encoded difference by entity, baseline tick and
-  current tick, so most updates in a crowded area are copies.
-- A baseline that left the ring forces a full state.
-- Snapshots travel on an `UNRELIABLE` channel. Each packet decodes on its
-  own, so one lost packet loses only its entities. The packet-acknowledged
-  hook advances the client's baselines; the client sends no extra
-  acknowledgment.
-- Spawns and despawns ride in snapshot packets and repeat until a packet
-  that carried them is acknowledged.
-- Gameplay events that need order (damage confirmations, inventory
-  changes) use a `RELIABLE_ORDERED` channel.
-
-#### Interest and bandwidth budget
-
-The server divides the world into a uniform grid, for example 32 m. A
-client's interest set is the cells near its streaming sources plus entities
-marked always relevant. Each candidate entity accumulates priority from
-distance, view direction, its own priority and the time since its last
-update. Each snapshot sends the highest-priority updates that fit the
-client's byte budget. The budget is the lower of a configured cap and a
-share of the bandwidth estimate.
-
-Estimates for planning, which phase 5 and phase 8 must measure. Each
-assumes 10 B per entity update and 51 B of packet overhead over IPv4.
-
-| Case | Updates per second per client | Down per client | Server egress |
-|---|---|---|---|
-| 20 players, all relevant, 30 Hz | 20 × 30 = 600 | about 60 kbps | about 1.2 Mbps |
-| 400 in one place: 32 at 30 Hz, 96 at 10 Hz, 272 at 4 Hz | 3,008 | about 250 kbps | about 100 Mbps |
-| Input upstream: 60 packets/s, four commands each | — | about 36 kbps up | — |
-
-#### Input, prediction and time
-
-- The client sends input on an `UNRELIABLE` channel with `IMMEDIATE`. Each
-  packet repeats the last four to eight FpsInput commands with their tick
-  and sequence, so a burst of lost packets loses no command.
-- The server holds one to two ticks of input in a jitter buffer and
-  reports the buffer's depth. The client changes its simulation rate by up
-  to ±5% to keep the depth at its target.
-- The client predicts its own player. Each snapshot carries the last input
-  sequence that the server applied, and the client replays later inputs
-  from the corrected state. This needs the separation of authoritative and
-  presentation state that the entity behavior proposal describes.
-- The client draws remote entities two snapshot intervals in the past and
-  interpolates between snapshots.
-- Hitscan lag compensation keeps one second of hitbox history on the
-  server. It belongs to a later gameplay change.
-
-#### Step B: persistent worlds
-
-10,000 players over a world, with 200 to 400 in one place, need
-simulation across several processes. The transport supports this through:
-
-- connection IDs with shard bits, so a load balancer or a socket per
-  worker can route packets without state;
-- gateways that terminate client connections (crypto, acknowledgment,
-  pacing) and forward compact per-client payloads from cell servers;
-- server-to-server connections that multiplex many client lanes, with a
-  32-bit lane ID in the service header rather than one transport channel
-  per client;
-- snapshot updates that encode per entity, so updates from several cell
-  servers combine into one client packet;
-- connection migration between gateways with a fresh token.
-
-Entity authority handoff across cell boundaries, cell-server placement and
-persistence are outside this proposal.
 
 ### Editor collaboration (use case 3)
 
@@ -344,8 +204,8 @@ client: reassemble -> HW decode -> present
   intra refresh.
 - **Rate.** The encoder bitrate is 0.85 × the bandwidth estimate, updated
   every 100 ms.
-- **Input.** Pointer and key input travels like game input: unreliable,
-  repeated, `IMMEDIATE`. Text entry travels on a reliable ordered channel.
+- **Input.** Pointer and key input travels unreliable and `IMMEDIATE`,
+  with each packet repeating the last few events. Text entry travels on a reliable ordered channel.
 - **Client.** The client presents the newest decoded frame without a
   jitter buffer. A one-frame buffer is an option for paths with jitter.
 
@@ -356,14 +216,13 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Owner | Path | Contents |
 |---|---|---|
-| `vkr_runtime` | `runtime/src/net/` | `world`, `stream` and `view` services, the remote content mount |
+| `vkr_runtime` | `runtime/src/net/` | `stream` and `view` services, the remote content mount |
 | Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay, access and agent federation (ADR-106); next partition edits |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
-| `vkr_net` | `net/src/` | Threaded host; replication helpers on the bit stream |
+| `vkr_net` | `net/src/` | Threaded host |
 
 - **Threads.** The editor and games pump a threaded host so a frame never
-  waits on the network. Snapshot encoding runs per client on the job
-  system and hands encoded payloads to the net workers.
+  waits on the network.
 - **Memory.** Each service bounds its queues by the transport's channel
   windows; staging memory for streamed assets returns to its pool after GPU
   completion, not after a frame count.
@@ -373,13 +232,13 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Phase | Scope | Exit evidence |
 |---|---|---|
 | 4. Editor collaboration and agents | Remaining after ADR-106: publishing on its own, partition edits | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
-| 5. Game sessions | `world` service, opt-in components, input, prediction for the FPS module | 20 clients (bots) on a Bistro session with measured bytes per client and correction counts under 2% loss |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
-| 8. Scale | Headless server executable for Windows and macOS that simulates without a renderer, server workers, Registered I/O on Windows, 400 co-located bots | Server tick cost, system-call CPU and egress at 400 clients on each host, against the estimate table |
 
 Phase 4 comes first because the editor uses it first and the depot it needs
-exists.
+exists. The former phases 5 (game sessions) and 8 (scale) are in the
+[game networking proposal](game-networking.md); the other phases keep their
+numbers.
 
 ## Performance targets
 
@@ -390,9 +249,7 @@ These are targets for the evidence of each phase, not results.
 | Depot throughput on 1 GbE between Mac and Windows | at least 110 MB/s, at most 1.5 cores per side | gap |
 | Transport CPU per 1,200 B packet, sent and received, without system calls | at most 2 µs on M1 Pro and Ryzen 5 2600 | gap |
 | Collaborative edit round trip | RTT plus at most one frame | 4 |
-| 20-player session bandwidth | at most 64 kbps down per client | 5 |
 | Glass-to-glass latency on a local network | at most 50 ms p95 at 2560×1440, 60 Hz | 7 |
-| 400 co-located clients | at most 300 kbps down per client; snapshot encode within the server tick on a Ryzen 5 2600 and on an M1 Pro | 8 |
 
 ## Verification
 
@@ -446,14 +303,7 @@ phase that depends on it.
   (Noise), library primitives, fuzzing and an external review before
   deployment outside trusted networks.
 - **Throughput on Windows and macOS servers.** One system call per datagram
-  may limit bulk transfers above 1 GbE and servers beyond the 400-client
-  case. Step B needs measured server capacity before it chooses between
-  more Windows workers and a Linux server build.
-- **Prediction needs gameplay changes.** Prediction and replay need the
-  state separation of the entity behavior proposal before phase 5 can
-  meet its exit evidence.
-- **Scope of step B.** Persistent worlds need distributed simulation that
-  this proposal does not specify.
+  may limit bulk transfers above 1 GbE.
 
 ## Related documents
 
@@ -461,8 +311,8 @@ phase that depends on it.
   transport, data format, sessions and asset depot.
 - [ADR-106](../adr/106-collaborative-editing-session.md): the collaborative
   editing session.
-- [ADR-073](../adr/073-native-gameplay-foundation.md): fixed ticks and
-  ordered input.
+- [Game networking](game-networking.md): multiplayer sessions, persistent
+  worlds and server scale.
 - [ADR-076](../adr/076-project-object-model.md): type descriptors and
   entity references.
 - [ADR-077](../adr/077-asset-build-system.md): content hashes, `.vkpak`,
@@ -472,7 +322,5 @@ phase that depends on it.
 - [ADR-084](../adr/084-agent-channel-and-level-design-toolkit.md): agent
   channel, authors, claims and the change feed.
 - [ADR-086](../adr/086-world-partition.md): streaming sources and cells.
-- [Entity behavior proposal](entity-behavior-system.md): the multiplayer
-  boundaries.
 - [Dedicated transfer queue](dedicated-transfer-queue.md): Vulkan upload
   path.

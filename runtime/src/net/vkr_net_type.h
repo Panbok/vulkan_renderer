@@ -3,9 +3,9 @@
 #include "core/vkr_type_desc.h"
 #include "vkr_bitstream.h"
 
-/* Descriptor-typed values on the wire (docs/proposals/network-protocol.md,
- * "Components on the wire"). A value travels as its authored properties in
- * descriptor order, without names:
+/* Descriptor-typed values on the wire
+ * (docs/adr/106-collaborative-editing-session.md). A value travels as its
+ * authored properties in descriptor order, without names:
  *
  *   BOOL                        1 bit
  *   I32                         zigzag bit varuint

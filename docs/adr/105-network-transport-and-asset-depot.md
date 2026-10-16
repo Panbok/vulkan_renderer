@@ -23,9 +23,10 @@ at runtime, a server service thread, non-blocking discovery, library steps
 with progress, cancel and conflict policies; four fuzzers ran under ASan and
 UBSan. [ADR-106](106-collaborative-editing-session.md) builds editor
 collaboration on it, and [ADR-110](110-project-sharing-in-the-editor.md)
-project sharing in the editor. The proposal keeps the rest of editor collaboration, agent
-federation, game sessions, asset and view streaming,
-scale and the open items listed under [Gaps](#gaps).
+project sharing in the editor. The proposal keeps the rest of editor
+collaboration, agent federation, asset and view streaming and the open
+items listed under [Gaps](#gaps); game sessions and server scale are in the
+[game networking proposal](../proposals/game-networking.md).
 
 ## Context
 
