@@ -477,6 +477,8 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
           renderer->prepared_frame.local_shadow_refractive_casters
               ? VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION
               : 0u,
+      /* Glass casts no sun shadow on either pipeline. */
+      .cascade_excluded_flags = VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION,
       .static_candidate_count =
           transmission ? 0u : slot->gpu_static_candidate_count,
       .command_partitions = transmission

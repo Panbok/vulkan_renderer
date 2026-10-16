@@ -350,10 +350,13 @@ uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
                       ? VKR_GPU_DRAW_CULL_PIXELS_MASK
                       : (uint32_t)vkr_ceil_f32(min_screen_pixels * 2.0f);
   }
-  return vkr_gpu_draw_cull_code(draw_distance) |
-         (half_pixels << VKR_GPU_DRAW_CULL_PIXELS_SHIFT) |
-         (vkr_gpu_draw_cull_code(shadow_distance)
-          << VKR_GPU_DRAW_CULL_SHADOW_SHIFT);
+  const uint32_t draw_code = vkr_gpu_draw_cull_code(draw_distance);
+  uint32_t shadow_code = vkr_gpu_draw_cull_code(shadow_distance);
+  if (draw_code != 0u && (shadow_code == 0u || draw_code < shadow_code)) {
+    shadow_code = draw_code;
+  }
+  return draw_code | (half_pixels << VKR_GPU_DRAW_CULL_PIXELS_SHIFT) |
+         (shadow_code << VKR_GPU_DRAW_CULL_SHADOW_SHIFT);
 }
 
 VkrGpuDrawCullReason

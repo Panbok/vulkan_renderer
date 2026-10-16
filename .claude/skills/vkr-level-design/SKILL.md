@@ -261,7 +261,8 @@ structures, and put a cutout around a room before the ground reaches it.
   operation adds where it is missing: `max_distance` in metres,
   `min_screen_pixels` (the smallest size in pixels across, at most 7.5),
   `shadow_distance` in metres (sun cascades that start farther leave the
-  object out) and `cast_shadows`. 0 means no limit. `remove` true takes
+  object out; a `max_distance` limits it too) and `cast_shadows`. 0 means
+  no limit. `remove` true takes
   the component off instead.
 - All edits are one change to review. The answer's `changed` counts the
   entities that changed; entities that already had the values stay out.

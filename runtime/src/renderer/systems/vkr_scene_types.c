@@ -2803,8 +2803,9 @@ static const VkrPropertyDesc s_draw_distance_properties[] = {
     {.name = "shadow_distance",
      .label = "Shadow distance",
      .unit = "m",
-     .tooltip = "Sun shadow cascades that start farther than this from the "
-                "camera leave the object out; 0 keeps every cascade",
+     .tooltip = "Sun shadow cascades that start farther than this, or than "
+                "the max distance, from the camera leave the object out; 0 "
+                "keeps every cascade",
      .zero_label = "All cascades",
      .offset = TYPE_OFFSET(SceneDrawDistance, shadow_distance),
      .kind = VKR_PROPERTY_F32,

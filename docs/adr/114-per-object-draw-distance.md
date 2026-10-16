@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-13
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -37,9 +37,16 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
    descendants without their own; the nearest wins
    (`vkr_scene_draw_cull`). Without one, a draw takes its kind's defaults:
    objects (meshes, brushes, shapes) 1 px; scatter and spline-mesh copies
-   2 px and a 50 m shadow distance, short of the High preset's last cascade
-   (about 54 m); terrains no limit. The owner chose the 1 px object default on
-   2026-10-13 although it changes existing output (below).
+   2 px and no shadow distance; terrains no limit. The owner chose the 1 px
+   object default on 2026-10-13 although it changes existing output (below).
+   Until 2026-10-16 copies took a 50 m shadow distance, which the High
+   preset's last cascade (starting about 54 m out) failed, so trees past it
+   drew without a sun shadow and every copy's shadow ended there; the cut
+   also moved with the camera's near clip, which sets the split. Copies
+   now carry the copy bit instead (decision 4). A draw distance also
+   bounds the shadow distance: `vkr_gpu_draw_cull_word` packs the smaller
+   of the two codes, so a caster the camera stops drawing leaves the
+   cascades that start past that distance.
 2. **Resolution.** The render sync resolves the values when an entity syncs
    and stores a cull word on its `VkrMesh` or `VkrMeshInstance`
    ([vkr_resources.h](../../runtime/src/renderer/resources/vkr_resources.h));
@@ -54,7 +61,9 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
    distance code, a 4-bit smallest diameter in half pixels and an 8-bit
    shadow distance code, then the hidden and sealed bits of
    [ADR-115](115-rooms-and-portals.md) and
-   [ADR-116](116-scatter-proxy-cells.md). A code c > 0 stands for
+   [ADR-116](116-scatter-proxy-cells.md) and the copy bit (bit 22,
+   `VKR_GPU_DRAW_CULL_COPY_BIT`), which `vkr_scene_draw_cull` sets on every
+   scatter and spline copy, under an authored component too. A code c > 0 stands for
    2^((c - 1) / 16) metres, 1 m to about 60 km in 4.4% steps, rounded up so
    a candidate never culls before its authored distance. The candidate row
    keeps 48 bytes and no binding is added. Encoding keeps only the low seven
@@ -76,7 +85,12 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
    - each cascade, static and dynamic (`vkr_gpu_draw_shadow_culled`): the
      shadow distance shorter than the cascade's slice start, which reads no
      camera position, so a cascade's casters change only with the
-     preset's splits;
+     preset's splits; and (`vkr_gpu_cascade_caster_too_small`) a bounding
+     sphere narrower than one texel of the cascade, or than
+     `VKR_GPU_CASCADE_COPY_MIN_TEXELS` (4) for a copy, which bounds the
+     cost of shadows from many small copies without a distance: grass and
+     pebbles leave the far cascades and trees keep theirs. The texel size
+     is the cascade's own, so this test reads no camera position either;
    - local faces and transmission views: nothing, since their
      `shadow_near` is zero.
    The camera view drives both opaque and transmission streams on the
@@ -156,6 +170,10 @@ local faces ([ADR-019](019-bounded-forward-spatial-lighting.md)).
   size and 5,341 drawn, against 5,224 visible rows after occlusion in the
   harness's hill view; with the Scene's chip on All, 414 hidden (the
   merged proxy meshes) and 8,560 drawn, against 8,481.
+- Since 2026-10-16 copies cast into every cascade above their size limit,
+  so the last cascade draws far trees it skipped before. That change has
+  no capture or timing yet: its cost on the tiled cascade redraw and the
+  pixels it changes are unmeasured.
 
 ## Alternatives considered
 

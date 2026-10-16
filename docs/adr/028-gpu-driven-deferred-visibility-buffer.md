@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -83,9 +83,10 @@ committed residency differs repacks the static rows
 ([`vkr_vulkan_draws.c`](../../renderer/src/vulkan/vkr_vulkan_draws.c)). A
 disagreement between counts and rows would show as an overflow count, not as
 a write outside the partition. The transmission stream partitions its own
-candidates for its one view. The tiled pipeline keeps eight buckets of at
-least the smaller of `C` and 65,536 rows per view
-([ADR-002](002-render-graph.md)).
+candidates for its one view. The tiled pipeline keeps a stride of eight
+times the smaller of `C` and 65,536 rows per view
+([ADR-002](002-render-graph.md)) and packs its buckets into it one after
+another, so a bucket never overflows.
 
 HZB rejection requires completed compatible history, matching world epoch and
 unjittered view-projection and the exact raster projection that produced depth;

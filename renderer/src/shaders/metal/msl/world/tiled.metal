@@ -557,12 +557,17 @@ enum VkrMetalTiledLighting : uint {
 // The tiled pipeline's local shadows: four hardware-filtered taps on the
 // opaque atlas, a 3x3 tent that softens texel edges without the desktop
 // penumbra, and without the refractive layers its glass never casts into.
+// The normal offset follows the geometric normal, as the cascades' does: a
+// normal-mapped one pushed each pixel its own way and left speckle on bumpy
+// surfaces near lamps.
 struct VkrMetalTiledLocalShadow {
+  float3 geometric_normal;
+
   float3 operator()(constant VkrMetalPacketFrameRoot *frame,
                     uint first_view_encoded, uint, uint kind,
-                    float3 world_position, float3 normal) const {
+                    float3 world_position, float3) const {
     return vkr_metal_packet_local_shadow_sample<false, false, true>(
-        frame, first_view_encoded, kind, world_position, normal);
+        frame, first_view_encoded, kind, world_position, geometric_normal);
   }
 
   bool contribution_cutoff() const { return false; }
@@ -619,7 +624,7 @@ vkr_metal_tiled_lighting_position(constant VkrMetalPacketFrameRoot *frame,
 // through the same filter taps. The light is pre-exposed.
 static float3 vkr_metal_tiled_moving_shadow(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
-    float3 normal) {
+    float3 normal, float3 geometric_normal) {
   constant VkrMetalPacketLightmap &lightmap = *frame->lightmap;
   float3 removed = float3(0.0f);
   const uint count = min(lightmap.baked_lamp_count, 2u);
@@ -646,13 +651,13 @@ static float3 vkr_metal_tiled_moving_shadow(
       continue;
     const float passed = vkr_metal_packet_local_shadow_sample<false, false, true>(
                              frame, lamp.static_first_view + 1u, term.kind,
-                             world_position, normal)
+                             world_position, geometric_normal)
                              .x;
     if (passed <= 0.0f)
       continue;
     const float kept = vkr_metal_packet_local_shadow_sample<false, false, true>(
                            frame, lamp.composite_first_view + 1u, term.kind,
-                           world_position, normal)
+                           world_position, geometric_normal)
                            .x;
     removed += lamp.light.p1.rgb * lamp.light.p2.x *
                (term.attenuation * term.cone * facing * max(passed - kept, 0.0f));
@@ -743,15 +748,13 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
 
   // The sun, shadowed by its cascades and the cloud layer. The cascades take
   // the geometric normal: the receiver plane, normal offset and slope bias
-  // describe the surface the map rasterized, not its normal map. Without a
-  // temporal resolve the kernel's per-pixel rotation stays fixed.
+  // describe the surface the map rasterized, not its normal map.
   if (frame->directional_direction_enabled.w > 0.5f) {
     float3 sun = normalize(-frame->directional_direction_enabled.xyz);
     float shadow =
         dot(normal, sun) > 0.0f
             ? vkr_metal_packet_directional_shadow_sample(
-                  frame, input.world_position, geometric_normal,
-                  vkr_shadow_kernel_rotation(uint2(input.position.xy), 0u))
+                  frame, input.world_position, geometric_normal)
                       .factor *
                   vkr_metal_packet_cloud_shadow(frame, input.world_position)
             : 0.0f;
@@ -784,7 +787,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
           frame, input.world_position, normal, view, base, metallic,
           roughness, f0, energy, false, no_coat, false, no_sheen, 0.0f,
           punctual_irradiance, light.diffuse, light.specular, coat_unused,
-          sheen_unused, VkrMetalTiledLocalShadow{});
+          sheen_unused, VkrMetalTiledLocalShadow{geometric_normal});
     }
     if (Lighting == VKR_METAL_TILED_LIGHTING_ALL ||
         Lighting == VKR_METAL_TILED_LIGHTING_INSPECT ||
@@ -826,7 +829,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
         Lighting == VKR_METAL_TILED_LIGHTING_INSPECT)
       diffuse_light = max(diffuse_light -
                               vkr_metal_tiled_moving_shadow(
-                                  frame, input.world_position, normal) /
+                                  frame, input.world_position, normal,
+                                  geometric_normal) /
                                   M_PI_F,
                           float3(0.0f));
   } else {

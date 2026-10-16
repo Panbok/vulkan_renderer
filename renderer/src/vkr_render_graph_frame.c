@@ -6,6 +6,12 @@
    reconstruct from depth: a few millimetres ten kilometres from the origin. */
 #define VKR_LOCAL_SHADOW_MASK_FRUSTUM_SLACK 0.05f
 
+/* The tiled pipeline's visible-row stride (gpu_draw_visible_capacity) holds
+   every candidate a view can classify. */
+_Static_assert(VKR_GPU_DRAW_CANDIDATE_CAPACITY <=
+                   VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 65536u,
+               "a tiled view's visible rows must hold every candidate");
+
 vkr_internal uint32_t vkr_render_graph_draw_capacity(uint32_t count) {
   uint32_t capacity = 1u;
   while (capacity < count)
@@ -244,10 +250,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           packet->input.world
               ? packet->input.world->transmission_gpu_candidate_count
               : 0u);
-  /* The tiled pipeline's parity-aware buckets retain the accepted
-     65536-draw bucket ceiling. A smaller scene must still fit when every
-     candidate uses one bucket. The desktop pipeline sizes each bucket from
-     its packed candidates instead. */
+  /* The tiled pipeline's visible rows keep the accepted stride of eight
+     buckets of up to 65536 rows; its prefix packs the buckets one after
+     another, so the stride holds every candidate whatever its bucket. The
+     desktop pipeline sizes each bucket from its packed candidates instead. */
   frame->gpu_draw_visible_capacity =
       VKR_WORLD_DRAW_STATE_BUCKET_COUNT *
       Min(frame->gpu_draw_candidate_capacity, 65536u);

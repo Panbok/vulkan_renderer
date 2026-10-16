@@ -298,9 +298,10 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                               memory_order_relaxed);
     return;
   }
-  /* Sub-texel casters skip the directional cascades. */
+  /* Sub-texel casters, and copies below their larger limit, skip the
+     directional cascades. */
   if (view_index != 0u && (candidate_flags & 1u) != 0u &&
-      vkr_gpu_cascade_caster_too_small(lod_view.position_scale.w,
+      vkr_gpu_cascade_caster_too_small(cull, lod_view.position_scale.w,
                                        lod_view.flags, radius)) {
     root.classifications[classification_index] = 0u;
     return;
@@ -349,15 +350,18 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   // Commands use the candidate count; visible rows use the prepared stride
   // shared by classification, raster, resolve and picking for this frame.
+  // Each bucket's range follows the previous one and takes its whole count
+  // within the view's rows, which hold every candidate, so no bucket drops
+  // the draws that reach it last.
   uint command_base =
       (view_index % root.icb_view_group_size) * root.candidate_count;
-  uint bucket_capacity = root.visible_capacity / 8u;
   uint visible_count = 0u;
   uint overflow_count = 0u;
   for (uint bucket = 0u; bucket < 8u; ++bucket) {
     uint bucket_count = atomic_load_explicit(&state.bucket_counts[bucket],
                                              memory_order_relaxed);
-    uint written_count = min(bucket_count, bucket_capacity);
+    uint written_count =
+        min(bucket_count, root.visible_capacity - visible_count);
     state.execution_ranges[bucket] =
         uint2(command_base + visible_count, written_count);
     visible_count += written_count;
@@ -493,8 +497,7 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   } else {
     uint local_index = atomic_fetch_add_explicit(&state.bucket_cursors[bucket],
                                                  1u, memory_order_relaxed);
-    uint bucket_capacity = root.visible_capacity / 8u;
-    if (local_index >= bucket_capacity)
+    if (local_index >= state.execution_ranges[bucket].y)
       return;
     visible_index =
         state.execution_ranges[bucket].x - command_base + local_index;

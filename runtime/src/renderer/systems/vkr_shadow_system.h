@@ -152,6 +152,7 @@ typedef struct VkrShadowCasterDepthBounds {
  * | shadow_map_size | texel size and snapping in the cascade fit |
  * | cascade_split_lambda | vkr_shadow_compute_cascade_splits() |
  * | max_shadow_distance | far-split clamp in the same function |
+ * | far_cascade_distance | the far level's split in the same function |
  * | cascade_guard_band_texels[_per] | XY extent expansion in the cascade fit |
  * | z_extension_factor, cascade_z_extension_factor_per | light-space Z range |
  * | use_constant_cascade_size | selects sphere-radius extent over corner AABB |
@@ -170,7 +171,7 @@ typedef struct VkrShadowCasterDepthBounds {
  *   vkr_metal_packet_directional_shadow_sample() |
  * | reuse_guard_band_texels, reuse_depth_guard_fraction,
  *   reuse_predictive_max_texels, reuse_dynamic_scan_budget,
- *   reuse_proactive_refresh_budget |
+ *   reuse_proactive_refresh_budget, reuse_proactive_margin_texels |
  *   vkr_shadow_guarded_fit() and the bounded dynamic overlap scan |
  *
  * Removed as obsolete rather than reserved: `shadow_bias_texel_scale`,
@@ -214,6 +215,12 @@ typedef struct VkrShadowConfig {
   uint32_t shadow_map_size;
   float32_t cascade_split_lambda;
   float32_t max_shadow_distance;
+  /** Above max_shadow_distance, the last cascade is a far level from
+   * max_shadow_distance to this distance: one coarse map that its guard band
+   * keeps through long camera motion, so ridges and buildings far from the
+   * camera keep their shadows. The other cascades split the near range.
+   * Zero ends every shadow at max_shadow_distance. */
+  float32_t far_cascade_distance;
   float32_t cascade_guard_band_texels;
   float32_t cascade_guard_band_texels_per[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t z_extension_factor;
@@ -236,7 +243,7 @@ typedef struct VkrShadowConfig {
   bool8_t pcf_uniform_early_out;
   /** Fraction of each cascade's span spent fading into the next cascade. */
   float32_t cascade_blend_fraction;
-  /** World distance over which shadows fade out before max_shadow_distance. */
+  /** World distance over which shadows fade out before the last split. */
   float32_t shadow_distance_fade_range;
   /** Phase 3B retained-cache expansion and bounded dynamic overlap scan. */
   float32_t reuse_guard_band_texels;
@@ -245,6 +252,9 @@ typedef struct VkrShadowConfig {
   uint32_t reuse_dynamic_scan_budget;
   /** Max still-reusable cascades refreshed per frame. Zero disables P5. */
   uint32_t reuse_proactive_refresh_budget;
+  /** A reusable cascade becomes due for a proactive refresh once its margin
+   * falls below this many of its texels; zero makes every one due. */
+  float32_t reuse_proactive_margin_texels;
   bool8_t sdsm_enabled;
   uint32_t sdsm_max_source_lag_frames;
   float32_t sdsm_temporal_blend;
@@ -396,6 +406,10 @@ typedef struct VkrShadowConfig {
       .cascade_blend_fraction = 0.08f,                                         \
       .shadow_distance_fade_range = 12.0f,                                     \
       .use_constant_cascade_size = true_v,                                     \
+      .reuse_guard_band_texels = 128.0f,                                       \
+      .reuse_depth_guard_fraction = 0.0625f,                                   \
+      .reuse_predictive_max_texels = 64.0f,                                    \
+      .reuse_dynamic_scan_budget = VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT,     \
       .world_anchored_light_view = true_v,                                     \
       .light_direction_tolerance_degrees =                                     \
           VKR_SHADOW_LIGHT_DIRECTION_TOLERANCE_DEGREES_DEFAULT,                \
@@ -825,6 +839,35 @@ float32_t vkr_shadow_quantize_extent_up(float32_t extent,
  */
 VkrShadowFit vkr_shadow_apply_fit_hysteresis(const VkrShadowFit *previous,
                                              const VkrShadowFit *raw);
+
+/**
+ * @brief Clamps a configuration to the values the packet lowering, packet
+ * validation and both receivers trust, and fills unset reuse controls.
+ *
+ * Every configuration a running system adopts passes through it, not only the
+ * one it starts with.
+ */
+void vkr_shadow_config_normalize(VkrShadowConfig *config);
+
+/** The tiled pipeline's sun cascades (ADR-087): the near cascades split
+ * VKR_SHADOW_TILED_NEAR_DISTANCE and the last becomes a far level to
+ * VKR_SHADOW_TILED_FAR_DISTANCE, kept through long camera motion and
+ * refreshed ahead of need one cascade per frame. A configuration that already
+ * names a far level keeps it. */
+#define VKR_SHADOW_TILED_NEAR_DISTANCE 80.0f
+#define VKR_SHADOW_TILED_FAR_DISTANCE 1000.0f
+#define VKR_SHADOW_TILED_FAR_FADE_RANGE 100.0f
+#define VKR_SHADOW_TILED_PROACTIVE_MARGIN_TEXELS 32.0f
+void vkr_shadow_config_apply_tiled(VkrShadowConfig *config);
+
+/** Distance at which a normalized configuration's last shadow ends: its far
+ * level's, else max_shadow_distance. */
+static inline float32_t
+vkr_shadow_config_range_end(const VkrShadowConfig *config) {
+  return config->far_cascade_distance > config->max_shadow_distance
+             ? config->far_cascade_distance
+             : config->max_shadow_distance;
+}
 
 /**
  * @brief Initialize shadow system resources and pipeline.

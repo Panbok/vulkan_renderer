@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-15
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -183,6 +183,30 @@ pipeline rather than a backend mechanism.
    `sha256:3d997af39190c2f9509c53699ecb461bb6158eb84bd7c8a6d4034d28caec4a91`,
    `sha256:12fddc9dd2ba7295ac64a6fdccf432e849011c4b276d4ddca3c0e0cc4cd7ce07`;
    2026-10-06, both on the set with visibility).
+   The sun's cascades filter with a fixed grid of hardware bilinear
+   compares weighted by a tent, 4x4 taps on High and 3x3 on Balanced, with
+   an eight-tap uniform-region exit (`vkr_metal_shadow_grid_kernel` in
+   [`sampling.metalh`](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh)).
+   The desktop pipeline's rotated Poisson kernel left a grain fixed to the
+   screen on this pipeline, which has no temporal resolve to average it,
+   and the penumbrae slid under it whenever the camera moved (user report,
+   2026-10-15). Taps stay within two texels of each other, where adjacent
+   bilinear footprints meet, so the widest penumbra is three texels; the
+   bounded penumbra estimate (ADR-041) runs on the three near cascades with
+   an unrotated blocker search. A receiver its cascade misses takes the next
+   cascade, and the cross-fade ignores a next map that misses it. On the
+   Level Design Test at 1146x595 (Release, M1 Pro, 2026-10-16, headless
+   editor, High, two interleaved runs each, the receiver shader alone
+   swapped) `Tiled.Opaque` took 11.6 / 9.9 / 10.1 ms median in the track,
+   deck and valley views against 12.2 / 10.3 / 11.0 ms with the Poisson
+   kernel; that is local evidence, not an authoritative profile. Local and
+   moving-caster shadows offset along the geometric normal, as the cascades
+   do. The near cascades split 80 m and the last is a far level to 1 km
+   (`vkr_shadow_config_apply_tiled`, ADR-041), so ridges, buildings and
+   trees keep their shadows across a valley; it redraws about every 130 m
+   of camera motion, at 2.8–3.0 ms for its static layer on the Level Design
+   Test, and the proactive refresh spreads the cascades' redraws one per
+   frame.
    A surface with a lightmap or the volume reflects the global environment
    only in the share its baked sky light supports and its surroundings'
    baked light in the rest, so rooms and tunnels do not reflect the sky
@@ -348,7 +372,8 @@ pipeline rather than a backend mechanism.
     `sha256:8df0a2f181136be51ab40c98e7d3a7ad1ca06006e8e21a5998619c152092b87b`).
     The tiled graph renders the local shadow atlas with the desktop passes
     `Shadow.Local.Clear` and `Shadow.Local`; glass casts no local shadow, so
-    the sampler reads no refractive layers. Each frame shades with the
+    the sampler reads no refractive layers, and no sun shadow on either
+    pipeline (ADR-041). Each frame shades with the
     fragment variant for its dynamic lights (`VkrMetalTiledLighting` in
     [`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal)
     and `vkr_metal_packet_tiled_lighting`): none, point and spot lights

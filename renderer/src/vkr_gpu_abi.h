@@ -71,8 +71,9 @@ _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT ==
    bucket and the four candidate flags of its state: the camera's draw
    distance code in bits 0 to 7, the smallest diameter the camera draws in
    half pixels in bits 8 to 11, the shadow distance code in bits 12 to 19,
-   and the room bits below. A code c above zero stands for 2^((c - 1) / 16)
-   metres; zero is no limit. Mirrors shared/lod_kernel.slangh. */
+   and the room and copy bits below. A code c above zero stands for
+   2^((c - 1) / 16) metres; zero is no limit. Mirrors
+   shared/lod_kernel.slangh. */
 #define VKR_GPU_DRAW_CULL_SHIFT 7u
 #define VKR_GPU_DRAW_CULL_CODE_MASK 0xFFu
 #define VKR_GPU_DRAW_CULL_PIXELS_SHIFT 8u
@@ -83,7 +84,11 @@ _Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT ==
    21: its rooms are sealed, so no cascade draws it (vkr_scene_rooms.h). */
 #define VKR_GPU_DRAW_CULL_HIDDEN_BIT (1u << 20u)
 #define VKR_GPU_DRAW_CULL_SEALED_BIT (1u << 21u)
-#define VKR_GPU_DRAW_CULL_BITS 22u
+/* Bit 22: a scatter or spline copy, which a cascade draws only while its
+   bounding sphere spans VKR_GPU_CASCADE_COPY_MIN_TEXELS (lod_kernel.slangh)
+   instead of one texel. */
+#define VKR_GPU_DRAW_CULL_COPY_BIT (1u << 22u)
+#define VKR_GPU_DRAW_CULL_BITS 23u
 /* The candidate state bits a visible row keeps: the bucket and the flags. */
 #define VKR_GPU_DRAW_CANDIDATE_STATE_MASK 0x7Fu
 
@@ -107,7 +112,9 @@ uint32_t vkr_gpu_draw_cull_code(float32_t metres);
 float32_t vkr_gpu_draw_cull_metres(uint32_t code);
 /** A cull word from a draw distance and a shadow distance in metres (zero
     for no limit) and the smallest drawn diameter in pixels, rounded up to
-    half pixels and clamped to 7.5. */
+    half pixels and clamped to 7.5. A draw distance also limits the shadow
+    distance, so a caster the camera stops drawing leaves the cascades that
+    start past it. */
 uint32_t vkr_gpu_draw_cull_word(float32_t draw_distance,
                                 float32_t min_screen_pixels,
                                 float32_t shadow_distance);

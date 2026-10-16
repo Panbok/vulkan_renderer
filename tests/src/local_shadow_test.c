@@ -78,6 +78,56 @@ static void local_shadow_prepare(const VkrPointLight *lights,
                        (VkrRetainedLocalShadowToken){0}, out);
 }
 
+/* The camera every input below points at: at the origin, no projection, so
+ * every face is visible, one frame at 60 Hz. */
+static VkrLocalShadowCamera s_test_camera;
+
+/* One frame's input with the camera at the origin, for tests that set more
+ * fields than local_shadow_resolve takes. */
+static VkrLocalShadowCacheInput
+local_shadow_input(const VkrPointLight *lights, uint32_t light_count,
+                   uint32_t face_budget, VkrRetainedLocalShadowToken token) {
+  s_test_camera = (VkrLocalShadowCamera){
+      .view = mat4_identity(),
+      .position = vec3_zero(),
+      .delta_seconds = 1.0f / 60.0f,
+      .frame_index = 1u,
+  };
+  return (VkrLocalShadowCacheInput){
+      .lights = lights,
+      .light_count = light_count,
+      .camera = &s_test_camera,
+      .token = token,
+      .static_generation = 1u,
+      .dynamic_generation = 1u,
+      .publication_generation = 1u,
+      .face_budget = face_budget,
+      .map_size = 1024u,
+      .fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT,
+  };
+}
+
+static void local_shadow_resolve_input(const VkrLocalShadowCacheInput *input,
+                                       VkrLocalShadowPassPayload *out) {
+  vkr_local_shadow_cache_resolve(&s_test_cache, &s_test_cache_scratch, input,
+                                 &s_test_pending, out);
+}
+
+/* Views of light `index` whose square lies in atlas layer `layer`. */
+static uint32_t
+local_shadow_views_in_layer(const VkrLocalShadowPassPayload *out,
+                            uint32_t index, uint32_t face_count,
+                            uint32_t layer) {
+  const uint32_t first = out->light_first_view[index];
+  assert(first != 0u);
+  uint32_t count = 0u;
+  for (uint32_t face = 0u; face < face_count; ++face) {
+    if (out->views[first - 1u + face].atlas_rect.w == (float32_t)layer)
+      count++;
+  }
+  return count;
+}
+
 static Vec3 local_shadow_project(const VkrLocalShadowView *view, Vec3 point) {
   const Vec4 clip = mat4_mul_vec4(view->light_view_projection,
                                   vec4_new(point.x, point.y, point.z, 1.0f));
@@ -275,6 +325,185 @@ static bool32_t test_local_shadow_atlas_faces_are_disjoint(void) {
   return true_v;
 }
 
+/* Another atlas layer count is another atlas image that clears every layer,
+ * and the face budget then redraws a few lights a frame while the others
+ * hide. The dynamic casters coming and going add and drop the band's layer,
+ * so the atlas keeps the live image's layers instead: when the band leaves
+ * and returns, nothing clears, nothing redraws and every light keeps its
+ * shadow. */
+static bool32_t test_local_shadow_layer_count_survives_band_flip(void) {
+  printf("  Running test_local_shadow_layer_count_survives_band_flip...\n");
+  VkrPointLight lights[3] = {
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f),
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f),
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f),
+  };
+  /* One static layer and the band. */
+  const VkrRetainedLocalShadowToken token = {
+      .resource_generation = 1u,
+      .atlas_layer_count = 2u,
+      .valid_layer_mask = UINT32_C(0x3),
+  };
+  VkrLocalShadowCacheInput input = local_shadow_input(lights, 3u, 6u, token);
+  input.dynamic_casters = true_v;
+  VkrLocalShadowPassPayload payload = {0};
+  MemZero(&s_test_cache, sizeof(s_test_cache));
+  /* Six faces a frame fill the three lights in three frames. */
+  for (uint32_t frame = 0u; frame < 3u; ++frame) {
+    local_shadow_resolve_input(&input, &payload);
+    assert(payload.atlas_layer_count == 2u && payload.render_count == 6u);
+    vkr_local_shadow_cache_commit(&s_test_cache, &s_test_pending, 1u + frame);
+  }
+
+  for (uint32_t frame = 0u; frame < 4u; ++frame) {
+    input.dynamic_casters = (frame & 1u) != 0u;
+    local_shadow_resolve_input(&input, &payload);
+    assert(payload.atlas_layer_count == 2u);
+    assert(payload.dynamic_layer_count == (input.dynamic_casters ? 1u : 0u));
+    assert(payload.atlas_clear_mask == 0u && payload.render_count == 0u);
+    for (uint32_t i = 0u; i < 3u; ++i)
+      assert(payload.light_first_view[i] != 0u);
+    vkr_local_shadow_cache_commit(&s_test_cache, &s_test_pending, 4u + frame);
+  }
+  printf("  test_local_shadow_layer_count_survives_band_flip PASSED\n");
+  return true_v;
+}
+
+/* A spot that turns has invalid content; while a more important light takes
+ * the only face of the budget, it shows the content its square holds with
+ * the committed projection and fades out slowly, instead of hiding at once
+ * and fading in from nothing once it draws. */
+static bool32_t test_local_shadow_turned_spot_keeps_committed_content(void) {
+  printf(
+      "  Running test_local_shadow_turned_spot_keeps_committed_content...\n");
+  VkrPointLight lights[2] = {
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_SPOT, true_v, 4.0f),
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_SPOT, true_v, 4.0f),
+  };
+  const VkrRetainedLocalShadowToken token = {
+      .resource_generation = 1u,
+      .atlas_layer_count = 1u,
+      .valid_layer_mask = UINT32_C(1),
+  };
+  VkrLocalShadowPassPayload payload = {0};
+  local_shadow_prepare(lights, 1u, 1u, 1024u, &payload);
+  vkr_local_shadow_cache_commit(&s_test_cache, &s_test_pending, 1u);
+  local_shadow_resolve(lights, 1u, 1u, 1024u, token, &payload);
+  assert(payload.render_count == 0u);
+  const VkrLocalShadowView committed = payload.views[0];
+  assert(committed.shadow_params.x == 1.0f);
+
+  /* The spot turns as a brighter newcomer arrives. */
+  lights[0].direction = vec3_new(1.0f, 0.0f, -1.0f);
+  lights[1].intensity = 10.0f;
+  local_shadow_resolve(lights, 2u, 1u, 1024u, token, &payload);
+  assert(payload.render_count == 1u);
+  assert(payload.render_views[0] == payload.light_first_view[1] - 1u);
+  assert(payload.light_first_view[0] != 0u);
+  const VkrLocalShadowView *shown =
+      &payload.views[payload.light_first_view[0] - 1u];
+  assert(MemCompare(&shown->light_view_projection,
+                    &committed.light_view_projection,
+                    sizeof(committed.light_view_projection)) == 0);
+  assert(MemCompare(&shown->atlas_rect, &committed.atlas_rect,
+                    sizeof(committed.atlas_rect)) == 0);
+  assert(shown->light_position_near.x == lights[0].position.x &&
+         shown->light_position_near.y == lights[0].position.y &&
+         shown->light_position_near.z == lights[0].position.z);
+  assert_near(shown->shadow_params.x, 1.0f - 1.0f / 60.0f);
+  vkr_local_shadow_cache_commit(&s_test_cache, &s_test_pending, 2u);
+
+  /* With the slot free it draws its new projection and fades back in. */
+  local_shadow_resolve(lights, 2u, 1u, 1024u, token, &payload);
+  assert(payload.render_count == 1u);
+  assert(payload.render_views[0] == payload.light_first_view[0] - 1u);
+  shown = &payload.views[payload.light_first_view[0] - 1u];
+  assert(MemCompare(&shown->light_view_projection,
+                    &committed.light_view_projection,
+                    sizeof(committed.light_view_projection)) != 0);
+  assert(shown->shadow_params.x == 1.0f);
+  printf("  test_local_shadow_turned_spot_keeps_committed_content PASSED\n");
+  return true_v;
+}
+
+/* A light that moves, such as a lamp riding a mover, has no static square to
+ * keep: its faces draw every caster in one pass, with no copy and no
+ * dynamic square. */
+static bool32_t test_local_shadow_moving_light_draws_one_pass(void) {
+  printf("  Running test_local_shadow_moving_light_draws_one_pass...\n");
+  VkrPointLight light =
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f);
+  const VkrRetainedLocalShadowToken token = {
+      .resource_generation = 1u,
+      .atlas_layer_count = 2u,
+      .valid_layer_mask = UINT32_C(0x3),
+  };
+  const uint8_t reached[1] = {0x1u};
+  VkrLocalShadowCacheInput input = local_shadow_input(&light, 1u, 6u, token);
+  input.dynamic_casters = true_v;
+  input.dynamic_faces = reached;
+  VkrLocalShadowPassPayload payload = {0};
+  MemZero(&s_test_cache, sizeof(s_test_cache));
+  local_shadow_resolve_input(&input, &payload);
+  assert(payload.render_count == 7u && payload.dynamic_render_count == 1u);
+  assert(payload.static_render_mask == 0x3Fu);
+  vkr_local_shadow_cache_commit(&s_test_cache, &s_test_pending, 1u);
+
+  light.position.x += 0.25f;
+  local_shadow_resolve_input(&input, &payload);
+  assert(payload.render_count == 6u && payload.dynamic_render_count == 0u);
+  assert(payload.companion_view_count == 0u);
+  assert(payload.static_render_mask == 0u);
+  printf("  test_local_shadow_moving_light_draws_one_pass PASSED\n");
+  return true_v;
+}
+
+/* Past the dynamic face cap, a face that showed a dynamic square keeps it
+ * until a competitor's light is VKR_LOCAL_SHADOW_DYNAMIC_INCUMBENT_BONUS
+ * more important: a light that becomes a little brighter does not take two
+ * faces from another light, whose moving casters' shadows would vanish. */
+static bool32_t test_local_shadow_dynamic_cap_keeps_incumbents(void) {
+  printf("  Running test_local_shadow_dynamic_cap_keeps_incumbents...\n");
+  VkrPointLight lights[3] = {
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f),
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f),
+      local_shadow_test_light(VKR_POINT_LIGHT_KIND_GLTF_POINT, true_v, 4.0f),
+  };
+  lights[2].intensity = 0.5f;
+  const VkrRetainedLocalShadowToken token = {
+      .resource_generation = 1u,
+      .atlas_layer_count = 2u,
+      .valid_layer_mask = UINT32_C(0x3),
+  };
+  /* Every face of every light wants a dynamic square: 18 past the cap. */
+  const uint8_t reached[3] = {0x3Fu, 0x3Fu, 0x3Fu};
+  VkrLocalShadowCacheInput input = local_shadow_input(lights, 3u, 18u, token);
+  input.dynamic_casters = true_v;
+  input.dynamic_faces = reached;
+  VkrLocalShadowPassPayload payload = {0};
+  MemZero(&s_test_cache, sizeof(s_test_cache));
+  local_shadow_resolve_input(&input, &payload);
+  assert(payload.dynamic_faces_wanted == 18u);
+  assert(payload.dynamic_render_count ==
+         VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX);
+  const uint32_t expected[3] = {6u, 6u, 4u};
+  for (uint32_t i = 0u; i < 3u; ++i)
+    assert(local_shadow_views_in_layer(&payload, i, 6u, 1u) == expected[i]);
+  vkr_local_shadow_cache_commit(&s_test_cache, &s_test_pending, 1u);
+
+  /* The third light becomes 1.3 times as important as the others: its two
+     faces without a square still wait, and the idle squares are reused. */
+  lights[2].intensity = 1.3f;
+  local_shadow_resolve_input(&input, &payload);
+  assert(payload.render_count == 0u);
+  assert(payload.dynamic_reused_count ==
+         VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX);
+  for (uint32_t i = 0u; i < 3u; ++i)
+    assert(local_shadow_views_in_layer(&payload, i, 6u, 1u) == expected[i]);
+  printf("  test_local_shadow_dynamic_cap_keeps_incumbents PASSED\n");
+  return true_v;
+}
+
 bool32_t run_local_shadow_tests(void) {
   printf("--- Running Local Shadow tests... ---\n");
   bool32_t passed = true_v;
@@ -284,5 +513,9 @@ bool32_t run_local_shadow_tests(void) {
   passed &= test_local_shadow_rejects_disabled_and_invalid();
   passed &= test_local_shadow_map_size_and_zero_config();
   passed &= test_local_shadow_atlas_faces_are_disjoint();
+  passed &= test_local_shadow_layer_count_survives_band_flip();
+  passed &= test_local_shadow_turned_spot_keeps_committed_content();
+  passed &= test_local_shadow_moving_light_draws_one_pass();
+  passed &= test_local_shadow_dynamic_cap_keeps_incumbents();
   return passed;
 }

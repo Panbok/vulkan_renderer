@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-15
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -38,6 +38,28 @@ cascade's texel snap lays its grid at whole texels of world space. Until
 whole shadow frustum (about 4–6 m), a fraction of a texel of each cascade, and
 every shadow edge jumped a few times a second while the camera rode a mover;
 `test_cascade_texel_grid_is_fixed_in_world` holds the world grid.
+
+A map is drawn with the guarded fit (`vkr_shadow_guarded_fit`): the raw fit
+widened by the reuse guard band, its extent quantized like the raw one, led by
+half a frame's motion inside the band, and its left and bottom edges snapped to
+whole guarded texels. Its texel therefore depends on the raw extent alone, and
+every redraw lands on one lattice in world space; before 2026-10-16 the
+guarded texel grew with the camera's motion and its origin lay off that
+lattice, so edges moved by a fraction of a texel at each redraw
+(`test_drawn_cascade_lattice_is_fixed_in_world`). An extent the hysteresis
+holds is re-snapped on its own texel. The orthographic near plane may lie
+behind the light eye: clamping it there clipped every caster farther toward
+the light than twice the frustum radius, so ridges and backdrop terrain cast
+nothing into a valley.
+
+A configuration may name a far level (`far_cascade_distance` above
+`max_shadow_distance`): the other cascades split the near range and the last
+spans from `max_shadow_distance` to the far distance, one coarse map that its
+guard band keeps through long camera motion. The tiled pipeline uses it
+(`vkr_shadow_config_apply_tiled`: near cascades to 80 m, far level to 1 km,
+ADR-087); the desktop pipeline does not. Every configuration a running system
+adopts passes `vkr_shadow_config_normalize`, so a preset chosen at runtime,
+such as Balanced, gets the same reuse controls as the one it starts with.
 
 Track static/dynamic caster and publication generations. Pack static candidate
 and instance rows per completion-protected slot; refresh on publication changes
@@ -87,8 +109,11 @@ command range is never executed and the next redraw resets it first. Local faces
 faces' views (ADR-019).
 
 Classification skips a caster in a directional cascade when its world
-bounding sphere spans less than one cascade texel
-(`vkr_gpu_cascade_caster_too_small`, `VKR_GPU_CASCADE_CASTER_MIN_TEXELS`). The
+bounding sphere spans less than one cascade texel, or four for a scatter or
+spline copy (`vkr_gpu_cascade_caster_too_small`,
+`VKR_GPU_CASCADE_CASTER_MIN_TEXELS`, `VKR_GPU_CASCADE_COPY_MIN_TEXELS`). It
+also skips transmissive casters, since glass casts no sun shadow on either
+pipeline (the cascade views' excluded candidate flags). The
 test reads the cascade's LOD view, whose constant scale is texels per metre;
 it applies to every non-camera orthographic view, so local faces and an
 orthographic editor camera keep every caster. The texel size follows the
@@ -107,12 +132,16 @@ fourth rendered frame. The tolerance applies
 only with fit stabilization; zero adopts every change. Direct lighting still
 uses the exact direction.
 
-The optional proactive refresh scheduler selects low-margin cascades within a
-bounded budget; the production budget is zero. Converging stale image copies is
+The proactive refresh scheduler redraws a still-reusable cascade early when its
+margin falls below `reuse_proactive_margin_texels`, the one with the least
+margin first, within a per-frame budget, and only in a frame that redraws no
+cascade anyway, so the redraws a moving camera needs arrive one per frame
+instead of falling due together. The tiled pipeline's budget is one at 32
+texels; the desktop pipeline's is zero. Converging stale image copies is
 a correctness refresh independent of that optional budget. ADR-033's SDSM is also opt-in.
 GPU camera/cascade classification remains ADR-028's one-phase topology.
 
-Receivers use shared progressive rotated Poisson comparison-PCF at 1/4/9/16/32
+Desktop receivers use shared progressive rotated Poisson comparison-PCF at 1/4/9/16/32
 taps, an optional uniform-region early-out at high tap counts, cascade cross-fade
 and distance fade. Constant/slope/normal-offset bias is authored in shadow texels
 and converted using each cascade's texel size and fitted depth span. Backend
@@ -179,6 +208,11 @@ casters over the copy through their own culling view, which follows the
 cascade views. The kept fit is the static layer's while it still matches
 and contains the cascade, otherwise the newest submitted static-only fit,
 otherwise a fresh guarded fit; dynamic casters are tested against that fit.
+A fresh fit draws the static layer in the same frame, and the next frames
+copy it; until 2026-10-16 such a cascade drew whole first and drew its static
+layer on the frame after, two heavy frames per refit. A light that turned
+since the static layer was drawn holds no fit a layer drawn now would be
+reused with, so that cascade still draws whole.
 A caster that leaves restores the layer by a copy alone. A failed scan or a
 pending publication draws every cascade whole as before, and without
 dynamic casters there is no image and no masks. Far-cascade moments rebuild

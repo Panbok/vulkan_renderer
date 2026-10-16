@@ -90,6 +90,9 @@ struct VkrVkCullRoot
     float4 reflection_plane;
     uint reflection_view;
     uint reflection_object_id;
+    // Candidate flags the directional cascades skip: glass casts no sun
+    // shadow.
+    uint cascade_excluded_flags;
 };
 
 struct VkrVkRasterRoot
@@ -796,11 +799,19 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
     uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
     uint excluded_flags = 0u;
     // The reflection view follows the transmission views but keeps the
-    // camera's flags.
+    // camera's flags; the cascades take their own exclusions.
     if (!reflection && view_index >= root.transmission_first_view)
+    {
         required_flags = root.transmission_required_flags;
+    }
     else if (!reflection && view_index >= root.local_shadow_first_view)
+    {
         excluded_flags = root.local_shadow_excluded_flags;
+    }
+    else if (!camera_rules)
+    {
+        excluded_flags = root.cascade_excluded_flags;
+    }
     // A static square or cascade layer holds the static casters; a dynamic
     // square or composed cascade adds the dynamic ones over a copy of it.
     // The camera and transmission views keep every mobility.
@@ -862,9 +873,10 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         root.classifications[classification_index] = 0xffffffffu;
         return;
     }
-    // Sub-texel casters skip the directional cascades.
+    // Sub-texel casters, and copies below their larger limit, skip the
+    // directional cascades.
     if (!camera_rules && (candidate_flags & 1u) != 0u &&
-        vkr_gpu_cascade_caster_too_small(lod_view.position_scale.w,
+        vkr_gpu_cascade_caster_too_small(cull, lod_view.position_scale.w,
                                          lod_view.flags, world_radius))
     {
         root.classifications[classification_index] = 0xffffffffu;

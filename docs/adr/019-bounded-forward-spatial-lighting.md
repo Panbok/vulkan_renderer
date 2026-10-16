@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-15
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -192,14 +192,26 @@ light resists a shrink below its previous size until a competitor is 1.5
 times more important; if every light reaches the smallest size, the least
 important leave until the rest fit. Turning the camera therefore resizes
 nothing. A light that returns or resizes has invalid
-content and draws first within the face budget; if the budget cannot draw it
-in that frame, its shadow is hidden until it draws and then fades in. The
+content and draws first within the face budget. If the budget cannot draw it
+in that frame and every face's square, layer and pool still hold content a
+submitted frame drew, it keeps publishing the projection that content was
+drawn with and its strength falls over 1 s
+(`VKR_LOCAL_SHADOW_COMMITTED_FADE_SECONDS`) until it draws; a light that
+moved, whose views must name its current position, or one whose squares are
+gone, is hidden until it draws and then fades in. Before 2026-10-16 every
+such light switched off at once, so shadows blinked when lights turned or
+resized past the face budget. The
 ranking takes each light's intensity before the light table's fade
 (`VkrLocalShadowCacheInput.unfaded_intensity`, 2026-10-12), so a light
 fading out of the table keeps its face size and content while it shows.
 Squares pack in descending size by layer
 and first free aligned cell; power-of-two squares that fit by area always pack.
-A light whose size and layer count are unchanged keeps its squares.
+A light whose size and layer count are unchanged keeps its squares. While
+the cache stays valid the atlas never shrinks: its layer count is the larger
+of what the faces need and the live atlas's count within the budget, static
+layers first and the dynamic band last, so a dynamic caster that appears or
+leaves no longer resizes the atlas and clears every layer (2026-10-16). It
+shrinks only when the cache resets; growth still replaces the atlas.
 
 The atlas is D16 on both backends: Metal render pipelines carry no depth
 format, and Vulkan draws local faces with D16 variants of the shadow pipelines
@@ -793,7 +805,12 @@ hidden until the face budget draws it. A face redraws whenever its content is
 invalid or stale, within the face budget per frame; after the fill, cost
 scales with moved lights and with the faces that changing dynamic casters
 reach, each a copy and a dynamic-caster draw. The dynamic band takes one of
-the budget's layers while a dynamic caster exists. A scene load draws its faces over
+the budget's layers while a dynamic caster exists. Faces that held dynamic
+squares at the last resolve rank their light 1.5 times more important for the
+band (`VKR_LOCAL_SHADOW_DYNAMIC_INCUMBENT_BONUS`), so lights of similar
+importance do not trade the 16 squares and hide each other's mover shadows.
+A light whose face frustum changed since its content was drawn draws every
+caster in one pass instead of a static square, a copy and a dynamic square. A scene load draws its faces over
 several frames: 432 Bistro faces take 15 frames under High. The shadow mask
 adds 32 bytes per pixel while local shadows are active, about 28 MiB per
 physical image at 1280x720. With refractive casters, the single transmission

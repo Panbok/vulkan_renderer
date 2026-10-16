@@ -1290,6 +1290,7 @@ vkr_global const VkrVulkanReflectedField s_vk_cull_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, lod_views),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, geometry_rows),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, command_partitions),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanCullRoot, cascade_excluded_flags),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_local_transmission_fields[] = {

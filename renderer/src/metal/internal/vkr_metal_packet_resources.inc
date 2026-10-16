@@ -3340,6 +3340,9 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
       vkr_metal_packet_pack_gpu_draw_view(
           &views[view], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v, renderer->frustum_enabled);
+      /* Glass casts no sun shadow. */
+      views[view].excluded_candidate_flags =
+          VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
       /* A view whose pass does not run this frame still counts casters for
          the cascade metrics, but encodes no commands. */
       if ((idle_views & (UINT64_C(1) << view)) != 0u)

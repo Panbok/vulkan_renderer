@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-15
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -557,9 +557,12 @@ Metal command-buffer demand growth uses the existing candidate count as its
 per-view ICB command stride. Graph draw-table storage follows scene demand on
 both backends through existing native capacity fields. Source capacity is
 `C = pow2(max(candidate_count, 1))`. Metal's visible, classification and
-argument stride is `V = 8 * min(C, 65536)`: eight buckets whose limit stays
-sufficient for a concentrated small scene and keeps the previous ceiling for
-larger scenes. Metal supplies `V` to classification, raster and picking, and
+argument stride is `V = 8 * min(C, 65536)`, which holds every candidate
+(`VKR_GPU_DRAW_CANDIDATE_CAPACITY` is at most `8 * 65536`). Since 2026-10-16
+its prefix gives each bucket its whole count after the previous bucket's
+range, as the Custom ranges already did, instead of capping each bucket at
+`V / 8` and dropping the draws that reached a full bucket last, which varied
+with atomic order between frames. Metal supplies `V` to classification, raster and picking, and
 its root layouts are unchanged. Since 2026-10-11 Vulkan strides each culling
 view's tables by `C` and gives each bucket the slice of the frame's packed
 candidates in that bucket: `VkrVulkanCullRoot.command_partitions` (first rows
@@ -986,8 +989,9 @@ output of the far cascades is not recorded.
 
 Both classify kernels skip a caster for any non-camera orthographic view when
 the shared `vkr_gpu_cascade_caster_too_small` (`lod_kernel.slangh`) finds its
-bounding-sphere diameter below one texel of the view's LOD scale. Native
-Vulkan evidence of the skip is not recorded.
+bounding-sphere diameter below one texel of the view's LOD scale, or below
+four for a candidate with the copy bit of its cull word. Native Vulkan
+evidence of the skip is not recorded.
 
 Both classify kernels also apply the per-object draw distance
 ([ADR-114](114-per-object-draw-distance.md)) through the shared

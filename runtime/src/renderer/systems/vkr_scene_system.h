@@ -516,9 +516,10 @@ typedef struct ScenePlanarReflector {
 
 /* The default draw distances of a draw that no draw_distance component
    reaches. Objects (meshes, brushes, shapes) leave the camera below one
-   pixel. Scatter and spline-mesh copies leave it below two and cast only
-   into cascades starting within 50 m, short of the High preset's last
-   cascade (about 54 m). Terrains never leave either. */
+   pixel. Scatter and spline-mesh copies leave it below two and cast into
+   every cascade; a cascade skips a copy, authored or not, whose bounding
+   sphere spans fewer than VKR_GPU_CASCADE_COPY_MIN_TEXELS texels
+   (VKR_GPU_DRAW_CULL_COPY_BIT). Terrains never leave either. */
 typedef enum VkrSceneDrawKind {
   VKR_SCENE_DRAW_KIND_OBJECT = 0,
   VKR_SCENE_DRAW_KIND_COPY,
@@ -527,7 +528,6 @@ typedef enum VkrSceneDrawKind {
 
 #define VKR_SCENE_DRAW_OBJECT_MIN_PIXELS 1.0f
 #define VKR_SCENE_DRAW_COPY_MIN_PIXELS 2.0f
-#define VKR_SCENE_DRAW_COPY_SHADOW_DISTANCE 50.0f
 
 typedef struct SceneScatterArea {
   float32_t radius;

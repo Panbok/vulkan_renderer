@@ -11,16 +11,21 @@
 // Cascade Helpers
 // ============================================================================
 
-vkr_internal void vkr_shadow_compute_cascade_splits(VkrShadowSystem *system,
-                                                    float32_t working_near,
-                                                    float32_t working_far,
-                                                    float32_t fixed_far,
-                                                    float32_t lambda) {
+/* Splits [working_near, working_far] over the near cascades and ends them at
+   `fixed_far`; a far level, when `range_far` lies beyond it, takes the last
+   cascade from there to `range_far`. */
+vkr_internal void vkr_shadow_compute_cascade_splits(
+    VkrShadowSystem *system, float32_t working_near, float32_t working_far,
+    float32_t fixed_far, float32_t range_far, float32_t lambda) {
   uint32_t count = system->config.cascade_count;
   if (count == 0) {
     system->cascade_splits[0] = working_near;
     system->cascade_splits[1] = fixed_far;
     return;
+  }
+  if (count > 1u && range_far > fixed_far) {
+    count -= 1u;
+    system->cascade_splits[count + 1u] = range_far;
   }
 
   working_far = vkr_max_f32(working_far, working_near + 0.001f);
@@ -283,10 +288,11 @@ vkr_internal uint64_t vkr_shadow_bias_signature(
 vkr_internal void vkr_shadow_fit_depth_clip(const VkrShadowFit *fit,
                                             float32_t *out_near,
                                             float32_t *out_far) {
+  /* An orthographic near plane may lie behind the light eye. Clamping it to
+     the eye clipped every caster farther toward the light than twice the
+     frustum radius: ridges and backdrop terrain cast nothing into a valley. */
   float32_t near_clip = -fit->max_z;
   float32_t far_clip = -fit->min_z;
-  if (near_clip < 0.0f)
-    near_clip = 0.0f;
   if (far_clip <= near_clip + 0.001f)
     far_clip = near_clip + 0.001f;
   *out_near = near_clip;
@@ -342,33 +348,61 @@ vkr_shadow_publish_cascade_receiver(const Mat4 *light_view,
                                               fit->center_y - half);
 }
 
+/* The fit a cascade's map is drawn with: the raw fit widened by the reuse
+   guard band and led half a frame's motion ahead. Its extent depends on the
+   raw extent alone and its left and bottom edges lie on whole texels of the
+   world-anchored light view, so every redraw lands on one texel lattice in
+   world space. A guarded texel that followed the motion, or an origin off
+   that lattice, moved every shadow edge by a fraction of a texel at each
+   redraw. */
 vkr_internal VkrShadowFit vkr_shadow_guarded_fit(const VkrShadowSystem *system,
                                                  uint32_t cascade) {
   const VkrCascadeData *data = &system->cascades[cascade];
+  const uint32_t map_size = system->config.shadow_map_size;
   VkrShadowFit guarded = data->fit;
   const float32_t texel = vkr_max_f32(data->fit.world_units_per_texel, 0.0f);
   guarded.extent += 2.0f * texel * system->config.reuse_guard_band_texels;
+  if (system->config.stabilize_cascades && map_size > 0u) {
+    guarded.extent = vkr_shadow_quantize_extent_up(guarded.extent, map_size);
+  }
+  const float32_t guarded_texel =
+      map_size > 0u ? guarded.extent / (float32_t)map_size : 0.0f;
 
   if (data->previous_fit_valid && texel > 0.0f) {
+    /* The lead stays inside the guard band, so the raw fit is contained
+       however the camera moved. */
     const float32_t max_motion =
-        texel * system->config.reuse_predictive_max_texels;
-    const float32_t dx =
-        vkr_clamp_f32(data->fit.center_x - data->previous_fit.center_x,
-                      -max_motion, max_motion);
-    const float32_t dy =
-        vkr_clamp_f32(data->fit.center_y - data->previous_fit.center_y,
-                      -max_motion, max_motion);
-    guarded.center_x += dx * 0.5f;
-    guarded.center_y += dy * 0.5f;
-    guarded.extent += vkr_max_f32(vkr_abs_f32(dx), vkr_abs_f32(dy));
+        vkr_min_f32(texel * system->config.reuse_predictive_max_texels,
+                    guarded.extent - data->fit.extent - 2.0f * guarded_texel);
+    if (max_motion > 0.0f) {
+      const float32_t dx =
+          vkr_clamp_f32(data->fit.center_x - data->previous_fit.center_x,
+                        -max_motion, max_motion);
+      const float32_t dy =
+          vkr_clamp_f32(data->fit.center_y - data->previous_fit.center_y,
+                        -max_motion, max_motion);
+      guarded.center_x += dx * 0.5f;
+      guarded.center_y += dy * 0.5f;
+    }
+  }
+
+  if (system->config.stabilize_cascades && guarded_texel > 0.0f) {
+    const float32_t half = guarded.extent * 0.5f;
+    guarded.center_x =
+        vkr_floor_f32((guarded.center_x - half) / guarded_texel) *
+            guarded_texel +
+        half;
+    guarded.center_y =
+        vkr_floor_f32((guarded.center_y - half) / guarded_texel) *
+            guarded_texel +
+        half;
   }
 
   const float32_t z_guard = (data->fit.max_z - data->fit.min_z) *
                             system->config.reuse_depth_guard_fraction;
   guarded.min_z -= z_guard;
   guarded.max_z += z_guard;
-  guarded.world_units_per_texel =
-      guarded.extent / (float32_t)system->config.shadow_map_size;
+  guarded.world_units_per_texel = guarded_texel;
   return guarded;
 }
 
@@ -1022,6 +1056,20 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   };
   if (stabilize && previous_fit) {
     fit = vkr_shadow_apply_fit_hysteresis(previous_fit, &fit);
+    /* A held extent keeps its own texel, so the centre snapped above with
+       the raw half is re-snapped on the held texel's lattice. */
+    const float32_t held_texel = fit.world_units_per_texel;
+    if (held_texel > 0.0f) {
+      const float32_t held_half = fit.extent * 0.5f;
+      fit.center_x =
+          vkr_floor_f32((fit.center_x - held_half) / held_texel + 0.5f) *
+              held_texel +
+          held_half;
+      fit.center_y =
+          vkr_floor_f32((fit.center_y - held_half) / held_texel + 0.5f) *
+              held_texel +
+          held_half;
+    }
   }
 
   const float32_t final_half = fit.extent * 0.5f;
@@ -1034,18 +1082,114 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   *out_light_space_origin =
       vkr_shadow_light_space_origin_from_view(&view, left, bottom);
 
-  float32_t near_clip = -fit.max_z;
-  float32_t far_clip = -fit.min_z;
-  if (near_clip < 0.0f) {
-    near_clip = 0.0f;
-  }
-  if (far_clip <= near_clip + 0.001f) {
-    far_clip = near_clip + 0.001f;
-  }
-
+  float32_t near_clip = 0.0f;
+  float32_t far_clip = 0.0f;
+  vkr_shadow_fit_depth_clip(&fit, &near_clip, &far_clip);
   Mat4 light_projection =
       mat4_ortho_zo_yinv(left, right, bottom, top, near_clip, far_clip);
   *out_view_projection = mat4_mul(light_projection, view);
+}
+
+void vkr_shadow_config_normalize(VkrShadowConfig *config) {
+  if (config->cascade_count == 0) {
+    config->cascade_count = 1;
+  }
+  if (config->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+    config->cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
+  }
+  if (config->shadow_map_size == 0) {
+    config->shadow_map_size = VKR_SHADOW_MAP_SIZE_DEFAULT;
+  }
+  if (!(config->local_shadow_fade_distance > 0.0f))
+    config->local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT;
+  config->cascade_split_lambda =
+      vkr_clamp_f32(config->cascade_split_lambda, 0.0f, 1.0f);
+  if (config->cascade_guard_band_texels < 0.0f) {
+    config->cascade_guard_band_texels = 0.0f;
+  }
+  if (config->z_extension_factor < 0.0f) {
+    config->z_extension_factor = 0.0f;
+  }
+  // Raster depth bias reaches both native encoders. Normalize it once here.
+  if (!(config->depth_bias_constant_factor >= 0.0f)) {
+    config->depth_bias_constant_factor = 0.0f;
+  }
+  if (!(config->depth_bias_slope_factor >= 0.0f)) {
+    config->depth_bias_slope_factor = 0.0f;
+  }
+  if (!(config->depth_bias_clamp >= 0.0f)) {
+    config->depth_bias_clamp = 0.0f;
+  }
+  if (!(config->reuse_guard_band_texels > 0.0f))
+    config->reuse_guard_band_texels = 128.0f;
+  config->reuse_depth_guard_fraction =
+      vkr_clamp_f32(config->reuse_depth_guard_fraction, 0.0f, 0.5f);
+  if (!(config->reuse_depth_guard_fraction > 0.0f))
+    config->reuse_depth_guard_fraction = 0.0625f;
+  if (!(config->reuse_predictive_max_texels >= 0.0f))
+    config->reuse_predictive_max_texels = 0.0f;
+  if (config->reuse_dynamic_scan_budget == 0u)
+    config->reuse_dynamic_scan_budget = VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT;
+  if (config->sdsm_max_source_lag_frames == 0u)
+    config->sdsm_max_source_lag_frames = 4u;
+  config->sdsm_temporal_blend =
+      vkr_clamp_f32(config->sdsm_temporal_blend, 0.0f, 0.99f);
+  config->sdsm_max_contraction_fraction =
+      vkr_clamp_f32(config->sdsm_max_contraction_fraction, 0.0f, 1.0f);
+  /* Receiver quality is normalized once here so the packet lowering, packet
+     validation, and both receiver shaders can trust it. The comparisons are
+     written as negated `>=` so a NaN configuration falls into the safe branch
+     rather than through it. An unsupported tap count degrades to the one-tap
+     kernel instead of indexing the Poisson table out of range. */
+  if (!(config->receiver_bias_texels >= 0.0f))
+    config->receiver_bias_texels = 0.0f;
+  if (!(config->receiver_slope_bias_texels >= 0.0f))
+    config->receiver_slope_bias_texels = 0.0f;
+  if (!(config->normal_offset_texels >= 0.0f))
+    config->normal_offset_texels = 0.0f;
+  if (!(config->pcf_radius_texels >= 0.0f))
+    config->pcf_radius_texels = 0.0f;
+  if (!vkr_shadow_pcf_sample_count_supported(config->pcf_sample_count))
+    config->pcf_sample_count = 1u;
+  config->pcf_uniform_early_out =
+      config->pcf_uniform_early_out ? true_v : false_v;
+  if (!(config->cascade_blend_fraction >= 0.0f))
+    config->cascade_blend_fraction = 0.0f;
+  if (config->cascade_blend_fraction > 0.5f)
+    config->cascade_blend_fraction = 0.5f;
+  if (!(config->far_cascade_distance > config->max_shadow_distance) ||
+      config->cascade_count < 2u)
+    config->far_cascade_distance = 0.0f;
+  if (!(config->shadow_distance_fade_range >= 0.0f))
+    config->shadow_distance_fade_range = 0.0f;
+  const float32_t range =
+      config->far_cascade_distance > 0.0f
+          ? config->far_cascade_distance - config->max_shadow_distance
+          : config->max_shadow_distance;
+  if (config->shadow_distance_fade_range > range)
+    config->shadow_distance_fade_range = range;
+  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
+    if (!(config->cascade_guard_band_texels_per[i] >= 0.0f)) {
+      config->cascade_guard_band_texels_per[i] = 0.0f;
+    }
+    if (!(config->cascade_z_extension_factor_per[i] >= 0.0f)) {
+      config->cascade_z_extension_factor_per[i] = 0.0f;
+    }
+  }
+}
+
+void vkr_shadow_config_apply_tiled(VkrShadowConfig *config) {
+  if (config->cascade_count >= 2u && config->far_cascade_distance <= 0.0f &&
+      config->max_shadow_distance > 0.0f) {
+    config->max_shadow_distance = vkr_min_f32(config->max_shadow_distance,
+                                              VKR_SHADOW_TILED_NEAR_DISTANCE);
+    config->far_cascade_distance = VKR_SHADOW_TILED_FAR_DISTANCE;
+    config->shadow_distance_fade_range = VKR_SHADOW_TILED_FAR_FADE_RANGE;
+  }
+  config->reuse_proactive_refresh_budget =
+      Max(config->reuse_proactive_refresh_budget, 1u);
+  config->reuse_proactive_margin_texels =
+      VKR_SHADOW_TILED_PROACTIVE_MARGIN_TEXELS;
 }
 
 bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
@@ -1057,88 +1201,7 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
   MemZero(system, sizeof(*system));
   system->config = config ? *config : VKR_SHADOW_CONFIG_DEFAULT;
 
-  if (system->config.cascade_count == 0) {
-    system->config.cascade_count = 1;
-  }
-  if (system->config.cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
-    system->config.cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
-  }
-  if (system->config.shadow_map_size == 0) {
-    system->config.shadow_map_size = VKR_SHADOW_MAP_SIZE_DEFAULT;
-  }
-  if (!(system->config.local_shadow_fade_distance > 0.0f))
-    system->config.local_shadow_fade_distance =
-        VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT;
-  system->config.cascade_split_lambda =
-      vkr_clamp_f32(system->config.cascade_split_lambda, 0.0f, 1.0f);
-  if (system->config.cascade_guard_band_texels < 0.0f) {
-    system->config.cascade_guard_band_texels = 0.0f;
-  }
-  if (system->config.z_extension_factor < 0.0f) {
-    system->config.z_extension_factor = 0.0f;
-  }
-  // Raster depth bias reaches both native encoders. Normalize it once here.
-  if (!(system->config.depth_bias_constant_factor >= 0.0f)) {
-    system->config.depth_bias_constant_factor = 0.0f;
-  }
-  if (!(system->config.depth_bias_slope_factor >= 0.0f)) {
-    system->config.depth_bias_slope_factor = 0.0f;
-  }
-  if (!(system->config.depth_bias_clamp >= 0.0f)) {
-    system->config.depth_bias_clamp = 0.0f;
-  }
-  if (!(system->config.reuse_guard_band_texels > 0.0f))
-    system->config.reuse_guard_band_texels = 128.0f;
-  system->config.reuse_depth_guard_fraction =
-      vkr_clamp_f32(system->config.reuse_depth_guard_fraction, 0.0f, 0.5f);
-  if (!(system->config.reuse_depth_guard_fraction > 0.0f))
-    system->config.reuse_depth_guard_fraction = 0.0625f;
-  if (!(system->config.reuse_predictive_max_texels >= 0.0f))
-    system->config.reuse_predictive_max_texels = 0.0f;
-  if (system->config.reuse_dynamic_scan_budget == 0u)
-    system->config.reuse_dynamic_scan_budget =
-        VKR_SHADOW_DYNAMIC_SCAN_BUDGET_DEFAULT;
-  if (system->config.sdsm_max_source_lag_frames == 0u)
-    system->config.sdsm_max_source_lag_frames = 4u;
-  system->config.sdsm_temporal_blend =
-      vkr_clamp_f32(system->config.sdsm_temporal_blend, 0.0f, 0.99f);
-  system->config.sdsm_max_contraction_fraction =
-      vkr_clamp_f32(system->config.sdsm_max_contraction_fraction, 0.0f, 1.0f);
-  /* Receiver quality is normalized once here so the packet lowering, packet
-     validation, and both receiver shaders can trust it. The comparisons are
-     written as negated `>=` so a NaN configuration falls into the safe branch
-     rather than through it. An unsupported tap count degrades to the one-tap
-     kernel instead of indexing the Poisson table out of range. */
-  if (!(system->config.receiver_bias_texels >= 0.0f))
-    system->config.receiver_bias_texels = 0.0f;
-  if (!(system->config.receiver_slope_bias_texels >= 0.0f))
-    system->config.receiver_slope_bias_texels = 0.0f;
-  if (!(system->config.normal_offset_texels >= 0.0f))
-    system->config.normal_offset_texels = 0.0f;
-  if (!(system->config.pcf_radius_texels >= 0.0f))
-    system->config.pcf_radius_texels = 0.0f;
-  if (!vkr_shadow_pcf_sample_count_supported(system->config.pcf_sample_count))
-    system->config.pcf_sample_count = 1u;
-  system->config.pcf_uniform_early_out =
-      system->config.pcf_uniform_early_out ? true_v : false_v;
-  if (!(system->config.cascade_blend_fraction >= 0.0f))
-    system->config.cascade_blend_fraction = 0.0f;
-  if (system->config.cascade_blend_fraction > 0.5f)
-    system->config.cascade_blend_fraction = 0.5f;
-  if (!(system->config.shadow_distance_fade_range >= 0.0f))
-    system->config.shadow_distance_fade_range = 0.0f;
-  if (system->config.shadow_distance_fade_range >
-      system->config.max_shadow_distance)
-    system->config.shadow_distance_fade_range =
-        system->config.max_shadow_distance;
-  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-    if (!(system->config.cascade_guard_band_texels_per[i] >= 0.0f)) {
-      system->config.cascade_guard_band_texels_per[i] = 0.0f;
-    }
-    if (!(system->config.cascade_z_extension_factor_per[i] >= 0.0f)) {
-      system->config.cascade_z_extension_factor_per[i] = 0.0f;
-    }
-  }
+  vkr_shadow_config_normalize(&system->config);
 
   // Generation 1, not 0: a zeroed history compares equal to generation 0 and
   // would be treated as valid before any fit exists.
@@ -1197,19 +1260,21 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
   if (system->config.max_shadow_distance > 0.0f)
     fixed_far = vkr_min_f32(fixed_far, system->config.max_shadow_distance);
   fixed_far = vkr_max_f32(fixed_far, camera->near_clip + 0.001f);
+  const float32_t range_far = vkr_min_f32(
+      camera->far_clip, vkr_shadow_config_range_end(&system->config));
   float32_t working_near = camera->near_clip;
   float32_t working_far = fixed_far;
   vkr_shadow_consume_sdsm(system, camera, fixed_far, &working_near,
                           &working_far);
   vkr_shadow_compute_cascade_splits(system, working_near, working_far,
-                                    fixed_far,
+                                    fixed_far, range_far,
                                     system->config.cascade_split_lambda);
 
   uint32_t shadow_map_size =
       vkr_shadow_config_get_max_map_size(&system->config);
   const Mat4 light_view = vkr_shadow_compute_light_view(
       camera, &system->config.scene_bounds, light_direction,
-      system->config.max_shadow_distance,
+      vkr_shadow_config_range_end(&system->config),
       system->config.world_anchored_light_view);
 
   uint32_t cascade_count = system->config.cascade_count;
@@ -1255,7 +1320,7 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
             ? light_view
             : vkr_shadow_compute_light_view(
                   camera, &system->config.scene_bounds, cascade_direction,
-                  system->config.max_shadow_distance,
+                  vkr_shadow_config_range_end(&system->config),
                   system->config.world_anchored_light_view);
     float32_t split_near = system->cascade_splits[i];
     float32_t split_far = system->cascade_splits[i + 1];
@@ -1584,6 +1649,41 @@ vkr_internal bool8_t vkr_shadow_scan_dynamic_casters(
   return true_v;
 }
 
+/* Proactive refreshes redraw a still-reusable cascade early, the one with the
+   least margin left, so the redraws a moving camera needs arrive one per
+   frame instead of falling due together. A frame that must redraw a cascade
+   anyway takes none. */
+vkr_internal void vkr_shadow_select_proactive(const VkrShadowSystem *system,
+                                              const bool8_t *reusable,
+                                              const float32_t *fit_margin,
+                                              bool8_t *proactive) {
+  const uint32_t cascade_count = system->config.cascade_count;
+  for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+    if (!reusable[cascade])
+      return;
+  }
+  const uint32_t budget =
+      Min(system->config.reuse_proactive_refresh_budget, cascade_count);
+  for (uint32_t refresh = 0u; refresh < budget; ++refresh) {
+    uint32_t selected = UINT32_MAX;
+    float32_t selected_margin = VKR_FLOAT_MAX;
+    for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
+      const float32_t threshold =
+          system->config.reuse_proactive_margin_texels *
+          system->cascades[cascade].world_units_per_texel;
+      const bool8_t due = threshold <= 0.0f || fit_margin[cascade] < threshold;
+      if (reusable[cascade] && !proactive[cascade] && due &&
+          fit_margin[cascade] < selected_margin) {
+        selected = cascade;
+        selected_margin = fit_margin[cascade];
+      }
+    }
+    if (selected == UINT32_MAX)
+      return;
+    proactive[selected] = true_v;
+  }
+}
+
 void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
                                      uint32_t image_index,
                                      VkrRetainedShadowToken retained_token,
@@ -1753,22 +1853,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         contents_current && fit_margin[cascade] >= 0.0f && !publication_pending;
   }
 
-  const uint32_t proactive_budget =
-      Min(system->config.reuse_proactive_refresh_budget, cascade_count);
-  for (uint32_t refresh = 0u; refresh < proactive_budget; ++refresh) {
-    uint32_t selected = UINT32_MAX;
-    float32_t selected_margin = VKR_FLOAT_MAX;
-    for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
-      if (reusable[cascade] && !proactive[cascade] &&
-          fit_margin[cascade] < selected_margin) {
-        selected = cascade;
-        selected_margin = fit_margin[cascade];
-      }
-    }
-    if (selected == UINT32_MAX)
-      break;
-    proactive[selected] = true_v;
-  }
+  vkr_shadow_select_proactive(system, reusable, fit_margin, proactive);
 
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     const uint32_t bit = UINT32_C(1) << cascade;
@@ -1790,21 +1875,33 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     out_data->correctness_forced[cascade] = reusable[cascade] ? 0u : 1u;
     out_data->proactive_refreshed[cascade] = proactive[cascade] ? 1u : 0u;
 
-    /* A proactive refresh takes a fresh guarded fit, and a cascade without
-       a kept fit has nothing a static layer drawn now would be reused with:
-       both draw whole. */
+    /* A proactive refresh, or a cascade the camera left without a kept fit,
+       takes a fresh guarded fit and draws its static layer with it in this
+       frame, which the next frames reuse; drawing it whole first cost a
+       second full draw on the frame after. A light that turned since the
+       static layer was drawn holds no fit a layer drawn now would be reused
+       with, so that cascade draws whole. */
     const VkrShadowCascadeHistory *kept =
-        composed && !proactive[cascade] ? fit_history[cascade] : NULL;
-    if (kept) {
+        proactive[cascade] ? NULL : fit_history[cascade];
+    const bool8_t fresh_layer_held =
+        system->static_history[cascade].last_submit_value != 0u &&
+        system->static_history[cascade].light_signature ==
+            light_signatures[cascade];
+    if (composed && (kept || fresh_layer_held)) {
       /* The layer is its static layer's copy, drawn first when invalid, with
-         the dynamic casters drawn over it when one can reach the kept fit. */
-      const Mat4 light_view = kept->rendered_light_view;
-      const VkrShadowFit fit = kept->rendered_fit;
-      out_data->view_projection[cascade] = kept->rendered_view_projection;
+         the dynamic casters drawn over it when one can reach the fit. */
+      const Mat4 light_view = kept ? kept->rendered_light_view
+                                   : system->cascades[cascade].light_view;
+      const VkrShadowFit fit =
+          kept ? kept->rendered_fit : guarded_fits[cascade];
+      out_data->view_projection[cascade] =
+          kept ? kept->rendered_view_projection
+               : vkr_shadow_view_projection_from_fit(&light_view, &fit);
       vkr_shadow_publish_cascade_receiver(&light_view, &fit, cascade, out_data);
-      const bool8_t overlap = fit_dynamic_overlap[cascade];
+      const bool8_t overlap = kept ? fit_dynamic_overlap[cascade]
+                                   : guarded_dynamic_overlap[cascade];
       const bool8_t static_valid =
-          static_fit[cascade] &&
+          kept && static_fit[cascade] &&
           (retained_token.static_valid_layer_mask & bit) != 0u;
       out_data->copy_mask |= bit;
       out_data->composited[cascade] = 1u;

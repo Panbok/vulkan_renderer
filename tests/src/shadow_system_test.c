@@ -315,6 +315,55 @@ vkr_internal void test_cascade_texel_grid_is_fixed_in_world(void) {
   }
 }
 
+/* The maps a receiver samples are drawn with the guarded fit, not the raw
+   one. Two rides that redraw at different places after different motion
+   must still draw every cascade with one texel size on one world lattice,
+   or each redraw moves every shadow edge by a fraction of a texel. */
+vkr_internal void test_drawn_cascade_lattice_is_fixed_in_world(void) {
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  const Vec3 light = vec3_normalize(vec3_new(-0.35f, -0.55f, -0.75f));
+  const Vec3 point = vec3_new(103.7f, -6.2f, 24.9f);
+  const float32_t map_size = (float32_t)config.shadow_map_size;
+  const Vec3 starts[2] = {vec3_new(100.0f, -4.0f, 30.0f),
+                          vec3_new(106.1f, -4.3f, 32.6f)};
+  const Vec3 motions[2] = {vec3_new(0.23f, 0.0f, 0.0f),
+                           vec3_new(-0.05f, 0.02f, 0.31f)};
+  VkrShadowFrameData frames[2] = {0};
+  for (uint32_t i = 0u; i < ArrayCount(frames); ++i) {
+    VkrShadowSystem system = {0};
+    assert(vkr_shadow_system_init(&system, &config));
+    VkrCamera camera = test_camera();
+    camera.position = starts[i];
+    vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+    camera.position = vec3_add(starts[i], motions[i]);
+    vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+    const VkrWorldPassPayload payload = {.static_generation = 7u};
+    vkr_shadow_system_resolve_frame(&system, 0u, (VkrRetainedShadowToken){0},
+                                    &payload, VKR_TEXTURE_FORMAT_D32_SFLOAT,
+                                    &frames[i]);
+    vkr_shadow_system_shutdown(&system);
+  }
+  for (uint32_t cascade = 0u; cascade < config.cascade_count; ++cascade) {
+    assert(frames[0].rendered[cascade] == 1u);
+    assert(frames[1].rendered[cascade] == 1u);
+    assert(frames[0].world_units_per_texel[cascade] ==
+           frames[1].world_units_per_texel[cascade]);
+    const Vec4 clip_a = mat4_mul_vec4(frames[0].view_projection[cascade],
+                                      vec3_to_vec4(point, 1.0f));
+    const Vec4 clip_b = mat4_mul_vec4(frames[1].view_projection[cascade],
+                                      vec3_to_vec4(point, 1.0f));
+    const float32_t texel_ax = (clip_a.x * 0.5f + 0.5f) * map_size;
+    const float32_t texel_ay = (clip_a.y * 0.5f + 0.5f) * map_size;
+    const float32_t texel_bx = (clip_b.x * 0.5f + 0.5f) * map_size;
+    const float32_t texel_by = (clip_b.y * 0.5f + 0.5f) * map_size;
+    const float32_t phase_x =
+        (texel_ax - texel_bx) - vkr_round_f32(texel_ax - texel_bx);
+    const float32_t phase_y =
+        (texel_ay - texel_by) - vkr_round_f32(texel_ay - texel_by);
+    assert(vkr_abs_f32(phase_x) < 0.01f && vkr_abs_f32(phase_y) < 0.01f);
+  }
+}
+
 vkr_internal void test_disabled_stabilization_does_not_publish_history(void) {
   VkrShadowSystem system = {0};
   VkrShadowSystem reference = {0};
@@ -787,13 +836,26 @@ vkr_internal void test_local_shadow_cache_lifecycle_and_invalidation(void) {
   payload.gpu_candidates = NULL;
   payload.gpu_shadow_candidate_count = 0u;
 
-  /* A replaced pool has another generation or layer count; its layers clear
-   * and the light hides until it redraws. */
+  /* While the cache continues the atlas keeps the live image's layers: the
+   * band's layer outlives the dynamic caster, nothing clears and the light
+   * keeps its content. */
   VkrRetainedLocalShadowToken replaced = valid;
   replaced.atlas_layer_count = 2u;
+  replaced.valid_layer_mask = UINT32_C(0x3);
   vkr_shadow_system_resolve_local_shadows(&system, replaced, &payload, &light,
                                           1u, NULL, NULL, 0u, &camera, &local);
-  assert(local.atlas_clear_mask == 1u && local.render_count == 1u);
+  assert(local.atlas_layer_count == 2u && local.dynamic_layer_count == 0u);
+  assert(local.atlas_clear_mask == 0u && local.render_count == 0u);
+  assert(local.light_first_view[0] != 0u);
+  vkr_shadow_system_discard_frame(&system);
+
+  /* A replaced pool has another generation or layer count; its layers clear
+   * and the light hides until it redraws. */
+  replaced.resource_generation++;
+  replaced.valid_layer_mask = 0u;
+  vkr_shadow_system_resolve_local_shadows(&system, replaced, &payload, &light,
+                                          1u, NULL, NULL, 0u, &camera, &local);
+  assert(local.atlas_clear_mask == 0x3u && local.render_count == 1u);
   vkr_shadow_system_discard_frame(&system);
   replaced = valid;
   replaced.valid_layer_mask = 0u;
@@ -2389,6 +2451,48 @@ vkr_internal void test_idle_dynamic_caster_reuses_composed_cascades(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* A camera that leaves every kept fit while dynamic casters exist redraws
+   each cascade's static layer with a fresh fit and composes over it in the
+   same frame; the next frame copies that layer without drawing it again.
+   Drawing the cascade whole first paid a second full draw on the next
+   frame. */
+vkr_internal void test_refit_composes_static_layer_in_one_frame(void) {
+  VkrShadowSystem system = {0};
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  update_for_reuse(&system, &camera);
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  payload.dynamic_generation++;
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+  };
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
+  vkr_shadow_system_commit_frame(&system, 18u);
+  token.static_valid_layer_mask = all;
+
+  camera.position.x += 2000.0f;
+  update_for_reuse(&system, &camera);
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.cascade_render_mask == 0u);
+  assert(frame.copy_mask == all && frame.static_render_mask == all);
+  vkr_shadow_system_commit_frame(&system, 19u);
+
+  payload.dynamic_generation++;
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.cascade_render_mask == 0u && frame.static_render_mask == 0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
 /* A static change inside a static layer's volume makes it stale, so the layer
    draws again; one outside leaves it valid. */
 vkr_internal void test_static_change_reaching_fit_redraws_static_layer(void) {
@@ -3303,6 +3407,7 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_disabled_stabilization_does_not_publish_history...\n");
   test_disabled_stabilization_does_not_publish_history();
   test_cascade_texel_grid_is_fixed_in_world();
+  test_drawn_cascade_lattice_is_fixed_in_world();
   printf("  test_disabled_stabilization_does_not_publish_history PASSED\n");
   printf("  Running retained cascade reuse tests...\n");
   test_local_shadow_cache_lifecycle_and_invalidation();
@@ -3328,6 +3433,7 @@ bool32_t run_shadow_system_tests(void) {
   test_dynamic_overlap_and_publication_fail_closed();
   test_composed_cascades_share_static_layers_across_images();
   test_idle_dynamic_caster_reuses_composed_cascades();
+  test_refit_composes_static_layer_in_one_frame();
   test_static_change_reaching_fit_redraws_static_layer();
   test_without_dynamic_casters_static_layers_stay_unused();
   test_static_image_first_frame_draws_whole();

@@ -86,6 +86,37 @@ Each row was read in source; the symptom column is inferred.
 Rows 7 and 8 block the local shadow architecture proposal's no-pop gate and
 are listed here only so that one change list fixes every pop source.
 
+A second audit on 2026-10-16, with Level Design Test and Bistro captures on
+the tiled pipeline, found more defects; the code changes below fixed them
+and defects 1–4, 7 and 8 in the shared host code, the shared cull kernel and
+the tiled receivers. The decisions are recorded in ADR-019, ADR-041, ADR-087
+and ADR-114.
+
+| Defect | Fix |
+|---|---|
+| 1, the guarded fit's texel and origin | Quantized guarded extent, lead inside the band, edges on the guarded lattice; CPU test |
+| 2, copies' 50 m shadow distance | No default; copies need 4 cascade texels instead (captures: tree and rock shadows past 54 m) |
+| 3 and 4 | The guarded texel no longer varies, so the cut and the shadow level hold between redraws |
+| 7 and 8 | Committed content fades over 1 s; the atlas never shrinks while the cache is valid; CPU tests |
+| Near plane clamped at the light eye | Removed; ridges and backdrop terrain shadow the valley (captures) |
+| Glass cast an opaque sun shadow | Cascades skip transmissive casters on both pipelines (owner decision) |
+| A draw distance did not end the shadow | The shadow code takes the smaller of the two |
+| Tiled 65,536-row bucket cap dropped casters in atomic order | Buckets pack one after another |
+| Balanced kept no cascade | Its reuse controls are set and every adopted configuration is normalized |
+| A refit composed cascade drew twice | It draws its static layer with the fresh fit in one frame; CPU test |
+| Tiled screen-locked grain | Fixed bilinear grid; penumbra estimate on the three near cascades |
+| Receivers outside their cascade shown lit | The next cascade samples them |
+| Local and moving shadows offset along the normal-mapped normal | Geometric normal |
+| Moving lamps drew a static square, a copy and a dynamic square | One pass; dynamic squares keep their incumbents |
+
+T1 runs as the proactive refresh (one per frame, 32-texel margin) and T2b as
+the far level (owner decision 2026-10-16: near cascades to 80 m, far level to
+1 km). Open on the tiled pipeline: the far level's static layer costs
+2.8–3.0 ms in the frame it redraws, above the 1.0 ms budget, so its redraw is
+to be spread over several frames; T3; a Bistro orbit and timing against the
+budgets. The desktop pipeline compiles every shared change; its native
+evidence and defects 5 and 6 are deferred (owner decision 2026-10-16).
+
 ## Desktop options
 
 Costs are estimates for an RX 6700 XT at 2560×1440 in Bistro.

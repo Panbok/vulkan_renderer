@@ -2387,13 +2387,15 @@ bool8_t vkr_mesh_manager_set_shadow_mobility(VkrMeshManager *manager,
   return true_v;
 }
 
-/* Whether two draw-distance settings put a caster in different shadows. */
+/* Whether two draw-distance settings put a caster in different shadows:
+   its shadow distance or its cascade size limit differ. */
 vkr_internal bool8_t vkr_mesh_draw_cull_casts_differ(uint32_t cull_a,
                                                      bool8_t shadowless_a,
                                                      uint32_t cull_b,
                                                      bool8_t shadowless_b) {
-  const uint32_t shadow_mask = VKR_GPU_DRAW_CULL_CODE_MASK
-                               << VKR_GPU_DRAW_CULL_SHADOW_SHIFT;
+  const uint32_t shadow_mask =
+      (VKR_GPU_DRAW_CULL_CODE_MASK << VKR_GPU_DRAW_CULL_SHADOW_SHIFT) |
+      VKR_GPU_DRAW_CULL_COPY_BIT;
   return shadowless_a != shadowless_b ||
          (cull_a & shadow_mask) != (cull_b & shadow_mask);
 }

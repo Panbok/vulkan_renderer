@@ -4325,6 +4325,10 @@ uint32_t vkr_scene_draw_cull(const VkrScene *scene, VkrEntityId entity,
   const VkrComponentTypeId comp_draw_distance =
       vkr_scene_type_id(scene, &vkr_scene_draw_distance_type);
   const uint32_t max_depth = scene->world->dir.capacity;
+  /* Copies keep their larger cascade size limit under an authored
+     component too. */
+  const uint32_t copy_bit =
+      kind == VKR_SCENE_DRAW_KIND_COPY ? VKR_GPU_DRAW_CULL_COPY_BIT : 0u;
   VkrEntityId current = entity;
   for (uint32_t depth = 0u;
        comp_draw_distance != VKR_COMPONENT_TYPE_INVALID &&
@@ -4335,7 +4339,8 @@ uint32_t vkr_scene_draw_cull(const VkrScene *scene, VkrEntityId entity,
     if (draw) {
       *out_shadowless = !draw->cast_shadows;
       return vkr_gpu_draw_cull_word(draw->max_distance, draw->min_screen_pixels,
-                                    draw->shadow_distance);
+                                    draw->shadow_distance) |
+             copy_bit;
     }
     const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
         scene->world, current, scene->comp_transform);
@@ -4345,8 +4350,8 @@ uint32_t vkr_scene_draw_cull(const VkrScene *scene, VkrEntityId entity,
   *out_shadowless = false_v;
   switch (kind) {
   case VKR_SCENE_DRAW_KIND_COPY:
-    return vkr_gpu_draw_cull_word(0.0f, VKR_SCENE_DRAW_COPY_MIN_PIXELS,
-                                  VKR_SCENE_DRAW_COPY_SHADOW_DISTANCE);
+    return vkr_gpu_draw_cull_word(0.0f, VKR_SCENE_DRAW_COPY_MIN_PIXELS, 0.0f) |
+           copy_bit;
   case VKR_SCENE_DRAW_KIND_TERRAIN:
     return 0u;
   case VKR_SCENE_DRAW_KIND_OBJECT:

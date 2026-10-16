@@ -1247,6 +1247,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         (input->config.far_cascade_evsm &&
          previous->cascade_count != input->config.cascade_count);
     application->shadow_system.config = input->config;
+    vkr_shadow_config_normalize(&application->shadow_system.config);
     if (input->invalidate_fit || moments_changed) {
       vkr_shadow_system_invalidate_fit_history(&application->shadow_system);
     }
@@ -2944,6 +2945,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     /* Its dynamic-light limit bounds the shadowed lights, so each takes the
        full filter (ADR-087). */
     frame->shadow.config.local_shadow_full_filter_all = true_v;
+    vkr_shadow_config_apply_tiled(&frame->shadow.config);
   }
   frame->shadow.invalidate_fit =
       application->shadow_fit_invalidate_requested || target_changed;

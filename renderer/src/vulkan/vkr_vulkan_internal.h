@@ -658,7 +658,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanCullRoot {
   /** The reflection's culling view, or UINT32_MAX without one. */
   uint32_t reflection_view;
   uint32_t reflection_object_id;
-  uint32_t reserved[2];
+  /** Candidate flags the directional cascades and their dynamic views skip:
+      transmissive casters, since glass casts no sun shadow. */
+  uint32_t cascade_excluded_flags;
+  uint32_t reserved;
 } VkrVulkanCullRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanRasterRoot {
@@ -1966,7 +1969,8 @@ _Static_assert(VKR_LOCAL_SHADOW_ATLAS_LAYER_COUNT_MAX <=
                "a layered local shadow graph image exceeds the graph layers");
 _Static_assert(sizeof(VkrVulkanCullRoot) == 304u &&
                    offsetof(VkrVulkanCullRoot, reflection_plane) == 272u &&
-                   offsetof(VkrVulkanCullRoot, reflection_view) == 288u,
+                   offsetof(VkrVulkanCullRoot, reflection_view) == 288u &&
+                   offsetof(VkrVulkanCullRoot, cascade_excluded_flags) == 296u,
                "Deferred cull-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanCullRoot, static_candidate_count) == 188u,
                "Vulkan cull root mobility ABI drift");

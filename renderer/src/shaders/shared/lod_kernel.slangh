@@ -50,30 +50,15 @@ float vkr_lod_projected(float error, float scale, uint flags, float distance)
                : error * scale / distance;
 }
 
-// Smallest bounding-sphere diameter, in texels, that a caster spans in an
-// orthographic shadow view and still draws. A smaller caster covers at most
-// the one texel the receiver's PCF footprint already spreads over several.
-#define VKR_GPU_CASCADE_CASTER_MIN_TEXELS 1.0f
-
-// Whether a shadow view with LOD `scale` and `flags` skips a caster whose
-// world bounding sphere has `radius`. Only orthographic views (directional
-// cascades) have a constant texel size; their scale is texels per metre over
-// the LOD threshold of one. The camera view must not call this, since an
-// orthographic camera is also constant.
-bool vkr_gpu_cascade_caster_too_small(float scale, uint flags, float radius)
-{
-    return (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u && scale > 0.0f &&
-           2.0f * radius * scale < VKR_GPU_CASCADE_CASTER_MIN_TEXELS;
-}
-
 // A candidate's draw-distance word, in its state flags above the bucket and
 // the candidate flags: the camera's draw distance code in bits 0 to 7, the
 // smallest diameter the camera draws in half pixels in bits 8 to 11, the
 // shadow distance code in bits 12 to 19, bit 20 when its rooms are hidden
-// from the camera this frame and bit 21 when they are sealed from the sun
-// (no cascade draws it). A code c above zero stands for
-// 2^((c - 1) / 16) metres, 1 m to about 60 km in steps of 4.4%; zero is no
-// limit. The host packs it in renderer/src/vkr_gpu_abi.h.
+// from the camera this frame, bit 21 when they are sealed from the sun
+// (no cascade draws it) and bit 22 when it is a scatter or spline copy. A
+// code c above zero stands for 2^((c - 1) / 16) metres, 1 m to about 60 km
+// in steps of 4.4%; zero is no limit. The host packs it in
+// renderer/src/vkr_gpu_abi.h.
 #define VKR_GPU_DRAW_CULL_SHIFT 7u
 #define VKR_GPU_DRAW_CULL_CODE_MASK 255u
 #define VKR_GPU_DRAW_CULL_PIXELS_SHIFT 8u
@@ -82,8 +67,35 @@ bool vkr_gpu_cascade_caster_too_small(float scale, uint flags, float radius)
 #define VKR_GPU_DRAW_CULL_CODES_PER_OCTAVE 16.0f
 #define VKR_GPU_DRAW_CULL_HIDDEN_BIT (1u << 20u)
 #define VKR_GPU_DRAW_CULL_SEALED_BIT (1u << 21u)
+#define VKR_GPU_DRAW_CULL_COPY_BIT (1u << 22u)
 // The candidate state bits a visible row keeps: the bucket and the flags.
 #define VKR_GPU_DRAW_CANDIDATE_STATE_MASK 127u
+
+// Smallest bounding-sphere diameter, in texels, that a caster spans in an
+// orthographic shadow view and still draws. A smaller caster covers at most
+// the one texel the receiver's PCF footprint already spreads over several.
+#define VKR_GPU_CASCADE_CASTER_MIN_TEXELS 1.0f
+// The same limit for scatter and spline copies (VKR_GPU_DRAW_CULL_COPY_BIT),
+// which are many and small: a cascade draws a copy only while its bounding
+// sphere spans this many texels, so grass and pebbles leave the far
+// cascades while trees and boulders keep their shadows to the last one.
+#define VKR_GPU_CASCADE_COPY_MIN_TEXELS 4.0f
+
+// Whether a shadow view with LOD `scale` and `flags` skips a caster of cull
+// word `cull` whose world bounding sphere has `radius`. Only orthographic
+// views (directional cascades) have a constant texel size; their scale is
+// texels per metre over the LOD threshold of one, so the test reads no
+// camera position and retained layers stay valid. The camera view must not
+// call this, since an orthographic camera is also constant.
+bool vkr_gpu_cascade_caster_too_small(uint cull, float scale, uint flags,
+                                      float radius)
+{
+    float min_texels = (cull & VKR_GPU_DRAW_CULL_COPY_BIT) != 0u
+                           ? VKR_GPU_CASCADE_COPY_MIN_TEXELS
+                           : VKR_GPU_CASCADE_CASTER_MIN_TEXELS;
+    return (flags & VKR_GPU_LOD_VIEW_CONSTANT) != 0u && scale > 0.0f &&
+           2.0f * radius * scale < min_texels;
+}
 
 uint vkr_gpu_draw_cull_word(uint state_flags)
 {
