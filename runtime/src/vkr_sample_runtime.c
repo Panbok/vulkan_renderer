@@ -444,6 +444,8 @@ typedef struct State {
   /* The VKR_DRAW_DISTANCE=0 diagnostic as the runtime read it at creation:
      the camera draws everything whatever the Scene's view asks. */
   bool8_t draw_distance_diagnostic_off;
+  /* Recordings: the client's latest outcome and the saved editor view. */
+  VkrSampleRecordingState recording;
 } State;
 
 vkr_global State *state = NULL;
@@ -5484,6 +5486,7 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
 typedef struct VkrSampleUiRequests {
   VkrGraphicsSettingsRequest graphics_request;
   VkrSampleTransportAction transport_action;
+  VkrSampleRecordingRequest recording_request;
   VkrSampleViewRequest view_request;
   bool8_t looks_changed;
   bool8_t custom_materials_reload;
@@ -5569,6 +5572,8 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .graphics = &state->graphics,
       .graphics_request = &requests->graphics_request,
       .transport_action = &requests->transport_action,
+      .recording_request = &requests->recording_request,
+      .recording = &state->recording.status,
       .script_request = &requests->script_request,
       .script_results = state->script_results,
       .script_result_count = state->script_result_count,
@@ -6463,6 +6468,11 @@ static void sample_edit_batch(VkrStandardSceneRuntime *application,
                   "Stop the simulation before editing the scene.");
     return;
   }
+  if (application->playback.open) {
+    string_format(result->message, sizeof(result->message),
+                  "Close the playback before editing the scene.");
+    return;
+  }
   if (state->gizmo_drag.active) {
     vkr_standard_scene_runtime_finish_gizmo_edit(application);
   }
@@ -6572,6 +6582,15 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
     string_format(
         state->edits.status, sizeof(state->edits.status),
         "Reset the simulation to edit or save; the origin is rebased.");
+    return;
+  }
+  /* Playback shows recorded state; edits wait until it closes. */
+  if (scene_edit->action != VKR_SCENE_EDIT_NONE &&
+      scene_edit->action != VKR_SCENE_EDIT_SELECT &&
+      scene_edit->action != VKR_SCENE_EDIT_FRAME &&
+      application->playback.open) {
+    string_format(state->edits.status, sizeof(state->edits.status),
+                  "Close the playback to edit the scene.");
     return;
   }
   if (sample_structure_edit(application, scene_edit)) {
@@ -6761,6 +6780,12 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
 vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     VkrStandardSceneRuntime *application,
     VkrSampleTransportAction transport_action) {
+  /* Playback keeps the simulation stopped (docs/proposals/recordings.md). */
+  if (application->playback.open &&
+      (transport_action == VKR_SAMPLE_TRANSPORT_START_SIMULATION ||
+       transport_action == VKR_SAMPLE_TRANSPORT_STEP_SIMULATION)) {
+    return;
+  }
   switch (transport_action) {
   case VKR_SAMPLE_TRANSPORT_START_SIMULATION:
     application->editor_viewport.simulation_running = true_v;
@@ -6942,6 +6967,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       string8_create_from_cstr((const uint8_t *)state->graphics_message,
                                string_length(state->graphics_message));
   sample_capture_poll(application);
+  vkr_sample_recording_publish(application, &state->recording);
   VkrSampleUiRequests requests = {
       .transport_action = VKR_SAMPLE_TRANSPORT_NONE,
       .close_response = VKR_SAMPLE_CLOSE_NONE,
@@ -7084,6 +7110,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   sample_capture_after_build(application, &requests.capture_request);
   vkr_standard_scene_runtime_apply_transport_action(application,
                                                     requests.transport_action);
+  vkr_sample_recording_apply(application, &state->recording,
+                             &requests.recording_request, state->scene_path);
   vkr_scene_physics_set_paused(
       sample_simulated_scene(application, NULL),
       !application->editor_viewport.simulation_running);

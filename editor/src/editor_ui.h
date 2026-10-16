@@ -8,6 +8,7 @@
 #include "editor_content.h"
 #include "editor_details.h"
 #include "editor_physics_settings.h"
+#include "editor_recording.h"
 #include "editor_scene_panels.h"
 #include "editor_scripts.h"
 #include "vkr_sample_runtime.h"
@@ -59,6 +60,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_SESSION,
   /* Project sharing through the depot (editor_depot.h). */
   VKR_EDITOR_WINDOW_DEPOT,
+  /* Session recordings (editor_recording.h). */
+  VKR_EDITOR_WINDOW_RECORDINGS,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -868,6 +871,9 @@ typedef struct VkrEditorUi {
   float32_t lights_scroll;
   float32_t lights_height;
   VkrEditorAnimation animation;
+  /* Recording requests and the Scene's REC indicator and playback bar
+     (editor_recording.h). */
+  VkrEditorRecording recording;
   /* Additive scene path and sidecar a Cmd request borrows until the
      runtime consumes it (ADR-076). */
   char cmd_scene_path[1024];

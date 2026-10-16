@@ -112,6 +112,13 @@ typedef enum EditorCommand {
   CMD_WORKBENCH_NEXT,
   /* The Scene fills the window over the dock and the top bar, or returns. */
   CMD_SCENE_MAXIMIZE,
+  /* Recordings (docs/proposals/recordings.md): start or stop, and add a
+     marker or a bug flag while recording. */
+  CMD_RECORD,
+  CMD_RECORD_MARK,
+  CMD_RECORD_BUG,
+  /* The Recordings window. */
+  CMD_RECORDINGS,
   CMD_COUNT
 } EditorCommand;
 

@@ -12,6 +12,7 @@
 #include "script/vkr_script_host.h"
 #include "vkr_graphics_settings.h"
 #include "vkr_renderer.h"
+#include "vkr_sample_recording.h"
 
 typedef struct VkrSampleUiText {
   String8 camera;
@@ -544,6 +545,11 @@ typedef struct VkrSampleUiFrame {
   uint64_t pipeline_late_draws;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
+  /** Recordings (docs/proposals/recordings.md): one request applied after
+   * build, and the status of the latest request, the recording in progress
+   * and the open playback, borrowed for the build. */
+  VkrSampleRecordingRequest *recording_request;
+  const VkrSampleRecordingStatus *recording;
   VkrSampleScriptRequest *script_request;
   /** The latest applied loads, most recent last; borrowed for the build. */
   const VkrSampleScriptResult *script_results;

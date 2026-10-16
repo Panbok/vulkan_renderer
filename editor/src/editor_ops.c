@@ -14765,7 +14765,426 @@ static VkrEditorOpStatus ops_run_session_leave(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+// =============================================================================
+// Recordings (docs/proposals/recordings.md)
+// =============================================================================
+
+/* Sends one recording request and, in later builds, answers with the
+   runtime's outcome of it. */
+static VkrEditorOpStatus ops_recording_wait(OpsContext *ctx,
+                                            VkrSampleRecordingRequest request) {
+  VkrEditorOpCall *call = ctx->call;
+  const VkrSampleRecordingStatus *status = ctx->frame->recording;
+  if (!status || !ctx->frame->recording_request) {
+    ops_fail(ctx, OPS_REJECTED, "This editor cannot record");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (call->stage == 0u) {
+    call->token = vkr_editor_recording_send(ctx->editor, request, false_v);
+    if (!call->token) {
+      ops_fail(ctx, OPS_BUSY, "Too many recording requests are waiting");
+      return VKR_EDITOR_OP_DONE;
+    }
+    call->stage = 1u;
+    call->frames = 0u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  if (status->token != call->token) {
+    if (++call->frames > 600u) {
+      ops_fail(ctx, OPS_BUSY, "The runtime did not answer the request");
+      return VKR_EDITOR_OP_DONE;
+    }
+    return VKR_EDITOR_OP_WAIT;
+  }
+  if (!status->ok) {
+    ops_fail(ctx, OPS_REJECTED, "%s", status->message);
+    return VKR_EDITOR_OP_DONE;
+  }
+  call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, call->result, "message",
+          vkr_bakery_json_cstr(ops_arena(ctx), status->message));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrBakeryJson *ops_recording_markers(OpsContext *ctx,
+                                            const VkrRecordingMarker *markers,
+                                            uint32_t count) {
+  VkrBakeryJson *array = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0u; i < count; ++i) {
+    VkrBakeryJson *marker = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, marker, "frame",
+            vkr_bakery_json_int(ops_arena(ctx), (int64_t)markers[i].frame));
+    ops_set(ctx, marker, "time", ops_number(ctx, markers[i].time));
+    ops_set(ctx, marker, "kind",
+            vkr_bakery_json_cstr(ops_arena(ctx), vkr_recording_marker_kind_name(
+                                                     markers[i].kind)));
+    ops_set(ctx, marker, "label",
+            vkr_bakery_json_cstr(ops_arena(ctx), markers[i].label));
+    vkr_bakery_json_append(array, marker);
+  }
+  return array;
+}
+
+/* The camera the last frame rendered with: world position and degrees. */
+static VkrBakeryJson *
+ops_recording_camera(OpsContext *ctx, const VkrSampleRecordingStatus *status) {
+  Arena *arena = ops_arena(ctx);
+  if (!status || !status->camera_valid) {
+    return vkr_bakery_json_null(arena);
+  }
+  VkrBakeryJson *camera = vkr_bakery_json_object(arena);
+  VkrBakeryJson *position = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    vkr_bakery_json_append(position,
+                           ops_number(ctx, status->camera_position[i]));
+  }
+  ops_set(ctx, camera, "position", position);
+  ops_set(ctx, camera, "yaw", ops_number(ctx, status->camera_yaw));
+  ops_set(ctx, camera, "pitch", ops_number(ctx, status->camera_pitch));
+  return camera;
+}
+
+static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
+  const VkrSampleRecordingStatus *status = ctx->frame->recording;
+  Arena *arena = ops_arena(ctx);
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "camera", ops_recording_camera(ctx, status));
+  char directory[VKR_RECORDING_PATH_MAX];
+  if (vkr_editor_recording_directory(ctx->editor, directory,
+                                     sizeof(directory))) {
+    ops_set(ctx, ctx->call->result, "directory",
+            vkr_bakery_json_cstr(arena, directory));
+  }
+  if (status && status->recording) {
+    VkrBakeryJson *recording = vkr_bakery_json_object(arena);
+    ops_set(ctx, recording, "path",
+            vkr_bakery_json_cstr(arena, status->recording_path));
+    ops_set(ctx, recording, "frames",
+            vkr_bakery_json_int(arena, (int64_t)status->frames));
+    ops_set(ctx, recording, "seconds", ops_number(ctx, status->seconds));
+    ops_set(ctx, recording, "markers",
+            vkr_bakery_json_int(arena, status->markers));
+    ops_set(ctx, recording, "dropped_records",
+            vkr_bakery_json_int(arena, (int64_t)status->stats.dropped_records));
+    ops_set(ctx, recording, "lost_records",
+            vkr_bakery_json_int(arena, (int64_t)status->stats.lost_records));
+    ops_set(ctx, recording, "stream_bytes",
+            vkr_bakery_json_int(arena, (int64_t)status->stats.stored_bytes));
+    ops_set(ctx, ctx->call->result, "recording", recording);
+  }
+  const VkrRecordingPlayback *playback = status ? status->playback : NULL;
+  if (playback) {
+    VkrBakeryJson *open = vkr_bakery_json_object(arena);
+    ops_set(ctx, open, "path",
+            vkr_bakery_json_cstr(arena, playback->bundle_path));
+    ops_set(ctx, open, "frames",
+            vkr_bakery_json_int(arena, (int64_t)playback->frame_count));
+    ops_set(ctx, open, "duration", ops_number(ctx, playback->duration));
+    ops_set(ctx, open, "time", ops_number(ctx, playback->time));
+    ops_set(ctx, open, "frame",
+            vkr_bakery_json_int(arena, (int64_t)vkr_recording_playback_frame_at(
+                                           playback, playback->time)));
+    ops_set(ctx, open, "playing",
+            vkr_bakery_json_bool(arena, playback->playing));
+    ops_set(ctx, open, "speed", ops_number(ctx, playback->speed));
+    ops_set(ctx, open, "loop", vkr_bakery_json_bool(arena, playback->loop));
+    ops_set(ctx, open, "truncated",
+            vkr_bakery_json_bool(arena, playback->truncated));
+    ops_set(ctx, open, "missing_frames",
+            vkr_bakery_json_int(arena, (int64_t)playback->missing_frames));
+    ops_set(
+        ctx, open, "markers",
+        ops_recording_markers(ctx, playback->markers, playback->marker_count));
+    ops_set(ctx, ctx->call->result, "playback", open);
+  }
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  if (call->stage == 0u) {
+    char name[VKR_RECORDING_LABEL_MAX + 1u] = {0};
+    if (!ops_arg_string(ctx, call->args, "name", name, sizeof(name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    char error[128];
+    const char *author = call->author[0] ? call->author : "agent";
+    call->token = vkr_editor_recording_start(ctx->editor, name, author, false_v,
+                                             error, sizeof(error));
+    if (!call->token) {
+      ops_fail(ctx, OPS_REJECTED, "%s", error);
+      return VKR_EDITOR_OP_DONE;
+    }
+    call->stage = 1u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  /* The request is queued; the shared wait answers it. */
+  const VkrEditorOpStatus status =
+      ops_recording_wait(ctx, (VkrSampleRecordingRequest){0});
+  if (status == VKR_EDITOR_OP_DONE && call->result && ctx->frame->recording) {
+    ops_set(ctx, call->result, "path",
+            vkr_bakery_json_cstr(ops_arena(ctx),
+                                 ctx->frame->recording->recording_path));
+  }
+  return status;
+}
+
+static VkrEditorOpStatus ops_run_rec_stop(OpsContext *ctx) {
+  return ops_recording_wait(
+      ctx, (VkrSampleRecordingRequest){.command = VKR_SAMPLE_RECORDING_STOP});
+}
+
+static VkrEditorOpStatus ops_run_rec_mark(OpsContext *ctx) {
+  VkrSampleRecordingRequest request = {
+      .command = VKR_SAMPLE_RECORDING_MARK,
+      .marker_kind = VKR_RECORDING_MARKER_NOTE,
+  };
+  if (ctx->call->stage == 0u) {
+    char kind[16] = {0};
+    if (!ops_arg_string(ctx, ctx->call->args, "label", request.label,
+                        sizeof(request.label)) ||
+        !ops_arg_string(ctx, ctx->call->args, "kind", kind, sizeof(kind))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (kind[0]) {
+      if (string_equals(kind, "bug")) {
+        request.marker_kind = VKR_RECORDING_MARKER_BUG;
+      } else if (string_equals(kind, "step")) {
+        request.marker_kind = VKR_RECORDING_MARKER_STEP;
+      } else if (!string_equals(kind, "note")) {
+        ops_fail(ctx, OPS_INVALID, "'kind' is note, bug or step");
+        return VKR_EDITOR_OP_DONE;
+      }
+    }
+  }
+  return ops_recording_wait(ctx, request);
+}
+
+static VkrEditorOpStatus ops_run_rec_open(OpsContext *ctx) {
+  VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_OPEN};
+  if (ctx->call->stage == 0u) {
+    char name[VKR_RECORDING_PATH_MAX] = {0};
+    if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!vkr_editor_recording_resolve(ctx->editor, name, request.path,
+                                      sizeof(request.path))) {
+      ops_fail(ctx, OPS_INVALID,
+               "'name' is a recording in the recording directory or a path");
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+  return ops_recording_wait(ctx, request);
+}
+
+static VkrEditorOpStatus
+ops_run_rec_transport(OpsContext *ctx, VkrSampleRecordingCommand command) {
+  return ops_recording_wait(ctx,
+                            (VkrSampleRecordingRequest){.command = command});
+}
+
+static VkrEditorOpStatus ops_run_rec_play(OpsContext *ctx) {
+  return ops_run_rec_transport(ctx, VKR_SAMPLE_RECORDING_PLAY);
+}
+
+static VkrEditorOpStatus ops_run_rec_pause(OpsContext *ctx) {
+  return ops_run_rec_transport(ctx, VKR_SAMPLE_RECORDING_PAUSE);
+}
+
+static VkrEditorOpStatus ops_run_rec_close(OpsContext *ctx) {
+  return ops_run_rec_transport(ctx, VKR_SAMPLE_RECORDING_CLOSE);
+}
+
+/* `frame`, `time`, or `marker`: a marker's index or its label. */
+static bool8_t ops_rec_seek_target(OpsContext *ctx,
+                                   VkrSampleRecordingRequest *request) {
+  const VkrRecordingPlayback *playback =
+      ctx->frame->recording ? ctx->frame->recording->playback : NULL;
+  if (!playback) {
+    return ops_fail(ctx, OPS_REJECTED, "No playback is open");
+  }
+  const VkrBakeryJson *args = ctx->call->args;
+  float64_t number = 0.0;
+  if (ops_arg_number(args, "frame", &number)) {
+    request->command = VKR_SAMPLE_RECORDING_SEEK_FRAME;
+    request->frame = number > 0.0 ? (uint64_t)number : 0u;
+    return true_v;
+  }
+  if (ops_arg_number(args, "time", &number)) {
+    request->command = VKR_SAMPLE_RECORDING_SEEK_TIME;
+    request->time = number;
+    return true_v;
+  }
+  const VkrBakeryJson *marker = vkr_bakery_json_get(args, "marker");
+  for (uint32_t i = 0u; marker && i < playback->marker_count; ++i) {
+    const bool8_t match =
+        marker->type == VKR_BAKERY_JSON_STRING
+            ? vkr_bakery_json_is_string(marker, playback->markers[i].label)
+            : ops_arg_number(args, "marker", &number) && (uint32_t)number == i;
+    if (match) {
+      request->command = VKR_SAMPLE_RECORDING_SEEK_FRAME;
+      request->frame = playback->markers[i].frame;
+      return true_v;
+    }
+  }
+  return ops_fail(ctx, OPS_INVALID,
+                  marker ? "No marker matches 'marker'"
+                         : "rec.seek needs 'frame', 'time' or 'marker'");
+}
+
+static VkrEditorOpStatus ops_run_rec_seek(OpsContext *ctx) {
+  VkrSampleRecordingRequest request = {0};
+  if (ctx->call->stage == 0u && !ops_rec_seek_target(ctx, &request)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrEditorOpStatus status = ops_recording_wait(ctx, request);
+  const VkrRecordingPlayback *playback =
+      ctx->frame->recording ? ctx->frame->recording->playback : NULL;
+  if (status == VKR_EDITOR_OP_DONE && ctx->call->result && playback) {
+    ops_set(ctx, ctx->call->result, "camera",
+            ops_recording_camera(ctx, ctx->frame->recording));
+    ops_set(ctx, ctx->call->result, "time", ops_number(ctx, playback->time));
+    ops_set(ctx, ctx->call->result, "frame",
+            vkr_bakery_json_int(ops_arena(ctx),
+                                (int64_t)vkr_recording_playback_frame_at(
+                                    playback, playback->time)));
+  }
+  return status;
+}
+
+static VkrEditorOpStatus ops_run_rec_set(OpsContext *ctx) {
+  const VkrRecordingPlayback *playback =
+      ctx->frame->recording ? ctx->frame->recording->playback : NULL;
+  VkrSampleRecordingRequest request = {
+      .command = VKR_SAMPLE_RECORDING_SETTINGS,
+      .speed = playback ? playback->speed : 1.0f,
+      .loop = playback ? playback->loop : false_v,
+  };
+  if (ctx->call->stage == 0u) {
+    float64_t speed = 0.0;
+    if (ops_arg_number(ctx->call->args, "speed", &speed)) {
+      if (!(speed >= 0.1 && speed <= 4.0)) {
+        ops_fail(ctx, OPS_INVALID, "'speed' lies in [0.1, 4]");
+        return VKR_EDITOR_OP_DONE;
+      }
+      request.speed = (float32_t)speed;
+    }
+    (void)vkr_bakery_json_get_bool(ctx->call->args, "loop", &request.loop);
+  }
+  return ops_recording_wait(ctx, request);
+}
+
+typedef struct OpsRecordingList {
+  OpsContext *ctx;
+  const char *directory;
+  VkrBakeryJson *array;
+  uint32_t count;
+} OpsRecordingList;
+
+/* One bundle: its summary's fields when it has one, else its name. */
+static bool8_t ops_recording_list_visit(void *context, const char *name,
+                                        bool8_t is_directory) {
+  OpsRecordingList *list = context;
+  const uint64_t length = string_length(name);
+  const uint64_t extension = sizeof(VKR_RECORDING_BUNDLE_EXTENSION) - 1u;
+  if (!is_directory || length <= extension ||
+      !string_equals(name + length - extension,
+                     VKR_RECORDING_BUNDLE_EXTENSION) ||
+      list->count >= 256u) {
+    return true_v;
+  }
+  Arena *arena = ops_arena(list->ctx);
+  char path[VKR_RECORDING_PATH_MAX];
+  string_format(path, sizeof(path), "%s/%s/%s", list->directory, name,
+                VKR_RECORDING_SUMMARY_FILE);
+  VkrBakeryJson *entry = NULL;
+  FileMapping mapping = {0};
+  const FilePath file = file_path_view(path);
+  if (file_map_readonly(&file, &mapping) == FILE_ERROR_NONE) {
+    entry = vkr_bakery_json_parse(arena, mapping.data, mapping.size, 16u, NULL);
+    file_unmap(&mapping);
+  }
+  if (!entry || entry->type != VKR_BAKERY_JSON_OBJECT) {
+    entry = vkr_bakery_json_object(arena);
+    ops_set(list->ctx, entry, "status",
+            vkr_bakery_json_cstr(arena, "no summary"));
+  }
+  ops_set(list->ctx, entry, "bundle", vkr_bakery_json_cstr(arena, name));
+  vkr_bakery_json_append(list->array, entry);
+  ++list->count;
+  return true_v;
+}
+
+static VkrEditorOpStatus ops_run_rec_list(OpsContext *ctx) {
+  char directory[VKR_RECORDING_PATH_MAX];
+  if (!vkr_editor_recording_directory(ctx->editor, directory,
+                                      sizeof(directory))) {
+    ops_fail(ctx, OPS_REJECTED, "No directory for recordings");
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsRecordingList list = {
+      .ctx = ctx,
+      .directory = directory,
+      .array = vkr_bakery_json_array(ops_arena(ctx)),
+  };
+  const FilePath path = file_path_view(directory);
+  (void)file_list_directory(&path, ops_recording_list_visit, &list);
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "directory",
+          vkr_bakery_json_cstr(ops_arena(ctx), directory));
+  ops_set(ctx, ctx->call->result, "recordings", list.array);
+  return VKR_EDITOR_OP_DONE;
+}
+
 static const OpsDef s_ops[] = {
+    {"rec.status",
+     "The recording in progress, the open playback with its markers, and "
+     "the directory new recordings go to (docs/proposals/recordings.md).",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_status, NULL,
+     OPS_QUICK | OPS_NO_SCENE},
+    {"rec.list",
+     "Recordings in the recording directory, each with its summary.json: "
+     "name, scene, author, frames, duration, markers and losses.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_list, NULL,
+     OPS_QUICK | OPS_NO_SCENE},
+    {"rec.start",
+     "Start recording the camera and frame state into a new bundle named "
+     "'name' (a time stamp when absent) in the recording directory.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_rec_start, NULL},
+    {"rec.stop", "Stop the recording in progress and write its summary.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_stop, NULL},
+    {"rec.mark",
+     "Add a marker at the current frame of the recording in progress: "
+     "'kind' note (default), bug or step, and a 'label'.",
+     "{\"type\":\"object\",\"properties\":{\"label\":{\"type\":"
+     "\"string\"},\"kind\":{\"enum\":[\"note\",\"bug\",\"step\"]}}}",
+     ops_run_rec_mark, NULL},
+    {"rec.open",
+     "Open a recording ('name' in the recording directory, or a path) and "
+     "enter Playback, paused at frame 0: the Scene shows its camera and "
+     "scene edits are refused until rec.close.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}},\"required\":[\"name\"]}",
+     ops_run_rec_open, NULL},
+    {"rec.play", "Play the open recording from the playhead.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_play, NULL},
+    {"rec.pause", "Pause the open recording.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_pause, NULL},
+    {"rec.seek",
+     "Move the playhead to a 'frame', a 'time' in seconds or a 'marker' "
+     "(index or label); answers the frame and time it reached.",
+     "{\"type\":\"object\",\"properties\":{\"frame\":{\"type\":"
+     "\"integer\"},\"time\":{\"type\":\"number\"},\"marker\":{}}}",
+     ops_run_rec_seek, NULL},
+    {"rec.set", "Set the playback 'speed' (0.1 to 4) and 'loop'.",
+     "{\"type\":\"object\",\"properties\":{\"speed\":{\"type\":"
+     "\"number\"},\"loop\":{\"type\":\"boolean\"}}}",
+     ops_run_rec_set, NULL},
+    {"rec.close",
+     "Leave Playback: the editor camera and the level's hour return.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_close, NULL},
     {"ops.list", "Every operation with its description and argument schema.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL, OPS_QUICK},
     {"editor.status",

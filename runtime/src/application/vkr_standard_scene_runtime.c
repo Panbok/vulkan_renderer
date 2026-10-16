@@ -3268,7 +3268,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
     log_warn("Active camera handle invalid; skipping controller update");
   }
 
-  if (camera &&
+  /* An open playback owns the camera; the free camera rests meanwhile. */
+  const bool8_t playback_camera =
+      vkr_standard_scene_recording_drive_camera(application, camera, delta);
+  if (camera && !playback_camera &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
       !application->config->disable_camera_controller &&
       !application->editor_viewport.scripts_own_camera) {
@@ -3278,6 +3281,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   }
 
   vkr_camera_registry_update_all(camera_system);
+  vkr_standard_scene_recording_capture(application, camera, delta);
 
   /* The active scene resolves its world with the root World as fallback;
      with no scene loaded the World renders alone and owns the sky products
@@ -3558,6 +3562,13 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
              "VkrStandardSceneRuntime is still running");
 
   log_info("VkrStandardSceneRuntime shutting down...");
+  /* A recording still running ends cleanly, with its index and summary. */
+  if (application->recording.active &&
+      !vkr_recording_stop(&application->recording, NULL)) {
+    log_error("Recording '%s' did not end cleanly",
+              application->recording.bundle_path);
+  }
+  vkr_recording_playback_close(&application->playback);
   vkr_dynamic_volume_selection_destroy(&application->dynamic_volume_selection);
   if (vkr_renderer_render_thread_enabled(&application->renderer)) {
     log_info("Render thread acquired %llu of %llu submitted frames",

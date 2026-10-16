@@ -14,6 +14,8 @@
 #include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
+#include "recording/vkr_recording.h"
+#include "recording/vkr_recording_playback.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/systems/vkr_dynamic_volume.h"
@@ -357,6 +359,11 @@ typedef struct VkrStandardSceneRuntime {
   VkrRendererError last_renderer_error;
   VkrStandardSceneRuntimeCallbacks callbacks;
   /* GPU timing policy is owned by `metrics->config`. */
+  /* Recordings (docs/proposals/recordings.md): the recording in progress
+     takes each frame's records after the camera update; an open playback
+     drives the camera while the client keeps it in Playback. */
+  VkrRecording recording;
+  VkrRecordingPlayback playback;
 } VkrStandardSceneRuntime;
 
 /**
@@ -386,6 +393,16 @@ vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(
 
 bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
     const VkrStandardSceneRuntime *runtime);
+/** An open playback advances by `delta` and places `camera` at its playhead,
+ * with the level's time of day; returns true_v while it owns the camera
+ * (vkr_standard_scene_recording.c). */
+bool8_t
+vkr_standard_scene_recording_drive_camera(VkrStandardSceneRuntime *runtime,
+                                          VkrCamera *camera, float64_t delta);
+/** Writes this frame's records when a recording is in progress. */
+void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
+                                          const VkrCamera *camera,
+                                          float64_t delta);
 /** Discards shadow fit history before the next frame; see
  * vkr_shadow_system_invalidate_fit_history. */
 void vkr_standard_scene_runtime_invalidate_shadow_fit(

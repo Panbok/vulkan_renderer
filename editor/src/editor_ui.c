@@ -240,6 +240,10 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                                            .size_pt = {440.0f, 480.0f},
                                            .z_order = 7u,
                                            .visible = false_v},
+              [VKR_EDITOR_WINDOW_RECORDINGS] = {.position_pt = {380.0f, 110.0f},
+                                                .size_pt = {520.0f, 440.0f},
+                                                .z_order = 7u,
+                                                .visible = false_v},
               [VKR_EDITOR_WINDOW_CHANGES] = {.position_pt = {300.0f, 90.0f},
                                              .size_pt = {560.0f, 380.0f},
                                              .z_order = 7u,
@@ -668,6 +672,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   }
   vkr_editor_windows_build_navigation(editor, frame);
   vkr_editor_workbench_build_row(editor, frame);
+  vkr_editor_recording_update(editor, frame);
   if (!preparing_scene) {
     if (level_shown) {
       vkr_editor_scene_overlays_build(editor, frame);

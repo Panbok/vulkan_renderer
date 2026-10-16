@@ -220,6 +220,11 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_SNAP] = {"Snap to surface or grid", VKR_UI_ICON_SNAP, false_v},
     [CMD_PLAY] = {"Play", VKR_UI_ICON_PLAY, false_v},
     [CMD_SCENE_MAXIMIZE] = {"Maximize Scene", VKR_UI_ICON_MAXIMIZE, false_v},
+    [CMD_RECORD] = {"Record session", VKR_UI_ICON_RECORD, false_v},
+    [CMD_RECORD_MARK] = {"Add recording marker", VKR_UI_ICON_PIN, false_v},
+    [CMD_RECORD_BUG] = {"Flag a bug in the recording", VKR_UI_ICON_WARNING_FILL,
+                        false_v},
+    [CMD_RECORDINGS] = {"Recordings", VKR_UI_ICON_VIDEO, false_v},
 };
 
 /* The keymap, after Unity's: a key and the exact modifiers held with it.
@@ -293,6 +298,10 @@ static const EditorKeyBinding s_keymap[] = {
     /* Level design. */
     {CMD_BRUSH_DRAW, KEY_B, 0u},
     {CMD_BRUSH_CLIP, KEY_X, VKR_INPUT_MOD_SHIFT},
+    /* Recordings: modified keys, so a playing game never reads them. */
+    {CMD_RECORD, KEY_R, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
+    {CMD_RECORD_MARK, KEY_M, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
+    {CMD_RECORD_BUG, KEY_B, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
     /* Play. */
     {CMD_PLAY, KEY_P, EDITOR_MOD_PRIMARY},
     {CMD_SIM_TOGGLE, KEY_P, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_SHIFT},
@@ -503,6 +512,24 @@ static bool8_t editor_can_undo(const VkrEditorUi *editor,
   return false_v;
 }
 
+/* Starts a recording under a time-stamp name, or stops the one running. */
+static void editor_record_toggle(VkrEditorUi *editor,
+                                 const VkrSampleUiFrame *frame) {
+  if (frame->recording && frame->recording->recording) {
+    (void)vkr_editor_recording_send(
+        editor,
+        (VkrSampleRecordingRequest){.command = VKR_SAMPLE_RECORDING_STOP},
+        true_v);
+    return;
+  }
+  char error[128];
+  if (!vkr_editor_recording_start(editor, NULL, "user", true_v, error,
+                                  sizeof(error))) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
+                     error);
+  }
+}
+
 bool8_t vkr_editor_command_enabled(EditorCommand command,
                                    const VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame) {
@@ -547,7 +574,17 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
     return frame->view_request != NULL && frame->mapping_valid &&
            !frame->scene_rendering_stopped;
   case CMD_PLAY:
-    return frame->scene != NULL || frame->world != NULL;
+    return (frame->scene != NULL || frame->world != NULL) &&
+           !(frame->recording && frame->recording->playback);
+  /* A recording starts outside Playback; markers need one in progress. */
+  case CMD_RECORD:
+    return frame->recording_request && frame->recording &&
+           (frame->recording->recording ||
+            ((frame->scene || frame->world) && !frame->recording->playback));
+  case CMD_RECORD_MARK:
+  case CMD_RECORD_BUG:
+    return frame->recording_request && frame->recording &&
+           frame->recording->recording;
   case CMD_SIM_START:
     return !frame->simulation_running;
   case CMD_SIM_PAUSE:
@@ -679,6 +716,10 @@ static int32_t editor_command_checked(EditorCommand command,
     return editor_panel_visible(frame, VKR_UI_DOCK_PANEL_BUILD);
   case CMD_SCENE_MAXIMIZE:
     return frame->scene_maximized;
+  case CMD_RECORD:
+    return frame->recording && frame->recording->recording;
+  case CMD_RECORDINGS:
+    return editor->windows[VKR_EDITOR_WINDOW_RECORDINGS].visible;
   default:
     return -1;
   }
@@ -812,6 +853,24 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_SCENE_MAXIMIZE:
     *frame->scene_maximized_next = !frame->scene_maximized;
+    break;
+  case CMD_RECORD:
+    editor_record_toggle(editor, frame);
+    break;
+  case CMD_RECORDINGS:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_RECORDINGS);
+    break;
+  case CMD_RECORD_MARK:
+  case CMD_RECORD_BUG:
+    (void)vkr_editor_recording_send(
+        editor,
+        (VkrSampleRecordingRequest){
+            .command = VKR_SAMPLE_RECORDING_MARK,
+            .marker_kind = command == CMD_RECORD_BUG
+                               ? VKR_RECORDING_MARKER_BUG
+                               : VKR_RECORDING_MARKER_NOTE,
+        },
+        true_v);
     break;
   case CMD_SIM_START:
     *frame->transport_action = VKR_SAMPLE_TRANSPORT_START_SIMULATION;
@@ -1024,6 +1083,10 @@ static const EditorMenuEntry s_scene_menu[] = {
     {CMD_SIM_RESET},
     {CMD_RENDER_TOGGLE, true_v},
     {CMD_CAMERA},
+    {CMD_RECORD, true_v},
+    {CMD_RECORD_MARK},
+    {CMD_RECORD_BUG},
+    {CMD_RECORDINGS},
     {CMD_SCENE_BAKE, true_v},
 };
 /* Build replaces Bakery for users; its recipes stay under Develop. */
@@ -1321,7 +1384,7 @@ static void editor_transport_build(VkrEditorUi *editor,
   const float32_t button = EDITOR_TRANSPORT_BUTTON_PT;
   const float32_t separator = 9.0f;
   const float32_t padding = 3.0f;
-  const float32_t width = button * 5.0f + separator + padding * 2.0f;
+  const float32_t width = button * 6.0f + separator * 2.0f + padding * 2.0f;
   const float32_t height = button + padding * 2.0f;
   const float32_t screen_w = (float32_t)ui->target_width / ui->content_scale;
   if (screen_w < 760.0f)
@@ -1332,6 +1395,8 @@ static void editor_transport_build(VkrEditorUi *editor,
       {.value = button, .unit = VKR_UI_TRACK_PX},
       {.value = separator, .unit = VKR_UI_TRACK_PX},
       {.value = button, .unit = VKR_UI_TRACK_PX},
+      {.value = button, .unit = VKR_UI_TRACK_PX},
+      {.value = separator, .unit = VKR_UI_TRACK_PX},
       {.value = button, .unit = VKR_UI_TRACK_PX},
   };
   const VkrUiTrack row = {.value = button, .unit = VKR_UI_TRACK_PX};
@@ -1364,6 +1429,8 @@ static void editor_transport_build(VkrEditorUi *editor,
           : vkr_editor_command_tooltip(ui, CMD_PLAY, "Play simulation"));
   play.style.min_size_pt = play.style.max_size_pt = (Vec2){button, button};
   play.icon_size_pt = 16.0f;
+  /* Playback keeps the simulation stopped until it closes. */
+  play.disabled = frame->recording && frame->recording->playback;
   play.icon_color = running ? theme->warning : theme->success;
   if (running) {
     play.style.background_color = vkr_ui_color_alpha(theme->success, 0.2f);
@@ -1416,6 +1483,24 @@ static void editor_transport_build(VkrEditorUi *editor,
   vkr_editor_toggle_style(&camera, frame->mouse_captured);
   if (vkr_ui_button(ui, string8_lit("camera"), (String8){0}, &camera))
     vkr_editor_command_execute(CMD_CAMERA, editor, frame);
+  divider.placement.column = 6u;
+  if (vkr_ui_panel_begin(ui, string8_lit("divider.record"), &divider))
+    (void)vkr_ui_panel_end(ui);
+  const bool8_t recording = frame->recording && frame->recording->recording;
+  VkrUiWidgetConfig record = vkr_editor_icon_button_config(
+      7u, 0u, VKR_UI_ICON_RECORD,
+      vkr_editor_command_tooltip(
+          ui, CMD_RECORD, recording ? "Stop recording" : "Record the session"));
+  record.style.min_size_pt = record.style.max_size_pt = (Vec2){button, button};
+  record.icon_color = theme->error;
+  record.disabled = !vkr_editor_command_enabled(CMD_RECORD, editor, frame);
+  if (recording) {
+    record.style.background_color = vkr_ui_color_alpha(theme->error, 0.25f);
+    record.style.hover_background_color =
+        vkr_ui_color_alpha(theme->error, 0.35f);
+  }
+  if (vkr_ui_button(ui, string8_lit("record"), (String8){0}, &record))
+    vkr_editor_command_execute(CMD_RECORD, editor, frame);
   (void)vkr_ui_panel_end(ui);
 }
 
@@ -1811,6 +1896,7 @@ void vkr_editor_scene_overlays_build(VkrEditorUi *editor,
   editor_scene_stats_build(frame);
   editor_scene_cooking_build(editor, frame);
   editor_scene_error_build(editor, frame);
+  vkr_editor_recording_overlays_build(editor, frame);
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
 }
 
@@ -2197,6 +2283,13 @@ static void editor_window_build_body(VkrEditorUi *editor, VkrUiSystem *ui,
       vkr_editor_session_window_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
+  } else if (kind == VKR_EDITOR_WINDOW_RECORDINGS) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("recordings.body"),
+                                 &bounds)) {
+      vkr_editor_recording_window_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else if (kind == VKR_EDITOR_WINDOW_DEPOT) {
     VkrUiRect bounds = {0};
     if (editor_window_body_begin(ui, window, string8_lit("depot.body"),
@@ -2312,6 +2405,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   case VKR_EDITOR_WINDOW_DEPOT:
     title_text = string8_lit("Project sharing");
     title_icon = VKR_UI_ICON_GIT_BRANCH;
+    break;
+  case VKR_EDITOR_WINDOW_RECORDINGS:
+    title_text = string8_lit("Recordings");
+    title_icon = VKR_UI_ICON_VIDEO;
     break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");
