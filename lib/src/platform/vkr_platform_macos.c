@@ -430,6 +430,17 @@ vkr_internal bool8_t vkr_platform_process_signal(pid_t pid,
   return false_v;
 }
 
+/* Process supervision polls need no wake-up precision; the trailing spin of
+   vkr_platform_sleep would hold a core for 2 ms of every 10 ms poll for as
+   long as the child runs. */
+vkr_internal void vkr_platform_poll_sleep(uint64_t ms) {
+  struct timespec duration = {
+      .tv_sec = (time_t)(ms / 1000u),
+      .tv_nsec = (long)((ms % 1000u) * 1000000u),
+  };
+  nanosleep(&duration, NULL);
+}
+
 vkr_internal bool8_t vkr_platform_process_stop(pid_t pid, bool8_t process_tree,
                                                uint32_t grace_ms, int *status,
                                                bool8_t *out_reaped) {
@@ -449,7 +460,7 @@ vkr_internal bool8_t vkr_platform_process_stop(pid_t pid, bool8_t process_tree,
     if (vkr_platform_monotonic_seconds() >= deadline) {
       break;
     }
-    vkr_platform_sleep(10u);
+    vkr_platform_poll_sleep(10u);
   }
   if (!vkr_platform_process_signal(pid, process_tree, SIGKILL)) {
     return false_v;
@@ -524,7 +535,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
         }
         break;
       }
-      vkr_platform_sleep(10u);
+      vkr_platform_poll_sleep(10u);
     }
   }
   if (config->terminate_process_tree &&
