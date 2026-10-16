@@ -314,9 +314,10 @@ desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
   3.1's 16 or SMAA T2x's 2 temporal phases, and stay fixed without a
   temporal resolve.
 
-Measured as in the prototype result, with the final code. "Hybrid" is
-rays with the contact march (`VKR_SUN_CONTACT_SHADOWS=1`); "contact" is the
-march without rays, as on a GPU without ray queries:
+Measured as in the prototype result. "Hybrid" is rays with the contact
+march (`VKR_SUN_CONTACT_SHADOWS=1`); "contact" is the march without rays, as
+on a GPU without ray queries. The march took 12 steps then;
+`VKR_SUN_CONTACT_STEPS` is now 8, so its rows are an upper bound:
 
 | Case, mode | Trace | Resolve | Temporal + copy | TLAS refit | Lighting | All GPU passes | Report |
 |---|---|---|---|---|---|---|---|
