@@ -11,9 +11,12 @@ implemented directional system is
 [ADR-041](../adr/041-retained-cascaded-shadows.md); the local-light cache is
 [ADR-019](../adr/019-bounded-forward-spatial-lighting.md), and its architecture
 is owned by the [local shadow architecture](local-shadow-architecture.md)
-proposal. This proposal fixes defects in both, and then replaces the near sun
-shadow on the desktop pipeline with ray queries and makes the tiled cascades
-cheaper and more stable.
+proposal. This proposal fixes defects in both, and then layers the sun shadow
+on each pipeline (owner decision 2026-10-16, [hybrid sun shadows](#hybrid-sun-shadows)):
+the cascades stay the base, screen-space contact shadows add contacts on both
+pipelines, the desktop pipeline adds ray-query penumbrae near the camera with a
+sparse shadow-map clipmap as its fallback, and the tiled pipeline adds
+signed-distance-field (SDF) shadows behind a prototype gate.
 
 ## Problem
 
@@ -37,7 +40,10 @@ taps at 1.5 texels, PCSS on cascades 0 and 1, an 8% blend band, and a fade to
 unshadowed over the last 20 m. Vulkan High adds EVSM on cascades 2 and 3; the
 tiled pipeline has no EVSM. Lightmaps hold no direct sun
 ([ADR-088](../adr/088-baked-lightmap-sets.md)), so no surface past 200 m has
-a sun shadow.
+a sun shadow. Screen-space contact shadows exist only for local lights on the
+desktop pipeline: an 8-step march over at most 0.25 m of camera depth in
+`Shadow.LocalMask` (`renderer/src/shaders/shared/local_shadow.slangh`), on
+when `contact_shadows` is set. The sun has none on either pipeline.
 
 Texel density, computed from the High preset at 2560×1440 with a 60° vertical
 field of view (estimate, not a capture):
@@ -129,7 +135,7 @@ Costs are estimates for an RX 6700 XT at 2560×1440 in Bistro.
 | D0: fix defects 1–8 | small gain | fixed | none | small gain | under +0.1 ms | none |
 | D1: D0, tighter light-space fits, 5–6 cascades, cached distant levels to about 2 km, sun screen-space shadows | medium gain | fixed | fixed | contact detail | +0.3–0.6 ms | +64–128 MiB |
 | D2: D1, plus ray-query sun shadows near the camera, denoised | removed in ray range | fixed | from D1 | penumbra from the sun's size | +1–3 ms, see the gate | TLAS exists; +30–60 MiB of targets |
-| D3: virtual shadow maps, 16k virtual, 128² pages, sun clipmap and local lights | about 1 texel per pixel | no borders | clipmap to km | filtered | 2–3 ms cached, 4–6 ms after invalidation | 256 MiB pool replaces about 730 MiB |
+| D3: sparse shadow-map clipmap (virtual shadow maps), 16k virtual, 128² pages, sun clipmap and local lights | about 1 texel per pixel | no borders | clipmap to km | filtered | 2–3 ms cached, 4–6 ms after invalidation | 256 MiB pool replaces about 730 MiB |
 
 Estimate sources: Bend Studio's screen-space shadows took 0.19 ms on PS5 at
 1440p (SIGGRAPH 2023); Call of Duty MW traced and denoised one light for
@@ -146,11 +152,34 @@ casters, skinned meshes (not in the TLAS), froxel fog and the far range keep
 the cascades, and GPUs without ray queries keep D1. D2 also removes the PCSS
 search on cascades 0 and 1.
 
-D3 fixes every symptom for the sun and the local lights in one system, but the
-engine has no cluster culling ([meshlet cluster culling](meshlet-cluster-culling.md)),
-so each dirty page draws whole instances; moving casters invalidate pages every
-frame; and ADR-041's per-image retained cascades would become one shared page
-cache with GPU-completion rules. D3 is the fallback if D2 misses its gate.
+D3 fixes every symptom for the sun and the local lights in one system. Each
+clipmap level covers twice the area of the one before around the camera, its
+128² pages are anchored to the world, and a pixel samples the level whose
+texel matches its footprint, so density stays near 1 texel per pixel at every
+distance and camera motion draws only the pages that scroll in. It fits the
+desktop pipeline: `VBuffer.Opaque` writes camera depth before
+`Lighting.Deferred`, so the shadow passes can move after it and mark the pages
+that visible pixels sample; RDNA2 and Ampere write depth into a physical page
+pool through a software page table with 32-bit image atomics, so sparse
+residency is not needed. Its costs:
+
+- The engine has no cluster culling
+  ([meshlet cluster culling](meshlet-cluster-culling.md)), so each dirty page
+  draws whole instances.
+- Moving casters invalidate pages every frame; static and dynamic page caches
+  split them, as ADR-041's static layer and dynamic overlay do now.
+- A moving sun invalidates every page. The sun direction would be held and
+  refreshed through slices, as the tiled far level does.
+- ADR-041's per-image retained cascades become one shared page cache with
+  GPU-completion rules.
+
+D3 is built if D2 misses its gate, or if the local shadow architecture pages
+local lights in the same pool, where the gain is larger (6.3 ms for local
+shadows against 1.1 ms for the sun).
+
+Desktop SDF shadows are declined. The TLAS exists, and ray queries give exact
+shadows for thin and alpha-tested casters, which an SDF loses below about two
+voxels.
 
 ### Ray-query cost gate
 
@@ -180,17 +209,131 @@ Costs are estimates for an M1 Pro at 1440p.
 | T2a, fixed sun: 3 cascades to about 80 m; the bake stores sun visibility per sun key past them | denser near cascades; static shadows over the whole level | −0.3 to −0.7 ms; one BC4 plane per key |
 | T2b, moving sun: 3 cascades to about 80 m and one cached far level refreshed over 8–16 frames | denser near cascades; shadows to about 1 km | about 0 ms |
 | T3: local lights take a 16-texel gather-compare tent, cross-face reprojection and screen-size face resolution | softer, steadier local shadows | +0.1–0.3 ms for 4 lights |
+| T4: sun contact shadows through a sun-term correction after `Tiled.Opaque` | contacts and detail finer than a texel near casters | +0.2–0.4 ms |
+| T5: SDF sun shadows past the near cascades and in their penumbrae, behind a prototype gate | soft penumbrae that harden at contacts; static and rigid casters; a moving sun redraws nothing | +0.5–1.5 ms; 50–100 MiB |
+| T6: dense clipmap of 2048² levels anchored to the world, each redrawing only the tiles that scroll in | uniform 2× borders and no refits; density about as now (1.2–2.4 screen pixels per texel at 1440p) | about 0 ms; about twice the sun memory |
 
 T2a blends two sun keys, so a sun between keys shows two offset copies of a
 baked shadow; it suits only a fixed sun. ADR-087 declined a per-frame redraw
 cap for the p95 because the p95 follows opaque cost; T1 targets the median and
-hitch frames.
+hitch frames. T4's cost is scaled from Bend Studio's 0.19 ms on PS5 at 1440p
+to an M1 Pro at the default 0.6 render scale; T5's from Unreal's distance field
+shadows. Neither is measured.
 
-Not chosen for the tiled pipeline: virtual shadow maps (Metal sparse textures
-are mapped from the CPU, and Unreal does not ship them on M1), ray tracing (M1
-has no hardware ray tracing; M3 is the first Mac with it), screen-space shadows
-(`Tiled.Opaque` keeps camera depth in memoryless tile storage) and EVSM
-(RGBA32F moment bandwidth).
+Not chosen for the tiled pipeline:
+
+- Sparse shadow-map clipmap (virtual shadow maps). Its pages are chosen from
+  camera depth before the shadow passes draw, and `Tiled.Opaque` produces depth
+  in the pass that shades the sun. The previous frame's depth would show a
+  coarse level for a frame wherever a surface is uncovered. Drawing into
+  scattered pages takes fragment atomics, which turn off M1's hidden-surface
+  removal, or a render pass per page. Placement sparse textures are mapped by
+  CPU calls on `MTL4CommandQueue`, so page requests need a readback. Unreal
+  ships virtual shadow maps on Apple silicon from M2 only, citing image atomics
+  and forward-progress guarantees. Revisit for an M3-class tier, or if the
+  tiled pipeline gains camera depth before its shadow passes.
+- T6, for now: it does not raise density. Revisit it if borders remain the
+  main complaint after T4 and T5.
+- Ray tracing: M1 has no hardware ray tracing; M3 is the first Mac with it.
+- EVSM: RGBA32F moment bandwidth.
+
+The earlier reason for declining screen-space shadows on this pipeline, that
+`Tiled.Opaque` keeps camera depth in memoryless tile storage, does not hold:
+the pass resolves depth into `opaque_vbuffer_depth`, which `Tiled.Atmosphere`,
+`HZB.BuildBase` and MetalFX read. The constraint is order, and T4 works
+around it.
+
+## Hybrid sun shadows
+
+Owner decision 2026-10-16. Each technique covers the others' weaknesses:
+
+| | Cascades | Contact shadows | Ray queries (desktop) | SDF (tiled) |
+|---|---|---|---|---|
+| Strong | every caster: skinned, alpha-tested, moving, foliage | contacts the cascade bias loses; detail finer than a texel | exact edges and penumbrae from the sun's size | soft penumbrae that harden at contacts; range at small cost; independent of the sun direction |
+| Weak | texel density, bias leaks at contacts, one blur radius for every penumbra, redraw cost | on-screen casters only, guessed thickness, short reach | skinned meshes are not in the TLAS; cost per ray | static and rigid casters only; thin casters under about two voxels; needs a cooked SDF |
+
+The layers by range and caster:
+
+| Range or caster | Desktop | Tiled |
+|---|---|---|
+| Base, to the cascades' end | cascades | 3 near cascades to about 80 m |
+| Contacts | sun contact march in `Lighting.Deferred` | T4 correction |
+| Near penumbra | ray queries (D2) | cascade filter; T5 where the caster is static |
+| Far range | D1 distant levels | far level to 1 km; T5 decides the static casters |
+| Skinned, alpha-tested, foliage, thin casters | cascades | cascades and the far level |
+| Glass | no sun shadow | no sun shadow |
+
+### Contact shadows on both pipelines
+
+One shared kernel in `renderer/src/shaders/shared/` marches camera depth
+toward the sun with a thickness test and a start offset that grows with
+camera distance, as the local-light march does. The desktop pipeline runs it
+in `Lighting.Deferred`, which already reads depth. The tiled pipeline runs it
+in the T4 correction. The step noise follows the frame index only while a
+temporal resolve runs (MetalFX on the tiled pipeline, SMAA T2x or FSR 3.1 on
+the desktop pipeline); otherwise it is fixed.
+
+### T4: the tiled sun-term correction
+
+The sun is shaded inside `Tiled.Opaque`, the pass that writes camera depth, so
+no pass can march that depth before the sun is lit. The correction subtracts
+the occluded part afterwards. It is exact, because the sun's term is linear in
+its visibility.
+
+```text
+Tiled.Opaque
+  hdr_scene_color   all light
+  tiled_sun_light   sun term after cascades
+  opaque_vbuffer_depth
+        |
+        v
+Tiled.SunShadow     T5 only: SDF trace
+  tiled_sun_visibility, half resolution
+        |
+        v
+Tiled.Atmosphere, or Tiled.SunApply when
+no atmosphere runs
+  contact march over depth
+  color -= sun_light * (1 - visibility)
+  then aerial perspective and fog
+```
+
+- `Tiled.Opaque` writes the sun's diffuse and specular term, after cascade
+  and cloud visibility and before fog, into `tiled_sun_light` (RG11B10F). At
+  4× MSAA it is a memoryless multisample target resolved on chip, as
+  `hdr_scene_color` is. At the 0.6 render scale of 1440p it costs about 5 MB
+  of stores and reads a frame.
+- The second output is a pipeline variant selected per frame, so frames
+  without contact shadows keep today's shader.
+- `Tiled.Atmosphere` already reads the resolved depth and rewrites every
+  pixel, so the correction joins it and adds no full-screen pass while fog,
+  aerial perspective or clouds run.
+- `Tiled.Blend` surfaces keep the cascades only. At MSAA edges the term is
+  the samples' average and the depth is the nearest sample, so an edge pixel
+  takes the nearest sample's visibility.
+
+### T5: tiled SDF shadows, prototype first
+
+- Cook: `vkr_bakery` writes a narrow-band distance volume per static mesh, at
+  most 64³ voxels in BC4. Bakery owns the generation, as it owns other baked
+  data.
+- Trace: a compute pass at half render resolution after `Tiled.Opaque` cone
+  traces the sun direction only on pixels past the near cascades and in their
+  penumbra band, against the mesh volumes whose light-space bounds touch the
+  pixel's screen tile (the approach of Unreal's distance field shadows). A
+  camera-centred global SDF clipmap is compared only if the object culling
+  becomes the cost.
+- Casters: static meshes and rigid moving ones, such as the lift and the
+  freight cars, through their instance transforms. Skinned, alpha-tested,
+  foliage, transmissive and thinner than two voxels keep the cascades and
+  the far level.
+- Invalidation: ADR-041's caster bounds and static generations select the
+  volumes to reload; the sun direction invalidates nothing.
+- Gate on an M1 Pro at the default 0.6 scale, on the Level Design Test valley
+  and freight views and on Bistro: trace at or under 1.0 ms median and SDF
+  memory at or under 96 MiB on the Level Design Test, with captures against
+  the far level. The result decides whether T5 replaces the far level for
+  static casters, adds to it, or is dropped.
 
 ## Budgets
 
@@ -206,6 +349,10 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
 | Tiled sun, all passes, median | not measured | 2.0 ms or less |
 | Tiled cascade redraw in one frame | 1.4–2.1 ms; two in 1% of frames | 1.0 ms or less; never two |
 | Tiled local shadows, 4 lights | +1.7 ms median, +5.0 ms p95 | 1.5 ms median, 2.5 ms p95 or less |
+| Desktop sun contact shadows, median, 1440p | none | 0.2 ms or less |
+| Tiled sun contact shadows (T4), median, 0.6 scale | none | 0.4 ms or less |
+| Tiled SDF trace (T5), median, 0.6 scale | none | 1.0 ms or less |
+| Tiled SDF memory (T5), Level Design Test | none | 96 MiB or less |
 | Visible pop | defects 1–4, 7, 8 | no shadow appears or vanishes in under 0.25 s in a Bistro orbit |
 
 ## Order
@@ -213,15 +360,28 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
 1. D0 and T0 on both pipelines.
 2. A scoped Bistro case that orbits across all four cascade borders and past
    54 m, captured and timed on each backend.
-3. Desktop: D1's distant levels and the D2 prototype gate. Tiled: T1, then
-   T2a or T2b.
-4. Desktop: D2 or, if it misses the gate, D3. Tiled: T3.
+3. Desktop: D1, with its distant levels and sun contact shadows, and the D2
+   prototype gate. Tiled: T1 and T2b, implemented.
+4. Tiled: T4.
+5. Desktop: D2 or, if it misses the gate, D3. Tiled: the T5 prototype and
+   gate.
+6. Tiled: T3.
 
 ## Decisions
 
-- Desktop direction: D2 (recommended), D3, or D1 only.
-- Whether tiled levels change the time of day at runtime, which selects T2a
-  or T2b.
+Settled by the owner on 2026-10-16:
+
+- Tiled levels change the time of day at runtime, so the tiled pipeline uses
+  T2b.
+- Glass casts no sun shadow from the cascades.
+- The hybrid layering above. Desktop: sun contact shadows, then the D2 gate,
+  with D3 as the fallback; no SDF. Tiled: T4, then the T5 prototype; no
+  sparse clipmap; T6 not now.
+
+Open:
+
+- After the T5 gate: SDF replaces the far level for static casters, adds to
+  it, or is dropped.
 
 ## Evidence required
 
@@ -234,3 +394,12 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
   budgets above, with equivalent work and output.
 - D2: the prototype gate result, then Vulkan validation of the ray pass and a
   motion capture that shows no denoiser ghosting at shadow edges.
+- Contact shadows: captures with contact shadows off and on at the Level
+  Design Test's lift, freight cars and mannequin feet and at Bistro's chairs
+  and tables, on each backend.
+- T4: with the march forced to full visibility, the corrected frame matches
+  the current frame within RG11B10F rounding, which detects a wrong sun term.
+- T5: the gate report above, and a Level Design Test sweep of the sun that
+  shows no SDF work caused by the sun's motion.
+- D3, if built: Vulkan validation and a page-pool residency report over the
+  Bistro orbit.
