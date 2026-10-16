@@ -139,8 +139,8 @@ pipeline rather than a backend mechanism.
    then runs even without media, marches the resolved depth toward the sun
    and subtracts `sun_light × (1 − visibility)` before the media. The sun's
    term is linear in its visibility, so the correction is exact: with the
-   march's visibility forced to one the frame matches a frame without it
-   within 1/255. The variants are created in the background the first time a
+   march's visibility forced to one the frame matches a frame without it bit
+   for bit (Bistro street and plaza). The variants are created in the background the first time a
    frame asks for them; frames go without contact shadows until then. See
    [Sun contact shadow measurement](#sun-contact-shadow-measurement).
    Opaque draws shade first and lay their own depth, with
@@ -1159,15 +1159,22 @@ repetitions of 300 frames each, dirty tree, not authoritative, 2026-10-16:
 | Sun light kept from the start of shading | 13.71 → 14.97 ms | 0.22 → 0.78 ms (world position per step) |
 | The same, the sun variant writing zero | 13.71 → 13.60 ms | 0.22 → 0.27 ms (march skipped) |
 | Visibility at the start, the sun lit after the local lights | 13.61–13.73 → 14.40–14.61 ms | 0.22 → 0.56 ms (linear depth per step) |
+| Sun light packed in one register from the start; 8 independent steps | 13.58 → 13.67 ms | 0.22 → 0.40 ms |
 
-The second target itself costs nothing; its three values kept live through
-the local lights' loops lower the opaque pass's occupancy. The shipped
-arrangement is the third: the sun variant keeps only the cascade visibility
-through the loops. Lighting the sun after the image-based light cost the
-base variant 2.5 ms and was dropped. Captures of the street and plaza views
-change 1,268 and 4,191 of 921,600 pixels at 1280×720: contacts under hedges,
-bollards, curbs and window frames. The 0.4 ms budget of the shadow quality
-proposal is not met.
+The second target itself costs nothing; three values kept live through the
+other lights' code lower the opaque pass's occupancy. The shipped
+arrangement is the last: the sun is lit first, as without contact shadows,
+and its light travels to the return packed in the target's own 11/11/10-bit
+float layout (`vkr_metal_tiled_pack_sun`), which loses nothing the target
+keeps. The march takes eight steps whose depth reads do not wait on each
+other, and skips pixels whose sun light is under 2% of their light. Lighting
+the sun after the image-based light cost the base variant 2.5 ms and was
+dropped. The last row's pairs were interleaved (off, on, off, on); a
+disturbed first run (14.30 ms off) is left out. Together the passes add
+about 0.28 ms, within the shadow quality proposal's 0.4 ms; no
+authoritative windowed run confirms it yet. Plaza captures change 3,675 of
+921,600 pixels at 1280×720: contacts under hedges, bollards, curbs and window
+frames.
 
 ### Sky edge measurement
 

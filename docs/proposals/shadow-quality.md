@@ -209,7 +209,7 @@ Costs are estimates for an M1 Pro at 1440p.
 | T2a, fixed sun: 3 cascades to about 80 m; the bake stores sun visibility per sun key past them | denser near cascades; static shadows over the whole level | −0.3 to −0.7 ms; one BC4 plane per key |
 | T2b, moving sun: 3 cascades to about 80 m and one cached far level refreshed over 8–16 frames | denser near cascades; shadows to about 1 km | about 0 ms |
 | T3: local lights take a 16-texel gather-compare tent, cross-face reprojection and screen-size face resolution | softer, steadier local shadows | +0.1–0.3 ms for 4 lights |
-| T4: sun contact shadows through a sun-term correction after `Tiled.Opaque` (implemented, Epic) | contacts and detail finer than a texel near casters | measured +1.0–1.4 ms |
+| T4: sun contact shadows through a sun-term correction after `Tiled.Opaque` (implemented, Epic) | contacts and detail finer than a texel near casters | measured about +0.28 ms |
 | T5: SDF sun shadows past the near cascades and in their penumbrae, behind a prototype gate | soft penumbrae that harden at contacts; static and rigid casters; a moving sun redraws nothing | +0.5–1.5 ms; 50–100 MiB |
 | T6: dense clipmap of 2048² levels anchored to the world, each redrawing only the tiles that scroll in | uniform 2× borders and no refits; density about as now (1.2–2.4 screen pixels per texel at 1440p) | about 0 ms; about twice the sun memory |
 
@@ -281,23 +281,19 @@ on sun contact frames, `Tiled.Opaque` writes the sun's term to `tiled_sun_light`
 `Tiled.Atmosphere` then marches the resolved depth and subtracts the occluded
 part, and it also runs on frames without media, so no `Tiled.SunApply` pass
 exists. With the march's visibility forced to one, the frame matches a frame
-without it within 1/255. The Contact shadows setting enables it, so only the
+without it bit for bit. The Contact shadows setting enables it, so only the
 Epic preset has it.
 
-It misses its budget. On the Bistro plaza at 1440p and 0.6 scale on the M1 Pro
-it adds 0.7–1.0 ms to `Tiled.Opaque` and 0.35 ms to `Tiled.Atmosphere`,
-against 0.4 ms in total
+On the Bistro plaza at 1440p and 0.6 scale on the M1 Pro it adds about
+0.09 ms to `Tiled.Opaque` and 0.19 ms to `Tiled.Atmosphere`, within its
+0.4 ms budget in local runs
 ([measurement](../adr/087-gpu-class-graphics-pipelines.md#sun-contact-shadow-measurement)).
-The opaque cost comes from the register pressure of keeping the sun's term,
-not from the second target. Remaining work, in order:
+Keeping the sun's light as three values cost the opaque pass about 1.2 ms
+through lost occupancy; packed in one register it costs almost nothing.
+Remaining work:
 
 - Authoritative windowed timing (`performance-windowed-gpu`) of the same
   views, and the Level Design Test lift, freight cars and mannequin captures.
-- A cheaper march: fewer steps, or half resolution with a depth-aware
-  upsample.
-- If the opaque cost stays: keep the term only in the lighting variants
-  where register pressure allows it, or carry fewer than three values per
-  pixel (an exact correction needs all three).
 - The desktop pipeline's march in `Lighting.Deferred`, which needs no
   second target, through the same shared helpers.
 
@@ -339,7 +335,7 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
 | Tiled cascade redraw in one frame | 1.4–2.1 ms; two in 1% of frames | 1.0 ms or less; never two |
 | Tiled local shadows, 4 lights | +1.7 ms median, +5.0 ms p95 | 1.5 ms median, 2.5 ms p95 or less |
 | Desktop sun contact shadows, median, 1440p | none | 0.2 ms or less |
-| Tiled sun contact shadows (T4), median, 0.6 scale | 1.0–1.4 ms, Bistro plaza, not authoritative | 0.4 ms or less |
+| Tiled sun contact shadows (T4), median, 0.6 scale | about 0.28 ms, Bistro plaza, not authoritative | 0.4 ms or less |
 | Tiled SDF trace (T5), median, 0.6 scale | none | 1.0 ms or less |
 | Tiled SDF memory (T5), Level Design Test | none | 96 MiB or less |
 | Visible pop | defects 1–4, 7, 8 | no shadow appears or vanishes in under 0.25 s in a Bistro orbit |
@@ -351,7 +347,7 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
    54 m, captured and timed on each backend.
 3. Desktop: D1, with its distant levels and sun contact shadows, and the D2
    prototype gate. Tiled: T1 and T2b, implemented.
-4. Tiled: T4, implemented; bring it within its budget.
+4. Tiled: T4, implemented.
 5. Desktop: D2 or, if it misses the gate, D3. Tiled: the T5 prototype and
    gate.
 6. Tiled: T3.
@@ -388,8 +384,8 @@ Open:
   and tables, on each backend.
 - T4: met on 2026-10-16, Bistro street and plaza on Metal: with the march
   forced to full visibility, the corrected frame matches the frame without
-  contact shadows within 1/255. Still needed: authoritative timing within
-  the budget and the Level Design Test captures.
+  contact shadows bit for bit. Local timing is within the budget. Still
+  needed: authoritative timing and the Level Design Test captures.
 - T5: the gate report above, and a Level Design Test sweep of the sun that
   shows no SDF work caused by the sun's motion.
 - D3, if built: Vulkan validation and a page-pool residency report over the

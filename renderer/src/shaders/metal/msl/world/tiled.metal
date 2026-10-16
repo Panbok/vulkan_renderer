@@ -195,8 +195,9 @@ struct VkrMetalTiledMedia {
 
 // The world position of the resolved surface at `pixel_center` with
 // reversed depth `depth`.
-static float3 vkr_metal_tiled_resolved_world(constant VkrMetalTiledSkyRoot &root,
-                                             float2 pixel_center, float depth) {
+static float3
+vkr_metal_tiled_resolved_world(constant VkrMetalTiledSkyRoot &root,
+                               float2 pixel_center, float depth) {
   float4 world_h =
       root.inverse_view_projection *
       float4(vkr_metal_packet_resolve_ndc(pixel_center, root.extent), depth,
@@ -265,12 +266,12 @@ vkr_metal_tiled_surface_media(constant VkrMetalTiledSkyRoot &root, uint2 pixel,
 }
 
 // Sun contact visibility of the resolved surface `world` at `pixel`: marches
-// the resolved depth toward the sun and stops at the first sample behind a
-// nearby surface (shadow_kernel.slangh). Depths compare along the camera
-// axis, where a sample's distance is its clip w, so a step reads one depth
-// and places no world position. The march leaves the screen without
-// occlusion. The sun shades only surfaces that face it, so the start offset
-// follows the sun rather than a normal.
+// the resolved depth toward the sun to the first sample behind a nearby
+// surface (shadow_kernel.slangh). Depths compare along the camera axis, where
+// a sample's distance is its clip w, so a step reads one depth and places no
+// world position. Samples off the screen do not occlude. The sun shades only
+// surfaces that face it, so the start offset follows the sun rather than a
+// normal.
 static float vkr_metal_tiled_sun_contact(constant VkrMetalTiledSkyRoot &root,
                                          uint2 pixel, float3 world) {
   constant VkrMetalPacketFrameRoot *frame = root.frame;
@@ -289,27 +290,33 @@ static float vkr_metal_tiled_sun_contact(constant VkrMetalTiledSkyRoot &root,
   const float4 clip_origin = float4(origin, 1.0f) * frame->view_projection;
   const float4 clip_span =
       float4(sun * march_length, 0.0f) * frame->view_projection;
+  // Every step reads its depth without waiting for the previous step's
+  // test, so the reads overlap; the first occluded step on the screen
+  // decides.
+  float first_hit = 2.0f;
+#pragma unroll
   for (uint step = 0u; step < VKR_SUN_CONTACT_STEPS; ++step) {
     const float t = (float(step) + noise) / float(VKR_SUN_CONTACT_STEPS);
     const float4 clip = clip_origin + t * clip_span;
-    if (clip.w <= 1e-4f)
-      break;
-    const float2 ndc = clip.xy / clip.w;
-    if (any(abs(ndc) >= 1.0f))
-      break;
+    const float2 ndc = clip.xy / max(clip.w, 1e-4f);
+    const bool on_screen = clip.w > 1e-4f && all(abs(ndc) < 1.0f);
     // The inverse of vkr_metal_packet_resolve_ndc: y runs down in pixels.
     const float2 sample_center =
         float2(ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f) * float2(root.extent);
-    const uint2 sample_pixel = min(uint2(sample_center), root.extent - 1u);
+    const uint2 sample_pixel =
+        min(uint2(clamp(sample_center, 0.0f, float2(root.extent))),
+            root.extent - 1u);
     const float sample_depth = root.depth.read(sample_pixel);
-    if (sample_depth <= 0.0f)
-      continue;
     const float surface_in_front =
         clip.w - root.depth_scale / (sample_depth + root.depth_offset);
-    if (vkr_local_shadow_contact_occluded(surface_in_front, clip.w))
-      return 1.0f - strength * (1.0f - vkr_local_shadow_contact_visibility(t));
+    if (on_screen && sample_depth > 0.0f &&
+        vkr_local_shadow_contact_occluded(surface_in_front, clip.w))
+      first_hit = min(first_hit, t);
   }
-  return 1.0f;
+  if (first_hit > 1.0f)
+    return 1.0f;
+  return 1.0f -
+         strength * (1.0f - vkr_local_shadow_contact_visibility(first_hit));
 }
 
 fragment float4 vkr_metal_tiled_atmosphere_fragment(
@@ -335,8 +342,11 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   // sample's visibility scales.
   float3 lit = destination.rgb;
   if (vkr_tiled_sun_output) {
+    // A pixel whose sun light is under VKR_SUN_CONTACT_MIN_SHARE of its
+    // light cannot darken visibly and skips the march.
     const float3 sun_light = root.sun_light.read(pixel).rgb;
-    if (any(sun_light > 0.0f)) {
+    if (dot(sun_light, float3(1.0f)) >
+        VKR_SUN_CONTACT_MIN_SHARE * dot(lit, float3(1.0f))) {
       const float3 world =
           vkr_metal_tiled_resolved_world(root, float2(pixel) + 0.5f, depth);
       const float visibility = vkr_metal_tiled_sun_contact(root, pixel, world);
@@ -629,8 +639,9 @@ struct VkrMetalTiledSurfaceLight {
   float3 diffuse;
   float3 specular;
   float3 emissive;
-  // The sun's part of diffuse and specular.
-  half3 sun;
+  // In sun contact frames, the sun's part of diffuse and specular
+  // (vkr_metal_tiled_pack_sun).
+  uint sun;
   float3 base;
   float3 reflectance;
   float metallic;
@@ -812,6 +823,23 @@ static float vkr_metal_tiled_sun_visibility(
              : 0.0f;
 }
 
+// The sun's light in the bit layout of its target, RG11B10F: the 11-, 11-
+// and 10-bit unsigned floats are the top bits of the half floats. Sun contact
+// frames carry it from the start of shading to the return in one register;
+// as three values it cost the opaque pass about 1.2 ms on the Bistro plaza
+// (M1 Pro, 1440p at 0.6 scale), as one about 0.2 ms.
+static uint vkr_metal_tiled_pack_sun(float3 light) {
+  const ushort3 bits = as_type<ushort3>(half3(min(light, 65000.0f)));
+  return (uint(bits.r) >> 4u) | ((uint(bits.g) >> 4u) << 11u) |
+         ((uint(bits.b) >> 5u) << 22u);
+}
+
+static half3 vkr_metal_tiled_unpack_sun(uint packed) {
+  return as_type<half3>(ushort3(ushort((packed & 0x7ffu) << 4u),
+                                ushort(((packed >> 11u) & 0x7ffu) << 4u),
+                                ushort((packed >> 22u) << 5u)));
+}
+
 // Adds the sun's light at `visibility` to `light`; sun contact frames also
 // keep it as `light.sun`.
 static void vkr_metal_tiled_light_sun(
@@ -827,7 +855,7 @@ static void vkr_metal_tiled_light_sun(
   light.diffuse += direct.diffuse;
   light.specular += direct.specular;
   if (vkr_tiled_sun_output)
-    light.sun = half3(direct.diffuse + direct.specular);
+    light.sun = vkr_metal_tiled_pack_sun(direct.diffuse + direct.specular);
 }
 
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
@@ -898,24 +926,19 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   light.diffuse = float3(0.0f);
   light.specular = float3(0.0f);
   light.emissive = emissive;
-  light.sun = half3(0.0h);
+  light.sun = 0u;
   light.base = base;
   light.reflectance = energy.reflectance;
   light.metallic = metallic;
 
-  // The sun, shadowed by its cascades and the cloud layer. Sun contact
-  // frames return its light beside the colour: kept live through the local
-  // lights' loops, those three values cost the opaque pass about 1.5 ms on
-  // the Bistro plaza (M1 Pro, 1440p at 0.6 scale), so those frames keep only
-  // its visibility through the loops and light it after them (+0.7 ms).
-  const bool sun_shines = frame->directional_direction_enabled.w > 0.5f;
-  const float sun_visibility =
-      sun_shines ? vkr_metal_tiled_sun_visibility(input, frame, normal,
-                                                  geometric_normal)
-                 : 0.0f;
-  if (sun_shines && !vkr_tiled_sun_output)
-    vkr_metal_tiled_light_sun(frame, sun_visibility, normal, view, base,
-                              metallic, roughness, f0, energy, light);
+  // The sun, shadowed by its cascades and the cloud layer, first: lit later,
+  // its inputs stay live through the other lights' code. Sun contact frames
+  // also keep its light, packed, to return beside the colour.
+  if (frame->directional_direction_enabled.w > 0.5f)
+    vkr_metal_tiled_light_sun(
+        frame,
+        vkr_metal_tiled_sun_visibility(input, frame, normal, geometric_normal),
+        normal, view, base, metallic, roughness, f0, energy, light);
 
   // The dynamic local lights, the bounded set the runtime keeps, through the
   // world-space light grid with their shadows sampled inline. Static lights
@@ -952,9 +975,6 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
     }
   }
 
-  if (sun_shines && vkr_tiled_sun_output)
-    vkr_metal_tiled_light_sun(frame, sun_visibility, normal, view, base,
-                              metallic, roughness, f0, energy, light);
 
   // Diffuse light: the lightmap stores irradiance, the volume and the global
   // environment the Lambertian response; each is pre-exposed here.
@@ -1371,7 +1391,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       input, frame, material, surface, front_facing, probe,
       visible.instance_index);
   return {float4(light.diffuse + light.specular + light.emissive, coverage),
-          half4(light.sun, 0.0h)};
+          half4(vkr_metal_tiled_unpack_sun(light.sun), 0.0h)};
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_fragment(

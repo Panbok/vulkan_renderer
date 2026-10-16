@@ -232,10 +232,13 @@ float vkr_shadow_evsm_tent_weight(uint tap)
 // cascade texel. The march takes the local-light march's start offset,
 // occlusion test, step noise and end fade (local_shadow.slangh); its length
 // grows with camera distance as the cascade texel does, and it fades out
-// over the last VKR_SUN_CONTACT_FADE_SHARE of VKR_SUN_CONTACT_DISTANCE.
-#define VKR_SUN_CONTACT_STEPS 12u
+// over the last VKR_SUN_CONTACT_FADE_SHARE of VKR_SUN_CONTACT_DISTANCE. A
+// receiver whose sun light is under VKR_SUN_CONTACT_MIN_SHARE of its light
+// cannot darken visibly and is not marched.
+#define VKR_SUN_CONTACT_STEPS 8u
 #define VKR_SUN_CONTACT_DISTANCE 80.0f
 #define VKR_SUN_CONTACT_FADE_SHARE 0.25f
+#define VKR_SUN_CONTACT_MIN_SHARE 0.02f
 
 float vkr_sun_contact_length(float camera_distance)
 {
