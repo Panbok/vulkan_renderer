@@ -856,8 +856,13 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
   }
 }
 
+/* `frustum_corners` lie relative to `origin`, the camera position, so the
+   slice's bounding sphere is computed in camera-relative coordinates: from
+   world corners far from the world origin, float rounding moved the radius
+   across its 1/16 m step as the camera moved and flipped the extent's
+   bracket. */
 vkr_internal void vkr_shadow_compute_cascade_matrix(
-    const Mat4 *light_view, const Vec3 frustum_corners[8],
+    const Mat4 *light_view, const Vec3 frustum_corners[8], Vec3 origin,
     uint32_t shadow_map_size, bool8_t stabilize, float32_t guard_band_texels,
     bool8_t use_constant_cascade_size, const VkrShadowSceneBounds *scene_bounds,
     float32_t z_extension_factor,
@@ -908,6 +913,7 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   if (stabilize) {
     radius = vkr_ceil_f32(radius * 16.0f) / 16.0f;
   }
+  center = vec3_add(center, origin);
 
   float32_t min_x = 0.0f;
   float32_t max_x = 0.0f;
@@ -925,8 +931,8 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
 
   // Compute bounds from frustum corners in light space.
   for (int i = 0; i < 8; ++i) {
-    Vec4 corner_ls =
-        mat4_mul_vec4(view, vec3_to_vec4(frustum_corners[i], 1.0f));
+    Vec4 corner_ls = mat4_mul_vec4(
+        view, vec3_to_vec4(vec3_add(frustum_corners[i], origin), 1.0f));
     min_x = vkr_min_f32(min_x, corner_ls.x);
     max_x = vkr_max_f32(max_x, corner_ls.x);
     min_y = vkr_min_f32(min_y, corner_ls.y);
@@ -1326,8 +1332,11 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     float32_t split_near = system->cascade_splits[i];
     float32_t split_far = system->cascade_splits[i + 1];
 
+    VkrCamera relative_camera = *camera;
+    relative_camera.position = vec3_zero();
     Vec3 corners[8];
-    vkr_shadow_compute_frustum_corners(camera, split_near, split_far, corners);
+    vkr_shadow_compute_frustum_corners(&relative_camera, split_near, split_far,
+                                       corners);
 
     float32_t guard_band = system->config.cascade_guard_band_texels;
     if (has_guard_per) {
@@ -1352,7 +1361,7 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
 
     VkrShadowFit fit = {0};
     vkr_shadow_compute_cascade_matrix(
-        &cascade->light_view, corners, shadow_map_size,
+        &cascade->light_view, corners, camera->position, shadow_map_size,
         system->config.stabilize_cascades, guard_band,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
         z_extension, caster_bounds,
@@ -1385,7 +1394,7 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
       }
     }
 
-    cascade->bounds_center = cascade_center;
+    cascade->bounds_center = vec3_add(cascade_center, camera->position);
     cascade->bounds_radius = vkr_sqrt_f32(max_radius_sq);
     cascade->split_far = split_far;
   }

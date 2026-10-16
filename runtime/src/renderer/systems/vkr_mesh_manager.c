@@ -2359,7 +2359,12 @@ bool8_t vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
 
   if (mesh->visible != visible) {
     mesh->visible = visible;
-    vkr_mesh_manager_note_topology_change(manager);
+    /* Shown or hidden, the mesh changes only what its own box holds, so
+       retained shadows whose volumes miss it stay valid. */
+    Vec3 min = vec3_zero();
+    Vec3 max = vec3_zero();
+    const bool8_t bounded = vkr_mesh_world_box(mesh, &min, &max);
+    vkr_mesh_manager_note_topology_change_within(manager, bounded, min, max);
   }
 
   return true_v;
@@ -3943,7 +3948,32 @@ void vkr_mesh_manager_instance_sync_render_state(VkrMeshManager *manager,
   const bool8_t model_changed =
       MemCompare(&inst->model, &model, sizeof(model)) != 0;
   if (visibility_changed) {
-    vkr_mesh_manager_note_topology_change(manager);
+    /* The instance changes only what its box holds, before and after a
+       move in the same call. */
+    const float32_t radius = inst->bounds_world_radius;
+    const Vec3 extent = vec3_new(radius, radius, radius);
+    Vec3 min = vec3_sub(inst->bounds_world_center, extent);
+    Vec3 max = vec3_add(inst->bounds_world_center, extent);
+    bool8_t bounded =
+        inst->bounds_valid && vkr_is_finite_f32(radius) && radius >= 0.0f;
+    if (bounded && model_changed) {
+      VkrMeshAsset *moved_asset =
+          vkr_mesh_manager_get_live_asset(manager, inst->asset);
+      VkrMeshInstance moved = *inst;
+      vkr_mesh_manager_update_instance_bounds(&moved, moved_asset, model);
+      const Vec3 moved_extent =
+          vec3_new(moved.bounds_world_radius, moved.bounds_world_radius,
+                   moved.bounds_world_radius);
+      bounded =
+          moved.bounds_valid && vkr_is_finite_f32(moved.bounds_world_radius);
+      const Vec3 moved_min = vec3_sub(moved.bounds_world_center, moved_extent);
+      const Vec3 moved_max = vec3_add(moved.bounds_world_center, moved_extent);
+      min = vec3_new(Min(min.x, moved_min.x), Min(min.y, moved_min.y),
+                     Min(min.z, moved_min.z));
+      max = vec3_new(Max(max.x, moved_max.x), Max(max.y, moved_max.y),
+                     Max(max.z, moved_max.z));
+    }
+    vkr_mesh_manager_note_topology_change_within(manager, bounded, min, max);
   }
   inst->visible = visible;
   inst->render_id = render_id;

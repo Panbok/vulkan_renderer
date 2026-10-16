@@ -47,7 +47,10 @@ every redraw lands on one lattice in world space; before 2026-10-16 the
 guarded texel grew with the camera's motion and its origin lay off that
 lattice, so edges moved by a fraction of a texel at each redraw
 (`test_drawn_cascade_lattice_is_fixed_in_world`). An extent the hysteresis
-holds is re-snapped on its own texel. The orthographic near plane may lie
+holds is re-snapped on its own texel. The slice's bounding sphere is fitted in
+camera-relative coordinates, since float rounding of world corners far from
+the origin moved the radius across its 1/16 m step and flipped the extent's
+bracket. The orthographic near plane may lie
 behind the light eye: clamping it there clipped every caster farther toward
 the light than twice the frustum radius, so ridges and backdrop terrain cast
 nothing into a valley.
@@ -100,7 +103,10 @@ measures each frame, since the scene-bounds Z fit is derived from that box
 alone: casters moving inside it, as movers and physics bodies do every frame
 in Play, leave static layers valid, and only a box that grows or shrinks
 moves the generation (2026-10-11; before, any caster's move did, and every
-static layer redrew each frame while anything moved). Scene-authored
+static layer redrew each frame while anything moved). Showing or hiding a mesh or an instance records its box as the static
+change, before and after a move in the same call, so retained cascades and
+static layers it does not reach stay valid; until 2026-10-16 every toggle
+redrew every cascade. Scene-authored
 meshes and editor shapes are static casters, because their transforms and
 geometry change only through mesh-manager calls that bump the static
 generation, adding and removing a drawn mesh included; an edit therefore
