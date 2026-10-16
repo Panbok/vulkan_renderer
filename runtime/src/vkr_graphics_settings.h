@@ -31,9 +31,9 @@ typedef struct VkrGraphicsSettings {
    * High on Metal. */
   uint32_t shadow_quality;
   bool8_t soft_shadows, local_shadows, ambient_occlusion;
-  /* Screen-space contact shadows: for the nearest local lights on the
-   * desktop pipeline and for the sun on the tiled pipeline; the Epic preset
-   * enables them. */
+  /* Screen-space contact shadows: for the sun on both pipelines and for the
+   * nearest local lights on the desktop pipeline; the Epic preset enables
+   * them. */
   bool8_t contact_shadows;
   /* Exponential variance moments filter the two farthest cascades instead of
    * PCF on the desktop pipeline; the High and Epic presets enable them. */

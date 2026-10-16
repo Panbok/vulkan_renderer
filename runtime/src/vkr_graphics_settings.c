@@ -281,12 +281,9 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, contact_shadows)) {
-    /* The desktop pipeline marches them for local lights, the tiled
-       pipeline for the sun. */
-    const bool8_t tiled =
-        state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
-    if (settings->shadow_quality == 0u ||
-        (!tiled && !settings->local_shadows)) {
+    /* Both pipelines march them for the sun, the desktop pipeline also for
+       the nearest local lights. */
+    if (settings->shadow_quality == 0u) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, volumetric_fog)) {

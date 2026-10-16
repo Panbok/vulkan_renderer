@@ -1098,6 +1098,27 @@ vkr_internal bool8_t vkr_renderer_metal_tiled_temporal(const VkrRenderer *rf) {
 #endif
 }
 
+/* Sets a desktop frame's ray-query sun shadows, where the device traces
+   them, and its contact march toward the sun, which runs in deferred
+   lighting where the sun shines and its cascades run. */
+vkr_internal void vkr_renderer_prepare_desktop_sun(VkrRenderer *rf,
+                                                   const VkrFrameInput *packet,
+                                                   VkrPreparedFrame *frame) {
+  const bool8_t desktop = !frame->tiled_pipeline && frame->scene_rendering;
+  frame->sun_ray_shadow_mode =
+      desktop && vkr_renderer_sun_ray_shadows_supported(rf)
+          ? rf->sun_ray_shadow_mode
+          : VKR_SUN_RAY_SHADOW_OFF;
+  const bool8_t sun_contact_asked =
+      rf->sun_contact_forced
+          ? rf->sun_contact_forced_on
+          : packet->shadow && packet->shadow->contact_shadows;
+  frame->sun_contact_shadows = desktop && sun_contact_asked && packet->shadow &&
+                               packet->shadow->cascade_count != 0u &&
+                               packet->lighting &&
+                               packet->lighting->directional_enabled;
+}
+
 /* Sets whether a tiled frame (ADR-087) takes sun contact shadows and SDF
    sun shadows, which correct the sun's light: a perspective frame, whose
    depth the march and the trace linearize, whose shadow payload asks for
@@ -1238,20 +1259,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.antialiasing_mode == VKR_ANTIALIASING_MODE_FSR_NATIVE &&
       rf->fsr31_available && rf->temporal_enabled && !tiled && default_output &&
       !orthographic;
-  prepared->frame.sun_ray_shadow_mode =
-      !tiled && prepared->frame.scene_rendering &&
-              vkr_renderer_sun_ray_shadows_supported(rf)
-          ? rf->sun_ray_shadow_mode
-          : VKR_SUN_RAY_SHADOW_OFF;
-  /* The desktop march runs in deferred lighting, where the sun shines and
-     its cascades run. */
-  const bool8_t sun_contact_asked =
-      rf->sun_contact_forced ? rf->sun_contact_forced_on
-                             : packet->shadow && packet->shadow->contact_shadows;
-  prepared->frame.sun_contact_shadows =
-      !tiled && prepared->frame.scene_rendering && sun_contact_asked &&
-      packet->shadow && packet->shadow->cascade_count != 0u &&
-      packet->lighting && packet->lighting->directional_enabled;
+  vkr_renderer_prepare_desktop_sun(rf, packet, &prepared->frame);
   /* FSR and T2x keep different histories, so a change resets both. */
   const bool8_t fsr31_changed =
       prepared->frame.fsr31_enabled != rf->fsr31_previous;
