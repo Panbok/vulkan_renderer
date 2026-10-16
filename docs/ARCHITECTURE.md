@@ -1194,10 +1194,16 @@ native Vulkan froxel output is not recorded.
 
 Directional shadows default to four 2048² cascades with snapping, fit hysteresis,
 per-target-image reuse and shared PCF/bias units. Each cascade fits the
-smallest sphere around its view slice. Receivers turn the kernel per pixel
-and compare every tap against the receiver plane's depth at its offset. The
-nearest two cascades add eight-sample PCSS blocker search and at most sixteen
-filter samples, with radii bounded at 8 texels and an authored 0.53-degree sun
+smallest sphere around its view slice, and every drawn map lies on one texel
+lattice fixed in world space. On the tiled pipeline three cascades split the
+nearest 80 m and the fourth is a far level to 1 km, rebuilt one tile of an
+8x8 grid a frame and retargeted that way to a moving sun. Desktop receivers
+turn the kernel per pixel; tiled receivers filter with a fixed bilinear grid,
+since that pipeline has no temporal resolve. Both compare every tap against
+the receiver plane's depth at its offset. The
+nearest two cascades (three on the tiled pipeline) add eight-sample PCSS
+blocker search and at most sixteen filter samples, with radii bounded at 8
+texels (3 on the tiled pipeline) and an authored 0.53-degree sun
 diameter by default. Farther cascades retain PCF,
 or, with the **Filtered far shadows** setting that the High and Epic presets
 turn on for the desktop pipeline, take one bilinear fetch of exponential
@@ -1206,13 +1212,14 @@ Static reuse requires guard
 containment, matching generations, valid retained layers and a match with the
 common submitted fit; stale physical copies redraw that fit once. A retained
 cascade's culling view classifies but encodes no commands and skips its reset,
-and casters smaller than one cascade texel skip the cascades. Incomplete
+and casters smaller than one cascade texel, or four for a scatter or spline
+copy, and glass skip the cascades. Incomplete
 publication forces rendering. While dynamic casters exist, a reached or stale
 cascade instead copies a shared static layer, drawn only when invalid, and
 draws its dynamic casters over the copy. A composed cascade whose dynamic
 casters have not changed since it was drawn is reused like static content.
-SDSM and proactive refresh are opt-in;
-fixed splits and zero proactive budget remain defaults. See
+SDSM is opt-in and fixed splits remain the default; proactive refresh runs
+on the tiled pipeline only, one cascade a frame once its margin runs low. See
 [ADR-041](adr/041-retained-cascaded-shadows.md) and
 [ADR-033](adr/033-occupied-depth-sdsm-feedback.md).
 

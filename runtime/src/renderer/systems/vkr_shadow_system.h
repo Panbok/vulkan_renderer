@@ -568,12 +568,31 @@ typedef struct VkrShadowPendingHistory {
  * of its texels of margin left, early enough that the guard band holds the
  * camera through the slices. */
 #define VKR_SHADOW_FAR_REBUILD_MARGIN_TEXELS 64.0f
+/** The far level holds its fitted light direction to this many times its
+ * cascade's tolerance while a rebuild retargets it to the current direction,
+ * so a moving or stopping sun reaches it through the slices instead of a
+ * whole redraw. */
+#define VKR_SHADOW_FAR_HOLD_FACTOR 4.0f
+
+/** The far level's fit for the current light direction while the held one
+ * differs from it, which a retargeting rebuild draws. */
+typedef struct VkrShadowFarTarget {
+  bool8_t valid;
+  Vec3 direction;
+  Mat4 light_view;
+  VkrShadowFit fit;
+} VkrShadowFarTarget;
 
 /** A far-level rebuild in progress: the fit its slices draw with and the
  * inputs that must hold until it publishes. */
 typedef struct VkrShadowFarRebuild {
   bool8_t active;
   uint32_t slices_drawn;
+  /** The rebuild draws a new light direction, which the far level adopts
+   * with `raw_fit` as its fit history when it publishes. */
+  bool8_t retarget;
+  Vec3 direction;
+  VkrShadowFit raw_fit;
   VkrShadowFit fit;
   Mat4 light_view;
   Mat4 view_projection;
@@ -756,6 +775,10 @@ typedef struct VkrShadowSystem {
   VkrShadowCascadeHistory static_history[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;
   VkrShadowFarRebuild far_rebuild;
+  VkrShadowFarTarget far_target;
+  /** The last resolve could rebuild the far level in slices, so update()
+   * may hold its direction for a retargeting rebuild. */
+  bool8_t far_retarget_ready;
 
   /** Resident local-light faces shared by every frame in flight. */
   VkrLocalShadowCache local_cache;

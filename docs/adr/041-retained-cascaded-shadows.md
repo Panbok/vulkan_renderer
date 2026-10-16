@@ -71,10 +71,24 @@ culling view, whose culling and raster take the tile's matrix
 the whole map. Receivers keep the kept layer meanwhile, and dynamic casters
 keep composing over it. The frame after the last tile copies the image
 into the static layer (`Shadow.Far.Publish.${i}`) and composes the cascade
-with the new fit. A change of light, bias, publications, caster bounds or a
-static change reaching the new fit, a replaced image, or a camera that
-leaves the kept fit drops the rebuild
-(`vkr_shadow_far_plan`, `test_far_level_rebuilds_in_slices`). Every configuration a running system
+with the new fit. A change of bias, a replaced image, or a camera that leaves
+the kept fit drops the rebuild (`vkr_shadow_far_plan`,
+`test_far_level_rebuilds_in_slices`). The far level keeps its static layer
+while that layer's light, bias and image hold and it contains the cascade,
+also when the world it holds went stale (a publication, a caster-bounds
+change or a static change that reaches it) or a publication is pending, and
+a rebuild replaces a stale layer; a rebuild that sees such a change keeps
+running and publishes with the generations it started from, so the next one
+follows (`vkr_shadow_far_keep_layer`,
+`test_far_level_rebuilds_stale_layer_in_slices`). The near cascades still
+draw whole while a publication is pending. While it can
+rebuild, the far level holds its fitted light direction to four times its
+tolerance, moving or stopped, and a rebuild retargets it: it draws the fit
+for the current direction, keeps that direction while the light stays within
+the hold, and on publication the far level adopts it with that fit as its
+history, so a moving or stopping sun reaches the far level through the
+tiles instead of whole redraws (`VKR_SHADOW_FAR_HOLD_FACTOR`,
+`test_far_level_follows_moving_sun_in_slices`). Every configuration a running system
 adopts passes `vkr_shadow_config_normalize`, so a preset chosen at runtime,
 such as Balanced, gets the same reuse controls as the one it starts with.
 
