@@ -1,5 +1,9 @@
 #include "application/vkr_standard_scene_runtime.h"
 
+#include "containers/str.h"
+#include "core/logger.h"
+#include "platform/vkr_platform.h"
+
 /* The frame's part of recordings (docs/proposals/recordings.md): what the
    recording in progress writes after the camera update, and how an open
    playback places the camera before it. The client starts, stops, opens and
@@ -41,9 +45,48 @@ vkr_standard_scene_recording_drive_camera(VkrStandardSceneRuntime *runtime,
   return true_v;
 }
 
+/* With $VKR_RECORDING_DIRECTORY set, the run records from its first frame
+   into <directory>/run-<pid>-<unix time>.vkrrec, raw because the runtime
+   carries no compressor; the harness passes it to its child, so a timing case
+   measures a recorded run. */
+vkr_internal void vkr_standard_scene_recording_from_environment(
+    VkrStandardSceneRuntime *runtime) {
+  runtime->recording_environment_read = true_v;
+  char directory[VKR_RECORDING_PATH_MAX - 64u];
+  if (!vkr_platform_environment_variable("VKR_RECORDING_DIRECTORY", directory,
+                                         sizeof(directory)) ||
+      !directory[0] || runtime->recording.active) {
+    return;
+  }
+  char path[VKR_RECORDING_PATH_MAX];
+  string_format(path, sizeof(path), "%s/run-%u-%lld%s", directory,
+                vkr_platform_get_process_id(),
+                (long long)vkr_platform_get_unix_time(),
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path,
+      .name = "run",
+      .author = "environment",
+      .identity_json =
+          runtime->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
+              ? "{\"source\":\"VKR_RECORDING_DIRECTORY\",\"pipeline\":"
+                "\"tiled\"}"
+              : "{\"source\":\"VKR_RECORDING_DIRECTORY\",\"pipeline\":"
+                "\"desktop\"}",
+  };
+  if (vkr_recording_start(&runtime->recording, &config)) {
+    log_info("Recording the run to %s", path);
+  } else {
+    log_error("VKR_RECORDING_DIRECTORY: could not create %s", path);
+  }
+}
+
 void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
                                           const VkrCamera *camera,
                                           float64_t delta) {
+  if (!runtime->recording_environment_read) {
+    vkr_standard_scene_recording_from_environment(runtime);
+  }
   if (!runtime->recording.active || !camera) {
     return;
   }

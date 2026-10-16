@@ -364,6 +364,8 @@ typedef struct VkrStandardSceneRuntime {
      drives the camera while the client keeps it in Playback. */
   VkrRecording recording;
   VkrRecordingPlayback playback;
+  /* $VKR_RECORDING_DIRECTORY was read: a set one records the whole run. */
+  bool8_t recording_environment_read;
 } VkrStandardSceneRuntime;
 
 /**
