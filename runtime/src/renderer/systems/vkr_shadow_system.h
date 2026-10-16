@@ -496,6 +496,19 @@ typedef struct VkrShadowFrameData {
    * layer was drawn this frame too. */
   uint32_t composited[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t static_rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
+  /** The far level's cascade, or VKR_SHADOW_FAR_NONE. Its static layer is
+   * rebuilt in tiles over several frames into the far pending image while
+   * receivers keep the old one: `far_slice_active` names this frame's tile,
+   * drawn through the cascade's culling view with
+   * `far_slice_view_projection` into the map texels [far_slice_rect[0],
+   * far_slice_rect[2]) x [far_slice_rect[1], far_slice_rect[3]) (column,
+   * row), and a bit of `far_publish_mask` copies the finished image into the
+   * static layer before its cascade composes. */
+  uint32_t far_cascade;
+  bool8_t far_slice_active;
+  uint32_t far_slice_rect[4];
+  Mat4 far_slice_view_projection;
+  uint32_t far_publish_mask;
   VkrShadowSdsmStatus sdsm_status;
   uint32_t sdsm_source_lag;
   uint32_t sdsm_occupied_count;
@@ -534,7 +547,44 @@ typedef struct VkrShadowPendingHistory {
   /** Static layers drawn by the frame in flight, which every image shares. */
   VkrShadowCascadeHistory static_cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t static_mask;
+  /** Far-level slices the frame in flight drew, up to this count, and
+   * whether it published the rebuilt layer. */
+  uint32_t far_slices_drawn;
+  bool8_t far_published;
 } VkrShadowPendingHistory;
+
+/** No far level (VkrShadowFrameData.far_cascade). */
+#define VKR_SHADOW_FAR_NONE UINT32_MAX
+/** Tiles a far-level rebuild draws, one per frame, in a square grid of
+ * VKR_SHADOW_FAR_SLICE_GRID per side; each tile culls its casters to its
+ * texels. On the Level Design Test on the M1 Pro the far level's static
+ * layer cost 2.8 to 3.0 ms drawn at once; its most expensive part took
+ * 2.1 ms in eight row bands, 1.6 ms in a 4x4 grid and 1.1 ms in this 8x8
+ * one, whose rebuild takes about a second at 60 frames per second. */
+#define VKR_SHADOW_FAR_SLICE_GRID 8u
+#define VKR_SHADOW_FAR_SLICE_COUNT                                             \
+  (VKR_SHADOW_FAR_SLICE_GRID * VKR_SHADOW_FAR_SLICE_GRID)
+/** A rebuild starts once the far level's kept fit has fewer than this many
+ * of its texels of margin left, early enough that the guard band holds the
+ * camera through the slices. */
+#define VKR_SHADOW_FAR_REBUILD_MARGIN_TEXELS 64.0f
+
+/** A far-level rebuild in progress: the fit its slices draw with and the
+ * inputs that must hold until it publishes. */
+typedef struct VkrShadowFarRebuild {
+  bool8_t active;
+  uint32_t slices_drawn;
+  VkrShadowFit fit;
+  Mat4 light_view;
+  Mat4 view_projection;
+  uint64_t static_generation;
+  uint64_t publication_generation;
+  uint64_t caster_bounds_generation;
+  uint64_t bias_signature;
+  uint64_t light_signature;
+  uint64_t pending_resource_generation;
+  uint64_t static_resource_generation;
+} VkrShadowFarRebuild;
 
 /** Camera state that drives local-shadow priority and the fade-in. */
 typedef struct VkrLocalShadowCamera {
@@ -705,6 +755,7 @@ typedef struct VkrShadowSystem {
    * content is proven by the retained token's static mask. */
   VkrShadowCascadeHistory static_history[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowPendingHistory pending_history;
+  VkrShadowFarRebuild far_rebuild;
 
   /** Resident local-light faces shared by every frame in flight. */
   VkrLocalShadowCache local_cache;

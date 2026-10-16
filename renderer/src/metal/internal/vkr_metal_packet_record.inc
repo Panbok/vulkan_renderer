@@ -321,6 +321,7 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   const bool8_t shadow_depth =
       pass->kind == VKR_RG_EXECUTOR_SHADOW ||
       pass->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC ||
+      pass->kind == VKR_RG_EXECUTOR_SHADOW_FAR_SLICE ||
       pass->kind == VKR_RG_EXECUTOR_LOCAL_SHADOW ||
       pass->kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC;
   [encoder setDepthStencilState:shadow_depth
@@ -329,7 +330,8 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   if (!draw->commands)
     return;
   if (pass->kind == VKR_RG_EXECUTOR_SHADOW ||
-      pass->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC)
+      pass->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC ||
+      pass->kind == VKR_RG_EXECUTOR_SHADOW_FAR_SLICE)
     [encoder setDepthBias:draw->depth_bias.depth_bias_constant
                slopeScale:draw->depth_bias.depth_bias_slope
                     clamp:draw->depth_bias.depth_bias_clamp];
@@ -486,6 +488,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     break;
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC:
+  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC:
   case VKR_RG_EXECUTOR_TILED_PICKING:

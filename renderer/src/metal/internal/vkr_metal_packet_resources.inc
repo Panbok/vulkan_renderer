@@ -3335,8 +3335,9 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
     for (uint32_t view = 1u; view < first_local_view; ++view) {
       const uint32_t cascade =
           vkr_render_graph_view_cascade(&renderer->prepared_frame, view);
-      const VkrFrustum shadow = vkr_frustum_from_matrix(
-          packet->input.shadow->cascades[cascade].light_view_projection);
+      const VkrFrustum shadow =
+          vkr_frustum_from_matrix(vkr_shadow_view_raster_projection(
+              packet->input.shadow, cascade, view));
       vkr_metal_packet_pack_gpu_draw_view(
           &views[view], &shadow, VKR_WORLD_DRAW_CANDIDATE_SHADOW_CASTER,
           false_v, renderer->frustum_enabled);

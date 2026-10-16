@@ -174,11 +174,15 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
           packet->input.shadow->cascades[cascade].split_near_far_texel_depth.x,
           VKR_GPU_LOD_SHADOW_NEAR_MIN);
       /* A composed cascade draws its static casters into its static layer
-         and its dynamic casters over the copy of that layer. */
+         and its dynamic casters over the copy of that layer; a far slice
+         draws static casters into the rebuilt layer. Levels and the size
+         cut follow the far cascade's whole map, not the slice's matrix. */
       if (view > frame->shadow_cascade_count)
         out_views[view].flags |= VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY;
       else if ((frame->shadow_cascade_static_render_mask &
-                (UINT32_C(1) << cascade)) != 0u)
+                (UINT32_C(1) << cascade)) != 0u ||
+               (frame->shadow_far_slice_active &&
+                cascade == frame->shadow_far_cascade))
         out_views[view].flags |= VKR_GPU_LOD_VIEW_STATIC_CASTERS_ONLY;
       continue;
     }

@@ -45,6 +45,25 @@
       "format": "SHADOW_DEPTH",
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
+        "TRANSFER_SRC",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "RETAINED",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "shadow_far_pending",
+      "condition": "scene_rendering && shadow_far_active",
+      "type": "image",
+      "extent": {
+        "mode": "square",
+        "size_source": "shadow_map_size"
+      },
+      "format": "SHADOW_DEPTH",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
         "TRANSFER_SRC"
       ],
       "flags": [
@@ -850,6 +869,128 @@
         }
       },
       "execute": "pass.shadow.cascade"
+    },
+    {
+      "name": "Shadow.Far.Slice.First",
+      "condition": "scene_rendering && shadow_far_slice_first",
+      "type": "graphics",
+      "flags": [
+        "NO_CULL"
+      ],
+      "domain": "SHADOW",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "shadow_far_pending",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": {
+            "depth": 1.0,
+            "stencil": 0
+          }
+        }
+      },
+      "execute": "pass.shadow.far_slice"
+    },
+    {
+      "name": "Shadow.Far.Slice",
+      "condition": "scene_rendering && shadow_far_slice_next",
+      "type": "graphics",
+      "flags": [
+        "NO_CULL"
+      ],
+      "domain": "SHADOW",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "depth": {
+          "image": "shadow_far_pending",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.shadow.far_slice"
+    },
+    {
+      "name": "Shadow.Far.Publish.${i}",
+      "condition": "scene_rendering && shadow_far_active",
+      "type": "transfer",
+      "repeat": {
+        "count_source": "shadow_cascade_count",
+        "condition_mask_source": "shadow_far_publish_mask"
+      },
+      "reads": [
+        {
+          "image": "shadow_far_pending",
+          "access": "TRANSFER_SRC",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "shadow_cascade_static",
+          "access": "TRANSFER_DST",
+          "binding": 1,
+          "subresource": {
+            "base_layer": "${i}",
+            "layer_count": 1
+          }
+        }
+      ],
+      "execute": "pass.shadow.far_publish"
     },
     {
       "name": "Shadow.Cascade.Copy.${i}",

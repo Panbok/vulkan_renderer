@@ -640,10 +640,24 @@ static float3 vkr_metal_tiled_moving_shadow(
     // composite views name one square, so the difference is zero and neither
     // is read. A moving caster that shadows the pixel lies on its ray, in the
     // same face.
-    const uint face =
-        term.kind == 2u
-            ? 0u
-            : vkr_local_shadow_face(world_position - lamp.light.p0.xyz);
+    // The face the sampler reads: the one its normal-offset receiver lies
+    // in. Choosing it from the unoffset position skipped the dynamic square
+    // in a thin band along cube edges.
+    uint face = 0u;
+    if (term.kind != 2u) {
+      const float3 from_light = world_position - lamp.light.p0.xyz;
+      const device VkrLocalShadowView &source =
+          frame->local_shadow_views[lamp.static_first_view +
+                                    vkr_local_shadow_face(from_light)];
+      const float footprint = 2.0f *
+                              dot(from_light, source.light_direction_far.xyz) *
+                              source.projection_params.x *
+                              source.projection_params.y;
+      face = vkr_local_shadow_face(
+          from_light +
+          geometric_normal * (source.projection_params.w * footprint) -
+          normalize(from_light) * (source.projection_params.z * footprint));
+    }
     if (all(frame->local_shadow_views[lamp.static_first_view + face]
                 .atlas_rect ==
             frame->local_shadow_views[lamp.composite_first_view + face]

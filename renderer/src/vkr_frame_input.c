@@ -1120,6 +1120,28 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
                         "packet.shadow.copy_mask",
                         "requires static and dynamic draws within copied "
                         "cascades, none drawn whole");
+    /* A far slice or publication needs the static image and its cascade; a
+       publication feeds that cascade's copy, and a slice its own view. */
+    const bool8_t far_valid = shadow->far_cascade < shadow->cascade_count;
+    const uint32_t far_bit =
+        far_valid ? UINT32_C(1) << shadow->far_cascade : 0u;
+    if ((shadow->far_cascade != UINT32_MAX && !far_valid) ||
+        shadow->far_slice_active > 1u ||
+        ((shadow->far_slice_active || shadow->far_publish_mask != 0u) &&
+         (!far_valid || !shadow->static_active)) ||
+        (shadow->far_publish_mask & ~far_bit) != 0u ||
+        (shadow->far_publish_mask & ~shadow->copy_mask) != 0u ||
+        (shadow->far_publish_mask & shadow->static_render_mask) != 0u ||
+        (shadow->far_slice_active &&
+         ((shadow->cascade_render_mask | shadow->static_render_mask) &
+          far_bit) != 0u) ||
+        (shadow->far_slice_active &&
+         (shadow->far_slice_rect[0] >= shadow->far_slice_rect[2] ||
+          shadow->far_slice_rect[1] >= shadow->far_slice_rect[3])))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.far_cascade",
+                        "requires a composed far cascade whose view draws "
+                        "only its slice and whose publication it copies");
     if (shadow->evsm_enabled > 1u ||
         (shadow->evsm_enabled &&
          shadow->cascade_count <= VKR_SHADOW_EVSM_FIRST_CASCADE))

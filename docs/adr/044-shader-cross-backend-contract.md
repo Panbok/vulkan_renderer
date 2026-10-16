@@ -135,7 +135,14 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     (`vkr_metal_packet_local_shadow_sample<false, false, true>`), where the Vulkan
     receivers filter with the Poisson disk and read the transmission layers.
     The harder tiled shadow edge is a class difference the owner accepted
-    (ADR-087, decision 11). Tiled rectangle lights skip rows below a
+    (ADR-087, decision 11). Its sun cascades filter with a fixed grid of
+    bilinear compares (`vkr_metal_shadow_grid_kernel`) instead of the shared
+    rotated Poisson table, because the class has no temporal resolve; the
+    shared receiver-plane gradient and penumbra bounds keep their meaning.
+    Local and moving-caster shadows offset along the geometric normal.
+    Native evidence: Metal Release headless-editor captures of the Level
+    Design Test and Bistro on 2026-10-16; no Metal validation run. Tiled
+    rectangle lights skip rows below a
     contribution bound through the `ContributionCutoff` parameter of
     `vkr_metal_packet_layered_rectangle_lights`; a receiver that no row faces
     skips the LTC table reads, which changes no result.

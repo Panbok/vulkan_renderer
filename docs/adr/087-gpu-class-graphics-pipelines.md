@@ -203,10 +203,14 @@ pipeline rather than a backend mechanism.
    moving-caster shadows offset along the geometric normal, as the cascades
    do. The near cascades split 80 m and the last is a far level to 1 km
    (`vkr_shadow_config_apply_tiled`, ADR-041), so ridges, buildings and
-   trees keep their shadows across a valley; it redraws about every 130 m
-   of camera motion, at 2.8–3.0 ms for its static layer on the Level Design
-   Test, and the proactive refresh spreads the cascades' redraws one per
-   frame.
+   trees keep their shadows across a valley. Its static layer cost
+   2.8–3.0 ms drawn at once on the Level Design Test, about every 130 m of
+   camera motion; it is rebuilt one tile of an 8x8 grid a frame instead,
+   0.36 ms per tile on average and 1.11 ms for the most expensive in a
+   14 m/s glide along the viaduct (headless editor, 1146x595, High,
+   `VKR_RG_GPU_TIMING`, 2026-10-16), and a rebuilt layer shades like one
+   drawn whole. The proactive refresh spreads the near cascades' redraws
+   one per frame.
    A surface with a lightmap or the volume reflects the global environment
    only in the share its baked sky light supports and its surroundings'
    baked light in the rest, so rooms and tunnels do not reflect the sky

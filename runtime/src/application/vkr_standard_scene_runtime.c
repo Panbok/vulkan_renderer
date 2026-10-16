@@ -1331,6 +1331,13 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     shadow_payload->static_render_mask = shadow_frame->static_render_mask;
     shadow_payload->copy_mask = shadow_frame->copy_mask;
     shadow_payload->dynamic_render_mask = shadow_frame->dynamic_render_mask;
+    shadow_payload->far_cascade = shadow_frame->far_cascade;
+    shadow_payload->far_slice_active = shadow_frame->far_slice_active;
+    MemCopy(shadow_payload->far_slice_rect, shadow_frame->far_slice_rect,
+            sizeof(shadow_payload->far_slice_rect));
+    shadow_payload->far_slice_view_projection =
+        shadow_frame->far_slice_view_projection;
+    shadow_payload->far_publish_mask = shadow_frame->far_publish_mask;
     for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
       shadow_payload->cascades[i] = (VkrShadowCascadePacketData){
           .light_view_projection = shadow_frame->view_projection[i],

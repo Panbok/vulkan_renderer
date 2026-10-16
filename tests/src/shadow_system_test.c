@@ -2493,6 +2493,86 @@ vkr_internal void test_refit_composes_static_layer_in_one_frame(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* The far level rebuilds its static layer one row slice a frame into the
+   far pending image while receivers keep the kept layer, then publishes it
+   with a copy instead of drawing every far caster in one frame. */
+vkr_internal void test_far_level_rebuilds_in_slices(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  vkr_shadow_config_apply_tiled(&config);
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t far = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t all = cascade_mask(&system);
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+      .far_pending_resource_generation = 9u,
+  };
+  update_for_reuse(&system, &camera);
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.static_active && frame.far_cascade == far);
+  vkr_shadow_system_commit_frame(&system, 18u);
+  token.static_valid_layer_mask = all;
+
+  /* Ride until the kept far fit runs low and a rebuild starts. */
+  uint64_t submit = 19u;
+  bool8_t started = false_v;
+  for (uint32_t step = 0u; step < 400u && !started; ++step) {
+    camera.position.x += 0.5f;
+    update_for_reuse(&system, &camera);
+    frame = resolve_composed(&system, 0u, token, &payload);
+    assert((frame.cascade_render_mask & far_bit) == 0u);
+    started = frame.far_slice_active;
+    if (started)
+      assert(frame.far_slice_rect[0] == 0u && frame.far_slice_rect[1] == 0u);
+    vkr_shadow_system_commit_frame(&system, submit++);
+  }
+  assert(started);
+  const Mat4 kept = frame.view_projection[far];
+
+  /* The tiles cover the map once. */
+  uint64_t texels =
+      (uint64_t)(frame.far_slice_rect[2] - frame.far_slice_rect[0]) *
+      (frame.far_slice_rect[3] - frame.far_slice_rect[1]);
+  for (uint32_t slice = 1u; slice < VKR_SHADOW_FAR_SLICE_COUNT; ++slice) {
+    camera.position.x += 0.05f;
+    update_for_reuse(&system, &camera);
+    frame = resolve_composed(&system, 0u, token, &payload);
+    assert(frame.far_slice_active && frame.far_publish_mask == 0u);
+    /* Receivers keep the layer the rebuild replaces. */
+    assert(MemCompare(&frame.view_projection[far], &kept, sizeof(Mat4)) == 0);
+    texels += (uint64_t)(frame.far_slice_rect[2] - frame.far_slice_rect[0]) *
+              (frame.far_slice_rect[3] - frame.far_slice_rect[1]);
+    vkr_shadow_system_commit_frame(&system, submit++);
+  }
+  assert(frame.far_slice_rect[2] == config.shadow_map_size &&
+         frame.far_slice_rect[3] == config.shadow_map_size);
+  assert(texels == (uint64_t)config.shadow_map_size * config.shadow_map_size);
+
+  update_for_reuse(&system, &camera);
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert(!frame.far_slice_active && frame.far_publish_mask == far_bit);
+  assert((frame.copy_mask & far_bit) != 0u);
+  assert(((frame.static_render_mask | frame.cascade_render_mask) & far_bit) ==
+         0u);
+  assert(MemCompare(&frame.view_projection[far], &kept, sizeof(Mat4)) != 0);
+  vkr_shadow_system_commit_frame(&system, submit++);
+
+  /* The published layer is the static layer from then on. */
+  update_for_reuse(&system, &camera);
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.far_publish_mask == 0u && !frame.far_slice_active);
+  assert(((frame.static_render_mask | frame.cascade_render_mask) & far_bit) ==
+         0u);
+  vkr_shadow_system_shutdown(&system);
+}
+
 /* A static change inside a static layer's volume makes it stale, so the layer
    draws again; one outside leaves it valid. */
 vkr_internal void test_static_change_reaching_fit_redraws_static_layer(void) {
@@ -3434,6 +3514,7 @@ bool32_t run_shadow_system_tests(void) {
   test_composed_cascades_share_static_layers_across_images();
   test_idle_dynamic_caster_reuses_composed_cascades();
   test_refit_composes_static_layer_in_one_frame();
+  test_far_level_rebuilds_in_slices();
   test_static_change_reaching_fit_redraws_static_layer();
   test_without_dynamic_casters_static_layers_stay_unused();
   test_static_image_first_frame_draws_whole();

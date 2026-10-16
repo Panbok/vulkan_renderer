@@ -111,10 +111,10 @@ and ADR-114.
 
 T1 runs as the proactive refresh (one per frame, 32-texel margin) and T2b as
 the far level (owner decision 2026-10-16: near cascades to 80 m, far level to
-1 km). Open on the tiled pipeline: the far level's static layer costs
-2.8–3.0 ms in the frame it redraws, above the 1.0 ms budget, so its redraw is
-to be spread over several frames; T3; a Bistro orbit and timing against the
-budgets. The desktop pipeline compiles every shared change; its native
+1 km), whose static layer is rebuilt one tile of an 8x8 grid a frame: its
+most expensive tile took 1.11 ms on the Level Design Test, against 2.8–3.0 ms
+for the whole layer and the 1.0 ms budget. Open on the tiled pipeline: T3; a
+Bistro orbit and capture-free timing against the budgets. The desktop pipeline compiles every shared change; its native
 evidence and defects 5 and 6 are deferred (owner decision 2026-10-16).
 
 ## Desktop options

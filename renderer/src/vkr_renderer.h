@@ -1064,6 +1064,9 @@ typedef struct VkrRetainedShadowToken {
   uint64_t static_resource_generation;
   /** Static cascade layers with retained content, a bit each. */
   uint32_t static_valid_layer_mask;
+  /** The image a far-level rebuild draws its slices into, which every frame
+   * in flight shares; zero while it does not exist. */
+  uint64_t far_pending_resource_generation;
 } VkrRetainedShadowToken;
 
 /** Proven retained state of the local-shadow cache, which every frame in

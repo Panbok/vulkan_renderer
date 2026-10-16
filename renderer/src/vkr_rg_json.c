@@ -93,6 +93,9 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"shadow_evsm_active", VKR_RG_JSON_CONDITION_SHADOW_EVSM_ACTIVE},
     {"shadow_cascade_static_active",
      VKR_RG_JSON_CONDITION_SHADOW_CASCADE_STATIC_ACTIVE},
+    {"shadow_far_active", VKR_RG_JSON_CONDITION_SHADOW_FAR_ACTIVE},
+    {"shadow_far_slice_first", VKR_RG_JSON_CONDITION_SHADOW_FAR_SLICE_FIRST},
+    {"shadow_far_slice_next", VKR_RG_JSON_CONDITION_SHADOW_FAR_SLICE_NEXT},
     {"sdsm_enabled", VKR_RG_JSON_CONDITION_SDSM_ENABLED},
     {"transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING},
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
@@ -2145,6 +2148,12 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
   case VKR_RG_JSON_CONDITION_SHADOW_CASCADE_STATIC_ACTIVE:
     return frame->shadow_cascade_static_active &&
            frame->shadow_cascade_count > 0u;
+  case VKR_RG_JSON_CONDITION_SHADOW_FAR_ACTIVE:
+    return frame->shadow_far_active;
+  case VKR_RG_JSON_CONDITION_SHADOW_FAR_SLICE_FIRST:
+    return frame->shadow_far_slice_active && frame->shadow_far_slice_first;
+  case VKR_RG_JSON_CONDITION_SHADOW_FAR_SLICE_NEXT:
+    return frame->shadow_far_slice_active && !frame->shadow_far_slice_first;
   case VKR_RG_JSON_CONDITION_SDSM_ENABLED:
     return frame->sdsm_enabled;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_PENDING:
@@ -2345,6 +2354,12 @@ vkr_internal bool8_t vkr_rg_json_repeat_iteration_enabled(
     *out_enabled =
         repeat_index < 32u && (frame->shadow_cascade_static_render_mask &
                                (UINT32_C(1) << repeat_index)) != 0u;
+    return true_v;
+  }
+  if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,
+                                "shadow_far_publish_mask")) {
+    *out_enabled = repeat_index < 32u && (frame->shadow_far_publish_mask &
+                                          (UINT32_C(1) << repeat_index)) != 0u;
     return true_v;
   }
   if (vkr_string8_equals_cstr_i(&repeat->condition_mask_source,

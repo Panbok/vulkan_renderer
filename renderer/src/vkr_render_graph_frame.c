@@ -292,6 +292,19 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       frame->shadow_cascade_static_active ? shadow->copy_mask : 0u;
   frame->shadow_cascade_dynamic_render_mask =
       frame->shadow_cascade_static_active ? shadow->dynamic_render_mask : 0u;
+  /* The far level's pending image exists while a far cascade does; its
+     slice draws through the far cascade's own view (ADR-041). */
+  frame->shadow_far_active = frame->shadow_cascade_static_active &&
+                             shadow->far_cascade < frame->shadow_cascade_count;
+  frame->shadow_far_cascade =
+      frame->shadow_far_active ? shadow->far_cascade : UINT32_MAX;
+  frame->shadow_far_slice_active =
+      frame->shadow_far_active && shadow->far_slice_active;
+  frame->shadow_far_slice_first = frame->shadow_far_slice_active &&
+                                  shadow->far_slice_rect[0] == 0u &&
+                                  shadow->far_slice_rect[1] == 0u;
+  frame->shadow_far_publish_mask =
+      frame->shadow_far_active ? shadow->far_publish_mask : 0u;
   /* Dynamic-caster views exist only in frames that draw over a copy, so
      classification and command capacity pay for them only then; every
      consumer numbers views through the same helpers. */
@@ -585,6 +598,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_TILED_BLEND] = {"pass.tiled.blend",
                                      VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_SHADOW_FAR_SLICE] = {"pass.shadow.far_slice",
+                                          VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH] = {"pass.shadow.far_publish",
+                                            VKR_RG_PASS_TYPE_TRANSFER},
     [VKR_RG_EXECUTOR_EDITOR_PRESENT] = {"pass.editor.present",
                                         VKR_RG_PASS_TYPE_COMPUTE},
 };

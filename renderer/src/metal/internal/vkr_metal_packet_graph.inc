@@ -298,6 +298,8 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   switch (kind) {
   case VKR_RG_EXECUTOR_SHADOW:
   case VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY:
+  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE:
+  case VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH:
   case VKR_RG_EXECUTOR_SHADOW_CASCADE_DYNAMIC:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW:
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY:
@@ -1264,6 +1266,31 @@ vkr_metal_packet_retained_static_cascades(VkrMetalPacketRenderer *renderer,
   }
 }
 
+/* The far level's pending image every frame in flight shares: one
+   instance with the shadow map's extent and format, or nothing. A far
+   rebuild holds while its generation does; the tiles clear their own
+   texels, so no layer validity is needed. */
+vkr_internal void
+vkr_metal_packet_retained_far_pending(VkrMetalPacketRenderer *renderer,
+                                      const VkrRgImageDesc *shadow_map,
+                                      VkrRetainedShadowToken *out_token) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, "shadow_far_pending"))
+      continue;
+    const VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!slot->live || slot->graph_generation == 0u ||
+        slot->graph_generation != image->generation ||
+        slot->instance_count != 1u || slot->desc.mip_levels != 1u ||
+        slot->desc.width != shadow_map->width ||
+        slot->desc.height != shadow_map->height ||
+        slot->desc.format != shadow_map->format || !slot->instances[0].live)
+      return;
+    out_token->far_pending_resource_generation = slot->graph_generation;
+    return;
+  }
+}
+
 void vkr_metal_packet_renderer_retained_shadow_token(
     VkrMetalPacketRenderer *renderer, uint32_t image_index,
     VkrRetainedShadowToken *out_token) {
@@ -1294,6 +1321,7 @@ void vkr_metal_packet_renderer_retained_shadow_token(
         out_token->valid_layer_mask |= UINT32_C(1) << layer;
     }
     vkr_metal_packet_retained_static_cascades(renderer, &slot->desc, out_token);
+    vkr_metal_packet_retained_far_pending(renderer, &slot->desc, out_token);
     return;
   }
 }
@@ -2096,6 +2124,41 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cascade_copy(
   return true_v;
 }
 
+/* Copies the far pending image, whose tiles finished a far-level rebuild,
+   into the far cascade's static layer before that layer's copy (ADR-041). */
+vkr_internal bool8_t vkr_metal_packet_prepare_far_publish(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrShadowPassPayload *shadow = packet->input.shadow;
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
+  const uint32_t cascade = pass->desc.repeat_index;
+  if (!shadow || cascade >= shadow->cascade_count ||
+      (shadow->far_publish_mask & (UINT32_C(1) << cascade)) == 0u || !read ||
+      !write || !write->has_slice || read->image.id == write->image.id ||
+      write->slice.base_layer != cascade)
+    return false_v;
+  id<MTLTexture> source = vkr_metal_packet_texture(renderer, read->image);
+  id<MTLTexture> destination = vkr_metal_packet_texture(renderer, write->image);
+  if (!source || !destination || source.width != destination.width ||
+      source.height != destination.height ||
+      source.pixelFormat != destination.pixelFormat)
+    return false_v;
+  prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
+      .source = source,
+      .destination = destination,
+      .source_slice = 0u,
+      .destination_slice = cascade,
+      .source_origin = MTLOriginMake(0u, 0u, 0u),
+      .destination_origin = MTLOriginMake(0u, 0u, 0u),
+      .size = MTLSizeMake(source.width, source.height, 1u),
+  };
+  prepared->transfer.has_texture_copy = true_v;
+  prepared->active = true_v;
+  return true_v;
+}
+
 /* Copies the frame's packed candidate rows and a zeroed compaction state
    into the culling buffers, a local face's static square into its dynamic
    square, or a cascade's static layer into the shadow map; Cull.Upload,
@@ -2112,6 +2175,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
   if (prepared->kind == VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY)
     return vkr_metal_packet_prepare_cascade_copy(renderer, pass, packet,
                                                  prepared);
+  if (prepared->kind == VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH)
+    return vkr_metal_packet_prepare_far_publish(renderer, pass, packet,
+                                                prepared);
   if (prepared->kind != VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD)
     return false_v;
   VkrMetalPacketTransferPass *transfer = &prepared->transfer;

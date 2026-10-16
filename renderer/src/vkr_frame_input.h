@@ -683,10 +683,35 @@ typedef struct VkrShadowPassPayload {
   uint32_t copy_mask;
   /** Copied cascades that then draw the dynamic casters over the copy. */
   uint32_t dynamic_render_mask;
+  /** The far level's cascade (ADR-041), or UINT32_MAX without one. Its
+   * static layer is rebuilt one tile a frame into the far pending image:
+   * `far_slice_active` draws the map texels [far_slice_rect[0],
+   * far_slice_rect[2]) x [far_slice_rect[1], far_slice_rect[3]) (column,
+   * row) through the cascade's culling view with
+   * `far_slice_view_projection`, which only that view's raster and culling
+   * read, and `far_publish_mask`, a subset of copy_mask, copies the finished
+   * image into the static layer before that layer's copy. */
+  uint32_t far_cascade;
+  bool8_t far_slice_active;
+  uint32_t far_slice_rect[4];
+  Mat4 far_slice_view_projection;
+  uint32_t far_publish_mask;
   VkrShadowCascadePacketData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrShadowReceiverPacketData receiver;
   const VkrShadowConfigOverride *config_override;
 } VkrShadowPassPayload;
+
+/** The matrix that rasterizes and culls `view`, a directional culling view
+ * of `cascade` (vkr_render_graph_view_cascade): a far slice's for the far
+ * cascade's own view while it draws a slice, else the cascade's. */
+static inline Mat4
+vkr_shadow_view_raster_projection(const VkrShadowPassPayload *shadow,
+                                  uint32_t cascade, uint32_t view) {
+  return shadow->far_slice_active && cascade == shadow->far_cascade &&
+                 view == 1u + cascade
+             ? shadow->far_slice_view_projection
+             : shadow->cascades[cascade].light_view_projection;
+}
 
 /**
  * @brief Payload for the UI pass.

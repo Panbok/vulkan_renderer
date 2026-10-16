@@ -706,6 +706,18 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t shadow_cascade_static_render_mask;
   uint32_t shadow_cascade_copy_mask;
   uint32_t shadow_cascade_dynamic_render_mask;
+  /** A far level exists (ADR-041): its pending image is kept; while
+   * `shadow_far_slice_active` its cascade's culling view draws one slice of
+   * the rebuilt static layer into it, and a bit of `shadow_far_publish_mask`
+   * copies the finished image into that cascade's static layer. */
+  bool8_t shadow_far_active;
+  uint32_t shadow_far_cascade;
+  bool8_t shadow_far_slice_active;
+  /** The slice is the rebuild's first, whose pass clears the whole image;
+   * later slices load it, since the retained image holds the earlier
+   * slices. */
+  bool8_t shadow_far_slice_first;
+  uint32_t shadow_far_publish_mask;
   /** Dynamic-caster culling views after the cascade views: the cascade
    * count while a dynamic draw over a copied layer runs, else zero. */
   uint32_t shadow_cascade_dynamic_view_count;
@@ -813,13 +825,16 @@ vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
 /**
  * Directional culling views whose pass does not run this frame. They still
  * classify, so a retained cascade keeps counting its casters, but encode no
- * commands (ADR-041). A cascade view draws for a whole cascade or its static
- * layer; a dynamic view draws over a copied layer.
+ * commands (ADR-041). A cascade view draws for a whole cascade, its static
+ * layer or a far slice; a dynamic view draws over a copied layer.
  */
 vkr_internal INLINE uint64_t
 vkr_render_graph_cascade_idle_view_mask(const VkrRenderGraphFrameInfo *frame) {
-  const uint32_t drawn = frame->shadow_cascade_render_mask |
-                         frame->shadow_cascade_static_render_mask;
+  const uint32_t drawn =
+      frame->shadow_cascade_render_mask |
+      frame->shadow_cascade_static_render_mask |
+      (frame->shadow_far_slice_active ? UINT32_C(1) << frame->shadow_far_cascade
+                                      : 0u);
   uint64_t mask = 0u;
   for (uint32_t cascade = 0u; cascade < frame->shadow_cascade_count;
        ++cascade) {

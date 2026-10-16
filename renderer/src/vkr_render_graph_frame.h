@@ -148,6 +148,12 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_TILED_BLEND,
   /** Copies the finished Scene image to the presenter (ADR-111). */
   VKR_RG_EXECUTOR_EDITOR_PRESENT,
+  /** Draws one row slice of the far level's rebuilt static layer into the
+   * far pending image (ADR-041). */
+  VKR_RG_EXECUTOR_SHADOW_FAR_SLICE,
+  /** Copies the finished far pending image into the far cascade's static
+   * layer. */
+  VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

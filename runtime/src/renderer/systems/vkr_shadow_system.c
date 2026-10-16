@@ -838,6 +838,7 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
     MemZero(system->cascade_history, sizeof(system->cascade_history));
     MemZero(system->static_history, sizeof(system->static_history));
     system->pending_history = (VkrShadowPendingHistory){0};
+    system->far_rebuild = (VkrShadowFarRebuild){0};
     /* The local-shadow cache is not tied to the target; its retained token
      * proves the shared pool, and light identity proves its content. */
     system->pending_local_history = (VkrLocalShadowPendingHistory){0};
@@ -1468,6 +1469,13 @@ void vkr_shadow_system_commit_frame(VkrShadowSystem *system,
     pending->static_cascades[cascade].last_submit_value = submit_value;
     system->static_history[cascade] = pending->static_cascades[cascade];
   }
+  VkrShadowFarRebuild *rebuild = &system->far_rebuild;
+  if (rebuild->active && pending->far_published) {
+    rebuild->active = false_v;
+  } else if (rebuild->active) {
+    rebuild->slices_drawn =
+        Max(rebuild->slices_drawn, pending->far_slices_drawn);
+  }
   *pending = (VkrShadowPendingHistory){0};
 
   vkr_local_shadow_cache_commit(&system->local_cache,
@@ -1649,6 +1657,174 @@ vkr_internal bool8_t vkr_shadow_scan_dynamic_casters(
   return true_v;
 }
 
+/* The far level's cascade, the last, or VKR_SHADOW_FAR_NONE. */
+vkr_internal uint32_t vkr_shadow_far_cascade(const VkrShadowSystem *system) {
+  return system->config.far_cascade_distance > 0.0f &&
+                 system->config.cascade_count >= 2u
+             ? system->config.cascade_count - 1u
+             : VKR_SHADOW_FAR_NONE;
+}
+
+/* The matrix that rasterizes the map texels `rect` (first column, first
+   row, end column, end row) of a cascade drawn with `view_projection` into a
+   viewport over them: clip X and Y map that tile of the map to the whole
+   clip range, so each tile's texels are the ones the whole map would hold
+   there. Receivers read texel (clip xy * 0.5 + 0.5) * size. */
+vkr_internal Mat4 vkr_shadow_slice_view_projection(Mat4 view_projection,
+                                                   const uint32_t rect[4],
+                                                   uint32_t size) {
+  Mat4 slice = view_projection;
+  for (uint32_t axis = 0u; axis < 2u; ++axis) {
+    const float32_t texels = (float32_t)(rect[axis + 2u] - rect[axis]);
+    const float32_t scale = (float32_t)size / texels;
+    const float32_t centre =
+        (float32_t)(rect[axis] + rect[axis + 2u]) / (float32_t)size - 1.0f;
+    for (uint32_t column = 0u; column < 4u; ++column) {
+      const float32_t value = view_projection.elements[column * 4u + axis];
+      const float32_t w = view_projection.elements[column * 4u + 3u];
+      slice.elements[column * 4u + axis] = scale * (value - centre * w);
+    }
+  }
+  return slice;
+}
+
+/* What the far level does this frame. */
+typedef enum VkrShadowFarStep {
+  VKR_SHADOW_FAR_STEP_NONE = 0,
+  VKR_SHADOW_FAR_STEP_SLICE,
+  VKR_SHADOW_FAR_STEP_PUBLISH,
+} VkrShadowFarStep;
+
+/* Advances the far level's rebuild: drops one whose inputs changed or whose
+   kept fit the camera left, starts one when the kept fit's margin runs low,
+   and names this frame's step. The rebuild draws into its own image, so the
+   kept layer keeps serving receivers and dynamic casters until it
+   publishes. */
+vkr_internal VkrShadowFarStep vkr_shadow_far_plan(
+    VkrShadowSystem *system, uint32_t far,
+    const VkrWorldPassPayload *candidates, VkrRetainedShadowToken token,
+    uint64_t bias_signature, uint64_t light_signature,
+    const VkrShadowFit *guarded_fit, float32_t kept_margin, bool8_t composed) {
+  VkrShadowFarRebuild *rebuild = &system->far_rebuild;
+  if (far == VKR_SHADOW_FAR_NONE || !composed || !candidates ||
+      token.far_pending_resource_generation == 0u) {
+    rebuild->active = false_v;
+    return VKR_SHADOW_FAR_STEP_NONE;
+  }
+  if (rebuild->active) {
+    const bool8_t static_held = !vkr_shadow_static_change_reaches_fit(
+        candidates, rebuild->static_generation, &rebuild->light_view,
+        &rebuild->fit);
+    const bool8_t holds =
+        static_held && kept_margin >= 0.0f &&
+        rebuild->publication_generation ==
+            vkr_world_content_publication_generation(candidates) &&
+        rebuild->caster_bounds_generation ==
+            candidates->caster_bounds_generation &&
+        rebuild->bias_signature == bias_signature &&
+        rebuild->light_signature == light_signature &&
+        rebuild->pending_resource_generation ==
+            token.far_pending_resource_generation &&
+        rebuild->static_resource_generation == token.static_resource_generation;
+    if (!holds) {
+      rebuild->active = false_v;
+    } else {
+      rebuild->static_generation = candidates->static_generation;
+    }
+  }
+  const float32_t threshold = VKR_SHADOW_FAR_REBUILD_MARGIN_TEXELS *
+                              system->cascades[far].world_units_per_texel;
+  if (!rebuild->active && kept_margin >= 0.0f && kept_margin < threshold) {
+    *rebuild = (VkrShadowFarRebuild){
+        .active = true_v,
+        .fit = *guarded_fit,
+        .light_view = system->cascades[far].light_view,
+        .static_generation = candidates->static_generation,
+        .publication_generation =
+            vkr_world_content_publication_generation(candidates),
+        .caster_bounds_generation = candidates->caster_bounds_generation,
+        .bias_signature = bias_signature,
+        .light_signature = light_signature,
+        .pending_resource_generation = token.far_pending_resource_generation,
+        .static_resource_generation = token.static_resource_generation,
+    };
+    rebuild->view_projection = vkr_shadow_view_projection_from_fit(
+        &rebuild->light_view, &rebuild->fit);
+  }
+  if (!rebuild->active)
+    return VKR_SHADOW_FAR_STEP_NONE;
+  return rebuild->slices_drawn < VKR_SHADOW_FAR_SLICE_COUNT
+             ? VKR_SHADOW_FAR_STEP_SLICE
+             : VKR_SHADOW_FAR_STEP_PUBLISH;
+}
+
+/* The far cascade of the frame that publishes its rebuild: the finished
+   image is copied into the static layer, which then composes the cascade
+   as a freshly drawn static layer would, with every dynamic caster drawn
+   over the copy since none was tested against the new fit. */
+vkr_internal void vkr_shadow_far_publish(VkrShadowSystem *system, uint32_t far,
+                                         const VkrWorldPassPayload *candidates,
+                                         VkrRetainedShadowToken token,
+                                         uint32_t dynamic_count,
+                                         VkrShadowFrameData *out_data) {
+  const VkrShadowFarRebuild *rebuild = &system->far_rebuild;
+  VkrShadowPendingHistory *pending = &system->pending_history;
+  const uint32_t bit = UINT32_C(1) << far;
+  out_data->view_projection[far] = rebuild->view_projection;
+  vkr_shadow_publish_cascade_receiver(&rebuild->light_view, &rebuild->fit, far,
+                                      out_data);
+  out_data->rendered[far] = 1u;
+  out_data->composited[far] = 1u;
+  out_data->static_rendered[far] = 1u;
+  out_data->copy_mask |= bit;
+  out_data->far_publish_mask = bit;
+  const bool8_t overlap = dynamic_count > 0u;
+  out_data->dynamic_forced[far] = overlap ? 1u : 0u;
+  if (overlap)
+    out_data->dynamic_render_mask |= bit;
+  pending->static_mask |= bit;
+  pending->static_cascades[far] = vkr_shadow_drawn_history(
+      candidates, &rebuild->light_view, &rebuild->fit,
+      &rebuild->view_projection, rebuild->bias_signature,
+      rebuild->light_signature, token.static_resource_generation);
+  pending->static_cascades[far].static_only_contents = true_v;
+  pending->static_cascades[far].dynamic_contents = false_v;
+  pending->cascade_mask |= bit;
+  pending->cascades[far] = vkr_shadow_drawn_history(
+      candidates, &rebuild->light_view, &rebuild->fit,
+      &rebuild->view_projection, rebuild->bias_signature,
+      rebuild->light_signature, token.resource_generation);
+  pending->cascades[far].static_only_contents = !overlap;
+  pending->cascades[far].composite = true_v;
+  pending->far_published = true_v;
+}
+
+/* Names this frame's tile of the far rebuild when the far cascade's culling
+   view is free: the cascade neither draws whole nor draws its static layer
+   this frame. */
+vkr_internal void vkr_shadow_far_emit_slice(VkrShadowSystem *system,
+                                            uint32_t far,
+                                            VkrShadowFrameData *out_data) {
+  const uint32_t bit = UINT32_C(1) << far;
+  if (((out_data->cascade_render_mask | out_data->static_render_mask) & bit) !=
+      0u)
+    return;
+  const VkrShadowFarRebuild *rebuild = &system->far_rebuild;
+  const uint32_t size = system->config.shadow_map_size;
+  const uint32_t step = size / VKR_SHADOW_FAR_SLICE_GRID;
+  const uint32_t column = rebuild->slices_drawn % VKR_SHADOW_FAR_SLICE_GRID;
+  const uint32_t row = rebuild->slices_drawn / VKR_SHADOW_FAR_SLICE_GRID;
+  const uint32_t last = VKR_SHADOW_FAR_SLICE_GRID - 1u;
+  out_data->far_slice_active = true_v;
+  out_data->far_slice_rect[0] = column * step;
+  out_data->far_slice_rect[1] = row * step;
+  out_data->far_slice_rect[2] = column == last ? size : (column + 1u) * step;
+  out_data->far_slice_rect[3] = row == last ? size : (row + 1u) * step;
+  out_data->far_slice_view_projection = vkr_shadow_slice_view_projection(
+      rebuild->view_projection, out_data->far_slice_rect, size);
+  system->pending_history.far_slices_drawn = rebuild->slices_drawn + 1u;
+}
+
 /* Proactive refreshes redraw a still-reusable cascade early, the one with the
    least margin left, so the redraws a moving camera needs arrive one per
    frame instead of falling due together. A frame that must redraw a cascade
@@ -1656,6 +1832,7 @@ vkr_internal bool8_t vkr_shadow_scan_dynamic_casters(
 vkr_internal void vkr_shadow_select_proactive(const VkrShadowSystem *system,
                                               const bool8_t *reusable,
                                               const float32_t *fit_margin,
+                                              uint32_t far,
                                               bool8_t *proactive) {
   const uint32_t cascade_count = system->config.cascade_count;
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
@@ -1672,7 +1849,8 @@ vkr_internal void vkr_shadow_select_proactive(const VkrShadowSystem *system,
           system->config.reuse_proactive_margin_texels *
           system->cascades[cascade].world_units_per_texel;
       const bool8_t due = threshold <= 0.0f || fit_margin[cascade] < threshold;
-      if (reusable[cascade] && !proactive[cascade] && due &&
+      /* The far level rebuilds over several frames instead. */
+      if (reusable[cascade] && !proactive[cascade] && due && cascade != far &&
           fit_margin[cascade] < selected_margin) {
         selected = cascade;
         selected_margin = fit_margin[cascade];
@@ -1691,11 +1869,14 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
                                      VkrTextureFormat shadow_depth_format,
                                      VkrShadowFrameData *out_data) {
   MemZero(out_data, sizeof(*out_data));
+  out_data->far_cascade = VKR_SHADOW_FAR_NONE;
   vkr_shadow_system_discard_frame(system);
   if (!system || !system->initialized || !system->light_enabled)
     return;
 
   const uint32_t cascade_count = system->config.cascade_count;
+  const uint32_t far = vkr_shadow_far_cascade(system);
+  out_data->far_cascade = far;
   out_data->enabled = true_v;
   out_data->cascade_count = cascade_count;
   out_data->sdsm_status = system->sdsm_status;
@@ -1755,7 +1936,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
      drawing every caster; unknown contents draw whole as before. The
      image's first frame draws whole too: its layers could record no
      resource generation, so they would draw again next frame. */
-  out_data->static_active = dynamic_count > 0u;
+  out_data->static_active = dynamic_count > 0u || far != VKR_SHADOW_FAR_NONE;
   const bool8_t compose = out_data->static_active && !publication_pending &&
                           retained_token.static_resource_generation != 0u;
 
@@ -1853,7 +2034,12 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         contents_current && fit_margin[cascade] >= 0.0f && !publication_pending;
   }
 
-  vkr_shadow_select_proactive(system, reusable, fit_margin, proactive);
+  const VkrShadowFarStep far_step = vkr_shadow_far_plan(
+      system, far, candidates, retained_token, bias_signature,
+      far != VKR_SHADOW_FAR_NONE ? light_signatures[far] : 0u,
+      far != VKR_SHADOW_FAR_NONE ? &guarded_fits[far] : NULL,
+      far != VKR_SHADOW_FAR_NONE ? fit_margin[far] : -1.0f, composed);
+  vkr_shadow_select_proactive(system, reusable, fit_margin, far, proactive);
 
   for (uint32_t cascade = 0u; cascade < cascade_count; ++cascade) {
     const uint32_t bit = UINT32_C(1) << cascade;
@@ -1862,6 +2048,11 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     const bool8_t dynamic_forced =
         dynamic_scan_failed || fit_dynamic_overlap[cascade];
 
+    if (cascade == far && far_step == VKR_SHADOW_FAR_STEP_PUBLISH) {
+      vkr_shadow_far_publish(system, far, candidates, retained_token,
+                             dynamic_count, out_data);
+      continue;
+    }
     if (reusable[cascade] && !proactive[cascade]) {
       out_data->view_projection[cascade] = history->rendered_view_projection;
       vkr_shadow_publish_cascade_receiver(&history->rendered_light_view,
@@ -1956,6 +2147,8 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         !(adopt_submitted ? fit_dynamic_overlap[cascade]
                           : guarded_dynamic_overlap[cascade]);
   }
+  if (far_step == VKR_SHADOW_FAR_STEP_SLICE)
+    vkr_shadow_far_emit_slice(system, far, out_data);
   pending->active = pending->cascade_mask != 0u;
 }
 

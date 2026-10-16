@@ -57,7 +57,21 @@ A configuration may name a far level (`far_cascade_distance` above
 spans from `max_shadow_distance` to the far distance, one coarse map that its
 guard band keeps through long camera motion. The tiled pipeline uses it
 (`vkr_shadow_config_apply_tiled`: near cascades to 80 m, far level to 1 km,
-ADR-087); the desktop pipeline does not. Every configuration a running system
+ADR-087); the desktop pipeline does not. A far level always composes from
+its static layer, which it rebuilds over several frames instead of drawing
+every far caster in one: once the kept fit's margin falls below 64 of its
+texels, a rebuild takes a fresh guarded fit and draws one tile of an 8x8
+grid a frame into the retained `shadow_far_pending` image
+(`Shadow.Far.Slice.First`, `Shadow.Far.Slice`) through the far cascade's own
+culling view, whose culling and raster take the tile's matrix
+(`vkr_shadow_view_raster_projection`) while its levels and size cut follow
+the whole map. Receivers keep the kept layer meanwhile, and dynamic casters
+keep composing over it. The frame after the last tile copies the image
+into the static layer (`Shadow.Far.Publish.${i}`) and composes the cascade
+with the new fit. A change of light, bias, publications, caster bounds or a
+static change reaching the new fit, a replaced image, or a camera that
+leaves the kept fit drops the rebuild
+(`vkr_shadow_far_plan`, `test_far_level_rebuilds_in_slices`). Every configuration a running system
 adopts passes `vkr_shadow_config_normalize`, so a preset chosen at runtime,
 such as Balanced, gets the same reuse controls as the one it starts with.
 

@@ -1272,10 +1272,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                   renderer->convert_vulkan_clip_y,
                   local_view ? packet->input.local_shadow->views[local_face]
                                    .light_view_projection
-                             : packet->input.shadow
-                                   ->cascades[vkr_render_graph_view_cascade(
-                                       &renderer->prepared_frame, view)]
-                                   .light_view_projection);
+                             : vkr_shadow_view_raster_projection(
+                                   packet->input.shadow,
+                                   vkr_render_graph_view_cascade(
+                                       &renderer->prepared_frame, view),
+                                   view));
     uint64_t frame_root_gpu = 0u;
     uint32_t view_frame_flags = 0u;
     if (!vkr_metal_packet_create_frame_root(
@@ -2283,6 +2284,38 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         renderer, pass, packet, prepared, view,
         packet->input.shadow->config_override, (uint32_t)target.width,
         (uint32_t)target.height, result);
+  }
+  if (kind == VKR_RG_EXECUTOR_SHADOW_FAR_SLICE) {
+    /* One tile of the far level's rebuilt static layer, through the far
+       cascade's culling view, which culls and rasterizes with the tile's
+       matrix; it clears and draws only its texels (ADR-041). */
+    const VkrShadowPassPayload *shadow = packet->input.shadow;
+    if (!shadow || !shadow->far_slice_active ||
+        shadow->far_cascade >= shadow->cascade_count)
+      return false_v;
+    const uint32_t size = (uint32_t)target.height;
+    const uint32_t *rect = shadow->far_slice_rect;
+    if (rect[0] >= rect[2] || rect[1] >= rect[3] || rect[2] > size ||
+        rect[3] > size || (uint32_t)target.width != size)
+      return false_v;
+    if (packet->input.world && renderer->gpu_draw_count > 0u &&
+        !vkr_metal_packet_prepare_gpu_shadow(
+            renderer, pass, packet, prepared, 1u + shadow->far_cascade,
+            shadow->config_override, size, size, result))
+      return false_v;
+    /* Receivers read texel (clip xy * 0.5 + 0.5) * size; the clip
+       conversion flips Y, so without it the rows count from the bottom. */
+    const uint32_t x = rect[0];
+    const uint32_t y =
+        renderer->convert_vulkan_clip_y ? rect[1] : size - rect[3];
+    const uint32_t width = rect[2] - rect[0];
+    const uint32_t height = rect[3] - rect[1];
+    prepared->indirect.viewport = (MTLViewport){
+        (double)x, (double)y, (double)width, (double)height, 0.0, 1.0};
+    prepared->indirect.clear_rect = (MTLScissorRect){x, y, width, height};
+    prepared->indirect.clear_depth = true_v;
+    prepared->active = true_v;
+    return true_v;
   }
   if (kind == VKR_RG_EXECUTOR_LOCAL_SHADOW ||
       kind == VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC) {
