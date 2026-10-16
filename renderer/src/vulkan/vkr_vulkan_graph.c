@@ -233,7 +233,7 @@ vkr_internal bool8_t vkr_vk_create_graph_image_instance(
      shaders read sample by sample; it is never a storage image. */
   const bool8_t multisampled = desc->samples > 1u;
   if (multisampled &&
-      (desc->samples != 2u && desc->samples != 4u && desc->samples != 8u ||
+      ((desc->samples != 2u && desc->samples != 4u && desc->samples != 8u) ||
        volume || desc->mip_levels != 1u || desc->layers != 1u ||
        (desc->flags & VKR_RG_RESOURCE_FLAG_FORCE_ARRAY) ||
        (checked_usage.set & VKR_TEXTURE_USAGE_STORAGE))) {
