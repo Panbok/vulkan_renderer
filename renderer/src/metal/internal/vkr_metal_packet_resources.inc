@@ -2558,7 +2558,7 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
      records and the light-space grid at its capacity. */
   if (renderer->prepared_frame.tiled_sun_sdf && packet->input.world) {
     const uint64_t objects =
-        Min(packet->input.world->static_candidate_count,
+        Min(packet->input.world->gpu_shadow_candidate_count,
             VKR_METAL_SDF_MAX_OBJECTS);
     const uint64_t grid_bytes =
         ((uint64_t)VKR_METAL_SDF_GRID_SIZE * VKR_METAL_SDF_GRID_SIZE + 1u +

@@ -251,11 +251,11 @@ vkr_metal_packet_sdf_reserve(VkrMetalPacketRenderer *renderer,
 }
 
 /* Prepares Tiled.SunShadow: generates at most
-   VKR_METAL_SDF_GENERATIONS_PER_FRAME new distance volumes, lists the static
-   opaque casters whose volumes are ready in the light-space grid around the
-   camera, and traces them at half resolution into binding 0 from the
-   resolved depth at binding 1. Cutout, skinned and moving casters keep the
-   cascades. */
+   VKR_METAL_SDF_GENERATIONS_PER_FRAME new distance volumes, lists the
+   static and rigid moving opaque casters whose volumes are ready in the
+   light-space grid around the camera, and traces them at half resolution
+   into binding 0 from the resolved depth at binding 1. Cutout and skinned
+   casters keep the cascades. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shadow(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -283,8 +283,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shadow(
                                  (2.0f * VKR_METAL_SDF_GRID_HALF_EXTENT);
   const uint32_t cell_count = VKR_METAL_SDF_GRID_SIZE * VKR_METAL_SDF_GRID_SIZE;
 
+  /* Static casters, then moving ones: a rigid mover's volume holds in its
+     own space, so it moves with its instance transform. */
   const uint32_t candidates =
-      world ? Min(world->static_candidate_count, VKR_METAL_SDF_MAX_OBJECTS)
+      world ? Min(world->gpu_shadow_candidate_count, VKR_METAL_SDF_MAX_OBJECTS)
             : 0u;
   uint64_t objects_gpu = 0u;
   VkrMetalSdfObject *objects =
