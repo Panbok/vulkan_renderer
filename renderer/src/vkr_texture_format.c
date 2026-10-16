@@ -23,7 +23,6 @@ static const VkrTextureFormatInfo
         [VKR_TEXTURE_FORMAT_ASTC_4x4_HDR] = {4, 4, 4, 16, true_v, false_v},
         [VKR_TEXTURE_FORMAT_RGB9E5_UFLOAT] = {3, 1, 1, 4, false_v, false_v},
         [VKR_TEXTURE_FORMAT_BC6H_UFLOAT] = {3, 4, 4, 16, true_v, false_v},
-        [VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT] = {3, 1, 1, 4, false_v, false_v},
         [VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM] = {2, 4, 4, 16, true_v, false_v},
         [VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT] = {4, 1, 1, 8, false_v,
                                                     false_v},

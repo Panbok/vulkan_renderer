@@ -171,6 +171,9 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_TILED_TEMPORAL_STAGE,
   /** Holds the upscaled output steady while the camera is still. */
   VKR_RG_EXECUTOR_TILED_STABILIZE,
+  /** The tiled pipeline's SDF sun shadow trace and the distance volumes it
+   * generates first (the shadow quality proposal's T5 prototype). */
+  VKR_RG_EXECUTOR_TILED_SUN_SHADOW,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

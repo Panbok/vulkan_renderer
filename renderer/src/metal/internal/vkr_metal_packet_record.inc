@@ -105,6 +105,29 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
+  case VKR_RG_EXECUTOR_TILED_SUN_SHADOW: {
+    /* New distance volumes: clear, splat and convert, each stage after the
+       last; then the trace, after volumes an earlier command buffer
+       generated, which Metal 4 does not order. */
+    const uint32_t count = pass->sun_shadow.generation_count;
+    const VkrMetalPacketDispatch *stages[3] = {pass->sun_shadow.clears,
+                                               pass->sun_shadow.splats,
+                                               pass->sun_shadow.converts};
+    for (uint32_t stage = 0u; count && stage < 3u; ++stage) {
+      for (uint32_t i = 0u; i < count; ++i)
+        vkr_metal_packet_record_dispatch(renderer, encoder, &stages[stage][i]);
+      [encoder barrierAfterEncoderStages:MTLStageDispatch
+                     beforeEncoderStages:MTLStageDispatch
+                       visibilityOptions:MTL4VisibilityOptionDevice];
+    }
+    if (pass->sun_shadow.volumes_in_flight)
+      [encoder barrierAfterQueueStages:MTLStageDispatch
+                          beforeStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    vkr_metal_packet_record_dispatch(renderer, encoder,
+                                     &pass->sun_shadow.trace);
+    break;
+  }
   case VKR_RG_EXECUTOR_TILED_STABILIZE:
     /* The previous mean comes from an earlier command buffer, which Metal 4
        does not order. */

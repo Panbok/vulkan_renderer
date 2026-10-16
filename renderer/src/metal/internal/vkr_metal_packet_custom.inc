@@ -276,7 +276,7 @@ vkr_metal_packet_custom_request_brdf(VkrMetalPacketRenderer *renderer,
 }
 
 bool8_t
-vkr_metal_packet_renderer_tiled_sun_contact(VkrMetalPacketRenderer *renderer) {
+vkr_metal_packet_renderer_tiled_sun_light(VkrMetalPacketRenderer *renderer) {
   if (!renderer)
     return false_v;
   if (@available(macOS 26.0, *)) {

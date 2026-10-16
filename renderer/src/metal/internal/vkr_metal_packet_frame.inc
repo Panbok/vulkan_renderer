@@ -2,6 +2,14 @@
 
 /* Per-frame upload preparation, pass encoding, submission, and failure
  * rollback. */
+
+/* SDF sun shadows (vkr_metal_packet_sdf.inc). */
+vkr_internal float32_t
+vkr_metal_packet_sun_shadow_start(const VkrShadowPassPayload *shadow);
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shadow(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0));
 vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
                                               uint64_t size,
                                               uint64_t *out_gpu_address) {
@@ -1110,7 +1118,7 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
       return;
     /* A sun contact frame shades with the sun variants; a slot whose sun
        variant is not ready yet draws its fallback. */
-    const uint32_t sun = renderer->prepared_frame.tiled_sun_contact
+    const uint32_t sun = renderer->prepared_frame.tiled_sun_light
                              ? VKR_METAL_TILED_SUN_VARIANT
                              : 0u;
     renderer->custom_ready_mask = vkr_metal_packet_custom_state_mask(
@@ -2120,16 +2128,15 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
 
 /* The sky draws' root: the frame, the sky-view lookup at `sky_view_binding`
    and the sky mode. The sky's view directions come from the camera-relative
-   `view_rays`; the world inverse only places resolved surfaces. The
-   atmosphere draw of a sun contact frame also takes the sun's light and the
-   contact march's noise index. */
+   `view_rays`; the world inverse only places resolved surfaces. Its sun
+   correction fields are zero; the atmosphere draw sets them through
+   `out_root`. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketFrameUpload *upload,
     uint32_t width, uint32_t height, uint32_t sky_view_binding,
-    id<MTLTexture> depth, id<MTLTexture> sun_light,
-    uint32_t contact_noise_index, uint64_t *out_root_gpu)
-    API_AVAILABLE(macos(26.0)) {
+    id<MTLTexture> depth, uint64_t *out_root_gpu,
+    VkrMetalTiledSkyRoot **out_root) API_AVAILABLE(macos(26.0)) {
   const VkrSkyPassPayload *sky = packet->input.sky;
   const VkrSkyMode sky_mode = !sky ? VKR_SKY_MODE_NONE
                               : sky->atmosphere.enabled
@@ -2172,15 +2179,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
                        sky->constant_radiance.z * pre_exposure, 0.0f}
               : (Vec4){0},
       .depth_texture_id = depth ? depth.gpuResourceID._impl : 0u,
-      .sun_light_texture_id = sun_light ? sun_light.gpuResourceID._impl : 0u,
-      .contact_noise_index = contact_noise_index,
-      /* The reversed perspective maps distance d along the camera axis to
-         depth m23 / d - m22 (mat4_perspective_reversed). */
-      .depth_offset = sun_light ? packet->temporal.jittered_projection.m22
-                                : 0.0f,
-      .depth_scale = sun_light ? packet->temporal.jittered_projection.m23
-                               : 0.0f,
   };
+  if (out_root)
+    *out_root = root;
   return true_v;
 }
 
@@ -2284,11 +2285,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       vkr_metal_packet_tiled_lighting(packet);
   const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
   const uint32_t decals = vkr_metal_packet_tiled_decal_variant(packet);
-  /* Sun contact frames take the variants that also write the sun's light
-     (its graph attachment 1). */
-  const bool8_t sun_contact = renderer->prepared_frame.tiled_sun_contact;
-  const uint32_t sun = sun_contact ? VKR_METAL_TILED_SUN_VARIANT : 0u;
-  if (sun_contact && pass->desc.color_attachments.length < 2u)
+  /* Frames that correct the sun's light take the variants that also write
+     it (the graph's attachment 1). */
+  const bool8_t sun_light = renderer->prepared_frame.tiled_sun_light;
+  const uint32_t sun = sun_light ? VKR_METAL_TILED_SUN_VARIANT : 0u;
+  if (sun_light && pass->desc.color_attachments.length < 2u)
     return false_v;
   /* Standard draws take the base BRDF variant; slot 0's extended ones take
      the extension variant as they record (ADR-113). */
@@ -2305,10 +2306,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   uint64_t sky_root = 0u;
   const bool8_t multisampled = renderer->tiled_sample_count > 1u;
   if ((multisampled && !vkr_metal_packet_tiled_ensure_targets(
-                           renderer, width, height, sun_contact)) ||
+                           renderer, width, height, sun_light)) ||
       !vkr_metal_packet_prepare_tiled_sky_root(renderer, pass, packet, upload,
-                                               width, height, 15u, nil, nil, 0u,
-                                               &sky_root))
+                                               width, height, 15u, nil,
+                                               &sky_root, NULL))
     return false_v;
   MTL4RenderPassDescriptor *descriptor =
       renderer->render_passes[prepared->index];
@@ -2319,12 +2320,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     color.resolveTexture = color.texture;
     color.texture = renderer->tiled_msaa_color;
     color.storeAction = MTLStoreActionMultisampleResolve;
-    if (sun_contact) {
-      MTLRenderPassColorAttachmentDescriptor *sun_light =
+    if (sun_light) {
+      MTLRenderPassColorAttachmentDescriptor *sun_target =
           descriptor.colorAttachments[1];
-      sun_light.resolveTexture = sun_light.texture;
-      sun_light.texture = renderer->tiled_msaa_sun;
-      sun_light.storeAction = MTLStoreActionMultisampleResolve;
+      sun_target.resolveTexture = sun_target.texture;
+      sun_target.texture = renderer->tiled_msaa_sun;
+      sun_target.storeAction = MTLStoreActionMultisampleResolve;
     }
     MTLRenderPassDepthAttachmentDescriptor *depth = descriptor.depthAttachment;
     depth.resolveTexture = depth.texture;
@@ -2645,8 +2646,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_temporal(
 }
 
 /* Prepares the atmosphere draw over the tiled pipeline's resolved image: it
-   reads the resolved depth at binding 0 and the sky-view lookup at 15, and
-   in sun contact frames the opaque pass's sun light at 37. The contact
+   reads the resolved depth at binding 0 and the sky-view lookup at 15. A
+   frame that corrects the sun's light also reads the opaque pass's sun light
+   at 37 and, with SDF sun shadows, the trace at 38, which takes over from
+   the cascades over a band from where the far level starts. The contact
    march's step pattern follows the frame while MetalFX accumulates frames
    and is fixed otherwise. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
@@ -2657,24 +2660,48 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   if (!depth)
     return false_v;
-  const bool8_t sun_contact = renderer->prepared_frame.tiled_sun_contact;
+  const bool8_t sun_correction = renderer->prepared_frame.tiled_sun_light;
+  const bool8_t sdf = renderer->prepared_frame.tiled_sun_sdf;
   id<MTLTexture> sun_light =
-      sun_contact ? vkr_metal_packet_pass_texture(renderer, pass, 37u) : nil;
-  if (sun_contact && !sun_light)
+      sun_correction ? vkr_metal_packet_pass_texture(renderer, pass, 37u) : nil;
+  id<MTLTexture> sun_shadow =
+      sdf ? vkr_metal_packet_pass_texture(renderer, pass, 38u) : nil;
+  if ((sun_correction && !sun_light) || (sdf && !sun_shadow))
     return false_v;
-  const uint32_t contact_noise_index =
-      renderer->prepared_frame.tiled_temporal_enabled
-          ? packet->input.frame.frame_index
-          : 0u;
   const uint32_t width = (uint32_t)target.width;
   const uint32_t height = (uint32_t)target.height;
+  VkrMetalTiledSkyRoot *root = NULL;
   if (!vkr_metal_packet_prepare_tiled_sky_root(
-          renderer, pass, packet, upload, width, height, 15u, depth, sun_light,
-          contact_noise_index, &prepared->tiled_atmosphere.root))
+          renderer, pass, packet, upload, width, height, 15u, depth,
+          &prepared->tiled_atmosphere.root, &root))
     return false_v;
+  if (sun_correction) {
+    const VkrShadowPassPayload *shadow = packet->input.shadow;
+    root->sun_light_texture_id = sun_light.gpuResourceID._impl;
+    root->contact_noise_index =
+        renderer->prepared_frame.tiled_temporal_enabled
+            ? packet->input.frame.frame_index
+            : 0u;
+    /* The reversed perspective maps distance d along the camera axis to
+       depth m23 / d - m22 (mat4_perspective_reversed). */
+    root->depth_offset = packet->temporal.jittered_projection.m22;
+    root->depth_scale = packet->temporal.jittered_projection.m23;
+    root->sun_flags =
+        (packet->tiled_sun_contact ? VKR_METAL_TILED_SUN_CONTACT : 0u) |
+        (sdf && shadow->sdf_mode >= VKR_SHADOW_SDF_MODE_REPLACE
+             ? VKR_METAL_TILED_SUN_SDF_REPLACE
+             : 0u) |
+        (sdf ? VKR_METAL_TILED_SUN_SDF : 0u);
+    if (sdf) {
+      root->sun_shadow_texture_id = sun_shadow.gpuResourceID._impl;
+      root->sun_shadow_start = vkr_metal_packet_sun_shadow_start(shadow);
+      root->sun_shadow_band =
+          VKR_METAL_SUN_SHADOW_BAND_SHARE * root->sun_shadow_start;
+    }
+  }
   prepared->tiled_atmosphere.viewport =
       (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
-  prepared->tiled_atmosphere.sun = sun_contact ? 1u : 0u;
+  prepared->tiled_atmosphere.sun = sun_correction ? 1u : 0u;
   prepared->active = true_v;
   return true_v;
 }
@@ -2999,6 +3026,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_TILED_STABILIZE:
     return vkr_metal_packet_prepare_tiled_stabilize(renderer, pass, packet,
                                                     prepared, upload);
+  case VKR_RG_EXECUTOR_TILED_SUN_SHADOW:
+    return vkr_metal_packet_prepare_tiled_sun_shadow(renderer, pass, packet,
+                                                     prepared, upload);
   case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
   case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
   case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:

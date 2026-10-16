@@ -206,6 +206,9 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
   /* Off keeps the identity cases had before sun contact shadows existed. */
   if (renderer->shadow_contact)
     ADD("renderer.shadow_contact", "%u", 1u);
+  if (renderer->shadow_sdf_mode != VKR_SHADOW_SDF_MODE_OFF)
+    ADD("renderer.shadow_sdf", "%s",
+        vkr_harness_shadow_sdf_name(renderer->shadow_sdf_mode));
   /* Off keeps the identity cases had before far-cascade EVSM existed. */
   if (vkr_harness_shadow_evsm_enabled(renderer))
     ADD("renderer.shadow_evsm", "%u", 1u);

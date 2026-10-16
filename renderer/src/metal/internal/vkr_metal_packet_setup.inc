@@ -93,6 +93,8 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT:
   case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
   case VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT:
+  case VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT:
+  case VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
     return 0;
@@ -1294,6 +1296,20 @@ vkr_metal_packet_create_environment_pipelines(VkrMetalPacketRenderer *renderer,
       renderer, fragment, "vkr_metal_packet_cloud_trace",
       VKR_METAL_PACKET_ABI_CLOUD_TRACE_ROOT, false_v,
       @"VKR Metal packet cloud trace");
+  renderer->sdf_clear_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_clear",
+      VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT, false_v, @"VKR SDF clear");
+  renderer->sdf_splat_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_splat",
+      VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT, false_v, @"VKR SDF splat");
+  renderer->sdf_convert_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_convert",
+      VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT, false_v, @"VKR SDF convert");
+  renderer->sun_shadow_trace_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_sun_shadow_trace",
+          VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT, false_v,
+          @"VKR SDF sun shadow trace");
   renderer->cloud_sky_light_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_cloud_sky_light",
       VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT, false_v,
@@ -1560,6 +1576,10 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->tiled_atmosphere_pipelines[0], "tiled atmosphere pipeline"},
       {renderer->tiled_resolve_pipelines[0], "tiled resolve pipeline"},
       {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
+      {renderer->sdf_clear_pipeline, "SDF clear pipeline"},
+      {renderer->sdf_splat_pipeline, "SDF splat pipeline"},
+      {renderer->sdf_convert_pipeline, "SDF convert pipeline"},
+      {renderer->sun_shadow_trace_pipeline, "SDF sun shadow trace pipeline"},
       {renderer->tiled_text_pipeline, "tiled world text pipeline"},
       {renderer->depth_write_state, "depth-write state"},
       {renderer->shadow_depth_write_state, "shadow depth-write state"},

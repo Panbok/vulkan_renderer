@@ -799,7 +799,11 @@ selected baked lamps ([ADR-108](adr/108-baked-lamp-direct-pages.md)).
 analytic height fog over the resolved image, splitting pixels that mix sky
 and surface samples between their media; with sun contact shadows on, the
 opaque pass also writes the sun's light and this draw removes the part a
-depth march toward the sun finds occluded. `Tiled.Blend` draws glass
+depth march toward the sun finds occluded. A prototype of SDF sun shadows
+past the near cascades (`VKR_SUN_SDF`, the shadow quality proposal's T5)
+traces distance volumes the GPU generates from static geometry in
+`Tiled.SunShadow` and corrects the sun's light through the same draw.
+`Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough
 glass blurs through a half-resolution copy of the image, taken only on frames
 with either in view. Projected decals lay their materials' base colour over

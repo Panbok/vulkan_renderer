@@ -470,28 +470,46 @@ Remaining work:
 - The desktop pipeline's march in `Lighting.Deferred`, which needs no
   second target, through the same shared helpers.
 
-### T5: tiled SDF shadows, prototype first
+### T5: tiled SDF shadows, prototype and gate
 
-- Cook: `vkr_bakery` writes a narrow-band distance volume per static mesh, at
-  most 64³ voxels in BC4. Bakery owns the generation, as it owns other baked
-  data.
-- Trace: a compute pass at half render resolution after `Tiled.Opaque` cone
-  traces the sun direction only on pixels past the near cascades and in their
-  penumbra band, against the mesh volumes whose light-space bounds touch the
-  pixel's screen tile (the approach of Unreal's distance field shadows). A
-  camera-centred global SDF clipmap is compared only if the object culling
-  becomes the cost.
-- Casters: static meshes and rigid moving ones, such as the lift and the
-  freight cars, through their instance transforms. Skinned, alpha-tested,
-  foliage, transmissive and thinner than two voxels keep the cascades and
-  the far level.
-- Invalidation: ADR-041's caster bounds and static generations select the
-  volumes to reload; the sun direction invalidates nothing.
-- Gate on an M1 Pro at the default 0.6 scale, on the Level Design Test valley
-  and freight views and on Bistro: trace at or under 1.0 ms median and SDF
-  memory at or under 96 MiB on the Level Design Test, with captures against
-  the far level. The result decides whether T5 replaces the far level for
-  static casters, adds to it, or is dropped.
+A prototype runs on the tiled pipeline behind `VKR_SUN_SDF` (`add`,
+`replace` or `replace_all`) or the harness case field `shadow_sdf`; no
+graphics setting selects it ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)
+decision 6, `vkr_metal_packet_sdf.inc`, `world/sun_shadow.metal`).
+
+- Volumes: one unsigned narrow-band distance volume per static opaque
+  submesh, R8 at most 64³ with voxels no smaller than 0.25 world metres
+  (half the far level's texel). The GPU generates them from the resident
+  triangles, four a frame, the first time a frame traces them, so the
+  prototype needs no cooked data; Bakery would own them if T5 stays.
+  Casters under 0.25 m or over 120 m (terrain), cutout, skinned and moving
+  casters keep the cascades.
+- Culling: a ray toward the sun is one point in the plane across the sun,
+  so a light-space grid of 128² cells over 800 m around the camera lists
+  each cell's casters; the CPU rebuilds it each frame.
+- Trace: `Tiled.SunShadow` sphere-traces at half resolution past where the
+  far level starts, with a penumbra from the nearest miss over the sun's
+  half angle (at least half a degree). The atmosphere draw takes the trace
+  alone (`replace`) or the darker of the trace and the far level (`add`)
+  through the opaque pass's unshadowed sun light.
+
+Gate results on the M1 Pro, 2026-10-16, local and not authoritative:
+
+| Measure | Result | Gate |
+|---|---|---|
+| Trace, Level Design Test valley and freight views | 0.25 and 0.32 ms at 1146×595 in the headless editor, about 0.5 and 0.64 ms scaled by pixels to 1440p at 0.6 | 1.0 ms |
+| Trace, Bistro plaza traced at every pixel (`replace_all`) | 0.55 ms median, 0.57 ms p95, at 1440p and 0.6 (`tiled_bistro_plaza_timing_sun_sdf_replace_all`) | 1.0 ms |
+| SDF memory, Level Design Test | 41.5 MB: 13,943 volumes and 8 MB of generation scratch | 96 MiB |
+| SDF memory, Bistro | 23.7 MiB with scratch | — |
+
+At 64³ without the voxel floor the Level Design Test took 318 MB. Captures:
+the trace reproduces Bistro's building shadows with softer edges when it
+replaces the cascades everywhere. Past the near cascades on the Level
+Design Test, `replace` sharpens the viaduct piers' shadows but loses the
+terrain's and the forest's, which have no volumes; `add` keeps them and
+adds the piers' sharper shadows. Not done: a moving-sun sweep, the rigid
+movers (lift, freight cars), authoritative 1440p timing of the Level
+Design Test, Metal validation.
 
 ## Budgets
 
@@ -538,8 +556,11 @@ Settled by the owner on 2026-10-16:
 
 Open:
 
-- After the T5 gate: SDF replaces the far level for static casters, adds to
-  it, or is dropped.
+- After the T5 gate, which the prototype passes on cost and memory: SDF
+  replaces the far level for static casters, adds to it, or is dropped.
+  Recommendation: add to it now, since replacing it loses the terrain's
+  and foliage's far shadows; replace it only once the far level draws just
+  the casters without volumes.
 
 ## Evidence required
 

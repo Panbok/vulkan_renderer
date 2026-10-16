@@ -45,6 +45,9 @@ typedef struct VkrPreparedFrame {
       shadow payload asks for them, the sun shines and the backend's
       shading variants that write the sun's light are ready. */
   bool8_t tiled_sun_contact;
+  /** Signed-distance-field sun shadows on the tiled pipeline, under the same
+      conditions, past the near cascades (VkrShadowSdfMode). */
+  bool8_t tiled_sun_sdf;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its

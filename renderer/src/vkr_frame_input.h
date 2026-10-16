@@ -666,6 +666,19 @@ vkr_local_shadow_render_layer_mask(const VkrLocalShadowPassPayload *payload) {
   return mask;
 }
 
+/** How SDF sun shadows (the tiled pipeline's, past the near cascades)
+ * combine with the far level's visibility. */
+typedef enum VkrShadowSdfMode {
+  VKR_SHADOW_SDF_MODE_OFF = 0,
+  /** The darker of the far level and the SDF trace. */
+  VKR_SHADOW_SDF_MODE_ADD,
+  /** The SDF trace alone. */
+  VKR_SHADOW_SDF_MODE_REPLACE,
+  /** The SDF trace alone at every distance, the near cascades' range too:
+   * a diagnostic that compares the trace with the cascades. */
+  VKR_SHADOW_SDF_MODE_REPLACE_ALL,
+} VkrShadowSdfMode;
+
 /**
  * @brief Payload for the shadow pass across cascades.
  *
@@ -678,6 +691,8 @@ typedef struct VkrShadowPassPayload {
    * atmosphere correction (VkrPreparedFrame.tiled_sun_contact) and desktop
    * deferred lighting (VkrPreparedFrame.sun_contact_shadows). */
   bool8_t contact_shadows;
+  /** SDF sun shadows, a VkrShadowSdfMode; the tiled pipeline draws them. */
+  uint32_t sdf_mode;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE keep filtered exponential
    * variance moments that deferred lighting samples instead of PCF; requires
    * cascade_count above that cascade. */

@@ -500,6 +500,8 @@ typedef enum VkrGpuAllocationOwner {
   VKR_GPU_ALLOCATION_OWNER_STAGING,
   VKR_GPU_ALLOCATION_OWNER_READBACK,
   VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
+  /** The tiled pipeline's SDF sun shadow volumes and their scratch. */
+  VKR_GPU_ALLOCATION_OWNER_SHADOW_FIELD,
   VKR_GPU_ALLOCATION_OWNER_COUNT,
 } VkrGpuAllocationOwner;
 
@@ -597,9 +599,6 @@ typedef enum VkrTextureFormat {
   /** Unsigned half-float BC6H for the desktop pipeline's baked lamp
    * pages. */
   VKR_TEXTURE_FORMAT_BC6H_UFLOAT,
-  /** Packed unsigned float RGB for render targets that hold light, such as
-   * the tiled pipeline's sun light of sun contact frames. */
-  VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT,
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;

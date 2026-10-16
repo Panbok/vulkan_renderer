@@ -199,12 +199,64 @@ typedef struct VkrMetalPacketGraphBuffer {
   bool8_t live;
 } VkrMetalPacketGraphBuffer;
 
+/* SDF sun shadows (the shadow quality proposal's T5 prototype): one
+   submesh's distance volume, generated on the GPU from its resident geometry
+   the first time a frame traces it (vkr_metal_packet_sdf.inc). */
+typedef enum VkrMetalSdfVolumeState {
+  VKR_METAL_SDF_VOLUME_EMPTY = 0,
+  VKR_METAL_SDF_VOLUME_READY,
+  /* Too small to cast a far shadow, or its texture could not be created. */
+  VKR_METAL_SDF_VOLUME_SKIPPED,
+} VkrMetalSdfVolumeState;
+
+typedef struct VkrMetalSdfVolume {
+  /* R8Unorm 3D: unsigned distance to the nearest triangle over the band,
+     in mesh-local voxels of `voxel`, over `dims` voxels from `box_min`.
+     Before generation `box_min` and `box_size` are the submesh's quantized
+     position box (its decode record). */
+  VkrMetalTextureResource texture;
+  Vec3 box_min;
+  Vec3 box_size;
+  float32_t voxel;
+  uint32_t dims[3];
+  uint32_t state;
+} VkrMetalSdfVolume;
+
+/* Distance volumes: at most this many voxels a side, with a border of
+   VKR_METAL_SDF_PAD_VOXELS, voxels no smaller than
+   VKR_METAL_SDF_MIN_WORLD_VOXEL world metres (half the far level's texel),
+   distances banded at VKR_METAL_SDF_BAND_VOXELS.
+   Casters under VKR_METAL_SDF_MIN_EXTENT world metres cast no far shadow
+   worth a volume; casters over VKR_METAL_SDF_MAX_EXTENT, such as terrain,
+   keep the cascades. */
+#define VKR_METAL_SDF_MAX_DIM 64u
+#define VKR_METAL_SDF_PAD_VOXELS 2u
+#define VKR_METAL_SDF_MIN_WORLD_VOXEL 0.25f
+#define VKR_METAL_SDF_BAND_VOXELS 6.0f
+#define VKR_METAL_SDF_MIN_EXTENT 0.25f
+#define VKR_METAL_SDF_MAX_EXTENT 120.0f
+/* The light-space grid: cells a side over twice the half extent in metres
+   around the camera, and its object and cell-entry capacities. */
+#define VKR_METAL_SDF_GRID_SIZE 128u
+#define VKR_METAL_SDF_GRID_HALF_EXTENT 400.0f
+#define VKR_METAL_SDF_MAX_OBJECTS 16384u
+#define VKR_METAL_SDF_MAX_GRID_ENTRIES 262144u
+/* How far toward the sun the trace looks, and the smallest sun half angle
+   its penumbrae take (half a degree). */
+#define VKR_METAL_SDF_TRACE_DISTANCE 300.0f
+#define VKR_METAL_SDF_MIN_SUN_TAN 0.00873f
+/* The share of the far level's start over which the trace takes over. */
+#define VKR_METAL_SUN_SHADOW_BAND_SHARE 0.1f
+
 typedef struct VkrMetalPacketMesh {
   VkrMetalBufferResource vertices;
   VkrMetalBufferResource indices;
   VkrGpuGeometryRow gpu_row;
   VkrGeometryRangeAllocation ranges;
   VkrMetalPacketSubmeshCreateInfo *submeshes;
+  /* One per submesh once a frame first traces SDF sun shadows; NULL
+     before. */
+  VkrMetalSdfVolume *sdf_volumes;
   uint32_t vertex_count;
   uint32_t index_count;
   uint32_t submesh_count;
@@ -496,11 +548,18 @@ typedef struct VkrMetalPacketCommitFeedbackRecord {
   bool8_t in_use;
 } VkrMetalPacketCommitFeedbackRecord;
 
+/* Distance volumes one frame generates at most, each through its own
+   command-slot scratch. */
+#define VKR_METAL_SDF_GENERATIONS_PER_FRAME 4u
+
 typedef struct VkrMetalPacketCommandSlot {
   /* The frame's count of late Custom draws in the readback slice, which
      the result reads once the frame completes (ADR-096); NULL without
      Custom graphs. */
   const uint32_t *custom_late_readback;
+  /* Atomic distance scratch of the distance volumes this slot's frame
+     generates; created the first time one does. */
+  VkrMetalBufferResource sdf_scratch[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;
@@ -611,8 +670,8 @@ typedef enum VkrMetalTiledLighting {
    are created in the background when a frame first asks for them. */
 #define VKR_METAL_TILED_SUN_VARIANT 2u
 #define VKR_METAL_TILED_SHADING_VARIANT_COUNT 4u
-/* The sun's light target: unsigned, as the light it holds. */
-#define VKR_METAL_TILED_SUN_LIGHT_FORMAT MTLPixelFormatRG11B10Float
+/* The sun light target: the unshadowed light and the cascade visibility. */
+#define VKR_METAL_TILED_SUN_LIGHT_FORMAT MTLPixelFormatRGBA16Float
 
 #define VKR_METAL_CUSTOM_LIBRARY_PATH 4096u
 
@@ -976,6 +1035,22 @@ struct VkrMetalPacketRenderer {
       cloud_noise_pipelines[VKR_METAL_PACKET_CLOUD_NOISE_COUNT];
   id<MTLComputePipelineState> cloud_shadow_pipeline;
   id<MTLComputePipelineState> cloud_trace_pipeline;
+  /* SDF sun shadows: a distance volume's clear, triangle splat and
+     conversion, and the half-resolution trace (vkr_metal_packet_sdf.inc). */
+  id<MTLComputePipelineState> sdf_clear_pipeline;
+  id<MTLComputePipelineState> sdf_splat_pipeline;
+  id<MTLComputePipelineState> sdf_convert_pipeline;
+  id<MTLComputePipelineState> sun_shadow_trace_pipeline;
+  /* CPU scratch the trace's light-space grid is built in, grown as needed:
+     per object its cell rectangle, and per cell a count then a cursor. */
+  uint16_t *sdf_object_cells;
+  uint32_t sdf_object_cell_capacity;
+  uint32_t *sdf_cell_cursor;
+  /* Bytes of the distance volumes created so far, and the submission of the
+     last frame that generated one, which a later trace waits for while it
+     may still run. */
+  uint64_t sdf_volume_bytes;
+  uint64_t sdf_generation_submit_value;
   id<MTLComputePipelineState> cloud_sky_light_pipeline;
   id<MTLComputePipelineState> cloud_sky_light_sh_pipeline;
   id<MTLComputePipelineState> cloud_sky_light_mips_pipeline;
@@ -1292,6 +1367,7 @@ vkr_metal_packet_present_committed_frame(VkrMetalPacketRenderer *renderer,
 #include "metal/internal/vkr_metal_packet_resources.inc"
 #include "metal/internal/vkr_metal_packet_animation_preview.inc"
 #include "metal/internal/vkr_metal_packet_frame.inc"
+#include "metal/internal/vkr_metal_packet_sdf.inc"
 #include "metal/internal/vkr_metal_packet_present.inc"
 #include "metal/internal/vkr_metal_packet_lifecycle.inc"
 // clang-format on

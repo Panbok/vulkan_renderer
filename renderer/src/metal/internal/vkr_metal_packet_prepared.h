@@ -201,6 +201,18 @@ typedef struct VkrMetalPacketPreparedPass {
       VkrMetalPacketDispatch dispatch;
       bool8_t history_in_flight;
     } stabilize;
+    /* Tiled.SunShadow: each new distance volume's clear, splat and
+       conversion, then the trace. */
+    struct {
+      VkrMetalPacketDispatch clears[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+      VkrMetalPacketDispatch splats[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+      VkrMetalPacketDispatch converts[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+      uint32_t generation_count;
+      VkrMetalPacketDispatch trace;
+      /* An earlier frame's generation may still run; Metal 4 does not
+         order command buffers. */
+      bool8_t volumes_in_flight;
+    } sun_shadow;
     struct {
       id<MTLTexture> source;
       /* The picked pixel's resolved depth, copied after its object id. */

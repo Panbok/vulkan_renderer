@@ -105,8 +105,9 @@ vkr_global const char
         [VKR_GPU_ALLOCATION_OWNER_STAGING] = "staging",
         [VKR_GPU_ALLOCATION_OWNER_READBACK] = "readback",
         [VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN] = "swapchain",
+        [VKR_GPU_ALLOCATION_OWNER_SHADOW_FIELD] = "shadow_field",
 };
-_Static_assert(VKR_GPU_ALLOCATION_OWNER_COUNT == 11,
+_Static_assert(VKR_GPU_ALLOCATION_OWNER_COUNT == 12,
                "A new VkrGpuAllocationOwner needs a report name here");
 
 typedef struct VkrGpuOwnerMetricRowDescription {

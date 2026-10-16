@@ -255,7 +255,8 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->input.world->refractive_draw_count > 0u;
   frame->tiled_temporal_enabled = packet->tiled_temporal_enabled;
   frame->tiled_temporal_still = packet->tiled_temporal_still;
-  frame->tiled_sun_contact = packet->tiled_sun_contact;
+  frame->tiled_sun_light = packet->tiled_sun_contact || packet->tiled_sun_sdf;
+  frame->tiled_sun_sdf = packet->tiled_sun_sdf;
   frame->tiled_object_motion_pending =
       frame->tiled_temporal_enabled && packet->input.world &&
       packet->input.world->gpu_candidate_count >
@@ -648,6 +649,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                               VKR_RG_PASS_TYPE_TRANSFER},
     [VKR_RG_EXECUTOR_TILED_STABILIZE] = {"pass.tiled.stabilize",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_SUN_SHADOW] = {"pass.tiled.sun_shadow",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

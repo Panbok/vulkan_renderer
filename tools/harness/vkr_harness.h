@@ -266,6 +266,10 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t shadow_sdsm;
   /** Screen-space contact shadows for the sun (the tiled pipeline's). */
   bool8_t shadow_contact;
+  /** SDF sun shadows (the tiled pipeline's), a VkrShadowSdfMode from the
+      case's "off", "add", "replace" or "replace_all". It fills padding that
+      stored summaries left zero, so they read as off. */
+  uint8_t shadow_sdf_mode;
   char backend[16];
   char shadow_preset[32];
   uint32_t shadow_cascades;
@@ -849,6 +853,9 @@ bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
 
 /** Sets the value every optional renderer field takes when a case omits it;
  * stored summaries older than a control take the same value. */
+/** A VkrShadowSdfMode's case name: "off", "add", "replace" or
+    "replace_all". */
+const char *vkr_harness_shadow_sdf_name(uint8_t mode);
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer);
 
 /** Resolves an optional case pin against the caller's environment request. */

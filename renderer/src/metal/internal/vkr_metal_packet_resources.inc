@@ -260,6 +260,51 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
   return true_v;
 }
 
+/* Records each submesh's quantized position box, from which a distance
+   volume is fitted when SDF sun shadows first trace it; without memory the
+   mesh casts no SDF shadow. */
+vkr_internal void
+vkr_metal_packet_init_sdf_volumes(VkrMetalPacketRenderer *renderer,
+                                  VkrMetalPacketMesh *mesh,
+                                  const VkrGpuGeometryDecodeRecord *decodes) {
+  mesh->sdf_volumes = vkr_allocator_alloc(
+      renderer->allocator,
+      (uint64_t)mesh->submesh_count * sizeof(VkrMetalSdfVolume),
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!mesh->sdf_volumes)
+    return;
+  for (uint32_t i = 0u; i < mesh->submesh_count; ++i) {
+    const VkrGpuGeometryDecodeRecord *decode =
+        &decodes[mesh->submeshes[i].decode_index];
+    mesh->sdf_volumes[i] = (VkrMetalSdfVolume){
+        .box_min = vec3_new(decode->position_bias[0], decode->position_bias[1],
+                            decode->position_bias[2]),
+        .box_size =
+            vec3_new(decode->position_scale[0], decode->position_scale[1],
+                     decode->position_scale[2]),
+    };
+  }
+}
+
+/* Retires a mesh's distance volumes after `retire_value` and frees their
+   records. */
+vkr_internal void
+vkr_metal_packet_release_sdf_volumes(VkrMetalPacketRenderer *renderer,
+                                     VkrMetalPacketMesh *mesh,
+                                     uint64_t retire_value) {
+  if (!mesh->sdf_volumes)
+    return;
+  for (uint32_t i = 0u; i < mesh->submesh_count; ++i) {
+    if (mesh->sdf_volumes[i].texture.metal_texture)
+      (void)vkr_metal_memory_device_retire(
+          renderer->memory, mesh->sdf_volumes[i].texture.handle, retire_value);
+  }
+  vkr_allocator_free(renderer->allocator, mesh->sdf_volumes,
+                     (uint64_t)mesh->submesh_count * sizeof(VkrMetalSdfVolume),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  mesh->sdf_volumes = NULL;
+}
+
 vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMeshCreateInfo *create_info,
@@ -443,6 +488,7 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
       submeshes[0] = default_submesh;
       slot->submesh_count = 1;
     }
+    vkr_metal_packet_init_sdf_volumes(renderer, slot, create_info->decodes);
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
     VKR_METAL_DIAGNOSTIC(renderer, "geometry_ranges_allocate",
@@ -578,6 +624,11 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
                                              loader_result);
       return true_v;
     }
+    /* A republished mesh with other ranges fits new distance volumes. */
+    if (existing->live)
+      vkr_metal_packet_release_sdf_volumes(
+          renderer, existing,
+          Max(existing->last_use_submit_value, renderer->submit_value));
     const uint64_t submesh_bytes =
         loader_result->submesh_count * sizeof(VkrMetalPacketSubmeshCreateInfo);
     VkrMetalPacketSubmeshCreateInfo *submeshes = vkr_allocator_alloc(
@@ -593,6 +644,8 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       existing->submeshes = submeshes;
       existing->submesh_count = (uint32_t)loader_result->submesh_count;
+      vkr_metal_packet_init_sdf_volumes(renderer, existing,
+                                        loader_result->buffer.decodes);
       return true_v;
     }
     VkrMeshHandle published = VKR_MESH_HANDLE_INVALID;
@@ -682,6 +735,7 @@ bool8_t vkr_metal_packet_renderer_destroy_mesh(VkrMetalPacketRenderer *renderer,
     vkr_geometry_megabuffer_account_retire(
         &mega->accounting, vertex_bytes, index_bytes,
         (uint64_t)slot->decode_count * sizeof(VkrGpuGeometryDecodeRecord));
+    vkr_metal_packet_release_sdf_volumes(renderer, slot, retire_value);
     slot->live = false_v;
     slot->generation =
         slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
@@ -2500,6 +2554,22 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
   if (packet->input.picking && packet->input.picking->pending)
     plan->root_count += 1u;
   plan->root_count += plan->ui_batch_count;
+  /* SDF sun shadows: the volumes a frame generates, the trace, the caster
+     records and the light-space grid at its capacity. */
+  if (renderer->prepared_frame.tiled_sun_sdf && packet->input.world) {
+    const uint64_t objects =
+        Min(packet->input.world->static_candidate_count,
+            VKR_METAL_SDF_MAX_OBJECTS);
+    const uint64_t grid_bytes =
+        ((uint64_t)VKR_METAL_SDF_GRID_SIZE * VKR_METAL_SDF_GRID_SIZE + 1u +
+         VKR_METAL_SDF_MAX_GRID_ENTRIES) *
+        sizeof(uint32_t);
+    plan->root_count +=
+        VKR_METAL_SDF_GENERATIONS_PER_FRAME + 1u +
+        (objects * sizeof(VkrMetalSdfObject) + grid_bytes) /
+            VKR_METAL_PACKET_DRAW_ROOT_STRIDE +
+        2u;
+  }
   /*
    * Pass encoders allocate at most one ordinary root each. Keep that authored
    * graph contribution explicit instead of relying on the fixed estimates

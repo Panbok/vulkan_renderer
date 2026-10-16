@@ -162,9 +162,10 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"picking_pending && !transmission_pending",
      VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION},
     {"blend_pending", VKR_RG_JSON_CONDITION_BLEND_PENDING},
-    {"(clouds_enabled || fog_apply_enabled || tiled_sun_contact)",
+    {"(clouds_enabled || fog_apply_enabled || tiled_sun_light)",
      VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE},
-    {"tiled_sun_contact", VKR_RG_JSON_CONDITION_TILED_SUN_CONTACT},
+    {"tiled_sun_light", VKR_RG_JSON_CONDITION_TILED_SUN_LIGHT},
+    {"tiled_sun_sdf", VKR_RG_JSON_CONDITION_TILED_SUN_SDF},
     {"tiled_refraction_pending",
      VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING},
     {"tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED},
@@ -525,7 +526,6 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"R32G32_UINT", VKR_TEXTURE_FORMAT_R32G32_UINT},
     {"R16G16_SNORM", VKR_TEXTURE_FORMAT_R16G16_SNORM},
     {"R16G16_SFLOAT", VKR_TEXTURE_FORMAT_R16G16_SFLOAT},
-    {"B10G11R11_UFLOAT", VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT},
     {"D16_UNORM", VKR_TEXTURE_FORMAT_D16_UNORM},
     {"D32_SFLOAT", VKR_TEXTURE_FORMAT_D32_SFLOAT},
     {"D24_UNORM_S8_UINT", VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT},
@@ -2277,9 +2277,11 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->blend_pending;
   case VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE:
     return frame->clouds_enabled || frame->fog_apply_enabled ||
-           frame->tiled_sun_contact;
-  case VKR_RG_JSON_CONDITION_TILED_SUN_CONTACT:
-    return frame->tiled_sun_contact;
+           frame->tiled_sun_light;
+  case VKR_RG_JSON_CONDITION_TILED_SUN_LIGHT:
+    return frame->tiled_sun_light;
+  case VKR_RG_JSON_CONDITION_TILED_SUN_SDF:
+    return frame->tiled_sun_sdf;
   case VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING:
     return frame->tiled_refraction_pending;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED:

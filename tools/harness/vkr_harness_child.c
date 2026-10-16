@@ -1631,6 +1631,7 @@ vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
   config.pcf_uniform_early_out = case_manifest->renderer.shadow_pcf_early_out;
   config.sdsm_enabled = case_manifest->renderer.shadow_sdsm;
   config.sun_contact = case_manifest->renderer.shadow_contact;
+  config.sun_sdf_mode = case_manifest->renderer.shadow_sdf_mode;
   config.far_cascade_evsm =
       vkr_harness_shadow_evsm_enabled(&case_manifest->renderer);
   config.cascade_split_lambda = case_manifest->renderer.shadow_split_lambda;

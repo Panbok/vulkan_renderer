@@ -125,14 +125,25 @@ struct VkrMetalTiledSkyRoot {
   // Uniform background radiance for the constant sky mode.
   float4 sky_radiance;
   depth2d<float, access::read> depth;
+  // The opaque pass's sun light without the cascades, and their visibility.
   texture2d<float, access::read> sun_light;
   uint contact_noise_index;
   // A resolved depth's distance along the camera axis:
   // depth_scale / (depth + depth_offset).
   float depth_offset;
   float depth_scale;
-  uint reserved;
+  // VKR_METAL_TILED_SUN_*.
+  uint sun_flags;
+  // The SDF trace's visibility and coverage at half resolution, and where it
+  // takes over from the cascades.
+  texture2d<float, access::sample> sun_shadow;
+  float sun_shadow_start;
+  float sun_shadow_band;
 };
+
+#define VKR_METAL_TILED_SUN_CONTACT 1u
+#define VKR_METAL_TILED_SUN_SDF 2u
+#define VKR_METAL_TILED_SUN_SDF_REPLACE 4u
 
 struct VkrMetalTiledSkyOutput {
   float4 position [[position]];
@@ -335,22 +346,49 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
     const VkrMetalTiledMedia sky = vkr_metal_tiled_sky_media(root, pixel);
     return float4(destination.rgb * sky.kept + sky.added, 1.0f);
   }
-  // In sun contact frames the sun's light that the march finds occluded
-  // leaves the surfaces' light first, before the media scale it: the sun's
-  // term is linear in its visibility. The sky's samples hold no sun light,
-  // and an edge pixel's sun light is its samples' mean, which the nearest
-  // sample's visibility scales.
+  // Frames that correct the sun's light replace its cascades' visibility
+  // before the media scale it: the opaque pass kept the sun's light without
+  // the cascades and their visibility, and the sun's term is linear in its
+  // visibility. Past the near cascades the SDF trace takes over from the far
+  // level, alone or as the darker of the two; the contact march then scales
+  // the result. The sky's samples hold no sun light, and an edge pixel's sun
+  // light is its samples' mean, which the nearest sample's visibility
+  // scales.
   float3 lit = destination.rgb;
   if (vkr_tiled_sun_output) {
     // A pixel whose sun light is under VKR_SUN_CONTACT_MIN_SHARE of its
-    // light cannot darken visibly and skips the march.
-    const float3 sun_light = root.sun_light.read(pixel).rgb;
-    if (dot(sun_light, float3(1.0f)) >
+    // light cannot change visibly and is left alone.
+    const float4 sun_light = root.sun_light.read(pixel);
+    if (dot(sun_light.rgb, float3(1.0f)) >
         VKR_SUN_CONTACT_MIN_SHARE * dot(lit, float3(1.0f))) {
-      const float3 world =
-          vkr_metal_tiled_resolved_world(root, float2(pixel) + 0.5f, depth);
-      const float visibility = vkr_metal_tiled_sun_contact(root, pixel, world);
-      lit = max(lit - sun_light * (1.0f - visibility), 0.0f);
+      const float cascades = sun_light.a;
+      float visibility = cascades;
+      if ((root.sun_flags & VKR_METAL_TILED_SUN_SDF) != 0u) {
+        constexpr sampler trace_sampler(coord::normalized,
+                                        address::clamp_to_edge,
+                                        filter::linear);
+        const float2 trace = root.sun_shadow
+                                 .sample(trace_sampler, (float2(pixel) + 0.5f) /
+                                                            float2(root.extent))
+                                 .rg;
+        const float axis_distance =
+            root.depth_scale / (depth + root.depth_offset);
+        const float weight =
+            trace.y * saturate((axis_distance - root.sun_shadow_start) /
+                               max(root.sun_shadow_band, 1e-3f));
+        const float traced =
+            (root.sun_flags & VKR_METAL_TILED_SUN_SDF_REPLACE) != 0u
+                ? trace.x
+                : min(cascades, trace.x);
+        visibility = mix(cascades, traced, weight);
+      }
+      if ((root.sun_flags & VKR_METAL_TILED_SUN_CONTACT) != 0u &&
+          visibility > 0.0f) {
+        const float3 world =
+            vkr_metal_tiled_resolved_world(root, float2(pixel) + 0.5f, depth);
+        visibility *= vkr_metal_tiled_sun_contact(root, pixel, world);
+      }
+      lit = max(lit + sun_light.rgb * (visibility - cascades), 0.0f);
     }
   }
   const VkrMetalTiledMedia near =
@@ -639,8 +677,8 @@ struct VkrMetalTiledSurfaceLight {
   float3 diffuse;
   float3 specular;
   float3 emissive;
-  // In sun contact frames, the sun's part of diffuse and specular
-  // (vkr_metal_tiled_pack_sun).
+  // In frames that correct the sun's light: its light without the cascades,
+  // and the cascades' visibility, packed (vkr_metal_tiled_pack_sun).
   uint sun;
   float3 base;
   float3 reflectance;
@@ -806,56 +844,74 @@ constant bool vkr_tiled_brdf_extension =
     is_function_constant_defined(vkr_tiled_brdf_extension_constant) &&
     vkr_tiled_brdf_extension_constant;
 
-// The sun's visibility at a forward-drawn surface: its cascades and the
-// cloud layer, zero where the surface faces away. The cascades take the
-// geometric normal: the receiver plane, normal offset and slope bias describe
-// the surface the map rasterized, not its normal map.
-static float vkr_metal_tiled_sun_visibility(
+// The sun's visibility at a forward-drawn surface through its cascades (x)
+// and the cloud layer (y), zero where the surface faces away. The cascades
+// take the geometric normal: the receiver plane, normal offset and slope bias
+// describe the surface the map rasterized, not its normal map.
+static float2 vkr_metal_tiled_sun_visibility(
     thread const VkrMetalTiledVertexOutput &input,
     constant VkrMetalPacketFrameRoot *frame, float3 normal,
     float3 geometric_normal) {
   const float3 sun = normalize(-frame->directional_direction_enabled.xyz);
   return dot(normal, sun) > 0.0f
-             ? vkr_metal_packet_directional_shadow_sample(
-                   frame, input.world_position, geometric_normal)
-                       .factor *
-                   vkr_metal_packet_cloud_shadow(frame, input.world_position)
-             : 0.0f;
+             ? float2(vkr_metal_packet_directional_shadow_sample(
+                          frame, input.world_position, geometric_normal)
+                          .factor,
+                      vkr_metal_packet_cloud_shadow(frame,
+                                                    input.world_position))
+             : float2(0.0f);
 }
 
-// The sun's light in the bit layout of its target, RG11B10F: the 11-, 11-
-// and 10-bit unsigned floats are the top bits of the half floats. Sun contact
-// frames carry it from the start of shading to the return in one register;
-// as three values it cost the opaque pass about 1.2 ms on the Bistro plaza
-// (M1 Pro, 1440p at 0.6 scale), as one about 0.2 ms.
-static uint vkr_metal_tiled_pack_sun(float3 light) {
-  const ushort3 bits = as_type<ushort3>(half3(min(light, 65000.0f)));
-  return (uint(bits.r) >> 4u) | ((uint(bits.g) >> 4u) << 11u) |
-         ((uint(bits.b) >> 5u) << 22u);
+// The sun's light and its cascades' visibility in one register, which frames
+// that correct the sun's light carry from the start of shading to the
+// return: as three or four values they cost the opaque pass about 1.0 to
+// 1.2 ms on the Bistro plaza (M1 Pro, 1440p at 0.6 scale), as one about
+// 0.1 ms. The light takes three 6-bit mantissas under a shared exponent
+// from 2^-15 to 2^16 (bits 0 to 22), the visibility 8 bits (23 to 30). The
+// colour holds the exact light; the correction alone reads this one.
+static uint vkr_metal_tiled_pack_sun(float3 light, float visibility) {
+  const float largest = max(light.r, max(light.g, light.b));
+  if (!(largest >= exp2(-15.0f)))
+    return uint(saturate(visibility) * 255.0f + 0.5f) << 23u;
+  const float exponent = clamp(floor(log2(largest)) + 1.0f, -14.0f, 16.0f);
+  const uint3 mantissa =
+      uint3(saturate(light * exp2(-exponent)) * 63.0f + 0.5f);
+  return mantissa.r | (mantissa.g << 6u) | (mantissa.b << 12u) |
+         (uint(exponent + 15.0f) << 18u) |
+         (uint(saturate(visibility) * 255.0f + 0.5f) << 23u);
 }
 
-static half3 vkr_metal_tiled_unpack_sun(uint packed) {
-  return as_type<half3>(ushort3(ushort((packed & 0x7ffu) << 4u),
-                                ushort(((packed >> 11u) & 0x7ffu) << 4u),
-                                ushort((packed >> 22u) << 5u)));
+static half4 vkr_metal_tiled_unpack_sun(uint packed) {
+  const float scale =
+      exp2(float((packed >> 18u) & 31u) - 15.0f) / 63.0f;
+  const float3 mantissa =
+      float3(uint3(packed, packed >> 6u, packed >> 12u) & 63u);
+  return half4(float4(mantissa * scale, float(packed >> 23u) / 255.0f));
 }
 
-// Adds the sun's light at `visibility` to `light`; sun contact frames also
-// keep it as `light.sun`.
+// Adds the sun's light at `visibility` (cascades, clouds) to `light`. Frames
+// that correct the sun's light also keep its light through the clouds alone
+// and the cascades' visibility, which the atmosphere draw replaces.
 static void vkr_metal_tiled_light_sun(
-    constant VkrMetalPacketFrameRoot *frame, float visibility, float3 normal,
+    constant VkrMetalPacketFrameRoot *frame, float2 visibility, float3 normal,
     float3 view, float3 base, float metallic, float roughness, float3 f0,
     thread const VkrGgxMaterialEnergy &energy,
     thread VkrMetalTiledSurfaceLight &light) {
   VkrMetalPacketDirectResult direct = vkr_metal_packet_direct(
       normal, view, normalize(-frame->directional_direction_enabled.xyz),
       frame->directional_color_intensity.rgb *
-          frame->directional_color_intensity.w * visibility,
+          frame->directional_color_intensity.w *
+          (vkr_tiled_sun_output ? visibility.y : visibility.x * visibility.y),
       base, metallic, roughness, f0, energy);
-  light.diffuse += direct.diffuse;
-  light.specular += direct.specular;
-  if (vkr_tiled_sun_output)
-    light.sun = vkr_metal_tiled_pack_sun(direct.diffuse + direct.specular);
+  if (vkr_tiled_sun_output) {
+    light.diffuse += direct.diffuse * visibility.x;
+    light.specular += direct.specular * visibility.x;
+    light.sun =
+        vkr_metal_tiled_pack_sun(direct.diffuse + direct.specular, visibility.x);
+  } else {
+    light.diffuse += direct.diffuse;
+    light.specular += direct.specular;
+  }
 }
 
 // Shades a forward-drawn surface: the sun with its cascades and cloud shadow,
@@ -932,8 +988,8 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   light.metallic = metallic;
 
   // The sun, shadowed by its cascades and the cloud layer, first: lit later,
-  // its inputs stay live through the other lights' code. Sun contact frames
-  // also keep its light, packed, to return beside the colour.
+  // its inputs stay live through the other lights' code. Frames that correct
+  // the sun's light also keep it, packed, to return beside the colour.
   if (frame->directional_direction_enabled.w > 0.5f)
     vkr_metal_tiled_light_sun(
         frame,
@@ -1391,7 +1447,7 @@ vkr_metal_tiled_forward(thread const VkrMetalTiledVertexOutput &input,
       input, frame, material, surface, front_facing, probe,
       visible.instance_index);
   return {float4(light.diffuse + light.specular + light.emissive, coverage),
-          half4(vkr_metal_tiled_unpack_sun(light.sun), 0.0h)};
+          vkr_metal_tiled_unpack_sun(light.sun)};
 }
 
 fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_fragment(

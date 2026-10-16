@@ -466,6 +466,22 @@ static bool8_t sample_additive_dirty(uint32_t slot);
 vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
                                          uint32_t slot);
 
+/* SDF sun shadows are a prototype behind the shadow quality proposal's T5
+   gate: VKR_SUN_SDF (add, replace or replace_all, a VkrShadowSdfMode)
+   selects them on the tiled pipeline; no graphics setting does. */
+vkr_internal uint32_t vkr_sample_runtime_sun_sdf_mode(void) {
+  char value[16];
+  if (!vkr_platform_environment_variable("VKR_SUN_SDF", value, sizeof(value)))
+    return VKR_SHADOW_SDF_MODE_OFF;
+  if (string_equals(value, "add"))
+    return VKR_SHADOW_SDF_MODE_ADD;
+  if (string_equals(value, "replace"))
+    return VKR_SHADOW_SDF_MODE_REPLACE;
+  if (string_equals(value, "replace_all"))
+    return VKR_SHADOW_SDF_MODE_REPLACE_ALL;
+  return VKR_SHADOW_SDF_MODE_OFF;
+}
+
 static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
                                        const VkrGraphicsSettings *settings) {
   /* Quality gates only; the scene's post_process component owns grading and
@@ -500,6 +516,7 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
      enable them under High's local-shadow budget. */
   application->shadow_config.local_shadow_contact = settings->contact_shadows;
   application->shadow_config.sun_contact = settings->contact_shadows;
+  application->shadow_config.sun_sdf_mode = vkr_sample_runtime_sun_sdf_mode();
   /* Soft shadows also covers local lights' authored source radii. */
   application->shadow_config.local_shadow_soft = settings->soft_shadows;
   application->shadow_config.far_cascade_evsm = settings->filtered_far_shadows;
@@ -840,6 +857,8 @@ vkr_internal const char *vkr_standard_scene_runtime_gpu_allocation_owner_name(
     return "readback";
   case VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN:
     return "swapchain";
+  case VKR_GPU_ALLOCATION_OWNER_SHADOW_FIELD:
+    return "shadow_field";
   case VKR_GPU_ALLOCATION_OWNER_UNKNOWN:
   default:
     return "unknown";

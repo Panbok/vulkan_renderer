@@ -202,6 +202,10 @@ typedef struct VkrShadowConfig {
    * them in its atmosphere draw; desktop deferred lighting marches them
    * where ray-query sun shadows do not cover the pixel. */
   bool8_t sun_contact;
+  /** SDF sun shadows past the near cascades, a VkrShadowSdfMode; the tiled
+   * pipeline only, a prototype behind the shadow quality proposal's T5 gate
+   * that only harness cases select. */
+  uint32_t sun_sdf_mode;
   /** Full-filter local lights widen their penumbra by their authored source
    * radius (the Soft shadows setting); false keeps the fixed filter. */
   bool8_t local_shadow_soft;

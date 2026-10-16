@@ -131,18 +131,24 @@ pipeline rather than a backend mechanism.
    and lays the clouds and sky fog over the first and the surface's media
    over the second (see [Sky edge measurement](#sky-edge-measurement)). It
    writes alpha one, and the tonemap presents alpha one.
-   Sun contact shadows (the Contact shadows setting, on the Epic preset) run
-   in the same draw. In those frames (`VkrPreparedFrame.tiled_sun_contact`)
-   the opaque pass takes shading variants, selected by a function constant,
-   that also write the sun's light after its cascades and cloud shadow to a
-   second target, `tiled_sun_light` (RG11B10F), and `Tiled.Atmosphere`, which
-   then runs even without media, marches the resolved depth toward the sun
-   and subtracts `sun_light × (1 − visibility)` before the media. The sun's
-   term is linear in its visibility, so the correction is exact: with the
-   march's visibility forced to one the frame matches a frame without it bit
-   for bit (Bistro street and plaza). The variants are created in the background the first time a
-   frame asks for them; frames go without contact shadows until then. See
-   [Sun contact shadow measurement](#sun-contact-shadow-measurement).
+   The same draw corrects the sun's light. Sun contact shadows (the Contact
+   shadows setting, on the Epic preset) and the SDF sun shadow prototype of
+   the shadow quality proposal (T5, selected only by `VKR_SUN_SDF` or a
+   harness case) need it. In those frames (`VkrPreparedFrame.tiled_sun_contact`,
+   `tiled_sun_sdf`) the opaque pass takes shading variants, selected by a
+   function constant, that also write the sun's light through the clouds
+   without the cascades, U, and the cascades' visibility v_c to a second
+   target, `tiled_sun_light` (RGBA16F; carried through shading as one packed
+   register, `vkr_metal_tiled_pack_sun`). `Tiled.Atmosphere`, which then runs
+   even without media, adds `U × (v − v_c)` before the media, where v is the
+   cascades' visibility or, past the near cascades, the SDF trace's
+   (`Tiled.SunShadow`, alone or the darker of the two), times the contact
+   march toward the sun over the resolved depth. The sun's term is linear in
+   its visibility, so the correction is exact: with the march's visibility
+   forced to one the frame matches a frame without it bit for bit (Bistro
+   street and plaza). The variants are created in the background the first
+   time a frame asks for them; frames go without the correction until then.
+   See [Sun contact shadow measurement](#sun-contact-shadow-measurement).
    Opaque draws shade first and lay their own depth, with
    fragment variants that never discard, so hidden-surface removal keeps its
    fast path; alpha-tested draws shade after them
@@ -1160,21 +1166,24 @@ repetitions of 300 frames each, dirty tree, not authoritative, 2026-10-16:
 | The same, the sun variant writing zero | 13.71 → 13.60 ms | 0.22 → 0.27 ms (march skipped) |
 | Visibility at the start, the sun lit after the local lights | 13.61–13.73 → 14.40–14.61 ms | 0.22 → 0.56 ms (linear depth per step) |
 | Sun light packed in one register from the start; 8 independent steps | 13.58 → 13.67 ms | 0.22 → 0.40 ms |
+| The same with the light and the cascades' visibility in one register, interleaved, machine in use | 14.41–14.58 → 13.99–15.13 ms | 0.22–0.23 → 0.43–0.45 ms |
 
 The second target itself costs nothing; three values kept live through the
 other lights' code lower the opaque pass's occupancy. The shipped
 arrangement is the last: the sun is lit first, as without contact shadows,
-and its light travels to the return packed in the target's own 11/11/10-bit
-float layout (`vkr_metal_tiled_pack_sun`), which loses nothing the target
-keeps. The march takes eight steps whose depth reads do not wait on each
-other, and skips pixels whose sun light is under 2% of their light. Lighting
-the sun after the image-based light cost the base variant 2.5 ms and was
-dropped. The last row's pairs were interleaved (off, on, off, on); a
-disturbed first run (14.30 ms off) is left out. Together the passes add
-about 0.28 ms, within the shadow quality proposal's 0.4 ms; no
-authoritative windowed run confirms it yet. Plaza captures change 3,675 of
-921,600 pixels at 1280×720: contacts under hedges, bollards, curbs and window
-frames.
+and its light without the cascades travels to the return packed with their
+visibility in one register (`vkr_metal_tiled_pack_sun`: three 6-bit
+mantissas under a shared exponent and 8 bits of visibility), which only the
+correction reads. The march takes eight steps whose depth reads do not
+wait on each other, and skips pixels whose sun light is under 2% of their
+light. Lighting the sun after the image-based light cost the base variant
+2.5 ms and was dropped. The last two rows' pairs were interleaved (off, on,
+off, on). In the second-to-last, a disturbed first run (14.30 ms off) is
+left out, and the passes add about 0.28 ms, within the shadow quality
+proposal's 0.4 ms. The last row's runs were disturbed by other GPU work and
+bound the opaque cost only within about ±0.5 ms. No authoritative windowed
+run confirms either yet. Plaza captures change 3,675 of 921,600 pixels at
+1280×720: contacts under hedges, bollards, curbs and window frames.
 
 ### Sky edge measurement
 

@@ -145,11 +145,14 @@ _Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
     surfaces' world positions and `view_rays`, the vkr_atmosphere_view_rays
     matrix of the same jittered projection, the sky's view directions.
     `depth_texture_id` is the resolved depth the cloud draw reads, zero for
-    the clear sky. In sun contact frames the atmosphere draw also reads the
-    opaque pass's sun light, `sun_light_texture_id`, steps its contact march
-    by `contact_noise_index` and takes a resolved depth's distance along the
-    camera axis as depth_scale / (depth + depth_offset); all are zero
-    otherwise. */
+    the clear sky. In frames that correct the sun's light the atmosphere draw
+    also reads the opaque pass's sun light, `sun_light_texture_id`, takes a
+    resolved depth's distance along the camera axis as
+    depth_scale / (depth + depth_offset) and applies `sun_flags`
+    (VKR_METAL_TILED_SUN_*): the contact march, stepped by
+    `contact_noise_index`, and the SDF trace `sun_shadow_texture_id`, which
+    takes over from the cascades over `sun_shadow_band` metres from
+    `sun_shadow_start`. All are zero otherwise. */
 typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint64_t frame;
   uint64_t sky_view_texture_id;
@@ -164,10 +167,80 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint32_t contact_noise_index;
   float32_t depth_offset;
   float32_t depth_scale;
-  uint32_t reserved;
+  uint32_t sun_flags;
+  uint64_t sun_shadow_texture_id;
+  float32_t sun_shadow_start;
+  float32_t sun_shadow_band;
 } VkrMetalTiledSkyRoot;
-_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 208u,
+#define VKR_METAL_TILED_SUN_CONTACT 1u
+#define VKR_METAL_TILED_SUN_SDF 2u
+#define VKR_METAL_TILED_SUN_SDF_REPLACE 4u
+_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 224u,
                "Metal tiled sky root ABI drift");
+
+/** One distance volume's generation (vkr_metal_packet_sdf.inc); mirrors
+    VkrMetalSdfGenerateRoot in world/sun_shadow.metal. The volume spans
+    `dims` voxels of `box_min_voxel.w` mesh-local metres from
+    `box_min_voxel.xyz`; `scratch` holds one atomic distance per voxel, and
+    the triangles are the submesh's `triangle_count` index triples from
+    `indices`, whose vertices are `vertices[index + vertex_offset]` decoded
+    by `decodes[decode_index]`. `band` is the narrow band in voxels. */
+typedef struct VKR_SIMD_ALIGN VkrMetalSdfGenerateRoot {
+  Vec4 box_min_voxel;
+  uint32_t dims[3];
+  uint32_t triangle_count;
+  uint64_t scratch;
+  uint64_t volume_texture_id;
+  uint64_t vertices;
+  uint64_t indices;
+  uint64_t decodes;
+  int32_t vertex_offset;
+  uint32_t decode_index;
+  float32_t band;
+  uint32_t reserved[3];
+} VkrMetalSdfGenerateRoot;
+_Static_assert(sizeof(VkrMetalSdfGenerateRoot) == 96u,
+               "Metal SDF generate root ABI drift");
+
+/** One SDF caster the sun shadow trace reads: rows mapping a world point to
+    its volume's [0, 1] coordinates, `scale` (x the world distance a stored
+    one stands for, y the world voxel size) and the volume. */
+typedef struct VKR_SIMD_ALIGN VkrMetalSdfObject {
+  Vec4 world_to_volume[3];
+  Vec4 scale;
+  uint64_t volume_texture_id;
+  uint32_t reserved[2];
+} VkrMetalSdfObject;
+_Static_assert(sizeof(VkrMetalSdfObject) == 80u, "Metal SDF object ABI drift");
+
+/** The half-resolution SDF sun shadow trace; mirrors VkrMetalSunShadowRoot
+    in world/sun_shadow.metal. A pixel's ray toward the sun is one point of
+    the light-space grid spanned by `light_u` and `light_v` (xyz the axis, w
+    the grid's first coordinate); `light_dir.w` is one over the cell size.
+    `grid` holds grid_size² + 1 offsets into the object indices that follow
+    them. Pixels nearer than `start_distance` along the camera axis are not
+    traced. */
+typedef struct VKR_SIMD_ALIGN VkrMetalSunShadowRoot {
+  Mat4 inverse_view_projection;
+  Vec4 light_u;
+  Vec4 light_v;
+  Vec4 light_dir;
+  uint64_t depth_texture_id;
+  uint64_t output_texture_id;
+  uint64_t objects;
+  uint64_t grid;
+  uint32_t extent[2];
+  uint32_t depth_extent[2];
+  uint32_t grid_size;
+  float32_t start_distance;
+  float32_t max_distance;
+  float32_t softness;
+  float32_t depth_offset;
+  float32_t depth_scale;
+  uint32_t reserved[2];
+} VkrMetalSunShadowRoot;
+_Static_assert(sizeof(VkrMetalSunShadowRoot) == 192u,
+               "Metal sun shadow root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLtc {
   uint64_t lights;
@@ -994,6 +1067,8 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT,
   VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
   VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT,
+  VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT,
+  VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

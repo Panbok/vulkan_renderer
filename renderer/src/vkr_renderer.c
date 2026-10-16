@@ -1098,24 +1098,33 @@ vkr_internal bool8_t vkr_renderer_metal_tiled_temporal(const VkrRenderer *rf) {
 #endif
 }
 
-/* The tiled pipeline's sun contact shadows (ADR-087) for a perspective
-   frame, whose depth the march linearizes: asked for, with a shining sun
-   whose cascades run. The first request starts building the backend's
-   variants that write the sun's light; until they are ready, frames go
-   without them. */
-vkr_internal bool8_t
-vkr_renderer_tiled_sun_contact(VkrRenderer *rf, const VkrFrameInput *packet,
-                               const VkrPreparedFrame *frame) {
-  if (!frame->scene_rendering || !packet->shadow ||
-      !packet->shadow->contact_shadows || packet->shadow->cascade_count == 0u ||
-      !packet->lighting || !packet->lighting->directional_enabled)
-    return false_v;
+/* Sets whether a tiled frame (ADR-087) takes sun contact shadows and SDF
+   sun shadows, which correct the sun's light: a perspective frame, whose
+   depth the march and the trace linearize, whose shadow payload asks for
+   them, with a shining sun and its cascades. The first request starts
+   building the backend's variants that write the sun's light; until they
+   are ready, frames go without the correction. */
+vkr_internal void vkr_renderer_prepare_tiled_sun(VkrRenderer *rf,
+                                                 const VkrFrameInput *packet,
+                                                 VkrPreparedFrame *frame,
+                                                 bool8_t orthographic) {
+  frame->tiled_sun_contact = false_v;
+  frame->tiled_sun_sdf = false_v;
+  if (!frame->tiled_pipeline || orthographic || !frame->scene_rendering ||
+      !packet->shadow ||
+      (!packet->shadow->contact_shadows &&
+       packet->shadow->sdf_mode == VKR_SHADOW_SDF_MODE_OFF) ||
+      packet->shadow->cascade_count == 0u || !packet->lighting ||
+      !packet->lighting->directional_enabled)
+    return;
 #if defined(PLATFORM_APPLE)
-  return rf->metal_renderer &&
-         vkr_metal_packet_renderer_tiled_sun_contact(rf->metal_renderer);
+  if (!rf->metal_renderer ||
+      !vkr_metal_packet_renderer_tiled_sun_light(rf->metal_renderer))
+    return;
+  frame->tiled_sun_contact = packet->shadow->contact_shadows;
+  frame->tiled_sun_sdf = packet->shadow->sdf_mode != VKR_SHADOW_SDF_MODE_OFF;
 #else
   (void)rf;
-  return false_v;
 #endif
 }
 
@@ -1269,9 +1278,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_temporal_enabled =
       rf->tiled_temporal_enabled && tiled && !orthographic && default_output &&
       vkr_renderer_metal_tiled_temporal(rf);
-  prepared->frame.tiled_sun_contact =
-      tiled && !orthographic &&
-      vkr_renderer_tiled_sun_contact(rf, packet, &prepared->frame);
+  vkr_renderer_prepare_tiled_sun(rf, packet, &prepared->frame, orthographic);
   const bool8_t temporal_frame =
       prepared->frame.tiled_temporal_enabled ||
       (rf->temporal_enabled && !tiled && !orthographic &&

@@ -93,13 +93,32 @@
       ]
     },
     {
+      "name": "tiled_sun_shadow",
+      "type": "image",
+      "condition": "scene_rendering && tiled_sun_sdf",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R8G8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "tiled_sun_light",
       "type": "image",
-      "condition": "scene_rendering && tiled_sun_contact",
+      "condition": "scene_rendering && tiled_sun_light",
       "extent": {
         "mode": "viewport"
       },
-      "format": "B10G11R11_UFLOAT",
+      "format": "R16G16B16A16_SFLOAT",
       "usage": [
         "COLOR_ATTACHMENT",
         "SAMPLED"
@@ -1502,7 +1521,7 @@
                 0
               ]
             },
-            "when": "tiled_sun_contact"
+            "when": "tiled_sun_light"
           }
         ],
         "depth": {
@@ -1604,8 +1623,28 @@
       "execute": "pass.clouds.trace"
     },
     {
+      "name": "Tiled.SunShadow",
+      "type": "compute",
+      "condition": "scene_rendering && tiled_sun_sdf",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_sun_shadow",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.tiled.sun_shadow"
+    },
+    {
       "name": "Tiled.Atmosphere",
-      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled || tiled_sun_contact)",
+      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled || tiled_sun_light)",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
@@ -1642,7 +1681,13 @@
           "image": "tiled_sun_light",
           "access": "SAMPLED",
           "binding": 37,
-          "when": "tiled_sun_contact"
+          "when": "tiled_sun_light"
+        },
+        {
+          "image": "tiled_sun_shadow",
+          "access": "SAMPLED",
+          "binding": 38,
+          "when": "tiled_sun_sdf"
         }
       ],
       "attachments": {

@@ -563,6 +563,13 @@ static const char *const s_render_mode_names[VKR_RENDER_MODE_COUNT] = {
 _Static_assert(VKR_RENDER_MODE_COUNT == 20u,
                "Name every render mode a case can select");
 
+const char *vkr_harness_shadow_sdf_name(uint8_t mode) {
+  return mode == VKR_SHADOW_SDF_MODE_REPLACE_ALL ? "replace_all"
+         : mode == VKR_SHADOW_SDF_MODE_REPLACE   ? "replace"
+         : mode == VKR_SHADOW_SDF_MODE_ADD       ? "add"
+                                                 : "off";
+}
+
 void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   VKR_STRING_COPY_LITERAL(renderer->render_mode, "default");
   VKR_STRING_COPY_LITERAL(renderer->exposure_mode, "manual");
@@ -1011,6 +1018,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer_shadows(
   float64_t split_lambda = shadow_config.cascade_split_lambda;
   renderer->shadow_pcf_early_out = shadow_config.pcf_uniform_early_out;
   renderer->shadow_sdsm = shadow_config.sdsm_enabled;
+  char shadow_sdf[16];
+  VKR_STRING_COPY_LITERAL(shadow_sdf, "off");
   if (!vkr_harness_manifest_u64(doc, token, "shadow_pcf_samples", false_v,
                                 &pcf_samples, error) ||
       !vkr_harness_manifest_f64(doc, token, "shadow_split_lambda", false_v,
@@ -1022,7 +1031,23 @@ vkr_internal bool8_t vkr_harness_parse_renderer_shadows(
       !vkr_harness_manifest_bool(doc, token, "shadow_sdsm", false_v,
                                  &renderer->shadow_sdsm, error) ||
       !vkr_harness_manifest_bool(doc, token, "shadow_contact", false_v,
-                                 &renderer->shadow_contact, error)) {
+                                 &renderer->shadow_contact, error) ||
+      !vkr_harness_manifest_string(doc, token, "shadow_sdf", false_v,
+                                   shadow_sdf, sizeof(shadow_sdf), error)) {
+    return false_v;
+  }
+  if (string_equals(shadow_sdf, "off")) {
+    renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_OFF;
+  } else if (string_equals(shadow_sdf, "add")) {
+    renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_ADD;
+  } else if (string_equals(shadow_sdf, "replace")) {
+    renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_REPLACE;
+  } else if (string_equals(shadow_sdf, "replace_all")) {
+    renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_REPLACE_ALL;
+  } else {
+    vkr_harness_error_set(error, "renderer.shadow_sdf", "$.renderer",
+                          "shadow_sdf must be off, add, replace or "
+                          "replace_all");
     return false_v;
   }
 
@@ -1079,6 +1104,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "shadow_pcf_early_out",
       "shadow_sdsm",
       "shadow_contact",
+      "shadow_sdf",
       "render_mode",
       "exposure_mode",
       "display_transform",
