@@ -382,34 +382,33 @@ bool8_t vkr_metal_packet_renderer_drain(
       renderer->ibl_black_prefilter = (VkrMetalTextureResource){0};
     }
     /* SDF sun shadows: each command slot's generation scratch and the
-       light-space grid's CPU scratch. */
+       field table. */
     for (uint32_t i = 0; renderer->command_slots &&
                          i < renderer->command_slot_count;
          ++i) {
-      for (uint32_t g = 0u; g < VKR_METAL_SDF_GENERATIONS_PER_FRAME; ++g) {
-        VkrMetalBufferResource *scratch =
-            &renderer->command_slots[i].sdf_scratch[g];
-        if (scratch->metal_buffer &&
-            vkr_metal_memory_device_retire(renderer->memory, scratch->handle,
-                                           renderer->submit_value) !=
-                VKR_METAL_MEMORY_STATUS_OK)
-          return false_v;
-        *scratch = (VkrMetalBufferResource){0};
-      }
+      VkrMetalBufferResource *scratch = &renderer->command_slots[i].sdf_scratch;
+      if (scratch->metal_buffer &&
+          vkr_metal_memory_device_retire(renderer->memory, scratch->handle,
+                                         renderer->submit_value) !=
+              VKR_METAL_MEMORY_STATUS_OK)
+        return false_v;
+      *scratch = (VkrMetalBufferResource){0};
     }
-    if (renderer->sdf_object_cells)
-      vkr_allocator_free(renderer->allocator, renderer->sdf_object_cells,
-                         (uint64_t)renderer->sdf_object_cell_capacity * 4u *
-                             sizeof(uint16_t),
+    if (renderer->sdf_rows)
+      vkr_allocator_free(renderer->allocator, renderer->sdf_rows,
+                         (uint64_t)renderer->sdf_row_capacity *
+                             sizeof(VkrMetalSdfVolumeRow),
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    renderer->sdf_object_cells = NULL;
-    renderer->sdf_object_cell_capacity = 0u;
-    if (renderer->sdf_cell_cursor)
-      vkr_allocator_free(renderer->allocator, renderer->sdf_cell_cursor,
-                         (uint64_t)VKR_METAL_SDF_GRID_SIZE *
-                             VKR_METAL_SDF_GRID_SIZE * sizeof(uint32_t),
+    renderer->sdf_rows = NULL;
+    renderer->sdf_row_capacity = 0u;
+    renderer->sdf_row_count = 0u;
+    if (renderer->sdf_mesh_volumes)
+      vkr_allocator_free(renderer->allocator, renderer->sdf_mesh_volumes,
+                         (uint64_t)renderer->max_meshes * 2u *
+                             sizeof(uint32_t),
                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    renderer->sdf_cell_cursor = NULL;
+    renderer->sdf_mesh_volumes = NULL;
+    renderer->sdf_mesh_count = 0u;
 
     for (uint32_t i = 0; i < renderer->max_materials; ++i) {
       if (renderer->packet_materials[i].live &&
@@ -759,6 +758,12 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->sdf_clear_pipeline release];
   [renderer->sdf_splat_pipeline release];
   [renderer->sdf_convert_pipeline release];
+  [renderer->sdf_grid_clear_pipeline release];
+  [renderer->sdf_grid_count_pipeline release];
+  [renderer->sdf_grid_reduce_pipeline release];
+  [renderer->sdf_grid_scan_pipeline release];
+  [renderer->sdf_grid_apply_pipeline release];
+  [renderer->sdf_grid_scatter_pipeline release];
   [renderer->sun_shadow_trace_pipeline release];
   [renderer->cloud_sky_light_pipeline release];
   [renderer->cloud_sky_light_sh_pipeline release];

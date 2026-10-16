@@ -33,8 +33,77 @@ struct VkrMetalPacketGpuDrawRoot {
   // Candidates below it are static; a local face view whose LOD flags
   // select one mobility skips the others.
   uint static_candidate_count;
+  // With SDF sun shadows, the views (bit per view) that skip the casters
+  // the trace covers, from the frame's field table.
+  uint sdf_skip_view_mask;
+  const device struct VkrMetalSdfVolumeRow *sdf_volume_rows;
+  const device uint2 *sdf_mesh_volumes;
+  uint sdf_mesh_count;
   uint reserved_3;
 };
+
+// SDF sun shadows (vkr_metal_packet_sdf.inc): one submesh's distance volume
+// in the frame's field table; mirrors VkrMetalSdfVolumeRow. A mesh's rows
+// follow in submesh order; `dims` stay zero until the volume is generated.
+// The grid build (world/sun_shadow.metal, later in the library) reads it
+// too.
+struct VkrMetalSdfVolumeRow {
+  // xyz the volume's mesh-local origin, w its voxel size.
+  float4 box_min_voxel;
+  uint dims[3];
+  // The submesh's first index from its mesh's first.
+  uint first_index;
+  texture3d<float, access::sample> volume;
+  // The submesh's longest mesh-local box side.
+  float extent;
+  uint reserved;
+};
+
+static_assert(sizeof(VkrMetalSdfVolumeRow) == 48u,
+              "VkrMetalSdfVolumeRow ABI drift");
+
+// Mirror VKR_METAL_SDF_MIN_EXTENT and VKR_METAL_SDF_MAX_EXTENT: the world
+// sizes of the casters the field holds.
+#define VKR_METAL_SDF_MIN_EXTENT 0.25f
+#define VKR_METAL_SDF_MAX_EXTENT 120.0f
+#define VKR_METAL_SDF_NO_ROW 0xFFFFFFFFu
+
+// The largest axis scale of `model`.
+static float vkr_metal_sdf_largest_scale(float4x4 model) {
+  return max(length(model[0].xyz),
+             max(length(model[1].xyz), length(model[2].xyz)));
+}
+
+// The field table row of `candidate`'s distance volume, or
+// VKR_METAL_SDF_NO_ROW unless the trace covers it: an opaque rigid sun
+// caster whose volume is generated and whose world size lies in the field's
+// range. Cutout, glass and skinned casters keep the cascades.
+static uint vkr_metal_sdf_field_row(
+    const device VkrMetalSdfVolumeRow *rows, const device uint2 *meshes,
+    uint mesh_count, const device VkrGpuCandidateDrawRow &candidate,
+    const device VkrGpuGeometryRow &geometry,
+    const device VkrMetalPacketInstance &instance) {
+  // Candidate flags: 4 casts sun shadows, 8 casts them through glass.
+  const uint flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
+  if ((flags & 4u) == 0u || (flags & 8u) != 0u ||
+      (vkr_gpu_draw_state_bucket(candidate.state_flags) & 2u) != 0u ||
+      instance.deformation_address != 0ul ||
+      candidate.geometry_index >= mesh_count)
+    return VKR_METAL_SDF_NO_ROW;
+  const uint2 range = meshes[candidate.geometry_index];
+  const uint first_index = candidate.first_index - geometry.first_index;
+  for (uint row = range.x; row < range.x + range.y; ++row) {
+    if (rows[row].first_index != first_index)
+      continue;
+    const float extent =
+        rows[row].extent * vkr_metal_sdf_largest_scale(instance.model);
+    return rows[row].dims[0] != 0u && extent >= VKR_METAL_SDF_MIN_EXTENT &&
+                   extent <= VKR_METAL_SDF_MAX_EXTENT
+               ? row
+               : VKR_METAL_SDF_NO_ROW;
+  }
+  return VKR_METAL_SDF_NO_ROW;
+}
 
 // The camera view's draw buckets per Custom graph slot (ADR-096), in two
 // planes by BRDF variant (ADR-113): plane 0 holds the Custom graphs' draws;
@@ -267,6 +336,17 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   }
   const device VkrMetalPacketInstance &instance =
       root.instances[candidate.instance_index];
+  /* With SDF sun shadows the far level leaves the casters the trace covers
+     (vkr_metal_packet_sdf.inc). */
+  if (view_index < 32u &&
+      ((root.sdf_skip_view_mask >> view_index) & 1u) != 0u &&
+      vkr_metal_sdf_field_row(root.sdf_volume_rows, root.sdf_mesh_volumes,
+                              root.sdf_mesh_count, candidate,
+                              root.geometry_rows[candidate.geometry_index],
+                              instance) != VKR_METAL_SDF_NO_ROW) {
+    root.classifications[classification_index] = 0u;
+    return;
+  }
   constant VkrGpuLodView &lod_view = root.lod_views[view_index];
   const float radius =
       candidate.local_bounding_sphere.w * instance.normal_column1.w;
@@ -782,8 +862,8 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
 
 static_assert(sizeof(VkrGpuDrawCompactionState) == 144,
               "GPU draw compaction state ABI must remain 144 bytes");
-static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 208,
-              "GPU draw root ABI must remain 208 bytes");
+static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 224,
+              "GPU draw root ABI must remain 224 bytes");
 static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
               "GPU draw view ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,

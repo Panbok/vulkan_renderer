@@ -112,6 +112,36 @@
       ]
     },
     {
+      "name": "tiled_sun_field_objects",
+      "type": "buffer",
+      "condition": "scene_rendering && tiled_sun_sdf",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_candidate_capacity",
+        "bytes_per_element": 80
+      },
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "tiled_sun_field_grid",
+      "type": "buffer",
+      "condition": "scene_rendering && tiled_sun_sdf",
+      "size": 4718852,
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
       "name": "tiled_sun_light",
       "type": "image",
       "condition": "scene_rendering && tiled_sun_light",
@@ -1631,6 +1661,16 @@
           "image": "opaque_vbuffer_depth",
           "access": "SAMPLED",
           "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 5
         }
       ],
       "writes": [
@@ -1638,6 +1678,16 @@
           "image": "tiled_sun_shadow",
           "access": "STORAGE_WRITE",
           "binding": 0
+        },
+        {
+          "buffer": "tiled_sun_field_objects",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 2
+        },
+        {
+          "buffer": "tiled_sun_field_grid",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 3
         }
       ],
       "execute": "pass.tiled.sun_shadow"

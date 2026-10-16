@@ -203,8 +203,8 @@ typedef struct VkrShadowConfig {
    * where ray-query sun shadows do not cover the pixel. */
   bool8_t sun_contact;
   /** SDF sun shadows past the near cascades, a VkrShadowSdfMode; the tiled
-   * pipeline only, a prototype behind the shadow quality proposal's T5 gate
-   * that only harness cases select. */
+   * pipeline only, from the Distance field shadows setting (the shadow
+   * quality proposal's T5). */
   uint32_t sun_sdf_mode;
   /** Full-filter local lights widen their penumbra by their authored source
    * radius (the Soft shadows setting); false keeps the fixed filter. */
@@ -544,6 +544,9 @@ typedef struct VkrShadowCascadeHistory {
   uint64_t bias_signature;
   uint64_t light_signature;
   uint64_t resource_generation;
+  /** The field revision (vkr_shadow_system_set_field_revision) the layer
+   * was drawn against; a far layer of an older one is stale. */
+  uint64_t field_revision;
   uint64_t last_submit_value;
 } VkrShadowCascadeHistory;
 
@@ -611,6 +614,7 @@ typedef struct VkrShadowFarRebuild {
   uint64_t light_signature;
   uint64_t pending_resource_generation;
   uint64_t static_resource_generation;
+  uint64_t field_revision;
 } VkrShadowFarRebuild;
 
 /** Camera state that drives local-shadow priority and the fade-in. */
@@ -784,6 +788,9 @@ typedef struct VkrShadowSystem {
   VkrShadowPendingHistory pending_history;
   VkrShadowFarRebuild far_rebuild;
   VkrShadowFarTarget far_target;
+  /** The casters the far level leaves to another shadow source, by
+   * revision (vkr_shadow_system_set_field_revision). */
+  uint64_t field_revision;
   /** The last resolve could rebuild the far level in slices, so update()
    * may hold its direction for a retargeting rebuild. */
   bool8_t far_retarget_ready;
@@ -846,6 +853,19 @@ void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system);
  * here instead.
  */
 void vkr_shadow_system_invalidate_local_cache(VkrShadowSystem *system);
+
+/**
+ * @brief Names the revision of the casters the far level leaves to another
+ * shadow source: the tiled pipeline's SDF field, whose casters the far level
+ * stops drawing once their distance volumes are ready
+ * (vkr_renderer_sun_field_revision, ADR-087).
+ *
+ * A far layer drawn against an older revision is stale: the far level
+ * rebuilds in slices while the kept layer, which still holds those casters,
+ * keeps serving.
+ */
+void vkr_shadow_system_set_field_revision(VkrShadowSystem *system,
+                                          uint64_t revision);
 
 void vkr_shadow_system_set_depth_range_sample(
     VkrShadowSystem *system, const VkrShadowDepthRangeSample *sample,

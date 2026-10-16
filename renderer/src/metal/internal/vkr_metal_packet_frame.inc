@@ -3,13 +3,6 @@
 /* Per-frame upload preparation, pass encoding, submission, and failure
  * rollback. */
 
-/* SDF sun shadows (vkr_metal_packet_sdf.inc). */
-vkr_internal float32_t
-vkr_metal_packet_sun_shadow_start(const VkrShadowPassPayload *shadow);
-vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shadow(
-    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
-    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
-    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0));
 vkr_internal void *vkr_metal_packet_next_root(VkrMetalPacketFrameUpload *upload,
                                               uint64_t size,
                                               uint64_t *out_gpu_address) {
@@ -1266,6 +1259,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     // Reversed depth has the same slope magnitude as the forward convention,
     // so the tolerance keeps its distance meaning; the shader subtracts it.
     root->hzb_depth_epsilon = 1e-3f;
+    /* With SDF sun shadows the far level leaves out the casters the trace
+       covers, which the frame's field table names. */
+    if (upload->sdf_volume_rows_gpu) {
+      root->sdf_skip_view_mask =
+          vkr_metal_packet_sdf_skip_view_mask(&renderer->prepared_frame);
+      root->sdf_volume_rows = upload->sdf_volume_rows_gpu;
+      root->sdf_mesh_volumes = upload->sdf_mesh_volumes_gpu;
+      root->sdf_mesh_count = upload->sdf_mesh_count;
+    }
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->gpu_draw_classify_pipeline,
         .root = root_gpu,

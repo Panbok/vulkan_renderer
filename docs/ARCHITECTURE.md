@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-16
+updated: 2026-10-17
 authority: architecture
 ---
 
@@ -801,9 +801,11 @@ and surface samples between their media; with sun contact shadows on, the
 opaque pass also writes the sun's light and this draw removes the part a
 depth march toward the sun finds occluded. Distance field shadows (an Epic
 setting, the shadow quality proposal's T5) trace distance volumes the GPU
-generates from static geometry in `Tiled.SunShadow` past the near cascades,
-and the same draw darkens the far level's shadows where the trace finds
-casters it misses.
+generates from rigid casters' geometry in `Tiled.SunShadow` past the near
+cascades, through a light-space grid the GPU builds each frame; the far
+level leaves those casters out and rebuilds in slices as the volumes become
+ready, so the trace draws their far shadows and the far level keeps
+terrain's and foliage's.
 `Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough
 glass blurs through a half-resolution copy of the image, taken only on frames

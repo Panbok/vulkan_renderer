@@ -1416,6 +1416,14 @@ uint32_t vkr_renderer_dynamic_volume_probe_budget(const VkrRenderer *renderer);
  */
 uint64_t vkr_renderer_scene_frames_completed(const VkrRenderer *renderer,
                                              uint64_t *out_completed_ns);
+/**
+ * The revision of the tiled pipeline's SDF sun shadow field (ADR-087): it
+ * grows once the distance volumes a run of frames generated are ready, and
+ * the far level, which leaves the field's casters to the trace, rebuilds
+ * against it (vkr_shadow_system_set_field_revision). Zero without the field.
+ * Never waits, so the frame loop may poll it while the render thread renders.
+ */
+uint64_t vkr_renderer_sun_field_revision(const VkrRenderer *renderer);
 
 uint32_t vkr_renderer_capture_channel_count(void);
 const VkrCaptureChannelDescription *

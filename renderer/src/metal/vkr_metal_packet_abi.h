@@ -151,7 +151,7 @@ _Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
     depth_scale / (depth + depth_offset) and applies `sun_flags`
     (VKR_METAL_TILED_SUN_*): the contact march, stepped by
     `contact_noise_index`, and the SDF trace `sun_shadow_texture_id`, which
-    takes over from the cascades over `sun_shadow_band` metres from
+    takes over from the cascades over the `sun_shadow_band` metres before
     `sun_shadow_start`. All are zero otherwise. */
 typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint64_t frame;
@@ -202,24 +202,73 @@ typedef struct VKR_SIMD_ALIGN VkrMetalSdfGenerateRoot {
 _Static_assert(sizeof(VkrMetalSdfGenerateRoot) == 96u,
                "Metal SDF generate root ABI drift");
 
-/** One SDF caster the sun shadow trace reads: rows mapping a world point to
-    its volume's [0, 1] coordinates, `scale` (x the world distance a stored
-    one stands for, y the world voxel size) and the volume. */
+/** One SDF caster the sun shadow trace reads, which the grid build writes
+    at its candidate's index: rows mapping a world point to its volume's
+    [0, 1] coordinates, `scale` (x the world distance a stored one stands
+    for, y the world voxel size), the volume, and the grid cells its box
+    covers as u0, u1, v0 and v1 in 16 bits each (u0 above u1 when none). */
 typedef struct VKR_SIMD_ALIGN VkrMetalSdfObject {
   Vec4 world_to_volume[3];
   Vec4 scale;
   uint64_t volume_texture_id;
-  uint32_t reserved[2];
+  uint32_t cells[2];
 } VkrMetalSdfObject;
 _Static_assert(sizeof(VkrMetalSdfObject) == 80u, "Metal SDF object ABI drift");
+
+/** One submesh's distance volume in the frame's field table
+    (vkr_metal_packet_sdf.inc); mirrors VkrMetalSdfVolumeRow in
+    world/gpu_draws.metal. A mesh's rows follow in submesh order, matched to
+    a candidate by `first_index`, the submesh's first index from its mesh's
+    first; `volume_texture_id` is zero until the volume is generated, and
+    `box_min_voxel` and `dims` place it as VkrMetalSdfGenerateRoot does.
+    `extent` is the submesh's longest mesh-local box side. */
+typedef struct VKR_SIMD_ALIGN VkrMetalSdfVolumeRow {
+  Vec4 box_min_voxel;
+  uint32_t dims[3];
+  uint32_t first_index;
+  uint64_t volume_texture_id;
+  float32_t extent;
+  uint32_t reserved;
+} VkrMetalSdfVolumeRow;
+_Static_assert(sizeof(VkrMetalSdfVolumeRow) == 48u,
+               "Metal SDF volume row ABI drift");
+
+/** The light-space grid build of SDF sun shadows (world/sun_shadow.metal):
+    the field casters among `candidate_count` candidates write their
+    VkrMetalSdfObject to `objects` and list themselves in the cells their
+    box covers. `grid` holds grid_size² + 1 offsets, `entry_capacity`
+    candidate indices, a cursor per cell, then the scan's block sums;
+    `volume_rows` and `mesh_volumes` are the frame's field table, one uint2
+    (first row, row count) per geometry row below `mesh_count`; `band` is the
+    volumes' narrow band in voxels. */
+typedef struct VKR_SIMD_ALIGN VkrMetalSdfGridRoot {
+  Vec4 light_u;
+  Vec4 light_v;
+  uint64_t candidates;
+  uint64_t instances;
+  uint64_t geometry_rows;
+  uint64_t volume_rows;
+  uint64_t mesh_volumes;
+  uint64_t objects;
+  uint64_t grid;
+  uint32_t candidate_count;
+  uint32_t mesh_count;
+  uint32_t grid_size;
+  uint32_t entry_capacity;
+  float32_t inverse_cell;
+  float32_t band;
+} VkrMetalSdfGridRoot;
+_Static_assert(sizeof(VkrMetalSdfGridRoot) == 112u,
+               "Metal SDF grid root ABI drift");
 
 /** The half-resolution SDF sun shadow trace; mirrors VkrMetalSunShadowRoot
     in world/sun_shadow.metal. A pixel's ray toward the sun is one point of
     the light-space grid spanned by `light_u` and `light_v` (xyz the axis, w
     the grid's first coordinate); `light_dir.w` is one over the cell size.
-    `grid` holds grid_size² + 1 offsets into the object indices that follow
-    them. Pixels nearer than `start_distance` along the camera axis are not
-    traced. */
+    `grid` holds grid_size² + 1 offsets into the `entry_capacity` candidate
+    indices that follow them, and `objects` the casters by candidate index
+    (VkrMetalSdfGridRoot). Pixels nearer than `start_distance` along the
+    camera axis are not traced. */
 typedef struct VKR_SIMD_ALIGN VkrMetalSunShadowRoot {
   Mat4 inverse_view_projection;
   Vec4 light_u;
@@ -237,7 +286,8 @@ typedef struct VKR_SIMD_ALIGN VkrMetalSunShadowRoot {
   float32_t softness;
   float32_t depth_offset;
   float32_t depth_scale;
-  uint32_t reserved[2];
+  uint32_t entry_capacity;
+  uint32_t reserved;
 } VkrMetalSunShadowRoot;
 _Static_assert(sizeof(VkrMetalSunShadowRoot) == 192u,
                "Metal sun shadow root ABI drift");
@@ -583,6 +633,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   /** Candidates below it are static; a local face view whose LOD flags
       select one mobility skips the others. */
   uint32_t static_candidate_count;
+  /** With SDF sun shadows, the views (bit per view) that skip the casters
+      the trace covers: the far level's (vkr_metal_packet_sdf.inc). They
+      read the frame's field table, VkrMetalSdfGridRoot's. */
+  uint32_t sdf_skip_view_mask;
+  uint64_t sdf_volume_rows;
+  uint64_t sdf_mesh_volumes;
+  uint32_t sdf_mesh_count;
   uint32_t reserved_3;
 } VkrMetalPacketGpuDrawRoot;
 
@@ -643,8 +700,8 @@ enum {
       VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
 };
 
-_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 208,
-               "Metal GPU draw root ABI must remain 208 bytes");
+_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 224,
+               "Metal GPU draw root ABI must remain 224 bytes");
 
 /** One HZB base/reduction dispatch over explicit source/destination views. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
@@ -1069,6 +1126,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT,
   VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT,
+  VKR_METAL_PACKET_ABI_SDF_GRID_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

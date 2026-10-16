@@ -3035,6 +3035,17 @@ bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer) {
 #endif
 }
 
+uint64_t vkr_renderer_sun_field_revision(const VkrRenderer *renderer) {
+#if defined(PLATFORM_APPLE)
+  if (renderer && renderer->metal_renderer)
+    return vkr_metal_packet_renderer_sun_field_revision(
+        renderer->metal_renderer);
+#else
+  (void)renderer;
+#endif
+  return 0u;
+}
+
 uint64_t vkr_renderer_scene_frames_completed(const VkrRenderer *renderer,
                                              uint64_t *out_completed_ns) {
 #if defined(PLATFORM_APPLE)

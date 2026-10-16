@@ -107,15 +107,34 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
   switch (pass->kind) {
   case VKR_RG_EXECUTOR_TILED_SUN_SHADOW: {
     /* New distance volumes: clear, splat and convert, each stage after the
-       last; then the trace, after volumes an earlier command buffer
-       generated, which Metal 4 does not order. */
+       last; the grid's clear, count, scan and scatter, each after the last;
+       then the trace, after volumes an earlier command buffer generated,
+       which Metal 4 does not order. */
     const uint32_t count = pass->sun_shadow.generation_count;
-    const VkrMetalPacketDispatch *stages[3] = {pass->sun_shadow.clears,
-                                               pass->sun_shadow.splats,
-                                               pass->sun_shadow.converts};
+    id<MTLComputePipelineState> stages[3] = {renderer->sdf_clear_pipeline,
+                                             renderer->sdf_splat_pipeline,
+                                             renderer->sdf_convert_pipeline};
     for (uint32_t stage = 0u; count && stage < 3u; ++stage) {
-      for (uint32_t i = 0u; i < count; ++i)
-        vkr_metal_packet_record_dispatch(renderer, encoder, &stages[stage][i]);
+      for (uint32_t i = 0u; i < count; ++i) {
+        const uint32_t threads =
+            stage == 1u ? pass->sun_shadow.generation_triangles[i]
+                        : pass->sun_shadow.generation_voxels[i];
+        const VkrMetalPacketDispatch dispatch = {
+            .pipeline = stages[stage],
+            .root = pass->sun_shadow.generation_roots[i],
+            .threads = MTLSizeMake(Max(threads, 1u), 1u, 1u),
+            .group_size = MTLSizeMake(stage == 1u ? 64u : 256u, 1u, 1u),
+        };
+        vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
+      }
+      [encoder barrierAfterEncoderStages:MTLStageDispatch
+                     beforeEncoderStages:MTLStageDispatch
+                       visibilityOptions:MTL4VisibilityOptionDevice];
+    }
+    for (uint32_t step = 0u; step < ArrayCount(pass->sun_shadow.grid);
+         ++step) {
+      vkr_metal_packet_record_dispatch(renderer, encoder,
+                                       &pass->sun_shadow.grid[step]);
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];

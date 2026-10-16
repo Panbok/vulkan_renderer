@@ -202,12 +202,15 @@ typedef struct VkrMetalPacketPreparedPass {
       bool8_t history_in_flight;
     } stabilize;
     /* Tiled.SunShadow: each new distance volume's clear, splat and
-       conversion, then the trace. */
+       conversion, by its root and its voxel and triangle counts; the
+       light-space grid's clear, count, block reduction, block scan, offsets
+       and scatter; then the trace. */
     struct {
-      VkrMetalPacketDispatch clears[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
-      VkrMetalPacketDispatch splats[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
-      VkrMetalPacketDispatch converts[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+      uint64_t generation_roots[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+      uint32_t generation_voxels[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+      uint32_t generation_triangles[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
       uint32_t generation_count;
+      VkrMetalPacketDispatch grid[6];
       VkrMetalPacketDispatch trace;
       /* An earlier frame's generation may still run; Metal 4 does not
          order command buffers. */

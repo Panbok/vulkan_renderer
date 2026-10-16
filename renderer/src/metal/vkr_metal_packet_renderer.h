@@ -404,6 +404,10 @@ bool8_t vkr_metal_packet_renderer_tiled_temporal(
  * until they are READY, and for good after a failure. Render thread only. */
 bool8_t
 vkr_metal_packet_renderer_tiled_sun_light(VkrMetalPacketRenderer *renderer);
+/** The SDF sun shadow field's revision (vkr_renderer_sun_field_revision);
+ * any thread. */
+uint64_t vkr_metal_packet_renderer_sun_field_revision(
+    const VkrMetalPacketRenderer *renderer);
 
 void vkr_metal_packet_renderer_retained_editor_extent(
     VkrMetalPacketRenderer *renderer, uint32_t *out_width,

@@ -672,7 +672,8 @@ vkr_local_shadow_render_layer_mask(const VkrLocalShadowPassPayload *payload) {
  * volumes (owner decision 2026-10-16). */
 typedef enum VkrShadowSdfMode {
   VKR_SHADOW_SDF_MODE_OFF = 0,
-  /** Past the near cascades, the darker of the far level and the trace. */
+  /** Past the near cascades, the darker of the cascades and the trace; the
+   * far level leaves out the casters the trace covers. */
   VKR_SHADOW_SDF_MODE_ADD,
   /** The trace alone at every distance: a diagnostic that compares the
    * trace with the cascades. */

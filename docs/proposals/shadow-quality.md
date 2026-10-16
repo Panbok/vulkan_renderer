@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-16
+updated: 2026-10-17
 authority: proposal
 ---
 # Shadow quality
@@ -505,44 +505,52 @@ On the Bistro plaza at 1440p and 0.6 scale on the M1 Pro it adds about
 ([measurement](../adr/087-gpu-class-graphics-pipelines.md#sun-contact-shadow-measurement)).
 Keeping the sun's light as three values cost the opaque pass about 1.2 ms
 through lost occupancy; packed in one register it costs almost nothing.
+Authoritative windowed timing on 2026-10-17 (1280×720 at 0.6 with MetalFX)
+puts it at about 0.3 ms
+([measurement](../adr/087-gpu-class-graphics-pipelines.md#sun-contact-shadow-measurement)).
 Remaining work:
 
-- Authoritative windowed timing (`performance-windowed-gpu`) of the same
-  views, and the Level Design Test lift, freight cars and mannequin captures.
+- The Level Design Test lift, freight cars and mannequin captures.
 - The desktop pipeline's march in `Lighting.Deferred`, which needs no
   second target, through the same shared helpers.
 
 ### T5: tiled SDF shadows, prototype and gate
 
 The tiled pipeline's Distance field shadows setting, on the Epic preset,
-runs it in the mode the owner chose after the gate: the trace adds to the
-far level ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md) decision 6,
+runs it as the owner chose: the trace takes the far shadows of the casters
+it covers and the far level keeps the rest
+([ADR-087](../adr/087-gpu-class-graphics-pipelines.md) decision 6,
 `vkr_metal_packet_sdf.inc`, `world/sun_shadow.metal`). Harness cases select
 it with `shadow_sdf` (`add`, or the `replace_all` diagnostic, which uses the
-trace alone at every distance to compare it with the cascades).
+trace alone at every distance to compare it with the cascades); the editor
+with `gfx.distance_field_shadows`.
 
-- Volumes: one unsigned narrow-band distance volume per static opaque
-  submesh, R8 at most 64³ with voxels no smaller than 0.25 world metres
-  (half the far level's texel). The GPU generates them from the resident
-  triangles, four a frame, the first time a frame traces them, so the
-  prototype needs no cooked data; Bakery is to own them.
-  Casters under 0.25 m or over 120 m (terrain), cutout, skinned and moving
-  casters keep the cascades.
+- Volumes: one unsigned narrow-band distance volume per opaque submesh of a
+  rigid sun caster, R8 at most 64³ with voxels no smaller than 0.25 world
+  metres (half the far level's texel). The GPU generates them from the
+  resident triangles, up to 32 a frame as a scan of 8,192 candidates a frame
+  reaches them, so it needs no cooked data; Bakery is to own them.
+  Casters under 0.25 m or over 120 m (terrain), cutout and skinned casters
+  keep the cascades.
 - Culling: a ray toward the sun is one point in the plane across the sun,
-  so a light-space grid of 128² cells over 800 m around the camera lists
-  each cell's casters; the CPU rebuilds it each frame.
-- Trace: `Tiled.SunShadow` sphere-traces at half resolution past where the
-  far level starts, with a penumbra from the nearest miss over the sun's
-  half angle (at least half a degree). The atmosphere draw takes the darker
-  of the trace and the far level through the opaque pass's unshadowed sun
-  light.
+  so a light-space grid of 256² cells over the shadows' reach (±1 km on the
+  tiled pipeline) lists each cell's casters. The GPU builds it each frame
+  from the candidates and a field table of the volumes.
+- Trace: `Tiled.SunShadow` sphere-traces at half resolution from where the
+  near cascades fade into the far level, with a penumbra from the nearest
+  miss over the sun's half angle (at least half a degree). The atmosphere
+  draw takes the darker of the trace and the cascades through the opaque
+  pass's unshadowed sun light.
+- Far level: its culling views skip the casters with ready volumes, and it
+  rebuilds in slices when the field's revision grows, which happens once
+  generation settles.
 
 Gate results on the M1 Pro, 2026-10-16, local and not authoritative:
 
 | Measure | Result | Gate |
 |---|---|---|
 | Trace, Level Design Test valley and freight views | 0.25 and 0.32 ms at 1146×595 in the headless editor, about 0.5 and 0.64 ms scaled by pixels to 1440p at 0.6 | 1.0 ms |
-| Trace, Bistro plaza traced at every pixel (`replace_all`) | 0.55 ms median, 0.57 ms p95, at 1440p and 0.6 (`tiled_bistro_plaza_timing_sun_sdf_replace_all`) | 1.0 ms |
+| Trace, Bistro plaza traced at every pixel (`replace_all`) | 0.55 ms median, 0.57 ms p95, at 1440p and 0.6 (`tiled_bistro_plaza_timing_sun_sdf_replace_all`); 0.79 ms with the GPU grid over ±1 km, of which 0.32 ms builds the grid | 1.0 ms |
 | SDF memory, Level Design Test | 41.5 MB: 13,943 volumes and 8 MB of generation scratch | 96 MiB |
 | SDF memory, Bistro | 23.7 MiB with scratch | — |
 
@@ -551,9 +559,14 @@ the trace reproduces Bistro's building shadows with softer edges when it
 replaces the cascades everywhere. Past the near cascades on the Level
 Design Test, the trace alone sharpens the viaduct piers' shadows but loses
 the terrain's and the forest's, which have no volumes; adding it to the far
-level keeps them and adds the piers' sharper shadows. Not done: a moving-sun sweep, the rigid
-movers (lift, freight cars), authoritative 1440p timing of the Level
-Design Test, Metal validation.
+level keeps them and adds the piers' sharper shadows. With the far level
+leaving the field casters out (2026-10-17), a diagnostic without the trace
+loses exactly the viaduct's, the piers' and the tunnel portal's far shadows
+([measurement](../adr/087-gpu-class-graphics-pipelines.md#sdf-sun-shadow-measurement)).
+A sun sweep at 14:00, 15:30 and 17:00 on the Level Design Test kept the
+volume count at 13,806, so the sun's motion causes no generation. Not done:
+captures of the rigid movers (lift, freight cars), authoritative 1440p
+timing of the Level Design Test and the GPU grid, Metal validation.
 
 ## Budgets
 
@@ -603,13 +616,15 @@ Settled by the owner on 2026-10-16:
   shadows setting, on the Epic preset: the trace alone loses the terrain's
   and foliage's far shadows.
 
+Settled on 2026-10-17: the far level leaves out the casters the trace
+covers, through a GPU grid over its whole reach, so the trace replaces their
+far shadows.
+
 Open:
 
-- Replacing the far level for static casters, which softens their
-  penumbrae, once the far level draws only the casters without volumes
-  (terrain, foliage, moving and skinned casters).
-- Bakery cooking the distance volumes, and the High preset once
-  authoritative timing confirms the budget.
+- Bakery cooking the distance volumes.
+- Contact shadows on the High preset: authoritative timing puts them at
+  about 0.3 ms, within the 0.4 ms budget. Distance field shadows stay on Epic.
 
 ## Evidence required
 
@@ -629,9 +644,9 @@ Open:
   and tables, on each backend.
 - T4: met on 2026-10-16, Bistro street and plaza on Metal: with the march
   forced to full visibility, the corrected frame matches the frame without
-  contact shadows bit for bit. Local timing is within the budget. Still
-  needed: authoritative timing and the Level Design Test captures.
-- T5: the gate report above, and a Level Design Test sweep of the sun that
-  shows no SDF work caused by the sun's motion.
+  contact shadows bit for bit. Authoritative windowed timing is within the
+  budget (2026-10-17). Still needed: the Level Design Test captures.
+- T5: the gate report and the Level Design Test sun sweep above are met;
+  still needed: authoritative timing of the GPU grid and Metal validation.
 - D3, if built: Vulkan validation and a page-pool residency report over the
   Bistro orbit.

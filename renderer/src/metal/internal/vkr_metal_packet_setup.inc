@@ -95,6 +95,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT:
   case VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT:
   case VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT:
+  case VKR_METAL_PACKET_ABI_SDF_GRID_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
     return 0;
@@ -1305,6 +1306,27 @@ vkr_metal_packet_create_environment_pipelines(VkrMetalPacketRenderer *renderer,
   renderer->sdf_convert_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_sdf_convert",
       VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT, false_v, @"VKR SDF convert");
+  renderer->sdf_grid_clear_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_grid_clear",
+      VKR_METAL_PACKET_ABI_SDF_GRID_ROOT, false_v, @"VKR SDF grid clear");
+  renderer->sdf_grid_count_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_grid_count",
+      VKR_METAL_PACKET_ABI_SDF_GRID_ROOT, false_v, @"VKR SDF grid count");
+  renderer->sdf_grid_reduce_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_sdf_grid_reduce",
+          VKR_METAL_PACKET_ABI_SDF_GRID_ROOT, false_v, @"VKR SDF grid reduce");
+  renderer->sdf_grid_scan_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_grid_scan",
+      VKR_METAL_PACKET_ABI_SDF_GRID_ROOT, false_v, @"VKR SDF grid scan");
+  renderer->sdf_grid_apply_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_sdf_grid_apply",
+      VKR_METAL_PACKET_ABI_SDF_GRID_ROOT, false_v, @"VKR SDF grid apply");
+  renderer->sdf_grid_scatter_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_sdf_grid_scatter",
+          VKR_METAL_PACKET_ABI_SDF_GRID_ROOT, false_v,
+          @"VKR SDF grid scatter");
   renderer->sun_shadow_trace_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_sun_shadow_trace",
@@ -1579,6 +1601,12 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->sdf_clear_pipeline, "SDF clear pipeline"},
       {renderer->sdf_splat_pipeline, "SDF splat pipeline"},
       {renderer->sdf_convert_pipeline, "SDF convert pipeline"},
+      {renderer->sdf_grid_clear_pipeline, "SDF grid clear pipeline"},
+      {renderer->sdf_grid_count_pipeline, "SDF grid count pipeline"},
+      {renderer->sdf_grid_reduce_pipeline, "SDF grid reduce pipeline"},
+      {renderer->sdf_grid_scan_pipeline, "SDF grid scan pipeline"},
+      {renderer->sdf_grid_apply_pipeline, "SDF grid apply pipeline"},
+      {renderer->sdf_grid_scatter_pipeline, "SDF grid scatter pipeline"},
       {renderer->sun_shadow_trace_pipeline, "SDF sun shadow trace pipeline"},
       {renderer->tiled_text_pipeline, "tiled world text pipeline"},
       {renderer->depth_write_state, "depth-write state"},

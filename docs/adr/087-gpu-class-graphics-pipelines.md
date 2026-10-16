@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-16
+updated: 2026-10-17
 authority: adr
 ---
 
@@ -141,15 +141,32 @@ pipeline rather than a backend mechanism.
    target, `tiled_sun_light` (RGBA16F; carried through shading as one packed
    register, `vkr_metal_tiled_pack_sun`). `Tiled.Atmosphere`, which then runs
    even without media, adds `U × (v − v_c)` before the media, where v is the
-   cascades' visibility or, past the near cascades, the darker of it and
-   the SDF trace's (`Tiled.SunShadow`, owner decision 2026-10-16: terrain,
-   foliage and moving casters have no distance volumes), times the contact
-   march toward the sun over the resolved depth. The sun's term is linear in
-   its visibility, so the correction is exact: with the march's visibility
-   forced to one the frame matches a frame without it bit for bit (Bistro
-   street and plaza). The variants are created in the background the first
-   time a frame asks for them; frames go without the correction until then.
-   See [Sun contact shadow measurement](#sun-contact-shadow-measurement).
+   cascades' visibility or, from where the near cascades fade into the far
+   level, the darker of it and the SDF trace's (`Tiled.SunShadow`), times
+   the contact march toward the sun over the resolved depth. The sun's term
+   is linear in its visibility, so the correction is exact: with the march's
+   visibility forced to one the frame matches a frame without it bit for bit
+   (Bistro street and plaza). The variants are created in the background the
+   first time a frame asks for them; frames go without the correction until
+   then. See [Sun contact shadow measurement](#sun-contact-shadow-measurement).
+   The SDF trace replaces the far level for the casters it covers (owner
+   decisions 2026-10-16 and 2026-10-17, `vkr_metal_packet_sdf.inc`): every
+   opaque rigid sun caster from 0.25 to 120 m whose submesh's distance volume
+   is generated. The GPU generates the volumes from resident triangles, up to
+   32 a frame. A field table of every live mesh's volumes, copied each frame,
+   lets the far level's culling views skip those casters and lets
+   `Tiled.SunShadow` list them in a light-space grid over every receiver the
+   shadows reach (256² cells, built on the GPU each frame) before it traces.
+   Terrain, foliage, cutout and skinned casters keep the far level's
+   shadows. The far level is rebuilt over many frames and kept long after, so
+   it may leave out only casters the trace covers: a volume stays ready while
+   its mesh lives, and the grid spans the far level's reach. Once a frame
+   generates no new volume after frames that did, the field's revision grows
+   (`vkr_renderer_sun_field_revision`); a far layer drawn against an older
+   revision is stale and rebuilds in slices
+   (`vkr_shadow_system_set_field_revision`), while the kept layer, which
+   still holds those casters, only doubles their shadows. See
+   [SDF sun shadow measurement](#sdf-sun-shadow-measurement).
    Opaque draws shade first and lay their own depth, with
    fragment variants that never discard, so hidden-surface removal keeps its
    fast path; alpha-tested draws shade after them
@@ -1182,9 +1199,57 @@ light. Lighting the sun after the image-based light cost the base variant
 off, on). In the second-to-last, a disturbed first run (14.30 ms off) is
 left out, and the passes add about 0.28 ms, within the shadow quality
 proposal's 0.4 ms. The last row's runs were disturbed by other GPU work and
-bound the opaque cost only within about ±0.5 ms. No authoritative windowed
-run confirms either yet. Plaza captures change 3,675 of 921,600 pixels at
-1280×720: contacts under hedges, bollards, curbs and window frames.
+bound the opaque cost only within about ±0.5 ms. Plaza captures change
+3,675 of 921,600 pixels at 1280×720: contacts under hedges, bollards, curbs
+and window frames.
+
+Authoritative windowed timing at `fb52f7dd`, clean worktree, 2026-10-17:
+`tiled_bistro_plaza_windowed_sun_{off,contact,sdf_replace_all}.case.json`
+(hidden window, 1280×720 at 0.6 render scale with MetalFX, immediate
+present) under `performance-windowed-gpu.json`, five repetitions of 300
+frames, interleaved off, contact, replace-all, off, contact; every report
+passed and was authoritative. p50/p95 in ms:
+
+| Run | `Tiled.Opaque` | `Tiled.SunShadow` | `Tiled.Atmosphere` | Frame wall |
+|---|---|---|---|---|
+| off (`00a83d`) | 9.724/10.667 | — | 0.346/0.703 | 17.26 |
+| contact (`00b1a4`) | 9.707/10.932 | — | 0.449/0.970 | 17.41 |
+| SDF everywhere (`00b838`) | 9.339/9.847 | 0.549/0.556 | 0.346/0.370 | 16.66 |
+| off (`00c44c`) | 9.232/9.741 | — | 0.195/0.211 | 15.81 |
+| contact (`00cd0b`) | 9.312/9.896 | — | 0.410/0.436 | 15.94 |
+
+The first pair ran with a wide p95; the second, steady pair puts contact
+shadows at +0.08 ms opaque and +0.22 ms atmosphere, about 0.3 ms, within the
+0.4 ms budget. The SDF row predates the GPU grid.
+
+### SDF sun shadow measurement
+
+M1 Pro, Release, dirty tree, local and not authoritative, 2026-10-17.
+`tiled_bistro_plaza_timing_sun_sdf_replace_all` (the trace at every pixel,
+2560×1440 at 0.6 with the spatial upscale, `local-offscreen-gpu-repeated`,
+five repetitions of 300 frames), `Tiled.SunShadow` p50:
+
+| Grid | Pass | Grid build alone |
+|---|---|---|
+| CPU, 128² over ±400 m (before) | 0.55 ms | — |
+| GPU, 256², one-thread scan and one thread per caster | 1.25 ms | — |
+| GPU, 512², the same | 2.83 ms | — |
+| GPU, 512², SIMD-group scan | 2.07 ms | 1.60 ms |
+| GPU, 512², block scan, a SIMD group per caster | 0.82 ms | — |
+| GPU, 256², block scan, a SIMD group per caster (shipped) | 0.79 ms | 0.32 ms |
+
+A single thread walking a large caster's cells at a low sun, and a scan
+held to one threadgroup, dominated the build. The shipped grid's capture
+of the plaza matches the earlier GPU grid's bit for bit
+(`sha256:4cfbba06d76a8c51…`, `tiled_bistro_plaza_sun_sdf_replace_all`).
+On the Level Design Test (headless editor, Epic, view across the valley
+from (300, 60, 450)), a diagnostic build that dropped the trace from the
+atmosphere draw lost the viaduct's, its piers' and the tunnel portal's far
+shadows once the far level rebuilt, while the terrain's and the forest's
+remained: the far level leaves the field casters out, and the trace alone
+draws their shadows. Before the field revision existed, the far level drawn
+at load kept those casters indefinitely. Not done: authoritative timing of
+the GPU grid, the Level Design Test's pass timing, and Metal validation.
 
 ### Sky edge measurement
 

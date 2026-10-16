@@ -2653,6 +2653,68 @@ vkr_internal void test_far_level_rebuilds_stale_layer_in_slices(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* A field revision the far layer was not drawn against (the tiled SDF field
+   gained casters the far level now leaves out) rebuilds the far level in
+   slices while the kept layer serves; the near cascades keep theirs. */
+vkr_internal void test_field_revision_rebuilds_far_level_in_slices(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  vkr_shadow_config_apply_tiled(&config);
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t far = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t all = cascade_mask(&system);
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+      .far_pending_resource_generation = 9u,
+  };
+  update_for_reuse(&system, &camera);
+  VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
+  vkr_shadow_system_commit_frame(&system, 18u);
+  token.static_valid_layer_mask = all;
+  uint64_t submit = 19u;
+  bool8_t first_published = false_v;
+  for (uint32_t step = 0u;
+       step < VKR_SHADOW_FAR_SLICE_COUNT + 4u && !first_published; ++step) {
+    update_for_reuse(&system, &camera);
+    frame = resolve_composed(&system, 0u, token, &payload);
+    first_published = frame.far_publish_mask == far_bit;
+    vkr_shadow_system_commit_frame(&system, submit++);
+  }
+  assert(first_published);
+  /* The kept layer is current: no rebuild starts. */
+  for (uint32_t step = 0u; step < 4u; ++step) {
+    update_for_reuse(&system, &camera);
+    frame = resolve_composed(&system, 0u, token, &payload);
+    assert(!frame.far_slice_active && frame.far_publish_mask == 0u);
+    vkr_shadow_system_commit_frame(&system, submit++);
+  }
+
+  vkr_shadow_system_set_field_revision(&system, 1u);
+  uint32_t slices = 0u;
+  bool8_t published = false_v;
+  for (uint32_t step = 0u; step < VKR_SHADOW_FAR_SLICE_COUNT + 4u; ++step) {
+    update_for_reuse(&system, &camera);
+    frame = resolve_composed(&system, 0u, token, &payload);
+    assert(((frame.cascade_render_mask | frame.static_render_mask) &
+            ~far_bit) == 0u);
+    assert(((frame.cascade_render_mask | frame.static_render_mask) & far_bit) ==
+           0u);
+    slices += frame.far_slice_active ? 1u : 0u;
+    published = published || frame.far_publish_mask == far_bit;
+    vkr_shadow_system_commit_frame(&system, submit++);
+  }
+  assert(slices == VKR_SHADOW_FAR_SLICE_COUNT && published);
+  assert(system.static_history[far].field_revision == 1u);
+  vkr_shadow_system_shutdown(&system);
+}
+
 /* A static change inside a static layer's volume makes it stale, so the layer
    draws again; one outside leaves it valid. */
 vkr_internal void test_static_change_reaching_fit_redraws_static_layer(void) {
@@ -3648,6 +3710,7 @@ bool32_t run_shadow_system_tests(void) {
   test_refit_composes_static_layer_in_one_frame();
   test_far_level_rebuilds_in_slices();
   test_far_level_rebuilds_stale_layer_in_slices();
+  test_field_revision_rebuilds_far_level_in_slices();
   test_static_change_reaching_fit_redraws_static_layer();
   test_without_dynamic_casters_static_layers_stay_unused();
   test_static_image_first_frame_draws_whole();

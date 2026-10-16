@@ -199,9 +199,9 @@ typedef struct VkrMetalPacketGraphBuffer {
   bool8_t live;
 } VkrMetalPacketGraphBuffer;
 
-/* SDF sun shadows (the shadow quality proposal's T5 prototype): one
-   submesh's distance volume, generated on the GPU from its resident geometry
-   the first time a frame traces it (vkr_metal_packet_sdf.inc). */
+/* SDF sun shadows (the shadow quality proposal's T5): one submesh's
+   distance volume, generated on the GPU from its resident geometry once a
+   frame's candidates reach it (vkr_metal_packet_sdf.inc). */
 typedef enum VkrMetalSdfVolumeState {
   VKR_METAL_SDF_VOLUME_EMPTY = 0,
   VKR_METAL_SDF_VOLUME_READY,
@@ -220,6 +220,8 @@ typedef struct VkrMetalSdfVolume {
   float32_t voxel;
   uint32_t dims[3];
   uint32_t state;
+  /* Its row in the field table while the table's layout is current. */
+  uint32_t row;
 } VkrMetalSdfVolume;
 
 /* Distance volumes: at most this many voxels a side, with a border of
@@ -235,12 +237,29 @@ typedef struct VkrMetalSdfVolume {
 #define VKR_METAL_SDF_BAND_VOXELS 6.0f
 #define VKR_METAL_SDF_MIN_EXTENT 0.25f
 #define VKR_METAL_SDF_MAX_EXTENT 120.0f
-/* The light-space grid: cells a side over twice the half extent in metres
-   around the camera, and its object and cell-entry capacities. */
-#define VKR_METAL_SDF_GRID_SIZE 128u
-#define VKR_METAL_SDF_GRID_HALF_EXTENT 400.0f
-#define VKR_METAL_SDF_MAX_OBJECTS 16384u
-#define VKR_METAL_SDF_MAX_GRID_ENTRIES 262144u
+/* The light-space grid: cells a side over the receivers the shadows reach
+   around the camera, at least the minimum half extent in metres, and its
+   capacity of cell entries. */
+#define VKR_METAL_SDF_GRID_SIZE 256u
+#define VKR_METAL_SDF_GRID_MIN_HALF_EXTENT 64.0f
+#define VKR_METAL_SDF_GRID_ENTRIES 1048576u
+/* Candidates a frame looks through for volumes to generate, round robin. */
+#define VKR_METAL_SDF_SCAN_CANDIDATES 8192u
+/* The grid scan's threadgroup and the cells each block of it scans (mirrors
+   world/sun_shadow.metal); the blocks' sums follow the cells' cursors. */
+#define VKR_METAL_SDF_SCAN_THREADS 256u
+#define VKR_METAL_SDF_SCAN_BLOCK 1024u
+#define VKR_METAL_SDF_GRID_CELLS                                               \
+  (VKR_METAL_SDF_GRID_SIZE * VKR_METAL_SDF_GRID_SIZE)
+#define VKR_METAL_SDF_SCAN_BLOCKS                                              \
+  (VKR_METAL_SDF_GRID_CELLS / VKR_METAL_SDF_SCAN_BLOCK)
+_Static_assert(VKR_METAL_SDF_GRID_CELLS % VKR_METAL_SDF_SCAN_BLOCK == 0u,
+               "the grid scan takes whole blocks");
+/* The grid buffer: offsets, entries, cursors and block sums. */
+#define VKR_METAL_SDF_GRID_BYTES                                               \
+  (((uint64_t)2u * VKR_METAL_SDF_GRID_CELLS + 1u +                             \
+    VKR_METAL_SDF_GRID_ENTRIES + VKR_METAL_SDF_SCAN_BLOCKS) *                  \
+   sizeof(uint32_t))
 /* How far toward the sun the trace looks, and the smallest sun half angle
    its penumbrae take (half a degree). */
 #define VKR_METAL_SDF_TRACE_DISTANCE 300.0f
@@ -414,6 +433,11 @@ typedef struct VkrMetalPacketFrameUpload {
   uint64_t sheen_gpu;
   uint64_t fog_gpu;
   uint64_t sky_gpu;
+  /* SDF sun shadows: this frame's copy of the field table, zero without
+     them (vkr_metal_packet_sdf.inc). */
+  uint64_t sdf_volume_rows_gpu;
+  uint64_t sdf_mesh_volumes_gpu;
+  uint32_t sdf_mesh_count;
   /** CPU view of the frame's sky record; preparation patches it before the
       submission reads it. */
   VkrMetalPacketSky *sky_cpu;
@@ -548,9 +572,11 @@ typedef struct VkrMetalPacketCommitFeedbackRecord {
   bool8_t in_use;
 } VkrMetalPacketCommitFeedbackRecord;
 
-/* Distance volumes one frame generates at most, each through its own
-   command-slot scratch. */
-#define VKR_METAL_SDF_GENERATIONS_PER_FRAME 4u
+/* Distance volumes one frame generates at most, and the voxels of the
+   command-slot scratch they share, four of the largest. */
+#define VKR_METAL_SDF_GENERATIONS_PER_FRAME 32u
+#define VKR_METAL_SDF_SCRATCH_VOXELS                                           \
+  (4u * VKR_METAL_SDF_MAX_DIM * VKR_METAL_SDF_MAX_DIM * VKR_METAL_SDF_MAX_DIM)
 
 typedef struct VkrMetalPacketCommandSlot {
   /* The frame's count of late Custom draws in the readback slice, which
@@ -558,8 +584,9 @@ typedef struct VkrMetalPacketCommandSlot {
      Custom graphs. */
   const uint32_t *custom_late_readback;
   /* Atomic distance scratch of the distance volumes this slot's frame
-     generates; created the first time one does. */
-  VkrMetalBufferResource sdf_scratch[VKR_METAL_SDF_GENERATIONS_PER_FRAME];
+     generates, VKR_METAL_SDF_SCRATCH_VOXELS; created the first time one
+     does. */
+  VkrMetalBufferResource sdf_scratch;
   id<MTL4CommandAllocator> allocator;
   id<MTL4CommandBuffer> buffer;
   id<MTL4CounterHeap> timestamp_heap;
@@ -1036,16 +1063,35 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> cloud_shadow_pipeline;
   id<MTLComputePipelineState> cloud_trace_pipeline;
   /* SDF sun shadows: a distance volume's clear, triangle splat and
-     conversion, and the half-resolution trace (vkr_metal_packet_sdf.inc). */
+     conversion, the light-space grid's clear, count, block reduction, block
+     scan, offsets and scatter, and the half-resolution trace
+     (vkr_metal_packet_sdf.inc). */
   id<MTLComputePipelineState> sdf_clear_pipeline;
   id<MTLComputePipelineState> sdf_splat_pipeline;
   id<MTLComputePipelineState> sdf_convert_pipeline;
+  id<MTLComputePipelineState> sdf_grid_clear_pipeline;
+  id<MTLComputePipelineState> sdf_grid_count_pipeline;
+  id<MTLComputePipelineState> sdf_grid_reduce_pipeline;
+  id<MTLComputePipelineState> sdf_grid_scan_pipeline;
+  id<MTLComputePipelineState> sdf_grid_apply_pipeline;
+  id<MTLComputePipelineState> sdf_grid_scatter_pipeline;
   id<MTLComputePipelineState> sun_shadow_trace_pipeline;
-  /* CPU scratch the trace's light-space grid is built in, grown as needed:
-     per object its cell rectangle, and per cell a count then a cursor. */
-  uint16_t *sdf_object_cells;
-  uint32_t sdf_object_cell_capacity;
-  uint32_t *sdf_cell_cursor;
+  /* The field table each SDF frame copies for the GPU: every live mesh's
+     volume rows, and per mesh slot below `sdf_mesh_count` its first row and
+     row count. Mesh creation and release lay it out again; a generation
+     updates its row. */
+  VkrMetalSdfVolumeRow *sdf_rows;
+  uint32_t sdf_row_count;
+  uint32_t sdf_row_capacity;
+  uint32_t *sdf_mesh_volumes;
+  uint32_t sdf_mesh_count;
+  bool8_t sdf_layout_dirty;
+  /* The next candidate the generation scan looks at. */
+  uint32_t sdf_scan_cursor;
+  /* The field's revision, which the frame loop reads: it grows on the first
+     frame that generates no volume after frames that did. */
+  VkrAtomicUint64 sdf_field_revision;
+  bool8_t sdf_field_grew;
   /* Bytes of the distance volumes created so far, and the submission of the
      last frame that generated one, which a later trace waits for while it
      may still run. */
@@ -1361,6 +1407,23 @@ vkr_metal_packet_present_committed_frame(VkrMetalPacketRenderer *renderer,
                                          const VkrPreparedFrame *packet,
                                          uint64_t submit_value)
     API_AVAILABLE(macos(26.0));
+/* SDF sun shadows (vkr_metal_packet_sdf.inc) follow the frame's helpers;
+   upload and pass preparation call into them. */
+vkr_internal float32_t
+vkr_metal_packet_sun_shadow_start(const VkrShadowPassPayload *shadow);
+vkr_internal uint64_t
+vkr_metal_packet_sdf_root_cells(const VkrMetalPacketRenderer *renderer);
+vkr_internal bool8_t
+vkr_metal_packet_sdf_layout(VkrMetalPacketRenderer *renderer);
+vkr_internal bool8_t
+vkr_metal_packet_write_upload_sdf_table(VkrMetalPacketRenderer *renderer,
+                                        VkrMetalPacketFrameUpload *upload);
+vkr_internal uint32_t
+vkr_metal_packet_sdf_skip_view_mask(const VkrRenderGraphFrameInfo *frame);
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shadow(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0));
 #include "metal/internal/vkr_metal_packet_commands.inc"
 #include "metal/internal/vkr_metal_packet_setup.inc"
 #include "metal/internal/vkr_metal_packet_custom.inc"

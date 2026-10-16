@@ -135,7 +135,7 @@ struct VkrMetalTiledSkyRoot {
   // VKR_METAL_TILED_SUN_*.
   uint sun_flags;
   // The SDF trace's visibility and coverage at half resolution, and where it
-  // takes over from the cascades.
+  // has taken over from the cascades, over the band before.
   texture2d<float, access::sample> sun_shadow;
   float sun_shadow_start;
   float sun_shadow_band;
@@ -349,11 +349,12 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   // Frames that correct the sun's light replace its cascades' visibility
   // before the media scale it: the opaque pass kept the sun's light without
   // the cascades and their visibility, and the sun's term is linear in its
-  // visibility. Past the near cascades the darker of the far level and the
-  // SDF trace takes over (the trace alone everywhere for the replace-all
-  // diagnostic); the contact march then scales the result. The sky's samples hold no sun light, and an edge pixel's sun
-  // light is its samples' mean, which the nearest sample's visibility
-  // scales.
+  // visibility. Before the far level fades in, the darker of the cascades
+  // and the SDF trace takes over, since the far level leaves out the casters
+  // the trace covers (the trace alone everywhere for the replace-all
+  // diagnostic); the contact march then scales the result. The sky's
+  // samples hold no sun light, and an edge pixel's sun light is its samples'
+  // mean, which the nearest sample's visibility scales.
   float3 lit = destination.rgb;
   if (vkr_tiled_sun_output) {
     // A pixel whose sun light is under VKR_SUN_CONTACT_MIN_SHARE of its
@@ -374,8 +375,10 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
         const float axis_distance =
             root.depth_scale / (depth + root.depth_offset);
         const float weight =
-            trace.y * saturate((axis_distance - root.sun_shadow_start) /
-                               max(root.sun_shadow_band, 1e-3f));
+            trace.y *
+            saturate((axis_distance -
+                      (root.sun_shadow_start - root.sun_shadow_band)) /
+                     max(root.sun_shadow_band, 1e-3f));
         const float traced =
             (root.sun_flags & VKR_METAL_TILED_SUN_SDF_REPLACE) != 0u
                 ? trace.x

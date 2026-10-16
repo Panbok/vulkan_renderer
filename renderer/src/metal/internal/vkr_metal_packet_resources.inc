@@ -261,12 +261,14 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
 }
 
 /* Records each submesh's quantized position box, from which a distance
-   volume is fitted when SDF sun shadows first trace it; without memory the
-   mesh casts no SDF shadow. */
+   volume is fitted once SDF sun shadows reach one of its candidates;
+   without memory the mesh casts no SDF shadow. The field table is laid out
+   again either way. */
 vkr_internal void
 vkr_metal_packet_init_sdf_volumes(VkrMetalPacketRenderer *renderer,
                                   VkrMetalPacketMesh *mesh,
                                   const VkrGpuGeometryDecodeRecord *decodes) {
+  renderer->sdf_layout_dirty = true_v;
   mesh->sdf_volumes = vkr_allocator_alloc(
       renderer->allocator,
       (uint64_t)mesh->submesh_count * sizeof(VkrMetalSdfVolume),
@@ -287,13 +289,14 @@ vkr_metal_packet_init_sdf_volumes(VkrMetalPacketRenderer *renderer,
 }
 
 /* Retires a mesh's distance volumes after `retire_value` and frees their
-   records. */
+   records; the field table is laid out again without them. */
 vkr_internal void
 vkr_metal_packet_release_sdf_volumes(VkrMetalPacketRenderer *renderer,
                                      VkrMetalPacketMesh *mesh,
                                      uint64_t retire_value) {
   if (!mesh->sdf_volumes)
     return;
+  renderer->sdf_layout_dirty = true_v;
   for (uint32_t i = 0u; i < mesh->submesh_count; ++i) {
     if (mesh->sdf_volumes[i].texture.metal_texture)
       (void)vkr_metal_memory_device_retire(
@@ -2554,21 +2557,12 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
   if (packet->input.picking && packet->input.picking->pending)
     plan->root_count += 1u;
   plan->root_count += plan->ui_batch_count;
-  /* SDF sun shadows: the volumes a frame generates, the trace, the caster
-     records and the light-space grid at its capacity. */
-  if (renderer->prepared_frame.tiled_sun_sdf && packet->input.world) {
-    const uint64_t objects =
-        Min(packet->input.world->gpu_shadow_candidate_count,
-            VKR_METAL_SDF_MAX_OBJECTS);
-    const uint64_t grid_bytes =
-        ((uint64_t)VKR_METAL_SDF_GRID_SIZE * VKR_METAL_SDF_GRID_SIZE + 1u +
-         VKR_METAL_SDF_MAX_GRID_ENTRIES) *
-        sizeof(uint32_t);
-    plan->root_count +=
-        VKR_METAL_SDF_GENERATIONS_PER_FRAME + 1u +
-        (objects * sizeof(VkrMetalSdfObject) + grid_bytes) /
-            VKR_METAL_PACKET_DRAW_ROOT_STRIDE +
-        2u;
+  /* SDF sun shadows: the field table's copy, the volumes a frame
+     generates, the grid build and the trace. */
+  if (renderer->prepared_frame.tiled_sun_sdf) {
+    if (!vkr_metal_packet_sdf_layout(renderer))
+      return false_v;
+    plan->root_count += vkr_metal_packet_sdf_root_cells(renderer);
   }
   /*
    * Pass encoders allocate at most one ordinary root each. Keep that authored
@@ -3625,6 +3619,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
           renderer, packet, upload, packet->input.editor->selection_draws,
           plan.selection_count, plan.overlay_count, true_v,
           upload->selection_draws, &upload->selection_root_gpu))
+    return false_v;
+  if (renderer->prepared_frame.tiled_sun_sdf &&
+      !vkr_metal_packet_write_upload_sdf_table(renderer, upload))
     return false_v;
   return true_v;
 }

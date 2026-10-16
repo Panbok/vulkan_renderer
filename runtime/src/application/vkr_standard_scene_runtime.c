@@ -1280,6 +1280,10 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     if (input->invalidate_local) {
       vkr_shadow_system_invalidate_local_cache(&application->shadow_system);
     }
+    /* The far level rebuilds without the casters the SDF field gained. */
+    vkr_shadow_system_set_field_revision(
+        &application->shadow_system,
+        vkr_renderer_sun_field_revision(&application->renderer));
   }
   if (input->update) {
     const float64_t update_start = vkr_platform_get_absolute_time();

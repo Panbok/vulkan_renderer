@@ -846,6 +846,13 @@ void vkr_shadow_system_invalidate_local_cache(VkrShadowSystem *system) {
   }
 }
 
+void vkr_shadow_system_set_field_revision(VkrShadowSystem *system,
+                                          uint64_t revision) {
+  if (system) {
+    system->field_revision = revision;
+  }
+}
+
 void vkr_shadow_system_invalidate_fit_history(VkrShadowSystem *system) {
   if (system) {
     system->fit_history.valid = false_v;
@@ -1668,7 +1675,7 @@ vkr_internal VkrShadowCascadeHistory vkr_shadow_drawn_history(
     const VkrWorldPassPayload *candidates, const Mat4 *light_view,
     const VkrShadowFit *fit, const Mat4 *view_projection,
     uint64_t bias_signature, uint64_t light_signature,
-    uint64_t resource_generation) {
+    uint64_t resource_generation, uint64_t field_revision) {
   return (VkrShadowCascadeHistory){
       .rendered_fit = *fit,
       .rendered_light_view = *light_view,
@@ -1681,6 +1688,7 @@ vkr_internal VkrShadowCascadeHistory vkr_shadow_drawn_history(
       .bias_signature = bias_signature,
       .light_signature = light_signature,
       .resource_generation = resource_generation,
+      .field_revision = field_revision,
       .dynamic_contents = candidates && !candidates->publication_pending,
       .dynamic_generation = candidates ? candidates->dynamic_generation : 0u,
   };
@@ -1841,6 +1849,7 @@ vkr_shadow_far_plan(VkrShadowSystem *system, uint32_t far,
                                : light_signature,
         .pending_resource_generation = token.far_pending_resource_generation,
         .static_resource_generation = token.static_resource_generation,
+        .field_revision = system->field_revision,
     };
     rebuild->view_projection = vkr_shadow_view_projection_from_fit(
         &rebuild->light_view, &rebuild->fit);
@@ -1883,7 +1892,8 @@ vkr_internal void vkr_shadow_far_publish(VkrShadowSystem *system, uint32_t far,
   pending->static_cascades[far] = vkr_shadow_drawn_history(
       candidates, &rebuild->light_view, &rebuild->fit,
       &rebuild->view_projection, rebuild->bias_signature,
-      rebuild->light_signature, token.static_resource_generation);
+      rebuild->light_signature, token.static_resource_generation,
+      rebuild->field_revision);
   pending->static_cascades[far].static_generation = rebuild->static_generation;
   pending->static_cascades[far].publication_generation =
       rebuild->publication_generation;
@@ -2066,9 +2076,12 @@ vkr_internal VkrShadowFarKept vkr_shadow_far_kept(
           vkr_shadow_rendered_fit_margin(image, &system->cascades[far]);
     }
   }
+  /* A layer drawn before the field gained casters still holds them, so the
+     far level rebuilds without them. */
   kept.stale =
       kept.layer_margin >= 0.0f
           ? candidates->publication_pending ||
+                layer->field_revision != system->field_revision ||
                 !vkr_shadow_submitted_inputs_match(
                     layer, candidates, token.static_resource_generation,
                     bias_signature, light_signature)
@@ -2352,7 +2365,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         pending->static_cascades[cascade] = vkr_shadow_drawn_history(
             candidates, &light_view, &fit, &out_data->view_projection[cascade],
             bias_signature, light_signatures[cascade],
-            retained_token.static_resource_generation);
+            retained_token.static_resource_generation, system->field_revision);
         pending->static_cascades[cascade].static_only_contents = true_v;
         pending->static_cascades[cascade].dynamic_contents = false_v;
       }
@@ -2360,7 +2373,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
       pending->cascades[cascade] = vkr_shadow_drawn_history(
           candidates, &light_view, &fit, &out_data->view_projection[cascade],
           bias_signature, light_signatures[cascade],
-          retained_token.resource_generation);
+          retained_token.resource_generation, system->field_revision);
       pending->cascades[cascade].static_only_contents = !overlap;
       pending->cascades[cascade].composite = true_v;
       continue;
@@ -2387,7 +2400,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
     pending->cascades[cascade] = vkr_shadow_drawn_history(
         candidates, &light_view, &fit, &out_data->view_projection[cascade],
         bias_signature, light_signatures[cascade],
-        retained_token.resource_generation);
+        retained_token.resource_generation, system->field_revision);
     pending->cascades[cascade].static_only_contents =
         !publication_pending && !dynamic_scan_failed &&
         !(adopt_submitted ? fit_dynamic_overlap[cascade]
