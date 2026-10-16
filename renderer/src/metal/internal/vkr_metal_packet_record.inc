@@ -423,27 +423,29 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
       /* Each filled compaction range shades with its pipelines of the
          frame's forward variant, in the same order: plane 1's slot 0 with
          the Standard extension variant, a Custom slot with its graph's
-         pipelines of the plane's BRDF variant (ADR-096, ADR-113). */
+         pipelines of the plane's BRDF variant (ADR-096, ADR-113), each
+         with the frame's sun variant. */
       const uint32_t decals = pass->tiled.decals;
       const uint32_t probes = pass->tiled.probes;
       const uint32_t lighting = pass->tiled.lighting;
       for (uint32_t plane = 0u;
            draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
            ++plane) {
+        const uint32_t variant = plane | pass->tiled.sun;
         for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
           if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
             continue;
           const VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
           id<MTLRenderPipelineState> pipeline =
               slot == 0u
-                  ? (cutout ? renderer->tiled_coverage_pipelines[plane][decals]
-                                                                [probes]
-                                                                [lighting]
-                            : renderer->tiled_forward_pipelines[plane][decals]
-                                                               [probes]
-                                                               [lighting])
-                  : (cutout ? graph->coverage[plane][decals][probes][lighting]
-                            : graph->forward[plane][decals][probes][lighting]);
+                  ? (cutout
+                         ? renderer->tiled_coverage_pipelines[variant][decals]
+                                                             [probes][lighting]
+                         : renderer->tiled_forward_pipelines[variant][decals]
+                                                            [probes][lighting])
+                  : (cutout
+                         ? graph->coverage[variant][decals][probes][lighting]
+                         : graph->forward[variant][decals][probes][lighting]);
           [encoder setRenderPipelineState:pipeline];
           for (uint32_t bucket = 0u;
                bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT; ++bucket) {
@@ -460,12 +462,13 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
   [encoder setArgumentTable:renderer->argument_table
                    atStages:MTLRenderStageVertex | MTLRenderStageFragment];
   [encoder setDepthStencilState:renderer->tiled_sky_state];
-  [encoder setRenderPipelineState:renderer->tiled_sky_pipeline];
+  const uint32_t sun = pass->tiled.sun != 0u ? 1u : 0u;
+  [encoder setRenderPipelineState:renderer->tiled_sky_pipelines[sun]];
   [encoder setCullMode:MTLCullModeNone];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle
               vertexStart:0u
               vertexCount:3u];
-  [encoder setRenderPipelineState:renderer->tiled_resolve_pipeline];
+  [encoder setRenderPipelineState:renderer->tiled_resolve_pipelines[sun]];
   [encoder dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
                                               VKR_METAL_TILED_TILE_HEIGHT, 1u)];
 }
@@ -479,7 +482,8 @@ vkr_internal void vkr_metal_packet_record_tiled_atmosphere(
   [renderer->argument_table setAddress:pass->tiled_atmosphere.root atIndex:1u];
   [encoder setArgumentTable:renderer->argument_table
                    atStages:MTLRenderStageVertex | MTLRenderStageFragment];
-  [encoder setRenderPipelineState:renderer->tiled_atmosphere_pipeline];
+  [encoder setRenderPipelineState:renderer->tiled_atmosphere_pipelines
+                                      [pass->tiled_atmosphere.sun]];
   [encoder setCullMode:MTLCullModeNone];
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle
               vertexStart:0u

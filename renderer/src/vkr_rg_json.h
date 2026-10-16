@@ -108,7 +108,9 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_PICKING_PENDING_TRANSMISSION,
   VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION,
   VKR_RG_JSON_CONDITION_BLEND_PENDING,
-  VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED,
+  /** The tiled atmosphere draw: clouds, fog or the sun contact march. */
+  VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE,
+  VKR_RG_JSON_CONDITION_TILED_SUN_CONTACT,
   VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING,
   VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED,
   VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISABLED,
@@ -386,6 +388,7 @@ typedef struct VkrRgJsonAttachment {
   VkrRgJsonIndex slice_mip_level;   // The slice mip level of the attachment.
   VkrRgJsonIndex slice_base_layer;  // The slice base layer of the attachment.
   VkrRgJsonIndex slice_layer_count; // The slice layer count of the attachment.
+  VkrRgJsonCondition condition;     // When the pass binds the attachment.
 } VkrRgJsonAttachment;
 Array(VkrRgJsonAttachment);
 

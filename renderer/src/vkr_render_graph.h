@@ -699,6 +699,10 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t tiled_object_motion_pending;
   /** The upscaled frame's camera is still (VkrPreparedFrame). */
   bool8_t tiled_temporal_still;
+  /** The tiled opaque pass writes the sun's light to `tiled_sun_light` and
+      the atmosphere draw removes the part a contact march finds occluded
+      (VkrPreparedFrame). */
+  bool8_t tiled_sun_contact;
   VkrTextureFormat target_color_format; /**< Present-target color format */
   VkrTextureFormat target_depth_format; /**< Present-target depth format */
   /** Access/layout each imported target attachment arrives in. */

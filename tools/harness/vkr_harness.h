@@ -264,6 +264,8 @@ typedef struct VkrHarnessRendererConfig {
   bool8_t taa_enabled;
   bool8_t shadow_pcf_early_out;
   bool8_t shadow_sdsm;
+  /** Screen-space contact shadows for the sun (the tiled pipeline's). */
+  bool8_t shadow_contact;
   char backend[16];
   char shadow_preset[32];
   uint32_t shadow_cascades;

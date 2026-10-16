@@ -43,6 +43,8 @@ vkr_metal_packet_pixel_format(VkrTextureFormat format) {
     return MTLPixelFormatRGB9E5Float;
   case VKR_TEXTURE_FORMAT_BC6H_UFLOAT:
     return MTLPixelFormatBC6H_RGBUfloat;
+  case VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT:
+    return MTLPixelFormatRG11B10Float;
   case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return MTLPixelFormatEAC_RG11Unorm;
   case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:

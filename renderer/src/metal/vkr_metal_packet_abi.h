@@ -145,7 +145,11 @@ _Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
     surfaces' world positions and `view_rays`, the vkr_atmosphere_view_rays
     matrix of the same jittered projection, the sky's view directions.
     `depth_texture_id` is the resolved depth the cloud draw reads, zero for
-    the clear sky. */
+    the clear sky. In sun contact frames the atmosphere draw also reads the
+    opaque pass's sun light, `sun_light_texture_id`, steps its contact march
+    by `contact_noise_index` and takes a resolved depth's distance along the
+    camera axis as depth_scale / (depth + depth_offset); all are zero
+    otherwise. */
 typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint64_t frame;
   uint64_t sky_view_texture_id;
@@ -156,8 +160,13 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint32_t clouds_enabled;
   Vec4 sky_radiance;
   uint64_t depth_texture_id;
+  uint64_t sun_light_texture_id;
+  uint32_t contact_noise_index;
+  float32_t depth_offset;
+  float32_t depth_scale;
+  uint32_t reserved;
 } VkrMetalTiledSkyRoot;
-_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 192u,
+_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 208u,
                "Metal tiled sky root ABI drift");
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketLtc {

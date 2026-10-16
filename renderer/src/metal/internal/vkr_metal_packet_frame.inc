@@ -1108,17 +1108,22 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
         upload, sizeof(VkrMetalCustomCompaction), &gpu_address);
     if (!compaction)
       return;
+    /* A sun contact frame shades with the sun variants; a slot whose sun
+       variant is not ready yet draws its fallback. */
+    const uint32_t sun = renderer->prepared_frame.tiled_sun_contact
+                             ? VKR_METAL_TILED_SUN_VARIANT
+                             : 0u;
     renderer->custom_ready_mask = vkr_metal_packet_custom_state_mask(
-        renderer, VKR_METAL_CUSTOM_GRAPH_READY, 0u);
+        renderer, VKR_METAL_CUSTOM_GRAPH_READY, sun);
     compaction->ready_mask = renderer->custom_ready_mask;
     compaction->pending_mask = vkr_metal_packet_custom_state_mask(
-        renderer, VKR_METAL_CUSTOM_GRAPH_PENDING, 0u);
+        renderer, VKR_METAL_CUSTOM_GRAPH_PENDING, sun);
     /* Extended draws take plane 1 in frames that bucket them (ADR-113). */
     compaction->brdf_ready = renderer->tiled_brdf_draws ? 1u : 0u;
     renderer->custom_brdf_ready_mask =
         renderer->tiled_brdf_draws
             ? vkr_metal_packet_custom_state_mask(
-                  renderer, VKR_METAL_CUSTOM_GRAPH_READY, 1u)
+                  renderer, VKR_METAL_CUSTOM_GRAPH_READY, 1u | sun)
             : 0u;
     compaction->brdf_ready_mask = renderer->custom_brdf_ready_mask;
     compaction->materials =
@@ -2040,39 +2045,47 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_shadow(
 }
 
 /* Keeps memoryless multisampled colour and depth of the tiled pipeline's
-   opaque pass at the target's extent. They have no memory to make resident,
-   and residency sets reject them. Frames still in flight may render into
-   replaced targets, so a resize retires them until the GPU completes the
-   last submission; a dynamic-resolution step therefore does not stall.
-   Only a second resize before that completion waits for it. */
+   opaque pass at the target's extent, and with `sun` its sun light. They
+   have no memory to make resident, and residency sets reject them. Frames
+   still in flight may render into replaced targets, so a resize retires
+   them until the GPU completes the last submission; a dynamic-resolution
+   step therefore does not stall. Only a second resize before that
+   completion waits for it. */
 vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
-    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height)
-    API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketRenderer *renderer, uint32_t width, uint32_t height,
+    bool8_t sun) API_AVAILABLE(macos(26.0)) {
   if (renderer->tiled_retired_color &&
       vkr_metal_packet_completed(renderer) >=
           renderer->tiled_retired_submit_value) {
     [renderer->tiled_retired_color release];
     [renderer->tiled_retired_depth release];
+    [renderer->tiled_retired_sun release];
     renderer->tiled_retired_color = nil;
     renderer->tiled_retired_depth = nil;
+    renderer->tiled_retired_sun = nil;
   }
-  if (renderer->tiled_msaa_color && renderer->tiled_width == width &&
-      renderer->tiled_height == height)
+  const bool8_t sized = renderer->tiled_msaa_color &&
+                        renderer->tiled_width == width &&
+                        renderer->tiled_height == height;
+  if (sized && (!sun || renderer->tiled_msaa_sun))
     return true_v;
-  if (renderer->tiled_msaa_color) {
+  if (!sized && renderer->tiled_msaa_color) {
     if (renderer->tiled_retired_color) {
       if (!vkr_metal_packet_wait(renderer,
                                  renderer->tiled_retired_submit_value))
         return false_v;
       [renderer->tiled_retired_color release];
       [renderer->tiled_retired_depth release];
+      [renderer->tiled_retired_sun release];
     }
     renderer->tiled_retired_color = renderer->tiled_msaa_color;
     renderer->tiled_retired_depth = renderer->tiled_msaa_depth;
+    renderer->tiled_retired_sun = renderer->tiled_msaa_sun;
     renderer->tiled_retired_submit_value = renderer->submit_value;
+    renderer->tiled_msaa_color = nil;
+    renderer->tiled_msaa_depth = nil;
+    renderer->tiled_msaa_sun = nil;
   }
-  renderer->tiled_msaa_color = nil;
-  renderer->tiled_msaa_depth = nil;
 
   MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
   descriptor.textureType = MTLTextureType2DMultisample;
@@ -2081,14 +2094,22 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
   descriptor.sampleCount = renderer->tiled_sample_count;
   descriptor.usage = MTLTextureUsageRenderTarget;
   descriptor.storageMode = MTLStorageModeMemoryless;
-  descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
-  renderer->tiled_msaa_color =
-      [renderer->device newTextureWithDescriptor:descriptor];
-  descriptor.pixelFormat = MTLPixelFormatDepth32Float;
-  renderer->tiled_msaa_depth =
-      [renderer->device newTextureWithDescriptor:descriptor];
+  if (!sized) {
+    descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
+    renderer->tiled_msaa_color =
+        [renderer->device newTextureWithDescriptor:descriptor];
+    descriptor.pixelFormat = MTLPixelFormatDepth32Float;
+    renderer->tiled_msaa_depth =
+        [renderer->device newTextureWithDescriptor:descriptor];
+  }
+  if (sun) {
+    descriptor.pixelFormat = VKR_METAL_TILED_SUN_LIGHT_FORMAT;
+    renderer->tiled_msaa_sun =
+        [renderer->device newTextureWithDescriptor:descriptor];
+  }
   [descriptor release];
-  if (!renderer->tiled_msaa_color || !renderer->tiled_msaa_depth) {
+  if (!renderer->tiled_msaa_color || !renderer->tiled_msaa_depth ||
+      (sun && !renderer->tiled_msaa_sun)) {
     log_error("Metal tiled multisampled targets unavailable");
     return false_v;
   }
@@ -2099,12 +2120,16 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
 
 /* The sky draws' root: the frame, the sky-view lookup at `sky_view_binding`
    and the sky mode. The sky's view directions come from the camera-relative
-   `view_rays`; the world inverse only places resolved surfaces. */
+   `view_rays`; the world inverse only places resolved surfaces. The
+   atmosphere draw of a sun contact frame also takes the sun's light and the
+   contact march's noise index. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketFrameUpload *upload,
     uint32_t width, uint32_t height, uint32_t sky_view_binding,
-    id<MTLTexture> depth, uint64_t *out_root_gpu) API_AVAILABLE(macos(26.0)) {
+    id<MTLTexture> depth, id<MTLTexture> sun_light,
+    uint32_t contact_noise_index, uint64_t *out_root_gpu)
+    API_AVAILABLE(macos(26.0)) {
   const VkrSkyPassPayload *sky = packet->input.sky;
   const VkrSkyMode sky_mode = !sky ? VKR_SKY_MODE_NONE
                               : sky->atmosphere.enabled
@@ -2147,6 +2172,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sky_root(
                        sky->constant_radiance.z * pre_exposure, 0.0f}
               : (Vec4){0},
       .depth_texture_id = depth ? depth.gpuResourceID._impl : 0u,
+      .sun_light_texture_id = sun_light ? sun_light.gpuResourceID._impl : 0u,
+      .contact_noise_index = contact_noise_index,
+      /* The reversed perspective maps distance d along the camera axis to
+         depth m23 / d - m22 (mat4_perspective_reversed). */
+      .depth_offset = sun_light ? packet->temporal.jittered_projection.m22
+                                : 0.0f,
+      .depth_scale = sun_light ? packet->temporal.jittered_projection.m23
+                               : 0.0f,
   };
   return true_v;
 }
@@ -2251,12 +2284,18 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       vkr_metal_packet_tiled_lighting(packet);
   const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
   const uint32_t decals = vkr_metal_packet_tiled_decal_variant(packet);
-  /* Standard draws take the base variant; slot 0's extended ones take the
-     extension variant as they record (ADR-113). */
+  /* Sun contact frames take the variants that also write the sun's light
+     (its graph attachment 1). */
+  const bool8_t sun_contact = renderer->prepared_frame.tiled_sun_contact;
+  const uint32_t sun = sun_contact ? VKR_METAL_TILED_SUN_VARIANT : 0u;
+  if (sun_contact && pass->desc.color_attachments.length < 2u)
+    return false_v;
+  /* Standard draws take the base BRDF variant; slot 0's extended ones take
+     the extension variant as they record (ADR-113). */
   if (!vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
-          renderer->tiled_coverage_pipelines[0][decals][probes][lighting],
-          renderer->tiled_forward_pipelines[0][decals][probes][lighting])) {
+          renderer->tiled_coverage_pipelines[sun][decals][probes][lighting],
+          renderer->tiled_forward_pipelines[sun][decals][probes][lighting])) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
@@ -2265,10 +2304,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   draws.viewport = (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
   uint64_t sky_root = 0u;
   const bool8_t multisampled = renderer->tiled_sample_count > 1u;
-  if ((multisampled &&
-       !vkr_metal_packet_tiled_ensure_targets(renderer, width, height)) ||
-      !vkr_metal_packet_prepare_tiled_sky_root(
-          renderer, pass, packet, upload, width, height, 15u, nil, &sky_root))
+  if ((multisampled && !vkr_metal_packet_tiled_ensure_targets(
+                           renderer, width, height, sun_contact)) ||
+      !vkr_metal_packet_prepare_tiled_sky_root(renderer, pass, packet, upload,
+                                               width, height, 15u, nil, nil, 0u,
+                                               &sky_root))
     return false_v;
   MTL4RenderPassDescriptor *descriptor =
       renderer->render_passes[prepared->index];
@@ -2279,6 +2319,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
     color.resolveTexture = color.texture;
     color.texture = renderer->tiled_msaa_color;
     color.storeAction = MTLStoreActionMultisampleResolve;
+    if (sun_contact) {
+      MTLRenderPassColorAttachmentDescriptor *sun_light =
+          descriptor.colorAttachments[1];
+      sun_light.resolveTexture = sun_light.texture;
+      sun_light.texture = renderer->tiled_msaa_sun;
+      sun_light.storeAction = MTLStoreActionMultisampleResolve;
+    }
     MTLRenderPassDepthAttachmentDescriptor *depth = descriptor.depthAttachment;
     depth.resolveTexture = depth.texture;
     depth.texture = renderer->tiled_msaa_depth;
@@ -2293,6 +2340,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   prepared->tiled.decals = decals;
   prepared->tiled.probes = probes;
   prepared->tiled.lighting = lighting;
+  prepared->tiled.sun = sun;
   prepared->active = true_v;
   return true_v;
 }
@@ -2597,7 +2645,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_temporal(
 }
 
 /* Prepares the atmosphere draw over the tiled pipeline's resolved image: it
-   reads the resolved depth at binding 0 and the sky-view lookup at 15. */
+   reads the resolved depth at binding 0 and the sky-view lookup at 15, and
+   in sun contact frames the opaque pass's sun light at 37. The contact
+   march's step pattern follows the frame while MetalFX accumulates frames
+   and is fixed otherwise. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -2606,14 +2657,24 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
   id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
   if (!depth)
     return false_v;
+  const bool8_t sun_contact = renderer->prepared_frame.tiled_sun_contact;
+  id<MTLTexture> sun_light =
+      sun_contact ? vkr_metal_packet_pass_texture(renderer, pass, 37u) : nil;
+  if (sun_contact && !sun_light)
+    return false_v;
+  const uint32_t contact_noise_index =
+      renderer->prepared_frame.tiled_temporal_enabled
+          ? packet->input.frame.frame_index
+          : 0u;
   const uint32_t width = (uint32_t)target.width;
   const uint32_t height = (uint32_t)target.height;
   if (!vkr_metal_packet_prepare_tiled_sky_root(
-          renderer, pass, packet, upload, width, height, 15u, depth,
-          &prepared->tiled_atmosphere.root))
+          renderer, pass, packet, upload, width, height, 15u, depth, sun_light,
+          contact_noise_index, &prepared->tiled_atmosphere.root))
     return false_v;
   prepared->tiled_atmosphere.viewport =
       (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
+  prepared->tiled_atmosphere.sun = sun_contact ? 1u : 0u;
   prepared->active = true_v;
   return true_v;
 }

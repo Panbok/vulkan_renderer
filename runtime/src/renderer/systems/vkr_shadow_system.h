@@ -198,6 +198,10 @@ typedef struct VkrShadowConfig {
    * only: the march costs about 1.1 ms of Shadow.LocalMask in the Bistro
    * street view on the M1 Pro, mostly through the occupancy it takes. */
   bool8_t local_shadow_contact;
+  /** Screen-space contact shadows for the sun. The tiled pipeline marches
+   * them in its atmosphere draw; the desktop pipeline does not draw them
+   * yet. */
+  bool8_t sun_contact;
   /** Full-filter local lights widen their penumbra by their authored source
    * radius (the Soft shadows setting); false keeps the fixed filter. */
   bool8_t local_shadow_soft;

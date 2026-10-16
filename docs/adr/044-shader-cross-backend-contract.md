@@ -94,8 +94,9 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     of a 320-byte `VkrMetalPacketLightmap` (its lamp-direct fields from byte
     96 and two 80-byte baked lamp rows from byte 160,
     [ADR-108](108-baked-lamp-direct-pages.md)), `terrain_materials` at byte 552
-    and `transmission_materials` at byte 560; the tiled sky root is 192
-    bytes. Both are pinned in
+    and `transmission_materials` at byte 560; the tiled sky root is 208
+    bytes, with the sun light at byte 184 and the contact march's noise
+    index and depth linearization at bytes 192 to 203. Both are pinned in
     `vkr_metal_packet_abi.c` and checked against reflection at pipeline
     creation.
   - The frame root carries `decals` at byte 568, its former tail padding:
@@ -169,6 +170,18 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     both backends (`deferred.slang` before applied it to local views only),
     so the cascades' dynamic-caster views of ADR-041 take only dynamic
     casters. Native evidence: Metal only; the Vulkan change compiles.
+  - Sun contact frames (ADR-087, decision 6) specialize the tiled forward,
+    sky and atmosphere entries with function constant 1
+    (`vkr_tiled_sun_output`): the forward and sky entries return
+    `VkrMetalTiledForwardOutput`, whose second output is the sun's light, and
+    Custom graphs' generated entries return the same record
+    (`vkr_material_codegen_msl_entries`). The march takes the shared
+    `vkr_sun_contact_length` and `vkr_sun_contact_strength`
+    (`shadow_kernel.slangh`) and the local-light march's start offset, noise,
+    occlusion test and end fade (`local_shadow.slangh`); the Vulkan
+    deferred lighting does not call the sun helpers yet. Native evidence:
+    Metal Release Bistro captures and the forced-visibility comparison on
+    2026-10-16; no Metal validation run.
   - The tiled class draws no SMAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted

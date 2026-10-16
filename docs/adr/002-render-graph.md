@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -41,7 +41,10 @@ consume these typed records; native encoder and command-buffer boundaries remain
 fallible.
 
 Name/type binding includes conditional declarations before frame conditions are
-evaluated.
+evaluated. Resources, passes, resource uses and colour attachments take
+conditions from a fixed expression table (`vkr_rg_json.c`). A conditional
+colour attachment must follow every unconditional one, so leaving it out of a
+frame keeps the others' indices; a depth attachment takes no condition.
 
 The shared compiler validates declarations, orders dependencies, culls work
 outside exported/present/`NO_CULL` roots and emits subresource image barriers and

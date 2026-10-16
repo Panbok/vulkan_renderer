@@ -131,6 +131,18 @@ pipeline rather than a backend mechanism.
    and lays the clouds and sky fog over the first and the surface's media
    over the second (see [Sky edge measurement](#sky-edge-measurement)). It
    writes alpha one, and the tonemap presents alpha one.
+   Sun contact shadows (the Contact shadows setting, on the Epic preset) run
+   in the same draw. In those frames (`VkrPreparedFrame.tiled_sun_contact`)
+   the opaque pass takes shading variants, selected by a function constant,
+   that also write the sun's light after its cascades and cloud shadow to a
+   second target, `tiled_sun_light` (RG11B10F), and `Tiled.Atmosphere`, which
+   then runs even without media, marches the resolved depth toward the sun
+   and subtracts `sun_light × (1 − visibility)` before the media. The sun's
+   term is linear in its visibility, so the correction is exact: with the
+   march's visibility forced to one the frame matches a frame without it
+   within 1/255. The variants are created in the background the first time a
+   frame asks for them; frames go without contact shadows until then. See
+   [Sun contact shadow measurement](#sun-contact-shadow-measurement).
    Opaque draws shade first and lay their own depth, with
    fragment variants that never discard, so hidden-surface removal keeps its
    fast path; alpha-tested draws shade after them
@@ -1134,6 +1146,28 @@ not limit the forward pass on the M1 Pro. Reports, before then half:
 glass captures
 `sha256:eab44f68831ad8c89595942ae3d57d64841bae39ab44a0573a696f0e146e2a9f`,
 `sha256:d0331a66931e7a4c7a097db4bfeb1191da0859243d0290341ca5566949cb4564`.
+
+### Sun contact shadow measurement
+
+M1 Pro, Release, Bistro plaza looking down at sunlit paving
+(`tiled_bistro_plaza_timing_sun_contact_{off,on}.case.json`), 2560×1440 at
+0.6 render scale with MetalFX, `local-offscreen-gpu-repeated.json`, five
+repetitions of 300 frames each, dirty tree, not authoritative, 2026-10-16:
+
+| Shader arrangement | `Tiled.Opaque` p50 off → on | `Tiled.Atmosphere` p50 off → on |
+|---|---|---|
+| Sun light kept from the start of shading | 13.71 → 14.97 ms | 0.22 → 0.78 ms (world position per step) |
+| The same, the sun variant writing zero | 13.71 → 13.60 ms | 0.22 → 0.27 ms (march skipped) |
+| Visibility at the start, the sun lit after the local lights | 13.61–13.73 → 14.40–14.61 ms | 0.22 → 0.56 ms (linear depth per step) |
+
+The second target itself costs nothing; its three values kept live through
+the local lights' loops lower the opaque pass's occupancy. The shipped
+arrangement is the third: the sun variant keeps only the cascade visibility
+through the loops. Lighting the sun after the image-based light cost the
+base variant 2.5 ms and was dropped. Captures of the street and plaza views
+change 1,268 and 4,191 of 921,600 pixels at 1280×720: contacts under hedges,
+bollards, curbs and window frames. The 0.4 ms budget of the shadow quality
+proposal is not met.
 
 ### Sky edge measurement
 

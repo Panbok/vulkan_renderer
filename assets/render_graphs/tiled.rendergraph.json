@@ -93,6 +93,24 @@
       ]
     },
     {
+      "name": "tiled_sun_light",
+      "type": "image",
+      "condition": "scene_rendering && tiled_sun_contact",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "B10G11R11_UFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "hdr_scene_color",
       "type": "image",
       "condition": "scene_rendering",
@@ -1471,6 +1489,20 @@
                 0
               ]
             }
+          },
+          {
+            "image": "tiled_sun_light",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": {
+              "color": [
+                0,
+                0,
+                0,
+                0
+              ]
+            },
+            "when": "tiled_sun_contact"
           }
         ],
         "depth": {
@@ -1573,7 +1605,7 @@
     },
     {
       "name": "Tiled.Atmosphere",
-      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled)",
+      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled || tiled_sun_contact)",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
@@ -1605,6 +1637,12 @@
           "access": "SAMPLED",
           "binding": 2,
           "when": "aerial_perspective_enabled"
+        },
+        {
+          "image": "tiled_sun_light",
+          "access": "SAMPLED",
+          "binding": 37,
+          "when": "tiled_sun_contact"
         }
       ],
       "attachments": {

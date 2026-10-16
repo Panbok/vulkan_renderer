@@ -225,3 +225,26 @@ float vkr_shadow_evsm_tent_weight(uint tap)
 {
     return (tap == 0u || tap == 3u) ? 0.125f : 0.375f;
 }
+
+// Sun contact shadows march VKR_SUN_CONTACT_STEPS camera-depth samples toward
+// the sun and multiply the cascades' visibility. They recover the contacts
+// that the cascades' bias and normal offset remove and detail finer than a
+// cascade texel. The march takes the local-light march's start offset,
+// occlusion test, step noise and end fade (local_shadow.slangh); its length
+// grows with camera distance as the cascade texel does, and it fades out
+// over the last VKR_SUN_CONTACT_FADE_SHARE of VKR_SUN_CONTACT_DISTANCE.
+#define VKR_SUN_CONTACT_STEPS 12u
+#define VKR_SUN_CONTACT_DISTANCE 80.0f
+#define VKR_SUN_CONTACT_FADE_SHARE 0.25f
+
+float vkr_sun_contact_length(float camera_distance)
+{
+    return clamp(0.05f + 0.02f * camera_distance, 0.05f, 1.5f);
+}
+
+// The share of a march's occlusion a receiver at `camera_distance` keeps.
+float vkr_sun_contact_strength(float camera_distance)
+{
+    return saturate((VKR_SUN_CONTACT_DISTANCE - camera_distance) /
+                    (VKR_SUN_CONTACT_FADE_SHARE * VKR_SUN_CONTACT_DISTANCE));
+}

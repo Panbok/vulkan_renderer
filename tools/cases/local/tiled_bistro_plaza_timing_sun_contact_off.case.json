@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "id": "local.tiled.bistro_plaza_timing_sun_contact_off",
+  "suite": "local",
+  "description": "Capture-free GPU timing of the Bistro plaza on the tiled pipeline at 2560x1440 and 0.6 render scale with sun contact shadows off (shadow-quality T4).",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    2560,
+    1440
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 5,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 300,
+    "measure": 300
+  },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 0.6,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "shadow_contact": false
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      10.0,
+      4.2,
+      27.8
+    ],
+    "yaw": 19.0,
+    "pitch": -22.0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    }
+  ],
+  "target_image_count": 3
+}

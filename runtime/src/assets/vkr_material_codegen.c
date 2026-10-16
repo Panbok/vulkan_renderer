@@ -689,7 +689,8 @@ bool8_t vkr_material_codegen_msl_entries(const char *function,
         for (uint32_t decals = 0; decals < 2u; ++decals) {
           codegen_append(
               &text,
-              "fragment float4 %s_vkr_metal_tiled_forward%s%s%s%s_fragment(\n"
+              "fragment VkrMetalTiledForwardOutput "
+              "%s_vkr_metal_tiled_forward%s%s%s%s_fragment(\n"
               "    VkrMetalTiledVertexOutput input [[stage_in]],\n"
               "    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],\n"
               "    bool front_facing [[front_facing]]) {\n"
@@ -706,7 +707,8 @@ bool8_t vkr_material_codegen_msl_entries(const char *function,
     }
     codegen_append(
         &text,
-        "fragment float4 %s_vkr_metal_tiled_forward_inspect%s_fragment(\n"
+        "fragment VkrMetalTiledForwardOutput "
+        "%s_vkr_metal_tiled_forward_inspect%s_fragment(\n"
         "    VkrMetalTiledVertexOutput input [[stage_in]],\n"
         "    constant VkrMetalPacketDrawRoot *root [[buffer(1)]],\n"
         "    bool front_facing [[front_facing]],\n"

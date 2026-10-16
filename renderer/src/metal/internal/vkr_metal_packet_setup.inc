@@ -450,7 +450,8 @@ vkr_metal_packet_create_pipeline_with_targets(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> vertex_library,
     const char *vertex_name, id<MTLLibrary> fragment_library,
     const char *fragment_name, MTLPixelFormat color_format,
-    VkrMetalPacketBlend blend, VkrMetalPacketAbiRecordId vertex_abi,
+    MTLPixelFormat second_color_format, VkrMetalPacketBlend blend,
+    VkrMetalPacketAbiRecordId vertex_abi,
     VkrMetalPacketAbiRecordId fragment_abi, bool8_t supports_icb,
     uint32_t sample_count, MTLFunctionConstantValues *fragment_constants,
     NSString *label) API_AVAILABLE(macos(26.0)) {
@@ -519,6 +520,9 @@ vkr_metal_packet_create_pipeline_with_targets(
       descriptor.alphaToOneState = MTL4AlphaToOneStateEnabled;
     }
   }
+  /* A second target the fragment writes unblended, such as the tiled sun
+     light of sun contact frames. */
+  descriptor.colorAttachments[1].pixelFormat = second_color_format;
   NSError *error = nil;
   id<MTLRenderPipelineState> pipeline = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
@@ -549,8 +553,8 @@ vkr_internal id<MTLRenderPipelineState> vkr_metal_packet_create_pipeline(
     NSString *label) API_AVAILABLE(macos(26.0)) {
   return vkr_metal_packet_create_pipeline_with_targets(
       renderer, vertex_library, vertex_name, fragment_library, fragment_name,
-      color_format, blend, vertex_abi, fragment_abi, supports_icb, 1u, nil,
-      label);
+      color_format, MTLPixelFormatInvalid, blend, vertex_abi, fragment_abi,
+      supports_icb, 1u, nil, label);
 }
 
 vkr_internal id<MTLComputePipelineState>
@@ -907,59 +911,162 @@ static const VkrMetalTiledEntries
             },
 };
 
-/* Creates one BRDF variant's tiled shading pipelines (ADR-113): forward
-   shading of opaque and alpha-tested draws, and the blend pass's glass and
-   blended surfaces back to front over the resolved image. Returns whether
-   every one exists. */
+/* Creates one shading variant's tiled shading pipelines (ADR-113): forward
+   shading of opaque and alpha-tested draws, and for a variant without the
+   sun's light the blend pass's glass and blended surfaces back to front over
+   the resolved image. Returns whether every one exists. */
 vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
-    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment, uint32_t brdf)
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment, uint32_t variant)
     API_AVAILABLE(macos(26.0)) {
-  MTLFunctionConstantValues *constants = renderer->tiled_brdf_constants[brdf];
+  MTLFunctionConstantValues *constants =
+      renderer->tiled_shading_constants[variant];
+  const MTLPixelFormat sun_format = (variant & VKR_METAL_TILED_SUN_VARIANT)
+                                        ? VKR_METAL_TILED_SUN_LIGHT_FORMAT
+                                        : MTLPixelFormatInvalid;
   bool8_t complete = true_v;
   for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
        ++decals) {
     for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
          ++probes) {
       for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-        renderer->tiled_forward_pipelines[brdf][decals][probes][i] =
+        renderer->tiled_forward_pipelines[variant][decals][probes][i] =
             vkr_metal_packet_create_pipeline_with_targets(
                 renderer, fragment, "vkr_metal_tiled_vertex", fragment,
                 tiled_lighting[i].forward[decals][probes],
-                MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
+                MTLPixelFormatRGBA16Float, sun_format,
+                VKR_METAL_PACKET_BLEND_NONE,
                 VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                 VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
                 renderer->tiled_sample_count, constants,
                 tiled_lighting[i].forward_label);
-        renderer->tiled_coverage_pipelines[brdf][decals][probes][i] =
+        renderer->tiled_coverage_pipelines[variant][decals][probes][i] =
             vkr_metal_packet_create_pipeline_with_targets(
                 renderer, fragment, "vkr_metal_tiled_vertex", fragment,
                 tiled_lighting[i].coverage[decals][probes],
-                MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_COVERAGE,
+                MTLPixelFormatRGBA16Float, sun_format,
+                VKR_METAL_PACKET_BLEND_COVERAGE,
                 VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                 VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
                 renderer->tiled_sample_count, constants,
                 tiled_lighting[i].coverage_label);
         complete &=
-            renderer->tiled_forward_pipelines[brdf][decals][probes][i] != nil &&
-            renderer->tiled_coverage_pipelines[brdf][decals][probes][i] != nil;
+            renderer->tiled_forward_pipelines[variant][decals][probes][i] !=
+                nil &&
+            renderer->tiled_coverage_pipelines[variant][decals][probes][i] !=
+                nil;
       }
     }
   }
+  if (variant >= VKR_METAL_TILED_BRDF_VARIANT_COUNT)
+    return complete;
   for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
        ++probes) {
     for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
-      renderer->tiled_blend_pipelines[brdf][probes][i] =
+      renderer->tiled_blend_pipelines[variant][probes][i] =
           vkr_metal_packet_create_pipeline_with_targets(
               renderer, fragment, "vkr_metal_tiled_vertex", fragment,
               tiled_lighting[i].blend[probes], MTLPixelFormatRGBA16Float,
-              VKR_METAL_PACKET_BLEND_BEHIND,
+              MTLPixelFormatInvalid, VKR_METAL_PACKET_BLEND_BEHIND,
               VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
               VKR_METAL_PACKET_ABI_DRAW_ROOT, false_v, 1u, constants,
               tiled_lighting[i].blend_label);
-      complete &= renderer->tiled_blend_pipelines[brdf][probes][i] != nil;
+      complete &= renderer->tiled_blend_pipelines[variant][probes][i] != nil;
     }
   }
   return complete;
+}
+
+/* Creates the sky draw, the tone-mapped multisample resolve and the
+   atmosphere draw of frames without (`sun` 0) or with (1) sun contact
+   shadows, whose opaque pass also has the sun's light target and whose
+   atmosphere draw removes the occluded part of that light. A failure leaves
+   nil. */
+vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment, uint32_t sun)
+    API_AVAILABLE(macos(26.0)) {
+  MTLFunctionConstantValues *constants =
+      renderer->tiled_shading_constants[sun ? VKR_METAL_TILED_SUN_VARIANT : 0u];
+  const MTLPixelFormat sun_format =
+      sun ? VKR_METAL_TILED_SUN_LIGHT_FORMAT : MTLPixelFormatInvalid;
+  renderer->tiled_sky_pipelines[sun] =
+      vkr_metal_packet_create_pipeline_with_targets(
+          renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
+          "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float, sun_format,
+          VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+          VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
+          renderer->tiled_sample_count, constants,
+          sun ? @"VKR tiled sky with sun light" : @"VKR tiled sky");
+  {
+    MTL4LibraryFunctionDescriptor *function =
+        [MTL4LibraryFunctionDescriptor new];
+    function.library = fragment;
+    function.name = @"vkr_metal_tiled_resolve_tile";
+    MTL4TileRenderPipelineDescriptor *descriptor =
+        [MTL4TileRenderPipelineDescriptor new];
+    descriptor.label =
+        sun ? @"VKR tiled resolve with sun light" : @"VKR tiled resolve";
+    descriptor.tileFunctionDescriptor = function;
+    descriptor.rasterSampleCount = renderer->tiled_sample_count;
+    descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    /* The sun's light takes the pass's plain multisample resolve. */
+    descriptor.colorAttachments[1].pixelFormat = sun_format;
+    descriptor.threadgroupSizeMatchesTileSize = YES;
+    NSError *error = nil;
+    renderer->tiled_resolve_pipelines[sun] = [renderer->compiler
+        newRenderPipelineStateWithDescriptor:descriptor
+                         compilerTaskOptions:renderer->compiler_options
+                                       error:&error];
+    if (!renderer->tiled_resolve_pipelines[sun])
+      vkr_metal_packet_print_error("tiled_resolve", error);
+    [descriptor release];
+    [function release];
+  }
+  MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
+  vertex.library = fragment;
+  vertex.name = @"vkr_metal_tiled_sky_vertex";
+  MTL4LibraryFunctionDescriptor *clouds = [MTL4LibraryFunctionDescriptor new];
+  clouds.library = fragment;
+  clouds.name = @"vkr_metal_tiled_atmosphere_fragment";
+  MTL4SpecializedFunctionDescriptor *specialized =
+      [MTL4SpecializedFunctionDescriptor new];
+  specialized.functionDescriptor = clouds;
+  specialized.constantValues = constants;
+  MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
+  descriptor.label = sun ? @"VKR tiled atmosphere with sun contact shadows"
+                         : @"VKR tiled atmosphere";
+  descriptor.vertexFunctionDescriptor = vertex;
+  descriptor.fragmentFunctionDescriptor = specialized;
+  MTL4PipelineOptions *options = [MTL4PipelineOptions new];
+  options.shaderReflection =
+      MTL4ShaderReflectionBindingInfo | MTL4ShaderReflectionBufferTypeInfo;
+  descriptor.options = options;
+  [options release];
+  descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+  descriptor.rasterSampleCount = 1;
+  /* The fragment reads the destination through programmable blending and
+     writes the composed pixel, so it splits edge pixels by the surface share
+     the resolve left in alpha. */
+  descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+  descriptor.colorAttachments[0].blendingState = MTL4BlendStateDisabled;
+  NSError *error = nil;
+  id<MTLRenderPipelineState> atmosphere = [renderer->compiler
+      newRenderPipelineStateWithDescriptor:descriptor
+                       compilerTaskOptions:renderer->compiler_options
+                                     error:&error];
+  if (!atmosphere)
+    vkr_metal_packet_print_error("tiled_atmosphere_pipeline", error);
+  if (atmosphere &&
+      !vkr_metal_packet_validate_abi_binding(
+          descriptor.label, atmosphere.reflection.fragmentBindings,
+          VKR_METAL_PACKET_ABI_TILED_SKY_ROOT)) {
+    [atmosphere release];
+    atmosphere = nil;
+  }
+  renderer->tiled_atmosphere_pipelines[sun] = atmosphere;
+  [descriptor release];
+  [specialized release];
+  [clouds release];
+  [vertex release];
 }
 
 /* Creates the extended variant's tiled shading pipelines, then publishes
@@ -982,10 +1089,10 @@ vkr_metal_packet_build_tiled_brdf_pipelines(VkrMetalPacketRenderer *renderer)
 }
 
 /* Creates pipelines on the job system (vkr_metal_packet_custom.inc): Custom
-   graph `slot` in BRDF variant `brdf`, or the tiled BRDF extension variant
-   when `slot` is 0. */
+   graph `slot` in shading variant `variant`, or when `slot` is 0 the tiled
+   BRDF extension variant or the tiled sun variants. */
 vkr_internal void vkr_metal_packet_background_build(
-    VkrMetalPacketRenderer *renderer, uint32_t slot, uint32_t brdf,
+    VkrMetalPacketRenderer *renderer, uint32_t slot, uint32_t variant,
     VkrJobHandle *out_job) API_AVAILABLE(macos(26.0));
 
 /* Starts creating the extended variant's tiled shading pipelines in the
@@ -1006,6 +1113,38 @@ vkr_internal void vkr_metal_packet_request_tiled_brdf_pipelines(
   log_info("Metal: creating the tiled BRDF extension pipelines");
   vkr_metal_packet_background_build(renderer, 0u, 1u,
                                     &renderer->tiled_brdf_job);
+}
+
+/* Creates the sun variants of both BRDF variants' shading pipelines and
+   the sky, resolve and atmosphere pipelines of sun contact frames, then
+   publishes READY or FAILED. Runs as a background build
+   (vkr_metal_packet_custom.inc). */
+vkr_internal void
+vkr_metal_packet_build_tiled_sun_pipelines(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  @autoreleasepool {
+    const float64_t start = vkr_platform_get_absolute_time();
+    bool8_t ok = true_v;
+    for (uint32_t brdf = 0u; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf)
+      ok &= vkr_metal_packet_create_tiled_shading_pipelines(
+          renderer, renderer->fragment_library,
+          brdf | VKR_METAL_TILED_SUN_VARIANT);
+    vkr_metal_packet_create_tiled_pass_pipelines(
+        renderer, renderer->fragment_library, 1u);
+    ok &= renderer->tiled_sky_pipelines[1] != nil &&
+          renderer->tiled_resolve_pipelines[1] != nil &&
+          renderer->tiled_atmosphere_pipelines[1] != nil;
+    if (ok)
+      log_info("Metal: tiled sun contact pipelines ready in %.1f ms",
+               (vkr_platform_get_absolute_time() - start) * 1.0e3);
+    else
+      log_error("Metal: tiled sun contact pipelines failed; frames go "
+                "without sun contact shadows");
+    vkr_atomic_uint32_store(&renderer->tiled_sun_state,
+                            ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                               : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                            VKR_MEMORY_ORDER_RELEASE);
+  }
 }
 
 /* Whether this frame buckets its extended Standard draws for the tiled
@@ -1033,13 +1172,17 @@ vkr_metal_packet_tiled_brdf_frame(VkrMetalPacketRenderer *renderer,
 vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> slang,
     id<MTLLibrary> fragment) API_AVAILABLE(macos(26.0)) {
-  for (uint32_t brdf = 0; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf) {
-    const bool8_t extension = brdf != 0u;
+  for (uint32_t variant = 0; variant < VKR_METAL_TILED_SHADING_VARIANT_COUNT;
+       ++variant) {
+    const bool8_t extension = (variant & 1u) != 0u;
+    const bool8_t sun = (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u;
     MTLFunctionConstantValues *constants = [MTLFunctionConstantValues new];
     [constants setConstantValue:&extension type:MTLDataTypeBool atIndex:0];
-    renderer->tiled_brdf_constants[brdf] = constants;
+    [constants setConstantValue:&sun type:MTLDataTypeBool atIndex:1];
+    renderer->tiled_shading_constants[variant] = constants;
   }
   vkr_metal_packet_create_tiled_shading_pipelines(renderer, fragment, 0u);
+  vkr_metal_packet_create_tiled_pass_pipelines(renderer, fragment, 0u);
   /* Without a visibility buffer, a pick replays the opaque draws; their
      alpha-tested surfaces pick whole. */
   renderer->tiled_picking_pipeline = vkr_metal_packet_create_pipeline(
@@ -1047,34 +1190,6 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       "vkr_metal_packet_picking_fragment", MTLPixelFormatR32Uint,
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
       VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v, @"VKR tiled picking");
-  renderer->tiled_sky_pipeline = vkr_metal_packet_create_pipeline_with_targets(
-      renderer, fragment, "vkr_metal_tiled_sky_vertex", fragment,
-      "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float,
-      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
-      VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
-      renderer->tiled_sample_count, nil, @"VKR tiled sky");
-  {
-    MTL4LibraryFunctionDescriptor *function =
-        [MTL4LibraryFunctionDescriptor new];
-    function.library = fragment;
-    function.name = @"vkr_metal_tiled_resolve_tile";
-    MTL4TileRenderPipelineDescriptor *descriptor =
-        [MTL4TileRenderPipelineDescriptor new];
-    descriptor.label = @"VKR tiled resolve";
-    descriptor.tileFunctionDescriptor = function;
-    descriptor.rasterSampleCount = renderer->tiled_sample_count;
-    descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-    descriptor.threadgroupSizeMatchesTileSize = YES;
-    NSError *error = nil;
-    renderer->tiled_resolve_pipeline = [renderer->compiler
-        newRenderPipelineStateWithDescriptor:descriptor
-                         compilerTaskOptions:renderer->compiler_options
-                                       error:&error];
-    if (!renderer->tiled_resolve_pipeline)
-      vkr_metal_packet_print_error("tiled_resolve", error);
-    [descriptor release];
-    [function release];
-  }
   /* The MetalFX upscaler's object motion over the resolved depth. */
   renderer->tiled_object_motion_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_tiled_object_motion_vertex", fragment,
@@ -1087,46 +1202,6 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       "vkr_metal_packet_text_fragment", MTLPixelFormatRGBA16Float,
       VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_TEXT_ROOT,
       VKR_METAL_PACKET_ABI_TEXT_ROOT, false_v, @"VKR tiled world text");
-  MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
-  vertex.library = fragment;
-  vertex.name = @"vkr_metal_tiled_sky_vertex";
-  MTL4LibraryFunctionDescriptor *clouds = [MTL4LibraryFunctionDescriptor new];
-  clouds.library = fragment;
-  clouds.name = @"vkr_metal_tiled_atmosphere_fragment";
-  MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
-  descriptor.label = @"VKR tiled atmosphere";
-  descriptor.vertexFunctionDescriptor = vertex;
-  descriptor.fragmentFunctionDescriptor = clouds;
-  MTL4PipelineOptions *options = [MTL4PipelineOptions new];
-  options.shaderReflection =
-      MTL4ShaderReflectionBindingInfo | MTL4ShaderReflectionBufferTypeInfo;
-  descriptor.options = options;
-  [options release];
-  descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
-  descriptor.rasterSampleCount = 1;
-  /* The fragment reads the destination through programmable blending and
-     writes the composed pixel, so it splits edge pixels by the surface share
-     the resolve left in alpha. */
-  descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-  descriptor.colorAttachments[0].blendingState = MTL4BlendStateDisabled;
-  NSError *error = nil;
-  renderer->tiled_atmosphere_pipeline = [renderer->compiler
-      newRenderPipelineStateWithDescriptor:descriptor
-                       compilerTaskOptions:renderer->compiler_options
-                                     error:&error];
-  if (!renderer->tiled_atmosphere_pipeline)
-    vkr_metal_packet_print_error("tiled_atmosphere_pipeline", error);
-  if (renderer->tiled_atmosphere_pipeline &&
-      !vkr_metal_packet_validate_abi_binding(
-          descriptor.label,
-          renderer->tiled_atmosphere_pipeline.reflection.fragmentBindings,
-          VKR_METAL_PACKET_ABI_TILED_SKY_ROOT)) {
-    [renderer->tiled_atmosphere_pipeline release];
-    renderer->tiled_atmosphere_pipeline = nil;
-  }
-  [descriptor release];
-  [clouds release];
-  [vertex release];
 }
 
 /* Creates the picking and text raster pipelines. */
@@ -1481,9 +1556,9 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->bloom_downsample_box2_pipeline,
        "bloom box2 downsample pipeline"},
       {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
-      {renderer->tiled_sky_pipeline, "tiled sky pipeline"},
-      {renderer->tiled_atmosphere_pipeline, "tiled atmosphere pipeline"},
-      {renderer->tiled_resolve_pipeline, "tiled resolve pipeline"},
+      {renderer->tiled_sky_pipelines[0], "tiled sky pipeline"},
+      {renderer->tiled_atmosphere_pipelines[0], "tiled atmosphere pipeline"},
+      {renderer->tiled_resolve_pipelines[0], "tiled resolve pipeline"},
       {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
       {renderer->tiled_text_pipeline, "tiled world text pipeline"},
       {renderer->depth_write_state, "depth-write state"},

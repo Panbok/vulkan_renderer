@@ -604,6 +604,16 @@ typedef enum VkrMetalTiledLighting {
    extended material. */
 #define VKR_METAL_TILED_BRDF_VARIANT_COUNT 2u
 
+/* The opaque pass's shading variants: a BRDF variant, plus
+   VKR_METAL_TILED_SUN_VARIANT in frames with sun contact shadows, whose
+   entries also write the sun's light to a second target for the atmosphere
+   draw's correction (VkrPreparedFrame.tiled_sun_contact). The sun variants
+   are created in the background when a frame first asks for them. */
+#define VKR_METAL_TILED_SUN_VARIANT 2u
+#define VKR_METAL_TILED_SHADING_VARIANT_COUNT 4u
+/* The sun's light target: unsigned, as the light it holds. */
+#define VKR_METAL_TILED_SUN_LIGHT_FORMAT MTLPixelFormatRG11B10Float
+
 #define VKR_METAL_CUSTOM_LIBRARY_PATH 4096u
 
 /* A Custom graph's pipelines (ADR-096): created on a background queue the
@@ -617,17 +627,18 @@ typedef enum VkrMetalCustomGraphState {
 
 typedef struct VkrMetalCustomGraph {
   char function[VKR_MATERIAL_CUSTOM_FUNCTION_CAPACITY];
-  /* A VkrMetalCustomGraphState per BRDF variant (ADR-113). The base set is
-     created when a material first names the function, the extension set
-     when a published material of the graph first uses a BRDF extension.
-     Each background creation publishes READY or FAILED with release order
-     after writing its pipelines. */
-  VkrAtomicUint32 state[VKR_METAL_TILED_BRDF_VARIANT_COUNT];
-  id<MTLRenderPipelineState> forward[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+  /* A VkrMetalCustomGraphState per shading variant (ADR-113). The base set
+     is created when a material first names the function, the extension set
+     when a published material of the graph first uses a BRDF extension, and
+     the sun variants of each once frames ask for sun contact shadows. Each
+     background creation publishes READY or FAILED with release order after
+     writing its pipelines. */
+  VkrAtomicUint32 state[VKR_METAL_TILED_SHADING_VARIANT_COUNT];
+  id<MTLRenderPipelineState> forward[VKR_METAL_TILED_SHADING_VARIANT_COUNT]
                                     [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                                     [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                                     [VKR_METAL_TILED_LIGHTING_COUNT];
-  id<MTLRenderPipelineState> coverage[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+  id<MTLRenderPipelineState> coverage[VKR_METAL_TILED_SHADING_VARIANT_COUNT]
                                      [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                                      [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                                      [VKR_METAL_TILED_LIGHTING_COUNT];
@@ -635,8 +646,8 @@ typedef struct VkrMetalCustomGraph {
   /* Published material rows naming the graph; a reload frees the slot at
      zero. Render-thread owned. */
   uint32_t references;
-  /* The job creating each BRDF variant; a zero handle ran inline. */
-  VkrJobHandle jobs[VKR_METAL_TILED_BRDF_VARIANT_COUNT];
+  /* The job creating each shading variant; a zero handle ran inline. */
+  VkrJobHandle jobs[VKR_METAL_TILED_SHADING_VARIANT_COUNT];
 } VkrMetalCustomGraph;
 
 /* The editor's presenter (ADR-111) composites the newest finished Scene image
@@ -815,19 +826,22 @@ struct VkrMetalPacketRenderer {
      alpha-tested draws, which write the samples their alpha covers; without
      and with decals and reflection probes, by shading variant. */
   id<MTLRenderPipelineState>
-      tiled_forward_pipelines[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+      tiled_forward_pipelines[VKR_METAL_TILED_SHADING_VARIANT_COUNT]
                              [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                              [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                              [VKR_METAL_TILED_LIGHTING_COUNT];
   id<MTLRenderPipelineState>
-      tiled_coverage_pipelines[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
+      tiled_coverage_pipelines[VKR_METAL_TILED_SHADING_VARIANT_COUNT]
                               [VKR_METAL_TILED_DECAL_VARIANT_COUNT]
                               [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                               [VKR_METAL_TILED_LIGHTING_COUNT];
-  id<MTLRenderPipelineState> tiled_sky_pipeline;
-  /* Tone-mapped multisample resolve at the end of the opaque pass. */
-  id<MTLRenderPipelineState> tiled_resolve_pipeline;
-  id<MTLRenderPipelineState> tiled_atmosphere_pipeline;
+  /* The sky, the tone-mapped multisample resolve at the end of the opaque
+     pass and the atmosphere draw; index 1 in frames with sun contact
+     shadows, whose opaque pass has the sun's light target and whose
+     atmosphere draw corrects the sun's light. */
+  id<MTLRenderPipelineState> tiled_sky_pipelines[2];
+  id<MTLRenderPipelineState> tiled_resolve_pipelines[2];
+  id<MTLRenderPipelineState> tiled_atmosphere_pipelines[2];
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */
@@ -835,15 +849,22 @@ struct VkrMetalPacketRenderer {
       tiled_blend_pipelines[VKR_METAL_TILED_BRDF_VARIANT_COUNT]
                            [VKR_METAL_TILED_PROBE_VARIANT_COUNT]
                            [VKR_METAL_TILED_LIGHTING_COUNT];
-  /* The fragment function constant of each BRDF variant, which every
+  /* The fragment function constants of each shading variant, which every
      pipeline whose entry reaches vkr_metal_tiled_shade takes. */
   MTLFunctionConstantValues
-      *tiled_brdf_constants[VKR_METAL_TILED_BRDF_VARIANT_COUNT];
+      *tiled_shading_constants[VKR_METAL_TILED_SHADING_VARIANT_COUNT];
   /* A VkrMetalCustomGraphState for the extended variant's pipelines: EMPTY
      until a scene first publishes an extended material, then PENDING while
      the custom group creates them, READY or FAILED with release order. */
   VkrAtomicUint32 tiled_brdf_state;
   VkrJobHandle tiled_brdf_job;
+  /* The same for the sun variants of both BRDF variants and the sky,
+     resolve and atmosphere pipelines of sun contact frames: EMPTY until a
+     frame first asks for sun contact shadows. `tiled_sun_requested` is the
+     render thread's record of that request. */
+  VkrAtomicUint32 tiled_sun_state;
+  VkrJobHandle tiled_sun_job;
+  bool8_t tiled_sun_requested;
   id<MTLRenderPipelineState> tiled_text_pipeline;
   /* Custom material graphs (ADR-096): the project library, each slot's
      pipelines (slot 0 stays empty) and the jobs creating them. */
@@ -882,12 +903,15 @@ struct VkrMetalPacketRenderer {
   id<MTLDepthStencilState> tiled_sky_state;
   id<MTLTexture> tiled_msaa_color;
   id<MTLTexture> tiled_msaa_depth;
+  /* The multisampled sun light of sun contact frames; nil until one runs. */
+  id<MTLTexture> tiled_msaa_sun;
   uint32_t tiled_width;
   uint32_t tiled_height;
   /* Targets a resize replaced, released once the GPU completes
      `tiled_retired_submit_value`, the last submission that drew into them. */
   id<MTLTexture> tiled_retired_color;
   id<MTLTexture> tiled_retired_depth;
+  id<MTLTexture> tiled_retired_sun;
   uint64_t tiled_retired_submit_value;
   /* The opaque pass's sample count, fixed at creation: four with the spatial
      upscale, one with MetalFX, which draws into the graph's targets. */

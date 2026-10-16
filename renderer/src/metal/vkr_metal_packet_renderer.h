@@ -397,6 +397,13 @@ uint32_t vkr_metal_packet_renderer_frame_image_index(
  * failure frames take the spatial upscale. */
 bool8_t vkr_metal_packet_renderer_tiled_temporal(
     const VkrMetalPacketRenderer *renderer);
+/** Whether the tiled pipeline's sun contact variants are ready: the opaque
+ * pass's shading variants that also write the sun's light and the atmosphere
+ * draw that corrects it. The first call starts creating them in the
+ * background; frames go without sun contact shadows until they are READY,
+ * and for good after a failure. Render thread only. */
+bool8_t
+vkr_metal_packet_renderer_tiled_sun_contact(VkrMetalPacketRenderer *renderer);
 
 void vkr_metal_packet_renderer_retained_editor_extent(
     VkrMetalPacketRenderer *renderer, uint32_t *out_width,

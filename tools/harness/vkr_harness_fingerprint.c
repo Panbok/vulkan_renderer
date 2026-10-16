@@ -203,6 +203,9 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
       renderer->shadow_cascades, renderer->shadow_pcf_samples,
       renderer->shadow_split_lambda, renderer->shadow_map_size,
       renderer->shadow_pcf_early_out, renderer->shadow_sdsm);
+  /* Off keeps the identity cases had before sun contact shadows existed. */
+  if (renderer->shadow_contact)
+    ADD("renderer.shadow_contact", "%u", 1u);
   /* Off keeps the identity cases had before far-cascade EVSM existed. */
   if (vkr_harness_shadow_evsm_enabled(renderer))
     ADD("renderer.shadow_evsm", "%u", 1u);

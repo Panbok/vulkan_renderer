@@ -144,7 +144,7 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .kind = VKR_PROPERTY_BOOL},
     {.name = "contact_shadows",
      .label = "Contact shadows",
-     .tooltip = "Add fine shadows where objects meet surfaces near lights",
+     .tooltip = "Add fine shadows where objects meet surfaces",
      .offset = GRAPHICS_OFFSET(contact_shadows),
      .kind = VKR_PROPERTY_BOOL},
     {.name = "texture_resolution",
@@ -240,7 +240,6 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
   const bool8_t tiled_unused =
       offset == offsetof(VkrGraphicsSettings, anti_aliasing) ||
       offset == offsetof(VkrGraphicsSettings, antialiasing) ||
-      offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
       offset == offsetof(VkrGraphicsSettings, filtered_far_shadows) ||
       offset == offsetof(VkrGraphicsSettings, ambient_occlusion) ||
       offset == offsetof(VkrGraphicsSettings, reflection_probes) ||
@@ -282,7 +281,12 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, contact_shadows)) {
-    if (settings->shadow_quality == 0u || !settings->local_shadows) {
+    /* The desktop pipeline marches them for local lights, the tiled
+       pipeline for the sun. */
+    const bool8_t tiled =
+        state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED;
+    if (settings->shadow_quality == 0u ||
+        (!tiled && !settings->local_shadows)) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, volumetric_fog)) {

@@ -797,7 +797,9 @@ lamp-direct pages, sampled bicubically, and moving casters shadow at most two
 selected baked lamps ([ADR-108](adr/108-baked-lamp-direct-pages.md)).
 `Tiled.Atmosphere` lays the clouds, aerial perspective and
 analytic height fog over the resolved image, splitting pixels that mix sky
-and surface samples between their media, and `Tiled.Blend` draws glass
+and surface samples between their media; with sun contact shadows on, the
+opaque pass also writes the sun's light and this draw removes the part a
+depth march toward the sun finds occluded. `Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough
 glass blurs through a half-resolution copy of the image, taken only on frames
 with either in view. Projected decals lay their materials' base colour over

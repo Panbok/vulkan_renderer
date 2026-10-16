@@ -1324,6 +1324,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         0.008726646259971648f);
     shadow_payload->cascade_count = shadow_cascade_count;
     shadow_payload->sdsm_enabled = shadow_config->sdsm_enabled;
+    shadow_payload->contact_shadows = shadow_config->sun_contact;
     shadow_payload->evsm_enabled =
         shadow_config->far_cascade_evsm &&
         shadow_cascade_count > VKR_SHADOW_EVSM_FIRST_CASCADE;

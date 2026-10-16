@@ -498,6 +498,11 @@ vkr_global const VkrMetalPacketAbiField vkr_tiled_sky_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalTiledSkyRoot, clouds_enabled, "clouds_enabled", 156),
     VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sky_radiance, "sky_radiance", 160),
     VKR_ABI_FIELD(VkrMetalTiledSkyRoot, depth_texture_id, "depth", 176),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sun_light_texture_id, "sun_light", 184),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, contact_noise_index,
+                  "contact_noise_index", 192),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, depth_offset, "depth_offset", 196),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, depth_scale, "depth_scale", 200),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_ibl_probe_fields[] = {
@@ -921,7 +926,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketDecal, "VkrMetalPacketDecal", 80, 16,
                            vkr_decal_fields),
         [VKR_METAL_PACKET_ABI_TILED_SKY_ROOT] =
-            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 192,
+            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 208,
                            16, vkr_tiled_sky_root_fields),
         [VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT] =
             VKR_ABI_RECORD(VkrMetalTiledMotionRoot, "VkrMetalTiledMotionRoot",

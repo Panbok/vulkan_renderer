@@ -1078,6 +1078,27 @@ vkr_internal bool8_t vkr_renderer_metal_tiled_temporal(const VkrRenderer *rf) {
 #endif
 }
 
+/* The tiled pipeline's sun contact shadows (ADR-087) for a perspective
+   frame, whose depth the march linearizes: asked for, with a shining sun
+   whose cascades run. The first request starts building the backend's
+   variants that write the sun's light; until they are ready, frames go
+   without them. */
+vkr_internal bool8_t
+vkr_renderer_tiled_sun_contact(VkrRenderer *rf, const VkrFrameInput *packet,
+                               const VkrPreparedFrame *frame) {
+  if (!frame->scene_rendering || !packet->shadow ||
+      !packet->shadow->contact_shadows || packet->shadow->cascade_count == 0u ||
+      !packet->lighting || !packet->lighting->directional_enabled)
+    return false_v;
+#if defined(PLATFORM_APPLE)
+  return rf->metal_renderer &&
+         vkr_metal_packet_renderer_tiled_sun_contact(rf->metal_renderer);
+#else
+  (void)rf;
+  return false_v;
+#endif
+}
+
 /* The editor's Scene image for a prepared frame: the image rectangle while
    the Scene renders, else the retained image fitted inside it. */
 vkr_internal void vkr_renderer_prepare_editor_image(VkrRenderer *rf,
@@ -1214,6 +1235,9 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   prepared->frame.tiled_temporal_enabled =
       rf->tiled_temporal_enabled && tiled && !orthographic && default_output &&
       vkr_renderer_metal_tiled_temporal(rf);
+  prepared->frame.tiled_sun_contact =
+      tiled && !orthographic &&
+      vkr_renderer_tiled_sun_contact(rf, packet, &prepared->frame);
   const bool8_t temporal_frame =
       prepared->frame.tiled_temporal_enabled ||
       (rf->temporal_enabled && !tiled && !orthographic &&

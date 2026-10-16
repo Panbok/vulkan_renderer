@@ -34,6 +34,10 @@ typedef struct VkrPreparedFrame {
   /** The upscaled frame's camera has not moved since the previous frame:
       a running mean holds MetalFX's output steady against its jitter. */
   bool8_t tiled_temporal_still;
+  /** Screen-space contact shadows for the sun on the tiled pipeline: the
+      shadow payload asks for them, the sun shines and the backend's
+      shading variants that write the sun's light are ready. */
+  bool8_t tiled_sun_contact;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its

@@ -165,11 +165,15 @@ typedef struct VkrMetalPacketPreparedPass {
       uint32_t decals;
       uint32_t probes;
       uint32_t lighting;
+      /* VKR_METAL_TILED_SUN_VARIANT in sun contact frames, else zero. */
+      uint32_t sun;
     } tiled;
-    /* The tiled pipeline's atmosphere draw over the resolved image. */
+    /* The tiled pipeline's atmosphere draw over the resolved image; `sun`
+       selects the pipeline that also corrects the sun's light. */
     struct {
       uint64_t root;
       MTLViewport viewport;
+      uint32_t sun;
     } tiled_atmosphere;
     /* MetalFX's inputs and output, the viewport the inputs hold and the
        frame's jitter in pixels (y down). */

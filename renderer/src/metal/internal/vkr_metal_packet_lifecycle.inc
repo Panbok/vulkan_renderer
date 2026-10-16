@@ -755,33 +755,40 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->gpu_shadow_opaque_pipeline release];
   [renderer->depth_clear_pipeline release];
   /* vkr_metal_packet_custom_release waited for the background creation of
-     the extended variant. */
-  for (uint32_t brdf = 0; brdf < VKR_METAL_TILED_BRDF_VARIANT_COUNT; ++brdf) {
+     the extended and sun variants. */
+  for (uint32_t variant = 0; variant < VKR_METAL_TILED_SHADING_VARIANT_COUNT;
+       ++variant) {
     for (uint32_t probes = 0; probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT;
          ++probes) {
       for (uint32_t i = 0; i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
         for (uint32_t decals = 0; decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT;
              ++decals) {
-          [renderer->tiled_forward_pipelines[brdf][decals][probes][i] release];
-          [renderer->tiled_coverage_pipelines[brdf][decals][probes][i]
+          [renderer->tiled_forward_pipelines[variant][decals][probes][i]
+              release];
+          [renderer->tiled_coverage_pipelines[variant][decals][probes][i]
               release];
         }
-        [renderer->tiled_blend_pipelines[brdf][probes][i] release];
+        if (variant < VKR_METAL_TILED_BRDF_VARIANT_COUNT)
+          [renderer->tiled_blend_pipelines[variant][probes][i] release];
       }
     }
-    [renderer->tiled_brdf_constants[brdf] release];
+    [renderer->tiled_shading_constants[variant] release];
   }
-  [renderer->tiled_sky_pipeline release];
-  [renderer->tiled_resolve_pipeline release];
-  [renderer->tiled_atmosphere_pipeline release];
+  for (uint32_t sun = 0; sun < 2u; ++sun) {
+    [renderer->tiled_sky_pipelines[sun] release];
+    [renderer->tiled_resolve_pipelines[sun] release];
+    [renderer->tiled_atmosphere_pipelines[sun] release];
+  }
   [renderer->tiled_picking_pipeline release];
   [renderer->tiled_text_pipeline release];
   [renderer->tiled_shade_state release];
   [renderer->tiled_sky_state release];
   [renderer->tiled_msaa_color release];
   [renderer->tiled_msaa_depth release];
+  [renderer->tiled_msaa_sun release];
   [renderer->tiled_retired_color release];
   [renderer->tiled_retired_depth release];
+  [renderer->tiled_retired_sun release];
   [renderer->tiled_motion_pipeline release];
   [renderer->tiled_object_motion_pipeline release];
   [renderer->temporal_transform_pipeline release];

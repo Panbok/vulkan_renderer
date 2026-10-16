@@ -244,6 +244,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->input.world->refractive_draw_count > 0u;
   frame->tiled_temporal_enabled = packet->tiled_temporal_enabled;
   frame->tiled_temporal_still = packet->tiled_temporal_still;
+  frame->tiled_sun_contact = packet->tiled_sun_contact;
   frame->tiled_object_motion_pending =
       frame->tiled_temporal_enabled && packet->input.world &&
       packet->input.world->gpu_candidate_count >

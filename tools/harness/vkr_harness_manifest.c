@@ -1020,7 +1020,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer_shadows(
       !vkr_harness_manifest_bool(doc, token, "shadow_pcf_early_out", false_v,
                                  &renderer->shadow_pcf_early_out, error) ||
       !vkr_harness_manifest_bool(doc, token, "shadow_sdsm", false_v,
-                                 &renderer->shadow_sdsm, error)) {
+                                 &renderer->shadow_sdsm, error) ||
+      !vkr_harness_manifest_bool(doc, token, "shadow_contact", false_v,
+                                 &renderer->shadow_contact, error)) {
     return false_v;
   }
 
@@ -1076,6 +1078,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "shadow_map_size",
       "shadow_pcf_early_out",
       "shadow_sdsm",
+      "shadow_contact",
       "render_mode",
       "exposure_mode",
       "display_transform",

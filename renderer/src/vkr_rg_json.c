@@ -160,8 +160,9 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"picking_pending && !transmission_pending",
      VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION},
     {"blend_pending", VKR_RG_JSON_CONDITION_BLEND_PENDING},
-    {"(clouds_enabled || fog_apply_enabled)",
-     VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED},
+    {"(clouds_enabled || fog_apply_enabled || tiled_sun_contact)",
+     VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE},
+    {"tiled_sun_contact", VKR_RG_JSON_CONDITION_TILED_SUN_CONTACT},
     {"tiled_refraction_pending",
      VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING},
     {"tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED},
@@ -522,6 +523,7 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"R32G32_UINT", VKR_TEXTURE_FORMAT_R32G32_UINT},
     {"R16G16_SNORM", VKR_TEXTURE_FORMAT_R16G16_SNORM},
     {"R16G16_SFLOAT", VKR_TEXTURE_FORMAT_R16G16_SFLOAT},
+    {"B10G11R11_UFLOAT", VKR_TEXTURE_FORMAT_B10G11R11_UFLOAT},
     {"D16_UNORM", VKR_TEXTURE_FORMAT_D16_UNORM},
     {"D32_SFLOAT", VKR_TEXTURE_FORMAT_D32_SFLOAT},
     {"D24_UNORM_S8_UINT", VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT},
@@ -1260,6 +1262,13 @@ vkr_internal bool8_t vkr_rg_json_parse_clear_depth(VkrRgJsonParseContext *ctx,
   return true_v;
 }
 
+/* Whether a parsed condition can leave its subject out of a frame. */
+vkr_internal bool8_t
+vkr_rg_json_condition_present(const VkrRgJsonCondition *condition) {
+  return condition->kind != VKR_RG_JSON_CONDITION_NONE ||
+         condition->requires_scene_rendering;
+}
+
 vkr_internal bool8_t vkr_rg_json_parse_attachment(
     VkrRgJsonParseContext *ctx, VkrJsonReader *obj, const char *field_path,
     VkrRgJsonAttachment *out_attach, bool8_t *out_read_only) {
@@ -1363,7 +1372,8 @@ vkr_internal bool8_t vkr_rg_json_parse_attachment(
                             out_attach->slice_layer_count.is_set;
   }
 
-  return true_v;
+  return vkr_rg_json_parse_condition(ctx, obj, field_path, "when",
+                                     &out_attach->condition);
 }
 
 vkr_internal bool8_t vkr_rg_json_parse_attachments(
@@ -1404,6 +1414,15 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
                                         &attachment, NULL)) {
         return false_v;
       }
+      if (!vkr_rg_json_condition_present(&attachment.condition) &&
+          out_attach->colors.length > 0u &&
+          vkr_rg_json_condition_present(
+              &out_attach->colors.data[out_attach->colors.length - 1u]
+                   .condition)) {
+        return vkr_rg_json_error(ctx, color_path,
+                                 "conditional colour attachments must follow "
+                                 "every unconditional one");
+      }
 
       if (!array_push_VkrRgJsonAttachment(&out_attach->colors, attachment)) {
         return vkr_rg_json_error(ctx, field_path, "out of memory");
@@ -1424,6 +1443,10 @@ vkr_internal bool8_t vkr_rg_json_parse_attachments(
                                       &out_attach->depth,
                                       &out_attach->depth_read_only)) {
       return false_v;
+    }
+    if (vkr_rg_json_condition_present(&out_attach->depth.condition)) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "depth attachment takes no condition");
     }
     out_attach->has_depth = true_v;
   }
@@ -2246,8 +2269,11 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->picking_pending && !frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_BLEND_PENDING:
     return frame->blend_pending;
-  case VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED:
-    return frame->clouds_enabled || frame->fog_apply_enabled;
+  case VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE:
+    return frame->clouds_enabled || frame->fog_apply_enabled ||
+           frame->tiled_sun_contact;
+  case VKR_RG_JSON_CONDITION_TILED_SUN_CONTACT:
+    return frame->tiled_sun_contact;
   case VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING:
     return frame->tiled_refraction_pending;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED:
@@ -3030,6 +3056,11 @@ vkr_internal bool8_t vkr_rg_json_add_pass_attachments(
   for (uint64_t c = 0; c < pass->attachments.colors.length; ++c) {
     VkrRgJsonAttachment *att =
         array_get_VkrRgJsonAttachment(&pass->attachments.colors, c);
+    /* A conditional colour attachment is left out of frames that do not
+       write it; it must follow every unconditional one, so the indices of
+       those stay fixed. */
+    if (!vkr_rg_json_condition_enabled(&att->condition, frame))
+      continue;
     String8 resolved_image = {0};
     bool8_t owned_image = false_v;
     if (!vkr_rg_expand_name(frame_allocator, att->image, r, &resolved_image,

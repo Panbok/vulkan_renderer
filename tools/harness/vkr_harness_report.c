@@ -403,6 +403,8 @@ vkr_internal bool8_t vkr_harness_report_write_renderer_features(
                                     renderer->shadow_pcf_early_out) &&
          vkr_harness_json_emit_bool(writer, "shadow_sdsm",
                                     renderer->shadow_sdsm) &&
+         vkr_harness_json_emit_bool(writer, "shadow_contact",
+                                    renderer->shadow_contact) &&
          vkr_harness_json_emit_f64(writer, "shadow_split_lambda",
                                    renderer->shadow_split_lambda) &&
          vkr_harness_json_emit_u64(writer, "shadow_map_size",
