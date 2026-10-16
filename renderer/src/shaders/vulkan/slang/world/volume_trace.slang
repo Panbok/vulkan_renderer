@@ -197,6 +197,41 @@ struct VkrVkVolumeSurface
     float2 uv;
 };
 
+// One corner of a traced triangle of a packed candidate row, read through
+// the geometry megabuffer's bases.
+VkrGpuDecodedVertex vk_ray_triangle_vertex(uint *indices,
+                                           VkrPackedStaticVertex *vertices,
+                                           VkrGpuCandidateDrawRow candidate,
+                                           VkrVkGeometryRow geometry,
+                                           VkrGpuGeometryDecodeRecord decode,
+                                           uint primitive, uint corner)
+{
+    uint index = uint(int(indices[candidate.first_index + primitive * 3u +
+                                  corner]) +
+                      candidate.vertex_offset);
+    return vkr_decode_packed_vertex(vertices[geometry.first_vertex + index],
+                                    decode);
+}
+
+// The texture coordinate at a traced triangle's barycentrics.
+float2 vk_ray_triangle_uv(uint *indices, VkrPackedStaticVertex *vertices,
+                          VkrGpuCandidateDrawRow candidate,
+                          VkrVkGeometryRow geometry, uint primitive,
+                          float2 barycentrics)
+{
+    VkrGpuGeometryDecodeRecord decode = geometry.decode[candidate.decode_index];
+    float2 uvs[3];
+    [unroll] for (uint corner = 0u; corner < 3u; ++corner)
+    {
+        uvs[corner] = vk_ray_triangle_vertex(indices, vertices, candidate,
+                                             geometry, decode, primitive,
+                                             corner)
+                          .texcoord;
+    }
+    return uvs[0] * (1.0f - barycentrics.x - barycentrics.y) +
+           uvs[1] * barycentrics.x + uvs[2] * barycentrics.y;
+}
+
 VkrVkVolumeSurface vk_volume_surface(VkrVkVolumeTraceRoot *root, uint row,
                                      uint primitive, float2 barycentrics,
                                      float3 incoming)
@@ -209,11 +244,9 @@ VkrVkVolumeSurface vk_volume_surface(VkrVkVolumeTraceRoot *root, uint row,
     float2 uvs[3];
     [unroll] for (uint corner = 0u; corner < 3u; ++corner)
     {
-        uint index = uint(int(root.indices[candidate.first_index +
-                                           primitive * 3u + corner]) +
-                          candidate.vertex_offset);
-        VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
-            root.vertices[geometry.first_vertex + index], decode);
+        VkrGpuDecodedVertex vertex = vk_ray_triangle_vertex(
+            root.indices, root.vertices, candidate, geometry, decode,
+            primitive, corner);
         positions[corner] =
             mul(instance.model, float4(vertex.position, 1.0f)).xyz;
         uvs[corner] = vertex.texcoord;

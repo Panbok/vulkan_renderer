@@ -216,6 +216,9 @@ struct VkrRenderer {
   uint64_t froxel_static_followed;
   bool8_t smaa_enabled;
   bool8_t msaa_enabled;
+  /* VKR_SUN_RAY_SHADOWS: "1" traces one sun ray per 2x2 block, "2" one a
+     pixel; frames take it where the device traces ray queries. */
+  VkrSunRayShadowMode sun_ray_shadow_mode;
   /* The build and device run FSR 3.1 (vkr_vulkan_renderer_fsr31_available);
      without it VKR_ANTIALIASING_MODE_FSR_NATIVE frames use SMAA T2x. */
   bool8_t fsr31_available;

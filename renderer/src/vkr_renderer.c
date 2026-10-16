@@ -945,6 +945,18 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   /* SMAA 4x is opt-in: on the Bistro street view it cost 2.7 ms at
      2560 x 1440 for about 9 % less edge shimmer in motion (ADR-037). */
   renderer->msaa_enabled = vkr_platform_environment_flag("VKR_MSAA_ENABLED");
+  /* Ray-query sun shadows are a prototype for the shadow-quality
+     proposal's cost gate, opt-in until it is measured. */
+  char sun_ray_shadows[8];
+  renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_OFF;
+  if (vkr_platform_environment_variable("VKR_SUN_RAY_SHADOWS", sun_ray_shadows,
+                                        sizeof(sun_ray_shadows))) {
+    if (string_equals(sun_ray_shadows, "1")) {
+      renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_HALF;
+    } else if (string_equals(sun_ray_shadows, "2")) {
+      renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_FULL;
+    }
+  }
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
   char post_transform_cache[8];
@@ -1209,6 +1221,11 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.antialiasing_mode == VKR_ANTIALIASING_MODE_FSR_NATIVE &&
       rf->fsr31_available && rf->temporal_enabled && !tiled && default_output &&
       !orthographic;
+  prepared->frame.sun_ray_shadow_mode =
+      !tiled && prepared->frame.scene_rendering &&
+              vkr_renderer_sun_ray_shadows_supported(rf)
+          ? rf->sun_ray_shadow_mode
+          : VKR_SUN_RAY_SHADOW_OFF;
   /* FSR and T2x keep different histories, so a change resets both. */
   const bool8_t fsr31_changed =
       prepared->frame.fsr31_enabled != rf->fsr31_previous;
@@ -2958,6 +2975,13 @@ bool8_t vkr_renderer_dynamic_volume_supported(const VkrRenderer *renderer) {
   return renderer && renderer->vulkan_renderer &&
          renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED &&
          vkr_vulkan_renderer_dynamic_volume_supported(
+             renderer->vulkan_renderer);
+}
+
+bool8_t vkr_renderer_sun_ray_shadows_supported(const VkrRenderer *renderer) {
+  return renderer && renderer->vulkan_renderer &&
+         renderer->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED &&
+         vkr_vulkan_renderer_sun_ray_shadows_supported(
              renderer->vulkan_renderer);
 }
 

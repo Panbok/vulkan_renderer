@@ -50,6 +50,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"planar_reflection_active",
      VKR_RG_JSON_CONDITION_PLANAR_REFLECTION_ACTIVE},
     {"dynamic_volume_active", VKR_RG_JSON_CONDITION_DYNAMIC_VOLUME_ACTIVE},
+    {"sun_ray_shadows_active", VKR_RG_JSON_CONDITION_SUN_RAY_SHADOWS_ACTIVE},
+    {"ray_scene_active", VKR_RG_JSON_CONDITION_RAY_SCENE_ACTIVE},
     {"clearcoat_enabled", VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED},
     {"sheen_enabled", VKR_RG_JSON_CONDITION_SHEEN_ENABLED},
     {"anisotropy_enabled", VKR_RG_JSON_CONDITION_ANISOTROPY_ENABLED},
@@ -2116,6 +2118,10 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->planar_reflection_active;
   case VKR_RG_JSON_CONDITION_DYNAMIC_VOLUME_ACTIVE:
     return frame->dynamic_volume_active;
+  case VKR_RG_JSON_CONDITION_SUN_RAY_SHADOWS_ACTIVE:
+    return frame->sun_ray_shadows_active;
+  case VKR_RG_JSON_CONDITION_RAY_SCENE_ACTIVE:
+    return frame->ray_scene_active;
   case VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED:
     return frame->clearcoat_enabled;
   case VKR_RG_JSON_CONDITION_SHEEN_ENABLED:

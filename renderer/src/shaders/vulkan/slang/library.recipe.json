@@ -236,6 +236,16 @@
       "stage": "compute"
     },
     {
+      "name": "packet.sun_ray_shadow_trace.comp",
+      "entry": "vk_sun_ray_shadow_trace",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.sun_ray_shadow_resolve.comp",
+      "entry": "vk_sun_ray_shadow_resolve",
+      "stage": "compute"
+    },
+    {
       "name": "packet.reflection.vert",
       "entry": "vk_reflection_vertex",
       "stage": "vertex"

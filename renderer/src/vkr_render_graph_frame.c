@@ -149,6 +149,14 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->input.dynamic_volume != NULL && packet->input.lighting &&
       packet->input.lighting->diffuse_volume.indirection.id != 0u &&
       packet->input.lighting->diffuse_volume.dynamic_sh.id != 0u;
+  /* The renderer requests sun rays only where the backend traces them. */
+  frame->sun_ray_shadows_active =
+      packet->scene_rendering && !packet->tiled_pipeline &&
+      packet->sun_ray_shadow_mode != VKR_SUN_RAY_SHADOW_OFF;
+  frame->sun_ray_shadow_half =
+      packet->sun_ray_shadow_mode == VKR_SUN_RAY_SHADOW_HALF;
+  frame->ray_scene_active =
+      frame->dynamic_volume_active || frame->sun_ray_shadows_active;
   /* The tiled pipeline takes a baked plane probe instead (ADR-087). */
   frame->planar_reflection_active = packet->scene_rendering &&
                                     !packet->tiled_pipeline &&
@@ -498,6 +506,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK] = {"pass.local_shadow.mask",
                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SUN_RAY_TRACE] = {"pass.shadow.sun_ray.trace",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SUN_RAY_RESOLVE] = {"pass.shadow.sun_ray.resolve",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LIGHTING_DEFERRED] = {"pass.lighting.deferred",
                                            VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED] =

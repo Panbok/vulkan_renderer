@@ -1399,6 +1399,8 @@ bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer);
  * desktop pipeline on a device with ray queries. Fixed once the renderer is
  * created. */
 bool8_t vkr_renderer_dynamic_volume_supported(const VkrRenderer *renderer);
+/** The desktop device traces ray-query sun shadows (VKR_SUN_RAY_SHADOWS). */
+bool8_t vkr_renderer_sun_ray_shadows_supported(const VkrRenderer *renderer);
 /** The tiled pipeline's upscaler in effect: the requested one, or the
  * spatial upscale where the device lacks Metal 4 MetalFX. Fixed once the
  * renderer is created; the desktop pipeline reports the spatial upscale. */

@@ -1310,11 +1310,11 @@ vkr_internal bool8_t vkr_vk_pack_gpu_candidate_range(
                                  instance_source_offset);
   slot->candidate_upload_cursor =
       instance_source_offset + (uint64_t)count * sizeof(*instances);
-  /* The dynamic volume layer's TLAS needs each opaque row's BLAS and
-     transform (ADR-119). Transmission rows live in their own buffer, so
-     only the opaque streams' rows name ray rows. A frame without the layer
-     keeps none, up to 18 MiB a slot. */
-  const bool8_t volume_frame = vkr_vk_volume_frame_active(renderer);
+  /* The TLAS of the dynamic volume layer and ray-query sun shadows needs
+     each opaque row's BLAS and transform (ADR-119). Transmission rows live
+     in their own buffer, so only the opaque streams' rows name ray rows. A
+     frame without either keeps none, up to 18 MiB a slot. */
+  const bool8_t volume_frame = vkr_vk_ray_scene_active(renderer);
   if (!volume_frame) {
     vkr_vk_release_ray_rows(renderer, slot);
   }

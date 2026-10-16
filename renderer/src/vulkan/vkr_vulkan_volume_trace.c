@@ -300,8 +300,10 @@ vkr_vk_blas_geometry(VkDeviceAddress positions, uint32_t vertex_count) {
    over every packed candidate row whose BLAS exists.
    ------------------------------------------------------------------------- */
 
-bool8_t vkr_vk_volume_frame_active(const VkrVulkanRenderer *renderer) {
-  return renderer->prepared_frame.dynamic_volume_active &&
+/* The frame traces its TLAS: for the dynamic volume layer or ray-query
+   sun shadows. */
+bool8_t vkr_vk_ray_scene_active(const VkrVulkanRenderer *renderer) {
+  return renderer->prepared_frame.ray_scene_active &&
          vkr_vk_volume_trace_enabled(renderer);
 }
 
@@ -771,7 +773,7 @@ bool8_t vkr_vk_prepare_volume_build(VkrVulkanRenderer *renderer,
   slot->volume_build_ready = false_v;
   slot->volume_timing_recorded = false_v;
   slot->volume_timing_probes = 0u;
-  if (!vkr_vk_volume_frame_active(renderer)) {
+  if (!vkr_vk_ray_scene_active(renderer)) {
     return true_v;
   }
   if (!slot->volume_lists) {

@@ -1716,6 +1716,13 @@ bool8_t vkr_vulkan_renderer_dynamic_volume_supported(
   return vkr_vk_volume_trace_enabled(renderer);
 }
 
+bool8_t vkr_vulkan_renderer_sun_ray_shadows_supported(
+    const VkrVulkanRenderer *renderer) {
+  return vkr_vk_volume_trace_enabled(renderer) &&
+         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE] &&
+         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE];
+}
+
 uint32_t vkr_vulkan_renderer_dynamic_volume_probe_budget(
     const VkrVulkanRenderer *renderer) {
   if (!renderer || renderer->volume_probe_budget <= 0.0f) {

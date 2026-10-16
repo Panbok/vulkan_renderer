@@ -18,6 +18,9 @@ typedef struct VkrPreparedFrame {
   /** The visibility raster takes two samples a pixel: with SMAA when
       VKR_MSAA_ENABLED is set (SMAA S2x). */
   bool8_t msaa_enabled;
+  /** Ray-query sun shadows (VKR_SUN_RAY_SHADOWS) on a desktop frame whose
+      device traces them; VKR_SUN_RAY_SHADOW_OFF otherwise. */
+  VkrSunRayShadowMode sun_ray_shadow_mode;
   /** FSR 3.1 native antialiasing (VkrAntialiasingMode) replaces SMAA and T2x:
       the scene's HDR colour is reconstructed at its own resolution before
       post-processing. */

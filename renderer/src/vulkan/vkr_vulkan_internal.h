@@ -108,6 +108,10 @@
 #define VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV "packet.volume_clear.comp.spv"
 #define VKR_VULKAN_PACKET_VOLUME_PROBE_RELIGHT_COMP_SPV                        \
   "packet.volume_probe_relight.comp.spv"
+#define VKR_VULKAN_PACKET_SUN_RAY_SHADOW_TRACE_COMP_SPV                        \
+  "packet.sun_ray_shadow_trace.comp.spv"
+#define VKR_VULKAN_PACKET_SUN_RAY_SHADOW_RESOLVE_COMP_SPV                      \
+  "packet.sun_ray_shadow_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV "packet.reflection.frag.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
   "packet.local_shadow_transmission.vert.spv"
@@ -896,7 +900,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   /** SMAA S2x's listed pixels for the second sample's lighting; zero
       otherwise. */
   uint64_t sample1_pixels;
-  uint32_t sample1_reserved[2];
+  /** Shadow.SunRayResolve's RG8 mask (visibility, weight over the
+      cascades); zero without ray-query sun shadows. */
+  uint32_t sun_ray_shadow_texture;
+  uint32_t sun_ray_reserved;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -2768,8 +2775,53 @@ typedef enum VkrVulkanVolumePipeline {
   VKR_VULKAN_VOLUME_PIPELINE_TRACE,
   VKR_VULKAN_VOLUME_PIPELINE_CLEAR,
   VKR_VULKAN_VOLUME_PIPELINE_PROBE_RELIGHT,
+  /* Ray-query sun shadows (VKR_SUN_RAY_SHADOWS) trace the same TLAS. */
+  VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE,
+  VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE,
   VKR_VULKAN_VOLUME_PIPELINE_COUNT,
 } VkrVulkanVolumePipeline;
+
+/* Shadow.SunRay and Shadow.SunRayResolve: one root for both kernels. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSunRayShadowRoot {
+  uint64_t frame;
+  uint64_t frame_padding;
+  Mat4 inverse_view_projection;
+  uint64_t visible_rows;
+  uint64_t candidates;
+  uint64_t geometry_rows;
+  /* The geometry megabuffer's bases (see VkrVulkanVolumeTraceRoot). */
+  uint64_t indices;
+  uint64_t vertices;
+  uint32_t vbuffer_texture;
+  uint32_t depth_texture;
+  uint32_t normal_texture;
+  /* RG16F: traced visibility and the traced pixel's view depth. */
+  uint32_t trace_texture;
+  /* RG8: filtered visibility and its weight over the cascades. */
+  uint32_t mask_texture;
+  uint32_t tlas_slot;
+  uint32_t extent[2];
+  uint32_t trace_extent[2];
+  /* VKR_VULKAN_SUN_RAY_HALF | VKR_VULKAN_SUN_RAY_TLAS. */
+  uint32_t flags;
+  uint32_t frame_index;
+  /* View depths, in metres, where the rays' weight starts to fall and
+     where it reaches zero; the rays' length. */
+  float32_t range_fade_start;
+  float32_t range_end;
+  float32_t ray_length;
+  uint32_t reserved[3];
+} VkrVulkanSunRayShadowRoot;
+_Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 192u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, visible_rows) == 80u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, vbuffer_texture) ==
+                       120u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, extent) == 144u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, flags) == 160u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, ray_length) == 176u,
+               "Vulkan sun ray shadow root ABI drift");
+#define VKR_VULKAN_SUN_RAY_HALF 1u
+#define VKR_VULKAN_SUN_RAY_TLAS 2u
 
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
@@ -3791,7 +3843,7 @@ void vkr_vk_commit_diffuse_volume_compose(VkrVulkanRenderer *renderer,
 /* Dynamic diffuse volume layer (vkr_vulkan_volume_trace.c, ADR-119). */
 bool8_t vkr_vk_volume_trace_enabled(const VkrVulkanRenderer *renderer);
 /* The device traces and this frame carries a bound volume and its update. */
-bool8_t vkr_vk_volume_frame_active(const VkrVulkanRenderer *renderer);
+bool8_t vkr_vk_ray_scene_active(const VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer);
 void vkr_vk_destroy_volume_pipelines(VkrVulkanRenderer *renderer,
                                      VkDevice device);
@@ -3881,6 +3933,9 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass, bool8_t resolve);
 bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass, bool8_t layered,

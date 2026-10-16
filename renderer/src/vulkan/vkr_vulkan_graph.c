@@ -1850,6 +1850,10 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
       bytes += sizeof(VkrVulkanDiffuseVolumeComposeRoot);
       break;
+    case VKR_RG_EXECUTOR_SUN_RAY_TRACE:
+    case VKR_RG_EXECUTOR_SUN_RAY_RESOLVE:
+      bytes += sizeof(VkrVulkanPacketFrameRoot);
+      break;
     case VKR_RG_EXECUTOR_VOLUME_BUILD:
       bytes += VKR_VULKAN_BLAS_BUILDS_PER_FRAME *
                (sizeof(VkrVulkanVolumeDecodeRoot) + 16u);
@@ -2039,6 +2043,12 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
                                            true_v);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK:
     return vkr_vk_prepare_local_shadow_mask(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_SUN_RAY_TRACE:
+    return vkr_vk_prepare_sun_ray_shadow(renderer, &prepared->compute, pass,
+                                         false_v);
+  case VKR_RG_EXECUTOR_SUN_RAY_RESOLVE:
+    return vkr_vk_prepare_sun_ray_shadow(renderer, &prepared->compute, pass,
+                                         true_v);
   case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
     return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
                                             false_v, false_v);

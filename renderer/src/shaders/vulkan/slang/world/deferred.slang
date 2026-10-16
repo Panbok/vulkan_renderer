@@ -320,7 +320,10 @@ struct VkrVkLightingRoot
     // SMAA S2x's listed pixels for the second sample's lighting; null
     // otherwise.
     uint *sample1_pixels;
-    uint2 sample1_reserved;
+    // Shadow.SunRayResolve's RG8 mask: the traced sun visibility and its
+    // weight over the cascades; zero without ray-query sun shadows.
+    uint sun_ray_shadow_texture;
+    uint sun_ray_reserved;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -3219,6 +3222,21 @@ uint2 vk_msaa_side_pixel(VkrVkLightingRoot root, uint2 pixel, uint visible)
     return pixel;
 }
 
+// The sun's visibility: Shadow.SunRayResolve's traced value where its weight
+// covers the pixel, the cascades beyond, blended across the ray range's end.
+// The cascades are not sampled where the rays cover the pixel alone.
+float vk_deferred_sun_shadow(VkrVulkanPacketFrameRoot *frame, float3 world,
+                             float3 normal, float2 rotation, float2 sun_ray,
+                             uint moments_texture, uint moments_sampler)
+{
+    if (sun_ray.y >= 1.0f)
+        return sun_ray.x;
+    float cascades = packet_directional_shadow(frame, world, normal, rotation,
+                                               moments_texture,
+                                               moments_sampler);
+    return lerp(cascades, sun_ray.x, sun_ray.y);
+}
+
 // Layered selects the clearcoat, sheen and anisotropy paths at compile time;
 // without them the kernel needs fewer registers.
 void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
@@ -3283,6 +3301,15 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     {
         VkrVulkanShadowDebugSample shadow_sample =
             packet_directional_shadow_debug(frame, world, normal);
+        // The factor view shows the visibility lighting takes, the sun
+        // rays' included.
+        if (root.sun_ray_shadow_texture != 0u)
+        {
+            float2 sun_ray =
+                g_storage_float2_2d[root.sun_ray_shadow_texture][side_pixel];
+            shadow_sample.factor =
+                lerp(shadow_sample.factor, sun_ray.x, sun_ray.y);
+        }
         g_storage_2d[root.scene_texture][thread_id.xy] = float4(
             packet_shadow_debug_color(frame.shadow_debug_mode, shadow_sample),
             1.0f);
@@ -3363,19 +3390,24 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         // A fixed per-pixel kernel rotation: the lighting root carries no
         // temporal phase for the sun's filter.
         float2 shadow_rotation = vkr_shadow_kernel_rotation(thread_id.xy, 0u);
+        // Without ray-query sun shadows the weight is zero: the cascades
+        // alone.
+        float2 sun_ray = root.sun_ray_shadow_texture != 0u
+                             ? g_storage_float2_2d[root.sun_ray_shadow_texture]
+                                                  [side_pixel]
+                             : float2(1.0f, 0.0f);
         float base_shadow =
-            packet_directional_shadow(frame, world, back_lit ? -normal : normal,
-                                      shadow_rotation,
-                                      root.shadow_moments_texture,
-                                      root.shadow_moments_sampler) *
+            vk_deferred_sun_shadow(frame, world, back_lit ? -normal : normal,
+                                   shadow_rotation, sun_ray,
+                                   root.shadow_moments_texture,
+                                   root.shadow_moments_sampler) *
             cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
             directional_shadow =
-                packet_directional_shadow(frame, world, normal,
-                                          shadow_rotation,
-                                          root.shadow_moments_texture,
-                                          root.shadow_moments_sampler) *
+                vk_deferred_sun_shadow(frame, world, normal, shadow_rotation,
+                                       sun_ray, root.shadow_moments_texture,
+                                       root.shadow_moments_sampler) *
                 cloud_shadow;
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),

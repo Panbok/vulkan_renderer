@@ -1618,6 +1618,93 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Ray-query sun shadows (prototype, VKR_SUN_RAY_SHADOWS): rays cover view
+   depths below the range's end and hand over to the cascades over its last
+   fifth. They run to the scene's edge; the TLAS holds every opaque and
+   alpha-tested candidate (ADR-119). */
+#define VKR_VULKAN_SUN_RAY_RANGE_END 50.0f
+#define VKR_VULKAN_SUN_RAY_RANGE_FADE_START 40.0f
+#define VKR_VULKAN_SUN_RAY_LENGTH 1000.0f
+
+/* Shadow.SunRay (`resolve` false) traces the trace texture at binding 16;
+   Shadow.SunRayResolve filters it into the mask at binding 17. */
+bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
+                                      VkrVulkanPreparedCompute *prepared,
+                                      const VkrRgPass *pass, bool8_t resolve) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint32_t vbuffer = 0u, depth = 0u, normal = 0u, trace = 0u, mask = 0u;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &trace) ||
+      (resolve && !vkr_vk_deferred_storage_index(renderer, pass, 17u, &mask)) ||
+      !visible || !slot->gpu_candidate_buffer)
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  uint64_t frame_address = 0u;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_address);
+  if (!frame_root)
+    return false_v;
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+  const uint32_t width = renderer->prepared_frame.viewport_width;
+  const uint32_t height = renderer->prepared_frame.viewport_height;
+  const bool8_t half = renderer->prepared_frame.sun_ray_shadow_half;
+  const VkrVulkanSunRayShadowRoot root = {
+      .frame = frame_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .visible_rows = visible->buffer.address,
+      .candidates = slot->gpu_candidate_buffer->buffer.address,
+      .geometry_rows = slot->gpu_geometry_rows,
+      .indices = renderer->geometry_megabuffer.indices.address,
+      .vertices = renderer->geometry_megabuffer.vertices.address,
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .normal_texture = normal,
+      .trace_texture = trace,
+      .mask_texture = mask,
+      .tlas_slot = renderer->active_frame_slot,
+      .extent = {width, height},
+      /* A half-rate trace covers every 2x2 block, the last one partly. */
+      .trace_extent = {half ? (width + 1u) / 2u : width,
+                       half ? (height + 1u) / 2u : height},
+      /* Without a built TLAS the trace stores no sample and lighting keeps
+         the cascades. */
+      .flags = (half ? VKR_VULKAN_SUN_RAY_HALF : 0u) |
+               (slot->volume_build_ready ? VKR_VULKAN_SUN_RAY_TLAS : 0u),
+      .frame_index = packet->input.frame.frame_index,
+      .range_fade_start = VKR_VULKAN_SUN_RAY_RANGE_FADE_START,
+      .range_end = VKR_VULKAN_SUN_RAY_RANGE_END,
+      .ray_length = VKR_VULKAN_SUN_RAY_LENGTH,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSunRayShadowRoot),
+                                 &prepared->root_address))
+    return false_v;
+  const uint32_t *dispatch = resolve ? root.extent : root.trace_extent;
+  const VkrVulkanVolumePipeline pipeline =
+      resolve ? VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE
+              : VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->volume_pipelines[pipeline];
+  prepared->groups[prepared->dispatch_count][0] = (dispatch[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] = (dispatch[1] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
 /* The base kernel shades every tile unless the frame has layered materials;
    then the layered pass owns tiles that carry layer data. */
 /* `sample_one`: SMAA S2x's second sample, lit at the pixels VBuffer.Split
@@ -1665,6 +1752,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   uint32_t baked_lamp_shadow = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (vkr_rg_pass_find_image_use(&pass->desc, 21u, 0u) &&
       !vkr_vk_deferred_storage_index(renderer, pass, 21u, &baked_lamp_shadow))
+    return false_v;
+  uint32_t sun_ray_shadow = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 46u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 46u, &sun_ray_shadow))
     return false_v;
   uint32_t baked_lamps = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   uint32_t baked_direction = VKR_VULKAN_SENTINEL_SLOT_INDEX;
@@ -1808,6 +1899,7 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .edge_mask_texture = edge_mask,
       .side_vbuffer_texture = side_vbuffer,
       .sample1_pixels = sample1_pixels ? sample1_pixels->buffer.address : 0u,
+      .sun_ray_shadow_texture = sun_ray_shadow,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),

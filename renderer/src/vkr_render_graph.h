@@ -572,6 +572,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t planar_reflection_divisor;
   /** The frame updates the diffuse volume's dynamic layer (ADR-119). */
   bool8_t dynamic_volume_active;
+  /** The frame traces ray-query sun shadows (VKR_SUN_RAY_SHADOWS), one ray
+      a pixel or, with `sun_ray_shadow_half`, one per 2x2 block. */
+  bool8_t sun_ray_shadows_active;
+  bool8_t sun_ray_shadow_half;
+  /** The frame builds its TLAS: for the dynamic layer or sun rays. */
+  bool8_t ray_scene_active;
   bool8_t clearcoat_enabled;
   bool8_t sheen_enabled;
   bool8_t anisotropy_enabled;

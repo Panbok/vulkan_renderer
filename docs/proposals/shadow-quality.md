@@ -193,10 +193,78 @@ from below. Estimated cost of the ray pass alone:
 | 1 per 4 pixels, whole screen | 0.92 M | about 1 ms | about 10 ms |
 | 1 per 4 pixels, near penumbra only | 0.2–0.4 M | about 0.5 ms | 2–4 ms |
 
-The denoiser adds 0.4–1 ms. Before D2 is built, a one-day prototype traces one
-first-hit sun ray per 4 pixels against the ADR-119 TLAS in a Bistro case and
-times it on the RX 6700 XT. At or under 1.5 ms with denoising, D2 becomes the
-High preset; above 3 ms, D1 is the default and D2 an opt-in Ultra setting.
+The denoiser adds 0.4–1 ms. The gate: at or under 1.5 ms with denoising, D2
+becomes the High preset; above 3 ms, D1 is the default and D2 an opt-in Ultra
+setting.
+
+### Prototype result
+
+The gate passes at one ray per 2×2 block. An opt-in prototype,
+`VKR_SUN_RAY_SHADOWS=1` (one ray per 2×2 block) or `=2` (one ray a pixel),
+adds two passes:
+
+- `Shadow.SunRay` traces one first-hit ray toward a point on the sun's disk
+  (the cascades' PCSS angle) against the ADR-119 TLAS. Alpha-tested casters
+  are tested at texture level 1. The traced pixel of each block turns with the
+  frame.
+- `Shadow.SunRayResolve` filters 3×3 trace texels with spatial, depth and
+  normal weights into an RG8 mask: visibility, and its weight over the
+  cascades.
+
+Lighting takes the mask below 40 m view depth and blends to the cascades by
+50 m; where the weight is 1, it samples no cascade. Plain Bistro has no
+diffuse volume, so `Volume.Build` now also builds the TLAS for sun rays
+(`ray_scene_active`). The sources are
+[`sun_ray_shadow.slang`](../../renderer/src/shaders/vulkan/slang/world/sun_ray_shadow.slang)
+and `vkr_vk_prepare_sun_ray_shadow` in
+[`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c).
+
+Measured on 2026-10-16: RX 6700 XT, Release with validation unset, 2560×1440,
+temporal AA (FSR native), High shadows, 5 repetitions × 300 frames,
+`profile --profile tools/profiles/local-offscreen-gpu-repeated.json`. Values
+are mean GPU ms per frame. Reports are "incomplete" only for a dirty tree and
+an unstable transmission-coverage warm-up metric; all repetitions passed.
+The two cases are `local.bistro.shadow.sun_ray_plaza_perf` (every visible
+pixel within 50 m) and `local.bistro.shadow.sun_ray_street_perf`.
+
+| Case, mode | Trace | Resolve | TLAS refit | Lighting | All GPU passes | Report |
+|---|---|---|---|---|---|---|
+| Plaza, off | — | — | — | 6.888 | 19.347 | `sha256:151801ba…` |
+| Plaza, 1 ray / 2×2 | 0.847 | 0.433 | 0.062 | 5.878 | 19.725 | `sha256:256d4193…` |
+| Plaza, 1 ray / pixel | 2.705 | 0.439 | 0.062 | 5.742 | 21.445 | `sha256:ac82bf58…` |
+| Street, off | — | — | — | 7.913 | 20.927 | `sha256:7ecbbf7e…` |
+| Street, 1 ray / 2×2 | 0.742 | 0.411 | 0.062 | 7.034 | 21.294 | `sha256:d20cff31…` |
+| Street, 1 ray / pixel | 2.288 | 0.421 | 0.062 | 6.958 | 22.780 | `sha256:59aed509…` |
+
+- At one ray per 2×2 block, the ray passes cost 1.34 ms (plaza) and 1.22 ms
+  (street), within the 1.5 ms gate.
+- Lighting gets 0.9–1.0 ms faster because it skips the cascade filter in ray
+  range. The whole frame costs 0.38 ms (plaza) and 0.37 ms (street) more.
+- One ray a pixel costs 3.2 ms (plaza), above the 3 ms limit, and looks
+  nearly the same as one per block after filtering. The half rate is the
+  High candidate.
+- The full-rate trace, at most 3.7 M rays, took 2.7 ms. The probe-trace rate
+  in the estimate table predicted about 40 ms.
+
+A Debug run of the plaza at one ray per 2×2 block, with
+`VK_LAYER_KHRONOS_validation` and synchronization checks, reported no
+validation messages (`local.bistro.shadow.sun_ray_plaza_validation`,
+`sha256:64f94aef…`).
+
+In the `shadow_debug_factor` captures of the plaza, the rays give crisp
+bollard and lamp-post shadows, hedge shadows with leaf detail, and contact
+shadows in facade relief and paving joints. The cascades blur or lose all of
+them.
+
+The prototype leaves these items for D2:
+
+- The filter is spatial only, and temporal AA averages its four rotating
+  corners. A temporal denoiser (0.4–1 ms) and a motion capture that checks
+  edges for ghosting and noise are still required.
+- Skinned meshes are not in the TLAS, so within ray range they cast no sun
+  shadow.
+- The range ends at a fixed 50 m.
+- Transmissive surfaces keep the cascades.
 
 ## Tiled options
 
@@ -346,10 +414,10 @@ Targets for Bistro at High. Current 1440p desktop values are scaled from
 2. A scoped Bistro case that orbits across all four cascade borders and past
    54 m, captured and timed on each backend.
 3. Desktop: D1, with its distant levels and sun contact shadows, and the D2
-   prototype gate. Tiled: T1 and T2b, implemented.
+   prototype gate, which passed (see the prototype result). Tiled: T1 and
+   T2b, implemented.
 4. Tiled: T4, implemented.
-5. Desktop: D2 or, if it misses the gate, D3. Tiled: the T5 prototype and
-   gate.
+5. Desktop: D2 at one ray per 2×2 block. Tiled: the T5 prototype and gate.
 6. Tiled: T3.
 
 ## Decisions
@@ -377,8 +445,9 @@ Open:
 - Each option: capture-free Release before/after reports on its native
   backend (RX 6700 XT for Vulkan, an M1-class Mac for Metal) meeting the
   budgets above, with equivalent work and output.
-- D2: the prototype gate result, then Vulkan validation of the ray pass and a
-  motion capture that shows no denoiser ghosting at shadow edges.
+- D2: a motion capture that shows no denoiser ghosting or noise at shadow
+  edges, and Vulkan validation of D2's final passes. The gate result and the
+  prototype's validation run are recorded above.
 - Contact shadows: captures with contact shadows off and on at the Level
   Design Test's lift, freight cars and mannequin feet and at Bistro's chairs
   and tables, on each backend.

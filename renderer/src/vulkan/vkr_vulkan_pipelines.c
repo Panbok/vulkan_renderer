@@ -1502,7 +1502,34 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, side_vbuffer_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, view_rays),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sample1_pixels),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sample1_reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_ray_shadow_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_ray_reserved),
+};
+
+vkr_global const VkrVulkanReflectedField s_vk_sun_ray_shadow_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, frame),
+    {"frame_address_padding",
+     (uint32_t)offsetof(VkrVulkanSunRayShadowRoot, frame_padding)},
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot,
+                               inverse_view_projection),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, visible_rows),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, candidates),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, geometry_rows),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, indices),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, vertices),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, vbuffer_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, depth_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, normal_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, trace_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, mask_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, tlas_slot),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, trace_extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, flags),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, frame_index),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, range_fade_start),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, range_end),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, ray_length),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {
@@ -1751,6 +1778,14 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
                               "vk_deferred_lighting", s_vk_lighting_fields,
                               VkrVulkanLightingRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_SUN_RAY_SHADOW_TRACE_COMP_SPV,
+                              "vk_sun_ray_shadow_trace",
+                              s_vk_sun_ray_shadow_fields,
+                              VkrVulkanSunRayShadowRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_SUN_RAY_SHADOW_RESOLVE_COMP_SPV,
+                              "vk_sun_ray_shadow_resolve",
+                              s_vk_sun_ray_shadow_fields,
+                              VkrVulkanSunRayShadowRoot),
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV,
         "vk_deferred_lighting_layered", s_vk_lighting_fields,
@@ -2136,13 +2171,14 @@ bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer) {
           VKR_VULKAN_PACKET_VOLUME_TRACE_COMP_SPV,
           VKR_VULKAN_PACKET_VOLUME_CLEAR_COMP_SPV,
           VKR_VULKAN_PACKET_VOLUME_PROBE_RELIGHT_COMP_SPV,
+          VKR_VULKAN_PACKET_SUN_RAY_SHADOW_TRACE_COMP_SPV,
+          VKR_VULKAN_PACKET_SUN_RAY_SHADOW_RESOLVE_COMP_SPV,
       };
   vkr_local_persist const char
       *const entries[VKR_VULKAN_VOLUME_PIPELINE_COUNT] = {
-          "vk_volume_blas_decode",
-          "vk_volume_trace",
-          "vk_volume_clear",
-          "vk_volume_probe_relight",
+          "vk_volume_blas_decode",   "vk_volume_trace",
+          "vk_volume_clear",         "vk_volume_probe_relight",
+          "vk_sun_ray_shadow_trace", "vk_sun_ray_shadow_resolve",
       };
   for (uint32_t i = 0u; i < VKR_VULKAN_VOLUME_PIPELINE_COUNT; ++i) {
     if (!vkr_vk_create_shader_module(renderer, paths[i],
