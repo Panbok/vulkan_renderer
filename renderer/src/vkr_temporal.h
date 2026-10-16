@@ -40,6 +40,10 @@ typedef struct VkrTemporalState {
   Vec3 view_position;
   uint64_t scene_generation;
   uint32_t frame_index;
+  /** The Halton index of the last committed frame. It advances by one per
+      committed frame, so frame numbers with gaps (the windowed editor skips
+      some) still walk every phase. */
+  uint32_t halton_index;
   uint32_t width;
   uint32_t height;
   uint32_t render_mode;

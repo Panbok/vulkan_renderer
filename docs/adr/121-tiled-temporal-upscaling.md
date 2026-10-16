@@ -72,7 +72,10 @@ like clouds and froxel fog.
    Halton (2, 3) generator. `VkrTemporalFrameInput::halton_phase_count`
    selects 8 phases for MetalFX and 16 for FSR 3.1 on the desktop pipeline;
    zero keeps SMAA's subsamples. Phases start at index 1, in internal pixels
-   with y down.
+   with y down. The phase advances by one per committed frame, not by frame
+   number, so frame numbers with gaps still walk every phase in order. A
+   120 Hz display at 60 frames a second would otherwise use only the four
+   phases with x ≥ 0.
 5. **Multisampling.** Under MetalFX the opaque pass draws one sample per
    pixel, straight into `hdr_scene_color` and the resolved depth. The
    multisample resolve would blur what MetalFX reconstructs.
@@ -102,7 +105,14 @@ like clouds and froxel fog.
    Scene output extent). The scaler sets reversed depth
    ([ADR-109](109-reversed-camera-depth.md)), the jitter, a motion scale of
    the content extent, the frame's pre-exposure and auto exposure. It sets
-   `reset` when the frame has no valid history. Scale steps do not reset it.
+   `reset` when the frame has no valid history. Scale steps and gaps in
+   frame numbers do not reset it: the previous camera, transforms and
+   skinned vertices are the last committed frame's either way. The windowed
+   editor skips about one frame number in three. Resetting on those gaps
+   showed each such frame raw and jittered, which looked like heavy jitter
+   on every edge of a still camera. `Tiled.ObjectMotion` and
+   `Tiled.Stabilize` take the last submitted frame's history across a gap
+   too.
    The scaler signals a fence, and the next encoder waits for it.
 9. **Adaptive quality.** With dynamic resolution on, the scaler is created
    once for the `viewport_capacity` extent, the Scene output times the
@@ -169,6 +179,26 @@ like clouds and froxel fog.
 - MetalFX gains timestamps or a changed cost structure on newer GPUs.
 
 ## Evidence
+
+### Frame-gap reset fix
+
+Release editor on `dec2c7de` plus the fix, M1 Pro, 2026-10-16, windowed
+(screen locked; the Scene's `final_color` through `view.capture`), Testbed
+"Level Design Test" scene, MetalFX 0.6 with adaptive quality, 2061×1062
+Scene. Each view holds the camera still for 16 captures; the column is the
+percentage of pixels whose luma standard deviation over them exceeds 8 of
+255, which includes the FPS counter and other UI text:
+
+| View | MetalFX before | MetalFX after | Spatial 0.67 |
+|---|---|---|---|
+| Valley along the line | 2.73% | 0.22–0.24% | 0.24% |
+| Valley north | 1.48% | 0.24–0.42% | 0.23% |
+| Interior | 0.42% | 0.26–0.30% | 0.27% |
+
+Before the fix, 655 of about 1,900 frames had only the frame-gap reason
+and reset MetalFX. After it, a run of the same views reset only at scene
+load and at the camera placements. The headless editor and the harness
+render every frame number and never showed the defect.
 
 ### Production round
 

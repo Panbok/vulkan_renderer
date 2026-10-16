@@ -1139,11 +1139,17 @@ vkr_internal void vkr_renderer_prepare_tiled_temporal(VkrRenderer *rf,
     frame->viewport_capacity_height =
         vkr_renderer_scaled_extent(rf->scene_output_height, capacity_scale);
   }
+  /* MetalFX keeps its history across a resolution step (its inputs keep the
+     capacity extent) and across a gap in frame numbers: the previous camera
+     and transforms are the last committed frame's either way. The windowed
+     editor skips about one number in three, and resetting there showed those
+     frames raw and jittered. */
   frame->tiled_temporal_history_valid =
       frame->tiled_temporal_enabled &&
       (frame->temporal.reset_reasons &
        ~(uint32_t)(VKR_TEMPORAL_RESET_EXTENT_CHANGE |
-                   VKR_TEMPORAL_RESET_RESOLUTION_STEP)) == 0u;
+                   VKR_TEMPORAL_RESET_RESOLUTION_STEP |
+                   VKR_TEMPORAL_RESET_FRAME_GAP)) == 0u;
   frame->tiled_temporal_still =
       frame->tiled_temporal_history_valid &&
       MemCompare(&frame->temporal.current_view_projection,

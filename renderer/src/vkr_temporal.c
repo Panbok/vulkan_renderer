@@ -92,10 +92,18 @@ vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
   return result;
 }
 
-vkr_internal Vec2 vkr_temporal_halton_jitter(uint32_t frame_index,
+/* The frame's Halton index: its frame index without history, then one past
+   the last committed frame's. Skipped frame numbers take no phase, and a
+   gapless sequence keeps its frame index. */
+vkr_internal uint32_t vkr_temporal_halton_index(
+    const VkrTemporalState *state, const VkrTemporalFrameInput *input) {
+  return state->valid ? state->halton_index + 1u : input->frame_index;
+}
+
+vkr_internal Vec2 vkr_temporal_halton_jitter(uint32_t halton_index,
                                              uint32_t phase_count) {
   /* Phases start at index 1; index 0's (0, 0) would sample a pixel corner. */
-  const uint32_t index = frame_index % phase_count + 1u;
+  const uint32_t index = halton_index % phase_count + 1u;
   return (Vec2){vkr_temporal_halton(index, 2u) - 0.5f,
                 vkr_temporal_halton(index, 3u) - 0.5f};
 }
@@ -203,8 +211,8 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
   }
   if (input->enabled && input->width > 0u && input->height > 0u &&
       input->halton_phase_count > 0u) {
-    frame.jitter_pixels = vkr_temporal_halton_jitter(input->frame_index,
-                                                     input->halton_phase_count);
+    frame.jitter_pixels = vkr_temporal_halton_jitter(
+        vkr_temporal_halton_index(state, input), input->halton_phase_count);
     frame.jittered_projection = vkr_temporal_jitter_projection(
         input->projection, frame.jitter_pixels, input->width, input->height);
   } else if (input->enabled && input->width > 0u && input->height > 0u) {
@@ -228,12 +236,14 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
 
 void vkr_temporal_commit(VkrTemporalState *state,
                          const VkrTemporalFrameInput *input) {
+  const uint32_t halton_index = vkr_temporal_halton_index(state, input);
   *state = (VkrTemporalState){
       .view = input->view,
       .projection = input->projection,
       .view_position = input->view_position,
       .scene_generation = input->scene_generation,
       .frame_index = input->frame_index,
+      .halton_index = halton_index,
       .width = input->width,
       .height = input->height,
       .render_mode = input->render_mode,

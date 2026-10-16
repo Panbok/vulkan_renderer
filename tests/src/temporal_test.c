@@ -192,6 +192,22 @@ vkr_internal void test_temporal_halton_jitter(void) {
     /* No SMAA rows apply to a Halton jitter. */
     assert(result.smaa_subsample_indices.x == 0.0f);
   }
+
+  /* A runtime that renders every other submitted frame (a 120 Hz display
+     at 60 frames a second) still walks every phase in order: the index
+     follows committed frames, not frame numbers. Stepping by frame number
+     would use only the four phases with x >= 0. */
+  state = (VkrTemporalState){0};
+  for (uint32_t committed = 0u;
+       committed < 2u * VKR_TEMPORAL_METALFX_PHASE_COUNT; ++committed) {
+    VkrTemporalFrameInput input = temporal_input(2u * committed);
+    input.halton_phase_count = VKR_TEMPORAL_METALFX_PHASE_COUNT;
+    const VkrTemporalFrame result = vkr_temporal_prepare(&state, &input);
+    const uint32_t phase = committed % VKR_TEMPORAL_METALFX_PHASE_COUNT;
+    assert(fabsf(result.jitter_pixels.x - (expected[phase][0] - 0.5f)) < 1e-6f);
+    assert(fabsf(result.jitter_pixels.y - (expected[phase][1] - 0.5f)) < 1e-6f);
+    vkr_temporal_commit(&state, &input);
+  }
   printf("  test_temporal_halton_jitter PASSED\n");
 }
 

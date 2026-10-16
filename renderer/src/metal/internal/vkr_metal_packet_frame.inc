@@ -1131,8 +1131,10 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
 
 /* Points the motion view's frame root at the previous frame's transforms
    and view-projection. They count only when the last submitted frame ran
-   ran the MetalFX upscaler and immediately precedes this one; otherwise each draw
-   takes its current transform, which leaves the camera motion. */
+   the MetalFX upscaler and this frame keeps its history; otherwise each draw
+   takes its current transform, which leaves the camera motion. A gap in
+   frame numbers between the two submissions breaks neither: the camera
+   history is the last committed frame's too. */
 vkr_internal bool8_t vkr_metal_packet_attach_temporal_draw_state(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketFrameUpload *upload, uint64_t frame_root_gpu)
@@ -1150,8 +1152,6 @@ vkr_internal bool8_t vkr_metal_packet_attach_temporal_draw_state(
           : NULL;
   const bool8_t history_valid =
       previous && packet->tiled_temporal_history_valid &&
-      renderer->temporal_previous_frame_index + 1u ==
-          packet->input.frame.frame_index &&
       renderer->temporal_previous_history_index !=
           renderer->history_output_index;
   /* The read keeps the instance from the history ring until it completes. */
@@ -2417,9 +2417,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_temporal_transform(
 
 /* The still-camera running mean: MetalFX's output at binding 0 and the
    viewport's motion at 1 into this frame's instance of the history image at
-   2. The previous frame's instance holds the mean when that frame was still
-   and stabilized too; its read keeps the instance from the history ring
-   until this frame completes. */
+   2. The last submitted frame's instance holds the mean when that frame was
+   still and stabilized too, across any gap in frame numbers; its read keeps
+   the instance from the history ring until this frame completes. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -2444,11 +2444,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
           : NULL;
   id<MTLTexture> history =
       previous ? (id<MTLTexture>)previous->resource.metal_texture : nil;
-  const bool8_t history_valid =
-      history && history.width == output.width &&
-      history.height == output.height &&
-      renderer->temporal_previous_frame_index + 1u ==
-          packet->input.frame.frame_index;
+  const bool8_t history_valid = history && history.width == output.width &&
+                                history.height == output.height;
   if (history_valid)
     previous->last_use_submit_value =
         Max(previous->last_use_submit_value, renderer->submit_value + 1u);
