@@ -199,8 +199,8 @@ typedef struct VkrShadowConfig {
    * street view on the M1 Pro, mostly through the occupancy it takes. */
   bool8_t local_shadow_contact;
   /** Screen-space contact shadows for the sun. The tiled pipeline marches
-   * them in its atmosphere draw; the desktop pipeline does not draw them
-   * yet. */
+   * them in its atmosphere draw; desktop deferred lighting marches them
+   * where ray-query sun shadows do not cover the pixel. */
   bool8_t sun_contact;
   /** Full-filter local lights widen their penumbra by their authored source
    * radius (the Soft shadows setting); false keeps the fixed filter. */

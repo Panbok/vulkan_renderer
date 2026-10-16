@@ -178,8 +178,10 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     (`vkr_material_codegen_msl_entries`). The march takes the shared
     `vkr_sun_contact_length` and `vkr_sun_contact_strength`
     (`shadow_kernel.slangh`) and the local-light march's start offset, noise,
-    occlusion test and end fade (`local_shadow.slangh`); the Vulkan
-    deferred lighting does not call the sun helpers yet. Native evidence:
+    occlusion test and end fade (`local_shadow.slangh`). Vulkan deferred
+    lighting marches with the same helpers where ray-query sun shadows do
+    not cover the pixel (`vk_contact_shadow`); its start offset also follows
+    the sun. Native evidence:
     Metal Release Bistro captures and the forced-visibility comparison on
     2026-10-16; no Metal validation run.
   - The tiled class draws no SMAA; its alpha-tested surfaces use alpha to

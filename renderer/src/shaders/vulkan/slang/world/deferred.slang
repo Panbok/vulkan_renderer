@@ -2741,14 +2741,14 @@ float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot root, float2 ndc,
 // behind a nearby surface. The march leaves the screen without occlusion.
 float vk_contact_shadow(VkrVulkanPacketFrameRoot *frame, VkrVkDepthView depth,
                         float3 origin, float3 direction, float march_length,
-                        float noise)
+                        uint steps, float noise)
 {
     float4 clip_origin = mul(frame.view_projection, float4(origin, 1.0f));
     float4 clip_span =
         mul(frame.view_projection, float4(direction * march_length, 0.0f));
-    for (uint step = 0u; step < VKR_LOCAL_SHADOW_CONTACT_STEPS; ++step)
+    for (uint step = 0u; step < steps; ++step)
     {
-        float t = (float(step) + noise) / float(VKR_LOCAL_SHADOW_CONTACT_STEPS);
+        float t = (float(step) + noise) / float(steps);
         float4 clip = clip_origin + t * clip_span;
         if (clip.w <= 1e-4f)
             break;
@@ -2886,7 +2886,7 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
                         0.5f * distance(light.p0.xyz, world));
                 float contact = vk_contact_shadow(
                     frame, depth_view, origin, term.direction, march_length,
-                    contact_noise);
+                    VKR_LOCAL_SHADOW_CONTACT_STEPS, contact_noise);
                 visibility *= vkr_local_shadow_apply_strength(
                     float3(contact), view.shadow_params.x);
             }
@@ -3463,22 +3463,32 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
                                        root.shadow_moments_texture,
                                        root.shadow_moments_sampler) *
                 cloud_shadow;
-        // Contacts finer than a cascade texel, where the rays do not cover
-        // the pixel: the rays find them exactly.
+        // Sun contact shadows (shadow_kernel.slangh), where the rays do
+        // not cover the pixel: the rays find contacts exactly. As on the
+        // tiled pipeline, the march starts along the sun, its length grows
+        // with camera distance and its strength fades out by
+        // VKR_SUN_CONTACT_DISTANCE.
         if (root.sun_contact != 0u && sun_ray.y < 1.0f && base_shadow > 0.0f)
         {
             float camera_distance = distance(world, frame.view_position.xyz);
-            float3 origin = world + sun_normal *
-                                        vkr_local_shadow_contact_start_offset(
-                                            camera_distance);
-            float contact = vk_contact_shadow(
-                frame, depth_view, origin, sun_direction,
-                VKR_LOCAL_SHADOW_CONTACT_LENGTH,
-                vkr_local_shadow_contact_noise(thread_id.xy,
-                                               root.sun_noise_index));
-            contact = lerp(contact, 1.0f, sun_ray.y);
-            base_shadow *= contact;
-            directional_shadow *= contact;
+            float strength = vkr_sun_contact_strength(camera_distance) *
+                             (1.0f - sun_ray.y);
+            if (strength > 0.0f)
+            {
+                float3 origin =
+                    world + sun_direction *
+                                vkr_local_shadow_contact_start_offset(
+                                    camera_distance);
+                float contact = vk_contact_shadow(
+                    frame, depth_view, origin, sun_direction,
+                    vkr_sun_contact_length(camera_distance),
+                    VKR_SUN_CONTACT_STEPS,
+                    vkr_local_shadow_contact_noise(thread_id.xy,
+                                                   root.sun_noise_index));
+                contact = 1.0f - strength * (1.0f - contact);
+                base_shadow *= contact;
+                directional_shadow *= contact;
+            }
         }
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),

@@ -292,12 +292,15 @@ desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
 - **Complete TLAS.** The rays engage only when the frame's TLAS holds every
   eligible row (`tlas_missing_rows`). After a load, casters whose BLAS still
   waits for the per-frame build budget keep their cascade shadow.
-- **Contact march.** A march toward the sun in `Lighting.Deferred`: 8 depth
-  samples over 0.25 m, through the local-light contact helpers and
-  `vk_contact_shadow`. It runs where the rays' weight is below 1, because the
-  rays find the contacts themselves. `VKR_SUN_CONTACT_SHADOWS=0` turns it
-  off. `=1` turns it on without rays, which gives cascades with contacts on
-  GPUs without ray queries.
+- **Contact march.** `Lighting.Deferred` marches camera depth toward the
+  sun with the tiled pipeline's shared kernel: `VKR_SUN_CONTACT_STEPS`
+  samples, `vkr_sun_contact_length` and `vkr_sun_contact_strength`
+  (`shadow_kernel.slangh`), and the local-light march's start offset, noise,
+  occlusion test and end fade, through `vk_contact_shadow`. It runs where
+  the rays' weight is below 1, because the rays find the contacts
+  themselves. It follows the shadow settings' `contact_shadows` (the Epic
+  preset), as the tiled pipeline does. `VKR_SUN_CONTACT_SHADOWS` set to `0`
+  or `1` overrides the setting.
 - **Defect 5, sun only.** The lighting, forward and transmission sun terms
   offset and bias the receiver along the geometric normal. Lighting
   reconstructs it from camera depth (`vkr_vk_depth_view_geometric_normal`) and
@@ -311,19 +314,31 @@ desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
   3.1's 16 or SMAA T2x's 2 temporal phases, and stay fixed without a
   temporal resolve.
 
-Measured as in the prototype result, with the final code:
+Measured as in the prototype result, with the final code. "Hybrid" is
+rays with the contact march (`VKR_SUN_CONTACT_SHADOWS=1`); "contact" is the
+march without rays, as on a GPU without ray queries:
 
 | Case, mode | Trace | Resolve | Temporal + copy | TLAS refit | Lighting | All GPU passes | Report |
 |---|---|---|---|---|---|---|---|
 | Plaza, off | — | — | — | — | 6.848 | 19.334 | `sha256:ea74ec0a…` |
-| Plaza, hybrid | 0.882 | 0.429 | 0.211 | 0.062 | 5.861 | 19.966 | `sha256:d37f51d1…` |
+| Plaza, contact | — | — | — | — | 8.023 | 20.526 | `sha256:920cd1fd…` |
+| Plaza, hybrid | 0.882 | 0.430 | 0.211 | 0.062 | 5.912 | 20.021 | `sha256:33c3b12d…` |
 | Street, off | — | — | — | — | 7.898 | 20.937 | `sha256:a7c1ff03…` |
-| Street, hybrid | 0.766 | 0.413 | 0.206 | 0.062 | 7.009 | 21.545 | `sha256:10f97c9c…` |
+| Street, contact | — | — | — | — | 8.045 | 21.096 | `sha256:89fd8911…` |
+| Street, hybrid | 0.767 | 0.413 | 0.206 | 0.062 | 7.066 | 21.618 | `sha256:dde69663…` |
 
 - **Ray passes.** They cost 1.58 ms on the plaza, where every pixel is in
   range, and 1.45 ms on the street. That is around the 1.5 ms gate.
-- **Frame cost.** The whole frame costs 0.63 ms (plaza) and 0.61 ms (street)
-  more.
+- **Frame cost.** The hybrid frame costs 0.69 ms (plaza) and 0.68 ms
+  (street) more. Rays without the march measured 0.63 and 0.61 ms more
+  (`sha256:d37f51d1…`, `10f97c9c…`).
+- **Contact march without rays.** It costs 1.18 ms of lighting on the sunlit
+  plaza and 0.15 ms on the shaded street, against the 0.2 ms budget. Inside
+  the lighting kernel the march is too expensive for the no-ray path. A
+  separate half-resolution pass that writes a contact mask is the next thing
+  to measure. Under the rays it marches only past 40 m and costs about
+  0.05 ms. Contacts show at curb edges, facade relief and hedges
+  (`sha256:da3d9c9c…` against `d00312b3…`).
 - **Defect fixes.** With rays off, the frame matches the prototype's
   baseline (19.347 and 20.927 ms), so the fixes add no measured cost.
 
@@ -352,6 +367,7 @@ Production readiness: not yet. Each item below blocks the High preset:
 | Foliage-heavy levels | Alpha-tested candidates run the `Proceed` loop; only Bistro is measured. | Level Design Test forest timing |
 | Moving sun | The history lags about ten frames behind a moving sun; the clip bounds the trail. | A time-of-day sweep capture |
 | Range | Fixed at 50 m. | Tie the range to the cascade splits or a preset value |
+| No-ray path | The contact march costs 1.18 ms in lighting on the sunlit plaza. | A half-resolution contact pass, timed against the 0.2 ms budget |
 
 
 ## Tiled options

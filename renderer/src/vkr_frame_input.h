@@ -674,8 +674,9 @@ vkr_local_shadow_render_layer_mask(const VkrLocalShadowPassPayload *payload) {
 typedef struct VkrShadowPassPayload {
   uint32_t cascade_count;
   bool8_t sdsm_enabled;
-  /** Screen-space contact shadows for the sun; the tiled pipeline draws
-   * them (VkrPreparedFrame.tiled_sun_contact). */
+  /** Screen-space contact shadows for the sun: the tiled pipeline's
+   * atmosphere correction (VkrPreparedFrame.tiled_sun_contact) and desktop
+   * deferred lighting (VkrPreparedFrame.sun_contact_shadows). */
   bool8_t contact_shadows;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE keep filtered exponential
    * variance moments that deferred lighting samples instead of PCF; requires

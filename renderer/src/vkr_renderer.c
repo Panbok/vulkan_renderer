@@ -957,15 +957,14 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_FULL;
     }
   }
-  /* The hybrid prototype adds sun contact shadows to the rays. */
+  /* Desktop sun contact shadows follow the shadow settings, as the tiled
+     pipeline's do; "0" or "1" overrides them for a matched capture. */
   char sun_contact_shadows[8];
-  renderer->sun_contact_shadows =
-      renderer->sun_ray_shadow_mode != VKR_SUN_RAY_SHADOW_OFF;
-  if (vkr_platform_environment_variable("VKR_SUN_CONTACT_SHADOWS",
-                                        sun_contact_shadows,
-                                        sizeof(sun_contact_shadows))) {
-    renderer->sun_contact_shadows = string_equals(sun_contact_shadows, "1");
-  }
+  renderer->sun_contact_forced = vkr_platform_environment_variable(
+      "VKR_SUN_CONTACT_SHADOWS", sun_contact_shadows,
+      sizeof(sun_contact_shadows));
+  renderer->sun_contact_forced_on =
+      renderer->sun_contact_forced && string_equals(sun_contact_shadows, "1");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
   char post_transform_cache[8];
@@ -1235,8 +1234,15 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
               vkr_renderer_sun_ray_shadows_supported(rf)
           ? rf->sun_ray_shadow_mode
           : VKR_SUN_RAY_SHADOW_OFF;
+  /* The desktop march runs in deferred lighting, where the sun shines and
+     its cascades run. */
+  const bool8_t sun_contact_asked =
+      rf->sun_contact_forced ? rf->sun_contact_forced_on
+                             : packet->shadow && packet->shadow->contact_shadows;
   prepared->frame.sun_contact_shadows =
-      !tiled && prepared->frame.scene_rendering && rf->sun_contact_shadows;
+      !tiled && prepared->frame.scene_rendering && sun_contact_asked &&
+      packet->shadow && packet->shadow->cascade_count != 0u &&
+      packet->lighting && packet->lighting->directional_enabled;
   /* FSR and T2x keep different histories, so a change resets both. */
   const bool8_t fsr31_changed =
       prepared->frame.fsr31_enabled != rf->fsr31_previous;
