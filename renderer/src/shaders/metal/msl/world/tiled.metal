@@ -349,9 +349,9 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   // Frames that correct the sun's light replace its cascades' visibility
   // before the media scale it: the opaque pass kept the sun's light without
   // the cascades and their visibility, and the sun's term is linear in its
-  // visibility. Past the near cascades the SDF trace takes over from the far
-  // level, alone or as the darker of the two; the contact march then scales
-  // the result. The sky's samples hold no sun light, and an edge pixel's sun
+  // visibility. Past the near cascades the darker of the far level and the
+  // SDF trace takes over (the trace alone everywhere for the replace-all
+  // diagnostic); the contact march then scales the result. The sky's samples hold no sun light, and an edge pixel's sun
   // light is its samples' mean, which the nearest sample's visibility
   // scales.
   float3 lit = destination.rgb;

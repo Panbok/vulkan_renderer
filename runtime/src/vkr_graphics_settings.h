@@ -35,6 +35,11 @@ typedef struct VkrGraphicsSettings {
    * nearest local lights on the desktop pipeline; the Epic preset enables
    * them. */
   bool8_t contact_shadows;
+  /* Distance field sun shadows past the near cascades on the tiled
+   * pipeline: traced distance volumes of static casters darken the far
+   * level's shadows where it misses their detail. The Epic preset enables
+   * them; the desktop pipeline ignores them. */
+  bool8_t distance_field_shadows;
   /* Exponential variance moments filter the two farthest cascades instead of
    * PCF on the desktop pipeline; the High and Epic presets enable them. */
   bool8_t filtered_far_shadows;

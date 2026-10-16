@@ -472,16 +472,18 @@ Remaining work:
 
 ### T5: tiled SDF shadows, prototype and gate
 
-A prototype runs on the tiled pipeline behind `VKR_SUN_SDF` (`add`,
-`replace` or `replace_all`) or the harness case field `shadow_sdf`; no
-graphics setting selects it ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md)
-decision 6, `vkr_metal_packet_sdf.inc`, `world/sun_shadow.metal`).
+The tiled pipeline's Distance field shadows setting, on the Epic preset,
+runs it in the mode the owner chose after the gate: the trace adds to the
+far level ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md) decision 6,
+`vkr_metal_packet_sdf.inc`, `world/sun_shadow.metal`). Harness cases select
+it with `shadow_sdf` (`add`, or the `replace_all` diagnostic, which uses the
+trace alone at every distance to compare it with the cascades).
 
 - Volumes: one unsigned narrow-band distance volume per static opaque
   submesh, R8 at most 64³ with voxels no smaller than 0.25 world metres
   (half the far level's texel). The GPU generates them from the resident
   triangles, four a frame, the first time a frame traces them, so the
-  prototype needs no cooked data; Bakery would own them if T5 stays.
+  prototype needs no cooked data; Bakery is to own them.
   Casters under 0.25 m or over 120 m (terrain), cutout, skinned and moving
   casters keep the cascades.
 - Culling: a ray toward the sun is one point in the plane across the sun,
@@ -489,9 +491,9 @@ decision 6, `vkr_metal_packet_sdf.inc`, `world/sun_shadow.metal`).
   each cell's casters; the CPU rebuilds it each frame.
 - Trace: `Tiled.SunShadow` sphere-traces at half resolution past where the
   far level starts, with a penumbra from the nearest miss over the sun's
-  half angle (at least half a degree). The atmosphere draw takes the trace
-  alone (`replace`) or the darker of the trace and the far level (`add`)
-  through the opaque pass's unshadowed sun light.
+  half angle (at least half a degree). The atmosphere draw takes the darker
+  of the trace and the far level through the opaque pass's unshadowed sun
+  light.
 
 Gate results on the M1 Pro, 2026-10-16, local and not authoritative:
 
@@ -505,9 +507,9 @@ Gate results on the M1 Pro, 2026-10-16, local and not authoritative:
 At 64³ without the voxel floor the Level Design Test took 318 MB. Captures:
 the trace reproduces Bistro's building shadows with softer edges when it
 replaces the cascades everywhere. Past the near cascades on the Level
-Design Test, `replace` sharpens the viaduct piers' shadows but loses the
-terrain's and the forest's, which have no volumes; `add` keeps them and
-adds the piers' sharper shadows. Not done: a moving-sun sweep, the rigid
+Design Test, the trace alone sharpens the viaduct piers' shadows but loses
+the terrain's and the forest's, which have no volumes; adding it to the far
+level keeps them and adds the piers' sharper shadows. Not done: a moving-sun sweep, the rigid
 movers (lift, freight cars), authoritative 1440p timing of the Level
 Design Test, Metal validation.
 
@@ -553,14 +555,18 @@ Settled by the owner on 2026-10-16:
 - The hybrid layering above. Desktop: sun contact shadows, then the D2 gate,
   with D3 as the fallback; no SDF. Tiled: T4, then the T5 prototype; no
   sparse clipmap; T6 not now.
+- After the T5 gate, which the prototype passes on cost and memory, SDF
+  shadows add to the far level (the darker of the two) as the Distance field
+  shadows setting, on the Epic preset: the trace alone loses the terrain's
+  and foliage's far shadows.
 
 Open:
 
-- After the T5 gate, which the prototype passes on cost and memory: SDF
-  replaces the far level for static casters, adds to it, or is dropped.
-  Recommendation: add to it now, since replacing it loses the terrain's
-  and foliage's far shadows; replace it only once the far level draws just
-  the casters without volumes.
+- Replacing the far level for static casters, which softens their
+  penumbrae, once the far level draws only the casters without volumes
+  (terrain, foliage, moving and skinned casters).
+- Bakery cooking the distance volumes, and the High preset once
+  authoritative timing confirms the budget.
 
 ## Evidence required
 

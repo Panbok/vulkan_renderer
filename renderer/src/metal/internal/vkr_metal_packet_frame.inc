@@ -2688,7 +2688,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
     root->depth_scale = packet->temporal.jittered_projection.m23;
     root->sun_flags =
         (packet->tiled_sun_contact ? VKR_METAL_TILED_SUN_CONTACT : 0u) |
-        (sdf && shadow->sdf_mode >= VKR_SHADOW_SDF_MODE_REPLACE
+        (sdf && shadow->sdf_mode == VKR_SHADOW_SDF_MODE_REPLACE_ALL
              ? VKR_METAL_TILED_SUN_SDF_REPLACE
              : 0u) |
         (sdf ? VKR_METAL_TILED_SUN_SDF : 0u);

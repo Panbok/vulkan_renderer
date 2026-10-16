@@ -132,17 +132,18 @@ pipeline rather than a backend mechanism.
    over the second (see [Sky edge measurement](#sky-edge-measurement)). It
    writes alpha one, and the tonemap presents alpha one.
    The same draw corrects the sun's light. Sun contact shadows (the Contact
-   shadows setting, on the Epic preset) and the SDF sun shadow prototype of
-   the shadow quality proposal (T5, selected only by `VKR_SUN_SDF` or a
-   harness case) need it. In those frames (`VkrPreparedFrame.tiled_sun_contact`,
+   shadows setting, on the Epic preset) and distance field sun shadows (the
+   Distance field shadows setting, on the Epic preset; the shadow quality
+   proposal's T5) need it. In those frames (`VkrPreparedFrame.tiled_sun_contact`,
    `tiled_sun_sdf`) the opaque pass takes shading variants, selected by a
    function constant, that also write the sun's light through the clouds
    without the cascades, U, and the cascades' visibility v_c to a second
    target, `tiled_sun_light` (RGBA16F; carried through shading as one packed
    register, `vkr_metal_tiled_pack_sun`). `Tiled.Atmosphere`, which then runs
    even without media, adds `U × (v − v_c)` before the media, where v is the
-   cascades' visibility or, past the near cascades, the SDF trace's
-   (`Tiled.SunShadow`, alone or the darker of the two), times the contact
+   cascades' visibility or, past the near cascades, the darker of it and
+   the SDF trace's (`Tiled.SunShadow`, owner decision 2026-10-16: terrain,
+   foliage and moving casters have no distance volumes), times the contact
    march toward the sun over the resolved depth. The sun's term is linear in
    its visibility, so the correction is exact: with the march's visibility
    forced to one the frame matches a frame without it bit for bit (Bistro

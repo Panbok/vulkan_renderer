@@ -147,6 +147,12 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Add fine shadows where objects meet surfaces",
      .offset = GRAPHICS_OFFSET(contact_shadows),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "distance_field_shadows",
+     .label = "Distance field shadows",
+     .tooltip = "Sharpen distant sun shadows of static objects with traced "
+                "distance fields",
+     .offset = GRAPHICS_OFFSET(distance_field_shadows),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "texture_resolution",
      .label = "Texture resolution",
      .tooltip = "Largest texture size to load; lower values use less memory. "
@@ -247,6 +253,11 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       offset == offsetof(VkrGraphicsSettings, volumetric_fog) ||
       offset == offsetof(VkrGraphicsSettings, depth_of_field) ||
       offset == offsetof(VkrGraphicsSettings, motion_blur);
+  /* Distance field shadows are the tiled pipeline's (ADR-087). */
+  if (state && state->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED &&
+      offset == offsetof(VkrGraphicsSettings, distance_field_shadows)) {
+    result.flags |= VKR_PROPERTY_STATE_DISABLED;
+  }
   if (state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
       tiled_unused) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
@@ -280,9 +291,10 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
     if (settings->shadow_quality == 0u) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
-  } else if (offset == offsetof(VkrGraphicsSettings, contact_shadows)) {
-    /* Both pipelines march them for the sun, the desktop pipeline also for
-       the nearest local lights. */
+  } else if (offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
+             offset == offsetof(VkrGraphicsSettings, distance_field_shadows)) {
+    /* Both pipelines march contact shadows for the sun, the desktop
+       pipeline also for the nearest local lights. */
     if (settings->shadow_quality == 0u) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
@@ -367,6 +379,7 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   out.filtered_far_shadows = high;
   out.local_shadows = medium;
   out.contact_shadows = epic;
+  out.distance_field_shadows = epic;
   out.ambient_occlusion = medium;
   out.reflection_probes = true_v;
   out.subsurface_scattering = medium;
@@ -398,6 +411,7 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
         gates.filtered_far_shadows == settings->filtered_far_shadows &&
         gates.local_shadows == settings->local_shadows &&
         gates.contact_shadows == settings->contact_shadows &&
+        gates.distance_field_shadows == settings->distance_field_shadows &&
         gates.ambient_occlusion == settings->ambient_occlusion &&
         gates.reflection_probes == settings->reflection_probes &&
         gates.subsurface_scattering == settings->subsurface_scattering &&

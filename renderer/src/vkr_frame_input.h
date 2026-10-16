@@ -666,16 +666,16 @@ vkr_local_shadow_render_layer_mask(const VkrLocalShadowPassPayload *payload) {
   return mask;
 }
 
-/** How SDF sun shadows (the tiled pipeline's, past the near cascades)
- * combine with the far level's visibility. */
+/** How SDF sun shadows (the tiled pipeline's distance field shadows)
+ * combine with the cascades' visibility. The SDF trace never replaces the
+ * far level, whose terrain, foliage and moving casters have no distance
+ * volumes (owner decision 2026-10-16). */
 typedef enum VkrShadowSdfMode {
   VKR_SHADOW_SDF_MODE_OFF = 0,
-  /** The darker of the far level and the SDF trace. */
+  /** Past the near cascades, the darker of the far level and the trace. */
   VKR_SHADOW_SDF_MODE_ADD,
-  /** The SDF trace alone. */
-  VKR_SHADOW_SDF_MODE_REPLACE,
-  /** The SDF trace alone at every distance, the near cascades' range too:
-   * a diagnostic that compares the trace with the cascades. */
+  /** The trace alone at every distance: a diagnostic that compares the
+   * trace with the cascades. */
   VKR_SHADOW_SDF_MODE_REPLACE_ALL,
 } VkrShadowSdfMode;
 

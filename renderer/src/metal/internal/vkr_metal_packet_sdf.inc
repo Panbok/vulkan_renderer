@@ -2,17 +2,17 @@
 // SDF sun shadows on the tiled pipeline (shadow quality proposal, T5)
 // =============================================================================
 //
-// A prototype behind the proposal's gate. Each static opaque submesh gets a
-// distance volume the first time a frame traces SDF sun shadows: the GPU
-// splats the submesh's resident triangles into an unsigned narrow-band
-// distance, so no cooked data is needed while the gate decides whether the
-// technique stays (Bakery would own the volumes if it does). Each frame
-// lists the casters whose volumes are ready in a light-space grid: a
-// pixel's ray toward the sun is one point of the plane across the sun's
-// direction, so the trace reads one cell's casters. `Tiled.SunShadow`
-// traces at half resolution past the near cascades, and the atmosphere draw
-// replaces the far level's visibility with the trace's (or takes the darker
-// of the two) through the opaque pass's unshadowed sun light.
+// The Distance field shadows setting (owner decision 2026-10-16, after the
+// proposal's gate). Each static opaque submesh gets a distance volume the
+// first time a frame traces them: the GPU splats the submesh's resident
+// triangles into an unsigned narrow-band distance (Bakery is to own the
+// volumes). Each frame lists the casters whose volumes are ready in a
+// light-space grid: a pixel's ray toward the sun is one point of the plane
+// across the sun's direction, so the trace reads one cell's casters.
+// `Tiled.SunShadow` traces at half resolution past the near cascades, and
+// the atmosphere draw takes the darker of the far level and the trace
+// through the opaque pass's unshadowed sun light: terrain, foliage and
+// moving casters have no volumes and keep the far level's shadows.
 
 /* Where the SDF trace starts to take over from the cascades, along the
    camera axis: where the far level starts, else where the cascades fade

@@ -466,22 +466,6 @@ static bool8_t sample_additive_dirty(uint32_t slot);
 vkr_internal void sample_additive_remove(VkrStandardSceneRuntime *application,
                                          uint32_t slot);
 
-/* SDF sun shadows are a prototype behind the shadow quality proposal's T5
-   gate: VKR_SUN_SDF (add, replace or replace_all, a VkrShadowSdfMode)
-   selects them on the tiled pipeline; no graphics setting does. */
-vkr_internal uint32_t vkr_sample_runtime_sun_sdf_mode(void) {
-  char value[16];
-  if (!vkr_platform_environment_variable("VKR_SUN_SDF", value, sizeof(value)))
-    return VKR_SHADOW_SDF_MODE_OFF;
-  if (string_equals(value, "add"))
-    return VKR_SHADOW_SDF_MODE_ADD;
-  if (string_equals(value, "replace"))
-    return VKR_SHADOW_SDF_MODE_REPLACE;
-  if (string_equals(value, "replace_all"))
-    return VKR_SHADOW_SDF_MODE_REPLACE_ALL;
-  return VKR_SHADOW_SDF_MODE_OFF;
-}
-
 static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
                                        const VkrGraphicsSettings *settings) {
   /* Quality gates only; the scene's post_process component owns grading and
@@ -516,7 +500,11 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
      enable them under High's local-shadow budget. */
   application->shadow_config.local_shadow_contact = settings->contact_shadows;
   application->shadow_config.sun_contact = settings->contact_shadows;
-  application->shadow_config.sun_sdf_mode = vkr_sample_runtime_sun_sdf_mode();
+  /* Distance field shadows darken the tiled far level's (the shadow
+     quality proposal's T5, owner decision 2026-10-16). */
+  application->shadow_config.sun_sdf_mode = settings->distance_field_shadows
+                                                ? VKR_SHADOW_SDF_MODE_ADD
+                                                : VKR_SHADOW_SDF_MODE_OFF;
   /* Soft shadows also covers local lights' authored source radii. */
   application->shadow_config.local_shadow_soft = settings->soft_shadows;
   application->shadow_config.far_cascade_evsm = settings->filtered_far_shadows;
@@ -601,6 +589,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.filtered_far_shadows != settings.filtered_far_shadows ||
       old.local_shadows != settings.local_shadows ||
       old.contact_shadows != settings.contact_shadows ||
+      old.distance_field_shadows != settings.distance_field_shadows ||
       old.ambient_occlusion != settings.ambient_occlusion ||
       old.reflection_probes != settings.reflection_probes ||
       old.subsurface_scattering != settings.subsurface_scattering ||

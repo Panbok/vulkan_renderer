@@ -565,7 +565,6 @@ _Static_assert(VKR_RENDER_MODE_COUNT == 20u,
 
 const char *vkr_harness_shadow_sdf_name(uint8_t mode) {
   return mode == VKR_SHADOW_SDF_MODE_REPLACE_ALL ? "replace_all"
-         : mode == VKR_SHADOW_SDF_MODE_REPLACE   ? "replace"
          : mode == VKR_SHADOW_SDF_MODE_ADD       ? "add"
                                                  : "off";
 }
@@ -1040,14 +1039,11 @@ vkr_internal bool8_t vkr_harness_parse_renderer_shadows(
     renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_OFF;
   } else if (string_equals(shadow_sdf, "add")) {
     renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_ADD;
-  } else if (string_equals(shadow_sdf, "replace")) {
-    renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_REPLACE;
   } else if (string_equals(shadow_sdf, "replace_all")) {
     renderer->shadow_sdf_mode = VKR_SHADOW_SDF_MODE_REPLACE_ALL;
   } else {
     vkr_harness_error_set(error, "renderer.shadow_sdf", "$.renderer",
-                          "shadow_sdf must be off, add, replace or "
-                          "replace_all");
+                          "shadow_sdf must be off, add or replace_all");
     return false_v;
   }
 
