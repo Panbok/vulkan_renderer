@@ -1402,7 +1402,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       packet->globals.bloom_enabled && !rf->bloom_forced_disabled &&
           !indirect_diffuse_only && !editor_inspection,
       packet->globals.bloom_threshold, packet->globals.bloom_knee,
-      packet->globals.bloom_intensity, prepared->frame.exposure.pre_exposure);
+      packet->globals.bloom_intensity, prepared->frame.exposure.pre_exposure,
+      prepared->frame.exposure.display_exposure);
   prepared->frame.subsurface_enabled =
       prepared->frame.scene_rendering && !orthographic && packet->lighting &&
       packet->lighting->subsurface.profile_count > 0u &&

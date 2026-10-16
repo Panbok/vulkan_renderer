@@ -79,32 +79,35 @@ VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
           ? frame->intensity *
                 ((float32_t)config->max_mip_count / (float32_t)mip_count)
           : 0.0f;
-  /* The kernels read pre-exposed radiance, so every scene-linear level scales
-     with it, its epsilon included; the soft threshold is then unchanged. The
-     Karis weight is not scale-free and returns luminance to scene-linear
-     first. */
-  const float32_t pre_exposure = frame->pre_exposure;
+  /* The levels are authored in exposed luminance, and the kernels read
+     pre-exposed radiance, so each scales by P / E, its epsilon included; the
+     soft threshold is then unchanged. The Karis weight is not scale-free and
+     takes luminance to exposed units first. */
+  const float32_t scale = frame->pre_exposure / frame->exposure;
   return (VkrBloomGpuParams){
-      .threshold = frame->threshold * pre_exposure,
-      .knee = frame->knee * pre_exposure,
-      .knee_denominator =
-          (4.0f * frame->knee + VKR_BLOOM_KNEE_EPSILON) * pre_exposure,
-      .firefly_clamp = config->firefly_clamp * pre_exposure,
+      .threshold = frame->threshold * scale,
+      .knee = frame->knee * scale,
+      .knee_denominator = (4.0f * frame->knee + VKR_BLOOM_KNEE_EPSILON) * scale,
+      .firefly_clamp = config->firefly_clamp * scale,
       .intensity = intensity,
-      .inverse_pre_exposure = 1.0f / pre_exposure,
+      .karis_scale = 1.0f / scale,
   };
 }
 
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,
                                 float32_t knee, float32_t intensity,
-                                float32_t pre_exposure) {
+                                float32_t pre_exposure, float32_t exposure) {
+  const float32_t frame_exposure =
+      vkr_is_finite_f32(exposure) && exposure > 0.0f ? exposure : pre_exposure;
   if (!enabled)
-    return (VkrBloomFrame){.pre_exposure = pre_exposure};
+    return (VkrBloomFrame){.pre_exposure = pre_exposure,
+                           .exposure = frame_exposure};
   return (VkrBloomFrame){
       .enabled = true_v,
       .threshold = threshold,
       .knee = knee,
       .intensity = intensity,
       .pre_exposure = pre_exposure,
+      .exposure = frame_exposure,
   };
 }

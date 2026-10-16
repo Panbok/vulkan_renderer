@@ -17,7 +17,12 @@ typedef enum VkrBloomFilter {
   VKR_BLOOM_FILTER_COUNT,
 } VkrBloomFilter;
 
-/** Production defaults for the per-frame, art-directable controls. */
+/**
+ * Production defaults for the per-frame, art-directable controls. Threshold
+ * and knee are exposed luminance: 1 is the level the frame's exposure maps to
+ * white, so bloom marks the same over-white highlights in a dark interior as
+ * in daylight.
+ */
 #define VKR_BLOOM_DEFAULT_THRESHOLD 1.0f
 #define VKR_BLOOM_DEFAULT_KNEE 0.5f
 #define VKR_BLOOM_DEFAULT_INTENSITY 0.05f
@@ -50,8 +55,8 @@ typedef struct VkrBloomConfig {
    */
   uint32_t min_mip_extent;
   /**
-   * Scene-linear ceiling applied to every prefilter tap. One hot texel would
-   * otherwise survive every reduction and become a whole-screen halo.
+   * Exposed-luminance ceiling applied to every prefilter tap. One hot texel
+   * would otherwise survive every reduction and become a whole-screen halo.
    */
   float32_t firefly_clamp;
   VkrBloomFilter filter;
@@ -65,14 +70,20 @@ typedef struct VkrBloomConfig {
  */
 typedef struct VkrBloomFrame {
   bool8_t enabled;
-  /** Scene-linear luminance at which a texel starts contributing. */
+  /** Exposed luminance at which a texel starts contributing. */
   float32_t threshold;
-  /** Soft-knee width in scene-linear luminance, centered on the threshold. */
+  /** Soft-knee width in exposed luminance, centered on the threshold. */
   float32_t knee;
   /** Weight applied to the resolved bloom when combined with the HDR source. */
   float32_t intensity;
   /** The frame's pre-exposure: the HDR source is stored scaled by it. */
   float32_t pre_exposure;
+  /**
+   * Scene-linear to exposed multiplier the levels are expressed against: the
+   * newest completed automatic exposure or the manual one. It trails the
+   * tonemap's exposure by the frames in flight, which the soft knee absorbs.
+   */
+  float32_t exposure;
 } VkrBloomFrame;
 
 /**
@@ -89,8 +100,8 @@ typedef struct VkrBloomGpuParams {
   float32_t knee_denominator;
   float32_t firefly_clamp;
   float32_t intensity;
-  /** Returns pre-exposed luminance to scene-linear for the Karis weight. */
-  float32_t inverse_pre_exposure;
+  /** Takes pre-exposed luminance to exposed luminance for the Karis weight. */
+  float32_t karis_scale;
   float32_t reserved[2];
 } VkrBloomGpuParams;
 
@@ -133,7 +144,11 @@ VkrBloomGpuParams vkr_bloom_gpu_params(const VkrBloomConfig *config,
                                        const VkrBloomFrame *frame,
                                        uint32_t mip_count);
 
-/** Builds frame-local bloom controls from validated packet fields. */
+/**
+ * Builds frame-local bloom controls from validated packet fields. A
+ * non-positive or non-finite `exposure` falls back to `pre_exposure`, the
+ * same exposure in whole stops.
+ */
 VkrBloomFrame vkr_bloom_prepare(bool8_t enabled, float32_t threshold,
                                 float32_t knee, float32_t intensity,
-                                float32_t pre_exposure);
+                                float32_t pre_exposure, float32_t exposure);

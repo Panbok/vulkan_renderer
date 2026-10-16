@@ -1100,7 +1100,8 @@ static const VkrPropertyDesc s_post_process_properties[] = {
     {.name = "bloom_threshold",
      .label = "Threshold",
      .group = "Bloom",
-     .tooltip = "Scene-linear luminance where bloom starts",
+     .tooltip = "Exposed luminance where bloom starts; 1 is the level "
+                "exposure maps to white",
      .offset = TYPE_OFFSET(ScenePostProcess, bloom_threshold),
      .kind = VKR_PROPERTY_F32,
      .min = 0.0f,

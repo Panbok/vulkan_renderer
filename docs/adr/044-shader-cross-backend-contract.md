@@ -269,7 +269,8 @@ rescaling applies to the histories each class keeps.
 - **Changed contracts.**
   - Frame, utility and Vulkan resolve roots carry `pre_exposure`, and the
     Metal tonemap root carries `inverse_pre_exposure`.
-  - Bloom parameters carry `inverse_pre_exposure`.
+  - Bloom parameters carry `karis_scale`, E/P, which takes pre-exposed
+    luminance to exposed luminance for the Karis weight.
   - The cloud trace root carries `history_pre_exposure_scale` on both
     backends; on Vulkan so do the TAA and froxel inject roots, and TAA also
     carries `pre_exposure`.

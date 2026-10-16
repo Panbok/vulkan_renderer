@@ -25,7 +25,7 @@ struct VkrBloomParams
     float knee_denominator;
     float firefly_clamp;
     float intensity;
-    float inverse_pre_exposure;
+    float karis_scale;
     float reserved1;
     float reserved2;
 };
@@ -67,7 +67,7 @@ float3 vkr_bloom_soft_threshold(VkrBloomParams params, float3 color)
 float vkr_bloom_karis_weight(VkrBloomParams params, float3 color)
 {
     return 1.0f / (1.0f + vkr_exposure_luminance(color) *
-                              params.inverse_pre_exposure);
+                              params.karis_scale);
 }
 
 #endif

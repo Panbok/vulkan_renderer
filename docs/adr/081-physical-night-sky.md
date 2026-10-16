@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -66,8 +66,9 @@ Consumers that need physical values divide P back out:
   - The default window is [-24, 8] log2, 32 stops over 256 bins, or 8 bins per
     stop. A whole-stop P therefore shifts the histogram by whole bins.
   - The EV range is [-8, 24] and the background threshold is 2^-28.
-- **Bloom.** Scales its threshold, knee, knee epsilon and firefly clamp by P.
-  The Karis weight uses L/P.
+- **Bloom.** Its threshold, knee and firefly clamp are exposed luminance
+  (ADR-042), so it scales them, the knee epsilon included, by P/E, where E
+  is the frame's display exposure. The Karis weight uses L·E/P.
 - **TAA.** Scales its transmission-reactivity luminance floor by P.
 
 Each backend records the exponent of every submission in a 32-entry ring. TAA,

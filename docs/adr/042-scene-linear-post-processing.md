@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-14
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -58,7 +58,14 @@ half-resolution chain, downsamples, accumulates deepest-first, and combines into
 full-resolution HDR before exposure multiplication/tonemap; the tiled pipeline
 folds the combine into its tonemap passes (ADR-087, decision 6). Separate graph
 resources preserve read/write dependencies. Shared arithmetic handles non-finite
-and extreme input and pins the knee/Karis behavior. Bloom can bypass independently.
+and extreme input and pins the knee/Karis behavior. Threshold, knee and
+firefly clamp are exposed luminance: 1 is the level the exposure maps to
+white. The levels follow the frame's display exposure, the newest completed
+automatic exposure or the manual one, which trails the tonemap by the frames
+in flight (`vkr_bloom_gpu_params`). Since 2026-10-16 a dark interior and
+daylight bloom the same over-white highlights; with scene-linear levels the
+Level Design Test's lamps (peak 49) clamped at 32 and bloomed as wide white
+discs at the interior's exposure of 7.4. Bloom can bypass independently.
 Combine intensity is multiplied once by configured maximum mip count divided
 by the actual contributing count. This preserves the usual full six-level look
 and its constant-field gain on shorter chains. Fewer than two levels disables

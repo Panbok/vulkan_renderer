@@ -51,7 +51,8 @@ vkr_internal void test_bloom_config_and_mips(void) {
 vkr_internal void test_bloom_chain_gain(void) {
   printf("  Running test_bloom_chain_gain...\n");
   const VkrBloomConfig config = vkr_bloom_config_default();
-  VkrBloomFrame frame = vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f, 1.0f);
+  VkrBloomFrame frame =
+      vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f, 1.0f, 1.0f);
   const struct {
     uint32_t width;
     uint32_t height;
@@ -81,6 +82,37 @@ vkr_internal void test_bloom_chain_gain(void) {
   assert(vkr_bloom_gpu_params(&config, &frame, 6u).intensity == 0.0f);
   assert(vkr_bloom_gpu_params(&config, &frame, 0u).intensity == 0.0f);
   printf("  test_bloom_chain_gain PASSED\n");
+}
+
+/* The levels follow the displayed image: one exposed highlight lands at the
+   same place on the knee under any exposure and pre-exposure, and the Karis
+   weight sees its exposed luminance. */
+vkr_internal void test_bloom_exposed_levels(void) {
+  printf("  Running test_bloom_exposed_levels...\n");
+  const VkrBloomConfig config = vkr_bloom_config_default();
+  const float32_t exposures[] = {1.0f / 16.0f, 1.0f, 7.5f};
+  const float32_t pre_exposures[] = {1.0f, 8.0f};
+  const float32_t exposed = 2.0f;
+  for (uint32_t e = 0u; e < 3u; ++e) {
+    for (uint32_t p = 0u; p < 2u; ++p) {
+      const VkrBloomFrame frame = vkr_bloom_prepare(
+          true_v, 1.0f, 0.5f, 0.05f, pre_exposures[p], exposures[e]);
+      const VkrBloomGpuParams params =
+          vkr_bloom_gpu_params(&config, &frame, 6u);
+      const float32_t stored = exposed / exposures[e] * pre_exposures[p];
+      assert(fabsf(stored / params.threshold - exposed) < 1e-4f);
+      assert(fabsf(stored / params.knee - 2.0f * exposed) < 1e-4f);
+      assert(fabsf(stored / params.firefly_clamp -
+                   exposed / config.firefly_clamp) < 1e-4f);
+      assert(fabsf(stored * params.karis_scale - exposed) < 1e-4f);
+    }
+  }
+  /* Without a usable exposure the levels fall back to the pre-exposure. */
+  const VkrBloomFrame fallback =
+      vkr_bloom_prepare(true_v, 1.0f, 0.5f, 0.05f, 8.0f, 0.0f);
+  assert(fallback.exposure == 8.0f);
+  assert(vkr_bloom_gpu_params(&config, &fallback, 6u).threshold == 1.0f);
+  printf("  test_bloom_exposed_levels PASSED\n");
 }
 
 vkr_internal void test_bloom_packet_validation(void) {
@@ -135,6 +167,7 @@ bool32_t run_bloom_tests(void) {
   printf("--- Running bloom tests... ---\n");
   test_bloom_config_and_mips();
   test_bloom_chain_gain();
+  test_bloom_exposed_levels();
   test_bloom_packet_validation();
   printf("Bloom tests PASSED\n");
   return true;
