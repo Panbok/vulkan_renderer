@@ -6,6 +6,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CATransaction.h>
 #import <simd/simd.h>
@@ -556,6 +557,8 @@ typedef struct VkrMetalPacketTextureUploadBatch {
 
 /* Samples of the tiled pipeline's opaque render pass (ADR-087): four cost
    0.3 to 0.5 ms over one on the M1 Pro. */
+/* The tiled pipeline's sample count under the spatial upscale; MetalFX's
+   temporal upscale draws one sample (renderer->tiled_sample_count). */
 #define VKR_METAL_TILED_SAMPLE_COUNT 4u
 /* The opaque pass's tile, which its resolve kernel covers with one thread
    per pixel; Metal's default for its four-sample targets on the M1 Pro. */
@@ -805,7 +808,7 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> gpu_shadow_pipeline;
   id<MTLRenderPipelineState> gpu_shadow_opaque_pipeline;
   id<MTLRenderPipelineState> depth_clear_pipeline;
-  /* The tiled pipeline (ADR-087) with VKR_METAL_TILED_SAMPLE_COUNT samples:
+  /* The tiled pipeline (ADR-087) with `tiled_sample_count` samples:
      forward shading and the clear sky draw into memoryless multisampled
      targets that resolve into the graph's colour and depth, and the cloud
      draw over the resolved image. Opaque draws, which never discard, and
@@ -886,6 +889,45 @@ struct VkrMetalPacketRenderer {
   id<MTLTexture> tiled_retired_color;
   id<MTLTexture> tiled_retired_depth;
   uint64_t tiled_retired_submit_value;
+  /* The opaque pass's sample count, fixed at creation: four with the spatial
+     upscale, one with MetalFX, which draws into the graph's targets. */
+  uint32_t tiled_sample_count;
+  /* The tiled pipeline upscales with MetalFX (config, device support). */
+  bool8_t tiled_temporal;
+  /* The MetalFX upscaler: camera motion from the resolved depth,
+     and MetalFX's temporal scaler from the internal scene to the Scene output
+     with the fence its untracked graph textures need. The scaler is
+     recreated, after the GPU completes every frame that used it, when either
+     extent changes. */
+  id<MTLComputePipelineState> tiled_motion_pipeline;
+  id<MTL4FXTemporalScaler> tiled_temporal_scaler;
+  id<MTLFence> tiled_temporal_fence;
+  /* Object motion: the dynamic draws of the motion culling view over the
+     camera motion, and the transform history the next frame reads. */
+  id<MTLRenderPipelineState> tiled_object_motion_pipeline;
+  id<MTLComputePipelineState> temporal_transform_pipeline;
+  /* The still-camera running mean over MetalFX's output. */
+  id<MTLComputePipelineState> tiled_stabilize_pipeline;
+  VkrRgBufferHandle transform_history_handle;
+  /* The last submitted frame: its history instance, which holds its
+     transforms and skinned vertices, its frame index and skinning layout,
+     and whether it ran the upscaler. Frames on the one queue order the
+     reads after its writes with queue barriers. */
+  uint32_t temporal_previous_history_index;
+  uint64_t temporal_previous_submit_value;
+  /* The last submitted frame wrote a stabilized image in its instance. */
+  bool8_t temporal_previous_stabilized;
+  uint32_t temporal_previous_frame_index;
+  bool8_t temporal_previous_valid;
+  VkrSkinningHistory temporal_previous_skinning;
+  /* Each skinning binding's previous deformed vertices, or zero. */
+  uint64_t skinning_previous_addresses[VKR_SKINNING_BINDING_CAPACITY];
+  uint32_t tiled_temporal_input_width;
+  uint32_t tiled_temporal_input_height;
+  uint32_t tiled_temporal_width;
+  uint32_t tiled_temporal_height;
+  /* A scaler creation failed: later frames take the spatial upscale. */
+  bool8_t tiled_temporal_unsupported;
   id<MTLRenderPipelineState> ui_pipeline;
   id<MTLRenderPipelineState> picking_pipeline;
   id<MTLRenderPipelineState> editor_overlay_pipeline;

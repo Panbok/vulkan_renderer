@@ -222,6 +222,9 @@ struct VkrRenderer {
   /* The antialiasing of the last prepared desktop frame: a change resets
      temporal history, whose producers differ between FSR and T2x. */
   bool8_t fsr31_previous;
+  /** The tiled pipeline upscales with MetalFX (vkr_renderer_tiled_upscaler);
+      fixed at creation. */
+  bool8_t tiled_temporal_enabled;
   /* False only for the analytic reference path; a frame uses the display-linear
      target when its final pass filters (vkr_renderer_prepare_frame_data). */
   bool8_t post_transform_cache_enabled;

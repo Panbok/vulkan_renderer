@@ -12,7 +12,9 @@ Accepted (partial). The decision is in force. Since 2026-10-06 the class
 follows the backend (decisions 1 and 7): Metal runs the tiled pipeline,
 including in the editor (decision 9), and Vulkan the desktop pipeline. The
 tiled pipeline draws glass (decision 10) and a bounded set of dynamic lights
-(decision 11), and holds the frame with adaptive quality (decision 12). On a lightmap-baked
+(decision 11), and holds the frame with adaptive quality (decision 12). Since
+2026-10-16 the MetalFX temporal scaler rebuilds its Scene from 0.6 of each
+axis by default ([ADR-121](121-tiled-temporal-upscaling.md)). On a lightmap-baked
 Bistro with cooked mesh levels
 ([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels))
 it takes 15.5 ms p95 at native scale and 14.9 ms with adaptive quality, within
@@ -93,9 +95,11 @@ pipeline rather than a backend mechanism.
    color grading), scene and asset data, and the render graph, upload,
    residency and animation infrastructure. Lighting, global illumination,
    shadows, anti-aliasing, screen-space effects and quality presets may differ.
-4. The tiled pipeline budget on the M1 Pro is Bistro at 2560×1440, render scale
-   1.0, no upscaler, 16.7 ms p95 (60 fps). Quality tiers that lower M1 cost are
-   allowed.
+4. The tiled pipeline budget on the M1 Pro is Bistro at 2560×1440, 16.7 ms
+   p95 (60 fps). Until 2026-10-16 it was measured at render scale 1.0 with no
+   upscaler; since then it is measured with the default MetalFX upscaling
+   ([ADR-121](121-tiled-temporal-upscaling.md)). Quality tiers that lower M1
+   cost are allowed.
 5. The tiled pipeline shades opaque surfaces forward in one multisampled
    render pass (owner decision 2026-10-05). On Bistro, with a depth pre-pass
    in both, it costs the same as a G-buffer kept in tile memory without
@@ -149,13 +153,14 @@ pipeline rather than a backend mechanism.
 7. The class follows the renderer's backend
    (`vkr_graphics_pipeline_for_backend` in
    [`vkr_renderer.h`](../../renderer/src/vkr_renderer.h)): Metal runs the
-   tiled class without temporal upscaling, Vulkan the desktop class. Nothing
+   tiled class, with MetalFX temporal upscaling
+   ([ADR-121](121-tiled-temporal-upscaling.md)), Vulkan the desktop class. Nothing
    else selects it. A harness case records the class its backend resolves to
    on the host in its report and workload fingerprint, so no desktop
    evidence matches a tiled run, and a case that names a render mode or
    replay channel the tiled class does not draw fails on Metal
    (`vkr_graphics_pipeline_draws_render_mode`). The tiled class turns
-   off temporal reconstruction, GTAO,
+   off the desktop temporal reconstruction (SMAA T2x, FSR 3.1), GTAO,
    surface diffusion, depth of field, motion blur, froxel fog, the local
    shadow mask, SDSM, the transmission passes, planar reflections and the
    diffuse volume's dynamic layer
@@ -188,7 +193,7 @@ pipeline rather than a backend mechanism.
    an eight-tap uniform-region exit (`vkr_metal_shadow_grid_kernel` in
    [`sampling.metalh`](../../renderer/src/shaders/metal/msl/shadow/sampling.metalh)).
    The desktop pipeline's rotated Poisson kernel left a grain fixed to the
-   screen on this pipeline, which has no temporal resolve to average it,
+   screen on this pipeline, which then had no temporal resolve to average it,
    and the penumbrae slid under it whenever the camera moved (user report,
    2026-10-15). Taps stay within two texels of each other, where adjacent
    bilinear footprints meet, so the widest penumbra is three texels; the
@@ -399,9 +404,11 @@ pipeline rather than a backend mechanism.
 12. Adaptive quality (owner decision, 2026-10-06, after Valve's VR adaptive
     quality): with dynamic resolution on, the tiled pipeline steps its
     internal render scale ([ADR-039](039-metal-internal-render-scale.md))
-    between 0.65 and native by 0.05 to hold its GPU frame budget, and its
-    tonemap pass upscales the scene spatially to the output. Native
-    resolution stays the target whenever the frame fits. The controller
+    by 0.05 between a floor and the render scale setting to hold its GPU
+    frame budget. MetalFX upscales the scene to the output, keeping its
+    history across steps ([ADR-121](121-tiled-temporal-upscaling.md)), or,
+    with the spatial upscaler, the tonemap pass. The render scale setting
+    stays the target whenever the frame fits. The controller
     ([`vkr_dynamic_resolution.c`](../../renderer/src/vkr_dynamic_resolution.c))
     keeps fixed-size CPU state and consumes only completed GPU submission
     times tagged with the scale they ran at; it ignores duplicate samples and
@@ -416,11 +423,13 @@ pipeline rather than a backend mechanism.
     learned timing but keeps the scale. A step recreates the viewport-sized
     graph images, so the HZB history restarts; the cloud history is sized
     from the Scene output and kept (ADR-074). A step marks the frame with its
-    own temporal reset reason, which every history but the clouds' treats
-    as a reset. The memoryless
+    own temporal reset reason, which every history but the clouds' and
+    MetalFX's treats as a reset. The memoryless
     multisampled targets retire until the GPU completes the frames that drew
-    into them instead of stalling it. The sample's tiled settings use 0.65
-    to 1 ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c)),
+    into them instead of stalling it. The sample's tiled settings use a
+    floor of 0.5 under MetalFX and 0.65 under the spatial upscale, and a
+    default render scale of 0.6
+    ([`vkr_sample_runtime_config.c`](../../runtime/src/vkr_sample_runtime_config.c)),
     and the dynamic-resolution setting turns it off. The budget is 90% of the
     frame time of the Target frame rate setting
     (`dynamic_resolution_target_fps`, 30 to 240, default 60; Cmd
@@ -1186,9 +1195,11 @@ multisampled target.
 - **Ordering alpha-tested draws near to far, laying their depth before
   their shading, or half-precision vertex outputs.** Not kept 2026-10-07:
   none lowers Bistro's cost ([measurement](#base-pass-measurement)).
-- **Fixed upscaling on M-series.** Rejected by the owner: native resolution
-  is the target. Decision 12 lowers it only while frames miss the budget
-  (revised by the owner, 2026-10-06).
+- **Fixed upscaling on M-series.** Rejected by the owner on 2026-10-06:
+  native resolution was the target, and decision 12 lowered it only while
+  frames missed the budget. Revised by the owner on 2026-10-16: MetalFX
+  temporal upscaling from 0.6 is the default
+  ([ADR-121](121-tiled-temporal-upscaling.md)).
 
 ## Revisit when
 

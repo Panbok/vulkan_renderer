@@ -186,6 +186,10 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
      the identity they had before the choice existed. */
   if (renderer->taa_enabled)
     ADD("renderer.antialiasing", "%s", renderer->antialiasing);
+  /* Cases authored before MetalFX upscale spatially and keep their
+     identity. */
+  if (!string_equals(renderer->upscaler, "spatial"))
+    ADD("renderer.upscaler", "%s", renderer->upscaler);
   /* Preserve fingerprints for manifests authored before these default-on
      controls existed. Only non-default state changes the workload identity. */
   if (!renderer->tonemap_enabled)

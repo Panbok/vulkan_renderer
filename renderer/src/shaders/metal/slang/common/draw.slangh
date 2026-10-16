@@ -240,7 +240,7 @@ struct VkrMetalPacketFrameRoot
     Texture2D<float4> transmission_source;
     StructuredBuffer<VkrMetalPacketIblProbe> ibl_probes;
     uint ibl_probe_count;
-    uint ibl_probe_reserved;
+    float texture_lod_bias;
     VkrMetalPacketTemporalDrawState* temporal_draw_state;
     Texture2DArray<float> local_shadow_map;
     StructuredBuffer<VkrLocalShadowView> local_shadow_views;

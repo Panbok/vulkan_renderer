@@ -121,6 +121,10 @@ typedef struct VkrMetalPacketRendererConfig {
   bool8_t tonemap_enabled;
   /** Converts the shared Vulkan-oriented clip-Y matrices for Metal raster. */
   bool8_t convert_vulkan_clip_y;
+  /** The tiled pipeline upscales with MetalFX over a single-sample scene;
+      without Metal 4 MetalFX it keeps four samples and the spatial upscale
+      (vkr_metal_packet_renderer_tiled_temporal). */
+  bool8_t tiled_temporal;
   /** Diagnostic rollback for P14 while retaining the graph. */
   bool8_t hzb_enabled;
   bool8_t frustum_enabled;
@@ -388,6 +392,12 @@ uint32_t vkr_metal_packet_renderer_frame_image_index(
     const VkrMetalPacketRenderer *renderer);
 /** Returns the extent only when the retained editor image has committed
  * contents. */
+/** Whether the tiled pipeline upscales with MetalFX: requested, the device
+ * supports Metal 4 MetalFX and no scaler creation has failed. After such a
+ * failure frames take the spatial upscale. */
+bool8_t vkr_metal_packet_renderer_tiled_temporal(
+    const VkrMetalPacketRenderer *renderer);
+
 void vkr_metal_packet_renderer_retained_editor_extent(
     VkrMetalPacketRenderer *renderer, uint32_t *out_width,
     uint32_t *out_height);

@@ -347,12 +347,15 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
                                  : VKR_DISPLAY_OUTPUT_SDR,
       .render_scale =
           vkr_graphics_settings_render_scale(&options->graphics, graphics),
-      /* The tiled pipeline's adaptive quality upscales spatially, so it
-         keeps 0.65 of each axis at least (ADR-087); its budget follows the
-         target frame rate setting. */
+      .tiled_upscaler = graphics->upscaler,
+      /* MetalFX rebuilds detail from half of each axis; the spatial upscale
+         keeps 0.65 at least (ADR-087). The budget follows the target frame
+         rate setting. */
       .dynamic_resolution =
           {
-              .min_scale = 0.65f,
+              .min_scale = graphics->upscaler == VKR_TILED_UPSCALER_METALFX
+                               ? 0.5f
+                               : 0.65f,
               .max_scale = 1.0f,
               .target_frame_ms =
                   vkr_graphics_settings_dynamic_resolution_budget_ms(graphics),

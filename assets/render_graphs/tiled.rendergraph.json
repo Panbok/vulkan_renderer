@@ -134,6 +134,129 @@
       ]
     },
     {
+      "name": "tiled_motion",
+      "type": "image",
+      "condition": "scene_rendering && tiled_temporal_enabled",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "tiled_temporal_color",
+      "type": "image",
+      "condition": "scene_rendering && tiled_temporal_enabled",
+      "extent": {
+        "mode": "scene_output"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "tiled_stable_color",
+      "type": "image",
+      "condition": "scene_rendering && tiled_temporal_enabled",
+      "extent": {
+        "mode": "scene_output"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "SAMPLED",
+        "STORAGE"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
+      "name": "tiled_temporal_input_color",
+      "type": "image",
+      "condition": "scene_rendering && tiled_temporal_staged",
+      "extent": {
+        "mode": "viewport_capacity"
+      },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": [
+        "SAMPLED",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "tiled_temporal_input_depth",
+      "type": "image",
+      "condition": "scene_rendering && tiled_temporal_staged",
+      "extent": {
+        "mode": "viewport_capacity"
+      },
+      "format": "SWAPCHAIN_DEPTH",
+      "usage": [
+        "SAMPLED",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "tiled_temporal_input_motion",
+      "type": "image",
+      "condition": "scene_rendering && tiled_temporal_staged",
+      "extent": {
+        "mode": "viewport_capacity"
+      },
+      "format": "R16G16_SFLOAT",
+      "usage": [
+        "SAMPLED",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "temporal_transform_history",
+      "condition": "scene_rendering && tiled_temporal_enabled",
+      "type": "buffer",
+      "size": 2621440,
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "HISTORY"
+      ]
+    },
+    {
       "name": "gpu_draw_candidates",
       "condition": "scene_rendering",
       "type": "buffer",
@@ -1610,6 +1733,214 @@
       "execute": "pass.tiled.blend"
     },
     {
+      "name": "Tiled.Motion",
+      "condition": "scene_rendering && tiled_temporal_enabled",
+      "type": "compute",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_motion",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.tiled.motion"
+    },
+    {
+      "name": "Tiled.ObjectMotion",
+      "condition": "scene_rendering && tiled_object_motion_pending",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_arguments",
+          "access": "INDIRECT_READ",
+          "binding": 3
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "tiled_motion",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ],
+        "depth": {
+          "image": "opaque_vbuffer_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.tiled.object_motion"
+    },
+    {
+      "name": "Tiled.TemporalStage",
+      "condition": "scene_rendering && tiled_temporal_staged",
+      "type": "transfer",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "TRANSFER_SRC",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "TRANSFER_SRC",
+          "binding": 1
+        },
+        {
+          "image": "tiled_motion",
+          "access": "TRANSFER_SRC",
+          "binding": 2
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_temporal_input_color",
+          "access": "TRANSFER_DST",
+          "binding": 3
+        },
+        {
+          "image": "tiled_temporal_input_depth",
+          "access": "TRANSFER_DST",
+          "binding": 4
+        },
+        {
+          "image": "tiled_temporal_input_motion",
+          "access": "TRANSFER_DST",
+          "binding": 5
+        }
+      ],
+      "execute": "pass.tiled.temporal_stage"
+    },
+    {
+      "name": "Tiled.Temporal",
+      "condition": "scene_rendering && tiled_temporal_enabled",
+      "type": "compute",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "!tiled_temporal_staged"
+        },
+        {
+          "image": "tiled_temporal_input_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "when": "tiled_temporal_staged"
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1,
+          "when": "!tiled_temporal_staged"
+        },
+        {
+          "image": "tiled_temporal_input_depth",
+          "access": "SAMPLED",
+          "binding": 1,
+          "when": "tiled_temporal_staged"
+        },
+        {
+          "image": "tiled_motion",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "!tiled_temporal_staged"
+        },
+        {
+          "image": "tiled_temporal_input_motion",
+          "access": "SAMPLED",
+          "binding": 2,
+          "when": "tiled_temporal_staged"
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_temporal_color",
+          "access": "STORAGE_WRITE",
+          "binding": 3
+        }
+      ],
+      "execute": "pass.tiled.temporal"
+    },
+    {
+      "name": "Tiled.Stabilize",
+      "condition": "scene_rendering && tiled_temporal_still",
+      "type": "compute",
+      "reads": [
+        {
+          "image": "tiled_temporal_color",
+          "access": "SAMPLED",
+          "binding": 0
+        },
+        {
+          "image": "tiled_motion",
+          "access": "SAMPLED",
+          "binding": 1
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_stable_color",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.tiled.stabilize"
+    },
+    {
+      "name": "Temporal.TransformHistory",
+      "condition": "scene_rendering && tiled_object_motion_pending",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "temporal_transform_history",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.temporal.transform_history"
+    },
+    {
       "name": "Picking.Tiled",
       "type": "graphics",
       "domain": "PICKING",
@@ -1916,7 +2247,22 @@
           "image": "hdr_scene_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0
+          "array_index": 0,
+          "when": "!tiled_temporal_enabled"
+        },
+        {
+          "image": "tiled_temporal_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_moving"
+        },
+        {
+          "image": "tiled_stable_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_still"
         },
         {
           "buffer": "exposure_state",
@@ -1956,7 +2302,22 @@
           "image": "hdr_scene_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0
+          "array_index": 0,
+          "when": "!tiled_temporal_enabled"
+        },
+        {
+          "image": "tiled_temporal_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_moving"
+        },
+        {
+          "image": "tiled_stable_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_still"
         },
         {
           "buffer": "exposure_state",
@@ -2002,7 +2363,22 @@
           "image": "hdr_scene_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0
+          "array_index": 0,
+          "when": "!tiled_temporal_enabled"
+        },
+        {
+          "image": "tiled_temporal_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_moving"
+        },
+        {
+          "image": "tiled_stable_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_still"
         },
         {
           "buffer": "exposure_state",
@@ -2042,7 +2418,22 @@
           "image": "hdr_scene_color",
           "access": "SAMPLED",
           "binding": 0,
-          "array_index": 0
+          "array_index": 0,
+          "when": "!tiled_temporal_enabled"
+        },
+        {
+          "image": "tiled_temporal_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_moving"
+        },
+        {
+          "image": "tiled_stable_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0,
+          "when": "tiled_temporal_still"
         },
         {
           "buffer": "exposure_state",

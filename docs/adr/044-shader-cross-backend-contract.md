@@ -103,6 +103,14 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     `VkrMetalPacketDecal` rows and the decal grid's cell masks, or zero on
     frames without decals. MSL reads the rows; the Slang mirror keeps their
     address ([ADR-092](092-projected-decals.md)).
+  - The frame root's `texture_lod_bias` at byte 444, formerly reserved,
+    holds the tiled texture mip bias under MetalFX upscaling, zero
+    otherwise. The MetalFX path adds four roots, pinned in
+    `vkr_metal_packet_abi.c`: `VkrMetalTiledMotionRoot` (96 bytes),
+    `VkrMetalPacketTemporalDrawState` (160 bytes) for the object motion
+    draws, `VkrMetalPacketTemporalTransformRoot` (32 bytes) and
+    `VkrMetalTiledStabilizeRoot` (64 bytes)
+    ([ADR-121](121-tiled-temporal-upscaling.md)).
   - The frame root grew to 592 bytes for Custom material graphs
     ([ADR-096](096-custom-material-graphs.md)): `custom_materials` at byte
     576 addresses the 256-byte `VkrMetalPacketCustomMaterial` rows, and

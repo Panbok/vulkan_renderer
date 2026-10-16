@@ -221,6 +221,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->viewport_height = packet->input.frame.viewport_height
                                ? packet->input.frame.viewport_height
                                : frame->target_height;
+  frame->viewport_capacity_width =
+      Max(frame->viewport_width, packet->viewport_capacity_width);
+  frame->viewport_capacity_height =
+      Max(frame->viewport_height, packet->viewport_capacity_height);
   frame->exposure_automatic =
       packet->scene_rendering &&
       packet->exposure.mode == VKR_EXPOSURE_MODE_AUTOMATIC;
@@ -238,6 +242,16 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->tiled_refraction_pending =
       packet->tiled_pipeline && frame->blend_pending &&
       packet->input.world->refractive_draw_count > 0u;
+  frame->tiled_temporal_enabled = packet->tiled_temporal_enabled;
+  frame->tiled_temporal_still = packet->tiled_temporal_still;
+  frame->tiled_object_motion_pending =
+      frame->tiled_temporal_enabled && packet->input.world &&
+      packet->input.world->gpu_candidate_count >
+          packet->input.world->static_candidate_count;
+  frame->tiled_temporal_staged =
+      frame->tiled_temporal_enabled &&
+      (frame->viewport_capacity_width != frame->viewport_width ||
+       frame->viewport_capacity_height != frame->viewport_height);
   /* The tiled pipeline draws glass with the blended surfaces, so it takes
      no transmission candidates (ADR-087). */
   frame->transmission_pending =
@@ -604,6 +618,16 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                             VKR_RG_PASS_TYPE_TRANSFER},
     [VKR_RG_EXECUTOR_EDITOR_PRESENT] = {"pass.editor.present",
                                         VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_MOTION] = {"pass.tiled.motion",
+                                      VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_TEMPORAL] = {"pass.tiled.temporal",
+                                        VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_OBJECT_MOTION] = {"pass.tiled.object_motion",
+                                             VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_TILED_TEMPORAL_STAGE] = {"pass.tiled.temporal_stage",
+                                              VKR_RG_PASS_TYPE_TRANSFER},
+    [VKR_RG_EXECUTOR_TILED_STABILIZE] = {"pass.tiled.stabilize",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

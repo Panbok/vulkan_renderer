@@ -72,7 +72,7 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
                   VKR_METAL_PACKET_BLEND_NONE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                  VKR_METAL_TILED_SAMPLE_COUNT, constants, label);
+                  renderer->tiled_sample_count, constants, label);
           string_format(name, sizeof(name), "%s_%s", graph->function,
                         tiled_lighting[i].coverage[decals][probes]);
           graph->coverage[brdf][decals][probes][i] =
@@ -82,7 +82,7 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
                   VKR_METAL_PACKET_BLEND_COVERAGE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                   VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                  VKR_METAL_TILED_SAMPLE_COUNT, constants, label);
+                  renderer->tiled_sample_count, constants, label);
           ok = graph->forward[brdf][decals][probes][i] != nil &&
                graph->coverage[brdf][decals][probes][i] != nil;
         }

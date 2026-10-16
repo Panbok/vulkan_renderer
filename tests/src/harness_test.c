@@ -487,12 +487,19 @@ vkr_internal void test_harness_case_parser(void) {
   /* Cases no longer author an upscaler; a case naming one is invalid. */
   const char *dynamic_key = strstr(dynamic_case, "\"dynamic_resolution\":true");
   assert(dynamic_key);
-  char retired_upscaler[2048];
-  snprintf(retired_upscaler, sizeof(retired_upscaler),
-           "%.*s\"upscaler\":\"spatial\",%s", (int)(dynamic_key - dynamic_case),
+  /* The tiled pipeline's upscaler: spatial unless a case names MetalFX. */
+  assert(strcmp(parsed.renderer.upscaler, "spatial") == 0);
+  char upscaler_case[2048];
+  snprintf(upscaler_case, sizeof(upscaler_case),
+           "%.*s\"upscaler\":\"metalfx\",%s", (int)(dynamic_key - dynamic_case),
            dynamic_case, dynamic_key);
-  assert(!vkr_harness_case_parse(retired_upscaler, strlen(retired_upscaler),
-                                 "memory", &parsed, &backend_error));
+  assert(vkr_harness_case_parse(upscaler_case, strlen(upscaler_case), "memory",
+                                &parsed, &backend_error));
+  assert(strcmp(parsed.renderer.upscaler, "metalfx") == 0);
+  snprintf(upscaler_case, sizeof(upscaler_case), "%.*s\"upscaler\":\"fsr\",%s",
+           (int)(dynamic_key - dynamic_case), dynamic_case, dynamic_key);
+  assert(!vkr_harness_case_parse(upscaler_case, strlen(upscaler_case), "memory",
+                                 &parsed, &backend_error));
   char antialiasing_case[2048];
   snprintf(antialiasing_case, sizeof(antialiasing_case),
            "%.*s\"antialiasing\":\"smaa_t2x\",%s",

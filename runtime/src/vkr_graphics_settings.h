@@ -19,6 +19,10 @@ typedef struct VkrGraphicsSettings {
    * a quarter of the pixels on a 2x Retina display. macOS only. */
   bool8_t high_dpi;
   float32_t render_scale;
+  /* VkrTiledUpscaler of the tiled pipeline: MetalFX (the default) or the
+   * spatial upscale. It takes effect at the next start; the desktop pipeline
+   * ignores it. */
+  uint32_t upscaler;
   uint32_t frame_limit;
   /* The frame rate dynamic resolution holds: the controller's GPU budget is
    * VKR_GRAPHICS_DYNAMIC_RESOLUTION_BUDGET_SHARE of its frame time. */

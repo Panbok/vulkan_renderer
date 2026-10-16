@@ -377,6 +377,7 @@ vkr_internal bool8_t vkr_harness_report_write_renderer_features(
                                     renderer->taa_enabled) &&
          vkr_harness_json_emit_string(writer, "antialiasing",
                                       renderer->antialiasing) &&
+         vkr_harness_json_emit_string(writer, "upscaler", renderer->upscaler) &&
          vkr_harness_json_emit_bool(writer, "tonemap_enabled",
                                     renderer->tonemap_enabled) &&
          vkr_harness_json_emit_bool(writer, "smaa_enabled",

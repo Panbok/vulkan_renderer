@@ -352,12 +352,16 @@ struct VkrMetalTiledSurface {
 // material's tint and, except on terrain, the vertex colour. Alpha-tested
 // draws read it alone first, so fragments that cover no sample discard
 // before the surface's other textures.
+// Under the temporal upscaler the frame's texture LOD bias picks the mips the
+// output resolution would, which the jittered history then resolves.
 static float4
 vkr_metal_tiled_base(thread const VkrMetalTiledVertexOutput &input,
+                     constant VkrMetalPacketFrameRoot *frame,
                      const device VkrMetalPacketMaterial &material) {
   const bool terrain = (material.flags & 2048u) != 0u;
   return material.base_color_texture.sample(material.base_color_sampler,
-                                            input.texcoord) *
+                                            input.texcoord,
+                                            bias(frame->texture_lod_bias)) *
          material.tint * (terrain ? float4(1.0f) : input.color);
 }
 
@@ -378,11 +382,15 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
   surface.occlusion = saturate(material.material_surface.w);
   float3 orm = float3(1.0f);
   if ((material.flags & 2u) != 0u)
-    orm = material.orm_texture.sample(material.orm_sampler, input.texcoord)
+    orm = material.orm_texture
+              .sample(material.orm_sampler, input.texcoord,
+                      bias(frame->texture_lod_bias))
               .rgb;
   if ((material.flags & 1u) != 0u)
     surface.tangent_normal = vkr_normal_map_decode(
-        material.normal_texture.sample(material.normal_sampler, input.texcoord)
+        material.normal_texture
+            .sample(material.normal_sampler, input.texcoord,
+                    bias(frame->texture_lod_bias))
             .xyz,
         material.material_surface.z);
   if (terrain) {
@@ -390,8 +398,10 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
     // branches on their weights.
     const device VkrMetalPacketTerrainMaterial &layers =
         frame->terrain_materials[material_index];
+    const float gradient_scale = exp2(frame->texture_lod_bias);
     const gradient2d gradients =
-        gradient2d(dfdx(input.texcoord), dfdy(input.texcoord));
+        gradient2d(dfdx(input.texcoord) * gradient_scale,
+                   dfdy(input.texcoord) * gradient_scale);
     float4 mask = float4(0.0f);
     if (layers.mask_source == VKR_LAYER_MASK_TEXTURE)
       mask = layers.mask_texture.sample(layers.mask_sampler, input.texcoord,
@@ -419,7 +429,8 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
   if ((material.flags & 4u) != 0u)
     surface.emissive *=
         material.emissive_texture.sample(material.emissive_sampler,
-                                         input.texcoord)
+                                         input.texcoord,
+                                         bias(frame->texture_lod_bias))
             .rgb;
   return surface;
 }
@@ -996,7 +1007,7 @@ struct VkrMetalStandardSurface {
         constant VkrMetalPacketFrameRoot *frame,
         const device VkrMetalPacketMaterial &material, uint material_index,
         thread float &coverage) {
-    const float4 base = vkr_metal_tiled_base(input, material);
+    const float4 base = vkr_metal_tiled_base(input, frame, material);
     if (Coverage)
       coverage = vkr_metal_tiled_coverage(material, base.a);
     return vkr_metal_tiled_surface(input, frame, material, material_index,
@@ -1546,6 +1557,235 @@ kernel void vkr_metal_tiled_resolve_tile(
   block.write(pixel, coord, ushort((1u << sample_count) - 1u));
 }
 
+// The MetalFX upscaler's camera motion (VkrMetalTiledMotionRoot): the
+// resolved depth's point, reprojected into the previous frame, as the
+// previous unjittered texture coordinate minus the current one. Sky pixels
+// sit at depth zero, a direction under the reversed infinite projection,
+// which the homogeneous reprojection keeps free of the camera's translation.
+// Moving objects take the camera's motion.
+struct VkrMetalTiledMotionRoot {
+  float4x4 reprojection;
+  depth2d<float, access::read> depth;
+  texture2d<float, access::write> motion;
+  uint2 extent;
+  float2 jitter_uv;
+};
+
+kernel void vkr_metal_tiled_motion(constant VkrMetalTiledMotionRoot &root
+                                   [[buffer(0)]],
+                                   uint2 pixel [[thread_position_in_grid]]) {
+  if (any(pixel >= root.extent))
+    return;
+  const float2 center = float2(pixel) + 0.5f;
+  const float depth = root.depth.read(pixel);
+  const float4 previous =
+      root.reprojection *
+      float4(vkr_metal_packet_resolve_ndc(center, root.extent), depth, 1.0f);
+  float2 motion = float2(0.0f);
+  if (previous.w > 0.0f) {
+    const float2 previous_ndc = previous.xy / previous.w;
+    const float2 previous_uv =
+        float2(previous_ndc.x * 0.5f + 0.5f, 0.5f - previous_ndc.y * 0.5f);
+    const float2 current_uv = center / float2(root.extent) - root.jitter_uv;
+    motion = previous_uv - current_uv;
+  }
+  root.motion.write(float4(motion, 0.0f, 0.0f), pixel);
+}
+
+static_assert(sizeof(VkrMetalTiledMotionRoot) == 96,
+              "Metal tiled motion root ABI drift");
+
+// The still-camera running mean over MetalFX's output (Tiled.Stabilize).
+// With the camera still, the jitter still moves MetalFX's reconstruction a
+// little from frame to frame; averaging each still pixel over up to
+// VKR_METAL_TILED_STABLE_FRAMES frames holds it steady. Jitter flicker on
+// highlights and thin geometry changes a pixel by 10 to 40% of its
+// luminance, so the mean is clamped to the range of the current 3x3
+// neighbourhood instead of tested against the pixel alone: flicker stays
+// inside that range, while a lighting change moves the whole neighbourhood.
+// A pixel restarts its mean where an object moves over it or the clamp moves
+// the mean by more than VKR_METAL_TILED_STABLE_CLIP of its luminance. The
+// count is in alpha.
+constant float VKR_METAL_TILED_STABLE_FRAMES = 32.0f;
+constant float VKR_METAL_TILED_STABLE_CLIP = 0.05f;
+constant float VKR_METAL_TILED_STABLE_MOTION_PIXELS = 0.01f;
+
+struct VkrMetalTiledStabilizeRoot {
+  texture2d<float, access::read> color;
+  texture2d<float, access::read> motion;
+  texture2d<float, access::read> history;
+  texture2d<float, access::write> output;
+  uint2 extent;
+  uint2 motion_extent;
+  float history_scale;
+  uint history_valid;
+  uint reserved[2];
+};
+
+kernel void vkr_metal_tiled_stabilize(constant VkrMetalTiledStabilizeRoot &root
+                                      [[buffer(0)]],
+                                      uint2 pixel [[thread_position_in_grid]]) {
+  if (any(pixel >= root.extent))
+    return;
+  const float3 current = root.color.read(pixel).rgb;
+  float4 result = float4(current, 1.0f);
+  if (root.history_valid != 0u) {
+    const uint2 motion_pixel =
+        min(uint2((float2(pixel) + 0.5f) * float2(root.motion_extent) /
+                  float2(root.extent)),
+            root.motion_extent - 1u);
+    const float2 motion =
+        root.motion.read(motion_pixel).xy * float2(root.motion_extent);
+    const float4 history = root.history.read(pixel);
+    const int2 last = int2(root.extent) - 1;
+    float3 low = current;
+    float3 high = current;
+    for (int y = -1; y <= 1; ++y) {
+      for (int x = -1; x <= 1; ++x) {
+        const uint2 tap = uint2(clamp(int2(pixel) + int2(x, y), int2(0), last));
+        const float3 neighbour = root.color.read(tap).rgb;
+        low = min(low, neighbour);
+        high = max(high, neighbour);
+      }
+    }
+    const float3 history_mean = history.rgb * root.history_scale;
+    const float3 mean = clamp(history_mean, low, high);
+    const float3 weights = float3(0.2126f, 0.7152f, 0.0722f);
+    const float clip = dot(abs(history_mean - mean), weights);
+    const bool still = dot(motion, motion) <
+                       VKR_METAL_TILED_STABLE_MOTION_PIXELS *
+                           VKR_METAL_TILED_STABLE_MOTION_PIXELS;
+    const bool steady =
+        clip <= max(VKR_METAL_TILED_STABLE_CLIP * dot(mean, weights), 1e-4f);
+    if (still && steady) {
+      const float count =
+          min(history.a + 1.0f, VKR_METAL_TILED_STABLE_FRAMES);
+      result = float4(mean + (current - mean) / count, count);
+    }
+  }
+  root.output.write(result, pixel);
+}
+
+static_assert(sizeof(VkrMetalTiledStabilizeRoot) == 64,
+              "Metal tiled stabilize root ABI drift");
+
+// Mirrors VKR_TEMPORAL_TRANSFORM_CAPACITY and the instance temporal flags'
+// owner bit (vkr_gpu_abi.h).
+constant uint VKR_METAL_TEMPORAL_TRANSFORM_CAPACITY = 32768u;
+constant uint VKR_METAL_INSTANCE_TEMPORAL_OWNER = 1u;
+
+// The MetalFX upscaler's object motion (Tiled.ObjectMotion): the motion
+// view's dynamic draws, rasterized with the opaque pass's jittered matrix,
+// carry their current and previous unjittered clip positions. A draw without
+// the previous frame's transform takes its current one, and a skinned draw
+// without the previous frame's vertices its current ones, which leaves the
+// camera's motion.
+struct VkrMetalTiledObjectMotionVertex {
+  float4 position [[position]];
+  float4 current_clip;
+  float4 previous_clip;
+};
+
+vertex VkrMetalTiledObjectMotionVertex
+vkr_metal_tiled_object_motion_vertex(uint vertex_id [[vertex_id]],
+                                     uint instance_id [[instance_id]],
+                                     constant VkrMetalPacketDrawRoot *root
+                                     [[buffer(0)]]) {
+  constant VkrMetalPacketFrameRoot *frame = root->frame;
+  constant VkrMetalPacketTemporalDrawState &temporal =
+      *frame->temporal_draw_state;
+  const device VkrGpuVisibleDrawRow &visible = root->visible_rows[instance_id];
+  const device VkrGpuGeometryRow &geometry =
+      root->geometry_rows[visible.geometry_index];
+  const device VkrPackedStaticVertex *vertices =
+      (const device VkrPackedStaticVertex *)geometry.vertex_address +
+      geometry.first_vertex;
+  const device VkrGpuGeometryDecodeRecord &decode =
+      ((const device VkrGpuGeometryDecodeRecord *)
+           geometry.decode_address)[visible.decode_index];
+  const VkrGpuDecodedVertex data =
+      vkr_decode_packed_vertex(vertices[vertex_id], decode);
+  const device VkrMetalPacketInstance &instance =
+      frame->instances[visible.instance_index];
+  const float3 position =
+      vkr_apply_deformation(data, instance.deformation_address, vertex_id)
+          .position;
+  float4x4 previous_model = instance.model;
+  float3 previous_position = position;
+  if (temporal.history_valid != 0u &&
+      instance.temporal_index < VKR_METAL_TEMPORAL_TRANSFORM_CAPACITY) {
+    const device VkrTemporalTransform &previous =
+        temporal.previous_transforms[instance.temporal_index];
+    if (previous.valid != 0u &&
+        previous.generation == instance.temporal_generation &&
+        previous.frame_index == temporal.previous_frame_index) {
+      previous_model = previous.model;
+      if (instance.previous_deformation_address != 0ul)
+        previous_position =
+            vkr_apply_deformation(data, instance.previous_deformation_address,
+                                  vertex_id)
+                .position;
+    }
+  }
+  const float4 world = instance.model * float4(position, 1.0f);
+  VkrMetalTiledObjectMotionVertex output;
+  // Frame and temporal roots store the transposed matrices Slang's row-vector
+  // lowering uses.
+  output.position = world * frame->view_projection;
+  output.current_clip = world * temporal.current_view_projection;
+  output.previous_clip = (previous_model * float4(previous_position, 1.0f)) *
+                         temporal.previous_view_projection;
+  return output;
+}
+
+fragment float4 vkr_metal_tiled_object_motion_fragment(
+    VkrMetalTiledObjectMotionVertex input [[stage_in]]) {
+  if (input.previous_clip.w <= 0.0f || input.current_clip.w <= 0.0f)
+    discard_fragment();
+  const float2 current_ndc = input.current_clip.xy / input.current_clip.w;
+  const float2 previous_ndc = input.previous_clip.xy / input.previous_clip.w;
+  const float2 current_uv =
+      float2(current_ndc.x * 0.5f + 0.5f, 0.5f - current_ndc.y * 0.5f);
+  const float2 previous_uv =
+      float2(previous_ndc.x * 0.5f + 0.5f, 0.5f - previous_ndc.y * 0.5f);
+  return float4(previous_uv - current_uv, 0.0f, 0.0f);
+}
+
+// Temporal.TransformHistory on the tiled pipeline: each owning dynamic
+// instance's transform by temporal index, stamped with the frame that wrote
+// it. Static instances keep their transform, so the object motion that reads
+// the history draws only dynamic ones.
+struct VkrMetalPacketTemporalTransformRoot {
+  device const VkrMetalPacketInstance *instances;
+  device VkrTemporalTransform *transforms;
+  uint instance_count;
+  uint transform_capacity;
+  uint frame_index;
+  uint first_instance;
+};
+
+kernel void vkr_metal_packet_temporal_transform(
+    constant VkrMetalPacketTemporalTransformRoot &root [[buffer(0)]],
+    uint index [[thread_position_in_grid]]) {
+  if (index >= root.instance_count)
+    return;
+  const device VkrMetalPacketInstance &instance =
+      root.instances[root.first_instance + index];
+  if ((instance.temporal_flags & VKR_METAL_INSTANCE_TEMPORAL_OWNER) == 0u ||
+      instance.temporal_index >= root.transform_capacity)
+    return;
+  VkrTemporalTransform transform;
+  transform.model = instance.model;
+  transform.generation = instance.temporal_generation;
+  transform.frame_index = root.frame_index;
+  transform.valid = 1u;
+  transform.reserved = 0u;
+  root.transforms[instance.temporal_index] = transform;
+}
+
+static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32,
+              "Metal temporal transform root ABI drift");
+
 // The light behind glass from the frame's refraction copy (ADR-087): at the
 // projection of the point the light leaves the glass from, and at the level
 // its roughness picks.
@@ -1593,7 +1833,7 @@ vkr_metal_tiled_blend(thread const VkrMetalTiledVertexOutput &input,
       frame->materials[visible.material_index];
   VkrMetalTiledSurface surface =
       vkr_metal_tiled_surface(input, frame, material, visible.material_index,
-                              vkr_metal_tiled_base(input, material));
+                              vkr_metal_tiled_base(input, frame, material));
   float transmission = saturate(material.material_alpha.y);
   float alpha = transmission > 0.0f ? 1.0f : surface.base.a;
   if (alpha <= 1e-4f)

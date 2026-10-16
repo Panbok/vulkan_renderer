@@ -626,6 +626,9 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
       !vkr_harness_manifest_string(doc, token, "antialiasing", false_v,
                                    renderer->antialiasing,
                                    sizeof(renderer->antialiasing), error) ||
+      !vkr_harness_manifest_string(doc, token, "upscaler", false_v,
+                                   renderer->upscaler,
+                                   sizeof(renderer->upscaler), error) ||
       !vkr_harness_manifest_bool(doc, token, "tonemap_enabled", false_v,
                                  &renderer->tonemap_enabled, error) ||
       !vkr_harness_manifest_bool(
@@ -805,6 +808,10 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
   const bool8_t antialiasing_valid =
       string_equals(renderer->antialiasing, "fsr") ||
       string_equals(renderer->antialiasing, "smaa_t2x");
+  /* The tiled pipeline's upscaler; cases default to the spatial upscale so
+     those authored before MetalFX keep their workload. */
+  const bool8_t upscaler_valid = string_equals(renderer->upscaler, "spatial") ||
+                                 string_equals(renderer->upscaler, "metalfx");
   const bool8_t automatic_exposure =
       string_equals(renderer->exposure_mode, "automatic");
   const bool8_t automatic_controls_valid =
@@ -855,7 +862,7 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
        renderer->motion_blur_entity_velocity_z == 0.0f);
   if (!preset_valid || !mode_valid || !backend_valid || !display_output_valid ||
       fields->cascades < 1u || fields->cascades > 8u || !exposure_mode_valid ||
-      !display_transform_valid || !antialiasing_valid ||
+      !display_transform_valid || !antialiasing_valid || !upscaler_valid ||
       !automatic_controls_valid || !bloom_controls_valid ||
       !gtao_controls_valid || !dof_focus_valid || !dof_f_stop_valid ||
       !motion_blur_controls_valid || !motion_blur_entity_valid ||
@@ -1050,6 +1057,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "physics_fixture",
       "taa_enabled",
       "antialiasing",
+      "upscaler",
       "tonemap_enabled",
       "smaa_enabled",
       "transmission_depth_diagnostic_enabled",

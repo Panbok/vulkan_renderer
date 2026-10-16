@@ -341,6 +341,12 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_TILED_PICKING:
   case VKR_RG_EXECUTOR_TILED_BLEND:
   case VKR_RG_EXECUTOR_EDITOR_PRESENT:
+  case VKR_RG_EXECUTOR_TILED_MOTION:
+  case VKR_RG_EXECUTOR_TILED_TEMPORAL:
+  case VKR_RG_EXECUTOR_TILED_OBJECT_MOTION:
+  case VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM:
+  case VKR_RG_EXECUTOR_TILED_TEMPORAL_STAGE:
+  case VKR_RG_EXECUTOR_TILED_STABILIZE:
     return true_v;
   default:
     return false_v;
@@ -1049,6 +1055,7 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
   renderer->gpu_candidate_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->gpu_candidate_instance_buffer_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->skinning_output_handle = VKR_RG_BUFFER_HANDLE_INVALID;
+  renderer->transform_history_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   renderer->exposure_state_handle = VKR_RG_BUFFER_HANDLE_INVALID;
   for (uint64_t i = 0u; i < renderer->graph->buffers.length; ++i) {
     const VkrRgBuffer *buffer =
@@ -1065,6 +1072,9 @@ vkr_metal_packet_realize_buffers(VkrMetalPacketRenderer *renderer,
       renderer->gpu_candidate_instance_buffer_handle = handle;
     else if (vkr_string8_equals_cstr(&buffer->name, "skinning_output"))
       renderer->skinning_output_handle = handle;
+    else if (vkr_string8_equals_cstr(&buffer->name,
+                                     "temporal_transform_history"))
+      renderer->transform_history_handle = handle;
     else if (vkr_string8_equals_cstr(&buffer->name, "exposure_state"))
       renderer->exposure_state_handle = handle;
     if (buffer->imported ||
@@ -1211,6 +1221,12 @@ vkr_metal_packet_install_retained_provider(VkrMetalPacketRenderer *renderer) {
       .commit = vkr_metal_packet_retained_commit,
   };
   vkr_rg_set_retained_state_provider(renderer->graph, &provider);
+}
+
+bool8_t
+vkr_metal_packet_renderer_tiled_temporal(const VkrMetalPacketRenderer *renderer) {
+  return renderer && renderer->tiled_temporal &&
+         !renderer->tiled_temporal_unsupported;
 }
 
 void vkr_metal_packet_renderer_retained_editor_extent(
@@ -2071,7 +2087,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_copy(
     return false_v;
   const float32_t atlas_size = (float32_t)VKR_LOCAL_SHADOW_ATLAS_SIZE;
   const NSUInteger size = (NSUInteger)(source.z * atlas_size);
-  prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
+  prepared->transfer.textures[0] = (VkrMetalPacketTextureCopy){
       .source = atlas,
       .destination = atlas,
       .source_slice = read->slice.base_layer,
@@ -2083,7 +2099,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_local_shadow_copy(
                         (NSUInteger)(destination.y * atlas_size), 0u),
       .size = MTLSizeMake(size, size, 1u),
   };
-  prepared->transfer.has_texture_copy = true_v;
+  prepared->transfer.texture_count = 1u;
   prepared->active = true_v;
   return true_v;
 }
@@ -2110,7 +2126,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cascade_copy(
       source.height != destination.height ||
       source.pixelFormat != destination.pixelFormat)
     return false_v;
-  prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
+  prepared->transfer.textures[0] = (VkrMetalPacketTextureCopy){
       .source = source,
       .destination = destination,
       .source_slice = cascade,
@@ -2119,7 +2135,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_cascade_copy(
       .destination_origin = MTLOriginMake(0u, 0u, 0u),
       .size = MTLSizeMake(source.width, source.height, 1u),
   };
-  prepared->transfer.has_texture_copy = true_v;
+  prepared->transfer.texture_count = 1u;
   prepared->active = true_v;
   return true_v;
 }
@@ -2145,7 +2161,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_far_publish(
       source.height != destination.height ||
       source.pixelFormat != destination.pixelFormat)
     return false_v;
-  prepared->transfer.texture_copy = (VkrMetalPacketTextureCopy){
+  prepared->transfer.textures[0] = (VkrMetalPacketTextureCopy){
       .source = source,
       .destination = destination,
       .source_slice = 0u,
@@ -2154,16 +2170,49 @@ vkr_internal bool8_t vkr_metal_packet_prepare_far_publish(
       .destination_origin = MTLOriginMake(0u, 0u, 0u),
       .size = MTLSizeMake(source.width, source.height, 1u),
   };
-  prepared->transfer.has_texture_copy = true_v;
+  prepared->transfer.texture_count = 1u;
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Copies the scene at binding 0, its resolved depth at 1 and its motion at
+   2 into the top-left corner of the capacity-sized images at 3, 4 and 5,
+   which MetalFX reads with the viewport as its input content. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_temporal_stage(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared) API_AVAILABLE(macos(26.0)) {
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, i, 0u);
+    const VkrRgImageUse *write =
+        vkr_rg_pass_find_image_use(&pass->desc, i + 3u, 0u);
+    id<MTLTexture> source =
+        read ? vkr_metal_packet_texture(renderer, read->image) : nil;
+    id<MTLTexture> destination =
+        write ? vkr_metal_packet_texture(renderer, write->image) : nil;
+    if (!source || !destination || source.width > destination.width ||
+        source.height > destination.height ||
+        source.pixelFormat != destination.pixelFormat)
+      return false_v;
+    prepared->transfer.textures[i] = (VkrMetalPacketTextureCopy){
+        .source = source,
+        .destination = destination,
+        .source_origin = MTLOriginMake(0u, 0u, 0u),
+        .destination_origin = MTLOriginMake(0u, 0u, 0u),
+        .size = MTLSizeMake(source.width, source.height, 1u),
+    };
+  }
+  prepared->transfer.texture_count = 3u;
   prepared->active = true_v;
   return true_v;
 }
 
 /* Copies the frame's packed candidate rows and a zeroed compaction state
    into the culling buffers, a local face's static square into its dynamic
-   square, or a cascade's static layer into the shadow map; Cull.Upload,
-   Shadow.Local.Copy and Shadow.Cascade.Copy are the only transfer passes the
-   executor check admits. */
+   square, a cascade's static layer into the shadow map, the far pending
+   image into the far static layer, or the tiled upscaler's inputs into their
+   capacity-sized images; Cull.Upload, Shadow.Local.Copy,
+   Shadow.Cascade.Copy, Shadow.Far.Publish and Tiled.TemporalStage are the
+   only transfer passes the executor check admits. */
 vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -2178,6 +2227,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_transfer(
   if (prepared->kind == VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH)
     return vkr_metal_packet_prepare_far_publish(renderer, pass, packet,
                                                 prepared);
+  if (prepared->kind == VKR_RG_EXECUTOR_TILED_TEMPORAL_STAGE)
+    return vkr_metal_packet_prepare_tiled_temporal_stage(renderer, pass,
+                                                         prepared);
   if (prepared->kind != VKR_RG_EXECUTOR_GPU_DRAW_UPLOAD)
     return false_v;
   VkrMetalPacketTransferPass *transfer = &prepared->transfer;
@@ -2257,8 +2309,8 @@ vkr_metal_packet_record_transfer(id<MTL4ComputeCommandEncoder> encoder,
           destinationOffset:copy->destination_offset
                        size:copy->size];
   }
-  if (transfer->has_texture_copy) {
-    const VkrMetalPacketTextureCopy *copy = &transfer->texture_copy;
+  for (uint32_t i = 0u; i < transfer->texture_count; ++i) {
+    const VkrMetalPacketTextureCopy *copy = &transfer->textures[i];
     [encoder copyFromTexture:copy->source
                  sourceSlice:copy->source_slice
                  sourceLevel:0u

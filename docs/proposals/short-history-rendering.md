@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-15
+updated: 2026-10-16
 authority: proposal
 ---
 
@@ -33,7 +33,7 @@ implemented.
 | Anti-aliasing | Replace the long-history TAA with the original SMAA T2x: two jitter phases and one previous frame. |
 | GTAO | Spatial only: fixed noise and more edge-aware denoise passes. |
 | Tone mapping | Replace AgX with the Gran Turismo 7 operator on both pipelines, without an offline A/B comparison first. |
-| Kept history | Clouds and froxel fog keep their temporal history; their signals are low frequency. |
+| Kept history | Clouds and froxel fog keep their temporal history; their signals are low frequency. Since 2026-10-16 the tiled pipeline's MetalFX upscaler also keeps a long history ([ADR-121](../adr/121-tiled-temporal-upscaling.md)). |
 
 Screen-space SSR and SSGI stayed noisy and produced temporal artifacts after
 repeated fixes (ADR-037, ADR-055, ADR-060 record the settling caps, reflected
@@ -118,8 +118,9 @@ history weights and the 128-sample static accumulation. Existing
 screen-space specular AA stays; two frames cannot hide shimmer that long
 history used to average.
 
-The tiled pipeline keeps multisampled forward rendering without history
-(ADR-087, decision 7).
+The tiled pipeline kept multisampled forward rendering without history
+(ADR-087, decision 7) until the owner chose MetalFX temporal upscaling on
+2026-10-16 ([ADR-121](../adr/121-tiled-temporal-upscaling.md)).
 
 ### TAA audit (2026-10-12)
 

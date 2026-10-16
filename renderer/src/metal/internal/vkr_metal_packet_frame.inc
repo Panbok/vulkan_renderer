@@ -141,9 +141,18 @@ vkr_internal bool8_t vkr_metal_packet_create_frame_root(
        packet->input.lighting->ibl_probe_count > 0u);
   *out_frame_flags =
       vkr_packet_derive_frame_flags(packet, lighting_pass, ibl_resources_ready);
+  /* Under the temporal upscaler, camera surfaces pick the mips the Scene
+     output's resolution would. */
+  const float32_t texture_lod_bias =
+      lighting_pass && renderer->prepared_frame.tiled_temporal_enabled &&
+              renderer->prepared_frame.render_scale > 0.0f &&
+              renderer->prepared_frame.render_scale < 1.0f
+          ? vkr_log2_f32(renderer->prepared_frame.render_scale)
+          : 0.0f;
   *frame_root = (VkrMetalPacketFrameRoot){
       .instances = instances_gpu,
       .view_projection = vkr_metal_packet_slang_draw_matrix(view_projection),
+      .texture_lod_bias = texture_lod_bias,
       .materials =
           vkr_metal_material_table_device_gpu_address(renderer->materials),
       .sh_coefficients_address = renderer->sh_coefficients.gpuAddress,
@@ -1120,6 +1129,56 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
   *out_gpu_address = renderer->custom_compaction_gpu;
 }
 
+/* Points the motion view's frame root at the previous frame's transforms
+   and view-projection. They count only when the last submitted frame ran
+   ran the MetalFX upscaler and immediately precedes this one; otherwise each draw
+   takes its current transform, which leaves the camera motion. */
+vkr_internal bool8_t vkr_metal_packet_attach_temporal_draw_state(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    VkrMetalPacketFrameUpload *upload, uint64_t frame_root_gpu)
+    API_AVAILABLE(macos(26.0)) {
+  uint64_t state_gpu = 0u;
+  VkrMetalPacketTemporalDrawState *state =
+      vkr_metal_packet_next_root(upload, sizeof(*state), &state_gpu);
+  if (!state)
+    return false_v;
+  VkrMetalPacketGraphBufferInstance *previous =
+      renderer->temporal_previous_valid
+          ? vkr_metal_packet_graph_buffer_instance(
+                renderer, renderer->transform_history_handle,
+                renderer->temporal_previous_history_index)
+          : NULL;
+  const bool8_t history_valid =
+      previous && packet->tiled_temporal_history_valid &&
+      renderer->temporal_previous_frame_index + 1u ==
+          packet->input.frame.frame_index &&
+      renderer->temporal_previous_history_index !=
+          renderer->history_output_index;
+  /* The read keeps the instance from the history ring until it completes. */
+  if (history_valid)
+    previous->last_use_submit_value =
+        Max(previous->last_use_submit_value, renderer->submit_value + 1u);
+  *state = (VkrMetalPacketTemporalDrawState){
+      .previous_transforms = history_valid ? previous->resource.gpu_address
+                                           : 0u,
+      .current_view_projection = vkr_metal_packet_slang_draw_matrix(
+          vkr_metal_packet_clip_matrix(
+              renderer->convert_vulkan_clip_y,
+              packet->temporal.current_view_projection)),
+      .previous_view_projection = vkr_metal_packet_slang_draw_matrix(
+          vkr_metal_packet_clip_matrix(
+              renderer->convert_vulkan_clip_y,
+              packet->temporal.previous_view_projection)),
+      .history_valid = history_valid ? 1u : 0u,
+      .previous_frame_index = renderer->temporal_previous_frame_index,
+  };
+  VkrMetalPacketFrameRoot *frame_root =
+      (VkrMetalPacketFrameRoot *)(upload->root_cpu +
+                                  (frame_root_gpu - upload->root_gpu));
+  frame_root->temporal_draw_state = state_gpu;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -1249,9 +1308,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   upload->root_cursor += draw_root_slots;
   const uint32_t first_local_view =
       vkr_render_graph_local_shadow_first_view(&renderer->prepared_frame);
+  const uint32_t motion_view =
+      renderer->prepared_frame.tiled_temporal_enabled
+          ? vkr_render_graph_motion_view(&renderer->prepared_frame)
+          : UINT32_MAX;
   for (uint32_t view = 0u; view < view_count; ++view) {
-    const bool8_t camera_view = view == 0u;
-    const bool8_t local_view = view >= first_local_view;
+    /* The motion view draws as the camera does. */
+    const bool8_t camera_view = view == 0u || view == motion_view;
+    const bool8_t local_view = view >= first_local_view && !camera_view;
     /* Local culling views follow render slots; each draws one view. */
     const uint32_t local_face =
         local_view
@@ -1287,6 +1351,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
                         : shadow_map_size,
             view_projection, camera_view, &frame_root_gpu, &view_frame_flags))
       return false_v;
+    if (view == motion_view &&
+        !vkr_metal_packet_attach_temporal_draw_state(
+            renderer, packet, upload, frame_root_gpu))
+      return false_v;
     draw_roots[view] = (VkrMetalPacketDrawRoot){
         .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
         .visible_rows = visible->resource.gpu_address +
@@ -1295,7 +1363,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
         .vertices = renderer->geometry_megabuffer.vertices.gpu_address,
         .frame = frame_root_gpu,
         .flags = VKR_METAL_PACKET_DRAW_ROOT_GPU_DRAW |
-                 (camera_view ? VKR_METAL_PACKET_DRAW_ROOT_PROBES : 0u),
+                 (view == 0u ? VKR_METAL_PACKET_DRAW_ROOT_PROBES : 0u),
     };
   }
   root->candidates = candidates->resource.gpu_address;
@@ -2010,7 +2078,7 @@ vkr_internal bool8_t vkr_metal_packet_tiled_ensure_targets(
   descriptor.textureType = MTLTextureType2DMultisample;
   descriptor.width = width;
   descriptor.height = height;
-  descriptor.sampleCount = VKR_METAL_TILED_SAMPLE_COUNT;
+  descriptor.sampleCount = renderer->tiled_sample_count;
   descriptor.usage = MTLTextureUsageRenderTarget;
   descriptor.storageMode = MTLStorageModeMemoryless;
   descriptor.pixelFormat = MTLPixelFormatRGBA16Float;
@@ -2196,23 +2264,28 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   const uint32_t height = (uint32_t)target.height;
   draws.viewport = (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
   uint64_t sky_root = 0u;
-  if (!vkr_metal_packet_tiled_ensure_targets(renderer, width, height) ||
+  const bool8_t multisampled = renderer->tiled_sample_count > 1u;
+  if ((multisampled &&
+       !vkr_metal_packet_tiled_ensure_targets(renderer, width, height)) ||
       !vkr_metal_packet_prepare_tiled_sky_root(
           renderer, pass, packet, upload, width, height, 15u, nil, &sky_root))
     return false_v;
   MTL4RenderPassDescriptor *descriptor =
       renderer->render_passes[prepared->index];
-  MTLRenderPassColorAttachmentDescriptor *color =
-      descriptor.colorAttachments[0];
-  color.resolveTexture = color.texture;
-  color.texture = renderer->tiled_msaa_color;
-  color.storeAction = MTLStoreActionMultisampleResolve;
-  MTLRenderPassDepthAttachmentDescriptor *depth = descriptor.depthAttachment;
-  depth.resolveTexture = depth.texture;
-  depth.texture = renderer->tiled_msaa_depth;
-  depth.storeAction = MTLStoreActionMultisampleResolve;
-  /* Reversed depth: the largest sample is the nearest surface's. */
-  depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMax;
+  /* One sample draws straight into the graph's colour and depth. */
+  if (multisampled) {
+    MTLRenderPassColorAttachmentDescriptor *color =
+        descriptor.colorAttachments[0];
+    color.resolveTexture = color.texture;
+    color.texture = renderer->tiled_msaa_color;
+    color.storeAction = MTLStoreActionMultisampleResolve;
+    MTLRenderPassDepthAttachmentDescriptor *depth = descriptor.depthAttachment;
+    depth.resolveTexture = depth.texture;
+    depth.texture = renderer->tiled_msaa_depth;
+    depth.storeAction = MTLStoreActionMultisampleResolve;
+    /* Reversed depth: the largest sample is the nearest surface's. */
+    depth.depthResolveFilter = MTLMultisampleDepthResolveFilterMax;
+  }
   descriptor.tileWidth = VKR_METAL_TILED_TILE_WIDTH;
   descriptor.tileHeight = VKR_METAL_TILED_TILE_HEIGHT;
   prepared->tiled.draws = draws;
@@ -2220,6 +2293,308 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   prepared->tiled.decals = decals;
   prepared->tiled.probes = probes;
   prepared->tiled.lighting = lighting;
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* The MetalFX upscaler's camera motion from the resolved depth at
+   binding 0 into the motion image at binding 1 (VkrMetalTiledMotionRoot). */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_motion(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> motion = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  if (!depth || !motion || !renderer->tiled_motion_pipeline ||
+      motion.width == 0u || motion.height == 0u ||
+      motion.width > UINT32_MAX || motion.height > UINT32_MAX)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalTiledMotionRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  const uint32_t width = (uint32_t)motion.width;
+  const uint32_t height = (uint32_t)motion.height;
+  const Mat4 current = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      mat4_mul(packet->temporal.jittered_projection,
+               packet->input.globals.view));
+  const Mat4 previous = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y,
+      packet->temporal.previous_view_projection);
+  *root = (VkrMetalTiledMotionRoot){
+      .reprojection = vkr_temporal_reprojection(
+          current, previous, packet->input.globals.view_position),
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .motion_texture_id = motion.gpuResourceID._impl,
+      .extent = {width, height},
+      .jitter_uv = {packet->temporal.jitter_pixels.x / (float32_t)width,
+                    packet->temporal.jitter_pixels.y / (float32_t)height},
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->tiled_motion_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(width, height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Object motion for the MetalFX upscaler: the motion view's dynamic draws
+   over the camera motion, tested against the resolved depth. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_object_motion(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    id<MTLTexture> target) API_AVAILABLE(macos(26.0)) {
+  prepared->active = true_v;
+  if (!packet->input.world || renderer->gpu_draw_count == 0u)
+    return true_v;
+  VkrMetalPacketGraphBufferInstance *state =
+      vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+  const uint32_t view =
+      vkr_render_graph_motion_view(&renderer->prepared_frame);
+  id<MTLIndirectCommandBuffer> icb =
+      renderer->active_command_slot
+          ->gpu_draw_icbs[view / renderer->gpu_draw_icb_view_group_size];
+  if (!state || !icb || !renderer->tiled_object_motion_pipeline)
+    return false_v;
+  prepared->indirect.commands = icb;
+  prepared->indirect.pipeline = renderer->tiled_object_motion_pipeline;
+  prepared->indirect.opaque_pipeline = renderer->tiled_object_motion_pipeline;
+  prepared->indirect.arguments =
+      state->resource.gpu_address +
+      (uint64_t)view * sizeof(VkrGpuDrawCompactionState);
+  prepared->indirect.viewport =
+      (MTLViewport){0.0, 0.0, target.width, target.height, 0.0, 1.0};
+  prepared->indirect.history_in_flight =
+      renderer->temporal_previous_submit_value >
+      vkr_metal_packet_completed(renderer);
+  return true_v;
+}
+
+/* Writes this frame's instance transforms by temporal index into the history
+   instance the next frame's object motion reads. */
+vkr_internal bool8_t vkr_metal_packet_prepare_temporal_transform(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketGraphBufferInstance *transforms =
+      vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+  if (!transforms || !renderer->temporal_transform_pipeline ||
+      transforms->resource.length <
+          (uint64_t)VKR_TEMPORAL_TRANSFORM_CAPACITY *
+              sizeof(VkrTemporalTransformGPU))
+    return false_v;
+  /* Without dynamic draws the pass records nothing. */
+  if (renderer->gpu_draw_count <= renderer->gpu_draw_static_count)
+    return true_v;
+  const uint32_t dynamic_count =
+      renderer->gpu_draw_count - renderer->gpu_draw_static_count;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketTemporalTransformRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketTemporalTransformRoot){
+      .instances = upload->gpu_draw_instances_gpu,
+      .transforms = transforms->resource.gpu_address,
+      .instance_count = dynamic_count,
+      .transform_capacity = VKR_TEMPORAL_TRANSFORM_CAPACITY,
+      .frame_index = packet->input.frame.frame_index,
+      .first_instance = renderer->gpu_draw_static_count,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->temporal_transform_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(dynamic_count, 1u, 1u),
+      .group_size = MTLSizeMake(64u, 1u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* The still-camera running mean: MetalFX's output at binding 0 and the
+   viewport's motion at 1 into this frame's instance of the history image at
+   2. The previous frame's instance holds the mean when that frame was still
+   and stabilized too; its read keeps the instance from the history ring
+   until this frame completes. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_stabilize(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> color = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> motion = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  const VkrRgImageUse *output_use =
+      vkr_rg_pass_find_image_use(&pass->desc, 2u, 0u);
+  id<MTLTexture> output =
+      output_use ? vkr_metal_packet_texture(renderer, output_use->image) : nil;
+  if (!color || !motion || !output || !renderer->tiled_stabilize_pipeline ||
+      output.width > UINT32_MAX || output.height > UINT32_MAX)
+    return false_v;
+  const uint32_t previous_index = renderer->temporal_previous_history_index;
+  VkrMetalPacketImage *slot = &renderer->images[output_use->image.id - 1u];
+  VkrMetalPacketImageInstance *previous =
+      renderer->temporal_previous_stabilized &&
+              previous_index != renderer->history_output_index &&
+              previous_index < slot->instance_count &&
+              slot->instances[previous_index].live
+          ? &slot->instances[previous_index]
+          : NULL;
+  id<MTLTexture> history =
+      previous ? (id<MTLTexture>)previous->resource.metal_texture : nil;
+  const bool8_t history_valid =
+      history && history.width == output.width &&
+      history.height == output.height &&
+      renderer->temporal_previous_frame_index + 1u ==
+          packet->input.frame.frame_index;
+  if (history_valid)
+    previous->last_use_submit_value =
+        Max(previous->last_use_submit_value, renderer->submit_value + 1u);
+  uint64_t root_gpu = 0u;
+  VkrMetalTiledStabilizeRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalTiledStabilizeRoot){
+      .color_texture_id = color.gpuResourceID._impl,
+      .motion_texture_id = motion.gpuResourceID._impl,
+      .history_texture_id = history_valid ? history.gpuResourceID._impl
+                                          : color.gpuResourceID._impl,
+      .output_texture_id = output.gpuResourceID._impl,
+      .extent = {(uint32_t)output.width, (uint32_t)output.height},
+      .motion_extent = {Min(renderer->prepared_frame.viewport_width,
+                            (uint32_t)motion.width),
+                        Min(renderer->prepared_frame.viewport_height,
+                            (uint32_t)motion.height)},
+      .history_scale = history_valid
+                           ? vkr_metal_packet_history_pre_exposure_scale(
+                                 renderer, packet,
+                                 renderer->temporal_previous_submit_value)
+                           : 1.0f,
+      .history_valid = history_valid ? 1u : 0u,
+  };
+  prepared->stabilize.dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->tiled_stabilize_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(output.width, output.height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->stabilize.history_in_flight =
+      history_valid && renderer->temporal_previous_submit_value >
+                           vkr_metal_packet_completed(renderer);
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* Creates MetalFX's temporal scaler from `input_width` by `input_height`
+   inputs, the viewport at dynamic resolution's largest scale, to the
+   `output_width` by `output_height` Scene output, after every submitted
+   frame that used a previous one completes. Each frame names the viewport
+   inside the inputs as its content, so dynamic-resolution steps keep the
+   scaler and its history; only a new output or capacity recreates it. */
+vkr_internal bool8_t vkr_metal_packet_tiled_ensure_temporal_scaler(
+    VkrMetalPacketRenderer *renderer, uint32_t input_width,
+    uint32_t input_height, uint32_t output_width, uint32_t output_height)
+    API_AVAILABLE(macos(26.0)) {
+  if (renderer->tiled_temporal_scaler &&
+      renderer->tiled_temporal_input_width == input_width &&
+      renderer->tiled_temporal_input_height == input_height &&
+      renderer->tiled_temporal_width == output_width &&
+      renderer->tiled_temporal_height == output_height)
+    return true_v;
+  if (renderer->tiled_temporal_unsupported)
+    return false_v;
+  if (renderer->tiled_temporal_scaler) {
+    if (!vkr_metal_packet_wait(renderer, renderer->submit_value))
+      return false_v;
+    [renderer->tiled_temporal_scaler release];
+    renderer->tiled_temporal_scaler = nil;
+  }
+  MTLFXTemporalScalerDescriptor *descriptor =
+      [MTLFXTemporalScalerDescriptor new];
+  descriptor.colorTextureFormat = MTLPixelFormatRGBA16Float;
+  descriptor.depthTextureFormat = MTLPixelFormatDepth32Float;
+  descriptor.motionTextureFormat = MTLPixelFormatRG16Float;
+  descriptor.outputTextureFormat = MTLPixelFormatRGBA16Float;
+  descriptor.inputWidth = input_width;
+  descriptor.inputHeight = input_height;
+  descriptor.outputWidth = output_width;
+  descriptor.outputHeight = output_height;
+  descriptor.autoExposureEnabled = YES;
+  descriptor.requiresSynchronousInitialization = YES;
+  /* Content from the inputs' full extent down to the device's smallest
+     supported fraction of the output. */
+  descriptor.inputContentPropertiesEnabled = YES;
+  descriptor.inputContentMinScale = Max(
+      (float)output_width / (float)input_width,
+      [MTLFXTemporalScalerDescriptor
+          supportedInputContentMinScaleForDevice:renderer->device]);
+  descriptor.inputContentMaxScale = Max(
+      descriptor.inputContentMinScale,
+      [MTLFXTemporalScalerDescriptor
+          supportedInputContentMaxScaleForDevice:renderer->device]);
+  renderer->tiled_temporal_scaler =
+      [descriptor newTemporalScalerWithDevice:renderer->device
+                                     compiler:renderer->compiler];
+  [descriptor release];
+  if (!renderer->tiled_temporal_scaler) {
+    log_error("MetalFX temporal scaler unavailable from %ux%u to %ux%u "
+              "(scale range %.3f to %.3f)",
+              input_width, input_height, output_width, output_height,
+              (float64_t)[MTLFXTemporalScalerDescriptor
+                  supportedInputContentMinScaleForDevice:renderer->device],
+              (float64_t)[MTLFXTemporalScalerDescriptor
+                  supportedInputContentMaxScaleForDevice:renderer->device]);
+    renderer->tiled_temporal_unsupported = true_v;
+    return false_v;
+  }
+  /* Graph textures are untracked: MetalFX orders its work with this fence,
+     and the next encoder waits for it. */
+  if (!renderer->tiled_temporal_fence)
+    renderer->tiled_temporal_fence = [renderer->device newFence];
+  if (!renderer->tiled_temporal_fence)
+    return false_v;
+  renderer->tiled_temporal_scaler.fence = renderer->tiled_temporal_fence;
+  renderer->tiled_temporal_input_width = input_width;
+  renderer->tiled_temporal_input_height = input_height;
+  renderer->tiled_temporal_width = output_width;
+  renderer->tiled_temporal_height = output_height;
+  return true_v;
+}
+
+/* The MetalFX pass: the internal scene at binding 0, its resolved depth at 1
+   and motion at 2, or their capacity-sized copies, reconstructed into the
+   Scene output image at 3. The viewport is the inputs' content. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_temporal(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared)
+    API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> color = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  id<MTLTexture> motion = vkr_metal_packet_pass_texture(renderer, pass, 2u);
+  id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 3u);
+  if (!color || !depth || !motion || !output || color.width > UINT32_MAX ||
+      color.height > UINT32_MAX || output.width > UINT32_MAX ||
+      output.height > UINT32_MAX)
+    return false_v;
+  if (!vkr_metal_packet_tiled_ensure_temporal_scaler(
+          renderer, (uint32_t)color.width, (uint32_t)color.height,
+          (uint32_t)output.width, (uint32_t)output.height))
+    return false_v;
+  prepared->tiled_temporal.content_width =
+      Min(renderer->prepared_frame.viewport_width, (uint32_t)color.width);
+  prepared->tiled_temporal.content_height =
+      Min(renderer->prepared_frame.viewport_height, (uint32_t)color.height);
+  prepared->tiled_temporal.color = color;
+  prepared->tiled_temporal.depth = depth;
+  prepared->tiled_temporal.motion = motion;
+  prepared->tiled_temporal.output = output;
+  prepared->tiled_temporal.jitter_x = packet->temporal.jitter_pixels.x;
+  prepared->tiled_temporal.jitter_y = packet->temporal.jitter_pixels.y;
+  prepared->tiled_temporal.pre_exposure = packet->exposure.pre_exposure;
+  prepared->tiled_temporal.reset = !packet->tiled_temporal_history_valid;
   prepared->active = true_v;
   return true_v;
 }
@@ -2363,6 +2738,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   if (kind == VKR_RG_EXECUTOR_TILED_ATMOSPHERE)
     return vkr_metal_packet_prepare_tiled_atmosphere(renderer, pass, packet,
                                                      prepared, upload, target);
+  if (kind == VKR_RG_EXECUTOR_TILED_OBJECT_MOTION)
+    return vkr_metal_packet_prepare_tiled_object_motion(renderer, pass, packet,
+                                                        prepared, target);
   if (kind == VKR_RG_EXECUTOR_TILED_PICKING)
     return vkr_metal_packet_prepare_gpu_draws(
         renderer, pass, prepared, renderer->tiled_picking_pipeline, nil);
@@ -2551,6 +2929,18 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
                                                      prepared, upload);
   case VKR_RG_EXECUTOR_HZB_BUILD:
     return vkr_metal_packet_prepare_hzb_build(renderer, pass, prepared, upload);
+  case VKR_RG_EXECUTOR_TILED_MOTION:
+    return vkr_metal_packet_prepare_tiled_motion(renderer, pass, packet,
+                                                 prepared, upload);
+  case VKR_RG_EXECUTOR_TILED_TEMPORAL:
+    return vkr_metal_packet_prepare_tiled_temporal(renderer, pass, packet,
+                                                   prepared);
+  case VKR_RG_EXECUTOR_TEMPORAL_TRANSFORM:
+    return vkr_metal_packet_prepare_temporal_transform(renderer, pass, packet,
+                                                       prepared, upload);
+  case VKR_RG_EXECUTOR_TILED_STABILIZE:
+    return vkr_metal_packet_prepare_tiled_stabilize(renderer, pass, packet,
+                                                    prepared, upload);
   case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
   case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:
   case VKR_RG_EXECUTOR_BLOOM_UPSAMPLE:
@@ -2738,6 +3128,9 @@ typedef struct VkrMetalPacketFrameSubmission {
   VkrMetalPacketGraphBufferInstance *exposure_state;
   id<MTLTexture> present;
   id<MTLTexture> shadow;
+  /* MetalFX encoded its work since the last encoder: the next one waits for
+     its fence. */
+  bool8_t tiled_temporal_fence_pending;
 } VkrMetalPacketFrameSubmission;
 
 /* Finishes pending asset uploads and makes the reserved slot this frame's
@@ -3222,7 +3615,56 @@ vkr_internal void vkr_metal_packet_record_pass_timing(
    theirs. */
 vkr_internal bool8_t
 vkr_metal_packet_pass_batchable(const VkrMetalPacketPreparedPass *prepared) {
-  return prepared->source->desc.type != VKR_RG_PASS_TYPE_GRAPHICS;
+  return prepared->source->desc.type != VKR_RG_PASS_TYPE_GRAPHICS &&
+         prepared->kind != VKR_RG_EXECUTOR_TILED_TEMPORAL;
+}
+
+/* The first encoder after MetalFX's work waits for its fence. */
+vkr_internal void vkr_metal_packet_wait_tiled_temporal(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameSubmission *submission,
+    id<MTL4CommandEncoder> encoder, MTLStages stages)
+    API_AVAILABLE(macos(26.0)) {
+  if (!submission->tiled_temporal_fence_pending)
+    return;
+  [encoder waitForFence:renderer->tiled_temporal_fence
+      beforeEncoderStages:stages];
+  submission->tiled_temporal_fence_pending = false_v;
+}
+
+/* Encodes MetalFX's temporal scaler between encoders. Its inputs' writers
+   ordered every later queue stage behind them; its readers wait for the
+   queue's dispatch work and, the first of them, for its fence. MetalFX
+   encodes no timestamps. */
+vkr_internal void vkr_metal_packet_encode_tiled_temporal(
+    VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameSubmission *submission,
+    const VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketResult *out_result) API_AVAILABLE(macos(26.0)) {
+  const float64_t pass_cpu_begin = vkr_platform_get_absolute_time();
+  if (prepared->active) {
+    id<MTL4FXTemporalScaler> scaler = renderer->tiled_temporal_scaler;
+    /* Jitter and motion are in the internal scene's pixels. */
+    const NSUInteger width = prepared->tiled_temporal.content_width;
+    const NSUInteger height = prepared->tiled_temporal.content_height;
+    scaler.colorTexture = prepared->tiled_temporal.color;
+    scaler.depthTexture = prepared->tiled_temporal.depth;
+    scaler.motionTexture = prepared->tiled_temporal.motion;
+    scaler.outputTexture = prepared->tiled_temporal.output;
+    scaler.inputContentWidth = width;
+    scaler.inputContentHeight = height;
+    scaler.jitterOffsetX = prepared->tiled_temporal.jitter_x;
+    scaler.jitterOffsetY = prepared->tiled_temporal.jitter_y;
+    scaler.motionVectorScaleX = (float)width;
+    scaler.motionVectorScaleY = (float)height;
+    scaler.preExposure = prepared->tiled_temporal.pre_exposure;
+    /* Reversed camera depth (ADR-109): zero is the farthest. */
+    scaler.depthReversed = YES;
+    scaler.reset = prepared->tiled_temporal.reset ? YES : NO;
+    [scaler encodeToCommandBuffer:renderer->command_buffer];
+    submission->tiled_temporal_fence_pending = true_v;
+  }
+  out_result->compute_pass_count++;
+  vkr_metal_packet_record_pass_timing(submission, prepared, false_v,
+                                      pass_cpu_begin, out_result);
 }
 
 vkr_internal void
@@ -3249,6 +3691,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
     return false_v;
   }
   encoder.label = prepared->label;
+  vkr_metal_packet_wait_tiled_temporal(
+      renderer, submission, encoder,
+      (MTLStages)(MTLStageVertex | MTLStageFragment | MTLStageTile));
   /* Apple GPUs run a pass's vertex and tiling work before its fragment work.
      The start stamp follows the earliest stage so the interval covers both;
      one written after the fragment stage would begin once tiling had ended. */
@@ -3335,6 +3780,9 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
     return false_v;
   }
   encoder.label = submission->prepared_passes[first].label;
+  vkr_metal_packet_wait_tiled_temporal(
+      renderer, submission, encoder,
+      (MTLStages)(MTLStageDispatch | MTLStageBlit));
   if (wait.src_stages != 0u)
     vkr_metal_dependency_encode_consumer(encoder, &wait);
 
@@ -3568,6 +4016,12 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
       ++order;
       continue;
     }
+    if (prepared->kind == VKR_RG_EXECUTOR_TILED_TEMPORAL) {
+      vkr_metal_packet_encode_tiled_temporal(renderer, submission, prepared,
+                                             out_result);
+      ++order;
+      continue;
+    }
     if (!vkr_metal_packet_pass_batchable(prepared)) {
       passed = vkr_metal_packet_encode_graph_pass(renderer, submission,
                                                   prepared, out_result);
@@ -3627,6 +4081,15 @@ vkr_internal void vkr_metal_packet_mark_frame_submitted(
     vkr_metal_packet_mark_exposure_submitted(renderer, submit_value);
   }
   vkr_metal_packet_mark_graph_buffers_submitted(renderer, submit_value);
+  /* The next frame's object motion reads this frame's transforms and
+     skinned vertices from this history instance. */
+  renderer->temporal_previous_valid = packet->tiled_temporal_enabled;
+  renderer->temporal_previous_submit_value = submit_value;
+  renderer->temporal_previous_stabilized = packet->tiled_temporal_still;
+  renderer->temporal_previous_history_index = renderer->history_output_index;
+  renderer->temporal_previous_frame_index = packet->input.frame.frame_index;
+  renderer->temporal_previous_skinning = renderer->pending_skinning_history;
+  renderer->temporal_previous_skinning.producer_submit = submit_value;
 }
 
 /* Points the command slot at the readback fields its completion decodes. */

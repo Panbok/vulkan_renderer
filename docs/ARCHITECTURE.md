@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-15
+updated: 2026-10-16
 authority: architecture
 ---
 
@@ -807,11 +807,17 @@ frames without a decal in view do not take
 resolve applies the same decals. It
 draws the 16 dynamic lights nearest the camera, 4 of them shadowed with a
 four-comparison tent each, holding the set with an incumbent bonus and fading
-lights in and out over 0.25 s, and no FXAA, screen-space effects or temporal
-history. Its
-adaptive quality lowers the internal render scale to as little as 0.65 while
-frames miss a GPU budget of 90% of the Target frame rate setting's frame
-time and upscales spatially
+lights in and out over 0.25 s, and no FXAA or screen-space effects. By
+default it renders one sample per pixel at 0.6 of each axis with a Halton
+jitter, and the MetalFX temporal scaler rebuilds the Scene at its output
+extent from colour, depth, camera motion and the motion of dynamic and
+skinned draws; a still camera averages its output over up to 32 frames
+([ADR-121](adr/121-tiled-temporal-upscaling.md)). The Upscaler setting's
+spatial choice, and devices without Metal 4 MetalFX, keep 4× MSAA and a
+spatial upscale in the tonemap pass. Its adaptive quality lowers the internal
+render scale to as little as 0.5 under MetalFX, or 0.65 under the spatial
+upscale, while frames miss a GPU budget of 90% of the Target frame rate
+setting's frame time
 ([ADR-039](adr/039-metal-internal-render-scale.md)). ADR-087 owns its passes,
 evidence and budget. The rest of this section describes the desktop
 pipeline, which only Vulkan runs.
@@ -1293,12 +1299,13 @@ vsync selects FIFO and its absence IMMEDIATE, with a FIFO fallback
 ([ADR-014](adr/014-offscreen-present-target.md)).
 
 Metal supports an explicit internal Scene scale, which the tiled pipeline's
-adaptive quality steps between 0.65 and native while its tonemap pass upscales
-spatially ([ADR-039](adr/039-metal-internal-render-scale.md), ADR-087 decision
-12). Zero-initialized renderer API callers use unit scale, and the default
-render scale is 1.0 on both backends. Neither backend has a temporal
-upscaler. Vulkan renders the Scene at unit scale and rejects any other
-scale; FSR 3.1 reconstructs at that scale only
+adaptive quality steps between its floor and the render scale setting while
+MetalFX, or the spatial tonemap, upscales it
+([ADR-039](adr/039-metal-internal-render-scale.md), ADR-087 decision 12,
+[ADR-121](adr/121-tiled-temporal-upscaling.md)). Zero-initialized renderer
+API callers use unit scale; the settings' default render scale is 0.6 on
+Metal and 1.0 on Vulkan. Vulkan renders the Scene at unit scale and rejects
+any other scale; FSR 3.1 reconstructs at that scale only
 ([ADR-052](adr/052-vulkan-fsr31-upscaling.md)).
 Forward/deferred specular antialiasing shares the perceptual-to-GGX
 roughness conversion on both backends; normal variance broadens squared GGX

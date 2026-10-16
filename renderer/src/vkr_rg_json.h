@@ -110,6 +110,13 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_BLEND_PENDING,
   VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED,
   VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING,
+  VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED,
+  VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISABLED,
+  VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STAGED,
+  VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED,
+  VKR_RG_JSON_CONDITION_TILED_OBJECT_MOTION_PENDING,
+  VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STILL,
+  VKR_RG_JSON_CONDITION_TILED_TEMPORAL_MOVING,
 } VkrRgJsonConditionKind;
 
 /**
@@ -176,8 +183,10 @@ typedef enum VkrRgJsonExtentMode {
   VKR_RG_JSON_EXTENT_MOTION_BLUR_TILES, // Ceil(Scene output / 16).
   VKR_RG_JSON_EXTENT_EDITOR_IMAGE,      // Retained editor presentation size.
   VKR_RG_JSON_EXTENT_VIEWPORT,          // Internal Scene render size.
-  VKR_RG_JSON_EXTENT_FIXED,             // The extent is a fixed size.
-  VKR_RG_JSON_EXTENT_SQUARE,            // The extent is a square size.
+  // The internal Scene size at dynamic resolution's largest scale.
+  VKR_RG_JSON_EXTENT_VIEWPORT_CAPACITY,
+  VKR_RG_JSON_EXTENT_FIXED,  // The extent is a fixed size.
+  VKR_RG_JSON_EXTENT_SQUARE, // The extent is a square size.
 } VkrRgJsonExtentMode;
 
 /**

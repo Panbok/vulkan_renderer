@@ -1947,14 +1947,16 @@ vkr_internal bool8_t vkr_metal_packet_candidate_graph_buffers(
          *out_resource_generation != 0u;
 }
 
-/* The tiled pipeline keeps no temporal history, so a skinned instance names
-   only this frame's deformation (ADR-087). */
+/* A skinned instance names this frame's deformation and, for the temporal
+   upscaler's object motion, the previous frame's when it has one. */
 vkr_internal VkrPreparedInstanceGPU vkr_metal_packet_prepare_instance(
     VkrMetalPacketRenderer *renderer, const VkrInstanceDataGPU *source) {
   VkrPreparedInstanceGPU result = vkr_gpu_prepare_instance(source);
   if (source->skinning_index) {
     result.deformation_address =
         renderer->skinning_addresses[source->skinning_index - 1u];
+    result.previous_deformation_address =
+        renderer->skinning_previous_addresses[source->skinning_index - 1u];
   }
   return result;
 }
@@ -1963,6 +1965,8 @@ vkr_internal bool8_t vkr_metal_packet_upload_skinning(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketFrameUpload *upload,
     const VkrWorldPassPayload *world, uint64_t offset) {
   MemZero(renderer->skinning_addresses, sizeof(renderer->skinning_addresses));
+  MemZero(renderer->skinning_previous_addresses,
+          sizeof(renderer->skinning_previous_addresses));
   if (!vkr_skinning_history_prepare(world,
                                     &renderer->pending_skinning_history)) {
     return false_v;
@@ -2012,6 +2016,25 @@ vkr_internal bool8_t vkr_metal_packet_upload_skinning(
     offset += palette_bytes;
     renderer->skinning_addresses[i] =
         output->resource.gpu_address + output_offset;
+    /* The last submitted frame's vertices of the same binding, in the
+       history instance it wrote, give the upscaler's object motion. */
+    if (renderer->prepared_frame.tiled_temporal_enabled &&
+        renderer->temporal_previous_valid) {
+      VkrMetalPacketGraphBufferInstance *previous =
+          vkr_metal_packet_graph_buffer_instance(
+              renderer, renderer->skinning_output_handle,
+              renderer->temporal_previous_history_index);
+      const uint64_t previous_offset = vkr_skinning_history_find(
+          &renderer->temporal_previous_skinning, source);
+      if (previous && previous != output && previous_offset != UINT64_MAX &&
+          previous_offset <= previous->resource.length &&
+          output_bytes <= previous->resource.length - previous_offset) {
+        renderer->skinning_previous_addresses[i] =
+            previous->resource.gpu_address + previous_offset;
+        previous->last_use_submit_value = Max(previous->last_use_submit_value,
+                                              renderer->submit_value + 1u);
+      }
+    }
     upload->skinning_roots[i] = (VkrMetalPacketSkinningRoot){
         .bind_vertices = gpu + vertices,
         .influences = gpu + influences,
@@ -2040,6 +2063,7 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
   const uint64_t pending_submit = renderer->submit_value + 1u;
   uint32_t packed_count = 0u;
   uint32_t unresolved_count = 0u;
+  uint32_t last_temporal_index = UINT32_MAX;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrWorldDrawCandidate *source = &sources[i];
     const VkrMeshHandle geometry = {
@@ -2060,6 +2084,14 @@ vkr_internal bool8_t vkr_metal_packet_pack_gpu_draw_stream(
         &mesh->submeshes[source->submesh_index];
     instances[packed_count] =
         vkr_metal_packet_prepare_instance(renderer, &source->instance);
+    /* The first row of an object owns its transform history entry, as the
+       desktop pipeline's packing marks it. */
+    instances[packed_count].temporal_flags =
+        ((source->submesh_index + 1u) << VKR_INSTANCE_TEMPORAL_SURFACE_SHIFT) |
+        (source->instance.temporal_index != last_temporal_index
+             ? VKR_INSTANCE_TEMPORAL_OWNER
+             : 0u);
+    last_temporal_index = source->instance.temporal_index;
     const uint32_t state_bucket =
         source->state_bucket | (instances[packed_count].normal_column0.w < 0.0f
                                     ? VKR_GPU_DRAW_STATE_MIRRORED_BIT
@@ -3365,6 +3397,11 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
       views[first_local_view + slot].excluded_candidate_flags =
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
     }
+    /* The motion view culls as the camera does; its LOD view keeps only
+       the dynamic draws (vkr_packet_write_lod_views). */
+    if (renderer->prepared_frame.tiled_temporal_enabled)
+      views[vkr_render_graph_motion_view(&renderer->prepared_frame)] =
+          views[0];
     upload->gpu_draw_views_gpu = gpu + plan->gpu_draw_views_offset;
   }
 }

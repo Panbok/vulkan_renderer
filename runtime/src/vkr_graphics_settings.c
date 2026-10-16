@@ -23,6 +23,14 @@ _Static_assert(ArrayCount(s_antialiasing_names) - 1u ==
                        VKR_ANTIALIASING_MODE_COUNT,
                "Name every anti-aliasing mode");
 
+/* Indexed by VkrTiledUpscaler. */
+static const char *const s_upscaler_names[] = {"metalfx", "spatial", NULL};
+static const char *const s_upscaler_labels[] = {"MetalFX", "Spatial", NULL};
+_Static_assert(ArrayCount(s_upscaler_names) - 1u == VKR_TILED_UPSCALER_COUNT &&
+                   ArrayCount(s_upscaler_labels) - 1u ==
+                       VKR_TILED_UPSCALER_COUNT,
+               "Name every tiled upscaler");
+
 #define GRAPHICS_OFFSET(field) (uint32_t)offsetof(VkrGraphicsSettings, field)
 
 static const VkrPropertyDesc s_graphics_properties[] = {
@@ -88,6 +96,15 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .max = 1.0f,
      .step = 0.5f,
      .display_scale = 100.0f},
+    {.name = "upscaler",
+     .label = "Upscaler",
+     .tooltip = "MetalFX rebuilds full-resolution detail from many jittered "
+                "frames; Spatial stretches each frame and smooths edges with "
+                "four samples. Applies after restart",
+     .names = s_upscaler_names,
+     .labels = s_upscaler_labels,
+     .offset = GRAPHICS_OFFSET(upscaler),
+     .kind = VKR_PROPERTY_ENUM},
     {.name = "anti_aliasing",
      .label = "Anti-aliasing",
      .tooltip = "Smooth visible edges",
@@ -235,6 +252,11 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       tiled_unused) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
+  /* Only the tiled pipeline upscales its Scene (ADR-087). */
+  if (offset == offsetof(VkrGraphicsSettings, upscaler) && state &&
+      state->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED) {
+    result.flags |= VKR_PROPERTY_STATE_HIDDEN;
+  }
   if (offset == offsetof(VkrGraphicsSettings, dynamic_resolution)) {
     if (state && !state->dynamic_resolution_available) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
@@ -289,8 +311,9 @@ const VkrTypeDesc vkr_graphics_settings_type = {
 
 VkrGraphicsSettings
 vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
-  /* Metal's tiled pipeline upscales spatially, adapting its resolution to
-     the frame (ADR-087); Vulkan's desktop pipeline renders at unit scale. */
+  /* Metal's tiled pipeline renders 0.6 of each axis and MetalFX rebuilds the
+     output, dynamic resolution lowering the scale to 0.5 for its frame
+     budget (ADR-087); Vulkan's desktop pipeline renders at unit scale. */
   return (VkrGraphicsSettings){
       .vsync = true_v,
       .hdr = false_v,
@@ -299,9 +322,9 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .dynamic_resolution_target_fps = 60u,
       .anti_aliasing = true_v,
       .antialiasing = VKR_ANTIALIASING_MODE_FSR_NATIVE,
-      /* With dynamic resolution the scale caps the controller, so Metal
-         starts uncapped and lets it choose. */
-      .render_scale = 1.0f,
+      /* With dynamic resolution the scale caps the controller. */
+      .render_scale = backend == VKR_RENDERER_BACKEND_TYPE_METAL ? 0.6f : 1.0f,
+      .upscaler = VKR_TILED_UPSCALER_METALFX,
       .shadow_quality = 2,
       .view_distance = 2,
       /* Full-resolution Bistro textures take 3.2 GB of a 16 GB Mac's 8 GiB
@@ -397,7 +420,7 @@ bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
                                                const VkrGraphicsSettings *b) {
   return a->vsync != b->vsync || a->hdr != b->hdr ||
          a->dynamic_resolution != b->dynamic_resolution ||
-         a->render_scale != b->render_scale;
+         a->render_scale != b->render_scale || a->upscaler != b->upscaler;
 }
 
 void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
@@ -407,6 +430,7 @@ void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
   settings->hdr = running->hdr;
   settings->dynamic_resolution = running->dynamic_resolution;
   settings->render_scale = running->render_scale;
+  settings->upscaler = running->upscaler;
 }
 
 float32_t vkr_graphics_settings_dynamic_resolution_budget_ms(

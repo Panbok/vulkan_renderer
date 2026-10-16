@@ -3,26 +3,41 @@
 #define VKR_TEMPORAL_CAMERA_CUT_DISTANCE 10.0f
 #define VKR_TEMPORAL_CAMERA_CUT_FORWARD_DOT 0.5f
 
+/* `view_projection` with `eye` moved to the origin: the clip position of the
+   eye-relative point. The eye's clip position is accumulated in float64 so
+   its cancellation leaves only the matrix's own rounding. */
+vkr_internal Mat4 vkr_temporal_eye_relative(Mat4 view_projection, Vec3 eye) {
+  Mat4 relative = view_projection;
+  const float64_t position[3] = {eye.x, eye.y, eye.z};
+  for (uint32_t row = 0u; row < 4u; ++row) {
+    float64_t clip = view_projection.elements[12u + row];
+    for (uint32_t column = 0u; column < 3u; ++column) {
+      clip += (float64_t)view_projection.elements[column * 4u + row] *
+              position[column];
+    }
+    relative.elements[12u + row] = (float32_t)clip;
+  }
+  return relative;
+}
+
+Mat4 vkr_temporal_reprojection(Mat4 current_view_projection,
+                               Mat4 previous_view_projection,
+                               Vec3 current_view_position) {
+  return mat4_mul(vkr_temporal_eye_relative(previous_view_projection,
+                                            current_view_position),
+                  mat4_inverse(vkr_temporal_eye_relative(
+                      current_view_projection, current_view_position)));
+}
+
 Mat4 vkr_temporal_sky_reprojection(Mat4 current_view_projection,
                                    Mat4 previous_view_projection,
                                    Vec3 current_view_position) {
   /* Move the current eye to the origin before inverting, so a reconstructed
      homogeneous point is already relative to the eye. Inverting the world
      view-projection and subtracting the eye afterwards loses the direction's
-     precision hundreds of metres from the origin. The eye's clip position is
-     accumulated in float64 so its cancellation leaves only the matrix's own
-     rounding. */
-  Mat4 current_relative = current_view_projection;
-  const float64_t eye[3] = {current_view_position.x, current_view_position.y,
-                            current_view_position.z};
-  for (uint32_t row = 0u; row < 4u; ++row) {
-    float64_t clip = current_view_projection.elements[12u + row];
-    for (uint32_t column = 0u; column < 3u; ++column) {
-      clip += (float64_t)current_view_projection.elements[column * 4u + row] *
-              eye[column];
-    }
-    current_relative.elements[12u + row] = (float32_t)clip;
-  }
+     precision hundreds of metres from the origin. */
+  const Mat4 current_relative =
+      vkr_temporal_eye_relative(current_view_projection, current_view_position);
 
   /* A zero w turns the eye-relative point into a direction, which removes
      the previous camera's translation. */
@@ -63,12 +78,9 @@ Vec2 vkr_temporal_jitter_for_frame(uint32_t frame_index, bool8_t msaa) {
   return first ? (Vec2){0.25f, 0.25f} : (Vec2){-0.25f, -0.25f};
 }
 
-/* FSR 3.1's jitter: the Halton (2, 3) sequence offset to [-0.5, 0.5) pixels.
-   At render scale 1 ffxFsr3GetJitterPhaseCount gives 8 * (output / render)^2
-   = 8 phases; 16 lowered the Bistro street's still edge error 9.58 -> 9.43
-   and its trail error in motion 13.13 -> 12.92 at no cost (ADR-052). */
-#define VKR_TEMPORAL_FSR_SEQUENCE_LENGTH 16u
-
+/* The Halton (2, 3) jitter of FSR 3.1 and MetalFX, offset to [-0.5, 0.5)
+   pixels. Its phase count comes with the frame input
+   (VKR_TEMPORAL_FSR_PHASE_COUNT, VKR_TEMPORAL_METALFX_PHASE_COUNT). */
 vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
   float32_t result = 0.0f;
   float32_t fraction = 1.0f;
@@ -80,8 +92,10 @@ vkr_internal float32_t vkr_temporal_halton(uint32_t index, uint32_t base) {
   return result;
 }
 
-vkr_internal Vec2 vkr_temporal_fsr_jitter(uint32_t frame_index) {
-  const uint32_t index = frame_index % VKR_TEMPORAL_FSR_SEQUENCE_LENGTH + 1u;
+vkr_internal Vec2 vkr_temporal_halton_jitter(uint32_t frame_index,
+                                             uint32_t phase_count) {
+  /* Phases start at index 1; index 0's (0, 0) would sample a pixel corner. */
+  const uint32_t index = frame_index % phase_count + 1u;
   return (Vec2){vkr_temporal_halton(index, 2u) - 0.5f,
                 vkr_temporal_halton(index, 3u) - 0.5f};
 }
@@ -155,6 +169,9 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
   VkrTemporalFrame frame = {
       .jittered_projection = input->projection,
       .current_view_projection = mat4_mul(input->projection, input->view),
+      .previous_view_projection =
+          state->valid ? mat4_mul(state->projection, state->view)
+                       : mat4_mul(input->projection, input->view),
       .previous_view_position =
           state->valid ? state->view_position : input->view_position,
       .reset_reasons = input->explicit_reset_reasons,
@@ -184,8 +201,10 @@ VkrTemporalFrame vkr_temporal_prepare(const VkrTemporalState *state,
     if (vkr_temporal_camera_cut(state, input))
       frame.reset_reasons |= VKR_TEMPORAL_RESET_CAMERA_CUT;
   }
-  if (input->enabled && input->width > 0u && input->height > 0u && input->fsr) {
-    frame.jitter_pixels = vkr_temporal_fsr_jitter(input->frame_index);
+  if (input->enabled && input->width > 0u && input->height > 0u &&
+      input->halton_phase_count > 0u) {
+    frame.jitter_pixels = vkr_temporal_halton_jitter(input->frame_index,
+                                                     input->halton_phase_count);
     frame.jittered_projection = vkr_temporal_jitter_projection(
         input->projection, frame.jitter_pixels, input->width, input->height);
   } else if (input->enabled && input->width > 0u && input->height > 0u) {

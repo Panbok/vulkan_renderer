@@ -149,7 +149,17 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
   const uint32_t reflection_view = frame->planar_reflection_active
                                        ? vkr_render_graph_reflection_view(frame)
                                        : UINT32_MAX;
+  const uint32_t motion_view = frame->tiled_temporal_enabled
+                                   ? vkr_render_graph_motion_view(frame)
+                                   : UINT32_MAX;
   for (uint32_t view = 1u; view < view_count; ++view) {
+    /* The motion view takes the camera's levels and culling over the
+       dynamic draws only, so it redraws the surfaces the camera drew. */
+    if (view == motion_view) {
+      out_views[view] = out_views[0];
+      out_views[view].flags |= VKR_GPU_LOD_VIEW_DYNAMIC_CASTERS_ONLY;
+      continue;
+    }
     /* The mirrored view selects levels for its own image rows from the
        mirrored eye, and culls by the camera's draw distances. */
     if (view == reflection_view) {

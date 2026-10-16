@@ -164,6 +164,14 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
      VKR_RG_JSON_CONDITION_CLOUDS_OR_FOG_APPLY_ENABLED},
     {"tiled_refraction_pending",
      VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING},
+    {"tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED},
+    {"!tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISABLED},
+    {"tiled_temporal_staged", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STAGED},
+    {"!tiled_temporal_staged", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED},
+    {"tiled_object_motion_pending",
+     VKR_RG_JSON_CONDITION_TILED_OBJECT_MOTION_PENDING},
+    {"tiled_temporal_still", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STILL},
+    {"tiled_temporal_moving", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_MOVING},
 };
 
 vkr_internal bool8_t vkr_rg_json_error(VkrRgJsonParseContext *ctx,
@@ -436,6 +444,8 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
     out_extent->mode = VKR_RG_JSON_EXTENT_EDITOR_IMAGE;
   } else if (vkr_string8_equals_cstr_i(&mode, "viewport")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_VIEWPORT;
+  } else if (vkr_string8_equals_cstr_i(&mode, "viewport_capacity")) {
+    out_extent->mode = VKR_RG_JSON_EXTENT_VIEWPORT_CAPACITY;
   } else if (vkr_string8_equals_cstr_i(&mode, "fixed")) {
     out_extent->mode = VKR_RG_JSON_EXTENT_FIXED;
   } else if (vkr_string8_equals_cstr_i(&mode, "square")) {
@@ -471,7 +481,8 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
     if (out_extent->mode != VKR_RG_JSON_EXTENT_WINDOW &&
         out_extent->mode != VKR_RG_JSON_EXTENT_SCENE_OUTPUT &&
         out_extent->mode != VKR_RG_JSON_EXTENT_EDITOR_IMAGE &&
-        out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT) {
+        out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT &&
+        out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT_CAPACITY) {
       return vkr_rg_json_error(
           ctx, field_path,
           "extent.divisor applies only to window, scene_output, and viewport "
@@ -2239,6 +2250,20 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->clouds_enabled || frame->fog_apply_enabled;
   case VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING:
     return frame->tiled_refraction_pending;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED:
+    return frame->tiled_temporal_enabled;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISABLED:
+    return !frame->tiled_temporal_enabled;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STAGED:
+    return frame->tiled_temporal_staged;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED:
+    return !frame->tiled_temporal_staged;
+  case VKR_RG_JSON_CONDITION_TILED_OBJECT_MOTION_PENDING:
+    return frame->tiled_object_motion_pending;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STILL:
+    return frame->tiled_temporal_still;
+  case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_MOVING:
+    return frame->tiled_temporal_enabled && !frame->tiled_temporal_still;
   default:
     return false_v;
   }
@@ -2452,6 +2477,12 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
         vkr_rg_json_divide_extent(frame->viewport_width, extent->divisor);
     *out_height =
         vkr_rg_json_divide_extent(frame->viewport_height, extent->divisor);
+    return true_v;
+  case VKR_RG_JSON_EXTENT_VIEWPORT_CAPACITY:
+    *out_width = vkr_rg_json_divide_extent(frame->viewport_capacity_width,
+                                           extent->divisor);
+    *out_height = vkr_rg_json_divide_extent(frame->viewport_capacity_height,
+                                            extent->divisor);
     return true_v;
   case VKR_RG_JSON_EXTENT_FIXED:
     *out_width = extent->width;

@@ -355,7 +355,8 @@ struct VkrMetalPacketFrameRoot {
   texture2d<float, access::sample> transmission_source;
   device VkrMetalPacketIblProbe *ibl_probes;
   uint ibl_probe_count;
-  uint ibl_probe_reserved;
+  // Material textures' LOD bias under the tiled temporal upscaler, else zero.
+  float texture_lod_bias;
   constant VkrMetalPacketTemporalDrawState *temporal_draw_state;
   depth2d_array<float, access::sample> local_shadow_map;
   device VkrLocalShadowView *local_shadow_views;

@@ -544,8 +544,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t scene_output_height;
   uint32_t viewport_width;  /**< Viewport width */
   uint32_t viewport_height; /**< Viewport height */
-  float32_t render_scale;   /**< Internal Scene extent / Scene output extent. */
-  bool8_t editor_enabled;   /**< Whether editor is enabled */
+  /** The viewport at dynamic resolution's largest scale, which the tiled
+      temporal upscaler's inputs hold; the viewport without it. */
+  uint32_t viewport_capacity_width;
+  uint32_t viewport_capacity_height;
+  float32_t render_scale; /**< Internal Scene extent / Scene output extent. */
+  bool8_t editor_enabled; /**< Whether editor is enabled */
   bool8_t scene_rendering;
   bool8_t skinning_enabled;
   uint32_t skinning_vertex_capacity;
@@ -683,6 +687,18 @@ typedef struct VkrRenderGraphFrameInfo {
   /** The tiled pipeline's blend has glass with a volume in view, whose
    * refraction samples a reduced copy of the scene (ADR-087). */
   bool8_t tiled_refraction_pending;
+  /** The tiled pipeline reconstructs its Halton-jittered scene with
+   * MetalFX's temporal scaler at the Scene output extent. */
+  bool8_t tiled_temporal_enabled;
+  /** The viewport is smaller than its capacity: the upscaler's inputs are
+      copied into capacity-sized images so MetalFX keeps one scaler and its
+      history across dynamic-resolution steps. */
+  bool8_t tiled_temporal_staged;
+  /** The tiled upscaler's frame has dynamic draws, whose motion and
+      transform history it records. */
+  bool8_t tiled_object_motion_pending;
+  /** The upscaled frame's camera is still (VkrPreparedFrame). */
+  bool8_t tiled_temporal_still;
   VkrTextureFormat target_color_format; /**< Present-target color format */
   VkrTextureFormat target_depth_format; /**< Present-target depth format */
   /** Access/layout each imported target attachment arrives in. */
@@ -816,10 +832,18 @@ vkr_render_graph_reflection_view(const VkrRenderGraphFrameInfo *frame) {
          frame->local_shadow_transmission_render_count;
 }
 
+/** The MetalFX upscaler's camera view of the dynamic draws, after
+    every other culling view: the object motion pass redraws them. */
 vkr_internal INLINE uint32_t
-vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+vkr_render_graph_motion_view(const VkrRenderGraphFrameInfo *frame) {
   return vkr_render_graph_reflection_view(frame) +
          (frame->planar_reflection_active ? 1u : 0u);
+}
+
+vkr_internal INLINE uint32_t
+vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+  return vkr_render_graph_motion_view(frame) +
+         (frame->tiled_temporal_enabled ? 1u : 0u);
 }
 
 /**

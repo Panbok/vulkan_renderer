@@ -90,6 +90,9 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_CLOUD_SKY_LIGHT_ROOT:
   case VKR_METAL_PACKET_ABI_DIFFUSE_VOLUME_COMPOSE_ROOT:
   case VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT:
+  case VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT:
+  case VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT:
+  case VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
     return 0;
@@ -925,7 +928,7 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
                 MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_NONE,
                 VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                 VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                VKR_METAL_TILED_SAMPLE_COUNT, constants,
+                renderer->tiled_sample_count, constants,
                 tiled_lighting[i].forward_label);
         renderer->tiled_coverage_pipelines[brdf][decals][probes][i] =
             vkr_metal_packet_create_pipeline_with_targets(
@@ -934,7 +937,7 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
                 MTLPixelFormatRGBA16Float, VKR_METAL_PACKET_BLEND_COVERAGE,
                 VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
                 VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
-                VKR_METAL_TILED_SAMPLE_COUNT, constants,
+                renderer->tiled_sample_count, constants,
                 tiled_lighting[i].coverage_label);
         complete &=
             renderer->tiled_forward_pipelines[brdf][decals][probes][i] != nil &&
@@ -1049,7 +1052,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
       "vkr_metal_tiled_sky_fragment", MTLPixelFormatRGBA16Float,
       VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
-      VKR_METAL_TILED_SAMPLE_COUNT, nil, @"VKR tiled sky");
+      renderer->tiled_sample_count, nil, @"VKR tiled sky");
   {
     MTL4LibraryFunctionDescriptor *function =
         [MTL4LibraryFunctionDescriptor new];
@@ -1059,7 +1062,7 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
         [MTL4TileRenderPipelineDescriptor new];
     descriptor.label = @"VKR tiled resolve";
     descriptor.tileFunctionDescriptor = function;
-    descriptor.rasterSampleCount = VKR_METAL_TILED_SAMPLE_COUNT;
+    descriptor.rasterSampleCount = renderer->tiled_sample_count;
     descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
     descriptor.threadgroupSizeMatchesTileSize = YES;
     NSError *error = nil;
@@ -1072,6 +1075,12 @@ vkr_internal void vkr_metal_packet_create_tiled_pipelines(
     [descriptor release];
     [function release];
   }
+  /* The MetalFX upscaler's object motion over the resolved depth. */
+  renderer->tiled_object_motion_pipeline = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_tiled_object_motion_vertex", fragment,
+      "vkr_metal_tiled_object_motion_fragment", MTLPixelFormatRG16Float,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v, @"VKR tiled object motion");
   /* World text over the glass and blended surfaces. */
   renderer->tiled_text_pipeline = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_text_vertex", fragment,
@@ -1297,6 +1306,18 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_hzb_build",
       VKR_METAL_PACKET_ABI_HZB_BUILD_ROOT, false_v,
       @"VKR Metal packet HZB build");
+  renderer->tiled_motion_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_tiled_motion",
+      VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT, false_v, @"VKR tiled motion");
+  renderer->tiled_stabilize_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_tiled_stabilize",
+      VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT, false_v,
+      @"VKR tiled stabilize");
+  renderer->temporal_transform_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_temporal_transform",
+          VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT, false_v,
+          @"VKR temporal transform history");
   renderer->exposure_clear_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_exposure_clear",
       VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
@@ -1443,6 +1464,12 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->diffuse_volume_compose_pipeline,
        "diffuse volume composition pipeline"},
       {renderer->hzb_build_pipeline, "HZB build pipeline"},
+      {renderer->tiled_motion_pipeline, "tiled motion pipeline"},
+      {renderer->temporal_transform_pipeline,
+       "temporal transform history pipeline"},
+      {renderer->tiled_stabilize_pipeline, "tiled stabilize pipeline"},
+      {renderer->tiled_object_motion_pipeline,
+       "tiled object motion pipeline"},
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
       {renderer->exposure_histogram_pipeline, "exposure histogram pipeline"},
       {renderer->exposure_resolve_pipeline, "exposure resolve pipeline"},
@@ -2616,6 +2643,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->tonemap_enabled = config->tonemap_enabled;
   renderer->dynamic_resolution_enabled = config->dynamic_resolution.enabled;
   renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
+  renderer->tiled_temporal = config->tiled_temporal;
   renderer->synchronous_validation_readback =
       config->synchronous_validation_readback;
 }
@@ -2905,6 +2933,16 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         return false_v;
       }
       renderer->device = [MTLCreateSystemDefaultDevice() retain];
+      /* MetalFX upscales a single-sample scene; the spatial upscale keeps
+         four samples. */
+      if (renderer->tiled_temporal && renderer->device &&
+          ![MTLFXTemporalScalerDescriptor supportsMetal4FX:renderer->device]) {
+        log_warn("Metal 4 MetalFX is unavailable; the tiled pipeline "
+                 "upscales spatially");
+        renderer->tiled_temporal = false_v;
+      }
+      renderer->tiled_sample_count =
+          renderer->tiled_temporal ? 1u : VKR_METAL_TILED_SAMPLE_COUNT;
       if (renderer->device &&
           ![renderer->device supportsFamily:MTLGPUFamilyApple9])
         renderer->max_samplers =

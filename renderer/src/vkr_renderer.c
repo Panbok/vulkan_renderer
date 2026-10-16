@@ -582,6 +582,9 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .target_width = width,
       .target_height = height,
       .dynamic_resolution = renderer->dynamic_resolution_config,
+      .tiled_temporal =
+          renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
+          backend_config->tiled_upscaler == VKR_TILED_UPSCALER_METALFX,
       .metal_layer = surface ? surface->metal_layer : NULL,
       .display_output_mode = backend_config->display_output_mode,
       .display_output_context = surface ? surface->context : NULL,
@@ -615,6 +618,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
     *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     return false_v;
   }
+  renderer->tiled_temporal_enabled =
+      vkr_metal_packet_renderer_tiled_temporal(renderer->metal_renderer);
   renderer->impl.caps.present_color_format =
       vkr_metal_packet_renderer_present_color_format(renderer->metal_renderer);
   vkr_metal_packet_renderer_get_asset_publisher(renderer->metal_renderer,
@@ -1057,6 +1062,94 @@ vkr_internal void vkr_renderer_backend_destroy(VkrRenderer *renderer) {
 #endif
 }
 
+/* The Metal backend still upscales with MetalFX: a failed scaler creation
+   turns later frames to the spatial upscale. */
+vkr_internal bool8_t vkr_renderer_metal_tiled_temporal(const VkrRenderer *rf) {
+#if defined(PLATFORM_APPLE)
+  return rf->metal_renderer &&
+         vkr_metal_packet_renderer_tiled_temporal(rf->metal_renderer);
+#else
+  (void)rf;
+  return false_v;
+#endif
+}
+
+/* The editor's Scene image for a prepared frame: the image rectangle while
+   the Scene renders, else the retained image fitted inside it. */
+vkr_internal void vkr_renderer_prepare_editor_image(VkrRenderer *rf,
+                                                    const VkrFrameInput *packet,
+                                                    VkrPreparedFrame *frame) {
+  frame->editor_image_available = false_v;
+  frame->editor_image_width = 1u;
+  frame->editor_image_height = 1u;
+  frame->editor_image_rect_px = (Vec4){0};
+  frame->scene_output_width = rf->scene_output_width;
+  frame->scene_output_height = rf->scene_output_height;
+  frame->render_scale = rf->render_scale;
+  if (packet->editor) {
+    const Vec4 rect = packet->editor->image_rect_px;
+    const bool8_t rendering = frame->scene_rendering;
+    if (!rendering) {
+#if defined(PLATFORM_APPLE)
+      vkr_metal_packet_renderer_retained_editor_extent(
+          rf->metal_renderer, &rf->editor_image_width,
+          &rf->editor_image_height);
+#else
+      vkr_vulkan_renderer_retained_editor_extent(rf->vulkan_renderer,
+                                                 &rf->editor_image_width,
+                                                 &rf->editor_image_height);
+#endif
+    }
+    const uint32_t width =
+        rendering ? (uint32_t)rect.z : rf->editor_image_width;
+    const uint32_t height =
+        rendering ? (uint32_t)rect.w : rf->editor_image_height;
+    frame->editor_image_available = width > 0u && height > 0u;
+    frame->editor_image_width = Max(width, 1u);
+    frame->editor_image_height = Max(height, 1u);
+    Vec4 output = rect;
+    if (!rendering && frame->editor_image_available) {
+      const float32_t scale =
+          Min(rect.z / (float32_t)width, rect.w / (float32_t)height);
+      output.z = Max(1.0f, vkr_floor_f32((float32_t)width * scale));
+      output.w = Max(1.0f, vkr_floor_f32((float32_t)height * scale));
+      output.x += vkr_floor_f32((rect.z - output.z) * 0.5f);
+      output.y += vkr_floor_f32((rect.w - output.w) * 0.5f);
+    }
+    frame->editor_image_rect_px = output;
+  }
+}
+
+/* The tiled pipeline's MetalFX state for a prepared frame, after its
+   temporal state. Dynamic resolution moves the scale below its cap, so the
+   upscaler's inputs hold the viewport at the cap. MetalFX takes a
+   dynamic-resolution step's new input content without a reset, and an output
+   resize recreates its scaler, so neither discards its history. A still
+   camera lets a running mean hold the upscaled image steady. */
+vkr_internal void vkr_renderer_prepare_tiled_temporal(VkrRenderer *rf,
+                                                      VkrPreparedFrame *frame,
+                                                      bool8_t scaled) {
+  frame->viewport_capacity_width = 0u;
+  frame->viewport_capacity_height = 0u;
+  if (frame->tiled_temporal_enabled && scaled &&
+      rf->dynamic_resolution_config.enabled) {
+    const float32_t capacity_scale = rf->dynamic_resolution_state.max_scale;
+    frame->viewport_capacity_width =
+        vkr_renderer_scaled_extent(rf->scene_output_width, capacity_scale);
+    frame->viewport_capacity_height =
+        vkr_renderer_scaled_extent(rf->scene_output_height, capacity_scale);
+  }
+  frame->tiled_temporal_history_valid =
+      frame->tiled_temporal_enabled &&
+      (frame->temporal.reset_reasons &
+       ~(uint32_t)(VKR_TEMPORAL_RESET_EXTENT_CHANGE |
+                   VKR_TEMPORAL_RESET_RESOLUTION_STEP)) == 0u;
+  frame->tiled_temporal_still =
+      frame->tiled_temporal_history_valid &&
+      MemCompare(&frame->temporal.current_view_projection,
+                 &frame->temporal.previous_view_projection, sizeof(Mat4)) == 0;
+}
+
 typedef struct VkrFramePreparation {
   VkrPreparedFrame frame;
   VkrTemporalFrameInput temporal_input;
@@ -1105,10 +1198,17 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
   const bool8_t temporal_view =
       packet->globals.render_mode == VKR_RENDER_MODE_TEMPORAL_MOTION ||
       packet->globals.render_mode == VKR_RENDER_MODE_TEMPORAL_HISTORY;
+  /* The tiled pipeline's MetalFX upscaler jitters the scene with eight
+     Halton phases and reconstructs it at the Scene output extent.
+     Orthographic views and inspection modes keep the spatial upscale. */
+  prepared->frame.tiled_temporal_enabled =
+      rf->tiled_temporal_enabled && tiled && !orthographic && default_output &&
+      vkr_renderer_metal_tiled_temporal(rf);
   const bool8_t temporal_frame =
-      rf->temporal_enabled && !tiled && !orthographic &&
-      (prepared->frame.smaa_enabled || prepared->frame.fsr31_enabled ||
-       temporal_view);
+      prepared->frame.tiled_temporal_enabled ||
+      (rf->temporal_enabled && !tiled && !orthographic &&
+       (prepared->frame.smaa_enabled || prepared->frame.fsr31_enabled ||
+        temporal_view));
   /* The display-linear target only pays off when the final pass filters. */
   const bool8_t output_filtered =
       prepared->frame.smaa_enabled || packet->globals.image_sharpness > 0.0f;
@@ -1116,45 +1216,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       rf->post_transform_cache_enabled && output_filtered &&
       prepared->frame.scene_rendering &&
       packet->globals.render_mode == VKR_RENDER_MODE_DEFAULT;
-  prepared->frame.editor_image_available = false_v;
-  prepared->frame.editor_image_width = 1u;
-  prepared->frame.editor_image_height = 1u;
-  prepared->frame.editor_image_rect_px = (Vec4){0};
-  prepared->frame.scene_output_width = rf->scene_output_width;
-  prepared->frame.scene_output_height = rf->scene_output_height;
-  prepared->frame.render_scale = rf->render_scale;
-  if (packet->editor) {
-    const Vec4 rect = packet->editor->image_rect_px;
-    const bool8_t rendering = prepared->frame.scene_rendering;
-    if (!rendering) {
-#if defined(PLATFORM_APPLE)
-      vkr_metal_packet_renderer_retained_editor_extent(
-          rf->metal_renderer, &rf->editor_image_width,
-          &rf->editor_image_height);
-#else
-      vkr_vulkan_renderer_retained_editor_extent(rf->vulkan_renderer,
-                                                 &rf->editor_image_width,
-                                                 &rf->editor_image_height);
-#endif
-    }
-    const uint32_t width =
-        rendering ? (uint32_t)rect.z : rf->editor_image_width;
-    const uint32_t height =
-        rendering ? (uint32_t)rect.w : rf->editor_image_height;
-    prepared->frame.editor_image_available = width > 0u && height > 0u;
-    prepared->frame.editor_image_width = Max(width, 1u);
-    prepared->frame.editor_image_height = Max(height, 1u);
-    Vec4 output = rect;
-    if (!rendering && prepared->frame.editor_image_available) {
-      const float32_t scale =
-          Min(rect.z / (float32_t)width, rect.w / (float32_t)height);
-      output.z = Max(1.0f, vkr_floor_f32((float32_t)width * scale));
-      output.w = Max(1.0f, vkr_floor_f32((float32_t)height * scale));
-      output.x += vkr_floor_f32((rect.z - output.z) * 0.5f);
-      output.y += vkr_floor_f32((rect.w - output.w) * 0.5f);
-    }
-    prepared->frame.editor_image_rect_px = output;
-  }
+  vkr_renderer_prepare_editor_image(rf, packet, &prepared->frame);
   if (!prepared->frame.scene_rendering) {
     if (!packet->animation_preview) {
       prepared->frame.input.world = NULL;
@@ -1252,12 +1314,17 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
           rf->temporal_reset_reasons |
           (fog_changed ? VKR_TEMPORAL_RESET_SCENE_CHANGE : 0u) |
           (fsr31_changed ? VKR_TEMPORAL_RESET_MODE_CHANGE : 0u),
+      .halton_phase_count = prepared->frame.tiled_temporal_enabled
+                                ? VKR_TEMPORAL_METALFX_PHASE_COUNT
+                            : prepared->frame.fsr31_enabled
+                                ? VKR_TEMPORAL_FSR_PHASE_COUNT
+                                : 0u,
       .enabled = temporal_frame,
       .msaa = prepared->frame.msaa_enabled,
-      .fsr = prepared->frame.fsr31_enabled,
   };
   prepared->frame.temporal =
       vkr_temporal_prepare(&rf->temporal_state, &prepared->temporal_input);
+  vkr_renderer_prepare_tiled_temporal(rf, &prepared->frame, scaled);
   if (prepared->frame.froxel_fog.grid_dimensions_cell_pixels[0])
     prepared->frame.froxel_fog.inverse_raster_view_projection =
         mat4_inverse(mat4_mul(prepared->frame.temporal.jittered_projection,
@@ -2843,6 +2910,13 @@ void vkr_renderer_flush_publications(VkrRenderer *renderer) {
 
 bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer) {
   return renderer && renderer->worker;
+}
+
+VkrTiledUpscaler vkr_renderer_tiled_upscaler(const VkrRenderer *renderer) {
+  return renderer && renderer->tiled_temporal_enabled &&
+                 vkr_renderer_metal_tiled_temporal(renderer)
+             ? VKR_TILED_UPSCALER_METALFX
+             : VKR_TILED_UPSCALER_SPATIAL;
 }
 
 bool8_t vkr_renderer_dynamic_volume_supported(const VkrRenderer *renderer) {

@@ -237,8 +237,8 @@ vkr_global const VkrMetalPacketAbiField vkr_frame_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probes, "ibl_probes", 432),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probe_count, "ibl_probe_count",
                   440),
-    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, ibl_probe_reserved,
-                  "ibl_probe_reserved", 444),
+    VKR_ABI_FIELD(VkrMetalPacketFrameRoot, texture_lod_bias, "texture_lod_bias",
+                  444),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, temporal_draw_state,
                   "temporal_draw_state", 448),
     VKR_ABI_FIELD(VkrMetalPacketFrameRoot, local_shadow_texture_id,
@@ -719,6 +719,45 @@ vkr_global const VkrMetalPacketAbiField vkr_hzb_build_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketHzbBuildRoot, reserved, "reserved", 36),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_tiled_motion_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalTiledMotionRoot, reprojection, "reprojection", 0),
+    VKR_ABI_FIELD(VkrMetalTiledMotionRoot, depth_texture_id, "depth", 64),
+    VKR_ABI_FIELD(VkrMetalTiledMotionRoot, motion_texture_id, "motion", 72),
+    VKR_ABI_FIELD(VkrMetalTiledMotionRoot, extent, "extent", 80),
+    VKR_ABI_FIELD(VkrMetalTiledMotionRoot, jitter_uv, "jitter_uv", 88),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_temporal_transform_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, instances, "instances",
+                  0),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, transforms, "transforms",
+                  8),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, instance_count,
+                  "instance_count", 16),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, transform_capacity,
+                  "transform_capacity", 20),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, frame_index,
+                  "frame_index", 24),
+    VKR_ABI_FIELD(VkrMetalPacketTemporalTransformRoot, first_instance,
+                  "first_instance", 28),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_tiled_stabilize_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, color_texture_id, "color", 0),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, motion_texture_id, "motion", 8),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, history_texture_id, "history",
+                  16),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, output_texture_id, "output", 24),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, extent, "extent", 32),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, motion_extent, "motion_extent",
+                  40),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, history_scale, "history_scale",
+                  48),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, history_valid, "history_valid",
+                  52),
+    VKR_ABI_FIELD(VkrMetalTiledStabilizeRoot, reserved, "reserved", 56),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_exposure_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketExposureRoot, histogram, "histogram", 0),
     VKR_ABI_FIELD(VkrMetalPacketExposureRoot, state, "state", 8),
@@ -884,6 +923,16 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_TILED_SKY_ROOT] =
             VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 192,
                            16, vkr_tiled_sky_root_fields),
+        [VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT] =
+            VKR_ABI_RECORD(VkrMetalTiledMotionRoot, "VkrMetalTiledMotionRoot",
+                           96, 16, vkr_tiled_motion_root_fields),
+        [VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT] = VKR_ABI_RECORD(
+            VkrMetalTiledStabilizeRoot, "VkrMetalTiledStabilizeRoot", 64, 16,
+            vkr_tiled_stabilize_root_fields),
+        [VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT] =
+            VKR_ABI_RECORD(VkrMetalPacketTemporalTransformRoot,
+                           "VkrMetalPacketTemporalTransformRoot", 32, 16,
+                           vkr_temporal_transform_root_fields),
         [VKR_METAL_PACKET_ABI_IBL_PROBE] =
             VKR_ABI_RECORD(VkrMetalPacketIblProbe, "VkrMetalPacketIblProbe", 80,
                            16, vkr_ibl_probe_fields),

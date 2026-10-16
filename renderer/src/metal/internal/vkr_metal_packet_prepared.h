@@ -51,6 +51,8 @@ typedef struct VkrMetalPacketIndirectPass {
   /* Local shadow faces clear only their atlas square before drawing. */
   MTLScissorRect clear_rect;
   bool8_t clear_depth;
+  /* Object motion: the previous frame's history may still be in flight. */
+  bool8_t history_in_flight;
   /* A camera pass's Custom graph ranges (the frame's
      VkrMetalCustomCompaction) and the slots that draw them, bit slot - 1;
      zero without Custom graphs (ADR-096). */
@@ -96,8 +98,9 @@ typedef struct VkrMetalPacketTextureCopy {
 typedef struct VkrMetalPacketTransferPass {
   VkrMetalPacketBufferCopy buffers[5];
   uint32_t buffer_count;
-  VkrMetalPacketTextureCopy texture_copy;
-  bool8_t has_texture_copy;
+  /* A shadow layer or atlas square, or the tiled upscaler's three inputs. */
+  VkrMetalPacketTextureCopy textures[3];
+  uint32_t texture_count;
 } VkrMetalPacketTransferPass;
 
 typedef struct VkrMetalPacketPreparedPass {
@@ -168,12 +171,32 @@ typedef struct VkrMetalPacketPreparedPass {
       uint64_t root;
       MTLViewport viewport;
     } tiled_atmosphere;
+    /* MetalFX's inputs and output, the viewport the inputs hold and the
+       frame's jitter in pixels (y down). */
+    struct {
+      uint32_t content_width;
+      uint32_t content_height;
+      id<MTLTexture> color;
+      id<MTLTexture> depth;
+      id<MTLTexture> motion;
+      id<MTLTexture> output;
+      float32_t jitter_x;
+      float32_t jitter_y;
+      float32_t pre_exposure;
+      bool8_t reset;
+    } tiled_temporal;
     struct {
       uint64_t root;
       MTLViewport viewport;
       MTLScissorRect scissor;
     } tonemap;
     VkrMetalPacketTransferPass transfer;
+    /* Tiled.Stabilize: the previous mean may come from a command buffer
+       still in flight. */
+    struct {
+      VkrMetalPacketDispatch dispatch;
+      bool8_t history_in_flight;
+    } stabilize;
     struct {
       id<MTLTexture> source;
       /* The picked pixel's resolved depth, copied after its object id. */

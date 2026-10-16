@@ -309,6 +309,20 @@ static void test_graphics_preferences_type(void) {
       &settings));
   assert(settings.shadow_quality == 1u);
 
+  /* Metal upscales with MetalFX from 0.6 of each axis; the choice is stored
+   * by name and takes effect at the next start. */
+  const VkrGraphicsSettings metal =
+      vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_METAL);
+  assert(metal.upscaler == VKR_TILED_UPSCALER_METALFX);
+  assert(metal.render_scale == 0.6f);
+  VkrGraphicsSettings upscaled = metal;
+  assert(vkr_graphics_settings_read_json(
+      string8_lit("{\"version\":1,\"upscaler\":\"spatial\"}"), &upscaled));
+  assert(upscaled.upscaler == VKR_TILED_UPSCALER_SPATIAL);
+  assert(vkr_graphics_settings_restart_required(&upscaled, &metal));
+  assert(!vkr_graphics_settings_read_json(
+      string8_lit("{\"version\":1,\"upscaler\":\"fsr\"}"), &upscaled));
+
   /* The anti-aliasing method defaults to FSR 3.1, is stored by name, and
    * offers nothing while anti-aliasing is off. */
   assert(settings.antialiasing == VKR_ANTIALIASING_MODE_FSR_NATIVE);

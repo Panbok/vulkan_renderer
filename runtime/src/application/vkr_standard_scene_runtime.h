@@ -111,6 +111,8 @@ typedef struct VkrStandardSceneRuntimeConfig {
   /** Valid only on Metal, whose tiled pipeline adapts its resolution
       (ADR-087). */
   VkrDynamicResolutionConfig dynamic_resolution;
+  /** VkrTiledUpscaler for the tiled pipeline; zero selects MetalFX. */
+  uint32_t tiled_upscaler;
   bool8_t capture_enabled;
   const char *bootstrap_font_directory;
   /** Largest loaded texture extent; mips above it are skipped at load. Zero

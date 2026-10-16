@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "id": "local.tiled.bistro_crowd_pan_capture",
+  "suite": "local",
+  "description": "16 animated Bistro mannequins, camera panning against five walkers, MetalFX from 0.6: final colour over 8 frames. Moving-object ghosting in camera motion.",
+  "scene": "assets/scenes/fixtures/bistro_tiled_crowd_local.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 160,
+    "measure": 8
+  },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 0.6,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "manual",
+    "manual_exposure": 0.853,
+    "exposure_compensation_ev": 0.0,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "motion_blur_entity": "Crowd A Crossing Group",
+    "motion_blur_entity_velocity": [
+      0.8077,
+      0.0,
+      -1.7252
+    ],
+    "upscaler": "metalfx"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "interpolation": "linear",
+    "keys": [
+      {
+        "t": 0,
+        "position": [
+          1.3500154,
+          3.62181449,
+          25.4996758
+        ],
+        "yaw": -154.91153,
+        "pitch": -3.12425447
+      },
+      {
+        "t": 1.0,
+        "position": [
+          1.3500154,
+          3.62181449,
+          25.4996758
+        ],
+        "yaw": -156.85153,
+        "pitch": -3.12425447
+      }
+    ],
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    }
+  ],
+  "target_image_count": 3,
+  "capture_session": "single",
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 1,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 2,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 3,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 4,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 5,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 6,
+      "channels": [
+        "final_color"
+      ]
+    },
+    {
+      "at_frame": 7,
+      "channels": [
+        "final_color"
+      ]
+    }
+  ]
+}

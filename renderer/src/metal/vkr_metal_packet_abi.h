@@ -291,7 +291,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketFrameRoot {
   uint64_t transmission_texture_id;
   uint64_t ibl_probes;
   uint32_t ibl_probe_count;
-  uint32_t ibl_probe_reserved;
+  /** Material textures' LOD bias: log2 of the render scale under the tiled
+      temporal upscaler, so surfaces keep the output's texture detail;
+      zero otherwise. */
+  float32_t texture_lod_bias;
   uint64_t temporal_draw_state;
   uint64_t local_shadow_texture_id;
   uint64_t local_shadow_views;
@@ -449,11 +452,11 @@ enum {
 };
 
 enum {
-  /* Camera, directional cascades, their dynamic-caster views, then the
-     local render slots. */
+  /* Camera, directional cascades, their dynamic-caster views, the local
+     render slots, then the MetalFX upscaler's motion view. */
   VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =
       1u + 2u * VKR_SHADOW_CASCADE_COUNT_MAX +
-      VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
+      VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX + 1u,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */
@@ -573,6 +576,75 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {
 
 _Static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
                "Metal HZB build root ABI must remain 48 bytes");
+
+/** The motion view's previous transforms and view-projections, which its
+    frame root's `temporal_draw_state` addresses; mirrors
+    VkrMetalPacketTemporalDrawState in msl/common/draw.metalh. Matrices are
+    stored as frame roots store theirs (vkr_metal_packet_slang_draw_matrix).
+    `previous_transforms` holds VkrTemporalTransformGPU rows by temporal index;
+    a row counts only when it was written at `previous_frame_index`. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalDrawState {
+  uint64_t previous_transforms;
+  uint32_t previous_transform_address_padding[2];
+  Mat4 current_view_projection;
+  Mat4 previous_view_projection;
+  uint32_t history_valid;
+  uint32_t previous_frame_index;
+  uint32_t reserved[2];
+} VkrMetalPacketTemporalDrawState;
+
+_Static_assert(sizeof(VkrMetalPacketTemporalDrawState) == 160u,
+               "Metal temporal draw state ABI drift");
+
+/** Writes the dynamic instances' transforms, `instance_count` from
+    `first_instance`, by temporal index (Temporal.TransformHistory on the
+    tiled pipeline). */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketTemporalTransformRoot {
+  uint64_t instances;
+  uint64_t transforms;
+  uint32_t instance_count;
+  uint32_t transform_capacity;
+  uint32_t frame_index;
+  uint32_t first_instance;
+} VkrMetalPacketTemporalTransformRoot;
+
+_Static_assert(sizeof(VkrMetalPacketTemporalTransformRoot) == 32u,
+               "Metal temporal transform root ABI drift");
+
+/** The still-camera running mean of MetalFX's output (Tiled.Stabilize):
+    `history_texture_id` is the previous frame's mean, its count in alpha,
+    scaled by `history_scale` to this frame's pre-exposure; `motion_extent`
+    is the viewport inside the motion image. */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledStabilizeRoot {
+  uint64_t color_texture_id;
+  uint64_t motion_texture_id;
+  uint64_t history_texture_id;
+  uint64_t output_texture_id;
+  uint32_t extent[2];
+  uint32_t motion_extent[2];
+  float32_t history_scale;
+  uint32_t history_valid;
+  uint32_t reserved[2];
+} VkrMetalTiledStabilizeRoot;
+
+_Static_assert(sizeof(VkrMetalTiledStabilizeRoot) == 64u,
+               "Metal tiled stabilize root ABI drift");
+
+/** The tiled pipeline's camera motion: `reprojection` maps the jittered
+    current clip position of a resolved depth into the previous frame's
+    unjittered clip space; the motion is the previous unjittered texture
+    coordinate minus the current one (MetalFX scales it by the extent). */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledMotionRoot {
+  Mat4 reprojection;
+  uint64_t depth_texture_id;
+  uint64_t motion_texture_id;
+  uint32_t extent[2];
+  /** The current jitter as a texture-coordinate shift, y down. */
+  float32_t jitter_uv[2];
+} VkrMetalTiledMotionRoot;
+
+_Static_assert(sizeof(VkrMetalTiledMotionRoot) == 96u,
+               "Metal tiled motion root ABI drift");
 
 /** Per-frame sky-view lookup and aerial-perspective volume builders. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketSkyBuildRoot {
@@ -910,6 +982,9 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SELECTION_OUTLINE_ROOT,
   VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT,
   VKR_METAL_PACKET_ABI_TILED_SKY_ROOT,
+  VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT,
+  VKR_METAL_PACKET_ABI_TEMPORAL_TRANSFORM_ROOT,
+  VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

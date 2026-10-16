@@ -1237,6 +1237,25 @@ vkr_internal void vkr_harness_child_update(void *state,
     VkrCapturePollResult poll = {0};
     VkrCaptureStatus status = vkr_renderer_capture_poll(
         &application->renderer, child->capture_request.request_id, &poll);
+    /* A single session arms each checkpoint on its exact frame, after the
+       previous capture publishes. A readback still in flight when the next
+       checkpoint is due would let that frame pass, so the session waits for
+       the GPU first; fixed frame steps keep the frames unchanged. */
+    const int32_t next_index = child->capture_index + 1;
+    if (status == VKR_CAPTURE_STATUS_PENDING &&
+        child->case_manifest->single_capture_session &&
+        next_index < (int32_t)child->case_manifest->capture_count &&
+        child->completed_frames + 1u >=
+            child->case_manifest->warmup_frames +
+                child->case_manifest->captures[next_index].at_frame) {
+      if (vkr_renderer_wait_idle(&application->renderer) !=
+          VKR_RENDERER_ERROR_NONE) {
+        vkr_harness_child_fail(application, "capture.wait_failed");
+        return;
+      }
+      status = vkr_renderer_capture_poll(
+          &application->renderer, child->capture_request.request_id, &poll);
+    }
     if (status == VKR_CAPTURE_STATUS_READY) {
       if (!vkr_harness_capture_publish(
               child->run_dir,
@@ -1260,7 +1279,6 @@ vkr_internal void vkr_harness_child_update(void *state,
             sizeof(child->capture_report->captures[i].comparison_status),
             "not_run");
       }
-      const int32_t next_index = child->capture_index + 1;
       if (child->case_manifest->single_capture_session &&
           next_index < (int32_t)child->case_manifest->capture_count) {
         /* The same replay continues toward the next checkpoint. */
@@ -1568,6 +1586,10 @@ vkr_internal VkrStandardSceneRuntimeConfig vkr_harness_child_application_config(
               ? VKR_DISPLAY_OUTPUT_AUTO_EXTENDED_LINEAR
               : VKR_DISPLAY_OUTPUT_SDR,
       .render_scale = case_manifest->renderer.render_scale,
+      .tiled_upscaler =
+          string_equals(case_manifest->renderer.upscaler, "metalfx")
+              ? VKR_TILED_UPSCALER_METALFX
+              : VKR_TILED_UPSCALER_SPATIAL,
       .texture_max_load_dimension =
           case_manifest->renderer.texture_max_load_dimension,
       .dynamic_resolution =

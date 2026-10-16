@@ -1001,6 +1001,17 @@ typedef struct VkrRendererBootMetrics {
   uint64_t graph_ns;
 } VkrRendererBootMetrics;
 
+/** The tiled pipeline's upscaler (ADR-087, ADR-039). MetalFX's temporal
+ * scaler reconstructs the Scene output from a jittered single-sample scene
+ * with object motion; the spatial upscale samples a four-sample scene. A
+ * device without Metal 4 MetalFX takes the spatial upscale. The desktop
+ * pipeline ignores it. */
+typedef enum VkrTiledUpscaler {
+  VKR_TILED_UPSCALER_METALFX = 0,
+  VKR_TILED_UPSCALER_SPATIAL = 1,
+  VKR_TILED_UPSCALER_COUNT,
+} VkrTiledUpscaler;
+
 typedef struct VkrRendererBackendConfig {
   const char *application_name;
   VkrRendererBootMetrics *boot_metrics;
@@ -1013,6 +1024,9 @@ typedef struct VkrRendererBackendConfig {
   /** Valid only on Metal, whose tiled pipeline steps the resolution of its
    * spatial upscale (ADR-087). */
   VkrDynamicResolutionConfig dynamic_resolution;
+  /** VkrTiledUpscaler; zero selects MetalFX. Fixed for the renderer's
+   * lifetime: the tiled pipeline's sample count follows it. */
+  uint32_t tiled_upscaler;
   bool8_t capture_enabled;
   /** Diagnostic-only API validation. Never part of a performance profile. */
   bool8_t validation_enabled;
@@ -1382,6 +1396,10 @@ bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer);
  * desktop pipeline on a device with ray queries. Fixed once the renderer is
  * created. */
 bool8_t vkr_renderer_dynamic_volume_supported(const VkrRenderer *renderer);
+/** The tiled pipeline's upscaler in effect: the requested one, or the
+ * spatial upscale where the device lacks Metal 4 MetalFX. Fixed once the
+ * renderer is created; the desktop pipeline reports the spatial upscale. */
+VkrTiledUpscaler vkr_renderer_tiled_upscaler(const VkrRenderer *renderer);
 /** Probes the dynamic volume layer may trace next frame: as many as its GPU
     time budget affords at the cost the renderer last measured, zero where
     the layer is unsupported (ADR-119). */

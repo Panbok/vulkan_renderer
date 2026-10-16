@@ -171,6 +171,81 @@ vkr_internal void test_temporal_sequence_repeats(void) {
   printf("  test_temporal_sequence_repeats PASSED\n");
 }
 
+vkr_internal void test_temporal_halton_jitter(void) {
+  printf("  Running test_temporal_halton_jitter...\n");
+  /* Halton (2, 3) indices 1 to 8 minus one half: the published sequence
+     1/2, 1/4, 3/4, ... and 1/3, 2/3, 1/9, ... */
+  const float32_t expected[8][2] = {
+      {0.5f, 1.0f / 3.0f},   {0.25f, 2.0f / 3.0f},   {0.75f, 1.0f / 9.0f},
+      {0.125f, 4.0f / 9.0f}, {0.625f, 7.0f / 9.0f},  {0.375f, 2.0f / 9.0f},
+      {0.875f, 5.0f / 9.0f}, {0.0625f, 8.0f / 9.0f},
+  };
+  VkrTemporalState state = {0};
+  for (uint32_t frame = 0u; frame < 2u * VKR_TEMPORAL_METALFX_PHASE_COUNT;
+       ++frame) {
+    VkrTemporalFrameInput input = temporal_input(frame);
+    input.halton_phase_count = VKR_TEMPORAL_METALFX_PHASE_COUNT;
+    const VkrTemporalFrame result = vkr_temporal_prepare(&state, &input);
+    const uint32_t phase = frame % VKR_TEMPORAL_METALFX_PHASE_COUNT;
+    assert(fabsf(result.jitter_pixels.x - (expected[phase][0] - 0.5f)) < 1e-6f);
+    assert(fabsf(result.jitter_pixels.y - (expected[phase][1] - 0.5f)) < 1e-6f);
+    /* No SMAA rows apply to a Halton jitter. */
+    assert(result.smaa_subsample_indices.x == 0.0f);
+  }
+  printf("  test_temporal_halton_jitter PASSED\n");
+}
+
+/* The motion pass maps a rasterized depth through the jittered current
+   camera into the previous camera. Far from the origin the eye-relative
+   inversion must still place the point where projecting it with the previous
+   camera does, within a tenth of a 1080p pixel. */
+vkr_internal void test_temporal_reprojection(void) {
+  printf("  Running test_temporal_reprojection...\n");
+  const Vec3 eye = {4000.0f, 20.0f, -3000.0f};
+  const Mat4 projection = mat4_perspective_reversed(
+      vkr_to_radians(70.0f), 16.0f / 9.0f, 0.1f, 1000.0f);
+  const Mat4 view = mat4_look_at(eye, vec3_add(eye, (Vec3){0.3f, -0.1f, -1.0f}),
+                                 (Vec3){0.0f, 1.0f, 0.0f});
+  const Vec3 previous_eye = vec3_add(eye, (Vec3){-0.4f, 0.05f, 0.3f});
+  const Mat4 previous_view = mat4_look_at(
+      previous_eye, vec3_add(previous_eye, (Vec3){0.32f, -0.1f, -1.0f}),
+      (Vec3){0.0f, 1.0f, 0.0f});
+  VkrTemporalState state = {0};
+  VkrTemporalFrameInput input = temporal_input(3u);
+  input.view = view;
+  input.projection = projection;
+  input.view_position = eye;
+  input.halton_phase_count = VKR_TEMPORAL_METALFX_PHASE_COUNT;
+  const VkrTemporalFrame frame = vkr_temporal_prepare(&state, &input);
+  const Mat4 current = mat4_mul(frame.jittered_projection, view);
+  const Mat4 previous = mat4_mul(projection, previous_view);
+  const Mat4 reprojection = vkr_temporal_reprojection(current, previous, eye);
+  const Vec3 offsets[] = {
+      {2.0f, -1.0f, -10.0f}, {-6.0f, 3.0f, -40.0f}, {0.5f, -1.5f, -2.5f}};
+  for (uint32_t i = 0u; i < ArrayCount(offsets); ++i) {
+    const Vec3 point = vec3_add(eye, offsets[i]);
+    /* The oracle projects each point in double precision. */
+    float64_t clip[4] = {0.0, 0.0, 0.0, 0.0};
+    float64_t expected[4] = {0.0, 0.0, 0.0, 0.0};
+    const float64_t world[4] = {point.x, point.y, point.z, 1.0};
+    for (uint32_t row = 0u; row < 4u; ++row) {
+      for (uint32_t column = 0u; column < 4u; ++column) {
+        clip[row] +=
+            (float64_t)current.elements[column * 4u + row] * world[column];
+        expected[row] +=
+            (float64_t)previous.elements[column * 4u + row] * world[column];
+      }
+    }
+    const Vec4 raster = {(float32_t)(clip[0] / clip[3]),
+                         (float32_t)(clip[1] / clip[3]),
+                         (float32_t)(clip[2] / clip[3]), 1.0f};
+    const Vec4 result = mat4_mul_vec4(reprojection, raster);
+    assert(fabs(result.x / result.w - expected[0] / expected[3]) < 2e-4);
+    assert(fabs(result.y / result.w - expected[1] / expected[3]) < 2e-4);
+  }
+  printf("  test_temporal_reprojection PASSED\n");
+}
+
 vkr_internal void test_temporal_rotation_cut(void) {
   printf("  Running test_temporal_rotation_cut...\n");
   VkrTemporalState state = {0};
@@ -714,6 +789,8 @@ bool32_t run_temporal_tests(void) {
   test_froxel_fog_history_survives_refits();
   test_temporal_reset_reasons();
   test_temporal_sequence_repeats();
+  test_temporal_halton_jitter();
+  test_temporal_reprojection();
   test_temporal_rotation_cut();
   test_temporal_sky_reprojection();
   test_temporal_orthographic_sky_reprojection();

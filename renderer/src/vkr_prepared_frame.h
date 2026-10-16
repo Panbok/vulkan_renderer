@@ -22,6 +22,18 @@ typedef struct VkrPreparedFrame {
       the scene's HDR colour is reconstructed at its own resolution before
       post-processing. */
   bool8_t fsr31_enabled;
+  /** The tiled pipeline's MetalFX temporal scaler reconstructs the jittered
+      scene at the Scene output extent: the renderer upscales with MetalFX,
+      the camera is perspective and the render mode is the default. */
+  bool8_t tiled_temporal_enabled;
+  /** MetalFX's history follows from the previous frame: temporal history
+      is valid but for a dynamic-resolution step, whose new input content
+      MetalFX takes without a reset (an output resize recreates the
+      scaler). */
+  bool8_t tiled_temporal_history_valid;
+  /** The upscaled frame's camera has not moved since the previous frame:
+      a running mean holds MetalFX's output steady against its jitter. */
+  bool8_t tiled_temporal_still;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its
@@ -33,6 +45,10 @@ typedef struct VkrPreparedFrame {
   /** Authoritative reconstructed Scene extent and internal render scale. */
   uint32_t scene_output_width;
   uint32_t scene_output_height;
+  /** The internal Scene extent at dynamic resolution's largest scale; zero
+      takes the viewport. */
+  uint32_t viewport_capacity_width;
+  uint32_t viewport_capacity_height;
   float32_t render_scale;
   VkrTemporalFrame temporal;
   VkrExposureFrame exposure;

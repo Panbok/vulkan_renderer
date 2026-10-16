@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-16
 authority: adr
 ---
 
@@ -26,21 +26,26 @@ range `vkr_renderer_render_scale_range` reports. Only the Metal tiled pipeline
 scales the Scene. Vulkan rejects non-unit scale and always renders the Scene at
 unit scale; Vulkan FSR 3.1, which scaled it temporally, was removed
 ([ADR-052](052-vulkan-fsr31-upscaling.md)). The default render scale is 1.0 on
-both backends. Keep native physical output and UI extent separate from
+Vulkan and 0.6 on Metal, where MetalFX upscales the tiled Scene
+([ADR-121](121-tiled-temporal-upscaling.md)). Keep native physical output and UI extent separate from
 the Scene presentation extent: whole target in direct mode or the dock-owned
 panel in editor mode.
 
 Spatial mode rounds Scene output dimensions times scale to the nearest
 internal pixel, with a minimum of one. Viewport-domain graph resources use
-that internal extent. On Metal the tiled pipeline's tonemap pass samples the
-internal HDR and upscales it spatially to the output; UI composes afterward at
-native resolution.
+that internal extent. On Metal the MetalFX temporal scaler rebuilds the
+internal HDR at the output extent (ADR-121); with the spatial upscaler, or a
+frame outside MetalFX's eligibility, the tiled pipeline's tonemap pass samples
+the internal HDR and upscales it spatially. UI composes afterward at native
+resolution.
 
 Picking maps physical target/panel coordinates to the internal extent using the
 same authoritative viewport mapping as camera aspect, gizmos and composition.
 A scale or extent change recreates the viewport-sized graph images and restarts
 their histories; on the tiled pipeline these are the cloud and HZB histories.
-ADR-087 (decision 12) owns dynamic scale changes. The harness includes scale and
+MetalFX keeps its history across adaptive-quality steps by reading the
+viewport from capacity-sized inputs (ADR-121). ADR-087 (decision 12) owns
+dynamic scale changes. The harness includes scale and
 both extents in workload identity and capture/report metadata.
 
 ## Consequences

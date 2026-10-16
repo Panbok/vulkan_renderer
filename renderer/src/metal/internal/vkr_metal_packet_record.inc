@@ -105,6 +105,16 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
+  case VKR_RG_EXECUTOR_TILED_STABILIZE:
+    /* The previous mean comes from an earlier command buffer, which Metal 4
+       does not order. */
+    if (pass->stabilize.history_in_flight)
+      [encoder barrierAfterQueueStages:MTLStageDispatch
+                          beforeStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    vkr_metal_packet_record_dispatch(renderer, encoder,
+                                     &pass->stabilize.dispatch);
+    break;
   case VKR_RG_EXECUTOR_SKINNING:
     for (uint32_t i = 0u; i < pass->skinning.count; ++i) {
       const VkrMetalPacketDispatch dispatch = {
@@ -476,10 +486,46 @@ vkr_internal void vkr_metal_packet_record_tiled_atmosphere(
               vertexCount:3u];
 }
 
+/* Object motion for the MetalFX upscaler. The previous frame's transforms
+   and skinned vertices come from an earlier command buffer, which Metal 4
+   does not order, so while it may still run the draws wait for the queue's
+   earlier dispatches. Their history instances count as used by this frame,
+   so no later frame rewrites them before it completes. The draws test the
+   resolved depth biased toward the camera by about a pixel's slope; a
+   moving surface overwrites the camera motion where it is the nearest. */
+vkr_internal void vkr_metal_packet_record_tiled_object_motion(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
+  const VkrMetalPacketIndirectPass *draw = &pass->indirect;
+  if (!draw->commands)
+    return;
+  if (draw->history_in_flight)
+    [encoder barrierAfterQueueStages:MTLStageDispatch
+                        beforeStages:MTLStageVertex
+                   visibilityOptions:MTL4VisibilityOptionDevice];
+  [encoder setViewport:draw->viewport];
+  [encoder setDepthStencilState:renderer->depth_read_state];
+  [encoder setDepthBias:16.0f slopeScale:1.0f clamp:0.0f];
+  [encoder setRenderPipelineState:draw->pipeline];
+  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+       ++bucket) {
+    [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+    [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                       ? MTLWindingClockwise
+                                       : MTLWindingCounterClockwise];
+    [encoder executeCommandsInBuffer:draw->commands
+                      indirectBuffer:draw->arguments +
+                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
+  }
+}
+
 vkr_internal void vkr_metal_packet_record_graphics_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
   switch (pass->kind) {
+  case VKR_RG_EXECUTOR_TILED_OBJECT_MOTION:
+    vkr_metal_packet_record_tiled_object_motion(renderer, encoder, pass);
+    break;
   case VKR_RG_EXECUTOR_TILED_OPAQUE:
     vkr_metal_packet_record_tiled_opaque(renderer, encoder, pass);
     break;

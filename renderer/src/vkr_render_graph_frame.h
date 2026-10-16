@@ -154,6 +154,17 @@ typedef enum VkrRgExecutorKind {
   /** Copies the finished far pending image into the far cascade's static
    * layer. */
   VKR_RG_EXECUTOR_SHADOW_FAR_PUBLISH,
+  /** The tiled pipeline's camera motion from its resolved depth, and the
+   * MetalFX temporal scaler over its jittered scene. */
+  VKR_RG_EXECUTOR_TILED_MOTION,
+  VKR_RG_EXECUTOR_TILED_TEMPORAL,
+  /** The MetalFX upscaler's moving draws over the camera motion. */
+  VKR_RG_EXECUTOR_TILED_OBJECT_MOTION,
+  /** Copies the upscaler's inputs into capacity-sized images while dynamic
+   * resolution renders below its cap. */
+  VKR_RG_EXECUTOR_TILED_TEMPORAL_STAGE,
+  /** Holds the upscaled output steady while the camera is still. */
+  VKR_RG_EXECUTOR_TILED_STABILIZE,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-16
 authority: adr
 ---
 # ADR-027: Immediate-mode grid UI with retained CPU state
@@ -554,7 +554,10 @@ Vulkan always renders the Scene at unit scale, so render scale is disabled
 there and the Scene percentage reads 100%. Dynamic resolution
 exists only on Metal, as the tiled pipeline's adaptive quality (ADR-087,
 decision 12). With it on, the render scale caps the scale the controller
-chooses, so Metal defaults to 1.0. The frame limit is read every frame. Other
+chooses; Metal defaults to 0.6, from which MetalFX rebuilds the Scene. The
+Upscaler setting, shown only on the tiled pipeline, chooses MetalFX or the
+spatial upscale and applies after a restart
+([ADR-121](121-tiled-temporal-upscaling.md)). The frame limit is read every frame. Other
 controls apply to live frame state; lighting changes invalidate the relevant
 shadow and temporal histories.
 

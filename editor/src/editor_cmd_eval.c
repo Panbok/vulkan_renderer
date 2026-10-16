@@ -112,13 +112,15 @@ static const char *const eval_ui_members[] = {
     "maximized",      "icons",         "icons_shown", "icons_occluded",
     "resolve_fights", "view",          NULL};
 static const char *const eval_gfx_members[] = {
-    "render_scale", "dynamic",
-    "vsync",        "preset",
-    "restart",      "invert_mouse_y",
-    "high_dpi",     "texture_resolution",
-    "target_fps",   NULL};
+    "render_scale", "dynamic",        "vsync",    "preset",
+    "restart",      "invert_mouse_y", "high_dpi", "texture_resolution",
+    "target_fps",   "upscaler",       NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
+/* Indexed by VkrTiledUpscaler, as the graphics setting names them. */
+static const char *const eval_gfx_upscalers[] = {"metalfx", "spatial", NULL};
+_Static_assert(ArrayCount(eval_gfx_upscalers) - 1u == VKR_TILED_UPSCALER_COUNT,
+               "Name every tiled upscaler");
 static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
                                                  NULL};
@@ -693,6 +695,11 @@ static bool8_t eval_gfx_member(Eval *eval, String8 name, Value *out) {
     return true_v;
   case 8:
     *out = eval_number(settings->dynamic_resolution_target_fps);
+    return true_v;
+  case 9:
+    if (settings->upscaler >= VKR_TILED_UPSCALER_COUNT)
+      break;
+    *out = eval_string("%s", eval_gfx_upscalers[settings->upscaler]);
     return true_v;
   default:
     break;
@@ -1579,6 +1586,15 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
         return eval_fail(eval, "Use a target frame rate from 30 to 240");
       settings.dynamic_resolution_target_fps =
           (uint32_t)vkr_round_f64(value->number);
+    } else if (index == 9 &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member)) {
+      /* The tiled pipeline's upscaler; it applies after a restart. */
+      const int32_t upscaler = eval_word_index(
+          eval_gfx_upscalers, (String8){.str = (uint8_t *)value->text,
+                                        .length = string_length(value->text)});
+      if (upscaler < 0)
+        return eval_fail(eval, "Use \"metalfx\" or \"spatial\"");
+      settings.upscaler = (uint32_t)upscaler;
     } else {
       return eval->error[0] ? false_v
                             : eval_fail(eval, "Cannot assign gfx.%.*s",
