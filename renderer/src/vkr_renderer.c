@@ -107,6 +107,10 @@ void vkr_renderer_join_render_thread(const VkrRenderer *renderer) {
 vkr_internal void *vkr_renderer_worker_main(void *arg) {
   VkrRenderer *renderer = arg;
   VkrRendererWorker *worker = renderer->worker;
+  /* The main thread, interactive from process start, waits for this one
+     every frame; a created thread starts at the default class, where other
+     processes' default-class work time-slices it. */
+  (void)vkr_thread_set_interactive();
   vkr_mutex_lock(worker->mutex);
   for (;;) {
     while (!worker->stop &&

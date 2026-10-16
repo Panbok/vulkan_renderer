@@ -3,6 +3,7 @@
 #include "platform/vkr_platform.h"
 
 #if defined(PLATFORM_APPLE)
+#include <pthread.h>
 #include <sched.h>
 #include <unistd.h>
 
@@ -170,6 +171,10 @@ void vkr_thread_sleep(uint64_t milliseconds) {
 }
 
 void vkr_thread_yield(void) { sched_yield(); }
+
+bool32_t vkr_thread_set_interactive(void) {
+  return pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0) == 0;
+}
 
 VkrThreadId vkr_thread_get_id(VkrThread thread) {
   if (thread == NULL) {

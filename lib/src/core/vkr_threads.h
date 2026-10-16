@@ -112,6 +112,18 @@ void vkr_thread_sleep(uint64_t milliseconds);
 void vkr_thread_yield(void);
 
 /**
+ * @brief Raises the calling thread to the platform's interactive scheduling
+ * class.
+ *
+ * For the few threads whose latency bounds a frame, such as the render
+ * thread the main thread waits for. A created thread starts at the default
+ * class, where equal-priority work in other processes time-slices it and a
+ * frame waits for a quantum.
+ * @return true_v when the platform accepted the request.
+ */
+bool32_t vkr_thread_set_interactive(void);
+
+/**
  * @brief Retrieves the id of the provided thread handle.
  * @param thread VkrThread to query.
  * @return Thread id on success, 0 on failure.

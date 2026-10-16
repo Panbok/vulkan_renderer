@@ -158,6 +158,11 @@ void vkr_thread_sleep(uint64_t milliseconds) {
 
 void vkr_thread_yield(void) { SwitchToThread(); }
 
+bool32_t vkr_thread_set_interactive(void) {
+  return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) !=
+         0;
+}
+
 VkrThreadId vkr_thread_get_id(VkrThread thread) {
   if (thread == NULL) {
     return 0;
