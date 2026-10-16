@@ -1626,23 +1626,69 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
 #define VKR_VULKAN_SUN_RAY_RANGE_FADE_START 40.0f
 #define VKR_VULKAN_SUN_RAY_LENGTH 1000.0f
 
-/* Shadow.SunRay (`resolve` false) traces the trace texture at binding 16;
-   Shadow.SunRayResolve filters it into the mask at binding 17. */
+/* The sun cascade filter's and contact march's noise phase: the temporal
+   resolve averages the phases FSR 3.1 or SMAA T2x step through; without one
+   the kernel stays fixed. */
+vkr_internal uint32_t vkr_vk_sun_noise_index(const VkrPreparedFrame *packet) {
+  if (!packet->temporal.enabled) {
+    return 0u;
+  }
+  const uint32_t phases = packet->fsr31_enabled ? VKR_TEMPORAL_FSR_PHASE_COUNT
+                                                : VKR_TEMPORAL_SEQUENCE_LENGTH;
+  return packet->input.frame.frame_index % phases;
+}
+
+/* Shadow.SunRay traces into the trace texture at binding 16;
+   Shadow.SunRayResolve filters it into the mask at binding 17;
+   Shadow.SunRayTemporal accumulates the mask with the history at binding 19
+   along the motion at 11 and its validity at 12 into the lighting mask at 18
+   and the next history at 20, which Shadow.SunRayHistory copies over 19. */
 bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedCompute *prepared,
-                                      const VkrRgPass *pass, bool8_t resolve) {
+                                      const VkrRgPass *pass,
+                                      VkrVulkanSunRayStage stage) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   uint32_t vbuffer = 0u, depth = 0u, normal = 0u, trace = 0u, mask = 0u;
+  uint32_t motion = 0u, validity = 0u, history = 0u, history_next = 0u;
+  uint32_t temporal = 0u;
   VkrVulkanGraphBufferInstance *visible =
       vkr_vk_deferred_buffer(renderer, pass, 13u);
   if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
       !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
-      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &trace) ||
-      (resolve && !vkr_vk_deferred_storage_index(renderer, pass, 17u, &mask)) ||
-      !visible || !slot->gpu_candidate_buffer)
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) || !visible ||
+      !slot->gpu_candidate_buffer)
     return false_v;
+  if (stage != VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &trace))
+    return false_v;
+  if (stage != VKR_VULKAN_SUN_RAY_STAGE_TRACE &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 17u, &mask))
+    return false_v;
+  bool8_t history_valid = false_v;
+  if (stage == VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL) {
+    const VkrRgImageUse *history_use =
+        vkr_rg_pass_find_image_use(&pass->desc, 19u, 0u);
+    VkrVulkanGraphImageInstance *history_image =
+        history_use ? vkr_vk_deferred_image(renderer, history_use->image)
+                    : NULL;
+    if (!history_image ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 11u, &motion) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 12u, &validity) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 18u, &temporal) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 19u, &history) ||
+        !vkr_vk_deferred_storage_index(renderer, pass, 20u, &history_next))
+      return false_v;
+    /* The history holds the previous submit's result in this image, and the
+       camera's history is continuous; anything else starts over. */
+    const VkImage image = history_image->image.handle;
+    history_valid =
+        renderer->graph->packet->temporal.history_valid &&
+        renderer->sun_ray_history_submit == renderer->submit_value &&
+        renderer->sun_ray_history_image == image;
+    renderer->sun_ray_history_submit = renderer->submit_value + 1u;
+    renderer->sun_ray_history_image = image;
+  }
   const VkrPreparedFrame *packet = renderer->graph->packet;
   const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
                                         packet->input.globals.view);
@@ -1679,25 +1725,40 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
       /* A half-rate trace covers every 2x2 block, the last one partly. */
       .trace_extent = {half ? (width + 1u) / 2u : width,
                        half ? (height + 1u) / 2u : height},
-      /* Without a built TLAS the trace stores no sample and lighting keeps
-         the cascades. */
+      /* Without a built TLAS that holds every row the trace stores no
+         sample and lighting keeps the cascades, so casters whose BLAS is
+         still queued after a load do not lose their shadow. */
       .flags = (half ? VKR_VULKAN_SUN_RAY_HALF : 0u) |
-               (slot->volume_build_ready ? VKR_VULKAN_SUN_RAY_TLAS : 0u),
+               (slot->volume_build_ready && slot->tlas_missing_rows == 0u
+                    ? VKR_VULKAN_SUN_RAY_TLAS
+                    : 0u),
       .frame_index = packet->input.frame.frame_index,
       .range_fade_start = VKR_VULKAN_SUN_RAY_RANGE_FADE_START,
       .range_end = VKR_VULKAN_SUN_RAY_RANGE_END,
       .ray_length = VKR_VULKAN_SUN_RAY_LENGTH,
+      .motion_texture = motion,
+      .validity_texture = validity,
+      .history_texture = history,
+      .history_next_texture = history_next,
+      .temporal_texture = temporal,
+      .history_valid = history_valid ? 1u : 0u,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanSunRayShadowRoot),
                                  &prepared->root_address))
     return false_v;
-  const uint32_t *dispatch = resolve ? root.extent : root.trace_extent;
-  const VkrVulkanVolumePipeline pipeline =
-      resolve ? VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE
-              : VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE;
+  const uint32_t *dispatch =
+      stage == VKR_VULKAN_SUN_RAY_STAGE_TRACE ? root.trace_extent : root.extent;
+  const VkrVulkanVolumePipeline pipelines[] = {
+      [VKR_VULKAN_SUN_RAY_STAGE_TRACE] =
+          VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE,
+      [VKR_VULKAN_SUN_RAY_STAGE_RESOLVE] =
+          VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE,
+      [VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL] =
+          VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TEMPORAL,
+  };
   prepared->pipelines[prepared->dispatch_count] =
-      renderer->volume_pipelines[pipeline];
+      renderer->volume_pipelines[pipelines[stage]];
   prepared->groups[prepared->dispatch_count][0] = (dispatch[0] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][1] = (dispatch[1] + 7u) / 8u;
   prepared->groups[prepared->dispatch_count][2] = 1u;
@@ -1900,6 +1961,8 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .side_vbuffer_texture = side_vbuffer,
       .sample1_pixels = sample1_pixels ? sample1_pixels->buffer.address : 0u,
       .sun_ray_shadow_texture = sun_ray_shadow,
+      .sun_noise_index = vkr_vk_sun_noise_index(packet),
+      .sun_contact = renderer->prepared_frame.sun_contact_shadows ? 1u : 0u,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),

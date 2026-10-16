@@ -1852,6 +1852,7 @@ uint64_t vkr_vk_graph_upload_bound(VkrVulkanRenderer *renderer,
       break;
     case VKR_RG_EXECUTOR_SUN_RAY_TRACE:
     case VKR_RG_EXECUTOR_SUN_RAY_RESOLVE:
+    case VKR_RG_EXECUTOR_SUN_RAY_TEMPORAL:
       bytes += sizeof(VkrVulkanPacketFrameRoot);
       break;
     case VKR_RG_EXECUTOR_VOLUME_BUILD:
@@ -2045,10 +2046,13 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_local_shadow_mask(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SUN_RAY_TRACE:
     return vkr_vk_prepare_sun_ray_shadow(renderer, &prepared->compute, pass,
-                                         false_v);
+                                         VKR_VULKAN_SUN_RAY_STAGE_TRACE);
   case VKR_RG_EXECUTOR_SUN_RAY_RESOLVE:
     return vkr_vk_prepare_sun_ray_shadow(renderer, &prepared->compute, pass,
-                                         true_v);
+                                         VKR_VULKAN_SUN_RAY_STAGE_RESOLVE);
+  case VKR_RG_EXECUTOR_SUN_RAY_TEMPORAL:
+    return vkr_vk_prepare_sun_ray_shadow(renderer, &prepared->compute, pass,
+                                         VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL);
   case VKR_RG_EXECUTOR_LIGHTING_DEFERRED:
     return vkr_vk_prepare_deferred_lighting(renderer, &prepared->compute, pass,
                                             false_v, false_v);
@@ -2193,6 +2197,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
   case VKR_RG_EXECUTOR_TRANSMISSION_DEPTH_SEED:
   case VKR_RG_EXECUTOR_PICKING_DEPTH_SEED:
+  case VKR_RG_EXECUTOR_SUN_RAY_HISTORY_COPY:
     return vkr_vk_prepare_graph_transfer_pass(renderer, prepared, pass);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY:
     return vkr_vk_prepare_local_shadow_copy(renderer, prepared, pass);
@@ -2445,6 +2450,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_COPY_PRE_TRANSMISSION_EDITOR:
     case VKR_RG_EXECUTOR_LOCAL_SHADOW_COPY:
     case VKR_RG_EXECUTOR_SHADOW_CASCADE_COPY:
+    case VKR_RG_EXECUTOR_SUN_RAY_HISTORY_COPY:
       if (prepared->transfer.regionCount)
         vkCmdCopyImage2(command, &prepared->transfer);
       break;

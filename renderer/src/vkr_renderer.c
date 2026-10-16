@@ -957,6 +957,15 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
       renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_FULL;
     }
   }
+  /* The hybrid prototype adds sun contact shadows to the rays. */
+  char sun_contact_shadows[8];
+  renderer->sun_contact_shadows =
+      renderer->sun_ray_shadow_mode != VKR_SUN_RAY_SHADOW_OFF;
+  if (vkr_platform_environment_variable("VKR_SUN_CONTACT_SHADOWS",
+                                        sun_contact_shadows,
+                                        sizeof(sun_contact_shadows))) {
+    renderer->sun_contact_shadows = string_equals(sun_contact_shadows, "1");
+  }
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
      "0" spelling keeps the analytic per-tap transform as a reference. */
   char post_transform_cache[8];
@@ -1226,6 +1235,8 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
               vkr_renderer_sun_ray_shadows_supported(rf)
           ? rf->sun_ray_shadow_mode
           : VKR_SUN_RAY_SHADOW_OFF;
+  prepared->frame.sun_contact_shadows =
+      !tiled && prepared->frame.scene_rendering && rf->sun_contact_shadows;
   /* FSR and T2x keep different histories, so a change resets both. */
   const bool8_t fsr31_changed =
       prepared->frame.fsr31_enabled != rf->fsr31_previous;

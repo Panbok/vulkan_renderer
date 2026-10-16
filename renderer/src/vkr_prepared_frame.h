@@ -21,6 +21,9 @@ typedef struct VkrPreparedFrame {
   /** Ray-query sun shadows (VKR_SUN_RAY_SHADOWS) on a desktop frame whose
       device traces them; VKR_SUN_RAY_SHADOW_OFF otherwise. */
   VkrSunRayShadowMode sun_ray_shadow_mode;
+  /** A contact march toward the sun on a desktop frame (with sun rays, or
+      VKR_SUN_CONTACT_SHADOWS). */
+  bool8_t sun_contact_shadows;
   /** FSR 3.1 native antialiasing (VkrAntialiasingMode) replaces SMAA and T2x:
       the scene's HDR colour is reconstructed at its own resolution before
       post-processing. */

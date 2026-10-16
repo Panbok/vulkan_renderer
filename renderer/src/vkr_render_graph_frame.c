@@ -155,6 +155,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->sun_ray_shadow_mode != VKR_SUN_RAY_SHADOW_OFF;
   frame->sun_ray_shadow_half =
       packet->sun_ray_shadow_mode == VKR_SUN_RAY_SHADOW_HALF;
+  frame->sun_contact_shadows = packet->scene_rendering &&
+                               !packet->tiled_pipeline &&
+                               packet->sun_contact_shadows;
   frame->ray_scene_active =
       frame->dynamic_volume_active || frame->sun_ray_shadows_active;
   /* The tiled pipeline takes a baked plane probe instead (ADR-087). */
@@ -510,6 +513,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SUN_RAY_RESOLVE] = {"pass.shadow.sun_ray.resolve",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SUN_RAY_TEMPORAL] = {"pass.shadow.sun_ray.temporal",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SUN_RAY_HISTORY_COPY] = {"pass.shadow.sun_ray.history",
+                                              VKR_RG_PASS_TYPE_TRANSFER},
     [VKR_RG_EXECUTOR_LIGHTING_DEFERRED] = {"pass.lighting.deferred",
                                            VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED] =

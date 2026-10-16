@@ -246,6 +246,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.sun_ray_shadow_temporal.comp",
+      "entry": "vk_sun_ray_shadow_temporal",
+      "stage": "compute"
+    },
+    {
       "name": "packet.reflection.vert",
       "entry": "vk_reflection_vertex",
       "stage": "vertex"

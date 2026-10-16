@@ -1,10 +1,11 @@
 // Ray-query sun shadows on the desktop pipeline (prototype for the
-// shadow-quality proposal's D2 gate). Shadow.SunRay traces one first-hit ray
-// per traced pixel toward a point on the sun's disk against the frame
-// slot's TLAS (ADR-119): every pixel, or one pixel of each 2x2 block whose
-// position turns with the frame. Shadow.SunRayResolve filters the samples
-// with depth and normal weights into a full-resolution mask that deferred
-// lighting takes in place of the cascades within the ray range.
+// shadow-quality proposal's D2). Shadow.SunRay traces one first-hit ray per
+// traced pixel toward a point on the sun's disk against the frame slot's TLAS
+// (ADR-119): every pixel, or one pixel of each 2x2 block whose position turns
+// with the frame. Shadow.SunRayResolve filters the samples with depth and
+// normal weights at full resolution. Shadow.SunRayTemporal accumulates the
+// filtered visibility over frames along the camera motion into the mask that
+// deferred lighting takes in place of the cascades within the ray range.
 
 // Bit of VkrVkSunRayShadowRoot::flags: one ray per 2x2 block.
 #define VKR_SUN_RAY_HALF 1u
@@ -35,7 +36,8 @@ struct VkrVkSunRayShadowRoot
     // VKR_SUN_RAY_NO_SAMPLE.
     uint trace_texture;
     // RG8: the filtered visibility and the weight lighting gives it over
-    // the cascades.
+    // the cascades: Shadow.SunRayResolve's output, Shadow.SunRayTemporal's
+    // input.
     uint mask_texture;
     // The frame slot's acceleration structure in g_volume_tlas.
     uint tlas_slot;
@@ -48,8 +50,21 @@ struct VkrVkSunRayShadowRoot
     float range_fade_start;
     float range_end;
     float ray_length;
+    // Shadow.SunRayTemporal: the camera's motion to the previous frame in UV
+    // and its validity (x: motion valid, y: the surface's previous device
+    // depth), from the G-buffer resolve.
+    uint motion_texture;
+    uint validity_texture;
+    // RG16F: the accumulated visibility and its surface's device depth, or
+    // VKR_SUN_RAY_NO_SAMPLE; last frame's (read) and this frame's (written,
+    // then copied over it).
+    uint history_texture;
+    uint history_next_texture;
+    // RG8: the accumulated mask lighting reads.
+    uint temporal_texture;
+    // Nonzero when the history holds the previous frame's result.
+    uint history_valid;
     uint reserved;
-    uint2 reserved_tail;
 };
 
 struct VkrVkSunRayShadowPush
@@ -70,11 +85,15 @@ uint2 vk_sun_ray_trace_pixel(VkrVkSunRayShadowRoot root, uint2 texel)
     return texel * 2u + corners[root.frame_index & 3u];
 }
 
-float3 vk_sun_ray_world(VkrVkSunRayShadowRoot root, uint2 pixel, float depth)
+VkrVkDepthView vk_sun_ray_depth_view(VkrVkSunRayShadowRoot root)
 {
-    float2 ndc_xy = (float2(pixel) + 0.5f) / float2(root.extent) * 2.0f - 1.0f;
-    return vkr_vk_deferred_homogeneous(
-        mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+    VkrVkDepthView view;
+    view.vbuffer_texture = root.vbuffer_texture;
+    view.depth_texture = root.depth_texture;
+    view.extent = root.extent;
+    view.inverse_view_projection = root.inverse_view_projection;
+    view.sample_position = 0.5f;
+    return view;
 }
 
 // Whether a ray from `origin` along `direction` leaves the scene within
@@ -154,7 +173,8 @@ void vk_sun_ray_shadow_trace(uint3 thread_id : SV_DispatchThreadID)
         frame.shadow_cascade_count != 0u)
     {
         float depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
-        float3 world = vk_sun_ray_world(root, pixel, depth);
+        float3 world =
+            vkr_vk_depth_view_world(vk_sun_ray_depth_view(root), pixel, depth);
         float view_depth = abs(mul(frame.view, float4(world, 1.0f)).z);
         if (view_depth < root.range_end)
         {
@@ -177,8 +197,14 @@ void vk_sun_ray_shadow_trace(uint3 thread_id : SV_DispatchThreadID)
                 // position's error does.
                 float camera_distance =
                     distance(world, frame.view_position.xyz);
-                float3 origin = world + (facing ? normal : -normal) *
-                                            (0.01f + 0.002f * camera_distance);
+                // The origin leaves the geometric surface: along the
+                // shading normal it could start inside normal-map relief.
+                float3 geometric_normal = vkr_vk_depth_view_geometric_normal(
+                    vk_sun_ray_depth_view(root), pixel, visible, depth, world, normal,
+                    packet_view_direction(frame, world));
+                float3 origin =
+                    world + (facing ? geometric_normal : -geometric_normal) *
+                                (0.01f + 0.002f * camera_distance);
                 float3 direction = vk_sun_ray_direction(
                     sun, frame.shadow_cascades[0].origin_inv_size_sun.w,
                     pixel, root.frame_index);
@@ -213,7 +239,8 @@ void vk_sun_ray_shadow_resolve(uint3 thread_id : SV_DispatchThreadID)
     if (g_storage_uint2_2d[root.vbuffer_texture][pixel].x != 0u)
     {
         float depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
-        float3 world = vk_sun_ray_world(root, pixel, depth);
+        float3 world =
+            vkr_vk_depth_view_world(vk_sun_ray_depth_view(root), pixel, depth);
         float view_depth = abs(mul(frame.view, float4(world, 1.0f)).z);
         float range_weight = saturate(
             (root.range_end - view_depth) /
@@ -266,4 +293,102 @@ void vk_sun_ray_shadow_resolve(uint3 thread_id : SV_DispatchThreadID)
         }
     }
     g_storage_float2_2d[root.mask_texture][pixel] = result;
+}
+
+// Weight of the current frame's filtered visibility against the history: an
+// exponential average over about ten frames.
+#define VKR_SUN_RAY_TEMPORAL_ALPHA 0.1f
+// The history may lie this many standard deviations of the current
+// neighbourhood from its mean before it is clipped.
+#define VKR_SUN_RAY_TEMPORAL_CLIP 1.5f
+// A history texel lies on the same surface when its device depth is within
+// this fraction of the depth the surface had: reversed depth falls as one
+// over view depth, so this is about the same fraction of view depth.
+#define VKR_SUN_RAY_TEMPORAL_DEPTH_TOLERANCE 0.02f
+
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_sun_ray_shadow_temporal(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSunRayShadowRoot root = vkr_vk_uniform_root(*g_sun_ray_shadow_push.root);
+    if (any(thread_id.xy >= root.extent))
+        return;
+    uint2 pixel = thread_id.xy;
+    float2 current = g_storage_float2_2d[root.mask_texture][pixel];
+    float stored_depth = VKR_SUN_RAY_NO_SAMPLE;
+    float visibility = current.x;
+    if (current.y > 0.0f)
+    {
+        stored_depth =
+            g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+        // The current neighbourhood's mean and spread bound the history,
+        // so a moved shadow edge does not trail.
+        float sum = 0.0f;
+        float sum_squared = 0.0f;
+        float count = 0.0f;
+        for (int y = -1; y <= 1; ++y)
+        {
+            for (int x = -1; x <= 1; ++x)
+            {
+                int2 neighbour = int2(pixel) + int2(x, y);
+                if (any(neighbour < 0) || any(neighbour >= int2(root.extent)))
+                    continue;
+                float2 value =
+                    g_storage_float2_2d[root.mask_texture][uint2(neighbour)];
+                if (value.y <= 0.0f)
+                    continue;
+                sum += value.x;
+                sum_squared += value.x * value.x;
+                count += 1.0f;
+            }
+        }
+        float mean = sum / max(count, 1.0f);
+        float deviation =
+            sqrt(max(sum_squared / max(count, 1.0f) - mean * mean, 0.0f));
+        float2 validity = g_storage_float2_2d[root.validity_texture][pixel];
+        if (root.history_valid != 0u && validity.x > 0.5f)
+        {
+            // Bilinear history at the previous position, from the taps on
+            // the same surface: their depth matches the one this surface had
+            // there.
+            float2 motion = g_storage_float2_2d[root.motion_texture][pixel];
+            float2 previous =
+                (float2(pixel) + 0.5f) + motion * float2(root.extent) - 0.5f;
+            int2 base = int2(floor(previous));
+            float2 fraction = previous - float2(base);
+            float expected = validity.y;
+            float tolerance = VKR_SUN_RAY_TEMPORAL_DEPTH_TOLERANCE * expected;
+            float history = 0.0f;
+            float history_weight = 0.0f;
+            [unroll] for (uint tap = 0u; tap < 4u; ++tap)
+            {
+                int2 offset = int2(int(tap & 1u), int(tap >> 1u));
+                int2 texel = base + offset;
+                if (any(texel < 0) || any(texel >= int2(root.extent)))
+                    continue;
+                float2 stored =
+                    g_storage_float2_2d[root.history_texture][uint2(texel)];
+                if (stored.y < 0.0f || abs(stored.y - expected) > tolerance)
+                    continue;
+                float2 bilinear = lerp(1.0f - fraction, fraction,
+                                       float2(offset));
+                float weight = bilinear.x * bilinear.y;
+                history += stored.x * weight;
+                history_weight += weight;
+            }
+            if (history_weight > 1.0e-3f)
+            {
+                history /= history_weight;
+                history = clamp(history,
+                                mean - VKR_SUN_RAY_TEMPORAL_CLIP * deviation,
+                                mean + VKR_SUN_RAY_TEMPORAL_CLIP * deviation);
+                visibility =
+                    lerp(history, current.x, VKR_SUN_RAY_TEMPORAL_ALPHA);
+            }
+        }
+    }
+    g_storage_float2_2d[root.temporal_texture][pixel] =
+        float2(visibility, current.y);
+    g_storage_float2_2d[root.history_next_texture][pixel] =
+        float2(visibility, stored_depth);
 }

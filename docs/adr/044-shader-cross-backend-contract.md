@@ -831,7 +831,7 @@ domain under the [evidence rules](#evidence-rules).
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
 | Planar reflection: mirrored view shaded forward, reflector lookup | Desktop | the material, light, shadow and probe kernels below | — | `vulkan/slang/world/deferred.slang` (`vk_reflection_vertex`, `vk_reflection_fragment`, `vk_planar_reflection_specular`), `world/default.slang` (`packet_world_shade_surface`) |
 | Diffuse volume dynamic layer: BLAS decode, ray-query probe trace, runtime grid moments and relocation, lookup add, reflection probe relight ([ADR-119](119-dynamic-diffuse-volume-layer.md)) | Desktop, with ray queries | `shared/diffuse_volume_kernel.slangh`, `gpu_draw.slangh`, `punctual_light_kernel.slangh`, `sh_l2_kernel.slangh` | — | `vulkan/slang/world/volume_trace.slang` (`vk_volume_blas_decode`, `vk_volume_trace`, `vk_volume_clear`, `vk_volume_probe_relight`), `world/default.slang` (`packet_diffuse_volume_lookup`, `packet_probe_relight`); Vulkan native: Debug validation clean, Release capture and timing on Bistro; relight: Debug validation clean and a Release A/B against a relight-off catalog on Bistro |
-| Ray-query sun shadows, opt-in prototype (`VKR_SUN_RAY_SHADOWS`): trace, filtered mask, lighting blend ([shadow quality](../proposals/shadow-quality.md#prototype-result)) | Desktop, with ray queries | `shared/shadow_kernel.slangh`, `gpu_draw.slangh` | — | `vulkan/slang/world/sun_ray_shadow.slang` (`vk_sun_ray_shadow_trace`, `vk_sun_ray_shadow_resolve`), `world/volume_trace.slang` (`vk_ray_triangle_uv`), `world/deferred.slang` (`vk_deferred_sun_shadow`); Vulkan native: Debug validation (synchronization) clean on a Bistro plaza capture, Release captures and timing on Bistro |
+| Ray-query sun shadows, opt-in hybrid prototype (`VKR_SUN_RAY_SHADOWS`, `VKR_SUN_CONTACT_SHADOWS`): trace, filtered mask, temporal history, sun contact march, lighting blend ([shadow quality](../proposals/shadow-quality.md#hybrid-prototype)) | Desktop, with ray queries; the contact march also without them | `shared/shadow_kernel.slangh`, `local_shadow.slangh` (contact helpers), `gpu_draw.slangh` | — | `vulkan/slang/world/sun_ray_shadow.slang` (`vk_sun_ray_shadow_trace`, `vk_sun_ray_shadow_resolve`, `vk_sun_ray_shadow_temporal`), `world/volume_trace.slang` (`vk_ray_triangle_uv`), `world/deferred.slang` (`vk_deferred_sun_shadow`, `vk_contact_shadow`, `vkr_vk_depth_view_geometric_normal`); Vulkan native: Debug validation (synchronization) clean on a Bistro plaza capture, Release captures, a strafe capture and timing on Bistro |
 | Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission composition | Shared | `shared/transmission_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
@@ -999,9 +999,13 @@ Every receiver also shares the receiver-plane depth gradient
 (`vkr_shadow_receiver_plane_gradient`, from the cascade's
 `light_view_projection` rows), which each PCF and blocker tap adds to its
 reference depth, and the per-pixel kernel rotation
-(`vkr_shadow_kernel_rotation`) at noise index 0. The tiled pipeline passes
-the geometric normal to the cascades; the desktop receivers pass their
-shading normal. Since 2026-10-15 no shader reads the first two lanes of
+(`vkr_shadow_kernel_rotation`). Desktop deferred lighting steps its noise
+index with the temporal phase; the other receivers use index 0. Both
+pipelines pass the geometric normal to the sun's cascades. The desktop
+G-buffer keeps only the shading normal, so deferred lighting reconstructs
+the geometric normal from camera depth
+(`vkr_vk_depth_view_geometric_normal`). Desktop local-light receivers still
+pass the shading normal. Since 2026-10-15 no shader reads the first two lanes of
 `origin_inv_size_sun`, the light-space origin: the runtime still fills them,
 frame-input validation still requires them finite, and both backends copy
 them. ADR-041 records the authored units, fallback and acceptance evidence.

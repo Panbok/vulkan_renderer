@@ -78,9 +78,12 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_SMAA_BLEND,
   VKR_RG_EXECUTOR_SMAA_RESOLVE,
   VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK,
-  /* Ray-query sun shadows: the trace and its filtered mask. */
+  /* Ray-query sun shadows: the trace, its filtered mask, the mask
+     accumulated over frames, and that accumulation's history copy. */
   VKR_RG_EXECUTOR_SUN_RAY_TRACE,
   VKR_RG_EXECUTOR_SUN_RAY_RESOLVE,
+  VKR_RG_EXECUTOR_SUN_RAY_TEMPORAL,
+  VKR_RG_EXECUTOR_SUN_RAY_HISTORY_COPY,
   VKR_RG_EXECUTOR_LIGHTING_DEFERRED,
   VKR_RG_EXECUTOR_LIGHTING_DEFERRED_LAYERED,
   VKR_RG_EXECUTOR_FOG_APPLY,

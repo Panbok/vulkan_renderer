@@ -576,6 +576,9 @@ typedef struct VkrRenderGraphFrameInfo {
       a pixel or, with `sun_ray_shadow_half`, one per 2x2 block. */
   bool8_t sun_ray_shadows_active;
   bool8_t sun_ray_shadow_half;
+  /** Deferred lighting marches camera depth toward the sun for contacts
+      beyond the rays' cover. */
+  bool8_t sun_contact_shadows;
   /** The frame builds its TLAS: for the dynamic layer or sun rays. */
   bool8_t ray_scene_active;
   bool8_t clearcoat_enabled;

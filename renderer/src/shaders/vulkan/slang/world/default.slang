@@ -2139,15 +2139,19 @@ float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
         // rotation stays fixed.
         float2 shadow_rotation =
             vkr_shadow_kernel_rotation(uint2(input.position.xy), 0u);
-        float base_shadow = packet_directional_shadow(
-                                frame, input.world_position,
-                                back_lit ? -normal : normal, shadow_rotation) *
-                            cloud_shadow;
+        // The receiver moves off its geometric surface: the shading normal
+        // would push it along normal-map relief.
+        float base_shadow =
+            packet_directional_shadow(
+                frame, input.world_position,
+                back_lit ? -geometric_normal : geometric_normal,
+                shadow_rotation) *
+            cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
             directional_shadow =
-                packet_directional_shadow(frame, input.world_position, normal,
-                                          shadow_rotation) *
+                packet_directional_shadow(frame, input.world_position,
+                                          geometric_normal, shadow_rotation) *
                 cloud_shadow;
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),

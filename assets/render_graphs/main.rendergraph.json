@@ -1418,6 +1418,58 @@
       ]
     },
     {
+      "name": "sun_ray_filtered",
+      "type": "image",
+      "condition": "scene_rendering && sun_ray_shadows_active",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R8G8_UNORM",
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "sun_ray_history_next",
+      "type": "image",
+      "condition": "scene_rendering && sun_ray_shadows_active",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "sun_ray_history",
+      "type": "image",
+      "condition": "scene_rendering && sun_ray_shadows_active",
+      "extent": {
+        "mode": "viewport"
+      },
+      "format": "R16G16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "TRANSFER_DST"
+      ],
+      "flags": [
+        "HISTORY",
+        "RESIZABLE"
+      ]
+    },
+    {
       "name": "sun_ray_shadow",
       "type": "image",
       "condition": "scene_rendering && sun_ray_shadows_active",
@@ -4773,12 +4825,98 @@
       ],
       "writes": [
         {
-          "image": "sun_ray_shadow",
+          "image": "sun_ray_filtered",
           "access": "STORAGE_WRITE",
           "binding": 17
         }
       ],
       "execute": "pass.shadow.sun_ray.resolve"
+    },
+    {
+      "name": "Shadow.SunRayTemporal",
+      "type": "compute",
+      "condition": "scene_rendering && sun_ray_shadows_active",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        },
+        {
+          "image": "temporal_motion",
+          "access": "STORAGE_READ",
+          "binding": 11
+        },
+        {
+          "image": "temporal_validity",
+          "access": "STORAGE_READ",
+          "binding": 12
+        },
+        {
+          "image": "sun_ray_filtered",
+          "access": "STORAGE_READ",
+          "binding": 17
+        },
+        {
+          "image": "sun_ray_history",
+          "access": "STORAGE_READ",
+          "binding": 19
+        }
+      ],
+      "writes": [
+        {
+          "image": "sun_ray_shadow",
+          "access": "STORAGE_WRITE",
+          "binding": 18
+        },
+        {
+          "image": "sun_ray_history_next",
+          "access": "STORAGE_WRITE",
+          "binding": 20
+        }
+      ],
+      "execute": "pass.shadow.sun_ray.temporal"
+    },
+    {
+      "name": "Shadow.SunRayHistory",
+      "type": "transfer",
+      "condition": "scene_rendering && sun_ray_shadows_active",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "sun_ray_history_next",
+          "access": "TRANSFER_SRC",
+          "binding": 0
+        }
+      ],
+      "writes": [
+        {
+          "image": "sun_ray_history",
+          "access": "TRANSFER_DST",
+          "binding": 1
+        }
+      ],
+      "execute": "pass.shadow.sun_ray.history"
     },
     {
       "name": "DiffuseVolume.Sample",

@@ -490,6 +490,7 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
     if (!blas || (!blas->built && !blas->queued)) {
       if (!vkr_vk_queue_blas(renderer, slot, geometry, ray->submesh_index,
                              &triangle_budget)) {
+        slot->tlas_missing_rows++;
         continue;
       }
       blas = &geometry->blas[ray->submesh_index];
@@ -770,6 +771,7 @@ bool8_t vkr_vk_prepare_volume_build(VkrVulkanRenderer *renderer,
   vkr_vk_update_volume_budget(renderer, slot);
   slot->blas_job_count = 0u;
   slot->tlas_instance_count = 0u;
+  slot->tlas_missing_rows = 0u;
   slot->volume_build_ready = false_v;
   slot->volume_timing_recorded = false_v;
   slot->volume_timing_probes = 0u;

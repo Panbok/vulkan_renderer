@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "id": "local.bistro.shadow.sun_ray_plaza_strafe_capture",
+  "suite": "local",
+  "description": "Bistro plaza looking down at sunlit paving, 2560x1440, High shadows with temporal AA, camera strafing 2.5 m over 2 s: captures while moving, for ghosting and noise at sun-ray shadow edges (run with VKR_SUN_RAY_SHADOWS unset and 1).",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    2560,
+    1440
+  ],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 240,
+    "measure": 120
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "render_scale": 1.0,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "dynamic_resolution": false
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      {
+        "t": 0.0,
+        "position": [
+          10.0205421,
+          4.17517662,
+          27.8467007
+        ],
+        "yaw": 19.2320728,
+        "pitch": -22.0
+      },
+      {
+        "t": 2.0,
+        "position": [
+          12.5205421,
+          4.17517662,
+          27.8467007
+        ],
+        "yaw": 19.2320728,
+        "pitch": -22.0
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.gbuffer.resolve_invalid",
+      "stat": "max",
+      "max": 0
+    }
+  ],
+  "target_image_count": 3,
+  "captures": [
+    {
+      "at_frame": 30,
+      "channels": [
+        "final_color",
+        "shadow_debug_factor"
+      ]
+    },
+    {
+      "at_frame": 60,
+      "channels": [
+        "final_color",
+        "shadow_debug_factor"
+      ]
+    },
+    {
+      "at_frame": 100,
+      "channels": [
+        "final_color",
+        "shadow_debug_factor"
+      ]
+    }
+  ],
+  "compare": {
+    "max_pixel_delta": 1.0,
+    "max_mean_absolute_error": 0.0005,
+    "max_failed_pixel_ratio": 2e-05,
+    "emit_diff": true
+  }
+}

@@ -323,7 +323,13 @@ struct VkrVkLightingRoot
     // Shadow.SunRayResolve's RG8 mask: the traced sun visibility and its
     // weight over the cascades; zero without ray-query sun shadows.
     uint sun_ray_shadow_texture;
-    uint sun_ray_reserved;
+    // The sun cascade filter's and contact march's noise phase: the frame's
+    // temporal phase under FSR 3.1 or SMAA T2x, zero otherwise.
+    uint sun_noise_index;
+    // Nonzero: a contact march toward the sun multiplies its visibility
+    // where the rays do not cover the pixel.
+    uint sun_contact;
+    uint3 sun_reserved;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -2606,25 +2612,35 @@ float vkr_vk_deferred_filter_roughness(VkrVkLightingRoot root, uint2 pixel,
     return vkr_ggx_filter_roughness(roughness, normal_variance);
 }
 
-float3 vkr_vk_deferred_pixel_world(VkrVkLightingRoot root, uint2 pixel,
-                                   float depth)
+// Camera depth of one view and how a pixel's depth reconstructs its world
+// position: the inputs the geometric normal reads.
+struct VkrVkDepthView
+{
+    uint vbuffer_texture;
+    uint depth_texture;
+    uint2 extent;
+    float4x4 inverse_view_projection;
+    // Where in the pixel its depth lies: 0.5, or 0.25 for SMAA S2x's second
+    // sample.
+    float sample_position;
+};
+
+float3 vkr_vk_depth_view_world(VkrVkDepthView view, uint2 pixel, float depth)
 {
     // See vkr_vk_deferred_sky: no Y flip when inverting the view-projection.
-    // SMAA S2x's second sample's depth lies at (0.25, 0.25) in the pixel.
-    float sample_position = root.edge_mask_texture != 0u ? 0.25f : 0.5f;
-    float2 uv = (float2(pixel) + sample_position) / float2(root.extent);
+    float2 uv = (float2(pixel) + view.sample_position) / float2(view.extent);
     float2 ndc_xy = uv * 2.0f - 1.0f;
     return vkr_vk_deferred_homogeneous(
-        mul(root.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
+        mul(view.inverse_view_projection, float4(ndc_xy, depth, 1.0f)));
 }
 
 // The step from `world` to a neighbour along one screen axis on the same
 // visible draw. It takes the side whose depth changes less, so a silhouette
 // or a fold within the draw does not tilt it, and fails when neither
 // neighbour lies on the draw.
-bool vkr_vk_deferred_depth_axis(VkrVkLightingRoot root, uint2 pixel,
-                                uint2 pixel_step, uint visible_index,
-                                float depth, float3 world, out float3 axis)
+bool vkr_vk_depth_view_axis(VkrVkDepthView view, uint2 pixel,
+                            uint2 pixel_step, uint visible_index, float depth,
+                            float3 world, out float3 axis)
 {
     axis = 0.0f;
     bool forward_valid = false;
@@ -2632,22 +2648,22 @@ bool vkr_vk_deferred_depth_axis(VkrVkLightingRoot root, uint2 pixel,
     float forward_depth = 0.0f;
     float backward_depth = 0.0f;
     uint2 forward_pixel = pixel + pixel_step;
-    if (all(forward_pixel < root.extent) &&
-        g_storage_uint2_2d[root.vbuffer_texture][forward_pixel].x ==
+    if (all(forward_pixel < view.extent) &&
+        g_storage_uint2_2d[view.vbuffer_texture][forward_pixel].x ==
             visible_index)
     {
         forward_valid = true;
-        forward_depth = g_depth_textures[root.depth_texture].Load(
+        forward_depth = g_depth_textures[view.depth_texture].Load(
             int3(forward_pixel, 0));
     }
     if (all(pixel >= pixel_step))
     {
         uint2 backward_pixel = pixel - pixel_step;
-        if (g_storage_uint2_2d[root.vbuffer_texture][backward_pixel].x ==
+        if (g_storage_uint2_2d[view.vbuffer_texture][backward_pixel].x ==
             visible_index)
         {
             backward_valid = true;
-            backward_depth = g_depth_textures[root.depth_texture].Load(
+            backward_depth = g_depth_textures[view.depth_texture].Load(
                 int3(backward_pixel, 0));
         }
     }
@@ -2659,39 +2675,58 @@ bool vkr_vk_deferred_depth_axis(VkrVkLightingRoot root, uint2 pixel,
          abs(forward_depth - depth) <= abs(backward_depth - depth));
     if (use_forward)
     {
-        axis = vkr_vk_deferred_pixel_world(root, forward_pixel, forward_depth) -
+        axis = vkr_vk_depth_view_world(view, forward_pixel, forward_depth) -
                world;
     }
     else
     {
-        axis = world - vkr_vk_deferred_pixel_world(root, pixel - pixel_step,
-                                                   backward_depth);
+        axis = world - vkr_vk_depth_view_world(view, pixel - pixel_step,
+                                               backward_depth);
     }
     return true;
 }
 
-// The geometric normal for the environment's horizon fade. The G-buffer keeps
-// only the shading normal, so this reconstructs the surface's normal from
-// neighbouring depth on the same draw, facing the viewer. A pixel without a
-// neighbour on the draw along either axis keeps the shading normal.
-float3 vkr_vk_deferred_geometric_normal(VkrVkLightingRoot root, uint2 pixel,
-                                        uint visible_index, float depth,
-                                        float3 world, float3 normal,
-                                        float3 view)
+// The geometric normal: the G-buffer keeps only the shading normal, so this
+// reconstructs the surface's normal from neighbouring depth on the same draw,
+// facing the viewer. A pixel without a neighbour on the draw along either
+// axis keeps the shading normal.
+float3 vkr_vk_depth_view_geometric_normal(VkrVkDepthView view, uint2 pixel,
+                                          uint visible_index, float depth,
+                                          float3 world, float3 normal,
+                                          float3 to_viewer)
 {
     float3 axis_x;
     float3 axis_y;
-    if (!vkr_vk_deferred_depth_axis(root, pixel, uint2(1u, 0u), visible_index,
-                                    depth, world, axis_x) ||
-        !vkr_vk_deferred_depth_axis(root, pixel, uint2(0u, 1u), visible_index,
-                                    depth, world, axis_y))
+    if (!vkr_vk_depth_view_axis(view, pixel, uint2(1u, 0u), visible_index,
+                                depth, world, axis_x) ||
+        !vkr_vk_depth_view_axis(view, pixel, uint2(0u, 1u), visible_index,
+                                depth, world, axis_y))
         return normal;
     float3 geometric = cross(axis_x, axis_y);
     float length_squared = dot(geometric, geometric);
     if (length_squared <= 1e-20f)
         return normal;
     geometric *= rsqrt(length_squared);
-    return dot(geometric, view) < 0.0f ? -geometric : geometric;
+    return dot(geometric, to_viewer) < 0.0f ? -geometric : geometric;
+}
+
+VkrVkDepthView vkr_vk_lighting_depth_view(VkrVkLightingRoot root)
+{
+    VkrVkDepthView view;
+    view.vbuffer_texture = root.vbuffer_texture;
+    view.depth_texture = root.depth_texture;
+    view.extent = root.extent;
+    view.inverse_view_projection = root.inverse_view_projection;
+    // SMAA S2x's second sample's depth lies at (0.25, 0.25) in the pixel.
+    view.sample_position = root.edge_mask_texture != 0u ? 0.25f : 0.5f;
+    return view;
+}
+
+float3 vkr_vk_deferred_pixel_world(VkrVkLightingRoot root, uint2 pixel,
+                                   float depth)
+{
+    return vkr_vk_depth_view_world(vkr_vk_lighting_depth_view(root), pixel,
+                                   depth);
 }
 
 float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot root, float2 ndc,
@@ -2704,11 +2739,10 @@ float3 vk_local_shadow_mask_world(VkrVkLocalShadowMaskRoot root, float2 ndc,
 // Contact visibility toward one light: marches the depth buffer from `origin`
 // along `direction` and stops at the first sample whose camera ray passes
 // behind a nearby surface. The march leaves the screen without occlusion.
-float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot root, float3 origin,
-                              float3 direction, float march_length,
-                              float noise)
+float vk_contact_shadow(VkrVulkanPacketFrameRoot *frame, VkrVkDepthView depth,
+                        float3 origin, float3 direction, float march_length,
+                        float noise)
 {
-    VkrVulkanPacketFrameRoot *frame = root.frame;
     float4 clip_origin = mul(frame.view_projection, float4(origin, 1.0f));
     float4 clip_span =
         mul(frame.view_projection, float4(direction * march_length, 0.0f));
@@ -2722,11 +2756,13 @@ float vk_local_contact_shadow(VkrVkLocalShadowMaskRoot root, float3 origin,
         if (any(abs(ndc) >= 1.0f))
             break;
         // See vkr_vk_deferred_sky: no Y flip between NDC and pixels.
-        uint2 pixel = min(uint2((ndc * 0.5f + 0.5f) * float2(root.extent)),
-                          root.extent - 1u);
-        float3 surface = vk_local_shadow_mask_world(
-            root, ndc,
-            g_depth_textures[root.depth_texture].Load(int3(pixel, 0)));
+        uint2 pixel = min(uint2((ndc * 0.5f + 0.5f) * float2(depth.extent)),
+                          depth.extent - 1u);
+        float3 surface = vkr_vk_deferred_homogeneous(mul(
+            depth.inverse_view_projection,
+            float4(ndc,
+                   g_depth_textures[depth.depth_texture].Load(int3(pixel, 0)),
+                   1.0f)));
         float3 sample_position = origin + direction * (march_length * t);
         float surface_in_front =
             dot(surface - sample_position,
@@ -2771,6 +2807,12 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
         return;
     float3 normal = vkr_vk_octahedral_decode(
         g_storage_float2_2d[root.normal_texture][thread_id.xy]);
+    VkrVkDepthView depth_view;
+    depth_view.vbuffer_texture = root.vbuffer_texture;
+    depth_view.depth_texture = root.depth_texture;
+    depth_view.extent = root.extent;
+    depth_view.inverse_view_projection = root.inverse_view_projection;
+    depth_view.sample_position = 0.5f;
     float camera_distance = distance(world, frame.view_position.xyz);
     float contact_noise =
         vkr_local_shadow_contact_noise(thread_id.xy, root.contact_noise_index);
@@ -2842,8 +2884,9 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
                 float march_length =
                     min(VKR_LOCAL_SHADOW_CONTACT_LENGTH,
                         0.5f * distance(light.p0.xyz, world));
-                float contact = vk_local_contact_shadow(
-                    root, origin, term.direction, march_length, contact_noise);
+                float contact = vk_contact_shadow(
+                    frame, depth_view, origin, term.direction, march_length,
+                    contact_noise);
                 visibility *= vkr_local_shadow_apply_strength(
                     float3(contact), view.shadow_params.x);
             }
@@ -3316,6 +3359,15 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         return;
     }
     float3 view = packet_view_direction(frame, world);
+    // The sun's receiver offset and bias and the environment's horizon fade
+    // take the geometric normal; the shading normal would push the receiver
+    // along normal-map relief.
+    VkrVkDepthView depth_view = vkr_vk_lighting_depth_view(root);
+    float3 geometric_normal = normal;
+    if (frame.directional_direction_enabled.w > 0.5f ||
+        (frame.flags & 2u) != 0u)
+        geometric_normal = vkr_vk_depth_view_geometric_normal(
+            depth_view, thread_id.xy, encoded.x, depth, world, normal, view);
     // The G-buffer already folded metallic into diffuse albedo and F0, so the
     // shared helpers take a zero metallic factor here.
     float4 anisotropy_packed = 0.0f;
@@ -3387,28 +3439,47 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         bool back_lit = energy.diffuse_transmission_strength > 0.0f &&
                         dot(normal, sun_direction) < 0.0f;
         float cloud_shadow = packet_cloud_shadow(frame, world);
-        // A fixed per-pixel kernel rotation: the lighting root carries no
-        // temporal phase for the sun's filter.
-        float2 shadow_rotation = vkr_shadow_kernel_rotation(thread_id.xy, 0u);
+        // The kernel turns with the temporal phase, which the resolve
+        // averages; without a temporal resolve it stays fixed.
+        float2 shadow_rotation =
+            vkr_shadow_kernel_rotation(thread_id.xy, root.sun_noise_index);
         // Without ray-query sun shadows the weight is zero: the cascades
         // alone.
         float2 sun_ray = root.sun_ray_shadow_texture != 0u
                              ? g_storage_float2_2d[root.sun_ray_shadow_texture]
                                                   [side_pixel]
                              : float2(1.0f, 0.0f);
+        float3 sun_normal = back_lit ? -geometric_normal : geometric_normal;
         float base_shadow =
-            vk_deferred_sun_shadow(frame, world, back_lit ? -normal : normal,
-                                   shadow_rotation, sun_ray,
-                                   root.shadow_moments_texture,
+            vk_deferred_sun_shadow(frame, world, sun_normal, shadow_rotation,
+                                   sun_ray, root.shadow_moments_texture,
                                    root.shadow_moments_sampler) *
             cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
             directional_shadow =
-                vk_deferred_sun_shadow(frame, world, normal, shadow_rotation,
-                                       sun_ray, root.shadow_moments_texture,
+                vk_deferred_sun_shadow(frame, world, geometric_normal,
+                                       shadow_rotation, sun_ray,
+                                       root.shadow_moments_texture,
                                        root.shadow_moments_sampler) *
                 cloud_shadow;
+        // Contacts finer than a cascade texel, where the rays do not cover
+        // the pixel: the rays find them exactly.
+        if (root.sun_contact != 0u && sun_ray.y < 1.0f && base_shadow > 0.0f)
+        {
+            float camera_distance = distance(world, frame.view_position.xyz);
+            float3 origin = world + sun_normal *
+                                        vkr_local_shadow_contact_start_offset(
+                                            camera_distance);
+            float contact = vk_contact_shadow(
+                frame, depth_view, origin, sun_direction,
+                VKR_LOCAL_SHADOW_CONTACT_LENGTH,
+                vkr_local_shadow_contact_noise(thread_id.xy,
+                                               root.sun_noise_index));
+            contact = lerp(contact, 1.0f, sun_ray.y);
+            base_shadow *= contact;
+            directional_shadow *= contact;
+        }
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),
             frame.directional_color_intensity.rgb *
@@ -3532,8 +3603,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
     bool environment_enabled = (frame.flags & 2u) != 0u;
     if ((frame.flags & 2u) != 0u)
     {
-        float3 horizon_normal = vkr_vk_deferred_geometric_normal(
-            root, thread_id.xy, encoded.x, depth, world, normal, view);
+        float3 horizon_normal = geometric_normal;
         // A mover's pixels take their probes at its lighting origin
         // (ADR-120); DiffuseVolume.Sample looked the volume up there.
         float3 environment_position = packet_lighting_position(
@@ -4409,7 +4479,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         {
             directional_shadow =
                 packet_directional_shadow(
-                    frame, world, surface.normal,
+                    frame, world, surface.geometric_normal,
                     vkr_shadow_kernel_rotation(pixel, 0u)) *
                 packet_cloud_shadow(frame, world);
             float3 light =

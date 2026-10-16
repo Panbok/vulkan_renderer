@@ -123,8 +123,11 @@ for the whole layer and the 1.0 ms budget. A moving sun and a stale or
 pending world reach the far level through the same tiles. Open on the tiled
 pipeline: T3, which ADR-087 decision 11 settles for now; the near cascades
 still draw whole while a publication is pending; a Bistro orbit and
-capture-free timing against the budgets. The desktop pipeline compiles every shared change; its native
-evidence and defects 5 and 6 are deferred (owner decision 2026-10-16).
+capture-free timing against the budgets. The desktop pipeline compiles
+every shared change. Its native evidence for the shared fixes is still
+deferred (owner decision 2026-10-16). Defect 6 and the sun part of defect 5
+are fixed on the desktop pipeline (see the
+[hybrid prototype](#hybrid-prototype)).
 
 ## Desktop options
 
@@ -265,6 +268,91 @@ The prototype leaves these items for D2:
   shadow.
 - The range ends at a fixed 50 m.
 - Transmissive surfaces keep the cascades.
+
+### Hybrid prototype
+
+The hybrid prototype adds the hybrid layering to the ray prototype on the
+desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
+
+| Layer | Pass | Where it applies |
+|---|---|---|
+| Rays | `Shadow.SunRay`, `Shadow.SunRayResolve` | within 50 m, blended to the cascades from 40 m |
+| Temporal denoise | `Shadow.SunRayTemporal`, `Shadow.SunRayHistory` | wherever the rays apply |
+| Contact march | `Lighting.Deferred` | where the rays' weight is below 1 |
+| Cascades | `Lighting.Deferred` | beyond the rays, and on GPUs without ray queries |
+
+- **Temporal denoise.** `Shadow.SunRayTemporal` keeps an exponential
+  average (weight 0.1) of the filtered visibility along `temporal_motion`.
+  The history is RG16F (visibility, device depth). A bilinear history tap
+  counts only when its depth is within 2% of the previous depth that
+  `temporal_validity` records for the surface. The history is clipped to the
+  current 3×3 mean ± 1.5 standard deviations. It starts over unless the
+  previous submit wrote the same history image and the camera history is
+  valid. `Shadow.SunRayHistory` copies the new history over the old one.
+- **Complete TLAS.** The rays engage only when the frame's TLAS holds every
+  eligible row (`tlas_missing_rows`). After a load, casters whose BLAS still
+  waits for the per-frame build budget keep their cascade shadow.
+- **Contact march.** A march toward the sun in `Lighting.Deferred`: 8 depth
+  samples over 0.25 m, through the local-light contact helpers and
+  `vk_contact_shadow`. It runs where the rays' weight is below 1, because the
+  rays find the contacts themselves. `VKR_SUN_CONTACT_SHADOWS=0` turns it
+  off. `=1` turns it on without rays, which gives cascades with contacts on
+  GPUs without ray queries.
+- **Defect 5, sun only.** The lighting, forward and transmission sun terms
+  offset and bias the receiver along the geometric normal. Lighting
+  reconstructs it from camera depth (`vkr_vk_depth_view_geometric_normal`) and
+  already computed it for the horizon fade, so it costs no measured time.
+  The ray origin uses the same normal. Local lights keep the shading normal:
+  the reconstruction cost 0.29 ms in `Shadow.LocalMask` on the plaza (3.86 to
+  4.14 ms), and 4.79 ms when deferred to the first shadowed light
+  (`sha256:46c413a2…`, `2f99a298…`, `4561a079…`). The local shadow
+  architecture proposal owns that fix.
+- **Defect 6.** The sun's filter rotation and contact noise step through FSR
+  3.1's 16 or SMAA T2x's 2 temporal phases, and stay fixed without a
+  temporal resolve.
+
+Measured as in the prototype result, with the final code:
+
+| Case, mode | Trace | Resolve | Temporal + copy | TLAS refit | Lighting | All GPU passes | Report |
+|---|---|---|---|---|---|---|---|
+| Plaza, off | — | — | — | — | 6.848 | 19.334 | `sha256:ea74ec0a…` |
+| Plaza, hybrid | 0.882 | 0.429 | 0.211 | 0.062 | 5.861 | 19.966 | `sha256:d37f51d1…` |
+| Street, off | — | — | — | — | 7.898 | 20.937 | `sha256:a7c1ff03…` |
+| Street, hybrid | 0.766 | 0.413 | 0.206 | 0.062 | 7.009 | 21.545 | `sha256:10f97c9c…` |
+
+- **Ray passes.** They cost 1.58 ms on the plaza, where every pixel is in
+  range, and 1.45 ms on the street. That is around the 1.5 ms gate.
+- **Frame cost.** The whole frame costs 0.63 ms (plaza) and 0.61 ms (street)
+  more.
+- **Defect fixes.** With rays off, the frame matches the prototype's
+  baseline (19.347 and 20.927 ms), so the fixes add no measured cost.
+
+`local.bistro.shadow.sun_ray_plaza_strafe_capture` strafes the plaza camera
+2.5 m in 2 s and captures `shadow_debug_factor` at frames 30, 60 and 100
+(hybrid `sha256:6c00ef0e…`, off `sha256:fbfe2a6c…`):
+
+- The hybrid shows no trail behind the moving bollard and hedge shadows, and
+  keeps their edges sharp; the cascades' edges blur.
+- The rays darken the plaza tree's crown, whose alpha-tested leaves shadow
+  each other; the cascades leave it lit.
+- With rays off, the defect 5 fix removes the diagonal streaks the cascades
+  drew on the normal-mapped facade and columns.
+
+A Debug run of the plaza in hybrid mode, with `VK_LAYER_KHRONOS_validation`
+and synchronization checks, ran all four ray passes and reported no
+validation messages (`sha256:0595340c…`).
+
+Production readiness: not yet. Each item below blocks the High preset:
+
+| Item | Why it blocks | Work |
+|---|---|---|
+| Skinned casters | Not in the TLAS. Within 50 m characters cast no sun shadow, and the contact march is off where the rays apply. Bistro has none, so this is unmeasured. | A BLAS per skinned instance from `Animation.Skinning`'s output, refitted each frame; or the contact march under the rays as a stopgap |
+| Settings | An environment switch. | A shadow-preset field (High on ray-query devices), the graphics settings, and the harness fingerprint |
+| Worst-case cost | 1.58 ms on the plaza, above the 1.5 ms gate. | A half-size trace image (it is full size today); resolve and temporal in one pass; history images that alternate instead of the copy |
+| Foliage-heavy levels | Alpha-tested candidates run the `Proceed` loop; only Bistro is measured. | Level Design Test forest timing |
+| Moving sun | The history lags about ten frames behind a moving sun; the clip bounds the trail. | A time-of-day sweep capture |
+| Range | Fixed at 50 m. | Tie the range to the cascade splits or a preset value |
+
 
 ## Tiled options
 
@@ -445,9 +533,10 @@ Open:
 - Each option: capture-free Release before/after reports on its native
   backend (RX 6700 XT for Vulkan, an M1-class Mac for Metal) meeting the
   budgets above, with equivalent work and output.
-- D2: a motion capture that shows no denoiser ghosting or noise at shadow
-  edges, and Vulkan validation of D2's final passes. The gate result and the
-  prototype's validation run are recorded above.
+- D2: the production items in the hybrid prototype's table, a capture
+  with a skinned caster in ray range, and Vulkan validation of D2's final
+  passes. The gate result, the strafe capture and the prototypes'
+  validation runs are recorded above.
 - Contact shadows: captures with contact shadows off and on at the Level
   Design Test's lift, freight cars and mannequin feet and at Bistro's chairs
   and tables, on each backend.

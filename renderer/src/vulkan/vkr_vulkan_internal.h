@@ -112,6 +112,8 @@
   "packet.sun_ray_shadow_trace.comp.spv"
 #define VKR_VULKAN_PACKET_SUN_RAY_SHADOW_RESOLVE_COMP_SPV                      \
   "packet.sun_ray_shadow_resolve.comp.spv"
+#define VKR_VULKAN_PACKET_SUN_RAY_SHADOW_TEMPORAL_COMP_SPV                     \
+  "packet.sun_ray_shadow_temporal.comp.spv"
 #define VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV "packet.reflection.frag.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_TRANSMISSION_VERT_SPV                   \
   "packet.local_shadow_transmission.vert.spv"
@@ -903,7 +905,13 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   /** Shadow.SunRayResolve's RG8 mask (visibility, weight over the
       cascades); zero without ray-query sun shadows. */
   uint32_t sun_ray_shadow_texture;
-  uint32_t sun_ray_reserved;
+  /** The sun cascade filter's and contact march's noise phase: the frame's
+      temporal phase under FSR 3.1 or SMAA T2x, zero otherwise. */
+  uint32_t sun_noise_index;
+  /** Nonzero: a contact march toward the sun multiplies its visibility
+      where the rays do not cover the pixel. */
+  uint32_t sun_contact;
+  uint32_t sun_reserved[3];
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -2047,7 +2055,7 @@ _Static_assert(offsetof(VkrVulkanTemporalResolveRoot, extent) == 68u &&
                             transmission_visible_rows) == 88u &&
                    offsetof(VkrVulkanTemporalResolveRoot, reserved) == 116u,
                "Temporal resolve-root ABI offset drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 336u &&
+_Static_assert(sizeof(VkrVulkanLightingRoot) == 352u &&
                    offsetof(VkrVulkanLightingRoot, view_rays) == 256u &&
                    offsetof(VkrVulkanLightingRoot, sample1_pixels) == 320u &&
                    offsetof(VkrVulkanLightingRoot, planar_reflection_texture) ==
@@ -2075,7 +2083,7 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
                        164u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
                        192u &&
-                   sizeof(VkrVulkanLightingRoot) == 336u,
+                   sizeof(VkrVulkanLightingRoot) == 352u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");
@@ -2778,10 +2786,12 @@ typedef enum VkrVulkanVolumePipeline {
   /* Ray-query sun shadows (VKR_SUN_RAY_SHADOWS) trace the same TLAS. */
   VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE,
   VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_RESOLVE,
+  VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TEMPORAL,
   VKR_VULKAN_VOLUME_PIPELINE_COUNT,
 } VkrVulkanVolumePipeline;
 
-/* Shadow.SunRay and Shadow.SunRayResolve: one root for both kernels. */
+/* Shadow.SunRay, Shadow.SunRayResolve and Shadow.SunRayTemporal: one root
+   for the three kernels. */
 typedef struct VKR_SIMD_ALIGN VkrVulkanSunRayShadowRoot {
   uint64_t frame;
   uint64_t frame_padding;
@@ -2797,7 +2807,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSunRayShadowRoot {
   uint32_t normal_texture;
   /* RG16F: traced visibility and the traced pixel's view depth. */
   uint32_t trace_texture;
-  /* RG8: filtered visibility and its weight over the cascades. */
+  /* RG8: filtered visibility and its weight over the cascades, written by
+     the resolve and read by the temporal pass. */
   uint32_t mask_texture;
   uint32_t tlas_slot;
   uint32_t extent[2];
@@ -2810,9 +2821,22 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSunRayShadowRoot {
   float32_t range_fade_start;
   float32_t range_end;
   float32_t ray_length;
-  uint32_t reserved[3];
+  /* The temporal pass: camera motion and its validity from the G-buffer
+     resolve; the RG16F history (accumulated visibility, device depth) read
+     and written; the RG8 mask lighting reads; whether the history holds the
+     previous frame's result. */
+  uint32_t motion_texture;
+  uint32_t validity_texture;
+  uint32_t history_texture;
+  uint32_t history_next_texture;
+  uint32_t temporal_texture;
+  uint32_t history_valid;
+  uint32_t reserved;
 } VkrVulkanSunRayShadowRoot;
-_Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 192u &&
+_Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 208u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, motion_texture) ==
+                       180u &&
+                   offsetof(VkrVulkanSunRayShadowRoot, history_valid) == 200u &&
                    offsetof(VkrVulkanSunRayShadowRoot, visible_rows) == 80u &&
                    offsetof(VkrVulkanSunRayShadowRoot, vbuffer_texture) ==
                        120u &&
@@ -2822,6 +2846,13 @@ _Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 192u &&
                "Vulkan sun ray shadow root ABI drift");
 #define VKR_VULKAN_SUN_RAY_HALF 1u
 #define VKR_VULKAN_SUN_RAY_TLAS 2u
+
+/* The three ray-query sun shadow passes, which share one prepare. */
+typedef enum VkrVulkanSunRayStage {
+  VKR_VULKAN_SUN_RAY_STAGE_TRACE = 0,
+  VKR_VULKAN_SUN_RAY_STAGE_RESOLVE,
+  VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL,
+} VkrVulkanSunRayStage;
 
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
@@ -3043,6 +3074,9 @@ typedef struct VkrVulkanFrameSlot {
   VkrVulkanBuffer tlas_instances;
   VkrVulkanBuffer tlas_scratch;
   uint32_t tlas_instance_count;
+  /* Rows this frame's TLAS leaves out because their BLAS waits for a later
+     frame's build budget; sun rays keep the cascades until none is left. */
+  uint32_t tlas_missing_rows;
   /* The TLAS refits in place while its instance count and the scene's BLAS
      generation hold, and is rebuilt every VKR_VULKAN_TLAS_REBUILD_INTERVAL
      uses so that refits do not degrade it. */
@@ -3559,6 +3593,11 @@ struct VkrVulkanRenderer {
   /* Advances whenever a BLAS appears, moves or goes, so a TLAS refit sees
      only the instances it was built over. */
   uint64_t blas_generation;
+  /* The submit that last wrote the ray-query sun shadow history, and the
+     image it wrote: the next frame's temporal pass accumulates onto it only
+     when it is the previous submit's and the same image. */
+  uint64_t sun_ray_history_submit;
+  VkImage sun_ray_history_image;
   /* Probes a frame may trace within VKR_VULKAN_VOLUME_BUDGET_MS, from the
      measured cost of the layer's passes (ADR-119). Written on the render
      thread; the runtime reads it once a frame. */
@@ -3935,7 +3974,8 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedCompute *prepared,
-                                      const VkrRgPass *pass, bool8_t resolve);
+                                      const VkrRgPass *pass,
+                                      VkrVulkanSunRayStage stage);
 bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass, bool8_t layered,

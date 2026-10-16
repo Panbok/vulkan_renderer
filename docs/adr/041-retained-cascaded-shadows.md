@@ -182,8 +182,11 @@ and converted using each cascade's texel size and fitted depth span. Backend
 raster-bias lowering preserves those units. Cutout casters use alpha testing.
 
 The kernel turns per pixel by interleaved gradient noise
-(`vkr_shadow_kernel_rotation`, noise index 0 on both pipelines), so a sparse
-kernel's sampling error shows as single-pixel grain. Before 2026-10-15 the
+(`vkr_shadow_kernel_rotation`), so a sparse kernel's sampling error shows as
+single-pixel grain. Desktop deferred lighting steps the noise index through
+FSR 3.1's 16 or SMAA T2x's 2 temporal phases, which the resolve averages;
+blended draws, the tiled pipeline and frames without a temporal resolve keep
+index 0. Before 2026-10-15 the
 rotation was hashed per light-space shadow texel and showed as blocks one
 shadow texel wide; no receiver reads the light-space origin lanes of
 `origin_inv_size_sun` since then. Every PCF tap and PCSS blocker tap compares
