@@ -306,8 +306,11 @@ an agent must read one without the editor.
   recording or default to the open one; each spike and the frames' range
   also name their thumbnails, and `rec.seek` takes a spike rank. The editor's
   Performance window draws it with `vkr_ui_plot`,
-  including a GPU-by-pass chart over the frames with GPU times and a pass
-  table that isolates one pass.
+  including a GPU-by-pass chart over the frames with GPU times, and lists
+  spikes and passes in column tables (`editor_table.c`: resizable, sortable
+  columns, row selection, virtual rows) under the charts, the charts, the
+  lists and the two tables divided by split bars the designer drags; a pass
+  row isolates its pass.
 
 ## Consequences
 

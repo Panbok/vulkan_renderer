@@ -5,6 +5,7 @@
 #include "assets/vkr_recording_compare.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "editor_table.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "vkr_sample_runtime.h"
@@ -70,6 +71,17 @@ typedef struct VkrEditorRecordingEntry {
 
 /* The performance view of one recording (docs/proposals/recordings.md,
    "Performance view"): its loaded data, analysis and plot columns. */
+/* The Performance window's layout and tables, kept when another recording
+   loads. */
+typedef struct VkrEditorRecordingPerfView {
+  /* Charts above the lists, and spikes beside passes. */
+  VkrEditorSplit charts;
+  VkrEditorSplit lists;
+  VkrEditorTable spikes;
+  VkrEditorTable passes;
+  VkrEditorTable passes_compare;
+} VkrEditorRecordingPerfView;
+
 typedef struct VkrEditorRecordingPerf {
   bool8_t loaded;
   char path[VKR_RECORDING_PATH_MAX];
@@ -112,7 +124,7 @@ typedef struct VkrEditorRecordingPerf {
      pointer was over in the last build, for the tooltip. */
   uint64_t selected;
   uint32_t hovered_column;
-  float32_t spike_scroll;
+  VkrEditorRecordingPerfView view;
   /* Compare: recording B against this one, A, read into the same memory,
      and B's frame time at each column's frame for the frame chart's line,
      holding the last one where B has none. */
