@@ -1483,8 +1483,10 @@ static void test_recording_gpu_submission(void) {
 /* Detects: a render-thread publication's frame-loop work (the completing
    iteration's update, and its frame build when it built before the
    completion) left on the published frame instead of the iteration's own,
-   so a slow update sits a row before the frame.wall it lengthened; and the
-   split losing the published frame's other fields. */
+   so a slow update sits a row before the frame.wall it lengthened; the
+   first iteration's update lost with the frame from before the recording
+   that it published; and the split losing the published frame's other
+   fields. */
 static void test_recording_loop_metrics(void) {
   printf("  Running test_recording_loop_metrics...\n");
   RecordingTestMemory memory;
@@ -1522,15 +1524,14 @@ static void test_recording_loop_metrics(void) {
   assert(vkr_recording_start(&recording, &config));
   /* Iteration f records frame f, then completes frame f - 1: the
      publication holds frame f - 1's wall (10 + f - 1 ms) and iteration f's
-     update (100 + f ms). Iterations 3 and 5 built a frame first (50 + f
-     ms); only iteration 3 built it before the completion. */
+     update (100 + f ms). Iteration 0 completes a frame from before the
+     recording, whose wall is no recorded frame's. Iterations 3 and 5 built
+     a frame first (50 + f ms); only iteration 3 built it before the
+     completion. */
   for (uint64_t f = 0u; f < 6u; ++f) {
     const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
     const VkrRecordingCamera camera = {.fov = 60.0f};
     vkr_recording_frame(&recording, &frame, &camera);
-    if (f == 0u) {
-      continue;
-    }
     vkr_metrics_begin_frame(metrics, f, f);
     vkr_metrics_duration_add_ns(metrics, wall, (10u + f - 1u) * 1000000u);
     vkr_metrics_duration_add_ns(metrics, update, (100u + f) * 1000000u);
@@ -1541,7 +1542,8 @@ static void test_recording_loop_metrics(void) {
     VkrMetricsSnapshotView view = {0};
     assert(vkr_metrics_snapshot_acquire(metrics, &view));
     const VkrRecordingMetricsLoop loop = {.frame = f, .built = f == 3u};
-    vkr_recording_metrics(&recording, f - 1u, view.frame, &loop);
+    vkr_recording_metrics(&recording, f == 0u ? UINT64_MAX : f - 1u, view.frame,
+                          &loop);
     vkr_metrics_snapshot_release(metrics, &view);
   }
   VkrRecorderStats stats;
@@ -1562,8 +1564,7 @@ static void test_recording_loop_metrics(void) {
   for (uint64_t f = 0u; f < 6u; ++f) {
     assert(walls->valid[f] == (f < 5u));
     assert(f == 5u || walls->values[f] == (float64_t)(10u + f));
-    assert(updates->valid[f] == (f > 0u));
-    assert(f == 0u || updates->values[f] == (float64_t)(100u + f));
+    assert(updates->valid[f] && updates->values[f] == (float64_t)(100u + f));
   }
   /* Iteration 3's build is its own; iteration 5's came after it completed
      frame 4, so it stays with frame 4. */

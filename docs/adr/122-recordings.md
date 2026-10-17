@@ -329,7 +329,9 @@ an agent must read one without the editor.
   written on the iteration's own recorded frame, again as a record whose
   mask holds them alone, so a slow update sits on the frame whose
   `frame.wall` it lengthened. Before, a 290 ms agent capture's update sat
-  one row before its `frame.wall` spike and the spike named another cause.
+  one row before its `frame.wall` spike and the spike named another cause. The
+  recording's first iteration publishes a frame from before the recording,
+  so only its loop work is written, on frame 0.
 - **Pass rows (Tier 1).** A Tier 1 recording adds streams `pass_name` (an id
   and a name, written once before the id's first row) and `passes`: the
   executed passes of one rendered frame, each with CPU encode and GPU

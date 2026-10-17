@@ -790,15 +790,25 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
                                           uint64_t frame,
                                           const VkrRecordingMetricsLoop *loop,
                                           bool8_t published) {
-  if (!runtime->recording.active || frame == UINT64_MAX) {
+  /* The frame rendered before the recording began publishes the update of
+     the recording's first frame-loop iteration. */
+  const bool8_t loop_only =
+      frame == UINT64_MAX && loop && loop->frame != UINT64_MAX;
+  if (!runtime->recording.active || (frame == UINT64_MAX && !loop_only)) {
     return;
   }
   VkrMetricsSnapshotView view = {0};
   if (!published || !vkr_metrics_snapshot_acquire(runtime->metrics, &view)) {
-    vkr_recording_metrics(&runtime->recording, frame, NULL, NULL);
+    if (!loop_only) {
+      vkr_recording_metrics(&runtime->recording, frame, NULL, NULL);
+    }
     return;
   }
   vkr_recording_metrics(&runtime->recording, frame, view.frame, loop);
+  if (loop_only) {
+    vkr_metrics_snapshot_release(runtime->metrics, &view);
+    return;
+  }
   /* The pass table is single-buffered: it belongs to this publication only
      when both name the same renderer frame. */
   const VkrRendererMetricsPassTable *passes =

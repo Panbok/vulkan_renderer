@@ -739,8 +739,12 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
   if (!recording->metrics_enabled) {
     return;
   }
-  /* The renderer's events of this publication land on its frame. */
-  for (uint32_t i = 0u; published && i < recording->event_metric_count; ++i) {
+  /* The renderer's events of this publication land on its frame; a
+     publication of a frame from before the recording keeps only the loop
+     work, which belongs to a recorded frame. */
+  const bool8_t recorded = frame != UINT64_MAX;
+  for (uint32_t i = 0u;
+       recorded && published && i < recording->event_metric_count; ++i) {
     const VkrRecordingEventMetric *metric =
         &VKR_RECORDING_EVENT_METRICS[recording->event_metric_names[i]];
     const VkrMetricId id = recording->event_metric_ids[i];
@@ -779,7 +783,9 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
                   fields;
     fields &= ~loop_fields;
   }
-  vkr_recording_metrics_record(recording, frame, published, fields, true_v);
+  if (recorded) {
+    vkr_recording_metrics_record(recording, frame, published, fields, true_v);
+  }
   /* A record whose mask holds the loop fields alone; readers merge it into
      the frame's record by the mask. Before the first recorded frame they
      belong to no frame. */

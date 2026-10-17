@@ -16331,7 +16331,13 @@ static bool8_t ops_recording_list_visit(void *context, const char *name,
     file_unmap(&mapping);
   }
   if (!entry || entry->type != VKR_BAKERY_JSON_OBJECT) {
+    /* A crash before stop leaves no summary; the bundle names it, as
+       rec.open takes it. */
     entry = vkr_bakery_json_object(arena);
+    ops_set(list->ctx, entry, "name",
+            vkr_bakery_json_string(
+                arena, string8_create_from_cstr((const uint8_t *)name,
+                                                length - extension)));
     ops_set(list->ctx, entry, "status",
             vkr_bakery_json_cstr(arena, "no summary"));
   }

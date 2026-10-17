@@ -630,6 +630,39 @@ Every gate uses Bistro, as `AGENTS.md` requires.
 8. **Agent loop.** An agent creates a request, the user records it, and the
    agent answers the question from `summary.json` and capped queries alone.
 
+Results on Metal (M1 Pro, Release, headless editor, Bistro, 2026-10-17;
+scripts in `.scratch/recordings/`):
+
+- **Gate 2.** Watch places the camera exactly (R1: 0 m and 0° at four
+  frames). A pixel comparison under the snapshot rule is not possible: the
+  thumbnails are JPEG and the Scene capture carries the editor's overlays
+  (REC chip, playback bar, route). Scene-linear HDR from `query.luminance`
+  instead, at three still poses held 1.5 s while recording and the same
+  frames in Watch: the whole image's log average matched within 0.01 stops
+  at each pose, and 24 world points differed by up to 1.7 stops (mean 0.05
+  to 0.35), less than the live view varies against itself 1.5 s later (up
+  to 7 stops at a point, 0.005 stops over regions).
+- **Gate 3.** 20 seeks across a 2,819-frame, 22 m glide recording with
+  entity edits, first and last frame included, took at most 35.8 ms (median
+  30.1 ms) from `rec.seek` to a `rec.status` that read the new playhead,
+  against 250 ms. Bistro has no cells to settle.
+- **Gate 4.** Not run: no debug pass with a fixed GPU cost exists. The join
+  was checked by correlation instead (R2: r = 0.986 against the same
+  frame's pass times on Metal, 0.934 on Vulkan).
+- **Gate 5.** A recording killed with SIGKILL 7 s in left a bundle that
+  `vkr_rec verify` read as truncated with every byte valid: 7 record chunks,
+  0 bad, 7,836 records, frames 0 to 1297, no gaps; `vkr_rec summary` and
+  `spikes` analyzed it, its 15 thumbnails stayed, and a new editor listed it
+  (by its bundle name, without `summary.json`), opened it and sought to
+  frame 1200.
+- **Gate 8.** An agent asked "Where does this glide hitch, and what causes
+  it?" with `rec.request.create`; the request was started through Cmd as
+  the Recordings window does, a window capture during the glide made a
+  hitch, and the request stopped itself after 5 s. From `summary.json` and
+  `rec.spikes` alone the agent named frame 702, 183.6 ms against a 9.6 ms
+  median, mostly `cpu.update` (+182.2 ms): the capture requested at frame
+  693 writes its PNG on the main thread when its readback arrives.
+
 Bistro has no collision, so R3, R6 and gates 6 and 7 use the scoped Bistro
 Play case `assets/scenes/fixtures/bistro_play_local.scene.json`: Bistro with
 a collision-only slab under the street and a Player Start. Moving bodies for

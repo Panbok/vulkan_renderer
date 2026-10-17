@@ -390,7 +390,9 @@ typedef struct VkrRecordingMetricsLoop {
  * @brief Writes the Tier 0 metrics of recorded frame `frame` from a published
  * metrics frame, except gpu.submission, which vkr_recording_gpu_submission
  * places, and, with `loop`, the frame-loop work it names, which goes on
- * `loop->frame`; no-op for a recording without metrics. Frame-loop thread.
+ * `loop->frame`; `frame` UINT64_MAX (a frame from before the recording)
+ * writes only that. No-op for a recording without metrics. Frame-loop
+ * thread.
  */
 void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
                            const VkrMetricsFrame *published,
