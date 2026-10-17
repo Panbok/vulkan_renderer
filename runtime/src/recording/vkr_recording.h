@@ -55,6 +55,17 @@
 #define VKR_RECORDING_CONTAINER_ACTIVE 0u
 #define VKR_RECORDING_CONTAINER_WORLD 1u
 #define VKR_RECORDING_CONTAINER_ADDITIVE 2u
+/* Gameplay records from script modules (vkr_rec_player, vkr_rec_tag,
+   vkr_rec_event in sdk/sdk.h), under the frame whose update ran them. A
+   player record is a VkrRecordingPlayer per fixed tick; a tag is a u16 key
+   length, the key, then the value; an event is a u16 name length, the
+   name, then its payload. */
+#define VKR_RECORDING_STREAM_PLAYER 8u
+#define VKR_RECORDING_STREAM_TAG 9u
+#define VKR_RECORDING_STREAM_EVENT 10u
+/* Longest tag key or value and event name; longest event payload. */
+#define VKR_RECORDING_TEXT_MAX 63u
+#define VKR_RECORDING_EVENT_PAYLOAD_MAX 256u
 /* Recent recorded frames whose renderer frame index pass rows can name;
    rows arrive a few frames after their frame. */
 #define VKR_RECORDING_FRAME_INDEX_HISTORY 32u
@@ -117,6 +128,20 @@ typedef struct VkrRecordingPose {
   float32_t linear[9];
   uint32_t document;
 } VkrRecordingPose;
+
+/* A module's player at one fixed tick: feet position in world space with
+   the scene's origin offset, velocity, view and module-defined state. */
+typedef struct VkrRecordingPlayer {
+  uint64_t tick;
+  float64_t position[3];
+  float32_t velocity[3];
+  float32_t yaw;
+  float32_t pitch;
+  /* VKR_REC_PLAYER_* (sdk/sdk.h) */
+  uint32_t flags;
+  uint32_t state;
+  uint32_t reserved;
+} VkrRecordingPlayer;
 
 /* Marker records are a u32 kind followed by a UTF-8 label. */
 typedef struct VkrRecordingMarker {
@@ -251,6 +276,19 @@ void vkr_recording_pose(VkrRecording *recording, const VkrRecordingPose *pose);
 
 /** Writes the poses still batched. */
 void vkr_recording_poses_flush(VkrRecording *recording);
+
+/** Writes a player record under the frame being updated. */
+void vkr_recording_player(VkrRecording *recording,
+                          const VkrRecordingPlayer *player);
+
+/** Writes a tag: `key` became `value`, each cut to VKR_RECORDING_TEXT_MAX
+    bytes. */
+void vkr_recording_tag(VkrRecording *recording, String8 key, String8 value);
+
+/** Writes an event `name` with up to VKR_RECORDING_EVENT_PAYLOAD_MAX bytes
+    of payload. */
+void vkr_recording_event(VkrRecording *recording, String8 name,
+                         const void *payload, uint32_t size);
 
 /** Adds a marker at the current frame. Returns false_v when it was lost. */
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

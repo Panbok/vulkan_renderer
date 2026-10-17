@@ -17,6 +17,7 @@
  *   camera   position (m, 3 elements), yaw (deg)
  *   marker     variable records: u32 kind, then the UTF-8 label
  *   metrics    "valid" (u64 bit mask), then one value per metric
+ *   player     position (m, 3 elements), velocity (m/s, 3 elements)
  *   pass_name  variable records: u32 pass id, then the UTF-8 name
  *   passes     variable records of pass rows (vkr_recording_format.h)
  *
@@ -37,6 +38,12 @@
 /* Pass rows a load keeps, 48 MiB: about 8 minutes of 150 passes at 60
    frames per second. Later frames load without rows. */
 #define VKR_RECORDING_DATA_PASS_ROW_MAX (1ull << 22u)
+/* vkr_recording_frames_write_json columns of the player's last tick in a
+   frame: its position and its speed in m/s. */
+#define VKR_RECORDING_PLAYER_X_FIELD "player.x"
+#define VKR_RECORDING_PLAYER_Y_FIELD "player.y"
+#define VKR_RECORDING_PLAYER_Z_FIELD "player.z"
+#define VKR_RECORDING_PLAYER_SPEED_FIELD "player.speed"
 /* Prefixes of vkr_recording_frames_write_json columns that read one pass's
    GPU or CPU time, followed by the pass name. */
 #define VKR_RECORDING_PASS_GPU_FIELD "pass.gpu:"
@@ -120,6 +127,13 @@ typedef struct VkrRecordingData {
   float64_t *positions;
   float32_t *yaws;
   uint8_t *camera_valid;
+  /* The player of the frame's last tick (vkr_rec_player): three positions
+     and a speed per frame where player_valid is 1. has_player says the
+     recording declares a player stream. */
+  bool8_t has_player;
+  float64_t *player_positions;
+  float32_t *player_speeds;
+  uint8_t *player_valid;
   /* Frames without a frame record. */
   uint64_t missing_frames;
 

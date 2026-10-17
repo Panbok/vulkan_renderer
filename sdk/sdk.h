@@ -75,7 +75,7 @@
 #endif
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 9u
+#define VKR_SDK_VERSION 10u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -614,6 +614,22 @@ typedef const VkrModuleDesc *(*VkrModuleEntry)(uint32_t sdk_version);
  * writes up to `capacity` module entries and returns how many it lists. */
 typedef uint32_t (*VkrProjectEntry)(VkrModuleEntry *entries, uint32_t capacity);
 
+/* A module's player at one fixed tick, for vkr_rec_player. */
+#define VKR_REC_PLAYER_GROUNDED 1u
+#define VKR_REC_PLAYER_CROUCHED 2u
+typedef struct VkrRecPlayer {
+  /* Feet, in world space. */
+  Vec3 position;
+  /* Meters per second. */
+  Vec3 velocity;
+  float32_t yaw_degrees;
+  float32_t pitch_degrees;
+  /* VKR_REC_PLAYER_* */
+  uint32_t flags;
+  /* Module-defined, such as the selected weapon. */
+  uint32_t state;
+} VkrRecPlayer;
+
 // =============================================================================
 // Private host table: call the vkr_* functions below instead
 // =============================================================================
@@ -755,6 +771,12 @@ typedef struct VkrSdkTable {
   float64_t (*time_of_day)(VkrCtx *ctx);
   bool8_t (*set_time_of_day)(VkrCtx *ctx, float64_t hour);
   bool8_t (*set_light_group)(VkrCtx *ctx, VkrStr name, float32_t intensity);
+
+  /* Recordings. */
+  void (*rec_player)(VkrCtx *ctx, const VkrRecPlayer *player);
+  void (*rec_tag)(VkrCtx *ctx, VkrStr key, VkrStr value);
+  void (*rec_event)(VkrCtx *ctx, VkrStr name, const void *payload,
+                    uint32_t size);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -1161,6 +1183,26 @@ static inline bool8_t vkr_set_time_of_day(VkrCtx *ctx, float64_t hour) {
 static inline bool8_t vkr_set_light_group(VkrCtx *ctx, VkrStr name,
                                           float32_t intensity) {
   return ctx->sdk->set_light_group(ctx, name, intensity);
+}
+
+/** Records the module's player for this fixed tick while the editor records
+ * a session (docs/proposals/recordings.md): Watch draws its path and
+ * analysis places spikes on it. Call once per fixed_update after moving the
+ * player; nothing happens while nothing records. */
+static inline void vkr_rec_player(VkrCtx *ctx, const VkrRecPlayer *player) {
+  ctx->sdk->rec_player(ctx, player);
+}
+
+/** Records that gameplay state `key` became `value`, such as "weapon" and
+ * "rifle"; each is cut to 63 bytes. Record changes, not every tick. */
+static inline void vkr_rec_tag(VkrCtx *ctx, VkrStr key, VkrStr value) {
+  ctx->sdk->rec_tag(ctx, key, value);
+}
+
+/** Records a gameplay event `name` with up to 256 bytes of payload. */
+static inline void vkr_rec_event(VkrCtx *ctx, VkrStr name, const void *payload,
+                                 uint32_t size) {
+  ctx->sdk->rec_event(ctx, name, payload, size);
 }
 
 /** The game owns keyboard and mouse this frame. */

@@ -5,6 +5,7 @@
 #include "script/vkr_script_internal.h"
 
 #include "animation/vkr_animation_player.h"
+#include "recording/vkr_recording.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -1062,6 +1063,53 @@ static bool8_t sdk_set_time_of_day(VkrCtx *ctx, float64_t hour) {
 
 /* Every attached container scales the group, so its lights follow wherever
    they load (ADR-090). */
+/* ---- Recordings ---- */
+
+static void sdk_rec_player(VkrCtx *ctx, const VkrRecPlayer *player) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrRecording *recording = script->host->recording;
+  if (!recording || !recording->active || !player) {
+    return;
+  }
+  const VkrScene *scene = sdk_active(script);
+  const Vec3 origin = scene ? scene->origin_offset : vec3_zero();
+  const VkrRecordingPlayer record = {
+      .tick = vkr_scene_simulation_completed_ticks(scene) + 1u,
+      .position = {(float64_t)player->position.x + (float64_t)origin.x,
+                   (float64_t)player->position.y + (float64_t)origin.y,
+                   (float64_t)player->position.z + (float64_t)origin.z},
+      .velocity = {player->velocity.x, player->velocity.y, player->velocity.z},
+      .yaw = player->yaw_degrees,
+      .pitch = player->pitch_degrees,
+      .flags = player->flags,
+      .state = player->state,
+  };
+  vkr_recording_player(recording, &record);
+}
+
+static void sdk_rec_tag(VkrCtx *ctx, VkrStr key, VkrStr value) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrRecording *recording = script->host->recording;
+  String8 key_text;
+  String8 value_text;
+  if (!recording || !recording->active || !sdk_text(script, key, &key_text) ||
+      !sdk_text(script, value, &value_text)) {
+    return;
+  }
+  vkr_recording_tag(recording, key_text, value_text);
+}
+
+static void sdk_rec_event(VkrCtx *ctx, VkrStr name, const void *payload,
+                          uint32_t size) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrRecording *recording = script->host->recording;
+  String8 name_text;
+  if (!recording || !recording->active || !sdk_text(script, name, &name_text)) {
+    return;
+  }
+  vkr_recording_event(recording, name_text, payload, size);
+}
+
 static bool8_t sdk_set_light_group(VkrCtx *ctx, VkrStr name,
                                    float32_t intensity) {
   ScriptCtx *script = sdk_ctx(ctx);
@@ -1902,5 +1950,8 @@ void script_sdk_table(VkrSdkTable *table) {
       .time_of_day = sdk_time_of_day,
       .set_time_of_day = sdk_set_time_of_day,
       .set_light_group = sdk_set_light_group,
+      .rec_player = sdk_rec_player,
+      .rec_tag = sdk_rec_tag,
+      .rec_event = sdk_rec_event,
   };
 }

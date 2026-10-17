@@ -20,6 +20,8 @@
    one that names no series. */
 #define VKR_RECORDING_COLUMN_FRAME_MS (UINT32_MAX - 1u)
 #define VKR_RECORDING_COLUMN_UNKNOWN UINT32_MAX
+/* Player columns: x, y, z, then speed. */
+#define VKR_RECORDING_COLUMN_PLAYER (UINT32_MAX - 5u)
 /* Pass columns: one of these bits with the pass id. */
 #define VKR_RECORDING_COLUMN_PASS_GPU 0x40000000u
 #define VKR_RECORDING_COLUMN_PASS_CPU 0x20000000u
@@ -41,6 +43,9 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *metrics;
   const VkrRecordingStream *pass_name;
   const VkrRecordingStream *passes;
+  const VkrRecordingStream *player;
+  const VkrRecordingField *player_position;
+  const VkrRecordingField *player_velocity;
   const VkrRecordingField *display_dt;
   const VkrRecordingField *position;
   const VkrRecordingField *yaw;
@@ -174,6 +179,11 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->metrics = vkr_recording_find_stream(dictionary, "metrics");
   load->pass_name = vkr_recording_find_stream(dictionary, "pass_name");
   load->passes = vkr_recording_find_stream(dictionary, "passes");
+  load->player = vkr_recording_find_stream(dictionary, "player");
+  load->player_position =
+      vkr_recording_find_field(load->player, "position", 3u);
+  load->player_velocity =
+      vkr_recording_find_field(load->player, "velocity", 3u);
   load->display_dt = vkr_recording_find_field(load->frame, "display_dt", 1u);
   load->position = vkr_recording_find_field(load->camera, "position", 3u);
   load->yaw = vkr_recording_find_field(load->camera, "yaw", 1u);
@@ -411,11 +421,26 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
     data->camera_valid[frame] = 1u;
   } else if (vkr_recording_record_fits(load->metrics, record)) {
     vkr_recording_data_fill_metrics(load, record);
+  } else if (vkr_recording_record_fits(load->player, record) &&
+             load->player_position) {
+    /* Ticks arrive in order, so the frame keeps its last one. */
+    float64_t speed_squared = 0.0;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      data->player_positions[frame * 3u + axis] =
+          vkr_recording_field_value(load->player_position, record->data, axis);
+      const float64_t velocity =
+          load->player_velocity ? vkr_recording_field_value(
+                                      load->player_velocity, record->data, axis)
+                                : 0.0;
+      speed_squared += velocity * velocity;
+    }
+    data->player_speeds[frame] = (float32_t)vkr_sqrt_f64(speed_squared);
+    data->player_valid[frame] = 1u;
   }
 }
 
 /* One allocation: series and markers, then the float64 arrays, the float32
-   yaws and the byte flags. */
+   yaws and speeds, and the byte flags. */
 vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   VkrRecordingData *data = load->data;
   const uint64_t frames = load->frame_count;
@@ -424,9 +449,10 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
       vkr_align_up_u64(sizeof(VkrRecordingSeries) * series, 8u);
   const uint64_t marker_bytes = vkr_align_up_u64(
       sizeof(VkrRecordingDataMarker) * (uint64_t)load->marker_capacity, 8u);
-  const uint64_t f64_bytes = sizeof(float64_t) * frames * (5u + series);
-  const uint64_t f32_bytes = vkr_align_up_u64(sizeof(float32_t) * frames, 8u);
-  const uint64_t flag_bytes = frames * (2u + series);
+  const uint64_t f64_bytes = sizeof(float64_t) * frames * (8u + series);
+  const uint64_t f32_bytes =
+      vkr_align_up_u64(sizeof(float32_t) * frames * 2u, 8u);
+  const uint64_t flag_bytes = frames * (3u + series);
   const uint64_t block_bytes =
       series_bytes + marker_bytes + f64_bytes + f32_bytes + flag_bytes;
   uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
@@ -449,16 +475,20 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   data->times = f64;
   data->display_dt = f64 + frames;
   data->positions = f64 + frames * 2u;
+  data->player_positions = f64 + frames * 5u;
   for (uint64_t i = 0u; i < series; ++i) {
-    data->series[i].values = f64 + frames * (5u + i);
+    data->series[i].values = f64 + frames * (8u + i);
   }
   cursor += f64_bytes;
   data->yaws = (float32_t *)cursor;
+  data->player_speeds = data->yaws + frames;
   cursor += f32_bytes;
   data->frame_valid = cursor;
   data->camera_valid = cursor + frames;
+  data->player_valid = cursor + frames * 2u;
+  data->has_player = load->player != NULL && load->player_position != NULL;
   for (uint64_t i = 0u; i < series; ++i) {
-    data->series[i].valid = cursor + frames * (2u + i);
+    data->series[i].valid = cursor + frames * (3u + i);
     const VkrRecordingField *field = load->metric_fields[i];
     MemCopy(data->series[i].name, field->name, string_length(field->name));
     MemCopy(data->series[i].unit, field->unit, string_length(field->unit));
@@ -1316,6 +1346,19 @@ vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
   }
   vkr_recording_json_named_optional(json, "yaw", data->camera_valid[frame],
                                     (float64_t)data->yaws[frame]);
+  if (data->has_player) {
+    vkr_recording_json_key(json, "player");
+    if (data->player_valid[frame]) {
+      vkr_json_writer_begin_array(json);
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        vkr_recording_json_number(json,
+                                  data->player_positions[frame * 3u + axis]);
+      }
+      vkr_json_writer_end_array(json);
+    } else {
+      vkr_json_writer_null(json);
+    }
+  }
 
   vkr_recording_json_key(json, "contributors");
   vkr_json_writer_begin_array(json);
@@ -1589,6 +1632,15 @@ vkr_internal uint32_t vkr_recording_column(const VkrRecordingData *data,
   if (string_equals(name, VKR_RECORDING_FRAME_MS_FIELD)) {
     return VKR_RECORDING_COLUMN_FRAME_MS;
   }
+  static const char *const player_fields[] = {
+      VKR_RECORDING_PLAYER_X_FIELD, VKR_RECORDING_PLAYER_Y_FIELD,
+      VKR_RECORDING_PLAYER_Z_FIELD, VKR_RECORDING_PLAYER_SPEED_FIELD};
+  for (uint32_t i = 0u; data->has_player && i < ArrayCount(player_fields);
+       ++i) {
+    if (string_equals(name, player_fields[i])) {
+      return VKR_RECORDING_COLUMN_PLAYER + i;
+    }
+  }
   static const struct {
     const char *prefix;
     uint32_t bit;
@@ -1642,6 +1694,16 @@ vkr_internal void vkr_recording_write_cell(VkrJsonWriter *json,
   }
   if (column == VKR_RECORDING_COLUMN_UNKNOWN) {
     vkr_json_writer_null(json);
+    return;
+  }
+  if (column >= VKR_RECORDING_COLUMN_PLAYER &&
+      column < VKR_RECORDING_COLUMN_FRAME_MS) {
+    const uint32_t axis = column - VKR_RECORDING_COLUMN_PLAYER;
+    const bool8_t present = data->player_valid[frame] != 0u;
+    vkr_recording_json_optional(json, present,
+                                axis < 3u
+                                    ? data->player_positions[frame * 3u + axis]
+                                    : (float64_t)data->player_speeds[frame]);
     return;
   }
   if (column &

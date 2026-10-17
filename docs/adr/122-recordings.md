@@ -87,6 +87,17 @@ an agent must read one without the editor.
   the playhead as an evaluated override before the frame's transform update;
   closing removes the overrides, so authored transforms never change. Script
   spawns have no name yet and are not recorded.
+- **Gameplay records (R3).** SDK version 10 adds `vkr_rec_player`,
+  `vkr_rec_tag` and `vkr_rec_event` ([sdk.h](../../sdk/sdk.h)). They write
+  streams `player` (one record per fixed tick: feet position with the origin
+  offset, velocity, view, flags and module state), `tag` and `event` under
+  the frame whose update ran them, through the recording the script host
+  borrows each frame; without a recording they do nothing. The FPS module
+  records its player after each tick's move. The analysis keeps each frame's
+  last player, places spikes at it and offers `player.x`, `.y`, `.z` and
+  `.speed` to `vkr_rec frames`. The scoped Play case
+  `assets/scenes/fixtures/bistro_play_local.scene.json` is Bistro with a
+  collision-only slab under the street and a Player Start.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

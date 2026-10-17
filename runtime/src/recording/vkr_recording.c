@@ -39,6 +39,41 @@ static const VkrRecordingField VKR_RECORDING_FRAME_FIELDS[] = {
      .offset = 20u},
 };
 
+static const VkrRecordingField VKR_RECORDING_PLAYER_FIELDS[] = {
+    {.name = "tick",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 0u},
+    {.name = "position",
+     .unit = "m",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 3u,
+     .offset = 8u},
+    {.name = "velocity",
+     .unit = "m/s",
+     .type = VKR_RECORDING_FIELD_F32,
+     .count = 3u,
+     .offset = 32u},
+    {.name = "yaw",
+     .unit = "deg",
+     .type = VKR_RECORDING_FIELD_F32,
+     .count = 1u,
+     .offset = 44u},
+    {.name = "pitch",
+     .unit = "deg",
+     .type = VKR_RECORDING_FIELD_F32,
+     .count = 1u,
+     .offset = 48u},
+    {.name = "flags",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 52u},
+    {.name = "state",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 56u},
+};
+
 static const VkrRecordingField VKR_RECORDING_CAMERA_FIELDS[] = {
     {.name = "position",
      .unit = "m",
@@ -89,6 +124,15 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
      .fields = VKR_RECORDING_CAMERA_FIELDS},
     /* A u32 kind, then the UTF-8 label. */
     {.id = VKR_RECORDING_STREAM_MARKER, .name = "marker"},
+    {.id = VKR_RECORDING_STREAM_PLAYER,
+     .name = "player",
+     .record_size = sizeof(VkrRecordingPlayer),
+     .field_count = ArrayCount(VKR_RECORDING_PLAYER_FIELDS),
+     .fields = VKR_RECORDING_PLAYER_FIELDS},
+    /* A u16 key length, the key, then the value. */
+    {.id = VKR_RECORDING_STREAM_TAG, .name = "tag"},
+    /* A u16 name length, the name, then the payload. */
+    {.id = VKR_RECORDING_STREAM_EVENT, .name = "event"},
 };
 
 /* Tier 0 (docs/proposals/recordings.md, "Metrics and capture tiers"):
@@ -123,6 +167,7 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
 
 _Static_assert(sizeof(VkrRecordingFrame) == 24u, "frame record layout");
 _Static_assert(sizeof(VkrRecordingPose) == 88u, "pose record layout");
+_Static_assert(sizeof(VkrRecordingPlayer) == 64u, "player record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
 
 const VkrRecordingStream *vkr_recording_streams(uint32_t *out_count) {
@@ -280,8 +325,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
-  VkrRecordingStream streams[8];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 4u <= 8u,
+  VkrRecordingStream streams[12];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 4u <= 12u,
                  "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
@@ -597,6 +642,52 @@ void vkr_recording_pose(VkrRecording *recording, const VkrRecordingPose *pose) {
   if (recording->pose_batch_count == VKR_RECORDING_POSE_BATCH) {
     vkr_recording_poses_flush(recording);
   }
+}
+
+void vkr_recording_player(VkrRecording *recording,
+                          const VkrRecordingPlayer *player) {
+  vkr_assert(recording != NULL && recording->active && player != NULL);
+  (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_PLAYER, recording->frame,
+                           player, sizeof(*player));
+}
+
+/* A u16 length and `head`, then `tail`: the layout of tags and events. */
+vkr_internal void vkr_recording_text_record(VkrRecording *recording,
+                                            uint16_t stream, String8 head,
+                                            const void *tail,
+                                            uint32_t tail_size) {
+  const uint16_t length =
+      (uint16_t)Min(head.length, (uint64_t)VKR_RECORDING_TEXT_MAX);
+  uint8_t *record = vkr_recorder_reserve(
+      recording->recorder, VKR_RECORDER_PRODUCER_MAIN, stream, recording->frame,
+      2u + (uint32_t)length + tail_size);
+  if (!record) {
+    return;
+  }
+  MemCopy(record, &length, sizeof(length));
+  if (length > 0u) {
+    MemCopy(record + 2u, head.str, length);
+  }
+  if (tail_size > 0u) {
+    MemCopy(record + 2u + length, tail, tail_size);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
+void vkr_recording_tag(VkrRecording *recording, String8 key, String8 value) {
+  vkr_assert(recording != NULL && recording->active);
+  vkr_recording_text_record(
+      recording, VKR_RECORDING_STREAM_TAG, key, value.str,
+      (uint32_t)Min(value.length, (uint64_t)VKR_RECORDING_TEXT_MAX));
+}
+
+void vkr_recording_event(VkrRecording *recording, String8 name,
+                         const void *payload, uint32_t size) {
+  vkr_assert(recording != NULL && recording->active);
+  vkr_recording_text_record(
+      recording, VKR_RECORDING_STREAM_EVENT, name, payload,
+      payload ? Min(size, VKR_RECORDING_EVENT_PAYLOAD_MAX) : 0u);
 }
 
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

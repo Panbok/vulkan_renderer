@@ -14,7 +14,9 @@
  *                                     frame, time, camera position, then
  *                                     the fields (default frame_ms; a
  *                                     pass is pass.gpu:<name> or
- *                                     pass.cpu:<name>); at most 500 rows,
+ *                                     pass.cpu:<name>, the player
+ *                                     player.x, .y, .z or .speed); at
+ *                                     most 500 rows,
  *                                     "truncated" says so
  *   vkr_rec passes <bundle|stream> [--top N] [--frame F]
  *                                     JSON: per-pass CPU and GPU statistics
@@ -472,6 +474,11 @@ static int rec_frames(const char *path, uint64_t first, uint64_t last,
               VKR_RECORDING_FRAME_MS_FIELD);
       for (uint32_t s = 0u; s < data.series_count; ++s) {
         fprintf(stderr, ",%s", data.series[s].name);
+      }
+      if (data.has_player) {
+        fprintf(stderr, ",%s,%s,%s,%s", VKR_RECORDING_PLAYER_X_FIELD,
+                VKR_RECORDING_PLAYER_Y_FIELD, VKR_RECORDING_PLAYER_Z_FIELD,
+                VKR_RECORDING_PLAYER_SPEED_FIELD);
       }
       if (data.pass_count > 0u) {
         fprintf(stderr, ",%s<pass>,%s<pass> (vkr_rec passes lists them)",

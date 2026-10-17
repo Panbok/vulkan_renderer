@@ -967,6 +967,112 @@ static void test_recording_pose_playback(void) {
   printf("  test_recording_pose_playback PASSED\n");
 }
 
+/* Detects: a frame that keeps its first tick's player instead of its last,
+   a player on a frame it did not run on, a wrong speed, player columns
+   offered for a recording without a player, and tags or events whose
+   lengths, text or payload do not survive the stream. */
+static void test_recording_player_records(void) {
+  printf("  Running test_recording_player_records...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("player", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {.bundle_path = path,
+                                     .codec = vkr_depot_zstd_codec()};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  /* Frames 1 and 2 run two ticks each; frame 0 and 3 run none. */
+  uint64_t tick = 1u;
+  for (uint32_t f = 0u; f < 4u; ++f) {
+    for (uint32_t t = 0u; f >= 1u && f <= 2u && t < 2u; ++t) {
+      const VkrRecordingPlayer player = {
+          .tick = tick,
+          .position = {(float64_t)tick, 0.5, -2.0},
+          .velocity = {3.0f, 0.0f, 4.0f},
+          .flags = 1u,
+      };
+      vkr_recording_player(&recording, &player);
+      ++tick;
+    }
+    if (f == 2u) {
+      vkr_recording_tag(&recording, string8_lit("weapon"),
+                        string8_lit("rifle"));
+      const uint32_t damage = 37u;
+      vkr_recording_event(&recording, string8_lit("hit"), &damage,
+                          sizeof(damage));
+    }
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+  }
+  assert(vkr_recording_stop(&recording, NULL));
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  assert(data.frame_count == 4u && data.has_player);
+  assert(!data.player_valid[0] && !data.player_valid[3]);
+  assert(data.player_valid[1] && data.player_positions[1u * 3u] == 2.0);
+  assert(data.player_valid[2] && data.player_positions[2u * 3u] == 4.0 &&
+         data.player_positions[2u * 3u + 1u] == 0.5);
+  assert(data.player_speeds[2] == 5.0f);
+  assert(vkr_recording_data_has_field(&data, VKR_RECORDING_PLAYER_X_FIELD) &&
+         vkr_recording_data_has_field(&data, VKR_RECORDING_PLAYER_SPEED_FIELD));
+  vkr_recording_data_free(&data);
+
+  /* The tag and the event, read back from the stream. */
+  VkrRecordingReader reader;
+  char stream[1100];
+  string_format(stream, sizeof(stream), "%s/%s", path,
+                VKR_RECORDING_STREAM_FILE);
+  assert(vkr_recording_reader_open(&reader, &memory.allocator, stream) ==
+         VKR_RECORDING_READ_OK);
+  uint32_t tags = 0u;
+  uint32_t events = 0u;
+  for (uint32_t i = 0u; i < reader.chunk_count; ++i) {
+    if (reader.chunks[i].type != VKR_RECORDING_CHUNK_RECORDS) {
+      continue;
+    }
+    uint8_t *payload = NULL;
+    uint64_t size = 0u;
+    assert(vkr_recording_reader_chunk(&reader, i, vkr_depot_zstd_codec(),
+                                      &memory.allocator, &payload, &size));
+    uint64_t cursor = 0u;
+    VkrRecordingRecord record;
+    while (vkr_recording_records_next(payload, size, &cursor, &record)) {
+      if (record.stream == VKR_RECORDING_STREAM_TAG) {
+        assert(record.frame == 2u && record.size == 2u + 6u + 5u &&
+               record.data[0] == 6u && record.data[1] == 0u &&
+               MemCompare(record.data + 2u, "weaponrifle", 11u) == 0);
+        ++tags;
+      } else if (record.stream == VKR_RECORDING_STREAM_EVENT) {
+        uint32_t damage = 0u;
+        MemCopy(&damage, record.data + 2u + 3u, sizeof(damage));
+        assert(record.frame == 2u && record.size == 2u + 3u + 4u &&
+               MemCompare(record.data + 2u, "hit", 3u) == 0 && damage == 37u);
+        ++events;
+      }
+    }
+    vkr_recording_reader_chunk_free(&memory.allocator, payload, size);
+  }
+  vkr_recording_reader_close(&reader);
+  assert(tags == 1u && events == 1u);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_player_records PASSED\n");
+}
+
 bool32_t run_recording_tests(void) {
   printf("--- Starting Recording Tests ---\n");
   test_spsc_ring_wrap_and_full();
@@ -977,6 +1083,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pass_rows();
   test_scene_change_tracking();
   test_recording_pose_playback();
+  test_recording_player_records();
   printf("--- Recording Tests Completed ---\n");
   return true_v;
 }

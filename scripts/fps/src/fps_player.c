@@ -383,6 +383,18 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
   state->crouched = motor.crouched;
   player->camera.config.eye_height = state->crouched ? .9f : 1.6f;
   player->steps++;
+  /* A recording keeps the tick's settled player, with the magazine's rounds
+     as its state. */
+  const VkrRecPlayer record = {
+      .position = player->current_foot,
+      .velocity = state->velocity,
+      .yaw_degrees = state->yaw * 57.2957795f,
+      .pitch_degrees = state->pitch * 57.2957795f,
+      .flags = (state->grounded ? VKR_REC_PLAYER_GROUNDED : 0u) |
+               (state->crouched ? VKR_REC_PLAYER_CROUCHED : 0u),
+      .state = state->weapon.magazine_rounds,
+  };
+  vkr_rec_player(ctx, &record);
   /* Animation follows the motion over what carries the player: a rider
      standing on a moving car stands, and a run back along it plays at the
      run's pace, not the car's. */

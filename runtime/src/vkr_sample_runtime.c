@@ -3939,6 +3939,8 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
       .simulation_running = application->editor_viewport.simulation_running,
       .camera_available =
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
+  state->scripts.recording =
+      application->recording.active ? &application->recording : NULL;
   vkr_script_host_frame(&state->scripts, &frame);
   vkr_scene_handle_update(handle, frame.scene_delta);
   if (scene->physics_paused &&

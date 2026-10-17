@@ -32,6 +32,8 @@
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "script/vkr_io_router.h"
+
+struct VkrRecording;
 #include "sdk.h"
 
 #define VKR_SCRIPT_MODULE_NAME_CAPACITY 64u
@@ -239,6 +241,9 @@ typedef struct VkrScriptHost {
   /* Update and late_update run: vkr_time reads the frame's time. */
   bool8_t frame_time_valid;
   VkrScriptView view;
+  /* The recording in progress, borrowed for the frame, or NULL: where
+     vkr_rec_player, vkr_rec_tag and vkr_rec_event write. */
+  struct VkrRecording *recording;
   bool8_t time_step_set;
   float64_t time_step;
   uint64_t frame_serial;
