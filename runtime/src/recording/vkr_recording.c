@@ -74,6 +74,13 @@ static const VkrRecordingField VKR_RECORDING_PLAYER_FIELDS[] = {
      .offset = 56u},
 };
 
+static const VkrRecordingField VKR_RECORDING_EDIT_FIELDS[] = {
+    {.name = "sequence",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 0u},
+};
+
 static const VkrRecordingField VKR_RECORDING_ACTION_FIELDS[] = {
     {.name = "tick",
      .type = VKR_RECORDING_FIELD_U64,
@@ -154,6 +161,11 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
     {.id = VKR_RECORDING_STREAM_TAG, .name = "tag"},
     /* A u16 name length, the name, then the payload. */
     {.id = VKR_RECORDING_STREAM_EVENT, .name = "event"},
+    {.id = VKR_RECORDING_STREAM_EDIT,
+     .name = "edit",
+     .record_size = sizeof(uint64_t),
+     .field_count = 1u,
+     .fields = VKR_RECORDING_EDIT_FIELDS},
     {.id = VKR_RECORDING_STREAM_ACTION,
      .name = "action",
      .record_size = sizeof(VkrRecordingAction),
@@ -679,6 +691,14 @@ void vkr_recording_player(VkrRecording *recording,
                          sizeof(*player))) {
     ++recording->player_records;
   }
+}
+
+void vkr_recording_edit(VkrRecording *recording, uint64_t sequence) {
+  vkr_assert(recording != NULL && recording->active);
+  const uint64_t frame = recording->frame > 0u ? recording->frame - 1u : 0u;
+  (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_EDIT, frame, &sequence,
+                           sizeof(sequence));
 }
 
 void vkr_recording_action(VkrRecording *recording,

@@ -108,6 +108,9 @@ vkr_internal bool8_t vkr_recording_count(VkrRecordingLoad *load,
   } else if (record->stream == VKR_RECORDING_STREAM_POSE &&
              record->size % sizeof(VkrRecordingPose) == 0u) {
     playback->pose_sample_count += record->size / sizeof(VkrRecordingPose);
+  } else if (record->stream == VKR_RECORDING_STREAM_EDIT &&
+             record->size == sizeof(uint64_t)) {
+    ++playback->edit_count;
   }
   return true_v;
 }
@@ -137,6 +140,12 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
     const uint32_t length =
         Min(record->size - 4u, (uint32_t)VKR_RECORDING_LABEL_MAX);
     MemCopy(marker->label, record->data + 4u, length);
+  } else if (record->stream == VKR_RECORDING_STREAM_EDIT &&
+             record->size == sizeof(uint64_t)) {
+    /* Records of one producer arrive in frame order. */
+    const uint32_t at = playback->edit_count++;
+    playback->edit_frames[at] = record->frame;
+    MemCopy(&playback->edit_sequences[at], record->data, sizeof(uint64_t));
   } else if (record->stream == VKR_RECORDING_STREAM_POSE &&
              record->size % sizeof(VkrRecordingPose) == 0u) {
     const uint32_t count = record->size / (uint32_t)sizeof(VkrRecordingPose);
@@ -309,8 +318,18 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   if (!load->poses) {
     return vkr_recording_load_fail(load, "out of memory");
   }
+  playback->edit_frames = vkr_allocator_alloc(
+      &playback->allocator, sizeof(uint64_t) * (playback->edit_count + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->edit_sequences = vkr_allocator_alloc(
+      &playback->allocator, sizeof(uint64_t) * (playback->edit_count + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!playback->edit_frames || !playback->edit_sequences) {
+    return vkr_recording_load_fail(load, "out of memory");
+  }
   playback->marker_count = 0u;
   playback->pose_sample_count = 0u;
+  playback->edit_count = 0u;
   if (!vkr_recording_load_records(load, vkr_recording_fill) ||
       !vkr_recording_playback_group_poses(load)) {
     return false_v;
@@ -416,6 +435,21 @@ void vkr_recording_playback_seek_frame(VkrRecordingPlayback *playback,
                                        uint64_t frame) {
   vkr_assert(playback != NULL && playback->open);
   playback->time = playback->times[Min(frame, playback->frame_count - 1u)];
+}
+
+bool8_t vkr_recording_playback_edit_at(const VkrRecordingPlayback *playback,
+                                       uint64_t frame, uint64_t *out_sequence) {
+  vkr_assert(playback != NULL && out_sequence != NULL);
+  if (playback->edit_count == 0u) {
+    return false_v;
+  }
+  uint32_t at = 0u;
+  while (at + 1u < playback->edit_count &&
+         playback->edit_frames[at + 1u] <= frame) {
+    ++at;
+  }
+  *out_sequence = playback->edit_sequences[at];
+  return true_v;
 }
 
 uint32_t vkr_recording_playback_pose_at(const VkrRecordingPlayback *playback,

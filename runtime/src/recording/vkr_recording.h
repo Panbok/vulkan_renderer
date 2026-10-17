@@ -66,6 +66,10 @@
 /* A module's admitted input actions (vkr_rec_action), a
    VkrRecordingAction each: what Drive feeds back. */
 #define VKR_RECORDING_STREAM_ACTION 11u
+/* Where the scene edit journals stood (a u64: the sequence of the newest
+   edit an undo would revert, zero for none), at the start and at each frame
+   whose edits changed it. Watch steps the journals back to it. */
+#define VKR_RECORDING_STREAM_EDIT 12u
 /* Longest tag key or value and event name; longest event payload. */
 #define VKR_RECORDING_TEXT_MAX 63u
 #define VKR_RECORDING_EVENT_PAYLOAD_MAX 256u
@@ -298,6 +302,9 @@ void vkr_recording_poses_flush(VkrRecording *recording);
 /** Writes a player record under the frame being updated. */
 void vkr_recording_player(VkrRecording *recording,
                           const VkrRecordingPlayer *player);
+
+/** Writes where the edit journals stand, under the frame on screen. */
+void vkr_recording_edit(VkrRecording *recording, uint64_t sequence);
 
 /** Writes an action record under the frame being updated. */
 void vkr_recording_action(VkrRecording *recording,

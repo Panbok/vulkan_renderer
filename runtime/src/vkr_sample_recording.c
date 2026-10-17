@@ -190,6 +190,7 @@ vkr_sample_recording_open(VkrStandardSceneRuntime *runtime,
     vkr_sample_recording_result(state, request->token, false_v, error);
     return;
   }
+  ++runtime->playback_serial;
   const VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &runtime->camera_system, runtime->active_camera);
   VkrScene *level = vkr_standard_scene_runtime_level_scene(runtime);
@@ -430,11 +431,18 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
 
 void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
                                   VkrSampleRecordingState *state,
-                                  uint64_t edit_revision) {
+                                  uint64_t edit_revision,
+                                  uint64_t edit_sequence) {
   VkrSampleRecordingStatus *status = &state->status;
-  if (runtime->recording.active && edit_revision != state->edit_revision) {
+  if (!runtime->recording.active) {
+    state->edit_start_written = false_v;
+  } else if (!state->edit_start_written) {
+    state->edit_start_written = true_v;
+    vkr_recording_edit(&runtime->recording, edit_sequence);
+  } else if (edit_revision != state->edit_revision) {
     (void)vkr_recording_mark(&runtime->recording, VKR_RECORDING_MARKER_EDIT,
                              "scene edited");
+    vkr_recording_edit(&runtime->recording, edit_sequence);
   }
   state->edit_revision = edit_revision;
   status->recording = runtime->recording.active;

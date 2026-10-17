@@ -58,6 +58,12 @@ typedef struct VkrRecordingPlayback {
   /* The stream ends without a clean stop. */
   bool8_t truncated;
 
+  /* Where the edit journals stood (VKR_RECORDING_STREAM_EDIT), by frame;
+     the first is the recording's start. */
+  uint64_t *edit_frames;
+  uint64_t *edit_sequences;
+  uint32_t edit_count;
+
   /* Recorded poses, grouped by key and ordered by frame. */
   VkrRecordingPoseSample *pose_samples;
   uint64_t pose_sample_count;
@@ -116,6 +122,12 @@ uint64_t vkr_recording_playback_frame_at(const VkrRecordingPlayback *playback,
     entity had not moved yet. */
 uint32_t vkr_recording_playback_pose_at(const VkrRecordingPlayback *playback,
                                         uint32_t key, uint64_t frame);
+
+/** Where the edit journals stood at `frame`: the last edit record at or
+    before it, else the start's. False for a recording without edit records.
+ */
+bool8_t vkr_recording_playback_edit_at(const VkrRecordingPlayback *playback,
+                                       uint64_t frame, uint64_t *out_sequence);
 
 /** The camera and time of day at the playhead. */
 VkrRecordingPlaybackPose

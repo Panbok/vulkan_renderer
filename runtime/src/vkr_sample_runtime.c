@@ -6590,6 +6590,159 @@ static void sample_frame_box(VkrCamera *camera, Vec3 lower, Vec3 upper) {
   camera->view_dirty = true_v;
 }
 
+/* The loaded containers' journals with their scenes: the primary scene's,
+   the World's and each added scene's. Returns how many. */
+static uint32_t sample_edit_journals(VkrStandardSceneRuntime *application,
+                                     VkrSceneEditState **out_edits,
+                                     VkrScene **out_scenes) {
+  uint32_t count = 0u;
+  if (application->active_scene) {
+    out_edits[count] = &state->edits;
+    out_scenes[count++] = application->active_scene;
+  }
+  if (application->world_scene &&
+      application->world_scene != application->active_scene) {
+    out_edits[count] = &state->world_edits;
+    out_scenes[count++] = application->world_scene;
+  }
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    if (state->additive_handles[i]) {
+      out_edits[count] = &state->additive_edits[i];
+      out_scenes[count++] =
+          vkr_scene_handle_get_scene(state->additive_handles[i]);
+    }
+  }
+  return count;
+}
+
+/* The sequence of the newest edit an undo would revert across every
+   journal, or zero when none would. */
+static uint64_t sample_edit_sequence(VkrStandardSceneRuntime *application) {
+  VkrSceneEditState *edits[VKR_SCENE_ADDITIVE_MAX + 2u];
+  VkrScene *scenes[VKR_SCENE_ADDITIVE_MAX + 2u];
+  const uint32_t count = sample_edit_journals(application, edits, scenes);
+  uint64_t newest = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    newest = Max(newest, vkr_scene_edit_next_sequence(edits[i], false_v));
+  }
+  return newest;
+}
+
+/* Undoes the newest edit, or redoes the oldest undone one, across every
+   journal. False when there was none, or it failed. */
+static bool8_t sample_edit_step(VkrStandardSceneRuntime *application,
+                                bool8_t redo) {
+  VkrSceneEditState *edits[VKR_SCENE_ADDITIVE_MAX + 2u];
+  VkrScene *scenes[VKR_SCENE_ADDITIVE_MAX + 2u];
+  const uint32_t count = sample_edit_journals(application, edits, scenes);
+  uint32_t best = UINT32_MAX;
+  uint64_t best_sequence = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint64_t next = vkr_scene_edit_next_sequence(edits[i], redo);
+    if (next && (best == UINT32_MAX ||
+                 (redo ? next < best_sequence : next > best_sequence))) {
+      best = i;
+      best_sequence = next;
+    }
+  }
+  return best != UINT32_MAX &&
+         vkr_scene_edit_undo(edits[best], scenes[best], redo);
+}
+
+/* The sequence of the oldest undone edit a redo would restore across every
+   journal, or zero when none would. */
+static uint64_t
+sample_edit_redo_sequence(VkrStandardSceneRuntime *application) {
+  VkrSceneEditState *edits[VKR_SCENE_ADDITIVE_MAX + 2u];
+  VkrScene *scenes[VKR_SCENE_ADDITIVE_MAX + 2u];
+  const uint32_t count = sample_edit_journals(application, edits, scenes);
+  uint64_t oldest = 0u;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint64_t next = vkr_scene_edit_next_sequence(edits[i], true_v);
+    if (next && (!oldest || next < oldest)) {
+      oldest = next;
+    }
+  }
+  return oldest;
+}
+
+/* Steps the journals toward the edit `target` (sample_edit_sequence), at
+   most `limit` steps; a redo stops before an edit past it. Returns whether
+   any step ran. */
+static bool8_t sample_edit_seek(VkrStandardSceneRuntime *application,
+                                uint64_t target, uint32_t limit) {
+  bool8_t stepped = false_v;
+  for (uint32_t i = 0; i < limit; ++i) {
+    const uint64_t current = sample_edit_sequence(application);
+    if (current > target) {
+      if (!sample_edit_step(application, false_v)) {
+        break;
+      }
+    } else {
+      const uint64_t next = sample_edit_redo_sequence(application);
+      if (current == target || !next || next > target ||
+          !sample_edit_step(application, true_v)) {
+        break;
+      }
+    }
+    stepped = true_v;
+  }
+  return stepped;
+}
+
+/* Steps per frame Watch moves the journals, so a seek across many edits
+   spreads over a few frames. */
+#define SAMPLE_PLAYBACK_EDIT_STEPS 64u
+
+/* Watch shows the recording's edits by moving the journals back and forth
+   with undo and redo, when the recorded edits are still their newest; a
+   closed or replaced playback returns them where they were. */
+static void sample_playback_edits(VkrStandardSceneRuntime *application) {
+  VkrSampleRecordingState *recording = &state->recording;
+  const VkrRecordingPlayback *playback = &application->playback;
+  const bool8_t same = playback->open && recording->playback_edits_serial ==
+                                             application->playback_serial;
+  if (recording->playback_edits_serial && !same) {
+    if (recording->status.playback_edits ==
+            VKR_SAMPLE_RECORDING_EDITS_REPLAYED &&
+        sample_edit_seek(application, recording->playback_edit_end,
+                         VKR_SCENE_EDIT_UNDO_CAPACITY)) {
+      vkr_standard_scene_recording_release_poses(application);
+    }
+    recording->playback_edits_serial = 0u;
+    recording->status.playback_edits = VKR_SAMPLE_RECORDING_EDITS_NONE;
+  }
+  if (!playback->open) {
+    return;
+  }
+  if (!recording->playback_edits_serial) {
+    recording->playback_edits_serial = application->playback_serial;
+    recording->playback_edit_end = sample_edit_sequence(application);
+    /* The first record is the start; later ones are edits. */
+    if (playback->edit_count < 2u) {
+      recording->status.playback_edits = VKR_SAMPLE_RECORDING_EDITS_NONE;
+    } else {
+      const uint64_t recorded_end =
+          playback->edit_sequences[playback->edit_count - 1u];
+      recording->status.playback_edits =
+          recorded_end == recording->playback_edit_end
+              ? VKR_SAMPLE_RECORDING_EDITS_REPLAYED
+              : VKR_SAMPLE_RECORDING_EDITS_UNAVAILABLE;
+    }
+  }
+  if (recording->status.playback_edits != VKR_SAMPLE_RECORDING_EDITS_REPLAYED) {
+    return;
+  }
+  uint64_t target = 0u;
+  const uint64_t frame =
+      vkr_recording_playback_frame_at(playback, playback->time);
+  if (vkr_recording_playback_edit_at(playback, frame, &target) &&
+      sample_edit_seek(application, target, SAMPLE_PLAYBACK_EDIT_STEPS)) {
+    /* Entities the steps created or deleted bind again next frame. */
+    vkr_standard_scene_recording_release_poses(application);
+  }
+}
+
 vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
     VkrStandardSceneRuntime *application,
     const VkrSceneEditRequest *scene_edit) {
@@ -6656,40 +6809,9 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
   /* Undo and redo follow the most recent edit across every journal. */
   if (scene_edit->action == VKR_SCENE_EDIT_UNDO ||
       scene_edit->action == VKR_SCENE_EDIT_REDO) {
-    const bool8_t redo = scene_edit->action == VKR_SCENE_EDIT_REDO;
-    VkrSceneEditState *best_edits =
-        application->active_scene ? &state->edits : NULL;
-    VkrScene *best_scene = application->active_scene;
-    uint64_t best =
-        best_edits ? vkr_scene_edit_next_sequence(best_edits, redo) : 0u;
-    VkrSceneEditState *candidates[VKR_SCENE_ADDITIVE_MAX + 1u];
-    VkrScene *candidate_scenes[VKR_SCENE_ADDITIVE_MAX + 1u];
-    uint32_t candidate_count = 0u;
-    if (world) {
-      candidates[candidate_count] = &state->world_edits;
-      candidate_scenes[candidate_count++] = world;
-    }
-    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
-      if (state->additive_handles[i]) {
-        candidates[candidate_count] = &state->additive_edits[i];
-        candidate_scenes[candidate_count++] =
-            vkr_scene_handle_get_scene(state->additive_handles[i]);
-      }
-    }
-    for (uint32_t i = 0; i < candidate_count; ++i) {
-      const uint64_t next = vkr_scene_edit_next_sequence(candidates[i], redo);
-      if (next && (!best || (redo ? next < best : next > best))) {
-        best = next;
-        best_edits = candidates[i];
-        best_scene = candidate_scenes[i];
-      }
-    }
-    if (best_edits != &state->edits) {
-      if (best_edits) {
-        (void)vkr_scene_edit_undo(best_edits, best_scene, redo);
-      }
-      return;
-    }
+    (void)sample_edit_step(application,
+                           scene_edit->action == VKR_SCENE_EDIT_REDO);
+    return;
   }
   if (scene_edit->action == VKR_SCENE_EDIT_SAVE) {
     sample_world_save();
@@ -6733,11 +6855,6 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
       break;
     case VKR_SCENE_EDIT_PARTITION:
       sample_partition_request(scene, scene_edit);
-      break;
-    case VKR_SCENE_EDIT_UNDO:
-    case VKR_SCENE_EDIT_REDO:
-      (void)vkr_scene_edit_undo(&state->edits, scene,
-                                scene_edit->action == VKR_SCENE_EDIT_REDO);
       break;
     case VKR_SCENE_EDIT_SAVE:
       if (state->ui.save_scene_edits) {
@@ -7016,7 +7133,8 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
       edit_revision += state->additive_edits[i].revision;
     }
-    vkr_sample_recording_publish(application, &state->recording, edit_revision);
+    vkr_sample_recording_publish(application, &state->recording, edit_revision,
+                                 sample_edit_sequence(application));
     sample_recording_transport(application);
   }
   VkrSampleUiRequests requests = {
@@ -7164,6 +7282,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   vkr_sample_recording_apply(application, &state->recording,
                              &requests.recording_request, state->scene_path);
   sample_recording_transport(application);
+  sample_playback_edits(application);
   vkr_scene_physics_set_paused(
       sample_simulated_scene(application, NULL),
       !application->editor_viewport.simulation_running);

@@ -71,8 +71,16 @@ an agent must read one without the editor.
   ([editor_ops.c](../../editor/src/editor_ops.c)); `vkr_rec summary` and
   `vkr_rec verify` read bundles offline
   ([vkr_rec_main.c](../../tools/recording/vkr_rec_main.c)).
-- **Edits.** An edit while recording adds an `edit` marker. Playback shows
-  the scene as it is now, except for entity poses.
+- **Edits.** An edit while recording adds an `edit` marker, and stream
+  `edit` records where the scene journals stand: the sequence of the newest
+  edit an undo would revert across every journal, at the start and at each
+  frame that changed it. When a playback opens and the recording's last
+  position is still the journals' newest edit, Watch steps the journals with
+  undo and redo to each frame's position, at most 64 steps a frame, and
+  closing or opening another recording redoes them to where they stood. A
+  scene edited after the recording, or a history that dropped its edits,
+  shows the scene as it is now; `rec.status` reports `edits` as `replayed`,
+  `unavailable` or `none`.
 - **Entity poses (R3).** An editor recording adds stream `pose`: the world
   pose of every entity whose world matrix changed that frame, as an f64
   translation plus the matrix's 3x3, written by the frame-loop thread after
@@ -164,6 +172,13 @@ an agent must read one without the editor.
   carry one, so the format takes a codec instead.
 - **Replaying edits in R1** moved to R3, which brings the world state stream
   that edit replay needs.
+- **A `start/` overlay plus encoded edits** (the proposal's plan) was not
+  built. Restoring it reloads the scene, which drops the user's unsaved
+  edits and undo history unless they are saved first, and the network edit
+  encoding names entities by document id, which Bistro's document lacks.
+  Stepping the journals reuses the editor's exact undo, needs no reload and
+  leaves the user's state as it was; its limit is that the recording's
+  edits must still head the history.
 
 ## Revisit when
 

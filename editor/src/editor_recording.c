@@ -168,6 +168,17 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
           diverged ? theme->warning : theme->text, status->message);
     }
     recording->was_driving = status->driving;
+    if (status->playback &&
+        status->playback_edits == VKR_SAMPLE_RECORDING_EDITS_UNAVAILABLE) {
+      if (!recording->edits_warned) {
+        vkr_editor_toast(editor, VKR_UI_ICON_INFO_FILL, vkr_ui_theme()->text,
+                         "The scene changed after this recording, so Watch "
+                         "shows today's scene, not its edits.");
+      }
+      recording->edits_warned = true_v;
+    } else if (!status->playback) {
+      recording->edits_warned = false_v;
+    }
   }
   editor_recording_thumbnail(recording, frame);
   if (recording->queue_count == 0u || !frame->recording_request ||

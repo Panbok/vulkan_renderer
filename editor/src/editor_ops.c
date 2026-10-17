@@ -14918,6 +14918,9 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
             vkr_bakery_json_bool(arena, playback->playing));
     ops_set(ctx, open, "speed", ops_number(ctx, playback->speed));
     ops_set(ctx, open, "loop", vkr_bakery_json_bool(arena, playback->loop));
+    static const char *const edits[] = {"none", "replayed", "unavailable"};
+    ops_set(ctx, open, "edits",
+            vkr_bakery_json_cstr(arena, edits[status->playback_edits]));
     ops_set(ctx, open, "truncated",
             vkr_bakery_json_bool(arena, playback->truncated));
     ops_set(ctx, open, "missing_frames",

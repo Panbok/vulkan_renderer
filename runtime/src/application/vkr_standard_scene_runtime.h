@@ -379,6 +379,8 @@ typedef struct VkrStandardSceneRuntime {
   VkrScene *recording_tracked[VKR_RECORDING_CONTAINER_ADDITIVE +
                               VKR_SCENE_ADDITIVE_MAX];
   uint64_t playback_pose_generation;
+  /* Advances with each playback opened, so a client tells two apart. */
+  uint64_t playback_serial;
 } VkrStandardSceneRuntime;
 
 /**

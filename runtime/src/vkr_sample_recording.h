@@ -53,6 +53,18 @@ typedef enum VkrSampleRecordingTransport {
   VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE,
 } VkrSampleRecordingTransport;
 
+/* Whether Watch shows the recording's scene edits
+   (docs/proposals/recordings.md, "Recorded state"). */
+typedef enum VkrSampleRecordingEdits {
+  /* The recording made no edits. */
+  VKR_SAMPLE_RECORDING_EDITS_NONE = 0,
+  /* The journals step back and forth to each frame's edits. */
+  VKR_SAMPLE_RECORDING_EDITS_REPLAYED,
+  /* The scene changed after the recording, or its edits left the undo
+     history: Watch shows the scene as it is now. */
+  VKR_SAMPLE_RECORDING_EDITS_UNAVAILABLE,
+} VkrSampleRecordingEdits;
+
 /* What the latest drive measured (VkrRecordingDrive). */
 typedef struct VkrSampleRecordingDriveResult {
   bool8_t valid;
@@ -110,6 +122,8 @@ typedef struct VkrSampleRecordingStatus {
   float64_t camera_position[3];
   float32_t camera_yaw;
   float32_t camera_pitch;
+  /* How the open playback shows the recording's edits. */
+  VkrSampleRecordingEdits playback_edits;
   /* A drive in progress, and what the drive in progress or the last one
      measured. */
   bool8_t driving;
@@ -127,8 +141,10 @@ typedef struct VkrSampleRecordingState {
   float32_t near_clip;
   float32_t far_clip;
   float64_t hour;
-  /* The scene journals' summed revision the recording last saw. */
+  /* The scene journals' summed revision the recording last saw, and whether
+     the recording wrote where the journals stood at its start. */
   uint64_t edit_revision;
+  bool8_t edit_start_written;
   /* Whole-frame and per-pass GPU timing as they were before a recording
      with metrics took them over; restored at stop. */
   bool8_t restore_gpu_timing;
@@ -138,6 +154,11 @@ typedef struct VkrSampleRecordingState {
      (vkr_sample_recording_take_transport). */
   VkrSampleRecordingTransport transport[2];
   uint32_t transport_count;
+  /* The playback whose edits the journals replay (its open serial, zero
+     for none) and the journals' position when it opened, where closing
+     returns them. */
+  uint64_t playback_edits_serial;
+  uint64_t playback_edit_end;
   /* The drive saw the session simulate; a stop after that ends it. */
   bool8_t drive_started;
   uint64_t drive_token;
@@ -156,7 +177,9 @@ bool8_t vkr_sample_recording_take_transport(VkrSampleRecordingState *state,
 
 /** Refreshes the live part of the status before the next build.
  * `edit_revision` sums the loaded scenes' journal revisions: a change while
- * recording adds an edit marker. */
+ * recording adds an edit marker and records `edit_sequence`, the newest edit
+ * an undo would revert across the journals. */
 void vkr_sample_recording_publish(struct VkrStandardSceneRuntime *runtime,
                                   VkrSampleRecordingState *state,
-                                  uint64_t edit_revision);
+                                  uint64_t edit_revision,
+                                  uint64_t edit_sequence);

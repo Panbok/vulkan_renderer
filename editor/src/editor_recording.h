@@ -117,6 +117,8 @@ typedef struct VkrEditorRecording {
   bool8_t was_recording;
   /* A drive ran last frame; its end shows its measurement. */
   bool8_t was_driving;
+  /* The open playback's edits were reported as not replayable. */
+  bool8_t edits_warned;
   /* One past the entry whose Delete was pressed once, or zero; a second
      press deletes it. */
   uint32_t delete_armed;
