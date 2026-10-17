@@ -841,6 +841,10 @@ static void test_recording_analysis_json_bound(void) {
          spikes->count < VKR_RECORDING_ANALYSIS_SPIKE_MAX);
   assert(analysis_test_flag(root, "spikes_truncated") &&
          analysis_test_number(root, "spikes_found") == 50.0);
+  /* Spikes never crowd out the series. */
+  assert(!analysis_test_flag(root, "series_truncated") &&
+         analysis_test_member(root, "series")->count ==
+             ANALYSIS_TEST_METRIC_COUNT);
   assert(analysis_test_number(vkr_bakery_json_at(spikes, 0u), "frame") ==
          260.0);
   const VkrBakeryJson *markers =

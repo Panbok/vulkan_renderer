@@ -59,6 +59,8 @@
 #define VKR_RECORDING_ANALYSIS_MARKER_FRAMES 10u
 /* Default bound of the analysis object, in bytes. */
 #define VKR_RECORDING_ANALYSIS_JSON_BUDGET 8192u
+/* Passes the bound keeps ahead of the spikes. */
+#define VKR_RECORDING_ANALYSIS_JSON_PASSES_FIRST 10u
 #define VKR_RECORDING_FRAMES_ROW_MAX 500u
 
 typedef enum VkrRecordingDataError {
@@ -327,9 +329,10 @@ void vkr_recording_analysis_free(VkrRecordingAnalysis *analysis);
 /* JSON                                                                      */
 
 typedef struct VkrRecordingAnalysisJsonOptions {
-  /* Upper bound of the written object in bytes; zero for none. Spikes, in
-     rank order, then series, in dictionary order, then passes, in analysis
-     order, are cut to fit, and each cut is stated. */
+  /* Upper bound of the written object in bytes; zero for none. Series, in
+     dictionary order, then the first VKR_RECORDING_ANALYSIS_JSON_PASSES_FIRST
+     passes, then spikes, in rank order, then the other passes are cut to
+     fit, and each cut is stated. */
   uint64_t budget_bytes;
   bool8_t include_series;
 } VkrRecordingAnalysisJsonOptions;

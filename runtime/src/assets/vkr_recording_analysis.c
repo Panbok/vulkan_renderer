@@ -1558,6 +1558,28 @@ vkr_internal uint64_t vkr_recording_measure(
   return wrapped && bytes >= 2u ? bytes - 2u : bytes;
 }
 
+/* Takes parts `first` onward of one kind while they fit in `budget`, a
+   comma before every part after a list's first; returns the new count. */
+vkr_internal uint32_t vkr_recording_fit(const VkrRecordingData *data,
+                                        const VkrRecordingAnalysis *analysis,
+                                        bool8_t include_series,
+                                        VkrRecordingMeasure part,
+                                        uint32_t first, uint32_t last,
+                                        uint64_t budget, uint64_t *used) {
+  uint32_t count = first;
+  for (uint32_t i = first; i < last; ++i) {
+    const uint64_t bytes =
+        vkr_recording_measure(data, analysis, include_series, part, i) +
+        (i > 0u ? 1u : 0u);
+    if (*used + bytes > budget) {
+      break;
+    }
+    *used += bytes;
+    ++count;
+  }
+  return count;
+}
+
 bool8_t vkr_recording_analysis_write_json(
     VkrJsonWriter *json, const VkrRecordingData *data,
     const VkrRecordingAnalysis *analysis,
@@ -1574,49 +1596,29 @@ bool8_t vkr_recording_analysis_write_json(
   uint32_t pass_limit = analysis->pass_count;
 
   if (chosen->budget_bytes > 0u) {
-    /* Spikes in rank order come first, then series in dictionary order,
-       then passes in analysis order; each part goes in while the object
-       stays within the budget. A comma separates every part after the
-       first. */
+    /* Series come first, in dictionary order, then the first passes, then
+       spikes in rank order, then the other passes; each part goes in while
+       the object stays within the budget. */
     uint64_t used = vkr_recording_measure(data, analysis, include_series,
                                           VKR_RECORDING_MEASURE_HEADER, 0u) +
                     VKR_RECORDING_JSON_FLAG_SLACK;
-    spike_limit = 0u;
-    for (uint32_t i = 0u; i < analysis->spike_count; ++i) {
-      const uint64_t bytes =
-          vkr_recording_measure(data, analysis, include_series,
-                                VKR_RECORDING_MEASURE_SPIKE, i) +
-          (i > 0u ? 1u : 0u);
-      if (used + bytes > chosen->budget_bytes) {
-        break;
-      }
-      used += bytes;
-      ++spike_limit;
-    }
     const uint32_t series_count = series_limit;
-    series_limit = 0u;
-    for (uint32_t i = 0u; i < series_count; ++i) {
-      const uint64_t bytes =
-          vkr_recording_measure(data, analysis, include_series,
-                                VKR_RECORDING_MEASURE_SERIES, i) +
-          (i > 0u ? 1u : 0u);
-      if (used + bytes > chosen->budget_bytes) {
-        break;
-      }
-      used += bytes;
-      ++series_limit;
-    }
-    pass_limit = 0u;
-    for (uint32_t i = 0u; i < analysis->pass_count; ++i) {
-      const uint64_t bytes =
-          vkr_recording_measure(data, analysis, include_series,
-                                VKR_RECORDING_MEASURE_PASS, i) +
-          (i > 0u ? 1u : 0u);
-      if (used + bytes > chosen->budget_bytes) {
-        break;
-      }
-      used += bytes;
-      ++pass_limit;
+    series_limit = vkr_recording_fit(data, analysis, include_series,
+                                     VKR_RECORDING_MEASURE_SERIES, 0u,
+                                     series_count, chosen->budget_bytes, &used);
+    pass_limit = vkr_recording_fit(
+        data, analysis, include_series, VKR_RECORDING_MEASURE_PASS, 0u,
+        Min(analysis->pass_count, VKR_RECORDING_ANALYSIS_JSON_PASSES_FIRST),
+        chosen->budget_bytes, &used);
+    spike_limit = vkr_recording_fit(
+        data, analysis, include_series, VKR_RECORDING_MEASURE_SPIKE, 0u,
+        analysis->spike_count, chosen->budget_bytes, &used);
+    /* The rest of the passes continue the first ones' list. */
+    if (pass_limit ==
+        Min(analysis->pass_count, VKR_RECORDING_ANALYSIS_JSON_PASSES_FIRST)) {
+      pass_limit = vkr_recording_fit(
+          data, analysis, include_series, VKR_RECORDING_MEASURE_PASS,
+          pass_limit, analysis->pass_count, chosen->budget_bytes, &used);
     }
   }
 
