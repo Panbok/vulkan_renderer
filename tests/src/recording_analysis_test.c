@@ -1262,13 +1262,13 @@ static void test_recording_analysis_events(void) {
          analysis_test_event_is(vkr_bakery_json_at(late, 0u),
                                 VKR_RECORDING_EVENT_PIPELINE_LATE, 161.0, 2.0,
                                 0.0));
-  const VkrBakeryJson *near =
+  const VkrBakeryJson *nearby =
       analysis_test_member(vkr_bakery_json_at(spikes, 1u), "events");
-  assert(near->count == 2u &&
-         analysis_test_event_is(vkr_bakery_json_at(near, 0u),
+  assert(nearby->count == 2u &&
+         analysis_test_event_is(vkr_bakery_json_at(nearby, 0u),
                                 VKR_RECORDING_EVENT_SCENE, 100.0, 1.0, 40.0) &&
-         analysis_test_event_is(vkr_bakery_json_at(near, 1u), "door_open", 99.0,
-                                1.0, -1.0));
+         analysis_test_event_is(vkr_bakery_json_at(nearby, 1u), "door_open",
+                                99.0, 1.0, -1.0));
 
   const char *fields[] = {VKR_RECORDING_FRAME_MS_FIELD};
   assert(vkr_recording_frames_write_json(analysis_test_json_begin(&writer),
