@@ -320,7 +320,7 @@ struct VkrVkLightingRoot
     // SMAA S2x's listed pixels for the second sample's lighting; null
     // otherwise.
     uint *sample1_pixels;
-    // Shadow.SunRayResolve's RG8 mask: the traced sun visibility and its
+    // Shadow.SunRayTemporal's RG8 mask: the traced sun visibility and its
     // weight over the cascades; zero without ray-query sun shadows.
     uint sun_ray_shadow_texture;
     // The sun cascade filter's and contact march's noise phase: the frame's

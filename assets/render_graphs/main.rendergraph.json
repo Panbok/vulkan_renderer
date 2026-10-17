@@ -1460,9 +1460,10 @@
       "type": "image",
       "condition": "scene_rendering && sun_ray_shadows_active",
       "extent": {
-        "mode": "viewport"
+        "mode": "viewport",
+        "divisor": 2
       },
-      "format": "R8G8_UNORM",
+      "format": "R16G16_SFLOAT",
       "usage": [
         "STORAGE"
       ],

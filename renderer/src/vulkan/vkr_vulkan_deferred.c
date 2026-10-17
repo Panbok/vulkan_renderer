@@ -1648,8 +1648,9 @@ vkr_internal uint32_t vkr_vk_sun_noise_index(const VkrPreparedFrame *packet) {
   return packet->input.frame.frame_index % phases;
 }
 
-/* Shadow.SunRay traces into the trace texture at binding 16;
-   Shadow.SunRayResolve filters it into the mask at binding 17;
+/* Shadow.SunRay traces into the half-resolution trace texture at binding 16;
+   Shadow.SunRayResolve filters it into the half-resolution mask at binding
+   17;
    Shadow.SunRayTemporal accumulates the mask with the history at binding 19
    along the motion at 11 and its validity at 12 into the lighting mask at 18
    and the next history at 20, which Shadow.SunRayHistory copies over 19. */
@@ -1755,8 +1756,10 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanSunRayShadowRoot),
                                  &prepared->root_address))
     return false_v;
-  const uint32_t *dispatch =
-      stage == VKR_VULKAN_SUN_RAY_STAGE_TRACE ? root.trace_extent : root.extent;
+  /* The trace and the resolve run on the half-resolution grid. */
+  const uint32_t *dispatch = stage == VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL
+                                 ? root.extent
+                                 : root.trace_extent;
   const VkrVulkanVolumePipeline pipelines[] = {
       [VKR_VULKAN_SUN_RAY_STAGE_TRACE] =
           VKR_VULKAN_VOLUME_PIPELINE_SUN_RAY_TRACE,
