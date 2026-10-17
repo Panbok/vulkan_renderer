@@ -63,6 +63,8 @@
 #define OPS_CAPTURE_KEEP 32u
 /* Builds a capture waits after changing the view, so the frame shows it. */
 #define OPS_CAPTURE_SETTLE_FRAMES 4u
+/* Samples per side of each pixel vkr_editor_capture_sample averages. */
+#define OPS_CAPTURE_SAMPLE_GRID 3u
 /* A windowed editor captures after this long without the designer's input,
    and gives up after the limit. */
 #define OPS_CAPTURE_IDLE_SECONDS 1.5
@@ -7870,7 +7872,7 @@ static uint8_t ops_encode_srgb(float32_t linear) {
   return (uint8_t)(encoded * 255.0f + 0.5f);
 }
 
-/* The PNG writer's output file; a failed write fails the capture. */
+/* The PNG or JPEG writer's output file; a failed write fails the capture. */
 typedef struct OpsPngSink {
   FileHandle *file;
   bool8_t ok;
@@ -7905,10 +7907,28 @@ bool8_t vkr_editor_png_write(const char *path, const uint8_t *rgba,
   return written;
 }
 
-/* Writes the Scene image area of the captured window as an RGBA8 PNG. */
+bool8_t vkr_editor_jpg_write(const char *path, const uint8_t *rgba,
+                             uint32_t width, uint32_t height, int32_t quality) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  bool8_t written = false_v;
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &file) == FILE_ERROR_NONE) {
+    OpsPngSink sink = {.file = &file, .ok = true_v};
+    written = stbi_write_jpg_to_func(ops_png_sink, &sink, (int)width,
+                                     (int)height, 4, rgba, quality) != 0;
+    written = sink.ok && written;
+  }
+  file_close(&file);
+  return written;
+}
+
 /* The captured frame as RGBA8 rows from the top, of the Scene's image
-   rectangle or the whole window; heap memory the caller frees. */
-uint8_t *vkr_editor_capture_rgba(const VkrCaptureItemResult *item, Vec4 rect_px,
+   rectangle or the whole window; heap memory the caller frees, or NULL with
+   a reason in `out_error` for an unsupported format or an empty rectangle. */
+static uint8_t *ops_capture_crop(const VkrCaptureItemResult *item, Vec4 rect_px,
                                  uint32_t *out_width, uint32_t *out_height,
                                  const char **out_error) {
   const bool8_t rgba8 = item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
@@ -7969,6 +7989,69 @@ uint8_t *vkr_editor_capture_rgba(const VkrCaptureItemResult *item, Vec4 rect_px,
   return pixels;
 }
 
+/* The display-encoded colour of the texel at `in`, added to `sum` (RGB). */
+static void ops_capture_texel_add(const uint8_t *in, bool8_t half,
+                                  bool8_t bgra8, uint32_t sum[3]) {
+  if (half) {
+    uint16_t channels[4];
+    MemCopy(channels, in, sizeof(channels));
+    for (uint32_t c = 0; c < 3u; ++c) {
+      sum[c] += ops_encode_srgb(ops_half_to_float(channels[c]));
+    }
+    return;
+  }
+  sum[0] += bgra8 ? in[2] : in[0];
+  sum[1] += in[1];
+  sum[2] += bgra8 ? in[0] : in[2];
+}
+
+bool8_t vkr_editor_capture_sample(const VkrCaptureItemResult *item,
+                                  uint32_t width, uint32_t height,
+                                  uint8_t *out) {
+  const bool8_t rgba8 = item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
+                        item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  const bool8_t bgra8 = item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM ||
+                        item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
+  const bool8_t half = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+  if ((!rgba8 && !bgra8 && !half) || !item->data || item->width == 0u ||
+      item->height == 0u || width == 0u || height == 0u) {
+    return false_v;
+  }
+  /* A grid of samples spread over each output pixel's footprint; 32.32
+     fixed-point steps map a sample to its texel without a division. */
+  const uint32_t grid = OPS_CAPTURE_SAMPLE_GRID;
+  const uint64_t texel = half ? 8u : 4u;
+  const uint64_t step_x =
+      ((uint64_t)item->width << 32u) / ((uint64_t)width * grid);
+  const uint64_t step_y =
+      ((uint64_t)item->height << 32u) / ((uint64_t)height * grid);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t *rows[OPS_CAPTURE_SAMPLE_GRID];
+    for (uint32_t sy = 0; sy < grid; ++sy) {
+      const uint64_t row = (((uint64_t)y * grid + sy) * step_y) >> 32u;
+      const uint64_t source_y = item->origin == VKR_CAPTURE_ORIGIN_BOTTOM_LEFT
+                                    ? item->height - 1u - row
+                                    : row;
+      rows[sy] = (const uint8_t *)item->data + source_y * item->row_pitch;
+    }
+    for (uint32_t x = 0; x < width; ++x) {
+      uint32_t sum[3] = {0u, 0u, 0u};
+      for (uint32_t sx = 0; sx < grid; ++sx) {
+        const uint64_t source_x = (((uint64_t)x * grid + sx) * step_x) >> 32u;
+        for (uint32_t sy = 0; sy < grid; ++sy) {
+          ops_capture_texel_add(rows[sy] + source_x * texel, half, bgra8, sum);
+        }
+      }
+      uint8_t *pixel = out + ((size_t)y * width + x) * 4u;
+      for (uint32_t c = 0; c < 3u; ++c) {
+        pixel[c] = (uint8_t)((sum[c] + grid * grid / 2u) / (grid * grid));
+      }
+      pixel[3] = 255u;
+    }
+  }
+  return true_v;
+}
+
 static uint8_t *ops_capture_rgba(OpsContext *ctx,
                                  const OpsPendingCapture *pending,
                                  const VkrCaptureItemResult *item,
@@ -7979,25 +8062,27 @@ static uint8_t *ops_capture_rgba(OpsContext *ctx,
                         : vec4_new(0.0f, 0.0f, (float32_t)item->width,
                                    (float32_t)item->height);
   const char *error = NULL;
-  uint8_t *pixels =
-      vkr_editor_capture_rgba(item, rect, out_width, out_height, &error);
+  uint8_t *pixels = ops_capture_crop(item, rect, out_width, out_height, &error);
   if (!pixels) {
     (void)ops_fail(ctx, OPS_CAPTURE, "%s", error);
   }
   return pixels;
 }
 
-uint32_t vkr_editor_image_shrink_height(uint32_t width, uint32_t height,
+/* The height ops_image_box_shrink gives a width-by-height image. */
+static uint32_t ops_image_shrink_height(uint32_t width, uint32_t height,
                                         uint32_t target_width) {
   const uint32_t w = Max(1u, Min(target_width, width));
   return Max(1u, (uint32_t)(((uint64_t)height * w + width / 2u) / width));
 }
 
-void vkr_editor_image_shrink(const uint8_t *source, uint32_t width,
-                             uint32_t height, uint32_t target_width,
-                             uint8_t *out) {
+/* Box-filters RGBA8 `source` to `target_width` wide, its aspect kept, into
+   `out` (target_width by ops_image_shrink_height pixels). */
+static void ops_image_box_shrink(const uint8_t *source, uint32_t width,
+                                 uint32_t height, uint32_t target_width,
+                                 uint8_t *out) {
   const uint32_t w = Max(1u, Min(target_width, width));
-  const uint32_t h = vkr_editor_image_shrink_height(width, height, w);
+  const uint32_t h = ops_image_shrink_height(width, height, w);
   for (uint32_t y = 0; y < h; ++y) {
     const uint32_t ya = (uint32_t)((uint64_t)y * height / h);
     const uint32_t yb =
@@ -8031,13 +8116,13 @@ static uint8_t *ops_image_shrink(Arena *arena, const uint8_t *source,
                                  uint32_t width, uint32_t height,
                                  uint32_t target_width, uint32_t *out_height) {
   const uint32_t w = Max(1u, Min(target_width, width));
-  const uint32_t h = vkr_editor_image_shrink_height(width, height, w);
+  const uint32_t h = ops_image_shrink_height(width, height, w);
   uint8_t *out =
       arena_alloc(arena, (uint64_t)w * h * 4u, ARENA_MEMORY_TAG_ARRAY);
   if (!out) {
     return NULL;
   }
-  vkr_editor_image_shrink(source, width, height, w, out);
+  ops_image_box_shrink(source, width, height, w, out);
   *out_height = h;
   return out;
 }
@@ -9483,6 +9568,10 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         !ops_arg_bool(call->args, "settle", true_v) || ops_settled(frame, NULL);
     if (++call->frames < OPS_CAPTURE_SETTLE_FRAMES ||
         (!settled && call->frames < OPS_SCENE_SETTLE_FRAMES)) {
+      return VKR_EDITOR_OP_WAIT;
+    }
+    /* A recording's thumbnail holds the capture for a few frames. */
+    if (frame->capture_busy && call->frames < OPS_WAIT_FRAMES) {
       return VKR_EDITOR_OP_WAIT;
     }
     call->settle_timeout = call->settle_timeout || !settled;

@@ -40,6 +40,7 @@ enum {
   VKR_CAPTURE_CHANNEL_MOTION_VECTORS,
   VKR_CAPTURE_CHANNEL_SUBSURFACE_COLOR,
   VKR_CAPTURE_CHANNEL_SUBSURFACE_DIFFUSE,
+  VKR_CAPTURE_CHANNEL_EDITOR_SCENE,
 };
 
 vkr_global const VkrCaptureChannelDescription s_capture_channels[] = {
@@ -178,7 +179,11 @@ vkr_global const VkrCaptureChannelDescription s_capture_channels[] = {
      "subsurface_diffuse", VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
      VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_LINEAR, "RGBA16_FLOAT_LE",
      1},
-
+    /* The editor's Scene image as the viewport shows it, before the UI. */
+    {VKR_CAPTURE_CHANNEL_EDITOR_SCENE, "editor_scene", "editor_scene_image",
+     VKR_CAPTURE_FEATURE_NONE, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_SRGB, "RGBA8_SRGB_PNG",
+     1},
 };
 
 /* Duplicate requests are rejected with one 64-bit mask keyed by channel id. */

@@ -58,99 +58,6 @@ editor_recording_report(VkrEditorUi *editor,
   }
 }
 
-/* Frames after a recording starts before its thumbnail capture, so the
-   Scene shows its first frames; and frames to wait for a capture. */
-#define EDITOR_RECORDING_THUMB_DELAY 10u
-#define EDITOR_RECORDING_THUMB_TIMEOUT 120u
-#define EDITOR_RECORDING_THUMB_TOKEN (1ull << 63u)
-
-/* Writes the captured Scene, shrunk to the thumbnail width, as thumb.png. */
-vkr_internal bool8_t editor_recording_thumb_write(
-    const VkrSampleUiFrame *frame, const VkrCaptureItemResult *item,
-    const char *bundle) {
-  const Vec4 rect = frame->mapping_valid
-                        ? frame->mapping.image_rect_px
-                        : vec4_new(0.0f, 0.0f, (float32_t)item->width,
-                                   (float32_t)item->height);
-  uint32_t width = 0u;
-  uint32_t height = 0u;
-  const char *error = NULL;
-  uint8_t *pixels =
-      vkr_editor_capture_rgba(item, rect, &width, &height, &error);
-  if (!pixels) {
-    return false_v;
-  }
-  /* Content's preview loader takes images up to 256 pixels a side. */
-  uint32_t target = Min(VKR_EDITOR_RECORDING_THUMB_WIDTH, width);
-  while (target > 16u &&
-         vkr_editor_image_shrink_height(width, height, target) > 240u) {
-    target -= 8u;
-  }
-  const uint32_t thumb_height =
-      vkr_editor_image_shrink_height(width, height, target);
-  uint8_t *thumb = vkr_heap_alloc((size_t)target * thumb_height * 4u);
-  bool8_t written = false_v;
-  if (thumb) {
-    vkr_editor_image_shrink(pixels, width, height, target, thumb);
-    char path[VKR_RECORDING_PATH_MAX];
-    string_format(path, sizeof(path), "%s/%s", bundle,
-                  VKR_EDITOR_RECORDING_THUMB_FILE);
-    written = vkr_editor_png_write(path, thumb, target, thumb_height);
-    vkr_heap_free(thumb);
-  }
-  vkr_heap_free(pixels);
-  return written;
-}
-
-/* One capture of the Scene shortly after a recording starts becomes its
-   thumbnail. An agent capture asked in the same frame wins; this one tries
-   again later, at most three times. */
-vkr_internal void editor_recording_thumbnail(VkrEditorRecording *recording,
-                                             const VkrSampleUiFrame *frame) {
-  const VkrSampleRecordingStatus *status = frame->recording;
-  if (!status || !status->recording) {
-    return;
-  }
-  if (!string_equals(recording->thumb_bundle, status->recording_path)) {
-    string_format(recording->thumb_bundle, sizeof(recording->thumb_bundle),
-                  "%s", status->recording_path);
-    recording->thumb_token = 0u;
-    recording->thumb_wait = 0u;
-    recording->thumb_attempts = 0u;
-    recording->thumb_done = false_v;
-  }
-  if (recording->thumb_done) {
-    return;
-  }
-  ++recording->thumb_wait;
-  const VkrSampleCaptureReady *ready = frame->capture_ready;
-  if (recording->thumb_token) {
-    if (ready && ready->token == recording->thumb_token) {
-      recording->thumb_done =
-          (!ready->failed && ready->item &&
-           editor_recording_thumb_write(frame, ready->item,
-                                        recording->thumb_bundle)) ||
-          ++recording->thumb_attempts >= 3u;
-      recording->thumb_token = 0u;
-      recording->thumb_wait = 0u;
-    } else if (recording->thumb_wait > EDITOR_RECORDING_THUMB_TIMEOUT) {
-      recording->thumb_token = 0u;
-      recording->thumb_wait = 0u;
-      recording->thumb_done = ++recording->thumb_attempts >= 3u;
-    }
-    return;
-  }
-  if (recording->thumb_wait >= EDITOR_RECORDING_THUMB_DELAY &&
-      frame->capture_request && !frame->capture_request->request &&
-      frame->mapping_valid && !frame->scene_rendering_stopped) {
-    recording->thumb_token =
-        EDITOR_RECORDING_THUMB_TOKEN | ++recording->thumb_serial;
-    recording->thumb_wait = 0u;
-    *frame->capture_request = (VkrSampleCaptureRequest){
-        .request = true_v, .token = recording->thumb_token};
-  }
-}
-
 void vkr_editor_recording_update(VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
   VkrEditorRecording *recording = &editor->recording;
@@ -180,7 +87,7 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
       recording->edits_warned = false_v;
     }
   }
-  editor_recording_thumbnail(recording, frame);
+  vkr_editor_recording_thumbs_update(editor, frame);
   vkr_editor_recording_requests_update(editor, frame);
   if (recording->queue_count == 0u || !frame->recording_request ||
       frame->recording_request->command != VKR_SAMPLE_RECORDING_NONE) {
@@ -1073,6 +980,7 @@ editor_recording_release_thumbs(VkrEditorRecording *recording) {
 }
 
 void vkr_editor_recording_shutdown(VkrEditorUi *editor) {
+  vkr_editor_recording_thumbs_shutdown(editor);
   editor_recording_release_thumbs(&editor->recording);
   vkr_editor_recording_perf_release(&editor->recording.perf);
   editor->recording.entry_count = 0u;
@@ -1189,19 +1097,39 @@ vkr_editor_recording_newest(VkrEditorUi *editor) {
   return NULL;
 }
 
-/* Removes the bundle's files, then the bundle. */
+/* Removes a directory's files and, two levels down, its directories (a
+   bundle's thumbs/ and start/), then the directory. */
+typedef struct EditorRecordingDelete {
+  const char *directory;
+  uint32_t depth;
+} EditorRecordingDelete;
+
+vkr_internal bool8_t editor_recording_remove_tree(const char *directory,
+                                                  uint32_t depth);
+
 vkr_internal bool8_t editor_recording_delete_visit(void *context,
                                                    const char *name,
                                                    bool8_t is_directory) {
-  const char *bundle = context;
+  const EditorRecordingDelete *remove = context;
+  char path[VKR_RECORDING_PATH_MAX];
+  string_format(path, sizeof(path), "%s/%s", remove->directory, name);
   if (is_directory) {
+    if (remove->depth < 2u) {
+      (void)editor_recording_remove_tree(path, remove->depth + 1u);
+    }
     return true_v;
   }
-  char path[VKR_RECORDING_PATH_MAX];
-  string_format(path, sizeof(path), "%s/%s", bundle, name);
   const FilePath file = file_path_view(path);
   (void)file_remove(&file);
   return true_v;
+}
+
+vkr_internal bool8_t editor_recording_remove_tree(const char *directory,
+                                                  uint32_t depth) {
+  EditorRecordingDelete remove = {.directory = directory, .depth = depth};
+  const FilePath path = file_path_view(directory);
+  (void)file_list_directory(&path, editor_recording_delete_visit, &remove);
+  return file_remove_directory(&path) == FILE_ERROR_NONE;
 }
 
 vkr_internal bool8_t editor_recording_delete(const char *directory,
@@ -1214,9 +1142,7 @@ vkr_internal bool8_t editor_recording_delete(const char *directory,
           (int32_t)sizeof(bundle)) {
     return false_v;
   }
-  const FilePath path = file_path_view(bundle);
-  (void)file_list_directory(&path, editor_recording_delete_visit, bundle);
-  return file_remove_directory(&path) == FILE_ERROR_NONE;
+  return editor_recording_remove_tree(bundle, 0u);
 }
 
 vkr_internal VkrUiPlacement editor_recording_cell(uint32_t column,

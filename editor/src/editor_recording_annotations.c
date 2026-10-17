@@ -887,8 +887,10 @@ void vkr_editor_recording_copy_prompt(VkrEditorUi *editor,
       "\"%s\"} opens it, rec.seek takes a frame, a time or a marker, and "
       "view.capture shows the frame; rec.annotations reads the notes and "
       "ranges, and rec.note and rec.range add yours. Offline, vkr_rec "
-      "summary, spikes, frames and passes read the bundle.\n",
-      VKR_RECORDING_SUMMARY_FILE, entry->bundle);
+      "summary, spikes, frames and passes read the bundle, and %s/ holds "
+      "a JPEG of the Scene twice a second named by its frame.\n",
+      VKR_RECORDING_SUMMARY_FILE, entry->bundle,
+      VKR_EDITOR_RECORDING_THUMBS_DIRECTORY);
   (void)vkr_platform_clipboard_write_text((const uint8_t *)prompt.text,
                                           (uint32_t)prompt.length);
 }

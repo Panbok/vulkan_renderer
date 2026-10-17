@@ -5644,6 +5644,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .capture_request = &requests->capture_request,
       .capture_ready =
           state->capture_ready_valid ? &state->capture_ready : NULL,
+      .capture_busy = state->capture_pending,
       .scene_request = &requests->scene_request,
       .world = application->world_scene,
       .world_edits = &state->world_edits,
@@ -6388,7 +6389,9 @@ static void sample_capture_after_build(VkrStandardSceneRuntime *application,
     return;
   }
   const VkrCaptureChannelId channel = vkr_renderer_capture_channel_from_name(
-      request->scene_hdr ? "hdr_post_transmission" : "final_color");
+      request->scene_hdr    ? "hdr_post_transmission"
+      : request->scene_only ? "editor_scene"
+                            : "final_color");
   if (application->capture_request || channel == VKR_CAPTURE_CHANNEL_INVALID) {
     state->capture_ready =
         (VkrSampleCaptureReady){.token = request->token, .failed = true_v};

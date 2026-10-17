@@ -19,6 +19,8 @@
 /* A ruler label wants at least this much room. */
 #define EDITOR_TIMELINE_TICK_PT 90.0f
 #define EDITOR_TIMELINE_MARK_PT 9.0f
+/* The hover preview's image width. */
+#define EDITOR_TIMELINE_PREVIEW_PT 192.0f
 
 float32_t vkr_editor_recording_timeline_height(VkrEditorUi *editor) {
   return editor->recording.timeline.open
@@ -443,8 +445,10 @@ vkr_internal void editor_timeline_plot(VkrEditorUi *editor,
   config.placement.align = VKR_UI_ALIGN_STRETCH;
   config.style.background_color = vkr_ui_color_alpha(theme->window, 0.6f);
   config.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+  /* A recording with thumbnails shows the frame in the hover preview. */
   const uint32_t hovered = timeline->hovered_column;
-  if (hovered != VKR_UI_PLOT_NONE && hovered < timeline->column_count) {
+  if (hovered != VKR_UI_PLOT_NONE && hovered < timeline->column_count &&
+      !timeline->previewed) {
     const uint64_t at = timeline->column_frame[hovered];
     config.tooltip = string8_create_formatted(
         ui->frame_allocator, "Frame %llu  \xc2\xb7  %.2f ms  \xc2\xb7  %.2f s",
@@ -620,6 +624,94 @@ vkr_internal void editor_timeline_ruler(VkrEditorUi *editor,
   }
 }
 
+/* Over the frame-time lane, above the hovered column: the thumbnail of the
+   frame under the pointer, with its number, time and frame time. */
+vkr_internal void editor_timeline_preview(VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame,
+                                          const VkrRecordingPlayback *playback,
+                                          Vec3 bar_pt, VkrUiRect lane) {
+  VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
+  const uint32_t hovered = timeline->hovered_column;
+  timeline->previewed = false_v;
+  if (hovered == VKR_UI_PLOT_NONE || hovered >= timeline->column_count) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const uint64_t at = timeline->column_frame[hovered];
+  VkrTextureHandle texture = {0};
+  Vec2 size = {0};
+  bool8_t any = false_v;
+  const bool8_t ready = vkr_editor_recording_thumb_preview(
+      editor, ui, playback->bundle_path, at, &texture, &size, &any);
+  timeline->previewed = any;
+  if (!any) {
+    return;
+  }
+  /* The image keeps the thumbnail's aspect at a fixed width; until the
+     first one loads, a 16:9 placeholder holds its place. */
+  const float32_t image_width = EDITOR_TIMELINE_PREVIEW_PT;
+  const float32_t image_height = ready && size.x > 0.0f
+                                     ? image_width * size.y / size.x
+                                     : image_width * 9.0f / 16.0f;
+  const float32_t width = image_width + 8.0f;
+  const float32_t height = image_height + 8.0f + 3.0f + 16.0f;
+  const float32_t scale = ui->content_scale;
+  const float32_t center = (lane.x + lane.width * ((float32_t)hovered + 0.5f) /
+                                         (float32_t)timeline->column_count) /
+                           scale;
+  const float32_t left = vkr_clamp_f32(center - width * 0.5f, bar_pt.x,
+                                       bar_pt.x + bar_pt.z - width);
+  const float32_t top = bar_pt.y - EDITOR_TIMELINE_HEIGHT_PT -
+                        EDITOR_TIMELINE_GAP_PT * 2.0f - height;
+
+  const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack rows[] = {{.value = image_height, .unit = VKR_UI_TRACK_PX},
+                             {.value = 16.0f, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = VKR_UI_PLACEMENT_DEFAULT;
+  panel.placement.column = panel.placement.row = 0u;
+  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  panel.placement.margin_pt = (VkrUiEdges){top, 0.0f, 0.0f, left};
+  panel.style = vkr_editor_glass_style();
+  panel.style.padding_pt = (VkrUiEdges){4.0f, 4.0f, 4.0f, 4.0f};
+  panel.style.gap_pt = 3.0f;
+  panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){width, height};
+  panel.columns = &column;
+  panel.column_count = 1u;
+  panel.rows = rows;
+  panel.row_count = ArrayCount(rows);
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.timeline.preview"),
+                          &panel)) {
+    return;
+  }
+  VkrUiWidgetConfig image = vkr_ui_widget_config_default();
+  image.placement = editor_timeline_cell(0u, 0u);
+  image.placement.align = VKR_UI_ALIGN_STRETCH;
+  image.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+  if (ready) {
+    vkr_ui_image(ui, string8_lit("image"),
+                 (VkrUiTextureRef){texture.id, texture.generation}, size,
+                 &image);
+  } else {
+    image.style.background_color = vkr_ui_color_alpha(theme->window, 0.8f);
+    vkr_ui_label(ui, string8_lit("image"), (String8){0}, &image);
+  }
+  VkrUiWidgetConfig caption = vkr_ui_widget_config_default();
+  caption.placement = editor_timeline_cell(0u, 1u);
+  caption.placement.justify = VKR_UI_ALIGN_CENTER;
+  caption.style.font_size_pt = theme->font_caption;
+  caption.style.text_color = theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("caption"),
+               string8_create_formatted(
+                   ui->frame_allocator,
+                   "Frame %llu  \xc2\xb7  %.2f ms  \xc2\xb7  %.2f s",
+                   (unsigned long long)at, timeline->column_ms[hovered],
+                   playback->times[at]),
+               &caption);
+  (void)vkr_ui_panel_end(ui);
+}
+
 void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrRecordingPlayback *playback,
@@ -677,4 +769,5 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
     editor_timeline_ruler(editor, frame, playback, width);
   }
   (void)vkr_ui_panel_end(ui);
+  editor_timeline_preview(editor, frame, playback, bar_pt, lane);
 }

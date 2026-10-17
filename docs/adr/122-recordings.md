@@ -32,7 +32,8 @@ an agent must read one without the editor.
 ## Decision
 
 - **Format.** A recording is a directory bundle `<name>.vkrrec/` holding
-  `stream.vkrs`, `summary.json` and `thumb.png`. The stream is a header, typed
+  `stream.vkrs`, `summary.json`, `thumb.png` and, from the editor,
+  `thumbs/`. The stream is a header, typed
   chunks with CRC-32 on header and payload, an index chunk and a trailer.
   Records carry a stream id and a frame number; a DICTIONARY chunk names each
   stream's fields, types and units. A reader keeps every whole chunk before a
@@ -146,6 +147,21 @@ an agent must read one without the editor.
   (`loop_start`, `loop_end`) that every settings request carries; `rec.set`
   takes `range` [first, last] frames, [] for the whole recording
   ([editor_recording_timeline.c](../../editor/src/editor_recording_timeline.c)).
+- **Thumbnails (R5).** While the editor records, it captures the Scene twice
+  a second through capture channel `editor_scene` (the editor's Scene image
+  after its grid, outlines and gizmos, before the UI, so the REC chip and
+  windows stay out). The main thread samples each capture to at most
+  256×240 with nine texels per pixel as it arrives, and a thread of its own
+  writes `thumbs/<frame>.jpg` (eight-digit recorder frame, quality 82, 8.6 KB
+  on average on Bistro); the first is also `thumb.png`, the card's picture. One
+  capture at a time: a thumbnail waits while the agent's capture renders or
+  the last thumbnail writes, an agent capture waits for a rendering
+  thumbnail (`capture_busy`), and three failed captures in a row stop a
+  recording's thumbnails. Hovering the timeline's frame-time lane shows the
+  thumbnail at or before the hovered frame with its number, frame time and
+  time; four stay loaded, and the nearest loaded one stands in while the
+  wanted one loads
+  ([editor_recording_thumbs.c](../../editor/src/editor_recording_thumbs.c)).
 - **Annotations (R4).** A bundle's `annotations.json` (kind
   `vkr.recording.annotations`) holds notes on frames (at most 64), named
   frame ranges (at most 32) and a review state: unreviewed, reviewed or
@@ -274,8 +290,12 @@ an agent must read one without the editor.
   check found 0 m and 0° error at four frames on Bistro.
 - A recording made by another build reads only if its dictionary's frame and
   camera layouts match; playback refuses others with a reason.
-- Thumbnails come from a Scene capture shortly after start and compete with
-  agent captures; a lost capture retries up to three times.
+- Thumbnails cost the main thread 0.24 ms per capture (sampling a
+  1275×700 Bistro Scene to 256×141) and 0.04 ms to start the write thread.
+  In a 15 s idle headless Bistro recording (M1 Pro, Metal, Release) the
+  frame after each request and the frame that reads the capture ran about
+  0.8 and 0.5 ms longer than the 5.65 ms median and the one after about
+  1.0 ms shorter; the editor session's first capture ran 12.5 ms once.
 
 ## Alternatives considered
 
@@ -292,6 +312,12 @@ an agent must read one without the editor.
   Stepping the journals reuses the editor's exact undo, needs no reload and
   leaves the user's state as it was; its limit is that the recording's
   edits must still head the history.
+
+- **`thumbs.vkrt`, one BC1 file per recording** (the proposal's plan) was
+  not built: the BC encoder is unavailable on arm64 hosts, the texture
+  loader takes image files, and a JPEG a thumbnail is small and readable by
+  agents without a tool. The write thread keeps the file count off the
+  frame.
 
 ## Revisit when
 

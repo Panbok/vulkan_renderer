@@ -401,15 +401,18 @@ typedef struct VkrSampleEditBatchResult {
   VkrEntityId created[VKR_SAMPLE_EDIT_BATCH_MAX];
 } VkrSampleEditBatchResult;
 
-/* Captures the presented window color once (final_color). The runtime
- * renders it with a later frame and lends the poll result to one build
- * through `capture_ready`; it releases the capture after that build. */
+/* Captures the presented window color once (final_color), or a Scene image.
+ * The runtime renders it with a later frame and lends the poll result to one
+ * build through `capture_ready`; it releases the capture after that build. */
 typedef struct VkrSampleCaptureRequest {
   bool8_t request;
   uint64_t token;
   /** Capture the Scene's scene-linear HDR colour (hdr_post_transmission,
    * RGBA16F, pre-exposed) instead of the window (ADR-099). */
   bool8_t scene_hdr;
+  /** Capture the Scene image as the viewport shows it, without the editor
+   * UI (editor_scene), instead of the window. */
+  bool8_t scene_only;
 } VkrSampleCaptureRequest;
 
 typedef struct VkrSampleCaptureReady {
@@ -488,6 +491,8 @@ typedef struct VkrSampleUiFrame {
   VkrSampleCaptureRequest *capture_request;
   /** A finished capture, for this build only; NULL otherwise. */
   const VkrSampleCaptureReady *capture_ready;
+  /** A capture is rendering; one asked for now is ignored. */
+  bool8_t capture_busy;
   VkrSampleSceneRequest *scene_request;
   /** Root World container and its journal, or NULL; entities carry
    * VKR_SCENE_WORLD_ROOT_ID in their world field. Edits of its entities use

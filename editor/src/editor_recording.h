@@ -3,6 +3,8 @@
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
 #include "assets/vkr_recording_compare.h"
+#include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "vkr_sample_runtime.h"
@@ -17,7 +19,14 @@
 #define VKR_EDITOR_RECORDING_LIST_MAX 128u
 /* thumb.png in a bundle: the Scene a moment after the recording starts. */
 #define VKR_EDITOR_RECORDING_THUMB_FILE "thumb.png"
-#define VKR_EDITOR_RECORDING_THUMB_WIDTH 240u
+/* thumbs/<frame>.jpg in a bundle: the Scene twice a second while it
+   records, the frame zero-padded to eight digits. */
+#define VKR_EDITOR_RECORDING_THUMBS_DIRECTORY "thumbs"
+/* Thumbnails fit this box; Content's preview loader takes 256 a side. */
+#define VKR_EDITOR_RECORDING_THUMB_WIDTH 256u
+#define VKR_EDITOR_RECORDING_THUMB_HEIGHT 240u
+/* Thumbnails the timeline keeps loaded for its hover preview. */
+#define VKR_EDITOR_RECORDING_PREVIEWS 4u
 
 /* One bundle in the recording directory, from its summary.json. */
 typedef struct VkrEditorRecordingEntry {
@@ -243,7 +252,66 @@ typedef struct VkrEditorRecordingTimeline {
      the pointer was over in the last build, for the tooltip. */
   VkrUiId plot_id;
   uint32_t hovered_column;
+  /* The recording has thumbnails, so the hover preview, not the tooltip,
+     describes the hovered frame. */
+  bool8_t previewed;
 } VkrEditorRecordingTimeline;
+
+/* One thumbnail on its way to disk: pixels sampled from the capture on the
+   main thread, then encoded and written by a thread of its own. */
+typedef struct VkrEditorRecordingThumbJob {
+  VkrThread thread;
+  VkrAtomicBool done;
+  bool8_t running;
+  /* Set by the thread: the JPEG, and thumb.png when `cover`, were written. */
+  bool8_t written;
+  bool8_t cover;
+  /* VKR_EDITOR_RECORDING_THUMB_WIDTH x _HEIGHT RGBA8, allocated with the
+     first thumbnail and kept. */
+  uint8_t *pixels;
+  uint32_t width;
+  uint32_t height;
+  uint64_t frame;
+  char bundle[VKR_RECORDING_PATH_MAX];
+} VkrEditorRecordingThumbJob;
+
+/* A thumbnail loaded for the timeline's hover preview. */
+typedef struct VkrEditorRecordingPreview {
+  uint64_t frame;
+  VkrResourceHandleInfo request;
+  VkrTextureHandle texture;
+  uint32_t width;
+  uint32_t height;
+  bool8_t failed;
+  /* The build that last asked for it; the oldest is replaced. */
+  uint64_t used;
+} VkrEditorRecordingPreview;
+
+typedef struct VkrEditorRecordingThumbs {
+  /* Capturing: the bundle recording, the capture's token (its high bit keeps
+     it apart from agent captures), builds waited, the recorder frame it
+     shows, captures failed in a row, and when the next one is due.
+     `cover_done`: thumb.png exists. */
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t token;
+  uint64_t serial;
+  uint32_t wait;
+  uint32_t failures;
+  uint64_t frame;
+  float64_t next_time;
+  bool8_t cover_done;
+  /* The allocator the write threads come from. */
+  VkrAllocator *allocator;
+  VkrEditorRecordingThumbJob job;
+  /* Previewing: the thumbnail frames of the bundle playing, ascending, read
+     once per bundle, and the loaded previews. */
+  char index_bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t *frames;
+  uint32_t frame_count;
+  uint32_t frame_capacity;
+  VkrEditorRecordingPreview previews[VKR_EDITOR_RECORDING_PREVIEWS];
+  uint64_t builds;
+} VkrEditorRecordingThumbs;
 
 typedef struct VkrEditorRecording {
   /* Requests waiting for a frame; the runtime takes one per frame. */
@@ -288,15 +356,7 @@ typedef struct VkrEditorRecording {
      press deletes it. */
   uint32_t delete_armed;
   float32_t scroll;
-  /* The thumbnail capture of the recording in progress: the bundle it
-     belongs to, the capture's token (its high bit keeps it apart from agent
-     captures), frames waited and attempts made. */
-  char thumb_bundle[VKR_RECORDING_PATH_MAX];
-  uint64_t thumb_token;
-  uint64_t thumb_serial;
-  uint32_t thumb_wait;
-  uint32_t thumb_attempts;
-  bool8_t thumb_done;
+  VkrEditorRecordingThumbs thumbs;
   VkrEditorRecordingPerf perf;
 } VkrEditorRecording;
 
@@ -438,6 +498,25 @@ void vkr_editor_recording_timeline_build(struct VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrRecordingPlayback *playback,
                                          Vec3 bar_pt);
+
+/* ---- Thumbnails (editor_recording_thumbs.c) ---- */
+
+/** While the Scene records, captures it twice a second without the editor
+ * UI and writes each capture under the bundle's thumbs/, the first also as
+ * thumb.png. Call once per build. */
+void vkr_editor_recording_thumbs_update(struct VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame);
+/** The thumbnail nearest at or before `frame_index` of the bundle at
+ * `bundle_path`, once loaded: its texture and size. False while it loads or
+ * when the bundle has none; `out_any` says whether it has any. */
+bool8_t vkr_editor_recording_thumb_preview(struct VkrEditorUi *editor,
+                                           VkrUiSystem *ui,
+                                           const char *bundle_path,
+                                           uint64_t frame_index,
+                                           VkrTextureHandle *out_texture,
+                                           Vec2 *out_size, bool8_t *out_any);
+/** Waits for a thumbnail being written and releases the previews. */
+void vkr_editor_recording_thumbs_shutdown(struct VkrEditorUi *editor);
 
 /* ---- Perf re-run (editor_recording_rerun.c) ---- */
 
