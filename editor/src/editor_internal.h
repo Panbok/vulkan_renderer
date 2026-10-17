@@ -117,6 +117,8 @@ typedef enum EditorCommand {
   CMD_RECORD,
   CMD_RECORD_MARK,
   CMD_RECORD_BUG,
+  /* A recording request's current step is done. */
+  CMD_REQUEST_NEXT_STEP,
   /* The Recordings window. */
   CMD_RECORDINGS,
   CMD_COUNT

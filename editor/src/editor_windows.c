@@ -224,6 +224,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
     [CMD_RECORD_MARK] = {"Add recording marker", VKR_UI_ICON_PIN, false_v},
     [CMD_RECORD_BUG] = {"Flag a bug in the recording", VKR_UI_ICON_WARNING_FILL,
                         false_v},
+    [CMD_REQUEST_NEXT_STEP] = {"Next request step", VKR_UI_ICON_CHECK, false_v},
     [CMD_RECORDINGS] = {"Recordings", VKR_UI_ICON_VIDEO, false_v},
 };
 
@@ -302,6 +303,7 @@ static const EditorKeyBinding s_keymap[] = {
     {CMD_RECORD, KEY_R, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
     {CMD_RECORD_MARK, KEY_M, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
     {CMD_RECORD_BUG, KEY_B, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
+    {CMD_REQUEST_NEXT_STEP, KEY_N, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_ALT},
     /* Play. */
     {CMD_PLAY, KEY_P, EDITOR_MOD_PRIMARY},
     {CMD_SIM_TOGGLE, KEY_P, EDITOR_MOD_PRIMARY | VKR_INPUT_MOD_SHIFT},
@@ -585,6 +587,9 @@ bool8_t vkr_editor_command_enabled(EditorCommand command,
   case CMD_RECORD_BUG:
     return frame->recording_request && frame->recording &&
            frame->recording->recording;
+  case CMD_REQUEST_NEXT_STEP:
+    return editor->recording.requests.active && frame->recording &&
+           frame->recording->recording;
   case CMD_SIM_START:
     return !frame->simulation_running;
   case CMD_SIM_PAUSE:
@@ -860,6 +865,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
   case CMD_RECORDINGS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_RECORDINGS);
     break;
+  case CMD_REQUEST_NEXT_STEP:
+    (void)vkr_editor_recording_request_next_step(editor);
+    break;
   case CMD_RECORD_MARK:
   case CMD_RECORD_BUG:
     (void)vkr_editor_recording_send(
@@ -1086,6 +1094,7 @@ static const EditorMenuEntry s_scene_menu[] = {
     {CMD_RECORD, true_v},
     {CMD_RECORD_MARK},
     {CMD_RECORD_BUG},
+    {CMD_REQUEST_NEXT_STEP},
     {CMD_RECORDINGS},
     {CMD_SCENE_BAKE, true_v},
 };

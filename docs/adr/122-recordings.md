@@ -115,6 +115,25 @@ an agent must read one without the editor.
   projected in the editor's late camera hook with the frame's final camera,
   as object icons are; a point behind the camera breaks it. It draws over
   geometry.
+- **Requests (R4).** An agent asks the user for a recording with
+  `rec.request.create`: a question the recording must answer, up to 8 steps,
+  and optionally a scene, a start pose, a tier, a stop after some seconds and
+  an expiry (60 minutes by default). Each request is one JSON file,
+  `<recordings>/requests/<id>.json` (kind `vkr.recording.request`),
+  rewritten whole on every change, so the agent's operations and the editor
+  read the same state; ids are letters, digits, `-` and `_`. Pending requests
+  show as cards at the top of the Recordings window and once in a toast. Start
+  (or Cmd `request.start <id>`) needs the request's scene open and no
+  recording or playback; it places the camera, records under the request's
+  id and marks it accepted. While it records, the question and steps stay at
+  the top right of the Scene and "Next request step" (Cmd+Alt+N) adds a
+  `step` marker per step. When the recording stops, by the user or by the
+  stop rule, the request becomes recorded and names its bundle; a recording
+  that has not started 5 s after Start returns the request to pending.
+  Decline (or `request.decline <id> [reason]`) keeps the user's reason.
+  `rec.request.wait` holds until the request is recorded, declined,
+  cancelled or expired, or a timeout passes
+  ([editor_recording_requests.c](../../editor/src/editor_recording_requests.c)).
 - **Gameplay records (R3).** SDK version 12 adds `vkr_rec_player`,
   `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
   ([sdk.h](../../sdk/sdk.h)). They write

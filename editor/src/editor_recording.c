@@ -181,6 +181,7 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
     }
   }
   editor_recording_thumbnail(recording, frame);
+  vkr_editor_recording_requests_update(editor, frame);
   if (recording->queue_count == 0u || !frame->recording_request ||
       frame->recording_request->command != VKR_SAMPLE_RECORDING_NONE) {
     return;
@@ -798,6 +799,7 @@ void vkr_editor_recording_project(VkrEditorUi *editor,
 void vkr_editor_recording_overlays_build(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
   editor_recording_path_build(editor, frame);
+  vkr_editor_recording_request_overlay_build(editor, frame);
   editor_recording_indicator_build(editor, frame);
   editor_recording_bar_build(editor, frame);
 }
@@ -1332,8 +1334,12 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
   recording->was_recording = active;
 
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  const VkrUiTrack rows[] = {{.value = 30.0f, .unit = VKR_UI_TRACK_PX},
-                             {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  /* Agents' requests sit above the recordings while any wait. */
+  const VkrUiTrack rows[] = {
+      {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = vkr_editor_recording_requests_height(editor),
+       .unit = VKR_UI_TRACK_PX},
+      {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
   VkrUiPanelConfig body = vkr_ui_panel_config_default();
   body.placement = editor_recording_cell(0u, 0u);
   body.placement.align = VKR_UI_ALIGN_STRETCH;
@@ -1348,10 +1354,12 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
     return;
   }
   editor_recording_window_header(editor, frame);
+  (void)vkr_editor_recording_requests_build(
+      editor, frame, 1u, bounds.width / ui->content_scale - 24.0f);
   if (recording->entry_count == 0u) {
     VkrUiWidgetConfig empty =
         vkr_editor_text_config(theme->font_body, theme->text_secondary);
-    empty.placement = editor_recording_cell(0u, 1u);
+    empty.placement = editor_recording_cell(0u, 2u);
     empty.placement.align = VKR_UI_ALIGN_START;
     empty.text.layout.word_wrap = true_v;
     char record_key[32] = "the Record button";
@@ -1373,7 +1381,7 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
     card_rows[i] = (VkrUiTrack){.value = 64.0f, .unit = VKR_UI_TRACK_PX};
   }
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
-  list.placement = editor_recording_cell(0u, 1u);
+  list.placement = editor_recording_cell(0u, 2u);
   list.placement.align = VKR_UI_ALIGN_STRETCH;
   list.columns = &column;
   list.column_count = 1u;
@@ -1382,7 +1390,7 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
   list.style.gap_pt = theme->space_sm;
   const bool8_t can_watch =
       !active && !frame->simulation_running && frame->recording_request != NULL;
-  (void)bounds;
+
   bool8_t load_budget = true_v;
   if (vkr_ui_scroll_area_begin(ui, string8_lit("cards"), &list)) {
     for (uint32_t i = 0u; i < recording->entry_count; ++i) {

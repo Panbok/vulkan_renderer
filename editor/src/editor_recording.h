@@ -100,6 +100,73 @@ typedef struct VkrEditorRecordingPerf {
   float32_t spike_scroll;
 } VkrEditorRecordingPerf;
 
+/* Recording requests (docs/proposals/recordings.md, "Recording requests"):
+   an agent asks the user to record something, through a file in the
+   recording directory's requests/ the editor watches. */
+#define VKR_EDITOR_RECORDING_REQUEST_MAX 16u
+#define VKR_EDITOR_RECORDING_REQUEST_STEP_MAX 8u
+#define VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX 256u
+#define VKR_EDITOR_RECORDING_REQUEST_ID_MAX 48u
+
+typedef enum VkrEditorRecordingRequestStatus {
+  VKR_EDITOR_RECORDING_REQUEST_PENDING = 0,
+  /* The user started recording it. */
+  VKR_EDITOR_RECORDING_REQUEST_ACCEPTED,
+  VKR_EDITOR_RECORDING_REQUEST_DECLINED,
+  /* Its recording stopped; `recording` names the bundle. */
+  VKR_EDITOR_RECORDING_REQUEST_RECORDED,
+  VKR_EDITOR_RECORDING_REQUEST_CANCELLED,
+  VKR_EDITOR_RECORDING_REQUEST_EXPIRED,
+  VKR_EDITOR_RECORDING_REQUEST_STATUS_COUNT,
+} VkrEditorRecordingRequestStatus;
+
+typedef struct VkrEditorRecordingRequest {
+  char id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX];
+  int64_t created;
+  int64_t expires;
+  /* The requesting agent. */
+  char owner[32];
+  VkrEditorRecordingRequestStatus status;
+  /* The scene to record in; empty for any. */
+  char scene[VKR_RECORDING_PATH_MAX];
+  /* Where the camera starts, in scene space. */
+  bool8_t has_pose;
+  Vec3 position;
+  float32_t yaw;
+  float32_t pitch;
+  char steps[VKR_EDITOR_RECORDING_REQUEST_STEP_MAX]
+            [VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
+  uint32_t step_count;
+  VkrRecordingTier tier;
+  /* Stop after this many seconds of recording; zero for the user's stop. */
+  uint32_t stop_seconds;
+  char question[2u * VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
+  char recording[VKR_RECORDING_PATH_MAX];
+  char decline_reason[VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
+} VkrEditorRecordingRequest;
+
+typedef struct VkrEditorRecordingRequests {
+  VkrEditorRecordingRequest items[VKR_EDITOR_RECORDING_REQUEST_MAX];
+  uint32_t count;
+  /* When the files were last read. */
+  float64_t read_at;
+  /* Pending requests already announced, by id hash. */
+  uint64_t announced[VKR_EDITOR_RECORDING_REQUEST_MAX];
+  uint32_t announced_count;
+  /* The request being recorded, its id, the step it is on and when its
+     recording began; active is false otherwise. */
+  bool8_t active;
+  char active_id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX];
+  uint32_t step;
+  float64_t started_at;
+  bool8_t stop_sent;
+  bool8_t saw_recording;
+  /* The card whose Decline asks for a reason, and the reason typed. */
+  char decline_id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX];
+  char decline_text[VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
+  uint32_t decline_length;
+} VkrEditorRecordingRequests;
+
 typedef struct VkrEditorRecording {
   /* Requests waiting for a frame; the runtime takes one per frame. */
   VkrSampleRecordingRequest queue[VKR_EDITOR_RECORDING_QUEUE];
@@ -134,6 +201,7 @@ typedef struct VkrEditorRecording {
   uint64_t path_frames[VKR_EDITOR_RECORDING_PATH_POINTS];
   uint8_t path_classes[VKR_EDITOR_RECORDING_PATH_POINTS];
   VkrUiId path_id;
+  VkrEditorRecordingRequests requests;
   /* One past the entry whose Delete was pressed once, or zero; a second
      press deletes it. */
   uint32_t delete_armed;
@@ -201,6 +269,55 @@ void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
 void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds);
+
+/* ---- Recording requests (editor_recording_requests.c) ---- */
+
+/** Writes a new pending request, giving it an id, its creation time and an
+ * expiry `expire_seconds` from now. */
+bool8_t vkr_editor_recording_request_create(
+    struct VkrEditorUi *editor, const VkrEditorRecordingRequest *request,
+    uint32_t expire_seconds, char *out_id, uint64_t id_capacity, char *error,
+    uint64_t error_capacity);
+/** The request named `id`, read from its file; false when there is none. */
+bool8_t vkr_editor_recording_request_read(struct VkrEditorUi *editor,
+                                          const char *id,
+                                          VkrEditorRecordingRequest *out);
+/** Reads every request, newest first, into the editor's list. */
+void vkr_editor_recording_requests_list(struct VkrEditorUi *editor);
+/** The user starts a pending request: the camera goes to its start pose
+ * and a recording starts under its id. */
+bool8_t vkr_editor_recording_request_start(struct VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           const char *id, char *error,
+                                           uint64_t error_capacity);
+/** The user declines a pending request with a reason, which may be empty. */
+bool8_t vkr_editor_recording_request_decline(struct VkrEditorUi *editor,
+                                             const char *id, const char *reason,
+                                             char *error,
+                                             uint64_t error_capacity);
+/** The agent withdraws a request that is not recorded yet. */
+bool8_t vkr_editor_recording_request_cancel(struct VkrEditorUi *editor,
+                                            const char *id, char *error,
+                                            uint64_t error_capacity);
+/** Marks the active request's current step done with a step marker. */
+bool8_t vkr_editor_recording_request_next_step(struct VkrEditorUi *editor);
+/** Per frame: reads new requests and announces them, expires old ones,
+ * applies the active request's stop rule and records its end. */
+void vkr_editor_recording_requests_update(struct VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame);
+/** The Recordings window's Requests section in `row` of its body, which is
+ * `width_pt` wide; returns whether it showed anything. */
+bool8_t vkr_editor_recording_requests_build(struct VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            uint32_t row, float32_t width_pt);
+/** Points the Requests section takes; zero when it shows nothing. */
+float32_t vkr_editor_recording_requests_height(struct VkrEditorUi *editor);
+/** The active request's question and steps over the Scene. */
+void vkr_editor_recording_request_overlay_build(struct VkrEditorUi *editor,
+                                                const VkrSampleUiFrame *frame);
+/** "pending", "accepted", "declined", "recorded", "cancelled", "expired". */
+const char *vkr_editor_recording_request_status_name(
+    VkrEditorRecordingRequestStatus status);
 
 /** Places the open playback's route with the frame's final camera. */
 void vkr_editor_recording_project(struct VkrEditorUi *editor,

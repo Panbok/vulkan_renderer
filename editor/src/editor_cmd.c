@@ -465,6 +465,44 @@ static bool8_t cmd_run_build_camera(CmdContext *ctx, const CmdDef *def,
                                          sizeof(ctx->message));
 }
 
+/* `request.start <id>` and `request.decline <id> [reason]`: answer an
+   agent's recording request as the Recordings window's buttons do. */
+static bool8_t cmd_run_request(CmdContext *ctx, const CmdDef *def,
+                               String8 arg) {
+  String8 rest = cmd_trim(arg);
+  uint64_t split = 0u;
+  while (split < rest.length && rest.str[split] != ' ') {
+    ++split;
+  }
+  if (split == 0u || split >= VKR_EDITOR_RECORDING_REQUEST_ID_MAX) {
+    string_format(ctx->message, sizeof(ctx->message), "Usage: %s %s", def->name,
+                  def->usage);
+    return false_v;
+  }
+  char id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX];
+  string_format(id, sizeof(id), "%.*s", (int)split, (const char *)rest.str);
+  const String8 reason = cmd_unquote(
+      (String8){.str = rest.str + split, .length = rest.length - split});
+  if (def->value == 0u) {
+    if (!vkr_editor_recording_request_start(
+            ctx->editor, ctx->frame, id, ctx->message, sizeof(ctx->message))) {
+      return false_v;
+    }
+    string_format(ctx->message, sizeof(ctx->message), "Recording %s", id);
+    return true_v;
+  }
+  char text[VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
+  string_format(text, sizeof(text), "%.*s",
+                (int)Min(reason.length, (uint64_t)sizeof(text) - 1u),
+                (const char *)reason.str);
+  if (!vkr_editor_recording_request_decline(ctx->editor, id, text, ctx->message,
+                                            sizeof(ctx->message))) {
+    return false_v;
+  }
+  string_format(ctx->message, sizeof(ctx->message), "Declined %s", id);
+  return true_v;
+}
+
 static bool8_t cmd_require_scene(CmdContext *ctx) {
   if (ctx->frame->scene || ctx->frame->world)
     return true_v;
@@ -2508,6 +2546,12 @@ static const CmdDef cmd_defs[] = {
     {"snap", CMD_ARG_NONE, "",
      "Rest the selection on the surface, grid or ground below it (End)",
      cmd_run_snap, CMD_COUNT, 0u},
+    {"request.start", CMD_ARG_TEXT, "<id>",
+     "Start recording an agent's recording request", cmd_run_request, CMD_COUNT,
+     0u},
+    {"request.decline", CMD_ARG_TEXT, "<id> [reason]",
+     "Decline an agent's recording request, telling it why", cmd_run_request,
+     CMD_COUNT, 1u},
     {"script.new", CMD_ARG_TEXT, "<Name>",
      "Create a script module in Scripts/ and open it", cmd_run_script_new,
      CMD_COUNT, 0u},

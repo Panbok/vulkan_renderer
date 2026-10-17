@@ -14961,6 +14961,187 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* ---- Recording requests ---- */
+
+static VkrBakeryJson *
+ops_recording_request(OpsContext *ctx,
+                      const VkrEditorRecordingRequest *request) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *object = vkr_bakery_json_object(arena);
+  ops_set(ctx, object, "id", vkr_bakery_json_cstr(arena, request->id));
+  ops_set(ctx, object, "status",
+          vkr_bakery_json_cstr(arena, vkr_editor_recording_request_status_name(
+                                          request->status)));
+  ops_set(ctx, object, "owner", vkr_bakery_json_cstr(arena, request->owner));
+  ops_set(ctx, object, "question",
+          vkr_bakery_json_cstr(arena, request->question));
+  ops_set(ctx, object, "scene", vkr_bakery_json_cstr(arena, request->scene));
+  VkrBakeryJson *steps = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < request->step_count; ++i) {
+    vkr_bakery_json_append(steps,
+                           vkr_bakery_json_cstr(arena, request->steps[i]));
+  }
+  ops_set(ctx, object, "steps", steps);
+  ops_set(ctx, object, "stop_seconds",
+          vkr_bakery_json_int(arena, request->stop_seconds));
+  ops_set(ctx, object, "created", vkr_bakery_json_int(arena, request->created));
+  ops_set(ctx, object, "expires", vkr_bakery_json_int(arena, request->expires));
+  ops_set(ctx, object, "recording",
+          request->recording[0]
+              ? vkr_bakery_json_cstr(arena, request->recording)
+              : vkr_bakery_json_null(arena));
+  if (request->recording[0]) {
+    char summary[VKR_RECORDING_PATH_MAX + 32u];
+    string_format(summary, sizeof(summary), "%s/%s", request->recording,
+                  VKR_RECORDING_SUMMARY_FILE);
+    ops_set(ctx, object, "summary", vkr_bakery_json_cstr(arena, summary));
+  }
+  ops_set(ctx, object, "decline_reason",
+          vkr_bakery_json_cstr(arena, request->decline_reason));
+  return object;
+}
+
+static VkrEditorOpStatus ops_run_rec_request_create(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  VkrEditorRecordingRequest request = {.tier = VKR_RECORDING_TIER_1};
+  char tier[8] = "1";
+  if (!ops_arg_string(ctx, args, "question", request.question,
+                      sizeof(request.question)) ||
+      !ops_arg_string(ctx, args, "scene", request.scene,
+                      sizeof(request.scene)) ||
+      !ops_arg_string(ctx, args, "tier", tier, sizeof(tier))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  request.tier = ops_equals(string8_create_from_cstr((const uint8_t *)tier,
+                                                     string_length(tier)),
+                            "none")
+                     ? VKR_RECORDING_TIER_NONE
+                 : tier[0] == '0' ? VKR_RECORDING_TIER_0
+                                  : VKR_RECORDING_TIER_1;
+  string_format(request.owner, sizeof(request.owner), "%s",
+                ctx->call->author[0] ? ctx->call->author : "agent");
+  const VkrBakeryJson *steps = vkr_bakery_json_get(args, "steps");
+  for (uint32_t i = 0u;
+       steps && steps->type == VKR_BAKERY_JSON_ARRAY && i < steps->count &&
+       request.step_count < VKR_EDITOR_RECORDING_REQUEST_STEP_MAX;
+       ++i) {
+    const VkrBakeryJson *step = vkr_bakery_json_at(steps, i);
+    if (step->type != VKR_BAKERY_JSON_STRING) {
+      ops_fail(ctx, OPS_INVALID, "'steps' holds strings");
+      return VKR_EDITOR_OP_DONE;
+    }
+    string_format(request.steps[request.step_count++], sizeof(request.steps[0]),
+                  "%.*s", (int32_t)step->string.length,
+                  (const char *)step->string.str);
+  }
+  const VkrBakeryJson *pose = vkr_bakery_json_get(args, "start_pose");
+  if (pose) {
+    float64_t yaw = 0.0;
+    float64_t pitch = 0.0;
+    bool8_t has_position = false_v;
+    if (!ops_arg_vec3(ctx, pose, "position", &request.position,
+                      &has_position)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!has_position) {
+      ops_fail(ctx, OPS_INVALID, "'start_pose' needs a 'position'");
+      return VKR_EDITOR_OP_DONE;
+    }
+    (void)ops_arg_number(pose, "yaw", &yaw);
+    (void)ops_arg_number(pose, "pitch", &pitch);
+    request.has_pose = true_v;
+    request.yaw = (float32_t)yaw;
+    request.pitch = (float32_t)pitch;
+  }
+  float64_t stop_seconds = 0.0;
+  float64_t expire_minutes = 60.0;
+  (void)ops_arg_number(args, "stop_seconds", &stop_seconds);
+  (void)ops_arg_number(args, "expire_minutes", &expire_minutes);
+  request.stop_seconds = (uint32_t)vkr_clamp_f64(stop_seconds, 0.0, 3600.0);
+  char id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX];
+  char error[192];
+  if (!vkr_editor_recording_request_create(
+          ctx->editor, &request,
+          (uint32_t)(vkr_clamp_f64(expire_minutes, 1.0, 10080.0) * 60.0), id,
+          sizeof(id), error, sizeof(error))) {
+    ops_fail(ctx, OPS_REJECTED, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorRecordingRequest created;
+  if (!vkr_editor_recording_request_read(ctx->editor, id, &created)) {
+    ops_fail(ctx, OPS_REJECTED, "The request was written but cannot be read");
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_recording_request(ctx, &created);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_rec_request_list(OpsContext *ctx) {
+  vkr_editor_recording_requests_list(ctx->editor);
+  const VkrEditorRecordingRequests *requests = &ctx->editor->recording.requests;
+  VkrBakeryJson *array = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0u; i < requests->count; ++i) {
+    vkr_bakery_json_append(array,
+                           ops_recording_request(ctx, &requests->items[i]));
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "requests", array);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_rec_request_cancel(OpsContext *ctx) {
+  char id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX] = {0};
+  char error[192];
+  if (!ops_arg_string(ctx, ctx->call->args, "id", id, sizeof(id))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_recording_request_cancel(ctx->editor, id, error,
+                                           sizeof(error))) {
+    ops_fail(ctx, OPS_REJECTED, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorRecordingRequest request;
+  if (vkr_editor_recording_request_read(ctx->editor, id, &request)) {
+    ctx->call->result = ops_recording_request(ctx, &request);
+  }
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Waits until the request is recorded, declined, cancelled or expired, or
+   `timeout_seconds` (default 20) pass; answers with the request either way.
+ */
+static VkrEditorOpStatus ops_run_rec_request_wait(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  char id[VKR_EDITOR_RECORDING_REQUEST_ID_MAX] = {0};
+  if (!ops_arg_string(ctx, call->args, "id", id, sizeof(id))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (call->stage == 0u) {
+    float64_t timeout = 20.0;
+    (void)ops_arg_number(call->args, "timeout_seconds", &timeout);
+    /* The deadline, in milliseconds. */
+    call->token =
+        (uint64_t)((now + vkr_clamp_f64(timeout, 0.0, 600.0)) * 1000.0);
+    call->stage = 1u;
+  }
+  VkrEditorRecordingRequest request;
+  if (!vkr_editor_recording_request_read(ctx->editor, id, &request)) {
+    ops_fail(ctx, OPS_INVALID, "No request named '%s'", id);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const bool8_t settled =
+      request.status != VKR_EDITOR_RECORDING_REQUEST_PENDING &&
+      request.status != VKR_EDITOR_RECORDING_REQUEST_ACCEPTED;
+  if (!settled && now * 1000.0 < (float64_t)call->token) {
+    return VKR_EDITOR_OP_WAIT;
+  }
+  call->result = ops_recording_request(ctx, &request);
+  ops_set(ctx, call->result, "waiting",
+          vkr_bakery_json_bool(ops_arena(ctx), !settled));
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_rec_drive(OpsContext *ctx) {
   VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE};
   if (ctx->call->stage == 0u) {
@@ -15327,6 +15508,37 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"follow\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}",
      ops_run_rec_drive, NULL},
+    {"rec.request.create",
+     "Ask the user to record something: a 'question' the recording must "
+     "answer, 'steps' to show while they record, an optional 'scene' path, "
+     "'start_pose' {position, yaw, pitch} for the camera, 'tier', "
+     "'stop_seconds' to stop by itself and 'expire_minutes' (default 60). "
+     "The user starts or declines it in the Recordings window; "
+     "rec.request.wait returns the recording.",
+     "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":"
+     "\"string\"},\"steps\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"string\"}},\"scene\":{\"type\":\"string\"},\"start_pose\":{"
+     "\"type\":\"object\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]},"
+     "\"stop_seconds\":{\"type\":\"number\"},\"expire_minutes\":{"
+     "\"type\":\"number\"}},\"required\":[\"question\"]}",
+     ops_run_rec_request_create, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.request.list",
+     "Recording requests, newest first, with status, recording and the "
+     "user's decline reason.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_request_list, NULL,
+     OPS_QUICK | OPS_NO_SCENE},
+    {"rec.request.cancel", "Withdraw a request that is not recorded yet.",
+     "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":"
+     "\"string\"}},\"required\":[\"id\"]}",
+     ops_run_rec_request_cancel, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.request.wait",
+     "Wait until request 'id' is recorded, declined, cancelled or expired, "
+     "or 'timeout_seconds' (default 20) pass; 'waiting' says which. A "
+     "recorded request names its recording and summary.json.",
+     "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":"
+     "\"string\"},\"timeout_seconds\":{\"type\":\"number\"}},"
+     "\"required\":[\"id\"]}",
+     ops_run_rec_request_wait, NULL, OPS_NO_SCENE},
     {"rec.drive_stop", "End the running drive and pause the session.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_drive_stop, NULL},
     {"ops.list", "Every operation with its description and argument schema.",
