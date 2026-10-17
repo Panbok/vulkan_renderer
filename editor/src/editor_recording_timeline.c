@@ -11,6 +11,9 @@
    recording; the timeline looks closer. */
 
 #define EDITOR_TIMELINE_HEIGHT_PT 150.0f
+/* The memory lane's height, and the gap between the panel's rows. */
+#define EDITOR_TIMELINE_MEMORY_PT 34.0f
+#define EDITOR_TIMELINE_ROW_GAP_PT 3.0f
 #define EDITOR_TIMELINE_GAP_PT 6.0f
 /* The view shows no fewer frames than this. */
 #define EDITOR_TIMELINE_MIN_FRAMES 8u
@@ -25,9 +28,19 @@
 /* The hover preview's image width. */
 #define EDITOR_TIMELINE_PREVIEW_PT 192.0f
 
+/* The panel's height: taller by the memory lane when it shows. */
+vkr_internal float32_t
+editor_timeline_panel_height(const VkrEditorRecordingTimeline *timeline) {
+  return EDITOR_TIMELINE_HEIGHT_PT +
+         (timeline->memory_lane
+              ? EDITOR_TIMELINE_MEMORY_PT + EDITOR_TIMELINE_ROW_GAP_PT
+              : 0.0f);
+}
+
 float32_t vkr_editor_recording_timeline_height(VkrEditorUi *editor) {
-  return editor->recording.timeline.open
-             ? EDITOR_TIMELINE_HEIGHT_PT + EDITOR_TIMELINE_GAP_PT
+  const VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
+  return timeline->open
+             ? editor_timeline_panel_height(timeline) + EDITOR_TIMELINE_GAP_PT
              : 0.0f;
 }
 
@@ -47,6 +60,7 @@ vkr_internal void editor_timeline_reset(VkrEditorRecordingTimeline *timeline,
   timeline->selected = false_v;
   timeline->column_count = 0u;
   timeline->hovered_column = VKR_UI_PLOT_NONE;
+  timeline->memory_hovered = VKR_UI_PLOT_NONE;
 }
 
 /* Sets the view to `first` + `span` frames, kept inside the recording. */
@@ -85,6 +99,50 @@ vkr_internal uint32_t editor_timeline_column_of(
                     editor_timeline_span(timeline));
 }
 
+/* Each column's highest resident and GPU driver memory, in GB. A column
+   without a sample carries the one before it, so the lines stay level
+   over lost or unsampled frames. */
+vkr_internal void
+editor_timeline_memory_columns(VkrEditorRecordingTimeline *timeline,
+                               const VkrRecordingPlayback *playback) {
+  if (!playback->has_memory) {
+    return;
+  }
+  float32_t *columns[2] = {timeline->column_ram, timeline->column_vram};
+  for (uint32_t m = 0u; m < 2u; ++m) {
+    float32_t carried = -1.0f;
+    timeline->memory_min_gb[m] = timeline->memory_max_gb[m] = -1.0f;
+    for (uint32_t c = 0u; c < timeline->column_count; ++c) {
+      const uint64_t first = editor_timeline_column_start(timeline, c);
+      const uint64_t end = c + 1u < timeline->column_count
+                               ? editor_timeline_column_start(timeline, c + 1u)
+                               : timeline->view_last + 1u;
+      float32_t highest = -1.0f;
+      for (uint64_t f = first; f < end; ++f) {
+        if (playback->memory_valid[f] & (1u << m)) {
+          highest =
+              Max(highest, (float32_t)(playback->memory_bytes[f * 2u + m] /
+                                       (1024.0 * 1024.0 * 1024.0)));
+        }
+      }
+      carried = highest >= 0.0f ? highest : carried;
+      columns[m][c] = carried;
+      if (carried >= 0.0f) {
+        timeline->memory_min_gb[m] =
+            timeline->memory_min_gb[m] < 0.0f
+                ? carried
+                : Min(timeline->memory_min_gb[m], carried);
+        timeline->memory_max_gb[m] = Max(timeline->memory_max_gb[m], carried);
+      }
+    }
+    /* Columns before the first sample take it. */
+    for (uint32_t c = 0u; c < timeline->column_count && columns[m][c] < 0.0f;
+         ++c) {
+      columns[m][c] = Max(timeline->memory_min_gb[m], 0.0f);
+    }
+  }
+}
+
 /* Each column's slowest frame over the view, built when the view changes. */
 vkr_internal void
 editor_timeline_columns(VkrEditorRecordingTimeline *timeline,
@@ -118,6 +176,7 @@ editor_timeline_columns(VkrEditorRecordingTimeline *timeline,
     timeline->column_class[c] = ms > 2.0 * budget ? 2u : ms > budget ? 1u : 0u;
     slowest = Max(slowest, (float32_t)ms);
   }
+  editor_timeline_memory_columns(timeline, playback);
   /* Room above the slowest bar, and the budget line always in view. */
   timeline->top_ms = Max(slowest * 1.08f, (float32_t)budget * 1.25f);
 }
@@ -481,6 +540,116 @@ vkr_internal void editor_timeline_plot(VkrEditorUi *editor,
   editor_timeline_wheel(timeline, playback, ui, result.hovered);
 }
 
+/* Resident (RAM) and GPU driver memory per column as two lines on their
+   own axis, labelled in the lane's corner; hover reads a column, a click
+   seeks. On Apple silicon GPU memory is part of the resident footprint, so
+   the lines are never added. */
+vkr_internal void editor_timeline_memory(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrRecordingPlayback *playback,
+                                         uint32_t row) {
+  VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const Vec4 colors[2] = {theme->accent, {0.66f, 0.55f, 0.98f, 1.0f}};
+  /* Each line on its own axis, so a change of a few MB shows; the lines
+     keep the lower part of the lane and the legend the top. */
+  VkrUiPlotSeries lines[2];
+  uint32_t line_count = 0u;
+  for (uint32_t m = 0u; m < 2u; ++m) {
+    if (timeline->memory_max_gb[m] < 0.0f) {
+      continue;
+    }
+    const float32_t low = timeline->memory_min_gb[m];
+    const float32_t span = Max(timeline->memory_max_gb[m] - low, 0.02f);
+    lines[line_count++] = (VkrUiPlotSeries){
+        .values = m == 0u ? timeline->column_ram : timeline->column_vram,
+        .color = colors[m],
+        .y_min = low - span * 0.15f,
+        .y_max = low + span * 1.9f,
+    };
+  }
+  const uint64_t current =
+      vkr_recording_playback_frame_at(playback, playback->time);
+  const VkrUiPlotConfig plot = {
+      .sample_count = timeline->column_count,
+      .y_min = 0.0f,
+      .y_max = 1.0f,
+      .lines = lines,
+      .line_count = line_count,
+      .cursor = editor_timeline_column_of(timeline, current),
+      .cursor_color = theme->text,
+      .range_first = VKR_UI_PLOT_NONE,
+      .range_last = VKR_UI_PLOT_NONE,
+      .hover_color = vkr_ui_color_alpha(theme->text, 0.08f),
+  };
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.placement = editor_timeline_cell(0u, row);
+  config.placement.align = VKR_UI_ALIGN_STRETCH;
+  config.style.background_color = vkr_ui_color_alpha(theme->window, 0.6f);
+  config.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+  const uint32_t hovered = timeline->memory_hovered;
+  if (hovered != VKR_UI_PLOT_NONE && hovered < timeline->column_count) {
+    config.tooltip = string8_create_formatted(
+        ui->frame_allocator,
+        "Frame %llu  \xc2\xb7  RAM %.2f GB  \xc2\xb7  GPU %.2f GB",
+        (unsigned long long)editor_timeline_column_start(timeline, hovered),
+        timeline->column_ram[hovered], timeline->column_vram[hovered]);
+  }
+  const VkrUiPlotResult result = vkr_ui_plot(
+      ui, string8_lit("editor.recording.timeline.memory"), &plot, &config);
+  timeline->memory_id = result.id;
+  timeline->memory_hovered = result.hovered;
+  if (result.clicked != VKR_UI_PLOT_NONE) {
+    VkrSampleRecordingRequest seek = {
+        .command = VKR_SAMPLE_RECORDING_SEEK_FRAME,
+        .frame = editor_timeline_column_start(timeline, result.clicked)};
+    (void)vkr_editor_recording_send(editor, seek, false_v);
+  }
+  /* The legend, over the lane's top-left corner: each line's name and the
+     range it spans in the view. */
+  const char *names[2] = {"RAM", "GPU"};
+  float32_t left = 6.0f;
+  for (uint32_t m = 0u; m < 2u; ++m) {
+    if (timeline->memory_max_gb[m] < 0.0f) {
+      continue;
+    }
+    VkrUiWidgetConfig label =
+        vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+    label.placement = editor_timeline_cell(0u, row);
+    label.placement.justify = VKR_UI_ALIGN_START;
+    label.placement.align = VKR_UI_ALIGN_START;
+    label.placement.margin_pt = (VkrUiEdges){2.0f, 0.0f, 0.0f, left};
+    label.icon = VKR_UI_ICON_DOT;
+    label.icon_size_pt = 7.0f;
+    label.icon_color = colors[m];
+    (void)vkr_ui_push_id_u64(ui, m);
+    /* Under 100 MB of change reads in MB, so it is not lost to rounding;
+       a level line reads one value. */
+    const float32_t low = timeline->memory_min_gb[m];
+    const float32_t high = timeline->memory_max_gb[m];
+    const bool8_t megabytes = (high - low) * 1024.0f < 100.0f;
+    const float32_t scale = megabytes ? 1024.0f : 1.0f;
+    const char *unit = megabytes ? "MB" : "GB";
+    char low_text[32];
+    char high_text[32];
+    string_format(low_text, sizeof(low_text), megabytes ? "%.0f" : "%.2f",
+                  low * scale);
+    string_format(high_text, sizeof(high_text), megabytes ? "%.0f" : "%.2f",
+                  high * scale);
+    vkr_ui_label(ui, string8_lit("memory.legend"),
+                 string_equals(low_text, high_text)
+                     ? string8_create_formatted(ui->frame_allocator, "%s %s %s",
+                                                names[m], low_text, unit)
+                     : string8_create_formatted(
+                           ui->frame_allocator, "%s %s\xe2\x80\x93%s %s",
+                           names[m], low_text, high_text, unit),
+                 &label);
+    (void)vkr_ui_pop_id(ui);
+    left += 150.0f;
+  }
+}
+
 /* The lane's x, in points from the lane's left edge, of `frame`. */
 vkr_internal float32_t
 editor_timeline_x(const VkrEditorRecordingTimeline *timeline,
@@ -790,7 +959,7 @@ vkr_internal void editor_timeline_preview(VkrEditorUi *editor,
                            scale;
   const float32_t left = vkr_clamp_f32(center - width * 0.5f, bar_pt.x,
                                        bar_pt.x + bar_pt.z - width);
-  const float32_t top = bar_pt.y - EDITOR_TIMELINE_HEIGHT_PT -
+  const float32_t top = bar_pt.y - editor_timeline_panel_height(timeline) -
                         EDITOR_TIMELINE_GAP_PT * 2.0f - height;
 
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
@@ -860,37 +1029,47 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   }
   editor_timeline_columns(timeline, playback);
 
-  /* The engine-event lane shows only for a recording with events. */
+  /* The engine-event and memory lanes show only for recordings that have
+     events or memory samples. */
   const bool8_t engine_lane = playback->event_count > 0u;
-  const uint32_t marks_row = engine_lane ? 3u : 2u;
-  const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  const VkrUiTrack mark_track = {.value = EDITOR_TIMELINE_MARK_PT + 2.0f,
-                                 .unit = VKR_UI_TRACK_PX};
-  const VkrUiTrack ruler_track = {.value = 14.0f, .unit = VKR_UI_TRACK_PX};
-  const VkrUiTrack rows[] = {
+  timeline->memory_lane = playback->has_memory;
+  VkrUiTrack rows[6] = {
       {.value = 24.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-      engine_lane ? (VkrUiTrack){.value = EDITOR_TIMELINE_ENGINE_PT,
-                                 .unit = VKR_UI_TRACK_PX}
-                  : mark_track,
-      engine_lane ? mark_track : ruler_track,
-      ruler_track};
+  };
+  uint32_t row_count = 2u;
+  const uint32_t engine_row = row_count;
+  if (engine_lane) {
+    rows[row_count++] = (VkrUiTrack){.value = EDITOR_TIMELINE_ENGINE_PT,
+                                     .unit = VKR_UI_TRACK_PX};
+  }
+  const uint32_t memory_row = row_count;
+  if (timeline->memory_lane) {
+    rows[row_count++] = (VkrUiTrack){.value = EDITOR_TIMELINE_MEMORY_PT,
+                                     .unit = VKR_UI_TRACK_PX};
+  }
+  const uint32_t marks_row = row_count;
+  rows[row_count++] = (VkrUiTrack){.value = EDITOR_TIMELINE_MARK_PT + 2.0f,
+                                   .unit = VKR_UI_TRACK_PX};
+  rows[row_count++] = (VkrUiTrack){.value = 14.0f, .unit = VKR_UI_TRACK_PX};
+  const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
   panel.placement = VKR_UI_PLACEMENT_DEFAULT;
   panel.placement.column = panel.placement.row = 0u;
   panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
-  panel.placement.margin_pt = (VkrUiEdges){
-      bar_pt.y - EDITOR_TIMELINE_HEIGHT_PT - EDITOR_TIMELINE_GAP_PT, 0.0f, 0.0f,
-      bar_pt.x};
+  panel.placement.margin_pt =
+      (VkrUiEdges){bar_pt.y - editor_timeline_panel_height(timeline) -
+                       EDITOR_TIMELINE_GAP_PT,
+                   0.0f, 0.0f, bar_pt.x};
   panel.style = vkr_editor_glass_style();
   panel.style.padding_pt = (VkrUiEdges){6.0f, 10.0f, 6.0f, 10.0f};
-  panel.style.gap_pt = 3.0f;
+  panel.style.gap_pt = EDITOR_TIMELINE_ROW_GAP_PT;
   panel.style.min_size_pt = panel.style.max_size_pt =
-      (Vec2){bar_pt.z, EDITOR_TIMELINE_HEIGHT_PT};
+      (Vec2){bar_pt.z, editor_timeline_panel_height(timeline)};
   panel.columns = &column;
   panel.column_count = 1u;
   panel.rows = rows;
-  panel.row_count = ArrayCount(rows) - (engine_lane ? 0u : 1u);
+  panel.row_count = row_count;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.timeline"),
                           &panel)) {
     return;
@@ -898,13 +1077,17 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   editor_timeline_header(editor, frame, playback);
   editor_timeline_columns(timeline, playback);
   editor_timeline_plot(editor, frame, playback);
+  if (timeline->memory_lane) {
+    editor_timeline_memory(editor, frame, playback, memory_row);
+  }
   /* Marks and labels follow the lane's width from its last drawing. */
   VkrUiRect lane = {0};
   if (vkr_ui_widget_rect(ui, timeline->plot_id, &lane)) {
     const float32_t width = lane.width / ui->content_scale;
     if (engine_lane) {
-      editor_timeline_engine(editor, frame, playback, width, 2u);
+      editor_timeline_engine(editor, frame, playback, width, engine_row);
     }
+
     editor_timeline_events(editor, frame, playback, width, marks_row);
     editor_timeline_ruler(editor, frame, playback, width, marks_row + 1u);
   }

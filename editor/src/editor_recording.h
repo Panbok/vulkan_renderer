@@ -248,6 +248,16 @@ typedef struct VkrEditorRecordingTimeline {
   float32_t column_ms[VKR_EDITOR_TIMELINE_COLUMNS];
   uint8_t column_class[VKR_EDITOR_TIMELINE_COLUMNS];
   float32_t top_ms;
+  /* With a memory lane: each column's highest resident and GPU driver
+     memory in GB, carried over columns without a sample, and each line's
+     lowest and highest column; -1 for a line without samples. */
+  bool8_t memory_lane;
+  float32_t column_ram[VKR_EDITOR_TIMELINE_COLUMNS];
+  float32_t column_vram[VKR_EDITOR_TIMELINE_COLUMNS];
+  float32_t memory_min_gb[2];
+  float32_t memory_max_gb[2];
+  VkrUiId memory_id;
+  uint32_t memory_hovered;
   /* The frame-time lane's id, for its last drawn rectangle, and the column
      the pointer was over in the last build, for the tooltip. */
   VkrUiId plot_id;

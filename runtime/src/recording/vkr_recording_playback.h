@@ -94,6 +94,13 @@ typedef struct VkrRecordingPlayback {
   uint32_t event_name_count;
   /* Frames that had no records and repeat the one before. */
   uint64_t missing_frames;
+  /* Memory of each frame from its metrics (Tier 0): the process's resident
+     bytes and the GPU driver's allocated bytes, two per frame, where bit 0
+     and bit 1 of memory_valid say each was sampled. has_memory says the
+     recording declares either. */
+  bool8_t has_memory;
+  float64_t *memory_bytes;
+  uint8_t *memory_valid;
   /* The player of each frame's last tick (vkr_rec_player): three per frame,
      where player_valid is 1; has_player says any frame has one. */
   bool8_t has_player;

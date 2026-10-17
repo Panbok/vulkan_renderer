@@ -145,7 +145,12 @@ an agent must read one without the editor.
   Dragging across the lane selects frames, which can loop, become a range,
   get a perf re-run or fill the view. A loop span is a playback setting
   (`loop_start`, `loop_end`) that every settings request carries; `rec.set`
-  takes `range` [first, last] frames, [] for the whole recording
+  takes `range` [first, last] frames, [] for the whole recording. A
+  recording with metrics adds a memory lane: resident memory (RAM) and the
+  GPU driver's allocated memory, each column's highest, on separate axes
+  scaled to the view so a few MB of growth shows, with each line's range in
+  its legend; they are never added, since on Apple silicon GPU memory is
+  part of the resident footprint
   ([editor_recording_timeline.c](../../editor/src/editor_recording_timeline.c)).
 - **Engine events.** Stream `event` carries, beside script events,
   engine events named `vkr.*` with a count and milliseconds
