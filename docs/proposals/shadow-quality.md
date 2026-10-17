@@ -299,9 +299,12 @@ desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
   occlusion test and end fade, through `vk_contact_shadow`. It runs where
   the rays' weight is below 1, because the rays find the contacts
   themselves. It follows the shadow settings' `contact_shadows` (the Epic
-  preset on this pipeline), as the tiled pipeline does; without rays it marches the whole
-  frame (see the cost below). `VKR_SUN_CONTACT_SHADOWS` set to `0` or `1`
-  overrides the setting.
+  preset on this pipeline), as the tiled pipeline does.
+  `VKR_SUN_CONTACT_SHADOWS` set to `0` or `1` overrides the setting. Since
+  2026-10-17 `Shadow.SunContact` marches once per 2x2 block, from the
+  block's top-left pixel, into an R16F half-resolution image, and lighting
+  weights the four nearest blocks by bilinear weight and device-depth
+  match (`vk_sun_contact`, `vk_deferred_sun_contact`); see the cost below.
 - **Defect 5, sun only.** The lighting, forward and transmission sun terms
   offset and bias the receiver along the geometric normal. Lighting
   reconstructs it from camera depth (`vkr_vk_depth_view_geometric_normal`) and
@@ -334,13 +337,17 @@ on a GPU without ray queries. The march took 12 steps then;
 - **Frame cost.** The hybrid frame costs 0.69 ms (plaza) and 0.68 ms
   (street) more. Rays without the march measured 0.63 and 0.61 ms more
   (`sha256:d37f51d1…`, `10f97c9c…`).
-- **Contact march without rays.** It costs 1.18 ms of lighting on the sunlit
-  plaza and 0.15 ms on the shaded street, against the 0.2 ms budget. Inside
-  the lighting kernel the march is too expensive for the no-ray path. A
-  separate half-resolution pass that writes a contact mask is the next thing
-  to measure. Under the rays it marches only past 40 m and costs about
-  0.05 ms. Contacts show at curb edges, facade relief and hedges
-  (`sha256:da3d9c9c…` against `d00312b3…`).
+- **Contact march without rays.** Inside the lighting kernel it cost 1.18 ms
+  of lighting on the sunlit plaza at 12 steps and 0.81 ms at 8 (6.969 to
+  7.782 ms, `sha256:d4991dd4…` against `28353eea…`), against the 0.2 ms
+  budget. The half-resolution pass costs 0.122 ms on the plaza and 0.116 ms
+  on the street, and lighting stays at 6.947 and 7.958 ms
+  (`sha256:5704b878…`, `cd293015…`; the full-resolution street march had
+  8.138 ms, `fc784495…`). With rays the pass skips what they cover and costs
+  0.021 ms (`9b53740f…`). Contacts show at curb edges, facade relief and
+  hedges; the half-resolution pass darkens the same pixels as the
+  full-resolution march did, without block edges (plaza captures
+  `sha256:da3d9c9c…` against `d00312b3…` before, and the 2026-10-17 pair).
 - **Defect fixes.** With rays off, the frame matches the prototype's
   baseline (19.347 and 20.927 ms), so the fixes add no measured cost.
 
@@ -364,12 +371,12 @@ Production readiness: not yet. Each item below blocks the High preset:
 | Item | Why it blocks | Work |
 |---|---|---|
 | Skinned casters | Not in the TLAS. Within 50 m characters cast no sun shadow, and the contact march is off where the rays apply. Bistro has none, so this is unmeasured. | A BLAS per skinned instance from `Animation.Skinning`'s output, refitted each frame; or the contact march under the rays as a stopgap |
-| Settings | An environment switch. | A shadow-preset field (High on ray-query devices), the graphics settings, and the harness fingerprint |
+| Settings | Done 2026-10-17: the **Ray traced shadows** graphics setting, on in Epic on the desktop pipeline (`VkrShadowConfig.sun_ray_shadows`, the payload's `sun_rays`, half rate); `VKR_SUN_RAY_SHADOWS` overrides it. Harness cases still select rays through the variable, since a case field would change the stored summary layout. | — |
 | Worst-case cost | 1.58 ms on the plaza, above the 1.5 ms gate. | A half-size trace image (it is full size today); resolve and temporal in one pass; history images that alternate instead of the copy |
 | Foliage-heavy levels | Alpha-tested candidates run the `Proceed` loop; only Bistro is measured. | Level Design Test forest timing |
 | Moving sun | The history lags about ten frames behind a moving sun; the clip bounds the trail. | A time-of-day sweep capture |
 | Range | Fixed at 50 m. | Tie the range to the cascade splits or a preset value |
-| No-ray path | The contact march costs 1.18 ms in lighting on the sunlit plaza. | A half-resolution contact pass, timed against the 0.2 ms budget |
+| No-ray path | Done 2026-10-17: `Shadow.SunContact` at half resolution costs 0.12 ms against the 0.2 ms budget. | — |
 
 
 ### Desktop far level

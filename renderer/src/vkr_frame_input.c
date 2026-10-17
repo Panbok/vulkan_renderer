@@ -1151,6 +1151,9 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
                         "packet.shadow.far_cascade",
                         "requires a composed far cascade whose view draws "
                         "only its slice and whose publication it copies");
+    if (shadow->sun_rays > 1u)
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.sun_rays", "must be zero or one");
     if (shadow->evsm_enabled > 1u ||
         (shadow->evsm_enabled &&
          shadow->cascade_count <= VKR_SHADOW_EVSM_FIRST_CASCADE))

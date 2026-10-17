@@ -692,6 +692,10 @@ typedef struct VkrShadowPassPayload {
    * atmosphere correction (VkrPreparedFrame.tiled_sun_contact) and desktop
    * deferred lighting (VkrPreparedFrame.sun_contact_shadows). */
   bool8_t contact_shadows;
+  /** Ray-query sun shadows near the camera, which the desktop pipeline
+   * traces where the device supports ray queries
+   * (VkrPreparedFrame.sun_ray_shadow_mode). */
+  bool8_t sun_rays;
   /** SDF sun shadows, a VkrShadowSdfMode; the tiled pipeline draws them. */
   uint32_t sdf_mode;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE keep filtered exponential

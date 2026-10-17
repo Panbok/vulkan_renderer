@@ -216,8 +216,10 @@ struct VkrRenderer {
   uint64_t froxel_static_followed;
   bool8_t smaa_enabled;
   bool8_t msaa_enabled;
-  /* VKR_SUN_RAY_SHADOWS: "1" traces one sun ray per 2x2 block, "2" one a
-     pixel; frames take it where the device traces ray queries. */
+  /* VKR_SUN_RAY_SHADOWS is set: "0" turns ray-query sun shadows off, "1"
+     traces one sun ray per 2x2 block and "2" one a pixel, instead of the
+     shadow settings' half rate. */
+  bool8_t sun_ray_shadow_forced;
   VkrSunRayShadowMode sun_ray_shadow_mode;
   /* VKR_SUN_CONTACT_SHADOWS is set: desktop sun contact shadows follow
      `sun_contact_forced_on` instead of the shadow settings. */

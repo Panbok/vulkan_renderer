@@ -945,12 +945,13 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   /* SMAA 4x is opt-in: on the Bistro street view it cost 2.7 ms at
      2560 x 1440 for about 9 % less edge shimmer in motion (ADR-037). */
   renderer->msaa_enabled = vkr_platform_environment_flag("VKR_MSAA_ENABLED");
-  /* Ray-query sun shadows are a prototype for the shadow-quality
-     proposal's cost gate, opt-in until it is measured. */
+  /* Ray-query sun shadows follow the Ray traced shadows setting at half
+     rate; the variable overrides it for a matched capture. */
   char sun_ray_shadows[8];
   renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_OFF;
-  if (vkr_platform_environment_variable("VKR_SUN_RAY_SHADOWS", sun_ray_shadows,
-                                        sizeof(sun_ray_shadows))) {
+  renderer->sun_ray_shadow_forced = vkr_platform_environment_variable(
+      "VKR_SUN_RAY_SHADOWS", sun_ray_shadows, sizeof(sun_ray_shadows));
+  if (renderer->sun_ray_shadow_forced) {
     if (string_equals(sun_ray_shadows, "1")) {
       renderer->sun_ray_shadow_mode = VKR_SUN_RAY_SHADOW_HALF;
     } else if (string_equals(sun_ray_shadows, "2")) {
@@ -1105,9 +1106,15 @@ vkr_internal void vkr_renderer_prepare_desktop_sun(VkrRenderer *rf,
                                                    const VkrFrameInput *packet,
                                                    VkrPreparedFrame *frame) {
   const bool8_t desktop = !frame->tiled_pipeline && frame->scene_rendering;
+  VkrSunRayShadowMode sun_ray_asked = VKR_SUN_RAY_SHADOW_OFF;
+  if (rf->sun_ray_shadow_forced) {
+    sun_ray_asked = rf->sun_ray_shadow_mode;
+  } else if (packet->shadow && packet->shadow->sun_rays) {
+    sun_ray_asked = VKR_SUN_RAY_SHADOW_HALF;
+  }
   frame->sun_ray_shadow_mode =
       desktop && vkr_renderer_sun_ray_shadows_supported(rf)
-          ? rf->sun_ray_shadow_mode
+          ? sun_ray_asked
           : VKR_SUN_RAY_SHADOW_OFF;
   const bool8_t sun_contact_asked =
       rf->sun_contact_forced

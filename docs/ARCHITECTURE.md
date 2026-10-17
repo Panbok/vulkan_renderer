@@ -1208,7 +1208,12 @@ lattice fixed in world space. On the tiled pipeline three cascades split the
 nearest 80 m and the fourth is a far level to 1 km, rebuilt one tile of an
 8x8 grid a frame and retargeted that way to a moving sun. On the desktop
 pipeline four cascades keep the nearest 200 m and a fifth is the same far
-level. Desktop receivers
+level. With the **Ray traced shadows** setting (Epic on the desktop pipeline,
+on GPUs with ray queries) sun rays against the frame's TLAS replace the
+cascades within 40–50 m (`Shadow.SunRay`, ADR-044). With **Contact shadows**
+`Shadow.SunContact` marches camera depth toward the sun once per 2x2 block,
+and deferred lighting upsamples it by depth where the rays do not reach.
+Desktop receivers
 turn the kernel per pixel; tiled receivers filter with a fixed bilinear grid,
 since that pipeline has no temporal resolve. Both compare every tap against
 the receiver plane's depth at its offset. The
@@ -1218,7 +1223,8 @@ texels (3 on the tiled pipeline) and an authored 0.53-degree sun
 diameter by default. Farther cascades retain PCF,
 or, with the **Filtered far shadows** setting that the High and Epic presets
 turn on for the desktop pipeline, take one bilinear fetch of exponential
-variance moments that a half-resolution pass rebuilds when the cascade redraws.
+variance moments that a half-resolution pass rebuilds when the cascade redraws;
+the far level keeps PCF.
 Static reuse requires guard
 containment, matching generations, valid retained layers and a match with the
 common submitted fit; stale physical copies redraw that fit once. A retained

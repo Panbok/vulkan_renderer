@@ -40,6 +40,10 @@ typedef struct VkrGraphicsSettings {
    * level shadows. The Epic preset enables them; the desktop pipeline
    * ignores them. */
   bool8_t distance_field_shadows;
+  /* Ray-query sun shadows near the camera on the desktop pipeline, where
+   * the GPU traces ray queries; the cascades take over past 50 m. The Epic
+   * preset enables them; the tiled pipeline ignores them. */
+  bool8_t ray_traced_shadows;
   /* Exponential variance moments filter the two farthest cascades instead of
    * PCF on the desktop pipeline; the High and Epic presets enable them. */
   bool8_t filtered_far_shadows;

@@ -153,6 +153,12 @@ static const VkrPropertyDesc s_graphics_properties[] = {
                 "distance fields",
      .offset = GRAPHICS_OFFSET(distance_field_shadows),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "ray_traced_shadows",
+     .label = "Ray traced shadows",
+     .tooltip = "Trace exact sun shadows near the camera on GPUs with ray "
+                "tracing",
+     .offset = GRAPHICS_OFFSET(ray_traced_shadows),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "texture_resolution",
      .label = "Texture resolution",
      .tooltip = "Largest texture size to load; lower values use less memory. "
@@ -258,6 +264,11 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       offset == offsetof(VkrGraphicsSettings, distance_field_shadows)) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
+  /* Ray traced shadows are the desktop pipeline's (ADR-044). */
+  if (state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
+      offset == offsetof(VkrGraphicsSettings, ray_traced_shadows)) {
+    result.flags |= VKR_PROPERTY_STATE_DISABLED;
+  }
   if (state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
       tiled_unused) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
@@ -292,7 +303,8 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, contact_shadows) ||
-             offset == offsetof(VkrGraphicsSettings, distance_field_shadows)) {
+             offset == offsetof(VkrGraphicsSettings, distance_field_shadows) ||
+             offset == offsetof(VkrGraphicsSettings, ray_traced_shadows)) {
     /* Both pipelines march contact shadows for the sun, the desktop
        pipeline also for the nearest local lights. */
     if (settings->shadow_quality == 0u) {
@@ -388,6 +400,9 @@ graphics_preset_gates(const VkrGraphicsSettings *base, VkrGraphicsPreset preset,
   out.contact_shadows =
       epic || (high && pipeline == VKR_GRAPHICS_PIPELINE_TILED);
   out.distance_field_shadows = epic;
+  /* About 0.7 ms at 2560x1440 on an RX 6700 XT in Bistro (the shadow
+     quality proposal's hybrid prototype). */
+  out.ray_traced_shadows = epic && pipeline != VKR_GRAPHICS_PIPELINE_TILED;
   out.ambient_occlusion = medium;
   out.reflection_probes = true_v;
   out.subsurface_scattering = medium;
@@ -422,6 +437,7 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings,
         gates.local_shadows == settings->local_shadows &&
         gates.contact_shadows == settings->contact_shadows &&
         gates.distance_field_shadows == settings->distance_field_shadows &&
+        gates.ray_traced_shadows == settings->ray_traced_shadows &&
         gates.ambient_occlusion == settings->ambient_occlusion &&
         gates.reflection_probes == settings->reflection_probes &&
         gates.subsurface_scattering == settings->subsurface_scattering &&

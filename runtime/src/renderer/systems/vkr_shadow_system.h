@@ -202,6 +202,10 @@ typedef struct VkrShadowConfig {
    * them in its atmosphere draw; desktop deferred lighting marches them
    * where ray-query sun shadows do not cover the pixel. */
   bool8_t sun_contact;
+  /** Ray-query sun shadows near the camera (the Ray traced shadows
+   * setting); the desktop pipeline traces them where the device supports
+   * ray queries. */
+  bool8_t sun_ray_shadows;
   /** SDF sun shadows past the near cascades, a VkrShadowSdfMode; the tiled
    * pipeline only, from the Distance field shadows setting (the shadow
    * quality proposal's T5). */

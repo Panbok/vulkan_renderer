@@ -184,10 +184,12 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     rows. The march takes the shared
     `vkr_sun_contact_length` and `vkr_sun_contact_strength`
     (`shadow_kernel.slangh`) and the local-light march's start offset, noise,
-    occlusion test and end fade (`local_shadow.slangh`). Vulkan deferred
-    lighting marches with the same helpers where ray-query sun shadows do
-    not cover the pixel (`vk_contact_shadow`); its start offset also follows
-    the sun. Native evidence:
+    occlusion test and end fade (`local_shadow.slangh`). The Vulkan
+    `Shadow.SunContact` pass marches with the same helpers once per 2x2
+    block (`vk_sun_contact`, 128-byte `VkrVulkanSunContactRoot`) where
+    ray-query sun shadows do not cover the pixel, and deferred lighting
+    upsamples it by depth (`vk_deferred_sun_contact`); its start offset also
+    follows the sun. Native evidence:
     Metal Release Bistro captures and the forced-visibility comparison on
     2026-10-16; no Metal validation run.
   - The tiled class draws no SMAA; its alpha-tested surfaces use alpha to
@@ -839,7 +841,7 @@ domain under the [evidence rules](#evidence-rules).
 | Visibility buffer, G-buffer resolve and deferred lighting | Desktop | `shared/gpu_draw.slangh` and the kernels below | — | `vulkan/slang/world/deferred.slang`, `picking/default.slang` |
 | Planar reflection: mirrored view shaded forward, reflector lookup | Desktop | the material, light, shadow and probe kernels below | — | `vulkan/slang/world/deferred.slang` (`vk_reflection_vertex`, `vk_reflection_fragment`, `vk_planar_reflection_specular`), `world/default.slang` (`packet_world_shade_surface`) |
 | Diffuse volume dynamic layer: BLAS decode, ray-query probe trace, runtime grid moments and relocation, lookup add, reflection probe relight ([ADR-119](119-dynamic-diffuse-volume-layer.md)) | Desktop, with ray queries | `shared/diffuse_volume_kernel.slangh`, `gpu_draw.slangh`, `punctual_light_kernel.slangh`, `sh_l2_kernel.slangh` | — | `vulkan/slang/world/volume_trace.slang` (`vk_volume_blas_decode`, `vk_volume_trace`, `vk_volume_clear`, `vk_volume_probe_relight`), `world/default.slang` (`packet_diffuse_volume_lookup`, `packet_probe_relight`); Vulkan native: Debug validation clean, Release capture and timing on Bistro; relight: Debug validation clean and a Release A/B against a relight-off catalog on Bistro |
-| Ray-query sun shadows, opt-in hybrid prototype (`VKR_SUN_RAY_SHADOWS`, `VKR_SUN_CONTACT_SHADOWS`): trace, filtered mask, temporal history, sun contact march, lighting blend ([shadow quality](../proposals/shadow-quality.md#hybrid-prototype)) | Desktop, with ray queries; the contact march also without them | `shared/shadow_kernel.slangh`, `local_shadow.slangh` (contact helpers), `gpu_draw.slangh` | — | `vulkan/slang/world/sun_ray_shadow.slang` (`vk_sun_ray_shadow_trace`, `vk_sun_ray_shadow_resolve`, `vk_sun_ray_shadow_temporal`), `world/volume_trace.slang` (`vk_ray_triangle_uv`), `world/deferred.slang` (`vk_deferred_sun_shadow`, `vk_contact_shadow`, `vkr_vk_depth_view_geometric_normal`); Vulkan native: Debug validation (synchronization) clean on a Bistro plaza capture, Release captures, a strafe capture and timing on Bistro |
+| Ray-query sun shadows, the Ray traced shadows setting (`VKR_SUN_RAY_SHADOWS` and `VKR_SUN_CONTACT_SHADOWS` override): trace, filtered mask, temporal history, half-resolution sun contact march, lighting blend ([shadow quality](../proposals/shadow-quality.md#hybrid-prototype)) | Desktop, with ray queries; the contact march also without them | `shared/shadow_kernel.slangh`, `local_shadow.slangh` (contact helpers), `gpu_draw.slangh` | — | `vulkan/slang/world/sun_ray_shadow.slang` (`vk_sun_ray_shadow_trace`, `vk_sun_ray_shadow_resolve`, `vk_sun_ray_shadow_temporal`), `world/volume_trace.slang` (`vk_ray_triangle_uv`), `world/deferred.slang` (`vk_deferred_sun_shadow`, `vk_contact_shadow`, `vk_sun_contact`, `vk_deferred_sun_contact`, `vkr_vk_depth_view_geometric_normal`); Vulkan native: Debug validation (synchronization) clean on a Bistro plaza capture, Release captures, a strafe capture and timing on Bistro |
 | Material/light math | Shared | `shared/normal_map_kernel.slangh`, `ggx_kernel.slangh`, `point_light.slangh`, `punctual_light_kernel.slangh` | `metal/msl/world/tiled.metal`, `lighting.metalh` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Clearcoat, sheen, anisotropy, thin-sheet diffuse transmission | Desktop | `shared/clearcoat_kernel.slangh`, `sheen_kernel.slangh`, `anisotropy_kernel.slangh` | — | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Transmission composition | Shared | `shared/transmission_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/world/deferred.slang` |
