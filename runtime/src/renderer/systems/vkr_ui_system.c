@@ -20,7 +20,22 @@ typedef enum VkrUiNodeKind {
   VKR_UI_NODE_BEZIER,
   VKR_UI_NODE_CODE,
   VKR_UI_NODE_PLOT,
+  VKR_UI_NODE_PATH,
 } VkrUiNodeKind;
+
+/* A path's frame-allocated copy of the caller's points, colors and palette,
+   in pixels from the content box. A point the caller gave as non-finite has
+   color VKR_UI_PATH_BREAK. */
+#define VKR_UI_PATH_BREAK UINT8_MAX
+typedef struct VkrUiPathData {
+  Vec2 *points;
+  uint8_t *colors;
+  uint32_t count;
+  Vec4 palette[VKR_UI_PATH_PALETTE_CAPACITY];
+  uint32_t palette_count;
+  float32_t width_px;
+  uint64_t hash;
+} VkrUiPathData;
 
 /* A plot's frame-allocated copy of the caller's data with finite values and
  * authored colors. Drawing resolves after the caller's arrays may be gone. */
@@ -129,6 +144,8 @@ struct VkrUiFrameNode {
   uint32_t code_glyphs;
   /* Plots: frame-allocated, NULL for an invalid plot. */
   VkrUiPlotData *plot;
+  /* Paths: frame-allocated, NULL for none. */
+  VkrUiPathData *path;
   float32_t icon_size_px;
   bool8_t disabled;
   bool8_t focusable;
@@ -2131,6 +2148,9 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
     hash = vkr_ui_hash_bytes(hash, marks, sizeof(marks));
     hash = vkr_ui_hash_bytes(hash, mark_colors, sizeof(mark_colors));
   }
+  if (node->kind == VKR_UI_NODE_PATH && node->path) {
+    hash = vkr_ui_hash_bytes(hash, &node->path->hash, sizeof(node->path->hash));
+  }
   if (node->kind == VKR_UI_NODE_BEZIER) {
     hash = vkr_ui_hash_bytes(hash, node->bezier_points,
                              sizeof(node->bezier_points));
@@ -3933,6 +3953,123 @@ vkr_internal VkrUiRect vkr_ui_plot_column_band(VkrUiRect content,
 
 /* Back to front: range and hover bands, bars, reference lines, lines and
  * the cursor, clipped to the content box. */
+/* One polyline per run of finite points whose segments share a color; a
+   run ends on the point where the next color starts, so strokes meet. */
+vkr_internal void vkr_ui_emit_path(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
+                                   const VkrUiFrameNode *node,
+                                   VkrUiRect content) {
+  const VkrUiPathData *path = node->path;
+  if (!path || path->count < 2u || !vkr_ui_rect_has_area(content)) {
+    return;
+  }
+  (void)system;
+  uint32_t start = 0u;
+  while (start + 1u < path->count) {
+    if (path->colors[start] == VKR_UI_PATH_BREAK ||
+        path->colors[start + 1u] == VKR_UI_PATH_BREAK) {
+      ++start;
+      continue;
+    }
+    const uint8_t color = path->colors[start];
+    uint32_t end = start + 1u;
+    while (end + 1u < path->count &&
+           path->colors[end + 1u] != VKR_UI_PATH_BREAK &&
+           path->colors[end] == color) {
+      ++end;
+    }
+    (void)vkr_ui_draw_buffer_polyline(
+        buffer, content, path->points + start, end - start + 1u, path->width_px,
+        path->palette[color],
+        vkr_ui_hash_bytes(path->hash, &start, sizeof(start)));
+    start = end;
+  }
+}
+
+/* Copies a path into frame memory in pixels, with sanitized colors. NULL
+   when there is nothing to stroke or memory ran out. */
+vkr_internal VkrUiPathData *vkr_ui_path_copy(VkrUiSystem *system,
+                                             const VkrUiPathConfig *source) {
+  if (!source || !source->points || source->count < 2u || !source->palette ||
+      source->palette_count == 0u) {
+    return NULL;
+  }
+  const uint32_t count = Min(source->count, VKR_UI_PATH_POINT_MAX);
+  const uint64_t bytes = sizeof(VkrUiPathData) + sizeof(Vec2) * count + count;
+  uint8_t *storage = vkr_allocator_alloc(system->frame_allocator, bytes,
+                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!storage) {
+    return NULL;
+  }
+  VkrUiPathData *path = (VkrUiPathData *)storage;
+  *path = (VkrUiPathData){
+      .points = (Vec2 *)(storage + sizeof(VkrUiPathData)),
+      .count = count,
+      .palette_count = Min(source->palette_count, VKR_UI_PATH_PALETTE_CAPACITY),
+      .width_px = Max(source->width_pt, 0.5f) * system->content_scale,
+  };
+  path->colors = (uint8_t *)(path->points + count);
+  const float32_t scale = system->content_scale;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const Vec2 point = source->points[i];
+    const bool8_t finite =
+        vkr_is_finite_f32(point.x) && vkr_is_finite_f32(point.y);
+    path->points[i] =
+        finite ? (Vec2){point.x * scale, point.y * scale} : (Vec2){0};
+    const uint8_t color = source->colors ? source->colors[i] : 0u;
+    path->colors[i] = !finite                       ? VKR_UI_PATH_BREAK
+                      : color < path->palette_count ? color
+                                                    : 0u;
+  }
+  for (uint32_t i = 0u; i < path->palette_count; ++i) {
+    path->palette[i] = vkr_ui_linear_color(source->palette[i]);
+  }
+  uint64_t hash =
+      vkr_ui_hash_bytes(0x9a7au, path->points, sizeof(Vec2) * (uint64_t)count);
+  hash = vkr_ui_hash_bytes(hash, path->colors, count);
+  hash = vkr_ui_hash_bytes(hash, path->palette, sizeof(path->palette));
+  path->hash = vkr_ui_hash_bytes(hash, &path->width_px, sizeof(path->width_px));
+  return path;
+}
+
+VkrUiId vkr_ui_path(VkrUiSystem *system, String8 id_label,
+                    const VkrUiPathConfig *path,
+                    const VkrUiWidgetConfig *source_config) {
+  if (!system || !system->frame_open) {
+    return VKR_UI_ID_NONE;
+  }
+  const VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
+  const VkrUiWidgetConfig *config = source_config ? source_config : &fallback;
+  const VkrUiId id = vkr_ui_id_stack_widget_label(&system->id_stack, id_label);
+  const uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_PATH,
+                                         config->placement, &config->style);
+  if (index == VKR_UI_NODE_NONE) {
+    return VKR_UI_ID_NONE;
+  }
+  VkrUiFrameNode *node = &system->frame_nodes[index];
+  node->intrinsic_size =
+      vkr_ui_style_clamp_size(node->style.min_size_px, &node->style);
+  node->path = vkr_ui_path_copy(system, path);
+  return id;
+}
+
+bool8_t vkr_ui_path_set(VkrUiSystem *system, VkrUiId id,
+                        const VkrUiPathConfig *path) {
+  if (!system || (!system->frame_open && !system->frame_draw_pending) ||
+      id == VKR_UI_ID_NONE) {
+    return false_v;
+  }
+  VkrUiRetainedState *retained = vkr_ui_retained_find(system, id);
+  if (!retained || retained->last_seen_frame != system->frame_index) {
+    return false_v;
+  }
+  VkrUiFrameNode *node = &system->frame_nodes[retained->frame_node_index];
+  if (node->kind != VKR_UI_NODE_PATH) {
+    return false_v;
+  }
+  node->path = vkr_ui_path_copy(system, path);
+  return true_v;
+}
+
 vkr_internal void vkr_ui_emit_plot(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
                                    const VkrUiFrameNode *node,
                                    VkrUiRect content) {
@@ -4287,6 +4424,9 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
     break;
   case VKR_UI_NODE_PLOT:
     vkr_ui_emit_plot(system, buffer, node, content);
+    break;
+  case VKR_UI_NODE_PATH:
+    vkr_ui_emit_path(system, buffer, node, content);
     break;
   case VKR_UI_NODE_IMAGE:
     vkr_ui_emit_image(buffer, node, content);
@@ -4669,6 +4809,9 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
     /* Range, hover, bars, references and cursor, plus one run per line. */
     if (node->kind == VKR_UI_NODE_PLOT && node->plot)
       estimate += 5u + node->plot->line_count;
+    /* At most one stroke per segment. */
+    if (node->kind == VKR_UI_NODE_PATH && node->path)
+      estimate += node->path->count;
     if (node->icon != VKR_UI_ICON_NONE)
       estimate += 20u;
     if (node->retained->text_live) {

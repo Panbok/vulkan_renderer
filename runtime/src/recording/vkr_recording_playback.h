@@ -71,6 +71,11 @@ typedef struct VkrRecordingPlayback {
   uint32_t marker_count;
   /* Frames that had no records and repeat the one before. */
   uint64_t missing_frames;
+  /* The player of each frame's last tick (vkr_rec_player): three per frame,
+     where player_valid is 1; has_player says any frame has one. */
+  bool8_t has_player;
+  float64_t *player_positions;
+  uint8_t *player_valid;
   /* The stream ends without a clean stop. */
   bool8_t truncated;
 

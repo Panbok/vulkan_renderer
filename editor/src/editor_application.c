@@ -401,6 +401,7 @@ static void editor_application_project_scene(void *state,
                                              const VkrSampleUiFrame *frame) {
   VkrEditorApplication *editor = state;
   vkr_editor_labels_project(&editor->ui, frame);
+  vkr_editor_recording_project(&editor->ui, frame);
   vkr_editor_physics_project(&editor->ui, frame);
   vkr_editor_grid_project(&editor->ui, frame);
 }

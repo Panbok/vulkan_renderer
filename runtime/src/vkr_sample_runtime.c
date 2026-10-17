@@ -7327,6 +7327,7 @@ vkr_standard_scene_runtime_project_ui(VkrStandardSceneRuntime *application,
       .scene_rendering_stopped =
           vkr_standard_scene_runtime_editor_scene_rendering_stopped(
               application),
+      .recording = &state->recording.status,
   };
   /* Containers still loaded after this frame's edits; projection must not
      touch one removed since the UI build. */

@@ -738,6 +738,39 @@ VkrUiPlotResult vkr_ui_plot(VkrUiSystem *system, String8 id_label,
                             const VkrUiPlotConfig *plot,
                             const VkrUiWidgetConfig *config);
 
+#define VKR_UI_PATH_PALETTE_CAPACITY 4u
+#define VKR_UI_PATH_POINT_MAX 16384u
+
+/** A stroked open path, such as a route projected into the Scene. */
+typedef struct VkrUiPathConfig {
+  /** Points from the content box's top-left, in points; a non-finite point
+   * ends one stroke and the next finite point starts another. */
+  const Vec2 *points;
+  /** Per point, its index into `palette`; a segment takes its first point's
+   * color. NULL strokes everything in palette[0]. */
+  const uint8_t *colors;
+  uint32_t count;
+  const Vec4 *palette;
+  uint32_t palette_count;
+  float32_t width_pt;
+} VkrUiPathConfig;
+
+/**
+ * @brief A path widget: the stroke of `path` over the widget box, clipped to
+ * it. It takes no input, so pointer events reach what is under it. Points
+ * past VKR_UI_PATH_POINT_MAX are left out.
+ * @return The widget's id, for vkr_ui_path_set.
+ */
+VkrUiId vkr_ui_path(VkrUiSystem *system, String8 id_label,
+                    const VkrUiPathConfig *path,
+                    const VkrUiWidgetConfig *config);
+
+/** Replaces a built path's points before draw preparation, as
+ * vkr_ui_widget_set_rect moves a widget: a path that follows the camera
+ * projects with the frame's final camera. */
+bool8_t vkr_ui_path_set(VkrUiSystem *system, VkrUiId id,
+                        const VkrUiPathConfig *path);
+
 /** Set an authored widget's left/top margins and fixed size in points before
  * draw preparation. Input keeps using the preceding presented bounds. */
 bool8_t vkr_ui_widget_set_rect(VkrUiSystem *system, VkrUiId id,

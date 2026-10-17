@@ -106,6 +106,15 @@ an agent must read one without the editor.
   so its skin moves as recorded; with the scene stopped the player does not
   advance and keeps it. Closing destroys the stand-ins. A spawn without a
   model, such as a bare shape, has no stand-in yet.
+- **Route (R3).** While a playback is open the Scene draws its route: the
+  player's track, holding its position between fixed ticks, or the camera's
+  in a recording without a player, at most 4,096 points, each segment
+  colored by its frames' worst frame time against the 16.7 ms budget and
+  dimmed ahead of the playhead. It is a `vkr_ui_path` over the Scene image
+  ([vkr_ui_system.h](../../runtime/src/renderer/systems/vkr_ui_system.h)),
+  projected in the editor's late camera hook with the frame's final camera,
+  as object icons are; a point behind the camera breaks it. It draws over
+  geometry.
 - **Gameplay records (R3).** SDK version 11 adds `vkr_rec_player`,
   `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
   ([sdk.h](../../sdk/sdk.h)). They write

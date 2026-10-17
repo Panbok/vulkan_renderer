@@ -41,6 +41,9 @@ typedef struct VkrEditorRecordingEntry {
   bool8_t thumb_failed;
 } VkrEditorRecordingEntry;
 
+/* Points of the open playback's route in the Scene. */
+#define VKR_EDITOR_RECORDING_PATH_POINTS 4096u
+
 /* Plot columns of the performance view: longer recordings keep the slowest
    frame of each run of frames. */
 #define VKR_EDITOR_PERF_COLUMNS 2048u
@@ -119,6 +122,18 @@ typedef struct VkrEditorRecording {
   bool8_t was_driving;
   /* The open playback's edits were reported as not replayable. */
   bool8_t edits_warned;
+  /* The open playback's route: the player's track when it has one, else
+     the camera's, one point per run of frames with the origin offset added,
+     the frame it shows and the run's worst frame time (0 within budget, 1
+     up to twice it, 2 beyond, UINT8_MAX for a break). Built per bundle;
+     drawn by path_id. */
+  char path_bundle[VKR_RECORDING_PATH_MAX];
+  uint32_t path_count;
+  bool8_t path_player;
+  float64_t path_points[VKR_EDITOR_RECORDING_PATH_POINTS][3];
+  uint64_t path_frames[VKR_EDITOR_RECORDING_PATH_POINTS];
+  uint8_t path_classes[VKR_EDITOR_RECORDING_PATH_POINTS];
+  VkrUiId path_id;
   /* One past the entry whose Delete was pressed once, or zero; a second
      press deletes it. */
   uint32_t delete_armed;
@@ -186,6 +201,10 @@ void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
 void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds);
+
+/** Places the open playback's route with the frame's final camera. */
+void vkr_editor_recording_project(struct VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame);
 
 /** Releases the Library's thumbnail textures and the Performance window's
  * data; call before the UI system shuts down. */

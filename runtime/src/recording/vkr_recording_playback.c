@@ -192,6 +192,15 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
     const uint32_t length =
         Min(record->size - 4u, (uint32_t)VKR_RECORDING_LABEL_MAX);
     MemCopy(marker->label, record->data + 4u, length);
+  } else if (record->stream == VKR_RECORDING_STREAM_PLAYER &&
+             record->size == sizeof(VkrRecordingPlayer)) {
+    /* Ticks arrive in order, so the frame keeps its last one. */
+    VkrRecordingPlayer player;
+    MemCopy(&player, record->data, sizeof(player));
+    MemCopy(&playback->player_positions[record->frame * 3u], player.position,
+            sizeof(player.position));
+    playback->player_valid[record->frame] = 1u;
+    playback->has_player = true_v;
   } else if (record->stream == VKR_RECORDING_STREAM_SPAWN) {
     vkr_recording_fill_spawn(playback, record);
   } else if (record->stream == VKR_RECORDING_STREAM_DESPAWN &&
@@ -344,10 +353,17 @@ vkr_recording_playback_allocate(VkrRecordingPlayback *playback) {
       &playback->allocator,
       sizeof(VkrRecordingMarker) * ((uint64_t)playback->marker_count + 1u),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->player_positions =
+      vkr_allocator_alloc(&playback->allocator, sizeof(float64_t) * frames * 3u,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->player_valid = vkr_allocator_alloc(&playback->allocator, frames,
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!playback->frames || !playback->cameras || !playback->times ||
-      !playback->markers) {
+      !playback->markers || !playback->player_positions ||
+      !playback->player_valid) {
     return false_v;
   }
+  MemZero(playback->player_valid, frames);
   MemZero(playback->frames, sizeof(VkrRecordingFrame) * frames);
   MemZero(playback->cameras, sizeof(VkrRecordingCamera) * frames);
   return true_v;

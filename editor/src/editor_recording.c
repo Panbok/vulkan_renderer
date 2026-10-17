@@ -644,8 +644,160 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   editor_recording_markers_build(editor, frame, playback, slider_px);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Route                                                                     */
+
+#define EDITOR_RECORDING_PATH_BREAK UINT8_MAX
+/* Palette slots: within budget, up to twice it, beyond, and ahead of the
+   playhead. */
+#define EDITOR_RECORDING_PATH_AHEAD 3u
+
+/* One point per run of frames: the player's position, or the camera's in a
+   recording without a player, and the run's worst frame time. Frames between
+   two fixed ticks have no player record and keep the last one; frames before
+   the first break the route. */
+vkr_internal void
+editor_recording_path_prepare(VkrEditorRecording *recording,
+                              const VkrRecordingPlayback *playback) {
+  if (string_equals(recording->path_bundle, playback->bundle_path)) {
+    return;
+  }
+  string_format(recording->path_bundle, sizeof(recording->path_bundle), "%s",
+                playback->bundle_path);
+  recording->path_player = playback->has_player;
+  const uint64_t frames = playback->frame_count;
+  const uint64_t step = (frames + VKR_EDITOR_RECORDING_PATH_POINTS - 1u) /
+                        VKR_EDITOR_RECORDING_PATH_POINTS;
+  const float64_t budget = VKR_RECORDING_ANALYSIS_BUDGET_MS;
+  uint32_t count = 0u;
+  uint64_t held = UINT64_MAX;
+  for (uint64_t first = 0u;
+       first < frames && count < VKR_EDITOR_RECORDING_PATH_POINTS;
+       first += Max(step, 1u)) {
+    const uint64_t end = Min(first + Max(step, 1u), frames);
+    float64_t worst_ms = 0.0;
+    uint64_t shown = UINT64_MAX;
+    for (uint64_t f = first; f < end; ++f) {
+      worst_ms = Max(worst_ms, playback->frames[f].display_dt * 1000.0);
+      if (playback->has_player && playback->player_valid[f]) {
+        held = f;
+      }
+      if (shown == UINT64_MAX) {
+        shown = playback->has_player ? held : f;
+      }
+    }
+    recording->path_frames[count] = first;
+    if (shown == UINT64_MAX) {
+      recording->path_classes[count++] = EDITOR_RECORDING_PATH_BREAK;
+      continue;
+    }
+    const float64_t *position = playback->has_player
+                                    ? &playback->player_positions[shown * 3u]
+                                    : playback->cameras[shown].position;
+    MemCopy(recording->path_points[count], position, sizeof(float64_t) * 3u);
+    recording->path_classes[count++] = worst_ms > 2.0 * budget ? 2u
+                                       : worst_ms > budget     ? 1u
+                                                               : 0u;
+  }
+  recording->path_count = count;
+}
+
+/* The route's widget over the Scene image; vkr_editor_recording_project
+   gives it points once the frame's camera is known. */
+vkr_internal void editor_recording_path_build(VkrEditorUi *editor,
+                                              const VkrSampleUiFrame *frame) {
+  VkrEditorRecording *recording = &editor->recording;
+  recording->path_id = VKR_UI_ID_NONE;
+  const VkrRecordingPlayback *playback =
+      frame->recording ? frame->recording->playback : NULL;
+  if (!playback) {
+    recording->path_bundle[0] = '\0';
+    return;
+  }
+  if (!frame->mapping_valid) {
+    return;
+  }
+  editor_recording_path_prepare(recording, playback);
+  if (recording->path_count < 2u) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const Vec4 image = frame->mapping.image_rect_px;
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.placement = VKR_UI_PLACEMENT_DEFAULT;
+  config.placement.column = config.placement.row = 0;
+  config.placement.justify = config.placement.align = VKR_UI_ALIGN_START;
+  config.placement.margin_pt = (VkrUiEdges){image.y / ui->content_scale, 0, 0,
+                                            image.x / ui->content_scale};
+  config.style.min_size_pt = config.style.max_size_pt =
+      (Vec2){image.z / ui->content_scale, image.w / ui->content_scale};
+  recording->path_id =
+      vkr_ui_path(ui, string8_lit("editor.recording.route"), NULL, &config);
+}
+
+void vkr_editor_recording_project(VkrEditorUi *editor,
+                                  const VkrSampleUiFrame *frame) {
+  VkrEditorRecording *recording = &editor->recording;
+  const VkrRecordingPlayback *playback =
+      frame->recording ? frame->recording->playback : NULL;
+  if (recording->path_id == VKR_UI_ID_NONE || !playback ||
+      !string_equals(recording->path_bundle, playback->bundle_path)) {
+    return;
+  }
+  const VkrScene *level = frame->scene ? frame->scene : frame->world;
+  const Vec3 origin = level ? level->origin_offset : vec3_zero();
+  const Vec4 image = frame->mapping.image_rect_px;
+  const float32_t scale = frame->ui->content_scale;
+  const uint64_t playhead =
+      vkr_recording_playback_frame_at(playback, playback->time);
+  Vec2 *points = vkr_allocator_alloc(frame->ui->frame_allocator,
+                                     sizeof(Vec2) * recording->path_count,
+                                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint8_t *colors =
+      vkr_allocator_alloc(frame->ui->frame_allocator, recording->path_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!points || !colors) {
+    return;
+  }
+  for (uint32_t i = 0u; i < recording->path_count; ++i) {
+    const uint8_t class = recording->path_classes[i];
+    colors[i] = recording->path_frames[i] > playhead
+                    ? EDITOR_RECORDING_PATH_AHEAD
+                    : (class == EDITOR_RECORDING_PATH_BREAK ? 0u : class);
+    points[i] = (Vec2){VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY};
+    if (class == EDITOR_RECORDING_PATH_BREAK) {
+      continue;
+    }
+    const float64_t *world = recording->path_points[i];
+    const Vec4 clip = mat4_mul_vec4(
+        frame->view_projection,
+        (Vec4){(float32_t)(world[0] - (float64_t)origin.x),
+               (float32_t)(world[1] - (float64_t)origin.y),
+               (float32_t)(world[2] - (float64_t)origin.z), 1.0f});
+    /* A point behind the camera breaks the route there. */
+    if (!vkr_is_finite_f32(clip.w) || clip.w <= 1.0e-3f) {
+      continue;
+    }
+    points[i] = (Vec2){image.z * (clip.x / clip.w * 0.5f + 0.5f) / scale,
+                       image.w * (clip.y / clip.w * 0.5f + 0.5f) / scale};
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const Vec4 palette[] = {theme->success, theme->warning, theme->error,
+                          vkr_ui_color_alpha(theme->text, 0.35f)};
+  const VkrUiPathConfig path = {
+      .points = points,
+      .colors = colors,
+      .count = recording->path_count,
+      .palette = palette,
+      .palette_count = ArrayCount(palette),
+      .width_pt = 3.0f,
+  };
+  (void)vkr_ui_path_set(frame->ui, recording->path_id, &path);
+}
+
 void vkr_editor_recording_overlays_build(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
+  editor_recording_path_build(editor, frame);
   editor_recording_indicator_build(editor, frame);
   editor_recording_bar_build(editor, frame);
 }
