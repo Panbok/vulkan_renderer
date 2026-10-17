@@ -181,6 +181,86 @@ bool8_t vkr_ui_draw_buffer_box(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                  });
 }
 
+bool8_t vkr_ui_draw_buffer_rects(VkrUiDrawBuffer *buffer, VkrUiRect bounds_px,
+                                 const VkrUiDrawRect *rects, uint32_t count,
+                                 uint64_t content_hash) {
+  if (!rects || count == 0u) {
+    return false_v;
+  }
+
+  return vkr_ui_draw_buffer_push(buffer, (VkrUiDrawCommand){
+                                             .rect_px = bounds_px,
+                                             .color = {1.0f, 1.0f, 1.0f, 1.0f},
+                                             .mode = VKR_UI_DRAW_MODE_QUAD,
+                                             .run = VKR_UI_DRAW_RUN_RECTS,
+                                             .run_count = count,
+                                             .run_rects = rects,
+                                             .run_scale = 1.0f,
+                                             .run_hash = content_hash,
+                                         });
+}
+
+bool8_t vkr_ui_draw_buffer_polyline(VkrUiDrawBuffer *buffer,
+                                    VkrUiRect bounds_px, const Vec2 *points,
+                                    uint32_t count, float32_t width_px,
+                                    Vec4 color, uint64_t content_hash) {
+  if (!points || count < 2u || !vkr_is_finite_f32(width_px) ||
+      width_px <= 0.0f) {
+    return false_v;
+  }
+
+  return vkr_ui_draw_buffer_push(buffer, (VkrUiDrawCommand){
+                                             .rect_px = bounds_px,
+                                             .color = color,
+                                             .mode = VKR_UI_DRAW_MODE_QUAD,
+                                             .run = VKR_UI_DRAW_RUN_POLYLINE,
+                                             .run_count = count,
+                                             .run_points = points,
+                                             .run_scale = 1.0f,
+                                             .run_width_px = width_px,
+                                             .run_hash = content_hash,
+                                         });
+}
+
+/* A run is untextured flat geometry with its own placement; its borrowed
+ * elements are checked here, where every command is validated. */
+static bool8_t vkr_ui_draw_run_valid(const VkrUiDrawCommand *command) {
+  if (command->run > VKR_UI_DRAW_RUN_POLYLINE ||
+      command->mode != VKR_UI_DRAW_MODE_QUAD || command->texture.id != 0u ||
+      command->corner_count != 0u ||
+      command->gradient != VKR_UI_DRAW_GRADIENT_NONE ||
+      !vkr_is_finite_f32(command->run_scale) || command->run_scale <= 0.0f) {
+    return false_v;
+  }
+
+  if (command->run == VKR_UI_DRAW_RUN_RECTS) {
+    if (!command->run_rects || command->run_count == 0u) {
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < command->run_count; ++i) {
+      const VkrUiDrawRect *item = &command->run_rects[i];
+      if (!vkr_ui_rect_is_finite(item->rect) || item->rect.width < 0.0f ||
+          item->rect.height < 0.0f || !vkr_ui_draw_vec4_finite(item->color)) {
+        return false_v;
+      }
+    }
+    return true_v;
+  }
+
+  if (!command->run_points || command->run_count < 2u ||
+      !vkr_is_finite_f32(command->run_width_px) ||
+      command->run_width_px <= 0.0f) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < command->run_count; ++i) {
+    if (!vkr_is_finite_f32(command->run_points[i].x) ||
+        !vkr_is_finite_f32(command->run_points[i].y)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
   if (!vkr_ui_rect_has_area(command.rect_px) ||
       !vkr_ui_rect_is_finite(command.clip_rect_px) ||
@@ -197,6 +277,9 @@ static bool8_t vkr_ui_draw_command_valid(VkrUiDrawCommand command) {
       !vkr_is_finite_f32(command.screen_px_range) ||
       command.screen_px_range < 0.0f)
     return false_v;
+  if (command.run != VKR_UI_DRAW_RUN_NONE) {
+    return vkr_ui_draw_run_valid(&command);
+  }
   if (command.corner_count) {
     if (command.mode != VKR_UI_DRAW_MODE_QUAD || command.texture.id != 0u ||
         (command.corner_count != 3u && command.corner_count != 4u))
@@ -371,6 +454,155 @@ static void vkr_ui_draw_write_polygon(const VkrUiDrawCommand *command,
   out->vertex_count += count * 2u;
 }
 
+/* A run point in Y-down target pixels. */
+static Vec2 vkr_ui_draw_run_point(const VkrUiDrawCommand *command,
+                                  uint32_t index) {
+  return (Vec2){
+      command->rect_px.x + command->run_points[index].x * command->run_scale,
+      command->rect_px.y + command->run_points[index].y * command->run_scale,
+  };
+}
+
+static Vec2 vkr_ui_draw_direction(Vec2 from, Vec2 to) {
+  const float32_t dx = to.x - from.x;
+  const float32_t dy = to.y - from.y;
+  const float32_t length = vkr_sqrt_f32(dx * dx + dy * dy);
+  if (!(length > 0.0001f)) {
+    return (Vec2){0};
+  }
+  return (Vec2){dx / length, dy / length};
+}
+
+/* Flat quads; empty and transparent rectangles emit nothing. */
+static void vkr_ui_draw_write_rects(const VkrUiDrawCommand *command,
+                                    uint32_t target_height,
+                                    VkrUiDrawOutput *out) {
+  const float32_t scale = command->run_scale;
+  const float32_t height = (float32_t)target_height;
+  for (uint32_t i = 0u; i < command->run_count; ++i) {
+    const VkrUiDrawRect *item = &command->run_rects[i];
+    const Vec4 color = vec4_mul(item->color, command->color);
+    if (item->rect.width <= 0.0f || item->rect.height <= 0.0f ||
+        color.w <= 0.0f) {
+      continue;
+    }
+
+    const float32_t left = command->rect_px.x + item->rect.x * scale;
+    const float32_t right = left + item->rect.width * scale;
+    const float32_t top = height - (command->rect_px.y + item->rect.y * scale);
+    const float32_t bottom = top - item->rect.height * scale;
+    const Vec2 positions[4] = {
+        {left, bottom}, {right, bottom}, {right, top}, {left, top}};
+    const uint32_t base = out->vertex_count;
+    for (uint32_t corner = 0u; corner < 4u; ++corner) {
+      out->vertices[base + corner] = (VkrUiVertex){
+          .position = positions[corner],
+          .color = color,
+      };
+    }
+
+    const uint32_t indices[] = {base + 0u, base + 1u, base + 2u,
+                                base + 2u, base + 3u, base + 0u};
+    MemCopy(out->indices + out->index_count, indices, sizeof(indices));
+    out->index_count += ArrayCount(indices);
+    out->vertex_count += 4u;
+  }
+}
+
+/* Four vertices per point across the stroke: outer fringe, opaque core edge,
+ * opaque core edge, outer fringe. Each segment joins its two points' rows
+ * with three quads. The core ends half a pixel inside the stroke edge and
+ * the fringe half a pixel outside it, as polygon edges do. */
+static void vkr_ui_draw_write_polyline(const VkrUiDrawCommand *command,
+                                       uint32_t target_height,
+                                       VkrUiDrawOutput *out) {
+  const uint32_t count = command->run_count;
+  const float32_t half_width =
+      command->run_width_px * command->run_scale * 0.5f;
+  const float32_t core = Max(half_width - 0.5f, 0.0f);
+  const float32_t fringe = half_width + 0.5f;
+  Vec4 color = command->color;
+  /* A stroke thinner than a pixel fades instead of thinning further. */
+  if (half_width < 0.5f) {
+    color.w *= half_width * 2.0f;
+  }
+  Vec4 clear = color;
+  clear.w = 0.0f;
+
+  const uint32_t base = out->vertex_count;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const Vec2 point = vkr_ui_draw_run_point(command, i);
+    const Vec2 previous =
+        i > 0u ? vkr_ui_draw_run_point(command, i - 1u) : point;
+    const Vec2 next =
+        i + 1u < count ? vkr_ui_draw_run_point(command, i + 1u) : point;
+    Vec2 incoming = vkr_ui_draw_direction(previous, point);
+    Vec2 outgoing = vkr_ui_draw_direction(point, next);
+    if (incoming.x == 0.0f && incoming.y == 0.0f) {
+      incoming = outgoing;
+    }
+    if (outgoing.x == 0.0f && outgoing.y == 0.0f) {
+      outgoing = incoming;
+    }
+    if (incoming.x == 0.0f && incoming.y == 0.0f) {
+      incoming = (Vec2){1.0f, 0.0f};
+      outgoing = incoming;
+    }
+
+    /* The joint's normal bisects its segments; the mitre keeps the stroke's
+     * width across each, up to four times the width at sharp turns. */
+    Vec2 tangent = vkr_ui_draw_direction(
+        (Vec2){0}, (Vec2){incoming.x + outgoing.x, incoming.y + outgoing.y});
+    if (tangent.x == 0.0f && tangent.y == 0.0f) {
+      tangent = incoming;
+    }
+    const Vec2 normal = {-tangent.y, tangent.x};
+    const float32_t cosine = normal.x * -incoming.y + normal.y * incoming.x;
+    const float32_t mitre = 1.0f / Max(cosine, 0.25f);
+    const float32_t offsets[4] = {fringe, core, -core, -fringe};
+    for (uint32_t row = 0u; row < 4u; ++row) {
+      const float32_t offset = offsets[row] * mitre;
+      out->vertices[base + i * 4u + row] = (VkrUiVertex){
+          .position = {point.x + normal.x * offset,
+                       (float32_t)target_height -
+                           (point.y + normal.y * offset)},
+          .color = row == 0u || row == 3u ? clear : color,
+      };
+    }
+  }
+
+  for (uint32_t i = 0u; i + 1u < count; ++i) {
+    const uint32_t a = base + i * 4u;
+    const uint32_t b = a + 4u;
+    for (uint32_t row = 0u; row < 3u; ++row) {
+      const uint32_t indices[] = {a + row,      a + row + 1u, b + row + 1u,
+                                  b + row + 1u, b + row,      a + row};
+      MemCopy(out->indices + out->index_count, indices, sizeof(indices));
+      out->index_count += ArrayCount(indices);
+    }
+  }
+  out->vertex_count += count * 4u;
+}
+
+/* Vertices and indices a command may write; empty rects of a run emit less. */
+static void vkr_ui_draw_command_size(const VkrUiDrawCommand *command,
+                                     uint64_t *out_vertices,
+                                     uint64_t *out_indices) {
+  if (command->run == VKR_UI_DRAW_RUN_RECTS) {
+    *out_vertices = (uint64_t)command->run_count * 4u;
+    *out_indices = (uint64_t)command->run_count * 6u;
+  } else if (command->run == VKR_UI_DRAW_RUN_POLYLINE) {
+    *out_vertices = (uint64_t)command->run_count * 4u;
+    *out_indices = (uint64_t)(command->run_count - 1u) * 18u;
+  } else if (command->corner_count) {
+    *out_vertices = command->corner_count * 2u;
+    *out_indices = command->corner_count * 9u - 6u;
+  } else {
+    *out_vertices = 4u;
+    *out_indices = 6u;
+  }
+}
+
 VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
                                        uint32_t target_width,
                                        uint32_t target_height,
@@ -393,8 +625,13 @@ VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
   uint32_t dropped = buffer->dropped_command_count;
   for (uint32_t i = 0u; i < buffer->command_count; ++i) {
     const VkrUiDrawCommand *command = &buffer->commands[i];
-    const VkrUiRect scissor = vkr_ui_draw_integral_scissor(
-        command->clip_rect_px, target_width, target_height);
+    /* A run draws only inside its bounds. */
+    const VkrUiRect clip =
+        command->run != VKR_UI_DRAW_RUN_NONE
+            ? vkr_ui_rect_intersect(command->clip_rect_px, command->rect_px)
+            : command->clip_rect_px;
+    const VkrUiRect scissor =
+        vkr_ui_draw_integral_scissor(clip, target_width, target_height);
     if (!vkr_ui_rect_has_area(scissor))
       continue;
     VkrUiDrawBatch *current =
@@ -403,10 +640,9 @@ VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
             : NULL;
     const bool8_t starts_batch =
         !current || !vkr_ui_draw_batch_accepts(current, command, scissor);
-    const uint32_t vertices =
-        command->corner_count ? command->corner_count * 2u : 4u;
-    const uint32_t indices =
-        command->corner_count ? command->corner_count * 9u - 6u : 6u;
+    uint64_t vertices = 0u;
+    uint64_t indices = 0u;
+    vkr_ui_draw_command_size(command, &vertices, &indices);
     if (out_draws->vertex_capacity - out_draws->vertex_count < vertices ||
         out_draws->index_capacity - out_draws->index_count < indices ||
         (starts_batch && out_draws->batch_count == out_draws->batch_capacity)) {
@@ -422,11 +658,23 @@ VkrUiDrawBuildResult vkr_ui_draw_build(const VkrUiDrawBuffer *buffer,
           .sdf_unit_range = command->sdf_unit_range,
       };
     }
-    if (command->corner_count)
+    const uint32_t first_index = out_draws->index_count;
+    if (command->run == VKR_UI_DRAW_RUN_RECTS) {
+      vkr_ui_draw_write_rects(command, target_height, out_draws);
+    } else if (command->run == VKR_UI_DRAW_RUN_POLYLINE) {
+      vkr_ui_draw_write_polyline(command, target_height, out_draws);
+    } else if (command->corner_count) {
       vkr_ui_draw_write_polygon(command, target_height, out_draws);
-    else
+    } else {
       vkr_ui_draw_write_quad(command, target_height, out_draws);
-    out_draws->batches[out_draws->batch_count - 1u].index_count += indices;
+    }
+    const uint32_t written = out_draws->index_count - first_index;
+    if (starts_batch && written == 0u) {
+      /* A run of empty rectangles opens no batch. */
+      out_draws->batch_count--;
+    } else {
+      out_draws->batches[out_draws->batch_count - 1u].index_count += written;
+    }
   }
   return (VkrUiDrawBuildResult){
       .status = dropped ? VKR_UI_DRAW_BUILD_TRUNCATED : VKR_UI_DRAW_BUILD_OK,

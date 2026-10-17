@@ -19,7 +19,45 @@ typedef enum VkrUiNodeKind {
   VKR_UI_NODE_IMAGE,
   VKR_UI_NODE_BEZIER,
   VKR_UI_NODE_CODE,
+  VKR_UI_NODE_PLOT,
 } VkrUiNodeKind;
+
+/* A plot's frame-allocated copy of the caller's data with finite values and
+ * authored colors. Drawing resolves after the caller's arrays may be gone. */
+typedef struct VkrUiPlotData {
+  uint32_t sample_count;
+  float32_t y_min;
+  float32_t y_max;
+  /* bar_count rows of sample_count finite values. */
+  float32_t *bars;
+  uint32_t bar_count;
+  Vec4 bar_series_colors[VKR_UI_PLOT_BAR_SERIES_CAPACITY];
+  /* Per-sample palette index of the first bar series, or NULL. */
+  uint8_t *bar_colors;
+  Vec4 palette[VKR_UI_PLOT_PALETTE_CAPACITY];
+  uint32_t palette_count;
+  /* Each sample's stack height (the first line's value without bars), which
+   * picks the tallest sample of a column. */
+  float32_t *totals;
+  /* line_count rows of sample_count finite values. */
+  float32_t *lines;
+  uint32_t line_count;
+  Vec4 line_colors[VKR_UI_PLOT_LINE_SERIES_CAPACITY];
+  Vec2 line_ranges[VKR_UI_PLOT_LINE_SERIES_CAPACITY];
+  float32_t line_width_pt;
+  VkrUiPlotReference references[VKR_UI_PLOT_REFERENCE_CAPACITY];
+  uint32_t reference_count;
+  /* Covers every field above, which the batched runs draw; their tile
+   * fingerprints use it. The marks below are hashed with the node. */
+  uint64_t hash;
+  uint32_t cursor;
+  Vec4 cursor_color;
+  uint32_t range_first;
+  uint32_t range_last;
+  Vec4 range_color;
+  uint32_t hovered;
+  Vec4 hover_color;
+} VkrUiPlotData;
 
 struct VkrUiRetainedState {
   VkrUiId id;
@@ -53,6 +91,11 @@ struct VkrUiRetainedState {
   /* Scroll areas: the scrollbar or a scroll key moved the offset this frame,
    * so it outranks a caller-owned offset; see vkr_ui_scroll_area_offset. */
   bool8_t scroll_moved;
+  /* Plots: the held press's pointer x in pixels and column, and whether it
+   * has moved far enough to brush. */
+  float32_t plot_press_x;
+  uint32_t plot_press_column;
+  bool8_t plot_dragging;
 };
 
 struct VkrUiFrameNode {
@@ -84,6 +127,8 @@ struct VkrUiFrameNode {
   VkrUiCodeView code;
   uint64_t code_hash;
   uint32_t code_glyphs;
+  /* Plots: frame-allocated, NULL for an invalid plot. */
+  VkrUiPlotData *plot;
   float32_t icon_size_px;
   bool8_t disabled;
   bool8_t focusable;
@@ -421,6 +466,11 @@ void vkr_ui_system_shutdown(VkrUiSystem *system) {
                          (uint64_t)presence->command_capacity *
                              sizeof(*presence->commands),
                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (presence->run_data) {
+      vkr_allocator_free(&system->retained_allocator, presence->run_data,
+                         presence->run_data_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
   }
   for (uint32_t i = 0u; i < system->retained_bucket_capacity; ++i) {
     VkrUiRetainedState *state = system->retained_buckets[i];
@@ -2071,6 +2121,16 @@ vkr_internal uint64_t vkr_ui_node_hash(VkrUiSystem *system,
   hash = vkr_ui_hash_bytes(hash, &node->image_size, sizeof(node->image_size));
   if (node->kind == VKR_UI_NODE_CODE)
     hash = vkr_ui_hash_bytes(hash, &node->code_hash, sizeof(node->code_hash));
+  if (node->kind == VKR_UI_NODE_PLOT && node->plot) {
+    const VkrUiPlotData *plot = node->plot;
+    const uint32_t marks[4] = {plot->cursor, plot->range_first,
+                               plot->range_last, plot->hovered};
+    const Vec4 mark_colors[3] = {plot->cursor_color, plot->range_color,
+                                 plot->hover_color};
+    hash = vkr_ui_hash_bytes(hash, &plot->hash, sizeof(plot->hash));
+    hash = vkr_ui_hash_bytes(hash, marks, sizeof(marks));
+    hash = vkr_ui_hash_bytes(hash, mark_colors, sizeof(mark_colors));
+  }
   if (node->kind == VKR_UI_NODE_BEZIER) {
     hash = vkr_ui_hash_bytes(hash, node->bezier_points,
                              sizeof(node->bezier_points));
@@ -3329,6 +3389,600 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
   }
 }
 
+/* Plot columns across `width_px` pixels: one per sample while each keeps a
+ * pixel, and no more than the bar budget allows for the plot's stack. */
+vkr_internal uint32_t vkr_ui_plot_column_count(const VkrUiPlotData *plot,
+                                               float32_t width_px) {
+  const float32_t pixels = vkr_floor_f32(width_px);
+  uint32_t columns = plot->sample_count;
+  if (pixels < (float32_t)columns) {
+    columns = pixels >= 1.0f ? (uint32_t)pixels : 1u;
+  }
+  const uint32_t budget = VKR_UI_PLOT_BAR_BUDGET / Max(plot->bar_count, 1u);
+  return Max(Min(columns, budget), 1u);
+}
+
+/* First sample of `column`; `columns` itself gives the sample count. Every
+ * column holds at least one sample because columns <= samples. */
+vkr_internal uint32_t vkr_ui_plot_column_start(const VkrUiPlotData *plot,
+                                               uint32_t column,
+                                               uint32_t columns) {
+  return (uint32_t)((uint64_t)column * plot->sample_count / columns);
+}
+
+/* The column holding `sample`: the last whose start is at or before it. */
+vkr_internal uint32_t vkr_ui_plot_sample_column(const VkrUiPlotData *plot,
+                                                uint32_t sample,
+                                                uint32_t columns) {
+  return (uint32_t)((((uint64_t)sample + 1u) * columns - 1u) /
+                    plot->sample_count);
+}
+
+/* The tallest sample of a column, so spikes survive; ties keep the first. */
+vkr_internal uint32_t vkr_ui_plot_column_sample(const VkrUiPlotData *plot,
+                                                uint32_t column,
+                                                uint32_t columns) {
+  const uint32_t start = vkr_ui_plot_column_start(plot, column, columns);
+  const uint32_t end = vkr_ui_plot_column_start(plot, column + 1u, columns);
+  uint32_t best = start;
+  for (uint32_t sample = start + 1u; sample < end; ++sample) {
+    if (plot->totals[sample] > plot->totals[best]) {
+      best = sample;
+    }
+  }
+  return best;
+}
+
+vkr_internal uint32_t vkr_ui_plot_pointer_column(float32_t x, VkrUiRect content,
+                                                 uint32_t columns) {
+  const float32_t column =
+      vkr_floor_f32((x - content.x) / content.width * (float32_t)columns);
+  return (uint32_t)vkr_clamp_f32(column, 0.0f, (float32_t)(columns - 1u));
+}
+
+/* Left pixel edge of `column`, rounded so neighbouring columns abut. */
+vkr_internal float32_t vkr_ui_plot_column_x(VkrUiRect content, uint32_t column,
+                                            uint32_t columns) {
+  return vkr_round_f32(content.x +
+                       content.width * (float32_t)column / (float32_t)columns);
+}
+
+/* Y pixel of `value` in the content box, clamped to [minimum, maximum]. */
+vkr_internal float32_t vkr_ui_plot_y(float32_t value, float32_t minimum,
+                                     float32_t maximum, VkrUiRect content) {
+  const float32_t t =
+      (vkr_clamp_f32(value, minimum, maximum) - minimum) / (maximum - minimum);
+  return content.y + content.height * (1.0f - t);
+}
+
+vkr_internal float32_t vkr_ui_plot_finite(float32_t value) {
+  return vkr_is_finite_f32(value) ? value : 0.0f;
+}
+
+vkr_internal bool8_t vkr_ui_plot_series_valid(const VkrUiPlotSeries *series,
+                                              uint32_t count,
+                                              uint32_t capacity) {
+  if (count > capacity || (count && !series)) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!series[i].values) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Copies the caller's plot into frame memory, sanitized; NULL when the plot
+ * is invalid or memory runs out. Samples past the capacity are dropped and
+ * reported through `out_truncated`. */
+vkr_internal VkrUiPlotData *vkr_ui_plot_copy(VkrUiSystem *system,
+                                             const VkrUiPlotConfig *source,
+                                             bool8_t *out_truncated) {
+  if (source->sample_count == 0u || !vkr_is_finite_f32(source->y_min) ||
+      !vkr_is_finite_f32(source->y_max) || source->y_max <= source->y_min ||
+      !vkr_ui_plot_series_valid(source->bars, source->bar_count,
+                                VKR_UI_PLOT_BAR_SERIES_CAPACITY) ||
+      !vkr_ui_plot_series_valid(source->lines, source->line_count,
+                                VKR_UI_PLOT_LINE_SERIES_CAPACITY) ||
+      source->reference_count > VKR_UI_PLOT_REFERENCE_CAPACITY ||
+      (source->reference_count && !source->references) ||
+      source->palette_count > VKR_UI_PLOT_PALETTE_CAPACITY ||
+      (source->palette_count && !source->palette)) {
+    return NULL;
+  }
+
+  const uint32_t count = Min(source->sample_count, VKR_UI_PLOT_SAMPLE_CAPACITY);
+  *out_truncated = source->sample_count > count;
+  const bool8_t indexed = source->bar_colors && source->bar_count > 0u;
+  const uint64_t value_rows =
+      (uint64_t)source->bar_count + source->line_count + 1u;
+  const uint64_t bytes = sizeof(VkrUiPlotData) +
+                         value_rows * count * sizeof(float32_t) +
+                         (indexed ? count : 0u);
+  uint8_t *storage = vkr_allocator_alloc(system->frame_allocator, bytes,
+                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!storage) {
+    return NULL;
+  }
+
+  VkrUiPlotData *plot = (VkrUiPlotData *)storage;
+  float32_t *values = (float32_t *)(storage + sizeof(*plot));
+  *plot = (VkrUiPlotData){
+      .sample_count = count,
+      .y_min = source->y_min,
+      .y_max = source->y_max,
+      .bars = values,
+      .bar_count = source->bar_count,
+      .palette_count = source->palette_count,
+      .totals = values + (uint64_t)source->bar_count * count,
+      .lines = values + ((uint64_t)source->bar_count + 1u) * count,
+      .line_count = source->line_count,
+      .line_width_pt = vkr_is_finite_f32(source->line_width_pt) &&
+                               source->line_width_pt > 0.0f
+                           ? source->line_width_pt
+                           : 1.5f,
+      .cursor = source->cursor < count ? source->cursor : VKR_UI_PLOT_NONE,
+      .cursor_color = source->cursor_color,
+      .range_first = VKR_UI_PLOT_NONE,
+      .range_last = VKR_UI_PLOT_NONE,
+      .range_color = source->range_color,
+      .hovered = VKR_UI_PLOT_NONE,
+      .hover_color = source->hover_color,
+  };
+  if (source->range_first <= source->range_last &&
+      source->range_first < count) {
+    plot->range_first = source->range_first;
+    plot->range_last = Min(source->range_last, count - 1u);
+  }
+
+  /* Bars: non-finite values count as zero. A sample's total is the extent of
+   * its stack above and below zero. */
+  MemZero(plot->totals, (uint64_t)count * sizeof(*plot->totals));
+  for (uint32_t series = 0u; series < source->bar_count; ++series) {
+    const float32_t *from = source->bars[series].values;
+    float32_t *to = plot->bars + (uint64_t)series * count;
+    plot->bar_series_colors[series] = source->bars[series].color;
+    for (uint32_t i = 0u; i < count; ++i) {
+      to[i] = vkr_ui_plot_finite(from[i]);
+      plot->totals[i] += vkr_abs_f32(to[i]);
+    }
+  }
+  for (uint32_t line = 0u; line < source->line_count; ++line) {
+    const VkrUiPlotSeries *series = &source->lines[line];
+    float32_t *to = plot->lines + (uint64_t)line * count;
+    for (uint32_t i = 0u; i < count; ++i) {
+      to[i] = vkr_ui_plot_finite(series->values[i]);
+    }
+    plot->line_colors[line] = series->color;
+    const bool8_t own_range = vkr_is_finite_f32(series->y_min) &&
+                              vkr_is_finite_f32(series->y_max) &&
+                              series->y_max > series->y_min;
+    plot->line_ranges[line] = own_range ? (Vec2){series->y_min, series->y_max}
+                                        : (Vec2){source->y_min, source->y_max};
+  }
+  /* Without bars, the first line picks each column's sample. */
+  if (source->bar_count == 0u && source->line_count > 0u) {
+    MemCopy(plot->totals, plot->lines, (uint64_t)count * sizeof(*plot->totals));
+  }
+  if (indexed) {
+    plot->bar_colors = (uint8_t *)(values + value_rows * count);
+    MemCopy(plot->bar_colors, source->bar_colors, count);
+  }
+  if (source->palette_count) {
+    MemCopy(plot->palette, source->palette,
+            (uint64_t)source->palette_count * sizeof(*plot->palette));
+  }
+  for (uint32_t i = 0u; i < source->reference_count; ++i) {
+    const VkrUiPlotReference *reference = &source->references[i];
+    if (!vkr_is_finite_f32(reference->value)) {
+      continue;
+    }
+    plot->references[plot->reference_count++] = (VkrUiPlotReference){
+        .value = reference->value,
+        .color = reference->color,
+        .width_pt =
+            vkr_is_finite_f32(reference->width_pt) && reference->width_pt > 0.0f
+                ? reference->width_pt
+                : 1.0f,
+        .dashed = reference->dashed,
+    };
+  }
+  return plot;
+}
+
+/* What the plot's runs draw, field by field: struct padding is not part of
+ * the plot. The cursor, range and hover marks are hashed with the node. */
+vkr_internal uint64_t vkr_ui_plot_hash(const VkrUiPlotData *plot) {
+  const uint32_t count = plot->sample_count;
+  const uint32_t counts[5] = {count, plot->bar_count, plot->line_count,
+                              plot->palette_count, plot->reference_count};
+  const float32_t metrics[3] = {plot->y_min, plot->y_max, plot->line_width_pt};
+  uint64_t hash =
+      vkr_ui_hash_bytes(UINT64_C(1469598103934665603), counts, sizeof(counts));
+  hash = vkr_ui_hash_bytes(hash, metrics, sizeof(metrics));
+  hash = vkr_ui_hash_bytes(hash, plot->bar_series_colors,
+                           plot->bar_count * sizeof(Vec4));
+  hash = vkr_ui_hash_bytes(hash, plot->palette,
+                           plot->palette_count * sizeof(Vec4));
+  hash = vkr_ui_hash_bytes(hash, plot->line_colors,
+                           plot->line_count * sizeof(Vec4));
+  hash = vkr_ui_hash_bytes(hash, plot->line_ranges,
+                           plot->line_count * sizeof(Vec2));
+  hash = vkr_ui_hash_bytes(
+      hash, plot->bars, (uint64_t)plot->bar_count * count * sizeof(float32_t));
+  hash =
+      vkr_ui_hash_bytes(hash, plot->lines,
+                        (uint64_t)plot->line_count * count * sizeof(float32_t));
+  const bool8_t indexed = plot->bar_colors != NULL;
+  hash = vkr_ui_hash_bytes(hash, &indexed, sizeof(indexed));
+  if (indexed) {
+    hash = vkr_ui_hash_bytes(hash, plot->bar_colors, count);
+  }
+  for (uint32_t i = 0u; i < plot->reference_count; ++i) {
+    const VkrUiPlotReference *reference = &plot->references[i];
+    hash = vkr_ui_hash_bytes(hash, &reference->value, sizeof(reference->value));
+    hash = vkr_ui_hash_bytes(hash, &reference->color, sizeof(reference->color));
+    hash = vkr_ui_hash_bytes(hash, &reference->width_pt,
+                             sizeof(reference->width_pt));
+    hash =
+        vkr_ui_hash_bytes(hash, &reference->dashed, sizeof(reference->dashed));
+  }
+  return hash;
+}
+
+/* Hover, click and brush from the previous frame's layout, as other
+ * widgets hit-test. */
+vkr_internal void vkr_ui_plot_input(VkrUiSystem *system, VkrUiFrameNode *node,
+                                    bool8_t was_active, bool8_t released_here,
+                                    VkrUiPlotResult *result) {
+  VkrUiRetainedState *retained = node->retained;
+  const VkrUiPlotData *plot = node->plot;
+  const VkrUiRect content =
+      vkr_ui_style_content_rect(retained->last_rect, &node->style);
+  if (!vkr_ui_rect_has_area(content)) {
+    return;
+  }
+
+  const uint32_t columns = vkr_ui_plot_column_count(plot, content.width);
+  const uint32_t column =
+      vkr_ui_plot_pointer_column((float32_t)system->mouse_x, content, columns);
+  if (node->hovered && !node->disabled) {
+    result->hovered = vkr_ui_plot_column_sample(plot, column, columns);
+  }
+
+  const bool8_t held = system->active_id == node->id;
+  const bool8_t released = was_active && !held && system->mouse_released;
+  if (held && !was_active) {
+    int32_t press_x = system->mouse_x;
+    int32_t press_y = system->mouse_y;
+    input_get_button_press_position(system->input, BUTTON_LEFT, &press_x,
+                                    &press_y);
+    retained->plot_press_x = (float32_t)press_x;
+    retained->plot_press_column =
+        vkr_ui_plot_pointer_column((float32_t)press_x, content, columns);
+    retained->plot_dragging = false_v;
+  }
+  if (!held && !released) {
+    return;
+  }
+
+  const float32_t threshold = 3.0f * system->content_scale;
+  if (vkr_abs_f32((float32_t)system->mouse_x - retained->plot_press_x) >=
+      threshold) {
+    retained->plot_dragging = true_v;
+  }
+  /* A resize while held can leave fewer columns than at the press. */
+  const uint32_t press_column = Min(retained->plot_press_column, columns - 1u);
+  if (retained->plot_dragging) {
+    const uint32_t first = Min(press_column, column);
+    const uint32_t last = Max(press_column, column);
+    result->brush_first = vkr_ui_plot_column_start(plot, first, columns);
+    result->brush_last =
+        vkr_ui_plot_column_start(plot, last + 1u, columns) - 1u;
+    result->brushing = held;
+    result->brushed = released;
+  } else if (released && released_here) {
+    result->clicked = vkr_ui_plot_column_sample(plot, press_column, columns);
+  }
+  if (released) {
+    retained->plot_dragging = false_v;
+  }
+}
+
+VkrUiPlotResult vkr_ui_plot(VkrUiSystem *system, String8 id_label,
+                            const VkrUiPlotConfig *plot,
+                            const VkrUiWidgetConfig *source_config) {
+  VkrUiPlotResult result = {
+      .hovered = VKR_UI_PLOT_NONE,
+      .clicked = VKR_UI_PLOT_NONE,
+      .brush_first = VKR_UI_PLOT_NONE,
+      .brush_last = VKR_UI_PLOT_NONE,
+  };
+  if (!system || !system->frame_open || !plot) {
+    return result;
+  }
+
+  const VkrUiWidgetConfig fallback = vkr_ui_widget_config_default();
+  const VkrUiWidgetConfig *config = source_config ? source_config : &fallback;
+  const VkrUiId id = vkr_ui_id_stack_widget_label(&system->id_stack, id_label);
+  result.id = id;
+  const uint32_t index = vkr_ui_add_node(system, id, VKR_UI_NODE_PLOT,
+                                         config->placement, &config->style);
+  if (index == VKR_UI_NODE_NONE) {
+    return result;
+  }
+
+  VkrUiFrameNode *node = &system->frame_nodes[index];
+  const float32_t scale = system->content_scale;
+  node->intrinsic_size = vkr_ui_style_clamp_size(
+      (Vec2){Max(node->style.min_size_px.x, 120.0f * scale),
+             Max(node->style.min_size_px.y, 48.0f * scale)},
+      &node->style);
+  node->plot = vkr_ui_plot_copy(system, plot, &result.truncated);
+  if (!node->plot) {
+    return result;
+  }
+
+  node->disabled = config->disabled;
+  node->tooltip = config->tooltip;
+  node->cursor = config->cursor;
+  const bool8_t was_active = system->active_id == id;
+  const bool8_t released_here = vkr_ui_interact(system, node, false_v);
+  vkr_ui_plot_input(system, node, was_active, released_here, &result);
+  node->plot->hovered = result.hovered;
+  node->plot->hash = vkr_ui_plot_hash(node->plot);
+  return result;
+}
+
+/* A run's fingerprint: the plot's content, the scale its pixels follow and
+ * which of the plot's runs it is. */
+vkr_internal uint64_t vkr_ui_plot_run_hash(const VkrUiSystem *system,
+                                           const VkrUiPlotData *plot,
+                                           uint32_t layer) {
+  uint64_t hash = vkr_ui_hash_bytes(plot->hash, &system->content_scale,
+                                    sizeof(system->content_scale));
+  return vkr_ui_hash_bytes(hash, &layer, sizeof(layer));
+}
+
+/* Each column's tallest sample as one bar, stacked by series: positive
+ * values upward from zero, negative ones downward. Bars at least four
+ * pixels wide keep a one-pixel gap. One rect run draws them all. */
+vkr_internal void vkr_ui_emit_plot_bars(VkrUiSystem *system,
+                                        VkrUiDrawBuffer *buffer,
+                                        const VkrUiPlotData *plot,
+                                        VkrUiRect content, uint32_t columns) {
+  VkrUiDrawRect *rects =
+      vkr_allocator_alloc(system->frame_allocator,
+                          (uint64_t)columns * plot->bar_count * sizeof(*rects),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!rects) {
+    return;
+  }
+
+  Vec4 series_colors[VKR_UI_PLOT_BAR_SERIES_CAPACITY];
+  Vec4 palette[VKR_UI_PLOT_PALETTE_CAPACITY];
+  for (uint32_t i = 0u; i < plot->bar_count; ++i) {
+    series_colors[i] = vkr_ui_linear_color(plot->bar_series_colors[i]);
+  }
+  for (uint32_t i = 0u; i < plot->palette_count; ++i) {
+    palette[i] = vkr_ui_linear_color(plot->palette[i]);
+  }
+
+  uint32_t count = 0u;
+  for (uint32_t column = 0u; column < columns; ++column) {
+    const uint32_t sample = vkr_ui_plot_column_sample(plot, column, columns);
+    const float32_t left = vkr_ui_plot_column_x(content, column, columns);
+    float32_t right = vkr_ui_plot_column_x(content, column + 1u, columns);
+    if (right - left >= 4.0f) {
+      right -= 1.0f;
+    }
+    right = Max(right, left + 1.0f);
+
+    float32_t above = 0.0f;
+    float32_t below = 0.0f;
+    for (uint32_t series = 0u; series < plot->bar_count; ++series) {
+      const float32_t value =
+          plot->bars[(uint64_t)series * plot->sample_count + sample];
+      if (value == 0.0f) {
+        continue;
+      }
+      float32_t *edge = value > 0.0f ? &above : &below;
+      const float32_t from = *edge;
+      *edge += value;
+      const float32_t y0 =
+          vkr_round_f32(vkr_ui_plot_y(from, plot->y_min, plot->y_max, content));
+      const float32_t y1 = vkr_round_f32(
+          vkr_ui_plot_y(*edge, plot->y_min, plot->y_max, content));
+      const float32_t top = Min(y0, y1);
+      const float32_t bottom = Max(y0, y1);
+      if (bottom <= top) {
+        continue;
+      }
+
+      Vec4 color = series_colors[series];
+      if (series == 0u && plot->bar_colors &&
+          plot->bar_colors[sample] < plot->palette_count) {
+        color = palette[plot->bar_colors[sample]];
+      }
+      rects[count++] = (VkrUiDrawRect){
+          .rect = {left - content.x, top - content.y, right - left,
+                   bottom - top},
+          .color = color,
+      };
+    }
+  }
+  if (count) {
+    (void)vkr_ui_draw_buffer_rects(buffer, content, rects, count,
+                                   vkr_ui_plot_run_hash(system, plot, 0u));
+  }
+}
+
+/* Reference lines inside the range, dashed 4 points on and 3 off, as one
+ * rect run. */
+vkr_internal void vkr_ui_emit_plot_references(VkrUiSystem *system,
+                                              VkrUiDrawBuffer *buffer,
+                                              const VkrUiPlotData *plot,
+                                              VkrUiRect content) {
+  const float32_t scale = system->content_scale;
+  const float32_t dash = Max(1.0f, vkr_round_f32(4.0f * scale));
+  const float32_t period = dash + Max(1.0f, vkr_round_f32(3.0f * scale));
+  const uint32_t dashes = (uint32_t)vkr_ceil_f32(content.width / period);
+  uint64_t capacity = 0u;
+  for (uint32_t i = 0u; i < plot->reference_count; ++i) {
+    capacity += plot->references[i].dashed ? dashes : 1u;
+  }
+  VkrUiDrawRect *rects =
+      vkr_allocator_alloc(system->frame_allocator, capacity * sizeof(*rects),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!rects) {
+    return;
+  }
+
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < plot->reference_count; ++i) {
+    const VkrUiPlotReference *reference = &plot->references[i];
+    if (reference->value < plot->y_min || reference->value > plot->y_max) {
+      continue;
+    }
+    const float32_t thickness =
+        Max(1.0f, vkr_round_f32(reference->width_pt * scale));
+    const float32_t y =
+        vkr_ui_plot_y(reference->value, plot->y_min, plot->y_max, content);
+    const float32_t top = vkr_round_f32(y - thickness * 0.5f) - content.y;
+    const Vec4 color = vkr_ui_linear_color(reference->color);
+    if (!reference->dashed) {
+      rects[count++] = (VkrUiDrawRect){
+          .rect = {0.0f, top, content.width, thickness},
+          .color = color,
+      };
+      continue;
+    }
+    for (uint32_t d = 0u; d < dashes; ++d) {
+      const float32_t x = (float32_t)d * period;
+      rects[count++] = (VkrUiDrawRect){
+          .rect = {x, top, Min(dash, content.width - x), thickness},
+          .color = color,
+      };
+    }
+  }
+  if (count) {
+    (void)vkr_ui_draw_buffer_rects(buffer, content, rects, count,
+                                   vkr_ui_plot_run_hash(system, plot, 1u));
+  }
+}
+
+/* Each line through its columns' highest values at their centres, as one
+ * polyline run per line. */
+vkr_internal void vkr_ui_emit_plot_lines(VkrUiSystem *system,
+                                         VkrUiDrawBuffer *buffer,
+                                         const VkrUiPlotData *plot,
+                                         VkrUiRect content, uint32_t columns) {
+  const uint32_t capacity = Max(columns, 2u);
+  const float32_t width_px = plot->line_width_pt * system->content_scale;
+  for (uint32_t line = 0u; line < plot->line_count; ++line) {
+    Vec2 *points = vkr_allocator_alloc(system->frame_allocator,
+                                       (uint64_t)capacity * sizeof(*points),
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!points) {
+      return;
+    }
+
+    const float32_t *values = plot->lines + (uint64_t)line * plot->sample_count;
+    const Vec2 range = plot->line_ranges[line];
+    for (uint32_t column = 0u; column < columns; ++column) {
+      const uint32_t start = vkr_ui_plot_column_start(plot, column, columns);
+      const uint32_t end = vkr_ui_plot_column_start(plot, column + 1u, columns);
+      float32_t value = values[start];
+      for (uint32_t sample = start + 1u; sample < end; ++sample) {
+        value = Max(value, values[sample]);
+      }
+      const float32_t left = vkr_ui_plot_column_x(content, column, columns);
+      const float32_t right =
+          vkr_ui_plot_column_x(content, column + 1u, columns);
+      points[column] = (Vec2){
+          (left + right) * 0.5f - content.x,
+          vkr_ui_plot_y(value, range.x, range.y, content) - content.y,
+      };
+    }
+    uint32_t count = columns;
+    /* One column still draws a line across the plot. */
+    if (columns == 1u) {
+      points[1] = (Vec2){content.width, points[0].y};
+      points[0].x = 0.0f;
+      count = 2u;
+    }
+    (void)vkr_ui_draw_buffer_polyline(
+        buffer, content, points, count, width_px,
+        vkr_ui_linear_color(plot->line_colors[line]),
+        vkr_ui_plot_run_hash(system, plot, 2u + line));
+  }
+}
+
+/* A column-wide band at least `min_width_px` wide, centred on its column. */
+vkr_internal VkrUiRect vkr_ui_plot_column_band(VkrUiRect content,
+                                               uint32_t first, uint32_t last,
+                                               uint32_t columns,
+                                               float32_t min_width_px) {
+  const float32_t left = vkr_ui_plot_column_x(content, first, columns);
+  const float32_t right = vkr_ui_plot_column_x(content, last + 1u, columns);
+  const float32_t width = Max(right - left, min_width_px);
+  const float32_t x = vkr_round_f32((left + right - width) * 0.5f);
+  return (VkrUiRect){x, content.y, width, content.height};
+}
+
+/* Back to front: range and hover bands, bars, reference lines, lines and
+ * the cursor, clipped to the content box. */
+vkr_internal void vkr_ui_emit_plot(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
+                                   const VkrUiFrameNode *node,
+                                   VkrUiRect content) {
+  const VkrUiPlotData *plot = node->plot;
+  if (!plot || !vkr_ui_rect_has_area(content) ||
+      !vkr_ui_draw_buffer_push_clip(buffer, content)) {
+    return;
+  }
+
+  const float32_t scale = system->content_scale;
+  const uint32_t columns = vkr_ui_plot_column_count(plot, content.width);
+  if (plot->range_first != VKR_UI_PLOT_NONE) {
+    const uint32_t first =
+        vkr_ui_plot_sample_column(plot, plot->range_first, columns);
+    const uint32_t last =
+        vkr_ui_plot_sample_column(plot, plot->range_last, columns);
+    vkr_ui_emit_rect(
+        buffer, vkr_ui_plot_column_band(content, first, last, columns, 1.0f),
+        plot->range_color, (Vec4){0});
+  }
+  if (plot->hovered != VKR_UI_PLOT_NONE) {
+    const uint32_t column =
+        vkr_ui_plot_sample_column(plot, plot->hovered, columns);
+    vkr_ui_emit_rect(buffer,
+                     vkr_ui_plot_column_band(content, column, column, columns,
+                                             Max(1.0f, vkr_round_f32(scale))),
+                     plot->hover_color, (Vec4){0});
+  }
+  if (plot->bar_count) {
+    vkr_ui_emit_plot_bars(system, buffer, plot, content, columns);
+  }
+  if (plot->reference_count) {
+    vkr_ui_emit_plot_references(system, buffer, plot, content);
+  }
+  if (plot->line_count) {
+    vkr_ui_emit_plot_lines(system, buffer, plot, content, columns);
+  }
+  if (plot->cursor != VKR_UI_PLOT_NONE) {
+    const uint32_t column =
+        vkr_ui_plot_sample_column(plot, plot->cursor, columns);
+    VkrUiRect line =
+        vkr_ui_plot_column_band(content, column, column, columns, 0.0f);
+    const float32_t width = Max(1.0f, vkr_round_f32(1.5f * scale));
+    line.x = vkr_round_f32(line.x + (line.width - width) * 0.5f);
+    line.width = width;
+    vkr_ui_emit_rect(buffer, line, plot->cursor_color, (Vec4){0});
+  }
+  (void)vkr_ui_draw_buffer_pop_clip(buffer);
+}
+
 /* A cubic curve, as one quad per segment. */
 vkr_internal void vkr_ui_emit_bezier(const VkrUiSystem *system,
                                      VkrUiDrawBuffer *buffer,
@@ -3631,6 +4285,9 @@ vkr_internal void vkr_ui_emit_node(VkrUiSystem *system, uint32_t node_index,
   case VKR_UI_NODE_CODE:
     vkr_ui_emit_code(system, buffer, node, content);
     break;
+  case VKR_UI_NODE_PLOT:
+    vkr_ui_emit_plot(system, buffer, node, content);
+    break;
   case VKR_UI_NODE_IMAGE:
     vkr_ui_emit_image(buffer, node, content);
     break;
@@ -3790,12 +4447,76 @@ vkr_internal void vkr_ui_presence_transform(VkrUiDrawCommand *commands,
       command->corners_px[corner] =
           vkr_ui_presence_point(command->corners_px[corner], origin, s, dy);
     command->corner_radius_px = vec4_scale(command->corner_radius_px, s);
+    command->run_scale *= s;
     command->border_px *= s;
     command->softness_px *= s;
     command->screen_px_range *= s;
     command->color.w *= eased;
     command->border_color.w *= eased;
   }
+}
+
+vkr_internal uint64_t vkr_ui_run_bytes(const VkrUiDrawCommand *command) {
+  if (command->run == VKR_UI_DRAW_RUN_RECTS) {
+    return (uint64_t)command->run_count * sizeof(*command->run_rects);
+  }
+  if (command->run == VKR_UI_DRAW_RUN_POLYLINE) {
+    return (uint64_t)command->run_count * sizeof(*command->run_points);
+  }
+  return 0u;
+}
+
+/* Copies the run data of the presence's kept commands into its own storage
+ * and repoints them there, since the frame's data is gone by the time the
+ * panel fades out. False without memory; the panel then snaps out. */
+vkr_internal bool8_t vkr_ui_presence_keep_runs(VkrUiSystem *system,
+                                               VkrUiPresenceState *presence) {
+  /* Each copy starts on the alignment of the rectangles' colors. */
+  const uint64_t align = AlignOf(VkrUiDrawRect);
+  uint64_t bytes = 0u;
+  for (uint32_t i = 0u; i < presence->command_count; ++i) {
+    bytes += AlignPow2(vkr_ui_run_bytes(&presence->commands[i]), align);
+  }
+  if (bytes == 0u) {
+    return true_v;
+  }
+
+  if (bytes > presence->run_data_capacity) {
+    uint64_t capacity = Max(presence->run_data_capacity, (uint64_t)KB(4));
+    while (capacity < bytes) {
+      capacity *= 2u;
+    }
+    uint8_t *grown = vkr_allocator_alloc(&system->retained_allocator, capacity,
+                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!grown) {
+      return false_v;
+    }
+    if (presence->run_data) {
+      vkr_allocator_free(&system->retained_allocator, presence->run_data,
+                         presence->run_data_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    presence->run_data = grown;
+    presence->run_data_capacity = capacity;
+  }
+
+  uint8_t *cursor = presence->run_data;
+  for (uint32_t i = 0u; i < presence->command_count; ++i) {
+    VkrUiDrawCommand *command = &presence->commands[i];
+    const uint64_t size = vkr_ui_run_bytes(command);
+    if (size == 0u) {
+      continue;
+    }
+    if (command->run == VKR_UI_DRAW_RUN_RECTS) {
+      MemCopy(cursor, command->run_rects, size);
+      command->run_rects = (const VkrUiDrawRect *)cursor;
+    } else {
+      MemCopy(cursor, command->run_points, size);
+      command->run_points = (const Vec2 *)cursor;
+    }
+    cursor += AlignPow2(size, align);
+  }
+  return true_v;
 }
 
 /* After the root's commands: keeps each shown transitioning panel's picture
@@ -3838,6 +4559,8 @@ vkr_internal void vkr_ui_presence_emit(VkrUiSystem *system,
     presence->command_count = count <= presence->command_capacity ? count : 0u;
     if (presence->command_count)
       MemCopy(presence->commands, commands, count * sizeof(*commands));
+    if (presence->command_count && !vkr_ui_presence_keep_runs(system, presence))
+      presence->command_count = 0u;
     presence->rect_px = node->rect;
     vkr_ui_presence_transform(commands, count, presence->kind, node->rect,
                               presence->t, system->content_scale);
@@ -3943,6 +4666,9 @@ vkr_internal uint32_t vkr_ui_command_estimate(VkrUiSystem *system) {
                     ? 9u + vkr_ui_bezier_segments(node)
                 : node->kind == VKR_UI_NODE_CODE ? 9u + node->code_glyphs
                                                  : 9u;
+    /* Range, hover, bars, references and cursor, plus one run per line. */
+    if (node->kind == VKR_UI_NODE_PLOT && node->plot)
+      estimate += 5u + node->plot->line_count;
     if (node->icon != VKR_UI_ICON_NONE)
       estimate += 20u;
     if (node->retained->text_live) {
@@ -4213,7 +4939,22 @@ vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
 
   if (tooltip != VKR_UI_NODE_NONE) {
     VkrUiFrameNode *node = &system->frame_nodes[tooltip];
-    const VkrUiRect anchor = system->frame_nodes[tooltip_source].rect;
+    const VkrUiFrameNode *owner = &system->frame_nodes[tooltip_source];
+    VkrUiRect anchor = owner->rect;
+    /* A plot's tooltip describes the hovered sample, so it starts at that
+     * sample's column; the hovered sample is part of the plot's hash. */
+    if (owner->kind == VKR_UI_NODE_PLOT && owner->plot &&
+        owner->plot->hovered != VKR_UI_PLOT_NONE) {
+      const VkrUiRect content =
+          vkr_ui_style_content_rect(owner->rect, &owner->style);
+      if (vkr_ui_rect_has_area(content)) {
+        const uint32_t columns =
+            vkr_ui_plot_column_count(owner->plot, content.width);
+        const uint32_t column = vkr_ui_plot_sample_column(
+            owner->plot, owner->plot->hovered, columns);
+        anchor.x = vkr_ui_plot_column_x(content, column, columns);
+      }
+    }
     const float32_t gap = 5.0f * system->content_scale;
     const float32_t width = Min(node->intrinsic_size.x, target.width);
     const float32_t height = Min(node->intrinsic_size.y, target.height);

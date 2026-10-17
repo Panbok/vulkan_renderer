@@ -9,6 +9,24 @@
 
 #define VKR_UI_CLIP_STACK_CAPACITY 32u
 
+/** One rectangle of a rect run, in pixels from the run's origin. */
+typedef struct VkrUiDrawRect {
+  VkrUiRect rect;
+  /** Linear color, multiplied by the command's `color`. */
+  Vec4 color;
+} VkrUiDrawRect;
+
+/** Batched geometry of a draw command: one command draws many primitives,
+ * such as the bars of a chart. */
+typedef enum VkrUiDrawRun {
+  VKR_UI_DRAW_RUN_NONE = 0,
+  /** `run_count` flat rectangles, each with its own color. */
+  VKR_UI_DRAW_RUN_RECTS,
+  /** An open polyline through `run_count` points, stroked `run_width_px`
+   * wide in `color` with a one-device-pixel alpha fringe on both sides. */
+  VKR_UI_DRAW_RUN_POLYLINE,
+} VkrUiDrawRun;
+
 typedef struct VkrUiDrawCommand {
   VkrUiRect rect_px;
   /** Prepared convex icon polygon: inner then outer coverage ring, Y-down.
@@ -33,6 +51,23 @@ typedef struct VkrUiDrawCommand {
   /** A plain quad's fill blends `color` into `border_color` across it:
    * VKR_UI_DRAW_GRADIENT_*. Vertex colors interpolate in linear space. */
   uint32_t gradient;
+  /** Batched geometry, VKR_UI_DRAW_RUN_*. Rectangles and points are in
+   * pixels from rect_px's origin, multiplied by run_scale, so moving or
+   * scaling rect_px moves the run with it. The run draws only inside
+   * rect_px, which is also its damage bound. The data is borrowed until the
+   * draw list is built. */
+  uint32_t run;
+  uint32_t run_count;
+  union {
+    const VkrUiDrawRect *run_rects;
+    const Vec2 *run_points;
+  };
+  float32_t run_scale;
+  /** Polyline stroke width in pixels before run_scale. */
+  float32_t run_width_px;
+  /** Fingerprint of the borrowed run data; tile damage hashes it in place of
+   * the data, so it must change whenever the data does. */
+  uint64_t run_hash;
 } VkrUiDrawCommand;
 
 enum {
@@ -91,6 +126,21 @@ bool8_t vkr_ui_draw_buffer_text_quad(VkrUiDrawBuffer *buffer, VkrUiRect rect_px,
                                      VkrUiDrawMode text_mode,
                                      float32_t screen_px_range,
                                      Vec2 sdf_unit_range);
+/** `count` flat rectangles in one command, placed from `bounds_px`'s origin
+ * and clipped to it. `rects` stays borrowed until the draw list is built;
+ * `content_hash` must change whenever the rectangles do. */
+bool8_t vkr_ui_draw_buffer_rects(VkrUiDrawBuffer *buffer, VkrUiRect bounds_px,
+                                 const VkrUiDrawRect *rects, uint32_t count,
+                                 uint64_t content_hash);
+/** An antialiased open polyline through `count` (at least two) points, placed
+ * from `bounds_px`'s origin and clipped to it. A joint follows the mitre of
+ * its two segments, limited to four times the width. `points` stays borrowed
+ * until the draw list is built; `content_hash` must change whenever the
+ * points do. Colors are linear. */
+bool8_t vkr_ui_draw_buffer_polyline(VkrUiDrawBuffer *buffer,
+                                    VkrUiRect bounds_px, const Vec2 *points,
+                                    uint32_t count, float32_t width_px,
+                                    Vec4 color, uint64_t content_hash);
 /** Rounded box with an optional inner border. A positive softness feathers
  * the edge over that many pixels on each side for shadows and glows; the
  * emitted quad grows to cover the feather. Colors are linear. */

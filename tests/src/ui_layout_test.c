@@ -380,6 +380,105 @@ static void test_ui_icon_coverage_and_capacity(void) {
   printf("  test_ui_icon_coverage_and_capacity PASSED\n");
 }
 
+static void test_ui_draw_runs(void) {
+  printf("  Running test_ui_draw_runs...\n");
+  VkrUiDrawCommand commands[2] = {0};
+  VkrUiDrawBuffer buffer = {0};
+  const VkrUiRect bounds = {10.0f, 20.0f, 50.0f, 30.0f};
+  // One command carries many rectangles placed from its bounds' origin; an
+  // empty rectangle emits nothing and the scissor never leaves the bounds.
+  const VkrUiDrawRect rects[3] = {
+      {.rect = {0.0f, 0.0f, 5.0f, 10.0f}, .color = {1.0f, 0.5f, 0.25f, 1.0f}},
+      {.rect = {5.0f, 0.0f, 0.0f, 10.0f}, .color = {1.0f, 1.0f, 1.0f, 1.0f}},
+      {.rect = {10.0f, 5.0f, 5.0f, 5.0f}, .color = {0.0f, 1.0f, 0.0f, 0.5f}},
+  };
+  assert(vkr_ui_draw_buffer_begin(&buffer, commands, ArrayCount(commands),
+                                  (VkrUiRect){0.0f, 0.0f, 100.0f, 80.0f}));
+  assert(vkr_ui_draw_buffer_push_clip(&buffer,
+                                      (VkrUiRect){0.0f, 0.0f, 40.0f, 80.0f}));
+  assert(vkr_ui_draw_buffer_rects(&buffer, bounds, rects, 3u, 7u));
+  VkrUiVertex vertices[12];
+  uint32_t indices[36];
+  VkrUiDrawBatch batches[2];
+  VkrUiDrawOutput output = {.vertices = vertices,
+                            .vertex_capacity = 12u,
+                            .indices = indices,
+                            .index_capacity = 36u,
+                            .batches = batches,
+                            .batch_capacity = 2u};
+  assert(vkr_ui_draw_build(&buffer, 100u, 80u, &output).status ==
+         VKR_UI_DRAW_BUILD_OK);
+  assert(output.vertex_count == 8u && output.index_count == 12u);
+  assert(output.batch_count == 1u && batches[0].index_count == 12u);
+  assert(batches[0].scissor_rect_px.x == 10.0f &&
+         batches[0].scissor_rect_px.width == 30.0f &&
+         batches[0].scissor_rect_px.height == 30.0f);
+  assert(vertices[0].position.x == 10.0f && vertices[0].position.y == 50.0f);
+  assert(vertices[2].position.x == 15.0f && vertices[2].position.y == 60.0f);
+  assert(vertices[4].position.x == 20.0f && vertices[4].position.y == 50.0f);
+  assert(vertices[4].color.y == 1.0f && vertices[4].color.w == 0.5f);
+  // A presence transform scales a run through run_scale and fades it through
+  // the command color, so the borrowed rectangles stay untouched.
+  commands[0].run_scale = 2.0f;
+  commands[0].color.w = 0.5f;
+  assert(vkr_ui_draw_build(&buffer, 100u, 80u, &output).status ==
+         VKR_UI_DRAW_BUILD_OK);
+  assert(vertices[4].position.x == 30.0f && vertices[4].position.y == 40.0f);
+  assert(ui_near(vertices[0].color.w, 0.5f) &&
+         ui_near(vertices[4].color.w, 0.25f));
+  // Capacity rejects a run whole, as it does a polygon.
+  output.vertex_capacity = 7u;
+  VkrUiDrawBuildResult result = vkr_ui_draw_build(&buffer, 100u, 80u, &output);
+  assert(result.status == VKR_UI_DRAW_BUILD_TRUNCATED &&
+         result.dropped_command_count == 1u && output.vertex_count == 0u);
+
+  // A polyline keeps an opaque core half a pixel inside each stroke edge and
+  // a transparent fringe half a pixel outside it.
+  Vec2 points[3] = {{0.0f, 10.0f}, {20.0f, 10.0f}, {40.0f, 10.0f}};
+  assert(vkr_ui_draw_buffer_begin(&buffer, commands, ArrayCount(commands),
+                                  (VkrUiRect){0.0f, 0.0f, 100.0f, 80.0f}));
+  assert(vkr_ui_draw_buffer_polyline(&buffer, bounds, points, 3u, 2.0f,
+                                     (Vec4){1.0f, 1.0f, 1.0f, 1.0f}, 9u));
+  output.vertex_capacity = 12u;
+  assert(vkr_ui_draw_build(&buffer, 100u, 80u, &output).status ==
+         VKR_UI_DRAW_BUILD_OK);
+  assert(output.vertex_count == 12u && output.index_count == 36u);
+  assert(ui_near(vertices[0].position.x, 10.0f) &&
+         ui_near(vertices[0].position.y, 48.5f) && vertices[0].color.w == 0.0f);
+  assert(ui_near(vertices[1].position.y, 49.5f) && vertices[1].color.w == 1.0f);
+  assert(ui_near(vertices[3].position.y, 51.5f) && vertices[3].color.w == 0.0f);
+  assert(ui_near(vertices[8].position.x, 50.0f));
+  for (uint32_t i = 0u; i < output.index_count; ++i) {
+    assert(indices[i] < output.vertex_count);
+  }
+  // Borrowed points are validated when the list is built.
+  points[1].y = NAN;
+  assert(vkr_ui_draw_build(&buffer, 100u, 80u, &output).status ==
+         VKR_UI_DRAW_BUILD_INVALID);
+  points[1].y = 10.0f;
+
+  // Tile damage follows the run's content fingerprint, not its pointer.
+  Arena *arena = arena_create(MB(1), MB(1));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  VkrUiTileCache cache = {0};
+  vkr_ui_tile_cache_init(&cache, &allocator);
+  VkrUiTileFrame frame = {0};
+  assert(vkr_ui_tile_build(&cache, &allocator, 100u, 80u, 64u, commands, 1u,
+                           NULL, 0u, &frame));
+  assert(vkr_ui_tile_build(&cache, &allocator, 100u, 80u, 64u, commands, 1u,
+                           NULL, 0u, &frame));
+  assert(frame.dirty_tile_count == 0u);
+  commands[0].run_hash = 10u;
+  assert(vkr_ui_tile_build(&cache, &allocator, 100u, 80u, 64u, commands, 1u,
+                           NULL, 0u, &frame));
+  assert(frame.dirty_tile_count == 1u && frame.dirty_tiles[0]);
+  vkr_ui_tile_cache_destroy(&cache);
+  arena_destroy(arena);
+  printf("  test_ui_draw_runs PASSED\n");
+}
+
 static void test_ui_tile_hashing_and_motion_damage(void) {
   printf("  Running test_ui_tile_hashing_and_motion_damage...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -796,6 +895,7 @@ bool32_t run_ui_layout_tests(void) {
   test_ui_style_content_scale();
   test_ui_draw_build();
   test_ui_icon_coverage_and_capacity();
+  test_ui_draw_runs();
   test_ui_tile_hashing_and_motion_damage();
   test_ui_dock_layout_drag_and_json_round_trip();
   test_ui_dock_close_nested_sibling_focus();

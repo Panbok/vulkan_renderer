@@ -393,6 +393,97 @@ typedef struct VkrUiCodeView {
   Vec4 caret_color;
 } VkrUiCodeView;
 
+/* A plot draws at most this many samples; the rest are reported truncated. */
+#define VKR_UI_PLOT_SAMPLE_CAPACITY 4096u
+#define VKR_UI_PLOT_BAR_SERIES_CAPACITY 8u
+#define VKR_UI_PLOT_LINE_SERIES_CAPACITY 4u
+#define VKR_UI_PLOT_REFERENCE_CAPACITY 8u
+#define VKR_UI_PLOT_PALETTE_CAPACITY 16u
+/* Bar rectangles one plot draws at most. Columns are at least one pixel
+ * wide and number at most this budget divided by the bar series; samples
+ * sharing a column draw its tallest one. */
+#define VKR_UI_PLOT_BAR_BUDGET 4096u
+#define VKR_UI_PLOT_NONE UINT32_MAX
+
+/** One series of a plot: the plot's `sample_count` values. */
+typedef struct VkrUiPlotSeries {
+  const float32_t *values;
+  Vec4 color;
+  /** Lines only: their own value range when y_max > y_min, such as memory
+   * on its own axis; otherwise the plot's range. */
+  float32_t y_min;
+  float32_t y_max;
+} VkrUiPlotSeries;
+
+/** A horizontal line across the plot at `value`, such as a frame budget. */
+typedef struct VkrUiPlotReference {
+  float32_t value;
+  Vec4 color;
+  /** Zero draws one point. */
+  float32_t width_pt;
+  bool8_t dashed;
+} VkrUiPlotReference;
+
+/** A chart of `sample_count` samples drawn left to right inside the widget's
+ * content box, clipped to it. Every pointer is borrowed for the call only:
+ * the plot copies what it draws. Values clamp to [y_min, y_max] and
+ * non-finite ones count as zero. Bars grow from zero, or from the range edge
+ * nearer it. Colors are authored like style colors; a zero-initialized color
+ * draws nothing, so a zeroed config with samples, a range and one series is
+ * valid. */
+typedef struct VkrUiPlotConfig {
+  uint32_t sample_count;
+  float32_t y_min;
+  float32_t y_max;
+  /** Bars, stacked in series order: positive values upward from zero and
+   * negative values downward, such as differences from a median frame. */
+  const VkrUiPlotSeries *bars;
+  uint32_t bar_count;
+  /** Optional per-sample palette index for the first bar series, such as
+   * a frame time against its budget; an index at or past palette_count keeps
+   * the series color. */
+  const uint8_t *bar_colors;
+  const Vec4 *palette;
+  uint32_t palette_count;
+  /** Polylines through each column's highest value, over the bars. */
+  const VkrUiPlotSeries *lines;
+  uint32_t line_count;
+  /** Zero draws 1.5 points. */
+  float32_t line_width_pt;
+  const VkrUiPlotReference *references;
+  uint32_t reference_count;
+  /** The selected sample, as a vertical line over everything. */
+  uint32_t cursor;
+  Vec4 cursor_color;
+  /** Highlighted samples [range_first, range_last] behind the bars, such as
+   * a brushed range. */
+  uint32_t range_first;
+  uint32_t range_last;
+  Vec4 range_color;
+  /** Tint of the hovered column behind the bars. */
+  Vec4 hover_color;
+} VkrUiPlotConfig;
+
+/** A plot's pointer interaction this frame, in sample indices. Samples that
+ * share a column report its tallest. */
+typedef struct VkrUiPlotResult {
+  VkrUiId id;
+  /** Sample under the pointer, or VKR_UI_PLOT_NONE. A caller can describe
+   * it in the widget tooltip of its next build; a plot's tooltip follows the
+   * pointer. */
+  uint32_t hovered;
+  /** Sample pressed and released without a drag, or VKR_UI_PLOT_NONE. */
+  uint32_t clicked;
+  /** Dragged columns' samples [brush_first, brush_last], in order, while
+   * `brushing` and on the release frame, when `brushed` is set. */
+  uint32_t brush_first;
+  uint32_t brush_last;
+  bool8_t brushing;
+  bool8_t brushed;
+  /** Samples past VKR_UI_PLOT_SAMPLE_CAPACITY were not drawn. */
+  bool8_t truncated;
+} VkrUiPlotResult;
+
 VkrUiPanelConfig vkr_ui_panel_config_default(void);
 VkrUiWidgetConfig vkr_ui_widget_config_default(void);
 
@@ -410,6 +501,10 @@ typedef struct VkrUiPresenceState {
   VkrUiDrawCommand *commands;
   uint32_t command_count;
   uint32_t command_capacity;
+  /** Copies of the batched rectangles and points `commands` draw, which
+   * their frame data no longer holds. Grow-only, like `commands`. */
+  uint8_t *run_data;
+  uint64_t run_data_capacity;
 } VkrUiPresenceState;
 
 /** Persistent UI system plus one frame's scratch-backed immediate context. */
@@ -634,6 +729,14 @@ Vec2 vkr_ui_code_cell_size(VkrUiSystem *system, VkrFontHandle font,
 bool8_t vkr_ui_code_view(VkrUiSystem *system, String8 id_label,
                          const VkrUiCodeView *view,
                          const VkrUiWidgetConfig *config, VkrUiId *out_id);
+/** Draws `plot` as one widget whatever its sample count, filling its grid
+ * cell; style min_size_pt sets its intrinsic size (default 120 x 48). It
+ * takes pointer input but not keyboard focus. An invalid plot, such as one
+ * with y_max <= y_min or a series without values, draws only the widget
+ * box and reports no interaction. */
+VkrUiPlotResult vkr_ui_plot(VkrUiSystem *system, String8 id_label,
+                            const VkrUiPlotConfig *plot,
+                            const VkrUiWidgetConfig *config);
 
 /** Set an authored widget's left/top margins and fixed size in points before
  * draw preparation. Input keeps using the preceding presented bounds. */

@@ -46,6 +46,14 @@ vkr_ui_tile_command_fingerprint(const VkrUiDrawCommand *command) {
   VKR_UI_TILE_HASH_FIELD(screen_px_range);
   VKR_UI_TILE_HASH_FIELD(sdf_unit_range);
   VKR_UI_TILE_HASH_FIELD(gradient);
+  /* A run's borrowed data enters through its fingerprint, not its pointer. */
+  if (command->run != VKR_UI_DRAW_RUN_NONE) {
+    VKR_UI_TILE_HASH_FIELD(run);
+    VKR_UI_TILE_HASH_FIELD(run_count);
+    VKR_UI_TILE_HASH_FIELD(run_scale);
+    VKR_UI_TILE_HASH_FIELD(run_width_px);
+    VKR_UI_TILE_HASH_FIELD(run_hash);
+  }
 #undef VKR_UI_TILE_HASH_FIELD
   return hash;
 }
