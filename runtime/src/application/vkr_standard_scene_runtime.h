@@ -414,9 +414,13 @@ bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
  * its playhead, before the frame's transform update. */
 void vkr_standard_scene_recording_advance(VkrStandardSceneRuntime *runtime,
                                           float64_t delta);
-/** Removes the poses an open playback applied; call before closing it. */
+/** Removes the poses an open playback applied; they bind again on the next
+ * frame. */
 void vkr_standard_scene_recording_release_poses(
     VkrStandardSceneRuntime *runtime);
+/** Removes everything an open playback put in the scenes, its poses and its
+ * spawn stand-ins; call before closing it. */
+void vkr_standard_scene_recording_close_world(VkrStandardSceneRuntime *runtime);
 /** An open playback places `camera` at its playhead, with the level's time
  * of day; returns true_v while it owns the camera
  * (vkr_standard_scene_recording.c). */

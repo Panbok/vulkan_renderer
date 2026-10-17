@@ -3593,7 +3593,7 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
     log_error("Recording '%s' did not end cleanly",
               application->recording.bundle_path);
   }
-  vkr_standard_scene_recording_release_poses(application);
+  vkr_standard_scene_recording_close_world(application);
   vkr_recording_playback_close(&application->playback);
   vkr_recording_drive_close(&application->drive);
   vkr_dynamic_volume_selection_destroy(&application->dynamic_volume_selection);

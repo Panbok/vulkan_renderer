@@ -30,6 +30,9 @@ struct VkrSceneModel {
   const char *error;
 };
 
+vkr_internal bool8_t scene_model_copy_path(VkrScene *scene, String8 path,
+                                           String8 *out);
+
 vkr_internal struct VkrSceneModel *scene_model_find(const VkrScene *scene,
                                                     VkrEntityId wrapper) {
   for (struct VkrSceneModel *model = scene->models; model;
@@ -282,6 +285,13 @@ bool8_t vkr_scene_spawn_model(VkrScene *scene, struct VkrRenderAssets *assets,
                                &desc->animation, error)) {
     goto cleanup;
   }
+  /* The paths name the model to readers such as recordings. */
+  if (!scene_model_copy_path(scene, desc->mesh_path, &model->mesh_path) ||
+      !scene_model_copy_path(scene, desc->animation_path,
+                             &model->animation_path)) {
+    *error = "Model spawn allocation failed";
+    goto cleanup;
+  }
   model->status = VKR_SCENE_MODEL_READY;
   model->next = scene->models;
   scene->models = model;
@@ -485,4 +495,28 @@ void vkr_scene_models_shutdown(VkrScene *scene) {
     scene->models = model->next;
     scene_model_free(scene, model);
   }
+}
+
+bool8_t vkr_scene_model_paths(const VkrScene *scene, VkrEntityId wrapper,
+                              String8 *out_mesh, String8 *out_animation) {
+  const struct VkrSceneModel *model =
+      scene ? scene_model_find(scene, wrapper) : NULL;
+  if (!model || model->status == VKR_SCENE_MODEL_FAILED ||
+      !model->mesh_path.length) {
+    return false_v;
+  }
+  *out_mesh = model->mesh_path;
+  *out_animation = model->animation_path;
+  return true_v;
+}
+
+VkrEntityId vkr_scene_model_node(const VkrScene *scene, VkrEntityId wrapper,
+                                 uint32_t node) {
+  const struct VkrSceneModel *model =
+      scene ? scene_model_find(scene, wrapper) : NULL;
+  if (!model || model->status != VKR_SCENE_MODEL_READY ||
+      node >= model->node_count) {
+    return VKR_ENTITY_ID_INVALID;
+  }
+  return model->nodes[node];
 }

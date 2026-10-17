@@ -51,6 +51,10 @@
    VkrRecordingPose.document of one named by a ref. */
 #define VKR_RECORDING_POSE_NODE_NONE UINT32_MAX
 #define VKR_RECORDING_POSE_DOCUMENT_NONE UINT32_MAX
+/* VkrRecordingPose.kind: named by ref or document index, or by spawn id,
+   which `document` then holds. */
+#define VKR_RECORDING_POSE_KIND_DOCUMENT 0u
+#define VKR_RECORDING_POSE_KIND_SPAWN 1u
 /* VkrRecordingPose.container */
 #define VKR_RECORDING_CONTAINER_ACTIVE 0u
 #define VKR_RECORDING_CONTAINER_WORLD 1u
@@ -70,6 +74,15 @@
    edit an undo would revert, zero for none), at the start and at each frame
    whose edits changed it. Watch steps the journals back to it. */
 #define VKR_RECORDING_STREAM_EDIT 12u
+/* Entities scripts spawn, which have no document name: a spawn record is a
+   u32 spawn id, a u8 container, then a u16 length and the mesh path and a
+   u16 length and the animation bank path of its model (both empty for
+   none); a later record of the id gives the model it got. A despawn record
+   is the u32 id of a spawn that went away. */
+#define VKR_RECORDING_STREAM_SPAWN 13u
+#define VKR_RECORDING_STREAM_DESPAWN 14u
+/* Spawns a recording names; later ones are left out. */
+#define VKR_RECORDING_SPAWN_MAX 4096u
 /* Longest tag key or value and event name; longest event payload. */
 #define VKR_RECORDING_TEXT_MAX 63u
 #define VKR_RECORDING_EVENT_PAYLOAD_MAX 256u
@@ -123,12 +136,14 @@ typedef struct VkrRecordingCamera {
    it and its document-stable ref, or, for a node of an imported model, by
    the ref of the nearest ancestor that has one and the glTF node index. A
    document without refs names its entities by document index instead, with
-   a zero ref: stable while the document is unchanged. */
+   a zero ref: stable while the document is unchanged. A script spawn, or a
+   node of a model spawned under one, is named by spawn id (kind SPAWN). */
 typedef struct VkrRecordingPose {
   VkrEntityRef ref;
   uint32_t node;
   uint8_t container;
-  uint8_t reserved[3];
+  uint8_t kind;
+  uint8_t reserved[2];
   /* World translation plus the scene's origin offset. */
   float64_t translation[3];
   /* The world matrix's upper 3x3, column-major. */
@@ -249,6 +264,15 @@ typedef struct VkrRecording {
   VkrRecordingPose *pose_batch;
   uint32_t pose_batch_count;
   uint64_t poses_written;
+  /* Spawns the recording named: their entity ids and containers by spawn
+     id, an open-addressed table of id + 1 by entity, and which spawns are
+     still alive and have their model written. From the recording's memory.
+   */
+  uint64_t *spawn_entities;
+  uint8_t *spawn_containers;
+  uint8_t *spawn_flags;
+  uint32_t *spawn_slots;
+  uint32_t spawn_count;
   /* Gameplay records written, for the summary. */
   uint64_t player_records;
   uint64_t action_records;
@@ -302,6 +326,22 @@ void vkr_recording_poses_flush(VkrRecording *recording);
 /** Writes a player record under the frame being updated. */
 void vkr_recording_player(VkrRecording *recording,
                           const VkrRecordingPlayer *player);
+
+/* VkrRecording.spawn_flags */
+#define VKR_RECORDING_SPAWN_ALIVE 1u
+#define VKR_RECORDING_SPAWN_MODEL 2u
+
+/** The spawn id of `entity` in `container`, naming it on first sight and
+    writing its spawn record; UINT32_MAX when the table is full. */
+uint32_t vkr_recording_spawn_id(VkrRecording *recording, uint64_t entity,
+                                uint8_t container);
+
+/** Writes the model a spawn got, once. */
+void vkr_recording_spawn_model(VkrRecording *recording, uint32_t id,
+                               String8 mesh, String8 animation);
+
+/** Writes that a spawn went away; its id is not reused. */
+void vkr_recording_despawn(VkrRecording *recording, uint32_t id);
 
 /** Writes where the edit journals stand, under the frame on screen. */
 void vkr_recording_edit(VkrRecording *recording, uint64_t sequence);

@@ -200,6 +200,8 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
 
 /* Sampling period of the process's resident memory, in seconds. */
 #define VKR_RECORDING_RESIDENT_PERIOD 0.1
+/* Open-addressed spawn slots: twice the spawns, a power of two. */
+#define VKR_RECORDING_SPAWN_SLOTS (2u * VKR_RECORDING_SPAWN_MAX)
 /* Open-addressed pass name slots: twice the names, a power of two. */
 #define VKR_RECORDING_PASS_SLOTS (2u * VKR_RECORDING_PASS_MAX)
 
@@ -333,6 +335,29 @@ vkr_internal bool8_t vkr_recording_passes_create(VkrRecording *recording) {
   return true_v;
 }
 
+/* The spawn table, from the recording's memory. */
+vkr_internal bool8_t vkr_recording_spawns_create(VkrRecording *recording) {
+  const uint64_t spawns = VKR_RECORDING_SPAWN_MAX;
+  recording->spawn_entities =
+      vkr_allocator_alloc(&recording->allocator, sizeof(uint64_t) * spawns,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  recording->spawn_containers = vkr_allocator_alloc(
+      &recording->allocator, spawns, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  recording->spawn_flags = vkr_allocator_alloc(&recording->allocator, spawns,
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  recording->spawn_slots = vkr_allocator_alloc(
+      &recording->allocator,
+      sizeof(uint32_t) * (uint64_t)VKR_RECORDING_SPAWN_SLOTS,
+      VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  if (!recording->spawn_entities || !recording->spawn_containers ||
+      !recording->spawn_flags || !recording->spawn_slots) {
+    return false_v;
+  }
+  MemZero(recording->spawn_slots,
+          sizeof(uint32_t) * (uint64_t)VKR_RECORDING_SPAWN_SLOTS);
+  return true_v;
+}
+
 bool8_t vkr_recording_start(VkrRecording *recording,
                             const VkrRecordingConfig *config) {
   vkr_assert(recording != NULL && config != NULL);
@@ -365,7 +390,7 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
   VkrRecordingStream streams[16];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 4u <= 16u,
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 6u <= 16u,
                  "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
@@ -388,13 +413,17 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         &recording->allocator,
         sizeof(VkrRecordingPose) * (uint64_t)VKR_RECORDING_POSE_BATCH,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!recording->pose_batch) {
+    if (!recording->pose_batch || !vkr_recording_spawns_create(recording)) {
       goto cleanup;
     }
     recording->poses_enabled = true_v;
     /* Variable records of VkrRecordingPose entries. */
     streams[stream_count++] =
         (VkrRecordingStream){.id = VKR_RECORDING_STREAM_POSE, .name = "pose"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_SPAWN, .name = "spawn"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_DESPAWN, .name = "despawn"};
   }
   if (config->metrics && config->passes) {
     if (!vkr_recording_passes_create(recording)) {
@@ -693,6 +722,86 @@ void vkr_recording_player(VkrRecording *recording,
   }
 }
 
+/* A spawn record: the id, the container, then the model's paths. */
+vkr_internal void vkr_recording_spawn_record(VkrRecording *recording,
+                                             uint32_t id, String8 mesh,
+                                             String8 animation) {
+  const uint16_t mesh_length =
+      (uint16_t)Min(mesh.length, (uint64_t)VKR_RECORDING_PATH_MAX - 1u);
+  const uint16_t animation_length =
+      (uint16_t)Min(animation.length, (uint64_t)VKR_RECORDING_PATH_MAX - 1u);
+  const uint64_t frame = recording->frame > 0u ? recording->frame - 1u : 0u;
+  uint8_t *record = vkr_recorder_reserve(
+      recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+      VKR_RECORDING_STREAM_SPAWN, frame,
+      9u + (uint32_t)mesh_length + (uint32_t)animation_length);
+  if (!record) {
+    return;
+  }
+  MemCopy(record, &id, sizeof(id));
+  record[4] = recording->spawn_containers[id];
+  MemCopy(record + 5u, &mesh_length, sizeof(mesh_length));
+  if (mesh_length > 0u) {
+    MemCopy(record + 7u, mesh.str, mesh_length);
+  }
+  MemCopy(record + 7u + mesh_length, &animation_length,
+          sizeof(animation_length));
+  if (animation_length > 0u) {
+    MemCopy(record + 9u + mesh_length, animation.str, animation_length);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
+uint32_t vkr_recording_spawn_id(VkrRecording *recording, uint64_t entity,
+                                uint8_t container) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->spawn_slots) {
+    return UINT32_MAX;
+  }
+  const uint32_t mask = VKR_RECORDING_SPAWN_SLOTS - 1u;
+  /* The entity id holds its container's world and a generation, so no two
+     spawns of one session share it. */
+  uint32_t probe = (uint32_t)vkr_hash_table_finalize(entity) & mask;
+  while (recording->spawn_slots[probe] != 0u) {
+    const uint32_t id = recording->spawn_slots[probe] - 1u;
+    if (recording->spawn_entities[id] == entity) {
+      return id;
+    }
+    probe = (probe + 1u) & mask;
+  }
+  if (recording->spawn_count >= VKR_RECORDING_SPAWN_MAX) {
+    return UINT32_MAX;
+  }
+  const uint32_t id = recording->spawn_count++;
+  recording->spawn_entities[id] = entity;
+  recording->spawn_containers[id] = container;
+  recording->spawn_flags[id] = VKR_RECORDING_SPAWN_ALIVE;
+  recording->spawn_slots[probe] = id + 1u;
+  vkr_recording_spawn_record(recording, id, (String8){0}, (String8){0});
+  return id;
+}
+
+void vkr_recording_spawn_model(VkrRecording *recording, uint32_t id,
+                               String8 mesh, String8 animation) {
+  vkr_assert(recording != NULL && recording->active &&
+             id < recording->spawn_count);
+  if (recording->spawn_flags[id] & VKR_RECORDING_SPAWN_MODEL) {
+    return;
+  }
+  recording->spawn_flags[id] |= VKR_RECORDING_SPAWN_MODEL;
+  vkr_recording_spawn_record(recording, id, mesh, animation);
+}
+
+void vkr_recording_despawn(VkrRecording *recording, uint32_t id) {
+  vkr_assert(recording != NULL && recording->active &&
+             id < recording->spawn_count);
+  recording->spawn_flags[id] &= (uint8_t)~VKR_RECORDING_SPAWN_ALIVE;
+  const uint64_t frame = recording->frame > 0u ? recording->frame - 1u : 0u;
+  (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_DESPAWN, frame, &id,
+                           sizeof(id));
+}
+
 void vkr_recording_edit(VkrRecording *recording, uint64_t sequence) {
   vkr_assert(recording != NULL && recording->active);
   const uint64_t frame = recording->frame > 0u ? recording->frame - 1u : 0u;
@@ -894,6 +1003,7 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
   vkr_recording_json_u64(json, "frames", recording->frame);
   if (recording->poses_enabled) {
     vkr_recording_json_u64(json, "poses", recording->poses_written);
+    vkr_recording_json_u64(json, "spawns", recording->spawn_count);
   }
   /* Drive needs both. */
   vkr_recording_json_u64(json, "player_ticks", recording->player_records);

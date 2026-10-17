@@ -870,7 +870,9 @@ static VkrRecordingPose recording_pose(uint8_t ref_byte, uint32_t node,
 /* Detects: poses of one entity split across keys or mixed with another
    entity's, samples out of frame order after records arrive interleaved,
    a lookup that answers the next sample or one before the entity first
-   moved, and a node pose merged with its wrapper's own pose. */
+   moved, a node pose merged with its wrapper's own pose, a spawn named
+   twice, a spawn's model replaced by a later report, its frames lost, and a
+   spawn pose merged with a document one. */
 static void test_recording_pose_playback(void) {
   printf("  Running test_recording_pose_playback...\n");
   RecordingTestMemory memory;
@@ -907,6 +909,25 @@ static void test_recording_pose_playback(void) {
       const VkrRecordingPose pose = recording_pose(0xAAu, 2u, 50.0);
       vkr_recording_pose(&recording, &pose);
     }
+    /* A spawn appears at frame 2, gets its model at 3 and goes at 5; a
+       pose of its node 4 shares its id. */
+    if (f == 2u) {
+      const uint32_t id = vkr_recording_spawn_id(&recording, 0x1234u, 0u);
+      assert(id == 0u && vkr_recording_spawn_id(&recording, 0x1234u, 0u) == 0u);
+      VkrRecordingPose pose = recording_pose(0u, 4u, 70.0);
+      pose.kind = VKR_RECORDING_POSE_KIND_SPAWN;
+      pose.document = id;
+      vkr_recording_pose(&recording, &pose);
+    }
+    if (f == 3u) {
+      vkr_recording_spawn_model(&recording, 0u, string8_lit("a/body.vkb"),
+                                string8_lit("a/body.vka"));
+      vkr_recording_spawn_model(&recording, 0u, string8_lit("ignored.vkb"),
+                                (String8){0});
+    }
+    if (f == 5u) {
+      vkr_recording_despawn(&recording, 0u);
+    }
     vkr_recording_poses_flush(&recording);
   }
   assert(vkr_recording_stop(&recording, NULL));
@@ -915,13 +936,31 @@ static void test_recording_pose_playback(void) {
   char error[192];
   assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
                                      error, sizeof(error)));
-  assert(playback.pose_key_count == 3u && playback.pose_sample_count == 9u);
+  assert(playback.pose_key_count == 4u && playback.pose_sample_count == 10u);
+  assert(playback.spawn_count == 1u && playback.spawns[0].first_frame == 2u &&
+         playback.spawns[0].last_frame == 5u);
+  String8 mesh;
+  String8 animation;
+  assert(vkr_recording_playback_spawn_model(&playback, 0u, &mesh, &animation));
+  assert(vkr_string8_equals_cstr(&mesh, "a/body.vkb") &&
+         vkr_string8_equals_cstr(&animation, "a/body.vka"));
+  uint32_t spawn_key = UINT32_MAX;
+  for (uint32_t k = 0u; k < playback.pose_key_count; ++k) {
+    if (playback.pose_keys[k].kind == VKR_RECORDING_POSE_KIND_SPAWN) {
+      spawn_key = k;
+    }
+  }
+  assert(spawn_key != UINT32_MAX && playback.pose_keys[spawn_key].node == 4u &&
+         playback.pose_keys[spawn_key].document == 0u);
   uint32_t wrapper = UINT32_MAX;
   uint32_t node = UINT32_MAX;
   uint32_t mover = UINT32_MAX;
   for (uint32_t k = 0u; k < playback.pose_key_count; ++k) {
     const VkrRecordingPoseKey *key = &playback.pose_keys[k];
     const uint8_t byte = ((const uint8_t *)&key->ref)[0];
+    if (key->kind == VKR_RECORDING_POSE_KIND_SPAWN) {
+      continue;
+    }
     if (byte == 0xAAu && key->node == VKR_RECORDING_POSE_NODE_NONE) {
       wrapper = k;
     } else if (byte == 0xAAu && key->node == 2u) {

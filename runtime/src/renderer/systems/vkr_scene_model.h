@@ -68,6 +68,17 @@ VkrSceneModelStatus vkr_scene_model_status(const VkrScene *scene,
                                            VkrEntityId wrapper,
                                            const char **error);
 
+/** The mesh and animation bank paths `wrapper`'s spawned model was made
+ * with, the bank empty for a static model; false_v when it holds none.
+ * Borrowed until the model is despawned. */
+bool8_t vkr_scene_model_paths(const VkrScene *scene, VkrEntityId wrapper,
+                              String8 *out_mesh, String8 *out_animation);
+
+/** The entity of source node `node` of `wrapper`'s ready spawned model, or
+ * invalid. */
+VkrEntityId vkr_scene_model_node(const VkrScene *scene, VkrEntityId wrapper,
+                                 uint32_t node);
+
 /** Releases a spawned model: its animation binding and requests, source-node
  * entities and mesh instances, or a requested model's loads. The wrapper
  * itself stays. No-op when `wrapper` holds no spawned model. */

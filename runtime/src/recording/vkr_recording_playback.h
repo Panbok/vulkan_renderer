@@ -29,9 +29,25 @@ typedef struct VkrRecordingPoseKey {
   uint32_t node;
   uint32_t document;
   uint8_t container;
+  /* VKR_RECORDING_POSE_KIND_* */
+  uint8_t kind;
   uint32_t first;
   uint32_t count;
 } VkrRecordingPoseKey;
+
+/* A script spawn the recording named: the frames it lived in and the model
+   it got, its paths in VkrRecordingPlayback.spawn_text. */
+typedef struct VkrRecordingSpawn {
+  uint64_t first_frame;
+  /* The frame it went away in, or UINT64_MAX when it lived to the end. */
+  uint64_t last_frame;
+  uint8_t container;
+  bool8_t seen;
+  uint32_t mesh_offset;
+  uint32_t mesh_length;
+  uint32_t animation_offset;
+  uint32_t animation_length;
+} VkrRecordingSpawn;
 
 /* VkrRecordingPlayback.pose_applied: no sample applied, as before the
    entity's first recorded pose (vkr_recording_playback_pose_at), or a key
@@ -64,6 +80,25 @@ typedef struct VkrRecordingPlayback {
   uint64_t *edit_sequences;
   uint32_t edit_count;
 
+  /* Script spawns by spawn id, and the text their paths point into. */
+  VkrRecordingSpawn *spawns;
+  uint32_t spawn_count;
+  char *spawn_text;
+  uint64_t spawn_text_bytes;
+  uint64_t spawn_text_capacity;
+  /* The runtime's stand-ins for spawns with a model, VkrEntityId values by
+     spawn id, and whether each shows. */
+  uint64_t *spawn_proxies;
+  uint8_t *spawn_shown;
+  /* The node keys of each spawn: spawn_node_keys[spawn_node_first[id] ..
+     spawn_node_first[id + 1]), and the frame whose node pose the animated
+     stand-ins last took, UINT64_MAX for none. */
+  uint32_t *spawn_node_first;
+  uint32_t *spawn_node_keys;
+  /* Each spawn's own pose key, UINT32_MAX for none. */
+  uint32_t *spawn_self_key;
+  uint64_t spawn_pose_frame;
+
   /* Recorded poses, grouped by key and ordered by frame. */
   VkrRecordingPoseSample *pose_samples;
   uint64_t pose_sample_count;
@@ -73,6 +108,8 @@ typedef struct VkrRecordingPlayback {
      (vkr_standard_scene_recording.c): VkrEntityId values, invalid for a key
      the scene does not hold, and the sample each key last applied. */
   bool8_t poses_bound;
+  /* Some spawn keys wait for their stand-in's model to load. */
+  bool8_t poses_pending;
   uint64_t *pose_entities;
   uint32_t *pose_applied;
 
@@ -122,6 +159,12 @@ uint64_t vkr_recording_playback_frame_at(const VkrRecordingPlayback *playback,
     entity had not moved yet. */
 uint32_t vkr_recording_playback_pose_at(const VkrRecordingPlayback *playback,
                                         uint32_t key, uint64_t frame);
+
+/** The mesh and animation paths of spawn `id`'s model, NUL-terminated;
+    false_v for a spawn without one. */
+bool8_t vkr_recording_playback_spawn_model(const VkrRecordingPlayback *playback,
+                                           uint32_t id, String8 *out_mesh,
+                                           String8 *out_animation);
 
 /** Where the edit journals stood at `frame`: the last edit record at or
     before it, else the start's. False for a recording without edit records.

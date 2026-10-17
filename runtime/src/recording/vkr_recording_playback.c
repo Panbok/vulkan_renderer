@@ -111,8 +111,60 @@ vkr_internal bool8_t vkr_recording_count(VkrRecordingLoad *load,
   } else if (record->stream == VKR_RECORDING_STREAM_EDIT &&
              record->size == sizeof(uint64_t)) {
     ++playback->edit_count;
+  } else if (record->stream == VKR_RECORDING_STREAM_SPAWN &&
+             record->size >= 9u) {
+    uint32_t id = 0u;
+    MemCopy(&id, record->data, sizeof(id));
+    if (id < VKR_RECORDING_SPAWN_MAX) {
+      playback->spawn_count = Max(playback->spawn_count, id + 1u);
+      playback->spawn_text_bytes += record->size;
+    }
   }
   return true_v;
+}
+
+/* Fills a spawn from a spawn record: its first frame and, when the record
+   carries one, its model's paths. */
+vkr_internal void vkr_recording_fill_spawn(VkrRecordingPlayback *playback,
+                                           const VkrRecordingRecord *record) {
+  uint32_t id = 0u;
+  MemCopy(&id, record->data, sizeof(id));
+  if (record->size < 9u || id >= playback->spawn_count) {
+    return;
+  }
+  uint16_t mesh_length = 0u;
+  uint16_t animation_length = 0u;
+  MemCopy(&mesh_length, record->data + 5u, sizeof(mesh_length));
+  if (7u + (uint32_t)mesh_length + 2u > record->size) {
+    return;
+  }
+  MemCopy(&animation_length, record->data + 7u + mesh_length,
+          sizeof(animation_length));
+  if (9u + (uint32_t)mesh_length + animation_length != record->size) {
+    return;
+  }
+  VkrRecordingSpawn *spawn = &playback->spawns[id];
+  if (!spawn->seen) {
+    spawn->seen = true_v;
+    spawn->first_frame = record->frame;
+    spawn->container = record->data[4];
+  }
+  if (mesh_length == 0u ||
+      playback->spawn_text_bytes + mesh_length + animation_length + 2u >
+          playback->spawn_text_capacity) {
+    return;
+  }
+  char *text = playback->spawn_text + playback->spawn_text_bytes;
+  MemCopy(text, record->data + 7u, mesh_length);
+  text[mesh_length] = '\0';
+  MemCopy(text + mesh_length + 1u, record->data + 9u + mesh_length,
+          animation_length);
+  text[mesh_length + 1u + animation_length] = '\0';
+  spawn->mesh_offset = (uint32_t)playback->spawn_text_bytes;
+  spawn->mesh_length = mesh_length;
+  spawn->animation_offset = spawn->mesh_offset + mesh_length + 1u;
+  spawn->animation_length = animation_length;
+  playback->spawn_text_bytes += mesh_length + animation_length + 2u;
 }
 
 vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
@@ -140,6 +192,15 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
     const uint32_t length =
         Min(record->size - 4u, (uint32_t)VKR_RECORDING_LABEL_MAX);
     MemCopy(marker->label, record->data + 4u, length);
+  } else if (record->stream == VKR_RECORDING_STREAM_SPAWN) {
+    vkr_recording_fill_spawn(playback, record);
+  } else if (record->stream == VKR_RECORDING_STREAM_DESPAWN &&
+             record->size == sizeof(uint32_t)) {
+    uint32_t id = 0u;
+    MemCopy(&id, record->data, sizeof(id));
+    if (id < playback->spawn_count) {
+      playback->spawns[id].last_frame = record->frame;
+    }
   } else if (record->stream == VKR_RECORDING_STREAM_EDIT &&
              record->size == sizeof(uint64_t)) {
     /* Records of one producer arrive in frame order. */
@@ -175,6 +236,9 @@ vkr_internal int32_t vkr_recording_compare_poses(const void *lhs,
   if (a->pose.node != b->pose.node) {
     return a->pose.node < b->pose.node ? -1 : 1;
   }
+  if (a->pose.kind != b->pose.kind) {
+    return a->pose.kind < b->pose.kind ? -1 : 1;
+  }
   if (a->pose.document != b->pose.document) {
     return a->pose.document < b->pose.document ? -1 : 1;
   }
@@ -184,7 +248,7 @@ vkr_internal int32_t vkr_recording_compare_poses(const void *lhs,
 vkr_internal bool8_t vkr_recording_pose_same_key(const VkrRecordingPose *a,
                                                  const VkrRecordingPose *b) {
   return a->container == b->container && a->node == b->node &&
-         a->document == b->document &&
+         a->kind == b->kind && a->document == b->document &&
          MemCompare(&a->ref, &b->ref, sizeof(a->ref)) == 0;
 }
 
@@ -224,6 +288,7 @@ vkr_recording_playback_group_poses(VkrRecordingLoad *load) {
           .ref = loaded->pose.ref,
           .node = loaded->pose.node,
           .document = loaded->pose.document,
+          .kind = loaded->pose.kind,
           .container = loaded->pose.container,
           .first = (uint32_t)i,
       };
@@ -327,6 +392,23 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   if (!playback->edit_frames || !playback->edit_sequences) {
     return vkr_recording_load_fail(load, "out of memory");
   }
+  playback->spawns = vkr_allocator_alloc(
+      &playback->allocator,
+      sizeof(VkrRecordingSpawn) * ((uint64_t)playback->spawn_count + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->spawn_text_capacity = playback->spawn_text_bytes + 1u;
+  playback->spawn_text =
+      vkr_allocator_alloc(&playback->allocator, playback->spawn_text_capacity,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!playback->spawns || !playback->spawn_text) {
+    return vkr_recording_load_fail(load, "out of memory");
+  }
+  MemZero(playback->spawns,
+          sizeof(VkrRecordingSpawn) * ((uint64_t)playback->spawn_count + 1u));
+  for (uint32_t i = 0u; i < playback->spawn_count; ++i) {
+    playback->spawns[i].last_frame = UINT64_MAX;
+  }
+  playback->spawn_text_bytes = 0u;
   playback->marker_count = 0u;
   playback->pose_sample_count = 0u;
   playback->edit_count = 0u;
@@ -435,6 +517,23 @@ void vkr_recording_playback_seek_frame(VkrRecordingPlayback *playback,
                                        uint64_t frame) {
   vkr_assert(playback != NULL && playback->open);
   playback->time = playback->times[Min(frame, playback->frame_count - 1u)];
+}
+
+bool8_t vkr_recording_playback_spawn_model(const VkrRecordingPlayback *playback,
+                                           uint32_t id, String8 *out_mesh,
+                                           String8 *out_animation) {
+  vkr_assert(playback != NULL && out_mesh != NULL && out_animation != NULL);
+  if (id >= playback->spawn_count || !playback->spawns[id].mesh_length) {
+    return false_v;
+  }
+  const VkrRecordingSpawn *spawn = &playback->spawns[id];
+  *out_mesh =
+      (String8){.str = (uint8_t *)playback->spawn_text + spawn->mesh_offset,
+                .length = spawn->mesh_length};
+  *out_animation = (String8){.str = (uint8_t *)playback->spawn_text +
+                                    spawn->animation_offset,
+                             .length = spawn->animation_length};
+  return true_v;
 }
 
 bool8_t vkr_recording_playback_edit_at(const VkrRecordingPlayback *playback,

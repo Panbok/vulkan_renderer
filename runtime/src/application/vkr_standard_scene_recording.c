@@ -4,6 +4,8 @@
 #include "containers/vkr_hashtable.h"
 #include "core/logger.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_model.h"
 
 /* The frame's part of recordings (docs/proposals/recordings.md): what the
    recording in progress writes after the camera update, and how an open
@@ -77,6 +79,42 @@ vkr_internal bool8_t vkr_standard_scene_recording_identity(
   return true_v;
 }
 
+/* Names a script spawn, or a node of a model spawned under one, by spawn
+   id (VKR_RECORDING_POSE_KIND_SPAWN). False for anything else or when the
+   recording's spawn table is full. */
+vkr_internal bool8_t vkr_standard_scene_recording_spawn_name(
+    VkrStandardSceneRuntime *runtime, VkrScene *scene, uint8_t container,
+    VkrEntityId entity, VkrRecordingPose *pose) {
+  VkrEntityId named = entity;
+  pose->node = VKR_RECORDING_POSE_NODE_NONE;
+  const SceneSourceIdentity *identity = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_source_identity);
+  if (identity && identity->gltf_node_index != UINT32_MAX) {
+    /* A model node: the wrapper above it that holds the spawned model. */
+    const SceneTransform *transform = vkr_scene_get_transform(scene, entity);
+    named = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+    while (named.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+           vkr_scene_model_status(scene, named, NULL) == VKR_SCENE_MODEL_NONE) {
+      transform = vkr_scene_get_transform(scene, named);
+      named = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+    }
+    pose->node = identity->gltf_node_index;
+  }
+  if (named.u64 == VKR_ENTITY_ID_INVALID.u64 ||
+      !vkr_scene_entity_transient(scene, named)) {
+    return false_v;
+  }
+  const uint32_t id =
+      vkr_recording_spawn_id(&runtime->recording, named.u64, container);
+  if (id == UINT32_MAX) {
+    return false_v;
+  }
+  MemZero(&pose->ref, sizeof(pose->ref));
+  pose->kind = VKR_RECORDING_POSE_KIND_SPAWN;
+  pose->document = id;
+  return true_v;
+}
+
 /* Writes one changed entity's world pose; skips one it cannot name. */
 vkr_internal void
 vkr_standard_scene_recording_pose(VkrStandardSceneRuntime *runtime,
@@ -84,8 +122,11 @@ vkr_standard_scene_recording_pose(VkrStandardSceneRuntime *runtime,
                                   VkrEntityId entity) {
   const SceneTransform *transform = vkr_scene_get_transform(scene, entity);
   VkrRecordingPose pose = {.container = container};
-  if (!transform || !vkr_standard_scene_recording_identity(
-                        scene, entity, &pose.ref, &pose.node, &pose.document)) {
+  if (!transform ||
+      (!vkr_standard_scene_recording_identity(scene, entity, &pose.ref,
+                                              &pose.node, &pose.document) &&
+       !vkr_standard_scene_recording_spawn_name(runtime, scene, container,
+                                                entity, &pose))) {
     return;
   }
   const Mat4 *world = &transform->world;
@@ -101,6 +142,32 @@ vkr_standard_scene_recording_pose(VkrStandardSceneRuntime *runtime,
     }
   }
   vkr_recording_pose(&runtime->recording, &pose);
+}
+
+/* Writes the despawns of spawns that went away and the models spawns got
+   since the last frame. */
+vkr_internal void
+vkr_standard_scene_recording_spawns(VkrStandardSceneRuntime *runtime) {
+  VkrRecording *recording = &runtime->recording;
+  for (uint32_t id = 0u; id < recording->spawn_count; ++id) {
+    const uint8_t flags = recording->spawn_flags[id];
+    if (!(flags & VKR_RECORDING_SPAWN_ALIVE)) {
+      continue;
+    }
+    VkrScene *scene = vkr_standard_scene_recording_container(
+        runtime, recording->spawn_containers[id]);
+    const VkrEntityId entity = {.u64 = recording->spawn_entities[id]};
+    if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+      vkr_recording_despawn(recording, id);
+      continue;
+    }
+    String8 mesh;
+    String8 animation;
+    if (!(flags & VKR_RECORDING_SPAWN_MODEL) &&
+        vkr_scene_model_paths(scene, entity, &mesh, &animation)) {
+      vkr_recording_spawn_model(recording, id, mesh, animation);
+    }
+  }
 }
 
 /* Writes the poses of entities that changed since the last frame, at most
@@ -144,6 +211,7 @@ vkr_standard_scene_recording_poses(VkrStandardSceneRuntime *runtime) {
     budget -= taken;
   }
   vkr_recording_poses_flush(&runtime->recording);
+  vkr_standard_scene_recording_spawns(runtime);
 }
 
 /* Stops tracking the containers a finished recording tracked. */
@@ -179,16 +247,236 @@ vkr_internal Mat4 vkr_standard_scene_recording_pose_world(
 
 /* A hash of a pose key's name. */
 vkr_internal uint64_t vkr_standard_scene_recording_key_hash(
-    uint8_t container, const VkrEntityRef *ref, uint32_t node,
+    uint8_t container, uint8_t kind, const VkrEntityRef *ref, uint32_t node,
     uint32_t document) {
-  uint8_t bytes[sizeof(VkrEntityRef) + 9u];
+  uint8_t bytes[sizeof(VkrEntityRef) + 10u];
   bytes[0] = container;
-  MemCopy(bytes + 1u, ref, sizeof(*ref));
-  MemCopy(bytes + 1u + sizeof(*ref), &node, sizeof(node));
-  MemCopy(bytes + 5u + sizeof(*ref), &document, sizeof(document));
+  bytes[1] = kind;
+  MemCopy(bytes + 2u, ref, sizeof(*ref));
+  MemCopy(bytes + 2u + sizeof(*ref), &node, sizeof(node));
+  MemCopy(bytes + 6u + sizeof(*ref), &document, sizeof(document));
   return vkr_hash_table_key_string8(
              string8_create_from_cstr(bytes, sizeof(bytes)))
       .hash;
+}
+
+/* Creates the transient stand-ins of spawns that had a model, hidden until
+   their first frame, and loads their models. */
+vkr_internal bool8_t
+vkr_standard_scene_recording_spawn_proxies(VkrStandardSceneRuntime *runtime) {
+  VkrRecordingPlayback *playback = &runtime->playback;
+  const uint64_t count = (uint64_t)playback->spawn_count + 1u;
+  playback->spawn_proxies =
+      vkr_allocator_alloc(&playback->allocator, sizeof(uint64_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->spawn_shown = vkr_allocator_alloc(&playback->allocator, count,
+                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!playback->spawn_proxies || !playback->spawn_shown) {
+    return false_v;
+  }
+  MemZero(playback->spawn_shown, count);
+  /* Node keys grouped by spawn, for the animated stand-ins' poses. */
+  playback->spawn_node_first =
+      vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * (count + 1u),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->spawn_node_keys = vkr_allocator_alloc(
+      &playback->allocator,
+      sizeof(uint32_t) * ((uint64_t)playback->pose_key_count + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->spawn_self_key =
+      vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!playback->spawn_node_first || !playback->spawn_node_keys ||
+      !playback->spawn_self_key) {
+    return false_v;
+  }
+  for (uint32_t id = 0u; id < count; ++id) {
+    playback->spawn_self_key[id] = UINT32_MAX;
+  }
+  MemZero(playback->spawn_node_first, sizeof(uint32_t) * (count + 1u));
+  for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
+    const VkrRecordingPoseKey *key = &playback->pose_keys[k];
+    if (key->kind != VKR_RECORDING_POSE_KIND_SPAWN ||
+        key->document >= playback->spawn_count) {
+      continue;
+    }
+    if (key->node == VKR_RECORDING_POSE_NODE_NONE) {
+      playback->spawn_self_key[key->document] = k;
+    } else {
+      ++playback->spawn_node_first[key->document + 1u];
+    }
+  }
+  for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
+    playback->spawn_node_first[id + 1u] += playback->spawn_node_first[id];
+  }
+  uint32_t *cursor = playback->spawn_node_keys;
+  for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
+    for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
+      const VkrRecordingPoseKey *key = &playback->pose_keys[k];
+      if (key->kind == VKR_RECORDING_POSE_KIND_SPAWN &&
+          key->node != VKR_RECORDING_POSE_NODE_NONE && key->document == id) {
+        *cursor++ = k;
+      }
+    }
+  }
+  playback->spawn_pose_frame = UINT64_MAX;
+  uint32_t created = 0u;
+  for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
+    playback->spawn_proxies[id] = VKR_ENTITY_ID_INVALID.u64;
+    String8 mesh;
+    String8 animation;
+    VkrScene *scene = vkr_standard_scene_recording_container(
+        runtime, playback->spawns[id].container);
+    if (!scene ||
+        !vkr_recording_playback_spawn_model(playback, id, &mesh, &animation)) {
+      continue;
+    }
+    const VkrEntityId proxy = vkr_scene_create_entity(scene, NULL);
+    VkrSceneModelDesc desc = {.mesh_path = mesh,
+                              .animation_path = animation,
+                              .animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
+    const char *error = NULL;
+    if (!proxy.u64 ||
+        !vkr_scene_set_transform(scene, proxy, vec3_zero(), vkr_quat_identity(),
+                                 vec3_one()) ||
+        !vkr_scene_set_transient(scene, proxy) ||
+        !vkr_scene_request_model(scene, &runtime->assets, proxy, &desc,
+                                 &error)) {
+      if (proxy.u64) {
+        vkr_scene_destroy_entity(scene, proxy);
+      }
+      log_warn("Playback could not stand in for spawn %u: %s", id,
+               error ? error : "entity creation failed");
+      continue;
+    }
+    vkr_scene_set_visibility(scene, proxy, false_v, true_v);
+    playback->spawn_proxies[id] = proxy.u64;
+    ++created;
+  }
+  if (created > 0u) {
+    log_info("Playback stands in for %u of %u spawns", created,
+             playback->spawn_count);
+  }
+  return true_v;
+}
+
+/* Binds the spawn keys still unbound: a spawn's own key to its stand-in,
+   a node's key to the node once the stand-in's model is ready. Sets
+   poses_pending while some wait for a model. */
+vkr_internal void
+vkr_standard_scene_recording_bind_spawns(VkrStandardSceneRuntime *runtime) {
+  VkrRecordingPlayback *playback = &runtime->playback;
+  playback->poses_pending = false_v;
+  for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
+    const VkrRecordingPoseKey *key = &playback->pose_keys[k];
+    if (key->kind != VKR_RECORDING_POSE_KIND_SPAWN ||
+        playback->pose_entities[k] != VKR_ENTITY_ID_INVALID.u64 ||
+        key->document >= playback->spawn_count) {
+      continue;
+    }
+    const VkrEntityId proxy = {.u64 = playback->spawn_proxies[key->document]};
+    VkrScene *scene =
+        vkr_standard_scene_recording_container(runtime, key->container);
+    if (!scene || proxy.u64 == VKR_ENTITY_ID_INVALID.u64) {
+      continue;
+    }
+    if (key->node == VKR_RECORDING_POSE_NODE_NONE) {
+      playback->pose_entities[k] = proxy.u64;
+      continue;
+    }
+    const VkrEntityId node = vkr_scene_model_node(scene, proxy, key->node);
+    if (node.u64 != VKR_ENTITY_ID_INVALID.u64) {
+      playback->pose_entities[k] = node.u64;
+    } else if (vkr_scene_model_status(scene, proxy, NULL) ==
+               VKR_SCENE_MODEL_LOADING) {
+      playback->poses_pending = true_v;
+    }
+  }
+}
+
+/* An animated stand-in draws its skin from its player's pose, not from its
+   node entities: the recorded node poses at `frame`, relative to the
+   stand-in's recorded pose of that frame, become that pose. With the scene
+   stopped the player does not advance, so the pose stays. */
+vkr_internal void
+vkr_standard_scene_recording_pose_skins(VkrStandardSceneRuntime *runtime,
+                                        uint64_t frame) {
+  VkrRecordingPlayback *playback = &runtime->playback;
+  if (playback->spawn_pose_frame == frame) {
+    return;
+  }
+  /* A stand-in whose model still loads takes its pose once it is ready. */
+  playback->spawn_pose_frame = playback->poses_pending ? UINT64_MAX : frame;
+  for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
+    const VkrEntityId proxy = {.u64 = playback->spawn_proxies[id]};
+    VkrScene *scene = vkr_standard_scene_recording_container(
+        runtime, playback->spawns[id].container);
+    VkrAnimationPlayer *player =
+        scene && proxy.u64 != VKR_ENTITY_ID_INVALID.u64
+            ? vkr_scene_animation_get_player(scene, proxy)
+            : NULL;
+    const uint32_t self = playback->spawn_self_key[id];
+    const uint32_t self_sample =
+        self == UINT32_MAX
+            ? UINT32_MAX
+            : vkr_recording_playback_pose_at(playback, self, frame);
+    if (!player || self_sample == UINT32_MAX) {
+      continue;
+    }
+    const Mat4 inverse = mat4_inverse(vkr_standard_scene_recording_pose_world(
+        scene, &playback->pose_samples[self_sample]));
+    vkr_animation_player_set_playing(player, false_v);
+    uint32_t nodes[256];
+    Mat4 globals[256];
+    uint32_t count = 0u;
+    for (uint32_t i = playback->spawn_node_first[id];
+         i < playback->spawn_node_first[id + 1u] && count < ArrayCount(nodes);
+         ++i) {
+      const uint32_t k = playback->spawn_node_keys[i];
+      const uint32_t sample =
+          vkr_recording_playback_pose_at(playback, k, frame);
+      if (sample == UINT32_MAX) {
+        continue;
+      }
+      nodes[count] = playback->pose_keys[k].node;
+      Mat4 global =
+          mat4_mul(inverse, vkr_standard_scene_recording_pose_world(
+                                scene, &playback->pose_samples[sample]));
+      /* Both are affine; the inverse's rounding must not leave the bottom
+         row the player checks. */
+      global.elements[3] = 0.0f;
+      global.elements[7] = 0.0f;
+      global.elements[11] = 0.0f;
+      global.elements[15] = 1.0f;
+      globals[count++] = global;
+    }
+    if (count > 0u &&
+        !vkr_animation_player_override_globals(player, nodes, globals, count)) {
+      log_warn("Playback could not pose spawn %u", id);
+    }
+  }
+}
+
+/* Shows each stand-in from its spawn's first frame until it went away. */
+vkr_internal void
+vkr_standard_scene_recording_show_spawns(VkrStandardSceneRuntime *runtime,
+                                         uint64_t frame) {
+  VkrRecordingPlayback *playback = &runtime->playback;
+  for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
+    const VkrEntityId proxy = {.u64 = playback->spawn_proxies[id]};
+    const VkrRecordingSpawn *spawn = &playback->spawns[id];
+    VkrScene *scene =
+        vkr_standard_scene_recording_container(runtime, spawn->container);
+    if (!scene || proxy.u64 == VKR_ENTITY_ID_INVALID.u64) {
+      continue;
+    }
+    const uint8_t shown =
+        frame >= spawn->first_frame && frame < spawn->last_frame ? 1u : 0u;
+    if (shown != playback->spawn_shown[id]) {
+      vkr_scene_set_visibility(scene, proxy, shown != 0u, true_v);
+      playback->spawn_shown[id] = shown;
+    }
+  }
 }
 
 /* Finds each pose key's live entity with one walk over the containers, and
@@ -212,7 +500,9 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
   uint32_t *slots =
       vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * slot_count,
                           VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
-  if (!playback->pose_entities || !playback->pose_applied || !slots) {
+  if (!playback->pose_entities || !playback->pose_applied || !slots ||
+      (!playback->spawn_proxies &&
+       !vkr_standard_scene_recording_spawn_proxies(runtime))) {
     return false_v;
   }
   /* Slots hold key + 1; zero is empty. */
@@ -220,9 +510,10 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
   const uint32_t mask = slot_count - 1u;
   for (uint32_t k = 0u; k < keys; ++k) {
     const VkrRecordingPoseKey *key = &playback->pose_keys[k];
-    uint32_t probe = (uint32_t)vkr_standard_scene_recording_key_hash(
-                         key->container, &key->ref, key->node, key->document) &
-                     mask;
+    uint32_t probe =
+        (uint32_t)vkr_standard_scene_recording_key_hash(
+            key->container, key->kind, &key->ref, key->node, key->document) &
+        mask;
     while (slots[probe] != 0u) {
       probe = (probe + 1u) & mask;
     }
@@ -242,13 +533,15 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
         continue;
       }
       uint32_t probe = (uint32_t)vkr_standard_scene_recording_key_hash(
-                           (uint8_t)c, &ref, node, document) &
+                           (uint8_t)c, VKR_RECORDING_POSE_KIND_DOCUMENT, &ref,
+                           node, document) &
                        mask;
       while (slots[probe] != 0u) {
         const uint32_t k = slots[probe] - 1u;
         const VkrRecordingPoseKey *key = &playback->pose_keys[k];
-        if (key->container == c && key->node == node &&
-            key->document == document &&
+        if (key->container == c &&
+            key->kind == VKR_RECORDING_POSE_KIND_DOCUMENT &&
+            key->node == node && key->document == document &&
             MemCompare(&key->ref, &ref, sizeof(ref)) == 0) {
           playback->pose_entities[k] = entity.u64;
           break;
@@ -263,8 +556,10 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
         vkr_standard_scene_recording_container(runtime, key->container);
     const VkrEntityId entity = {.u64 = playback->pose_entities[k]};
     const SceneTransform *transform =
-        scene && key->count == 1u ? vkr_scene_get_transform(scene, entity)
-                                  : NULL;
+        scene && key->count == 1u &&
+                key->kind == VKR_RECORDING_POSE_KIND_DOCUMENT
+            ? vkr_scene_get_transform(scene, entity)
+            : NULL;
     if (!transform) {
       continue;
     }
@@ -276,6 +571,7 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
   }
   vkr_allocator_free(&playback->allocator, slots, sizeof(uint32_t) * slot_count,
                      VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  vkr_standard_scene_recording_bind_spawns(runtime);
   uint32_t bound = 0u;
   uint32_t still = 0u;
   for (uint32_t k = 0u; k < keys; ++k) {
@@ -302,13 +598,22 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
   }
   if (!playback->poses_bound ||
       runtime->playback_pose_generation != runtime->scene_generation) {
+    /* A reloaded scene took the stand-ins with it. */
+    if (runtime->playback_pose_generation != runtime->scene_generation) {
+      playback->spawn_proxies = NULL;
+    }
     runtime->playback_pose_generation = runtime->scene_generation;
     if (!vkr_standard_scene_recording_bind_poses(runtime)) {
       return;
     }
   }
+  if (playback->poses_pending) {
+    vkr_standard_scene_recording_bind_spawns(runtime);
+  }
   const uint64_t frame =
       vkr_recording_playback_frame_at(playback, playback->time);
+  vkr_standard_scene_recording_show_spawns(runtime, frame);
+  vkr_standard_scene_recording_pose_skins(runtime, frame);
   for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
     const VkrEntityId entity = {.u64 = playback->pose_entities[k]};
     const uint32_t applied = playback->pose_applied[k];
@@ -356,6 +661,26 @@ void vkr_standard_scene_recording_release_poses(
     playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_NONE;
   }
   playback->poses_bound = false_v;
+}
+
+void vkr_standard_scene_recording_close_world(
+    VkrStandardSceneRuntime *runtime) {
+  vkr_standard_scene_recording_release_poses(runtime);
+  VkrRecordingPlayback *playback = &runtime->playback;
+  if (!playback->open || !playback->spawn_proxies) {
+    return;
+  }
+  for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
+    const VkrEntityId proxy = {.u64 = playback->spawn_proxies[id]};
+    VkrScene *scene = vkr_standard_scene_recording_container(
+        runtime, playback->spawns[id].container);
+    if (scene && proxy.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+        vkr_scene_entity_alive(scene, proxy)) {
+      vkr_scene_destroy_entity(scene, proxy);
+    }
+    playback->spawn_proxies[id] = VKR_ENTITY_ID_INVALID.u64;
+  }
+  playback->spawn_proxies = NULL;
 }
 
 void vkr_standard_scene_recording_advance(VkrStandardSceneRuntime *runtime,

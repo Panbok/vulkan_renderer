@@ -93,8 +93,19 @@ an agent must read one without the editor.
   poses per entity, binds them to live entities once per scene generation,
   skips entities whose only pose matches the scene, and applies the pose at
   the playhead as an evaluated override before the frame's transform update;
-  closing removes the overrides, so authored transforms never change. Script
-  spawns have no name yet and are not recorded.
+  closing removes the overrides, so authored transforms never change.
+- **Spawns (R3).** A transient entity scripts spawned, or a node of a model
+  spawned under one, is named by a spawn id the recording gives it on first
+  sight (pose kind SPAWN). Stream `spawn` holds each id's container and,
+  once known, its model's mesh and animation paths; `despawn` marks when it
+  went away. Watch creates a transient stand-in for every spawn with a
+  model, loads that model, shows it only between its spawn and despawn
+  frames, and poses it and its nodes from their recorded poses. An animated
+  stand-in takes its nodes' recorded poses, relative to its own pose of the
+  same frame, as its player's pose (`vkr_animation_player_override_globals`),
+  so its skin moves as recorded; with the scene stopped the player does not
+  advance and keeps it. Closing destroys the stand-ins. A spawn without a
+  model, such as a bare shape, has no stand-in yet.
 - **Gameplay records (R3).** SDK version 11 adds `vkr_rec_player`,
   `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
   ([sdk.h](../../sdk/sdk.h)). They write
