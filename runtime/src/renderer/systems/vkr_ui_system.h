@@ -738,7 +738,7 @@ VkrUiPlotResult vkr_ui_plot(VkrUiSystem *system, String8 id_label,
                             const VkrUiPlotConfig *plot,
                             const VkrUiWidgetConfig *config);
 
-#define VKR_UI_PATH_PALETTE_CAPACITY 4u
+#define VKR_UI_PATH_PALETTE_CAPACITY 8u
 #define VKR_UI_PATH_POINT_MAX 16384u
 
 /** A stroked open path, such as a route projected into the Scene. */

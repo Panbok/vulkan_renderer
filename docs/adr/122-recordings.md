@@ -119,7 +119,11 @@ an agent must read one without the editor.
   ([vkr_ui_system.h](../../runtime/src/renderer/systems/vkr_ui_system.h)),
   projected in the editor's late camera hook with the frame's final camera,
   as object icons are; a point behind the camera breaks it. It draws over
-  geometry.
+  geometry, faded (30% of its colour) where collision hides a point from
+  the camera: the collision ray Scene icons use, cast for up to 128 points
+  a build from where the last build stopped while the view changes, so a
+  moving camera costs a bounded number of rays and a still one none. A
+  scene without collision, such as Bistro, fades nothing.
 - **Requests (R4).** An agent asks the user for a recording with
   `rec.request.create`: a question the recording must answer, up to 8 steps,
   and optionally a scene, a start pose, a tier, a stop after some seconds and

@@ -712,8 +712,11 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
 
 #define EDITOR_RECORDING_PATH_BREAK UINT8_MAX
 /* Palette slots: within budget, up to twice it, beyond, and ahead of the
-   playhead. */
+   playhead; the next four are the same behind collision. */
 #define EDITOR_RECORDING_PATH_AHEAD 3u
+#define EDITOR_RECORDING_PATH_HIDDEN 4u
+/* Occlusion rays one build casts for the route. */
+#define EDITOR_RECORDING_PATH_RAYS 128u
 
 /* One point per run of frames: the player's position, or the camera's in a
    recording without a player, and the run's worst frame time. Frames between
@@ -763,6 +766,49 @@ editor_recording_path_prepare(VkrEditorRecording *recording,
                                                                : 0u;
   }
   recording->path_count = count;
+  MemZero(recording->path_hidden, sizeof(recording->path_hidden));
+  recording->path_cursor = 0u;
+  recording->path_swept = 0u;
+}
+
+/* Casts up to EDITOR_RECORDING_PATH_RAYS occlusion rays from the camera to
+   route points, continuing where the last build stopped, until every point
+   has been swept since the view changed; a moving camera thus costs a
+   bounded number of rays and a still one none. Scenes without collision
+   hide nothing. */
+vkr_internal void editor_recording_path_sweep(VkrEditorRecording *recording,
+                                              const VkrSampleUiFrame *frame,
+                                              Vec3 origin) {
+  if (!vkr_editor_label_occlusion_available(frame)) {
+    MemZero(recording->path_hidden, sizeof(recording->path_hidden));
+    return;
+  }
+  if (MemCompare(&recording->path_view, &frame->view_projection,
+                 sizeof(Mat4)) != 0) {
+    recording->path_view = frame->view_projection;
+    recording->path_swept = 0u;
+  }
+  if (recording->path_swept >= recording->path_count) {
+    return;
+  }
+  const Mat4 inverse = mat4_inverse(frame->view_projection);
+  for (uint32_t ray = 0u; ray < EDITOR_RECORDING_PATH_RAYS &&
+                          recording->path_swept < recording->path_count;
+       ++ray) {
+    const uint32_t i = recording->path_cursor % recording->path_count;
+    recording->path_cursor = i + 1u;
+    ++recording->path_swept;
+    if (recording->path_classes[i] == EDITOR_RECORDING_PATH_BREAK) {
+      continue;
+    }
+    const float64_t *world = recording->path_points[i];
+    const Vec3 point = vec3_new((float32_t)(world[0] - (float64_t)origin.x),
+                                (float32_t)(world[1] - (float64_t)origin.y),
+                                (float32_t)(world[2] - (float64_t)origin.z));
+    recording->path_hidden[i] =
+        vkr_editor_label_occluded(frame, frame->view_projection, inverse, point,
+                                  NULL, VKR_ENTITY_ID_INVALID);
+  }
 }
 
 /* The route's widget over the Scene image; vkr_editor_recording_project
@@ -822,11 +868,15 @@ void vkr_editor_recording_project(VkrEditorUi *editor,
   if (!points || !colors) {
     return;
   }
+  editor_recording_path_sweep(recording, frame, origin);
   for (uint32_t i = 0u; i < recording->path_count; ++i) {
     const uint8_t class = recording->path_classes[i];
     colors[i] = recording->path_frames[i] > playhead
                     ? EDITOR_RECORDING_PATH_AHEAD
                     : (class == EDITOR_RECORDING_PATH_BREAK ? 0u : class);
+    if (recording->path_hidden[i]) {
+      colors[i] += EDITOR_RECORDING_PATH_HIDDEN;
+    }
     points[i] = (Vec2){VKR_FLOAT_INFINITY, VKR_FLOAT_INFINITY};
     if (class == EDITOR_RECORDING_PATH_BREAK) {
       continue;
@@ -845,8 +895,15 @@ void vkr_editor_recording_project(VkrEditorUi *editor,
                        image.w * (clip.y / clip.w * 0.5f + 0.5f) / scale};
   }
   const VkrUiTheme *theme = vkr_ui_theme();
-  const Vec4 palette[] = {theme->success, theme->warning, theme->error,
-                          vkr_ui_color_alpha(theme->text, 0.35f)};
+  /* Behind collision the route stays readable but recedes. */
+  const Vec4 palette[] = {theme->success,
+                          theme->warning,
+                          theme->error,
+                          vkr_ui_color_alpha(theme->text, 0.35f),
+                          vkr_ui_color_alpha(theme->success, 0.3f),
+                          vkr_ui_color_alpha(theme->warning, 0.3f),
+                          vkr_ui_color_alpha(theme->error, 0.3f),
+                          vkr_ui_color_alpha(theme->text, 0.12f)};
   const VkrUiPathConfig path = {
       .points = points,
       .colors = colors,

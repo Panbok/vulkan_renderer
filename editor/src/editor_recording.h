@@ -380,6 +380,13 @@ typedef struct VkrEditorRecording {
   float64_t path_points[VKR_EDITOR_RECORDING_PATH_POINTS][3];
   uint64_t path_frames[VKR_EDITOR_RECORDING_PATH_POINTS];
   uint8_t path_classes[VKR_EDITOR_RECORDING_PATH_POINTS];
+  /* Route points collision hides from the camera, swept a bounded number
+     a build from the cursor; `path_swept` counts the points swept since
+     the view last changed, `path_view` that view. */
+  bool8_t path_hidden[VKR_EDITOR_RECORDING_PATH_POINTS];
+  uint32_t path_cursor;
+  uint32_t path_swept;
+  Mat4 path_view;
   VkrUiId path_id;
   VkrEditorRecordingRequests requests;
   VkrEditorRecordingNotes notes;
