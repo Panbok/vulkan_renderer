@@ -14,10 +14,12 @@ the recorder, camera and frame recording with simulation stopped, Watch
 playback with exact seeking, the editor's Record control, REC indicator,
 playback bar and Recordings window, the `rec.*` agent operations, Tier 0
 frame metrics, Tier 1 pass rows, the recording analysis, the Performance
-window, and from R3 the entity poses that Watch replays. Play
-recording, Drive, perf re-runs and re-simulation remain in the proposal.
-The authoritative overhead gate has not run; a non-authoritative
-Bistro A/B is recorded in the proposal.
+window, and from R3 the entity poses that Watch replays, Play recording,
+Drive, requests, annotations, Compare, harness recordings and perf re-runs.
+Re-simulation remains in the proposal. A Tier 0 recording passed the
+authoritative overhead gate on a GPU-bound Bistro orbit (2026-10-17, in the
+proposal); a CPU-bound workload has not been measured, so harness runs that
+record keep the authority reason `recording.enabled`.
 
 ## Context
 
