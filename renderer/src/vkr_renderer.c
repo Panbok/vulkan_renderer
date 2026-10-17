@@ -714,6 +714,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
           backend_config->gpu_assisted_validation ||
           vkr_platform_environment_flag("VKR_VULKAN_GPU_VALIDATION"),
       .fsr31_enabled = true_v,
+      .pipeline_create = backend_config->pipeline_create,
   };
   config.enable_validation = config.enable_validation ||
                              backend_config->validation_enabled ||

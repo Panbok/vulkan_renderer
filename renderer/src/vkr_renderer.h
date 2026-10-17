@@ -1047,7 +1047,8 @@ typedef struct VkrRendererBackendConfig {
   /** Receives each pipeline the backend creates while the application
    * runs, with its creation time (pipeline.create); an invalid source
    * publishes none. Metal publishes its background Custom graph and tiled
-   * variant builds. */
+   * variant builds; Vulkan, which builds the rest at creation, the
+   * presentation pipelines a swapchain format change rebuilds. */
   VkrMetricEventProducer pipeline_create;
   /** Receives each shader library the backend loads, with its load time
    * (shader.load); an invalid source publishes none. Metal publishes its

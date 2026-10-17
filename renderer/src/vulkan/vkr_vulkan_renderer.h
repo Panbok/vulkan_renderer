@@ -104,6 +104,11 @@ typedef struct VkrVulkanRendererConfig {
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;
+  /** Receives each pipeline built after creation with its time
+   * (pipeline.create): the presentation pipelines a swapchain format change
+   * rebuilds. Creation builds every other pipeline before the application
+   * runs. An invalid source publishes none. */
+  VkrMetricEventProducer pipeline_create;
 } VkrVulkanRendererConfig;
 
 typedef struct VkrVulkanResult {

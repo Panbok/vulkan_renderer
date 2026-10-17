@@ -157,12 +157,15 @@ an agent must read one without the editor.
   (`VkrRecordingEngineEvent`, [vkr_recording_format.h](../../runtime/src/assets/vkr_recording_format.h)):
   pipeline builds (`vkr.pipeline`, from `pipeline.create`, which Metal
   publishes for its background Custom graph and tiled variant builds and
-  the backend config's `pipeline_create` producer carries; Vulkan publishes
-  none yet), shader library loads (`vkr.shader`, from `shader.load`: Metal's
+  the backend config's `pipeline_create` producer carries; Vulkan builds
+  every pipeline at creation and publishes only the presentation pipelines
+  a swapchain format change rebuilds, when HDR output turns on or off),
+  shader library loads (`vkr.shader`, from `shader.load`: Metal's
   startup libraries and each project material library load, through the
   config's `shader_load` producer), asset loads (`vkr.texture`, `vkr.mesh`, `vkr.material`, `vkr.scene`) from
   the frame's published load durations, draws skipped while their pipeline
-  compiles (`vkr.pipeline_late`, from `pipelines.late`), world cells loaded
+  compiles (`vkr.pipeline_late`, from `pipelines.late`; Metal only, since no
+  Vulkan draw waits for a pipeline), world cells loaded
   and unloaded by streaming (`vkr.cell_load`, `vkr.cell_unload`) and script
   hot reloads (`vkr.script_reload`). Renderer-derived events need Tier 0;
   cell and reload events record at every tier. The analysis totals them per
