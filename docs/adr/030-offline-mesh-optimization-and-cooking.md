@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-17
 authority: adr
 ---
 # ADR-030: Versioned meshoptimizer-cooked mesh artifacts
@@ -115,6 +115,24 @@ and any lightmap block, and one index stream per range with levels after all
 range streams. [ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md#cooked-mesh-levels)
 owns their generation, layout and decoding; source-metadata variants copy the
 block verbatim.
+
+Static world ranges whose longest side spans 0.25 to 120 world metres also
+carry a distance volume for the tiled pipeline's SDF sun shadows
+([ADR-087](087-gpu-class-graphics-pipelines.md) decision 6): header flag
+`VKR_MESH_COOKED_FLAG_DISTANCE` (bit 2), a distance block after the LOD
+block with one 40-byte entry per range (dims, mesh-space origin and voxel
+size, CRC and offset of the voxels; zero dims without a volume), and each
+volume's voxels, one byte each, after every LOD stream. The cooker
+(`vkr_mesh_cooked_build_distance`) fits a volume as the Metal backend fits a
+generated one (`vkr_geometry_upload.h`): at most 64 voxels a side with a
+two-voxel border, voxels no smaller than 0.25 world metres, each voxel its
+centre's distance to the nearest triangle over a six-voxel band. A range's
+world scale is the largest of the in-scene source nodes that place its mesh,
+so Bistro's centimetre meshes under ×100 nodes get metre voxels; ranges no
+node places take unit scale. The decoder checks entries and voxel CRCs, and
+the loader passes the volumes to publication. Cooking Bistro's
+`bistro-lights-main.vkb` gave 469 of its 646 ranges volumes, 10 MiB, in 14 s
+on the M1 Pro (2026-10-17).
 
 The importer supports paired `JOINTS_0` and `WEIGHTS_0`, including sparse/strided
 accessors and normalized unsigned-byte/unsigned-short weights. It rejects extra

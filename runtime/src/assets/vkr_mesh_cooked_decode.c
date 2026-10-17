@@ -45,6 +45,11 @@ typedef struct VkrMeshCookedRangeView {
   uint64_t lod_stream_size;
   uint32_t lod_index_counts[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
   float32_t lod_errors[VKR_GPU_GEOMETRY_LOD_LEVEL_MAX];
+  /* The distance block's entry: zero dims without a volume. */
+  uint32_t distance_dims[3];
+  Vec4 distance_box_min_voxel;
+  uint32_t distance_crc;
+  uint64_t distance_offset;
 } VkrMeshCookedRangeView;
 
 void vkr_mesh_cooked_hash_settings(
@@ -338,9 +343,9 @@ vkr_internal bool8_t vkr_mesh_cooked_header_valid(
        (header->total_vertex_count || header->total_index_count ||
         !header->header_reserved[0])) ||
       (header->flags &
-       ~(VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_LOD)) != 0u ||
-      ((header->flags &
-        (VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_LOD)) != 0u &&
+       ~(VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_LOD |
+         VKR_MESH_COOKED_FLAG_DISTANCE)) != 0u ||
+      (header->flags != 0u &&
        (header->version != VKR_MESH_COOKED_VERSION || !header->range_count)) ||
       header->header_reserved[0] > VKR_MESH_COOKED_MAX_RANGES ||
       header->header_reserved[1] > VKR_MESH_COOKED_MAX_RANGES ||
@@ -559,6 +564,57 @@ vkr_internal bool8_t vkr_mesh_cooked_read_lods(
   return true_v;
 }
 
+/* The voxel count of a distance volume's `dims`. */
+vkr_internal uint64_t vkr_mesh_cooked_distance_bytes(const uint32_t dims[3]) {
+  return (uint64_t)dims[0] * dims[1] * dims[2];
+}
+
+/**
+ * Reads the distance block of a static artifact into each range's view: no
+ * volume, or one of at most VKR_GEOMETRY_DISTANCE_MAX_DIM voxels a side with
+ * a finite origin and a positive voxel size. Voxels are checked once they are
+ * read.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_distances(
+    VkrByteReader *source_reader, const VkrMeshCookedHeaderView *header,
+    VkrMeshCookedRangeView *ranges) {
+  for (uint32_t i = 0; i < header->range_count; ++i) {
+    VkrMeshCookedRangeView *range = &ranges[i];
+    float32_t box[4] = {0};
+    bool8_t ok = true_v;
+    for (uint32_t axis = 0; axis < 3u; ++axis)
+      ok =
+          ok && vkr_byte_reader_u32(source_reader, &range->distance_dims[axis]);
+    for (uint32_t k = 0; k < 4u; ++k)
+      ok = ok && vkr_byte_reader_f32(source_reader, &box[k]) &&
+           vkr_is_finite_f32(box[k]);
+    ok = ok && vkr_byte_reader_u32(source_reader, &range->distance_crc) &&
+         vkr_byte_reader_u64(source_reader, &range->distance_offset);
+    if (!ok) {
+      return false_v;
+    }
+    range->distance_box_min_voxel = vec4_new(box[0], box[1], box[2], box[3]);
+    const uint64_t voxels =
+        vkr_mesh_cooked_distance_bytes(range->distance_dims);
+    if (voxels == 0u) {
+      if (range->distance_dims[0] || range->distance_dims[1] ||
+          range->distance_dims[2] || range->distance_crc ||
+          range->distance_offset || box[0] != 0.0f || box[1] != 0.0f ||
+          box[2] != 0.0f || box[3] != 0.0f) {
+        return false_v;
+      }
+      continue;
+    }
+    if (range->distance_dims[0] > VKR_GEOMETRY_DISTANCE_MAX_DIM ||
+        range->distance_dims[1] > VKR_GEOMETRY_DISTANCE_MAX_DIM ||
+        range->distance_dims[2] > VKR_GEOMETRY_DISTANCE_MAX_DIM ||
+        box[3] <= 0.0f || range->distance_offset == 0u) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /**
  * Reads the source scene nodes, mesh ranges, and the skin or lightmap block
  * that fill the space between the dependency records and the string table.
@@ -660,6 +716,10 @@ vkr_internal bool8_t vkr_mesh_cooked_read_source(
   }
   if ((header->flags & VKR_MESH_COOKED_FLAG_LOD) != 0u &&
       !vkr_mesh_cooked_read_lods(&source_reader, header, ranges)) {
+    return false_v;
+  }
+  if ((header->flags & VKR_MESH_COOKED_FLAG_DISTANCE) != 0u &&
+      !vkr_mesh_cooked_read_distances(&source_reader, header, ranges)) {
     return false_v;
   }
   if (source_reader.offset != header->string_offset ||
@@ -885,12 +945,13 @@ vkr_internal bool8_t vkr_mesh_cooked_read_ranges(
 }
 
 /**
- * Checks the LOD streams, which tile the file after the ranges' own streams
- * in range order, and each level against its range: fewer indices than the
- * level before it. Returns the total index count of levels 1 and up.
+ * Checks the LOD streams, which tile [streams_end, lods_end) after the ranges'
+ * own streams in range order, and each level against its range: fewer
+ * indices than the level before it. Returns the total index count of levels
+ * 1 and up.
  */
 vkr_internal bool8_t vkr_mesh_cooked_read_lod_streams(
-    const uint8_t *data, uint64_t size, uint64_t streams_end,
+    const uint8_t *data, uint64_t size, uint64_t streams_end, uint64_t lods_end,
     const VkrMeshCookedHeaderView *header, const VkrMeshCookedRangeView *ranges,
     uint64_t *out_lod_index_count) {
   uint64_t expected = streams_end;
@@ -922,12 +983,37 @@ vkr_internal bool8_t vkr_mesh_cooked_read_lod_streams(
     }
     expected = vkr_align_up_u64(stream_end, VKR_MESH_COOKED_STREAM_ALIGNMENT);
   }
-  if (expected != size || lod_index_count > UINT32_MAX ||
+  if (expected != lods_end || lod_index_count > UINT32_MAX ||
       header->total_index_count + lod_index_count > UINT32_MAX) {
     return false_v;
   }
   *out_lod_index_count = lod_index_count;
   return true_v;
+}
+
+/**
+ * Checks the distance volumes' voxels, which tile the file from `start` to
+ * its end in range order, against their CRCs.
+ */
+vkr_internal bool8_t vkr_mesh_cooked_read_distance_streams(
+    const uint8_t *data, uint64_t size, uint64_t start,
+    const VkrMeshCookedHeaderView *header,
+    const VkrMeshCookedRangeView *ranges) {
+  uint64_t expected = start;
+  for (uint32_t i = 0; i < header->range_count; ++i) {
+    const uint64_t bytes =
+        vkr_mesh_cooked_distance_bytes(ranges[i].distance_dims);
+    if (bytes == 0u) {
+      continue;
+    }
+    if (ranges[i].distance_offset != expected || bytes > size - expected ||
+        vkr_crc32(data + expected, bytes) != ranges[i].distance_crc) {
+      return false_v;
+    }
+    expected =
+        vkr_align_up_u64(expected + bytes, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+  }
+  return expected == size;
 }
 
 bool8_t vkr_mesh_cooked_read_identity(const uint8_t *data, uint64_t size,
@@ -1095,8 +1181,18 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
     return false_v;
   }
 
-  /* The ranges' own streams end where the first LOD stream starts. */
-  uint64_t streams_end = size;
+  /* The ranges' own streams end where the first LOD stream starts, and the
+     LOD streams where the first distance volume's voxels start. */
+  uint64_t lods_end = size;
+  uint64_t distance_bytes = 0u;
+  for (uint32_t i = header.range_count; i > 0u; --i) {
+    if (vkr_mesh_cooked_distance_bytes(ranges[i - 1u].distance_dims)) {
+      lods_end = ranges[i - 1u].distance_offset;
+      distance_bytes +=
+          vkr_mesh_cooked_distance_bytes(ranges[i - 1u].distance_dims);
+    }
+  }
+  uint64_t streams_end = lods_end;
   uint32_t lod_range_count = 0u;
   for (uint32_t i = 0; i < header.range_count; ++i) {
     if (ranges[i].lod_level_count > 1u) {
@@ -1107,10 +1203,13 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   }
   uint64_t lod_index_count = 0u;
   reader.offset = header.directory_offset;
-  if (!vkr_mesh_cooked_read_ranges(&reader, data, size, streams_end, &header,
+  if (lods_end > size || streams_end > lods_end ||
+      !vkr_mesh_cooked_read_ranges(&reader, data, size, streams_end, &header,
                                    ranges) ||
-      !vkr_mesh_cooked_read_lod_streams(data, size, streams_end, &header,
-                                        ranges, &lod_index_count)) {
+      !vkr_mesh_cooked_read_lod_streams(data, size, streams_end, lods_end,
+                                        &header, ranges, &lod_index_count) ||
+      !vkr_mesh_cooked_read_distance_streams(data, size, lods_end, &header,
+                                             ranges)) {
     return false_v;
   }
 
@@ -1158,6 +1257,37 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
   if (header.range_count &&
       (!vertices || !indices || !output_ranges.data || !decodes)) {
     return false_v;
+  }
+  VkrGeometryDistanceVolume *distance_volumes = NULL;
+  if ((header.flags & VKR_MESH_COOKED_FLAG_DISTANCE) != 0u) {
+    distance_volumes = vkr_allocator_alloc(result_allocator,
+                                           (uint64_t)header.range_count *
+                                               sizeof(*distance_volumes),
+                                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    uint8_t *voxels =
+        distance_bytes ? vkr_allocator_alloc(result_allocator, distance_bytes,
+                                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                       : NULL;
+    if (!distance_volumes || (distance_bytes && !voxels)) {
+      return false_v;
+    }
+    for (uint32_t i = 0; i < header.range_count; ++i) {
+      const VkrMeshCookedRangeView *range = &ranges[i];
+      const uint64_t bytes =
+          vkr_mesh_cooked_distance_bytes(range->distance_dims);
+      distance_volumes[i] = (VkrGeometryDistanceVolume){0};
+      if (bytes == 0u) {
+        continue;
+      }
+      MemCopy(voxels, data + range->distance_offset, bytes);
+      distance_volumes[i] = (VkrGeometryDistanceVolume){
+          .box_min_voxel = range->distance_box_min_voxel,
+          .dims = {range->distance_dims[0], range->distance_dims[1],
+                   range->distance_dims[2]},
+          .voxels = voxels,
+      };
+      voxels += bytes;
+    }
   }
 
   uint32_t vertex_base = 0;
@@ -1231,6 +1361,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       .decode_count = (uint32_t)decode_count,
   };
   out_decoded->ranges = output_ranges;
+  out_decoded->distance_volumes = distance_volumes;
   out_decoded->quantization = header.quantization;
   out_decoded->source_bytes = source_bytes;
   out_decoded->cooked_bytes = size;
@@ -1238,7 +1369,7 @@ bool8_t vkr_mesh_cooked_decode(VkrAllocator *result_allocator,
       vertex_bytes + index_bytes +
       (uint64_t)skin->skin_count * sizeof(uint32_t) +
       (uint64_t)skin->vertex_count * sizeof(VkrMeshSkinVertex) +
-      decode_count * sizeof(VkrGpuGeometryDecodeRecord);
+      decode_count * sizeof(VkrGpuGeometryDecodeRecord) + distance_bytes;
   return true_v;
 }
 

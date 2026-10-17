@@ -800,12 +800,12 @@ analytic height fog over the resolved image, splitting pixels that mix sky
 and surface samples between their media; with sun contact shadows on, the
 opaque pass also writes the sun's light and this draw removes the part a
 depth march toward the sun finds occluded. Distance field shadows (an Epic
-setting, the shadow quality proposal's T5) trace distance volumes the GPU
-generates from rigid casters' geometry in `Tiled.SunShadow` past the near
-cascades, through a light-space grid the GPU builds each frame; the far
-level leaves those casters out and rebuilds in slices as the volumes become
-ready, so the trace draws their far shadows and the far level keeps
-terrain's and foliage's.
+setting, the shadow quality proposal's T5) trace distance volumes, which
+cooked meshes carry and the GPU generates for other rigid casters, in
+`Tiled.SunShadow` past the near cascades, through a light-space grid the GPU
+builds each frame; the far level leaves those casters out and rebuilds in
+slices as the volumes become ready, so the trace draws their far shadows and
+the far level keeps terrain's and foliage's.
 `Tiled.Blend` draws glass
 with the blended surfaces, back to front; glass volumes refract and rough
 glass blurs through a half-resolution copy of the image, taken only on frames

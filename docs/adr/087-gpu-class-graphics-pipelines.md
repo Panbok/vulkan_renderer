@@ -153,8 +153,11 @@ pipeline rather than a backend mechanism.
    The SDF trace replaces the far level for the casters it covers (owner
    decisions 2026-10-16 and 2026-10-17, `vkr_metal_packet_sdf.inc`): every
    opaque rigid sun caster from 0.25 to 120 m whose submesh's distance volume
-   is generated. The GPU generates the volumes from resident triangles, up to
-   32 a frame. A field table of every live mesh's volumes, copied each frame,
+   is ready. Cooked meshes carry their volumes
+   ([ADR-030](030-offline-mesh-optimization-and-cooking.md)), which mesh
+   creation uploads; the GPU generates the rest, such as editor-built
+   geometry, from resident triangles, up to 32 a frame. A field table of
+   every live mesh's volumes, copied each frame,
    lets the far level's culling views skip those casters and lets
    `Tiled.SunShadow` list them in a light-space grid over every receiver the
    shadows reach (256² cells, built on the GPU each frame) before it traces.
@@ -1240,17 +1243,47 @@ five repetitions of 300 frames), `Tiled.SunShadow` p50:
 | GPU, 256², block scan, a SIMD group per caster (shipped) | 0.79 ms | 0.32 ms |
 
 A single thread walking a large caster's cells at a low sun, and a scan
-held to one threadgroup, dominated the build. The shipped grid's capture
-of the plaza matches the earlier GPU grid's bit for bit
-(`sha256:4cfbba06d76a8c51…`, `tiled_bistro_plaza_sun_sdf_replace_all`).
+held to one threadgroup, dominated the build. With GPU-generated volumes the
+shipped grid's capture of the plaza matches the earlier GPU grid's bit for
+bit (`sha256:4cfbba06d76a8c51…`, `tiled_bistro_plaza_sun_sdf_replace_all`).
+
+Authoritative windowed timing of the GPU grid at `cecf22e7`, clean worktree,
+2026-10-17: `tiled_bistro_plaza_windowed_sun_{off,contact,epic,sdf_replace_all}`
+under `performance-windowed-gpu.json` (hidden window, 1280×720 at 0.6 with
+MetalFX, five repetitions of 300 frames), interleaved off, contact, Epic,
+replace-all, off, contact, Epic; every report passed and was authoritative.
+p50 in ms:
+
+| Run | `Tiled.Opaque` | `Tiled.SunShadow` | `Tiled.Atmosphere` | Frame wall |
+|---|---|---|---|---|
+| off (`00f763`, `0109c0`) | 9.219, 9.213 | — | 0.191, 0.189 | 15.58, 15.56 |
+| contact (`00f8cc`, `010861`) | 9.293, 9.296 | — | 0.406, 0.407 | 16.08, 16.14 |
+| Epic, contact and SDF (`00fdd6`, `01145b`) | 9.300, 9.288 | 0.331, 0.327 | 0.431, 0.434 | 16.53, 16.62 |
+| SDF everywhere (`010587`) | 9.290 | 0.789 | 0.338 | 16.93 |
+
+Contact shadows cost 0.30 ms of GPU time and the distance field shadows on
+top 0.36 ms, nearly all the grid build, since the plaza has few pixels past
+the near cascades. On the Level Design Test's view across the valley
+(headless editor at 1146×595, Epic, fixed scale), alternating the setting
+three times gave 13.8 ms frames off and 14.45 ms on.
+
+Cooked against GPU-generated volumes, the same binary's replace-all plaza
+capture changes 20,583 of 921,600 pixels by more than 2 of 255, along
+silhouettes such as bollards, window frames and the awning, where the cooked
+volumes' unquantized positions and per-mesh scale shift self-shadowing; the
+ground's shadows match. Metal API validation of
+`tiled_bistro_plaza_sun_epic_validation` (contact and distance field
+shadows, cooked volumes uploaded at creation) reported nothing.
+
 On the Level Design Test (headless editor, Epic, view across the valley
 from (300, 60, 450)), a diagnostic build that dropped the trace from the
 atmosphere draw lost the viaduct's, its piers' and the tunnel portal's far
 shadows once the far level rebuilt, while the terrain's and the forest's
 remained: the far level leaves the field casters out, and the trace alone
 draws their shadows. Before the field revision existed, the far level drawn
-at load kept those casters indefinitely. Not done: authoritative timing of
-the GPU grid, the Level Design Test's pass timing, and Metal validation.
+at load kept those casters indefinitely. Not done: the Level Design Test's
+per-pass timing at a gate resolution, which needs a harness case of the
+level.
 
 ### Sky edge measurement
 

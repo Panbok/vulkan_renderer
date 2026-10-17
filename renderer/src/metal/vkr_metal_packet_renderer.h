@@ -157,6 +157,9 @@ typedef struct VkrMetalPacketMeshCreateInfo {
   /** Indices of the one default range when `submesh_count` is zero; zero
       draws them all. */
   uint32_t default_index_count;
+  /** Cooked distance volumes, one per submesh, or NULL; submeshes without
+      one have theirs generated on the GPU (ADR-087). */
+  const struct VkrGeometryDistanceVolume *distance_volumes;
 } VkrMetalPacketMeshCreateInfo;
 
 /** Focused immutable material publication input for the Metal GPU table. */

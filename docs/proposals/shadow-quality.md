@@ -527,9 +527,12 @@ with `gfx.distance_field_shadows`.
 
 - Volumes: one unsigned narrow-band distance volume per opaque submesh of a
   rigid sun caster, R8 at most 64³ with voxels no smaller than 0.25 world
-  metres (half the far level's texel). The GPU generates them from the
-  resident triangles, up to 32 a frame as a scan of 8,192 candidates a frame
-  reaches them, so it needs no cooked data; Bakery is to own them.
+  metres (half the far level's texel). The mesh cooker writes them into the
+  `.vkb` (owner decision 2026-10-17,
+  [ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md)) and mesh
+  creation uploads them; the GPU generates the rest from the resident
+  triangles, up to 32 a frame as a scan of 8,192 candidates a frame reaches
+  them, which covers editor-built geometry such as the Level Design Test's.
   Casters under 0.25 m or over 120 m (terrain), cutout and skinned casters
   keep the cascades.
 - Culling: a ray toward the sun is one point in the plane across the sun,
@@ -564,9 +567,14 @@ leaving the field casters out (2026-10-17), a diagnostic without the trace
 loses exactly the viaduct's, the piers' and the tunnel portal's far shadows
 ([measurement](../adr/087-gpu-class-graphics-pipelines.md#sdf-sun-shadow-measurement)).
 A sun sweep at 14:00, 15:30 and 17:00 on the Level Design Test kept the
-volume count at 13,806, so the sun's motion causes no generation. Not done:
-captures of the rigid movers (lift, freight cars), authoritative 1440p
-timing of the Level Design Test and the GPU grid, Metal validation.
+volume count at 13,806, so the sun's motion causes no generation. The
+freight car moved to the middle of the viaduct, a rigid mover, casts its
+far shadow through the trace, and contact shadows darken its crates and the
+railing posts. Authoritative windowed timing puts the Epic preset's
+distance field shadows at 0.33 ms on the Bistro plaza, and Metal API
+validation of contact and distance field shadows with cooked volumes
+reported nothing. Not done: per-pass timing of the Level Design Test at a
+gate resolution, which needs a harness case of the level.
 
 ## Budgets
 
@@ -620,14 +628,12 @@ Settled on 2026-10-17: the far level leaves out the casters the trace
 covers, through a GPU grid over its whole reach, so the trace replaces their
 far shadows.
 
-Open:
-
-- Bakery cooking the distance volumes.
-
-Settled on 2026-10-17: the High preset takes contact shadows on the tiled
-pipeline, where authoritative timing puts them at about 0.3 ms, within the
-0.4 ms budget. The desktop pipeline keeps them on Epic until its sun march
-fits the 0.2 ms budget; distance field shadows stay on Epic.
+Settled on 2026-10-17: Bakery's mesh cooker writes the distance volumes
+into the `.vkb`, and meshes without them keep the GPU generation. The High
+preset takes contact shadows on the tiled pipeline, where authoritative
+timing puts them at about 0.3 ms, within the 0.4 ms budget. The desktop
+pipeline keeps them on Epic until its sun march fits the 0.2 ms budget;
+distance field shadows stay on Epic.
 
 ## Evidence required
 
@@ -644,12 +650,14 @@ fits the 0.2 ms budget; distance field shadows stay on Epic.
   validation runs are recorded above.
 - Contact shadows: captures with contact shadows off and on at the Level
   Design Test's lift, freight cars and mannequin feet and at Bistro's chairs
-  and tables, on each backend.
+  and tables, on each backend. Metal has the freight car's and the plaza's
+  (2026-10-17); the lift stands indoors, out of the sun.
 - T4: met on 2026-10-16, Bistro street and plaza on Metal: with the march
   forced to full visibility, the corrected frame matches the frame without
   contact shadows bit for bit. Authoritative windowed timing is within the
-  budget (2026-10-17). Still needed: the Level Design Test captures.
-- T5: the gate report and the Level Design Test sun sweep above are met;
-  still needed: authoritative timing of the GPU grid and Metal validation.
+  budget (2026-10-17).
+- T5: met on 2026-10-17 on Metal (gate report, sun sweep, authoritative
+  timing of the GPU grid, Metal validation); still needed: the Level Design
+  Test's per-pass timing at a gate resolution.
 - D3, if built: Vulkan validation and a page-pool residency report over the
   Bistro orbit.

@@ -232,6 +232,7 @@ vkr_internal bool8_t vkr_mesh_manager_publish_loaded_mesh(
           },
       .submeshes = mesh_result->submeshes.data,
       .submesh_count = range_count,
+      .distance_volumes = mesh_result->distance_volumes,
   };
   const bool8_t published =
       publisher->publish_loaded_mesh(publisher->state, geometry, &upload);

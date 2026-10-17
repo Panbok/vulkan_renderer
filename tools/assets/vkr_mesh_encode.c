@@ -67,6 +67,12 @@ typedef struct VkrMeshCookedRangeBuild {
   uint64_t encoded_lod_index_size;
   uint64_t lod_stream_offset;
   uint32_t lod_crc;
+  /* Distance volume (ADR-087's SDF sun shadows): zero dims without one. */
+  uint32_t distance_dims[3];
+  Vec4 distance_box_min_voxel;
+  uint8_t *distance_voxels;
+  uint32_t distance_crc;
+  uint64_t distance_offset;
 } VkrMeshCookedRangeBuild;
 
 static bool8_t vkr_mesh_cooked_path_is_absolute(String8 path) {
@@ -330,6 +336,8 @@ typedef struct VkrMeshCookedHeaderBuild {
   VkrMeshCookedLightmap lightmap;
   /* Some range carries detail levels, so the artifact has an LOD block. */
   bool8_t has_lod;
+  /* Some range carries a distance volume, so it has a distance block. */
+  bool8_t has_distance;
   uint64_t directory_offset;
   uint64_t dependency_offset;
   uint64_t string_offset;
@@ -378,6 +386,205 @@ vkr_internal bool8_t vkr_mesh_cooked_validate_vertices(
              info->skin.joint_counts || info->skin.animation_fingerprint) {
     return false_v;
   }
+  return true_v;
+}
+
+/* The distance from `p` to triangle `a b c` (Ericson, Real-Time Collision
+   Detection, 5.1.5), as world/sun_shadow.metal measures it. */
+vkr_internal float32_t vkr_mesh_cooked_triangle_distance(Vec3 p, Vec3 a, Vec3 b,
+                                                         Vec3 c) {
+  const Vec3 ab = vec3_sub(b, a);
+  const Vec3 ac = vec3_sub(c, a);
+  const Vec3 ap = vec3_sub(p, a);
+  const float32_t d1 = vec3_dot(ab, ap);
+  const float32_t d2 = vec3_dot(ac, ap);
+  if (d1 <= 0.0f && d2 <= 0.0f) {
+    return vec3_length(ap);
+  }
+  const Vec3 bp = vec3_sub(p, b);
+  const float32_t d3 = vec3_dot(ab, bp);
+  const float32_t d4 = vec3_dot(ac, bp);
+  if (d3 >= 0.0f && d4 <= d3) {
+    return vec3_length(bp);
+  }
+  const float32_t vc = d1 * d4 - d3 * d2;
+  if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+    return vec3_length(vec3_sub(ap, vec3_scale(ab, d1 / (d1 - d3))));
+  }
+  const Vec3 cp = vec3_sub(p, c);
+  const float32_t d5 = vec3_dot(ab, cp);
+  const float32_t d6 = vec3_dot(ac, cp);
+  if (d6 >= 0.0f && d5 <= d6) {
+    return vec3_length(cp);
+  }
+  const float32_t vb = d5 * d2 - d1 * d6;
+  if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+    return vec3_length(vec3_sub(ap, vec3_scale(ac, d2 / (d2 - d6))));
+  }
+  const float32_t va = d3 * d6 - d5 * d4;
+  if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+    return vec3_length(vec3_sub(
+        bp, vec3_scale(vec3_sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)))));
+  }
+  const float32_t denominator = 1.0f / (va + vb + vc);
+  return vec3_length(vec3_sub(vec3_sub(ap, vec3_scale(ab, vb * denominator)),
+                              vec3_scale(ac, vc * denominator)));
+}
+
+/* The world scale each range is placed at: the largest axis scale, through
+   its parents, of the in-scene nodes that place its source mesh, or one when
+   none does. Cooked distance volumes fit their voxels and extent limits to
+   it, as the Metal backend does to the instance that needs one. */
+vkr_internal float32_t *
+vkr_mesh_cooked_range_scales(VkrAllocator *scratch_allocator,
+                             const VkrMeshCookedEncodeInfo *info) {
+  float32_t *scales = vkr_allocator_alloc(scratch_allocator,
+                                          (uint64_t)Max(info->range_count, 1u) *
+                                              sizeof(float32_t),
+                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!scales) {
+    return NULL;
+  }
+  for (uint32_t i = 0; i < info->range_count; ++i) {
+    scales[i] = 0.0f;
+  }
+  const VkrMeshSource *source = &info->source;
+  for (uint64_t n = 0; n < source->nodes.length; ++n) {
+    const VkrMeshSourceNode *node = &source->nodes.data[n];
+    if (!node->in_scene || node->mesh_variant >= source->meshes.length) {
+      continue;
+    }
+    Mat4 world = node->local;
+    uint32_t parent = node->parent;
+    for (uint64_t depth = 0;
+         parent < source->nodes.length && depth < source->nodes.length;
+         ++depth) {
+      world = mat4_mul(source->nodes.data[parent].local, world);
+      parent = source->nodes.data[parent].parent;
+    }
+    float32_t scale = 0.0f;
+    for (uint32_t column = 0u; column < 3u; ++column) {
+      scale =
+          Max(scale, vec3_length(vec3_new(world.elements[column * 4u + 0u],
+                                          world.elements[column * 4u + 1u],
+                                          world.elements[column * 4u + 2u])));
+    }
+    const VkrMeshSourceMesh *mesh = &source->meshes.data[node->mesh_variant];
+    for (uint32_t r = mesh->first_range;
+         r < mesh->first_range + mesh->range_count && r < info->range_count;
+         ++r) {
+      scales[r] = Max(scales[r], scale);
+    }
+  }
+  for (uint32_t i = 0; i < info->range_count; ++i) {
+    if (!(scales[i] > 0.0f) || !isfinite(scales[i])) {
+      scales[i] = 1.0f;
+    }
+  }
+  return scales;
+}
+
+/* Cooks `range`'s distance volume as the Metal backend generates one
+   (vkr_metal_packet_sdf.inc) for an instance at `world_scale`: fitted to the
+   range's quantization box `decode` with a border, voxels no smaller than
+   VKR_GEOMETRY_DISTANCE_MIN_VOXEL world metres, each voxel the distance from
+   its centre to the nearest triangle within the band, over the band.
+   Skinned and non-world ranges and ranges outside the world extent limits
+   get none; the backend generates theirs when an instance needs one. */
+vkr_internal bool8_t vkr_mesh_cooked_build_distance(
+    VkrAllocator *scratch_allocator, const VkrGeometryUploadRange *range,
+    bool8_t has_skin, float32_t world_scale, const VkrVertex3d *vertices,
+    const uint32_t *indices, uint32_t index_count,
+    const VkrGpuGeometryDecodeRecord *decode,
+    VkrMeshCookedRangeBuild *out_range) {
+  if (has_skin || range->pipeline_domain != VKR_PIPELINE_DOMAIN_WORLD) {
+    return true_v;
+  }
+  const float32_t extent =
+      Max(decode->position_scale[0],
+          Max(decode->position_scale[1], decode->position_scale[2]));
+  const float32_t world_extent = extent * world_scale;
+  if (!(world_extent >= VKR_GEOMETRY_DISTANCE_MIN_EXTENT &&
+        world_extent <= VKR_GEOMETRY_DISTANCE_MAX_EXTENT)) {
+    return true_v;
+  }
+  const float32_t voxel =
+      Max(extent / (float32_t)(VKR_GEOMETRY_DISTANCE_MAX_DIM -
+                               2u * VKR_GEOMETRY_DISTANCE_PAD_VOXELS),
+          VKR_GEOMETRY_DISTANCE_MIN_VOXEL / world_scale);
+  const float32_t pad = (float32_t)VKR_GEOMETRY_DISTANCE_PAD_VOXELS * voxel;
+  uint32_t dims[3];
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const uint32_t inner =
+        (uint32_t)vkr_ceil_f32(decode->position_scale[axis] / voxel);
+    dims[axis] = Min(Max(inner, 1u) + 2u * VKR_GEOMETRY_DISTANCE_PAD_VOXELS,
+                     VKR_GEOMETRY_DISTANCE_MAX_DIM);
+  }
+  const Vec3 box_min =
+      vec3_new(decode->position_bias[0] - pad, decode->position_bias[1] - pad,
+               decode->position_bias[2] - pad);
+  const uint64_t count = (uint64_t)dims[0] * dims[1] * dims[2];
+  const float32_t band = VKR_GEOMETRY_DISTANCE_BAND_VOXELS;
+  float32_t *distances =
+      vkr_allocator_alloc(scratch_allocator, count * sizeof(float32_t),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint8_t *voxels = vkr_allocator_alloc(scratch_allocator, count,
+                                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  if (!distances || !voxels) {
+    return false_v;
+  }
+  for (uint64_t i = 0u; i < count; ++i) {
+    distances[i] = band;
+  }
+
+  /* Each triangle lowers the distance of every voxel within the band of
+     its box, in voxels from the volume's origin. */
+  const float32_t inverse_voxel = 1.0f / voxel;
+  for (uint32_t t = 0u; t + 2u < index_count; t += 3u) {
+    Vec3 corners[3];
+    for (uint32_t k = 0u; k < 3u; ++k) {
+      const VkrPackedVec3 position = vertices[indices[t + k]].position;
+      corners[k] = vec3_scale(
+          vec3_sub(vec3_new(position.x, position.y, position.z), box_min),
+          inverse_voxel);
+    }
+    int32_t first[3];
+    int32_t last[3];
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const float32_t a = corners[0].elements[axis];
+      const float32_t b = corners[1].elements[axis];
+      const float32_t c = corners[2].elements[axis];
+      first[axis] = Max((int32_t)vkr_floor_f32(Min(a, Min(b, c)) - band), 0);
+      last[axis] = Min((int32_t)vkr_ceil_f32(Max(a, Max(b, c)) + band),
+                       (int32_t)dims[axis] - 1);
+    }
+    for (int32_t z = first[2]; z <= last[2]; ++z) {
+      for (int32_t y = first[1]; y <= last[1]; ++y) {
+        for (int32_t x = first[0]; x <= last[0]; ++x) {
+          float32_t *slot =
+              &distances[((uint64_t)z * dims[1] + (uint64_t)y) * dims[0] +
+                         (uint64_t)x];
+          const float32_t distance = vkr_mesh_cooked_triangle_distance(
+              vec3_new((float32_t)x + 0.5f, (float32_t)y + 0.5f,
+                       (float32_t)z + 0.5f),
+              corners[0], corners[1], corners[2]);
+          *slot = Min(*slot, distance);
+        }
+      }
+    }
+  }
+  for (uint64_t i = 0u; i < count; ++i) {
+    voxels[i] =
+        (uint8_t)(vkr_clamp_f32(distances[i] / band, 0.0f, 1.0f) * 255.0f +
+                  0.5f);
+  }
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    out_range->distance_dims[axis] = dims[axis];
+  }
+  out_range->distance_box_min_voxel =
+      vec4_new(box_min.x, box_min.y, box_min.z, voxel);
+  out_range->distance_voxels = voxels;
+  out_range->distance_crc = vkr_crc32(voxels, count);
   return true_v;
 }
 
@@ -485,7 +692,7 @@ vkr_internal bool8_t vkr_mesh_cooked_build_lods(
 vkr_internal bool8_t vkr_mesh_cooked_encode_range(
     VkrAllocator *scratch_allocator, const VkrMeshCookedEncodeInfo *info,
     uint32_t i, bool8_t has_skin, const float32_t *lightmap_uv,
-    VkrMeshCookedRangeBuild *out_range) {
+    float32_t world_scale, VkrMeshCookedRangeBuild *out_range) {
   const VkrVertex3d *source_vertices =
       (const VkrVertex3d *)info->mesh_buffer.vertices;
   const uint32_t *source_indices = (const uint32_t *)info->mesh_buffer.indices;
@@ -675,9 +882,13 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
       .max_extents = optimized_max,
   };
   return vkr_mesh_cooked_build_lods(
-      scratch_allocator, range, has_skin, optimized_vertices,
-      (uint32_t)optimized_vertex_count, optimized_indices, range->index_count,
-      out_range);
+             scratch_allocator, range, has_skin, optimized_vertices,
+             (uint32_t)optimized_vertex_count, optimized_indices,
+             range->index_count, out_range) &&
+         vkr_mesh_cooked_build_distance(scratch_allocator, range, has_skin,
+                                        world_scale, optimized_vertices,
+                                        optimized_indices, range->index_count,
+                                        &range_decode, out_range);
 }
 
 /* Folds one encoded range into the header in range order: the first range's
@@ -717,6 +928,7 @@ vkr_mesh_cooked_accumulate_range(VkrMeshCookedHeaderBuild *header, uint32_t i,
   header->total_vertices += range->vertex_count;
   header->total_indices += range->index_count;
   header->has_lod = header->has_lod || range->lod_level_count > 1u;
+  header->has_distance = header->has_distance || range->distance_voxels;
   return header->total_vertices <= UINT32_MAX &&
          header->total_indices <= UINT32_MAX;
 }
@@ -731,6 +943,8 @@ typedef struct VkrMeshCookedRangeJob {
   bool8_t has_skin;
   /* Two floats per merged vertex when the mesh has a lightmap UV set. */
   const float32_t *lightmap_uv;
+  /* Each range's world scale (vkr_mesh_cooked_range_scales). */
+  const float32_t *range_scales;
   VkrAtomicUint32 next;
   VkrAtomicBool failed;
   Arena *arenas[VKR_MESH_COOKED_RANGE_WORKERS];
@@ -761,7 +975,8 @@ vkr_internal void *vkr_mesh_cooked_range_worker(void *argument) {
       return NULL;
     }
     if (!vkr_mesh_cooked_encode_range(&allocator, job->info, i, job->has_skin,
-                                      job->lightmap_uv, &job->ranges[i])) {
+                                      job->lightmap_uv, job->range_scales[i],
+                                      &job->ranges[i])) {
       vkr_atomic_bool_store(&job->failed, true_v, VKR_MEMORY_ORDER_RELAXED);
       return NULL;
     }
@@ -832,6 +1047,10 @@ vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
     source_bytes +=
         (uint64_t)info->range_count * VKR_MESH_COOKED_LOD_ENTRY_SIZE;
   }
+  if (header->has_distance) {
+    source_bytes +=
+        (uint64_t)info->range_count * VKR_MESH_COOKED_DISTANCE_ENTRY_SIZE;
+  }
   header->directory_offset = VKR_MESH_COOKED_HEADER_SIZE;
   if (!vkr_checked_add_u64(header->directory_offset, range_bytes,
                            &header->dependency_offset) ||
@@ -874,6 +1093,21 @@ vkr_internal bool8_t vkr_mesh_cooked_compute_layout(
     header->file_size =
         vkr_align_up_u64(header->file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
   }
+  for (uint32_t i = 0; i < info->range_count; ++i) {
+    if (!ranges[i].distance_voxels) {
+      continue;
+    }
+    ranges[i].distance_offset = header->file_size;
+    if (!vkr_checked_add_u64(header->file_size,
+                             (uint64_t)ranges[i].distance_dims[0] *
+                                 ranges[i].distance_dims[1] *
+                                 ranges[i].distance_dims[2],
+                             &header->file_size)) {
+      return false_v;
+    }
+    header->file_size =
+        vkr_align_up_u64(header->file_size, VKR_MESH_COOKED_STREAM_ALIGNMENT);
+  }
   if (header->file_size > VKR_MESH_COOKED_MAX_FILE_SIZE ||
       header->file_size > SIZE_MAX) {
     return false_v;
@@ -908,11 +1142,14 @@ vkr_internal bool8_t vkr_mesh_cooked_write_header(
   ok = ok && vkr_byte_writer_u64(writer, header->file_size);
   ok = ok && vkr_byte_writer_u64(writer, 0u);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)info->source_path.length);
-  ok = ok && vkr_byte_writer_u32(
-                 writer, (header->lightmap.atlas_count != 0u
-                              ? VKR_MESH_COOKED_FLAG_LIGHTMAP_UV
-                              : 0u) |
-                             (header->has_lod ? VKR_MESH_COOKED_FLAG_LOD : 0u));
+  ok =
+      ok &&
+      vkr_byte_writer_u32(
+          writer,
+          (header->lightmap.atlas_count != 0u ? VKR_MESH_COOKED_FLAG_LIGHTMAP_UV
+                                              : 0u) |
+              (header->has_lod ? VKR_MESH_COOKED_FLAG_LOD : 0u) |
+              (header->has_distance ? VKR_MESH_COOKED_FLAG_DISTANCE : 0u));
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_vertices);
   ok = ok && vkr_byte_writer_u32(writer, (uint32_t)header->total_indices);
   ok = ok && vkr_byte_writer_bytes(writer, header->source_hash, 32u);
@@ -1064,6 +1301,18 @@ vkr_internal bool8_t vkr_mesh_cooked_write_metadata(
         ok = ok && vkr_byte_writer_f32(writer,
                                        used ? range->lod_errors[level] : 0.0f);
       }
+    }
+  }
+  if (header->has_distance) {
+    for (uint32_t i = 0; ok && i < info->range_count; ++i) {
+      const VkrMeshCookedRangeBuild *range = &ranges[i];
+      for (uint32_t axis = 0; axis < 3u; ++axis)
+        ok = ok && vkr_byte_writer_u32(writer, range->distance_dims[axis]);
+      for (uint32_t k = 0; k < 4u; ++k)
+        ok = ok && vkr_byte_writer_f32(
+                       writer, range->distance_box_min_voxel.elements[k]);
+      ok = ok && vkr_byte_writer_u32(writer, range->distance_crc);
+      ok = ok && vkr_byte_writer_u64(writer, range->distance_offset);
     }
   }
   return ok;
@@ -1463,6 +1712,11 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
   range_job->ranges = ranges;
   range_job->has_skin = has_skin;
   range_job->lightmap_uv = lightmap_uv;
+  range_job->range_scales =
+      vkr_mesh_cooked_range_scales(scratch_allocator, info);
+  if (!range_job->range_scales) {
+    return false_v;
+  }
   if (info->range_count &&
       !vkr_mesh_cooked_encode_ranges(scratch_allocator, range_job)) {
     return false_v;
@@ -1537,6 +1791,11 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_artifact(
     if (ranges[i].lod_level_count > 1u) {
       MemCopy(artifact + ranges[i].lod_stream_offset,
               ranges[i].encoded_lod_indices, ranges[i].encoded_lod_index_size);
+    }
+    if (ranges[i].distance_voxels) {
+      MemCopy(artifact + ranges[i].distance_offset, ranges[i].distance_voxels,
+              (uint64_t)ranges[i].distance_dims[0] *
+                  ranges[i].distance_dims[1] * ranges[i].distance_dims[2]);
     }
   }
   vkr_store_le_u32(artifact + VKR_MESH_COOKED_METADATA_CRC_OFFSET,
@@ -1697,8 +1956,8 @@ bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
       return false_v;
     }
   }
-  /* A static mesh's lightmap and LOD blocks follow its source metadata and
-     are copied verbatim with the streams. */
+  /* A static mesh's lightmap, LOD and distance blocks follow its source
+     metadata and are copied verbatim with the streams. */
   const uint64_t static_tail =
       ((header_flags & VKR_MESH_COOKED_FLAG_LIGHTMAP_UV) != 0u
            ? VKR_MESH_COOKED_LIGHTMAP_BLOCK_HEADER_SIZE +
@@ -1707,6 +1966,9 @@ bool8_t vkr_mesh_cooked_source_variant(VkrAllocator *allocator,
            : 0u) +
       ((header_flags & VKR_MESH_COOKED_FLAG_LOD) != 0u
            ? (uint64_t)range_count * VKR_MESH_COOKED_LOD_ENTRY_SIZE
+           : 0u) +
+      ((header_flags & VKR_MESH_COOKED_FLAG_DISTANCE) != 0u
+           ? (uint64_t)range_count * VKR_MESH_COOKED_DISTANCE_ENTRY_SIZE
            : 0u);
   const uint64_t source_end = original.offset;
   if ((version == VKR_MESH_COOKED_VERSION &&

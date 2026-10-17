@@ -41,14 +41,43 @@ typedef struct VkrGeometryUploadRange {
 } VkrGeometryUploadRange;
 Array(VkrGeometryUploadRange);
 
+/* Distance volumes of the tiled pipeline's SDF sun shadows (ADR-087), which
+ * the mesh cooker writes and the Metal backend generates for submeshes
+ * without one: at most VKR_GEOMETRY_DISTANCE_MAX_DIM voxels a side with a
+ * border of VKR_GEOMETRY_DISTANCE_PAD_VOXELS, voxels no smaller than
+ * VKR_GEOMETRY_DISTANCE_MIN_VOXEL world metres (mesh units when cooked), and
+ * each voxel the unsigned distance from its centre to the nearest triangle
+ * over VKR_GEOMETRY_DISTANCE_BAND_VOXELS, rounded to 8 bits. Submeshes under
+ * VKR_GEOMETRY_DISTANCE_MIN_EXTENT or over VKR_GEOMETRY_DISTANCE_MAX_EXTENT
+ * world metres along their longest side have none. */
+#define VKR_GEOMETRY_DISTANCE_MAX_DIM 64u
+#define VKR_GEOMETRY_DISTANCE_PAD_VOXELS 2u
+#define VKR_GEOMETRY_DISTANCE_MIN_VOXEL 0.25f
+#define VKR_GEOMETRY_DISTANCE_BAND_VOXELS 6.0f
+#define VKR_GEOMETRY_DISTANCE_MIN_EXTENT 0.25f
+#define VKR_GEOMETRY_DISTANCE_MAX_EXTENT 120.0f
+
+/**
+ * One submesh's cooked distance volume: `dims` voxels of `box_min_voxel.w`
+ * mesh units from `box_min_voxel.xyz`, `voxels` holding one byte per voxel, x
+ * fastest then y then z. Zero dims and no voxels when the submesh has none.
+ */
+typedef struct VkrGeometryDistanceVolume {
+  Vec4 box_min_voxel;
+  uint32_t dims[3];
+  const uint8_t *voxels;
+} VkrGeometryDistanceVolume;
+
 /**
  * Borrowed geometry publication input. `submeshes` and every buffer pointer
- * remain valid until the publisher returns.
+ * remain valid until the publisher returns. `distance_volumes`, when not
+ * NULL, holds one entry per submesh.
  */
 typedef struct VkrGeometryUpload {
   VkrGeometryUploadBuffer buffer;
   const VkrGeometryUploadRange *submeshes;
   uint32_t submesh_count;
+  const VkrGeometryDistanceVolume *distance_volumes;
 } VkrGeometryUpload;
 
 /**

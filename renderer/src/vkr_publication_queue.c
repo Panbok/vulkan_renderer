@@ -261,6 +261,31 @@ vkr_internal bool8_t vkr_publication_record_loaded_mesh(
         vkr_publication_copy_string8(renderer, submeshes[i].shader_override);
   }
   command->mesh.submeshes = submeshes;
+  /* Cooked distance volumes, one per submesh, and each one's voxels. */
+  if (mesh->distance_volumes) {
+    VkrGeometryDistanceVolume *volumes =
+        (VkrGeometryDistanceVolume *)vkr_publication_copy(
+            renderer, mesh->distance_volumes,
+            (uint64_t)mesh->submesh_count * sizeof(*mesh->distance_volumes));
+    if (!volumes) {
+      command->discarded = true_v;
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < mesh->submesh_count; ++i) {
+      if (!volumes[i].voxels) {
+        continue;
+      }
+      const uint64_t bytes = (uint64_t)volumes[i].dims[0] * volumes[i].dims[1] *
+                             volumes[i].dims[2];
+      volumes[i].voxels =
+          vkr_publication_copy_bulk(renderer, volumes[i].voxels, bytes);
+      if (!volumes[i].voxels) {
+        command->discarded = true_v;
+        return false_v;
+      }
+    }
+    command->mesh.distance_volumes = volumes;
+  }
   return true_v;
 }
 

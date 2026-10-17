@@ -315,6 +315,119 @@ vkr_internal bool8_t vkr_metal_packet_sdf_generate(
   return true_v;
 }
 
+/* Creates the textures of `mesh`'s `cooked` distance volumes, one entry per
+   submesh, and uploads their voxels, as many volumes a submission as an
+   upload slot holds. A volume whose texture or submission fails stays empty
+   for the GPU to generate. The trace waits for the uploads while they may
+   still run (volumes_in_flight). */
+vkr_internal void
+vkr_metal_packet_sdf_upload_cooked(VkrMetalPacketRenderer *renderer,
+                                   VkrMetalPacketMesh *mesh,
+                                   const VkrGeometryDistanceVolume *cooked)
+    API_AVAILABLE(macos(26.0)) {
+  if (!mesh->sdf_volumes) {
+    return;
+  }
+  uint32_t first = 0u;
+  while (first < mesh->submesh_count) {
+    /* A run of volumes whose voxels fit one upload slot, at least one. */
+    uint64_t bytes = 0u;
+    uint32_t end = first;
+    for (; end < mesh->submesh_count; ++end) {
+      const VkrGeometryDistanceVolume *volume = &cooked[end];
+      const uint64_t size =
+          volume->voxels ? (uint64_t)volume->dims[0] * volume->dims[1] *
+                               volume->dims[2]
+                         : 0u;
+      if (bytes != 0u && bytes + size > renderer->upload_slot_size) {
+        break;
+      }
+      bytes += size;
+    }
+    if (bytes == 0u) {
+      first = end;
+      continue;
+    }
+    VkrMetalRingSlice slice = {0};
+    VkrMetalAddressPair upload = {0};
+    id<MTLBuffer> upload_buffer = nil;
+    id<MTL4ComputeCommandEncoder> encoder = nil;
+    if (!vkr_metal_packet_begin_upload(renderer, bytes, &slice, &upload,
+                                       &upload_buffer, &encoder)) {
+      return;
+    }
+    uint64_t offset = 0u;
+    for (uint32_t i = first; i < end; ++i) {
+      const VkrGeometryDistanceVolume *source = &cooked[i];
+      VkrMetalSdfVolume *volume = &mesh->sdf_volumes[i];
+      if (!source->voxels || source->dims[0] == 0u || source->dims[1] == 0u ||
+          source->dims[2] == 0u || source->dims[0] > VKR_METAL_SDF_MAX_DIM ||
+          source->dims[1] > VKR_METAL_SDF_MAX_DIM ||
+          source->dims[2] > VKR_METAL_SDF_MAX_DIM ||
+          !(source->box_min_voxel.w > 0.0f)) {
+        continue;
+      }
+      MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+      descriptor.textureType = MTLTextureType3D;
+      descriptor.pixelFormat = MTLPixelFormatR8Unorm;
+      descriptor.width = source->dims[0];
+      descriptor.height = source->dims[1];
+      descriptor.depth = source->dims[2];
+      descriptor.usage = MTLTextureUsageShaderRead;
+      const VkrMetalMemoryStatus status =
+          vkr_metal_memory_device_create_texture(
+              renderer->memory, descriptor,
+              VKR_GPU_ALLOCATION_OWNER_SHADOW_FIELD, &volume->texture);
+      [descriptor release];
+      if (status != VKR_METAL_MEMORY_STATUS_OK) {
+        volume->texture = (VkrMetalTextureResource){0};
+        continue;
+      }
+      const uint64_t size =
+          (uint64_t)source->dims[0] * source->dims[1] * source->dims[2];
+      MemCopy((uint8_t *)upload.cpu_address + offset, source->voxels, size);
+      [encoder copyFromBuffer:upload_buffer
+                 sourceOffset:slice.offset + offset
+            sourceBytesPerRow:source->dims[0]
+          sourceBytesPerImage:(uint64_t)source->dims[0] * source->dims[1]
+                   sourceSize:MTLSizeMake(source->dims[0], source->dims[1],
+                                          source->dims[2])
+                    toTexture:(id<MTLTexture>)volume->texture.metal_texture
+             destinationSlice:0
+             destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+      offset += size;
+      volume->box_min = vec3_new(source->box_min_voxel.x,
+                                 source->box_min_voxel.y,
+                                 source->box_min_voxel.z);
+      volume->voxel = source->box_min_voxel.w;
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        volume->dims[axis] = source->dims[axis];
+      }
+      volume->state = VKR_METAL_SDF_VOLUME_READY;
+      renderer->sdf_volume_bytes += size;
+    }
+    const bool8_t submitted =
+        vkr_metal_packet_submit_upload(renderer, encoder, slice);
+    for (uint32_t i = first; i < end; ++i) {
+      VkrMetalSdfVolume *volume = &mesh->sdf_volumes[i];
+      if (submitted || volume->state != VKR_METAL_SDF_VOLUME_READY) {
+        continue;
+      }
+      /* Without the submission the texture holds no voxels. */
+      (void)vkr_metal_memory_device_retire(
+          renderer->memory, volume->texture.handle, renderer->submit_value);
+      volume->texture = (VkrMetalTextureResource){0};
+      volume->state = VKR_METAL_SDF_VOLUME_EMPTY;
+    }
+    if (!submitted) {
+      return;
+    }
+    renderer->sdf_generation_submit_value = renderer->submit_value;
+    first = end;
+  }
+}
+
 /* The mesh of `candidate` when it is a sun caster that needs its volume
    generated, with the instance's largest axis scale; the GPU's field
    casters (vkr_metal_sdf_field_row) are the same casters once ready. Sizes

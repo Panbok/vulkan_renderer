@@ -489,9 +489,15 @@ static void test_mesh_cooked_round_trip_and_malformed_boundaries(void) {
   assert(handle.as.mesh->load_metrics.preparation ==
          VKR_MESH_PREPARATION_COOKED);
   assert(handle.as.mesh->load_metrics.cooked_bytes == loader_artifact_size);
+  /* The 1 m triangle's distance volume: four 0.25 m voxels across and one
+     through, each with a two-voxel border. */
+  assert(handle.as.mesh->distance_volumes != NULL &&
+         handle.as.mesh->distance_volumes[0].dims[0] == 8u &&
+         handle.as.mesh->distance_volumes[0].dims[1] == 8u &&
+         handle.as.mesh->distance_volumes[0].dims[2] == 5u);
   assert(handle.as.mesh->load_metrics.decoded_bytes ==
          3u * sizeof(VkrPackedStaticVertex) + 3u * sizeof(uint32_t) +
-             sizeof(VkrGpuGeometryDecodeRecord));
+             sizeof(VkrGpuGeometryDecodeRecord) + 8u * 8u * 5u);
   assert(handle.as.mesh->load_metrics.vertices_transformed_before > 0);
   assert(handle.as.mesh->load_metrics.vertices_transformed_after ==
          handle.as.mesh->load_metrics.vertices_transformed_before);
@@ -1023,7 +1029,9 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   uint8_t *plain = NULL;
   uint64_t plain_size = 0;
   assert(vkr_mesh_cooked_encode(&scratch, &info, &plain, &plain_size));
-  assert(test_read_le32(plain + TEST_HEADER_FLAGS_FIELD) == 0u);
+  /* The unit cube's ranges carry distance volumes either way. */
+  assert(test_read_le32(plain + TEST_HEADER_FLAGS_FIELD) ==
+         VKR_MESH_COOKED_FLAG_DISTANCE);
 
   info.lightmap = (VkrMeshCookedLightmapOptions){
       .texels_per_unit = 32.0f, .padding = 2u, .max_size = 4096u};
@@ -1036,7 +1044,7 @@ static void test_mesh_cooked_lightmap_uv_round_trip(void) {
   assert(cooked_size == again_size &&
          MemCompare(cooked, again, cooked_size) == 0);
   assert(test_read_le32(cooked + TEST_HEADER_FLAGS_FIELD) ==
-         VKR_MESH_COOKED_FLAG_LIGHTMAP_UV);
+         (VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_DISTANCE));
 
   VkrMeshCookedDecoded decoded = {0};
   assert(
@@ -1290,8 +1298,9 @@ static void test_mesh_cooked_lod_round_trip(void) {
   assert(vkr_mesh_cooked_encode(&scratch, &grid.info, &again, &again_size));
   assert(cooked_size == again_size &&
          MemCompare(cooked, again, cooked_size) == 0);
+  /* The opaque grid also carries a distance volume. */
   assert(test_read_le32(cooked + TEST_HEADER_FLAGS_FIELD) ==
-         VKR_MESH_COOKED_FLAG_LOD);
+         (VKR_MESH_COOKED_FLAG_LOD | VKR_MESH_COOKED_FLAG_DISTANCE));
 
   VkrMeshCookedDecoded decoded = {0};
   assert(
@@ -1337,6 +1346,7 @@ static void test_mesh_cooked_lod_round_trip(void) {
 
   /* Entries must keep the table's limits and errors that never shrink. */
   const uint64_t entry = test_read_le64(cooked + TEST_STRING_OFFSET_FIELD) -
+                         2u * (uint64_t)VKR_MESH_COOKED_DISTANCE_ENTRY_SIZE -
                          2u * (uint64_t)VKR_MESH_COOKED_LOD_ENTRY_SIZE;
   uint8_t *mutated = vkr_allocator_alloc(&scratch, cooked_size,
                                          VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
@@ -1361,6 +1371,150 @@ static void test_mesh_cooked_lod_round_trip(void) {
   arena_destroy(result_arena);
   arena_destroy(scratch_arena);
   printf("  test_mesh_cooked_lod_round_trip PASSED\n");
+}
+
+/* The cooked distance value of a voxel `distance` mesh units from the
+ * nearest triangle, for 0.25-unit voxels and the 6-voxel band. */
+static uint8_t test_distance_byte(float32_t distance) {
+  const float32_t band = VKR_GEOMETRY_DISTANCE_BAND_VOXELS;
+  const float32_t voxels = distance / VKR_GEOMETRY_DISTANCE_MIN_VOXEL;
+  return (uint8_t)(Min(voxels / band, 1.0f) * 255.0f + 0.5f);
+}
+
+/* Cooked distance volumes (ADR-087): a flat 2 x 2 unit quad's opaque range
+ * gets a volume of 0.25-unit voxels with a two-voxel border whose bytes are
+ * each voxel centre's distance to the quad over the band, measured here from
+ * the geometry; the blended copy gets none; tampered voxels or dims beyond
+ * the limit are rejected. */
+static void test_mesh_cooked_distance_round_trip(void) {
+  printf("  Running test_mesh_cooked_distance_round_trip...\n");
+  static const char dependency_path[] = "build/vkr_mesh_cooked_distance.bin";
+  FILE *dependency = fopen(dependency_path, "wb");
+  assert(dependency != NULL);
+  assert(fwrite("distance\n", 1u, 9u, dependency) == 9u);
+  assert(fclose(dependency) == 0);
+  Arena *scratch_arena = arena_create(MB(64), MB(4));
+  Arena *result_arena = arena_create(MB(16), MB(1));
+  assert(scratch_arena != NULL && result_arena != NULL);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  VkrAllocator result = {.ctx = result_arena};
+  assert(vkr_allocator_arena(&scratch));
+  assert(vkr_allocator_arena(&result));
+
+  VkrVertex3d vertices[8];
+  uint32_t indices[12];
+  VkrGeometryUploadRange ranges[2];
+  VkrMeshSourceMesh source_meshes[2];
+  VkrMeshSourceNode nodes[2];
+  for (uint32_t copy = 0u; copy < 2u; ++copy) {
+    const float32_t x = 3.0f * (float32_t)copy;
+    vertices[copy * 4u + 0u] = test_vertex(x, 0.0f, 0.0f);
+    vertices[copy * 4u + 1u] = test_vertex(x + 2.0f, 0.0f, 0.0f);
+    vertices[copy * 4u + 2u] = test_vertex(x + 2.0f, 2.0f, 0.0f);
+    vertices[copy * 4u + 3u] = test_vertex(x, 2.0f, 0.0f);
+    const uint32_t base = copy * 4u;
+    const uint32_t quad[6] = {base, base + 1u, base + 2u,
+                              base, base + 2u, base + 3u};
+    MemCopy(&indices[copy * 6u], quad, sizeof(quad));
+    ranges[copy] = (VkrGeometryUploadRange){
+        .range_id = copy,
+        .first_index = copy * 6u,
+        .index_count = 6u,
+        .min_extents = {x, 0.0f, 0.0f},
+        .max_extents = {x + 2.0f, 2.0f, 0.0f},
+        .material_name = string8_lit("material.quad"),
+        .pipeline_domain = copy == 0u ? VKR_PIPELINE_DOMAIN_WORLD
+                                      : VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT};
+    source_meshes[copy] = (VkrMeshSourceMesh){
+        .source_mesh_index = copy, .first_range = copy, .range_count = 1};
+    nodes[copy] = (VkrMeshSourceNode){.name = string8_lit("quad"),
+                                      .local = mat4_identity(),
+                                      .parent = UINT32_MAX,
+                                      .mesh = copy,
+                                      .mesh_variant = copy,
+                                      .camera = UINT32_MAX,
+                                      .skin = UINT32_MAX,
+                                      .light = UINT32_MAX,
+                                      .in_scene = true_v};
+  }
+  String8 dependency_string = string8_lit(dependency_path);
+  const VkrMeshCookedEncodeInfo info = {
+      .source = {.nodes = {.data = nodes, .length = 2},
+                 .meshes = {.data = source_meshes, .length = 2}},
+      .source_path = dependency_string,
+      .dependency_paths = &dependency_string,
+      .dependency_count = 1,
+      .mesh_buffer = {.vertex_size = sizeof(VkrVertex3d),
+                      .vertex_count = 8,
+                      .vertices = vertices,
+                      .index_size = sizeof(uint32_t),
+                      .index_count = 12,
+                      .indices = indices},
+      .ranges = ranges,
+      .range_count = 2,
+      .budgets = vkr_packed_geometry_default_budgets(),
+  };
+  uint8_t *cooked = NULL;
+  uint64_t cooked_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &info, &cooked, &cooked_size));
+  assert(test_read_le32(cooked + TEST_HEADER_FLAGS_FIELD) ==
+         VKR_MESH_COOKED_FLAG_DISTANCE);
+
+  VkrMeshCookedDecoded decoded = {0};
+  assert(
+      vkr_mesh_cooked_decode(&result, &scratch, cooked, cooked_size, &decoded));
+  assert(decoded.distance_volumes != NULL);
+  const VkrGeometryDistanceVolume *volume = &decoded.distance_volumes[0];
+  /* Eight voxels across the quad and one through it, two of border each
+     side. */
+  assert(volume->dims[0] == 12u && volume->dims[1] == 12u &&
+         volume->dims[2] == 5u && volume->voxels != NULL);
+  assert(volume->box_min_voxel.w == VKR_GEOMETRY_DISTANCE_MIN_VOXEL);
+  assert(vkr_abs_f32(volume->box_min_voxel.x + 0.5f) < 1e-4f &&
+         vkr_abs_f32(volume->box_min_voxel.y + 0.5f) < 1e-4f &&
+         vkr_abs_f32(volume->box_min_voxel.z + 0.5f) < 1e-3f);
+  assert(decoded.distance_volumes[1].dims[0] == 0u &&
+         decoded.distance_volumes[1].voxels == NULL);
+  /* Voxel centres over the quad, below it, and beyond two of its corners. */
+  const struct {
+    uint32_t x, y, z;
+    float32_t distance;
+  } samples[] = {
+      {6u, 6u, 2u, 0.125f},
+      {6u, 6u, 0u, 0.375f},
+      {0u, 0u, 0u, vkr_sqrt_f32(3.0f * 0.375f * 0.375f)},
+      {11u, 11u, 4u, vkr_sqrt_f32(2.0f * 0.375f * 0.375f + 0.625f * 0.625f)},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(samples); ++i) {
+    const uint8_t stored =
+        volume->voxels[(samples[i].z * volume->dims[1] + samples[i].y) *
+                           volume->dims[0] +
+                       samples[i].x];
+    const int32_t expected = test_distance_byte(samples[i].distance);
+    assert(stored >= expected - 1 && stored <= expected + 1);
+  }
+
+  /* Voxels and entries are checked. */
+  uint8_t *mutated = vkr_allocator_alloc(&scratch, cooked_size,
+                                         VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  assert(mutated != NULL);
+  VkrMeshCookedDecoded rejected = {0};
+  /* The opaque range's entry: dims, origin and voxel size, CRC, offset. */
+  const uint64_t entry = test_read_le64(cooked + TEST_STRING_OFFSET_FIELD) -
+                         2u * (uint64_t)VKR_MESH_COOKED_DISTANCE_ENTRY_SIZE;
+  MemCopy(mutated, cooked, cooked_size);
+  mutated[test_read_le64(cooked + entry + 32u)] ^= 0x5Au;
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, cooked_size,
+                                 &rejected));
+  MemCopy(mutated, cooked, cooked_size);
+  test_write_le32(mutated + entry, VKR_GEOMETRY_DISTANCE_MAX_DIM + 1u);
+  test_refresh_integrity(mutated);
+  assert(!vkr_mesh_cooked_decode(&result, &scratch, mutated, cooked_size,
+                                 &rejected));
+
+  arena_destroy(result_arena);
+  arena_destroy(scratch_arena);
+  printf("  test_mesh_cooked_distance_round_trip PASSED\n");
 }
 
 uint8_t *test_cook_lightmap_cube(float32_t texels_per_unit,
@@ -1394,6 +1548,7 @@ bool32_t run_mesh_cooked_tests(void) {
   test_mesh_cooked_round_trip_and_malformed_boundaries();
   test_mesh_cooked_lightmap_uv_round_trip();
   test_mesh_cooked_lod_round_trip();
+  test_mesh_cooked_distance_round_trip();
   test_cooked_optimization_preserves_triangles();
   test_obj_face_storage_grows_geometrically();
   test_metadata_only_gltf_cooked_load_without_source();

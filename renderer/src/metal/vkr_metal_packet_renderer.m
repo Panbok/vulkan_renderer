@@ -224,19 +224,19 @@ typedef struct VkrMetalSdfVolume {
   uint32_t row;
 } VkrMetalSdfVolume;
 
-/* Distance volumes: at most this many voxels a side, with a border of
-   VKR_METAL_SDF_PAD_VOXELS, voxels no smaller than
-   VKR_METAL_SDF_MIN_WORLD_VOXEL world metres (half the far level's texel),
-   distances banded at VKR_METAL_SDF_BAND_VOXELS.
+/* Distance volumes, as the mesh cooker writes them (vkr_geometry_upload.h):
+   at most this many voxels a side, with a border of VKR_METAL_SDF_PAD_VOXELS,
+   voxels no smaller than VKR_METAL_SDF_MIN_WORLD_VOXEL world metres (half
+   the far level's texel), distances banded at VKR_METAL_SDF_BAND_VOXELS.
    Casters under VKR_METAL_SDF_MIN_EXTENT world metres cast no far shadow
    worth a volume; casters over VKR_METAL_SDF_MAX_EXTENT, such as terrain,
    keep the cascades. */
-#define VKR_METAL_SDF_MAX_DIM 64u
-#define VKR_METAL_SDF_PAD_VOXELS 2u
-#define VKR_METAL_SDF_MIN_WORLD_VOXEL 0.25f
-#define VKR_METAL_SDF_BAND_VOXELS 6.0f
-#define VKR_METAL_SDF_MIN_EXTENT 0.25f
-#define VKR_METAL_SDF_MAX_EXTENT 120.0f
+#define VKR_METAL_SDF_MAX_DIM VKR_GEOMETRY_DISTANCE_MAX_DIM
+#define VKR_METAL_SDF_PAD_VOXELS VKR_GEOMETRY_DISTANCE_PAD_VOXELS
+#define VKR_METAL_SDF_MIN_WORLD_VOXEL VKR_GEOMETRY_DISTANCE_MIN_VOXEL
+#define VKR_METAL_SDF_BAND_VOXELS VKR_GEOMETRY_DISTANCE_BAND_VOXELS
+#define VKR_METAL_SDF_MIN_EXTENT VKR_GEOMETRY_DISTANCE_MIN_EXTENT
+#define VKR_METAL_SDF_MAX_EXTENT VKR_GEOMETRY_DISTANCE_MAX_EXTENT
 /* The light-space grid: cells a side over the receivers the shadows reach
    around the camera, at least the minimum half extent in metres, and its
    capacity of cell entries. */
@@ -1420,6 +1420,11 @@ vkr_metal_packet_write_upload_sdf_table(VkrMetalPacketRenderer *renderer,
                                         VkrMetalPacketFrameUpload *upload);
 vkr_internal uint32_t
 vkr_metal_packet_sdf_skip_view_mask(const VkrRenderGraphFrameInfo *frame);
+vkr_internal void
+vkr_metal_packet_sdf_upload_cooked(VkrMetalPacketRenderer *renderer,
+                                   VkrMetalPacketMesh *mesh,
+                                   const VkrGeometryDistanceVolume *cooked)
+    API_AVAILABLE(macos(26.0));
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shadow(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,

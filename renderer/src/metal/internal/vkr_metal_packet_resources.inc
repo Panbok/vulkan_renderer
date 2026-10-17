@@ -261,13 +261,15 @@ vkr_internal bool8_t vkr_metal_packet_ensure_geometry_megabuffer(
 }
 
 /* Records each submesh's quantized position box, from which a distance
-   volume is fitted once SDF sun shadows reach one of its candidates;
-   without memory the mesh casts no SDF shadow. The field table is laid out
-   again either way. */
+   volume is fitted once SDF sun shadows reach one of its candidates, and
+   uploads the `cooked` volumes, one per submesh when not NULL; without memory
+   the mesh casts no SDF shadow. The field table is laid out again either
+   way. */
 vkr_internal void
 vkr_metal_packet_init_sdf_volumes(VkrMetalPacketRenderer *renderer,
                                   VkrMetalPacketMesh *mesh,
-                                  const VkrGpuGeometryDecodeRecord *decodes) {
+                                  const VkrGpuGeometryDecodeRecord *decodes,
+                                  const VkrGeometryDistanceVolume *cooked) {
   renderer->sdf_layout_dirty = true_v;
   mesh->sdf_volumes = vkr_allocator_alloc(
       renderer->allocator,
@@ -285,6 +287,11 @@ vkr_metal_packet_init_sdf_volumes(VkrMetalPacketRenderer *renderer,
             vec3_new(decode->position_scale[0], decode->position_scale[1],
                      decode->position_scale[2]),
     };
+  }
+  if (cooked) {
+    if (@available(macOS 26.0, *)) {
+      vkr_metal_packet_sdf_upload_cooked(renderer, mesh, cooked);
+    }
   }
 }
 
@@ -491,7 +498,8 @@ vkr_internal bool8_t vkr_metal_packet_renderer_create_mesh_internal(
       submeshes[0] = default_submesh;
       slot->submesh_count = 1;
     }
-    vkr_metal_packet_init_sdf_volumes(renderer, slot, create_info->decodes);
+    vkr_metal_packet_init_sdf_volumes(renderer, slot, create_info->decodes,
+                                      create_info->distance_volumes);
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
     VKR_METAL_DIAGNOSTIC(renderer, "geometry_ranges_allocate",
@@ -579,6 +587,7 @@ bool8_t vkr_metal_packet_renderer_create_loaded_mesh(
             .index_count = loader_result->buffer.index_count,
             .submeshes = submeshes,
             .submesh_count = (uint32_t)loader_result->submesh_count,
+            .distance_volumes = loader_result->distance_volumes,
         },
         out_handle);
     vkr_allocator_free(renderer->allocator, submeshes,
@@ -648,7 +657,8 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
       existing->submeshes = submeshes;
       existing->submesh_count = (uint32_t)loader_result->submesh_count;
       vkr_metal_packet_init_sdf_volumes(renderer, existing,
-                                        loader_result->buffer.decodes);
+                                        loader_result->buffer.decodes,
+                                        loader_result->distance_volumes);
       return true_v;
     }
     VkrMeshHandle published = VKR_MESH_HANDLE_INVALID;
@@ -665,6 +675,7 @@ bool8_t vkr_metal_packet_renderer_publish_loaded_mesh(
             .index_count = loader_result->buffer.index_count,
             .submeshes = submeshes,
             .submesh_count = (uint32_t)loader_result->submesh_count,
+            .distance_volumes = loader_result->distance_volumes,
         },
         requested, &published);
     vkr_allocator_free(renderer->allocator, submeshes,

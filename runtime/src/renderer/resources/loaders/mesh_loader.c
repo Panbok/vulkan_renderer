@@ -261,6 +261,7 @@ vkr_internal bool8_t vkr_mesh_loader_read_cooked(
     range->material_name = resolved;
   }
   result->submeshes = decoded.ranges;
+  result->distance_volumes = decoded.distance_volumes;
   result->load_metrics = (VkrMeshLoadMetrics){
       .source_bytes = decoded.source_bytes,
       .cooked_bytes = decoded.cooked_bytes,

@@ -66,6 +66,8 @@ typedef struct VkrMeshLoaderResult {
   VkrMeshLoaderBuffer mesh_buffer; /**< Merged vertex/index payload. */
   VkrMeshLoadMetrics load_metrics;
   Array_VkrGeometryUploadRange submeshes; /**< Decoder-owned geometry ranges. */
+  /** Cooked distance volumes, one per submesh, or NULL (ADR-087). */
+  const VkrGeometryDistanceVolume *distance_volumes;
   /** Runtime material references, indexed by submeshes; released before arena
    * return. */
   Array_VkrMaterialHandle material_handles;

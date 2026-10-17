@@ -122,6 +122,7 @@ static const char *const eval_gfx_members[] = {"render_scale",
                                                "target_fps",
                                                "upscaler",
                                                "distance_field_shadows",
+                                               "contact_shadows",
                                                NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
@@ -712,6 +713,9 @@ static bool8_t eval_gfx_member(Eval *eval, String8 name, Value *out) {
     return true_v;
   case 10:
     *out = eval_bool(settings->distance_field_shadows);
+    return true_v;
+  case 11:
+    *out = eval_bool(settings->contact_shadows);
     return true_v;
   default:
     break;
@@ -1612,6 +1616,9 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
       /* The tiled pipeline's SDF sun shadows (ADR-087). */
       settings.distance_field_shadows = value->number != 0.0;
+    } else if (index == 11 &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
+      settings.contact_shadows = value->number != 0.0;
     } else {
       return eval->error[0] ? false_v
                             : eval_fail(eval, "Cannot assign gfx.%.*s",

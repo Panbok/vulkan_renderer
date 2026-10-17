@@ -49,6 +49,15 @@
 #define VKR_MESH_COOKED_LOD_ENTRY_SIZE                                         \
   (24u + (VKR_GPU_GEOMETRY_LOD_LEVEL_MAX - 1u) * 8u)
 
+/* Header flag: static ranges carry distance volumes for the tiled pipeline's
+ * SDF sun shadows (ADR-087, vkr_geometry_upload.h). The distance block
+ * follows the LOD block: one entry per range in range order, each its
+ * volume's dims (zero without one), mesh-space origin and voxel size, and
+ * the CRC and offset of its voxels, one byte each, which follow every LOD
+ * stream in range order. */
+#define VKR_MESH_COOKED_FLAG_DISTANCE 4u
+#define VKR_MESH_COOKED_DISTANCE_ENTRY_SIZE 40u
+
 /* One source mesh's chart atlas: UV2 spans width x height texels at
  * texels_per_unit. */
 typedef struct VkrMeshCookedLightmapAtlas {
@@ -74,6 +83,9 @@ typedef struct VkrMeshCookedDecoded {
   VkrMeshSkinData skin;
   VkrMeshCookedLightmap lightmap;
   Array_VkrGeometryUploadRange ranges;
+  /** One per range when the artifact has a distance block, else NULL; the
+   * voxels share the decoded result's allocator. */
+  VkrGeometryDistanceVolume *distance_volumes;
   VkrGeometryQuantizationMetrics quantization;
 } VkrMeshCookedDecoded;
 

@@ -1435,6 +1435,47 @@ vkr_internal bool8_t vkr_vk_prepare_far_publish(
   return true_v;
 }
 
+/* One tile of the far level's rebuilt static layer, through the far
+   cascade's culling view, which culls and rasterizes with the tile's
+   matrix; it clears and draws only its texels (ADR-041). Receivers read
+   texel (clip xy * 0.5 + 0.5) * size, which Vulkan's viewport maps to rows
+   from the top. */
+vkr_internal bool8_t vkr_vk_prepare_shadow_far_slice(
+    VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
+    const VkrRgPass *pass, uint32_t target_width, uint32_t target_height) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  prepared->clear_depth_rect = false_v;
+  const VkrShadowPassPayload *shadow = packet->input.shadow;
+  if (!shadow || !shadow->far_slice_active ||
+      shadow->far_cascade >= shadow->cascade_count)
+    return false_v;
+  const uint32_t *rect = shadow->far_slice_rect;
+  if (rect[0] >= rect[2] || rect[1] >= rect[3] || rect[2] > target_width ||
+      rect[3] > target_height || target_width != target_height)
+    return false_v;
+  const uint32_t width = rect[2] - rect[0];
+  const uint32_t height = rect[3] - rect[1];
+  prepared->viewport = (VkViewport){
+      .x = (float32_t)rect[0],
+      .y = (float32_t)rect[1],
+      .width = (float32_t)width,
+      .height = (float32_t)height,
+      .minDepth = 0.0f,
+      .maxDepth = 1.0f,
+  };
+  prepared->scissor = (VkRect2D){
+      .offset = {(int32_t)rect[0], (int32_t)rect[1]},
+      .extent = {width, height},
+  };
+  prepared->depth_clear_rect =
+      (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
+  prepared->clear_depth_rect = true_v;
+  prepared->depth_bias = shadow->config_override ? *shadow->config_override
+                                                 : (VkrShadowConfigOverride){0};
+  return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
+                                        false_v, 1u + shadow->far_cascade);
+}
+
 vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedGraphPass *prepared,
     const VkrRgPass *pass, VkrRgExecutorKind kind, uint32_t target_width,
@@ -1504,44 +1545,9 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
             : vkr_render_graph_cascade_dynamic_view(&renderer->prepared_frame,
                                                     cascade));
   }
-  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE: {
-    /* One tile of the far level's rebuilt static layer, through the far
-       cascade's culling view, which culls and rasterizes with the tile's
-       matrix; it clears and draws only its texels (ADR-041). Receivers read
-       texel (clip xy * 0.5 + 0.5) * size, which Vulkan's viewport maps to
-       rows from the top. */
-    prepared->clear_depth_rect = false_v;
-    const VkrShadowPassPayload *shadow = packet->input.shadow;
-    if (!shadow || !shadow->far_slice_active ||
-        shadow->far_cascade >= shadow->cascade_count)
-      return false_v;
-    const uint32_t *rect = shadow->far_slice_rect;
-    if (rect[0] >= rect[2] || rect[1] >= rect[3] || rect[2] > target_width ||
-        rect[3] > target_height || target_width != target_height)
-      return false_v;
-    const uint32_t width = rect[2] - rect[0];
-    const uint32_t height = rect[3] - rect[1];
-    prepared->viewport = (VkViewport){
-        .x = (float32_t)rect[0],
-        .y = (float32_t)rect[1],
-        .width = (float32_t)width,
-        .height = (float32_t)height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
-    prepared->scissor = (VkRect2D){
-        .offset = {(int32_t)rect[0], (int32_t)rect[1]},
-        .extent = {width, height},
-    };
-    prepared->depth_clear_rect =
-        (VkClearRect){.rect = prepared->scissor, .layerCount = 1u};
-    prepared->clear_depth_rect = true_v;
-    prepared->depth_bias = shadow->config_override
-                               ? *shadow->config_override
-                               : (VkrShadowConfigOverride){0};
-    return vkr_vk_prepare_deferred_raster(renderer, &prepared->raster, pass,
-                                          false_v, 1u + shadow->far_cascade);
-  }
+  case VKR_RG_EXECUTOR_SHADOW_FAR_SLICE:
+    return vkr_vk_prepare_shadow_far_slice(renderer, prepared, pass,
+                                           target_width, target_height);
   case VKR_RG_EXECUTOR_LOCAL_SHADOW_DYNAMIC: {
     /* Dynamic slot i draws the dynamic casters over the copy of its static
        square, so it clears nothing. */

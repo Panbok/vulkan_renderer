@@ -139,8 +139,10 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];
     }
+    /* Generated volumes come from dispatches, cooked ones from copies. */
     if (pass->sun_shadow.volumes_in_flight)
-      [encoder barrierAfterQueueStages:MTLStageDispatch
+      [encoder barrierAfterQueueStages:(MTLStages)(MTLStageDispatch |
+                                                   MTLStageBlit)
                           beforeStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
     vkr_metal_packet_record_dispatch(renderer, encoder,

@@ -140,8 +140,10 @@ if(VKR_BUILD_TOOLS)
     set(VKR_BAKERY_IDENTITY_TEXTURE_FILES
         ${VKR_BAKERY_TEXTURE_SOURCES} "${VKR_BAKERY_PRODUCER_SOURCE}")
     set(VKR_BAKERY_IDENTITY_TEXTURE_EXTRA "ktx ${VKR_BAKERY_KTX_COMMIT}")
+    # vkr_geometry_upload.h holds the cooked distance volumes' limits.
     set(VKR_BAKERY_IDENTITY_MESH_FILES
         "${CMAKE_SOURCE_DIR}/tools/vkr_mesh_cooker.c"
+        "${CMAKE_SOURCE_DIR}/renderer/src/vkr_geometry_upload.h"
         ${VKR_BAKERY_COOKING_SOURCES} ${VKR_BAKERY_TEXTURE_SOURCES}
         "${VKR_BAKERY_PRODUCER_SOURCE}")
     set(VKR_BAKERY_IDENTITY_MESH_EXTRA
