@@ -146,8 +146,10 @@ an agent must read one without the editor.
   none; `rec.list` and `vkr_rec summary` report it. The playback bar adds a
   note at the playhead from a field above it, marks a range with two presses
   of Range, and toggles the review (Shift flags it); notes show as squares
-  and ranges as outlined spans on its track, and a card shows the note count
-  and the review. Copy agent prompt puts the recording's facts, its first
+  and ranges as outlined spans on its track. Clicking one seeks to it and
+  opens a panel over the bar: a note's text, author and Delete, or a range's
+  name to rename (Enter) and Delete (`rec.range` `rename` for agents). A
+  card shows the note count and the review. Copy agent prompt puts the recording's facts, its first
   markers, notes and ranges, the review, the request it answers and the
   playhead on the clipboard
   ([editor_recording_annotations.c](../../editor/src/editor_recording_annotations.c)).

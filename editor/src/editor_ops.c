@@ -15335,13 +15335,16 @@ static VkrEditorOpStatus ops_run_rec_range(OpsContext *ctx) {
   uint64_t first = 0u;
   uint64_t last = 0u;
   uint64_t remove = 0u;
+  uint64_t rename = 0u;
   bool8_t has_first = false_v;
   bool8_t has_last = false_v;
   bool8_t removing = false_v;
+  bool8_t renaming = false_v;
   if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
       !ops_arg_index(ctx, "first", &first, &has_first) ||
       !ops_arg_index(ctx, "last", &last, &has_last) ||
-      !ops_arg_index(ctx, "remove", &remove, &removing)) {
+      !ops_arg_index(ctx, "remove", &remove, &removing) ||
+      !ops_arg_index(ctx, "rename", &rename, &renaming)) {
     return VKR_EDITOR_OP_DONE;
   }
   VkrRecordingAnnotations *annotations = ops_recording_annotations(ctx, bundle);
@@ -15357,6 +15360,16 @@ static VkrEditorOpStatus ops_run_rec_range(OpsContext *ctx) {
     return ops_recording_annotations_done(ctx, annotations);
   }
   String8 label = {0};
+  if (renaming) {
+    if (!vkr_bakery_json_get_string(ctx->call->args, "label", &label) ||
+        rename >= annotations->range_count ||
+        !vkr_recording_annotations_rename_range(annotations, (uint32_t)rename,
+                                                label)) {
+      ops_fail(ctx, OPS_INVALID, "Renaming needs range 'rename' and a 'label'");
+      return VKR_EDITOR_OP_DONE;
+    }
+    return ops_recording_annotations_done(ctx, annotations);
+  }
   if (!has_first || !has_last ||
       !vkr_bakery_json_get_string(ctx->call->args, "label", &label) ||
       label.length == 0u) {
@@ -15792,11 +15805,12 @@ static const OpsDef s_ops[] = {
      ops_run_rec_note, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.range",
      "Name frames 'first' to 'last' of recording 'name' (default: the open "
-     "one) with 'label', or 'remove' range index.",
+     "one) with 'label', 'rename' range index to 'label', or 'remove' range "
+     "index.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{\"type\":"
      "\"integer\"},\"label\":{\"type\":\"string\"},\"remove\":{"
-     "\"type\":\"integer\"}}}",
+     "\"type\":\"integer\"},\"rename\":{\"type\":\"integer\"}}}",
      ops_run_rec_range, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.review",
      "Set recording 'name' (default: the open one) to 'state' unreviewed, "

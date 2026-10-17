@@ -1397,6 +1397,12 @@ static void test_recording_annotations(void) {
   vkr_recording_annotations_remove_range(&read, 0u);
   assert(read.note_count == 3u && read.notes[1].frame == 30u);
   assert(read.range_count == 1u && strcmp(read.ranges[0].name, "Hitch") == 0);
+  assert(vkr_recording_annotations_rename_range(&read, 0u,
+                                                string8_lit("Hitch at door")));
+  assert(strcmp(read.ranges[0].name, "Hitch at door") == 0);
+  assert(!vkr_recording_annotations_rename_range(&read, 0u, (String8){0}));
+  assert(!vkr_recording_annotations_rename_range(&read, 1u,
+                                                 string8_lit("missing")));
 
   char file[1100];
   string_format(file, sizeof(file), "%s/%s", path,

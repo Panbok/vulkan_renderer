@@ -172,6 +172,13 @@ typedef struct VkrEditorRecordingRequests {
   uint32_t decline_length;
 } VkrEditorRecordingRequests;
 
+/* What the panel over the playback bar shows besides the note field. */
+typedef enum VkrEditorRecordingSelection {
+  VKR_EDITOR_RECORDING_SELECTION_NONE = 0,
+  VKR_EDITOR_RECORDING_SELECTION_NOTE,
+  VKR_EDITOR_RECORDING_SELECTION_RANGE,
+} VkrEditorRecordingSelection;
+
 /* The annotations of one recording, cached while its playback is open or an
    operation edits them, and the playback bar's note and range tools. */
 typedef struct VkrEditorRecordingNotes {
@@ -187,6 +194,13 @@ typedef struct VkrEditorRecordingNotes {
   /* A range being marked: its first frame, until a second press ends it. */
   bool8_t marking;
   uint64_t range_first;
+  /* The note or range clicked on the track, by index into the cached
+     annotations, and the range name being edited; any change to the
+     annotations clears it, as indices move. */
+  VkrEditorRecordingSelection selected;
+  uint32_t selected_index;
+  char name[VKR_RECORDING_RANGE_NAME_MAX];
+  uint64_t name_length;
 } VkrEditorRecordingNotes;
 
 typedef struct VkrEditorRecording {
@@ -376,8 +390,9 @@ void vkr_editor_recording_review_toggle(struct VkrEditorUi *editor,
 void vkr_editor_recording_annotations_track(
     struct VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     const VkrRecordingPlayback *playback, VkrUiRect slider_px);
-/** The note field's rectangle in points while it is open, from the playback
- * bar's top-left corner and width. */
+/** The rectangle in points of the panel over the playback bar (the note
+ * field, or the selected note or range) while one is open, from the bar's
+ * top-left corner and width. */
 bool8_t vkr_editor_recording_composer_rect(const struct VkrEditorUi *editor,
                                            Vec3 bar_pt, Vec4 *out_pt);
 /** The note field over the playback bar, whose top-left corner and width

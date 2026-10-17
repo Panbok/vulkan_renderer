@@ -20,6 +20,8 @@
 /* The note field over the playback bar. */
 #define EDITOR_ANNOTATIONS_COMPOSER_PT 440.0f
 #define EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT 44.0f
+/* The selected note's panel: a caption and up to three lines of text. */
+#define EDITOR_ANNOTATIONS_NOTE_PANEL_HEIGHT_PT 86.0f
 
 /* ------------------------------------------------------------------------ */
 /* Cache                                                                     */
@@ -32,6 +34,7 @@ vkr_editor_recording_annotations(VkrEditorUi *editor, const char *bundle_path,
     return &notes->annotations;
   }
   notes->bundle[0] = '\0';
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
   if (!vkr_recording_annotations_read(bundle_path, &notes->annotations)) {
     string_format(error, error_capacity,
                   "The recording's %s is damaged; fix or delete it first.",
@@ -49,6 +52,8 @@ bool8_t vkr_editor_recording_annotations_save(VkrEditorUi *editor) {
       !vkr_recording_annotations_write(notes->bundle, &notes->annotations)) {
     return false_v;
   }
+  /* Indices move when notes or ranges come and go. */
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
   /* The card of the same bundle shows the new counts at once. */
   for (uint32_t i = 0u; i < recording->entry_count; ++i) {
     VkrEditorRecordingEntry *entry = &recording->entries[i];
@@ -141,6 +146,7 @@ void vkr_editor_recording_note_toggle(VkrEditorUi *editor) {
   notes->composing = !notes->composing;
   notes->focus = notes->composing;
   notes->text_length = 0u;
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
 }
 
 void vkr_editor_recording_range_mark(VkrEditorUi *editor,
@@ -202,6 +208,25 @@ void vkr_editor_recording_review_toggle(VkrEditorUi *editor,
 
 /* ------------------------------------------------------------------------ */
 /* Track                                                                     */
+
+/* Selects a note or range, or deselects it when it was selected; the note
+   field closes. A range's name fills the rename field. */
+vkr_internal void editor_annotations_select(VkrEditorRecordingNotes *notes,
+                                            VkrEditorRecordingSelection kind,
+                                            uint32_t index, const char *name) {
+  if (notes->selected == kind && notes->selected_index == index) {
+    notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+    return;
+  }
+  notes->selected = kind;
+  notes->selected_index = index;
+  notes->composing = false_v;
+  notes->name_length = 0u;
+  if (name) {
+    notes->name_length = Min(string_length(name), sizeof(notes->name) - 1u);
+    MemCopy(notes->name, name, notes->name_length);
+  }
+}
 
 /* The track's x, in points, of frame `frame`. */
 vkr_internal float32_t
@@ -279,11 +304,17 @@ void vkr_editor_recording_annotations_track(
         (unsigned long long)range->first, (unsigned long long)range->last,
         range->author[0] ? ", by " : "", range->author);
     (void)vkr_ui_push_id_u64(ui, i);
+    if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_RANGE &&
+        notes->selected_index == i) {
+      band.style.background_color = vkr_ui_color_alpha(theme->text, 0.4f);
+    }
     if (vkr_ui_button(ui, string8_lit("editor.recording.range"), (String8){0},
                       &band)) {
       VkrSampleRecordingRequest seek = {
           .command = VKR_SAMPLE_RECORDING_SEEK_FRAME, .frame = range->first};
       (void)vkr_editor_recording_send(editor, seek, false_v);
+      editor_annotations_select(notes, VKR_EDITOR_RECORDING_SELECTION_RANGE, i,
+                                range->name);
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -310,11 +341,17 @@ void vkr_editor_recording_annotations_track(
         (unsigned long long)note->frame, note->author[0] ? " by " : "",
         note->author, note->text);
     (void)vkr_ui_push_id_u64(ui, i);
+    if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE &&
+        notes->selected_index == i) {
+      square.style.background_color = theme->accent_hover;
+    }
     if (vkr_ui_button(ui, string8_lit("editor.recording.note"), (String8){0},
                       &square)) {
       VkrSampleRecordingRequest seek = {
           .command = VKR_SAMPLE_RECORDING_SEEK_FRAME, .frame = note->frame};
       (void)vkr_editor_recording_send(editor, seek, false_v);
+      editor_annotations_select(notes, VKR_EDITOR_RECORDING_SELECTION_NOTE, i,
+                                NULL);
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -358,35 +395,39 @@ editor_annotations_add_note(VkrEditorUi *editor,
   editor_annotations_saved(editor, VKR_UI_ICON_PENCIL_LINE, message);
 }
 
+/* Whether the selection still names a note or range of the cache. */
+vkr_internal bool8_t
+editor_annotations_selection_valid(const VkrEditorRecordingNotes *notes) {
+  return (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE &&
+          notes->selected_index < notes->annotations.note_count) ||
+         (notes->selected == VKR_EDITOR_RECORDING_SELECTION_RANGE &&
+          notes->selected_index < notes->annotations.range_count);
+}
+
 bool8_t vkr_editor_recording_composer_rect(const VkrEditorUi *editor,
                                            Vec3 bar_pt, Vec4 *out_pt) {
-  if (!editor->recording.notes.composing) {
+  const VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  float32_t height = 0.0f;
+  if (notes->composing) {
+    height = EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT;
+  } else if (editor_annotations_selection_valid(notes)) {
+    height = notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE
+                 ? EDITOR_ANNOTATIONS_NOTE_PANEL_HEIGHT_PT
+                 : EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT;
+  }
+  if (height <= 0.0f) {
     return false_v;
   }
   /* Above the bar, from its left edge, so it reads as the bar's own. */
-  *out_pt =
-      (Vec4){bar_pt.x, bar_pt.y - EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT - 6.0f,
-             Min(EDITOR_ANNOTATIONS_COMPOSER_PT, bar_pt.z),
-             EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT};
+  *out_pt = (Vec4){bar_pt.x, bar_pt.y - height - 6.0f,
+                   Min(EDITOR_ANNOTATIONS_COMPOSER_PT, bar_pt.z), height};
   return true_v;
 }
 
-void vkr_editor_recording_composer_build(VkrEditorUi *editor,
-                                         const VkrSampleUiFrame *frame,
-                                         const VkrRecordingPlayback *playback,
-                                         Vec3 bar_pt) {
-  VkrEditorRecordingNotes *notes = &editor->recording.notes;
-  Vec4 rect;
-  if (!vkr_editor_recording_composer_rect(editor, bar_pt, &rect)) {
-    return;
-  }
-  VkrUiSystem *ui = frame->ui;
-  const VkrUiTheme *theme = vkr_ui_theme();
-  const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
-                                {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-                                {.unit = VKR_UI_TRACK_AUTO},
-                                {.value = 24.0f, .unit = VKR_UI_TRACK_PX}};
-  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+/* The glass panel over the bar at `rect`, in points. */
+vkr_internal bool8_t editor_annotations_panel_begin(
+    VkrUiSystem *ui, String8 id, Vec4 rect, const VkrUiTrack *columns,
+    uint32_t column_count, const VkrUiTrack *rows, uint32_t row_count) {
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
   panel.placement = VKR_UI_PLACEMENT_DEFAULT;
   panel.placement.column = panel.placement.row = 0u;
@@ -394,14 +435,48 @@ void vkr_editor_recording_composer_build(VkrEditorUi *editor,
   panel.placement.margin_pt = (VkrUiEdges){rect.y, 0.0f, 0.0f, rect.x};
   panel.style = vkr_editor_glass_style();
   panel.style.padding_pt = (VkrUiEdges){8.0f, 10.0f, 8.0f, 10.0f};
-  panel.style.gap_pt = theme->space_md;
+  panel.style.gap_pt = vkr_ui_theme()->space_md;
   panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){rect.z, rect.w};
   panel.columns = columns;
-  panel.column_count = ArrayCount(columns);
-  panel.rows = &row;
-  panel.row_count = 1u;
-  if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.composer"),
-                          &panel)) {
+  panel.column_count = column_count;
+  panel.rows = rows;
+  panel.row_count = row_count;
+  return vkr_ui_panel_begin(ui, id, &panel);
+}
+
+/* A Delete button in the error colour, sized as the bar's text buttons. */
+vkr_internal VkrUiWidgetConfig editor_annotations_delete_button(
+    VkrEditorUi *editor, uint32_t column, uint32_t row, String8 tooltip) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiWidgetConfig remove = vkr_ui_widget_config_default();
+  remove.placement = editor_annotations_cell(column);
+  remove.placement.row = row;
+  vkr_editor_ghost_style(&remove);
+  remove.text.font = editor->heading_font;
+  remove.icon = VKR_UI_ICON_TRASH;
+  vkr_editor_button_size(&remove);
+  remove.style.min_size_pt.y = remove.style.max_size_pt.y = 26.0f;
+  remove.style.text_color = theme->error;
+  remove.icon_color = theme->error;
+  remove.tooltip = tooltip;
+  return remove;
+}
+
+/* The note field: the playhead's frame, the text, Add note and Close. */
+vkr_internal void
+editor_annotations_composer(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                            const VkrRecordingPlayback *playback, Vec4 rect) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
+                                {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                {.unit = VKR_UI_TRACK_AUTO},
+                                {.value = 24.0f, .unit = VKR_UI_TRACK_PX}};
+  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  if (!editor_annotations_panel_begin(
+          ui, string8_lit("editor.recording.composer"), rect, columns,
+          ArrayCount(columns), &row, 1u)) {
     return;
   }
   const uint64_t current = editor_annotations_playhead(playback);
@@ -462,6 +537,177 @@ void vkr_editor_recording_composer_build(VkrEditorUi *editor,
     editor_annotations_add_note(editor, playback);
   }
   (void)vkr_ui_panel_end(ui);
+}
+
+/* The selected note: who wrote it at which frame, its text, Delete and
+   Close. */
+vkr_internal void
+editor_annotations_note_panel(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame,
+                              const VkrRecordingPlayback *playback, Vec4 rect) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrRecordingNote *note =
+      &notes->annotations.notes[notes->selected_index];
+  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                {.unit = VKR_UI_TRACK_AUTO},
+                                {.value = 24.0f, .unit = VKR_UI_TRACK_PX}};
+  const VkrUiTrack rows[] = {{.value = 26.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  if (!editor_annotations_panel_begin(ui, string8_lit("editor.recording.note"),
+                                      rect, columns, ArrayCount(columns), rows,
+                                      ArrayCount(rows))) {
+    return;
+  }
+  VkrUiWidgetConfig caption =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  caption.placement = editor_annotations_cell(0u);
+  caption.placement.justify = VKR_UI_ALIGN_START;
+  caption.icon = VKR_UI_ICON_PENCIL_LINE;
+  caption.icon_size_pt = 12.0f;
+  vkr_ui_label(ui, string8_lit("caption"),
+               string8_create_formatted(
+                   ui->frame_allocator, "Note at frame %llu%s%s",
+                   (unsigned long long)note->frame,
+                   note->author[0] ? "  \xc2\xb7  " : "", note->author),
+               &caption);
+  VkrUiWidgetConfig remove = editor_annotations_delete_button(
+      editor, 1u, 0u, string8_lit("Delete this note"));
+  const bool8_t deleting =
+      vkr_ui_button(ui, string8_lit("delete"), string8_lit("Delete"), &remove);
+  VkrUiWidgetConfig close = vkr_editor_icon_button_config(
+      2u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close (Escape)"));
+  const bool8_t closing =
+      vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) ||
+      (!ui->focused_is_text && input_key_just_pressed(ui->input, KEY_ESCAPE));
+  VkrUiWidgetConfig text =
+      vkr_editor_text_config(theme->font_body, theme->text);
+  text.placement = editor_annotations_cell(0u);
+  text.placement.row = 1u;
+  text.placement.column_span = 3u;
+  text.placement.justify = VKR_UI_ALIGN_START;
+  text.placement.align = VKR_UI_ALIGN_START;
+  text.text.layout.word_wrap = true_v;
+  text.text.layout.max_width = rect.z - 20.0f;
+  vkr_ui_label(ui, string8_lit("text"),
+               string8_create_from_cstr((const uint8_t *)note->text,
+                                        string_length(note->text)),
+               &text);
+  (void)vkr_ui_panel_end(ui);
+  if (deleting) {
+    VkrRecordingAnnotations *annotations =
+        editor_annotations_open(editor, playback);
+    if (annotations) {
+      vkr_recording_annotations_remove_note(annotations, notes->selected_index);
+      editor_annotations_saved(editor, VKR_UI_ICON_TRASH, "Deleted the note.");
+    }
+  } else if (closing) {
+    notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+  }
+}
+
+/* The selected range: its name to edit, its frames, Delete and Close. */
+vkr_internal void editor_annotations_range_panel(
+    VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+    const VkrRecordingPlayback *playback, Vec4 rect) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const uint32_t index = notes->selected_index;
+  const VkrRecordingRange *range = &notes->annotations.ranges[index];
+  const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
+                                {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                {.unit = VKR_UI_TRACK_AUTO},
+                                {.value = 24.0f, .unit = VKR_UI_TRACK_PX}};
+  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  if (!editor_annotations_panel_begin(ui, string8_lit("editor.recording.range"),
+                                      rect, columns, ArrayCount(columns), &row,
+                                      1u)) {
+    return;
+  }
+  VkrUiWidgetConfig frames =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  frames.placement = editor_annotations_cell(0u);
+  frames.icon = VKR_UI_ICON_RULER;
+  frames.icon_size_pt = 12.0f;
+  vkr_ui_label(ui, string8_lit("frames"),
+               string8_create_formatted(ui->frame_allocator,
+                                        "%llu\xe2\x80\x93%llu",
+                                        (unsigned long long)range->first,
+                                        (unsigned long long)range->last),
+               &frames);
+  VkrUiWidgetConfig field = vkr_ui_widget_config_default();
+  field.placement = editor_annotations_cell(1u);
+  vkr_editor_field_style(&field);
+  field.style.min_size_pt.y = field.style.max_size_pt.y = 26.0f;
+  field.tooltip = string8_lit("The range's name; Enter renames it");
+  const VkrUiId field_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
+  VkrUiTextEditBuffer buffer = {.data = (uint8_t *)notes->name,
+                                .length = notes->name_length,
+                                .capacity = sizeof(notes->name) - 1u};
+  (void)vkr_ui_text_field(ui, string8_lit("name"), &buffer, &field);
+  notes->name_length = buffer.length;
+  const bool8_t focused = ui->focused_id == field_id;
+  const bool8_t enter = focused && input_key_just_pressed(ui->input, KEY_ENTER);
+  const bool8_t escape = input_key_just_pressed(ui->input, KEY_ESCAPE) &&
+                         (focused || !ui->focused_is_text);
+  VkrUiWidgetConfig remove = editor_annotations_delete_button(
+      editor, 2u, 0u, string8_lit("Delete this range"));
+  const bool8_t deleting =
+      vkr_ui_button(ui, string8_lit("delete"), string8_lit("Delete"), &remove);
+  VkrUiWidgetConfig close = vkr_editor_icon_button_config(
+      3u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close (Escape)"));
+  const bool8_t closing =
+      vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) || escape;
+  (void)vkr_ui_panel_end(ui);
+
+  if (deleting || enter) {
+    VkrRecordingAnnotations *annotations =
+        editor_annotations_open(editor, playback);
+    if (!annotations) {
+      return;
+    }
+    if (deleting) {
+      vkr_recording_annotations_remove_range(annotations, index);
+      editor_annotations_saved(editor, VKR_UI_ICON_TRASH, "Deleted the range.");
+      return;
+    }
+    const String8 name = {.str = (uint8_t *)notes->name,
+                          .length = notes->name_length};
+    if (!vkr_recording_annotations_rename_range(annotations, index, name)) {
+      return;
+    }
+    editor_annotations_saved(editor, VKR_UI_ICON_RULER, "Renamed the range.");
+    /* A rename moves no index; the range stays selected. */
+    notes->selected = VKR_EDITOR_RECORDING_SELECTION_RANGE;
+    notes->selected_index = index;
+  } else if (closing) {
+    notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+  }
+}
+
+void vkr_editor_recording_composer_build(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrRecordingPlayback *playback,
+                                         Vec3 bar_pt) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  /* The panel describes the open playback's cache only. */
+  if (!string_equals(notes->bundle, playback->bundle_path)) {
+    notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+  }
+  Vec4 rect;
+  if (!vkr_editor_recording_composer_rect(editor, bar_pt, &rect)) {
+    return;
+  }
+  if (notes->composing) {
+    editor_annotations_composer(editor, frame, playback, rect);
+  } else if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE) {
+    editor_annotations_note_panel(editor, frame, playback, rect);
+  } else {
+    editor_annotations_range_panel(editor, frame, playback, rect);
+  }
 }
 
 /* ------------------------------------------------------------------------ */

@@ -95,6 +95,10 @@ bool8_t vkr_recording_annotations_add_range(VkrRecordingAnnotations *a,
                                             uint64_t first, uint64_t last,
                                             const char *author, String8 name);
 
+/** Renames range `index`; false for an empty name or a missing range. */
+bool8_t vkr_recording_annotations_rename_range(VkrRecordingAnnotations *a,
+                                               uint32_t index, String8 name);
+
 void vkr_recording_annotations_remove_note(VkrRecordingAnnotations *a,
                                            uint32_t index);
 

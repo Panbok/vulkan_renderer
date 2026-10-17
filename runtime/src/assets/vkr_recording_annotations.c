@@ -372,6 +372,17 @@ bool8_t vkr_recording_annotations_add_range(VkrRecordingAnnotations *a,
   return true_v;
 }
 
+bool8_t vkr_recording_annotations_rename_range(VkrRecordingAnnotations *a,
+                                               uint32_t index, String8 name) {
+  vkr_assert(a != NULL);
+  if (name.length == 0u || index >= a->range_count) {
+    return false_v;
+  }
+  vkr_recording_annotations_copy(a->ranges[index].name,
+                                 sizeof(a->ranges[index].name), name);
+  return true_v;
+}
+
 void vkr_recording_annotations_remove_note(VkrRecordingAnnotations *a,
                                            uint32_t index) {
   vkr_assert(a != NULL);
