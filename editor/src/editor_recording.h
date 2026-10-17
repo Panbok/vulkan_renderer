@@ -300,6 +300,15 @@ typedef struct VkrEditorRecordingThumbs {
   uint64_t frame;
   float64_t next_time;
   bool8_t cover_done;
+  /* The warm-up capture while nothing records: its token, builds waited,
+     failures, the readback bytes a capture has needed so far, and the
+     Scene image's bytes with the builds it has kept them. */
+  uint64_t warm_token;
+  uint32_t warm_wait;
+  uint32_t warm_failures;
+  uint64_t warm_bytes;
+  uint64_t warm_size;
+  uint32_t warm_stable;
   /* The allocator the write threads come from. */
   VkrAllocator *allocator;
   VkrEditorRecordingThumbJob job;
@@ -515,6 +524,17 @@ bool8_t vkr_editor_recording_thumb_preview(struct VkrEditorUi *editor,
                                            uint64_t frame_index,
                                            VkrTextureHandle *out_texture,
                                            Vec2 *out_size, bool8_t *out_any);
+/** The frames of the bundle's thumbnails, ascending; borrowed until
+ * another bundle's are listed. */
+uint32_t vkr_editor_recording_thumb_frames(struct VkrEditorUi *editor,
+                                           const char *bundle_path,
+                                           const uint64_t **out_frames);
+/** The file of the bundle's thumbnail at or before `frame_index`, else its
+ * first; false when it has none. */
+bool8_t vkr_editor_recording_thumb_at(struct VkrEditorUi *editor,
+                                      const char *bundle_path,
+                                      uint64_t frame_index, char *out,
+                                      uint64_t capacity);
 /** Waits for a thumbnail being written and releases the previews. */
 void vkr_editor_recording_thumbs_shutdown(struct VkrEditorUi *editor);
 

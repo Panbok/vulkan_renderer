@@ -15,12 +15,14 @@
 #include "assets/vkr_material_codegen.h"
 #include "containers/vkr_sort.h"
 #include "core/logger.h"
+#include "core/vkr_content_codec.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
 #include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
@@ -15690,6 +15692,405 @@ static VkrEditorOpStatus ops_run_rec_close(OpsContext *ctx) {
 }
 
 /* `frame`, `time`, or `marker`: a marker's index or its label. */
+/* ---- Recording reads ---- */
+
+/* A recording loaded for one read op, its analysis, and the memory both
+   live in, released together by ops_recording_read_free. */
+typedef struct OpsRecordingRead {
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  VkrRecordingData data;
+  VkrRecordingAnalysis analysis;
+  bool8_t created;
+  bool8_t loaded;
+  bool8_t analyzed;
+} OpsRecordingRead;
+
+#define OPS_RECORDING_READ_COMMIT (1ull << 20u)
+#define OPS_RECORDING_READ_RESERVE (1ull << 30u)
+/* Spikes rec.spikes answers at most, and the bound of its analysis. */
+#define OPS_RECORDING_SPIKE_MAX 100u
+#define OPS_RECORDING_READ_BUDGET (32ull * 1024ull)
+
+static void ops_recording_read_free(OpsRecordingRead *read) {
+  if (read->analyzed) {
+    vkr_recording_analysis_free(&read->analysis);
+  }
+  if (read->loaded) {
+    vkr_recording_data_free(&read->data);
+  }
+  if (read->created) {
+    vkr_dmemory_allocator_destroy(&read->allocator);
+  }
+  MemZero(read, sizeof(*read));
+}
+
+/* Loads and analyzes the bundle, keeping `spike_max` spikes; false after
+   failing the call. */
+static bool8_t ops_recording_read(OpsContext *ctx, const char *bundle,
+                                  uint32_t spike_max, OpsRecordingRead *read) {
+  MemZero(read, sizeof(*read));
+  if (!vkr_dmemory_create(OPS_RECORDING_READ_COMMIT, OPS_RECORDING_READ_RESERVE,
+                          &read->memory)) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of memory for the recording");
+  }
+  read->allocator = (VkrAllocator){.ctx = &read->memory};
+  vkr_dmemory_allocator_create(&read->allocator);
+  read->created = true_v;
+  read->loaded = vkr_recording_data_load(&read->data, &read->allocator, bundle,
+                                         vkr_content_codec_zstd_decoder()) ==
+                 VKR_RECORDING_DATA_OK;
+  if (!read->loaded || read->data.frame_count == 0u) {
+    ops_recording_read_free(read);
+    return ops_fail(ctx, OPS_INVALID, "'%s' is not a readable recording",
+                    bundle);
+  }
+  const VkrRecordingAnalysisOptions options = {.spike_max = spike_max};
+  read->analyzed = vkr_recording_analyze(&read->data, &options,
+                                         &read->allocator, &read->analysis);
+  if (!read->analyzed) {
+    ops_recording_read_free(read);
+    return ops_fail(ctx, OPS_LIMIT, "The recording could not be analyzed");
+  }
+  return true_v;
+}
+
+/* complete, truncated (cut off, its whole chunks read) or damaged. */
+static const char *ops_recording_read_status(const VkrRecordingData *data) {
+  if (data->bad_chunks > 0u) {
+    return "damaged";
+  }
+  return data->truncated ? "truncated" : "complete";
+}
+
+/* What `writes` puts in a writer, parsed for the call's result; NULL after
+   failing the call. */
+typedef void (*OpsJsonWrite)(VkrJsonWriter *json, void *context);
+
+static VkrBakeryJson *ops_written_json(OpsContext *ctx, OpsJsonWrite writes,
+                                       void *context) {
+  VkrBakeryBuffer buffer = {0};
+  VkrJsonWriter writer;
+  vkr_json_writer_init(&writer, ops_buffer_sink, &buffer);
+  writes(&writer, context);
+  VkrBakeryJson *result = NULL;
+  if (vkr_json_writer_complete(&writer) && !buffer.failed) {
+    result = vkr_bakery_json_parse(ops_arena(ctx), buffer.data, buffer.length,
+                                   24u, NULL);
+  }
+  vkr_bakery_buffer_free(&buffer);
+  if (!result) {
+    ops_fail(ctx, OPS_LIMIT, "The answer could not be written");
+  }
+  return result;
+}
+
+/* Sets "thumb" on `object`: the bundle's thumbnail at or before `frame`. */
+static void ops_recording_thumb(OpsContext *ctx, VkrBakeryJson *object,
+                                const char *bundle, uint64_t frame) {
+  char path[VKR_RECORDING_PATH_MAX + 32u];
+  if (vkr_editor_recording_thumb_at(ctx->editor, bundle, frame, path,
+                                    sizeof(path))) {
+    ops_set(ctx, object, "thumb", vkr_bakery_json_cstr(ops_arena(ctx), path));
+  }
+}
+
+static VkrEditorOpStatus ops_run_rec_summary(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  char path[VKR_RECORDING_PATH_MAX + 32u];
+  string_format(path, sizeof(path), "%s/%s", bundle,
+                VKR_RECORDING_SUMMARY_FILE);
+  const FilePath file = file_path_view(path);
+  FileMapping mapping = {0};
+  if (file_map_readonly(&file, &mapping) != FILE_ERROR_NONE) {
+    ops_fail(ctx, OPS_INVALID, "'%s' cannot be read", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrBakeryJson *summary = vkr_bakery_json_parse(
+      ops_arena(ctx), (const uint8_t *)mapping.data, mapping.size, 24u, NULL);
+  file_unmap(&mapping);
+  if (!summary) {
+    ops_fail(ctx, OPS_INVALID, "'%s' is not JSON", path);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const uint64_t *thumbs = NULL;
+  const uint32_t thumb_count =
+      vkr_editor_recording_thumb_frames(ctx->editor, bundle, &thumbs);
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "path",
+          vkr_bakery_json_cstr(ops_arena(ctx), bundle));
+  ops_set(ctx, ctx->call->result, "summary", summary);
+  ops_set(ctx, ctx->call->result, "thumbs",
+          vkr_bakery_json_int(ops_arena(ctx), (int64_t)thumb_count));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static void ops_write_spikes(VkrJsonWriter *json, void *context) {
+  const OpsRecordingRead *read = context;
+  const VkrRecordingAnalysisJsonOptions options = {
+      .budget_bytes = OPS_RECORDING_READ_BUDGET,
+      .include_series = false_v,
+  };
+  vkr_recording_analysis_write_json(json, &read->data, &read->analysis,
+                                    &options);
+}
+
+static VkrEditorOpStatus ops_run_rec_spikes(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  float64_t top = VKR_RECORDING_ANALYSIS_SPIKE_MAX;
+  if (ops_arg_number(ctx->call->args, "top", &top) &&
+      !(top >= 1.0 && top <= OPS_RECORDING_SPIKE_MAX)) {
+    ops_fail(ctx, OPS_INVALID, "'top' lies in [1, %u]",
+             OPS_RECORDING_SPIKE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsRecordingRead read;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_recording_read(ctx, bundle, (uint32_t)top, &read)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrBakeryJson *analysis = ops_written_json(ctx, ops_write_spikes, &read);
+  if (analysis) {
+    /* Each spike points at the picture nearest before it. */
+    VkrBakeryJson *spikes = vkr_bakery_json_get(analysis, "spikes");
+    for (uint32_t i = 0u; spikes && i < spikes->count; ++i) {
+      VkrBakeryJson *spike = vkr_bakery_json_at(spikes, i);
+      int64_t frame = 0;
+      if (vkr_bakery_json_get_int(spike, "frame", &frame) && frame >= 0) {
+        ops_recording_thumb(ctx, spike, bundle, (uint64_t)frame);
+      }
+    }
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, ctx->call->result, "path",
+            vkr_bakery_json_cstr(ops_arena(ctx), bundle));
+    ops_set(ctx, ctx->call->result, "status",
+            vkr_bakery_json_cstr(ops_arena(ctx),
+                                 ops_recording_read_status(&read.data)));
+    ops_set(ctx, ctx->call->result, "analysis", analysis);
+  }
+  ops_recording_read_free(&read);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Columns rec.frames reads beyond frame, time and the camera position. */
+#define OPS_RECORDING_FIELD_MAX 16u
+
+typedef struct OpsFramesWrite {
+  const OpsRecordingRead *read;
+  uint64_t first;
+  uint64_t last;
+  const char *fields[OPS_RECORDING_FIELD_MAX];
+  uint32_t field_count;
+} OpsFramesWrite;
+
+static void ops_write_frames(VkrJsonWriter *json, void *context) {
+  const OpsFramesWrite *frames = context;
+  vkr_recording_frames_write_json(json, &frames->read->data, frames->first,
+                                  frames->last, frames->fields,
+                                  frames->field_count, 0u);
+}
+
+/* The 'fields' rec.frames reads, else frame_ms alone; false after failing
+   the call with the fields the recording has. */
+static bool8_t ops_recording_fields(OpsContext *ctx,
+                                    const OpsRecordingRead *read,
+                                    OpsFramesWrite *out) {
+  const VkrBakeryJson *fields = vkr_bakery_json_get(ctx->call->args, "fields");
+  if (!fields) {
+    out->fields[out->field_count++] = VKR_RECORDING_FRAME_MS_FIELD;
+    return true_v;
+  }
+  if (fields->type != VKR_BAKERY_JSON_ARRAY ||
+      fields->count > OPS_RECORDING_FIELD_MAX) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'fields' is an array of at most %u names",
+                    OPS_RECORDING_FIELD_MAX);
+  }
+  for (uint32_t i = 0u; i < fields->count; ++i) {
+    const char *name = vkr_bakery_json_cstr_value(
+        ops_arena(ctx), vkr_bakery_json_at(fields, i));
+    if (!name || !vkr_recording_data_has_field(&read->data, name)) {
+      char known[1024];
+      int32_t length = string_format(known, sizeof(known), "%s",
+                                     VKR_RECORDING_FRAME_MS_FIELD);
+      for (uint32_t s = 0u; s < read->data.series_count && length > 0 &&
+                            length < (int32_t)sizeof(known);
+           ++s) {
+        length += string_format(known + length, sizeof(known) - length, ", %s",
+                                read->data.series[s].name);
+      }
+      return ops_fail(ctx, OPS_INVALID, "Unknown field '%s'. Fields: %s%s",
+                      name ? name : "", known,
+                      read->data.pass_count
+                          ? ", and pass.gpu:<pass> or pass.cpu:<pass> "
+                            "(rec.passes lists them)"
+                          : "");
+    }
+    out->fields[out->field_count++] = name;
+  }
+  return true_v;
+}
+
+/* The thumbnails among the frames: [frame, path] pairs from the one at or
+   before `first` to `last`. */
+static VkrBakeryJson *ops_recording_thumb_list(OpsContext *ctx,
+                                               const char *bundle,
+                                               uint64_t first, uint64_t last) {
+  VkrBakeryJson *list = vkr_bakery_json_array(ops_arena(ctx));
+  const uint64_t *thumbs = NULL;
+  const uint32_t count =
+      vkr_editor_recording_thumb_frames(ctx->editor, bundle, &thumbs);
+  for (uint32_t i = 0u; i < count && thumbs[i] <= last; ++i) {
+    if (i + 1u < count && thumbs[i + 1u] <= first) {
+      continue;
+    }
+    char path[VKR_RECORDING_PATH_MAX + 32u];
+    string_format(path, sizeof(path), "%s/%s/%08llu.jpg", bundle,
+                  VKR_EDITOR_RECORDING_THUMBS_DIRECTORY,
+                  (unsigned long long)thumbs[i]);
+    VkrBakeryJson *pair = vkr_bakery_json_array(ops_arena(ctx));
+    vkr_bakery_json_append(
+        pair, vkr_bakery_json_int(ops_arena(ctx), (int64_t)thumbs[i]));
+    vkr_bakery_json_append(pair, vkr_bakery_json_cstr(ops_arena(ctx), path));
+    vkr_bakery_json_append(list, pair);
+  }
+  return list;
+}
+
+static VkrEditorOpStatus ops_run_rec_frames(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  float64_t first = 0.0;
+  float64_t last = 0.0;
+  if (!ops_arg_number(ctx->call->args, "first", &first) ||
+      !ops_arg_number(ctx->call->args, "last", &last) || first < 0.0 ||
+      last < first) {
+    ops_fail(ctx, OPS_INVALID, "rec.frames needs 'first' <= 'last' frames");
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsRecordingRead read;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_recording_read(ctx, bundle, 1u, &read)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsFramesWrite query = {.read = &read,
+                          .first = (uint64_t)first,
+                          .last =
+                              Min((uint64_t)last, read.data.frame_count - 1u)};
+  VkrBakeryJson *range = NULL;
+  if (query.first >= read.data.frame_count) {
+    ops_fail(ctx, OPS_INVALID, "'first' must be below %llu",
+             (unsigned long long)read.data.frame_count);
+  } else if (ops_recording_fields(ctx, &read, &query)) {
+    range = ops_written_json(ctx, ops_write_frames, &query);
+  }
+  if (range) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, ctx->call->result, "path",
+            vkr_bakery_json_cstr(ops_arena(ctx), bundle));
+    ops_set(ctx, ctx->call->result, "status",
+            vkr_bakery_json_cstr(ops_arena(ctx),
+                                 ops_recording_read_status(&read.data)));
+    ops_set(ctx, ctx->call->result, "range", range);
+    ops_set(ctx, ctx->call->result, "thumbs",
+            ops_recording_thumb_list(ctx, bundle, query.first, query.last));
+  }
+  ops_recording_read_free(&read);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* Rows within this many frames stand in for a 'frame' without GPU times:
+   one tiled sampling period. */
+#define OPS_RECORDING_PASS_REACH 8u
+
+typedef struct OpsPassesWrite {
+  const OpsRecordingRead *read;
+  uint32_t top;
+  uint64_t frame;
+} OpsPassesWrite;
+
+static void ops_write_passes(VkrJsonWriter *json, void *context) {
+  const OpsPassesWrite *passes = context;
+  vkr_recording_passes_write_json(json, &passes->read->data,
+                                  &passes->read->analysis, passes->top,
+                                  passes->frame, OPS_RECORDING_PASS_REACH);
+}
+
+static VkrEditorOpStatus ops_run_rec_passes(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  float64_t top = 20.0;
+  float64_t frame = -1.0;
+  (void)ops_arg_number(ctx->call->args, "top", &top);
+  const bool8_t at_frame = ops_arg_number(ctx->call->args, "frame", &frame);
+  if (!(top >= 0.0 && top <= 1000.0) || (at_frame && frame < 0.0)) {
+    ops_fail(ctx, OPS_INVALID,
+             "'top' lies in [0, 1000] (0 for all) and 'frame' is a frame");
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsRecordingRead read;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_recording_read(ctx, bundle, 1u, &read)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsPassesWrite query = {.read = &read,
+                          .top = (uint32_t)top,
+                          .frame = at_frame ? (uint64_t)frame : UINT64_MAX};
+  VkrBakeryJson *passes = NULL;
+  if (read.data.pass_count == 0u) {
+    ops_fail(ctx, OPS_INVALID, "'%s' has no pass rows; record with tier 1",
+             bundle);
+  } else if (at_frame && query.frame >= read.data.frame_count) {
+    ops_fail(ctx, OPS_INVALID, "'frame' must be below %llu",
+             (unsigned long long)read.data.frame_count);
+  } else {
+    passes = ops_written_json(ctx, ops_write_passes, &query);
+  }
+  if (passes) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, ctx->call->result, "path",
+            vkr_bakery_json_cstr(ops_arena(ctx), bundle));
+    ops_set(ctx, ctx->call->result, "status",
+            vkr_bakery_json_cstr(ops_arena(ctx),
+                                 ops_recording_read_status(&read.data)));
+    ops_set(ctx, ctx->call->result, "passes", passes);
+  }
+  ops_recording_read_free(&read);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* The worst frame of spike `rank` (1 for the largest) of the open
+   recording; false after failing the call. */
+static bool8_t ops_rec_seek_spike(OpsContext *ctx,
+                                  const VkrRecordingPlayback *playback,
+                                  float64_t rank,
+                                  VkrSampleRecordingRequest *request) {
+  if (!(rank >= 1.0 && rank <= OPS_RECORDING_SPIKE_MAX)) {
+    return ops_fail(ctx, OPS_INVALID, "'spike' is a rank in [1, %u]",
+                    OPS_RECORDING_SPIKE_MAX);
+  }
+  OpsRecordingRead read;
+  if (!ops_recording_read(ctx, playback->bundle_path, (uint32_t)rank, &read)) {
+    return false_v;
+  }
+  const uint32_t index = (uint32_t)rank - 1u;
+  const bool8_t found = index < read.analysis.spike_count;
+  if (found) {
+    request->command = VKR_SAMPLE_RECORDING_SEEK_FRAME;
+    request->frame = read.analysis.spikes[index].frame;
+  } else {
+    ops_fail(ctx, OPS_INVALID, "The recording has %u spikes",
+             read.analysis.spike_count);
+  }
+  ops_recording_read_free(&read);
+  return found;
+}
+
 static bool8_t ops_rec_seek_target(OpsContext *ctx,
                                    VkrSampleRecordingRequest *request) {
   const VkrRecordingPlayback *playback =
@@ -15709,6 +16110,9 @@ static bool8_t ops_rec_seek_target(OpsContext *ctx,
     request->time = number;
     return true_v;
   }
+  if (ops_arg_number(args, "spike", &number)) {
+    return ops_rec_seek_spike(ctx, playback, number, request);
+  }
   const VkrBakeryJson *marker = vkr_bakery_json_get(args, "marker");
   for (uint32_t i = 0u; marker && i < playback->marker_count; ++i) {
     const bool8_t match =
@@ -15723,7 +16127,8 @@ static bool8_t ops_rec_seek_target(OpsContext *ctx,
   }
   return ops_fail(ctx, OPS_INVALID,
                   marker ? "No marker matches 'marker'"
-                         : "rec.seek needs 'frame', 'time' or 'marker'");
+                         : "rec.seek needs 'frame', 'time', 'marker' or "
+                           "'spike'");
 }
 
 static VkrEditorOpStatus ops_run_rec_seek(OpsContext *ctx) {
@@ -15988,10 +16393,12 @@ static const OpsDef s_ops[] = {
     {"rec.pause", "Pause the open recording.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_pause, NULL},
     {"rec.seek",
-     "Move the playhead to a 'frame', a 'time' in seconds or a 'marker' "
-     "(index or label); answers the frame and time it reached.",
+     "Move the playhead to a 'frame', a 'time' in seconds, a 'marker' "
+     "(index or label) or a 'spike' rank (1 for the largest); answers the "
+     "frame and time it reached.",
      "{\"type\":\"object\",\"properties\":{\"frame\":{\"type\":"
-     "\"integer\"},\"time\":{\"type\":\"number\"},\"marker\":{}}}",
+     "\"integer\"},\"time\":{\"type\":\"number\"},\"marker\":{},"
+     "\"spike\":{\"type\":\"integer\"}}}",
      ops_run_rec_seek, NULL},
     {"rec.set",
      "Set the playback 'speed' (0.1 to 4) and 'loop'; 'range' [first, last] "
@@ -16008,6 +16415,43 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"}},\"required\":[\"name\"]}",
      ops_run_rec_analyze, NULL, OPS_NO_SCENE},
+    {"rec.summary",
+     "The summary.json of recording 'name' (default: the open one): "
+     "identity, frame-time statistics, series, slowest passes, spikes and "
+     "markers, the analysis within 8 KB; and how many thumbnails it holds.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_rec_summary, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.spikes",
+     "The 'top' (default 20, at most 100) frame-time spikes of recording "
+     "'name' (default: the open one), largest first: frame, time, ms "
+     "against the local median, camera, the series and passes that grew, "
+     "nearby markers, and 'thumb', the Scene thumbnail at or before it. "
+     "rec.seek 'spike' moves the playhead to one.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"top\":{\"type\":\"integer\"}}}",
+     ops_run_rec_spikes, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.frames",
+     "Frames 'first' to 'last' of recording 'name' (default: the open one) "
+     "as columns and rows: frame, time, camera x, y, z, then 'fields' "
+     "(default frame_ms; a series name, player.x/.y/.z/.speed, or "
+     "pass.gpu:<pass> / pass.cpu:<pass>). At most 500 rows; 'truncated' "
+     "says so. 'thumbs' lists the [frame, path] thumbnails over the range.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{"
+     "\"type\":\"integer\"},\"fields\":{\"type\":\"array\","
+     "\"items\":{\"type\":\"string\"}}},\"required\":[\"first\","
+     "\"last\"]}",
+     ops_run_rec_frames, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.passes",
+     "Per-pass CPU and GPU statistics of tier 1 recording 'name' (default: "
+     "the open one), largest GPU total first, the 'top' (default 20, 0 for "
+     "all); with 'frame', that frame's rows, or the nearest frame's with GPU "
+     "times on tiled.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"top\":{\"type\":\"integer\"},\"frame\":{"
+     "\"type\":\"integer\"}}}",
+     ops_run_rec_passes, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.close",
      "Leave Playback: the editor camera and the level's hour return.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_close, NULL},

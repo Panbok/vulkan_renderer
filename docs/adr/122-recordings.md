@@ -275,7 +275,12 @@ an agent must read one without the editor.
   Pass statistics rank by total time; a spike names the passes that grew
   most in its frame, or in the run's slowest frame with GPU times.
   `vkr_rec spikes`, `vkr_rec frames` and `vkr_rec passes` query the same
-  analysis, and the editor's Performance window draws it with `vkr_ui_plot`,
+  analysis, and so do the editor's `rec.summary` (the bundle's
+  `summary.json`), `rec.spikes` (at most 100, its object bounded to 32 KB),
+  `rec.frames` (at most 500 rows) and `rec.passes`, which name the
+  recording or default to the open one; each spike and the frames' range
+  also name their thumbnails, and `rec.seek` takes a spike rank. The editor's
+  Performance window draws it with `vkr_ui_plot`,
   including a GPU-by-pass chart over the frames with GPU times and a pass
   table that isolates one pass.
 
@@ -295,7 +300,11 @@ an agent must read one without the editor.
   In a 15 s idle headless Bistro recording (M1 Pro, Metal, Release) the
   frame after each request and the frame that reads the capture ran about
   0.8 and 0.5 ms longer than the 5.65 ms median and the one after about
-  1.0 ms shorter; the editor session's first capture ran 12.5 ms once.
+  1.0 ms shorter. The renderer grows its readback memory on the first
+  capture that needs more and waits for the GPU (about 6 ms on Bistro), so
+  the editor makes one capture of the Scene while nothing records once the
+  Scene image has kept its size for 30 builds; without it every first
+  recording of a session began with that spike.
 
 ## Alternatives considered
 

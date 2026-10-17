@@ -24,6 +24,8 @@
 #define EDITOR_THUMBS_TIMEOUT 120u
 #define EDITOR_THUMBS_INTERVAL 0.5
 #define EDITOR_THUMBS_FAILURES 3u
+/* Builds the Scene image keeps its size before the warm-up capture. */
+#define EDITOR_THUMBS_WARM_STABLE 30u
 #define EDITOR_THUMBS_TOKEN (1ull << 63u)
 #define EDITOR_THUMBS_QUALITY 82
 #define EDITOR_THUMBS_INDEX_MIN 256u
@@ -117,6 +119,59 @@ vkr_internal void editor_thumbs_start(VkrEditorRecordingThumbs *thumbs,
                                    editor_thumbs_write, job);
 }
 
+/* Whether the capture slot is free for a capture asked in this build. */
+vkr_internal bool8_t editor_thumbs_slot_free(const VkrSampleUiFrame *frame) {
+  return frame->capture_request && !frame->capture_request->request &&
+         !frame->capture_busy && frame->mapping_valid &&
+         !frame->scene_rendering_stopped;
+}
+
+/* The renderer grows its readback memory the first time a capture needs
+   more, and waits for the GPU to do it: a frame of about 6 ms on Bistro.
+   While nothing records, one capture of a Scene image that has kept its
+   size for a while grows it, so a recording's first thumbnail does not
+   carry that frame. */
+vkr_internal void editor_thumbs_warm(VkrEditorRecordingThumbs *thumbs,
+                                     const VkrSampleUiFrame *frame) {
+  if (thumbs->warm_token) {
+    const VkrSampleCaptureReady *ready = frame->capture_ready;
+    if (ready && ready->token == thumbs->warm_token) {
+      if (!ready->failed && ready->item) {
+        thumbs->warm_bytes = Max(thumbs->warm_bytes, ready->item->data_size);
+      } else {
+        ++thumbs->warm_failures;
+      }
+      thumbs->warm_token = 0u;
+    } else if (++thumbs->warm_wait > EDITOR_THUMBS_TIMEOUT) {
+      ++thumbs->warm_failures;
+      thumbs->warm_token = 0u;
+    }
+    return;
+  }
+  if (!frame->mapping_valid) {
+    return;
+  }
+  /* RGBA8 rows of the Scene image, padded as the renderer pads them. */
+  const uint64_t width = (uint64_t)frame->mapping.image_rect_px.z;
+  const uint64_t height = (uint64_t)frame->mapping.image_rect_px.w;
+  const uint64_t bytes = ((width * 4u + 255u) & ~255ull) * height;
+  if (bytes != thumbs->warm_size) {
+    thumbs->warm_size = bytes;
+    thumbs->warm_stable = 0u;
+    return;
+  }
+  if (bytes == 0u || bytes <= thumbs->warm_bytes ||
+      thumbs->warm_failures >= EDITOR_THUMBS_FAILURES ||
+      ++thumbs->warm_stable < EDITOR_THUMBS_WARM_STABLE ||
+      !editor_thumbs_slot_free(frame)) {
+    return;
+  }
+  thumbs->warm_token = EDITOR_THUMBS_TOKEN | ++thumbs->serial;
+  thumbs->warm_wait = 0u;
+  *frame->capture_request = (VkrSampleCaptureRequest){
+      .request = true_v, .token = thumbs->warm_token, .scene_only = true_v};
+}
+
 void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame) {
   VkrEditorRecordingThumbs *thumbs = &editor->recording.thumbs;
@@ -125,6 +180,7 @@ void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
   const VkrSampleRecordingStatus *status = frame->recording;
   if (!status || !status->recording) {
     thumbs->token = 0u;
+    editor_thumbs_warm(thumbs, frame);
     return;
   }
   if (!string_equals(thumbs->bundle, status->recording_path)) {
@@ -136,6 +192,7 @@ void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
     thumbs->wait = 0u;
     thumbs->next_time = 0.0;
     thumbs->failures = 0u;
+    thumbs->warm_token = 0u;
     thumbs->cover_done = false_v;
   }
   ++thumbs->wait;
@@ -158,9 +215,7 @@ void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
   const float64_t now = vkr_platform_get_absolute_time();
   if (thumbs->failures >= EDITOR_THUMBS_FAILURES ||
       thumbs->wait < EDITOR_THUMBS_DELAY || now < thumbs->next_time ||
-      thumbs->job.running || !frame->capture_request ||
-      frame->capture_request->request || frame->capture_busy ||
-      !frame->mapping_valid || frame->scene_rendering_stopped) {
+      thumbs->job.running || !editor_thumbs_slot_free(frame)) {
     return;
   }
   thumbs->token = EDITOR_THUMBS_TOKEN | ++thumbs->serial;
@@ -323,6 +378,47 @@ vkr_internal bool8_t editor_thumbs_ready(VkrEditorRecordingPreview *preview) {
   return false_v;
 }
 
+/* The index of the last listed thumbnail at or before `frame_index`, else
+   0 for the first; the list must not be empty. */
+vkr_internal uint32_t editor_thumbs_find(const VkrEditorRecordingThumbs *thumbs,
+                                         uint64_t frame_index) {
+  uint32_t low = 0u;
+  uint32_t high = thumbs->frame_count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    if (thumbs->frames[middle] <= frame_index) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low > 0u ? low - 1u : 0u;
+}
+
+uint32_t vkr_editor_recording_thumb_frames(VkrEditorUi *editor,
+                                           const char *bundle_path,
+                                           const uint64_t **out_frames) {
+  VkrEditorRecordingThumbs *thumbs = &editor->recording.thumbs;
+  editor_thumbs_index(thumbs, bundle_path);
+  *out_frames = thumbs->frames;
+  return thumbs->frame_count;
+}
+
+bool8_t vkr_editor_recording_thumb_at(VkrEditorUi *editor,
+                                      const char *bundle_path,
+                                      uint64_t frame_index, char *out,
+                                      uint64_t capacity) {
+  VkrEditorRecordingThumbs *thumbs = &editor->recording.thumbs;
+  editor_thumbs_index(thumbs, bundle_path);
+  if (thumbs->frame_count == 0u) {
+    return false_v;
+  }
+  const uint64_t frame =
+      thumbs->frames[editor_thumbs_find(thumbs, frame_index)];
+  (void)editor_thumbs_path(thumbs, frame, false_v, out, capacity);
+  return true_v;
+}
+
 bool8_t vkr_editor_recording_thumb_preview(VkrEditorUi *editor, VkrUiSystem *ui,
                                            const char *bundle_path,
                                            uint64_t frame_index,
@@ -334,18 +430,8 @@ bool8_t vkr_editor_recording_thumb_preview(VkrEditorUi *editor, VkrUiSystem *ui,
   if (thumbs->frame_count == 0u) {
     return false_v;
   }
-  /* The last thumbnail at or before the frame, else the first. */
-  uint32_t low = 0u;
-  uint32_t high = thumbs->frame_count;
-  while (low < high) {
-    const uint32_t middle = low + (high - low) / 2u;
-    if (thumbs->frames[middle] <= frame_index) {
-      low = middle + 1u;
-    } else {
-      high = middle;
-    }
-  }
-  const uint64_t frame = thumbs->frames[low > 0u ? low - 1u : 0u];
+  const uint64_t frame =
+      thumbs->frames[editor_thumbs_find(thumbs, frame_index)];
   VkrEditorRecordingPreview *wanted = NULL;
   VkrEditorRecordingPreview *oldest = &thumbs->previews[0];
   for (uint32_t i = 0u; i < VKR_EDITOR_RECORDING_PREVIEWS; ++i) {
