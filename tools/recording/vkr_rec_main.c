@@ -31,6 +31,7 @@
  */
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
+#include "assets/vkr_recording_compare.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/str.h"
 #include "core/vkr_json_writer.h"
@@ -605,6 +606,95 @@ static int rec_passes(const char *path, uint32_t top, uint64_t frame) {
   return status;
 }
 
+static void rec_usage(void);
+
+/* Loads and analyzes one side of a comparison; false after a message. */
+static bool8_t rec_compare_side(const char *path, VkrRecordingData *data,
+                                VkrRecordingAnalysis *analysis) {
+  if (!rec_load(path, data)) {
+    return false_v;
+  }
+  if (!vkr_recording_analyze(data, NULL, &rec_allocator, analysis)) {
+    fprintf(stderr, "vkr_rec: out of memory analyzing '%s'\n", path);
+    vkr_recording_data_free(data);
+    return false_v;
+  }
+  return true_v;
+}
+
+static int rec_compare(const char *a_path, const char *b_path,
+                       const VkrRecordingCompareOptions *options) {
+  VkrRecordingData a;
+  VkrRecordingData b;
+  VkrRecordingAnalysis a_analysis;
+  VkrRecordingAnalysis b_analysis;
+  if (!rec_compare_side(a_path, &a, &a_analysis)) {
+    return REC_EXIT_DAMAGED;
+  }
+  if (!rec_compare_side(b_path, &b, &b_analysis)) {
+    vkr_recording_analysis_free(&a_analysis);
+    vkr_recording_data_free(&a);
+    return REC_EXIT_DAMAGED;
+  }
+  static VkrRecordingCompare compare;
+  char error[160];
+  int result = REC_EXIT_DAMAGED;
+  if (vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, options,
+                            &rec_allocator, &compare, error, sizeof(error))) {
+    const RecExit a_status = rec_data_status(&a);
+    const RecExit b_status = rec_data_status(&b);
+    VkrJsonWriter json;
+    vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+    vkr_json_writer_begin_object(&json);
+    vkr_json_writer_name(&json, rec_str("status_a"));
+    vkr_json_writer_string(&json, rec_str(rec_status_name(a_status)));
+    vkr_json_writer_name(&json, rec_str("status_b"));
+    vkr_json_writer_string(&json, rec_str(rec_status_name(b_status)));
+    vkr_json_writer_name(&json, rec_str("compare"));
+    vkr_recording_compare_write_json(&json, &a, &compare);
+    vkr_json_writer_end_object(&json);
+    vkr_json_writer_complete(&json);
+    fputc('\n', stdout);
+    vkr_recording_compare_free(&compare);
+    result = Max(a_status, b_status);
+  } else {
+    fprintf(stderr, "vkr_rec: cannot compare: %s\n", error);
+  }
+  vkr_recording_analysis_free(&b_analysis);
+  vkr_recording_data_free(&b);
+  vkr_recording_analysis_free(&a_analysis);
+  vkr_recording_data_free(&a);
+  return result;
+}
+
+static int rec_run_compare(int argc, char **argv) {
+  if (argc < 4) {
+    rec_usage();
+    return REC_EXIT_DAMAGED;
+  }
+  VkrRecordingCompareOptions options = {.align = VKR_RECORDING_ALIGN_TIME};
+  for (int i = 4; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+    if (strcmp(argv[i], "--align") == 0) {
+      if (!vkr_recording_align_parse(rec_str(argv[i + 1]), &options.align)) {
+        fprintf(stderr,
+                "vkr_rec: --align takes time, marker, distance or frame\n");
+        return REC_EXIT_DAMAGED;
+      }
+    } else if (strcmp(argv[i], "--marker") == 0) {
+      options.marker = argv[i + 1];
+      options.align = VKR_RECORDING_ALIGN_MARKER;
+    } else {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  return rec_compare(argv[2], argv[3], &options);
+}
+
 static void rec_usage(void) {
   fprintf(
       stderr,
@@ -614,6 +704,8 @@ static void rec_usage(void) {
       "       vkr_rec frames <bundle|stream> --range A:B "
       "[--fields name,name]\n"
       "       vkr_rec passes <bundle|stream> [--top N] [--frame F]\n"
+      "       vkr_rec compare <a> <b> [--align time|marker|distance|frame]"
+      " [--marker label]\n"
       "A:B is inclusive; frame_ms names the frame time, pass.gpu:<pass> and\n"
       "pass.cpu:<pass> a pass's times; at most 500 rows\n");
 }
@@ -727,6 +819,8 @@ VKR_MAIN(argc, argv) {
     result = rec_run_frames(argc, argv);
   } else if (strcmp(argv[1], "passes") == 0) {
     result = rec_run_passes(argc, argv);
+  } else if (strcmp(argv[1], "compare") == 0) {
+    result = rec_run_compare(argc, argv);
   } else {
     rec_usage();
   }

@@ -153,6 +153,22 @@ an agent must read one without the editor.
   markers, notes and ranges, the review, the request it answers and the
   playhead on the clipboard
   ([editor_recording_annotations.c](../../editor/src/editor_recording_annotations.c)).
+- **Compare (R5).** `vkr_recording_compare` compares recording B with A,
+  both analyzed
+  ([vkr_recording_compare.h](../../runtime/src/assets/vkr_recording_compare.h)).
+  Statistics (p50, p95, p99, max, 1% low, mean, frames over budget, RAM and
+  VRAM peaks) and passes, matched by name with GPU means when both have GPU
+  pass times, differ without alignment. The frame-by-frame difference maps
+  each frame of A to the frame of B at the same key: seconds from the start,
+  seconds from a marker label both carry, meters along the path (the
+  players' when both recorded one, else the cameras'), or the frame number
+  for re-runs; from it come the mean change per aligned frame and the 30
+  aligned frames of A where B is slowest. The Performance window shows B
+  beside the analyzed recording: each card's last line is B's value and the
+  change, B's frame times run as a line over A's bars, the pass table lists
+  A, B and the change, largest first, and the header switches the
+  alignment. A card's Compare button, `rec.compare` and `vkr_rec compare`
+  start it.
 - **Gameplay records (R3).** SDK version 12 adds `vkr_rec_player`,
   `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
   ([sdk.h](../../sdk/sdk.h)). They write

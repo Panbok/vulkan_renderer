@@ -1239,6 +1239,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX}};
   const VkrUiTrack rows[] = {{.value = 23.0f, .unit = VKR_UI_TRACK_PX},
                              {.value = 23.0f, .unit = VKR_UI_TRACK_PX}};
@@ -1374,8 +1375,38 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
       vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
     }
   }
+  /* Compare with the analyzed recording: this one becomes B. */
+  const VkrEditorRecordingPerf *perf = &recording->perf;
+  char bundle_path[VKR_RECORDING_PATH_MAX];
+  string_format(bundle_path, sizeof(bundle_path), "%s/%s", recording->directory,
+                entry->bundle);
+  const bool8_t is_a = perf->loaded && string_equals(perf->path, bundle_path);
+  VkrUiWidgetConfig compare = vkr_editor_icon_button_config(
+      4u, 0u, VKR_UI_ICON_LAYERS,
+      !perf->loaded ? string8_lit("Compare: analyze another recording first, "
+                                  "then compare this one with it")
+      : is_a        ? string8_lit("This is the analyzed recording; compare "
+                                         "another one with it")
+                    : string8_create_formatted(
+                   ui->frame_allocator,
+                   "Compare with %s: its frame times, statistics and passes "
+                          "beside this one's",
+                   perf->name));
+  compare.placement.row_span = 2u;
+  compare.disabled = !perf->loaded || is_a || !entry->has_summary;
+  vkr_editor_toggle_style(&compare,
+                          perf->comparing &&
+                              string_equals(perf->compare_path, bundle_path));
+  if (vkr_ui_button(ui, string8_lit("compare"), (String8){0}, &compare)) {
+    char error[160];
+    if (!vkr_editor_recording_compare(editor, bundle_path,
+                                      VKR_RECORDING_ALIGN_TIME, NULL, error,
+                                      sizeof(error))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
+    }
+  }
   VkrUiWidgetConfig drive = vkr_editor_icon_button_config(
-      4u, 0u, VKR_UI_ICON_GAME_CONTROLLER,
+      5u, 0u, VKR_UI_ICON_GAME_CONTROLLER,
       entry->drivable
           ? string8_lit("Drive: play the recorded actions on this build and "
                         "measure how far the player's path parts")
@@ -1389,7 +1420,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
     (void)vkr_editor_recording_send(editor, request, true_v);
   }
   VkrUiWidgetConfig copy = vkr_editor_icon_button_config(
-      5u, 0u, VKR_UI_ICON_COPY,
+      6u, 0u, VKR_UI_ICON_COPY,
       string8_lit("Copy a prompt that points an agent at this recording"));
   copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
@@ -1399,7 +1430,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   }
   const bool8_t armed = recording->delete_armed == index + 1u;
   VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
-      6u, 0u, VKR_UI_ICON_TRASH,
+      7u, 0u, VKR_UI_ICON_TRASH,
       armed ? string8_lit("Click again to delete it from disk")
             : string8_lit("Delete this recording"));
   remove.placement.row_span = 2u;

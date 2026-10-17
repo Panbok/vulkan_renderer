@@ -66,7 +66,17 @@ static const Vec4 PERF_PASS_COLOR[VKR_EDITOR_PERF_PASS_SERIES] = {
 /* ------------------------------------------------------------------------ */
 /* Data                                                                      */
 
+void vkr_editor_recording_compare_stop(VkrEditorRecordingPerf *perf) {
+  if (perf->comparing) {
+    vkr_recording_compare_free(&perf->compare);
+    vkr_recording_analysis_free(&perf->compare_analysis);
+    vkr_recording_data_free(&perf->compare_data);
+  }
+  perf->comparing = false_v;
+}
+
 void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf) {
+  vkr_editor_recording_compare_stop(perf);
   if (perf->loaded) {
     vkr_recording_analysis_free(&perf->analysis);
     vkr_recording_data_free(&perf->data);
@@ -293,6 +303,108 @@ vkr_internal void perf_pass_columns(VkrEditorRecordingPerf *perf) {
   perf->pass_ms_top = Max(Min(max * 1.05f, p99 * 3.0f), 0.5f);
 }
 
+/* The bundle's name, without its directory and extension. */
+vkr_internal void perf_bundle_name(const char *path, char *out,
+                                   uint64_t capacity) {
+  const char *base = path;
+  for (const char *c = path; *c; ++c) {
+    if (*c == '/' || *c == '\\') {
+      base = c + 1;
+    }
+  }
+  string_format(out, capacity, "%s", base);
+  const uint64_t length = string_length(out);
+  const uint64_t extension = sizeof(VKR_RECORDING_BUNDLE_EXTENSION) - 1u;
+  if (length > extension &&
+      string_equals(out + length - extension, VKR_RECORDING_BUNDLE_EXTENSION)) {
+    out[length - extension] = '\0';
+  }
+}
+
+/* B's frame time at each column's frame, holding the last one where B has
+   none at that frame; the chart's top grows to hold it. */
+vkr_internal void perf_compare_columns(VkrEditorRecordingPerf *perf) {
+  float32_t held = 0.0f;
+  for (uint32_t c = 0u; c < perf->column_count; ++c) {
+    const uint64_t frame = perf->column_frame[c];
+    const uint64_t match = frame < perf->data.frame_count
+                               ? perf->compare.b_frame[frame]
+                               : UINT64_MAX;
+    float64_t ms = 0.0;
+    if (match != UINT64_MAX &&
+        vkr_recording_data_frame_ms(&perf->compare_data, match, &ms)) {
+      held = (float32_t)ms;
+    }
+    perf->compare_ms[c] = held;
+    perf->frame_ms_top = Max(perf->frame_ms_top, held * 1.05f);
+  }
+}
+
+bool8_t vkr_editor_recording_compare(VkrEditorUi *editor, const char *name,
+                                     VkrRecordingAlign align,
+                                     const char *marker, char *error,
+                                     uint64_t error_capacity) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  if (!perf->loaded) {
+    string_format(error, error_capacity,
+                  "Analyze a recording first; it is what B is compared with.");
+    return false_v;
+  }
+  char path[VKR_RECORDING_PATH_MAX];
+  if (!vkr_editor_recording_resolve(editor, name, path, sizeof(path))) {
+    string_format(error, error_capacity, "No recording named '%s'.",
+                  name ? name : "");
+    return false_v;
+  }
+  /* B stays loaded while only the alignment changes. */
+  const bool8_t same =
+      perf->comparing && string_equals(perf->compare_path, path);
+  VkrRecordingData data = perf->compare_data;
+  VkrRecordingAnalysis analysis = perf->compare_analysis;
+  if (!same) {
+    if (vkr_recording_data_load(&data, &perf->allocator, path,
+                                vkr_content_codec_zstd_decoder()) !=
+            VKR_RECORDING_DATA_OK ||
+        data.frame_count == 0u) {
+      string_format(error, error_capacity, "'%s' is not a readable recording.",
+                    path);
+      return false_v;
+    }
+    if (!vkr_recording_analyze(&data, NULL, &perf->allocator, &analysis)) {
+      vkr_recording_data_free(&data);
+      string_format(error, error_capacity,
+                    "The recording could not be analyzed.");
+      return false_v;
+    }
+  }
+  const VkrRecordingCompareOptions options = {.align = align, .marker = marker};
+  VkrRecordingCompare compare;
+  if (!vkr_recording_compare(&perf->data, &perf->analysis, &data, &analysis,
+                             &options, &perf->allocator, &compare, error,
+                             error_capacity)) {
+    if (!same) {
+      vkr_recording_analysis_free(&analysis);
+      vkr_recording_data_free(&data);
+    }
+    return false_v;
+  }
+  if (same) {
+    vkr_recording_compare_free(&perf->compare);
+  } else {
+    vkr_editor_recording_compare_stop(perf);
+    perf->compare_data = data;
+    perf->compare_analysis = analysis;
+    string_format(perf->compare_path, sizeof(perf->compare_path), "%s", path);
+    perf_bundle_name(path, perf->compare_name, sizeof(perf->compare_name));
+  }
+  perf->compare = compare;
+  perf->comparing = true_v;
+  perf_columns(perf);
+  perf_compare_columns(perf);
+  vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_PERFORMANCE, true_v);
+  return true_v;
+}
+
 bool8_t vkr_editor_recording_analyze(VkrEditorUi *editor, const char *name,
                                      char *error, uint64_t error_capacity) {
   VkrEditorRecordingPerf *perf = &editor->recording.perf;
@@ -332,20 +444,7 @@ bool8_t vkr_editor_recording_analyze(VkrEditorUi *editor, const char *name,
   }
   perf->loaded = true_v;
   string_format(perf->path, sizeof(perf->path), "%s", path);
-  /* The bundle's name, without its directory and extension. */
-  const char *base = path;
-  for (const char *c = path; *c; ++c) {
-    if (*c == '/' || *c == '\\') {
-      base = c + 1;
-    }
-  }
-  string_format(perf->name, sizeof(perf->name), "%s", base);
-  const uint64_t length = string_length(perf->name);
-  const uint64_t extension = sizeof(VKR_RECORDING_BUNDLE_EXTENSION) - 1u;
-  if (length > extension && string_equals(perf->name + length - extension,
-                                          VKR_RECORDING_BUNDLE_EXTENSION)) {
-    perf->name[length - extension] = '\0';
-  }
+  perf_bundle_name(path, perf->name, sizeof(perf->name));
   perf_columns(perf);
   perf_pass_columns(perf);
   vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_PERFORMANCE, true_v);
@@ -467,15 +566,57 @@ vkr_internal void perf_caption(VkrUiSystem *ui, const char *id, String8 text,
 }
 
 /* A stat card: a caption over a value. */
+/* Recording B's line over A's bars. */
+static const Vec4 PERF_COMPARE_COLOR = {0.690f, 0.553f, 0.984f, 1.0f};
+/* A change smaller than this share of A's value reads as no change. */
+#define PERF_COMPARE_SAME 0.02
+
+/* The colour of B - A for a statistic where lower is better. */
+vkr_internal Vec4 perf_compare_color(float64_t a, float64_t b) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float64_t threshold = Max(vkr_abs_f64(a) * PERF_COMPARE_SAME, 1.0e-6);
+  return b - a > threshold   ? theme->error
+         : a - b > threshold ? theme->success
+                             : theme->text_secondary;
+}
+
+/* B's value of card `id` and its change, as the card's last line. */
+vkr_internal String8 perf_compare_line(VkrUiSystem *ui,
+                                       const VkrEditorRecordingPerf *perf,
+                                       VkrRecordingCompareStatId id,
+                                       float64_t scale, const char *unit) {
+  const VkrRecordingCompareStat *stat = &perf->compare.stats[id];
+  if (!stat->valid) {
+    return string8_lit("B: not measured");
+  }
+  const float64_t a = stat->a * scale;
+  const float64_t b = stat->b * scale;
+  /* B's value and the change as a share of A's; counts and a zero A take
+     the plain difference. */
+  if (id == VKR_RECORDING_COMPARE_OVER_BUDGET) {
+    return string8_create_formatted(ui->frame_allocator, "B %.0f  (%+.0f)", b,
+                                    b - a);
+  }
+  if (a == 0.0) {
+    return string8_create_formatted(ui->frame_allocator, "B %.2f%s  (%+.2f)", b,
+                                    unit, b - a);
+  }
+  return string8_create_formatted(ui->frame_allocator, "B %.2f%s  (%+.0f%%)", b,
+                                  unit, 100.0 * (b - a) / a);
+}
+
+/* One statistic: its caption, A's value and, while comparing, B's value
+   and the change in `compare_color`. */
 vkr_internal void perf_card(VkrEditorUi *editor, VkrUiSystem *ui,
                             uint32_t column, const char *caption, String8 value,
-                            Vec4 color) {
+                            Vec4 color, String8 compare, Vec4 compare_color) {
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {{.value = 14.0f, .unit = VKR_UI_TRACK_PX},
-                             {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
-  VkrUiPanelConfig card =
-      perf_grid(perf_cell(column, 0u), &fill, 1u, rows, ArrayCount(rows));
+                             {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                             {.value = 14.0f, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig card = perf_grid(perf_cell(column, 0u), &fill, 1u, rows,
+                                    compare.length ? 3u : 2u);
   card.style.padding_pt = (VkrUiEdges){6.0f, 10.0f, 6.0f, 10.0f};
   card.style.background_color = theme->raised;
   card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
@@ -495,9 +636,32 @@ vkr_internal void perf_card(VkrEditorUi *editor, VkrUiSystem *ui,
     text.placement.align = VKR_UI_ALIGN_CENTER;
     text.text.font = editor->heading_font;
     vkr_ui_label(ui, string8_lit("value"), value, &text);
+    if (compare.length) {
+      perf_caption(ui, "compare", compare, perf_cell(0u, 2u), compare_color);
+    }
     (void)vkr_ui_panel_end(ui);
   }
   (void)vkr_ui_pop_id(ui);
+}
+
+/* A statistic's card; while comparing, its last line is B's value of `id`
+   in `unit` after `scale`, and the change. */
+vkr_internal void perf_stat_card(VkrEditorUi *editor, VkrUiSystem *ui,
+                                 uint32_t column, const char *caption,
+                                 String8 value, Vec4 color,
+                                 VkrRecordingCompareStatId id, float64_t scale,
+                                 const char *unit) {
+  const VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  String8 line = {0};
+  Vec4 line_color = vkr_ui_theme()->text_secondary;
+  if (perf->comparing) {
+    const VkrRecordingCompareStat *stat = &perf->compare.stats[id];
+    line = perf_compare_line(ui, perf, id, scale, unit);
+    if (stat->valid) {
+      line_color = perf_compare_color(stat->a, stat->b);
+    }
+  }
+  perf_card(editor, ui, column, caption, value, color, line, line_color);
 }
 
 vkr_internal String8 perf_gb(VkrUiSystem *ui, const VkrRecordingData *data,
@@ -533,34 +697,40 @@ vkr_internal void perf_cards(VkrEditorUi *editor, VkrUiSystem *ui,
   const Vec4 max_color = time->max > 2.0 * budget ? theme->error
                          : time->max > budget     ? theme->warning
                                                   : theme->text;
-  perf_card(editor, ui, 0u, "p50",
-            string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p50),
-            theme->text);
-  perf_card(editor, ui, 1u, "p95",
-            string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p95),
-            theme->text);
-  perf_card(editor, ui, 2u, "p99",
-            string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p99),
-            p99_color);
-  perf_card(editor, ui, 3u, "max",
-            string8_create_formatted(ui->frame_allocator, "%.2f ms", time->max),
-            max_color);
-  perf_card(editor, ui, 4u, "1% low",
-            string8_create_formatted(ui->frame_allocator, "%.2f ms",
-                                     analysis->low_1pct_ms),
-            theme->text);
-  perf_card(editor, ui, 5u, "over 16.7 ms",
-            string8_create_formatted(ui->frame_allocator, "%llu frame%s",
-                                     (unsigned long long)analysis->over_budget,
-                                     analysis->over_budget == 1u ? "" : "s"),
-            analysis->over_budget ? theme->warning : theme->text);
-  perf_card(editor, ui, 6u, "RAM peak / avg",
-            perf_gb(ui, &perf->data, analysis, "process.resident_bytes"),
-            theme->text);
-  perf_card(editor, ui, 7u, "VRAM peak / avg",
-            perf_gb(ui, &perf->data, analysis,
-                    "memory.gpu.driver.current_allocated_bytes"),
-            theme->text);
+  perf_stat_card(
+      editor, ui, 0u, "p50",
+      string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p50),
+      theme->text, VKR_RECORDING_COMPARE_P50, 1.0, "");
+  perf_stat_card(
+      editor, ui, 1u, "p95",
+      string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p95),
+      theme->text, VKR_RECORDING_COMPARE_P95, 1.0, "");
+  perf_stat_card(
+      editor, ui, 2u, "p99",
+      string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p99),
+      p99_color, VKR_RECORDING_COMPARE_P99, 1.0, "");
+  perf_stat_card(
+      editor, ui, 3u, "max",
+      string8_create_formatted(ui->frame_allocator, "%.2f ms", time->max),
+      max_color, VKR_RECORDING_COMPARE_MAX, 1.0, "");
+  perf_stat_card(editor, ui, 4u, "1% low",
+                 string8_create_formatted(ui->frame_allocator, "%.2f ms",
+                                          analysis->low_1pct_ms),
+                 theme->text, VKR_RECORDING_COMPARE_LOW_1PCT, 1.0, "");
+  perf_stat_card(
+      editor, ui, 5u, "over 16.7 ms",
+      string8_create_formatted(ui->frame_allocator, "%llu frame%s",
+                               (unsigned long long)analysis->over_budget,
+                               analysis->over_budget == 1u ? "" : "s"),
+      analysis->over_budget ? theme->warning : theme->text,
+      VKR_RECORDING_COMPARE_OVER_BUDGET, 1.0, "");
+  perf_stat_card(editor, ui, 6u, "RAM peak / avg",
+                 perf_gb(ui, &perf->data, analysis, "process.resident_bytes"),
+                 theme->text, VKR_RECORDING_COMPARE_RAM_PEAK, 1.0e-9, " GB");
+  perf_stat_card(editor, ui, 7u, "VRAM peak / avg",
+                 perf_gb(ui, &perf->data, analysis,
+                         "memory.gpu.driver.current_allocated_bytes"),
+                 theme->text, VKR_RECORDING_COMPARE_VRAM_PEAK, 1.0e-9, " GB");
   (void)vkr_ui_panel_end(ui);
 }
 
@@ -736,13 +906,16 @@ vkr_internal void perf_frame_chart(VkrEditorUi *editor,
   VkrEditorRecordingPerf *perf = &editor->recording.perf;
   const VkrUiTheme *theme = vkr_ui_theme();
   const float64_t budget = perf->analysis.budget_ms;
-  perf_title(frame->ui, "frame.title",
-             string8_create_formatted(
-                 frame->ui->frame_allocator,
-                 "Frame time (ms, %s)  \xc2\xb7  dashed at %.1f ms and "
-                 "twice it; green within, amber up to twice, red beyond",
-                 vkr_recording_data_frame_source(&perf->data), budget),
-             perf_cell(0u, row), false_v);
+  perf_title(
+      frame->ui, "frame.title",
+      string8_create_formatted(
+          frame->ui->frame_allocator,
+          "Frame time (ms, %s)  \xc2\xb7  dashed at %.1f ms and "
+          "twice it; green within, amber up to twice, red beyond%s%s",
+          vkr_recording_data_frame_source(&perf->data), budget,
+          perf->comparing ? "  \xc2\xb7  line: B aligned by " : "",
+          perf->comparing ? vkr_recording_align_name(perf->compare.align) : ""),
+      perf_cell(0u, row), false_v);
   const Vec4 palette[] = {theme->success, theme->warning, theme->error,
                           theme->text_disabled};
   const VkrUiPlotSeries bars = {.values = perf->frame_ms,
@@ -755,12 +928,18 @@ vkr_internal void perf_frame_chart(VkrEditorUi *editor,
        .color = vkr_ui_color_alpha(theme->text_secondary, 0.5f),
        .dashed = true_v},
   };
+  /* While comparing, B's frame times run over A's bars. */
+  const VkrUiPlotSeries compare = {.values = perf->compare_ms,
+                                   .color = PERF_COMPARE_COLOR};
   VkrUiPlotConfig plot = {
       .sample_count = perf->column_count,
       .y_min = 0.0f,
       .y_max = perf->frame_ms_top,
       .bars = &bars,
       .bar_count = 1u,
+      .lines = perf->comparing ? &compare : NULL,
+      .line_count = perf->comparing ? 1u : 0u,
+      .line_width_pt = 1.5f,
       .bar_colors = perf->frame_color,
       .palette = palette,
       .palette_count = ArrayCount(palette),
@@ -1268,6 +1447,218 @@ vkr_internal void perf_empty(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* ------------------------------------------------------------------------ */
+/* Compare                                                                   */
+
+/* The header's comparison controls: what B is, how it is aligned, and an
+   end to it. */
+vkr_internal void perf_compare_controls(VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        uint32_t column) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack columns[] = {auto_track, auto_track, auto_track,
+                                auto_track, auto_track, auto_track};
+  VkrUiPanelConfig row =
+      perf_grid(perf_cell(column, 0u), columns, ArrayCount(columns), &fill, 1u);
+  row.placement.justify = VKR_UI_ALIGN_END;
+  row.style.gap_pt = theme->space_xs;
+  if (!vkr_ui_panel_begin(ui, string8_lit("compare"), &row)) {
+    return;
+  }
+  VkrUiWidgetConfig with =
+      vkr_editor_text_config(theme->font_caption, theme->text);
+  with.placement = perf_cell(0u, 0u);
+  with.placement.align = VKR_UI_ALIGN_CENTER;
+  with.style.padding_pt.right = theme->space_md;
+  with.icon = VKR_UI_ICON_DOT;
+  with.icon_size_pt = 10.0f;
+  with.icon_color = PERF_COMPARE_COLOR;
+  with.tooltip = string8_create_formatted(ui->frame_allocator,
+                                          "B: %s, compared with A: %s",
+                                          perf->compare_path, perf->path);
+  vkr_ui_label(ui, string8_lit("with"),
+               string8_create_formatted(ui->frame_allocator, "vs %s",
+                                        perf->compare_name),
+               &with);
+  static const char *const labels[] = {"Time", "Marker", "Distance", "Frame"};
+  static const char *const tips[] = {
+      "Align by seconds from the first frame",
+      "Align on a marker label both recordings carry",
+      "Align by meters along the path: two runs at different speeds line up",
+      "Align frame by frame: re-runs of one recording only",
+  };
+  _Static_assert(ArrayCount(labels) == VKR_RECORDING_ALIGN_COUNT,
+                 "a label for every alignment");
+  for (uint32_t i = 0u; i < VKR_RECORDING_ALIGN_COUNT; ++i) {
+    VkrUiWidgetConfig mode = vkr_ui_widget_config_default();
+    mode.placement = perf_cell(1u + i, 0u);
+    mode.placement.align = VKR_UI_ALIGN_CENTER;
+    vkr_editor_ghost_style(&mode);
+    mode.style.font_size_pt = theme->font_caption;
+    mode.style.padding_pt = (VkrUiEdges){2.0f, 8.0f, 2.0f, 8.0f};
+    vkr_editor_toggle_style(&mode, perf->compare.align == i);
+    mode.tooltip =
+        i == VKR_RECORDING_ALIGN_MARKER && perf->compare.marker[0]
+            ? string8_create_formatted(ui->frame_allocator, "%s: \"%s\"",
+                                       tips[i], perf->compare.marker)
+            : string8_create_from_cstr((const uint8_t *)tips[i],
+                                       string_length(tips[i]));
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("align"),
+                      string8_create_from_cstr((const uint8_t *)labels[i],
+                                               string_length(labels[i])),
+                      &mode) &&
+        perf->compare.align != i) {
+      char error[160];
+      char path[VKR_RECORDING_PATH_MAX];
+      string_format(path, sizeof(path), "%s", perf->compare_path);
+      if (!vkr_editor_recording_compare(editor, path, (VkrRecordingAlign)i,
+                                        NULL, error, sizeof(error))) {
+        vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                         error);
+      }
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  VkrUiWidgetConfig stop = vkr_editor_icon_button_config(
+      5u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Stop comparing"));
+  if (vkr_ui_button(ui, string8_lit("stop"), (String8){0}, &stop)) {
+    vkr_editor_recording_compare_stop(perf);
+    perf_columns(perf);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+/* The window's first row: what A is, and the comparison when one is open. */
+vkr_internal void perf_header(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame, uint32_t row) {
+  const VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  VkrUiSystem *ui = frame->ui;
+  const VkrRecordingData *data = &perf->data;
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack columns[] = {fill, {.unit = VKR_UI_TRACK_AUTO}};
+  VkrUiPanelConfig header = perf_grid(perf_cell(0u, row), columns,
+                                      perf->comparing ? 2u : 1u, &fill, 1u);
+  if (!vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
+    return;
+  }
+  /* Where B is slower, when it is anywhere; else how much faster. */
+  char window[112] = "";
+  const VkrRecordingCompare *compare = &perf->compare;
+  if (perf->comparing && compare->worst_first != UINT64_MAX &&
+      compare->worst_delta_ms > 0.0) {
+    string_format(window, sizeof(window),
+                  "  \xc2\xb7  B slower at frames %llu to %llu by %.2f ms",
+                  (unsigned long long)compare->worst_first,
+                  (unsigned long long)compare->worst_last,
+                  compare->worst_delta_ms);
+  } else if (perf->comparing && compare->aligned_frames > 0u) {
+    string_format(window, sizeof(window),
+                  "  \xc2\xb7  B %+.2f ms per aligned frame",
+                  compare->delta_mean_ms);
+  }
+  perf_title(ui, "title",
+             string8_create_formatted(
+                 ui->frame_allocator,
+                 "%s%s  \xc2\xb7  %.1f s  \xc2\xb7  %llu frames%s%s%s",
+                 perf->comparing ? "A: " : "", perf->name,
+                 data->times[data->frame_count - 1u],
+                 (unsigned long long)data->frame_count,
+                 data->missing_frames ? "  \xc2\xb7  frames lost" : "",
+                 data->truncated ? "  \xc2\xb7  cut off" : "", window),
+             perf_cell(0u, 0u), false_v);
+  if (perf->comparing) {
+    perf_compare_controls(editor, frame, 1u);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+/* The pass table while comparing: A's and B's mean per pass by name and the
+   change, largest first. */
+vkr_internal void perf_compare_pass_table(VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame,
+                                          uint32_t column) {
+  const VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  const VkrRecordingCompare *compare = &perf->compare;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  if (compare->pass_count == 0u) {
+    perf_title(ui, "passes.title",
+               string8_lit("Passes: neither recording has pass rows"),
+               perf_cell(column, 0u), false_v);
+    return;
+  }
+  perf_title(ui, "passes.title",
+             string8_create_formatted(
+                 ui->frame_allocator,
+                 "Passes: mean %s ms per frame, B minus A, largest change "
+                 "first",
+                 compare->pass_gpu ? "GPU" : "CPU encode"),
+             perf_cell(column, 0u), false_v);
+  const uint32_t count = Min(compare->pass_count, (uint32_t)PERF_PASS_ROWS);
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiTrack rows[PERF_PASS_ROWS + 1u];
+  for (uint32_t i = 0u; i <= count; ++i) {
+    rows[i] = (VkrUiTrack){.value = 20.0f, .unit = VKR_UI_TRACK_PX};
+  }
+  VkrUiPanelConfig list =
+      perf_grid(perf_cell(column, 1u), &fill, 1u, rows, count + 1u);
+  list.style.gap_pt = 1.0f;
+  if (!vkr_ui_scroll_area_begin(ui, string8_lit("compare.passes"), &list)) {
+    return;
+  }
+  VkrUiWidgetConfig header =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  header.placement = perf_cell(0u, 0u);
+  header.placement.justify = VKR_UI_ALIGN_START;
+  header.style.padding_pt = (VkrUiEdges){0.0f, 8.0f, 0.0f, 8.0f};
+  header.text.font = editor->mono_font;
+  vkr_ui_label(ui, string8_lit("header"),
+               string8_create_formatted(ui->frame_allocator,
+                                        "%-30s %8s %8s %8s %7s", "Pass", "A",
+                                        "B", "change", "%"),
+               &header);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrRecordingPassDelta *delta = &compare->passes[i];
+    char a[16] = "       -";
+    char b[16] = "       -";
+    if (delta->in_a) {
+      string_format(a, sizeof(a), "%8.3f", delta->a_ms);
+    }
+    if (delta->in_b) {
+      string_format(b, sizeof(b), "%8.3f", delta->b_ms);
+    }
+    char percent[16] = "      -";
+    if (delta->in_a && delta->in_b && delta->a_ms > 0.0) {
+      string_format(percent, sizeof(percent), "%+6.0f%%",
+                    100.0 * (delta->b_ms - delta->a_ms) / delta->a_ms);
+    }
+    VkrUiWidgetConfig line = vkr_editor_text_config(
+        theme->font_caption, perf_compare_color(delta->a_ms, delta->b_ms));
+    line.placement = perf_cell(0u, i + 1u);
+    line.placement.justify = VKR_UI_ALIGN_START;
+    line.style.padding_pt = (VkrUiEdges){0.0f, 8.0f, 0.0f, 8.0f};
+    line.text.font = editor->mono_font;
+    line.tooltip =
+        string8_create_formatted(ui->frame_allocator, "%s%s", delta->name,
+                                 !delta->in_a   ? ": only in B"
+                                 : !delta->in_b ? ": only in A"
+                                                : "");
+    (void)vkr_ui_push_id_u64(ui, i);
+    vkr_ui_label(ui, string8_lit("pass"),
+                 string8_create_formatted(
+                     ui->frame_allocator, "%-30.30s %s %s %+8.3f %s",
+                     delta->name, a, b, delta->b_ms - delta->a_ms, percent),
+                 &line);
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_scroll_area_end(ui);
+}
+
 void vkr_editor_recording_perf_build(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds) {
@@ -1283,7 +1674,7 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
   const VkrUiTrack title = {.value = 18.0f, .unit = VKR_UI_TRACK_PX};
   const VkrUiTrack rows[] = {
       title,
-      {.value = 50.0f, .unit = VKR_UI_TRACK_PX},
+      {.value = perf->comparing ? 66.0f : 50.0f, .unit = VKR_UI_TRACK_PX},
       title,
       {.value = 2.0f, .unit = VKR_UI_TRACK_FR},
       title,
@@ -1301,16 +1692,7 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
   if (!vkr_ui_panel_begin(ui, string8_lit("perf.body"), &body)) {
     return;
   }
-  const VkrRecordingData *data = &perf->data;
-  perf_title(ui, "header",
-             string8_create_formatted(
-                 ui->frame_allocator,
-                 "%s  \xc2\xb7  %.1f s  \xc2\xb7  %llu frames%s%s", perf->name,
-                 data->times[data->frame_count - 1u],
-                 (unsigned long long)data->frame_count,
-                 data->missing_frames ? "  \xc2\xb7  frames lost" : "",
-                 data->truncated ? "  \xc2\xb7  cut off" : ""),
-             perf_cell(0u, 0u), false_v);
+  perf_header(editor, frame, 0u);
   perf_cards(editor, ui, 1u);
   perf_frame_chart(editor, frame, 2u);
   perf_stage_chart(editor, frame, 4u);
@@ -1326,7 +1708,11 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
   bottom.style.gap_pt = theme->space_md;
   if (vkr_ui_panel_begin(ui, string8_lit("perf.lists"), &bottom)) {
     perf_spikes(editor, frame, 0u);
-    perf_pass_table(editor, frame, 1u);
+    if (perf->comparing) {
+      perf_compare_pass_table(editor, frame, 1u);
+    } else {
+      perf_pass_table(editor, frame, 1u);
+    }
     (void)vkr_ui_panel_end(ui);
   }
   (void)vkr_ui_panel_end(ui);

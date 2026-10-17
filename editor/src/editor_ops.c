@@ -15644,6 +15644,63 @@ static VkrEditorOpStatus ops_run_rec_analyze(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+static VkrEditorOpStatus ops_run_rec_compare(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char a[VKR_RECORDING_PATH_MAX] = {0};
+  char b[VKR_RECORDING_PATH_MAX] = {0};
+  char marker[VKR_RECORDING_LABEL_MAX + 1u] = {0};
+  if (!ops_arg_string(ctx, args, "a", a, sizeof(a)) ||
+      !ops_arg_string(ctx, args, "b", b, sizeof(b)) ||
+      !ops_arg_string(ctx, args, "marker", marker, sizeof(marker))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrRecordingAlign align =
+      marker[0] ? VKR_RECORDING_ALIGN_MARKER : VKR_RECORDING_ALIGN_TIME;
+  String8 align_name = {0};
+  if (vkr_bakery_json_get_string(args, "align", &align_name) &&
+      !vkr_recording_align_parse(align_name, &align)) {
+    ops_fail(ctx, OPS_INVALID, "'align' is time, marker, distance or frame");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!b[0]) {
+    ops_fail(ctx, OPS_INVALID, "'b' names the recording to compare");
+    return VKR_EDITOR_OP_DONE;
+  }
+  char error[160];
+  /* A defaults to the analyzed recording. */
+  if (a[0] &&
+      !vkr_editor_recording_analyze(ctx->editor, a, error, sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_recording_compare(ctx->editor, b, align,
+                                    marker[0] ? marker : NULL, error,
+                                    sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrEditorRecordingPerf *perf = &ctx->editor->recording.perf;
+  VkrBakeryBuffer buffer = {0};
+  VkrJsonWriter writer;
+  vkr_json_writer_init(&writer, ops_buffer_sink, &buffer);
+  vkr_recording_compare_write_json(&writer, &perf->data, &perf->compare);
+  VkrBakeryJson *result = NULL;
+  if (vkr_json_writer_complete(&writer) && !buffer.failed) {
+    result = vkr_bakery_json_parse(ops_arena(ctx), buffer.data, buffer.length,
+                                   16u, NULL);
+  }
+  vkr_bakery_buffer_free(&buffer);
+  if (!result) {
+    ops_fail(ctx, OPS_LIMIT, "The comparison could not be written");
+    return VKR_EDITOR_OP_DONE;
+  }
+  ops_set(ctx, result, "a", vkr_bakery_json_cstr(ops_arena(ctx), perf->path));
+  ops_set(ctx, result, "b",
+          vkr_bakery_json_cstr(ops_arena(ctx), perf->compare_path));
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
 typedef struct OpsRecordingList {
   OpsContext *ctx;
   const char *directory;
@@ -15788,6 +15845,18 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"follow\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}",
      ops_run_rec_drive, NULL},
+    {"rec.compare",
+     "Compare recording 'b' with recording 'a' (default: the analyzed one) "
+     "and show both in the Performance window. 'align' maps A's frames to "
+     "B's: time (default), marker (a label both carry, 'marker' or the "
+     "first shared), distance along the path, or frame for re-runs. Answers "
+     "each statistic as [a, b, b - a], the slowest window of B against A "
+     "and the passes by change.",
+     "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"},"
+     "\"b\":{\"type\":\"string\"},\"align\":{\"enum\":[\"time\","
+     "\"marker\",\"distance\",\"frame\"]},\"marker\":{\"type\":"
+     "\"string\"}},\"required\":[\"b\"]}",
+     ops_run_rec_compare, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.annotations",
      "The notes, named ranges and review state of recording 'name', or of "
      "the open one; notes and ranges carry the index rec.note and rec.range "

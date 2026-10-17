@@ -1,6 +1,7 @@
 #include "recording_analysis_test.h"
 
 #include "assets/vkr_recording_analysis.h"
+#include "assets/vkr_recording_compare.h"
 #include "memory/arena.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -188,6 +189,8 @@ typedef struct AnalysisTestScenario {
                       const char **out_labels);
   /* Pass records written while writing `frame`; NULL for none. */
   void (*passes)(AnalysisTestChunk *chunk, uint64_t frame, uint64_t frames);
+  /* The camera's speed, as a multiple of the main scenario's; zero is 1. */
+  float64_t camera_scale;
 } AnalysisTestScenario;
 
 typedef struct AnalysisTestMemory {
@@ -244,8 +247,11 @@ static void analysis_test_put_frame(AnalysisTestChunk *chunk,
       .simulation_time = (float64_t)frame * ANALYSIS_TEST_DT,
       .time_of_day = 12.0f,
   };
+  const float64_t travel =
+      (float64_t)frame *
+      (scenario->camera_scale > 0.0 ? scenario->camera_scale : 1.0);
   const AnalysisTestCamera camera = {
-      .position = {(float64_t)frame * 0.5, 1.5, -(float64_t)frame},
+      .position = {travel * 0.5, 1.5, -travel},
       .yaw = (float32_t)frame,
       .fov = 60.0f,
       .near_clip = 0.1f,
@@ -407,6 +413,10 @@ static void analysis_test_load(const char *label,
 /* in frame 160 and Lighting in frame 100, rows of a pass whose name record   */
 /* was lost, and a second record for frame 10.                               */
 
+/* GBuffer's GPU time outside frame 160; the compare test raises it for its
+   second recording. */
+static float32_t analysis_test_gbuffer_ms = 4.0f;
+
 static void analysis_test_put_passes_of(AnalysisTestChunk *chunk,
                                         uint64_t frame, float32_t cpu_bias) {
   if (frame == ANALYSIS_TEST_MAIN_MISSING) {
@@ -414,7 +424,8 @@ static void analysis_test_put_passes_of(AnalysisTestChunk *chunk,
   }
   const bool8_t timed = frame % 4u == 0u;
   const float32_t cpu[4] = {0.2f + cpu_bias, 0.3f, 0.1f, 0.5f};
-  const float32_t gpu[4] = {2.0f, frame == 160u ? 9.0f : 4.0f,
+  const float32_t gpu[4] = {2.0f,
+                            frame == 160u ? 9.0f : analysis_test_gbuffer_ms,
                             frame == 100u ? 7.0f : 3.0f, 1.0f};
   uint8_t record[VKR_RECORDING_PASSES_HEADER_SIZE +
                  4u * VKR_RECORDING_PASS_ROW_SIZE];
@@ -1005,6 +1016,121 @@ static void test_recording_analysis_passes(void) {
   printf("  test_recording_analysis_passes PASSED\n");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Compare: B is the pass scenario 2 ms slower over frames 120 to 159, with   */
+/* its marker 10 frames later, its camera twice as fast and GBuffer 6 ms.     */
+
+static void analysis_test_b_metrics(uint64_t frame, AnalysisTestMetrics *out) {
+  analysis_test_main_metrics(frame, out);
+  if (frame >= 120u && frame < 160u) {
+    out->values[ANALYSIS_TEST_WALL] += 2.0;
+  }
+}
+
+static uint32_t analysis_test_b_markers(uint64_t frame, uint32_t *out_kinds,
+                                        const char **out_labels) {
+  return analysis_test_main_markers(frame - 10u, out_kinds, out_labels);
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_B = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
+    .metrics = analysis_test_b_metrics,
+    .markers = analysis_test_b_markers,
+    .passes = analysis_test_put_passes,
+    .camera_scale = 2.0,
+};
+
+/* Detects: a frame mapped to the wrong frame of B under each alignment, a
+   lost frame counted as aligned, the slowest window found off the slowed
+   frames, a statistic or pass compared with the wrong side, a pass delta
+   sorted below a smaller one, and a missing marker accepted. */
+static void test_recording_compare(void) {
+  printf("  Running test_recording_compare...\n");
+  AnalysisTestMemory memory;
+  analysis_memory_create(&memory);
+  char a_path[1024];
+  char b_path[1024];
+  VkrRecordingData a;
+  VkrRecordingData b;
+  analysis_test_load("compare_a", &ANALYSIS_TEST_PASSES, &memory, a_path,
+                     sizeof(a_path), &a);
+  analysis_test_gbuffer_ms = 6.0f;
+  analysis_test_load("compare_b", &ANALYSIS_TEST_B, &memory, b_path,
+                     sizeof(b_path), &b);
+  analysis_test_gbuffer_ms = 4.0f;
+  VkrRecordingAnalysis a_analysis;
+  VkrRecordingAnalysis b_analysis;
+  assert(vkr_recording_analyze(&a, NULL, &memory.allocator, &a_analysis));
+  assert(vkr_recording_analyze(&b, NULL, &memory.allocator, &b_analysis));
+
+  static VkrRecordingCompare compare;
+  char error[160];
+  assert(vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, NULL,
+                               &memory.allocator, &compare, error,
+                               sizeof(error)));
+  assert(compare.align == VKR_RECORDING_ALIGN_TIME);
+  /* Frame 150 is lost in both. */
+  assert(compare.aligned_frames == 199u);
+  assert(compare.b_frame[150] == UINT64_MAX && compare.b_frame[149] == 149u);
+  assert(analysis_test_near(compare.delta_mean_ms, 2.0 * 39.0 / 199.0));
+  assert(compare.worst_first == 120u && compare.worst_last == 149u);
+  assert(analysis_test_near(compare.worst_delta_ms, 2.0));
+  const VkrRecordingCompareStat *max =
+      &compare.stats[VKR_RECORDING_COMPARE_MAX];
+  assert(max->valid && max->a == 31.0 && max->b == 31.0);
+  const VkrRecordingCompareStat *mean =
+      &compare.stats[VKR_RECORDING_COMPARE_MEAN];
+  assert(analysis_test_near(mean->b - mean->a, 2.0 * 39.0 / 199.0));
+  assert(!compare.stats[VKR_RECORDING_COMPARE_RAM_PEAK].valid);
+  assert(compare.pass_gpu && compare.pass_count == 3u);
+  assert(strcmp(compare.passes[0].name, "GBuffer") == 0);
+  assert(compare.passes[0].in_a && compare.passes[0].in_b);
+  assert(compare.passes[0].b_ms - compare.passes[0].a_ms > 1.9);
+  assert(compare.passes[1].b_ms == compare.passes[1].a_ms);
+  vkr_recording_compare_free(&compare);
+
+  VkrRecordingCompareOptions options = {.align = VKR_RECORDING_ALIGN_MARKER};
+  assert(vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, &options,
+                               &memory.allocator, &compare, error,
+                               sizeof(error)));
+  assert(strcmp(compare.marker, "stutter here") == 0);
+  assert(compare.b_frame[50] == 60u && compare.b_frame[140] == UINT64_MAX);
+  assert(compare.b_frame[189] == 199u && compare.b_frame[190] == UINT64_MAX);
+  vkr_recording_compare_free(&compare);
+
+  options = (VkrRecordingCompareOptions){.align = VKR_RECORDING_ALIGN_DISTANCE};
+  assert(vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, &options,
+                               &memory.allocator, &compare, error,
+                               sizeof(error)));
+  assert(!compare.distance_player);
+  assert(compare.b_frame[40] == 20u && compare.b_frame[100] == 50u);
+  vkr_recording_compare_free(&compare);
+
+  options = (VkrRecordingCompareOptions){.align = VKR_RECORDING_ALIGN_FRAME};
+  assert(vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, &options,
+                               &memory.allocator, &compare, error,
+                               sizeof(error)));
+  assert(compare.b_frame[10] == 10u && compare.aligned_frames == 199u);
+  vkr_recording_compare_free(&compare);
+
+  options = (VkrRecordingCompareOptions){.align = VKR_RECORDING_ALIGN_MARKER,
+                                         .marker = "nope"};
+  assert(!vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, &options,
+                                &memory.allocator, &compare, error,
+                                sizeof(error)));
+  assert(strstr(error, "nope") != NULL);
+
+  vkr_recording_analysis_free(&a_analysis);
+  vkr_recording_analysis_free(&b_analysis);
+  vkr_recording_data_free(&a);
+  vkr_recording_data_free(&b);
+  analysis_test_remove(a_path);
+  analysis_test_remove(b_path);
+  analysis_memory_destroy(&memory);
+  printf("  test_recording_compare PASSED\n");
+}
+
 bool32_t run_recording_analysis_tests(void) {
   printf("--- Starting Recording Analysis Tests ---\n");
   test_recording_analysis_statistics();
@@ -1012,6 +1138,7 @@ bool32_t run_recording_analysis_tests(void) {
   test_recording_analysis_json();
   test_recording_analysis_json_bound();
   test_recording_analysis_passes();
+  test_recording_compare();
   printf("--- Recording Analysis Tests Completed ---\n");
   return true_v;
 }

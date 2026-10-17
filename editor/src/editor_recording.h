@@ -2,6 +2,7 @@
 
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
+#include "assets/vkr_recording_compare.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "vkr_sample_runtime.h"
@@ -103,6 +104,16 @@ typedef struct VkrEditorRecordingPerf {
   uint64_t selected;
   uint32_t hovered_column;
   float32_t spike_scroll;
+  /* Compare: recording B against this one, A, read into the same memory,
+     and B's frame time at each column's frame for the frame chart's line,
+     holding the last one where B has none. */
+  bool8_t comparing;
+  char compare_path[VKR_RECORDING_PATH_MAX];
+  char compare_name[VKR_RECORDING_LABEL_MAX + 1u];
+  VkrRecordingData compare_data;
+  VkrRecordingAnalysis compare_analysis;
+  VkrRecordingCompare compare;
+  float32_t compare_ms[VKR_EDITOR_PERF_COLUMNS];
 } VkrEditorRecordingPerf;
 
 /* Recording requests (docs/proposals/recordings.md, "Recording requests"):
@@ -306,6 +317,18 @@ void vkr_editor_recording_window_build(struct VkrEditorUi *editor,
 bool8_t vkr_editor_recording_analyze(struct VkrEditorUi *editor,
                                      const char *name, char *error,
                                      uint64_t error_capacity);
+
+/** Compares recording `name` (B, a bundle path or name) with the analyzed
+ * recording (A) in the Performance window, aligned by `align` (`marker`
+ * names the label for VKR_RECORDING_ALIGN_MARKER; NULL takes the first
+ * both carry). False with the reason in `error`, leaving any comparison
+ * before it. */
+bool8_t vkr_editor_recording_compare(struct VkrEditorUi *editor,
+                                     const char *name, VkrRecordingAlign align,
+                                     const char *marker, char *error,
+                                     uint64_t error_capacity);
+/** Ends the comparison; A stays analyzed. */
+void vkr_editor_recording_compare_stop(VkrEditorRecordingPerf *perf);
 
 /** Frees the Performance window's data. */
 void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
