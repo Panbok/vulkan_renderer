@@ -680,6 +680,36 @@ vkr_internal bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
   return complete;
 }
 
+/** Why the run cannot be authoritative before it executes: a local profile,
+    or a recording whose cost is unmeasured against the overhead gate, so a
+    recorded run describes what happened, not what the build costs. */
+vkr_internal void
+vkr_harness_add_setup_authority_reasons(VkrHarnessReport *report,
+                                        const VkrHarnessProfile *profile,
+                                        bool8_t record) {
+  if (!profile->authoritative) {
+    vkr_harness_report_add_authority_reason(report, "profile.local_only");
+  }
+  if (record) {
+    vkr_harness_report_add_authority_reason(report, "recording.enabled");
+  }
+}
+
+/** Records every completed repetition's artifacts, and its recording when
+    the run records; a repetition without one leaves the run incomplete. */
+vkr_internal bool8_t vkr_harness_record_repetition_artifacts(
+    VkrHarnessReport *report, const char *run_root, bool8_t record) {
+  bool8_t complete = true_v;
+  for (uint32_t run = 0; run < report->completed_repetitions; ++run) {
+    complete &= vkr_harness_record_run_artifacts(report, run_root, run);
+    if (record &&
+        !vkr_harness_record_recording_artifacts(report, run_root, run)) {
+      vkr_harness_report_mark_incomplete(report, "recording.missing");
+    }
+  }
+  return complete;
+}
+
 /**
  * Turns the collected evidence into a verdict. Missing or partial evidence
  * makes the run incomplete; only complete evidence that violates an assertion
@@ -886,9 +916,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   }
   vkr_harness_timestamp_utc(report.provenance.started_at);
   vkr_harness_provenance_collect(executable, repo_root, &report.provenance);
-  if (!profile.authoritative) {
-    vkr_harness_report_add_authority_reason(&report, "profile.local_only");
-  }
+  vkr_harness_add_setup_authority_reasons(&report, &profile, record);
   if (report.provenance.dirty) {
     if (!profile.allow_dirty) {
       vkr_harness_stderr("Execution profile requires a clean worktree\n");
@@ -897,11 +925,6 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       return VKR_HARNESS_EXIT_UNAVAILABLE;
     }
     vkr_harness_report_add_authority_reason(&report, "provenance.dirty");
-  }
-  /* The recorder's cost is unmeasured against the overhead gate; a recorded
-     run describes what happened, not what the build costs. */
-  if (record) {
-    vkr_harness_report_add_authority_reason(&report, "recording.enabled");
   }
 
   char artifact_candidate[VKR_HARNESS_PATH_MAX];
@@ -1052,15 +1075,8 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   string_format(final_report, sizeof(final_report), "%s/report.json", run_root);
   string_format(summary, sizeof(summary), "%s/summary.csv", run_root);
   vkr_harness_timestamp_utc(report.provenance.ended_at);
-  bool8_t artifacts_complete = true_v;
-  for (uint32_t run = 0; run < report.completed_repetitions; ++run) {
-    artifacts_complete &=
-        vkr_harness_record_run_artifacts(&report, run_root, run);
-    if (record &&
-        !vkr_harness_record_recording_artifacts(&report, run_root, run)) {
-      vkr_harness_report_mark_incomplete(&report, "recording.missing");
-    }
-  }
+  bool8_t artifacts_complete =
+      vkr_harness_record_repetition_artifacts(&report, run_root, record);
   if (!vkr_harness_summary_csv_write(summary, &report, arenas.transient,
                                      &error)) {
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
