@@ -37,6 +37,7 @@
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_system.h"
+#include "renderer/systems/vkr_scene_terrain.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "script/vkr_script_host.h"
@@ -3917,19 +3918,22 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
 }
 
 /* Advances the simulated container, running the script session on it. */
-/* True while a model the re-simulated recording had joined after at most
-   the ticks this session completed still loads here: the frame waits for
-   it, so the model joins before the same tick as it did there. */
+/* True while a model or terrain body the re-simulated recording had joined
+   after at most the ticks this session completed still builds here: the
+   frame waits for it, so it joins at the same tick as it did there. */
 static bool8_t sample_resim_join_wait(const VkrRecordingDrive *drive,
                                       const VkrScene *scene) {
   const uint64_t ticks = vkr_scene_physics_clock(scene).completed;
   for (uint32_t i = 0u; i < drive->join_count; ++i) {
     const VkrRecordingJoin *join = &drive->joins[i];
-    if (drive->join_applied[i] || join->ticks > ticks ||
-        join->kind != VKR_RECORDING_JOIN_MODEL) {
+    if (drive->join_applied[i] || join->ticks > ticks) {
       continue;
     }
-    if (vkr_scene_model_loading(scene, (VkrEntityId){.u64 = join->entity})) {
+    const VkrEntityId entity = {.u64 = join->entity};
+    if ((join->kind == VKR_RECORDING_JOIN_MODEL &&
+         vkr_scene_model_loading(scene, entity)) ||
+        (join->kind == VKR_RECORDING_JOIN_TERRAIN_BODY &&
+         vkr_scene_terrain_body_building(scene, entity))) {
       return true_v;
     }
   }
@@ -3974,10 +3978,10 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
   /* A re-simulation replays the recorded session clock; a recording keeps
      it (docs/proposals/recordings.md, "Drive and re-simulation"). While a
-     model the recorded session had joined by now is still loading, the
-     frame neither ticks nor runs modules, and takes no recorded frame; the
-     first frame after its loads finish joins it in the scene's update,
-     after the modules ran, as the recorded frame did. */
+     model or terrain body the recorded session had joined by now still
+     builds, the frame neither ticks nor runs modules, and takes no
+     recorded frame; the first frame after it finishes joins it in the
+     scene's update, after the modules ran, as the recorded frame did. */
   bool8_t join_wait = false_v;
   if (application->drive.open && application->drive.resim &&
       frame.simulation_running) {

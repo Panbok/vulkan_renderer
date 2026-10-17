@@ -1031,37 +1031,42 @@ static VkrRecordingDrive *script_host_resim(const VkrScriptHost *host) {
   return host->drive && host->drive->resim ? host->drive : NULL;
 }
 
-/* A model whose loads finished joins a re-simulated session only after the
-   fixed ticks the recorded session completed before it joined there. */
+_Static_assert((uint32_t)VKR_SCENE_JOIN_MODEL == VKR_RECORDING_JOIN_MODEL &&
+                   (uint32_t)VKR_SCENE_JOIN_TERRAIN_BODY ==
+                       VKR_RECORDING_JOIN_TERRAIN_BODY,
+               "recordings keep scene join kinds by value");
+
+/* A finished model or terrain body joins a re-simulated session only after
+   the fixed ticks the recorded session completed before it joined there. */
 static bool8_t script_host_may_join(void *user, const VkrScene *scene,
-                                    VkrEntityId wrapper) {
+                                    VkrSceneJoinKind kind, VkrEntityId entity) {
   const VkrRecordingDrive *resim = script_host_resim(user);
   if (!resim) {
     return true_v;
   }
-  wrapper.parts.generation = 0u;
-  return vkr_recording_drive_may_join(resim, VKR_RECORDING_JOIN_MODEL,
-                                      wrapper.u64,
+  entity.parts.generation = 0u;
+  return vkr_recording_drive_may_join(resim, (uint32_t)kind, entity.u64,
                                       vkr_scene_physics_clock(scene).completed);
 }
 
 /* A recording keeps the tick of each join; a re-simulation notes it. */
 static void script_host_joined(void *user, const VkrScene *scene,
-                               VkrEntityId wrapper, bool8_t failed) {
+                               VkrSceneJoinKind kind, VkrEntityId entity,
+                               bool8_t failed) {
   VkrScriptHost *host = user;
-  wrapper.parts.generation = 0u;
+  entity.parts.generation = 0u;
   if (host->recording) {
     const VkrRecordingJoin join = {
         .ticks = vkr_scene_physics_clock(scene).completed,
-        .entity = wrapper.u64,
-        .kind = VKR_RECORDING_JOIN_MODEL,
+        .entity = entity.u64,
+        .kind = (uint32_t)kind,
         .failed = failed ? 1u : 0u,
     };
     vkr_recording_join(host->recording, &join);
   }
   VkrRecordingDrive *resim = script_host_resim(host);
   if (resim) {
-    vkr_recording_drive_joined(resim, VKR_RECORDING_JOIN_MODEL, wrapper.u64);
+    vkr_recording_drive_joined(resim, (uint32_t)kind, entity.u64);
   }
 }
 
@@ -2332,17 +2337,20 @@ static const char *script_session_begin(VkrScriptHost *host) {
                       script_instance_desc(host, instance)->input);
   }
   VkrScene *active = host->session.active;
-  const VkrSceneModelJoinHooks join_hooks = {
+  const VkrSceneJoinHooks join_hooks = {
       .user = host,
       .may_join = script_host_may_join,
       .joined = script_host_joined,
   };
+  /* Recorded and re-simulated sessions stream by ticks, not budgets. */
+  const bool8_t deterministic = host->recording || script_host_resim(host);
   for (uint32_t c = 0; c < host->container_count; ++c) {
     if (!vkr_scene_observe_destroy(host->containers[c].scene,
                                    script_host_entity_destroying, host)) {
       return "The scene already has a destroy observer";
     }
-    vkr_scene_set_model_join_hooks(host->containers[c].scene, &join_hooks);
+    vkr_scene_set_join_hooks(host->containers[c].scene, &join_hooks);
+    host->containers[c].scene->deterministic_streaming = deterministic;
   }
   if (input) {
     if (!input_observe(host->session.input, script_host_input, host)) {
@@ -2377,7 +2385,8 @@ static void script_session_teardown(VkrScriptHost *host) {
      runs no destroy hook. */
   for (uint32_t c = 0; c < host->container_count; ++c) {
     (void)vkr_scene_unobserve_destroy(host->containers[c].scene, host);
-    vkr_scene_set_model_join_hooks(host->containers[c].scene, NULL);
+    vkr_scene_set_join_hooks(host->containers[c].scene, NULL);
+    host->containers[c].scene->deterministic_streaming = false_v;
   }
   if (host->callbacks_installed) {
     (void)vkr_scene_simulation_detach(active, host);
@@ -2486,7 +2495,8 @@ void vkr_script_host_detach(VkrScriptHost *host, const VkrScene *scene) {
   /* The container's instances end, and World-scoped behaviors on its
      entities stop, before its entities go; unloading runs no destroy hook. */
   (void)vkr_scene_unobserve_destroy(host->containers[slot].scene, host);
-  vkr_scene_set_model_join_hooks(host->containers[slot].scene, NULL);
+  vkr_scene_set_join_hooks(host->containers[slot].scene, NULL);
+  host->containers[slot].scene->deterministic_streaming = false_v;
   vkr_io_router_detach(&host->io, host->containers[slot].scene);
   for (uint32_t i = host->instance_count; i-- > 0u;) {
     VkrScriptInstance *instance = host->instances[i];

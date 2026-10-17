@@ -414,9 +414,10 @@ void vkr_scene_models_update(VkrScene *scene) {
         animation == VKR_SCENE_MODEL_LOADING) {
       continue;
     }
-    const VkrSceneModelJoinHooks *hooks = &scene->model_join_hooks;
+    const VkrSceneJoinHooks *hooks = &scene->join_hooks;
     if (hooks->may_join &&
-        !hooks->may_join(hooks->user, scene, model->wrapper)) {
+        !hooks->may_join(hooks->user, scene, VKR_SCENE_JOIN_MODEL,
+                         model->wrapper)) {
       continue;
     }
     const char *error = NULL;
@@ -458,7 +459,8 @@ void vkr_scene_models_update(VkrScene *scene) {
                model->mesh_path.str, error);
     }
     if (hooks->joined) {
-      hooks->joined(hooks->user, scene, model->wrapper, error != NULL);
+      hooks->joined(hooks->user, scene, VKR_SCENE_JOIN_MODEL, model->wrapper,
+                    error != NULL);
     }
   }
 }
@@ -481,14 +483,6 @@ bool8_t vkr_scene_model_loading(const VkrScene *scene, VkrEntityId wrapper) {
                 VKR_SCENE_MODEL_LOADING);
   }
   return false_v;
-}
-
-void vkr_scene_set_model_join_hooks(VkrScene *scene,
-                                    const VkrSceneModelJoinHooks *hooks) {
-  if (!scene) {
-    return;
-  }
-  scene->model_join_hooks = hooks ? *hooks : (VkrSceneModelJoinHooks){0};
 }
 
 VkrSceneModelStatus vkr_scene_model_status(const VkrScene *scene,

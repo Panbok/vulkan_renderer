@@ -2472,6 +2472,13 @@ Vec3 vkr_scene_restore_origin(VkrScene *scene) {
   return offset;
 }
 
+void vkr_scene_set_join_hooks(VkrScene *scene, const VkrSceneJoinHooks *hooks) {
+  if (!scene) {
+    return;
+  }
+  scene->join_hooks = hooks ? *hooks : (VkrSceneJoinHooks){0};
+}
+
 void vkr_scene_set_stream_sources(VkrScene *scene, const Vec3 *sources,
                                   uint32_t count) {
   if (!scene) {

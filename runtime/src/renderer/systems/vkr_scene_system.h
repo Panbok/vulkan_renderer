@@ -1427,18 +1427,29 @@ typedef void (*VkrSceneEntityObserver)(struct VkrScene *scene,
 
 struct VkrScene;
 
-/* A gate on requested models whose loads finished (vkr_scene_models_update)
-   and a note of each that joined or failed: a recording keeps the fixed
-   tick of each join and a re-simulation holds one back until its recorded
-   tick (docs/proposals/recordings.md, "Drive and re-simulation"). Unset
-   hooks join every finished load. */
-typedef struct VkrSceneModelJoinHooks {
+/* Results that finish off the frame loop and join the scene when they are
+   ready. */
+typedef enum VkrSceneJoinKind {
+  /** A requested model joins its wrapper (vkr_scene_models_update). */
+  VKR_SCENE_JOIN_MODEL = 1,
+  /** A streamed terrain's collision body built on a physics worker
+      replaces its body. */
+  VKR_SCENE_JOIN_TERRAIN_BODY = 2,
+} VkrSceneJoinKind;
+
+/* A gate on finished results before they join and a note of each that
+   joined or failed: a recording keeps the fixed tick of each join and a
+   re-simulation holds one back until its recorded tick
+   (docs/proposals/recordings.md, "Drive and re-simulation"). `entity` is
+   the model's wrapper or the terrain. Unset hooks join every finished
+   result. */
+typedef struct VkrSceneJoinHooks {
   void *user;
   bool8_t (*may_join)(void *user, const struct VkrScene *scene,
-                      VkrEntityId wrapper);
-  void (*joined)(void *user, const struct VkrScene *scene, VkrEntityId wrapper,
-                 bool8_t failed);
-} VkrSceneModelJoinHooks;
+                      VkrSceneJoinKind kind, VkrEntityId entity);
+  void (*joined)(void *user, const struct VkrScene *scene,
+                 VkrSceneJoinKind kind, VkrEntityId entity, bool8_t failed);
+} VkrSceneJoinHooks;
 
 typedef struct VkrScene {
   VkrScenePhysics *physics;
@@ -1457,7 +1468,11 @@ typedef struct VkrScene {
   VkrSceneAnimation *animations; // Independently owned per-wrapper pose state.
   /** Runtime-spawned models (vkr_scene_model.h), newest first. */
   struct VkrSceneModel *models;
-  VkrSceneModelJoinHooks model_join_hooks;
+  VkrSceneJoinHooks join_hooks;
+  /* A recorded or re-simulated session: streaming starts work when it is
+     due instead of when a wall-clock budget has room, so two runs start it
+     at the same tick. */
+  bool8_t deterministic_streaming;
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
@@ -1909,6 +1924,9 @@ bool8_t vkr_scene_shift_origin(VkrScene *scene, Vec3 shift);
 /* Puts every root remembered at the first shift back where it was, moves
    roots made since by `origin_offset`, and returns the offset it undid. */
 Vec3 vkr_scene_restore_origin(VkrScene *scene);
+
+/* Sets the scene's join hooks (VkrSceneJoinHooks); NULL clears them. */
+void vkr_scene_set_join_hooks(VkrScene *scene, const VkrSceneJoinHooks *hooks);
 
 /* Replaces the scene's streaming sources with the first
    VKR_SCENE_STREAM_SOURCES_MAX of `sources`, in world space. */

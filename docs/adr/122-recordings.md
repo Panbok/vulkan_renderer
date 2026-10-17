@@ -16,9 +16,9 @@ playback bar and Recordings window, the `rec.*` agent operations, Tier 0
 frame metrics, Tier 1 pass rows, the recording analysis, the Performance
 window, and from R3 the entity poses that Watch replays, Play recording,
 Drive, requests, annotations, Compare, harness recordings and perf re-runs,
-and from R6 Re-simulate on the same build, with model joins at their
-recorded ticks. Terrain collision rebuilds and world partition cell loads
-are not yet held to recorded ticks (in the proposal). A Tier 0 recording passed the
+and from R6 Re-simulate on the same build, with model joins and terrain
+collision rebuilds at their recorded ticks. World partition cell loads are
+not (in the proposal). A Tier 0 recording passed the
 authoritative overhead gate on a GPU-bound Bistro orbit (2026-10-17, in the
 proposal); a CPU-bound workload has not been measured, so harness runs that
 record keep the authority reason `recording.enabled`.
@@ -306,14 +306,21 @@ an agent must read one without the editor.
   re-simulated session starts from a rebuilt physics world, and a reset
   keeps the scene's body order: Jolt steps alike only from alike body order,
   and before, each reset reversed it and a first Play ran on the world as
-  edits had built it, so twelve dynamic boxes parted at tick 1. Models the
-  session requested join at their recorded ticks: the script host's scene
-  hooks (`VkrSceneModelJoinHooks`) write stream `join` (the fixed ticks
-  completed, the wrapper without its generation) while recording, and while
-  re-simulating hold a finished model until the ticks its next recorded
-  join followed; a frame whose due model still loads neither ticks nor runs
-  modules nor takes a recorded frame. Before, the FPS mannequin joined
-  whenever its load finished and a re-simulation could part at tick 6.
+  edits had built it, so twelve dynamic boxes parted at tick 1. Results
+  that finish off the frame loop join at their recorded ticks: models the
+  session requested and the collision bodies a streamed terrain builds on
+  a physics worker as its window moves. The script host's scene hooks
+  (`VkrSceneJoinHooks`) write stream `join` (the kind, the fixed ticks
+  completed, the wrapper or terrain without its generation) while
+  recording, and while re-simulating hold a finished result until the
+  ticks its next recorded join followed; a frame whose due result still
+  builds neither ticks nor runs modules nor takes a recorded frame. Such
+  sessions also start a due terrain rebuild at once instead of within the
+  frame's wall-clock budget (`deterministic_streaming`). Before, the FPS
+  mannequin joined whenever its load finished and a re-simulation could
+  part at tick 6. World partition cells are not held this way: a cell
+  loaded in another history gives its entities other slots and its bodies
+  another order, which the hashes and the physics see.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

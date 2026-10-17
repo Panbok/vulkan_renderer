@@ -154,9 +154,12 @@ typedef struct VkrRecordingSimFrame {
   float64_t delta;
 } VkrRecordingSimFrame;
 
+/* The scene's join kinds (VkrSceneJoinKind), by the same values. */
 typedef enum VkrRecordingJoinKind {
   /** A requested model joined its wrapper, or failed. */
   VKR_RECORDING_JOIN_MODEL = 1,
+  /** A streamed terrain's worker-built collision body replaced its body. */
+  VKR_RECORDING_JOIN_TERRAIN_BODY = 2,
 } VkrRecordingJoinKind;
 
 /* An asynchronous result a session applied: its kind, the entity it joined

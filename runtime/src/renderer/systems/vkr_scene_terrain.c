@@ -2134,9 +2134,16 @@ static bool8_t terrain_body_set(VkrScene *scene, TerrainRecord *record,
   return ok;
 }
 
-/* The finished body build, if any, becomes the terrain's body. */
+/* The finished body build, if any, becomes the terrain's body once the
+   scene's join hooks admit it. */
 static void terrain_body_poll(VkrScene *scene, TerrainRecord *record) {
   if (!vkr_physics_shape_build_done(record->body_build)) {
+    return;
+  }
+  const VkrSceneJoinHooks *hooks = &scene->join_hooks;
+  if (hooks->may_join &&
+      !hooks->may_join(hooks->user, scene, VKR_SCENE_JOIN_TERRAIN_BODY,
+                       record->entity)) {
     return;
   }
   VkrPhysicsColliderDesc collider = terrain_collider(
@@ -2151,6 +2158,24 @@ static void terrain_body_poll(VkrScene *scene, TerrainRecord *record) {
   } else {
     record->collision_built = ok;
   }
+  if (hooks->joined) {
+    hooks->joined(hooks->user, scene, VKR_SCENE_JOIN_TERRAIN_BODY,
+                  record->entity, !ok);
+  }
+}
+
+bool8_t vkr_scene_terrain_body_building(const VkrScene *scene,
+                                        VkrEntityId terrain) {
+  const VkrSceneTerrains *state = scene ? scene->terrains : NULL;
+  for (uint32_t i = 0; state && i < state->record_count; ++i) {
+    const TerrainRecord *record = &state->records[i];
+    if (record->entity.parts.index == terrain.parts.index &&
+        record->entity.parts.world == terrain.parts.world) {
+      return record->body_build &&
+             !vkr_physics_shape_build_done(record->body_build);
+    }
+  }
+  return false_v;
 }
 
 /* One height field body over the whole terrain, holes padding the grid to a
@@ -2479,7 +2504,8 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
                                        terrain_collision_key(record->entity));
     record->body_built = false_v;
   } else if (wanted && !record->collision_rejected && due &&
-             (urgent || vkr_platform_get_absolute_time() - start <= budget)) {
+             (urgent || scene->deterministic_streaming ||
+              vkr_platform_get_absolute_time() - start <= budget)) {
     terrain_build_window_collision(scene, record, window, position, urgent);
   }
   record->collision_dirty = record->body_built && record->body_edited;
