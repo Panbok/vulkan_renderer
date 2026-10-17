@@ -50,7 +50,8 @@ vkr_internal bool8_t editor_rerun_copy(const char *source,
   }
   FileHandle handle = {0};
   FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_WRITE_TRUNCATE);
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
   bitset8_set(&mode, FILE_MODE_CREATE);
   bitset8_set(&mode, FILE_MODE_BINARY);
   bool8_t ok = file_open(&to, mode, &handle) == FILE_ERROR_NONE;
@@ -235,7 +236,8 @@ vkr_internal bool8_t editor_rerun_case(Arena *arena,
                 EDITOR_RERUN_CASES, slug);
   FileHandle handle = {0};
   FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_WRITE_TRUNCATE);
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
   bitset8_set(&mode, FILE_MODE_CREATE);
   const FilePath path = file_path_view(out->case_path);
   uint64_t written = 0u;
