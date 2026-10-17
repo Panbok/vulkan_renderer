@@ -428,6 +428,15 @@ vkr_sample_recording_drive(VkrStandardSceneRuntime *runtime,
         "it holds the session's seed, clock and tick hashes.");
     return;
   }
+  /* Sim frames of another layout are skipped when the drive loads. */
+  if (request->resim && runtime->drive.sim_frame_count == 0u) {
+    vkr_recording_drive_close(&runtime->drive);
+    vkr_sample_recording_result(
+        state, request->token, false_v,
+        "Re-simulate cannot replay this recording's session clock: an "
+        "older build wrote it. Record the session again.");
+    return;
+  }
   runtime->drive.resim = request->resim;
   /* Drive plays the session, which Playback keeps stopped. */
   if (runtime->playback.open) {
