@@ -288,6 +288,8 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
        vkr_renderer_capture_request_contains(
            packet->input.debug->capture,
            "transmission_visibility_ids_layer_4"));
+  frame->debug_gpu_spike =
+      packet->input.debug && packet->input.debug->gpu_spike_iterations > 0u;
   frame->deferred_emissive_capture_enabled =
       packet->scene_rendering && packet->input.debug &&
       vkr_renderer_capture_request_contains(packet->input.debug->capture,
@@ -663,6 +665,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TILED_SUN_SHADOW] = {"pass.tiled.sun_shadow",
                                           VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE] = {"pass.debug.gpu_spike",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

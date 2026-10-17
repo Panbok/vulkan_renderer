@@ -869,6 +869,10 @@ typedef struct VkrPickingPassPayload {
   uint64_t request_id;
 } VkrPickingPassPayload;
 
+/* Bounds Debug.GpuSpike, a few hundred milliseconds on current GPUs, well
+   under the drivers' watchdogs. */
+#define VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX (1u << 26)
+
 /**
  * @brief Optional GPU debug and telemetry requests for the frame.
  */
@@ -881,6 +885,12 @@ typedef struct VkrGpuDebugPayload {
   bool8_t transmission_depth_diagnostic_enabled;
   /** 0=off, 1=cascade index, 2=shadow factor, 3=sampled map depth. */
   uint32_t shadow_debug_mode;
+  /** Nonzero runs pass Debug.GpuSpike in this frame: one dispatch that spins
+      this many dependent iterations, a GPU cost with no CPU cost, for
+      checking that GPU time lands on the frame that submitted it
+      (docs/proposals/recordings.md, gate 4). At most
+      VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX. */
+  uint32_t gpu_spike_iterations;
   /** Optional batch reserved and copied by this frame. Borrowed for submit. */
   const VkrCaptureBatchRequest *capture;
 } VkrGpuDebugPayload;

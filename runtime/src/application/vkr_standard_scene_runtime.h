@@ -322,6 +322,9 @@ typedef struct VkrStandardSceneRuntime {
   VkrFrameGlobals globals;
   VkrSubsystemPlan subsystem_plan;
   uint32_t shadow_debug_mode;
+  /* Iterations of pass Debug.GpuSpike the next built frame runs; that frame
+     takes them (VkrGpuDebugPayload.gpu_spike_iterations). */
+  uint32_t debug_gpu_spike_iterations;
   bool8_t transmission_depth_diagnostic_enabled;
   uint32_t ibl_probe_limit;
   /** A reflection-probe capture (vkr_bakery bake probe, ADR-019): world

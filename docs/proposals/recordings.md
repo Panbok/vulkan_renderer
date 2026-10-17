@@ -646,9 +646,17 @@ scripts in `.scratch/recordings/`):
   entity edits, first and last frame included, took at most 35.8 ms (median
   30.1 ms) from `rec.seek` to a `rec.status` that read the new playhead,
   against 250 ms. Bistro has no cells to settle.
-- **Gate 4.** Not run: no debug pass with a fixed GPU cost exists. The join
-  was checked by correlation instead (R2: r = 0.986 against the same
-  frame's pass times on Metal, 0.934 on Vulkan).
+- **Gate 4.** `debug.gpu_spike` runs pass `Debug.GpuSpike` in the next
+  rendered frame: one 64-wide dispatch spinning a dependent multiply-add
+  chain, a GPU cost with no CPU cost. Recording Bistro at Tier 1 with the
+  render thread on, a 2,000,000-iteration spike requested at frame 194
+  rendered in frame 195, whose pass rows hold `Debug.GpuSpike`, and that
+  frame's `gpu.submission` is the recording's largest (65.4 ms against
+  about 5.3 ms). The frame loop stalls three frames later, when the frames
+  in flight run out (frame 198, `cpu.render_wait` +60.4 ms), so a spike
+  that wait leads now names the GPU frame it waited on (`gpu_wait` in
+  `rec.spikes`, "GPU frame N" in the Performance window). Vulkan: not run
+  (the pass and kernel compile; native evidence unavailable).
 - **Gate 5.** A recording killed with SIGKILL 7 s in left a bundle that
   `vkr_rec verify` read as truncated with every byte valid: 7 record chunks,
   0 bad, 7,836 records, frames 0 to 1297, no gaps; `vkr_rec summary` and

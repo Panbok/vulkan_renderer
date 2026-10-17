@@ -2224,6 +2224,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
                                              pass);
   case VKR_RG_EXECUTOR_EXPOSURE_RESOLVE:
     return vkr_vk_prepare_exposure_resolve(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE:
+    return vkr_vk_prepare_gpu_spike(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SUBSURFACE_GATHER:
     return vkr_vk_prepare_subsurface(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_MOTION_BLUR_TILE_MAX:

@@ -550,6 +550,56 @@ static void test_recording_analysis_statistics(void) {
   printf("  test_recording_analysis_statistics PASSED\n");
 }
 
+/* GPU frame 121 costs 12 ms more; the frame loop stalls on it at 124, when
+   the frames in flight ran out. Frame 100 stalls on its own update. */
+static void analysis_test_gpu_wait_metrics(uint64_t frame,
+                                           AnalysisTestMetrics *out) {
+  MemZero(out, sizeof(*out));
+  out->valid = (1ull << ANALYSIS_TEST_METRIC_COUNT) - 1u;
+  out->values[ANALYSIS_TEST_WALL] =
+      frame == 124u ? 29.0 : (frame == 100u ? 30.0 : 16.0);
+  out->values[ANALYSIS_TEST_UPDATE] = frame == 100u ? 19.0 : 5.0;
+  out->values[ANALYSIS_TEST_RENDER_WAIT] = frame == 124u ? 15.0 : 2.0;
+  out->values[ANALYSIS_TEST_GPU] = frame == 121u ? 22.0 : 10.0;
+  out->values[ANALYSIS_TEST_BYTES_LIVE] = 1.0e9;
+  out->values[ANALYSIS_TEST_DRAW_CALLS] = 1000.0;
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_GPU_WAIT = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_NO_FRAME,
+    .metrics = analysis_test_gpu_wait_metrics,
+};
+
+/* Detects: a spike the frame loop's wait for the renderer leads, left
+   without the GPU frame it waited on, that frame taken from outside the
+   frames in flight, and a GPU frame named for a spike its own update
+   explains. */
+static void test_recording_analysis_gpu_wait(void) {
+  printf("  Running test_recording_analysis_gpu_wait...\n");
+  AnalysisTestMemory memory;
+  analysis_memory_create(&memory);
+  char path[1024];
+  VkrRecordingData data;
+  analysis_test_load("gpu_wait", &ANALYSIS_TEST_GPU_WAIT, &memory, path,
+                     sizeof(path), &data);
+  VkrRecordingAnalysis analysis;
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  assert(analysis.spike_count == 2u);
+  const VkrRecordingSpike *own = &analysis.spikes[0];
+  const VkrRecordingSpike *stall = &analysis.spikes[1];
+  assert(own->frame == 100u && own->gpu_frame == UINT64_MAX);
+  assert(stall->frame == 124u &&
+         stall->contributors[0].series == ANALYSIS_TEST_RENDER_WAIT);
+  assert(stall->gpu_frame == 121u && stall->gpu_ms == 22.0 &&
+         stall->gpu_excess == 12.0);
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  analysis_test_remove(path);
+  analysis_memory_destroy(&memory);
+  printf("  test_recording_analysis_gpu_wait PASSED\n");
+}
+
 /* Detects: a plateau reported as spikes, a two-frame spike reported twice or
    without its worst frame, a missed isolated spike, wrong rank order or
    neighbour median, and contributors that include the frame time itself,
@@ -1346,6 +1396,7 @@ bool32_t run_recording_analysis_tests(void) {
   printf("--- Starting Recording Analysis Tests ---\n");
   test_recording_analysis_statistics();
   test_recording_analysis_spikes();
+  test_recording_analysis_gpu_wait();
   test_recording_analysis_json();
   test_recording_analysis_json_bound();
   test_recording_analysis_passes();

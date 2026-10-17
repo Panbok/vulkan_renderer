@@ -785,6 +785,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->bloom_downsample_tent13_pipeline release];
   [renderer->bloom_prefilter_pipeline release];
   [renderer->exposure_resolve_pipeline release];
+  [renderer->gpu_spike_pipeline release];
   [renderer->exposure_histogram_pipeline release];
   [renderer->exposure_clear_pipeline release];
   [renderer->gpu_draw_prefix_pipeline release];

@@ -1633,6 +1633,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.debug.shadow_debug_mode",
                       "must be a supported debug view");
+  if (packet->debug &&
+      packet->debug->gpu_spike_iterations > VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX)
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.debug.gpu_spike_iterations",
+                      "must be at most VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX");
 
 #undef VKR_REJECT_PACKET
   if (out_validation_error)

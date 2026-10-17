@@ -468,6 +468,9 @@ typedef struct VkrSampleUiFrame {
      tests (view.cull_report); `cull_report` holds the latest sort and
      `cull_report_serial` counts them. */
   bool8_t *cull_report_request;
+  /* Set to run pass Debug.GpuSpike with this many iterations in the next
+     rendered frame (VkrGpuDebugPayload.gpu_spike_iterations). */
+  uint32_t *gpu_spike_request;
   VkrSceneCullReport cull_report;
   uint64_t cull_report_serial;
   /* The last grid fit's outcome, or empty. */

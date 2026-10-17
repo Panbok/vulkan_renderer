@@ -119,6 +119,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_SDF_GRID_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
+  case VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT:
     return 0;
   default:
     return 1;
@@ -1466,6 +1467,11 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
           renderer, fragment, "vkr_metal_packet_exposure_resolve",
           VKR_METAL_PACKET_ABI_EXPOSURE_ROOT, false_v,
           @"VKR Metal packet exposure resolve");
+  /* Debug only: frames that ask for Debug.GpuSpike skip it without it. */
+  renderer->gpu_spike_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_gpu_spike",
+      VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT, false_v,
+      @"VKR Metal packet debug GPU spike");
 }
 
 /* Creates the bloom and display-linear pipelines. */

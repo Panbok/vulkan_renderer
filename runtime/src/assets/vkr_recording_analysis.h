@@ -292,6 +292,10 @@ typedef struct VkrRecordingPassStats {
  * inward at the ends, invalid samples left out) and is at least 4 ms above
  * that median, or when it exceeds twice the budget.
  */
+/* Frames before a spike searched for the GPU work it waited on: the most
+   frames either backend keeps in flight, plus one. */
+#define VKR_RECORDING_ANALYSIS_GPU_LOOKBACK 4u
+
 typedef struct VkrRecordingSpike {
   /* The worst frame of the run. */
   uint64_t frame;
@@ -307,6 +311,15 @@ typedef struct VkrRecordingSpike {
   /* Positive excesses only, largest first. */
   VkrRecordingContributor contributors[VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX];
   uint32_t contributor_count;
+  /* When the frame loop's wait for the renderer leads the contributors: the
+     frame among the VKR_RECORDING_ANALYSIS_GPU_LOOKBACK before `frame`, or
+     `frame` itself, whose gpu.submission grew most above its median, and
+     by how much. A GPU spike in frame N stalls the frame loop only once
+     the frames in flight run out, a few frames later. UINT64_MAX when no
+     such frame grew by a quarter of the wait's excess. */
+  uint64_t gpu_frame;
+  float64_t gpu_ms;
+  float64_t gpu_excess;
   /* Tier 1: the passes that grew most in `pass_frame`, positive excesses
      only, largest first. pass_frame is `frame` when its rows carry GPU
      times, else the run's slowest frame that has them, else `frame` with

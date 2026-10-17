@@ -5604,6 +5604,7 @@ typedef struct VkrSampleUiRequests {
   VkrSampleGridFitRequest grid_fit_request;
   VkrSampleTimeOfDayRequest time_of_day_request;
   bool8_t cull_report_request;
+  uint32_t gpu_spike_iterations;
   VkrSampleCloseResponse close_response;
   bool8_t quit;
   bool8_t scene_shortcuts_blocked;
@@ -5704,6 +5705,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .grid_fit_request = &requests->grid_fit_request,
       .time_of_day_request = &requests->time_of_day_request,
       .cull_report_request = &requests->cull_report_request,
+      .gpu_spike_request = &requests->gpu_spike_iterations,
       .cull_report = application->cull_report,
       .cull_report_serial = application->cull_report_serial,
       .grid_status =
@@ -7292,6 +7294,10 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   sample_time_of_day_apply(application, &requests.time_of_day_request);
   if (requests.cull_report_request) {
     application->cull_report_request = true_v;
+  }
+  if (requests.gpu_spike_iterations) {
+    application->debug_gpu_spike_iterations =
+        Min(requests.gpu_spike_iterations, VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX);
   }
   /* A UI pick runs as a context click does, at the given pixel. */
   if (requests.pick_request.request) {

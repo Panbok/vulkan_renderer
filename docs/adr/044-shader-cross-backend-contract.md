@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-16
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -864,6 +864,7 @@ domain under the [evidence rules](#evidence-rules).
 | SMAA 4x and T2x | Desktop | — | — | `vulkan/slang/post/smaa.slang`; S2x's visibility split, second-sample resolve and lighting, and compose in `world/deferred.slang` |
 | FSR 3.1 native antialiasing inputs | Desktop | — | — | `vulkan/slang/post/fsr31.slang` (`vk_fsr31_prepare`); the reconstruction is the FidelityFX SDK's own shaders (ADR-052) |
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
+| Debug GPU spike (pass `Debug.GpuSpike`, `VkrGpuDebugPayload.gpu_spike_iterations`): a dependent multiply-add chain for a GPU cost with no CPU cost | Shared semantics, one implementation per backend | — | `metal/msl/editor/gpu_spike.metal`; Metal native: on Bistro (M1 Pro, Release) 2,000,000 iterations ran about 60 ms on the frame that carried them | `vulkan/slang/editor/gpu_spike.slang` (`vk_gpu_spike`); compiles to SPIR-V, Vulkan native evidence unavailable |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
 mirrors the shared Slang record. Consult [`shared/README.md`](../../renderer/src/shaders/shared/README.md)

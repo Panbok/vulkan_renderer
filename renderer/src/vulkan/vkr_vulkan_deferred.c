@@ -3282,6 +3282,41 @@ bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Mirrors VkrVkGpuSpikeRoot in shaders/vulkan/slang/editor/gpu_spike.slang. */
+typedef struct VkrVulkanGpuSpikeRoot {
+  uint64_t state;
+  uint32_t iterations;
+  uint32_t reserved;
+} VkrVulkanGpuSpikeRoot;
+
+bool8_t vkr_vk_prepare_gpu_spike(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPreparedCompute *prepared,
+                                 const VkrRgPass *pass) {
+  const VkrRgBufferUse *state_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 0u, 0u);
+  VkrVulkanGraphBufferInstance *state =
+      state_use ? vkr_vk_graph_buffer(renderer, state_use->buffer) : NULL;
+  const VkrGpuDebugPayload *debug = renderer->graph->packet->input.debug;
+  const uint32_t iterations = debug ? debug->gpu_spike_iterations : 0u;
+  if (!state || iterations == 0u)
+    return true_v;
+  const VkrVulkanGpuSpikeRoot root = {
+      .state = state->buffer.address,
+      .iterations = iterations,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanGpuSpikeRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_GPU_SPIKE];
+  prepared->groups[prepared->dispatch_count][0] = 1u;
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
 void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value) {
   VkrVulkanFrameSlot *slot =

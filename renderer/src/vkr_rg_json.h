@@ -126,6 +126,8 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_TILED_OBJECT_MOTION_PENDING,
   VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STILL,
   VKR_RG_JSON_CONDITION_TILED_TEMPORAL_MOVING,
+  /** The frame's debug payload asks for pass Debug.GpuSpike. */
+  VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE,
 } VkrRgJsonConditionKind;
 
 /**

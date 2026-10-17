@@ -1861,6 +1861,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
   const bool8_t gpu_timing = pass_gpu_timing || submission_gpu_timing;
   const VkrCaptureBatchRequest *capture =
       vkr_standard_scene_runtime_frame_capture(application);
+  /* A GPU spike is one frame's: this frame takes it. */
+  const uint32_t gpu_spike = application->debug_gpu_spike_iterations;
+  application->debug_gpu_spike_iterations = 0u;
   draw->debug_payload = (VkrGpuDebugPayload){
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = pass_gpu_timing,
@@ -1870,13 +1873,14 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
           application->transmission_depth_diagnostic_enabled,
       .shadow_debug_mode =
           draw->scene_stopped ? 0u : application->shadow_debug_mode,
+      .gpu_spike_iterations = gpu_spike,
       .capture = capture,
   };
   draw->capture_request = capture;
   draw->capture_request_id = capture ? capture->request_id : 0u;
   draw->debug_ptr = (gpu_timing || capture ||
                      application->transmission_depth_diagnostic_enabled ||
-                     application->shadow_debug_mode != 0u)
+                     application->shadow_debug_mode != 0u || gpu_spike != 0u)
                         ? &draw->debug_payload
                         : NULL;
 }

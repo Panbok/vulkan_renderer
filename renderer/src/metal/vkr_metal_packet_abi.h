@@ -863,6 +863,17 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketExposureRoot {
 _Static_assert(sizeof(VkrMetalPacketExposureRoot) == 112,
                "Metal exposure root ABI must remain 112 bytes");
 
+/** Mirrors VkrMetalPacketGpuSpikeRoot in
+ * shaders/metal/msl/editor/gpu_spike.metal. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuSpikeRoot {
+  uint64_t state;
+  uint32_t iterations;
+  uint32_t reserved;
+} VkrMetalPacketGpuSpikeRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGpuSpikeRoot) == 16u,
+               "Metal GPU spike root ABI drift");
+
 /** Mirrors VkrMetalPacketBloomRoot in shaders/metal/msl/post/bloom.metal. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketBloomRoot {
   uint64_t source_texture_id;
@@ -1127,6 +1138,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT,
   VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GRID_ROOT,
+  VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

@@ -845,6 +845,12 @@ vkr_global const VkrMetalPacketAbiField vkr_exposure_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketExposureRoot, metering, "metering", 48),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_gpu_spike_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketGpuSpikeRoot, state, "state", 0),
+    VKR_ABI_FIELD(VkrMetalPacketGpuSpikeRoot, iterations, "iterations", 8),
+    VKR_ABI_FIELD(VkrMetalPacketGpuSpikeRoot, reserved, "reserved", 12),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_bloom_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketBloomRoot, source_texture_id, "source", 0),
     VKR_ABI_FIELD(VkrMetalPacketBloomRoot, coarse_texture_id, "coarse", 8),
@@ -1006,6 +1012,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_SDF_GRID_ROOT] =
             VKR_ABI_RECORD(VkrMetalSdfGridRoot, "VkrMetalSdfGridRoot", 112, 16,
                            vkr_sdf_grid_root_fields),
+        [VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketGpuSpikeRoot, "VkrMetalPacketGpuSpikeRoot", 16, 16,
+            vkr_gpu_spike_root_fields),
         [VKR_METAL_PACKET_ABI_TILED_MOTION_ROOT] =
             VKR_ABI_RECORD(VkrMetalTiledMotionRoot, "VkrMetalTiledMotionRoot",
                            96, 16, vkr_tiled_motion_root_fields),

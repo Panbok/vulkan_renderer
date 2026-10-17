@@ -37,6 +37,7 @@
     "msl/editor/overlay.metal",
     "msl/editor/selection.metal",
     "msl/editor/grid.metal",
+    "msl/editor/gpu_spike.metal",
     "../shared/shadow_kernel.slangh",
     "msl/shadow/sampling.metalh",
     "msl/world/lighting.metalh",

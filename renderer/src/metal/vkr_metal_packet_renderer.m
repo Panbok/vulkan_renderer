@@ -1124,6 +1124,7 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> exposure_clear_pipeline;
   id<MTLComputePipelineState> exposure_histogram_pipeline;
   id<MTLComputePipelineState> exposure_resolve_pipeline;
+  id<MTLComputePipelineState> gpu_spike_pipeline;
   id<MTLComputePipelineState> bloom_prefilter_pipeline;
   /* Both filters are resident; the cold configuration selects which one a
      build measures. Neither is a fallback for the other. */

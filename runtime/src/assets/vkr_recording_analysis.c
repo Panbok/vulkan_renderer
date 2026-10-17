@@ -989,6 +989,42 @@ vkr_recording_spike_contributors(const VkrRecordingData *data,
   }
 }
 
+/* For a spike the frame loop's wait for the renderer leads: the frame in
+   flight whose GPU submission grew most (VkrRecordingSpike.gpu_frame). */
+vkr_internal void
+vkr_recording_spike_gpu_wait(const VkrRecordingData *data,
+                             const VkrRecordingAnalysis *analysis,
+                             VkrRecordingSpike *spike) {
+  spike->gpu_frame = UINT64_MAX;
+  if (spike->contributor_count == 0u ||
+      !string_equals(data->series[spike->contributors[0].series].name,
+                     "cpu.render_wait")) {
+    return;
+  }
+  const uint32_t gpu = vkr_recording_data_find_series(data, "gpu.submission");
+  if (gpu == UINT32_MAX || analysis->series[gpu].valid == 0u) {
+    return;
+  }
+  const VkrRecordingSeries *series = &data->series[gpu];
+  const float64_t floor = spike->contributors[0].excess * 0.25;
+  const uint64_t first =
+      spike->frame > VKR_RECORDING_ANALYSIS_GPU_LOOKBACK
+          ? spike->frame - VKR_RECORDING_ANALYSIS_GPU_LOOKBACK
+          : 0u;
+  for (uint64_t f = first; f <= spike->frame; ++f) {
+    if (!series->valid[f]) {
+      continue;
+    }
+    const float64_t excess = series->values[f] - analysis->series[gpu].p50;
+    if (excess >= floor &&
+        (spike->gpu_frame == UINT64_MAX || excess > spike->gpu_excess)) {
+      spike->gpu_frame = f;
+      spike->gpu_ms = series->values[f];
+      spike->gpu_excess = excess;
+    }
+  }
+}
+
 /* Largest GPU total first, then CPU total, then the lower id. A pass that
    runs in few frames ranks by what it cost over the recording, not by its
    cost when it ran. */
@@ -1260,6 +1296,7 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
         .pass_frame = UINT64_MAX,
     };
     vkr_recording_spike_contributors(data, out, spike);
+    vkr_recording_spike_gpu_wait(data, out, spike);
     vkr_recording_spike_passes(data, out, pass_rank, frame_ms, valid, spike);
   }
 
@@ -1509,6 +1546,17 @@ vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
     vkr_json_writer_end_object(json);
   }
   vkr_json_writer_end_array(json);
+  /* The GPU work the frame loop waited on, a few frames back. */
+  vkr_recording_json_key(json, "gpu_wait");
+  if (spike->gpu_frame != UINT64_MAX) {
+    vkr_json_writer_begin_object(json);
+    vkr_recording_json_named_number(json, "frame", (float64_t)spike->gpu_frame);
+    vkr_recording_json_named_number(json, "ms", spike->gpu_ms);
+    vkr_recording_json_named_number(json, "excess", spike->gpu_excess);
+    vkr_json_writer_end_object(json);
+  } else {
+    vkr_json_writer_null(json);
+  }
 
   if (data->pass_block) {
     vkr_recording_json_named_optional(json, "pass_frame",

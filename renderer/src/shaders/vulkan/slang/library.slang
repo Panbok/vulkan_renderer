@@ -53,6 +53,7 @@
 #include "picking/default.slang"
 #include "common/fullscreen.slang"
 #include "post/exposure.slang"
+#include "editor/gpu_spike.slang"
 #include "post/bloom.slang"
 #include "post/dof.slang"
 #include "post/motion_blur.slang"

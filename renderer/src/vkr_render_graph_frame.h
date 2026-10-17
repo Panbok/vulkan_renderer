@@ -176,6 +176,8 @@ typedef enum VkrRgExecutorKind {
   /** The tiled pipeline's SDF sun shadow trace and the distance volumes it
    * generates first (the shadow quality proposal's T5 prototype). */
   VKR_RG_EXECUTOR_TILED_SUN_SHADOW,
+  /** A fixed GPU cost the debug payload asks for (VkrGpuDebugPayload). */
+  VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

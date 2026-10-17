@@ -1767,6 +1767,18 @@
       ]
     },
     {
+      "name": "debug_gpu_spike_state",
+      "type": "buffer",
+      "condition": "debug_gpu_spike",
+      "size": 16,
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
       "name": "exposure_state",
       "type": "buffer",
       "condition": "scene_rendering && exposure_automatic",
@@ -11473,6 +11485,22 @@
         }
       ],
       "execute": "pass.exposure.histogram"
+    },
+    {
+      "name": "Debug.GpuSpike",
+      "type": "compute",
+      "condition": "debug_gpu_spike",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "debug_gpu_spike_state",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.debug.gpu_spike"
     },
     {
       "name": "Post.Exposure.Resolve",

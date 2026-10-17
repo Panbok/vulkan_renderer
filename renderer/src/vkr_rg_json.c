@@ -104,6 +104,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"!transmission_pending", VKR_RG_JSON_CONDITION_TRANSMISSION_IDLE},
     {"transmission_depth_diagnostic_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC},
+    {"debug_gpu_spike", VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE},
     {"deferred_emissive_capture_enabled",
      VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE},
     {"resolve_barycentric_lod_capture_enabled",
@@ -2205,6 +2206,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return !frame->transmission_pending;
   case VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC:
     return frame->transmission_depth_diagnostic_enabled;
+  case VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE:
+    return frame->debug_gpu_spike;
   case VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE:
     return frame->deferred_emissive_capture_enabled;
   case VKR_RG_JSON_CONDITION_RESOLVE_BARYCENTRIC_LOD_CAPTURE:

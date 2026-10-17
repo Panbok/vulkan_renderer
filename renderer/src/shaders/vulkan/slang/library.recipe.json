@@ -397,6 +397,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.gpu_spike.comp",
+      "entry": "vk_gpu_spike",
+      "stage": "compute"
+    },
+    {
       "name": "packet.subsurface_gather.comp",
       "entry": "vk_subsurface_gather",
       "stage": "compute"

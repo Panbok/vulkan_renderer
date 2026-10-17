@@ -344,7 +344,14 @@ an agent must read one without the editor.
   `frame.wall` it lengthened. Before, a 290 ms agent capture's update sat
   one row before its `frame.wall` spike and the spike named another cause. The
   recording's first iteration publishes a frame from before the recording,
-  so only its loop work is written, on frame 0.
+  so only its loop work is written, on frame 0. A spike whose largest
+  contributor is the frame loop's wait for the renderer also names the
+  frame among the 4 before it whose `gpu.submission` grew most (at least a
+  quarter of the wait's excess): GPU work in frame N stalls the frame loop
+  only when the frames in flight run out. `rec.spikes` answers it as
+  `gpu_wait` and the Performance window as "GPU frame N". The agent
+  operation `debug.gpu_spike` runs pass `Debug.GpuSpike` (ADR-044) in the
+  next rendered frame to check this join.
 - **Pass rows (Tier 1).** A Tier 1 recording adds streams `pass_name` (an id
   and a name, written once before the id's first row) and `passes`: the
   executed passes of one rendered frame, each with CPU encode and GPU

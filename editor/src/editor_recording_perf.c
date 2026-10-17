@@ -1353,13 +1353,18 @@ vkr_internal void perf_memory_charts(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(frame->ui);
 }
 
-/* What explains a spike: the series that grew most, the pass whose GPU
-   time grew most, and a marker within 10 frames. */
+/* What explains a spike: the GPU frame the frame loop waited on or the
+   series that grew most, the pass whose GPU time grew most, and a marker
+   within 10 frames. */
 vkr_internal String8 perf_spike_cause(VkrUiSystem *ui,
                                       const VkrEditorRecordingPerf *perf,
                                       const VkrRecordingSpike *spike) {
   char cause[96] = "";
-  if (spike->contributor_count > 0u) {
+  if (spike->gpu_frame != UINT64_MAX) {
+    /* The wait names the GPU frame it waited on. */
+    string_format(cause, sizeof(cause), "GPU frame %llu +%.2f ms",
+                  (unsigned long long)spike->gpu_frame, spike->gpu_excess);
+  } else if (spike->contributor_count > 0u) {
     const VkrRecordingContributor *top = &spike->contributors[0];
     string_format(cause, sizeof(cause), "%s +%.2f ms",
                   perf->data.series[top->series].name, top->excess);

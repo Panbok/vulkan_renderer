@@ -1886,6 +1886,37 @@ vkr_internal bool8_t vkr_metal_packet_prepare_exposure_resolve(
   return true_v;
 }
 
+/* Debug.GpuSpike: one 64-thread group spinning the payload's iteration
+   count. Without its pipeline the pass does nothing. */
+vkr_internal bool8_t vkr_metal_packet_prepare_gpu_spike(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketGraphBufferInstance *state =
+      vkr_metal_packet_pass_buffer(renderer, pass, 0u);
+  const uint32_t iterations =
+      packet->input.debug ? packet->input.debug->gpu_spike_iterations : 0u;
+  if (!state || !renderer->gpu_spike_pipeline || iterations == 0u)
+    return true_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketGpuSpikeRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketGpuSpikeRoot){
+      .state = state->resource.gpu_address,
+      .iterations = iterations,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->gpu_spike_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(64u, 1u, 1u),
+      .group_size = MTLSizeMake(64u, 1u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
 /**
  * @brief Encodes one bloom chain step.
  *
@@ -3014,6 +3045,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_EXPOSURE_RESOLVE:
     return vkr_metal_packet_prepare_exposure_resolve(renderer, pass, packet,
                                                      prepared, upload);
+  case VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE:
+    return vkr_metal_packet_prepare_gpu_spike(renderer, pass, packet, prepared,
+                                              upload);
   case VKR_RG_EXECUTOR_HZB_BUILD:
     return vkr_metal_packet_prepare_hzb_build(renderer, pass, prepared, upload);
   case VKR_RG_EXECUTOR_TILED_MOTION:

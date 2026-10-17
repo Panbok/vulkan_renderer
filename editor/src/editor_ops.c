@@ -6913,6 +6913,29 @@ static VkrEditorOpStatus ops_run_greybox(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* debug.gpu_spike: has the next rendered frame run pass Debug.GpuSpike, a
+   GPU cost with no CPU cost (docs/proposals/recordings.md, gate 4). */
+static VkrEditorOpStatus ops_run_gpu_spike(OpsContext *ctx) {
+  const VkrSampleUiFrame *frame = ctx->frame;
+  float64_t iterations = 0.0;
+  if (!ops_arg_number(ctx->call->args, "iterations", &iterations) ||
+      !(iterations >= 1.0 &&
+        iterations <= (float64_t)VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX)) {
+    ops_fail(ctx, OPS_INVALID, "'iterations' is 1 to %u",
+             VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!frame->gpu_spike_request) {
+    ops_fail(ctx, OPS_BUSY, "No frame renders to carry the spike");
+    return VKR_EDITOR_OP_DONE;
+  }
+  *frame->gpu_spike_request = (uint32_t)iterations;
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "iterations",
+          vkr_bakery_json_int(ops_arena(ctx), (int64_t)iterations));
+  return VKR_EDITOR_OP_DONE;
+}
+
 /* view.cull_report (ADR-114): has the runtime sort the next Scene frame's
    camera candidates by the camera's tests, then answers with the counts.
    Stage 1 waits for the report whose serial passes the one saved. */
@@ -17624,6 +17647,14 @@ static const OpsDef s_ops[] = {
      ",\"to\":" OPS_VEC3_SCHEMA ",\"entity\":" OPS_ENTITY_SCHEMA
      "," OPS_SETTLE_SCHEMA "}}",
      ops_run_measure, NULL, OPS_QUICK | OPS_SETTLES},
+    {"debug.gpu_spike",
+     "Run pass Debug.GpuSpike in the next rendered frame: one small dispatch "
+     "spinning 'iterations' dependent multiply-adds (at most 2^26), a GPU "
+     "cost with no CPU cost, for checking that a recording files GPU time "
+     "on the frame that submitted it.",
+     "{\"type\":\"object\",\"properties\":{\"iterations\":{\"type\":"
+     "\"integer\"}},\"required\":[\"iterations\"]}",
+     ops_run_gpu_spike, NULL},
     {"view.cull_report",
      "Count how the camera's tests sort the Scene's next frame's opaque "
      "candidates, on the CPU as the GPU classify does: 'outside_view' of "

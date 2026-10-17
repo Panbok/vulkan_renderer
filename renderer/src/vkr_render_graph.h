@@ -627,6 +627,8 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t transmission_gpu_draw_candidate_capacity;
   /** True only when a focused capture requests the post-layer-3 peel. */
   bool8_t transmission_depth_diagnostic_enabled;
+  /** True when the debug payload asks for pass Debug.GpuSpike. */
+  bool8_t debug_gpu_spike;
   /** True only when capture requests the resolve emissive diagnostic. */
   bool8_t deferred_emissive_capture_enabled;
   /** True only when capture requests resolve barycentrics and LOD. */

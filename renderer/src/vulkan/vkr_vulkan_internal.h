@@ -154,6 +154,7 @@
   "packet.exposure_histogram.comp.spv"
 #define VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV                            \
   "packet.exposure_resolve.comp.spv"
+#define VKR_VULKAN_PACKET_GPU_SPIKE_COMP_SPV "packet.gpu_spike.comp.spv"
 #define VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV                           \
   "packet.subsurface_gather.comp.spv"
 #define VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV                        \
@@ -494,6 +495,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_MSAA_COMPOSE,
   VKR_VULKAN_DEFERRED_PIPELINE_MSAA_SAMPLE1_LIST_RESET,
   VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
+  /** Debug.GpuSpike (VkrGpuDebugPayload.gpu_spike_iterations). */
+  VKR_VULKAN_DEFERRED_PIPELINE_GPU_SPIKE,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -4098,6 +4101,11 @@ bool8_t vkr_vk_prepare_fog_apply(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_exposure_histogram(VkrVulkanRenderer *renderer,
                                           VkrVulkanPreparedCompute *prepared,
                                           const VkrRgPass *pass);
+/** Debug.GpuSpike: one 64-invocation workgroup spinning the debug
+ * payload's iteration count; nothing without it. */
+bool8_t vkr_vk_prepare_gpu_spike(VkrVulkanRenderer *renderer,
+                                 VkrVulkanPreparedCompute *prepared,
+                                 const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);
