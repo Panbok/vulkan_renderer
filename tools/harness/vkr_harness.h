@@ -143,6 +143,9 @@ typedef enum VkrHarnessCameraMode {
   VKR_HARNESS_CAMERA_ORTHOGRAPHIC_LEFT,
   VKR_HARNESS_CAMERA_ORTHOGRAPHIC_RIGHT,
   VKR_HARNESS_CAMERA_ORTHOGRAPHIC_BOTTOM,
+  /** The camera of a recording (ADR-122) over a range of its frames: a perf
+   * re-run. Appended, so stored modes keep their values. */
+  VKR_HARNESS_CAMERA_RECORDING,
 } VkrHarnessCameraMode;
 
 typedef enum VkrHarnessCameraInterpolation {
@@ -230,6 +233,16 @@ typedef struct VkrHarnessCameraScriptPose {
   bool8_t exact_basis;
 } VkrHarnessCameraScriptPose;
 
+/** A recording camera's source: the repo-relative bundle or stream, the
+ * stream's digest the case loader takes, and the recorded frames replayed,
+ * inclusive; UINT64_MAX for `last_frame` runs to the recording's end. */
+typedef struct VkrHarnessCameraRecording {
+  char path[512];
+  char stream_sha256[VKR_HARNESS_DIGEST_MAX];
+  uint64_t first_frame;
+  uint64_t last_frame;
+} VkrHarnessCameraRecording;
+
 typedef struct VkrHarnessCamera {
   VkrHarnessCameraMode mode;
   VkrHarnessCameraInterpolation interpolation;
@@ -242,7 +255,13 @@ typedef struct VkrHarnessCamera {
   float32_t near_plane;
   float32_t far_plane;
   VkrHarnessCameraPose static_pose;
-  VkrHarnessCameraKey keys[VKR_HARNESS_MAX_CAMERA_KEYS];
+  /* Only keyframe and flythrough cameras have keys, so a recording camera's
+     source shares their bytes; the stored capture-summary layout keeps its
+     size. */
+  union {
+    VkrHarnessCameraKey keys[VKR_HARNESS_MAX_CAMERA_KEYS];
+    VkrHarnessCameraRecording recording;
+  };
   uint32_t key_count;
   Vec3 orbit_center;
   float32_t orbit_radius;
@@ -255,6 +274,10 @@ typedef struct VkrHarnessCamera {
   uint32_t fly_lookup_count;
   float32_t fly_total_length;
 } VkrHarnessCamera;
+
+_Static_assert(sizeof(VkrHarnessCameraRecording) <=
+                   sizeof(VkrHarnessCameraKey) * VKR_HARNESS_MAX_CAMERA_KEYS,
+               "a recording camera's source fits in the keys it shares");
 
 typedef struct VkrHarnessRendererConfig {
   bool8_t editor;

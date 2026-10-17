@@ -157,7 +157,10 @@ an agent must read one without the editor.
   repetition a Tier 0 recording of its run in `runs/<i>/recording/` and lists
   its stream and `summary.json` among the report's artifacts; the run is not
   authoritative while the recorder's overhead gate is open (ADR-051). Two
-  harness runs' recordings open in Compare like any others.
+  harness runs' recordings open in Compare like any others. A case camera of
+  mode `recording` replays a recording's range under the case's fixed delta
+  and harness rules (a perf re-run): the harness child seeks the runtime's
+  playback each frame, so the run renders what Watch shows.
 - **Compare (R5).** `vkr_recording_compare` compares recording B with A,
   both analyzed
   ([vkr_recording_compare.h](../../runtime/src/assets/vkr_recording_compare.h)).

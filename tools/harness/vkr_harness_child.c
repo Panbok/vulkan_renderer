@@ -1198,6 +1198,48 @@ vkr_harness_child_next_frame(VkrStandardSceneRuntime *application) {
   return application->renderer.frame_number + 1u;
 }
 
+/* A recording camera replays its recording through the runtime's playback,
+   paused, so the camera, lens, time of day and recorded entity poses come
+   from it as they do in Watch (ADR-122). */
+vkr_internal bool8_t vkr_harness_child_open_recording(
+    VkrStandardSceneRuntime *application, const char *repo_root,
+    const VkrHarnessCamera *camera) {
+  if (camera->mode != VKR_HARNESS_CAMERA_RECORDING) {
+    return true_v;
+  }
+  char path[VKR_HARNESS_PATH_MAX];
+  string_format(path, sizeof(path), "%s/%s", repo_root, camera->recording.path);
+  char error[192];
+  if (!vkr_recording_playback_open(&application->playback, path,
+                                   vkr_content_codec_zstd_decoder(), error,
+                                   sizeof(error))) {
+    vkr_harness_stderr("Recording camera: %s\n", error);
+    return false_v;
+  }
+  if (camera->recording.first_frame >= application->playback.frame_count) {
+    vkr_harness_stderr("Recording camera: first_frame %llu is past the "
+                       "recording's %llu frames\n",
+                       (unsigned long long)camera->recording.first_frame,
+                       (unsigned long long)application->playback.frame_count);
+    vkr_recording_playback_close(&application->playback);
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Seeks the playback to the range's first frame plus `script_time`, holding
+   its last frame after the range ends. */
+vkr_internal void
+vkr_harness_child_seek_recording(VkrStandardSceneRuntime *application,
+                                 const VkrHarnessCameraRecording *recording,
+                                 float64_t script_time) {
+  VkrRecordingPlayback *playback = &application->playback;
+  const uint64_t last = Min(recording->last_frame, playback->frame_count - 1u);
+  const float64_t start = playback->times[recording->first_frame];
+  vkr_recording_playback_seek_time(
+      playback, Min(start + Max(script_time, 0.0), playback->times[last]));
+}
+
 vkr_internal void vkr_harness_child_update(void *state,
                                            VkrStandardSceneRuntime *application,
                                            float64_t delta) {
@@ -1447,13 +1489,18 @@ vkr_internal void vkr_harness_child_update(void *state,
     script_camera.mode =
         child->case_manifest->captures[child->capture_index].camera_mode;
   }
+  const float64_t script_time = vkr_harness_camera_script_time(
+      child->completed_frames, child->case_manifest->warmup_frames,
+      child->case_manifest->fixed_delta_seconds);
+  /* A recording camera seeks the playback; the runtime places the camera
+     from it after this update, as Watch does. */
+  if (script_camera.mode == VKR_HARNESS_CAMERA_RECORDING) {
+    vkr_harness_child_seek_recording(application, &script_camera.recording,
+                                     script_time);
+    return;
+  }
   if (!camera ||
-      !vkr_harness_camera_evaluate_script(
-          &script_camera,
-          vkr_harness_camera_script_time(
-              child->completed_frames, child->case_manifest->warmup_frames,
-              child->case_manifest->fixed_delta_seconds),
-          &pose)) {
+      !vkr_harness_camera_evaluate_script(&script_camera, script_time, &pose)) {
     vkr_harness_child_fail(application, "camera.evaluate_failed");
     return;
   }
@@ -2561,6 +2608,11 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   }
   if (!vkr_harness_child_configure_application(application, &case_manifest,
                                                &profile, &exit_code)) {
+    goto cleanup;
+  }
+  if (!vkr_harness_child_open_recording(application, repo_root,
+                                        &case_manifest.camera)) {
+    exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
 

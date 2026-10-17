@@ -73,7 +73,10 @@ inspect `auxiliary_runs[]` for child reports and effective configurations.
 Unavailable captures return `3`; never substitute a different channel.
 Capture names and case fields come from
 the runtime parser in `tools/harness/vkr_harness_manifest.c` and working
-examples under `tools/cases/`. Report fields are emitted by
+examples under `tools/cases/`. A perf re-run replays a recording (ADR-122) as
+the case camera: `"camera": {"mode": "recording", "recording":
+"<repo-relative .vkrrec>", "first_frame": A, "last_frame": B}`; size
+`frames.measure` to the range's seconds at `fixed_delta`. Report fields are emitted by
 `tools/harness/vkr_harness_report.c`; ADR-051 records the evidence contract.
 
 ## Interpret the report

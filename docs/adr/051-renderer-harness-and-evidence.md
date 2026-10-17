@@ -31,7 +31,14 @@ join the artifacts, the report's `recording` is true and the run gains the
 authority reason `recording.enabled`; a repetition without exactly one bundle
 leaves the run incomplete (`recording.missing`). Otherwise the parent unsets
 `VKR_RECORDING_DIRECTORY` for every child, so an inherited one records
-nothing.
+nothing. A case camera of mode `recording` (`recording`, a repo-relative bundle
+or stream, and optional `first_frame` and `last_frame`) is a perf re-run: the
+child opens the recording in the runtime's playback, paused, and seeks it each
+frame to the range's first frame plus the case time, so the recorded camera,
+lens, hour and entity poses apply as in Watch. The case loader digests the
+stream, and only such a camera adds `camera.recording` (that digest and the
+range) to the workload fingerprint; its source shares the bytes of the camera
+keys, so the stored capture-summary layout is unchanged.
 Snapshot reports adopt the first verified child's actual render extent, as
 profile reports do. Recomputing that extent from requested scale used obsolete
 nearest rounding and could disagree with the captured source textures.

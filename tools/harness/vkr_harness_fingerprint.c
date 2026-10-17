@@ -116,6 +116,13 @@ vkr_internal bool8_t vkr_harness_camera_fields(
       camera->orbit_radius, camera->orbit_height,
       camera->orbit_duration_seconds, camera->orbit_revolutions,
       camera->orbit_start_angle_degrees);
+  /* Only a recording camera adds this, so other cases keep their
+     fingerprints; the stream's digest, not its path, names the workload. */
+  if (camera->mode == VKR_HARNESS_CAMERA_RECORDING) {
+    ADD("camera.recording", "%s,%llu,%llu", camera->recording.stream_sha256,
+        (unsigned long long)camera->recording.first_frame,
+        (unsigned long long)camera->recording.last_frame);
+  }
   for (uint32_t i = 0; i < camera->key_count; ++i) {
     char name[96];
     string_format(name, sizeof(name), "camera.key.%03u", i);

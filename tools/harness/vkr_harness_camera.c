@@ -186,7 +186,10 @@ bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
     }
     return true_v;
   }
-  if (camera->mode == VKR_HARNESS_CAMERA_STATIC) {
+  /* A recording camera's path and lens come from its recording, which the
+     child opens. */
+  if (camera->mode == VKR_HARNESS_CAMERA_STATIC ||
+      camera->mode == VKR_HARNESS_CAMERA_RECORDING) {
     return true_v;
   }
   if (vkr_harness_camera_is_cubemap(camera->mode)) {

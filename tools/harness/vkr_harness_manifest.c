@@ -233,6 +233,38 @@ vkr_internal bool8_t vkr_harness_parse_camera_keys(
   return true_v;
 }
 
+/* A recording camera: the recording and its frame range, and nothing of the
+   scripted cameras, whose lens and path the recording supplies. */
+vkr_internal bool8_t vkr_harness_parse_recording_camera(
+    const VkrHarnessJsonDocument *doc, int32_t token, VkrHarnessCamera *camera,
+    bool8_t scripted_fields, VkrHarnessError *error) {
+  camera->mode = VKR_HARNESS_CAMERA_RECORDING;
+  camera->recording = (VkrHarnessCameraRecording){.last_frame = UINT64_MAX};
+  if (scripted_fields) {
+    vkr_harness_error_set(error, "camera.recording", "$.camera",
+                          "A recording camera takes only recording, "
+                          "first_frame and last_frame");
+    return false_v;
+  }
+  if (!vkr_harness_manifest_string(doc, token, "recording", true_v,
+                                   camera->recording.path,
+                                   sizeof(camera->recording.path), error) ||
+      !vkr_harness_manifest_u64(doc, token, "first_frame", false_v,
+                                &camera->recording.first_frame, error) ||
+      !vkr_harness_manifest_u64(doc, token, "last_frame", false_v,
+                                &camera->recording.last_frame, error)) {
+    return false_v;
+  }
+  if (!vkr_harness_path_is_safe_relative(camera->recording.path) ||
+      camera->recording.last_frame < camera->recording.first_frame) {
+    vkr_harness_error_set(error, "camera.recording", "$.camera.recording",
+                          "The recording must be a repository-relative path "
+                          "and last_frame no earlier than first_frame");
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                               int32_t token,
                                               VkrHarnessCamera *camera,
@@ -253,7 +285,10 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                                    "height",
                                                    "revolutions",
                                                    "duration_seconds",
-                                                   "start_angle_degrees"};
+                                                   "start_angle_degrees",
+                                                   "recording",
+                                                   "first_frame",
+                                                   "last_frame"};
   vkr_local_persist const char *const required[] = {"mode"};
   if (!vkr_harness_json_object_validate(
           doc, token, allowed, ArrayCount(allowed), required,
@@ -413,6 +448,18 @@ vkr_internal bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
         pitch_token >= 0 || radius_token >= 0 || height_token >= 0 ||
         revolutions_token >= 0 || duration_token >= 0 || angle_token >= 0 ||
         !vkr_harness_parse_camera_keys(doc, keys, camera, error)) {
+      return false_v;
+    }
+  } else if (string_equals(mode, "recording")) {
+    if (!vkr_harness_parse_recording_camera(
+            doc, token, camera,
+            keys >= 0 || position >= 0 || center >= 0 || yaw_token >= 0 ||
+                pitch_token >= 0 || vertical_fov_token >= 0 ||
+                orthographic_height_token >= 0 || interpolation_token >= 0 ||
+                radius_token >= 0 || height_token >= 0 ||
+                revolutions_token >= 0 || duration_token >= 0 ||
+                angle_token >= 0,
+            error)) {
       return false_v;
     }
   } else if (string_equals(mode, "orbit")) {
@@ -2154,6 +2201,37 @@ vkr_internal bool8_t vkr_harness_load_text(const char *path, Arena *arena,
   return true_v;
 }
 
+/* A recording camera's stream digest: the workload names the frames it
+   replays, so another recording at the same path is another workload. */
+vkr_internal bool8_t vkr_harness_case_recording_digest(
+    const char *repository_root, VkrHarnessCamera *camera,
+    VkrHarnessError *out_error) {
+  if (camera->mode != VKR_HARNESS_CAMERA_RECORDING) {
+    return true_v;
+  }
+  char resolved[VKR_HARNESS_PATH_MAX];
+  if (!vkr_harness_resolve_existing_path(
+          repository_root, camera->recording.path, resolved, out_error)) {
+    return false_v;
+  }
+  /* A bundle holds its stream; a stream file is read as given. */
+  char stream[VKR_HARNESS_PATH_MAX];
+  const uint64_t length = string_length(resolved);
+  const uint64_t extension = sizeof(".vkrrec") - 1u;
+  string_format(stream, sizeof(stream),
+                length > extension &&
+                        string_equals(resolved + length - extension, ".vkrrec")
+                    ? "%s/stream.vkrs"
+                    : "%s",
+                resolved);
+  if (!vkr_harness_sha256_file(stream, camera->recording.stream_sha256)) {
+    vkr_harness_error_set(out_error, "camera.recording", "$.camera.recording",
+                          "The recording's stream '%s' cannot be read", stream);
+    return false_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_harness_case_load(const char *repository_root,
                               const char *relative_manifest_path,
                               VkrHarnessCase *out_case,
@@ -2179,7 +2257,9 @@ bool8_t vkr_harness_case_load(const char *repository_root,
   }
   char scene[VKR_HARNESS_PATH_MAX];
   if (!vkr_harness_resolve_existing_path(repository_root, out_case->scene,
-                                         scene, out_error)) {
+                                         scene, out_error) ||
+      !vkr_harness_case_recording_digest(repository_root, &out_case->camera,
+                                         out_error)) {
     return false_v;
   }
   if (out_case->asset_context == VKR_HARNESS_ASSET_CONTEXT_MANAGED_WORKSPACE) {
