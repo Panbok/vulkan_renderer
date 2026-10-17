@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.recording.overhead_bistro_cpu",
   "suite": "local",
-  "description": "Bistro orbit with little GPU work (640x360, half render scale, two balanced cascades) so the frame-loop thread bounds the frame: the recording overhead gate on a CPU-bound workload (ADR-122).",
+  "description": "Bistro orbit with little GPU work (640x360, half render scale, two balanced cascades, a 12 m far plane), offscreen so no display paces it: the recording overhead gate where CPU work shows (ADR-122).",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
@@ -10,15 +10,15 @@
     360
   ],
   "boot": "full",
-  "target": "windowed_hidden",
-  "present": "immediate",
+  "target": "offscreen",
+  "present": "none",
   "cache": "isolated_warm",
   "fixed_delta": 0.016666667,
   "repetitions": 1,
   "repetition_timeout_ms": 1200000,
   "asset_ready_timeout_ms": 900000,
   "frames": {
-    "warmup": 120,
+    "warmup": 480,
     "measure": 300
   },
   "renderer": {
@@ -44,7 +44,7 @@
     "start_angle_degrees": 0,
     "vertical_fov_degrees": 70,
     "near_plane": 0.1,
-    "far_plane": 500
+    "far_plane": 12
   },
   "assertions": [
     {
