@@ -1411,6 +1411,12 @@ of the raster jitter and the cloud march noise period, with temporal history
 invalidated; replay version 8 aligns to that 64-frame period.
 See [ADR-015](adr/015-metrics-module.md) and [ADR-051](adr/051-renderer-harness-and-evidence.md).
 
+Recordings write per-frame records through one lock-free ring per producer
+thread; a writer thread at utility priority compresses and appends checksummed
+chunks, and frame threads never block on it. Watch playback drives the camera
+from a recording with simulation stopped. See
+[ADR-122](adr/122-recordings.md).
+
 ## Remaining implementation and evidence boundaries
 
 These are limits of current code or retained acceptance, not scheduled promises:

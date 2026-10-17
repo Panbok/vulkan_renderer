@@ -16,6 +16,8 @@ below are starting points for checking a definition, not alternate API specs.
 | Renderer | Shared acquired-frame lifecycle, target state and full-frame rendering; scene and UI systems have application owners. | [vkr_renderer.c](../renderer/src/vkr_renderer.c) |
 | Native implementation | Metal or Vulkan operations selected by the platform build; `VkrRendererImpl` stores properties, not a dispatch table. | [vkr_renderer_impl.h](../renderer/src/vkr_renderer_impl.h) |
 | Frame input | Versioned `VkrFrameInput` containing caller metadata, settings and authoritative pass payloads. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
+| Recording | A `.vkrrec` bundle: a checksummed record stream, `summary.json` and a thumbnail, written by the recorder without blocking frame threads. | [ADR-122](adr/122-recordings.md) |
+| Playback | The transport state in which an open recording drives the camera and the level's hour; simulation and scene edits wait until it closes. | [vkr_recording_playback.h](../runtime/src/recording/vkr_recording_playback.h) |
 | Prepared frame | Private `VkrPreparedFrame`: borrowed input plus derived temporal, exposure, bloom and GTAO values. | [vkr_prepared_frame.h](../renderer/src/vkr_prepared_frame.h) |
 | Acquired frame | `VkrFrame`, identifying one target/command-slot acquisition with resolved dimensions and target generation. Render or cancel consumes it; acquisition number does not prove GPU completion. | [vkr_renderer.h](../renderer/src/vkr_renderer.h) |
 | Payload | The typed data a pass consumes, such as world candidates, shadows, UI draws, or picking requests. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |

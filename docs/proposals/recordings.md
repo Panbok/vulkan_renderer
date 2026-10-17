@@ -27,7 +27,9 @@ recording with steps and a question. The user records it, and the agent
 analyzes it. Agent benchmarks are recordings, so the user reviews them in the
 same viewer.
 
-Nothing in this document is implemented. Code, operations and the command use
+Phases R0 and R1 are implemented; [ADR-122](../adr/122-recordings.md) records
+their contract. The rest of this document is the design of the remaining
+phases. Code, operations and the command use
 the word "recording"; "replay" already names the harness capture passes
 (`vkr_harness_replay.c`), and "session" names collaborative editing
 ([ADR-106](../adr/106-collaborative-editing-session.md)).
