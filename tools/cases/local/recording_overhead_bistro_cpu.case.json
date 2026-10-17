@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.recording.overhead_bistro_cpu",
   "suite": "local",
-  "description": "Bistro orbit with little GPU work (640x360, half render scale, two balanced cascades, a 12 m far plane), offscreen so no display paces it: the recording overhead gate where CPU work shows (ADR-122).",
+  "description": "Bistro street from a still camera with little GPU work (640x360, half render scale, two balanced cascades, a 12 m far plane), offscreen: the recording overhead gate where CPU work shows (ADR-122).",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 1,
   "resolution": [
@@ -30,18 +30,14 @@
     "render_scale": 0.5
   },
   "camera": {
-    "mode": "orbit",
-    "speed": "medium",
-    "center": [
-      -20,
-      6,
-      6
+    "mode": "static",
+    "position": [
+      -2.0,
+      7.0,
+      6.0
     ],
-    "radius": 18,
-    "height": 7,
-    "revolutions": 1.4,
-    "duration_seconds": 7,
-    "start_angle_degrees": 0,
+    "yaw": 180.0,
+    "pitch": -15.0,
     "vertical_fov_degrees": 70,
     "near_plane": 0.1,
     "far_plane": 12
