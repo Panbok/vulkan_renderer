@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/vkr_codec.h"
+#include "core/vkr_entity_ref.h"
 #include "core/vkr_metrics.h"
 #include "defines.h"
 #include "memory/vkr_dmemory.h"
@@ -38,6 +39,22 @@
    id, then the rows of each rendered frame. Rows are droppable. */
 #define VKR_RECORDING_STREAM_PASS_NAME 5u
 #define VKR_RECORDING_STREAM_PASSES 6u
+/* World poses of entities whose transform changed (VkrRecordingPose), in
+   records of up to VKR_RECORDING_POSE_BATCH entries; the first frames list
+   every entity once. Not droppable: a lost pose would show a stale one. */
+#define VKR_RECORDING_STREAM_POSE 7u
+#define VKR_RECORDING_POSE_BATCH 256u
+/* Poses a frame writes at most; a larger change list, such as the first
+   one of a big level, continues on the next frames. */
+#define VKR_RECORDING_POSE_FRAME_MAX 2048u
+/* VkrRecordingPose.node of an entity that is not a model node, and
+   VkrRecordingPose.document of one named by a ref. */
+#define VKR_RECORDING_POSE_NODE_NONE UINT32_MAX
+#define VKR_RECORDING_POSE_DOCUMENT_NONE UINT32_MAX
+/* VkrRecordingPose.container */
+#define VKR_RECORDING_CONTAINER_ACTIVE 0u
+#define VKR_RECORDING_CONTAINER_WORLD 1u
+#define VKR_RECORDING_CONTAINER_ADDITIVE 2u
 /* Recent recorded frames whose renderer frame index pass rows can name;
    rows arrive a few frames after their frame. */
 #define VKR_RECORDING_FRAME_INDEX_HISTORY 32u
@@ -84,6 +101,23 @@ typedef struct VkrRecordingCamera {
   uint32_t projection;
 } VkrRecordingCamera;
 
+/* One entity's world pose. An entity is named by the container that holds
+   it and its document-stable ref, or, for a node of an imported model, by
+   the ref of the nearest ancestor that has one and the glTF node index. A
+   document without refs names its entities by document index instead, with
+   a zero ref: stable while the document is unchanged. */
+typedef struct VkrRecordingPose {
+  VkrEntityRef ref;
+  uint32_t node;
+  uint8_t container;
+  uint8_t reserved[3];
+  /* World translation plus the scene's origin offset. */
+  float64_t translation[3];
+  /* The world matrix's upper 3x3, column-major. */
+  float32_t linear[9];
+  uint32_t document;
+} VkrRecordingPose;
+
 /* Marker records are a u32 kind followed by a UTF-8 label. */
 typedef struct VkrRecordingMarker {
   uint64_t frame;
@@ -112,6 +146,9 @@ typedef struct VkrRecordingConfig {
   const VkrMetrics *metrics;
   /* Tier 1: also record each rendered frame's pass rows. Needs `metrics`. */
   bool8_t passes;
+  /* Record the world poses of entities that move (VKR_RECORDING_STREAM_POSE).
+   */
+  bool8_t poses;
   /* Tier 1: take per-pass GPU timestamps in one frame of every
      `pass_gpu_period`; zero leaves them as the metrics config has them.
      vkr_recording_pass_gpu_frame tells the runtime which frames. */
@@ -162,6 +199,12 @@ typedef struct VkrRecording {
   char (*pass_names)[VKR_RECORDING_PASS_NAME_MAX + 1u];
   uint16_t *pass_slots;
   uint64_t pass_rows_written;
+  /* Poses waiting for vkr_recording_poses_flush, from the recording's
+     memory. */
+  bool8_t poses_enabled;
+  VkrRecordingPose *pose_batch;
+  uint32_t pose_batch_count;
+  uint64_t poses_written;
 } VkrRecording;
 
 /**
@@ -201,6 +244,13 @@ void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
  */
 bool8_t vkr_recording_pass_gpu_frame(const VkrRecording *recording,
                                      bool8_t *out_timed);
+
+/** Adds a pose of the last written frame; full batches go to the recorder.
+    No-op for a recording without poses. */
+void vkr_recording_pose(VkrRecording *recording, const VkrRecordingPose *pose);
+
+/** Writes the poses still batched. */
+void vkr_recording_poses_flush(VkrRecording *recording);
 
 /** Adds a marker at the current frame. Returns false_v when it was lost. */
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

@@ -14,6 +14,31 @@
  * the recorded camera.
  */
 
+/* One recorded pose of one entity. */
+typedef struct VkrRecordingPoseSample {
+  uint64_t frame;
+  float64_t translation[3];
+  float32_t linear[9];
+  uint32_t key;
+} VkrRecordingPoseSample;
+
+/* An entity the recording posed, named as in VkrRecordingPose; its samples
+   are pose_samples[first, first + count), by frame. */
+typedef struct VkrRecordingPoseKey {
+  VkrEntityRef ref;
+  uint32_t node;
+  uint32_t document;
+  uint8_t container;
+  uint32_t first;
+  uint32_t count;
+} VkrRecordingPoseKey;
+
+/* VkrRecordingPlayback.pose_applied: no sample applied, as before the
+   entity's first recorded pose (vkr_recording_playback_pose_at), or a key
+   whose only sample matched the scene when it was bound, which needs none. */
+#define VKR_RECORDING_POSE_APPLIED_NONE UINT32_MAX
+#define VKR_RECORDING_POSE_APPLIED_STATIC (UINT32_MAX - 1u)
+
 typedef struct VkrRecordingPlayback {
   bool8_t open;
   VkrDMemory memory;
@@ -32,6 +57,18 @@ typedef struct VkrRecordingPlayback {
   uint64_t missing_frames;
   /* The stream ends without a clean stop. */
   bool8_t truncated;
+
+  /* Recorded poses, grouped by key and ordered by frame. */
+  VkrRecordingPoseSample *pose_samples;
+  uint64_t pose_sample_count;
+  VkrRecordingPoseKey *pose_keys;
+  uint32_t pose_key_count;
+  /* The runtime's binding of the keys to live entities
+     (vkr_standard_scene_recording.c): VkrEntityId values, invalid for a key
+     the scene does not hold, and the sample each key last applied. */
+  bool8_t poses_bound;
+  uint64_t *pose_entities;
+  uint32_t *pose_applied;
 
   float64_t duration;
   /* The playhead, in [0, duration]. */
@@ -74,6 +111,11 @@ void vkr_recording_playback_seek_frame(VkrRecordingPlayback *playback,
 /** The frame at or before a recorded time. */
 uint64_t vkr_recording_playback_frame_at(const VkrRecordingPlayback *playback,
                                          float64_t time);
+
+/** The last sample of `key` at or before `frame`, or UINT32_MAX when the
+    entity had not moved yet. */
+uint32_t vkr_recording_playback_pose_at(const VkrRecordingPlayback *playback,
+                                        uint32_t key, uint64_t frame);
 
 /** The camera and time of day at the playhead. */
 VkrRecordingPlaybackPose

@@ -76,6 +76,9 @@ typedef struct SceneName {
   0x04 // Parent link changed, rebuild topo order
 #define SCENE_TRANSFORM_WORLD_UPDATED                                          \
   0x08 // World matrix was updated this frame (for child propagation)
+/* The world matrix changed since the change list was last drained
+   (vkr_scene_track_changes); set only while changes are tracked. */
+#define SCENE_TRANSFORM_CHANGED 0x10
 
 /**
  * @brief Transform component with TRS, cached matrices, and hierarchy support.
@@ -1517,6 +1520,15 @@ typedef struct VkrScene {
   uint32_t render_dirty_count;
   uint32_t render_dirty_capacity;
   bool8_t render_full_sync_needed; // Set on scene load or dirty overflow
+  /** Entities whose world matrix changed since the list was last drained,
+      each once (SCENE_TRANSFORM_CHANGED), while changes are tracked
+      (vkr_scene_track_changes). Unlike render_dirty_entities it keeps every
+      transform and survives syncs and several updates in one frame. */
+  bool8_t changes_tracked;
+  bool8_t changed_overflow;
+  VkrEntityId *changed_entities;
+  uint32_t changed_count;
+  uint32_t changed_capacity;
   /** A physics body was added, changed or removed, so the shadow mobility
       of the scene's meshes is reclassified (vkr_scene_entity_moves). */
   bool8_t shadow_mobility_dirty;
@@ -2406,6 +2418,24 @@ VkrEntityId vkr_scene_find_entity_by_name(const VkrScene *scene, String8 name);
  */
 bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
                                    Mat4 local);
+
+/**
+ * @brief Starts or stops listing the entities whose world matrix changes.
+ * Starting lists every entity with a transform once, so the first drain
+ * holds the whole scene. Stopping clears the list and its marks.
+ * @return false_v when the first list could not be allocated; tracking
+ * then starts with the list overflowed.
+ */
+bool8_t vkr_scene_track_changes(VkrScene *scene, bool8_t enabled);
+/** The changed entities since the last drain; some may have died. With
+    `out_overflow` true, the list lost entries and the caller reads every
+    entity instead. */
+const VkrEntityId *vkr_scene_changed_entities(const VkrScene *scene,
+                                              uint32_t *out_count,
+                                              bool8_t *out_overflow);
+/** Removes the first `count` listed entities, or the whole list after an
+    overflow; removed entities are listed again when they change again. */
+void vkr_scene_changed_entities_consume(VkrScene *scene, uint32_t count);
 
 /* Publish an evaluated world pose; NULL removes the transient override. */
 bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,

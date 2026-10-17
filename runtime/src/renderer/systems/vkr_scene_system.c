@@ -1338,6 +1338,24 @@ vkr_internal bool8_t scene_ensure_mesh_capacity(VkrScene *scene,
                           AlignOf(uint32_t), false_v);
 }
 
+/* Lists `entity` once until the next drain; a failed grow makes the reader
+   rescan the scene. */
+vkr_internal void scene_mark_changed(VkrScene *scene, VkrEntityId entity,
+                                     SceneTransform *transform) {
+  if (transform->flags & SCENE_TRANSFORM_CHANGED) {
+    return;
+  }
+  transform->flags |= SCENE_TRANSFORM_CHANGED;
+  if (!scene_grow_array(scene->alloc, (void **)&scene->changed_entities,
+                        &scene->changed_capacity, scene->changed_count,
+                        scene->changed_count + 1u, SCENE_DEFAULT_DIRTY_CAPACITY,
+                        sizeof(VkrEntityId), AlignOf(VkrEntityId), false_v)) {
+    scene->changed_overflow = true;
+    return;
+  }
+  scene->changed_entities[scene->changed_count++] = entity;
+}
+
 /**
  * @brief Mark entity as needing render sync.
  * @note Entity is assumed to be already validated alive by caller.
@@ -2254,6 +2272,12 @@ vkr_internal void scene_arrays_shutdown(VkrScene *scene) {
         scene->alloc, scene->render_dirty_entities,
         scene->render_dirty_capacity * sizeof(VkrEntityId),
         AlignOf(VkrEntityId), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (scene->changed_entities) {
+    vkr_allocator_free_aligned(scene->alloc, scene->changed_entities,
+                               scene->changed_capacity * sizeof(VkrEntityId),
+                               AlignOf(VkrEntityId),
+                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (scene->editor_hidden) {
     vkr_allocator_free_aligned(
@@ -3297,6 +3321,9 @@ void vkr_scene_update_transforms(VkrScene *scene) {
 
     // Mark for render sync
     scene_mark_render_dirty(scene, entity);
+    if (scene->changes_tracked) {
+      scene_mark_changed(scene, entity, transform);
+    }
   }
   if (recomputed) {
     scene->transform_revision++;
@@ -3546,6 +3573,80 @@ String8 vkr_scene_get_name(const VkrScene *scene, VkrEntityId entity) {
     return (String8){0};
 
   return comp->name;
+}
+
+/* Clears SCENE_TRANSFORM_CHANGED: on the listed entities, or on every one
+   after an overflow, when the list misses some. */
+vkr_internal void scene_changed_unmark(VkrScene *scene) {
+  if (scene->changed_overflow) {
+    for (uint32_t i = 0u; i < scene->topo_count; ++i) {
+      SceneTransform *transform = vkr_entity_get_component_if_alive(
+          scene->world, scene->topo_order[i], scene->comp_transform);
+      if (transform) {
+        transform->flags &= (uint8_t)~SCENE_TRANSFORM_CHANGED;
+      }
+    }
+  } else {
+    for (uint32_t i = 0u; i < scene->changed_count; ++i) {
+      SceneTransform *transform = vkr_entity_get_component_if_alive(
+          scene->world, scene->changed_entities[i], scene->comp_transform);
+      if (transform) {
+        transform->flags &= (uint8_t)~SCENE_TRANSFORM_CHANGED;
+      }
+    }
+  }
+  scene->changed_count = 0u;
+  scene->changed_overflow = false;
+}
+
+bool8_t vkr_scene_track_changes(VkrScene *scene, bool8_t enabled) {
+  if (!scene || !scene->world) {
+    return false_v;
+  }
+  scene_changed_unmark(scene);
+  scene->changes_tracked = enabled;
+  if (!enabled) {
+    return true_v;
+  }
+  if (scene->hierarchy_dirty) {
+    scene_rebuild_topo_order(scene);
+  }
+  for (uint32_t i = 0u; i < scene->topo_count; ++i) {
+    SceneTransform *transform = vkr_entity_get_component_if_alive(
+        scene->world, scene->topo_order[i], scene->comp_transform);
+    if (transform) {
+      scene_mark_changed(scene, scene->topo_order[i], transform);
+    }
+  }
+  return !scene->changed_overflow;
+}
+
+const VkrEntityId *vkr_scene_changed_entities(const VkrScene *scene,
+                                              uint32_t *out_count,
+                                              bool8_t *out_overflow) {
+  *out_count = scene ? scene->changed_count : 0u;
+  *out_overflow = scene ? scene->changed_overflow : false_v;
+  return scene ? scene->changed_entities : NULL;
+}
+
+void vkr_scene_changed_entities_consume(VkrScene *scene, uint32_t count) {
+  if (!scene) {
+    return;
+  }
+  if (scene->changed_overflow || count >= scene->changed_count) {
+    scene_changed_unmark(scene);
+    return;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    SceneTransform *transform = vkr_entity_get_component_if_alive(
+        scene->world, scene->changed_entities[i], scene->comp_transform);
+    if (transform) {
+      transform->flags &= (uint8_t)~SCENE_TRANSFORM_CHANGED;
+    }
+  }
+  scene->changed_count -= count;
+  MemCopy(scene->changed_entities, scene->changed_entities + count,
+          sizeof(VkrEntityId) * scene->changed_count);
 }
 
 bool8_t vkr_scene_set_evaluated_transform(VkrScene *scene, VkrEntityId entity,

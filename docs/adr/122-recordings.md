@@ -13,8 +13,8 @@ Accepted (partial). Phases R0, R1 and most of R2 of
 the recorder, camera and frame recording with simulation stopped, Watch
 playback with exact seeking, the editor's Record control, REC indicator,
 playback bar and Recordings window, the `rec.*` agent operations, Tier 0
-frame metrics, Tier 1 pass rows, the recording analysis and the Performance
-window. Play
+frame metrics, Tier 1 pass rows, the recording analysis, the Performance
+window, and from R3 the entity poses that Watch replays. Play
 recording, Drive, perf re-runs and re-simulation remain in the proposal.
 The authoritative overhead gate has not run; a non-authoritative
 Bistro A/B is recorded in the proposal.
@@ -71,8 +71,22 @@ an agent must read one without the editor.
   ([editor_ops.c](../../editor/src/editor_ops.c)); `vkr_rec summary` and
   `vkr_rec verify` read bundles offline
   ([vkr_rec_main.c](../../tools/recording/vkr_rec_main.c)).
-- **Edits.** An edit while recording adds an `edit` marker; playback shows the
-  scene as it is now.
+- **Edits.** An edit while recording adds an `edit` marker. Playback shows
+  the scene as it is now, except for entity poses.
+- **Entity poses (R3).** An editor recording adds stream `pose`: the world
+  pose of every entity whose world matrix changed that frame, as an f64
+  translation plus the matrix's 3x3, written by the frame-loop thread after
+  the update. The scene lists changed entities only while a recording tracks
+  it (`vkr_scene_track_changes`, `SCENE_TRANSFORM_CHANGED`), so several
+  transform passes in one frame lose none. Tracking starts by listing every
+  entity once, at most 2048 a frame. An entity is named by its
+  document-stable ref, a model node by its nearest ref'd ancestor and glTF
+  node, and a document without refs by document index. Watch groups the
+  poses per entity, binds them to live entities once per scene generation,
+  skips entities whose only pose matches the scene, and applies the pose at
+  the playhead as an evaluated override before the frame's transform update;
+  closing removes the overrides, so authored transforms never change. Script
+  spawns have no name yet and are not recorded.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

@@ -9,6 +9,8 @@
 #include "platform/vkr_platform.h"
 #include "recording/vkr_recorder.h"
 #include "recording/vkr_recording.h"
+#include "recording/vkr_recording_playback.h"
+#include "renderer/systems/vkr_scene_system.h"
 #include "vkr_depot_zstd.h"
 #include "vkr_renderer_metrics.h"
 
@@ -757,6 +759,214 @@ static void test_recording_pass_rows(void) {
   printf("  test_recording_pass_rows PASSED\n");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Entity poses                                                              */
+
+static bool8_t recording_listed(VkrScene *scene, VkrEntityId entity) {
+  uint32_t count = 0u;
+  bool8_t overflow = false_v;
+  const VkrEntityId *changed =
+      vkr_scene_changed_entities(scene, &count, &overflow);
+  assert(!overflow);
+  uint32_t found = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    found += changed[i].u64 == entity.u64 ? 1u : 0u;
+  }
+  assert(found <= 1u);
+  return found == 1u;
+}
+
+static uint32_t recording_changed_count(VkrScene *scene) {
+  uint32_t count = 0u;
+  bool8_t overflow = false_v;
+  (void)vkr_scene_changed_entities(scene, &count, &overflow);
+  return count;
+}
+
+/* Detects: a change lost when a later transform pass in the same frame
+   clears WORLD_UPDATED, an entity listed twice, a child of a moved parent
+   left out, an evaluated override that is not a change, a partial consume
+   that drops or keeps the wrong entries, changes listed while untracked,
+   and a start that does not list the whole scene once. */
+static void test_scene_change_tracking(void) {
+  printf("  Running test_scene_change_tracking...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &memory.allocator, 31, 8, &error));
+  VkrEntityId entities[3];
+  for (uint32_t i = 0u; i < ArrayCount(entities); ++i) {
+    entities[i] = vkr_scene_create_entity(&scene, &error);
+    assert(entities[i].u64 && error == VKR_SCENE_ERROR_NONE);
+    assert(vkr_scene_set_transform(&scene, entities[i], vec3_zero(),
+                                   vkr_quat_identity(), vec3_one()));
+  }
+  const VkrEntityId parent = entities[0];
+  const VkrEntityId child = entities[1];
+  const VkrEntityId other = entities[2];
+  vkr_scene_set_parent(&scene, child, parent);
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 0u);
+
+  /* Starting lists every entity once. */
+  assert(vkr_scene_track_changes(&scene, true_v));
+  assert(recording_changed_count(&scene) == 3u &&
+         recording_listed(&scene, parent) && recording_listed(&scene, child) &&
+         recording_listed(&scene, other));
+  vkr_scene_changed_entities_consume(&scene, 1u);
+  assert(recording_changed_count(&scene) == 2u);
+  vkr_scene_changed_entities_consume(&scene, 2u);
+  assert(recording_changed_count(&scene) == 0u);
+
+  /* A move survives a second pass in the same frame, and its child
+     follows. */
+  vkr_scene_set_position(&scene, parent, vec3_new(1.0f, 2.0f, 3.0f));
+  vkr_scene_update_transforms(&scene);
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 2u &&
+         recording_listed(&scene, parent) && recording_listed(&scene, child) &&
+         !recording_listed(&scene, other));
+  /* A second move before the drain lists nothing twice. */
+  vkr_scene_set_position(&scene, parent, vec3_new(4.0f, 2.0f, 3.0f));
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 2u);
+  vkr_scene_changed_entities_consume(&scene, 2u);
+
+  /* An evaluated override changes the world matrix. */
+  const Mat4 pose = mat4_translate(vec3_new(0.0f, 5.0f, 0.0f));
+  assert(vkr_scene_set_evaluated_transform(&scene, other, &pose));
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 1u &&
+         recording_listed(&scene, other));
+
+  /* Stopping clears the list; untracked changes list nothing. */
+  assert(vkr_scene_track_changes(&scene, false_v));
+  assert(recording_changed_count(&scene) == 0u);
+  vkr_scene_set_position(&scene, parent, vec3_new(9.0f, 2.0f, 3.0f));
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 0u);
+  /* Tracking again starts from the whole scene, with no stale marks. */
+  assert(vkr_scene_track_changes(&scene, true_v));
+  assert(recording_changed_count(&scene) == 3u);
+
+  vkr_scene_shutdown(&scene, NULL);
+  recording_memory_destroy(&memory);
+  printf("  test_scene_change_tracking PASSED\n");
+}
+
+static VkrRecordingPose recording_pose(uint8_t ref_byte, uint32_t node,
+                                       float64_t x) {
+  VkrRecordingPose pose = {.node = node,
+                           .document = VKR_RECORDING_POSE_DOCUMENT_NONE,
+                           .container = VKR_RECORDING_CONTAINER_ACTIVE,
+                           .translation = {x, 1.0, -2.0},
+                           .linear = {1, 0, 0, 0, 1, 0, 0, 0, 1}};
+  MemSet(&pose.ref, ref_byte, sizeof(pose.ref));
+  return pose;
+}
+
+/* Detects: poses of one entity split across keys or mixed with another
+   entity's, samples out of frame order after records arrive interleaved,
+   a lookup that answers the next sample or one before the entity first
+   moved, and a node pose merged with its wrapper's own pose. */
+static void test_recording_pose_playback(void) {
+  printf("  Running test_recording_pose_playback...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("poses", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path,
+      .codec = vkr_depot_zstd_codec(),
+      .poses = true_v,
+  };
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  /* Entity 0xAA moves at frames 0, 3 and 5; its node 2 at frame 1 only;
+     entity 0x11 from frame 2. */
+  for (uint32_t f = 0u; f < 7u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    if (f >= 2u) {
+      const VkrRecordingPose pose = recording_pose(
+          0x11u, VKR_RECORDING_POSE_NODE_NONE, 100.0 + (float64_t)f);
+      vkr_recording_pose(&recording, &pose);
+    }
+    if (f == 0u || f == 3u || f == 5u) {
+      const VkrRecordingPose pose =
+          recording_pose(0xAAu, VKR_RECORDING_POSE_NODE_NONE, (float64_t)f);
+      vkr_recording_pose(&recording, &pose);
+    }
+    if (f == 1u) {
+      const VkrRecordingPose pose = recording_pose(0xAAu, 2u, 50.0);
+      vkr_recording_pose(&recording, &pose);
+    }
+    vkr_recording_poses_flush(&recording);
+  }
+  assert(vkr_recording_stop(&recording, NULL));
+
+  static VkrRecordingPlayback playback;
+  char error[192];
+  assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
+                                     error, sizeof(error)));
+  assert(playback.pose_key_count == 3u && playback.pose_sample_count == 9u);
+  uint32_t wrapper = UINT32_MAX;
+  uint32_t node = UINT32_MAX;
+  uint32_t mover = UINT32_MAX;
+  for (uint32_t k = 0u; k < playback.pose_key_count; ++k) {
+    const VkrRecordingPoseKey *key = &playback.pose_keys[k];
+    const uint8_t byte = ((const uint8_t *)&key->ref)[0];
+    if (byte == 0xAAu && key->node == VKR_RECORDING_POSE_NODE_NONE) {
+      wrapper = k;
+    } else if (byte == 0xAAu && key->node == 2u) {
+      node = k;
+    } else if (byte == 0x11u) {
+      mover = k;
+    }
+  }
+  assert(wrapper != UINT32_MAX && node != UINT32_MAX && mover != UINT32_MAX);
+  assert(playback.pose_keys[wrapper].count == 3u &&
+         playback.pose_keys[node].count == 1u &&
+         playback.pose_keys[mover].count == 5u);
+  /* At frame 4 the wrapper shows its frame 3 pose, at 6 its frame 5 pose. */
+  uint32_t sample = vkr_recording_playback_pose_at(&playback, wrapper, 4u);
+  assert(sample != UINT32_MAX && playback.pose_samples[sample].frame == 3u &&
+         playback.pose_samples[sample].translation[0] == 3.0);
+  sample = vkr_recording_playback_pose_at(&playback, wrapper, 6u);
+  assert(playback.pose_samples[sample].frame == 5u);
+  sample = vkr_recording_playback_pose_at(&playback, wrapper, 0u);
+  assert(playback.pose_samples[sample].frame == 0u);
+  /* Before its first pose an entity has none. */
+  assert(vkr_recording_playback_pose_at(&playback, mover, 1u) == UINT32_MAX);
+  sample = vkr_recording_playback_pose_at(&playback, mover, 2u);
+  assert(playback.pose_samples[sample].translation[0] == 102.0);
+  sample = vkr_recording_playback_pose_at(&playback, node, 6u);
+  assert(playback.pose_samples[sample].translation[0] == 50.0);
+  for (uint32_t k = 0u; k < playback.pose_key_count; ++k) {
+    const VkrRecordingPoseKey *key = &playback.pose_keys[k];
+    for (uint32_t i = 1u; i < key->count; ++i) {
+      assert(playback.pose_samples[key->first + i - 1u].frame <
+             playback.pose_samples[key->first + i].frame);
+    }
+  }
+  vkr_recording_playback_close(&playback);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_pose_playback PASSED\n");
+}
+
 bool32_t run_recording_tests(void) {
   printf("--- Starting Recording Tests ---\n");
   test_spsc_ring_wrap_and_full();
@@ -765,6 +975,8 @@ bool32_t run_recording_tests(void) {
   test_recording_truncated_recovery();
   test_recorder_accounting();
   test_recording_pass_rows();
+  test_scene_change_tracking();
+  test_recording_pose_playback();
   printf("--- Recording Tests Completed ---\n");
   return true_v;
 }

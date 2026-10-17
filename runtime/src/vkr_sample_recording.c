@@ -104,6 +104,7 @@ vkr_internal void vkr_sample_recording_start(
       .identity_json = identity[0] ? identity : NULL,
       .metrics =
           request->tier != VKR_RECORDING_TIER_NONE ? runtime->metrics : NULL,
+      .poses = true_v,
       .passes = request->tier == VKR_RECORDING_TIER_1,
       /* Per-pass stamps split the tiled pipeline's shared compute encoder
          (about 0.5 ms per Bistro frame), so Tier 1 samples them there;
@@ -180,6 +181,7 @@ vkr_sample_recording_open(VkrStandardSceneRuntime *runtime,
             : "Stop the simulation before opening a playback.");
     return;
   }
+  vkr_standard_scene_recording_release_poses(runtime);
   vkr_recording_playback_close(&runtime->playback);
   char error[192];
   if (!vkr_recording_playback_open(&runtime->playback, request->path,
@@ -212,6 +214,7 @@ vkr_sample_recording_open(VkrStandardSceneRuntime *runtime,
 vkr_internal void vkr_sample_recording_close(VkrStandardSceneRuntime *runtime,
                                              VkrSampleRecordingState *state,
                                              uint64_t token) {
+  vkr_standard_scene_recording_release_poses(runtime);
   vkr_recording_playback_close(&runtime->playback);
   VkrCamera *camera = vkr_camera_registry_get_by_handle(&runtime->camera_system,
                                                         runtime->active_camera);

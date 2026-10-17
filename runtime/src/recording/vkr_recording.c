@@ -122,6 +122,7 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
 #define VKR_RECORDING_PASS_SLOTS (2u * VKR_RECORDING_PASS_MAX)
 
 _Static_assert(sizeof(VkrRecordingFrame) == 24u, "frame record layout");
+_Static_assert(sizeof(VkrRecordingPose) == 88u, "pose record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
 
 const VkrRecordingStream *vkr_recording_streams(uint32_t *out_count) {
@@ -280,8 +281,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
   VkrRecordingStream streams[8];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 3u <= 8u,
-                 "room for the metrics and pass streams");
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 4u <= 8u,
+                 "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
   uint32_t stream_count = base_count;
@@ -297,6 +298,19 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         .field_count = field_count,
         .fields = metric_fields,
     };
+  }
+  if (config->poses) {
+    recording->pose_batch = vkr_allocator_alloc(
+        &recording->allocator,
+        sizeof(VkrRecordingPose) * (uint64_t)VKR_RECORDING_POSE_BATCH,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!recording->pose_batch) {
+      goto cleanup;
+    }
+    recording->poses_enabled = true_v;
+    /* Variable records of VkrRecordingPose entries. */
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_POSE, .name = "pose"};
   }
   if (config->metrics && config->passes) {
     if (!vkr_recording_passes_create(recording)) {
@@ -557,6 +571,34 @@ bool8_t vkr_recording_pass_gpu_frame(const VkrRecording *recording,
   return true_v;
 }
 
+void vkr_recording_poses_flush(VkrRecording *recording) {
+  vkr_assert(recording != NULL && recording->active);
+  const uint32_t count = recording->pose_batch_count;
+  if (count == 0u) {
+    return;
+  }
+  recording->pose_batch_count = 0u;
+  /* The poses belong to the frame on screen: the last one written. */
+  const uint64_t frame = recording->frame > 0u ? recording->frame - 1u : 0u;
+  if (vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                         VKR_RECORDING_STREAM_POSE, frame,
+                         recording->pose_batch,
+                         (uint32_t)sizeof(VkrRecordingPose) * count)) {
+    recording->poses_written += count;
+  }
+}
+
+void vkr_recording_pose(VkrRecording *recording, const VkrRecordingPose *pose) {
+  vkr_assert(recording != NULL && recording->active && pose != NULL);
+  if (!recording->poses_enabled) {
+    return;
+  }
+  recording->pose_batch[recording->pose_batch_count++] = *pose;
+  if (recording->pose_batch_count == VKR_RECORDING_POSE_BATCH) {
+    vkr_recording_poses_flush(recording);
+  }
+}
+
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,
                            const char *label) {
   vkr_assert(recording != NULL && recording->active);
@@ -700,6 +742,9 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
     vkr_recording_json_u64(json, "pass_rows", recording->pass_rows_written);
   }
   vkr_recording_json_u64(json, "frames", recording->frame);
+  if (recording->poses_enabled) {
+    vkr_recording_json_u64(json, "poses", recording->poses_written);
+  }
   vkr_recording_json_f64(json, "duration_seconds", recording->time);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
   vkr_recording_json_u64(json, "lost_records", stats->lost_records);

@@ -3254,6 +3254,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   if (vkr_allocator_supports_scopes(frame_alloc))
     frame_scope = vkr_allocator_begin_scope(frame_alloc);
 
+  /* Recorded poses land before the client's scene update transforms them. */
+  vkr_standard_scene_recording_advance(application, delta);
   VKR_METRICS_SCOPE_NS(application->metrics, application->metric_ids.update) {
     if (application->callbacks.update)
       application->callbacks.update(application->callbacks.state, application,
@@ -3283,7 +3285,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
 
   /* An open playback owns the camera; the free camera rests meanwhile. */
   const bool8_t playback_camera =
-      vkr_standard_scene_recording_drive_camera(application, camera, delta);
+      vkr_standard_scene_recording_drive_camera(application, camera);
   if (camera && !playback_camera &&
       !vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) &&
       !application->config->disable_camera_controller &&
@@ -3591,6 +3593,7 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
     log_error("Recording '%s' did not end cleanly",
               application->recording.bundle_path);
   }
+  vkr_standard_scene_recording_release_poses(application);
   vkr_recording_playback_close(&application->playback);
   vkr_dynamic_volume_selection_destroy(&application->dynamic_volume_selection);
   if (vkr_renderer_render_thread_enabled(&application->renderer)) {

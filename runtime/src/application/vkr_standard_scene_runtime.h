@@ -370,6 +370,12 @@ typedef struct VkrStandardSceneRuntime {
   VkrRecordingPlayback playback;
   /* $VKR_RECORDING_DIRECTORY was read: a set one records the whole run. */
   bool8_t recording_environment_read;
+  /* The containers whose transform changes the recording tracks, by
+     VKR_RECORDING_CONTAINER_* index, and the scene generation the playback's
+     poses were bound to. */
+  VkrScene *recording_tracked[VKR_RECORDING_CONTAINER_ADDITIVE +
+                              VKR_SCENE_ADDITIVE_MAX];
+  uint64_t playback_pose_generation;
 } VkrStandardSceneRuntime;
 
 /**
@@ -399,12 +405,19 @@ vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(
 
 bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
     const VkrStandardSceneRuntime *runtime);
-/** An open playback advances by `delta` and places `camera` at its playhead,
- * with the level's time of day; returns true_v while it owns the camera
+/** An open playback advances by `delta` and poses the recorded entities at
+ * its playhead, before the frame's transform update. */
+void vkr_standard_scene_recording_advance(VkrStandardSceneRuntime *runtime,
+                                          float64_t delta);
+/** Removes the poses an open playback applied; call before closing it. */
+void vkr_standard_scene_recording_release_poses(
+    VkrStandardSceneRuntime *runtime);
+/** An open playback places `camera` at its playhead, with the level's time
+ * of day; returns true_v while it owns the camera
  * (vkr_standard_scene_recording.c). */
 bool8_t
 vkr_standard_scene_recording_drive_camera(VkrStandardSceneRuntime *runtime,
-                                          VkrCamera *camera, float64_t delta);
+                                          VkrCamera *camera);
 /** After the metrics frame of recorded frame `frame` closed: writes its Tier
  * 0 metrics when it was `published`, else a record with none valid. */
 void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
