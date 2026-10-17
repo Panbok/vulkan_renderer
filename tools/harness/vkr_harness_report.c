@@ -296,6 +296,7 @@ vkr_internal bool8_t vkr_harness_report_write_header(
         writer, vkr_harness_string(report->authority_reasons[i]));
   }
   ok = ok && vkr_json_writer_end_array(writer) &&
+       vkr_harness_json_emit_bool(writer, "recording", report->recording) &&
        vkr_harness_json_emit_name(writer, "case") &&
        vkr_json_writer_begin_object(writer) &&
        vkr_harness_json_emit_string(writer, "id", report->case_manifest.id) &&

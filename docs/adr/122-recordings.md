@@ -153,6 +153,11 @@ an agent must read one without the editor.
   markers, notes and ranges, the review, the request it answers and the
   playhead on the clipboard
   ([editor_recording_annotations.c](../../editor/src/editor_recording_annotations.c)).
+- **Harness recordings (R5).** `vkr_harness profile --record` gives each
+  repetition a Tier 0 recording of its run in `runs/<i>/recording/` and lists
+  its stream and `summary.json` among the report's artifacts; the run is not
+  authoritative while the recorder's overhead gate is open (ADR-051). Two
+  harness runs' recordings open in Compare like any others.
 - **Compare (R5).** `vkr_recording_compare` compares recording B with A,
   both analyzed
   ([vkr_recording_compare.h](../../runtime/src/assets/vkr_recording_compare.h)).

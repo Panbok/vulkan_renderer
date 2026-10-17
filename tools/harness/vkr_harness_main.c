@@ -155,7 +155,8 @@ VKR_MAIN(argc, argv) {
                 artifact_root_override,
                 vkr_harness_flag(argc, argv, "--cross-backend"))
           : vkr_harness_profile_run(executable, repo_root, case_path,
-                                    profile_path, artifact_root_override);
+                                    profile_path, artifact_root_override,
+                                    vkr_harness_flag(argc, argv, "--record"));
   vkr_platform_shutdown();
   return result;
 }

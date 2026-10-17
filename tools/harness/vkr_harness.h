@@ -663,6 +663,8 @@ typedef struct VkrHarnessReport {
   bool8_t authoritative;
   char authority_reasons[VKR_HARNESS_MAX_AUTHORITY_REASONS][64];
   uint32_t authority_reason_count;
+  /* Every repetition wrote a Tier 0 recording of its run (`--record`). */
+  bool8_t recording;
   VkrHarnessCase case_manifest;
   VkrHarnessProfile profile;
   bool8_t profile_compatible;

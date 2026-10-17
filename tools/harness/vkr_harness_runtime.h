@@ -172,9 +172,12 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *run_dir, bool8_t prewarm,
                           int32_t capture_index, const char *replay_mode,
                           const char *scene_content_digest);
+/** `record` gives every repetition a recording of its run (ADR-122) in
+ * runs/<i>/recording/, listed among the artifacts; it costs the run its
+ * authority. */
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,
-                            const char *artifact_root_override);
+                            const char *artifact_root_override, bool8_t record);
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path,
                              const char *artifact_root_override,

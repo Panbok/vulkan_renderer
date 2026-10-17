@@ -46,7 +46,7 @@ use `vkr-performance`. Native backend evidence remains backend-specific;
 
 | Command | Use and output |
 |---|---|
-| `profile --case <case.json> --profile <profile.json>` | Isolated capture-free repetitions, aggregate metrics, child reports, `summary.csv` |
+| `profile --case <case.json> --profile <profile.json>` | Isolated capture-free repetitions, aggregate metrics, child reports, `summary.csv`; `--record` adds a Tier 0 recording per repetition (`runs/<i>/recording/`) for the editor's Compare and `vkr_rec compare`, at the cost of authority (`recording.enabled`) |
 | `snapshot --case <case.json> --profile <profile.json>` | Replay captures and comparison results; replay timings are auxiliary |
 | `autotest --case <case.json> --profile <profile.json>` | Separate nested primary-profile and snapshot reports |
 | `compare --run <snapshot-run-directory>` | Recheck completed snapshot digests and compare to its accepted baseline |

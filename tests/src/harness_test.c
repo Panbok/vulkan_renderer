@@ -1740,29 +1740,15 @@ vkr_internal void test_harness_report_shape(void) {
                               "scale_range[1]", &error));
   assert(fabs(observed_min - 0.55) < 1e-12);
   assert(fabs(observed_max - 0.7) < 1e-12);
-  vkr_local_persist const char *const fields[] = {"schema_version",
-                                                  "kind",
-                                                  "tool",
-                                                  "tool_version",
-                                                  "run_id",
-                                                  "status",
-                                                  "exit_code",
-                                                  "authoritative",
-                                                  "authority_reasons",
-                                                  "case",
-                                                  "profile",
-                                                  "provenance",
-                                                  "comparison",
-                                                  "effective_config",
-                                                  "execution",
-                                                  "runs",
-                                                  "auxiliary_runs",
-                                                  "aggregate",
-                                                  "events",
-                                                  "captures",
-                                                  "assertions",
-                                                  "diagnostics",
-                                                  "artifacts"};
+  vkr_local_persist const char *const fields[] = {
+      "schema_version", "kind",          "tool",
+      "tool_version",   "run_id",        "status",
+      "exit_code",      "authoritative", "authority_reasons",
+      "recording",      "case",          "profile",
+      "provenance",     "comparison",    "effective_config",
+      "execution",      "runs",          "auxiliary_runs",
+      "aggregate",      "events",        "captures",
+      "assertions",     "diagnostics",   "artifacts"};
   assert(vkr_harness_json_object_validate(&document, 0, fields,
                                           ArrayCount(fields), fields,
                                           ArrayCount(fields), "$", &error));

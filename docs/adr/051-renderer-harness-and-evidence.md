@@ -25,6 +25,13 @@ warmup, measured frames, and captures. Profiles own repetitions,
 instrumentation, environment constraints, stability, and authority requirements.
 The parent launches isolated children and records effective configuration and
 build/device provenance alongside workload, policy, and environment fingerprints.
+Children record a run (ADR-122) only under `profile --record`: each repetition
+writes a Tier 0 bundle in `runs/<i>/recording/`, its stream and `summary.json`
+join the artifacts, the report's `recording` is true and the run gains the
+authority reason `recording.enabled`; a repetition without exactly one bundle
+leaves the run incomplete (`recording.missing`). Otherwise the parent unsets
+`VKR_RECORDING_DIRECTORY` for every child, so an inherited one records
+nothing.
 Snapshot reports adopt the first verified child's actual render extent, as
 profile reports do. Recomputing that extent from requested scale used obsolete
 nearest rounding and could disagree with the captured source textures.

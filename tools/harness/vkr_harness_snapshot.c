@@ -45,6 +45,8 @@ vkr_internal int vkr_harness_snapshot_spawn(
        .value = renderer->tonemap_enabled ? "0" : "1"},
       {.name = "VKR_SMAA_DISABLED",
        .value = renderer->smaa_enabled ? "0" : "1"},
+      /* Replays never record; an inherited directory would. */
+      {.name = "VKR_RECORDING_DIRECTORY", .value = NULL},
   };
   VkrPlatformEnvironmentVariable
       environment[ArrayCount(environment_defaults) + 1u] = {0};

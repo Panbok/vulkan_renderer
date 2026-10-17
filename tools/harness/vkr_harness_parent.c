@@ -55,11 +55,13 @@ vkr_internal void vkr_harness_gpu_lane_release(VkrHarnessGpuLane *lane) {
   vkr_platform_process_lock_release(&lane->lock);
 }
 
-vkr_internal int vkr_harness_spawn_child(
-    const char *executable, const char *repo_root, const char *case_path,
-    const char *profile_path, const char *run_dir, const char *cache_path,
-    uint32_t timeout_ms, bool8_t prewarm, const char *scene_content_digest,
-    const VkrHarnessRendererConfig *renderer) {
+vkr_internal int
+vkr_harness_spawn_child(const char *executable, const char *repo_root,
+                        const char *case_path, const char *profile_path,
+                        const char *run_dir, const char *cache_path,
+                        const char *recording_dir, uint32_t timeout_ms,
+                        bool8_t prewarm, const char *scene_content_digest,
+                        const VkrHarnessRendererConfig *renderer) {
   char stdout_path[VKR_HARNESS_PATH_MAX];
   char stderr_path[VKR_HARNESS_PATH_MAX];
   string_format(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
@@ -87,9 +89,14 @@ vkr_internal int vkr_harness_spawn_child(
        .value = renderer->smaa_enabled ? "0" : "1"},
   };
   VkrPlatformEnvironmentVariable
-      environment[ArrayCount(environment_defaults) + 1u] = {0};
+      environment[ArrayCount(environment_defaults) + 2u] = {0};
   MemCopy(environment, environment_defaults, sizeof(environment_defaults));
   uint32_t environment_count = ArrayCount(environment_defaults);
+  /* A child records only where the parent says; an inherited directory
+     would record unannounced and cost the timing nobody accounted for. */
+  environment[environment_count++] = (VkrPlatformEnvironmentVariable){
+      .name = "VKR_RECORDING_DIRECTORY",
+      .value = recording_dir && recording_dir[0] ? recording_dir : NULL};
   if (cache_path && cache_path[0]) {
     environment[environment_count++] = (VkrPlatformEnvironmentVariable){
         .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
@@ -525,8 +532,9 @@ vkr_internal bool8_t vkr_harness_execute_repetition(
     const VkrHarnessArenas *arenas, const char *executable,
     const char *repo_root, const char *case_path, const char *profile_path,
     const char *run_root, uint32_t index, const VkrHarnessCase *case_manifest,
-    const char *scene_content_digest, VkrHarnessRunReference *reference,
-    VkrHarnessSampleSet *out_samples, VkrHarnessError *error) {
+    const char *scene_content_digest, bool8_t record,
+    VkrHarnessRunReference *reference, VkrHarnessSampleSet *out_samples,
+    VkrHarnessError *error) {
   char run_dir[VKR_HARNESS_PATH_MAX];
   string_format(run_dir, sizeof(run_dir), "%s/runs/%u", run_root, index);
   reference->index = index;
@@ -548,8 +556,8 @@ vkr_internal bool8_t vkr_harness_execute_repetition(
     }
     const int prewarm_exit = vkr_harness_spawn_child(
         executable, repo_root, case_path, profile_path, prewarm_dir, cache_path,
-        case_manifest->repetition_timeout_ms, true_v, scene_content_digest,
-        &case_manifest->renderer);
+        NULL, case_manifest->repetition_timeout_ms, true_v,
+        scene_content_digest, &case_manifest->renderer);
     if (prewarm_exit != VKR_HARNESS_EXIT_PASS) {
       vkr_harness_error_set(
           error, "execution.prewarm_failed", "$",
@@ -558,10 +566,15 @@ vkr_internal bool8_t vkr_harness_execute_repetition(
       return false_v;
     }
   }
+  char recording_dir[VKR_HARNESS_PATH_MAX] = {0};
+  if (record) {
+    string_format(recording_dir, sizeof(recording_dir), "%s/recording",
+                  run_dir);
+  }
   const int child_exit = vkr_harness_spawn_child(
       executable, repo_root, case_path, profile_path, run_dir, cache_path,
-      case_manifest->repetition_timeout_ms, false_v, scene_content_digest,
-      &case_manifest->renderer);
+      recording_dir, case_manifest->repetition_timeout_ms, false_v,
+      scene_content_digest, &case_manifest->renderer);
   char child_report[VKR_HARNESS_PATH_MAX];
   char samples_path[VKR_HARNESS_PATH_MAX];
   string_format(child_report, sizeof(child_report), "%s/report.json", run_dir);
@@ -577,6 +590,64 @@ vkr_internal bool8_t vkr_harness_execute_repetition(
     return false_v;
   }
   return true_v;
+}
+
+/* The one recording bundle a recorded repetition wrote; its name holds the
+   child's process id and start time. */
+typedef struct VkrHarnessRecordingFind {
+  char bundle[VKR_HARNESS_PATH_MAX];
+  uint32_t count;
+} VkrHarnessRecordingFind;
+
+vkr_internal bool8_t vkr_harness_recording_visit(void *context,
+                                                 const char *name,
+                                                 bool8_t is_directory) {
+  VkrHarnessRecordingFind *find = context;
+  const uint64_t length = string_length(name);
+  const uint64_t extension = sizeof(".vkrrec") - 1u;
+  if (is_directory && length > extension &&
+      string_equals(name + length - extension, ".vkrrec")) {
+    string_format(find->bundle, sizeof(find->bundle), "%s", name);
+    ++find->count;
+  }
+  return true_v;
+}
+
+/* The recorded repetition's stream and summary; false when it wrote no
+   single readable bundle. */
+vkr_internal bool8_t vkr_harness_record_recording_artifacts(
+    VkrHarnessReport *report, const char *run_root, uint32_t index) {
+  char directory[VKR_HARNESS_PATH_MAX];
+  string_format(directory, sizeof(directory), "%s/runs/%u/recording", run_root,
+                index);
+  VkrHarnessRecordingFind find = {0};
+  const FilePath path = file_path_view(directory);
+  if (file_list_directory(&path, vkr_harness_recording_visit, &find) !=
+          FILE_ERROR_NONE ||
+      find.count != 1u) {
+    return false_v;
+  }
+  const struct {
+    const char *file;
+    const char *role_suffix;
+    const char *media_type;
+  } files[] = {
+      {"stream.vkrs", "recording.stream", "application/vnd.vkr.recording"},
+      {"summary.json", "recording.summary", "application/json"},
+  };
+  bool8_t complete = true_v;
+  for (uint32_t i = 0u; i < ArrayCount(files); ++i) {
+    char relative[VKR_HARNESS_PATH_MAX];
+    char absolute[VKR_HARNESS_PATH_MAX];
+    char role[96];
+    string_format(relative, sizeof(relative), "runs/%u/recording/%s/%s", index,
+                  find.bundle, files[i].file);
+    string_format(absolute, sizeof(absolute), "%s/%s", run_root, relative);
+    string_format(role, sizeof(role), "run.%u.%s", index, files[i].role_suffix);
+    complete &= vkr_harness_report_add_artifact(report, role, relative,
+                                                files[i].media_type, absolute);
+  }
+  return complete;
 }
 
 /** Records the run's artifact digests; every one must resolve. */
@@ -717,13 +788,15 @@ vkr_internal void vkr_harness_apply_verdict(VkrHarnessReport *report,
 
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,
-                            const char *artifact_root_override) {
+                            const char *artifact_root_override,
+                            bool8_t record) {
 #if !VKR_METRICS_ENABLED
   (void)executable;
   (void)repo_root;
   (void)case_path;
   (void)profile_path;
   (void)artifact_root_override;
+  (void)record;
   vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                           NULL);
@@ -794,6 +867,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       .case_manifest = case_manifest,
       .profile = profile,
       .profile_compatible = true_v,
+      .recording = record,
       .subsystem_mask = subsystem_plan.effective_mask,
       /* A profile may raise the repetition count but never lower it. */
       .requested_repetitions =
@@ -824,6 +898,11 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     }
     vkr_harness_report_add_authority_reason(&report, "provenance.dirty");
   }
+  /* The recorder's cost is unmeasured against the overhead gate; a recorded
+     run describes what happened, not what the build costs. */
+  if (record) {
+    vkr_harness_report_add_authority_reason(&report, "recording.enabled");
+  }
 
   char artifact_candidate[VKR_HARNESS_PATH_MAX];
   char artifact_root[VKR_HARNESS_PATH_MAX];
@@ -847,9 +926,9 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
      contributes its report, samples, stdout, and stderr; the aggregate adds
      `summary.csv`. */
   if (!arenas.persistent || !arenas.transient ||
-      !vkr_harness_report_init_storage(&report, arenas.persistent, 0u,
-                                       (report.requested_repetitions * 4u) +
-                                           8u)) {
+      !vkr_harness_report_init_storage(
+          &report, arenas.persistent, 0u,
+          (report.requested_repetitions * (record ? 6u : 4u)) + 8u)) {
     vkr_harness_stderr("Unable to create the aggregation arenas\n");
     arena_destroy(arenas.persistent);
     arena_destroy(arenas.transient);
@@ -896,10 +975,10 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   VkrHarnessSampleSet runs[VKR_HARNESS_MAX_RUNS] = {0};
   for (uint32_t run = 0; run < report.requested_repetitions; ++run) {
     VkrHarnessRunReference *reference = &report.runs[report.run_count++];
-    if (!vkr_harness_execute_repetition(&arenas, executable, repo_root,
-                                        case_path, profile_path, run_root, run,
-                                        &case_manifest, scene_manifest.sha256,
-                                        reference, &runs[run], &error)) {
+    if (!vkr_harness_execute_repetition(
+            &arenas, executable, repo_root, case_path, profile_path, run_root,
+            run, &case_manifest, scene_manifest.sha256, record, reference,
+            &runs[run], &error)) {
       vkr_harness_stderr("%s: %s\n", error.code, error.message);
       break;
     }
@@ -977,6 +1056,10 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   for (uint32_t run = 0; run < report.completed_repetitions; ++run) {
     artifacts_complete &=
         vkr_harness_record_run_artifacts(&report, run_root, run);
+    if (record &&
+        !vkr_harness_record_recording_artifacts(&report, run_root, run)) {
+      vkr_harness_report_mark_incomplete(&report, "recording.missing");
+    }
   }
   if (!vkr_harness_summary_csv_write(summary, &report, arenas.transient,
                                      &error)) {
