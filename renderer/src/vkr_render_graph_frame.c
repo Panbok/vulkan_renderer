@@ -150,11 +150,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->input.lighting->diffuse_volume.indirection.id != 0u &&
       packet->input.lighting->diffuse_volume.dynamic_sh.id != 0u;
   /* The renderer requests sun rays only where the backend traces them. */
-  frame->sun_ray_shadows_active =
-      packet->scene_rendering && !packet->tiled_pipeline &&
-      packet->sun_ray_shadow_mode != VKR_SUN_RAY_SHADOW_OFF;
-  frame->sun_ray_shadow_half =
-      packet->sun_ray_shadow_mode == VKR_SUN_RAY_SHADOW_HALF;
+  frame->sun_ray_shadows_active = packet->scene_rendering &&
+                                  !packet->tiled_pipeline &&
+                                  packet->sun_ray_shadows;
   frame->sun_contact_shadows = packet->scene_rendering &&
                                !packet->tiled_pipeline &&
                                packet->sun_contact_shadows;

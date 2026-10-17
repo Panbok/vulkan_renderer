@@ -18,9 +18,10 @@ typedef struct VkrPreparedFrame {
   /** The visibility raster takes two samples a pixel: with SMAA when
       VKR_MSAA_ENABLED is set (SMAA S2x). */
   bool8_t msaa_enabled;
-  /** Ray-query sun shadows (VKR_SUN_RAY_SHADOWS) on a desktop frame whose
-      device traces them; VKR_SUN_RAY_SHADOW_OFF otherwise. */
-  VkrSunRayShadowMode sun_ray_shadow_mode;
+  /** Ray-query sun shadows, one ray per 2x2 block, on a desktop frame whose
+      device traces them: the shadow settings ask for them, or
+      VKR_SUN_RAY_SHADOWS is "1". */
+  bool8_t sun_ray_shadows;
   /** A contact march toward the sun on a desktop frame: the shadow
       settings ask for contact shadows (or VKR_SUN_CONTACT_SHADOWS is "1"),
       the sun shines and its cascades run. */

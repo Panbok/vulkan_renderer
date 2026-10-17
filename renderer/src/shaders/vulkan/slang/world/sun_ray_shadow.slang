@@ -1,16 +1,14 @@
 // Ray-query sun shadows on the desktop pipeline (prototype for the
 // shadow-quality proposal's D2). Shadow.SunRay traces one first-hit ray per
 // traced pixel toward a point on the sun's disk against the frame slot's TLAS
-// (ADR-119): every pixel, or one pixel of each 2x2 block whose position turns
-// with the frame. Shadow.SunRayResolve filters the samples with depth and
+// (ADR-119): one pixel of each 2x2 block, whose position turns with the
+// frame. Shadow.SunRayResolve filters the samples with depth and
 // normal weights at full resolution. Shadow.SunRayTemporal accumulates the
 // filtered visibility over frames along the camera motion into the mask that
 // deferred lighting takes in place of the cascades within the ray range.
 
-// Bit of VkrVkSunRayShadowRoot::flags: one ray per 2x2 block.
-#define VKR_SUN_RAY_HALF 1u
 // Bit of VkrVkSunRayShadowRoot::flags: the frame slot's TLAS is built.
-#define VKR_SUN_RAY_TLAS 2u
+#define VKR_SUN_RAY_TLAS 1u
 // Texture level of an alpha-tested caster's coverage. Shadows show cut-out
 // shapes near the camera, so they take a finer level than the probe trace.
 #define VKR_SUN_RAY_ALPHA_LEVEL 1.0f
@@ -32,8 +30,9 @@ struct VkrVkSunRayShadowRoot
     uint vbuffer_texture;
     uint depth_texture;
     uint normal_texture;
-    // RG16F: the traced visibility and the traced pixel's view depth, or
-    // VKR_SUN_RAY_NO_SAMPLE.
+    // RGBA16F, one texel per 2x2 block: the traced visibility, the traced
+    // pixel's view depth, or VKR_SUN_RAY_NO_SAMPLE, and its octahedral
+    // normal, which the resolve weights by.
     uint trace_texture;
     // RG8: the filtered visibility and the weight lighting gives it over
     // the cascades: Shadow.SunRayResolve's output, Shadow.SunRayTemporal's
@@ -74,12 +73,10 @@ struct VkrVkSunRayShadowPush
 };
 [[vk::push_constant]] ConstantBuffer<VkrVkSunRayShadowPush> g_sun_ray_shadow_push;
 
-// The full-resolution pixel a trace texel samples this frame: itself, or
-// one corner of its 2x2 block in a four-frame cycle.
+// The full-resolution pixel a trace texel samples this frame: one corner of
+// its 2x2 block in a four-frame cycle.
 uint2 vk_sun_ray_trace_pixel(VkrVkSunRayShadowRoot root, uint2 texel)
 {
-    if ((root.flags & VKR_SUN_RAY_HALF) == 0u)
-        return texel;
     const uint2 corners[4] = {uint2(0u, 0u), uint2(1u, 1u), uint2(1u, 0u),
                               uint2(0u, 1u)};
     return texel * 2u + corners[root.frame_index & 3u];
@@ -165,7 +162,7 @@ void vk_sun_ray_shadow_trace(uint3 thread_id : SV_DispatchThreadID)
         return;
     uint2 pixel = min(vk_sun_ray_trace_pixel(root, thread_id.xy),
                       root.extent - 1u);
-    float2 result = float2(1.0f, VKR_SUN_RAY_NO_SAMPLE);
+    float4 result = float4(1.0f, VKR_SUN_RAY_NO_SAMPLE, 0.0f, 0.0f);
     VkrVulkanPacketFrameRoot *frame = root.frame;
     uint visible = g_storage_uint2_2d[root.vbuffer_texture][pixel].x;
     if (visible != 0u && (root.flags & VKR_SUN_RAY_TLAS) != 0u &&
@@ -178,8 +175,9 @@ void vk_sun_ray_shadow_trace(uint3 thread_id : SV_DispatchThreadID)
         float view_depth = abs(mul(frame.view, float4(world, 1.0f)).z);
         if (view_depth < root.range_end)
         {
-            float3 normal = vkr_vk_octahedral_decode(
-                g_storage_float2_2d[root.normal_texture][pixel]);
+            float2 encoded_normal =
+                g_storage_float2_2d[root.normal_texture][pixel];
+            float3 normal = vkr_vk_octahedral_decode(encoded_normal);
             float3 sun = normalize(-frame.directional_direction_enabled.xyz);
             // A surface facing away from the sun takes no direct light
             // unless it transmits some, which lighting shadows from the
@@ -215,10 +213,10 @@ void vk_sun_ray_shadow_trace(uint3 thread_id : SV_DispatchThreadID)
                                  ? 1.0f
                                  : 0.0f;
             }
-            result = float2(visibility, view_depth);
+            result = float4(visibility, view_depth, encoded_normal);
         }
     }
-    g_storage_float2_2d[root.trace_texture][thread_id.xy] = result;
+    g_storage_2d[root.trace_texture][thread_id.xy] = result;
 }
 
 // Samples within this many trace texels of a pixel's own texel filter it.
@@ -249,8 +247,7 @@ void vk_sun_ray_shadow_resolve(uint3 thread_id : SV_DispatchThreadID)
         {
             float3 normal = vkr_vk_octahedral_decode(
                 g_storage_float2_2d[root.normal_texture][pixel]);
-            bool half_rate = (root.flags & VKR_SUN_RAY_HALF) != 0u;
-            int2 center = half_rate ? int2(pixel / 2u) : int2(pixel);
+            int2 center = int2(pixel / 2u);
             // Depths within this relative distance of the pixel's count as
             // its surface.
             float depth_tolerance = 0.02f * view_depth + 0.02f;
@@ -265,8 +262,8 @@ void vk_sun_ray_shadow_resolve(uint3 thread_id : SV_DispatchThreadID)
                     int2 texel = center + int2(x, y);
                     if (any(texel < 0) || any(texel >= int2(root.trace_extent)))
                         continue;
-                    float2 traced =
-                        g_storage_float2_2d[root.trace_texture][uint2(texel)];
+                    float4 traced =
+                        g_storage_2d[root.trace_texture][uint2(texel)];
                     if (traced.y < 0.0f)
                         continue;
                     uint2 source = min(
@@ -278,8 +275,8 @@ void vk_sun_ray_shadow_resolve(uint3 thread_id : SV_DispatchThreadID)
                                          VKR_SUN_RAY_RESOLVE_SIGMA));
                     float depth_weight = saturate(
                         1.0f - abs(traced.y - view_depth) / depth_tolerance);
-                    float3 source_normal = vkr_vk_octahedral_decode(
-                        g_storage_float2_2d[root.normal_texture][source]);
+                    float3 source_normal =
+                        vkr_vk_octahedral_decode(traced.zw);
                     float normal_weight =
                         pow(saturate(dot(normal, source_normal)), 8.0f);
                     float weight = spatial * depth_weight * normal_weight;

@@ -1713,7 +1713,6 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
       VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
   const uint32_t width = renderer->prepared_frame.viewport_width;
   const uint32_t height = renderer->prepared_frame.viewport_height;
-  const bool8_t half = renderer->prepared_frame.sun_ray_shadow_half;
   const VkrVulkanSunRayShadowRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1729,16 +1728,15 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
       .mask_texture = mask,
       .tlas_slot = renderer->active_frame_slot,
       .extent = {width, height},
-      /* A half-rate trace covers every 2x2 block, the last one partly. */
-      .trace_extent = {half ? (width + 1u) / 2u : width,
-                       half ? (height + 1u) / 2u : height},
+      /* One ray per whole 2x2 block, as the graph's half-size trace image
+         floors the viewport. */
+      .trace_extent = {Max(width / 2u, 1u), Max(height / 2u, 1u)},
       /* Without a built TLAS that holds every row the trace stores no
          sample and lighting keeps the cascades, so casters whose BLAS is
          still queued after a load do not lose their shadow. */
-      .flags = (half ? VKR_VULKAN_SUN_RAY_HALF : 0u) |
-               (slot->volume_build_ready && slot->tlas_missing_rows == 0u
-                    ? VKR_VULKAN_SUN_RAY_TLAS
-                    : 0u),
+      .flags = slot->volume_build_ready && slot->tlas_missing_rows == 0u
+                   ? VKR_VULKAN_SUN_RAY_TLAS
+                   : 0u,
       .frame_index = packet->input.frame.frame_index,
       .range_fade_start = VKR_VULKAN_SUN_RAY_RANGE_FADE_START,
       .range_end = VKR_VULKAN_SUN_RAY_RANGE_END,

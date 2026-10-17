@@ -89,15 +89,6 @@ typedef struct VkrFrameInfo {
   uint64_t scene_generation;
 } VkrFrameInfo;
 
-/* Prototype ray-query sun shadows (the shadow-quality proposal's D2 gate):
-   rays replace the cascades near the camera, one per pixel or one per 2x2
-   block. */
-typedef enum VkrSunRayShadowMode {
-  VKR_SUN_RAY_SHADOW_OFF = 0,
-  VKR_SUN_RAY_SHADOW_HALF,
-  VKR_SUN_RAY_SHADOW_FULL,
-} VkrSunRayShadowMode;
-
 /** Antialiasing on the desktop pipeline (ADR-037, ADR-052). FSR 3.1
  * reconstructs the Scene at its own resolution from many jittered frames;
  * SMAA T2x is the cheaper two-frame fallback, and the only mode where the
@@ -694,7 +685,7 @@ typedef struct VkrShadowPassPayload {
   bool8_t contact_shadows;
   /** Ray-query sun shadows near the camera, which the desktop pipeline
    * traces where the device supports ray queries
-   * (VkrPreparedFrame.sun_ray_shadow_mode). */
+   * (VkrPreparedFrame.sun_ray_shadows). */
   bool8_t sun_rays;
   /** SDF sun shadows, a VkrShadowSdfMode; the tiled pipeline draws them. */
   uint32_t sdf_mode;

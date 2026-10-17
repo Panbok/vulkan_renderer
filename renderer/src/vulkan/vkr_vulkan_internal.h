@@ -2873,7 +2873,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSunRayShadowRoot {
   uint32_t tlas_slot;
   uint32_t extent[2];
   uint32_t trace_extent[2];
-  /* VKR_VULKAN_SUN_RAY_HALF | VKR_VULKAN_SUN_RAY_TLAS. */
+  /* VKR_VULKAN_SUN_RAY_TLAS. */
   uint32_t flags;
   uint32_t frame_index;
   /* View depths, in metres, where the rays' weight starts to fall and
@@ -2904,8 +2904,7 @@ _Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 208u &&
                    offsetof(VkrVulkanSunRayShadowRoot, flags) == 160u &&
                    offsetof(VkrVulkanSunRayShadowRoot, ray_length) == 176u,
                "Vulkan sun ray shadow root ABI drift");
-#define VKR_VULKAN_SUN_RAY_HALF 1u
-#define VKR_VULKAN_SUN_RAY_TLAS 2u
+#define VKR_VULKAN_SUN_RAY_TLAS 1u
 
 /* The three ray-query sun shadow passes, which share one prepare. */
 typedef enum VkrVulkanSunRayStage {
