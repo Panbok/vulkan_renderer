@@ -313,6 +313,11 @@ an agent must read one without the editor.
   rows (12 bytes each) per Bistro frame: a 244-frame Bistro recording took
   65 KB compressed. On tiled, every 8th frame also pays for the pass stamps
   (about 0.5 ms on Bistro), so timing comparisons use Tier 0.
+- Recording did not raise `frame.wall` in authoritative A/B runs on Bistro
+  (the GPU-bound orbit, and a 640×360 orbit with and without the render
+  thread), nor any CPU stage; Bistro stays GPU-bound on the M1 at low
+  resolution, so a CPU-bound workload is still to be measured
+  (docs/proposals/recordings.md, R1).
 - A seek reproduces the recorded camera exactly: a scripted agent-channel
   check found 0 m and 0° error at four frames on Bistro.
 - A recording made by another build reads only if its dictionary's frame and
