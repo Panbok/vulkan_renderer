@@ -952,18 +952,22 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
      2560 x 1440 for about 9 % less edge shimmer in motion (ADR-037). */
   renderer->msaa_enabled = vkr_platform_environment_flag("VKR_MSAA_ENABLED");
   /* Ray-query sun shadows follow the Ray traced shadows setting; "0" or "1"
-     overrides it for a matched capture. */
+     overrides it for a matched capture. An unset variable reads empty. */
   char sun_ray_shadows[8];
-  renderer->sun_ray_shadow_forced = vkr_platform_environment_variable(
-      "VKR_SUN_RAY_SHADOWS", sun_ray_shadows, sizeof(sun_ray_shadows));
+  renderer->sun_ray_shadow_forced =
+      vkr_platform_environment_variable("VKR_SUN_RAY_SHADOWS", sun_ray_shadows,
+                                        sizeof(sun_ray_shadows)) &&
+      sun_ray_shadows[0] != '\0';
   renderer->sun_ray_shadow_forced_on =
       renderer->sun_ray_shadow_forced && string_equals(sun_ray_shadows, "1");
   /* Desktop sun contact shadows follow the shadow settings, as the tiled
      pipeline's do; "0" or "1" overrides them for a matched capture. */
   char sun_contact_shadows[8];
-  renderer->sun_contact_forced = vkr_platform_environment_variable(
-      "VKR_SUN_CONTACT_SHADOWS", sun_contact_shadows,
-      sizeof(sun_contact_shadows));
+  renderer->sun_contact_forced =
+      vkr_platform_environment_variable("VKR_SUN_CONTACT_SHADOWS",
+                                        sun_contact_shadows,
+                                        sizeof(sun_contact_shadows)) &&
+      sun_contact_shadows[0] != '\0';
   renderer->sun_contact_forced_on =
       renderer->sun_contact_forced && string_equals(sun_contact_shadows, "1");
   /* Filtering display-linear pixels is the default (ADR-043); only the explicit
