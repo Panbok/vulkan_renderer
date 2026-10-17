@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-17
 authority: adr
 ---
 
@@ -8,9 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted (partial). A Vulkan device-memory budget is not implemented, and no
-device below the memory floor has a Bistro measurement. Only the two reference
-devices have native evidence.
+Accepted (partial). Vulkan reports the driver's memory usage and budget but
+does not enforce a device-memory budget, and no device below the memory floor
+has a Bistro measurement. Only the two reference devices have native evidence.
 
 ## Context
 
@@ -79,7 +79,7 @@ path depends on the capability.
 | Lossy render-target compression | No | Yes | Yes | Not exposed | Not exposed | Not used |
 | Samplers per stage in argument buffers | 996 | 996 | 500,000 | Not applicable | Not applicable | The Metal sampler cache holds at most 932 states below Apple9, keeping 64 for inline MSL samplers, and reuses the closest cached state beyond that |
 | Scene scaling | Spatial upscale with adaptive quality | Same | Same | None; unit scale | None; unit scale | ADR-087 (decision 12); Vulkan FSR 3.1 was removed (ADR-052) |
-| Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, not enabled | Same | Metal only |
+| Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, enabled when present | Same | Metal enforces it; Vulkan reports device-local usage and budget as `memory.gpu.driver.*` metrics |
 | `VK_EXT_descriptor_heap` | Not applicable | Not applicable | Not applicable | Missing on Windows drivers | Present | Not used; adopting it drops Windows RDNA 2 |
 
 Apple9 GPUs allocate registers dynamically (Apple's Dynamic Caching). Occupancy
@@ -149,7 +149,7 @@ every M1 and M2 Mac.
 
 A supported family changes, a driver snapshot changes a required extension, an
 8 GB Mac or another column gets a native measurement, or the reduced texture
-tier or a Vulkan memory budget ships.
+tier or an enforced Vulkan memory budget ships.
 
 ## Sources
 
@@ -171,5 +171,6 @@ tier or a Vulkan memory budget ships.
 - [Metal managed budget](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc)
   (`vkr_metal_packet_managed_budget`)
 - [Vulkan device floor](../../renderer/src/vulkan/vkr_vulkan_device.c)
+  (`vkr_vulkan_device_memory_budget` reads the driver's usage and budget)
 - [Texture pressure budget](../../runtime/src/renderer/systems/vkr_render_assets.c)
 - [Texture format selection](../../runtime/src/renderer/systems/vkr_texture_system.c)
