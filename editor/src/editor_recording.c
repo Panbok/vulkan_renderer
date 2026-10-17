@@ -368,6 +368,19 @@ vkr_internal void editor_recording_transport(VkrEditorUi *editor,
 }
 
 /* The marker before or after the playhead, or none. */
+void vkr_editor_recording_settings(VkrEditorUi *editor, float32_t speed,
+                                   bool8_t loop, float64_t loop_start,
+                                   float64_t loop_end) {
+  const VkrSampleRecordingRequest request = {
+      .command = VKR_SAMPLE_RECORDING_SETTINGS,
+      .speed = speed,
+      .loop = loop,
+      .loop_start = loop_start,
+      .loop_end = loop_end,
+  };
+  (void)vkr_editor_recording_send(editor, request, false_v);
+}
+
 vkr_internal const VkrRecordingMarker *
 editor_recording_marker_near(const VkrRecordingPlayback *playback,
                              bool8_t forward) {
@@ -395,7 +408,7 @@ vkr_internal VkrUiWidgetConfig editor_recording_button(uint32_t column,
   return button;
 }
 
-vkr_internal Vec4 editor_recording_marker_color(uint32_t kind) {
+Vec4 vkr_editor_recording_marker_color(uint32_t kind) {
   const VkrUiTheme *theme = vkr_ui_theme();
   switch (kind) {
   case VKR_RECORDING_MARKER_BUG:
@@ -408,7 +421,6 @@ vkr_internal Vec4 editor_recording_marker_color(uint32_t kind) {
   return theme->info;
 }
 
-/* Marker ticks over the scrub slider's last rectangle; a click seeks. */
 /* A marker's dot on the playback bar's track, ring included. */
 #define EDITOR_RECORDING_MARKER_PT 12.0f
 
@@ -434,7 +446,8 @@ vkr_internal void editor_recording_markers_build(
         (slider_px.y + slider_px.height * 0.5f) / scale - size * 0.5f, 0.0f,
         0.0f, (slider_px.x + slider_px.width * fraction) / scale - size * 0.5f};
     tick.style.min_size_pt = tick.style.max_size_pt = (Vec2){size, size};
-    tick.style.background_color = editor_recording_marker_color(marker->kind);
+    tick.style.background_color =
+        vkr_editor_recording_marker_color(marker->kind);
     tick.style.hover_background_color = vkr_ui_theme()->text;
     tick.style.border_pt = (VkrUiEdges){2.0f, 2.0f, 2.0f, 2.0f};
     tick.style.border_color = vkr_ui_theme()->popup;
@@ -586,9 +599,9 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                     string8_create_formatted(ui->frame_allocator, "%g\xc3\x97",
                                              (double)speeds[speed_index]),
                     &speed)) {
-    editor_recording_transport(editor, VKR_SAMPLE_RECORDING_SETTINGS, 0.0, 0u,
-                               speeds[(speed_index + 1u) % ArrayCount(speeds)],
-                               playback->loop);
+    vkr_editor_recording_settings(
+        editor, speeds[(speed_index + 1u) % ArrayCount(speeds)], playback->loop,
+        playback->loop_start, playback->loop_end);
   }
   /* Review: a click marks it reviewed or takes that back; Shift flags it. */
   char error[192];
@@ -624,8 +637,20 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                      : string8_lit("Play once; click to loop"));
   vkr_editor_toggle_style(&loop, playback->loop);
   if (vkr_ui_button(ui, string8_lit("loop"), (String8){0}, &loop)) {
-    editor_recording_transport(editor, VKR_SAMPLE_RECORDING_SETTINGS, 0.0, 0u,
-                               playback->speed, !playback->loop);
+    vkr_editor_recording_settings(editor, playback->speed, !playback->loop,
+                                  playback->loop_start, playback->loop_end);
+  }
+  VkrUiWidgetConfig timeline = editor_recording_button(
+      13u,
+      editor->recording.timeline.open ? VKR_UI_ICON_CHEVRON_DOWN
+                                      : VKR_UI_ICON_CHEVRON_UP,
+      editor->recording.timeline.open
+          ? string8_lit("Hide the timeline")
+          : string8_lit("Show the timeline: frame times, markers and "
+                        "ranges up close, with zoom and selection"));
+  vkr_editor_toggle_style(&timeline, editor->recording.timeline.open);
+  if (vkr_ui_button(ui, string8_lit("timeline"), (String8){0}, &timeline)) {
+    editor->recording.timeline.open = !editor->recording.timeline.open;
   }
   VkrUiWidgetConfig analyze = editor_recording_button(
       12u, VKR_UI_ICON_CHART_BAR,
@@ -653,7 +678,7 @@ vkr_internal bool8_t editor_recording_bar_rect(const VkrSampleUiFrame *frame,
   const Vec4 viewport = frame->mapping.panel_rect_px;
   const float32_t left = 104.0f;
   const float32_t width = viewport.z / scale - left - 10.0f;
-  /* Nine buttons, the clock and the speed leave the track 80 pt. */
+  /* Ten buttons, the clock and the speed leave the track 60 pt. */
   if (width < 520.0f) {
     return false_v;
   }
@@ -680,8 +705,17 @@ void vkr_editor_recording_register_input(VkrEditorUi *editor,
         ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
         (VkrUiRect){bar.x * scale, bar.y * scale, bar.z * scale,
                     EDITOR_RECORDING_BAR_HEIGHT_PT * scale});
+    const float32_t timeline = vkr_editor_recording_timeline_height(editor);
+    if (timeline > 0.0f) {
+      (void)vkr_ui_input_layer_register(
+          ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
+          (VkrUiRect){bar.x * scale, (bar.y - timeline) * scale, bar.z * scale,
+                      timeline * scale});
+    }
+    Vec3 stack = bar;
+    stack.y -= timeline;
     Vec4 composer;
-    if (vkr_editor_recording_composer_rect(editor, bar, &composer)) {
+    if (vkr_editor_recording_composer_rect(editor, stack, &composer)) {
       (void)vkr_ui_input_layer_register(
           ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
           (VkrUiRect){composer.x * scale, composer.y * scale,
@@ -733,6 +767,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
       button,
       button,
       button,
+      button,
   };
   const VkrUiTrack row = {.value = EDITOR_RECORDING_BUTTON_PT,
                           .unit = VKR_UI_TRACK_PX};
@@ -758,7 +793,11 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
   vkr_editor_recording_annotations_track(editor, frame, playback, slider_px);
   editor_recording_markers_build(editor, frame, playback, slider_px);
-  vkr_editor_recording_composer_build(editor, frame, playback, bar_pt);
+  /* The timeline sits on the bar; the note and range panels on top. */
+  vkr_editor_recording_timeline_build(editor, frame, playback, bar_pt);
+  Vec3 stack_pt = bar_pt;
+  stack_pt.y -= vkr_editor_recording_timeline_height(editor);
+  vkr_editor_recording_composer_build(editor, frame, playback, stack_pt);
 }
 
 /* ------------------------------------------------------------------------ */

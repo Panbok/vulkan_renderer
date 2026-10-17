@@ -214,6 +214,37 @@ typedef struct VkrEditorRecordingNotes {
   uint64_t name_length;
 } VkrEditorRecordingNotes;
 
+/* Columns the timeline's frame-time lane draws at most; each shows the
+   slowest frame of its run of frames. */
+#define VKR_EDITOR_TIMELINE_COLUMNS 512u
+
+/* The timeline over the playback bar: the frames it shows, the frames
+   brushed on it, and the frame-time columns built for that view. */
+typedef struct VkrEditorRecordingTimeline {
+  bool8_t open;
+  /* The bundle the view belongs to; another one resets it. */
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t view_first;
+  uint64_t view_last;
+  /* A brushed selection, inclusive; `selected` is false without one. */
+  bool8_t selected;
+  uint64_t select_first;
+  uint64_t select_last;
+  /* Columns of [columns_first, columns_last]: each column's slowest frame,
+     its time and its budget class (0 within, 1 up to twice, 2 beyond). */
+  uint64_t columns_first;
+  uint64_t columns_last;
+  uint32_t column_count;
+  uint64_t column_frame[VKR_EDITOR_TIMELINE_COLUMNS];
+  float32_t column_ms[VKR_EDITOR_TIMELINE_COLUMNS];
+  uint8_t column_class[VKR_EDITOR_TIMELINE_COLUMNS];
+  float32_t top_ms;
+  /* The frame-time lane's id, for its last drawn rectangle, and the column
+     the pointer was over in the last build, for the tooltip. */
+  VkrUiId plot_id;
+  uint32_t hovered_column;
+} VkrEditorRecordingTimeline;
+
 typedef struct VkrEditorRecording {
   /* Requests waiting for a frame; the runtime takes one per frame. */
   VkrSampleRecordingRequest queue[VKR_EDITOR_RECORDING_QUEUE];
@@ -250,6 +281,7 @@ typedef struct VkrEditorRecording {
   VkrUiId path_id;
   VkrEditorRecordingRequests requests;
   VkrEditorRecordingNotes notes;
+  VkrEditorRecordingTimeline timeline;
   /* Reused while the list reads each bundle's annotations. */
   VkrRecordingAnnotations list_annotations;
   /* One past the entry whose Delete was pressed once, or zero; a second
@@ -291,6 +323,16 @@ uint64_t vkr_editor_recording_send(struct VkrEditorUi *editor,
  * the agent's private directory outside a project. */
 bool8_t vkr_editor_recording_directory(struct VkrEditorUi *editor, char *out,
                                        uint64_t capacity);
+
+/** The colour of a recording marker of `kind`, on the bar and timeline. */
+Vec4 vkr_editor_recording_marker_color(uint32_t kind);
+
+/** Sets the open playback's speed and loop; `loop_start` and `loop_end` are
+ * the recorded times it loops between, an empty span the whole recording.
+ * Every settings change passes the span it keeps. */
+void vkr_editor_recording_settings(struct VkrEditorUi *editor, float32_t speed,
+                                   bool8_t loop, float64_t loop_start,
+                                   float64_t loop_end);
 
 /** Starts a recording named `name` (a time stamp when empty) by `author`
  * that measures `tier`. Returns its token, or zero with the reason in
@@ -383,6 +425,19 @@ bool8_t vkr_editor_recording_requests_build(struct VkrEditorUi *editor,
  * until the list is read again. */
 const VkrEditorRecordingEntry *
 vkr_editor_recording_newest(struct VkrEditorUi *editor);
+
+/* ---- Timeline (editor_recording_timeline.c) ---- */
+
+/** The timeline's height in points when open over the open playback, else
+ * zero. */
+float32_t vkr_editor_recording_timeline_height(struct VkrEditorUi *editor);
+/** The timeline above the playback bar, whose top-left corner and width are
+ * `bar_pt`: the frame-time lane, markers, notes and ranges, a ruler, zoom,
+ * and actions on a brushed selection. */
+void vkr_editor_recording_timeline_build(struct VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrRecordingPlayback *playback,
+                                         Vec3 bar_pt);
 
 /* ---- Perf re-run (editor_recording_rerun.c) ---- */
 

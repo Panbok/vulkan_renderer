@@ -263,6 +263,8 @@ vkr_sample_recording_transport(VkrStandardSceneRuntime *runtime,
   case VKR_SAMPLE_RECORDING_SETTINGS:
     playback->speed = Min(Max(request->speed, 0.1f), 4.0f);
     playback->loop = request->loop;
+    vkr_recording_playback_set_loop_range(playback, request->loop_start,
+                                          request->loop_end);
     break;
   default:
     break;

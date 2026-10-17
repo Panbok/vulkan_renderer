@@ -95,6 +95,10 @@ typedef struct VkrSampleRecordingRequest {
   uint64_t frame;
   float32_t speed;
   bool8_t loop;
+  /* SETTINGS: the recorded times `loop` loops between; an empty span loops
+     the whole recording. */
+  float64_t loop_start;
+  float64_t loop_end;
   /* START: the compressor the client links; NULL stores chunks raw. */
   const VkrCodec *codec;
   /* START: what the recording measures. */

@@ -1318,6 +1318,63 @@ static void test_recording_gpu_submission(void) {
   printf("  test_recording_gpu_submission PASSED\n");
 }
 
+/* Detects: a loop span that lets the playhead run past its end, a wrap
+   that loses the overshoot, a playhead before the span that never enters
+   it, and an empty span that stops looping the whole recording. */
+static void test_recording_playback_loop_range(void) {
+  printf("  Running test_recording_playback_loop_range...\n");
+  char path[1024];
+  recording_test_path("loop", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {.bundle_path = path,
+                                     .codec = vkr_depot_zstd_codec()};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  /* 21 frames 0.1 s apart: recorded times 0 to 2 s. */
+  for (uint32_t f = 0u; f < 21u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 0.1};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+
+  static VkrRecordingPlayback playback;
+  char error[128];
+  assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
+                                     error, sizeof(error)));
+  const float64_t epsilon = 1.0e-9;
+  playback.loop = true_v;
+  playback.playing = true_v;
+  vkr_recording_playback_set_loop_range(&playback, 0.5, 1.0);
+  vkr_recording_playback_advance(&playback, 0.2);
+  assert(fabs(playback.time - 0.5) < epsilon);
+  vkr_recording_playback_advance(&playback, 0.6);
+  assert(fabs(playback.time - 0.6) < epsilon);
+  /* Several spans in one step keep the remainder. */
+  vkr_recording_playback_advance(&playback, 1.25);
+  assert(fabs(playback.time - 0.85) < epsilon);
+  /* An empty span loops all of it again. */
+  vkr_recording_playback_set_loop_range(&playback, 0.0, 0.0);
+  vkr_recording_playback_advance(&playback, 1.3);
+  assert(fabs(playback.time - 0.15) < epsilon && playback.playing);
+  playback.loop = false_v;
+  vkr_recording_playback_advance(&playback, 5.0);
+  assert(fabs(playback.time - 2.0) < epsilon && !playback.playing);
+  vkr_recording_playback_close(&playback);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  printf("  test_recording_playback_loop_range PASSED\n");
+}
+
 /* Detects: notes or ranges out of order after an add, a note lost or
    reordered on its frame, escapes (quotes, newlines, UTF-8) damaged by the
    write and read, a cut inside a UTF-8 sequence, a reversed range kept
@@ -1441,6 +1498,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pose_playback();
   test_recording_player_records();
   test_recording_drive();
+  test_recording_playback_loop_range();
   test_recording_annotations();
   printf("--- Recording Tests Completed ---\n");
   return true_v;

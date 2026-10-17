@@ -127,6 +127,10 @@ typedef struct VkrRecordingPlayback {
   float32_t speed;
   bool8_t playing;
   bool8_t loop;
+  /* With `loop`, the times it loops between; loop_end at or below
+     loop_start loops the whole recording. */
+  float64_t loop_start;
+  float64_t loop_end;
 } VkrRecordingPlayback;
 
 typedef struct VkrRecordingPlaybackPose {
@@ -146,6 +150,11 @@ bool8_t vkr_recording_playback_open(VkrRecordingPlayback *playback,
                                     char *error, uint64_t error_capacity);
 
 void vkr_recording_playback_close(VkrRecordingPlayback *playback);
+
+/** Loops between recorded times `start` and `end`, clamped to the
+    recording; an empty span loops the whole recording. */
+void vkr_recording_playback_set_loop_range(VkrRecordingPlayback *playback,
+                                           float64_t start, float64_t end);
 
 /** Moves a playing playhead by `seconds` of display time times the speed. */
 void vkr_recording_playback_advance(VkrRecordingPlayback *playback,

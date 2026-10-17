@@ -136,6 +136,16 @@ an agent must read one without the editor.
   `rec.request.wait` holds until the request is recorded, declined,
   cancelled or expired, or a timeout passes
   ([editor_recording_requests.c](../../editor/src/editor_recording_requests.c)).
+- **Timeline.** The playback bar's chevron opens a timeline over it: a
+  frame-time lane of at most 512 columns (each the slowest frame of its run)
+  against the 16.7 ms budget, with the playhead; an event lane with
+  markers, notes and ranges; and a ruler. The wheel zooms around the
+  pointer and Shift-wheel pans; a playing playhead pulls the view along.
+  Dragging across the lane selects frames, which can loop, become a range,
+  get a perf re-run or fill the view. A loop span is a playback setting
+  (`loop_start`, `loop_end`) that every settings request carries; `rec.set`
+  takes `range` [first, last] frames, [] for the whole recording
+  ([editor_recording_timeline.c](../../editor/src/editor_recording_timeline.c)).
 - **Annotations (R4).** A bundle's `annotations.json` (kind
   `vkr.recording.annotations`) holds notes on frames (at most 64), named
   frame ranges (at most 32) and a review state: unreviewed, reviewed or

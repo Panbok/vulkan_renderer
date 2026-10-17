@@ -517,16 +517,28 @@ void vkr_recording_playback_advance(VkrRecordingPlayback *playback,
     return;
   }
   float64_t time = playback->time + seconds * (float64_t)playback->speed;
-  if (time >= playback->duration) {
-    if (playback->loop && playback->duration > 0.0) {
-      time -=
-          playback->duration * (float64_t)(uint64_t)(time / playback->duration);
-    } else {
-      time = playback->duration;
-      playback->playing = false_v;
-    }
+  const bool8_t span = playback->loop_end > playback->loop_start;
+  const float64_t start = span ? playback->loop_start : 0.0;
+  const float64_t end = span ? playback->loop_end : playback->duration;
+  if (playback->loop && end > start && (time >= end || time < start)) {
+    /* A playhead outside the span enters it at its start. */
+    const float64_t length = end - start;
+    time = time < start
+               ? start
+               : start + (time - end) -
+                     length * (float64_t)(uint64_t)((time - end) / length);
+  } else if (time >= playback->duration) {
+    time = playback->duration;
+    playback->playing = false_v;
   }
   playback->time = Max(time, 0.0);
+}
+
+void vkr_recording_playback_set_loop_range(VkrRecordingPlayback *playback,
+                                           float64_t start, float64_t end) {
+  vkr_assert(playback != NULL && playback->open);
+  playback->loop_start = Min(Max(start, 0.0), playback->duration);
+  playback->loop_end = Min(Max(end, 0.0), playback->duration);
 }
 
 void vkr_recording_playback_seek_time(VkrRecordingPlayback *playback,

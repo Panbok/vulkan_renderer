@@ -15664,8 +15664,37 @@ static VkrEditorOpStatus ops_run_rec_set(OpsContext *ctx) {
       .command = VKR_SAMPLE_RECORDING_SETTINGS,
       .speed = playback ? playback->speed : 1.0f,
       .loop = playback ? playback->loop : false_v,
+      .loop_start = playback ? playback->loop_start : 0.0,
+      .loop_end = playback ? playback->loop_end : 0.0,
   };
   if (ctx->call->stage == 0u) {
+    /* 'range' [first, last] loops those frames; [] loops all of it. */
+    const VkrBakeryJson *range = vkr_bakery_json_get(ctx->call->args, "range");
+    if (range) {
+      if (!playback || range->type != VKR_BAKERY_JSON_ARRAY ||
+          (range->count != 0u && range->count != 2u)) {
+        ops_fail(ctx, OPS_INVALID,
+                 "'range' is [first, last] frames of the open recording, or "
+                 "[]");
+        return VKR_EDITOR_OP_DONE;
+      }
+      request.loop_start = request.loop_end = 0.0;
+      if (range->count == 2u) {
+        const VkrBakeryJson *first = vkr_bakery_json_at(range, 0u);
+        const VkrBakeryJson *last = vkr_bakery_json_at(range, 1u);
+        if (first->type != VKR_BAKERY_JSON_INT ||
+            last->type != VKR_BAKERY_JSON_INT || first->integer < 0 ||
+            last->integer <= first->integer ||
+            (uint64_t)last->integer >= playback->frame_count) {
+          ops_fail(ctx, OPS_INVALID,
+                   "'range' frames must rise and lie within the recording");
+          return VKR_EDITOR_OP_DONE;
+        }
+        request.loop_start = playback->times[first->integer];
+        request.loop_end = playback->times[last->integer];
+        request.loop = true_v;
+      }
+    }
     float64_t speed = 0.0;
     if (ops_arg_number(ctx->call->args, "speed", &speed)) {
       if (!(speed >= 0.1 && speed <= 4.0)) {
@@ -15875,9 +15904,12 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"frame\":{\"type\":"
      "\"integer\"},\"time\":{\"type\":\"number\"},\"marker\":{}}}",
      ops_run_rec_seek, NULL},
-    {"rec.set", "Set the playback 'speed' (0.1 to 4) and 'loop'.",
+    {"rec.set",
+     "Set the playback 'speed' (0.1 to 4) and 'loop'; 'range' [first, last] "
+     "loops those frames, [] the whole recording.",
      "{\"type\":\"object\",\"properties\":{\"speed\":{\"type\":"
-     "\"number\"},\"loop\":{\"type\":\"boolean\"}}}",
+     "\"number\"},\"loop\":{\"type\":\"boolean\"},\"range\":{\"type\":"
+     "\"array\",\"items\":{\"type\":\"integer\"}}}}",
      ops_run_rec_set, NULL},
     {"rec.analyze",
      "Show a recording ('name' or a path) in the Performance window: "
