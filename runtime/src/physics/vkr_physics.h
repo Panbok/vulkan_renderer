@@ -249,6 +249,16 @@ typedef struct VkrPhysicsJobs {
 // submissions and wake-ups can cost more than they save.
 #define VKR_PHYSICS_PARALLEL_BODIES 512u
 
+// A world's counts for measurement: its bodies, the awake ones among
+// them, and the solid contacts its last step reported.
+typedef struct VkrPhysicsStats {
+  uint32_t bodies;
+  uint32_t awake_bodies;
+  uint32_t contacts;
+} VkrPhysicsStats;
+void vkr_physics_world_stats(const VkrPhysicsWorld *world,
+                             VkrPhysicsStats *out);
+
 // Steps of every world spread over `jobs` from now on; NULL, the default,
 // keeps every step on the calling thread. Results do not depend on the
 // choice. Clearing waits for jobs still queued, so clear before the workers

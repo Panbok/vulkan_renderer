@@ -408,6 +408,7 @@ subsystem and the entities that differ.
 | None | Camera, player, input, state, events | Overhead gate |
 | Tier 0 | Frame wall time, CPU scopes, whole-frame GPU time, draw and visibility counts, RSS and `phys_footprint` with their peaks, VRAM driver bytes and budget, GPU owner rows and allocator tags when they change, recorder self-cost | Overhead gate, measured with whole-frame GPU timing on; its instrumentation fingerprint is recorded |
 | Tier 1 | Tier 0 plus per-pass CPU and GPU times | Vulkan: live. Metal: sampled frames (1 in N, labeled) or a perf re-run (D2) |
+| All measurements | Tier 1 with GPU pass stamps every frame on both backends, plus every catalog metric and physics counts (ADR-122) | Diagnostic: costs at least Tier 1; never used for timing comparisons |
 | Thumbnails | 320×180 BC1 at 2 Hz, downscaled before the UI composite | Measured in R5 |
 
 Whole-frame GPU time and `VK_EXT_memory_budget` on Vulkan are implemented.

@@ -288,6 +288,16 @@ bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error);
 /* Nanoseconds the native physics step took since the last call, then zero:
    the frame's physics time for metrics. */
 uint64_t vkr_scene_physics_take_step_ns(VkrScene *scene);
+/* The scene's physics for measurement: its bodies, the native world's awake
+   bodies and last step's solid contacts, and its characters. Zeros without
+   physics. */
+typedef struct VkrScenePhysicsStats {
+  uint32_t bodies;
+  uint32_t awake_bodies;
+  uint32_t contacts;
+  uint32_t characters;
+} VkrScenePhysicsStats;
+void vkr_scene_physics_stats(const VkrScene *scene, VkrScenePhysicsStats *out);
 void vkr_scene_physics_shutdown(VkrScene *scene);
 bool8_t vkr_scene_physics_entity_destroying(VkrScene *scene,
                                             VkrEntityId entity);

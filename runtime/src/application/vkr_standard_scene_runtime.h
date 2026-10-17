@@ -158,6 +158,13 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // animation and transforms), and of it the native physics step.
   VkrMetricId simulation;
   VkrMetricId physics;
+  // The simulated container's physics after its step: bodies, the awake
+  // ones, last step's solid contacts, characters and fixed ticks run.
+  VkrMetricId physics_bodies;
+  VkrMetricId physics_awake_bodies;
+  VkrMetricId physics_contacts;
+  VkrMetricId physics_characters;
+  VkrMetricId physics_ticks;
 } VkrStandardSceneRuntimeMetricIds;
 
 struct VkrStandardSceneRuntime;

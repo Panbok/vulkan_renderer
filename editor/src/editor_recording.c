@@ -75,6 +75,12 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
           diverged ? theme->warning : theme->text, status->message);
     }
     recording->was_driving = status->driving;
+    /* A recording that just stopped joins the list, whether or not the
+       Recordings window is open: the Performance window lists it too. */
+    if (recording->was_recording && !status->recording) {
+      recording->listed = false_v;
+    }
+    recording->was_recording = status->recording;
     if (status->playback &&
         status->playback_edits == VKR_SAMPLE_RECORDING_EDITS_UNAVAILABLE) {
       if (!recording->edits_warned) {
@@ -171,8 +177,8 @@ bool8_t vkr_editor_recording_resolve(VkrEditorUi *editor, const char *name,
 
 uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
                                     const char *author, VkrRecordingTier tier,
-                                    bool8_t toast, char *error,
-                                    uint64_t error_capacity) {
+                                    bool8_t all_measurements, bool8_t toast,
+                                    char *error, uint64_t error_capacity) {
   char directory[VKR_RECORDING_PATH_MAX];
   if (!vkr_editor_recording_directory(editor, directory, sizeof(directory))) {
     string_format(error, error_capacity, "No directory for recordings.");
@@ -182,6 +188,7 @@ uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
       .command = VKR_SAMPLE_RECORDING_START,
       .codec = vkr_depot_zstd_codec(),
       .tier = tier,
+      .all_measurements = all_measurements,
   };
   editor_recording_name(name, request.name, sizeof(request.name));
   string_format(request.author, sizeof(request.author), "%s",
@@ -221,9 +228,11 @@ editor_recording_indicator_build(VkrEditorUi *editor,
   const uint32_t seconds = (uint32_t)status->seconds % 60u;
   const float64_t bytes = (float64_t)status->stats.stored_bytes;
   String8 text = string8_create_formatted(
-      ui->frame_allocator, "REC %02u:%02u  \xc2\xb7  %.1f %s%s", minutes,
+      ui->frame_allocator, "REC %02u:%02u  \xc2\xb7  %.1f %s%s%s", minutes,
       seconds, bytes < 1048576.0 ? bytes / 1024.0 : bytes / 1048576.0,
-      bytes < 1048576.0 ? "KB" : "MB", lost ? "  \xc2\xb7  data lost" : "");
+      bytes < 1048576.0 ? "KB" : "MB",
+      status->recording_all_measurements ? "  \xc2\xb7  all measurements" : "",
+      lost ? "  \xc2\xb7  data lost" : "");
   VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
   chip.placement = VKR_UI_PLACEMENT_DEFAULT;
   chip.placement.column = chip.placement.row = 0u;
@@ -975,6 +984,8 @@ vkr_internal void editor_recording_entry_read(const char *directory,
                     editor_recording_number(&reader, "player_ticks") > 0.0;
   /* A Play session with tick hashes re-simulates with or without input. */
   entry->resimulable = editor_recording_number(&reader, "tick_hashes") > 0.0;
+  entry->all_measurements =
+      editor_recording_number(&reader, "measurements") > 0.0;
   /* Markers are an array of objects, each with one "kind". */
   vkr_json_reader_reset(&reader);
   if (vkr_json_find_array(&reader, "markers")) {
@@ -1231,6 +1242,12 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
       scene = c + 1;
     }
   }
+  /* Counts that are zero say nothing, so they are left out. */
+  char markers[32] = "";
+  if (entry->markers > 0u) {
+    string_format(markers, sizeof(markers), "  \xc2\xb7  %u marker%s",
+                  entry->markers, entry->markers == 1u ? "" : "s");
+  }
   char notes[32] = "";
   if (entry->notes > 0u) {
     string_format(notes, sizeof(notes), "  \xc2\xb7  %u note%s", entry->notes,
@@ -1238,11 +1255,10 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
   }
   return string8_create_formatted(
       ui->frame_allocator,
-      "%s  \xc2\xb7  %llu frames  \xc2\xb7  %u marker%s%s  \xc2\xb7  %s  "
-      "\xc2\xb7  %s%s",
-      length, (unsigned long long)entry->frames, entry->markers,
-      entry->markers == 1u ? "" : "s", notes,
+      "%s  \xc2\xb7  %llu frames%s%s  \xc2\xb7  %s  \xc2\xb7  %s%s%s", length,
+      (unsigned long long)entry->frames, markers, notes,
       entry->author[0] ? entry->author : "?", scene,
+      entry->all_measurements ? "  \xc2\xb7  all measurements" : "",
       entry->lost ? "  \xc2\xb7  data lost" : "");
 }
 
@@ -1266,8 +1282,9 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX}};
-  const VkrUiTrack rows[] = {{.value = 23.0f, .unit = VKR_UI_TRACK_PX},
-                             {.value = 23.0f, .unit = VKR_UI_TRACK_PX}};
+  /* The name and buttons over the facts, which take the card's width. */
+  const VkrUiTrack rows[] = {{.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 18.0f, .unit = VKR_UI_TRACK_PX}};
   VkrUiPanelConfig card = vkr_ui_panel_config_default();
   card.placement = editor_recording_cell(0u, index);
   card.placement.align = VKR_UI_ALIGN_STRETCH;
@@ -1324,6 +1341,8 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   title.rows = &name_row;
   title.row_count = 1u;
   title.style.gap_pt = 6.0f;
+  /* Room between the thumbnail and the text beside it. */
+  title.placement.margin_pt.left = theme->space_sm;
   if (vkr_ui_panel_begin(ui, string8_lit("title"), &title)) {
     VkrUiWidgetConfig name =
         vkr_editor_text_config(theme->font_body, theme->text);
@@ -1363,7 +1382,9 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
       theme->font_caption,
       entry->lost ? theme->warning : theme->text_secondary);
   meta.placement = editor_recording_cell(1u, 1u);
+  meta.placement.column_span = ArrayCount(columns) - 1u;
   meta.placement.justify = VKR_UI_ALIGN_START;
+  meta.placement.margin_pt.left = theme->space_sm;
   const String8 facts = editor_recording_meta(ui, entry);
   /* A narrow window cuts the line; its tooltip keeps it whole. */
   meta.tooltip = facts;
@@ -1371,7 +1392,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
 
   VkrUiWidgetConfig watch = vkr_ui_widget_config_default();
   watch.placement = editor_recording_cell(2u, 0u);
-  watch.placement.row_span = 2u;
   vkr_editor_primary_style(&watch, editor->heading_font);
   watch.icon = VKR_UI_ICON_PLAY;
   watch.icon_size_pt = 12.0f;
@@ -1389,7 +1409,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   VkrUiWidgetConfig analyze = vkr_editor_icon_button_config(
       3u, 0u, VKR_UI_ICON_CHART_BAR,
       string8_lit("Analyze: statistics, charts and spikes"));
-  analyze.placement.row_span = 2u;
   analyze.disabled = !entry->has_summary;
   if (vkr_ui_button(ui, string8_lit("analyze"), (String8){0}, &analyze)) {
     char error[160];
@@ -1417,7 +1436,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                    "Compare with %s: its frame times, statistics and passes "
                           "beside this one's",
                    perf->name));
-  compare.placement.row_span = 2u;
   compare.disabled = !perf->loaded || is_a || !entry->has_summary;
   vkr_editor_toggle_style(&compare,
                           perf->comparing &&
@@ -1436,7 +1454,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
           ? string8_lit("Drive: play the recorded actions on this build and "
                         "measure how far the player's path parts")
           : string8_lit("Drive needs a Play recording with player actions"));
-  drive.placement.row_span = 2u;
   drive.disabled = !entry->drivable || !can_watch;
   if (vkr_ui_button(ui, string8_lit("drive"), (String8){0}, &drive)) {
     VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE};
@@ -1451,7 +1468,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                         "stop at the first tick whose state differs")
           : string8_lit("Re-simulate needs a recording that began before "
                         "Play started"));
-  resim.placement.row_span = 2u;
   resim.disabled = !entry->resimulable || !can_watch;
   if (vkr_ui_button(ui, string8_lit("resim"), (String8){0}, &resim)) {
     VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE,
@@ -1463,7 +1479,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   VkrUiWidgetConfig copy = vkr_editor_icon_button_config(
       7u, 0u, VKR_UI_ICON_COPY,
       string8_lit("Copy a prompt that points an agent at this recording"));
-  copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
     vkr_editor_recording_copy_prompt(editor, frame, entry);
     vkr_editor_toast(editor, VKR_UI_ICON_COPY, theme->text,
@@ -1474,7 +1489,6 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
       8u, 0u, VKR_UI_ICON_TRASH,
       armed ? string8_lit("Click again to delete it from disk")
             : string8_lit("Delete this recording"));
-  remove.placement.row_span = 2u;
   remove.icon_color = armed ? theme->error : theme->text_secondary;
   if (vkr_ui_button(ui, string8_lit("delete"), (String8){0}, &remove)) {
     if (armed) {
@@ -1499,6 +1513,7 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+                                {.unit = VKR_UI_TRACK_AUTO},
                                 {.unit = VKR_UI_TRACK_AUTO}};
   const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig header = vkr_ui_panel_config_default();
@@ -1528,8 +1543,22 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
     recording->listed = false_v;
   }
   const bool8_t active = frame->recording && frame->recording->recording;
+  /* Every measurement, for investigations: it costs frame time, so timing
+     comparisons record without it. */
+  VkrUiWidgetConfig all = vkr_ui_widget_config_default();
+  all.placement = editor_recording_cell(2u, 0u);
+  all.disabled = active;
+  all.tooltip = string8_lit(
+      "Record every measurement: every engine metric, physics counts, GPU "
+      "time of every pass each frame and the assets events name. Costs frame "
+      "time (about 0.5 ms on tiled); leave it off for timing comparisons.");
+  bool8_t take_all = recording->all_measurements;
+  if (vkr_ui_checkbox(ui, string8_lit("all_measurements"),
+                      string8_lit("All measurements"), &take_all, &all)) {
+    recording->all_measurements = take_all;
+  }
   VkrUiWidgetConfig record = vkr_ui_widget_config_default();
-  record.placement = editor_recording_cell(2u, 0u);
+  record.placement = editor_recording_cell(3u, 0u);
   vkr_editor_action_style(&record, editor->heading_font);
   record.icon = active ? VKR_UI_ICON_STOP : VKR_UI_ICON_RECORD;
   record.icon_size_pt = 12.0f;
@@ -1552,11 +1581,9 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const bool8_t active = frame->recording && frame->recording->recording;
-  /* A recording that just stopped joins the list. */
-  if (!recording->listed || (recording->was_recording && !active)) {
+  if (!recording->listed) {
     editor_recording_list(editor);
   }
-  recording->was_recording = active;
 
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   /* Agents' requests sit above the recordings while any wait. */

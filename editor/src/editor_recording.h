@@ -47,6 +47,8 @@ typedef struct VkrEditorRecordingEntry {
      re-simulate. */
   bool8_t drivable;
   bool8_t resimulable;
+  /* Recorded with every measurement. */
+  bool8_t all_measurements;
   /* From annotations.json. */
   uint32_t notes;
   uint32_t ranges;
@@ -83,6 +85,12 @@ typedef struct VkrEditorRecordingPerfView {
   VkrEditorTable spikes;
   VkrEditorTable passes;
   VkrEditorTable passes_compare;
+  /* The right list shows every metrics series instead of the passes. */
+  bool8_t show_series;
+  VkrEditorTable series;
+  /* Series whose name holds this text, ASCII case-insensitive. */
+  uint8_t series_search[64];
+  uint32_t series_search_length;
 } VkrEditorRecordingPerfView;
 
 typedef struct VkrEditorRecordingPerf {
@@ -178,6 +186,8 @@ typedef struct VkrEditorRecordingRequest {
             [VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
   uint32_t step_count;
   VkrRecordingTier tier;
+  /* Record every measurement ("measurements": "all"). */
+  bool8_t all_measurements;
   /* Stop after this many seconds of recording; zero for the user's stop. */
   uint32_t stop_seconds;
   char question[2u * VKR_EDITOR_RECORDING_REQUEST_TEXT_MAX];
@@ -365,6 +375,9 @@ typedef struct VkrEditorRecording {
   uint32_t entry_count;
   bool8_t listed;
   bool8_t was_recording;
+  /* Record takes every measurement (the Recordings window's checkbox,
+     kept with the project's editor settings). */
+  bool8_t all_measurements;
   /* A drive ran last frame; its end shows its measurement. */
   bool8_t was_driving;
   /* The open playback's edits were reported as not replayable. */
@@ -436,11 +449,12 @@ void vkr_editor_recording_settings(struct VkrEditorUi *editor, float32_t speed,
                                    float64_t loop_end);
 
 /** Starts a recording named `name` (a time stamp when empty) by `author`
- * that measures `tier`. Returns its token, or zero with the reason in
- * `error`. */
+ * that measures `tier`, or with `all_measurements` every measurement the
+ * engine has. Returns its token, or zero with the reason in `error`. */
 uint64_t vkr_editor_recording_start(struct VkrEditorUi *editor,
                                     const char *name, const char *author,
-                                    VkrRecordingTier tier, bool8_t toast,
+                                    VkrRecordingTier tier,
+                                    bool8_t all_measurements, bool8_t toast,
                                     char *error, uint64_t error_capacity);
 
 /** Resolves a recording argument: a path, or a bundle name in the recording

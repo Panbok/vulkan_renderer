@@ -2033,6 +2033,21 @@ bool8_t vkr_scene_physics_apply(VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+void vkr_scene_physics_stats(const VkrScene *scene, VkrScenePhysicsStats *out) {
+  *out = (VkrScenePhysicsStats){0};
+  if (!scene || !scene->physics) {
+    return;
+  }
+  VkrPhysicsStats world = {0};
+  vkr_physics_world_stats(scene->physics->world, &world);
+  out->bodies = scene->physics->body_count;
+  out->awake_bodies = world.awake_bodies;
+  out->contacts = world.contacts;
+  for (uint32_t i = 0; i < ArrayCount(scene->physics->characters); ++i) {
+    out->characters += scene->physics->characters[i].entity.u64 != 0u;
+  }
+}
+
 uint32_t vkr_scene_physics_body_count(const VkrScene *scene) {
   return scene && scene->physics ? scene->physics->body_count : 0;
 }

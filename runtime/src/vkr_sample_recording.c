@@ -104,13 +104,19 @@ vkr_internal void vkr_sample_recording_start(
       .author = request->author[0] ? request->author : "user",
       .identity_json = identity[0] ? identity : NULL,
       .metrics =
-          request->tier != VKR_RECORDING_TIER_NONE ? runtime->metrics : NULL,
+          request->tier != VKR_RECORDING_TIER_NONE || request->all_measurements
+              ? runtime->metrics
+              : NULL,
       .poses = true_v,
-      .passes = request->tier == VKR_RECORDING_TIER_1,
+      .passes =
+          request->tier == VKR_RECORDING_TIER_1 || request->all_measurements,
+      .all_measurements = request->all_measurements,
       /* Per-pass stamps split the tiled pipeline's shared compute encoder
          (about 0.5 ms per Bistro frame), so Tier 1 samples them there;
-         desktop stamps are cheap and run every frame (D2). */
-      .pass_gpu_period = runtime->metrics->config.pass_gpu_timings ||
+         desktop stamps are cheap and run every frame (D2). All
+         measurements take them every frame on both. */
+      .pass_gpu_period = request->all_measurements ||
+                                 runtime->metrics->config.pass_gpu_timings ||
                                  runtime->renderer.graphics_pipeline !=
                                      VKR_GRAPHICS_PIPELINE_TILED
                              ? 1u
@@ -130,7 +136,13 @@ vkr_internal void vkr_sample_recording_start(
     state->restore_gpu_timing = true_v;
     state->submission_timing = runtime->metrics->config.submission_gpu_timings;
     state->pass_timing = runtime->metrics->config.pass_gpu_timings;
+    state->event_subjects = runtime->metrics->config.event_subjects;
     runtime->metrics->config.submission_gpu_timings = true_v;
+    /* All measurements also name each event's subject, such as the asset
+       a load read. */
+    if (request->all_measurements) {
+      runtime->metrics->config.event_subjects = true_v;
+    }
   }
   log_info("Recording to %s", request->path);
   vkr_sample_recording_result(state, request->token, true_v, "Recording.");
@@ -154,6 +166,7 @@ vkr_sample_recording_stop(VkrStandardSceneRuntime *runtime,
   if (state->restore_gpu_timing) {
     runtime->metrics->config.submission_gpu_timings = state->submission_timing;
     runtime->metrics->config.pass_gpu_timings = state->pass_timing;
+    runtime->metrics->config.event_subjects = state->event_subjects;
     state->restore_gpu_timing = false_v;
   }
   char message[VKR_RECORDING_PATH_MAX + 96u];
@@ -543,6 +556,8 @@ void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
   }
   state->edit_revision = edit_revision;
   status->recording = runtime->recording.active;
+  status->recording_all_measurements =
+      runtime->recording.active && runtime->recording.measurement_count > 0u;
   if (status->recording) {
     string_format(status->recording_path, sizeof(status->recording_path), "%s",
                   runtime->recording.bundle_path);

@@ -1177,6 +1177,71 @@ vkr_internal void perf_pass_cells(VkrUiSystem *ui,
       at_valid ? string8_create_formatted(frame, "%.2f", at_ms) : dash;
 }
 
+/* The right list's title row: its caption, and the switch between the
+   passes and every metrics series. */
+vkr_internal void perf_list_title(VkrEditorUi *editor, VkrUiSystem *ui,
+                                  String8 text, uint32_t column) {
+  VkrEditorRecordingPerfView *view = &editor->recording.perf.view;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack search_track = {.value = 180.0f, .unit = VKR_UI_TRACK_PX};
+  /* The series list has a search field between the caption and switch. */
+  const uint32_t search = view->show_series ? 1u : 0u;
+  const VkrUiTrack columns[] = {fill, search_track, auto_track, auto_track};
+  const VkrUiTrack passes_columns[] = {fill, auto_track, auto_track};
+  VkrUiPanelConfig row = search
+                             ? perf_grid(perf_cell(column, 0u), columns,
+                                         ArrayCount(columns), &fill, 1u)
+                             : perf_grid(perf_cell(column, 0u), passes_columns,
+                                         ArrayCount(passes_columns), &fill, 1u);
+  row.style.gap_pt = theme->space_xs;
+  if (!vkr_ui_panel_begin(ui, string8_lit("list.title"), &row)) {
+    return;
+  }
+  perf_caption(ui, "caption", text, perf_cell(0u, 0u), theme->text_secondary);
+  if (search) {
+    VkrUiTextEditBuffer edit = {view->series_search, view->series_search_length,
+                                sizeof(view->series_search)};
+    VkrUiPlacement field = perf_cell(1u, 0u);
+    field.align = VKR_UI_ALIGN_CENTER;
+    if (vkr_editor_search_field(ui, string8_lit("search"), &edit, field,
+                                string8_lit("Filter series"),
+                                string8_lit("Show the series whose name holds "
+                                            "this text (case-insensitive)"),
+                                VKR_FONT_HANDLE_INVALID)) {
+      view->series_search_length = edit.length;
+      view->series.scroll_pt = 0.0f;
+    }
+  }
+  static const char *const labels[] = {"Passes", "Series"};
+  static const char *const tips[] = {
+      "Render passes and their times",
+      "Every metrics series the recording carries, with its statistics",
+  };
+  for (uint32_t i = 0u; i < ArrayCount(labels); ++i) {
+    VkrUiWidgetConfig mode = vkr_ui_widget_config_default();
+    mode.placement = perf_cell(1u + search + i, 0u);
+    mode.placement.align = VKR_UI_ALIGN_CENTER;
+    vkr_editor_ghost_style(&mode);
+    mode.style.font_size_pt = theme->font_caption;
+    mode.style.padding_pt = (VkrUiEdges){2.0f, 8.0f, 2.0f, 8.0f};
+    const bool8_t series = i == 1u;
+    vkr_editor_toggle_style(&mode, view->show_series == series);
+    mode.tooltip = string8_create_from_cstr((const uint8_t *)tips[i],
+                                            string_length(tips[i]));
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("mode"),
+                      string8_create_from_cstr((const uint8_t *)labels[i],
+                                               string_length(labels[i])),
+                      &mode)) {
+      view->show_series = series;
+    }
+    (void)vkr_ui_pop_id(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
 /* The passes, most total time first unless a column sorts them; a click
    isolates one in the pass chart. */
 vkr_internal void perf_pass_table(VkrEditorUi *editor,
@@ -1187,19 +1252,19 @@ vkr_internal void perf_pass_table(VkrEditorUi *editor,
   const VkrRecordingData *data = &perf->data;
   const VkrRecordingAnalysis *analysis = &perf->analysis;
   if (!perf->has_passes) {
-    perf_title(ui, "passes.title", string8_lit("Passes: not recorded"),
-               perf_cell(column, 0u), false_v);
+    perf_list_title(editor, ui, string8_lit("Passes: not recorded"), column);
     return;
   }
-  perf_title(ui, "passes.title",
-             string8_create_formatted(
-                 ui->frame_allocator,
-                 "Passes: %u  \xc2\xb7  %s ms when they ran, over %llu "
-                 "frames; click one to isolate it",
-                 analysis->pass_count, perf->pass_gpu ? "GPU" : "CPU encode",
-                 (unsigned long long)(perf->pass_gpu ? data->pass_gpu_frames
-                                                     : data->pass_frames)),
-             perf_cell(column, 0u), false_v);
+  perf_list_title(
+      editor, ui,
+      string8_create_formatted(
+          ui->frame_allocator,
+          "Passes: %u  \xc2\xb7  %s ms when they ran, over %llu "
+          "frames; click one to isolate it",
+          analysis->pass_count, perf->pass_gpu ? "GPU" : "CPU encode",
+          (unsigned long long)(perf->pass_gpu ? data->pass_gpu_frames
+                                              : data->pass_frames)),
+      column);
 
   /* The table frame's times, by pass id. */
   const uint64_t at = perf_pass_table_frame(perf, frame);
@@ -1279,9 +1344,11 @@ vkr_internal void perf_pass_table(VkrEditorUi *editor,
         .cells = cells,
         .dot = perf_pass_color(perf, stats->pass),
         .has_dot = true_v,
-        .tooltip = perf->pass_focus == stats->pass
-                       ? string8_lit("Show every pass in the chart")
-                       : string8_lit("Show only this pass in the chart"),
+        .tooltip = string8_create_formatted(
+            ui->frame_allocator, "%s  \xc2\xb7  click to show %s",
+            data->passes[stats->pass].name,
+            perf->pass_focus == stats->pass ? "every pass in the chart"
+                                            : "only this pass in the chart"),
     };
     if (vkr_editor_table_row(ui, table, columns, PERF_PASS_COLUMN_COUNT, r,
                              &row)) {
@@ -1289,6 +1356,186 @@ vkr_internal void perf_pass_table(VkrEditorUi *editor,
           perf->pass_focus == stats->pass ? UINT32_MAX : stats->pass;
       perf_pass_columns(perf);
     }
+  }
+  vkr_editor_table_end(ui);
+}
+
+/* Series table columns: name, unit, mean, p95 and max of the valid
+   samples, and the frames that carry one. */
+enum {
+  PERF_SERIES_COLUMN_NAME = 0,
+  PERF_SERIES_COLUMN_UNIT,
+  PERF_SERIES_COLUMN_MEAN,
+  PERF_SERIES_COLUMN_P95,
+  PERF_SERIES_COLUMN_MAX,
+  PERF_SERIES_COLUMN_FRAMES,
+  PERF_SERIES_COLUMN_COUNT,
+};
+
+/* A value in its series' unit: bytes in binary multiples, whole counts
+   without decimals. */
+vkr_internal String8 perf_series_value(VkrAllocator *allocator,
+                                       const char *unit, float64_t value) {
+  const float64_t magnitude = vkr_abs_f64(value);
+  if (string_equals(unit, "bytes")) {
+    if (magnitude >= 1073741824.0) {
+      return string8_create_formatted(allocator, "%.2f GiB",
+                                      value / 1073741824.0);
+    }
+    if (magnitude >= 1048576.0) {
+      return string8_create_formatted(allocator, "%.1f MiB", value / 1048576.0);
+    }
+    if (magnitude >= 1024.0) {
+      return string8_create_formatted(allocator, "%.1f KiB", value / 1024.0);
+    }
+    return string8_create_formatted(allocator, "%.0f B", value);
+  }
+  if (!string_equals(unit, "ms") && magnitude < 1.0e15 &&
+      vkr_floor_f64(value) == value) {
+    return string8_create_formatted(allocator, "%.0f", value);
+  }
+  return string8_create_formatted(allocator, "%.3f", value);
+}
+
+/* Whether `name` holds the `length` bytes of `query`, ASCII
+   case-insensitive; an empty query matches every name. */
+vkr_internal bool8_t perf_series_matches(const char *name, const uint8_t *query,
+                                         uint32_t length) {
+  if (length == 0u) {
+    return true_v;
+  }
+  const uint64_t name_length = string_length(name);
+  for (uint64_t start = 0u; start + length <= name_length; ++start) {
+    if (string_n_equalsi(name + start, (const char *)query, length)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* The value series `index` sorts by in `column`. */
+vkr_internal float64_t perf_series_key(const VkrRecordingStats *stats,
+                                       uint32_t column, uint32_t index) {
+  switch (column) {
+  case PERF_SERIES_COLUMN_MEAN:
+    return stats->mean;
+  case PERF_SERIES_COLUMN_P95:
+    return stats->p95;
+  case PERF_SERIES_COLUMN_MAX:
+    return stats->max;
+  case PERF_SERIES_COLUMN_FRAMES:
+    return (float64_t)stats->valid;
+  default:
+    return (float64_t)index;
+  }
+}
+
+/* Every metrics series with a sample, in recording order unless a column
+   sorts them: the Tier 0 fields, then an all-measurements recording's
+   catalog metrics. */
+vkr_internal void perf_series_table(VkrEditorUi *editor,
+                                    const VkrSampleUiFrame *frame,
+                                    uint32_t column) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  VkrUiSystem *ui = frame->ui;
+  VkrAllocator *allocator = ui->frame_allocator;
+  const VkrRecordingData *data = &perf->data;
+  const VkrRecordingAnalysis *analysis = &perf->analysis;
+  VkrEditorTable *table = &perf->view.series;
+  PerfSortItem *items =
+      data->series_count > 0u
+          ? vkr_allocator_alloc(allocator,
+                                sizeof(*items) * (uint64_t)data->series_count,
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+          : NULL;
+  const VkrEditorRecordingPerfView *view = &perf->view;
+  uint32_t sampled = 0u;
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; items && i < data->series_count; ++i) {
+    const VkrRecordingStats *stats = &analysis->series[i];
+    if (stats->valid == 0u) {
+      continue;
+    }
+    ++sampled;
+    if (!perf_series_matches(data->series[i].name, view->series_search,
+                             view->series_search_length)) {
+      continue;
+    }
+    const char *name = NULL;
+    if (table->sort_column == PERF_SERIES_COLUMN_NAME) {
+      name = data->series[i].name;
+    } else if (table->sort_column == PERF_SERIES_COLUMN_UNIT) {
+      name = data->series[i].unit;
+    }
+    items[count++] =
+        (PerfSortItem){.key = perf_series_key(stats, table->sort_column, i),
+                       .name = name,
+                       .index = i};
+  }
+  String8 title = string8_lit("Series: none recorded");
+  if (count < sampled) {
+    title =
+        string8_create_formatted(allocator, "Series: %u of %u", count, sampled);
+  } else if (sampled > 0u) {
+    title = string8_create_formatted(
+        allocator, "Series: %u  \xc2\xb7  over the frames with a sample",
+        sampled);
+  }
+  perf_list_title(editor, ui, title, column);
+  if (count == 0u) {
+    return;
+  }
+  static const VkrEditorTableColumn columns[PERF_SERIES_COLUMN_COUNT] = {
+      {.title = "Series", .min_pt = 120.0f},
+      {.title = "Unit", .width_pt = 56.0f},
+      {.title = "Mean", .width_pt = 78.0f, .numeric = true_v},
+      {.title = "p95", .width_pt = 78.0f, .numeric = true_v},
+      {.title = "Max", .width_pt = 78.0f, .numeric = true_v},
+      {.title = "Frames",
+       .width_pt = 62.0f,
+       .numeric = true_v,
+       .tooltip = "Frames with a sample"},
+  };
+  perf_sort_items(table, items, count);
+  bool8_t sorted = false_v;
+  uint32_t first = 0u;
+  uint32_t end = 0u;
+  if (!vkr_editor_table_begin(ui, "series", table, columns,
+                              PERF_SERIES_COLUMN_COUNT, count,
+                              perf_cell(column, 1u), &sorted, &first, &end)) {
+    return;
+  }
+  const String8 dash = string8_lit("\xe2\x80\x94");
+  for (uint32_t r = first; r < end; ++r) {
+    const uint32_t index = items[r].index;
+    const VkrRecordingSeries *series = &data->series[index];
+    const VkrRecordingStats *stats = &analysis->series[index];
+    const String8 cells[PERF_SERIES_COLUMN_COUNT] = {
+        string8_create_formatted(allocator, "%s", series->name),
+        series->unit[0]
+            ? string8_create_formatted(allocator, "%s", series->unit)
+            : dash,
+        perf_series_value(allocator, series->unit, stats->mean),
+        perf_series_value(allocator, series->unit, stats->p95),
+        perf_series_value(allocator, series->unit, stats->max),
+        string8_create_formatted(allocator, "%llu",
+                                 (unsigned long long)stats->valid),
+    };
+    const String8 low = perf_series_value(allocator, series->unit, stats->min);
+    const String8 median =
+        perf_series_value(allocator, series->unit, stats->p50);
+    const String8 high = perf_series_value(allocator, series->unit, stats->p99);
+    const VkrEditorTableRow row = {
+        .key = index,
+        .cells = cells,
+        .tooltip = string8_create_formatted(
+            allocator, "%s  \xc2\xb7  min %.*s, median %.*s, p99 %.*s",
+            series->name, (int)low.length, (const char *)low.str,
+            (int)median.length, (const char *)median.str, (int)high.length,
+            (const char *)high.str),
+    };
+    (void)vkr_editor_table_row(ui, table, columns, PERF_SERIES_COLUMN_COUNT, r,
+                               &row);
   }
   vkr_editor_table_end(ui);
 }
@@ -1493,7 +1740,11 @@ vkr_internal void perf_spikes(VkrEditorUi *editor,
         .cells = cells,
         .text_color = spike->frame_ms > 2.0 * analysis->budget_ms ? theme->error
                                                                   : theme->text,
-        .tooltip = string8_lit("Watch this frame in the Scene"),
+        /* The cause column cuts a long cause; the tooltip keeps it. */
+        .tooltip = string8_create_formatted(
+            allocator, "%.*s\nClick to watch this frame in the Scene",
+            (int)cells[PERF_SPIKE_COLUMN_CAUSE].length,
+            (const char *)cells[PERF_SPIKE_COLUMN_CAUSE].str),
     };
     if (vkr_editor_table_row(ui, table, columns, PERF_SPIKE_COLUMN_COUNT, r,
                              &row)) {
@@ -1890,7 +2141,11 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
       {.value = view->lists.ratio, .unit = VKR_UI_TRACK_FR},
       bar,
       {.value = 1.0f - view->lists.ratio, .unit = VKR_UI_TRACK_FR}};
-  const VkrUiTrack lists[] = {title, fill};
+  /* The list titles hold the Passes/Series switch and the series search,
+     so they take a control's height. */
+  const VkrUiTrack list_title = {.value = theme->control_height,
+                                 .unit = VKR_UI_TRACK_PX};
+  const VkrUiTrack lists[] = {list_title, fill};
   VkrUiPanelConfig bottom =
       perf_grid(perf_cell(0u, 4u), columns, ArrayCount(columns), lists,
                 ArrayCount(lists));
@@ -1903,6 +2158,8 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
                          split_width);
     if (perf->comparing) {
       perf_compare_pass_table(editor, frame, 2u);
+    } else if (view->show_series) {
+      perf_series_table(editor, frame, 2u);
     } else {
       perf_pass_table(editor, frame, 2u);
     }

@@ -63,6 +63,10 @@ static inline VKR_MAYBE_UNUSED void vkr_store_le_u64(uint8_t *dst,
   vkr_store_le_u32(dst + 4u, (uint32_t)(value >> 32u));
 }
 
+static inline VKR_MAYBE_UNUSED uint16_t vkr_load_le_u16(const uint8_t *src) {
+  return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8u));
+}
+
 static inline VKR_MAYBE_UNUSED uint32_t vkr_load_le_u32(const uint8_t *src) {
   return (uint32_t)src[0] | ((uint32_t)src[1] << 8u) |
          ((uint32_t)src[2] << 16u) | ((uint32_t)src[3] << 24u);

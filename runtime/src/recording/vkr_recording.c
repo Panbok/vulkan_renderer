@@ -524,6 +524,9 @@ vkr_internal bool8_t vkr_recording_spawns_create(VkrRecording *recording) {
   return true_v;
 }
 
+vkr_internal void vkr_recording_measurements_start(VkrRecording *recording,
+                                                   const VkrMetrics *metrics);
+
 bool8_t vkr_recording_start(VkrRecording *recording,
                             const VkrRecordingConfig *config) {
   vkr_assert(recording != NULL && config != NULL);
@@ -560,8 +563,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
-  VkrRecordingStream streams[28];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 6u <= 28u,
+  VkrRecordingStream streams[32];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 8u <= 32u,
                  "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
@@ -579,6 +582,15 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         .field_count = field_count,
         .fields = metric_fields,
     };
+  }
+  if (config->metrics && config->all_measurements) {
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_MEASUREMENT_NAME,
+                             .name = "measurement_name"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_MEASUREMENTS,
+                             .flags = VKR_RECORDING_STREAM_DROPPABLE,
+                             .name = "measurements"};
   }
   if (config->poses) {
     recording->pose_batch = vkr_allocator_alloc(
@@ -626,6 +638,9 @@ bool8_t vkr_recording_start(VkrRecording *recording,
     goto cleanup;
   }
   recording->active = true_v;
+  if (config->metrics && config->all_measurements) {
+    vkr_recording_measurements_start(recording, config->metrics);
+  }
   return true_v;
 
 cleanup:
@@ -688,12 +703,10 @@ vkr_internal void vkr_recording_engine_event_at(VkrRecording *recording,
 
 /* The value a recording keeps of one published sample: a duration's sum, a
    counter's or gauge's value, in the field's unit. */
-vkr_internal bool8_t vkr_recording_metric_value(
-    const VkrRecording *recording, uint32_t index,
+vkr_internal bool8_t vkr_recording_sample_value(
+    VkrMetricId id, VkrMetricKind kind, float64_t scale,
     const VkrMetricsFrame *published, float64_t *out_value) {
-  const VkrMetricId id = recording->metric_ids[index];
-  const float64_t scale = recording->metric_scale[index];
-  if (recording->metric_kind[index] == VKR_METRIC_KIND_DURATION) {
+  if (kind == VKR_METRIC_KIND_DURATION) {
     VkrMetricDurationSample sample;
     if (!vkr_metrics_frame_read_duration(published, id, &sample) ||
         sample.count == 0u) {
@@ -713,6 +726,92 @@ vkr_internal bool8_t vkr_recording_metric_value(
     return true_v;
   }
   return false_v;
+}
+
+vkr_internal bool8_t vkr_recording_metric_value(
+    const VkrRecording *recording, uint32_t index,
+    const VkrMetricsFrame *published, float64_t *out_value) {
+  return vkr_recording_sample_value(
+      recording->metric_ids[index], recording->metric_kind[index],
+      recording->metric_scale[index], published, out_value);
+}
+
+/* All measurements: every catalog metric the metrics stream does not
+   carry, named once at the start. */
+vkr_internal void vkr_recording_measurements_start(VkrRecording *recording,
+                                                   const VkrMetrics *metrics) {
+  uint32_t catalog_count = 0u;
+  const VkrMetricCatalogEntry *catalog =
+      vkr_metrics_get_catalog(metrics, &catalog_count);
+  for (uint32_t i = 0u; i < catalog_count && recording->measurement_count <
+                                                 VKR_RECORDING_MEASUREMENT_MAX;
+       ++i) {
+    const VkrMetricId id =
+        ((VkrMetricId)metrics->registry_generation << 16u) | i;
+    bool8_t carried = false_v;
+    for (uint32_t m = 0u; m < recording->metric_count && !carried; ++m) {
+      carried = recording->metric_ids[m] == id;
+    }
+    if (carried) {
+      continue;
+    }
+    const uint32_t index = recording->measurement_count++;
+    recording->measurement_ids[index] = id;
+    recording->measurement_kind[index] = catalog[i].kind;
+    recording->measurement_scale[index] =
+        catalog[i].unit == VKR_METRIC_UNIT_NANOSECONDS ? 1.0e-6 : 1.0;
+    const char *unit = vkr_recording_unit(catalog[i].unit);
+    const uint16_t name_length = (uint16_t)string_length_bounded(
+        catalog[i].name, VKR_RECORDING_NAME_MAX);
+    const uint16_t unit_length = (uint16_t)string_length(unit);
+    uint8_t *record =
+        vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                             VKR_RECORDING_STREAM_MEASUREMENT_NAME, 0u,
+                             8u + (uint32_t)name_length + unit_length);
+    if (!record) {
+      continue;
+    }
+    MemCopy(record, &index, sizeof(index));
+    MemCopy(record + 4u, &name_length, sizeof(name_length));
+    MemCopy(record + 6u, &unit_length, sizeof(unit_length));
+    MemCopy(record + 8u, catalog[i].name, name_length);
+    MemCopy(record + 8u + name_length, unit, unit_length);
+    vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  }
+}
+
+/* One frame's measurements, a record per page of
+   VKR_RECORDING_MEASUREMENT_PAGE. */
+vkr_internal void vkr_recording_measurements(VkrRecording *recording,
+                                             uint64_t frame,
+                                             const VkrMetricsFrame *published) {
+  for (uint32_t first = 0u; first < recording->measurement_count;
+       first += VKR_RECORDING_MEASUREMENT_PAGE) {
+    const uint32_t count = Min(recording->measurement_count - first,
+                               VKR_RECORDING_MEASUREMENT_PAGE);
+    uint8_t *record = vkr_recorder_reserve(
+        recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+        VKR_RECORDING_STREAM_MEASUREMENTS, frame, 16u + 8u * count);
+    if (!record) {
+      return;
+    }
+    uint64_t valid = 0u;
+    for (uint32_t i = 0u; i < count; ++i) {
+      const uint32_t index = first + i;
+      float64_t value = 0.0;
+      if (vkr_recording_sample_value(recording->measurement_ids[index],
+                                     recording->measurement_kind[index],
+                                     recording->measurement_scale[index],
+                                     published, &value)) {
+        valid |= 1ull << i;
+      }
+      MemCopy(record + 16u + 8u * i, &value, sizeof(value));
+    }
+    MemCopy(record, &first, sizeof(first));
+    MemCopy(record + 4u, &count, sizeof(count));
+    MemCopy(record + 8u, &valid, sizeof(valid));
+    vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  }
 }
 
 /* A metrics record on `frame` with the published fields in `fields`, and
@@ -801,6 +900,9 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
   }
   if (recorded) {
     vkr_recording_metrics_record(recording, frame, published, fields, true_v);
+    if (published && recording->measurement_count) {
+      vkr_recording_measurements(recording, frame, published);
+    }
   }
   /* A record whose mask holds the loop fields alone; readers merge it into
      the frame's record by the mask. Before the first recorded frame they
@@ -1373,6 +1475,7 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
   vkr_recording_json_u64(json, "actions", recording->action_records);
   /* Re-simulate needs them too. */
   vkr_recording_json_u64(json, "tick_hashes", recording->tick_hashes_written);
+  vkr_recording_json_u64(json, "measurements", recording->measurement_count);
   vkr_recording_json_f64(json, "duration_seconds", recording->time);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
   vkr_recording_json_u64(json, "lost_records", stats->lost_records);

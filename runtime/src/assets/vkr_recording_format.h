@@ -136,6 +136,10 @@ bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
  * number: a u32 row count, u32 VKR_RECORDING_PASSES_* flags, then per row a
  * u16 pass id, u16 VKR_RECORDING_PASS_* flags, f32 CPU ms and f32 GPU ms.
  */
+/* All measurements (the recorder's measurement_name and measurements
+ * streams): series a recording may name, and values one record holds. */
+#define VKR_RECORDING_MEASUREMENT_MAX 512u
+#define VKR_RECORDING_MEASUREMENT_PAGE 64u
 #define VKR_RECORDING_PASS_NAME_MAX 63u
 #define VKR_RECORDING_PASS_MAX 512u
 #define VKR_RECORDING_PASSES_HEADER_SIZE 8u

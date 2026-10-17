@@ -378,6 +378,24 @@ an agent must read one without the editor.
   frames carry `VKR_RECORDING_FRAME_PASS_TIMING`. The editor's Record makes
   Tier 1 recordings; `rec.start` takes `tier` none, 0 or 1. Stop restores the
   pass timing setting.
+- **All measurements.** A recording with `all_measurements` (the Recordings
+  window's All measurements checkbox, kept with the project's editor
+  settings; `rec.start` `measurements` all; a request's `measurements`)
+  is Tier 1 with GPU pass stamps on every frame, tiled included, and the
+  registry's event subjects on. It adds streams `measurement_name` (an index,
+  a name and a unit per catalog metric the Tier 0 list does not carry,
+  written at start) and `measurements` (pages of 64 values with a valid
+  mask; `vkr_recording_format.h`), so a frame's every published metric is
+  kept. Physics publishes `physics.bodies`, `physics.awake_bodies`,
+  `physics.contacts`, `physics.characters` and `physics.ticks` while the
+  simulation runs. The analysis appends the measurements as series after
+  the metrics fields; `summary.json` counts them under `measurements`, and
+  the Performance window lists every series with a sample in a Series
+  table beside Passes, filtered by name. On Bistro an all-measurements Play
+  recording of 966 frames carried 474 measurements with no dropped records
+  and GPU pass times on every frame with pass rows. On tiled the stamps
+  split the shared compute encoder in every frame, so timing comparisons
+  still use Tier 0.
 - **Analysis.** At stop the runtime reads the stream back and writes
   statistics, the time-based 1% low and spikes (over 1.2 times the median of
   19 neighbours and 4 ms above it, or over twice the budget) into

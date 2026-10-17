@@ -344,6 +344,21 @@ static VkrPhysicsBody handle_for(const VkrPhysicsWorld *world, uint32_t index) {
          (static_cast<uint64_t>(index) + 1);
 }
 
+extern "C" void vkr_physics_world_stats(const VkrPhysicsWorld *world,
+                                        VkrPhysicsStats *out) {
+  if (!out) {
+    return;
+  }
+  *out = VkrPhysicsStats{};
+  if (!world) {
+    return;
+  }
+  out->bodies = world->system.GetNumBodies();
+  out->awake_bodies =
+      world->system.GetNumActiveBodies(JPH::EBodyType::RigidBody);
+  out->contacts = static_cast<uint32_t>(world->contacts.size());
+}
+
 extern "C" VkrPhysicsWorld *vkr_physics_world_create(uint32_t max_bodies) {
   if (max_bodies == 0 || max_bodies > 65536) {
     return nullptr;

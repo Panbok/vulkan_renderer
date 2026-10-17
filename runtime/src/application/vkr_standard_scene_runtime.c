@@ -154,6 +154,22 @@ vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
   return vkr_metrics_register(metrics, &description, out_id);
 }
 
+/* An optional frame count gauge, as the physics measurements are: absent
+   while nothing simulates. */
+vkr_internal bool8_t vkr_standard_scene_runtime_register_gauge_metric(
+    VkrMetrics *metrics, const char *name, VkrMetricId *out_id) {
+  const VkrMetricDescription description = {
+      .name =
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)),
+      .domain = VKR_METRIC_DOMAIN_FRAME,
+      .kind = VKR_METRIC_KIND_GAUGE,
+      .unit = VKR_METRIC_UNIT_COUNT,
+      .scalar = VKR_METRIC_SCALAR_U64,
+      .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+  };
+  return vkr_metrics_register(metrics, &description, out_id);
+}
+
 vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
     VkrStandardSceneRuntime *application) {
   application->metrics_arena = arena_create(MB(2), KB(64));
@@ -216,6 +232,18 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
       !vkr_standard_scene_runtime_register_duration_metric(
           application->metrics, "cpu.physics", VKR_METRIC_DOMAIN_FRAME, false_v,
           &ids->physics) ||
+      !vkr_standard_scene_runtime_register_gauge_metric(
+          application->metrics, "physics.bodies", &ids->physics_bodies) ||
+      !vkr_standard_scene_runtime_register_gauge_metric(
+          application->metrics, "physics.awake_bodies",
+          &ids->physics_awake_bodies) ||
+      !vkr_standard_scene_runtime_register_gauge_metric(
+          application->metrics, "physics.contacts", &ids->physics_contacts) ||
+      !vkr_standard_scene_runtime_register_gauge_metric(
+          application->metrics, "physics.characters",
+          &ids->physics_characters) ||
+      !vkr_standard_scene_runtime_register_gauge_metric(
+          application->metrics, "physics.ticks", &ids->physics_ticks) ||
       !vkr_metrics_register(application->metrics,
                             &(VkrMetricDescription){
                                 .name = string8_lit("frame.decoupled"),

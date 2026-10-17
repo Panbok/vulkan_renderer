@@ -151,6 +151,8 @@ vkr_internal bool8_t editor_request_write(
                       request->tier == VKR_RECORDING_TIER_NONE ? "none"
                       : request->tier == VKR_RECORDING_TIER_0  ? "0"
                                                                : "1");
+  editor_request_text(json, "measurements",
+                      request->all_measurements ? "all" : "standard");
   editor_request_number(json, "stop_seconds", request->stop_seconds);
   editor_request_text(json, "question", request->question);
   editor_request_text(json, "recording", request->recording);
@@ -238,6 +240,9 @@ vkr_internal bool8_t editor_request_parse(const VkrBakeryJson *root,
   out->tier = string_equals(tier, "none") ? VKR_RECORDING_TIER_NONE
               : string_equals(tier, "0")  ? VKR_RECORDING_TIER_0
                                           : VKR_RECORDING_TIER_1;
+  char measurements[16];
+  editor_request_copy(root, "measurements", measurements, sizeof(measurements));
+  out->all_measurements = string_equals(measurements, "all");
   out->stop_seconds = (uint32_t)editor_request_get_number(root, "stop_seconds");
   editor_request_copy(root, "question", out->question, sizeof(out->question));
   editor_request_copy(root, "recording", out->recording,
@@ -439,9 +444,10 @@ bool8_t vkr_editor_recording_request_start(VkrEditorUi *editor,
     state->camera_yaw = request.yaw;
     state->camera_pitch = request.pitch;
   }
-  if (!vkr_editor_recording_start(
-          editor, request.id, request.owner[0] ? request.owner : "agent",
-          request.tier, true_v, error, error_capacity)) {
+  if (!vkr_editor_recording_start(editor, request.id,
+                                  request.owner[0] ? request.owner : "agent",
+                                  request.tier, request.all_measurements,
+                                  true_v, error, error_capacity)) {
     return false_v;
   }
   request.status = VKR_EDITOR_RECORDING_REQUEST_ACCEPTED;

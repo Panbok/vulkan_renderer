@@ -45,6 +45,11 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *pass_name;
   const VkrRecordingStream *passes;
   const VkrRecordingStream *player;
+  /* All measurements: series after the metrics stream's, named by
+     measurement_name records. */
+  const VkrRecordingStream *measurement_name;
+  const VkrRecordingStream *measurements;
+  uint32_t measurement_capacity;
   const VkrRecordingField *player_position;
   const VkrRecordingField *player_velocity;
   const VkrRecordingField *display_dt;
@@ -183,6 +188,9 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->pass_name = vkr_recording_find_stream(dictionary, "pass_name");
   load->passes = vkr_recording_find_stream(dictionary, "passes");
   load->player = vkr_recording_find_stream(dictionary, "player");
+  load->measurement_name =
+      vkr_recording_find_stream(dictionary, "measurement_name");
+  load->measurements = vkr_recording_find_stream(dictionary, "measurements");
   load->player_position =
       vkr_recording_find_field(load->player, "position", 3u);
   load->player_velocity =
@@ -296,6 +304,16 @@ vkr_internal void vkr_recording_data_count(VkrRecordingDataLoad *load,
     load->pass_rows += vkr_recording_pass_record_rows(record);
     return;
   }
+  if (vkr_recording_is_stream(load->measurement_name, record)) {
+    if (record->size >= 8u) {
+      const uint32_t index = vkr_load_le_u32(record->data);
+      if (index < VKR_RECORDING_MEASUREMENT_MAX) {
+        load->measurement_capacity =
+            Max(load->measurement_capacity, index + 1u);
+      }
+    }
+    return;
+  }
   const bool8_t framed = vkr_recording_is_stream(load->frame, record) ||
                          vkr_recording_is_stream(load->camera, record) ||
                          vkr_recording_is_stream(load->metrics, record);
@@ -333,6 +351,61 @@ vkr_recording_data_fill_metrics(VkrRecordingDataLoad *load,
     }
     data->series[i].values[record->frame] = value;
     data->series[i].valid[record->frame] = 1u;
+  }
+}
+
+/* A measurement_name record: series metric_count + index takes the name and
+   unit. */
+vkr_internal void
+vkr_recording_data_fill_measurement_name(VkrRecordingDataLoad *load,
+                                         const VkrRecordingRecord *record) {
+  if (record->size < 8u) {
+    return;
+  }
+  const uint32_t index = vkr_load_le_u32(record->data);
+  const uint32_t name_length = vkr_load_le_u16(record->data + 4u);
+  const uint32_t unit_length = vkr_load_le_u16(record->data + 6u);
+  if (index >= load->measurement_capacity ||
+      8u + name_length + unit_length > record->size) {
+    return;
+  }
+  VkrRecordingSeries *series = &load->data->series[load->metric_count + index];
+  const uint32_t name = Min(name_length, (uint32_t)VKR_RECORDING_NAME_MAX);
+  const uint32_t unit = Min(unit_length, (uint32_t)VKR_RECORDING_NAME_MAX);
+  MemCopy(series->name, record->data + 8u, name);
+  series->name[name] = '\0';
+  MemCopy(series->unit, record->data + 8u + name_length, unit);
+  series->unit[unit] = '\0';
+}
+
+/* A measurements record: up to a page of values under its valid mask. */
+vkr_internal void
+vkr_recording_data_fill_measurements(VkrRecordingDataLoad *load,
+                                     const VkrRecordingRecord *record) {
+  if (record->size < 16u || record->frame >= load->data->frame_count) {
+    return;
+  }
+  const uint32_t first = vkr_load_le_u32(record->data);
+  const uint32_t count = vkr_load_le_u32(record->data + 4u);
+  const uint64_t valid = vkr_load_le_u64(record->data + 8u);
+  if (count > VKR_RECORDING_MEASUREMENT_PAGE ||
+      16u + 8u * count != record->size) {
+    return;
+  }
+  for (uint32_t i = 0u; i < count && first + i < load->measurement_capacity;
+       ++i) {
+    if (((valid >> i) & 1u) == 0u) {
+      continue;
+    }
+    const float64_t value =
+        vkr_recording_analysis_load_f64(record->data + 16u + 8u * i);
+    if (!vkr_is_finite_f64(value)) {
+      continue;
+    }
+    VkrRecordingSeries *series =
+        &load->data->series[load->metric_count + first + i];
+    series->values[record->frame] = value;
+    series->valid[record->frame] = 1u;
   }
 }
 
@@ -442,6 +515,14 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
     vkr_recording_data_fill_passes(load, record);
     return;
   }
+  if (vkr_recording_is_stream(load->measurement_name, record)) {
+    vkr_recording_data_fill_measurement_name(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->measurements, record)) {
+    vkr_recording_data_fill_measurements(load, record);
+    return;
+  }
   if (vkr_recording_is_stream(load->event, record)) {
     vkr_recording_data_fill_event(load, record);
     return;
@@ -507,7 +588,8 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
 vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   VkrRecordingData *data = load->data;
   const uint64_t frames = load->frame_count;
-  const uint64_t series = load->metric_count;
+  const uint64_t series =
+      (uint64_t)load->metric_count + load->measurement_capacity;
   const uint64_t series_bytes =
       vkr_align_up_u64(sizeof(VkrRecordingSeries) * series, 8u);
   const uint64_t marker_bytes = vkr_align_up_u64(
@@ -560,6 +642,9 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   data->player_valid = cursor + frames * 2u;
   for (uint64_t i = 0u; i < series; ++i) {
     data->series[i].valid = cursor + frames * (3u + i);
+    if (i >= load->metric_count) {
+      continue;
+    }
     const VkrRecordingField *field = load->metric_fields[i];
     MemCopy(data->series[i].name, field->name, string_length(field->name));
     MemCopy(data->series[i].unit, field->unit, string_length(field->unit));

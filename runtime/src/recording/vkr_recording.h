@@ -104,6 +104,14 @@
 #define VKR_RECORDING_STREAM_CELLS 20u
 /* Cells a cells record holds at most. */
 #define VKR_RECORDING_CELLS_MAX 256u
+/* All measurements (VkrRecordingConfig.all_measurements): every metric of
+   the registry beyond the metrics stream's, each named once by a
+   measurement_name record (a u32 index, a u16 name length, a u16 unit
+   length, the name, the unit) and recorded each frame in measurements
+   records of up to 64: a u32 first index, a u32 count, a u64 valid mask,
+   then `count` float64 values in the unit named. */
+#define VKR_RECORDING_STREAM_MEASUREMENT_NAME 21u
+#define VKR_RECORDING_STREAM_MEASUREMENTS 22u
 /* Transform hashes are split by stable entity key
    (vkr_scene_entity_stable_key), so a mismatch narrows to the entities of
    the buckets that differ. */
@@ -285,6 +293,9 @@ typedef struct VkrRecordingConfig {
   const VkrMetrics *metrics;
   /* Tier 1: also record each rendered frame's pass rows. Needs `metrics`. */
   bool8_t passes;
+  /* Every metric of the registry, not only Tier 0's, in the measurements
+     streams. Needs `metrics`. */
+  bool8_t all_measurements;
   /* Record the world poses of entities that move (VKR_RECORDING_STREAM_POSE).
    */
   bool8_t poses;
@@ -341,6 +352,11 @@ typedef struct VkrRecording {
      published frame, so it is written on the frame that rendered it. */
   uint32_t gpu_submission_metric;
   uint64_t gpu_frame_written;
+  /* All measurements: the registry metrics beyond metric_ids. */
+  uint32_t measurement_count;
+  VkrMetricId measurement_ids[VKR_RECORDING_MEASUREMENT_MAX];
+  float64_t measurement_scale[VKR_RECORDING_MEASUREMENT_MAX];
+  VkrMetricKind measurement_kind[VKR_RECORDING_MEASUREMENT_MAX];
   /* Field masks of VKR_RECORDING_LOOP_METRICS and
      VKR_RECORDING_LOOP_BUILD_METRICS. */
   uint64_t loop_metrics;

@@ -1496,6 +1496,135 @@ static void test_recording_gpu_submission(void) {
   printf("  test_recording_gpu_submission PASSED\n");
 }
 
+/* Detects: an all-measurements recording losing a catalog metric past
+   the first page of VKR_RECORDING_MEASUREMENT_PAGE, writing a Tier 0 field
+   twice, a duration with no samples read as a zero, a nanosecond unit left
+   unscaled, and the analysis missing the measurement series. */
+static void test_recording_all_measurements(void) {
+  printf("  Running test_recording_all_measurements...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  VkrMetricId wall = VKR_METRIC_ID_INVALID;
+  const VkrMetricDescription wall_desc = {
+      .name = string8_lit("frame.wall"),
+      .domain = VKR_METRIC_DOMAIN_FRAME,
+      .kind = VKR_METRIC_KIND_DURATION,
+      .unit = VKR_METRIC_UNIT_NANOSECONDS,
+      .scalar = VKR_METRIC_SCALAR_U64,
+      .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+  };
+  assert(vkr_metrics_register(metrics, &wall_desc, &wall));
+  /* More gauges than one page holds, so the last ones land on a second. */
+  enum { GAUGE_COUNT = VKR_RECORDING_MEASUREMENT_PAGE + 5u };
+  VkrMetricId gauges[GAUGE_COUNT];
+  char gauge_names[GAUGE_COUNT][24];
+  for (uint32_t i = 0u; i < GAUGE_COUNT; ++i) {
+    string_format(gauge_names[i], sizeof(gauge_names[i]), "test.gauge.%02u", i);
+    const VkrMetricDescription desc = {
+        .name = string8_create_from_cstr((const uint8_t *)gauge_names[i],
+                                         string_length(gauge_names[i])),
+        .domain = VKR_METRIC_DOMAIN_FRAME,
+        .kind = VKR_METRIC_KIND_GAUGE,
+        .unit = VKR_METRIC_UNIT_COUNT,
+        .scalar = VKR_METRIC_SCALAR_U64,
+        .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+    };
+    assert(vkr_metrics_register(metrics, &desc, &gauges[i]));
+  }
+  VkrMetricId span = VKR_METRIC_ID_INVALID;
+  VkrMetricDescription span_desc = wall_desc;
+  span_desc.name = string8_lit("test.span");
+  assert(vkr_metrics_register(metrics, &span_desc, &span));
+  assert(vkr_metrics_seal(metrics));
+
+  char path[1024];
+  recording_test_path("measure", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {.bundle_path = path,
+                                     .codec = vkr_depot_zstd_codec(),
+                                     .metrics = metrics,
+                                     .all_measurements = true_v};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  assert(recording.measurement_count == GAUGE_COUNT + 1u);
+  /* Gauge i reads 100 f + i; the span runs on odd frames for (2 + f) ms. */
+  const uint64_t frames = 8u;
+  for (uint64_t f = 0u; f < frames; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    vkr_metrics_begin_frame(metrics, f, f);
+    vkr_metrics_duration_add_ns(metrics, wall, 16000000u);
+    for (uint32_t i = 0u; i < GAUGE_COUNT; ++i) {
+      vkr_metrics_gauge_set_u64(metrics, gauges[i], 100u * f + i);
+    }
+    if (f % 2u == 1u) {
+      vkr_metrics_duration_add_ns(metrics, span, (2u + f) * 1000000u);
+    }
+    assert(vkr_metrics_end_frame(metrics));
+    VkrMetricsSnapshotView view = {0};
+    assert(vkr_metrics_snapshot_acquire(metrics, &view));
+    vkr_recording_metrics(&recording, f, view.frame, NULL);
+    vkr_metrics_snapshot_release(metrics, &view);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  uint32_t wall_count = 0u;
+  for (uint32_t i = 0u; i < data.series_count; ++i) {
+    wall_count += string_equals(data.series[i].name, "frame.wall") ? 1u : 0u;
+  }
+  assert(wall_count == 1u);
+  for (uint32_t i = 0u; i < GAUGE_COUNT; ++i) {
+    const uint32_t series =
+        vkr_recording_data_find_series(&data, gauge_names[i]);
+    assert(series != UINT32_MAX);
+    assert(string_equals(data.series[series].unit, "count"));
+    for (uint64_t f = 0u; f < frames; ++f) {
+      assert(data.series[series].valid[f]);
+      assert(data.series[series].values[f] == (float64_t)(100u * f + i));
+    }
+  }
+  const uint32_t span_series =
+      vkr_recording_data_find_series(&data, "test.span");
+  assert(span_series != UINT32_MAX);
+  assert(string_equals(data.series[span_series].unit, "ms"));
+  for (uint64_t f = 0u; f < frames; ++f) {
+    assert(data.series[span_series].valid[f] == (f % 2u == 1u));
+    if (f % 2u == 1u) {
+      assert(data.series[span_series].values[f] == (float64_t)(2u + f));
+    }
+  }
+  VkrRecordingAnalysis analysis;
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  const VkrRecordingStats *span_stats = &analysis.series[span_series];
+  assert(span_stats->valid == frames / 2u);
+  assert(span_stats->min == 3.0 && span_stats->max == 9.0);
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_all_measurements PASSED\n");
+}
+
 /* Detects: an idle Play session (tick hashes, no actions or player
    track) refused for re-simulation, its drive spanning no ticks, and a
    recording with neither input nor a session opened. */
@@ -1811,7 +1940,8 @@ static void test_recording_annotations(void) {
     const FilePath foreign = file_path_view(file);
     FileHandle handle = {0};
     FileMode mode = bitset8_create();
-    bitset8_set(&mode, FILE_MODE_WRITE_TRUNCATE);
+    bitset8_set(&mode, FILE_MODE_WRITE);
+    bitset8_set(&mode, FILE_MODE_TRUNCATE);
     bitset8_set(&mode, FILE_MODE_CREATE);
     assert(file_open(&foreign, mode, &handle) == FILE_ERROR_NONE);
     const char *other = "{\"kind\":\"vkr.recording.request\"}";
@@ -1838,6 +1968,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pass_rows();
   test_recording_gpu_submission();
   test_recording_loop_metrics();
+  test_recording_all_measurements();
   test_recording_resim_idle();
   test_scene_change_tracking();
   test_recording_pose_playback();

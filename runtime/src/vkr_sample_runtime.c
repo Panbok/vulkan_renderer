@@ -4090,6 +4090,7 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
                             VkrScene *scene, VkrSceneHandle handle,
                             float64_t delta_time) {
   const float64_t start = vkr_platform_get_absolute_time();
+  const uint64_t ticks_before = vkr_scene_physics_clock(scene).completed;
   sample_simulate_steps(application, scene, handle, delta_time);
   VKR_METRICS_ADD_ELAPSED_NS(application->metrics,
                              application->metric_ids.simulation, start);
@@ -4097,6 +4098,24 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
   if (physics_ns > 0u) {
     vkr_metrics_duration_add_ns(application->metrics,
                                 application->metric_ids.physics, physics_ns);
+  }
+  /* What the step simulated, while the simulation runs. */
+  if (application->editor_viewport.simulation_running) {
+    VkrScenePhysicsStats stats;
+    vkr_scene_physics_stats(scene, &stats);
+    const VkrStandardSceneRuntimeMetricIds *ids = &application->metric_ids;
+    const uint64_t ticks_after = vkr_scene_physics_clock(scene).completed;
+    vkr_metrics_gauge_set_u64(application->metrics, ids->physics_bodies,
+                              stats.bodies);
+    vkr_metrics_gauge_set_u64(application->metrics, ids->physics_awake_bodies,
+                              stats.awake_bodies);
+    vkr_metrics_gauge_set_u64(application->metrics, ids->physics_contacts,
+                              stats.contacts);
+    vkr_metrics_gauge_set_u64(application->metrics, ids->physics_characters,
+                              stats.characters);
+    vkr_metrics_gauge_set_u64(
+        application->metrics, ids->physics_ticks,
+        ticks_after >= ticks_before ? ticks_after - ticks_before : 0u);
   }
 }
 

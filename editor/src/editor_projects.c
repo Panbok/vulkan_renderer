@@ -692,6 +692,8 @@ static bool8_t project_collect_settings(VkrEditorProjects *projects,
       project_json_bool(&writer, "labels_environment",
                         editor->labels_environment) &&
       project_json_bool(&writer, "labels_markers", editor->labels_markers) &&
+      project_json_bool(&writer, "recording_all_measurements",
+                        editor->recording.all_measurements) &&
       project_json_bool(&writer, "labels_text", editor->labels_text) &&
       project_json_bool(&writer, "labels_empty", editor->labels_empty) &&
       project_json_bool(&writer, "labels_occlusion",
@@ -966,6 +968,7 @@ static void project_restore_settings(VkrEditorProjects *projects,
   editor->labels_point = true_v;
   editor->labels_environment = true_v;
   editor->labels_markers = true_v;
+  editor->recording.all_measurements = false_v;
   editor->labels_text = true_v;
   editor->labels_empty = true_v;
   editor->labels_occlusion = true_v;
@@ -1013,6 +1016,9 @@ static void project_restore_settings(VkrEditorProjects *projects,
                           &editor->labels_environment);
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "labels_markers", &editor->labels_markers);
+  panels.pos = 0;
+  (void)vkr_json_get_bool(&panels, "recording_all_measurements",
+                          &editor->recording.all_measurements);
   panels.pos = 0;
   (void)vkr_json_get_bool(&panels, "labels_text", &editor->labels_text);
   panels.pos = 0;

@@ -15006,6 +15006,10 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
     ops_set(ctx, recording, "frames",
             vkr_bakery_json_int(arena, (int64_t)status->frames));
     ops_set(ctx, recording, "seconds", ops_number(ctx, status->seconds));
+    ops_set(ctx, recording, "measurements",
+            vkr_bakery_json_cstr(arena, status->recording_all_measurements
+                                            ? "all"
+                                            : "standard"));
     ops_set(ctx, recording, "markers",
             vkr_bakery_json_int(arena, status->markers));
     ops_set(ctx, recording, "dropped_records",
@@ -15151,6 +15155,12 @@ static VkrEditorOpStatus ops_run_rec_request_create(OpsContext *ctx) {
                      ? VKR_RECORDING_TIER_NONE
                  : tier[0] == '0' ? VKR_RECORDING_TIER_0
                                   : VKR_RECORDING_TIER_1;
+  char measurements[16] = "standard";
+  if (!ops_arg_string(ctx, args, "measurements", measurements,
+                      sizeof(measurements))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  request.all_measurements = string_equals(measurements, "all");
   string_format(request.owner, sizeof(request.owner), "%s",
                 ctx->call->author[0] ? ctx->call->author : "agent");
   const VkrBakeryJson *steps = vkr_bakery_json_get(args, "steps");
@@ -15646,9 +15656,20 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
       ops_fail(ctx, OPS_INVALID, "'tier' must be none, 0 or 1");
       return VKR_EDITOR_OP_DONE;
     }
+    char measurements[16] = "standard";
+    if (!ops_arg_string(ctx, call->args, "measurements", measurements,
+                        sizeof(measurements))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!string_equals(measurements, "standard") &&
+        !string_equals(measurements, "all")) {
+      ops_fail(ctx, OPS_INVALID, "'measurements' must be standard or all");
+      return VKR_EDITOR_OP_DONE;
+    }
     char error[128];
     const char *author = call->author[0] ? call->author : "agent";
     call->token = vkr_editor_recording_start(ctx->editor, name, author, tier,
+                                             string_equals(measurements, "all"),
                                              false_v, error, sizeof(error));
     if (!call->token) {
       ops_fail(ctx, OPS_REJECTED, "%s", error);
@@ -16418,9 +16439,13 @@ static const OpsDef s_ops[] = {
      "'name' (a time stamp when absent) in the recording directory. 'tier' "
      "none records no metrics, 0 frame metrics, 1 (default) frame metrics "
      "and render pass rows, with GPU pass times every frame on desktop and "
-     "every 8th frame on tiled.",
+     "every 8th frame on tiled. 'measurements' all also records every "
+     "engine measurement (every metric, physics counts, GPU pass times every "
+     "frame on tiled too, event subjects); it costs frame time, so time "
+     "comparisons use standard (default).",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
-     "\"string\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]}}}",
+     "\"string\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]},"
+     "\"measurements\":{\"enum\":[\"standard\",\"all\"]}}}",
      ops_run_rec_start, NULL},
     {"rec.stop", "Stop the recording in progress and write its summary.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_stop, NULL},
@@ -16577,6 +16602,7 @@ static const OpsDef s_ops[] = {
      "Ask the user to record something: a 'question' the recording must "
      "answer, 'steps' to show while they record, an optional 'scene' path, "
      "'start_pose' {position, yaw, pitch} for the camera, 'tier', "
+     "'measurements' (standard or all, as rec.start takes it), "
      "'stop_seconds' to stop by itself and 'expire_minutes' (default 60). "
      "The user starts or declines it in the Recordings window; "
      "rec.request.wait returns the recording.",
@@ -16584,6 +16610,7 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"steps\":{\"type\":\"array\",\"items\":{\"type\":"
      "\"string\"}},\"scene\":{\"type\":\"string\"},\"start_pose\":{"
      "\"type\":\"object\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]},"
+     "\"measurements\":{\"enum\":[\"standard\",\"all\"]},"
      "\"stop_seconds\":{\"type\":\"number\"},\"expire_minutes\":{"
      "\"type\":\"number\"}},\"required\":[\"question\"]}",
      ops_run_rec_request_create, NULL, OPS_QUICK | OPS_NO_SCENE},

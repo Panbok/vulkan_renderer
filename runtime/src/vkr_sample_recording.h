@@ -113,6 +113,10 @@ typedef struct VkrSampleRecordingRequest {
   const VkrCodec *codec;
   /* START: what the recording measures. */
   VkrRecordingTier tier;
+  /* START: every measurement the engine has: all registry metrics, physics
+     counts, per-pass GPU times every frame and event subjects (implies
+     Tier 1). */
+  bool8_t all_measurements;
   /* DRIVE: modules steer the driven player back toward the recorded one. */
   bool8_t follow;
   /* DRIVE: re-simulate: replay the session's seed and clock and stop at the
@@ -127,6 +131,9 @@ typedef struct VkrSampleRecordingStatus {
   char message[192];
   /* The recording in progress. */
   bool8_t recording;
+  /* The recording in progress takes every measurement
+     (VkrRecordingConfig.all_measurements). */
+  bool8_t recording_all_measurements;
   char recording_path[VKR_RECORDING_PATH_MAX];
   uint64_t frames;
   float64_t seconds;
@@ -164,11 +171,12 @@ typedef struct VkrSampleRecordingState {
      the recording wrote where the journals stood at its start. */
   uint64_t edit_revision;
   bool8_t edit_start_written;
-  /* Whole-frame and per-pass GPU timing as they were before a recording
-     with metrics took them over; restored at stop. */
+  /* Whole-frame and per-pass GPU timing and event subjects as they were
+     before a recording with metrics took them over; restored at stop. */
   bool8_t restore_gpu_timing;
   bool8_t submission_timing;
   bool8_t pass_timing;
+  bool8_t event_subjects;
   /* Transport for the client to apply, in order
      (vkr_sample_recording_take_transport). */
   VkrSampleRecordingTransport transport[2];
