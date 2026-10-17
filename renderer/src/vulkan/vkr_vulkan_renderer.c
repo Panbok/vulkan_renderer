@@ -67,42 +67,70 @@ uint64_t vkr_vk_refresh_completed(VkrVulkanRenderer *renderer) {
 
 vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
                                                  VkrVulkanFrameSlot *slot) {
-  if (!slot->timing_requested || slot->timing_collected)
+  if (slot->timing_collected)
     return true_v;
   if (!slot->retire_value || slot->retire_value > renderer->completed_value ||
-      !slot->timestamp_query_count)
+      (slot->timing_requested && !slot->timestamp_query_count))
     return false_v;
-  uint64_t timestamps[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS * 2u] = {0};
-  if (vkGetQueryPoolResults(
-          vkr_vk_renderer_device(renderer), slot->timestamp_pool, 0u,
-          slot->timestamp_query_count,
-          (VkDeviceSize)slot->timestamp_query_count * sizeof(*timestamps),
-          timestamps, sizeof(*timestamps),
-          VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
-    return false_v;
-  const float64_t timestamp_ms =
+  const VkDevice device = vkr_vk_renderer_device(renderer);
+  const float64_t timestamp_period_ns =
       (float64_t)vkr_vulkan_device_properties(renderer->device)
-          ->properties.limits.timestampPeriod /
-      1000000.0;
-  /* Passes are recorded in execution order. A pass's top-of-pipe stamp can
-     land while earlier passes still run, since its barrier blocks only the
-     stages that read their output, but its bottom-of-pipe stamp waits for all
-     earlier work. Overlap is therefore counted once, in the earlier pass. */
-  uint64_t previous_end = 0u;
-  for (uint32_t i = 0; i < slot->pass_timing_count; ++i) {
-    const size_t query_index = (size_t)i * 2u;
-    uint64_t begin = timestamps[query_index];
-    const uint64_t end = timestamps[query_index + 1u];
-    slot->pass_timings[i].valid = end >= begin;
-    if (slot->pass_timings[i].valid) {
-      if (previous_end > begin)
-        begin = Min(previous_end, end);
-      previous_end = Max(previous_end, end);
-      slot->pass_timings[i].gpu_ms = (float64_t)(end - begin) * timestamp_ms;
+          ->properties.limits.timestampPeriod;
+  if (slot->submission_timing_requested) {
+    uint64_t frame_stamps[2] = {0};
+    if (vkGetQueryPoolResults(
+            device, slot->timestamp_pool, VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY,
+            ArrayCount(frame_stamps), sizeof(frame_stamps), frame_stamps,
+            sizeof(*frame_stamps), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+      return false_v;
+    slot->gpu_submission_valid = frame_stamps[1] >= frame_stamps[0];
+    if (slot->gpu_submission_valid)
+      slot->gpu_submission_ns =
+          (uint64_t)((float64_t)(frame_stamps[1] - frame_stamps[0]) *
+                     timestamp_period_ns);
+  }
+  if (slot->timing_requested) {
+    uint64_t timestamps[VKR_VULKAN_PASS_TIMESTAMP_QUERIES] = {0};
+    if (vkGetQueryPoolResults(
+            device, slot->timestamp_pool, 0u, slot->timestamp_query_count,
+            (VkDeviceSize)slot->timestamp_query_count * sizeof(*timestamps),
+            timestamps, sizeof(*timestamps),
+            VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+      return false_v;
+    const float64_t timestamp_ms = timestamp_period_ns / 1000000.0;
+    /* Passes are recorded in execution order. A pass's top-of-pipe stamp can
+       land while earlier passes still run, since its barrier blocks only the
+       stages that read their output, but its bottom-of-pipe stamp waits for
+       all earlier work. Overlap is therefore counted once, in the earlier
+       pass. */
+    uint64_t previous_end = 0u;
+    for (uint32_t i = 0; i < slot->pass_timing_count; ++i) {
+      const size_t query_index = (size_t)i * 2u;
+      uint64_t begin = timestamps[query_index];
+      const uint64_t end = timestamps[query_index + 1u];
+      slot->pass_timings[i].valid = end >= begin;
+      if (slot->pass_timings[i].valid) {
+        if (previous_end > begin)
+          begin = Min(previous_end, end);
+        previous_end = Max(previous_end, end);
+        slot->pass_timings[i].gpu_ms = (float64_t)(end - begin) * timestamp_ms;
+      }
     }
   }
   slot->timing_collected = true_v;
   return true_v;
+}
+
+/* Why a slot reports no whole-frame GPU time, or NONE when it has one. */
+vkr_internal VkrRendererImplGpuTimingReason
+vkr_vk_submission_timing_reason(const VkrVulkanFrameSlot *slot) {
+  if (!slot->submission_timing_requested)
+    return VKR_RENDERER_IMPL_GPU_TIMING_REASON_DISABLED;
+  if (!slot->timing_collected)
+    return VKR_RENDERER_IMPL_GPU_TIMING_REASON_NOT_READY;
+  return slot->gpu_submission_valid
+             ? VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE
+             : VKR_RENDERER_IMPL_GPU_TIMING_REASON_FEEDBACK_ERROR;
 }
 
 bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
@@ -483,8 +511,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   }
   vkr_vk_collect_picking_result(renderer, slot);
   if (slot->retire_value && slot->retire_value <= completed &&
-      slot->timing_requested && !slot->timing_collected &&
-      !vkr_vk_collect_slot_timings(renderer, slot))
+      !slot->timing_collected && !vkr_vk_collect_slot_timings(renderer, slot))
     return false_v;
   if (!vkr_vk_stage_next_publication_batch(renderer))
     return false_v;
@@ -505,7 +532,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   slot->sheen_upload_recorded = false_v;
   slot->anisotropy_upload_recorded = false_v;
   slot->smaa_upload_recorded = false_v;
-  slot->source_frame_index = source_frame_index;
+  renderer->prepared_source_frame_index = source_frame_index;
   slot->acquired_window_image = false_v;
   slot->reacquired_presented_image = false_v;
   if (renderer->config.target_kind == VKR_PRESENT_TARGET_OFFSCREEN) {
@@ -803,6 +830,12 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
       .pRegions = &slot->picking_readback_region,
   };
   vkCmdCopyImageToBuffer2(command, &readback_info);
+  /* The frame's GPU time ends before the present blit, whose wait for the
+     acquired image would add swapchain and vsync stalls. */
+  if (slot->submission_timing_requested)
+    vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                         slot->timestamp_pool,
+                         VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY + 1u);
   if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     VkrVulkanWindowTarget *window = &renderer->window_target;
     const uint32_t image_index = slot->image_index;
@@ -875,11 +908,21 @@ vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
   };
   if (slot->timing_requested)
     vkResetQueryPool(vkr_vk_renderer_device(renderer), slot->timestamp_pool, 0u,
-                     VKR_RENDERER_IMPL_MAX_PASS_TIMINGS * 2u);
+                     VKR_VULKAN_PASS_TIMESTAMP_QUERIES);
+  if (slot->submission_timing_requested)
+    vkResetQueryPool(vkr_vk_renderer_device(renderer), slot->timestamp_pool,
+                     VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY, 2u);
   if (vkBeginCommandBuffer(command, &begin_info) != VK_SUCCESS) {
     log_error("Vulkan failed to begin the frame command buffer");
     return false_v;
   }
+  /* A bottom-of-pipe stamp waits for all earlier work on the queue, so the
+     frame's time starts once the previous frame has finished; overlapping
+     frames are not counted twice. */
+  if (slot->submission_timing_requested)
+    vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                         slot->timestamp_pool,
+                         VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY);
   if (!vkr_vk_record_frame_commands(renderer, slot))
     return false_v;
   if (vkEndCommandBuffer(command) != VK_SUCCESS) {
@@ -960,7 +1003,11 @@ vkr_internal bool8_t vkr_vk_realize_compiled_graph(
 vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
                                              VkrVulkanFrameSlot *slot) {
   slot->timing_requested = renderer->prepared_frame.timing_enabled;
-  slot->timing_collected = !slot->timing_requested;
+  slot->submission_timing_requested =
+      renderer->prepared_frame.submission_timing_enabled;
+  slot->timing_collected =
+      !slot->timing_requested && !slot->submission_timing_requested;
+  slot->gpu_submission_valid = false_v;
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
   slot->exposure_requested = renderer->prepared_frame.exposure_automatic;
   slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
@@ -1145,7 +1192,10 @@ vkr_internal bool8_t vkr_vk_commit_submission(VkrVulkanRenderer *renderer,
   vkr_vk_mark_skinning_submitted(renderer, signal_value);
   vkr_vk_mark_graph_images_submitted(renderer, signal_value);
   vkr_vk_mark_graph_buffers_submitted(renderer, signal_value);
+  /* The label moves with the retire value: until this submission the slot
+     still holds its previous frame, whose result a poll may yet report. */
   slot->retire_value = signal_value;
+  slot->source_frame_index = renderer->prepared_source_frame_index;
   if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
     vkr_vulkan_reacquire_record(&renderer->window_target.reacquire_state,
                                 slot->reacquired_presented_image, signal_value);
@@ -1450,6 +1500,9 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   renderer->sentinel_uploaded = true_v;
   renderer->frame_active = false_v;
   vkr_rg_end_frame(renderer->graph);
+  renderer->driver_memory_valid = vkr_vulkan_device_memory_budget(
+      renderer->device, &renderer->driver_memory_usage_bytes,
+      &renderer->driver_memory_budget_bytes);
   if (out_result) {
     *out_result = (VkrVulkanResult){
         .submit_value = signal_value,
@@ -1459,6 +1512,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
         .image_index = slot->image_index,
         .pass_timing_count = slot->pass_timing_count,
         .packet_build = slot->packet_build,
+        .gpu_submission_unavailable_reason =
+            vkr_vk_submission_timing_reason(slot),
     };
     MemCopy(out_result->pass_timings, slot->pass_timings,
             (uint64_t)slot->pass_timing_count *
@@ -1531,8 +1586,7 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
                                   VKR_VULKAN_READBACK_SIZE)) {
     return false_v;
   }
-  if (best->timing_requested && !best->timing_collected &&
-      !vkr_vk_collect_slot_timings(renderer, best))
+  if (!best->timing_collected && !vkr_vk_collect_slot_timings(renderer, best))
     return false_v;
   const uint8_t *color = best->readback.allocation.mapped;
   const VkrGpuDrawCompactionState *opaque =
@@ -1564,6 +1618,11 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .identifier = (uint32_t)color[0] | ((uint32_t)color[1] << 8u) |
                     ((uint32_t)color[2] << 16u) | ((uint32_t)color[3] << 24u),
       .pass_timing_count = best->pass_timing_count,
+      .gpu_submission_ns =
+          best->gpu_submission_valid ? best->gpu_submission_ns : 0u,
+      .gpu_submission_unavailable_reason =
+          vkr_vk_submission_timing_reason(best),
+      .gpu_submission_valid = best->gpu_submission_valid,
       .readback_ready = true_v,
       .hzb_history_valid = best->hzb_history_valid,
       .has_gpu_draw_diagnostics = true_v,
@@ -1795,6 +1854,9 @@ void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,
           sizeof(out_metrics->live_bytes_by_type));
   MemCopy(out_metrics->live_count_by_type, metrics.live_count_by_type,
           sizeof(out_metrics->live_count_by_type));
+  out_metrics->driver_usage_bytes = renderer->driver_memory_usage_bytes;
+  out_metrics->driver_budget_bytes = renderer->driver_memory_budget_bytes;
+  out_metrics->driver_metrics_valid = renderer->driver_memory_valid;
 }
 
 void vkr_vulkan_renderer_geometry_megabuffer_metrics(

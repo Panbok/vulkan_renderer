@@ -301,6 +301,9 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->timing_enabled = packet->input.debug &&
                           packet->input.debug->enable_timing &&
                           packet->input.debug->capture_pass_timestamps;
+  frame->submission_timing_enabled =
+      packet->input.debug && packet->input.debug->enable_timing &&
+      packet->input.debug->capture_submission_timing;
   /* Sample-distribution shadow fitting reduces the visibility buffer, which
      the tiled pipeline does not draw. */
   frame->sdsm_enabled = !packet->tiled_pipeline && packet->input.shadow &&

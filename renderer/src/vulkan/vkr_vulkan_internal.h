@@ -2884,6 +2884,13 @@ typedef enum VkrVulkanSunRayStage {
   VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL,
 } VkrVulkanSunRayStage;
 
+/* A slot's timestamp pool holds two queries per pass, then the begin and end
+   of the whole frame. */
+#define VKR_VULKAN_PASS_TIMESTAMP_QUERIES                                      \
+  (VKR_RENDERER_IMPL_MAX_PASS_TIMINGS * 2u)
+#define VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY VKR_VULKAN_PASS_TIMESTAMP_QUERIES
+#define VKR_VULKAN_TIMESTAMP_QUERIES (VKR_VULKAN_PASS_TIMESTAMP_QUERIES + 2u)
+
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
   VkCommandBuffer command_buffer;
@@ -2902,8 +2909,13 @@ typedef struct VkrVulkanFrameSlot {
   uint32_t timestamp_query_count;
   uint32_t pass_timing_count;
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
+  /** Whole-frame GPU time, from the frame's begin and end timestamps. */
+  uint64_t gpu_submission_ns;
   bool8_t timing_requested;
+  bool8_t submission_timing_requested;
+  /** Every timestamp this slot requested has been read back. */
   bool8_t timing_collected;
+  bool8_t gpu_submission_valid;
   bool8_t transmission_coverage_requested;
   uint32_t transmission_coverage_extent[2];
   bool8_t sdsm_requested;
@@ -3686,6 +3698,13 @@ struct VkrVulkanRenderer {
   VkSemaphore timeline;
   uint64_t submit_value;
   uint64_t completed_value;
+  /* Source frame of the prepared frame; its slot takes it at submission. */
+  uint64_t prepared_source_frame_index;
+  /* VK_EXT_memory_budget totals over the device-local heaps, sampled at
+     each submission; invalid without the extension. */
+  uint64_t driver_memory_usage_bytes;
+  uint64_t driver_memory_budget_bytes;
+  bool8_t driver_memory_valid;
   VkrVulkanPreExposureRecord
       pre_exposure_history[VKR_VULKAN_PRE_EXPOSURE_HISTORY];
   uint32_t pre_exposure_history_next;

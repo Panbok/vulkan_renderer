@@ -685,6 +685,8 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t transmission_compact_enabled;
   /** True when this frame requests backend pass timestamps. */
   bool8_t timing_enabled;
+  /** True when this frame requests its whole-frame GPU time. */
+  bool8_t submission_timing_enabled;
   /**
    * Whether this frame's packet requests a pick. Gates the picking resources
    * and passes so a non-picking frame pays nothing for them.

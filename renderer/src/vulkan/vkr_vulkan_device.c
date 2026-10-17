@@ -58,6 +58,7 @@ typedef struct VkrVulkanCandidate {
   bool8_t has_swapchain_maintenance_extension;
   /* VK_KHR_acceleration_structure needs VK_KHR_deferred_host_operations. */
   bool8_t has_ray_query_extensions;
+  bool8_t has_memory_budget_extension;
   VkPhysicalDeviceAccelerationStructurePropertiesKHR
       acceleration_structure_properties;
 } VkrVulkanCandidate;
@@ -91,6 +92,8 @@ struct VkrVulkanDevice {
   /* Loaded only when ray queries are enabled. */
   VkrVulkanRayQueryFunctions ray_query_functions;
   bool8_t ray_query_enabled;
+  /* VK_EXT_memory_budget: the driver's per-heap usage and budget. */
+  bool8_t memory_budget_enabled;
   bool8_t swapchain_colorspace_enabled;
   bool8_t ready;
 };
@@ -623,6 +626,8 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
         vkr_vk_extension_present(
             extensions, extension_count,
             VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    candidate->has_memory_budget_extension = vkr_vk_extension_present(
+        extensions, extension_count, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
   }
   /* The ray-query structures may chain only for a device that names their
      extensions. */
@@ -687,6 +692,12 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                     candidate->has_descriptor_buffer_extension,
                     candidate->has_descriptor_buffer_extension ? "available"
                                                                : "missing");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_EXTENSION,
+                    VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, false_v,
+                    candidate->has_memory_budget_extension,
+                    candidate->has_memory_budget_extension
+                        ? "driver memory usage and budget metrics"
+                        : "driver memory metrics unsupported");
   vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
   vkr_vk_add_feature(report, "geometryShader",
                      candidate->features.geometry_shader);
@@ -1388,7 +1399,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                        candidate->features.storage_image_extended_formats,
                    .samplerAnisotropy = candidate->features.sampler_anisotropy},
   };
-  const char *extensions[6] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  const char *extensions[7] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
   if (device->config.windowed)
     extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -1402,6 +1413,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
     extensions[extension_count++] =
         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
   }
+  if (candidate->has_memory_budget_extension)
+    extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1423,6 +1436,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                    &device->queue);
   device->ray_query_enabled =
       enable_ray_query && vkr_vk_load_ray_query_functions(device, candidate);
+  device->memory_budget_enabled = candidate->has_memory_budget_extension;
   const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
                     "descriptor-buffer function table", true_v,
@@ -1613,6 +1627,32 @@ const VkPhysicalDeviceMemoryProperties *
 vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device) {
   return device && device->selected ? &device->selected->memory_properties
                                     : NULL;
+}
+
+bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
+                                        uint64_t *out_usage_bytes,
+                                        uint64_t *out_budget_bytes) {
+  vkr_assert(out_usage_bytes != NULL && out_budget_bytes != NULL);
+  *out_usage_bytes = 0u;
+  *out_budget_bytes = 0u;
+  if (!device || !device->selected || !device->memory_budget_enabled)
+    return false_v;
+  VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+  };
+  VkPhysicalDeviceMemoryProperties2 properties = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+      .pNext = &budget,
+  };
+  vkGetPhysicalDeviceMemoryProperties2(device->selected->physical, &properties);
+  const VkPhysicalDeviceMemoryProperties *memory = &properties.memoryProperties;
+  for (uint32_t i = 0u; i < memory->memoryHeapCount; ++i) {
+    if (memory->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+      *out_usage_bytes += budget.heapUsage[i];
+      *out_budget_bytes += budget.heapBudget[i];
+    }
+  }
+  return true_v;
 }
 
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT *

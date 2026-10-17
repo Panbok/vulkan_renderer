@@ -122,6 +122,11 @@ vkr_vulkan_device_properties(const VkrVulkanDevice *device);
 float32_t vkr_vulkan_device_max_anisotropy(const VkrVulkanDevice *device);
 const VkPhysicalDeviceMemoryProperties *
 vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device);
+/** The driver's current usage and budget summed over the device-local heaps,
+    from VK_EXT_memory_budget; false when the device did not enable it. */
+bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
+                                        uint64_t *out_usage_bytes,
+                                        uint64_t *out_budget_bytes);
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT *
 vkr_vulkan_device_descriptor_properties(const VkrVulkanDevice *device);
 const VkrVulkanDescriptorLayout *

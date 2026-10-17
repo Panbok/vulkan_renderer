@@ -346,6 +346,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
   VKR_LOWER_DEVICE_MEMORY_FIELD(readback_ring_oversize_failures);
 #undef VKR_LOWER_DEVICE_MEMORY_FIELD
   memory->transfer_ring_demand_metrics_supported = true_v;
+  memory->driver_memory_metrics_supported = true_v;
   for (uint32_t i = 0; i < destination->pass_timing_count; ++i) {
     const VkrMetalPacketPassTiming *source_timing = &source->pass_timings[i];
     VkrRendererImplPassTiming *destination_timing =
@@ -1874,6 +1875,10 @@ vkr_internal bool8_t vkr_renderer_backend_memory_metrics(
       metrics.physical_allocated_bytes_peak;
   out_metrics->residency_allocation_count = metrics.physical_allocations_live;
   out_metrics->native_live_resources = source->live_allocations;
+  out_metrics->driver_current_allocated_size = metrics.driver_usage_bytes;
+  out_metrics->driver_recommended_working_set_size =
+      metrics.driver_budget_bytes;
+  out_metrics->driver_memory_metrics_supported = metrics.driver_metrics_valid;
   return true_v;
 }
 #endif
@@ -1971,6 +1976,10 @@ vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
   *out_result = (VkrRendererImplSubmitResult){
       .submit_value = source.submit_value,
       .source_frame_index = source.source_frame_index,
+      .gpu_submission_ns = source.gpu_submission_ns,
+      .gpu_submission_unavailable_reason =
+          source.gpu_submission_unavailable_reason,
+      .gpu_submission_valid = source.gpu_submission_valid,
       .executed_pass_count = source.pass_timing_count,
       .indexed_draw_count = source.indexed_draw_count,
       .shadow_draw_count = source.shadow_draw_count,
@@ -2707,6 +2716,8 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
         .transmission_draw_count = result.transmission_draw_count,
         .blend_draw_count = result.blend_draw_count,
         .pass_timing_count = result.pass_timing_count,
+        .gpu_submission_unavailable_reason =
+            result.gpu_submission_unavailable_reason,
     };
     MemCopy(renderer->timing_result.pass_timings, result.pass_timings,
             (uint64_t)result.pass_timing_count *
@@ -2731,6 +2742,11 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
      still describe an older completed frame. */
   renderer->frame_metrics.packet_build = result.packet_build;
   const VkrRendererImplSubmitResult *observed = &renderer->timing_result;
+  renderer->frame_metrics.gpu_submission_ns = observed->gpu_submission_ns;
+  renderer->frame_metrics.gpu_submission_valid = observed->gpu_submission_valid;
+  renderer->frame_metrics.gpu_submission_unavailable_reason =
+      vkr_renderer_gpu_timing_metric_reason(
+          observed->gpu_submission_unavailable_reason);
   renderer->frame_metrics.world.hzb_history_valid = observed->hzb_history_valid;
   renderer->frame_metrics.exposure = observed->exposure;
   if (observed->has_gpu_draw_diagnostics) {

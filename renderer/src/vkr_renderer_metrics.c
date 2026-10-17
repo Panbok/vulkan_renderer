@@ -175,20 +175,33 @@ vkr_internal void vkr_gpu_owner_metric_row_values(
 }
 #endif
 
+/* The backend report a memory metric needs; a backend without it reads the
+   metric unsupported instead of zero. */
+typedef enum VkrRendererImplMemoryMetricSource {
+  VKR_IMPL_MEMORY_SOURCE_ALL = 0,
+  VKR_IMPL_MEMORY_SOURCE_TRANSFER_RING_DEMAND,
+  VKR_IMPL_MEMORY_SOURCE_DRIVER,
+} VkrRendererImplMemoryMetricSource;
+
 typedef struct VkrRendererImplMemoryMetricDescription {
   const char *name;
   VkrMetricKind kind;
   VkrMetricUnit unit;
-  bool8_t metal_only;
+  VkrRendererImplMemoryMetricSource source;
 } VkrRendererImplMemoryMetricDescription;
 
-#define VKR_IMPL_GAUGE(NAME, UNIT) {NAME, VKR_METRIC_KIND_GAUGE, UNIT, false_v}
+#define VKR_IMPL_GAUGE(NAME, UNIT)                                             \
+  {NAME, VKR_METRIC_KIND_GAUGE, UNIT, VKR_IMPL_MEMORY_SOURCE_ALL}
 #define VKR_IMPL_COUNTER(NAME, UNIT)                                           \
-  {NAME, VKR_METRIC_KIND_COUNTER, UNIT, false_v}
+  {NAME, VKR_METRIC_KIND_COUNTER, UNIT, VKR_IMPL_MEMORY_SOURCE_ALL}
 #define VKR_IMPL_METAL_GAUGE(NAME, UNIT)                                       \
-  {NAME, VKR_METRIC_KIND_GAUGE, UNIT, true_v}
+  {NAME, VKR_METRIC_KIND_GAUGE, UNIT,                                          \
+   VKR_IMPL_MEMORY_SOURCE_TRANSFER_RING_DEMAND}
 #define VKR_IMPL_METAL_COUNTER(NAME, UNIT)                                     \
-  {NAME, VKR_METRIC_KIND_COUNTER, UNIT, true_v}
+  {NAME, VKR_METRIC_KIND_COUNTER, UNIT,                                        \
+   VKR_IMPL_MEMORY_SOURCE_TRANSFER_RING_DEMAND}
+#define VKR_IMPL_DRIVER_GAUGE(NAME, UNIT)                                      \
+  {NAME, VKR_METRIC_KIND_GAUGE, UNIT, VKR_IMPL_MEMORY_SOURCE_DRIVER}
 
 vkr_global const VkrRendererImplMemoryMetricDescription
     vkr_renderer_impl_memory_metric_descriptions[] = {
@@ -242,10 +255,10 @@ vkr_global const VkrRendererImplMemoryMetricDescription
                          VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.native",
                          VKR_METRIC_UNIT_COUNT),
-        VKR_IMPL_GAUGE("memory.gpu.driver.current_allocated_bytes",
-                       VKR_METRIC_UNIT_BYTES),
-        VKR_IMPL_GAUGE("memory.gpu.driver.recommended_budget_bytes",
-                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_DRIVER_GAUGE("memory.gpu.driver.current_allocated_bytes",
+                              VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_DRIVER_GAUGE("memory.gpu.driver.recommended_budget_bytes",
+                              VKR_METRIC_UNIT_BYTES),
         VKR_IMPL_COUNTER("memory.gpu.rings.upload.acquires",
                          VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.rings.upload.reuses",
@@ -1384,6 +1397,21 @@ vkr_internal uint32_t vkr_renderer_metrics_impl_values(
   return i;
 }
 
+/* Whether the backend's memory report holds the values a metric reads. */
+vkr_internal bool8_t vkr_renderer_impl_memory_metric_supported(
+    VkrRendererImplMemoryMetricSource source,
+    const VkrRendererImplMemoryMetrics *memory) {
+  switch (source) {
+  case VKR_IMPL_MEMORY_SOURCE_TRANSFER_RING_DEMAND:
+    return memory->transfer_ring_demand_metrics_supported;
+  case VKR_IMPL_MEMORY_SOURCE_DRIVER:
+    return memory->driver_memory_metrics_supported;
+  case VKR_IMPL_MEMORY_SOURCE_ALL:
+    break;
+  }
+  return true_v;
+}
+
 vkr_internal void
 vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
                                          VkrRenderer *renderer) {
@@ -1406,9 +1434,9 @@ vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
       renderer_metrics->previous.impl_memory_interval_contiguous;
   for (uint32_t i = 0; i < count; ++i) {
     const VkrMetricId id = renderer_metrics->ids.impl_memory[i];
-    if (vkr_renderer_impl_memory_metric_descriptions[i].metal_only &&
-        !renderer->timing_result.memory
-             .transfer_ring_demand_metrics_supported) {
+    if (!vkr_renderer_impl_memory_metric_supported(
+            vkr_renderer_impl_memory_metric_descriptions[i].source,
+            &renderer->timing_result.memory)) {
       vkr_metrics_mark(renderer_metrics->metrics, id,
                        VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                        VKR_METRIC_REASON_UNSUPPORTED);

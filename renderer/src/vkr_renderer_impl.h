@@ -165,6 +165,10 @@ typedef struct VkrRendererImplMemoryMetrics {
   uint64_t readback_ring_max_requested_bytes;
   uint64_t readback_ring_oversize_failures;
   bool8_t transfer_ring_demand_metrics_supported;
+  /** driver_current_allocated_size and driver_recommended_working_set_size
+      hold the driver's values; without them those metrics read
+      unsupported instead of zero. */
+  bool8_t driver_memory_metrics_supported;
 } VkrRendererImplMemoryMetrics;
 
 typedef struct VkrRendererImplMaterialMetrics {

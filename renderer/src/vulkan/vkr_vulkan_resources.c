@@ -1713,7 +1713,7 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
     const VkQueryPoolCreateInfo query_info = {
         .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
         .queryType = VK_QUERY_TYPE_TIMESTAMP,
-        .queryCount = VKR_RENDERER_IMPL_MAX_PASS_TIMINGS * 2u,
+        .queryCount = VKR_VULKAN_TIMESTAMP_QUERIES,
     };
     if (vkAllocateCommandBuffers(device, &command_info,
                                  &slot->command_buffer) != VK_SUCCESS ||

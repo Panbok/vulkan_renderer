@@ -143,6 +143,10 @@ typedef struct VkrVulkanResult {
   uint32_t identifier;
   uint32_t pass_timing_count;
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
+  /** Whole-frame GPU time; only a completed frame's poll can carry it. */
+  uint64_t gpu_submission_ns;
+  VkrRendererImplGpuTimingReason gpu_submission_unavailable_reason;
+  bool8_t gpu_submission_valid;
   /** Same-frame packet-lowering CPU cost; only submit fills it, not poll. */
   VkrPacketBuildMetrics packet_build;
   bool8_t readback_ready;
@@ -172,6 +176,11 @@ typedef struct VkrVulkanMemoryMetrics {
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
   uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
   uint64_t live_count_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  /** The driver's device-local usage and budget at the last submission;
+      valid only with VK_EXT_memory_budget. */
+  uint64_t driver_usage_bytes;
+  uint64_t driver_budget_bytes;
+  bool8_t driver_metrics_valid;
 } VkrVulkanMemoryMetrics;
 
 void vkr_vulkan_renderer_geometry_megabuffer_metrics(
