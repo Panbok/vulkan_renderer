@@ -2460,14 +2460,22 @@ static bool8_t physics_reset_stage(VkrScene *scene,
   VkrScenePhysics *physics = scene->physics;
   physics->resetting = true_v;
   MemZero(physics->reset_characters, sizeof(physics->reset_characters));
+  /* The copies keep the list's order, so every reset creates the bodies in
+     the same order: Jolt steps alike only from alike body order, and a
+     re-simulation resets once more than the session it replays. */
+  ScenePhysicsBody **tail = &physics->reset_bodies;
+  while (*tail) {
+    tail = &(*tail)->next;
+  }
   for (ScenePhysicsBody *body = physics->bodies; body; body = body->next) {
     ScenePhysicsBody *copy = vkr_dmemory_alloc(&physics->memory, sizeof(*copy));
     if (!copy) {
       return physics_fail(error, "Physics reset body allocation failed");
     }
     *copy = *body;
-    copy->next = physics->reset_bodies;
-    physics->reset_bodies = copy;
+    copy->next = NULL;
+    *tail = copy;
+    tail = &copy->next;
     copy->body = VKR_PHYSICS_BODY_INVALID;
     copy->disabled = false_v;
     MemZero(copy->joints, sizeof(copy->joints));

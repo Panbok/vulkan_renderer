@@ -17,6 +17,9 @@
 /* Path distance, in meters, past which Drive reports a divergence. */
 #define VKR_RECORDING_DRIVE_TOLERANCE 0.25
 
+/* Asynchronous results of the re-simulated session a drive keeps. */
+#define VKR_RECORDING_DRIVE_JOIN_MAX 128u
+
 typedef struct VkrRecordingDrive {
   bool8_t open;
   VkrDMemory memory;
@@ -85,6 +88,13 @@ typedef struct VkrRecordingDrive {
   uint64_t hash_divergent_frame;
   char hash_subsystems[160];
   uint32_t hash_buckets;
+  /* The session's asynchronous results by the ticks completed before each,
+     the ones the re-simulation has applied, and how many the recording
+     held beyond VKR_RECORDING_DRIVE_JOIN_MAX, which then join freely. */
+  VkrRecordingJoin joins[VKR_RECORDING_DRIVE_JOIN_MAX];
+  bool8_t join_applied[VKR_RECORDING_DRIVE_JOIN_MAX];
+  uint32_t join_count;
+  bool8_t joins_cut;
 } VkrRecordingDrive;
 
 /**
@@ -128,6 +138,18 @@ bool8_t vkr_recording_drive_sim_frame(VkrRecordingDrive *drive,
 bool8_t vkr_recording_drive_check_hash(VkrRecordingDrive *drive,
                                        const VkrRecordingTickHash *live,
                                        const char *const *module_names);
+
+/** Whether a re-simulation may apply the finished result `kind` of `entity`
+    once `ticks` fixed ticks completed: when the recording applied its next
+    such result after at most as many. A result the recording never applied
+    waits. */
+bool8_t vkr_recording_drive_may_join(const VkrRecordingDrive *drive,
+                                     uint32_t kind, uint64_t entity,
+                                     uint64_t ticks);
+
+/** Notes that a re-simulation applied result `kind` of `entity`. */
+void vkr_recording_drive_joined(VkrRecordingDrive *drive, uint32_t kind,
+                                uint64_t entity);
 
 /** Compares the driven player at tick `tick` with the recorded one. */
 void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,

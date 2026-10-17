@@ -58,9 +58,19 @@ bool8_t vkr_scene_request_model(VkrScene *scene, struct VkrRenderAssets *assets,
                                 const VkrSceneModelDesc *desc,
                                 const char **error);
 
-/** Instantiates requested models whose loads finished and records failed
- * ones. Structural edits must be allowed. */
+/** Instantiates requested models whose loads finished and the scene's
+ * join hooks admit, and records failed ones. Structural edits must be
+ * allowed. */
 void vkr_scene_models_update(VkrScene *scene);
+
+/** True while the requested model of `wrapper`, matched by index and world
+ * whatever its generation (a re-simulated session's wrappers reuse slots),
+ * still waits for its loads. */
+bool8_t vkr_scene_model_loading(const VkrScene *scene, VkrEntityId wrapper);
+
+/** Sets the scene's model join hooks; NULL clears them. */
+void vkr_scene_set_model_join_hooks(VkrScene *scene,
+                                    const VkrSceneModelJoinHooks *hooks);
 
 /** Where `wrapper`'s model stands; `*error`, when given, receives why a
  * requested model failed. */

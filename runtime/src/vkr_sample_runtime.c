@@ -3917,6 +3917,25 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
 }
 
 /* Advances the simulated container, running the script session on it. */
+/* True while a model the re-simulated recording had joined after at most
+   the ticks this session completed still loads here: the frame waits for
+   it, so the model joins before the same tick as it did there. */
+static bool8_t sample_resim_join_wait(const VkrRecordingDrive *drive,
+                                      const VkrScene *scene) {
+  const uint64_t ticks = vkr_scene_physics_clock(scene).completed;
+  for (uint32_t i = 0u; i < drive->join_count; ++i) {
+    const VkrRecordingJoin *join = &drive->joins[i];
+    if (drive->join_applied[i] || join->ticks > ticks ||
+        join->kind != VKR_RECORDING_JOIN_MODEL) {
+      continue;
+    }
+    if (vkr_scene_model_loading(scene, (VkrEntityId){.u64 = join->entity})) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 static void sample_simulate_steps(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, VkrSceneHandle handle,
                                   float64_t delta_time) {
@@ -3954,11 +3973,19 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
       .camera_available =
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
   /* A re-simulation replays the recorded session clock; a recording keeps
-     it (docs/proposals/recordings.md, "Drive and re-simulation"). */
+     it (docs/proposals/recordings.md, "Drive and re-simulation"). While a
+     model the recorded session had joined by now is still loading, the
+     frame neither ticks nor runs modules, and takes no recorded frame; the
+     first frame after its loads finish joins it in the scene's update,
+     after the modules ran, as the recorded frame did. */
+  bool8_t join_wait = false_v;
   if (application->drive.open && application->drive.resim &&
       frame.simulation_running) {
     VkrRecordingSimFrame clock;
-    if (vkr_recording_drive_sim_frame(&application->drive, &clock)) {
+    join_wait = sample_resim_join_wait(&application->drive, scene);
+    if (join_wait) {
+      frame.scene_delta = 0.0;
+    } else if (vkr_recording_drive_sim_frame(&application->drive, &clock)) {
       frame.now = clock.now;
       frame.scene_delta = clock.delta;
     } else {
@@ -3970,7 +3997,9 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
                                         .delta = frame.scene_delta};
     vkr_recording_sim_frame(&application->recording, &clock);
   }
-  vkr_script_host_frame(&state->scripts, &frame);
+  if (!join_wait) {
+    vkr_script_host_frame(&state->scripts, &frame);
+  }
   vkr_scene_handle_update(handle, frame.scene_delta);
   if (scene->physics_paused &&
       application->editor_viewport.simulation_running) {

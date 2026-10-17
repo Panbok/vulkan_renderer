@@ -16,8 +16,9 @@ playback bar and Recordings window, the `rec.*` agent operations, Tier 0
 frame metrics, Tier 1 pass rows, the recording analysis, the Performance
 window, and from R3 the entity poses that Watch replays, Play recording,
 Drive, requests, annotations, Compare, harness recordings and perf re-runs,
-and from R6 Re-simulate on the same build. Recorded async completions and a
-fixed physics worker count remain in the proposal. A Tier 0 recording passed the
+and from R6 Re-simulate on the same build, with model joins at their
+recorded ticks. Terrain collision rebuilds and world partition cell loads
+are not yet held to recorded ticks (in the proposal). A Tier 0 recording passed the
 authoritative overhead gate on a GPU-bound Bistro orbit (2026-10-17, in the
 proposal); a CPU-bound workload has not been measured, so harness runs that
 record keep the authority reason `recording.enabled`.
@@ -295,7 +296,18 @@ an agent must read one without the editor.
   each tick's hashes; the first mismatch pauses the session and reports the
   recorded frame, the tick, the differing modules, bodies or transform
   buckets, and the bodies and characters in those buckets. Re-simulate
-  needs a recording that began before Play started.
+  needs a recording that began before Play started. A recorded or
+  re-simulated session starts from a rebuilt physics world, and a reset
+  keeps the scene's body order: Jolt steps alike only from alike body order,
+  and before, each reset reversed it and a first Play ran on the world as
+  edits had built it, so twelve dynamic boxes parted at tick 1. Models the
+  session requested join at their recorded ticks: the script host's scene
+  hooks (`VkrSceneModelJoinHooks`) write stream `join` (the fixed ticks
+  completed, the wrapper without its generation) while recording, and while
+  re-simulating hold a finished model until the ticks its next recorded
+  join followed; a frame whose due model still loads neither ticks nor runs
+  modules nor takes a recorded frame. Before, the FPS mannequin joined
+  whenever its load finished and a re-simulation could part at tick 6.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

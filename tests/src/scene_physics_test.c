@@ -273,6 +273,36 @@ static void physics_test_world_gravity(VkrAllocator *allocator) {
   vkr_scene_shutdown(&root, NULL);
 }
 
+/* Detects a reset that rebuilds the bodies in another order than the last
+   one: Jolt steps alike only from alike body order, and a re-simulation
+   resets once more than the session it replays. */
+static void physics_test_reset_order(VkrAllocator *allocator) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, allocator, 11, 16, NULL));
+  const char *error = NULL;
+  const VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  for (uint32_t i = 0; i < 4u; ++i) {
+    const VkrEntityId body =
+        physics_test_entity(&scene, vec3_new((float32_t)i * 3.0f, 5, 0));
+    assert(vkr_scene_physics_apply(&scene, body, &config, &error));
+  }
+  vkr_scene_update(&scene, 0.0);
+  const uint32_t count = vkr_scene_physics_body_count(&scene);
+  assert(count == 4u);
+  VkrEntityId order[4];
+  for (uint32_t i = 0; i < count; ++i) {
+    order[i] = vkr_scene_physics_body_at(&scene, i);
+  }
+  for (uint32_t reset = 0; reset < 2u; ++reset) {
+    vkr_scene_physics_set_paused(&scene, true_v);
+    assert(vkr_scene_physics_reset(&scene, &error));
+    for (uint32_t i = 0; i < count; ++i) {
+      assert(vkr_scene_physics_body_at(&scene, i).u64 == order[i].u64);
+    }
+  }
+  vkr_scene_shutdown(&scene, NULL);
+}
+
 /* An edit journal finalizes the graph after every edit, physics or not. A
    finalize with nothing prepared must not leave the graph finalized, or the
    next body edit is refused. */
@@ -612,6 +642,7 @@ bool32_t run_scene_physics_tests(void) {
   vkr_dmemory_allocator_create(&allocator);
   physics_test_world_gravity(&allocator);
   physics_test_empty_finalize(&allocator);
+  physics_test_reset_order(&allocator);
   physics_test_generated(&allocator);
   physics_test_generated_kinematic(&allocator);
   physics_test_generated_turn(&allocator);

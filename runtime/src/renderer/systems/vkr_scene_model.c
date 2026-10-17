@@ -414,6 +414,11 @@ void vkr_scene_models_update(VkrScene *scene) {
         animation == VKR_SCENE_MODEL_LOADING) {
       continue;
     }
+    const VkrSceneModelJoinHooks *hooks = &scene->model_join_hooks;
+    if (hooks->may_join &&
+        !hooks->may_join(hooks->user, scene, model->wrapper)) {
+      continue;
+    }
     const char *error = NULL;
     if (mesh == VKR_SCENE_MODEL_FAILED) {
       error = "Model mesh failed to load";
@@ -452,7 +457,38 @@ void vkr_scene_models_update(VkrScene *scene) {
       log_warn("Spawned model %.*s failed: %s", (int)model->mesh_path.length,
                model->mesh_path.str, error);
     }
+    if (hooks->joined) {
+      hooks->joined(hooks->user, scene, model->wrapper, error != NULL);
+    }
   }
+}
+
+bool8_t vkr_scene_model_loading(const VkrScene *scene, VkrEntityId wrapper) {
+  if (!scene) {
+    return false_v;
+  }
+  for (const struct VkrSceneModel *model = scene->models; model;
+       model = model->next) {
+    if (model->status != VKR_SCENE_MODEL_LOADING ||
+        model->wrapper.parts.index != wrapper.parts.index ||
+        model->wrapper.parts.world != wrapper.parts.world) {
+      continue;
+    }
+    return scene_model_request_status(&model->mesh_request) ==
+               VKR_SCENE_MODEL_LOADING ||
+           (model->animation_path.length &&
+            scene_model_request_status(&model->animation_request) ==
+                VKR_SCENE_MODEL_LOADING);
+  }
+  return false_v;
+}
+
+void vkr_scene_set_model_join_hooks(VkrScene *scene,
+                                    const VkrSceneModelJoinHooks *hooks) {
+  if (!scene) {
+    return;
+  }
+  scene->model_join_hooks = hooks ? *hooks : (VkrSceneModelJoinHooks){0};
 }
 
 VkrSceneModelStatus vkr_scene_model_status(const VkrScene *scene,

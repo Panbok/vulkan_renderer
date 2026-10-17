@@ -1238,8 +1238,10 @@ static VkrRecordingTickHash recording_test_tick_hash(uint64_t tick) {
    repeats a frame, sim frames or hashes kept before the session started or
    after it restarted, hashes compared against another tick, a module hash
    matched by index instead of name, a mismatch that is not reported at its
-   tick and frame with its subsystems and buckets, and a drive that keeps
-   matching after it diverged. */
+   tick and frame with its subsystems and buckets, a drive that keeps
+   matching after it diverged, and a model join admitted before its
+   recorded tick, taken from outside the first session, or matched to a
+   wrapper's earlier model. */
 static void test_recording_resim(void) {
   printf("  Running test_recording_resim...\n");
   RecordingTestMemory memory;
@@ -1269,6 +1271,20 @@ static void test_recording_resim(void) {
     const VkrRecordingTickHash before = recording_test_tick_hash(99u);
     if (f < 2u) {
       vkr_recording_tick_hash(&recording, &before, names);
+    }
+    /* A model joins before the session (dropped), after 2 ticks of the
+       first session (kept) and in the second session (ignored). */
+    if (f == 1u || f == 3u || f == 6u) {
+      const VkrRecordingJoin join = {.ticks = f == 3u ? 2u : 1u,
+                                     .entity = 0x40u + f,
+                                     .kind = VKR_RECORDING_JOIN_MODEL};
+      vkr_recording_join(&recording, &join);
+    }
+    /* The same wrapper takes a second model after 4 ticks. */
+    if (f == 4u) {
+      const VkrRecordingJoin again = {
+          .ticks = 4u, .entity = 0x43u, .kind = VKR_RECORDING_JOIN_MODEL};
+      vkr_recording_join(&recording, &again);
     }
     for (uint64_t t = 0u; f >= 2u && t < 2u; ++t) {
       const VkrRecordingTickHash hash =
@@ -1302,6 +1318,23 @@ static void test_recording_resim(void) {
   }
   assert(!vkr_recording_drive_sim_frame(&drive, &clock) && drive.finished);
   drive.finished = false_v;
+
+  /* Only the first session's join counts; it waits for its 2 ticks, and a
+     model the recording never joined waits for good. */
+  assert(drive.join_count == 2u);
+  assert(!vkr_recording_drive_may_join(&drive, VKR_RECORDING_JOIN_MODEL, 0x43u,
+                                       1u));
+  assert(vkr_recording_drive_may_join(&drive, VKR_RECORDING_JOIN_MODEL, 0x43u,
+                                      2u));
+  assert(!vkr_recording_drive_may_join(&drive, VKR_RECORDING_JOIN_MODEL, 0x46u,
+                                       9u));
+  /* Once the first joined, the wrapper's second model waits for tick 4. */
+  vkr_recording_drive_joined(&drive, VKR_RECORDING_JOIN_MODEL, 0x43u);
+  assert(drive.join_applied[0] && !drive.join_applied[1]);
+  assert(!vkr_recording_drive_may_join(&drive, VKR_RECORDING_JOIN_MODEL, 0x43u,
+                                       3u));
+  assert(vkr_recording_drive_may_join(&drive, VKR_RECORDING_JOIN_MODEL, 0x43u,
+                                      4u));
 
   /* A live run whose module list holds a module the recording lacks before
      "fps" matches "fps" by name and reports the stranger. */

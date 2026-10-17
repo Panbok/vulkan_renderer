@@ -1425,6 +1425,21 @@ struct VkrScene;
 typedef void (*VkrSceneEntityObserver)(struct VkrScene *scene,
                                        VkrEntityId entity, void *context);
 
+struct VkrScene;
+
+/* A gate on requested models whose loads finished (vkr_scene_models_update)
+   and a note of each that joined or failed: a recording keeps the fixed
+   tick of each join and a re-simulation holds one back until its recorded
+   tick (docs/proposals/recordings.md, "Drive and re-simulation"). Unset
+   hooks join every finished load. */
+typedef struct VkrSceneModelJoinHooks {
+  void *user;
+  bool8_t (*may_join)(void *user, const struct VkrScene *scene,
+                      VkrEntityId wrapper);
+  void (*joined)(void *user, const struct VkrScene *scene, VkrEntityId wrapper,
+                 bool8_t failed);
+} VkrSceneModelJoinHooks;
+
 typedef struct VkrScene {
   VkrScenePhysics *physics;
   /** Scenes sharing one native physics world (ADR-076), or NULL for a
@@ -1442,6 +1457,7 @@ typedef struct VkrScene {
   VkrSceneAnimation *animations; // Independently owned per-wrapper pose state.
   /** Runtime-spawned models (vkr_scene_model.h), newest first. */
   struct VkrSceneModel *models;
+  VkrSceneModelJoinHooks model_join_hooks;
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets

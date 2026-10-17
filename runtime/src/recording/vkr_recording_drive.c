@@ -88,6 +88,15 @@ vkr_internal bool8_t vkr_recording_drive_scan(VkrRecordingDriveLoad *load) {
                  record.stream == VKR_RECORDING_STREAM_HASH_MODULE &&
                  record.size > 4u) {
         vkr_recording_drive_name_module(drive, &record);
+      } else if (load->sessions == 1u && !load->counting &&
+                 record.stream == VKR_RECORDING_STREAM_JOIN &&
+                 record.size == sizeof(VkrRecordingJoin)) {
+        if (drive->join_count < VKR_RECORDING_DRIVE_JOIN_MAX) {
+          MemCopy(&drive->joins[drive->join_count++], record.data,
+                  sizeof(VkrRecordingJoin));
+        } else {
+          drive->joins_cut = true_v;
+        }
       } else if (record.stream == VKR_RECORDING_STREAM_PLAYER &&
                  record.size == sizeof(VkrRecordingPlayer)) {
         if (!load->counting) {
@@ -377,6 +386,39 @@ vkr_internal bool8_t vkr_recording_drive_module_hash(
     }
   }
   return false_v;
+}
+
+/* The next recorded result `kind` of `entity` not yet applied, or
+   UINT32_MAX: a wrapper given a second model matches its second join. */
+vkr_internal uint32_t vkr_recording_drive_find_join(
+    const VkrRecordingDrive *drive, uint32_t kind, uint64_t entity) {
+  for (uint32_t i = 0u; i < drive->join_count; ++i) {
+    if (!drive->join_applied[i] && drive->joins[i].kind == kind &&
+        drive->joins[i].entity == entity) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
+bool8_t vkr_recording_drive_may_join(const VkrRecordingDrive *drive,
+                                     uint32_t kind, uint64_t entity,
+                                     uint64_t ticks) {
+  vkr_assert(drive != NULL);
+  const uint32_t index = vkr_recording_drive_find_join(drive, kind, entity);
+  if (index == UINT32_MAX) {
+    return drive->joins_cut;
+  }
+  return drive->joins[index].ticks <= ticks;
+}
+
+void vkr_recording_drive_joined(VkrRecordingDrive *drive, uint32_t kind,
+                                uint64_t entity) {
+  vkr_assert(drive != NULL);
+  const uint32_t index = vkr_recording_drive_find_join(drive, kind, entity);
+  if (index != UINT32_MAX) {
+    drive->join_applied[index] = true_v;
+  }
 }
 
 bool8_t vkr_recording_drive_check_hash(VkrRecordingDrive *drive,

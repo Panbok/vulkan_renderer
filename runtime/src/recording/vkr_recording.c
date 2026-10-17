@@ -152,6 +152,22 @@ static const VkrRecordingField VKR_RECORDING_SIM_FRAME_FIELDS[] = {
      .offset = 8u},
 };
 
+static const VkrRecordingField VKR_RECORDING_JOIN_FIELDS[] = {
+    {.name = "ticks", .type = VKR_RECORDING_FIELD_U64, .count = 1u},
+    {.name = "entity",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 8u},
+    {.name = "kind",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 16u},
+    {.name = "failed",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 20u},
+};
+
 static const VkrRecordingField VKR_RECORDING_TICK_HASH_FIELDS[] = {
     {.name = "tick", .type = VKR_RECORDING_FIELD_U64, .count = 1u},
     {.name = "transforms",
@@ -221,6 +237,11 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
      .fields = VKR_RECORDING_TICK_HASH_FIELDS},
     /* A u32 index, then the UTF-8 module name. */
     {.id = VKR_RECORDING_STREAM_HASH_MODULE, .name = "hash_module"},
+    {.id = VKR_RECORDING_STREAM_JOIN,
+     .name = "join",
+     .record_size = sizeof(VkrRecordingJoin),
+     .field_count = ArrayCount(VKR_RECORDING_JOIN_FIELDS),
+     .fields = VKR_RECORDING_JOIN_FIELDS},
 };
 
 /* Tier 0 (docs/proposals/recordings.md, "Metrics and capture tiers"):
@@ -301,6 +322,7 @@ _Static_assert(sizeof(VkrRecordingPose) == 88u, "pose record layout");
 _Static_assert(sizeof(VkrRecordingPlayer) == 64u, "player record layout");
 _Static_assert(sizeof(VkrRecordingAction) == 32u, "action record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
+_Static_assert(sizeof(VkrRecordingJoin) == 24u, "join record layout");
 _Static_assert(sizeof(VkrRecordingTickHash) ==
                    16u + 4u * (VKR_RECORDING_HASH_BUCKETS +
                                VKR_RECORDING_HASH_MODULE_MAX),
@@ -522,8 +544,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
-  VkrRecordingStream streams[24];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 6u <= 24u,
+  VkrRecordingStream streams[28];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 6u <= 28u,
                  "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
@@ -1115,6 +1137,15 @@ void vkr_recording_sim_frame(VkrRecording *recording,
     (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
                              VKR_RECORDING_STREAM_SIM_FRAME, recording->frame,
                              frame, sizeof(*frame));
+  }
+}
+
+void vkr_recording_join(VkrRecording *recording, const VkrRecordingJoin *join) {
+  vkr_assert(recording != NULL && recording->active);
+  if (recording->session_written) {
+    (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                             VKR_RECORDING_STREAM_JOIN, recording->frame, join,
+                             sizeof(*join));
   }
 }
 

@@ -94,6 +94,10 @@
 #define VKR_RECORDING_STREAM_SIM_FRAME 16u
 #define VKR_RECORDING_STREAM_TICK_HASH 17u
 #define VKR_RECORDING_STREAM_HASH_MODULE 18u
+/* An asynchronous result the session applied (VkrRecordingJoin): a
+   re-simulation applies it after as many fixed ticks, whenever its load
+   finishes. */
+#define VKR_RECORDING_STREAM_JOIN 19u
 /* Transform hashes are split by entity index, so a mismatch narrows to the
    entities of the buckets that differ. */
 #define VKR_RECORDING_HASH_BUCKETS 16u
@@ -149,6 +153,21 @@ typedef struct VkrRecordingSimFrame {
   float64_t now;
   float64_t delta;
 } VkrRecordingSimFrame;
+
+typedef enum VkrRecordingJoinKind {
+  /** A requested model joined its wrapper, or failed. */
+  VKR_RECORDING_JOIN_MODEL = 1,
+} VkrRecordingJoinKind;
+
+/* An asynchronous result a session applied: its kind, the entity it joined
+   (without its generation, as tick hashes name entities) and the fixed
+   ticks completed before it. */
+typedef struct VkrRecordingJoin {
+  uint64_t ticks;
+  uint64_t entity;
+  uint32_t kind;
+  uint32_t failed;
+} VkrRecordingJoin;
 
 /* The simulation after one fixed tick, hashed by subsystem: the scene's
    transforms in VKR_RECORDING_HASH_BUCKETS buckets by entity index, its
@@ -473,6 +492,10 @@ void vkr_recording_session(VkrRecording *recording, uint64_t seed);
     session started while recording. */
 void vkr_recording_sim_frame(VkrRecording *recording,
                              const VkrRecordingSimFrame *frame);
+
+/** Writes an asynchronous result the session applied; nothing before a
+    session started while recording. */
+void vkr_recording_join(VkrRecording *recording, const VkrRecordingJoin *join);
 
 /** Writes a tick's hashes, and first the names of modules not yet named;
     nothing before a session started while recording. */
