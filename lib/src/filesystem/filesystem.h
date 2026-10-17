@@ -577,6 +577,14 @@ bool8_t file_create_directory(const FilePath *path);
 /** Creates one directory and fails with ALREADY_EXISTS when it is present. */
 FileError file_create_directory_exclusive(const FilePath *path);
 
+/**
+ * Creates the directory at `path` and every missing directory above it; an
+ * existing directory succeeds. Either separator splits the path, and a drive
+ * root such as "C:" is taken as present. False when a part cannot be created
+ * or the path exceeds 4095 bytes.
+ */
+bool8_t file_create_directories(const FilePath *path);
+
 /** Flushes file contents to durable storage before publication. */
 FileError file_sync(FileHandle *handle);
 

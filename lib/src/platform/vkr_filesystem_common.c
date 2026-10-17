@@ -48,6 +48,35 @@ FilePath file_path_create(const char *path, VkrAllocator *allocator,
                     .type = type};
 }
 
+bool8_t file_create_directories(const FilePath *path) {
+  if (!path || !path->path.str || path->path.length == 0u) {
+    return false_v;
+  }
+  char prefix[4096];
+  const uint64_t length = path->path.length;
+  if (length >= sizeof(prefix)) {
+    return false_v;
+  }
+  MemCopy(prefix, path->path.str, length);
+  prefix[length] = '\0';
+  /* Each separator ends a parent; the whole path is the last part. */
+  for (uint64_t i = 1u; i <= length; ++i) {
+    if (i < length && prefix[i] != '/' && prefix[i] != '\\') {
+      continue;
+    }
+    const char separator = prefix[i];
+    prefix[i] = '\0';
+    const bool8_t drive = i == 2u && prefix[1] == ':';
+    const FilePath part = file_path_view(prefix);
+    const bool8_t created = drive || file_create_directory(&part);
+    prefix[i] = separator;
+    if (!created) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 FilePath file_path_view(const char *path) {
   if (!path) {
     return (FilePath){.type = FILE_PATH_TYPE_ABSOLUTE};

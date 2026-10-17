@@ -619,6 +619,7 @@ vkr_internal void editor_annotations_range_panel(
   const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
                                 {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.unit = VKR_UI_TRACK_AUTO},
+                                {.unit = VKR_UI_TRACK_AUTO},
                                 {.value = 24.0f, .unit = VKR_UI_TRACK_PX}};
   const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   if (!editor_annotations_panel_begin(ui, string8_lit("editor.recording.range"),
@@ -653,12 +654,40 @@ vkr_internal void editor_annotations_range_panel(
   const bool8_t enter = focused && input_key_just_pressed(ui->input, KEY_ENTER);
   const bool8_t escape = input_key_just_pressed(ui->input, KEY_ESCAPE) &&
                          (focused || !ui->focused_is_text);
+  /* A perf re-run of the range: the case is written, the harness command
+     goes to the clipboard. */
+  VkrUiWidgetConfig rerun = vkr_ui_widget_config_default();
+  rerun.placement = editor_annotations_cell(2u);
+  vkr_editor_action_style(&rerun, editor->heading_font);
+  rerun.icon = VKR_UI_ICON_SPEED;
+  vkr_editor_button_size(&rerun);
+  rerun.style.min_size_pt.y = rerun.style.max_size_pt.y = 26.0f;
+  rerun.tooltip = string8_lit("Benchmark this range: write a harness case "
+                              "that replays it and copy its command");
+  if (vkr_ui_button(ui, string8_lit("rerun"), string8_lit("Re-run"), &rerun)) {
+    VkrEditorRecordingRerun written;
+    char error[192];
+    if (vkr_editor_recording_rerun(editor, playback->bundle_path, range->first,
+                                   range->last, &written, error,
+                                   sizeof(error))) {
+      (void)vkr_platform_clipboard_write_text(
+          (const uint8_t *)written.command,
+          (uint32_t)string_length(written.command));
+      char text[VKR_RECORDING_PATH_MAX + 64u];
+      string_format(text, sizeof(text),
+                    "Wrote %s; its harness command is on the clipboard.",
+                    written.case_path);
+      vkr_editor_toast(editor, VKR_UI_ICON_SPEED, theme->text, text);
+    } else {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
+    }
+  }
   VkrUiWidgetConfig remove = editor_annotations_delete_button(
-      editor, 2u, 0u, string8_lit("Delete this range"));
+      editor, 3u, 0u, string8_lit("Delete this range"));
   const bool8_t deleting =
       vkr_ui_button(ui, string8_lit("delete"), string8_lit("Delete"), &remove);
   VkrUiWidgetConfig close = vkr_editor_icon_button_config(
-      3u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close (Escape)"));
+      4u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close (Escape)"));
   const bool8_t closing =
       vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) || escape;
   (void)vkr_ui_panel_end(ui);

@@ -15390,6 +15390,62 @@ static VkrEditorOpStatus ops_run_rec_range(OpsContext *ctx) {
   return ops_recording_annotations_done(ctx, annotations);
 }
 
+static VkrEditorOpStatus ops_run_rec_rerun(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  uint64_t first = 0u;
+  uint64_t last = UINT64_MAX;
+  uint64_t range = 0u;
+  bool8_t has_first = false_v;
+  bool8_t has_last = false_v;
+  bool8_t has_range = false_v;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_arg_index(ctx, "first", &first, &has_first) ||
+      !ops_arg_index(ctx, "last", &last, &has_last) ||
+      !ops_arg_index(ctx, "range", &range, &has_range)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* A named range supplies the frames. */
+  if (has_range) {
+    const VkrRecordingAnnotations *annotations =
+        ops_recording_annotations(ctx, bundle);
+    if (!annotations) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (range >= annotations->range_count || has_first || has_last) {
+      ops_fail(ctx, OPS_INVALID,
+               "'range' names one of the recording's ranges, without "
+               "'first' or 'last'");
+      return VKR_EDITOR_OP_DONE;
+    }
+    first = annotations->ranges[range].first;
+    last = annotations->ranges[range].last;
+  }
+  VkrEditorRecordingRerun rerun;
+  char error[192];
+  if (!vkr_editor_recording_rerun(ctx->editor, bundle, first, last, &rerun,
+                                  error, sizeof(error))) {
+    ops_fail(ctx, OPS_REJECTED, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "case",
+          vkr_bakery_json_cstr(arena, rerun.case_path));
+  ops_set(ctx, ctx->call->result, "recording",
+          vkr_bakery_json_cstr(arena, rerun.recording_path));
+  ops_set(ctx, ctx->call->result, "first_frame",
+          vkr_bakery_json_int(arena, (int64_t)rerun.first_frame));
+  ops_set(ctx, ctx->call->result, "last_frame",
+          vkr_bakery_json_int(arena, (int64_t)rerun.last_frame));
+  ops_set(ctx, ctx->call->result, "measure_frames",
+          vkr_bakery_json_int(arena, (int64_t)rerun.measure_frames));
+  ops_set(ctx, ctx->call->result, "seconds", ops_number(ctx, rerun.seconds));
+  ops_set(ctx, ctx->call->result, "command",
+          vkr_bakery_json_cstr(arena, rerun.command));
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_rec_review(OpsContext *ctx) {
   char bundle[VKR_RECORDING_PATH_MAX];
   uint64_t frames = 0u;
@@ -15881,6 +15937,16 @@ static const OpsDef s_ops[] = {
      "\"integer\"},\"label\":{\"type\":\"string\"},\"remove\":{"
      "\"type\":\"integer\"},\"rename\":{\"type\":\"integer\"}}}",
      ops_run_rec_range, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.rerun",
+     "Write a perf re-run: a harness case under tools/cases/local that "
+     "replays frames 'first' to 'last', or named 'range' index, of "
+     "recording 'name' (default: the open one) with the windowed timing "
+     "case's settings. Answers the case and the harness command to run; "
+     "the editor does not run it.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{\"type\":"
+     "\"integer\"},\"range\":{\"type\":\"integer\"}}}",
+     ops_run_rec_rerun, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.review",
      "Set recording 'name' (default: the open one) to 'state' unreviewed, "
      "reviewed or flagged.",

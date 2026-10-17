@@ -55,24 +55,8 @@ vkr_internal bool8_t editor_request_directory(VkrEditorUi *editor, char *out,
   if (!create) {
     return true_v;
   }
-  char prefix[VKR_RECORDING_PATH_MAX];
-  const uint64_t length = string_length(out);
-  MemCopy(prefix, out, length + 1u);
-  for (uint64_t i = 1u; i <= length; ++i) {
-    if (i < length && prefix[i] != '/' && prefix[i] != '\\') {
-      continue;
-    }
-    const char separator = prefix[i];
-    prefix[i] = '\0';
-    const FilePath part = file_path_view(prefix);
-    /* A drive root such as "C:" cannot be created and need not be. */
-    const bool8_t drive = i == 2u && prefix[1] == ':';
-    if (!drive && !file_create_directory(&part)) {
-      return false_v;
-    }
-    prefix[i] = separator;
-  }
-  return true_v;
+  const FilePath directory = file_path_view(out);
+  return file_create_directories(&directory);
 }
 
 /* Ids are letters, digits, '-' and '_', so an agent's id stays a file

@@ -160,7 +160,14 @@ an agent must read one without the editor.
   harness runs' recordings open in Compare like any others. A case camera of
   mode `recording` replays a recording's range under the case's fixed delta
   and harness rules (a perf re-run): the harness child seeks the runtime's
-  playback each frame, so the run renders what Watch shows.
+  playback each frame, so the run renders what Watch shows. `rec.rerun` and
+  a range panel's Re-run write such a case under `tools/cases/local` from the
+  windowed timing case `bistro_shadow_orbit` (its settings, the recording's
+  scene, the range's frames, measured frames covering the range's seconds at
+  its fixed delta, no captures or assertions), copy the recording into
+  `build/_artifacts/rerun`, and give the harness command; the editor never
+  runs it, which would share the GPU with the benchmark
+  ([editor_recording_rerun.c](../../editor/src/editor_recording_rerun.c)).
 - **Compare (R5).** `vkr_recording_compare` compares recording B with A,
   both analyzed
   ([vkr_recording_compare.h](../../runtime/src/assets/vkr_recording_compare.h)).

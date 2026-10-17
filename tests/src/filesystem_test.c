@@ -403,6 +403,55 @@ vkr_internal void test_file_get_error_strings(void) {
   printf("  test_file_get_error_strings PASSED\n");
 }
 
+/* Detects: a missing parent left uncreated, an existing tree reported as a
+   failure, a file in the way accepted as a directory, and a trailing
+   separator that stops the walk. */
+vkr_internal void test_file_create_directories(void) {
+  printf("  Running test_file_create_directories...\n");
+  const uint32_t id = ++g_fs_test_counter;
+  char root[512];
+  char leaf[600];
+  char trailing[600];
+  char blocked[640];
+  snprintf(root, sizeof(root), "%s%s/tree_%u", PROJECT_SOURCE_DIR,
+           FS_TEST_RELATIVE_DIR, id);
+  snprintf(leaf, sizeof(leaf), "%s/a/b/c", root);
+  snprintf(trailing, sizeof(trailing), "%s/d/", root);
+  const FilePath leaf_path = file_path_view(leaf);
+  assert(file_create_directories(&leaf_path));
+  assert(file_exists(&leaf_path));
+  assert(file_create_directories(&leaf_path));
+  const FilePath trailing_path = file_path_view(trailing);
+  assert(file_create_directories(&trailing_path));
+
+  /* A file named like a parent stops the walk. */
+  char file_text[640];
+  snprintf(file_text, sizeof(file_text), "%s/file", root);
+  const FilePath file_path = file_path_view(file_text);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
+  FileHandle handle = {0};
+  assert(file_open(&file_path, mode, &handle) == FILE_ERROR_NONE);
+  file_close(&handle);
+  snprintf(blocked, sizeof(blocked), "%s/file/below", root);
+  const FilePath blocked_path = file_path_view(blocked);
+  assert(!file_create_directories(&blocked_path));
+  assert(!file_exists(&blocked_path));
+
+  assert(file_remove(&file_path) == FILE_ERROR_NONE);
+  const char *const remove_order[] = {"a/b/c", "a/b", "a", "d", ""};
+  for (uint32_t i = 0u; i < sizeof(remove_order) / sizeof(remove_order[0]);
+       ++i) {
+    char path[640];
+    snprintf(path, sizeof(path), "%s%s%s", root, remove_order[i][0] ? "/" : "",
+             remove_order[i]);
+    const FilePath directory = file_path_view(path);
+    assert(file_remove_directory(&directory) == FILE_ERROR_NONE);
+  }
+  printf("  test_file_create_directories PASSED\n");
+}
+
 vkr_internal void test_file_clone(void) {
   printf("  Running test_file_clone...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -1212,6 +1261,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_load_spirv_shader();
   test_file_path_helpers();
   test_file_get_error_strings();
+  test_file_create_directories();
   test_file_clone();
   test_file_link();
   test_file_rename_waits_for_brief_reader();

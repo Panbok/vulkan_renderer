@@ -384,6 +384,29 @@ bool8_t vkr_editor_recording_requests_build(struct VkrEditorUi *editor,
 const VkrEditorRecordingEntry *
 vkr_editor_recording_newest(struct VkrEditorUi *editor);
 
+/* ---- Perf re-run (editor_recording_rerun.c) ---- */
+
+/* A written re-run case: where it is, the recording copy it names, the
+   frames it replays, how many it measures and the harness command. */
+typedef struct VkrEditorRecordingRerun {
+  char case_path[VKR_RECORDING_PATH_MAX];
+  char recording_path[VKR_RECORDING_PATH_MAX];
+  char command[1536];
+  uint64_t first_frame;
+  uint64_t last_frame;
+  uint64_t measure_frames;
+  float64_t seconds;
+} VkrEditorRecordingRerun;
+
+/** Writes a harness case that replays frames `first` to `last` (UINT64_MAX:
+ * the end) of recording `name` with the windowed timing case's settings, and
+ * copies the recording where the case names it; the harness runs it. False
+ * with the reason in `error`, such as a scene outside the repository. */
+bool8_t vkr_editor_recording_rerun(struct VkrEditorUi *editor, const char *name,
+                                   uint64_t first, uint64_t last,
+                                   VkrEditorRecordingRerun *out, char *error,
+                                   uint64_t error_capacity);
+
 /* ---- Annotations (editor_recording_annotations.c) ---- */
 
 /** The annotations of the bundle at `bundle_path`, read into the cache when
