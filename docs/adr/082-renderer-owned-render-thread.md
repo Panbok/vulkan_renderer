@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-06
+updated: 2026-10-17
 authority: adr
 ---
 # ADR-082: Renderer-owned render thread
@@ -138,6 +138,10 @@ discards shadow reuse. The runtime also:
   from values cached when the last frame completed, not from the renderer;
 - carries a capture request only once, and settles only the capture or
   picking request the completed frame carried;
+- polls and releases its caller's capture at completion, when the render
+  thread is idle, so `vkr_standard_scene_runtime_capture_poll` and
+  `_capture_release` never wait for it; while a frame renders, the poll
+  answers what the last completion found;
 - closes a metrics frame at completion and opens the next, so a published
   frame's renderer results, pass table and `cpu_frame_index` describe one
   rendered frame. `cpu.render_submit` is then the worker's render time,

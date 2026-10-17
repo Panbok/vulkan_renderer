@@ -248,6 +248,22 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
     "memory.gpu.driver.recommended_budget_bytes",
 };
 
+/* Frame-loop work that a render thread's completion iteration (ADR-082)
+   measures before it completes the frame it publishes: it belongs to that
+   iteration's recorded frame, whose frame.wall it lengthens. */
+static const char *const VKR_RECORDING_LOOP_METRICS[] = {
+    "cpu.update",
+    "cpu.simulation",
+    "cpu.physics",
+    "cpu.render_wait",
+};
+
+/* Frame-loop work measured before the completion only when the iteration
+   built its frame first (a decoupled frame). */
+static const char *const VKR_RECORDING_LOOP_BUILD_METRICS[] = {
+    "cpu.world_payload_build",
+};
+
 /* Renderer metrics and the engine events they become: a duration's
    samples in the frame, with their time, or a gauge's nonzero value. */
 typedef struct VkrRecordingEventMetric {
@@ -366,6 +382,18 @@ vkr_internal uint32_t vkr_recording_metric_fields(VkrRecording *recording,
       const uint32_t index = recording->metric_count++;
       if (string_equals(catalog[i].name, "gpu.submission")) {
         recording->gpu_submission_metric = index;
+      }
+      for (uint32_t l = 0u; l < ArrayCount(VKR_RECORDING_LOOP_METRICS); ++l) {
+        if (string_equals(catalog[i].name, VKR_RECORDING_LOOP_METRICS[l])) {
+          recording->loop_metrics |= 1ull << index;
+        }
+      }
+      for (uint32_t l = 0u; l < ArrayCount(VKR_RECORDING_LOOP_BUILD_METRICS);
+           ++l) {
+        if (string_equals(catalog[i].name,
+                          VKR_RECORDING_LOOP_BUILD_METRICS[l])) {
+          recording->loop_build_metrics |= 1ull << index;
+        }
       }
       recording->metric_ids[index] =
           ((VkrMetricId)metrics->registry_generation << 16u) | i;
@@ -649,8 +677,42 @@ vkr_internal bool8_t vkr_recording_metric_value(
   return false_v;
 }
 
+/* A metrics record on `frame` with the published fields in `fields`, and
+   resident memory when `resident` is set. */
+vkr_internal void vkr_recording_metrics_record(VkrRecording *recording,
+                                               uint64_t frame,
+                                               const VkrMetricsFrame *published,
+                                               uint64_t fields,
+                                               bool8_t resident) {
+  const uint32_t count = recording->metric_count;
+  const uint32_t size = 8u * (count + 2u);
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_METRICS, frame, size);
+  if (!record) {
+    return;
+  }
+  uint64_t valid = 0u;
+  for (uint32_t i = 0u; i <= count; ++i) {
+    float64_t value = 0.0;
+    const bool8_t present =
+        i < count
+            ? published && ((fields >> i) & 1u) != 0u &&
+                  vkr_recording_metric_value(recording, i, published, &value)
+            : resident && recording->resident_valid;
+    if (i == count && present) {
+      value = (float64_t)recording->resident_bytes;
+    }
+    valid |= present ? 1ull << i : 0ull;
+    MemCopy(record + 8u + 8u * i, &value, sizeof(value));
+  }
+  MemCopy(record, &valid, sizeof(valid));
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
 void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
-                           const VkrMetricsFrame *published) {
+                           const VkrMetricsFrame *published,
+                           const VkrRecordingMetricsLoop *loop) {
   vkr_assert(recording != NULL && recording->active);
   if (!recording->metrics_enabled) {
     return;
@@ -683,31 +745,26 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
     recording->resident_valid =
         vkr_platform_get_process_resident_memory(&recording->resident_bytes);
   }
-  const uint32_t count = recording->metric_count;
-  const uint32_t size = 8u * (count + 2u);
-  uint8_t *record =
-      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
-                           VKR_RECORDING_STREAM_METRICS, frame, size);
-  if (!record) {
-    return;
+  /* gpu.submission measures an earlier frame; it is written there. */
+  uint64_t fields = UINT64_MAX;
+  if (recording->gpu_submission_metric != UINT32_MAX) {
+    fields &= ~(1ull << recording->gpu_submission_metric);
   }
-  uint64_t valid = 0u;
-  for (uint32_t i = 0u; i <= count; ++i) {
-    float64_t value = 0.0;
-    /* gpu.submission measures an earlier frame; it is written there. */
-    const bool8_t present =
-        i < count
-            ? published && i != recording->gpu_submission_metric &&
-                  vkr_recording_metric_value(recording, i, published, &value)
-            : recording->resident_valid;
-    if (i == count && present) {
-      value = (float64_t)recording->resident_bytes;
-    }
-    valid |= present ? 1ull << i : 0ull;
-    MemCopy(record + 8u + 8u * i, &value, sizeof(value));
+  uint64_t loop_fields = 0u;
+  if (loop && loop->frame != frame) {
+    loop_fields = (recording->loop_metrics |
+                   (loop->built ? recording->loop_build_metrics : 0u)) &
+                  fields;
+    fields &= ~loop_fields;
   }
-  MemCopy(record, &valid, sizeof(valid));
-  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  vkr_recording_metrics_record(recording, frame, published, fields, true_v);
+  /* A record whose mask holds the loop fields alone; readers merge it into
+     the frame's record by the mask. Before the first recorded frame they
+     belong to no frame. */
+  if (loop_fields != 0u && published && loop->frame != UINT64_MAX) {
+    vkr_recording_metrics_record(recording, loop->frame, published, loop_fields,
+                                 false_v);
+  }
 }
 
 /* The id of the pass named `name`; a new name gets the next id and a name

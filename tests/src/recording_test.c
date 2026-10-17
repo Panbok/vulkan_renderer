@@ -713,6 +713,9 @@ static void test_recording_pass_rows(void) {
                                  vkr_depot_zstd_codec()) ==
          VKR_RECORDING_DATA_OK);
   assert(data.frame_count == RECORDING_PASS_TEST_FRAMES);
+  /* Every recording declares the player stream; with no player records
+     there is no player path to align by. */
+  assert(!data.has_player);
   assert(data.pass_count == 3u);
   const uint32_t a = vkr_recording_data_find_pass(&data, "A");
   const uint32_t b = vkr_recording_data_find_pass(&data, "B");
@@ -1401,7 +1404,7 @@ static void test_recording_gpu_submission(void) {
     assert(vkr_metrics_end_frame(metrics));
     VkrMetricsSnapshotView view = {0};
     assert(vkr_metrics_snapshot_acquire(metrics, &view));
-    vkr_recording_metrics(&recording, f, view.frame);
+    vkr_recording_metrics(&recording, f, view.frame, NULL);
     vkr_recording_passes(&recording, f, index, NULL);
     vkr_recording_gpu_submission(&recording, source,
                                  (float64_t)gpu_ns * 1.0e-6);
@@ -1442,6 +1445,110 @@ static void test_recording_gpu_submission(void) {
   assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
   recording_memory_destroy(&memory);
   printf("  test_recording_gpu_submission PASSED\n");
+}
+
+/* Detects: a render-thread publication's frame-loop work (the completing
+   iteration's update, and its frame build when it built before the
+   completion) left on the published frame instead of the iteration's own,
+   so a slow update sits a row before the frame.wall it lengthened; and the
+   split losing the published frame's other fields. */
+static void test_recording_loop_metrics(void) {
+  printf("  Running test_recording_loop_metrics...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  VkrMetricDescription desc = {
+      .name = string8_lit("frame.wall"),
+      .domain = VKR_METRIC_DOMAIN_FRAME,
+      .kind = VKR_METRIC_KIND_DURATION,
+      .unit = VKR_METRIC_UNIT_NANOSECONDS,
+      .scalar = VKR_METRIC_SCALAR_U64,
+      .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+  };
+  VkrMetricId wall = VKR_METRIC_ID_INVALID;
+  VkrMetricId update = VKR_METRIC_ID_INVALID;
+  VkrMetricId payload = VKR_METRIC_ID_INVALID;
+  assert(vkr_metrics_register(metrics, &desc, &wall));
+  desc.name = string8_lit("cpu.update");
+  assert(vkr_metrics_register(metrics, &desc, &update));
+  desc.name = string8_lit("cpu.world_payload_build");
+  assert(vkr_metrics_register(metrics, &desc, &payload));
+  assert(vkr_metrics_seal(metrics));
+
+  char path[1024];
+  recording_test_path("loop_metrics", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path, .codec = vkr_depot_zstd_codec(), .metrics = metrics};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  /* Iteration f records frame f, then completes frame f - 1: the
+     publication holds frame f - 1's wall (10 + f - 1 ms) and iteration f's
+     update (100 + f ms). Iterations 3 and 5 built a frame first (50 + f
+     ms); only iteration 3 built it before the completion. */
+  for (uint64_t f = 0u; f < 6u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    if (f == 0u) {
+      continue;
+    }
+    vkr_metrics_begin_frame(metrics, f, f);
+    vkr_metrics_duration_add_ns(metrics, wall, (10u + f - 1u) * 1000000u);
+    vkr_metrics_duration_add_ns(metrics, update, (100u + f) * 1000000u);
+    if (f == 3u || f == 5u) {
+      vkr_metrics_duration_add_ns(metrics, payload, (50u + f) * 1000000u);
+    }
+    assert(vkr_metrics_end_frame(metrics));
+    VkrMetricsSnapshotView view = {0};
+    assert(vkr_metrics_snapshot_acquire(metrics, &view));
+    const VkrRecordingMetricsLoop loop = {.frame = f, .built = f == 3u};
+    vkr_recording_metrics(&recording, f - 1u, view.frame, &loop);
+    vkr_metrics_snapshot_release(metrics, &view);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  const VkrRecordingSeries *walls =
+      &data.series[vkr_recording_data_find_series(&data, "frame.wall")];
+  const VkrRecordingSeries *updates =
+      &data.series[vkr_recording_data_find_series(&data, "cpu.update")];
+  const VkrRecordingSeries *payloads =
+      &data.series[vkr_recording_data_find_series(&data,
+                                                  "cpu.world_payload_build")];
+  for (uint64_t f = 0u; f < 6u; ++f) {
+    assert(walls->valid[f] == (f < 5u));
+    assert(f == 5u || walls->values[f] == (float64_t)(10u + f));
+    assert(updates->valid[f] == (f > 0u));
+    assert(f == 0u || updates->values[f] == (float64_t)(100u + f));
+  }
+  /* Iteration 3's build is its own; iteration 5's came after it completed
+     frame 4, so it stays with frame 4. */
+  assert(payloads->valid[3] && payloads->values[3] == 53.0);
+  assert(payloads->valid[4] && payloads->values[4] == 55.0);
+  assert(!payloads->valid[0] && !payloads->valid[1] && !payloads->valid[2] &&
+         !payloads->valid[5]);
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_loop_metrics PASSED\n");
 }
 
 /* Detects: a loop span that lets the playhead run past its end, a wrap
@@ -1620,6 +1727,7 @@ bool32_t run_recording_tests(void) {
   test_recorder_accounting();
   test_recording_pass_rows();
   test_recording_gpu_submission();
+  test_recording_loop_metrics();
   test_scene_change_tracking();
   test_recording_pose_playback();
   test_recording_player_records();

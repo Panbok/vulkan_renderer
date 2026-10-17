@@ -154,8 +154,9 @@ typedef struct VkrRecordingData {
   float32_t *yaws;
   uint8_t *camera_valid;
   /* The player of the frame's last tick (vkr_rec_player): three positions
-     and a speed per frame where player_valid is 1. has_player says the
-     recording declares a player stream. */
+     and a speed per frame where player_valid is 1. has_player says any
+     frame has one: editor recordings declare the player stream even when
+     no Play session wrote to it. */
   bool8_t has_player;
   float64_t *player_positions;
   float32_t *player_speeds;

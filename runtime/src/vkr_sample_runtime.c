@@ -6394,8 +6394,8 @@ static void sample_capture_poll(VkrStandardSceneRuntime *application) {
     return;
   }
   VkrCapturePollResult poll = {0};
-  const VkrCaptureStatus status = vkr_renderer_capture_poll(
-      &application->renderer, state->capture_batch.request_id, &poll);
+  const VkrCaptureStatus status = vkr_standard_scene_runtime_capture_poll(
+      application, state->capture_batch.request_id, &poll);
   /* Not yet submitted, or still rendering. */
   if (status == VKR_CAPTURE_STATUS_PENDING ||
       (status == VKR_CAPTURE_STATUS_NOT_FOUND &&
@@ -6411,8 +6411,8 @@ static void sample_capture_poll(VkrStandardSceneRuntime *application) {
     state->capture_ready.failed = false_v;
   } else if (status == VKR_CAPTURE_STATUS_READY ||
              status == VKR_CAPTURE_STATUS_FAILED) {
-    vkr_renderer_capture_release(&application->renderer,
-                                 state->capture_batch.request_id);
+    vkr_standard_scene_runtime_capture_release(application,
+                                               state->capture_batch.request_id);
   }
   state->capture_ready_valid = true_v;
 }
@@ -6424,8 +6424,8 @@ static void sample_capture_after_build(VkrStandardSceneRuntime *application,
                                        const VkrSampleCaptureRequest *request) {
   if (state->capture_ready_valid) {
     if (!state->capture_ready.failed) {
-      vkr_renderer_capture_release(&application->renderer,
-                                   state->capture_batch.request_id);
+      vkr_standard_scene_runtime_capture_release(
+          application, state->capture_batch.request_id);
     }
     state->capture_ready_valid = false_v;
   }

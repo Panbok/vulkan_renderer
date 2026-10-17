@@ -2878,6 +2878,63 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
   frame->scratch_scope = (VkrAllocatorScope){0};
 }
 
+/* The caller's capture work, run while the render thread is idle: the
+   releases it asked for, then a poll of the capture it watches. */
+vkr_internal void vkr_standard_scene_runtime_capture_settle(
+    VkrStandardSceneRuntime *application) {
+  for (uint32_t i = 0u; i < application->capture_release_count; ++i) {
+    (void)vkr_renderer_capture_release(&application->renderer,
+                                       application->capture_releases[i]);
+  }
+  application->capture_release_count = 0u;
+  VkrStandardSceneRuntimeCaptureWatch *watch = &application->capture_watch;
+  if (watch->active) {
+    watch->status = vkr_renderer_capture_poll(&application->renderer, watch->id,
+                                              &watch->result);
+  }
+}
+
+VkrCaptureStatus
+vkr_standard_scene_runtime_capture_poll(VkrStandardSceneRuntime *application,
+                                        VkrCaptureRequestId request_id,
+                                        VkrCapturePollResult *out_result) {
+  vkr_assert(application && out_result);
+  VkrStandardSceneRuntimeCaptureWatch *watch = &application->capture_watch;
+  /* No frame is rendering, so the poll waits for nothing. */
+  if (!application->frame_in_flight) {
+    watch->active = false_v;
+    return vkr_renderer_capture_poll(&application->renderer, request_id,
+                                     out_result);
+  }
+  if (!watch->active || watch->id != request_id) {
+    *watch = (VkrStandardSceneRuntimeCaptureWatch){
+        .active = true_v,
+        .id = request_id,
+        .status = VKR_CAPTURE_STATUS_PENDING,
+    };
+  }
+  if (watch->status == VKR_CAPTURE_STATUS_PENDING) {
+    *out_result = (VkrCapturePollResult){.status = VKR_CAPTURE_STATUS_PENDING};
+    return VKR_CAPTURE_STATUS_PENDING;
+  }
+  *out_result = watch->result;
+  watch->active = false_v;
+  return watch->status;
+}
+
+void vkr_standard_scene_runtime_capture_release(
+    VkrStandardSceneRuntime *application, VkrCaptureRequestId request_id) {
+  vkr_assert(application);
+  if (!application->frame_in_flight ||
+      application->capture_release_count ==
+          ArrayCount(application->capture_releases)) {
+    (void)vkr_renderer_capture_release(&application->renderer, request_id);
+    return;
+  }
+  application->capture_releases[application->capture_release_count++] =
+      request_id;
+}
+
 /* Collects the submitted frame, waiting for the render thread when it is
    still rendering. Does nothing when no frame awaits completion. */
 vkr_internal void vkr_standard_scene_runtime_complete_frame(
@@ -2899,12 +2956,21 @@ vkr_internal void vkr_standard_scene_runtime_complete_frame(
     vkr_renderer_complete_frame(&application->renderer, &result);
   }
   vkr_standard_scene_runtime_finish_frame(application, frame, &result);
+  vkr_standard_scene_runtime_capture_settle(application);
   /* Inline frames close their metrics frame at the end of the loop
      iteration. A render thread finishes a frame during a later iteration,
-     whose remaining work belongs to the next frame. */
+     whose remaining work belongs to the next frame; the work this
+     iteration did before completing it is recorded on its own frame. */
   if (render_thread) {
+    const VkrRecordingMetricsLoop loop = {
+        .frame =
+            application->recording.active && application->recording.frame > 0u
+                ? application->recording.frame - 1u
+                : UINT64_MAX,
+        .built = application->frame->decoupled,
+    };
     vkr_standard_scene_recording_metrics(
-        application, frame->recording_frame,
+        application, frame->recording_frame, &loop,
         vkr_metrics_end_frame(application->metrics));
     vkr_metrics_begin_frame(application->metrics,
                             application->renderer.frame_number + 1u,
@@ -3506,7 +3572,7 @@ vkr_internal void vkr_standard_scene_runtime_host_frame_complete(
             ? application->recording.frame - 1u
             : UINT64_MAX;
     vkr_standard_scene_recording_metrics(
-        application, recording_frame,
+        application, recording_frame, NULL,
         vkr_metrics_end_frame(application->metrics));
   }
 }

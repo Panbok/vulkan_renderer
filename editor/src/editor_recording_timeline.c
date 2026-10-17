@@ -99,7 +99,7 @@ vkr_internal uint32_t editor_timeline_column_of(
                     editor_timeline_span(timeline));
 }
 
-/* Each column's highest resident and GPU driver memory, in GB. A column
+/* Each column's highest resident and GPU driver memory, in GiB. A column
    without a sample carries the one before it, so the lines stay level
    over lost or unsampled frames. */
 vkr_internal void
@@ -592,7 +592,7 @@ vkr_internal void editor_timeline_memory(VkrEditorUi *editor,
   if (hovered != VKR_UI_PLOT_NONE && hovered < timeline->column_count) {
     config.tooltip = string8_create_formatted(
         ui->frame_allocator,
-        "Frame %llu  \xc2\xb7  RAM %.2f GB  \xc2\xb7  GPU %.2f GB",
+        "Frame %llu  \xc2\xb7  RAM %.2f GiB  \xc2\xb7  GPU %.2f GiB",
         (unsigned long long)editor_timeline_column_start(timeline, hovered),
         timeline->column_ram[hovered], timeline->column_vram[hovered]);
   }
@@ -624,13 +624,13 @@ vkr_internal void editor_timeline_memory(VkrEditorUi *editor,
     label.icon_size_pt = 7.0f;
     label.icon_color = colors[m];
     (void)vkr_ui_push_id_u64(ui, m);
-    /* Under 100 MB of change reads in MB, so it is not lost to rounding;
+    /* Under 100 MiB of change reads in MiB, so it is not lost to rounding;
        a level line reads one value. */
     const float32_t low = timeline->memory_min_gb[m];
     const float32_t high = timeline->memory_max_gb[m];
     const bool8_t megabytes = (high - low) * 1024.0f < 100.0f;
     const float32_t scale = megabytes ? 1024.0f : 1.0f;
-    const char *unit = megabytes ? "MB" : "GB";
+    const char *unit = megabytes ? "MiB" : "GiB";
     char low_text[32];
     char high_text[32];
     string_format(low_text, sizeof(low_text), megabytes ? "%.0f" : "%.2f",

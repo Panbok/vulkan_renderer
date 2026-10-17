@@ -233,7 +233,9 @@ an agent must read one without the editor.
   pass times, differ without alignment. The frame-by-frame difference maps
   each frame of A to the frame of B at the same key: seconds from the start,
   seconds from a marker label both carry, meters along the path (the
-  players' when both recorded one, else the cameras'), or the frame number
+  players' when both have player records, else the cameras'; every
+  recording declares the player stream, so a declared but empty one does
+  not count), or the frame number
   for re-runs; from it come the mean change per aligned frame and the 30
   aligned frames of A where B is slowest. The Performance window shows B
   beside the analyzed recording: each card's last line is B's value and the
@@ -307,7 +309,15 @@ an agent must read one without the editor.
   the recorded frame that rendered that frame, as a second `metrics` record
   whose mask holds that field alone; readers merge records by mask. A
   completion repeated across publications is written once, and frames still
-  on the GPU at stop have none.
+  on the GPU at stop have none. With a render thread a frame is published
+  during a later frame-loop iteration (ADR-082), which runs its update and
+  waits for the frame before it closes the metrics frame. That iteration's
+  `cpu.update`, `cpu.simulation`, `cpu.physics` and `cpu.render_wait`, and
+  its `cpu.world_payload_build` when it built a decoupled frame first, are
+  written on the iteration's own recorded frame, again as a record whose
+  mask holds them alone, so a slow update sits on the frame whose
+  `frame.wall` it lengthened. Before, a 290 ms agent capture's update sat
+  one row before its `frame.wall` spike and the spike named another cause.
 - **Pass rows (Tier 1).** A Tier 1 recording adds streams `pass_name` (an id
   and a name, written once before the id's first row) and `passes`: the
   executed passes of one rendered frame, each with CPU encode and GPU
@@ -358,10 +368,15 @@ an agent must read one without the editor.
   camera layouts match; playback refuses others with a reason.
 - Thumbnails cost the main thread 0.24 ms per capture (sampling a
   1275×700 Bistro Scene to 256×141) and 0.04 ms to start the write thread.
-  In a 15 s idle headless Bistro recording (M1 Pro, Metal, Release) the
-  frame after each request and the frame that reads the capture ran about
-  0.8 and 0.5 ms longer than the 5.65 ms median and the one after about
-  1.0 ms shorter. The renderer grows its readback memory on the first
+  The editor polls and releases its captures through the runtime, which
+  runs both at frame completion while the render thread renders a frame
+  (ADR-082): before, each poll waited for that thread, which on Vulkan
+  added about 3 ms per thumbnail (`cpu.update` 12 ms against 0.7 ms), and
+  on Metal the frames around a capture ran 0.5 to 0.8 ms longer. After it,
+  in a 4.6 s headless Bistro recording (M1 Pro, Metal, Release) with 9
+  thumbnails, the 35 frames from one before to five after each capture had
+  a median `frame.wall` of 5.46 ms and `cpu.update` of 0.17 ms, against
+  5.49 and 0.17 ms on the other 445. The renderer grows its readback memory on the first
   capture that needs more and waits for the GPU (about 6 ms on Bistro), so
   the editor makes one capture of the Scene while nothing records once the
   Scene image has kept its size for 30 builds; without it every first

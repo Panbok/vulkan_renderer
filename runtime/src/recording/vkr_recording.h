@@ -305,6 +305,10 @@ typedef struct VkrRecording {
      published frame, so it is written on the frame that rendered it. */
   uint32_t gpu_submission_metric;
   uint64_t gpu_frame_written;
+  /* Field masks of VKR_RECORDING_LOOP_METRICS and
+     VKR_RECORDING_LOOP_BUILD_METRICS. */
+  uint64_t loop_metrics;
+  uint64_t loop_build_metrics;
   /* The renderer frame index of recent recorded frames. */
   VkrRecordingFrameIndex frame_history[VKR_RECORDING_FRAME_INDEX_HISTORY];
   uint32_t frame_history_next;
@@ -352,13 +356,26 @@ void vkr_recording_frame(VkrRecording *recording,
                          const VkrRecordingFrame *frame,
                          const VkrRecordingCamera *camera);
 
+/* Where a publication's frame-loop work belongs when a render thread
+   completed its frame during a later frame-loop iteration (ADR-082): that
+   iteration measured its update and its wait for the frame before closing
+   the metrics frame, so they lengthen its own frame.wall, not the published
+   frame's. `frame` is that iteration's recorded frame (UINT64_MAX before the
+   first) and `built` says it built its frame before the completion. */
+typedef struct VkrRecordingMetricsLoop {
+  uint64_t frame;
+  bool8_t built;
+} VkrRecordingMetricsLoop;
+
 /**
  * @brief Writes the Tier 0 metrics of recorded frame `frame` from a published
  * metrics frame, except gpu.submission, which vkr_recording_gpu_submission
- * places; no-op for a recording without metrics. Frame-loop thread.
+ * places, and, with `loop`, the frame-loop work it names, which goes on
+ * `loop->frame`; no-op for a recording without metrics. Frame-loop thread.
  */
 void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
-                           const VkrMetricsFrame *published);
+                           const VkrMetricsFrame *published,
+                           const VkrRecordingMetricsLoop *loop);
 
 /**
  * @brief Notes that recorded frame `frame` rendered renderer frame

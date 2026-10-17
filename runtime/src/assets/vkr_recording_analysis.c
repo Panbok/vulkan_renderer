@@ -498,6 +498,7 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
     }
     data->player_speeds[frame] = (float32_t)vkr_sqrt_f64(speed_squared);
     data->player_valid[frame] = 1u;
+    data->has_player = true_v;
   }
 }
 
@@ -557,7 +558,6 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   data->frame_valid = cursor;
   data->camera_valid = cursor + frames;
   data->player_valid = cursor + frames * 2u;
-  data->has_player = load->player != NULL && load->player_position != NULL;
   for (uint64_t i = 0u; i < series; ++i) {
     data->series[i].valid = cursor + frames * (3u + i);
     const VkrRecordingField *field = load->metric_fields[i];

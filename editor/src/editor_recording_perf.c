@@ -673,7 +673,7 @@ vkr_internal String8 perf_gb(VkrUiSystem *ui, const VkrRecordingData *data,
     return string8_lit("n/a");
   }
   const VkrRecordingStats *stats = &analysis->series[index];
-  return string8_create_formatted(ui->frame_allocator, "%.2f / %.2f GB",
+  return string8_create_formatted(ui->frame_allocator, "%.2f / %.2f GiB",
                                   stats->max / PERF_GB, stats->mean / PERF_GB);
 }
 
@@ -727,11 +727,13 @@ vkr_internal void perf_cards(VkrEditorUi *editor, VkrUiSystem *ui,
       VKR_RECORDING_COMPARE_OVER_BUDGET, 1.0, "");
   perf_stat_card(editor, ui, 6u, "RAM peak / avg",
                  perf_gb(ui, &perf->data, analysis, "process.resident_bytes"),
-                 theme->text, VKR_RECORDING_COMPARE_RAM_PEAK, 1.0e-9, " GB");
+                 theme->text, VKR_RECORDING_COMPARE_RAM_PEAK, 1.0 / PERF_GB,
+                 " GiB");
   perf_stat_card(editor, ui, 7u, "VRAM peak / avg",
                  perf_gb(ui, &perf->data, analysis,
                          "memory.gpu.driver.current_allocated_bytes"),
-                 theme->text, VKR_RECORDING_COMPARE_VRAM_PEAK, 1.0e-9, " GB");
+                 theme->text, VKR_RECORDING_COMPARE_VRAM_PEAK, 1.0 / PERF_GB,
+                 " GiB");
   (void)vkr_ui_panel_end(ui);
 }
 
@@ -757,7 +759,7 @@ vkr_internal String8 perf_tooltip(VkrUiSystem *ui,
   }
   if (perf->has_ram || perf->has_vram) {
     text = string8_create_formatted(
-        ui->frame_allocator, "%.*s\nRAM %.2f GB  \xc2\xb7  VRAM %.2f GB",
+        ui->frame_allocator, "%.*s\nRAM %.2f GiB  \xc2\xb7  VRAM %.2f GiB",
         (int32_t)text.length, text.str, perf->ram_gb[column],
         perf->vram_gb[column]);
   }
@@ -1309,7 +1311,7 @@ perf_memory_chart(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   perf_title(ui, "title",
              present
                  ? string8_create_formatted(ui->frame_allocator,
-                                            "%s (GB)  \xc2\xb7  %.2f to %.2f",
+                                            "%s (GiB)  \xc2\xb7  %.2f to %.2f",
                                             name, range[0], range[1])
                  : string8_create_formatted(ui->frame_allocator,
                                             "%s: not recorded", name),

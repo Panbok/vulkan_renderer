@@ -164,6 +164,19 @@ struct VkrStandardSceneRuntime;
 /* Packet storage of one frame; private to the runtime. */
 typedef struct VkrStandardSceneRuntimeFrame VkrStandardSceneRuntimeFrame;
 
+/* Capture releases a frame completion runs for the caller. */
+#define VKR_STANDARD_SCENE_CAPTURE_RELEASES 4u
+
+/* The capture a caller polls while the render thread renders a frame: the
+   runtime polls it at each frame completion, when that thread is idle, so
+   the caller never waits for the thread (ADR-082). */
+typedef struct VkrStandardSceneRuntimeCaptureWatch {
+  bool8_t active;
+  VkrCaptureRequestId id;
+  VkrCaptureStatus status;
+  VkrCapturePollResult result;
+} VkrStandardSceneRuntimeCaptureWatch;
+
 typedef struct VkrStandardSceneRuntimeCallbacks {
   void *state;
   void (*update)(void *state, struct VkrStandardSceneRuntime *runtime,
@@ -361,6 +374,11 @@ typedef struct VkrStandardSceneRuntime {
   VkrStandardSceneRuntimeEditorViewport editor_viewport;
   VkrUiInputCapture ui_capture;
   const VkrCaptureBatchRequest *capture_request;
+  VkrStandardSceneRuntimeCaptureWatch capture_watch;
+  /* Releases asked for while a frame rendered; the next completion runs
+     them. */
+  VkrCaptureRequestId capture_releases[VKR_STANDARD_SCENE_CAPTURE_RELEASES];
+  uint32_t capture_release_count;
   VkrRendererError last_renderer_error;
   VkrStandardSceneRuntimeCallbacks callbacks;
   /* GPU timing policy is owned by `metrics->config`. */
@@ -428,9 +446,13 @@ bool8_t
 vkr_standard_scene_recording_drive_camera(VkrStandardSceneRuntime *runtime,
                                           VkrCamera *camera);
 /** After the metrics frame of recorded frame `frame` closed: writes its Tier
- * 0 metrics when it was `published`, else a record with none valid. */
+ * 0 metrics when it was `published`, else a record with none valid. With
+ * `loop`, the frame-loop work it names goes on the completing iteration's
+ * frame (VkrRecordingMetricsLoop). */
 void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
-                                          uint64_t frame, bool8_t published);
+                                          uint64_t frame,
+                                          const VkrRecordingMetricsLoop *loop,
+                                          bool8_t published);
 /** Writes this frame's records when a recording is in progress. */
 void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
                                           const VkrCamera *camera,
@@ -446,6 +468,18 @@ void vkr_standard_scene_runtime_invalidate_local_shadows(
 bool8_t vkr_standard_scene_runtime_editor_viewport_mapping(
     VkrStandardSceneRuntime *runtime, uint32_t window_width,
     uint32_t window_height, VkrViewportMapping *out_mapping);
+/** vkr_renderer_capture_poll without waiting for the render thread: while
+ * it renders a frame, the answer is the poll at the last frame completion
+ * (PENDING until one ran). A non-pending answer ends the watch. */
+VkrCaptureStatus
+vkr_standard_scene_runtime_capture_poll(VkrStandardSceneRuntime *runtime,
+                                        VkrCaptureRequestId request_id,
+                                        VkrCapturePollResult *out_result);
+/** vkr_renderer_capture_release without waiting for the render thread:
+ * while it renders a frame, the next frame completion releases the
+ * capture. */
+void vkr_standard_scene_runtime_capture_release(
+    VkrStandardSceneRuntime *runtime, VkrCaptureRequestId request_id);
 void vkr_standard_scene_runtime_set_callbacks(
     VkrStandardSceneRuntime *runtime,
     const VkrStandardSceneRuntimeCallbacks *callbacks);
