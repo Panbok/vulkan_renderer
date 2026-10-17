@@ -1,5 +1,7 @@
 #pragma once
 
+#include "assets/vkr_recording_analysis.h"
+#include "memory/vkr_dmemory.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "vkr_sample_runtime.h"
 
@@ -37,6 +39,45 @@ typedef struct VkrEditorRecordingEntry {
   bool8_t thumb_failed;
 } VkrEditorRecordingEntry;
 
+/* Plot columns of the performance view: longer recordings keep the slowest
+   frame of each run of frames. */
+#define VKR_EDITOR_PERF_COLUMNS 2048u
+/* CPU stages the view stacks: update, render prepare, submit and wait. */
+#define VKR_EDITOR_PERF_STAGES 4u
+
+/* The performance view of one recording (docs/proposals/recordings.md,
+   "Performance view"): its loaded data, analysis and plot columns. */
+typedef struct VkrEditorRecordingPerf {
+  bool8_t loaded;
+  char path[VKR_RECORDING_PATH_MAX];
+  char name[VKR_RECORDING_LABEL_MAX + 1u];
+  char error[160];
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  VkrRecordingData data;
+  VkrRecordingAnalysis analysis;
+  uint32_t column_count;
+  /* The frame each column shows. */
+  uint64_t column_frame[VKR_EDITOR_PERF_COLUMNS];
+  float32_t frame_ms[VKR_EDITOR_PERF_COLUMNS];
+  uint8_t frame_color[VKR_EDITOR_PERF_COLUMNS];
+  float32_t stage_ms[VKR_EDITOR_PERF_STAGES][VKR_EDITOR_PERF_COLUMNS];
+  float32_t ram_gb[VKR_EDITOR_PERF_COLUMNS];
+  float32_t vram_gb[VKR_EDITOR_PERF_COLUMNS];
+  float32_t frame_ms_top;
+  float32_t stage_ms_top;
+  float32_t ram_range[2];
+  float32_t vram_range[2];
+  bool8_t has_stages;
+  bool8_t has_ram;
+  bool8_t has_vram;
+  /* The frame the view selected last, or UINT64_MAX; and the column the
+     pointer was over in the last build, for the tooltip. */
+  uint64_t selected;
+  uint32_t hovered_column;
+  float32_t spike_scroll;
+} VkrEditorRecordingPerf;
+
 typedef struct VkrEditorRecording {
   /* Requests waiting for a frame; the runtime takes one per frame. */
   VkrSampleRecordingRequest queue[VKR_EDITOR_RECORDING_QUEUE];
@@ -68,6 +109,7 @@ typedef struct VkrEditorRecording {
   uint32_t thumb_wait;
   uint32_t thumb_attempts;
   bool8_t thumb_done;
+  VkrEditorRecordingPerf perf;
 } VkrEditorRecording;
 
 struct VkrEditorUi;
@@ -107,8 +149,22 @@ void vkr_editor_recording_window_build(struct VkrEditorUi *editor,
                                        const VkrSampleUiFrame *frame,
                                        VkrUiRect bounds);
 
-/** Releases the Library's thumbnail textures; call before the UI system
- * shuts down. */
+/** Loads a recording (a bundle path or name) into the Performance window and
+ * shows it. False with the reason in `error`. */
+bool8_t vkr_editor_recording_analyze(struct VkrEditorUi *editor,
+                                     const char *name, char *error,
+                                     uint64_t error_capacity);
+
+/** Frees the Performance window's data. */
+void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
+
+/** The Performance window's body. */
+void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     VkrUiRect bounds);
+
+/** Releases the Library's thumbnail textures and the Performance window's
+ * data; call before the UI system shuts down. */
 void vkr_editor_recording_shutdown(struct VkrEditorUi *editor);
 
 /** The REC indicator and, in Playback, the playback bar over the Scene. */

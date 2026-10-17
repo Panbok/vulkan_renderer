@@ -99,6 +99,7 @@ vkr_internal void vkr_sample_recording_start(
       .scene = scene,
       .author = request->author[0] ? request->author : "user",
       .identity_json = identity[0] ? identity : NULL,
+      .metrics = request->no_metrics ? NULL : runtime->metrics,
   };
   if (!vkr_recording_start(&runtime->recording, &config)) {
     char message[VKR_RECORDING_PATH_MAX + 64u];
@@ -106,6 +107,14 @@ vkr_internal void vkr_sample_recording_start(
                   "Could not create the recording '%s'.", request->path);
     vkr_sample_recording_result(state, request->token, false_v, message);
     return;
+  }
+  /* Tier 0 carries the frame's GPU time: whole-frame timing from command
+     completion, without the per-pass stamps that perturb the tiled
+     pipeline (docs/proposals/recordings.md, D2). */
+  if (config.metrics) {
+    state->restore_submission_timing = true_v;
+    state->submission_timing = runtime->metrics->config.submission_gpu_timings;
+    runtime->metrics->config.submission_gpu_timings = true_v;
   }
   log_info("Recording to %s", request->path);
   vkr_sample_recording_result(state, request->token, true_v, "Recording.");
@@ -126,6 +135,10 @@ vkr_sample_recording_stop(VkrStandardSceneRuntime *runtime,
   string_format(path, sizeof(path), "%s", runtime->recording.bundle_path);
   VkrRecorderStats stats;
   const bool8_t ok = vkr_recording_stop(&runtime->recording, &stats);
+  if (state->restore_submission_timing) {
+    runtime->metrics->config.submission_gpu_timings = state->submission_timing;
+    state->restore_submission_timing = false_v;
+  }
   char message[VKR_RECORDING_PATH_MAX + 96u];
   if (ok) {
     string_format(message, sizeof(message), "Saved %llu frames (%.1f s) to %s.",

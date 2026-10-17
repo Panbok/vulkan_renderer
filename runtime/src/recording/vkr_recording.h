@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/vkr_codec.h"
+#include "core/vkr_metrics.h"
 #include "defines.h"
 #include "memory/vkr_dmemory.h"
 #include "recording/vkr_recorder.h"
@@ -25,6 +26,13 @@
 #define VKR_RECORDING_STREAM_FRAME 1u
 #define VKR_RECORDING_STREAM_CAMERA 2u
 #define VKR_RECORDING_STREAM_MARKER 3u
+/* Tier 0 frame metrics: a u64 `valid` bitmask, then one f64 per metric named
+   after it, durations in milliseconds. Droppable. */
+#define VKR_RECORDING_STREAM_METRICS 4u
+/* Metrics a recording can carry; the bitmask has one bit each. */
+#define VKR_RECORDING_METRIC_MAX 48u
+/* Process memory joins the metrics as this field, sampled every 100 ms. */
+#define VKR_RECORDING_RESIDENT_FIELD "process.resident_bytes"
 
 /* VkrRecordingFrame.flags */
 #define VKR_RECORDING_FRAME_SIMULATING 1u
@@ -55,15 +63,6 @@ typedef struct VkrRecordingCamera {
   uint32_t projection;
 } VkrRecordingCamera;
 
-typedef enum VkrRecordingMarkerKind {
-  VKR_RECORDING_MARKER_NOTE = 1u,
-  VKR_RECORDING_MARKER_BUG = 2u,
-  VKR_RECORDING_MARKER_STEP = 3u,
-  /* The scene was edited at this frame. Playback shows the scene as it is
-     now, not as it was (edit replay comes with the world state stream). */
-  VKR_RECORDING_MARKER_EDIT = 4u,
-} VkrRecordingMarkerKind;
-
 /* Marker records are a u32 kind followed by a UTF-8 label. */
 typedef struct VkrRecordingMarker {
   uint64_t frame;
@@ -74,8 +73,6 @@ typedef struct VkrRecordingMarker {
 
 /* The streams every runtime recording declares. */
 const VkrRecordingStream *vkr_recording_streams(uint32_t *out_count);
-
-const char *vkr_recording_marker_kind_name(uint32_t kind);
 
 typedef struct VkrRecordingConfig {
   /* The bundle directory to create, ending in VKR_RECORDING_BUNDLE_EXTENSION.
@@ -89,6 +86,9 @@ typedef struct VkrRecordingConfig {
   const char *author;
   /* UTF-8 JSON for the IDENTITY chunk; NULL writes "{}". */
   const char *identity_json;
+  /* The registry whose Tier 0 metrics the recording carries each frame;
+     NULL records no metrics. Borrowed while the recording runs. */
+  const VkrMetrics *metrics;
 } VkrRecordingConfig;
 
 typedef struct VkrRecording {
@@ -106,6 +106,17 @@ typedef struct VkrRecording {
   float64_t time;
   VkrRecordingMarker markers[VKR_RECORDING_MARKER_MAX];
   uint32_t marker_count;
+  /* Tier 0 metrics found in the registry at start, in field order: their
+     ids, and 1e-6 for nanosecond durations, else 1. The resident memory
+     field follows them. */
+  bool8_t metrics_enabled;
+  uint32_t metric_count;
+  VkrMetricId metric_ids[VKR_RECORDING_METRIC_MAX];
+  float64_t metric_scale[VKR_RECORDING_METRIC_MAX];
+  VkrMetricKind metric_kind[VKR_RECORDING_METRIC_MAX];
+  float64_t resident_sampled_at;
+  uint64_t resident_bytes;
+  bool8_t resident_valid;
 } VkrRecording;
 
 /**
@@ -120,6 +131,13 @@ bool8_t vkr_recording_start(VkrRecording *recording,
 void vkr_recording_frame(VkrRecording *recording,
                          const VkrRecordingFrame *frame,
                          const VkrRecordingCamera *camera);
+
+/**
+ * @brief Writes the Tier 0 metrics of recorded frame `frame` from a published
+ * metrics frame; no-op for a recording without metrics. Frame-loop thread.
+ */
+void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
+                           const VkrMetricsFrame *published);
 
 /** Adds a marker at the current frame. Returns false_v when it was lost. */
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

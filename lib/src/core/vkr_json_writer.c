@@ -351,6 +351,21 @@ bool8_t vkr_json_writer_f64(VkrJsonWriter *writer, float64_t value) {
   return vkr_json_writer_number(writer, buffer, length);
 }
 
+bool8_t vkr_json_writer_f64_digits(VkrJsonWriter *writer, float64_t value,
+                                   uint32_t significant_digits) {
+  if (!isfinite(value)) {
+    if (writer) {
+      writer->failed = true_v;
+    }
+    return false_v;
+  }
+  const int32_t digits = (int32_t)Min(Max(significant_digits, 1u), 17u);
+  char buffer[40];
+  const int32_t length =
+      snprintf(buffer, sizeof(buffer), "%.*g", digits, value);
+  return vkr_json_writer_number(writer, buffer, length);
+}
+
 bool8_t vkr_json_writer_bool(VkrJsonWriter *writer, bool8_t value) {
   if (!vkr_json_writer_before_value(writer)) {
     return false_v;

@@ -3907,9 +3907,9 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
 }
 
 /* Advances the simulated container, running the script session on it. */
-static void sample_simulate(VkrStandardSceneRuntime *application,
-                            VkrScene *scene, VkrSceneHandle handle,
-                            float64_t delta_time) {
+static void sample_simulate_steps(VkrStandardSceneRuntime *application,
+                                  VkrScene *scene, VkrSceneHandle handle,
+                                  float64_t delta_time) {
   if (!state->scripts.started && !state->script_start_attempted &&
       application->editor_viewport.simulation_running) {
     sample_scripts_start(application);
@@ -3976,6 +3976,22 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
   application->editor_viewport.scripts_own_camera =
       state->script_view.camera_valid;
   vkr_scene_handle_sync(handle, &application->assets);
+}
+
+/* Advances the simulated container and records its time and its native
+   physics time as frame metrics. */
+static void sample_simulate(VkrStandardSceneRuntime *application,
+                            VkrScene *scene, VkrSceneHandle handle,
+                            float64_t delta_time) {
+  const float64_t start = vkr_platform_get_absolute_time();
+  sample_simulate_steps(application, scene, handle, delta_time);
+  VKR_METRICS_ADD_ELAPSED_NS(application->metrics,
+                             application->metric_ids.simulation, start);
+  const uint64_t physics_ns = vkr_scene_physics_take_step_ns(scene);
+  if (physics_ns > 0u) {
+    vkr_metrics_duration_add_ns(application->metrics,
+                                application->metric_ids.physics, physics_ns);
+  }
 }
 
 /* A partitioned primary scene's cell documents sit beside its document:

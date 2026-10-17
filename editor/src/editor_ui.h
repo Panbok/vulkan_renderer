@@ -62,6 +62,8 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_DEPOT,
   /* Session recordings (editor_recording.h). */
   VKR_EDITOR_WINDOW_RECORDINGS,
+  /* A recording's statistics, charts and spikes (editor_recording_perf.c). */
+  VKR_EDITOR_WINDOW_PERFORMANCE,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 

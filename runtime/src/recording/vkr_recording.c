@@ -1,6 +1,8 @@
 #include "recording/vkr_recording.h"
 
+#include "assets/vkr_recording_analysis.h"
 #include "containers/str.h"
+#include "core/vkr_content_codec.h"
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory_allocator.h"
@@ -88,26 +90,40 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
     {.id = VKR_RECORDING_STREAM_MARKER, .name = "marker"},
 };
 
+/* Tier 0 (docs/proposals/recordings.md, "Metrics and capture tiers"):
+   whatever of these the registry holds, in this order. */
+static const char *const VKR_RECORDING_TIER0_METRICS[] = {
+    "frame.wall",
+    "cpu.frame_work",
+    "cpu.update",
+    "cpu.simulation",
+    "cpu.physics",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "cpu.render_wait",
+    "cpu.shadow_update",
+    "cpu.world_payload_build",
+    "cpu.graph_build",
+    "cpu.graph_compile",
+    "gpu.submission",
+    "frame.render_scale",
+    "draw.world.calls_issued",
+    "draw.world.commands_issued",
+    "visibility.objects_tested",
+    "upload.fence_waits",
+    "memory.gpu.driver.current_allocated_bytes",
+    "memory.gpu.driver.recommended_budget_bytes",
+};
+
+/* Sampling period of the process's resident memory, in seconds. */
+#define VKR_RECORDING_RESIDENT_PERIOD 0.1
+
 _Static_assert(sizeof(VkrRecordingFrame) == 24u, "frame record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
 
 const VkrRecordingStream *vkr_recording_streams(uint32_t *out_count) {
   *out_count = ArrayCount(VKR_RECORDING_STREAMS);
   return VKR_RECORDING_STREAMS;
-}
-
-const char *vkr_recording_marker_kind_name(uint32_t kind) {
-  switch (kind) {
-  case VKR_RECORDING_MARKER_NOTE:
-    return "note";
-  case VKR_RECORDING_MARKER_BUG:
-    return "bug";
-  case VKR_RECORDING_MARKER_STEP:
-    return "step";
-  case VKR_RECORDING_MARKER_EDIT:
-    return "edit";
-  }
-  return "unknown";
 }
 
 vkr_internal void vkr_recording_copy_text(char *destination, uint64_t capacity,
@@ -144,6 +160,67 @@ vkr_internal bool8_t vkr_recording_create_bundle(VkrRecording *recording) {
   return file_create_directory_exclusive(&path) == FILE_ERROR_NONE;
 }
 
+vkr_internal const char *vkr_recording_unit(VkrMetricUnit unit) {
+  switch (unit) {
+  case VKR_METRIC_UNIT_NANOSECONDS:
+    return "ms";
+  case VKR_METRIC_UNIT_BYTES:
+    return "bytes";
+  case VKR_METRIC_UNIT_RATIO:
+    return "ratio";
+  case VKR_METRIC_UNIT_PERCENT:
+    return "percent";
+  case VKR_METRIC_UNIT_COUNT_PER_SECOND:
+    return "count/s";
+  default:
+    return "count";
+  }
+}
+
+/* Finds the Tier 0 metrics in the registry and describes them, after the
+   `valid` mask, in `fields`; returns the field count. */
+vkr_internal uint32_t vkr_recording_metric_fields(VkrRecording *recording,
+                                                  const VkrMetrics *metrics,
+                                                  VkrRecordingField *fields) {
+  fields[0] = (VkrRecordingField){
+      .name = "valid", .type = VKR_RECORDING_FIELD_U64, .count = 1u};
+  uint32_t catalog_count = 0u;
+  const VkrMetricCatalogEntry *catalog =
+      vkr_metrics_get_catalog(metrics, &catalog_count);
+  for (uint32_t m = 0u; m < ArrayCount(VKR_RECORDING_TIER0_METRICS) &&
+                        recording->metric_count + 1u < VKR_RECORDING_METRIC_MAX;
+       ++m) {
+    for (uint32_t i = 0u; i < catalog_count; ++i) {
+      if (!string_equals(catalog[i].name, VKR_RECORDING_TIER0_METRICS[m])) {
+        continue;
+      }
+      const uint32_t index = recording->metric_count++;
+      recording->metric_ids[index] =
+          ((VkrMetricId)metrics->registry_generation << 16u) | i;
+      recording->metric_kind[index] = catalog[i].kind;
+      recording->metric_scale[index] =
+          catalog[i].unit == VKR_METRIC_UNIT_NANOSECONDS ? 1.0e-6 : 1.0;
+      fields[1u + index] = (VkrRecordingField){
+          .name = catalog[i].name,
+          .unit = vkr_recording_unit(catalog[i].unit),
+          .type = VKR_RECORDING_FIELD_F64,
+          .count = 1u,
+          .offset = 8u + 8u * index,
+      };
+      break;
+    }
+  }
+  const uint32_t resident = recording->metric_count;
+  fields[1u + resident] = (VkrRecordingField){
+      .name = VKR_RECORDING_RESIDENT_FIELD,
+      .unit = "bytes",
+      .type = VKR_RECORDING_FIELD_F64,
+      .count = 1u,
+      .offset = 8u + 8u * resident,
+  };
+  return resident + 2u;
+}
+
 bool8_t vkr_recording_start(VkrRecording *recording,
                             const VkrRecordingConfig *config) {
   vkr_assert(recording != NULL && config != NULL);
@@ -173,8 +250,25 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   char stream_path[VKR_RECORDING_PATH_MAX];
   string_format(stream_path, sizeof(stream_path), "%s/%s",
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
-  uint32_t stream_count = 0u;
-  const VkrRecordingStream *streams = vkr_recording_streams(&stream_count);
+  uint32_t base_count = 0u;
+  const VkrRecordingStream *base = vkr_recording_streams(&base_count);
+  VkrRecordingStream streams[8];
+  VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
+  MemCopy(streams, base, sizeof(*base) * base_count);
+  uint32_t stream_count = base_count;
+  if (config->metrics) {
+    recording->metrics_enabled = true_v;
+    const uint32_t field_count =
+        vkr_recording_metric_fields(recording, config->metrics, metric_fields);
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_METRICS,
+        .flags = VKR_RECORDING_STREAM_DROPPABLE,
+        .name = "metrics",
+        .record_size = 8u * field_count,
+        .field_count = field_count,
+        .fields = metric_fields,
+    };
+  }
   const VkrRecorderConfig recorder_config = {
       .stream_path = stream_path,
       .codec = config->codec,
@@ -216,6 +310,73 @@ void vkr_recording_frame(VkrRecording *recording,
                            VKR_RECORDING_STREAM_CAMERA, recording->frame,
                            camera, sizeof(*camera));
   ++recording->frame;
+}
+
+/* The value a recording keeps of one published sample: a duration's sum, a
+   counter's or gauge's value, in the field's unit. */
+vkr_internal bool8_t vkr_recording_metric_value(
+    const VkrRecording *recording, uint32_t index,
+    const VkrMetricsFrame *published, float64_t *out_value) {
+  const VkrMetricId id = recording->metric_ids[index];
+  const float64_t scale = recording->metric_scale[index];
+  if (recording->metric_kind[index] == VKR_METRIC_KIND_DURATION) {
+    VkrMetricDurationSample sample;
+    if (!vkr_metrics_frame_read_duration(published, id, &sample) ||
+        sample.count == 0u) {
+      return false_v;
+    }
+    *out_value = (float64_t)sample.sum_ns * scale;
+    return true_v;
+  }
+  uint64_t whole = 0u;
+  if (vkr_metrics_frame_read_u64(published, id, &whole)) {
+    *out_value = (float64_t)whole * scale;
+    return true_v;
+  }
+  float64_t real = 0.0;
+  if (vkr_metrics_frame_read_f64(published, id, &real)) {
+    *out_value = real * scale;
+    return true_v;
+  }
+  return false_v;
+}
+
+void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
+                           const VkrMetricsFrame *published) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->metrics_enabled) {
+    return;
+  }
+  /* Resident memory is a system call, so it is sampled, then carried. */
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (now - recording->resident_sampled_at >= VKR_RECORDING_RESIDENT_PERIOD) {
+    recording->resident_sampled_at = now;
+    recording->resident_valid =
+        vkr_platform_get_process_resident_memory(&recording->resident_bytes);
+  }
+  const uint32_t count = recording->metric_count;
+  const uint32_t size = 8u * (count + 2u);
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_METRICS, frame, size);
+  if (!record) {
+    return;
+  }
+  uint64_t valid = 0u;
+  for (uint32_t i = 0u; i <= count; ++i) {
+    float64_t value = 0.0;
+    const bool8_t present =
+        i < count ? published && vkr_recording_metric_value(recording, i,
+                                                            published, &value)
+                  : recording->resident_valid;
+    if (i == count && present) {
+      value = (float64_t)recording->resident_bytes;
+    }
+    valid |= present ? 1ull << i : 0ull;
+    MemCopy(record + 8u + 8u * i, &value, sizeof(value));
+  }
+  MemCopy(record, &valid, sizeof(valid));
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
 }
 
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,
@@ -298,9 +459,38 @@ vkr_internal void vkr_recording_write_markers(VkrJsonWriter *json,
   vkr_json_writer_end_array(json);
 }
 
-/* summary.json: the small file an agent or the Library reads first. Later
-   phases add statistics and spikes; readers ignore names they do not know. */
-vkr_internal bool8_t vkr_recording_write_summary(const VkrRecording *recording,
+/* Reads the stream back and writes its statistics and spikes as the
+   summary's "analysis": once, at stop, off the frame path. */
+vkr_internal void vkr_recording_write_analysis(VkrRecording *recording,
+                                               VkrJsonWriter *json) {
+  char stream[VKR_RECORDING_PATH_MAX];
+  string_format(stream, sizeof(stream), "%s/%s", recording->bundle_path,
+                VKR_RECORDING_STREAM_FILE);
+  VkrRecordingData data;
+  if (vkr_recording_data_load(&data, &recording->allocator, stream,
+                              vkr_content_codec_zstd_decoder()) !=
+      VKR_RECORDING_DATA_OK) {
+    return;
+  }
+  VkrRecordingAnalysis analysis;
+  const VkrRecordingAnalysisOptions options = {0};
+  if (vkr_recording_analyze(&data, &options, &recording->allocator,
+                            &analysis)) {
+    const VkrRecordingAnalysisJsonOptions json_options = {
+        .budget_bytes = 8192u,
+        .include_series = true_v,
+    };
+    vkr_json_writer_name(json, string8_lit("analysis"));
+    (void)vkr_recording_analysis_write_json(json, &data, &analysis,
+                                            &json_options);
+    vkr_recording_analysis_free(&analysis);
+  }
+  vkr_recording_data_free(&data);
+}
+
+/* summary.json: the small file an agent or the Library reads first; readers
+   ignore names they do not know. */
+vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
                                                  const VkrRecorderStats *stats,
                                                  bool8_t stream_ok) {
   char path[VKR_RECORDING_PATH_MAX];
@@ -323,7 +513,8 @@ vkr_internal bool8_t vkr_recording_write_summary(const VkrRecording *recording,
                          (uint64_t)recording->started_unix);
   vkr_recording_json_text(json, "status",
                           stream_ok ? "complete" : "incomplete");
-  vkr_recording_json_text(json, "tier", "none");
+  vkr_recording_json_text(json, "tier",
+                          recording->metrics_enabled ? "0" : "none");
   vkr_recording_json_u64(json, "frames", recording->frame);
   vkr_recording_json_f64(json, "duration_seconds", recording->time);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
@@ -331,6 +522,9 @@ vkr_internal bool8_t vkr_recording_write_summary(const VkrRecording *recording,
   vkr_recording_json_u64(json, "stream_bytes", stats->stored_bytes);
   vkr_recording_json_f64(json, "writer_seconds", stats->writer_seconds);
   vkr_recording_write_markers(json, recording);
+  if (recording->metrics_enabled && stream_ok) {
+    vkr_recording_write_analysis(recording, json);
+  }
   vkr_json_writer_end_object(json);
   return vkr_json_file_writer_commit(&file);
 }

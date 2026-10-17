@@ -67,6 +67,7 @@ vkr_internal void vkr_standard_scene_recording_from_environment(
       .bundle_path = path,
       .name = "run",
       .author = "environment",
+      .metrics = runtime->metrics,
       .identity_json =
           runtime->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
               ? "{\"source\":\"VKR_RECORDING_DIRECTORY\",\"pipeline\":"
@@ -79,6 +80,20 @@ vkr_internal void vkr_standard_scene_recording_from_environment(
   } else {
     log_error("VKR_RECORDING_DIRECTORY: could not create %s", path);
   }
+}
+
+void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
+                                          uint64_t frame, bool8_t published) {
+  if (!runtime->recording.active || frame == UINT64_MAX) {
+    return;
+  }
+  VkrMetricsSnapshotView view = {0};
+  if (!published || !vkr_metrics_snapshot_acquire(runtime->metrics, &view)) {
+    vkr_recording_metrics(&runtime->recording, frame, NULL);
+    return;
+  }
+  vkr_recording_metrics(&runtime->recording, frame, view.frame);
+  vkr_metrics_snapshot_release(runtime->metrics, &view);
 }
 
 void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,

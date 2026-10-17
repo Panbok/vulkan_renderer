@@ -405,6 +405,20 @@ bool8_t vkr_recording_end_decode(const uint8_t *data, uint64_t size,
   return true_v;
 }
 
+const char *vkr_recording_marker_kind_name(uint32_t kind) {
+  switch (kind) {
+  case VKR_RECORDING_MARKER_NOTE:
+    return "note";
+  case VKR_RECORDING_MARKER_BUG:
+    return "bug";
+  case VKR_RECORDING_MARKER_STEP:
+    return "step";
+  case VKR_RECORDING_MARKER_EDIT:
+    return "edit";
+  }
+  return "unknown";
+}
+
 const char *vkr_recording_chunk_type_name(uint32_t type) {
   switch (type) {
   case VKR_RECORDING_CHUNK_IDENTITY:

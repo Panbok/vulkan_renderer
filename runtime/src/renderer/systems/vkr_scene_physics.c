@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "memory/vkr_dmemory.h"
 #include "physics/vkr_collision_asset.h"
+#include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_collision_layers.h"
 
@@ -105,6 +106,9 @@ struct s_VkrScenePhysics {
   bool8_t editing;
   bool8_t faulted;
   bool8_t resetting;
+  /* Nanoseconds the native step took since vkr_scene_physics_take_step_ns
+     last took them. */
+  uint64_t step_ns;
   /* The world belongs to the scene's physics set, not this scene. */
   bool8_t shared_world;
   /* Characters a reset recreated, published only when every member staged. */
@@ -2237,6 +2241,16 @@ static bool8_t physics_step_end(VkrScene *scene, const char **error) {
   return physics_drive_kinematic(scene, error);
 }
 
+uint64_t vkr_scene_physics_take_step_ns(VkrScene *scene) {
+  VkrScenePhysics *physics = scene ? scene->physics : NULL;
+  if (!physics) {
+    return 0u;
+  }
+  const uint64_t step_ns = physics->step_ns;
+  physics->step_ns = 0u;
+  return step_ns;
+}
+
 bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error) {
   VkrScenePhysics *physics = scene->physics;
   if (physics) {
@@ -2294,8 +2308,13 @@ bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error) {
   if (!vkr_physics_world_set_gravity(physics->world, gravity_values)) {
     return physics_fail(error, vkr_physics_last_error(physics->world));
   }
-  if (!vkr_physics_step(physics->world,
-                        (float32_t)VKR_SCENE_PHYSICS_FIXED_DT)) {
+  const float64_t step_start = vkr_platform_get_absolute_time();
+  const bool8_t stepped =
+      vkr_physics_step(physics->world, (float32_t)VKR_SCENE_PHYSICS_FIXED_DT);
+  physics->step_ns +=
+      (uint64_t)((vkr_platform_get_absolute_time() - step_start) *
+                 1000000000.0);
+  if (!stepped) {
     for (uint32_t i = 0; i < count; ++i) {
       scenes[i]->physics->faulted = true_v;
     }

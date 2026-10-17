@@ -543,6 +543,19 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     editor_recording_transport(editor, VKR_SAMPLE_RECORDING_SETTINGS, 0.0, 0u,
                                playback->speed, !playback->loop);
   }
+  VkrUiWidgetConfig analyze = editor_recording_button(
+      9u, VKR_UI_ICON_CHART_BAR,
+      string8_lit("Analyze this recording: statistics, charts and spikes"));
+  vkr_editor_toggle_style(
+      &analyze, editor->windows[VKR_EDITOR_WINDOW_PERFORMANCE].visible);
+  if (vkr_ui_button(ui, string8_lit("analyze"), (String8){0}, &analyze)) {
+    char error[160];
+    if (!vkr_editor_recording_analyze(editor, playback->bundle_path, error,
+                                      sizeof(error))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, error);
+    }
+  }
 }
 
 /* Bottom of the Scene in Playback, above the corner chips: close, play,
@@ -575,6 +588,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
       {.value = 150.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.value = 44.0f, .unit = VKR_UI_TRACK_PX},
+      button,
       button,
   };
   const VkrUiTrack row = {.value = EDITOR_RECORDING_BUTTON_PT,
@@ -720,6 +734,7 @@ editor_recording_release_thumbs(VkrEditorRecording *recording) {
 
 void vkr_editor_recording_shutdown(VkrEditorUi *editor) {
   editor_recording_release_thumbs(&editor->recording);
+  vkr_editor_recording_perf_release(&editor->recording.perf);
   editor->recording.entry_count = 0u;
   editor->recording.listed = false_v;
 }
@@ -921,6 +936,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                                 {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.value = 76.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX}};
   const VkrUiTrack rows[] = {{.value = 23.0f, .unit = VKR_UI_TRACK_PX},
                              {.value = 23.0f, .unit = VKR_UI_TRACK_PX}};
@@ -1008,8 +1024,22 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                   recording->directory, entry->bundle);
     (void)vkr_editor_recording_send(editor, request, true_v);
   }
+  VkrUiWidgetConfig analyze = vkr_editor_icon_button_config(
+      3u, 0u, VKR_UI_ICON_CHART_BAR,
+      string8_lit("Analyze: statistics, charts and spikes"));
+  analyze.placement.row_span = 2u;
+  analyze.disabled = !entry->has_summary;
+  if (vkr_ui_button(ui, string8_lit("analyze"), (String8){0}, &analyze)) {
+    char error[160];
+    char path[VKR_RECORDING_PATH_MAX];
+    string_format(path, sizeof(path), "%s/%s", recording->directory,
+                  entry->bundle);
+    if (!vkr_editor_recording_analyze(editor, path, error, sizeof(error))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
+    }
+  }
   VkrUiWidgetConfig copy = vkr_editor_icon_button_config(
-      3u, 0u, VKR_UI_ICON_COPY,
+      4u, 0u, VKR_UI_ICON_COPY,
       string8_lit("Copy a prompt that points an agent at this recording"));
   copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
@@ -1019,7 +1049,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   }
   const bool8_t armed = recording->delete_armed == index + 1u;
   VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
-      4u, 0u, VKR_UI_ICON_TRASH,
+      5u, 0u, VKR_UI_ICON_TRASH,
       armed ? string8_lit("Click again to delete it from disk")
             : string8_lit("Delete this recording"));
   remove.placement.row_span = 2u;

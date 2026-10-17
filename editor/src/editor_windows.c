@@ -2283,6 +2283,13 @@ static void editor_window_build_body(VkrEditorUi *editor, VkrUiSystem *ui,
       vkr_editor_session_window_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
+  } else if (kind == VKR_EDITOR_WINDOW_PERFORMANCE) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("performance.body"),
+                                 &bounds)) {
+      vkr_editor_recording_perf_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else if (kind == VKR_EDITOR_WINDOW_RECORDINGS) {
     VkrUiRect bounds = {0};
     if (editor_window_body_begin(ui, window, string8_lit("recordings.body"),
@@ -2409,6 +2416,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   case VKR_EDITOR_WINDOW_RECORDINGS:
     title_text = string8_lit("Recordings");
     title_icon = VKR_UI_ICON_VIDEO;
+    break;
+  case VKR_EDITOR_WINDOW_PERFORMANCE:
+    title_text = string8_lit("Performance");
+    title_icon = VKR_UI_ICON_CHART_BAR;
     break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");

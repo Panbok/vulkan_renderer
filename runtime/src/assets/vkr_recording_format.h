@@ -72,6 +72,20 @@ typedef enum VkrRecordingFieldType {
 /* Stream 0 belongs to the recorder: gaps and its own counters. */
 #define VKR_RECORDING_STREAM_RECORDER 0u
 
+/* Marker records (stream "marker" of runtime recordings) are a u32 kind
+   followed by a UTF-8 label. */
+typedef enum VkrRecordingMarkerKind {
+  VKR_RECORDING_MARKER_NOTE = 1u,
+  VKR_RECORDING_MARKER_BUG = 2u,
+  VKR_RECORDING_MARKER_STEP = 3u,
+  /* The scene was edited at this frame. Playback shows the scene as it is
+     now, not as it was (edit replay comes with the world state stream). */
+  VKR_RECORDING_MARKER_EDIT = 4u,
+} VkrRecordingMarkerKind;
+
+/** "note", "bug", "step", "edit" or "unknown". */
+const char *vkr_recording_marker_kind_name(uint32_t kind);
+
 typedef struct VkrRecordingField {
   const char *name;
   /* Empty or a unit such as "ms", "bytes", "m". */

@@ -15104,6 +15104,27 @@ static VkrEditorOpStatus ops_run_rec_set(OpsContext *ctx) {
   return ops_recording_wait(ctx, request);
 }
 
+static VkrEditorOpStatus ops_run_rec_analyze(OpsContext *ctx) {
+  char name[VKR_RECORDING_PATH_MAX] = {0};
+  if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  char error[160];
+  if (!vkr_editor_recording_analyze(ctx->editor, name, error, sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrEditorRecordingPerf *perf = &ctx->editor->recording.perf;
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "frames",
+          vkr_bakery_json_int(ops_arena(ctx), (int64_t)perf->data.frame_count));
+  ops_set(ctx, ctx->call->result, "spikes",
+          vkr_bakery_json_int(ops_arena(ctx), perf->analysis.spike_count));
+  ops_set(ctx, ctx->call->result, "p95_ms",
+          ops_number(ctx, perf->analysis.frame_time.p95));
+  return VKR_EDITOR_OP_DONE;
+}
+
 typedef struct OpsRecordingList {
   OpsContext *ctx;
   const char *directory;
@@ -15212,6 +15233,14 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"speed\":{\"type\":"
      "\"number\"},\"loop\":{\"type\":\"boolean\"}}}",
      ops_run_rec_set, NULL},
+    {"rec.analyze",
+     "Show a recording ('name' or a path) in the Performance window: "
+     "statistics, frame-time, CPU-stage and memory charts and spikes. Read "
+     "the numbers from its summary.json or `vkr_rec`; this op is for the "
+     "designer's view and captures of it.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}},\"required\":[\"name\"]}",
+     ops_run_rec_analyze, NULL, OPS_NO_SCENE},
     {"rec.close",
      "Leave Playback: the editor camera and the level's hour return.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_close, NULL},

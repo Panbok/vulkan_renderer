@@ -40,6 +40,7 @@ add_executable(vkr_editor
     src/editor_physics.c
     src/editor_physics_settings.c
     src/editor_recording.c
+    src/editor_recording_perf.c
     src/editor_graphics.c
     src/editor_content.c
     src/editor_projects.c

@@ -153,6 +153,10 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // 1 for a frame the render thread acquired itself, while the next frame
   // was built; 0 for a frame acquired on the frame-loop thread.
   VkrMetricId decoupled;
+  // Nested inside update: the simulated container's step (scripts, physics,
+  // animation and transforms), and of it the native physics step.
+  VkrMetricId simulation;
+  VkrMetricId physics;
 } VkrStandardSceneRuntimeMetricIds;
 
 struct VkrStandardSceneRuntime;
@@ -401,6 +405,10 @@ bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
 bool8_t
 vkr_standard_scene_recording_drive_camera(VkrStandardSceneRuntime *runtime,
                                           VkrCamera *camera, float64_t delta);
+/** After the metrics frame of recorded frame `frame` closed: writes its Tier
+ * 0 metrics when it was `published`, else a record with none valid. */
+void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
+                                          uint64_t frame, bool8_t published);
 /** Writes this frame's records when a recording is in progress. */
 void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
                                           const VkrCamera *camera,

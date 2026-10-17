@@ -285,6 +285,9 @@ bool8_t vkr_scene_physics_register(VkrScene *scene);
 void vkr_scene_physics_update(VkrScene *scene, float64_t dt);
 /* One native tick, called only by the shared scene simulation coordinator. */
 bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error);
+/* Nanoseconds the native physics step took since the last call, then zero:
+   the frame's physics time for metrics. */
+uint64_t vkr_scene_physics_take_step_ns(VkrScene *scene);
 void vkr_scene_physics_shutdown(VkrScene *scene);
 bool8_t vkr_scene_physics_entity_destroying(VkrScene *scene,
                                             VkrEntityId entity);

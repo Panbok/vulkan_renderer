@@ -44,6 +44,7 @@
 #include "pool_test.h"
 #include "quat_test.h"
 #include "queue_test.h"
+#include "recording_analysis_test.h"
 #include "recording_test.h"
 #include "render_graph_barrier_test.h"
 #include "renderer_impl_test.h"

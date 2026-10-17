@@ -58,6 +58,10 @@ bool8_t vkr_json_writer_string(VkrJsonWriter *writer, String8 value);
 bool8_t vkr_json_writer_u64(VkrJsonWriter *writer, uint64_t value);
 bool8_t vkr_json_writer_i64(VkrJsonWriter *writer, int64_t value);
 bool8_t vkr_json_writer_f64(VkrJsonWriter *writer, float64_t value);
+/** `value` with at most `significant_digits` (1 to 17), such as 16.667 for
+ * a report a person or an agent reads; vkr_json_writer_f64 round-trips. */
+bool8_t vkr_json_writer_f64_digits(VkrJsonWriter *writer, float64_t value,
+                                   uint32_t significant_digits);
 bool8_t vkr_json_writer_bool(VkrJsonWriter *writer, bool8_t value);
 bool8_t vkr_json_writer_null(VkrJsonWriter *writer);
 

@@ -133,6 +133,9 @@ struct VkrStandardSceneRuntimeFrame {
   bool8_t present_wait_scene;
   /* Submitted with an editor Scene the renderer counts on completion. */
   bool8_t counts_scene;
+  /* The recording's number for this frame, or UINT64_MAX; its metrics join
+     the recording under it when the frame completes. */
+  uint64_t recording_frame;
 };
 
 vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
@@ -206,6 +209,13 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
       !vkr_standard_scene_runtime_register_duration_metric(
           application->metrics, "cpu.render_wait", VKR_METRIC_DOMAIN_FRAME,
           false_v, &ids->render_wait) ||
+      // Sampled only while a container simulates or updates.
+      !vkr_standard_scene_runtime_register_duration_metric(
+          application->metrics, "cpu.simulation", VKR_METRIC_DOMAIN_FRAME,
+          false_v, &ids->simulation) ||
+      !vkr_standard_scene_runtime_register_duration_metric(
+          application->metrics, "cpu.physics", VKR_METRIC_DOMAIN_FRAME,
+          false_v, &ids->physics) ||
       !vkr_metrics_register(application->metrics,
                             &(VkrMetricDescription){
                                 .name = string8_lit("frame.decoupled"),
@@ -2887,7 +2897,9 @@ vkr_internal void vkr_standard_scene_runtime_complete_frame(
      iteration. A render thread finishes a frame during a later iteration,
      whose remaining work belongs to the next frame. */
   if (render_thread) {
-    vkr_metrics_end_frame(application->metrics);
+    vkr_standard_scene_recording_metrics(
+        application, frame->recording_frame,
+        vkr_metrics_end_frame(application->metrics));
     vkr_metrics_begin_frame(application->metrics,
                             application->renderer.frame_number + 1u,
                             application->completed_frame_submit_serial);
@@ -3282,6 +3294,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
 
   vkr_camera_registry_update_all(camera_system);
   vkr_standard_scene_recording_capture(application, camera, delta);
+  application->frame->recording_frame =
+      application->recording.active && application->recording.frame > 0u
+          ? application->recording.frame - 1u
+          : UINT64_MAX;
 
   /* The active scene resolves its world with the root World as fallback;
      with no scene loaded the World renders alone and owns the sky products
@@ -3477,7 +3493,13 @@ vkr_internal void vkr_standard_scene_runtime_host_frame_complete(
                              host_frame->absolute_time_seconds);
   /* A frame still rendering closes its metrics frame when it completes. */
   if (!application->frame_in_flight) {
-    vkr_metrics_end_frame(application->metrics);
+    const uint64_t recording_frame =
+        application->recording.active && application->recording.frame > 0u
+            ? application->recording.frame - 1u
+            : UINT64_MAX;
+    vkr_standard_scene_recording_metrics(
+        application, recording_frame,
+        vkr_metrics_end_frame(application->metrics));
   }
 }
 

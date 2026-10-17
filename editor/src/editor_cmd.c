@@ -58,10 +58,10 @@ static const VkrUiDockPanelKind cmd_panel_kinds[] = {
     VKR_UI_DOCK_PANEL_TERRAIN};
 
 static const char *const cmd_windows[] = {
-    "animation", "physics", "preferences", "draws",       "memory",
-    "help",      "create",  "build",       "script",      "changes",
-    "level",     "terrain", "partition",   "environment", "bake",
-    "lights",    "session", "depot",       "recordings",  NULL};
+    "animation",  "physics",     "preferences", "draws",   "memory",  "help",
+    "create",     "build",       "script",      "changes", "level",   "terrain",
+    "partition",  "environment", "bake",        "lights",  "session", "depot",
+    "recordings", "performance", NULL};
 static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_ANIMATION,     VKR_EDITOR_WINDOW_PHYSICS,
     VKR_EDITOR_WINDOW_GRAPHICS,      VKR_EDITOR_WINDOW_DRAWS,
@@ -72,7 +72,7 @@ static const VkrEditorWindowKind cmd_window_kinds[] = {
     VKR_EDITOR_WINDOW_PARTITION,     VKR_EDITOR_WINDOW_ENVIRONMENT,
     VKR_EDITOR_WINDOW_BAKE_SETTINGS, VKR_EDITOR_WINDOW_LIGHTS,
     VKR_EDITOR_WINDOW_SESSION,       VKR_EDITOR_WINDOW_DEPOT,
-    VKR_EDITOR_WINDOW_RECORDINGS};
+    VKR_EDITOR_WINDOW_RECORDINGS,    VKR_EDITOR_WINDOW_PERFORMANCE};
 
 const char *vkr_editor_cmd_window_name(VkrEditorWindowKind kind) {
   for (uint32_t i = 0; i < ArrayCount(cmd_window_kinds); ++i) {

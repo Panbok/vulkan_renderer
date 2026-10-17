@@ -8,13 +8,14 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Phases R0 and R1 of
+Accepted (partial). Phases R0, R1 and most of R2 of
 [Recordings](../proposals/recordings.md) are implemented: the stream format,
 the recorder, camera and frame recording with simulation stopped, Watch
 playback with exact seeking, the editor's Record control, REC indicator,
-playback bar and Recordings window, and the `rec.*` agent operations. Frame
-metrics, Play recording, Drive, perf re-runs and re-simulation remain in the
-proposal. The authoritative overhead gate has not run; a non-authoritative
+playback bar and Recordings window, the `rec.*` agent operations, Tier 0
+frame metrics, the recording analysis and the Performance window. Play
+recording, Drive, perf re-runs and re-simulation remain in the proposal.
+The authoritative overhead gate has not run; a non-authoritative
 Bistro A/B is recorded in the proposal.
 
 ## Context
@@ -71,6 +72,20 @@ an agent must read one without the editor.
   ([vkr_rec_main.c](../../tools/recording/vkr_rec_main.c)).
 - **Edits.** An edit while recording adds an `edit` marker; playback shows the
   scene as it is now.
+- **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
+  a `valid` bitmask and one float64 per registry metric found from a fixed
+  Tier 0 list, durations in milliseconds, plus process resident memory
+  sampled every 100 ms. The frame-loop thread writes the record when the
+  frame's metrics frame is published, under the frame's own recording number;
+  a dropped publication writes no values. An editor recording turns on
+  whole-frame GPU timing and restores it at stop.
+- **Analysis.** At stop the runtime reads the stream back and writes
+  statistics, the time-based 1% low and spikes (over 1.2 times the median of
+  19 neighbours and 4 ms above it, or over twice the budget) into
+  `summary.json` within 8 KB
+  ([vkr_recording_analysis.h](../../runtime/src/assets/vkr_recording_analysis.h)).
+  `vkr_rec spikes` and `vkr_rec frames` query the same analysis, and the
+  editor's Performance window draws it with `vkr_ui_plot`.
 
 ## Consequences
 

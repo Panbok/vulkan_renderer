@@ -3,11 +3,23 @@
  * (docs/proposals/recordings.md, "Offline command").
  *
  *   vkr_rec summary <bundle|stream>   JSON: identity, streams, counters
+ *                                     and, with a metrics stream, the
+ *                                     analysis summary.json carries
  *   vkr_rec verify <bundle|stream>    decodes every chunk and record
+ *   vkr_rec spikes <bundle|stream> [--top N]
+ *                                     JSON: frame-time statistics and the N
+ *                                     worst spikes (default 20)
+ *   vkr_rec frames <bundle|stream> --range A:B [--fields a,b,...]
+ *                                     JSON rows of frames A to B inclusive:
+ *                                     frame, time, camera position, then
+ *                                     the fields (default frame_ms); at
+ *                                     most 500 rows, "truncated" says so
  *
- * Exit status: 0 for a whole recording, 2 for a recording cut off by a crash
- * whose whole chunks are valid, 1 for an unreadable or damaged recording.
+ * Every command prints one compact JSON object on stdout. Exit status: 0 for
+ * a whole recording, 2 for a recording cut off by a crash whose whole chunks
+ * are valid, 1 for an unreadable or damaged recording or a usage error.
  */
+#include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/str.h"
 #include "core/vkr_json_writer.h"
@@ -21,6 +33,10 @@
 #include <string.h>
 
 #define REC_PATH_MAX 4096u
+/* Largest --top a spikes query takes. */
+#define REC_TOP_MAX 1000u
+#define REC_FIELD_MAX 32u
+#define REC_FIELDS_TEXT_MAX 2048u
 
 typedef enum RecExit {
   REC_EXIT_OK = 0,
@@ -237,6 +253,44 @@ static void rec_write_end(VkrJsonWriter *json, const RecScan *scan) {
   vkr_json_writer_end_object(json);
 }
 
+static bool8_t rec_has_stream(const RecScan *scan, const char *name) {
+  for (uint32_t i = 0u;
+       scan->has_dictionary && i < scan->dictionary.stream_count; ++i) {
+    if (strcmp(scan->dictionary.streams[i].name, name) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+static bool8_t rec_load(const char *path, VkrRecordingData *data) {
+  const VkrRecordingDataError error = vkr_recording_data_load(
+      data, &rec_allocator, path, vkr_depot_zstd_codec());
+  if (error != VKR_RECORDING_DATA_OK) {
+    fprintf(stderr, "vkr_rec: cannot load '%s' (error %d)\n", path, (int)error);
+    return false_v;
+  }
+  return true_v;
+}
+
+/* The bounded analysis object summary.json carries, or null. */
+static void rec_write_analysis(VkrJsonWriter *json, const char *path) {
+  vkr_json_writer_name(json, rec_str("analysis"));
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    vkr_json_writer_null(json);
+    return;
+  }
+  VkrRecordingAnalysis analysis;
+  if (vkr_recording_analyze(&data, NULL, &rec_allocator, &analysis)) {
+    vkr_recording_analysis_write_json(json, &data, &analysis, NULL);
+    vkr_recording_analysis_free(&analysis);
+  } else {
+    vkr_json_writer_null(json);
+  }
+  vkr_recording_data_free(&data);
+}
+
 static RecExit rec_status(const VkrRecordingReader *reader,
                           const RecScan *scan) {
   if (scan->bad_chunks > 0u || !scan->has_dictionary ||
@@ -304,6 +358,9 @@ static int rec_report(const char *path, bool8_t verbose) {
     rec_write_identity(&json, &reader);
     rec_write_streams(&json, &scan);
     rec_write_end(&json, &scan);
+    if (rec_has_stream(&scan, "metrics")) {
+      rec_write_analysis(&json, path);
+    }
   }
   vkr_json_writer_end_object(&json);
   vkr_json_writer_complete(&json);
@@ -316,13 +373,191 @@ static int rec_report(const char *path, bool8_t verbose) {
   return status;
 }
 
+/* Status of a loaded recording, with the same meaning as rec_status. */
+static RecExit rec_data_status(const VkrRecordingData *data) {
+  if (data->bad_chunks > 0u) {
+    return REC_EXIT_DAMAGED;
+  }
+  return data->truncated ? REC_EXIT_TRUNCATED : REC_EXIT_OK;
+}
+
+static int rec_spikes(const char *path, uint32_t top) {
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    return REC_EXIT_DAMAGED;
+  }
+  const VkrRecordingAnalysisOptions options = {.spike_max = top};
+  VkrRecordingAnalysis analysis;
+  if (!vkr_recording_analyze(&data, &options, &rec_allocator, &analysis)) {
+    fprintf(stderr, "vkr_rec: out of memory analyzing '%s'\n", path);
+    vkr_recording_data_free(&data);
+    return REC_EXIT_DAMAGED;
+  }
+  const RecExit status = rec_data_status(&data);
+  /* Every requested spike, without the series block. */
+  const VkrRecordingAnalysisJsonOptions json_options = {
+      .budget_bytes = 0u,
+      .include_series = false_v,
+  };
+  VkrJsonWriter json;
+  vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+  vkr_json_writer_begin_object(&json);
+  vkr_json_writer_name(&json, rec_str("status"));
+  vkr_json_writer_string(&json, rec_str(rec_status_name(status)));
+  vkr_json_writer_name(&json, rec_str("top"));
+  vkr_json_writer_u64(&json, top);
+  vkr_json_writer_name(&json, rec_str("analysis"));
+  vkr_recording_analysis_write_json(&json, &data, &analysis, &json_options);
+  vkr_json_writer_end_object(&json);
+  vkr_json_writer_complete(&json);
+  fputc('\n', stdout);
+
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  return status;
+}
+
+/* "A:B" with A <= B. */
+static bool8_t rec_parse_range(const char *text, uint64_t *out_first,
+                               uint64_t *out_last) {
+  const char *colon = strchr(text, ':');
+  if (!colon || colon == text || colon - text >= 32) {
+    return false_v;
+  }
+  char first[32];
+  memcpy(first, text, (size_t)(colon - text));
+  first[colon - text] = '\0';
+  return string_to_u64(first, out_first) &&
+         string_to_u64(colon + 1, out_last) && *out_first <= *out_last;
+}
+
+/* Splits "a,b,c" in place into `out_fields`; empty names are refused. */
+static bool8_t rec_parse_fields(char *text, const char **out_fields,
+                                uint32_t *out_count) {
+  *out_count = 0u;
+  char *name = text;
+  for (;;) {
+    char *comma = strchr(name, ',');
+    if (comma) {
+      *comma = '\0';
+    }
+    if (name[0] == '\0' || *out_count == REC_FIELD_MAX) {
+      return false_v;
+    }
+    out_fields[(*out_count)++] = name;
+    if (!comma) {
+      return true_v;
+    }
+    name = comma + 1;
+  }
+}
+
+static int rec_frames(const char *path, uint64_t first, uint64_t last,
+                      const char **fields, uint32_t field_count) {
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    return REC_EXIT_DAMAGED;
+  }
+  for (uint32_t i = 0u; i < field_count; ++i) {
+    if (strcmp(fields[i], VKR_RECORDING_FRAME_MS_FIELD) != 0 &&
+        vkr_recording_data_find_series(&data, fields[i]) == UINT32_MAX) {
+      fprintf(stderr, "vkr_rec: unknown field '%s'; fields: %s", fields[i],
+              VKR_RECORDING_FRAME_MS_FIELD);
+      for (uint32_t s = 0u; s < data.series_count; ++s) {
+        fprintf(stderr, ",%s", data.series[s].name);
+      }
+      fputc('\n', stderr);
+      vkr_recording_data_free(&data);
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  const RecExit status = rec_data_status(&data);
+  VkrJsonWriter json;
+  vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+  vkr_json_writer_begin_object(&json);
+  vkr_json_writer_name(&json, rec_str("status"));
+  vkr_json_writer_string(&json, rec_str(rec_status_name(status)));
+  vkr_json_writer_name(&json, rec_str("range"));
+  vkr_recording_frames_write_json(&json, &data, first, last, fields,
+                                  field_count, 0u);
+  vkr_json_writer_end_object(&json);
+  vkr_json_writer_complete(&json);
+  fputc('\n', stdout);
+  vkr_recording_data_free(&data);
+  return status;
+}
+
 static void rec_usage(void) {
-  fprintf(stderr, "usage: vkr_rec summary <bundle|stream>\n"
-                  "       vkr_rec verify <bundle|stream>\n");
+  fprintf(
+      stderr,
+      "usage: vkr_rec summary <bundle|stream>\n"
+      "       vkr_rec verify <bundle|stream>\n"
+      "       vkr_rec spikes <bundle|stream> [--top N]\n"
+      "       vkr_rec frames <bundle|stream> --range A:B "
+      "[--fields name,name]\n"
+      "A:B is inclusive; frame_ms names the frame time; at most 500 rows\n");
+}
+
+static int rec_run_spikes(int argc, char **argv) {
+  uint32_t top = VKR_RECORDING_ANALYSIS_SPIKE_MAX;
+  if (argc == 5 && strcmp(argv[3], "--top") == 0) {
+    if (!string_to_u32(argv[4], &top) || top == 0u || top > REC_TOP_MAX) {
+      fprintf(stderr, "vkr_rec: --top takes 1 to %u\n", REC_TOP_MAX);
+      return REC_EXIT_DAMAGED;
+    }
+  } else if (argc != 3) {
+    rec_usage();
+    return REC_EXIT_DAMAGED;
+  }
+  return rec_spikes(argv[2], top);
+}
+
+static int rec_run_frames(int argc, char **argv) {
+  bool8_t has_range = false_v;
+  uint64_t first = 0u;
+  uint64_t last = 0u;
+  static char fields_text[REC_FIELDS_TEXT_MAX];
+  const char *fields[REC_FIELD_MAX] = {VKR_RECORDING_FRAME_MS_FIELD};
+  uint32_t field_count = 1u;
+  for (int i = 3; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+    if (strcmp(argv[i], "--range") == 0) {
+      has_range = rec_parse_range(argv[i + 1], &first, &last);
+      if (!has_range) {
+        fprintf(stderr, "vkr_rec: --range takes A:B with A <= B\n");
+        return REC_EXIT_DAMAGED;
+      }
+    } else if (strcmp(argv[i], "--fields") == 0) {
+      const size_t length = strlen(argv[i + 1]);
+      if (length >= sizeof(fields_text)) {
+        fprintf(stderr, "vkr_rec: --fields is too long\n");
+        return REC_EXIT_DAMAGED;
+      }
+      memcpy(fields_text, argv[i + 1], length + 1u);
+      if (!rec_parse_fields(fields_text, fields, &field_count)) {
+        fprintf(stderr,
+                "vkr_rec: --fields takes up to %u names split by "
+                "commas\n",
+                REC_FIELD_MAX);
+        return REC_EXIT_DAMAGED;
+      }
+    } else {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  if (!has_range) {
+    rec_usage();
+    return REC_EXIT_DAMAGED;
+  }
+  return rec_frames(argv[2], first, last, fields, field_count);
 }
 
 VKR_MAIN(argc, argv) {
-  if (argc != 3) {
+  if (argc < 3) {
     rec_usage();
     return REC_EXIT_DAMAGED;
   }
@@ -336,10 +571,14 @@ VKR_MAIN(argc, argv) {
   vkr_dmemory_allocator_create(&rec_allocator);
 
   int result = REC_EXIT_DAMAGED;
-  if (strcmp(argv[1], "summary") == 0) {
+  if (strcmp(argv[1], "summary") == 0 && argc == 3) {
     result = rec_report(argv[2], true_v);
-  } else if (strcmp(argv[1], "verify") == 0) {
+  } else if (strcmp(argv[1], "verify") == 0 && argc == 3) {
     result = rec_report(argv[2], false_v);
+  } else if (strcmp(argv[1], "spikes") == 0) {
+    result = rec_run_spikes(argc, argv);
+  } else if (strcmp(argv[1], "frames") == 0) {
+    result = rec_run_frames(argc, argv);
   } else {
     rec_usage();
   }
