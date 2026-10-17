@@ -21,6 +21,27 @@ vkr_metal_packet_release_budgeted_resource(VkrMetalPacketRenderer *renderer,
   vkr_metal_memory_device_release_external(renderer->memory, allocated);
 }
 
+/* The absolute time in nanoseconds, as metric events take it. */
+vkr_internal uint64_t vkr_metal_packet_now_ns(void) {
+  return (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+}
+
+/* Publishes a shader library load named `subject` that began at
+   `start_ns` (shader.load), failed when `loaded` is false. */
+vkr_internal void
+vkr_metal_packet_shader_event(VkrMetalPacketRenderer *renderer,
+                              const char *subject, uint64_t start_ns,
+                              bool8_t loaded) {
+  const uint64_t end_ns = vkr_metal_packet_now_ns();
+  (void)vkr_metrics_event_record(
+      renderer->shader_load,
+      string8_create_from_cstr((const uint8_t *)subject,
+                               string_length(subject)),
+      start_ns, end_ns >= start_ns ? end_ns - start_ns : 0u, 0u,
+      loaded ? VKR_METRIC_EVENT_STATUS_SUCCESS
+             : VKR_METRIC_EVENT_STATUS_FAILED);
+}
+
 vkr_internal id<MTLLibrary>
 vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
                                 const char *path, const char *metallib_path,
@@ -1663,12 +1684,18 @@ vkr_internal bool8_t vkr_metal_packet_create_pipelines(
   }
   /* Startup shader cost is the baseline for precompiled libraries. */
   const float64_t library_start = vkr_platform_get_absolute_time();
+  uint64_t event_start = vkr_metal_packet_now_ns();
   id<MTLLibrary> slang = vkr_metal_packet_create_library(
       renderer, slang_msl_path, slang_metallib_path,
       @"VKR Metal packet Slang shaders");
+  vkr_metal_packet_shader_event(renderer, "library.slang", event_start,
+                                slang != nil);
+  event_start = vkr_metal_packet_now_ns();
   id<MTLLibrary> fragment = vkr_metal_packet_create_library(
       renderer, fragment_msl_path, fragment_metallib_path,
       @"VKR Metal packet resource shaders");
+  vkr_metal_packet_shader_event(renderer, "library", event_start,
+                                fragment != nil);
   const float64_t library_end = vkr_platform_get_absolute_time();
   bool8_t created = false_v;
   if (!slang || !fragment)
@@ -2705,6 +2732,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->allocator = config->allocator;
   renderer->job_system = config->job_system;
   renderer->pipeline_create = config->pipeline_create;
+  renderer->shader_load = config->shader_load;
   /* A path: the wide Windows environment keeps non-ASCII names (ADR-070). */
   char diagnostics_directory[1024];
   if (vkr_platform_environment_variable("VKR_METAL_DIAGNOSTICS_DIR",

@@ -158,7 +158,9 @@ an agent must read one without the editor.
   pipeline builds (`vkr.pipeline`, from `pipeline.create`, which Metal
   publishes for its background Custom graph and tiled variant builds and
   the backend config's `pipeline_create` producer carries; Vulkan publishes
-  none yet), asset loads (`vkr.texture`, `vkr.mesh`, `vkr.material`, `vkr.scene`) from
+  none yet), shader library loads (`vkr.shader`, from `shader.load`: Metal's
+  startup libraries and each project material library load, through the
+  config's `shader_load` producer), asset loads (`vkr.texture`, `vkr.mesh`, `vkr.material`, `vkr.scene`) from
   the frame's published load durations, draws skipped while their pipeline
   compiles (`vkr.pipeline_late`, from `pipelines.late`), world cells loaded
   and unloaded by streaming (`vkr.cell_load`, `vkr.cell_unload`) and script

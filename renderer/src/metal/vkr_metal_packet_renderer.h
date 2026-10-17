@@ -86,6 +86,8 @@ typedef struct VkrMetalPacketRendererConfig {
   /** Receives each background pipeline build with its time
    * (pipeline.create); an invalid source publishes none. */
   VkrMetricEventProducer pipeline_create;
+  /** Receives each shader library load with its time (shader.load). */
+  VkrMetricEventProducer shader_load;
   VkrMetalPacketTargetKind target_kind;
   uint32_t target_width;
   uint32_t target_height;

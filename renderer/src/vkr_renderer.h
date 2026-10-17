@@ -1049,6 +1049,10 @@ typedef struct VkrRendererBackendConfig {
    * publishes none. Metal publishes its background Custom graph and tiled
    * variant builds. */
   VkrMetricEventProducer pipeline_create;
+  /** Receives each shader library the backend loads, with its load time
+   * (shader.load); an invalid source publishes none. Metal publishes its
+   * startup libraries and each project material library load. */
+  VkrMetricEventProducer shader_load;
 } VkrRendererBackendConfig;
 
 typedef enum VkrPresentTargetAttachment {

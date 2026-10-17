@@ -91,11 +91,12 @@ const char *vkr_recording_marker_kind_name(uint32_t kind);
  * scripts write with vkr_rec_event): a record named with the "vkr." prefix,
  * which scripts must not use, whose payload is a VkrRecordingEngineEvent.
  * The renderer's events come from the frame's published metrics: pipeline
- * builds and asset loads with their time, and draws skipped while their
- * pipeline compiles (pipelines.late) with none.
+ * builds, shader library loads and asset loads with their time, and draws
+ * skipped while their pipeline compiles (pipelines.late) with none.
  */
 #define VKR_RECORDING_ENGINE_EVENT_PREFIX "vkr."
 #define VKR_RECORDING_EVENT_PIPELINE "vkr.pipeline"
+#define VKR_RECORDING_EVENT_SHADER "vkr.shader"
 #define VKR_RECORDING_EVENT_PIPELINE_LATE "vkr.pipeline_late"
 #define VKR_RECORDING_EVENT_TEXTURE "vkr.texture"
 #define VKR_RECORDING_EVENT_MESH "vkr.mesh"

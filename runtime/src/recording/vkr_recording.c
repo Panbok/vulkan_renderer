@@ -208,6 +208,7 @@ typedef struct VkrRecordingEventMetric {
 
 static const VkrRecordingEventMetric VKR_RECORDING_EVENT_METRICS[] = {
     {"pipeline.create", VKR_RECORDING_EVENT_PIPELINE, VKR_METRIC_KIND_DURATION},
+    {"shader.load", VKR_RECORDING_EVENT_SHADER, VKR_METRIC_KIND_DURATION},
     {"pipelines.late", VKR_RECORDING_EVENT_PIPELINE_LATE,
      VKR_METRIC_KIND_GAUGE},
     {"asset.texture_load", VKR_RECORDING_EVENT_TEXTURE,

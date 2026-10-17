@@ -965,6 +965,8 @@ struct VkrMetalPacketRenderer {
   VkrJobSystem *job_system;
   /* Publishes each background build's time (pipeline.create). */
   VkrMetricEventProducer pipeline_create;
+  /* Publishes each shader library load's time (shader.load). */
+  VkrMetricEventProducer shader_load;
   /* Background creations requested and not yet finished. */
   VkrAtomicUint32 background_builds;
   bool8_t custom_loaded;

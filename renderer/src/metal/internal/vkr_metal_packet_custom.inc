@@ -22,9 +22,12 @@ vkr_internal void vkr_metal_packet_custom_open(VkrMetalPacketRenderer *renderer)
   NSString *file =
       [NSString stringWithUTF8String:renderer->custom_library_path];
   NSError *error = nil;
+  const uint64_t start_ns = vkr_metal_packet_now_ns();
   renderer->custom_library =
       [renderer->device newLibraryWithURL:[NSURL fileURLWithPath:file]
                                     error:&error];
+  vkr_metal_packet_shader_event(renderer, "project_materials", start_ns,
+                                renderer->custom_library != nil);
   if (!renderer->custom_library)
     vkr_metal_packet_print_error("project_materials", error);
   else
@@ -130,8 +133,7 @@ vkr_internal void
 vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
     API_AVAILABLE(macos(26.0)) {
   VkrMetalPacketRenderer *renderer = build->renderer;
-  const uint64_t start_ns =
-      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+  const uint64_t start_ns = vkr_metal_packet_now_ns();
   const char *subject = NULL;
   VkrAtomicUint32 *state = NULL;
   if (build->slot != 0u) {
@@ -149,8 +151,7 @@ vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
   }
   /* The pipeline.create event a recording files on the frame that saw
      the build finish (ADR-122). */
-  const uint64_t end_ns =
-      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+  const uint64_t end_ns = vkr_metal_packet_now_ns();
   (void)vkr_metrics_event_record(
       renderer->pipeline_create,
       string8_create_from_cstr((const uint8_t *)subject,

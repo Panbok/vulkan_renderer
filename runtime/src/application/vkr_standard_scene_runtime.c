@@ -579,6 +579,8 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .job_system = &application->job_system,
       .pipeline_create = metrics_producers ? metrics_producers->pipeline_create
                                            : (VkrMetricEventProducer){0},
+      .shader_load = metrics_producers ? metrics_producers->shader_load
+                                       : (VkrMetricEventProducer){0},
   };
   VkrNativeSurface native_surface = {0};
   const VkrNativeSurface *surface = NULL;
