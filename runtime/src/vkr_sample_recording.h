@@ -3,6 +3,7 @@
 #include "core/vkr_codec.h"
 #include "math/vec.h"
 #include "recording/vkr_recording.h"
+#include "recording/vkr_recording_drive.h"
 #include "recording/vkr_recording_playback.h"
 
 /* vkr_standard_scene_runtime.h includes vkr_sample_runtime.h, which includes
@@ -36,7 +37,38 @@ typedef enum VkrSampleRecordingCommand {
   VKR_SAMPLE_RECORDING_SEEK_FRAME,
   /* Sets `speed` and `loop`. */
   VKR_SAMPLE_RECORDING_SETTINGS,
+  /* Resets the session and plays it with the actions of `path`
+     (docs/proposals/recordings.md, "Drive and re-simulation"). */
+  VKR_SAMPLE_RECORDING_DRIVE,
+  /* Ends the drive and pauses the session. */
+  VKR_SAMPLE_RECORDING_DRIVE_STOP,
 } VkrSampleRecordingCommand;
+
+/* Transport the client applies for a recording request: Drive resets the
+   session and plays it, and pauses it when the actions run out. */
+typedef enum VkrSampleRecordingTransport {
+  VKR_SAMPLE_RECORDING_TRANSPORT_NONE = 0,
+  VKR_SAMPLE_RECORDING_TRANSPORT_RESET,
+  VKR_SAMPLE_RECORDING_TRANSPORT_PLAY,
+  VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE,
+} VkrSampleRecordingTransport;
+
+/* What the latest drive measured (VkrRecordingDrive). */
+typedef struct VkrSampleRecordingDriveResult {
+  bool8_t valid;
+  char path[VKR_RECORDING_PATH_MAX];
+  /* Recorded ticks replayed out of the recording's, and those compared. */
+  uint64_t ticks;
+  uint64_t ticks_total;
+  uint64_t ticks_compared;
+  float64_t distance;
+  float64_t max_distance;
+  float64_t path_length;
+  /* The first recorded tick and frame past VKR_RECORDING_DRIVE_TOLERANCE,
+     UINT64_MAX for none. */
+  uint64_t divergent_tick;
+  uint64_t divergent_frame;
+} VkrSampleRecordingDriveResult;
 
 typedef struct VkrSampleRecordingRequest {
   VkrSampleRecordingCommand command;
@@ -78,6 +110,10 @@ typedef struct VkrSampleRecordingStatus {
   float64_t camera_position[3];
   float32_t camera_yaw;
   float32_t camera_pitch;
+  /* A drive in progress, and what the drive in progress or the last one
+     measured. */
+  bool8_t driving;
+  VkrSampleRecordingDriveResult drive;
 } VkrSampleRecordingStatus;
 
 typedef struct VkrSampleRecordingState {
@@ -98,6 +134,13 @@ typedef struct VkrSampleRecordingState {
   bool8_t restore_gpu_timing;
   bool8_t submission_timing;
   bool8_t pass_timing;
+  /* Transport for the client to apply, in order
+     (vkr_sample_recording_take_transport). */
+  VkrSampleRecordingTransport transport[2];
+  uint32_t transport_count;
+  /* The drive saw the session simulate; a stop after that ends it. */
+  bool8_t drive_started;
+  uint64_t drive_token;
 } VkrSampleRecordingState;
 
 /** Applies one request; `scene_path` names the level for the summary. */
@@ -105,6 +148,11 @@ void vkr_sample_recording_apply(struct VkrStandardSceneRuntime *runtime,
                                 VkrSampleRecordingState *state,
                                 const VkrSampleRecordingRequest *request,
                                 String8 scene_path);
+
+/** The next transport a request or a drive asks for, in order; false_v when
+    none is waiting. */
+bool8_t vkr_sample_recording_take_transport(VkrSampleRecordingState *state,
+                                            VkrSampleRecordingTransport *out);
 
 /** Refreshes the live part of the status before the next build.
  * `edit_revision` sums the loaded scenes' journal revisions: a change while

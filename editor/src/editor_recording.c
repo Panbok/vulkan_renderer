@@ -156,6 +156,18 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
   VkrEditorRecording *recording = &editor->recording;
   if (frame->recording) {
     editor_recording_report(editor, frame->recording);
+    /* A drive's measurement arrives with its end. */
+    const VkrSampleRecordingStatus *status = frame->recording;
+    if (recording->was_driving && !status->driving && status->drive.valid &&
+        status->message[0]) {
+      const VkrUiTheme *theme = vkr_ui_theme();
+      const bool8_t diverged = status->drive.divergent_tick != UINT64_MAX;
+      vkr_editor_toast(
+          editor,
+          diverged ? VKR_UI_ICON_WARNING_FILL : VKR_UI_ICON_GAME_CONTROLLER,
+          diverged ? theme->warning : theme->text, status->message);
+    }
+    recording->was_driving = status->driving;
   }
   editor_recording_thumbnail(recording, frame);
   if (recording->queue_count == 0u || !frame->recording_request ||
@@ -675,6 +687,8 @@ vkr_internal void editor_recording_entry_read(const char *directory,
                            editor_recording_number(&reader, "lost_records"));
   entry->started_unix =
       (int64_t)editor_recording_number(&reader, "started_unix");
+  entry->drivable = editor_recording_number(&reader, "actions") > 0.0 &&
+                    editor_recording_number(&reader, "player_ticks") > 0.0;
   /* Markers are an array of objects, each with one "kind". */
   vkr_json_reader_reset(&reader);
   if (vkr_json_find_array(&reader, "markers")) {
@@ -924,7 +938,8 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
       scene, entry->lost ? "  \xc2\xb7  data lost" : "");
 }
 
-/* One card: name and status, the facts line, Watch, Copy prompt, Delete. */
+/* One card: name and status, the facts line, Watch, Analyze, Drive, Copy
+   prompt, Delete. */
 vkr_internal void editor_recording_card(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame,
                                         uint32_t index, bool8_t can_watch,
@@ -937,6 +952,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   const VkrUiTrack columns[] = {{.value = 84.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.value = 76.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX}};
@@ -1040,8 +1056,22 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
       vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
     }
   }
+  VkrUiWidgetConfig drive = vkr_editor_icon_button_config(
+      4u, 0u, VKR_UI_ICON_GAME_CONTROLLER,
+      entry->drivable
+          ? string8_lit("Drive: play the recorded actions on this build and "
+                        "measure how far the player's path parts")
+          : string8_lit("Drive needs a Play recording with player actions"));
+  drive.placement.row_span = 2u;
+  drive.disabled = !entry->drivable || !can_watch;
+  if (vkr_ui_button(ui, string8_lit("drive"), (String8){0}, &drive)) {
+    VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE};
+    string_format(request.path, sizeof(request.path), "%s/%s",
+                  recording->directory, entry->bundle);
+    (void)vkr_editor_recording_send(editor, request, true_v);
+  }
   VkrUiWidgetConfig copy = vkr_editor_icon_button_config(
-      4u, 0u, VKR_UI_ICON_COPY,
+      5u, 0u, VKR_UI_ICON_COPY,
       string8_lit("Copy a prompt that points an agent at this recording"));
   copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
@@ -1051,7 +1081,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   }
   const bool8_t armed = recording->delete_armed == index + 1u;
   VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
-      5u, 0u, VKR_UI_ICON_TRASH,
+      6u, 0u, VKR_UI_ICON_TRASH,
       armed ? string8_lit("Click again to delete it from disk")
             : string8_lit("Delete this recording"));
   remove.placement.row_span = 2u;

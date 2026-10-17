@@ -3941,6 +3941,7 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
   state->scripts.recording =
       application->recording.active ? &application->recording : NULL;
+  state->scripts.drive = application->drive.open ? &application->drive : NULL;
   vkr_script_host_frame(&state->scripts, &frame);
   vkr_scene_handle_update(handle, frame.scene_delta);
   if (scene->physics_paused &&
@@ -6797,6 +6798,30 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
 
 vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
     VkrStandardSceneRuntime *application,
+    VkrSampleTransportAction transport_action);
+
+/* Applies the transport recordings asked for: Drive resets and plays the
+   session and pauses it at its end. */
+vkr_internal void
+sample_recording_transport(VkrStandardSceneRuntime *application) {
+  VkrSampleRecordingTransport transport;
+  while (vkr_sample_recording_take_transport(&state->recording, &transport)) {
+    static const VkrSampleTransportAction actions[] = {
+        [VKR_SAMPLE_RECORDING_TRANSPORT_NONE] = VKR_SAMPLE_TRANSPORT_NONE,
+        [VKR_SAMPLE_RECORDING_TRANSPORT_RESET] =
+            VKR_SAMPLE_TRANSPORT_RESET_SIMULATION,
+        [VKR_SAMPLE_RECORDING_TRANSPORT_PLAY] =
+            VKR_SAMPLE_TRANSPORT_START_SIMULATION,
+        [VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE] =
+            VKR_SAMPLE_TRANSPORT_PAUSE_SIMULATION,
+    };
+    vkr_standard_scene_runtime_apply_transport_action(application,
+                                                      actions[transport]);
+  }
+}
+
+vkr_internal void vkr_standard_scene_runtime_apply_transport_action(
+    VkrStandardSceneRuntime *application,
     VkrSampleTransportAction transport_action) {
   /* Playback keeps the simulation stopped (docs/proposals/recordings.md). */
   if (application->playback.open &&
@@ -6992,6 +7017,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       edit_revision += state->additive_edits[i].revision;
     }
     vkr_sample_recording_publish(application, &state->recording, edit_revision);
+    sample_recording_transport(application);
   }
   VkrSampleUiRequests requests = {
       .transport_action = VKR_SAMPLE_TRANSPORT_NONE,
@@ -7137,6 +7163,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
                                                     requests.transport_action);
   vkr_sample_recording_apply(application, &state->recording,
                              &requests.recording_request, state->scene_path);
+  sample_recording_transport(application);
   vkr_scene_physics_set_paused(
       sample_simulated_scene(application, NULL),
       !application->editor_viewport.simulation_running);

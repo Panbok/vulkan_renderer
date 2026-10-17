@@ -6,6 +6,7 @@
 
 #include "animation/vkr_animation_player.h"
 #include "recording/vkr_recording.h"
+#include "recording/vkr_recording_drive.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -1068,7 +1069,10 @@ static bool8_t sdk_set_time_of_day(VkrCtx *ctx, float64_t hour) {
 static void sdk_rec_player(VkrCtx *ctx, const VkrRecPlayer *player) {
   ScriptCtx *script = sdk_ctx(ctx);
   VkrRecording *recording = script->host->recording;
-  if (!recording || !recording->active || !player) {
+  VkrRecordingDrive *drive = script->host->drive;
+  const bool8_t recording_on = recording && recording->active;
+  const bool8_t driving = drive && drive->open;
+  if ((!recording_on && !driving) || !player) {
     return;
   }
   const VkrScene *scene = sdk_active(script);
@@ -1084,7 +1088,52 @@ static void sdk_rec_player(VkrCtx *ctx, const VkrRecPlayer *player) {
       .flags = player->flags,
       .state = player->state,
   };
-  vkr_recording_player(recording, &record);
+  if (driving) {
+    vkr_recording_drive_player(drive, record.tick, record.position);
+  }
+  if (recording_on) {
+    vkr_recording_player(recording, &record);
+  }
+}
+
+static void sdk_rec_action(VkrCtx *ctx, const VkrRecAction *action) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
+  if (!host->recording || !host->recording->active || !action) {
+    return;
+  }
+  const VkrRecordingAction record = {
+      .tick = vkr_scene_simulation_completed_ticks(sdk_active(script)) + 1u,
+      .sequence = ++host->rec_action_sequence,
+      .action = action->action,
+      .pressed = action->pressed ? 1u : 0u,
+      .x = action->x,
+      .y = action->y,
+  };
+  vkr_recording_action(host->recording, &record);
+}
+
+static bool8_t sdk_driving(VkrCtx *ctx) {
+  const VkrRecordingDrive *drive = sdk_ctx(ctx)->host->drive;
+  return drive && drive->open;
+}
+
+static uint32_t sdk_drive_actions(VkrCtx *ctx, uint64_t tick, VkrRecAction *out,
+                                  uint32_t capacity) {
+  VkrRecordingDrive *drive = sdk_ctx(ctx)->host->drive;
+  if (!drive || !drive->open || (!out && capacity > 0u)) {
+    return 0u;
+  }
+  VkrRecordingAction actions[64];
+  const uint32_t count = vkr_recording_drive_actions(
+      drive, tick, actions, Min(capacity, (uint32_t)ArrayCount(actions)));
+  for (uint32_t i = 0u; i < count; ++i) {
+    out[i] = (VkrRecAction){.action = actions[i].action,
+                            .pressed = actions[i].pressed != 0u,
+                            .x = actions[i].x,
+                            .y = actions[i].y};
+  }
+  return count;
 }
 
 static void sdk_rec_tag(VkrCtx *ctx, VkrStr key, VkrStr value) {
@@ -1953,5 +2002,8 @@ void script_sdk_table(VkrSdkTable *table) {
       .rec_player = sdk_rec_player,
       .rec_tag = sdk_rec_tag,
       .rec_event = sdk_rec_event,
+      .rec_action = sdk_rec_action,
+      .driving = sdk_driving,
+      .drive_actions = sdk_drive_actions,
   };
 }

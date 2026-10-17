@@ -257,10 +257,34 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
           "Backspace reset, Tab/Escape release or capture mouse.");
 }
 
+/* While a recording drives the session, its actions for `tick` are the
+   player's input. */
+static void fps_drive(VkrCtx *ctx, FpsModule *module, uint64_t tick) {
+  VkrRecAction actions[FPS_INPUT_CAPACITY / 4u];
+  const uint32_t count =
+      vkr_drive_actions(ctx, tick, actions, (uint32_t)ArrayCount(actions));
+  FpsInput *commands = &module->player.commands;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (actions[i].action >= FPS_ACTION_COUNT) {
+      continue;
+    }
+    const FpsCommand command = {.tick = tick,
+                                .sequence = commands->last_sequence + 1u,
+                                .action = (FpsAction)actions[i].action,
+                                .pressed = actions[i].pressed,
+                                .x = actions[i].x,
+                                .y = actions[i].y};
+    (void)fps_input_push(commands, command);
+  }
+}
+
 static void fps_fixed_update(VkrCtx *ctx, FpsModule *module) {
   const char *error = NULL;
-  if (!fps_player_before_physics(ctx, &module->player, vkr_ticks(ctx) + 1u,
-                                 &error)) {
+  const uint64_t tick = vkr_ticks(ctx) + 1u;
+  if (vkr_driving(ctx)) {
+    fps_drive(ctx, module, tick);
+  }
+  if (!fps_player_before_physics(ctx, &module->player, tick, &error)) {
     vkr_fail(ctx, "%s", error);
   }
 }
@@ -271,6 +295,10 @@ static void fps_late_fixed_update(VkrCtx *ctx, FpsModule *module) {
 
 static void fps_input(VkrCtx *ctx, FpsModule *module,
                       const VkrInputEvent *event) {
+  /* A driven session plays the recording's input, not the user's. */
+  if (vkr_driving(ctx)) {
+    return;
+  }
   fps_player_observe(ctx, &module->player, event);
 }
 
@@ -292,8 +320,9 @@ static void fps_update(VkrCtx *ctx, FpsModule *module, float32_t dt) {
       }
     }
   }
-  vkr_set_time_step(ctx, fps_player_frame(ctx, &module->player, vkr_time(ctx),
-                                          vkr_input_focused(ctx)));
+  vkr_set_time_step(
+      ctx, fps_player_frame(ctx, &module->player, vkr_time(ctx),
+                            vkr_input_focused(ctx) || vkr_driving(ctx)));
 }
 
 /* Render poses never modify the authored spawn or weapon transform. */

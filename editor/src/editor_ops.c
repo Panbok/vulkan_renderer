@@ -14927,7 +14927,58 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
         ops_recording_markers(ctx, playback->markers, playback->marker_count));
     ops_set(ctx, ctx->call->result, "playback", open);
   }
+  if (status && (status->driving || status->drive.valid)) {
+    const VkrSampleRecordingDriveResult *drive = &status->drive;
+    VkrBakeryJson *result = vkr_bakery_json_object(arena);
+    ops_set(ctx, result, "running",
+            vkr_bakery_json_bool(arena, status->driving));
+    ops_set(ctx, result, "path", vkr_bakery_json_cstr(arena, drive->path));
+    ops_set(ctx, result, "ticks",
+            vkr_bakery_json_int(arena, (int64_t)drive->ticks));
+    ops_set(ctx, result, "ticks_total",
+            vkr_bakery_json_int(arena, (int64_t)drive->ticks_total));
+    ops_set(ctx, result, "ticks_compared",
+            vkr_bakery_json_int(arena, (int64_t)drive->ticks_compared));
+    ops_set(ctx, result, "distance", ops_number(ctx, drive->distance));
+    ops_set(ctx, result, "max_distance", ops_number(ctx, drive->max_distance));
+    ops_set(ctx, result, "path_length", ops_number(ctx, drive->path_length));
+    ops_set(ctx, result, "tolerance",
+            ops_number(ctx, VKR_RECORDING_DRIVE_TOLERANCE));
+    const bool8_t diverged = drive->divergent_tick != UINT64_MAX;
+    ops_set(ctx, result, "divergent_tick",
+            diverged
+                ? vkr_bakery_json_int(arena, (int64_t)drive->divergent_tick)
+                : vkr_bakery_json_null(arena));
+    ops_set(ctx, result, "divergent_frame",
+            diverged
+                ? vkr_bakery_json_int(arena, (int64_t)drive->divergent_frame)
+                : vkr_bakery_json_null(arena));
+    ops_set(ctx, ctx->call->result, "drive", result);
+  }
   return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_rec_drive(OpsContext *ctx) {
+  VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE};
+  if (ctx->call->stage == 0u) {
+    char name[VKR_RECORDING_PATH_MAX] = {0};
+    if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!vkr_editor_recording_resolve(ctx->editor, name, request.path,
+                                      sizeof(request.path))) {
+      ops_fail(ctx, OPS_INVALID,
+               "'name' is a recording in the recording directory or a path");
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+  return ops_recording_wait(ctx, request);
+}
+
+static VkrEditorOpStatus ops_run_rec_drive_stop(OpsContext *ctx) {
+  return ops_recording_wait(
+      ctx,
+      (VkrSampleRecordingRequest){.command = VKR_SAMPLE_RECORDING_DRIVE_STOP});
 }
 
 static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
@@ -15261,6 +15312,17 @@ static const OpsDef s_ops[] = {
     {"rec.close",
      "Leave Playback: the editor camera and the level's hour return.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_close, NULL},
+    {"rec.drive",
+     "Drive recording 'name': reset the session and play it with the "
+     "recorded player actions on the current build. rec.status 'drive' "
+     "reports the distance between the driven and the recorded player, its "
+     "maximum and the first recorded frame past the tolerance; the drive "
+     "ends when the actions run out or the session stops.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}},\"required\":[\"name\"]}",
+     ops_run_rec_drive, NULL},
+    {"rec.drive_stop", "End the running drive and pause the session.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_drive_stop, NULL},
     {"ops.list", "Every operation with its description and argument schema.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_list, NULL, OPS_QUICK},
     {"editor.status",

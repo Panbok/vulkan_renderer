@@ -74,6 +74,27 @@ static const VkrRecordingField VKR_RECORDING_PLAYER_FIELDS[] = {
      .offset = 56u},
 };
 
+static const VkrRecordingField VKR_RECORDING_ACTION_FIELDS[] = {
+    {.name = "tick",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 0u},
+    {.name = "sequence",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 8u},
+    {.name = "action",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 16u},
+    {.name = "pressed",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 20u},
+    {.name = "x", .type = VKR_RECORDING_FIELD_F32, .count = 1u, .offset = 24u},
+    {.name = "y", .type = VKR_RECORDING_FIELD_F32, .count = 1u, .offset = 28u},
+};
+
 static const VkrRecordingField VKR_RECORDING_CAMERA_FIELDS[] = {
     {.name = "position",
      .unit = "m",
@@ -133,6 +154,11 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
     {.id = VKR_RECORDING_STREAM_TAG, .name = "tag"},
     /* A u16 name length, the name, then the payload. */
     {.id = VKR_RECORDING_STREAM_EVENT, .name = "event"},
+    {.id = VKR_RECORDING_STREAM_ACTION,
+     .name = "action",
+     .record_size = sizeof(VkrRecordingAction),
+     .field_count = ArrayCount(VKR_RECORDING_ACTION_FIELDS),
+     .fields = VKR_RECORDING_ACTION_FIELDS},
 };
 
 /* Tier 0 (docs/proposals/recordings.md, "Metrics and capture tiers"):
@@ -168,6 +194,7 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
 _Static_assert(sizeof(VkrRecordingFrame) == 24u, "frame record layout");
 _Static_assert(sizeof(VkrRecordingPose) == 88u, "pose record layout");
 _Static_assert(sizeof(VkrRecordingPlayer) == 64u, "player record layout");
+_Static_assert(sizeof(VkrRecordingAction) == 32u, "action record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
 
 const VkrRecordingStream *vkr_recording_streams(uint32_t *out_count) {
@@ -325,8 +352,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
-  VkrRecordingStream streams[12];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 4u <= 12u,
+  VkrRecordingStream streams[16];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 4u <= 16u,
                  "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
@@ -647,9 +674,21 @@ void vkr_recording_pose(VkrRecording *recording, const VkrRecordingPose *pose) {
 void vkr_recording_player(VkrRecording *recording,
                           const VkrRecordingPlayer *player) {
   vkr_assert(recording != NULL && recording->active && player != NULL);
-  (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
-                           VKR_RECORDING_STREAM_PLAYER, recording->frame,
-                           player, sizeof(*player));
+  if (vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                         VKR_RECORDING_STREAM_PLAYER, recording->frame, player,
+                         sizeof(*player))) {
+    ++recording->player_records;
+  }
+}
+
+void vkr_recording_action(VkrRecording *recording,
+                          const VkrRecordingAction *action) {
+  vkr_assert(recording != NULL && recording->active && action != NULL);
+  if (vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                         VKR_RECORDING_STREAM_ACTION, recording->frame, action,
+                         sizeof(*action))) {
+    ++recording->action_records;
+  }
 }
 
 /* A u16 length and `head`, then `tail`: the layout of tags and events. */
@@ -836,6 +875,9 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
   if (recording->poses_enabled) {
     vkr_recording_json_u64(json, "poses", recording->poses_written);
   }
+  /* Drive needs both. */
+  vkr_recording_json_u64(json, "player_ticks", recording->player_records);
+  vkr_recording_json_u64(json, "actions", recording->action_records);
   vkr_recording_json_f64(json, "duration_seconds", recording->time);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
   vkr_recording_json_u64(json, "lost_records", stats->lost_records);

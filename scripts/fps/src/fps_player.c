@@ -237,6 +237,12 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
   bool8_t jump = false_v;
   FpsCommand command;
   while (fps_input_next(&player->commands, tick, &command)) {
+    /* A recording keeps each admitted command; Drive feeds them back. */
+    const VkrRecAction admitted = {.action = (uint32_t)command.action,
+                                   .pressed = command.pressed,
+                                   .x = command.x,
+                                   .y = command.y};
+    vkr_rec_action(ctx, &admitted);
     const uint32_t bit = 1u << command.action;
     if (command.action == FPS_ACTION_LOOK) {
       state->yaw = command.x;

@@ -1,0 +1,259 @@
+#include "recording/vkr_recording_drive.h"
+
+#include "assets/vkr_recording_format.h"
+#include "containers/str.h"
+#include "containers/vkr_sort.h"
+#include "math/vkr_math.h"
+#include "memory/vkr_dmemory_allocator.h"
+
+#define VKR_RECORDING_DRIVE_MEMORY_COMMIT (1ull * 1024ull * 1024ull)
+#define VKR_RECORDING_DRIVE_MEMORY_RESERVE (1024ull * 1024ull * 1024ull)
+
+typedef struct VkrRecordingDriveLoad {
+  VkrRecordingDrive *drive;
+  const VkrRecordingReader *reader;
+  const VkrCodec *codec;
+  bool8_t counting;
+} VkrRecordingDriveLoad;
+
+/* Counts, then copies, the action and player records of every readable
+   records chunk. */
+vkr_internal bool8_t vkr_recording_drive_scan(VkrRecordingDriveLoad *load) {
+  VkrRecordingDrive *drive = load->drive;
+  for (uint32_t i = 0u; i < load->reader->chunk_count; ++i) {
+    if (load->reader->chunks[i].type != VKR_RECORDING_CHUNK_RECORDS) {
+      continue;
+    }
+    uint8_t *payload = NULL;
+    uint64_t size = 0u;
+    if (!vkr_recording_reader_chunk(load->reader, i, load->codec,
+                                    &drive->allocator, &payload, &size)) {
+      return false_v;
+    }
+    uint64_t cursor = 0u;
+    VkrRecordingRecord record;
+    while (vkr_recording_records_next(payload, size, &cursor, &record)) {
+      if (record.stream == VKR_RECORDING_STREAM_ACTION &&
+          record.size == sizeof(VkrRecordingAction)) {
+        if (!load->counting) {
+          MemCopy(&drive->actions[drive->action_count], record.data,
+                  sizeof(VkrRecordingAction));
+        }
+        ++drive->action_count;
+      } else if (record.stream == VKR_RECORDING_STREAM_PLAYER &&
+                 record.size == sizeof(VkrRecordingPlayer)) {
+        if (!load->counting) {
+          MemCopy(&drive->players[drive->player_count], record.data,
+                  sizeof(VkrRecordingPlayer));
+          drive->player_frames[drive->player_count] = record.frame;
+        }
+        ++drive->player_count;
+      }
+    }
+    vkr_recording_reader_chunk_free(&drive->allocator, payload, size);
+  }
+  return true_v;
+}
+
+vkr_internal int32_t vkr_recording_compare_actions(const void *lhs,
+                                                   const void *rhs) {
+  const VkrRecordingAction *a = lhs;
+  const VkrRecordingAction *b = rhs;
+  if (a->tick != b->tick) {
+    return a->tick < b->tick ? -1 : 1;
+  }
+  return a->sequence < b->sequence ? -1 : (a->sequence > b->sequence ? 1 : 0);
+}
+
+vkr_internal bool8_t vkr_recording_drive_load(VkrRecordingDrive *drive,
+                                              const VkrRecordingReader *reader,
+                                              const VkrCodec *codec,
+                                              char *error,
+                                              uint64_t error_capacity) {
+  VkrRecordingDriveLoad load = {
+      .drive = drive, .reader = reader, .codec = codec, .counting = true_v};
+  if (!vkr_recording_drive_scan(&load)) {
+    string_format(error, error_capacity, "a records chunk is damaged");
+    return false_v;
+  }
+  if (drive->action_count == 0u || drive->player_count == 0u) {
+    string_format(error, error_capacity,
+                  "the recording has no %s to drive with",
+                  drive->action_count == 0u ? "actions" : "player track");
+    return false_v;
+  }
+  const uint64_t actions = drive->action_count;
+  const uint64_t players = drive->player_count;
+  drive->actions = vkr_allocator_alloc(&drive->allocator,
+                                       sizeof(VkrRecordingAction) * actions,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  drive->players = vkr_allocator_alloc(&drive->allocator,
+                                       sizeof(VkrRecordingPlayer) * players,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  drive->player_frames =
+      vkr_allocator_alloc(&drive->allocator, sizeof(uint64_t) * players,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!drive->actions || !drive->players || !drive->player_frames) {
+    string_format(error, error_capacity, "out of memory");
+    return false_v;
+  }
+  drive->action_count = 0u;
+  drive->player_count = 0u;
+  load.counting = false_v;
+  if (!vkr_recording_drive_scan(&load)) {
+    string_format(error, error_capacity, "a records chunk is damaged");
+    return false_v;
+  }
+  vkr_sort(drive->actions, drive->action_count, sizeof(VkrRecordingAction),
+           vkr_recording_compare_actions);
+  /* Player records arrive in tick order within a run. */
+  drive->first_tick = Min(drive->actions[0].tick, drive->players[0].tick);
+  drive->last_tick = Max(drive->actions[drive->action_count - 1u].tick,
+                         drive->players[drive->player_count - 1u].tick);
+  return true_v;
+}
+
+bool8_t vkr_recording_drive_open(VkrRecordingDrive *drive, const char *path,
+                                 const VkrCodec *codec, char *error,
+                                 uint64_t error_capacity) {
+  vkr_assert(drive != NULL && path != NULL && error != NULL);
+  vkr_assert(!drive->open && "close the open drive first");
+  MemZero(drive, sizeof(*drive));
+  if (!vkr_dmemory_create(VKR_RECORDING_DRIVE_MEMORY_COMMIT,
+                          VKR_RECORDING_DRIVE_MEMORY_RESERVE, &drive->memory)) {
+    string_format(error, error_capacity, "out of memory");
+    return false_v;
+  }
+  drive->allocator = (VkrAllocator){.ctx = &drive->memory};
+  vkr_dmemory_allocator_create(&drive->allocator);
+  string_format(drive->bundle_path, sizeof(drive->bundle_path), "%s", path);
+
+  /* A bundle directory holds the stream file; a file path is used as is. */
+  char stream[VKR_RECORDING_PATH_MAX];
+  string_format(stream, sizeof(stream), "%s/%s", path,
+                VKR_RECORDING_STREAM_FILE);
+  VkrRecordingReader reader;
+  VkrRecordingReadError read_error =
+      vkr_recording_reader_open(&reader, &drive->allocator, stream);
+  if (read_error == VKR_RECORDING_READ_OPEN) {
+    read_error = vkr_recording_reader_open(&reader, &drive->allocator, path);
+  }
+  if (read_error != VKR_RECORDING_READ_OK) {
+    string_format(error, error_capacity, "'%s' is not a readable recording",
+                  path);
+    vkr_dmemory_allocator_destroy(&drive->allocator);
+    MemZero(drive, sizeof(*drive));
+    return false_v;
+  }
+  const bool8_t loaded =
+      vkr_recording_drive_load(drive, &reader, codec, error, error_capacity);
+  vkr_recording_reader_close(&reader);
+  if (!loaded) {
+    vkr_dmemory_allocator_destroy(&drive->allocator);
+    MemZero(drive, sizeof(*drive));
+    return false_v;
+  }
+  drive->base_tick = UINT64_MAX;
+  drive->divergent_tick = UINT64_MAX;
+  drive->divergent_frame = UINT64_MAX;
+  drive->open = true_v;
+  return true_v;
+}
+
+void vkr_recording_drive_close(VkrRecordingDrive *drive) {
+  vkr_assert(drive != NULL);
+  if (drive->open) {
+    vkr_dmemory_allocator_destroy(&drive->allocator);
+  }
+  MemZero(drive, sizeof(*drive));
+}
+
+/* The recorded tick driven tick `tick` replays; UINT64_MAX before the
+   base. */
+vkr_internal uint64_t
+vkr_recording_drive_recorded(const VkrRecordingDrive *drive, uint64_t tick) {
+  if (drive->base_tick == UINT64_MAX || tick < drive->base_tick) {
+    return UINT64_MAX;
+  }
+  return drive->first_tick + (tick - drive->base_tick);
+}
+
+uint32_t vkr_recording_drive_actions(VkrRecordingDrive *drive, uint64_t tick,
+                                     VkrRecordingAction *out,
+                                     uint32_t capacity) {
+  vkr_assert(drive != NULL && drive->open && (out != NULL || capacity == 0u));
+  if (drive->base_tick == UINT64_MAX) {
+    drive->base_tick = tick;
+  }
+  const uint64_t recorded = vkr_recording_drive_recorded(drive, tick);
+  if (recorded == UINT64_MAX) {
+    return 0u;
+  }
+  drive->finished = recorded >= drive->last_tick;
+  drive->ticks_driven = tick - drive->base_tick + 1u;
+  /* Actions of ticks the run skipped are not replayed late. */
+  while (drive->action_cursor < drive->action_count &&
+         drive->actions[drive->action_cursor].tick < recorded) {
+    ++drive->action_cursor;
+  }
+  uint32_t written = 0u;
+  while (written < capacity && drive->action_cursor < drive->action_count &&
+         drive->actions[drive->action_cursor].tick == recorded) {
+    out[written++] = drive->actions[drive->action_cursor++];
+  }
+  return written;
+}
+
+/* The index of the recorded player at tick `recorded`, or UINT64_MAX. */
+vkr_internal uint64_t vkr_recording_drive_find_player(
+    const VkrRecordingDrive *drive, uint64_t recorded) {
+  uint64_t low = 0u;
+  uint64_t high = drive->player_count;
+  while (low < high) {
+    const uint64_t middle = low + (high - low) / 2u;
+    if (drive->players[middle].tick < recorded) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low < drive->player_count && drive->players[low].tick == recorded
+             ? low
+             : UINT64_MAX;
+}
+
+void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,
+                                const float64_t position[3]) {
+  vkr_assert(drive != NULL && drive->open && position != NULL);
+  const uint64_t recorded = vkr_recording_drive_recorded(drive, tick);
+  const uint64_t index = recorded == UINT64_MAX
+                             ? UINT64_MAX
+                             : vkr_recording_drive_find_player(drive, recorded);
+  if (drive->has_position) {
+    float64_t step = 0.0;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const float64_t delta = position[axis] - drive->last_position[axis];
+      step += delta * delta;
+    }
+    drive->path_length += vkr_sqrt_f64(step);
+  }
+  MemCopy(drive->last_position, position, sizeof(drive->last_position));
+  drive->has_position = true_v;
+  if (index == UINT64_MAX) {
+    return;
+  }
+  const VkrRecordingPlayer *player = &drive->players[index];
+  float64_t squared = 0.0;
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const float64_t delta = position[axis] - player->position[axis];
+    squared += delta * delta;
+  }
+  drive->distance = vkr_sqrt_f64(squared);
+  drive->max_distance = Max(drive->max_distance, drive->distance);
+  ++drive->ticks_compared;
+  if (drive->divergent_tick == UINT64_MAX &&
+      drive->distance > VKR_RECORDING_DRIVE_TOLERANCE) {
+    drive->divergent_tick = recorded;
+    drive->divergent_frame = drive->player_frames[index];
+  }
+}

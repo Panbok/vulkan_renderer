@@ -269,6 +269,110 @@ vkr_sample_recording_transport(VkrStandardSceneRuntime *runtime,
   vkr_sample_recording_result(state, request->token, true_v, "");
 }
 
+vkr_internal void
+vkr_sample_recording_queue(VkrSampleRecordingState *state,
+                           VkrSampleRecordingTransport transport) {
+  if (state->transport_count < ArrayCount(state->transport)) {
+    state->transport[state->transport_count++] = transport;
+  }
+}
+
+/* Copies what the open drive measured into the status. */
+vkr_internal void
+vkr_sample_recording_drive_result(const VkrRecordingDrive *drive,
+                                  VkrSampleRecordingDriveResult *out) {
+  const uint64_t total = drive->last_tick - drive->first_tick + 1u;
+  const uint64_t done = Min(drive->ticks_driven, total);
+  string_format(out->path, sizeof(out->path), "%s", drive->bundle_path);
+  out->valid = true_v;
+  out->ticks = done;
+  out->ticks_total = total;
+  out->ticks_compared = drive->ticks_compared;
+  out->distance = drive->distance;
+  out->max_distance = drive->max_distance;
+  out->path_length = drive->path_length;
+  out->divergent_tick = drive->divergent_tick;
+  out->divergent_frame = drive->divergent_frame;
+}
+
+/* Ends the open drive with its measurement as the request's outcome. */
+vkr_internal void
+vkr_sample_recording_drive_end(VkrStandardSceneRuntime *runtime,
+                               VkrSampleRecordingState *state, uint64_t token,
+                               const char *why) {
+  VkrSampleRecordingDriveResult *result = &state->status.drive;
+  vkr_sample_recording_drive_result(&runtime->drive, result);
+  char message[256];
+  if (result->divergent_tick == UINT64_MAX) {
+    string_format(message, sizeof(message),
+                  "Drive %s: %llu ticks compared, the path stayed within "
+                  "%.2f m (max %.3f m).",
+                  why, (unsigned long long)result->ticks_compared,
+                  VKR_RECORDING_DRIVE_TOLERANCE, result->max_distance);
+  } else {
+    string_format(message, sizeof(message),
+                  "Drive %s: the path left %.2f m at recorded frame %llu "
+                  "(tick %llu); max %.2f m over %llu ticks.",
+                  why, VKR_RECORDING_DRIVE_TOLERANCE,
+                  (unsigned long long)result->divergent_frame,
+                  (unsigned long long)result->divergent_tick,
+                  result->max_distance,
+                  (unsigned long long)result->ticks_compared);
+  }
+  log_info("%s", message);
+  vkr_sample_recording_result(state, token, true_v, message);
+  vkr_recording_drive_close(&runtime->drive);
+  state->drive_started = false_v;
+}
+
+vkr_internal void
+vkr_sample_recording_drive(VkrStandardSceneRuntime *runtime,
+                           VkrSampleRecordingState *state,
+                           const VkrSampleRecordingRequest *request) {
+  if (runtime->drive.open) {
+    vkr_sample_recording_result(state, request->token, false_v,
+                                "A drive is already running.");
+    return;
+  }
+  char error[192];
+  if (!vkr_recording_drive_open(&runtime->drive, request->path,
+                                vkr_content_codec_zstd_decoder(), error,
+                                sizeof(error))) {
+    vkr_sample_recording_result(state, request->token, false_v, error);
+    return;
+  }
+  /* Drive plays the session, which Playback keeps stopped. */
+  if (runtime->playback.open) {
+    vkr_sample_recording_close(runtime, state, 0u);
+  }
+  /* The request answers now; the measurement ends in the status. */
+  state->drive_token = 0u;
+  state->drive_started = false_v;
+  MemZero(&state->status.drive, sizeof(state->status.drive));
+  vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_RESET);
+  vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_PLAY);
+  char message[VKR_RECORDING_PATH_MAX + 96u];
+  string_format(message, sizeof(message),
+                "Driving %s: %llu actions over %llu ticks.", request->path,
+                (unsigned long long)runtime->drive.action_count,
+                (unsigned long long)(runtime->drive.last_tick -
+                                     runtime->drive.first_tick + 1u));
+  log_info("%s", message);
+  vkr_sample_recording_result(state, request->token, true_v, message);
+}
+
+bool8_t vkr_sample_recording_take_transport(VkrSampleRecordingState *state,
+                                            VkrSampleRecordingTransport *out) {
+  if (state->transport_count == 0u) {
+    return false_v;
+  }
+  *out = state->transport[0];
+  state->transport_count--;
+  MemCopy(state->transport, state->transport + 1u,
+          sizeof(state->transport[0]) * state->transport_count);
+  return true_v;
+}
+
 void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
                                 VkrSampleRecordingState *state,
                                 const VkrSampleRecordingRequest *request,
@@ -309,6 +413,18 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
   case VKR_SAMPLE_RECORDING_SETTINGS:
     vkr_sample_recording_transport(runtime, state, request);
     return;
+  case VKR_SAMPLE_RECORDING_DRIVE:
+    vkr_sample_recording_drive(runtime, state, request);
+    return;
+  case VKR_SAMPLE_RECORDING_DRIVE_STOP:
+    if (!runtime->drive.open) {
+      vkr_sample_recording_result(state, request->token, false_v,
+                                  "No drive is running.");
+      return;
+    }
+    vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE);
+    vkr_sample_recording_drive_end(runtime, state, request->token, "stopped");
+    return;
   }
 }
 
@@ -331,6 +447,21 @@ void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
     vkr_recording_stats(&runtime->recording, &status->stats);
   }
   status->playback = runtime->playback.open ? &runtime->playback : NULL;
+  /* A drive ends when its recorded ticks run out or the session stops. */
+  if (runtime->drive.open) {
+    const bool8_t simulating = runtime->editor_viewport.simulation_running;
+    state->drive_started = state->drive_started || simulating;
+    vkr_sample_recording_drive_result(&runtime->drive, &status->drive);
+    if (runtime->drive.finished) {
+      vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE);
+      vkr_sample_recording_drive_end(runtime, state, state->drive_token,
+                                     "finished");
+    } else if (state->drive_started && !simulating) {
+      vkr_sample_recording_drive_end(runtime, state, state->drive_token,
+                                     "ended when the session stopped");
+    }
+  }
+  status->driving = runtime->drive.open;
   const VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &runtime->camera_system, runtime->active_camera);
   VkrScene *level = vkr_standard_scene_runtime_level_scene(runtime);

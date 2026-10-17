@@ -63,6 +63,9 @@
 #define VKR_RECORDING_STREAM_PLAYER 8u
 #define VKR_RECORDING_STREAM_TAG 9u
 #define VKR_RECORDING_STREAM_EVENT 10u
+/* A module's admitted input actions (vkr_rec_action), a
+   VkrRecordingAction each: what Drive feeds back. */
+#define VKR_RECORDING_STREAM_ACTION 11u
 /* Longest tag key or value and event name; longest event payload. */
 #define VKR_RECORDING_TEXT_MAX 63u
 #define VKR_RECORDING_EVENT_PAYLOAD_MAX 256u
@@ -142,6 +145,18 @@ typedef struct VkrRecordingPlayer {
   uint32_t state;
   uint32_t reserved;
 } VkrRecordingPlayer;
+
+/* One input action a module admitted at a fixed tick. `action` and the
+   x, y values are the module's own; `sequence` orders actions of one tick.
+ */
+typedef struct VkrRecordingAction {
+  uint64_t tick;
+  uint64_t sequence;
+  uint32_t action;
+  uint32_t pressed;
+  float32_t x;
+  float32_t y;
+} VkrRecordingAction;
 
 /* Marker records are a u32 kind followed by a UTF-8 label. */
 typedef struct VkrRecordingMarker {
@@ -230,6 +245,9 @@ typedef struct VkrRecording {
   VkrRecordingPose *pose_batch;
   uint32_t pose_batch_count;
   uint64_t poses_written;
+  /* Gameplay records written, for the summary. */
+  uint64_t player_records;
+  uint64_t action_records;
 } VkrRecording;
 
 /**
@@ -280,6 +298,10 @@ void vkr_recording_poses_flush(VkrRecording *recording);
 /** Writes a player record under the frame being updated. */
 void vkr_recording_player(VkrRecording *recording,
                           const VkrRecordingPlayer *player);
+
+/** Writes an action record under the frame being updated. */
+void vkr_recording_action(VkrRecording *recording,
+                          const VkrRecordingAction *action);
 
 /** Writes a tag: `key` became `value`, each cut to VKR_RECORDING_TEXT_MAX
     bytes. */

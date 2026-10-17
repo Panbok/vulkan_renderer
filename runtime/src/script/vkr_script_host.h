@@ -34,6 +34,7 @@
 #include "script/vkr_io_router.h"
 
 struct VkrRecording;
+struct VkrRecordingDrive;
 #include "sdk.h"
 
 #define VKR_SCRIPT_MODULE_NAME_CAPACITY 64u
@@ -244,6 +245,11 @@ typedef struct VkrScriptHost {
   /* The recording in progress, borrowed for the frame, or NULL: where
      vkr_rec_player, vkr_rec_tag and vkr_rec_event write. */
   struct VkrRecording *recording;
+  /* The Drive in progress, borrowed for the frame, or NULL: where
+     vkr_drive_actions reads and where vkr_rec_player is compared. */
+  struct VkrRecordingDrive *drive;
+  /* Orders the actions vkr_rec_action records. */
+  uint64_t rec_action_sequence;
   bool8_t time_step_set;
   float64_t time_step;
   uint64_t frame_serial;

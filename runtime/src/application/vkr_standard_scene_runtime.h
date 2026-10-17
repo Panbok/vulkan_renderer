@@ -15,6 +15,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "recording/vkr_recording.h"
+#include "recording/vkr_recording_drive.h"
 #include "recording/vkr_recording_playback.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
@@ -368,6 +369,8 @@ typedef struct VkrStandardSceneRuntime {
      drives the camera while the client keeps it in Playback. */
   VkrRecording recording;
   VkrRecordingPlayback playback;
+  /* An open drive feeds a recording's actions to the session it plays. */
+  VkrRecordingDrive drive;
   /* $VKR_RECORDING_DIRECTORY was read: a set one records the whole run. */
   bool8_t recording_environment_read;
   /* The containers whose transform changes the recording tracks, by

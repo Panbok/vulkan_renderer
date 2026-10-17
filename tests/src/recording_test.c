@@ -9,6 +9,7 @@
 #include "platform/vkr_platform.h"
 #include "recording/vkr_recorder.h"
 #include "recording/vkr_recording.h"
+#include "recording/vkr_recording_drive.h"
 #include "recording/vkr_recording_playback.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "vkr_depot_zstd.h"
@@ -1073,6 +1074,90 @@ static void test_recording_player_records(void) {
   printf("  test_recording_player_records PASSED\n");
 }
 
+/* Detects: actions replayed on the wrong driven tick or out of sequence,
+   a driven run starting at another tick than the recording, actions of a
+   skipped tick replayed late, a distance measured against the wrong
+   recorded tick, a divergence reported inside the tolerance or at the
+   wrong tick or frame, and a drive that never finishes. */
+static void test_recording_drive(void) {
+  printf("  Running test_recording_drive...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("drive", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {.bundle_path = path,
+                                     .codec = vkr_depot_zstd_codec()};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  /* Recorded ticks 40 to 49, one per frame: the player walks 1 m a tick
+     along x; actions at ticks 41 (two, written out of order) and 45. */
+  for (uint64_t tick = 40u; tick < 50u; ++tick) {
+    const VkrRecordingPlayer player = {
+        .tick = tick, .position = {(float64_t)(tick - 40u), 0.0, 0.0}};
+    vkr_recording_player(&recording, &player);
+    if (tick == 41u) {
+      const VkrRecordingAction second = {
+          .tick = 41u, .sequence = 8u, .action = 2u, .pressed = 1u};
+      const VkrRecordingAction first = {
+          .tick = 41u, .sequence = 7u, .action = 1u, .pressed = 1u, .x = 0.5f};
+      vkr_recording_action(&recording, &second);
+      vkr_recording_action(&recording, &first);
+    }
+    if (tick == 45u) {
+      const VkrRecordingAction release = {
+          .tick = 45u, .sequence = 9u, .action = 1u, .pressed = 0u};
+      vkr_recording_action(&recording, &release);
+    }
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+  }
+  assert(vkr_recording_stop(&recording, NULL));
+
+  static VkrRecordingDrive drive;
+  char error[192];
+  assert(vkr_recording_drive_open(&drive, path, vkr_depot_zstd_codec(), error,
+                                  sizeof(error)));
+  assert(drive.first_tick == 40u && drive.last_tick == 49u &&
+         drive.action_count == 3u && drive.player_count == 10u);
+  /* The driven run starts at tick 1000, which replays tick 40. */
+  VkrRecordingAction out[8];
+  assert(vkr_recording_drive_actions(&drive, 1000u, out, 8u) == 0u);
+  float64_t position[3] = {0.0, 0.0, 0.0};
+  vkr_recording_drive_player(&drive, 1000u, position);
+  assert(drive.distance == 0.0);
+  const uint32_t count = vkr_recording_drive_actions(&drive, 1001u, out, 8u);
+  assert(count == 2u && out[0].action == 1u && out[0].x == 0.5f &&
+         out[1].action == 2u);
+  position[0] = 1.1;
+  vkr_recording_drive_player(&drive, 1001u, position);
+  assert(drive.divergent_tick == UINT64_MAX && drive.max_distance > 0.09);
+  /* Ticks 1002 to 1005 are skipped: the release at recorded 45 is not
+     replayed late at 1006. */
+  assert(vkr_recording_drive_actions(&drive, 1006u, out, 8u) == 0u);
+  position[0] = 6.5;
+  vkr_recording_drive_player(&drive, 1006u, position);
+  assert(drive.divergent_tick == 46u && drive.divergent_frame == 6u &&
+         drive.distance == 0.5);
+  assert(!drive.finished);
+  (void)vkr_recording_drive_actions(&drive, 1009u, out, 8u);
+  assert(drive.finished && drive.ticks_compared == 3u);
+  vkr_recording_drive_close(&drive);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_drive PASSED\n");
+}
+
 bool32_t run_recording_tests(void) {
   printf("--- Starting Recording Tests ---\n");
   test_spsc_ring_wrap_and_full();
@@ -1084,6 +1169,7 @@ bool32_t run_recording_tests(void) {
   test_scene_change_tracking();
   test_recording_pose_playback();
   test_recording_player_records();
+  test_recording_drive();
   printf("--- Recording Tests Completed ---\n");
   return true_v;
 }

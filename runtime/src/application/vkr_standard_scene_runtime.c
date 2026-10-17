@@ -3595,6 +3595,7 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
   }
   vkr_standard_scene_recording_release_poses(application);
   vkr_recording_playback_close(&application->playback);
+  vkr_recording_drive_close(&application->drive);
   vkr_dynamic_volume_selection_destroy(&application->dynamic_volume_selection);
   if (vkr_renderer_render_thread_enabled(&application->renderer)) {
     log_info("Render thread acquired %llu of %llu submitted frames",

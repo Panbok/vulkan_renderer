@@ -30,6 +30,8 @@ typedef struct VkrEditorRecordingEntry {
   uint64_t lost;
   int64_t started_unix;
   bool8_t has_summary;
+  /* The recording holds actions and a player track to drive with. */
+  bool8_t drivable;
   /* thumb.png as a UI texture, loaded when the card first shows; released
      when the list is read again. */
   VkrResourceHandleInfo thumb_request;
@@ -113,6 +115,8 @@ typedef struct VkrEditorRecording {
   uint32_t entry_count;
   bool8_t listed;
   bool8_t was_recording;
+  /* A drive ran last frame; its end shows its measurement. */
+  bool8_t was_driving;
   /* One past the entry whose Delete was pressed once, or zero; a second
      press deletes it. */
   uint32_t delete_armed;

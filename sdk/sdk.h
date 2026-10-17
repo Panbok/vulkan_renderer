@@ -75,7 +75,7 @@
 #endif
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 10u
+#define VKR_SDK_VERSION 11u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -630,6 +630,15 @@ typedef struct VkrRecPlayer {
   uint32_t state;
 } VkrRecPlayer;
 
+/* One input action a module admitted, for vkr_rec_action and Drive.
+   `action`, `x` and `y` are the module's own, such as an aim. */
+typedef struct VkrRecAction {
+  uint32_t action;
+  bool8_t pressed;
+  float32_t x;
+  float32_t y;
+} VkrRecAction;
+
 // =============================================================================
 // Private host table: call the vkr_* functions below instead
 // =============================================================================
@@ -777,6 +786,10 @@ typedef struct VkrSdkTable {
   void (*rec_tag)(VkrCtx *ctx, VkrStr key, VkrStr value);
   void (*rec_event)(VkrCtx *ctx, VkrStr name, const void *payload,
                     uint32_t size);
+  void (*rec_action)(VkrCtx *ctx, const VkrRecAction *action);
+  bool8_t (*driving)(VkrCtx *ctx);
+  uint32_t (*drive_actions)(VkrCtx *ctx, uint64_t tick, VkrRecAction *out,
+                            uint32_t capacity);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -1203,6 +1216,25 @@ static inline void vkr_rec_tag(VkrCtx *ctx, VkrStr key, VkrStr value) {
 static inline void vkr_rec_event(VkrCtx *ctx, VkrStr name, const void *payload,
                                  uint32_t size) {
   ctx->sdk->rec_event(ctx, name, payload, size);
+}
+
+/** Records an input action the module admitted on this fixed tick, in
+ * admission order, so Drive can feed it back. */
+static inline void vkr_rec_action(VkrCtx *ctx, const VkrRecAction *action) {
+  ctx->sdk->rec_action(ctx, action);
+}
+
+/** A recording drives this session: the module takes its actions from
+ * vkr_drive_actions and ignores live input. */
+static inline bool8_t vkr_driving(VkrCtx *ctx) {
+  return ctx->sdk->driving(ctx);
+}
+
+/** The recorded actions for fixed tick `tick` while driving, in order;
+ * returns how many it wrote to `out`. Call once per tick. */
+static inline uint32_t vkr_drive_actions(VkrCtx *ctx, uint64_t tick,
+                                         VkrRecAction *out, uint32_t capacity) {
+  return ctx->sdk->drive_actions(ctx, tick, out, capacity);
 }
 
 /** The game owns keyboard and mouse this frame. */

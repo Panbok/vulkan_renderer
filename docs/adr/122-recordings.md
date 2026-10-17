@@ -87,8 +87,9 @@ an agent must read one without the editor.
   the playhead as an evaluated override before the frame's transform update;
   closing removes the overrides, so authored transforms never change. Script
   spawns have no name yet and are not recorded.
-- **Gameplay records (R3).** SDK version 10 adds `vkr_rec_player`,
-  `vkr_rec_tag` and `vkr_rec_event` ([sdk.h](../../sdk/sdk.h)). They write
+- **Gameplay records (R3).** SDK version 11 adds `vkr_rec_player`,
+  `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
+  ([sdk.h](../../sdk/sdk.h)). They write
   streams `player` (one record per fixed tick: feet position with the origin
   offset, velocity, view, flags and module state), `tag` and `event` under
   the frame whose update ran them, through the recording the script host
@@ -97,7 +98,20 @@ an agent must read one without the editor.
   last player, places spikes at it and offers `player.x`, `.y`, `.z` and
   `.speed` to `vkr_rec frames`. The scoped Play case
   `assets/scenes/fixtures/bistro_play_local.scene.json` is Bistro with a
-  collision-only slab under the street and a Player Start.
+  collision-only slab under the street and a Player Start. Stream `action`
+  holds each input action a module admitted, by tick and sequence; the FPS
+  module records every command it drains.
+- **Drive (R3).** `rec.drive`, or Drive on a recording card, resets the
+  session and plays it while `vkr_driving` tells modules to take their
+  actions from `vkr_drive_actions` instead of live input
+  ([vkr_recording_drive.h](../../runtime/src/recording/vkr_recording_drive.h)).
+  Driven tick `base + n` replays recorded tick `first + n`; actions of a
+  tick the run skipped are not replayed late. Each `vkr_rec_player` call
+  during a drive is compared with the recorded player at the same tick,
+  giving the distance, its maximum, the driven path length and the first
+  recorded tick and frame past 0.25 m. The drive ends when its ticks run out
+  (the session pauses) or the session stops; `rec.status` reports the
+  measurement and the editor shows it.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory
