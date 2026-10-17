@@ -1619,6 +1619,12 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Shadow.SunContact's half-resolution extent, as the graph's divided
+   viewport extent floors it. */
+vkr_internal uint32_t vkr_vk_sun_contact_extent(uint32_t extent) {
+  return Max(extent / 2u, 1u);
+}
+
 /* Ray-query sun shadows (prototype, VKR_SUN_RAY_SHADOWS): rays cover view
    depths below the range's end and hand over to the cascades over its last
    fifth. They run to the scene's edge; the TLAS holds every opaque and
@@ -1767,6 +1773,71 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Shadow.SunContact marches the sun's contact shadows once per 2x2 block
+   into the half-resolution image at binding 16, from the visibility at 0,
+   the depth at 1, the normals at 4 and the visible rows at 13. */
+bool8_t vkr_vk_prepare_sun_contact(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedCompute *prepared,
+                                   const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint32_t vbuffer = 0u, depth = 0u, normal = 0u, contact = 0u;
+  VkrVulkanGraphBufferInstance *visible =
+      vkr_vk_deferred_buffer(renderer, pass, 13u);
+  if (!vkr_vk_deferred_storage_index(renderer, pass, 0u, &vbuffer) ||
+      !vkr_vk_deferred_sampled_index(renderer, pass, 1u, &depth) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 4u, &normal) ||
+      !vkr_vk_deferred_storage_index(renderer, pass, 16u, &contact) || !visible)
+    return false_v;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const Mat4 view_projection = mat4_mul(packet->temporal.jittered_projection,
+                                        packet->input.globals.view);
+  const VkrPacketFrameConstants frame = vkr_packet_derive_frame_constants(
+      packet, renderer->prepared_frame.viewport_width,
+      renderer->prepared_frame.viewport_height);
+  uint64_t frame_address = 0u;
+  VkrVulkanPacketFrameRoot *frame_root =
+      vkr_vk_packet_frame_root(slot, &frame_address);
+  if (!frame_root)
+    return false_v;
+  vkr_vk_fill_packet_frame_root(
+      renderer, frame_root, slot, &frame, slot->gpu_candidate_instances,
+      view_projection, VKR_VULKAN_SENTINEL_SLOT_INDEX,
+      VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
+  const uint32_t width = renderer->prepared_frame.viewport_width;
+  const uint32_t height = renderer->prepared_frame.viewport_height;
+  const VkrVulkanSunContactRoot root = {
+      .frame = frame_address,
+      .inverse_view_projection = mat4_inverse(view_projection),
+      .visible_rows = visible->buffer.address,
+      .vbuffer_texture = vbuffer,
+      .depth_texture = depth,
+      .normal_texture = normal,
+      .contact_texture = contact,
+      .extent = {width, height},
+      .contact_extent = {vkr_vk_sun_contact_extent(width),
+                         vkr_vk_sun_contact_extent(height)},
+      .noise_index = vkr_vk_sun_noise_index(packet),
+      /* The rays find the contacts where they cover the pixel alone. */
+      .ray_cover_depth = renderer->prepared_frame.sun_ray_shadows_active
+                             ? VKR_VULKAN_SUN_RAY_RANGE_FADE_START
+                             : 0.0f,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanSunContactRoot),
+                                 &prepared->root_address))
+    return false_v;
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_SUN_CONTACT];
+  prepared->groups[prepared->dispatch_count][0] =
+      (root.contact_extent[0] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][1] =
+      (root.contact_extent[1] + 7u) / 8u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  return true_v;
+}
+
 /* The base kernel shades every tile unless the frame has layered materials;
    then the layered pass owns tiles that carry layer data. */
 /* `sample_one`: SMAA S2x's second sample, lit at the pixels VBuffer.Split
@@ -1818,6 +1889,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
   uint32_t sun_ray_shadow = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   if (vkr_rg_pass_find_image_use(&pass->desc, 46u, 0u) &&
       !vkr_vk_deferred_storage_index(renderer, pass, 46u, &sun_ray_shadow))
+    return false_v;
+  uint32_t sun_contact = VKR_VULKAN_SENTINEL_SLOT_INDEX;
+  if (vkr_rg_pass_find_image_use(&pass->desc, 47u, 0u) &&
+      !vkr_vk_deferred_storage_index(renderer, pass, 47u, &sun_contact))
     return false_v;
   uint32_t baked_lamps = VKR_VULKAN_SENTINEL_SLOT_INDEX;
   uint32_t baked_direction = VKR_VULKAN_SENTINEL_SLOT_INDEX;
@@ -1966,7 +2041,10 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .sample1_pixels = sample1_pixels ? sample1_pixels->buffer.address : 0u,
       .sun_ray_shadow_texture = sun_ray_shadow,
       .sun_noise_index = vkr_vk_sun_noise_index(packet),
-      .sun_contact = renderer->prepared_frame.sun_contact_shadows ? 1u : 0u,
+      .sun_contact_texture = sun_contact,
+      .sun_contact_extent =
+          {vkr_vk_sun_contact_extent(renderer->prepared_frame.viewport_width),
+           vkr_vk_sun_contact_extent(renderer->prepared_frame.viewport_height)},
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),

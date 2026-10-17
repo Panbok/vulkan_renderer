@@ -78,6 +78,8 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_SMAA_BLEND,
   VKR_RG_EXECUTOR_SMAA_RESOLVE,
   VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK,
+  /* The sun's contact march at half resolution. */
+  VKR_RG_EXECUTOR_SUN_CONTACT,
   /* Ray-query sun shadows: the trace, its filtered mask, the mask
      accumulated over frames, and that accumulation's history copy. */
   VKR_RG_EXECUTOR_SUN_RAY_TRACE,

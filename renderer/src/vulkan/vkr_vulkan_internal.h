@@ -137,6 +137,7 @@
   "packet.local_shadow_mask_baked.comp.spv"
 #define VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_BAKED_COMP_SPV             \
   "packet.local_shadow_mask_contact_baked.comp.spv"
+#define VKR_VULKAN_PACKET_SUN_CONTACT_COMP_SPV "packet.sun_contact.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV                           \
   "packet.deferred_lighting.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
@@ -422,6 +423,7 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_BAKED,
   VKR_VULKAN_DEFERRED_PIPELINE_LOCAL_SHADOW_MASK_CONTACT_BAKED,
+  VKR_VULKAN_DEFERRED_PIPELINE_SUN_CONTACT,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
@@ -908,13 +910,14 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   /** The sun cascade filter's and contact march's noise phase: the frame's
       temporal phase under FSR 3.1 or SMAA T2x, zero otherwise. */
   uint32_t sun_noise_index;
-  /** Nonzero: a contact march toward the sun multiplies its visibility
-      where the rays do not cover the pixel. */
-  uint32_t sun_contact;
+  /** Shadow.SunContact's R16F half-resolution contact visibility, which
+      multiplies the sun's where the rays do not cover the pixel; the
+      sentinel slot without sun contact shadows. */
+  uint32_t sun_contact_texture;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE below this one sample
       `shadow_moments_texture`; the far level filters with PCF. */
   uint32_t shadow_moments_cascade_end;
-  uint32_t sun_reserved[2];
+  uint32_t sun_contact_extent[2];
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -1014,6 +1017,30 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
    * before its surface work. */
   VkrPointLightMask mask_lights;
 } VkrVulkanLocalShadowMaskRoot;
+
+/* Shadow.SunContact: the sun's contact march, one per 2x2 block. */
+typedef struct VKR_SIMD_ALIGN VkrVulkanSunContactRoot {
+  uint64_t frame;
+  uint64_t frame_padding;
+  Mat4 inverse_view_projection;
+  uint64_t visible_rows;
+  uint32_t vbuffer_texture;
+  uint32_t depth_texture;
+  uint32_t normal_texture;
+  /* R16F, one texel per 2x2 block: the block's top-left pixel's contact
+   * visibility with the distance fade applied. */
+  uint32_t contact_texture;
+  uint32_t extent[2];
+  uint32_t contact_extent[2];
+  uint32_t noise_index;
+  /* View depth, in metres, below which ray-query sun shadows cover the pixel
+   * alone; zero without them. */
+  float32_t ray_cover_depth;
+} VkrVulkanSunContactRoot;
+_Static_assert(sizeof(VkrVulkanSunContactRoot) == 128u &&
+                   offsetof(VkrVulkanSunContactRoot, contact_texture) == 100u &&
+                   offsetof(VkrVulkanSunContactRoot, ray_cover_depth) == 124u,
+               "Sun contact root ABI drift");
 _Static_assert(
     sizeof(VkrVulkanLocalShadowMaskRoot) == 160u &&
         offsetof(VkrVulkanLocalShadowMaskRoot, visible_rows) == 80u &&
@@ -3979,6 +4006,9 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
                                       VkrVulkanPreparedCompute *prepared,
                                       const VkrRgPass *pass,
                                       VkrVulkanSunRayStage stage);
+bool8_t vkr_vk_prepare_sun_contact(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedCompute *prepared,
+                                   const VkrRgPass *pass);
 bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass, bool8_t layered,

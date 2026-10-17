@@ -1420,6 +1420,24 @@
       ]
     },
     {
+      "name": "sun_contact",
+      "type": "image",
+      "condition": "scene_rendering && sun_contact_active",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16_SFLOAT",
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "sun_ray_trace",
       "type": "image",
       "condition": "scene_rendering && sun_ray_shadows_active",
@@ -4888,6 +4906,44 @@
       "execute": "pass.local_shadow.mask"
     },
     {
+      "name": "Shadow.SunContact",
+      "type": "compute",
+      "condition": "scene_rendering && sun_contact_active",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "image": "opaque_vbuffer",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "gbuffer_normal",
+          "access": "STORAGE_READ",
+          "binding": 4
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 13
+        }
+      ],
+      "writes": [
+        {
+          "image": "sun_contact",
+          "access": "STORAGE_WRITE",
+          "binding": 16
+        }
+      ],
+      "execute": "pass.shadow.sun_contact"
+    },
+    {
       "name": "Shadow.SunRay",
       "type": "compute",
       "condition": "scene_rendering && sun_ray_shadows_active",
@@ -5526,6 +5582,12 @@
           "when": "sun_ray_shadows_active"
         },
         {
+          "image": "sun_contact",
+          "access": "STORAGE_READ",
+          "binding": 47,
+          "when": "sun_contact_active"
+        },
+        {
           "image": "planar_reflection_color",
           "access": "SAMPLED",
           "binding": 45,
@@ -5750,6 +5812,12 @@
           "access": "STORAGE_READ",
           "binding": 46,
           "when": "sun_ray_shadows_active"
+        },
+        {
+          "image": "sun_contact",
+          "access": "STORAGE_READ",
+          "binding": 47,
+          "when": "sun_contact_active"
         },
         {
           "image": "planar_reflection_color",
@@ -5978,6 +6046,12 @@
           "when": "sun_ray_shadows_active"
         },
         {
+          "image": "sun_contact",
+          "access": "STORAGE_READ",
+          "binding": 47,
+          "when": "sun_contact_active"
+        },
+        {
           "image": "planar_reflection_color",
           "access": "SAMPLED",
           "binding": 45,
@@ -6202,6 +6276,12 @@
           "access": "STORAGE_READ",
           "binding": 46,
           "when": "sun_ray_shadows_active"
+        },
+        {
+          "image": "sun_contact",
+          "access": "STORAGE_READ",
+          "binding": 47,
+          "when": "sun_contact_active"
         },
         {
           "image": "planar_reflection_color",
@@ -6494,6 +6574,12 @@
           "access": "STORAGE_READ",
           "binding": 46,
           "when": "sun_ray_shadows_active"
+        },
+        {
+          "image": "sun_contact",
+          "access": "STORAGE_READ",
+          "binding": 47,
+          "when": "sun_contact_active"
         },
         {
           "image": "planar_reflection_color",

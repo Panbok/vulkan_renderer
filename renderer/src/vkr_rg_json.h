@@ -38,6 +38,8 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_DYNAMIC_VOLUME_ACTIVE,
   /** The frame traces ray-query sun shadows (VKR_SUN_RAY_SHADOWS). */
   VKR_RG_JSON_CONDITION_SUN_RAY_SHADOWS_ACTIVE,
+  /** The frame marches the sun's contact shadows (Shadow.SunContact). */
+  VKR_RG_JSON_CONDITION_SUN_CONTACT_ACTIVE,
   /** The frame builds its TLAS: the dynamic volume layer or sun rays. */
   VKR_RG_JSON_CONDITION_RAY_SCENE_ACTIVE,
   VKR_RG_JSON_CONDITION_CLEARCOAT_ENABLED,

@@ -1429,6 +1429,23 @@ vkr_global const VkrVulkanReflectedField s_vk_diffuse_volume_sample_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanDiffuseVolumeSampleRoot, visible_rows),
 };
 
+vkr_global const VkrVulkanReflectedField s_vk_sun_contact_fields[] = {
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, frame),
+    {"frame_address_padding",
+     (uint32_t)offsetof(VkrVulkanSunContactRoot, frame_padding)},
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot,
+                               inverse_view_projection),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, visible_rows),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, vbuffer_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, depth_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, normal_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, contact_texture),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, contact_extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, noise_index),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunContactRoot, ray_cover_depth),
+};
+
 vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, frame),
     {"frame_address_padding",
@@ -1504,10 +1521,10 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sample1_pixels),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_ray_shadow_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_noise_index),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_contact),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_contact_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                shadow_moments_cascade_end),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_contact_extent),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_sun_ray_shadow_fields[] = {
@@ -1785,6 +1802,9 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
         VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_BAKED_COMP_SPV,
         "vk_local_shadow_mask_contact_baked", s_vk_local_shadow_mask_fields,
         VkrVulkanLocalShadowMaskRoot),
+    VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_SUN_CONTACT_COMP_SPV,
+                              "vk_sun_contact", s_vk_sun_contact_fields,
+                              VkrVulkanSunContactRoot),
     VKR_VULKAN_REFLECTED_ROOT(VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
                               "vk_deferred_lighting", s_vk_lighting_fields,
                               VkrVulkanLightingRoot),
@@ -2829,6 +2849,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_COMP_SPV,
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_BAKED_COMP_SPV,
       VKR_VULKAN_PACKET_LOCAL_SHADOW_MASK_CONTACT_BAKED_COMP_SPV,
+      VKR_VULKAN_PACKET_SUN_CONTACT_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
@@ -2909,6 +2930,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_local_shadow_mask_contact",
       "vk_local_shadow_mask_baked",
       "vk_local_shadow_mask_contact_baked",
+      "vk_sun_contact",
       "vk_deferred_lighting",
       "vk_deferred_lighting_layered",
       "vk_temporal_resolve",

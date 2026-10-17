@@ -326,13 +326,14 @@ struct VkrVkLightingRoot
     // The sun cascade filter's and contact march's noise phase: the frame's
     // temporal phase under FSR 3.1 or SMAA T2x, zero otherwise.
     uint sun_noise_index;
-    // Nonzero: a contact march toward the sun multiplies its visibility
-    // where the rays do not cover the pixel.
-    uint sun_contact;
+    // Shadow.SunContact's R16F half-resolution contact visibility, which
+    // multiplies the sun's where the rays do not cover the pixel; zero
+    // without sun contact shadows.
+    uint sun_contact_texture;
     // Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE below this one sample
     // shadow_moments_texture; the far level filters with PCF.
     uint shadow_moments_cascade_end;
-    uint2 sun_reserved;
+    uint2 sun_contact_extent;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -413,6 +414,29 @@ struct VkrVkLocalShadowMaskRoot
     // Bit i: light i is shadowed and its range reaches the camera frustum.
     // No other light is in range of a visible pixel with a shadow view.
     uint4 mask_lights;
+};
+
+// Shadow.SunContact: the sun's contact march at half resolution.
+struct VkrVkSunContactRoot
+{
+    VkrVulkanPacketFrameRoot *frame;
+    uint2 frame_address_padding;
+    float4x4 inverse_view_projection;
+    VkrGpuVisibleDrawRow* visible_rows;
+    uint vbuffer_texture;
+    uint depth_texture;
+    uint normal_texture;
+    // R16F, one texel per 2x2 block: the contact visibility of the block's
+    // top-left pixel with the distance fade applied, one where it was not
+    // marched.
+    uint contact_texture;
+    uint2 extent;
+    uint2 contact_extent;
+    // The march's step-noise phase (the sun cascade filter's).
+    uint noise_index;
+    // View depth, in metres, below which ray-query sun shadows cover the
+    // pixel alone and find its contacts; zero without them.
+    float ray_cover_depth;
 };
 
 // One far cascade's EVSM moments layer, built from its depth layer.
@@ -598,6 +622,11 @@ struct VkrVkLocalShadowMaskPush
     VkrVkLocalShadowMaskRoot *root;
     uint2 reserved;
 };
+struct VkrVkSunContactPush
+{
+    VkrVkSunContactRoot *root;
+    uint2 reserved;
+};
 struct VkrVkTemporalResolvePush
 {
     VkrVkTemporalResolveRoot *root;
@@ -647,6 +676,7 @@ struct VkrVkTransmissionCompactPush
 [[vk::push_constant]] ConstantBuffer<VkrVkLightingPush> g_lighting_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkLocalShadowMaskPush>
     g_local_shadow_mask_push;
+[[vk::push_constant]] ConstantBuffer<VkrVkSunContactPush> g_sun_contact_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkDiffuseVolumeSamplePush>
     g_diffuse_volume_sample_push;
 [[vk::push_constant]] ConstantBuffer<VkrVkTemporalResolvePush>
@@ -2778,6 +2808,96 @@ float vk_contact_shadow(VkrVulkanPacketFrameRoot *frame, VkrVkDepthView depth,
     return 1.0f;
 }
 
+// Sun contact shadows (shadow_kernel.slangh) at half resolution: one march
+// per 2x2 block from its top-left pixel, which deferred lighting upsamples
+// with depth weights (vk_deferred_sun_contact). Like the full-resolution
+// march they replace, the march starts along the sun, its length grows with
+// camera distance and its strength fades out by VKR_SUN_CONTACT_DISTANCE; a
+// surface facing away from the sun that transmits none of it is not
+// marched, and neither is one the rays cover alone.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_sun_contact(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkSunContactRoot root = vkr_vk_uniform_root(*g_sun_contact_push.root);
+    if (any(thread_id.xy >= root.contact_extent))
+        return;
+    uint2 pixel = min(thread_id.xy * 2u, root.extent - 1u);
+    float result = 1.0f;
+    VkrVulkanPacketFrameRoot *frame = root.frame;
+    uint visible = g_storage_uint2_2d[root.vbuffer_texture][pixel].x;
+    if (visible != 0u && frame.directional_direction_enabled.w > 0.5f)
+    {
+        VkrVkDepthView depth_view;
+        depth_view.vbuffer_texture = root.vbuffer_texture;
+        depth_view.depth_texture = root.depth_texture;
+        depth_view.extent = root.extent;
+        depth_view.inverse_view_projection = root.inverse_view_projection;
+        depth_view.sample_position = 0.5f;
+        float depth = g_depth_textures[root.depth_texture].Load(int3(pixel, 0));
+        float3 world = vkr_vk_depth_view_world(depth_view, pixel, depth);
+        float camera_distance = distance(world, frame.view_position.xyz);
+        float strength = vkr_sun_contact_strength(camera_distance);
+        float view_depth = abs(mul(frame.view, float4(world, 1.0f)).z);
+        if (strength > 0.0f && view_depth >= root.ray_cover_depth)
+        {
+            float3 sun = normalize(-frame.directional_direction_enabled.xyz);
+            float3 normal = vkr_vk_octahedral_decode(
+                g_storage_float2_2d[root.normal_texture][pixel]);
+            bool facing = dot(normal, sun) > 0.0f;
+            if (facing ||
+                frame.materials[root.visible_rows[visible - 1u].material_index]
+                        .material_diffuse_transmission.w > 0.0f)
+            {
+                float3 origin =
+                    world + sun * vkr_local_shadow_contact_start_offset(
+                                      camera_distance);
+                float contact = vk_contact_shadow(
+                    frame, depth_view, origin, sun,
+                    vkr_sun_contact_length(camera_distance),
+                    VKR_SUN_CONTACT_STEPS,
+                    vkr_local_shadow_contact_noise(pixel, root.noise_index));
+                result = 1.0f - strength * (1.0f - contact);
+            }
+        }
+    }
+    g_storage_2d[root.contact_texture][thread_id.xy] =
+        float4(result, 0.0f, 0.0f, 0.0f);
+}
+
+// Shadow.SunContact's visibility at `pixel`, of device depth `depth`: the
+// four blocks around it, each weighted bilinearly and by how near its
+// marched pixel's depth lies to the pixel's, or the pixel's own block when
+// none lies on its surface.
+float vk_deferred_sun_contact(VkrVkLightingRoot root, uint2 pixel,
+                              float depth)
+{
+    float2 position = float2(pixel) * 0.5f;
+    int2 base = int2(floor(position));
+    float2 fraction = position - float2(base);
+    int2 last = int2(root.sun_contact_extent) - 1;
+    float tolerance = 0.02f * depth + 1.0e-6f;
+    float total = 0.0f;
+    float weight_sum = 0.0f;
+    [unroll] for (uint tap = 0u; tap < 4u; ++tap)
+    {
+        int2 offset = int2(int(tap & 1u), int(tap >> 1u));
+        uint2 block = uint2(clamp(base + offset, int2(0), last));
+        uint2 source = min(block * 2u, root.extent - 1u);
+        float source_depth =
+            g_depth_textures[root.depth_texture].Load(int3(source, 0));
+        float2 bilinear = lerp(1.0f - fraction, fraction, float2(offset));
+        float weight = bilinear.x * bilinear.y *
+                       saturate(1.0f - abs(source_depth - depth) / tolerance);
+        total += g_storage_2d[root.sun_contact_texture][block].x * weight;
+        weight_sum += weight;
+    }
+    if (weight_sum > 1.0e-3f)
+        return total / weight_sum;
+    uint2 own = uint2(clamp(int2(pixel / 2u), int2(0), last));
+    return g_storage_2d[root.sun_contact_texture][own].x;
+}
+
 // Shadow.LocalMask stores every in-range shadowed light's visibility with the
 // receiver normal, range test and light traversal of deferred lighting, so the
 // lighting kernels read one texel per light instead of filtering shadow maps.
@@ -3469,32 +3589,17 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
                                        root.shadow_moments_sampler,
                                        root.shadow_moments_cascade_end) *
                 cloud_shadow;
-        // Sun contact shadows (shadow_kernel.slangh), where the rays do
-        // not cover the pixel: the rays find contacts exactly. As on the
-        // tiled pipeline, the march starts along the sun, its length grows
-        // with camera distance and its strength fades out by
-        // VKR_SUN_CONTACT_DISTANCE.
-        if (root.sun_contact != 0u && sun_ray.y < 1.0f && base_shadow > 0.0f)
+        // Sun contact shadows (vk_sun_contact), where the rays do not cover
+        // the pixel: the rays find contacts exactly.
+        if (root.sun_contact_texture != 0u && sun_ray.y < 1.0f &&
+            base_shadow > 0.0f)
         {
-            float camera_distance = distance(world, frame.view_position.xyz);
-            float strength = vkr_sun_contact_strength(camera_distance) *
-                             (1.0f - sun_ray.y);
-            if (strength > 0.0f)
-            {
-                float3 origin =
-                    world + sun_direction *
-                                vkr_local_shadow_contact_start_offset(
-                                    camera_distance);
-                float contact = vk_contact_shadow(
-                    frame, depth_view, origin, sun_direction,
-                    vkr_sun_contact_length(camera_distance),
-                    VKR_SUN_CONTACT_STEPS,
-                    vkr_local_shadow_contact_noise(thread_id.xy,
-                                                   root.sun_noise_index));
-                contact = 1.0f - strength * (1.0f - contact);
-                base_shadow *= contact;
-                directional_shadow *= contact;
-            }
+            float contact =
+                1.0f - (1.0f - sun_ray.y) *
+                           (1.0f - vk_deferred_sun_contact(root, side_pixel,
+                                                           depth));
+            base_shadow *= contact;
+            directional_shadow *= contact;
         }
         VkrVulkanDirectResult direct = packet_direct(
             normal, view, normalize(-frame.directional_direction_enabled.xyz),

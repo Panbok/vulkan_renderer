@@ -519,6 +519,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                       VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_LOCAL_SHADOW_MASK] = {"pass.local_shadow.mask",
                                            VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_SUN_CONTACT] = {"pass.shadow.sun_contact",
+                                     VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SUN_RAY_TRACE] = {"pass.shadow.sun_ray.trace",
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_SUN_RAY_RESOLVE] = {"pass.shadow.sun_ray.resolve",
