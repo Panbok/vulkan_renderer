@@ -147,6 +147,20 @@ an agent must read one without the editor.
   (`loop_start`, `loop_end`) that every settings request carries; `rec.set`
   takes `range` [first, last] frames, [] for the whole recording
   ([editor_recording_timeline.c](../../editor/src/editor_recording_timeline.c)).
+- **Engine events.** Stream `event` carries, beside script events,
+  engine events named `vkr.*` with a count and milliseconds
+  (`VkrRecordingEngineEvent`, [vkr_recording_format.h](../../runtime/src/assets/vkr_recording_format.h)):
+  asset loads (`vkr.texture`, `vkr.mesh`, `vkr.material`, `vkr.scene`) from
+  the frame's published load durations, draws skipped while their pipeline
+  compiles (`vkr.pipeline_late`, from `pipelines.late`), world cells loaded
+  and unloaded by streaming (`vkr.cell_load`, `vkr.cell_unload`) and script
+  hot reloads (`vkr.script_reload`). Renderer-derived events need Tier 0;
+  cell and reload events record at every tier. The analysis totals them per
+  name in `summary.json`, lists up to four engine then script events within
+  10 frames of each spike, and `vkr_rec frames` and `rec.frames` give a
+  range's events. The timeline shows them in a lane under the frame-time
+  lane, one tick per column coloured by its costliest kind, with each
+  kind's count and load time in the tooltip.
 - **Thumbnails (R5).** While the editor records, it captures the Scene twice
   a second through capture channel `editor_scene` (the editor's Scene image
   after its grid, outlines and gizmos, before the UI, so the REC chip and

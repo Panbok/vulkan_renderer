@@ -33,6 +33,8 @@
 #define VKR_RECORDING_STREAM_METRICS 4u
 /* Metrics a recording can carry; the bitmask has one bit each. */
 #define VKR_RECORDING_METRIC_MAX 48u
+/* Renderer event metrics a recording turns into engine events. */
+#define VKR_RECORDING_EVENT_METRIC_MAX 8u
 /* Process memory joins the metrics as this field, sampled every 100 ms. */
 #define VKR_RECORDING_RESIDENT_FIELD "process.resident_bytes"
 /* Tier 1 render pass rows (vkr_recording_format.h): the name of each pass
@@ -243,6 +245,12 @@ typedef struct VkrRecording {
   VkrMetricId metric_ids[VKR_RECORDING_METRIC_MAX];
   float64_t metric_scale[VKR_RECORDING_METRIC_MAX];
   VkrMetricKind metric_kind[VKR_RECORDING_METRIC_MAX];
+  /* Renderer event metrics found at start, written as engine events on
+     the frames whose publication counted them: their ids and the index of
+     their event name. */
+  uint32_t event_metric_count;
+  VkrMetricId event_metric_ids[VKR_RECORDING_EVENT_METRIC_MAX];
+  uint8_t event_metric_names[VKR_RECORDING_EVENT_METRIC_MAX];
   float64_t resident_sampled_at;
   uint64_t resident_bytes;
   bool8_t resident_valid;
@@ -387,6 +395,12 @@ void vkr_recording_tag(VkrRecording *recording, String8 key, String8 value);
     of payload. */
 void vkr_recording_event(VkrRecording *recording, String8 name,
                          const void *payload, uint32_t size);
+
+/** Writes engine event `name` (VKR_RECORDING_EVENT_*): `count` of them in
+    the frame being updated, taking `ms` milliseconds, zero when not
+    measured. */
+void vkr_recording_engine_event(VkrRecording *recording, const char *name,
+                                uint32_t count, float32_t ms);
 
 /** Adds a marker at the current frame. Returns false_v when it was lost. */
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

@@ -105,6 +105,9 @@ vkr_internal bool8_t vkr_recording_count(VkrRecordingLoad *load,
   } else if (record->stream == VKR_RECORDING_STREAM_MARKER &&
              record->size >= 4u) {
     ++playback->marker_count;
+  } else if (record->stream == VKR_RECORDING_STREAM_EVENT &&
+             record->size >= 2u) {
+    ++playback->event_count;
   } else if (record->stream == VKR_RECORDING_STREAM_POSE &&
              record->size % sizeof(VkrRecordingPose) == 0u) {
     playback->pose_sample_count += record->size / sizeof(VkrRecordingPose);
@@ -173,6 +176,37 @@ vkr_internal void vkr_recording_fill_spawn(VkrRecordingPlayback *playback,
   playback->spawn_text_bytes += mesh_length + animation_length + 2u;
 }
 
+/* An event record, its name added to the names when new. */
+vkr_internal void vkr_recording_fill_event(VkrRecordingPlayback *playback,
+                                           const VkrRecordingRecord *record) {
+  VkrRecordingEventView view;
+  if (!vkr_recording_event_parse(record->data, record->size, &view)) {
+    return;
+  }
+  const uint32_t length = Min(view.name_length, VKR_RECORDING_TEXT_MAX);
+  uint32_t name = 0u;
+  while (name < playback->event_name_count &&
+         !(string_length(playback->event_names[name]) == length &&
+           MemCompare(playback->event_names[name], view.name, length) == 0)) {
+    ++name;
+  }
+  if (name == playback->event_name_count) {
+    if (name == VKR_RECORDING_PLAYBACK_EVENT_NAMES) {
+      return;
+    }
+    MemCopy(playback->event_names[name], view.name, length);
+    playback->event_names[name][length] = '\0';
+    ++playback->event_name_count;
+  }
+  playback->events[playback->event_count++] = (VkrRecordingPlaybackEvent){
+      .frame = record->frame,
+      .name = name,
+      .count = view.count,
+      .ms = view.ms,
+      .engine = view.engine,
+  };
+}
+
 vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
                                         const VkrRecordingRecord *record) {
   VkrRecordingPlayback *playback = load->playback;
@@ -198,6 +232,8 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
     const uint32_t length =
         Min(record->size - 4u, (uint32_t)VKR_RECORDING_LABEL_MAX);
     MemCopy(marker->label, record->data + 4u, length);
+  } else if (record->stream == VKR_RECORDING_STREAM_EVENT) {
+    vkr_recording_fill_event(playback, record);
   } else if (record->stream == VKR_RECORDING_STREAM_PLAYER &&
              record->size == sizeof(VkrRecordingPlayer)) {
     /* Ticks arrive in order, so the frame keeps its last one. */
@@ -320,6 +356,20 @@ vkr_recording_playback_group_poses(VkrRecordingLoad *load) {
   return true_v;
 }
 
+/* By frame, then name, then count: a total order. */
+vkr_internal int32_t vkr_recording_compare_events(const void *lhs,
+                                                  const void *rhs) {
+  const VkrRecordingPlaybackEvent *a = lhs;
+  const VkrRecordingPlaybackEvent *b = rhs;
+  if (a->frame != b->frame) {
+    return a->frame < b->frame ? -1 : 1;
+  }
+  if (a->name != b->name) {
+    return a->name < b->name ? -1 : 1;
+  }
+  return a->count < b->count ? -1 : (a->count > b->count ? 1 : 0);
+}
+
 /* Repeats the last whole frame over lost ones and builds the clock. */
 vkr_internal void vkr_recording_playback_finish(VkrRecordingLoad *load) {
   VkrRecordingPlayback *playback = load->playback;
@@ -341,6 +391,10 @@ vkr_internal void vkr_recording_playback_finish(VkrRecordingLoad *load) {
     marker->time =
         playback->times[Min(marker->frame, playback->frame_count - 1u)];
   }
+  /* The renderer's events arrive with their publication, after events of
+     later frames. */
+  vkr_sort(playback->events, playback->event_count, sizeof(*playback->events),
+           vkr_recording_compare_events);
 }
 
 vkr_internal bool8_t
@@ -359,13 +413,18 @@ vkr_recording_playback_allocate(VkrRecordingPlayback *playback) {
       &playback->allocator,
       sizeof(VkrRecordingMarker) * ((uint64_t)playback->marker_count + 1u),
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->events =
+      vkr_allocator_alloc(&playback->allocator,
+                          sizeof(VkrRecordingPlaybackEvent) *
+                              ((uint64_t)playback->event_count + 1u),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   playback->player_positions =
       vkr_allocator_alloc(&playback->allocator, sizeof(float64_t) * frames * 3u,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   playback->player_valid = vkr_allocator_alloc(&playback->allocator, frames,
                                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!playback->frames || !playback->cameras || !playback->times ||
-      !playback->markers || !playback->player_positions ||
+      !playback->markers || !playback->events || !playback->player_positions ||
       !playback->player_valid) {
     return false_v;
   }
@@ -432,6 +491,8 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   }
   playback->spawn_text_bytes = 0u;
   playback->marker_count = 0u;
+  playback->event_count = 0u;
+  playback->event_name_count = 0u;
   playback->pose_sample_count = 0u;
   playback->edit_count = 0u;
   if (!vkr_recording_load_records(load, vkr_recording_fill) ||

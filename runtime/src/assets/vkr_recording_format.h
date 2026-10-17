@@ -87,6 +87,46 @@ typedef enum VkrRecordingMarkerKind {
 const char *vkr_recording_marker_kind_name(uint32_t kind);
 
 /*
+ * Engine events (stream "event" of runtime recordings, beside the events
+ * scripts write with vkr_rec_event): a record named with the "vkr." prefix,
+ * which scripts must not use, whose payload is a VkrRecordingEngineEvent.
+ * The renderer's events come from the frame's published metrics: asset
+ * loads with their time, and draws skipped while their pipeline compiles
+ * (pipelines.late) with none.
+ */
+#define VKR_RECORDING_ENGINE_EVENT_PREFIX "vkr."
+#define VKR_RECORDING_EVENT_PIPELINE_LATE "vkr.pipeline_late"
+#define VKR_RECORDING_EVENT_TEXTURE "vkr.texture"
+#define VKR_RECORDING_EVENT_MESH "vkr.mesh"
+#define VKR_RECORDING_EVENT_MATERIAL "vkr.material"
+#define VKR_RECORDING_EVENT_SCENE "vkr.scene"
+#define VKR_RECORDING_EVENT_CELL_LOAD "vkr.cell_load"
+#define VKR_RECORDING_EVENT_CELL_UNLOAD "vkr.cell_unload"
+#define VKR_RECORDING_EVENT_SCRIPT_RELOAD "vkr.script_reload"
+
+/* How many happened in the frame and the milliseconds they took, zero when
+   not measured. */
+typedef struct VkrRecordingEngineEvent {
+  uint32_t count;
+  float32_t ms;
+} VkrRecordingEngineEvent;
+
+/* An event record read in place: its name, borrowed from the record, and
+   for an engine event its count and milliseconds; a script's event counts
+   one and has no time. */
+typedef struct VkrRecordingEventView {
+  const uint8_t *name;
+  uint32_t name_length;
+  bool8_t engine;
+  uint32_t count;
+  float32_t ms;
+} VkrRecordingEventView;
+
+/** Reads an event record's payload; false for a malformed one. */
+bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
+                                  VkrRecordingEventView *out);
+
+/*
  * Render pass rows (streams "pass_name" and "passes" of runtime recordings
  * with Tier 1 metrics). A pass_name record is a u32 pass id then the UTF-8
  * name; it comes before the first passes record that uses the id. A passes

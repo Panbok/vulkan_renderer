@@ -19,6 +19,9 @@
 /* A ruler label wants at least this much room. */
 #define EDITOR_TIMELINE_TICK_PT 90.0f
 #define EDITOR_TIMELINE_MARK_PT 9.0f
+/* The engine-event lane's height and its ticks' width. */
+#define EDITOR_TIMELINE_ENGINE_PT 7.0f
+#define EDITOR_TIMELINE_TICK_WIDTH_PT 4.0f
 /* The hover preview's image width. */
 #define EDITOR_TIMELINE_PREVIEW_PT 192.0f
 
@@ -486,19 +489,19 @@ editor_timeline_x(const VkrEditorRecordingTimeline *timeline,
          (float32_t)editor_timeline_span(timeline);
 }
 
-/* A mark in the event lane at `frame`: a dot, a note's square or a range's
-   span; a click seeks to its frame. */
+/* A mark of `size_pt` in lane `row` at `x`: a dot, a note's square, a
+   range's span or a column's engine events; a click seeks to `seek_frame`.
+   */
 vkr_internal void editor_timeline_mark(VkrEditorUi *editor, VkrUiSystem *ui,
                                        const char *id, uint64_t index,
-                                       float32_t x, float32_t width, Vec4 color,
-                                       float32_t radius, uint64_t seek_frame,
-                                       String8 tooltip) {
+                                       uint32_t row, Vec2 size_pt, float32_t x,
+                                       Vec4 color, float32_t radius,
+                                       uint64_t seek_frame, String8 tooltip) {
   VkrUiWidgetConfig mark = vkr_ui_widget_config_default();
-  mark.placement = editor_timeline_cell(0u, 2u);
+  mark.placement = editor_timeline_cell(0u, row);
   mark.placement.justify = VKR_UI_ALIGN_START;
   mark.placement.margin_pt.left = x;
-  mark.style.min_size_pt = mark.style.max_size_pt =
-      (Vec2){width, EDITOR_TIMELINE_MARK_PT};
+  mark.style.min_size_pt = mark.style.max_size_pt = size_pt;
   mark.style.background_color = color;
   mark.style.hover_background_color = vkr_ui_theme()->text;
   mark.style.corner_radius_pt = (Vec4){radius, radius, radius, radius};
@@ -519,7 +522,7 @@ vkr_internal void editor_timeline_mark(VkrEditorUi *editor, VkrUiSystem *ui,
 vkr_internal void editor_timeline_events(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrRecordingPlayback *playback,
-                                         float32_t width) {
+                                         float32_t width, uint32_t row) {
   const VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -538,8 +541,9 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
     const float32_t x1 = editor_timeline_x(
         timeline, width, Min(range->last, timeline->view_last));
     editor_timeline_mark(
-        editor, ui, "range", i, x0, Max(x1 - x0, EDITOR_TIMELINE_MARK_PT),
-        vkr_ui_color_alpha(theme->text, 0.3f), 3.0f, range->first,
+        editor, ui, "range", i, row,
+        (Vec2){Max(x1 - x0, EDITOR_TIMELINE_MARK_PT), EDITOR_TIMELINE_MARK_PT},
+        x0, vkr_ui_color_alpha(theme->text, 0.3f), 3.0f, range->first,
         string8_create_formatted(ui->frame_allocator, "%s: frames %llu to %llu",
                                  range->name, (unsigned long long)range->first,
                                  (unsigned long long)range->last));
@@ -551,9 +555,9 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
       continue;
     }
     editor_timeline_mark(
-        editor, ui, "marker", i,
+        editor, ui, "marker", i, row,
+        (Vec2){EDITOR_TIMELINE_MARK_PT, EDITOR_TIMELINE_MARK_PT},
         editor_timeline_x(timeline, width, marker->frame) - half,
-        EDITOR_TIMELINE_MARK_PT,
         vkr_editor_recording_marker_color(marker->kind), half, marker->frame,
         string8_create_formatted(ui->frame_allocator, "%s at frame %llu%s%s",
                                  vkr_recording_marker_kind_name(marker->kind),
@@ -567,11 +571,134 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
       continue;
     }
     editor_timeline_mark(
-        editor, ui, "note", i,
-        editor_timeline_x(timeline, width, note->frame) - half,
-        EDITOR_TIMELINE_MARK_PT, theme->text, 2.0f, note->frame,
+        editor, ui, "note", i, row,
+        (Vec2){EDITOR_TIMELINE_MARK_PT, EDITOR_TIMELINE_MARK_PT},
+        editor_timeline_x(timeline, width, note->frame) - half, theme->text,
+        2.0f, note->frame,
         string8_create_formatted(ui->frame_allocator, "Note at frame %llu:\n%s",
                                  (unsigned long long)note->frame, note->text));
+  }
+}
+
+/* Engine events the lane names and colours by kind: draws waiting for
+   their pipelines, asset loads, world cells and script reloads. A script's own
+   event keeps its name. */
+typedef struct EditorTimelineEventKind {
+  const char *name;
+  const char *label;
+  Vec4 color;
+} EditorTimelineEventKind;
+
+vkr_internal EditorTimelineEventKind
+editor_timeline_event_kind(const char *name) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const Vec4 violet = {0.66f, 0.55f, 0.98f, 1.0f};
+  const Vec4 teal = {0.30f, 0.78f, 0.80f, 1.0f};
+  const EditorTimelineEventKind kinds[] = {
+      {VKR_RECORDING_EVENT_PIPELINE_LATE, "Draws waiting for pipelines",
+       violet},
+      {VKR_RECORDING_EVENT_TEXTURE, "Texture loads", theme->accent},
+      {VKR_RECORDING_EVENT_MESH, "Mesh loads", theme->accent},
+      {VKR_RECORDING_EVENT_MATERIAL, "Material loads", theme->accent},
+      {VKR_RECORDING_EVENT_SCENE, "Scene loads", theme->accent},
+      {VKR_RECORDING_EVENT_CELL_LOAD, "Cell loads", teal},
+      {VKR_RECORDING_EVENT_CELL_UNLOAD, "Cell unloads", teal},
+      {VKR_RECORDING_EVENT_SCRIPT_RELOAD, "Script reloads", theme->warning},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(kinds); ++i) {
+    if (string_equals(name, kinds[i].name)) {
+      return kinds[i];
+    }
+  }
+  return (EditorTimelineEventKind){name, name, theme->text_secondary};
+}
+
+/* The first event at or after `frame`. */
+vkr_internal uint32_t editor_timeline_first_event(
+    const VkrRecordingPlayback *playback, uint64_t frame) {
+  uint32_t low = 0u;
+  uint32_t high = playback->event_count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    if (playback->events[middle].frame < frame) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/* One tick per column holding events, coloured by its costliest kind, with
+   every kind's count and time in its tooltip; a click seeks to its first
+   event. */
+vkr_internal void editor_timeline_engine(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrRecordingPlayback *playback,
+                                         float32_t width, uint32_t row) {
+  const VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
+  VkrUiSystem *ui = frame->ui;
+  uint32_t i = editor_timeline_first_event(playback, timeline->view_first);
+  while (i < playback->event_count &&
+         playback->events[i].frame <= timeline->view_last) {
+    const uint32_t column =
+        editor_timeline_column_of(timeline, playback->events[i].frame);
+    uint32_t counts[VKR_RECORDING_PLAYBACK_EVENT_NAMES] = {0};
+    float32_t ms[VKR_RECORDING_PLAYBACK_EVENT_NAMES] = {0};
+    const uint64_t first = playback->events[i].frame;
+    uint64_t last = first;
+    for (; i < playback->event_count &&
+           playback->events[i].frame <= timeline->view_last &&
+           editor_timeline_column_of(timeline, playback->events[i].frame) ==
+               column;
+         ++i) {
+      const VkrRecordingPlaybackEvent *event = &playback->events[i];
+      counts[event->name] += event->count;
+      ms[event->name] += event->ms;
+      last = event->frame;
+    }
+    char tooltip[512];
+    int32_t length = 0;
+    uint32_t heaviest = UINT32_MAX;
+    for (uint32_t name = 0u; name < playback->event_name_count; ++name) {
+      if (counts[name] == 0u) {
+        continue;
+      }
+      if (heaviest == UINT32_MAX || ms[name] > ms[heaviest] ||
+          (ms[name] == ms[heaviest] && counts[name] > counts[heaviest])) {
+        heaviest = name;
+      }
+      const EditorTimelineEventKind kind =
+          editor_timeline_event_kind(playback->event_names[name]);
+      if (length >= 0 && length < (int32_t)sizeof(tooltip)) {
+        length += ms[name] > 0.0f
+                      ? string_format(tooltip + length,
+                                      sizeof(tooltip) - (uint64_t)length,
+                                      "%s: %u  \xc2\xb7  %.1f ms\n", kind.label,
+                                      counts[name], ms[name])
+                      : string_format(tooltip + length,
+                                      sizeof(tooltip) - (uint64_t)length,
+                                      "%s: %u\n", kind.label, counts[name]);
+      }
+    }
+    if (heaviest == UINT32_MAX) {
+      continue;
+    }
+    String8 text =
+        first == last
+            ? string8_create_formatted(ui->frame_allocator, "%sFrame %llu",
+                                       tooltip, (unsigned long long)first)
+            : string8_create_formatted(
+                  ui->frame_allocator, "%sFrames %llu to %llu", tooltip,
+                  (unsigned long long)first, (unsigned long long)last);
+    const float32_t x =
+        editor_timeline_x(timeline, width, (first + last) / 2u) -
+        EDITOR_TIMELINE_TICK_WIDTH_PT * 0.5f;
+    editor_timeline_mark(
+        editor, ui, "engine", column, row,
+        (Vec2){EDITOR_TIMELINE_TICK_WIDTH_PT, EDITOR_TIMELINE_ENGINE_PT}, x,
+        editor_timeline_event_kind(playback->event_names[heaviest]).color, 1.0f,
+        first, text);
   }
 }
 
@@ -579,7 +706,7 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
 vkr_internal void editor_timeline_ruler(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame,
                                         const VkrRecordingPlayback *playback,
-                                        float32_t width) {
+                                        float32_t width, uint32_t row) {
   const VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -603,7 +730,7 @@ vkr_internal void editor_timeline_ruler(VkrEditorUi *editor,
     const uint64_t at = vkr_recording_playback_frame_at(playback, t);
     VkrUiWidgetConfig label =
         vkr_editor_text_config(theme->font_caption, theme->text_secondary);
-    label.placement = editor_timeline_cell(0u, 3u);
+    label.placement = editor_timeline_cell(0u, row);
     label.placement.justify = VKR_UI_ALIGN_START;
     label.placement.margin_pt.left = editor_timeline_x(timeline, width, at);
     label.icon = VKR_UI_ICON_DOT;
@@ -732,12 +859,21 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   }
   editor_timeline_columns(timeline, playback);
 
+  /* The engine-event lane shows only for a recording with events. */
+  const bool8_t engine_lane = playback->event_count > 0u;
+  const uint32_t marks_row = engine_lane ? 3u : 2u;
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack mark_track = {.value = EDITOR_TIMELINE_MARK_PT + 2.0f,
+                                 .unit = VKR_UI_TRACK_PX};
+  const VkrUiTrack ruler_track = {.value = 14.0f, .unit = VKR_UI_TRACK_PX};
   const VkrUiTrack rows[] = {
       {.value = 24.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-      {.value = EDITOR_TIMELINE_MARK_PT + 2.0f, .unit = VKR_UI_TRACK_PX},
-      {.value = 14.0f, .unit = VKR_UI_TRACK_PX}};
+      engine_lane ? (VkrUiTrack){.value = EDITOR_TIMELINE_ENGINE_PT,
+                                 .unit = VKR_UI_TRACK_PX}
+                  : mark_track,
+      engine_lane ? mark_track : ruler_track,
+      ruler_track};
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
   panel.placement = VKR_UI_PLACEMENT_DEFAULT;
   panel.placement.column = panel.placement.row = 0u;
@@ -753,7 +889,7 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   panel.columns = &column;
   panel.column_count = 1u;
   panel.rows = rows;
-  panel.row_count = ArrayCount(rows);
+  panel.row_count = ArrayCount(rows) - (engine_lane ? 0u : 1u);
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.timeline"),
                           &panel)) {
     return;
@@ -765,8 +901,11 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   VkrUiRect lane = {0};
   if (vkr_ui_widget_rect(ui, timeline->plot_id, &lane)) {
     const float32_t width = lane.width / ui->content_scale;
-    editor_timeline_events(editor, frame, playback, width);
-    editor_timeline_ruler(editor, frame, playback, width);
+    if (engine_lane) {
+      editor_timeline_engine(editor, frame, playback, width, 2u);
+    }
+    editor_timeline_events(editor, frame, playback, width, marks_row);
+    editor_timeline_ruler(editor, frame, playback, width, marks_row + 1u);
   }
   (void)vkr_ui_panel_end(ui);
   editor_timeline_preview(editor, frame, playback, bar_pt, lane);

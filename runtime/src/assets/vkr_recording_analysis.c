@@ -40,6 +40,7 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *frame;
   const VkrRecordingStream *camera;
   const VkrRecordingStream *marker;
+  const VkrRecordingStream *event;
   const VkrRecordingStream *metrics;
   const VkrRecordingStream *pass_name;
   const VkrRecordingStream *passes;
@@ -57,6 +58,7 @@ typedef struct VkrRecordingDataLoad {
   /* First pass counts; the second fills up to them. */
   uint64_t frame_count;
   uint32_t marker_capacity;
+  uint32_t event_capacity;
   uint32_t pass_capacity;
   uint64_t pass_rows;
   bool8_t too_large;
@@ -176,6 +178,7 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->frame = vkr_recording_find_stream(dictionary, "frame");
   load->camera = vkr_recording_find_stream(dictionary, "camera");
   load->marker = vkr_recording_find_stream(dictionary, "marker");
+  load->event = vkr_recording_find_stream(dictionary, "event");
   load->metrics = vkr_recording_find_stream(dictionary, "metrics");
   load->pass_name = vkr_recording_find_stream(dictionary, "pass_name");
   load->passes = vkr_recording_find_stream(dictionary, "passes");
@@ -275,6 +278,13 @@ vkr_internal void vkr_recording_data_count(VkrRecordingDataLoad *load,
     }
     return;
   }
+  if (vkr_recording_is_stream(load->event, record)) {
+    if (record->size >= 2u &&
+        load->event_capacity < VKR_RECORDING_DATA_EVENT_MAX) {
+      ++load->event_capacity;
+    }
+    return;
+  }
   if (vkr_recording_is_stream(load->pass_name, record)) {
     const uint32_t id = vkr_recording_pass_name_id(record);
     if (id != UINT32_MAX) {
@@ -368,6 +378,54 @@ vkr_recording_data_fill_passes(VkrRecordingDataLoad *load,
                                             VKR_RECORDING_PASSES_GPU_TIMED);
 }
 
+/* The index of event name `name` (`length` bytes), added when new;
+   UINT32_MAX when the table is full. */
+vkr_internal uint32_t vkr_recording_data_event_name(VkrRecordingData *data,
+                                                    const uint8_t *name,
+                                                    uint32_t length) {
+  length = Min(length, (uint32_t)VKR_RECORDING_NAME_MAX);
+  for (uint32_t i = 0u; i < data->event_name_count; ++i) {
+    const char *known = data->event_names[i].name;
+    if (string_length(known) == length &&
+        MemCompare(known, name, length) == 0) {
+      return i;
+    }
+  }
+  if (data->event_name_count == VKR_RECORDING_DATA_EVENT_NAME_MAX) {
+    return UINT32_MAX;
+  }
+  VkrRecordingDataEventName *entry = &data->event_names[data->event_name_count];
+  MemCopy(entry->name, name, length);
+  entry->name[length] = '\0';
+  return data->event_name_count++;
+}
+
+/* An event record, named in the data's name table. */
+vkr_internal void
+vkr_recording_data_fill_event(VkrRecordingDataLoad *load,
+                              const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  VkrRecordingEventView view;
+  if (!vkr_recording_event_parse(record->data, record->size, &view)) {
+    return;
+  }
+  const uint32_t name_index =
+      data->event_count < load->event_capacity
+          ? vkr_recording_data_event_name(data, view.name, view.name_length)
+          : UINT32_MAX;
+  if (name_index == UINT32_MAX) {
+    ++data->events_dropped;
+    return;
+  }
+  data->events[data->event_count++] = (VkrRecordingDataEvent){
+      .frame = record->frame,
+      .name = name_index,
+      .count = view.count,
+      .ms = view.ms,
+      .engine = view.engine,
+  };
+}
+
 vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
                                           const VkrRecordingRecord *record) {
   VkrRecordingData *data = load->data;
@@ -382,6 +440,10 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
   }
   if (vkr_recording_is_stream(load->passes, record)) {
     vkr_recording_data_fill_passes(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->event, record)) {
+    vkr_recording_data_fill_event(load, record);
     return;
   }
   if (vkr_recording_is_stream(load->marker, record)) {
@@ -449,12 +511,17 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
       vkr_align_up_u64(sizeof(VkrRecordingSeries) * series, 8u);
   const uint64_t marker_bytes = vkr_align_up_u64(
       sizeof(VkrRecordingDataMarker) * (uint64_t)load->marker_capacity, 8u);
+  const uint64_t event_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingDataEvent) * (uint64_t)load->event_capacity +
+          sizeof(VkrRecordingDataEventName) *
+              (uint64_t)VKR_RECORDING_DATA_EVENT_NAME_MAX,
+      8u);
   const uint64_t f64_bytes = sizeof(float64_t) * frames * (8u + series);
   const uint64_t f32_bytes =
       vkr_align_up_u64(sizeof(float32_t) * frames * 2u, 8u);
   const uint64_t flag_bytes = frames * (3u + series);
-  const uint64_t block_bytes =
-      series_bytes + marker_bytes + f64_bytes + f32_bytes + flag_bytes;
+  const uint64_t block_bytes = series_bytes + marker_bytes + event_bytes +
+                               f64_bytes + f32_bytes + flag_bytes;
   uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!block) {
@@ -471,6 +538,10 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   cursor += series_bytes;
   data->markers = (VkrRecordingDataMarker *)cursor;
   cursor += marker_bytes;
+  data->event_names = (VkrRecordingDataEventName *)cursor;
+  data->events = (VkrRecordingDataEvent *)(data->event_names +
+                                           VKR_RECORDING_DATA_EVENT_NAME_MAX);
+  cursor += event_bytes;
   float64_t *f64 = (float64_t *)cursor;
   data->times = f64;
   data->display_dt = f64 + frames;
@@ -531,6 +602,24 @@ vkr_recording_data_allocate_passes(VkrRecordingDataLoad *load) {
   return true_v;
 }
 
+/* By frame, then by name, then by count: a total order, so equal inputs
+   sort alike. */
+vkr_internal int32_t vkr_recording_compare_events(const void *lhs,
+                                                  const void *rhs) {
+  const VkrRecordingDataEvent *a = lhs;
+  const VkrRecordingDataEvent *b = rhs;
+  if (a->frame != b->frame) {
+    return a->frame < b->frame ? -1 : 1;
+  }
+  if (a->name != b->name) {
+    return a->name < b->name ? -1 : 1;
+  }
+  if (a->count != b->count) {
+    return a->count < b->count ? -1 : 1;
+  }
+  return a->ms < b->ms ? -1 : (a->ms > b->ms ? 1 : 0);
+}
+
 /* Repeats the last frame and pose over lost ones, builds the clock and picks
    the frame-time series. */
 vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
@@ -552,6 +641,10 @@ vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
     VkrRecordingDataMarker *marker = &data->markers[i];
     marker->time = data->times[Min(marker->frame, data->frame_count - 1u)];
   }
+  /* The renderer's events arrive with their publication, a frame or two
+     after events of later frames. */
+  vkr_sort(data->events, data->event_count, sizeof(*data->events),
+           vkr_recording_compare_events);
   for (uint64_t i = 0u; data->pass_block && i < data->frame_count; ++i) {
     if (data->pass_row_counts[i] == 0u) {
       continue;
@@ -1097,6 +1190,13 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
     valid[i] = vkr_recording_data_frame_ms(data, i, &frame_ms[i]) ? 1u : 0u;
   }
   vkr_recording_frame_stats(out, frame_ms, valid, count, samples);
+  for (uint32_t i = 0u; i < data->event_count; ++i) {
+    const VkrRecordingDataEvent *event = &data->events[i];
+    VkrRecordingEventTotal *total = &out->event_totals[event->name];
+    ++total->records;
+    total->count += event->count;
+    total->ms += event->ms;
+  }
 
   for (uint32_t s = 0u; s < data->series_count; ++s) {
     const VkrRecordingSeries *series = &data->series[s];
@@ -1319,6 +1419,43 @@ vkr_internal void vkr_recording_write_spike_markers(
   vkr_json_writer_end_array(json);
 }
 
+/* An event as [name, frame, count, ms], ms null when not measured. */
+vkr_internal void
+vkr_recording_write_event(VkrJsonWriter *json, const VkrRecordingData *data,
+                          const VkrRecordingDataEvent *event) {
+  vkr_json_writer_begin_array(json);
+  vkr_recording_json_text(json, data->event_names[event->name].name);
+  vkr_json_writer_u64(json, event->frame);
+  vkr_json_writer_u64(json, event->count);
+  vkr_recording_json_optional(json, event->engine, (float64_t)event->ms);
+  vkr_json_writer_end_array(json);
+}
+
+/* Engine events within the marker reach of `frame`, then script events,
+   each in frame order, at most VKR_RECORDING_ANALYSIS_SPIKE_EVENT_MAX. */
+vkr_internal void vkr_recording_write_spike_events(VkrJsonWriter *json,
+                                                   const VkrRecordingData *data,
+                                                   uint64_t frame) {
+  const uint64_t reach = VKR_RECORDING_ANALYSIS_MARKER_FRAMES;
+  uint32_t written = 0u;
+  vkr_recording_json_key(json, "events");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t pass = 0u; pass < 2u; ++pass) {
+    for (uint32_t i = 0u; i < data->event_count &&
+                          written < VKR_RECORDING_ANALYSIS_SPIKE_EVENT_MAX;
+         ++i) {
+      const VkrRecordingDataEvent *event = &data->events[i];
+      if (event->engine != (pass == 0u) || event->frame + reach < frame ||
+          event->frame > frame + reach) {
+        continue;
+      }
+      vkr_recording_write_event(json, data, event);
+      ++written;
+    }
+  }
+  vkr_json_writer_end_array(json);
+}
+
 vkr_internal void
 vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
                           const VkrRecordingAnalysis *analysis, uint32_t rank) {
@@ -1394,6 +1531,7 @@ vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
   }
 
   vkr_recording_write_spike_markers(json, data, frame);
+  vkr_recording_write_spike_events(json, data, frame);
 
   /* Aligned with the analysis "bytes_series" names. */
   vkr_recording_json_key(json, "bytes");
@@ -1496,6 +1634,24 @@ vkr_recording_write_analysis(VkrJsonWriter *json, const VkrRecordingData *data,
     }
   }
   vkr_json_writer_end_array(json);
+
+  /* [name, records, count, ms] per event name; ms null for script events. */
+  vkr_recording_json_key(json, "events");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < data->event_name_count; ++i) {
+    const VkrRecordingEventTotal *total = &analysis->event_totals[i];
+    const bool8_t engine = string_n_equals(
+        data->event_names[i].name, VKR_RECORDING_ENGINE_EVENT_PREFIX,
+        string_length(VKR_RECORDING_ENGINE_EVENT_PREFIX));
+    vkr_json_writer_begin_array(json);
+    vkr_recording_json_text(json, data->event_names[i].name);
+    vkr_json_writer_u64(json, total->records);
+    vkr_json_writer_u64(json, total->count);
+    vkr_recording_json_optional(json, engine, total->ms);
+    vkr_json_writer_end_array(json);
+  }
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_named_u64(json, "events_dropped", data->events_dropped);
 
   vkr_recording_json_named_u64(json, "spikes_found", analysis->spikes_found);
   vkr_recording_json_key(json, "spikes");
@@ -1848,6 +2004,27 @@ bool8_t vkr_recording_frames_write_json(VkrJsonWriter *json,
   vkr_recording_json_named_u64(json, "rows_total", rows_total);
   vkr_recording_json_key(json, "truncated");
   vkr_json_writer_bool(json, rows < rows_total);
+
+  /* The events of the written rows, as the analysis writes them. */
+  const uint64_t end = first + rows;
+  uint32_t events = 0u;
+  uint64_t events_total = 0u;
+  vkr_recording_json_key(json, "events");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < data->event_count; ++i) {
+    const VkrRecordingDataEvent *event = &data->events[i];
+    if (event->frame < first || event->frame >= end) {
+      continue;
+    }
+    ++events_total;
+    if (events < VKR_RECORDING_FRAMES_EVENT_MAX) {
+      vkr_recording_write_event(json, data, event);
+      ++events;
+    }
+  }
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_key(json, "events_truncated");
+  vkr_json_writer_bool(json, events < events_total);
   vkr_json_writer_end_object(json);
   return !json->failed;
 }

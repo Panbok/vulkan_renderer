@@ -167,6 +167,7 @@ static const VkrRecordingStream ANALYSIS_TEST_STREAMS[] = {
      .record_size = sizeof(AnalysisTestMetrics),
      .field_count = ArrayCount(ANALYSIS_TEST_METRIC_FIELDS),
      .fields = ANALYSIS_TEST_METRIC_FIELDS},
+    {.id = 7u, .name = "event"},
     /* Only scenarios with pass rows declare these two. */
     {.id = 5u, .name = "pass_name"},
     {.id = 6u, .flags = VKR_RECORDING_STREAM_DROPPABLE, .name = "passes"},
@@ -189,6 +190,8 @@ typedef struct AnalysisTestScenario {
                       const char **out_labels);
   /* Pass records written while writing `frame`; NULL for none. */
   void (*passes)(AnalysisTestChunk *chunk, uint64_t frame, uint64_t frames);
+  /* Event records written while writing `frame`; NULL for none. */
+  void (*events)(AnalysisTestChunk *chunk, uint64_t frame);
   /* The camera's speed, as a multiple of the main scenario's; zero is 1. */
   float64_t camera_scale;
 } AnalysisTestScenario;
@@ -314,6 +317,9 @@ static void analysis_test_write(const char *path, VkrAllocator *allocator,
     analysis_test_put_markers(&chunk, scenario, frame);
     if (scenario->passes) {
       scenario->passes(&chunk, frame, scenario->frames);
+    }
+    if (scenario->events) {
+      scenario->events(&chunk, frame);
     }
     const bool8_t last = frame + 1u == scenario->frames;
     if ((frame + 1u) % ANALYSIS_TEST_CHUNK_FRAMES == 0u || last) {
@@ -1131,6 +1137,160 @@ static void test_recording_compare(void) {
   printf("  test_recording_compare PASSED\n");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Event scenario: the main scenario with texture loads at frame 30 written   */
+/* after a script event of frame 31, a script event at 99, a scene load at 100,
+ * a texture      */
+/* record whose payload is not an engine event's at 120, draws waiting for    */
+/* pipelines at 161, and a record whose name runs past its end.               */
+
+static void analysis_test_put_event(AnalysisTestChunk *chunk, uint64_t frame,
+                                    const char *name, const void *payload,
+                                    uint32_t payload_size, uint16_t length) {
+  uint8_t record[2u + 64u + 16u];
+  const uint32_t name_bytes = (uint32_t)strlen(name);
+  MemCopy(record, &length, sizeof(length));
+  MemCopy(record + 2u, name, name_bytes);
+  MemCopy(record + 2u + name_bytes, payload, payload_size);
+  analysis_test_put(chunk, 7u, frame, record, 2u + name_bytes + payload_size);
+}
+
+static void analysis_test_engine_event(AnalysisTestChunk *chunk, uint64_t frame,
+                                       const char *name, uint32_t count,
+                                       float32_t ms) {
+  const VkrRecordingEngineEvent event = {.count = count, .ms = ms};
+  analysis_test_put_event(chunk, frame, name, &event, sizeof(event),
+                          (uint16_t)strlen(name));
+}
+
+static void analysis_test_events(AnalysisTestChunk *chunk, uint64_t frame) {
+  const uint32_t token = 7u;
+  if (frame == 31u) {
+    analysis_test_put_event(chunk, frame, "lever", &token, sizeof(token), 5u);
+  } else if (frame == 32u) {
+    analysis_test_engine_event(chunk, 30u, VKR_RECORDING_EVENT_TEXTURE, 3u,
+                               12.5f);
+  } else if (frame == 99u) {
+    analysis_test_put_event(chunk, frame, "door_open", &token, sizeof(token),
+                            9u);
+  } else if (frame == 100u) {
+    analysis_test_engine_event(chunk, frame, VKR_RECORDING_EVENT_SCENE, 1u,
+                               40.0f);
+  } else if (frame == 120u) {
+    analysis_test_put_event(chunk, frame, VKR_RECORDING_EVENT_TEXTURE, &token,
+                            sizeof(token),
+                            (uint16_t)strlen(VKR_RECORDING_EVENT_TEXTURE));
+  } else if (frame == 140u) {
+    analysis_test_put_event(chunk, frame, "short", NULL, 0u, 40u);
+  } else if (frame == 161u) {
+    analysis_test_engine_event(chunk, frame, VKR_RECORDING_EVENT_PIPELINE_LATE,
+                               2u, 0.0f);
+  }
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_EVENTS = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
+    .metrics = analysis_test_main_metrics,
+    .markers = analysis_test_main_markers,
+    .events = analysis_test_events,
+};
+
+/* The JSON array [name, frame, count, ms] is `name` at `frame`. */
+static bool8_t analysis_test_event_is(const VkrBakeryJson *event,
+                                      const char *name, float64_t frame,
+                                      float64_t count, float64_t ms) {
+  const VkrBakeryJson *time = vkr_bakery_json_at(event, 3u);
+  return event->count == 4u &&
+         vkr_bakery_json_is_string(vkr_bakery_json_at(event, 0u), name) &&
+         vkr_bakery_json_at(event, 1u)->number == frame &&
+         vkr_bakery_json_at(event, 2u)->number == count &&
+         (ms < 0.0 ? time->type == VKR_BAKERY_JSON_NULL : time->number == ms);
+}
+
+/* Detects: engine events read with the wrong count or time, a script event
+   or a foreign payload taken for an engine event, a malformed record kept,
+   events left out of frame order, totals that miss a record, a spike that
+   lists events from outside its reach or script events before engine ones,
+   and a frame range that drops its events. */
+static void test_recording_analysis_events(void) {
+  printf("  Running test_recording_analysis_events...\n");
+  AnalysisTestMemory memory;
+  analysis_memory_create(&memory);
+  Arena *arena = arena_create(MB(16), MB(1));
+  assert(arena != NULL);
+  char path[1024];
+  VkrRecordingData data;
+  analysis_test_load("events", &ANALYSIS_TEST_EVENTS, &memory, path,
+                     sizeof(path), &data);
+  assert(data.event_count == 6u && data.event_name_count == 5u &&
+         data.events_dropped == 0u);
+  const uint64_t frames[] = {30u, 31u, 99u, 100u, 120u, 161u};
+  for (uint32_t i = 0u; i < ArrayCount(frames); ++i) {
+    assert(data.events[i].frame == frames[i]);
+  }
+  const VkrRecordingDataEvent *texture = &data.events[0];
+  assert(texture->engine && texture->count == 3u && texture->ms == 12.5f &&
+         strcmp(data.event_names[texture->name].name,
+                VKR_RECORDING_EVENT_TEXTURE) == 0);
+  assert(!data.events[2].engine && data.events[2].count == 1u &&
+         data.events[2].ms == 0.0f);
+  assert(!data.events[4].engine && data.events[4].count == 1u &&
+         data.events[4].name == texture->name);
+
+  VkrRecordingAnalysis analysis;
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  const VkrRecordingEventTotal *textures =
+      &analysis.event_totals[texture->name];
+  assert(textures->records == 2u && textures->count == 4u &&
+         textures->ms == 12.5);
+
+  VkrJsonWriter writer;
+  assert(vkr_recording_analysis_write_json(analysis_test_json_begin(&writer),
+                                           &data, &analysis, NULL));
+  assert(vkr_json_writer_complete(&writer));
+  const VkrBakeryJson *root = analysis_test_parse(arena);
+  const VkrBakeryJson *totals = analysis_test_member(root, "events");
+  assert(totals->count == 5u);
+  const VkrBakeryJson *spikes = analysis_test_member(root, "spikes");
+  assert(spikes->count == 2u);
+  /* Spike 161 sees the late pipelines; 100 the scene load, then the
+     script's event a frame before it, but not the textures 70 frames off. */
+  const VkrBakeryJson *late =
+      analysis_test_member(vkr_bakery_json_at(spikes, 0u), "events");
+  assert(late->count == 1u &&
+         analysis_test_event_is(vkr_bakery_json_at(late, 0u),
+                                VKR_RECORDING_EVENT_PIPELINE_LATE, 161.0, 2.0,
+                                0.0));
+  const VkrBakeryJson *near =
+      analysis_test_member(vkr_bakery_json_at(spikes, 1u), "events");
+  assert(near->count == 2u &&
+         analysis_test_event_is(vkr_bakery_json_at(near, 0u),
+                                VKR_RECORDING_EVENT_SCENE, 100.0, 1.0, 40.0) &&
+         analysis_test_event_is(vkr_bakery_json_at(near, 1u), "door_open", 99.0,
+                                1.0, -1.0));
+
+  const char *fields[] = {VKR_RECORDING_FRAME_MS_FIELD};
+  assert(vkr_recording_frames_write_json(analysis_test_json_begin(&writer),
+                                         &data, 25u, 35u, fields, 1u, 0u));
+  assert(vkr_json_writer_complete(&writer));
+  const VkrBakeryJson *range = analysis_test_parse(arena);
+  const VkrBakeryJson *range_events = analysis_test_member(range, "events");
+  assert(range_events->count == 2u &&
+         analysis_test_event_is(vkr_bakery_json_at(range_events, 0u),
+                                VKR_RECORDING_EVENT_TEXTURE, 30.0, 3.0, 12.5) &&
+         analysis_test_event_is(vkr_bakery_json_at(range_events, 1u), "lever",
+                                31.0, 1.0, -1.0) &&
+         !analysis_test_flag(range, "events_truncated"));
+
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  analysis_test_remove(path);
+  arena_destroy(arena);
+  analysis_memory_destroy(&memory);
+  printf("  test_recording_analysis_events PASSED\n");
+}
+
 bool32_t run_recording_analysis_tests(void) {
   printf("--- Starting Recording Analysis Tests ---\n");
   test_recording_analysis_statistics();
@@ -1138,6 +1298,7 @@ bool32_t run_recording_analysis_tests(void) {
   test_recording_analysis_json();
   test_recording_analysis_json_bound();
   test_recording_analysis_passes();
+  test_recording_analysis_events();
   test_recording_compare();
   printf("--- Recording Analysis Tests Completed ---\n");
   return true_v;

@@ -3695,6 +3695,14 @@ static void sample_script_result(VkrStandardSceneRuntime *application,
           vkr_scene_handle_get_scene(state->additive_handles[s]));
     }
   }
+  /* A reload of a module already running shows on the recording's
+     timeline; first loads belong to the session's start. */
+  if (application->recording.active &&
+      (result == VKR_SCRIPT_RELOAD_KEPT_STATE ||
+       result == VKR_SCRIPT_RELOAD_RESTARTED)) {
+    vkr_recording_engine_event(&application->recording,
+                               VKR_RECORDING_EVENT_SCRIPT_RELOAD, 1u, 0.0f);
+  }
   if (result == VKR_SCRIPT_RELOAD_FAILED) {
     log_error("Script %s was not loaded: %s", name,
               error ? error : "unknown error");
@@ -4145,21 +4153,40 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
   const float64_t start = vkr_platform_get_absolute_time();
   const float64_t budget = VKR_SAMPLE_PARTITION_BUDGET_MS / 1000.0;
   const uint64_t structure = scene->structure_revision;
+  uint32_t unloaded = 0u;
   for (uint32_t i = 0; i < plan.unload_count; ++i) {
     if (vkr_scene_edit_cell_unloadable(edits, scene, plan.unload[i])) {
       vkr_scene_edit_cell_unload(edits, scene, plan.unload[i]);
+      ++unloaded;
     }
   }
+  const float64_t loads_start = vkr_platform_get_absolute_time();
+  uint32_t loaded = 0u;
   /* One load always runs, so a slow frame still makes progress. */
   for (uint32_t i = 0; i < plan.load_count; ++i) {
     if (i && vkr_platform_get_absolute_time() - start > budget) {
       break;
     }
-    if (!vkr_scene_edit_cell_load(edits, scene, plan.load[i])) {
+    if (vkr_scene_edit_cell_load(edits, scene, plan.load[i])) {
+      ++loaded;
+    } else {
       /* An unreadable document stays unloaded, and listed, rather than
          retried each frame; the status says which. */
       string_format(state->scene_status, sizeof(state->scene_status), "%s",
                     edits->status);
+    }
+  }
+  if (application->recording.active) {
+    const float64_t end = vkr_platform_get_absolute_time();
+    if (unloaded) {
+      vkr_recording_engine_event(&application->recording,
+                                 VKR_RECORDING_EVENT_CELL_UNLOAD, unloaded,
+                                 (float32_t)((loads_start - start) * 1000.0));
+    }
+    if (loaded) {
+      vkr_recording_engine_event(&application->recording,
+                                 VKR_RECORDING_EVENT_CELL_LOAD, loaded,
+                                 (float32_t)((end - loads_start) * 1000.0));
     }
   }
   sample_partition_routed(structure != scene->structure_revision);

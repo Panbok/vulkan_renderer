@@ -58,6 +58,20 @@ typedef struct VkrRecordingSpawn {
 #define VKR_RECORDING_POSE_APPLIED_NONE UINT32_MAX
 #define VKR_RECORDING_POSE_APPLIED_STATIC (UINT32_MAX - 1u)
 
+/* Event names a playback keeps; events of later names are dropped. */
+#define VKR_RECORDING_PLAYBACK_EVENT_NAMES 32u
+
+/* A record of stream "event" (vkr_recording_format.h): an engine event or a
+   script's, by frame, its name's index in event_names. */
+typedef struct VkrRecordingPlaybackEvent {
+  uint64_t frame;
+  uint32_t name;
+  uint32_t count;
+  /* Milliseconds the events took, zero when not measured. */
+  float32_t ms;
+  bool8_t engine;
+} VkrRecordingPlaybackEvent;
+
 typedef struct VkrRecordingPlayback {
   bool8_t open;
   VkrDMemory memory;
@@ -72,6 +86,12 @@ typedef struct VkrRecordingPlayback {
   float64_t *times;
   VkrRecordingMarker *markers;
   uint32_t marker_count;
+  /* Events by frame, and their names in first-seen order. */
+  VkrRecordingPlaybackEvent *events;
+  uint32_t event_count;
+  char event_names[VKR_RECORDING_PLAYBACK_EVENT_NAMES]
+                  [VKR_RECORDING_TEXT_MAX + 1u];
+  uint32_t event_name_count;
   /* Frames that had no records and repeat the one before. */
   uint64_t missing_frames;
   /* The player of each frame's last tick (vkr_rec_player): three per frame,

@@ -198,6 +198,29 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
     "memory.gpu.driver.recommended_budget_bytes",
 };
 
+/* Renderer metrics and the engine events they become: a duration's
+   samples in the frame, with their time, or a gauge's nonzero value. */
+typedef struct VkrRecordingEventMetric {
+  const char *metric;
+  const char *event;
+  VkrMetricKind kind;
+} VkrRecordingEventMetric;
+
+static const VkrRecordingEventMetric VKR_RECORDING_EVENT_METRICS[] = {
+    {"pipelines.late", VKR_RECORDING_EVENT_PIPELINE_LATE,
+     VKR_METRIC_KIND_GAUGE},
+    {"asset.texture_load", VKR_RECORDING_EVENT_TEXTURE,
+     VKR_METRIC_KIND_DURATION},
+    {"asset.mesh_load", VKR_RECORDING_EVENT_MESH, VKR_METRIC_KIND_DURATION},
+    {"asset.material_load", VKR_RECORDING_EVENT_MATERIAL,
+     VKR_METRIC_KIND_DURATION},
+    {"asset.scene_load", VKR_RECORDING_EVENT_SCENE, VKR_METRIC_KIND_DURATION},
+};
+
+_Static_assert(ArrayCount(VKR_RECORDING_EVENT_METRICS) <=
+                   VKR_RECORDING_EVENT_METRIC_MAX,
+               "room for every event metric");
+
 /* Sampling period of the process's resident memory, in seconds. */
 #define VKR_RECORDING_RESIDENT_PERIOD 0.1
 /* Open-addressed spawn slots: twice the spawns, a power of two. */
@@ -314,6 +337,29 @@ vkr_internal uint32_t vkr_recording_metric_fields(VkrRecording *recording,
   return resident + 2u;
 }
 
+/* Finds the renderer event metrics in the registry. */
+vkr_internal void vkr_recording_event_metrics(VkrRecording *recording,
+                                              const VkrMetrics *metrics) {
+  uint32_t catalog_count = 0u;
+  const VkrMetricCatalogEntry *catalog =
+      vkr_metrics_get_catalog(metrics, &catalog_count);
+  recording->event_metric_count = 0u;
+  for (uint32_t e = 0u; e < ArrayCount(VKR_RECORDING_EVENT_METRICS); ++e) {
+    for (uint32_t i = 0u; i < catalog_count; ++i) {
+      if (catalog[i].kind != VKR_RECORDING_EVENT_METRICS[e].kind ||
+          !string_equals(catalog[i].name,
+                         VKR_RECORDING_EVENT_METRICS[e].metric)) {
+        continue;
+      }
+      const uint32_t index = recording->event_metric_count++;
+      recording->event_metric_ids[index] =
+          ((VkrMetricId)metrics->registry_generation << 16u) | i;
+      recording->event_metric_names[index] = (uint8_t)e;
+      break;
+    }
+  }
+}
+
 /* The pass name table, from the recording's memory. */
 vkr_internal bool8_t vkr_recording_passes_create(VkrRecording *recording) {
   const uint64_t name_bytes =
@@ -400,6 +446,7 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   uint32_t stream_count = base_count;
   if (config->metrics) {
     recording->metrics_enabled = true_v;
+    vkr_recording_event_metrics(recording, config->metrics);
     const uint32_t field_count =
         vkr_recording_metric_fields(recording, config->metrics, metric_fields);
     streams[stream_count++] = (VkrRecordingStream){
@@ -483,6 +530,40 @@ void vkr_recording_frame(VkrRecording *recording,
   ++recording->frame;
 }
 
+/* A u16 length and `head`, then `tail`: the layout of tags and events. */
+vkr_internal void vkr_recording_text_record(VkrRecording *recording,
+                                            uint16_t stream, uint64_t frame,
+                                            String8 head, const void *tail,
+                                            uint32_t tail_size) {
+  const uint16_t length =
+      (uint16_t)Min(head.length, (uint64_t)VKR_RECORDING_TEXT_MAX);
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           stream, frame, 2u + (uint32_t)length + tail_size);
+  if (!record) {
+    return;
+  }
+  MemCopy(record, &length, sizeof(length));
+  if (length > 0u) {
+    MemCopy(record + 2u, head.str, length);
+  }
+  if (tail_size > 0u) {
+    MemCopy(record + 2u + length, tail, tail_size);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
+vkr_internal void vkr_recording_engine_event_at(VkrRecording *recording,
+                                                uint64_t frame,
+                                                const char *name,
+                                                uint32_t count, float32_t ms) {
+  const VkrRecordingEngineEvent event = {.count = count, .ms = ms};
+  vkr_recording_text_record(
+      recording, VKR_RECORDING_STREAM_EVENT, frame,
+      string8_create_from_cstr((const uint8_t *)name, string_length(name)),
+      &event, sizeof(event));
+}
+
 /* The value a recording keeps of one published sample: a duration's sum, a
    counter's or gauge's value, in the field's unit. */
 vkr_internal bool8_t vkr_recording_metric_value(
@@ -517,6 +598,27 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
   vkr_assert(recording != NULL && recording->active);
   if (!recording->metrics_enabled) {
     return;
+  }
+  /* The renderer's events of this publication land on its frame. */
+  for (uint32_t i = 0u; published && i < recording->event_metric_count; ++i) {
+    const VkrRecordingEventMetric *metric =
+        &VKR_RECORDING_EVENT_METRICS[recording->event_metric_names[i]];
+    const VkrMetricId id = recording->event_metric_ids[i];
+    VkrMetricDurationSample sample;
+    uint64_t value = 0u;
+    if (metric->kind == VKR_METRIC_KIND_DURATION &&
+        vkr_metrics_frame_read_duration(published, id, &sample) &&
+        sample.count > 0u) {
+      vkr_recording_engine_event_at(
+          recording, frame, metric->event,
+          (uint32_t)Min(sample.count, UINT32_MAX),
+          (float32_t)((float64_t)sample.sum_ns * 1.0e-6));
+    } else if (metric->kind == VKR_METRIC_KIND_GAUGE &&
+               vkr_metrics_frame_read_u64(published, id, &value) &&
+               value > 0u) {
+      vkr_recording_engine_event_at(recording, frame, metric->event,
+                                    (uint32_t)Min(value, UINT32_MAX), 0.0f);
+    }
   }
   /* Resident memory is a system call, so it is sampled, then carried. */
   const float64_t now = vkr_platform_get_absolute_time();
@@ -861,33 +963,10 @@ void vkr_recording_action(VkrRecording *recording,
   }
 }
 
-/* A u16 length and `head`, then `tail`: the layout of tags and events. */
-vkr_internal void vkr_recording_text_record(VkrRecording *recording,
-                                            uint16_t stream, String8 head,
-                                            const void *tail,
-                                            uint32_t tail_size) {
-  const uint16_t length =
-      (uint16_t)Min(head.length, (uint64_t)VKR_RECORDING_TEXT_MAX);
-  uint8_t *record = vkr_recorder_reserve(
-      recording->recorder, VKR_RECORDER_PRODUCER_MAIN, stream, recording->frame,
-      2u + (uint32_t)length + tail_size);
-  if (!record) {
-    return;
-  }
-  MemCopy(record, &length, sizeof(length));
-  if (length > 0u) {
-    MemCopy(record + 2u, head.str, length);
-  }
-  if (tail_size > 0u) {
-    MemCopy(record + 2u + length, tail, tail_size);
-  }
-  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
-}
-
 void vkr_recording_tag(VkrRecording *recording, String8 key, String8 value) {
   vkr_assert(recording != NULL && recording->active);
   vkr_recording_text_record(
-      recording, VKR_RECORDING_STREAM_TAG, key, value.str,
+      recording, VKR_RECORDING_STREAM_TAG, recording->frame, key, value.str,
       (uint32_t)Min(value.length, (uint64_t)VKR_RECORDING_TEXT_MAX));
 }
 
@@ -895,8 +974,14 @@ void vkr_recording_event(VkrRecording *recording, String8 name,
                          const void *payload, uint32_t size) {
   vkr_assert(recording != NULL && recording->active);
   vkr_recording_text_record(
-      recording, VKR_RECORDING_STREAM_EVENT, name, payload,
+      recording, VKR_RECORDING_STREAM_EVENT, recording->frame, name, payload,
       payload ? Min(size, VKR_RECORDING_EVENT_PAYLOAD_MAX) : 0u);
+}
+
+void vkr_recording_engine_event(VkrRecording *recording, const char *name,
+                                uint32_t count, float32_t ms) {
+  vkr_assert(recording != NULL && recording->active);
+  vkr_recording_engine_event_at(recording, recording->frame, name, count, ms);
 }
 
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

@@ -3,6 +3,7 @@
 #include "containers/str.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
+#include "math/vkr_math.h"
 
 static const uint8_t VKR_RECORDING_FILE_MAGIC[8] = {'V', 'K', 'R', 'R',
                                                     'E', 'C', 'S', 'T'};
@@ -402,6 +403,34 @@ bool8_t vkr_recording_end_decode(const uint8_t *data, uint64_t size,
       .seconds = vkr_recording_load_f64(data + 64u),
       .writer_seconds = vkr_recording_load_f64(data + 72u),
   };
+  return true_v;
+}
+
+bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
+                                  VkrRecordingEventView *out) {
+  if (!data || size < 2u) {
+    return false_v;
+  }
+  const uint32_t length = (uint32_t)data[0] | ((uint32_t)data[1] << 8u);
+  if (2u + length > size) {
+    return false_v;
+  }
+  *out = (VkrRecordingEventView){
+      .name = data + 2u, .name_length = length, .count = 1u};
+  const uint32_t prefix =
+      (uint32_t)string_length(VKR_RECORDING_ENGINE_EVENT_PREFIX);
+  const uint32_t payload = size - 2u - length;
+  if (length > prefix &&
+      MemCompare(out->name, VKR_RECORDING_ENGINE_EVENT_PREFIX, prefix) == 0 &&
+      payload == sizeof(VkrRecordingEngineEvent)) {
+    const uint8_t *tail = out->name + length;
+    const uint32_t ms_bits = vkr_load_le_u32(tail + 4u);
+    float32_t ms = 0.0f;
+    MemCopy(&ms, &ms_bits, sizeof(ms));
+    out->engine = true_v;
+    out->count = vkr_load_le_u32(tail);
+    out->ms = vkr_is_finite_f32(ms) && ms >= 0.0f ? ms : 0.0f;
+  }
   return true_v;
 }
 

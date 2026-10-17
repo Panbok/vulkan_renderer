@@ -94,6 +94,30 @@ typedef struct VkrRecordingDataMarker {
   char label[VKR_RECORDING_DATA_LABEL_MAX + 1u];
 } VkrRecordingDataMarker;
 
+/* Distinct event names and events a load keeps; later ones are dropped and
+   counted in events_dropped. */
+#define VKR_RECORDING_DATA_EVENT_NAME_MAX 64u
+#define VKR_RECORDING_DATA_EVENT_MAX (1u << 16u)
+/* Events a spike lists from the frames around it, and a frame range. */
+#define VKR_RECORDING_ANALYSIS_SPIKE_EVENT_MAX 4u
+#define VKR_RECORDING_FRAMES_EVENT_MAX 200u
+
+/* A record of stream "event": an engine event (VKR_RECORDING_EVENT_*) with
+   how many it counts and the milliseconds they took, or a script's event,
+   which counts one and carries no time. */
+typedef struct VkrRecordingDataEvent {
+  uint64_t frame;
+  /* Index into VkrRecordingData.event_names. */
+  uint32_t name;
+  uint32_t count;
+  float32_t ms;
+  bool8_t engine;
+} VkrRecordingDataEvent;
+
+typedef struct VkrRecordingDataEventName {
+  char name[VKR_RECORDING_NAME_MAX + 1u];
+} VkrRecordingDataEventName;
+
 /* A render pass of a Tier 1 recording, by the id its rows carry. */
 typedef struct VkrRecordingDataPass {
   char name[VKR_RECORDING_PASS_NAME_MAX + 1u];
@@ -141,6 +165,12 @@ typedef struct VkrRecordingData {
 
   VkrRecordingDataMarker *markers;
   uint32_t marker_count;
+  /* By frame, then as recorded; names in first-seen order. */
+  VkrRecordingDataEvent *events;
+  uint32_t event_count;
+  VkrRecordingDataEventName *event_names;
+  uint32_t event_name_count;
+  uint64_t events_dropped;
   VkrRecordingSeries *series;
   uint32_t series_count;
   /* The series vkr_recording_data_frame_ms reads: "frame.wall" when it has a
@@ -286,6 +316,12 @@ typedef struct VkrRecordingSpike {
   uint32_t pass_contributor_count;
 } VkrRecordingSpike;
 
+typedef struct VkrRecordingEventTotal {
+  uint64_t records;
+  uint64_t count;
+  float64_t ms;
+} VkrRecordingEventTotal;
+
 typedef struct VkrRecordingAnalysis {
   VkrAllocator *allocator;
   void *block;
@@ -312,6 +348,9 @@ typedef struct VkrRecordingAnalysis {
      samples), then CPU total, then id, largest first. */
   VkrRecordingPassStats *passes;
   uint32_t pass_count;
+  /* Per event name, in VkrRecordingData.event_names order: records, the
+     events they count and their milliseconds. */
+  VkrRecordingEventTotal event_totals[VKR_RECORDING_DATA_EVENT_NAME_MAX];
 } VkrRecordingAnalysis;
 
 /**
