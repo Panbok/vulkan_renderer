@@ -236,7 +236,8 @@ an agent must read one without the editor.
   seconds from a marker label both carry, meters along the path (the
   players' when both have player records, else the cameras'; every
   recording declares the player stream, so a declared but empty one does
-  not count), or the frame number
+  not count; where either path stands still, frames at that distance pair
+  by the time since each stopped), or the frame number
   for re-runs; from it come the mean change per aligned frame and the 30
   aligned frames of A where B is slowest. The Performance window shows B
   beside the analyzed recording: each card's last line is B's value and the
@@ -296,7 +297,8 @@ an agent must read one without the editor.
   each tick's hashes; the first mismatch pauses the session and reports the
   recorded frame, the tick, the differing modules, bodies or transform
   buckets, and the bodies and characters in those buckets. Re-simulate
-  needs a recording that began before Play started. A recorded or
+  needs a recording that began before Play started, and replays one without
+  input too (an idle session); Drive needs actions and a player track. A recorded or
   re-simulated session starts from a rebuilt physics world, and a reset
   keeps the scene's body order: Jolt steps alike only from alike body order,
   and before, each reset reversed it and a first Play ran on the world as

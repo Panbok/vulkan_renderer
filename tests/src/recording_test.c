@@ -1480,6 +1480,66 @@ static void test_recording_gpu_submission(void) {
   printf("  test_recording_gpu_submission PASSED\n");
 }
 
+/* Detects: an idle Play session (tick hashes, no actions or player
+   track) refused for re-simulation, its drive spanning no ticks, and a
+   recording with neither input nor a session opened. */
+static void test_recording_resim_idle(void) {
+  printf("  Running test_recording_resim_idle...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("resim_idle", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {.bundle_path = path,
+                                     .codec = vkr_depot_zstd_codec()};
+  const char *names[] = {"fps"};
+  static VkrRecording recording;
+  static VkrRecordingDrive drive;
+  char error[192];
+  for (uint32_t pass = 0u; pass < 2u; ++pass) {
+    /* Pass 0 records an idle session of ticks 1 to 4; pass 1 records
+       frames only. */
+    assert(vkr_recording_start(&recording, &config));
+    for (uint64_t f = 0u; f < 4u; ++f) {
+      if (pass == 0u) {
+        if (f == 0u) {
+          vkr_recording_session(&recording, 7u);
+        }
+        const VkrRecordingSimFrame clock = {.now = (float64_t)f,
+                                            .delta = 1.0 / 60.0};
+        vkr_recording_sim_frame(&recording, &clock);
+        const VkrRecordingTickHash hash = recording_test_tick_hash(f + 1u);
+        vkr_recording_tick_hash(&recording, &hash, names);
+      }
+      const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+      const VkrRecordingCamera camera = {.fov = 60.0f};
+      vkr_recording_frame(&recording, &frame, &camera);
+    }
+    assert(vkr_recording_stop(&recording, NULL));
+    const bool8_t opened = vkr_recording_drive_open(
+        &drive, path, vkr_depot_zstd_codec(), error, sizeof(error));
+    if (pass == 0u) {
+      assert(opened && drive.action_count == 0u && drive.player_count == 0u);
+      assert(drive.first_tick == 1u && drive.last_tick == 4u);
+      vkr_recording_drive_close(&drive);
+    } else {
+      assert(!opened && strstr(error, "no actions") != NULL);
+    }
+    char file[1100];
+    string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+    recording_test_remove(file);
+    string_format(file, sizeof(file), "%s/%s", path,
+                  VKR_RECORDING_SUMMARY_FILE);
+    recording_test_remove(file);
+    const FilePath bundle = file_path_view(path);
+    assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  }
+  recording_memory_destroy(&memory);
+  printf("  test_recording_resim_idle PASSED\n");
+}
+
 /* Detects: a render-thread publication's frame-loop work (the completing
    iteration's update, and its frame build when it built before the
    completion) left on the published frame instead of the iteration's own,
@@ -1762,6 +1822,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pass_rows();
   test_recording_gpu_submission();
   test_recording_loop_metrics();
+  test_recording_resim_idle();
   test_scene_change_tracking();
   test_recording_pose_playback();
   test_recording_player_records();

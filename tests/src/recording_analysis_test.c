@@ -194,6 +194,8 @@ typedef struct AnalysisTestScenario {
   void (*events)(AnalysisTestChunk *chunk, uint64_t frame);
   /* The camera's speed, as a multiple of the main scenario's; zero is 1. */
   float64_t camera_scale;
+  /* The frame the camera stops at; zero never stops. */
+  uint64_t hold_from;
 } AnalysisTestScenario;
 
 typedef struct AnalysisTestMemory {
@@ -250,8 +252,10 @@ static void analysis_test_put_frame(AnalysisTestChunk *chunk,
       .simulation_time = (float64_t)frame * ANALYSIS_TEST_DT,
       .time_of_day = 12.0f,
   };
+  const uint64_t moving =
+      scenario->hold_from ? Min(frame, scenario->hold_from) : frame;
   const float64_t travel =
-      (float64_t)frame *
+      (float64_t)moving *
       (scenario->camera_scale > 0.0 ? scenario->camera_scale : 1.0);
   const AnalysisTestCamera camera = {
       .position = {travel * 0.5, 1.5, -travel},
@@ -1047,8 +1051,26 @@ static const AnalysisTestScenario ANALYSIS_TEST_B = {
     .camera_scale = 2.0,
 };
 
+/* A and B stop at the same point of the path, A at frame 100 and B, twice
+   as fast, at frame 50. */
+static const AnalysisTestScenario ANALYSIS_TEST_HOLD_A = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
+    .metrics = analysis_test_main_metrics,
+    .hold_from = 100u,
+};
+
+static const AnalysisTestScenario ANALYSIS_TEST_HOLD_B = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
+    .metrics = analysis_test_b_metrics,
+    .camera_scale = 2.0,
+    .hold_from = 50u,
+};
+
 /* Detects: a frame mapped to the wrong frame of B under each alignment, a
-   lost frame counted as aligned, the slowest window found off the slowed
+   hold under distance alignment mapped to one frame, a lost frame counted as
+   aligned, the slowest window found off the slowed
    frames, a statistic or pass compared with the wrong side, a pass delta
    sorted below a smaller one, and a missing marker accepted. */
 static void test_recording_compare(void) {
@@ -1112,6 +1134,35 @@ static void test_recording_compare(void) {
   assert(!compare.distance_player);
   assert(compare.b_frame[40] == 20u && compare.b_frame[100] == 50u);
   vkr_recording_compare_free(&compare);
+
+  /* Where both stand still the frames pair by time since each stopped,
+     not all on B's first held frame. */
+  char hold_a_path[1024];
+  char hold_b_path[1024];
+  VkrRecordingData hold_a;
+  VkrRecordingData hold_b;
+  analysis_test_load("compare_hold_a", &ANALYSIS_TEST_HOLD_A, &memory,
+                     hold_a_path, sizeof(hold_a_path), &hold_a);
+  analysis_test_load("compare_hold_b", &ANALYSIS_TEST_HOLD_B, &memory,
+                     hold_b_path, sizeof(hold_b_path), &hold_b);
+  VkrRecordingAnalysis hold_a_analysis;
+  VkrRecordingAnalysis hold_b_analysis;
+  assert(vkr_recording_analyze(&hold_a, NULL, &memory.allocator,
+                               &hold_a_analysis));
+  assert(vkr_recording_analyze(&hold_b, NULL, &memory.allocator,
+                               &hold_b_analysis));
+  assert(vkr_recording_compare(&hold_a, &hold_a_analysis, &hold_b,
+                               &hold_b_analysis, &options, &memory.allocator,
+                               &compare, error, sizeof(error)));
+  assert(compare.b_frame[60] == 30u && compare.b_frame[100] == 50u);
+  assert(compare.b_frame[160] == 110u && compare.b_frame[199] == 149u);
+  vkr_recording_compare_free(&compare);
+  vkr_recording_analysis_free(&hold_a_analysis);
+  vkr_recording_analysis_free(&hold_b_analysis);
+  vkr_recording_data_free(&hold_a);
+  vkr_recording_data_free(&hold_b);
+  analysis_test_remove(hold_a_path);
+  analysis_test_remove(hold_b_path);
 
   options = (VkrRecordingCompareOptions){.align = VKR_RECORDING_ALIGN_FRAME};
   assert(vkr_recording_compare(&a, &a_analysis, &b, &b_analysis, &options,

@@ -916,8 +916,8 @@ vkr_internal void editor_recording_entry_read(const char *directory,
       (int64_t)editor_recording_number(&reader, "started_unix");
   entry->drivable = editor_recording_number(&reader, "actions") > 0.0 &&
                     editor_recording_number(&reader, "player_ticks") > 0.0;
-  entry->resimulable =
-      entry->drivable && editor_recording_number(&reader, "tick_hashes") > 0.0;
+  /* A Play session with tick hashes re-simulates with or without input. */
+  entry->resimulable = editor_recording_number(&reader, "tick_hashes") > 0.0;
   /* Markers are an array of objects, each with one "kind". */
   vkr_json_reader_reset(&reader);
   if (vkr_json_find_array(&reader, "markers")) {

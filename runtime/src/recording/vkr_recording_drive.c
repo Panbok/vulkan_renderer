@@ -133,7 +133,11 @@ vkr_internal bool8_t vkr_recording_drive_load(VkrRecordingDrive *drive,
     string_format(error, error_capacity, "a records chunk is damaged");
     return false_v;
   }
-  if (drive->action_count == 0u || drive->player_count == 0u) {
+  /* A session with tick hashes re-simulates without input, such as an
+     idle one; Drive itself needs actions and a player track, which the
+     caller checks. */
+  if ((drive->action_count == 0u || drive->player_count == 0u) &&
+      (!drive->has_session || drive->hash_count == 0u)) {
     string_format(error, error_capacity,
                   "the recording has no %s to drive with",
                   drive->action_count == 0u ? "actions" : "player track");
@@ -141,14 +145,14 @@ vkr_internal bool8_t vkr_recording_drive_load(VkrRecordingDrive *drive,
   }
   const uint64_t actions = drive->action_count;
   const uint64_t players = drive->player_count;
-  drive->actions = vkr_allocator_alloc(&drive->allocator,
-                                       sizeof(VkrRecordingAction) * actions,
-                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  drive->players = vkr_allocator_alloc(&drive->allocator,
-                                       sizeof(VkrRecordingPlayer) * players,
-                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  drive->actions = vkr_allocator_alloc(
+      &drive->allocator, sizeof(VkrRecordingAction) * (actions + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  drive->players = vkr_allocator_alloc(
+      &drive->allocator, sizeof(VkrRecordingPlayer) * (players + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   drive->player_frames =
-      vkr_allocator_alloc(&drive->allocator, sizeof(uint64_t) * players,
+      vkr_allocator_alloc(&drive->allocator, sizeof(uint64_t) * (players + 1u),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!drive->actions || !drive->players || !drive->player_frames) {
     string_format(error, error_capacity, "out of memory");
@@ -183,10 +187,23 @@ vkr_internal bool8_t vkr_recording_drive_load(VkrRecordingDrive *drive,
   }
   vkr_sort(drive->actions, drive->action_count, sizeof(VkrRecordingAction),
            vkr_recording_compare_actions);
-  /* Player records arrive in tick order within a run. */
-  drive->first_tick = Min(drive->actions[0].tick, drive->players[0].tick);
-  drive->last_tick = Max(drive->actions[drive->action_count - 1u].tick,
-                         drive->players[drive->player_count - 1u].tick);
+  /* Player records arrive in tick order within a run; a session without
+     either spans its hashed ticks. */
+  drive->first_tick = UINT64_MAX;
+  drive->last_tick = 0u;
+  if (drive->action_count > 0u) {
+    drive->first_tick = drive->actions[0].tick;
+    drive->last_tick = drive->actions[drive->action_count - 1u].tick;
+  }
+  if (drive->player_count > 0u) {
+    drive->first_tick = Min(drive->first_tick, drive->players[0].tick);
+    drive->last_tick =
+        Max(drive->last_tick, drive->players[drive->player_count - 1u].tick);
+  }
+  if (drive->first_tick == UINT64_MAX) {
+    drive->first_tick = drive->hashes[0].tick;
+    drive->last_tick = drive->hashes[drive->hash_count - 1u].tick;
+  }
   return true_v;
 }
 

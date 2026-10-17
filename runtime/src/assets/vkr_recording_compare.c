@@ -232,12 +232,17 @@ vkr_internal void vkr_recording_compare_keys(const VkrRecordingData *data,
   }
 }
 
+/* Path that moves less than this between frames is a hold. */
+#define VKR_RECORDING_COMPARE_HOLD_M 1.0e-4
+
 /* The frame of B whose key is nearest `key`, or UINT64_MAX outside B's
-   keys. Keys never decrease. */
+   keys by more than rounding (two paths summed frame by frame end a hair
+   apart). Keys never decrease. */
 vkr_internal uint64_t vkr_recording_compare_nearest(const float64_t *keys,
                                                     uint64_t count,
                                                     float64_t key) {
-  if (count == 0u || key < keys[0] || key > keys[count - 1u]) {
+  if (count == 0u || key < keys[0] - VKR_RECORDING_COMPARE_HOLD_M ||
+      key > keys[count - 1u] + VKR_RECORDING_COMPARE_HOLD_M) {
     return UINT64_MAX;
   }
   uint64_t low = 0u;
@@ -256,6 +261,67 @@ vkr_internal uint64_t vkr_recording_compare_nearest(const float64_t *keys,
   return low;
 }
 
+/* A stretch of frames at one path distance, for distance alignment. */
+typedef struct VkrRecordingCompareHold {
+  uint64_t a_first;
+  uint64_t b_first;
+  uint64_t b_last;
+} VkrRecordingCompareHold;
+
+/* Distance alignment inside a hold: where A or B stands still, the frames
+   of one distance pair by the time since the hold began, so a hold maps to
+   the other's hold frame by frame instead of every frame to one; an A frame
+   past the end of B's hold has no counterpart. `match` is B's frame nearest
+   A's frame `f` by distance. */
+vkr_internal uint64_t vkr_recording_compare_in_hold(
+    const VkrRecordingData *a, const VkrRecordingData *b,
+    const float64_t *a_keys, const float64_t *b_keys, uint64_t f,
+    uint64_t match, VkrRecordingCompareHold *hold) {
+  if (f == 0u || a_keys[f] - a_keys[f - 1u] >= VKR_RECORDING_COMPARE_HOLD_M) {
+    hold->a_first = f;
+  }
+  /* B's hold around the match, kept while matches stay inside it. */
+  if (match < hold->b_first || match > hold->b_last ||
+      hold->b_last == UINT64_MAX) {
+    hold->b_first = match;
+    while (hold->b_first > 0u && b_keys[match] - b_keys[hold->b_first - 1u] <
+                                     VKR_RECORDING_COMPARE_HOLD_M) {
+      --hold->b_first;
+    }
+    hold->b_last = match;
+    while (hold->b_last + 1u < b->frame_count &&
+           b_keys[hold->b_last + 1u] - b_keys[match] <
+               VKR_RECORDING_COMPARE_HOLD_M) {
+      ++hold->b_last;
+    }
+  }
+  if (hold->a_first == f && hold->b_first == hold->b_last) {
+    return match;
+  }
+  const float64_t target =
+      b->times[hold->b_first] + (a->times[f] - a->times[hold->a_first]);
+  if (hold->b_last + 1u < b->frame_count &&
+      target >= b->times[hold->b_last + 1u]) {
+    return UINT64_MAX;
+  }
+  /* The hold's frame nearest the target time; times never decrease. */
+  uint64_t low = hold->b_first;
+  uint64_t high = hold->b_last;
+  while (low < high) {
+    const uint64_t middle = low + (high - low) / 2u;
+    if (b->times[middle] < target) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  if (low > hold->b_first &&
+      target - b->times[low - 1u] < vkr_abs_f64(b->times[low] - target)) {
+    --low;
+  }
+  return low;
+}
+
 /* Maps A's frames to B's and measures the difference over the mapped ones. */
 vkr_internal void vkr_recording_compare_align(const VkrRecordingData *a,
                                               const VkrRecordingData *b,
@@ -267,9 +333,14 @@ vkr_internal void vkr_recording_compare_align(const VkrRecordingData *a,
   float64_t window_sum = 0.0;
   float64_t sum = 0.0;
   out->worst_first = out->worst_last = UINT64_MAX;
+  VkrRecordingCompareHold hold = {.b_last = UINT64_MAX};
   for (uint64_t f = 0u; f < a->frame_count; ++f) {
     uint64_t match =
         vkr_recording_compare_nearest(b_keys, b->frame_count, a_keys[f]);
+    if (out->align == VKR_RECORDING_ALIGN_DISTANCE && match != UINT64_MAX) {
+      match =
+          vkr_recording_compare_in_hold(a, b, a_keys, b_keys, f, match, &hold);
+    }
     float64_t a_ms = 0.0;
     float64_t b_ms = 0.0;
     if (match == UINT64_MAX || !vkr_recording_data_frame_ms(a, f, &a_ms) ||

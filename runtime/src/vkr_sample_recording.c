@@ -408,6 +408,16 @@ vkr_sample_recording_drive(VkrStandardSceneRuntime *runtime,
     return;
   }
   runtime->drive.follow = request->follow;
+  const bool8_t no_actions = runtime->drive.action_count == 0u;
+  if (!request->resim && (no_actions || runtime->drive.player_count == 0u)) {
+    vkr_recording_drive_close(&runtime->drive);
+    vkr_sample_recording_result(
+        state, request->token, false_v,
+        no_actions ? "The recording has no actions to drive with; Re-simulate "
+                     "replays a session without input."
+                   : "The recording has no player track to drive with.");
+    return;
+  }
   if (request->resim &&
       (!runtime->drive.has_session || runtime->drive.hash_count == 0u)) {
     vkr_recording_drive_close(&runtime->drive);
