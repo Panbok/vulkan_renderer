@@ -353,6 +353,9 @@ vkr_graphics_settings_defaults(VkrRendererBackendType backend) {
       .fog = true_v,
       .volumetric_fog = true_v,
       .bloom = true_v,
+      /* The defaults are the High preset, which takes the tiled pipeline's
+         contact shadows. */
+      .contact_shadows = backend == VKR_RENDERER_BACKEND_TYPE_METAL,
   };
 }
 
@@ -364,10 +367,11 @@ const char *vkr_graphics_preset_name(VkrGraphicsPreset preset) {
                                      (uint32_t)VKR_GRAPHICS_PRESET_CUSTOM)];
 }
 
-/* Quality gates of one preset over `base`, whose display settings stay. */
+/* Quality gates of one preset for `pipeline` over `base`, whose display
+   settings stay. */
 static VkrGraphicsSettings
-graphics_preset_gates(const VkrGraphicsSettings *base,
-                      VkrGraphicsPreset preset) {
+graphics_preset_gates(const VkrGraphicsSettings *base, VkrGraphicsPreset preset,
+                      VkrGraphicsPipelineClass pipeline) {
   const bool8_t medium = preset >= VKR_GRAPHICS_PRESET_MEDIUM;
   const bool8_t high = preset >= VKR_GRAPHICS_PRESET_HIGH;
   const bool8_t epic = preset >= VKR_GRAPHICS_PRESET_EPIC;
@@ -378,7 +382,11 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
   out.soft_shadows = medium;
   out.filtered_far_shadows = high;
   out.local_shadows = medium;
-  out.contact_shadows = epic;
+  /* The tiled pipeline's sun contact shadows fit High's budget (about
+     0.3 ms, ADR-087); the desktop pipeline's full-frame march and local-light
+     contacts stay on Epic. */
+  out.contact_shadows =
+      epic || (high && pipeline == VKR_GRAPHICS_PIPELINE_TILED);
   out.distance_field_shadows = epic;
   out.ambient_occlusion = medium;
   out.reflection_probes = true_v;
@@ -392,17 +400,19 @@ graphics_preset_gates(const VkrGraphicsSettings *base,
 }
 
 void vkr_graphics_settings_apply_preset(VkrGraphicsSettings *settings,
-                                        VkrGraphicsPreset preset) {
+                                        VkrGraphicsPreset preset,
+                                        VkrGraphicsPipelineClass pipeline) {
   if (settings && preset < VKR_GRAPHICS_PRESET_CUSTOM) {
-    *settings = graphics_preset_gates(settings, preset);
+    *settings = graphics_preset_gates(settings, preset, pipeline);
   }
 }
 
 VkrGraphicsPreset
-vkr_graphics_settings_preset(const VkrGraphicsSettings *settings) {
+vkr_graphics_settings_preset(const VkrGraphicsSettings *settings,
+                             VkrGraphicsPipelineClass pipeline) {
   for (uint32_t i = 0; i < VKR_GRAPHICS_PRESET_CUSTOM; ++i) {
     const VkrGraphicsSettings gates =
-        graphics_preset_gates(settings, (VkrGraphicsPreset)i);
+        graphics_preset_gates(settings, (VkrGraphicsPreset)i, pipeline);
     /* Field by field: struct padding is unspecified. */
     if (gates.anti_aliasing == settings->anti_aliasing &&
         gates.shadow_quality == settings->shadow_quality &&

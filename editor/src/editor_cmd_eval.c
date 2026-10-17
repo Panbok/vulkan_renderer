@@ -685,8 +685,9 @@ static bool8_t eval_gfx_member(Eval *eval, String8 name, Value *out) {
     *out = eval_bool(settings->vsync);
     return true_v;
   case 3:
-    *out = eval_string(
-        "%s", eval_gfx_presets[vkr_graphics_settings_preset(settings)]);
+    *out =
+        eval_string("%s", eval_gfx_presets[vkr_graphics_settings_preset(
+                              settings, frame->graphics->graphics_pipeline)]);
     return true_v;
   case 4:
     *out = eval_bool(frame->graphics->restart_required);
@@ -1574,7 +1575,8 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
                                       .length = string_length(value->text)});
       if (preset < 0 || preset >= (int32_t)VKR_GRAPHICS_PRESET_CUSTOM)
         return eval_fail(eval, "Unknown preset '%s'", value->text);
-      vkr_graphics_settings_apply_preset(&settings, (VkrGraphicsPreset)preset);
+      vkr_graphics_settings_apply_preset(&settings, (VkrGraphicsPreset)preset,
+                                         frame->graphics->graphics_pipeline);
     } else if (index == 7 &&
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_NUMBER, member)) {
       /* The one of the three choices whose texel limit is the value; zero

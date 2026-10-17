@@ -132,9 +132,10 @@ pipeline rather than a backend mechanism.
    over the second (see [Sky edge measurement](#sky-edge-measurement)). It
    writes alpha one, and the tonemap presents alpha one.
    The same draw corrects the sun's light. Sun contact shadows (the Contact
-   shadows setting, on the Epic preset) and distance field sun shadows (the
-   Distance field shadows setting, on the Epic preset; the shadow quality
-   proposal's T5) need it. In those frames (`VkrPreparedFrame.tiled_sun_contact`,
+   shadows setting, on the High and Epic presets of this pipeline; the
+   presets differ by pipeline, `vkr_graphics_settings_apply_preset`) and
+   distance field sun shadows (the Distance field shadows setting, on the
+   Epic preset; the shadow quality proposal's T5) need it. In those frames (`VkrPreparedFrame.tiled_sun_contact`,
    `tiled_sun_sdf`) the opaque pass takes shading variants, selected by a
    function constant, that also write the sun's light through the clouds
    without the cascades, U, and the cascades' visibility v_c to a second

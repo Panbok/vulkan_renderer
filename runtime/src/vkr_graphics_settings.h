@@ -32,13 +32,13 @@ typedef struct VkrGraphicsSettings {
   uint32_t shadow_quality;
   bool8_t soft_shadows, local_shadows, ambient_occlusion;
   /* Screen-space contact shadows: for the sun on both pipelines and for the
-   * nearest local lights on the desktop pipeline; the Epic preset enables
-   * them. */
+   * nearest local lights on the desktop pipeline; the High preset enables
+   * them on the tiled pipeline, the Epic preset on both. */
   bool8_t contact_shadows;
   /* Distance field sun shadows past the near cascades on the tiled
-   * pipeline: traced distance volumes of static casters darken the far
-   * level's shadows where it misses their detail. The Epic preset enables
-   * them; the desktop pipeline ignores them. */
+   * pipeline: traced distance volumes of rigid casters replace their far
+   * level shadows. The Epic preset enables them; the desktop pipeline
+   * ignores them. */
   bool8_t distance_field_shadows;
   /* Exponential variance moments filter the two farthest cascades instead of
    * PCF on the desktop pipeline; the High and Epic presets enable them. */
@@ -92,11 +92,16 @@ typedef enum VkrGraphicsPreset {
 } VkrGraphicsPreset;
 
 const char *vkr_graphics_preset_name(VkrGraphicsPreset preset);
+/* Presets differ by graphics pipeline where a gate's cost does (ADR-087):
+   High takes contact shadows on the tiled pipeline only. */
 void vkr_graphics_settings_apply_preset(VkrGraphicsSettings *settings,
-                                        VkrGraphicsPreset preset);
-/* The preset whose quality gates `settings` match, else CUSTOM. */
+                                        VkrGraphicsPreset preset,
+                                        VkrGraphicsPipelineClass pipeline);
+/* The preset for `pipeline` whose quality gates `settings` match, else
+   CUSTOM. */
 VkrGraphicsPreset
-vkr_graphics_settings_preset(const VkrGraphicsSettings *settings);
+vkr_graphics_settings_preset(const VkrGraphicsSettings *settings,
+                             VkrGraphicsPipelineClass pipeline);
 
 /** Machine-local graphics preferences. The state hook's context is a
  * `const VkrGraphicsSettingsState *` or NULL. */

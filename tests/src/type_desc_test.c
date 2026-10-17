@@ -309,10 +309,18 @@ static void test_graphics_preferences_type(void) {
       &settings));
   assert(settings.shadow_quality == 1u);
 
-  /* Metal upscales with MetalFX from 0.6 of each axis; the choice is stored
-   * by name and takes effect at the next start. */
+  /* Each backend's defaults are its pipeline's High preset. */
+  const VkrGraphicsSettings vulkan =
+      vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_VULKAN);
+  assert(vkr_graphics_settings_preset(&vulkan, VKR_GRAPHICS_PIPELINE_DESKTOP) ==
+         VKR_GRAPHICS_PRESET_HIGH);
   const VkrGraphicsSettings metal =
       vkr_graphics_settings_defaults(VKR_RENDERER_BACKEND_TYPE_METAL);
+  assert(vkr_graphics_settings_preset(&metal, VKR_GRAPHICS_PIPELINE_TILED) ==
+         VKR_GRAPHICS_PRESET_HIGH);
+
+  /* Metal upscales with MetalFX from 0.6 of each axis; the choice is stored
+   * by name and takes effect at the next start. */
   assert(metal.upscaler == VKR_TILED_UPSCALER_METALFX);
   assert(metal.render_scale == 0.6f);
   VkrGraphicsSettings upscaled = metal;

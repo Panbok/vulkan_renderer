@@ -290,8 +290,8 @@ static void view_chip_text(const VkrEditorUi *editor,
   string_format(text[3], 48, "Show");
   if (frame->graphics) {
     const VkrGraphicsSettings settings = view_graphics(editor, frame);
-    const char *preset =
-        vkr_graphics_preset_name(vkr_graphics_settings_preset(&settings));
+    const char *preset = vkr_graphics_preset_name(vkr_graphics_settings_preset(
+        &settings, frame->graphics->graphics_pipeline));
     const bool8_t dynamic = settings.dynamic_resolution &&
                             frame->graphics->dynamic_resolution_available;
     /* The scale the Scene rendered at, which an editor scale, dynamic
@@ -446,7 +446,8 @@ static uint32_t view_quality_rows(VkrEditorUi *editor,
     return 0u;
   }
   const VkrGraphicsSettings settings = view_graphics(editor, frame);
-  const VkrGraphicsPreset preset = vkr_graphics_settings_preset(&settings);
+  const VkrGraphicsPreset preset = vkr_graphics_settings_preset(
+      &settings, frame->graphics->graphics_pipeline);
   rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
   string_format(rows[count++].text, sizeof(rows[0].text), "Scalability");
   for (uint32_t i = 0; i < VKR_GRAPHICS_PRESET_CUSTOM; ++i) {
@@ -2775,7 +2776,8 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
           frame, view_texture_limits[index - texture_row].extent);
     } else if (index >= 1 && index <= VKR_GRAPHICS_PRESET_CUSTOM) {
       vkr_graphics_settings_apply_preset(&settings,
-                                         (VkrGraphicsPreset)(index - 1u));
+                                         (VkrGraphicsPreset)(index - 1u),
+                                         frame->graphics->graphics_pipeline);
       view_quality_apply(frame, settings);
     } else if (index == VKR_GRAPHICS_PRESET_CUSTOM + 1u) {
       vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_GRAPHICS, true_v);

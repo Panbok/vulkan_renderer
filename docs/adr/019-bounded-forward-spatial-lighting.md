@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-16
+updated: 2026-10-17
 authority: adr
 ---
 
@@ -779,7 +779,8 @@ Contact shadows therefore belong to the Ultra preset only
 `VkrLocalShadowPassPayload.contact_shadows`). Vulkan builds the mask twice,
 `vk_local_shadow_mask` and `vk_local_shadow_mask_contact`, so the default
 kernel carries none of the march's registers. In the application they follow
-the "Contact shadows" graphics setting, which the Epic preset enables; harness
+the "Contact shadows" graphics setting, which the Epic preset enables on the
+desktop pipeline (the tiled pipeline's High preset also enables it); harness
 cases enable them through the `ultra` shadow preset. On the Metal desktop
 implementation (M1 host, matched builds, default preset) the mask fell from
 5.68 to 4.61 ms in the street view without TAA and from 4.18 to 3.15 ms with

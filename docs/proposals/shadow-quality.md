@@ -299,7 +299,7 @@ desktop pipeline, behind the same `VKR_SUN_RAY_SHADOWS` switch (2026-10-16):
   occlusion test and end fade, through `vk_contact_shadow`. It runs where
   the rays' weight is below 1, because the rays find the contacts
   themselves. It follows the shadow settings' `contact_shadows` (the Epic
-  preset), as the tiled pipeline does; without rays it marches the whole
+  preset on this pipeline), as the tiled pipeline does; without rays it marches the whole
   frame (see the cost below). `VKR_SUN_CONTACT_SHADOWS` set to `0` or `1`
   overrides the setting.
 - **Defect 5, sun only.** The lighting, forward and transmission sun terms
@@ -424,7 +424,7 @@ Costs are estimates for an M1 Pro at 1440p.
 | T2a, fixed sun: 3 cascades to about 80 m; the bake stores sun visibility per sun key past them | denser near cascades; static shadows over the whole level | −0.3 to −0.7 ms; one BC4 plane per key |
 | T2b, moving sun: 3 cascades to about 80 m and one cached far level refreshed over 8–16 frames | denser near cascades; shadows to about 1 km | about 0 ms |
 | T3: local lights take a 16-texel gather-compare tent, cross-face reprojection and screen-size face resolution | softer, steadier local shadows | +0.1–0.3 ms for 4 lights |
-| T4: sun contact shadows through a sun-term correction after `Tiled.Opaque` (implemented, Epic) | contacts and detail finer than a texel near casters | measured about +0.28 ms |
+| T4: sun contact shadows through a sun-term correction after `Tiled.Opaque` (implemented, High and Epic) | contacts and detail finer than a texel near casters | measured about +0.3 ms |
 | T5: SDF sun shadows past the near cascades and in their penumbrae, behind a prototype gate | soft penumbrae that harden at contacts; static and rigid casters; a moving sun redraws nothing | +0.5–1.5 ms; 50–100 MiB |
 | T6: dense clipmap of 2048² levels anchored to the world, each redrawing only the tiles that scroll in | uniform 2× borders and no refits; density about as now (1.2–2.4 screen pixels per texel at 1440p) | about 0 ms; about twice the sun memory |
 
@@ -496,8 +496,8 @@ on sun contact frames, `Tiled.Opaque` writes the sun's term to `tiled_sun_light`
 `Tiled.Atmosphere` then marches the resolved depth and subtracts the occluded
 part, and it also runs on frames without media, so no `Tiled.SunApply` pass
 exists. With the march's visibility forced to one, the frame matches a frame
-without it bit for bit. The Contact shadows setting enables it, so only the
-Epic preset has it.
+without it bit for bit. The Contact shadows setting enables it; on the tiled
+pipeline the High and Epic presets do (owner decision 2026-10-17).
 
 On the Bistro plaza at 1440p and 0.6 scale on the M1 Pro it adds about
 0.09 ms to `Tiled.Opaque` and 0.19 ms to `Tiled.Atmosphere`, within its
@@ -623,8 +623,11 @@ far shadows.
 Open:
 
 - Bakery cooking the distance volumes.
-- Contact shadows on the High preset: authoritative timing puts them at
-  about 0.3 ms, within the 0.4 ms budget. Distance field shadows stay on Epic.
+
+Settled on 2026-10-17: the High preset takes contact shadows on the tiled
+pipeline, where authoritative timing puts them at about 0.3 ms, within the
+0.4 ms budget. The desktop pipeline keeps them on Epic until its sun march
+fits the 0.2 ms budget; distance field shadows stay on Epic.
 
 ## Evidence required
 
