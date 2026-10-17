@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "id": "local.tiled.bistro_plaza_windowed_sun_epic",
+  "suite": "local",
+  "description": "Bistro plaza, tiled, hidden window, MetalFX at 0.6: sun contact shadows and distance field shadows together, as the Epic preset runs them (shadow-quality T4 and T5).",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    1280,
+    720
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 5,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 400,
+    "measure": 300
+  },
+  "renderer": {
+    "backend": "metal",
+    "render_scale": 0.6,
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "shadow_contact": true,
+    "upscaler": "metalfx",
+    "shadow_sdf": "add"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [
+      10.0,
+      4.2,
+      27.8
+    ],
+    "yaw": 19.0,
+    "pitch": -22.0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    }
+  ]
+}
