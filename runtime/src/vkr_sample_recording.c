@@ -342,6 +342,7 @@ vkr_sample_recording_drive(VkrStandardSceneRuntime *runtime,
     vkr_sample_recording_result(state, request->token, false_v, error);
     return;
   }
+  runtime->drive.follow = request->follow;
   /* Drive plays the session, which Playback keeps stopped. */
   if (runtime->playback.open) {
     vkr_sample_recording_close(runtime, state, 0u);

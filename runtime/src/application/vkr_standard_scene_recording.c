@@ -161,11 +161,25 @@ vkr_standard_scene_recording_spawns(VkrStandardSceneRuntime *runtime) {
       vkr_recording_despawn(recording, id);
       continue;
     }
+    if (flags & VKR_RECORDING_SPAWN_LOOK) {
+      continue;
+    }
     String8 mesh;
     String8 animation;
-    if (!(flags & VKR_RECORDING_SPAWN_MODEL) &&
-        vkr_scene_model_paths(scene, entity, &mesh, &animation)) {
-      vkr_recording_spawn_model(recording, id, mesh, animation);
+    const SceneShape *shape = vkr_entity_get_component_if_alive_const(
+        scene->world, entity, scene->comp_shape);
+    if (vkr_scene_model_paths(scene, entity, &mesh, &animation)) {
+      vkr_recording_spawn_look(recording, id, mesh, animation, NULL);
+    } else if (shape) {
+      const VkrRecordingSpawnShape look = {
+          .type = (uint32_t)shape->type,
+          .size = {shape->dimensions.x, shape->dimensions.y,
+                   shape->dimensions.z},
+          .color = {shape->color.x, shape->color.y, shape->color.z,
+                    shape->color.w},
+      };
+      vkr_recording_spawn_look(recording, id, (String8){0}, (String8){0},
+                               &look);
     }
   }
 }
@@ -260,8 +274,8 @@ vkr_internal uint64_t vkr_standard_scene_recording_key_hash(
       .hash;
 }
 
-/* Creates the transient stand-ins of spawns that had a model, hidden until
-   their first frame, and loads their models. */
+/* Creates the transient stand-ins of spawns that had a model or a shape,
+   hidden until their first frame, and loads their models. */
 vkr_internal bool8_t
 vkr_standard_scene_recording_spawn_proxies(VkrStandardSceneRuntime *runtime) {
   VkrRecordingPlayback *playback = &runtime->playback;
@@ -323,25 +337,39 @@ vkr_standard_scene_recording_spawn_proxies(VkrStandardSceneRuntime *runtime) {
   uint32_t created = 0u;
   for (uint32_t id = 0u; id < playback->spawn_count; ++id) {
     playback->spawn_proxies[id] = VKR_ENTITY_ID_INVALID.u64;
+    const VkrRecordingSpawn *spawn = &playback->spawns[id];
+    VkrScene *scene =
+        vkr_standard_scene_recording_container(runtime, spawn->container);
     String8 mesh;
     String8 animation;
-    VkrScene *scene = vkr_standard_scene_recording_container(
-        runtime, playback->spawns[id].container);
-    if (!scene ||
-        !vkr_recording_playback_spawn_model(playback, id, &mesh, &animation)) {
+    const bool8_t model =
+        vkr_recording_playback_spawn_model(playback, id, &mesh, &animation);
+    if (!scene || (!model && !spawn->has_shape)) {
       continue;
     }
     const VkrEntityId proxy = vkr_scene_create_entity(scene, NULL);
-    VkrSceneModelDesc desc = {.mesh_path = mesh,
-                              .animation_path = animation,
-                              .animation = VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
     const char *error = NULL;
-    if (!proxy.u64 ||
-        !vkr_scene_set_transform(scene, proxy, vec3_zero(), vkr_quat_identity(),
-                                 vec3_one()) ||
-        !vkr_scene_set_transient(scene, proxy) ||
-        !vkr_scene_request_model(scene, &runtime->assets, proxy, &desc,
-                                 &error)) {
+    bool8_t made = proxy.u64 &&
+                   vkr_scene_set_transform(scene, proxy, vec3_zero(),
+                                           vkr_quat_identity(), vec3_one()) &&
+                   vkr_scene_set_transient(scene, proxy);
+    if (made && model) {
+      VkrSceneModelDesc desc = {.mesh_path = mesh,
+                                .animation_path = animation,
+                                .animation =
+                                    VKR_SCENE_ANIMATION_CONFIG_DEFAULT};
+      made = vkr_scene_request_model(scene, &runtime->assets, proxy, &desc,
+                                     &error);
+    } else if (made) {
+      VkrSceneShapeConfig shape = VKR_SCENE_SHAPE_CONFIG_DEFAULT;
+      shape.type = (SceneShapeType)spawn->shape.type;
+      shape.dimensions = vec3_new(spawn->shape.size[0], spawn->shape.size[1],
+                                  spawn->shape.size[2]);
+      shape.color = vec4_new(spawn->shape.color[0], spawn->shape.color[1],
+                             spawn->shape.color[2], spawn->shape.color[3]);
+      made = vkr_scene_set_shape(scene, &runtime->assets, proxy, &shape, NULL);
+    }
+    if (!made) {
       if (proxy.u64) {
         vkr_scene_destroy_entity(scene, proxy);
       }

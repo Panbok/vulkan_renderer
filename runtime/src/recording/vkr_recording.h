@@ -77,8 +77,9 @@
 /* Entities scripts spawn, which have no document name: a spawn record is a
    u32 spawn id, a u8 container, then a u16 length and the mesh path and a
    u16 length and the animation bank path of its model (both empty for
-   none); a later record of the id gives the model it got. A despawn record
-   is the u32 id of a spawn that went away. */
+   none), then optionally a VkrRecordingSpawnShape; a later record of the id
+   gives the look it got: a model, or a shape. A despawn record is the u32
+   id of a spawn that went away. */
 #define VKR_RECORDING_STREAM_SPAWN 13u
 #define VKR_RECORDING_STREAM_DESPAWN 14u
 /* Spawns a recording names; later ones are left out. */
@@ -327,18 +328,28 @@ void vkr_recording_poses_flush(VkrRecording *recording);
 void vkr_recording_player(VkrRecording *recording,
                           const VkrRecordingPlayer *player);
 
+/* A spawn's primitive shape (SceneShape). */
+typedef struct VkrRecordingSpawnShape {
+  uint32_t type;
+  float32_t size[3];
+  float32_t color[4];
+} VkrRecordingSpawnShape;
+
 /* VkrRecording.spawn_flags */
 #define VKR_RECORDING_SPAWN_ALIVE 1u
-#define VKR_RECORDING_SPAWN_MODEL 2u
+/* Its look, a model or a shape, is written. */
+#define VKR_RECORDING_SPAWN_LOOK 2u
 
 /** The spawn id of `entity` in `container`, naming it on first sight and
     writing its spawn record; UINT32_MAX when the table is full. */
 uint32_t vkr_recording_spawn_id(VkrRecording *recording, uint64_t entity,
                                 uint8_t container);
 
-/** Writes the model a spawn got, once. */
-void vkr_recording_spawn_model(VkrRecording *recording, uint32_t id,
-                               String8 mesh, String8 animation);
+/** Writes the look a spawn got, once: its model's paths, or with empty
+    paths its shape. */
+void vkr_recording_spawn_look(VkrRecording *recording, uint32_t id,
+                              String8 mesh, String8 animation,
+                              const VkrRecordingSpawnShape *shape);
 
 /** Writes that a spawn went away; its id is not reused. */
 void vkr_recording_despawn(VkrRecording *recording, uint32_t id);

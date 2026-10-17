@@ -1118,6 +1118,54 @@ static bool8_t sdk_driving(VkrCtx *ctx) {
   return drive && drive->open;
 }
 
+/* A recorded player in the module's terms: scene-space feet without the
+   origin offset. */
+static VkrRecPlayer sdk_rec_player_of(ScriptCtx *script,
+                                      const VkrRecordingPlayer *player) {
+  const VkrScene *scene = sdk_active(script);
+  const Vec3 origin = scene ? scene->origin_offset : vec3_zero();
+  return (VkrRecPlayer){
+      .position =
+          vec3_new((float32_t)(player->position[0] - (float64_t)origin.x),
+                   (float32_t)(player->position[1] - (float64_t)origin.y),
+                   (float32_t)(player->position[2] - (float64_t)origin.z)),
+      .velocity = vec3_new(player->velocity[0], player->velocity[1],
+                           player->velocity[2]),
+      .yaw_degrees = player->yaw,
+      .pitch_degrees = player->pitch,
+      .flags = player->flags,
+      .state = player->state,
+  };
+}
+
+static bool8_t sdk_drive_start(VkrCtx *ctx, VkrRecPlayer *out) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  const VkrRecordingDrive *drive = script->host->drive;
+  if (!drive || !drive->open || !out) {
+    return false_v;
+  }
+  *out = sdk_rec_player_of(script, vkr_recording_drive_start_player(drive));
+  return true_v;
+}
+
+static bool8_t sdk_drive_reference(VkrCtx *ctx, uint64_t tick,
+                                   VkrRecPlayer *out) {
+  ScriptCtx *script = sdk_ctx(ctx);
+  const VkrRecordingDrive *drive = script->host->drive;
+  const VkrRecordingPlayer *player =
+      drive && drive->open ? vkr_recording_drive_reference(drive, tick) : NULL;
+  if (!player || !out) {
+    return false_v;
+  }
+  *out = sdk_rec_player_of(script, player);
+  return true_v;
+}
+
+static bool8_t sdk_drive_follow(VkrCtx *ctx) {
+  const VkrRecordingDrive *drive = sdk_ctx(ctx)->host->drive;
+  return drive && drive->open && drive->follow;
+}
+
 static uint32_t sdk_drive_actions(VkrCtx *ctx, uint64_t tick, VkrRecAction *out,
                                   uint32_t capacity) {
   VkrRecordingDrive *drive = sdk_ctx(ctx)->host->drive;
@@ -2005,5 +2053,8 @@ void script_sdk_table(VkrSdkTable *table) {
       .rec_action = sdk_rec_action,
       .driving = sdk_driving,
       .drive_actions = sdk_drive_actions,
+      .drive_start = sdk_drive_start,
+      .drive_reference = sdk_drive_reference,
+      .drive_follow = sdk_drive_follow,
   };
 }

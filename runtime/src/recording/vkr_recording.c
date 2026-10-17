@@ -723,9 +723,10 @@ void vkr_recording_player(VkrRecording *recording,
 }
 
 /* A spawn record: the id, the container, then the model's paths. */
-vkr_internal void vkr_recording_spawn_record(VkrRecording *recording,
-                                             uint32_t id, String8 mesh,
-                                             String8 animation) {
+vkr_internal void
+vkr_recording_spawn_record(VkrRecording *recording, uint32_t id, String8 mesh,
+                           String8 animation,
+                           const VkrRecordingSpawnShape *shape) {
   const uint16_t mesh_length =
       (uint16_t)Min(mesh.length, (uint64_t)VKR_RECORDING_PATH_MAX - 1u);
   const uint16_t animation_length =
@@ -734,7 +735,8 @@ vkr_internal void vkr_recording_spawn_record(VkrRecording *recording,
   uint8_t *record = vkr_recorder_reserve(
       recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
       VKR_RECORDING_STREAM_SPAWN, frame,
-      9u + (uint32_t)mesh_length + (uint32_t)animation_length);
+      9u + (uint32_t)mesh_length + (uint32_t)animation_length +
+          (shape ? (uint32_t)sizeof(*shape) : 0u));
   if (!record) {
     return;
   }
@@ -748,6 +750,10 @@ vkr_internal void vkr_recording_spawn_record(VkrRecording *recording,
           sizeof(animation_length));
   if (animation_length > 0u) {
     MemCopy(record + 9u + mesh_length, animation.str, animation_length);
+  }
+  if (shape) {
+    MemCopy(record + 9u + mesh_length + animation_length, shape,
+            sizeof(*shape));
   }
   vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
 }
@@ -777,19 +783,20 @@ uint32_t vkr_recording_spawn_id(VkrRecording *recording, uint64_t entity,
   recording->spawn_containers[id] = container;
   recording->spawn_flags[id] = VKR_RECORDING_SPAWN_ALIVE;
   recording->spawn_slots[probe] = id + 1u;
-  vkr_recording_spawn_record(recording, id, (String8){0}, (String8){0});
+  vkr_recording_spawn_record(recording, id, (String8){0}, (String8){0}, NULL);
   return id;
 }
 
-void vkr_recording_spawn_model(VkrRecording *recording, uint32_t id,
-                               String8 mesh, String8 animation) {
+void vkr_recording_spawn_look(VkrRecording *recording, uint32_t id,
+                              String8 mesh, String8 animation,
+                              const VkrRecordingSpawnShape *shape) {
   vkr_assert(recording != NULL && recording->active &&
              id < recording->spawn_count);
-  if (recording->spawn_flags[id] & VKR_RECORDING_SPAWN_MODEL) {
+  if (recording->spawn_flags[id] & VKR_RECORDING_SPAWN_LOOK) {
     return;
   }
-  recording->spawn_flags[id] |= VKR_RECORDING_SPAWN_MODEL;
-  vkr_recording_spawn_record(recording, id, mesh, animation);
+  recording->spawn_flags[id] |= VKR_RECORDING_SPAWN_LOOK;
+  vkr_recording_spawn_record(recording, id, mesh, animation, shape);
 }
 
 void vkr_recording_despawn(VkrRecording *recording, uint32_t id) {

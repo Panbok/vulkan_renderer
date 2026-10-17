@@ -14968,6 +14968,7 @@ static VkrEditorOpStatus ops_run_rec_drive(OpsContext *ctx) {
     if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name))) {
       return VKR_EDITOR_OP_DONE;
     }
+    request.follow = ops_arg_bool(ctx->call->args, "follow", false_v);
     if (!vkr_editor_recording_resolve(ctx->editor, name, request.path,
                                       sizeof(request.path))) {
       ops_fail(ctx, OPS_INVALID,
@@ -15320,9 +15321,11 @@ static const OpsDef s_ops[] = {
      "recorded player actions on the current build. rec.status 'drive' "
      "reports the distance between the driven and the recorded player, its "
      "maximum and the first recorded frame past the tolerance; the drive "
-     "ends when the actions run out or the session stops.",
+     "ends when the actions run out or the session stops. The player starts "
+     "where the recording's did; 'follow' steers it back toward the recorded "
+     "path.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
-     "\"string\"}},\"required\":[\"name\"]}",
+     "\"string\"},\"follow\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}",
      ops_run_rec_drive, NULL},
     {"rec.drive_stop", "End the running drive and pause the session.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_drive_stop, NULL},

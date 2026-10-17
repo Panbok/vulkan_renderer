@@ -41,6 +41,9 @@ typedef struct VkrRecordingDrive {
   uint64_t ticks_driven;
   /* The last driven tick replays `last_tick` or later. */
   bool8_t finished;
+  /* Modules steer the driven player back toward the recorded one
+     (vkr_drive_follow). */
+  bool8_t follow;
 
   /* Distance between the driven and the recorded player at the latest
      compared tick, its maximum, the driven path's length and the first
@@ -75,6 +78,15 @@ void vkr_recording_drive_close(VkrRecordingDrive *drive);
 uint32_t vkr_recording_drive_actions(VkrRecordingDrive *drive, uint64_t tick,
                                      VkrRecordingAction *out,
                                      uint32_t capacity);
+
+/** The recorded player Drive starts from: the recording's first. */
+const VkrRecordingPlayer *
+vkr_recording_drive_start_player(const VkrRecordingDrive *drive);
+
+/** The recorded player that driven tick `tick` replays, or NULL before the
+    base tick or for a tick without one. */
+const VkrRecordingPlayer *
+vkr_recording_drive_reference(const VkrRecordingDrive *drive, uint64_t tick);
 
 /** Compares the driven player at tick `tick` with the recorded one. */
 void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,

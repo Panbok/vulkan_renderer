@@ -920,10 +920,16 @@ static void test_recording_pose_playback(void) {
       vkr_recording_pose(&recording, &pose);
     }
     if (f == 3u) {
-      vkr_recording_spawn_model(&recording, 0u, string8_lit("a/body.vkb"),
-                                string8_lit("a/body.vka"));
-      vkr_recording_spawn_model(&recording, 0u, string8_lit("ignored.vkb"),
-                                (String8){0});
+      vkr_recording_spawn_look(&recording, 0u, string8_lit("a/body.vkb"),
+                               string8_lit("a/body.vka"), NULL);
+      vkr_recording_spawn_look(&recording, 0u, string8_lit("ignored.vkb"),
+                               (String8){0}, NULL);
+      /* A second spawn gets a shape. */
+      const uint32_t box = vkr_recording_spawn_id(&recording, 0x5678u, 0u);
+      const VkrRecordingSpawnShape shape = {
+          .size = {0.6f, 1.8f, 0.6f}, .color = {0.15f, 0.45f, 0.85f, 1.0f}};
+      vkr_recording_spawn_look(&recording, box, (String8){0}, (String8){0},
+                               &shape);
     }
     if (f == 5u) {
       vkr_recording_despawn(&recording, 0u);
@@ -937,8 +943,17 @@ static void test_recording_pose_playback(void) {
   assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
                                      error, sizeof(error)));
   assert(playback.pose_key_count == 4u && playback.pose_sample_count == 10u);
-  assert(playback.spawn_count == 1u && playback.spawns[0].first_frame == 2u &&
-         playback.spawns[0].last_frame == 5u);
+  assert(playback.spawn_count == 2u && playback.spawns[0].first_frame == 2u &&
+         playback.spawns[0].last_frame == 5u && !playback.spawns[0].has_shape);
+  assert(playback.spawns[1].first_frame == 3u &&
+         playback.spawns[1].last_frame == UINT64_MAX &&
+         playback.spawns[1].has_shape &&
+         playback.spawns[1].shape.size[1] == 1.8f &&
+         playback.spawns[1].shape.color[2] == 0.85f);
+  String8 none_mesh;
+  String8 none_animation;
+  assert(!vkr_recording_playback_spawn_model(&playback, 1u, &none_mesh,
+                                             &none_animation));
   String8 mesh;
   String8 animation;
   assert(vkr_recording_playback_spawn_model(&playback, 0u, &mesh, &animation));
@@ -1117,7 +1132,8 @@ static void test_recording_player_records(void) {
    a driven run starting at another tick than the recording, actions of a
    skipped tick replayed late, a distance measured against the wrong
    recorded tick, a divergence reported inside the tolerance or at the
-   wrong tick or frame, and a drive that never finishes. */
+   wrong tick or frame, a drive that never finishes, and a start or a
+   reference that is not the recorded player of the replayed tick. */
 static void test_recording_drive(void) {
   printf("  Running test_recording_drive...\n");
   RecordingTestMemory memory;
@@ -1162,6 +1178,10 @@ static void test_recording_drive(void) {
                                   sizeof(error)));
   assert(drive.first_tick == 40u && drive.last_tick == 49u &&
          drive.action_count == 3u && drive.player_count == 10u);
+  /* Drive starts from the first recorded player; before the base tick no
+     tick has a reference. */
+  assert(vkr_recording_drive_start_player(&drive)->tick == 40u);
+  assert(vkr_recording_drive_reference(&drive, 1000u) == NULL);
   /* The driven run starts at tick 1000, which replays tick 40. */
   VkrRecordingAction out[8];
   assert(vkr_recording_drive_actions(&drive, 1000u, out, 8u) == 0u);
@@ -1177,6 +1197,9 @@ static void test_recording_drive(void) {
   /* Ticks 1002 to 1005 are skipped: the release at recorded 45 is not
      replayed late at 1006. */
   assert(vkr_recording_drive_actions(&drive, 1006u, out, 8u) == 0u);
+  const VkrRecordingPlayer *reference =
+      vkr_recording_drive_reference(&drive, 1006u);
+  assert(reference && reference->tick == 46u && reference->position[0] == 6.0);
   position[0] = 6.5;
   vkr_recording_drive_player(&drive, 1006u, position);
   assert(drive.divergent_tick == 46u && drive.divergent_frame == 6u &&

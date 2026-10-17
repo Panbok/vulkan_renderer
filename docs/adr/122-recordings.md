@@ -104,8 +104,8 @@ an agent must read one without the editor.
   stand-in takes its nodes' recorded poses, relative to its own pose of the
   same frame, as its player's pose (`vkr_animation_player_override_globals`),
   so its skin moves as recorded; with the scene stopped the player does not
-  advance and keeps it. Closing destroys the stand-ins. A spawn without a
-  model, such as a bare shape, has no stand-in yet.
+  advance and keeps it. A spawn with a primitive shape instead gets a shape
+  stand-in of the same size and color. Closing destroys the stand-ins.
 - **Route (R3).** While a playback is open the Scene draws its route: the
   player's track, holding its position between fixed ticks, or the camera's
   in a recording without a player, at most 4,096 points, each segment
@@ -115,7 +115,7 @@ an agent must read one without the editor.
   projected in the editor's late camera hook with the frame's final camera,
   as object icons are; a point behind the camera breaks it. It draws over
   geometry.
-- **Gameplay records (R3).** SDK version 11 adds `vkr_rec_player`,
+- **Gameplay records (R3).** SDK version 12 adds `vkr_rec_player`,
   `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
   ([sdk.h](../../sdk/sdk.h)). They write
   streams `player` (one record per fixed tick: feet position with the origin
@@ -139,7 +139,12 @@ an agent must read one without the editor.
   giving the distance, its maximum, the driven path length and the first
   recorded tick and frame past 0.25 m. The drive ends when its ticks run out
   (the session pauses) or the session stops; `rec.status` reports the
-  measurement and the editor shows it.
+  measurement and the editor shows it. `vkr_drive_start` gives the recorded
+  player a drive starts from, so a module places its player there and a
+  recording that began mid-session drives from where it began;
+  `vkr_drive_follow` and `vkr_drive_reference` let a module steer its player
+  back toward the recorded one (`rec.drive` with `follow`). The FPS module
+  does both, pulling at most at run speed.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

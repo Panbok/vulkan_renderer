@@ -343,6 +343,20 @@ static bool8_t player_before(VkrCtx *ctx, FpsPlayer *player, uint64_t tick) {
                            .gravity = vkr_gravity(ctx),
                            .crouch = crouch_requested,
                            .dt = dt};
+  /* A following drive pulls the player back toward the recorded one, at
+     most at run speed, so a long drive stays comparable after a change. */
+  VkrRecPlayer reference;
+  if (vkr_drive_follow(ctx) && vkr_drive_reference(ctx, tick, &reference)) {
+    Vec2 pull = vec2_new((reference.position.x - motor.foot.x) * 5.0f,
+                         (reference.position.z - motor.foot.z) * 5.0f);
+    const float32_t magnitude = sqrtf(pull.x * pull.x + pull.y * pull.y);
+    const float32_t limit = player->settings.move_speed;
+    if (magnitude > limit) {
+      pull = vec2_new(pull.x * limit / magnitude, pull.y * limit / magnitude);
+    }
+    move.velocity.x += pull.x;
+    move.velocity.z += pull.y;
+  }
   /* On a ladder gravity waits: forward climbs, down while the view looks
      down, and a jump pushes off it, away and up. */
   const FpsLadder *ladder = player_ladder(ctx, player, state);

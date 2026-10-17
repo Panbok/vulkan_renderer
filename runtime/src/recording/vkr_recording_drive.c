@@ -222,6 +222,22 @@ vkr_internal uint64_t vkr_recording_drive_find_player(
              : UINT64_MAX;
 }
 
+const VkrRecordingPlayer *
+vkr_recording_drive_start_player(const VkrRecordingDrive *drive) {
+  vkr_assert(drive != NULL && drive->open);
+  return &drive->players[0];
+}
+
+const VkrRecordingPlayer *
+vkr_recording_drive_reference(const VkrRecordingDrive *drive, uint64_t tick) {
+  vkr_assert(drive != NULL && drive->open);
+  const uint64_t recorded = vkr_recording_drive_recorded(drive, tick);
+  const uint64_t index = recorded == UINT64_MAX
+                             ? UINT64_MAX
+                             : vkr_recording_drive_find_player(drive, recorded);
+  return index == UINT64_MAX ? NULL : &drive->players[index];
+}
+
 void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,
                                 const float64_t position[3]) {
   vkr_assert(drive != NULL && drive->open && position != NULL);

@@ -75,7 +75,7 @@
 #endif
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 11u
+#define VKR_SDK_VERSION 12u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -790,6 +790,9 @@ typedef struct VkrSdkTable {
   bool8_t (*driving)(VkrCtx *ctx);
   uint32_t (*drive_actions)(VkrCtx *ctx, uint64_t tick, VkrRecAction *out,
                             uint32_t capacity);
+  bool8_t (*drive_start)(VkrCtx *ctx, VkrRecPlayer *out);
+  bool8_t (*drive_reference)(VkrCtx *ctx, uint64_t tick, VkrRecPlayer *out);
+  bool8_t (*drive_follow)(VkrCtx *ctx);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -1235,6 +1238,27 @@ static inline bool8_t vkr_driving(VkrCtx *ctx) {
 static inline uint32_t vkr_drive_actions(VkrCtx *ctx, uint64_t tick,
                                          VkrRecAction *out, uint32_t capacity) {
   return ctx->sdk->drive_actions(ctx, tick, out, capacity);
+}
+
+/** The recorded player a drive starts from, so the module can place its
+ * player there before the first driven tick: a recording that began
+ * mid-session drives from where it began. */
+static inline bool8_t vkr_drive_start(VkrCtx *ctx, VkrRecPlayer *out) {
+  return ctx->sdk->drive_start(ctx, out);
+}
+
+/** The recorded player for fixed tick `tick` while driving; false before
+ * the first driven tick or for a tick the recording has none for. */
+static inline bool8_t vkr_drive_reference(VkrCtx *ctx, uint64_t tick,
+                                          VkrRecPlayer *out) {
+  return ctx->sdk->drive_reference(ctx, tick, out);
+}
+
+/** The drive asks the module to steer its player back toward the recorded
+ * one (vkr_drive_reference), so a long session stays comparable after a
+ * change. */
+static inline bool8_t vkr_drive_follow(VkrCtx *ctx) {
+  return ctx->sdk->drive_follow(ctx);
 }
 
 /** The game owns keyboard and mouse this frame. */

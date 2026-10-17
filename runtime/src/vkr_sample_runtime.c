@@ -3910,6 +3910,10 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
 static void sample_simulate_steps(VkrStandardSceneRuntime *application,
                                   VkrScene *scene, VkrSceneHandle handle,
                                   float64_t delta_time) {
+  /* Modules starting a driven session read the drive's start. */
+  state->scripts.recording =
+      application->recording.active ? &application->recording : NULL;
+  state->scripts.drive = application->drive.open ? &application->drive : NULL;
   if (!state->scripts.started && !state->script_start_attempted &&
       application->editor_viewport.simulation_running) {
     sample_scripts_start(application);
@@ -3939,9 +3943,6 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
       .simulation_running = application->editor_viewport.simulation_running,
       .camera_available =
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
-  state->scripts.recording =
-      application->recording.active ? &application->recording : NULL;
-  state->scripts.drive = application->drive.open ? &application->drive : NULL;
   vkr_script_host_frame(&state->scripts, &frame);
   vkr_scene_handle_update(handle, frame.scene_delta);
   if (scene->physics_paused &&

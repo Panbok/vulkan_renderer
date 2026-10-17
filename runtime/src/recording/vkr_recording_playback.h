@@ -47,6 +47,9 @@ typedef struct VkrRecordingSpawn {
   uint32_t mesh_length;
   uint32_t animation_offset;
   uint32_t animation_length;
+  /* A spawn without a model may have a shape. */
+  bool8_t has_shape;
+  VkrRecordingSpawnShape shape;
 } VkrRecordingSpawn;
 
 /* VkrRecordingPlayback.pose_applied: no sample applied, as before the

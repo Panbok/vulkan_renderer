@@ -140,7 +140,9 @@ vkr_internal void vkr_recording_fill_spawn(VkrRecordingPlayback *playback,
   }
   MemCopy(&animation_length, record->data + 7u + mesh_length,
           sizeof(animation_length));
-  if (9u + (uint32_t)mesh_length + animation_length != record->size) {
+  const uint32_t paths = 9u + (uint32_t)mesh_length + animation_length;
+  const bool8_t shaped = paths + sizeof(VkrRecordingSpawnShape) == record->size;
+  if (paths != record->size && !shaped) {
     return;
   }
   VkrRecordingSpawn *spawn = &playback->spawns[id];
@@ -148,6 +150,10 @@ vkr_internal void vkr_recording_fill_spawn(VkrRecordingPlayback *playback,
     spawn->seen = true_v;
     spawn->first_frame = record->frame;
     spawn->container = record->data[4];
+  }
+  if (shaped) {
+    MemCopy(&spawn->shape, record->data + paths, sizeof(spawn->shape));
+    spawn->has_shape = true_v;
   }
   if (mesh_length == 0u ||
       playback->spawn_text_bytes + mesh_length + animation_length + 2u >

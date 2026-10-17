@@ -224,6 +224,14 @@ static void fps_start(VkrCtx *ctx, FpsModule *module) {
       return;
     }
   }
+  /* A drive starts where its recording's player stood, which differs from
+     the Player Start when the recording began mid-session. */
+  VkrRecPlayer checkpoint;
+  if (vkr_driving(ctx) && vkr_drive_start(ctx, &checkpoint)) {
+    config.spawn_foot = checkpoint.position;
+    config.has_spawn = true_v;
+    config.yaw = checkpoint.yaw_degrees * 0.01745329252f;
+  }
   config.visual = module->visual;
   config.visual_loading = module->body_loading;
   if (weapon_count) {

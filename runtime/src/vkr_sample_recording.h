@@ -99,6 +99,8 @@ typedef struct VkrSampleRecordingRequest {
   const VkrCodec *codec;
   /* START: what the recording measures. */
   VkrRecordingTier tier;
+  /* DRIVE: modules steer the driven player back toward the recorded one. */
+  bool8_t follow;
 } VkrSampleRecordingRequest;
 
 typedef struct VkrSampleRecordingStatus {
