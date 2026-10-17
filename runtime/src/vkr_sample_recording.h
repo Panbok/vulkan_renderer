@@ -80,6 +80,16 @@ typedef struct VkrSampleRecordingDriveResult {
      UINT64_MAX for none. */
   uint64_t divergent_tick;
   uint64_t divergent_frame;
+  /* Re-simulation: ticks whose hashes matched; at the first that did not,
+     its recorded tick and frame, the subsystems that differ and the
+     simulated entities in the transform buckets that differ. */
+  bool8_t resim;
+  bool8_t hash_diverged;
+  uint64_t ticks_hashed;
+  uint64_t hash_tick;
+  uint64_t hash_frame;
+  char subsystems[160];
+  char entities[192];
 } VkrSampleRecordingDriveResult;
 
 typedef struct VkrSampleRecordingRequest {
@@ -105,6 +115,9 @@ typedef struct VkrSampleRecordingRequest {
   VkrRecordingTier tier;
   /* DRIVE: modules steer the driven player back toward the recorded one. */
   bool8_t follow;
+  /* DRIVE: re-simulate: replay the session's seed and clock and stop at the
+     first tick whose hashes differ from the recording's. */
+  bool8_t resim;
 } VkrSampleRecordingRequest;
 
 typedef struct VkrSampleRecordingStatus {

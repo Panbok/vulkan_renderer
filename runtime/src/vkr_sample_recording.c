@@ -7,6 +7,7 @@
 #include "core/vkr_content_codec.h"
 #include "core/vkr_json_writer.h"
 #include "platform/vkr_platform.h"
+#include "renderer/systems/vkr_scene_physics.h"
 
 #define VKR_SAMPLE_RECORDING_IDENTITY_MAX 2048u
 /* Tier 1 on the tiled pipeline takes per-pass GPU stamps in one frame of
@@ -296,6 +297,53 @@ vkr_sample_recording_drive_result(const VkrRecordingDrive *drive,
   out->path_length = drive->path_length;
   out->divergent_tick = drive->divergent_tick;
   out->divergent_frame = drive->divergent_frame;
+  out->resim = drive->resim;
+  out->hash_diverged = drive->hash_diverged;
+  out->ticks_hashed = drive->ticks_hashed;
+  out->hash_tick = drive->hash_divergent_tick;
+  out->hash_frame = drive->hash_divergent_frame;
+  string_format(out->subsystems, sizeof(out->subsystems), "%s",
+                drive->hash_subsystems);
+}
+
+/* Names the simulated entities, bodies and characters, whose index falls
+   in a transform bucket that differed, as candidates for what moved. */
+vkr_internal void
+vkr_sample_recording_resim_entities(VkrStandardSceneRuntime *runtime,
+                                    const VkrRecordingDrive *drive, char *out,
+                                    uint64_t capacity) {
+  out[0] = '\0';
+  VkrScene *scene = runtime->active_scene;
+  if (!scene || !drive->hash_buckets) {
+    return;
+  }
+  VkrEntityId candidates[64];
+  uint32_t count = 0u;
+  const uint32_t bodies = vkr_scene_physics_body_count(scene);
+  for (uint32_t i = 0u; i < bodies && count < ArrayCount(candidates); ++i) {
+    candidates[count++] = vkr_scene_physics_body_at(scene, i);
+  }
+  VkrPhysicsCharacterState states[ArrayCount(candidates)];
+  count += vkr_scene_characters(scene, candidates + count, states,
+                                ArrayCount(candidates) - count);
+  uint64_t length = 0u;
+  uint32_t named = 0u;
+  for (uint32_t i = 0u; i < count && named < 6u; ++i) {
+    const uint32_t bucket =
+        candidates[i].parts.index % VKR_RECORDING_HASH_BUCKETS;
+    if (!(drive->hash_buckets & (1u << bucket))) {
+      continue;
+    }
+    String8 name = vkr_scene_get_name(scene, candidates[i]);
+    const int32_t written = string_format(
+        out + length, capacity - length, "%s%.*s", named ? ", " : "",
+        (int32_t)Min(name.length, (uint64_t)48u), (const char *)name.str);
+    if (written < 0 || (uint64_t)written >= capacity - length) {
+      break;
+    }
+    length += (uint64_t)written;
+    ++named;
+  }
 }
 
 /* Ends the open drive with its measurement as the request's outcome. */
@@ -306,7 +354,22 @@ vkr_sample_recording_drive_end(VkrStandardSceneRuntime *runtime,
   VkrSampleRecordingDriveResult *result = &state->status.drive;
   vkr_sample_recording_drive_result(&runtime->drive, result);
   char message[256];
-  if (result->divergent_tick == UINT64_MAX) {
+  if (result->resim) {
+    vkr_sample_recording_resim_entities(
+        runtime, &runtime->drive, result->entities, sizeof(result->entities));
+  }
+  if (result->resim && result->hash_diverged) {
+    string_format(message, sizeof(message),
+                  "Re-simulate %s at recorded frame %llu, tick %llu: %s "
+                  "differ%s%s.",
+                  why, (unsigned long long)result->hash_frame,
+                  (unsigned long long)result->hash_tick, result->subsystems,
+                  result->entities[0] ? "; near " : "", result->entities);
+  } else if (result->resim) {
+    string_format(message, sizeof(message),
+                  "Re-simulate %s: %llu ticks matched the recording.", why,
+                  (unsigned long long)result->ticks_hashed);
+  } else if (result->divergent_tick == UINT64_MAX) {
     string_format(message, sizeof(message),
                   "Drive %s: %llu ticks compared, the path stayed within "
                   "%.2f m (max %.3f m).",
@@ -345,6 +408,16 @@ vkr_sample_recording_drive(VkrStandardSceneRuntime *runtime,
     return;
   }
   runtime->drive.follow = request->follow;
+  if (request->resim &&
+      (!runtime->drive.has_session || runtime->drive.hash_count == 0u)) {
+    vkr_recording_drive_close(&runtime->drive);
+    vkr_sample_recording_result(
+        state, request->token, false_v,
+        "Re-simulate needs a recording that began before Play started, so "
+        "it holds the session's seed, clock and tick hashes.");
+    return;
+  }
+  runtime->drive.resim = request->resim;
   /* Drive plays the session, which Playback keeps stopped. */
   if (runtime->playback.open) {
     vkr_sample_recording_close(runtime, state, 0u);
@@ -357,7 +430,8 @@ vkr_sample_recording_drive(VkrStandardSceneRuntime *runtime,
   vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_PLAY);
   char message[VKR_RECORDING_PATH_MAX + 96u];
   string_format(message, sizeof(message),
-                "Driving %s: %llu actions over %llu ticks.", request->path,
+                "%s %s: %llu actions over %llu ticks.",
+                request->resim ? "Re-simulating" : "Driving", request->path,
                 (unsigned long long)runtime->drive.action_count,
                 (unsigned long long)(runtime->drive.last_tick -
                                      runtime->drive.first_tick + 1u));
@@ -463,7 +537,11 @@ void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
     const bool8_t simulating = runtime->editor_viewport.simulation_running;
     state->drive_started = state->drive_started || simulating;
     vkr_sample_recording_drive_result(&runtime->drive, &status->drive);
-    if (runtime->drive.finished) {
+    if (runtime->drive.hash_diverged) {
+      vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE);
+      vkr_sample_recording_drive_end(runtime, state, state->drive_token,
+                                     "stopped");
+    } else if (runtime->drive.finished) {
       vkr_sample_recording_queue(state, VKR_SAMPLE_RECORDING_TRANSPORT_PAUSE);
       vkr_sample_recording_drive_end(runtime, state, state->drive_token,
                                      "finished");

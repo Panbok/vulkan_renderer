@@ -297,8 +297,22 @@ static void fps_fixed_update(VkrCtx *ctx, FpsModule *module) {
   }
 }
 
+/* The player's simulation for re-simulation: where it stands, how it moves
+   and faces, and what it fired and hit. Its input queue and camera are
+   bookkeeping a replay feeds differently, so they stay out. */
+static void fps_sim_hash(VkrCtx *ctx, const FpsPlayer *player) {
+  const float32_t values[] = {player->current_foot.x,  player->current_foot.y,
+                              player->current_foot.z,  player->move_velocity.x,
+                              player->move_velocity.y, player->carried.x,
+                              player->carried.y,       player->facing};
+  const uint64_t counts[] = {player->steps, player->shots_fired, player->hits};
+  vkr_sim_hash(ctx, values, (uint32_t)sizeof(values));
+  vkr_sim_hash(ctx, counts, (uint32_t)sizeof(counts));
+}
+
 static void fps_late_fixed_update(VkrCtx *ctx, FpsModule *module) {
   fps_player_after_physics(ctx, &module->player);
+  fps_sim_hash(ctx, &module->player);
 }
 
 static void fps_input(VkrCtx *ctx, FpsModule *module,

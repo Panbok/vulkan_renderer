@@ -14,7 +14,25 @@ typedef struct VkrRecordingDriveLoad {
   const VkrRecordingReader *reader;
   const VkrCodec *codec;
   bool8_t counting;
+  /* Session records seen in this pass. */
+  uint32_t sessions;
 } VkrRecordingDriveLoad;
+
+/* A hash_module record: the name of module index `index`. */
+vkr_internal void
+vkr_recording_drive_name_module(VkrRecordingDrive *drive,
+                                const VkrRecordingRecord *record) {
+  uint32_t index = 0u;
+  MemCopy(&index, record->data, sizeof(index));
+  if (index >= VKR_RECORDING_HASH_MODULE_MAX) {
+    return;
+  }
+  const uint32_t length =
+      Min(record->size - 4u, (uint32_t)VKR_RECORDING_HASH_MODULE_NAME_MAX);
+  MemCopy(drive->module_names[index], record->data + 4u, length);
+  drive->module_names[index][length] = '\0';
+  drive->module_name_count = Max(drive->module_name_count, index + 1u);
+}
 
 /* Counts, then copies, the action and player records of every readable
    records chunk. */
@@ -40,6 +58,36 @@ vkr_internal bool8_t vkr_recording_drive_scan(VkrRecordingDriveLoad *load) {
                   sizeof(VkrRecordingAction));
         }
         ++drive->action_count;
+      } else if (record.stream == VKR_RECORDING_STREAM_SESSION &&
+                 record.size == sizeof(VkrRecordingSession)) {
+        /* Only the first session re-simulates; a restart ends it. */
+        if (++load->sessions == 1u && !load->counting) {
+          VkrRecordingSession session;
+          MemCopy(&session, record.data, sizeof(session));
+          drive->seed = session.seed;
+        }
+        drive->has_session = true_v;
+      } else if (load->sessions == 1u &&
+                 record.stream == VKR_RECORDING_STREAM_SIM_FRAME &&
+                 record.size == sizeof(VkrRecordingSimFrame)) {
+        if (!load->counting) {
+          MemCopy(&drive->sim_frames[drive->sim_frame_count], record.data,
+                  sizeof(VkrRecordingSimFrame));
+        }
+        ++drive->sim_frame_count;
+      } else if (load->sessions == 1u &&
+                 record.stream == VKR_RECORDING_STREAM_TICK_HASH &&
+                 record.size == sizeof(VkrRecordingTickHash)) {
+        if (!load->counting) {
+          MemCopy(&drive->hashes[drive->hash_count], record.data,
+                  sizeof(VkrRecordingTickHash));
+          drive->hash_frames[drive->hash_count] = record.frame;
+        }
+        ++drive->hash_count;
+      } else if (load->sessions == 1u && !load->counting &&
+                 record.stream == VKR_RECORDING_STREAM_HASH_MODULE &&
+                 record.size > 4u) {
+        vkr_recording_drive_name_module(drive, &record);
       } else if (record.stream == VKR_RECORDING_STREAM_PLAYER &&
                  record.size == sizeof(VkrRecordingPlayer)) {
         if (!load->counting) {
@@ -97,8 +145,28 @@ vkr_internal bool8_t vkr_recording_drive_load(VkrRecordingDrive *drive,
     string_format(error, error_capacity, "out of memory");
     return false_v;
   }
+  if (drive->sim_frame_count > 0u || drive->hash_count > 0u) {
+    drive->sim_frames = vkr_allocator_alloc(&drive->allocator,
+                                            sizeof(VkrRecordingSimFrame) *
+                                                (drive->sim_frame_count + 1u),
+                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    drive->hashes = vkr_allocator_alloc(&drive->allocator,
+                                        sizeof(VkrRecordingTickHash) *
+                                            (drive->hash_count + 1u),
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    drive->hash_frames = vkr_allocator_alloc(
+        &drive->allocator, sizeof(uint64_t) * (drive->hash_count + 1u),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!drive->sim_frames || !drive->hashes || !drive->hash_frames) {
+      string_format(error, error_capacity, "out of memory");
+      return false_v;
+    }
+  }
   drive->action_count = 0u;
   drive->player_count = 0u;
+  drive->sim_frame_count = 0u;
+  drive->hash_count = 0u;
+  load.sessions = 0u;
   load.counting = false_v;
   if (!vkr_recording_drive_scan(&load)) {
     string_format(error, error_capacity, "a records chunk is damaged");
@@ -156,6 +224,8 @@ bool8_t vkr_recording_drive_open(VkrRecordingDrive *drive, const char *path,
   drive->base_tick = UINT64_MAX;
   drive->divergent_tick = UINT64_MAX;
   drive->divergent_frame = UINT64_MAX;
+  drive->hash_divergent_tick = UINT64_MAX;
+  drive->hash_divergent_frame = UINT64_MAX;
   drive->open = true_v;
   return true_v;
 }
@@ -272,4 +342,91 @@ void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,
     drive->divergent_tick = recorded;
     drive->divergent_frame = drive->player_frames[index];
   }
+}
+
+bool8_t vkr_recording_drive_sim_frame(VkrRecordingDrive *drive,
+                                      VkrRecordingSimFrame *out) {
+  vkr_assert(drive != NULL && drive->open && out != NULL);
+  if (drive->sim_cursor >= drive->sim_frame_count) {
+    drive->finished = true_v;
+    return false_v;
+  }
+  *out = drive->sim_frames[drive->sim_cursor++];
+  return true_v;
+}
+
+/* Appends `text` to the divergence's subsystem list. */
+vkr_internal void vkr_recording_drive_differs(VkrRecordingDrive *drive,
+                                              const char *text) {
+  const uint64_t length = string_length(drive->hash_subsystems);
+  string_format(drive->hash_subsystems + length,
+                sizeof(drive->hash_subsystems) - length, "%s%s",
+                length ? ", " : "", text);
+}
+
+/* The recorded hash of module `name` in `recorded`, or false when the
+   recording has no such module. */
+vkr_internal bool8_t vkr_recording_drive_module_hash(
+    const VkrRecordingDrive *drive, const VkrRecordingTickHash *recorded,
+    const char *name, uint32_t *out) {
+  for (uint32_t i = 0u;
+       i < recorded->module_count && i < drive->module_name_count; ++i) {
+    if (string_equals(drive->module_names[i], name)) {
+      *out = recorded->modules[i];
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_recording_drive_check_hash(VkrRecordingDrive *drive,
+                                       const VkrRecordingTickHash *live,
+                                       const char *const *module_names) {
+  vkr_assert(drive != NULL && drive->open && live != NULL);
+  if (drive->hash_diverged) {
+    return false_v;
+  }
+  while (drive->hash_cursor < drive->hash_count &&
+         drive->hashes[drive->hash_cursor].tick < live->tick) {
+    ++drive->hash_cursor;
+  }
+  if (drive->hash_cursor >= drive->hash_count ||
+      drive->hashes[drive->hash_cursor].tick != live->tick) {
+    return true_v;
+  }
+  const VkrRecordingTickHash *recorded = &drive->hashes[drive->hash_cursor];
+  /* Script state first: a module that drew a different number or kept
+     different data is the likely cause of what moved after it. */
+  for (uint32_t i = 0u; i < live->module_count; ++i) {
+    uint32_t hash = 0u;
+    char text[96];
+    if (!vkr_recording_drive_module_hash(drive, recorded, module_names[i],
+                                         &hash)) {
+      string_format(text, sizeof(text), "module %s (not in the recording)",
+                    module_names[i]);
+      vkr_recording_drive_differs(drive, text);
+    } else if (hash != live->modules[i]) {
+      string_format(text, sizeof(text), "module %s", module_names[i]);
+      vkr_recording_drive_differs(drive, text);
+    }
+  }
+  if (recorded->bodies != live->bodies) {
+    vkr_recording_drive_differs(drive, "physics bodies");
+  }
+  for (uint32_t b = 0u; b < VKR_RECORDING_HASH_BUCKETS; ++b) {
+    if (recorded->transforms[b] != live->transforms[b]) {
+      drive->hash_buckets |= 1u << b;
+    }
+  }
+  if (drive->hash_buckets) {
+    vkr_recording_drive_differs(drive, "transforms");
+  }
+  if (drive->hash_subsystems[0] == '\0') {
+    ++drive->ticks_hashed;
+    return true_v;
+  }
+  drive->hash_diverged = true_v;
+  drive->hash_divergent_tick = live->tick;
+  drive->hash_divergent_frame = drive->hash_frames[drive->hash_cursor];
+  return false_v;
 }

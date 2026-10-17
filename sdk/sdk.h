@@ -75,7 +75,7 @@
 #endif
 
 /** Modules built for another SDK version are refused. */
-#define VKR_SDK_VERSION 12u
+#define VKR_SDK_VERSION 13u
 
 /** Component types or behaviors one module may declare. */
 #define VKR_SDK_EXPORT_MAX 64u
@@ -793,6 +793,10 @@ typedef struct VkrSdkTable {
   bool8_t (*drive_start)(VkrCtx *ctx, VkrRecPlayer *out);
   bool8_t (*drive_reference)(VkrCtx *ctx, uint64_t tick, VkrRecPlayer *out);
   bool8_t (*drive_follow)(VkrCtx *ctx);
+
+  /* Random numbers and re-simulation. */
+  uint32_t (*random_u32)(VkrCtx *ctx);
+  void (*sim_hash)(VkrCtx *ctx, const void *data, uint32_t size);
 } VkrSdkTable;
 
 /* The host's context starts with this member. */
@@ -1259,6 +1263,36 @@ static inline bool8_t vkr_drive_reference(VkrCtx *ctx, uint64_t tick,
  * change. */
 static inline bool8_t vkr_drive_follow(VkrCtx *ctx) {
   return ctx->sdk->drive_follow(ctx);
+}
+
+/** The next number of the module's own generator, seeded from the Play
+ * session, so a recording re-simulates it exactly (docs/proposals/
+ * recordings.md, "Drive and re-simulation"). Gameplay draws from this, not
+ * rand(), which a re-simulation cannot repeat. */
+static inline uint32_t vkr_random_u32(VkrCtx *ctx) {
+  return ctx->sdk->random_u32(ctx);
+}
+
+/** A number in [0, 1) from the module's generator. */
+static inline float32_t vkr_random_f32(VkrCtx *ctx) {
+  return (float32_t)(vkr_random_u32(ctx) >> 8u) * (1.0f / 16777216.0f);
+}
+
+/** A number in [low, high) from the module's generator. */
+static inline float32_t vkr_random_range(VkrCtx *ctx, float32_t low,
+                                         float32_t high) {
+  return low + (high - low) * vkr_random_f32(ctx);
+}
+
+/** Adds `size` bytes of the module's simulation state to this fixed tick's
+ * hash of the module, which a recording keeps and a re-simulation compares
+ * (docs/proposals/recordings.md). Call from fixed_update or
+ * late_fixed_update with values that a replay of the same input reproduces:
+ * positions, velocities, counters; never pointers, wall-clock times or
+ * input bookkeeping. Components, per-entity state and vkr_random_u32's
+ * generator are hashed without it. */
+static inline void vkr_sim_hash(VkrCtx *ctx, const void *data, uint32_t size) {
+  ctx->sdk->sim_hash(ctx, data, size);
 }
 
 /** The game owns keyboard and mouse this frame. */

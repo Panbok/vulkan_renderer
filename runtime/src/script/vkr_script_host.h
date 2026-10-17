@@ -192,6 +192,9 @@ typedef struct VkrScriptStateType {
   uint32_t align;
   /* ECS component per attached container slot, registered on first use. */
   VkrComponentTypeId ids[VKR_SCRIPT_CONTAINER_MAX];
+  /* The module that registered it, whose tick hash covers it, or
+     UINT32_MAX for a tool context's. */
+  uint32_t module;
 } VkrScriptStateType;
 
 #define VKR_SCRIPT_BOUND_ANIMATION_MAX 4u
@@ -250,6 +253,9 @@ typedef struct VkrScriptHost {
   struct VkrRecordingDrive *drive;
   /* Orders the actions vkr_rec_action records. */
   uint64_t rec_action_sequence;
+  /* Seeds the modules' generators: the clock at the session's start, or a
+     re-simulated recording's seed. */
+  uint64_t session_seed;
   bool8_t time_step_set;
   float64_t time_step;
   uint64_t frame_serial;

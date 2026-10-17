@@ -5,6 +5,7 @@
 #include "script/vkr_script_internal.h"
 
 #include "animation/vkr_animation_player.h"
+#include "core/vkr_hash.h"
 #include "recording/vkr_recording.h"
 #include "recording/vkr_recording_drive.h"
 #include "renderer/systems/vkr_scene_animation.h"
@@ -884,7 +885,10 @@ static VkrStateType sdk_state_type(VkrCtx *ctx, VkrStr name, uint32_t size,
     return (VkrStateType){0};
   }
   VkrScriptStateType *type = &host->state_types[host->state_type_count];
-  *type = (VkrScriptStateType){.size = size, .align = align};
+  *type = (VkrScriptStateType){
+      .size = size,
+      .align = align,
+      .module = script->instance ? script->instance->module : UINT32_MAX};
   MemCopy(type->name, word.str, word.length);
   for (uint32_t c = 0; c < VKR_SCRIPT_CONTAINER_MAX; ++c) {
     type->ids[c] = VKR_COMPONENT_TYPE_INVALID;
@@ -1141,7 +1145,9 @@ static VkrRecPlayer sdk_rec_player_of(ScriptCtx *script,
 static bool8_t sdk_drive_start(VkrCtx *ctx, VkrRecPlayer *out) {
   ScriptCtx *script = sdk_ctx(ctx);
   const VkrRecordingDrive *drive = script->host->drive;
-  if (!drive || !drive->open || !out) {
+  /* A re-simulation starts where the recorded session started, as the
+     scene places the player, not at its first recorded tick. */
+  if (!drive || !drive->open || drive->resim || !out) {
     return false_v;
   }
   *out = sdk_rec_player_of(script, vkr_recording_drive_start_player(drive));
@@ -1159,6 +1165,26 @@ static bool8_t sdk_drive_reference(VkrCtx *ctx, uint64_t tick,
   }
   *out = sdk_rec_player_of(script, player);
   return true_v;
+}
+
+/* splitmix64: one 64-bit step of the instance's state, its high half. */
+static uint32_t sdk_random_u32(VkrCtx *ctx) {
+  VkrScriptInstance *instance = sdk_ctx(ctx)->instance;
+  if (!instance) {
+    return 0u;
+  }
+  uint64_t z = (instance->random_state += 0x9e3779b97f4a7c15ull);
+  z = (z ^ (z >> 30u)) * 0xbf58476d1ce4e5b9ull;
+  z = (z ^ (z >> 27u)) * 0x94d049bb133111ebull;
+  z ^= z >> 31u;
+  return (uint32_t)(z >> 32u);
+}
+
+static void sdk_sim_hash(VkrCtx *ctx, const void *data, uint32_t size) {
+  VkrScriptInstance *instance = sdk_ctx(ctx)->instance;
+  if (instance && data && size) {
+    instance->sim_hash = vkr_crc32_update(instance->sim_hash, data, size);
+  }
 }
 
 static bool8_t sdk_drive_follow(VkrCtx *ctx) {
@@ -2056,5 +2082,7 @@ void script_sdk_table(VkrSdkTable *table) {
       .drive_start = sdk_drive_start,
       .drive_reference = sdk_drive_reference,
       .drive_follow = sdk_drive_follow,
+      .random_u32 = sdk_random_u32,
+      .sim_hash = sdk_sim_hash,
   };
 }

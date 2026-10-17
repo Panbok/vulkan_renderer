@@ -15047,6 +15047,25 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
             diverged
                 ? vkr_bakery_json_int(arena, (int64_t)drive->divergent_frame)
                 : vkr_bakery_json_null(arena));
+    if (drive->resim) {
+      /* Re-simulation: hashes per tick, and the first tick that differed. */
+      VkrBakeryJson *resim = vkr_bakery_json_object(arena);
+      ops_set(ctx, resim, "ticks_matched",
+              vkr_bakery_json_int(arena, (int64_t)drive->ticks_hashed));
+      ops_set(ctx, resim, "diverged",
+              vkr_bakery_json_bool(arena, drive->hash_diverged));
+      if (drive->hash_diverged) {
+        ops_set(ctx, resim, "tick",
+                vkr_bakery_json_int(arena, (int64_t)drive->hash_tick));
+        ops_set(ctx, resim, "frame",
+                vkr_bakery_json_int(arena, (int64_t)drive->hash_frame));
+        ops_set(ctx, resim, "subsystems",
+                vkr_bakery_json_cstr(arena, drive->subsystems));
+        ops_set(ctx, resim, "entities",
+                vkr_bakery_json_cstr(arena, drive->entities));
+      }
+      ops_set(ctx, result, "resim", resim);
+    }
     ops_set(ctx, ctx->call->result, "drive", result);
   }
   return VKR_EDITOR_OP_DONE;
@@ -15566,6 +15585,7 @@ static VkrEditorOpStatus ops_run_rec_drive(OpsContext *ctx) {
       return VKR_EDITOR_OP_DONE;
     }
     request.follow = ops_arg_bool(ctx->call->args, "follow", false_v);
+    request.resim = ops_arg_bool(ctx->call->args, "resim", false_v);
     if (!vkr_editor_recording_resolve(ctx->editor, name, request.path,
                                       sizeof(request.path))) {
       ops_fail(ctx, OPS_INVALID,
@@ -16462,9 +16482,14 @@ static const OpsDef s_ops[] = {
      "maximum and the first recorded frame past the tolerance; the drive "
      "ends when the actions run out or the session stops. The player starts "
      "where the recording's did; 'follow' steers it back toward the recorded "
-     "path.",
+     "path. 'resim' re-simulates instead, on the same build and machine: "
+     "the session replays the recording's seed and clock, every fixed tick's "
+     "hashes are compared, and it stops at the first that differs; "
+     "rec.status 'drive.resim' names the frame, tick, subsystems and "
+     "entities. It needs a recording that began before Play started.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
-     "\"string\"},\"follow\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}",
+     "\"string\"},\"follow\":{\"type\":\"boolean\"},\"resim\":{"
+     "\"type\":\"boolean\"}},\"required\":[\"name\"]}",
      ops_run_rec_drive, NULL},
     {"rec.compare",
      "Compare recording 'b' with recording 'a' (default: the analyzed one) "

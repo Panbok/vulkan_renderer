@@ -42,8 +42,11 @@ typedef struct VkrEditorRecordingEntry {
   uint64_t lost;
   int64_t started_unix;
   bool8_t has_summary;
-  /* The recording holds actions and a player track to drive with. */
+  /* The recording holds actions and a player track to drive with, and
+     the tick hashes of a session that started while it recorded, to
+     re-simulate. */
   bool8_t drivable;
+  bool8_t resimulable;
   /* From annotations.json. */
   uint32_t notes;
   uint32_t ranges;

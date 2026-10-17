@@ -1221,6 +1221,132 @@ static void test_recording_drive(void) {
   printf("  test_recording_drive PASSED\n");
 }
 
+/* The hashes of re-simulation test tick `tick`: one module, "fps". */
+static VkrRecordingTickHash recording_test_tick_hash(uint64_t tick) {
+  VkrRecordingTickHash hash = {.tick = tick, .bodies = 7u, .module_count = 1u};
+  for (uint32_t b = 0; b < VKR_RECORDING_HASH_BUCKETS; ++b) {
+    hash.transforms[b] = (uint32_t)(tick * 31u + b);
+  }
+  hash.modules[0] = (uint32_t)(tick * 977u);
+  return hash;
+}
+
+/* Detects: a re-simulation without the recorded seed, a clock that skips or
+   repeats a frame, sim frames or hashes kept before the session started or
+   after it restarted, hashes compared against another tick, a module hash
+   matched by index instead of name, a mismatch that is not reported at its
+   tick and frame with its subsystems and buckets, and a drive that keeps
+   matching after it diverged. */
+static void test_recording_resim(void) {
+  printf("  Running test_recording_resim...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("resim", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {.bundle_path = path,
+                                     .codec = vkr_depot_zstd_codec()};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  const char *names[] = {"fps"};
+  /* Frames 0 and 1 run before Play: neither their clock nor a hash
+     counts. Play starts at frame 2 with ticks 1 to 6, two a frame; a restart
+     at frame 5 starts a session that re-simulation ignores. */
+  for (uint64_t f = 0u; f < 7u; ++f) {
+    if (f == 2u) {
+      vkr_recording_session(&recording, 0x5eedull);
+    } else if (f == 5u) {
+      vkr_recording_session(&recording, 0xbadull);
+    }
+    const VkrRecordingSimFrame clock = {.now = 100.0 + (float64_t)f,
+                                        .delta = 0.03};
+    vkr_recording_sim_frame(&recording, &clock);
+    const VkrRecordingTickHash before = recording_test_tick_hash(99u);
+    if (f < 2u) {
+      vkr_recording_tick_hash(&recording, &before, names);
+    }
+    for (uint64_t t = 0u; f >= 2u && t < 2u; ++t) {
+      const VkrRecordingTickHash hash =
+          recording_test_tick_hash((f - 2u) * 2u + t + 1u);
+      vkr_recording_tick_hash(&recording, &hash, names);
+    }
+    const VkrRecordingPlayer player = {.tick = f + 1u};
+    vkr_recording_player(&recording, &player);
+    const VkrRecordingAction action = {.tick = f + 1u, .sequence = f};
+    vkr_recording_action(&recording, &action);
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+  }
+  assert(vkr_recording_stop(&recording, NULL));
+
+  static VkrRecordingDrive drive;
+  char error[192];
+  assert(vkr_recording_drive_open(&drive, path, vkr_depot_zstd_codec(), error,
+                                  sizeof(error)));
+  /* The first session: frames 2 to 4, ticks 1 to 6. */
+  assert(drive.has_session && drive.seed == 0x5eedull);
+  assert(drive.sim_frame_count == 3u && drive.hash_count == 6u &&
+         drive.module_name_count == 1u &&
+         strcmp(drive.module_names[0], "fps") == 0);
+  drive.resim = true_v;
+  VkrRecordingSimFrame clock;
+  for (uint64_t f = 2u; f < 5u; ++f) {
+    assert(vkr_recording_drive_sim_frame(&drive, &clock) &&
+           clock.now == 100.0 + (float64_t)f && clock.delta == 0.03);
+  }
+  assert(!vkr_recording_drive_sim_frame(&drive, &clock) && drive.finished);
+  drive.finished = false_v;
+
+  /* A live run whose module list holds a module the recording lacks before
+     "fps" matches "fps" by name and reports the stranger. */
+  const char *live_names[] = {"tools", "fps"};
+  const VkrRecordingTickHash recorded = recording_test_tick_hash(1u);
+  VkrRecordingTickHash live = recorded;
+  live.module_count = 2u;
+  live.modules[0] = 12345u;
+  live.modules[1] = recorded.modules[0];
+  assert(!vkr_recording_drive_check_hash(&drive, &live, live_names));
+  assert(!vkr_recording_drive_check_hash(&drive, &live, live_names));
+  /* "tools" is not in the recording: that alone differs. */
+  assert(drive.hash_diverged && drive.hash_divergent_tick == 1u &&
+         drive.hash_divergent_frame == 2u &&
+         strcmp(drive.hash_subsystems, "module tools (not in the recording)") ==
+             0);
+
+  /* A run with the recording's modules matches until tick 5, where the
+     module and bucket 3 differ. */
+  drive.hash_diverged = false_v;
+  drive.hash_subsystems[0] = '\0';
+  drive.hash_cursor = 0u;
+  drive.ticks_hashed = 0u;
+  for (uint64_t tick = 1u; tick <= 6u; ++tick) {
+    VkrRecordingTickHash run = recording_test_tick_hash(tick);
+    if (tick == 5u) {
+      run.modules[0] ^= 1u;
+      run.transforms[3] ^= 1u;
+    }
+    const bool8_t matched = vkr_recording_drive_check_hash(&drive, &run, names);
+    assert(matched == (tick < 5u));
+  }
+  assert(drive.ticks_hashed == 4u && drive.hash_divergent_tick == 5u &&
+         drive.hash_divergent_frame == 4u && drive.hash_buckets == (1u << 3) &&
+         strcmp(drive.hash_subsystems, "module fps, transforms") == 0);
+  vkr_recording_drive_close(&drive);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_resim PASSED\n");
+}
+
 /* Detects: gpu.submission written on the frame that published it instead
    of the frame that rendered it, a repeated completion written twice, a
    GPU time from before the recording filed on a recorded frame, and the
@@ -1498,6 +1624,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pose_playback();
   test_recording_player_records();
   test_recording_drive();
+  test_recording_resim();
   test_recording_playback_loop_range();
   test_recording_annotations();
   printf("--- Recording Tests Completed ---\n");

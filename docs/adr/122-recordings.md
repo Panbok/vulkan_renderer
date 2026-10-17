@@ -15,8 +15,9 @@ playback with exact seeking, the editor's Record control, REC indicator,
 playback bar and Recordings window, the `rec.*` agent operations, Tier 0
 frame metrics, Tier 1 pass rows, the recording analysis, the Performance
 window, and from R3 the entity poses that Watch replays, Play recording,
-Drive, requests, annotations, Compare, harness recordings and perf re-runs.
-Re-simulation remains in the proposal. A Tier 0 recording passed the
+Drive, requests, annotations, Compare, harness recordings and perf re-runs,
+and from R6 Re-simulate on the same build. Recorded async completions and a
+fixed physics worker count remain in the proposal. A Tier 0 recording passed the
 authoritative overhead gate on a GPU-bound Bistro orbit (2026-10-17, in the
 proposal); a CPU-bound workload has not been measured, so harness runs that
 record keep the authority reason `recording.enabled`.
@@ -270,6 +271,29 @@ an agent must read one without the editor.
   `vkr_drive_follow` and `vkr_drive_reference` let a module steer its player
   back toward the recorded one (`rec.drive` with `follow`). The FPS module
   does both, pulling at most at run speed.
+- **Re-simulate (R6).** A Play session draws a session seed (the wall clock,
+  or the recorded seed when re-simulating) and writes it to stream
+  `session`; each running frame writes its clock (`now`, scene delta) to
+  `sim_frame`. SDK version 13 adds a seeded splitmix64 generator per module
+  instance (`vkr_random_u32`, `vkr_random_f32`, `vkr_random_range`, seeded
+  from the session seed, the module name and the container) and
+  `vkr_sim_hash`, which feeds simulation values a module keeps outside
+  components into its tick hash. After each fixed tick the script host
+  writes `tick_hash`: CRC-32s of the transforms in 16 buckets by entity
+  index, the physics bodies' poses and velocities, and per module its
+  generators, `vkr_sim_hash` input, typed components and per-entity state
+  ([vkr_script_hash.c](../../runtime/src/script/vkr_script_hash.c)); stream
+  `hash_module` names the modules. Entity ids are hashed without their
+  generation, which grows when a session reset reuses a slot, and so are
+  live entity ids inside script data. Instance data is not hashed: it
+  holds input bookkeeping and frame-time presentation that a replay does
+  not reproduce. `rec.drive` with `resim`, or Re-simulate on a card, resets
+  the session with the recorded seed, replays the recorded clock and
+  actions from the scene start (without `vkr_drive_start`) and compares
+  each tick's hashes; the first mismatch pauses the session and reports the
+  recorded frame, the tick, the differing modules, bodies or transform
+  buckets, and the bodies and characters in those buckets. Re-simulate
+  needs a recording that began before Play started.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

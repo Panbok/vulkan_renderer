@@ -139,6 +139,39 @@ static const VkrRecordingField VKR_RECORDING_CAMERA_FIELDS[] = {
      .offset = 44u},
 };
 
+static const VkrRecordingField VKR_RECORDING_SESSION_FIELDS[] = {
+    {.name = "seed", .type = VKR_RECORDING_FIELD_U64, .count = 1u},
+};
+
+static const VkrRecordingField VKR_RECORDING_SIM_FRAME_FIELDS[] = {
+    {.name = "now", .unit = "s", .type = VKR_RECORDING_FIELD_F64, .count = 1u},
+    {.name = "delta",
+     .unit = "s",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 8u},
+};
+
+static const VkrRecordingField VKR_RECORDING_TICK_HASH_FIELDS[] = {
+    {.name = "tick", .type = VKR_RECORDING_FIELD_U64, .count = 1u},
+    {.name = "transforms",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = VKR_RECORDING_HASH_BUCKETS,
+     .offset = 8u},
+    {.name = "bodies",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 8u + 4u * VKR_RECORDING_HASH_BUCKETS},
+    {.name = "module_count",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 12u + 4u * VKR_RECORDING_HASH_BUCKETS},
+    {.name = "modules",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = VKR_RECORDING_HASH_MODULE_MAX,
+     .offset = 16u + 4u * VKR_RECORDING_HASH_BUCKETS},
+};
+
 static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
     {.id = VKR_RECORDING_STREAM_FRAME,
      .name = "frame",
@@ -171,6 +204,23 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
      .record_size = sizeof(VkrRecordingAction),
      .field_count = ArrayCount(VKR_RECORDING_ACTION_FIELDS),
      .fields = VKR_RECORDING_ACTION_FIELDS},
+    {.id = VKR_RECORDING_STREAM_SESSION,
+     .name = "session",
+     .record_size = sizeof(VkrRecordingSession),
+     .field_count = ArrayCount(VKR_RECORDING_SESSION_FIELDS),
+     .fields = VKR_RECORDING_SESSION_FIELDS},
+    {.id = VKR_RECORDING_STREAM_SIM_FRAME,
+     .name = "sim_frame",
+     .record_size = sizeof(VkrRecordingSimFrame),
+     .field_count = ArrayCount(VKR_RECORDING_SIM_FRAME_FIELDS),
+     .fields = VKR_RECORDING_SIM_FRAME_FIELDS},
+    {.id = VKR_RECORDING_STREAM_TICK_HASH,
+     .name = "tick_hash",
+     .record_size = sizeof(VkrRecordingTickHash),
+     .field_count = ArrayCount(VKR_RECORDING_TICK_HASH_FIELDS),
+     .fields = VKR_RECORDING_TICK_HASH_FIELDS},
+    /* A u32 index, then the UTF-8 module name. */
+    {.id = VKR_RECORDING_STREAM_HASH_MODULE, .name = "hash_module"},
 };
 
 /* Tier 0 (docs/proposals/recordings.md, "Metrics and capture tiers"):
@@ -235,6 +285,10 @@ _Static_assert(sizeof(VkrRecordingPose) == 88u, "pose record layout");
 _Static_assert(sizeof(VkrRecordingPlayer) == 64u, "player record layout");
 _Static_assert(sizeof(VkrRecordingAction) == 32u, "action record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
+_Static_assert(sizeof(VkrRecordingTickHash) ==
+                   16u + 4u * (VKR_RECORDING_HASH_BUCKETS +
+                               VKR_RECORDING_HASH_MODULE_MAX),
+               "tick hash record layout");
 
 const VkrRecordingStream *vkr_recording_streams(uint32_t *out_count) {
   *out_count = ArrayCount(VKR_RECORDING_STREAMS);
@@ -440,8 +494,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
-  VkrRecordingStream streams[16];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 6u <= 16u,
+  VkrRecordingStream streams[24];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 6u <= 24u,
                  "room for the metrics, pose and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
@@ -986,6 +1040,56 @@ void vkr_recording_engine_event(VkrRecording *recording, const char *name,
   vkr_recording_engine_event_at(recording, recording->frame, name, count, ms);
 }
 
+void vkr_recording_session(VkrRecording *recording, uint64_t seed) {
+  vkr_assert(recording != NULL && recording->active);
+  const VkrRecordingSession session = {.seed = seed};
+  if (vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                         VKR_RECORDING_STREAM_SESSION, recording->frame,
+                         &session, sizeof(session))) {
+    recording->session_written = true_v;
+    recording->hash_modules_named = 0u;
+  }
+}
+
+void vkr_recording_sim_frame(VkrRecording *recording,
+                             const VkrRecordingSimFrame *frame) {
+  vkr_assert(recording != NULL && recording->active);
+  if (recording->session_written) {
+    (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                             VKR_RECORDING_STREAM_SIM_FRAME, recording->frame,
+                             frame, sizeof(*frame));
+  }
+}
+
+void vkr_recording_tick_hash(VkrRecording *recording,
+                             const VkrRecordingTickHash *hash,
+                             const char *const *module_names) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->session_written) {
+    return;
+  }
+  for (uint32_t i = recording->hash_modules_named; i < hash->module_count;
+       ++i) {
+    const uint32_t length = (uint32_t)string_length_bounded(
+        module_names[i], VKR_RECORDING_HASH_MODULE_NAME_MAX);
+    uint8_t *record = vkr_recorder_reserve(
+        recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+        VKR_RECORDING_STREAM_HASH_MODULE, recording->frame, 4u + length);
+    if (!record) {
+      return;
+    }
+    MemCopy(record, &i, sizeof(i));
+    MemCopy(record + 4u, module_names[i], length);
+    vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+    recording->hash_modules_named = i + 1u;
+  }
+  if (vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                         VKR_RECORDING_STREAM_TICK_HASH, recording->frame, hash,
+                         sizeof(*hash))) {
+    ++recording->tick_hashes_written;
+  }
+}
+
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,
                            const char *label) {
   vkr_assert(recording != NULL && recording->active);
@@ -1136,6 +1240,8 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
   /* Drive needs both. */
   vkr_recording_json_u64(json, "player_ticks", recording->player_records);
   vkr_recording_json_u64(json, "actions", recording->action_records);
+  /* Re-simulate needs them too. */
+  vkr_recording_json_u64(json, "tick_hashes", recording->tick_hashes_written);
   vkr_recording_json_f64(json, "duration_seconds", recording->time);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
   vkr_recording_json_u64(json, "lost_records", stats->lost_records);

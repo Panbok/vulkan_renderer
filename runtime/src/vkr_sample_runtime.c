@@ -3953,6 +3953,23 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
       .simulation_running = application->editor_viewport.simulation_running,
       .camera_available =
           state->view_state.camera_view == VKR_SAMPLE_CAMERA_PERSPECTIVE};
+  /* A re-simulation replays the recorded session clock; a recording keeps
+     it (docs/proposals/recordings.md, "Drive and re-simulation"). */
+  if (application->drive.open && application->drive.resim &&
+      frame.simulation_running) {
+    VkrRecordingSimFrame clock;
+    if (vkr_recording_drive_sim_frame(&application->drive, &clock)) {
+      frame.now = clock.now;
+      frame.scene_delta = clock.delta;
+    } else {
+      frame.scene_delta = 0.0;
+    }
+  }
+  if (application->recording.active && frame.simulation_running) {
+    const VkrRecordingSimFrame clock = {.now = frame.now,
+                                        .delta = frame.scene_delta};
+    vkr_recording_sim_frame(&application->recording, &clock);
+  }
   vkr_script_host_frame(&state->scripts, &frame);
   vkr_scene_handle_update(handle, frame.scene_delta);
   if (scene->physics_paused &&

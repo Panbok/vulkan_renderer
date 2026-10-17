@@ -84,6 +84,22 @@
    id of a spawn that went away. */
 #define VKR_RECORDING_STREAM_SPAWN 13u
 #define VKR_RECORDING_STREAM_DESPAWN 14u
+/* Re-simulation (docs/proposals/recordings.md, "Drive and re-simulation"):
+   a session record (VkrRecordingSession) when a Play session starts while
+   recording; a sim_frame record (VkrRecordingSimFrame) for every frame the
+   session then runs, the clock its modules read; and a tick_hash record
+   (VkrRecordingTickHash) for every fixed tick. A hash_module record, a u32
+   index then the UTF-8 module name, names the index tick hashes use. */
+#define VKR_RECORDING_STREAM_SESSION 15u
+#define VKR_RECORDING_STREAM_SIM_FRAME 16u
+#define VKR_RECORDING_STREAM_TICK_HASH 17u
+#define VKR_RECORDING_STREAM_HASH_MODULE 18u
+/* Transform hashes are split by entity index, so a mismatch narrows to the
+   entities of the buckets that differ. */
+#define VKR_RECORDING_HASH_BUCKETS 16u
+/* Script modules a tick hash covers; later ones are left out. */
+#define VKR_RECORDING_HASH_MODULE_MAX 16u
+#define VKR_RECORDING_HASH_MODULE_NAME_MAX 63u
 /* Spawns a recording names; later ones are left out. */
 #define VKR_RECORDING_SPAWN_MAX 4096u
 /* Longest tag key or value and event name; longest event payload. */
@@ -120,6 +136,31 @@ typedef struct VkrRecordingFrame {
   float32_t time_of_day;
   uint32_t flags;
 } VkrRecordingFrame;
+
+/* The Play session that started while recording: the seed of its modules'
+   generators. Its ticks count from one. */
+typedef struct VkrRecordingSession {
+  uint64_t seed;
+} VkrRecordingSession;
+
+/* The clock a session frame's modules read (vkr_time) and the scene delta
+   the frame began with. */
+typedef struct VkrRecordingSimFrame {
+  float64_t now;
+  float64_t delta;
+} VkrRecordingSimFrame;
+
+/* The simulation after one fixed tick, hashed by subsystem: the scene's
+   transforms in VKR_RECORDING_HASH_BUCKETS buckets by entity index, its
+   physics bodies, and each script module's state (instance data,
+   components, per-entity state and generator), in hash_module order. */
+typedef struct VkrRecordingTickHash {
+  uint64_t tick;
+  uint32_t transforms[VKR_RECORDING_HASH_BUCKETS];
+  uint32_t bodies;
+  uint32_t module_count;
+  uint32_t modules[VKR_RECORDING_HASH_MODULE_MAX];
+} VkrRecordingTickHash;
 
 /* One record per frame: the camera the frame rendered with. */
 typedef struct VkrRecordingCamera {
@@ -237,6 +278,11 @@ typedef struct VkrRecording {
   float64_t time;
   VkrRecordingMarker markers[VKR_RECORDING_MARKER_MAX];
   uint32_t marker_count;
+  /* A Play session started while recording: its sim frames and tick hashes
+     are written, and the module names written so far. */
+  bool8_t session_written;
+  uint32_t hash_modules_named;
+  uint64_t tick_hashes_written;
   /* Tier 0 metrics found in the registry at start, in field order: their
      ids, and 1e-6 for nanosecond durations, else 1. The resident memory
      field follows them. */
@@ -401,6 +447,21 @@ void vkr_recording_event(VkrRecording *recording, String8 name,
     measured. */
 void vkr_recording_engine_event(VkrRecording *recording, const char *name,
                                 uint32_t count, float32_t ms);
+
+/** Writes that a Play session started with generator seed `seed`; its sim
+    frames and tick hashes follow. */
+void vkr_recording_session(VkrRecording *recording, uint64_t seed);
+
+/** Writes the clock of the session frame being updated; nothing before a
+    session started while recording. */
+void vkr_recording_sim_frame(VkrRecording *recording,
+                             const VkrRecordingSimFrame *frame);
+
+/** Writes a tick's hashes, and first the names of modules not yet named;
+    nothing before a session started while recording. */
+void vkr_recording_tick_hash(VkrRecording *recording,
+                             const VkrRecordingTickHash *hash,
+                             const char *const *module_names);
 
 /** Adds a marker at the current frame. Returns false_v when it was lost. */
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

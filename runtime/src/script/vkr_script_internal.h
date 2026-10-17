@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include "recording/vkr_recording.h"
 #include "script/vkr_script_host.h"
 
 /* What a ledger record releases. */
@@ -163,7 +164,23 @@ struct VkrScriptInstance {
   bool8_t disabled;
   /* The running hook called vkr_fail. */
   bool8_t failed;
+  /* vkr_random_u32's generator: the session seed mixed with the module's
+     name and container, so every instance draws its own sequence. */
+  uint64_t random_state;
+  /* What vkr_sim_hash fed this tick, a running CRC-32; the tick hash takes
+     and restarts it. */
+  uint32_t sim_hash;
 };
+
+/* Hashes the session after fixed tick `tick` (vkr_script_hash.c): the
+   transforms and bodies of `scene` and each module's state, and names the
+   modules in `out_names`, which borrow the host's names. */
+void vkr_script_host_tick_hash(VkrScriptHost *host, VkrScene *scene,
+                               uint64_t tick, VkrRecordingTickHash *out,
+                               const char **out_names);
+
+/* Starts every instance's vkr_sim_hash over for the next tick. */
+void vkr_script_host_tick_hash_restart(VkrScriptHost *host);
 
 /* Fills the SDK table (vkr_script_sdk.c). */
 void script_sdk_table(VkrSdkTable *table);

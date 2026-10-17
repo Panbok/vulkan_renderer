@@ -916,6 +916,8 @@ vkr_internal void editor_recording_entry_read(const char *directory,
       (int64_t)editor_recording_number(&reader, "started_unix");
   entry->drivable = editor_recording_number(&reader, "actions") > 0.0 &&
                     editor_recording_number(&reader, "player_ticks") > 0.0;
+  entry->resimulable =
+      entry->drivable && editor_recording_number(&reader, "tick_hashes") > 0.0;
   /* Markers are an array of objects, each with one "kind". */
   vkr_json_reader_reset(&reader);
   if (vkr_json_find_array(&reader, "markers")) {
@@ -1187,7 +1189,7 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
       entry->lost ? "  \xc2\xb7  data lost" : "");
 }
 
-/* One card: name and status, the facts line, Watch, Analyze, Drive, Copy
+/* One card: name and status, the facts line, Watch, Analyze, Compare, Drive,
    prompt, Delete. */
 vkr_internal void editor_recording_card(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame,
@@ -1201,6 +1203,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   const VkrUiTrack columns[] = {{.value = 84.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.value = 88.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
@@ -1384,8 +1387,24 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                   recording->directory, entry->bundle);
     (void)vkr_editor_recording_send(editor, request, true_v);
   }
+  VkrUiWidgetConfig resim = vkr_editor_icon_button_config(
+      6u, 0u, VKR_UI_ICON_LOG_DEBUG,
+      entry->resimulable
+          ? string8_lit("Re-simulate: replay the session on this build and "
+                        "stop at the first tick whose state differs")
+          : string8_lit("Re-simulate needs a recording that began before "
+                        "Play started"));
+  resim.placement.row_span = 2u;
+  resim.disabled = !entry->resimulable || !can_watch;
+  if (vkr_ui_button(ui, string8_lit("resim"), (String8){0}, &resim)) {
+    VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE,
+                                         .resim = true_v};
+    string_format(request.path, sizeof(request.path), "%s/%s",
+                  recording->directory, entry->bundle);
+    (void)vkr_editor_recording_send(editor, request, true_v);
+  }
   VkrUiWidgetConfig copy = vkr_editor_icon_button_config(
-      6u, 0u, VKR_UI_ICON_COPY,
+      7u, 0u, VKR_UI_ICON_COPY,
       string8_lit("Copy a prompt that points an agent at this recording"));
   copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
@@ -1395,7 +1414,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   }
   const bool8_t armed = recording->delete_armed == index + 1u;
   VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
-      7u, 0u, VKR_UI_ICON_TRASH,
+      8u, 0u, VKR_UI_ICON_TRASH,
       armed ? string8_lit("Click again to delete it from disk")
             : string8_lit("Delete this recording"));
   remove.placement.row_span = 2u;

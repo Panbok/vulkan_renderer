@@ -57,6 +57,34 @@ typedef struct VkrRecordingDrive {
   float64_t last_position[3];
   uint64_t divergent_tick;
   uint64_t divergent_frame;
+
+  /* Re-simulation: the recording's first Play session, if it started while
+     recording: its seed, the frame clock of each of its frames and the
+     hashes of each of its ticks, by tick, with the frame that ran each and
+     the module names hashes index. `resim` drives with them: the session
+     takes the seed and the clock, and every tick's hashes are compared. */
+  bool8_t has_session;
+  bool8_t resim;
+  uint64_t seed;
+  VkrRecordingSimFrame *sim_frames;
+  uint64_t sim_frame_count;
+  uint64_t sim_cursor;
+  VkrRecordingTickHash *hashes;
+  uint64_t *hash_frames;
+  uint64_t hash_count;
+  uint64_t hash_cursor;
+  char module_names[VKR_RECORDING_HASH_MODULE_MAX]
+                   [VKR_RECORDING_HASH_MODULE_NAME_MAX + 1u];
+  uint32_t module_name_count;
+  /* Ticks whose hashes matched, and the first that did not: its recorded
+     tick and frame, the subsystems that differ, and the transform buckets
+     among them. */
+  uint64_t ticks_hashed;
+  bool8_t hash_diverged;
+  uint64_t hash_divergent_tick;
+  uint64_t hash_divergent_frame;
+  char hash_subsystems[160];
+  uint32_t hash_buckets;
 } VkrRecordingDrive;
 
 /**
@@ -87,6 +115,19 @@ vkr_recording_drive_start_player(const VkrRecordingDrive *drive);
     base tick or for a tick without one. */
 const VkrRecordingPlayer *
 vkr_recording_drive_reference(const VkrRecordingDrive *drive, uint64_t tick);
+
+/** The frame clock of the next re-simulated session frame; false past the
+    recording's last, which finishes the drive. */
+bool8_t vkr_recording_drive_sim_frame(VkrRecordingDrive *drive,
+                                      VkrRecordingSimFrame *out);
+
+/** Compares a re-simulated tick's hashes with the recording's tick of the
+    same number. False at the first tick that differs, which it describes in
+    the hash_* fields; true for a match or a tick the recording has none
+    for. */
+bool8_t vkr_recording_drive_check_hash(VkrRecordingDrive *drive,
+                                       const VkrRecordingTickHash *live,
+                                       const char *const *module_names);
 
 /** Compares the driven player at tick `tick` with the recorded one. */
 void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,

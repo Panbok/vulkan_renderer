@@ -1,8 +1,11 @@
 #include "script/vkr_script_internal.h"
 
 #include "containers/vkr_sort.h"
+#include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "platform/vkr_platform.h"
+#include "recording/vkr_recording_drive.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_simulation.h"
@@ -650,6 +653,14 @@ static VkrScriptInstance *script_instance_create(VkrScriptHost *host,
     }
     MemZero(instance->data, desc->data_size);
   }
+  /* FNV-1a of the module's name, mixed into the session seed. */
+  uint64_t name_hash = 1469598103934665603ull;
+  for (const char *c = desc ? host->modules[module].name : ""; *c; ++c) {
+    name_hash = (name_hash ^ (uint8_t)*c) * 1099511628211ull;
+  }
+  instance->random_state =
+      host->session_seed ^ name_hash ^ ((uint64_t)container << 56u);
+  instance->sim_hash = VKR_CRC32_INITIAL;
   return instance;
 }
 
@@ -1015,10 +1026,36 @@ static bool8_t script_host_before_physics(VkrScene *scene, uint64_t tick,
   return script_host_tick(host, scene, SCRIPT_HOOK_FIXED_UPDATE);
 }
 
+/* After a tick: a recording keeps its hashes, and a re-simulation compares
+   them with the recording's and pauses at the first that differs, which the
+   drive describes. */
+static void script_host_hash_tick(VkrScriptHost *host, VkrScene *scene,
+                                  uint64_t tick) {
+  VkrRecordingDrive *resim =
+      host->drive && host->drive->resim ? host->drive : NULL;
+  if ((!host->recording || !host->recording->session_written) && !resim) {
+    return;
+  }
+  VkrRecordingTickHash hash;
+  const char *names[VKR_RECORDING_HASH_MODULE_MAX];
+  vkr_script_host_tick_hash(host, scene, tick, &hash, names);
+  if (host->recording) {
+    vkr_recording_tick_hash(host->recording, &hash, names);
+  }
+  if (resim && !vkr_recording_drive_check_hash(resim, &hash, names)) {
+    vkr_scene_physics_set_paused(scene, true_v);
+  }
+}
+
 static bool8_t script_host_after_physics(VkrScene *scene, uint64_t tick,
                                          void *context) {
-  (void)tick;
-  return script_host_tick(context, scene, SCRIPT_HOOK_LATE_FIXED_UPDATE);
+  VkrScriptHost *host = context;
+  if (!script_host_tick(host, scene, SCRIPT_HOOK_LATE_FIXED_UPDATE)) {
+    return false_v;
+  }
+  script_host_hash_tick(host, scene, tick);
+  vkr_script_host_tick_hash_restart(host);
+  return true_v;
 }
 
 // =============================================================================
@@ -2326,6 +2363,12 @@ bool8_t vkr_script_host_start(VkrScriptHost *host,
     return false_v;
   }
   host->session = *desc;
+  /* A re-simulation replays its recording's seed; any other session takes
+     the clock's. */
+  host->session_seed =
+      host->drive && host->drive->resim
+          ? host->drive->seed
+          : (uint64_t)(vkr_platform_get_absolute_time() * 1.0e9);
   host->container_count = 0u;
   host->active_container = script_container_attach(host, active);
   host->world_container = desc->world
@@ -2337,6 +2380,10 @@ bool8_t vkr_script_host_start(VkrScriptHost *host,
   host->view = (VkrScriptView){0};
   host->error[0] = '\0';
   host->frame_serial++;
+  /* A recording keeps the seed, and the clock and hashes that follow. */
+  if (host->recording) {
+    vkr_recording_session(host->recording, host->session_seed);
+  }
   const char *failure = script_session_begin(host);
   if (failure) {
     if (failure != host->error) {
