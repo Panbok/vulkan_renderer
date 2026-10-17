@@ -644,6 +644,62 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
 /* Bottom of the Scene in Playback, above the corner chips: close, play,
    frame steps, next marker, the clock, a scrub bar with marker ticks,
    speed and loop. */
+/* The playback bar's top-left corner and width in points; false when the
+   Scene is too narrow for it. The orientation gizmo holds the Scene's
+   bottom-left corner. */
+vkr_internal bool8_t editor_recording_bar_rect(const VkrSampleUiFrame *frame,
+                                               Vec3 *out_pt) {
+  const float32_t scale = frame->ui->content_scale;
+  const Vec4 viewport = frame->mapping.panel_rect_px;
+  const float32_t left = 104.0f;
+  const float32_t width = viewport.z / scale - left - 10.0f;
+  /* Nine buttons, the clock and the speed leave the track 80 pt. */
+  if (width < 520.0f) {
+    return false_v;
+  }
+  *out_pt = (Vec3){viewport.x / scale + left,
+                   (viewport.y + viewport.w) / scale -
+                       EDITOR_RECORDING_BAR_HEIGHT_PT - 40.0f,
+                   width};
+  return true_v;
+}
+
+void vkr_editor_recording_register_input(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame) {
+  if (!frame->mapping_valid || !frame->recording) {
+    return;
+  }
+  /* Scene overlays build on the Scene toolbar's layer, which holds the
+     pointer only where it is registered; registered before the Scene reads
+     its input, a click on them never reaches the Scene behind. */
+  VkrUiSystem *ui = frame->ui;
+  const float32_t scale = ui->content_scale;
+  Vec3 bar;
+  if (frame->recording->playback && editor_recording_bar_rect(frame, &bar)) {
+    (void)vkr_ui_input_layer_register(
+        ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
+        (VkrUiRect){bar.x * scale, bar.y * scale, bar.z * scale,
+                    EDITOR_RECORDING_BAR_HEIGHT_PT * scale});
+    Vec4 composer;
+    if (vkr_editor_recording_composer_rect(editor, bar, &composer)) {
+      (void)vkr_ui_input_layer_register(
+          ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
+          (VkrUiRect){composer.x * scale, composer.y * scale,
+                      composer.z * scale, composer.w * scale});
+    }
+  }
+  /* The REC chip sizes to its text; its last drawn rectangle stands. */
+  VkrUiRect chip;
+  if (frame->recording->recording &&
+      vkr_ui_widget_rect(
+          ui,
+          vkr_ui_id_stack_widget_label(&ui->id_stack,
+                                       string8_lit("editor.recording.rec")),
+          &chip)) {
+    (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER, chip);
+  }
+}
+
 vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
                                              const VkrSampleUiFrame *frame) {
   const VkrRecordingPlayback *playback =
@@ -657,13 +713,8 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
     return;
   }
   VkrUiSystem *ui = frame->ui;
-  const float32_t scale = ui->content_scale;
-  const Vec4 viewport = frame->mapping.panel_rect_px;
-  /* The orientation gizmo holds the Scene's bottom-left corner. */
-  const float32_t left = 104.0f;
-  const float32_t width = viewport.z / scale - left - 10.0f;
-  /* Nine buttons, the clock and the speed leave the track 80 pt. */
-  if (width < 520.0f) {
+  Vec3 bar_pt;
+  if (!editor_recording_bar_rect(frame, &bar_pt)) {
     return;
   }
   const VkrUiTrack button = {.value = EDITOR_RECORDING_BUTTON_PT,
@@ -689,10 +740,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   bar.placement = VKR_UI_PLACEMENT_DEFAULT;
   bar.placement.column = bar.placement.row = 0u;
   bar.placement.justify = bar.placement.align = VKR_UI_ALIGN_START;
-  const float32_t bar_top = (viewport.y + viewport.w) / scale -
-                            EDITOR_RECORDING_BAR_HEIGHT_PT - 40.0f;
-  bar.placement.margin_pt =
-      (VkrUiEdges){bar_top, 0.0f, 0.0f, viewport.x / scale + left};
+  bar.placement.margin_pt = (VkrUiEdges){bar_pt.y, 0.0f, 0.0f, bar_pt.x};
   bar.columns = columns;
   bar.column_count = ArrayCount(columns);
   bar.rows = &row;
@@ -700,7 +748,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   bar.style = vkr_editor_glass_style();
   bar.style.padding_pt = (VkrUiEdges){4.0f, 6.0f, 4.0f, 6.0f};
   bar.style.min_size_pt = bar.style.max_size_pt =
-      (Vec2){width, EDITOR_RECORDING_BAR_HEIGHT_PT};
+      (Vec2){bar_pt.z, EDITOR_RECORDING_BAR_HEIGHT_PT};
   VkrUiRect slider_px = {0};
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.bar"), &bar)) {
     return;
@@ -710,9 +758,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
   vkr_editor_recording_annotations_track(editor, frame, playback, slider_px);
   editor_recording_markers_build(editor, frame, playback, slider_px);
-  vkr_editor_recording_composer_build(
-      editor, frame, playback,
-      (Vec3){viewport.x / scale + left, bar_top, width});
+  vkr_editor_recording_composer_build(editor, frame, playback, bar_pt);
 }
 
 /* ------------------------------------------------------------------------ */

@@ -615,6 +615,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_cmd_update(editor, frame);
   vkr_editor_agent_update(editor->agent, editor, frame);
   vkr_editor_windows_register_input_layers(editor, frame->ui);
+  vkr_editor_recording_register_input(editor, frame);
   vkr_editor_viewport_update(editor, frame);
   vkr_editor_io_update(editor, frame);
   vkr_editor_terrain_update(editor, frame);

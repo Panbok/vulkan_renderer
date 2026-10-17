@@ -358,17 +358,30 @@ editor_annotations_add_note(VkrEditorUi *editor,
   editor_annotations_saved(editor, VKR_UI_ICON_PENCIL_LINE, message);
 }
 
+bool8_t vkr_editor_recording_composer_rect(const VkrEditorUi *editor,
+                                           Vec3 bar_pt, Vec4 *out_pt) {
+  if (!editor->recording.notes.composing) {
+    return false_v;
+  }
+  /* Above the bar, from its left edge, so it reads as the bar's own. */
+  *out_pt =
+      (Vec4){bar_pt.x, bar_pt.y - EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT - 6.0f,
+             Min(EDITOR_ANNOTATIONS_COMPOSER_PT, bar_pt.z),
+             EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT};
+  return true_v;
+}
+
 void vkr_editor_recording_composer_build(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrRecordingPlayback *playback,
                                          Vec3 bar_pt) {
   VkrEditorRecordingNotes *notes = &editor->recording.notes;
-  if (!notes->composing) {
+  Vec4 rect;
+  if (!vkr_editor_recording_composer_rect(editor, bar_pt, &rect)) {
     return;
   }
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
-  const float32_t width = Min(EDITOR_ANNOTATIONS_COMPOSER_PT, bar_pt.z);
   const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
                                 {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.unit = VKR_UI_TRACK_AUTO},
@@ -378,15 +391,11 @@ void vkr_editor_recording_composer_build(VkrEditorUi *editor,
   panel.placement = VKR_UI_PLACEMENT_DEFAULT;
   panel.placement.column = panel.placement.row = 0u;
   panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
-  /* Above the bar, from its left edge, so it reads as the bar's own. */
-  panel.placement.margin_pt =
-      (VkrUiEdges){bar_pt.y - EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT - 6.0f,
-                   0.0f, 0.0f, bar_pt.x};
+  panel.placement.margin_pt = (VkrUiEdges){rect.y, 0.0f, 0.0f, rect.x};
   panel.style = vkr_editor_glass_style();
   panel.style.padding_pt = (VkrUiEdges){8.0f, 10.0f, 8.0f, 10.0f};
   panel.style.gap_pt = theme->space_md;
-  panel.style.min_size_pt = panel.style.max_size_pt =
-      (Vec2){width, EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT};
+  panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){rect.z, rect.w};
   panel.columns = columns;
   panel.column_count = ArrayCount(columns);
   panel.rows = &row;

@@ -245,6 +245,12 @@ typedef struct VkrEditorRecording {
 
 struct VkrEditorUi;
 
+/** Gives the Scene overlays that take clicks (the playback bar, its note
+ * field and the REC chip) the pointer over their rectangles. Call with the
+ * floating windows' layers, before the Scene reads its input. */
+void vkr_editor_recording_register_input(struct VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame);
+
 /** Sends the next queued request and reports the outcome of the editor's own
  * requests; call once per build before the operations and controls. */
 void vkr_editor_recording_update(struct VkrEditorUi *editor,
@@ -370,6 +376,10 @@ void vkr_editor_recording_review_toggle(struct VkrEditorUi *editor,
 void vkr_editor_recording_annotations_track(
     struct VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     const VkrRecordingPlayback *playback, VkrUiRect slider_px);
+/** The note field's rectangle in points while it is open, from the playback
+ * bar's top-left corner and width. */
+bool8_t vkr_editor_recording_composer_rect(const struct VkrEditorUi *editor,
+                                           Vec3 bar_pt, Vec4 *out_pt);
 /** The note field over the playback bar, whose top-left corner and width
  * are `bar_pt`; it adds the note at the playhead on Enter or Add. */
 void vkr_editor_recording_composer_build(struct VkrEditorUi *editor,
