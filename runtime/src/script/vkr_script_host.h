@@ -236,6 +236,9 @@ typedef struct VkrScriptHost {
   VkrScriptSessionDesc session;
   VkrScriptContainer containers[VKR_SCRIPT_CONTAINER_MAX];
   VkrScriptKeyCache key_caches[VKR_SCRIPT_CONTAINER_MAX];
+  /* A recorded or re-simulated session: behaviors run and vkr_find answers
+     in stable-key order (vkr_scene_entity_stable_key), not slot order. */
+  bool8_t deterministic;
   uint32_t container_count;
   /* Index of the active container and of the World's. */
   uint32_t active_container;

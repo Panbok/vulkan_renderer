@@ -5,6 +5,7 @@
 #include "script/vkr_script_internal.h"
 
 #include "animation/vkr_animation_player.h"
+#include "containers/vkr_sort.h"
 #include "core/vkr_hash.h"
 #include "recording/vkr_recording.h"
 #include "recording/vkr_recording_drive.h"
@@ -770,17 +771,62 @@ static bool8_t sdk_component_set(VkrCtx *ctx, VkrEntity entity,
          script_ctx_error(script, "The component value was refused");
 }
 
+typedef struct SdkFound {
+  uint64_t key;
+  VkrEntityId entity;
+} SdkFound;
+
+static int32_t sdk_found_compare(const void *left, const void *right) {
+  const SdkFound *a = left;
+  const SdkFound *b = right;
+  if (a->key != b->key) {
+    return a->key < b->key ? -1 : 1;
+  }
+  return a->entity.u64 < b->entity.u64
+             ? -1
+             : (a->entity.u64 > b->entity.u64 ? 1 : 0);
+}
+
 static uint32_t sdk_component_find(VkrCtx *ctx, VkrContainer container,
                                    const VkrComponentDesc *type, VkrEntity *out,
                                    uint32_t capacity) {
   ScriptCtx *script = sdk_ctx(ctx);
+  VkrScriptHost *host = script->host;
   const uint32_t slot = script_container_slot(script, container);
-  const VkrTypeDesc *resolved = script_resolve_type(script->host, type);
+  const VkrTypeDesc *resolved = script_resolve_type(host, type);
   if (slot == UINT32_MAX || !resolved) {
     return 0u;
   }
-  return vkr_scene_find_typed(script->host->containers[slot].scene, resolved,
-                              (VkrEntityId *)out, out ? capacity : 0u);
+  VkrScene *scene = host->containers[slot].scene;
+  if (!host->deterministic || !out || capacity == 0u) {
+    return vkr_scene_find_typed(scene, resolved, (VkrEntityId *)out,
+                                out ? capacity : 0u);
+  }
+  /* A recorded or re-simulated session answers in stable-key order, so a
+     load history that gave entities other slots finds them in the same
+     order. */
+  const uint32_t total = vkr_scene_find_typed(scene, resolved, NULL, 0u);
+  const uint64_t position = arena_pos(host->temp);
+  VkrEntityId *ids = arena_alloc(host->temp, sizeof(*ids) * (total + 1u),
+                                 ARENA_MEMORY_TAG_ARRAY);
+  SdkFound *found = arena_alloc(host->temp, sizeof(*found) * (total + 1u),
+                                ARENA_MEMORY_TAG_ARRAY);
+  if (!ids || !found) {
+    arena_reset_to(host->temp, position, ARENA_MEMORY_TAG_UNKNOWN);
+    return vkr_scene_find_typed(scene, resolved, (VkrEntityId *)out, capacity);
+  }
+  const uint32_t count =
+      Min(vkr_scene_find_typed(scene, resolved, ids, total), total);
+  for (uint32_t i = 0u; i < count; ++i) {
+    found[i] = (SdkFound){.key = vkr_scene_entity_stable_key(scene, ids[i]),
+                          .entity = ids[i]};
+  }
+  vkr_sort(found, count, sizeof(*found), sdk_found_compare);
+  for (uint32_t i = 0u; i < Min(count, capacity); ++i) {
+    out[i] = (VkrEntity){.id = found[i].entity.u64};
+  }
+  arena_reset_to(host->temp, position, ARENA_MEMORY_TAG_UNKNOWN);
+  return count;
 }
 
 static VkrEntity sdk_resolve(VkrCtx *ctx, VkrEntity owner, VkrEntityRef ref) {

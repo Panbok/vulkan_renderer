@@ -731,6 +731,7 @@ static void script_instance_end(VkrScriptHost *host,
 
 typedef struct ScriptFound {
   uint64_t entity;
+  uint64_t order;
   uint32_t behavior;
 } ScriptFound;
 
@@ -740,12 +741,16 @@ static int script_found_compare(const void *left, const void *right) {
   if (a->behavior != b->behavior) {
     return a->behavior < b->behavior ? -1 : 1;
   }
+  if (a->order != b->order) {
+    return a->order < b->order ? -1 : 1;
+  }
   return a->entity < b->entity ? -1 : a->entity > b->entity ? 1 : 0;
 }
 
 static int script_binding_compare(const ScriptBinding *binding,
                                   const ScriptFound *found) {
   const ScriptFound key = {.entity = binding->entity,
+                           .order = binding->order,
                            .behavior = binding->behavior};
   return script_found_compare(&key, found);
 }
@@ -802,7 +807,12 @@ static bool8_t script_instance_sync(VkrScriptHost *host,
                       found_count - written)
                 : 0u;
         for (uint32_t i = 0; i < count; ++i) {
-          found[written++] = (ScriptFound){.entity = ids[i].u64, .behavior = b};
+          found[written++] = (ScriptFound){
+              .entity = ids[i].u64,
+              .order = host->deterministic
+                           ? vkr_scene_entity_stable_key(scene, ids[i])
+                           : 0u,
+              .behavior = b};
         }
       }
     }
@@ -865,6 +875,7 @@ static bool8_t script_instance_sync(VkrScriptHost *host,
       bindings[kept++] = instance->bindings[b++];
     } else {
       bindings[kept++] = (ScriptBinding){.entity = found[f].entity,
+                                         .order = found[f].order,
                                          .behavior = found[f].behavior};
     }
   }
@@ -2392,6 +2403,7 @@ static void script_session_teardown(VkrScriptHost *host) {
     vkr_scene_set_join_hooks(host->containers[c].scene, NULL);
     host->containers[c].scene->deterministic_session = false_v;
   }
+  host->deterministic = false_v;
   if (host->callbacks_installed) {
     (void)vkr_scene_simulation_detach(active, host);
     host->callbacks_installed = false_v;
@@ -2420,6 +2432,7 @@ bool8_t vkr_script_host_start(VkrScriptHost *host,
      before Play add bodies in another order than a rebuild does. */
   const bool8_t rebuild = host->recording || script_host_resim(host);
   active->deterministic_session = rebuild;
+  host->deterministic = rebuild;
   if ((rebuild || vkr_scene_simulation_completed_ticks(active) ||
        vkr_scene_physics_debt(active)) &&
       !vkr_scene_physics_reset(active, error)) {

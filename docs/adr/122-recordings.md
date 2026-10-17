@@ -20,8 +20,10 @@ and from R6 Re-simulate on the same build, with model joins and terrain
 collision rebuilds at their recorded ticks and world partition streaming
 replayed. A Tier 0 recording passed the
 authoritative overhead gate on a GPU-bound Bistro orbit (2026-10-17, in the
-proposal); a CPU-bound workload has not been measured, so harness runs that
-record keep the authority reason `recording.enabled`.
+proposal). On a CPU-bound offscreen Bistro view recording did not lengthen
+frames either, but five of its eight runs failed the offscreen profile's
+warmup rule, so that gate has no full authoritative A/B and harness runs
+that record keep the authority reason `recording.enabled`.
 
 ## Context
 
@@ -331,7 +333,9 @@ an agent must read one without the editor.
   cells to match before it starts, each re-simulated frame streams around
   the recorded source, and cells load without the frame budget; the
   deterministic reset then orders bodies by stable key, whatever order
-  loads left them in.
+  loads left them in. Behaviors of such a session run, and `vkr_find`
+  answers, in stable-key order too, since a module that draws from its
+  generator per entity would otherwise draw in slot order.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

@@ -126,6 +126,10 @@ typedef struct ScriptOwned {
 /* One behavior running on one entity. */
 typedef struct ScriptBinding {
   uint64_t entity;
+  /* The entity's stable key in a deterministic session, else zero: hooks
+     run in (behavior, order, entity) order, so a re-simulation whose load
+     history gave entities other slots calls them in the same order. */
+  uint64_t order;
   uint32_t behavior;
   ScriptLedger ledger;
   bool8_t started;

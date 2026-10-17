@@ -3,6 +3,7 @@
 #include "core/vkr_job_system.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "recording/vkr_recording_drive.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_script_host.h"
@@ -200,9 +201,14 @@ static uint32_t s_spin_stops_at_destroy;
 #define SPIN_FIELDS VKR_FIELD(F32, speed, "Speed", 0.5f, .unit = "turns/s")
 VKR_COMPONENT(Spin, spin, "Spin", SPIN_FIELDS)
 
+/* The entities whose behaviors started, in start order. */
+static VkrEntity s_spin_started[8];
+static uint32_t s_spin_started_count;
+
 static void spin_start(VkrCtx *ctx, VkrEntity self, Spin *spin) {
   assert(spin && spin->speed == 0.5f);
   s_spin_starts++;
+  s_spin_started[s_spin_started_count++ % ArrayCount(s_spin_started)] = self;
   /* Scoped to this entity's behavior. */
   s_spin_child = vkr_spawn(
       ctx, &(VkrSpawnDesc){.name = VKR_STR("SpinChild"), .parent = self});
@@ -347,6 +353,61 @@ static VkrScene *test_scene_holding(VkrScene *a, VkrScene *b, VkrEntity e) {
   return vkr_scene_entity_alive(a, id)   ? a
          : vkr_scene_entity_alive(b, id) ? b
                                          : NULL;
+}
+/* Starts a deterministic session on a scene holding "Near" and "Far" with
+   a Spin each, made in `far_first` order after `filler` other entities, and
+   writes the names in the order their behaviors started. */
+static void script_order_session(VkrScriptHost *host, uint32_t filler,
+                                 bool8_t far_first, String8 *out_names) {
+  VkrScene scene;
+  assert(vkr_scene_init(&scene, &s_allocator, 54, 16, NULL));
+  for (uint32_t i = 0; i < filler; ++i) {
+    (void)vkr_scene_create_entity(&scene, NULL);
+  }
+  const VkrTypeDesc *type = vkr_scene_world_type_named(string8_lit("spin"));
+  Spin value;
+  type->defaults(&value);
+  for (uint32_t i = 0; i < 2u; ++i) {
+    const bool8_t far = (i == 0u) == far_first;
+    const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
+    assert(vkr_scene_set_transform(&scene, entity, vec3_zero(),
+                                   vkr_quat_identity(), vec3_one()));
+    assert(vkr_scene_set_name(&scene, entity,
+                              far ? string8_lit("Far") : string8_lit("Near")));
+    assert(vkr_scene_set_typed(&scene, entity, type, &value));
+  }
+  /* A re-simulating drive makes the session deterministic. */
+  static VkrRecordingDrive drive;
+  drive = (VkrRecordingDrive){.open = true_v, .resim = true_v};
+  host->drive = &drive;
+  InputState input = {0};
+  const VkrScriptSessionDesc session = {.active = &scene, .input = &input};
+  const char *error = NULL;
+  s_life_mode = LIFE_IDLE;
+  s_spin_started_count = 0u;
+  assert(vkr_script_host_start(host, &session, &error));
+  assert(s_spin_started_count == 2u);
+  for (uint32_t i = 0; i < 2u; ++i) {
+    const String8 name =
+        vkr_scene_get_name(&scene, (VkrEntityId){.u64 = s_spin_started[i].id});
+    out_names[i] = vkr_string8_equals_cstr(&name, "Far") ? string8_lit("Far")
+                                                         : string8_lit("Near");
+  }
+  vkr_script_host_stop(host);
+  host->drive = NULL;
+  vkr_scene_shutdown(&scene, NULL);
+}
+
+/* Detects: behaviors of a recorded or re-simulated session started in ECS
+   slot order, so a re-simulation whose world partition load history gave
+   the entities other slots runs their hooks in another order (ADR-122). */
+static void test_script_deterministic_order(VkrScriptHost *host) {
+  String8 first[2];
+  String8 second[2];
+  script_order_session(host, 0u, false_v, first);
+  script_order_session(host, 3u, true_v, second);
+  assert(string8_equals(&first[0], &second[0]) &&
+         string8_equals(&first[1], &second[1]));
 }
 
 static void test_script_containers(VkrScriptHost *host) {
@@ -766,6 +827,7 @@ bool32_t run_script_host_tests(void) {
   test_script_host_lifecycle(&host);
   assert(vkr_script_host_add_module(&host, vkr_module_spinner, &error));
   test_script_behaviors(&host);
+  test_script_deterministic_order(&host);
   assert(vkr_script_host_add_module(&host, vkr_module_zone, &error));
   assert(vkr_script_host_add_module(&host, vkr_module_game, &error));
   test_script_containers(&host);

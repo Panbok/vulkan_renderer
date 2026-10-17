@@ -1053,7 +1053,9 @@ static inline bool8_t vkr_component_set(VkrCtx *ctx, VkrEntity entity,
 }
 
 /** Writes up to `capacity` entities of the instance's container carrying
- * `type`, in entity order, and returns how many carry it. */
+ * `type`, in entity order, and returns how many carry it. A recorded or
+ * re-simulated session answers in an order that does not depend on which
+ * slots entities took, so a re-simulation finds them in the same order. */
 static inline uint32_t vkr_find(VkrCtx *ctx, const VkrComponentDesc *type,
                                 VkrEntity *out, uint32_t capacity) {
   return ctx->sdk->component_find(ctx, VKR_CONTAINER_SELF, type, out, capacity);
