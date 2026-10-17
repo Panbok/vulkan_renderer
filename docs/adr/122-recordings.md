@@ -211,7 +211,8 @@ an agent must read one without the editor.
   mode `recording` replays a recording's range under the case's fixed delta
   and harness rules (a perf re-run): the harness child seeks the runtime's
   playback each frame, so the run renders what Watch shows. `rec.rerun` and
-  a range panel's Re-run write such a case under `tools/cases/local` from the
+  a range panel's Re-run write such a case under `tools/cases/rerun` (ignored
+  by git, so authoritative profiles accept the tree) from the
   windowed timing case `bistro_shadow_orbit` (its settings, the recording's
   scene, the range's frames, measured frames covering the range's seconds at
   its fixed delta, no captures or assertions), copy the recording into

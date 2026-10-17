@@ -16503,7 +16503,7 @@ static const OpsDef s_ops[] = {
      "\"type\":\"integer\"},\"rename\":{\"type\":\"integer\"}}}",
      ops_run_rec_range, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.rerun",
-     "Write a perf re-run: a harness case under tools/cases/local that "
+     "Write a perf re-run: a harness case under tools/cases/rerun that "
      "replays frames 'first' to 'last', or named 'range' index, of "
      "recording 'name' (default: the open one) with the windowed timing "
      "case's settings. Answers the case and the harness command to run; "

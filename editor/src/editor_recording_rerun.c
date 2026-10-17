@@ -21,7 +21,11 @@
   "tools/cases/performance/bistro_shadow_orbit.case.json"
 #define EDITOR_RERUN_PROFILE "tools/profiles/performance-windowed-gpu.json"
 #define EDITOR_RERUN_ARTIFACTS "build/_artifacts/rerun"
-#define EDITOR_RERUN_CASES "tools/cases/local"
+/* Ignored by git: a re-run is a local input, like the recording and the
+   scene assets it names, so the tree stays clean for authoritative
+   profiles. The directory is the case's suite. */
+#define EDITOR_RERUN_CASES "tools/cases/rerun"
+#define EDITOR_RERUN_SUITE "rerun"
 #define EDITOR_RERUN_FILE_MAX (16ull * 1024ull * 1024ull)
 
 /* ------------------------------------------------------------------------ */
@@ -189,10 +193,10 @@ vkr_internal bool8_t editor_rerun_case(Arena *arena,
   out->seconds = source->last_time - source->first_time;
   out->measure_frames = (uint64_t)vkr_ceil_f64(out->seconds / fixed_delta) + 1u;
   char id[160];
-  string_format(id, sizeof(id), "local.rerun.%s", slug);
+  string_format(id, sizeof(id), EDITOR_RERUN_SUITE ".%s", slug);
   vkr_bakery_json_set(arena, json, "id", vkr_bakery_json_cstr(arena, id));
   vkr_bakery_json_set(arena, json, "suite",
-                      vkr_bakery_json_cstr(arena, "local"));
+                      vkr_bakery_json_cstr(arena, EDITOR_RERUN_SUITE));
   char description[256];
   string_format(description, sizeof(description),
                 "Perf re-run of recording %s, frames %llu to %llu, with %s's "
@@ -258,7 +262,7 @@ bool8_t vkr_editor_recording_rerun(VkrEditorUi *editor, const char *name,
      its root. */
   const FilePath template_file = file_path_view(EDITOR_RERUN_TEMPLATE);
   const FilePath cases = file_path_view(EDITOR_RERUN_CASES);
-  if (!file_exists(&template_file) || !file_exists(&cases)) {
+  if (!file_exists(&template_file) || !file_create_directories(&cases)) {
     string_format(error, error_capacity,
                   "Perf re-runs need the editor started from the VKR "
                   "repository, which holds %s.",
