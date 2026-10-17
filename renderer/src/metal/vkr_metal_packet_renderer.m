@@ -963,6 +963,8 @@ struct VkrMetalPacketRenderer {
      pipelines on the requesting thread. Detached before its owner shuts it
      down (vkr_metal_packet_renderer_detach_jobs). */
   VkrJobSystem *job_system;
+  /* Publishes each background build's time (pipeline.create). */
+  VkrMetricEventProducer pipeline_create;
   /* Background creations requested and not yet finished. */
   VkrAtomicUint32 background_builds;
   bool8_t custom_loaded;

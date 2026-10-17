@@ -580,6 +580,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .pipeline_archive_path = pipeline_archive_path,
       .custom_library_path = custom_library,
       .job_system = backend_config ? backend_config->job_system : NULL,
+      .pipeline_create = backend_config ? backend_config->pipeline_create
+                                        : (VkrMetricEventProducer){0},
       .target_kind =
           renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
               ? VKR_METAL_PACKET_TARGET_OFFSCREEN

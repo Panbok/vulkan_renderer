@@ -595,6 +595,7 @@ editor_timeline_event_kind(const char *name) {
   const Vec4 violet = {0.66f, 0.55f, 0.98f, 1.0f};
   const Vec4 teal = {0.30f, 0.78f, 0.80f, 1.0f};
   const EditorTimelineEventKind kinds[] = {
+      {VKR_RECORDING_EVENT_PIPELINE, "Pipeline builds", violet},
       {VKR_RECORDING_EVENT_PIPELINE_LATE, "Draws waiting for pipelines",
        violet},
       {VKR_RECORDING_EVENT_TEXTURE, "Texture loads", theme->accent},

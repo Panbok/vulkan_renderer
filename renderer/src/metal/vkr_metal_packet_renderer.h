@@ -83,6 +83,9 @@ typedef struct VkrMetalPacketRendererConfig {
    * variant pipelines in the background; NULL creates them on the
    * requesting thread. */
   VkrJobSystem *job_system;
+  /** Receives each background pipeline build with its time
+   * (pipeline.create); an invalid source publishes none. */
+  VkrMetricEventProducer pipeline_create;
   VkrMetalPacketTargetKind target_kind;
   uint32_t target_width;
   uint32_t target_height;

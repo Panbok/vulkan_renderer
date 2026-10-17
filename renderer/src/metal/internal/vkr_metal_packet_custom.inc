@@ -129,14 +129,38 @@ typedef struct VkrMetalBackgroundBuild {
 vkr_internal void
 vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
     API_AVAILABLE(macos(26.0)) {
-  if (build->slot != 0u)
-    vkr_metal_packet_custom_create(build->renderer, build->slot,
-                                   build->variant);
-  else if (build->variant & VKR_METAL_TILED_SUN_VARIANT)
-    vkr_metal_packet_build_tiled_sun_pipelines(build->renderer);
-  else
-    vkr_metal_packet_build_tiled_brdf_pipelines(build->renderer);
-  vkr_atomic_uint32_fetch_sub(&build->renderer->background_builds, 1u,
+  VkrMetalPacketRenderer *renderer = build->renderer;
+  const uint64_t start_ns =
+      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+  const char *subject = NULL;
+  VkrAtomicUint32 *state = NULL;
+  if (build->slot != 0u) {
+    vkr_metal_packet_custom_create(renderer, build->slot, build->variant);
+    subject = renderer->custom_graphs[build->slot].function;
+    state = &renderer->custom_graphs[build->slot].state[build->variant];
+  } else if (build->variant & VKR_METAL_TILED_SUN_VARIANT) {
+    vkr_metal_packet_build_tiled_sun_pipelines(renderer);
+    subject = "tiled.sun";
+    state = &renderer->tiled_sun_state;
+  } else {
+    vkr_metal_packet_build_tiled_brdf_pipelines(renderer);
+    subject = "tiled.brdf";
+    state = &renderer->tiled_brdf_state;
+  }
+  /* The pipeline.create event a recording files on the frame that saw
+     the build finish (ADR-122). */
+  const uint64_t end_ns =
+      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+  (void)vkr_metrics_event_record(
+      renderer->pipeline_create,
+      string8_create_from_cstr((const uint8_t *)subject,
+                               string_length(subject)),
+      start_ns, end_ns >= start_ns ? end_ns - start_ns : 0u, 0u,
+      vkr_atomic_uint32_load(state, VKR_MEMORY_ORDER_ACQUIRE) ==
+              VKR_METAL_CUSTOM_GRAPH_READY
+          ? VKR_METRIC_EVENT_STATUS_SUCCESS
+          : VKR_METRIC_EVENT_STATUS_FAILED);
+  vkr_atomic_uint32_fetch_sub(&renderer->background_builds, 1u,
                               VKR_MEMORY_ORDER_RELEASE);
 }
 

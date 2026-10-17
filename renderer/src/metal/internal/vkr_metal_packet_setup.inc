@@ -2704,6 +2704,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
     API_AVAILABLE(macos(26.0)) {
   renderer->allocator = config->allocator;
   renderer->job_system = config->job_system;
+  renderer->pipeline_create = config->pipeline_create;
   /* A path: the wide Windows environment keeps non-ASCII names (ADR-070). */
   char diagnostics_directory[1024];
   if (vkr_platform_environment_variable("VKR_METAL_DIAGNOSTICS_DIR",

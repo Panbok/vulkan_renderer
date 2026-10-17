@@ -1044,6 +1044,11 @@ typedef struct VkrRendererBackendConfig {
    * owner calls vkr_renderer_detach_jobs before shutting it down; NULL
    * creates those pipelines on the rendering thread. */
   VkrJobSystem *job_system;
+  /** Receives each pipeline the backend creates while the application
+   * runs, with its creation time (pipeline.create); an invalid source
+   * publishes none. Metal publishes its background Custom graph and tiled
+   * variant builds. */
+  VkrMetricEventProducer pipeline_create;
 } VkrRendererBackendConfig;
 
 typedef enum VkrPresentTargetAttachment {
