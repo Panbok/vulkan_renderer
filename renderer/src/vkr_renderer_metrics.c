@@ -1240,6 +1240,12 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
   table->cpu_frame_index = cpu_frame_index;
   {
     const VkrRendererImplSubmitResult *result = &renderer->timing_result;
+    renderer_metrics->submission = (VkrRendererMetricsSubmission){
+        .cpu_frame_index = cpu_frame_index,
+        .source_frame_index = result->source_frame_index,
+        .gpu_ns = result->gpu_submission_ns,
+        .valid = result->gpu_submission_valid,
+    };
     VkrRendererMetricsPassSample samples[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS] = {
         0};
     bool8_t valid =
@@ -2190,6 +2196,11 @@ void vkr_renderer_metrics_collect(
 const VkrRendererMetricsPassTable *vkr_renderer_metrics_get_pass_table(
     const VkrRendererMetrics *renderer_metrics) {
   return renderer_metrics ? &renderer_metrics->passes : NULL;
+}
+
+const VkrRendererMetricsSubmission *vkr_renderer_metrics_get_submission(
+    const VkrRendererMetrics *renderer_metrics) {
+  return renderer_metrics ? &renderer_metrics->submission : NULL;
 }
 
 bool8_t

@@ -187,7 +187,14 @@ an agent must read one without the editor.
   sampled every 100 ms. The frame-loop thread writes the record when the
   frame's metrics frame is published, under the frame's own recording number;
   a dropped publication writes no values. An editor recording turns on
-  whole-frame GPU timing and restores it at stop.
+  whole-frame GPU timing and restores it at stop. `gpu.submission` is the
+  exception: a published frame carries the newest completed frame's GPU time,
+  so the renderer keeps the frame that ran it beside the pass table
+  (`vkr_renderer_metrics_get_submission`), and the recording writes it on
+  the recorded frame that rendered that frame, as a second `metrics` record
+  whose mask holds that field alone; readers merge records by mask. A
+  completion repeated across publications is written once, and frames still
+  on the GPU at stop have none.
 - **Pass rows (Tier 1).** A Tier 1 recording adds streams `pass_name` (an id
   and a name, written once before the id's first row) and `passes`: the
   executed passes of one rendered frame, each with CPU encode and GPU

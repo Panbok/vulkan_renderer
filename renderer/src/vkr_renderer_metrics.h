@@ -338,10 +338,26 @@ vkr_renderer_metrics_cumulative_delta(uint64_t current, uint64_t *previous) {
   return current >= prior ? current - prior : 0u;
 }
 
+/**
+ * @brief The whole-frame GPU time the most recently collected frame reports,
+ * and the renderer frame that ran it.
+ *
+ * gpu.submission publishes the newest completed frame's time, which lags the
+ * collected frame by the frames in flight; `source_frame_index` names the one
+ * it measured. Single-buffered like the pass table, keyed the same way.
+ */
+typedef struct VkrRendererMetricsSubmission {
+  uint64_t cpu_frame_index;
+  uint64_t source_frame_index;
+  uint64_t gpu_ns;
+  bool8_t valid;
+} VkrRendererMetricsSubmission;
+
 typedef struct VkrRendererMetrics {
   VkrMetrics *metrics;
   VkrRendererMetricIds ids;
   VkrRendererMetricsPassTable passes;
+  VkrRendererMetricsSubmission submission;
   /* A collected frame whose valid pass GPU times sum to at least this logs
      its slowest passes, so a headless run can attribute hitches; zero
      disables. Diagnostic only: no metric or report reads it. */
@@ -433,6 +449,8 @@ void vkr_renderer_metrics_collect(
     const VkrRendererMetricsCollectContext *context);
 const VkrRendererMetricsPassTable *
 vkr_renderer_metrics_get_pass_table(const VkrRendererMetrics *renderer_metrics);
+const VkrRendererMetricsSubmission *
+vkr_renderer_metrics_get_submission(const VkrRendererMetrics *renderer_metrics);
 bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
                                         String8 path);
 

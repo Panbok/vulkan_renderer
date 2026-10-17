@@ -805,6 +805,16 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
       &runtime->recording, frame, view.frame->cpu_frame_index,
       passes && passes->cpu_frame_index == view.frame->cpu_frame_index ? passes
                                                                        : NULL);
+  /* The published gpu.submission measures an earlier frame; the sample
+     beside it names which, so the recording files it there. */
+  const VkrRendererMetricsSubmission *submission =
+      vkr_renderer_metrics_get_submission(&runtime->renderer_metrics);
+  if (submission && submission->valid &&
+      submission->cpu_frame_index == view.frame->cpu_frame_index) {
+    vkr_recording_gpu_submission(&runtime->recording,
+                                 submission->source_frame_index,
+                                 (float64_t)submission->gpu_ns * 1.0e-6);
+  }
   vkr_metrics_snapshot_release(runtime->metrics, &view);
 }
 

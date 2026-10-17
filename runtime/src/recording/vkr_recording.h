@@ -246,11 +246,17 @@ typedef struct VkrRecording {
   float64_t resident_sampled_at;
   uint64_t resident_bytes;
   bool8_t resident_valid;
-  /* Tier 1, and the renderer frame index of recent recorded frames. */
-  bool8_t passes_enabled;
-  uint32_t pass_gpu_period;
+  /* gpu.submission's field index, UINT32_MAX without it, and the newest
+     renderer frame whose GPU time was written, plus one. Its value lags the
+     published frame, so it is written on the frame that rendered it. */
+  uint32_t gpu_submission_metric;
+  uint64_t gpu_frame_written;
+  /* The renderer frame index of recent recorded frames. */
   VkrRecordingFrameIndex frame_history[VKR_RECORDING_FRAME_INDEX_HISTORY];
   uint32_t frame_history_next;
+  /* Tier 1. */
+  bool8_t passes_enabled;
+  uint32_t pass_gpu_period;
   /* The newest renderer frame whose rows were written, plus one. */
   uint64_t pass_frame_written;
   /* Pass names by id, and an open-addressed table of id + 1 by name hash;
@@ -294,20 +300,32 @@ void vkr_recording_frame(VkrRecording *recording,
 
 /**
  * @brief Writes the Tier 0 metrics of recorded frame `frame` from a published
- * metrics frame; no-op for a recording without metrics. Frame-loop thread.
+ * metrics frame, except gpu.submission, which vkr_recording_gpu_submission
+ * places; no-op for a recording without metrics. Frame-loop thread.
  */
 void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
                            const VkrMetricsFrame *published);
 
 /**
- * @brief Writes the pass rows of `passes`, the table collected with renderer
- * frame `frame_index`, which recorded frame `frame` rendered with. The rows
- * describe an earlier frame, named by their GPU source frame; rows of a frame
- * already written or older than the history are skipped. No-op below Tier 1.
+ * @brief Notes that recorded frame `frame` rendered renderer frame
+ * `frame_index`, then writes the pass rows of `passes`, the table collected
+ * with it. The rows describe an earlier frame, named by their GPU source
+ * frame; rows of a frame already written or older than the history are
+ * skipped. Rows need Tier 1; the note is taken at every tier.
  */
 void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
                           uint64_t frame_index,
                           const VkrRendererMetricsPassTable *passes);
+
+/**
+ * @brief Writes gpu.submission, `gpu_ms` of renderer frame
+ * `source_frame_index`, on the recorded frame that rendered it, as a metrics
+ * record holding that field alone. Call after vkr_recording_passes; a frame
+ * already written or older than the history is skipped.
+ */
+void vkr_recording_gpu_submission(VkrRecording *recording,
+                                  uint64_t source_frame_index,
+                                  float64_t gpu_ms);
 
 /**
  * @brief Whether the next recorded frame takes per-pass GPU timestamps.

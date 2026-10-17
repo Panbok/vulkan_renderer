@@ -1221,6 +1221,103 @@ static void test_recording_drive(void) {
   printf("  test_recording_drive PASSED\n");
 }
 
+/* Detects: gpu.submission written on the frame that published it instead
+   of the frame that rendered it, a repeated completion written twice, a
+   GPU time from before the recording filed on a recorded frame, and the
+   partial record overwriting the frame's other metrics. */
+static void test_recording_gpu_submission(void) {
+  printf("  Running test_recording_gpu_submission...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  VkrMetricId wall = VKR_METRIC_ID_INVALID;
+  VkrMetricId gpu = VKR_METRIC_ID_INVALID;
+  const VkrMetricDescription wall_desc = {
+      .name = string8_lit("frame.wall"),
+      .domain = VKR_METRIC_DOMAIN_FRAME,
+      .kind = VKR_METRIC_KIND_DURATION,
+      .unit = VKR_METRIC_UNIT_NANOSECONDS,
+      .scalar = VKR_METRIC_SCALAR_U64,
+      .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+  };
+  VkrMetricDescription gpu_desc = wall_desc;
+  gpu_desc.name = string8_lit("gpu.submission");
+  assert(vkr_metrics_register(metrics, &wall_desc, &wall));
+  assert(vkr_metrics_register(metrics, &gpu_desc, &gpu));
+  assert(vkr_metrics_seal(metrics));
+
+  char path[1024];
+  recording_test_path("gpu", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path, .codec = vkr_depot_zstd_codec(), .metrics = metrics};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  /* Renderer frames 200 to 211, one per recorded frame; each publishes the
+     GPU time of the frame 3 back, (5 + n) ms for renderer frame 200 + n.
+     Frame 6 repeats frame 5's completion, so frame 203's time never comes. */
+  const uint64_t base = 200u;
+  for (uint64_t f = 0u; f < 12u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    const uint64_t index = base + f;
+    const uint64_t source = f == 6u ? index - 4u : index - 3u;
+    const uint64_t gpu_ns = (5u + source - (base - 3u)) * 1000000u - 3000000u;
+    vkr_metrics_begin_frame(metrics, index, index);
+    vkr_metrics_duration_add_ns(metrics, wall, (16u + f) * 1000000u);
+    vkr_metrics_duration_add_ns(metrics, gpu, gpu_ns);
+    assert(vkr_metrics_end_frame(metrics));
+    VkrMetricsSnapshotView view = {0};
+    assert(vkr_metrics_snapshot_acquire(metrics, &view));
+    vkr_recording_metrics(&recording, f, view.frame);
+    vkr_recording_passes(&recording, f, index, NULL);
+    vkr_recording_gpu_submission(&recording, source,
+                                 (float64_t)gpu_ns * 1.0e-6);
+    vkr_metrics_snapshot_release(metrics, &view);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  const uint32_t wall_series =
+      vkr_recording_data_find_series(&data, "frame.wall");
+  const uint32_t gpu_series =
+      vkr_recording_data_find_series(&data, "gpu.submission");
+  assert(wall_series != UINT32_MAX && gpu_series != UINT32_MAX);
+  for (uint64_t f = 0u; f < 12u; ++f) {
+    assert(data.series[wall_series].valid[f]);
+    assert(data.series[wall_series].values[f] == (float64_t)(16u + f));
+    /* Frames 0 to 8 rendered the sources 200 to 208 that completed; 3 never
+       came, and 9 to 11 were in flight at the stop. */
+    const bool8_t expected = f <= 8u && f != 3u;
+    assert(data.series[gpu_series].valid[f] == expected);
+    if (expected) {
+      assert(data.series[gpu_series].values[f] == (float64_t)(5u + f));
+    }
+  }
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_gpu_submission PASSED\n");
+}
+
 /* Detects: notes or ranges out of order after an add, a note lost or
    reordered on its frame, escapes (quotes, newlines, UTF-8) damaged by the
    write and read, a cut inside a UTF-8 sequence, a reversed range kept
@@ -1333,6 +1430,7 @@ bool32_t run_recording_tests(void) {
   test_recording_truncated_recovery();
   test_recorder_accounting();
   test_recording_pass_rows();
+  test_recording_gpu_submission();
   test_scene_change_tracking();
   test_recording_pose_playback();
   test_recording_player_records();
