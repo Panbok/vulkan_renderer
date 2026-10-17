@@ -1625,13 +1625,16 @@ vkr_internal uint32_t vkr_vk_sun_contact_extent(uint32_t extent) {
   return Max(extent / 2u, 1u);
 }
 
-/* Ray-query sun shadows (prototype, VKR_SUN_RAY_SHADOWS): rays cover view
-   depths below the range's end and hand over to the cascades over its last
-   fifth. They run to the scene's edge; the TLAS holds every opaque and
-   alpha-tested candidate (ADR-119). */
-#define VKR_VULKAN_SUN_RAY_RANGE_END 50.0f
-#define VKR_VULKAN_SUN_RAY_RANGE_FADE_START 40.0f
+/* Ray-query sun shadows: rays cover view depths below the range's end
+   (VkrVulkanRenderer.sun_ray_range_end) and hand over to the cascades over
+   its last fifth. They run to the scene's edge; the TLAS holds every opaque
+   and alpha-tested candidate (ADR-119). */
 #define VKR_VULKAN_SUN_RAY_LENGTH 1000.0f
+
+vkr_internal float32_t
+vkr_vk_sun_ray_fade_start(const VkrVulkanRenderer *renderer) {
+  return renderer->sun_ray_range_end * 0.8f;
+}
 
 /* The sun cascade filter's and contact march's noise phase: the temporal
    resolve averages the phases FSR 3.1 or SMAA T2x step through; without one
@@ -1738,8 +1741,8 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
                    ? VKR_VULKAN_SUN_RAY_TLAS
                    : 0u,
       .frame_index = packet->input.frame.frame_index,
-      .range_fade_start = VKR_VULKAN_SUN_RAY_RANGE_FADE_START,
-      .range_end = VKR_VULKAN_SUN_RAY_RANGE_END,
+      .range_fade_start = vkr_vk_sun_ray_fade_start(renderer),
+      .range_end = renderer->sun_ray_range_end,
       .ray_length = VKR_VULKAN_SUN_RAY_LENGTH,
       .motion_texture = motion,
       .validity_texture = validity,
@@ -1818,7 +1821,7 @@ bool8_t vkr_vk_prepare_sun_contact(VkrVulkanRenderer *renderer,
       .noise_index = vkr_vk_sun_noise_index(packet),
       /* The rays find the contacts where they cover the pixel alone. */
       .ray_cover_depth = renderer->prepared_frame.sun_ray_shadows_active
-                             ? VKR_VULKAN_SUN_RAY_RANGE_FADE_START
+                             ? vkr_vk_sun_ray_fade_start(renderer)
                              : 0.0f,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),

@@ -2905,6 +2905,8 @@ _Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 208u &&
                    offsetof(VkrVulkanSunRayShadowRoot, ray_length) == 176u,
                "Vulkan sun ray shadow root ABI drift");
 #define VKR_VULKAN_SUN_RAY_TLAS 1u
+/* View depth, in metres, where ray-query sun shadows end by default. */
+#define VKR_VULKAN_SUN_RAY_RANGE_END 50.0f
 
 /* The three ray-query sun shadow passes, which share one prepare. */
 typedef enum VkrVulkanSunRayStage {
@@ -3670,6 +3672,10 @@ struct VkrVulkanRenderer {
      when it is the previous submit's and the same image. */
   uint64_t sun_ray_history_submit;
   VkImage sun_ray_history_image;
+  /* View depth, in metres, where ray-query sun shadows end: 50, or
+     VKR_SUN_RAY_RANGE for a measurement. Their weight falls over the last
+     fifth. */
+  float32_t sun_ray_range_end;
   /* Probes a frame may trace within VKR_VULKAN_VOLUME_BUDGET_MS, from the
      measured cost of the layer's passes (ADR-119). Written on the render
      thread; the runtime reads it once a frame. */

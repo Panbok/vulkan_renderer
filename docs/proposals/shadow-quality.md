@@ -422,6 +422,41 @@ raster, and the receivers' next-cascade fallback and far-plane clamp.
   captures, not harness reports, and the scene is the 2026-10-12 copy from
   the depot.
 
+### Level Design Test measurements
+
+On 2026-10-17 the Release editor, headless (Scene 1275×618, FSR 3.1, High
+settings, 18:30), recorded Tier 1 recordings (ADR-122) of the Level Design
+Test copy in three modes: the far level alone (`VKR_SUN_RAY_SHADOWS=0`), rays
+to 50 m, and rays to 1 km (`VKR_SUN_RAY_RANGE=1000`, which moves the ray
+range for a measurement). Medians of about 410 frames each, in ms:
+
+| View, mode | Ray passes | `Lighting.Deferred` | Pixels that change against the far level (more than 24 of 255) |
+|---|---|---|---|
+| Valley side, far level | — | 0.982 | — |
+| Valley side, rays to 50 m | 0.093 | 1.062 | 0.03% |
+| Valley side, rays to 1 km | 0.289 | 0.874 | 1.2% |
+| Bridge and fir stands, far level | — | 0.933 | — |
+| Bridge and fir stands, rays to 50 m | 0.087 | 0.957 | 0.01% |
+| Bridge and fir stands, rays to 1 km | 0.329 | 0.819 | 9.8% |
+
+- **Quality.** Rays to 1 km add the self-shadowing that the far level's
+  texels, about 0.5 m, blur away: terrain relief on the slopes, rock shadows
+  by the river and tree stands' own shadows. From these viewpoints, 40 m and
+  more above the ground, rays to 50 m reach almost no pixel.
+- **Cost.** Rays to 1 km take about 3.5 times the 50 m rays' passes here and
+  lighting saves about 0.1 ms. Scaled by pixel count to 2560×1440 (4.7
+  times), they would take about 1.4–1.6 ms against the far level's 80 MiB
+  and its few hundredths of a millisecond while its camera moves; D2's
+  1.5 ms gate holds the rays near the camera, and the far level stays.
+- **Foliage.** The fir, spruce and larch stands cost the rays no more than
+  the bare slopes (0.329 against 0.289 ms at 1 km), so alpha testing does
+  not dominate there.
+- **Open.** The level's movers (trams, freight car, lifts) move only in Play,
+  where the view follows the player from its start inside the base; timing
+  them needs a scripted drive. The copy has no skinned characters; the
+  Bistro mannequin cases stand in (Skinned casters above). These are editor
+  recordings at a small Scene, not harness reports.
+
 ## Tiled options
 
 Costs are estimates for an M1 Pro at 1440p.

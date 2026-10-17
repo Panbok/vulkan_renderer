@@ -214,6 +214,17 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
     renderer->config.graph_path = "assets/render_graphs/main.rendergraph.json";
   renderer->candidate_publication_generation = 1u;
   renderer->geometry_table_generation = 1u;
+  /* VKR_SUN_RAY_RANGE measures the rays over a longer range, up to the far
+     level's 1 km. */
+  renderer->sun_ray_range_end = VKR_VULKAN_SUN_RAY_RANGE_END;
+  char sun_ray_range[16];
+  float32_t sun_ray_range_value = 0.0f;
+  if (vkr_platform_environment_variable("VKR_SUN_RAY_RANGE", sun_ray_range,
+                                        sizeof(sun_ray_range)) &&
+      sun_ray_range[0] && string_to_f32(sun_ray_range, &sun_ray_range_value) &&
+      sun_ray_range_value >= 1.0f && sun_ray_range_value <= 1000.0f) {
+    renderer->sun_ray_range_end = sun_ray_range_value;
+  }
   if (!renderer->config.max_graph_images)
     renderer->config.max_graph_images = 128u;
   if (!renderer->config.max_graph_buffers)
