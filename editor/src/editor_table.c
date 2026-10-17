@@ -10,6 +10,8 @@
 #define EDITOR_TABLE_WHEEL_ROWS 3.0f
 #define EDITOR_TABLE_FIRST_PAGE 24u
 #define EDITOR_TABLE_CELL_PAD_PT 6.0f
+/* The scrollbar's widest thumb, 6 points, and the 2 beside it, plus 2. */
+#define EDITOR_TABLE_GUTTER_PT 10.0f
 
 vkr_internal VkrUiPlacement editor_table_cell(uint32_t column, uint32_t row) {
   return (VkrUiPlacement){.column = column,
@@ -102,6 +104,7 @@ vkr_internal bool8_t editor_table_header(VkrUiSystem *ui, VkrEditorTable *table,
                              .unit = VKR_UI_TRACK_PX};
   VkrUiPanelConfig header = editor_table_row_panel(
       editor_table_cell(0u, 0u), tracks, column_count, &height);
+  header.style.padding_pt.right = table->gutter_pt;
   header.style.background_color = theme->header;
   header.style.border_pt = (VkrUiEdges){0.0f, 0.0f, 1.0f, 0.0f};
   header.style.border_color = theme->separator;
@@ -221,24 +224,27 @@ bool8_t vkr_editor_table_begin(VkrUiSystem *ui, const char *id,
           &outer)) {
     return false_v;
   }
-  *out_sorted = editor_table_header(ui, table, columns, column_count);
-
   /* The rows scroll by the wheel over them and by the bar; only the rows
      in view are built. */
   const float32_t row_pt = VKR_EDITOR_TABLE_ROW_PT;
   const float32_t content_pt = (float32_t)row_count * row_pt;
   VkrUiRect body = {0};
   float32_t page_pt = 0.0f;
-  if (table->body_id && vkr_ui_widget_rect(ui, table->body_id, &body)) {
+  const bool8_t measured =
+      table->body_id && vkr_ui_widget_rect(ui, table->body_id, &body);
+  if (measured) {
     page_pt = body.height / ui->content_scale;
-    if (ui->mouse_wheel != 0 && !ui->mouse_captured &&
-        (float32_t)ui->mouse_x >= body.x &&
-        (float32_t)ui->mouse_x < body.x + body.width &&
-        (float32_t)ui->mouse_y >= body.y &&
-        (float32_t)ui->mouse_y < body.y + body.height) {
-      table->scroll_pt -=
-          (float32_t)ui->mouse_wheel * row_pt * EDITOR_TABLE_WHEEL_ROWS;
-    }
+  }
+  table->gutter_pt =
+      measured && content_pt > page_pt + 0.5f ? EDITOR_TABLE_GUTTER_PT : 0.0f;
+  *out_sorted = editor_table_header(ui, table, columns, column_count);
+  if (measured && ui->mouse_wheel != 0 && !ui->mouse_captured &&
+      (float32_t)ui->mouse_x >= body.x &&
+      (float32_t)ui->mouse_x < body.x + body.width &&
+      (float32_t)ui->mouse_y >= body.y &&
+      (float32_t)ui->mouse_y < body.y + body.height) {
+    table->scroll_pt -=
+        (float32_t)ui->mouse_wheel * row_pt * EDITOR_TABLE_WHEEL_ROWS;
   }
   table->scroll_pt =
       vkr_clamp_f32(table->scroll_pt, 0.0f, Max(0.0f, content_pt - page_pt));
@@ -283,6 +289,7 @@ bool8_t vkr_editor_table_row(VkrUiSystem *ui, VkrEditorTable *table,
       editor_table_row_panel(placement, tracks, column_count, &height);
   panel.style.min_size_pt.y = panel.style.max_size_pt.y =
       VKR_EDITOR_TABLE_ROW_PT;
+  panel.style.padding_pt.right = table->gutter_pt;
   bool8_t clicked = false_v;
   (void)vkr_ui_push_id_u64(ui, row->key);
   if (vkr_ui_panel_begin(ui, string8_lit("row"), &panel)) {

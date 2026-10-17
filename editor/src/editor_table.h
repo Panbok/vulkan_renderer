@@ -41,6 +41,9 @@ typedef struct VkrEditorTable {
   float32_t drag_from_x;
   float32_t drag_from_width;
   float32_t scroll_pt;
+  /* Room kept clear at the right of the header and rows for the scrollbar
+     while the rows overflow, so it never covers a right-aligned value. */
+  float32_t gutter_pt;
   /* The rows' scroll area, for its last rectangle. */
   VkrUiId body_id;
 } VkrEditorTable;
