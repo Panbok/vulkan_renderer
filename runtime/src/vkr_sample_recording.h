@@ -53,8 +53,8 @@ typedef struct VkrSampleRecordingRequest {
   bool8_t loop;
   /* START: the compressor the client links; NULL stores chunks raw. */
   const VkrCodec *codec;
-  /* START: record no frame metrics (capture tier None). */
-  bool8_t no_metrics;
+  /* START: what the recording measures. */
+  VkrRecordingTier tier;
 } VkrSampleRecordingRequest;
 
 typedef struct VkrSampleRecordingStatus {
@@ -93,10 +93,11 @@ typedef struct VkrSampleRecordingState {
   float64_t hour;
   /* The scene journals' summed revision the recording last saw. */
   uint64_t edit_revision;
-  /* Whole-frame GPU timing as it was before a recording with metrics turned
-     it on; restored at stop. */
-  bool8_t restore_submission_timing;
+  /* Whole-frame and per-pass GPU timing as they were before a recording
+     with metrics took them over; restored at stop. */
+  bool8_t restore_gpu_timing;
   bool8_t submission_timing;
+  bool8_t pass_timing;
 } VkrSampleRecordingState;
 
 /** Applies one request; `scene_path` names the level for the summary. */

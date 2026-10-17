@@ -13,7 +13,8 @@ Accepted (partial). Phases R0, R1 and most of R2 of
 the recorder, camera and frame recording with simulation stopped, Watch
 playback with exact seeking, the editor's Record control, REC indicator,
 playback bar and Recordings window, the `rec.*` agent operations, Tier 0
-frame metrics, the recording analysis and the Performance window. Play
+frame metrics, Tier 1 pass rows, the recording analysis and the Performance
+window. Play
 recording, Drive, perf re-runs and re-simulation remain in the proposal.
 The authoritative overhead gate has not run; a non-authoritative
 Bistro A/B is recorded in the proposal.
@@ -79,18 +80,36 @@ an agent must read one without the editor.
   frame's metrics frame is published, under the frame's own recording number;
   a dropped publication writes no values. An editor recording turns on
   whole-frame GPU timing and restores it at stop.
+- **Pass rows (Tier 1).** A Tier 1 recording adds streams `pass_name` (an id
+  and a name, written once before the id's first row) and `passes`: the
+  executed passes of one rendered frame, each with CPU encode and GPU
+  milliseconds (`vkr_recording_format.h`). The renderer's pass table
+  describes a completed earlier frame; the recording maps its source frame
+  index to the recorded frame through a 32-frame history and writes each
+  source frame once. GPU pass stamps run every frame on desktop and in one
+  frame of 8 on tiled, where they split the shared compute encoder; such
+  frames carry `VKR_RECORDING_FRAME_PASS_TIMING`. The editor's Record makes
+  Tier 1 recordings; `rec.start` takes `tier` none, 0 or 1. Stop restores the
+  pass timing setting.
 - **Analysis.** At stop the runtime reads the stream back and writes
   statistics, the time-based 1% low and spikes (over 1.2 times the median of
   19 neighbours and 4 ms above it, or over twice the budget) into
   `summary.json` within 8 KB
   ([vkr_recording_analysis.h](../../runtime/src/assets/vkr_recording_analysis.h)).
-  `vkr_rec spikes` and `vkr_rec frames` query the same analysis, and the
-  editor's Performance window draws it with `vkr_ui_plot`.
+  Pass statistics rank by total time; a spike names the passes that grew
+  most in its frame, or in the run's slowest frame with GPU times.
+  `vkr_rec spikes`, `vkr_rec frames` and `vkr_rec passes` query the same
+  analysis, and the editor's Performance window draws it with `vkr_ui_plot`,
+  including a GPU-by-pass chart over the frames with GPU times and a pass
+  table that isolates one pass.
 
 ## Consequences
 
 - Recording costs two bounded copies per frame on the frame-loop thread; the
-  writer ran 6.8 µs per frame in the Bistro A/B.
+  writer ran 6.8 µs per frame in the Bistro A/B. Tier 1 adds about 35 pass
+  rows (12 bytes each) per Bistro frame: a 244-frame Bistro recording took
+  65 KB compressed. On tiled, every 8th frame also pays for the pass stamps
+  (about 0.5 ms on Bistro), so timing comparisons use Tier 0.
 - A seek reproduces the recorded camera exactly: a scripted agent-channel
   check found 0 m and 0° error at four frames on Bistro.
 - A recording made by another build reads only if its dictionary's frame and

@@ -17,6 +17,7 @@
 #define ANALYSIS_TEST_CHUNK_FRAMES 50u
 #define ANALYSIS_TEST_NO_FRAME UINT64_MAX
 #define ANALYSIS_TEST_LABEL_BYTES 120u
+#define ANALYSIS_TEST_MAIN_MISSING 150u
 
 typedef enum AnalysisTestMetric {
   ANALYSIS_TEST_WALL = 0,
@@ -165,11 +166,17 @@ static const VkrRecordingStream ANALYSIS_TEST_STREAMS[] = {
      .record_size = sizeof(AnalysisTestMetrics),
      .field_count = ArrayCount(ANALYSIS_TEST_METRIC_FIELDS),
      .fields = ANALYSIS_TEST_METRIC_FIELDS},
+    /* Only scenarios with pass rows declare these two. */
+    {.id = 5u, .name = "pass_name"},
+    {.id = 6u, .flags = VKR_RECORDING_STREAM_DROPPABLE, .name = "passes"},
 };
+#define ANALYSIS_TEST_PASS_STREAMS 2u
 
 _Static_assert(sizeof(AnalysisTestFrame) == 24u, "frame record layout");
 _Static_assert(sizeof(AnalysisTestCamera) == 48u, "camera record layout");
 _Static_assert(sizeof(AnalysisTestMetrics) == 56u, "metrics record layout");
+
+typedef struct AnalysisTestChunk AnalysisTestChunk;
 
 typedef struct AnalysisTestScenario {
   uint64_t frames;
@@ -179,6 +186,8 @@ typedef struct AnalysisTestScenario {
   /* Up to two markers at `frame`; returns how many. */
   uint32_t (*markers)(uint64_t frame, uint32_t *out_kinds,
                       const char **out_labels);
+  /* Pass records written while writing `frame`; NULL for none. */
+  void (*passes)(AnalysisTestChunk *chunk, uint64_t frame, uint64_t frames);
 } AnalysisTestScenario;
 
 typedef struct AnalysisTestMemory {
@@ -210,10 +219,10 @@ static void analysis_test_remove(const char *path) {
   (void)file_remove(&file);
 }
 
-typedef struct AnalysisTestChunk {
+struct AnalysisTestChunk {
   uint8_t data[32u * 1024u];
   uint64_t size;
-} AnalysisTestChunk;
+};
 
 static void analysis_test_put(AnalysisTestChunk *chunk, uint16_t stream,
                               uint64_t frame, const void *payload,
@@ -279,9 +288,12 @@ static void analysis_test_write(const char *path, VkrAllocator *allocator,
                                     0u, identity, strlen(identity)));
   uint8_t *dictionary = NULL;
   uint64_t dictionary_size = 0u;
-  assert(vkr_recording_dictionary_encode(
-      ANALYSIS_TEST_STREAMS, ArrayCount(ANALYSIS_TEST_STREAMS), allocator,
-      &dictionary, &dictionary_size));
+  const uint32_t stream_count =
+      ArrayCount(ANALYSIS_TEST_STREAMS) -
+      (scenario->passes ? 0u : ANALYSIS_TEST_PASS_STREAMS);
+  assert(vkr_recording_dictionary_encode(ANALYSIS_TEST_STREAMS, stream_count,
+                                         allocator, &dictionary,
+                                         &dictionary_size));
   assert(vkr_recording_writer_chunk(&writer, VKR_RECORDING_CHUNK_DICTIONARY, 0u,
                                     0u, dictionary, dictionary_size));
   vkr_allocator_free(allocator, dictionary, dictionary_size,
@@ -294,6 +306,9 @@ static void analysis_test_write(const char *path, VkrAllocator *allocator,
       analysis_test_put_frame(&chunk, scenario, frame);
     }
     analysis_test_put_markers(&chunk, scenario, frame);
+    if (scenario->passes) {
+      scenario->passes(&chunk, frame, scenario->frames);
+    }
     const bool8_t last = frame + 1u == scenario->frames;
     if ((frame + 1u) % ANALYSIS_TEST_CHUNK_FRAMES == 0u || last) {
       const uint64_t first = frame - frame % ANALYSIS_TEST_CHUNK_FRAMES;
@@ -364,7 +379,7 @@ static uint32_t analysis_test_main_markers(uint64_t frame, uint32_t *out_kinds,
 
 static const AnalysisTestScenario ANALYSIS_TEST_MAIN = {
     .frames = 200u,
-    .missing_frame = 150u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
     .metrics = analysis_test_main_metrics,
     .markers = analysis_test_main_markers,
 };
@@ -385,6 +400,73 @@ static void analysis_test_load(const char *label,
                                  vkr_depot_zstd_codec()) ==
          VKR_RECORDING_DATA_OK);
 }
+
+/* ------------------------------------------------------------------------ */
+/* Pass scenario: the main scenario with Shadow, GBuffer and Lighting pass    */
+/* rows written two frames late, GPU times on every 4th frame, GBuffer slow   */
+/* in frame 160 and Lighting in frame 100, rows of a pass whose name record   */
+/* was lost, and a second record for frame 10.                               */
+
+static void analysis_test_put_passes_of(AnalysisTestChunk *chunk,
+                                        uint64_t frame, float32_t cpu_bias) {
+  if (frame == ANALYSIS_TEST_MAIN_MISSING) {
+    return;
+  }
+  const bool8_t timed = frame % 4u == 0u;
+  const float32_t cpu[4] = {0.2f + cpu_bias, 0.3f, 0.1f, 0.5f};
+  const float32_t gpu[4] = {2.0f, frame == 160u ? 9.0f : 4.0f,
+                            frame == 100u ? 7.0f : 3.0f, 1.0f};
+  uint8_t record[VKR_RECORDING_PASSES_HEADER_SIZE +
+                 4u * VKR_RECORDING_PASS_ROW_SIZE];
+  const uint32_t rows = 4u;
+  const uint32_t flags = timed ? VKR_RECORDING_PASSES_GPU_TIMED : 0u;
+  MemCopy(record, &rows, sizeof(rows));
+  MemCopy(record + 4u, &flags, sizeof(flags));
+  for (uint16_t i = 0u; i < rows; ++i) {
+    uint8_t *row = record + VKR_RECORDING_PASSES_HEADER_SIZE +
+                   (uint32_t)i * VKR_RECORDING_PASS_ROW_SIZE;
+    const uint16_t row_flags = timed ? VKR_RECORDING_PASS_GPU_VALID : 0u;
+    const float32_t gpu_ms = timed ? gpu[i] : 0.0f;
+    MemCopy(row, &i, sizeof(i));
+    MemCopy(row + 2u, &row_flags, sizeof(row_flags));
+    MemCopy(row + 4u, &cpu[i], sizeof(cpu[i]));
+    MemCopy(row + 8u, &gpu_ms, sizeof(gpu_ms));
+  }
+  analysis_test_put(chunk, 6u, frame, record, sizeof(record));
+}
+
+static void analysis_test_put_passes(AnalysisTestChunk *chunk, uint64_t frame,
+                                     uint64_t frames) {
+  if (frame == 0u) {
+    /* Pass 3 has rows but no name. */
+    static const char *const names[] = {"Shadow", "GBuffer", "Lighting"};
+    for (uint32_t id = 0u; id < ArrayCount(names); ++id) {
+      uint8_t record[4u + 16u];
+      const uint32_t length = (uint32_t)strlen(names[id]);
+      MemCopy(record, &id, sizeof(id));
+      MemCopy(record + 4u, names[id], length);
+      analysis_test_put(chunk, 5u, frame, record, 4u + length);
+    }
+  }
+  if (frame >= 2u) {
+    analysis_test_put_passes_of(chunk, frame - 2u, 0.0f);
+  }
+  if (frame + 1u == frames) {
+    analysis_test_put_passes_of(chunk, frame - 1u, 0.0f);
+    analysis_test_put_passes_of(chunk, frame, 0.0f);
+  }
+  if (frame == 20u) {
+    analysis_test_put_passes_of(chunk, 10u, 9.0f);
+  }
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_PASSES = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
+    .metrics = analysis_test_main_metrics,
+    .markers = analysis_test_main_markers,
+    .passes = analysis_test_put_passes,
+};
 
 /* Detects: a lost frame that shifts later indices or counts as a sample, a
    clock that skips a lost frame, a metrics valid bit that is ignored, the
@@ -784,12 +866,148 @@ static void test_recording_analysis_json_bound(void) {
   printf("  test_recording_analysis_json_bound PASSED\n");
 }
 
+/* Detects: rows placed by write order instead of their frame, a second
+   record for a frame that replaces the first, rows of an unnamed pass kept,
+   GPU times read on frames without them, pass statistics or order that mix
+   GPU and CPU samples, a spike explained by a frame without GPU times when
+   its run has one, the nearest GPU frame off by one or on the later side of
+   a tie, and pass columns or the frame breakdown in JSON that miss a value
+   or print one a frame lacks. */
+static void test_recording_analysis_passes(void) {
+  printf("  Running test_recording_analysis_passes...\n");
+  AnalysisTestMemory memory;
+  analysis_memory_create(&memory);
+  Arena *arena = arena_create(MB(16), MB(1));
+  assert(arena != NULL);
+  char path[1024];
+  VkrRecordingData data;
+  analysis_test_load("passes", &ANALYSIS_TEST_PASSES, &memory, path,
+                     sizeof(path), &data);
+
+  assert(data.pass_count == 3u && data.pass_rows_cut == 0u);
+  const uint32_t shadow = vkr_recording_data_find_pass(&data, "Shadow");
+  const uint32_t gbuffer = vkr_recording_data_find_pass(&data, "GBuffer");
+  const uint32_t lighting = vkr_recording_data_find_pass(&data, "Lighting");
+  assert(shadow == 0u && gbuffer == 1u && lighting == 2u);
+  assert(data.pass_frames == 199u && data.pass_gpu_frames == 50u);
+  uint32_t count = 0u;
+  const VkrRecordingPassRow *rows =
+      vkr_recording_data_pass_rows(&data, 160u, &count);
+  assert(count == 3u && rows[1].pass == gbuffer && rows[1].gpu_ms == 9.0f &&
+         (rows[1].flags & VKR_RECORDING_PASS_GPU_VALID));
+  rows = vkr_recording_data_pass_rows(&data, 10u, &count);
+  assert(count == 3u && rows[0].cpu_ms == 0.2f && rows[0].gpu_ms == 0.0f &&
+         !(rows[0].flags & VKR_RECORDING_PASS_GPU_VALID));
+  assert(vkr_recording_data_pass_rows(&data, 150u, &count) == NULL &&
+         count == 0u);
+  rows = vkr_recording_data_pass_rows(&data, 199u, &count);
+  assert(count == 3u);
+  assert(vkr_recording_data_gpu_frame_near(&data, 5u, 8u) == 4u &&
+         vkr_recording_data_gpu_frame_near(&data, 6u, 8u) == 4u &&
+         vkr_recording_data_gpu_frame_near(&data, 7u, 8u) == 8u &&
+         vkr_recording_data_gpu_frame_near(&data, 5u, 0u) == UINT64_MAX &&
+         vkr_recording_data_gpu_frame_near(&data, 150u, 8u) == 148u);
+
+  VkrRecordingAnalysis analysis;
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  assert(analysis.pass_count == 3u);
+  const VkrRecordingPassStats *first = &analysis.passes[0];
+  assert(first->pass == gbuffer && analysis.passes[1].pass == lighting &&
+         analysis.passes[2].pass == shadow);
+  assert(first->cpu.valid == 199u && first->gpu.valid == 50u &&
+         first->gpu.p50 == 4.0 && first->gpu.max == 9.0 &&
+         analysis_test_near(first->gpu.mean, 4.1));
+  assert(analysis.spike_count == 2u);
+  const VkrRecordingSpike *late = &analysis.spikes[0];
+  assert(late->frame == 161u && late->pass_frame == 160u && late->pass_gpu &&
+         late->pass_contributor_count == 1u &&
+         late->passes[0].pass == gbuffer && late->passes[0].value == 9.0 &&
+         late->passes[0].excess == 5.0);
+  const VkrRecordingSpike *single = &analysis.spikes[1];
+  assert(single->frame == 100u && single->pass_frame == 100u &&
+         single->pass_gpu && single->pass_contributor_count == 1u &&
+         single->passes[0].pass == lighting && single->passes[0].excess == 4.0);
+
+  VkrJsonWriter writer;
+  assert(vkr_recording_analysis_write_json(analysis_test_json_begin(&writer),
+                                           &data, &analysis, NULL));
+  assert(vkr_json_writer_complete(&writer));
+  const VkrBakeryJson *root = analysis_test_parse(arena);
+  assert(analysis_test_number(root, "pass_gpu_frames") == 50.0 &&
+         !analysis_test_flag(root, "passes_truncated"));
+  const VkrBakeryJson *passes = analysis_test_member(root, "passes");
+  assert(passes->count == 3u);
+  /* [name, frames, gpu_frames, gpu_mean, gpu_p50, gpu_p95, gpu_max,
+     cpu_mean, cpu_p95] */
+  const VkrBakeryJson *entry = vkr_bakery_json_at(passes, 0u);
+  assert(entry->count == 9u &&
+         vkr_bakery_json_is_string(vkr_bakery_json_at(entry, 0u), "GBuffer") &&
+         vkr_bakery_json_at(entry, 1u)->number == 199.0 &&
+         vkr_bakery_json_at(entry, 2u)->number == 50.0 &&
+         vkr_bakery_json_at(entry, 4u)->number == 4.0 &&
+         vkr_bakery_json_at(entry, 6u)->number == 9.0);
+  const VkrBakeryJson *spike =
+      vkr_bakery_json_at(analysis_test_member(root, "spikes"), 0u);
+  assert(analysis_test_number(spike, "pass_frame") == 160.0 &&
+         vkr_bakery_json_is_string(analysis_test_member(spike, "pass_time"),
+                                   "gpu"));
+  const VkrBakeryJson *cause =
+      vkr_bakery_json_at(analysis_test_member(spike, "passes"), 0u);
+  assert(vkr_bakery_json_is_string(analysis_test_member(cause, "name"),
+                                   "GBuffer") &&
+         analysis_test_number(cause, "excess") == 5.0);
+
+  /* Pass columns: GBuffer's GPU time exists in frame 160 only. */
+  assert(vkr_recording_data_has_field(&data, "pass.cpu:Lighting") &&
+         !vkr_recording_data_has_field(&data, "pass.gpu:Nope") &&
+         !vkr_recording_data_has_field(&data, "pass.gpu:"));
+  const char *fields[] = {"pass.gpu:GBuffer", "pass.cpu:Lighting"};
+  assert(vkr_recording_frames_write_json(analysis_test_json_begin(&writer),
+                                         &data, 160u, 161u, fields,
+                                         ArrayCount(fields), 0u));
+  assert(vkr_json_writer_complete(&writer));
+  root = analysis_test_parse(arena);
+  const VkrBakeryJson *frame_rows = analysis_test_member(root, "rows");
+  const VkrBakeryJson *at160 = vkr_bakery_json_at(frame_rows, 0u);
+  const VkrBakeryJson *at161 = vkr_bakery_json_at(frame_rows, 1u);
+  /* Six significant digits print the float 0.1 as 0.1. */
+  assert(vkr_bakery_json_at(at160, 5u)->number == 9.0 &&
+         analysis_test_near(vkr_bakery_json_at(at160, 6u)->number, 0.1));
+  assert(vkr_bakery_json_at(at161, 5u)->type == VKR_BAKERY_JSON_NULL &&
+         analysis_test_near(vkr_bakery_json_at(at161, 6u)->number, 0.1));
+
+  /* A frame without GPU times shows the nearest one with them. */
+  assert(vkr_recording_passes_write_json(analysis_test_json_begin(&writer),
+                                         &data, &analysis, 2u, 161u, 8u));
+  assert(vkr_json_writer_complete(&writer));
+  root = analysis_test_parse(arena);
+  assert(analysis_test_member(root, "passes")->count == 2u &&
+         analysis_test_flag(root, "passes_truncated"));
+  const VkrBakeryJson *breakdown = analysis_test_member(root, "frame");
+  assert(analysis_test_number(breakdown, "requested") == 161.0 &&
+         analysis_test_number(breakdown, "frame") == 160.0 &&
+         analysis_test_flag(breakdown, "gpu"));
+  const VkrBakeryJson *slowest =
+      vkr_bakery_json_at(analysis_test_member(breakdown, "rows"), 0u);
+  assert(
+      vkr_bakery_json_is_string(vkr_bakery_json_at(slowest, 0u), "GBuffer") &&
+      vkr_bakery_json_at(slowest, 2u)->number == 9.0);
+
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  analysis_test_remove(path);
+  arena_destroy(arena);
+  analysis_memory_destroy(&memory);
+  printf("  test_recording_analysis_passes PASSED\n");
+}
+
 bool32_t run_recording_analysis_tests(void) {
   printf("--- Starting Recording Analysis Tests ---\n");
   test_recording_analysis_statistics();
   test_recording_analysis_spikes();
   test_recording_analysis_json();
   test_recording_analysis_json_bound();
+  test_recording_analysis_passes();
   printf("--- Recording Analysis Tests Completed ---\n");
   return true_v;
 }

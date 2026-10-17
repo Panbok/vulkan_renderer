@@ -214,8 +214,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
           application->metrics, "cpu.simulation", VKR_METRIC_DOMAIN_FRAME,
           false_v, &ids->simulation) ||
       !vkr_standard_scene_runtime_register_duration_metric(
-          application->metrics, "cpu.physics", VKR_METRIC_DOMAIN_FRAME,
-          false_v, &ids->physics) ||
+          application->metrics, "cpu.physics", VKR_METRIC_DOMAIN_FRAME, false_v,
+          &ids->physics) ||
       !vkr_metrics_register(application->metrics,
                             &(VkrMetricDescription){
                                 .name = string8_lit("frame.decoupled"),

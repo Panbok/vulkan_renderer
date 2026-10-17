@@ -86,6 +86,23 @@ typedef enum VkrRecordingMarkerKind {
 /** "note", "bug", "step", "edit" or "unknown". */
 const char *vkr_recording_marker_kind_name(uint32_t kind);
 
+/*
+ * Render pass rows (streams "pass_name" and "passes" of runtime recordings
+ * with Tier 1 metrics). A pass_name record is a u32 pass id then the UTF-8
+ * name; it comes before the first passes record that uses the id. A passes
+ * record holds the executed passes of one rendered frame, under that frame's
+ * number: a u32 row count, u32 VKR_RECORDING_PASSES_* flags, then per row a
+ * u16 pass id, u16 VKR_RECORDING_PASS_* flags, f32 CPU ms and f32 GPU ms.
+ */
+#define VKR_RECORDING_PASS_NAME_MAX 63u
+#define VKR_RECORDING_PASS_MAX 512u
+#define VKR_RECORDING_PASSES_HEADER_SIZE 8u
+#define VKR_RECORDING_PASS_ROW_SIZE 12u
+/* The frame took per-pass GPU timestamps. */
+#define VKR_RECORDING_PASSES_GPU_TIMED 1u
+/* The row's GPU time is a measurement. */
+#define VKR_RECORDING_PASS_GPU_VALID 1u
+
 typedef struct VkrRecordingField {
   const char *name;
   /* Empty or a unit such as "ms", "bytes", "m". */

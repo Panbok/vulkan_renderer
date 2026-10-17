@@ -2,6 +2,7 @@
 
 #include "assets/vkr_recording_analysis.h"
 #include "containers/str.h"
+#include "containers/vkr_hashtable.h"
 #include "core/vkr_content_codec.h"
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
@@ -117,6 +118,8 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
 
 /* Sampling period of the process's resident memory, in seconds. */
 #define VKR_RECORDING_RESIDENT_PERIOD 0.1
+/* Open-addressed pass name slots: twice the names, a power of two. */
+#define VKR_RECORDING_PASS_SLOTS (2u * VKR_RECORDING_PASS_MAX)
 
 _Static_assert(sizeof(VkrRecordingFrame) == 24u, "frame record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
@@ -221,6 +224,30 @@ vkr_internal uint32_t vkr_recording_metric_fields(VkrRecording *recording,
   return resident + 2u;
 }
 
+/* The pass name table, from the recording's memory, and an empty frame
+   history. */
+vkr_internal bool8_t vkr_recording_passes_create(VkrRecording *recording) {
+  const uint64_t name_bytes =
+      sizeof(*recording->pass_names) * (uint64_t)VKR_RECORDING_PASS_MAX;
+  const uint64_t slot_bytes =
+      sizeof(*recording->pass_slots) * (uint64_t)VKR_RECORDING_PASS_SLOTS;
+  recording->pass_names = vkr_allocator_alloc(&recording->allocator, name_bytes,
+                                              VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  recording->pass_slots = vkr_allocator_alloc(
+      &recording->allocator, slot_bytes, VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  if (!recording->pass_names || !recording->pass_slots) {
+    return false_v;
+  }
+  MemZero(recording->pass_names, name_bytes);
+  MemZero(recording->pass_slots, slot_bytes);
+  for (uint32_t i = 0u; i < VKR_RECORDING_FRAME_INDEX_HISTORY; ++i) {
+    recording->frame_history[i] = (VkrRecordingFrameIndex){
+        .frame_index = UINT64_MAX, .frame = UINT64_MAX};
+  }
+  recording->passes_enabled = true_v;
+  return true_v;
+}
+
 bool8_t vkr_recording_start(VkrRecording *recording,
                             const VkrRecordingConfig *config) {
   vkr_assert(recording != NULL && config != NULL);
@@ -253,6 +280,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
   VkrRecordingStream streams[8];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 3u <= 8u,
+                 "room for the metrics and pass streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
   uint32_t stream_count = base_count;
@@ -268,6 +297,18 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         .field_count = field_count,
         .fields = metric_fields,
     };
+  }
+  if (config->metrics && config->passes) {
+    if (!vkr_recording_passes_create(recording)) {
+      goto cleanup;
+    }
+    recording->pass_gpu_period = config->pass_gpu_period;
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_PASS_NAME, .name = "pass_name"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASSES,
+                             .flags = VKR_RECORDING_STREAM_DROPPABLE,
+                             .name = "passes"};
   }
   const VkrRecorderConfig recorder_config = {
       .stream_path = stream_path,
@@ -377,6 +418,143 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
   }
   MemCopy(record, &valid, sizeof(valid));
   vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
+/* The id of the pass named `name`; a new name gets the next id and a name
+   record first. UINT16_MAX when the table is full or the record was lost,
+   so a later frame tries again. */
+vkr_internal uint16_t vkr_recording_pass_id(VkrRecording *recording,
+                                            uint64_t frame, const char *name,
+                                            uint32_t length) {
+  const VkrHashTableKey key = vkr_hash_table_key_string8(
+      string8_create_from_cstr((const uint8_t *)name, length));
+  const uint32_t mask = VKR_RECORDING_PASS_SLOTS - 1u;
+  uint32_t probe = (uint32_t)key.hash & mask;
+  while (recording->pass_slots[probe] != 0u) {
+    const uint16_t id = (uint16_t)(recording->pass_slots[probe] - 1u);
+    const char *known = recording->pass_names[id];
+    if (string_length(known) == length &&
+        MemCompare(known, name, length) == 0) {
+      return id;
+    }
+    probe = (probe + 1u) & mask;
+  }
+  if (recording->pass_count >= VKR_RECORDING_PASS_MAX) {
+    return UINT16_MAX;
+  }
+  const uint16_t id = (uint16_t)recording->pass_count;
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_PASS_NAME, frame, 4u + length);
+  if (!record) {
+    return UINT16_MAX;
+  }
+  const uint32_t id_value = id;
+  MemCopy(record, &id_value, sizeof(id_value));
+  MemCopy(record + 4u, name, length);
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  MemCopy(recording->pass_names[id], name, length);
+  recording->pass_names[id][length] = '\0';
+  recording->pass_slots[probe] = (uint16_t)(id + 1u);
+  ++recording->pass_count;
+  return id;
+}
+
+/* The recorded frame that rendered renderer frame `frame_index`, or
+   UINT64_MAX when it left the history or was never recorded. */
+vkr_internal uint64_t vkr_recording_frame_of(const VkrRecording *recording,
+                                             uint64_t frame_index) {
+  for (uint32_t i = 0u; i < VKR_RECORDING_FRAME_INDEX_HISTORY; ++i) {
+    if (recording->frame_history[i].frame_index == frame_index) {
+      return recording->frame_history[i].frame;
+    }
+  }
+  return UINT64_MAX;
+}
+
+void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
+                          uint64_t frame_index,
+                          const VkrRendererMetricsPassTable *passes) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled) {
+    return;
+  }
+  recording->frame_history[recording->frame_history_next] =
+      (VkrRecordingFrameIndex){.frame_index = frame_index, .frame = frame};
+  recording->frame_history_next =
+      (recording->frame_history_next + 1u) % VKR_RECORDING_FRAME_INDEX_HISTORY;
+  if (!passes || passes->count == 0u) {
+    return;
+  }
+  /* Every row of a table names the same source frame. The table repeats
+     the last completed frame until another completes. */
+  const uint64_t source = passes->samples[0].gpu_source_frame_index;
+  if (source < recording->pass_frame_written) {
+    return;
+  }
+  const uint64_t target = vkr_recording_frame_of(recording, source);
+  if (target == UINT64_MAX) {
+    return;
+  }
+  recording->pass_frame_written = source + 1u;
+
+  const uint32_t count = Min(passes->count, (uint32_t)VKR_RECORDING_PASS_MAX);
+  uint16_t ids[VKR_RECORDING_PASS_MAX];
+  uint32_t rows = 0u;
+  uint32_t flags = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrRendererMetricsPassSample *sample = &passes->samples[i];
+    ids[i] = UINT16_MAX;
+    if (sample->culled || sample->disabled) {
+      continue;
+    }
+    ids[i] = vkr_recording_pass_id(recording, frame, sample->name,
+                                   sample->name_length);
+    if (ids[i] == UINT16_MAX) {
+      continue;
+    }
+    ++rows;
+    flags |= sample->gpu_valid ? VKR_RECORDING_PASSES_GPU_TIMED : 0u;
+  }
+  uint8_t *record = vkr_recorder_reserve(
+      recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+      VKR_RECORDING_STREAM_PASSES, target,
+      VKR_RECORDING_PASSES_HEADER_SIZE + VKR_RECORDING_PASS_ROW_SIZE * rows);
+  if (!record) {
+    return;
+  }
+  MemCopy(record, &rows, sizeof(rows));
+  MemCopy(record + 4u, &flags, sizeof(flags));
+  uint8_t *row = record + VKR_RECORDING_PASSES_HEADER_SIZE;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (ids[i] == UINT16_MAX) {
+      continue;
+    }
+    const VkrRendererMetricsPassSample *sample = &passes->samples[i];
+    const uint16_t row_flags =
+        sample->gpu_valid ? VKR_RECORDING_PASS_GPU_VALID : 0u;
+    const float32_t cpu_ms = (float32_t)sample->cpu_ms;
+    const float32_t gpu_ms =
+        sample->gpu_valid ? (float32_t)sample->gpu_ms : 0.0f;
+    MemCopy(row, &ids[i], sizeof(ids[i]));
+    MemCopy(row + 2u, &row_flags, sizeof(row_flags));
+    MemCopy(row + 4u, &cpu_ms, sizeof(cpu_ms));
+    MemCopy(row + 8u, &gpu_ms, sizeof(gpu_ms));
+    row += VKR_RECORDING_PASS_ROW_SIZE;
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  recording->pass_rows_written += rows;
+}
+
+bool8_t vkr_recording_pass_gpu_frame(const VkrRecording *recording,
+                                     bool8_t *out_timed) {
+  vkr_assert(recording != NULL && out_timed != NULL);
+  if (!recording->active || !recording->passes_enabled ||
+      recording->pass_gpu_period == 0u) {
+    return false_v;
+  }
+  *out_timed = recording->frame % recording->pass_gpu_period == 0u;
+  return true_v;
 }
 
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,
@@ -514,7 +692,13 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
   vkr_recording_json_text(json, "status",
                           stream_ok ? "complete" : "incomplete");
   vkr_recording_json_text(json, "tier",
-                          recording->metrics_enabled ? "0" : "none");
+                          recording->passes_enabled    ? "1"
+                          : recording->metrics_enabled ? "0"
+                                                       : "none");
+  if (recording->passes_enabled) {
+    vkr_recording_json_u64(json, "pass_gpu_period", recording->pass_gpu_period);
+    vkr_recording_json_u64(json, "pass_rows", recording->pass_rows_written);
+  }
   vkr_recording_json_u64(json, "frames", recording->frame);
   vkr_recording_json_f64(json, "duration_seconds", recording->time);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);

@@ -1,5 +1,6 @@
 #include "recording_test.h"
 
+#include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/vkr_spsc_ring.h"
 #include "core/vkr_threads.h"
@@ -7,7 +8,9 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
 #include "recording/vkr_recorder.h"
+#include "recording/vkr_recording.h"
 #include "vkr_depot_zstd.h"
+#include "vkr_renderer_metrics.h"
 
 /* Recordings (docs/proposals/recordings.md, phase R0): the producer ring,
  * the stream format and the recorder. Each test names the failure it
@@ -618,6 +621,142 @@ static void test_recorder_accounting(void) {
   printf("  test_recorder_accounting PASSED\n");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Pass rows                                                                 */
+
+#define RECORDING_PASS_TEST_FRAMES 12u
+/* Renderer frame index of recorded frame 0. */
+#define RECORDING_PASS_TEST_BASE 100u
+
+/* A pass table of renderer frame `source`: passes A and B, a culled C, and
+   D from source 105 on; GPU times on even sources. */
+static uint32_t recording_pass_table(uint64_t source,
+                                     VkrRendererMetricsPassSample *out) {
+  static const char *const names[] = {"A", "B", "C", "D"};
+  const uint32_t count = source >= RECORDING_PASS_TEST_BASE + 5u ? 4u : 3u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    VkrRendererMetricsPassSample *sample = &out[i];
+    MemZero(sample, sizeof(*sample));
+    sample->name[0] = names[i][0];
+    sample->name_length = 1u;
+    sample->cpu_ms = 0.25 * (float64_t)(i + 1u) + (float64_t)source * 1.0e-3;
+    sample->gpu_ms = (float64_t)(i + 1u) + (float64_t)source * 1.0e-2;
+    sample->gpu_valid = source % 2u == 0u;
+    sample->gpu_source_frame_index = source;
+    sample->culled = i == 2u;
+  }
+  return count;
+}
+
+/* Detects: rows written under the frame that collected them instead of the
+   frame that rendered them, a repeated table written twice, a table from
+   before the recording written at all, a culled pass recorded or named,
+   ids that change between frames, the GPU flag on a frame without GPU
+   times, and the sampled-frame schedule. */
+static void test_recording_pass_rows(void) {
+  printf("  Running test_recording_pass_rows...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  char path[1024];
+  recording_test_path("passes", path, sizeof(path));
+  /* A bundle directory, not a stream file. */
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path,
+      .codec = vkr_depot_zstd_codec(),
+      .metrics = metrics,
+      .passes = true_v,
+      .pass_gpu_period = 4u,
+  };
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+
+  VkrRendererMetricsPassSample samples[4];
+  for (uint64_t f = 0u; f < RECORDING_PASS_TEST_FRAMES; ++f) {
+    bool8_t timed = false_v;
+    assert(vkr_recording_pass_gpu_frame(&recording, &timed));
+    assert(timed == (f % 4u == 0u));
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    /* Rows arrive two frames late; before that the table describes a frame
+       from before the recording. Frame 5 repeats frame 4's table. */
+    const uint64_t index = RECORDING_PASS_TEST_BASE + f;
+    uint64_t source = f >= 2u ? index - 2u : RECORDING_PASS_TEST_BASE - 7u;
+    if (f == 5u) {
+      source = index - 3u;
+    }
+    const VkrRendererMetricsPassTable table = {
+        .samples = samples,
+        .count = recording_pass_table(source, samples),
+        .capacity = ArrayCount(samples),
+        .cpu_frame_index = index,
+    };
+    vkr_recording_passes(&recording, f, index, &table);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  assert(data.frame_count == RECORDING_PASS_TEST_FRAMES);
+  assert(data.pass_count == 3u);
+  const uint32_t a = vkr_recording_data_find_pass(&data, "A");
+  const uint32_t b = vkr_recording_data_find_pass(&data, "B");
+  const uint32_t d = vkr_recording_data_find_pass(&data, "D");
+  assert(a == 0u && b == 1u && d == 2u);
+  assert(vkr_recording_data_find_pass(&data, "C") == UINT32_MAX);
+  /* Frames 0 to 9 rendered sources 100 to 109; frame 3's table was never
+     current, and frames 10 and 11 had not completed. */
+  assert(data.pass_frames == 9u);
+  for (uint64_t f = 0u; f < RECORDING_PASS_TEST_FRAMES; ++f) {
+    uint32_t count = 0u;
+    const VkrRecordingPassRow *rows =
+        vkr_recording_data_pass_rows(&data, f, &count);
+    if (f == 3u || f >= 10u) {
+      assert(count == 0u && rows == NULL);
+      continue;
+    }
+    const uint64_t source = RECORDING_PASS_TEST_BASE + f;
+    const uint32_t expected = source >= RECORDING_PASS_TEST_BASE + 5u ? 3u : 2u;
+    assert(count == expected);
+    const bool8_t gpu = source % 2u == 0u;
+    assert(((data.pass_frame_flags[f] & VKR_RECORDING_PASSES_GPU_TIMED) !=
+            0u) == gpu);
+    for (uint32_t i = 0u; i < count; ++i) {
+      /* The culled C sits between B and D in the table. */
+      const uint32_t slot = rows[i].pass == d ? 3u : rows[i].pass;
+      const float32_t cpu = (float32_t)(0.25 * (float64_t)(slot + 1u) +
+                                        (float64_t)source * 1.0e-3);
+      const float32_t gpu_ms =
+          (float32_t)((float64_t)(slot + 1u) + (float64_t)source * 1.0e-2);
+      assert(rows[i].cpu_ms == cpu);
+      assert(((rows[i].flags & VKR_RECORDING_PASS_GPU_VALID) != 0u) == gpu);
+      assert(rows[i].gpu_ms == (gpu ? gpu_ms : 0.0f));
+    }
+  }
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_pass_rows PASSED\n");
+}
+
 bool32_t run_recording_tests(void) {
   printf("--- Starting Recording Tests ---\n");
   test_spsc_ring_wrap_and_full();
@@ -625,6 +764,7 @@ bool32_t run_recording_tests(void) {
   test_recording_format_round_trip();
   test_recording_truncated_recovery();
   test_recorder_accounting();
+  test_recording_pass_rows();
   printf("--- Recording Tests Completed ---\n");
   return true_v;
 }

@@ -44,6 +44,9 @@ typedef struct VkrEditorRecordingEntry {
 #define VKR_EDITOR_PERF_COLUMNS 2048u
 /* CPU stages the view stacks: update, render prepare, submit and wait. */
 #define VKR_EDITOR_PERF_STAGES 4u
+/* Pass series the view stacks: the passes with the most total time, then
+   the rest as one. */
+#define VKR_EDITOR_PERF_PASS_SERIES 8u
 
 /* The performance view of one recording (docs/proposals/recordings.md,
    "Performance view"): its loaded data, analysis and plot columns. */
@@ -71,6 +74,20 @@ typedef struct VkrEditorRecordingPerf {
   bool8_t has_stages;
   bool8_t has_ram;
   bool8_t has_vram;
+  /* Tier 1. The pass chart has its own columns: each shows the frame of its
+     run of frames with GPU times (CPU times when the recording has none)
+     whose passes took longest. Series are the passes with the most total
+     time, then the rest; with a focused pass, that pass alone. */
+  bool8_t has_passes;
+  bool8_t pass_gpu;
+  uint32_t pass_focus;
+  uint32_t pass_column_count;
+  uint64_t pass_column_frame[VKR_EDITOR_PERF_COLUMNS];
+  float32_t pass_ms[VKR_EDITOR_PERF_PASS_SERIES][VKR_EDITOR_PERF_COLUMNS];
+  uint32_t pass_series[VKR_EDITOR_PERF_PASS_SERIES];
+  uint32_t pass_series_count;
+  float32_t pass_ms_top;
+  uint32_t pass_hovered_column;
   /* The frame the view selected last, or UINT64_MAX; and the column the
      pointer was over in the last build, for the tooltip. */
   uint64_t selected;
@@ -130,12 +147,13 @@ uint64_t vkr_editor_recording_send(struct VkrEditorUi *editor,
 bool8_t vkr_editor_recording_directory(struct VkrEditorUi *editor, char *out,
                                        uint64_t capacity);
 
-/** Starts a recording named `name` (a time stamp when empty) by `author`.
- * Returns its token, or zero with the reason in `error`. */
+/** Starts a recording named `name` (a time stamp when empty) by `author`
+ * that measures `tier`. Returns its token, or zero with the reason in
+ * `error`. */
 uint64_t vkr_editor_recording_start(struct VkrEditorUi *editor,
                                     const char *name, const char *author,
-                                    bool8_t toast, char *error,
-                                    uint64_t error_capacity);
+                                    VkrRecordingTier tier, bool8_t toast,
+                                    char *error, uint64_t error_capacity);
 
 /** Resolves a recording argument: a path, or a bundle name in the recording
  * directory with or without its extension. */

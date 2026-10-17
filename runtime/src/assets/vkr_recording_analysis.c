@@ -13,13 +13,17 @@
 /* JSON numbers keep this many significant digits: a microsecond for
    frame times, a millimetre for positions within 100 m. */
 #define VKR_RECORDING_JSON_DIGITS 6u
-/* "false" is one byte longer than "true"; a measured header may hold two
+/* "false" is one byte longer than "true"; a measured header may hold three
    truncation flags that turn false. */
-#define VKR_RECORDING_JSON_FLAG_SLACK 2u
+#define VKR_RECORDING_JSON_FLAG_SLACK 3u
 /* Column of vkr_recording_frames_write_json that reads the frame time, and
    one that names no series. */
 #define VKR_RECORDING_COLUMN_FRAME_MS (UINT32_MAX - 1u)
 #define VKR_RECORDING_COLUMN_UNKNOWN UINT32_MAX
+/* Pass columns: one of these bits with the pass id. */
+#define VKR_RECORDING_COLUMN_PASS_GPU 0x40000000u
+#define VKR_RECORDING_COLUMN_PASS_CPU 0x20000000u
+#define VKR_RECORDING_COLUMN_PASS_MASK 0x0000ffffu
 
 /* ------------------------------------------------------------------------ */
 /* Load                                                                      */
@@ -35,6 +39,8 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *camera;
   const VkrRecordingStream *marker;
   const VkrRecordingStream *metrics;
+  const VkrRecordingStream *pass_name;
+  const VkrRecordingStream *passes;
   const VkrRecordingField *display_dt;
   const VkrRecordingField *position;
   const VkrRecordingField *yaw;
@@ -46,6 +52,8 @@ typedef struct VkrRecordingDataLoad {
   /* First pass counts; the second fills up to them. */
   uint64_t frame_count;
   uint32_t marker_capacity;
+  uint32_t pass_capacity;
+  uint64_t pass_rows;
   bool8_t too_large;
 } VkrRecordingDataLoad;
 
@@ -164,6 +172,8 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->camera = vkr_recording_find_stream(dictionary, "camera");
   load->marker = vkr_recording_find_stream(dictionary, "marker");
   load->metrics = vkr_recording_find_stream(dictionary, "metrics");
+  load->pass_name = vkr_recording_find_stream(dictionary, "pass_name");
+  load->passes = vkr_recording_find_stream(dictionary, "passes");
   load->display_dt = vkr_recording_find_field(load->frame, "display_dt", 1u);
   load->position = vkr_recording_find_field(load->camera, "position", 3u);
   load->yaw = vkr_recording_find_field(load->camera, "yaw", 1u);
@@ -189,6 +199,29 @@ vkr_internal bool8_t vkr_recording_record_fits(
     const VkrRecordingStream *stream, const VkrRecordingRecord *record) {
   return vkr_recording_is_stream(stream, record) && stream->record_size > 0u &&
          record->size == stream->record_size;
+}
+
+/* The row count of a passes record whose size matches it, else zero. */
+vkr_internal uint32_t
+vkr_recording_pass_record_rows(const VkrRecordingRecord *record) {
+  if (record->size < VKR_RECORDING_PASSES_HEADER_SIZE) {
+    return 0u;
+  }
+  const uint32_t rows = vkr_load_le_u32(record->data);
+  const uint64_t size = VKR_RECORDING_PASSES_HEADER_SIZE +
+                        (uint64_t)VKR_RECORDING_PASS_ROW_SIZE * rows;
+  return rows <= VKR_RECORDING_PASS_MAX && size == record->size ? rows : 0u;
+}
+
+/* The pass id of a pass_name record that fits, else UINT32_MAX. */
+vkr_internal uint32_t
+vkr_recording_pass_name_id(const VkrRecordingRecord *record) {
+  if (record->size < 4u ||
+      record->size - 4u > (uint32_t)VKR_RECORDING_PASS_NAME_MAX) {
+    return UINT32_MAX;
+  }
+  const uint32_t id = vkr_load_le_u32(record->data);
+  return id < VKR_RECORDING_PASS_MAX ? id : UINT32_MAX;
 }
 
 typedef void (*VkrRecordingDataVisit)(VkrRecordingDataLoad *load,
@@ -232,6 +265,17 @@ vkr_internal void vkr_recording_data_count(VkrRecordingDataLoad *load,
     }
     return;
   }
+  if (vkr_recording_is_stream(load->pass_name, record)) {
+    const uint32_t id = vkr_recording_pass_name_id(record);
+    if (id != UINT32_MAX) {
+      load->pass_capacity = Max(load->pass_capacity, id + 1u);
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->passes, record)) {
+    load->pass_rows += vkr_recording_pass_record_rows(record);
+    return;
+  }
   const bool8_t framed = vkr_recording_is_stream(load->frame, record) ||
                          vkr_recording_is_stream(load->camera, record) ||
                          vkr_recording_is_stream(load->metrics, record);
@@ -272,9 +316,64 @@ vkr_recording_data_fill_metrics(VkrRecordingDataLoad *load,
   }
 }
 
+vkr_internal void
+vkr_recording_data_fill_passes(VkrRecordingDataLoad *load,
+                               const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  const uint64_t frame = record->frame;
+  const uint32_t rows = vkr_recording_pass_record_rows(record);
+  if (!data->pass_block || rows == 0u || frame >= data->frame_count ||
+      data->pass_row_counts[frame] > 0u) {
+    return;
+  }
+  if (data->pass_row_count + rows > load->pass_rows) {
+    data->pass_rows_cut += rows;
+    return;
+  }
+  const uint64_t first = data->pass_row_count;
+  const uint8_t *at = record->data + VKR_RECORDING_PASSES_HEADER_SIZE;
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < rows; ++i, at += VKR_RECORDING_PASS_ROW_SIZE) {
+    const uint16_t pass = (uint16_t)(at[0] | (at[1] << 8u));
+    /* A row whose name record was lost names no pass. */
+    if (pass >= data->pass_count || data->passes[pass].name[0] == '\0') {
+      continue;
+    }
+    const uint16_t flags = (uint16_t)(at[2] | (at[3] << 8u));
+    const float32_t cpu_ms = vkr_load_le_f32(at + 4u);
+    const float32_t gpu_ms = vkr_load_le_f32(at + 8u);
+    const bool8_t gpu_valid = (flags & VKR_RECORDING_PASS_GPU_VALID) != 0u &&
+                              vkr_is_finite_f32(gpu_ms) && gpu_ms >= 0.0f;
+    data->pass_rows[first + kept++] = (VkrRecordingPassRow){
+        .pass = pass,
+        .flags = gpu_valid ? VKR_RECORDING_PASS_GPU_VALID : 0u,
+        .cpu_ms = vkr_is_finite_f32(cpu_ms) ? Max(cpu_ms, 0.0f) : 0.0f,
+        .gpu_ms = gpu_valid ? gpu_ms : 0.0f,
+    };
+  }
+  data->pass_row_count += kept;
+  data->pass_first[frame] = first;
+  data->pass_row_counts[frame] = (uint16_t)kept;
+  data->pass_frame_flags[frame] = (uint8_t)(vkr_load_le_u32(record->data + 4u) &
+                                            VKR_RECORDING_PASSES_GPU_TIMED);
+}
+
 vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
                                           const VkrRecordingRecord *record) {
   VkrRecordingData *data = load->data;
+  if (vkr_recording_is_stream(load->pass_name, record)) {
+    const uint32_t id = vkr_recording_pass_name_id(record);
+    if (data->pass_block && id < data->pass_count) {
+      const uint32_t length = record->size - 4u;
+      MemCopy(data->passes[id].name, record->data + 4u, length);
+      data->passes[id].name[length] = '\0';
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->passes, record)) {
+    vkr_recording_data_fill_passes(load, record);
+    return;
+  }
   if (vkr_recording_is_stream(load->marker, record)) {
     if (record->size < 4u || data->marker_count >= load->marker_capacity) {
       return;
@@ -367,6 +466,41 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   return true_v;
 }
 
+/* The pass block: names, then rows, then the per-frame row index, counts
+   and flags. Nothing without pass names. */
+vkr_internal bool8_t
+vkr_recording_data_allocate_passes(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (load->pass_capacity == 0u) {
+    return true_v;
+  }
+  const uint64_t frames = data->frame_count;
+  load->pass_rows = Min(load->pass_rows, VKR_RECORDING_DATA_PASS_ROW_MAX);
+  const uint64_t name_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingDataPass) * (uint64_t)load->pass_capacity, 8u);
+  const uint64_t row_bytes =
+      vkr_align_up_u64(sizeof(VkrRecordingPassRow) * load->pass_rows, 8u);
+  const uint64_t first_bytes = sizeof(uint64_t) * frames;
+  const uint64_t count_bytes = sizeof(uint16_t) * frames;
+  const uint64_t block_bytes =
+      name_bytes + row_bytes + first_bytes + count_bytes + frames;
+  uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!block) {
+    return false_v;
+  }
+  MemZero(block, block_bytes);
+  data->pass_block = block;
+  data->pass_block_bytes = block_bytes;
+  data->passes = (VkrRecordingDataPass *)block;
+  data->pass_count = load->pass_capacity;
+  data->pass_rows = (VkrRecordingPassRow *)(block + name_bytes);
+  data->pass_first = (uint64_t *)(block + name_bytes + row_bytes);
+  data->pass_row_counts = (uint16_t *)(data->pass_first + frames);
+  data->pass_frame_flags = (uint8_t *)(data->pass_row_counts + frames);
+  return true_v;
+}
+
 /* Repeats the last frame and pose over lost ones, builds the clock and picks
    the frame-time series. */
 vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
@@ -387,6 +521,14 @@ vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
   for (uint32_t i = 0u; i < data->marker_count; ++i) {
     VkrRecordingDataMarker *marker = &data->markers[i];
     marker->time = data->times[Min(marker->frame, data->frame_count - 1u)];
+  }
+  for (uint64_t i = 0u; data->pass_block && i < data->frame_count; ++i) {
+    if (data->pass_row_counts[i] == 0u) {
+      continue;
+    }
+    ++data->pass_frames;
+    data->pass_gpu_frames +=
+        (data->pass_frame_flags[i] & VKR_RECORDING_PASSES_GPU_TIMED) ? 1u : 0u;
   }
 
   data->frame_time_series = UINT32_MAX;
@@ -431,7 +573,8 @@ VkrRecordingDataError vkr_recording_data_load(VkrRecordingData *out,
     error = VKR_RECORDING_DATA_EMPTY;
     goto cleanup;
   }
-  if (!vkr_recording_data_allocate(&load)) {
+  if (!vkr_recording_data_allocate(&load) ||
+      !vkr_recording_data_allocate_passes(&load)) {
     error = VKR_RECORDING_DATA_MEMORY;
     goto cleanup;
   }
@@ -454,6 +597,10 @@ void vkr_recording_data_free(VkrRecordingData *data) {
   if (data->block) {
     vkr_allocator_free(data->allocator, data->block, data->block_bytes,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (data->pass_block) {
+    vkr_allocator_free(data->allocator, data->pass_block,
+                       data->pass_block_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   MemZero(data, sizeof(*data));
   data->frame_time_series = UINT32_MAX;
@@ -491,6 +638,55 @@ bool8_t vkr_recording_data_frame_ms(const VkrRecordingData *data,
 
 const char *vkr_recording_data_frame_source(const VkrRecordingData *data) {
   return data->frame_time_series != UINT32_MAX ? "frame.wall" : "display_dt";
+}
+
+const VkrRecordingPassRow *
+vkr_recording_data_pass_rows(const VkrRecordingData *data, uint64_t frame,
+                             uint32_t *out_count) {
+  *out_count = 0u;
+  if (!data->pass_block || frame >= data->frame_count ||
+      data->pass_row_counts[frame] == 0u) {
+    return NULL;
+  }
+  *out_count = data->pass_row_counts[frame];
+  return &data->pass_rows[data->pass_first[frame]];
+}
+
+uint32_t vkr_recording_data_find_pass(const VkrRecordingData *data,
+                                      const char *name) {
+  for (uint32_t i = 0u; i < data->pass_count; ++i) {
+    if (data->passes[i].name[0] != '\0' &&
+        string_equals(data->passes[i].name, name)) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
+vkr_internal bool8_t vkr_recording_gpu_timed(const VkrRecordingData *data,
+                                             uint64_t frame) {
+  return data->pass_block && frame < data->frame_count &&
+         data->pass_row_counts[frame] > 0u &&
+         (data->pass_frame_flags[frame] & VKR_RECORDING_PASSES_GPU_TIMED);
+}
+
+uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
+                                           uint64_t frame, uint64_t reach) {
+  if (!data->pass_block || frame >= data->frame_count) {
+    return UINT64_MAX;
+  }
+  for (uint64_t distance = 0u; distance <= reach; ++distance) {
+    if (distance <= frame && vkr_recording_gpu_timed(data, frame - distance)) {
+      return frame - distance;
+    }
+    if (vkr_recording_gpu_timed(data, frame + distance)) {
+      return frame + distance;
+    }
+    if (distance > frame && frame + distance >= data->frame_count) {
+      break;
+    }
+  }
+  return UINT64_MAX;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -670,6 +866,138 @@ vkr_recording_spike_contributors(const VkrRecordingData *data,
   }
 }
 
+/* Largest GPU total first, then CPU total, then the lower id. A pass that
+   runs in few frames ranks by what it cost over the recording, not by its
+   cost when it ran. */
+vkr_internal int32_t vkr_recording_compare_passes(const void *lhs,
+                                                  const void *rhs) {
+  const VkrRecordingPassStats *a = lhs;
+  const VkrRecordingPassStats *b = rhs;
+  const float64_t a_gpu = a->gpu.mean * (float64_t)a->gpu.valid;
+  const float64_t b_gpu = b->gpu.mean * (float64_t)b->gpu.valid;
+  if (a_gpu != b_gpu) {
+    return a_gpu > b_gpu ? -1 : 1;
+  }
+  const float64_t a_cpu = a->cpu.mean * (float64_t)a->cpu.valid;
+  const float64_t b_cpu = b->cpu.mean * (float64_t)b->cpu.valid;
+  if (a_cpu != b_cpu) {
+    return a_cpu > b_cpu ? -1 : 1;
+  }
+  return a->pass < b->pass ? -1 : (a->pass > b->pass ? 1 : 0);
+}
+
+/* Per-pass CPU and GPU statistics. Each pass's samples go to its own run of
+   `scratch` (two per row), are sorted there and reduced. */
+vkr_internal void vkr_recording_pass_stats(const VkrRecordingData *data,
+                                           VkrRecordingAnalysis *out,
+                                           uint64_t *offsets,
+                                           float64_t *scratch) {
+  const uint32_t passes = data->pass_count;
+  const uint64_t rows = data->pass_row_count;
+  float64_t *cpu = scratch;
+  float64_t *gpu = scratch + rows;
+  uint64_t *cpu_count = offsets;
+  uint64_t *gpu_count = offsets + passes;
+  uint64_t *start = offsets + 2u * passes;
+  MemZero(offsets, sizeof(uint64_t) * 3u * passes);
+  for (uint64_t i = 0u; i < rows; ++i) {
+    ++start[data->pass_rows[i].pass];
+  }
+  uint64_t sum = 0u;
+  for (uint32_t p = 0u; p < passes; ++p) {
+    const uint64_t count = start[p];
+    start[p] = sum;
+    sum += count;
+  }
+  for (uint64_t i = 0u; i < rows; ++i) {
+    const VkrRecordingPassRow *row = &data->pass_rows[i];
+    const uint64_t at = start[row->pass];
+    cpu[at + cpu_count[row->pass]++] = (float64_t)row->cpu_ms;
+    if (row->flags & VKR_RECORDING_PASS_GPU_VALID) {
+      gpu[at + gpu_count[row->pass]++] = (float64_t)row->gpu_ms;
+    }
+  }
+  out->pass_count = 0u;
+  for (uint32_t p = 0u; p < passes; ++p) {
+    if (cpu_count[p] == 0u) {
+      continue;
+    }
+    VkrRecordingPassStats *stats = &out->passes[out->pass_count++];
+    stats->pass = p;
+    vkr_recording_stats_compute(cpu + start[p], cpu_count[p], &stats->cpu);
+    vkr_recording_stats_compute(gpu + start[p], gpu_count[p], &stats->gpu);
+  }
+  vkr_sort(out->passes, out->pass_count, sizeof(VkrRecordingPassStats),
+           vkr_recording_compare_passes);
+}
+
+/* The frame whose pass rows explain a spike (VkrRecordingSpike.pass_frame). */
+vkr_internal uint64_t vkr_recording_spike_pass_frame(
+    const VkrRecordingData *data, const float64_t *frame_ms,
+    const uint8_t *valid, const VkrRecordingSpike *spike, bool8_t *out_gpu) {
+  *out_gpu = true_v;
+  if (vkr_recording_gpu_timed(data, spike->frame)) {
+    return spike->frame;
+  }
+  uint64_t best = UINT64_MAX;
+  for (uint64_t f = spike->first_frame; f <= spike->last_frame; ++f) {
+    if (valid[f] && vkr_recording_gpu_timed(data, f) &&
+        (best == UINT64_MAX || frame_ms[f] > frame_ms[best])) {
+      best = f;
+    }
+  }
+  if (best != UINT64_MAX) {
+    return best;
+  }
+  *out_gpu = false_v;
+  uint32_t count = 0u;
+  (void)vkr_recording_data_pass_rows(data, spike->frame, &count);
+  return count > 0u ? spike->frame : UINT64_MAX;
+}
+
+/* The passes of `pass_frame` that grew most over their medians. `rank` maps
+   a pass id to its index in analysis->passes. */
+vkr_internal void
+vkr_recording_spike_passes(const VkrRecordingData *data,
+                           const VkrRecordingAnalysis *analysis,
+                           const uint32_t *rank, const float64_t *frame_ms,
+                           const uint8_t *valid, VkrRecordingSpike *spike) {
+  spike->pass_frame = vkr_recording_spike_pass_frame(data, frame_ms, valid,
+                                                     spike, &spike->pass_gpu);
+  uint32_t count = 0u;
+  const VkrRecordingPassRow *rows =
+      vkr_recording_data_pass_rows(data, spike->pass_frame, &count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrRecordingPassRow *row = &rows[i];
+    if (spike->pass_gpu && !(row->flags & VKR_RECORDING_PASS_GPU_VALID)) {
+      continue;
+    }
+    const VkrRecordingPassStats *stats = &analysis->passes[rank[row->pass]];
+    const float64_t value =
+        spike->pass_gpu ? (float64_t)row->gpu_ms : (float64_t)row->cpu_ms;
+    const float64_t excess =
+        value - (spike->pass_gpu ? stats->gpu.p50 : stats->cpu.p50);
+    if (excess <= 0.0) {
+      continue;
+    }
+    uint32_t at = spike->pass_contributor_count;
+    if (at == VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX) {
+      if (excess <= spike->passes[at - 1u].excess) {
+        continue;
+      }
+      --at;
+    } else {
+      ++spike->pass_contributor_count;
+    }
+    while (at > 0u && spike->passes[at - 1u].excess < excess) {
+      spike->passes[at] = spike->passes[at - 1u];
+      --at;
+    }
+    spike->passes[at] = (VkrRecordingPassContributor){
+        .pass = row->pass, .value = value, .excess = excess};
+  }
+}
+
 bool8_t vkr_recording_analyze(const VkrRecordingData *data,
                               const VkrRecordingAnalysisOptions *options,
                               VkrAllocator *allocator,
@@ -685,11 +1013,13 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
                                  : VKR_RECORDING_ANALYSIS_SPIKE_MAX;
   const uint64_t count = data->frame_count;
 
-  /* Owned results: series statistics, then the kept spikes. */
+  /* Owned results: series statistics, the kept spikes, pass statistics. */
   const uint64_t stats_bytes = vkr_align_up_u64(
       sizeof(VkrRecordingStats) * (uint64_t)data->series_count, 8u);
+  const uint64_t spike_bytes = sizeof(VkrRecordingSpike) * (uint64_t)spike_max;
   const uint64_t block_bytes =
-      stats_bytes + sizeof(VkrRecordingSpike) * (uint64_t)spike_max;
+      stats_bytes + spike_bytes +
+      sizeof(VkrRecordingPassStats) * (uint64_t)data->pass_count;
   uint8_t *block = vkr_allocator_alloc(allocator, block_bytes,
                                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!block) {
@@ -700,14 +1030,21 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
   out->block_bytes = block_bytes;
   out->series = (VkrRecordingStats *)block;
   out->spikes = (VkrRecordingSpike *)(block + stats_bytes);
+  out->passes = (VkrRecordingPassStats *)(block + stats_bytes + spike_bytes);
 
-  /* Scratch: frame times, sorted samples, window medians, spike runs and
-     the frame-time flags. Adjacent candidates merge, so runs are at most
-     half the frames, rounded up. */
+  /* Scratch: frame times, sorted samples, window medians, spike runs, pass
+     samples (two per row), pass counts and ranks, and the frame-time flags.
+     Adjacent candidates merge, so runs are at most half the frames, rounded
+     up. */
   const uint64_t run_capacity = (count + 1u) / 2u;
-  const uint64_t scratch_bytes = sizeof(float64_t) * count * 3u +
-                                 sizeof(VkrRecordingSpikeRun) * run_capacity +
-                                 count;
+  const uint64_t pass_sample_count = 2u * data->pass_row_count;
+  const uint64_t pass_offset_count = 3u * (uint64_t)data->pass_count;
+  const uint64_t scratch_bytes =
+      sizeof(float64_t) * (count * 3u + pass_sample_count) +
+      sizeof(VkrRecordingSpikeRun) * run_capacity +
+      sizeof(uint64_t) * pass_offset_count +
+      vkr_align_up_u64(sizeof(uint32_t) * (uint64_t)data->pass_count, 8u) +
+      count;
   uint8_t *scratch = vkr_allocator_alloc(allocator, scratch_bytes,
                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!scratch) {
@@ -717,8 +1054,14 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
   float64_t *frame_ms = (float64_t *)scratch;
   float64_t *samples = frame_ms + count;
   float64_t *medians = samples + count;
-  VkrRecordingSpikeRun *runs = (VkrRecordingSpikeRun *)(medians + count);
-  uint8_t *valid = (uint8_t *)(runs + run_capacity);
+  float64_t *pass_samples = medians + count;
+  VkrRecordingSpikeRun *runs =
+      (VkrRecordingSpikeRun *)(pass_samples + pass_sample_count);
+  uint64_t *pass_offsets = (uint64_t *)(runs + run_capacity);
+  uint32_t *pass_rank = (uint32_t *)(pass_offsets + pass_offset_count);
+  uint8_t *valid =
+      (uint8_t *)pass_rank +
+      vkr_align_up_u64(sizeof(uint32_t) * (uint64_t)data->pass_count, 8u);
 
   for (uint64_t i = 0u; i < count; ++i) {
     valid[i] = vkr_recording_data_frame_ms(data, i, &frame_ms[i]) ? 1u : 0u;
@@ -734,6 +1077,13 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
       }
     }
     vkr_recording_stats_compute(samples, sample_count, &out->series[s]);
+  }
+  vkr_recording_pass_stats(data, out, pass_offsets, pass_samples);
+  for (uint32_t i = 0u; i < data->pass_count; ++i) {
+    pass_rank[i] = UINT32_MAX;
+  }
+  for (uint32_t i = 0u; i < out->pass_count; ++i) {
+    pass_rank[out->passes[i].pass] = i;
   }
 
   /* Candidates, merged into runs that keep their worst frame. */
@@ -777,8 +1127,10 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
         .median_ms = median,
         .ratio = median > 0.0 ? frame_ms[run->worst] / median : 0.0,
         .excess_ms = run->excess,
+        .pass_frame = UINT64_MAX,
     };
     vkr_recording_spike_contributors(data, out, spike);
+    vkr_recording_spike_passes(data, out, pass_rank, frame_ms, valid, spike);
   }
 
   vkr_allocator_free(allocator, scratch, scratch_bytes,
@@ -978,6 +1330,26 @@ vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
   }
   vkr_json_writer_end_array(json);
 
+  if (data->pass_block) {
+    vkr_recording_json_named_optional(json, "pass_frame",
+                                      spike->pass_frame != UINT64_MAX,
+                                      (float64_t)spike->pass_frame);
+    vkr_recording_json_key(json, "pass_time");
+    vkr_recording_json_text(json, spike->pass_gpu ? "gpu" : "cpu");
+    vkr_recording_json_key(json, "passes");
+    vkr_json_writer_begin_array(json);
+    for (uint32_t i = 0u; i < spike->pass_contributor_count; ++i) {
+      const VkrRecordingPassContributor *pass = &spike->passes[i];
+      vkr_json_writer_begin_object(json);
+      vkr_recording_json_key(json, "name");
+      vkr_recording_json_text(json, data->passes[pass->pass].name);
+      vkr_recording_json_named_number(json, "ms", pass->value);
+      vkr_recording_json_named_number(json, "excess", pass->excess);
+      vkr_json_writer_end_object(json);
+    }
+    vkr_json_writer_end_array(json);
+  }
+
   vkr_recording_write_spike_markers(json, data, frame);
 
   /* Aligned with the analysis "bytes_series" names. */
@@ -995,11 +1367,57 @@ vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
   vkr_json_writer_end_object(json);
 }
 
+/* [name, frames, gpu_frames, gpu_mean, gpu_p50, gpu_p95, gpu_max,
+   cpu_mean, cpu_p95] */
+vkr_internal void vkr_recording_write_pass_entry(
+    VkrJsonWriter *json, const VkrRecordingData *data,
+    const VkrRecordingAnalysis *analysis, uint32_t index) {
+  const VkrRecordingPassStats *stats = &analysis->passes[index];
+  const bool8_t gpu = stats->gpu.valid > 0u;
+  vkr_json_writer_begin_array(json);
+  vkr_recording_json_text(json, data->passes[stats->pass].name);
+  vkr_json_writer_u64(json, stats->cpu.valid);
+  vkr_json_writer_u64(json, stats->gpu.valid);
+  vkr_recording_json_optional(json, gpu, stats->gpu.mean);
+  vkr_recording_json_optional(json, gpu, stats->gpu.p50);
+  vkr_recording_json_optional(json, gpu, stats->gpu.p95);
+  vkr_recording_json_optional(json, gpu, stats->gpu.max);
+  vkr_recording_json_number(json, stats->cpu.mean);
+  vkr_recording_json_number(json, stats->cpu.p95);
+  vkr_json_writer_end_array(json);
+}
+
+vkr_internal void
+vkr_recording_write_passes(VkrJsonWriter *json, const VkrRecordingData *data,
+                           const VkrRecordingAnalysis *analysis,
+                           uint32_t pass_limit) {
+  static const char *const pass_columns[] = {
+      "name",    "frames",  "gpu_frames", "gpu_mean", "gpu_p50",
+      "gpu_p95", "gpu_max", "cpu_mean",   "cpu_p95"};
+  vkr_recording_json_named_u64(json, "pass_frames", data->pass_frames);
+  vkr_recording_json_named_u64(json, "pass_gpu_frames", data->pass_gpu_frames);
+  vkr_recording_json_named_u64(json, "pass_rows_cut", data->pass_rows_cut);
+  vkr_recording_json_key(json, "pass_columns");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < ArrayCount(pass_columns); ++i) {
+    vkr_recording_json_text(json, pass_columns[i]);
+  }
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_key(json, "passes");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < pass_limit; ++i) {
+    vkr_recording_write_pass_entry(json, data, analysis, i);
+  }
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_key(json, "passes_truncated");
+  vkr_json_writer_bool(json, pass_limit < analysis->pass_count);
+}
+
 vkr_internal void
 vkr_recording_write_analysis(VkrJsonWriter *json, const VkrRecordingData *data,
                              const VkrRecordingAnalysis *analysis,
                              bool8_t include_series, uint32_t series_limit,
-                             uint32_t spike_limit) {
+                             uint32_t spike_limit, uint32_t pass_limit) {
   static const char *const series_columns[] = {"unit", "valid", "min", "max",
                                                "mean", "p50",   "p95", "p99"};
   vkr_json_writer_begin_object(json);
@@ -1022,6 +1440,9 @@ vkr_recording_write_analysis(VkrJsonWriter *json, const VkrRecordingData *data,
     vkr_json_writer_end_object(json);
     vkr_recording_json_key(json, "series_truncated");
     vkr_json_writer_bool(json, series_limit < data->series_count);
+  }
+  if (data->pass_block) {
+    vkr_recording_write_passes(json, data, analysis, pass_limit);
   }
 
   vkr_recording_json_key(json, "bytes_series");
@@ -1057,6 +1478,7 @@ typedef enum VkrRecordingMeasure {
   VKR_RECORDING_MEASURE_HEADER,
   VKR_RECORDING_MEASURE_SPIKE,
   VKR_RECORDING_MEASURE_SERIES,
+  VKR_RECORDING_MEASURE_PASS,
 } VkrRecordingMeasure;
 
 /* Bytes one part of the analysis object takes when written. */
@@ -1069,7 +1491,7 @@ vkr_internal uint64_t vkr_recording_measure(
   switch (part) {
   case VKR_RECORDING_MEASURE_HEADER:
     vkr_recording_write_analysis(&counter, data, analysis, include_series, 0u,
-                                 0u);
+                                 0u, 0u);
     break;
   case VKR_RECORDING_MEASURE_SPIKE:
     vkr_recording_write_spike(&counter, data, analysis, index);
@@ -1080,10 +1502,17 @@ vkr_internal uint64_t vkr_recording_measure(
     vkr_recording_write_series_entry(&counter, data, analysis, index);
     vkr_json_writer_end_object(&counter);
     break;
+  case VKR_RECORDING_MEASURE_PASS:
+    /* An element needs an array around it; the brackets are not counted. */
+    vkr_json_writer_begin_array(&counter);
+    vkr_recording_write_pass_entry(&counter, data, analysis, index);
+    vkr_json_writer_end_array(&counter);
+    break;
   }
   vkr_json_writer_complete(&counter);
-  return part == VKR_RECORDING_MEASURE_SERIES && bytes >= 2u ? bytes - 2u
-                                                             : bytes;
+  const bool8_t wrapped = part == VKR_RECORDING_MEASURE_SERIES ||
+                          part == VKR_RECORDING_MEASURE_PASS;
+  return wrapped && bytes >= 2u ? bytes - 2u : bytes;
 }
 
 bool8_t vkr_recording_analysis_write_json(
@@ -1099,11 +1528,13 @@ bool8_t vkr_recording_analysis_write_json(
   const bool8_t include_series = chosen->include_series;
   uint32_t series_limit = include_series ? data->series_count : 0u;
   uint32_t spike_limit = analysis->spike_count;
+  uint32_t pass_limit = analysis->pass_count;
 
   if (chosen->budget_bytes > 0u) {
-    /* Spikes in rank order come first, then series in dictionary order;
-       each part goes in while the object stays within the budget. A comma
-       separates every part after the first. */
+    /* Spikes in rank order come first, then series in dictionary order,
+       then passes in analysis order; each part goes in while the object
+       stays within the budget. A comma separates every part after the
+       first. */
     uint64_t used = vkr_recording_measure(data, analysis, include_series,
                                           VKR_RECORDING_MEASURE_HEADER, 0u) +
                     VKR_RECORDING_JSON_FLAG_SLACK;
@@ -1132,10 +1563,22 @@ bool8_t vkr_recording_analysis_write_json(
       used += bytes;
       ++series_limit;
     }
+    pass_limit = 0u;
+    for (uint32_t i = 0u; i < analysis->pass_count; ++i) {
+      const uint64_t bytes =
+          vkr_recording_measure(data, analysis, include_series,
+                                VKR_RECORDING_MEASURE_PASS, i) +
+          (i > 0u ? 1u : 0u);
+      if (used + bytes > chosen->budget_bytes) {
+        break;
+      }
+      used += bytes;
+      ++pass_limit;
+    }
   }
 
   vkr_recording_write_analysis(json, data, analysis, include_series,
-                               series_limit, spike_limit);
+                               series_limit, spike_limit, pass_limit);
   return !json->failed;
 }
 
@@ -1146,7 +1589,46 @@ vkr_internal uint32_t vkr_recording_column(const VkrRecordingData *data,
   if (string_equals(name, VKR_RECORDING_FRAME_MS_FIELD)) {
     return VKR_RECORDING_COLUMN_FRAME_MS;
   }
+  static const struct {
+    const char *prefix;
+    uint32_t bit;
+  } pass_fields[] = {
+      {VKR_RECORDING_PASS_GPU_FIELD, VKR_RECORDING_COLUMN_PASS_GPU},
+      {VKR_RECORDING_PASS_CPU_FIELD, VKR_RECORDING_COLUMN_PASS_CPU},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(pass_fields); ++i) {
+    const uint64_t length = string_length(pass_fields[i].prefix);
+    if (string_length(name) > length &&
+        MemCompare(name, pass_fields[i].prefix, length) == 0) {
+      const uint32_t pass = vkr_recording_data_find_pass(data, name + length);
+      return pass == UINT32_MAX ? VKR_RECORDING_COLUMN_UNKNOWN
+                                : pass_fields[i].bit | pass;
+    }
+  }
   return vkr_recording_data_find_series(data, name);
+}
+
+/* One pass's time in `frame`: false_v when the frame has no row for it or,
+   for GPU, no GPU time. */
+vkr_internal bool8_t vkr_recording_pass_cell(const VkrRecordingData *data,
+                                             uint32_t column, uint64_t frame,
+                                             float64_t *out_ms) {
+  const uint32_t pass = column & VKR_RECORDING_COLUMN_PASS_MASK;
+  const bool8_t gpu = (column & VKR_RECORDING_COLUMN_PASS_GPU) != 0u;
+  uint32_t count = 0u;
+  const VkrRecordingPassRow *rows =
+      vkr_recording_data_pass_rows(data, frame, &count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (rows[i].pass != pass) {
+      continue;
+    }
+    if (gpu && !(rows[i].flags & VKR_RECORDING_PASS_GPU_VALID)) {
+      return false_v;
+    }
+    *out_ms = gpu ? (float64_t)rows[i].gpu_ms : (float64_t)rows[i].cpu_ms;
+    return true_v;
+  }
+  return false_v;
 }
 
 vkr_internal void vkr_recording_write_cell(VkrJsonWriter *json,
@@ -1162,9 +1644,84 @@ vkr_internal void vkr_recording_write_cell(VkrJsonWriter *json,
     vkr_json_writer_null(json);
     return;
   }
+  if (column &
+      (VKR_RECORDING_COLUMN_PASS_GPU | VKR_RECORDING_COLUMN_PASS_CPU)) {
+    float64_t ms = 0.0;
+    const bool8_t present = vkr_recording_pass_cell(data, column, frame, &ms);
+    vkr_recording_json_optional(json, present, ms);
+    return;
+  }
   const VkrRecordingSeries *series = &data->series[column];
   vkr_recording_json_optional(json, series->valid[frame],
                               series->values[frame]);
+}
+
+bool8_t vkr_recording_data_has_field(const VkrRecordingData *data,
+                                     const char *name) {
+  return vkr_recording_column(data, name) != VKR_RECORDING_COLUMN_UNKNOWN;
+}
+
+/* Slowest GPU time first, then slowest CPU time, then the lower pass. */
+vkr_internal int32_t vkr_recording_compare_rows(const void *lhs,
+                                                const void *rhs) {
+  const VkrRecordingPassRow *a = lhs;
+  const VkrRecordingPassRow *b = rhs;
+  if (a->gpu_ms != b->gpu_ms) {
+    return a->gpu_ms > b->gpu_ms ? -1 : 1;
+  }
+  if (a->cpu_ms != b->cpu_ms) {
+    return a->cpu_ms > b->cpu_ms ? -1 : 1;
+  }
+  return a->pass < b->pass ? -1 : (a->pass > b->pass ? 1 : 0);
+}
+
+bool8_t vkr_recording_passes_write_json(VkrJsonWriter *json,
+                                        const VkrRecordingData *data,
+                                        const VkrRecordingAnalysis *analysis,
+                                        uint32_t top, uint64_t frame,
+                                        uint64_t reach) {
+  vkr_assert(json != NULL && data != NULL && analysis != NULL);
+  const uint32_t limit =
+      top > 0u ? Min(top, analysis->pass_count) : analysis->pass_count;
+  vkr_json_writer_begin_object(json);
+  vkr_recording_write_passes(json, data, analysis, limit);
+  if (frame != UINT64_MAX) {
+    uint64_t shown = frame;
+    if (!vkr_recording_gpu_timed(data, frame)) {
+      const uint64_t near =
+          vkr_recording_data_gpu_frame_near(data, frame, reach);
+      shown = near != UINT64_MAX ? near : frame;
+    }
+    uint32_t count = 0u;
+    const VkrRecordingPassRow *rows =
+        vkr_recording_data_pass_rows(data, shown, &count);
+    VkrRecordingPassRow sorted[VKR_RECORDING_PASS_MAX];
+    if (count > 0u) {
+      MemCopy(sorted, rows, sizeof(*rows) * count);
+      vkr_sort(sorted, count, sizeof(*sorted), vkr_recording_compare_rows);
+    }
+    vkr_recording_json_key(json, "frame");
+    vkr_json_writer_begin_object(json);
+    vkr_recording_json_named_u64(json, "requested", frame);
+    vkr_recording_json_named_u64(json, "frame", shown);
+    vkr_recording_json_key(json, "gpu");
+    vkr_json_writer_bool(json, vkr_recording_gpu_timed(data, shown));
+    vkr_recording_json_key(json, "rows");
+    vkr_json_writer_begin_array(json);
+    for (uint32_t i = 0u; i < count; ++i) {
+      vkr_json_writer_begin_array(json);
+      vkr_recording_json_text(json, data->passes[sorted[i].pass].name);
+      vkr_recording_json_number(json, (float64_t)sorted[i].cpu_ms);
+      vkr_recording_json_optional(
+          json, (sorted[i].flags & VKR_RECORDING_PASS_GPU_VALID) != 0u,
+          (float64_t)sorted[i].gpu_ms);
+      vkr_json_writer_end_array(json);
+    }
+    vkr_json_writer_end_array(json);
+    vkr_json_writer_end_object(json);
+  }
+  vkr_json_writer_end_object(json);
+  return !json->failed;
 }
 
 bool8_t vkr_recording_frames_write_json(VkrJsonWriter *json,

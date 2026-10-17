@@ -5,6 +5,7 @@
 #include "defines.h"
 #include "memory/vkr_dmemory.h"
 #include "recording/vkr_recorder.h"
+#include "vkr_renderer_metrics.h"
 
 /*
  * A recording in progress (docs/proposals/recordings.md, phase R1): the
@@ -33,11 +34,31 @@
 #define VKR_RECORDING_METRIC_MAX 48u
 /* Process memory joins the metrics as this field, sampled every 100 ms. */
 #define VKR_RECORDING_RESIDENT_FIELD "process.resident_bytes"
+/* Tier 1 render pass rows (vkr_recording_format.h): the name of each pass
+   id, then the rows of each rendered frame. Rows are droppable. */
+#define VKR_RECORDING_STREAM_PASS_NAME 5u
+#define VKR_RECORDING_STREAM_PASSES 6u
+/* Recent recorded frames whose renderer frame index pass rows can name;
+   rows arrive a few frames after their frame. */
+#define VKR_RECORDING_FRAME_INDEX_HISTORY 32u
 
 /* VkrRecordingFrame.flags */
 #define VKR_RECORDING_FRAME_SIMULATING 1u
 #define VKR_RECORDING_FRAME_SCRIPT_CAMERA 2u
 #define VKR_RECORDING_FRAME_RENDERING_STOPPED 4u
+/* The frame took per-pass GPU timestamps, which cost GPU time on the tiled
+   pipeline. */
+#define VKR_RECORDING_FRAME_PASS_TIMING 8u
+
+/* What a recording measures (docs/proposals/recordings.md, "Metrics and
+   capture tiers"). */
+typedef enum VkrRecordingTier {
+  VKR_RECORDING_TIER_NONE = 0,
+  /* Frame metrics. */
+  VKR_RECORDING_TIER_0,
+  /* Frame metrics and render pass rows. */
+  VKR_RECORDING_TIER_1,
+} VkrRecordingTier;
 
 /* One record per frame: the frame's timing and simulation state. */
 typedef struct VkrRecordingFrame {
@@ -89,7 +110,18 @@ typedef struct VkrRecordingConfig {
   /* The registry whose Tier 0 metrics the recording carries each frame;
      NULL records no metrics. Borrowed while the recording runs. */
   const VkrMetrics *metrics;
+  /* Tier 1: also record each rendered frame's pass rows. Needs `metrics`. */
+  bool8_t passes;
+  /* Tier 1: take per-pass GPU timestamps in one frame of every
+     `pass_gpu_period`; zero leaves them as the metrics config has them.
+     vkr_recording_pass_gpu_frame tells the runtime which frames. */
+  uint32_t pass_gpu_period;
 } VkrRecordingConfig;
+
+typedef struct VkrRecordingFrameIndex {
+  uint64_t frame_index;
+  uint64_t frame;
+} VkrRecordingFrameIndex;
 
 typedef struct VkrRecording {
   bool8_t active;
@@ -117,6 +149,19 @@ typedef struct VkrRecording {
   float64_t resident_sampled_at;
   uint64_t resident_bytes;
   bool8_t resident_valid;
+  /* Tier 1, and the renderer frame index of recent recorded frames. */
+  bool8_t passes_enabled;
+  uint32_t pass_gpu_period;
+  VkrRecordingFrameIndex frame_history[VKR_RECORDING_FRAME_INDEX_HISTORY];
+  uint32_t frame_history_next;
+  /* The newest renderer frame whose rows were written, plus one. */
+  uint64_t pass_frame_written;
+  /* Pass names by id, and an open-addressed table of id + 1 by name hash;
+     both from the recording's memory. */
+  uint32_t pass_count;
+  char (*pass_names)[VKR_RECORDING_PASS_NAME_MAX + 1u];
+  uint16_t *pass_slots;
+  uint64_t pass_rows_written;
 } VkrRecording;
 
 /**
@@ -138,6 +183,24 @@ void vkr_recording_frame(VkrRecording *recording,
  */
 void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
                            const VkrMetricsFrame *published);
+
+/**
+ * @brief Writes the pass rows of `passes`, the table collected with renderer
+ * frame `frame_index`, which recorded frame `frame` rendered with. The rows
+ * describe an earlier frame, named by their GPU source frame; rows of a frame
+ * already written or older than the history are skipped. No-op below Tier 1.
+ */
+void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
+                          uint64_t frame_index,
+                          const VkrRendererMetricsPassTable *passes);
+
+/**
+ * @brief Whether the next recorded frame takes per-pass GPU timestamps.
+ * @return false_v when the recording leaves them to the metrics config;
+ * otherwise true_v with the answer in `out_timed`.
+ */
+bool8_t vkr_recording_pass_gpu_frame(const VkrRecording *recording,
+                                     bool8_t *out_timed);
 
 /** Adds a marker at the current frame. Returns false_v when it was lost. */
 bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,

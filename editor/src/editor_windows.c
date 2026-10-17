@@ -523,8 +523,8 @@ static void editor_record_toggle(VkrEditorUi *editor,
     return;
   }
   char error[128];
-  if (!vkr_editor_recording_start(editor, NULL, "user", true_v, error,
-                                  sizeof(error))) {
+  if (!vkr_editor_recording_start(editor, NULL, "user", VKR_RECORDING_TIER_1,
+                                  true_v, error, sizeof(error))) {
     vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
                      error);
   }

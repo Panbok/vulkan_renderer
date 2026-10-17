@@ -93,6 +93,14 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
     return;
   }
   vkr_recording_metrics(&runtime->recording, frame, view.frame);
+  /* The pass table is single-buffered: it belongs to this publication only
+     when both name the same renderer frame. */
+  const VkrRendererMetricsPassTable *passes =
+      vkr_renderer_metrics_get_pass_table(&runtime->renderer_metrics);
+  vkr_recording_passes(
+      &runtime->recording, frame, view.frame->cpu_frame_index,
+      passes && passes->cpu_frame_index == view.frame->cpu_frame_index ? passes
+                                                                       : NULL);
   vkr_metrics_snapshot_release(runtime->metrics, &view);
 }
 
@@ -104,6 +112,12 @@ void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
   }
   if (!runtime->recording.active || !camera) {
     return;
+  }
+  /* Tier 1 takes per-pass GPU timestamps in the frames the recording
+     samples; the metrics config stays the authority the frame reads. */
+  bool8_t pass_timed = false_v;
+  if (vkr_recording_pass_gpu_frame(&runtime->recording, &pass_timed)) {
+    runtime->metrics->config.pass_gpu_timings = pass_timed;
   }
   const VkrStandardSceneRuntimeEditorViewport *viewport =
       &runtime->editor_viewport;
@@ -117,6 +131,9 @@ void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
   }
   if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(runtime)) {
     flags |= VKR_RECORDING_FRAME_RENDERING_STOPPED;
+  }
+  if (runtime->metrics->config.pass_gpu_timings) {
+    flags |= VKR_RECORDING_FRAME_PASS_TIMING;
   }
   const VkrRecordingFrame frame = {
       .display_dt = delta,

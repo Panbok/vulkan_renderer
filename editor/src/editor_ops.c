@@ -14937,10 +14937,24 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
     if (!ops_arg_string(ctx, call->args, "name", name, sizeof(name))) {
       return VKR_EDITOR_OP_DONE;
     }
+    char tier_name[8] = "1";
+    if (!ops_arg_string(ctx, call->args, "tier", tier_name,
+                        sizeof(tier_name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    VkrRecordingTier tier = VKR_RECORDING_TIER_1;
+    if (string_equals(tier_name, "none")) {
+      tier = VKR_RECORDING_TIER_NONE;
+    } else if (string_equals(tier_name, "0")) {
+      tier = VKR_RECORDING_TIER_0;
+    } else if (!string_equals(tier_name, "1")) {
+      ops_fail(ctx, OPS_INVALID, "'tier' must be none, 0 or 1");
+      return VKR_EDITOR_OP_DONE;
+    }
     char error[128];
     const char *author = call->author[0] ? call->author : "agent";
-    call->token = vkr_editor_recording_start(ctx->editor, name, author, false_v,
-                                             error, sizeof(error));
+    call->token = vkr_editor_recording_start(ctx->editor, name, author, tier,
+                                             false_v, error, sizeof(error));
     if (!call->token) {
       ops_fail(ctx, OPS_REJECTED, "%s", error);
       return VKR_EDITOR_OP_DONE;
@@ -15200,9 +15214,12 @@ static const OpsDef s_ops[] = {
      OPS_QUICK | OPS_NO_SCENE},
     {"rec.start",
      "Start recording the camera and frame state into a new bundle named "
-     "'name' (a time stamp when absent) in the recording directory.",
+     "'name' (a time stamp when absent) in the recording directory. 'tier' "
+     "none records no metrics, 0 frame metrics, 1 (default) frame metrics "
+     "and render pass rows, with GPU pass times every frame on desktop and "
+     "every 8th frame on tiled.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
-     "\"string\"}}}",
+     "\"string\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]}}}",
      ops_run_rec_start, NULL},
     {"rec.stop", "Stop the recording in progress and write its summary.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_stop, NULL},

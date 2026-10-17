@@ -241,7 +241,7 @@ void vkr_editor_ui_init(VkrEditorUi *editor) {
                                            .z_order = 7u,
                                            .visible = false_v},
               [VKR_EDITOR_WINDOW_PERFORMANCE] = {.position_pt = {300.0f, 70.0f},
-                                                 .size_pt = {980.0f, 700.0f},
+                                                 .size_pt = {1120.0f, 860.0f},
                                                  .z_order = 7u,
                                                  .visible = false_v},
               [VKR_EDITOR_WINDOW_RECORDINGS] = {.position_pt = {360.0f, 110.0f},

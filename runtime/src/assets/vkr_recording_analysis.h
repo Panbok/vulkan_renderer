@@ -15,8 +15,10 @@
  *
  *   frame    display_dt (s)
  *   camera   position (m, 3 elements), yaw (deg)
- *   marker   variable records: u32 kind, then the UTF-8 label
- *   metrics  "valid" (u64 bit mask), then one value per metric
+ *   marker     variable records: u32 kind, then the UTF-8 label
+ *   metrics    "valid" (u64 bit mask), then one value per metric
+ *   pass_name  variable records: u32 pass id, then the UTF-8 name
+ *   passes     variable records of pass rows (vkr_recording_format.h)
  *
  * Bit i of a metrics record's "valid" field covers the i-th metrics field
  * after "valid", in dictionary order. A stream without a "valid" field marks
@@ -32,6 +34,13 @@
 #define VKR_RECORDING_DATA_LABEL_MAX 120u
 /* Largest frame count a load accepts: 77 hours at 60 frames per second. */
 #define VKR_RECORDING_DATA_FRAME_MAX (1ull << 24u)
+/* Pass rows a load keeps, 48 MiB: about 8 minutes of 150 passes at 60
+   frames per second. Later frames load without rows. */
+#define VKR_RECORDING_DATA_PASS_ROW_MAX (1ull << 22u)
+/* Prefixes of vkr_recording_frames_write_json columns that read one pass's
+   GPU or CPU time, followed by the pass name. */
+#define VKR_RECORDING_PASS_GPU_FIELD "pass.gpu:"
+#define VKR_RECORDING_PASS_CPU_FIELD "pass.cpu:"
 
 #define VKR_RECORDING_ANALYSIS_BUDGET_MS 16.667
 #define VKR_RECORDING_ANALYSIS_SPIKE_MAX 20u
@@ -76,8 +85,24 @@ typedef struct VkrRecordingDataMarker {
   char label[VKR_RECORDING_DATA_LABEL_MAX + 1u];
 } VkrRecordingDataMarker;
 
-/* A loaded recording. Every array lives in one allocation that
-   vkr_recording_data_free releases; pointers stay valid until then. */
+/* A render pass of a Tier 1 recording, by the id its rows carry. */
+typedef struct VkrRecordingDataPass {
+  char name[VKR_RECORDING_PASS_NAME_MAX + 1u];
+} VkrRecordingDataPass;
+
+/* One executed pass of one frame. */
+typedef struct VkrRecordingPassRow {
+  uint16_t pass;
+  /* VKR_RECORDING_PASS_* */
+  uint16_t flags;
+  float32_t cpu_ms;
+  /* Zero without VKR_RECORDING_PASS_GPU_VALID. */
+  float32_t gpu_ms;
+} VkrRecordingPassRow;
+
+/* A loaded recording. Every array lives in one allocation, the pass rows in
+   a second, that vkr_recording_data_free releases; pointers stay valid until
+   then. */
 typedef struct VkrRecordingData {
   VkrAllocator *allocator;
   void *block;
@@ -105,6 +130,26 @@ typedef struct VkrRecordingData {
   /* The series vkr_recording_data_frame_ms reads: "frame.wall" when it has a
      valid sample, else UINT32_MAX for display_dt in milliseconds. */
   uint32_t frame_time_series;
+
+  /* Tier 1, all NULL or zero without pass rows. Frame f's rows are
+     pass_row_counts[f] rows from pass_rows[pass_first[f]];
+     pass_frame_flags[f] holds the frame's VKR_RECORDING_PASSES_* flags. A
+     second record for a frame is ignored; rows of a pass id without a name
+     record are dropped. */
+  void *pass_block;
+  uint64_t pass_block_bytes;
+  VkrRecordingDataPass *passes;
+  uint32_t pass_count;
+  VkrRecordingPassRow *pass_rows;
+  uint64_t pass_row_count;
+  uint64_t *pass_first;
+  uint16_t *pass_row_counts;
+  uint8_t *pass_frame_flags;
+  /* Frames with rows, those whose rows carry GPU times, and rows past
+     VKR_RECORDING_DATA_PASS_ROW_MAX that were not loaded. */
+  uint64_t pass_frames;
+  uint64_t pass_gpu_frames;
+  uint64_t pass_rows_cut;
 
   /* Reader state: whole chunks after a crash, and records chunks that failed
      their CRC or decode and were skipped. */
@@ -135,6 +180,20 @@ bool8_t vkr_recording_data_frame_ms(const VkrRecordingData *data,
 /** "frame.wall" or "display_dt": where frame times come from. */
 const char *vkr_recording_data_frame_source(const VkrRecordingData *data);
 
+/** The rows of `frame`; NULL with a zero count for a frame without rows. */
+const VkrRecordingPassRow *
+vkr_recording_data_pass_rows(const VkrRecordingData *data, uint64_t frame,
+                             uint32_t *out_count);
+
+/** The pass named `name`, or UINT32_MAX. */
+uint32_t vkr_recording_data_find_pass(const VkrRecordingData *data,
+                                      const char *name);
+
+/** The frame nearest `frame` whose rows carry GPU times, the earlier one on
+    a tie, within `reach` frames; UINT64_MAX when there is none. */
+uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
+                                           uint64_t frame, uint64_t reach);
+
 /* ------------------------------------------------------------------------ */
 /* Analysis                                                                  */
 
@@ -164,6 +223,22 @@ typedef struct VkrRecordingContributor {
   float64_t excess;
 } VkrRecordingContributor;
 
+/* A pass that grew at a spike: its time minus its median, both GPU or both
+   CPU as the spike's pass_gpu says. */
+typedef struct VkrRecordingPassContributor {
+  uint32_t pass;
+  float64_t value;
+  float64_t excess;
+} VkrRecordingPassContributor;
+
+/* One pass over the recording. */
+typedef struct VkrRecordingPassStats {
+  uint32_t pass;
+  /* Over the frames with a row, and the rows with a GPU time. */
+  VkrRecordingStats cpu;
+  VkrRecordingStats gpu;
+} VkrRecordingPassStats;
+
 /*
  * A run of adjacent spike frames. A frame is a candidate when its frame time
  * exceeds 1.2 times the median of the 19-frame window centred on it (shifted
@@ -185,6 +260,14 @@ typedef struct VkrRecordingSpike {
   /* Positive excesses only, largest first. */
   VkrRecordingContributor contributors[VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX];
   uint32_t contributor_count;
+  /* Tier 1: the passes that grew most in `pass_frame`, positive excesses
+     only, largest first. pass_frame is `frame` when its rows carry GPU
+     times, else the run's slowest frame that has them, else `frame` with
+     CPU times; UINT64_MAX without rows. */
+  uint64_t pass_frame;
+  bool8_t pass_gpu;
+  VkrRecordingPassContributor passes[VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX];
+  uint32_t pass_contributor_count;
 } VkrRecordingSpike;
 
 typedef struct VkrRecordingAnalysis {
@@ -209,6 +292,10 @@ typedef struct VkrRecordingAnalysis {
   uint32_t spike_count;
   /* Spikes before the options' spike_max cut. */
   uint64_t spikes_found;
+  /* Tier 1: one per pass with a row, by GPU total (mean times GPU
+     samples), then CPU total, then id, largest first. */
+  VkrRecordingPassStats *passes;
+  uint32_t pass_count;
 } VkrRecordingAnalysis;
 
 /**
@@ -227,17 +314,17 @@ void vkr_recording_analysis_free(VkrRecordingAnalysis *analysis);
 
 typedef struct VkrRecordingAnalysisJsonOptions {
   /* Upper bound of the written object in bytes; zero for none. Spikes, in
-     rank order, then series, in dictionary order, are cut to fit, and the
-     cut is stated. */
+     rank order, then series, in dictionary order, then passes, in analysis
+     order, are cut to fit, and each cut is stated. */
   uint64_t budget_bytes;
   bool8_t include_series;
 } VkrRecordingAnalysisJsonOptions;
 
 /**
  * @brief Writes the analysis as one JSON object value: frame_time, series
- * (as column arrays), bytes_series names and spikes. The caller names it,
- * for example "analysis" in summary.json. Fractional numbers are rounded to
- * a multiple of 1/1024, which prints exactly in few digits.
+ * and passes (as column arrays), bytes_series names and spikes. The caller
+ * names it, for example "analysis" in summary.json. Fractional numbers keep
+ * six significant digits.
  * @param options NULL selects VKR_RECORDING_ANALYSIS_JSON_BUDGET with series.
  * @return false_v when the writer failed.
  */
@@ -249,10 +336,30 @@ bool8_t vkr_recording_analysis_write_json(
 /**
  * @brief Writes frames `first` to `last`, inclusive, as one JSON object of
  * columns and rows: frame, time, camera x, y, z, then `fields`. A field is a
- * series name or VKR_RECORDING_FRAME_MS_FIELD; an invalid sample or an
- * unknown field writes null. More than `row_max` rows (zero selects
- * VKR_RECORDING_FRAMES_ROW_MAX) are cut and "truncated" says so.
+ * series name, VKR_RECORDING_FRAME_MS_FIELD, or VKR_RECORDING_PASS_GPU_FIELD
+ * or VKR_RECORDING_PASS_CPU_FIELD followed by a pass name; an invalid
+ * sample, a frame without the pass or an unknown field writes null. More than
+ * `row_max` rows (zero selects VKR_RECORDING_FRAMES_ROW_MAX) are cut and
+ * "truncated" says so.
  */
+/** True when `name` is a column vkr_recording_frames_write_json can read. */
+bool8_t vkr_recording_data_has_field(const VkrRecordingData *data,
+                                     const char *name);
+
+/**
+ * @brief Writes the pass statistics as one JSON object: pass_frames,
+ * pass_gpu_frames, pass_rows_cut, pass_columns and the first `top` passes
+ * in analysis order (zero for all). With `frame` other than UINT64_MAX it
+ * adds "frame": that frame's rows as [name, cpu_ms, gpu_ms or null], slowest
+ * GPU first, then slowest CPU, after moving to the nearest frame with GPU
+ * times within `reach` frames when `frame` has none.
+ */
+bool8_t vkr_recording_passes_write_json(VkrJsonWriter *json,
+                                        const VkrRecordingData *data,
+                                        const VkrRecordingAnalysis *analysis,
+                                        uint32_t top, uint64_t frame,
+                                        uint64_t reach);
+
 bool8_t vkr_recording_frames_write_json(VkrJsonWriter *json,
                                         const VkrRecordingData *data,
                                         uint64_t first, uint64_t last,

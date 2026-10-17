@@ -239,8 +239,9 @@ bool8_t vkr_editor_recording_resolve(VkrEditorUi *editor, const char *name,
 }
 
 uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
-                                    const char *author, bool8_t toast,
-                                    char *error, uint64_t error_capacity) {
+                                    const char *author, VkrRecordingTier tier,
+                                    bool8_t toast, char *error,
+                                    uint64_t error_capacity) {
   char directory[VKR_RECORDING_PATH_MAX];
   if (!vkr_editor_recording_directory(editor, directory, sizeof(directory))) {
     string_format(error, error_capacity, "No directory for recordings.");
@@ -249,6 +250,7 @@ uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
   VkrSampleRecordingRequest request = {
       .command = VKR_SAMPLE_RECORDING_START,
       .codec = vkr_depot_zstd_codec(),
+      .tier = tier,
   };
   editor_recording_name(name, request.name, sizeof(request.name));
   string_format(request.author, sizeof(request.author), "%s",

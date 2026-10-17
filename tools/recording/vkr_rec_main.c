@@ -12,8 +12,16 @@
  *   vkr_rec frames <bundle|stream> --range A:B [--fields a,b,...]
  *                                     JSON rows of frames A to B inclusive:
  *                                     frame, time, camera position, then
- *                                     the fields (default frame_ms); at
- *                                     most 500 rows, "truncated" says so
+ *                                     the fields (default frame_ms; a
+ *                                     pass is pass.gpu:<name> or
+ *                                     pass.cpu:<name>); at most 500 rows,
+ *                                     "truncated" says so
+ *   vkr_rec passes <bundle|stream> [--top N] [--frame F]
+ *                                     JSON: per-pass CPU and GPU statistics
+ *                                     of a Tier 1 recording, largest GPU
+ *                                     total first, and with --frame that
+ *                                     frame's rows (or the nearest frame
+ *                                     with GPU times)
  *
  * Every command prints one compact JSON object on stdout. Exit status: 0 for
  * a whole recording, 2 for a recording cut off by a crash whose whole chunks
@@ -459,12 +467,15 @@ static int rec_frames(const char *path, uint64_t first, uint64_t last,
     return REC_EXIT_DAMAGED;
   }
   for (uint32_t i = 0u; i < field_count; ++i) {
-    if (strcmp(fields[i], VKR_RECORDING_FRAME_MS_FIELD) != 0 &&
-        vkr_recording_data_find_series(&data, fields[i]) == UINT32_MAX) {
+    if (!vkr_recording_data_has_field(&data, fields[i])) {
       fprintf(stderr, "vkr_rec: unknown field '%s'; fields: %s", fields[i],
               VKR_RECORDING_FRAME_MS_FIELD);
       for (uint32_t s = 0u; s < data.series_count; ++s) {
         fprintf(stderr, ",%s", data.series[s].name);
+      }
+      if (data.pass_count > 0u) {
+        fprintf(stderr, ",%s<pass>,%s<pass> (vkr_rec passes lists them)",
+                VKR_RECORDING_PASS_GPU_FIELD, VKR_RECORDING_PASS_CPU_FIELD);
       }
       fputc('\n', stderr);
       vkr_recording_data_free(&data);
@@ -487,6 +498,50 @@ static int rec_frames(const char *path, uint64_t first, uint64_t last,
   return status;
 }
 
+/* Rows within this many frames stand in for a --frame without GPU times:
+   one tiled sampling period. */
+#define REC_PASS_FRAME_REACH 8u
+
+static int rec_passes(const char *path, uint32_t top, uint64_t frame) {
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    return REC_EXIT_DAMAGED;
+  }
+  if (data.pass_count == 0u) {
+    fprintf(stderr, "vkr_rec: '%s' has no pass rows (record with tier 1)\n",
+            path);
+    vkr_recording_data_free(&data);
+    return REC_EXIT_DAMAGED;
+  }
+  if (frame != UINT64_MAX && frame >= data.frame_count) {
+    fprintf(stderr, "vkr_rec: --frame must be below %llu\n",
+            (unsigned long long)data.frame_count);
+    vkr_recording_data_free(&data);
+    return REC_EXIT_DAMAGED;
+  }
+  VkrRecordingAnalysis analysis;
+  if (!vkr_recording_analyze(&data, NULL, &rec_allocator, &analysis)) {
+    fprintf(stderr, "vkr_rec: out of memory analyzing '%s'\n", path);
+    vkr_recording_data_free(&data);
+    return REC_EXIT_DAMAGED;
+  }
+  const RecExit status = rec_data_status(&data);
+  VkrJsonWriter json;
+  vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+  vkr_json_writer_begin_object(&json);
+  vkr_json_writer_name(&json, rec_str("status"));
+  vkr_json_writer_string(&json, rec_str(rec_status_name(status)));
+  vkr_json_writer_name(&json, rec_str("passes"));
+  vkr_recording_passes_write_json(&json, &data, &analysis, top, frame,
+                                  REC_PASS_FRAME_REACH);
+  vkr_json_writer_end_object(&json);
+  vkr_json_writer_complete(&json);
+  fputc('\n', stdout);
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  return status;
+}
+
 static void rec_usage(void) {
   fprintf(
       stderr,
@@ -495,7 +550,9 @@ static void rec_usage(void) {
       "       vkr_rec spikes <bundle|stream> [--top N]\n"
       "       vkr_rec frames <bundle|stream> --range A:B "
       "[--fields name,name]\n"
-      "A:B is inclusive; frame_ms names the frame time; at most 500 rows\n");
+      "       vkr_rec passes <bundle|stream> [--top N] [--frame F]\n"
+      "A:B is inclusive; frame_ms names the frame time, pass.gpu:<pass> and\n"
+      "pass.cpu:<pass> a pass's times; at most 500 rows\n");
 }
 
 static int rec_run_spikes(int argc, char **argv) {
@@ -510,6 +567,32 @@ static int rec_run_spikes(int argc, char **argv) {
     return REC_EXIT_DAMAGED;
   }
   return rec_spikes(argv[2], top);
+}
+
+static int rec_run_passes(int argc, char **argv) {
+  uint32_t top = 0u;
+  uint64_t frame = UINT64_MAX;
+  for (int i = 3; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+    if (strcmp(argv[i], "--top") == 0) {
+      if (!string_to_u32(argv[i + 1], &top) || top == 0u || top > REC_TOP_MAX) {
+        fprintf(stderr, "vkr_rec: --top takes 1 to %u\n", REC_TOP_MAX);
+        return REC_EXIT_DAMAGED;
+      }
+    } else if (strcmp(argv[i], "--frame") == 0) {
+      if (!string_to_u64(argv[i + 1], &frame) || frame == UINT64_MAX) {
+        fprintf(stderr, "vkr_rec: --frame takes a frame number\n");
+        return REC_EXIT_DAMAGED;
+      }
+    } else {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  return rec_passes(argv[2], top, frame);
 }
 
 static int rec_run_frames(int argc, char **argv) {
@@ -579,6 +662,8 @@ VKR_MAIN(argc, argv) {
     result = rec_run_spikes(argc, argv);
   } else if (strcmp(argv[1], "frames") == 0) {
     result = rec_run_frames(argc, argv);
+  } else if (strcmp(argv[1], "passes") == 0) {
+    result = rec_run_passes(argc, argv);
   } else {
     rec_usage();
   }

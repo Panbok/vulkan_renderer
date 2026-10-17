@@ -9,6 +9,9 @@
 #include "platform/vkr_platform.h"
 
 #define VKR_SAMPLE_RECORDING_IDENTITY_MAX 2048u
+/* Tier 1 on the tiled pipeline takes per-pass GPU stamps in one frame of
+   this many. */
+#define VKR_SAMPLE_RECORDING_TILED_PASS_PERIOD 8u
 
 typedef struct VkrSampleRecordingText {
   char *data;
@@ -99,7 +102,17 @@ vkr_internal void vkr_sample_recording_start(
       .scene = scene,
       .author = request->author[0] ? request->author : "user",
       .identity_json = identity[0] ? identity : NULL,
-      .metrics = request->no_metrics ? NULL : runtime->metrics,
+      .metrics =
+          request->tier != VKR_RECORDING_TIER_NONE ? runtime->metrics : NULL,
+      .passes = request->tier == VKR_RECORDING_TIER_1,
+      /* Per-pass stamps split the tiled pipeline's shared compute encoder
+         (about 0.5 ms per Bistro frame), so Tier 1 samples them there;
+         desktop stamps are cheap and run every frame (D2). */
+      .pass_gpu_period = runtime->metrics->config.pass_gpu_timings ||
+                                 runtime->renderer.graphics_pipeline !=
+                                     VKR_GRAPHICS_PIPELINE_TILED
+                             ? 1u
+                             : VKR_SAMPLE_RECORDING_TILED_PASS_PERIOD,
   };
   if (!vkr_recording_start(&runtime->recording, &config)) {
     char message[VKR_RECORDING_PATH_MAX + 64u];
@@ -109,11 +122,12 @@ vkr_internal void vkr_sample_recording_start(
     return;
   }
   /* Tier 0 carries the frame's GPU time: whole-frame timing from command
-     completion, without the per-pass stamps that perturb the tiled
-     pipeline (docs/proposals/recordings.md, D2). */
+     completion. The recording sets per-pass stamps frame by frame
+     (vkr_recording_pass_gpu_frame); both return at stop. */
   if (config.metrics) {
-    state->restore_submission_timing = true_v;
+    state->restore_gpu_timing = true_v;
     state->submission_timing = runtime->metrics->config.submission_gpu_timings;
+    state->pass_timing = runtime->metrics->config.pass_gpu_timings;
     runtime->metrics->config.submission_gpu_timings = true_v;
   }
   log_info("Recording to %s", request->path);
@@ -135,9 +149,10 @@ vkr_sample_recording_stop(VkrStandardSceneRuntime *runtime,
   string_format(path, sizeof(path), "%s", runtime->recording.bundle_path);
   VkrRecorderStats stats;
   const bool8_t ok = vkr_recording_stop(&runtime->recording, &stats);
-  if (state->restore_submission_timing) {
+  if (state->restore_gpu_timing) {
     runtime->metrics->config.submission_gpu_timings = state->submission_timing;
-    state->restore_submission_timing = false_v;
+    runtime->metrics->config.pass_gpu_timings = state->pass_timing;
+    state->restore_gpu_timing = false_v;
   }
   char message[VKR_RECORDING_PATH_MAX + 96u];
   if (ok) {
