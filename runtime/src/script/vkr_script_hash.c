@@ -9,25 +9,97 @@
    transforms, physics bodies and each module's state, which a recording
    keeps and a re-simulation compares tick by tick. The hashes read values,
    never addresses, so two runs of one build that simulate the same ticks
-   hash alike. */
+   hash alike.
+
+   Entities are named by their stable key (vkr_scene_entity_stable_key),
+   never their ECS slot, and each entity's hash is summed into its bucket, so
+   neither the slots nor the chunk order that a session's load and unload
+   history leaves (world partition cells) changes a hash. */
 
 /* Entities whose typed components one call reads at a time. */
 #define SCRIPT_HASH_TYPED_BATCH 256u
+/* Slots a container's key cache grows to first. */
+#define SCRIPT_HASH_KEY_CACHE_MIN 1024u
 
-/* An entity as a hash sees it: its index and world without the generation,
-   which grows each time a session reset frees and reuses the slot, so a
-   re-simulation's entities hash like the recorded session's. */
-vkr_internal uint64_t script_hash_id(VkrEntityId entity) {
-  entity.parts.generation = 0u;
-  return entity.u64;
+/* Grows container `c`'s key cache to hold slot `index`; false when it
+   could not, and the key is then computed without the cache. */
+vkr_internal bool8_t script_hash_key_cache_fit(VkrScriptHost *host, uint32_t c,
+                                               uint32_t index) {
+  VkrScriptKeyCache *cache = &host->key_caches[c];
+  if (index < cache->capacity) {
+    return true_v;
+  }
+  uint32_t capacity = Max(cache->capacity, SCRIPT_HASH_KEY_CACHE_MIN);
+  while (capacity <= index) {
+    capacity *= 2u;
+  }
+  uint64_t *keys = vkr_allocator_alloc(&host->instance_allocator,
+                                       sizeof(uint64_t) * (uint64_t)capacity,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *generations = vkr_allocator_alloc(
+      &host->instance_allocator, sizeof(uint32_t) * (uint64_t)capacity,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!keys || !generations) {
+    if (keys) {
+      vkr_allocator_free(&host->instance_allocator, keys,
+                         sizeof(uint64_t) * (uint64_t)capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    if (generations) {
+      vkr_allocator_free(&host->instance_allocator, generations,
+                         sizeof(uint32_t) * (uint64_t)capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    return false_v;
+  }
+  MemZero(generations, sizeof(uint32_t) * (uint64_t)capacity);
+  if (cache->capacity) {
+    MemCopy(keys, cache->keys, sizeof(uint64_t) * (uint64_t)cache->capacity);
+    MemCopy(generations, cache->generations,
+            sizeof(uint32_t) * (uint64_t)cache->capacity);
+    vkr_allocator_free(&host->instance_allocator, cache->keys,
+                       sizeof(uint64_t) * (uint64_t)cache->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_free(&host->instance_allocator, cache->generations,
+                       sizeof(uint32_t) * (uint64_t)cache->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  cache->keys = keys;
+  cache->generations = generations;
+  cache->capacity = capacity;
+  return true_v;
+}
+
+/* Entity `entity` of container `c` as a hash sees it: its stable key,
+   looked up once per slot and generation. */
+vkr_internal uint64_t script_hash_key(VkrScriptHost *host, uint32_t c,
+                                      VkrEntityId entity) {
+  const uint32_t index = entity.parts.index;
+  const uint32_t generation = (uint32_t)entity.parts.generation + 1u;
+  VkrScriptKeyCache *cache = &host->key_caches[c];
+  if (index < cache->capacity && cache->generations[index] == generation) {
+    return cache->keys[index];
+  }
+  const uint64_t key =
+      vkr_scene_entity_stable_key(host->containers[c].scene, entity);
+  if (script_hash_key_cache_fit(host, c, index)) {
+    cache->keys[index] = key;
+    cache->generations[index] = generation;
+  }
+  return key;
+}
+
+/* One entity's contribution to a sum: its key and the hash of its values. */
+vkr_internal uint32_t script_hash_entity(uint64_t key, uint32_t values) {
+  uint32_t state = vkr_crc32_update(VKR_CRC32_INITIAL, &key, sizeof(key));
+  return vkr_crc32_update(state, &values, sizeof(values));
 }
 
 /* Continues `state` over `size` bytes of script data, with every aligned
-   64-bit word that names a live entity of an attached container hashed
-   without its generation. */
-vkr_internal uint32_t script_hash_data(const VkrScriptHost *host,
-                                       uint32_t state, const void *data,
-                                       uint64_t size) {
+   64-bit word that names a live entity of an attached container hashed as
+   that entity's stable key. */
+vkr_internal uint32_t script_hash_data(VkrScriptHost *host, uint32_t state,
+                                       const void *data, uint64_t size) {
   const uint8_t *bytes = data;
   const uint64_t words =
       (uintptr_t)bytes % sizeof(uint64_t) == 0u ? size / sizeof(uint64_t) : 0u;
@@ -39,7 +111,7 @@ vkr_internal uint32_t script_hash_data(const VkrScriptHost *host,
       const VkrScriptContainer *container = &host->containers[c];
       if (container->world_id == value.parts.world &&
           vkr_entity_is_alive(container->scene->world, value)) {
-        value.u64 = script_hash_id(value);
+        value.u64 = script_hash_key(host, c, value);
         break;
       }
     }
@@ -51,12 +123,14 @@ vkr_internal uint32_t script_hash_data(const VkrScriptHost *host,
 }
 
 typedef struct ScriptHashTransforms {
+  VkrScriptHost *host;
+  uint32_t container;
   VkrComponentTypeId transform;
   uint32_t *buckets;
 } ScriptHashTransforms;
 
-/* One chunk of transforms: each entity's id, position, rotation and scale,
-   into the bucket its index falls in. */
+/* One chunk of transforms: each entity's position, rotation and scale,
+   added to the bucket its stable key falls in. */
 vkr_internal void script_hash_transform_chunk(const VkrArchetype *archetype,
                                               VkrChunk *chunk, void *user) {
   (void)archetype;
@@ -74,20 +148,20 @@ vkr_internal void script_hash_transform_chunk(const VkrArchetype *archetype,
                                   transform->rotation.y, transform->rotation.z,
                                   transform->rotation.w, transform->scale.x,
                                   transform->scale.y,    transform->scale.z};
-    const uint32_t bucket =
-        entities[i].parts.index % VKR_RECORDING_HASH_BUCKETS;
-    const uint64_t id = script_hash_id(entities[i]);
-    uint32_t state = vkr_crc32_update(hash->buckets[bucket], &id, sizeof(id));
-    hash->buckets[bucket] = vkr_crc32_update(state, values, sizeof(values));
+    const uint64_t key =
+        script_hash_key(hash->host, hash->container, entities[i]);
+    hash->buckets[key % VKR_RECORDING_HASH_BUCKETS] += script_hash_entity(
+        key, vkr_crc32_update(VKR_CRC32_INITIAL, values, sizeof(values)));
   }
 }
 
-/* The scene's transforms in buckets by entity index. */
-vkr_internal void script_hash_transforms(VkrScene *scene, uint32_t *buckets) {
-  for (uint32_t b = 0; b < VKR_RECORDING_HASH_BUCKETS; ++b) {
-    buckets[b] = VKR_CRC32_INITIAL;
-  }
-  ScriptHashTransforms hash = {.transform = scene->comp_transform,
+/* Container `c`'s transforms in buckets by stable key. */
+vkr_internal void script_hash_transforms(VkrScriptHost *host, uint32_t c,
+                                         uint32_t *buckets) {
+  VkrScene *scene = host->containers[c].scene;
+  ScriptHashTransforms hash = {.host = host,
+                               .container = c,
+                               .transform = scene->comp_transform,
                                .buckets = buckets};
   VkrQuery query;
   vkr_entity_query_build(scene->world, &scene->comp_transform, 1u, NULL, 0u,
@@ -96,10 +170,11 @@ vkr_internal void script_hash_transforms(VkrScene *scene, uint32_t *buckets) {
                               &hash);
 }
 
-/* The scene's physics bodies: each body's entity and its pose and
-   velocities. */
-vkr_internal uint32_t script_hash_bodies(const VkrScene *scene) {
-  uint32_t state = VKR_CRC32_INITIAL;
+/* Container `c`'s physics bodies: each body's pose and velocities, summed
+   by stable key. */
+vkr_internal uint32_t script_hash_bodies(VkrScriptHost *host, uint32_t c) {
+  const VkrScene *scene = host->containers[c].scene;
+  uint32_t sum = 0u;
   const uint32_t count = vkr_scene_physics_body_count(scene);
   for (uint32_t i = 0; i < count; ++i) {
     const VkrEntityId entity = vkr_scene_physics_body_at(scene, i);
@@ -112,21 +187,23 @@ vkr_internal uint32_t script_hash_bodies(const VkrScene *scene) {
     MemCopy(values + 3, pose.rotation, sizeof(pose.rotation));
     MemCopy(values + 7, pose.linear_velocity, sizeof(pose.linear_velocity));
     MemCopy(values + 10, pose.angular_velocity, sizeof(pose.angular_velocity));
-    const uint64_t id = script_hash_id(entity);
-    state = vkr_crc32_update(state, &id, sizeof(id));
-    state = vkr_crc32_update(state, values, sizeof(values));
+    sum += script_hash_entity(
+        script_hash_key(host, c, entity),
+        vkr_crc32_update(VKR_CRC32_INITIAL, values, sizeof(values)));
   }
-  return state;
+  return sum;
 }
 
 typedef struct ScriptHashState {
-  const VkrScriptHost *host;
+  VkrScriptHost *host;
+  uint32_t container;
   VkrComponentTypeId id;
   uint32_t size;
-  uint32_t state;
+  uint32_t sum;
 } ScriptHashState;
 
-/* One chunk of a per-entity state type: each entity and its bytes. */
+/* One chunk of a per-entity state type: each entity's bytes, summed by
+   stable key. */
 vkr_internal void script_hash_state_chunk(const VkrArchetype *archetype,
                                           VkrChunk *chunk, void *user) {
   (void)archetype;
@@ -135,18 +212,19 @@ vkr_internal void script_hash_state_chunk(const VkrArchetype *archetype,
   const VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
   const uint8_t *values = vkr_entity_chunk_column_const(chunk, hash->id);
   for (uint32_t i = 0; i < count; ++i) {
-    const uint64_t id = script_hash_id(entities[i]);
-    hash->state = vkr_crc32_update(hash->state, &id, sizeof(id));
-    hash->state = script_hash_data(
-        hash->host, hash->state, values + (uint64_t)i * hash->size, hash->size);
+    hash->sum += script_hash_entity(
+        script_hash_key(hash->host, hash->container, entities[i]),
+        script_hash_data(hash->host, VKR_CRC32_INITIAL,
+                         values + (uint64_t)i * hash->size, hash->size));
   }
 }
 
 /* Module `m`'s state: its instances' generators and what they fed
-   vkr_sim_hash this tick, its components' values and its per-entity state,
-   in every attached container. Instance data is not hashed whole: it holds
-   input bookkeeping, frame-time presentation and pointers that a replay of
-   the same input does not reproduce. */
+   vkr_sim_hash this tick, in instance order, then its components' values
+   and its per-entity state in every attached container, summed by stable
+   key. Instance data is not hashed whole: it holds input bookkeeping,
+   frame-time presentation and pointers that a replay of the same input does
+   not reproduce. */
 vkr_internal uint32_t script_hash_module(VkrScriptHost *host, uint32_t m) {
   uint32_t state = VKR_CRC32_INITIAL;
   for (uint32_t i = 0; i < host->instance_count; ++i) {
@@ -162,6 +240,7 @@ vkr_internal uint32_t script_hash_module(VkrScriptHost *host, uint32_t m) {
   const VkrScriptModule *module = &host->modules[m];
   for (uint32_t c = 0; c < host->container_count; ++c) {
     VkrScene *scene = host->containers[c].scene;
+    uint32_t sum = 0u;
     for (uint32_t t = 0; t < module->type_count; ++t) {
       const VkrTypeDesc *type = module->types[t];
       VkrEntityId entities[SCRIPT_HASH_TYPED_BATCH];
@@ -170,11 +249,10 @@ vkr_internal uint32_t script_hash_module(VkrScriptHost *host, uint32_t m) {
           SCRIPT_HASH_TYPED_BATCH);
       for (uint32_t e = 0; e < found; ++e) {
         const void *value = vkr_scene_get_typed(scene, entities[e], type);
-        const uint64_t id = script_hash_id(entities[e]);
-        state = vkr_crc32_update(state, &id, sizeof(id));
-        if (value) {
-          state = script_hash_data(host, state, value, type->size);
-        }
+        sum += script_hash_entity(
+            script_hash_key(host, c, entities[e]) ^ (uint64_t)t,
+            value ? script_hash_data(host, VKR_CRC32_INITIAL, value, type->size)
+                  : 0u);
       }
     }
     for (uint32_t s = 0; s < host->state_type_count; ++s) {
@@ -183,13 +261,14 @@ vkr_internal uint32_t script_hash_module(VkrScriptHost *host, uint32_t m) {
         continue;
       }
       ScriptHashState hash = {
-          .host = host, .id = type->ids[c], .size = type->size, .state = state};
+          .host = host, .container = c, .id = type->ids[c], .size = type->size};
       VkrQuery query;
       vkr_entity_query_build(scene->world, &type->ids[c], 1u, NULL, 0u, &query);
       vkr_entity_query_each_chunk(scene->world, &query, script_hash_state_chunk,
                                   &hash);
-      state = hash.state;
+      sum += hash.sum * (2u * s + 1u);
     }
+    state = vkr_crc32_update(state, &sum, sizeof(sum));
   }
   return state;
 }
@@ -199,8 +278,14 @@ void vkr_script_host_tick_hash(VkrScriptHost *host, VkrScene *scene,
                                const char **out_names) {
   MemZero(out, sizeof(*out));
   out->tick = tick;
-  script_hash_transforms(scene, out->transforms);
-  out->bodies = script_hash_bodies(scene);
+  uint32_t c = 0u;
+  while (c < host->container_count && host->containers[c].scene != scene) {
+    ++c;
+  }
+  if (c < host->container_count) {
+    script_hash_transforms(host, c, out->transforms);
+    out->bodies = script_hash_bodies(host, c);
+  }
   for (uint32_t m = 0; m < host->module_count &&
                        out->module_count < VKR_RECORDING_HASH_MODULE_MAX;
        ++m) {

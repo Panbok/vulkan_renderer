@@ -215,6 +215,13 @@ typedef struct State {
   bool8_t gameplay_enabled;
   /* One session start per reset boundary; Reset and scene changes clear it. */
   bool8_t script_start_attempted;
+  /* A Play session began and marked the cells loaded then; its end
+     restores them once (sample_partition_session). */
+  bool8_t partition_session_open;
+  /* The streaming source this frame's containers read: the camera's
+     position, or a re-simulation's recorded one (sample_stream_sources). */
+  Vec3 stream_source;
+  uint32_t stream_source_count;
   InputState *input_state;
   bool8_t scene_keyboard_focus;
   /* This frame's Escape released the flying camera or cancelled a gizmo
@@ -456,6 +463,9 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application);
 static void sample_partition_open(VkrScene *scene);
 static void sample_partition_session(VkrStandardSceneRuntime *application,
                                      bool8_t begin);
+static void sample_partition_match(VkrStandardSceneRuntime *application,
+                                   const VkrRecordingDrive *drive);
+static void sample_partition_record_cells(VkrStandardSceneRuntime *application);
 static bool8_t sample_origin_rebased(VkrStandardSceneRuntime *application);
 static void sample_script_request(VkrStandardSceneRuntime *application,
                                   const VkrSampleScriptRequest *request,
@@ -3639,6 +3649,9 @@ static void sample_io_request(VkrStandardSceneRuntime *application,
  * boundary. A failure keeps the scene paused and reports why. */
 static void sample_scripts_start(VkrStandardSceneRuntime *application) {
   state->script_start_attempted = true_v;
+  if (application->drive.open && application->drive.resim) {
+    sample_partition_match(application, &application->drive);
+  }
   sample_partition_session(application, true_v);
   const char *error = NULL;
   VkrScene *scene = sample_simulated_scene(application, NULL);
@@ -3666,6 +3679,7 @@ static void sample_scripts_start(VkrStandardSceneRuntime *application) {
       application->editor_viewport.simulation_running) {
     vkr_window_set_mouse_capture(&application->host.window, true_v);
   }
+  sample_partition_record_cells(application);
 }
 
 /* Publishes one applied load to the UI. The first in a frame replaces the
@@ -3918,26 +3932,49 @@ static void sample_scripts_stop(VkrStandardSceneRuntime *application) {
 }
 
 /* Advances the simulated container, running the script session on it. */
+/* Whether one of the `count` entities, by stable key, is the entity of a
+   join the re-simulated recording had applied after at most `ticks` and
+   this session has not. */
+static bool8_t sample_resim_join_due(const VkrRecordingDrive *drive,
+                                     const VkrScene *scene, uint32_t kind,
+                                     uint64_t ticks,
+                                     const VkrEntityId *entities,
+                                     uint32_t count) {
+  for (uint32_t e = 0u; e < count; ++e) {
+    const uint64_t key = vkr_scene_entity_stable_key(scene, entities[e]);
+    for (uint32_t i = 0u; i < drive->join_count; ++i) {
+      const VkrRecordingJoin *join = &drive->joins[i];
+      if (!drive->join_applied[i] && join->kind == kind &&
+          join->entity == key && join->ticks <= ticks) {
+        return true_v;
+      }
+    }
+  }
+  return false_v;
+}
+
 /* True while a model or terrain body the re-simulated recording had joined
    after at most the ticks this session completed still builds here: the
    frame waits for it, so it joins at the same tick as it did there. */
 static bool8_t sample_resim_join_wait(const VkrRecordingDrive *drive,
                                       const VkrScene *scene) {
-  const uint64_t ticks = vkr_scene_physics_clock(scene).completed;
-  for (uint32_t i = 0u; i < drive->join_count; ++i) {
-    const VkrRecordingJoin *join = &drive->joins[i];
-    if (drive->join_applied[i] || join->ticks > ticks) {
-      continue;
-    }
-    const VkrEntityId entity = {.u64 = join->entity};
-    if ((join->kind == VKR_RECORDING_JOIN_MODEL &&
-         vkr_scene_model_loading(scene, entity)) ||
-        (join->kind == VKR_RECORDING_JOIN_TERRAIN_BODY &&
-         vkr_scene_terrain_body_building(scene, entity))) {
-      return true_v;
-    }
+  if (drive->join_count == 0u) {
+    return false_v;
   }
-  return false_v;
+  const uint64_t ticks = vkr_scene_physics_clock(scene).completed;
+  VkrEntityId building[64];
+  const uint32_t models =
+      Min(vkr_scene_models_loading(scene, building, ArrayCount(building)),
+          (uint32_t)ArrayCount(building));
+  if (sample_resim_join_due(drive, scene, VKR_RECORDING_JOIN_MODEL, ticks,
+                            building, models)) {
+    return true_v;
+  }
+  const uint32_t terrains =
+      Min(vkr_scene_terrains_building(scene, building, ArrayCount(building)),
+          (uint32_t)ArrayCount(building));
+  return sample_resim_join_due(drive, scene, VKR_RECORDING_JOIN_TERRAIN_BODY,
+                               ticks, building, terrains);
 }
 
 static void sample_simulate_steps(VkrStandardSceneRuntime *application,
@@ -3997,8 +4034,13 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
     }
   }
   if (application->recording.active && frame.simulation_running) {
-    const VkrRecordingSimFrame clock = {.now = frame.now,
-                                        .delta = frame.scene_delta};
+    const VkrRecordingSimFrame clock = {
+        .now = frame.now,
+        .delta = frame.scene_delta,
+        .source = {state->stream_source.x, state->stream_source.y,
+                   state->stream_source.z},
+        .has_source = state->stream_source_count,
+    };
     vkr_recording_sim_frame(&application->recording, &clock);
   }
   if (!join_wait) {
@@ -4203,6 +4245,14 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
   const float64_t start = vkr_platform_get_absolute_time();
   const float64_t budget = VKR_SAMPLE_PARTITION_BUDGET_MS / 1000.0;
   const uint64_t structure = scene->structure_revision;
+  /* Cells change between frames, outside any physics step, but a running
+     simulation refuses physics edits: without a pause an unload would keep
+     its objects and bodies, and a load would create objects without
+     bodies. */
+  const bool8_t running = !vkr_scene_physics_is_paused(scene);
+  if (running) {
+    vkr_scene_physics_set_paused(scene, true_v);
+  }
   uint32_t unloaded = 0u;
   for (uint32_t i = 0; i < plan.unload_count; ++i) {
     if (vkr_scene_edit_cell_unloadable(edits, scene, plan.unload[i])) {
@@ -4214,7 +4264,10 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
   uint32_t loaded = 0u;
   /* One load always runs, so a slow frame still makes progress. */
   for (uint32_t i = 0; i < plan.load_count; ++i) {
-    if (i && vkr_platform_get_absolute_time() - start > budget) {
+    /* A recorded or re-simulated session loads every due cell, so two
+       runs load the same cells in the same frame. */
+    if (i && !scene->deterministic_session &&
+        vkr_platform_get_absolute_time() - start > budget) {
       break;
     }
     if (vkr_scene_edit_cell_load(edits, scene, plan.load[i])) {
@@ -4225,6 +4278,9 @@ static void sample_partition_update(VkrStandardSceneRuntime *application) {
       string_format(state->scene_status, sizeof(state->scene_status), "%s",
                     edits->status);
     }
+  }
+  if (running) {
+    vkr_scene_physics_set_paused(scene, false_v);
   }
   if (application->recording.active) {
     const float64_t end = vkr_platform_get_absolute_time();
@@ -4318,6 +4374,88 @@ static void sample_partition_request(VkrScene *scene,
 /* Play keeps the cells it starts with while the scene has unsaved edits, so
    Reset finds them as they were; a saved scene streams freely and Reset
    brings its starting cells back from their documents. */
+/* Whether `cell` is one of the `count` {x, z} pairs of `cells`. */
+static bool8_t sample_partition_listed(const int32_t *cells, uint32_t count,
+                                       VkrScenePartitionCell cell) {
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (cells[2u * i] == cell.x && cells[2u * i + 1u] == cell.z) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* A re-simulation starts from the cells its recorded session started with:
+   the loaded cells it lacks load and the others unload, whatever loads and
+   unloads came since. A cell that cannot unload (unsaved edits, a pin)
+   stays, which the tick hashes then report. */
+static void sample_partition_match(VkrStandardSceneRuntime *application,
+                                   const VkrRecordingDrive *drive) {
+  VkrScene *scene = application->active_scene;
+  SceneWorldPartition settings;
+  if (!drive->has_start_cells || !scene ||
+      !vkr_scene_partition_settings(scene, &settings)) {
+    return;
+  }
+  const uint64_t structure = scene->structure_revision;
+  uint32_t count = 0u;
+  vkr_scene_partition_cells(scene, &count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrScenePartitionCell cell =
+        vkr_scene_partition_cells(scene, &count)[i].cell;
+    const VkrScenePartitionCellRecord *record =
+        vkr_scene_partition_cell(scene, cell, false_v);
+    if (!record || !(record->flags & VKR_SCENE_PARTITION_CELL_LOADED) ||
+        sample_partition_listed(drive->start_cells, drive->start_cell_count,
+                                cell)) {
+      continue;
+    }
+    if (vkr_scene_edit_cell_unloadable(&state->edits, scene, cell)) {
+      vkr_scene_edit_cell_unload(&state->edits, scene, cell);
+    } else {
+      log_warn("Re-simulate: cell %d,%d stays loaded; the recorded session "
+               "began without it",
+               cell.x, cell.z);
+    }
+  }
+  for (uint32_t i = 0u; i < drive->start_cell_count; ++i) {
+    const VkrScenePartitionCell cell = {.x = drive->start_cells[2u * i],
+                                        .z = drive->start_cells[2u * i + 1u]};
+    const VkrScenePartitionCellRecord *record =
+        vkr_scene_partition_cell(scene, cell, false_v);
+    if ((!record || !(record->flags & VKR_SCENE_PARTITION_CELL_LOADED)) &&
+        !vkr_scene_edit_cell_load(&state->edits, scene, cell)) {
+      log_warn("Re-simulate: cell %d,%d did not load", cell.x, cell.z);
+    }
+  }
+  sample_partition_routed(structure != scene->structure_revision);
+}
+
+/* A recording keeps the cells its session starts with, which a
+   re-simulation loads again first. */
+static void
+sample_partition_record_cells(VkrStandardSceneRuntime *application) {
+  VkrScene *scene = application->active_scene;
+  SceneWorldPartition settings;
+  if (!application->recording.active || !scene ||
+      !vkr_scene_partition_settings(scene, &settings)) {
+    return;
+  }
+  int32_t cells[VKR_RECORDING_CELLS_MAX * 2u];
+  uint32_t loaded = 0u;
+  uint32_t count = 0u;
+  const VkrScenePartitionCellRecord *records =
+      vkr_scene_partition_cells(scene, &count);
+  for (uint32_t i = 0u; i < count && loaded < VKR_RECORDING_CELLS_MAX; ++i) {
+    if (records[i].flags & VKR_SCENE_PARTITION_CELL_LOADED) {
+      cells[2u * loaded] = records[i].cell.x;
+      cells[2u * loaded + 1u] = records[i].cell.z;
+      ++loaded;
+    }
+  }
+  vkr_recording_cells(&application->recording, cells, loaded);
+}
+
 static void sample_partition_session(VkrStandardSceneRuntime *application,
                                      bool8_t begin) {
   VkrScene *scene = application->active_scene;
@@ -4325,6 +4463,13 @@ static void sample_partition_session(VkrStandardSceneRuntime *application,
   if (!scene || !vkr_scene_partition_settings(scene, &settings)) {
     return;
   }
+  /* A Reset with no session since the last one has nothing to restore:
+     without the marks every loaded cell would look loaded by Play and
+     unload. */
+  if (!begin && !state->partition_session_open) {
+    return;
+  }
+  state->partition_session_open = begin;
   const bool8_t dirty = state->edits.revision != state->edits.saved_revision;
   const uint64_t structure = scene->structure_revision;
   uint32_t count = 0u;
@@ -4472,12 +4617,24 @@ static void sample_rebase_restore(VkrStandardSceneRuntime *application) {
 }
 
 /* Every loaded container streams around the camera that draws the
-   viewport, the editor's or a game's. */
+   viewport, the editor's or a game's. A re-simulated session frame streams
+   around the source its recorded frame did, which the recording keeps
+   because that frame's camera came from the frame before it. */
 static void sample_stream_sources(VkrStandardSceneRuntime *application) {
   const VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &application->camera_system, application->active_camera);
-  const uint32_t count = camera ? 1u : 0u;
-  const Vec3 source = camera ? camera->position : vec3_zero();
+  uint32_t count = camera ? 1u : 0u;
+  Vec3 source = camera ? camera->position : vec3_zero();
+  VkrRecordingSimFrame next;
+  if (application->drive.open && application->drive.resim &&
+      application->editor_viewport.simulation_running &&
+      vkr_recording_drive_peek_sim_frame(&application->drive, &next)) {
+    count = next.has_source ? 1u : 0u;
+    source = vec3_new((float32_t)next.source[0], (float32_t)next.source[1],
+                      (float32_t)next.source[2]);
+  }
+  state->stream_source = source;
+  state->stream_source_count = count;
   VkrSceneHandle handles[2u + VKR_SCENE_ADDITIVE_MAX] = {
       state->scene_resource.as.scene, state->world_handle};
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {

@@ -1469,10 +1469,12 @@ typedef struct VkrScene {
   /** Runtime-spawned models (vkr_scene_model.h), newest first. */
   struct VkrSceneModel *models;
   VkrSceneJoinHooks join_hooks;
-  /* A recorded or re-simulated session: streaming starts work when it is
-     due instead of when a wall-clock budget has room, so two runs start it
-     at the same tick. */
-  bool8_t deterministic_streaming;
+  /* A recorded or re-simulated session (ADR-122): streaming starts work
+     when it is due instead of when a wall-clock budget has room, so two runs
+     start it at the same tick, and a physics reset creates bodies in
+     stable-key order (vkr_scene_entity_stable_key), whatever order loads
+     and unloads left them in. Set before the session's reset. */
+  bool8_t deterministic_session;
   VkrWorld *world;                // ECS storage (authoritative scene state)
   VkrAllocator *alloc;            // Scene-owned allocator
   struct VkrRenderAssets *assets; // Borrowed owner of published scene assets
@@ -2482,6 +2484,15 @@ bool8_t vkr_scene_set_source_identity(VkrScene *scene, VkrEntityId entity,
     node inside an imported model. */
 bool8_t vkr_scene_entity_ref(const VkrScene *scene, VkrEntityId entity,
                              VkrEntityRef *out);
+/* Ancestors vkr_scene_entity_stable_key climbs at most. */
+#define VKR_SCENE_STABLE_KEY_DEPTH 64u
+
+/** A key for `entity` that does not depend on which ECS slot it took, so two
+    sessions whose load and unload histories differ key it alike (ADR-122,
+    re-simulation): its document-stable id, else its document index, else
+    its glTF node index or name chained to its parent's key. Entities that
+    share a name under one parent share a key. Zero for a dead entity. */
+uint64_t vkr_scene_entity_stable_key(const VkrScene *scene, VkrEntityId entity);
 /** Gives an entity the editor created its document-stable id. */
 bool8_t vkr_scene_set_entity_ref(VkrScene *scene, VkrEntityId entity,
                                  const VkrEntityRef *id);

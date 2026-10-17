@@ -117,11 +117,10 @@ uint32_t vkr_scene_terrain_tile_indices(const VkrVertex3d *vertices,
 uint64_t vkr_scene_terrain_revision(const VkrScene *scene);
 /* Whether every terrain's mesh and collision match its samples. */
 bool8_t vkr_scene_terrain_settled(const VkrScene *scene);
-/* True while `terrain`'s collision body builds on a physics worker; the
-   terrain is matched by index and world whatever its generation (a
-   re-simulated session's entities reuse slots). */
-bool8_t vkr_scene_terrain_body_building(const VkrScene *scene,
-                                        VkrEntityId terrain);
+/* Writes up to `capacity` terrains whose collision bodies build on a
+   physics worker; returns how many there are. */
+uint32_t vkr_scene_terrains_building(const VkrScene *scene, VkrEntityId *out,
+                                     uint32_t capacity);
 
 /* Absolute path of a heightfield file the component names. */
 bool8_t vkr_scene_terrain_resolve(const VkrScene *scene, const char *relative,

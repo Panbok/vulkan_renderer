@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -145,7 +145,12 @@ Each frame the runtime plans loads and unloads for the primary scene
   pinned cells never unload until released.
 - Play holds the cells it starts with only while the scene has unsaved edits.
   Reset unloads cells loaded during Play and reloads the starting cells that
-  left. While the origin is rebased, edits and saves are refused, because the
+  left; a Reset with no Play since the last one leaves the cells alone
+  (before 2026-10-18 it unloaded every loaded cell). Cells load and unload
+  during Play between frames with physics paused around them, so their
+  objects' bodies come and go with them; before, a running simulation
+  refused those physics edits, an unload kept its objects and a load made
+  them without bodies. While the origin is rebased, edits and saves are refused, because the
   world holds positions the documents do not.
 - A session's IO router refreshes after cells come or go
   (`vkr_io_router_refresh`,

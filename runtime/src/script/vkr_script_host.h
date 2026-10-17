@@ -171,6 +171,16 @@ typedef struct VkrScriptContainer {
   uint32_t world_id;
 } VkrScriptContainer;
 
+/* Stable entity keys (vkr_scene_entity_stable_key) a container's tick
+   hashes looked up, by entity slot; a slot's key holds while its
+   generation, stored plus one, matches. Reset when the container attaches;
+   the arrays live in the host's instance allocator. */
+typedef struct VkrScriptKeyCache {
+  uint64_t *keys;
+  uint32_t *generations;
+  uint32_t capacity;
+} VkrScriptKeyCache;
+
 /** What a session runs on. */
 typedef struct VkrScriptSessionDesc {
   /** The played container; its clock drives every tick. */
@@ -225,6 +235,7 @@ typedef struct VkrScriptHost {
   bool8_t started;
   VkrScriptSessionDesc session;
   VkrScriptContainer containers[VKR_SCRIPT_CONTAINER_MAX];
+  VkrScriptKeyCache key_caches[VKR_SCRIPT_CONTAINER_MAX];
   uint32_t container_count;
   /* Index of the active container and of the World's. */
   uint32_t active_container;

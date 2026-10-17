@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_scene_physics.h"
 
+#include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "memory/vkr_dmemory.h"
 #include "physics/vkr_collision_asset.h"
@@ -2454,6 +2455,72 @@ void vkr_scene_physics_update(VkrScene *scene, float64_t dt) {
 /* Rebuild one scene's bodies, joints and characters into `replacement` from
    authored poses. Nothing is published; the scene keeps its old world until
    commit. */
+/* A body or generated body in a deterministic reset's creation order. */
+typedef struct PhysicsResetOrder {
+  uint64_t key;
+  uint32_t index;
+  ScenePhysicsBody *body;
+} PhysicsResetOrder;
+
+vkr_internal int32_t physics_reset_order_compare(const void *lhs,
+                                                 const void *rhs) {
+  const PhysicsResetOrder *a = lhs;
+  const PhysicsResetOrder *b = rhs;
+  if (a->key != b->key) {
+    return a->key < b->key ? -1 : 1;
+  }
+  return a->index < b->index ? -1 : (a->index > b->index ? 1 : 0);
+}
+
+/* Relinks the reset copies in stable-key order (scene->deterministic_session)
+   and fills `generated` with the generated bodies' indices in key order;
+   false when the order could not be allocated. Loads and unloads leave
+   bodies in another order in each session, and Jolt steps alike only from
+   alike body order. */
+vkr_internal bool8_t physics_reset_order(VkrScene *scene, uint32_t *generated) {
+  VkrScenePhysics *physics = scene->physics;
+  uint32_t count = 0u;
+  for (ScenePhysicsBody *body = physics->reset_bodies; body;
+       body = body->next) {
+    ++count;
+  }
+  const uint32_t total = Max(count, physics->generated_count);
+  const uint64_t bytes = sizeof(PhysicsResetOrder) * (uint64_t)Max(total, 1u);
+  PhysicsResetOrder *order =
+      vkr_allocator_alloc(scene->alloc, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!order) {
+    return false_v;
+  }
+  uint32_t at = 0u;
+  for (ScenePhysicsBody *body = physics->reset_bodies; body;
+       body = body->next) {
+    order[at] = (PhysicsResetOrder){
+        .key = vkr_scene_entity_stable_key(scene, body->entity),
+        .index = at,
+        .body = body};
+    ++at;
+  }
+  vkr_sort(order, count, sizeof(*order), physics_reset_order_compare);
+  ScenePhysicsBody **tail = &physics->reset_bodies;
+  for (uint32_t i = 0u; i < count; ++i) {
+    *tail = order[i].body;
+    tail = &order[i].body->next;
+  }
+  *tail = NULL;
+  for (uint32_t i = 0u; i < physics->generated_count; ++i) {
+    order[i] =
+        (PhysicsResetOrder){.key = physics->generated[i].key, .index = i};
+  }
+  vkr_sort(order, physics->generated_count, sizeof(*order),
+           physics_reset_order_compare);
+  for (uint32_t i = 0u; i < physics->generated_count; ++i) {
+    generated[i] = order[i].index;
+  }
+  vkr_allocator_free(scene->alloc, order, bytes,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return true_v;
+}
+
 static bool8_t physics_reset_stage(VkrScene *scene,
                                    VkrPhysicsWorld *replacement,
                                    const char **error) {
@@ -2462,7 +2529,8 @@ static bool8_t physics_reset_stage(VkrScene *scene,
   MemZero(physics->reset_characters, sizeof(physics->reset_characters));
   /* The copies keep the list's order, so every reset creates the bodies in
      the same order: Jolt steps alike only from alike body order, and a
-     re-simulation resets once more than the session it replays. */
+     re-simulation resets once more than the session it replays. A
+     deterministic session orders them by stable key instead. */
   ScenePhysicsBody **tail = &physics->reset_bodies;
   while (*tail) {
     tail = &(*tail)->next;
@@ -2479,6 +2547,17 @@ static bool8_t physics_reset_stage(VkrScene *scene,
     copy->body = VKR_PHYSICS_BODY_INVALID;
     copy->disabled = false_v;
     MemZero(copy->joints, sizeof(copy->joints));
+  }
+  uint32_t generated_order[SCENE_PHYSICS_GENERATED_MAX];
+  for (uint32_t i = 0; i < physics->generated_count; ++i) {
+    generated_order[i] = i;
+  }
+  if (scene->deterministic_session &&
+      !physics_reset_order(scene, generated_order)) {
+    return physics_fail(error, "Physics reset order allocation failed");
+  }
+  for (ScenePhysicsBody *copy = physics->reset_bodies; copy;
+       copy = copy->next) {
     if (!vkr_scene_physics_validate(scene, copy->entity, &copy->authored,
                                     error) ||
         !physics_create_body(scene, copy, replacement, true_v, &copy->body,
@@ -2489,7 +2568,8 @@ static bool8_t physics_reset_stage(VkrScene *scene,
   }
   /* Generated bodies come back from their own copies, kinematic ones at
      rest. */
-  for (uint32_t i = 0; i < physics->generated_count; ++i) {
+  for (uint32_t g = 0; g < physics->generated_count; ++g) {
+    const uint32_t i = generated_order[g];
     ScenePhysicsGenerated rest = physics->generated[i];
     rest.target_position = vec3_zero();
     rest.target_rotation = vkr_quat_identity();

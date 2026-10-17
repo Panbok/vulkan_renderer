@@ -15,6 +15,7 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "vkr_scene_animation.h"
 
+#include "containers/vkr_hashtable.h"
 #include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "math/vkr_math.h"
@@ -5750,6 +5751,53 @@ bool8_t vkr_scene_entity_ref(const VkrScene *scene, VkrEntityId entity,
   }
   *out = scene->document_ids[source->scene_entity_index];
   return true_v;
+}
+
+/* Mixes `part` of an identity, tagged by its kind, into `key`. */
+vkr_internal uint64_t scene_stable_key_mix(uint64_t key, uint64_t tag,
+                                           uint64_t part) {
+  return vkr_hash_table_finalize(key ^ (tag << 56u) ^
+                                 vkr_hash_table_finalize(part + tag));
+}
+
+uint64_t vkr_scene_entity_stable_key(const VkrScene *scene,
+                                     VkrEntityId entity) {
+  if (!scene || !vkr_scene_entity_alive(scene, entity)) {
+    return 0u;
+  }
+  uint64_t key = (uint64_t)scene->world_id;
+  /* A chain of nodes ends at the entity that has an identity of its own. */
+  for (uint32_t depth = 0u; depth < VKR_SCENE_STABLE_KEY_DEPTH; ++depth) {
+    const VkrEntityRef *ref =
+        vkr_entity_get_component(scene->world, entity, scene->comp_entity_ref);
+    if (ref) {
+      return scene_stable_key_mix(
+          key, 1u,
+          vkr_hash_table_key_string8(
+              (String8){.str = (uint8_t *)ref->bytes, .length = 16u})
+              .hash);
+    }
+    const SceneSourceIdentity *source = vkr_entity_get_component(
+        scene->world, entity, scene->comp_source_identity);
+    if (source && source->gltf_node_index == UINT32_MAX &&
+        source->scene_entity_index != UINT32_MAX) {
+      return scene_stable_key_mix(key, 2u, source->scene_entity_index);
+    }
+    key = source && source->gltf_node_index != UINT32_MAX
+              ? scene_stable_key_mix(key, 3u, source->gltf_node_index)
+              : scene_stable_key_mix(key, 4u,
+                                     vkr_hash_table_key_string8(
+                                         vkr_scene_get_name(scene, entity))
+                                         .hash);
+    const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+        scene->world, entity, scene->comp_transform);
+    if (!transform || transform->parent.u64 == VKR_ENTITY_ID_INVALID.u64 ||
+        !vkr_scene_entity_alive(scene, transform->parent)) {
+      return scene_stable_key_mix(key, 5u, 0u);
+    }
+    entity = transform->parent;
+  }
+  return scene_stable_key_mix(key, 6u, 0u);
 }
 
 bool8_t vkr_scene_set_entity_ref(VkrScene *scene, VkrEntityId entity,

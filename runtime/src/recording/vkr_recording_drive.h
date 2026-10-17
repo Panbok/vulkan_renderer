@@ -91,6 +91,11 @@ typedef struct VkrRecordingDrive {
   /* The session's asynchronous results by the ticks completed before each,
      the ones the re-simulation has applied, and how many the recording
      held beyond VKR_RECORDING_DRIVE_JOIN_MAX, which then join freely. */
+  /* The world partition cells loaded when the session started, {x, z}
+     pairs, when the recording kept them. */
+  int32_t start_cells[VKR_RECORDING_CELLS_MAX * 2u];
+  uint32_t start_cell_count;
+  bool8_t has_start_cells;
   VkrRecordingJoin joins[VKR_RECORDING_DRIVE_JOIN_MAX];
   bool8_t join_applied[VKR_RECORDING_DRIVE_JOIN_MAX];
   uint32_t join_count;
@@ -125,6 +130,11 @@ vkr_recording_drive_start_player(const VkrRecordingDrive *drive);
     base tick or for a tick without one. */
 const VkrRecordingPlayer *
 vkr_recording_drive_reference(const VkrRecordingDrive *drive, uint64_t tick);
+
+/** The next re-simulated session frame without taking it, so streaming
+    can read its source before the frame runs; false past the last. */
+bool8_t vkr_recording_drive_peek_sim_frame(const VkrRecordingDrive *drive,
+                                           VkrRecordingSimFrame *out);
 
 /** The frame clock of the next re-simulated session frame; false past the
     recording's last, which finishes the drive. */

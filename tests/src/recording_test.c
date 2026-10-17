@@ -1241,7 +1241,8 @@ static VkrRecordingTickHash recording_test_tick_hash(uint64_t tick) {
    tick and frame with its subsystems and buckets, a drive that keeps
    matching after it diverged, and a model join admitted before its
    recorded tick, taken from outside the first session, or matched to a
-   wrapper's earlier model. */
+   wrapper's earlier model; the starting cells or a frame's streaming
+   source lost or taken from the restart. */
 static void test_recording_resim(void) {
   printf("  Running test_recording_resim...\n");
   RecordingTestMemory memory;
@@ -1262,11 +1263,17 @@ static void test_recording_resim(void) {
   for (uint64_t f = 0u; f < 7u; ++f) {
     if (f == 2u) {
       vkr_recording_session(&recording, 0x5eedull);
+      const int32_t cells[] = {-1, 0, 2, -3};
+      vkr_recording_cells(&recording, cells, 2u);
     } else if (f == 5u) {
       vkr_recording_session(&recording, 0xbadull);
+      const int32_t other[] = {9, 9};
+      vkr_recording_cells(&recording, other, 1u);
     }
     const VkrRecordingSimFrame clock = {.now = 100.0 + (float64_t)f,
-                                        .delta = 0.03};
+                                        .delta = 0.03,
+                                        .source = {(float64_t)f, 1.5, -2.0},
+                                        .has_source = 1u};
     vkr_recording_sim_frame(&recording, &clock);
     const VkrRecordingTickHash before = recording_test_tick_hash(99u);
     if (f < 2u) {
@@ -1307,14 +1314,23 @@ static void test_recording_resim(void) {
                                   sizeof(error)));
   /* The first session: frames 2 to 4, ticks 1 to 6. */
   assert(drive.has_session && drive.seed == 0x5eedull);
+  /* The first session's starting cells, not the restart's. */
+  assert(drive.has_start_cells && drive.start_cell_count == 2u &&
+         drive.start_cells[0] == -1 && drive.start_cells[1] == 0 &&
+         drive.start_cells[2] == 2 && drive.start_cells[3] == -3);
   assert(drive.sim_frame_count == 3u && drive.hash_count == 6u &&
          drive.module_name_count == 1u &&
          strcmp(drive.module_names[0], "fps") == 0);
   drive.resim = true_v;
   VkrRecordingSimFrame clock;
   for (uint64_t f = 2u; f < 5u; ++f) {
+    VkrRecordingSimFrame peeked;
+    assert(vkr_recording_drive_peek_sim_frame(&drive, &peeked) &&
+           peeked.now == 100.0 + (float64_t)f);
     assert(vkr_recording_drive_sim_frame(&drive, &clock) &&
-           clock.now == 100.0 + (float64_t)f && clock.delta == 0.03);
+           clock.now == 100.0 + (float64_t)f && clock.delta == 0.03 &&
+           clock.has_source && clock.source[0] == (float64_t)f &&
+           clock.source[2] == -2.0);
   }
   assert(!vkr_recording_drive_sim_frame(&drive, &clock) && drive.finished);
   drive.finished = false_v;

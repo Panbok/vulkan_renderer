@@ -98,8 +98,15 @@
    re-simulation applies it after as many fixed ticks, whenever its load
    finishes. */
 #define VKR_RECORDING_STREAM_JOIN 19u
-/* Transform hashes are split by entity index, so a mismatch narrows to the
-   entities of the buckets that differ. */
+/* The world partition cells loaded when the session started: a u32 count,
+   then that many {i32 x, i32 z}. A re-simulation loads and unloads cells
+   to match before it starts. */
+#define VKR_RECORDING_STREAM_CELLS 20u
+/* Cells a cells record holds at most. */
+#define VKR_RECORDING_CELLS_MAX 256u
+/* Transform hashes are split by stable entity key
+   (vkr_scene_entity_stable_key), so a mismatch narrows to the entities of
+   the buckets that differ. */
 #define VKR_RECORDING_HASH_BUCKETS 16u
 /* Script modules a tick hash covers; later ones are left out. */
 #define VKR_RECORDING_HASH_MODULE_MAX 16u
@@ -147,11 +154,16 @@ typedef struct VkrRecordingSession {
   uint64_t seed;
 } VkrRecordingSession;
 
-/* The clock a session frame's modules read (vkr_time) and the scene delta
-   the frame began with. */
+/* The clock a session frame's modules read (vkr_time), the scene delta
+   the frame began with, and the streaming source that frame's world
+   partition and terrain streaming read (the camera position; `has_source`
+   zero without one). */
 typedef struct VkrRecordingSimFrame {
   float64_t now;
   float64_t delta;
+  float64_t source[3];
+  uint32_t has_source;
+  uint32_t reserved;
 } VkrRecordingSimFrame;
 
 /* The scene's join kinds (VkrSceneJoinKind), by the same values. */
@@ -162,9 +174,9 @@ typedef enum VkrRecordingJoinKind {
   VKR_RECORDING_JOIN_TERRAIN_BODY = 2,
 } VkrRecordingJoinKind;
 
-/* An asynchronous result a session applied: its kind, the entity it joined
-   (without its generation, as tick hashes name entities) and the fixed
-   ticks completed before it. */
+/* An asynchronous result a session applied: its kind, the stable key of
+   the entity it joined (vkr_scene_entity_stable_key, as tick hashes name
+   entities) and the fixed ticks completed before it. */
 typedef struct VkrRecordingJoin {
   uint64_t ticks;
   uint64_t entity;
@@ -173,9 +185,11 @@ typedef struct VkrRecordingJoin {
 } VkrRecordingJoin;
 
 /* The simulation after one fixed tick, hashed by subsystem: the scene's
-   transforms in VKR_RECORDING_HASH_BUCKETS buckets by entity index, its
-   physics bodies, and each script module's state (instance data,
-   components, per-entity state and generator), in hash_module order. */
+   transforms in VKR_RECORDING_HASH_BUCKETS buckets by stable entity key,
+   its physics bodies, and each script module's state (generators,
+   vkr_sim_hash input, components and per-entity state), in hash_module
+   order. Per-entity hashes are summed, so slot and chunk order do not
+   count. */
 typedef struct VkrRecordingTickHash {
   uint64_t tick;
   uint32_t transforms[VKR_RECORDING_HASH_BUCKETS];
@@ -497,6 +511,12 @@ void vkr_recording_session(VkrRecording *recording, uint64_t seed);
     session started while recording. */
 void vkr_recording_sim_frame(VkrRecording *recording,
                              const VkrRecordingSimFrame *frame);
+
+/** Writes the world partition cells loaded as the session starts,
+    `count` {x, z} pairs, at most VKR_RECORDING_CELLS_MAX; nothing before a
+    session started while recording. */
+void vkr_recording_cells(VkrRecording *recording, const int32_t *cells,
+                         uint32_t count);
 
 /** Writes an asynchronous result the session applied; nothing before a
     session started while recording. */

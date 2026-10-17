@@ -89,6 +89,17 @@ vkr_internal bool8_t vkr_recording_drive_scan(VkrRecordingDriveLoad *load) {
                  record.size > 4u) {
         vkr_recording_drive_name_module(drive, &record);
       } else if (load->sessions == 1u && !load->counting &&
+                 record.stream == VKR_RECORDING_STREAM_CELLS &&
+                 record.size >= 4u && !drive->has_start_cells) {
+        uint32_t count = 0u;
+        MemCopy(&count, record.data, sizeof(count));
+        count = Min(count, (record.size - 4u) / (2u * sizeof(int32_t)));
+        count = Min(count, VKR_RECORDING_CELLS_MAX);
+        MemCopy(drive->start_cells, record.data + 4u,
+                sizeof(int32_t) * 2u * count);
+        drive->start_cell_count = count;
+        drive->has_start_cells = true_v;
+      } else if (load->sessions == 1u && !load->counting &&
                  record.stream == VKR_RECORDING_STREAM_JOIN &&
                  record.size == sizeof(VkrRecordingJoin)) {
         if (drive->join_count < VKR_RECORDING_DRIVE_JOIN_MAX) {
@@ -368,6 +379,16 @@ void vkr_recording_drive_player(VkrRecordingDrive *drive, uint64_t tick,
     drive->divergent_tick = recorded;
     drive->divergent_frame = drive->player_frames[index];
   }
+}
+
+bool8_t vkr_recording_drive_peek_sim_frame(const VkrRecordingDrive *drive,
+                                           VkrRecordingSimFrame *out) {
+  vkr_assert(drive != NULL && out != NULL);
+  if (drive->sim_cursor >= drive->sim_frame_count) {
+    return false_v;
+  }
+  *out = drive->sim_frames[drive->sim_cursor];
+  return true_v;
 }
 
 bool8_t vkr_recording_drive_sim_frame(VkrRecordingDrive *drive,

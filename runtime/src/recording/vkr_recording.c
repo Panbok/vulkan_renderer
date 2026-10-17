@@ -150,6 +150,19 @@ static const VkrRecordingField VKR_RECORDING_SIM_FRAME_FIELDS[] = {
      .type = VKR_RECORDING_FIELD_F64,
      .count = 1u,
      .offset = 8u},
+    {.name = "source",
+     .unit = "m",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 3u,
+     .offset = 16u},
+    {.name = "has_source",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 40u},
+    {.name = "reserved",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 44u},
 };
 
 static const VkrRecordingField VKR_RECORDING_JOIN_FIELDS[] = {
@@ -237,6 +250,8 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
      .fields = VKR_RECORDING_TICK_HASH_FIELDS},
     /* A u32 index, then the UTF-8 module name. */
     {.id = VKR_RECORDING_STREAM_HASH_MODULE, .name = "hash_module"},
+    /* A u32 count, then {i32 x, i32 z} per cell. */
+    {.id = VKR_RECORDING_STREAM_CELLS, .name = "cells"},
     {.id = VKR_RECORDING_STREAM_JOIN,
      .name = "join",
      .record_size = sizeof(VkrRecordingJoin),
@@ -323,6 +338,7 @@ _Static_assert(sizeof(VkrRecordingPlayer) == 64u, "player record layout");
 _Static_assert(sizeof(VkrRecordingAction) == 32u, "action record layout");
 _Static_assert(sizeof(VkrRecordingCamera) == 48u, "camera record layout");
 _Static_assert(sizeof(VkrRecordingJoin) == 24u, "join record layout");
+_Static_assert(sizeof(VkrRecordingSimFrame) == 48u, "sim frame record layout");
 _Static_assert(sizeof(VkrRecordingTickHash) ==
                    16u + 4u * (VKR_RECORDING_HASH_BUCKETS +
                                VKR_RECORDING_HASH_MODULE_MAX),
@@ -1144,6 +1160,27 @@ void vkr_recording_sim_frame(VkrRecording *recording,
                              VKR_RECORDING_STREAM_SIM_FRAME, recording->frame,
                              frame, sizeof(*frame));
   }
+}
+
+void vkr_recording_cells(VkrRecording *recording, const int32_t *cells,
+                         uint32_t count) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->session_written) {
+    return;
+  }
+  count = Min(count, VKR_RECORDING_CELLS_MAX);
+  const uint32_t pairs = sizeof(int32_t) * 2u * count;
+  uint8_t *record = vkr_recorder_reserve(
+      recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+      VKR_RECORDING_STREAM_CELLS, recording->frame, 4u + pairs);
+  if (!record) {
+    return;
+  }
+  MemCopy(record, &count, sizeof(count));
+  if (pairs) {
+    MemCopy(record + 4u, cells, pairs);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
 }
 
 void vkr_recording_join(VkrRecording *recording, const VkrRecordingJoin *join) {

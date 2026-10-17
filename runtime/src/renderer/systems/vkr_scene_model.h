@@ -63,10 +63,10 @@ bool8_t vkr_scene_request_model(VkrScene *scene, struct VkrRenderAssets *assets,
  * allowed. */
 void vkr_scene_models_update(VkrScene *scene);
 
-/** True while the requested model of `wrapper`, matched by index and world
- * whatever its generation (a re-simulated session's wrappers reuse slots),
- * still waits for its loads. */
-bool8_t vkr_scene_model_loading(const VkrScene *scene, VkrEntityId wrapper);
+/** Writes up to `capacity` wrappers whose requested models still wait for
+ * their loads; returns how many there are. */
+uint32_t vkr_scene_models_loading(const VkrScene *scene, VkrEntityId *out,
+                                  uint32_t capacity);
 
 /** Where `wrapper`'s model stands; `*error`, when given, receives why a
  * requested model failed. */

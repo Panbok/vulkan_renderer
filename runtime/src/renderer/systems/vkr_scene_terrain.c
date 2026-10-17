@@ -2164,18 +2164,22 @@ static void terrain_body_poll(VkrScene *scene, TerrainRecord *record) {
   }
 }
 
-bool8_t vkr_scene_terrain_body_building(const VkrScene *scene,
-                                        VkrEntityId terrain) {
+uint32_t vkr_scene_terrains_building(const VkrScene *scene, VkrEntityId *out,
+                                     uint32_t capacity) {
   const VkrSceneTerrains *state = scene ? scene->terrains : NULL;
+  uint32_t count = 0u;
   for (uint32_t i = 0; state && i < state->record_count; ++i) {
     const TerrainRecord *record = &state->records[i];
-    if (record->entity.parts.index == terrain.parts.index &&
-        record->entity.parts.world == terrain.parts.world) {
-      return record->body_build &&
-             !vkr_physics_shape_build_done(record->body_build);
+    if (!record->body_build ||
+        vkr_physics_shape_build_done(record->body_build)) {
+      continue;
     }
+    if (count < capacity) {
+      out[count] = record->entity;
+    }
+    ++count;
   }
-  return false_v;
+  return count;
 }
 
 /* One height field body over the whole terrain, holes padding the grid to a
@@ -2504,7 +2508,7 @@ static bool8_t terrain_stream(VkrScene *scene, TerrainRecord *record,
                                        terrain_collision_key(record->entity));
     record->body_built = false_v;
   } else if (wanted && !record->collision_rejected && due &&
-             (urgent || scene->deterministic_streaming ||
+             (urgent || scene->deterministic_session ||
               vkr_platform_get_absolute_time() - start <= budget)) {
     terrain_build_window_collision(scene, record, window, position, urgent);
   }

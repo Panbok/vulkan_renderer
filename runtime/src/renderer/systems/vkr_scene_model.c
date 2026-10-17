@@ -465,24 +465,25 @@ void vkr_scene_models_update(VkrScene *scene) {
   }
 }
 
-bool8_t vkr_scene_model_loading(const VkrScene *scene, VkrEntityId wrapper) {
-  if (!scene) {
-    return false_v;
-  }
-  for (const struct VkrSceneModel *model = scene->models; model;
+uint32_t vkr_scene_models_loading(const VkrScene *scene, VkrEntityId *out,
+                                  uint32_t capacity) {
+  uint32_t count = 0u;
+  for (const struct VkrSceneModel *model = scene ? scene->models : NULL; model;
        model = model->next) {
     if (model->status != VKR_SCENE_MODEL_LOADING ||
-        model->wrapper.parts.index != wrapper.parts.index ||
-        model->wrapper.parts.world != wrapper.parts.world) {
+        (scene_model_request_status(&model->mesh_request) !=
+             VKR_SCENE_MODEL_LOADING &&
+         (!model->animation_path.length ||
+          scene_model_request_status(&model->animation_request) !=
+              VKR_SCENE_MODEL_LOADING))) {
       continue;
     }
-    return scene_model_request_status(&model->mesh_request) ==
-               VKR_SCENE_MODEL_LOADING ||
-           (model->animation_path.length &&
-            scene_model_request_status(&model->animation_request) ==
-                VKR_SCENE_MODEL_LOADING);
+    if (count < capacity) {
+      out[count] = model->wrapper;
+    }
+    ++count;
   }
-  return false_v;
+  return count;
 }
 
 VkrSceneModelStatus vkr_scene_model_status(const VkrScene *scene,

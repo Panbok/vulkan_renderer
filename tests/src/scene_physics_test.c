@@ -303,6 +303,85 @@ static void physics_test_reset_order(VkrAllocator *allocator) {
   vkr_scene_shutdown(&scene, NULL);
 }
 
+/* Two editor objects (document ids 1 and 2), a body each, and a named
+   child under the first; `filler` slots taken first and the objects made
+   in the other order shift their ECS slots. */
+typedef struct PhysicsKeyScene {
+  VkrScene scene;
+  VkrEntityId first;
+  VkrEntityId second;
+  VkrEntityId child;
+} PhysicsKeyScene;
+
+static void physics_key_scene(VkrAllocator *allocator, PhysicsKeyScene *out,
+                              uint32_t filler, bool8_t second_first) {
+  assert(vkr_scene_init(&out->scene, allocator, 13, 64, NULL));
+  for (uint32_t i = 0; i < filler; ++i) {
+    (void)physics_test_entity(&out->scene, vec3_new(50, 0, (float32_t)i));
+  }
+  const VkrEntityRef first_ref = {.bytes = {1}};
+  const VkrEntityRef second_ref = {.bytes = {2}};
+  for (uint32_t pass = 0; pass < 2u; ++pass) {
+    const bool8_t make_second = (pass == 0u) == second_first;
+    const VkrEntityId entity = physics_test_entity(
+        &out->scene, vec3_new(make_second ? 4.0f : 0.0f, 5, 0));
+    assert(vkr_scene_set_entity_ref(&out->scene, entity,
+                                    make_second ? &second_ref : &first_ref));
+    *(make_second ? &out->second : &out->first) = entity;
+  }
+  out->child = physics_test_entity(&out->scene, vec3_new(0, 1, 0));
+  vkr_scene_set_parent(&out->scene, out->child, out->first);
+  assert(vkr_scene_set_name(&out->scene, out->child, string8_lit("Handle")));
+  const char *error = NULL;
+  const VkrScenePhysicsSnapshot config = vkr_scene_physics_default();
+  assert(vkr_scene_physics_apply(
+      &out->scene, second_first ? out->second : out->first, &config, &error));
+  assert(vkr_scene_physics_apply(
+      &out->scene, second_first ? out->first : out->second, &config, &error));
+  vkr_scene_update(&out->scene, 0.0);
+}
+
+/* Detects: a stable key that follows the ECS slot, so a session whose cell
+   loads came in another order keys an entity otherwise (ADR-122); a key
+   that ignores an entity's document id or a child's parent and name; and a
+   deterministic reset that keeps list order instead of stable-key order. */
+static void physics_test_stable_keys(VkrAllocator *allocator) {
+  PhysicsKeyScene a;
+  physics_key_scene(allocator, &a, 0u, false_v);
+  const uint64_t first = vkr_scene_entity_stable_key(&a.scene, a.first);
+  const uint64_t second = vkr_scene_entity_stable_key(&a.scene, a.second);
+  const uint64_t child = vkr_scene_entity_stable_key(&a.scene, a.child);
+  assert(first && second && child);
+  assert(first != second && child != first && child != second);
+  a.scene.deterministic_session = true_v;
+  vkr_scene_physics_set_paused(&a.scene, true_v);
+  const char *error = NULL;
+  assert(vkr_scene_physics_reset(&a.scene, &error));
+  const uint64_t a_order[2] = {
+      vkr_scene_entity_stable_key(&a.scene,
+                                  vkr_scene_physics_body_at(&a.scene, 0)),
+      vkr_scene_entity_stable_key(&a.scene,
+                                  vkr_scene_physics_body_at(&a.scene, 1))};
+  vkr_scene_shutdown(&a.scene, NULL);
+
+  PhysicsKeyScene b;
+  physics_key_scene(allocator, &b, 5u, true_v);
+  assert(b.first.parts.index != a.first.parts.index);
+  assert(vkr_scene_entity_stable_key(&b.scene, b.first) == first);
+  assert(vkr_scene_entity_stable_key(&b.scene, b.second) == second);
+  assert(vkr_scene_entity_stable_key(&b.scene, b.child) == child);
+  /* Bodies listed in the other order come back from a deterministic reset
+     in the same order. */
+  b.scene.deterministic_session = true_v;
+  vkr_scene_physics_set_paused(&b.scene, true_v);
+  assert(vkr_scene_physics_reset(&b.scene, &error));
+  assert(vkr_scene_entity_stable_key(
+             &b.scene, vkr_scene_physics_body_at(&b.scene, 0)) == a_order[0]);
+  assert(vkr_scene_entity_stable_key(
+             &b.scene, vkr_scene_physics_body_at(&b.scene, 1)) == a_order[1]);
+  vkr_scene_shutdown(&b.scene, NULL);
+}
+
 /* An edit journal finalizes the graph after every edit, physics or not. A
    finalize with nothing prepared must not leave the graph finalized, or the
    next body edit is refused. */
@@ -643,6 +722,7 @@ bool32_t run_scene_physics_tests(void) {
   physics_test_world_gravity(&allocator);
   physics_test_empty_finalize(&allocator);
   physics_test_reset_order(&allocator);
+  physics_test_stable_keys(&allocator);
   physics_test_generated(&allocator);
   physics_test_generated_kinematic(&allocator);
   physics_test_generated_turn(&allocator);

@@ -1044,9 +1044,9 @@ static bool8_t script_host_may_join(void *user, const VkrScene *scene,
   if (!resim) {
     return true_v;
   }
-  entity.parts.generation = 0u;
-  return vkr_recording_drive_may_join(resim, (uint32_t)kind, entity.u64,
-                                      vkr_scene_physics_clock(scene).completed);
+  return vkr_recording_drive_may_join(
+      resim, (uint32_t)kind, vkr_scene_entity_stable_key(scene, entity),
+      vkr_scene_physics_clock(scene).completed);
 }
 
 /* A recording keeps the tick of each join; a re-simulation notes it. */
@@ -1054,11 +1054,11 @@ static void script_host_joined(void *user, const VkrScene *scene,
                                VkrSceneJoinKind kind, VkrEntityId entity,
                                bool8_t failed) {
   VkrScriptHost *host = user;
-  entity.parts.generation = 0u;
+  const uint64_t key = vkr_scene_entity_stable_key(scene, entity);
   if (host->recording) {
     const VkrRecordingJoin join = {
         .ticks = vkr_scene_physics_clock(scene).completed,
-        .entity = entity.u64,
+        .entity = key,
         .kind = (uint32_t)kind,
         .failed = failed ? 1u : 0u,
     };
@@ -1066,7 +1066,7 @@ static void script_host_joined(void *user, const VkrScene *scene,
   }
   VkrRecordingDrive *resim = script_host_resim(host);
   if (resim) {
-    vkr_recording_drive_joined(resim, (uint32_t)kind, entity.u64);
+    vkr_recording_drive_joined(resim, (uint32_t)kind, key);
   }
 }
 
@@ -2205,6 +2205,10 @@ static uint32_t script_container_attach(VkrScriptHost *host, VkrScene *scene) {
   host->containers[slot] = (VkrScriptContainer){
       .scene = scene, .world_id = scene->world ? scene->world->world_id : 0u};
   host->transforms_dirty[slot] = false_v;
+  VkrScriptKeyCache *keys = &host->key_caches[slot];
+  if (keys->generations) {
+    MemZero(keys->generations, sizeof(uint32_t) * (uint64_t)keys->capacity);
+  }
   for (uint32_t t = 0; t < host->state_type_count; ++t) {
     host->state_types[t].ids[slot] = VKR_COMPONENT_TYPE_INVALID;
   }
@@ -2350,7 +2354,7 @@ static const char *script_session_begin(VkrScriptHost *host) {
       return "The scene already has a destroy observer";
     }
     vkr_scene_set_join_hooks(host->containers[c].scene, &join_hooks);
-    host->containers[c].scene->deterministic_streaming = deterministic;
+    host->containers[c].scene->deterministic_session = deterministic;
   }
   if (input) {
     if (!input_observe(host->session.input, script_host_input, host)) {
@@ -2386,7 +2390,7 @@ static void script_session_teardown(VkrScriptHost *host) {
   for (uint32_t c = 0; c < host->container_count; ++c) {
     (void)vkr_scene_unobserve_destroy(host->containers[c].scene, host);
     vkr_scene_set_join_hooks(host->containers[c].scene, NULL);
-    host->containers[c].scene->deterministic_streaming = false_v;
+    host->containers[c].scene->deterministic_session = false_v;
   }
   if (host->callbacks_installed) {
     (void)vkr_scene_simulation_detach(active, host);
@@ -2415,6 +2419,7 @@ bool8_t vkr_script_host_start(VkrScriptHost *host,
      steps alike only from alike body order and state, and edits made
      before Play add bodies in another order than a rebuild does. */
   const bool8_t rebuild = host->recording || script_host_resim(host);
+  active->deterministic_session = rebuild;
   if ((rebuild || vkr_scene_simulation_completed_ticks(active) ||
        vkr_scene_physics_debt(active)) &&
       !vkr_scene_physics_reset(active, error)) {
@@ -2496,7 +2501,7 @@ void vkr_script_host_detach(VkrScriptHost *host, const VkrScene *scene) {
      entities stop, before its entities go; unloading runs no destroy hook. */
   (void)vkr_scene_unobserve_destroy(host->containers[slot].scene, host);
   vkr_scene_set_join_hooks(host->containers[slot].scene, NULL);
-  host->containers[slot].scene->deterministic_streaming = false_v;
+  host->containers[slot].scene->deterministic_session = false_v;
   vkr_io_router_detach(&host->io, host->containers[slot].scene);
   for (uint32_t i = host->instance_count; i-- > 0u;) {
     VkrScriptInstance *instance = host->instances[i];

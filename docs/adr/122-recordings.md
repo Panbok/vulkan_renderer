@@ -17,8 +17,8 @@ frame metrics, Tier 1 pass rows, the recording analysis, the Performance
 window, and from R3 the entity poses that Watch replays, Play recording,
 Drive, requests, annotations, Compare, harness recordings and perf re-runs,
 and from R6 Re-simulate on the same build, with model joins and terrain
-collision rebuilds at their recorded ticks. World partition cell loads are
-not (in the proposal). A Tier 0 recording passed the
+collision rebuilds at their recorded ticks and world partition streaming
+replayed. A Tier 0 recording passed the
 authoritative overhead gate on a GPU-bound Bistro orbit (2026-10-17, in the
 proposal); a CPU-bound workload has not been measured, so harness runs that
 record keep the authority reason `recording.enabled`.
@@ -281,19 +281,26 @@ an agent must read one without the editor.
   does both, pulling at most at run speed.
 - **Re-simulate (R6).** A Play session draws a session seed (the wall clock,
   or the recorded seed when re-simulating) and writes it to stream
-  `session`; each running frame writes its clock (`now`, scene delta) to
-  `sim_frame`. SDK version 13 adds a seeded splitmix64 generator per module
+  `session`; each running frame writes its clock (`now`, scene delta) and
+  its streaming source (the camera position world partition and terrain
+  streaming read) to `sim_frame`. SDK version 13 adds a seeded splitmix64 generator per module
   instance (`vkr_random_u32`, `vkr_random_f32`, `vkr_random_range`, seeded
   from the session seed, the module name and the container) and
   `vkr_sim_hash`, which feeds simulation values a module keeps outside
   components into its tick hash. After each fixed tick the script host
-  writes `tick_hash`: CRC-32s of the transforms in 16 buckets by entity
-  index, the physics bodies' poses and velocities, and per module its
-  generators, `vkr_sim_hash` input, typed components and per-entity state
+  writes `tick_hash`: CRC-32s of the transforms in 16 buckets, the
+  physics bodies' poses and velocities, and per module its generators,
+  `vkr_sim_hash` input, typed components and per-entity state
   ([vkr_script_hash.c](../../runtime/src/script/vkr_script_hash.c)); stream
-  `hash_module` names the modules. Entity ids are hashed without their
-  generation, which grows when a session reset reuses a slot, and so are
-  live entity ids inside script data. Instance data is not hashed: it
+  `hash_module` names the modules. Entities are named by a stable key
+  (`vkr_scene_entity_stable_key`), never their ECS slot: the document-stable
+  id an editor or cell object carries, else a document entity's index, else
+  a node's glTF index or name chained to its parent's key; live entity ids
+  inside script data hash as their keys, and per-entity hashes are summed
+  into their buckets, so neither the slots nor the chunk order a load and
+  unload history leaves changes a hash. The host caches each key by slot
+  and generation; on the scoped Bistro case the first tick of a session
+  hashes in 0.56 ms and later ones in 0.14 ms on average. Instance data is not hashed: it
   holds input bookkeeping and frame-time presentation that a replay does
   not reproduce. `rec.drive` with `resim`, or Re-simulate on a card, resets
   the session with the recorded seed, replays the recorded clock and
@@ -316,11 +323,15 @@ an agent must read one without the editor.
   ticks its next recorded join followed; a frame whose due result still
   builds neither ticks nor runs modules nor takes a recorded frame. Such
   sessions also start a due terrain rebuild at once instead of within the
-  frame's wall-clock budget (`deterministic_streaming`). Before, the FPS
+  frame's wall-clock budget (`deterministic_session`). Before, the FPS
   mannequin joined whenever its load finished and a re-simulation could
-  part at tick 6. World partition cells are not held this way: a cell
-  loaded in another history gives its entities other slots and its bodies
-  another order, which the hashes and the physics see.
+  part at tick 6. Joins name their entity by stable key too. World
+  partition sessions also replay their streaming: stream `cells` keeps the
+  cells loaded when the session starts, a re-simulation loads and unloads
+  cells to match before it starts, each re-simulated frame streams around
+  the recorded source, and cells load without the frame budget; the
+  deterministic reset then orders bodies by stable key, whatever order
+  loads left them in.
 - **Frame metrics (Tier 0).** A recording with metrics adds stream `metrics`:
   a `valid` bitmask and one float64 per registry metric found from a fixed
   Tier 0 list, durations in milliseconds, plus process resident memory

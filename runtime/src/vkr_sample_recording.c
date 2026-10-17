@@ -306,8 +306,8 @@ vkr_sample_recording_drive_result(const VkrRecordingDrive *drive,
                 drive->hash_subsystems);
 }
 
-/* Names the simulated entities, bodies and characters, whose index falls
-   in a transform bucket that differed, as candidates for what moved. */
+/* Names the simulated entities, bodies and characters, whose stable key
+   falls in a transform bucket that differed, as candidates for what moved. */
 vkr_internal void
 vkr_sample_recording_resim_entities(VkrStandardSceneRuntime *runtime,
                                     const VkrRecordingDrive *drive, char *out,
@@ -330,7 +330,8 @@ vkr_sample_recording_resim_entities(VkrStandardSceneRuntime *runtime,
   uint32_t named = 0u;
   for (uint32_t i = 0u; i < count && named < 6u; ++i) {
     const uint32_t bucket =
-        candidates[i].parts.index % VKR_RECORDING_HASH_BUCKETS;
+        (uint32_t)(vkr_scene_entity_stable_key(scene, candidates[i]) %
+                   VKR_RECORDING_HASH_BUCKETS);
     if (!(drive->hash_buckets & (1u << bucket))) {
       continue;
     }
