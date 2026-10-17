@@ -59,6 +59,9 @@ typedef enum VkrRecordingMarkerKind {
   VKR_RECORDING_MARKER_NOTE = 1u,
   VKR_RECORDING_MARKER_BUG = 2u,
   VKR_RECORDING_MARKER_STEP = 3u,
+  /* The scene was edited at this frame. Playback shows the scene as it is
+     now, not as it was (edit replay comes with the world state stream). */
+  VKR_RECORDING_MARKER_EDIT = 4u,
 } VkrRecordingMarkerKind;
 
 /* Marker records are a u32 kind followed by a UTF-8 label. */

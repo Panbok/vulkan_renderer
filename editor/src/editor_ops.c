@@ -7887,43 +7887,55 @@ static void ops_png_sink(void *context, void *data, int size) {
              written == (uint64_t)size;
 }
 
+bool8_t vkr_editor_png_write(const char *path, const uint8_t *rgba,
+                             uint32_t width, uint32_t height) {
+  const FilePath file_path = file_path_view(path);
+  FileHandle file = {0};
+  bool8_t written = false_v;
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
+                                  FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
+                &file) == FILE_ERROR_NONE) {
+    OpsPngSink sink = {.file = &file, .ok = true_v};
+    written = stbi_write_png_to_func(ops_png_sink, &sink, (int)width,
+                                     (int)height, 4, rgba, (int)width * 4) != 0;
+    written = sink.ok && written;
+  }
+  file_close(&file);
+  return written;
+}
+
 /* Writes the Scene image area of the captured window as an RGBA8 PNG. */
 /* The captured frame as RGBA8 rows from the top, of the Scene's image
    rectangle or the whole window; heap memory the caller frees. */
-static uint8_t *ops_capture_rgba(OpsContext *ctx,
-                                 const OpsPendingCapture *pending,
-                                 const VkrCaptureItemResult *item,
-                                 uint32_t *out_width, uint32_t *out_height) {
+uint8_t *vkr_editor_capture_rgba(const VkrCaptureItemResult *item, Vec4 rect_px,
+                                 uint32_t *out_width, uint32_t *out_height,
+                                 const char **out_error) {
   const bool8_t rgba8 = item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
                         item->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
   const bool8_t bgra8 = item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM ||
                         item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
   const bool8_t half = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   if (!rgba8 && !bgra8 && !half) {
-    (void)ops_fail(ctx, OPS_CAPTURE, "Unsupported capture format %u",
-                   (unsigned)item->format);
+    *out_error = "Unsupported capture format";
     return NULL;
   }
-  /* The Scene's image rectangle, clamped to the captured window. */
-  const Vec4 rect = ctx->frame->mapping_valid && !pending->window
-                        ? ctx->frame->mapping.image_rect_px
-                        : vec4_new(0.0f, 0.0f, (float32_t)item->width,
-                                   (float32_t)item->height);
-  const uint32_t x0 = (uint32_t)vkr_clamp_f32(rect.x, 0.0f, item->width);
-  const uint32_t y0 = (uint32_t)vkr_clamp_f32(rect.y, 0.0f, item->height);
-  const uint32_t x1 =
-      (uint32_t)vkr_clamp_f32(rect.x + rect.z, (float32_t)x0, item->width);
-  const uint32_t y1 =
-      (uint32_t)vkr_clamp_f32(rect.y + rect.w, (float32_t)y0, item->height);
+  /* The rectangle, clamped to the captured image. */
+  const uint32_t x0 = (uint32_t)vkr_clamp_f32(rect_px.x, 0.0f, item->width);
+  const uint32_t y0 = (uint32_t)vkr_clamp_f32(rect_px.y, 0.0f, item->height);
+  const uint32_t x1 = (uint32_t)vkr_clamp_f32(rect_px.x + rect_px.z,
+                                              (float32_t)x0, item->width);
+  const uint32_t y1 = (uint32_t)vkr_clamp_f32(rect_px.y + rect_px.w,
+                                              (float32_t)y0, item->height);
   const uint32_t width = x1 - x0;
   const uint32_t height = y1 - y0;
   if (!width || !height) {
-    (void)ops_fail(ctx, OPS_CAPTURE, "The Scene has no visible area");
+    *out_error = "The Scene has no visible area";
     return NULL;
   }
   uint8_t *pixels = vkr_heap_alloc((size_t)width * height * 4u);
   if (!pixels) {
-    (void)ops_fail(ctx, OPS_LIMIT, "Out of memory for the capture");
+    *out_error = "Out of memory for the capture";
     return NULL;
   }
   const uint32_t texel = half ? 8u : 4u;
@@ -7957,20 +7969,35 @@ static uint8_t *ops_capture_rgba(OpsContext *ctx,
   return pixels;
 }
 
-/* `source` (RGBA8, width by height) at `target_width` pixels wide, its
-   aspect kept: each pixel averages the source pixels it covers. Arena
-   memory; NULL when it does not fit. */
-static uint8_t *ops_image_shrink(Arena *arena, const uint8_t *source,
-                                 uint32_t width, uint32_t height,
-                                 uint32_t target_width, uint32_t *out_height) {
-  const uint32_t w = Max(1u, Min(target_width, width));
-  const uint32_t h =
-      Max(1u, (uint32_t)(((uint64_t)height * w + width / 2u) / width));
-  uint8_t *out =
-      arena_alloc(arena, (uint64_t)w * h * 4u, ARENA_MEMORY_TAG_ARRAY);
-  if (!out) {
-    return NULL;
+static uint8_t *ops_capture_rgba(OpsContext *ctx,
+                                 const OpsPendingCapture *pending,
+                                 const VkrCaptureItemResult *item,
+                                 uint32_t *out_width, uint32_t *out_height) {
+  /* The Scene's image rectangle, or the whole captured window. */
+  const Vec4 rect = ctx->frame->mapping_valid && !pending->window
+                        ? ctx->frame->mapping.image_rect_px
+                        : vec4_new(0.0f, 0.0f, (float32_t)item->width,
+                                   (float32_t)item->height);
+  const char *error = NULL;
+  uint8_t *pixels =
+      vkr_editor_capture_rgba(item, rect, out_width, out_height, &error);
+  if (!pixels) {
+    (void)ops_fail(ctx, OPS_CAPTURE, "%s", error);
   }
+  return pixels;
+}
+
+uint32_t vkr_editor_image_shrink_height(uint32_t width, uint32_t height,
+                                        uint32_t target_width) {
+  const uint32_t w = Max(1u, Min(target_width, width));
+  return Max(1u, (uint32_t)(((uint64_t)height * w + width / 2u) / width));
+}
+
+void vkr_editor_image_shrink(const uint8_t *source, uint32_t width,
+                             uint32_t height, uint32_t target_width,
+                             uint8_t *out) {
+  const uint32_t w = Max(1u, Min(target_width, width));
+  const uint32_t h = vkr_editor_image_shrink_height(width, height, w);
   for (uint32_t y = 0; y < h; ++y) {
     const uint32_t ya = (uint32_t)((uint64_t)y * height / h);
     const uint32_t yb =
@@ -7996,6 +8023,21 @@ static uint8_t *ops_image_shrink(Arena *arena, const uint8_t *source,
       pixel[3] = 255u;
     }
   }
+}
+
+/* `source` at `target_width` pixels wide in arena memory; NULL when it does
+   not fit. */
+static uint8_t *ops_image_shrink(Arena *arena, const uint8_t *source,
+                                 uint32_t width, uint32_t height,
+                                 uint32_t target_width, uint32_t *out_height) {
+  const uint32_t w = Max(1u, Min(target_width, width));
+  const uint32_t h = vkr_editor_image_shrink_height(width, height, w);
+  uint8_t *out =
+      arena_alloc(arena, (uint64_t)w * h * 4u, ARENA_MEMORY_TAG_ARRAY);
+  if (!out) {
+    return NULL;
+  }
+  vkr_editor_image_shrink(source, width, height, w, out);
   *out_height = h;
   return out;
 }
@@ -8088,19 +8130,7 @@ static bool8_t ops_capture_png(OpsContext *ctx, OpsPendingCapture *pending,
     const uint32_t serial = ++ctx->ops->capture_serial;
     string_format(pending->path, sizeof(pending->path), "%s/capture-%d-%u.png",
                   captures, pid, serial);
-    const FilePath capture_path = file_path_view(pending->path);
-    FileHandle file = {0};
-    if (file_open(&capture_path,
-                  (FileMode){.set = FILE_MODE_WRITE | FILE_MODE_CREATE |
-                                    FILE_MODE_TRUNCATE | FILE_MODE_BINARY},
-                  &file) == FILE_ERROR_NONE) {
-      OpsPngSink sink = {.file = &file, .ok = true_v};
-      written =
-          stbi_write_png_to_func(ops_png_sink, &sink, (int)width, (int)height,
-                                 4, pixels, (int)width * 4) != 0;
-      written = sink.ok && written;
-    }
-    file_close(&file);
+    written = vkr_editor_png_write(pending->path, pixels, width, height);
     if (serial > OPS_CAPTURE_KEEP) {
       char old[512];
       string_format(old, sizeof(old), "%s/capture-%d-%u.png", captures, pid,

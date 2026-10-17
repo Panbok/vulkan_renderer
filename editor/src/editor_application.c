@@ -345,6 +345,7 @@ static bool8_t editor_application_shutdown(void *state,
    */
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
+  vkr_editor_recording_shutdown(&editor->ui);
   vkr_editor_depot_destroy(editor->ui.depot);
   editor->ui.depot = NULL;
   vkr_editor_session_destroy(editor->ui.session);

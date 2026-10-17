@@ -104,6 +104,8 @@ const char *vkr_recording_marker_kind_name(uint32_t kind) {
     return "bug";
   case VKR_RECORDING_MARKER_STEP:
     return "step";
+  case VKR_RECORDING_MARKER_EDIT:
+    return "edit";
   }
   return "unknown";
 }

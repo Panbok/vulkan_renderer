@@ -89,6 +89,8 @@ typedef struct VkrSampleRecordingState {
   float32_t near_clip;
   float32_t far_clip;
   float64_t hour;
+  /* The scene journals' summed revision the recording last saw. */
+  uint64_t edit_revision;
 } VkrSampleRecordingState;
 
 /** Applies one request; `scene_path` names the level for the summary. */
@@ -97,6 +99,9 @@ void vkr_sample_recording_apply(struct VkrStandardSceneRuntime *runtime,
                                 const VkrSampleRecordingRequest *request,
                                 String8 scene_path);
 
-/** Refreshes the live part of the status before the next build. */
+/** Refreshes the live part of the status before the next build.
+ * `edit_revision` sums the loaded scenes' journal revisions: a change while
+ * recording adds an edit marker. */
 void vkr_sample_recording_publish(struct VkrStandardSceneRuntime *runtime,
-                                  VkrSampleRecordingState *state);
+                                  VkrSampleRecordingState *state,
+                                  uint64_t edit_revision);

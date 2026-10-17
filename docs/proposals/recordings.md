@@ -335,8 +335,11 @@ The recorder uses explicit hooks, not shared descriptors:
   runtime spawns by a recording-local id with their model or prefab), animation
   player state, script-changed light state, spawn and destroy, cell loads and
   unloads, origin rebase shifts, time of day, graphics settings changes.
-- **Edits:** edits made with simulation stopped, encoded with
-  `vkr_net_scene_edit`. An edit kind that this encoding rejects is a gap event.
+- **Edits:** R1 records an `edit` marker at each frame where a loaded
+  scene's journal changed, and playback shows the scene as it is now. R3
+  replays edits with the world state stream: the `start/` overlay at record
+  start plus edits encoded with `vkr_net_scene_edit`; an edit kind that
+  encoding rejects is a gap event.
 - **Place:** each spike context derives the room name from rooms and portals
   ([ADR-115](../adr/115-rooms-and-portals.md)) and the cell from the partition,
   so places do not depend on module tags.
@@ -583,9 +586,9 @@ agent reported.
 | Phase | Delivers | Main evidence |
 |---|---|---|
 | R0 (implemented 2026-10-17) | `VkrSpscRing` and `VkrCodec` in `lib/`; input observer slots; stream format, writer, reader; recorder; `vkr_rec summary` and `verify` | `run_recording_tests`: ring wrap and threads, format round-trip, truncated-file recovery, recorder drop and gap accounting |
-| R1 (partial, 2026-10-17) | Simulation-stopped recording (camera, view state, edits with `start/`), tier None; Playback transport state; Watch; minimal timeline (ruler, playhead, markers); record overlay; Library with one thumbnail per recording. Implemented: camera and frame recording, markers, Playback with exact seek, the playback bar with marker ticks, the REC indicator and Record button, the Recordings window, `rec.*` operations. Open: edits with `start/`, thumbnails, the authoritative overhead gate | Overhead gate with tier None; Bistro Watch matches recorded poses (passed: seek error 0 m and 0 degrees at four probe frames, `.scratch/recordings/r1_check.py`). Non-authoritative overhead A/B on 2026-10-17: `tiled_bistro_plaza_timing_sun_contact_on` with `local-offscreen-gpu-repeated`, 5 repetitions each, recording off then on through `VKR_RECORDING_DIRECTORY`: `frame.wall` per-repetition medians 17.744–17.860 ms off, 17.729–17.755 ms on (p50 difference −54 µs, inside the spread); writer thread 6.8 µs per frame; no dropped or lost records. Not authoritative: local profile, dirty tree, and the profile's transmission warmup metric reads 0 on the tiled pipeline |
+| R1 (partial, 2026-10-17) | Simulation-stopped recording (camera, view state, edits with `start/`), tier None; Playback transport state; Watch; minimal timeline (ruler, playhead, markers); record overlay; Library with one thumbnail per recording. Implemented: camera and frame recording, markers, edit markers, Playback with exact seek, the playback bar with marker ticks, the REC indicator and Record button, the Recordings window with thumbnails, `rec.*` operations. Moved to R3: replaying edits with `start/`. Open: the authoritative overhead gate | Overhead gate with tier None; Bistro Watch matches recorded poses (passed: seek error 0 m and 0 degrees at four probe frames, `.scratch/recordings/r1_check.py`). Non-authoritative overhead A/B on 2026-10-17: `tiled_bistro_plaza_timing_sun_contact_on` with `local-offscreen-gpu-repeated`, 5 repetitions each, recording off then on through `VKR_RECORDING_DIRECTORY`: `frame.wall` per-repetition medians 17.744–17.860 ms off, 17.729–17.755 ms on (p50 difference −54 µs, inside the spread); writer thread 6.8 µs per frame; no dropped or lost records. Not authoritative: local profile, dirty tree, and the profile's transmission warmup metric reads 0 on the tiled pipeline |
 | R2 | Recorder frame join; Tier 0 additions; plot, table and splitter primitives; performance view; `summary.json`; read operations and `vkr_rec` queries | Tier 0 overhead gate; spike-join gate; Vulkan rows on Windows |
-| R3 | Play recording: player hook, tags, events, dirty-list state, actions; Watch of the world; Drive with path distance | A scoped Bistro Play case; Drive after a code change |
+| R3 | Play recording: player hook, tags, events, dirty-list state, actions; Watch of the world, with edits replayed from `start/`; Drive with path distance | A scoped Bistro Play case; Drive after a code change |
 | R4 | Recording requests with lifecycle; annotations; Copy agent prompt | An agent request recorded by the user and answered by text |
 | R5 | Perf re-run; Tier 1 (Vulkan live, Metal sampled); harness recording mode; Compare; thumbnails at 2 Hz | Matched Release A/B of a re-run on Bistro |
 | R6 | Re-simulate: frame clock, per-module generators, recorded async completions, hashes, divergence report | Same-machine re-simulation without divergence |

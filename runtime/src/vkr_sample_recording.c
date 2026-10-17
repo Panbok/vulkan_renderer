@@ -282,8 +282,14 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
 }
 
 void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
-                                  VkrSampleRecordingState *state) {
+                                  VkrSampleRecordingState *state,
+                                  uint64_t edit_revision) {
   VkrSampleRecordingStatus *status = &state->status;
+  if (runtime->recording.active && edit_revision != state->edit_revision) {
+    (void)vkr_recording_mark(&runtime->recording, VKR_RECORDING_MARKER_EDIT,
+                             "scene edited");
+  }
+  state->edit_revision = edit_revision;
   status->recording = runtime->recording.active;
   if (status->recording) {
     string_format(status->recording_path, sizeof(status->recording_path), "%s",

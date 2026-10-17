@@ -6967,7 +6967,14 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
       string8_create_from_cstr((const uint8_t *)state->graphics_message,
                                string_length(state->graphics_message));
   sample_capture_poll(application);
-  vkr_sample_recording_publish(application, &state->recording);
+  {
+    uint64_t edit_revision =
+        state->edits.revision + state->world_edits.revision;
+    for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+      edit_revision += state->additive_edits[i].revision;
+    }
+    vkr_sample_recording_publish(application, &state->recording, edit_revision);
+  }
   VkrSampleUiRequests requests = {
       .transport_action = VKR_SAMPLE_TRANSPORT_NONE,
       .close_response = VKR_SAMPLE_CLOSE_NONE,

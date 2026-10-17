@@ -177,3 +177,26 @@ void vkr_editor_changes_build(VkrEditorUi *editor,
 /* Whether `entity` belongs to a pending change. */
 bool8_t vkr_editor_ops_entity_pending(const VkrEditorOps *ops,
                                       VkrEntityId entity);
+
+/* Capture pixels shared by the agent's captures and recording thumbnails. */
+
+/** An RGBA8 copy of `rect_px` (x, y, width, height in captured pixels) of a
+ * capture, top row first, in vkr_heap memory the caller frees; NULL with a
+ * reason in `out_error` for an unsupported format or an empty rectangle. */
+uint8_t *vkr_editor_capture_rgba(const VkrCaptureItemResult *item, Vec4 rect_px,
+                                 uint32_t *out_width, uint32_t *out_height,
+                                 const char **out_error);
+
+/** The height vkr_editor_image_shrink gives a width-by-height image. */
+uint32_t vkr_editor_image_shrink_height(uint32_t width, uint32_t height,
+                                        uint32_t target_width);
+
+/** Box-filters RGBA8 `source` to `target_width` wide, its aspect kept, into
+ * `out` (target_width by vkr_editor_image_shrink_height pixels). */
+void vkr_editor_image_shrink(const uint8_t *source, uint32_t width,
+                             uint32_t height, uint32_t target_width,
+                             uint8_t *out);
+
+/** Writes RGBA8 pixels as a PNG file. */
+bool8_t vkr_editor_png_write(const char *path, const uint8_t *rgba,
+                             uint32_t width, uint32_t height);

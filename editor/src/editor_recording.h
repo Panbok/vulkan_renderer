@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/systems/vkr_resource_system.h"
 #include "vkr_sample_runtime.h"
 
 /*
@@ -10,6 +11,9 @@
 
 #define VKR_EDITOR_RECORDING_QUEUE 8u
 #define VKR_EDITOR_RECORDING_LIST_MAX 128u
+/* thumb.png in a bundle: the Scene a moment after the recording starts. */
+#define VKR_EDITOR_RECORDING_THUMB_FILE "thumb.png"
+#define VKR_EDITOR_RECORDING_THUMB_WIDTH 240u
 
 /* One bundle in the recording directory, from its summary.json. */
 typedef struct VkrEditorRecordingEntry {
@@ -24,6 +28,13 @@ typedef struct VkrEditorRecordingEntry {
   uint64_t lost;
   int64_t started_unix;
   bool8_t has_summary;
+  /* thumb.png as a UI texture, loaded when the card first shows; released
+     when the list is read again. */
+  VkrResourceHandleInfo thumb_request;
+  VkrTextureHandle thumb_texture;
+  uint32_t thumb_width;
+  uint32_t thumb_height;
+  bool8_t thumb_failed;
 } VkrEditorRecordingEntry;
 
 typedef struct VkrEditorRecording {
@@ -48,6 +59,15 @@ typedef struct VkrEditorRecording {
      press deletes it. */
   uint32_t delete_armed;
   float32_t scroll;
+  /* The thumbnail capture of the recording in progress: the bundle it
+     belongs to, the capture's token (its high bit keeps it apart from agent
+     captures), frames waited and attempts made. */
+  char thumb_bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t thumb_token;
+  uint64_t thumb_serial;
+  uint32_t thumb_wait;
+  uint32_t thumb_attempts;
+  bool8_t thumb_done;
 } VkrEditorRecording;
 
 struct VkrEditorUi;
@@ -86,6 +106,10 @@ bool8_t vkr_editor_recording_resolve(struct VkrEditorUi *editor,
 void vkr_editor_recording_window_build(struct VkrEditorUi *editor,
                                        const VkrSampleUiFrame *frame,
                                        VkrUiRect bounds);
+
+/** Releases the Library's thumbnail textures; call before the UI system
+ * shuts down. */
+void vkr_editor_recording_shutdown(struct VkrEditorUi *editor);
 
 /** The REC indicator and, in Playback, the playback bar over the Scene. */
 void vkr_editor_recording_overlays_build(struct VkrEditorUi *editor,

@@ -4,9 +4,11 @@
 #include "core/vkr_json.h"
 #include "editor_agent.h"
 #include "editor_internal.h"
+#include "editor_ops.h"
 #include "editor_projects.h"
 #include "editor_ui.h"
 #include "filesystem/filesystem.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 #include "vkr_depot_zstd.h"
 
@@ -56,12 +58,106 @@ editor_recording_report(VkrEditorUi *editor,
   }
 }
 
+/* Frames after a recording starts before its thumbnail capture, so the
+   Scene shows its first frames; and frames to wait for a capture. */
+#define EDITOR_RECORDING_THUMB_DELAY 10u
+#define EDITOR_RECORDING_THUMB_TIMEOUT 120u
+#define EDITOR_RECORDING_THUMB_TOKEN (1ull << 63u)
+
+/* Writes the captured Scene, shrunk to the thumbnail width, as thumb.png. */
+vkr_internal bool8_t editor_recording_thumb_write(
+    const VkrSampleUiFrame *frame, const VkrCaptureItemResult *item,
+    const char *bundle) {
+  const Vec4 rect = frame->mapping_valid
+                        ? frame->mapping.image_rect_px
+                        : vec4_new(0.0f, 0.0f, (float32_t)item->width,
+                                   (float32_t)item->height);
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  const char *error = NULL;
+  uint8_t *pixels =
+      vkr_editor_capture_rgba(item, rect, &width, &height, &error);
+  if (!pixels) {
+    return false_v;
+  }
+  /* Content's preview loader takes images up to 256 pixels a side. */
+  uint32_t target = Min(VKR_EDITOR_RECORDING_THUMB_WIDTH, width);
+  while (target > 16u &&
+         vkr_editor_image_shrink_height(width, height, target) > 240u) {
+    target -= 8u;
+  }
+  const uint32_t thumb_height =
+      vkr_editor_image_shrink_height(width, height, target);
+  uint8_t *thumb = vkr_heap_alloc((size_t)target * thumb_height * 4u);
+  bool8_t written = false_v;
+  if (thumb) {
+    vkr_editor_image_shrink(pixels, width, height, target, thumb);
+    char path[VKR_RECORDING_PATH_MAX];
+    string_format(path, sizeof(path), "%s/%s", bundle,
+                  VKR_EDITOR_RECORDING_THUMB_FILE);
+    written = vkr_editor_png_write(path, thumb, target, thumb_height);
+    vkr_heap_free(thumb);
+  }
+  vkr_heap_free(pixels);
+  return written;
+}
+
+/* One capture of the Scene shortly after a recording starts becomes its
+   thumbnail. An agent capture asked in the same frame wins; this one tries
+   again later, at most three times. */
+vkr_internal void editor_recording_thumbnail(VkrEditorRecording *recording,
+                                             const VkrSampleUiFrame *frame) {
+  const VkrSampleRecordingStatus *status = frame->recording;
+  if (!status || !status->recording) {
+    return;
+  }
+  if (!string_equals(recording->thumb_bundle, status->recording_path)) {
+    string_format(recording->thumb_bundle, sizeof(recording->thumb_bundle),
+                  "%s", status->recording_path);
+    recording->thumb_token = 0u;
+    recording->thumb_wait = 0u;
+    recording->thumb_attempts = 0u;
+    recording->thumb_done = false_v;
+  }
+  if (recording->thumb_done) {
+    return;
+  }
+  ++recording->thumb_wait;
+  const VkrSampleCaptureReady *ready = frame->capture_ready;
+  if (recording->thumb_token) {
+    if (ready && ready->token == recording->thumb_token) {
+      recording->thumb_done =
+          (!ready->failed && ready->item &&
+           editor_recording_thumb_write(frame, ready->item,
+                                        recording->thumb_bundle)) ||
+          ++recording->thumb_attempts >= 3u;
+      recording->thumb_token = 0u;
+      recording->thumb_wait = 0u;
+    } else if (recording->thumb_wait > EDITOR_RECORDING_THUMB_TIMEOUT) {
+      recording->thumb_token = 0u;
+      recording->thumb_wait = 0u;
+      recording->thumb_done = ++recording->thumb_attempts >= 3u;
+    }
+    return;
+  }
+  if (recording->thumb_wait >= EDITOR_RECORDING_THUMB_DELAY &&
+      frame->capture_request && !frame->capture_request->request &&
+      frame->mapping_valid && !frame->scene_rendering_stopped) {
+    recording->thumb_token =
+        EDITOR_RECORDING_THUMB_TOKEN | ++recording->thumb_serial;
+    recording->thumb_wait = 0u;
+    *frame->capture_request = (VkrSampleCaptureRequest){
+        .request = true_v, .token = recording->thumb_token};
+  }
+}
+
 void vkr_editor_recording_update(VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
   VkrEditorRecording *recording = &editor->recording;
   if (frame->recording) {
     editor_recording_report(editor, frame->recording);
   }
+  editor_recording_thumbnail(recording, frame);
   if (recording->queue_count == 0u || !frame->recording_request ||
       frame->recording_request->command != VKR_SAMPLE_RECORDING_NONE) {
     return;
@@ -280,6 +376,8 @@ vkr_internal Vec4 editor_recording_marker_color(uint32_t kind) {
     return theme->error;
   case VKR_RECORDING_MARKER_STEP:
     return theme->success;
+  case VKR_RECORDING_MARKER_EDIT:
+    return theme->warning;
   }
   return theme->info;
 }
@@ -594,8 +692,110 @@ vkr_internal bool8_t editor_recording_list_visit(void *context,
   return true_v;
 }
 
+/* The texture request path of an entry's thumbnail. */
+vkr_internal String8 editor_recording_thumb_path(
+    const VkrEditorRecording *recording, const VkrEditorRecordingEntry *entry,
+    char *out, uint64_t capacity) {
+  const int32_t length = string_format(
+      out, capacity, "%s/%s/%s?cs=srgb&source=only", recording->directory,
+      entry->bundle, VKR_EDITOR_RECORDING_THUMB_FILE);
+  return string8_create_from_cstr((const uint8_t *)out,
+                                  length > 0 ? (uint64_t)length : 0u);
+}
+
+vkr_internal void
+editor_recording_release_thumbs(VkrEditorRecording *recording) {
+  for (uint32_t i = 0u; i < recording->entry_count; ++i) {
+    VkrEditorRecordingEntry *entry = &recording->entries[i];
+    if (entry->thumb_request.request_id) {
+      char path[VKR_RECORDING_PATH_MAX + 64u];
+      vkr_resource_system_unload(
+          &entry->thumb_request,
+          editor_recording_thumb_path(recording, entry, path, sizeof(path)));
+    }
+    entry->thumb_request = (VkrResourceHandleInfo){0};
+    entry->thumb_texture = (VkrTextureHandle){0};
+  }
+}
+
+void vkr_editor_recording_shutdown(VkrEditorUi *editor) {
+  editor_recording_release_thumbs(&editor->recording);
+  editor->recording.entry_count = 0u;
+  editor->recording.listed = false_v;
+}
+
+/* Width and height from a PNG's header; false for anything else or a side
+   past the 256 pixels the preview loader takes. */
+vkr_internal bool8_t editor_recording_png_size(const char *path,
+                                               uint32_t *width,
+                                               uint32_t *height) {
+  static const uint8_t signature[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+  FileMapping mapping = {0};
+  const FilePath file = file_path_view(path);
+  if (file_map_readonly(&file, &mapping) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  const bool8_t valid = mapping.size >= 24u &&
+                        MemCompare(mapping.data, signature, 8u) == 0 &&
+                        MemCompare(mapping.data + 12u, "IHDR", 4u) == 0;
+  if (valid) {
+    const uint8_t *h = mapping.data;
+    *width = (uint32_t)h[16] << 24 | (uint32_t)h[17] << 16 |
+             (uint32_t)h[18] << 8 | h[19];
+    *height = (uint32_t)h[20] << 24 | (uint32_t)h[21] << 16 |
+              (uint32_t)h[22] << 8 | h[23];
+  }
+  file_unmap(&mapping);
+  return valid && *width > 0u && *height > 0u && *width <= 256u &&
+         *height <= 256u;
+}
+
+/* Starts or polls an entry's thumbnail texture; at most one new load per
+   frame, so opening the window never stalls on decoding. */
+vkr_internal void editor_recording_thumb_load(VkrEditorRecording *recording,
+                                              VkrEditorRecordingEntry *entry,
+                                              VkrUiSystem *ui,
+                                              bool8_t *load_budget) {
+  if (entry->thumb_failed || entry->thumb_texture.id) {
+    return;
+  }
+  if (entry->thumb_request.request_id) {
+    VkrResourceHandleInfo resolved = {0};
+    if (vkr_resource_system_try_get_resolved(&entry->thumb_request,
+                                             &resolved)) {
+      entry->thumb_texture = resolved.as.texture;
+      return;
+    }
+    VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+    const VkrResourceLoadState state =
+        vkr_resource_system_get_state(&entry->thumb_request, &error);
+    entry->thumb_failed = state == VKR_RESOURCE_LOAD_STATE_FAILED ||
+                          state == VKR_RESOURCE_LOAD_STATE_CANCELED;
+    return;
+  }
+  if (!*load_budget) {
+    return;
+  }
+  char file[VKR_RECORDING_PATH_MAX];
+  string_format(file, sizeof(file), "%s/%s/%s", recording->directory,
+                entry->bundle, VKR_EDITOR_RECORDING_THUMB_FILE);
+  if (!editor_recording_png_size(file, &entry->thumb_width,
+                                 &entry->thumb_height)) {
+    entry->thumb_failed = true_v;
+    return;
+  }
+  *load_budget = false_v;
+  char path[VKR_RECORDING_PATH_MAX + 64u];
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  entry->thumb_failed = !vkr_resource_system_load(
+      VKR_RESOURCE_TYPE_TEXTURE,
+      editor_recording_thumb_path(recording, entry, path, sizeof(path)),
+      ui->frame_allocator, &entry->thumb_request, &error);
+}
+
 vkr_internal void editor_recording_list(VkrEditorUi *editor) {
   VkrEditorRecording *recording = &editor->recording;
+  editor_recording_release_thumbs(recording);
   recording->entry_count = 0u;
   recording->delete_armed = 0u;
   recording->listed = true_v;
@@ -710,17 +910,20 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
 /* One card: name and status, the facts line, Watch, Copy prompt, Delete. */
 vkr_internal void editor_recording_card(VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame,
-                                        uint32_t index, bool8_t can_watch) {
+                                        uint32_t index, bool8_t can_watch,
+                                        bool8_t *load_budget) {
   VkrEditorRecording *recording = &editor->recording;
-  const VkrEditorRecordingEntry *entry = &recording->entries[index];
+  VkrEditorRecordingEntry *entry = &recording->entries[index];
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
-  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+  editor_recording_thumb_load(recording, entry, ui, load_budget);
+  const VkrUiTrack columns[] = {{.value = 84.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.value = 76.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX}};
-  const VkrUiTrack rows[] = {{.value = 20.0f, .unit = VKR_UI_TRACK_PX},
-                             {.value = 18.0f, .unit = VKR_UI_TRACK_PX}};
+  const VkrUiTrack rows[] = {{.value = 23.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 23.0f, .unit = VKR_UI_TRACK_PX}};
   VkrUiPanelConfig card = vkr_ui_panel_config_default();
   card.placement = editor_recording_cell(0u, index);
   card.placement.align = VKR_UI_ALIGN_STRETCH;
@@ -728,7 +931,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   card.column_count = ArrayCount(columns);
   card.rows = rows;
   card.row_count = ArrayCount(rows);
-  card.style.padding_pt = (VkrUiEdges){7.0f, 10.0f, 7.0f, 12.0f};
+  card.style.padding_pt = (VkrUiEdges){6.0f, 10.0f, 6.0f, 6.0f};
   card.style.gap_pt = theme->space_sm;
   card.style.background_color = theme->raised;
   card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
@@ -740,15 +943,40 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   if (!vkr_ui_panel_begin(ui, string8_lit("card"), &card)) {
     return;
   }
+  /* The thumbnail, or the film icon while it loads or when there is none. */
+  if (entry->thumb_texture.id) {
+    VkrUiWidgetConfig image = vkr_ui_widget_config_default();
+    image.placement = editor_recording_cell(0u, 0u);
+    image.placement.row_span = 2u;
+    image.placement.align = VKR_UI_ALIGN_STRETCH;
+    image.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+    vkr_ui_image(
+        ui, string8_lit("thumb"),
+        (VkrUiTextureRef){entry->thumb_texture.id,
+                          entry->thumb_texture.generation},
+        (Vec2){(float32_t)entry->thumb_width, (float32_t)entry->thumb_height},
+        &image);
+  } else {
+    VkrUiWidgetConfig picture = vkr_ui_widget_config_default();
+    picture.placement = editor_recording_cell(0u, 0u);
+    picture.placement.row_span = 2u;
+    picture.placement.justify = VKR_UI_ALIGN_CENTER;
+    picture.icon = VKR_UI_ICON_VIDEO;
+    picture.icon_size_pt = 22.0f;
+    picture.icon_color = theme->text_disabled;
+    vkr_ui_label(ui, string8_lit("thumb"), (String8){0}, &picture);
+  }
   const bool8_t complete = string_equals(entry->status, "complete");
   VkrUiWidgetConfig name =
       vkr_editor_text_config(theme->font_body, theme->text);
-  name.placement = editor_recording_cell(0u, 0u);
+  name.placement = editor_recording_cell(1u, 0u);
   name.placement.justify = VKR_UI_ALIGN_START;
   name.text.font = editor->heading_font;
-  name.icon = complete ? VKR_UI_ICON_VIDEO : VKR_UI_ICON_WARNING_FILL;
-  name.icon_size_pt = 13.0f;
-  name.icon_color = complete ? theme->text_secondary : theme->warning;
+  if (!complete) {
+    name.icon = VKR_UI_ICON_WARNING_FILL;
+    name.icon_size_pt = 13.0f;
+    name.icon_color = theme->warning;
+  }
   name.tooltip = string8_create_formatted(ui->frame_allocator, "%s/%s\n%s",
                                           recording->directory, entry->bundle,
                                           entry->status);
@@ -759,13 +987,13 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   VkrUiWidgetConfig meta = vkr_editor_text_config(
       theme->font_caption,
       entry->lost ? theme->warning : theme->text_secondary);
-  meta.placement = editor_recording_cell(0u, 1u);
+  meta.placement = editor_recording_cell(1u, 1u);
   meta.placement.justify = VKR_UI_ALIGN_START;
   vkr_ui_label(ui, string8_lit("meta"), editor_recording_meta(ui, entry),
                &meta);
 
   VkrUiWidgetConfig watch = vkr_ui_widget_config_default();
-  watch.placement = editor_recording_cell(1u, 0u);
+  watch.placement = editor_recording_cell(2u, 0u);
   watch.placement.row_span = 2u;
   vkr_editor_primary_style(&watch, editor->heading_font);
   watch.icon = VKR_UI_ICON_PLAY;
@@ -781,7 +1009,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
     (void)vkr_editor_recording_send(editor, request, true_v);
   }
   VkrUiWidgetConfig copy = vkr_editor_icon_button_config(
-      2u, 0u, VKR_UI_ICON_COPY,
+      3u, 0u, VKR_UI_ICON_COPY,
       string8_lit("Copy a prompt that points an agent at this recording"));
   copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
@@ -791,7 +1019,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   }
   const bool8_t armed = recording->delete_armed == index + 1u;
   VkrUiWidgetConfig remove = vkr_editor_icon_button_config(
-      3u, 0u, VKR_UI_ICON_TRASH,
+      4u, 0u, VKR_UI_ICON_TRASH,
       armed ? string8_lit("Click again to delete it from disk")
             : string8_lit("Delete this recording"));
   remove.placement.row_span = 2u;
@@ -917,7 +1145,7 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
   }
   VkrUiTrack card_rows[VKR_EDITOR_RECORDING_LIST_MAX];
   for (uint32_t i = 0u; i < recording->entry_count; ++i) {
-    card_rows[i] = (VkrUiTrack){.value = 58.0f, .unit = VKR_UI_TRACK_PX};
+    card_rows[i] = (VkrUiTrack){.value = 64.0f, .unit = VKR_UI_TRACK_PX};
   }
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
   list.placement = editor_recording_cell(0u, 1u);
@@ -930,10 +1158,11 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
   const bool8_t can_watch =
       !active && !frame->simulation_running && frame->recording_request != NULL;
   (void)bounds;
+  bool8_t load_budget = true_v;
   if (vkr_ui_scroll_area_begin(ui, string8_lit("cards"), &list)) {
     for (uint32_t i = 0u; i < recording->entry_count; ++i) {
       (void)vkr_ui_push_id_u64(ui, i);
-      editor_recording_card(editor, frame, i, can_watch);
+      editor_recording_card(editor, frame, i, can_watch, &load_budget);
       (void)vkr_ui_pop_id(ui);
     }
     (void)vkr_ui_scroll_area_end(ui);
