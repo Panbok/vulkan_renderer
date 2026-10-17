@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/vkr_recording_analysis.h"
+#include "assets/vkr_recording_annotations.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "vkr_sample_runtime.h"
@@ -32,6 +33,10 @@ typedef struct VkrEditorRecordingEntry {
   bool8_t has_summary;
   /* The recording holds actions and a player track to drive with. */
   bool8_t drivable;
+  /* From annotations.json. */
+  uint32_t notes;
+  uint32_t ranges;
+  VkrRecordingReview review;
   /* thumb.png as a UI texture, loaded when the card first shows; released
      when the list is read again. */
   VkrResourceHandleInfo thumb_request;
@@ -167,6 +172,23 @@ typedef struct VkrEditorRecordingRequests {
   uint32_t decline_length;
 } VkrEditorRecordingRequests;
 
+/* The annotations of one recording, cached while its playback is open or an
+   operation edits them, and the playback bar's note and range tools. */
+typedef struct VkrEditorRecordingNotes {
+  /* The bundle the cache holds; empty when none. */
+  char bundle[VKR_RECORDING_PATH_MAX];
+  VkrRecordingAnnotations annotations;
+  /* The note field above the playback bar, and whether it takes the
+     keyboard on its next build. */
+  bool8_t composing;
+  bool8_t focus;
+  char text[VKR_RECORDING_NOTE_TEXT_MAX];
+  uint64_t text_length;
+  /* A range being marked: its first frame, until a second press ends it. */
+  bool8_t marking;
+  uint64_t range_first;
+} VkrEditorRecordingNotes;
+
 typedef struct VkrEditorRecording {
   /* Requests waiting for a frame; the runtime takes one per frame. */
   VkrSampleRecordingRequest queue[VKR_EDITOR_RECORDING_QUEUE];
@@ -202,6 +224,9 @@ typedef struct VkrEditorRecording {
   uint8_t path_classes[VKR_EDITOR_RECORDING_PATH_POINTS];
   VkrUiId path_id;
   VkrEditorRecordingRequests requests;
+  VkrEditorRecordingNotes notes;
+  /* Reused while the list reads each bundle's annotations. */
+  VkrRecordingAnnotations list_annotations;
   /* One past the entry whose Delete was pressed once, or zero; a second
      press deletes it. */
   uint32_t delete_armed;
@@ -310,8 +335,60 @@ void vkr_editor_recording_requests_update(struct VkrEditorUi *editor,
 bool8_t vkr_editor_recording_requests_build(struct VkrEditorUi *editor,
                                             const VkrSampleUiFrame *frame,
                                             uint32_t row, float32_t width_pt);
-/** Points the Requests section takes; zero when it shows nothing. */
-float32_t vkr_editor_recording_requests_height(struct VkrEditorUi *editor);
+/** The newest recording that can be analyzed, reading the directory if the
+ * Recordings window has not; NULL when there is none. The pointer lives
+ * until the list is read again. */
+const VkrEditorRecordingEntry *
+vkr_editor_recording_newest(struct VkrEditorUi *editor);
+
+/* ---- Annotations (editor_recording_annotations.c) ---- */
+
+/** The annotations of the bundle at `bundle_path`, read into the cache when
+ * it holds another bundle; NULL with the reason in `error` when the file is
+ * damaged. The pointer lives until another bundle is read. */
+VkrRecordingAnnotations *
+vkr_editor_recording_annotations(struct VkrEditorUi *editor,
+                                 const char *bundle_path, char *error,
+                                 uint64_t error_capacity);
+/** Writes the cached annotations and updates the bundle's card. */
+bool8_t vkr_editor_recording_annotations_save(struct VkrEditorUi *editor);
+/** Frames of the recording at `bundle_path`: the open playback's, else its
+ * summary.json's; zero when unknown. */
+uint64_t vkr_editor_recording_frame_count(const VkrSampleUiFrame *frame,
+                                          const char *bundle_path);
+/** The playback bar's tools: open or close the note field, mark a range's
+ * first or last frame at the playhead, and set the review state, flagging it
+ * when `flag`. */
+void vkr_editor_recording_note_toggle(struct VkrEditorUi *editor);
+void vkr_editor_recording_range_mark(struct VkrEditorUi *editor,
+                                     const VkrRecordingPlayback *playback);
+void vkr_editor_recording_review_toggle(struct VkrEditorUi *editor,
+                                        const VkrRecordingPlayback *playback,
+                                        bool8_t flag);
+/** The open playback's ranges and notes on the playback bar's track, whose
+ * pixel rectangle is `slider_px`. */
+void vkr_editor_recording_annotations_track(
+    struct VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+    const VkrRecordingPlayback *playback, VkrUiRect slider_px);
+/** The note field over the playback bar, whose top-left corner and width
+ * are `bar_pt`; it adds the note at the playhead on Enter or Add. */
+void vkr_editor_recording_composer_build(struct VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrRecordingPlayback *playback,
+                                         Vec3 bar_pt);
+/** Puts a prompt on the clipboard that points an agent at the recording:
+ * its facts, markers, notes, ranges, review, the request it answers and
+ * the playhead when it is open. */
+void vkr_editor_recording_copy_prompt(struct VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      const VkrEditorRecordingEntry *entry);
+/** Fills the entry's note and range counts and review state. */
+void vkr_editor_recording_entry_annotations(struct VkrEditorUi *editor,
+                                            const char *bundle_path,
+                                            VkrEditorRecordingEntry *entry);
+/** Requests the Requests section shows: pending ones and the one
+ * recording. */
+uint32_t vkr_editor_recording_requests_shown(struct VkrEditorUi *editor);
 /** The active request's question and steps over the Scene. */
 void vkr_editor_recording_request_overlay_build(struct VkrEditorUi *editor,
                                                 const VkrSampleUiFrame *frame);

@@ -134,6 +134,9 @@ void vkr_editor_field_style(VkrUiWidgetConfig *config);
 void vkr_editor_action_style(VkrUiWidgetConfig *config, VkrFontHandle heading);
 void vkr_editor_primary_style(VkrUiWidgetConfig *config, VkrFontHandle heading);
 void vkr_editor_ghost_style(VkrUiWidgetConfig *config);
+/* The *_style helpers colour a button; this sizes a text button to the
+   editor's action height with room either side of its icon and label. */
+void vkr_editor_button_size(VkrUiWidgetConfig *config);
 void vkr_editor_toggle_style(VkrUiWidgetConfig *config, bool8_t active);
 VkrUiWidgetConfig vkr_editor_icon_button_config(uint32_t column, uint32_t row,
                                                 VkrUiIcon icon,

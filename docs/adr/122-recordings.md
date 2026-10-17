@@ -134,6 +134,23 @@ an agent must read one without the editor.
   `rec.request.wait` holds until the request is recorded, declined,
   cancelled or expired, or a timeout passes
   ([editor_recording_requests.c](../../editor/src/editor_recording_requests.c)).
+- **Annotations (R4).** A bundle's `annotations.json` (kind
+  `vkr.recording.annotations`) holds notes on frames (at most 64), named
+  frame ranges (at most 32) and a review state: unreviewed, reviewed or
+  flagged, with who set it. It is rewritten whole on every change, so the
+  stream and `summary.json` never change after the recording stops; a bundle
+  without it has none
+  ([vkr_recording_annotations.h](../../runtime/src/assets/vkr_recording_annotations.h)).
+  Agents read it with `rec.annotations` and change it with `rec.note`,
+  `rec.range` and `rec.review`, which take the open recording when they name
+  none; `rec.list` and `vkr_rec summary` report it. The playback bar adds a
+  note at the playhead from a field above it, marks a range with two presses
+  of Range, and toggles the review (Shift flags it); notes show as squares
+  and ranges as outlined spans on its track, and a card shows the note count
+  and the review. Copy agent prompt puts the recording's facts, its first
+  markers, notes and ranges, the review, the request it answers and the
+  playhead on the clipboard
+  ([editor_recording_annotations.c](../../editor/src/editor_recording_annotations.c)).
 - **Gameplay records (R3).** SDK version 12 adds `vkr_rec_player`,
   `vkr_rec_tag`, `vkr_rec_event` and `vkr_rec_action`
   ([sdk.h](../../sdk/sdk.h)). They write

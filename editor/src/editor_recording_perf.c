@@ -550,8 +550,9 @@ vkr_internal void perf_cards(VkrEditorUi *editor, VkrUiSystem *ui,
                                      analysis->low_1pct_ms),
             theme->text);
   perf_card(editor, ui, 5u, "over 16.7 ms",
-            string8_create_formatted(ui->frame_allocator, "%llu frames",
-                                     (unsigned long long)analysis->over_budget),
+            string8_create_formatted(ui->frame_allocator, "%llu frame%s",
+                                     (unsigned long long)analysis->over_budget,
+                                     analysis->over_budget == 1u ? "" : "s"),
             analysis->over_budget ? theme->warning : theme->text);
   perf_card(editor, ui, 6u, "RAM peak / avg",
             perf_gb(ui, &perf->data, analysis, "process.resident_bytes"),
@@ -892,11 +893,15 @@ vkr_internal float64_t perf_pass_sum(const VkrEditorRecordingPerf *perf,
 vkr_internal String8 perf_pass_text(VkrUiSystem *ui,
                                     const VkrEditorRecordingPerf *perf,
                                     const VkrRecordingPassStats *stats,
-                                    float64_t all_ms, bool8_t at_valid,
-                                    float32_t at_ms) {
+                                    float64_t all_ms, bool8_t has_at,
+                                    bool8_t at_valid, float32_t at_ms) {
   const VkrRecordingStats *shown = perf->pass_gpu ? &stats->gpu : &stats->cpu;
-  char at[16] = "      -";
-  if (at_valid) {
+  /* The frame column shows only while a frame is chosen. */
+  char at[16] = "";
+  if (has_at) {
+    string_format(at, sizeof(at), "%7s", "-");
+  }
+  if (has_at && at_valid) {
     string_format(at, sizeof(at), "%7.2f", at_ms);
   }
   if (shown->valid == 0u) {
@@ -965,9 +970,10 @@ vkr_internal void perf_pass_table(VkrEditorUi *editor,
   if (!vkr_ui_scroll_area_begin(ui, string8_lit("passes"), &list)) {
     return;
   }
-  char at_title[24] = "  @frame";
+  /* The last column: the frame at the playhead, or the selected one. */
+  char at_title[24] = "";
   if (at != UINT64_MAX) {
-    string_format(at_title, sizeof(at_title), "  @%llu",
+    string_format(at_title, sizeof(at_title), "  at %llu",
                   (unsigned long long)at);
   }
   VkrUiWidgetConfig header =
@@ -1005,7 +1011,7 @@ vkr_internal void perf_pass_table(VkrEditorUi *editor,
                        : string8_lit("Show only this pass in the chart");
     (void)vkr_ui_push_id_u64(ui, stats->pass);
     if (vkr_ui_button(ui, string8_lit("pass"),
-                      perf_pass_text(ui, perf, stats, all_ms,
+                      perf_pass_text(ui, perf, stats, all_ms, at != UINT64_MAX,
                                      at_valid[stats->pass], at_ms[stats->pass]),
                       &line)) {
       perf->pass_focus =
@@ -1107,12 +1113,16 @@ vkr_internal String8 perf_spike_text(VkrUiSystem *ui,
       break;
     }
   }
+  /* Columns as PERF_SPIKE_HEADER names them. */
   return string8_create_formatted(
-      ui->frame_allocator,
-      "#%-3u frame %-7llu %8.2f s %8.2f ms  x%-5.1f %s%s%s%s", index + 1u,
-      (unsigned long long)spike->frame, spike->time, spike->frame_ms,
-      spike->ratio, cause, pass, marker[0] ? "  \xe2\x9a\x91 " : "", marker);
+      ui->frame_allocator, "#%-3u %7llu %8.2f %8.2f %6.1fx  %s%s%s%s",
+      index + 1u, (unsigned long long)spike->frame, spike->time,
+      spike->frame_ms, spike->ratio, cause, pass, marker[0] ? "  near " : "",
+      marker);
 }
+
+/* The spike list's header, column for column with perf_spike_text. */
+#define PERF_SPIKE_HEADER "#      frame   time s       ms   ratio  cause"
 
 vkr_internal void perf_spikes(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame, uint32_t column) {
@@ -1129,11 +1139,12 @@ vkr_internal void perf_spikes(VkrEditorUi *editor,
                  (unsigned long long)analysis->spikes_found),
              perf_cell(column, 0u), false_v);
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  VkrUiTrack rows[VKR_RECORDING_ANALYSIS_SPIKE_MAX];
+  VkrUiTrack rows[VKR_RECORDING_ANALYSIS_SPIKE_MAX + 1u];
   const uint32_t count =
       Min(analysis->spike_count, (uint32_t)VKR_RECORDING_ANALYSIS_SPIKE_MAX);
-  for (uint32_t i = 0u; i < count; ++i) {
-    rows[i] = (VkrUiTrack){.value = 22.0f, .unit = VKR_UI_TRACK_PX};
+  /* The header row, then a row per spike, as tall as the pass table's. */
+  for (uint32_t i = 0u; i <= count; ++i) {
+    rows[i] = (VkrUiTrack){.value = 20.0f, .unit = VKR_UI_TRACK_PX};
   }
   if (count == 0u) {
     perf_caption(ui, "spikes.none",
@@ -1143,15 +1154,23 @@ vkr_internal void perf_spikes(VkrEditorUi *editor,
     return;
   }
   VkrUiPanelConfig list =
-      perf_grid(perf_cell(column, 1u), &fill, 1u, rows, count);
-  list.style.gap_pt = 2.0f;
+      perf_grid(perf_cell(column, 1u), &fill, 1u, rows, count + 1u);
+  list.style.gap_pt = 1.0f;
   if (!vkr_ui_scroll_area_begin(ui, string8_lit("spikes"), &list)) {
     return;
   }
+  VkrUiWidgetConfig header =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  header.placement = perf_cell(0u, 0u);
+  header.placement.justify = VKR_UI_ALIGN_START;
+  header.style.padding_pt = (VkrUiEdges){0.0f, 8.0f, 0.0f, 8.0f};
+  header.text.font = editor->mono_font;
+  vkr_ui_label(ui, string8_lit("header"), string8_lit(PERF_SPIKE_HEADER),
+               &header);
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrRecordingSpike *spike = &analysis->spikes[i];
     VkrUiWidgetConfig line = vkr_ui_widget_config_default();
-    line.placement = perf_cell(0u, i);
+    line.placement = perf_cell(0u, i + 1u);
     vkr_editor_ghost_style(&line);
     line.style.font_size_pt = theme->font_caption;
     line.style.padding_pt = (VkrUiEdges){2.0f, 8.0f, 2.0f, 8.0f};
@@ -1173,6 +1192,82 @@ vkr_internal void perf_spikes(VkrEditorUi *editor,
   (void)vkr_ui_scroll_area_end(ui);
 }
 
+/* Nothing analyzed yet: what the window shows and a way to fill it, in the
+   middle of the window. */
+vkr_internal void perf_empty(VkrEditorUi *editor,
+                             const VkrSampleUiFrame *frame) {
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrEditorRecordingEntry *newest = vkr_editor_recording_newest(editor);
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  const VkrUiTrack rows[] = {auto_track, auto_track, auto_track, auto_track};
+  VkrUiPanelConfig body = perf_grid(perf_cell(0u, 0u), &fill, 1u, &fill, 1u);
+  if (!vkr_ui_panel_begin(ui, string8_lit("perf.empty"), &body)) {
+    return;
+  }
+  VkrUiPanelConfig stack =
+      perf_grid(perf_cell(0u, 0u), &auto_track, 1u, rows, ArrayCount(rows));
+  stack.placement.justify = stack.placement.align = VKR_UI_ALIGN_CENTER;
+  stack.style.gap_pt = theme->space_md;
+  if (vkr_ui_panel_begin(ui, string8_lit("stack"), &stack)) {
+    VkrUiWidgetConfig icon = vkr_ui_widget_config_default();
+    icon.placement = perf_cell(0u, 0u);
+    icon.placement.justify = VKR_UI_ALIGN_CENTER;
+    icon.icon = VKR_UI_ICON_CHART_BAR;
+    icon.icon_size_pt = 32.0f;
+    icon.icon_color = theme->text_disabled;
+    vkr_ui_label(ui, string8_lit("icon"), (String8){0}, &icon);
+    VkrUiWidgetConfig title =
+        vkr_editor_text_config(theme->font_body, theme->text);
+    title.placement = perf_cell(0u, 1u);
+    title.placement.justify = VKR_UI_ALIGN_CENTER;
+    title.text.font = editor->heading_font;
+    vkr_ui_label(ui, string8_lit("title"), string8_lit("No recording analyzed"),
+                 &title);
+    VkrUiWidgetConfig text =
+        vkr_editor_text_config(theme->font_body, theme->text_secondary);
+    text.placement = perf_cell(0u, 2u);
+    text.placement.justify = VKR_UI_ALIGN_CENTER;
+    text.text.layout.word_wrap = true_v;
+    text.text.layout.max_width = 360.0f;
+    text.text.layout.anchor.horizontal = VKR_TEXT_ALIGN_CENTER;
+    vkr_ui_label(ui, string8_lit("text"),
+                 string8_lit("Frame times, spikes, CPU stages and GPU passes "
+                             "of a recording show here. Analyze one from its "
+                             "card in Recordings or from the playback bar."),
+                 &text);
+    VkrUiWidgetConfig analyze = vkr_ui_widget_config_default();
+    analyze.placement = perf_cell(0u, 3u);
+    analyze.placement.justify = VKR_UI_ALIGN_CENTER;
+    analyze.style.margin_pt.top = theme->space_sm;
+    vkr_editor_primary_style(&analyze, editor->heading_font);
+    analyze.icon = VKR_UI_ICON_CHART_BAR;
+    vkr_editor_button_size(&analyze);
+    analyze.disabled = newest == NULL;
+    analyze.tooltip = newest ? string8_lit("Analyze the newest recording")
+                             : string8_lit("Record something first");
+    if (vkr_ui_button(ui, string8_lit("analyze"),
+                      newest
+                          ? string8_create_formatted(ui->frame_allocator,
+                                                     "Analyze %s", newest->name)
+                          : string8_lit("No recordings yet"),
+                      &analyze) &&
+        newest) {
+      char error[160];
+      char path[VKR_RECORDING_PATH_MAX];
+      string_format(path, sizeof(path), "%s/%s", editor->recording.directory,
+                    newest->bundle);
+      if (!vkr_editor_recording_analyze(editor, path, error, sizeof(error))) {
+        vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                         error);
+      }
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
 void vkr_editor_recording_perf_build(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds) {
@@ -1182,20 +1277,7 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   if (!perf->loaded) {
-    VkrUiPanelConfig body = perf_grid(perf_cell(0u, 0u), &fill, 1u, &fill, 1u);
-    body.style.padding_pt = (VkrUiEdges){12.0f, 14.0f, 12.0f, 14.0f};
-    if (vkr_ui_panel_begin(ui, string8_lit("perf.empty"), &body)) {
-      VkrUiWidgetConfig text =
-          vkr_editor_text_config(theme->font_body, theme->text_secondary);
-      text.placement = perf_cell(0u, 0u);
-      text.placement.align = VKR_UI_ALIGN_START;
-      text.text.layout.word_wrap = true_v;
-      vkr_ui_label(ui, string8_lit("text"),
-                   string8_lit("Choose Analyze on a recording in the "
-                               "Recordings window or the playback bar."),
-                   &text);
-      (void)vkr_ui_panel_end(ui);
-    }
+    perf_empty(editor, frame);
     return;
   }
   const VkrUiTrack title = {.value = 18.0f, .unit = VKR_UI_TRACK_PX};

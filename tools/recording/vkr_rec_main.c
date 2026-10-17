@@ -30,6 +30,7 @@
  * are valid, 1 for an unreadable or damaged recording or a usage error.
  */
 #include "assets/vkr_recording_analysis.h"
+#include "assets/vkr_recording_annotations.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/str.h"
 #include "core/vkr_json_writer.h"
@@ -301,6 +302,60 @@ static void rec_write_analysis(VkrJsonWriter *json, const char *path) {
   vkr_recording_data_free(&data);
 }
 
+/* The bundle's annotations.json, or null when the bundle has none or it
+   cannot be read; `path` is the bundle or its stream file. */
+static void rec_write_annotations(VkrJsonWriter *json, const char *path) {
+  char bundle[VKR_RECORDING_ANNOTATIONS_PATH_MAX];
+  string_format(bundle, sizeof(bundle), "%s", path);
+  const uint64_t length = string_length(bundle);
+  const uint64_t stream = sizeof("/stream.vkrs") - 1u;
+  if (length > stream &&
+      string_equals(bundle + length - stream, "/stream.vkrs")) {
+    bundle[length - stream] = '\0';
+  }
+  vkr_json_writer_name(json, rec_str("annotations"));
+  static VkrRecordingAnnotations annotations;
+  if (!vkr_recording_annotations_read(bundle, &annotations)) {
+    vkr_json_writer_null(json);
+    return;
+  }
+  vkr_json_writer_begin_object(json);
+  vkr_json_writer_name(json, rec_str("review"));
+  vkr_json_writer_string(
+      json, rec_str(vkr_recording_review_name(annotations.review)));
+  vkr_json_writer_name(json, rec_str("review_by"));
+  vkr_json_writer_string(json, rec_str(annotations.review_by));
+  vkr_json_writer_name(json, rec_str("notes"));
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < annotations.note_count; ++i) {
+    const VkrRecordingNote *note = &annotations.notes[i];
+    vkr_json_writer_begin_object(json);
+    vkr_json_writer_name(json, rec_str("frame"));
+    vkr_json_writer_u64(json, note->frame);
+    vkr_json_writer_name(json, rec_str("author"));
+    vkr_json_writer_string(json, rec_str(note->author));
+    vkr_json_writer_name(json, rec_str("text"));
+    vkr_json_writer_string(json, rec_str(note->text));
+    vkr_json_writer_end_object(json);
+  }
+  vkr_json_writer_end_array(json);
+  vkr_json_writer_name(json, rec_str("ranges"));
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < annotations.range_count; ++i) {
+    const VkrRecordingRange *range = &annotations.ranges[i];
+    vkr_json_writer_begin_object(json);
+    vkr_json_writer_name(json, rec_str("first"));
+    vkr_json_writer_u64(json, range->first);
+    vkr_json_writer_name(json, rec_str("last"));
+    vkr_json_writer_u64(json, range->last);
+    vkr_json_writer_name(json, rec_str("label"));
+    vkr_json_writer_string(json, rec_str(range->name));
+    vkr_json_writer_end_object(json);
+  }
+  vkr_json_writer_end_array(json);
+  vkr_json_writer_end_object(json);
+}
+
 static RecExit rec_status(const VkrRecordingReader *reader,
                           const RecScan *scan) {
   if (scan->bad_chunks > 0u || !scan->has_dictionary ||
@@ -371,6 +426,7 @@ static int rec_report(const char *path, bool8_t verbose) {
     if (rec_has_stream(&scan, "metrics")) {
       rec_write_analysis(&json, path);
     }
+    rec_write_annotations(&json, path);
   }
   vkr_json_writer_end_object(&json);
   vkr_json_writer_complete(&json);

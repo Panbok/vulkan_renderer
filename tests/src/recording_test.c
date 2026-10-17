@@ -1,6 +1,7 @@
 #include "recording_test.h"
 
 #include "assets/vkr_recording_analysis.h"
+#include "assets/vkr_recording_annotations.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/vkr_spsc_ring.h"
 #include "core/vkr_threads.h"
@@ -1220,6 +1221,110 @@ static void test_recording_drive(void) {
   printf("  test_recording_drive PASSED\n");
 }
 
+/* Detects: notes or ranges out of order after an add, a note lost or
+   reordered on its frame, escapes (quotes, newlines, UTF-8) damaged by the
+   write and read, a cut inside a UTF-8 sequence, a reversed range kept
+   reversed, a missing file read as an error, and a foreign file read as
+   annotations. */
+static void test_recording_annotations(void) {
+  printf("  Running test_recording_annotations...\n");
+  char path[1024];
+  recording_test_path("annotations", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const FilePath bundle = file_path_view(path);
+  assert(file_create_directory(&bundle));
+
+  static VkrRecordingAnnotations written;
+  static VkrRecordingAnnotations read;
+  assert(vkr_recording_annotations_read(path, &read));
+  assert(read.note_count == 0u && read.range_count == 0u &&
+         read.review == VKR_RECORDING_REVIEW_UNREVIEWED);
+
+  MemZero(&written, sizeof(written));
+  const char *quoted = "first \"quoted\"\nline \xc3\xa9 \xe2\x9c\x93";
+  assert(vkr_recording_annotations_add_note(&written, 30u, "user",
+                                            string8_lit("second")));
+  assert(vkr_recording_annotations_add_note(
+      &written, 10u, "agent",
+      string8_create_from_cstr((const uint8_t *)quoted, strlen(quoted))));
+  assert(vkr_recording_annotations_add_note(&written, 30u, "user",
+                                            string8_lit("third")));
+  assert(
+      !vkr_recording_annotations_add_note(&written, 40u, "user", (String8){0}));
+  /* 254 ASCII bytes and a two-byte character: the cut at 255 bytes falls
+     inside the character and backs up before it. */
+  char long_text[257];
+  MemSet(long_text, 'a', 254u);
+  long_text[254] = (char)0xc3;
+  long_text[255] = (char)0xa9;
+  long_text[256] = '\0';
+  assert(vkr_recording_annotations_add_note(
+      &written, 5u, "user",
+      string8_create_from_cstr((const uint8_t *)long_text, 256u)));
+  assert(vkr_recording_annotations_add_range(&written, 50u, 20u, "agent",
+                                             string8_lit("Hitch")));
+  assert(vkr_recording_annotations_add_range(&written, 5u, 6u, "user",
+                                             string8_lit("Start")));
+  vkr_recording_annotations_set_review(&written, VKR_RECORDING_REVIEW_FLAGGED,
+                                       "agent");
+  assert(written.notes[0].frame == 5u && written.notes[1].frame == 10u);
+  assert(strcmp(written.notes[2].text, "second") == 0 &&
+         strcmp(written.notes[3].text, "third") == 0);
+  assert(strlen(written.notes[0].text) == 254u);
+  assert(written.ranges[0].first == 5u && written.ranges[1].first == 20u &&
+         written.ranges[1].last == 50u);
+
+  assert(vkr_recording_annotations_write(path, &written));
+  assert(vkr_recording_annotations_read(path, &read));
+  assert(read.note_count == 4u && read.range_count == 2u);
+  for (uint32_t i = 0u; i < read.note_count; ++i) {
+    assert(read.notes[i].frame == written.notes[i].frame);
+    assert(read.notes[i].created == written.notes[i].created);
+    assert(strcmp(read.notes[i].author, written.notes[i].author) == 0);
+    assert(strcmp(read.notes[i].text, written.notes[i].text) == 0);
+  }
+  assert(strcmp(read.notes[1].text, quoted) == 0);
+  for (uint32_t i = 0u; i < read.range_count; ++i) {
+    assert(read.ranges[i].first == written.ranges[i].first &&
+           read.ranges[i].last == written.ranges[i].last);
+    assert(strcmp(read.ranges[i].name, written.ranges[i].name) == 0);
+    assert(strcmp(read.ranges[i].author, written.ranges[i].author) == 0);
+  }
+  assert(read.review == VKR_RECORDING_REVIEW_FLAGGED &&
+         strcmp(read.review_by, "agent") == 0 &&
+         read.review_at == written.review_at);
+
+  vkr_recording_annotations_remove_note(&read, 1u);
+  vkr_recording_annotations_remove_range(&read, 0u);
+  assert(read.note_count == 3u && read.notes[1].frame == 30u);
+  assert(read.range_count == 1u && strcmp(read.ranges[0].name, "Hitch") == 0);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path,
+                VKR_RECORDING_ANNOTATIONS_FILE);
+  {
+    const FilePath foreign = file_path_view(file);
+    FileHandle handle = {0};
+    FileMode mode = bitset8_create();
+    bitset8_set(&mode, FILE_MODE_WRITE_TRUNCATE);
+    bitset8_set(&mode, FILE_MODE_CREATE);
+    assert(file_open(&foreign, mode, &handle) == FILE_ERROR_NONE);
+    const char *other = "{\"kind\":\"vkr.recording.request\"}";
+    uint64_t wrote = 0u;
+    assert(file_write(&handle, strlen(other), (const uint8_t *)other, &wrote) ==
+           FILE_ERROR_NONE);
+    file_close(&handle);
+  }
+  assert(!vkr_recording_annotations_read(path, &read));
+  assert(read.note_count == 0u);
+
+  recording_test_remove(file);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  printf("  test_recording_annotations PASSED\n");
+}
+
 bool32_t run_recording_tests(void) {
   printf("--- Starting Recording Tests ---\n");
   test_spsc_ring_wrap_and_full();
@@ -1232,6 +1337,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pose_playback();
   test_recording_player_records();
   test_recording_drive();
+  test_recording_annotations();
   printf("--- Recording Tests Completed ---\n");
   return true_v;
 }

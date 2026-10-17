@@ -15142,6 +15142,262 @@ static VkrEditorOpStatus ops_run_rec_request_wait(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* ---- Recording annotations ---- */
+
+/* The bundle an annotation op names with 'name', or the open playback's;
+   false after failing the call. */
+static bool8_t ops_recording_bundle(OpsContext *ctx, char *out,
+                                    uint64_t capacity, uint64_t *out_frames) {
+  char name[VKR_RECORDING_PATH_MAX] = {0};
+  if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name))) {
+    return false_v;
+  }
+  const VkrRecordingPlayback *playback =
+      ctx->frame->recording ? ctx->frame->recording->playback : NULL;
+  if (name[0]) {
+    if (!vkr_editor_recording_resolve(ctx->editor, name, out, capacity)) {
+      return ops_fail(ctx, OPS_INVALID, "No recording named '%s'", name);
+    }
+  } else if (playback) {
+    string_format(out, capacity, "%s", playback->bundle_path);
+  } else {
+    return ops_fail(ctx, OPS_INVALID,
+                    "Name a recording, or open one with rec.open");
+  }
+  *out_frames = vkr_editor_recording_frame_count(ctx->frame, out);
+  if (*out_frames == 0u) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' is not a recording with a summary",
+                    out);
+  }
+  return true_v;
+}
+
+/* The bundle's cached annotations; false after failing the call. */
+static VkrRecordingAnnotations *ops_recording_annotations(OpsContext *ctx,
+                                                          const char *bundle) {
+  char error[192];
+  VkrRecordingAnnotations *annotations = vkr_editor_recording_annotations(
+      ctx->editor, bundle, error, sizeof(error));
+  if (!annotations) {
+    ops_fail(ctx, OPS_REJECTED, "%s", error);
+  }
+  return annotations;
+}
+
+static VkrBakeryJson *
+ops_recording_annotations_json(OpsContext *ctx,
+                               const VkrRecordingAnnotations *a) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *object = vkr_bakery_json_object(arena);
+  VkrBakeryJson *review = vkr_bakery_json_object(arena);
+  ops_set(ctx, review, "state",
+          vkr_bakery_json_cstr(arena, vkr_recording_review_name(a->review)));
+  ops_set(ctx, review, "by", vkr_bakery_json_cstr(arena, a->review_by));
+  ops_set(ctx, review, "at", vkr_bakery_json_int(arena, a->review_at));
+  ops_set(ctx, object, "review", review);
+  VkrBakeryJson *notes = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < a->note_count; ++i) {
+    VkrBakeryJson *note = vkr_bakery_json_object(arena);
+    ops_set(ctx, note, "index", vkr_bakery_json_int(arena, i));
+    ops_set(ctx, note, "frame",
+            vkr_bakery_json_int(arena, (int64_t)a->notes[i].frame));
+    ops_set(ctx, note, "author",
+            vkr_bakery_json_cstr(arena, a->notes[i].author));
+    ops_set(ctx, note, "text", vkr_bakery_json_cstr(arena, a->notes[i].text));
+    vkr_bakery_json_append(notes, note);
+  }
+  ops_set(ctx, object, "notes", notes);
+  VkrBakeryJson *ranges = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < a->range_count; ++i) {
+    VkrBakeryJson *range = vkr_bakery_json_object(arena);
+    ops_set(ctx, range, "index", vkr_bakery_json_int(arena, i));
+    ops_set(ctx, range, "first",
+            vkr_bakery_json_int(arena, (int64_t)a->ranges[i].first));
+    ops_set(ctx, range, "last",
+            vkr_bakery_json_int(arena, (int64_t)a->ranges[i].last));
+    ops_set(ctx, range, "label",
+            vkr_bakery_json_cstr(arena, a->ranges[i].name));
+    ops_set(ctx, range, "author",
+            vkr_bakery_json_cstr(arena, a->ranges[i].author));
+    vkr_bakery_json_append(ranges, range);
+  }
+  ops_set(ctx, object, "ranges", ranges);
+  return object;
+}
+
+/* Writes the changed annotations and answers with all of them. */
+static VkrEditorOpStatus
+ops_recording_annotations_done(OpsContext *ctx,
+                               const VkrRecordingAnnotations *annotations) {
+  if (!vkr_editor_recording_annotations_save(ctx->editor)) {
+    ops_fail(ctx, OPS_REJECTED, "The annotations could not be written");
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = ops_recording_annotations_json(ctx, annotations);
+  return VKR_EDITOR_OP_DONE;
+}
+
+static const char *ops_author(const OpsContext *ctx) {
+  return ctx->call->author[0] ? ctx->call->author : "agent";
+}
+
+/* An optional non-negative integer argument; false after failing the call
+   when it is present but not one. */
+static bool8_t ops_arg_index(OpsContext *ctx, const char *key, uint64_t *out,
+                             bool8_t *present) {
+  float64_t value = 0.0;
+  *present = vkr_bakery_json_get(ctx->call->args, key) != NULL;
+  if (!*present) {
+    return true_v;
+  }
+  if (!ops_arg_number(ctx->call->args, key, &value) || value < 0.0 ||
+      value != (float64_t)(uint64_t)value) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' must be a whole number", key);
+  }
+  *out = (uint64_t)value;
+  return true_v;
+}
+
+static VkrEditorOpStatus ops_run_rec_annotations(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrRecordingAnnotations *annotations =
+      ops_recording_annotations(ctx, bundle);
+  if (annotations) {
+    ctx->call->result = ops_recording_annotations_json(ctx, annotations);
+    ops_set(ctx, ctx->call->result, "frames",
+            vkr_bakery_json_int(ops_arena(ctx), (int64_t)frames));
+  }
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_rec_note(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  uint64_t frame = 0u;
+  uint64_t remove = 0u;
+  bool8_t has_frame = false_v;
+  bool8_t removing = false_v;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_arg_index(ctx, "frame", &frame, &has_frame) ||
+      !ops_arg_index(ctx, "remove", &remove, &removing)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrRecordingAnnotations *annotations = ops_recording_annotations(ctx, bundle);
+  if (!annotations) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (removing) {
+    if (remove >= annotations->note_count) {
+      ops_fail(ctx, OPS_INVALID, "No note %llu", (unsigned long long)remove);
+      return VKR_EDITOR_OP_DONE;
+    }
+    vkr_recording_annotations_remove_note(annotations, (uint32_t)remove);
+    return ops_recording_annotations_done(ctx, annotations);
+  }
+  const VkrRecordingPlayback *playback =
+      ctx->frame->recording ? ctx->frame->recording->playback : NULL;
+  if (!has_frame) {
+    if (!playback || !string_equals(playback->bundle_path, bundle)) {
+      ops_fail(ctx, OPS_INVALID,
+               "Give the note a 'frame', or open the recording to note the "
+               "playhead's");
+      return VKR_EDITOR_OP_DONE;
+    }
+    frame = vkr_recording_playback_frame_at(playback, playback->time);
+  }
+  String8 text = {0};
+  if (!vkr_bakery_json_get_string(ctx->call->args, "text", &text) ||
+      text.length == 0u) {
+    ops_fail(ctx, OPS_INVALID, "'text' must be the note's words");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (frame >= frames) {
+    ops_fail(ctx, OPS_INVALID, "Frame %llu is past the recording's %llu",
+             (unsigned long long)frame, (unsigned long long)frames);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_recording_annotations_add_note(annotations, frame, ops_author(ctx),
+                                          text)) {
+    ops_fail(ctx, OPS_LIMIT, "The recording holds %u notes at most",
+             VKR_RECORDING_NOTE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  return ops_recording_annotations_done(ctx, annotations);
+}
+
+static VkrEditorOpStatus ops_run_rec_range(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  uint64_t first = 0u;
+  uint64_t last = 0u;
+  uint64_t remove = 0u;
+  bool8_t has_first = false_v;
+  bool8_t has_last = false_v;
+  bool8_t removing = false_v;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_arg_index(ctx, "first", &first, &has_first) ||
+      !ops_arg_index(ctx, "last", &last, &has_last) ||
+      !ops_arg_index(ctx, "remove", &remove, &removing)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrRecordingAnnotations *annotations = ops_recording_annotations(ctx, bundle);
+  if (!annotations) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (removing) {
+    if (remove >= annotations->range_count) {
+      ops_fail(ctx, OPS_INVALID, "No range %llu", (unsigned long long)remove);
+      return VKR_EDITOR_OP_DONE;
+    }
+    vkr_recording_annotations_remove_range(annotations, (uint32_t)remove);
+    return ops_recording_annotations_done(ctx, annotations);
+  }
+  String8 label = {0};
+  if (!has_first || !has_last ||
+      !vkr_bakery_json_get_string(ctx->call->args, "label", &label) ||
+      label.length == 0u) {
+    ops_fail(ctx, OPS_INVALID, "A range needs 'first', 'last' and a 'label'");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (Max(first, last) >= frames) {
+    ops_fail(ctx, OPS_INVALID, "Frame %llu is past the recording's %llu",
+             (unsigned long long)Max(first, last), (unsigned long long)frames);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_recording_annotations_add_range(annotations, first, last,
+                                           ops_author(ctx), label)) {
+    ops_fail(ctx, OPS_LIMIT, "The recording holds %u ranges at most",
+             VKR_RECORDING_RANGE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  return ops_recording_annotations_done(ctx, annotations);
+}
+
+static VkrEditorOpStatus ops_run_rec_review(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  String8 state = {0};
+  VkrRecordingReview review = VKR_RECORDING_REVIEW_UNREVIEWED;
+  if (!vkr_bakery_json_get_string(ctx->call->args, "state", &state) ||
+      !vkr_recording_review_parse(state, &review)) {
+    ops_fail(ctx, OPS_INVALID, "'state' is unreviewed, reviewed or flagged");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrRecordingAnnotations *annotations = ops_recording_annotations(ctx, bundle);
+  if (!annotations) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  vkr_recording_annotations_set_review(annotations, review, ops_author(ctx));
+  return ops_recording_annotations_done(ctx, annotations);
+}
+
 static VkrEditorOpStatus ops_run_rec_drive(OpsContext *ctx) {
   VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_DRIVE};
   if (ctx->call->stage == 0u) {
@@ -15411,6 +15667,16 @@ static bool8_t ops_recording_list_visit(void *context, const char *name,
             vkr_bakery_json_cstr(arena, "no summary"));
   }
   ops_set(list->ctx, entry, "bundle", vkr_bakery_json_cstr(arena, name));
+  /* The annotations' counts and review; rec.annotations reads them whole. */
+  VkrEditorRecordingEntry counts = {0};
+  string_format(path, sizeof(path), "%s/%s", list->directory, name);
+  vkr_editor_recording_entry_annotations(list->ctx->editor, path, &counts);
+  ops_set(list->ctx, entry, "notes", vkr_bakery_json_int(arena, counts.notes));
+  ops_set(list->ctx, entry, "ranges",
+          vkr_bakery_json_int(arena, counts.ranges));
+  ops_set(
+      list->ctx, entry, "review",
+      vkr_bakery_json_cstr(arena, vkr_recording_review_name(counts.review)));
   vkr_bakery_json_append(list->array, entry);
   ++list->count;
   return true_v;
@@ -15445,7 +15711,8 @@ static const OpsDef s_ops[] = {
      OPS_QUICK | OPS_NO_SCENE},
     {"rec.list",
      "Recordings in the recording directory, each with its summary.json: "
-     "name, scene, author, frames, duration, markers and losses.",
+     "name, scene, author, frames, duration, markers and losses, and its "
+     "annotations' notes and ranges counts and review state.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_list, NULL,
      OPS_QUICK | OPS_NO_SCENE},
     {"rec.start",
@@ -15508,6 +15775,36 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"follow\":{\"type\":\"boolean\"}},\"required\":[\"name\"]}",
      ops_run_rec_drive, NULL},
+    {"rec.annotations",
+     "The notes, named ranges and review state of recording 'name', or of "
+     "the open one; notes and ranges carry the index rec.note and rec.range "
+     "remove by.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_rec_annotations, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.note",
+     "Add a note with 'text' at 'frame' of recording 'name' (default: the "
+     "open one, at its playhead), or 'remove' note index. It shows on the "
+     "playback bar and in the copied agent prompt.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"frame\":{\"type\":\"integer\"},\"text\":{\"type\":"
+     "\"string\"},\"remove\":{\"type\":\"integer\"}}}",
+     ops_run_rec_note, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.range",
+     "Name frames 'first' to 'last' of recording 'name' (default: the open "
+     "one) with 'label', or 'remove' range index.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{\"type\":"
+     "\"integer\"},\"label\":{\"type\":\"string\"},\"remove\":{"
+     "\"type\":\"integer\"}}}",
+     ops_run_rec_range, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.review",
+     "Set recording 'name' (default: the open one) to 'state' unreviewed, "
+     "reviewed or flagged.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"state\":{\"enum\":[\"unreviewed\",\"reviewed\","
+     "\"flagged\"]}},\"required\":[\"state\"]}",
+     ops_run_rec_review, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.request.create",
      "Ask the user to record something: a 'question' the recording must "
      "answer, 'steps' to show while they record, an optional 'scene' path, "

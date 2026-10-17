@@ -14,6 +14,7 @@ add_library(vkr_asset_formats STATIC
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_probe_capture.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_recording_format.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_recording_analysis.c"
+    "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_recording_annotations.c"
     "${CMAKE_SOURCE_DIR}/runtime/src/assets/vkr_mesh_decode.cpp")
 vkr_configure_library(vkr_asset_formats)
 # The C readers stay behind the libc boundary (ADR-118); the meshoptimizer

@@ -107,6 +107,26 @@ void vkr_editor_ghost_style(VkrUiWidgetConfig *config) {
   config->style.text_color = theme->text_secondary;
 }
 
+/* Action buttons stand 4 pt taller than fields and rows, as the Build and
+   Physics windows' buttons do. */
+#define EDITOR_BUTTON_EXTRA_HEIGHT_PT 4.0f
+#define EDITOR_BUTTON_SIDE_PT 12.0f
+#define EDITOR_BUTTON_ICON_PT 13.0f
+
+void vkr_editor_button_size(VkrUiWidgetConfig *config) {
+  const float32_t height =
+      vkr_ui_theme()->control_height + EDITOR_BUTTON_EXTRA_HEIGHT_PT;
+  config->style.min_size_pt.y = height;
+  config->style.max_size_pt.y = height;
+  config->style.padding_pt.left =
+      Max(config->style.padding_pt.left, EDITOR_BUTTON_SIDE_PT);
+  config->style.padding_pt.right =
+      Max(config->style.padding_pt.right, EDITOR_BUTTON_SIDE_PT);
+  if (config->icon_size_pt <= 0.0f) {
+    config->icon_size_pt = EDITOR_BUTTON_ICON_PT;
+  }
+}
+
 VkrUiWidgetConfig vkr_editor_icon_button_config(uint32_t column, uint32_t row,
                                                 VkrUiIcon icon,
                                                 String8 tooltip) {

@@ -692,8 +692,17 @@ editor_request_shown(const VkrEditorRecordingRequest *request) {
          request->status == VKR_EDITOR_RECORDING_REQUEST_ACCEPTED;
 }
 
-/* The facts line: who asks, the steps, the scene, the stop rule, the
-   expiry. */
+uint32_t vkr_editor_recording_requests_shown(struct VkrEditorUi *editor) {
+  const VkrEditorRecordingRequests *requests = &editor->recording.requests;
+  uint32_t shown = 0u;
+  for (uint32_t i = 0u; i < requests->count; ++i) {
+    shown += editor_request_shown(&requests->items[i]) ? 1u : 0u;
+  }
+  return shown;
+}
+
+/* The facts line: who asks, the steps, the scene, the stop rule and the
+   time left; a part with nothing to say is left out. */
 vkr_internal String8 editor_request_facts(
     VkrUiSystem *ui, const VkrEditorRecordingRequest *request) {
   const char *scene = request->scene[0] ? request->scene : "any scene";
@@ -709,26 +718,60 @@ vkr_internal String8 editor_request_facts(
       string_equals(scene + scene_length - suffix, ".scene.json")) {
     scene_length -= suffix;
   }
-  char stop[32] = "you stop it";
+  char steps[24] = "";
+  if (request->step_count > 0u) {
+    string_format(steps, sizeof(steps), "  \xc2\xb7  %u step%s",
+                  request->step_count, request->step_count == 1u ? "" : "s");
+  }
+  char stop[32] = "";
   if (request->stop_seconds > 0u) {
-    string_format(stop, sizeof(stop), "stops after %u s",
+    string_format(stop, sizeof(stop), "  \xc2\xb7  stops after %u s",
                   request->stop_seconds);
   }
   const int64_t left = request->expires - vkr_platform_get_unix_time();
   char expiry[32] = "";
   if (request->status == VKR_EDITOR_RECORDING_REQUEST_PENDING && left > 0) {
-    string_format(expiry, sizeof(expiry), "  \xc2\xb7  expires in %lld min",
+    string_format(expiry, sizeof(expiry), "  \xc2\xb7  %lld min left",
                   (long long)((left + 59) / 60));
   }
   return string8_create_formatted(
-      ui->frame_allocator,
-      "%s  \xc2\xb7  %u step%s  \xc2\xb7  %.*s  \xc2\xb7  %s%s",
-      request->owner[0] ? request->owner : "agent", request->step_count,
-      request->step_count == 1u ? "" : "s", (int32_t)scene_length, scene, stop,
-      expiry);
+      ui->frame_allocator, "%s%s  \xc2\xb7  %.*s%s%s",
+      request->owner[0] ? request->owner : "agent", steps,
+      (int32_t)scene_length, scene, stop, expiry);
 }
 
-/* The Decline row: a reason field with Send and Back. */
+/* The facts line's tooltip spells out what the short line abbreviates. */
+vkr_internal String8 editor_request_facts_tooltip(
+    VkrUiSystem *ui, const VkrEditorRecordingRequest *request) {
+  char stop[48] = "You stop the recording.";
+  if (request->stop_seconds > 0u) {
+    string_format(stop, sizeof(stop), "It stops itself after %u s.",
+                  request->stop_seconds);
+  }
+  return string8_create_formatted(
+      ui->frame_allocator, "From %s, request %s\nScene: %s\n%s",
+      request->owner[0] ? request->owner : "an agent", request->id,
+      request->scene[0] ? request->scene : "any", stop);
+}
+
+/* A text button sized as every Recordings action is. */
+vkr_internal VkrUiWidgetConfig editor_request_button(VkrEditorUi *editor,
+                                                     uint32_t column,
+                                                     bool8_t primary,
+                                                     VkrUiIcon icon) {
+  VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+  button.placement = editor_request_cell(column, 0u);
+  if (primary) {
+    vkr_editor_primary_style(&button, editor->heading_font);
+  } else {
+    vkr_editor_action_style(&button, editor->heading_font);
+  }
+  button.icon = icon;
+  vkr_editor_button_size(&button);
+  return button;
+}
+
+/* The Decline row: a reason field with Decline and Back. */
 vkr_internal void
 editor_request_decline_row(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                            const VkrEditorRecordingRequest *request) {
@@ -736,33 +779,39 @@ editor_request_decline_row(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-                                {.value = 72.0f, .unit = VKR_UI_TRACK_PX},
-                                {.value = 64.0f, .unit = VKR_UI_TRACK_PX}};
-  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+                                {.unit = VKR_UI_TRACK_AUTO},
+                                {.unit = VKR_UI_TRACK_AUTO}};
+  const VkrUiTrack row = {.unit = VKR_UI_TRACK_AUTO};
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
   panel.placement = editor_request_cell(0u, 2u);
   panel.placement.column_span = 2u;
-  panel.placement.align = VKR_UI_ALIGN_STRETCH;
   panel.columns = columns;
   panel.column_count = ArrayCount(columns);
   panel.rows = &row;
   panel.row_count = 1u;
-  panel.style.gap_pt = theme->space_sm;
+  panel.style.gap_pt = theme->space_md;
+  panel.style.padding_pt.top = theme->space_sm;
   if (!vkr_ui_panel_begin(ui, string8_lit("decline"), &panel)) {
     return;
   }
   VkrUiWidgetConfig field = vkr_ui_widget_config_default();
   field.placement = editor_request_cell(0u, 0u);
   vkr_editor_field_style(&field);
-  field.tooltip = string8_lit("Why, for the agent; it may be empty");
+  /* As tall as the buttons beside it. */
+  vkr_editor_button_size(&field);
+  field.style.padding_pt.left = field.style.padding_pt.right = 8.0f;
+  field.tooltip = string8_lit("Why not? The agent reads this; it may be "
+                              "empty");
   VkrUiTextEditBuffer buffer = {.data = (uint8_t *)requests->decline_text,
                                 .length = requests->decline_length,
                                 .capacity = sizeof(requests->decline_text)};
   (void)vkr_ui_text_field(ui, string8_lit("reason"), &buffer, &field);
   requests->decline_length = buffer.length;
-  VkrUiWidgetConfig send = vkr_ui_widget_config_default();
-  send.placement = editor_request_cell(1u, 0u);
-  vkr_editor_action_style(&send, editor->heading_font);
+  VkrUiWidgetConfig send =
+      editor_request_button(editor, 1u, false_v, VKR_UI_ICON_CLOSE);
+  send.style.text_color = theme->error;
+  send.icon_color = theme->error;
+  send.tooltip = string8_lit("Decline the request with this reason");
   if (vkr_ui_button(ui, string8_lit("send"), string8_lit("Decline"), &send)) {
     char error[160];
     requests->decline_text[requests->decline_length] = '\0';
@@ -774,9 +823,10 @@ editor_request_decline_row(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     requests->decline_id[0] = '\0';
     requests->decline_length = 0u;
   }
-  VkrUiWidgetConfig back = vkr_ui_widget_config_default();
-  back.placement = editor_request_cell(2u, 0u);
+  VkrUiWidgetConfig back =
+      editor_request_button(editor, 2u, false_v, VKR_UI_ICON_NONE);
   vkr_editor_ghost_style(&back);
+  back.tooltip = string8_lit("Keep the request");
   if (vkr_ui_button(ui, string8_lit("back"), string8_lit("Back"), &back)) {
     requests->decline_id[0] = '\0';
     requests->decline_length = 0u;
@@ -784,11 +834,81 @@ editor_request_decline_row(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   (void)vkr_ui_panel_end(ui);
 }
 
-/* One request: the question, the facts, and Start and Decline; or, while
-   it records, its step. */
-/* Points beside a card's text: its padding, border and buttons column. */
-#define EDITOR_REQUEST_CARD_CHROME_PT 216.0f
+/* Start and Decline; or, while the request records, its next step. */
+vkr_internal void
+editor_request_actions(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                       const VkrEditorRecordingRequest *request,
+                       bool8_t recording) {
+  VkrEditorRecordingRequests *requests = &editor->recording.requests;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
+                                {.unit = VKR_UI_TRACK_AUTO}};
+  const VkrUiTrack row = {.unit = VKR_UI_TRACK_AUTO};
+  VkrUiPanelConfig buttons = vkr_ui_panel_config_default();
+  buttons.placement = editor_request_cell(1u, 0u);
+  buttons.placement.row_span = 2u;
+  buttons.placement.justify = VKR_UI_ALIGN_END;
+  buttons.columns = columns;
+  buttons.column_count = recording ? 1u : 2u;
+  buttons.rows = &row;
+  buttons.row_count = 1u;
+  buttons.style.gap_pt = theme->space_md;
+  if (!vkr_ui_panel_begin(ui, string8_lit("buttons"), &buttons)) {
+    return;
+  }
+  if (recording) {
+    VkrUiWidgetConfig next =
+        editor_request_button(editor, 0u, true_v, VKR_UI_ICON_CHECK);
+    next.disabled = requests->step >= request->step_count;
+    char key[32] = "";
+    (void)vkr_editor_command_shortcut(CMD_REQUEST_NEXT_STEP, key, sizeof(key));
+    next.tooltip = string8_create_formatted(ui->frame_allocator,
+                                            "Mark the current step done (%s)",
+                                            key[0] ? key : "no shortcut");
+    const String8 label = request->step_count == 0u ? string8_lit("Recording")
+                          : requests->step < request->step_count
+                              ? string8_create_formatted(
+                                    ui->frame_allocator, "Finish step %u of %u",
+                                    requests->step + 1u, request->step_count)
+                              : string8_lit("All steps done");
+    if (vkr_ui_button(ui, string8_lit("next"), label, &next)) {
+      (void)vkr_editor_recording_request_next_step(editor);
+    }
+  } else {
+    VkrUiWidgetConfig start =
+        editor_request_button(editor, 0u, true_v, VKR_UI_ICON_RECORD);
+    start.disabled = requests->active;
+    start.tooltip = requests->active
+                        ? string8_lit("Another request is recording")
+                        : string8_lit("Place the camera and start recording");
+    if (vkr_ui_button(ui, string8_lit("start"), string8_lit("Start"), &start)) {
+      char error[192];
+      if (!vkr_editor_recording_request_start(editor, frame, request->id, error,
+                                              sizeof(error))) {
+        vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                         error);
+      }
+    }
+    VkrUiWidgetConfig decline =
+        editor_request_button(editor, 1u, false_v, VKR_UI_ICON_NONE);
+    decline.tooltip = string8_lit("Tell the agent you will not record it");
+    if (vkr_ui_button(ui, string8_lit("decline"), string8_lit("Decline"),
+                      &decline)) {
+      string_format(requests->decline_id, sizeof(requests->decline_id), "%s",
+                    request->id);
+      requests->decline_length = 0u;
+    }
+  }
+  (void)vkr_ui_panel_end(ui);
+}
 
+/* Points of a card that are not its question: padding, borders, the
+   buttons and the gap before them. */
+#define EDITOR_REQUEST_CARD_CHROME_PT 236.0f
+
+/* One request: the question over its facts, with the actions at the right
+   and, while declining, the reason row below. */
 vkr_internal void editor_request_card(VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame,
                                       const VkrEditorRecordingRequest *request,
@@ -798,22 +918,23 @@ vkr_internal void editor_request_card(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const bool8_t recording =
       request->status == VKR_EDITOR_RECORDING_REQUEST_ACCEPTED;
-  const bool8_t declining = string_equals(requests->decline_id, request->id);
+  const bool8_t declining =
+      !recording && string_equals(requests->decline_id, request->id);
   const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-                                {.value = 172.0f, .unit = VKR_UI_TRACK_PX}};
-  const VkrUiTrack rows[] = {{.value = 40.0f, .unit = VKR_UI_TRACK_PX},
-                             {.value = 20.0f, .unit = VKR_UI_TRACK_PX},
-                             {.value = 30.0f, .unit = VKR_UI_TRACK_PX}};
+                                {.unit = VKR_UI_TRACK_AUTO}};
+  const VkrUiTrack rows[] = {{.unit = VKR_UI_TRACK_AUTO},
+                             {.unit = VKR_UI_TRACK_AUTO},
+                             {.unit = VKR_UI_TRACK_AUTO}};
   VkrUiPanelConfig card = vkr_ui_panel_config_default();
   card.placement = editor_request_cell(0u, row);
-  card.placement.align = VKR_UI_ALIGN_STRETCH;
   card.columns = columns;
   card.column_count = ArrayCount(columns);
   card.rows = rows;
   card.row_count = declining ? 3u : 2u;
-  card.style.padding_pt = (VkrUiEdges){8.0f, 12.0f, 8.0f, 12.0f};
-  card.style.gap_pt = theme->space_xs;
+  card.style.padding_pt = (VkrUiEdges){10.0f, 12.0f, 10.0f, 14.0f};
+  card.style.gap_pt = theme->space_sm;
   card.style.background_color = theme->raised;
+  /* The accent edge says who acts next: the user, or the recording. */
   card.style.border_pt = (VkrUiEdges){1, 1, 1, 3};
   card.style.border_color = recording ? theme->error : theme->accent;
   card.style.corner_radius_pt =
@@ -828,111 +949,27 @@ vkr_internal void editor_request_card(VkrEditorUi *editor,
       vkr_editor_text_config(theme->font_body, theme->text);
   question.placement = editor_request_cell(0u, 0u);
   question.placement.justify = VKR_UI_ALIGN_START;
-  question.placement.align = VKR_UI_ALIGN_START;
+  question.placement.align = VKR_UI_ALIGN_END;
   question.text.font = editor->heading_font;
   question.text.layout.word_wrap = true_v;
   question.text.layout.max_width =
-      Max(1.0f, width_pt - EDITOR_REQUEST_CARD_CHROME_PT);
-  question.tooltip = string8_create_formatted(ui->frame_allocator, "%s\n%s",
-                                              request->question, request->id);
+      Max(120.0f, width_pt - EDITOR_REQUEST_CARD_CHROME_PT);
   vkr_ui_label(ui, string8_lit("question"),
                editor_request_str(request->question), &question);
   VkrUiWidgetConfig facts =
       vkr_editor_text_config(theme->font_caption, theme->text_secondary);
   facts.placement = editor_request_cell(0u, 1u);
   facts.placement.justify = VKR_UI_ALIGN_START;
+  facts.placement.align = VKR_UI_ALIGN_START;
+  facts.tooltip = editor_request_facts_tooltip(ui, request);
   vkr_ui_label(ui, string8_lit("facts"), editor_request_facts(ui, request),
                &facts);
-
-  const VkrUiTrack button_columns[] = {
-      {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-      {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
-  const VkrUiTrack button_row = {.value = 30.0f, .unit = VKR_UI_TRACK_PX};
-  VkrUiPanelConfig buttons = vkr_ui_panel_config_default();
-  buttons.placement = editor_request_cell(1u, 0u);
-  buttons.placement.row_span = 2u;
-  buttons.columns = button_columns;
-  buttons.column_count = ArrayCount(button_columns);
-  buttons.rows = &button_row;
-  buttons.row_count = 1u;
-  buttons.style.gap_pt = theme->space_sm;
-  if (vkr_ui_panel_begin(ui, string8_lit("buttons"), &buttons)) {
-    if (recording) {
-      VkrUiWidgetConfig next = vkr_ui_widget_config_default();
-      next.placement = editor_request_cell(0u, 0u);
-      next.placement.column_span = 2u;
-      vkr_editor_primary_style(&next, editor->heading_font);
-      next.icon = VKR_UI_ICON_CHECK;
-      next.disabled = requests->step >= request->step_count;
-      char key[32] = "";
-      (void)vkr_editor_command_shortcut(CMD_REQUEST_NEXT_STEP, key,
-                                        sizeof(key));
-      next.tooltip = string8_create_formatted(ui->frame_allocator,
-                                              "Mark the step done (%s)",
-                                              key[0] ? key : "no shortcut");
-      if (vkr_ui_button(ui, string8_lit("next"),
-                        requests->step < request->step_count
-                            ? string8_create_formatted(
-                                  ui->frame_allocator, "Finish step %u of %u",
-                                  requests->step + 1u, request->step_count)
-                            : string8_lit("All steps done"),
-                        &next)) {
-        (void)vkr_editor_recording_request_next_step(editor);
-      }
-    } else {
-      VkrUiWidgetConfig start = vkr_ui_widget_config_default();
-      start.placement = editor_request_cell(0u, 0u);
-      vkr_editor_primary_style(&start, editor->heading_font);
-      start.icon = VKR_UI_ICON_RECORD;
-      start.disabled = requests->active;
-      start.tooltip = string8_lit("Place the camera and start recording it");
-      if (vkr_ui_button(ui, string8_lit("start"), string8_lit("Start"),
-                        &start)) {
-        char error[192];
-        if (!vkr_editor_recording_request_start(editor, frame, request->id,
-                                                error, sizeof(error))) {
-          vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
-                           error);
-        }
-      }
-      VkrUiWidgetConfig decline = vkr_ui_widget_config_default();
-      decline.placement = editor_request_cell(1u, 0u);
-      vkr_editor_ghost_style(&decline);
-      decline.tooltip = string8_lit("Tell the agent you will not record it");
-      if (vkr_ui_button(ui, string8_lit("decline"), string8_lit("Decline"),
-                        &decline)) {
-        string_format(requests->decline_id, sizeof(requests->decline_id), "%s",
-                      request->id);
-        requests->decline_length = 0u;
-      }
-    }
-    (void)vkr_ui_panel_end(ui);
-  }
-  if (declining && !recording) {
+  editor_request_actions(editor, frame, request, recording);
+  if (declining) {
     editor_request_decline_row(editor, frame, request);
   }
   (void)vkr_ui_panel_end(ui);
   (void)vkr_ui_pop_id(ui);
-}
-
-/* Card heights: with and without the decline reason row. */
-#define EDITOR_REQUEST_CARD_PT 92.0f
-#define EDITOR_REQUEST_DECLINE_CARD_PT 126.0f
-#define EDITOR_REQUEST_TITLE_PT 18.0f
-
-float32_t vkr_editor_recording_requests_height(VkrEditorUi *editor) {
-  const VkrEditorRecordingRequests *requests = &editor->recording.requests;
-  const float32_t gap = vkr_ui_theme()->space_sm;
-  float32_t height = 0.0f;
-  for (uint32_t i = 0u; i < requests->count; ++i) {
-    if (editor_request_shown(&requests->items[i])) {
-      height +=
-          gap + (string_equals(requests->decline_id, requests->items[i].id)
-                     ? EDITOR_REQUEST_DECLINE_CARD_PT
-                     : EDITOR_REQUEST_CARD_PT);
-    }
-  }
-  return height > 0.0f ? height + EDITOR_REQUEST_TITLE_PT : 0.0f;
 }
 
 bool8_t vkr_editor_recording_requests_build(VkrEditorUi *editor,
@@ -941,42 +978,36 @@ bool8_t vkr_editor_recording_requests_build(VkrEditorUi *editor,
   VkrEditorRecordingRequests *requests = &editor->recording.requests;
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
-  uint32_t shown = 0u;
-  VkrUiTrack rows[VKR_EDITOR_RECORDING_REQUEST_MAX + 1u];
-  rows[shown] =
-      (VkrUiTrack){.value = EDITOR_REQUEST_TITLE_PT, .unit = VKR_UI_TRACK_PX};
-  for (uint32_t i = 0u; i < requests->count; ++i) {
-    if (editor_request_shown(&requests->items[i])) {
-      const bool8_t declining =
-          string_equals(requests->decline_id, requests->items[i].id);
-      rows[++shown] =
-          (VkrUiTrack){.value = declining ? EDITOR_REQUEST_DECLINE_CARD_PT
-                                          : EDITOR_REQUEST_CARD_PT,
-                       .unit = VKR_UI_TRACK_PX};
-    }
-  }
+  const uint32_t shown = vkr_editor_recording_requests_shown(editor);
   if (shown == 0u) {
     return false_v;
+  }
+  VkrUiTrack rows[VKR_EDITOR_RECORDING_REQUEST_MAX + 1u];
+  for (uint32_t i = 0u; i <= shown; ++i) {
+    rows[i] = (VkrUiTrack){.unit = VKR_UI_TRACK_AUTO};
   }
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig section = vkr_ui_panel_config_default();
   section.placement = editor_request_cell(0u, row);
-  section.placement.align = VKR_UI_ALIGN_STRETCH;
+  section.placement.align = VKR_UI_ALIGN_START;
   section.columns = &column;
   section.column_count = 1u;
   section.rows = rows;
   section.row_count = shown + 1u;
-  section.style.gap_pt = theme->space_sm;
+  section.style.gap_pt = theme->space_md;
   if (!vkr_ui_panel_begin(ui, string8_lit("requests"), &section)) {
     return true_v;
   }
   VkrUiWidgetConfig title =
-      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+      vkr_editor_section_label_config(editor->heading_font);
   title.placement = editor_request_cell(0u, 0u);
   title.placement.justify = VKR_UI_ALIGN_START;
+  title.tooltip = string8_lit("Agents ask for these recordings; Start one to "
+                              "record it, or Decline it with a reason");
   vkr_ui_label(ui, string8_lit("title"),
                string8_create_formatted(ui->frame_allocator,
-                                        "Requests from agents: %u", shown),
+                                        "Requests from agents  \xc2\xb7  %u",
+                                        shown),
                &title);
   uint32_t card_row = 1u;
   for (uint32_t i = 0u; i < requests->count; ++i) {
@@ -992,6 +1023,9 @@ bool8_t vkr_editor_recording_requests_build(VkrEditorUi *editor,
 /* ------------------------------------------------------------------------ */
 /* Scene overlay                                                             */
 
+/* The panel's width; its height follows the question and the steps. */
+#define EDITOR_REQUEST_OVERLAY_PT 320.0f
+
 void vkr_editor_recording_request_overlay_build(VkrEditorUi *editor,
                                                 const VkrSampleUiFrame *frame) {
   VkrEditorRecordingRequests *requests = &editor->recording.requests;
@@ -1003,46 +1037,41 @@ void vkr_editor_recording_request_overlay_build(VkrEditorUi *editor,
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const float32_t scale = ui->content_scale;
-  const Vec4 image = frame->mapping.image_rect_px;
-  const float32_t width = 320.0f;
+  const Vec4 viewport = frame->mapping.panel_rect_px;
+  const float32_t width = EDITOR_REQUEST_OVERLAY_PT;
   const uint32_t steps = request->step_count;
-  /* Padding, the caption, a two-line question, the steps and the hint. */
-  const float32_t height =
-      16.0f + 16.0f + 36.0f + 20.0f * (float32_t)steps + 16.0f + 4.0f;
   VkrUiTrack rows[VKR_EDITOR_RECORDING_REQUEST_STEP_MAX + 3u];
-  rows[0] = (VkrUiTrack){.value = 16.0f, .unit = VKR_UI_TRACK_PX};
-  rows[1] = (VkrUiTrack){.value = 36.0f, .unit = VKR_UI_TRACK_PX};
-  for (uint32_t i = 0u; i < steps; ++i) {
-    rows[2u + i] = (VkrUiTrack){.value = 20.0f, .unit = VKR_UI_TRACK_PX};
+  for (uint32_t i = 0u; i < steps + 3u; ++i) {
+    rows[i] = (VkrUiTrack){.unit = VKR_UI_TRACK_AUTO};
   }
-  rows[2u + steps] = (VkrUiTrack){.value = 16.0f, .unit = VKR_UI_TRACK_PX};
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig panel = vkr_ui_panel_config_default();
   panel.placement = VKR_UI_PLACEMENT_DEFAULT;
   panel.placement.column = panel.placement.row = 0;
   panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  /* Below the Scene toolbar, at the Scene's right edge. */
   panel.placement.margin_pt =
-      (VkrUiEdges){image.y / scale + 48.0f, 0, 0,
-                   (image.x + image.z) / scale - width - 12.0f};
-  panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){width, height};
+      (VkrUiEdges){viewport.y / scale + 48.0f, 0, 0,
+                   (viewport.x + viewport.z) / scale - width - 12.0f};
+  panel.style = vkr_editor_glass_style();
+  panel.style.min_size_pt = (Vec2){width, 0.0f};
+  panel.style.max_size_pt = (Vec2){width, 0.0f};
   panel.columns = &column;
   panel.column_count = 1u;
   panel.rows = rows;
   panel.row_count = steps + 3u;
-  panel.style.padding_pt = (VkrUiEdges){8.0f, 12.0f, 8.0f, 12.0f};
-  panel.style.background_color = vkr_ui_color_alpha(theme->popup, 0.92f);
-  panel.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
-  panel.style.border_color = theme->border;
-  panel.style.corner_radius_pt =
-      (Vec4){theme->radius_large, theme->radius_large, theme->radius_large,
-             theme->radius_large};
+  panel.style.padding_pt = (VkrUiEdges){10.0f, 14.0f, 10.0f, 14.0f};
+  panel.style.gap_pt = theme->space_sm;
   if (!vkr_ui_panel_begin(ui, string8_lit("editor.request.overlay"), &panel)) {
     return;
   }
   VkrUiWidgetConfig caption =
-      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+      vkr_editor_section_label_config(editor->heading_font);
   caption.placement = editor_request_cell(0u, 0u);
   caption.placement.justify = VKR_UI_ALIGN_START;
+  caption.icon = VKR_UI_ICON_RECORD;
+  caption.icon_size_pt = 10.0f;
+  caption.icon_color = theme->error;
   vkr_ui_label(
       ui, string8_lit("caption"),
       string8_create_formatted(ui->frame_allocator, "Request from %s",
@@ -1052,23 +1081,27 @@ void vkr_editor_recording_request_overlay_build(VkrEditorUi *editor,
       vkr_editor_text_config(theme->font_body, theme->text);
   question.placement = editor_request_cell(0u, 1u);
   question.placement.justify = VKR_UI_ALIGN_START;
-  question.placement.align = VKR_UI_ALIGN_START;
   question.text.font = editor->heading_font;
   question.text.layout.word_wrap = true_v;
-  question.text.layout.max_width = width - 24.0f;
+  question.text.layout.max_width = width - 28.0f;
+  question.style.padding_pt.bottom = theme->space_sm;
   vkr_ui_label(ui, string8_lit("question"),
                editor_request_str(request->question), &question);
   for (uint32_t i = 0u; i < steps; ++i) {
     const bool8_t done = i < requests->step;
     const bool8_t current = i == requests->step;
     VkrUiWidgetConfig step = vkr_editor_text_config(
-        theme->font_caption, done      ? theme->text_disabled
-                             : current ? theme->text
-                                       : theme->text_secondary);
+        theme->font_body, done      ? theme->text_disabled
+                          : current ? theme->text
+                                    : theme->text_secondary);
     step.placement = editor_request_cell(0u, 2u + i);
     step.placement.justify = VKR_UI_ALIGN_START;
-    step.icon = done ? VKR_UI_ICON_CHECK : VKR_UI_ICON_DOT;
-    step.icon_size_pt = done ? 12.0f : 7.0f;
+    step.text.layout.word_wrap = true_v;
+    step.text.layout.max_width = width - 50.0f;
+    step.icon = done      ? VKR_UI_ICON_CHECK
+                : current ? VKR_UI_ICON_CHEVRON_RIGHT
+                          : VKR_UI_ICON_DOT;
+    step.icon_size_pt = 12.0f;
     step.icon_color = done      ? theme->success
                       : current ? theme->accent
                                 : theme->text_disabled;
@@ -1084,18 +1117,19 @@ void vkr_editor_recording_request_overlay_build(VkrEditorUi *editor,
     const float64_t left =
         (float64_t)request->stop_seconds -
         (vkr_platform_get_absolute_time() - requests->started_at);
-    string_format(stop, sizeof(stop), "  \xc2\xb7  stops in %.0f s",
-                  Max(left, 0.0));
+    string_format(stop, sizeof(stop), "%sstops in %.0f s",
+                  steps > 0u ? "  \xc2\xb7  " : "", Max(left, 0.0));
   }
   VkrUiWidgetConfig hint =
-      vkr_editor_text_config(theme->font_caption, theme->text_disabled);
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
   hint.placement = editor_request_cell(0u, 2u + steps);
   hint.placement.justify = VKR_UI_ALIGN_START;
+  hint.style.padding_pt.top = theme->space_sm;
   vkr_ui_label(
       ui, string8_lit("hint"),
       string8_create_formatted(ui->frame_allocator, "%s%s%s",
                                steps > 0u ? (key[0] ? key : "Next step") : "",
-                               steps > 0u ? " marks the step done" : "", stop),
+                               steps > 0u ? " finishes a step" : "", stop),
       &hint);
   (void)vkr_ui_panel_end(ui);
 }

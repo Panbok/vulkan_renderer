@@ -409,6 +409,9 @@ vkr_internal Vec4 editor_recording_marker_color(uint32_t kind) {
 }
 
 /* Marker ticks over the scrub slider's last rectangle; a click seeks. */
+/* A marker's dot on the playback bar's track, ring included. */
+#define EDITOR_RECORDING_MARKER_PT 12.0f
+
 vkr_internal void editor_recording_markers_build(
     VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     const VkrRecordingPlayback *playback, VkrUiRect slider_px) {
@@ -424,13 +427,19 @@ vkr_internal void editor_recording_markers_build(
     tick.placement = VKR_UI_PLACEMENT_DEFAULT;
     tick.placement.column = tick.placement.row = 0u;
     tick.placement.justify = tick.placement.align = VKR_UI_ALIGN_START;
-    tick.placement.margin_pt =
-        (VkrUiEdges){slider_px.y / scale - 9.0f, 0.0f, 0.0f,
-                     (slider_px.x + slider_px.width * fraction) / scale - 4.0f};
-    tick.style.min_size_pt = tick.style.max_size_pt = (Vec2){8.0f, 8.0f};
+    /* A dot on the track, ringed in the bar's colour so it reads over the
+       played part. */
+    const float32_t size = EDITOR_RECORDING_MARKER_PT;
+    tick.placement.margin_pt = (VkrUiEdges){
+        (slider_px.y + slider_px.height * 0.5f) / scale - size * 0.5f, 0.0f,
+        0.0f, (slider_px.x + slider_px.width * fraction) / scale - size * 0.5f};
+    tick.style.min_size_pt = tick.style.max_size_pt = (Vec2){size, size};
     tick.style.background_color = editor_recording_marker_color(marker->kind);
     tick.style.hover_background_color = vkr_ui_theme()->text;
-    tick.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+    tick.style.border_pt = (VkrUiEdges){2.0f, 2.0f, 2.0f, 2.0f};
+    tick.style.border_color = vkr_ui_theme()->popup;
+    tick.style.corner_radius_pt =
+        (Vec4){size * 0.5f, size * 0.5f, size * 0.5f, size * 0.5f};
     tick.tooltip = string8_create_formatted(
         ui->frame_allocator, "%s at %.2f s (frame %llu)%s%s",
         vkr_recording_marker_kind_name(marker->kind), marker->time,
@@ -497,10 +506,31 @@ editor_recording_bar_controls(VkrEditorUi *editor,
     editor_recording_transport(editor, VKR_SAMPLE_RECORDING_SEEK_FRAME, 0.0,
                                marker->frame, 0.0f, false_v);
   }
+  const VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiWidgetConfig note = editor_recording_button(
+      5u, VKR_UI_ICON_PENCIL_LINE, string8_lit("Add a note at the playhead"));
+  vkr_editor_toggle_style(&note, notes->composing);
+  if (vkr_ui_button(ui, string8_lit("note"), (String8){0}, &note)) {
+    vkr_editor_recording_note_toggle(editor);
+  }
+  VkrUiWidgetConfig range = editor_recording_button(
+      6u, VKR_UI_ICON_RULER,
+      notes->marking
+          ? string8_create_formatted(
+                ui->frame_allocator,
+                "Range from frame %llu: move the playhead to its end and "
+                "click again",
+                (unsigned long long)notes->range_first)
+          : string8_lit("Mark a range: click at its first frame, then at "
+                        "its last"));
+  vkr_editor_toggle_style(&range, notes->marking);
+  if (vkr_ui_button(ui, string8_lit("range"), (String8){0}, &range)) {
+    vkr_editor_recording_range_mark(editor, playback);
+  }
 
   VkrUiWidgetConfig time =
       vkr_editor_text_config(theme->font_caption, theme->text);
-  time.placement.column = 5u;
+  time.placement.column = 7u;
   time.placement.row = 0u;
   time.placement.justify = VKR_UI_ALIGN_START;
   time.placement.align = VKR_UI_ALIGN_CENTER;
@@ -520,7 +550,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   VkrUiSystem *ui = frame->ui;
   VkrUiWidgetConfig scrub = vkr_ui_widget_config_default();
   scrub.placement = VKR_UI_PLACEMENT_DEFAULT;
-  scrub.placement.column = 6u;
+  scrub.placement.column = 8u;
   scrub.placement.row = 0u;
   scrub.placement.justify = VKR_UI_ALIGN_STRETCH;
   scrub.placement.align = VKR_UI_ALIGN_CENTER;
@@ -546,7 +576,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   VkrUiWidgetConfig speed = vkr_ui_widget_config_default();
   speed.placement = VKR_UI_PLACEMENT_DEFAULT;
-  speed.placement.column = 7u;
+  speed.placement.column = 9u;
   speed.placement.row = 0u;
   speed.placement.justify = speed.placement.align = VKR_UI_ALIGN_CENTER;
   vkr_editor_ghost_style(&speed);
@@ -560,8 +590,36 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                speeds[(speed_index + 1u) % ArrayCount(speeds)],
                                playback->loop);
   }
+  /* Review: a click marks it reviewed or takes that back; Shift flags it. */
+  char error[192];
+  const VkrRecordingAnnotations *annotations = vkr_editor_recording_annotations(
+      editor, playback->bundle_path, error, sizeof(error));
+  const VkrRecordingReview review =
+      annotations ? annotations->review : VKR_RECORDING_REVIEW_UNREVIEWED;
+  VkrUiWidgetConfig reviewed = editor_recording_button(
+      10u,
+      review == VKR_RECORDING_REVIEW_FLAGGED ? VKR_UI_ICON_WARNING_FILL
+                                             : VKR_UI_ICON_CHECK_CIRCLE,
+      review == VKR_RECORDING_REVIEW_REVIEWED
+          ? string8_lit("Reviewed; click to unmark, Shift-click to flag")
+      : review == VKR_RECORDING_REVIEW_FLAGGED
+          ? string8_lit("Flagged; click to mark it reviewed")
+          : string8_lit("Mark reviewed; Shift-click to flag it"));
+  vkr_editor_toggle_style(&reviewed, review != VKR_RECORDING_REVIEW_UNREVIEWED);
+  if (review == VKR_RECORDING_REVIEW_REVIEWED) {
+    reviewed.icon_color = vkr_ui_theme()->success;
+  } else if (review == VKR_RECORDING_REVIEW_FLAGGED) {
+    reviewed.icon_color = vkr_ui_theme()->warning;
+  }
+  reviewed.disabled = annotations == NULL;
+  if (vkr_ui_button(ui, string8_lit("review"), (String8){0}, &reviewed)) {
+    const bool8_t shift = input_is_key_down(ui->input, KEY_LSHIFT) ||
+                          input_is_key_down(ui->input, KEY_RSHIFT);
+    vkr_editor_recording_review_toggle(
+        editor, playback, shift && review != VKR_RECORDING_REVIEW_FLAGGED);
+  }
   VkrUiWidgetConfig loop = editor_recording_button(
-      8u, VKR_UI_ICON_REFRESH,
+      11u, VKR_UI_ICON_REFRESH,
       playback->loop ? string8_lit("Looping; click to play once")
                      : string8_lit("Play once; click to loop"));
   vkr_editor_toggle_style(&loop, playback->loop);
@@ -570,12 +628,11 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                playback->speed, !playback->loop);
   }
   VkrUiWidgetConfig analyze = editor_recording_button(
-      9u, VKR_UI_ICON_CHART_BAR,
+      12u, VKR_UI_ICON_CHART_BAR,
       string8_lit("Analyze this recording: statistics, charts and spikes"));
   vkr_editor_toggle_style(
       &analyze, editor->windows[VKR_EDITOR_WINDOW_PERFORMANCE].visible);
   if (vkr_ui_button(ui, string8_lit("analyze"), (String8){0}, &analyze)) {
-    char error[160];
     if (!vkr_editor_recording_analyze(editor, playback->bundle_path, error,
                                       sizeof(error))) {
       vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
@@ -591,6 +648,11 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
                                              const VkrSampleUiFrame *frame) {
   const VkrRecordingPlayback *playback =
       frame->recording ? frame->recording->playback : NULL;
+  if (!playback) {
+    /* The tools end with the playback they belong to. */
+    editor->recording.notes.composing = false_v;
+    editor->recording.notes.marking = false_v;
+  }
   if (!playback || !frame->mapping_valid) {
     return;
   }
@@ -600,7 +662,8 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   /* The orientation gizmo holds the Scene's bottom-left corner. */
   const float32_t left = 104.0f;
   const float32_t width = viewport.z / scale - left - 10.0f;
-  if (width < 360.0f) {
+  /* Nine buttons, the clock and the speed leave the track 80 pt. */
+  if (width < 520.0f) {
     return;
   }
   const VkrUiTrack button = {.value = EDITOR_RECORDING_BUTTON_PT,
@@ -611,9 +674,12 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
       button,
       button,
       button,
+      button,
+      button,
       {.value = 150.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.value = 44.0f, .unit = VKR_UI_TRACK_PX},
+      button,
       button,
       button,
   };
@@ -623,10 +689,10 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   bar.placement = VKR_UI_PLACEMENT_DEFAULT;
   bar.placement.column = bar.placement.row = 0u;
   bar.placement.justify = bar.placement.align = VKR_UI_ALIGN_START;
+  const float32_t bar_top = (viewport.y + viewport.w) / scale -
+                            EDITOR_RECORDING_BAR_HEIGHT_PT - 40.0f;
   bar.placement.margin_pt =
-      (VkrUiEdges){(viewport.y + viewport.w) / scale -
-                       EDITOR_RECORDING_BAR_HEIGHT_PT - 40.0f,
-                   0.0f, 0.0f, viewport.x / scale + left};
+      (VkrUiEdges){bar_top, 0.0f, 0.0f, viewport.x / scale + left};
   bar.columns = columns;
   bar.column_count = ArrayCount(columns);
   bar.rows = &row;
@@ -642,7 +708,11 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   editor_recording_bar_controls(editor, frame, playback);
   editor_recording_bar_scrub(editor, frame, playback, &slider_px);
   (void)vkr_ui_panel_end(ui);
+  vkr_editor_recording_annotations_track(editor, frame, playback, slider_px);
   editor_recording_markers_build(editor, frame, playback, slider_px);
+  vkr_editor_recording_composer_build(
+      editor, frame, playback,
+      (Vec3){viewport.x / scale + left, bar_top, width});
 }
 
 /* ------------------------------------------------------------------------ */
@@ -866,6 +936,7 @@ vkr_internal void editor_recording_entry_read(const char *directory,
 }
 
 typedef struct EditorRecordingListing {
+  VkrEditorUi *editor;
   VkrEditorRecording *recording;
 } EditorRecordingListing;
 
@@ -884,6 +955,9 @@ vkr_internal bool8_t editor_recording_list_visit(void *context,
   MemZero(entry, sizeof(*entry));
   string_format(entry->bundle, sizeof(entry->bundle), "%s", name);
   editor_recording_entry_read(recording->directory, entry);
+  char path[VKR_RECORDING_PATH_MAX];
+  string_format(path, sizeof(path), "%s/%s", recording->directory, name);
+  vkr_editor_recording_entry_annotations(listing->editor, path, entry);
   return true_v;
 }
 
@@ -1000,7 +1074,7 @@ vkr_internal void editor_recording_list(VkrEditorUi *editor) {
     recording->directory[0] = '\0';
     return;
   }
-  EditorRecordingListing listing = {.recording = recording};
+  EditorRecordingListing listing = {.editor = editor, .recording = recording};
   const FilePath path = file_path_view(recording->directory);
   (void)file_list_directory(&path, editor_recording_list_visit, &listing);
   /* Newest first: insertion sort on the start time. */
@@ -1014,6 +1088,20 @@ vkr_internal void editor_recording_list(VkrEditorUi *editor) {
     }
     recording->entries[j] = entry;
   }
+}
+
+const VkrEditorRecordingEntry *
+vkr_editor_recording_newest(VkrEditorUi *editor) {
+  VkrEditorRecording *recording = &editor->recording;
+  if (!recording->listed) {
+    editor_recording_list(editor);
+  }
+  for (uint32_t i = 0u; i < recording->entry_count; ++i) {
+    if (recording->entries[i].has_summary) {
+      return &recording->entries[i];
+    }
+  }
+  return NULL;
 }
 
 /* Removes the bundle's files, then the bundle. */
@@ -1046,27 +1134,6 @@ vkr_internal bool8_t editor_recording_delete(const char *directory,
   return file_remove_directory(&path) == FILE_ERROR_NONE;
 }
 
-/* A short prompt for an agent: where the bundle is and what to read. */
-vkr_internal void
-editor_recording_copy_prompt(const char *directory,
-                             const VkrEditorRecordingEntry *entry) {
-  char prompt[1536];
-  const int32_t length = string_format(
-      prompt, sizeof(prompt),
-      "Review the VKR recording %s/%s (%s, scene %s, %.1f s, %llu frames, "
-      "%u markers). Read its summary.json first, then open it with "
-      "rec.open and seek its markers with rec.seek, or run "
-      "`vkr_rec summary` on it.",
-      directory, entry->bundle, entry->name,
-      entry->scene[0] ? entry->scene : "unknown", entry->duration,
-      (unsigned long long)entry->frames, entry->markers);
-  if (length > 0) {
-    (void)vkr_platform_clipboard_write_text(
-        (const uint8_t *)prompt,
-        (uint32_t)Min((uint32_t)length, (uint32_t)sizeof(prompt) - 1u));
-  }
-}
-
 vkr_internal VkrUiPlacement editor_recording_cell(uint32_t column,
                                                   uint32_t row) {
   return (VkrUiPlacement){.column = column,
@@ -1094,13 +1161,19 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
       scene = c + 1;
     }
   }
+  char notes[32] = "";
+  if (entry->notes > 0u) {
+    string_format(notes, sizeof(notes), "  \xc2\xb7  %u note%s", entry->notes,
+                  entry->notes == 1u ? "" : "s");
+  }
   return string8_create_formatted(
       ui->frame_allocator,
-      "%s  \xc2\xb7  %llu frames  \xc2\xb7  %u marker%s  \xc2\xb7  %s  "
+      "%s  \xc2\xb7  %llu frames  \xc2\xb7  %u marker%s%s  \xc2\xb7  %s  "
       "\xc2\xb7  %s%s",
       length, (unsigned long long)entry->frames, entry->markers,
-      entry->markers == 1u ? "" : "s", entry->author[0] ? entry->author : "?",
-      scene, entry->lost ? "  \xc2\xb7  data lost" : "");
+      entry->markers == 1u ? "" : "s", notes,
+      entry->author[0] ? entry->author : "?", scene,
+      entry->lost ? "  \xc2\xb7  data lost" : "");
 }
 
 /* One card: name and status, the facts line, Watch, Analyze, Drive, Copy
@@ -1116,7 +1189,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   editor_recording_thumb_load(recording, entry, ui, load_budget);
   const VkrUiTrack columns[] = {{.value = 84.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-                                {.value = 76.0f, .unit = VKR_UI_TRACK_PX},
+                                {.value = 88.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
                                 {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
@@ -1130,7 +1203,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   card.column_count = ArrayCount(columns);
   card.rows = rows;
   card.row_count = ArrayCount(rows);
-  card.style.padding_pt = (VkrUiEdges){6.0f, 10.0f, 6.0f, 6.0f};
+  card.style.padding_pt = (VkrUiEdges){6.0f, 8.0f, 6.0f, 6.0f};
   card.style.gap_pt = theme->space_sm;
   card.style.background_color = theme->raised;
   card.style.border_pt = (VkrUiEdges){1, 1, 1, 1};
@@ -1166,30 +1239,63 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
     vkr_ui_label(ui, string8_lit("thumb"), (String8){0}, &picture);
   }
   const bool8_t complete = string_equals(entry->status, "complete");
-  VkrUiWidgetConfig name =
-      vkr_editor_text_config(theme->font_body, theme->text);
-  name.placement = editor_recording_cell(1u, 0u);
-  name.placement.justify = VKR_UI_ALIGN_START;
-  name.text.font = editor->heading_font;
-  if (!complete) {
-    name.icon = VKR_UI_ICON_WARNING_FILL;
-    name.icon_size_pt = 13.0f;
-    name.icon_color = theme->warning;
+  /* The name, then its state's icon, so the name lines up with the facts
+     below it. An incomplete recording's warning outranks its review. */
+  const VkrUiTrack name_columns[] = {{.unit = VKR_UI_TRACK_AUTO},
+                                     {.unit = VKR_UI_TRACK_AUTO},
+                                     {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  const VkrUiTrack name_row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  VkrUiPanelConfig title = vkr_ui_panel_config_default();
+  title.placement = editor_recording_cell(1u, 0u);
+  title.columns = name_columns;
+  title.column_count = ArrayCount(name_columns);
+  title.rows = &name_row;
+  title.row_count = 1u;
+  title.style.gap_pt = 6.0f;
+  if (vkr_ui_panel_begin(ui, string8_lit("title"), &title)) {
+    VkrUiWidgetConfig name =
+        vkr_editor_text_config(theme->font_body, theme->text);
+    name.placement = editor_recording_cell(0u, 0u);
+    name.placement.justify = VKR_UI_ALIGN_START;
+    name.text.font = editor->heading_font;
+    name.tooltip = string8_create_formatted(
+        ui->frame_allocator, "%s/%s", recording->directory, entry->bundle);
+    vkr_ui_label(ui, string8_lit("name"),
+                 string8_create_from_cstr((const uint8_t *)entry->name,
+                                          string_length(entry->name)),
+                 &name);
+    VkrUiWidgetConfig state = vkr_ui_widget_config_default();
+    state.placement = editor_recording_cell(1u, 0u);
+    state.placement.justify = VKR_UI_ALIGN_START;
+    state.icon_size_pt = 13.0f;
+    if (!complete) {
+      state.icon = VKR_UI_ICON_WARNING_FILL;
+      state.icon_color = theme->warning;
+      state.tooltip = string8_create_formatted(
+          ui->frame_allocator, "The recording is %s", entry->status);
+    } else if (entry->review == VKR_RECORDING_REVIEW_REVIEWED) {
+      state.icon = VKR_UI_ICON_CHECK_CIRCLE;
+      state.icon_color = theme->success;
+      state.tooltip = string8_lit("Reviewed");
+    } else if (entry->review == VKR_RECORDING_REVIEW_FLAGGED) {
+      state.icon = VKR_UI_ICON_WARNING_FILL;
+      state.icon_color = theme->warning;
+      state.tooltip = string8_lit("Flagged: something here needs work");
+    }
+    if (state.icon != VKR_UI_ICON_NONE) {
+      vkr_ui_label(ui, string8_lit("state"), (String8){0}, &state);
+    }
+    (void)vkr_ui_panel_end(ui);
   }
-  name.tooltip = string8_create_formatted(ui->frame_allocator, "%s/%s\n%s",
-                                          recording->directory, entry->bundle,
-                                          entry->status);
-  vkr_ui_label(ui, string8_lit("name"),
-               string8_create_from_cstr((const uint8_t *)entry->name,
-                                        string_length(entry->name)),
-               &name);
   VkrUiWidgetConfig meta = vkr_editor_text_config(
       theme->font_caption,
       entry->lost ? theme->warning : theme->text_secondary);
   meta.placement = editor_recording_cell(1u, 1u);
   meta.placement.justify = VKR_UI_ALIGN_START;
-  vkr_ui_label(ui, string8_lit("meta"), editor_recording_meta(ui, entry),
-               &meta);
+  const String8 facts = editor_recording_meta(ui, entry);
+  /* A narrow window cuts the line; its tooltip keeps it whole. */
+  meta.tooltip = facts;
+  vkr_ui_label(ui, string8_lit("meta"), facts, &meta);
 
   VkrUiWidgetConfig watch = vkr_ui_widget_config_default();
   watch.placement = editor_recording_cell(2u, 0u);
@@ -1197,6 +1303,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   vkr_editor_primary_style(&watch, editor->heading_font);
   watch.icon = VKR_UI_ICON_PLAY;
   watch.icon_size_pt = 12.0f;
+  vkr_editor_button_size(&watch);
   watch.disabled = !can_watch || !entry->has_summary;
   watch.tooltip = can_watch ? string8_lit("Watch it in the Scene")
                             : string8_lit("Stop the simulation or the "
@@ -1240,7 +1347,7 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
       string8_lit("Copy a prompt that points an agent at this recording"));
   copy.placement.row_span = 2u;
   if (vkr_ui_button(ui, string8_lit("copy"), (String8){0}, &copy)) {
-    editor_recording_copy_prompt(recording->directory, entry);
+    vkr_editor_recording_copy_prompt(editor, frame, entry);
     vkr_editor_toast(editor, VKR_UI_ICON_COPY, theme->text,
                      "Copied an agent prompt for this recording.");
   }
@@ -1265,18 +1372,19 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
-vkr_internal void
-editor_recording_window_header(VkrEditorUi *editor,
-                               const VkrSampleUiFrame *frame) {
+/* The Recordings section's title and count, Refresh and Record. */
+vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
+                                                 const VkrSampleUiFrame *frame,
+                                                 uint32_t row_index) {
   VkrEditorRecording *recording = &editor->recording;
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-                                {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
-                                {.value = 110.0f, .unit = VKR_UI_TRACK_PX}};
+                                {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+                                {.unit = VKR_UI_TRACK_AUTO}};
   const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig header = vkr_ui_panel_config_default();
-  header.placement = editor_recording_cell(0u, 0u);
+  header.placement = editor_recording_cell(0u, row_index);
   header.columns = columns;
   header.column_count = ArrayCount(columns);
   header.rows = &row;
@@ -1286,18 +1394,16 @@ editor_recording_window_header(VkrEditorUi *editor,
     return;
   }
   VkrUiWidgetConfig where =
-      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+      vkr_editor_section_label_config(editor->heading_font);
   where.placement = editor_recording_cell(0u, 0u);
   where.placement.justify = VKR_UI_ALIGN_START;
-  where.tooltip =
-      string8_create_from_cstr((const uint8_t *)recording->directory,
-                               string_length(recording->directory));
-  vkr_ui_label(
-      ui, string8_lit("count"),
-      string8_create_formatted(ui->frame_allocator, "%u recording%s",
-                               recording->entry_count,
-                               recording->entry_count == 1u ? "" : "s"),
-      &where);
+  where.tooltip = string8_create_formatted(ui->frame_allocator, "Saved in %s",
+                                           recording->directory);
+  vkr_ui_label(ui, string8_lit("count"),
+               string8_create_formatted(ui->frame_allocator,
+                                        "Recordings  \xc2\xb7  %u",
+                                        recording->entry_count),
+               &where);
   VkrUiWidgetConfig refresh = vkr_editor_icon_button_config(
       1u, 0u, VKR_UI_ICON_REFRESH, string8_lit("Read the directory again"));
   if (vkr_ui_button(ui, string8_lit("refresh"), (String8){0}, &refresh)) {
@@ -1307,9 +1413,10 @@ editor_recording_window_header(VkrEditorUi *editor,
   VkrUiWidgetConfig record = vkr_ui_widget_config_default();
   record.placement = editor_recording_cell(2u, 0u);
   vkr_editor_action_style(&record, editor->heading_font);
-  record.icon = VKR_UI_ICON_RECORD;
+  record.icon = active ? VKR_UI_ICON_STOP : VKR_UI_ICON_RECORD;
   record.icon_size_pt = 12.0f;
   record.icon_color = theme->error;
+  vkr_editor_button_size(&record);
   record.disabled = !vkr_editor_command_enabled(CMD_RECORD, editor, frame);
   record.tooltip = vkr_editor_command_tooltip(ui, CMD_RECORD, NULL);
   if (vkr_ui_button(ui, string8_lit("record"),
@@ -1335,31 +1442,33 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
 
   const VkrUiTrack column = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   /* Agents' requests sit above the recordings while any wait. */
-  const VkrUiTrack rows[] = {
-      {.value = 30.0f, .unit = VKR_UI_TRACK_PX},
-      {.value = vkr_editor_recording_requests_height(editor),
-       .unit = VKR_UI_TRACK_PX},
-      {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
+  const bool8_t requests = vkr_editor_recording_requests_shown(editor) > 0u;
+  const uint32_t first = requests ? 1u : 0u;
+  const VkrUiTrack rows[] = {{.unit = VKR_UI_TRACK_AUTO},
+                             {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
   VkrUiPanelConfig body = vkr_ui_panel_config_default();
   body.placement = editor_recording_cell(0u, 0u);
   body.placement.align = VKR_UI_ALIGN_STRETCH;
   body.columns = &column;
   body.column_count = 1u;
-  body.rows = rows;
-  body.row_count = ArrayCount(rows);
-  body.style.padding_pt = (VkrUiEdges){10.0f, 12.0f, 10.0f, 12.0f};
+  body.rows = rows + (requests ? 0u : 1u);
+  body.row_count = requests ? 3u : 2u;
+  body.style.padding_pt = (VkrUiEdges){12.0f, 12.0f, 12.0f, 12.0f};
   body.style.gap_pt = theme->space_md;
   body.clip_children = true_v;
   if (!vkr_ui_panel_begin(ui, string8_lit("recordings.body"), &body)) {
     return;
   }
-  editor_recording_window_header(editor, frame);
-  (void)vkr_editor_recording_requests_build(
-      editor, frame, 1u, bounds.width / ui->content_scale - 24.0f);
+  if (requests) {
+    (void)vkr_editor_recording_requests_build(
+        editor, frame, 0u, bounds.width / ui->content_scale - 24.0f);
+  }
+  editor_recording_window_header(editor, frame, first);
   if (recording->entry_count == 0u) {
     VkrUiWidgetConfig empty =
         vkr_editor_text_config(theme->font_body, theme->text_secondary);
-    empty.placement = editor_recording_cell(0u, 2u);
+    empty.placement = editor_recording_cell(0u, first + 1u);
     empty.placement.align = VKR_UI_ALIGN_START;
     empty.text.layout.word_wrap = true_v;
     char record_key[32] = "the Record button";
@@ -1381,7 +1490,7 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
     card_rows[i] = (VkrUiTrack){.value = 64.0f, .unit = VKR_UI_TRACK_PX};
   }
   VkrUiPanelConfig list = vkr_ui_panel_config_default();
-  list.placement = editor_recording_cell(0u, 2u);
+  list.placement = editor_recording_cell(0u, first + 1u);
   list.placement.align = VKR_UI_ALIGN_STRETCH;
   list.columns = &column;
   list.column_count = 1u;
