@@ -975,10 +975,14 @@ vkr_internal VkrShadowConfig vkr_standard_scene_runtime_pipeline_shadow_config(
        full filter (ADR-087). */
     config.local_shadow_full_filter_all = true_v;
     vkr_shadow_config_apply_tiled(&config);
-  } else if (!vkr_platform_environment_flag("VKR_SHADOW_FAR_DISABLED")) {
+  } else {
+    /* Moving casters shadow up to four baked lamps (ADR-104). */
+    config.local_shadow_baked_lamp_count =
+        VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX;
     /* The desktop far level (shadow-quality D1); VKR_SHADOW_FAR_DISABLED
        ends the sun's shadows at the near cascades for a matched capture. */
-    vkr_shadow_config_apply_desktop(&config);
+    if (!vkr_platform_environment_flag("VKR_SHADOW_FAR_DISABLED"))
+      vkr_shadow_config_apply_desktop(&config);
   }
   return config;
 }

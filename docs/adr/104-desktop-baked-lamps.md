@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-15
+updated: 2026-10-17
 authority: adr
 ---
 
@@ -12,8 +12,9 @@ Accepted (partial). The desktop pipeline (Vulkan) bakes static lamps
 into lamp-group lightmap layers with direction pages. It removes the lamps
 from runtime lighting and shades the baked light per pixel on opaque and
 transmissive surfaces. Moving receivers take lamp light from the sparse
-volume, and moving casters shadow at most two baked lamps, selected by their
-light at the moving casters the camera may see. The tiled pipeline (Metal) runs the shared payload, validation and
+volume, and moving casters shadow at most four baked lamps (two on the
+tiled pipeline), selected by their light at the moving casters the camera
+may see. The tiled pipeline (Metal) runs the shared payload, validation and
 atlas changes with native evidence since 2026-10-10. No timing here is
 authoritative. Of the 2026-10-11 changes, native Vulkan runs on 2026-10-12
 show a Bistro set named under `lightmaps.desktop` baking the static lamps,
@@ -48,6 +49,11 @@ Owner decisions:
   - The two lamps are those whose light at the moving casters is strongest,
     not those nearest the camera: from the Bistro street camera the nearest
     lamps stood 8 to 12 m from the mannequin and its shadow barely showed.
+- **2026-10-17:**
+  - The desktop pipeline shadows up to four baked lamps, and a moving caster
+    weighs by the view it may cover: from the far end of the Level Design
+    Test warehouse the overhead crane cast no shadow, because the boxes near
+    the player took both places.
   - Each platform is baked, packaged and tested on its own machine, so a bake
     writes only its host's planes and BC planes need not match across hosts.
 - **2026-10-11:**
@@ -126,14 +132,17 @@ Owner decisions:
    lamps it drops as baked candidates. Each frame the shadow system scores a
    candidate by summing, over the moving casters the camera may see, its
    light at the caster, colour luminance × intensity × distance falloff ×
-   spot cone, times `1 / max(d², 2 m²)` for the caster's distance `d` from
-   the camera. A caster counts when its bounds meet the lamp's range on a
-   face the camera may see, its rooms are not hidden from the camera, and its
-   sphere grown by `min(0.25 × range, 4 m)`, the reach of its shadow, lies
-   inside the camera's side planes. The falloff is held at
-   `max(caster radius, 0.1 × range)`, so a caster touching a lamp does not
-   outweigh every other. At most two lamps are selected
-   ([`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
+   spot cone, times the view the caster may cover,
+   `r² / max(d², r², 2 m²)` for its bounding sphere's radius `r` and its
+   centre's distance `d` from the camera. A caster counts when its bounds
+   meet the lamp's range on a face the camera may see, its rooms are not
+   hidden from the camera, and its sphere grown by `min(0.25 × range, 4 m)`,
+   the reach of its shadow, lies inside the camera's side planes. The
+   falloff at the caster's centre is held at `0.1 × range`, so a caster
+   touching a lamp does not outweigh every other. At most four lamps are
+   selected on the desktop pipeline and two on the tiled pipeline, whose
+   lightmap record holds two (`VkrShadowConfig.local_shadow_baked_lamp_count`,
+   [`vkr_shadow_system.c`](../../runtime/src/renderer/systems/vkr_shadow_system.c),
    `vkr_shadow_select_baked_lamps`). Free places take the best outsiders at
    once. A selected lamp keeps its place while a moving caster meets its
    range, until an outsider has scored 1.5 times higher than the weakest
@@ -143,11 +152,18 @@ Owner decisions:
    light at one caster, without the camera weight, and an incumbent's score
    counted 1.15 times: in the Level Design Test warehouse, boxes near the
    camera cast no lamp shadow, and lamp shadows popped as the player walked
-   or turned. No lamp is shown while the dynamic-caster scan is unavailable,
+   or turned. Until 2026-10-17 two lamps were selected on both pipelines, a
+   caster weighed `1 / max(d², 2 m²)` for its distance `d` from the camera
+   past its radius, and the falloff was held at the caster's radius as well:
+   the crane's 49 m beam, a sphere of about 25 m, scored almost nothing
+   under the lamps it hangs below, and from the warehouse's far end the
+   boxes near the player took both places, so the crane cast no shadow. No lamp is shown while the dynamic-caster scan is unavailable,
    and that frame keeps the selection for the next. A publication in flight
    no longer drops the lamps: static squares hold static casters only and
    composite squares copy them, so the difference stays the moving casters'.
-   A selected lamp's static squares take one atlas layer before
+   The selected lamps' static squares take atlas layers of their own, as
+   many as that many lamps of the largest face fill (one on the tiled
+   pipeline, two on the desktop pipeline, 32 MiB each), before
    the dynamic band, present only while the scene has baked lamps and moving
    casters, and its faces follow ADR-019's static and dynamic squares. It
    publishes two view blocks, the composite (the dynamic square where a
@@ -177,7 +193,9 @@ Owner decisions:
   shadows that runtime shadow maps draw on Bistro's walls come out softer or
   weaker. The directed share gives an approximate highlight, not one per lamp.
 - A moving object takes lamp light at probe resolution (1 m) and has no lamp
-  shadow on itself. Only two baked lamps cast its shadows; the others pass
+  shadow on itself. Only four baked lamps (two on the tiled pipeline) cast
+  its shadows, and the frame's 16 dynamic faces bound the faces they cover;
+  the others pass
   through it, and a tap that crosses into a face without a dynamic square
   can lose a sliver of a soft shadow edge.
 - Bistro's desktop lamp data at 2,909 instances, three 4096 pages and one
@@ -327,7 +345,7 @@ Unavailable:
 
 ## Revisit when
 
-- **Moving casters.** A scene needs more than two lamps' shadows on its
+- **Moving casters.** A scene needs more than four lamps' shadows on its
   movers, or the mask's 1.3 ms with two lamps selected must shrink, for
   example at half resolution.
 - **BC quality.** A capture review finds block artefacts on lightmapped

@@ -34,9 +34,12 @@ typedef struct VkrLocalShadowCacheInput {
   /** Bit i: the i-th baked lamp gives its place up, so its shadow fades
    * out instead of in. */
   uint32_t baked_fading_mask;
-  /** The scene has baked lamps the frame may shadow, so the atlas keeps a
-   * layer for their static squares before the dynamic band. */
+  /** The scene has baked lamps the frame may shadow, so the atlas keeps
+   * layers for their static squares before the dynamic band. */
   bool8_t baked_lamps_possible;
+  /** Baked lamps the frame may shadow at most, which sizes those layers
+   * (VKR_LOCAL_SHADOW_BAKED_LAYER_COUNT). */
+  uint32_t baked_lamp_places;
   /** Baked lamps the selection considered, for the payload's metric. */
   uint32_t baked_lamp_candidates;
   VkrRetainedLocalShadowToken token;

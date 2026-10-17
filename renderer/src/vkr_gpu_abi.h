@@ -459,12 +459,20 @@ typedef struct VkrGpuVisibleDrawRow {
  * holds no static square; this many faces of the largest size fill it. */
 #define VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX 16u
 #define VKR_LOCAL_SHADOW_DYNAMIC_LAYER_COUNT 1u
-/* Baked lamps a frame shadows with its moving casters on the desktop
- * pipeline (ADR-104): those whose light at the moving casters in their range
- * is strongest. Their static squares fill one atlas layer of their
- * own, before the dynamic band, while the scene has baked lamps and moving
- * casters; this many lamps of the largest size fill at most that layer. */
-#define VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX 2u
+/* Baked lamps a frame shadows with its moving casters (ADR-104): those
+ * whose light at the moving casters the camera may see scores highest. The
+ * desktop pipeline shadows up to this many; the tiled pipeline's lightmap
+ * record holds VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX. Their static
+ * squares fill atlas layers of their own, before the dynamic band, while the
+ * scene has baked lamps and moving casters: as many layers as `lamps` lamps
+ * of the largest size fill. */
+#define VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX 4u
+#define VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX 2u
+#define VKR_LOCAL_SHADOW_BAKED_LAYER_COUNT(lamps)                              \
+  (((lamps) * 6u * VKR_LOCAL_SHADOW_MAP_SIZE_MAX *                             \
+        VKR_LOCAL_SHADOW_MAP_SIZE_MAX +                                        \
+    VKR_LOCAL_SHADOW_ATLAS_SIZE * VKR_LOCAL_SHADOW_ATLAS_SIZE - 1u) /          \
+   (VKR_LOCAL_SHADOW_ATLAS_SIZE * VKR_LOCAL_SHADOW_ATLAS_SIZE))
 #define VKR_LOCAL_SHADOW_TRANSMISSION_MAP_SIZE_MAX 512u
 /* Texels per transmission array: 32 faces at 512 squared. The arrays hold one
  * layer per face of the face budget, for the most important lights; larger
@@ -489,12 +497,15 @@ _Static_assert(
 _Static_assert(VKR_LOCAL_SHADOW_DYNAMIC_FACE_COUNT_MAX <
                    VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX,
                "dynamic squares leave render slots for static squares");
-_Static_assert((uint64_t)VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX * 6u *
-                       VKR_LOCAL_SHADOW_MAP_SIZE_MAX *
-                       VKR_LOCAL_SHADOW_MAP_SIZE_MAX <=
-                   (uint64_t)VKR_LOCAL_SHADOW_ATLAS_SIZE *
-                       VKR_LOCAL_SHADOW_ATLAS_SIZE,
-               "one layer holds the baked lamps' static squares");
+_Static_assert(VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX <=
+                   VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX,
+               "the payload holds the tiled pipeline's baked lamps");
+_Static_assert(VKR_LOCAL_SHADOW_BAKED_LAYER_COUNT(
+                   VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX) == 1u &&
+                   VKR_LOCAL_SHADOW_BAKED_LAYER_COUNT(
+                       VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX) == 2u,
+               "the tiled pipeline's baked lamps fill one layer and the "
+               "desktop pipeline's two");
 
 /** Bits of `count` consecutive render slots or layers starting at `first`;
  * the whole word when they cover all 64 bits. */

@@ -104,11 +104,12 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketLightmap {
   /* VkrLightmapBinding::active_lamp_mask. */
   uint32_t active_lamp_mask;
   uint32_t reserved;
-  VkrMetalPacketBakedLamp baked_lamps[VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX];
+  VkrMetalPacketBakedLamp
+      baked_lamps[VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX];
 } VkrMetalPacketLightmap;
 _Static_assert(sizeof(VkrMetalPacketLightmap) == 320u,
                "Metal lightmap record ABI drift");
-_Static_assert(VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX == 2u,
+_Static_assert(VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX == 2u,
                "Metal lightmap record holds two baked lamps");
 _Static_assert(VKR_LIGHTMAP_MAX_ACTIVE_LAYERS <= 8u,
                "Metal lightmap record holds at most eight active layers");

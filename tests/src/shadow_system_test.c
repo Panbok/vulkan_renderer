@@ -1630,6 +1630,64 @@ vkr_internal void test_local_shadow_baked_lamp_selection(void) {
   vkr_shadow_system_shutdown(&system);
 }
 
+/* The desktop pipeline shadows four baked lamps, whose static squares take
+ * two layers, and a moving caster weighs by the view it may cover: a crane
+ * 20 m away keeps its lamp against five boxes at the camera's feet, each
+ * under a lamp of its own. Weighed by inverse-square camera distance, with
+ * the lamp's light held at the crane's radius, the boxes' lamps took every
+ * place. */
+vkr_internal void test_local_shadow_desktop_baked_lamps_weigh_view(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  config.local_shadow_face_budget = 48u;
+  config.local_shadow_fade_distance = 1000.0f;
+  config.local_shadow_baked_lamp_count = VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX;
+  assert(vkr_shadow_system_init(&system, &config));
+
+  /* The crane's lamp 3 m above its centre, then a lamp 3 m above each box. */
+  VkrPointLight lamps[6] = {
+      local_shadow_test_light(40u, VKR_POINT_LIGHT_KIND_GLTF_POINT, 100.0f,
+                              vec3_new(0.0f, 7.0f, 20.0f)),
+  };
+  VkrWorldDrawCandidate casters[6] = {
+      local_shadow_dynamic_caster(vec3_new(0.0f, 4.0f, 20.0f), 8.0f),
+  };
+  for (uint32_t i = 1u; i < ArrayCount(lamps); ++i) {
+    const float32_t x = -6.0f + 2.0f * (float32_t)i;
+    lamps[i] = local_shadow_test_light(40u + i, VKR_POINT_LIGHT_KIND_GLTF_POINT,
+                                       100.0f, vec3_new(x, 3.5f, 3.0f));
+    casters[i] = local_shadow_dynamic_caster(vec3_new(x, 0.5f, 3.0f), 0.3f);
+  }
+  VkrWorldPassPayload payload = retained_static_payload();
+  payload.gpu_candidates = casters;
+  payload.gpu_candidate_count = ArrayCount(casters);
+  payload.gpu_shadow_candidate_count = ArrayCount(casters);
+  /* Two baked layers, then the band; no static lights. */
+  VkrRetainedLocalShadowToken valid = local_shadow_valid_token();
+  valid.atlas_layer_count = 3u;
+  valid.valid_layer_mask = UINT32_C(0x7);
+  const VkrPointLight no_light = {0};
+  VkrLocalShadowPassPayload local = {0};
+  VkrValidationError validation = {0};
+  const VkrLocalShadowCamera camera =
+      local_shadow_camera(vec3_new(0.0f, 2.0f, 0.0f));
+
+  vkr_shadow_system_resolve_local_shadows(&system, valid, &payload, &no_light,
+                                          0u, NULL, lamps, ArrayCount(lamps),
+                                          &camera, &local);
+  assert(local.atlas_layer_count == 3u && local.dynamic_layer_count == 1u);
+  assert(local.baked_lamp_candidates == 6u &&
+         local.baked_lamp_count == VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX);
+  bool8_t crane_lamp = false_v;
+  for (uint32_t i = 0u; i < local.baked_lamp_count; ++i)
+    crane_lamp |= local.baked_lamps[i].light.render_id == 40u;
+  assert(crane_lamp);
+  assert(local_shadow_validate(&local, &payload, &no_light, 0u, &validation) ==
+         VKR_RENDERER_ERROR_NONE);
+  vkr_shadow_system_discard_frame(&system);
+  vkr_shadow_system_shutdown(&system);
+}
+
 /* With refractive casters the most important lights hold one transmission
  * layer per face, drawn with the face. A layer becomes readable only once
  * drawn; losing a prefix image or a layer's content redraws the light's
@@ -3760,6 +3818,7 @@ bool32_t run_shadow_system_tests(void) {
   test_local_shadow_fade_keeps_face_size();
   test_local_shadow_bistro_lamps_fit_every_preset();
   test_local_shadow_baked_lamp_selection();
+  test_local_shadow_desktop_baked_lamps_weigh_view();
   test_local_shadow_transmission_layers();
   test_local_shadow_cache_fills_every_light();
   test_local_shadow_camera_cut_snaps();

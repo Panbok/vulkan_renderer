@@ -148,6 +148,8 @@ typedef struct VkrShadowCasterDepthBounds {
  * | local_shadow_face_budget, local_shadow_map_size,
  *   local_shadow_fade_distance, local_shadow_full_filter_all,
  *   local_shadow_atlas_layer_budget | vkr_local_shadow_cache_resolve() |
+ * | local_shadow_baked_lamp_count | vkr_shadow_select_baked_lamps() and the
+ *   baked layers in vkr_local_shadow_cache_resolve() |
  * | cascade_count | split/matrix loop; packet cascade count |
  * | shadow_map_size | texel size and snapping in the cascade fit |
  * | cascade_split_lambda | vkr_shadow_compute_cascade_splits() |
@@ -194,6 +196,11 @@ typedef struct VkrShadowConfig {
    * over the last VKR_LOCAL_SHADOW_FADE_BAND_METRES; lights past it are not
    * filtered. Bounds the shadowed lights a pixel filters. */
   float32_t local_shadow_fade_distance;
+  /** Baked lamps a frame shadows with its moving casters (ADR-104): up to
+   * VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX on the desktop pipeline; zero
+   * takes the tiled pipeline's VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX.
+   * Their static squares take VKR_LOCAL_SHADOW_BAKED_LAYER_COUNT layers. */
+  uint32_t local_shadow_baked_lamp_count;
   /** Screen-space contact shadows for the full-filter local lights. Ultra
    * only: the march costs about 1.1 ms of Shadow.LocalMask in the Bistro
    * street view on the M1 Pro, mostly through the occupancy it takes. */

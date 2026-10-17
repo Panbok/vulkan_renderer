@@ -3221,7 +3221,7 @@ vkr_internal bool8_t vkr_metal_packet_upload_lightmap(
       plan->local_shadow_view_count > 0u ? packet->input.local_shadow : NULL;
   const uint32_t baked_count = local_shadow
                                    ? Min(local_shadow->baked_lamp_count,
-                                         VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
+                                         VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX)
                                    : 0u;
   for (uint32_t i = 0u; i < baked_count; ++i) {
     const VkrLocalShadowBakedLamp *lamp = &local_shadow->baked_lamps[i];

@@ -1562,9 +1562,10 @@ These are limits of current code or retained acceptance, not scheduled promises:
   The tiled pipeline samples every layer; the desktop pipeline samples the
   lamp groups' desktop planes in place of its static lamps in opaque and
   transmission shading, moving receivers take the volume's lamp light, and
-  at most two baked lamps cast the moving casters' shadows, chosen by their
-  light at the moving casters the camera may see, weighted by the casters'
-  nearness to the camera, and kept until another lamp scores 1.5 times
+  at most four baked lamps (two on the tiled pipeline) cast the moving
+  casters' shadows, chosen by their light at the moving casters the camera
+  may see, weighted by the view each caster may cover, and kept until
+  another lamp scores 1.5 times
   higher for 0.5 s; see [ADR-088](adr/088-baked-lightmap-sets.md) and
   [ADR-104](adr/104-desktop-baked-lamps.md). The per-class references pass
   the Debug CPU suite; on native Vulkan a fixture loads its

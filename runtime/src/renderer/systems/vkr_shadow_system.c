@@ -1130,6 +1130,11 @@ void vkr_shadow_config_normalize(VkrShadowConfig *config) {
   }
   if (!(config->local_shadow_fade_distance > 0.0f))
     config->local_shadow_fade_distance = VKR_LOCAL_SHADOW_FADE_DISTANCE_DEFAULT;
+  if (config->local_shadow_baked_lamp_count == 0u ||
+      config->local_shadow_baked_lamp_count >
+          VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX)
+    config->local_shadow_baked_lamp_count =
+        VKR_LOCAL_SHADOW_TILED_BAKED_LAMP_COUNT_MAX;
   config->cascade_split_lambda =
       vkr_clamp_f32(config->cascade_split_lambda, 0.0f, 1.0f);
   if (config->cascade_guard_band_texels < 0.0f) {
@@ -2451,16 +2456,18 @@ vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
    while scores cross nor pop. */
 #define VKR_BAKED_LAMP_CHALLENGE_FACTOR 1.5f
 #define VKR_BAKED_LAMP_CHALLENGE_SECONDS 0.5f
-/* A lamp lights a moving caster as it would at this fraction of its range,
-   or the caster's radius, when nearer, so a caster touching a lamp does not
-   outweigh every other. */
+/* A lamp lights a moving caster's centre as it would at this fraction of its
+   range when nearer, so a caster touching a lamp does not outweigh every
+   other. */
 #define VKR_BAKED_LAMP_NEAR_RANGE_FRACTION 0.1f
 /* A moving caster's shadow may show this far beyond its bounding sphere:
    this fraction of the lamp's range, at most the metres. */
 #define VKR_BAKED_LAMP_SHADOW_REACH_FRACTION 0.25f
 #define VKR_BAKED_LAMP_SHADOW_REACH_METRES 4.0f
-/* Moving casters nearer the camera than this score alike; farther ones
-   score by inverse-square camera distance. */
+/* A moving caster weighs by the view it may cover: its bounding sphere's
+   squared radius over its squared distance from the camera, held at this
+   distance when nearer and whole once the camera is inside it. A crane
+   across a hall then outweighs a box at the player's feet. */
 #define VKR_BAKED_LAMP_CAMERA_NEAR_METRES 2.0f
 
 /* The luminance `light` sends to `point`: intensity times its distance
@@ -2558,9 +2565,9 @@ vkr_internal uint32_t vkr_shadow_best_baked_outsider(const VkrPointLight *lamps,
 }
 
 /* Selects the baked lamps whose moving-caster shadows the frame shows, at
-   most VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX, by `score`, and stores the
-   selection. A selected lamp stays while a moving caster meets its range;
-   free places take the strongest outsiders at once. With every place
+   most the configuration's local_shadow_baked_lamp_count, by `score`, and
+   stores the selection. A selected lamp stays while a moving caster meets its
+   range; free places take the strongest outsiders at once. With every place
    taken, the weakest lamp gives its place to an outsider that has
    outscored it by the challenge factor for the hold time: it fades out,
    and the outsider takes the place once its shadow has faded. A fading
@@ -2579,9 +2586,12 @@ vkr_internal uint32_t vkr_shadow_select_baked_lamps(
       ++*out_candidates;
   }
 
+  const uint32_t place_count = system->config.local_shadow_baked_lamp_count;
   uint32_t selected_count = 0u;
   uint32_t fading_mask = 0u;
-  for (uint32_t i = 0u; i < system->baked_lamp_selected_count; ++i) {
+  for (uint32_t i = 0u;
+       i < system->baked_lamp_selected_count && selected_count < place_count;
+       ++i) {
     const uint32_t render_id = system->baked_lamp_render_ids[i];
     const uint32_t lamp =
         vkr_shadow_find_baked_lamp(lamps, lamp_count, render_id);
@@ -2597,7 +2607,7 @@ vkr_internal uint32_t vkr_shadow_select_baked_lamps(
     out_selected[selected_count++] = lamp;
   }
 
-  while (selected_count < VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX) {
+  while (selected_count < place_count) {
     const uint32_t best = vkr_shadow_best_baked_outsider(
         lamps, score, lamp_count, out_selected, selected_count);
     if (best == lamp_count)
@@ -2621,9 +2631,8 @@ vkr_internal uint32_t vkr_shadow_select_baked_lamps(
       weakest = i;
   }
   const bool8_t challenged =
-      selected_count == VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX &&
-      fading_mask == 0u && challenger != lamp_count &&
-      weakest != selected_count &&
+      selected_count == place_count && fading_mask == 0u &&
+      challenger != lamp_count && weakest != selected_count &&
       score[challenger] >
           score[out_selected[weakest]] * VKR_BAKED_LAMP_CHALLENGE_FACTOR;
   if (!challenged) {
@@ -2720,11 +2729,12 @@ void vkr_shadow_system_resolve_local_shadows(
         camera && (candidate->cull & VKR_GPU_DRAW_CULL_HIDDEN_BIT) == 0u;
     float32_t camera_weight = 0.0f;
     if (scored) {
-      const float32_t camera_distance =
-          Max(vec3_length(vec3_sub(center, camera->position)) - radius, 0.0f);
-      camera_weight = 1.0f / Max(camera_distance * camera_distance,
-                                 VKR_BAKED_LAMP_CAMERA_NEAR_METRES *
-                                     VKR_BAKED_LAMP_CAMERA_NEAR_METRES);
+      const float32_t radius_squared = radius * radius;
+      camera_weight =
+          radius_squared /
+          Max(vec3_length_squared(vec3_sub(center, camera->position)),
+              Max(radius_squared, VKR_BAKED_LAMP_CAMERA_NEAR_METRES *
+                                      VKR_BAKED_LAMP_CAMERA_NEAR_METRES));
     }
     for (uint32_t lamp = 0u; lamp < bounded_lamp_count; ++lamp) {
       const VkrPointLight *baked_lamp = &baked_lamps[lamp];
@@ -2744,7 +2754,7 @@ void vkr_shadow_system_resolve_local_shadows(
                                              radius + shadow_reach))
         continue;
       const float32_t near_distance =
-          Max(radius, baked_lamp->range * VKR_BAKED_LAMP_NEAR_RANGE_FRACTION);
+          baked_lamp->range * VKR_BAKED_LAMP_NEAR_RANGE_FRACTION;
       const float32_t contribution =
           camera_weight *
           vkr_shadow_baked_lamp_light_at(baked_lamp, center, near_distance);
@@ -2791,6 +2801,7 @@ void vkr_shadow_system_resolve_local_shadows(
       .baked_light_count = selected_count,
       .baked_fading_mask = fading_mask,
       .baked_lamps_possible = bounded_lamp_count != 0u,
+      .baked_lamp_places = system->config.local_shadow_baked_lamp_count,
       .baked_lamp_candidates = baked_candidates,
       .camera = camera,
       .feedback = system->light_contribution_ranking_disabled

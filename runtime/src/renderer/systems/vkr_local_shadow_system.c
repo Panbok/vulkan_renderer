@@ -551,13 +551,15 @@ vkr_internal Vec4 vkr_local_shadow_cell_rect(uint32_t cell,
                 (float32_t)(cell >> 16u)};
 }
 
-/* Places the baked lamps' static squares in the layer at `layer`: a lamp
- * keeps its previous squares there when they are free, the others take the
- * first free ones, largest first. Returns false when one does not fit. */
+/* Places the baked lamps' static squares in the `layer_count` layers from
+ * `first_layer`: a lamp keeps its previous squares there when they are free,
+ * the others take the first free ones, largest first. Returns false when one
+ * does not fit. */
 vkr_internal bool8_t vkr_local_shadow_place_baked(
     const VkrLocalShadowCache *cache, VkrLocalShadowCandidate *candidates,
-    uint32_t candidate_count, uint32_t layer) {
-  VkrLocalShadowAtlas atlas = {.layer_count = 1u};
+    uint32_t candidate_count, uint32_t first_layer, uint32_t layer_count) {
+  /* The local atlas numbers the baked layers from zero. */
+  VkrLocalShadowAtlas atlas = {.layer_count = layer_count};
   bool8_t placed[VKR_LOCAL_SHADOW_LIGHT_COUNT_MAX] = {0};
   for (uint32_t i = 0u; i < candidate_count; ++i) {
     VkrLocalShadowCandidate *candidate = &candidates[i];
@@ -573,10 +575,11 @@ vkr_internal bool8_t vkr_local_shadow_place_baked(
     bool8_t fits = true_v;
     for (uint32_t face = 0u; fits && face < candidate->face_count; ++face) {
       const uint32_t cell = previous->face_cells[face];
-      fits = (cell >> 16u) == layer &&
-             vkr_local_shadow_atlas_free(&trial, cell & 0xFFFFu, cells);
+      const uint32_t local_cell = cell - (first_layer << 16u);
+      fits = (cell >> 16u) >= first_layer &&
+             vkr_local_shadow_atlas_free(&trial, local_cell, cells);
       if (fits)
-        vkr_local_shadow_atlas_mark(&trial, cell & 0xFFFFu, cells);
+        vkr_local_shadow_atlas_mark(&trial, local_cell, cells);
     }
     if (!fits)
       continue;
@@ -595,7 +598,7 @@ vkr_internal bool8_t vkr_local_shadow_place_baked(
         uint32_t cell = 0u;
         if (!vkr_local_shadow_atlas_allocate(&atlas, size, &cell))
           return false_v;
-        candidate->face_cells[face] = cell | (layer << 16u);
+        candidate->face_cells[face] = cell + (first_layer << 16u);
       }
     }
   }
@@ -1716,7 +1719,11 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
   const uint32_t dynamic_layer_count =
       input->dynamic_casters ? VKR_LOCAL_SHADOW_DYNAMIC_LAYER_COUNT : 0u;
   const uint32_t baked_layer_count =
-      input->baked_lamps_possible && input->dynamic_casters ? 1u : 0u;
+      input->baked_lamps_possible && input->dynamic_casters
+          ? VKR_LOCAL_SHADOW_BAKED_LAYER_COUNT(
+                Clamp(input->baked_lamp_places, 1u,
+                      VKR_LOCAL_SHADOW_BAKED_LAMP_COUNT_MAX))
+          : 0u;
   const uint32_t reserved_layers = dynamic_layer_count + baked_layer_count;
   const uint32_t layer_budget =
       input->atlas_layer_budget != 0u
@@ -1777,7 +1784,7 @@ void vkr_local_shadow_cache_resolve(VkrLocalShadowCache *cache,
       dynamic_layer_count != 0u && !input->dynamic_faces_unknown &&
       baked_layer_count != 0u &&
       vkr_local_shadow_place_baked(cache, candidates, candidate_count,
-                                   static_layer_count);
+                                   static_layer_count, baked_layer_count);
   if (!baked_shown) {
     uint32_t kept = 0u;
     for (uint32_t i = 0u; i < candidate_count; ++i) {
