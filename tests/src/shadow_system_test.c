@@ -2501,8 +2501,8 @@ vkr_internal void test_far_level_rebuilds_in_slices(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   vkr_shadow_config_apply_tiled(&config);
   assert(vkr_shadow_system_init(&system, &config));
-  const uint32_t far = config.cascade_count - 1u;
-  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t far_level = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far_level;
   const uint32_t all = cascade_mask(&system);
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
@@ -2516,7 +2516,7 @@ vkr_internal void test_far_level_rebuilds_in_slices(void) {
   };
   update_for_reuse(&system, &camera);
   VkrShadowFrameData frame = resolve_composed(&system, 0u, token, &payload);
-  assert(frame.static_active && frame.far_cascade == far);
+  assert(frame.static_active && frame.far_cascade == far_level);
   vkr_shadow_system_commit_frame(&system, 18u);
   token.static_valid_layer_mask = all;
 
@@ -2546,7 +2546,7 @@ vkr_internal void test_far_level_rebuilds_in_slices(void) {
     vkr_shadow_system_commit_frame(&system, submit++);
   }
   assert(started);
-  const Mat4 kept = frame.view_projection[far];
+  const Mat4 kept = frame.view_projection[far_level];
 
   /* The tiles cover the map once. */
   uint64_t texels =
@@ -2558,7 +2558,8 @@ vkr_internal void test_far_level_rebuilds_in_slices(void) {
     frame = resolve_composed(&system, 0u, token, &payload);
     assert(frame.far_slice_active && frame.far_publish_mask == 0u);
     /* Receivers keep the layer the rebuild replaces. */
-    assert(MemCompare(&frame.view_projection[far], &kept, sizeof(Mat4)) == 0);
+    assert(MemCompare(&frame.view_projection[far_level], &kept, sizeof(Mat4)) ==
+           0);
     texels += (uint64_t)(frame.far_slice_rect[2] - frame.far_slice_rect[0]) *
               (frame.far_slice_rect[3] - frame.far_slice_rect[1]);
     vkr_shadow_system_commit_frame(&system, submit++);
@@ -2573,7 +2574,8 @@ vkr_internal void test_far_level_rebuilds_in_slices(void) {
   assert((frame.copy_mask & far_bit) != 0u);
   assert(((frame.static_render_mask | frame.cascade_render_mask) & far_bit) ==
          0u);
-  assert(MemCompare(&frame.view_projection[far], &kept, sizeof(Mat4)) != 0);
+  assert(MemCompare(&frame.view_projection[far_level], &kept, sizeof(Mat4)) !=
+         0);
   vkr_shadow_system_commit_frame(&system, submit++);
 
   /* The published layer is the static layer from then on. */
@@ -2593,8 +2595,8 @@ vkr_internal void test_far_level_rebuilds_stale_layer_in_slices(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   vkr_shadow_config_apply_tiled(&config);
   assert(vkr_shadow_system_init(&system, &config));
-  const uint32_t far = config.cascade_count - 1u;
-  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t far_level = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far_level;
   const uint32_t all = cascade_mask(&system);
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
@@ -2621,7 +2623,7 @@ vkr_internal void test_far_level_rebuilds_stale_layer_in_slices(void) {
     vkr_shadow_system_commit_frame(&system, submit++);
   }
   assert(first_published);
-  const Mat4 kept = system.static_history[far].rendered_view_projection;
+  const Mat4 kept = system.static_history[far_level].rendered_view_projection;
 
   payload.publication_pending = true_v;
   for (uint32_t step = 0u; step < 4u; ++step) {
@@ -2630,7 +2632,8 @@ vkr_internal void test_far_level_rebuilds_stale_layer_in_slices(void) {
     assert(((frame.cascade_render_mask | frame.static_render_mask) & far_bit) ==
            0u);
     assert((frame.copy_mask & far_bit) != 0u && !frame.far_slice_active);
-    assert(MemCompare(&frame.view_projection[far], &kept, sizeof(Mat4)) == 0);
+    assert(MemCompare(&frame.view_projection[far_level], &kept, sizeof(Mat4)) ==
+           0);
     vkr_shadow_system_commit_frame(&system, submit++);
   }
   payload.publication_pending = false_v;
@@ -2648,7 +2651,7 @@ vkr_internal void test_far_level_rebuilds_stale_layer_in_slices(void) {
     vkr_shadow_system_commit_frame(&system, submit++);
   }
   assert(slices == VKR_SHADOW_FAR_SLICE_COUNT && published);
-  assert(system.static_history[far].publication_generation ==
+  assert(system.static_history[far_level].publication_generation ==
          payload.publication_generation);
   vkr_shadow_system_shutdown(&system);
 }
@@ -2661,8 +2664,8 @@ vkr_internal void test_field_revision_rebuilds_far_level_in_slices(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   vkr_shadow_config_apply_tiled(&config);
   assert(vkr_shadow_system_init(&system, &config));
-  const uint32_t far = config.cascade_count - 1u;
-  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t far_level = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far_level;
   const uint32_t all = cascade_mask(&system);
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
@@ -2711,7 +2714,7 @@ vkr_internal void test_field_revision_rebuilds_far_level_in_slices(void) {
     vkr_shadow_system_commit_frame(&system, submit++);
   }
   assert(slices == VKR_SHADOW_FAR_SLICE_COUNT && published);
-  assert(system.static_history[far].field_revision == 1u);
+  assert(system.static_history[far_level].field_revision == 1u);
   vkr_shadow_system_shutdown(&system);
 }
 
@@ -2828,6 +2831,69 @@ vkr_internal void test_without_dynamic_casters_static_layers_stay_unused(void) {
   assert(!first.static_active && first.copy_mask == 0u &&
          first.static_render_mask == 0u && first.dynamic_render_mask == 0u);
   assert(first.cascade_render_mask == all);
+  vkr_shadow_system_shutdown(&system);
+}
+
+/* Without dynamic casters the desktop far level composes alone: the static
+   image holds its layer only and the near cascades draw whole. A live image
+   laid out for every cascade, which the graph recreates this frame, proves
+   no layer to compose from, and a dynamic caster lays the image out from
+   the first cascade again. */
+vkr_internal void test_desktop_static_image_holds_far_level_alone(void) {
+  VkrShadowSystem system = {0};
+  VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  vkr_shadow_config_apply_desktop(&config);
+  assert(config.static_far_only);
+  assert(vkr_shadow_system_init(&system, &config));
+  const uint32_t far_level = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far_level;
+  const uint32_t all = cascade_mask(&system);
+  VkrCamera camera = test_camera();
+  VkrWorldPassPayload payload = retained_static_payload();
+  prime_retained_history(&system, &camera, 0u, &payload);
+  VkrRetainedShadowToken token = {
+      .resource_generation = 3u,
+      .valid_layer_mask = all,
+      .moments_valid_cascade_mask = all,
+      .static_resource_generation = 5u,
+      .static_first_cascade = far_level,
+      .far_pending_resource_generation = 9u,
+  };
+
+  uint64_t submit = 18u;
+  bool8_t published = false_v;
+  VkrShadowFrameData frame = {0};
+  for (uint32_t step = 0u; step < VKR_SHADOW_FAR_SLICE_COUNT + 4u && !published;
+       ++step) {
+    update_for_reuse(&system, &camera);
+    frame = resolve_composed(&system, 0u, token, &payload);
+    assert(frame.static_active && frame.static_first_cascade == far_level);
+    assert(((frame.copy_mask | frame.static_render_mask) & ~far_bit) == 0u);
+    published = frame.far_publish_mask == far_bit;
+    vkr_shadow_system_commit_frame(&system, submit++);
+  }
+  assert(published);
+  token.static_valid_layer_mask = far_bit;
+
+  VkrRetainedShadowToken every_cascade = token;
+  every_cascade.static_first_cascade = 0u;
+  every_cascade.static_valid_layer_mask = all;
+  update_for_reuse(&system, &camera);
+  frame = resolve_composed(&system, 1u, every_cascade, &payload);
+  assert(frame.static_first_cascade == far_level);
+  assert(frame.copy_mask == 0u && frame.static_render_mask == 0u &&
+         frame.far_publish_mask == 0u);
+  vkr_shadow_system_discard_frame(&system);
+
+  VkrWorldDrawCandidate dynamic =
+      dynamic_candidate_at_history(&system.cascade_history[0][0], true_v);
+  payload.gpu_candidates = &dynamic;
+  payload.gpu_shadow_candidate_count = 1u;
+  payload.dynamic_generation++;
+  update_for_reuse(&system, &camera);
+  frame = resolve_composed(&system, 0u, token, &payload);
+  assert(frame.static_active && frame.static_first_cascade == 0u);
+  assert(frame.copy_mask == 0u);
   vkr_shadow_system_shutdown(&system);
 }
 
@@ -3025,8 +3091,8 @@ vkr_internal void test_far_level_follows_moving_sun_in_slices(void) {
   VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
   vkr_shadow_config_apply_tiled(&config);
   assert(vkr_shadow_system_init(&system, &config));
-  const uint32_t far = config.cascade_count - 1u;
-  const uint32_t far_bit = UINT32_C(1) << far;
+  const uint32_t far_level = config.cascade_count - 1u;
+  const uint32_t far_bit = UINT32_C(1) << far_level;
   const uint32_t all = (UINT32_C(1) << config.cascade_count) - 1u;
   VkrCamera camera = test_camera();
   VkrWorldPassPayload payload = retained_static_payload();
@@ -3063,7 +3129,7 @@ vkr_internal void test_far_level_follows_moving_sun_in_slices(void) {
     vkr_shadow_system_commit_frame(&system, submit++);
   }
   assert(published >= 2u);
-  const Vec3 held = system.fit_history.light_directions[far];
+  const Vec3 held = system.fit_history.light_directions[far_level];
   assert(held.x == light.x && held.y == light.y && held.z == light.z);
   vkr_shadow_system_shutdown(&system);
 }
@@ -3713,6 +3779,7 @@ bool32_t run_shadow_system_tests(void) {
   test_field_revision_rebuilds_far_level_in_slices();
   test_static_change_reaching_fit_redraws_static_layer();
   test_without_dynamic_casters_static_layers_stay_unused();
+  test_desktop_static_image_holds_far_level_alone();
   test_static_image_first_frame_draws_whole();
   test_discarded_static_layer_draws_again();
   test_turning_sun_draws_cascades_whole();

@@ -1927,6 +1927,9 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
                                                                       : 0u),
       .local_shadow_mask_texture = local_shadow_mask,
       .shadow_moments_texture = shadow_moments,
+      .shadow_moments_cascade_end =
+          VKR_SHADOW_EVSM_FIRST_CASCADE +
+          renderer->prepared_frame.shadow_moments_layer_count,
       .baked_lamps_texture = baked_lamps,
       .baked_direction_texture = baked_direction,
       .diffuse_volume_texture = diffuse_volume,

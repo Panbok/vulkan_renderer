@@ -911,7 +911,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   /** Nonzero: a contact march toward the sun multiplies its visibility
       where the rays do not cover the pixel. */
   uint32_t sun_contact;
-  uint32_t sun_reserved[3];
+  /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE below this one sample
+      `shadow_moments_texture`; the far level filters with PCF. */
+  uint32_t shadow_moments_cascade_end;
+  uint32_t sun_reserved[2];
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&

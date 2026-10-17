@@ -2588,6 +2588,15 @@ vkr_internal bool8_t vkr_rg_json_resolve_layers(
       return true_v;
     }
     if (vkr_string8_equals_cstr_i(&desc->layers_source,
+                                  "shadow_static_layer_count")) {
+      *out_layers =
+          frame->shadow_map_layer_count > frame->shadow_static_first_cascade
+              ? frame->shadow_map_layer_count -
+                    frame->shadow_static_first_cascade
+              : 1u;
+      return true_v;
+    }
+    if (vkr_string8_equals_cstr_i(&desc->layers_source,
                                   "shadow_moments_layer_count")) {
       *out_layers = Max(frame->shadow_moments_layer_count, 1u);
       return true_v;
@@ -2732,6 +2741,14 @@ vkr_rg_resolve_index(const VkrRgJsonIndex *index, uint32_t fallback,
   if (vkr_string8_equals_cstr_i(&index->token, "${i+1}") ||
       vkr_string8_equals_cstr_i(&index->token, "i+1")) {
     return fallback == UINT32_MAX ? UINT32_MAX : fallback + 1u;
+  }
+  /* Cascade i's layer of the static cascade image, which holds the cascades
+   * from shadow_static_first_cascade on. */
+  if (vkr_string8_equals_cstr_i(&index->token, "${shadow_static_layer}")) {
+    return frame && fallback >= frame->shadow_static_first_cascade &&
+                   fallback != UINT32_MAX
+               ? fallback - frame->shadow_static_first_cascade
+               : UINT32_MAX;
   }
   /* A local-shadow render slot draws one face: its depth goes to the face's
    * atlas layer and its crossings to the face's transmission layer. */

@@ -65,7 +65,14 @@ cascade above them as a far level to 1 km
 (`vkr_shadow_config_apply_desktop`; `VKR_SHADOW_FAR_DISABLED` ends the sun's
 shadows at the near cascades instead). The frame's shadow map and the shadow
 system take the same configuration
-(`vkr_standard_scene_runtime_pipeline_shadow_config`). A far level always composes from
+(`vkr_standard_scene_runtime_pipeline_shadow_config`). While the world has no
+dynamic caster the desktop far level composes alone
+(`VkrShadowConfig.static_far_only`): the static image holds its layer only
+(`static_first_cascade`, the graph's `${shadow_static_layer}`) and the near
+cascades draw whole into each target image, as without a far level. A live
+static image laid out from another cascade is recreated that frame, so the
+shadow system composes nothing from it
+(`test_desktop_static_image_holds_far_level_alone`). A far level always composes from
 its static layer, which it rebuilds over several frames instead of drawing
 every far caster in one: once the kept fit's margin falls below 64 of its
 texels, a rebuild takes a fresh guarded fit and draws one tile of an 8x8
@@ -286,7 +293,9 @@ the static-only rule.
 ### Far-cascade EVSM
 
 The **Filtered far shadows** setting (`VkrShadowConfig.far_cascade_evsm`) gives
-cascades from `VKR_SHADOW_EVSM_FIRST_CASCADE` (2) exponential variance moments.
+cascades from `VKR_SHADOW_EVSM_FIRST_CASCADE` (2) up to the far level
+exponential variance moments; the far level filters with PCF, so its third of
+the moments does not exist for its few receivers.
 The shadow payload's `evsm_enabled` requires more cascades than that. The High
 and Ultra shadow presets and the High and Epic graphics presets turn it on; the
 Balanced shadow preset and the Low and Medium graphics presets leave it off.
@@ -327,7 +336,10 @@ reuse. Once the images agree, static frames omit those passes again. Static
 frames need no new GPU storage, copies or waits; while the world has dynamic
 casters, the static layers take one more shadow-map-sized depth image (64 MiB
 at four 2048² cascades) and a composed cascade one copy of its layer per
-frame while its dynamic casters change.
+frame while its dynamic casters change. The desktop far level adds 80 MiB at
+2048² with three target images: a layer in each shadow map (48 MiB), its
+static layer and its pending image (16 MiB each); dynamic casters widen the
+static image to every cascade.
 
 While the light moves, a cascade's shadow can lag the lit direction by up to
 its tolerance: under 7 mm for a 15 m caster in cascade 0 and 5.2 cm in cascade

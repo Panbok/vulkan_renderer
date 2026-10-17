@@ -733,6 +733,9 @@ typedef struct VkrRenderGraphFrameInfo {
   /** The world has dynamic casters: the shared static cascade image exists
    * and cascades may compose their layer from it (ADR-041). */
   bool8_t shadow_cascade_static_active;
+  /** The cascade the static image's first layer holds; the image keeps the
+   * shadow map's layers from that cascade on. */
+  uint32_t shadow_static_first_cascade;
   /** Cascades whose static layer draws, whose static layer is copied into
    * their shadow-map layer, and whose copy takes the dynamic casters. */
   uint32_t shadow_cascade_static_render_mask;
@@ -754,8 +757,9 @@ typedef struct VkrRenderGraphFrameInfo {
    * count while a dynamic draw over a copied layer runs, else zero. */
   uint32_t shadow_cascade_dynamic_view_count;
   /** Far cascades keep EVSM moments, one layer per cascade from
-   * VKR_SHADOW_EVSM_FIRST_CASCADE; the render mask shifted to those layers
-   * selects the moments a redrawn cascade rebuilds. */
+   * VKR_SHADOW_EVSM_FIRST_CASCADE up to the far level, which keeps none;
+   * the render mask shifted to those layers selects the moments a redrawn
+   * cascade rebuilds. */
   bool8_t shadow_evsm_active;
   uint32_t shadow_moments_layer_count;
   uint32_t shadow_moments_render_mask;

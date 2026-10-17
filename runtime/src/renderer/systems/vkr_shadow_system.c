@@ -1237,6 +1237,7 @@ void vkr_shadow_config_apply_desktop(VkrShadowConfig *config) {
       config->cascade_z_extension_factor_per[far - 1u];
   config->far_cascade_distance = VKR_SHADOW_DESKTOP_FAR_DISTANCE;
   config->shadow_distance_fade_range = VKR_SHADOW_TILED_FAR_FADE_RANGE;
+  config->static_far_only = true_v;
 }
 
 bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
@@ -2208,6 +2209,17 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
      image's first frame draws whole too: its layers could record no
      resource generation, so they would draw again next frame. */
   out_data->static_active = dynamic_count > 0u || far != VKR_SHADOW_FAR_NONE;
+  /* Without dynamic casters the far level alone may need the static image.
+     A live image laid out for other cascades is recreated this frame, so its
+     layers hold nothing this frame can compose from. */
+  if (system->config.static_far_only && dynamic_count == 0u &&
+      far != VKR_SHADOW_FAR_NONE) {
+    out_data->static_first_cascade = far;
+  }
+  if (retained_token.static_first_cascade != out_data->static_first_cascade) {
+    retained_token.static_resource_generation = 0u;
+    retained_token.static_valid_layer_mask = 0u;
+  }
   const bool8_t compose = out_data->static_active && !publication_pending &&
                           retained_token.static_resource_generation != 0u;
 
@@ -2228,6 +2240,8 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
   /* A failed scan cannot place the dynamic casters; every cascade draws
      whole as without the static image. */
   const bool8_t composed = compose && !dynamic_scan_failed;
+  const uint32_t composed_mask =
+      composed ? ~((UINT32_C(1) << out_data->static_first_cascade) - 1u) : 0u;
 
   VkrShadowPendingHistory *pending = &system->pending_history;
   pending->image_index = image_index;
@@ -2254,9 +2268,11 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         ((history->static_only_contents && !dynamic_forced) ||
          (history->dynamic_contents && candidates &&
           history->dynamic_generation == candidates->dynamic_generation));
-    /* A filtered far cascade also needs moments built from that depth. */
+    /* A filtered far cascade also needs moments built from that depth; the
+       far level filters with PCF and keeps none. */
     const bool8_t moments_required = system->config.far_cascade_evsm &&
-                                     cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE;
+                                     cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE &&
+                                     cascade != far;
     reusable[cascade] =
         (retained_token.valid_layer_mask & bit) != 0u &&
         (!moments_required ||
@@ -2337,7 +2353,7 @@ void vkr_shadow_system_resolve_frame(VkrShadowSystem *system,
         system->static_history[cascade].last_submit_value != 0u &&
         system->static_history[cascade].light_signature ==
             light_signatures[cascade];
-    if (composed && (kept || fresh_layer_held)) {
+    if ((composed_mask & bit) != 0u && (kept || fresh_layer_held)) {
       /* The layer is its static layer's copy, drawn first when invalid, with
          the dynamic casters drawn over it when one can reach the fit. */
       const Mat4 light_view = kept ? kept->rendered_light_view

@@ -393,23 +393,25 @@ raster, and the receivers' next-cascade fallback and far-plane clamp.
   passes average under 0.01 ms a frame; the rest is receivers sampling it
   past 200 m. The receiver fallback adds 0.14 ms more, which ADR-041
   records.
-- **Memory.** Render-graph images grow by 192 MiB in the street view, with
-  three target images (`rendergraph.image_bytes.live` 3.467 to 3.668 GB):
-  one more 2048² layer in each shadow map (48 MiB), the static image, which
-  the far level keeps alive with all five layers (80 MiB), the pending
-  image (16 MiB) and the far cascade's EVSM moments (48 MiB). That is above
-  D1's +64–128 MiB estimate and works against the 600 MiB desktop budget.
-  Dropping the far cascade's moments, as the tiled pipeline does, or a
-  static image that holds only the layers that use it would save 48 MiB
-  and up to 64 MiB.
+- **Memory.** As first ported, render-graph images grew by 192 MiB in the
+  street view, with three target images (`rendergraph.image_bytes.live`
+  3.467 to 3.668 GB): one more 2048² layer in each shadow map (48 MiB), the
+  static image, which the far level kept alive with all five layers
+  (80 MiB), the pending image (16 MiB) and the far cascade's EVSM moments
+  (48 MiB). The far level now filters with PCF and keeps no moments, and
+  without dynamic casters the static image holds its layer alone, so the
+  far level costs 80 MiB (3.551 GB, `sha256:c31758d0…`), inside D1's
+  +64–128 MiB estimate. Street frame time and `Lighting.Deferred` were
+  unchanged within run-to-run spread (21.09 and 8.06 ms against 21.31 and
+  8.06 ms a day earlier).
 - **Validation.** Debug runs of the Bistro plaza with
   `VK_LAYER_KHRONOS_validation` and synchronization checks, rays off and
   on, after 60 and 200 warm-up frames (past the first 64-tile rebuild and
   its publish), reported no validation messages (`sha256:43f4709d…`,
   `82ec9d4e…`, `fea1c6c7…`).
-- **Open.** The far cascade takes EVSM moments like cascades 2 and 3, and
-  every frame that recomposes it recomputes them; dynamic casters within
-  1 km recompose it every frame they move. The valley captures are editor
+- **Open.** Dynamic casters within 1 km recompose the far cascade every
+  frame they move, and while any exists the static image holds every
+  cascade. The valley captures are editor
   captures, not harness reports, and the scene is the 2026-10-12 copy from
   the depot.
 

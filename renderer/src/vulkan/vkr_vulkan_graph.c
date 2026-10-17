@@ -564,7 +564,7 @@ vkr_internal uint32_t vkr_vk_retained_moments_mask(VkrVulkanRenderer *renderer,
 }
 
 /* The static cascade layers every frame in flight shares; one instance with
-   the shadow map's extent, format and layers, or nothing. */
+   the shadow map's extent and format holding its last layers, or nothing. */
 vkr_internal void
 vkr_vk_retained_static_cascades(VkrVulkanRenderer *renderer,
                                 const VkrRgImageDesc *shadow_map,
@@ -583,13 +583,16 @@ vkr_vk_retained_static_cascades(VkrVulkanRenderer *renderer,
         slot->desc.width != shadow_map->width ||
         slot->desc.height != shadow_map->height ||
         slot->desc.format != shadow_map->format ||
-        slot->desc.layers != shadow_map->layers ||
+        slot->desc.layers > shadow_map->layers ||
         !slot->instances[0].image.handle)
       return;
+    const uint32_t first = shadow_map->layers - slot->desc.layers;
     out_token->static_resource_generation = slot->graph_generation;
-    for (uint32_t layer = 0u; layer < Min(slot->desc.layers, 32u); ++layer) {
+    out_token->static_first_cascade = first;
+    for (uint32_t layer = 0u; layer < slot->desc.layers && first + layer < 32u;
+         ++layer) {
       if (slot->instances[0].retained_states[layer].content_valid)
-        out_token->static_valid_layer_mask |= UINT32_C(1) << layer;
+        out_token->static_valid_layer_mask |= UINT32_C(1) << (first + layer);
     }
     return;
   }
@@ -1384,9 +1387,11 @@ vkr_internal bool8_t vkr_vk_prepare_cascade_copy(
   const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
   const uint32_t cascade = pass->desc.repeat_index;
   if (!shadow || cascade >= shadow->cascade_count ||
+      cascade < shadow->static_first_cascade ||
       (shadow->copy_mask & (UINT32_C(1) << cascade)) == 0u || !read || !write ||
       !read->has_slice || !write->has_slice ||
-      read->image.id == write->image.id || read->slice.base_layer != cascade ||
+      read->image.id == write->image.id ||
+      read->slice.base_layer != cascade - shadow->static_first_cascade ||
       write->slice.base_layer != cascade)
     return false_v;
   VkrVulkanGraphImageInstance *source = vkr_vk_graph_image(
@@ -1399,7 +1404,7 @@ vkr_internal bool8_t vkr_vk_prepare_cascade_copy(
       source->image.format != destination->image.format)
     return false_v;
   vkr_vk_prepare_depth_layer_copy(
-      prepared, &source->image, cascade, (VkOffset3D){0, 0, 0},
+      prepared, &source->image, read->slice.base_layer, (VkOffset3D){0, 0, 0},
       &destination->image, cascade, (VkOffset3D){0, 0, 0},
       (VkExtent3D){source->image.width, source->image.height, 1u});
   return true_v;
@@ -1416,8 +1421,10 @@ vkr_internal bool8_t vkr_vk_prepare_far_publish(
   const VkrRgImageUse *write = vkr_rg_pass_find_image_use(&pass->desc, 1u, 0u);
   const uint32_t cascade = pass->desc.repeat_index;
   if (!shadow || cascade != shadow->far_cascade ||
+      cascade < shadow->static_first_cascade ||
       (shadow->far_publish_mask & (UINT32_C(1) << cascade)) == 0u || !read ||
-      !write || !write->has_slice || write->slice.base_layer != cascade)
+      !write || !write->has_slice ||
+      write->slice.base_layer != cascade - shadow->static_first_cascade)
     return false_v;
   VkrVulkanGraphImageInstance *source = vkr_vk_graph_image(
       renderer, read->image, renderer->prepared_frame.image_index);
@@ -1430,7 +1437,7 @@ vkr_internal bool8_t vkr_vk_prepare_far_publish(
     return false_v;
   vkr_vk_prepare_depth_layer_copy(
       prepared, &source->image, 0u, (VkOffset3D){0, 0, 0}, &destination->image,
-      cascade, (VkOffset3D){0, 0, 0},
+      write->slice.base_layer, (VkOffset3D){0, 0, 0},
       (VkExtent3D){source->image.width, source->image.height, 1u});
   return true_v;
 }
@@ -1525,7 +1532,9 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
     }
     if (!packet->input.shadow)
       return true_v;
-    const uint32_t cascade = pass->desc.depth_attachment.desc.slice.base_layer;
+    /* Each cascade's passes repeat once per cascade; the static image's
+       layers start at its first cascade instead of zero. */
+    const uint32_t cascade = pass->desc.repeat_index;
     if (cascade >= packet->input.shadow->cascade_count)
       return false_v;
     /* No hardcoded fallback: the configured value is the contract, and a

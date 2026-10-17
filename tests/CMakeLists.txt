@@ -13,6 +13,9 @@ target_sources(vulkan_renderer_tester PRIVATE
     "${CMAKE_SOURCE_DIR}/app/src/debug_overlay.c"
 )
 vkr_require_declared_c_functions(vulkan_renderer_tester)
+# Each suite inlines its tests into one frame sized for the 8 MiB macOS main
+# stack; the shadow system suite's exceeds Windows' 1 MiB default.
+vkr_set_main_stack_reserve(vulkan_renderer_tester)
 
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_property(TARGET vulkan_renderer_tester PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")

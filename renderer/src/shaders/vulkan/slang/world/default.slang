@@ -565,12 +565,15 @@ VkrVkPcssBlockers packet_shadow_pcss_blockers(
 /**
  * One cascade's visibility, or VKR_VK_SHADOW_MISSED where its map misses the
  * receiver. `rotation` turns the kernel per pixel (vkr_shadow_kernel_rotation).
+ * Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE below `moments_cascade_end`
+ * sample `moments_texture`; the far level has no moments and filters with PCF.
  */
 float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
                             float3 world_position, float3 normal, float n_dot_l,
                             float2 rotation,
                             uint moments_texture = VKR_VK_SHADOW_MOMENTS_NONE,
-                            uint moments_sampler = 0u)
+                            uint moments_sampler = 0u,
+                            uint moments_cascade_end = 0u)
 {
     VkrVulkanShadowCascade data = root.shadow_cascades[cascade];
     float texel = data.split_near_far_texel_depth.z;
@@ -607,7 +610,8 @@ float packet_shadow_cascade(VkrVulkanPacketFrameRoot *root, uint cascade,
 
     // Filtered far cascades take one bilinear moments fetch instead of PCF.
     if (moments_texture != VKR_VK_SHADOW_MOMENTS_NONE &&
-        cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE)
+        cascade >= VKR_SHADOW_EVSM_FIRST_CASCADE &&
+        cascade < moments_cascade_end)
     {
         float4 moments = g_array_textures[moments_texture].SampleLevel(
             g_samplers[moments_sampler],
@@ -670,7 +674,8 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
                                 float3 world_position, float3 normal,
                                 float2 rotation,
                                 uint moments_texture = VKR_VK_SHADOW_MOMENTS_NONE,
-                                uint moments_sampler = 0u)
+                                uint moments_sampler = 0u,
+                                uint moments_cascade_end = 0u)
 {
     if (root.shadow_cascade_count == 0u)
         return 1.0f;
@@ -696,7 +701,7 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
         dot(normal, normalize(-root.directional_direction_enabled.xyz));
     float factor = packet_shadow_cascade(root, cascade, world_position, normal,
                                          n_dot_l, rotation, moments_texture,
-                                         moments_sampler);
+                                         moments_sampler, moments_cascade_end);
     // A receiver its cascade's map misses, pushed past an edge by the normal
     // offset, takes the next cascade's map, which contains it, rather than
     // full light.
@@ -705,7 +710,7 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
         cascade += 1u;
         factor = packet_shadow_cascade(root, cascade, world_position, normal,
                                        n_dot_l, rotation, moments_texture,
-                                       moments_sampler);
+                                       moments_sampler, moments_cascade_end);
     }
     if (factor < 0.0f)
         factor = 1.0f;
@@ -723,7 +728,8 @@ float packet_directional_shadow(VkrVulkanPacketFrameRoot *root,
             float next = packet_shadow_cascade(root, cascade + 1u,
                                                world_position, normal, n_dot_l,
                                                rotation, moments_texture,
-                                               moments_sampler);
+                                               moments_sampler,
+                                               moments_cascade_end);
             // A next map that misses the receiver keeps this one's value.
             if (next >= 0.0f)
                 factor = lerp(factor, next, t);

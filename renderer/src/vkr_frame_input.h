@@ -705,6 +705,10 @@ typedef struct VkrShadowPassPayload {
    * cascade may be composed from its static layer and a dynamic draw. The
    * three masks below are zero without it. */
   bool8_t static_active;
+  /** The cascade the static image's first layer holds; its layer i holds
+   * cascade static_first_cascade + i and no static mask names a cascade
+   * below it. Zero without the static image. */
+  uint32_t static_first_cascade;
   /** Cascades whose static layer draws the static casters this frame. */
   uint32_t static_render_mask;
   /** Cascades whose static layer is copied into their shadow-map layer;

@@ -214,10 +214,11 @@ typedef struct VkrShadowConfig {
    * limit bounds the shadowed lights, so none shows the single tap's stepped
    * edge (ADR-087). The desktop pipeline leaves it false (ADR-019). */
   bool8_t local_shadow_full_filter_all;
-  /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE also keep filtered
-   * exponential variance moments that deferred lighting samples instead of
-   * PCF (the Filtered far shadows setting). On in High and Ultra, off in
-   * Balanced; the tiled pipeline clears it every frame (ADR-087). */
+  /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE below the far level also
+   * keep filtered exponential variance moments that deferred lighting
+   * samples instead of PCF (the Filtered far shadows setting). On in High
+   * and Ultra, off in Balanced; the tiled pipeline clears it every frame
+   * (ADR-087). */
   bool8_t far_cascade_evsm;
   uint32_t cascade_count;
   uint32_t shadow_map_size;
@@ -229,6 +230,12 @@ typedef struct VkrShadowConfig {
    * camera keep their shadows. The other cascades split the near range.
    * Zero ends every shadow at max_shadow_distance. */
   float32_t far_cascade_distance;
+  /** While the world has no dynamic caster, only the far level composes from
+   * the static image, which then holds its layer alone, and the near
+   * cascades draw whole into each frame's shadow map. The desktop pipeline
+   * sets it so the far level does not keep a static layer of every cascade;
+   * the tiled pipeline composes them all. */
+  bool8_t static_far_only;
   float32_t cascade_guard_band_texels;
   float32_t cascade_guard_band_texels_per[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t z_extension_factor;
@@ -483,6 +490,9 @@ typedef struct VkrShadowFrameData {
   uint32_t cascade_count;
   uint32_t cascade_render_mask;
   bool8_t static_active;
+  /** The cascade the static image's first layer holds: its layer i holds
+   * cascade static_first_cascade + i, and no cascade below it composes. */
+  uint32_t static_first_cascade;
   uint32_t static_render_mask;
   uint32_t copy_mask;
   uint32_t dynamic_render_mask;
@@ -965,8 +975,9 @@ void vkr_shadow_config_apply_tiled(VkrShadowConfig *config);
 /** The desktop pipeline's sun cascades (shadow-quality proposal, D1): its
  * near cascades keep their range and one more cascade above them becomes the
  * far level to VKR_SHADOW_DESKTOP_FAR_DISTANCE, rebuilt one tile a frame as
- * the tiled pipeline's is. A configuration that already names a far level,
- * or holds no room for another cascade, keeps its cascades. */
+ * the tiled pipeline's is; while no dynamic caster exists the static image
+ * holds the far level's layer alone. A configuration that already names a
+ * far level, or holds no room for another cascade, keeps its cascades. */
 #define VKR_SHADOW_DESKTOP_FAR_DISTANCE 1000.0f
 void vkr_shadow_config_apply_desktop(VkrShadowConfig *config);
 

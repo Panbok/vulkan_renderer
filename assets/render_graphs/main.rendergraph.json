@@ -196,7 +196,7 @@
         "mode": "square",
         "size_source": "shadow_map_size"
       },
-      "layers_source": "shadow_map_layer_count",
+      "layers_source": "shadow_static_layer_count",
       "format": "SHADOW_DEPTH",
       "usage": [
         "DEPTH_STENCIL_ATTACHMENT",
@@ -2776,7 +2776,7 @@
             "stencil": 0
           },
           "slice": {
-            "base_layer": "${i}",
+            "base_layer": "${shadow_static_layer}",
             "layer_count": 1
           }
         }
@@ -2898,7 +2898,7 @@
           "access": "TRANSFER_DST",
           "binding": 1,
           "subresource": {
-            "base_layer": "${i}",
+            "base_layer": "${shadow_static_layer}",
             "layer_count": 1
           }
         }
@@ -2919,7 +2919,7 @@
           "access": "TRANSFER_SRC",
           "binding": 0,
           "subresource": {
-            "base_layer": "${i}",
+            "base_layer": "${shadow_static_layer}",
             "layer_count": 1
           }
         }

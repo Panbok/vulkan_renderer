@@ -1505,6 +1505,8 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_ray_shadow_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_noise_index),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_contact),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               shadow_moments_cascade_end),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_reserved),
 };
 

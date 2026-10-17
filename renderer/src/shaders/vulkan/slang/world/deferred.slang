@@ -329,7 +329,10 @@ struct VkrVkLightingRoot
     // Nonzero: a contact march toward the sun multiplies its visibility
     // where the rays do not cover the pixel.
     uint sun_contact;
-    uint3 sun_reserved;
+    // Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE below this one sample
+    // shadow_moments_texture; the far level filters with PCF.
+    uint shadow_moments_cascade_end;
+    uint2 sun_reserved;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -3270,13 +3273,14 @@ uint2 vk_msaa_side_pixel(VkrVkLightingRoot root, uint2 pixel, uint visible)
 // The cascades are not sampled where the rays cover the pixel alone.
 float vk_deferred_sun_shadow(VkrVulkanPacketFrameRoot *frame, float3 world,
                              float3 normal, float2 rotation, float2 sun_ray,
-                             uint moments_texture, uint moments_sampler)
+                             uint moments_texture, uint moments_sampler,
+                             uint moments_cascade_end)
 {
     if (sun_ray.y >= 1.0f)
         return sun_ray.x;
     float cascades = packet_directional_shadow(frame, world, normal, rotation,
-                                               moments_texture,
-                                               moments_sampler);
+                                               moments_texture, moments_sampler,
+                                               moments_cascade_end);
     return lerp(cascades, sun_ray.x, sun_ray.y);
 }
 
@@ -3453,7 +3457,8 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
         float base_shadow =
             vk_deferred_sun_shadow(frame, world, sun_normal, shadow_rotation,
                                    sun_ray, root.shadow_moments_texture,
-                                   root.shadow_moments_sampler) *
+                                   root.shadow_moments_sampler,
+                                   root.shadow_moments_cascade_end) *
             cloud_shadow;
         float directional_shadow = base_shadow;
         if (back_lit && clearcoat_active)
@@ -3461,7 +3466,8 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
                 vk_deferred_sun_shadow(frame, world, geometric_normal,
                                        shadow_rotation, sun_ray,
                                        root.shadow_moments_texture,
-                                       root.shadow_moments_sampler) *
+                                       root.shadow_moments_sampler,
+                                       root.shadow_moments_cascade_end) *
                 cloud_shadow;
         // Sun contact shadows (shadow_kernel.slangh), where the rays do
         // not cover the pixel: the rays find contacts exactly. As on the

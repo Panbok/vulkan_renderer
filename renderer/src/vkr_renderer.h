@@ -1078,7 +1078,10 @@ typedef struct VkrRetainedShadowToken {
    * each cascade drawn with its static casters while dynamic casters exist;
    * zero while that image does not exist. */
   uint64_t static_resource_generation;
-  /** Static cascade layers with retained content, a bit each. */
+  /** The cascade the static image's first layer holds. */
+  uint32_t static_first_cascade;
+  /** Cascades whose static layer holds retained content, a bit each at their
+   * cascade index. */
   uint32_t static_valid_layer_mask;
   /** The image a far-level rebuild draws its slices into, which every frame
    * in flight shares; zero while it does not exist. */

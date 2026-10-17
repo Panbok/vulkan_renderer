@@ -1120,6 +1120,15 @@ vkr_internal VkrRendererError vkr_frame_input_validate_shadow(
                         "packet.shadow.copy_mask",
                         "requires static and dynamic draws within copied "
                         "cascades, none drawn whole");
+    if ((shadow->static_first_cascade != 0u &&
+         (!shadow->static_active ||
+          shadow->static_first_cascade >= shadow->cascade_count)) ||
+        (shadow->static_first_cascade < 32u &&
+         (shadow->copy_mask &
+          ((UINT32_C(1) << shadow->static_first_cascade) - 1u)) != 0u))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.shadow.static_first_cascade",
+                        "must name a cascade at or below every copied one");
     /* A far slice or publication needs the static image and its cascade; a
        publication feeds that cascade's copy, and a slice its own view. */
     const bool8_t far_valid = shadow->far_cascade < shadow->cascade_count;

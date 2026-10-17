@@ -1582,6 +1582,7 @@ vkr_internal void test_composed_cascade_frame_lowering(void) {
       .static_render_mask = 0x2u,
       .copy_mask = 0xau,
       .dynamic_render_mask = 0x8u,
+      .far_cascade = UINT32_MAX,
   };
   VkrPreparedFrame packet = {.scene_rendering = true_v};
   packet.input.shadow = &shadow;

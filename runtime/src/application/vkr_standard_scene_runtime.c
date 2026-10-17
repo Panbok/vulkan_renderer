@@ -1370,6 +1370,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
         shadow_cascade_count > VKR_SHADOW_EVSM_FIRST_CASCADE;
     shadow_payload->cascade_render_mask = shadow_frame->cascade_render_mask;
     shadow_payload->static_active = shadow_frame->static_active;
+    shadow_payload->static_first_cascade = shadow_frame->static_first_cascade;
     shadow_payload->static_render_mask = shadow_frame->static_render_mask;
     shadow_payload->copy_mask = shadow_frame->copy_mask;
     shadow_payload->dynamic_render_mask = shadow_frame->dynamic_render_mask;

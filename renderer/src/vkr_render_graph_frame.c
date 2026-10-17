@@ -313,6 +313,10 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   const VkrShadowPassPayload *shadow = packet->input.shadow;
   frame->shadow_cascade_render_mask = shadow ? shadow->cascade_render_mask : 0u;
   frame->shadow_cascade_static_active = shadow && shadow->static_active;
+  frame->shadow_static_first_cascade =
+      frame->shadow_cascade_static_active
+          ? Min(shadow->static_first_cascade, frame->shadow_map_layer_count)
+          : 0u;
   frame->shadow_cascade_static_render_mask =
       frame->shadow_cascade_static_active ? shadow->static_render_mask : 0u;
   frame->shadow_cascade_copy_mask =
@@ -340,17 +344,22 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
           ? frame->shadow_cascade_count
           : 0u;
   frame->shadow_evsm_active = shadow && shadow->evsm_enabled;
+  /* The far level filters with PCF: its layer would hold a third of the
+     moments for the fewest receivers. */
+  const uint32_t moments_cascade_end = frame->shadow_far_active
+                                           ? frame->shadow_far_cascade
+                                           : frame->shadow_cascade_count;
   frame->shadow_moments_layer_count =
-      frame->shadow_evsm_active
-          ? frame->shadow_cascade_count - VKR_SHADOW_EVSM_FIRST_CASCADE
+      frame->shadow_evsm_active &&
+              moments_cascade_end > VKR_SHADOW_EVSM_FIRST_CASCADE
+          ? moments_cascade_end - VKR_SHADOW_EVSM_FIRST_CASCADE
           : 0u;
   /* A layer drawn whole or composed from its static layer rebuilds its
      moments. */
-  frame->shadow_moments_render_mask = frame->shadow_evsm_active
-                                          ? (frame->shadow_cascade_render_mask |
-                                             frame->shadow_cascade_copy_mask) >>
-                                                VKR_SHADOW_EVSM_FIRST_CASCADE
-                                          : 0u;
+  frame->shadow_moments_render_mask =
+      ((frame->shadow_cascade_render_mask | frame->shadow_cascade_copy_mask) >>
+       VKR_SHADOW_EVSM_FIRST_CASCADE) &
+      ((UINT32_C(1) << frame->shadow_moments_layer_count) - 1u);
 
   /* Exact-grid history reuse is useful for stable unjittered samples. Avoid
      producing depth history while temporal jitter changes that grid. */
