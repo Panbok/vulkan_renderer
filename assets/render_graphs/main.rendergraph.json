@@ -2532,11 +2532,35 @@
       "execute": "pass.gpu_draw_upload"
     },
     {
+      "name": "Animation.Skinning",
+      "condition": "skinning_enabled",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "writes": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        }
+      ],
+      "execute": "pass.animation.skinning"
+    },
+    {
       "name": "Volume.Build",
       "type": "compute",
       "condition": "ray_scene_active",
       "flags": [
         "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 0,
+          "when": "skinning_enabled"
+        }
       ],
       "execute": "pass.volume.build"
     },
@@ -2560,22 +2584,6 @@
         }
       ],
       "execute": "pass.volume.trace"
-    },
-    {
-      "name": "Animation.Skinning",
-      "condition": "skinning_enabled",
-      "type": "compute",
-      "flags": [
-        "NO_CULL"
-      ],
-      "writes": [
-        {
-          "buffer": "skinning_output",
-          "access": "STORAGE_WRITE",
-          "binding": 0
-        }
-      ],
-      "execute": "pass.animation.skinning"
     },
     {
       "name": "Temporal.TransformHistory",

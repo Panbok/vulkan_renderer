@@ -99,6 +99,9 @@ struct VkrVkVolumeDecodeRoot
     int vertex_offset;
     uint decode_index;
     uint reserved;
+    // A skinned row's deformed vertices this frame, which replace the
+    // geometry's positions; zero for a static submesh.
+    uint64_t deformation;
 };
 
 struct VkrVkVolumeDecodePush
@@ -129,12 +132,21 @@ void vk_volume_blas_decode(uint3 id : SV_DispatchThreadID)
     VkrVkGeometryRow geometry = root.geometry_rows[root.geometry_index];
     uint index = uint(int(root.indices[root.first_index + id.x]) +
                       root.vertex_offset);
-    VkrGpuDecodedVertex vertex = vkr_decode_packed_vertex(
-        root.vertices[geometry.first_vertex + index],
-        geometry.decode[root.decode_index]);
-    root.positions[id.x * 3u + 0u] = vertex.position.x;
-    root.positions[id.x * 3u + 1u] = vertex.position.y;
-    root.positions[id.x * 3u + 2u] = vertex.position.z;
+    float3 position;
+    if (root.deformation != 0)
+    {
+        position = ((VkrGpuDeformedVertex *)root.deformation)[index].position;
+    }
+    else
+    {
+        position = vkr_decode_packed_vertex(
+                       root.vertices[geometry.first_vertex + index],
+                       geometry.decode[root.decode_index])
+                       .position;
+    }
+    root.positions[id.x * 3u + 0u] = position.x;
+    root.positions[id.x * 3u + 1u] = position.y;
+    root.positions[id.x * 3u + 2u] = position.z;
 }
 
 // The lattice position of probe `probe`, with its relocation, and whether

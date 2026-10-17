@@ -42,7 +42,8 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
   trace and update;
 - (2026-10-13) everything in one step; without ray queries the layer is off;
   acceleration structures hold static and rigid moving geometry, not skinned
-  meshes; 128 rays a probe;
+  meshes (since 2026-10-17 they hold skinned meshes too, see below); 128
+  rays a probe;
 - (2026-10-14) when 2048 probes a frame measured 3.6 ms, the budget wins and
   the probe count adapts to it;
 - (2026-10-14, lightmaps with the baked volume and the layer) a static lamp
@@ -70,9 +71,19 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
      round again. A slot's build memory is released once it has nothing to
      build.
    - The candidate pack records a ray row (geometry, submesh, transform,
-     opaque and double-sided flags) per packed opaque row; skinned rows stay
-     out. Each frame slot's TLAS covers the rows whose BLAS exists or builds
-     that frame; an instance's custom index is its packed row, and its
+     opaque and double-sided flags) per packed opaque row; a skinned row also
+     records its deformed vertices, `Animation.Skinning`'s output, which now
+     runs before `Volume.Build`. Each skinned row takes one of its frame
+     slot's skinned BLASes (at most `VKR_VULKAN_SKINNED_BLAS_MAX`, 64, and
+     `VKR_VULKAN_SKINNED_TRIANGLES_PER_FRAME`, 512k triangles): the decode
+     reads the deformed positions, and the BLAS (`PREFER_FAST_TRACE`,
+     `ALLOW_UPDATE`) refits in place to each frame's pose, rebuilding after
+     `VKR_VULKAN_SKINNED_REBUILD_INTERVAL` (30) refits, when its entry held
+     another submesh, or when the frame that built it never submitted. Only
+     the slot's own TLAS names its skinned BLASes, so the slot's next frame
+     refits them once this one has completed. A skinned row past either cap
+     counts as missing. Each frame slot's TLAS covers the rows whose BLAS
+     exists or builds that frame; an instance's custom index is its packed row, and its
      binding-table offset marks a double-sided material for the grid's
      inside test. The TLAS refits in place while its instance count and the
      scene's BLAS generation hold, and rebuilds every 30 uses.

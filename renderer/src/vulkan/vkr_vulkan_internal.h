@@ -2643,14 +2643,20 @@ typedef struct VkrVulkanRayRow {
      row i, which the pass has read already, so the instance addresses are
      written without reading back the mapped instance buffer. */
   VkrVulkanBlas *instance_blas;
+  /* A skinned row's deformed vertices this frame (Animation.Skinning's
+     output); zero for a static row. */
+  uint64_t deformation;
 } VkrVulkanRayRow;
 /* The row's material is opaque; otherwise rays test its alpha. */
 #define VKR_VULKAN_RAY_ROW_OPAQUE 1u
-/* The row deforms (skinning) and stays out of the acceleration structure. */
+/* The row deforms without a skinned output and stays out of the acceleration
+   structure. */
 #define VKR_VULKAN_RAY_ROW_SKIP 2u
 /* The row's material is double-sided: a ray reaching its back is not
    inside geometry. */
 #define VKR_VULKAN_RAY_ROW_DOUBLE_SIDED 4u
+/* The row is skinned: its BLAS rebuilds each frame from `deformation`. */
+#define VKR_VULKAN_RAY_ROW_SKINNED 8u
 
 /* GPU time the dynamic volume layer's build and trace may take a frame, and
    the probe counts its budget moves within (ADR-119). */
@@ -2666,6 +2672,13 @@ typedef struct VkrVulkanRayRow {
    slots' worth of a whole scene. */
 #define VKR_VULKAN_BLAS_BUILDS_PER_FRAME 256u
 #define VKR_VULKAN_BLAS_TRIANGLES_PER_FRAME (1u << 17u)
+/* Skinned rows a frame's TLAS holds and the triangles their BLASes rebuild;
+   past either, the frame's ray-query sun shadows keep the cascades. */
+#define VKR_VULKAN_SKINNED_BLAS_MAX 64u
+#define VKR_VULKAN_SKINNED_TRIANGLES_PER_FRAME (1u << 19u)
+/* A skinned BLAS refits to each frame's pose and rebuilds after this many
+   refits, or when its slot entry holds another submesh. */
+#define VKR_VULKAN_SKINNED_REBUILD_INTERVAL 30u
 
 /** One BLAS a frame builds: the submesh decoded into `positions_offset` of
     the slot's position buffer, built with `scratch_offset` of its scratch. */
@@ -2681,6 +2694,11 @@ typedef struct VkrVulkanBlasJob {
   VkDeviceSize positions_offset;
   VkDeviceSize scratch_offset;
   uint64_t decode_root;
+  /* A skinned row's deformed vertices, which the decode reads instead of
+     the geometry's; zero for a static submesh. */
+  uint64_t deformation;
+  /* The skinned BLAS refits its last build instead of rebuilding. */
+  bool8_t update;
 } VkrVulkanBlasJob;
 
 /* A built BLAS compacted into `handle` by a frame's copy; the frame's commit
@@ -2713,6 +2731,16 @@ typedef struct VkrVulkanVolumeSlotLists {
   VkAccelerationStructureKHR blas_size_source[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
   VkrVulkanBlasCompaction blas_compactions[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
   VkrVulkanRetiredBlas blas_retired[2u * VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+  /* This frame's skinned rebuilds, and the slot's skinned BLASes, which
+     only its own TLAS names and which the slot's next frame rebuilds in
+     place once this one has completed. */
+  VkrVulkanBlasJob skinned_jobs[VKR_VULKAN_SKINNED_BLAS_MAX];
+  VkrVulkanBlas skinned_blas[VKR_VULKAN_SKINNED_BLAS_MAX];
+  /* The submesh each skinned BLAS was last built from, and its refits since
+     that build. */
+  VkrGeometryHandle skinned_geometry[VKR_VULKAN_SKINNED_BLAS_MAX];
+  uint32_t skinned_submesh[VKR_VULKAN_SKINNED_BLAS_MAX];
+  uint32_t skinned_refits[VKR_VULKAN_SKINNED_BLAS_MAX];
 } VkrVulkanVolumeSlotLists;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeDecodeRoot {
@@ -2727,6 +2755,8 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanVolumeDecodeRoot {
   int32_t vertex_offset;
   uint32_t decode_index;
   uint32_t reserved;
+  /* A skinned row's deformed vertices, zero for a static submesh. */
+  uint64_t deformation;
 } VkrVulkanVolumeDecodeRoot;
 _Static_assert(sizeof(VkrVulkanVolumeDecodeRoot) == 64u,
                "Vulkan volume decode root ABI drift");
@@ -3138,6 +3168,7 @@ typedef struct VkrVulkanFrameSlot {
      first volume frame and freed with the slot. */
   VkrVulkanVolumeSlotLists *volume_lists;
   uint32_t blas_job_count;
+  uint32_t skinned_job_count;
   /* BLAS compaction: the compacted sizes of the BLASes this slot last
      built, readable once its frame has submitted and completed; the copies
      this frame records; and the structures they replaced. */

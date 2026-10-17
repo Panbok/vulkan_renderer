@@ -18,6 +18,10 @@
 #define VKR_VULKAN_BLAS_BUILD_FLAGS                                            \
   (VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |                 \
    VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR)
+/* Skinned BLASes refit to every frame's pose. */
+#define VKR_VULKAN_SKINNED_BLAS_BUILD_FLAGS                                    \
+  (VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |                 \
+   VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR)
 
 vkr_internal const VkrVulkanRayQueryFunctions *
 vkr_vk_ray_query(const VkrVulkanRenderer *renderer) {
@@ -126,17 +130,28 @@ void vkr_vk_record_ray_row(VkrVulkanFrameSlot *slot, uint32_t row,
     return;
   }
   const Mat4 model = candidate->instance.model;
+  /* A skinned row takes this frame's deformed vertices, which the slot's
+     skinning upload has placed. */
+  const uint32_t skinning = candidate->instance.skinning_index;
+  const uint64_t deformation =
+      skinning != 0u && skinning <= VKR_SKINNING_BINDING_CAPACITY
+          ? slot->skinning_addresses[skinning - 1u]
+          : 0u;
+  uint32_t skinned_flags = 0u;
+  if (skinning != 0u) {
+    skinned_flags =
+        deformation ? VKR_VULKAN_RAY_ROW_SKINNED : VKR_VULKAN_RAY_ROW_SKIP;
+  }
   VkrVulkanRayRow *ray = &slot->ray_rows[row];
   *ray = (VkrVulkanRayRow){
       .geometry = candidate->geometry,
       .submesh_index = candidate->submesh_index,
-      .flags =
-          (material->alpha_mode != VKR_MATERIAL_ALPHA_CUTOUT
-               ? VKR_VULKAN_RAY_ROW_OPAQUE
-               : 0u) |
-          (candidate->instance.skinning_index != 0u ? VKR_VULKAN_RAY_ROW_SKIP
-                                                    : 0u) |
-          (material->double_sided ? VKR_VULKAN_RAY_ROW_DOUBLE_SIDED : 0u),
+      .flags = (material->alpha_mode != VKR_MATERIAL_ALPHA_CUTOUT
+                    ? VKR_VULKAN_RAY_ROW_OPAQUE
+                    : 0u) |
+               skinned_flags |
+               (material->double_sided ? VKR_VULKAN_RAY_ROW_DOUBLE_SIDED : 0u),
+      .deformation = deformation,
       .transform = {model.m00, model.m01, model.m02, model.m03, model.m10,
                     model.m11, model.m12, model.m13, model.m20, model.m21,
                     model.m22, model.m23},
@@ -212,10 +227,24 @@ vkr_internal void vkr_vk_collect_blas_compaction(VkrVulkanRenderer *renderer,
   slot->blas_compaction_count = 0u;
 }
 
+/* Destroys the slot's skinned BLASes; the slot's frames have completed. */
+vkr_internal void vkr_vk_destroy_skinned_blas(VkrVulkanRenderer *renderer,
+                                              VkrVulkanFrameSlot *slot) {
+  if (!slot->volume_lists) {
+    return;
+  }
+  for (uint32_t i = 0u; i < VKR_VULKAN_SKINNED_BLAS_MAX; ++i) {
+    if (slot->volume_lists->skinned_blas[i].handle) {
+      vkr_vk_destroy_blas(renderer, &slot->volume_lists->skinned_blas[i]);
+    }
+  }
+}
+
 void vkr_vk_destroy_volume_slot(VkrVulkanRenderer *renderer,
                                 VkrVulkanFrameSlot *slot) {
   const VkrVulkanRayQueryFunctions *functions = vkr_vk_ray_query(renderer);
   vkr_vk_collect_blas_compaction(renderer, slot);
+  vkr_vk_destroy_skinned_blas(renderer, slot);
   if (slot->volume_lists) {
     vkr_allocator_free(&renderer->volume_allocator, slot->volume_lists,
                        sizeof(*slot->volume_lists),
@@ -346,58 +375,107 @@ vkr_internal bool8_t vkr_vk_queue_blas(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Queues the rebuild of the frame's next skinned BLAS from `deformation`,
+   the row's skinned vertices this frame; NULL past the frame's skinned
+   rows or triangles. */
+vkr_internal VkrVulkanBlas *vkr_vk_queue_skinned_blas(
+    VkrVulkanFrameSlot *slot, VkrVulkanPublishedGeometry *geometry,
+    uint32_t submesh_index, uint64_t deformation, uint32_t *triangle_budget) {
+  const VkrVulkanSubmeshRange *submesh = &geometry->submeshes[submesh_index];
+  const uint32_t triangles = submesh->index_count / 3u;
+  if (slot->skinned_job_count >= VKR_VULKAN_SKINNED_BLAS_MAX ||
+      triangles == 0u || triangles > *triangle_budget || !deformation) {
+    return NULL;
+  }
+  *triangle_budget -= triangles;
+  const uint32_t index = slot->skinned_job_count++;
+  VkrVulkanBlas *blas = &slot->volume_lists->skinned_blas[index];
+  slot->volume_lists->skinned_jobs[index] = (VkrVulkanBlasJob){
+      .blas = blas,
+      .geometry = geometry->handle,
+      .submesh_index = submesh_index,
+      .geometry_index = geometry->handle.id - 1u,
+      .first_index = geometry->gpu_row.first_index + submesh->first_index,
+      .index_count = triangles * 3u,
+      .vertex_offset = submesh->vertex_offset,
+      .decode_index = submesh->decode_index,
+      .deformation = deformation,
+  };
+  return blas;
+}
+
+/* The build sizes of `job`'s BLAS under `flags`. */
+vkr_internal VkAccelerationStructureBuildSizesInfoKHR
+vkr_vk_blas_sizes(VkrVulkanRenderer *renderer, const VkrVulkanBlasJob *job,
+                  VkBuildAccelerationStructureFlagsKHR flags) {
+  const uint32_t triangles = job->index_count / 3u;
+  VkAccelerationStructureGeometryKHR geometry =
+      vkr_vk_blas_geometry(0u, job->index_count);
+  const VkAccelerationStructureBuildGeometryInfoKHR info = {
+      .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+      .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+      .flags = flags,
+      .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+      .geometryCount = 1u,
+      .pGeometries = &geometry,
+  };
+  VkAccelerationStructureBuildSizesInfoKHR sizes = {
+      .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
+  };
+  vkr_vk_ray_query(renderer)->get_build_sizes(
+      vkr_vk_renderer_device(renderer),
+      VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, &triangles,
+      &sizes);
+  return sizes;
+}
+
+/* Creates `blas`'s storage and structure of `size` bytes. */
+vkr_internal bool8_t vkr_vk_create_blas(VkrVulkanRenderer *renderer,
+                                        VkrVulkanBlas *blas,
+                                        VkDeviceSize size) {
+  const VkrVulkanRayQueryFunctions *functions = vkr_vk_ray_query(renderer);
+  VkDevice device = vkr_vk_renderer_device(renderer);
+  if (!vkr_vk_create_buffer(
+          renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
+          VKR_GPU_ALLOCATION_OWNER_MESH, size,
+          VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+          &blas->buffer)) {
+    return false_v;
+  }
+  const VkAccelerationStructureCreateInfoKHR create = {
+      .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+      .buffer = blas->buffer.handle,
+      .size = size,
+      .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+  };
+  if (functions->create_acceleration_structure(device, &create, NULL,
+                                               &blas->handle) != VK_SUCCESS) {
+    return false_v;
+  }
+  const VkAccelerationStructureDeviceAddressInfoKHR address = {
+      .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+      .accelerationStructure = blas->handle,
+  };
+  blas->address = functions->get_device_address(device, &address);
+  return true_v;
+}
+
 /* Sizes, allocates and creates every queued BLAS, and lays the jobs'
    positions and scratch out in the slot's buffers. */
 vkr_internal bool8_t vkr_vk_prepare_blas_jobs(VkrVulkanRenderer *renderer,
                                               VkrVulkanFrameSlot *slot) {
   const VkrVulkanRayQueryFunctions *functions = vkr_vk_ray_query(renderer);
-  VkDevice device = vkr_vk_renderer_device(renderer);
   VkDeviceSize positions_size = 0u;
   VkDeviceSize scratch_size = 0u;
   for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
     VkrVulkanBlasJob *job = &slot->volume_lists->blas_jobs[i];
-    const uint32_t triangles = job->index_count / 3u;
-    VkAccelerationStructureGeometryKHR geometry =
-        vkr_vk_blas_geometry(0u, job->index_count);
-    const VkAccelerationStructureBuildGeometryInfoKHR info = {
-        .sType =
-            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-        .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-        .flags = VKR_VULKAN_BLAS_BUILD_FLAGS,
-        .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-        .geometryCount = 1u,
-        .pGeometries = &geometry,
-    };
-    VkAccelerationStructureBuildSizesInfoKHR sizes = {
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
-    };
-    functions->get_build_sizes(device,
-                               VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-                               &info, &triangles, &sizes);
-    if (!vkr_vk_create_buffer(
-            renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
-            VKR_GPU_ALLOCATION_OWNER_MESH, sizes.accelerationStructureSize,
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            &job->blas->buffer)) {
+    const VkAccelerationStructureBuildSizesInfoKHR sizes =
+        vkr_vk_blas_sizes(renderer, job, VKR_VULKAN_BLAS_BUILD_FLAGS);
+    if (!vkr_vk_create_blas(renderer, job->blas,
+                            sizes.accelerationStructureSize)) {
       return false_v;
     }
-    const VkAccelerationStructureCreateInfoKHR create = {
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
-        .buffer = job->blas->buffer.handle,
-        .size = sizes.accelerationStructureSize,
-        .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-    };
-    if (functions->create_acceleration_structure(
-            device, &create, NULL, &job->blas->handle) != VK_SUCCESS) {
-      return false_v;
-    }
-    const VkAccelerationStructureDeviceAddressInfoKHR address = {
-        .sType =
-            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
-        .accelerationStructure = job->blas->handle,
-    };
-    job->blas->address = functions->get_device_address(device, &address);
     job->positions_offset = positions_size;
     positions_size +=
         vkr_vk_align_size((VkDeviceSize)job->index_count * 12u, 256u);
@@ -405,9 +483,54 @@ vkr_internal bool8_t vkr_vk_prepare_blas_jobs(VkrVulkanRenderer *renderer,
     scratch_size +=
         vkr_vk_align_size(sizes.buildScratchSize, functions->scratch_alignment);
   }
+  /* A skinned BLAS refits in place to this frame's pose while it holds a
+     submitted build of the same submesh; otherwise it rebuilds there while
+     its structure holds the build. Its last reader, the slot's previous
+     frame, has completed. A new structure moves its address, so the TLAS
+     rebuilds. */
+  VkrVulkanVolumeSlotLists *lists = slot->volume_lists;
+  for (uint32_t i = 0u; i < slot->skinned_job_count; ++i) {
+    VkrVulkanBlasJob *job = &lists->skinned_jobs[i];
+    const VkAccelerationStructureBuildSizesInfoKHR sizes =
+        vkr_vk_blas_sizes(renderer, job, VKR_VULKAN_SKINNED_BLAS_BUILD_FLAGS);
+    job->update =
+        job->blas->built &&
+        job->blas->buffer.size >= sizes.accelerationStructureSize &&
+        lists->skinned_geometry[i].id == job->geometry.id &&
+        lists->skinned_geometry[i].generation == job->geometry.generation &&
+        lists->skinned_submesh[i] == job->submesh_index &&
+        lists->skinned_refits[i] < VKR_VULKAN_SKINNED_REBUILD_INTERVAL;
+    if (job->update) {
+      lists->skinned_refits[i]++;
+    } else {
+      if (!job->blas->handle ||
+          job->blas->buffer.size < sizes.accelerationStructureSize) {
+        if (job->blas->handle) {
+          vkr_vk_destroy_blas(renderer, job->blas);
+        }
+        if (!vkr_vk_create_blas(renderer, job->blas,
+                                sizes.accelerationStructureSize)) {
+          return false_v;
+        }
+        renderer->blas_generation++;
+      }
+      /* A cancelled frame leaves no build to refit. */
+      job->blas->built = false_v;
+      lists->skinned_geometry[i] = job->geometry;
+      lists->skinned_submesh[i] = job->submesh_index;
+      lists->skinned_refits[i] = 0u;
+    }
+    job->positions_offset = positions_size;
+    positions_size +=
+        vkr_vk_align_size((VkDeviceSize)job->index_count * 12u, 256u);
+    job->scratch_offset = scratch_size;
+    scratch_size += vkr_vk_align_size(job->update ? sizes.updateScratchSize
+                                                  : sizes.buildScratchSize,
+                                      functions->scratch_alignment);
+  }
   /* Once its scene has built, a slot holds no build memory; its previous
      frame, the buffers' last use, has completed. */
-  if (!slot->blas_job_count) {
+  if (!slot->blas_job_count && !slot->skinned_job_count) {
     if (slot->blas_positions.handle) {
       vkr_vk_destroy_buffer(renderer, &slot->blas_positions);
     }
@@ -428,8 +551,12 @@ vkr_internal bool8_t vkr_vk_prepare_blas_jobs(VkrVulkanRenderer *renderer,
                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
     return false_v;
   }
-  for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
-    VkrVulkanBlasJob *job = &slot->volume_lists->blas_jobs[i];
+  for (uint32_t i = 0u; i < slot->blas_job_count + slot->skinned_job_count;
+       ++i) {
+    VkrVulkanBlasJob *job =
+        i < slot->blas_job_count
+            ? &slot->volume_lists->blas_jobs[i]
+            : &slot->volume_lists->skinned_jobs[i - slot->blas_job_count];
     VkrVulkanVolumeDecodeRoot *root = vkr_vk_frame_upload_allocate(
         slot, sizeof(*root), _Alignof(VkrVulkanVolumeDecodeRoot),
         &job->decode_root, NULL);
@@ -446,6 +573,7 @@ vkr_internal bool8_t vkr_vk_prepare_blas_jobs(VkrVulkanRenderer *renderer,
         .index_count = job->index_count,
         .vertex_offset = job->vertex_offset,
         .decode_index = job->decode_index,
+        .deformation = job->deformation,
     };
   }
   return true_v;
@@ -468,6 +596,7 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
   VkAccelerationStructureInstanceKHR *instances =
       slot->tlas_instances.allocation.mapped;
   uint32_t triangle_budget = VKR_VULKAN_BLAS_TRIANGLES_PER_FRAME;
+  uint32_t skinned_budget = VKR_VULKAN_SKINNED_TRIANGLES_PER_FRAME;
   uint32_t count = 0u;
   for (uint32_t row = 0u; row < rows; ++row) {
     const VkrVulkanRayRow *ray = &slot->ray_rows[row];
@@ -480,21 +609,30 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
         ray->submesh_index >= geometry->submesh_count) {
       continue;
     }
-    VkrVulkanBlas *blas =
-        geometry->blas ? &geometry->blas[ray->submesh_index] : NULL;
-    /* A BLAS a cancelled frame created was never built. */
-    if (blas && blas->handle && !blas->built && !blas->queued) {
-      vkr_vk_destroy_blas(renderer, blas);
-      renderer->blas_generation++;
-    }
-    if (!blas || (!blas->built && !blas->queued)) {
-      if (!vkr_vk_queue_blas(renderer, slot, geometry, ray->submesh_index,
-                             &triangle_budget)) {
+    VkrVulkanBlas *blas = NULL;
+    if (ray->flags & VKR_VULKAN_RAY_ROW_SKINNED) {
+      blas = vkr_vk_queue_skinned_blas(slot, geometry, ray->submesh_index,
+                                       ray->deformation, &skinned_budget);
+      if (!blas) {
         slot->tlas_missing_rows++;
         continue;
       }
-      blas = &geometry->blas[ray->submesh_index];
-      blas->queued = true_v;
+    } else {
+      blas = geometry->blas ? &geometry->blas[ray->submesh_index] : NULL;
+      /* A BLAS a cancelled frame created was never built. */
+      if (blas && blas->handle && !blas->built && !blas->queued) {
+        vkr_vk_destroy_blas(renderer, blas);
+        renderer->blas_generation++;
+      }
+      if (!blas || (!blas->built && !blas->queued)) {
+        if (!vkr_vk_queue_blas(renderer, slot, geometry, ray->submesh_index,
+                               &triangle_budget)) {
+          slot->tlas_missing_rows++;
+          continue;
+        }
+        blas = &geometry->blas[ray->submesh_index];
+        blas->queued = true_v;
+      }
     }
     geometry->last_use_submit_value = renderer->submit_value + 1u;
     /* The instance is composed here and stored whole: its packed fields
@@ -770,6 +908,7 @@ bool8_t vkr_vk_prepare_volume_build(VkrVulkanRenderer *renderer,
       &renderer->frame_slots[renderer->active_frame_slot];
   vkr_vk_update_volume_budget(renderer, slot);
   slot->blas_job_count = 0u;
+  slot->skinned_job_count = 0u;
   slot->tlas_instance_count = 0u;
   slot->tlas_missing_rows = 0u;
   slot->volume_build_ready = false_v;
@@ -894,12 +1033,16 @@ void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
     };
     functions->cmd_copy(command, &copy);
   }
-  if (slot->blas_job_count) {
+  const uint32_t build_count = slot->blas_job_count + slot->skinned_job_count;
+  if (build_count) {
     vkCmdBindPipeline(
         command, VK_PIPELINE_BIND_POINT_COMPUTE,
         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_BLAS_DECODE]);
-    for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
-      const VkrVulkanBlasJob *job = &slot->volume_lists->blas_jobs[i];
+    for (uint32_t i = 0u; i < build_count; ++i) {
+      const VkrVulkanBlasJob *job =
+          i < slot->blas_job_count
+              ? &slot->volume_lists->blas_jobs[i]
+              : &slot->volume_lists->skinned_jobs[i - slot->blas_job_count];
       vkr_vk_volume_push(renderer, command, job->decode_root);
       vkCmdDispatch(command, (job->index_count + 63u) / 64u, 1u, 1u);
     }
@@ -909,17 +1052,22 @@ void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
         VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         VK_ACCESS_2_SHADER_READ_BIT);
     VkAccelerationStructureGeometryKHR
-        geometries[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+        geometries[VKR_VULKAN_BLAS_BUILDS_PER_FRAME +
+                   VKR_VULKAN_SKINNED_BLAS_MAX];
     VkAccelerationStructureBuildGeometryInfoKHR
-        infos[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+        infos[VKR_VULKAN_BLAS_BUILDS_PER_FRAME + VKR_VULKAN_SKINNED_BLAS_MAX];
     VkAccelerationStructureBuildRangeInfoKHR
-        ranges[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+        ranges[VKR_VULKAN_BLAS_BUILDS_PER_FRAME + VKR_VULKAN_SKINNED_BLAS_MAX];
     const VkAccelerationStructureBuildRangeInfoKHR
-        *range_pointers[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+        *range_pointers[VKR_VULKAN_BLAS_BUILDS_PER_FRAME +
+                        VKR_VULKAN_SKINNED_BLAS_MAX];
     const VkDeviceAddress scratch = vkr_vk_align_size(
         slot->blas_scratch.address, functions->scratch_alignment);
-    for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
-      const VkrVulkanBlasJob *job = &slot->volume_lists->blas_jobs[i];
+    for (uint32_t i = 0u; i < build_count; ++i) {
+      const bool8_t skinned = i >= slot->blas_job_count;
+      const VkrVulkanBlasJob *job =
+          skinned ? &slot->volume_lists->skinned_jobs[i - slot->blas_job_count]
+                  : &slot->volume_lists->blas_jobs[i];
       geometries[i] = vkr_vk_blas_geometry(slot->blas_positions.address +
                                                job->positions_offset,
                                            job->index_count);
@@ -927,8 +1075,12 @@ void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
           .sType =
               VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
           .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-          .flags = VKR_VULKAN_BLAS_BUILD_FLAGS,
-          .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+          .flags = skinned ? VKR_VULKAN_SKINNED_BLAS_BUILD_FLAGS
+                           : VKR_VULKAN_BLAS_BUILD_FLAGS,
+          .mode = job->update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                              : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+          .srcAccelerationStructure =
+              job->update ? job->blas->handle : VK_NULL_HANDLE,
           .dstAccelerationStructure = job->blas->handle,
           .geometryCount = 1u,
           .pGeometries = &geometries[i],
@@ -939,22 +1091,26 @@ void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
       };
       range_pointers[i] = &ranges[i];
     }
-    functions->cmd_build(command, slot->blas_job_count, infos, range_pointers);
+    functions->cmd_build(command, build_count, infos, range_pointers);
     vkr_vk_volume_memory_barrier(
         command, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
-    VkAccelerationStructureKHR built[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
-    for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
-      built[i] = slot->volume_lists->blas_jobs[i].blas->handle;
+    /* Static BLASes report their compacted sizes; skinned ones refit next
+       time and stay as built. */
+    if (slot->blas_job_count) {
+      VkAccelerationStructureKHR built[VKR_VULKAN_BLAS_BUILDS_PER_FRAME];
+      for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
+        built[i] = slot->volume_lists->blas_jobs[i].blas->handle;
+      }
+      vkCmdResetQueryPool(command, slot->blas_size_pool, 0u,
+                          slot->blas_job_count);
+      functions->cmd_write_properties(
+          command, slot->blas_job_count, built,
+          VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+          slot->blas_size_pool, 0u);
     }
-    vkCmdResetQueryPool(command, slot->blas_size_pool, 0u,
-                        slot->blas_job_count);
-    functions->cmd_write_properties(
-        command, slot->blas_job_count, built,
-        VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
-        slot->blas_size_pool, 0u);
   } else if (slot->blas_compaction_count) {
     vkr_vk_volume_memory_barrier(
         command, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
@@ -1357,6 +1513,9 @@ void vkr_vk_commit_volume_trace(VkrVulkanRenderer *renderer,
   if (slot->volume_build_ready) {
     for (uint32_t i = 0u; i < slot->blas_job_count; ++i) {
       slot->volume_lists->blas_jobs[i].blas->built = true_v;
+    }
+    for (uint32_t i = 0u; i < slot->skinned_job_count; ++i) {
+      slot->volume_lists->skinned_jobs[i].blas->built = true_v;
     }
     slot->tlas_uses_since_build =
         slot->tlas_update ? slot->tlas_uses_since_build + 1u : 0u;

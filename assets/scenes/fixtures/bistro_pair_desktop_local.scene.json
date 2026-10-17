@@ -1,0 +1,237 @@
+{
+  "version": 2,
+  "environment": {
+    "enabled": true,
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "atmosphere": {
+    "enabled": true,
+    "sun_direction": [
+      0.57735,
+      0.57735,
+      0.57735
+    ]
+  },
+  "clouds": {
+    "enabled": true,
+    "base_altitude_m": 1500,
+    "top_altitude_m": 4000,
+    "coverage": 0.45,
+    "density": 0.02,
+    "wind_mps": [
+      10,
+      0
+    ]
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [
+        -7.5,
+        2.2,
+        9.0
+      ],
+      "extents": [
+        5.5,
+        2.5,
+        8.0
+      ],
+      "blend_distance": 0.75,
+      "intensity": 1.0,
+      "diffuse_intensity": 1.0,
+      "specular_intensity": 1.0,
+      "cubemap": {
+        "path": "assets/textures/bistro_cafe_probe.vkt"
+      }
+    }
+  ],
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [
+          0.77092856,
+          0.9677925,
+          1.0
+        ],
+        "intensity": 1.91198,
+        "direction_local": [
+          -0.57735,
+          -0.57735,
+          -0.57735
+        ],
+        "atmosphere_sun": true
+      }
+    },
+    {
+      "name": "Bistro Lights",
+      "parent": null,
+      "transform": {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/models/bistro-lights-main.vkb",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Crowd A Crossing Group",
+      "parent": 0,
+      "transform": {
+        "pos": [
+          38.0,
+          0.0,
+          17.0
+        ],
+        "rot": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "A Crossing Walker Emerging",
+      "parent": 3,
+      "transform": {
+        "pos": [
+          -18.6896,
+          0.24,
+          11.7006
+        ],
+        "rot": [
+          0.0,
+          -0.2172,
+          0.0,
+          0.9761
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/characters/mannequin/mannequin.vkb",
+        "pipeline_domain": "world",
+        "dynamic_caster": true
+      },
+      "animation": {
+        "path": "assets/characters/mannequin/mannequin.vka",
+        "clip": 15,
+        "loop": true
+      },
+      "components": {
+        "mover": {
+          "activation": "scripted",
+          "direction": [
+            0,
+            0,
+            -1
+          ],
+          "distance": 9.0,
+          "speed": 1.9049,
+          "wait": 0.5,
+          "loop": true
+        }
+      }
+    },
+    {
+      "name": "A Square Idle Occluder Center",
+      "parent": 3,
+      "transform": {
+        "pos": [
+          -18.6804,
+          0.16,
+          16.3977
+        ],
+        "rot": [
+          0.0,
+          -0.8438,
+          0.0,
+          0.5366
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "path": "assets/characters/mannequin/mannequin.vkb",
+        "pipeline_domain": "world",
+        "dynamic_caster": true
+      },
+      "animation": {
+        "path": "assets/characters/mannequin/mannequin.vka",
+        "clip": 5,
+        "loop": true
+      }
+    }
+  ]
+}
