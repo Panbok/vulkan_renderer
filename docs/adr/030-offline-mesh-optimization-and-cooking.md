@@ -76,6 +76,9 @@ and the reader accepts both. Version 18 keeps the packed geometry layout and
 adds a little-endian skin extension after source metadata, covered by the metadata
 checksum. It contains the animation fingerprint, skin and vertex counts, per-skin
 joint counts, then four uint32 joint indices and four float32 weights per vertex.
+Since 2026-10-17 a version 18 artifact may also carry the detail-level block
+([ADR-085](085-gpu-geometry-lod-and-terrain-geomorphing.md)) after the skin
+extension, and no other optional block.
 This CPU asset representation does not establish the eventual GPU influence ABI.
 
 A static mesh cooked with the mesh recipe's `lightmap_texels_per_unit`

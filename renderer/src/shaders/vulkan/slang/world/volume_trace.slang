@@ -112,6 +112,8 @@ struct VkrVkVolumeDecodePush
 [[vk::push_constant]] ConstantBuffer<VkrVkVolumeDecodePush> g_volume_decode_push;
 
 #define VKR_VOLUME_TRACE_RAYS 128u
+// The TLAS instance mask of static and rigid instances.
+#define VKR_VOLUME_RAY_MASK_STATIC 0x01u
 #define VKR_VOLUME_TRACE_WAVES (VKR_VOLUME_TRACE_RAYS / 32u)
 // Rays leave the probe and shadow rays the surface this far, in metres.
 #define VKR_VOLUME_TRACE_OFFSET 0.02f
@@ -599,8 +601,12 @@ void vk_volume_trace(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
         ray.Direction = direction;
         ray.TMin = VKR_VOLUME_TRACE_OFFSET;
         ray.TMax = root.ray_length;
+        // Static and rigid instances only: a skinned instance's BLAS may
+        // hold a coarser level than its row draws, whose vertices the
+        // surface reads (VKR_VULKAN_RAY_MASK_STATIC).
         RayQuery<RAY_FLAG_NONE> query;
-        query.TraceRayInline(scene, RAY_FLAG_NONE, 0xFFu, ray);
+        query.TraceRayInline(scene, RAY_FLAG_NONE, VKR_VOLUME_RAY_MASK_STATIC,
+                             ray);
         while (query.Proceed())
         {
             // Alpha-tested surfaces let rays through where they are cut out.

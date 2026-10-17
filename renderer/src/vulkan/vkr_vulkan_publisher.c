@@ -1895,6 +1895,32 @@ vkr_vk_release_unused_geometry_ranges(VkrVulkanRenderer *renderer,
     log_fatal("Vulkan failed to release an unused geometry reservation");
 }
 
+/* A submesh's range, with the coarsest detail level within
+   VKR_VULKAN_RAY_LOD_ERROR of it, which skinned BLASes build from. */
+vkr_internal VkrVulkanSubmeshRange
+vkr_vk_submesh_range(const VkrGeometryUploadRange *submesh,
+                     const VkrGpuGeometryDecodeRecord *decodes) {
+  VkrVulkanSubmeshRange range = {
+      .first_index = submesh->first_index,
+      .index_count = submesh->index_count,
+      .vertex_offset = submesh->vertex_offset,
+      .decode_index = submesh->decode_index,
+      .ray_first_index = submesh->first_index,
+      .ray_index_count = submesh->index_count,
+  };
+  const VkrGpuGeometryLodRow *row =
+      vkr_packed_geometry_lod_row(decodes, submesh->decode_index);
+  for (uint32_t level = 1u; row && level < row->level_count; ++level) {
+    if (row->levels[level].error > VKR_VULKAN_RAY_LOD_ERROR) {
+      break;
+    }
+    range.ray_first_index =
+        submesh->first_index + row->levels[level].first_index;
+    range.ray_index_count = row->levels[level].index_count;
+  }
+  return range;
+}
+
 vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
     void *state, VkrGeometryHandle handle, const VkrGeometryConfig *geometry,
     const VkrGeometryUploadRange *submeshes, uint32_t submesh_count) {
@@ -1962,12 +1988,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
       record->submeshes_size = submeshes_size;
     }
     for (uint32_t i = 0u; i < submesh_count; ++i) {
-      record->submeshes[i] = (VkrVulkanSubmeshRange){
-          .first_index = submeshes[i].first_index,
-          .index_count = submeshes[i].index_count,
-          .vertex_offset = submeshes[i].vertex_offset,
-          .decode_index = submeshes[i].decode_index,
-      };
+      record->submeshes[i] =
+          vkr_vk_submesh_range(&submeshes[i], geometry->decodes);
     }
     record->submesh_count = submesh_count;
     vkr_vk_advance_candidate_publication_generation(renderer);
@@ -2024,12 +2046,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
     return false_v;
   }
   for (uint32_t i = 0; i < submesh_count; ++i) {
-    pending.submeshes[i] = (VkrVulkanSubmeshRange){
-        .first_index = submeshes[i].first_index,
-        .index_count = submeshes[i].index_count,
-        .vertex_offset = submeshes[i].vertex_offset,
-        .decode_index = submeshes[i].decode_index,
-    };
+    pending.submeshes[i] =
+        vkr_vk_submesh_range(&submeshes[i], geometry->decodes);
   }
   VkrVulkanPendingBufferInitialization initializations[3] = {0};
   const bool8_t created =

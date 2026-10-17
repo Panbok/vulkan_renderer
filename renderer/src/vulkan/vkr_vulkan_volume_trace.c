@@ -375,14 +375,21 @@ vkr_internal bool8_t vkr_vk_queue_blas(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
-/* Queues the rebuild of the frame's next skinned BLAS from `deformation`,
+/* Queues the build of the frame's next skinned BLAS from `deformation`,
    the row's skinned vertices this frame; NULL past the frame's skinned
-   rows or triangles. */
-vkr_internal VkrVulkanBlas *vkr_vk_queue_skinned_blas(
-    VkrVulkanFrameSlot *slot, VkrVulkanPublishedGeometry *geometry,
-    uint32_t submesh_index, uint64_t deformation, uint32_t *triangle_budget) {
+   rows or triangles. An opaque row builds from the submesh's ray level; an
+   alpha-tested one keeps the drawn triangles, whose texture coordinates
+   the trace reads by primitive. */
+vkr_internal VkrVulkanBlas *
+vkr_vk_queue_skinned_blas(VkrVulkanFrameSlot *slot,
+                          VkrVulkanPublishedGeometry *geometry,
+                          uint32_t submesh_index, bool8_t opaque,
+                          uint64_t deformation, uint32_t *triangle_budget) {
   const VkrVulkanSubmeshRange *submesh = &geometry->submeshes[submesh_index];
-  const uint32_t triangles = submesh->index_count / 3u;
+  const uint32_t first_index =
+      opaque ? submesh->ray_first_index : submesh->first_index;
+  const uint32_t triangles =
+      (opaque ? submesh->ray_index_count : submesh->index_count) / 3u;
   if (slot->skinned_job_count >= VKR_VULKAN_SKINNED_BLAS_MAX ||
       triangles == 0u || triangles > *triangle_budget || !deformation) {
     return NULL;
@@ -395,7 +402,7 @@ vkr_internal VkrVulkanBlas *vkr_vk_queue_skinned_blas(
       .geometry = geometry->handle,
       .submesh_index = submesh_index,
       .geometry_index = geometry->handle.id - 1u,
-      .first_index = geometry->gpu_row.first_index + submesh->first_index,
+      .first_index = geometry->gpu_row.first_index + first_index,
       .index_count = triangles * 3u,
       .vertex_offset = submesh->vertex_offset,
       .decode_index = submesh->decode_index,
@@ -611,8 +618,10 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
     }
     VkrVulkanBlas *blas = NULL;
     if (ray->flags & VKR_VULKAN_RAY_ROW_SKINNED) {
-      blas = vkr_vk_queue_skinned_blas(slot, geometry, ray->submesh_index,
-                                       ray->deformation, &skinned_budget);
+      blas = vkr_vk_queue_skinned_blas(
+          slot, geometry, ray->submesh_index,
+          (ray->flags & VKR_VULKAN_RAY_ROW_OPAQUE) != 0u, ray->deformation,
+          &skinned_budget);
       if (!blas) {
         slot->tlas_missing_rows++;
         continue;
@@ -639,7 +648,9 @@ vkr_internal bool8_t vkr_vk_prepare_tlas_instances(VkrVulkanRenderer *renderer,
        are bitfields, and assigning one in mapped memory reads it back. */
     VkAccelerationStructureInstanceKHR instance = {
         .instanceCustomIndex = row,
-        .mask = 0xFFu,
+        .mask = (ray->flags & VKR_VULKAN_RAY_ROW_SKINNED)
+                    ? VKR_VULKAN_RAY_MASK_SKINNED
+                    : VKR_VULKAN_RAY_MASK_STATIC,
         /* Ray queries use no binding table; the offset tells the trace a
            double-sided material. */
         .instanceShaderBindingTableRecordOffset =

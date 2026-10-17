@@ -1373,6 +1373,66 @@ static void test_mesh_cooked_lod_round_trip(void) {
   printf("  test_mesh_cooked_lod_round_trip PASSED\n");
 }
 
+/* Skinned ranges cook detail levels too (ADR-085): the skinned artifact
+ * keeps its skin block, carries the LOD block after it and no other block,
+ * and its opaque range's levels draw the range's own skinned vertices. */
+static void test_mesh_cooked_skinned_lod_round_trip(void) {
+  printf("  Running test_mesh_cooked_skinned_lod_round_trip...\n");
+  static const char dependency_path[] = "build/vkr_mesh_cooked_skin_lod.bin";
+  FILE *dependency = fopen(dependency_path, "wb");
+  assert(dependency != NULL);
+  assert(fwrite("skin lod\n", 1u, 9u, dependency) == 9u);
+  assert(fclose(dependency) == 0);
+  Arena *scratch_arena = arena_create(MB(64), MB(4));
+  Arena *result_arena = arena_create(MB(16), MB(1));
+  assert(scratch_arena != NULL && result_arena != NULL);
+  VkrAllocator scratch = {.ctx = scratch_arena};
+  VkrAllocator result = {.ctx = result_arena};
+  assert(vkr_allocator_arena(&scratch));
+  assert(vkr_allocator_arena(&result));
+
+  static TestLodGrid grid;
+  test_lod_grid_build(&grid, string8_lit(dependency_path));
+  static VkrMeshSkinVertex influences[2u * TEST_LOD_GRID_VERTICES];
+  for (uint32_t i = 0u; i < ArrayCount(influences); ++i) {
+    influences[i] = (VkrMeshSkinVertex){.weights = {1.0f}};
+  }
+  uint32_t joint_counts[1] = {1u};
+  grid.nodes[0].skin = 0u;
+  grid.nodes[1].skin = 0u;
+  grid.info.skin = (VkrMeshSkinData){
+      .animation_fingerprint = 789u,
+      .skin_count = 1u,
+      .joint_counts = joint_counts,
+      .vertex_count = ArrayCount(influences),
+      .vertices = influences,
+  };
+  uint8_t *cooked = NULL;
+  uint64_t cooked_size = 0;
+  assert(vkr_mesh_cooked_encode(&scratch, &grid.info, &cooked, &cooked_size));
+  assert(test_read_le32(cooked + TEST_HEADER_FLAGS_FIELD) ==
+         VKR_MESH_COOKED_FLAG_LOD);
+
+  VkrMeshCookedDecoded decoded = {0};
+  assert(
+      vkr_mesh_cooked_decode(&result, &scratch, cooked, cooked_size, &decoded));
+  assert(decoded.skin.skin_count == 1u &&
+         decoded.skin.animation_fingerprint == 789u);
+  const VkrGpuGeometryDecodeRecord *decodes = decoded.mesh_buffer.decodes;
+  const VkrGeometryUploadRange *opaque = &decoded.ranges.data[0];
+  const VkrGpuGeometryLodRow *row = vkr_packed_geometry_lod_row(decodes, 0u);
+  assert(row != NULL && row->level_count >= 3u);
+  assert(vkr_packed_geometry_lod_row(decodes, 1u) == NULL);
+  assert(vkr_packed_geometry_lod_ranges_are_valid(
+      decodes, 0u, opaque->first_index, opaque->index_count, 0,
+      decoded.mesh_buffer.indices, decoded.mesh_buffer.index_count,
+      decoded.mesh_buffer.vertex_count));
+
+  arena_destroy(result_arena);
+  arena_destroy(scratch_arena);
+  printf("  test_mesh_cooked_skinned_lod_round_trip PASSED\n");
+}
+
 /* The cooked distance value of a voxel `distance` mesh units from the
  * nearest triangle, for 0.25-unit voxels and the 6-voxel band. */
 static uint8_t test_distance_byte(float32_t distance) {
@@ -1548,6 +1608,7 @@ bool32_t run_mesh_cooked_tests(void) {
   test_mesh_cooked_round_trip_and_malformed_boundaries();
   test_mesh_cooked_lightmap_uv_round_trip();
   test_mesh_cooked_lod_round_trip();
+  test_mesh_cooked_skinned_lod_round_trip();
   test_mesh_cooked_distance_round_trip();
   test_cooked_optimization_preserves_triangles();
   test_obj_face_storage_grows_geometrically();

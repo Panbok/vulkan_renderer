@@ -904,7 +904,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   /** SMAA S2x's listed pixels for the second sample's lighting; zero
       otherwise. */
   uint64_t sample1_pixels;
-  /** Shadow.SunRayResolve's RG8 mask (visibility, weight over the
+  /** Shadow.SunRayTemporal's RG8 mask (visibility, weight over the
       cascades); zero without ray-query sun shadows. */
   uint32_t sun_ray_shadow_texture;
   /** The sun cascade filter's and contact march's noise phase: the frame's
@@ -2655,8 +2655,14 @@ typedef struct VkrVulkanRayRow {
 /* The row's material is double-sided: a ray reaching its back is not
    inside geometry. */
 #define VKR_VULKAN_RAY_ROW_DOUBLE_SIDED 4u
-/* The row is skinned: its BLAS rebuilds each frame from `deformation`. */
+/* The row is skinned: its BLAS refits each frame to `deformation`. */
 #define VKR_VULKAN_RAY_ROW_SKINNED 8u
+/* TLAS instance masks. A skinned opaque row's BLAS may hold a coarser
+   detail level than its candidate row draws, so traces that read the hit
+   triangle's vertices (the dynamic volume layer's surfaces) leave skinned
+   instances out; visibility traces take both. */
+#define VKR_VULKAN_RAY_MASK_STATIC 0x01u
+#define VKR_VULKAN_RAY_MASK_SKINNED 0x02u
 
 /* GPU time the dynamic volume layer's build and trace may take a frame, and
    the probe counts its budget moves within (ADR-119). */
@@ -3399,7 +3405,16 @@ typedef struct VkrVulkanSubmeshRange {
   uint32_t index_count;
   int32_t vertex_offset;
   uint32_t decode_index;
+  /* The submesh's coarsest detail level within VKR_VULKAN_RAY_LOD_ERROR of
+     it, which skinned BLASes refit every frame and build from; the submesh
+     itself without levels. */
+  uint32_t ray_first_index;
+  uint32_t ray_index_count;
 } VkrVulkanSubmeshRange;
+
+/* Largest model-space error, in metres, of the detail level a skinned BLAS
+   builds from: well under a shadow's penumbra at the rays' range. */
+#define VKR_VULKAN_RAY_LOD_ERROR 0.01f
 
 typedef struct VkrVulkanPublishedGeometry {
   VkrGeometryHandle handle;

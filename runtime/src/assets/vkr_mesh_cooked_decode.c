@@ -345,8 +345,10 @@ vkr_internal bool8_t vkr_mesh_cooked_header_valid(
       (header->flags &
        ~(VKR_MESH_COOKED_FLAG_LIGHTMAP_UV | VKR_MESH_COOKED_FLAG_LOD |
          VKR_MESH_COOKED_FLAG_DISTANCE)) != 0u ||
-      (header->flags != 0u &&
-       (header->version != VKR_MESH_COOKED_VERSION || !header->range_count)) ||
+      (header->flags != 0u && !header->range_count) ||
+      /* A skinned artifact carries detail levels and no other block. */
+      (header->version == VKR_MESH_COOKED_SKIN_VERSION &&
+       (header->flags & ~VKR_MESH_COOKED_FLAG_LOD) != 0u) ||
       header->header_reserved[0] > VKR_MESH_COOKED_MAX_RANGES ||
       header->header_reserved[1] > VKR_MESH_COOKED_MAX_RANGES ||
       header->file_size != size ||
@@ -429,14 +431,20 @@ vkr_internal bool8_t vkr_mesh_cooked_layout_valid(
 vkr_internal bool8_t vkr_mesh_cooked_read_skin(
     VkrByteReader *source_reader, VkrAllocator *result_allocator,
     const VkrMeshCookedHeaderView *header, VkrMeshSkinData *skin) {
+  /* The detail-level block, the only one a skinned artifact may carry,
+     follows the extension. */
+  const uint64_t tail =
+      (header->flags & VKR_MESH_COOKED_FLAG_LOD) != 0u
+          ? (uint64_t)header->range_count * VKR_MESH_COOKED_LOD_ENTRY_SIZE
+          : 0u;
   if (!vkr_byte_reader_u64(source_reader, &skin->animation_fingerprint) ||
       !vkr_byte_reader_u32(source_reader, &skin->skin_count) ||
       !vkr_byte_reader_u32(source_reader, &skin->vertex_count) ||
       !skin->skin_count || skin->skin_count > 65536u ||
       skin->vertex_count != header->total_vertex_count ||
-      source_reader->offset > header->string_offset ||
+      source_reader->offset + tail > header->string_offset ||
       (uint64_t)skin->skin_count * 4u + (uint64_t)skin->vertex_count * 32u !=
-          header->string_offset - source_reader->offset) {
+          header->string_offset - tail - source_reader->offset) {
     return false_v;
   }
   skin->joint_counts = vkr_allocator_alloc(

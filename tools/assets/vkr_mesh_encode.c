@@ -608,13 +608,14 @@ static const float32_t vkr_mesh_cooked_lod_attribute_weights[5] = {
    ranges too small to halve, keep only themselves. */
 vkr_internal bool8_t vkr_mesh_cooked_build_lods(
     VkrAllocator *scratch_allocator, const VkrGeometryUploadRange *source,
-    bool8_t has_skin, const VkrVertex3d *vertices, uint32_t vertex_count,
-    const uint32_t *indices, uint32_t index_count,
-    VkrMeshCookedRangeBuild *range) {
+    const VkrVertex3d *vertices, uint32_t vertex_count, const uint32_t *indices,
+    uint32_t index_count, VkrMeshCookedRangeBuild *range) {
   range->lod_level_count = 1u;
   range->lod_index_counts[0] = index_count;
   range->lod_errors[0] = 0.0f;
-  if (has_skin || source->pipeline_domain != VKR_PIPELINE_DOMAIN_WORLD ||
+  /* Skinned ranges take levels too: their indices name the range's own
+     vertices, which skinning deforms for every level alike. */
+  if (source->pipeline_domain != VKR_PIPELINE_DOMAIN_WORLD ||
       index_count / 3u < 2u * VKR_MESH_COOKED_LOD_MIN_TRIANGLES) {
     return true_v;
   }
@@ -882,7 +883,7 @@ vkr_internal bool8_t vkr_mesh_cooked_encode_range(
       .max_extents = optimized_max,
   };
   return vkr_mesh_cooked_build_lods(
-             scratch_allocator, range, has_skin, optimized_vertices,
+             scratch_allocator, range, optimized_vertices,
              (uint32_t)optimized_vertex_count, optimized_indices,
              range->index_count, out_range) &&
          vkr_mesh_cooked_build_distance(scratch_allocator, range, has_skin,

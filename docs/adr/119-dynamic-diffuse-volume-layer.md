@@ -82,7 +82,13 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
      another submesh, or when the frame that built it never submitted. Only
      the slot's own TLAS names its skinned BLASes, so the slot's next frame
      refits them once this one has completed. A skinned row past either cap
-     counts as missing. Each frame slot's TLAS covers the rows whose BLAS
+     counts as missing. An opaque skinned row builds from its submesh's
+     coarsest detail level within `VKR_VULKAN_RAY_LOD_ERROR` (1 cm,
+     ADR-085), an alpha-tested one from the drawn triangles, whose texture
+     coordinates the trace reads by primitive. Skinned instances take TLAS
+     mask `VKR_VULKAN_RAY_MASK_SKINNED`, which this layer's surface trace
+     leaves out, since it reads the hit triangle's vertices; its visibility
+     rays and the sun's take every instance. Each frame slot's TLAS covers the rows whose BLAS
      exists or builds that frame; an instance's custom index is its packed row, and its
      binding-table offset marks a double-sided material for the grid's
      inside test. The TLAS refits in place while its instance count and the

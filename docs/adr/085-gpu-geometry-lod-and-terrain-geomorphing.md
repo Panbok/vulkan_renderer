@@ -79,10 +79,13 @@ cracks between tiles at different levels or morphs.
 
 ### Cooked mesh levels
 
-The mesh cooker gives each static range of the world domain up to six levels
-after itself (`vkr_mesh_cooked_build_lods` in
-[vkr_mesh_encode.c](../../tools/assets/vkr_mesh_encode.c)); skinned ranges and
-other domains, blended surfaces among them, keep one. Each level targets half
+The mesh cooker gives each range of the world domain, static or skinned, up
+to six levels after itself (`vkr_mesh_cooked_build_lods` in
+[vkr_mesh_encode.c](../../tools/assets/vkr_mesh_encode.c)); other domains,
+blended surfaces among them, keep one. A skinned range's levels name its own
+vertices, so skinning deforms every level alike, and their errors are
+measured in the bind pose (since 2026-10-17; the Vulkan skinned BLASes build
+from them, ADR-119). Each level targets half
 the previous level's triangles and is simplified from the range with
 meshoptimizer's `meshopt_simplifyWithAttributes`, so errors do not compound:
 open borders stay locked, so ranges that meet do not crack; small disconnected
@@ -96,8 +99,9 @@ not reordered by level.
 
 Static artifacts stay at version 17 and set header flag
 `VKR_MESH_COOKED_FLAG_LOD` (bit 1,
-[vkr_mesh_cooked.h](../../runtime/src/assets/vkr_mesh_cooked.h)). Its block
-follows the source metadata and any lightmap block: one 72-byte entry per range
+[vkr_mesh_cooked.h](../../runtime/src/assets/vkr_mesh_cooked.h)); skinned
+artifacts, version 18, may set it and no other flag. Its block follows the
+source metadata, any skin extension and any lightmap block: one 72-byte entry per range
 with the level count, the CRC, offset and size of one meshoptimizer index
 stream that holds levels 1 and up, and each level's index count and error.
 Those streams follow every range's own streams, in range order. The reader
