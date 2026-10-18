@@ -245,11 +245,14 @@ float64_t vkr_platform_get_absolute_time() {
 }
 
 uint64_t vkr_platform_get_monotonic_ns(void) {
+  return vkr_platform_monotonic_ns_from_counter(mach_absolute_time());
+}
+
+uint64_t vkr_platform_monotonic_ns_from_counter(uint64_t counter) {
   assert(timebase_initialized && "vkr_platform_init() must be called first");
-  const uint64_t ticks = mach_absolute_time();
   /* Split the conversion so a long uptime cannot overflow the product. */
-  const uint64_t whole = ticks / timebase_info.denom;
-  const uint64_t part = ticks % timebase_info.denom;
+  const uint64_t whole = counter / timebase_info.denom;
+  const uint64_t part = counter % timebase_info.denom;
   return whole * timebase_info.numer +
          part * timebase_info.numer / timebase_info.denom;
 }
@@ -515,6 +518,37 @@ bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry) {
   return telemetry.footprint_valid || telemetry.cpu_time_valid ||
          telemetry.thermal_valid || telemetry.memory_pressure_valid ||
          telemetry.power_valid || telemetry.low_power_valid;
+}
+
+/* macOS reports no OS budget of GPU memory and no GPU use of other
+   processes; Metal's own memory figures stay in the renderer's metrics. */
+bool8_t vkr_platform_gpu_monitor_create(VkrAllocator *allocator,
+                                        const uint8_t *adapter_luid,
+                                        VkrPlatformGpuMonitor *out_monitor) {
+  (void)allocator;
+  (void)adapter_luid;
+  if (out_monitor) {
+    *out_monitor = NULL;
+  }
+  return false_v;
+}
+
+bool8_t
+vkr_platform_gpu_monitor_sample(VkrPlatformGpuMonitor monitor,
+                                VkrPlatformGpuTelemetry *out_telemetry) {
+  (void)monitor;
+  if (out_telemetry) {
+    *out_telemetry = (VkrPlatformGpuTelemetry){0};
+  }
+  return false_v;
+}
+
+void vkr_platform_gpu_monitor_destroy(VkrAllocator *allocator,
+                                      VkrPlatformGpuMonitor *monitor) {
+  (void)allocator;
+  if (monitor) {
+    *monitor = NULL;
+  }
 }
 
 void vkr_platform_exit_immediate(int32_t exit_code) { _Exit(exit_code); }

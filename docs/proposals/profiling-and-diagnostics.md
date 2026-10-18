@@ -42,28 +42,27 @@ Remaining gaps:
 
 ## P1: platform signals (remaining)
 
-- Windows metrics beyond `vkr_platform_get_telemetry` (whose Windows
-  sources ADR-125 records): `IDXGIAdapter3::QueryVideoMemoryInfo` and PDH
-  GPU engine use of other processes.
+The Windows sources, the OS's GPU memory view, other processes' GPU use and
+`gpu.peer_load` are in [ADR-125](../adr/125-platform-telemetry-metrics.md);
+Vulkan object names in [ADR-124](../adr/124-renderer-health-and-diagnostic-reads.md).
+Remaining:
+
 - Vulkan present latency (`VK_KHR_present_id`, `present_wait`) behind the
-  present timing's latency and missed counts.
-- Vulkan object names (`vkSetDebugUtilsObjectNameEXT`) and optional pipeline
-  statistics per pass, gated like pass timing.
-- The harness authority reason `gpu.peer_load`.
+  present timing's latency and missed counts, on a driver that exposes them
+  (the Windows RX 6700 XT driver does not).
+- Optional pipeline statistics per pass, gated like pass timing.
 - Acceptance: the Tier 0 overhead gate rerun with the added Tier 0 fields;
   present latency on a visible window.
 
 ## P2: timeline (remaining)
 
-CPU zones per thread, Metal GPU pass starts on the CPU clock, the Perfetto
-export and rolling recordings are implemented in
+CPU zones per thread, Metal and Vulkan GPU pass starts on the CPU clock,
+the Perfetto export and rolling recordings are implemented in
 [ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md); `rec.explain` and
 `vkr_rec explain` in [ADR-122](../adr/122-recordings.md); `vkr_harness
 perf-compare` in [ADR-051](../adr/051-renderer-harness-and-evidence.md).
 Remaining:
 
-- Vulkan pass starts (`gpu_start_ms`) and host GPU times through
-  `VK_KHR_calibrated_timestamps`.
 - PIX event output of the zone macro on Windows and `os_signpost` on macOS,
   so native profilers show the zones.
 - More zones where cost hides: asset loads, physics steps inside jobs,

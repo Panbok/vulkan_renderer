@@ -650,14 +650,21 @@ typedef enum VkrHarnessConditionMetric {
   VKR_HARNESS_CONDITION_MEMORY_PRESSURE,
   VKR_HARNESS_CONDITION_LOW_POWER,
   VKR_HARNESS_CONDITION_ON_BATTERY,
+  /** Other processes' use of the busiest GPU engine, in percent. */
+  VKR_HARNESS_CONDITION_GPU_PEER_UTIL,
   VKR_HARNESS_CONDITION_METRIC_COUNT,
 } VkrHarnessConditionMetric;
 
+/** Other processes' GPU use, in percent at a counted frame, above which a run
+ * loses authority with `gpu.peer_load`: they then take engine time a timing
+ * includes, while a desktop compositor and background video stay below. */
+#define VKR_HARNESS_GPU_PEER_LOAD_PERCENT 10u
+
 /**
- * One OS gauge folded over every sampled frame: the highest level for the
- * thermal and memory-pressure gauges, the number of frames at 1 for the power
- * flags. Frames the gauge was unavailable for are counted apart and never
- * folded in as zero.
+ * One OS gauge folded over every sampled frame: the highest value for the
+ * thermal, memory-pressure and GPU peer gauges, the number of frames at 1 for
+ * the power flags. Frames the gauge was unavailable for are counted apart and
+ * never folded in as zero.
  */
 typedef struct VkrHarnessConditionValue {
   bool8_t registered;
@@ -1053,6 +1060,9 @@ const char *
 vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric);
 /** The engine gauge a system condition is read from and reported as. */
 const char *vkr_harness_condition_metric_name(VkrHarnessConditionMetric metric);
+/** Whether a system condition folds its highest frame (`max`) rather than
+    the frames it was on (`active_frames`). */
+bool8_t vkr_harness_condition_metric_is_level(VkrHarnessConditionMetric metric);
 /** The `diagnostic_counts.output` member an output line class is counted
     under. */
 const char *vkr_harness_output_class_name(VkrHarnessOutputClass output_class);

@@ -48,6 +48,14 @@ them while the render thread runs.
   when the device supports that extension and its `deviceFault` feature.
   The startup capability report names the `deviceFault` feature, so a log
   shows whether a lost device will explain itself.
+- With `VK_EXT_debug_utils`, which the instance enables whenever it is
+  present, `vkr_vulkan_device_set_object_name` names each graph image and
+  buffer after its graph resource when it is realized, and each pipeline
+  after its shader entry points when it is created, so validation messages
+  and RenderDoc, Nsight or RGP captures say which resource or shader they
+  mean ([vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c),
+  [vkr_vulkan_pipelines.c](../../renderer/src/vulkan/vkr_vulkan_pipelines.c)).
+  Names are set at creation only, never per frame.
 
 **Bounded Vulkan completion waits.** Frame-slot reuse, swapchain image reuse,
 idle, FSR slot and graph resource waits wait at most 5 s
@@ -153,6 +161,13 @@ A run loses authority with `gpu.errors` when a GPU error occurred and with
 - A windowed Release Bistro editor stayed minimized for 40 s, recreated its
   swapchain on restore, answered `health.status` throughout and logged no
   completion timeout.
+- Object names, at `96857df1` plus these changes: the same Release case under
+  `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump`,
+  `VK_APIDUMP_OUTPUT_RANGE=0-1` and `VK_APIDUMP_DETAILED=false` logged 206
+  `vkSetDebugUtilsObjectNameEXT` calls before the first present, all
+  `VK_SUCCESS`: 118 after pipeline creation (92 compute, 26 graphics) and 88
+  after graph image and buffer realization. The dump does not show the
+  strings.
 - `vkr_bakery bake probe --scene assets/scenes/bistro.scene.json --position
   -28.5 4.6 2.9 --size 256 --supersample 4` captured six 1024×1024 Bistro
   faces through a Release Vulkan harness child in 45 frames and 40 s, report

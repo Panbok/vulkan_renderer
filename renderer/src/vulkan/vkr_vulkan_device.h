@@ -39,6 +39,10 @@ typedef struct VkrVulkanCandidateReport {
   uint32_t api_version;
   uint32_t driver_id;
   VkConformanceVersion conformance_version;
+  /* The adapter's LUID (VkPhysicalDeviceIDProperties), which OS telemetry
+     matches its adapters by; valid only where the driver reports one. */
+  uint8_t device_luid[VK_LUID_SIZE];
+  bool8_t device_luid_valid;
   uint32_t queue_family_index;
   bool8_t offscreen_viable;
   bool8_t window_viable;
@@ -127,6 +131,16 @@ vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device);
 bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
                                         uint64_t *out_usage_bytes,
                                         uint64_t *out_budget_bytes);
+/** Reads the device's timestamp counter and QueryPerformanceCounter at one
+    moment (VK_KHR_calibrated_timestamps); the host value converts with
+    vkr_platform_monotonic_ns_from_counter. False when the device has no such
+    pair. `out_deviation_ns` bounds how far apart the two reads may be. */
+bool8_t vkr_vulkan_device_calibrate_host(const VkrVulkanDevice *device,
+                                         uint64_t *out_device_ticks,
+                                         uint64_t *out_host_counter,
+                                         uint64_t *out_deviation_ns);
+/** Meaningful low bits of the queue's timestamps (timestampValidBits). */
+uint32_t vkr_vulkan_device_timestamp_valid_bits(const VkrVulkanDevice *device);
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT *
 vkr_vulkan_device_descriptor_properties(const VkrVulkanDevice *device);
 const VkrVulkanDescriptorLayout *
@@ -180,3 +194,9 @@ PFN_vkCmdBeginDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device);
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device);
+/** Names a Vulkan object for captures (RenderDoc, Nsight, RGP) and validation
+    messages; `name` need not be terminated and is cut at 127 bytes. Does
+    nothing without VK_EXT_debug_utils. Call at creation, never per frame. */
+void vkr_vulkan_device_set_object_name(const VkrVulkanDevice *device,
+                                       VkObjectType type, uint64_t handle,
+                                       const char *name, uint64_t length);

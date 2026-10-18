@@ -11,8 +11,8 @@ authority: adr
 Accepted (partial). The first part of phase P2 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
 implemented: CPU zones recorded per thread, GPU pass starts on the CPU clock
-on Metal, the Perfetto export and rolling recordings. The Vulkan pass starts
-and the editor's Timeline window are not built.
+on Metal and Vulkan, the Perfetto export and rolling recordings. The editor's
+Timeline window is not built.
 
 ## Context
 
@@ -67,6 +67,25 @@ same `mach_absolute_time` clock, place the frame on the CPU clock. So no
 `sampleTimestamps:gpuTimestamp:` call is needed. Untimed work before the
 first timed pass shifts the passes early by that work's length.
 
+On Vulkan, pass starts count from the first timed pass's begin the same way
+([vkr_vulkan_renderer.c](../../renderer/src/vulkan/vkr_vulkan_renderer.c)).
+The frame's begin and end stamps reach the CPU clock through
+`VK_KHR_calibrated_timestamps` (or its EXT origin) when the device pairs its
+timestamps with `QueryPerformanceCounter`, the counter behind
+`vkr_platform_get_monotonic_ns` on Windows:
+
+- The device enables the extension only with both time domains, and the
+  startup capability report names `calibratedTimestamps`
+  ([vkr_vulkan_device.c](../../renderer/src/vulkan/vkr_vulkan_device.c)).
+- The render thread keeps one calibration pair, a device stamp and the host
+  time read with it, and refreshes it once it is a second old, which bounds
+  the drift between the clocks.
+- A stamp's distance from the pair is taken signed within the queue's
+  `timestampValidBits`, then scaled by `timestampPeriod`;
+  `vkr_platform_monotonic_ns_from_counter` converts the pair's raw counter.
+- Without the extension or the domain, `gpu_host_valid` stays false and
+  passes keep their device-relative starts.
+
 **Instrumented zones.**
 
 | Zone | Thread |
@@ -75,6 +94,7 @@ first timed pass shifts the passes early by that work's length.
 | `Update`, `Simulation`, `World.Payload`, `Render.Prepare`, `Render.Wait` | Frame loop |
 | `Render` (the frame loop's when rendering inline) | Render thread |
 | `Metal.Graph`, `Metal.Encode` | Render thread |
+| `Vulkan.Graph` (graph realization), `Vulkan.Record` (command recording) | Render thread |
 | `Job` (each job run) | Job workers |
 
 **Export** ([vkr_rec_main.c](../../tools/recording/vkr_rec_main.c)).
@@ -130,7 +150,8 @@ The export caps output at 4,000,000 events.
 
 ## Revisit when
 
-- Vulkan fills `gpu_start_ms` and the host GPU times (calibrated timestamps).
+- A Vulkan host without the `QueryPerformanceCounter` domain needs another
+  host clock (`CLOCK_MONOTONIC` on Linux).
 - The editor gains its Timeline window, or the rolling buffer lands.
 - A timing run shows the zones' cost matters.
 
@@ -158,4 +179,21 @@ The export caps output at 4,000,000 events.
   export resolved every pass and zone name (6,557 zones, 2,956 passes). A
   `vkr_rec explain --frame 400` answered `unknown` for a normal frame.
   `rec.stop` wrote nothing.
-- Vulkan: compile only; no pass starts.
+- Vulkan on Windows, 2026-10-18, Ryzen 5 2600, RX 6700 XT, Adrenalin
+  26.6.3 (both calibrated-timestamps extensions present; the KHR one is
+  used): the startup log read `Vulkan capability feature
+  calibratedTimestamps: present`. A headless Release Bistro editor, driven
+  through `vkr_mcp`, recorded 460 frames at Tier 1 with zones while the
+  camera orbited. `vkr_rec export --perfetto` wrote 91,832 events: 3,863
+  zones including 460 `Vulkan.Graph` and 460 `Vulkan.Record`, `Job` zones on
+  11 workers, 456 GPU frames and 85,194 GPU pass spans, every pass inside its
+  frame's span, no unmatched frame and no bad record. No GPU frame began
+  before a `Vulkan.Record` ended; the next GPU frame began at least 14 µs
+  after it (p50 5.7 ms, p95 11.3 ms), the queue still running the previous
+  frame.
+- On Vulkan, `rec.start {"rolling": 30}`, a camera jump and `rec.save_last`
+  wrote 697 frames. `vkr_rec explain --spike 1` named frame 64,
+  `gpu.submission` 15.7 ms against a 7.2 ms median; the trace shows that GPU
+  frame at 15.75 ms with 182 timed passes summing 14.0 ms. Spike 2, frame
+  107, followed a 42 ms GPU frame. The rolling start left a
+  `.rolling.vkrrec` directory holding only a thumbnail.

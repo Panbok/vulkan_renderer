@@ -1,3 +1,4 @@
+#include "core/vkr_zone.h"
 #include "vkr_render_graph_frame.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
@@ -132,6 +133,45 @@ VkResult vkr_vk_wait_timeline(VkrVulkanRenderer *renderer, uint64_t value,
   return vkr_vk_finish_completion_wait(renderer, result, value, wait_name);
 }
 
+/* Places a device timestamp on vkr_platform_get_monotonic_ns's clock through
+   the cached calibration pair, refreshing the pair once it is a second old.
+   False when the device has no calibrated host domain. */
+vkr_internal bool8_t vkr_vk_device_ticks_to_host_ns(VkrVulkanRenderer *renderer,
+                                                    uint64_t ticks,
+                                                    float64_t period_ns,
+                                                    uint64_t *out_host_ns) {
+  const uint64_t now_ns = vkr_platform_get_monotonic_ns();
+  if (!renderer->host_calibration_valid ||
+      now_ns - renderer->host_calibration_sampled_ns >= 1000000000ull) {
+    uint64_t device_ticks = 0u;
+    uint64_t host_counter = 0u;
+    uint64_t deviation_ns = 0u;
+    renderer->host_calibration_valid = vkr_vulkan_device_calibrate_host(
+        renderer->device, &device_ticks, &host_counter, &deviation_ns);
+    if (!renderer->host_calibration_valid)
+      return false_v;
+    renderer->host_calibration_device_ticks = device_ticks;
+    renderer->host_calibration_host_ns =
+        vkr_platform_monotonic_ns_from_counter(host_counter);
+    renderer->host_calibration_sampled_ns = now_ns;
+  }
+  /* The stamp may precede the calibration, and the counter wraps at its
+     valid bits, so the distance is taken signed within those bits. */
+  uint64_t delta = ticks - renderer->host_calibration_device_ticks;
+  const uint32_t valid_bits =
+      vkr_vulkan_device_timestamp_valid_bits(renderer->device);
+  if (valid_bits > 0u && valid_bits < 64u) {
+    const uint32_t shift = 64u - valid_bits;
+    delta = (uint64_t)((int64_t)(delta << shift) >> shift);
+  }
+  const float64_t host_ns = (float64_t)renderer->host_calibration_host_ns +
+                            (float64_t)(int64_t)delta * period_ns;
+  if (!(host_ns > 0.0) || host_ns >= 18446744073709551615.0)
+    return false_v;
+  *out_host_ns = (uint64_t)host_ns;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
                                                  VkrVulkanFrameSlot *slot) {
   if (slot->timing_collected)
@@ -151,10 +191,18 @@ vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
             sizeof(*frame_stamps), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
       return false_v;
     slot->gpu_submission_valid = frame_stamps[1] >= frame_stamps[0];
-    if (slot->gpu_submission_valid)
+    if (slot->gpu_submission_valid) {
       slot->gpu_submission_ns =
           (uint64_t)((float64_t)(frame_stamps[1] - frame_stamps[0]) *
                      timestamp_period_ns);
+      slot->gpu_host_valid =
+          vkr_vk_device_ticks_to_host_ns(renderer, frame_stamps[0],
+                                         timestamp_period_ns,
+                                         &slot->gpu_start_host_ns) &&
+          vkr_vk_device_ticks_to_host_ns(renderer, frame_stamps[1],
+                                         timestamp_period_ns,
+                                         &slot->gpu_end_host_ns);
+    }
   }
   if (slot->timing_requested) {
     uint64_t timestamps[VKR_VULKAN_PASS_TIMESTAMP_QUERIES] = {0};
@@ -169,18 +217,28 @@ vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
        land while earlier passes still run, since its barrier blocks only the
        stages that read their output, but its bottom-of-pipe stamp waits for
        all earlier work. Overlap is therefore counted once, in the earlier
-       pass. */
+       pass. Starts count from the first timed pass's begin, as on Metal. */
     uint64_t previous_end = 0u;
+    uint64_t origin = 0u;
+    bool8_t origin_set = false_v;
     for (uint32_t i = 0; i < slot->pass_timing_count; ++i) {
       const size_t query_index = (size_t)i * 2u;
       uint64_t begin = timestamps[query_index];
       const uint64_t end = timestamps[query_index + 1u];
-      slot->pass_timings[i].valid = end >= begin;
-      if (slot->pass_timings[i].valid) {
+      VkrRendererImplPassTiming *timing = &slot->pass_timings[i];
+      timing->valid = end >= begin;
+      timing->gpu_start_valid = timing->valid;
+      if (timing->valid) {
         if (previous_end > begin)
           begin = Min(previous_end, end);
         previous_end = Max(previous_end, end);
-        slot->pass_timings[i].gpu_ms = (float64_t)(end - begin) * timestamp_ms;
+        if (!origin_set) {
+          origin = begin;
+          origin_set = true_v;
+        }
+        timing->gpu_ms = (float64_t)(end - begin) * timestamp_ms;
+        timing->gpu_start_ms =
+            begin > origin ? (float64_t)(begin - origin) * timestamp_ms : 0.0;
       }
     }
   }
@@ -1016,7 +1074,10 @@ vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
     vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                          slot->timestamp_pool,
                          VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY);
-  if (!vkr_vk_record_frame_commands(renderer, slot))
+  VKR_ZONE_BEGIN(record_zone, "Vulkan.Record");
+  const bool8_t recorded = vkr_vk_record_frame_commands(renderer, slot);
+  VKR_ZONE_END(record_zone);
+  if (!recorded)
     return false_v;
   if (vkEndCommandBuffer(command) != VK_SUCCESS) {
     log_error("Vulkan failed to end the frame command buffer");
@@ -1101,6 +1162,7 @@ vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
   slot->timing_collected =
       !slot->timing_requested && !slot->submission_timing_requested;
   slot->gpu_submission_valid = false_v;
+  slot->gpu_host_valid = false_v;
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;
   slot->exposure_requested = renderer->prepared_frame.exposure_automatic;
   slot->shadow_depth_range = (VkrShadowDepthRangeSample){0};
@@ -1528,7 +1590,11 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
 #if VKR_METRICS_ENABLED
   const uint64_t graph_compile_ns = vkr_metrics_elapsed_ns(graph_compile_start);
 #endif
-  if (!vkr_vk_realize_compiled_graph(renderer, packet)) {
+  VKR_ZONE_BEGIN(graph_zone, "Vulkan.Graph");
+  const bool8_t graph_realized =
+      vkr_vk_realize_compiled_graph(renderer, packet);
+  VKR_ZONE_END(graph_zone);
+  if (!graph_realized) {
     vkr_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
@@ -1724,6 +1790,9 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .gpu_submission_unavailable_reason =
           vkr_vk_submission_timing_reason(best),
       .gpu_submission_valid = best->gpu_submission_valid,
+      .gpu_start_host_ns = best->gpu_host_valid ? best->gpu_start_host_ns : 0u,
+      .gpu_end_host_ns = best->gpu_host_valid ? best->gpu_end_host_ns : 0u,
+      .gpu_host_valid = best->gpu_host_valid,
       .readback_ready = true_v,
       .hzb_history_valid = best->hzb_history_valid,
       .has_gpu_draw_diagnostics = true_v,

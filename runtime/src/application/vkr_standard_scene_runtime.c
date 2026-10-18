@@ -196,6 +196,14 @@ vkr_internal bool8_t vkr_standard_scene_runtime_register_telemetry_metrics(
        VKR_METRIC_UNIT_NANOSECONDS, &ids->process_time},
       {"os.page_faults.major", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_COUNTER,
        VKR_METRIC_UNIT_COUNT, &ids->major_page_faults},
+      {"memory.gpu.os.budget_bytes", VKR_METRIC_DOMAIN_MEMORY_GPU,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES,
+       &ids->os_gpu_memory_budget},
+      {"memory.gpu.os.usage_bytes", VKR_METRIC_DOMAIN_MEMORY_GPU,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES, &ids->os_gpu_memory_usage},
+      {"os.gpu.other_process_util", VKR_METRIC_DOMAIN_FRAME,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_PERCENT,
+       &ids->os_gpu_other_process_util},
   };
   for (uint32_t i = 0u; i < ArrayCount(rows); ++i) {
     const VkrMetricDescription description = {
@@ -279,6 +287,39 @@ vkr_internal void vkr_standard_scene_runtime_publish_telemetry(
   application->telemetry_faults_published = faults;
   application->telemetry_faults_published_valid =
       telemetry->major_page_faults_valid;
+}
+
+/* Publishes the OS's view of the renderer's adapter. Without a monitor or a
+   source every value reads unsupported; other processes' GPU use reads not
+   sampled until the sampler's first complete period. */
+vkr_internal void vkr_standard_scene_runtime_publish_gpu_telemetry(
+    VkrStandardSceneRuntime *application) {
+  VkrMetrics *metrics = application->metrics;
+  const VkrStandardSceneRuntimeMetricIds *ids = &application->metric_ids;
+  VkrPlatformGpuTelemetry gpu = {0};
+  (void)vkr_platform_gpu_monitor_sample(application->gpu_monitor, &gpu);
+  if (gpu.memory_valid) {
+    vkr_metrics_gauge_set_u64(metrics, ids->os_gpu_memory_budget,
+                              gpu.memory_budget_bytes);
+    vkr_metrics_gauge_set_u64(metrics, ids->os_gpu_memory_usage,
+                              gpu.memory_usage_bytes);
+  } else {
+    vkr_metrics_mark(metrics, ids->os_gpu_memory_budget,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_UNSUPPORTED);
+    vkr_metrics_mark(metrics, ids->os_gpu_memory_usage,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_UNSUPPORTED);
+  }
+  if (gpu.other_process_util_valid) {
+    vkr_metrics_gauge_set_u64(metrics, ids->os_gpu_other_process_util,
+                              gpu.other_process_util_percent);
+  } else {
+    vkr_metrics_mark(metrics, ids->os_gpu_other_process_util,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     application->gpu_monitor ? VKR_METRIC_REASON_NOT_SAMPLED
+                                              : VKR_METRIC_REASON_UNSUPPORTED);
+  }
 }
 #endif
 
@@ -514,6 +555,16 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
   VkrDeviceInformation device = {0};
   vkr_renderer_get_device_information(&application->renderer, &device,
                                       application->frame_arenas[0]);
+#if VKR_METRICS_ENABLED
+  /* Only frame metrics read the monitor. A platform without a source leaves
+     it NULL and its metrics unsupported. */
+  _Static_assert(VKR_DEVICE_ADAPTER_LUID_SIZE == VKR_PLATFORM_ADAPTER_LUID_SIZE,
+                 "the renderer and the platform name an adapter alike");
+  (void)vkr_platform_gpu_monitor_create(
+      &application->app_allocator,
+      device.adapter_luid_valid ? device.adapter_luid : NULL,
+      &application->gpu_monitor);
+#endif
   if (!vkr_render_assets_initialize(
           &application->assets, &application->renderer.asset_publisher, &device,
           &application->job_system, metrics_producers,
@@ -603,6 +654,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
 vkr_internal void vkr_standard_scene_runtime_rendering_shutdown(
     VkrStandardSceneRuntime *application) {
   vkr_renderer_wait_idle(&application->renderer);
+  vkr_platform_gpu_monitor_destroy(&application->app_allocator,
+                                   &application->gpu_monitor);
   if (application->assets.resource_system_initialized)
     vkr_resource_system_quiesce();
   if (application->picking.initialized)
@@ -3078,6 +3131,7 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
     VkrPlatformTelemetry telemetry = {0};
     (void)vkr_platform_get_telemetry(&telemetry);
     vkr_standard_scene_runtime_publish_telemetry(application, &telemetry);
+    vkr_standard_scene_runtime_publish_gpu_telemetry(application);
     /* A recording's frame budget: what this frame's presentation paced to. */
     const float64_t frame_limit =
         (float64_t)application->host.config.target_frame_rate;

@@ -381,10 +381,9 @@ vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric) {
     a per-frame gauge, unavailable where the platform has no source. */
 vkr_global const char *const
     vkr_harness_condition_metric_names[VKR_HARNESS_CONDITION_METRIC_COUNT] = {
-        "os.thermal.level",
-        "os.memory.pressure",
-        "os.power.low_power",
-        "os.power.on_battery",
+        "os.thermal.level",          "os.memory.pressure",
+        "os.power.low_power",        "os.power.on_battery",
+        "os.gpu.other_process_util",
 };
 
 const char *
@@ -392,6 +391,13 @@ vkr_harness_condition_metric_name(VkrHarnessConditionMetric metric) {
   return metric < VKR_HARNESS_CONDITION_METRIC_COUNT
              ? vkr_harness_condition_metric_names[metric]
              : "unknown";
+}
+
+bool8_t
+vkr_harness_condition_metric_is_level(VkrHarnessConditionMetric metric) {
+  return metric == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
+         metric == VKR_HARNESS_CONDITION_MEMORY_PRESSURE ||
+         metric == VKR_HARNESS_CONDITION_GPU_PEER_UTIL;
 }
 
 /** Index-aligned with VkrHarnessStatisticKind; also the report/CSV wire names.

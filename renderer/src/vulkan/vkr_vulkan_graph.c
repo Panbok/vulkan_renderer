@@ -452,6 +452,10 @@ bool8_t vkr_vk_realize_graph_images(VkrVulkanRenderer *renderer) {
         vkr_vk_destroy_graph_image(renderer, slot);
         return false_v;
       }
+      vkr_vulkan_device_set_object_name(
+          renderer->device, VK_OBJECT_TYPE_IMAGE,
+          (uint64_t)(uintptr_t)slot->instances[instance].image.handle,
+          (const char *)image->name.str, image->name.length);
     }
   }
   return true_v;
@@ -954,6 +958,10 @@ bool8_t vkr_vk_realize_graph_buffers(VkrVulkanRenderer *renderer) {
         vkr_vk_destroy_graph_buffer(renderer, slot);
         return false_v;
       }
+      vkr_vulkan_device_set_object_name(
+          renderer->device, VK_OBJECT_TYPE_BUFFER,
+          (uint64_t)(uintptr_t)slot->instances[instance].buffer.handle,
+          (const char *)buffer->name.str, buffer->name.length);
     }
   }
   return true_v;

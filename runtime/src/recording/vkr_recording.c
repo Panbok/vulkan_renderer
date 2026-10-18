@@ -327,6 +327,9 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
     "os.thermal.level",
     "os.power.low_power",
     "os.page_faults.major",
+    "memory.gpu.os.budget_bytes",
+    "memory.gpu.os.usage_bytes",
+    "os.gpu.other_process_util",
 };
 
 /* Frame-loop work that a render thread's completion iteration (ADR-082)

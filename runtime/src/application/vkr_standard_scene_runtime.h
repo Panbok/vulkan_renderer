@@ -14,6 +14,7 @@
 #include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 #include "recording/vkr_recording.h"
 #include "recording/vkr_recording_drive.h"
 #include "recording/vkr_recording_playback.h"
@@ -168,6 +169,12 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   VkrMetricId os_low_power;
   VkrMetricId process_time;
   VkrMetricId major_page_faults;
+  // The OS's GPU telemetry (VkrPlatformGpuMonitor), sampled each frame: the
+  // video memory budget and usage of the renderer's adapter, comparable with
+  // memory.gpu.driver.*, and the busiest engine's use by other processes.
+  VkrMetricId os_gpu_memory_budget;
+  VkrMetricId os_gpu_memory_usage;
+  VkrMetricId os_gpu_other_process_util;
   // The frame time presentation paces to: the display's refresh interval
   // when the frame presented with vertical sync, raised to the frame
   // limit's. Unsampled for unpaced frames, which have no such floor.
@@ -239,6 +246,10 @@ typedef struct VkrStandardSceneRuntime {
   uint64_t telemetry_faults_published;
   bool8_t telemetry_cpu_published;
   bool8_t telemetry_faults_published_valid;
+  /* The renderer adapter's OS GPU telemetry, from `app_allocator`; created
+     with rendering where metrics are enabled and the platform has a source,
+     else NULL. Destroyed, joining its sampler thread, with rendering. */
+  VkrPlatformGpuMonitor gpu_monitor;
   VkrRendererMetrics renderer_metrics;
   VkrApplicationHost host;
   VkrStandardSceneRuntimeConfig *config; /**< Pointer to the configuration used

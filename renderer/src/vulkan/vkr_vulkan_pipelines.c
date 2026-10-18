@@ -2133,6 +2133,15 @@ vkr_vk_validate_pass_output_root_abi(VkrVulkanRenderer *renderer) {
 
 #undef VKR_VULKAN_REFLECTED_FIELD
 
+/* Names a pipeline after its shader entry points, so captures and
+   validation messages say which shader a pipeline runs. */
+vkr_internal void vkr_vk_name_pipeline(VkrVulkanRenderer *renderer,
+                                       VkPipeline pipeline, const char *name) {
+  vkr_vulkan_device_set_object_name(renderer->device, VK_OBJECT_TYPE_PIPELINE,
+                                    (uint64_t)(uintptr_t)pipeline, name,
+                                    string_length(name));
+}
+
 vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
                                                  const char *path,
                                                  VkShaderModule *out_module) {
@@ -2263,6 +2272,7 @@ bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer) {
                 result);
       return false_v;
     }
+    vkr_vk_name_pipeline(renderer, renderer->volume_pipelines[i], entries[i]);
   }
   return true_v;
 }
@@ -2524,6 +2534,10 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
               result);
     return false_v;
   }
+  char name[128];
+  string_format(name, sizeof(name), "%s%s%s", stages[0].pName,
+                depth_only ? "" : " + ", depth_only ? "" : stages[1].pName);
+  vkr_vk_name_pipeline(renderer, *out_pipeline, name);
   return true_v;
 }
 
@@ -2844,6 +2858,7 @@ vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {
                                  renderer->pipeline_cache, 1u, &info, NULL,
                                  &renderer->ibl_pipelines[i]) != VK_SUCCESS)
       return false_v;
+    vkr_vk_name_pipeline(renderer, renderer->ibl_pipelines[i], stage.pName);
   }
   return true_v;
 }
@@ -2879,6 +2894,8 @@ vkr_vk_create_atmosphere_pipelines(VkrVulkanRenderer *renderer) {
             vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
             &info, NULL, &renderer->atmosphere_pipelines[i]) != VK_SUCCESS)
       return false_v;
+    vkr_vk_name_pipeline(renderer, renderer->atmosphere_pipelines[i],
+                         entries[i]);
   }
   return true_v;
 }
@@ -3072,6 +3089,7 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
             vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
             &info, NULL, &renderer->deferred_pipelines[i]) != VK_SUCCESS)
       return false_v;
+    vkr_vk_name_pipeline(renderer, renderer->deferred_pipelines[i], entries[i]);
   }
   return true_v;
 }

@@ -13,8 +13,9 @@ Accepted (partial). Phase P1 of
 implemented on the Mac: the lib telemetry API, its macOS sources, the registry
 metrics, their Tier 0 recording fields, `health.status`, the harness's system
 conditions, Metal present latency, the recording timeline's System lane and
-the `perf.snapshot` and `perf.set` operations. The Windows sources are
-implemented and have a native Bistro run; Vulkan reports no present latency.
+the `perf.snapshot` and `perf.set` operations. The Windows sources, the
+OS's video memory figures and other processes' GPU use are implemented and
+have a native Bistro run. Vulkan reports no present latency.
 
 ## Context
 
@@ -87,6 +88,22 @@ signals with `cpu.backend_present`, `cpu.drawable_acquire`, `gpu.errors` and
 `log.errors`. `health.status` reports a `system` object with the thermal
 level, memory pressure, footprint, power source and low-power mode.
 
+**The OS's view of the GPU** ([vkr_platform_gpu_windows.c](../../lib/src/platform/vkr_platform_gpu_windows.c)).
+`vkr_platform_gpu_monitor_create` takes the renderer's adapter LUID, which
+the Vulkan device reads from `VkPhysicalDeviceIDProperties` and
+`vkr_renderer_get_device_information` passes on; the runtime creates the
+monitor with rendering and destroys it at shutdown. On Windows:
+
+| Metric | Source |
+|---|---|
+| `memory.gpu.os.budget_bytes`, `memory.gpu.os.usage_bytes` (gauges) | `IDXGIAdapter3::QueryVideoMemoryInfo`, local segment, read on the frame |
+| `os.gpu.other_process_util` (gauge, percent) | PDH `\GPU Engine(*)\Utilization Percentage` through its English path: every other process's use summed per engine of the same adapter, the busiest engine's sum |
+
+One PDH collection takes about 1 ms, so a sampler thread created by the first
+frame's read collects once a second and publishes through an atomic; destroy
+joins it. The frame's read costs about 1 µs. macOS has no source yet and
+reports all three unsupported. The three are in Tier 0 recordings.
+
 **Harness** ([vkr_harness_report.c](../../tools/harness/vkr_harness_report.c)):
 the parent samples the system when a profile, snapshot or autotest starts and
 ends and writes `thermal_state_*`, `power_source_*`, `low_power_*` and
@@ -97,7 +114,11 @@ pressure and the frames in low-power mode or on battery over warmup and
 measured frames. A run loses authority with `thermal.throttled` at a serious
 or critical thermal level, `memory.pressure` at critical pressure and
 `power.low_power` in low-power mode, at any counted frame or at start or end.
-On battery is reported only.
+On battery is reported only. `system_conditions` also carries the highest
+`os.gpu.other_process_util`, and a run loses authority with `gpu.peer_load`
+when other processes used more than 10 percent of an engine at any counted
+frame (`VKR_HARNESS_GPU_PEER_LOAD_PERCENT`). `vkr_harness perf-compare` flags
+that condition only when the two runs fall on opposite sides of it.
 
 **Present latency** ([vkr_metal_packet_present.inc](../../renderer/src/metal/internal/vkr_metal_packet_present.inc)):
 each window present writes the drawable's ID and the CPU time of the call
@@ -109,6 +130,9 @@ after the renderer is destroyed, so the marks and totals live in a separate
 allocation that the renderer and each pending present reference; the last
 reference frees it. The collector publishes `gpu.present.latency` (one mean
 sample per frame) and `gpu.present.missed` (counter), both in Tier 0.
+Vulkan needs `VK_KHR_present_id` and `VK_KHR_present_wait` for the same
+measurement; the Windows RX 6700 XT driver (Adrenalin 26.6.3) exposes
+neither, so Vulkan publishes no latency there.
 
 **Live reads** ([editor_ops.c](../../editor/src/editor_ops.c)):
 `perf.snapshot` answers the newest published metrics frame from the live
@@ -156,6 +180,8 @@ nominal; hovering names a column's states and footprint, and a click seeks.
 - A Windows source for thermal level or disk-read faults becomes reliable, or
   per-frame CPU time needs better than clock-tick resolution on Windows.
 - A matched timing run shows the per-frame sample or the power read matters.
+- A Windows driver exposes `VK_KHR_present_wait`, or a macOS source for the
+  OS's GPU memory view or other processes' GPU use is chosen.
 
 ## Evidence
 
@@ -196,3 +222,18 @@ nominal; hovering names a column's states and footprint, and a click seeks.
   windowed Release Bistro editor. A test main linked against the Release
   `vkr_foundation` saw the footprint rise 64.1 MB after touching 64 MB and
   measured 1.42 µs a call over 20,000 calls.
+- The OS's GPU view, Windows, at `96857df1` plus these changes, the same
+  case and profile twice (reports
+  `sha256:61d93071c3aec68bbe4ebd49e6cc3774abb962bd498a355b5c4263d23d83776b`
+  and
+  `sha256:3822cbdfa6994ed0463c8b62ef50dac0597186adb2a1a6a45843a18f5e48c4ac`):
+  `memory.gpu.os.budget_bytes` 12,032,638,976 against the driver's
+  `memory.gpu.driver.recommended_budget_bytes` 12,032,638,800, and
+  `memory.gpu.os.usage_bytes` 7,134 MB against the driver's 7,051 MB, all
+  120 samples valid; `os.gpu.other_process_util` valid in 120 of 120, max 2
+  percent, so no `gpu.peer_load`. `vkr_harness perf-compare` on the pair read
+  both, found 170 work-volume rows unchanged and answered `inconclusive`:
+  frame wall p50 2.83 to 2.90 ms (+2.5 %) with non-overlapping repetition
+  ranges, but neither run is authoritative. A standalone probe of the monitor
+  found the adapter by LUID and measured one PDH collection at about 1 ms
+  over 318 instances.

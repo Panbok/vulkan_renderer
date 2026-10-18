@@ -207,8 +207,8 @@ void vkr_harness_system_conditions_from_samples(
     }
     fold->registered = true_v;
     /* Levels keep their highest frame; flags count the frames they were on. */
-    const bool8_t level = condition == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
-                          condition == VKR_HARNESS_CONDITION_MEMORY_PRESSURE;
+    const bool8_t level = vkr_harness_condition_metric_is_level(
+        (VkrHarnessConditionMetric)condition);
     for (uint32_t frame = 0u; frame < frame_count; ++frame) {
       const uint64_t offset = (uint64_t)frame * metric_count + metric;
       /* A platform without the signal publishes the gauge unavailable; that

@@ -1825,7 +1825,14 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .display_output =
           vkr_vulkan_renderer_display_output(renderer->vulkan_renderer),
       .actual_world_renderer_topology = VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
+      .adapter_luid_valid = selected && selected->device_luid_valid,
   };
+  _Static_assert(VK_LUID_SIZE == VKR_DEVICE_ADAPTER_LUID_SIZE,
+                 "a device LUID is Vulkan's deviceLUID");
+  if (device_information->adapter_luid_valid) {
+    MemCopy(device_information->adapter_luid, selected->device_luid,
+            sizeof(device_information->adapter_luid));
+  }
 #endif
 }
 
@@ -2124,6 +2131,9 @@ vkr_internal bool8_t vkr_renderer_backend_poll_submit_result(
       .submit_value = source.submit_value,
       .source_frame_index = source.source_frame_index,
       .gpu_submission_ns = source.gpu_submission_ns,
+      .gpu_start_host_ns = source.gpu_start_host_ns,
+      .gpu_end_host_ns = source.gpu_end_host_ns,
+      .gpu_host_valid = source.gpu_host_valid,
       .gpu_submission_unavailable_reason =
           source.gpu_submission_unavailable_reason,
       .gpu_submission_valid = source.gpu_submission_valid,

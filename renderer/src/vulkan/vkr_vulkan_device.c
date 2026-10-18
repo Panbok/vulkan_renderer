@@ -67,6 +67,14 @@ typedef struct VkrVulkanCandidate {
   bool8_t has_ray_query_extensions;
   bool8_t has_memory_budget_extension;
   bool8_t has_device_fault_extension;
+  /* VK_KHR_calibrated_timestamps, or the EXT it was promoted from; NULL when
+     the device names neither. The pair of domains it must calibrate is the
+     device's timestamps against QueryPerformanceCounter, the counter behind
+     vkr_platform_get_monotonic_ns on Windows. */
+  const char *calibrated_timestamps_extension;
+  bool8_t calibrated_host_domain;
+  /* Meaningful bits of the selected queue family's timestamps. */
+  uint32_t timestamp_valid_bits;
   VkPhysicalDeviceAccelerationStructurePropertiesKHR
       acceleration_structure_properties;
 } VkrVulkanCandidate;
@@ -97,9 +105,15 @@ struct VkrVulkanDevice {
   // validation because Release GPU captures also need graph pass names.
   PFN_vkCmdBeginDebugUtilsLabelEXT cmd_begin_debug_label;
   PFN_vkCmdEndDebugUtilsLabelEXT cmd_end_debug_label;
+  // Names graph resources and pipelines for captures and validation
+  // messages; null without VK_EXT_debug_utils.
+  PFN_vkSetDebugUtilsObjectNameEXT set_object_name;
   /* Loaded only when VK_EXT_device_fault and its deviceFault feature are
      enabled. */
   PFN_vkGetDeviceFaultInfoEXT get_device_fault_info;
+  /* Loaded only when calibrated timestamps are enabled (the KHR and EXT entry
+     points share one signature). */
+  PFN_vkGetCalibratedTimestampsKHR get_calibrated_timestamps;
   /* Loaded only when ray queries are enabled. */
   VkrVulkanRayQueryFunctions ray_query_functions;
   bool8_t ray_query_enabled;
@@ -370,6 +384,9 @@ vkr_internal void vkr_vk_load_debug_label_functions(VkrVulkanDevice *device) {
     device->cmd_begin_debug_label = NULL;
     device->cmd_end_debug_label = NULL;
   }
+  device->set_object_name =
+      (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(
+          device->instance, "vkSetDebugUtilsObjectNameEXT");
 }
 
 vkr_internal bool8_t vkr_vk_create_window_surface(VkrVulkanDevice *device) {
@@ -551,6 +568,20 @@ vkr_vk_query_candidate_properties(VkrVulkanCandidate *candidate,
   report->api_version = candidate->properties.properties.apiVersion;
   report->driver_id = candidate->driver.driverID;
   report->conformance_version = candidate->driver.conformanceVersion;
+
+  /* Queried apart so the candidate's kept chain points at no local. */
+  VkPhysicalDeviceIDProperties id = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES,
+  };
+  VkPhysicalDeviceProperties2 id_properties = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+      .pNext = &id,
+  };
+  vkGetPhysicalDeviceProperties2(candidate->physical, &id_properties);
+  report->device_luid_valid = id.deviceLUIDValid ? true_v : false_v;
+  if (report->device_luid_valid) {
+    MemCopy(report->device_luid, id.deviceLUID, sizeof(report->device_luid));
+  }
 }
 
 vkr_internal void
@@ -622,6 +653,41 @@ vkr_vk_query_candidate_features(VkrVulkanCandidate *candidate) {
   };
 }
 
+/* True when the candidate's calibrated-timestamps extension can pair the
+   device's timestamps with QueryPerformanceCounter. Other host domains
+   (CLOCK_MONOTONIC and its raw form) have no lib conversion yet. */
+vkr_internal bool8_t vkr_vk_query_calibrated_host_domain(
+    const VkrVulkanDevice *device, const VkrVulkanCandidate *candidate) {
+  if (!candidate->calibrated_timestamps_extension) {
+    return false_v;
+  }
+  const bool8_t khr =
+      string_equals(candidate->calibrated_timestamps_extension,
+                    VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+  const PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR get_domains =
+      (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR)vkGetInstanceProcAddr(
+          device->instance,
+          khr ? "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR"
+              : "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT");
+  if (!get_domains) {
+    return false_v;
+  }
+  VkTimeDomainKHR domains[8];
+  uint32_t domain_count = ArrayCount(domains);
+  const VkResult result =
+      get_domains(candidate->physical, &domain_count, domains);
+  if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+    return false_v;
+  }
+  bool8_t device_domain = false_v;
+  bool8_t host_domain = false_v;
+  for (uint32_t i = 0u; i < domain_count; ++i) {
+    device_domain |= domains[i] == VK_TIME_DOMAIN_DEVICE_KHR;
+    host_domain |= domains[i] == VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
+  }
+  return device_domain && host_domain;
+}
+
 vkr_internal void
 vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
                                   VkrVulkanCandidate *candidate) {
@@ -653,7 +719,17 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
         extensions, extension_count, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     candidate->has_device_fault_extension = vkr_vk_extension_present(
         extensions, extension_count, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    candidate->calibrated_timestamps_extension =
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
+            ? VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+        : vkr_vk_extension_present(extensions, extension_count,
+                                   VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
+            ? VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+            : NULL;
   }
+  candidate->calibrated_host_domain =
+      vkr_vk_query_calibrated_host_domain(device, candidate);
   /* The fault feature structure may chain only for a device that names its
      extension. */
   if (candidate->has_device_fault_extension) {
@@ -747,6 +823,16 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                         ? "feature unsupported: no device-lost fault report"
                         : "VK_EXT_device_fault missing: no device-lost fault "
                           "report");
+  const bool8_t calibrated_present = candidate->calibrated_host_domain;
+  vkr_vk_report_add(
+      report, VKR_VULKAN_REPORT_FEATURE, "calibratedTimestamps", false_v,
+      calibrated_present,
+      calibrated_present ? "GPU frame times on the host clock"
+      : candidate->calibrated_timestamps_extension
+          ? "no QueryPerformanceCounter time domain: GPU times stay "
+            "device-relative"
+          : "VK_KHR_calibrated_timestamps missing: GPU times stay "
+            "device-relative");
   vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
   vkr_vk_add_feature(report, "geometryShader",
                      candidate->features.geometry_shader);
@@ -831,6 +917,7 @@ vkr_vk_select_candidate_queue(const VkrVulkanDevice *device,
     }
     if ((queues[i].queueFlags & required_queue) == required_queue && present) {
       candidate->queue_family_index = i;
+      candidate->timestamp_valid_bits = queues[i].timestampValidBits;
       break;
     }
   }
@@ -1224,6 +1311,7 @@ vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   device->cmd_bind_descriptor_buffers = NULL;
   device->cmd_set_descriptor_offsets = NULL;
   device->get_device_fault_info = NULL;
+  device->get_calibrated_timestamps = NULL;
   MemZero(&device->resource_layout, sizeof(device->resource_layout));
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
@@ -1458,7 +1546,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                        candidate->features.storage_image_extended_formats,
                    .samplerAnisotropy = candidate->features.sampler_anisotropy},
   };
-  const char *extensions[8] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  const char *extensions[12] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
   if (device->config.windowed)
     extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -1476,6 +1564,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
     extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
   if (enable_device_fault)
     extensions[extension_count++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
+  if (candidate->calibrated_host_domain)
+    extensions[extension_count++] = candidate->calibrated_timestamps_extension;
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1502,6 +1592,15 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       enable_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(
                                 device->device, "vkGetDeviceFaultInfoEXT")
                           : NULL;
+  device->get_calibrated_timestamps =
+      candidate->calibrated_host_domain
+          ? (PFN_vkGetCalibratedTimestampsKHR)vkGetDeviceProcAddr(
+                device->device,
+                string_equals(candidate->calibrated_timestamps_extension,
+                              VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
+                    ? "vkGetCalibratedTimestampsKHR"
+                    : "vkGetCalibratedTimestampsEXT")
+          : NULL;
   const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
                     "descriptor-buffer function table", true_v,
@@ -1604,6 +1703,7 @@ void vkr_vulkan_device_destroy(VkrVulkanDevice *device) {
   }
   device->cmd_begin_debug_label = NULL;
   device->cmd_end_debug_label = NULL;
+  device->set_object_name = NULL;
   if (device->instance) {
     vkDestroyInstance(device->instance, NULL);
   }
@@ -1720,6 +1820,37 @@ bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
   return true_v;
 }
 
+bool8_t vkr_vulkan_device_calibrate_host(const VkrVulkanDevice *device,
+                                         uint64_t *out_device_ticks,
+                                         uint64_t *out_host_counter,
+                                         uint64_t *out_deviation_ns) {
+  vkr_assert(out_device_ticks != NULL && out_host_counter != NULL &&
+             out_deviation_ns != NULL);
+  if (!device || !device->device || !device->get_calibrated_timestamps)
+    return false_v;
+  const VkCalibratedTimestampInfoKHR infos[2] = {
+      {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR,
+       .timeDomain = VK_TIME_DOMAIN_DEVICE_KHR},
+      {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR,
+       .timeDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR},
+  };
+  uint64_t stamps[2] = {0};
+  uint64_t deviation = 0u;
+  if (device->get_calibrated_timestamps(device->device, ArrayCount(infos),
+                                        infos, stamps,
+                                        &deviation) != VK_SUCCESS)
+    return false_v;
+  *out_device_ticks = stamps[0];
+  *out_host_counter = stamps[1];
+  *out_deviation_ns = deviation;
+  return true_v;
+}
+
+uint32_t vkr_vulkan_device_timestamp_valid_bits(const VkrVulkanDevice *device) {
+  return device && device->selected ? device->selected->timestamp_valid_bits
+                                    : 0u;
+}
+
 const VkPhysicalDeviceDescriptorBufferPropertiesEXT *
 vkr_vulkan_device_descriptor_properties(const VkrVulkanDevice *device) {
   return device && device->selected ? &device->selected->descriptor_properties
@@ -1759,6 +1890,27 @@ vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device) {
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device) {
   return device ? device->cmd_end_debug_label : NULL;
+}
+
+void vkr_vulkan_device_set_object_name(const VkrVulkanDevice *device,
+                                       VkObjectType type, uint64_t handle,
+                                       const char *name, uint64_t length) {
+  if (!device || !device->device || !device->set_object_name || !handle ||
+      !name || !length)
+    return;
+  /* The driver wants a terminated string; the graph's names are String8. */
+  char terminated[128];
+  const uint64_t copied = Min(length, (uint64_t)sizeof(terminated) - 1u);
+  MemCopy(terminated, name, copied);
+  terminated[copied] = '\0';
+  const VkDebugUtilsObjectNameInfoEXT info = {
+      .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+      .objectType = type,
+      .objectHandle = handle,
+      .pObjectName = terminated,
+  };
+  /* A name is a debugging aid; failing to set one changes nothing else. */
+  (void)device->set_object_name(device->device, &info);
 }
 
 void vkr_vulkan_device_get_health(const VkrVulkanDevice *device,

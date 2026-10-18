@@ -152,6 +152,11 @@ typedef struct VkrVulkanResult {
   uint64_t gpu_submission_ns;
   VkrRendererImplGpuTimingReason gpu_submission_unavailable_reason;
   bool8_t gpu_submission_valid;
+  /** The frame's GPU begin and end on vkr_platform_get_monotonic_ns's clock,
+      through calibrated timestamps; valid with gpu_host_valid. */
+  uint64_t gpu_start_host_ns;
+  uint64_t gpu_end_host_ns;
+  bool8_t gpu_host_valid;
   /** Same-frame packet-lowering CPU cost; only submit fills it, not poll. */
   VkrPacketBuildMetrics packet_build;
   bool8_t readback_ready;

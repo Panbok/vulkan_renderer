@@ -438,6 +438,9 @@ typedef enum VkrWorldRendererTopology {
   VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
 } VkrWorldRendererTopology;
 
+/** Bytes of a GPU adapter's locally unique identifier (a Windows LUID). */
+#define VKR_DEVICE_ADAPTER_LUID_SIZE 8u
+
 typedef struct VkrDeviceInformation {
   String8 device_name;
   String8 vendor_name;
@@ -475,6 +478,10 @@ typedef struct VkrDeviceInformation {
   VkrWorldRendererTopology actual_world_renderer_topology;
   /** The pipeline class the backend runs (ADR-087). */
   VkrGraphicsPipelineClass graphics_pipeline;
+  /** The adapter the device runs on, by which OS GPU telemetry finds it:
+   * Vulkan's deviceLUID where the driver reports one; Metal has none. */
+  uint8_t adapter_luid[VKR_DEVICE_ADAPTER_LUID_SIZE];
+  bool8_t adapter_luid_valid;
 } VkrDeviceInformation;
 
 // ============================================================================

@@ -87,6 +87,10 @@ float64_t vkr_platform_get_absolute_time();
 /** The same monotonic clock as vkr_platform_get_absolute_time, in integer
  * nanoseconds; all threads share it. */
 uint64_t vkr_platform_get_monotonic_ns(void);
+/** Converts a raw reading of the counter behind vkr_platform_get_monotonic_ns
+ * (QueryPerformanceCounter ticks on Windows, mach_absolute_time on macOS) to
+ * that function's nanoseconds, such as a GPU driver's calibrated host stamp. */
+uint64_t vkr_platform_monotonic_ns_from_counter(uint64_t counter);
 
 VkrTime vkr_platform_get_local_time();
 
@@ -204,6 +208,60 @@ typedef struct VkrPlatformTelemetry {
  * Returns false when no signal is available.
  */
 bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry);
+
+/** Bytes of a GPU adapter's locally unique identifier: Windows `LUID`, the
+ * layout of Vulkan's `deviceLUID`. */
+#define VKR_PLATFORM_ADAPTER_LUID_SIZE 8u
+
+/**
+ * The OS's view of one GPU adapter, beside the graphics API's own figures.
+ * Each value has a validity flag: a platform or adapter without a source
+ * leaves it false, so a consumer reports the value unavailable instead of
+ * zero.
+ */
+typedef struct VkrPlatformGpuTelemetry {
+  /** Windows DXGI local segment (`QueryVideoMemoryInfo`): the budget the OS
+   * gives this process on the adapter and the process's usage of it. They
+   * count the same memory as VK_EXT_memory_budget's device-local heaps, as
+   * the OS's video memory manager sees it. */
+  uint64_t memory_budget_bytes;
+  uint64_t memory_usage_bytes;
+  /** The busiest GPU engine type's utilization by every other process on the
+   * adapter, 0 to 100 percent, sampled about once a second. */
+  uint32_t other_process_util_percent;
+  bool8_t memory_valid;
+  bool8_t other_process_util_valid;
+} VkrPlatformGpuTelemetry;
+
+/** Samples one GPU adapter for VkrPlatformGpuTelemetry; opaque. */
+typedef struct s_VkrPlatformGpuMonitor *VkrPlatformGpuMonitor;
+typedef struct VkrAllocator VkrAllocator;
+
+/**
+ * Opens a monitor of the adapter `adapter_luid` names
+ * (VKR_PLATFORM_ADAPTER_LUID_SIZE bytes), or of every adapter when it is
+ * NULL; without an adapter the memory values stay unavailable. The monitor
+ * and, at the first sample, its sampler thread come from `allocator`.
+ * Returns false where the platform has no source (macOS) or on failure.
+ */
+bool8_t vkr_platform_gpu_monitor_create(VkrAllocator *allocator,
+                                        const uint8_t *adapter_luid,
+                                        VkrPlatformGpuMonitor *out_monitor);
+
+/**
+ * Reads the adapter's memory now and the other processes' GPU use from the
+ * last background sample, an atomic load. The first call starts a sampler
+ * thread at about 1 Hz, because one collection of the per-process engine
+ * counters takes milliseconds; call from the thread that may allocate from
+ * the monitor's allocator. A NULL monitor reports nothing. Returns false
+ * when no value is available.
+ */
+bool8_t vkr_platform_gpu_monitor_sample(VkrPlatformGpuMonitor monitor,
+                                        VkrPlatformGpuTelemetry *out_telemetry);
+
+/** Stops and joins the sampler thread and releases the monitor; NULL-safe. */
+void vkr_platform_gpu_monitor_destroy(VkrAllocator *allocator,
+                                      VkrPlatformGpuMonitor *monitor);
 
 /** True when the variable `name` is set to exactly `expected`, such as an
  * off switch spelled "0". A value longer than 63 bytes never matches. */

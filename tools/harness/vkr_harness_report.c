@@ -450,8 +450,7 @@ void vkr_harness_system_conditions_merge(
     VkrHarnessConditionValue *target = &total->metrics[i];
     const VkrHarnessConditionValue *source = &run->metrics[i];
     target->registered = source->registered && (first || target->registered);
-    if (i == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
-        i == VKR_HARNESS_CONDITION_MEMORY_PRESSURE) {
+    if (vkr_harness_condition_metric_is_level((VkrHarnessConditionMetric)i)) {
       target->value = Max(target->value, source->value);
     } else {
       target->value += source->value;
@@ -503,6 +502,12 @@ void vkr_harness_report_apply_system_conditions(VkrHarnessReport *report) {
       vkr_harness_telemetry_low_power(start) ||
       vkr_harness_telemetry_low_power(end)) {
     vkr_harness_report_add_authority_reason(report, "power.low_power");
+  }
+  /* Only frames carry this signal; the start and end samples are platform
+     telemetry, which has no GPU engines. */
+  if (metrics[VKR_HARNESS_CONDITION_GPU_PEER_UTIL].value >
+      VKR_HARNESS_GPU_PEER_LOAD_PERCENT) {
+    vkr_harness_report_add_authority_reason(report, "gpu.peer_load");
   }
 }
 
@@ -1062,10 +1067,10 @@ vkr_internal bool8_t vkr_harness_report_write_system_conditions(
                          : fold->counted_frames == 0u ? "unavailable"
                                                       : NULL;
     /* Levels report their highest frame, flags the frames they were on. */
-    const char *value_name = i == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
-                                     i == VKR_HARNESS_CONDITION_MEMORY_PRESSURE
-                                 ? "max"
-                                 : "active_frames";
+    const char *value_name =
+        vkr_harness_condition_metric_is_level((VkrHarnessConditionMetric)i)
+            ? "max"
+            : "active_frames";
     const char *name =
         vkr_harness_condition_metric_name((VkrHarnessConditionMetric)i);
     ok = vkr_harness_json_emit_name(writer, name) &&

@@ -1072,8 +1072,7 @@ vkr_internal void vkr_harness_perf_conditions_read(String8 root,
     for (uint32_t i = 0u; i < VKR_HARNESS_CONDITION_METRIC_COUNT; ++i) {
       /* Levels report their highest frame, flags the frames they were on. */
       const char *value_name =
-          i == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
-                  i == VKR_HARNESS_CONDITION_MEMORY_PRESSURE
+          vkr_harness_condition_metric_is_level((VkrHarnessConditionMetric)i)
               ? "max"
               : "active_frames";
       VkrHarnessPerfCondition *slot = &out->conditions[i];
@@ -1527,8 +1526,16 @@ vkr_harness_perf_conditions(VkrHarnessPerfComparison *comparison) {
   for (uint32_t i = 0u; i < VKR_HARNESS_PERF_CONDITION_COUNT; ++i) {
     const VkrHarnessPerfCondition *before = &comparison->before.conditions[i];
     const VkrHarnessPerfCondition *after = &comparison->after.conditions[i];
+    /* Other processes' GPU use varies by a few percent between any two runs,
+       so it differs only when the runs fall on opposite sides of the
+       authority threshold. */
+    const bool8_t thresholded = i == VKR_HARNESS_CONDITION_GPU_PEER_UTIL;
+    const float64_t threshold = (float64_t)VKR_HARNESS_GPU_PEER_LOAD_PERCENT;
+    const bool8_t same_value =
+        thresholded ? (before->value > threshold) == (after->value > threshold)
+                    : before->value == after->value;
     if (before->available == after->available &&
-        (!before->available || before->value == after->value)) {
+        (!before->available || same_value)) {
       continue;
     }
     char name[64];

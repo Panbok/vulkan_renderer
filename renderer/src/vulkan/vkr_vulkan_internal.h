@@ -2978,6 +2978,10 @@ typedef struct VkrVulkanFrameSlot {
   VkrRendererImplPassTiming pass_timings[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
   /** Whole-frame GPU time, from the frame's begin and end timestamps. */
   uint64_t gpu_submission_ns;
+  /** Those timestamps on the host clock; valid with gpu_host_valid. */
+  uint64_t gpu_start_host_ns;
+  uint64_t gpu_end_host_ns;
+  bool8_t gpu_host_valid;
   bool8_t timing_requested;
   bool8_t submission_timing_requested;
   /** Every timestamp this slot requested has been read back. */
@@ -3786,6 +3790,13 @@ struct VkrVulkanRenderer {
   uint64_t driver_memory_usage_bytes;
   uint64_t driver_memory_budget_bytes;
   bool8_t driver_memory_valid;
+  /* One device timestamp and the host time it was read at, from calibrated
+     timestamps; render thread only. Refreshed at most once a second, which
+     bounds the drift between the two clocks. */
+  uint64_t host_calibration_device_ticks;
+  uint64_t host_calibration_host_ns;
+  uint64_t host_calibration_sampled_ns;
+  bool8_t host_calibration_valid;
   VkrVulkanPreExposureRecord
       pre_exposure_history[VKR_VULKAN_PRE_EXPOSURE_HISTORY];
   uint32_t pre_exposure_history_next;

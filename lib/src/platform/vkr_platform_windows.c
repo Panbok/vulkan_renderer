@@ -360,10 +360,13 @@ float64_t vkr_platform_get_absolute_time() {
 uint64_t vkr_platform_get_monotonic_ns(void) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
+  return vkr_platform_monotonic_ns_from_counter((uint64_t)now.QuadPart);
+}
+
+uint64_t vkr_platform_monotonic_ns_from_counter(uint64_t counter) {
   /* Split the conversion so a long uptime cannot overflow the product. */
-  const uint64_t ticks = (uint64_t)now.QuadPart;
-  const uint64_t whole = ticks / clock_ticks_per_second;
-  const uint64_t part = ticks % clock_ticks_per_second;
+  const uint64_t whole = counter / clock_ticks_per_second;
+  const uint64_t part = counter % clock_ticks_per_second;
   return whole * 1000000000ull + part * 1000000000ull / clock_ticks_per_second;
 }
 
