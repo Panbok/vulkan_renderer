@@ -187,7 +187,10 @@ void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
   ++thumbs->builds;
   editor_thumbs_finish(thumbs, false_v);
   const VkrSampleRecordingStatus *status = frame->recording;
-  if (!status || !status->recording) {
+  /* A rolling recording's path names no bundle; its saves carry no
+     thumbnails. */
+  if (!status || !status->recording ||
+      status->recording_rolling_seconds > 0.0) {
     thumbs->token = 0u;
     editor_thumbs_warm(editor, thumbs, frame);
     return;

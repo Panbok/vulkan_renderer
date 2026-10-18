@@ -149,8 +149,8 @@ about three frames after their CPU frame.
 - The save writes a summary with its analysis, using its own memory while
   the writer thread still owns the recording's.
 - Stopping discards the window.
-- A rolling recording records Tier 1 with zones, but no poses and no
-  all-measurements streams.
+- A rolling recording records Tier 1 with zones, but no poses, no
+  all-measurements streams and no thumbnails.
 - `rec.start {"rolling": seconds}` (1 to 300) starts one and `rec.save_last
   {name}` saves it. In the Recordings window, Keep last 30 s starts one;
   Record then reads Save last 30 s, and the Scene's LAST chip and the record
