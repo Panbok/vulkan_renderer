@@ -28,6 +28,14 @@
  *                                     total first, and with --frame that
  *                                     frame's rows (or the nearest frame
  *                                     with GPU times)
+ *   vkr_rec export <bundle|stream> --perfetto OUT [--range A:B]
+ *                                     writes OUT, a Chrome trace-event JSON
+ *                                     file for ui.perfetto.dev or
+ *                                     chrome://tracing: CPU zones per
+ *                                     thread, GPU passes, Tier 0 counters
+ *                                     and markers of frames A to B
+ *                                     inclusive (default all); JSON: event
+ *                                     counts
  *
  * Every command prints one compact JSON object on stdout. Exit status: 0 for
  * a whole recording, 2 for a recording cut off by a crash whose whole chunks
@@ -37,8 +45,12 @@
 #include "assets/vkr_recording_annotations.h"
 #include "assets/vkr_recording_compare.h"
 #include "assets/vkr_recording_format.h"
+#include "containers/array.h"
 #include "containers/str.h"
+#include "containers/vkr_sort.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_json_writer.h"
+#include "math/vkr_math.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_entry.h"
@@ -613,6 +625,925 @@ static int rec_passes(const char *path, uint32_t top, uint64_t frame) {
   return status;
 }
 
+/* ------------------------------------------------------------------------ */
+/* export --perfetto: a Chrome trace-event JSON file                          */
+
+/* Events one export writes; past it the file closes valid and the status
+   says "truncated". It also bounds the zones and pass rows held in memory. */
+#define REC_EXPORT_EVENT_MAX 4000000u
+/* The record layouts of streams "zone" and "pass_starts" (runtime
+   recordings with CPU zones and pass start times). */
+#define REC_ZONE_RECORD_SIZE 24u
+#define REC_PASS_STARTS_HEADER_SIZE 24u
+#define REC_PASS_STARTS_CPU_CLOCK 1u
+/* Zone ids are u16; names longer than this are cut. */
+#define REC_ZONE_ID_COUNT 65536u
+#define REC_ZONE_NAME_MAX 255u
+#define REC_EVENT_NAME_MAX 192u
+#define REC_TRACE_CPU_PID 1u
+#define REC_TRACE_GPU_PID 2u
+#define REC_TRACE_GPU_QUEUE_TID 1u
+#define REC_TRACE_GPU_FRAMES_TID 2u
+
+/* One record of stream "zone", with the frame of its record. */
+typedef struct RecZone {
+  uint64_t begin_ns;
+  uint64_t end_ns;
+  uint64_t frame;
+  uint16_t zone;
+  uint16_t slot;
+  uint32_t depth;
+} RecZone;
+
+/* A passes record: `count` rows from RecExport.pass_rows[first]. `order`
+   keeps the first record of a frame first after sorting. */
+typedef struct RecPassRecord {
+  uint64_t frame;
+  uint64_t first;
+  uint32_t count;
+  uint32_t order;
+} RecPassRecord;
+
+typedef struct RecPassRow {
+  uint16_t pass;
+  uint16_t flags;
+  float32_t cpu_ms;
+  float32_t gpu_ms;
+} RecPassRow;
+
+/* A pass_starts record on the CPU clock: `count` start times from
+   RecExport.pass_starts[first]. */
+typedef struct RecPassStarts {
+  uint64_t frame;
+  uint64_t gpu_start_ns;
+  uint64_t gpu_end_ns;
+  uint64_t first;
+  uint32_t count;
+  uint32_t order;
+} RecPassStarts;
+
+/* Where a frame starts: its "Frame" zone's begin on the main thread. */
+typedef struct RecFrameStart {
+  uint64_t frame;
+  uint64_t begin_ns;
+} RecFrameStart;
+
+typedef struct RecZoneName {
+  uint32_t offset;
+  uint32_t length;
+  bool8_t known;
+} RecZoneName;
+
+ArrayConstructor(RecZone, RecZone);
+ArrayConstructor(RecPassRecord, RecPassRecord);
+ArrayConstructor(RecPassRow, RecPassRow);
+ArrayConstructor(RecPassStarts, RecPassStarts);
+ArrayConstructor(RecFrameStart, RecFrameStart);
+
+/* A Tier 0 series the trace shows as a counter, and the scale from its
+   recorded unit to the counter's. */
+typedef struct RecTraceCounter {
+  const char *series;
+  const char *label;
+  float64_t scale;
+} RecTraceCounter;
+
+static const RecTraceCounter REC_TRACE_COUNTERS[] = {
+    {.series = "frame.wall", .label = "frame.wall (ms)", .scale = 1.0},
+    {.series = "gpu.submission", .label = "gpu.submission (ms)", .scale = 1.0},
+    {.series = "cpu.process_time",
+     .label = "cpu.process_time (ms)",
+     .scale = 1.0},
+    {.series = "os.memory.footprint_bytes",
+     .label = "os.memory.footprint (MiB)",
+     .scale = 1.0 / (1024.0 * 1024.0)},
+    {.series = "os.thermal.level", .label = "os.thermal.level", .scale = 1.0},
+    {.series = "os.memory.pressure",
+     .label = "os.memory.pressure",
+     .scale = 1.0},
+    {.series = "gpu.present.latency",
+     .label = "gpu.present.latency (ms)",
+     .scale = 1.0},
+};
+
+typedef struct RecExport {
+  uint64_t first_frame;
+  uint64_t last_frame;
+  /* Stream ids found by name, UINT32_MAX when the recording lacks one. */
+  uint32_t zone_name_stream;
+  uint32_t zone_stream;
+  uint32_t passes_stream;
+  uint32_t pass_starts_stream;
+
+  RecZoneName zone_names[REC_ZONE_ID_COUNT];
+  Array_uint8_t zone_name_text;
+  Array_RecZone zones;
+  Array_RecPassRecord pass_records;
+  Array_RecPassRow pass_rows;
+  Array_RecPassStarts starts;
+  Array_float32_t start_ms;
+  Array_RecFrameStart frame_starts;
+  bool8_t slot_used[REC_ZONE_ID_COUNT];
+
+  /* Earliest time the trace shows; every ts is relative to it so the
+     microsecond values keep their nanosecond digits. */
+  uint64_t base_ns;
+  uint64_t events;
+  bool8_t capped;
+  bool8_t out_of_memory;
+  uint32_t bad_chunks;
+  uint64_t bad_records;
+  uint64_t zone_events;
+  uint64_t gpu_frames;
+  uint64_t gpu_passes;
+  uint64_t gpu_frames_unmatched;
+  uint64_t counter_events;
+  uint64_t marker_events;
+  uint64_t markers_untimed;
+} RecExport;
+
+static RecExport rec_export_state;
+
+static uint32_t rec_find_stream_id(const VkrRecordingDictionary *dictionary,
+                                   const char *name) {
+  for (uint32_t i = 0u; i < dictionary->stream_count; ++i) {
+    if (strcmp(dictionary->streams[i].name, name) == 0) {
+      return dictionary->streams[i].id;
+    }
+  }
+  return UINT32_MAX;
+}
+
+static bool8_t rec_export_in_range(const RecExport *ex, uint64_t frame) {
+  return frame >= ex->first_frame && frame <= ex->last_frame;
+}
+
+/* False once the zones and pass rows held reach the event cap. */
+static bool8_t rec_export_room(RecExport *ex, uint64_t more) {
+  const uint64_t held =
+      ex->zones.length + ex->pass_rows.length + ex->start_ms.length;
+  if (held + more > REC_EXPORT_EVENT_MAX) {
+    ex->capped = true_v;
+    return false_v;
+  }
+  return true_v;
+}
+
+static void rec_export_zone_name(RecExport *ex,
+                                 const VkrRecordingRecord *record) {
+  if (record->size < 4u) {
+    ++ex->bad_records;
+    return;
+  }
+  const uint32_t id = vkr_load_le_u32(record->data);
+  if (id >= REC_ZONE_ID_COUNT) {
+    ++ex->bad_records;
+    return;
+  }
+  RecZoneName *name = &ex->zone_names[id];
+  if (name->known) {
+    return;
+  }
+  const uint32_t length = Min(record->size - 4u, REC_ZONE_NAME_MAX);
+  const uint64_t offset = ex->zone_name_text.length;
+  if (!array_reserve_uint8_t(&ex->zone_name_text, offset + length)) {
+    ex->out_of_memory = true_v;
+    return;
+  }
+  MemCopy(ex->zone_name_text.data + offset, record->data + 4u, length);
+  ex->zone_name_text.length += length;
+  *name = (RecZoneName){
+      .offset = (uint32_t)offset,
+      .length = length,
+      .known = true_v,
+  };
+}
+
+static void rec_export_zone(RecExport *ex, const VkrRecordingRecord *record) {
+  if (record->size != REC_ZONE_RECORD_SIZE) {
+    ++ex->bad_records;
+    return;
+  }
+  if (!rec_export_room(ex, 1u)) {
+    return;
+  }
+  const RecZone zone = {
+      .zone = vkr_load_le_u16(record->data),
+      .slot = vkr_load_le_u16(record->data + 2u),
+      .depth = vkr_load_le_u32(record->data + 4u),
+      .begin_ns = vkr_load_le_u64(record->data + 8u),
+      .end_ns = vkr_load_le_u64(record->data + 16u),
+      .frame = record->frame,
+  };
+  if (!array_push_RecZone(&ex->zones, zone)) {
+    ex->out_of_memory = true_v;
+  }
+}
+
+static void rec_export_passes(RecExport *ex, const VkrRecordingRecord *record) {
+  if (record->size < VKR_RECORDING_PASSES_HEADER_SIZE) {
+    ++ex->bad_records;
+    return;
+  }
+  const uint32_t rows = vkr_load_le_u32(record->data);
+  if ((uint64_t)VKR_RECORDING_PASSES_HEADER_SIZE +
+          (uint64_t)rows * VKR_RECORDING_PASS_ROW_SIZE !=
+      record->size) {
+    ++ex->bad_records;
+    return;
+  }
+  if (!rec_export_room(ex, rows)) {
+    return;
+  }
+  const uint64_t first = ex->pass_rows.length;
+  if (!array_reserve_RecPassRow(&ex->pass_rows, first + rows)) {
+    ex->out_of_memory = true_v;
+    return;
+  }
+  for (uint32_t i = 0u; i < rows; ++i) {
+    const uint8_t *at = record->data + VKR_RECORDING_PASSES_HEADER_SIZE +
+                        (uint64_t)i * VKR_RECORDING_PASS_ROW_SIZE;
+    ex->pass_rows.data[first + i] = (RecPassRow){
+        .pass = vkr_load_le_u16(at),
+        .flags = vkr_load_le_u16(at + 2u),
+        .cpu_ms = vkr_load_le_f32(at + 4u),
+        .gpu_ms = vkr_load_le_f32(at + 8u),
+    };
+  }
+  ex->pass_rows.length += rows;
+  const RecPassRecord pass_record = {
+      .frame = record->frame,
+      .first = first,
+      .count = rows,
+      .order = (uint32_t)ex->pass_records.length,
+  };
+  if (!array_push_RecPassRecord(&ex->pass_records, pass_record)) {
+    ex->out_of_memory = true_v;
+  }
+}
+
+static void rec_export_pass_starts(RecExport *ex,
+                                   const VkrRecordingRecord *record) {
+  if (record->size < REC_PASS_STARTS_HEADER_SIZE) {
+    ++ex->bad_records;
+    return;
+  }
+  const uint32_t rows = vkr_load_le_u32(record->data);
+  if ((uint64_t)REC_PASS_STARTS_HEADER_SIZE + (uint64_t)rows * 4u !=
+      record->size) {
+    ++ex->bad_records;
+    return;
+  }
+  /* GPU times on another clock cannot sit beside the CPU zones. */
+  if ((vkr_load_le_u32(record->data + 4u) & REC_PASS_STARTS_CPU_CLOCK) == 0u) {
+    return;
+  }
+  if (!rec_export_room(ex, rows)) {
+    return;
+  }
+  const uint64_t first = ex->start_ms.length;
+  if (!array_reserve_float32_t(&ex->start_ms, first + rows)) {
+    ex->out_of_memory = true_v;
+    return;
+  }
+  for (uint32_t i = 0u; i < rows; ++i) {
+    ex->start_ms.data[first + i] = vkr_load_le_f32(
+        record->data + REC_PASS_STARTS_HEADER_SIZE + (uint64_t)i * 4u);
+  }
+  ex->start_ms.length += rows;
+  const RecPassStarts starts = {
+      .frame = record->frame,
+      .gpu_start_ns = vkr_load_le_u64(record->data + 8u),
+      .gpu_end_ns = vkr_load_le_u64(record->data + 16u),
+      .first = first,
+      .count = rows,
+      .order = (uint32_t)ex->starts.length,
+  };
+  if (!array_push_RecPassStarts(&ex->starts, starts)) {
+    ex->out_of_memory = true_v;
+  }
+}
+
+static void rec_export_records(RecExport *ex, const uint8_t *payload,
+                               uint64_t size) {
+  uint64_t cursor = 0u;
+  VkrRecordingRecord record;
+  while (vkr_recording_records_next(payload, size, &cursor, &record)) {
+    /* Names resolve zones of any frame, so they are read outside the
+       range too. */
+    if (record.stream == ex->zone_name_stream) {
+      rec_export_zone_name(ex, &record);
+      continue;
+    }
+    if (!rec_export_in_range(ex, record.frame)) {
+      continue;
+    }
+    if (record.stream == ex->zone_stream) {
+      rec_export_zone(ex, &record);
+    } else if (record.stream == ex->passes_stream) {
+      rec_export_passes(ex, &record);
+    } else if (record.stream == ex->pass_starts_stream) {
+      rec_export_pass_starts(ex, &record);
+    }
+  }
+  if (cursor != size) {
+    ++ex->bad_records;
+  }
+}
+
+/* Reads the zone and pass streams; false when the stream cannot be read. */
+static bool8_t rec_export_collect(const char *path, RecExport *ex) {
+  VkrRecordingReader reader;
+  const VkrRecordingReadError error = rec_open(path, &reader);
+  if (error != VKR_RECORDING_READ_OK) {
+    fprintf(stderr, "vkr_rec: cannot read '%s' (error %d)\n", path, (int)error);
+    return false_v;
+  }
+  const VkrCodec *codec = vkr_depot_zstd_codec();
+  VkrRecordingDictionary dictionary = {0};
+  bool8_t has_dictionary = false_v;
+  const uint32_t dictionary_index =
+      vkr_recording_reader_find(&reader, VKR_RECORDING_CHUNK_DICTIONARY);
+  uint8_t *payload = NULL;
+  uint64_t size = 0u;
+  if (dictionary_index != UINT32_MAX &&
+      vkr_recording_reader_chunk(&reader, dictionary_index, codec,
+                                 &rec_allocator, &payload, &size)) {
+    has_dictionary = vkr_recording_dictionary_decode(
+        payload, size, &rec_allocator, &dictionary);
+    vkr_recording_reader_chunk_free(&rec_allocator, payload, size);
+  }
+  if (!has_dictionary) {
+    fprintf(stderr, "vkr_rec: '%s' has no readable dictionary\n", path);
+    vkr_recording_reader_close(&reader);
+    return false_v;
+  }
+  ex->zone_name_stream = rec_find_stream_id(&dictionary, "zone_name");
+  ex->zone_stream = rec_find_stream_id(&dictionary, "zone");
+  ex->passes_stream = rec_find_stream_id(&dictionary, "passes");
+  ex->pass_starts_stream = rec_find_stream_id(&dictionary, "pass_starts");
+  vkr_recording_dictionary_free(&rec_allocator, &dictionary);
+
+  const bool8_t wanted =
+      ex->zone_stream != UINT32_MAX || ex->pass_starts_stream != UINT32_MAX;
+  for (uint32_t i = 0u; wanted && i < reader.chunk_count; ++i) {
+    if (reader.chunks[i].type != VKR_RECORDING_CHUNK_RECORDS) {
+      continue;
+    }
+    if (!vkr_recording_reader_chunk(&reader, i, codec, &rec_allocator, &payload,
+                                    &size)) {
+      ++ex->bad_chunks;
+      continue;
+    }
+    rec_export_records(ex, payload, size);
+    vkr_recording_reader_chunk_free(&rec_allocator, payload, size);
+  }
+  vkr_recording_reader_close(&reader);
+  return true_v;
+}
+
+static int32_t rec_compare_zones(const void *lhs, const void *rhs) {
+  const RecZone *a = lhs;
+  const RecZone *b = rhs;
+  if (a->begin_ns != b->begin_ns) {
+    return a->begin_ns < b->begin_ns ? -1 : 1;
+  }
+  if (a->slot != b->slot) {
+    return a->slot < b->slot ? -1 : 1;
+  }
+  if (a->depth != b->depth) {
+    return a->depth < b->depth ? -1 : 1;
+  }
+  return 0;
+}
+
+static int32_t rec_compare_pass_records(const void *lhs, const void *rhs) {
+  const RecPassRecord *a = lhs;
+  const RecPassRecord *b = rhs;
+  if (a->frame != b->frame) {
+    return a->frame < b->frame ? -1 : 1;
+  }
+  return a->order < b->order ? -1 : (a->order > b->order ? 1 : 0);
+}
+
+static int32_t rec_compare_pass_starts(const void *lhs, const void *rhs) {
+  const RecPassStarts *a = lhs;
+  const RecPassStarts *b = rhs;
+  if (a->frame != b->frame) {
+    return a->frame < b->frame ? -1 : 1;
+  }
+  return a->order < b->order ? -1 : (a->order > b->order ? 1 : 0);
+}
+
+static int32_t rec_compare_frame_starts(const void *lhs, const void *rhs) {
+  const RecFrameStart *a = lhs;
+  const RecFrameStart *b = rhs;
+  if (a->frame != b->frame) {
+    return a->frame < b->frame ? -1 : 1;
+  }
+  return a->begin_ns < b->begin_ns ? -1 : (a->begin_ns > b->begin_ns ? 1 : 0);
+}
+
+static int32_t rec_compare_frame_key(const void *key, const void *record) {
+  const uint64_t frame = *(const uint64_t *)key;
+  const RecFrameStart *start = record;
+  return frame < start->frame ? -1 : (frame > start->frame ? 1 : 0);
+}
+
+static String8 rec_export_zone_label(const RecExport *ex, uint16_t zone,
+                                     char *scratch, uint64_t scratch_size) {
+  const RecZoneName *name = &ex->zone_names[zone];
+  if (name->known && name->length > 0u) {
+    return string8_create_from_cstr(ex->zone_name_text.data + name->offset,
+                                    name->length);
+  }
+  string_format(scratch, scratch_size, "zone %u", (unsigned)zone);
+  return rec_str(scratch);
+}
+
+/* Sorts what the collection read, finds where each frame starts and the
+   earliest time the trace shows. */
+static void rec_export_prepare(RecExport *ex) {
+  vkr_sort(ex->zones.data, ex->zones.length, sizeof(RecZone),
+           rec_compare_zones);
+  vkr_sort(ex->pass_records.data, ex->pass_records.length,
+           sizeof(RecPassRecord), rec_compare_pass_records);
+  vkr_sort(ex->starts.data, ex->starts.length, sizeof(RecPassStarts),
+           rec_compare_pass_starts);
+
+  static const char frame_name[] = "Frame";
+  const uint32_t frame_name_length = sizeof(frame_name) - 1u;
+  for (uint64_t i = 0u; i < ex->zones.length; ++i) {
+    const RecZone *zone = &ex->zones.data[i];
+    ex->slot_used[zone->slot] = true_v;
+    const RecZoneName *name = &ex->zone_names[zone->zone];
+    if (zone->slot != 0u || !name->known || name->length != frame_name_length ||
+        MemCompare(ex->zone_name_text.data + name->offset, frame_name,
+                   frame_name_length) != 0) {
+      continue;
+    }
+    const RecFrameStart start = {.frame = zone->frame,
+                                 .begin_ns = zone->begin_ns};
+    if (!array_push_RecFrameStart(&ex->frame_starts, start)) {
+      ex->out_of_memory = true_v;
+      break;
+    }
+  }
+  /* The earliest Frame zone of a frame comes first; the lookup takes it. */
+  vkr_sort(ex->frame_starts.data, ex->frame_starts.length,
+           sizeof(RecFrameStart), rec_compare_frame_starts);
+  uint64_t kept = 0u;
+  for (uint64_t i = 0u; i < ex->frame_starts.length; ++i) {
+    if (kept > 0u && ex->frame_starts.data[kept - 1u].frame ==
+                         ex->frame_starts.data[i].frame) {
+      continue;
+    }
+    ex->frame_starts.data[kept++] = ex->frame_starts.data[i];
+  }
+  ex->frame_starts.length = kept;
+
+  ex->base_ns = UINT64_MAX;
+  if (ex->zones.length > 0u) {
+    ex->base_ns = ex->zones.data[0].begin_ns;
+  }
+  for (uint64_t i = 0u; i < ex->starts.length; ++i) {
+    ex->base_ns = Min(ex->base_ns, ex->starts.data[i].gpu_start_ns);
+  }
+  if (ex->base_ns == UINT64_MAX) {
+    ex->base_ns = 0u;
+  }
+}
+
+/* The frame's start time, or false for a frame without a Frame zone. */
+static bool8_t rec_export_frame_time(const RecExport *ex, uint64_t frame,
+                                     uint64_t *out_ns) {
+  const RecFrameStart *start =
+      vkr_binary_search(&frame, ex->frame_starts.data, ex->frame_starts.length,
+                        sizeof(RecFrameStart), rec_compare_frame_key);
+  if (!start) {
+    return false_v;
+  }
+  *out_ns = start->begin_ns;
+  return true_v;
+}
+
+/* Microseconds after the base with the nanosecond digits: 3 decimals. */
+static void rec_trace_time(VkrJsonWriter *json, const RecExport *ex,
+                           const char *key, uint64_t ns) {
+  const uint64_t relative = ns > ex->base_ns ? ns - ex->base_ns : 0u;
+  uint32_t digits = 1u;
+  for (uint64_t whole = relative / 1000u; whole >= 10u; whole /= 10u) {
+    ++digits;
+  }
+  vkr_json_writer_name(json, rec_str(key));
+  vkr_json_writer_f64_digits(json, (float64_t)relative / 1000.0, digits + 3u);
+}
+
+static void rec_trace_duration(VkrJsonWriter *json, uint64_t ns) {
+  uint32_t digits = 1u;
+  for (uint64_t whole = ns / 1000u; whole >= 10u; whole /= 10u) {
+    ++digits;
+  }
+  vkr_json_writer_name(json, rec_str("dur"));
+  vkr_json_writer_f64_digits(json, (float64_t)ns / 1000.0, digits + 3u);
+}
+
+/* Opens an event object with its name, phase and ids; false once the trace
+   holds REC_EXPORT_EVENT_MAX events. The caller closes the object. */
+static bool8_t rec_trace_begin(VkrJsonWriter *json, RecExport *ex, String8 name,
+                               const char *phase, uint32_t pid, uint32_t tid) {
+  if (ex->events >= REC_EXPORT_EVENT_MAX) {
+    ex->capped = true_v;
+    return false_v;
+  }
+  ++ex->events;
+  vkr_json_writer_begin_object(json);
+  vkr_json_writer_name(json, rec_str("name"));
+  vkr_json_writer_string(json, name);
+  vkr_json_writer_name(json, rec_str("ph"));
+  vkr_json_writer_string(json, rec_str(phase));
+  vkr_json_writer_name(json, rec_str("pid"));
+  vkr_json_writer_u64(json, pid);
+  vkr_json_writer_name(json, rec_str("tid"));
+  vkr_json_writer_u64(json, tid);
+  return true_v;
+}
+
+/* A metadata event: process_name, thread_name or a sort index. */
+static void rec_trace_metadata(VkrJsonWriter *json, RecExport *ex,
+                               const char *kind, uint32_t pid, uint32_t tid,
+                               const char *name, int64_t sort_index) {
+  if (!rec_trace_begin(json, ex, rec_str(kind), "M", pid, tid)) {
+    return;
+  }
+  vkr_json_writer_name(json, rec_str("args"));
+  vkr_json_writer_begin_object(json);
+  if (name) {
+    vkr_json_writer_name(json, rec_str("name"));
+    vkr_json_writer_string(json, rec_str(name));
+  } else {
+    vkr_json_writer_name(json, rec_str("sort_index"));
+    vkr_json_writer_i64(json, sort_index);
+  }
+  vkr_json_writer_end_object(json);
+  vkr_json_writer_end_object(json);
+}
+
+static void rec_trace_write_names(VkrJsonWriter *json, RecExport *ex) {
+  rec_trace_metadata(json, ex, "process_name", REC_TRACE_CPU_PID, 0u, "CPU", 0);
+  rec_trace_metadata(json, ex, "process_sort_index", REC_TRACE_CPU_PID, 0u,
+                     NULL, 0);
+  for (uint32_t slot = 0u; slot < REC_ZONE_ID_COUNT; ++slot) {
+    if (!ex->slot_used[slot]) {
+      continue;
+    }
+    char name[32];
+    if (slot == 0u) {
+      string_format(name, sizeof(name), "Main");
+    } else if (slot == 1u) {
+      string_format(name, sizeof(name), "Render");
+    } else {
+      string_format(name, sizeof(name), "Worker %u", slot - 2u);
+    }
+    rec_trace_metadata(json, ex, "thread_name", REC_TRACE_CPU_PID, slot, name,
+                       0);
+    rec_trace_metadata(json, ex, "thread_sort_index", REC_TRACE_CPU_PID, slot,
+                       NULL, slot);
+  }
+  if (ex->starts.length == 0u) {
+    return;
+  }
+  rec_trace_metadata(json, ex, "process_name", REC_TRACE_GPU_PID, 0u, "GPU", 0);
+  rec_trace_metadata(json, ex, "process_sort_index", REC_TRACE_GPU_PID, 0u,
+                     NULL, 1);
+  rec_trace_metadata(json, ex, "thread_name", REC_TRACE_GPU_PID,
+                     REC_TRACE_GPU_QUEUE_TID, "Queue", 0);
+  rec_trace_metadata(json, ex, "thread_name", REC_TRACE_GPU_PID,
+                     REC_TRACE_GPU_FRAMES_TID, "Frames", 0);
+}
+
+static void rec_trace_write_zones(VkrJsonWriter *json, RecExport *ex) {
+  for (uint64_t i = 0u; i < ex->zones.length; ++i) {
+    const RecZone *zone = &ex->zones.data[i];
+    char scratch[32];
+    const String8 name =
+        rec_export_zone_label(ex, zone->zone, scratch, sizeof(scratch));
+    if (!rec_trace_begin(json, ex, name, "X", REC_TRACE_CPU_PID, zone->slot)) {
+      return;
+    }
+    vkr_json_writer_name(json, rec_str("cat"));
+    vkr_json_writer_string(json, rec_str("zone"));
+    rec_trace_time(json, ex, "ts", zone->begin_ns);
+    rec_trace_duration(json, zone->end_ns > zone->begin_ns
+                                 ? zone->end_ns - zone->begin_ns
+                                 : 0u);
+    vkr_json_writer_name(json, rec_str("args"));
+    vkr_json_writer_begin_object(json);
+    vkr_json_writer_name(json, rec_str("frame"));
+    vkr_json_writer_u64(json, zone->frame);
+    vkr_json_writer_name(json, rec_str("depth"));
+    vkr_json_writer_u64(json, zone->depth);
+    vkr_json_writer_end_object(json);
+    vkr_json_writer_end_object(json);
+    ++ex->zone_events;
+  }
+}
+
+static String8 rec_export_pass_label(const VkrRecordingData *data,
+                                     uint16_t pass, char *scratch,
+                                     uint64_t scratch_size) {
+  if (pass < data->pass_count && data->passes[pass].name[0] != '\0') {
+    return rec_str(data->passes[pass].name);
+  }
+  string_format(scratch, scratch_size, "pass %u", (unsigned)pass);
+  return rec_str(scratch);
+}
+
+/* The timed passes of one frame on the Queue thread. */
+static void rec_trace_write_frame_passes(VkrJsonWriter *json, RecExport *ex,
+                                         const VkrRecordingData *data,
+                                         const RecPassStarts *starts,
+                                         const RecPassRecord *record) {
+  for (uint32_t i = 0u; i < record->count; ++i) {
+    const RecPassRow *row = &ex->pass_rows.data[record->first + i];
+    const float32_t start_ms = ex->start_ms.data[starts->first + i];
+    if ((row->flags & VKR_RECORDING_PASS_GPU_VALID) == 0u ||
+        !vkr_is_finite_f32(start_ms) || !vkr_is_finite_f32(row->gpu_ms)) {
+      continue;
+    }
+    const int64_t offset_ns = (int64_t)((float64_t)start_ms * 1.0e6);
+    uint64_t begin_ns = starts->gpu_start_ns;
+    if (offset_ns >= 0) {
+      begin_ns += (uint64_t)offset_ns;
+    } else {
+      begin_ns -= Min(begin_ns, (uint64_t)(-offset_ns));
+    }
+    const float64_t gpu_ns = Max((float64_t)row->gpu_ms * 1.0e6, 0.0);
+    char scratch[32];
+    const String8 name =
+        rec_export_pass_label(data, row->pass, scratch, sizeof(scratch));
+    if (!rec_trace_begin(json, ex, name, "X", REC_TRACE_GPU_PID,
+                         REC_TRACE_GPU_QUEUE_TID)) {
+      return;
+    }
+    vkr_json_writer_name(json, rec_str("cat"));
+    vkr_json_writer_string(json, rec_str("gpu"));
+    rec_trace_time(json, ex, "ts", begin_ns);
+    rec_trace_duration(json, (uint64_t)(gpu_ns + 0.5));
+    vkr_json_writer_name(json, rec_str("args"));
+    vkr_json_writer_begin_object(json);
+    vkr_json_writer_name(json, rec_str("frame"));
+    vkr_json_writer_u64(json, starts->frame);
+    vkr_json_writer_name(json, rec_str("cpu_ms"));
+    vkr_json_writer_f64_digits(json, row->cpu_ms, 6u);
+    vkr_json_writer_end_object(json);
+    vkr_json_writer_end_object(json);
+    ++ex->gpu_passes;
+  }
+}
+
+/* Per pass_starts record: the frame's GPU span, then its passes when the
+   frame's first passes record has as many rows. */
+static void rec_trace_write_gpu(VkrJsonWriter *json, RecExport *ex,
+                                const VkrRecordingData *data) {
+  uint64_t r = 0u;
+  for (uint64_t s = 0u; s < ex->starts.length; ++s) {
+    const RecPassStarts *starts = &ex->starts.data[s];
+    if (s > 0u && ex->starts.data[s - 1u].frame == starts->frame) {
+      continue;
+    }
+    char name[48];
+    string_format(name, sizeof(name), "GPU frame %llu",
+                  (unsigned long long)starts->frame);
+    if (!rec_trace_begin(json, ex, rec_str(name), "X", REC_TRACE_GPU_PID,
+                         REC_TRACE_GPU_FRAMES_TID)) {
+      return;
+    }
+    vkr_json_writer_name(json, rec_str("cat"));
+    vkr_json_writer_string(json, rec_str("gpu"));
+    rec_trace_time(json, ex, "ts", starts->gpu_start_ns);
+    rec_trace_duration(json, starts->gpu_end_ns > starts->gpu_start_ns
+                                 ? starts->gpu_end_ns - starts->gpu_start_ns
+                                 : 0u);
+    vkr_json_writer_name(json, rec_str("args"));
+    vkr_json_writer_begin_object(json);
+    vkr_json_writer_name(json, rec_str("frame"));
+    vkr_json_writer_u64(json, starts->frame);
+    vkr_json_writer_end_object(json);
+    vkr_json_writer_end_object(json);
+    ++ex->gpu_frames;
+
+    while (r < ex->pass_records.length &&
+           ex->pass_records.data[r].frame < starts->frame) {
+      ++r;
+    }
+    if (r == ex->pass_records.length ||
+        ex->pass_records.data[r].frame != starts->frame ||
+        ex->pass_records.data[r].count != starts->count) {
+      ++ex->gpu_frames_unmatched;
+      continue;
+    }
+    rec_trace_write_frame_passes(json, ex, data, starts,
+                                 &ex->pass_records.data[r]);
+  }
+}
+
+static void rec_trace_write_counters(VkrJsonWriter *json, RecExport *ex,
+                                     const VkrRecordingData *data) {
+  uint32_t series[ArrayCount(REC_TRACE_COUNTERS)];
+  for (uint32_t c = 0u; c < ArrayCount(REC_TRACE_COUNTERS); ++c) {
+    series[c] =
+        vkr_recording_data_find_series(data, REC_TRACE_COUNTERS[c].series);
+  }
+  for (uint64_t i = 0u; i < ex->frame_starts.length; ++i) {
+    const RecFrameStart *start = &ex->frame_starts.data[i];
+    if (start->frame >= data->frame_count) {
+      continue;
+    }
+    for (uint32_t c = 0u; c < ArrayCount(REC_TRACE_COUNTERS); ++c) {
+      if (series[c] == UINT32_MAX) {
+        continue;
+      }
+      const VkrRecordingSeries *values = &data->series[series[c]];
+      if (!values->valid[start->frame]) {
+        continue;
+      }
+      if (!rec_trace_begin(json, ex, rec_str(REC_TRACE_COUNTERS[c].label), "C",
+                           REC_TRACE_CPU_PID, 0u)) {
+        return;
+      }
+      rec_trace_time(json, ex, "ts", start->begin_ns);
+      vkr_json_writer_name(json, rec_str("args"));
+      vkr_json_writer_begin_object(json);
+      vkr_json_writer_name(json, rec_str("value"));
+      vkr_json_writer_f64_digits(
+          json, values->values[start->frame] * REC_TRACE_COUNTERS[c].scale, 9u);
+      vkr_json_writer_end_object(json);
+      vkr_json_writer_end_object(json);
+      ++ex->counter_events;
+    }
+  }
+}
+
+static void rec_trace_write_markers(VkrJsonWriter *json, RecExport *ex,
+                                    const VkrRecordingData *data) {
+  for (uint32_t i = 0u; i < data->marker_count; ++i) {
+    const VkrRecordingDataMarker *marker = &data->markers[i];
+    if (!rec_export_in_range(ex, marker->frame)) {
+      continue;
+    }
+    uint64_t ns = 0u;
+    if (!rec_export_frame_time(ex, marker->frame, &ns)) {
+      ++ex->markers_untimed;
+      continue;
+    }
+    char name[REC_EVENT_NAME_MAX];
+    const char *kind = vkr_recording_marker_kind_name(marker->kind);
+    if (marker->label[0] != '\0') {
+      string_format(name, sizeof(name), "%s: %s", kind, marker->label);
+    } else {
+      string_format(name, sizeof(name), "%s", kind);
+    }
+    if (!rec_trace_begin(json, ex, rec_str(name), "i", REC_TRACE_CPU_PID, 0u)) {
+      return;
+    }
+    vkr_json_writer_name(json, rec_str("s"));
+    vkr_json_writer_string(json, rec_str("g"));
+    rec_trace_time(json, ex, "ts", ns);
+    vkr_json_writer_name(json, rec_str("args"));
+    vkr_json_writer_begin_object(json);
+    vkr_json_writer_name(json, rec_str("frame"));
+    vkr_json_writer_u64(json, marker->frame);
+    vkr_json_writer_end_object(json);
+    vkr_json_writer_end_object(json);
+    ++ex->marker_events;
+  }
+}
+
+/* The trace file: {"traceEvents": [...], "displayTimeUnit": "ms",
+   "otherData": {...}}; false when it cannot be written. */
+static bool8_t rec_trace_write(const char *out_path, const char *path,
+                               RecExport *ex, const VkrRecordingData *data) {
+  static VkrJsonFileWriter file;
+  if (!vkr_json_file_writer_begin(&file, rec_str(out_path))) {
+    return false_v;
+  }
+  VkrJsonWriter *json = &file.writer;
+  vkr_json_writer_begin_object(json);
+  vkr_json_writer_name(json, rec_str("traceEvents"));
+  vkr_json_writer_begin_array(json);
+  rec_trace_write_names(json, ex);
+  rec_trace_write_zones(json, ex);
+  rec_trace_write_gpu(json, ex, data);
+  rec_trace_write_counters(json, ex, data);
+  rec_trace_write_markers(json, ex, data);
+  vkr_json_writer_end_array(json);
+  vkr_json_writer_name(json, rec_str("displayTimeUnit"));
+  vkr_json_writer_string(json, rec_str("ms"));
+  vkr_json_writer_name(json, rec_str("otherData"));
+  vkr_json_writer_begin_object(json);
+  vkr_json_writer_name(json, rec_str("source"));
+  vkr_json_writer_string(json, rec_str(path));
+  vkr_json_writer_name(json, rec_str("time_base_ns"));
+  vkr_json_writer_u64(json, ex->base_ns);
+  vkr_json_writer_name(json, rec_str("first_frame"));
+  vkr_json_writer_u64(json, ex->first_frame);
+  vkr_json_writer_name(json, rec_str("last_frame"));
+  vkr_json_writer_u64(json,
+                      Min(ex->last_frame, Max(data->frame_count, 1u) - 1u));
+  vkr_json_writer_name(json, rec_str("capped"));
+  vkr_json_writer_bool(json, ex->capped);
+  vkr_json_writer_end_object(json);
+  vkr_json_writer_end_object(json);
+  return vkr_json_file_writer_commit(&file);
+}
+
+static void rec_export_free(RecExport *ex) {
+  array_destroy_uint8_t(&ex->zone_name_text);
+  array_destroy_RecZone(&ex->zones);
+  array_destroy_RecPassRecord(&ex->pass_records);
+  array_destroy_RecPassRow(&ex->pass_rows);
+  array_destroy_RecPassStarts(&ex->starts);
+  array_destroy_float32_t(&ex->start_ms);
+  array_destroy_RecFrameStart(&ex->frame_starts);
+}
+
+static int rec_export(const char *path, const char *out_path, uint64_t first,
+                      uint64_t last) {
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    return REC_EXIT_DAMAGED;
+  }
+  RecExport *ex = &rec_export_state;
+  MemZero(ex, sizeof(*ex));
+  ex->first_frame = first;
+  ex->last_frame = last;
+  ex->zone_name_text = (Array_uint8_t){.allocator = &rec_allocator};
+  ex->zones = (Array_RecZone){.allocator = &rec_allocator};
+  ex->pass_records = (Array_RecPassRecord){.allocator = &rec_allocator};
+  ex->pass_rows = (Array_RecPassRow){.allocator = &rec_allocator};
+  ex->starts = (Array_RecPassStarts){.allocator = &rec_allocator};
+  ex->start_ms = (Array_float32_t){.allocator = &rec_allocator};
+  ex->frame_starts = (Array_RecFrameStart){.allocator = &rec_allocator};
+
+  int result = REC_EXIT_DAMAGED;
+  if (!rec_export_collect(path, ex)) {
+    goto cleanup;
+  }
+  rec_export_prepare(ex);
+  if (ex->out_of_memory) {
+    fprintf(stderr, "vkr_rec: out of memory exporting '%s'\n", path);
+    goto cleanup;
+  }
+  if (!rec_trace_write(out_path, path, ex, &data)) {
+    fprintf(stderr, "vkr_rec: cannot write '%s'\n", out_path);
+    goto cleanup;
+  }
+
+  RecExit status = rec_data_status(&data);
+  if (ex->bad_chunks > 0u || ex->bad_records > 0u) {
+    status = REC_EXIT_DAMAGED;
+  } else if (ex->capped) {
+    status = REC_EXIT_TRUNCATED;
+  }
+  VkrJsonWriter json;
+  vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+  vkr_json_writer_begin_object(&json);
+  vkr_json_writer_name(&json, rec_str("status"));
+  vkr_json_writer_string(&json, rec_str(rec_status_name(status)));
+  vkr_json_writer_name(&json, rec_str("events"));
+  vkr_json_writer_u64(&json, ex->events);
+  vkr_json_writer_name(&json, rec_str("path"));
+  vkr_json_writer_string(&json, rec_str(out_path));
+  vkr_json_writer_name(&json, rec_str("capped"));
+  vkr_json_writer_bool(&json, ex->capped);
+  vkr_json_writer_name(&json, rec_str("zones"));
+  vkr_json_writer_u64(&json, ex->zone_events);
+  vkr_json_writer_name(&json, rec_str("gpu_frames"));
+  vkr_json_writer_u64(&json, ex->gpu_frames);
+  vkr_json_writer_name(&json, rec_str("gpu_passes"));
+  vkr_json_writer_u64(&json, ex->gpu_passes);
+  vkr_json_writer_name(&json, rec_str("gpu_frames_unmatched"));
+  vkr_json_writer_u64(&json, ex->gpu_frames_unmatched);
+  vkr_json_writer_name(&json, rec_str("counters"));
+  vkr_json_writer_u64(&json, ex->counter_events);
+  vkr_json_writer_name(&json, rec_str("markers"));
+  vkr_json_writer_u64(&json, ex->marker_events);
+  vkr_json_writer_name(&json, rec_str("markers_untimed"));
+  vkr_json_writer_u64(&json, ex->markers_untimed);
+  vkr_json_writer_name(&json, rec_str("bad_records"));
+  vkr_json_writer_u64(&json, ex->bad_records);
+  vkr_json_writer_end_object(&json);
+  vkr_json_writer_complete(&json);
+  fputc('\n', stdout);
+  result = status;
+
+cleanup:
+  rec_export_free(ex);
+  vkr_recording_data_free(&data);
+  return result;
+}
+
 static void rec_usage(void);
 
 /* Loads and analyzes one side of a comparison; false after a message. */
@@ -713,6 +1644,8 @@ static void rec_usage(void) {
       "       vkr_rec passes <bundle|stream> [--top N] [--frame F]\n"
       "       vkr_rec compare <a> <b> [--align time|marker|distance|frame]"
       " [--marker label]\n"
+      "       vkr_rec export <bundle|stream> --perfetto <out.json> "
+      "[--range A:B]\n"
       "A:B is inclusive; frame_ms names the frame time, pass.gpu:<pass> and\n"
       "pass.cpu:<pass> a pass's times; at most 500 rows. --budget is the\n"
       "frame budget in ms (default: the recorded present interval)\n");
@@ -823,6 +1756,34 @@ static int rec_run_frames(int argc, char **argv) {
   return rec_frames(argv[2], first, last, fields, field_count);
 }
 
+static int rec_run_export(int argc, char **argv) {
+  const char *out_path = NULL;
+  uint64_t first = 0u;
+  uint64_t last = UINT64_MAX;
+  for (int i = 3; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+    if (strcmp(argv[i], "--perfetto") == 0) {
+      out_path = argv[i + 1];
+    } else if (strcmp(argv[i], "--range") == 0) {
+      if (!rec_parse_range(argv[i + 1], &first, &last)) {
+        fprintf(stderr, "vkr_rec: --range takes A:B with A <= B\n");
+        return REC_EXIT_DAMAGED;
+      }
+    } else {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  if (!out_path || out_path[0] == '\0') {
+    rec_usage();
+    return REC_EXIT_DAMAGED;
+  }
+  return rec_export(argv[2], out_path, first, last);
+}
+
 VKR_MAIN(argc, argv) {
   if (argc < 3) {
     rec_usage();
@@ -852,6 +1813,8 @@ VKR_MAIN(argc, argv) {
     result = rec_run_passes(argc, argv);
   } else if (strcmp(argv[1], "compare") == 0) {
     result = rec_run_compare(argc, argv);
+  } else if (strcmp(argv[1], "export") == 0) {
+    result = rec_run_export(argc, argv);
   } else {
     rec_usage();
   }

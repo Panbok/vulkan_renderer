@@ -205,8 +205,12 @@ typedef struct VkrRendererImplPassTiming {
   char name[VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY];
   float64_t cpu_ms;
   float64_t gpu_ms;
+  /** GPU start after the submission's first timed pass began, in ms; a
+   * backend that cannot place passes leaves gpu_start_valid false. */
+  float64_t gpu_start_ms;
   uint32_t pass_index;
   bool8_t valid;
+  bool8_t gpu_start_valid;
   VkrRendererImplGpuTimingReason unavailable_reason;
 } VkrRendererImplPassTiming;
 
@@ -285,6 +289,11 @@ typedef struct VkrRendererImplSubmitResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
   uint64_t gpu_submission_ns;
+  /** The submission's GPU start and end on vkr_platform_get_monotonic_ns's
+   * clock; valid with gpu_host_valid (Metal commit feedback). */
+  uint64_t gpu_start_host_ns;
+  uint64_t gpu_end_host_ns;
+  bool8_t gpu_host_valid;
   float32_t source_render_scale;
   uint32_t source_render_width;
   uint32_t source_render_height;

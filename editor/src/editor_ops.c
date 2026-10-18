@@ -16138,11 +16138,13 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
       ops_fail(ctx, OPS_INVALID, "'measurements' must be standard or all");
       return VKR_EDITOR_OP_DONE;
     }
+    const bool8_t all = string_equals(measurements, "all");
+    const bool8_t zones = ops_arg_bool(call->args, "zones", all);
     char error[128];
     const char *author = call->author[0] ? call->author : "agent";
-    call->token = vkr_editor_recording_start(ctx->editor, name, author, tier,
-                                             string_equals(measurements, "all"),
-                                             false_v, error, sizeof(error));
+    call->token =
+        vkr_editor_recording_start(ctx->editor, name, author, tier, all, zones,
+                                   false_v, error, sizeof(error));
     if (!call->token) {
       ops_fail(ctx, OPS_REJECTED, "%s", error);
       return VKR_EDITOR_OP_DONE;
@@ -16914,10 +16916,13 @@ static const OpsDef s_ops[] = {
      "every 8th frame on tiled. 'measurements' all also records every "
      "engine measurement (every metric, physics counts, GPU pass times every "
      "frame on tiled too, event subjects); it costs frame time, so time "
-     "comparisons use standard (default).",
+     "comparisons use standard (default). 'zones' (default: with "
+     "measurements all) records every thread's CPU zones and, at tier 1, the "
+     "GPU pass starts, for vkr_rec export --perfetto.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]},"
-     "\"measurements\":{\"enum\":[\"standard\",\"all\"]}}}",
+     "\"measurements\":{\"enum\":[\"standard\",\"all\"]},\"zones\":{"
+     "\"type\":\"boolean\"}}}",
      ops_run_rec_start, NULL},
     {"rec.stop", "Stop the recording in progress and write its summary.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_stop, NULL},

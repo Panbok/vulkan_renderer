@@ -22,8 +22,11 @@ a scoped Bistro case without weakening the evidence profile.
    valid pass timestamps locate GPU work. In a running editor,
    `perf.set {"pass_timing": true}` then `perf.snapshot {"passes": true}`
    reads both live; `os.*` and `cpu.process_time` show throttling, memory
-   pressure and process CPU time. Read [GPU-TRACE.md](GPU-TRACE.md) only
-   when hardware counters or encoder attribution are needed.
+   pressure and process CPU time. For a thread and GPU timeline, record with
+   `rec.start {"tier": "1", "zones": true}` and run `vkr_rec export <bundle>
+   --perfetto <out.json>`; open it in ui.perfetto.dev. Read
+   [GPU-TRACE.md](GPU-TRACE.md) only when hardware counters or encoder
+   attribution are needed.
 4. Change one attributable cause. Preserve the measured workload or state
    the intentional change. Select correctness checks through `vkr-validation`.
 5. Rerun the same configuration. Compare valid samples and spread, work-volume

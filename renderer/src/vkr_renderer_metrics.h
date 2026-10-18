@@ -44,12 +44,16 @@ typedef struct VkrRendererMetricsPassSample {
   uint8_t name_length;
   float64_t cpu_ms;
   float64_t gpu_ms;
+  /* GPU start after the frame's first timed pass began, in ms; valid with
+     gpu_start_valid. */
+  float64_t gpu_start_ms;
   uint64_t cpu_frame_index;
   uint64_t gpu_source_frame_index;
   uint64_t gpu_source_submit_serial;
   bool8_t culled;
   bool8_t disabled;
   bool8_t gpu_valid;
+  bool8_t gpu_start_valid;
   VkrRendererImplGpuTimingReason gpu_unavailable_reason;
 } VkrRendererMetricsPassSample;
 
@@ -66,6 +70,11 @@ typedef struct VkrRendererMetricsPassTable {
   uint32_t count;
   uint32_t capacity;
   uint64_t cpu_frame_index;
+  /* The source submission's GPU start and end on the CPU's monotonic clock,
+     valid with gpu_host_valid; pass starts count from the start. */
+  uint64_t gpu_start_host_ns;
+  uint64_t gpu_end_host_ns;
+  bool8_t gpu_host_valid;
   bool8_t truncated;
 } VkrRendererMetricsPassTable;
 

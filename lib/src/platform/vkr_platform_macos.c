@@ -244,6 +244,16 @@ float64_t vkr_platform_get_absolute_time() {
          (timebase_info.denom * 1e9);
 }
 
+uint64_t vkr_platform_get_monotonic_ns(void) {
+  assert(timebase_initialized && "vkr_platform_init() must be called first");
+  const uint64_t ticks = mach_absolute_time();
+  /* Split the conversion so a long uptime cannot overflow the product. */
+  const uint64_t whole = ticks / timebase_info.denom;
+  const uint64_t part = ticks % timebase_info.denom;
+  return whole * timebase_info.numer +
+         part * timebase_info.numer / timebase_info.denom;
+}
+
 VkrTime vkr_platform_get_local_time() {
   time_t raw_time;
   time(&raw_time);

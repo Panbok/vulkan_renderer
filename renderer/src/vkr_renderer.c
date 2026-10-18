@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "core/vkr_zone.h"
 #include "filesystem/vkr_vfs.h"
 #include "math/mat.h"
 #include "math/vec.h"
@@ -238,6 +239,7 @@ vkr_internal void *vkr_renderer_worker_main(void *arg) {
      every frame; a created thread starts at the default class, where other
      processes' default-class work time-slices it. */
   (void)vkr_thread_set_interactive();
+  vkr_zone_thread_set(VKR_ZONE_THREAD_RENDER);
   vkr_mutex_lock(worker->mutex);
   for (;;) {
     while (!worker->stop &&
@@ -251,8 +253,10 @@ vkr_internal void *vkr_renderer_worker_main(void *arg) {
     }
     vkr_mutex_unlock(worker->mutex);
 
+    VKR_ZONE_BEGIN(render_zone, "Render");
     vkr_renderer_render_submitted(renderer, &worker->work,
                                   &renderer->frame_result);
+    VKR_ZONE_END(render_zone);
 
     vkr_mutex_lock(worker->mutex);
     vkr_atomic_uint32_store(&worker->state, VKR_RENDERER_WORKER_IDLE,
@@ -355,6 +359,9 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
       .submit_value = source->submit_value,
       .source_frame_index = source->source_frame_index,
       .gpu_submission_ns = source->gpu_submission_ns,
+      .gpu_start_host_ns = source->gpu_start_host_ns,
+      .gpu_end_host_ns = source->gpu_end_host_ns,
+      .gpu_host_valid = source->gpu_host_valid,
       .source_render_scale = source->source_render_scale,
       .source_render_width = source->source_render_width,
       .source_render_height = source->source_render_height,
@@ -482,8 +489,10 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
             sizeof(destination_timing->name));
     destination_timing->cpu_ms = source_timing->cpu_ms;
     destination_timing->gpu_ms = source_timing->gpu_ms;
+    destination_timing->gpu_start_ms = source_timing->gpu_start_ms;
     destination_timing->pass_index = source_timing->pass_index;
     destination_timing->valid = source_timing->valid;
+    destination_timing->gpu_start_valid = source_timing->valid;
     destination_timing->unavailable_reason = source_timing->unavailable_reason;
   }
 }

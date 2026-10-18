@@ -101,6 +101,10 @@ void *vkr_recorder_reserve(VkrRecorder *recorder, VkrRecorderProducer producer,
   vkr_assert(recorder->stream_size[stream] == 0u ||
              recorder->stream_size[stream] == size);
   VkrRecorderLane *lane = &recorder->lanes[producer];
+  if (!lane->ring.data) {
+    vkr_atomic_uint64_fetch_add(&lane->dropped, 1u, VKR_MEMORY_ORDER_RELAXED);
+    return NULL;
+  }
 #if !defined(NDEBUG)
   const VkrThreadId thread = vkr_thread_current_id();
   if (lane->owner == 0u) {
@@ -282,7 +286,9 @@ vkr_internal void *vkr_recorder_thread(void *argument) {
         vkr_atomic_bool_load(&recorder->stop, VKR_MEMORY_ORDER_ACQUIRE);
     uint64_t drained = 0u;
     for (uint32_t i = 0u; i < VKR_RECORDER_PRODUCER_COUNT; ++i) {
-      drained += vkr_recorder_drain(recorder, i);
+      if (recorder->lanes[i].ring.data) {
+        drained += vkr_recorder_drain(recorder, i);
+      }
     }
     if (recorder->chunk_size > 0u &&
         vkr_platform_get_absolute_time() - recorder->chunk_started >=
@@ -414,8 +420,11 @@ VkrRecorder *vkr_recorder_start(VkrAllocator *allocator,
     goto cleanup;
   }
   for (uint32_t i = 0u; i < VKR_RECORDER_PRODUCER_COUNT; ++i) {
-    if (!vkr_spsc_ring_create(allocator, ring_bytes,
-                              &recorder->lanes[i].ring)) {
+    const uint64_t lane_bytes = i >= VKR_RECORDER_PRODUCER_WORKER_FIRST
+                                    ? config->worker_ring_bytes
+                                    : ring_bytes;
+    if (lane_bytes > 0u && !vkr_spsc_ring_create(allocator, lane_bytes,
+                                                 &recorder->lanes[i].ring)) {
       goto cleanup;
     }
   }

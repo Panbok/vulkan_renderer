@@ -36,6 +36,7 @@
 #include "spline_test.h"
 #include "type_desc_test.h"
 #include "weapon_test.h"
+#include "zone_test.h"
 
 bool32_t run_path_io_tests(void);
 bool32_t run_process_path_tests(void);
@@ -78,6 +79,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_event_data_buffer_tests),
     VKR_TEST_SUITE(run_threads_tests),
     VKR_TEST_SUITE(run_job_system_tests),
+    VKR_TEST_SUITE(run_zone_tests),
     VKR_TEST_SUITE(run_input_tests),
     VKR_TEST_SUITE(run_debug_overlay_tests),
     VKR_TEST_SUITE(run_json_tests),

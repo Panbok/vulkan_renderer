@@ -148,6 +148,13 @@
 #define vkr_local_persist static
 #define vkr_internal static
 
+/* Storage each thread holds its own copy of. */
+#if defined(_MSC_VER) && !defined(__clang__)
+#define VKR_THREAD_LOCAL __declspec(thread)
+#else
+#define VKR_THREAD_LOCAL _Thread_local
+#endif
+
 #define VKR_INVALID_ID 4294967295U
 
 // Count leading zeros for 32-bit integers - macro version

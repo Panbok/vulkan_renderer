@@ -22,8 +22,8 @@ latency, the recording timeline's System lane, `perf.snapshot` and
 
 Remaining gaps:
 
-- Pass rows store durations only; there are no CPU zones and no CPU/GPU clock
-  link, so no thread timeline or flame chart exists.
+- The editor has no timeline view of zones and passes; Vulkan records no
+  pass starts.
 - Windows platform signals, present latency and other processes' GPU use
   are not recorded.
 - The Performance window opens only on a recording; there is no live view.
@@ -55,17 +55,22 @@ Remaining gaps:
   Windows Bistro run with the Windows sources valid; present latency on a
   visible window.
 
-## P2: timeline
+## P2: timeline (remaining)
 
-- A runtime-gated zone macro writing begin and end into per-thread recorder
-  rings (the unused RENDER producer and one ring per job worker), also
-  emitting `os_signpost` and PIX events.
-- A start offset in each pass row, placed on the CPU clock through
-  `sampleTimestamps:gpuTimestamp:` and `VK_KHR_calibrated_timestamps`;
-  `vkr_rec export --perfetto`; a rolling in-memory buffer saved by hotkey or
-  `perf.capture_last`.
-- A Timeline window with thread tracks, a GPU track and a flame chart;
-  `rec.explain {spike}`; `vkr_harness perf-compare` for before/after verdicts.
+CPU zones per thread, Metal GPU pass starts on the CPU clock and the Perfetto
+export are implemented in
+[ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md). Remaining:
+
+- Vulkan pass starts (`gpu_start_ms`) and host GPU times through
+  `VK_KHR_calibrated_timestamps`.
+- PIX event output of the zone macro on Windows and `os_signpost` on macOS,
+  so native profilers show the zones.
+- More zones where cost hides: asset loads, physics steps inside jobs,
+  script ticks, shadow updates.
+- A rolling in-memory buffer saved by hotkey or `perf.capture_last`.
+- The editor's Timeline window: thread tracks, a GPU track and a flame
+  chart; `rec.explain {spike}`; `vkr_harness perf-compare`.
+- Counters and markers for recordings without `Frame` zones in the export.
 - Acceptance: the overhead gate with zones on; zone sums match stage metrics.
 
 ## P3: deep tools

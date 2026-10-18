@@ -4493,8 +4493,12 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, false_v, false_v);
       return false_v;
     }
-    if (!vkr_metal_packet_realize_frame_graph(renderer, packet, out_result) ||
-        !vkr_metal_packet_select_frame_histories(renderer, packet))
+    VKR_ZONE_BEGIN(graph_zone, "Metal.Graph");
+    const bool8_t graph_ready =
+        vkr_metal_packet_realize_frame_graph(renderer, packet, out_result) &&
+        vkr_metal_packet_select_frame_histories(renderer, packet);
+    VKR_ZONE_END(graph_zone);
+    if (!graph_ready)
       goto graph_failure;
 
     VkrMetalPacketFrameSubmission submission = {0};
@@ -4556,8 +4560,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, true_v, false_v);
       return false_v;
     }
-    if (!vkr_metal_packet_encode_frame_commands(renderer, packet, &submission,
-                                                out_result)) {
+    VKR_ZONE_BEGIN(encode_zone, "Metal.Encode");
+    const bool8_t encoded = vkr_metal_packet_encode_frame_commands(
+        renderer, packet, &submission, out_result);
+    VKR_ZONE_END(encode_zone);
+    if (!encoded) {
       vkr_metal_packet_rollback_gpu_draw_resource_preparation(renderer, packet);
       vkr_metal_packet_abandon_ibl_bake_recordings(renderer,
                                                    &submission.frame_upload);

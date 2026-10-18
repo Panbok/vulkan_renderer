@@ -72,8 +72,11 @@ vkr_metal_packet_collect_encoder_timings(VkrMetalPacketRenderer *renderer,
   const MTL4TimestampHeapEntry *entries = resolved.bytes;
   const float64_t to_ms = 1000.0 / (float64_t)renderer->timestamp_frequency;
   /* Timings are in execution order. Overlap between a graphics pass's early
-     start stamp and earlier encoders is counted once, in the earlier pass. */
+     start stamp and earlier encoders is counted once, in the earlier pass.
+     Starts count from the first timed pass's begin, which the submission's
+     host GPU start (commit feedback) places on the CPU clock. */
   uint64_t previous_end = 0u;
+  uint64_t origin = 0u;
   for (uint32_t i = 0u; i < slot->pending_result.pass_timing_count; ++i) {
     VkrMetalPacketPassTiming *timing = &slot->pending_result.pass_timings[i];
     if (timing->unavailable_reason !=
@@ -88,6 +91,10 @@ vkr_metal_packet_collect_encoder_timings(VkrMetalPacketRenderer *renderer,
       if (timing->starts_after_previous && previous_end > begin)
         begin = Min(previous_end, end);
       previous_end = Max(previous_end, end);
+      if (origin == 0u)
+        origin = begin;
+      timing->gpu_start_ms =
+          begin > origin ? (float64_t)(begin - origin) * to_ms : 0.0;
       timing->gpu_ms = (float64_t)(end - begin) * to_ms;
       timing->valid = true_v;
       timing->unavailable_reason = VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE;
@@ -190,6 +197,13 @@ vkr_metal_packet_harvest_commit_feedback(VkrMetalPacketRenderer *renderer) {
         duration <= (CFTimeInterval)UINT64_MAX / 1000000000.0) {
       result->gpu_submission_ns = (uint64_t)(duration * 1000000000.0 + 0.5);
       result->gpu_submission_valid = true_v;
+      /* GPUStartTime and GPUEndTime are host seconds of the same
+         mach_absolute_time clock as vkr_platform_get_monotonic_ns. */
+      result->gpu_start_host_ns =
+          (uint64_t)(record->gpu_start_time * 1000000000.0 + 0.5);
+      result->gpu_end_host_ns =
+          (uint64_t)(record->gpu_end_time * 1000000000.0 + 0.5);
+      result->gpu_host_valid = true_v;
       result->gpu_submission_unavailable_reason =
           VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE;
     } else {

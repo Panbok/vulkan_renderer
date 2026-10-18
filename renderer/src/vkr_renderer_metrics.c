@@ -1296,6 +1296,7 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
   VkrRendererMetricsPassTable *table = &renderer_metrics->passes;
   table->count = 0;
   table->truncated = false_v;
+  table->gpu_host_valid = false_v;
   table->cpu_frame_index = cpu_frame_index;
   {
     const VkrRendererImplSubmitResult *result = &renderer->timing_result;
@@ -1326,6 +1327,9 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
       sample->name_length = (uint8_t)length;
       sample->cpu_ms = source->cpu_ms;
       sample->gpu_ms = source->gpu_ms;
+      sample->gpu_start_ms = source->gpu_start_ms;
+      sample->gpu_start_valid =
+          source->gpu_start_valid && vkr_is_finite_f64(source->gpu_start_ms);
       sample->cpu_frame_index = cpu_frame_index;
       sample->gpu_source_frame_index = result->source_frame_index;
       sample->gpu_source_submit_serial = result->submit_value;
@@ -1339,6 +1343,9 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
       for (uint32_t i = 0; i < table->count; ++i) {
         table->samples[i].gpu_source_frame_index = source_frame;
       }
+      table->gpu_start_host_ns = result->gpu_start_host_ns;
+      table->gpu_end_host_ns = result->gpu_end_host_ns;
+      table->gpu_host_valid = result->gpu_host_valid;
       vkr_renderer_metrics_log_slow_frame(renderer_metrics, source_frame);
     }
     return;

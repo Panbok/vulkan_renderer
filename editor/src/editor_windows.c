@@ -539,6 +539,7 @@ static void editor_record_toggle(VkrEditorUi *editor,
   }
   char error[128];
   if (!vkr_editor_recording_start(editor, NULL, "user", VKR_RECORDING_TIER_1,
+                                  editor->recording.all_measurements,
                                   editor->recording.all_measurements, true_v,
                                   error, sizeof(error))) {
     vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,

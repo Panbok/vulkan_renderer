@@ -226,6 +226,9 @@ typedef struct VkrMetalPacketPassTiming {
   char name[VKR_METAL_PACKET_TIMING_NAME_CAPACITY];
   float64_t cpu_ms;
   float64_t gpu_ms;
+  /** GPU start after the submission's first timed pass began, in ms; valid
+   * with `valid`. */
+  float64_t gpu_start_ms;
   uint32_t pass_index;
   bool8_t valid;
   /** Graphics passes stamp their start after the vertex stage, which can run
@@ -241,6 +244,11 @@ typedef struct VkrMetalPacketResult {
   uint64_t submit_value;
   uint64_t source_frame_index;
   uint64_t gpu_submission_ns;
+  /** The submission's GPU start and end on the host's monotonic clock
+   * (commit feedback), in ns; valid with gpu_host_valid. */
+  uint64_t gpu_start_host_ns;
+  uint64_t gpu_end_host_ns;
+  bool8_t gpu_host_valid;
   float32_t source_render_scale;
   uint32_t source_render_width;
   uint32_t source_render_height;

@@ -16,12 +16,20 @@
  * The writer is the only thread that allocates, compresses or does I/O.
  */
 
+/* Job workers that get a producer of their own; later workers record no
+   zones. */
+#define VKR_RECORDER_WORKER_PRODUCERS 16u
+
 typedef enum VkrRecorderProducer {
   /* The frame-loop thread: update, input, state. */
   VKR_RECORDER_PRODUCER_MAIN = 0,
   /* The render thread: acquisition, completion, metrics. */
   VKR_RECORDER_PRODUCER_RENDER,
-  VKR_RECORDER_PRODUCER_COUNT,
+  /* Job workers, one each, for CPU zones (vkr_zone.h); their rings exist
+     only when the configuration sizes them. */
+  VKR_RECORDER_PRODUCER_WORKER_FIRST,
+  VKR_RECORDER_PRODUCER_COUNT =
+      VKR_RECORDER_PRODUCER_WORKER_FIRST + VKR_RECORDER_WORKER_PRODUCERS,
 } VkrRecorderProducer;
 
 /* Recorder-owned record of stream VKR_RECORDING_STREAM_RECORDER: records a
@@ -46,6 +54,9 @@ typedef struct VkrRecorderConfig {
   uint32_t stream_count;
   /* Ring bytes per producer, a power of two; zero selects 8 MiB. */
   uint64_t ring_bytes;
+  /* Ring bytes per job-worker producer, a power of two; zero creates no
+     worker rings, and their records are dropped. */
+  uint64_t worker_ring_bytes;
   /* A chunk closes at this many raw bytes; zero selects 1 MiB. */
   uint64_t chunk_bytes;
   /* A chunk closes after this long; zero selects one second. */
@@ -83,7 +94,7 @@ VkrRecorder *vkr_recorder_start(VkrAllocator *allocator,
  * @brief Producer: reserves a record of `size` payload bytes in `producer`'s
  * ring. Only one thread may use each producer.
  * @return The payload to fill before vkr_recorder_commit, or NULL when the
- * ring is full; the loss is counted.
+ * ring is full or the producer has no ring; the loss is counted.
  */
 void *vkr_recorder_reserve(VkrRecorder *recorder, VkrRecorderProducer producer,
                            uint16_t stream, uint64_t frame, uint32_t size);

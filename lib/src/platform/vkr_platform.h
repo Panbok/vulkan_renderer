@@ -84,6 +84,9 @@ uint32_t vkr_platform_get_logical_core_count(void);
 void vkr_platform_sleep(uint64_t milliseconds);
 
 float64_t vkr_platform_get_absolute_time();
+/** The same monotonic clock as vkr_platform_get_absolute_time, in integer
+ * nanoseconds; all threads share it. */
+uint64_t vkr_platform_get_monotonic_ns(void);
 
 VkrTime vkr_platform_get_local_time();
 

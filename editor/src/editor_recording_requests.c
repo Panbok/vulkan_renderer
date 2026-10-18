@@ -444,10 +444,10 @@ bool8_t vkr_editor_recording_request_start(VkrEditorUi *editor,
     state->camera_yaw = request.yaw;
     state->camera_pitch = request.pitch;
   }
-  if (!vkr_editor_recording_start(editor, request.id,
-                                  request.owner[0] ? request.owner : "agent",
-                                  request.tier, request.all_measurements,
-                                  true_v, error, error_capacity)) {
+  if (!vkr_editor_recording_start(
+          editor, request.id, request.owner[0] ? request.owner : "agent",
+          request.tier, request.all_measurements, request.all_measurements,
+          true_v, error, error_capacity)) {
     return false_v;
   }
   request.status = VKR_EDITOR_RECORDING_REQUEST_ACCEPTED;

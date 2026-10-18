@@ -2,6 +2,7 @@
 #include "core/vkr_content_codec.h"
 #include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
+#include "core/vkr_zone.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
 #include "renderer/resources/loaders/scene_loader.h"
@@ -4098,7 +4099,9 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
 #if VKR_METRICS_ENABLED
   const uint64_t ticks_before = vkr_scene_physics_clock(scene).completed;
 #endif
+  VKR_ZONE_BEGIN(simulation_zone, "Simulation");
   sample_simulate_steps(application, scene, handle, delta_time);
+  VKR_ZONE_END(simulation_zone);
   VKR_METRICS_ADD_ELAPSED_NS(application->metrics,
                              application->metric_ids.simulation, start);
   const uint64_t physics_ns = vkr_scene_physics_take_step_ns(scene);

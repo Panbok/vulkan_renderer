@@ -1,3 +1,4 @@
+#include "core/vkr_zone.h"
 #include "renderer/systems/vkr_scene_animation.h"
 
 #include "application/vkr_standard_scene_runtime.h"
@@ -1222,6 +1223,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
   const VkrFrameConfig frame_config =
       vkr_standard_scene_runtime_frame_config(application);
   VkrRendererError prepare_err = VKR_RENDERER_ERROR_NONE;
+  VKR_ZONE_BEGIN(prepare_zone, "Render.Prepare");
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.render_prepare) {
     prepare_err =
@@ -1230,6 +1232,7 @@ vkr_internal bool8_t vkr_standard_scene_runtime_begin_scene_frame(
       prepare_err = vkr_renderer_begin_frame(&application->renderer,
                                              &frame_config, setup);
   }
+  VKR_ZONE_END(prepare_zone);
   vkr_standard_scene_runtime_handle_acquire_error(application, prepare_err);
   return prepare_err == VKR_RENDERER_ERROR_NONE;
 }
@@ -1320,6 +1323,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   VkrRendererError world_error = VKR_RENDERER_ERROR_NONE;
   /* The renderer's publication state joins the payload once the frame is
      acquired (vkr_standard_scene_runtime_prepare_acquired). */
+  VKR_ZONE_BEGIN(payload_zone, "World.Payload");
   VKR_METRICS_SCOPE_NS(application->metrics,
                        application->metric_ids.world_payload_build) {
     /* Rooms hide what the camera cannot see through portals and far
@@ -1397,6 +1401,7 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
           application->static_capture, draw->scratch, &draw->world_payload,
           &visibility_stats);
   }
+  VKR_ZONE_END(payload_zone);
   if (world_error != VKR_RENDERER_ERROR_NONE) {
     return world_error;
   }
@@ -3183,10 +3188,12 @@ vkr_internal void vkr_standard_scene_runtime_complete_frame(
   const bool8_t render_thread =
       vkr_renderer_render_thread_enabled(&application->renderer);
   if (render_thread) {
+    VKR_ZONE_BEGIN(wait_zone, "Render.Wait");
     VKR_METRICS_SCOPE_NS(application->metrics,
                          application->metric_ids.render_wait) {
       vkr_renderer_complete_frame(&application->renderer, &result);
     }
+    VKR_ZONE_END(wait_zone);
   } else {
     vkr_renderer_complete_frame(&application->renderer, &result);
   }
@@ -3402,11 +3409,13 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     submit_error =
         vkr_renderer_submit_frame(setup, &frame->packet, &hooks, &validation);
   } else {
+    VKR_ZONE_BEGIN(submit_zone, "Render");
     VKR_METRICS_SCOPE_NS(application->metrics,
                          application->metric_ids.render_submit) {
       submit_error =
           vkr_renderer_submit_frame(setup, &frame->packet, &hooks, &validation);
     }
+    VKR_ZONE_END(submit_zone);
   }
   if (submit_error != VKR_RENDERER_ERROR_NONE) {
     VkrRendererFrameResult result = {
@@ -3573,11 +3582,13 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
 
   /* Recorded poses land before the client's scene update transforms them. */
   vkr_standard_scene_recording_advance(application, delta);
+  VKR_ZONE_BEGIN(update_zone, "Update");
   VKR_METRICS_SCOPE_NS(application->metrics, application->metric_ids.update) {
     if (application->callbacks.update)
       application->callbacks.update(application->callbacks.state, application,
                                     delta);
   }
+  VKR_ZONE_END(update_zone);
 
   if (!bitset8_is_set(&application->host.flags,
                       VKR_APPLICATION_HOST_FLAG_RUNNING) ||

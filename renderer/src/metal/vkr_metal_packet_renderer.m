@@ -17,6 +17,7 @@
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_byte_io.h"
+#include "core/vkr_zone.h"
 #include "math/vkr_frustum.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"

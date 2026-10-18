@@ -242,6 +242,7 @@ bool8_t vkr_platform_clipboard_write_text(const uint8_t *text,
 }
 
 static float64_t clock_frequency;
+static uint64_t clock_ticks_per_second = 1u;
 static bool32_t high_res_timer_enabled = false;
 static UINT timer_resolution = 0;
 
@@ -265,6 +266,7 @@ bool8_t vkr_platform_init() {
   LARGE_INTEGER frequency;
   QueryPerformanceFrequency(&frequency);
   clock_frequency = 1.0 / (float64_t)frequency.QuadPart;
+  clock_ticks_per_second = (uint64_t)frequency.QuadPart;
 
   // Try to enable high resolution timer for better Sleep() precision
   TIMECAPS tc;
@@ -353,6 +355,16 @@ float64_t vkr_platform_get_absolute_time() {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
   return (float64_t)now.QuadPart * clock_frequency;
+}
+
+uint64_t vkr_platform_get_monotonic_ns(void) {
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  /* Split the conversion so a long uptime cannot overflow the product. */
+  const uint64_t ticks = (uint64_t)now.QuadPart;
+  const uint64_t whole = ticks / clock_ticks_per_second;
+  const uint64_t part = ticks % clock_ticks_per_second;
+  return whole * 1000000000ull + part * 1000000000ull / clock_ticks_per_second;
 }
 
 VkrTime vkr_platform_get_local_time() {

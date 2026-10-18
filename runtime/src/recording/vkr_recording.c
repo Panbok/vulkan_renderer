@@ -1,5 +1,7 @@
 #include "recording/vkr_recording.h"
 
+#include "core/vkr_zone.h"
+
 #include "assets/vkr_recording_analysis.h"
 #include "containers/str.h"
 #include "containers/vkr_hashtable.h"
@@ -199,6 +201,28 @@ static const VkrRecordingField VKR_RECORDING_TICK_HASH_FIELDS[] = {
      .type = VKR_RECORDING_FIELD_U32,
      .count = VKR_RECORDING_HASH_MODULE_MAX,
      .offset = 16u + 4u * VKR_RECORDING_HASH_BUCKETS},
+};
+
+static const VkrRecordingField VKR_RECORDING_ZONE_FIELDS[] = {
+    {.name = "zone", .type = VKR_RECORDING_FIELD_U16, .count = 1u},
+    {.name = "thread",
+     .type = VKR_RECORDING_FIELD_U16,
+     .count = 1u,
+     .offset = 2u},
+    {.name = "depth",
+     .type = VKR_RECORDING_FIELD_U32,
+     .count = 1u,
+     .offset = 4u},
+    {.name = "begin_ns",
+     .unit = "ns",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 8u},
+    {.name = "end_ns",
+     .unit = "ns",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 16u},
 };
 
 static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
@@ -547,6 +571,60 @@ vkr_internal bool8_t vkr_recording_spawns_create(VkrRecording *recording) {
 vkr_internal void vkr_recording_measurements_start(VkrRecording *recording,
                                                    const VkrMetrics *metrics);
 
+/* The zone sink: files a finished zone in the ring of the thread that ran
+   it, under the recorded frame current now. Each slot is one thread, so
+   each ring keeps its single producer. */
+vkr_internal void vkr_recording_zone_write(void *context,
+                                           const VkrZoneRecord *record) {
+  VkrRecording *recording = (VkrRecording *)context;
+  VkrRecorderProducer producer = VKR_RECORDER_PRODUCER_COUNT;
+  if (record->thread == VKR_ZONE_THREAD_MAIN) {
+    producer = VKR_RECORDER_PRODUCER_MAIN;
+  } else if (record->thread == VKR_ZONE_THREAD_RENDER) {
+    producer = VKR_RECORDER_PRODUCER_RENDER;
+  } else if (record->thread >= VKR_ZONE_THREAD_WORKER_FIRST &&
+             record->thread - VKR_ZONE_THREAD_WORKER_FIRST <
+                 VKR_RECORDER_WORKER_PRODUCERS) {
+    producer =
+        (VkrRecorderProducer)(VKR_RECORDER_PRODUCER_WORKER_FIRST +
+                              record->thread - VKR_ZONE_THREAD_WORKER_FIRST);
+  }
+  if (producer == VKR_RECORDER_PRODUCER_COUNT) {
+    return;
+  }
+  const uint64_t frame =
+      vkr_atomic_uint64_load(&recording->zone_frame, VKR_MEMORY_ORDER_RELAXED);
+  (void)vkr_recorder_write(recording->recorder, producer,
+                           VKR_RECORDING_STREAM_ZONE, frame, record,
+                           sizeof(*record));
+}
+
+/* Names the zones registered since the last call (frame-loop thread). */
+vkr_internal void vkr_recording_zone_names(VkrRecording *recording,
+                                           uint64_t frame) {
+  const uint32_t count = vkr_zone_site_count();
+  while (recording->zone_names_written < count) {
+    const uint32_t zone = recording->zone_names_written;
+    const char *name = vkr_zone_site_name(zone);
+    if (!name) {
+      /* Registered but not published yet; the next frame names it. */
+      break;
+    }
+    const uint32_t length =
+        (uint32_t)Min(string_length(name), (uint64_t)VKR_RECORDING_TEXT_MAX);
+    uint8_t *record = vkr_recorder_reserve(
+        recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+        VKR_RECORDING_STREAM_ZONE_NAME, frame, 4u + length);
+    if (!record) {
+      break;
+    }
+    MemCopy(record, &zone, sizeof(zone));
+    MemCopy(record + 4u, name, length);
+    vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+    ++recording->zone_names_written;
+  }
+}
+
 bool8_t vkr_recording_start(VkrRecording *recording,
                             const VkrRecordingConfig *config) {
   vkr_assert(recording != NULL && config != NULL);
@@ -584,8 +662,8 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
   VkrRecordingStream streams[32];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 8u <= 32u,
-                 "room for the metrics, pose and pass streams");
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 11u <= 32u,
+                 "room for the metrics, pose, pass and zone streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
   uint32_t stream_count = base_count;
@@ -640,6 +718,22 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASSES,
                              .flags = VKR_RECORDING_STREAM_DROPPABLE,
                              .name = "passes"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASS_STARTS,
+                             .flags = VKR_RECORDING_STREAM_DROPPABLE,
+                             .name = "pass_starts"};
+  }
+  if (config->zones) {
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_ZONE_NAME, .name = "zone_name"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_ZONE,
+        .flags = VKR_RECORDING_STREAM_DROPPABLE,
+        .name = "zone",
+        .record_size = sizeof(VkrZoneRecord),
+        .field_count = ArrayCount(VKR_RECORDING_ZONE_FIELDS),
+        .fields = VKR_RECORDING_ZONE_FIELDS,
+    };
   }
   const VkrRecorderConfig recorder_config = {
       .stream_path = stream_path,
@@ -648,6 +742,7 @@ bool8_t vkr_recording_start(VkrRecording *recording,
       .streams = streams,
       .stream_count = stream_count,
       .ring_bytes = VKR_RECORDING_RING_BYTES,
+      .worker_ring_bytes = config->zones ? VKR_RECORDING_WORKER_RING_BYTES : 0u,
   };
   if (!vkr_recording_create_bundle(recording)) {
     goto cleanup;
@@ -660,6 +755,12 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   recording->active = true_v;
   if (config->metrics && config->all_measurements) {
     vkr_recording_measurements_start(recording, config->metrics);
+  }
+  if (config->zones) {
+    recording->zones_enabled = true_v;
+    const VkrZoneSink sink = {.write = vkr_recording_zone_write,
+                              .context = recording};
+    vkr_zone_sink_set(&sink);
   }
   return true_v;
 
@@ -684,6 +785,11 @@ void vkr_recording_frame(VkrRecording *recording,
   (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
                            VKR_RECORDING_STREAM_CAMERA, recording->frame,
                            camera, sizeof(*camera));
+  if (recording->zones_enabled) {
+    vkr_recording_zone_names(recording, recording->frame);
+    vkr_atomic_uint64_store(&recording->zone_frame, recording->frame,
+                            VKR_MEMORY_ORDER_RELAXED);
+  }
   ++recording->frame;
 }
 
@@ -985,6 +1091,40 @@ vkr_internal uint64_t vkr_recording_frame_of(const VkrRecording *recording,
   return UINT64_MAX;
 }
 
+/* The GPU starts of the rows just written, in their order, placed on the
+   CPU clock by the submission's host start (VKR_RECORDING_STREAM_PASS_STARTS).
+ */
+vkr_internal void
+vkr_recording_pass_starts(VkrRecording *recording, uint64_t target,
+                          const VkrRendererMetricsPassTable *passes,
+                          const uint16_t *ids, uint32_t count, uint32_t rows) {
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_PASS_STARTS, target,
+                           VKR_RECORDING_PASS_STARTS_HEADER_SIZE + 4u * rows);
+  if (!record) {
+    return;
+  }
+  const uint32_t flags = VKR_RECORDING_PASS_STARTS_HOST_CLOCK;
+  MemCopy(record, &rows, sizeof(rows));
+  MemCopy(record + 4u, &flags, sizeof(flags));
+  MemCopy(record + 8u, &passes->gpu_start_host_ns, sizeof(uint64_t));
+  MemCopy(record + 16u, &passes->gpu_end_host_ns, sizeof(uint64_t));
+  uint8_t *row = record + VKR_RECORDING_PASS_STARTS_HEADER_SIZE;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (ids[i] == UINT16_MAX) {
+      continue;
+    }
+    const VkrRendererMetricsPassSample *sample = &passes->samples[i];
+    const float32_t start_ms = sample->gpu_valid && sample->gpu_start_valid
+                                   ? (float32_t)sample->gpu_start_ms
+                                   : (float32_t)VKR_FLOAT_NAN;
+    MemCopy(row, &start_ms, sizeof(start_ms));
+    row += 4u;
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
 void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
                           uint64_t frame_index,
                           const VkrRendererMetricsPassTable *passes) {
@@ -1054,6 +1194,9 @@ void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
   }
   vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
   recording->pass_rows_written += rows;
+  if (passes->gpu_host_valid) {
+    vkr_recording_pass_starts(recording, target, passes, ids, count, rows);
+  }
 }
 
 void vkr_recording_gpu_submission(VkrRecording *recording,
@@ -1514,6 +1657,13 @@ bool8_t vkr_recording_stop(VkrRecording *recording,
   vkr_assert(recording != NULL);
   if (!recording->active) {
     return false_v;
+  }
+  if (recording->zones_enabled) {
+    /* Waits until no thread is inside a zone write, so the recorder can
+       stop; then names zones that only workers ran since the last frame. */
+    vkr_zone_sink_set(NULL);
+    vkr_recording_zone_names(recording, recording->frame);
+    recording->zones_enabled = false_v;
   }
   VkrRecorderStats stats;
   const bool8_t stream_ok = vkr_recorder_stop(recording->recorder, &stats);

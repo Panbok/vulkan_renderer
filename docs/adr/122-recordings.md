@@ -548,6 +548,9 @@ an agent must read one without the editor.
   agents without a tool. The write thread keeps the file count off the
   frame.
 
+CPU zones, GPU pass starts and the Perfetto export extend recordings with
+three streams; [ADR-126](126-cpu-zones-and-gpu-pass-timeline.md) owns them.
+
 ## Revisit when
 
 Play recording (R3) adds world state, or frame metrics (R2) add render-thread

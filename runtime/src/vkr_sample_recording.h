@@ -117,6 +117,9 @@ typedef struct VkrSampleRecordingRequest {
      counts, per-pass GPU times every frame and event subjects (implies
      Tier 1). */
   bool8_t all_measurements;
+  /* START: every thread's CPU zones and the GPU pass starts for a timeline
+     (VkrRecordingConfig.zones). */
+  bool8_t zones;
   /* DRIVE: modules steer the driven player back toward the recorded one. */
   bool8_t follow;
   /* DRIVE: re-simulate: replay the session's seed and clock and stop at the

@@ -1,6 +1,7 @@
 #include "application/vkr_application_host.h"
 
 #include "core/input.h"
+#include "core/vkr_zone.h"
 #include "platform/vkr_platform.h"
 
 vkr_internal bool8_t vkr_application_host_event(Event *event,
@@ -122,6 +123,9 @@ void vkr_application_host_run(VkrApplicationHost *host) {
   vkr_clock_start(&host->clock);
   vkr_clock_update(&host->clock);
   host->last_frame_time = host->clock.elapsed;
+  /* The frame loop runs on this thread; its zones (vkr_zone.h) file under
+     the main slot. */
+  vkr_zone_thread_set(VKR_ZONE_THREAD_MAIN);
 
   bool8_t window_running = true_v;
   while (window_running &&
@@ -160,7 +164,10 @@ void vkr_application_host_run(VkrApplicationHost *host) {
       vkr_platform_sleep(1u);
       continue;
     }
+    /* One frame-loop iteration, closed on every path out of it. */
+    VKR_ZONE_BEGIN(frame_zone, "Frame");
     if (!host->callbacks.frame(host->callbacks.state, &frame_with_delta)) {
+      VKR_ZONE_END(frame_zone);
       vkr_application_host_close(host);
       break;
     }
@@ -172,10 +179,12 @@ void vkr_application_host_run(VkrApplicationHost *host) {
       if (remaining > 0.0) {
         const uint64_t milliseconds = (uint64_t)(remaining * 1000.0);
         if (milliseconds > 0u) {
+          VKR_ZONE_BEGIN(limiter_zone, "Frame.Limiter");
           if (host->callbacks.sleep)
             host->callbacks.sleep(host->callbacks.state, milliseconds);
           else
             vkr_platform_sleep(milliseconds);
+          VKR_ZONE_END(limiter_zone);
         }
       }
     }
@@ -185,6 +194,7 @@ void vkr_application_host_run(VkrApplicationHost *host) {
     /* A headless run's synthetic input needs its edges cleared too. */
     if (host->config.windowed || host->window.input_state.is_initialized)
       input_update(&host->window.input_state);
+    VKR_ZONE_END(frame_zone);
   }
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING);
 }

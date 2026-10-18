@@ -111,6 +111,7 @@ vkr_internal void vkr_sample_recording_start(
       .passes =
           request->tier == VKR_RECORDING_TIER_1 || request->all_measurements,
       .all_measurements = request->all_measurements,
+      .zones = request->zones,
       /* Per-pass stamps split the tiled pipeline's shared compute encoder
          (about 0.5 ms per Bistro frame), so Tier 1 samples them there;
          desktop stamps are cheap and run every frame (D2). All

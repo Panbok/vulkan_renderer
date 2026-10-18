@@ -116,6 +116,25 @@
    then `count` float64 values in the unit named. */
 #define VKR_RECORDING_STREAM_MEASUREMENT_NAME 21u
 #define VKR_RECORDING_STREAM_MEASUREMENTS 22u
+/* CPU zones (VkrRecordingConfig.zones, lib/src/core/vkr_zone.h): a
+   zone_name record is a u32 zone id then the UTF-8 name; a zone record is
+   one VkrZoneRecord (u16 zone, u16 thread slot, u32 depth, u64 begin_ns, u64
+   end_ns on the CPU's monotonic clock) under the recorded frame current
+   when it ended. Slot 0 is the frame loop, 1 the render thread, 2 + k job
+   worker k; a "Frame" zone on slot 0 spans one frame-loop iteration. */
+#define VKR_RECORDING_STREAM_ZONE_NAME 23u
+#define VKR_RECORDING_STREAM_ZONE 24u
+/* GPU pass starts (Tier 1): per rendered frame, under its number, a u32 row
+   count, u32 VKR_RECORDING_PASS_STARTS_* flags, u64 GPU start and u64 GPU
+   end on the CPU's monotonic clock in ns, then per row of the frame's
+   passes record, in its order, an f32 start in ms after the GPU start (NaN
+   for an untimed pass). */
+#define VKR_RECORDING_STREAM_PASS_STARTS 25u
+#define VKR_RECORDING_PASS_STARTS_HEADER_SIZE 24u
+/* The GPU start and end are on the CPU clock. */
+#define VKR_RECORDING_PASS_STARTS_HOST_CLOCK 1u
+/* Ring bytes of each job worker's producer when zones are recorded. */
+#define VKR_RECORDING_WORKER_RING_BYTES (1024u * 1024u)
 /* Transform hashes are split by stable entity key
    (vkr_scene_entity_stable_key), so a mismatch narrows to the entities of
    the buckets that differ. */
@@ -309,6 +328,10 @@ typedef struct VkrRecordingConfig {
      `pass_gpu_period`; zero leaves them as the metrics config has them.
      vkr_recording_pass_gpu_frame tells the runtime which frames. */
   uint32_t pass_gpu_period;
+  /* Record CPU zones from every thread that named its zone slot. The
+     recording installs the process's zone sink while it runs, so at most
+     one recording records zones. */
+  bool8_t zones;
 } VkrRecordingConfig;
 
 typedef struct VkrRecordingFrameIndex {
@@ -370,6 +393,11 @@ typedef struct VkrRecording {
   /* The renderer frame index of recent recorded frames. */
   VkrRecordingFrameIndex frame_history[VKR_RECORDING_FRAME_INDEX_HISTORY];
   uint32_t frame_history_next;
+  /* CPU zones: the sink is installed, the zone names written so far, and
+     the recorded frame zones from other threads file under. */
+  bool8_t zones_enabled;
+  uint32_t zone_names_written;
+  VkrAtomicUint64 zone_frame;
   /* Tier 1. */
   bool8_t passes_enabled;
   uint32_t pass_gpu_period;

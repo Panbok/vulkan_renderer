@@ -284,8 +284,9 @@ bool8_t vkr_editor_recording_resolve(VkrEditorUi *editor, const char *name,
 
 uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
                                     const char *author, VkrRecordingTier tier,
-                                    bool8_t all_measurements, bool8_t toast,
-                                    char *error, uint64_t error_capacity) {
+                                    bool8_t all_measurements, bool8_t zones,
+                                    bool8_t toast, char *error,
+                                    uint64_t error_capacity) {
   char directory[VKR_RECORDING_PATH_MAX];
   if (!vkr_editor_recording_directory(editor, directory, sizeof(directory))) {
     string_format(error, error_capacity, "No directory for recordings.");
@@ -296,6 +297,7 @@ uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
       .codec = vkr_depot_zstd_codec(),
       .tier = tier,
       .all_measurements = all_measurements,
+      .zones = zones,
   };
   editor_recording_name(name, request.name, sizeof(request.name));
   string_format(request.author, sizeof(request.author), "%s",
@@ -1695,8 +1697,9 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
   all.disabled = active;
   all.tooltip = string8_lit(
       "Record every measurement: every engine metric, physics counts, GPU "
-      "time of every pass each frame and the assets events name. Costs frame "
-      "time (about 0.5 ms on tiled); leave it off for timing comparisons.");
+      "time of every pass each frame, the assets events name and every "
+      "thread's CPU zones for a timeline. Costs frame time (about 0.5 ms on "
+      "tiled); leave it off for timing comparisons.");
   bool8_t take_all = recording->all_measurements;
   if (vkr_ui_checkbox(ui, string8_lit("all_measurements"),
                       string8_lit("All measurements"), &take_all, &all)) {

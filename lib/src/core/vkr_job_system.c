@@ -1,5 +1,6 @@
 #include "core/vkr_job_system.h"
 #include "core/logger.h"
+#include "core/vkr_zone.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
@@ -281,6 +282,11 @@ vkr_internal void *job_worker_thread(void *param) {
 
   VkrJobWorker *worker = (VkrJobWorker *)param;
   VkrJobSystem *system = worker->system;
+  /* Workers past the zone slots record no zones. */
+  vkr_zone_thread_set(
+      worker->index < VKR_ZONE_THREAD_MAX - VKR_ZONE_THREAD_WORKER_FIRST
+          ? (uint16_t)(VKR_ZONE_THREAD_WORKER_FIRST + worker->index)
+          : VKR_ZONE_THREAD_NONE);
 
   while (true) {
     vkr_mutex_lock(system->mutex);
@@ -332,7 +338,9 @@ vkr_internal void *job_worker_thread(void *param) {
 
     bool8_t success = false_v;
     if (slot->run) {
+      VKR_ZONE_BEGIN(job_zone, "Job");
       success = slot->run(&ctx, slot->payload);
+      VKR_ZONE_END(job_zone);
     }
 
     job_worker_complete(system, slot, handle, &ctx, success);

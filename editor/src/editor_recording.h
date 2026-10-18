@@ -505,12 +505,14 @@ void vkr_editor_recording_settings(struct VkrEditorUi *editor, float32_t speed,
 
 /** Starts a recording named `name` (a time stamp when empty) by `author`
  * that measures `tier`, or with `all_measurements` every measurement the
- * engine has. Returns its token, or zero with the reason in `error`. */
+ * engine has; `zones` adds every thread's CPU zones for the timeline.
+ * Returns its token, or zero with the reason in `error`. */
 uint64_t vkr_editor_recording_start(struct VkrEditorUi *editor,
                                     const char *name, const char *author,
                                     VkrRecordingTier tier,
-                                    bool8_t all_measurements, bool8_t toast,
-                                    char *error, uint64_t error_capacity);
+                                    bool8_t all_measurements, bool8_t zones,
+                                    bool8_t toast, char *error,
+                                    uint64_t error_capacity);
 
 /** Resolves a recording argument: a path, or a bundle name in the recording
  * directory with or without its extension. */
