@@ -281,6 +281,15 @@ typedef struct VkrPreparedTextDraw {
   uint32_t revision;
 } VkrPreparedTextDraw;
 
+/* World text draws its depth this far toward the camera, in units of the
+ * float depth's last mantissa bit and of the triangle's depth slope, so a
+ * label placed on a surface wins over it instead of fighting it as the
+ * temporal jitter moves the samples. A label set a few millimetres off its
+ * surface needs no bias. Camera depth is reversed, so the bias is positive
+ * on both backends. */
+#define VKR_WORLD_TEXT_DEPTH_BIAS_CONSTANT 256.0f
+#define VKR_WORLD_TEXT_DEPTH_BIAS_SLOPE 2.0f
+
 /**
  * @brief One frame-local UI geometry stream split into ordered scissor batches.
  *

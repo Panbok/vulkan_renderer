@@ -409,6 +409,9 @@ vkr_internal void vkr_metal_packet_record_prepared_text_draws(
                                      1.0}];
   [encoder setCullMode:MTLCullModeNone];
   [encoder setDepthStencilState:depth_state];
+  [encoder setDepthBias:VKR_WORLD_TEXT_DEPTH_BIAS_CONSTANT
+             slopeScale:VKR_WORLD_TEXT_DEPTH_BIAS_SLOPE
+                  clamp:0.0f];
   [encoder setRenderPipelineState:pipeline];
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrMetalPacketPreparedTextDraw *draw =
@@ -427,6 +430,7 @@ vkr_internal void vkr_metal_packet_record_prepared_text_draws(
     root_cpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
     root_gpu += VKR_METAL_PACKET_DRAW_ROOT_STRIDE;
   }
+  [encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
 }
 
 vkr_internal bool8_t vkr_metal_packet_prepare_text_draws(

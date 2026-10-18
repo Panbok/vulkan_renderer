@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-09-06
+updated: 2026-10-18
 authority: adr
 ---
 # ADR-035: Derivative-based MTSDF coverage
@@ -27,6 +27,16 @@ The cooked MTSDF loader accepts only a linear, single-page RGBA8 MTSDF atlas.
 Its clamp-to-edge, linear, non-mipmapped sampling stays fixed when the sample's
 scene-texture filtering controls change.
 No alpha-SDF blend fallback is implemented.
+
+World text and its picking variant draw with a depth bias toward the camera,
+`VKR_WORLD_TEXT_DEPTH_BIAS_CONSTANT` (256 units of the float depth's last
+mantissa bit) and `VKR_WORLD_TEXT_DEPTH_BIAS_SLOPE` (2), on both backends
+(since 2026-10-18). A label placed on a surface then wins its depth test
+instead of fighting the surface as the temporal jitter moves the samples: in
+the Level Design Test scene six signs lie in their plates' planes, and the
+freight elevator sign lost letters frame to frame. At 5 m the constant part
+moves the text under 0.3 mm.
+
 Bootstrap atlas range is selected for the smallest UI text at 1x display scale;
 see [ADR-034](034-offline-cooked-font-artifacts.md). Clamping a too-small range in
 the shader does not recover distance information missing from the cooked field.
@@ -54,4 +64,5 @@ binding, or signed-distance effects such as outlines and glow.
 - [frame text draw](../../renderer/src/vkr_frame_input.h)
 - [Metal text shader](../../renderer/src/shaders/metal/msl/text/default.metal)
 - [Vulkan text shader](../../renderer/src/shaders/vulkan/slang/text/default.slang)
+- [Metal world text draws](../../renderer/src/metal/internal/vkr_metal_packet_frame.inc), [Vulkan world text draws](../../renderer/src/vulkan/vkr_vulkan_draws.c)
 - [cooked-atlas validation](../../runtime/src/renderer/resources/loaders/cooked_font_loader.c)

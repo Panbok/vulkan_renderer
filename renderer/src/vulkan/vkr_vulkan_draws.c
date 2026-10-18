@@ -1985,6 +1985,8 @@ vkr_internal void vkr_vk_record_prepared_text_draws(
       &renderer->frame_slots[renderer->active_frame_slot];
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     renderer->packet_pipelines[pipeline]);
+  vkCmdSetDepthBias(command, VKR_WORLD_TEXT_DEPTH_BIAS_CONSTANT, 0.0f,
+                    VKR_WORLD_TEXT_DEPTH_BIAS_SLOPE);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrVulkanPreparedTextDraw *draw = &draws[i];
     const VkrVulkanPushConstants push = {.root = roots_address +

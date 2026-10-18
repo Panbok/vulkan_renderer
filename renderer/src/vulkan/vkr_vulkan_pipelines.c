@@ -2736,12 +2736,12 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
              VKR_VULKAN_PACKET_SHADER_TEXT_FRAGMENT,
              VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT, true_v,
-             false_v, true_v, false_v) &&
+             false_v, true_v, true_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_PICKING_TEXT,
              VKR_VULKAN_PACKET_SHADER_TEXT_VERTEX,
              VKR_VULKAN_PACKET_SHADER_TEXT_PICKING_FRAGMENT, VK_FORMAT_R32_UINT,
-             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, false_v) &&
+             VK_FORMAT_D32_SFLOAT, true_v, true_v, false_v, true_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_VISIBILITY,
              VKR_VULKAN_PACKET_SHADER_VISIBILITY_VERTEX,
