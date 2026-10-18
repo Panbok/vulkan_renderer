@@ -30,9 +30,10 @@
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
-/** Cold-boundary limits for the frame-local retained UI stream. */
-#define VKR_UI_VERTEX_CAPACITY 65536u
-#define VKR_UI_INDEX_CAPACITY 98304u
+/** Cold-boundary limits for the frame-local retained UI stream: 32768 quads,
+ * room for the Performance window's charts over a full editor. */
+#define VKR_UI_VERTEX_CAPACITY 131072u
+#define VKR_UI_INDEX_CAPACITY 196608u
 #define VKR_UI_BATCH_CAPACITY 4096u
 
 /** Frame-local reflection probe descriptor lowered by the selected renderer. */

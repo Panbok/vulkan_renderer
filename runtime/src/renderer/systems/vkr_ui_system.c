@@ -3410,10 +3410,14 @@ vkr_internal void vkr_ui_emit_code(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
 }
 
 /* Plot columns across `width_px` pixels: one per sample while each keeps a
- * pixel, and no more than the bar budget allows for the plot's stack. */
-vkr_internal uint32_t vkr_ui_plot_column_count(const VkrUiPlotData *plot,
+ * point, and no more than the bar budget allows for the plot's stack. A
+ * point, not a pixel: a high-density display would double the geometry for
+ * bars the eye cannot tell apart. */
+vkr_internal uint32_t vkr_ui_plot_column_count(const VkrUiSystem *system,
+                                               const VkrUiPlotData *plot,
                                                float32_t width_px) {
-  const float32_t pixels = vkr_floor_f32(width_px);
+  const float32_t pixels =
+      vkr_floor_f32(width_px / Max(system->content_scale, 1.0f));
   uint32_t columns = plot->sample_count;
   if (pixels < (float32_t)columns) {
     columns = pixels >= 1.0f ? (uint32_t)pixels : 1u;
@@ -3664,7 +3668,8 @@ vkr_internal void vkr_ui_plot_input(VkrUiSystem *system, VkrUiFrameNode *node,
     return;
   }
 
-  const uint32_t columns = vkr_ui_plot_column_count(plot, content.width);
+  const uint32_t columns =
+      vkr_ui_plot_column_count(system, plot, content.width);
   const uint32_t column =
       vkr_ui_plot_pointer_column((float32_t)system->mouse_x, content, columns);
   if (node->hovered && !node->disabled) {
@@ -4080,7 +4085,8 @@ vkr_internal void vkr_ui_emit_plot(VkrUiSystem *system, VkrUiDrawBuffer *buffer,
   }
 
   const float32_t scale = system->content_scale;
-  const uint32_t columns = vkr_ui_plot_column_count(plot, content.width);
+  const uint32_t columns =
+      vkr_ui_plot_column_count(system, plot, content.width);
   if (plot->range_first != VKR_UI_PLOT_NONE) {
     const uint32_t first =
         vkr_ui_plot_sample_column(plot, plot->range_first, columns);
@@ -5092,7 +5098,7 @@ vkr_internal bool8_t vkr_ui_resolve_draw_commands(VkrUiSystem *system) {
           vkr_ui_style_content_rect(owner->rect, &owner->style);
       if (vkr_ui_rect_has_area(content)) {
         const uint32_t columns =
-            vkr_ui_plot_column_count(owner->plot, content.width);
+            vkr_ui_plot_column_count(system, owner->plot, content.width);
         const uint32_t column = vkr_ui_plot_sample_column(
             owner->plot, owner->plot->hovered, columns);
         anchor.x = vkr_ui_plot_column_x(content, column, columns);
