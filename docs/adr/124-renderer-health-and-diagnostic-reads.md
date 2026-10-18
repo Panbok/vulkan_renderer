@@ -10,8 +10,8 @@ authority: adr
 
 Accepted (partial). Phase P0 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
-implemented on both backends, and each has a native Bistro run. On Vulkan no
-long healthy GPU job has yet run against the 5 s completion bound.
+implemented on both backends, and each has a native Bistro run. No Vulkan
+GPU wait in those runs came near the 5 s completion bound.
 
 ## Context
 
@@ -111,8 +111,8 @@ A run loses authority with `gpu.errors` when a GPU error occurred and with
 
 - Metal shader logging (`MTLLogState`) routes validation through the engine.
 - The crash handler and GPU breadcrumbs of the proposal's P3 land.
-- A long healthy Vulkan GPU job, such as a reflection probe bake, runs
-  against the bounded waits, or a device loss exercises the fault report.
+- A healthy Vulkan GPU job that takes seconds runs against the bounded
+  waits, or a device loss exercises the fault report.
 
 ## Evidence
 
@@ -153,3 +153,11 @@ A run loses authority with `gpu.errors` when a GPU error occurred and with
 - A windowed Release Bistro editor stayed minimized for 40 s, recreated its
   swapchain on restore, answered `health.status` throughout and logged no
   completion timeout.
+- `vkr_bakery bake probe --scene assets/scenes/bistro.scene.json --position
+  -28.5 4.6 2.9 --size 256 --supersample 4` captured six 1024×1024 Bistro
+  faces through a Release Vulkan harness child in 45 frames and 40 s, report
+  `sha256:bd91d1cfe1b35f2786a3c359699e9120932742c6610f50fa61004fc620540e8d`:
+  `gpu.errors` and `log.errors` 0, and the output scan found no ERROR or
+  FATAL line, so no completion wait timed out. The editor's Bake lighting
+  job could not run beside an open Bistro editor on the 16 GB machine: its
+  diffuse-volume Bakery process left under 1.5 GB free.
