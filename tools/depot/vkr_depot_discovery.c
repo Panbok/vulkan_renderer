@@ -137,8 +137,10 @@ bool8_t vkr_depot_discovery_read_answer(const uint8_t *bytes, uint32_t size,
 
 void vkr_depot_host_name(char *out, uint32_t capacity) {
 #if defined(_WIN32)
-  const char *name = getenv(DISCOVERY_HOST_VARIABLE);
-  snprintf(out, capacity, "%s", name && name[0] ? name : "windows");
+  char name[VKR_DEPOT_DISCOVERY_TEXT];
+  (void)vkr_platform_environment_variable(DISCOVERY_HOST_VARIABLE, name,
+                                          sizeof(name));
+  snprintf(out, capacity, "%s", name[0] ? name : "windows");
 #else
   if (gethostname(out, capacity) != 0) {
     snprintf(out, capacity, "host");

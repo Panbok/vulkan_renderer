@@ -1,5 +1,6 @@
 #include "vkr_depot_sync.h"
 
+#include "platform/vkr_platform.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_discovery.h"
 #include "vkr_net_crypto.h"
@@ -14,9 +15,17 @@
 // Identity, name and addresses
 // =============================================================================
 
+/* VKR_DEPOT_IDENTITY as UTF-8: the CRT's getenv gives the active code page
+   on Windows, which turns a non-ASCII path into another one. */
+static bool8_t depot_identity_override(char *out, uint32_t capacity) {
+  return vkr_platform_environment_variable("VKR_DEPOT_IDENTITY", out,
+                                           capacity) &&
+         out[0];
+}
+
 bool8_t vkr_depot_identity_path(char *out, uint32_t capacity) {
-  const char *override = getenv("VKR_DEPOT_IDENTITY");
-  if (override && override[0]) {
+  char override[VKR_DEPOT_PATH_CAPACITY];
+  if (depot_identity_override(override, sizeof(override))) {
     return snprintf(out, capacity, "%s", override) < (int)capacity;
   }
   char data[VKR_DEPOT_PATH_CAPACITY];
@@ -57,11 +66,12 @@ bool8_t vkr_depot_identity(VkrNetKeyPair *out, bool8_t create) {
   if (depot_identity_read(path, out)) {
     return true_v;
   }
-  const char *override = getenv("VKR_DEPOT_IDENTITY");
+  char override[VKR_DEPOT_PATH_CAPACITY];
   char legacy[VKR_DEPOT_PATH_CAPACITY];
-  const bool8_t migrated = !(override && override[0]) &&
-                           depot_identity_legacy_path(legacy, sizeof(legacy)) &&
-                           depot_identity_read(legacy, out);
+  const bool8_t migrated =
+      !depot_identity_override(override, sizeof(override)) &&
+      depot_identity_legacy_path(legacy, sizeof(legacy)) &&
+      depot_identity_read(legacy, out);
   if (!migrated && !create) {
     return false_v;
   }
@@ -79,10 +89,11 @@ bool8_t vkr_depot_identity(VkrNetKeyPair *out, bool8_t create) {
 }
 
 void vkr_depot_display_name(char out[VKR_DEPOT_DISPLAY_NAME]) {
+  char user[VKR_DEPOT_DISPLAY_NAME * 2u];
 #if defined(_WIN32)
-  const char *user = getenv("USERNAME");
+  (void)vkr_platform_environment_variable("USERNAME", user, sizeof(user));
 #else
-  const char *user = getenv("USER");
+  (void)vkr_platform_environment_variable("USER", user, sizeof(user));
 #endif
   char host[VKR_DEPOT_DISCOVERY_TEXT];
   vkr_depot_host_name(host, sizeof(host));
@@ -93,7 +104,7 @@ void vkr_depot_display_name(char out[VKR_DEPOT_DISPLAY_NAME]) {
     host[length - 6u] = '\0';
   }
   char name[VKR_DEPOT_DISPLAY_NAME * 2u];
-  snprintf(name, sizeof(name), "%s@%s", user && user[0] ? user : "user", host);
+  snprintf(name, sizeof(name), "%s@%s", user[0] ? user : "user", host);
   (void)vkr_depot_display_name_clean((const uint8_t *)name,
                                      (uint32_t)strlen(name), out);
 }
