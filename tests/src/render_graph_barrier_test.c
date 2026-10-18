@@ -3018,6 +3018,69 @@ vkr_internal void test_editor_pass_output_reads_named_image(void) {
   printf("  test_editor_pass_output_reads_named_image PASSED\n");
 }
 
+/* Detects: Volume.Trace or Shadow.SunRay scheduled before Volume.Build,
+   which builds the frame slot's TLAS they trace. Without a declared
+   dependency the scheduler ran Volume.Trace first, against the TLAS the slot
+   built three frames before, whose BLASes a burst of brush rebuilds had
+   retired: a GPU page fault (device lost). */
+vkr_internal void test_tlas_readers_follow_volume_build(void) {
+  printf("  Running test_tlas_readers_follow_volume_build...\n");
+  for (uint32_t skinning = 0u; skinning < 2u; ++skinning) {
+    Arena *arena = arena_create(MB(16), MB(2));
+    VkrAllocator allocator = {.ctx = arena};
+    assert(vkr_allocator_arena(&allocator));
+    VkrRgJsonGraph json = {0};
+    assert(vkr_rg_json_load_file(
+        &allocator, "assets/render_graphs/main.rendergraph.json", &json));
+    VkrRgExecutorRegistry registry = {0};
+    assert(vkr_rg_executor_registry_init(&registry, &allocator));
+    assert(vkr_render_graph_register_executors(&registry));
+    assert(vkr_rg_json_bind_executors(&json, &registry));
+    VkrRenderGraph *graph = vkr_rg_create(&allocator);
+    assert(graph);
+    VkrRenderGraphFrameInfo frame = {
+        .scene_rendering = true_v,
+        .gpu_draw_candidate_capacity = 1u,
+        .gpu_draw_visible_capacity = 8u,
+        .transmission_gpu_draw_candidate_capacity = 1u,
+        .target_width = 1000u,
+        .target_height = 800u,
+        .window_width = 1000u,
+        .window_height = 800u,
+        .scene_output_width = 1000u,
+        .scene_output_height = 800u,
+        .viewport_width = 1000u,
+        .viewport_height = 800u,
+        .render_scale = 1.0f,
+        .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+        .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+        .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+        .shadow_map_size = 2048u,
+        .shadow_map_layer_count = 4u,
+        .shadow_cascade_count = 4u,
+        .shadow_cascade_render_mask = 0xfu,
+        .skinning_enabled = skinning != 0u,
+        .skinning_vertex_capacity = 1024u,
+        .dynamic_volume_active = true_v,
+        .sun_ray_shadows_active = true_v,
+        .ray_scene_active = true_v,
+    };
+    assert(vkr_rg_begin_frame(graph, &frame));
+    assert(vkr_rg_build_from_json(graph, &json, &frame));
+    assert(vkr_rg_compile_schedule(graph));
+    uint64_t build_order = 0u;
+    uint64_t trace_order = 0u;
+    uint64_t sun_order = 0u;
+    assert(rg_find_named_pass(graph, "Volume.Build", &build_order));
+    assert(rg_find_named_pass(graph, "Volume.Trace", &trace_order));
+    assert(rg_find_named_pass(graph, "Shadow.SunRay", &sun_order));
+    assert(build_order < trace_order && build_order < sun_order);
+    vkr_rg_end_frame(graph);
+    arena_destroy(arena);
+  }
+  printf("  test_tlas_readers_follow_volume_build PASSED\n");
+}
+
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
@@ -3048,6 +3111,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_deferred_image_formats();
   test_frame_allocator_reclaims_authored_passes();
   test_tiled_graph_topology();
+  test_tlas_readers_follow_volume_build();
   test_main_graph_fits_runtime_pass_capacity();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();

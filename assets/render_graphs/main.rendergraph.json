@@ -1767,6 +1767,18 @@
       ]
     },
     {
+      "name": "ray_scene",
+      "type": "buffer",
+      "condition": "ray_scene_active",
+      "size": 16,
+      "usage": [
+        "STORAGE"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT"
+      ]
+    },
+    {
       "name": "debug_gpu_spike_state",
       "type": "buffer",
       "condition": "debug_gpu_spike",
@@ -2576,6 +2588,13 @@
           "when": "skinning_enabled"
         }
       ],
+      "writes": [
+        {
+          "buffer": "ray_scene",
+          "access": "STORAGE_WRITE",
+          "binding": 1
+        }
+      ],
       "execute": "pass.volume.build"
     },
     {
@@ -2595,6 +2614,11 @@
           "buffer": "gpu_draw_instances",
           "access": "STORAGE_READ",
           "binding": 1
+        },
+        {
+          "buffer": "ray_scene",
+          "access": "STORAGE_READ",
+          "binding": 2
         }
       ],
       "execute": "pass.volume.trace"
@@ -4997,6 +5021,11 @@
           "buffer": "gpu_draw_candidates",
           "access": "STORAGE_READ",
           "binding": 2
+        },
+        {
+          "buffer": "ray_scene",
+          "access": "STORAGE_READ",
+          "binding": 17
         }
       ],
       "writes": [

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-14
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -101,6 +101,19 @@ dynamic diffuse light after screen-space GI was removed (2026-10-12,
    whose candidate and instance rows the trace reads, under the graph
    condition `dynamic_volume_active`
    ([main.rendergraph.json](../../assets/render_graphs/main.rendergraph.json)).
+   The frame slot's TLAS is not a graph resource, so `Volume.Build` writes
+   the per-slot `ray_scene` buffer and every TLAS reader, `Volume.Trace` and
+   `Shadow.SunRay`, reads it: the compiler then schedules them after the
+   build (`test_tlas_readers_follow_volume_build`). Before 2026-10-18
+   nothing ordered them, and the scheduler could run `Volume.Trace` first,
+   against the TLAS the slot built three frames before. When geometry
+   retired in between, its BLASes were freed under that TLAS: a burst of
+   brush rebuilds in Play (greybox view toggled, or crates rebuilt as their
+   physics paused) lost the device on Windows/Vulkan, a page fault in
+   `Volume.Trace` with `Volume.Build` not started (RGD dump; two of two
+   runs). With the declared reads the same headless greybox-toggle runs
+   finished cleanly, two of two (Release, RX 6700 XT, Adrenalin 26.6.3,
+   dirty tree).
 4. **Selection**, on the CPU per frame
    ([vkr_dynamic_volume.c](../../runtime/src/renderer/systems/vkr_dynamic_volume.c)).
    - Sources: dynamic point and rectangle lights (sign +1); static lights
