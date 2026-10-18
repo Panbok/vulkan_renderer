@@ -1228,9 +1228,11 @@ static void level_lint_brushes(LevelGrid *grid, LevelIssues *issues) {
 }
 
 /* The smallest shared area that counts as z-fighting, one square
-   centimeter, and how far in front of it another solid hides it. */
+   centimeter, how far in front of it another solid hides it, and how far
+   inside its corners the probes of that lie. */
 #define LEVEL_FIGHT_AREA_MIN 1.0e-4f
 #define LEVEL_FIGHT_FRONT 0.01f
+#define LEVEL_FIGHT_INSET 0.01f
 /* Shared areas one check reads at most; the issues merge far below it. */
 #define LEVEL_FIGHT_MAX 4096u
 
@@ -1380,17 +1382,21 @@ static bool8_t level_mover_carries(const VkrScene *scene, VkrEntityId carrier,
 
 /* Whether `point` lies inside a gathered solid deeper than the coplanar
    distance that stays where it is while the fight between `a` and `b`
-   shows: one that never moves, or one at rest that a or b at rest moves
-   with or whose mover carries a's or b's, as a car's deck under its door. */
-static bool8_t level_fight_hidden(const VkrScene *scene,
+   shows: one at rest that a or b at rest moves with or whose mover
+   carries a's or b's, as a car's deck under its door, or one that never
+   moves. A solid that never moves does not hide a fight between two solids
+   of one mover: their fight rides along its whole travel, and the solid
+   covers it at one pose only. */
+static bool8_t level_fight_buried(const VkrScene *scene,
                                   const LevelFightSet *set,
                                   const LevelFightSolid *a,
                                   const LevelFightSolid *b, Vec3 point) {
+  const bool8_t together = a->mover.u64 && a->mover.u64 == b->mover.u64;
   for (uint32_t s = 0; s < set->solid_count; ++s) {
     const LevelFightSolid *solid = &set->solids[s];
     const VkrEntityId mover = solid->mover;
     const bool8_t stays =
-        !mover.u64 ||
+        (!mover.u64 && !together) ||
         (!solid->open && ((!a->open && mover.u64 == a->mover.u64) ||
                           (!b->open && mover.u64 == b->mover.u64) ||
                           level_mover_carries(scene, mover, a->mover) ||
@@ -1411,6 +1417,26 @@ static bool8_t level_fight_hidden(const VkrScene *scene,
     }
   }
   return false_v;
+}
+
+/* Whether solids that stay hide all of `fight` between `a` and `b`: each
+   probe of its shared area, its middle and its corners moved in from their
+   edges, lies just in front of it inside one, so an area a rail covers
+   only in part still fights. */
+static bool8_t level_fight_hidden(const VkrScene *scene,
+                                  const LevelFightSet *set,
+                                  const LevelFightSolid *a,
+                                  const LevelFightSolid *b,
+                                  const VkrBrushFaceOverlap *fight) {
+  Vec3 probes[VKR_BRUSH_OVERLAP_PROBE_MAX];
+  const uint32_t count = vkr_brush_overlap_probes(fight, LEVEL_FIGHT_INSET,
+                                                  LEVEL_FIGHT_FRONT, probes);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!level_fight_buried(scene, set, a, b, probes[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 static bool8_t level_box_apart(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi) {
@@ -1496,22 +1522,14 @@ static void level_fight_gather(const VkrScene *scene, Vec3 lo, Vec3 hi,
   }
 }
 
-/* The point just in front of a fight's front face: its shared area lies in
-   the first face's plane, and the second face lies `separation` in front
-   of it. */
-static Vec3 level_fight_front(const VkrBrushFaceOverlap *fight) {
-  return vec3_add(fight->center,
-                  vec3_scale(fight->normal,
-                             Max(fight->separation, 0.0f) + LEVEL_FIGHT_FRONT));
-}
-
 /* Drawn faces of two solids that face the same way in one plane, or in
    planes closer than VKR_EDITOR_FIGHT_GAP, over more than a square
    centimeter: z-fighting, which flickers in any view.
    A shared area counts in the region its middle lies in, and not when the
-   point just in front of it lies inside another solid, as a face buried in
-   a wall. A mover's brushes count again at its open pose, as a door leaf
-   whose end meets a wall face once it has slid open. */
+   points just in front of its middle and corners all lie inside other
+   solids, as a face buried in a wall. A mover's brushes count again at its
+   open pose, as a door leaf whose end meets a wall face once it has slid
+   open. */
 static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
   const Vec3 lo = vec3_new(grid->min.x, grid->min.y - 4.0f, grid->min.z);
   const Vec3 hi = vec3_new(grid->max.x, grid->max.y + 4.0f, grid->max.z);
@@ -1550,7 +1568,7 @@ static void level_lint_fights(LevelGrid *grid, LevelIssues *issues) {
     if (at.x < grid->min.x || at.x >= grid->max.x || at.z < grid->min.z ||
         at.z >= grid->max.z || at.y < lo.y || at.y > hi.y ||
         level_issue_merges(issues, VKR_EDITOR_LEVEL_Z_FIGHT, at, entity) ||
-        level_fight_hidden(grid->scene, &set, a, b, level_fight_front(fight))) {
+        level_fight_hidden(grid->scene, &set, a, b, fight)) {
       continue;
     }
     const uint32_t index = issues->count;
@@ -1668,7 +1686,7 @@ uint32_t vkr_editor_level_fight_moves(const VkrScene *scene, Vec3 lo, Vec3 hi,
     const LevelFightSolid *b = &set.solids[fight->owner_b];
     if (a->open || b->open || at.x < lo.x || at.y < lo.y || at.z < lo.z ||
         at.x > hi.x || at.y > hi.y || at.z > hi.z ||
-        level_fight_hidden(scene, &set, a, b, level_fight_front(fight))) {
+        level_fight_hidden(scene, &set, a, b, fight)) {
       continue;
     }
     /* b lies `separation` in front of a along a's normal. */

@@ -867,15 +867,23 @@ not fight; an overlap narrower than
 leaves between ring pieces that share a radial plane. Faces group by plane
 distance and main axis and sweep along one axis, so each meets only faces
 near its plane and extent. A shared area counts in the region its middle
-lies in, and not when the point 1 cm in front of that middle lies inside
-another solid, as a face buried in a wall. A brush under a mover counts
-once more at the mover's open pose (`vkr_io_mover_open_motion`), so a door
-leaf whose end meets a jamb once it has slid open is a fight. A moving solid
-hides another's face only while the two stay together: one at rest whose
-mover moves either fighting solid at rest, or carries it, as a car's deck
-under its door; a closed door never hides a fight it uncovers when it opens,
-and a mover's open copy is never compared with its own brushes at rest. The
-issue names both solids
+lies in, and not when every probe of it lies inside another solid, as a
+face buried in a wall: the points 1 cm in front of its middle and of up to
+eight of its corners, each corner moved 1 cm in from both its edges, or
+less in an area under 4 cm across (`vkr_brush_overlap_probes`). An area
+under 8 mm across keeps its middle alone, since a corner probe that close
+to an edge would miss the 1 mm depth on the seam of two solids that bury
+it together. An area a solid covers only in part still fights, as a crane
+truck's underside that runs past its rail. A brush
+under a mover counts once more at the mover's open pose
+(`vkr_io_mover_open_motion`), so a door leaf whose end meets a jamb once it
+has slid open is a fight. A moving solid hides another's face only while
+the two stay together: one at rest whose mover moves either fighting solid
+at rest, or carries it, as a car's deck under its door; a closed door never
+hides a fight it uncovers when it opens, and a mover's open copy is never
+compared with its own brushes at rest. A solid that never moves hides no
+fight between two solids of one mover, whose fight rides along the whole
+travel. The issue names both solids
 (`entity` and `other`; one blockout shape's pieces name it twice), the
 shared area in square meters and the plane's `normal`, the way both faces
 look.

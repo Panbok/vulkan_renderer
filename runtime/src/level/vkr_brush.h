@@ -256,6 +256,10 @@ typedef struct VkrBrushFaceSlot {
   uint8_t classes;
 } VkrBrushFaceSlot;
 
+/* Corners of a shared area a VkrBrushFaceOverlap keeps; an area with more
+   keeps ones spaced evenly around it. */
+#define VKR_BRUSH_OVERLAP_CORNER_MAX 8u
+
 typedef struct VkrBrushFaceOverlap {
   uint32_t owner_a;
   uint32_t owner_b;
@@ -270,6 +274,10 @@ typedef struct VkrBrushFaceOverlap {
   float32_t area;
   Vec3 center;
   Vec3 normal;
+  /* The corners of that area in the first face's plane, in order around
+     it. */
+  Vec3 corners[VKR_BRUSH_OVERLAP_CORNER_MAX];
+  uint32_t corner_count;
 } VkrBrushFaceOverlap;
 
 /* The pairs of `faces` that z-fight, their planes within `gap` metres,
@@ -284,6 +292,17 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
                                      float32_t min_area,
                                      VkrBrushFaceOverlap *out,
                                      uint32_t capacity);
+
+/* The points that tell whether a solid hides all of `overlap`: the middle
+   of its shared area and each kept corner moved `inset` metres in from both
+   its edges (less in an area narrower than four insets, and at most halfway
+   to the middle), every one `front` metres in front of the face nearer the
+   viewer. An area under 8 mm across has its middle alone. Writes
+   VKR_BRUSH_OVERLAP_PROBE_MAX points at most to `out` and returns how
+   many; the middle comes first. */
+#define VKR_BRUSH_OVERLAP_PROBE_MAX (VKR_BRUSH_OVERLAP_CORNER_MAX + 1u)
+uint32_t vkr_brush_overlap_probes(const VkrBrushFaceOverlap *overlap,
+                                  float32_t inset, float32_t front, Vec3 *out);
 
 /* Moves the corners of the brush `planes` that lie at one of `points`
    (within 1 mm) by `delta`, after cutting it with `split` when that is not

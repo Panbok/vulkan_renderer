@@ -846,11 +846,13 @@ static uint32_t brush_overlap_clip(const Vec3 *in, uint32_t count, Vec3 normal,
 }
 
 /* The area of face `b` dropped onto face `a`'s plane that lies inside `a`
-   and within `gap` of `b`'s plane, and its middle. */
+   and within `gap` of `b`'s plane, its middle, and up to
+   VKR_BRUSH_OVERLAP_CORNER_MAX of its corners. */
 static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
                                     const VkrBrushFaceRef *b,
                                     const Vec3 *vertices, float32_t gap,
-                                    Vec3 *out_center) {
+                                    Vec3 *out_center, Vec3 *out_corners,
+                                    uint32_t *out_corner_count) {
   Vec3 ping[BRUSH_OVERLAP_POINT_MAX];
   Vec3 pong[BRUSH_OVERLAP_POINT_MAX];
   /* Relative to a corner of `a`, so float precision follows the faces'
@@ -898,6 +900,13 @@ static float32_t brush_face_overlap(const VkrBrushFaceRef *a,
     perimeter += vec3_length(vec3_sub(next, in[k]));
   }
   *out_center = vec3_add(origin, vec3_scale(sum, 1.0f / (float32_t)count));
+  /* Corners spaced evenly around the area when it has more than the
+     overlap keeps. */
+  const uint32_t kept = Min(count, VKR_BRUSH_OVERLAP_CORNER_MAX);
+  for (uint32_t k = 0; k < kept; ++k) {
+    out_corners[k] = vec3_add(origin, in[k * count / kept]);
+  }
+  *out_corner_count = kept;
   const float32_t area = 0.5f * vkr_abs_f32(vec3_dot(twice, a->normal));
   /* A strip about 2 * area / perimeter wide: narrower than the tolerance,
      the faces only touch along an edge, as float error leaves between ring
@@ -1049,8 +1058,10 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
         continue;
       }
       Vec3 middle = vec3_zero();
-      const float32_t area =
-          brush_face_overlap(a, b, vertices, margin, &middle);
+      Vec3 corners[VKR_BRUSH_OVERLAP_CORNER_MAX];
+      uint32_t corner_count = 0u;
+      const float32_t area = brush_face_overlap(a, b, vertices, margin, &middle,
+                                                corners, &corner_count);
       if (area <= min_area) {
         continue;
       }
@@ -1064,12 +1075,89 @@ uint32_t vkr_brush_coplanar_overlaps(VkrBrushFaceRef *faces, uint32_t count,
                 a->normal, vec3_sub(vertices[b->first], vertices[a->first])),
             .area = area,
             .center = middle,
-            .normal = a->normal};
+            .normal = a->normal,
+            .corner_count = corner_count};
+        MemCopy(out[found].corners, corners, corner_count * sizeof(*corners));
       }
       found++;
     }
   }
   return found;
+}
+
+/* The unit normal of edge p-q in the plane of `normal` that points toward
+   `middle`, or zero for an edge shorter than a micrometer, as clipping
+   leaves where corners repeat. */
+static Vec3 brush_edge_inward(Vec3 normal, Vec3 p, Vec3 q, Vec3 middle) {
+  const Vec3 edge = vec3_sub(q, p);
+  const float32_t length = vec3_length(edge);
+  if (!(length > 1.0e-6f)) {
+    return vec3_zero();
+  }
+  const Vec3 inward = vec3_scale(vec3_cross(normal, edge), 1.0f / length);
+  return vec3_dot(inward, vec3_sub(middle, p)) < 0.0f ? vec3_negate(inward)
+                                                      : inward;
+}
+
+uint32_t vkr_brush_overlap_probes(const VkrBrushFaceOverlap *overlap,
+                                  float32_t inset, float32_t front, Vec3 *out) {
+  /* The area lies in the first face's plane, and the second face lies
+     `separation` in front of it. */
+  const Vec3 lift =
+      vec3_scale(overlap->normal, Max(overlap->separation, 0.0f) + front);
+  const Vec3 middle = overlap->center;
+  uint32_t count = 0u;
+  out[count++] = vec3_add(middle, lift);
+  const uint32_t corners =
+      Min(overlap->corner_count, VKR_BRUSH_OVERLAP_CORNER_MAX);
+  if (corners < 3u) {
+    return count;
+  }
+
+  /* An area about 2 * area / perimeter across keeps its probes at most a
+     quarter of that from its edges, so a narrow strip's stay inside it. A
+     solid hides a probe only deeper than the coplanar distance inside it,
+     so an area too narrow to probe twice that in from its edges keeps its
+     middle alone: corners closer would fail on the seam of two solids
+     that together bury it. */
+  float32_t perimeter = 0.0f;
+  for (uint32_t k = 0; k < corners; ++k) {
+    perimeter += vec3_length(
+        vec3_sub(overlap->corners[(k + 1u) % corners], overlap->corners[k]));
+  }
+  const float32_t width =
+      perimeter > 0.0f ? 2.0f * overlap->area / perimeter : 0.0f;
+  const float32_t depth = Min(inset, 0.25f * width);
+  if (!(depth > 2.0f * VKR_BRUSH_COPLANAR_DISTANCE)) {
+    return count;
+  }
+
+  /* Each corner moves `depth` in from both its edges: x . n1 = x . n2 =
+     depth for the edges' inward normals. */
+  for (uint32_t k = 0; k < corners; ++k) {
+    const Vec3 corner = overlap->corners[k];
+    const Vec3 before = overlap->corners[(k + corners - 1u) % corners];
+    const Vec3 after = overlap->corners[(k + 1u) % corners];
+    const Vec3 n1 = brush_edge_inward(overlap->normal, before, corner, middle);
+    const Vec3 n2 = brush_edge_inward(overlap->normal, corner, after, middle);
+    const Vec3 toward = vec3_sub(middle, corner);
+    const float32_t reach = vec3_length(toward);
+    const float32_t sum = 1.0f + vec3_dot(n1, n2);
+    Vec3 shift = vec3_zero();
+    if (vec3_dot(n1, n1) == 0.0f && vec3_dot(n2, n2) == 0.0f) {
+      shift = reach > 0.0f ? vec3_scale(toward, depth / reach) : vec3_zero();
+    } else if (sum > 1.0e-3f) {
+      shift = vec3_scale(vec3_add(n1, n2), depth / sum);
+    }
+    /* At most halfway to the middle, so a sharp corner's probe stays
+       inside the area. */
+    const float32_t length = vec3_length(shift);
+    if (length > 0.5f * reach) {
+      shift = vec3_scale(shift, 0.5f * reach / length);
+    }
+    out[count++] = vec3_add(vec3_add(corner, shift), lift);
+  }
+  return count;
 }
 
 /* The input plane a hull plane copies: the one it lies on, else the one

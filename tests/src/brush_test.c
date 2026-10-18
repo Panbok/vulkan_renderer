@@ -934,10 +934,32 @@ static uint32_t brush_test_fights(Vec3 a_lo, Vec3 a_hi, Vec3 b_lo, Vec3 b_hi,
                                   VKR_BRUSH_COPLANAR_DISTANCE, geometry, out);
 }
 
+/* Whether every probe of `overlap` lies more than the coplanar distance
+   inside the box lo..hi, as the level check asks of a solid that may hide
+   the fight (ADR-084). */
+static bool8_t brush_test_probes_inside(const VkrBrushFaceOverlap *overlap,
+                                        Vec3 lo, Vec3 hi) {
+  Vec3 probes[VKR_BRUSH_OVERLAP_PROBE_MAX];
+  const uint32_t count =
+      vkr_brush_overlap_probes(overlap, 0.01f, 0.01f, probes);
+  const float32_t margin = VKR_BRUSH_COPLANAR_DISTANCE;
+  for (uint32_t i = 0; i < count; ++i) {
+    const Vec3 p = probes[i];
+    if (!(p.x > lo.x + margin && p.y > lo.y + margin && p.z > lo.z + margin &&
+          p.x < hi.x - margin && p.y < hi.y - margin && p.z < hi.z - margin)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* Z-fighting (ADR-084): boxes whose tops share a plane and overlap fight
    over the shared square, turned and far from the origin too; a box on
    another's top, back to back, a top 2 mm higher and tops sharing a strip
-   0.2 mm wide do not. */
+   0.2 mm wide do not. The probes of the shared square lie 1 cm over it,
+   at its middle and 1 cm in from its edges at its corners, so a solid over
+   its middle alone, as a crane rail under part of a truck, does not hide
+   it. */
 static void brush_test_coplanar(VkrBrushGeometry *geometry) {
   const Vec3 lo = vec3_new(0.0f, 0.0f, 0.0f);
   const Vec3 hi = vec3_new(2.0f, 1.0f, 2.0f);
@@ -952,6 +974,25 @@ static void brush_test_coplanar(VkrBrushGeometry *geometry) {
   assert(brush_test_near(overlap.center.y, 1.0f, 1.0e-4f));
   assert(brush_test_near(overlap.center.z, 1.5f, 1.0e-4f));
   assert(overlap.owner_a != overlap.owner_b);
+  assert(overlap.corner_count == 4u);
+  Vec3 probes[VKR_BRUSH_OVERLAP_PROBE_MAX];
+  const uint32_t probe_count =
+      vkr_brush_overlap_probes(&overlap, 0.01f, 0.01f, probes);
+  assert(probe_count == 5u);
+  for (uint32_t i = 0; i < probe_count; ++i) {
+    assert(brush_test_near(probes[i].y, 1.01f, 1.0e-4f));
+    assert(probes[i].x > 1.0099f && probes[i].x < 1.9901f);
+    assert(probes[i].z > 1.0099f && probes[i].z < 1.9901f);
+  }
+  /* A slab over the near 0.6 m of the square holds the probe over its
+     middle, the one point the check once tried, but not those over its
+     far corners; a slab over all of it holds every probe. */
+  assert(brush_test_near(probes[0].z, 1.5f, 1.0e-4f));
+  const Vec3 slab_lo = vec3_new(0.9f, 1.0f, 0.9f);
+  assert(
+      !brush_test_probes_inside(&overlap, slab_lo, vec3_new(2.1f, 1.1f, 1.6f)));
+  assert(
+      brush_test_probes_inside(&overlap, slab_lo, vec3_new(2.1f, 1.1f, 2.1f)));
 
   const Vec3 distant = vec3_new(1000.0f, 20.0f, -500.0f);
   found = brush_test_fights(lo, hi, vec3_new(1.0f, 0.5f, 1.0f),
