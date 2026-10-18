@@ -125,6 +125,13 @@ bool8_t vkr_harness_samples_read(const char *path,
  */
 void vkr_harness_diagnostics_from_samples(const VkrHarnessSampleSet *samples,
                                           VkrHarnessDiagnosticCounts *counts);
+/**
+ * Folds the OS gauges over the same frames as
+ * `vkr_harness_diagnostics_from_samples`. A gauge the catalog lacks stays
+ * unregistered.
+ */
+void vkr_harness_system_conditions_from_samples(
+    const VkrHarnessSampleSet *samples, VkrHarnessSystemConditions *conditions);
 
 /**
  * Statistics over the measured window only; warmup frames are skipped. Samples
@@ -161,6 +168,13 @@ void vkr_harness_provenance_set_text(char *field, uint64_t capacity,
 void vkr_harness_provenance_collect(const char *executable,
                                     const char *repo_root,
                                     VkrHarnessProvenance *provenance);
+/**
+ * Samples the OS conditions a run starts or ends under into
+ * `report->system_start` or `report->system_end` and names the thermal level
+ * in the matching provenance row. A signal the platform lacks stays unknown.
+ */
+void vkr_harness_report_sample_system_start(VkrHarnessReport *report);
+void vkr_harness_report_sample_system_end(VkrHarnessReport *report);
 #define VKR_HARNESS_ENVIRONMENT_FIELD_COUNT 14u
 
 /**

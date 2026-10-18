@@ -4,15 +4,25 @@
 
 #include "containers/str.h"
 
+#include "core/vkr_atomic.h"
+
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/ps/IOPSKeys.h>
+#include <IOKit/ps/IOPowerSources.h>
 #include <dlfcn.h>
+#include <libkern/OSThermalNotification.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <notify.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/file.h>
 #include <sys/resource.h>
+#include <sys/sysctl.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 
@@ -321,6 +331,180 @@ bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes) {
   }
   *out_bytes = info.resident_size;
   return true_v;
+}
+
+/* The notify(3) token of the thermal pressure level, registered by the first
+   caller, and the last level read through it; -1 until then. Reading the
+   level is an IPC (about 13 us on an M1 Pro), so a call reads it only after
+   notify_check (shared memory, under 0.1 us) reports a change. */
+vkr_global VkrAtomicInt32 g_thermal_token = -1;
+vkr_global VkrAtomicInt32 g_thermal_level = -1;
+
+/* The power source and low-power mode, read at most once a second because
+   the power source query is an IPC to powerd. `g_power_bits` packs the four
+   VKR_POWER_* flags; `g_power_sampled_ms` is when they were read. */
+vkr_global VkrAtomicUint32 g_power_bits = 0u;
+vkr_global VkrAtomicUint64 g_power_sampled_ms = 0u;
+
+enum {
+  VKR_POWER_SOURCE_VALID = 1u << 0,
+  VKR_POWER_ON_BATTERY = 1u << 1,
+  VKR_POWER_LOW_POWER_VALID = 1u << 2,
+  VKR_POWER_LOW_POWER = 1u << 3,
+};
+
+vkr_internal bool8_t
+vkr_platform_macos_thermal_level(VkrPlatformThermalLevel *out_level) {
+  int32_t token =
+      vkr_atomic_int32_load(&g_thermal_token, VKR_MEMORY_ORDER_ACQUIRE);
+  if (token < 0) {
+    int registered = -1;
+    if (notify_register_check(kOSThermalNotificationPressureLevelName,
+                              &registered) != NOTIFY_STATUS_OK) {
+      return false_v;
+    }
+    int32_t expected = -1;
+    if (vkr_atomic_int32_compare_exchange(
+            &g_thermal_token, &expected, (int32_t)registered,
+            VKR_MEMORY_ORDER_ACQ_REL, VKR_MEMORY_ORDER_ACQUIRE)) {
+      token = (int32_t)registered;
+    } else {
+      /* Another thread registered first; keep its token. */
+      notify_cancel(registered);
+      token = expected;
+    }
+  }
+  int changed = 0;
+  int32_t level =
+      vkr_atomic_int32_load(&g_thermal_level, VKR_MEMORY_ORDER_ACQUIRE);
+  if (notify_check((int)token, &changed) != NOTIFY_STATUS_OK) {
+    return false_v;
+  }
+  if (changed || level < 0) {
+    uint64_t state = 0u;
+    if (notify_get_state((int)token, &state) != NOTIFY_STATUS_OK) {
+      return false_v;
+    }
+    switch (state) {
+    case kOSThermalPressureLevelNominal:
+      level = VKR_PLATFORM_THERMAL_NOMINAL;
+      break;
+    case kOSThermalPressureLevelModerate:
+      level = VKR_PLATFORM_THERMAL_FAIR;
+      break;
+    case kOSThermalPressureLevelHeavy:
+      level = VKR_PLATFORM_THERMAL_SERIOUS;
+      break;
+    default:
+      /* Trapping and sleeping, and any later, hotter level. */
+      level = VKR_PLATFORM_THERMAL_CRITICAL;
+      break;
+    }
+    vkr_atomic_int32_store(&g_thermal_level, level, VKR_MEMORY_ORDER_RELEASE);
+  }
+  *out_level = (VkrPlatformThermalLevel)level;
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_platform_macos_memory_pressure(VkrPlatformMemoryPressure *out_pressure) {
+  int32_t level = 0;
+  size_t length = sizeof(level);
+  if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &length, NULL,
+                   0) != 0) {
+    return false_v;
+  }
+  /* The kernel reports 1 normal, 2 warn and 4 critical. */
+  *out_pressure = level >= 4   ? VKR_PLATFORM_MEMORY_PRESSURE_CRITICAL
+                  : level >= 2 ? VKR_PLATFORM_MEMORY_PRESSURE_WARN
+                               : VKR_PLATFORM_MEMORY_PRESSURE_NORMAL;
+  return true_v;
+}
+
+/* Reads the power source and low-power mode now. Low-power mode has only a
+   Foundation API, called through the Objective-C runtime; a process that
+   loaded no Foundation finds no class and reports it unavailable. */
+vkr_internal uint32_t vkr_platform_macos_power_bits(void) {
+  uint32_t bits = 0u;
+  CFTypeRef info = IOPSCopyPowerSourcesInfo();
+  if (info) {
+    CFStringRef source = IOPSGetProvidingPowerSourceType(info);
+    if (source) {
+      bits |= VKR_POWER_SOURCE_VALID;
+      if (CFStringCompare(source, CFSTR(kIOPSBatteryPowerValue), 0) ==
+          kCFCompareEqualTo) {
+        bits |= VKR_POWER_ON_BATTERY;
+      }
+    }
+    CFRelease(info);
+  }
+  Class process_info_class = objc_getClass("NSProcessInfo");
+  SEL low_power = sel_registerName("isLowPowerModeEnabled");
+  if (process_info_class &&
+      class_getInstanceMethod(process_info_class, low_power)) {
+    id process_info = ((id(*)(Class, SEL))objc_msgSend)(
+        process_info_class, sel_registerName("processInfo"));
+    if (process_info) {
+      bits |= VKR_POWER_LOW_POWER_VALID;
+      if (((BOOL(*)(id, SEL))objc_msgSend)(process_info, low_power)) {
+        bits |= VKR_POWER_LOW_POWER;
+      }
+    }
+  }
+  return bits;
+}
+
+bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry) {
+  if (!out_telemetry) {
+    return false_v;
+  }
+  VkrPlatformTelemetry telemetry = {0};
+
+  task_vm_info_data_t vm_info = {0};
+  mach_msg_type_number_t vm_count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vm_info,
+                &vm_count) == KERN_SUCCESS) {
+    telemetry.footprint_bytes = vm_info.phys_footprint;
+    telemetry.footprint_valid = true_v;
+  }
+
+  struct rusage usage = {0};
+  if (getrusage(RUSAGE_SELF, &usage) == 0) {
+    telemetry.cpu_user_ns = (uint64_t)usage.ru_utime.tv_sec * 1000000000ull +
+                            (uint64_t)usage.ru_utime.tv_usec * 1000ull;
+    telemetry.cpu_system_ns = (uint64_t)usage.ru_stime.tv_sec * 1000000000ull +
+                              (uint64_t)usage.ru_stime.tv_usec * 1000ull;
+    telemetry.cpu_time_valid = true_v;
+    telemetry.major_page_faults = (uint64_t)usage.ru_majflt;
+    telemetry.major_page_faults_valid = true_v;
+  }
+
+  telemetry.thermal_valid =
+      vkr_platform_macos_thermal_level(&telemetry.thermal_level);
+  telemetry.memory_pressure_valid =
+      vkr_platform_macos_memory_pressure(&telemetry.memory_pressure);
+
+  const uint64_t now_ms = (uint64_t)(vkr_platform_get_absolute_time() * 1000.0);
+  const uint64_t sampled_ms =
+      vkr_atomic_uint64_load(&g_power_sampled_ms, VKR_MEMORY_ORDER_ACQUIRE);
+  uint32_t power =
+      vkr_atomic_uint32_load(&g_power_bits, VKR_MEMORY_ORDER_ACQUIRE);
+  if (sampled_ms == 0u || now_ms - sampled_ms >= 1000u) {
+    /* Two threads may both read; either result is current. */
+    power = vkr_platform_macos_power_bits();
+    vkr_atomic_uint32_store(&g_power_bits, power, VKR_MEMORY_ORDER_RELEASE);
+    vkr_atomic_uint64_store(&g_power_sampled_ms, Max(now_ms, 1u),
+                            VKR_MEMORY_ORDER_RELEASE);
+  }
+  telemetry.power_valid = (power & VKR_POWER_SOURCE_VALID) != 0u;
+  telemetry.on_battery = (power & VKR_POWER_ON_BATTERY) != 0u;
+  telemetry.low_power_valid = (power & VKR_POWER_LOW_POWER_VALID) != 0u;
+  telemetry.low_power = (power & VKR_POWER_LOW_POWER) != 0u;
+
+  *out_telemetry = telemetry;
+  return telemetry.footprint_valid || telemetry.cpu_time_valid ||
+         telemetry.thermal_valid || telemetry.memory_pressure_valid ||
+         telemetry.power_valid || telemetry.low_power_valid;
 }
 
 void vkr_platform_exit_immediate(int32_t exit_code) { _Exit(exit_code); }

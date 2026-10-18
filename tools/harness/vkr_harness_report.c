@@ -438,6 +438,108 @@ void vkr_harness_report_apply_diagnostics(VkrHarnessReport *report) {
   }
 }
 
+void vkr_harness_system_conditions_merge(
+    VkrHarnessSystemConditions *total, const VkrHarnessSystemConditions *run) {
+  if (!run->collected) {
+    return;
+  }
+  /* The aggregate holds a gauge only if every collected run did. */
+  const bool8_t first = !total->collected;
+  total->collected = true_v;
+  for (uint32_t i = 0u; i < VKR_HARNESS_CONDITION_METRIC_COUNT; ++i) {
+    VkrHarnessConditionValue *target = &total->metrics[i];
+    const VkrHarnessConditionValue *source = &run->metrics[i];
+    target->registered = source->registered && (first || target->registered);
+    if (i == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
+        i == VKR_HARNESS_CONDITION_MEMORY_PRESSURE) {
+      target->value = Max(target->value, source->value);
+    } else {
+      target->value += source->value;
+    }
+    target->counted_frames += source->counted_frames;
+    target->unavailable_frames += source->unavailable_frames;
+  }
+}
+
+/** Whether one start or end sample shows a condition that costs authority. */
+vkr_internal bool8_t
+vkr_harness_telemetry_throttled(const VkrPlatformTelemetry *telemetry) {
+  return telemetry->thermal_valid &&
+         telemetry->thermal_level >= VKR_PLATFORM_THERMAL_SERIOUS;
+}
+
+/* Only critical pressure costs authority. A Bistro run on the 16 GB Mac
+   production floor reaches warn as its footprint passes about 6 GB, so warn
+   is that machine's normal operating state; the report still shows it. */
+vkr_internal bool8_t
+vkr_harness_telemetry_memory_pressed(const VkrPlatformTelemetry *telemetry) {
+  return telemetry->memory_pressure_valid &&
+         telemetry->memory_pressure >= VKR_PLATFORM_MEMORY_PRESSURE_CRITICAL;
+}
+
+vkr_internal bool8_t
+vkr_harness_telemetry_low_power(const VkrPlatformTelemetry *telemetry) {
+  return telemetry->low_power_valid && telemetry->low_power;
+}
+
+void vkr_harness_report_apply_system_conditions(VkrHarnessReport *report) {
+  const VkrHarnessConditionValue *metrics = report->system_conditions.metrics;
+  const VkrPlatformTelemetry *start = &report->system_start;
+  const VkrPlatformTelemetry *end = &report->system_end;
+  /* A gauge folds only counted frames, so a nonzero value is observed. */
+  if (metrics[VKR_HARNESS_CONDITION_THERMAL_LEVEL].value >=
+          (uint64_t)VKR_PLATFORM_THERMAL_SERIOUS ||
+      vkr_harness_telemetry_throttled(start) ||
+      vkr_harness_telemetry_throttled(end)) {
+    vkr_harness_report_add_authority_reason(report, "thermal.throttled");
+  }
+  if (metrics[VKR_HARNESS_CONDITION_MEMORY_PRESSURE].value >=
+          (uint64_t)VKR_PLATFORM_MEMORY_PRESSURE_CRITICAL ||
+      vkr_harness_telemetry_memory_pressed(start) ||
+      vkr_harness_telemetry_memory_pressed(end)) {
+    vkr_harness_report_add_authority_reason(report, "memory.pressure");
+  }
+  if (metrics[VKR_HARNESS_CONDITION_LOW_POWER].value > 0u ||
+      vkr_harness_telemetry_low_power(start) ||
+      vkr_harness_telemetry_low_power(end)) {
+    vkr_harness_report_add_authority_reason(report, "power.low_power");
+  }
+}
+
+/* Provenance names of a start or end sample; "unknown" without a signal. */
+vkr_internal const char *
+vkr_harness_power_source_name(const VkrPlatformTelemetry *telemetry) {
+  if (!telemetry->power_valid) {
+    return "unknown";
+  }
+  return telemetry->on_battery ? "battery" : "ac";
+}
+
+vkr_internal const char *
+vkr_harness_low_power_name(const VkrPlatformTelemetry *telemetry) {
+  if (!telemetry->low_power_valid) {
+    return "unknown";
+  }
+  return telemetry->low_power ? "on" : "off";
+}
+
+vkr_internal const char *
+vkr_harness_memory_pressure_name(const VkrPlatformTelemetry *telemetry) {
+  if (!telemetry->memory_pressure_valid) {
+    return "unknown";
+  }
+  switch (telemetry->memory_pressure) {
+  case VKR_PLATFORM_MEMORY_PRESSURE_NORMAL:
+    return "normal";
+  case VKR_PLATFORM_MEMORY_PRESSURE_WARN:
+    return "warn";
+  case VKR_PLATFORM_MEMORY_PRESSURE_CRITICAL:
+    return "critical";
+  default:
+    return "unknown";
+  }
+}
+
 vkr_internal bool8_t vkr_harness_report_write_header(
     VkrJsonWriter *writer, const VkrHarnessReport *report) {
   bool8_t ok =
@@ -520,6 +622,24 @@ vkr_internal bool8_t vkr_harness_report_write_provenance(
                                       report->provenance.thermal_state_start) &&
          vkr_harness_json_emit_string(writer, "thermal_state_end",
                                       report->provenance.thermal_state_end) &&
+         vkr_harness_json_emit_string(
+             writer, "power_source_start",
+             vkr_harness_power_source_name(&report->system_start)) &&
+         vkr_harness_json_emit_string(
+             writer, "power_source_end",
+             vkr_harness_power_source_name(&report->system_end)) &&
+         vkr_harness_json_emit_string(
+             writer, "low_power_start",
+             vkr_harness_low_power_name(&report->system_start)) &&
+         vkr_harness_json_emit_string(
+             writer, "low_power_end",
+             vkr_harness_low_power_name(&report->system_end)) &&
+         vkr_harness_json_emit_string(
+             writer, "memory_pressure_start",
+             vkr_harness_memory_pressure_name(&report->system_start)) &&
+         vkr_harness_json_emit_string(
+             writer, "memory_pressure_end",
+             vkr_harness_memory_pressure_name(&report->system_end)) &&
          vkr_harness_json_emit_i64(writer, "process_priority",
                                    report->provenance.process_priority) &&
          vkr_json_writer_end_object(writer) &&
@@ -911,10 +1031,74 @@ vkr_internal bool8_t vkr_harness_report_write_diagnostic_counts(
          vkr_json_writer_end_object(writer);
 }
 
+/**
+ * Emits `system_conditions`. A gauge without frames to fold is `null` with an
+ * `unavailable_reason`, so a platform without the signal never reads as
+ * nominal.
+ */
+vkr_internal bool8_t vkr_harness_report_write_system_conditions(
+    VkrJsonWriter *writer, const VkrHarnessSystemConditions *conditions) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "system_conditions") &&
+               vkr_json_writer_begin_object(writer) &&
+               vkr_harness_json_emit_string(writer, "metrics_window",
+                                            "warmup_and_measured_frames") &&
+               vkr_harness_json_emit_name(writer, "metrics");
+  if (ok && !conditions->collected) {
+    return vkr_json_writer_null(writer) &&
+           vkr_harness_json_emit_string(writer, "metrics_unavailable_reason",
+                                        "no_samples") &&
+           vkr_json_writer_end_object(writer);
+  }
+  ok = ok && vkr_json_writer_begin_object(writer);
+  for (uint32_t i = 0u; ok && i < VKR_HARNESS_CONDITION_METRIC_COUNT; ++i) {
+    const VkrHarnessConditionValue *fold = &conditions->metrics[i];
+    const char *reason = !fold->registered            ? "not_registered"
+                         : fold->counted_frames == 0u ? "unavailable"
+                                                      : NULL;
+    /* Levels report their highest frame, flags the frames they were on. */
+    const char *value_name = i == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
+                                     i == VKR_HARNESS_CONDITION_MEMORY_PRESSURE
+                                 ? "max"
+                                 : "active_frames";
+    const char *name =
+        vkr_harness_condition_metric_name((VkrHarnessConditionMetric)i);
+    ok = vkr_harness_json_emit_name(writer, name) &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_name(writer, value_name) &&
+         (reason ? vkr_json_writer_null(writer)
+                 : vkr_json_writer_u64(writer, fold->value)) &&
+         vkr_harness_json_emit_u64(writer, "counted_frames",
+                                   fold->counted_frames) &&
+         vkr_harness_json_emit_u64(writer, "unavailable_frames",
+                                   fold->unavailable_frames);
+    if (ok && reason) {
+      ok = vkr_harness_json_emit_string(writer, "unavailable_reason", reason);
+    }
+    ok = ok && vkr_json_writer_end_object(writer);
+  }
+  return ok && vkr_json_writer_end_object(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
 /** Whether a run or report gathered any diagnostics worth writing. */
 vkr_internal bool8_t
 vkr_harness_diagnostics_collected(const VkrHarnessDiagnosticCounts *counts) {
   return counts->metrics_collected || counts->output_collected;
+}
+
+/**
+ * Emits `diagnostic_counts` and `system_conditions` once diagnostics were
+ * collected. Both come from the same samples, so a run without them writes
+ * `system_conditions` with a reason instead of dropping it.
+ */
+vkr_internal bool8_t vkr_harness_report_write_run_health(
+    VkrJsonWriter *writer, const VkrHarnessDiagnosticCounts *counts,
+    const VkrHarnessSystemConditions *conditions) {
+  if (!vkr_harness_diagnostics_collected(counts) && !conditions->collected) {
+    return true_v;
+  }
+  return vkr_harness_report_write_diagnostic_counts(writer, counts) &&
+         vkr_harness_report_write_system_conditions(writer, conditions);
 }
 
 /** Emits `runs` and `auxiliary_runs`, which share one row shape. */
@@ -936,9 +1120,8 @@ vkr_internal bool8_t vkr_harness_report_write_run_references(
                                       run->workload_fingerprint) &&
          vkr_harness_json_emit_string(writer, "policy_fingerprint",
                                       run->policy_fingerprint) &&
-         (!vkr_harness_diagnostics_collected(&run->diagnostics) ||
-          vkr_harness_report_write_diagnostic_counts(writer,
-                                                     &run->diagnostics)) &&
+         vkr_harness_report_write_run_health(writer, &run->diagnostics,
+                                             &run->system_conditions) &&
          vkr_json_writer_end_object(writer);
   }
   return ok && vkr_json_writer_end_array(writer);
@@ -1208,9 +1391,8 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_report_write_captures(writer, report) &&
       vkr_harness_report_write_assertions(writer, report) &&
       vkr_harness_report_write_diagnostics(writer, report) &&
-      (!vkr_harness_diagnostics_collected(&report->diagnostics) ||
-       vkr_harness_report_write_diagnostic_counts(writer,
-                                                  &report->diagnostics)) &&
+      vkr_harness_report_write_run_health(writer, &report->diagnostics,
+                                          &report->system_conditions) &&
       vkr_harness_report_write_artifacts(writer, report) &&
       vkr_json_writer_end_object(writer);
   if (!ok || !vkr_json_file_writer_commit(&file_writer)) {

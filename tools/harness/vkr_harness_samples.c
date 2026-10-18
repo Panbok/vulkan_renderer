@@ -141,6 +141,18 @@ bool8_t vkr_harness_samples_read(const char *path,
   return true_v;
 }
 
+/** The catalog index of `name`, or the metric count when it is absent. */
+vkr_internal uint32_t vkr_harness_samples_find_metric(
+    const VkrHarnessSampleSet *samples, const char *name) {
+  const uint32_t metric_count = samples->header.metric_count;
+  uint32_t metric = 0u;
+  while (metric < metric_count &&
+         !string_equals(samples->metrics[metric].name, name)) {
+    metric++;
+  }
+  return metric;
+}
+
 void vkr_harness_diagnostics_from_samples(const VkrHarnessSampleSet *samples,
                                           VkrHarnessDiagnosticCounts *counts) {
   const uint32_t metric_count = samples->header.metric_count;
@@ -149,13 +161,9 @@ void vkr_harness_diagnostics_from_samples(const VkrHarnessSampleSet *samples,
   counts->metrics_collected = true_v;
   for (uint32_t diagnostic = 0u;
        diagnostic < VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT; ++diagnostic) {
-    const char *name = vkr_harness_diagnostic_metric_name(
-        (VkrHarnessDiagnosticMetric)diagnostic);
-    uint32_t metric = 0u;
-    while (metric < metric_count &&
-           !string_equals(samples->metrics[metric].name, name)) {
-      metric++;
-    }
+    const uint32_t metric = vkr_harness_samples_find_metric(
+        samples, vkr_harness_diagnostic_metric_name(
+                     (VkrHarnessDiagnosticMetric)diagnostic));
     VkrHarnessDiagnosticTotal *total = &counts->metrics[diagnostic];
     MemZero(total, sizeof(*total));
     if (metric == metric_count) {
@@ -176,6 +184,47 @@ void vkr_harness_diagnostics_from_samples(const VkrHarnessSampleSet *samples,
         total->total += (uint64_t)value;
       }
       total->counted_frames++;
+    }
+  }
+}
+
+void vkr_harness_system_conditions_from_samples(
+    const VkrHarnessSampleSet *samples,
+    VkrHarnessSystemConditions *conditions) {
+  const uint32_t metric_count = samples->header.metric_count;
+  const uint32_t frame_count =
+      samples->header.warmup_frames + samples->header.measure_frames;
+  conditions->collected = true_v;
+  for (uint32_t condition = 0u; condition < VKR_HARNESS_CONDITION_METRIC_COUNT;
+       ++condition) {
+    const uint32_t metric = vkr_harness_samples_find_metric(
+        samples, vkr_harness_condition_metric_name(
+                     (VkrHarnessConditionMetric)condition));
+    VkrHarnessConditionValue *fold = &conditions->metrics[condition];
+    MemZero(fold, sizeof(*fold));
+    if (metric == metric_count) {
+      continue;
+    }
+    fold->registered = true_v;
+    /* Levels keep their highest frame; flags count the frames they were on. */
+    const bool8_t level = condition == VKR_HARNESS_CONDITION_THERMAL_LEVEL ||
+                          condition == VKR_HARNESS_CONDITION_MEMORY_PRESSURE;
+    for (uint32_t frame = 0u; frame < frame_count; ++frame) {
+      const uint64_t offset = (uint64_t)frame * metric_count + metric;
+      /* A platform without the signal publishes the gauge unavailable; that
+         frame says nothing about the conditions. */
+      if (samples->availability[offset] ==
+          VKR_METRIC_AVAILABILITY_UNAVAILABLE) {
+        fold->unavailable_frames++;
+        continue;
+      }
+      const float64_t value = samples->values[offset];
+      if (level && value > 0.0) {
+        fold->value = Max(fold->value, (uint64_t)value);
+      } else if (!level && value > 0.0) {
+        fold->value++;
+      }
+      fold->counted_frames++;
     }
   }
 }

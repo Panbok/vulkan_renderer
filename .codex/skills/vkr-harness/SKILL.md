@@ -94,6 +94,7 @@ Check these fields before accepting an observation:
 | `aggregate.metrics`, `aggregate.passes` | Valid samples, nearest-rank percentiles, population standard deviation |
 | `events`, artifact digests | Required-metric invalidity, overflow, publication drops, and artifact completeness |
 | `diagnostic_counts` | GPU errors, validation messages and log errors in the counted frames and the child's output; a GPU or validation error costs authority (`gpu.errors`, `validation.messages`), and a `null` total is uncounted, not clean |
+| `system_conditions`, provenance `thermal_state_*`, `memory_pressure_*`, `power_source_*`, `low_power_*` | Throttling, memory pressure and power state during and around the run; `thermal.throttled`, `memory.pressure` (critical only) and `power.low_power` cost authority, warn pressure and battery are reported only |
 
 Logical window size can differ from drawable pixels. Offscreen targets use
 ordinary images and report `present_mode=none`; infer neither pixels nor WSI

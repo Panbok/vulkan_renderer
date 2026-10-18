@@ -218,14 +218,14 @@ vkr_harness_snapshot_adopt_provenance(VkrHarnessReport *report,
 }
 
 /**
- * Sums one replay child's diagnostic counters and scans its captured streams
- * and its prewarm child's. Runs before the child's captures are judged: a
- * failed child's streams often say why.
+ * Sums one replay child's diagnostic counters, folds its OS gauges, and scans
+ * its captured streams and its prewarm child's. Runs before the child's
+ * captures are judged: a failed child's streams often say why.
  */
-vkr_internal void
-vkr_harness_snapshot_collect_diagnostics(VkrHarnessReport *report, Arena *arena,
-                                         const char *child_dir,
-                                         VkrHarnessDiagnosticCounts *counts) {
+vkr_internal void vkr_harness_snapshot_collect_diagnostics(
+    VkrHarnessReport *report, Arena *arena, const char *child_dir,
+    VkrHarnessDiagnosticCounts *counts,
+    VkrHarnessSystemConditions *conditions) {
   vkr_local_persist const char *const kStreams[] = {"stdout.log", "stderr.log"};
   const bool8_t prewarm =
       report->case_manifest.cache == VKR_HARNESS_CACHE_ISOLATED_WARM;
@@ -235,6 +235,7 @@ vkr_harness_snapshot_collect_diagnostics(VkrHarnessReport *report, Arena *arena,
   string_format(path, sizeof(path), "%s/samples.bin", child_dir);
   if (vkr_harness_samples_read(path, &report->case_manifest, arena, &samples)) {
     vkr_harness_diagnostics_from_samples(&samples, counts);
+    vkr_harness_system_conditions_from_samples(&samples, conditions);
   }
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
   for (uint32_t stream = 0u; stream < ArrayCount(kStreams); ++stream) {
@@ -247,6 +248,7 @@ vkr_harness_snapshot_collect_diagnostics(VkrHarnessReport *report, Arena *arena,
     }
   }
   vkr_harness_diagnostics_merge(&report->diagnostics, counts);
+  vkr_harness_system_conditions_merge(&report->system_conditions, conditions);
 }
 
 /**
@@ -268,7 +270,8 @@ vkr_internal bool8_t vkr_harness_snapshot_adopt_child(
   string_format(reference->report, sizeof(reference->report), "%s/report.json",
                 child_relative);
   vkr_harness_snapshot_collect_diagnostics(report, summary_arena, child_dir,
-                                           &reference->diagnostics);
+                                           &reference->diagnostics,
+                                           &reference->system_conditions);
   string_format(child_report, sizeof(child_report), "%s/report.json",
                 child_dir);
   string_format(child_summary, sizeof(child_summary), "%s/capture-summary.bin",
@@ -503,6 +506,7 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   }
   vkr_harness_timestamp_utc(report.provenance.started_at);
   vkr_harness_provenance_collect(executable, repo_root, &report.provenance);
+  vkr_harness_report_sample_system_start(&report);
   if (!profile.authoritative) {
     vkr_harness_report_add_authority_reason(&report, "profile.local_only");
   }
@@ -583,6 +587,8 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     }
   }
 
+  /* The last replay child has exited. */
+  vkr_harness_report_sample_system_end(&report);
   const bool8_t comparison_compatible = vkr_harness_snapshot_fingerprints_agree(
       &report, &case_manifest, &profile, scene_manifest.sha256, &error);
   vkr_harness_timestamp_utc(report.provenance.ended_at);
@@ -598,6 +604,7 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     vkr_harness_report_mark_incomplete(&report,
                                        "comparison.content_scale_mismatch");
   vkr_harness_report_apply_diagnostics(&report);
+  vkr_harness_report_apply_system_conditions(&report);
   if (complete) {
     vkr_harness_snapshot_compare_baseline(&report, repo_root, run_root,
                                           summary_arena, cross_backend, &error);

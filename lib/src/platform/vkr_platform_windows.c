@@ -531,6 +531,16 @@ bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes) {
   return true_v;
 }
 
+bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry) {
+  if (!out_telemetry) {
+    return false_v;
+  }
+  /* Every signal reads unavailable until the Windows sources land
+     (docs/proposals/profiling-and-diagnostics.md, P1). */
+  *out_telemetry = (VkrPlatformTelemetry){0};
+  return false_v;
+}
+
 vkr_internal void vkr_platform_stream_write(DWORD stream, const char *message) {
   if (!message) {
     return;

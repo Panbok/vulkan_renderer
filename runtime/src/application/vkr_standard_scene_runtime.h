@@ -157,6 +157,17 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // ERROR and FATAL records, and WARN records, the logger took this frame.
   VkrMetricId log_errors;
   VkrMetricId log_warnings;
+  // Platform telemetry (vkr_platform_get_telemetry), sampled each frame:
+  // the OS-charged footprint, memory pressure, thermal level, power source
+  // and low-power mode as gauges; process CPU time and major page faults
+  // since the previous frame.
+  VkrMetricId os_footprint;
+  VkrMetricId os_memory_pressure;
+  VkrMetricId os_thermal_level;
+  VkrMetricId os_on_battery;
+  VkrMetricId os_low_power;
+  VkrMetricId process_time;
+  VkrMetricId major_page_faults;
   // Nested inside update: the simulated container's step (scripts, physics,
   // animation and transforms), and of it the native physics step.
   VkrMetricId simulation;
@@ -218,6 +229,12 @@ typedef struct VkrStandardSceneRuntime {
      per-frame counts. */
   uint64_t log_errors_published;
   uint64_t log_warnings_published;
+  /* Process CPU time and major page faults at the previous frame's sample;
+     the first sample only sets them. */
+  uint64_t telemetry_cpu_ns_published;
+  uint64_t telemetry_faults_published;
+  bool8_t telemetry_cpu_published;
+  bool8_t telemetry_faults_published_valid;
   VkrRendererMetrics renderer_metrics;
   VkrApplicationHost host;
   VkrStandardSceneRuntimeConfig *config; /**< Pointer to the configuration used

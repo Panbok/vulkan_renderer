@@ -170,6 +170,117 @@ vkr_internal bool8_t vkr_standard_scene_runtime_register_gauge_metric(
   return vkr_metrics_register(metrics, &description, out_id);
 }
 
+/* Platform telemetry metrics: shared names wherever both platforms measure
+   the same quantity (docs/proposals/profiling-and-diagnostics.md). */
+vkr_internal bool8_t vkr_standard_scene_runtime_register_telemetry_metrics(
+    VkrMetrics *metrics, VkrStandardSceneRuntimeMetricIds *ids) {
+  const struct {
+    const char *name;
+    VkrMetricDomain domain;
+    VkrMetricKind kind;
+    VkrMetricUnit unit;
+    VkrMetricId *id;
+  } rows[] = {
+      {"os.memory.footprint_bytes", VKR_METRIC_DOMAIN_MEMORY_CPU,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES, &ids->os_footprint},
+      {"os.memory.pressure", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_COUNT, &ids->os_memory_pressure},
+      {"os.thermal.level", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_COUNT, &ids->os_thermal_level},
+      {"os.power.on_battery", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_COUNT, &ids->os_on_battery},
+      {"os.power.low_power", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_COUNT, &ids->os_low_power},
+      {"cpu.process_time", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_DURATION,
+       VKR_METRIC_UNIT_NANOSECONDS, &ids->process_time},
+      {"os.page_faults.major", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_COUNTER,
+       VKR_METRIC_UNIT_COUNT, &ids->major_page_faults},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(rows); ++i) {
+    const VkrMetricDescription description = {
+        .name = string8_create_from_cstr((const uint8_t *)rows[i].name,
+                                         string_length(rows[i].name)),
+        .domain = rows[i].domain,
+        .kind = rows[i].kind,
+        .unit = rows[i].unit,
+        .scalar = VKR_METRIC_SCALAR_U64,
+        .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+    };
+    if (!vkr_metrics_register(metrics, &description, rows[i].id)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+#if VKR_METRICS_ENABLED
+/* Publishes one telemetry sample. A signal the platform lacks reads
+   unsupported; the interval values read not sampled on the first frame,
+   which only sets their baselines. */
+vkr_internal void vkr_standard_scene_runtime_publish_telemetry(
+    VkrStandardSceneRuntime *application,
+    const VkrPlatformTelemetry *telemetry) {
+  VkrMetrics *metrics = application->metrics;
+  const VkrStandardSceneRuntimeMetricIds *ids = &application->metric_ids;
+  const struct {
+    VkrMetricId id;
+    uint64_t value;
+    bool8_t valid;
+  } gauges[] = {
+      {ids->os_footprint, telemetry->footprint_bytes,
+       telemetry->footprint_valid},
+      {ids->os_memory_pressure, (uint64_t)telemetry->memory_pressure,
+       telemetry->memory_pressure_valid},
+      {ids->os_thermal_level, (uint64_t)telemetry->thermal_level,
+       telemetry->thermal_valid},
+      {ids->os_on_battery, telemetry->on_battery ? 1u : 0u,
+       telemetry->power_valid},
+      {ids->os_low_power, telemetry->low_power ? 1u : 0u,
+       telemetry->low_power_valid},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(gauges); ++i) {
+    if (gauges[i].valid) {
+      vkr_metrics_gauge_set_u64(metrics, gauges[i].id, gauges[i].value);
+    } else {
+      vkr_metrics_mark(metrics, gauges[i].id,
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_UNSUPPORTED);
+    }
+  }
+
+  const uint64_t cpu_ns = telemetry->cpu_user_ns + telemetry->cpu_system_ns;
+  if (telemetry->cpu_time_valid && application->telemetry_cpu_published &&
+      cpu_ns >= application->telemetry_cpu_ns_published) {
+    vkr_metrics_duration_add_ns(metrics, ids->process_time,
+                                cpu_ns -
+                                    application->telemetry_cpu_ns_published);
+  } else {
+    vkr_metrics_mark(metrics, ids->process_time,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     telemetry->cpu_time_valid ? VKR_METRIC_REASON_NOT_SAMPLED
+                                               : VKR_METRIC_REASON_UNSUPPORTED);
+  }
+  application->telemetry_cpu_ns_published = cpu_ns;
+  application->telemetry_cpu_published = telemetry->cpu_time_valid;
+
+  const uint64_t faults = telemetry->major_page_faults;
+  if (telemetry->major_page_faults_valid &&
+      application->telemetry_faults_published_valid &&
+      faults >= application->telemetry_faults_published) {
+    vkr_metrics_counter_add(metrics, ids->major_page_faults,
+                            faults - application->telemetry_faults_published);
+  } else {
+    vkr_metrics_mark(
+        metrics, ids->major_page_faults, VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+        telemetry->major_page_faults_valid ? VKR_METRIC_REASON_NOT_SAMPLED
+                                           : VKR_METRIC_REASON_UNSUPPORTED);
+  }
+  application->telemetry_faults_published = faults;
+  application->telemetry_faults_published_valid =
+      telemetry->major_page_faults_valid;
+}
+#endif
+
 vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
     VkrStandardSceneRuntime *application) {
   application->metrics_arena = arena_create(MB(2), KB(64));
@@ -274,6 +385,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
                                 .writer = VKR_METRIC_WRITER_RENDER_THREAD,
                             },
                             &ids->log_warnings) ||
+      !vkr_standard_scene_runtime_register_telemetry_metrics(
+          application->metrics, ids) ||
       !vkr_renderer_metrics_register(&application->renderer_metrics,
                                      application->metrics)) {
     return false_v;
@@ -2947,6 +3060,9 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
                             log_warnings - application->log_warnings_published);
     application->log_errors_published = log_errors;
     application->log_warnings_published = log_warnings;
+    VkrPlatformTelemetry telemetry = {0};
+    (void)vkr_platform_get_telemetry(&telemetry);
+    vkr_standard_scene_runtime_publish_telemetry(application, &telemetry);
     VkrRendererMetricsCollectContext metrics_context = {
         .application = vkr_application_metrics_snapshot(
             &application->assets, &application->ui_system,

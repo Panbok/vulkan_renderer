@@ -359,6 +359,23 @@ vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric) {
              : "unknown";
 }
 
+/** Index-aligned with VkrHarnessConditionMetric; the engine publishes each as
+    a per-frame gauge, unavailable where the platform has no source. */
+vkr_global const char *const
+    vkr_harness_condition_metric_names[VKR_HARNESS_CONDITION_METRIC_COUNT] = {
+        "os.thermal.level",
+        "os.memory.pressure",
+        "os.power.low_power",
+        "os.power.on_battery",
+};
+
+const char *
+vkr_harness_condition_metric_name(VkrHarnessConditionMetric metric) {
+  return metric < VKR_HARNESS_CONDITION_METRIC_COUNT
+             ? vkr_harness_condition_metric_names[metric]
+             : "unknown";
+}
+
 /** Index-aligned with VkrHarnessStatisticKind; also the report/CSV wire names.
  */
 vkr_global const char

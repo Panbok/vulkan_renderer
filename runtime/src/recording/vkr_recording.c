@@ -282,6 +282,18 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
     "upload.fence_waits",
     "memory.gpu.driver.current_allocated_bytes",
     "memory.gpu.driver.recommended_budget_bytes",
+    /* Present cost, faults and the platform signals that explain a frame
+       (ADR-124, docs/proposals/profiling-and-diagnostics.md). */
+    "cpu.backend_present",
+    "cpu.drawable_acquire",
+    "cpu.process_time",
+    "gpu.errors",
+    "log.errors",
+    "os.memory.footprint_bytes",
+    "os.memory.pressure",
+    "os.thermal.level",
+    "os.power.low_power",
+    "os.page_faults.major",
 };
 
 /* Frame-loop work that a render thread's completion iteration (ADR-082)

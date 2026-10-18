@@ -149,6 +149,59 @@ bool8_t vkr_platform_get_system_info(VkrPlatformSystemInfo *out_info);
  */
 bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes);
 
+/** System thermal pressure, normalized across platforms. */
+typedef enum VkrPlatformThermalLevel {
+  VKR_PLATFORM_THERMAL_NOMINAL = 0,
+  VKR_PLATFORM_THERMAL_FAIR = 1,
+  /** The OS throttles the CPU and GPU; timings are not comparable. */
+  VKR_PLATFORM_THERMAL_SERIOUS = 2,
+  VKR_PLATFORM_THERMAL_CRITICAL = 3,
+} VkrPlatformThermalLevel;
+
+/** System memory pressure, normalized across platforms. */
+typedef enum VkrPlatformMemoryPressure {
+  VKR_PLATFORM_MEMORY_PRESSURE_NORMAL = 0,
+  /** The OS compresses or pages memory out. */
+  VKR_PLATFORM_MEMORY_PRESSURE_WARN = 1,
+  VKR_PLATFORM_MEMORY_PRESSURE_CRITICAL = 2,
+} VkrPlatformMemoryPressure;
+
+/**
+ * Process and system signals that explain a frame's time. Each value has a
+ * validity flag: a platform without a source leaves it false, so a consumer
+ * reports the value unavailable instead of zero.
+ */
+typedef struct VkrPlatformTelemetry {
+  /** Memory the OS charges the process and limits it by: macOS
+   * `phys_footprint`, Windows private bytes. */
+  uint64_t footprint_bytes;
+  /** CPU time of every thread of the process since it started. */
+  uint64_t cpu_user_ns;
+  uint64_t cpu_system_ns;
+  /** Page faults that read from disk since the process started. */
+  uint64_t major_page_faults;
+  VkrPlatformThermalLevel thermal_level;
+  VkrPlatformMemoryPressure memory_pressure;
+  bool8_t on_battery;
+  /** The OS's low-power mode, which lowers CPU and GPU clocks. */
+  bool8_t low_power;
+  bool8_t footprint_valid;
+  bool8_t cpu_time_valid;
+  bool8_t major_page_faults_valid;
+  bool8_t thermal_valid;
+  bool8_t memory_pressure_valid;
+  bool8_t power_valid;
+  bool8_t low_power_valid;
+} VkrPlatformTelemetry;
+
+/**
+ * Samples every telemetry signal the platform has. Safe from any thread. On
+ * an M1 Pro a call costs about 2.5 us; the thermal level is re-read only when
+ * it changes, and the power source (about 90 us) at most once a second.
+ * Returns false when no signal is available.
+ */
+bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry);
+
 /** True when the variable `name` is set to exactly `expected`, such as an
  * off switch spelled "0". A value longer than 63 bytes never matches. */
 vkr_internal INLINE bool8_t

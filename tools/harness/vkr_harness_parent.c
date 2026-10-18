@@ -681,21 +681,26 @@ vkr_internal bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
 }
 
 /**
- * Sums every executed repetition's diagnostic counters, scans its captured
- * streams and its prewarm child's, and withdraws authority from a run whose
- * GPU failed or whose validation reported an error. A repetition that failed
- * still contributes its streams: they often say why.
+ * Sums every executed repetition's diagnostic counters, folds its OS gauges,
+ * scans its captured streams and its prewarm child's, and withdraws authority
+ * from a run whose GPU failed, whose validation reported an error, or whose
+ * OS throttled, ran short of memory, or ran in low-power mode. A repetition
+ * that failed still contributes its streams: they often say why.
  */
 vkr_internal void
 vkr_harness_collect_diagnostics(VkrHarnessReport *report, const char *run_root,
                                 const VkrHarnessSampleSet *runs,
                                 bool8_t prewarm, Arena *transient) {
   vkr_local_persist const char *const kStreams[] = {"stdout.log", "stderr.log"};
+  /* Every child has exited: the end sample sees the system the run left. */
+  vkr_harness_report_sample_system_end(report);
   for (uint32_t run = 0u; run < report->run_count; ++run) {
     VkrHarnessDiagnosticCounts *counts = &report->runs[run].diagnostics;
     /* A repetition's samples are read only once its child passed. */
     if (runs[run].header.metric_count > 0u) {
       vkr_harness_diagnostics_from_samples(&runs[run], counts);
+      vkr_harness_system_conditions_from_samples(
+          &runs[run], &report->runs[run].system_conditions);
     }
     for (uint32_t stream = 0u; stream < ArrayCount(kStreams); ++stream) {
       char path[VKR_HARNESS_PATH_MAX];
@@ -709,8 +714,11 @@ vkr_harness_collect_diagnostics(VkrHarnessReport *report, const char *run_root,
       }
     }
     vkr_harness_diagnostics_merge(&report->diagnostics, counts);
+    vkr_harness_system_conditions_merge(&report->system_conditions,
+                                        &report->runs[run].system_conditions);
   }
   vkr_harness_report_apply_diagnostics(report);
+  vkr_harness_report_apply_system_conditions(report);
 }
 
 /** Why the run cannot be authoritative before it executes: a local profile,
@@ -949,6 +957,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   }
   vkr_harness_timestamp_utc(report.provenance.started_at);
   vkr_harness_provenance_collect(executable, repo_root, &report.provenance);
+  vkr_harness_report_sample_system_start(&report);
   vkr_harness_add_setup_authority_reasons(&report, &profile, record);
   if (report.provenance.dirty) {
     if (!profile.allow_dirty) {

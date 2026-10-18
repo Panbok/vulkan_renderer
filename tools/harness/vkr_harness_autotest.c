@@ -223,6 +223,7 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
   }
   vkr_harness_timestamp_utc(report.provenance.started_at);
   vkr_harness_provenance_collect(executable, repo_root, &report.provenance);
+  vkr_harness_report_sample_system_start(&report);
   if (!profile.authoritative) {
     vkr_harness_report_add_authority_reason(&report, "profile.local_only");
   }
@@ -317,6 +318,7 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
   }
 publish:
   vkr_harness_timestamp_utc(report.provenance.ended_at);
+  vkr_harness_report_sample_system_end(&report);
   const struct {
     const char *role;
     const char *relative;

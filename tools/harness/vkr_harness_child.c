@@ -1963,7 +1963,10 @@ vkr_internal bool8_t vkr_harness_child_write_report(
   /* Only the counters: this process's own streams are still open, so the
      parent scans them after it exits. */
   vkr_harness_diagnostics_from_samples(samples, &report->diagnostics);
+  vkr_harness_system_conditions_from_samples(samples,
+                                             &report->system_conditions);
   vkr_harness_report_apply_diagnostics(report);
+  vkr_harness_report_apply_system_conditions(report);
 
   if (capture_source) {
     string_format(report->environment_fingerprint,

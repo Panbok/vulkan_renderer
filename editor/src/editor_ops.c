@@ -14936,6 +14936,36 @@ static VkrEditorOpStatus ops_run_health_status(OpsContext *ctx) {
         ops_log_record_json(ctx, &recent[(recent_first + i) % recent_count]));
   }
 
+  static const char *const thermal_names[] = {"nominal", "fair", "serious",
+                                              "critical"};
+  static const char *const pressure_names[] = {"normal", "warn", "critical"};
+  VkrPlatformTelemetry telemetry = {0};
+  (void)vkr_platform_get_telemetry(&telemetry);
+  VkrBakeryJson *system = vkr_bakery_json_object(arena);
+  ops_set(
+      ctx, system, "thermal",
+      telemetry.thermal_valid
+          ? vkr_bakery_json_cstr(arena, thermal_names[telemetry.thermal_level])
+          : vkr_bakery_json_null(arena));
+  ops_set(ctx, system, "memory_pressure",
+          telemetry.memory_pressure_valid
+              ? vkr_bakery_json_cstr(arena,
+                                     pressure_names[telemetry.memory_pressure])
+              : vkr_bakery_json_null(arena));
+  ops_set(ctx, system, "footprint_mb",
+          telemetry.footprint_valid
+              ? ops_number(ctx, (float64_t)telemetry.footprint_bytes /
+                                    (1024.0 * 1024.0))
+              : vkr_bakery_json_null(arena));
+  ops_set(ctx, system, "on_battery",
+          telemetry.power_valid
+              ? vkr_bakery_json_bool(arena, telemetry.on_battery)
+              : vkr_bakery_json_null(arena));
+  ops_set(ctx, system, "low_power",
+          telemetry.low_power_valid
+              ? vkr_bakery_json_bool(arena, telemetry.low_power)
+              : vkr_bakery_json_null(arena));
+
   const bool8_t ok = health->gpu_errors == 0u && !health->device_lost &&
                      health->validation_errors == 0u &&
                      log_counts.by_level[LOG_LEVEL_FATAL] == 0u &&
@@ -14944,6 +14974,7 @@ static VkrEditorOpStatus ops_run_health_status(OpsContext *ctx) {
   ops_set(ctx, result, "ok", vkr_bakery_json_bool(arena, ok));
   ops_set(ctx, result, "gpu", gpu);
   ops_set(ctx, result, "log", log);
+  ops_set(ctx, result, "system", system);
   ops_set(ctx, result, "scene_error",
           scene_error == VKR_RENDERER_ERROR_NONE
               ? vkr_bakery_json_null(arena)
@@ -18133,7 +18164,10 @@ static const OpsDef s_ops[] = {
      "Whether the editor runs cleanly: GPU submissions that failed, device "
      "loss, validation messages (counted on Vulkan; null where the backend's "
      "layers write to stderr, as Metal's do), log records by severity since "
-     "start, the Scene's renderer error and the newest error records.",
+     "start, the system's thermal level, memory pressure, power source and "
+     "low-power mode with this process's memory footprint (null where the "
+     "platform has no source), the Scene's renderer error and the newest "
+     "error records.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_health_status, NULL,
      OPS_QUICK},
     {"session.status",

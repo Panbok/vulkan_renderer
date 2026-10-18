@@ -6,7 +6,10 @@ target_compile_definitions(vkr_foundation PUBLIC
     $<$<PLATFORM_ID:Darwin>:PLATFORM_APPLE=1>
     $<$<PLATFORM_ID:Windows>:PLATFORM_WINDOWS=1>)
 if(APPLE)
-    target_link_libraries(vkr_foundation PRIVATE "-framework CoreGraphics")
+    # Telemetry reads the power source through IOKit and low-power mode
+    # through the Objective-C runtime (vkr_platform_macos.c).
+    target_link_libraries(vkr_foundation PRIVATE "-framework CoreGraphics"
+        "-framework IOKit" "-framework CoreFoundation" objc)
 elseif(WIN32)
     # Local sockets (vkr_local_socket_windows.c) use Winsock and file DACLs;
     # UDP broadcast lists interfaces through the IP helper.

@@ -1418,6 +1418,10 @@ bounds GPU-completion waits at 5 s, as the Metal watchdog does, and reports
 device loss with its `VK_EXT_device_fault` record. Agents read these through
 `health.status` and `log.read`; see
 [ADR-124](adr/124-renderer-health-and-diagnostic-reads.md).
+The runtime also publishes the platform's telemetry each frame: footprint,
+memory pressure, thermal level, power state, process CPU time and major page
+faults ([ADR-125](adr/125-platform-telemetry-metrics.md)); the harness takes
+authority from throttled, critically pressed or low-power runs.
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
 of the raster jitter and the cloud march noise period, with temporal history

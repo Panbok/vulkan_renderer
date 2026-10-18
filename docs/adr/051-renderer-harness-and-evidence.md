@@ -35,7 +35,13 @@ nothing. Every run, auxiliary run and report carries `diagnostic_counts`:
 GPU error, validation and log counters summed over warmup and measured frames,
 and validation text found in the child's output; a GPU error costs the
 authority reason `gpu.errors` and a validation error `validation.messages`
-([ADR-124](124-renderer-health-and-diagnostic-reads.md)). A case camera of
+([ADR-124](124-renderer-health-and-diagnostic-reads.md)). Each also carries
+`system_conditions` (highest thermal level and memory pressure, low-power and
+battery frames), and the provenance records the system's thermal level, power
+source, low-power mode and memory pressure at start and end; a serious thermal
+level costs `thermal.throttled`, critical pressure `memory.pressure` and
+low-power mode `power.low_power`
+([ADR-125](125-platform-telemetry-metrics.md)). A case camera of
 mode `recording` (`recording`, a repo-relative bundle or stream, and optional `first_frame` and `last_frame`) is a perf re-run: the
 child opens the recording in the runtime's playback, paused, and seeks it each
 frame to the range's first frame plus the case time, so the recorded camera,

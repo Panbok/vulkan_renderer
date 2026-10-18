@@ -109,6 +109,54 @@ void vkr_harness_provenance_collect(const char *executable,
   }
 }
 
+/** The provenance name of a sampled thermal level; "unknown" without one. */
+static const char *
+vkr_harness_thermal_state_name(const VkrPlatformTelemetry *telemetry) {
+  if (!telemetry->thermal_valid) {
+    return "unknown";
+  }
+  switch (telemetry->thermal_level) {
+  case VKR_PLATFORM_THERMAL_NOMINAL:
+    return "nominal";
+  case VKR_PLATFORM_THERMAL_FAIR:
+    return "fair";
+  case VKR_PLATFORM_THERMAL_SERIOUS:
+    return "serious";
+  case VKR_PLATFORM_THERMAL_CRITICAL:
+    return "critical";
+  default:
+    return "unknown";
+  }
+}
+
+/**
+ * Samples the OS conditions into `telemetry` and names the thermal level in
+ * `thermal_state`. The thermal rows stay outside the environment fingerprint,
+ * so a hot machine still matches its baseline; authority answers for it.
+ */
+static void vkr_harness_system_sample(VkrPlatformTelemetry *telemetry,
+                                      char *thermal_state, uint64_t capacity) {
+  MemZero(telemetry, sizeof(*telemetry));
+  /* A failed sample keeps every validity flag false: unknown, never nominal. */
+  if (!vkr_platform_get_telemetry(telemetry)) {
+    MemZero(telemetry, sizeof(*telemetry));
+  }
+  string_format(thermal_state, capacity, "%s",
+                vkr_harness_thermal_state_name(telemetry));
+}
+
+void vkr_harness_report_sample_system_start(VkrHarnessReport *report) {
+  vkr_harness_system_sample(&report->system_start,
+                            report->provenance.thermal_state_start,
+                            sizeof(report->provenance.thermal_state_start));
+}
+
+void vkr_harness_report_sample_system_end(VkrHarnessReport *report) {
+  vkr_harness_system_sample(&report->system_end,
+                            report->provenance.thermal_state_end,
+                            sizeof(report->provenance.thermal_state_end));
+}
+
 uint32_t vkr_harness_environment_fields(
     const VkrHarnessProvenance *provenance, bool8_t exclusive_gpu_lane,
     VkrHarnessFingerprintField fields[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT]) {

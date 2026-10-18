@@ -13,16 +13,17 @@ the recorder ([ADR-122](../adr/122-recordings.md)), harness reports
 ([ADR-051](../adr/051-renderer-harness-and-evidence.md)), the editor's stats
 chip and `stats.*`, and Metal dynamic resolution. A metric added there reaches
 all of them. Phase P0, renderer health and diagnostic reads, is implemented in
-[ADR-124](../adr/124-renderer-health-and-diagnostic-reads.md).
+[ADR-124](../adr/124-renderer-health-and-diagnostic-reads.md). The first part
+of P1, the lib telemetry API with its macOS sources, the `os.*` and
+`cpu.process_time` metrics and the harness's system conditions, is implemented
+in [ADR-125](../adr/125-platform-telemetry-metrics.md).
 
 Remaining gaps:
 
 - Pass rows store durations only; there are no CPU zones and no CPU/GPU clock
   link, so no thread timeline or flame chart exists.
-- No platform signal is recorded: thermal state, power, `phys_footprint`,
-  memory pressure, CPU time, present latency or other processes' GPU use.
-  The harness report already has `thermal_state_start`, `thermal_state_end`
-  and `power_mode` fields, all `unknown`.
+- Windows platform signals, present latency and other processes' GPU use
+  are not recorded.
 - The Performance window opens only on a recording; there is no live view.
 - No op or button triggers a native GPU capture; there is no crash handler.
 
@@ -37,28 +38,22 @@ Remaining gaps:
 - Third-party headers (`renderdoc_app.h`, the PIX event runtime, NVML, ADLX)
   are optional and loaded only when present.
 
-## P1: platform signals
+## P1: platform signals (remaining)
 
-- A lib telemetry module (ADR-118) sampled at 10 Hz on the recorder's writer
-  thread, outside the frame loop:
-  - macOS: `NSProcessInfo.thermalState`, `isLowPowerModeEnabled`,
-    `task_info(TASK_VM_INFO).phys_footprint`, memory pressure events
-    (`DISPATCH_SOURCE_TYPE_MEMORYPRESSURE`), thread and process CPU time,
-    page faults.
-  - Windows: `IDXGIAdapter3::QueryVideoMemoryInfo`, PDH GPU engine use of
-    other processes, `GetProcessTimes`, `PrivateUsage`,
-    `GetSystemPowerStatus`. Thermal state stays unavailable.
+- Windows sources behind `vkr_platform_get_telemetry`: `PrivateUsage`,
+  `GetProcessTimes`, `GetSystemPowerStatus`; plus
+  `IDXGIAdapter3::QueryVideoMemoryInfo` and PDH GPU engine use of other
+  processes as new metrics. Thermal state stays unavailable.
 - Present latency: `MTLDrawable.addPresentedHandler`, `VK_KHR_present_id` and
   `present_wait`. CPU/GPU clock link: `sampleTimestamps:gpuTimestamp:`,
   `VK_KHR_calibrated_timestamps`.
 - Vulkan object names (`vkSetDebugUtilsObjectNameEXT`) and optional pipeline
   statistics per pass, gated like pass timing.
-- Harness authority reasons `thermal.throttled`, `memory.pressure` and
-  `gpu.peer_load`, and the existing provenance fields filled.
+- The harness authority reason `gpu.peer_load`.
 - A System lane under the Performance window's frame-time lane; agent ops
   `perf.snapshot {prefix}` and `perf.set {pass_timing, pipeline_stats}`.
-- Acceptance: the Tier 0 overhead gate rerun; a throttle or pressure event
-  visible in a Bistro recording.
+- Acceptance: the Tier 0 overhead gate rerun with the added Tier 0 fields; a
+  Windows Bistro run with the Windows sources valid.
 
 ## P2: timeline
 
@@ -84,6 +79,9 @@ Remaining gaps:
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
 
 ## Open items
+
+- Memory pressure costs authority only at critical (ADR-125); confirm that
+  warn, the 16 GB Mac's normal state under Bistro, stays report-only.
 
 - `baseline propose` does not check `authoritative`, so a snapshot that lost
   authority to `validation.messages` can still be proposed.

@@ -644,6 +644,38 @@ typedef struct VkrHarnessDiagnosticCounts {
   uint64_t output_lines[VKR_HARNESS_OUTPUT_CLASS_COUNT];
 } VkrHarnessDiagnosticCounts;
 
+/** Per-frame OS gauges a report folds under `system_conditions`. */
+typedef enum VkrHarnessConditionMetric {
+  VKR_HARNESS_CONDITION_THERMAL_LEVEL,
+  VKR_HARNESS_CONDITION_MEMORY_PRESSURE,
+  VKR_HARNESS_CONDITION_LOW_POWER,
+  VKR_HARNESS_CONDITION_ON_BATTERY,
+  VKR_HARNESS_CONDITION_METRIC_COUNT,
+} VkrHarnessConditionMetric;
+
+/**
+ * One OS gauge folded over every sampled frame: the highest level for the
+ * thermal and memory-pressure gauges, the number of frames at 1 for the power
+ * flags. Frames the gauge was unavailable for are counted apart and never
+ * folded in as zero.
+ */
+typedef struct VkrHarnessConditionValue {
+  bool8_t registered;
+  uint64_t value;
+  uint64_t counted_frames;
+  uint64_t unavailable_frames;
+} VkrHarnessConditionValue;
+
+/**
+ * The OS conditions one child process or a whole run measured under, over
+ * the sampled warmup and measured frames, the window `diagnostic_counts`
+ * sums.
+ */
+typedef struct VkrHarnessSystemConditions {
+  bool8_t collected;
+  VkrHarnessConditionValue metrics[VKR_HARNESS_CONDITION_METRIC_COUNT];
+} VkrHarnessSystemConditions;
+
 typedef struct VkrHarnessRunReference {
   uint32_t index;
   char status[24];
@@ -654,6 +686,8 @@ typedef struct VkrHarnessRunReference {
   char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
   /* Written under the row only once a run collected them. */
   VkrHarnessDiagnosticCounts diagnostics;
+  /* Written beside `diagnostic_counts`, under the same condition. */
+  VkrHarnessSystemConditions system_conditions;
 } VkrHarnessRunReference;
 
 typedef struct VkrHarnessArtifact {
@@ -766,6 +800,14 @@ typedef struct VkrHarnessReport {
   /* Sums over every run reference, or the child's own samples; written as
      `diagnostic_counts` only once collected. */
   VkrHarnessDiagnosticCounts diagnostics;
+  /* Folded like `diagnostics` and written beside it. */
+  VkrHarnessSystemConditions system_conditions;
+  /* OS conditions this process sampled when the run started and ended,
+     written as the provenance's `*_start` and `*_end` rows. They live beside
+     the provenance, not in it, because stored capture summaries pin its
+     layout. A zeroed sample has no valid signal and reads as unknown. */
+  VkrPlatformTelemetry system_start;
+  VkrPlatformTelemetry system_end;
   /* Arena-backed like `metrics`, `passes`, and `events`: a snapshot parent
      merges hundreds of child rows, and inlining them would put megabytes on the
      stack of every writer. Sized once by
@@ -1009,6 +1051,8 @@ const char *vkr_harness_statistic_name(VkrHarnessStatisticKind statistic);
 /** The engine metric name a diagnostic counter is read from and reported as. */
 const char *
 vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric);
+/** The engine gauge a system condition is read from and reported as. */
+const char *vkr_harness_condition_metric_name(VkrHarnessConditionMetric metric);
 const char *vkr_harness_operator_name(VkrHarnessAssertionOperator operation);
 bool8_t vkr_harness_statistic_from_name(const char *name,
                                         VkrHarnessStatisticKind *out_statistic);
@@ -1115,6 +1159,16 @@ void vkr_harness_diagnostics_merge(VkrHarnessDiagnosticCounts *total,
  * but cost no authority.
  */
 void vkr_harness_report_apply_diagnostics(VkrHarnessReport *report);
+/** Adds one run's system conditions into a run-wide fold. */
+void vkr_harness_system_conditions_merge(VkrHarnessSystemConditions *total,
+                                         const VkrHarnessSystemConditions *run);
+/**
+ * Withdraws authority from a run measured while the OS throttled for heat,
+ * ran short of memory, or ran in low-power mode, in any counted frame or in
+ * the start or end sample. Running on battery is reported but costs no
+ * authority.
+ */
+void vkr_harness_report_apply_system_conditions(VkrHarnessReport *report);
 
 /**
  * Named-member shorthand over `core/vkr_json_writer.h` for the C strings the

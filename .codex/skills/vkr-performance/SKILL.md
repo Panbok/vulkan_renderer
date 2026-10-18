@@ -56,6 +56,8 @@ adds instrumentation and requires complete pass availability accounting;
 
 A speed claim requires `status=pass`, `authoritative=true`, empty
 `authority_reasons`, and matching environment/workload/policy fingerprints.
+Compare `system_conditions` too: warn memory pressure keeps authority, so a
+before/after pair should show the same highest pressure and thermal level.
 Match build/compiler, GPU/driver, pipeline class, resolution, assets,
 target/image count, presentation, editor/features, cache policy, and
 instrumentation. Compare GPU-timestamp-on with timestamp-on. FIFO can hide CPU
