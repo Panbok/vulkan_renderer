@@ -9,11 +9,12 @@ then creates objects until its history passes the budget, which makes a
 new base for joiners, and one more after it. The guest editor joins from
 `main`: it checks the newest base out, reloads its scene, is welcomed and
 replays only the edits after that base. The host then writes a file into
-its working copy and publishes it; the guest fetches it. The check passes
-when the guest holds the host's unsaved object and the objects from before
-and after the newest base, the published file arrives in the guest's
-working copy with the same bytes, and both editors end at the same depot
-commit and scene digest.
+its working copy and the guest one into its own; neither asks to publish,
+so each arrives through automatic publishing. A last `session.publish`
+commits on request. The check passes when the guest holds the host's
+unsaved object and the objects from before and after the newest base, each
+written file arrives in the other working copy with the same bytes, and
+both editors end at the same depot commit and scene digest.
 
     python tools/checks/check_session_depot.py \
         --editor build_debug/editor/vkr_editor.exe \
@@ -206,23 +207,48 @@ def main() -> int:
             failures.append("the guest did not replay from the newer base: "
                             f"{replay.group(0) if replay else None}")
 
+        # Files an editor writes publish on their own, both ways.
+        def arrives(source: pathlib.Path, target: pathlib.Path) -> bool:
+            end = min(deadline, time.time() + 120.0)
+            while time.time() < end:
+                if target.exists() and target.read_bytes() == \
+                        source.read_bytes():
+                    return True
+                time.sleep(2.0)
+            return False
+
         notes = host_copy / "scenes" / "notes.txt"
         notes.write_text("published through the session depot\n",
                          encoding="utf-8")
-        published = mason.call("session.publish", {"message": "Notes"})
+        if not arrives(notes, guest_copy / "scenes" / "notes.txt"):
+            failures.append("the host's file did not reach the guest without "
+                            "a publish")
+        reply = guest_copy / "scenes" / "reply.txt"
+        reply.write_text("published by the guest\n", encoding="utf-8")
+        if not arrives(reply, host_copy / "scenes" / "reply.txt"):
+            failures.append("the guest's file did not reach the host without "
+                            "a publish")
+        settled = poll(mason, lambda s: not (s.get("depot") or {}).get("busy"),
+                       deadline, host)
+        before = (settled.get("depot") or {}).get("head", "")
+        # An automatic poll may hold the depot step for a moment.
+        for _ in range(10):
+            published = mason.call("session.publish",
+                                   {"message": "On request"})
+            if published.get("ok") or "Another depot step" not in str(
+                    published.get("error")):
+                break
+            time.sleep(1.0)
         if not published.get("ok"):
             failures.append(f"publish failed: {published.get('error')}")
         host_state = poll(
             mason, lambda s: (s.get("depot") or {}).get("head") not in
-            ("", base) and not (s.get("depot") or {}).get("busy"), deadline,
-            host)
+            ("", base, before) and not (s.get("depot") or {}).get("busy"),
+            deadline, host)
         head = (host_state.get("depot") or {}).get("head", "")
         guest_state = poll(
             painter, lambda s: (s.get("depot") or {}).get("head") == head and
             not (s.get("depot") or {}).get("busy"), deadline, guest)
-        arrived = guest_copy / "scenes" / "notes.txt"
-        if not arrived.exists() or arrived.read_bytes() != notes.read_bytes():
-            failures.append("the published file did not reach the guest")
         if (guest_state.get("depot") or {}).get("head") != head:
             failures.append(f"the depot heads differ: host {head} guest "
                             f"{(guest_state.get('depot') or {}).get('head')}")

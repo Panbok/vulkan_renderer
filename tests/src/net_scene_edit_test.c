@@ -4,6 +4,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "net/vkr_net_scene_edit.h"
 #include "net/vkr_net_type.h"
+#include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_types.h"
 
@@ -551,6 +552,115 @@ static void test_net_scene_edit_replication(void) {
   printf("  test_net_scene_edit_replication PASSED\n");
 }
 
+/* A world partition peer whose cell documents live under `root`. */
+static void net_edit_cells_peer_init(EditPeer *peer, VkrAllocator *allocator,
+                                     const char *root) {
+  net_edit_peer_init(peer, allocator);
+  SceneWorldPartition partition;
+  vkr_type_defaults(&vkr_scene_world_partition_type, &partition);
+  assert(vkr_scene_create_typed_entity(&peer->scene, string8_lit("Partition"),
+                                       &vkr_scene_world_partition_type,
+                                       &partition)
+             .u64);
+  vkr_scene_edit_set_cells_root(
+      &peer->edits,
+      string8_create_from_cstr((const uint8_t *)root, strlen(root)));
+}
+
+/* Editors stream cells around their own cameras, so an edit can name an
+   object in a cell another editor has not loaded (ADR-106). Fails when the
+   reader does not report that cell, or when, once the cell is loaded, the
+   same bytes do not resolve to the object and apply. */
+static void test_net_scene_edit_cells(void) {
+  printf("  Running test_net_scene_edit_cells...\n");
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(64), GB(2), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  char root[1024];
+  char sidecar[1024];
+  char cell_path[1100];
+  char index_path[1100];
+  snprintf(root, sizeof(root), "%stests/tmp/net_cells_%u", PROJECT_SOURCE_DIR,
+           vkr_platform_get_process_id());
+  snprintf(sidecar, sizeof(sidecar), "%s.editor.json", root);
+  snprintf(cell_path, sizeof(cell_path), "%s/2_-1.json", root);
+  snprintf(index_path, sizeof(index_path), "%s/index.json", root);
+  const String8 sidecar_path =
+      string8_create_from_cstr((const uint8_t *)sidecar, strlen(sidecar));
+
+  /* A holds a tower in cell 2,-1 and saves it to that cell's document. */
+  EditPeer a;
+  net_edit_cells_peer_init(&a, &allocator, root);
+  assert(vkr_scene_edit_cells_open(&a.edits, &a.scene));
+  VkrSceneEditRequest request = net_edit_create(
+      40u, "tower", VKR_ENTITY_ID_INVALID, vec3_new(300.0f, 0.0f, -20.0f));
+  VkrEntityId created = VKR_ENTITY_ID_INVALID;
+  assert(net_edit_apply(&a, &request, &created));
+  vkr_scene_update_transforms(&a.scene);
+  assert(vkr_scene_edit_save(&a.edits, &a.scene, sidecar_path));
+
+  /* B opens the same files and has not loaded the cell. */
+  EditPeer b;
+  net_edit_cells_peer_init(&b, &allocator, root);
+  assert(vkr_scene_edit_load(&b.edits, &b.scene, sidecar_path));
+  assert(vkr_scene_edit_cells_open(&b.edits, &b.scene));
+  assert(!net_edit_find(&b, 40u).u64);
+
+  request = (VkrSceneEditRequest){.action = VKR_SCENE_EDIT_APPLY,
+                                  .entity = net_edit_find(&a, 40u)};
+  assert(vkr_scene_edit_read(&a.scene, request.entity, &request.values));
+  request.values.fields = VKR_SCENE_EDIT_NAME;
+  snprintf(request.values.name, sizeof(request.values.name), "watchtower");
+  uint8_t bytes[1024];
+  VkrBitWriter writer;
+  vkr_bit_writer_init(&writer, bytes, sizeof(bytes));
+  char error[256] = "";
+  const VkrNetSceneEditScenes scenes_a = net_edit_scenes(&a);
+  assert(vkr_net_scene_edit_write(&writer, &scenes_a, &request, -1, -1, error,
+                                  sizeof(error)));
+  const uint32_t size = vkr_bit_writer_finish(&writer);
+  assert(net_edit_apply(&a, &request, &created));
+
+  const VkrNetSceneEditScenes scenes_b = net_edit_scenes(&b);
+  VkrNetSceneEditMissingCell missing = {0};
+  const VkrNetSceneEditStorage storage = {.missing = &missing};
+  VkrBitReader reader;
+  VkrSceneEditRequest decoded;
+  int32_t entity_ref = 0;
+  int32_t parent_ref = 0;
+  vkr_bit_reader_init(&reader, bytes, size);
+  assert(!vkr_net_scene_edit_read(&reader, &scenes_b, &storage, &decoded,
+                                  &entity_ref, &parent_ref, error,
+                                  sizeof(error)));
+  assert(missing.found && missing.world == 0u && missing.cell.x == 2 &&
+         missing.cell.z == -1);
+
+  assert(vkr_scene_edit_cell_load(&b.edits, &b.scene, missing.cell));
+  missing = (VkrNetSceneEditMissingCell){0};
+  vkr_bit_reader_init(&reader, bytes, size);
+  if (!vkr_net_scene_edit_read(&reader, &scenes_b, &storage, &decoded,
+                               &entity_ref, &parent_ref, error,
+                               sizeof(error))) {
+    printf("    decode failed: %s\n", error);
+    assert(false && "decode after the cell loaded");
+  }
+  assert(!missing.found);
+  assert(decoded.entity.u64 == net_edit_find(&b, 40u).u64);
+  assert(net_edit_apply(&b, &decoded, &created));
+  net_edit_compare_all(&a, &b);
+
+  net_edit_peer_destroy(&a, &allocator);
+  net_edit_peer_destroy(&b, &allocator);
+  const char *paths[] = {cell_path, index_path, sidecar};
+  for (uint32_t i = 0u; i < ArrayCount(paths); ++i) {
+    assert(remove(paths[i]) == 0);
+  }
+  (void)remove(root);
+  vkr_dmemory_allocator_destroy(&allocator);
+  printf("  test_net_scene_edit_cells PASSED\n");
+}
+
 /* Fails when a world component value does not survive the descriptor codec
    byte for byte, or when an invalid value is accepted. */
 static void test_net_type_round_trip(void) {
@@ -607,6 +717,7 @@ bool32_t run_net_scene_edit_tests(void) {
   printf("--- Starting network scene edit tests ---\n");
   test_net_type_round_trip();
   test_net_scene_edit_replication();
+  test_net_scene_edit_cells();
   printf("--- Network scene edit tests completed ---\n");
   return true;
 }

@@ -17,20 +17,35 @@
  * collision layers and scene settings. A terrain op's result can differ between
  * machines (floating point), so the session host sends the samples it changed
  * beside the op, and other editors write those (VKR_HEIGHTFIELD_OP_SAMPLES).
- * Partition edits do not travel yet; the writer refuses them.
+ * Loading and pinning world partition cells stays local to each editor; the
+ * writer refuses those requests. Instead, an entity that streams with a cell
+ * travels with that cell, and a reader that has not loaded it reports the
+ * cell (VkrNetSceneEditMissingCell) so the caller loads it and reads again.
  *
  * A stamp's image and a road's points travel as raw arrays in place, 16-byte
  * aligned from the start of the encoded bytes and in the little-endian
  * order of every supported host. A reader whose bytes start 16-byte aligned
  * borrows them, so the request lives no longer than those bytes. */
 
+/* An entity the reader did not find because the world partition cell it
+   streams with is not loaded in this editor. */
+typedef struct VkrNetSceneEditMissingCell {
+  bool8_t found;
+  /* The container's world id, as in VkrEntityId. */
+  uint32_t world;
+  VkrScenePartitionCell cell;
+} VkrNetSceneEditMissingCell;
+
 /* Room the reader fills for edits whose values the request points to:
    collision layers and a physics batch. Without it those edits fail to
-   read. Valid until the request is consumed. */
+   read. Valid until the request is consumed. `missing`, when set, receives
+   the cell of an entity the read failed to find because that cell is not
+   loaded. */
 typedef struct VkrNetSceneEditStorage {
   VkrSceneCollisionLayers *collision_layers;
   VkrScenePhysicsChange *physics_changes;
   uint32_t physics_capacity;
+  VkrNetSceneEditMissingCell *missing;
 } VkrNetSceneEditStorage;
 
 typedef struct VkrNetSceneEditScenes {

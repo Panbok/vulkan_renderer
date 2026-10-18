@@ -50,7 +50,7 @@
  *   UNDO, REDO  empty
  *   REVERT  container 16, the session sequence of the batch it reverts */
 #define SESSION_SERVICE_VERSION 1u
-#define SESSION_SCHEMA_HASH 0x434f4c4c4142000dull
+#define SESSION_SCHEMA_HASH 0x434f4c4c4142000eull
 #define SESSION_EDIT_CHANNEL 0u
 #define SESSION_PRESENCE_CHANNEL 1u
 #define SESSION_MESSAGE_MAX (8u << 20)
@@ -176,7 +176,14 @@ typedef struct SessionDepotJob {
   bool8_t publish;
   /* Commit: on the working copy's base instead of `parent`. */
   bool8_t from_base;
+  /* Commit: an automatic publish, which commits only when a file outside
+     the open scene's documents changed and has been quiet for a moment;
+     `skipped` when it found none. */
+  bool8_t automatic;
+  bool8_t skipped;
   char directory[1024];
+  /* Automatic publish: the open scene's document. */
+  char scene[1024];
   char branch[VKR_DEPOT_BRANCH_NAME];
   char message[128];
   VkrDepotId parent;
@@ -188,6 +195,10 @@ typedef struct SessionDepotJob {
 } SessionDepotJob;
 
 #define SESSION_FETCH_MAX 16u
+/* Automatic publishing looks for changed files this often, and publishes a
+   change once its file has not been written for the quiet time. */
+#define SESSION_PUBLISH_POLL_US 3000000ull
+#define SESSION_PUBLISH_QUIET_SECONDS 2
 /* Builds the host waits for its scene to save before hosting fails. */
 #define SESSION_SAVE_FRAMES 600u
 
@@ -322,6 +333,13 @@ struct VkrEditorSession {
   uint8_t mode;
   VkrNetHost *host;
   VkrNetSession *net;
+  /* Pumps `host`, so acknowledgments, resends and pacing keep their timing
+     however long a frame takes. Messages are still read and handled on the
+     UI thread: the public calls that reach the network hold its lock
+     (session_lock), `lock_depth` deep. NULL when it could not start; the
+     UI thread then pumps the host each build. */
+  VkrNetHostThread *net_thread;
+  uint32_t lock_depth;
   char name[VKR_EDITOR_SESSION_NAME_MAX];
   char address[64];
   char key[65];
@@ -359,6 +377,8 @@ struct VkrEditorSession {
   uint64_t history_budget;
   uint64_t revert_floor;
   uint8_t rebase;
+  /* When automatic publishing last looked for changed files. */
+  uint64_t publish_polled_at;
   uint32_t rebase_frames;
   uint64_t rebase_seq;
   uint64_t rebase_bytes;
@@ -388,6 +408,11 @@ struct VkrEditorSession {
      a physics batch. */
   VkrSceneCollisionLayers edit_layers;
   VkrScenePhysicsChange *edit_physics;
+  /* The world partition cell the last placed edit lacked, and the cell this
+     editor last loaded for an edit, so a cell that does not load fails the
+     edit instead of retrying it every frame. */
+  VkrNetSceneEditMissingCell missing;
+  VkrNetSceneEditMissingCell cell_requested;
   VkrSampleEditBatchResult refused;
   VkrSceneEditRequest scratch;
   SessionBuffer payload;
@@ -700,9 +725,18 @@ void vkr_editor_session_digest(const VkrSampleUiFrame *frame,
   uint64_t count = 0u;
   for (uint32_t w = 0u; records && w < ArrayCount(worlds); ++w) {
     const VkrScene *scene = session_container(frame, worlds[w]);
+    /* Each editor streams world partition cells around its own camera, so
+       entities that stream with a cell stay out of the digest. Edits to
+       them still verify through the mirrored journals. */
+    SceneWorldPartition partition;
+    const bool8_t partitioned =
+        scene && vkr_scene_partition_settings(scene, &partition);
     for (uint32_t i = 0u; scene && i < scene->world->dir.living; ++i) {
       const VkrEntityId entity = vkr_entity_id_from_index(scene->world, i);
+      VkrScenePartitionCell cell;
       if (vkr_scene_entity_alive(scene, entity) &&
+          !(partitioned && vkr_scene_partition_entity_cell(scene, &partition,
+                                                           entity, &cell)) &&
           session_digest_entity(scene, entity, worlds[w], &records[count])) {
         count += 1u;
       }
@@ -860,6 +894,19 @@ static SessionEdit session_queue_pop(VkrEditorSession *session) {
     session->queue_head = 0u;
   }
   return edit;
+}
+
+/* Puts the edit just popped back at the head. The pop left room for it. */
+static void session_queue_unpop(VkrEditorSession *session,
+                                const SessionEdit *edit) {
+  if (session->queue_head) {
+    session->queue_head -= 1u;
+  } else {
+    MemCopy(session->queue + 1, session->queue,
+            session->queue_count * sizeof(*session->queue));
+  }
+  session->queue[session->queue_head] = *edit;
+  session->queue_count += 1u;
 }
 
 static void session_group_add(VkrEditorSession *session, uint64_t seq,
@@ -2053,6 +2100,38 @@ static void session_service_closed(void *context, VkrNetConnectionId connection,
   }
 }
 
+/* Takes the host thread's lock for a public call that reaches the
+   network; nested calls only count. */
+static void session_lock(VkrEditorSession *session) {
+  if (session->lock_depth++ == 0u && session->net_thread) {
+    vkr_net_host_thread_lock(session->net_thread);
+  }
+}
+
+static void session_unlock(VkrEditorSession *session) {
+  if (session->lock_depth == 0u) {
+    return;
+  }
+  if (--session->lock_depth == 0u && session->net_thread) {
+    vkr_net_host_thread_unlock(session->net_thread);
+  }
+}
+
+/* Starts pumping the host on its own thread, holding its lock at once when
+   a public call is under way. */
+static void session_start_thread(VkrEditorSession *session) {
+  session->net_thread =
+      vkr_net_host_thread_start(session->allocator, session->host, NULL, NULL);
+  if (!session->net_thread) {
+    log_warn("The session's network thread did not start; the editor pumps "
+             "the network each frame");
+    return;
+  }
+  if (session->lock_depth) {
+    vkr_net_host_thread_lock(session->net_thread);
+  }
+}
+
 static bool8_t session_start_network(VkrEditorSession *session,
                                      const VkrNetHostConfig *config) {
   if (!vkr_net_crypto_init()) {
@@ -2090,7 +2169,11 @@ static bool8_t session_start_network(VkrEditorSession *session,
       .event = session_service_event,
       .closed = session_service_closed,
   };
-  return vkr_net_session_register(session->net, &service);
+  if (!vkr_net_session_register(session->net, &service)) {
+    return false_v;
+  }
+  session_start_thread(session);
+  return true_v;
 }
 
 static void session_host_closed(VkrEditorSession *session, SessionLink *link) {
@@ -2116,7 +2199,8 @@ static void session_host_closed(VkrEditorSession *session, SessionLink *link) {
 }
 
 static void session_pump(VkrEditorSession *session) {
-  if (!vkr_net_host_pump(session->host, 0)) {
+  if (session->net_thread ? vkr_net_host_thread_failed(session->net_thread)
+                          : !vkr_net_host_pump(session->host, 0)) {
     session_fail(session, "The network socket failed.");
     return;
   }
@@ -2175,8 +2259,6 @@ static const char *session_action_name(VkrSceneEditAction action) {
   switch (action) {
   case VKR_SCENE_EDIT_TERRAIN:
     return "Terrain sample";
-  case VKR_SCENE_EDIT_PARTITION:
-    return "World partition";
   default:
     return "Scene load";
   }
@@ -2252,7 +2334,10 @@ static bool8_t session_ready(const VkrEditorSession *session) {
 }
 
 /* Takes this build's edit requests: journal edits enter the session instead
-   of applying here, and requests the session cannot carry are refused. */
+   of applying here, and requests the session cannot carry are refused.
+   Loading and pinning world partition cells stays local: an edit carries
+   the cells of the entities it names, and an editor loads a cell it lacks
+   before applying the edit (session_inject). */
 static void session_intercept(VkrEditorSession *session,
                               const VkrSampleUiFrame *frame) {
   VkrSampleSceneRequest *scene_request = frame->scene_request;
@@ -2273,7 +2358,8 @@ static void session_intercept(VkrEditorSession *session,
   if (edit && edit->action != VKR_SCENE_EDIT_NONE &&
       edit->action != VKR_SCENE_EDIT_SELECT &&
       edit->action != VKR_SCENE_EDIT_FRAME &&
-      edit->action != VKR_SCENE_EDIT_SAVE) {
+      edit->action != VKR_SCENE_EDIT_SAVE &&
+      edit->action != VKR_SCENE_EDIT_PARTITION) {
     SessionPayload payload = {.scenes = &scenes, .request = edit};
     if (edit->action == VKR_SCENE_EDIT_UNDO) {
       payload.kind = SESSION_EDIT_UNDO;
@@ -2690,7 +2776,8 @@ static bool8_t session_place(VkrEditorSession *session,
         .collision_layers = &session->edit_layers,
         .physics_changes = session->edit_physics,
         .physics_capacity =
-            session->edit_physics ? SESSION_PHYSICS_CHANGE_MAX : 0u};
+            session->edit_physics ? SESSION_PHYSICS_CHANGE_MAX : 0u,
+        .missing = &session->missing};
     if (!vkr_net_scene_edit_read(&reader, &scenes, &storage, request,
                                  &entity_ref, &parent_ref, error, capacity) ||
         !vkr_bit_reader_at_end(&reader)) {
@@ -2741,9 +2828,10 @@ static bool8_t session_place(VkrEditorSession *session,
       string_format(error, capacity, "Out of memory.");
       return false_v;
     }
+    const VkrNetSceneEditStorage storage = {.missing = &session->missing};
     for (uint32_t i = 0u; i < count; ++i) {
       VkrSampleEditBatchItem *item = &session->items[i];
-      if (!vkr_net_scene_edit_read(&reader, &scenes, NULL, &item->request,
+      if (!vkr_net_scene_edit_read(&reader, &scenes, &storage, &item->request,
                                    &item->entity_ref, &item->parent_ref, error,
                                    capacity)) {
         return false_v;
@@ -2799,6 +2887,37 @@ static uint64_t session_revert_seq(const SessionEdit *edit) {
   vkr_bit_reader_init(&reader, edit->payload, edit->size);
   (void)vkr_bit_read(&reader, 16u);
   return vkr_bit_read_varuint(&reader);
+}
+
+/* Loads and pins the world partition cell the last placed edit lacked, so
+   the edit applies on the next build; false when it lacked none or this
+   editor already loaded that cell for it and it is still missing. */
+static bool8_t session_load_missing_cell(VkrEditorSession *session,
+                                         const VkrSampleUiFrame *frame) {
+  const VkrNetSceneEditMissingCell missing = session->missing;
+  const VkrNetSceneEditMissingCell requested = session->cell_requested;
+  if (!missing.found) {
+    return false_v;
+  }
+  if (requested.found && requested.world == missing.world &&
+      requested.cell.x == missing.cell.x &&
+      requested.cell.z == missing.cell.z) {
+    session->cell_requested = (VkrNetSceneEditMissingCell){0};
+    return false_v;
+  }
+  const VkrNetSceneEditScenes scenes = session_scenes(frame);
+  if (missing.world != 0u || !scenes.containers[0]) {
+    /* Only the primary scene streams cells (ADR-086). */
+    return false_v;
+  }
+  *frame->scene_edit = (VkrSceneEditRequest){
+      .action = VKR_SCENE_EDIT_PARTITION,
+      .partition_cells = {missing.cell.x, missing.cell.z, missing.cell.x,
+                          missing.cell.z}};
+  session->cell_requested = missing;
+  log_info("Loading cell %d,%d for a session edit", missing.cell.x,
+           missing.cell.z);
+  return true_v;
 }
 
 /* Puts the next queued edit, or a rollback, into the free request slots. */
@@ -2864,8 +2983,13 @@ static void session_inject(VkrEditorSession *session,
     char error[192] = {0};
     uint16_t container = 0u;
     bool8_t as_batch = false_v;
+    session->missing = (VkrNetSceneEditMissingCell){0};
     if (!session_place(session, frame, &edit, own, slot_token, &container,
                        &as_batch, error, sizeof(error))) {
+      if (session_load_missing_cell(session, frame)) {
+        session_queue_unpop(session, &edit);
+        return;
+      }
       if (!host) {
         session_fail(session, "Session edit %llu does not apply here: %s",
                      (unsigned long long)edit.seq, error);
@@ -2888,6 +3012,7 @@ static void session_inject(VkrEditorSession *session,
       session_edit_release(&edit);
       continue;
     }
+    session->cell_requested = (VkrNetSceneEditMissingCell){0};
     *inflight = (SessionInflight){.active = true_v,
                                   .as_batch = as_batch,
                                   .edit = edit,
@@ -3129,6 +3254,64 @@ static bool8_t session_depot_ready(const VkrEditorSession *session) {
          session->rebase != SESSION_REBASE_SAVING;
 }
 
+/* Whether `path`, relative to the working copy, is one of the open scene's
+   documents: the scene, its sidecar or its cell documents, which share the
+   scene's name without ".json". Those travel as edits, so changing them
+   alone publishes nothing. */
+static bool8_t session_scene_document(const char *path, const char *stem,
+                                      uint32_t stem_length) {
+  return stem_length && string_length(path) >= stem_length &&
+         MemCompare(path, stem, stem_length) == 0;
+}
+
+/* Automatic publish: whether a file outside the open scene's documents
+   changed, and whether every such file has been quiet long enough. */
+static bool8_t session_publish_wanted(VkrDepotWorkspace *workspace,
+                                      const char *scene, bool8_t *out_quiet,
+                                      char *error, uint32_t capacity) {
+  *out_quiet = true_v;
+  char absolute[1024];
+  char stem[1024] = {0};
+  uint32_t stem_length = 0u;
+  const uint32_t root_length = (uint32_t)string_length(workspace->root);
+  if (scene[0] && vkr_bakery_path_absolute(scene, absolute, sizeof(absolute)) &&
+      string_length(absolute) > root_length + 1u &&
+      MemCompare(absolute, workspace->root, root_length) == 0) {
+    string_format(stem, sizeof(stem), "%s", absolute + root_length + 1u);
+    for (char *c = stem; *c; ++c) {
+      *c = *c == '\\' ? '/' : *c;
+    }
+    stem_length = (uint32_t)string_length(stem);
+    if (stem_length > 5u && string_equals(stem + stem_length - 5u, ".json")) {
+      stem_length -= 5u;
+    }
+  }
+  VkrDepotChangeList changes = {0};
+  if (!vkr_depot_status(workspace, &changes, error, capacity)) {
+    return false_v;
+  }
+  const int64_t now = vkr_bakery_unix_seconds();
+  bool8_t wanted = false_v;
+  for (uint32_t i = 0u; i < changes.count; ++i) {
+    const VkrDepotChangeEntry *entry = &changes.entries[i];
+    if (session_scene_document(entry->path, stem, stem_length)) {
+      continue;
+    }
+    wanted = true_v;
+    char file[1024];
+    VkrBakeryStat stat;
+    if (entry->change != VKR_DEPOT_CHANGE_DELETED &&
+        vkr_bakery_path_join(file, sizeof(file), workspace->root,
+                             entry->path) &&
+        vkr_bakery_stat(file, &stat) && stat.exists &&
+        now - stat.mtime_ns / 1000000000 < SESSION_PUBLISH_QUIET_SECONDS) {
+      *out_quiet = false_v;
+    }
+  }
+  vkr_depot_change_list_free(&changes);
+  return wanted;
+}
+
 static void *session_depot_worker(void *argument) {
   SessionDepotJob *job = argument;
   VkrDMemory memory;
@@ -3147,14 +3330,22 @@ static void *session_depot_worker(void *argument) {
     string_format(job->error, sizeof(job->error), "no depot working copy at %s",
                   job->directory);
   } else {
+    /* An automatic publish that finds nothing to publish, or a file still
+       being written, ends here; the next poll looks again. */
+    bool8_t quiet = true_v;
+    job->skipped = job->automatic && job->kind == SESSION_DEPOT_COMMIT &&
+                   (!session_publish_wanted(&workspace, job->scene, &quiet,
+                                            job->error, sizeof(job->error)) ||
+                    !quiet);
     /* A commit snapshots before it connects: hashing a large scene outlasts
        the idle timeout of an open connection. */
     const VkrDepotId parent = job->from_base ? workspace.base : job->parent;
     VkrDepotPendingCommit pending = {0};
     const bool8_t snapshot =
-        job->kind != SESSION_DEPOT_COMMIT ||
-        vkr_depot_commit_snapshot(&workspace, &parent, job->message, &pending,
-                                  job->error, sizeof(job->error));
+        !job->skipped &&
+        (job->kind != SESSION_DEPOT_COMMIT ||
+         vkr_depot_commit_snapshot(&workspace, &parent, job->message, &pending,
+                                   job->error, sizeof(job->error)));
     const VkrDepotConnectConfig connect = {.address = workspace.remote,
                                            .server_key = workspace.server_key,
                                            .store = &workspace.store};
@@ -3174,6 +3365,7 @@ static void *session_depot_worker(void *argument) {
                                          VKR_DEPOT_CONFLICT_FAIL, &kept, NULL,
                                          job->error, sizeof(job->error));
     }
+    job->ok = job->ok || (job->skipped && !job->error[0]);
     vkr_depot_pending_commit_free(&pending);
     vkr_depot_disconnect(connection);
     vkr_depot_workspace_close(&workspace);
@@ -3183,6 +3375,39 @@ static void *session_depot_worker(void *argument) {
   }
   vkr_atomic_bool_store(&job->done, true_v, VKR_MEMORY_ORDER_RELEASE);
   return NULL;
+}
+
+static bool8_t session_depot_start(VkrEditorSession *session, uint8_t kind);
+
+/* Publishes files this editor wrote without being asked: every few seconds,
+   while no other depot step runs or waits, a worker looks for changed files
+   outside the open scene's documents and, once they are quiet, commits the
+   working copy as session.publish does. */
+static void session_publish_poll(VkrEditorSession *session,
+                                 const VkrSampleUiFrame *frame) {
+  SessionDepotJob *job = &session->job;
+  if (job->running || session->fetch_count ||
+      session->depot_phase != SESSION_DEPOT_READY ||
+      session->rebase != SESSION_REBASE_NONE ||
+      (session->mode == VKR_EDITOR_SESSION_PARTICIPANT && !session->welcomed) ||
+      session->now - session->publish_polled_at < SESSION_PUBLISH_POLL_US) {
+    return;
+  }
+  session->publish_polled_at = session->now;
+  job->from_base = false_v;
+  job->automatic = true_v;
+  job->publish = true_v;
+  job->parent = session->depot_head;
+  job->expected = session->depot_head;
+  string_format(job->branch, sizeof(job->branch), "%s", session->depot_branch);
+  string_format(job->message, sizeof(job->message), "Files from %s",
+                session->name);
+  string_format(job->scene, sizeof(job->scene), "%.*s",
+                (int)frame->scene_path.length,
+                (const char *)frame->scene_path.str);
+  if (!session_depot_start(session, SESSION_DEPOT_COMMIT)) {
+    log_warn("An automatic depot publish could not start");
+  }
 }
 
 /* Starts the step the job fields describe. */
@@ -3586,6 +3811,13 @@ static void session_depot_update(VkrEditorSession *session,
   if (finished && job->kind == SESSION_DEPOT_COMMIT &&
       session->rebase == SESSION_REBASE_COMMITTING) {
     session_rebase_finished(session);
+  } else if (finished && job->kind == SESSION_DEPOT_COMMIT && job->automatic &&
+             (job->skipped || !job->ok)) {
+    /* A publish that lost a race to another editor's waits for that
+       commit's fetch, then the next poll commits on top of it. */
+    if (!job->ok) {
+      log_warn("Automatic publishing to the depot failed: %s", job->error);
+    }
   } else if (finished && job->kind == SESSION_DEPOT_COMMIT) {
     if (!job->ok) {
       log_warn("Publishing to the depot failed: %s", job->error);
@@ -3610,6 +3842,9 @@ static void session_depot_update(VkrEditorSession *session,
                session->depot_branch);
     }
   }
+  if (finished) {
+    job->automatic = false_v;
+  }
   if (session->mode == VKR_EDITOR_SESSION_HOST) {
     session_rebase_step(session, frame);
   }
@@ -3622,6 +3857,7 @@ static void session_depot_update(VkrEditorSession *session,
       log_warn("A depot fetch could not start");
     }
   }
+  session_publish_poll(session, frame);
 }
 
 bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
@@ -3639,6 +3875,7 @@ bool8_t vkr_editor_session_publish_files(VkrEditorSession *session,
     return false_v;
   }
   job->from_base = false_v;
+  job->automatic = false_v;
   job->publish = true_v;
   job->parent = session->depot_head;
   job->expected = session->depot_head;
@@ -3669,6 +3906,15 @@ VkrEditorSession *vkr_editor_session_create(VkrAllocator *allocator) {
 }
 
 static void session_reset(VkrEditorSession *session) {
+  /* The host thread stops first, without its lock; the closes below then
+     leave from this thread. */
+  if (session->net_thread) {
+    if (session->lock_depth) {
+      vkr_net_host_thread_unlock(session->net_thread);
+    }
+    vkr_net_host_thread_stop(session->net_thread);
+    session->net_thread = NULL;
+  }
   /* A depot step owns the job until it ends. */
   if (session->job.running) {
     (void)vkr_thread_join(session->job.thread);
@@ -3806,10 +4052,10 @@ static bool8_t session_begin(VkrEditorSession *session,
   return true_v;
 }
 
-bool8_t vkr_editor_session_host(VkrEditorSession *session,
-                                const VkrSampleUiFrame *frame, const char *bind,
-                                const char *name, char *error,
-                                uint32_t capacity) {
+static bool8_t session_host_locked(VkrEditorSession *session,
+                                   const VkrSampleUiFrame *frame,
+                                   const char *bind, const char *name,
+                                   char *error, uint32_t capacity) {
   if (!session_begin(session, frame, name, "host", error, capacity)) {
     return false_v;
   }
@@ -3864,11 +4110,25 @@ bool8_t vkr_editor_session_host(VkrEditorSession *session,
   return true_v;
 }
 
-bool8_t vkr_editor_session_join(VkrEditorSession *session,
-                                const VkrSampleUiFrame *frame,
-                                const char *address, const char *key_hex,
+bool8_t vkr_editor_session_host(VkrEditorSession *session,
+                                const VkrSampleUiFrame *frame, const char *bind,
                                 const char *name, char *error,
                                 uint32_t capacity) {
+  if (!session) {
+    return false_v;
+  }
+  session_lock(session);
+  const bool8_t ok =
+      session_host_locked(session, frame, bind, name, error, capacity);
+  session_unlock(session);
+  return ok;
+}
+
+static bool8_t session_join_locked(VkrEditorSession *session,
+                                   const VkrSampleUiFrame *frame,
+                                   const char *address, const char *key_hex,
+                                   const char *name, char *error,
+                                   uint32_t capacity) {
   uint8_t server_key[32];
   VkrNetAddress server;
   if (!address || !session_address(address, &server)) {
@@ -3918,8 +4178,23 @@ bool8_t vkr_editor_session_join(VkrEditorSession *session,
   return true_v;
 }
 
-void vkr_editor_session_update(VkrEditorSession *session,
-                               const VkrSampleUiFrame *frame) {
+bool8_t vkr_editor_session_join(VkrEditorSession *session,
+                                const VkrSampleUiFrame *frame,
+                                const char *address, const char *key_hex,
+                                const char *name, char *error,
+                                uint32_t capacity) {
+  if (!session) {
+    return false_v;
+  }
+  session_lock(session);
+  const bool8_t ok = session_join_locked(session, frame, address, key_hex, name,
+                                         error, capacity);
+  session_unlock(session);
+  return ok;
+}
+
+static void session_update_locked(VkrEditorSession *session,
+                                  const VkrSampleUiFrame *frame) {
   if (!session || session->mode == VKR_EDITOR_SESSION_NONE) {
     return;
   }
@@ -3960,6 +4235,16 @@ void vkr_editor_session_update(VkrEditorSession *session,
     return;
   }
   vkr_net_core_flush(vkr_net_host_core(session->host));
+}
+
+void vkr_editor_session_update(VkrEditorSession *session,
+                               const VkrSampleUiFrame *frame) {
+  if (!session || session->mode == VKR_EDITOR_SESSION_NONE) {
+    return;
+  }
+  session_lock(session);
+  session_update_locked(session, frame);
+  session_unlock(session);
 }
 
 void vkr_editor_session_status(const VkrEditorSession *session,
@@ -4059,11 +4344,22 @@ static bool8_t session_allow_key(VkrEditorSession *session,
   return true_v;
 }
 
-bool8_t vkr_editor_session_allow(VkrEditorSession *session, const char *key_hex,
-                                 bool8_t allowed) {
+static bool8_t session_allow_locked(VkrEditorSession *session,
+                                    const char *key_hex, bool8_t allowed) {
   uint8_t key[32];
   return session && key_hex && session_parse_hex(key_hex, key, sizeof(key)) &&
          session_allow_key(session, key, allowed);
+}
+
+bool8_t vkr_editor_session_allow(VkrEditorSession *session, const char *key_hex,
+                                 bool8_t allowed) {
+  if (!session) {
+    return false_v;
+  }
+  session_lock(session);
+  const bool8_t ok = session_allow_locked(session, key_hex, allowed);
+  session_unlock(session);
+  return ok;
 }
 
 // =============================================================================
@@ -4142,8 +4438,8 @@ bool8_t vkr_editor_session_hosting(const VkrEditorSession *session) {
   return session && session->mode == VKR_EDITOR_SESSION_HOST;
 }
 
-uint64_t vkr_editor_session_ask(VkrEditorSession *session,
-                                const VkrEditorSessionAsk *ask) {
+static uint64_t session_ask_locked(VkrEditorSession *session,
+                                   const VkrEditorSessionAsk *ask) {
   if (!vkr_editor_session_forwards(session)) {
     return 0u;
   }
@@ -4154,6 +4450,17 @@ uint64_t vkr_editor_session_ask(VkrEditorSession *session,
                               SESSION_EDIT_CHANNEL, session->message.data, size)
              ? sent.token
              : 0u;
+}
+
+uint64_t vkr_editor_session_ask(VkrEditorSession *session,
+                                const VkrEditorSessionAsk *ask) {
+  if (!session) {
+    return 0u;
+  }
+  session_lock(session);
+  const uint64_t id = session_ask_locked(session, ask);
+  session_unlock(session);
+  return id;
 }
 
 bool8_t vkr_editor_session_take_answer(VkrEditorSession *session,
@@ -4181,9 +4488,9 @@ bool8_t vkr_editor_session_take_ask(VkrEditorSession *session,
   return true_v;
 }
 
-void vkr_editor_session_reply(VkrEditorSession *session,
-                              const VkrEditorSessionAsk *ask,
-                              const VkrEditorSessionAnswer *answer) {
+static void session_reply_locked(VkrEditorSession *session,
+                                 const VkrEditorSessionAsk *ask,
+                                 const VkrEditorSessionAnswer *answer) {
   SessionLink *link = vkr_editor_session_hosting(session)
                           ? session_link_by_id(session, ask->peer)
                           : NULL;
@@ -4199,11 +4506,22 @@ void vkr_editor_session_reply(VkrEditorSession *session,
   }
 }
 
-void vkr_editor_session_publish(VkrEditorSession *session,
-                                const VkrEditorClaim *claims,
-                                uint32_t claim_count,
-                                const VkrEditorTask *tasks,
-                                uint32_t task_count) {
+void vkr_editor_session_reply(VkrEditorSession *session,
+                              const VkrEditorSessionAsk *ask,
+                              const VkrEditorSessionAnswer *answer) {
+  if (!session) {
+    return;
+  }
+  session_lock(session);
+  session_reply_locked(session, ask, answer);
+  session_unlock(session);
+}
+
+static void session_publish_locked(VkrEditorSession *session,
+                                   const VkrEditorClaim *claims,
+                                   uint32_t claim_count,
+                                   const VkrEditorTask *tasks,
+                                   uint32_t task_count) {
   if (!vkr_editor_session_hosting(session)) {
     return;
   }
@@ -4227,6 +4545,19 @@ void vkr_editor_session_publish(VkrEditorSession *session,
                          size);
     }
   }
+}
+
+void vkr_editor_session_publish(VkrEditorSession *session,
+                                const VkrEditorClaim *claims,
+                                uint32_t claim_count,
+                                const VkrEditorTask *tasks,
+                                uint32_t task_count) {
+  if (!session) {
+    return;
+  }
+  session_lock(session);
+  session_publish_locked(session, claims, claim_count, tasks, task_count);
+  session_unlock(session);
 }
 
 uint64_t vkr_editor_session_epoch(const VkrEditorSession *session) {
@@ -4601,9 +4932,9 @@ static void session_window_peers(VkrEditorUi *editor,
   }
 }
 
-void vkr_editor_session_window_build(VkrEditorUi *editor,
-                                     const VkrSampleUiFrame *frame,
-                                     VkrUiRect bounds) {
+static void session_window_build_locked(VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        VkrUiRect bounds) {
   VkrEditorSession *session = editor->session;
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -4725,8 +5056,21 @@ void vkr_editor_session_window_build(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
-void vkr_editor_session_accepted(VkrEditorSession *session, uint16_t container,
-                                 uint64_t group) {
+void vkr_editor_session_window_build(VkrEditorUi *editor,
+                                     const VkrSampleUiFrame *frame,
+                                     VkrUiRect bounds) {
+  if (!editor->session) {
+    session_window_build_locked(editor, frame, bounds);
+    return;
+  }
+  VkrEditorSession *session = editor->session;
+  session_lock(session);
+  session_window_build_locked(editor, frame, bounds);
+  session_unlock(session);
+}
+
+static void session_accepted_locked(VkrEditorSession *session,
+                                    uint16_t container, uint64_t group) {
   if (!session || session->mode == VKR_EDITOR_SESSION_NONE) {
     return;
   }
@@ -4751,6 +5095,16 @@ void vkr_editor_session_accepted(VkrEditorSession *session, uint16_t container,
     (void)session_send(session, session->connection, SESSION_EDIT_CHANNEL,
                        bytes, size);
   }
+}
+
+void vkr_editor_session_accepted(VkrEditorSession *session, uint16_t container,
+                                 uint64_t group) {
+  if (!session) {
+    return;
+  }
+  session_lock(session);
+  session_accepted_locked(session, container, group);
+  session_unlock(session);
 }
 
 bool8_t vkr_editor_session_take_accepted(VkrEditorSession *session,

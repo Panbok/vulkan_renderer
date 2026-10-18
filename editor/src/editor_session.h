@@ -166,7 +166,9 @@ void vkr_editor_session_status(const VkrEditorSession *session,
                                VkrEditorSessionStatus *out_status);
 
 /* The digest a participant must match to join: every entity with a document
-   id in the loaded containers, by id, with its name, pose and parent. */
+   id in the loaded containers, by id, with its name, pose and parent, except
+   entities that stream with a world partition cell, which each editor loads
+   around its own camera. */
 void vkr_editor_session_digest(const VkrSampleUiFrame *frame,
                                uint8_t out_digest[32]);
 

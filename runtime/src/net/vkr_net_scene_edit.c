@@ -108,6 +108,30 @@ net_edit_read_type_name(VkrBitReader *reader, char *error, uint32_t capacity) {
   return type;
 }
 
+/* A cell coordinate as a zigzag varuint. */
+static void net_edit_write_coordinate(VkrBitWriter *writer, int32_t value) {
+  const uint32_t zigzag = ((uint32_t)value << 1) ^ (uint32_t)(value >> 31);
+  vkr_bit_write_varuint(writer, zigzag);
+}
+
+static int32_t net_edit_read_coordinate(VkrBitReader *reader) {
+  const uint32_t zigzag = (uint32_t)vkr_bit_read_varuint(reader);
+  return (int32_t)(zigzag >> 1) ^ -(int32_t)(zigzag & 1u);
+}
+
+static bool8_t net_edit_cell_loaded(const VkrScene *scene,
+                                    VkrScenePartitionCell cell) {
+  uint32_t count = 0u;
+  const VkrScenePartitionCellRecord *records =
+      vkr_scene_partition_cells(scene, &count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (records[i].cell.x == cell.x && records[i].cell.z == cell.z) {
+      return (records[i].flags & VKR_SCENE_PARTITION_CELL_LOADED) != 0u;
+    }
+  }
+  return false_v;
+}
+
 static bool8_t net_edit_write_entity(VkrBitWriter *writer,
                                      const VkrNetSceneEditScenes *scenes,
                                      VkrEntityId entity, int32_t batch_ref,
@@ -133,11 +157,25 @@ static bool8_t net_edit_write_entity(VkrBitWriter *writer,
   vkr_bit_write(writer, entity.parts.world, 16u);
   vkr_bit_write(writer, vkr_load_le_u64(ref.bytes), 64u);
   vkr_bit_write(writer, vkr_load_le_u64(ref.bytes + 8), 64u);
+
+  /* The cell the entity streams with, so an editor that has not loaded it
+     can load it before applying the edit. */
+  SceneWorldPartition settings;
+  VkrScenePartitionCell cell;
+  const bool8_t in_cell =
+      vkr_scene_partition_settings(scene, &settings) &&
+      vkr_scene_partition_entity_cell(scene, &settings, entity, &cell);
+  vkr_bit_write(writer, in_cell, 1u);
+  if (in_cell) {
+    net_edit_write_coordinate(writer, cell.x);
+    net_edit_write_coordinate(writer, cell.z);
+  }
   return true_v;
 }
 
 static bool8_t net_edit_read_entity(VkrBitReader *reader,
                                     const VkrNetSceneEditScenes *scenes,
+                                    const VkrNetSceneEditStorage *storage,
                                     VkrEntityId *out_entity,
                                     int32_t *out_batch_ref, char *error,
                                     uint32_t capacity) {
@@ -164,12 +202,28 @@ static bool8_t net_edit_read_entity(VkrBitReader *reader,
   VkrEntityRef ref;
   vkr_store_le_u64(ref.bytes, vkr_bit_read(reader, 64u));
   vkr_store_le_u64(ref.bytes + 8, vkr_bit_read(reader, 64u));
+  const bool8_t in_cell = vkr_bit_read(reader, 1u) != 0u;
+  VkrScenePartitionCell cell = {0};
+  if (in_cell) {
+    cell.x = net_edit_read_coordinate(reader);
+    cell.z = net_edit_read_coordinate(reader);
+  }
   const VkrScene *scene = net_edit_container(scenes, world);
   const VkrEntityId entity =
       scene ? vkr_scene_find_entity_ref(scene, &ref) : VKR_ENTITY_ID_INVALID;
   if (!entity.u64) {
     char text[37];
     vkr_entity_ref_format(&ref, text);
+    if (in_cell && scene && !net_edit_cell_loaded(scene, cell)) {
+      if (storage && storage->missing) {
+        *storage->missing = (VkrNetSceneEditMissingCell){
+            .found = true_v, .world = world, .cell = cell};
+      }
+      string_format(error, capacity,
+                    "entity %s is in cell %d,%d, which is not loaded", text,
+                    cell.x, cell.z);
+      return false_v;
+    }
     string_format(error, capacity, "no entity %s in container %u", text, world);
     return false_v;
   }
@@ -846,16 +900,18 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
   const bool8_t has_entity = net_edit_has_entity(action);
   const bool8_t has_parent =
       action == VKR_SCENE_EDIT_CREATE || action == VKR_SCENE_EDIT_REPARENT;
-  if (has_entity && !net_edit_read_entity(reader, scenes, &request->entity,
-                                          out_entity_ref, error, capacity)) {
+  if (has_entity &&
+      !net_edit_read_entity(reader, scenes, storage, &request->entity,
+                            out_entity_ref, error, capacity)) {
     return false_v;
   }
   if (has_entity && !request->entity.u64 && *out_entity_ref < 0) {
     string_format(error, capacity, "the edit names no entity");
     return false_v;
   }
-  if (has_parent && !net_edit_read_entity(reader, scenes, &request->parent,
-                                          out_parent_ref, error, capacity)) {
+  if (has_parent &&
+      !net_edit_read_entity(reader, scenes, storage, &request->parent,
+                            out_parent_ref, error, capacity)) {
     return false_v;
   }
   if (action == VKR_SCENE_EDIT_CREATE) {
@@ -917,8 +973,8 @@ bool8_t vkr_net_scene_edit_read(VkrBitReader *reader,
     for (uint32_t i = 0u; ok && i < count; ++i) {
       VkrScenePhysicsChange *change = &storage->physics_changes[i];
       int32_t batch_ref = -1;
-      ok = net_edit_read_entity(reader, scenes, &change->entity, &batch_ref,
-                                error, capacity) &&
+      ok = net_edit_read_entity(reader, scenes, storage, &change->entity,
+                                &batch_ref, error, capacity) &&
            batch_ref < 0 && change->entity.u64 &&
            net_edit_read_physics(reader, &change->snapshot, error, capacity);
     }

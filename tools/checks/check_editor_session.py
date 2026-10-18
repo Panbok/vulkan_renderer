@@ -89,14 +89,15 @@ def editor_env(work: pathlib.Path, autoclose: int = 600) -> dict:
 
 
 def launch(editor: str, work: pathlib.Path, script: str, log: pathlib.Path,
-           socket: str = "", autoclose: int = 600):
-    """Starts a headless editor on Bistro that closes after `autoclose`
-    seconds; `socket` opens its agent channel there instead of none."""
+           socket: str = "", autoclose: int = 600, scene: str = SCENE):
+    """Starts a headless editor on `scene` (Bistro) that closes after
+    `autoclose` seconds; `socket` opens its agent channel there instead of
+    none."""
     work.mkdir(parents=True, exist_ok=True)
     out = open(log, "w", encoding="utf-8", errors="replace")
     channel = ["--agent-socket", socket] if socket else ["--no-agent-socket"]
     process = subprocess.Popen(
-        [editor, "--headless", *channel, "--scene", SCENE, "--exec", script],
+        [editor, "--headless", *channel, "--scene", scene, "--exec", script],
         cwd=ROOT, env=editor_env(work, autoclose), stdout=out,
         stderr=subprocess.STDOUT)
     return process, out
@@ -130,7 +131,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=7341)
     parser.add_argument("--work", default=str(ROOT / ".scratch" /
                                               "editor-session"))
-    parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument("--timeout", type=float, default=1500.0)
     args = parser.parse_args()
     args.editor = str(pathlib.Path(args.editor).resolve())
     work = pathlib.Path(args.work)
@@ -138,11 +139,12 @@ def main() -> int:
     host_log = work / "host.log"
     guest_log = work / "guest.log"
     # The host keeps the session open while the guest loads Bistro, joins
-    # and edits; a cold Debug start takes minutes.
-    polls = "\n".join(["wait 8", "op session.status"] * 40)
+    # and edits before the host edits the guest's copy; a cold Debug start
+    # takes minutes, and on a Ryzen 5 2600 the guest outlasted 320 s of polls.
+    polls = "\n".join(["wait 8", "op session.status"] * 80)
     host, host_out = launch(args.editor, work / "host",
                             HOST_SCRIPT.format(port=args.port, polls=polls),
-                            host_log)
+                            host_log, autoclose=1200)
     deadline = time.time() + args.timeout
     key = None
     while time.time() < deadline and host.poll() is None:
