@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -21,10 +21,10 @@ editor share the host's claims, task board (with capabilities and slots)
 and change feed, and their batches wait for review on every editor. A
 scene in a depot working copy hosts from a depot commit that joiners check
 out, editors publish files to each other through the depot, and a long
-history gives joiners a newer depot base. Edits that do not travel yet
-(listed under [Decision](#what-travels)) and publishing a file without
-being asked stay in the proposal. Every
-check ran on one Windows host; macOS and cross-machine runs are
+history gives joiners a newer depot base. Files an editor writes publish
+on their own. World partition cells stay local to each editor: an edit
+loads the cells it needs. The session's network runs on a host thread.
+Every check ran on one Windows host; macOS and cross-machine runs are
 unverified.
 
 ## Context
@@ -58,6 +58,14 @@ container's journal.
   the Scene pointer's ray.
   The messages are hand-packed on the bit stream; the service's schema hash
   is a constant that names this layout.
+- A host thread (`vkr_net_host_thread_start`,
+  [ADR-105](105-network-transport-and-asset-depot.md)) pumps the socket, so
+  acknowledgments, resends and pacing keep their timing however long a
+  frame takes. Messages are still read, handled and applied on the UI
+  thread: the public session calls that reach the network hold the
+  thread's lock, nested calls only counting. Leaving stops the thread
+  before the closing packets go. If the thread cannot start, the UI thread
+  pumps the socket each build, as before.
 
 ### Edits on the wire
 
@@ -87,9 +95,19 @@ batches (a ragdoll's bodies), collision layers and scene settings as edits
 of their own; undo, redo and batch reverts; gizmo moves. Physics settings
 travel as values: the body and each collider by their descriptors (with
 the collider's authored id), the attachment and joints field by field, and
-the reader validates the snapshot. Partition edits and scene or World
-loads are refused while a session runs, with a Console warning or a batch
-result saying so.
+the reader validates the snapshot. Scene or World loads are refused while
+a session runs, with a Console warning.
+
+World partition cells ([ADR-086](086-world-partition.md)) stream around
+each editor's own camera, so two editors seldom hold the same cells.
+Loading and pinning cells stays local and never travels. Instead, an entity
+reference on the wire carries the cell the entity streams with
+([vkr_net_scene_edit.h](../../runtime/src/net/vkr_net_scene_edit.h)). An
+editor that lacks the entity because that cell is not loaded loads and pins
+the cell, then applies the edit on the next build; the host does the same
+for a participant's edit. A cell that is still missing after its load fails
+the edit as any other. The join digest leaves out entities that stream with
+a cell; the mirrored journals still verify every edit to them.
 
 ### Terrain
 
@@ -197,6 +215,14 @@ working copy names the server and key.
   working copy on the newest session commit; PUBLISHED, through the host,
   makes every other editor fetch and check it out in order. Two editors
   that publish at once: the second fails until the first arrives.
+- **Publishing on its own** (owner decision 2026-10-18: the whole working
+  copy). Every 3 s, while no depot step runs or waits, a worker takes the
+  working copy's status. When a file outside the open scene's documents
+  (the scene, its sidecar and its cells, which travel as edits) changed and
+  no such file was written in the last 2 s, it commits and publishes the
+  whole working copy as `session.publish` does, including a saved scene. A
+  publish that loses a race to another editor's waits for that commit's
+  fetch and tries again on a later poll.
 - The working copy stays on the session branch afterwards; moving the
   project's branch to it is a depot step outside the editor.
 - **Newer bases.** When the history since the newest base passes the
@@ -294,6 +320,15 @@ peer's name, camera, selection and pointer ray. `task.add`,
   hosting, or a different scene file, refuses the join.
 - One injected edit per build bounds replay speed to the frame rate: a
   history of 10,000 edits takes about three minutes at 60 Hz.
+- An edit to an object in a cell another editor has not loaded costs that
+  editor one extra build and a synchronous cell load. The cell stays pinned
+  until someone releases it in the World Partition window.
+- Automatic publishing commits whatever the working copy holds, so a scene
+  saved on two editors can still make one editor's fetch refuse with a
+  conflict, as an explicit Publish can.
+- From an `--exec` script, `op partition.load` waits forever: the operation
+  runs as a Cmd line and the Cmd runner is busy with the script itself. A
+  script uses the Cmd line `partition.load x0 z0 x1 z1` instead.
 
 ## Alternatives considered
 
@@ -387,9 +422,35 @@ Windows 10, Ryzen 5 2600, clang, `build_debug`, 2026-10-10.
   `session-alpha-….base`; the guest joins from `main`, checks it out,
   replays 5 edits and holds `PreHost`, `Bulk 0` and `AfterBase`; the
   published file and digests match as before. Passes.
+- 2026-10-18, same host and build (partition cells, publishing on its own,
+  host thread):
+  - `--suite net` passes, including `test_net_scene_edit_cells`: an edit
+    naming an object saved in cell 2,-1 fails to read on a peer that has
+    not loaded the cell and reports that cell; after
+    `vkr_scene_edit_cell_load` the same bytes resolve and apply.
+  - `python tools/checks/check_session_partition.py --editor
+    build_debug/editor/vkr_editor.exe`
+    ([check_session_partition.py](../../tools/checks/check_session_partition.py))
+    copies Bistro to an ignored scratch scene, gives it a world partition
+    and saves a cube 2 km out into cell 15,15. The host loads that cell,
+    hosts and renames the cube; the guest, its camera at Bistro, replays the
+    rename, logs `Loading cell 15,15 for a session edit` and holds
+    `FarCubeRenamed`. Both end at sequence 2 with equal digests. Passes.
+  - `check_editor_session.py` now polls the host for 640 s: at 320 s the
+    Debug guest outlasted it, and the check failed the same way at
+    3d1f621c without these changes (sequences 10 and 11, the guest's
+    physics body after the host's). Passes at sequence 11, 5,991 to 5,992
+    entities on the duplicate.
+  - `check_agent_federation.py` passes at sequence 10.
+  - `check_session_depot.py` now writes `notes.txt` on the host and
+    `reply.txt` on the guest without publishing: the host's automatic
+    commit `448d0ae7…` and the guest's `df31adb9…` each reach the other
+    working copy, then `session.publish` commits `74054c51…`, which the
+    guest fetches. No other commit is made. Passes.
 - Not exercised: gizmo drags and their preview (no headless drag script),
   drawing of the pointer ray, batch reverts across editors, a failed newer
-  base, macOS, two machines.
+  base, a cell that fails to load for an edit, a publish that loses a race,
+  the frame time with the host thread, macOS, two machines.
 
 ## Revisit when
 

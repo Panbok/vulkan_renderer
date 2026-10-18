@@ -105,7 +105,7 @@ fallback.
 | Gap | Work | Evidence needed |
 |---|---|---|
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
-| Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session still pumps on the UI thread | The session on the host thread; the frame time measured with the receiver on another machine |
+| Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session pumps on the host thread too (ADR-106) | The frame time of both measured with the other editor on another machine |
 | Sparse working copy | Files fetched when opened, through the remote content mount of asset streaming | A Bistro scene opens from a sparse working copy |
 | Shared Bakery cache | Action keys to output hashes in a depot; a cook downloads instead of re-encoding | A second machine's cook of Bistro hits the cache |
 | Security | An independent review; the fuzzers run under ASan and UBSan (ADR-105) | Review closed before use outside a trusted network |
@@ -151,14 +151,13 @@ from the session base, shared undo, gizmo moves and their previews,
 seeded duplicates, terrain as results, the Session window, other
 editors' cameras, names, selections and pointer rays in the Scene, joining
 and publishing files through the depot, newer depot bases for long
-histories, and access by allowed identity keys. The rest:
+histories, access by allowed identity keys, edits that load the
+partition cells they need, publishing files on their own and the host
+thread. The rest:
 
-- **Partition edits.** Loading and pinning world partition cells travels,
-  so every editor holds the same cells.
-- **Publishing on its own.** An import, a material graph or another file
-  an editor writes during a session publishes without `session.publish`,
-  and each platform cooks its own variant or takes it from the shared
-  Bakery cache.
+- A file published during a session reaches other platforms as authored;
+  each cooks its own variant, or takes it from the shared Bakery cache
+  once that exists (see [Gaps](#gaps-of-phases-0-to-3)).
 - Play stays local to each participant in this proposal.
 
 ### Agent federation (use case 5)
@@ -231,7 +230,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Phase | Scope | Exit evidence |
 |---|---|---|
-| 4. Editor collaboration and agents | Remaining after ADR-106: publishing on its own, partition edits | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
+| 4. Editor collaboration and agents | Remaining after ADR-106: the same evidence between two machines | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
 | 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
 
