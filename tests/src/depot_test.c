@@ -1473,7 +1473,10 @@ static void *depot_remote_read(void *argument) {
    it arrives with other bytes, when readers asking at once on several
    threads see a failure, when an unlisted path is served, when a second
    remote fetches a file already present, or when publishing the same cooked
-   files again commits. */
+   files again commits. Then a member's Get: fails when the cooked texture
+   does not arrive with the author's bytes, when a second fetch writes it
+   again, or when, after the author changes its source without publishing,
+   the old cooked file is written instead of left to the cook. */
 static void test_depot_remote(void) {
   printf("  Running test_depot_remote...\n");
   char store_root[VKR_DEPOT_PATH_CAPACITY];
@@ -1634,6 +1637,77 @@ static void test_depot_remote(void) {
   assert(stats.fetched == 0u);
   vkr_depot_remote_close(remote);
 
+  /* A member gets the project and takes the cooked texture. */
+  char member_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("remote_member", member_root, sizeof(member_root));
+  const VkrDepotCloneConfig clone = {.address = address,
+                                     .server_key = info.server_key,
+                                     .directory = member_root,
+                                     .branch = "main",
+                                     .codec = vkr_depot_zstd_codec()};
+  VkrDepotCloneResult cloned = {0};
+  assert(vkr_depot_clone(&allocator, &clone, &cloned, error, sizeof(error)));
+  VkrDepotWorkspace member;
+  assert(
+      vkr_depot_workspace_open(&member, member_root, vkr_depot_zstd_codec()));
+  VkrDepotConnectConfig member_connect = {.address = address,
+                                          .server_key = info.server_key,
+                                          .store = &member.store,
+                                          .timeout_ms = 5000u};
+  connection = vkr_depot_connect(&allocator, &member_connect, NULL, error,
+                                 sizeof(error));
+  assert(connection);
+  client = vkr_depot_connection_client(connection);
+  VkrDepotCookedFetch fetched;
+  if (!vkr_depot_fetch_cooked(&member, client, "main", &fetched, error,
+                              sizeof(error))) {
+    printf("    cooked fetch failed: %s\n", error);
+    assert(false && "cooked fetch");
+  }
+  assert(fetched.listed == 1u && fetched.written == 1u && fetched.stale == 0u &&
+         fetched.present == 0u);
+  char member_cooked[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(member_cooked, sizeof(member_cooked), member_root,
+                              "textures/wall.png.vkt"));
+  assert(depot_test_files_equal(member_cooked, original));
+  VkrDepotFileList cache = {0};
+  assert(vkr_depot_cooked_cache_load(&member, &cache) && cache.count == 1u);
+  vkr_depot_file_list_free(&cache);
+  assert(vkr_depot_fetch_cooked(&member, client, "main", &fetched, error,
+                                sizeof(error)));
+  assert(fetched.present == 1u && fetched.written == 0u);
+  vkr_depot_disconnect(connection);
+
+  /* The author changes the texture's source and publishes no cooked file:
+     the member's next cooked fetch leaves that texture to its cook. */
+  depot_test_write(author_root, "textures/wall.png", "new png bytes", 13u);
+  connection =
+      vkr_depot_connect(&allocator, &connect, NULL, error, sizeof(error));
+  assert(connection);
+  client = vkr_depot_connection_client(connection);
+  const VkrDepotId author_base = author.base;
+  assert(vkr_depot_commit_snapshot(&author, &author_base, "new wall", &pending,
+                                   error, sizeof(error)));
+  assert(vkr_depot_commit_push(&author, client, "main", &author_base,
+                               &author_base, &pending, error, sizeof(error)));
+  vkr_depot_pending_commit_free(&pending);
+  vkr_depot_disconnect(connection);
+  assert(vkr_bakery_remove_file(member_cooked));
+  connection = vkr_depot_connect(&allocator, &member_connect, NULL, error,
+                                 sizeof(error));
+  assert(connection);
+  client = vkr_depot_connection_client(connection);
+  uint32_t kept = 0u;
+  assert(vkr_depot_fetch_checkout(&member, client, &author.base,
+                                  VKR_DEPOT_CONFLICT_FAIL, &kept, NULL, error,
+                                  sizeof(error)));
+  assert(vkr_depot_fetch_cooked(&member, client, "main", &fetched, error,
+                                sizeof(error)));
+  assert(fetched.stale == 1u && fetched.written == 0u &&
+         !vkr_bakery_is_file(member_cooked));
+  vkr_depot_disconnect(connection);
+  vkr_depot_workspace_close(&member);
+
   vkr_vfs_unmount_all();
   vkr_depot_workspace_close(&author);
   vkr_depot_service_stop(service);
@@ -1643,6 +1717,7 @@ static void test_depot_remote(void) {
   assert(vkr_bakery_remove_tree(author_root));
   assert(vkr_bakery_remove_tree(stream_root));
   assert(vkr_bakery_remove_tree(key_root));
+  assert(vkr_bakery_remove_tree(member_root));
   printf("  test_depot_remote PASSED\n");
 }
 

@@ -775,6 +775,180 @@ bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
   return true_v;
 }
 
+/* The project commit a cooked commit was cooked for, from its message;
+   false when the message names none. */
+static bool8_t depot_cooked_base(const VkrDepotCommit *commit,
+                                 VkrDepotId *out_base) {
+  const uint32_t prefix = (uint32_t)strlen(VKR_DEPOT_COOKED_MESSAGE);
+  char hex[VKR_DEPOT_ID_HEX];
+  if (commit->message_size != prefix + VKR_DEPOT_ID_HEX - 1u ||
+      memcmp(commit->message, VKR_DEPOT_COOKED_MESSAGE, prefix) != 0) {
+    return false_v;
+  }
+  memcpy(hex, commit->message + prefix, VKR_DEPOT_ID_HEX - 1u);
+  hex[VKR_DEPOT_ID_HEX - 1u] = '\0';
+  return vkr_depot_id_parse(hex, out_base);
+}
+
+/* The files of `commit`'s tree, when the store holds them; empty
+   otherwise. */
+static void depot_commit_files(const VkrDepotStore *store,
+                               const VkrDepotId *commit,
+                               VkrDepotFileList *out_files) {
+  MemZero(out_files, sizeof(*out_files));
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotCommit parsed;
+  if (!vkr_depot_id_zero(commit) &&
+      vkr_depot_store_get(store, commit, &bytes, &size) &&
+      vkr_depot_commit_parse(bytes, size, &parsed) &&
+      !vkr_depot_tree_files(store, &parsed.tree, out_files)) {
+    vkr_depot_file_list_free(out_files);
+  }
+  free(bytes);
+}
+
+bool8_t vkr_depot_fetch_cooked(VkrDepotWorkspace *workspace,
+                               VkrDepotClient *client, const char *branch,
+                               VkrDepotCookedFetch *out_fetch, char *error,
+                               uint32_t capacity) {
+  MemZero(out_fetch, sizeof(*out_fetch));
+  vkr_depot_cooked_branch(branch, out_fetch->branch, sizeof(out_fetch->branch));
+  bool8_t exists = false_v;
+  if (!vkr_depot_find_ref(client, out_fetch->branch, &out_fetch->commit,
+                          &exists)) {
+    snprintf(error, capacity, "the branches did not arrive: %s",
+             vkr_depot_client_error(client));
+    return false_v;
+  }
+  if (!exists) {
+    MemZero(&out_fetch->commit, sizeof(out_fetch->commit));
+    return true_v;
+  }
+  if (!vkr_depot_client_fetch_trees(client, &out_fetch->commit, NULL)) {
+    snprintf(error, capacity, "the cooked files' list did not arrive: %s",
+             vkr_depot_client_error(client));
+    return false_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  VkrDepotCommit commit;
+  VkrDepotFileList cooked = {0};
+  VkrDepotId base = {0};
+  bool8_t ok = vkr_depot_store_get(&workspace->store, &out_fetch->commit,
+                                   &bytes, &size) &&
+               vkr_depot_commit_parse(bytes, size, &commit) &&
+               vkr_depot_tree_files(&workspace->store, &commit.tree, &cooked);
+  if (ok && !depot_cooked_base(&commit, &base)) {
+    MemZero(&base, sizeof(base));
+  }
+  free(bytes);
+  if (!ok) {
+    snprintf(error, capacity, "the cooked commit could not be read");
+    return false_v;
+  }
+  out_fetch->listed = cooked.count;
+
+  /* A cooked `<source>.vkt` holds the source it was cooked from at that
+     commit; another source cooks here instead. Build textures belong to a
+     build revision that does not change. A file already here stays. */
+  VkrDepotFileList then = {0};
+  depot_commit_files(&workspace->store, &base, &then);
+  VkrDepotFileList cache = {0};
+  (void)vkr_depot_cooked_cache_load(workspace, &cache);
+  uint32_t *wanted = calloc(cooked.count + 1u, sizeof(uint32_t));
+  VkrDepotId *blobs = calloc(cooked.count + 1u, sizeof(VkrDepotId));
+  uint32_t want_count = 0u;
+  uint32_t blob_count = 0u;
+  ok = wanted && blobs;
+  for (uint32_t i = 0u; ok && i < cooked.count; ++i) {
+    const VkrDepotIndexEntry *entry = &cooked.entries[i];
+    const size_t length = strlen(entry->path);
+    const size_t suffix = sizeof(VKR_DEPOT_COOKED_SUFFIX) - 1u;
+    char target[VKR_DEPOT_PATH_CAPACITY];
+    if (length <= suffix ||
+        strcmp(entry->path + length - suffix, VKR_DEPOT_COOKED_SUFFIX) != 0 ||
+        !vkr_depot_path_valid(entry->path) ||
+        vkr_depot_file_list_find(&workspace->index, entry->path) ||
+        !vkr_bakery_path_join(target, sizeof(target), workspace->root,
+                              entry->path)) {
+      continue;
+    }
+    if (vkr_bakery_is_file(target)) {
+      out_fetch->present += 1u;
+      continue;
+    }
+    char source[VKR_DEPOT_PATH_CAPACITY];
+    snprintf(source, sizeof(source), "%.*s", (int)(length - suffix),
+             entry->path);
+    const VkrDepotIndexEntry *now =
+        vkr_depot_file_list_find(&workspace->index, source);
+    const VkrDepotIndexEntry *was = vkr_depot_file_list_find(&then, source);
+    if (now && (!was || !vkr_depot_id_equal(&now->blob, &was->blob))) {
+      out_fetch->stale += 1u;
+      continue;
+    }
+    wanted[want_count++] = i;
+    if (!vkr_depot_store_has(&workspace->store, &entry->blob)) {
+      blobs[blob_count++] = entry->blob;
+    }
+  }
+  VkrDepotTransferStats stats = {0};
+  if (ok && blob_count &&
+      !vkr_depot_client_fetch_files(client, blobs, blob_count, &stats)) {
+    snprintf(error, capacity, "the cooked files did not arrive: %s",
+             vkr_depot_client_error(client));
+    ok = false_v;
+  }
+  out_fetch->stored_bytes = stats.stored_bytes;
+
+  /* Written files join the cooked cache, so publishing them again hashes
+     nothing. */
+  VkrDepotFileList written = {0};
+  for (uint32_t w = 0u; ok && w < want_count; ++w) {
+    const VkrDepotIndexEntry *entry = &cooked.entries[wanted[w]];
+    char target[VKR_DEPOT_PATH_CAPACITY];
+    VkrBakeryStat stat;
+    if (vkr_bakery_path_join(target, sizeof(target), workspace->root,
+                             entry->path) &&
+        vkr_depot_write_blob(&workspace->store, &entry->blob, target) &&
+        vkr_bakery_stat(target, &stat) && stat.exists) {
+      out_fetch->written += 1u;
+      (void)vkr_depot_file_list_add(&written, entry->path, stat.size,
+                                    stat.mtime_ns, &entry->blob);
+    }
+  }
+  if (written.count) {
+    vkr_depot_file_list_sort(&written);
+    VkrDepotFileList merged = {0};
+    for (uint32_t i = 0u; i < written.count; ++i) {
+      const VkrDepotIndexEntry *entry = &written.entries[i];
+      (void)vkr_depot_file_list_add(&merged, entry->path, entry->size,
+                                    entry->mtime_ns, &entry->blob);
+    }
+    for (uint32_t i = 0u; i < cache.count; ++i) {
+      const VkrDepotIndexEntry *entry = &cache.entries[i];
+      if (!vkr_depot_file_list_find(&written, entry->path)) {
+        (void)vkr_depot_file_list_add(&merged, entry->path, entry->size,
+                                      entry->mtime_ns, &entry->blob);
+      }
+    }
+    vkr_depot_file_list_sort(&merged);
+    (void)vkr_depot_cooked_cache_save(workspace, &merged);
+    vkr_depot_file_list_free(&merged);
+  }
+  vkr_depot_file_list_free(&written);
+  vkr_depot_file_list_free(&cache);
+  vkr_depot_file_list_free(&then);
+  vkr_depot_file_list_free(&cooked);
+  free(wanted);
+  free(blobs);
+  if (!ok && !error[0]) {
+    snprintf(error, capacity, "out of memory");
+  }
+  return ok;
+}
+
 bool8_t vkr_depot_cooked_snapshot(VkrDepotWorkspace *workspace,
                                   VkrDepotId *out_tree, uint32_t *out_files,
                                   char *error, uint32_t capacity) {
@@ -802,25 +976,15 @@ bool8_t vkr_depot_publish_cooked(VkrDepotWorkspace *workspace,
   out_result->files = files;
   vkr_depot_cooked_branch(branch, out_result->branch,
                           sizeof(out_result->branch));
-  VkrDepotRef *refs = calloc(VKR_DEPOT_COOKED_REFS_MAX, sizeof(VkrDepotRef));
-  if (!refs) {
-    snprintf(error, capacity, "out of memory");
-    return false_v;
-  }
-  uint32_t ref_count = 0u;
-  const bool8_t listed = vkr_depot_client_refs(
-      client, refs, VKR_DEPOT_COOKED_REFS_MAX, &ref_count);
   VkrDepotId parent = {0};
-  for (uint32_t i = 0u; listed && i < ref_count; ++i) {
-    if (strcmp(refs[i].name, out_result->branch) == 0) {
-      parent = refs[i].commit;
-    }
-  }
-  free(refs);
-  if (!listed) {
+  bool8_t exists = false_v;
+  if (!vkr_depot_find_ref(client, out_result->branch, &parent, &exists)) {
     snprintf(error, capacity, "the branches did not arrive: %s",
              vkr_depot_client_error(client));
     return false_v;
+  }
+  if (!exists) {
+    MemZero(&parent, sizeof(parent));
   }
   /* The files the side branch holds already publish nothing. Its commit is
      in the store once this working copy published or fetched it. */
@@ -842,7 +1006,7 @@ bool8_t vkr_depot_publish_cooked(VkrDepotWorkspace *workspace,
   char base[VKR_DEPOT_ID_HEX];
   char message[160];
   vkr_depot_id_hex(&workspace->base, base);
-  snprintf(message, sizeof(message), "Cooked for %.12s", base);
+  snprintf(message, sizeof(message), VKR_DEPOT_COOKED_MESSAGE "%s", base);
   if (!depot_make_commit(&workspace->store, tree, &parent, message,
                          &out_result->commit, error, capacity)) {
     return false_v;

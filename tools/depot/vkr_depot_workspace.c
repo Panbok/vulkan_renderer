@@ -10,6 +10,9 @@
 
 #define WORKSPACE_STATE_MAGIC 0x57444b56u /* "VKDW" */
 #define WORKSPACE_STATE_VERSION 1u
+/* `.vkrdepot/cooked`: the cooked files last hashed or written, so a cooked
+   snapshot hashes only files whose size or time changed. */
+#define WORKSPACE_COOKED_MAGIC 0x43444b56u /* "VKDC" */
 
 // =============================================================================
 // File lists
@@ -108,6 +111,91 @@ static bool8_t workspace_meta_path(const VkrDepotWorkspace *workspace,
                               VKR_DEPOT_META_DIR) &&
          (!name || vkr_bakery_path_join(out, capacity, meta, name)) &&
          (name || snprintf(out, capacity, "%s", meta) < (int)capacity);
+}
+
+bool8_t vkr_depot_cooked_cache_save(const VkrDepotWorkspace *workspace,
+                                    const VkrDepotFileList *files) {
+  uint64_t size = 8u;
+  for (uint32_t i = 0u; i < files->count; ++i) {
+    size += 2u + strlen(files->entries[i].path) + 16u + VKR_DEPOT_ID_SIZE;
+  }
+  uint8_t *bytes = malloc(size);
+  if (!bytes) {
+    return false_v;
+  }
+  uint8_t *cursor = bytes;
+  vkr_store_le_u32(cursor, WORKSPACE_COOKED_MAGIC);
+  vkr_store_le_u32(cursor + 4, files->count);
+  cursor += 8u;
+  for (uint32_t i = 0u; i < files->count; ++i) {
+    const VkrDepotIndexEntry *entry = &files->entries[i];
+    const uint16_t path_size = (uint16_t)strlen(entry->path);
+    cursor[0] = (uint8_t)path_size;
+    cursor[1] = (uint8_t)(path_size >> 8);
+    memcpy(cursor + 2u, entry->path, path_size);
+    cursor += 2u + path_size;
+    vkr_store_le_u64(cursor, entry->size);
+    vkr_store_le_u64(cursor + 8, (uint64_t)entry->mtime_ns);
+    cursor += 16u;
+    memcpy(cursor, entry->blob.bytes, VKR_DEPOT_ID_SIZE);
+    cursor += VKR_DEPOT_ID_SIZE;
+  }
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  const bool8_t ok =
+      workspace_meta_path(workspace, "cooked", path, sizeof(path)) &&
+      vkr_bakery_write_file_atomic(path, bytes, size);
+  free(bytes);
+  return ok;
+}
+
+bool8_t vkr_depot_cooked_cache_load(const VkrDepotWorkspace *workspace,
+                                    VkrDepotFileList *out_files) {
+  MemZero(out_files, sizeof(*out_files));
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!workspace_meta_path(workspace, "cooked", path, sizeof(path)) ||
+      !vkr_bakery_is_file(path)) {
+    return true_v;
+  }
+  if (!vkr_bakery_read_file(path, 1ull << 31, &bytes, &size)) {
+    return false_v;
+  }
+  const uint8_t *cursor = bytes;
+  const uint8_t *end = bytes + size;
+  bool8_t ok = size >= 8u && vkr_load_le_u32(cursor) == WORKSPACE_COOKED_MAGIC;
+  const uint32_t count = ok ? vkr_load_le_u32(cursor + 4) : 0u;
+  cursor += ok ? 8u : 0u;
+  for (uint32_t i = 0u; ok && i < count; ++i) {
+    ok = end - cursor >= 2;
+    const uint16_t length =
+        ok ? (uint16_t)(cursor[0] | (cursor[1] << 8)) : (uint16_t)0u;
+    char entry_path[VKR_DEPOT_PATH_CAPACITY];
+    ok = ok && end - cursor >= 2 + (int64_t)length + 16 + VKR_DEPOT_ID_SIZE &&
+         length < sizeof(entry_path);
+    if (!ok) {
+      break;
+    }
+    memcpy(entry_path, cursor + 2u, length);
+    entry_path[length] = '\0';
+    cursor += 2u + length;
+    VkrDepotId blob;
+    const uint64_t file_size = vkr_load_le_u64(cursor);
+    const int64_t mtime = (int64_t)vkr_load_le_u64(cursor + 8);
+    memcpy(blob.bytes, cursor + 16u, VKR_DEPOT_ID_SIZE);
+    cursor += 16u + VKR_DEPOT_ID_SIZE;
+    ok =
+        !vkr_depot_path_valid(entry_path) ||
+        vkr_depot_file_list_add(out_files, entry_path, file_size, mtime, &blob);
+  }
+  free(bytes);
+  /* A torn or older cache only costs hashing again. */
+  if (!ok || cursor != end) {
+    vkr_depot_file_list_free(out_files);
+    return true_v;
+  }
+  vkr_depot_file_list_sort(out_files);
+  return true_v;
 }
 
 bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
@@ -531,8 +619,10 @@ typedef struct WalkState {
   uint64_t pending_bytes;
   DepotIgnore ignore;
   /* A cooked snapshot: only untracked platform files (VKR_DEPOT_COOKED_SUFFIX),
-     which the ignore rules keep out of an ordinary snapshot. */
+     which the ignore rules keep out of an ordinary snapshot, with the cooked
+     cache standing in for the index. */
   bool8_t cooked;
+  VkrDepotFileList cooked_known;
 } WalkState;
 
 /* Ignore rules apply to untracked paths only, as in git: a pulled
@@ -648,10 +738,9 @@ static bool8_t walk_visit(void *context, const char *name,
     goto done;
   }
   /* An unchanged file keeps the blob the index recorded. */
-  const VkrDepotIndexEntry *known =
-      state->cooked
-          ? NULL
-          : vkr_depot_file_list_find(&state->workspace->index, relative);
+  const VkrDepotIndexEntry *known = vkr_depot_file_list_find(
+      state->cooked ? &state->cooked_known : &state->workspace->index,
+      relative);
   if (known && known->size == stat.size && known->mtime_ns == stat.mtime_ns &&
       vkr_depot_store_has(&state->workspace->store, &known->blob)) {
     ok = vkr_depot_file_list_add(state->files, relative, stat.size,
@@ -785,10 +874,13 @@ static bool8_t workspace_snapshot(VkrDepotWorkspace *workspace, bool8_t cooked,
   state->files = out_files;
   state->cooked = cooked;
   const bool8_t walked =
+      (!cooked ||
+       vkr_depot_cooked_cache_load(workspace, &state->cooked_known)) &&
       ignore_load(workspace->root, &state->ignore) &&
       vkr_bakery_list_directory(workspace->root, walk_visit, state) &&
       !state->failed && walk_hash_pending(state);
   ignore_free(&state->ignore);
+  vkr_depot_file_list_free(&state->cooked_known);
   free(state->pending);
   free(state);
   if (!walked) {
@@ -813,7 +905,12 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
 bool8_t vkr_depot_workspace_snapshot_cooked(VkrDepotWorkspace *workspace,
                                             VkrDepotId *out_tree,
                                             VkrDepotFileList *out_files) {
-  return workspace_snapshot(workspace, true_v, out_tree, out_files);
+  if (!workspace_snapshot(workspace, true_v, out_tree, out_files)) {
+    return false_v;
+  }
+  /* The cache only saves hashing; a snapshot stands without it. */
+  (void)vkr_depot_cooked_cache_save(workspace, out_files);
+  return true_v;
 }
 
 // =============================================================================

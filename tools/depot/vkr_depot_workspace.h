@@ -103,6 +103,14 @@ bool8_t vkr_depot_workspace_snapshot_cooked(VkrDepotWorkspace *workspace,
                                             VkrDepotId *out_tree,
                                             VkrDepotFileList *out_files);
 
+/* The cooked files with the size and time they had when last hashed or
+   written (`.vkrdepot/cooked`), which a cooked snapshot keeps the blob of
+   while they stay so. A missing or torn cache loads empty. */
+bool8_t vkr_depot_cooked_cache_load(const VkrDepotWorkspace *workspace,
+                                    VkrDepotFileList *out_files);
+bool8_t vkr_depot_cooked_cache_save(const VkrDepotWorkspace *workspace,
+                                    const VkrDepotFileList *files);
+
 /* Whether `path` ('/' separators, relative to the root) matches the
    ignore `pattern`; `is_directory` for a folder. */
 bool8_t vkr_depot_ignore_match(const char *pattern, const char *path,

@@ -17909,7 +17909,8 @@ static const OpsDef s_ops[] = {
      "Project sharing: whether this editor shares the open project or holds "
      "a copy of one, the server, its access requests and list, local changes, "
      "whether others submitted newer changes, the running step with its "
-     "progress, the last error and the servers found on the network.",
+     "progress, the textures the last Get cooked or took from the cooked "
+     "side branch, the last error and the servers found on the network.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_depot_status, NULL,
      OPS_NO_SCENE},
     {"depot.share",

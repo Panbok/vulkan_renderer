@@ -203,8 +203,9 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
    GPUs, as the texture producer encodes for this computer. */
 void vkr_depot_cooked_branch(const char *branch, char *out, uint32_t capacity);
 
-/* Branches a cooked publish lists to find its side branch. */
-#define VKR_DEPOT_COOKED_REFS_MAX 1024u
+/* A cooked commit's message: this, then the full id of the project commit
+   its files were cooked for. */
+#define VKR_DEPOT_COOKED_MESSAGE "Cooked for "
 
 typedef struct VkrDepotCookedResult {
   /* `<branch>.cooked.<family>` (vkr_depot_cooked_branch). */
@@ -215,6 +216,30 @@ typedef struct VkrDepotCookedResult {
   /* The side branch held these files already; nothing was committed. */
   bool8_t unchanged;
 } VkrDepotCookedResult;
+
+typedef struct VkrDepotCookedFetch {
+  char branch[VKR_DEPOT_BRANCH_NAME];
+  /* The side branch's newest commit; zero when the server has none. */
+  VkrDepotId commit;
+  /* Cooked files it lists, those already here, those cooked from a source
+     this working copy changed, and those written. */
+  uint32_t listed;
+  uint32_t present;
+  uint32_t stale;
+  uint32_t written;
+  uint64_t stored_bytes;
+} VkrDepotCookedFetch;
+
+/* Writes the cooked files of `branch`'s side branch for this computer into
+   the working copy, before a cook would make them. A file already here
+   stays; a `<source>.vkt` whose source this working copy holds changed
+   since the commit it was cooked for stays out, so the cook makes it; a
+   path the index tracks is never written. Written files join the cooked
+   cache. True, with nothing written, when the server has no side branch. */
+bool8_t vkr_depot_fetch_cooked(VkrDepotWorkspace *workspace,
+                               VkrDepotClient *client, const char *branch,
+                               VkrDepotCookedFetch *out_fetch, char *error,
+                               uint32_t capacity);
 
 /* Hashes the working copy's cooked platform files into its store and
    returns their tree. Needs no connection: hashing hundreds of megabytes

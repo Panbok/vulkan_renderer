@@ -109,6 +109,8 @@ typedef struct DepotJob {
   bool8_t scripts_changed;
   uint32_t textures_cooked;
   uint32_t textures_failed;
+  /* Cooked textures the side branch for this computer brought instead. */
+  uint32_t textures_fetched;
   VkrDepotId base;
   VkrDepotId remote_head;
   bool8_t remote_known;
@@ -194,6 +196,11 @@ struct VkrEditorDepot {
   bool8_t connected;
   VkrDepotConnectStatus connect;
   uint32_t change_count;
+  /* The textures the last Get or Get latest cooked, took from the cooked
+     side branch and failed to cook. */
+  uint32_t textures_cooked;
+  uint32_t textures_fetched;
+  uint32_t textures_failed;
   DepotText changes[DEPOT_LIST_MAX];
   uint32_t conflict_count;
   DepotText conflicts[DEPOT_LIST_MAX];
@@ -855,6 +862,62 @@ static bool8_t depot_pull_visit(void *context, const char *path,
 
 static void depot_job_recook(DepotJob *job, const char *folder);
 
+/* Writes the cooked textures this computer's side branch holds for the
+   checked-out commit (ADR-123), so the cook that follows makes only the
+   rest. A failure only leaves more to cook. */
+static void depot_job_fetch_cooked(DepotJob *job, VkrDepotWorkspace *ws,
+                                   VkrDepotClient *client) {
+  VkrDepotCookedFetch fetched;
+  char error[DEPOT_TEXT] = {0};
+  if (!vkr_depot_fetch_cooked(ws, client, ws->branch, &fetched, error,
+                              sizeof(error))) {
+    log_warn("Project sharing: cooked textures did not arrive: %s", error);
+    return;
+  }
+  job->textures_fetched = fetched.written;
+  if (!vkr_depot_id_zero(&fetched.commit)) {
+    log_info("Project sharing: %u cooked textures from %s (%u here already, "
+             "%u to cook from changed sources)",
+             fetched.written, fetched.branch, fetched.present, fetched.stale);
+  }
+}
+
+/* Publishes this computer's cooked textures to the side branch, so another
+   computer of its GPU family fetches them instead of cooking (ADR-123).
+   The cooked cache keeps the snapshot to files that changed. A failure is
+   reported and leaves the step's result alone. */
+static void depot_job_publish_cooked(DepotWorker *worker) {
+  DepotJob *job = worker->job;
+  VkrDepotWorkspace *ws = worker->workspace;
+  char saved[DEPOT_TEXT];
+  string_format(saved, sizeof(saved), "%s", job->error);
+  VkrDepotId tree;
+  uint32_t files = 0u;
+  char error[DEPOT_TEXT] = {0};
+  if (!vkr_depot_cooked_snapshot(ws, &tree, &files, error, sizeof(error))) {
+    if (files) {
+      log_warn("Project sharing: cooked textures were not published: %s",
+               error);
+    }
+    return;
+  }
+  VkrDepotConnection *connection = depot_job_connect(worker, &ws->store);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  VkrDepotCookedResult result;
+  if (client && vkr_depot_publish_cooked(ws, client, ws->branch, &tree, files,
+                                         &result, error, sizeof(error))) {
+    if (!result.unchanged) {
+      log_info("Project sharing: published %u cooked textures to %s",
+               result.files, result.branch);
+    }
+  } else {
+    log_warn("Project sharing: cooked textures were not published: %s",
+             client ? error : job->error);
+  }
+  vkr_depot_disconnect(connection);
+  string_format(job->error, sizeof(job->error), "%s", saved);
+}
+
 /* Fetches the server's commit and checks it out; cooks the textures it
    brought and notes whether the scene must reload. */
 static void depot_job_pull(DepotWorker *worker) {
@@ -885,11 +948,17 @@ static void depot_job_pull(DepotWorker *worker) {
       vkr_depot_change_list_free(&conflicts);
     }
   }
+  if (job->ok && client) {
+    depot_job_fetch_cooked(job, ws, client);
+  }
   vkr_depot_disconnect(connection);
   if (job->ok) {
     (void)vkr_depot_file_list_diff(&before, &ws->index, depot_pull_visit, job);
     depot_job_cook(job, ws->root, &ws->index);
     depot_job_recook(job, ws->root);
+    if (job->textures_cooked) {
+      depot_job_publish_cooked(worker);
+    }
   }
   vkr_depot_file_list_free(&before);
 }
@@ -943,6 +1012,10 @@ static void depot_job_submit(DepotWorker *worker) {
   }
   vkr_depot_pending_commit_free(&pending);
   vkr_depot_disconnect(connection);
+  /* The new commit's cooked textures, for others of this GPU family. */
+  if (job->ok) {
+    depot_job_publish_cooked(worker);
+  }
 }
 
 static void depot_job_status(DepotWorker *worker) {
@@ -1017,8 +1090,18 @@ static void depot_job_clone(DepotWorker *worker) {
   VkrDepotWorkspace *ws = worker->workspace;
   if (vkr_depot_workspace_open(ws, job->directory, vkr_depot_zstd_codec())) {
     ws->progress = &job->progress;
+    VkrDepotConnection *connection = depot_job_connect(worker, &ws->store);
+    VkrDepotClient *client = vkr_depot_connection_client(connection);
+    if (client) {
+      depot_job_fetch_cooked(job, ws, client);
+    }
+    vkr_depot_disconnect(connection);
+    job->error[0] = '\0';
     depot_job_cook(job, ws->root, &ws->index);
     depot_job_recook(job, ws->root);
+    if (job->textures_cooked) {
+      depot_job_publish_cooked(worker);
+    }
     depot_job_history(job, ws);
     vkr_depot_workspace_close(ws);
   }
@@ -1401,6 +1484,7 @@ static bool8_t depot_start(VkrEditorDepot *depot, DepotJobKind kind) {
   job->scripts_changed = false_v;
   job->textures_cooked = 0u;
   job->textures_failed = 0u;
+  job->textures_fetched = 0u;
   job->opened_project[0] = '\0';
   MemZero(&job->remote_head, sizeof(job->remote_head));
   vkr_depot_progress_reset(&job->progress);
@@ -1696,6 +1780,11 @@ static void depot_finish(VkrEditorDepot *depot, VkrEditorUi *editor,
   } else if (!job->ok && job->kind != DEPOT_JOB_STATUS &&
              !vkr_depot_progress_canceled(&job->progress)) {
     string_format(depot->error, sizeof(depot->error), "%s", job->error);
+  }
+  if (job->kind == DEPOT_JOB_PULL || job->kind == DEPOT_JOB_CLONE) {
+    depot->textures_cooked = job->textures_cooked;
+    depot->textures_fetched = job->textures_fetched;
+    depot->textures_failed = job->textures_failed;
   }
   switch (job->kind) {
   case DEPOT_JOB_STATUS:
@@ -3428,6 +3517,14 @@ VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
                         vkr_bakery_json_cstr(arena, text));
   }
   vkr_bakery_json_set(arena, result, "job", job);
+  VkrBakeryJson *textures = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, textures, "cooked",
+                      vkr_bakery_json_int(arena, depot->textures_cooked));
+  vkr_bakery_json_set(arena, textures, "fetched",
+                      vkr_bakery_json_int(arena, depot->textures_fetched));
+  vkr_bakery_json_set(arena, textures, "failed",
+                      vkr_bakery_json_int(arena, depot->textures_failed));
+  vkr_bakery_json_set(arena, result, "textures", textures);
   vkr_bakery_json_set(arena, result, "error",
                       vkr_bakery_json_cstr(arena, depot->error));
   if (depot->service) {
