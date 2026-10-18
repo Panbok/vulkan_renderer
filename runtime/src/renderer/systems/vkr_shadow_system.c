@@ -2456,19 +2456,125 @@ vkr_internal bool8_t vkr_shadow_local_dynamic_overlaps_light(
    while scores cross nor pop. */
 #define VKR_BAKED_LAMP_CHALLENGE_FACTOR 1.5f
 #define VKR_BAKED_LAMP_CHALLENGE_SECONDS 0.5f
-/* A lamp lights a moving caster's centre as it would at this fraction of its
-   range when nearer, so a caster touching a lamp does not outweigh every
-   other. */
+/* A lamp lights a moving caster's nearest point as it would at this
+   fraction of its range when nearer, so a caster touching a lamp does not
+   outweigh every other. */
 #define VKR_BAKED_LAMP_NEAR_RANGE_FRACTION 0.1f
 /* A moving caster's shadow may show this far beyond its bounding sphere:
    this fraction of the lamp's range, at most the metres. */
 #define VKR_BAKED_LAMP_SHADOW_REACH_FRACTION 0.25f
 #define VKR_BAKED_LAMP_SHADOW_REACH_METRES 4.0f
-/* A moving caster weighs by the view it may cover: its bounding sphere's
-   squared radius over its squared distance from the camera, held at this
-   distance when nearer and whole once the camera is inside it. A crane
-   across a hall then outweighs a box at the player's feet. */
+/* A moving caster weighs by the view it may cover: its box's mean projected
+   area over pi, which a sphere's squared radius would be, over the squared
+   distance from the camera to its box, held at this distance when nearer
+   and whole once the camera is inside it. A lamp's light at the caster is
+   taken at the box point nearest the lamp. Both spread over the box: along
+   an axis of half length `a` at distance `h` the mean inverse square is the
+   nearest point's times atan(a / h) / (a / h). A crane beam spanning a hall
+   then weighs as its beam under the lamps it hangs below, not as the sphere
+   around it, which held the camera anywhere in the hall and outweighed
+   every box the camera saw. */
 #define VKR_BAKED_LAMP_CAMERA_NEAR_METRES 2.0f
+
+/* A moving caster's world box: its centre, unit half axes and half
+   lengths. Without a box from its producer, `valid` is false and the
+   bounding sphere stands in. */
+typedef struct VkrShadowCasterBox {
+  Vec3 center;
+  Vec3 axes[3];
+  float32_t half[3];
+  bool8_t valid;
+} VkrShadowCasterBox;
+
+vkr_internal VkrShadowCasterBox
+vkr_shadow_caster_box(const VkrWorldDrawCandidate *candidate, Vec3 center) {
+  VkrShadowCasterBox box = {.center = center};
+  const Vec3 half = candidate->local_half_extents;
+  if (!(half.x > 0.0f || half.y > 0.0f || half.z > 0.0f))
+    return box;
+  const Mat4 model = candidate->instance.model;
+  const Vec3 axes[3] = {
+      vec3_scale(vec3_new(model.m00, model.m10, model.m20), half.x),
+      vec3_scale(vec3_new(model.m01, model.m11, model.m21), half.y),
+      vec3_scale(vec3_new(model.m02, model.m12, model.m22), half.z),
+  };
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    box.half[axis] = vec3_length(axes[axis]);
+    box.axes[axis] = box.half[axis] > 1e-6f
+                         ? vec3_scale(axes[axis], 1.0f / box.half[axis])
+                         : vec3_zero();
+  }
+  box.valid = vkr_is_finite_f32(box.half[0]) &&
+              vkr_is_finite_f32(box.half[1]) && vkr_is_finite_f32(box.half[2]);
+  return box;
+}
+
+/* The point of `box` nearest `point`. */
+vkr_internal Vec3 vkr_shadow_caster_box_nearest(const VkrShadowCasterBox *box,
+                                                Vec3 point) {
+  const Vec3 offset = vec3_sub(point, box->center);
+  Vec3 nearest = box->center;
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const float32_t along = Clamp(vec3_dot(offset, box->axes[axis]),
+                                  -box->half[axis], box->half[axis]);
+    nearest = vec3_add(nearest, vec3_scale(box->axes[axis], along));
+  }
+  return nearest;
+}
+
+/* The share of the inverse square at `box`'s nearest point, `distance`
+   away, that its mean over the box keeps, as described above. */
+vkr_internal float32_t vkr_shadow_caster_box_spread(
+    const VkrShadowCasterBox *box, float32_t distance) {
+  float32_t spread = 1.0f;
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    const float32_t ratio = box->half[axis] / Max(distance, 1e-3f);
+    if (ratio > 1e-3f)
+      spread *= vkr_atan_f32(ratio) / ratio;
+  }
+  return spread;
+}
+
+/* The view a caster may cover from `camera_position`, as described above. */
+vkr_internal float32_t vkr_shadow_caster_camera_weight(
+    const VkrShadowCasterBox *box, float32_t radius, Vec3 camera_position) {
+  const float32_t near_squared =
+      VKR_BAKED_LAMP_CAMERA_NEAR_METRES * VKR_BAKED_LAMP_CAMERA_NEAR_METRES;
+  if (!box->valid) {
+    const float32_t radius_squared = radius * radius;
+    return radius_squared /
+           Max(vec3_length_squared(vec3_sub(camera_position, box->center)),
+               Max(radius_squared, near_squared));
+  }
+  /* A convex body's mean projected area is a quarter of its surface. */
+  const float32_t area_radius_squared =
+      2.0f *
+      (box->half[0] * box->half[1] + box->half[1] * box->half[2] +
+       box->half[2] * box->half[0]) /
+      VKR_PI;
+  const float32_t distance_squared = vec3_length_squared(vec3_sub(
+      camera_position, vkr_shadow_caster_box_nearest(box, camera_position)));
+  const float32_t held_squared =
+      Max(distance_squared, Max(area_radius_squared, near_squared));
+  return area_radius_squared / held_squared *
+         vkr_shadow_caster_box_spread(box, vkr_sqrt_f32(held_squared));
+}
+
+/* Whether `candidate` draws another submesh of the mesh instance `previous`
+   drew: the same mesh, bounds and model. The instance casts one shadow, so
+   the lamp scores count it once. */
+vkr_internal bool8_t
+vkr_shadow_same_caster(const VkrWorldDrawCandidate *previous,
+                       const VkrWorldDrawCandidate *candidate) {
+  return previous &&
+         MemCompare(&previous->mesh, &candidate->mesh,
+                    sizeof(candidate->mesh)) == 0 &&
+         MemCompare(&previous->local_bounding_sphere,
+                    &candidate->local_bounding_sphere,
+                    sizeof(candidate->local_bounding_sphere)) == 0 &&
+         MemCompare(&previous->instance.model, &candidate->instance.model,
+                    sizeof(candidate->instance.model)) == 0;
+}
 
 /* The luminance `light` sends to `point`: intensity times its distance
    falloff and spot cone, as the shared punctual kernel shades it, with the
@@ -2703,6 +2809,7 @@ void vkr_shadow_system_resolve_local_shadows(
   for (uint32_t lamp = 0u; camera && lamp < bounded_lamp_count; ++lamp)
     lamp_visible_faces[lamp] = (uint8_t)vkr_local_shadow_camera_faces(
         &baked_lamps[lamp], camera->view, camera->projection);
+  const VkrWorldDrawCandidate *previous_caster = NULL;
   for (uint32_t index = static_count;
        !dynamic_scan_failed && index < shadow_count; ++index) {
     const VkrWorldDrawCandidate *candidate = &candidates->gpu_candidates[index];
@@ -2725,16 +2832,16 @@ void vkr_shadow_system_resolve_local_shadows(
       dynamic_refractive[light] |= refractive && faces != 0u;
     }
 
+    /* The instance's other submeshes follow its first, which scores it. */
     const bool8_t scored =
-        camera && (candidate->cull & VKR_GPU_DRAW_CULL_HIDDEN_BIT) == 0u;
+        camera && (candidate->cull & VKR_GPU_DRAW_CULL_HIDDEN_BIT) == 0u &&
+        !vkr_shadow_same_caster(previous_caster, candidate);
+    previous_caster = candidate;
+    const VkrShadowCasterBox box = vkr_shadow_caster_box(candidate, center);
     float32_t camera_weight = 0.0f;
     if (scored) {
-      const float32_t radius_squared = radius * radius;
       camera_weight =
-          radius_squared /
-          Max(vec3_length_squared(vec3_sub(center, camera->position)),
-              Max(radius_squared, VKR_BAKED_LAMP_CAMERA_NEAR_METRES *
-                                      VKR_BAKED_LAMP_CAMERA_NEAR_METRES));
+          vkr_shadow_caster_camera_weight(&box, radius, camera->position);
     }
     for (uint32_t lamp = 0u; lamp < bounded_lamp_count; ++lamp) {
       const VkrPointLight *baked_lamp = &baked_lamps[lamp];
@@ -2755,9 +2862,18 @@ void vkr_shadow_system_resolve_local_shadows(
         continue;
       const float32_t near_distance =
           baked_lamp->range * VKR_BAKED_LAMP_NEAR_RANGE_FRACTION;
+      const Vec3 lit =
+          box.valid ? vkr_shadow_caster_box_nearest(&box, baked_lamp->position)
+                    : center;
+      const float32_t spread =
+          box.valid
+              ? vkr_shadow_caster_box_spread(
+                    &box, Max(vec3_length(vec3_sub(baked_lamp->position, lit)),
+                              near_distance))
+              : 1.0f;
       const float32_t contribution =
-          camera_weight *
-          vkr_shadow_baked_lamp_light_at(baked_lamp, center, near_distance);
+          camera_weight * spread *
+          vkr_shadow_baked_lamp_light_at(baked_lamp, lit, near_distance);
       if (vkr_is_finite_f32(contribution) && contribution > 0.0f)
         lamp_score[lamp] += contribution;
     }

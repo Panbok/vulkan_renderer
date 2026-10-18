@@ -131,6 +131,7 @@ vkr_scene_emit_world_source(VkrSceneWorldEmitContext *context,
           },
       .local_bounding_sphere = {source->center.x, source->center.y,
                                 source->center.z, vec3_length(half_extents)},
+      .local_half_extents = half_extents,
       .state_bucket = vkr_world_draw_state_bucket(
           source->alpha.shadow_alpha_tested ? VKR_MATERIAL_ALPHA_CUTOUT
                                             : VKR_MATERIAL_ALPHA_OPAQUE,

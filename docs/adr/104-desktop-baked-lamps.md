@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-17
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -49,6 +49,12 @@ Owner decisions:
   - The two lamps are those whose light at the moving casters is strongest,
     not those nearest the camera: from the Bistro street camera the nearest
     lamps stood 8 to 12 m from the mannequin and its shadow barely showed.
+- **2026-10-18:**
+  - A moving caster weighs by its box, not its bounding sphere, takes the
+    lamp's light at its point nearest the lamp, and counts once per
+    instance: a crane beam spanning the Level Design Test warehouse no
+    longer kept the lamps beside it selected over the lamp above the boxes
+    the player stood among.
 - **2026-10-17:**
   - The desktop pipeline shadows up to four baked lamps, and a moving caster
     weighs by the view it may cover: from the far end of the Level Design
@@ -133,8 +139,13 @@ Owner decisions:
    candidate by summing, over the moving casters the camera may see, its
    light at the caster, colour luminance × intensity × distance falloff ×
    spot cone, times the view the caster may cover,
-   `r² / max(d², r², 2 m²)` for its bounding sphere's radius `r` and its
-   centre's distance `d` from the camera. A caster counts when its bounds
+   `r² / max(d², r², 2 m²)`, where `r²` is its box's mean projected area
+   over π and `d` the camera's distance to the box. The light is taken at
+   the box point nearest the lamp. Both terms spread over the box: along an
+   axis of half length `a` at distance `h` each keeps `atan(a / h) / (a / h)`
+   of the nearest point's inverse square. An instance counts once, not once
+   per submesh, and a caster whose producer gives no box keeps its bounding
+   sphere (`vkr_shadow_caster_camera_weight`). A caster counts when its bounds
    meet the lamp's range on a face the camera may see, its rooms are not
    hidden from the camera, and its sphere grown by `min(0.25 × range, 4 m)`,
    the reach of its shadow, lies inside the camera's side planes. The
@@ -157,7 +168,15 @@ Owner decisions:
    past its radius, and the falloff was held at the caster's radius as well:
    the crane's 49 m beam, a sphere of about 25 m, scored almost nothing
    under the lamps it hangs below, and from the warehouse's far end the
-   boxes near the player took both places, so the crane cast no shadow. No lamp is shown while the dynamic-caster scan is unavailable,
+   boxes near the player took both places, so the crane cast no shadow.
+   Until 2026-10-18 a caster weighed `r² / max(d², r², 2 m²)` for its
+   bounding sphere's radius and its centre's distance, the light was taken
+   at its centre, and every submesh counted: the same crane's beam, a 23 m
+   sphere that held the camera anywhere in the hall, weighed 1 three times,
+   so on the tiled pipeline the two lamps beside the beam held both places,
+   and boxes under the player's own lamp cast no shadow for about two
+   seconds after the player reached them.
+   No lamp is shown while the dynamic-caster scan is unavailable,
    and that frame keeps the selection for the next. A publication in flight
    no longer drops the lamps: static squares hold static casters only and
    composite squares copy them, so the difference stays the moving casters'.
@@ -341,7 +360,25 @@ Unavailable:
 - the 2026-10-15 camera-weighted selection on native Vulkan: the CPU suite
   (`vulkan_renderer_tester`, Release) passes and the shaders compile
   (`vkr_bakery shaders --backend all`); its Metal captures are in
-  [ADR-108](108-baked-lamp-direct-pages.md#evidence-and-remaining-checks).
+  [ADR-108](108-baked-lamp-direct-pages.md#evidence-and-remaining-checks);
+- the 2026-10-18 box-weighted selection on native Vulkan and with the
+  desktop pipeline's four places.
+
+Release, M1 Pro, Metal (tiled, two places), 2026-10-18, headless editor,
+local and non-authoritative: Watch playback of recording
+`rec-20261018-120657` through the Level Design Test warehouse at 1×, with
+a temporary per-frame log of the selection. Before the change, lamps 92 and
+93 (x = 56) held both places at the boxes the player walked among; their
+largest term was the crane beam's 23 m sphere, which held the camera
+(weight 1, three submeshes), and the lamp above the boxes took a place only
+at (70.9, −76.5), about 59.4 s into the recording. After it, that lamp is
+selected from (62.8, −63.4), before the player reaches the boxes, and keeps
+its place among them. From the warehouse's far end, (92, 1.7, −56) looking
+at the crane in Edit mode, the lamps beside the crane scored zero after the
+change: a caster test before the weight drops the crane there, so this
+weight does not decide its shadow from that view. That view was not
+measured before the change. `run_shadow_system_tests`, `run_local_shadow_tests`,
+`run_lighting_system_tests` and `run_scene_loader_tests` pass (Release).
 
 ## Revisit when
 

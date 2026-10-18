@@ -253,6 +253,9 @@ typedef struct VkrWorldDrawCandidate {
   VkrMaterialHandle material;
   VkrInstanceDataGPU instance;
   Vec4 local_bounding_sphere;
+  /** Half extents of the local box centred on the sphere's centre; zero
+      when its producer gives none. */
+  Vec3 local_half_extents;
   uint32_t state_bucket;
   uint32_t flags;
   /** Draw and shadow distances, vkr_gpu_draw_cull_word; zero has no limit. */
