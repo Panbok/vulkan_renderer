@@ -83,12 +83,35 @@ holds the working copy's untracked `.vkt` files and nothing else:
   (`vkr_depot_cooked_snapshot`, without a connection, since hashing
   hundreds of megabytes outlasts the idle timeout), then commits them on
   top of the side branch's newest commit with the message `Cooked for
-  <base>` and moves the branch by compare-and-swap
-  (`vkr_depot_publish_cooked`). The same files as the branch holds publish
-  nothing. The project's branch and the working copy's index stay as they
-  were.
+  <full id of the working copy's base>` and moves the branch by
+  compare-and-swap (`vkr_depot_publish_cooked`). The same files as the
+  branch holds publish nothing. The project's branch and the working
+  copy's index stay as they were.
+- `.vkrdepot/cooked` caches the cooked files' sizes, times and blobs, so a
+  cooked snapshot hashes only files that changed since the last snapshot
+  or fetch.
 - A streaming client lists the side branch for its own family only, so a
   Windows computer never receives ASTC blocks.
+
+### Project sharing
+
+Get and Get latest ([ADR-110](110-project-sharing-in-the-editor.md)) fetch
+the cooked side branch for this computer after the checkout and before
+the cook (`vkr_depot_fetch_cooked`), so the cook makes only what it lacks:
+
+- A file already here stays, and a path the index tracks is never
+  written.
+- A `<source>.vkt` is taken only when its source's blob in this working
+  copy equals the source's blob at the commit it was cooked for; a changed
+  source cooks here instead. Other cooked files, such as a build's
+  textures, belong to a build revision and are taken where missing, as
+  `recook_textures` treats them.
+- After a Get or Get latest that cooked anything, and after every Submit,
+  the editor publishes its cooked files to the side branch; the cooked
+  cache keeps that to the files that changed. Neither failure fails the
+  step: a missing cooked file only cooks here.
+- `depot.status` reports the textures the last Get cooked, fetched and
+  failed to cook.
 
 ### Editor
 
@@ -169,6 +192,21 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
   reads of a Bistro load now.
 - Not measured: a local load's time to the same points, a link slower
   than loopback, macOS and the ASTC side branch, two computers.
+- 2026-10-18, Get with the cooked side branch, `build_debug` and
+  `build_release`, Windows:
+  - `--suite depot` passes `test_depot_remote`'s Get part: a member's
+    cooked fetch writes the texture with the author's bytes and caches it,
+    a second fetch finds it present and writes nothing, and after the
+    author changes its source without publishing, the fetch counts it
+    stale and writes nothing, so the cook makes it.
+  - Two editor Gets (`depot.clone`) of a copy of this computer's depot
+    store (the cross-machine project, 802 MB) over loopback, each from an
+    empty home: the first took 85 s, cooked one folder and published 5
+    cooked textures to `main.cooked.bc`; the second took 90 s, took the
+    same 5 from the side branch and cooked none. That project holds few
+    cooked textures, so the times say nothing about Bistro's 511. In both,
+    one scene's `recook_textures` failed with "Re-cook scene does not match
+    project membership", from the unchanged re-cook step.
 
 ## Revisit when
 

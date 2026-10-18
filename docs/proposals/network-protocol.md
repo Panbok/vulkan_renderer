@@ -107,7 +107,6 @@ fallback.
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
 | Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session pumps on the host thread too (ADR-106) | The frame time of both measured with the other editor on another machine |
 | Sparse working copy | A working copy whose files arrive when opened, through the remote content directory (ADR-123), with its index telling unfetched files from deleted ones | A Bistro scene opens from a sparse working copy and commits only what changed |
-| Cooked files for project sharing | Get and Get latest fetch the cooked side branch for this computer (ADR-123) before cooking, and a sharer publishes it after a cook | A second machine's Get of Bistro cooks no texture the side branch holds |
 | Security | An independent review; the fuzzers run under ASan and UBSan (ADR-105) | Review closed before use outside a trusted network |
 | Privacy | NAT traversal with a rendezvous and relay; packet numbers are already masked (ADR-105) | Decided by the owner before internet deployment |
 
@@ -150,7 +149,7 @@ thread. The rest:
 
 - A file published during a session reaches other platforms as authored;
   each cooks its own variant, or fetches it from the cooked side branch
-  (ADR-123) once project sharing does (see [Gaps](#gaps-of-phases-0-to-3)).
+  (ADR-123), which a Get or Get latest takes.
 - Play stays local to each participant in this proposal.
 
 ### Agent federation (use case 5)

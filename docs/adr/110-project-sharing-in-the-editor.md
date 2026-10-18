@@ -112,8 +112,10 @@ writes no ignored path (ADR-105).
 - **Submit** needs saved scenes. It first takes a newer commit from the
   server, keeping local changes, then snapshots, uploads and moves the
   branch by compare-and-swap.
-- **Get latest** fetches and checks out, cooks and re-cooks the textures it
-  brought, rescans materials when a material changed, and reloads the open
+- **Get latest** fetches and checks out, takes the cooked textures this
+  computer's cooked side branch holds for them
+  ([ADR-123](123-asset-streaming-from-a-depot.md#project-sharing)), cooks
+  and re-cooks the rest it brought, rescans materials when a material changed, and reloads the open
   scene once its edits are saved. A file changed here and there stops with
   the conflicts listed; Use theirs and Keep mine settle all of them.
 - History lists the latest commits of the local store with their age.
