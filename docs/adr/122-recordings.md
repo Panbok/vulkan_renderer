@@ -106,7 +106,9 @@ an agent must read one without the editor.
   what the session hid, such as a first-person player's body around the
   camera; closing shows them again. Recordings before the flag show every
   body. A playback of a Play session also draws what Play drew: no clip or
-  trigger brushes.
+  trigger brushes and no editor grid. The grid's axes, drawn from the
+  recorded eye, ran across the view at eye height in Watch; Play now hides
+  the grid too, as it hides the brushes.
 - **Spawns (R3).** A transient entity scripts spawned, or a node of a model
   spawned under one, is named by a spawn id the recording gives it on first
   sight (pose kind SPAWN). Stream `spawn` holds each id's container and,

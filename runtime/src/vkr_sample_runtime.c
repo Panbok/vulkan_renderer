@@ -5544,19 +5544,25 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
   }
 }
 
+/* Whether an open playback shows a frame of a Play session, which shows what
+   the game drew, as Play does. */
+static bool8_t
+sample_replaying_play(const VkrStandardSceneRuntime *application) {
+  const VkrRecordingPlayback *playback = &application->playback;
+  return playback->open && playback->frame_count > 0u &&
+         (playback
+              ->frames[vkr_recording_playback_frame_at(playback,
+                                                       playback->time)]
+              .flags &
+          VKR_RECORDING_FRAME_SIMULATING) != 0u;
+}
+
 /* The Show filter and the greybox view reach every loaded container,
    including ones loaded after they changed; unchanged ones cost one compare
    per scene. */
 static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   const uint32_t hidden = state->view_state.hidden_kinds;
-  /* A playback of a Play session shows what the game drew, as Play does. */
-  const VkrRecordingPlayback *playback = &application->playback;
-  const bool8_t replaying_play =
-      playback->open && playback->frame_count > 0u &&
-      (playback
-           ->frames[vkr_recording_playback_frame_at(playback, playback->time)]
-           .flags &
-       VKR_RECORDING_FRAME_SIMULATING) != 0u;
+  const bool8_t replaying_play = sample_replaying_play(application);
   /* Clip and trigger brushes draw while the editor edits, not during Play,
      its playback or in a game (ADR-084). */
   const bool8_t volumes = application->editor_viewport.enabled &&
@@ -5607,8 +5613,13 @@ static void sample_grid_apply(VkrStandardSceneRuntime *application) {
     plane = VKR_EDITOR_GRID_PLANE_XY;
   }
   VkrEditorGridPayload grid = {
-      /* The model stage has its own ground and no level grid. */
+      /* The model stage has its own ground and no level grid. Like clip
+         and trigger brushes, the grid draws while the editor edits, not
+         during Play or its playback: from a player's eye its axes ran
+         across the view at eye height. */
       .enabled = view->grid_enabled && camera && !application->stage_scene &&
+                 !application->editor_viewport.simulation_running &&
+                 !sample_replaying_play(application) &&
                  (application->active_scene ||
                   vkr_scene_handle_get_scene(state->world_handle)),
       .through_geometry = view->grid_through_geometry,

@@ -466,7 +466,9 @@ drop their old `material` and `floor_material` keys.
 
 Clip and trigger brushes draw only
 while `VkrScene.editor_volumes` is set, which the editor runtime sets while
-it edits and clears during Play; games leave it off.
+it edits and clears during Play; games leave it off. The editor grid follows
+the same rule: it draws while the editor edits, not during Play or a
+playback of a Play session.
 
 Solid and clip brushes add their world-space convex hull to their 32 m world
 cell; each cell holds static bodies of at most 32 hulls each, so a raycast's
