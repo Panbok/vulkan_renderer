@@ -3800,6 +3800,9 @@ struct VkrVulkanRenderer {
   uint64_t upload_wait_count;
   uint64_t frame_upload_exhaustion_count;
   uint64_t command_slot_wait_count;
+  /* CPU time in vkQueuePresentKHR and vkAcquireNextImageKHR since the metrics
+     collector last read it. Render thread only. */
+  VkrRendererImplPresentTiming present_timing;
   uint32_t active_frame_slot;
   uint32_t history_output_index;
   uint32_t next_image_index;
@@ -4299,6 +4302,16 @@ bool8_t vkr_vk_window_presents_complete(VkrVulkanRenderer *renderer,
                                         VkrVulkanWindowTarget *target,
                                         bool8_t wait);
 uint64_t vkr_vk_refresh_completed(VkrVulkanRenderer *renderer);
+/* Records VK_ERROR_DEVICE_LOST from any Vulkan call: the device reports the
+   loss once and the renderer fails terminally. Other results pass through. */
+VkResult vkr_vk_observe_result(VkrVulkanRenderer *renderer, VkResult result,
+                               const char *where);
+/* GPU-completion waits. Each waits at most VKR_VULKAN_COMPLETION_TIMEOUT_NS;
+   past it the process exits without teardown, because completion is unproven
+   and resources may still be GPU-referenced. `wait_name` names the wait in the
+   fatal message; `value` is the timeline value it proves. */
+VkResult vkr_vk_wait_timeline(VkrVulkanRenderer *renderer, uint64_t value,
+                              const char *wait_name);
 /* FSR 3.1 native AA (vkr_vulkan_fsr.c, vkr_vulkan_deferred.c). */
 bool8_t vkr_vk_prepare_fsr31_context(VkrVulkanRenderer *renderer);
 bool8_t vkr_vk_prepare_fsr31_inputs(VkrVulkanRenderer *renderer,

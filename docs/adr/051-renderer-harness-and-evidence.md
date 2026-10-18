@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-15
+updated: 2026-10-18
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -31,8 +31,12 @@ join the artifacts, the report's `recording` is true and the run gains the
 authority reason `recording.enabled`; a repetition without exactly one bundle
 leaves the run incomplete (`recording.missing`). Otherwise the parent unsets
 `VKR_RECORDING_DIRECTORY` for every child, so an inherited one records
-nothing. A case camera of mode `recording` (`recording`, a repo-relative bundle
-or stream, and optional `first_frame` and `last_frame`) is a perf re-run: the
+nothing. Every run, auxiliary run and report carries `diagnostic_counts`:
+GPU error, validation and log counters summed over warmup and measured frames,
+and validation text found in the child's output; a GPU error costs the
+authority reason `gpu.errors` and a validation error `validation.messages`
+([ADR-124](124-renderer-health-and-diagnostic-reads.md)). A case camera of
+mode `recording` (`recording`, a repo-relative bundle or stream, and optional `first_frame` and `last_frame`) is a perf re-run: the
 child opens the recording in the runtime's playback, paused, and seeks it each
 frame to the range's first frame plus the case time, so the recorded camera,
 lens, hour and entity poses apply as in Watch. The case loader digests the

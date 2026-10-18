@@ -40,6 +40,17 @@ enum {
   VKR_RENDERER_IMPL_SHADOW_CASCADE_COUNT = 8,
 };
 
+/** CPU time spent presenting and acquiring presentable images since the
+ * last read. The render thread accumulates; the metrics collector is the only
+ * reader and reset owner. Acquire covers only the wait for the next image
+ * (Metal `nextDrawable`, `vkAcquireNextImageKHR`), not frame-slot reuse. */
+typedef struct VkrRendererImplPresentTiming {
+  uint64_t present_ns;
+  uint64_t acquire_ns;
+  uint32_t present_count;
+  uint32_t acquire_count;
+} VkrRendererImplPresentTiming;
+
 /** Why a requested GPU duration could not be published. */
 typedef enum VkrRendererImplGpuTimingReason {
   VKR_RENDERER_IMPL_GPU_TIMING_REASON_NONE = 0,

@@ -254,6 +254,26 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
                                 .writer = VKR_METRIC_WRITER_RENDER_THREAD,
                             },
                             &ids->decoupled) ||
+      !vkr_metrics_register(application->metrics,
+                            &(VkrMetricDescription){
+                                .name = string8_lit("log.errors"),
+                                .domain = VKR_METRIC_DOMAIN_FRAME,
+                                .kind = VKR_METRIC_KIND_COUNTER,
+                                .unit = VKR_METRIC_UNIT_COUNT,
+                                .scalar = VKR_METRIC_SCALAR_U64,
+                                .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+                            },
+                            &ids->log_errors) ||
+      !vkr_metrics_register(application->metrics,
+                            &(VkrMetricDescription){
+                                .name = string8_lit("log.warnings"),
+                                .domain = VKR_METRIC_DOMAIN_FRAME,
+                                .kind = VKR_METRIC_KIND_COUNTER,
+                                .unit = VKR_METRIC_UNIT_COUNT,
+                                .scalar = VKR_METRIC_SCALAR_U64,
+                                .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+                            },
+                            &ids->log_warnings) ||
       !vkr_renderer_metrics_register(&application->renderer_metrics,
                                      application->metrics)) {
     return false_v;
@@ -2915,6 +2935,18 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
     vkr_metrics_counter_add(application->metrics,
                             application->metric_ids.decoupled,
                             frame->decoupled ? 1u : 0u);
+    const VkrLogCounts log_counts = log_counts_get();
+    const uint64_t log_errors = log_counts.by_level[LOG_LEVEL_FATAL] +
+                                log_counts.by_level[LOG_LEVEL_ERROR];
+    const uint64_t log_warnings = log_counts.by_level[LOG_LEVEL_WARN];
+    vkr_metrics_counter_add(application->metrics,
+                            application->metric_ids.log_errors,
+                            log_errors - application->log_errors_published);
+    vkr_metrics_counter_add(application->metrics,
+                            application->metric_ids.log_warnings,
+                            log_warnings - application->log_warnings_published);
+    application->log_errors_published = log_errors;
+    application->log_warnings_published = log_warnings;
     VkrRendererMetricsCollectContext metrics_context = {
         .application = vkr_application_metrics_snapshot(
             &application->assets, &application->ui_system,

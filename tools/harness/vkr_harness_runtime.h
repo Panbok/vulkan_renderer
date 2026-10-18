@@ -120,6 +120,13 @@ bool8_t vkr_harness_samples_read(const char *path,
                                  VkrHarnessSampleSet *out_samples);
 
 /**
+ * Sums the diagnostic counters over every frame `samples` holds, warmup and
+ * measured. A counter the catalog lacks stays unregistered.
+ */
+void vkr_harness_diagnostics_from_samples(const VkrHarnessSampleSet *samples,
+                                          VkrHarnessDiagnosticCounts *counts);
+
+/**
  * Statistics over the measured window only; warmup frames are skipped. Samples
  * that are not VKR_METRIC_AVAILABILITY_VALID are counted as invalid rather
  * than folded in as zeros.

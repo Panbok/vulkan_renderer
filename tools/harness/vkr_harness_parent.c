@@ -680,6 +680,39 @@ vkr_internal bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
   return complete;
 }
 
+/**
+ * Sums every executed repetition's diagnostic counters, scans its captured
+ * streams and its prewarm child's, and withdraws authority from a run whose
+ * GPU failed or whose validation reported an error. A repetition that failed
+ * still contributes its streams: they often say why.
+ */
+vkr_internal void
+vkr_harness_collect_diagnostics(VkrHarnessReport *report, const char *run_root,
+                                const VkrHarnessSampleSet *runs,
+                                bool8_t prewarm, Arena *transient) {
+  vkr_local_persist const char *const kStreams[] = {"stdout.log", "stderr.log"};
+  for (uint32_t run = 0u; run < report->run_count; ++run) {
+    VkrHarnessDiagnosticCounts *counts = &report->runs[run].diagnostics;
+    /* A repetition's samples are read only once its child passed. */
+    if (runs[run].header.metric_count > 0u) {
+      vkr_harness_diagnostics_from_samples(&runs[run], counts);
+    }
+    for (uint32_t stream = 0u; stream < ArrayCount(kStreams); ++stream) {
+      char path[VKR_HARNESS_PATH_MAX];
+      string_format(path, sizeof(path), "%s/runs/%u/%s", run_root, run,
+                    kStreams[stream]);
+      vkr_harness_diagnostics_scan_output(path, transient, counts);
+      if (prewarm) {
+        string_format(path, sizeof(path), "%s/runs/%u/prewarm/%s", run_root,
+                      run, kStreams[stream]);
+        vkr_harness_diagnostics_scan_output(path, transient, counts);
+      }
+    }
+    vkr_harness_diagnostics_merge(&report->diagnostics, counts);
+  }
+  vkr_harness_report_apply_diagnostics(report);
+}
+
 /** Why the run cannot be authoritative before it executes: a local profile,
     or a recording whose cost is unmeasured against the overhead gate, so a
     recorded run describes what happened, not what the build costs. */
@@ -1033,6 +1066,9 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
                                   &gpu_pass_complete, &error)) {
     vkr_harness_report_mark_incomplete(&report, "aggregate.failed");
   }
+  vkr_harness_collect_diagnostics(
+      &report, run_root, runs,
+      case_manifest.cache == VKR_HARNESS_CACHE_ISOLATED_WARM, arenas.transient);
   vkr_harness_apply_verdict(&report, &case_manifest, &profile, runs,
                             snapshot_dropped, gpu_pass_complete);
 

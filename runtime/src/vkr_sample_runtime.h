@@ -564,6 +564,9 @@ typedef struct VkrSampleUiFrame {
    * that took their fallback so far (VkrRendererPipelineStats). */
   uint32_t pipeline_pending_count;
   uint64_t pipeline_late_draws;
+  /** GPU errors, validation counts and device loss since the renderer was
+   * created. */
+  VkrRendererHealth renderer_health;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
   /** Recordings (docs/proposals/recordings.md): one request applied after

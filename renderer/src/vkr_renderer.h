@@ -1346,6 +1346,23 @@ typedef struct VkrRendererPipelineStats {
  * Custom material's fallback until it gains Custom graphs. */
 VkrRendererPipelineStats
 vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer);
+
+/** GPU and API faults the renderer saw since creation. Counts only grow. */
+typedef struct VkrRendererHealth {
+  /** Submissions the GPU finished with an error. */
+  uint64_t gpu_errors;
+  /** Validation messages by severity; meaningful only when counted. */
+  uint64_t validation_errors;
+  uint64_t validation_warnings;
+  /** The backend routes validation messages through the engine (a Vulkan
+   * debug messenger). Metal's validation layers write to stderr instead. */
+  bool8_t validation_counted;
+  /** The device was lost; every later frame fails. */
+  bool8_t device_lost;
+} VkrRendererHealth;
+
+/** Safe from any thread while the render thread runs. */
+VkrRendererHealth vkr_renderer_get_health(const VkrRenderer *renderer);
 /** After `vkr_bakery materials` rewrote the project library: the next frame
  * loads it again and recreates the Custom graphs' pipelines, which draw
  * their fallback meanwhile. Safe while the render thread runs; nothing on

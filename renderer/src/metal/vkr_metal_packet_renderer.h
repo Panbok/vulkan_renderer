@@ -501,6 +501,12 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
     VkrMetalPacketRenderer *renderer, uint64_t *out_wait_count);
 bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
     VkrMetalPacketRenderer *renderer, uint64_t *out_wait_count);
+/** Render thread only; the metrics collector is the sole caller. */
+bool8_t vkr_metal_packet_renderer_get_and_reset_present_timing(
+    VkrMetalPacketRenderer *renderer, VkrRendererImplPresentTiming *out_timing);
+/** Safe from any thread while the render thread runs. */
+void vkr_metal_packet_renderer_get_health(
+    const VkrMetalPacketRenderer *renderer, VkrRendererHealth *out_health);
 
 /** Releases request-owned capture storage, including a pending request. */
 bool8_t

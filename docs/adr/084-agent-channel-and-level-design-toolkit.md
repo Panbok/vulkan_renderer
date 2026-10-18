@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-18
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -102,6 +102,7 @@ thread during the editor's build.
 | `changes.list`, `changes.accept`, `changes.reject` | Review of agent edits |
 | `changes.feed`, `claims.set`, `claims.release`, `claims.list` | What every author changed since a sequence number; boxes that keep other agents out |
 | `undo`, `redo`, `cmd` | Cmd statements through the Cmd queue, returning the `[cmd]` lines they printed |
+| `log.read`, `health.status` | Log history records by level and text, and GPU errors, validation counts, device loss and log totals ([ADR-124](124-renderer-health-and-diagnostic-reads.md)) |
 | `query.raycast` | First physics surface along a ray |
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
 | `session.host`, `session.join`, `session.publish`, `session.access`, `session.leave`, `session.status` | The collaborative editing session ([ADR-106](106-collaborative-editing-session.md)) |

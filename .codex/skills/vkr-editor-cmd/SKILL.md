@@ -124,4 +124,6 @@ statement: use `content.place`, `content.drop`, `content.move` and
 `content.command`, which run the same actions, and report the gesture itself
 as unverified. It does not capture images; use the harness (`vkr-harness`)
 for pixel evidence. Results also reach the Console and the session log in
-`<workspace>/logs/`; stdout is the record for scripts.
+`<workspace>/logs/`; stdout is the record for scripts. Through the agent
+channel, `log.read` returns log records by level and text and
+`health.status` returns GPU errors, validation counts and log totals.

@@ -598,6 +598,52 @@ typedef struct VkrHarnessProvenance {
   uint32_t actual_target_height;
 } VkrHarnessProvenance;
 
+/** Engine interval counters a report sums under `diagnostic_counts`. */
+typedef enum VkrHarnessDiagnosticMetric {
+  VKR_HARNESS_DIAGNOSTIC_GPU_ERRORS,
+  VKR_HARNESS_DIAGNOSTIC_GPU_VALIDATION_ERRORS,
+  VKR_HARNESS_DIAGNOSTIC_GPU_VALIDATION_WARNINGS,
+  VKR_HARNESS_DIAGNOSTIC_LOG_ERRORS,
+  VKR_HARNESS_DIAGNOSTIC_LOG_WARNINGS,
+  VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT,
+} VkrHarnessDiagnosticMetric;
+
+/** Line classes counted in a child's captured stdout and stderr. */
+typedef enum VkrHarnessOutputClass {
+  VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+  VKR_HARNESS_OUTPUT_VALIDATION_WARNING,
+  /* A layer or runtime announcing validation is on; not a defect. */
+  VKR_HARNESS_OUTPUT_VALIDATION_NOTICE,
+  VKR_HARNESS_OUTPUT_LOG_ERROR,
+  VKR_HARNESS_OUTPUT_LOG_WARNING,
+  VKR_HARNESS_OUTPUT_CLASS_COUNT,
+} VkrHarnessOutputClass;
+
+/**
+ * One counter summed over every sampled frame. Frames the metric was
+ * unavailable for are counted apart and never folded in as zero.
+ */
+typedef struct VkrHarnessDiagnosticTotal {
+  bool8_t registered;
+  uint64_t total;
+  uint64_t counted_frames;
+  uint64_t unavailable_frames;
+} VkrHarnessDiagnosticTotal;
+
+/**
+ * GPU errors, validation messages, and logged errors one child process or a
+ * whole run produced. The counters cover the sampled warmup and measured
+ * frames; the output classes cover the child processes' whole lifetimes.
+ */
+typedef struct VkrHarnessDiagnosticCounts {
+  bool8_t metrics_collected;
+  VkrHarnessDiagnosticTotal metrics[VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT];
+  bool8_t output_collected;
+  uint32_t output_files_scanned;
+  uint32_t output_files_unreadable;
+  uint64_t output_lines[VKR_HARNESS_OUTPUT_CLASS_COUNT];
+} VkrHarnessDiagnosticCounts;
+
 typedef struct VkrHarnessRunReference {
   uint32_t index;
   char status[24];
@@ -606,6 +652,8 @@ typedef struct VkrHarnessRunReference {
   char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  /* Written under the row only once a run collected them. */
+  VkrHarnessDiagnosticCounts diagnostics;
 } VkrHarnessRunReference;
 
 typedef struct VkrHarnessArtifact {
@@ -715,6 +763,9 @@ typedef struct VkrHarnessReport {
   uint64_t event_subjects_truncated;
   VkrHarnessEvent *events;
   uint32_t event_count;
+  /* Sums over every run reference, or the child's own samples; written as
+     `diagnostic_counts` only once collected. */
+  VkrHarnessDiagnosticCounts diagnostics;
   /* Arena-backed like `metrics`, `passes`, and `events`: a snapshot parent
      merges hundreds of child rows, and inlining them would put megabytes on the
      stack of every writer. Sized once by
@@ -955,6 +1006,9 @@ const char *vkr_harness_present_name(VkrHarnessPresentMode present);
 const char *vkr_harness_cache_name(VkrHarnessCacheMode cache);
 const char *vkr_harness_boot_name(VkrHarnessBootProfile boot);
 const char *vkr_harness_statistic_name(VkrHarnessStatisticKind statistic);
+/** The engine metric name a diagnostic counter is read from and reported as. */
+const char *
+vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric);
 const char *vkr_harness_operator_name(VkrHarnessAssertionOperator operation);
 bool8_t vkr_harness_statistic_from_name(const char *name,
                                         VkrHarnessStatisticKind *out_statistic);
@@ -1045,6 +1099,22 @@ void vkr_harness_report_mark_incomplete(VkrHarnessReport *report,
 /** Terminal "the environment is not the requested one" outcome. */
 void vkr_harness_report_mark_unavailable(VkrHarnessReport *report,
                                          const char *reason);
+
+/**
+ * Counts validation and logged-error lines in one captured child stream. A
+ * missing or unreadable file is counted as unreadable, never as clean.
+ */
+void vkr_harness_diagnostics_scan_output(const char *path, Arena *transient,
+                                         VkrHarnessDiagnosticCounts *counts);
+/** Adds one run's diagnostics into a run-wide total. */
+void vkr_harness_diagnostics_merge(VkrHarnessDiagnosticCounts *total,
+                                   const VkrHarnessDiagnosticCounts *run);
+/**
+ * Withdraws authority from a run whose diagnostics show a failed GPU
+ * submission or a validation error. Warnings and logged errors are reported
+ * but cost no authority.
+ */
+void vkr_harness_report_apply_diagnostics(VkrHarnessReport *report);
 
 /**
  * Named-member shorthand over `core/vkr_json_writer.h` for the C strings the

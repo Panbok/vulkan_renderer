@@ -46,6 +46,15 @@ VkrLogHistorySnapshot log_history_snapshot(uint64_t after_sequence,
                                            VkrLogRecord *records,
                                            uint32_t capacity);
 
+/** Records logged since process start, by level. Counts every record that
+ * passed the runtime threshold, whether or not history is kept; safe from any
+ * thread. */
+typedef struct VkrLogCounts {
+  uint64_t by_level[LOG_LEVEL_TRACE + 1];
+} VkrLogCounts;
+
+VkrLogCounts log_counts_get(void);
+
 /** Runtime producer threshold; defaults to INFO in editor builds. Display
  * filters cannot recover records omitted at this boundary. */
 void log_max_level_set(LogLevel level);

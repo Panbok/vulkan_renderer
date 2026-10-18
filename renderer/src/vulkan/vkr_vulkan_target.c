@@ -59,9 +59,15 @@ bool8_t vkr_vk_window_presents_complete(VkrVulkanRenderer *renderer,
     if (!target->present_fence_pending[i])
       continue;
     const VkResult result =
-        wait ? vkWaitForFences(device, 1u, &target->present_complete[i],
-                               VK_TRUE, UINT64_MAX)
-             : vkGetFenceStatus(device, target->present_complete[i]);
+        wait ? vkr_vk_observe_result(
+                   renderer,
+                   vkWaitForFences(device, 1u, &target->present_complete[i],
+                                   VK_TRUE, UINT64_MAX),
+                   "present fence before swapchain destroy")
+             : vkr_vk_observe_result(
+                   renderer,
+                   vkGetFenceStatus(device, target->present_complete[i]),
+                   "present fence query");
     if (result == VK_NOT_READY)
       return false_v;
     if (result != VK_SUCCESS) {
@@ -390,8 +396,11 @@ vkr_internal bool8_t vkr_vk_present_cancelled_frame(VkrVulkanRenderer *renderer,
       .signalSemaphoreInfoCount = ArrayCount(signals),
       .pSignalSemaphoreInfos = signals,
   };
-  if (vkQueueSubmit2(vkr_vulkan_device_queue(renderer->device), 1u,
-                     &submit_info, VK_NULL_HANDLE) != VK_SUCCESS)
+  const VkResult submit_result =
+      vkQueueSubmit2(vkr_vulkan_device_queue(renderer->device), 1u,
+                     &submit_info, VK_NULL_HANDLE);
+  if (vkr_vk_observe_result(renderer, submit_result,
+                            "cancelled-frame submission") != VK_SUCCESS)
     return false_v;
 
   renderer->submit_value = signal_value;
@@ -419,9 +428,15 @@ vkr_internal bool8_t vkr_vk_present_cancelled_frame(VkrVulkanRenderer *renderer,
       .pSwapchains = &window->swapchain,
       .pImageIndices = &image_index,
   };
+  const float64_t present_start = vkr_platform_get_absolute_time();
+  const VkResult present_result = vkQueuePresentKHR(
+      vkr_vulkan_device_queue(renderer->device), &present_info);
+  renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
+  renderer->present_timing.present_count++;
+  (void)vkr_vk_observe_result(renderer, present_result,
+                              "cancelled-frame present");
   const VkrVulkanPresentResult disposition =
-      vkr_vulkan_present_result_classify(vkQueuePresentKHR(
-          vkr_vulkan_device_queue(renderer->device), &present_info));
+      vkr_vulkan_present_result_classify(present_result);
   if (disposition.present_completion_tracking_required) {
     window->image_presented[image_index] = true_v;
     window->present_fence_pending[image_index] =

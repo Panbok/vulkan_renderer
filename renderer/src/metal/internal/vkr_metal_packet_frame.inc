@@ -3220,7 +3220,10 @@ vkr_internal bool8_t vkr_metal_packet_acquire_drawable(
     [CATransaction commit];
   }
   [renderer->drawable release];
+  const float64_t acquire_start = vkr_platform_get_absolute_time();
   renderer->drawable = [[renderer->layer nextDrawable] retain];
+  renderer->present_timing.acquire_ns += vkr_metrics_elapsed_ns(acquire_start);
+  renderer->present_timing.acquire_count += 1u;
   if (renderer->drawable && renderer->drawable.texture.width == width &&
       renderer->drawable.texture.height == height)
     return true_v;
@@ -4590,9 +4593,11 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
             : 0u;
     command_slot->pass_timing_requested = submission.pass_timing_requested;
     VkrMetalPacketCommitFeedbackRecord *commit_feedback =
-        submission.submission_timing_requested
-            ? vkr_metal_packet_acquire_commit_feedback(renderer)
-            : NULL;
+        vkr_metal_packet_acquire_commit_feedback(renderer);
+    if (commit_feedback) {
+      commit_feedback->timing_requested =
+          submission.submission_timing_requested;
+    }
     command_slot->commit_feedback = commit_feedback;
     out_result->gpu_submission_unavailable_reason =
         submission.submission_timing_requested

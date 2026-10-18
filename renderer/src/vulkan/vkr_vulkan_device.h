@@ -162,6 +162,19 @@ typedef struct VkrVulkanRayQueryFunctions {
 const VkrVulkanRayQueryFunctions *
 vkr_vulkan_device_ray_query_functions(const VkrVulkanDevice *device);
 
+struct VkrRendererHealth;
+
+/** Validation message counts and device loss. Safe from any thread; the
+ * debug messenger counts from driver threads. Zeroed for a NULL device. */
+void vkr_vulkan_device_get_health(const VkrVulkanDevice *device,
+                                  struct VkrRendererHealth *out_health);
+/** Records an observed VK_ERROR_DEVICE_LOST. The first report logs `where`
+ * and the VK_EXT_device_fault records; later reports do nothing. */
+void vkr_vulkan_device_mark_lost(VkrVulkanDevice *device, const char *where);
+/** Logs the VK_EXT_device_fault records through log_error. Logs nothing when
+ * the device did not enable the extension. */
+void vkr_vulkan_device_log_fault_info(const VkrVulkanDevice *device);
+
 /** Null when VK_EXT_debug_utils is absent; callers skip labelling. */
 PFN_vkCmdBeginDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device);

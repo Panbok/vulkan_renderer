@@ -218,6 +218,38 @@ vkr_harness_snapshot_adopt_provenance(VkrHarnessReport *report,
 }
 
 /**
+ * Sums one replay child's diagnostic counters and scans its captured streams
+ * and its prewarm child's. Runs before the child's captures are judged: a
+ * failed child's streams often say why.
+ */
+vkr_internal void
+vkr_harness_snapshot_collect_diagnostics(VkrHarnessReport *report, Arena *arena,
+                                         const char *child_dir,
+                                         VkrHarnessDiagnosticCounts *counts) {
+  vkr_local_persist const char *const kStreams[] = {"stdout.log", "stderr.log"};
+  const bool8_t prewarm =
+      report->case_manifest.cache == VKR_HARNESS_CACHE_ISOLATED_WARM;
+  Scratch scratch = scratch_create(arena);
+  char path[VKR_HARNESS_PATH_MAX];
+  VkrHarnessSampleSet samples = {0};
+  string_format(path, sizeof(path), "%s/samples.bin", child_dir);
+  if (vkr_harness_samples_read(path, &report->case_manifest, arena, &samples)) {
+    vkr_harness_diagnostics_from_samples(&samples, counts);
+  }
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  for (uint32_t stream = 0u; stream < ArrayCount(kStreams); ++stream) {
+    string_format(path, sizeof(path), "%s/%s", child_dir, kStreams[stream]);
+    vkr_harness_diagnostics_scan_output(path, arena, counts);
+    if (prewarm) {
+      string_format(path, sizeof(path), "%s/prewarm/%s", child_dir,
+                    kStreams[stream]);
+      vkr_harness_diagnostics_scan_output(path, arena, counts);
+    }
+  }
+  vkr_harness_diagnostics_merge(&report->diagnostics, counts);
+}
+
+/**
  * Records one replay child in the report and adopts its verified captures.
  * Returns false when the child did not produce a usable summary, which ends
  * the run's replay loop.
@@ -235,6 +267,8 @@ vkr_internal bool8_t vkr_harness_snapshot_adopt_child(
                 child_exit == VKR_HARNESS_EXIT_PASS ? "pass" : "incomplete");
   string_format(reference->report, sizeof(reference->report), "%s/report.json",
                 child_relative);
+  vkr_harness_snapshot_collect_diagnostics(report, summary_arena, child_dir,
+                                           &reference->diagnostics);
   string_format(child_report, sizeof(child_report), "%s/report.json",
                 child_dir);
   string_format(child_summary, sizeof(child_summary), "%s/capture-summary.bin",
@@ -563,6 +597,7 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   if (!replay_scale_compatible)
     vkr_harness_report_mark_incomplete(&report,
                                        "comparison.content_scale_mismatch");
+  vkr_harness_report_apply_diagnostics(&report);
   if (complete) {
     vkr_harness_snapshot_compare_baseline(&report, repo_root, run_root,
                                           summary_arena, cross_backend, &error);

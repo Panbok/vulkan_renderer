@@ -55,14 +55,81 @@ vkr_internal bool8_t vkr_vk_create_timeline(VkrVulkanRenderer *renderer) {
                            &renderer->timeline) == VK_SUCCESS;
 }
 
+/* The longest a GPU-completion wait may block: Metal's
+   VKR_METAL_PACKET_TIMEOUT_MS. No healthy frame, upload, or bake submission
+   runs this long, and Windows resets a GPU stuck for 2 s. */
+#define VKR_VULKAN_COMPLETION_TIMEOUT_NS (5000ull * 1000ull * 1000ull)
+
 uint64_t vkr_vk_refresh_completed(VkrVulkanRenderer *renderer) {
+  if (!renderer->timeline)
+    return renderer->completed_value;
   uint64_t completed = renderer->completed_value;
-  if (renderer->timeline && vkGetSemaphoreCounterValue(
-                                vkr_vk_renderer_device(renderer),
-                                renderer->timeline, &completed) == VK_SUCCESS) {
+  const VkResult result = vkGetSemaphoreCounterValue(
+      vkr_vk_renderer_device(renderer), renderer->timeline, &completed);
+  if (result == VK_SUCCESS) {
     renderer->completed_value = completed;
+  } else {
+    (void)vkr_vk_observe_result(renderer, result, "timeline counter query");
   }
   return renderer->completed_value;
+}
+
+VkResult vkr_vk_observe_result(VkrVulkanRenderer *renderer, VkResult result,
+                               const char *where) {
+  if (result == VK_ERROR_DEVICE_LOST) {
+    vkr_vulkan_device_mark_lost(renderer->device, where);
+    renderer->terminal_failure = true_v;
+  }
+  return result;
+}
+
+/* Ends the process after a GPU-completion wait timed out. */
+vkr_internal void vkr_vk_completion_timeout_exit(VkrVulkanRenderer *renderer,
+                                                 const char *wait_name,
+                                                 uint64_t value) {
+  uint64_t completed = renderer->completed_value;
+  if (renderer->timeline)
+    (void)vkGetSemaphoreCounterValue(vkr_vk_renderer_device(renderer),
+                                     renderer->timeline, &completed);
+  /* The session log keeps the fault records; the fatal line follows them. */
+  vkr_vulkan_device_log_fault_info(renderer->device);
+  char message[512];
+  string_format(
+      message, sizeof(message),
+      "[FATAL]: Vulkan GPU completion timed out after %llu ms "
+      "(%s wait=%llu completed=%llu submitted=%llu). "
+      "Exiting without GPU teardown; unsaved edits are lost.\n",
+      (unsigned long long)(VKR_VULKAN_COMPLETION_TIMEOUT_NS / 1000000ull),
+      wait_name, (unsigned long long)value, (unsigned long long)completed,
+      (unsigned long long)renderer->submit_value);
+  vkr_platform_stderr_write(message);
+  /* Completion is unproven. Neither another wait nor normal teardown may
+     recycle resources still referenced by the GPU. Skip exit handlers too. */
+  vkr_platform_exit_immediate(1);
+}
+
+/* The one timeout policy behind every GPU-completion wait. */
+vkr_internal VkResult vkr_vk_finish_completion_wait(VkrVulkanRenderer *renderer,
+                                                    VkResult result,
+                                                    uint64_t value,
+                                                    const char *wait_name) {
+  if (result == VK_TIMEOUT)
+    vkr_vk_completion_timeout_exit(renderer, wait_name, value);
+  return vkr_vk_observe_result(renderer, result, wait_name);
+}
+
+VkResult vkr_vk_wait_timeline(VkrVulkanRenderer *renderer, uint64_t value,
+                              const char *wait_name) {
+  const VkSemaphoreWaitInfo wait_info = {
+      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+      .semaphoreCount = 1u,
+      .pSemaphores = &renderer->timeline,
+      .pValues = &value,
+  };
+  const VkResult result =
+      vkWaitSemaphores(vkr_vk_renderer_device(renderer), &wait_info,
+                       VKR_VULKAN_COMPLETION_TIMEOUT_NS);
+  return vkr_vk_finish_completion_wait(renderer, result, value, wait_name);
 }
 
 vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
@@ -503,14 +570,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   const uint32_t slot_index = renderer->command_ring.next_slot;
   VkrVulkanFrameSlot *slot = &renderer->frame_slots[slot_index];
   if (slot->retire_value > completed) {
-    VkSemaphoreWaitInfo wait_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .semaphoreCount = 1u,
-        .pSemaphores = &renderer->timeline,
-        .pValues = &slot->retire_value,
-    };
-    if (vkWaitSemaphores(vkr_vk_renderer_device(renderer), &wait_info,
-                         UINT64_MAX) != VK_SUCCESS) {
+    if (vkr_vk_wait_timeline(renderer, slot->retire_value,
+                             "frame-slot reuse") != VK_SUCCESS) {
       return false_v;
     }
     renderer->command_slot_wait_count++;
@@ -551,10 +612,17 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
     renderer->next_image_index =
         (renderer->next_image_index + 1u) % renderer->targets.image_count;
   } else {
+    /* Unbounded: the presentation engine may legitimately hold every image,
+       for example while the window is occluded. */
+    const float64_t acquire_start = vkr_platform_get_absolute_time();
     const VkResult acquire_result = vkAcquireNextImageKHR(
         vkr_vk_renderer_device(renderer), renderer->window_target.swapchain,
         UINT64_MAX, renderer->acquire_semaphores[slot_index], VK_NULL_HANDLE,
         &slot->image_index);
+    renderer->present_timing.acquire_ns +=
+        vkr_metrics_elapsed_ns(acquire_start);
+    renderer->present_timing.acquire_count++;
+    (void)vkr_vk_observe_result(renderer, acquire_result, "image acquire");
     if (acquire_result == VK_ERROR_OUT_OF_DATE_KHR) {
       renderer->target_dirty = true_v;
       vkr_vulkan_renderer_cancel_frame(renderer);
@@ -573,8 +641,14 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
     if (renderer->window_target.present_fence_pending[image_index]) {
       VkFence *present_fence =
           &renderer->window_target.present_complete[image_index];
-      if (vkWaitForFences(vkr_vk_renderer_device(renderer), 1u, present_fence,
-                          VK_TRUE, UINT64_MAX) != VK_SUCCESS ||
+      /* Unbounded: a present fence follows the presentation engine, which
+         may hold an image while the window is minimized or occluded. */
+      const VkResult present_wait = vkr_vk_observe_result(
+          renderer,
+          vkWaitForFences(vkr_vk_renderer_device(renderer), 1u, present_fence,
+                          VK_TRUE, UINT64_MAX),
+          "present fence before image reuse");
+      if (present_wait != VK_SUCCESS ||
           vkResetFences(vkr_vk_renderer_device(renderer), 1u, present_fence) !=
               VK_SUCCESS) {
         vkr_vulkan_renderer_cancel_frame(renderer);
@@ -585,14 +659,8 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
     const uint64_t image_submit =
         renderer->window_target.image_last_submit_value[image_index];
     if (image_submit > completed) {
-      VkSemaphoreWaitInfo image_wait = {
-          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-          .semaphoreCount = 1u,
-          .pSemaphores = &renderer->timeline,
-          .pValues = &image_submit,
-      };
-      if (vkWaitSemaphores(vkr_vk_renderer_device(renderer), &image_wait,
-                           UINT64_MAX) != VK_SUCCESS) {
+      if (vkr_vk_wait_timeline(renderer, image_submit,
+                               "swapchain image reuse") != VK_SUCCESS) {
         vkr_vulkan_renderer_cancel_frame(renderer);
         return false_v;
       }
@@ -1373,8 +1441,12 @@ vkr_internal bool8_t vkr_vk_present_submitted_image(VkrVulkanRenderer *renderer,
       .pSwapchains = &window->swapchain,
       .pImageIndices = &image_index,
   };
+  const float64_t present_start = vkr_platform_get_absolute_time();
   const VkResult present_result = vkQueuePresentKHR(
       vkr_vulkan_device_queue(renderer->device), &present_info);
+  renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
+  renderer->present_timing.present_count++;
+  (void)vkr_vk_observe_result(renderer, present_result, "queue present");
   const VkrVulkanPresentResult disposition =
       vkr_vulkan_present_result_classify(present_result);
   if (disposition.present_completion_tracking_required) {
@@ -1481,6 +1553,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       vkr_vk_queue_submit_frame(renderer, slot, signal_value);
   if (submit_result != VK_SUCCESS) {
     log_error("Vulkan queue submission failed (result=%d)", (int)submit_result);
+    (void)vkr_vk_observe_result(renderer, submit_result, "frame submission");
     vkr_vk_unwind_rejected_submission(renderer, slot);
     return false_v;
   }
@@ -1759,14 +1832,8 @@ bool8_t vkr_vulkan_renderer_wait_idle(VkrVulkanRenderer *renderer) {
   if (!renderer || !renderer->timeline || renderer->submit_value == 0u) {
     return renderer != NULL;
   }
-  const VkSemaphoreWaitInfo wait_info = {
-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-      .semaphoreCount = 1u,
-      .pSemaphores = &renderer->timeline,
-      .pValues = &renderer->submit_value,
-  };
-  if (vkWaitSemaphores(vkr_vk_renderer_device(renderer), &wait_info,
-                       UINT64_MAX) != VK_SUCCESS) {
+  if (vkr_vk_wait_timeline(renderer, renderer->submit_value, "idle wait") !=
+      VK_SUCCESS) {
     return false_v;
   }
   vkr_vk_refresh_completed(renderer);
@@ -1840,6 +1907,25 @@ bool8_t vkr_vulkan_renderer_get_and_reset_command_slot_wait_count(
   *out_wait_count = renderer->command_slot_wait_count;
   renderer->command_slot_wait_count = 0u;
   return true_v;
+}
+
+bool8_t vkr_vulkan_renderer_get_and_reset_present_timing(
+    VkrVulkanRenderer *renderer, VkrRendererImplPresentTiming *out_timing) {
+  if (!renderer || !out_timing) {
+    return false_v;
+  }
+  *out_timing = renderer->present_timing;
+  MemZero(&renderer->present_timing, sizeof(renderer->present_timing));
+  return true_v;
+}
+
+void vkr_vulkan_renderer_get_health(const VkrVulkanRenderer *renderer,
+                                    VkrRendererHealth *out_health) {
+  if (!out_health) {
+    return;
+  }
+  /* The device owns the counters, so this reads no render-thread state. */
+  vkr_vulkan_device_get_health(renderer ? renderer->device : NULL, out_health);
 }
 
 void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,

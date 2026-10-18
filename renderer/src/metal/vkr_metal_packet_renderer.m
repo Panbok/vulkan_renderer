@@ -566,7 +566,13 @@ typedef struct VkrMetalPacketCommitFeedbackRecord {
   VkrMetalPacketResult result;
   CFTimeInterval gpu_start_time;
   CFTimeInterval gpu_end_time;
+  /* The submission's error, retained by the callback and released by the
+     render thread once it is logged. */
+  NSError *error;
   bool8_t has_error;
+  /* Every commit carries feedback so GPU errors are seen; only a commit that
+     asked for submission timing publishes its duration. */
+  bool8_t timing_requested;
   VkrAtomicBool feedback_ready;
   VkrAtomicBool result_ready;
   bool8_t in_use;
@@ -919,6 +925,11 @@ struct VkrMetalPacketRenderer {
   uint32_t next_completed_timing;
   uint32_t next_commit_feedback;
   VkrMetalPacketWaitCounters wait_counters;
+  /* Present and drawable-acquire CPU time since the metrics collector last
+     read it; render thread only. */
+  VkrRendererImplPresentTiming present_timing;
+  /* Submissions the GPU finished with an error; read from any thread. */
+  VkrAtomicUint64 gpu_error_count;
   /* Active-slot aliases keep encoding code independent of slot selection. */
   id<MTL4CommandAllocator> command_allocator;
   id<MTL4CommandBuffer> command_buffer;

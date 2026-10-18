@@ -344,6 +344,21 @@ const char *vkr_harness_boot_name(VkrHarnessBootProfile boot) {
   }
 }
 
+/** Index-aligned with VkrHarnessDiagnosticMetric; the engine publishes each as
+    an interval counter per frame. */
+vkr_global const char *const
+    vkr_harness_diagnostic_metric_names[VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT] = {
+        "gpu.errors", "gpu.validation.errors", "gpu.validation.warnings",
+        "log.errors", "log.warnings",
+};
+
+const char *
+vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric) {
+  return metric < VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT
+             ? vkr_harness_diagnostic_metric_names[metric]
+             : "unknown";
+}
+
 /** Index-aligned with VkrHarnessStatisticKind; also the report/CSV wire names.
  */
 vkr_global const char

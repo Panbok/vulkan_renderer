@@ -252,6 +252,10 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId frame_command_slot_waits;
   VkrMetricId gpu_submission;
   VkrMetricId backend_present;
+  VkrMetricId drawable_acquire;
+  VkrMetricId gpu_errors;
+  VkrMetricId gpu_validation_errors;
+  VkrMetricId gpu_validation_warnings;
 
   VkrMetricId boot_instance;
   VkrMetricId boot_device;
@@ -324,6 +328,9 @@ typedef struct VkrRendererCumulativeBaselines {
   uint64_t meshes_batched;
   uint64_t jobs_completed;
   uint64_t gpu_allocations_created;
+  uint64_t gpu_errors;
+  uint64_t gpu_validation_errors;
+  uint64_t gpu_validation_warnings;
   uint64_t impl_memory[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX];
   struct {
     uint64_t allocated_bytes;

@@ -46,6 +46,8 @@ vkr_global uint32_t g_log_history_count = 0u;
    logged, so the file survives a crash. */
 vkr_global FILE *g_log_file = NULL;
 
+vkr_global VkrAtomicUint64 g_log_counts[LOG_LEVEL_TRACE + 1];
+
 vkr_global const char *LOG_LEVELS[6] = {
     "[FATAL]: ", "[ERROR]: ", "[WARN]: ", "[INFO]: ", "[DEBUG]: ", "[TRACE]: "};
 
@@ -226,11 +228,22 @@ void log_file_close(void) {
   log_unlock();
 }
 
+VkrLogCounts log_counts_get(void) {
+  VkrLogCounts counts = {0};
+  for (uint32_t i = 0u; i < ArrayCount(counts.by_level); ++i) {
+    counts.by_level[i] =
+        vkr_atomic_uint64_load(&g_log_counts[i], VKR_MEMORY_ORDER_RELAXED);
+  }
+  return counts;
+}
+
 void _log_message(LogLevel level, const char *file, uint32_t line,
                   const char *fmt, ...) {
   if (!log_level_enabled(level))
     return;
   assert(g_log_arena != NULL && "Log arena is not initialized.");
+  vkr_atomic_uint64_fetch_add(&g_log_counts[level], 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
 
   log_lock();
 

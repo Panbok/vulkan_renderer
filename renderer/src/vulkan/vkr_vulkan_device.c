@@ -1,10 +1,15 @@
 #include "vulkan/vkr_vulkan_device.h"
 
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
 #include "platform/vkr_platform.h"
+#include "vkr_renderer.h"
 #include "vulkan/vkr_vulkan_wsi.h"
 
 enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
+/* VK_EXT_device_fault records logged per report. A driver reporting more keeps
+   the first ones (VK_INCOMPLETE). */
+enum { VKR_VULKAN_DEVICE_FAULT_RECORD_MAX = 16 };
 /* Queue families queried per candidate device. A device reporting more keeps
    only the first ones. */
 enum { VKR_VULKAN_MAX_QUEUE_FAMILIES = 32 };
@@ -40,6 +45,8 @@ typedef struct VkrVulkanFeatureSet {
   bool8_t swapchain_maintenance1;
   bool8_t acceleration_structure;
   bool8_t ray_query;
+  /* Optional: VK_EXT_device_fault reports why a device was lost. */
+  bool8_t device_fault;
 } VkrVulkanFeatureSet;
 
 typedef struct VkrVulkanCandidate {
@@ -59,6 +66,7 @@ typedef struct VkrVulkanCandidate {
   /* VK_KHR_acceleration_structure needs VK_KHR_deferred_host_operations. */
   bool8_t has_ray_query_extensions;
   bool8_t has_memory_budget_extension;
+  bool8_t has_device_fault_extension;
   VkPhysicalDeviceAccelerationStructurePropertiesKHR
       acceleration_structure_properties;
 } VkrVulkanCandidate;
@@ -89,6 +97,9 @@ struct VkrVulkanDevice {
   // validation because Release GPU captures also need graph pass names.
   PFN_vkCmdBeginDebugUtilsLabelEXT cmd_begin_debug_label;
   PFN_vkCmdEndDebugUtilsLabelEXT cmd_end_debug_label;
+  /* Loaded only when VK_EXT_device_fault and its deviceFault feature are
+     enabled. */
+  PFN_vkGetDeviceFaultInfoEXT get_device_fault_info;
   /* Loaded only when ray queries are enabled. */
   VkrVulkanRayQueryFunctions ray_query_functions;
   bool8_t ray_query_enabled;
@@ -96,6 +107,12 @@ struct VkrVulkanDevice {
   bool8_t memory_budget_enabled;
   bool8_t swapchain_colorspace_enabled;
   bool8_t ready;
+  /* Validation messages by severity. The debug messenger counts them from
+     whichever thread the driver calls it on; any thread reads them. */
+  VkrAtomicUint64 validation_errors;
+  VkrAtomicUint64 validation_warnings;
+  /* Set by the first VK_ERROR_DEVICE_LOST the backend observes. */
+  VkrAtomicBool device_lost;
 };
 
 VkSurfaceFormatKHR vkr_vulkan_device_choose_surface_format(
@@ -296,8 +313,12 @@ vkr_vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       callback_data->pMessageIdName &&
       string_equals(callback_data->pMessageIdName,
                     "WARNING-Setting-Limit-Adjusted");
+  /* The counts follow the log classification: a GPU-AV setup notice is not a
+     warning, and loader messages are not validation results. */
   if (validation_message &&
       (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
+    vkr_atomic_uint64_fetch_add(&device->validation_errors, 1u,
+                                VKR_MEMORY_ORDER_RELAXED);
     log_error("Vulkan validation: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) &&
@@ -305,6 +326,8 @@ vkr_vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     log_info("Vulkan GPU-AV setup: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
+    vkr_atomic_uint64_fetch_add(&device->validation_warnings, 1u,
+                                VKR_MEMORY_ORDER_RELAXED);
     log_warn("Vulkan validation: %s", message);
   } else {
     log_debug("Vulkan loader: %s", message);
@@ -628,6 +651,21 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
             VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     candidate->has_memory_budget_extension = vkr_vk_extension_present(
         extensions, extension_count, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    candidate->has_device_fault_extension = vkr_vk_extension_present(
+        extensions, extension_count, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+  }
+  /* The fault feature structure may chain only for a device that names its
+     extension. */
+  if (candidate->has_device_fault_extension) {
+    VkPhysicalDeviceFaultFeaturesEXT device_fault = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+    };
+    VkPhysicalDeviceFeatures2 features2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &device_fault,
+    };
+    vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
+    candidate->features.device_fault = device_fault.deviceFault;
   }
   /* The ray-query structures may chain only for a device that names their
      extensions. */
@@ -1174,6 +1212,7 @@ vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   device->get_descriptor = NULL;
   device->cmd_bind_descriptor_buffers = NULL;
   device->cmd_set_descriptor_offsets = NULL;
+  device->get_device_fault_info = NULL;
   MemZero(&device->resource_layout, sizeof(device->resource_layout));
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
@@ -1388,9 +1427,18 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       .pNext = &features12,
       .shaderDrawParameters = VK_TRUE,
   };
+  /* Fault reports only; the vendor binary dump stays disabled. */
+  const bool8_t enable_device_fault =
+      candidate->has_device_fault_extension && candidate->features.device_fault;
+  VkPhysicalDeviceFaultFeaturesEXT device_fault = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
+      .pNext = &features11,
+      .deviceFault = VK_TRUE,
+  };
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-      .pNext = &features11,
+      .pNext =
+          enable_device_fault ? (void *)&device_fault : (void *)&features11,
       .features = {.shaderInt64 = VK_TRUE,
                    .geometryShader = VK_TRUE,
                    .independentBlend = VK_TRUE,
@@ -1399,7 +1447,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                        candidate->features.storage_image_extended_formats,
                    .samplerAnisotropy = candidate->features.sampler_anisotropy},
   };
-  const char *extensions[7] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  const char *extensions[8] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
   if (device->config.windowed)
     extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -1415,6 +1463,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   }
   if (candidate->has_memory_budget_extension)
     extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+  if (enable_device_fault)
+    extensions[extension_count++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1437,6 +1487,10 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   device->ray_query_enabled =
       enable_ray_query && vkr_vk_load_ray_query_functions(device, candidate);
   device->memory_budget_enabled = candidate->has_memory_budget_extension;
+  device->get_device_fault_info =
+      enable_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(
+                                device->device, "vkGetDeviceFaultInfoEXT")
+                          : NULL;
   const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
                     "descriptor-buffer function table", true_v,
@@ -1694,4 +1748,118 @@ vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device) {
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device) {
   return device ? device->cmd_end_debug_label : NULL;
+}
+
+void vkr_vulkan_device_get_health(const VkrVulkanDevice *device,
+                                  VkrRendererHealth *out_health) {
+  if (!out_health)
+    return;
+  MemZero(out_health, sizeof(*out_health));
+  if (!device)
+    return;
+  out_health->validation_errors = vkr_atomic_uint64_load(
+      &device->validation_errors, VKR_MEMORY_ORDER_RELAXED);
+  out_health->validation_warnings = vkr_atomic_uint64_load(
+      &device->validation_warnings, VKR_MEMORY_ORDER_RELAXED);
+  /* Written once during device creation, before any reader can hold the
+     device. */
+  out_health->validation_counted =
+      device->debug_messenger != VK_NULL_HANDLE ? true_v : false_v;
+  out_health->device_lost =
+      vkr_atomic_bool_load(&device->device_lost, VKR_MEMORY_ORDER_RELAXED)
+          ? true_v
+          : false_v;
+  /* A lost device is the only GPU error Vulkan reports, once. */
+  out_health->gpu_errors = out_health->device_lost ? 1u : 0u;
+}
+
+vkr_internal const char *
+vkr_vk_fault_address_type_name(VkDeviceFaultAddressTypeEXT type) {
+  switch (type) {
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT:
+    return "none";
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT:
+    return "invalid read";
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT:
+    return "invalid write";
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT:
+    return "invalid execute";
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT:
+    return "instruction pointer (unknown)";
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT:
+    return "instruction pointer (invalid)";
+  case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT:
+    return "instruction pointer (fault)";
+  default:
+    return "unknown";
+  }
+}
+
+void vkr_vulkan_device_log_fault_info(const VkrVulkanDevice *device) {
+  if (!device || !device->device || !device->get_device_fault_info)
+    return;
+  VkDeviceFaultCountsEXT counts = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT,
+  };
+  const VkResult count_result =
+      device->get_device_fault_info(device->device, &counts, NULL);
+  if (count_result != VK_SUCCESS) {
+    log_error("Vulkan device fault query failed (result=%d)",
+              (int)count_result);
+    return;
+  }
+
+  /* Bounded stack storage: a longer report is truncated, not allocated. */
+  VkDeviceFaultAddressInfoEXT addresses[VKR_VULKAN_DEVICE_FAULT_RECORD_MAX];
+  VkDeviceFaultVendorInfoEXT vendors[VKR_VULKAN_DEVICE_FAULT_RECORD_MAX];
+  const uint32_t reported_addresses = counts.addressInfoCount;
+  const uint32_t reported_vendors = counts.vendorInfoCount;
+  counts.addressInfoCount = Min(counts.addressInfoCount,
+                                (uint32_t)VKR_VULKAN_DEVICE_FAULT_RECORD_MAX);
+  counts.vendorInfoCount =
+      Min(counts.vendorInfoCount, (uint32_t)VKR_VULKAN_DEVICE_FAULT_RECORD_MAX);
+  counts.vendorBinarySize = 0u;
+  VkDeviceFaultInfoEXT info = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT,
+      .pAddressInfos = counts.addressInfoCount ? addresses : NULL,
+      .pVendorInfos = counts.vendorInfoCount ? vendors : NULL,
+  };
+  const VkResult info_result =
+      device->get_device_fault_info(device->device, &counts, &info);
+  if (info_result != VK_SUCCESS && info_result != VK_INCOMPLETE) {
+    log_error("Vulkan device fault query failed (result=%d)", (int)info_result);
+    return;
+  }
+
+  log_error("Vulkan device fault: %.*s (address records=%u of %u, vendor "
+            "records=%u of %u)",
+            (int)VK_MAX_DESCRIPTION_SIZE, info.description,
+            counts.addressInfoCount, reported_addresses, counts.vendorInfoCount,
+            reported_vendors);
+  for (uint32_t i = 0u; i < counts.addressInfoCount; ++i) {
+    const VkDeviceFaultAddressInfoEXT *address = &addresses[i];
+    log_error("Vulkan device fault address %u: %s at 0x%llx (precision %llu)",
+              i, vkr_vk_fault_address_type_name(address->addressType),
+              (unsigned long long)address->reportedAddress,
+              (unsigned long long)address->addressPrecision);
+  }
+  for (uint32_t i = 0u; i < counts.vendorInfoCount; ++i) {
+    const VkDeviceFaultVendorInfoEXT *vendor = &vendors[i];
+    log_error("Vulkan device fault vendor %u: %.*s (code=0x%llx data=0x%llx)",
+              i, (int)VK_MAX_DESCRIPTION_SIZE, vendor->description,
+              (unsigned long long)vendor->vendorFaultCode,
+              (unsigned long long)vendor->vendorFaultData);
+  }
+}
+
+void vkr_vulkan_device_mark_lost(VkrVulkanDevice *device, const char *where) {
+  if (!device)
+    return;
+  /* Only the first observer logs; every later call on a lost device fails
+     with the same result. */
+  if (vkr_atomic_bool_exchange(&device->device_lost, true_v,
+                               VKR_MEMORY_ORDER_RELAXED))
+    return;
+  log_error("Vulkan device lost: %s", where ? where : "<unknown>");
+  vkr_vulkan_device_log_fault_info(device);
 }

@@ -294,6 +294,30 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
   return true_v;
 }
 
+bool8_t vkr_metal_packet_renderer_get_and_reset_present_timing(
+    VkrMetalPacketRenderer *renderer,
+    VkrRendererImplPresentTiming *out_timing) {
+  if (!renderer || !out_timing)
+    return false_v;
+  *out_timing = renderer->present_timing;
+  renderer->present_timing = (VkrRendererImplPresentTiming){0};
+  return true_v;
+}
+
+void vkr_metal_packet_renderer_get_health(
+    const VkrMetalPacketRenderer *renderer, VkrRendererHealth *out_health) {
+  if (!out_health)
+    return;
+  *out_health = (VkrRendererHealth){0};
+  if (!renderer)
+    return;
+  /* Metal's API and shader validation layers report to stderr, outside the
+     engine, and a GPU hang exits at the completion timeout instead of
+     leaving a lost device behind. */
+  out_health->gpu_errors = vkr_atomic_uint64_load(&renderer->gpu_error_count,
+                                                  VKR_MEMORY_ORDER_RELAXED);
+}
+
 bool8_t
 vkr_metal_packet_renderer_capture_release(VkrMetalPacketRenderer *renderer,
                                           VkrCaptureRequestId request_id) {
@@ -723,6 +747,7 @@ vkr_internal void vkr_metal_packet_release_commit_feedback_records(
   if (renderer->commit_feedback_records) {
     for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
       [renderer->commit_feedback_records[i].options release];
+      [renderer->commit_feedback_records[i].error release];
       if (renderer->commit_feedback_records[i].handler)
         Block_release(renderer->commit_feedback_records[i].handler);
       if (renderer->commit_feedback_records[i].ready_handler)

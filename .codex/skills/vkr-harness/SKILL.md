@@ -93,6 +93,7 @@ Check these fields before accepting an observation:
 | `execution` | Independent repetition count and warmup stability |
 | `aggregate.metrics`, `aggregate.passes` | Valid samples, nearest-rank percentiles, population standard deviation |
 | `events`, artifact digests | Required-metric invalidity, overflow, publication drops, and artifact completeness |
+| `diagnostic_counts` | GPU errors, validation messages and log errors in the counted frames and the child's output; a GPU or validation error costs authority (`gpu.errors`, `validation.messages`), and a `null` total is uncounted, not clean |
 
 Logical window size can differ from drawable pixels. Offscreen targets use
 ordinary images and report `present_mode=none`; infer neither pixels nor WSI

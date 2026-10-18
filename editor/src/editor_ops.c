@@ -14736,6 +14736,223 @@ static VkrEditorOpStatus ops_run_stream_status(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+// =============================================================================
+// Logs and health
+// =============================================================================
+
+#define OPS_LOG_READ_LIMIT_MAX 200u
+#define OPS_LOG_READ_CHUNK 64u
+#define OPS_HEALTH_RECENT_ERRORS 5u
+
+static const char *const ops_log_level_names[] = {
+    [LOG_LEVEL_FATAL] = "fatal", [LOG_LEVEL_ERROR] = "error",
+    [LOG_LEVEL_WARN] = "warn",   [LOG_LEVEL_INFO] = "info",
+    [LOG_LEVEL_DEBUG] = "debug", [LOG_LEVEL_TRACE] = "trace",
+};
+
+static VkrBakeryJson *ops_log_record_json(OpsContext *ctx,
+                                          const VkrLogRecord *record) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *item = vkr_bakery_json_object(arena);
+  const uint32_t ms = record->utc_time_ms;
+  char time[16];
+  string_format(time, sizeof(time), "%02u:%02u:%02u.%03u", ms / 3600000u,
+                (ms / 60000u) % 60u, (ms / 1000u) % 60u, ms % 1000u);
+  char source[VKR_LOG_SOURCE_CAPACITY + 16];
+  string_format(source, sizeof(source), "%.*s:%u", (int)record->source_length,
+                (const char *)record->source, record->line);
+  ops_set(ctx, item, "seq",
+          vkr_bakery_json_int(arena, (int64_t)record->sequence));
+  ops_set(ctx, item, "time", vkr_bakery_json_cstr(arena, time));
+  ops_set(ctx, item, "level",
+          vkr_bakery_json_cstr(arena, ops_log_level_names[record->level]));
+  ops_set(ctx, item, "source", vkr_bakery_json_cstr(arena, source));
+  ops_set(ctx, item, "message",
+          ops_string(ctx, (String8){.str = (uint8_t *)record->message,
+                                    .length = record->message_length}));
+  if (record->truncated) {
+    ops_set(ctx, item, "truncated", vkr_bakery_json_bool(arena, true_v));
+  }
+  return item;
+}
+
+/* Scans the kept history after `after` for records at `max_level` or more
+   severe whose message contains `grep`. With `tail`, keeps the newest `limit`
+   matches in a ring; otherwise stops at the oldest `limit`. The oldest match
+   is `out[*out_first]`, the next ones follow it around the ring. Returns the
+   last sequence scanned. */
+static uint64_t ops_log_scan(OpsContext *ctx, uint64_t after,
+                             LogLevel max_level, String8 grep, bool8_t tail,
+                             uint32_t limit, VkrLogRecord *out,
+                             uint32_t *out_count, uint32_t *out_first) {
+  VkrLogRecord *chunk =
+      arena_alloc(ops_arena(ctx), sizeof(VkrLogRecord) * OPS_LOG_READ_CHUNK,
+                  ARENA_MEMORY_TAG_STRUCT);
+  uint32_t count = 0u;
+  uint32_t ring_start = 0u;
+  uint64_t scanned = after;
+  bool8_t full = false_v;
+  while (chunk && !full) {
+    const VkrLogHistorySnapshot snapshot =
+        log_history_snapshot(scanned, chunk, OPS_LOG_READ_CHUNK);
+    if (snapshot.count == 0u) {
+      break;
+    }
+    for (uint32_t i = 0u; i < snapshot.count; ++i) {
+      const VkrLogRecord *record = &chunk[i];
+      scanned = record->sequence;
+      const String8 message = {.str = (uint8_t *)record->message,
+                               .length = record->message_length};
+      if (record->level > max_level ||
+          (grep.length && !string8_contains(&message, &grep))) {
+        continue;
+      }
+      if (count < limit) {
+        out[count] = *record;
+        count += 1u;
+      } else if (tail) {
+        out[ring_start] = *record;
+        ring_start = (ring_start + 1u) % limit;
+      }
+      if (!tail && count == limit) {
+        full = true_v;
+        break;
+      }
+    }
+  }
+  *out_count = count;
+  *out_first = ring_start;
+  return scanned;
+}
+
+static VkrEditorOpStatus ops_run_log_read(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char level_name[16] = "info";
+  char grep[256] = {0};
+  if (!ops_arg_string(ctx, args, "level", level_name, sizeof(level_name)) ||
+      !ops_arg_string(ctx, args, "grep", grep, sizeof(grep))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  int32_t max_level = -1;
+  for (uint32_t i = 0u; i < ArrayCount(ops_log_level_names); ++i) {
+    if (string_equals(level_name, ops_log_level_names[i])) {
+      max_level = (int32_t)i;
+    }
+  }
+  if (max_level < 0) {
+    ops_fail(ctx, OPS_INVALID,
+             "'level' must be fatal, error, warn, info, debug or trace");
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t limit_value = 50.0;
+  float64_t after_value = 0.0;
+  (void)ops_arg_number(args, "limit", &limit_value);
+  const bool8_t follow = ops_arg_number(args, "after", &after_value);
+  if (limit_value < 1.0 || limit_value > (float64_t)OPS_LOG_READ_LIMIT_MAX ||
+      after_value < 0.0) {
+    ops_fail(ctx, OPS_INVALID, "'limit' must be 1 to %u and 'after' >= 0",
+             OPS_LOG_READ_LIMIT_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const uint32_t limit = (uint32_t)limit_value;
+  VkrLogRecord *matches = arena_alloc(
+      ops_arena(ctx), sizeof(VkrLogRecord) * limit, ARENA_MEMORY_TAG_STRUCT);
+  if (!matches) {
+    ops_fail(ctx, OPS_INVALID, "no memory for %u log records", limit);
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint32_t count = 0u;
+  uint32_t first = 0u;
+  const uint64_t scanned = ops_log_scan(
+      ctx, (uint64_t)after_value, (LogLevel)max_level,
+      string8_create_from_cstr((const uint8_t *)grep, string_length(grep)),
+      !follow, limit, matches, &count, &first);
+  const VkrLogHistorySnapshot history = log_history_snapshot(0u, NULL, 0u);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *records = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < count; ++i) {
+    vkr_bakery_json_append(
+        records, ops_log_record_json(ctx, &matches[(first + i) % count]));
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "records", records);
+  ops_set(ctx, result, "next_after",
+          vkr_bakery_json_int(arena, (int64_t)scanned));
+  ops_set(ctx, result, "newest",
+          vkr_bakery_json_int(arena, (int64_t)history.newest_sequence));
+  ops_set(
+      ctx, result, "first_available",
+      vkr_bakery_json_int(arena, (int64_t)history.first_available_sequence));
+  ops_set(ctx, result, "overwritten",
+          vkr_bakery_json_int(arena, (int64_t)history.overwritten_count));
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_health_status(OpsContext *ctx) {
+  Arena *arena = ops_arena(ctx);
+  const VkrRendererHealth *health = &ctx->frame->renderer_health;
+  const VkrLogCounts log_counts = log_counts_get();
+  const VkrRendererError scene_error = ctx->frame->scene_error;
+
+  VkrBakeryJson *validation = vkr_bakery_json_object(arena);
+  ops_set(ctx, validation, "counted",
+          vkr_bakery_json_bool(arena, health->validation_counted));
+  ops_set(ctx, validation, "errors",
+          health->validation_counted
+              ? vkr_bakery_json_int(arena, (int64_t)health->validation_errors)
+              : vkr_bakery_json_null(arena));
+  ops_set(ctx, validation, "warnings",
+          health->validation_counted
+              ? vkr_bakery_json_int(arena, (int64_t)health->validation_warnings)
+              : vkr_bakery_json_null(arena));
+  VkrBakeryJson *gpu = vkr_bakery_json_object(arena);
+  ops_set(ctx, gpu, "errors",
+          vkr_bakery_json_int(arena, (int64_t)health->gpu_errors));
+  ops_set(ctx, gpu, "device_lost",
+          vkr_bakery_json_bool(arena, health->device_lost));
+  ops_set(ctx, gpu, "validation", validation);
+
+  VkrBakeryJson *log = vkr_bakery_json_object(arena);
+  ops_set(ctx, log, "fatal",
+          vkr_bakery_json_int(arena,
+                              (int64_t)log_counts.by_level[LOG_LEVEL_FATAL]));
+  ops_set(ctx, log, "errors",
+          vkr_bakery_json_int(arena,
+                              (int64_t)log_counts.by_level[LOG_LEVEL_ERROR]));
+  ops_set(
+      ctx, log, "warnings",
+      vkr_bakery_json_int(arena, (int64_t)log_counts.by_level[LOG_LEVEL_WARN]));
+
+  VkrLogRecord recent[OPS_HEALTH_RECENT_ERRORS];
+  uint32_t recent_count = 0u;
+  uint32_t recent_first = 0u;
+  (void)ops_log_scan(ctx, 0u, LOG_LEVEL_ERROR, (String8){0}, true_v,
+                     ArrayCount(recent), recent, &recent_count, &recent_first);
+  VkrBakeryJson *recent_errors = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < recent_count; ++i) {
+    vkr_bakery_json_append(
+        recent_errors,
+        ops_log_record_json(ctx, &recent[(recent_first + i) % recent_count]));
+  }
+
+  const bool8_t ok = health->gpu_errors == 0u && !health->device_lost &&
+                     health->validation_errors == 0u &&
+                     log_counts.by_level[LOG_LEVEL_FATAL] == 0u &&
+                     scene_error == VKR_RENDERER_ERROR_NONE;
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "ok", vkr_bakery_json_bool(arena, ok));
+  ops_set(ctx, result, "gpu", gpu);
+  ops_set(ctx, result, "log", log);
+  ops_set(ctx, result, "scene_error",
+          scene_error == VKR_RENDERER_ERROR_NONE
+              ? vkr_bakery_json_null(arena)
+              : ops_string(ctx, vkr_renderer_get_error_string(scene_error)));
+  ops_set(ctx, result, "recent_errors", recent_errors);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_depot_trust(OpsContext *ctx) {
   vkr_editor_depot_trust_scripts(ctx->editor->depot, ctx->editor);
   ctx->call->result = ops_depot_status(ctx);
@@ -17898,6 +18115,26 @@ static const OpsDef s_ops[] = {
      "and how many were fetched, found present or failed, the bytes stored "
      "and the time loaders waited.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_stream_status, NULL,
+     OPS_QUICK},
+    {"log.read",
+     "Records from the editor's log history (the newest 2048), each with its "
+     "sequence, UTC time, level, source and message. 'level' keeps that "
+     "level and more severe ones (default info); 'grep' keeps messages "
+     "containing the text, case-sensitive. Without 'after' it answers the "
+     "newest 'limit' matches; with 'after' the oldest matches after that "
+     "sequence, so passing back 'next_after' follows the log.",
+     "{\"type\":\"object\",\"properties\":{\"level\":{\"type\":"
+     "\"string\",\"enum\":[\"fatal\",\"error\",\"warn\",\"info\","
+     "\"debug\",\"trace\"]},\"grep\":{\"type\":\"string\"},\"after\":{"
+     "\"type\":\"integer\",\"minimum\":0},\"limit\":{\"type\":"
+     "\"integer\",\"minimum\":1,\"maximum\":200}}}",
+     ops_run_log_read, NULL, OPS_QUICK},
+    {"health.status",
+     "Whether the editor runs cleanly: GPU submissions that failed, device "
+     "loss, validation messages (counted on Vulkan; null where the backend's "
+     "layers write to stderr, as Metal's do), log records by severity since "
+     "start, the Scene's renderer error and the newest error records.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_health_status, NULL,
      OPS_QUICK},
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "

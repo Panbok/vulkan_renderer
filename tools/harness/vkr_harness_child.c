@@ -1960,6 +1960,10 @@ vkr_internal bool8_t vkr_harness_child_write_report(
   if (report->provenance.dirty) {
     vkr_harness_report_add_authority_reason(report, "provenance.dirty");
   }
+  /* Only the counters: this process's own streams are still open, so the
+     parent scans them after it exits. */
+  vkr_harness_diagnostics_from_samples(samples, &report->diagnostics);
+  vkr_harness_report_apply_diagnostics(report);
 
   if (capture_source) {
     string_format(report->environment_fingerprint,

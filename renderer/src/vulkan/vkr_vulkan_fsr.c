@@ -52,13 +52,7 @@ bool8_t vkr_vk_prepare_fsr31_context(VkrVulkanRenderer *renderer) {
   const uint64_t use =
       renderer->fsr31_dispatch_uses[renderer->fsr31_dispatch_slot];
   if (use > vkr_vk_refresh_completed(renderer)) {
-    const VkSemaphoreWaitInfo wait = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .semaphoreCount = 1u,
-        .pSemaphores = &renderer->timeline,
-        .pValues = &use,
-    };
-    if (vkWaitSemaphores(vkr_vk_renderer_device(renderer), &wait, UINT64_MAX) !=
+    if (vkr_vk_wait_timeline(renderer, use, "FSR dispatch slot reuse") !=
         VK_SUCCESS)
       return false_v;
     vkr_vk_refresh_completed(renderer);

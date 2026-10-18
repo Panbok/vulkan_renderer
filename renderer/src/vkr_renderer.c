@@ -587,6 +587,8 @@ vkr_internal bool8_t vkr_renderer_backend_upload_wait_stats(
     VkrRenderer *renderer, VkrRendererUploadWaitStats *out_stats);
 vkr_internal bool8_t vkr_renderer_backend_command_slot_waits(
     VkrRenderer *renderer, uint64_t *out_wait_count);
+vkr_internal bool8_t vkr_renderer_backend_present_timing(
+    VkrRenderer *renderer, VkrRendererImplPresentTiming *out_timing);
 vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
     VkrRenderer *renderer, VkrDeviceMemoryStats *out_stats);
 #if !defined(PLATFORM_APPLE)
@@ -1875,6 +1877,17 @@ vkr_internal bool8_t vkr_renderer_backend_command_slot_waits(
 #endif
 }
 
+vkr_internal bool8_t vkr_renderer_backend_present_timing(
+    VkrRenderer *renderer, VkrRendererImplPresentTiming *out_timing) {
+#if defined(PLATFORM_APPLE)
+  return vkr_metal_packet_renderer_get_and_reset_present_timing(
+      renderer->metal_renderer, out_timing);
+#else
+  return vkr_vulkan_renderer_get_and_reset_present_timing(
+      renderer->vulkan_renderer, out_timing);
+#endif
+}
+
 vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
     VkrRenderer *renderer, VkrDeviceMemoryStats *out_stats) {
 #if defined(PLATFORM_APPLE)
@@ -2287,6 +2300,19 @@ vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer) {
   return stats;
 }
 
+VkrRendererHealth vkr_renderer_get_health(const VkrRenderer *renderer) {
+  VkrRendererHealth health = {0};
+  if (!renderer) {
+    return health;
+  }
+#if defined(PLATFORM_APPLE)
+  vkr_metal_packet_renderer_get_health(renderer->metal_renderer, &health);
+#else
+  vkr_vulkan_renderer_get_health(renderer->vulkan_renderer, &health);
+#endif
+  return health;
+}
+
 void vkr_renderer_detach_jobs(VkrRenderer *renderer) {
   vkr_renderer_join_render_thread(renderer);
 #if defined(PLATFORM_APPLE)
@@ -2325,6 +2351,13 @@ vkr_renderer_get_and_reset_command_slot_wait_count(VkrRenderer *renderer,
   vkr_renderer_join_render_thread(renderer);
   *out_wait_count = 0;
   return vkr_renderer_backend_command_slot_waits(renderer, out_wait_count);
+}
+
+bool8_t vkr_renderer_get_and_reset_present_timing(
+    VkrRenderer *renderer, VkrRendererImplPresentTiming *out_timing) {
+  vkr_renderer_join_render_thread(renderer);
+  *out_timing = (VkrRendererImplPresentTiming){0};
+  return vkr_renderer_backend_present_timing(renderer, out_timing);
 }
 
 bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,

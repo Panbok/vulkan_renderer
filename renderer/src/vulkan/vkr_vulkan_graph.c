@@ -375,14 +375,8 @@ vkr_internal bool8_t vkr_vk_wait_graph_use(VkrVulkanRenderer *renderer,
               (unsigned long long)last_use);
     return false_v;
   }
-  const VkSemaphoreWaitInfo wait = {
-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-      .semaphoreCount = 1u,
-      .pSemaphores = &renderer->timeline,
-      .pValues = &last_use,
-  };
   const VkResult result =
-      vkWaitSemaphores(vkr_vk_renderer_device(renderer), &wait, UINT64_MAX);
+      vkr_vk_wait_timeline(renderer, last_use, "graph resource reuse");
   if (result != VK_SUCCESS) {
     log_error("Vulkan graph resource wait failed (submit=%llu, result=%d)",
               (unsigned long long)last_use, (int)result);

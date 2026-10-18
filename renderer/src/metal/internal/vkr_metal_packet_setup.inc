@@ -2984,6 +2984,7 @@ vkr_internal bool8_t vkr_metal_packet_create_commit_feedback_records(
         record->gpu_start_time = feedback.GPUStartTime;
         record->gpu_end_time = feedback.GPUEndTime;
         record->has_error = feedback.error != nil ? true_v : false_v;
+        record->error = [feedback.error retain];
         dispatch_async(vkr_metal_packet_feedback_queue(),
                        record->ready_handler);
       }

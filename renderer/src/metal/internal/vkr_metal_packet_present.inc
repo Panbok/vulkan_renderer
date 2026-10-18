@@ -506,7 +506,10 @@ vkr_internal bool8_t vkr_metal_packet_present_frame(
   const uint64_t present_value = ++presenter->submit_value;
   [presenter->queue signalEvent:presenter->completion value:present_value];
   [presenter->queue signalDrawable:drawable];
+  const float64_t present_start = vkr_platform_get_absolute_time();
   [drawable present];
+  renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
+  renderer->present_timing.present_count += 1u;
   slot->present_value = present_value;
   slot->frame_mark = renderer->submit_value;
   presenter->texture_floor = renderer->submit_value + 1u;
@@ -611,7 +614,10 @@ vkr_internal void vkr_metal_packet_present_committed_frame(
   if (!renderer->drawable)
     return;
   [renderer->queue signalDrawable:renderer->drawable];
+  const float64_t present_start = vkr_platform_get_absolute_time();
   [renderer->drawable present];
+  renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
+  renderer->present_timing.present_count += 1u;
   VKR_METAL_DIAGNOSTIC(renderer, "drawable_present", "frame=%llu",
                        (unsigned long long)packet->input.frame.frame_index);
 }

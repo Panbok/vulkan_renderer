@@ -275,6 +275,169 @@ void vkr_harness_report_mark_unavailable(VkrHarnessReport *report,
                                 VKR_HARNESS_EXIT_UNAVAILABLE);
 }
 
+/** One text a captured output line may contain, and what it means. */
+typedef struct VkrHarnessOutputPattern {
+  const char *text;
+  /* VKR_HARNESS_OUTPUT_CLASS_COUNT for an engine level that is counted in no
+     class. */
+  VkrHarnessOutputClass line_class;
+  /* An engine logger level prefix (core/logger.c) rather than validation text.
+     A line is classed by its level and, separately, by validation text. */
+  bool8_t engine_level;
+  /* Matches only lines the engine logger did not write: the Metal runtime
+     prints its own validation failures, and an engine message that quotes the
+     same words is not one. */
+  bool8_t runtime_only;
+} VkrHarnessOutputPattern;
+
+/*
+ * Engine levels first. Validation text after them, first match wins, so the
+ * notice and warning wordings are tested before the error wordings they
+ * contain. Vulkan layer messages reach the output through the engine logger,
+ * so their patterns match engine lines too.
+ */
+vkr_global const VkrHarnessOutputPattern vkr_harness_output_patterns[] = {
+    {.text = "[FATAL]: ",
+     .line_class = VKR_HARNESS_OUTPUT_LOG_ERROR,
+     .engine_level = true_v},
+    {.text = "[ERROR]: ",
+     .line_class = VKR_HARNESS_OUTPUT_LOG_ERROR,
+     .engine_level = true_v},
+    {.text = "[WARN]: ",
+     .line_class = VKR_HARNESS_OUTPUT_LOG_WARNING,
+     .engine_level = true_v},
+    {.text = "[INFO]: ",
+     .line_class = VKR_HARNESS_OUTPUT_CLASS_COUNT,
+     .engine_level = true_v},
+    {.text = "[DEBUG]: ",
+     .line_class = VKR_HARNESS_OUTPUT_CLASS_COUNT,
+     .engine_level = true_v},
+    {.text = "[TRACE]: ",
+     .line_class = VKR_HARNESS_OUTPUT_CLASS_COUNT,
+     .engine_level = true_v},
+    {.text = "Metal API Validation Enabled",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_NOTICE,
+     .runtime_only = true_v},
+    {.text = "Validation Warning",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_WARNING},
+    {.text = "Validation Performance Warning",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_WARNING},
+    {.text = "Validation Error",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR},
+    {.text = "VUID-", .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR},
+    {.text = "-[MTLDebug",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+    {.text = "MTLValidation",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+    {.text = "Metal API Validation",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+    {.text = "failed assertion",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+    {.text = "Invalid device load",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+    {.text = "Invalid device store",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+    {.text = "Invalid texture",
+     .line_class = VKR_HARNESS_OUTPUT_VALIDATION_ERROR,
+     .runtime_only = true_v},
+};
+
+/** Counts the classes one output line belongs to: at most its engine level
+    and one validation class. */
+vkr_internal void
+vkr_harness_diagnostics_classify_line(String8 line,
+                                      VkrHarnessDiagnosticCounts *counts) {
+  bool8_t engine_line = false_v;
+  bool8_t validation_matched = false_v;
+  for (uint32_t i = 0u; i < ArrayCount(vkr_harness_output_patterns); ++i) {
+    const VkrHarnessOutputPattern *pattern = &vkr_harness_output_patterns[i];
+    if ((pattern->engine_level && engine_line) ||
+        (!pattern->engine_level && validation_matched) ||
+        (pattern->runtime_only && engine_line) ||
+        !string8_contains_cstr(&line, pattern->text)) {
+      continue;
+    }
+    if (pattern->engine_level) {
+      engine_line = true_v;
+    } else {
+      validation_matched = true_v;
+    }
+    if (pattern->line_class < VKR_HARNESS_OUTPUT_CLASS_COUNT) {
+      counts->output_lines[pattern->line_class]++;
+    }
+  }
+}
+
+void vkr_harness_diagnostics_scan_output(const char *path, Arena *transient,
+                                         VkrHarnessDiagnosticCounts *counts) {
+  counts->output_collected = true_v;
+  Scratch scratch = scratch_create(transient);
+  uint8_t *data = NULL;
+  uint64_t length = 0u;
+  if (!vkr_harness_read_file(path, transient, &data, &length)) {
+    counts->output_files_unreadable++;
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    return;
+  }
+  counts->output_files_scanned++;
+  uint64_t line_start = 0u;
+  for (uint64_t cursor = 0u; cursor <= length; ++cursor) {
+    if (cursor < length && data[cursor] != '\n') {
+      continue;
+    }
+    if (cursor > line_start) {
+      const String8 line = {.str = data + line_start,
+                            .length = cursor - line_start};
+      vkr_harness_diagnostics_classify_line(line, counts);
+    }
+    line_start = cursor + 1u;
+  }
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+}
+
+void vkr_harness_diagnostics_merge(VkrHarnessDiagnosticCounts *total,
+                                   const VkrHarnessDiagnosticCounts *run) {
+  if (run->metrics_collected) {
+    /* The aggregate holds a counter only if every collected run did. */
+    const bool8_t first = !total->metrics_collected;
+    total->metrics_collected = true_v;
+    for (uint32_t i = 0u; i < VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT; ++i) {
+      VkrHarnessDiagnosticTotal *target = &total->metrics[i];
+      const VkrHarnessDiagnosticTotal *source = &run->metrics[i];
+      target->registered = source->registered && (first || target->registered);
+      target->total += source->total;
+      target->counted_frames += source->counted_frames;
+      target->unavailable_frames += source->unavailable_frames;
+    }
+  }
+  if (run->output_collected) {
+    total->output_collected = true_v;
+    total->output_files_scanned += run->output_files_scanned;
+    total->output_files_unreadable += run->output_files_unreadable;
+    for (uint32_t i = 0u; i < VKR_HARNESS_OUTPUT_CLASS_COUNT; ++i) {
+      total->output_lines[i] += run->output_lines[i];
+    }
+  }
+}
+
+void vkr_harness_report_apply_diagnostics(VkrHarnessReport *report) {
+  const VkrHarnessDiagnosticCounts *counts = &report->diagnostics;
+  if (counts->metrics[VKR_HARNESS_DIAGNOSTIC_GPU_ERRORS].total > 0u) {
+    vkr_harness_report_add_authority_reason(report, "gpu.errors");
+  }
+  if (counts->metrics[VKR_HARNESS_DIAGNOSTIC_GPU_VALIDATION_ERRORS].total >
+          0u ||
+      counts->output_lines[VKR_HARNESS_OUTPUT_VALIDATION_ERROR] > 0u) {
+    vkr_harness_report_add_authority_reason(report, "validation.messages");
+  }
+}
+
 vkr_internal bool8_t vkr_harness_report_write_header(
     VkrJsonWriter *writer, const VkrHarnessReport *report) {
   bool8_t ok =
@@ -677,6 +840,83 @@ vkr_internal bool8_t vkr_harness_report_write_execution(
          vkr_json_writer_end_object(writer);
 }
 
+/** Index-aligned with VkrHarnessOutputClass; the report's wire names. */
+vkr_global const char
+    *const vkr_harness_output_class_names[VKR_HARNESS_OUTPUT_CLASS_COUNT] = {
+        "validation_errors", "validation_warnings", "validation_notices",
+        "log_errors",        "log_warnings",
+};
+
+/**
+ * Emits `diagnostic_counts`. A counter without frames to sum is `null` with
+ * an `unavailable_reason`, so a missing source never reads as zero errors.
+ */
+vkr_internal bool8_t vkr_harness_report_write_diagnostic_counts(
+    VkrJsonWriter *writer, const VkrHarnessDiagnosticCounts *counts) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "diagnostic_counts") &&
+               vkr_json_writer_begin_object(writer) &&
+               vkr_harness_json_emit_string(writer, "metrics_window",
+                                            "warmup_and_measured_frames") &&
+               vkr_harness_json_emit_name(writer, "metrics");
+  if (ok && !counts->metrics_collected) {
+    ok = vkr_json_writer_null(writer) &&
+         vkr_harness_json_emit_string(writer, "metrics_unavailable_reason",
+                                      "no_samples");
+  } else if (ok) {
+    ok = vkr_json_writer_begin_object(writer);
+    for (uint32_t i = 0u; ok && i < VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT; ++i) {
+      const VkrHarnessDiagnosticTotal *total = &counts->metrics[i];
+      const char *reason = !total->registered            ? "not_registered"
+                           : total->counted_frames == 0u ? "unavailable"
+                                                         : NULL;
+      ok = vkr_harness_json_emit_name(writer,
+                                      vkr_harness_diagnostic_metric_name(
+                                          (VkrHarnessDiagnosticMetric)i)) &&
+           vkr_json_writer_begin_object(writer) &&
+           vkr_harness_json_emit_name(writer, "total") &&
+           (reason ? vkr_json_writer_null(writer)
+                   : vkr_json_writer_u64(writer, total->total)) &&
+           vkr_harness_json_emit_u64(writer, "counted_frames",
+                                     total->counted_frames) &&
+           vkr_harness_json_emit_u64(writer, "unavailable_frames",
+                                     total->unavailable_frames);
+      if (ok && reason) {
+        ok = vkr_harness_json_emit_string(writer, "unavailable_reason", reason);
+      }
+      ok = ok && vkr_json_writer_end_object(writer);
+    }
+    ok = ok && vkr_json_writer_end_object(writer);
+  }
+  ok = ok &&
+       vkr_harness_json_emit_string(writer, "output_window",
+                                    "child_process_lifetime") &&
+       vkr_harness_json_emit_name(writer, "output");
+  if (ok && !counts->output_collected) {
+    /* A child writes its report before its own streams are complete. */
+    return vkr_json_writer_null(writer) &&
+           vkr_harness_json_emit_string(writer, "output_unavailable_reason",
+                                        "not_scanned") &&
+           vkr_json_writer_end_object(writer);
+  }
+  ok = ok && vkr_json_writer_begin_object(writer) &&
+       vkr_harness_json_emit_u64(writer, "files_scanned",
+                                 counts->output_files_scanned) &&
+       vkr_harness_json_emit_u64(writer, "files_unreadable",
+                                 counts->output_files_unreadable);
+  for (uint32_t i = 0u; ok && i < VKR_HARNESS_OUTPUT_CLASS_COUNT; ++i) {
+    ok = vkr_harness_json_emit_u64(writer, vkr_harness_output_class_names[i],
+                                   counts->output_lines[i]);
+  }
+  return ok && vkr_json_writer_end_object(writer) &&
+         vkr_json_writer_end_object(writer);
+}
+
+/** Whether a run or report gathered any diagnostics worth writing. */
+vkr_internal bool8_t
+vkr_harness_diagnostics_collected(const VkrHarnessDiagnosticCounts *counts) {
+  return counts->metrics_collected || counts->output_collected;
+}
+
 /** Emits `runs` and `auxiliary_runs`, which share one row shape. */
 vkr_internal bool8_t vkr_harness_report_write_run_references(
     VkrJsonWriter *writer, const char *name, const VkrHarnessRunReference *runs,
@@ -696,6 +936,9 @@ vkr_internal bool8_t vkr_harness_report_write_run_references(
                                       run->workload_fingerprint) &&
          vkr_harness_json_emit_string(writer, "policy_fingerprint",
                                       run->policy_fingerprint) &&
+         (!vkr_harness_diagnostics_collected(&run->diagnostics) ||
+          vkr_harness_report_write_diagnostic_counts(writer,
+                                                     &run->diagnostics)) &&
          vkr_json_writer_end_object(writer);
   }
   return ok && vkr_json_writer_end_array(writer);
@@ -965,6 +1208,9 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_report_write_captures(writer, report) &&
       vkr_harness_report_write_assertions(writer, report) &&
       vkr_harness_report_write_diagnostics(writer, report) &&
+      (!vkr_harness_diagnostics_collected(&report->diagnostics) ||
+       vkr_harness_report_write_diagnostic_counts(writer,
+                                                  &report->diagnostics)) &&
       vkr_harness_report_write_artifacts(writer, report) &&
       vkr_json_writer_end_object(writer);
   if (!ok || !vkr_json_file_writer_commit(&file_writer)) {

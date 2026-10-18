@@ -823,6 +823,27 @@ vkr_internal bool8_t vkr_renderer_metrics_register_backend(
     return false_v;
   }
   if (!vkr_renderer_metric_register(
+          metrics, "cpu.drawable_acquire", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
+          VKR_METRIC_SCALAR_U64, &ids->drawable_acquire)) {
+    return false_v;
+  }
+  // Faults since the previous frame; the renderer's totals only grow.
+  if (!vkr_renderer_metric_register(
+          metrics, "gpu.errors", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_COUNTER, VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
+          &ids->gpu_errors) ||
+      !vkr_renderer_metric_register(
+          metrics, "gpu.validation.errors", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_COUNTER, VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
+          &ids->gpu_validation_errors) ||
+      !vkr_renderer_metric_register(
+          metrics, "gpu.validation.warnings", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_COUNTER, VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
+          &ids->gpu_validation_warnings)) {
+    return false_v;
+  }
+  if (!vkr_renderer_metric_register(
           metrics, "gpu.submission", VKR_METRIC_DOMAIN_FRAME,
           VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
           VKR_METRIC_SCALAR_U64, &ids->gpu_submission)) {
@@ -1529,14 +1550,6 @@ vkr_internal void vkr_renderer_metrics_collect_submission_timings(
     vkr_metrics_mark(metrics, ids->gpu_submission,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE, reason);
   }
-  if (context->frame_metrics->backend_present_valid) {
-    vkr_metrics_duration_add_ns(metrics, ids->backend_present,
-                                context->frame_metrics->backend_present_ns);
-  } else {
-    vkr_metrics_mark(metrics, ids->backend_present,
-                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
-                     VKR_METRIC_REASON_NOT_SAMPLED);
-  }
 }
 
 vkr_internal void vkr_renderer_metrics_collect_packet_build(
@@ -1943,6 +1956,60 @@ vkr_renderer_metrics_collect_backend(VkrMetrics *metrics,
           renderer, &command_slot_wait_count)) {
     VKR_SET_U64(frame_command_slot_waits, command_slot_wait_count);
   }
+
+  // This collector is also the sole reset owner of the present timing. A
+  // frame that presented nothing, such as a headless one, is not sampled.
+  VkrRendererImplPresentTiming present = {0};
+  const bool8_t present_read =
+      vkr_renderer_get_and_reset_present_timing(renderer, &present);
+  if (present_read && present.present_count > 0u) {
+    vkr_metrics_duration_add_ns(metrics, ids->backend_present,
+                                present.present_ns);
+  } else {
+    vkr_metrics_mark(metrics, ids->backend_present,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+  if (present_read && present.acquire_count > 0u) {
+    vkr_metrics_duration_add_ns(metrics, ids->drawable_acquire,
+                                present.acquire_ns);
+  } else {
+    vkr_metrics_mark(metrics, ids->drawable_acquire,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+}
+
+/* GPU errors and validation messages since the previous frame. A backend
+   that does not route validation through the engine reads unsupported, never
+   zero, so a clean count is evidence. */
+vkr_internal void
+vkr_renderer_metrics_collect_health(VkrRendererMetrics *renderer_metrics,
+                                    const VkrRenderer *renderer) {
+  VkrMetrics *metrics = renderer_metrics->metrics;
+  const VkrRendererMetricIds *ids = &renderer_metrics->ids;
+  VkrRendererCumulativeBaselines *previous = &renderer_metrics->previous;
+  const VkrRendererHealth health = vkr_renderer_get_health(renderer);
+  vkr_metrics_counter_add(metrics, ids->gpu_errors,
+                          vkr_renderer_metrics_cumulative_delta(
+                              health.gpu_errors, &previous->gpu_errors));
+  if (!health.validation_counted) {
+    vkr_metrics_mark(metrics, ids->gpu_validation_errors,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_UNSUPPORTED);
+    vkr_metrics_mark(metrics, ids->gpu_validation_warnings,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_UNSUPPORTED);
+    return;
+  }
+  vkr_metrics_counter_add(
+      metrics, ids->gpu_validation_errors,
+      vkr_renderer_metrics_cumulative_delta(health.validation_errors,
+                                            &previous->gpu_validation_errors));
+  vkr_metrics_counter_add(
+      metrics, ids->gpu_validation_warnings,
+      vkr_renderer_metrics_cumulative_delta(
+          health.validation_warnings, &previous->gpu_validation_warnings));
 }
 
 vkr_internal void
@@ -2207,6 +2274,8 @@ void vkr_renderer_metrics_collect(
                                        world->gpu_diagnostics_valid);
 
   vkr_renderer_metrics_collect_backend(metrics, ids, renderer);
+
+  vkr_renderer_metrics_collect_health(renderer_metrics, renderer);
 
   vkr_renderer_metrics_collect_gpu_memory(renderer_metrics, renderer);
 

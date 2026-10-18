@@ -154,6 +154,9 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // 1 for a frame the render thread acquired itself, while the next frame
   // was built; 0 for a frame acquired on the frame-loop thread.
   VkrMetricId decoupled;
+  // ERROR and FATAL records, and WARN records, the logger took this frame.
+  VkrMetricId log_errors;
+  VkrMetricId log_warnings;
   // Nested inside update: the simulated container's step (scripts, physics,
   // animation and transforms), and of it the native physics step.
   VkrMetricId simulation;
@@ -211,6 +214,10 @@ typedef struct VkrStandardSceneRuntime {
   VkrAllocator metrics_allocator;
   VkrMetrics *metrics;
   VkrStandardSceneRuntimeMetricIds metric_ids;
+  /* Logger totals at the previous frame's publication, for the log metrics'
+     per-frame counts. */
+  uint64_t log_errors_published;
+  uint64_t log_warnings_published;
   VkrRendererMetrics renderer_metrics;
   VkrApplicationHost host;
   VkrStandardSceneRuntimeConfig *config; /**< Pointer to the configuration used

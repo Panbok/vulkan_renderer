@@ -141,6 +141,45 @@ bool8_t vkr_harness_samples_read(const char *path,
   return true_v;
 }
 
+void vkr_harness_diagnostics_from_samples(const VkrHarnessSampleSet *samples,
+                                          VkrHarnessDiagnosticCounts *counts) {
+  const uint32_t metric_count = samples->header.metric_count;
+  const uint32_t frame_count =
+      samples->header.warmup_frames + samples->header.measure_frames;
+  counts->metrics_collected = true_v;
+  for (uint32_t diagnostic = 0u;
+       diagnostic < VKR_HARNESS_DIAGNOSTIC_METRIC_COUNT; ++diagnostic) {
+    const char *name = vkr_harness_diagnostic_metric_name(
+        (VkrHarnessDiagnosticMetric)diagnostic);
+    uint32_t metric = 0u;
+    while (metric < metric_count &&
+           !string_equals(samples->metrics[metric].name, name)) {
+      metric++;
+    }
+    VkrHarnessDiagnosticTotal *total = &counts->metrics[diagnostic];
+    MemZero(total, sizeof(*total));
+    if (metric == metric_count) {
+      continue;
+    }
+    total->registered = true_v;
+    for (uint32_t frame = 0u; frame < frame_count; ++frame) {
+      const uint64_t offset = (uint64_t)frame * metric_count + metric;
+      /* A frame the counter could not report, including one the child never
+         reached, is not evidence of zero errors. */
+      if (samples->availability[offset] ==
+          VKR_METRIC_AVAILABILITY_UNAVAILABLE) {
+        total->unavailable_frames++;
+        continue;
+      }
+      const float64_t value = samples->values[offset];
+      if (value > 0.0) {
+        total->total += (uint64_t)value;
+      }
+      total->counted_frames++;
+    }
+  }
+}
+
 bool8_t vkr_harness_compute_metric_results(
     const VkrHarnessArenas *arenas, uint32_t warmup_frames,
     uint32_t measure_frames, uint32_t metric_count,

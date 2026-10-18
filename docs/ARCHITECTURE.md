@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-17
+updated: 2026-10-18
 authority: architecture
 ---
 
@@ -1412,6 +1412,12 @@ Metal compute/graphics timestamps exist; a graphics interval spans its vertex,
 tiling and fragment work, starting no earlier than the previous timed pass's
 end. Transfer timing is not supported. Every Vulkan pass interval likewise
 starts no earlier than the previous timed pass's end.
+Both backends also publish present and drawable-acquire CPU time, GPU errors,
+counted validation messages (Vulkan only) and logger error counts. Vulkan
+bounds GPU-completion waits at 5 s, as the Metal watchdog does, and reports
+device loss with its `VK_EXT_device_fault` record. Agents read these through
+`health.status` and `log.read`; see
+[ADR-124](adr/124-renderer-health-and-diagnostic-reads.md).
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero
 of the raster jitter and the cloud march noise period, with temporal history

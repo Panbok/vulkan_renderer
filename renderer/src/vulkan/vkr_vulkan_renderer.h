@@ -263,6 +263,12 @@ bool8_t vkr_vulkan_renderer_get_and_reset_frame_upload_exhaustion_count(
     VkrVulkanRenderer *renderer, uint64_t *out_exhaustion_count);
 bool8_t vkr_vulkan_renderer_get_and_reset_command_slot_wait_count(
     VkrVulkanRenderer *renderer, uint64_t *out_wait_count);
+/** Render thread only; the metrics collector is the sole caller. */
+bool8_t vkr_vulkan_renderer_get_and_reset_present_timing(
+    VkrVulkanRenderer *renderer, VkrRendererImplPresentTiming *out_timing);
+/** Safe from any thread; the debug messenger may count from driver threads. */
+void vkr_vulkan_renderer_get_health(const VkrVulkanRenderer *renderer,
+                                    VkrRendererHealth *out_health);
 void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,
                                         VkrVulkanMemoryMetrics *out_metrics);
 void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,

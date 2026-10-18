@@ -121,8 +121,6 @@ typedef struct VkrRendererFrameMetrics {
   uint64_t gpu_submission_ns;
   VkrMetricReason gpu_submission_unavailable_reason;
   bool8_t gpu_submission_valid;
-  uint64_t backend_present_ns;
-  bool8_t backend_present_valid;
   VkrExposureDebugSample exposure;
 } VkrRendererFrameMetrics;
 
@@ -280,6 +278,10 @@ struct VkrRenderer {
    before touching renderer or native state. The render thread itself never
    waits, so renderer code it runs may use public entry points. */
 void vkr_renderer_join_render_thread(const VkrRenderer *renderer);
+/** Returns and resets the present and drawable-acquire CPU time; the metrics
+ * collector is the only caller. */
+bool8_t vkr_renderer_get_and_reset_present_timing(
+    VkrRenderer *renderer, VkrRendererImplPresentTiming *out_timing);
 
 /* Embedded application instances use caller-owned storage. */
 bool32_t vkr_renderer_initialize(VkrRenderer *renderer,

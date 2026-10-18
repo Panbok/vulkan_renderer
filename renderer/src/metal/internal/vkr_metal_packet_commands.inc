@@ -119,7 +119,9 @@ vkr_metal_packet_acquire_commit_feedback(VkrMetalPacketRenderer *renderer) {
     record->result = (VkrMetalPacketResult){0};
     record->gpu_start_time = 0.0;
     record->gpu_end_time = 0.0;
+    record->error = nil;
     record->has_error = false_v;
+    record->timing_requested = false_v;
     vkr_atomic_bool_store(&record->feedback_ready, false_v,
                           VKR_MEMORY_ORDER_RELAXED);
     vkr_atomic_bool_store(&record->result_ready, false_v,
@@ -133,6 +135,31 @@ vkr_metal_packet_acquire_commit_feedback(VkrMetalPacketRenderer *renderer) {
   return NULL;
 }
 
+/* Counts a submission the GPU finished with an error and logs it. A fault
+   that repeats every frame logs its first occurrences, then at each power of
+   two, so the log stays readable while the count stays exact. */
+vkr_internal void vkr_metal_packet_report_gpu_error(
+    VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketCommitFeedbackRecord *record) {
+  const uint64_t count =
+      vkr_atomic_uint64_fetch_add(&renderer->gpu_error_count, 1u,
+                                  VKR_MEMORY_ORDER_RELAXED) +
+      1u;
+  if (count > 8u && (count & (count - 1u)) != 0u) {
+    return;
+  }
+  @autoreleasepool {
+    NSError *error = record->error;
+    log_error("Metal GPU submission for frame %llu failed (%llu so far): "
+              "%s %ld: %s",
+              (unsigned long long)record->result.source_frame_index,
+              (unsigned long long)count,
+              error ? error.domain.UTF8String : "unknown",
+              error ? (long)error.code : 0L,
+              error ? error.localizedDescription.UTF8String : "no error");
+  }
+}
+
 vkr_internal void
 vkr_metal_packet_harvest_commit_feedback(VkrMetalPacketRenderer *renderer) {
   for (uint32_t i = 0u; i < VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY; ++i) {
@@ -144,6 +171,17 @@ vkr_metal_packet_harvest_commit_feedback(VkrMetalPacketRenderer *renderer) {
         !vkr_atomic_bool_load(&record->result_ready, VKR_MEMORY_ORDER_ACQUIRE))
       continue;
     VkrMetalPacketResult *result = &record->result;
+    if (record->has_error) {
+      vkr_metal_packet_report_gpu_error(renderer, record);
+    }
+    [record->error release];
+    record->error = nil;
+    if (!record->timing_requested) {
+      /* The result was published at completion; this record only reported
+         errors. */
+      record->in_use = false_v;
+      continue;
+    }
     const CFTimeInterval duration =
         record->gpu_end_time - record->gpu_start_time;
     if (!record->has_error && vkr_is_finite_f64(record->gpu_start_time) &&
@@ -271,12 +309,18 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
         &renderer->capture_ring, slot->submit_value,
         slot->pending_result.exposure.state.exposure_multiplier);
   }
+  /* A timed submission publishes its result once the feedback carries its
+     GPU interval. Any other result publishes now; its record only reports
+     errors and returns to the pool when its feedback arrives. */
+  const bool8_t publish_with_feedback =
+      slot->commit_feedback && slot->commit_feedback->timing_requested;
+  if (!publish_with_feedback) {
+    vkr_metal_packet_cache_completed_result(renderer, &slot->pending_result);
+  }
   if (slot->commit_feedback) {
     slot->commit_feedback->result = slot->pending_result;
     vkr_atomic_bool_store(&slot->commit_feedback->result_ready, true_v,
                           VKR_MEMORY_ORDER_RELEASE);
-  } else {
-    vkr_metal_packet_cache_completed_result(renderer, &slot->pending_result);
   }
   slot->result_collected = true_v;
 }
