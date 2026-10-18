@@ -13,8 +13,8 @@ Accepted (partial). Phase P1 of
 implemented on the Mac: the lib telemetry API, its macOS sources, the registry
 metrics, their Tier 0 recording fields, `health.status`, the harness's system
 conditions, Metal present latency, the recording timeline's System lane and
-the `perf.snapshot` and `perf.set` operations. The Windows sources are a stub
-that reports every signal unavailable, and Vulkan reports no present latency.
+the `perf.snapshot` and `perf.set` operations. The Windows sources are
+implemented and have a native Bistro run; Vulkan reports no present latency.
 
 ## Context
 
@@ -48,6 +48,25 @@ The costs come from a standalone loop of 20,000 calls (200 for the power
 source) built with `clang -O2` on 2026-10-18. `vkr_foundation` links IOKit,
 CoreFoundation and `libobjc`; a process without Foundation finds no
 `NSProcessInfo` and reports low-power mode unavailable.
+
+**Windows sources** ([vkr_platform_windows.c](../../lib/src/platform/vkr_platform_windows.c)),
+about 1.4 µs a call on a Ryzen 5 2600, so every call reads every source:
+
+| Signal | Source |
+|---|---|
+| Footprint | `K32GetProcessMemoryInfo`, `PROCESS_MEMORY_COUNTERS_EX.PrivateUsage` |
+| CPU time | `GetProcessTimes`, kernel and user |
+| Memory pressure | `QueryMemoryResourceNotification` on the system's low and high memory resource notifications, created once: low is critical, high is normal, neither is warn |
+| Power source, low-power mode | `GetSystemPowerStatus`: `ACLineStatus` (255 is unknown) and `SystemStatusFlag` (battery saver) |
+
+Windows signals the low notification when available memory falls to about
+32 MB per 4 GB of RAM (at most 64 MB) and the high one above three times that,
+so warn means under about 192 MB available on a 16 GB machine. Thermal level
+and major page faults stay unavailable: Windows has no public per-process
+thermal level, and `PageFaultCount` counts soft faults too. `GetProcessTimes`
+advances in clock ticks (15.625 ms on that machine), so one frame's
+`cpu.process_time` reads 0 or whole ticks; only sums over many frames are
+exact.
 
 **Metrics.** The standard scene runtime samples once per published frame
 ([vkr_standard_scene_runtime.c](../../runtime/src/application/vkr_standard_scene_runtime.c)),
@@ -134,7 +153,8 @@ nominal; hovering names a column's states and footprint, and a click seeks.
 
 ## Revisit when
 
-- The Windows sources land (proposal P1; Windows session).
+- A Windows source for thermal level or disk-read faults becomes reliable, or
+  per-frame CPU time needs better than clock-tick resolution on Windows.
 - A matched timing run shows the per-frame sample or the power read matters.
 
 ## Evidence
@@ -162,4 +182,17 @@ nominal; hovering names a column's states and footprint, and a click seeks.
   passes. A 4 s Tier 0 recording opened in Watch showed the System lane
   without Analyze, all nominal, and a click on frame 416 showed its states
   and a 3.9 GiB footprint.
-- Windows: stub only.
+- Windows, 2026-10-18, Ryzen 5 2600, RX 6700 XT, Adrenalin 26.6.3, at
+  `ef733a9b` with these sources: `vkr_harness profile --case
+  tools/cases/local/p21_vulkan_bistro_windowed_validation.case.json
+  --profile tools/profiles/local-windowed.json` (Release, 2 repetitions of
+  256 warmup and 60 measured frames), report
+  `sha256:bab6be25200832ad1e9378ed893e8eff1c6d59e357c9d82259da9f5791a9104b`:
+  footprint, memory pressure, on battery and low power valid in 120 of 120
+  samples (footprint p50 8760 MiB, pressure 0, AC, low power off); thermal
+  level and major faults unavailable in every sample; `cpu.process_time` p50
+  0 and max 31.25 ms; provenance AC, low power off and normal pressure at
+  start and end. `health.status` filled `system` in a headless Debug and a
+  windowed Release Bistro editor. A test main linked against the Release
+  `vkr_foundation` saw the footprint rise 64.1 MB after touching 64 MB and
+  measured 1.42 µs a call over 20,000 calls.

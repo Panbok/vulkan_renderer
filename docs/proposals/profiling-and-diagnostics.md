@@ -42,18 +42,16 @@ Remaining gaps:
 
 ## P1: platform signals (remaining)
 
-- Windows sources behind `vkr_platform_get_telemetry`: `PrivateUsage`,
-  `GetProcessTimes`, `GetSystemPowerStatus`; plus
-  `IDXGIAdapter3::QueryVideoMemoryInfo` and PDH GPU engine use of other
-  processes as new metrics. Thermal state stays unavailable.
+- Windows metrics beyond `vkr_platform_get_telemetry` (whose Windows
+  sources ADR-125 records): `IDXGIAdapter3::QueryVideoMemoryInfo` and PDH
+  GPU engine use of other processes.
 - Vulkan present latency (`VK_KHR_present_id`, `present_wait`) behind the
   present timing's latency and missed counts.
 - Vulkan object names (`vkSetDebugUtilsObjectNameEXT`) and optional pipeline
   statistics per pass, gated like pass timing.
 - The harness authority reason `gpu.peer_load`.
-- Acceptance: the Tier 0 overhead gate rerun with the added Tier 0 fields; a
-  Windows Bistro run with the Windows sources valid; present latency on a
-  visible window.
+- Acceptance: the Tier 0 overhead gate rerun with the added Tier 0 fields;
+  present latency on a visible window.
 
 ## P2: timeline (remaining)
 

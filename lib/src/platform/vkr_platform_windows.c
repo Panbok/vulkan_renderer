@@ -543,14 +543,104 @@ bool8_t vkr_platform_get_process_resident_memory(uint64_t *out_bytes) {
   return true_v;
 }
 
+/* The system's memory resource notifications, created by the first telemetry
+   call and kept for the life of the process. Windows signals the low one when
+   available memory falls to about 32 MB per 4 GB of RAM (at most 64 MB) and
+   the high one above three times that. */
+vkr_global INIT_ONCE memory_notification_once = INIT_ONCE_STATIC_INIT;
+vkr_global HANDLE memory_notification_low = NULL;
+vkr_global HANDLE memory_notification_high = NULL;
+
+vkr_internal BOOL CALLBACK vkr_platform_create_memory_notifications(
+    PINIT_ONCE once, PVOID parameter, PVOID *context) {
+  (void)once;
+  (void)parameter;
+  (void)context;
+  memory_notification_low =
+      CreateMemoryResourceNotification(LowMemoryResourceNotification);
+  memory_notification_high =
+      CreateMemoryResourceNotification(HighMemoryResourceNotification);
+  return TRUE;
+}
+
+vkr_internal bool8_t
+vkr_platform_windows_memory_pressure(VkrPlatformMemoryPressure *out_pressure) {
+  (void)InitOnceExecuteOnce(&memory_notification_once,
+                            vkr_platform_create_memory_notifications, NULL,
+                            NULL);
+  if (!memory_notification_low || !memory_notification_high) {
+    return false_v;
+  }
+  BOOL low = FALSE;
+  BOOL high = FALSE;
+  if (!QueryMemoryResourceNotification(memory_notification_low, &low) ||
+      !QueryMemoryResourceNotification(memory_notification_high, &high)) {
+    return false_v;
+  }
+  /* Between the two thresholds the memory manager trims working sets. */
+  *out_pressure = low    ? VKR_PLATFORM_MEMORY_PRESSURE_CRITICAL
+                  : high ? VKR_PLATFORM_MEMORY_PRESSURE_NORMAL
+                         : VKR_PLATFORM_MEMORY_PRESSURE_WARN;
+  return true_v;
+}
+
+/* FILETIME durations count 100 ns intervals. */
+vkr_internal uint64_t vkr_platform_filetime_ns(FILETIME time) {
+  const uint64_t ticks =
+      ((uint64_t)time.dwHighDateTime << 32) | (uint64_t)time.dwLowDateTime;
+  return ticks * 100ull;
+}
+
+/* A call costs about 1.4 us on a Ryzen 5 2600, so every call reads every
+   source. GetProcessTimes advances in clock ticks (15.625 ms here): a single
+   frame's CPU time reads 0 or whole ticks, and only sums over many frames are
+   exact. Windows has no per-process count of faults read from disk
+   (PageFaultCount includes soft faults) and no public thermal level, so those
+   stay unavailable. */
 bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry) {
   if (!out_telemetry) {
     return false_v;
   }
-  /* Every signal reads unavailable until the Windows sources land
-     (docs/proposals/profiling-and-diagnostics.md, P1). */
-  *out_telemetry = (VkrPlatformTelemetry){0};
-  return false_v;
+  VkrPlatformTelemetry telemetry = {0};
+
+  PROCESS_MEMORY_COUNTERS_EX memory = {.cb = sizeof(memory)};
+  if (K32GetProcessMemoryInfo(GetCurrentProcess(),
+                              (PROCESS_MEMORY_COUNTERS *)&memory,
+                              sizeof(memory))) {
+    telemetry.footprint_bytes = (uint64_t)memory.PrivateUsage;
+    telemetry.footprint_valid = true_v;
+  }
+
+  FILETIME creation_time;
+  FILETIME exit_time;
+  FILETIME kernel_time;
+  FILETIME user_time;
+  if (GetProcessTimes(GetCurrentProcess(), &creation_time, &exit_time,
+                      &kernel_time, &user_time)) {
+    telemetry.cpu_user_ns = vkr_platform_filetime_ns(user_time);
+    telemetry.cpu_system_ns = vkr_platform_filetime_ns(kernel_time);
+    telemetry.cpu_time_valid = true_v;
+  }
+
+  telemetry.memory_pressure_valid =
+      vkr_platform_windows_memory_pressure(&telemetry.memory_pressure);
+
+  /* ACLineStatus 255 means unknown. SystemStatusFlag is 1 while battery
+     saver lowers clocks; it may turn on while plugged in. */
+  SYSTEM_POWER_STATUS power = {0};
+  if (GetSystemPowerStatus(&power)) {
+    if (power.ACLineStatus <= 1u) {
+      telemetry.on_battery = power.ACLineStatus == 0u;
+      telemetry.power_valid = true_v;
+    }
+    telemetry.low_power = power.SystemStatusFlag == 1u;
+    telemetry.low_power_valid = true_v;
+  }
+
+  *out_telemetry = telemetry;
+  return telemetry.footprint_valid || telemetry.cpu_time_valid ||
+         telemetry.memory_pressure_valid || telemetry.power_valid ||
+         telemetry.low_power_valid;
 }
 
 vkr_internal void vkr_platform_stream_write(DWORD stream, const char *message) {
