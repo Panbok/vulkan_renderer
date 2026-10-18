@@ -79,9 +79,13 @@ typedef struct VkrEditorRecordingEntry {
 /* The Performance window's layout and tables, kept when another recording
    loads. */
 typedef struct VkrEditorRecordingPerfView {
-  /* Charts above the lists, and spikes beside passes. */
+  /* Charts above the lists, spikes beside passes, and the charts beside the
+     frame inspector. */
   VkrEditorSplit charts;
   VkrEditorSplit lists;
+  VkrEditorSplit inspector;
+  /* CPU stages the stage chart leaves out, by its legend. */
+  bool8_t stage_hidden[VKR_EDITOR_PERF_STAGES];
   VkrEditorTable spikes;
   VkrEditorTable passes;
   VkrEditorTable passes_compare;
@@ -125,6 +129,8 @@ typedef struct VkrEditorRecordingPerf {
   bool8_t pass_gpu;
   uint32_t pass_focus;
   uint32_t pass_column_count;
+  /* Shown frames that carry the pass chart's times. */
+  uint64_t pass_view_frames;
   uint64_t pass_column_frame[VKR_EDITOR_PERF_COLUMNS];
   float32_t pass_ms[VKR_EDITOR_PERF_PASS_SERIES][VKR_EDITOR_PERF_COLUMNS];
   uint32_t pass_series[VKR_EDITOR_PERF_PASS_SERIES];
@@ -135,6 +141,30 @@ typedef struct VkrEditorRecordingPerf {
      pointer was over in the last build, for the tooltip. */
   uint64_t selected;
   uint32_t hovered_column;
+  /* The frame under the pointer on any chart in the last build, which every
+     chart marks and the inspector shows while nothing is selected; or
+     UINT64_MAX. */
+  uint64_t hover_frame;
+  uint64_t hover_next;
+  /* The frames a drag across a chart covers while it lasts, which every
+     chart marks; its release zooms to them. */
+  bool8_t brushing;
+  uint64_t brush_first;
+  uint64_t brush_last;
+  /* The frames the charts show, [view_first, view_last]; the whole
+     recording until a drag across a chart zooms in. */
+  uint64_t view_first;
+  uint64_t view_last;
+  /* Frame-time statistics over the shown frames, for the cards while
+     zoomed. */
+  VkrRecordingStats view_time;
+  float64_t view_low_1pct;
+  uint64_t view_over_budget;
+  /* A metrics series the Series table charted, or UINT32_MAX, and its
+     columns and range. */
+  uint32_t chart_series;
+  float32_t series_values[VKR_EDITOR_PERF_COLUMNS];
+  float32_t series_range[2];
   VkrEditorRecordingPerfView view;
   /* Compare: recording B against this one, A, read into the same memory,
      and B's frame time at each column's frame for the frame chart's line,

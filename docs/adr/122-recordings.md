@@ -429,7 +429,14 @@ an agent must read one without the editor.
   spikes and passes in column tables (`editor_table.c`: resizable, sortable
   columns, row selection, virtual rows) under the charts, the charts, the
   lists and the two tables divided by split bars the designer drags; a pass
-  row isolates its pass.
+  row isolates its pass. Every chart marks the selected frame and the frame
+  under the pointer on any chart. A click selects a frame, and the frame
+  inspector beside the charts shows its time, spike and cause, CPU stages,
+  the slowest GPU passes of the nearest frame with GPU times, counters,
+  memory and nearby markers, steps by frame or spike, and Watch seeks the
+  playback there (opening it). A drag across a chart zooms every chart and
+  the frame-time cards to its frames until Show all. The stage legend hides
+  stages, and a Series row charts its series under the memory charts.
 
 ## Consequences
 
