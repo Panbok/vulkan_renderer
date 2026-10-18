@@ -157,6 +157,9 @@ typedef struct VkrMaterialSystem {
   uint32_t texture_extent_limit;
   /* Resident textures may differ from what the limit loads. */
   bool8_t texture_reload_pending;
+  /* Undrawn resident textures the limit would grow wait for a draw: a
+     closed scene's assets kept warm do not grow while another scene runs. */
+  bool8_t texture_reload_deferred;
   uint64_t texture_stream_epoch;
   uint64_t *texture_material_last_used_epochs;
   VkrMaterialPublication *publications; /* max_material_count */

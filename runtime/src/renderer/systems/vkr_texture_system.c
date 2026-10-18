@@ -2358,6 +2358,20 @@ bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
          texture->limit_source_mip_levels;
 }
 
+bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
+                                            VkrTextureHandle handle,
+                                            uint32_t max_extent) {
+  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || texture->limit_source_mip_levels == 0u) {
+    return false_v;
+  }
+  const uint32_t skip =
+      vkr_texture_limit_skip(texture->limit_source_extent,
+                             texture->limit_source_mip_levels, max_extent);
+  return skip + texture->description.mip_levels <
+         texture->limit_source_mip_levels;
+}
+
 bool8_t vkr_texture_prepared_load_2d(uint8_t *pixels, uint64_t byte_size,
                                      uint32_t width, uint32_t height,
                                      VkrTextureFormat format, uint32_t channels,

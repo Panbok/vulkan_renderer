@@ -1842,8 +1842,28 @@ vkr_internal void test_material_texture_limit_reloads_changed_textures(
   }
   assert(material_streams == 2u);
 
-  /* Clearing the limit loads the full chain again. */
+  /* A raised limit leaves an undrawn material's textures as they are, as it
+   * does a closed scene's kept assets, until the material is drawn again. */
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_begin_texture_residency_frame(system);
   vkr_material_system_set_texture_extent_limit(system, 0u);
+  const VkrResourceSubmissionState submission = {.submit_serial = 1u,
+                                                 .completed_submit_serial = 2u,
+                                                 .frame_active = true_v};
+  for (uint32_t pump = 0u; pump < 20u; ++pump) {
+    vkr_resource_system_pump(submission, NULL);
+    vkr_material_system_pump_texture_streams(system, 8u);
+    vkr_platform_sleep(2u);
+  }
+  live = vkr_material_system_get_by_handle(system, material);
+  assert(live->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle.id == limited.id);
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    assert(system->texture_streams[i].material.id != material.id ||
+           !system->texture_streams[i].reload);
+  }
+  vkr_material_system_touch_texture_residency(system, material);
+
+  /* Drawn again, it loads the full chain. */
   const VkrTextureHandle restored = material_pbr_test_pump_until_extent(
       ctx, material, VKR_TEXTURE_SLOT_DIFFUSE, 16u);
   texture = vkr_texture_system_get_by_handle(&ctx->texture_system, restored);

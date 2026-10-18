@@ -2637,6 +2637,11 @@ vkr_internal void vkr_standard_scene_runtime_unload_scene_system(
   application->scene_generation = application->scene_generation == UINT64_MAX
                                       ? 1u
                                       : application->scene_generation + 1u;
+  /* Nothing the closed scene drew is drawn now, though no frame may draw
+     before the next scene: its warm textures do not grow under a raised
+     limit until a scene draws them again (ADR-012). */
+  vkr_material_system_begin_texture_residency_frame(
+      &application->assets.material_system);
   vkr_standard_scene_runtime_invalidate_shadow_fit(application);
   vkr_standard_scene_runtime_log_backend_allocator_stats(application, "unload",
                                                          NULL);

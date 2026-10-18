@@ -172,9 +172,14 @@ Each texture records the larger side and level count of its stored chain, so a
 changed limit reloads only textures whose chain would differ; 1K textures stay
 loaded under a 2K limit. Reloads run through the material texture stream queue
 ([material system](../../runtime/src/renderer/systems/vkr_material_system.c)),
-recently drawn materials first, with at most 32 queued or loading. The slot
-keeps its texture until the reload binds, and then the replaced texture is
-released. Additive scenes follow the primary scene's limit.
+recently drawn materials first, with at most 32 queued or loading. A limit that
+would grow a texture no draw used in the last frame waits until its material
+is drawn again; a lower limit shrinks every texture. Without that wait, a
+switch from Bistro (limit 1024) to Level Design Test (full) re-streamed
+Bistro's warm textures (ADR-089) from 0.6 to 3 GB while the new level loaded,
+and the Metal editor ran out of GPU memory. The slot keeps its texture until
+the reload binds, and then the replaced texture is released. Additive scenes
+follow the primary scene's limit.
 Bistro on the M1 Pro (Debug editor, headless, Graphics limit 2048, isolated
 settings, 2026-10-03): `stats.texture_mb` read 1099.55 MiB at full, 347.69 MiB
 45 s after `scene.textures 1024`, and 1099.55 MiB again 45 s after `undo`.

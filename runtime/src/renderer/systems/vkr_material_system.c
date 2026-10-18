@@ -1136,7 +1136,10 @@ vkr_material_system_reload_needed(VkrMaterialSystem *system,
 /* Queues reloads of resident textures whose mip chain the current limit
  * changes, recently drawn materials first, with at most
  * VKR_MATERIAL_TEXTURE_RELOAD_MAX queued or loading. The scan repeats each
- * pump until every stale texture has a reload. */
+ * pump until every stale texture has a reload. An undrawn texture the limit
+ * would grow waits until its material is drawn again: reloading a closed
+ * scene's kept textures at a raised limit took Bistro's from 0.6 to 3 GB
+ * while another level loaded, and ran the GPU out of memory. */
 static void
 vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
   uint32_t outstanding = 0u;
@@ -1152,6 +1155,7 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
   }
 
   bool8_t stale_left = false_v;
+  system->texture_reload_deferred = false_v;
   const uint32_t scanned = system->texture_stream_count;
   for (uint32_t pass = 0u; pass < 2u; ++pass) {
     for (uint32_t i = 0u; i < scanned; ++i) {
@@ -1162,6 +1166,12 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
           stream->replacement || stream->reloading || drawn != (pass == 0u) ||
           !vkr_material_stream_stale(system, stream,
                                      stream->resident_texture)) {
+        continue;
+      }
+      if (!drawn && vkr_texture_system_load_limit_grows(
+                        system->texture_system, stream->resident_texture,
+                        system->texture_extent_limit)) {
+        system->texture_reload_deferred = true_v;
         continue;
       }
       if (outstanding >= VKR_MATERIAL_TEXTURE_RELOAD_MAX ||
@@ -1264,6 +1274,10 @@ void vkr_material_system_touch_texture_residency(VkrMaterialSystem *system,
   *last_used = system->texture_stream_epoch;
   if (!returned_after_gap) {
     return;
+  }
+  /* Its textures may have waited for this draw to grow. */
+  if (system->texture_reload_deferred) {
+    system->texture_reload_pending = true_v;
   }
   for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
     VkrMaterialTextureStream *stream = &system->texture_streams[i];

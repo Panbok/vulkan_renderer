@@ -271,6 +271,14 @@ bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
                                               uint32_t max_extent);
 
 /**
+ * @brief True when loading a live texture's source again with the request
+ * load limit `max_extent` would store more mips than the texture holds.
+ */
+bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
+                                            VkrTextureHandle handle,
+                                            uint32_t max_extent);
+
+/**
  * @brief Gets a texture by index
  * @param system The texture system to get the texture from
  * @param index The index of the texture to get
