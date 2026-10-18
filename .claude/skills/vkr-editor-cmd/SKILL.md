@@ -129,3 +129,6 @@ channel, `log.read` returns log records by level and text,
 `health.status` returns GPU errors, validation counts, log totals and system
 telemetry, `perf.snapshot` returns the newest metrics frame (add `passes` for
 per-pass times) and `perf.set` switches pass and submission GPU timing.
+`debug.graph` returns the compiled render graph (add `dot` for a Graphviz
+file). After a crash, read `crash-*.txt` beside the session log in
+`<workspace>/logs/` (stderr for a run without a workspace).

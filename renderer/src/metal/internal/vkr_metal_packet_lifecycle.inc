@@ -294,6 +294,31 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
   return true_v;
 }
 
+bool8_t
+vkr_metal_packet_renderer_request_gpu_trace(VkrMetalPacketRenderer *renderer,
+                                            const char *path, uint32_t frames) {
+  if (!renderer || !path || !path[0] || frames == 0u)
+    return false_v;
+  VkrMetalPacketGpuTraceStatus *trace = &renderer->gpu_trace;
+  if (trace->state == VKR_METAL_PACKET_GPU_TRACE_REQUESTED ||
+      trace->state == VKR_METAL_PACKET_GPU_TRACE_CAPTURING ||
+      string_length(path) >= sizeof(trace->path))
+    return false_v;
+  *trace = (VkrMetalPacketGpuTraceStatus){
+      .state = VKR_METAL_PACKET_GPU_TRACE_REQUESTED,
+      .frames = frames,
+  };
+  string_format(trace->path, sizeof(trace->path), "%s", path);
+  return true_v;
+}
+
+void vkr_metal_packet_renderer_gpu_trace_status(
+    const VkrMetalPacketRenderer *renderer, VkrMetalPacketGpuTraceStatus *out) {
+  if (!out)
+    return;
+  *out = renderer ? renderer->gpu_trace : (VkrMetalPacketGpuTraceStatus){0};
+}
+
 bool8_t vkr_metal_packet_renderer_get_and_reset_present_timing(
     VkrMetalPacketRenderer *renderer,
     VkrRendererImplPresentTiming *out_timing) {

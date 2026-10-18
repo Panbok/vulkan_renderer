@@ -1,5 +1,7 @@
 /* Bounded command-slot acquisition, completion, timing retention, and uploads.
  */
+#include "platform/vkr_crash.h"
+
 vkr_internal void
 vkr_metal_packet_wait_timeout_exit(VkrMetalPacketRenderer *renderer,
                                    const char *queue, uint64_t value) {
@@ -16,6 +18,15 @@ vkr_metal_packet_wait_timeout_exit(VkrMetalPacketRenderer *renderer,
                 (unsigned long long)renderer->completion.signaledValue,
                 (unsigned long long)renderer->submit_value);
   vkr_platform_stderr_write(message);
+  /* The crash report keeps the breadcrumbs and log tail beside the log. */
+  char reason[256];
+  string_format(reason, sizeof(reason),
+                "gpu completion timeout (Metal %s wait=%llu completed=%llu "
+                "submitted=%llu)",
+                queue, (unsigned long long)value,
+                (unsigned long long)renderer->completion.signaledValue,
+                (unsigned long long)renderer->submit_value);
+  (void)vkr_crash_write_report(reason);
   /* Completion is unproven. Neither another wait nor normal teardown may
      recycle resources still referenced by the GPU. Skip exit handlers too. */
   vkr_platform_exit_immediate(1);

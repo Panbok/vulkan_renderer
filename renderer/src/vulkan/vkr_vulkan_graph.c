@@ -515,6 +515,11 @@ void vkr_vk_install_retained_provider(VkrVulkanRenderer *renderer) {
   vkr_rg_set_retained_state_provider(renderer->graph, &provider);
 }
 
+const VkrRenderGraph *
+vkr_vulkan_renderer_graph(const VkrVulkanRenderer *renderer) {
+  return renderer ? renderer->graph : NULL;
+}
+
 void vkr_vulkan_renderer_retained_editor_extent(VkrVulkanRenderer *renderer,
                                                 uint32_t *out_width,
                                                 uint32_t *out_height) {

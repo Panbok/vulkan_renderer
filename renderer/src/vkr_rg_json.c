@@ -535,6 +535,15 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"D24_UNORM_S8_UINT", VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT},
 };
 
+const char *vkr_rg_json_format_name(VkrTextureFormat format) {
+  for (uint32_t i = 0; i < ArrayCount(k_rg_json_format_map); ++i) {
+    if (k_rg_json_format_map[i].format == format) {
+      return k_rg_json_format_map[i].name;
+    }
+  }
+  return NULL;
+}
+
 vkr_internal bool8_t vkr_rg_json_parse_format(
     VkrRgJsonParseContext *ctx, String8 value, VkrTextureFormat *out_format,
     VkrRgJsonImageFormatSource *out_format_source) {

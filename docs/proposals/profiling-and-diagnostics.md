@@ -70,14 +70,19 @@ Remaining:
 - Counters and markers for recordings without `Frame` zones in the export.
 - Acceptance: the overhead gate with zones on; zone sums match stage metrics.
 
-## P3: deep tools
+## P3: deep tools (remaining)
 
-- `debug.gpu_capture` (MTLCaptureManager `.gputrace`, RenderDoc in-app API)
-  and a Capture GPU frame button.
-- A lib crash handler writing a breadcrumb file (frame, active pass, last log
-  records, backtrace) and a Windows minidump; Vulkan checkpoints or buffer
-  markers.
-- A render graph window and `debug.graph` built on `vkr_rg_export_dot`.
+Crash reports, the `debug.gpu_capture` request and `debug.graph` are
+implemented in [ADR-127](../adr/127-crash-reports-gpu-capture-and-graph-description.md).
+Remaining:
+
+- The Windows crash handler (exception filter, minidump) and Vulkan
+  checkpoints or buffer markers.
+- RenderDoc in-app capture behind `debug.gpu_capture` on Vulkan; a Capture GPU
+  frame button once a backend can capture (Metal 4 compute encoders are not
+  capturable programmatically on macOS 26).
+- A render graph window over `vkr_renderer_describe_graph`; the crash
+  report's pass breadcrumb.
 - Debug line and box drawing, freeze culling, overdraw, LOD and light-count
   views; optional vendor counters and an `xctrace` table importer.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.

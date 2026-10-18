@@ -45,6 +45,10 @@ vkr_global uint32_t g_log_history_count = 0u;
 /* The session log file: every record is appended and flushed as it is
    logged, so the file survives a crash. */
 vkr_global FILE *g_log_file = NULL;
+/* The session log's path for crash reports: written under the lock, read
+   without it (log_file_directory). */
+#define VKR_LOG_FILE_PATH_CAPACITY 2048u
+vkr_global char g_log_file_path[VKR_LOG_FILE_PATH_CAPACITY];
 
 vkr_global VkrAtomicUint64 g_log_counts[LOG_LEVEL_TRACE + 1];
 
@@ -210,6 +214,12 @@ bool8_t log_file_open(const char *path) {
     fclose(g_log_file);
   }
   g_log_file = stream;
+  const uint64_t path_length = string_length(path);
+  if (path_length < sizeof(g_log_file_path)) {
+    MemCopy(g_log_file_path, path, path_length + 1u);
+  } else {
+    g_log_file_path[0] = '\0';
+  }
   /* The records kept so far start the file, oldest first. */
   const uint64_t first = g_log_sequence - g_log_history_count + 1u;
   for (uint64_t sequence = first; sequence <= g_log_sequence; ++sequence) {
@@ -225,7 +235,108 @@ void log_file_close(void) {
     fclose(g_log_file);
     g_log_file = NULL;
   }
+  g_log_file_path[0] = '\0';
   log_unlock();
+}
+
+bool8_t log_file_directory(char *out, uint64_t capacity) {
+  if (!out || capacity == 0u) {
+    return false_v;
+  }
+  out[0] = '\0';
+  const uint64_t length =
+      string_length_bounded(g_log_file_path, sizeof(g_log_file_path));
+  if (length == 0u || length == sizeof(g_log_file_path)) {
+    return false_v;
+  }
+  uint64_t separator = length;
+  while (separator > 0u && g_log_file_path[separator - 1u] != '/' &&
+         g_log_file_path[separator - 1u] != '\\') {
+    --separator;
+  }
+  /* A bare file name lives in the working directory; "/name" in the root. */
+  const char *directory = separator ? g_log_file_path : ".";
+  const uint64_t directory_length = separator <= 1u ? 1u : separator - 1u;
+  if (directory_length >= capacity) {
+    return false_v;
+  }
+  MemCopy(out, directory, directory_length);
+  out[directory_length] = '\0';
+  return true_v;
+}
+
+/* Writes `value` as exactly `width` decimal digits, zero-padded. */
+vkr_internal void log_emergency_digits(char *out, uint32_t value,
+                                       uint32_t width) {
+  for (uint32_t i = width; i > 0u; --i) {
+    out[i - 1u] = (char)('0' + value % 10u);
+    value /= 10u;
+  }
+}
+
+/* log_file_write's line, built without stdio for a signal handler. */
+vkr_internal void log_emergency_record(const VkrLogRecord *record,
+                                       VkrLogEmergencyWrite write,
+                                       void *context) {
+  const uint32_t date = record->utc_date;
+  const uint32_t ms = record->utc_time_ms;
+  char stamp[] = "0000-00-00 00:00:00.000 ";
+  log_emergency_digits(stamp, date / 10000u, 4u);
+  log_emergency_digits(stamp + 5, date / 100u % 100u, 2u);
+  log_emergency_digits(stamp + 8, date % 100u, 2u);
+  log_emergency_digits(stamp + 11, ms / 3600000u % 100u, 2u);
+  log_emergency_digits(stamp + 14, ms / 60000u % 60u, 2u);
+  log_emergency_digits(stamp + 17, ms / 1000u % 60u, 2u);
+  log_emergency_digits(stamp + 20, ms % 1000u, 3u);
+  write(context, stamp, sizeof(stamp) - 1u);
+
+  const uint32_t level =
+      Min((uint32_t)record->level, (uint32_t)LOG_LEVEL_TRACE);
+  write(context, LOG_LEVELS[level], string_length(LOG_LEVELS[level]));
+
+  /* A torn record can hold any length; stay inside its arrays. */
+  const uint64_t source_length =
+      Min((uint64_t)record->source_length, VKR_LOG_SOURCE_CAPACITY - 1u);
+  write(context, (const char *)record->source, source_length);
+
+  char line[12] = ":";
+  uint32_t digits = 1u;
+  uint32_t value = record->line;
+  do {
+    ++digits;
+    value /= 10u;
+  } while (value > 0u && digits < 11u);
+  log_emergency_digits(line + 1, record->line, digits - 1u);
+  line[digits++] = ' ';
+  write(context, line, digits);
+
+  const uint64_t message_length =
+      Min((uint64_t)record->message_length, VKR_LOG_MESSAGE_CAPACITY - 1u);
+  write(context, (const char *)record->message, message_length);
+  if (record->truncated) {
+    write(context, " [truncated]", 12u);
+  }
+  write(context, "\n", 1u);
+}
+
+uint32_t log_history_emergency_write(uint32_t max_records,
+                                     VkrLogEmergencyWrite write,
+                                     void *context) {
+  if (!g_log_history || !write) {
+    return 0u;
+  }
+  /* No lock: the crash may have happened while this thread held it. */
+  const uint64_t newest = g_log_sequence;
+  const uint64_t kept =
+      Min((uint64_t)g_log_history_count, (uint64_t)VKR_LOG_HISTORY_CAPACITY);
+  const uint64_t count = Min(Min(kept, newest), (uint64_t)max_records);
+  for (uint64_t sequence = newest - count + 1u; sequence <= newest;
+       ++sequence) {
+    log_emergency_record(
+        &g_log_history[(sequence - 1u) % VKR_LOG_HISTORY_CAPACITY], write,
+        context);
+  }
+  return (uint32_t)count;
 }
 
 VkrLogCounts log_counts_get(void) {

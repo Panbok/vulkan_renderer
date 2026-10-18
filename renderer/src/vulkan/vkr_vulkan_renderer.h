@@ -285,6 +285,10 @@ vkr_vulkan_renderer_texture_format_supported(const VkrVulkanRenderer *renderer,
                                              VkrTextureFormat format);
 bool8_t vkr_vulkan_renderer_graph_resource_stats(
     const VkrVulkanRenderer *renderer, VkrRenderGraphResourceStats *out_stats);
+/** Render thread (the frontend joins it): the graph of the last submitted
+ * packet, valid until the next submit; NULL before the graph exists. */
+const VkrRenderGraph *
+vkr_vulkan_renderer_graph(const VkrVulkanRenderer *renderer);
 void vkr_vulkan_renderer_target_information(
     const VkrVulkanRenderer *renderer, VkrPresentMode *out_present_mode,
     VkrSurfaceColorFormat *out_color_format,

@@ -501,6 +501,10 @@ vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);
 bool8_t vkr_metal_packet_renderer_graph_resource_stats(
     const VkrMetalPacketRenderer *renderer,
     VkrRenderGraphResourceStats *out_stats);
+/** Render thread (the frontend joins it): the graph of the last submitted
+ * packet, valid until the next submit; NULL before the graph exists. */
+const VkrRenderGraph *
+vkr_metal_packet_renderer_graph(const VkrMetalPacketRenderer *renderer);
 bool8_t vkr_metal_packet_renderer_get_memory_metrics(
     const VkrMetalPacketRenderer *renderer,
     VkrMetalMemoryDeviceMetrics *out_metrics);
@@ -509,6 +513,32 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
     VkrMetalPacketRenderer *renderer, uint64_t *out_wait_count);
 bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
     VkrMetalPacketRenderer *renderer, uint64_t *out_wait_count);
+/* A native GPU capture (MTLCaptureManager .gputrace) and where it stands. */
+typedef enum VkrMetalPacketGpuTraceState {
+  VKR_METAL_PACKET_GPU_TRACE_IDLE = 0,
+  VKR_METAL_PACKET_GPU_TRACE_REQUESTED,
+  VKR_METAL_PACKET_GPU_TRACE_CAPTURING,
+  VKR_METAL_PACKET_GPU_TRACE_DONE,
+  VKR_METAL_PACKET_GPU_TRACE_FAILED,
+} VkrMetalPacketGpuTraceState;
+
+typedef struct VkrMetalPacketGpuTraceStatus {
+  VkrMetalPacketGpuTraceState state;
+  uint32_t frames;
+  char path[1024];
+  char message[256];
+} VkrMetalPacketGpuTraceStatus;
+
+/** Render thread (the frontend joins it): captures the next `frames` frames
+ * of the device's work into the .gputrace bundle at `path`, which must not
+ * exist. Returns false while a capture is pending or running. */
+bool8_t
+vkr_metal_packet_renderer_request_gpu_trace(VkrMetalPacketRenderer *renderer,
+                                            const char *path, uint32_t frames);
+/** Render thread (the frontend joins it). */
+void vkr_metal_packet_renderer_gpu_trace_status(
+    const VkrMetalPacketRenderer *renderer, VkrMetalPacketGpuTraceStatus *out);
+
 /** Render thread only; the metrics collector is the sole caller. */
 bool8_t vkr_metal_packet_renderer_get_and_reset_present_timing(
     VkrMetalPacketRenderer *renderer, VkrRendererImplPresentTiming *out_timing);

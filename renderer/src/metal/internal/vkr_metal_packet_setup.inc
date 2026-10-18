@@ -1914,11 +1914,15 @@ vkr_internal bool8_t vkr_metal_packet_create_compiler(
   /* Apple's Metal shader validator currently crashes in the Metal 4-to-3
      archive conversion path while installing lookupArchives. Validation runs
      intentionally compile from source, which is also the stronger shader
-     validation path; normal runs retain cold/warm archive behavior. */
-  if (vkr_platform_environment_flag("MTL_SHADER_VALIDATION")) {
+     validation path; normal runs retain cold/warm archive behavior. The GPU
+     capture layer (MTL_CAPTURE_ENABLED) throws in the same lookup, sending
+     supportsAIRNT to a dispatch queue (macOS 26), so capture-enabled runs
+     compile from source too. */
+  if (vkr_platform_environment_flag("MTL_SHADER_VALIDATION") ||
+      vkr_platform_environment_flag("MTL_CAPTURE_ENABLED")) {
     archive_path = NULL;
-    log_info(
-        "Metal shader validation enabled; pipeline archive lookup disabled");
+    log_info("Metal shader validation or GPU capture enabled; pipeline "
+             "archive lookup disabled");
   }
   if (archive_path) {
     NSString *path = [NSString stringWithUTF8String:archive_path];

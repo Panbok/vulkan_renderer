@@ -960,6 +960,10 @@ struct VkrMetalPacketRenderer {
   /* Present and drawable-acquire CPU time since the metrics collector last
      read it; render thread only. */
   VkrRendererImplPresentTiming present_timing;
+  /* A native GPU capture: its state, request and the frames still to
+     capture; render thread only. */
+  VkrMetalPacketGpuTraceStatus gpu_trace;
+  uint32_t gpu_trace_frames_left;
   /* Display feedback for window presents: shared state, the one handler
      every present adds, and the next mark a present writes. */
   VkrMetalPresentFeedback *present_feedback;
@@ -1543,6 +1547,11 @@ vkr_metal_packet_renderer_device_name(const VkrMetalPacketRenderer *renderer) {
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer) {
   return renderer ? renderer->actual_present_mode : VKR_PRESENT_MODE_DEFAULT;
+}
+
+const VkrRenderGraph *
+vkr_metal_packet_renderer_graph(const VkrMetalPacketRenderer *renderer) {
+  return renderer ? renderer->graph : NULL;
 }
 
 bool8_t vkr_metal_packet_renderer_graph_resource_stats(

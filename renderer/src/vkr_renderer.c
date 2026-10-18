@@ -19,6 +19,7 @@
 #include "vkr_prepared_frame.h"
 #include "vkr_renderer_internal.h"
 #include "vkr_renderer_metrics.h"
+#include "vkr_rg_debug.h"
 #include "vkr_rg_json.h"
 #include "vkr_shader_catalog.h"
 #include "vulkan/vkr_vulkan_renderer.h"
@@ -2317,6 +2318,101 @@ vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer) {
 #endif
   (void)renderer;
   return stats;
+}
+
+bool8_t vkr_renderer_describe_graph(VkrRenderer *renderer,
+                                    const VkrRgDescribeVisitor *visitor,
+                                    const char *dot_path,
+                                    VkrRgDescription *out_graph,
+                                    VkrRendererGraphInfo *out_info) {
+  vkr_renderer_join_render_thread(renderer);
+  if (!renderer) {
+    return false_v;
+  }
+
+  VkrRendererGraphInfo info = {
+      .pipeline = renderer->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
+                      ? "tiled"
+                      : "desktop",
+  };
+  const VkrRenderGraph *graph = NULL;
+  VkrRenderGraphResourceStats live = {0};
+  if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
+    info.backend = "vulkan";
+    graph = vkr_vulkan_renderer_graph(renderer->vulkan_renderer);
+    info.live_valid = vkr_vulkan_renderer_graph_resource_stats(
+        renderer->vulkan_renderer, &live);
+#if defined(PLATFORM_APPLE)
+  } else if (renderer->impl.kind == VKR_RENDERER_IMPL_METAL) {
+    info.backend = "metal";
+    graph = vkr_metal_packet_renderer_graph(renderer->metal_renderer);
+    info.live_valid = vkr_metal_packet_renderer_graph_resource_stats(
+        renderer->metal_renderer, &live);
+#endif
+  }
+  if (!graph) {
+    return false_v;
+  }
+
+  info.live_images = live.live_image_textures;
+  info.live_image_bytes = live.live_image_bytes;
+  info.live_buffers = live.live_buffers;
+  info.live_buffer_bytes = live.live_buffer_bytes;
+  if (!vkr_rg_describe(graph, visitor, out_graph)) {
+    return false_v;
+  }
+  if (dot_path && dot_path[0]) {
+    info.dot_written = vkr_rg_export_dot(graph, dot_path);
+  }
+  if (out_info) {
+    *out_info = info;
+  }
+  return true_v;
+}
+
+#if defined(PLATFORM_APPLE)
+_Static_assert((int)VKR_RENDERER_GPU_CAPTURE_FAILED ==
+                   (int)VKR_METAL_PACKET_GPU_TRACE_FAILED,
+               "frontend and Metal capture states match");
+#endif
+
+bool8_t vkr_renderer_request_gpu_capture(VkrRenderer *renderer,
+                                         const char *path, uint32_t frames) {
+  if (!renderer || !path) {
+    return false_v;
+  }
+  vkr_renderer_join_render_thread(renderer);
+#if defined(PLATFORM_APPLE)
+  return vkr_metal_packet_renderer_request_gpu_trace(renderer->metal_renderer,
+                                                     path, frames);
+#else
+  (void)frames;
+  return false_v;
+#endif
+}
+
+VkrRendererGpuCaptureStatus
+vkr_renderer_gpu_capture_status(VkrRenderer *renderer) {
+  VkrRendererGpuCaptureStatus status = {0};
+  if (!renderer) {
+    return status;
+  }
+  vkr_renderer_join_render_thread(renderer);
+#if defined(PLATFORM_APPLE)
+  VkrMetalPacketGpuTraceStatus trace = {0};
+  vkr_metal_packet_renderer_gpu_trace_status(renderer->metal_renderer, &trace);
+  /* The backend's states are the frontend's, in the same order. */
+  status.state = (VkrRendererGpuCaptureState)trace.state;
+  status.frames = trace.frames;
+  MemCopy(status.path, trace.path, sizeof(status.path));
+  MemCopy(status.message, trace.message, sizeof(status.message));
+#else
+  status.state = VKR_RENDERER_GPU_CAPTURE_FAILED;
+  string_format(status.message, sizeof(status.message),
+                "Vulkan has no GPU capture yet (RenderDoc in-app capture is "
+                "planned)");
+#endif
+  return status;
 }
 
 VkrRendererHealth vkr_renderer_get_health(const VkrRenderer *renderer) {

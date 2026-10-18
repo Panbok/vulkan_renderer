@@ -16,6 +16,7 @@
 #include "core/logger.h"
 #include "fps_module.h"
 #include "memory/vkr_heap.h"
+#include "platform/vkr_crash.h"
 #include "platform/vkr_platform.h"
 
 /* Launcher and editor client sizes in points. The editor request is clamped
@@ -476,6 +477,9 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
   }
   /* The Console lists this session's records from the first one. */
   log_capture_request(LOG_LEVEL_INFO);
+  /* A crash report lands beside the session log, in <workspace>/logs/ once
+     a workspace opens, and on stderr before that. */
+  (void)vkr_crash_install(NULL, "editor");
   bool8_t scene_only = editor_env_flag("VKR_EDITOR_SCENE_ONLY", false_v);
   for (int i = 1; i < argc; ++i) {
     if (string_equals(argv[i], "--scene")) {

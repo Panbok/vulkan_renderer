@@ -5,6 +5,7 @@
 #include "core/vkr_zone.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_vfs.h"
+#include "platform/vkr_crash.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "vkr_sample_runtime_config.h"
 
@@ -5823,6 +5824,26 @@ typedef struct VkrSampleUiRequests {
   bool8_t scene_maximized;
 } VkrSampleUiRequests;
 
+/* VkrSampleUiFrame's GPU capture over the runtime's Scene renderer. */
+vkr_internal bool8_t vkr_standard_scene_runtime_gpu_capture_request(
+    void *context, const char *path, uint32_t frames) {
+  return vkr_renderer_request_gpu_capture((VkrRenderer *)context, path, frames);
+}
+
+vkr_internal VkrRendererGpuCaptureStatus
+vkr_standard_scene_runtime_gpu_capture_status(void *context) {
+  return vkr_renderer_gpu_capture_status((VkrRenderer *)context);
+}
+
+/* VkrSampleUiFrame.describe_graph over the runtime's Scene renderer. */
+vkr_internal bool8_t vkr_standard_scene_runtime_describe_graph(
+    void *context, const struct VkrRgDescribeVisitor *visitor,
+    const char *dot_path, struct VkrRgDescription *out_graph,
+    VkrRendererGraphInfo *out_info) {
+  return vkr_renderer_describe_graph((VkrRenderer *)context, visitor, dot_path,
+                                     out_graph, out_info);
+}
+
 /* Describes this frame to the UI client and runs its build. The frame lends
    the client `requests` until build returns. */
 vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
@@ -5832,6 +5853,15 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
           &application->assets.material_system);
   const VkrRendererPipelineStats pipelines =
       vkr_renderer_get_pipeline_stats(&application->renderer);
+  /* The open scene, for a crash report (lib/src/platform/vkr_crash.h). */
+  char crash_scene[VKR_CRASH_TEXT_CAPACITY];
+  const uint64_t crash_scene_length =
+      Min(state->scene_path.length, (uint64_t)sizeof(crash_scene) - 1u);
+  if (crash_scene_length > 0u) {
+    MemCopy(crash_scene, state->scene_path.str, crash_scene_length);
+  }
+  crash_scene[crash_scene_length] = '\0';
+  vkr_crash_set_text(VKR_CRASH_TEXT_SCENE, crash_scene);
   VkrSampleUiFrame frame = {
       .ui = &application->ui_system,
       .window = &application->host.window,
@@ -5872,6 +5902,11 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .metrics = application->metrics,
       .pass_table =
           vkr_renderer_metrics_get_pass_table(&application->renderer_metrics),
+      .describe_graph = vkr_standard_scene_runtime_describe_graph,
+      .describe_graph_context = &application->renderer,
+      .gpu_capture_request = vkr_standard_scene_runtime_gpu_capture_request,
+      .gpu_capture_status = vkr_standard_scene_runtime_gpu_capture_status,
+      .gpu_capture_context = &application->renderer,
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
       .scene_output_scale = application->scene_output_scale,
       .scene_render_width = application->editor_viewport.enabled

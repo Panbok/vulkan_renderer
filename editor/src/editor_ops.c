@@ -20,10 +20,12 @@
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
+#include "filesystem/vkr_vfs.h"
 #include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_heap.h"
+#include "platform/vkr_crash.h"
 #include "platform/vkr_platform.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
@@ -37,6 +39,7 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
 #include "vkr_bakery_buffer.h"
+#include "vkr_rg_debug.h"
 
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -15142,6 +15145,341 @@ static VkrEditorOpStatus ops_run_perf_snapshot(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+#define OPS_GRAPH_ROW_MAX 512u
+
+/* One debug.graph answer under construction while the Scene renderer's
+   graph is visited; a NULL array leaves that part out. */
+typedef struct OpsGraphVisit {
+  OpsContext *ctx;
+  VkrBakeryJson *passes;
+  VkrBakeryJson *resources;
+  const char *filter;
+  uint32_t pass_matched;
+  uint32_t resource_matched;
+  uint32_t stale_resources;
+} OpsGraphVisit;
+
+/* The newest collected timing row of a pass, matched by its name as the
+   pass table stores it (truncated to VKR_METRIC_NAME_MAX). */
+static const VkrRendererMetricsPassSample *
+ops_graph_pass_timing(const VkrRendererMetricsPassTable *table, String8 name) {
+  if (!table) {
+    return NULL;
+  }
+  const uint64_t length = Min(name.length, (uint64_t)VKR_METRIC_NAME_MAX);
+  for (uint32_t i = 0u; i < table->count; ++i) {
+    const VkrRendererMetricsPassSample *row = &table->samples[i];
+    if (row->name_length == length &&
+        MemCompare(row->name, name.str, length) == 0) {
+      return row;
+    }
+  }
+  return NULL;
+}
+
+static VkrBakeryJson *ops_graph_order(OpsContext *ctx, uint32_t order) {
+  return order == UINT32_MAX ? vkr_bakery_json_null(ops_arena(ctx))
+                             : vkr_bakery_json_int(ops_arena(ctx), order);
+}
+
+static void ops_graph_visit_pass(void *user, const VkrRgDescribedPass *pass) {
+  OpsGraphVisit *visit = user;
+  if (visit->filter[0] && !string8_contains_cstr(&pass->name, visit->filter)) {
+    return;
+  }
+  visit->pass_matched += 1u;
+  if (visit->pass_matched > OPS_GRAPH_ROW_MAX) {
+    return;
+  }
+  OpsContext *ctx = visit->ctx;
+  Arena *arena = ops_arena(ctx);
+
+  VkrBakeryJson *reads = vkr_bakery_json_array(arena);
+  VkrBakeryJson *writes = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < pass->use_count; ++i) {
+    const VkrRgDescribedUse *use = &pass->uses[i];
+    vkr_bakery_json_append(use->write ? writes : reads,
+                           ops_string(ctx, use->resource));
+  }
+
+  VkrBakeryJson *item = vkr_bakery_json_object(arena);
+  ops_set(ctx, item, "name", ops_string(ctx, pass->name));
+  ops_set(ctx, item, "kind", vkr_bakery_json_cstr(arena, pass->type_name));
+  ops_set(ctx, item, "order", ops_graph_order(ctx, pass->order));
+  ops_set(ctx, item, "culled", vkr_bakery_json_bool(arena, pass->culled));
+  if (pass->disabled) {
+    ops_set(ctx, item, "disabled", vkr_bakery_json_bool(arena, true_v));
+  }
+  ops_set(ctx, item, "reads", reads);
+  ops_set(ctx, item, "writes", writes);
+  if (pass->use_total > pass->use_count) {
+    ops_set(ctx, item, "uses_truncated", vkr_bakery_json_bool(arena, true_v));
+  }
+
+  /* Timings of the newest collected frame, which may be a frame older or
+     newer than this build; a culled pass has none. */
+  const VkrRendererMetricsPassSample *row =
+      pass->culled ? NULL
+                   : ops_graph_pass_timing(ctx->frame->pass_table, pass->name);
+  if (row && !row->culled && !row->disabled) {
+    ops_set(ctx, item, "cpu_ms", ops_number(ctx, row->cpu_ms));
+    ops_set(ctx, item, "gpu_ms",
+            row->gpu_valid ? ops_number(ctx, row->gpu_ms)
+                           : vkr_bakery_json_null(arena));
+  }
+  vkr_bakery_json_append(visit->passes, item);
+}
+
+static void ops_graph_visit_resource(void *user,
+                                     const VkrRgDescribedResource *resource) {
+  OpsGraphVisit *visit = user;
+  if (!resource->declared) {
+    visit->stale_resources += 1u;
+    return;
+  }
+  visit->resource_matched += 1u;
+  if (visit->resource_matched > OPS_GRAPH_ROW_MAX) {
+    return;
+  }
+  OpsContext *ctx = visit->ctx;
+  Arena *arena = ops_arena(ctx);
+
+  VkrBakeryJson *item = vkr_bakery_json_object(arena);
+  ops_set(ctx, item, "name", ops_string(ctx, resource->name));
+  ops_set(ctx, item, "kind",
+          vkr_bakery_json_cstr(arena, resource->buffer ? "buffer" : "image"));
+  if (!resource->buffer) {
+    char format[32];
+    if (resource->format_name) {
+      string_format(format, sizeof(format), "%s", resource->format_name);
+    } else {
+      string_format(format, sizeof(format), "format_%u",
+                    (uint32_t)resource->format);
+    }
+    ops_set(ctx, item, "width", vkr_bakery_json_int(arena, resource->width));
+    ops_set(ctx, item, "height", vkr_bakery_json_int(arena, resource->height));
+    ops_set(ctx, item, "depth", vkr_bakery_json_int(arena, resource->depth));
+    ops_set(ctx, item, "layers", vkr_bakery_json_int(arena, resource->layers));
+    ops_set(ctx, item, "mips",
+            vkr_bakery_json_int(arena, resource->mip_levels));
+    ops_set(ctx, item, "samples",
+            vkr_bakery_json_int(arena, resource->samples));
+    ops_set(ctx, item, "format", vkr_bakery_json_cstr(arena, format));
+  }
+  ops_set(ctx, item, "bytes",
+          vkr_bakery_json_int(arena, (int64_t)resource->bytes));
+  ops_set(ctx, item, "lifetime",
+          vkr_bakery_json_cstr(arena, resource->lifetime));
+  ops_set(ctx, item, "instances",
+          vkr_bakery_json_cstr(arena, resource->instances));
+  ops_set(ctx, item, "first", ops_graph_order(ctx, resource->first_order));
+  ops_set(ctx, item, "last", ops_graph_order(ctx, resource->last_order));
+  if (resource->exported) {
+    ops_set(ctx, item, "exported", vkr_bakery_json_bool(arena, true_v));
+  }
+  if (resource->present) {
+    ops_set(ctx, item, "present", vkr_bakery_json_bool(arena, true_v));
+  }
+  vkr_bakery_json_append(visit->resources, item);
+}
+
+/* The answer to a finished capture, or a failure with its reason. */
+static VkrEditorOpStatus
+ops_gpu_capture_answer(OpsContext *ctx,
+                       const VkrRendererGpuCaptureStatus *status) {
+  if (status->state != VKR_RENDERER_GPU_CAPTURE_DONE) {
+    ops_fail(ctx, OPS_REJECTED, "%s",
+             status->message[0] ? status->message : "the capture failed");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "path", vkr_bakery_json_cstr(arena, status->path));
+  ops_set(ctx, result, "frames",
+          vkr_bakery_json_int(arena, (int64_t)status->frames));
+  ops_set(ctx, result, "message", vkr_bakery_json_cstr(arena, status->message));
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_debug_gpu_capture(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  const VkrSampleUiFrame *frame = ctx->frame;
+  if (!frame->gpu_capture_request || !frame->gpu_capture_status) {
+    ops_fail(ctx, OPS_REJECTED, "This editor cannot capture the GPU");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (call->stage == 0u) {
+    char name[96] = {0};
+    if (!ops_arg_string(ctx, call->args, "name", name, sizeof(name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    float64_t frames = 1.0;
+    if (ops_arg_number(call->args, "frames", &frames) &&
+        (frames < 1.0 || frames > 8.0)) {
+      ops_fail(ctx, OPS_INVALID, "'frames' must be 1 to 8");
+      return VKR_EDITOR_OP_DONE;
+    }
+    char directory[VKR_RECORDING_PATH_MAX];
+    if (!vkr_editor_recording_directory(ctx->editor, directory,
+                                        sizeof(directory))) {
+      ops_fail(ctx, OPS_REJECTED, "No directory for captures");
+      return VKR_EDITOR_OP_DONE;
+    }
+    char path[1024];
+    if (name[0]) {
+      string_format(path, sizeof(path), "%s/%s.gputrace", directory, name);
+    } else {
+      string_format(path, sizeof(path), "%s/gpu-%lld.gputrace", directory,
+                    (long long)vkr_platform_get_unix_time());
+    }
+    if (!frame->gpu_capture_request(frame->gpu_capture_context, path,
+                                    (uint32_t)frames)) {
+      const VkrRendererGpuCaptureStatus status =
+          frame->gpu_capture_status(frame->gpu_capture_context);
+      ops_fail(ctx, OPS_REJECTED, "%s",
+               status.state == VKR_RENDERER_GPU_CAPTURE_REQUESTED ||
+                       status.state == VKR_RENDERER_GPU_CAPTURE_CAPTURING
+                   ? "A GPU capture is already running"
+               : status.message[0] ? status.message
+                                   : "This renderer cannot capture the GPU");
+      return VKR_EDITOR_OP_DONE;
+    }
+    call->stage = 1u;
+    call->frames = 0u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  /* The capture starts and ends with submitted Scene frames. */
+  const VkrRendererGpuCaptureStatus status =
+      frame->gpu_capture_status(frame->gpu_capture_context);
+  if (status.state == VKR_RENDERER_GPU_CAPTURE_REQUESTED ||
+      status.state == VKR_RENDERER_GPU_CAPTURE_CAPTURING) {
+    if (++call->frames > 1200u) {
+      ops_fail(ctx, OPS_BUSY,
+               "The capture did not finish; is the Scene rendering?");
+      return VKR_EDITOR_OP_DONE;
+    }
+    return VKR_EDITOR_OP_WAIT;
+  }
+  return ops_gpu_capture_answer(ctx, &status);
+}
+
+static VkrEditorOpStatus ops_run_debug_graph(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char filter[VKR_METRIC_NAME_MAX + 1u] = {0};
+  char dot[1024] = {0};
+  if (!ops_arg_string(ctx, args, "pass", filter, sizeof(filter)) ||
+      !ops_arg_string(ctx, args, "dot", dot, sizeof(dot))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->frame->describe_graph) {
+    ops_fail(ctx, OPS_INVALID, "no Scene renderer");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  OpsGraphVisit visit = {
+      .ctx = ctx,
+      .passes = ops_arg_bool(args, "passes", true_v)
+                    ? vkr_bakery_json_array(arena)
+                    : NULL,
+      .resources = ops_arg_bool(args, "resources", true_v)
+                       ? vkr_bakery_json_array(arena)
+                       : NULL,
+      .filter = filter,
+  };
+  const VkrRgDescribeVisitor visitor = {
+      .user = &visit,
+      .pass = visit.passes ? ops_graph_visit_pass : NULL,
+      .resource = visit.resources ? ops_graph_visit_resource : NULL,
+  };
+  VkrRgDescription graph = {0};
+  VkrRendererGraphInfo info = {0};
+  if (!ctx->frame->describe_graph(ctx->frame->describe_graph_context, &visitor,
+                                  dot[0] ? dot : NULL, &graph, &info)) {
+    ops_fail(ctx, OPS_INVALID, "the Scene renderer has no render graph yet");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (dot[0] && !info.dot_written) {
+    ops_fail(ctx, OPS_REJECTED, "could not write the DOT file '%s'", dot);
+    return VKR_EDITOR_OP_DONE;
+  }
+
+  VkrBakeryJson *viewport = vkr_bakery_json_array(arena);
+  vkr_bakery_json_append(viewport,
+                         vkr_bakery_json_int(arena, graph.viewport_width));
+  vkr_bakery_json_append(viewport,
+                         vkr_bakery_json_int(arena, graph.viewport_height));
+  /* The graph declares one instance of a resource; the backend realizes
+     per-image and per-frame-slot copies. Graph memory never aliases. */
+  VkrBakeryJson *memory = vkr_bakery_json_object(arena);
+  ops_set(ctx, memory, "declared_image_bytes",
+          vkr_bakery_json_int(arena, (int64_t)graph.declared_image_bytes));
+  ops_set(ctx, memory, "declared_buffer_bytes",
+          vkr_bakery_json_int(arena, (int64_t)graph.declared_buffer_bytes));
+  if (info.live_valid) {
+    ops_set(ctx, memory, "live_images",
+            vkr_bakery_json_int(arena, info.live_images));
+    ops_set(ctx, memory, "live_image_bytes",
+            vkr_bakery_json_int(arena, (int64_t)info.live_image_bytes));
+    ops_set(ctx, memory, "live_buffers",
+            vkr_bakery_json_int(arena, info.live_buffers));
+    ops_set(ctx, memory, "live_buffer_bytes",
+            vkr_bakery_json_int(arena, (int64_t)info.live_buffer_bytes));
+  }
+  ops_set(ctx, memory, "aliasing", vkr_bakery_json_bool(arena, false_v));
+
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "backend",
+          vkr_bakery_json_cstr(arena, info.backend ? info.backend : "unknown"));
+  ops_set(ctx, result, "pipeline", vkr_bakery_json_cstr(arena, info.pipeline));
+  ops_set(ctx, result, "frame", vkr_bakery_json_int(arena, graph.frame_index));
+  ops_set(ctx, result, "compiled", vkr_bakery_json_bool(arena, graph.compiled));
+  ops_set(ctx, result, "scene_rendering",
+          vkr_bakery_json_bool(arena, graph.scene_rendering));
+  ops_set(ctx, result, "viewport", viewport);
+  ops_set(ctx, result, "render_scale",
+          ops_number(ctx, (float64_t)graph.render_scale));
+  ops_set(ctx, result, "pass_count",
+          vkr_bakery_json_int(arena, graph.pass_count));
+  ops_set(ctx, result, "scheduled_count",
+          vkr_bakery_json_int(arena, graph.scheduled_count));
+  ops_set(ctx, result, "culled_count",
+          vkr_bakery_json_int(arena, graph.culled_count));
+  ops_set(ctx, result, "resource_count",
+          vkr_bakery_json_int(arena, graph.declared_image_count +
+                                         graph.declared_buffer_count));
+  ops_set(ctx, result, "memory", memory);
+  if (visit.passes) {
+    ops_set(ctx, result, "passes_matched",
+            vkr_bakery_json_int(arena, visit.pass_matched));
+    ops_set(ctx, result, "passes", visit.passes);
+    const VkrRendererMetricsPassTable *table = ctx->frame->pass_table;
+    if (table) {
+      ops_set(ctx, result, "timings_frame",
+              vkr_bakery_json_int(arena, (int64_t)table->cpu_frame_index));
+    }
+  }
+  if (visit.resources) {
+    ops_set(ctx, result, "resources", visit.resources);
+    ops_set(ctx, result, "stale_resources",
+            vkr_bakery_json_int(arena, visit.stale_resources));
+  }
+  ops_set(ctx, result, "truncated",
+          vkr_bakery_json_bool(arena,
+                               visit.pass_matched > OPS_GRAPH_ROW_MAX ||
+                                   visit.resource_matched > OPS_GRAPH_ROW_MAX));
+  if (dot[0]) {
+    char resolved[1300];
+    const bool8_t absolute =
+        dot[0] == '/' || dot[0] == '\\' || (dot[0] && dot[1] == ':');
+    string_format(resolved, sizeof(resolved), "%s%s",
+                  absolute ? "" : vkr_content_root(), dot);
+    ops_set(ctx, result, "dot_path", vkr_bakery_json_cstr(arena, resolved));
+  }
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_perf_set(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   VkrMetrics *metrics = ctx->frame->metrics;
@@ -18501,6 +18839,36 @@ static const OpsDef s_ops[] = {
      "\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\","
      "\"minimum\":1,\"maximum\":400}}}",
      ops_run_perf_snapshot, NULL, OPS_QUICK},
+    {"debug.gpu_capture",
+     "Capture the next 'frames' (1 to 8, default 1) Scene frames for a GPU "
+     "debugger into the recording directory as 'name' (a time stamp when "
+     "absent): a .gputrace document Xcode opens on Metal. Metal capture needs "
+     "the editor started with MTL_CAPTURE_ENABLED=1, else the call answers "
+     "that; Vulkan has no capture yet. Answers the path once written.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"frames\":{\"type\":\"integer\",\"minimum\":1,"
+     "\"maximum\":8}}}",
+     ops_run_debug_gpu_capture, NULL},
+    {"debug.graph",
+     "The Scene renderer's last compiled render graph: each pass in execution "
+     "order, then culled passes, with its kind (graphics, compute, transfer), "
+     "order (null when culled), the resources it reads and writes by name, "
+     "and the newest collected CPU and GPU milliseconds by pass name (GPU "
+     "null when untimed; perf.set pass_timing turns timing on); and each "
+     "resource this frame declared with its kind, extent, layers, mips, "
+     "samples and format for an image, bytes of one instance, lifetime "
+     "(transient, imported, retained, history, persistent, per_frame_slot or "
+     "graph), backend instance domain and first and last execution position. "
+     "'passes' and 'resources' (default true) include each list; 'pass' "
+     "keeps passes whose name contains it; 'dot' also writes the graph as "
+     "Graphviz DOT to that path (relative to the content root unless "
+     "absolute). Memory answers declared bytes and the backend's realized "
+     "instances; graph memory never aliases. Lists stop at 512 rows "
+     "('truncated').",
+     "{\"type\":\"object\",\"properties\":{\"passes\":{\"type\":"
+     "\"boolean\"},\"resources\":{\"type\":\"boolean\"},\"pass\":{"
+     "\"type\":\"string\"},\"dot\":{\"type\":\"string\"}}}",
+     ops_run_debug_graph, NULL, OPS_QUICK},
     {"perf.set",
      "Turns GPU timing on or off at runtime: 'pass_timing' times every render "
      "graph pass (per-pass rows in perf.snapshot and recordings; on the tiled "
@@ -18680,8 +19048,11 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
     call->settle_done = true_v;
     call->settle_timeout = !settled;
   }
+  /* A crash during an operation names it in the crash report. */
+  vkr_crash_set_text(VKR_CRASH_TEXT_OPERATION, def->name);
   const VkrEditorOpStatus status =
       def->run ? def->run(&ctx) : ops_run_write(&ctx, def);
+  vkr_crash_set_text(VKR_CRASH_TEXT_OPERATION, "");
   if (status == VKR_EDITOR_OP_DONE && call->settle_timeout && call->result &&
       call->result->type == VKR_BAKERY_JSON_OBJECT) {
     ops_set(&ctx, call->result, "settled",

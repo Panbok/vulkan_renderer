@@ -7,6 +7,7 @@
 #include "filesystem/vkr_vfs.h"
 #include "fps_module.h"
 #include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_crash.h"
 #include "platform/vkr_entry.h"
 #include "platform/vkr_platform.h"
 
@@ -215,6 +216,16 @@ VKR_MAIN(argc, argv) {
 #if !VKR_PLAYER_SHIPPING
   log_max_level_set(LOG_LEVEL_INFO);
 #endif
+  /* A crash report lands in the per-user settings folder, or on stderr
+     when there is none. */
+  char crash_directory[VKR_PLAYER_PATH_CAPACITY];
+  snprintf(crash_directory, sizeof(crash_directory), "%s",
+           player.settings_path);
+  char *settings_name = strrchr(crash_directory, '/');
+  if (settings_name) {
+    *settings_name = '\0';
+  }
+  (void)vkr_crash_install(settings_name ? crash_directory : NULL, "player");
   VkrSampleRuntimeConfig config = vkr_sample_runtime_config_default();
   config.title = player.name[0] ? player.name : "Game";
   config.presentation.window_width_pt = player.window_width;

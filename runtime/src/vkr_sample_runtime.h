@@ -574,6 +574,22 @@ typedef struct VkrSampleUiFrame {
   /** Per-pass CPU and GPU rows of the newest collected frame, borrowed for
    * the build like the Draws and render graph window's text. */
   const struct VkrRendererMetricsPassTable *pass_table;
+  /** Describes the Scene renderer's last compiled render graph as
+   * vkr_renderer_describe_graph does, with `describe_graph_context` first.
+   * Frame-loop thread, during the build; it joins the render thread. */
+  bool8_t (*describe_graph)(void *context,
+                            const struct VkrRgDescribeVisitor *visitor,
+                            const char *dot_path,
+                            struct VkrRgDescription *out_graph,
+                            VkrRendererGraphInfo *out_info);
+  void *describe_graph_context;
+  /** Native GPU capture (vkr_renderer_request_gpu_capture and its status)
+   * over the Scene renderer, with `gpu_capture_context` first. Frame-loop
+   * thread, during the build; both join the render thread. */
+  bool8_t (*gpu_capture_request)(void *context, const char *path,
+                                 uint32_t frames);
+  VkrRendererGpuCaptureStatus (*gpu_capture_status)(void *context);
+  void *gpu_capture_context;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
   /** Recordings (docs/proposals/recordings.md): one request applied after

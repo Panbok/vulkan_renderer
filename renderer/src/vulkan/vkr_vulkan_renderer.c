@@ -1,4 +1,5 @@
 #include "core/vkr_zone.h"
+#include "platform/vkr_crash.h"
 #include "vkr_render_graph_frame.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
@@ -104,6 +105,15 @@ vkr_internal void vkr_vk_completion_timeout_exit(VkrVulkanRenderer *renderer,
       wait_name, (unsigned long long)value, (unsigned long long)completed,
       (unsigned long long)renderer->submit_value);
   vkr_platform_stderr_write(message);
+  /* The crash report keeps the breadcrumbs and log tail beside the log. */
+  char reason[256];
+  string_format(reason, sizeof(reason),
+                "gpu completion timeout (Vulkan %s wait=%llu completed=%llu "
+                "submitted=%llu)",
+                wait_name, (unsigned long long)value,
+                (unsigned long long)completed,
+                (unsigned long long)renderer->submit_value);
+  (void)vkr_crash_write_report(reason);
   /* Completion is unproven. Neither another wait nor normal teardown may
      recycle resources still referenced by the GPU. Skip exit handlers too. */
   vkr_platform_exit_immediate(1);

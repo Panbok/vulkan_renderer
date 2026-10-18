@@ -1,6 +1,6 @@
 /**
  * @file vkr_rg_debug.c
- * @brief Render graph debug helpers (DOT export).
+ * @brief Render graph debug helpers (DOT export and description).
  */
 #include "vkr_rg_debug.h"
 
@@ -9,6 +9,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_render_graph_internal.h"
+#include "vkr_rg_json.h"
 
 vkr_internal const char *vkr_rg_pass_type_name(VkrRgPassType type) {
   switch (type) {
@@ -430,5 +431,272 @@ bool8_t vkr_rg_export_dot_ex(const VkrRenderGraph *graph,
   vkr_rg_dot_write_fmt(&handle, allocator, "}\n");
   file_close(&handle);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  return true_v;
+}
+
+// =============================================================================
+// Compiled graph description
+// =============================================================================
+
+/* Uses of one pass, bounded by VKR_RG_DESCRIBED_USE_MAX; `total` counts
+   every use so the caller can mark truncation. */
+typedef struct VkrRgDescribeUses {
+  VkrRgDescribedUse items[VKR_RG_DESCRIBED_USE_MAX];
+  uint32_t count;
+  uint32_t total;
+} VkrRgDescribeUses;
+
+vkr_internal void vkr_rg_describe_add_use(VkrRgDescribeUses *uses,
+                                          String8 resource, const char *role,
+                                          bool8_t buffer, bool8_t write) {
+  uses->total += 1u;
+  if (uses->count >= VKR_RG_DESCRIBED_USE_MAX) {
+    return;
+  }
+  uses->items[uses->count++] = (VkrRgDescribedUse){
+      .resource = resource,
+      .role = role,
+      .buffer = buffer,
+      .write = write,
+  };
+}
+
+vkr_internal void vkr_rg_describe_add_image_use(VkrRenderGraph *graph,
+                                                VkrRgDescribeUses *uses,
+                                                VkrRgImageHandle handle,
+                                                const char *role,
+                                                bool8_t write) {
+  const VkrRgImage *image = vkr_rg_image_from_handle(graph, handle);
+  if (image) {
+    vkr_rg_describe_add_use(uses, image->name, role, false_v, write);
+  }
+}
+
+vkr_internal void vkr_rg_describe_add_buffer_use(VkrRenderGraph *graph,
+                                                 VkrRgDescribeUses *uses,
+                                                 VkrRgBufferHandle handle,
+                                                 const char *role,
+                                                 bool8_t write) {
+  const VkrRgBuffer *buffer = vkr_rg_buffer_from_handle(graph, handle);
+  if (buffer) {
+    vkr_rg_describe_add_use(uses, buffer->name, role, true_v, write);
+  }
+}
+
+/* Attachments first, then image and buffer reads and writes, as the DOT
+   export lists a pass's edges. */
+vkr_internal void vkr_rg_describe_collect_uses(VkrRenderGraph *graph,
+                                               const VkrRgPass *pass,
+                                               VkrRgDescribeUses *uses) {
+  const VkrRgPassDesc *desc = &pass->desc;
+  for (uint64_t i = 0; i < desc->color_attachments.length; ++i) {
+    vkr_rg_describe_add_image_use(
+        graph, uses, desc->color_attachments.data[i].image, "color", true_v);
+  }
+  if (desc->has_depth_attachment) {
+    const bool8_t read_only = desc->depth_attachment.read_only;
+    vkr_rg_describe_add_image_use(graph, uses, desc->depth_attachment.image,
+                                  read_only ? "depth_read" : "depth",
+                                  !read_only);
+  }
+
+  for (uint64_t i = 0; i < desc->image_reads.length; ++i) {
+    vkr_rg_describe_add_image_use(graph, uses, desc->image_reads.data[i].image,
+                                  "read", false_v);
+  }
+  for (uint64_t i = 0; i < desc->image_writes.length; ++i) {
+    vkr_rg_describe_add_image_use(graph, uses, desc->image_writes.data[i].image,
+                                  "write", true_v);
+  }
+  for (uint64_t i = 0; i < desc->buffer_reads.length; ++i) {
+    vkr_rg_describe_add_buffer_use(
+        graph, uses, desc->buffer_reads.data[i].buffer, "read", false_v);
+  }
+  for (uint64_t i = 0; i < desc->buffer_writes.length; ++i) {
+    vkr_rg_describe_add_buffer_use(
+        graph, uses, desc->buffer_writes.data[i].buffer, "write", true_v);
+  }
+}
+
+vkr_internal void vkr_rg_describe_pass(VkrRenderGraph *graph,
+                                       const VkrRgDescribeVisitor *visitor,
+                                       uint32_t pass_index, uint32_t order) {
+  const VkrRgPass *pass = array_get_VkrRgPass(&graph->passes, pass_index);
+  VkrRgDescribeUses uses;
+  uses.count = 0u;
+  uses.total = 0u;
+  vkr_rg_describe_collect_uses(graph, pass, &uses);
+
+  const VkrRgDescribedPass described = {
+      .name = pass->desc.name,
+      .index = pass_index,
+      .order = order,
+      .type = pass->desc.type,
+      .type_name = vkr_rg_pass_type_name(pass->desc.type),
+      .culled = order == UINT32_MAX,
+      .disabled = (pass->desc.flags & VKR_RG_PASS_FLAG_DISABLED) != 0,
+      .uses = uses.items,
+      .use_count = uses.count,
+      .use_total = uses.total,
+  };
+  visitor->pass(visitor->user, &described);
+}
+
+vkr_internal const char *vkr_rg_lifetime_name(VkrRgResourceFlags flags,
+                                              bool8_t imported) {
+  if (imported || (flags & VKR_RG_RESOURCE_FLAG_EXTERNAL)) {
+    return "imported";
+  }
+  if (flags & VKR_RG_RESOURCE_FLAG_HISTORY) {
+    return "history";
+  }
+  if (flags & VKR_RG_RESOURCE_FLAG_RETAINED) {
+    return "retained";
+  }
+  if (flags & VKR_RG_RESOURCE_FLAG_PER_FRAME_SLOT) {
+    return "per_frame_slot";
+  }
+  if (flags & VKR_RG_RESOURCE_FLAG_PERSISTENT) {
+    return "persistent";
+  }
+  if (flags & VKR_RG_RESOURCE_FLAG_TRANSIENT) {
+    return "transient";
+  }
+  return "graph";
+}
+
+vkr_internal const char *vkr_rg_instances_name(VkrRgResourceFlags flags) {
+  switch (vkr_rg_resource_instance_domain(flags)) {
+  case VKR_RG_RESOURCE_INSTANCE_PER_IMAGE:
+    return "per_image";
+  case VKR_RG_RESOURCE_INSTANCE_PER_FRAME_SLOT:
+    return "per_frame_slot";
+  case VKR_RG_RESOURCE_INSTANCE_SINGLE:
+    break;
+  }
+  return "single";
+}
+
+vkr_internal VkrRgDescribedResource
+vkr_rg_describe_image(const VkrRenderGraph *graph, uint32_t index) {
+  const VkrRgImage *image = &graph->images.data[index];
+  const VkrRgImageDesc *desc = &image->desc;
+  VkrRenderGraphResourceStats one = {0};
+  vkr_render_graph_resource_stats_add_image(&one, desc, 1u);
+  const bool8_t used = image->first_pass != UINT32_MAX;
+  return (VkrRgDescribedResource){
+      .name = image->name,
+      .index = index,
+      .buffer = false_v,
+      .declared = image->declared_this_frame,
+      .imported = image->imported,
+      .exported = image->exported,
+      .present = vkr_rg_image_handle_valid(graph->present_image) &&
+                 graph->present_image.id - 1u == index,
+      .width = desc->width,
+      .height = desc->height,
+      .depth = desc->depth,
+      .layers = desc->layers,
+      .mip_levels = desc->mip_levels,
+      .samples = (uint32_t)desc->samples,
+      .format = desc->format,
+      .format_name = vkr_rg_json_format_name(desc->format),
+      .bytes = one.live_image_bytes,
+      .flags = desc->flags,
+      .lifetime = vkr_rg_lifetime_name(desc->flags, image->imported),
+      .instances = vkr_rg_instances_name(desc->flags),
+      .first_order = used ? image->first_pass : UINT32_MAX,
+      .last_order = used ? image->last_pass : UINT32_MAX,
+  };
+}
+
+vkr_internal VkrRgDescribedResource
+vkr_rg_describe_buffer(const VkrRenderGraph *graph, uint32_t index) {
+  const VkrRgBuffer *buffer = &graph->buffers.data[index];
+  const VkrRgBufferDesc *desc = &buffer->desc;
+  const bool8_t used = buffer->first_pass != UINT32_MAX;
+  return (VkrRgDescribedResource){
+      .name = buffer->name,
+      .index = index,
+      .buffer = true_v,
+      .declared = buffer->declared_this_frame,
+      .imported = buffer->imported,
+      .exported = buffer->exported,
+      .format = VKR_TEXTURE_FORMAT_COUNT,
+      .bytes = desc->size,
+      .flags = desc->flags,
+      .lifetime = vkr_rg_lifetime_name(desc->flags, buffer->imported),
+      .instances = vkr_rg_instances_name(desc->flags),
+      .first_order = used ? buffer->first_pass : UINT32_MAX,
+      .last_order = used ? buffer->last_pass : UINT32_MAX,
+  };
+}
+
+bool8_t vkr_rg_describe(const VkrRenderGraph *graph,
+                        const VkrRgDescribeVisitor *visitor,
+                        VkrRgDescription *out_description) {
+  if (!graph) {
+    return false_v;
+  }
+  /* The visit only reads; handle resolution takes a mutable graph. */
+  VkrRenderGraph *rg = (VkrRenderGraph *)graph;
+  const uint32_t pass_count = (uint32_t)rg->passes.length;
+  const uint32_t scheduled = (uint32_t)rg->execution_order.length;
+
+  if (visitor && visitor->pass) {
+    for (uint32_t order = 0u; order < scheduled; ++order) {
+      const uint32_t pass_index = rg->execution_order.data[order];
+      if (pass_index < pass_count) {
+        vkr_rg_describe_pass(rg, visitor, pass_index, order);
+      }
+    }
+    /* Execution order holds exactly the kept passes, so a compiled graph's
+       remaining passes are its culled ones; without a compile every pass is
+       unscheduled. */
+    for (uint32_t i = 0u; i < pass_count; ++i) {
+      const VkrRgPass *pass = array_get_VkrRgPass(&rg->passes, i);
+      if (scheduled == 0u || pass->culled) {
+        vkr_rg_describe_pass(rg, visitor, i, UINT32_MAX);
+      }
+    }
+  }
+
+  VkrRgDescription description = {
+      .frame_index = rg->frame_info.frame_index,
+      .viewport_width = rg->frame_info.viewport_width,
+      .viewport_height = rg->frame_info.viewport_height,
+      .render_scale = rg->frame_info.render_scale,
+      .scene_rendering = rg->frame_info.scene_rendering,
+      .compiled = scheduled > 0u,
+      .pass_count = pass_count,
+      .scheduled_count = scheduled,
+      .culled_count = pass_count - Min(scheduled, pass_count),
+      .image_count = (uint32_t)rg->images.length,
+      .buffer_count = (uint32_t)rg->buffers.length,
+  };
+  for (uint32_t i = 0u; i < description.image_count; ++i) {
+    const VkrRgDescribedResource image = vkr_rg_describe_image(rg, i);
+    if (image.declared) {
+      description.declared_image_count += 1u;
+      description.declared_image_bytes += image.imported ? 0u : image.bytes;
+    }
+    if (visitor && visitor->resource) {
+      visitor->resource(visitor->user, &image);
+    }
+  }
+  for (uint32_t i = 0u; i < description.buffer_count; ++i) {
+    const VkrRgDescribedResource buffer = vkr_rg_describe_buffer(rg, i);
+    if (buffer.declared) {
+      description.declared_buffer_count += 1u;
+      description.declared_buffer_bytes += buffer.imported ? 0u : buffer.bytes;
+    }
+    if (visitor && visitor->resource) {
+      visitor->resource(visitor->user, &buffer);
+    }
+  }
+
+  if (out_description) {
+    *out_description = description;
+  }
   return true_v;
 }

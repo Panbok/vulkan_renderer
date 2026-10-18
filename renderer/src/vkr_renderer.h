@@ -1354,6 +1354,38 @@ typedef struct VkrRendererPipelineStats {
 VkrRendererPipelineStats
 vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer);
 
+struct VkrRgDescribeVisitor;
+struct VkrRgDescription;
+
+/** What vkr_renderer_describe_graph knows beyond the graph itself. */
+typedef struct VkrRendererGraphInfo {
+  const char *backend;  /**< "metal" or "vulkan" */
+  const char *pipeline; /**< "tiled" or "desktop" (ADR-087) */
+  /** The backend's realized graph-owned instances, imports excluded; a
+   * per-image or per-frame-slot resource counts every instance. */
+  uint32_t live_images;
+  uint64_t live_image_bytes;
+  uint32_t live_buffers;
+  uint64_t live_buffer_bytes;
+  bool8_t live_valid;
+  /** `dot_path` was given and vkr_rg_export_dot wrote it. */
+  bool8_t dot_written;
+} VkrRendererGraphInfo;
+
+/**
+ * Joins the render thread and describes the render graph of the last
+ * submitted packet: visits its passes and resources (vkr_rg_describe in
+ * vkr_rg_debug.h), fills its totals, and with a `dot_path` also writes it
+ * as Graphviz DOT (content-root relative unless absolute). The visit borrows
+ * graph names only during the call. Every argument but `renderer` is
+ * optional. Returns false before the backend has a graph.
+ */
+bool8_t vkr_renderer_describe_graph(VkrRenderer *renderer,
+                                    const struct VkrRgDescribeVisitor *visitor,
+                                    const char *dot_path,
+                                    struct VkrRgDescription *out_graph,
+                                    VkrRendererGraphInfo *out_info);
+
 /** GPU and API faults the renderer saw since creation. Counts only grow. */
 typedef struct VkrRendererHealth {
   /** Submissions the GPU finished with an error. */
@@ -1370,6 +1402,37 @@ typedef struct VkrRendererHealth {
 
 /** Safe from any thread while the render thread runs. */
 VkrRendererHealth vkr_renderer_get_health(const VkrRenderer *renderer);
+
+/** A native GPU capture for a GPU debugger and where it stands. */
+typedef enum VkrRendererGpuCaptureState {
+  VKR_RENDERER_GPU_CAPTURE_IDLE = 0,
+  VKR_RENDERER_GPU_CAPTURE_REQUESTED,
+  VKR_RENDERER_GPU_CAPTURE_CAPTURING,
+  VKR_RENDERER_GPU_CAPTURE_DONE,
+  VKR_RENDERER_GPU_CAPTURE_FAILED,
+} VkrRendererGpuCaptureState;
+
+typedef struct VkrRendererGpuCaptureStatus {
+  VkrRendererGpuCaptureState state;
+  uint32_t frames;
+  /** The capture file: a .gputrace bundle on Metal. */
+  char path[1024];
+  /** Why it failed, or what to do with the file. */
+  char message[256];
+} VkrRendererGpuCaptureStatus;
+
+/**
+ * Captures the next `frames` submitted frames into `path` for a GPU
+ * debugger: a .gputrace document for Xcode on Metal, which needs the process
+ * started with MTL_CAPTURE_ENABLED=1. Vulkan has no capture yet. Joins the
+ * render thread. Returns false while a capture is pending or running, or
+ * when the backend cannot capture; the status says why.
+ */
+bool8_t vkr_renderer_request_gpu_capture(VkrRenderer *renderer,
+                                         const char *path, uint32_t frames);
+/** Joins the render thread. */
+VkrRendererGpuCaptureStatus
+vkr_renderer_gpu_capture_status(VkrRenderer *renderer);
 /** After `vkr_bakery materials` rewrote the project library: the next frame
  * loads it again and recreates the Custom graphs' pipelines, which draw
  * their fallback meanwhile. Safe while the render thread runs; nothing on

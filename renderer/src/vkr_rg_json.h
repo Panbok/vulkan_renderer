@@ -472,6 +472,12 @@ typedef struct VkrRgJsonGraph {
 } VkrRgJsonGraph;
 
 /**
+ * The authored format token of `format` (for example "R16G16B16A16_SFLOAT"),
+ * or NULL for a format render graph files cannot name.
+ */
+const char *vkr_rg_json_format_name(VkrTextureFormat format);
+
+/**
  * Load a graph from a file.
  * @note: The graph is only used to describe a graph.
  * @param allocator: The allocator to use.

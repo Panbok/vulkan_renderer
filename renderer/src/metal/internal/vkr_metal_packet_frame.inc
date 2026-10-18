@@ -4451,6 +4451,67 @@ vkr_internal void vkr_metal_packet_fill_frame_result(
                                               &out_result->materials);
 }
 
+/* Starts a requested GPU capture before the frame encodes anything. Capture
+   to a document needs Metal's capture layer, which a process outside Xcode
+   gets only with MTL_CAPTURE_ENABLED=1 at launch; without it the request
+   fails with that reason. */
+vkr_internal void
+vkr_metal_packet_gpu_trace_begin(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketGpuTraceStatus *trace = &renderer->gpu_trace;
+  if (trace->state != VKR_METAL_PACKET_GPU_TRACE_REQUESTED)
+    return;
+  MTLCaptureManager *manager = [MTLCaptureManager sharedCaptureManager];
+  if (![manager supportsDestination:MTLCaptureDestinationGPUTraceDocument]) {
+    trace->state = VKR_METAL_PACKET_GPU_TRACE_FAILED;
+    string_format(trace->message, sizeof(trace->message),
+                  "GPU capture is off in this process; launch it with "
+                  "MTL_CAPTURE_ENABLED=1");
+    return;
+  }
+  MTLCaptureDescriptor *descriptor = [[MTLCaptureDescriptor alloc] init];
+  descriptor.captureObject = renderer->device;
+  descriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+  descriptor.outputURL =
+      [NSURL fileURLWithPath:[NSString stringWithUTF8String:trace->path]];
+  NSError *error = nil;
+  const BOOL started =
+      [manager startCaptureWithDescriptor:descriptor error:&error];
+  [descriptor release];
+  if (!started) {
+    trace->state = VKR_METAL_PACKET_GPU_TRACE_FAILED;
+    string_format(trace->message, sizeof(trace->message), "%s",
+                  error ? error.localizedDescription.UTF8String
+                        : "the capture did not start");
+    return;
+  }
+  trace->state = VKR_METAL_PACKET_GPU_TRACE_CAPTURING;
+  renderer->gpu_trace_frames_left = trace->frames;
+  log_info("Metal GPU capture started: %u frames to %s", trace->frames,
+           trace->path);
+}
+
+/* Counts a committed frame of a running capture and ends it after the last
+   one; Metal writes the document as the capture stops. */
+vkr_internal void
+vkr_metal_packet_gpu_trace_frame_done(VkrMetalPacketRenderer *renderer)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketGpuTraceStatus *trace = &renderer->gpu_trace;
+  if (trace->state != VKR_METAL_PACKET_GPU_TRACE_CAPTURING)
+    return;
+  if (renderer->gpu_trace_frames_left > 1u) {
+    --renderer->gpu_trace_frames_left;
+    return;
+  }
+  renderer->gpu_trace_frames_left = 0u;
+  [[MTLCaptureManager sharedCaptureManager] stopCapture];
+  trace->state = VKR_METAL_PACKET_GPU_TRACE_DONE;
+  string_format(trace->message, sizeof(trace->message),
+                "Captured %u frames; open the .gputrace in Xcode.",
+                trace->frames);
+  log_info("Metal GPU capture written to %s", trace->path);
+}
+
 bool8_t
 vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                         const VkrPreparedFrame *packet,
@@ -4468,6 +4529,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, false_v, false_v);
       return false_v;
     }
+    vkr_metal_packet_gpu_trace_begin(renderer);
 
     vkr_metal_packet_prepare_frame_state(renderer, packet, out_result);
     /* Editor.Present names the presenter image it fills (ADR-111). */
@@ -4676,6 +4738,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     if (submission.frame_upload.ibl_bake_recorded)
       vkr_metal_packet_publish_ibl_bakes(renderer, submit_value);
     vkr_metal_packet_present_committed_frame(renderer, packet, submit_value);
+    vkr_metal_packet_gpu_trace_frame_done(renderer);
     const bool8_t capture_submitted =
         submission.capture_count == 0 ||
         vkr_capture_ring_submit(

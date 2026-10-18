@@ -2,6 +2,7 @@
 
 #include "core/input.h"
 #include "core/vkr_zone.h"
+#include "platform/vkr_crash.h"
 #include "platform/vkr_platform.h"
 
 vkr_internal bool8_t vkr_application_host_event(Event *event,
@@ -128,6 +129,8 @@ void vkr_application_host_run(VkrApplicationHost *host) {
   vkr_zone_thread_set(VKR_ZONE_THREAD_MAIN);
 
   bool8_t window_running = true_v;
+  /* Frames this loop ran, for crash reports. */
+  uint64_t frame_index = 0u;
   while (window_running &&
          bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING) &&
          bitset8_is_set(&host->flags, VKR_APPLICATION_HOST_FLAG_INITIALIZED)) {
@@ -164,6 +167,10 @@ void vkr_application_host_run(VkrApplicationHost *host) {
       vkr_platform_sleep(1u);
       continue;
     }
+    /* Crash reports name the frame and the host stage it was in; finer
+       stages are the frame callback's own. */
+    vkr_crash_set_frame(++frame_index);
+    vkr_crash_set_text(VKR_CRASH_TEXT_STAGE, "frame");
     /* One frame-loop iteration, closed on every path out of it. */
     VKR_ZONE_BEGIN(frame_zone, "Frame");
     if (!host->callbacks.frame(host->callbacks.state, &frame_with_delta)) {
@@ -180,6 +187,7 @@ void vkr_application_host_run(VkrApplicationHost *host) {
         const uint64_t milliseconds = (uint64_t)(remaining * 1000.0);
         if (milliseconds > 0u) {
           VKR_ZONE_BEGIN(limiter_zone, "Frame.Limiter");
+          vkr_crash_set_text(VKR_CRASH_TEXT_STAGE, "frame limiter");
           if (host->callbacks.sleep)
             host->callbacks.sleep(host->callbacks.state, milliseconds);
           else
@@ -188,6 +196,7 @@ void vkr_application_host_run(VkrApplicationHost *host) {
         }
       }
     }
+    vkr_crash_set_text(VKR_CRASH_TEXT_STAGE, "frame complete");
     if (host->callbacks.frame_complete)
       host->callbacks.frame_complete(host->callbacks.state, &frame_with_delta);
     host->last_frame_time = frame_with_delta.elapsed_seconds;
@@ -196,6 +205,7 @@ void vkr_application_host_run(VkrApplicationHost *host) {
       input_update(&host->window.input_state);
     VKR_ZONE_END(frame_zone);
   }
+  vkr_crash_set_text(VKR_CRASH_TEXT_STAGE, "after the frame loop");
   bitset8_clear(&host->flags, VKR_APPLICATION_HOST_FLAG_RUNNING);
 }
 

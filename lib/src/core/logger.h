@@ -70,6 +70,24 @@ VKR_MUST_USE bool8_t log_init(Arena *arena);
  * open file. */
 bool8_t log_file_open(const char *path);
 void log_file_close(void);
+
+/** Receives the bytes of an emergency log dump. */
+typedef void (*VkrLogEmergencyWrite)(void *context, const char *bytes,
+                                     uint64_t length);
+
+/** Crash reports (platform/vkr_crash.h): writes the newest `max_records`
+ * kept records, oldest first, one session-log line each, through `write`.
+ * Best effort and async-signal-safe: it takes no lock, allocates nothing and
+ * calls no stdio, so a record another thread is writing can come out torn.
+ * Returns the records written; zero without captured history. */
+uint32_t log_history_emergency_write(uint32_t max_records,
+                                     VkrLogEmergencyWrite write, void *context);
+
+/** Copies the directory of the open session log file, without a trailing
+ * separator, for crash reports. Lock-free and async-signal-safe like
+ * log_history_emergency_write; false when no session log is open or the
+ * directory does not fit. */
+bool8_t log_file_directory(char *out, uint64_t capacity);
 // Call after logging threads join and before releasing the borrowed arena.
 void log_shutdown(void);
 void _log_message(LogLevel level, const char *file, uint32_t line,
