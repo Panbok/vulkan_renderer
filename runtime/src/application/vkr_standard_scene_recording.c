@@ -129,6 +129,12 @@ vkr_standard_scene_recording_pose(VkrStandardSceneRuntime *runtime,
                                                 entity, &pose))) {
     return;
   }
+  /* Its own visibility: a hidden parent hides it without a change here. */
+  const SceneVisibility *visibility = vkr_entity_get_component_if_alive_const(
+      scene->world, entity, scene->comp_visibility);
+  if (visibility && !visibility->visible) {
+    pose.flags |= VKR_RECORDING_POSE_FLAG_HIDDEN;
+  }
   const Mat4 *world = &transform->world;
   pose.translation[0] =
       (float64_t)world->m03 + (float64_t)scene->origin_offset.x;
@@ -520,6 +526,9 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
     playback->pose_applied =
         vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * keys,
                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    playback->pose_hidden =
+        vkr_allocator_alloc(&playback->allocator, sizeof(uint8_t) * keys,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   uint32_t slot_count = 16u;
   while (slot_count < keys * 2u) {
@@ -528,7 +537,8 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
   uint32_t *slots =
       vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * slot_count,
                           VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
-  if (!playback->pose_entities || !playback->pose_applied || !slots ||
+  if (!playback->pose_entities || !playback->pose_applied ||
+      !playback->pose_hidden || !slots ||
       (!playback->spawn_proxies &&
        !vkr_standard_scene_recording_spawn_proxies(runtime))) {
     return false_v;
@@ -548,6 +558,7 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
     slots[probe] = k + 1u;
     playback->pose_entities[k] = VKR_ENTITY_ID_INVALID.u64;
     playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_NONE;
+    playback->pose_hidden[k] = 0u;
   }
   for (uint32_t c = 0u; c < VKR_RECORDING_CONTAINER_COUNT; ++c) {
     VkrScene *scene = vkr_standard_scene_recording_container(runtime, c);
@@ -585,7 +596,9 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
     const VkrEntityId entity = {.u64 = playback->pose_entities[k]};
     const SceneTransform *transform =
         scene && key->count == 1u &&
-                key->kind == VKR_RECORDING_POSE_KIND_DOCUMENT
+                key->kind == VKR_RECORDING_POSE_KIND_DOCUMENT &&
+                !(playback->pose_samples[key->first].flags &
+                  VKR_RECORDING_POSE_FLAG_HIDDEN)
             ? vkr_scene_get_transform(scene, entity)
             : NULL;
     if (!transform) {
@@ -650,22 +663,37 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
       continue;
     }
     const uint32_t sample = vkr_recording_playback_pose_at(playback, k, frame);
-    if (sample == applied) {
-      continue;
-    }
     VkrScene *scene = vkr_standard_scene_recording_container(
         runtime, playback->pose_keys[k].container);
     if (!scene) {
       continue;
     }
-    if (sample == UINT32_MAX) {
-      (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
-    } else {
-      const Mat4 world = vkr_standard_scene_recording_pose_world(
-          scene, &playback->pose_samples[sample]);
-      (void)vkr_scene_set_evaluated_transform(scene, entity, &world);
+    if (sample != applied) {
+      if (sample == UINT32_MAX) {
+        (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
+      } else {
+        const Mat4 world = vkr_standard_scene_recording_pose_world(
+            scene, &playback->pose_samples[sample]);
+        (void)vkr_scene_set_evaluated_transform(scene, entity, &world);
+      }
+      playback->pose_applied[k] = sample;
     }
-    playback->pose_applied[k] = sample;
+    /* Hidden as the recording had it, such as a first-person player's body
+       around the camera. A stand-in its spawn's lifetime showed again is
+       hidden again. */
+    const uint8_t hidden =
+        sample != UINT32_MAX && (playback->pose_samples[sample].flags &
+                                 VKR_RECORDING_POSE_FLAG_HIDDEN)
+            ? 1u
+            : 0u;
+    const bool8_t reshown =
+        hidden &&
+        playback->pose_keys[k].kind == VKR_RECORDING_POSE_KIND_SPAWN &&
+        vkr_scene_entity_visible(scene, entity);
+    if (hidden != playback->pose_hidden[k] || reshown) {
+      vkr_scene_set_visibility(scene, entity, !hidden, true_v);
+      playback->pose_hidden[k] = hidden;
+    }
   }
 }
 
@@ -686,7 +714,12 @@ void vkr_standard_scene_recording_release_poses(
         applied != VKR_RECORDING_POSE_APPLIED_STATIC) {
       (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
     }
+    if (scene && entity.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+        playback->pose_hidden[k]) {
+      vkr_scene_set_visibility(scene, entity, true_v, true_v);
+    }
     playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_NONE;
+    playback->pose_hidden[k] = 0u;
   }
   playback->poses_bound = false_v;
 }

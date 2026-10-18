@@ -100,7 +100,13 @@ an agent must read one without the editor.
   poses per entity, binds them to live entities once per scene generation,
   skips entities whose only pose matches the scene, and applies the pose at
   the playhead as an evaluated override before the frame's transform update;
-  closing removes the overrides, so authored transforms never change.
+  closing removes the overrides, so authored transforms never change. A
+  pose carries `VKR_RECORDING_POSE_FLAG_HIDDEN` while its entity's own
+  visibility is off, and a visibility change writes a pose, so Watch hides
+  what the session hid, such as a first-person player's body around the
+  camera; closing shows them again. Recordings before the flag show every
+  body. A playback of a Play session also draws what Play drew: no clip or
+  trigger brushes.
 - **Spawns (R3).** A transient entity scripts spawned, or a node of a model
   spawned under one, is named by a spawn id the recording gives it on first
   sight (pose kind SPAWN). Stream `spawn` holds each id's container and,

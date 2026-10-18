@@ -405,6 +405,7 @@ vkr_recording_playback_group_poses(VkrRecordingLoad *load) {
     MemCopy(sample->translation, loaded->pose.translation,
             sizeof(sample->translation));
     MemCopy(sample->linear, loaded->pose.linear, sizeof(sample->linear));
+    sample->flags = loaded->pose.flags;
   }
   playback->pose_key_count = (uint32_t)keys;
   return true_v;

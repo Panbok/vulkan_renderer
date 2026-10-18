@@ -905,8 +905,10 @@ static void test_recording_pose_playback(void) {
       vkr_recording_pose(&recording, &pose);
     }
     if (f == 0u || f == 3u || f == 5u) {
-      const VkrRecordingPose pose =
+      /* Hidden from frame 3 to 5, as a first-person body is. */
+      VkrRecordingPose pose =
           recording_pose(0xAAu, VKR_RECORDING_POSE_NODE_NONE, (float64_t)f);
+      pose.flags = f == 3u ? VKR_RECORDING_POSE_FLAG_HIDDEN : 0u;
       vkr_recording_pose(&recording, &pose);
     }
     if (f == 1u) {
@@ -996,8 +998,10 @@ static void test_recording_pose_playback(void) {
   uint32_t sample = vkr_recording_playback_pose_at(&playback, wrapper, 4u);
   assert(sample != UINT32_MAX && playback.pose_samples[sample].frame == 3u &&
          playback.pose_samples[sample].translation[0] == 3.0);
+  assert(playback.pose_samples[sample].flags == VKR_RECORDING_POSE_FLAG_HIDDEN);
   sample = vkr_recording_playback_pose_at(&playback, wrapper, 6u);
-  assert(playback.pose_samples[sample].frame == 5u);
+  assert(playback.pose_samples[sample].frame == 5u &&
+         playback.pose_samples[sample].flags == 0u);
   sample = vkr_recording_playback_pose_at(&playback, wrapper, 0u);
   assert(playback.pose_samples[sample].frame == 0u);
   /* Before its first pose an entity has none. */

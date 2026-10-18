@@ -20,6 +20,8 @@ typedef struct VkrRecordingPoseSample {
   float64_t translation[3];
   float32_t linear[9];
   uint32_t key;
+  /* VKR_RECORDING_POSE_FLAG_* */
+  uint32_t flags;
 } VkrRecordingPoseSample;
 
 /* An entity the recording posed, named as in VkrRecordingPose; its samples
@@ -147,6 +149,9 @@ typedef struct VkrRecordingPlayback {
   bool8_t poses_pending;
   uint64_t *pose_entities;
   uint32_t *pose_applied;
+  /* Keys whose entity the playback hid because the pose it shows was
+     recorded hidden; closing shows them again. */
+  uint8_t *pose_hidden;
 
   float64_t duration;
   /* The playhead, in [0, duration]. */

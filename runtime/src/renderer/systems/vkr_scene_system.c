@@ -4065,6 +4065,14 @@ void vkr_scene_set_visibility(VkrScene *scene, VkrEntityId entity,
   scene->render_full_sync_needed = true;
   /* Hidden world objects stop taking effect; resolution runs again. */
   scene->world_revision++;
+  /* A recording writes the entity's pose again with its visibility. */
+  if (scene->changes_tracked) {
+    SceneTransform *transform = (SceneTransform *)vkr_entity_get_component_mut(
+        scene->world, entity, scene->comp_transform);
+    if (transform) {
+      scene_mark_changed(scene, entity, transform);
+    }
+  }
 }
 
 // ============================================================================

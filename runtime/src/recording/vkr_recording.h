@@ -57,6 +57,10 @@
    which `document` then holds. */
 #define VKR_RECORDING_POSE_KIND_DOCUMENT 0u
 #define VKR_RECORDING_POSE_KIND_SPAWN 1u
+/* VkrRecordingPose.flags: the entity was hidden (its own visibility off),
+   such as a first-person player's body; a change of visibility writes a
+   pose. */
+#define VKR_RECORDING_POSE_FLAG_HIDDEN 1u
 /* VkrRecordingPose.container */
 #define VKR_RECORDING_CONTAINER_ACTIVE 0u
 #define VKR_RECORDING_CONTAINER_WORLD 1u
@@ -231,7 +235,9 @@ typedef struct VkrRecordingPose {
   uint32_t node;
   uint8_t container;
   uint8_t kind;
-  uint8_t reserved[2];
+  /* VKR_RECORDING_POSE_FLAG_*; zero in recordings before them. */
+  uint8_t flags;
+  uint8_t reserved;
   /* World translation plus the scene's origin offset. */
   float64_t translation[3];
   /* The world matrix's upper 3x3, column-major. */

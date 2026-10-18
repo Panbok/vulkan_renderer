@@ -5544,10 +5544,19 @@ vkr_internal void vkr_standard_scene_runtime_poll_upload_wait_stats(
    per scene. */
 static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   const uint32_t hidden = state->view_state.hidden_kinds;
-  /* Clip and trigger brushes draw while the editor edits, not during Play
-     or in a game (ADR-084). */
+  /* A playback of a Play session shows what the game drew, as Play does. */
+  const VkrRecordingPlayback *playback = &application->playback;
+  const bool8_t replaying_play =
+      playback->open && playback->frame_count > 0u &&
+      (playback
+           ->frames[vkr_recording_playback_frame_at(playback, playback->time)]
+           .flags &
+       VKR_RECORDING_FRAME_SIMULATING) != 0u;
+  /* Clip and trigger brushes draw while the editor edits, not during Play,
+     its playback or in a game (ADR-084). */
   const bool8_t volumes = application->editor_viewport.enabled &&
-                          !application->editor_viewport.simulation_running;
+                          !application->editor_viewport.simulation_running &&
+                          !replaying_play;
   /* The Scene's draw distance switch likewise applies only while the editor
      edits: Play draws what the game draws. */
   application->draw_distance_off =
