@@ -1,17 +1,16 @@
 ---
-status: partial
-updated: 2026-10-12
+status: implemented
+updated: 2026-10-18
 authority: adr
 ---
 # ADR-112: Asset references and live asset swaps
 
 ## Status
 
-Accepted (partial). Implemented in the editor and runtime on macOS, where the
-Bakery daemon's file watch runs. Windows has no daemon watch yet
-([ADR-077](077-asset-build-system.md)), so there a change on disk starts
-nothing; a clicked Rebuild or Reimport still swaps in place. Only the Metal
-editor has run it.
+Accepted. Implemented in the editor and runtime on macOS and Windows, both
+fed by the Bakery daemon's file watch ([ADR-077](077-asset-build-system.md)).
+The Metal editor has run texture and mesh swaps. The Vulkan editor on Windows
+has run automatic rebuilds and swaps of a project texture only.
 
 ## Context
 
@@ -102,6 +101,11 @@ diagnostic.
    - its build file (edited or removed);
    - for a texture, the image, which is both its source and its build file.
 
+   The editor watches the resolved project directory and resolves each
+   report once. It compares the report with the paths the listing resolved
+   by the host's path rules (`file_path_equals`), because the daemon reports
+   `/` separators while Windows resolves to `\`
+   ([editor_content.c](../../editor/src/editor_content.c)).
    A build file proves an edit by its SHA-256 against the record's
    `fingerprint`, so a report that arrives after the listing was read again
    still counts. Another source still counts only when its time is newer than
@@ -155,7 +159,6 @@ diagnostic.
 
 ## Revisit when
 
-- Windows has the daemon watch.
 - Details should show asset names for references.
 - Mesh records keep a source hash.
 - A rebuilt mesh should keep skinned instances or rebake lightmaps.
@@ -184,4 +187,21 @@ of the Testbed workspace, Bistro scene, driven through the agent channel:
   `check_path_contract.py` and `check_bakery_recook.py` passed with the Release
   `vkr_bakery`. The Debug tester suites `mesh`, `scene`, `editor` and
   `material` passed.
-- **Not run:** Vulkan and Windows.
+
+On 2026-10-18, a Windows 10 host (Ryzen 5 2600, RX 6700 XT) ran a headless
+Release editor (Vulkan), driven through `vkr_mcp`. It opened a copy of the
+Testbed workspace's Bistro scene, with JSON documents copied and build files
+hard-linked:
+
+- **Setup:** `content.import` of a 64×64 red PNG made a project texture, and
+  its finalize moved it to the final tier. A `brush.box` beside a Bistro
+  doorway then took `material.assign` with `asset:project/<id>` and drew red.
+- **Texture edits:** rewriting the record's image green, then blue, rebuilt
+  it 2.8 s and 3.0 s after each write. Each logged "swatch rebuilt; 1 asset
+  updated in place", and the brush drew the new colour. The scene activated
+  once, and no mesh moved.
+- **Baseline:** the same run with the previous `editor_content.c` logged no
+  change and left the record's revision in place for 180 s after each write.
+- **Not run:** Vulkan mesh and material swaps, a deleted build file on
+  Windows, and an edit of a scene-scope asset on Windows. Bistro's own
+  textures have no source; its one mesh record rebuilds the whole import.

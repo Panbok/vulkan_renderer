@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-13
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -11,7 +11,8 @@ authority: adr
 Accepted (partial). Every phase of the
 [asset build system proposal](../proposals/asset-build-system.md) is
 implemented on macOS; on Windows the daemon serves over the same local
-socket (2026-10-06). The Windows script and bundle paths are unverified, and no executable loads a script module's
+socket (2026-10-06), and its file watch drives the editor's watches
+(2026-10-18). The Windows script and bundle paths are unverified, and no executable loads a script module's
 library yet; the script ABI is [ADR-079](079-c-script-modules.md).
 Bundles of managed projects are
 [ADR-078](078-project-build-and-packaging.md).
@@ -746,9 +747,19 @@ the job object's totals.
   separators in the checks); `check_editor_workspace_cleanup.py` needs the
   symbolic-link privilege.
 
+On the same host, 2026-10-18, Release:
+[`check_bakery_serve.py`](../../tools/checks/check_bakery_serve.py) passes
+against the Windows daemon: tagged runs, a watch with one rebuild per edit
+that its own outputs do not retrigger, cancellation, disconnection, one daemon
+per socket, a stale socket, shutdown, idle exit, and Ctrl+Break as SIGTERM.
+Windows Python has no `socket.AF_UNIX`, so the check's client calls Winsock's
+`AF_UNIX` through ctypes. The run set `TEMP` to an ASCII directory. Below the
+non-ASCII user directory, the texture packer's log line prints its output path
+in the ANSI code page, so a strict UTF-8 JSON reader rejects that event.
+
 Unavailable: a Bistro diffuse bake (memory limit of the measurement host),
-native Vulkan execution of the catalog path (MoltenVK 1.2), the daemon and a
-Vulkan bundle on Windows, Windows script modules, a runtime that loads script
+native Vulkan execution of the catalog path (MoltenVK 1.2), a Vulkan bundle
+on Windows, Windows script modules, a runtime that loads script
 modules, and an editor frame-time measurement with the daemon running; the
 editor-side cost is one non-blocking socket read per frame, but it is not
 measured. On Windows: extent-duplication clones (Windows 10 Pro cannot create
