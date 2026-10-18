@@ -3309,7 +3309,10 @@ vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
    only presents the UI over the newest finished Scene image, so the UI keeps
    the display's rate while the Scene takes longer. A Scene expected to finish
    well within the interval is shown in its own frame. Captures, the
-   animation preview and a stopped Scene keep one presentation per frame. */
+   animation preview and a stopped Scene keep one presentation per frame;
+   after them the presenter holds no Scene image, so its first frame renders
+   one rather than presenting the UI over an empty Scene, which flickered
+   twice a second while a recording took its thumbnails. */
 vkr_internal void vkr_standard_scene_runtime_choose_presentation(
     VkrStandardSceneRuntime *application) {
   VkrStandardSceneRuntimeFrame *frame = application->frame;
@@ -3324,8 +3327,10 @@ vkr_internal void vkr_standard_scene_runtime_choose_presentation(
       !application->editor_viewport.enabled ||
       vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
       application->editor_viewport.scene_backdrop_blur ||
-      application->capture_request || application->animation_preview.player)
+      application->capture_request || application->animation_preview.player) {
+    application->presenter_images_stale = true_v;
     return;
+  }
   frame->presenter = true_v;
   const float64_t interval = application->refresh_interval;
   const float64_t commit = vkr_platform_get_absolute_time() + interval;
@@ -3343,11 +3348,12 @@ vkr_internal void vkr_standard_scene_runtime_choose_presentation(
   }
   const bool8_t scene_due =
       running_at_commit <= 1u && queue_free <= commit + interval;
-  frame->present_only = !scene_due;
+  frame->present_only = !scene_due && !application->presenter_images_stale;
   frame->present_wait_scene =
       scene_due &&
       Max(queue_free, commit) + application->scene_duration - commit <=
           0.75 * interval;
+  application->presenter_images_stale = false_v;
 }
 
 vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(

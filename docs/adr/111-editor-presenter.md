@@ -75,8 +75,10 @@ cheap Scenes appear in their own frame as before. The display interval comes fro
 
 Captures, the animation preview, Render Stop and the backdrop blur keep one
 presentation per frame, through the frame's own graph. A Scene presented that
-way makes the presenter's images stale, and a later presenter frame waits for a
-new one. A frame that presents itself after presenter frames waits for them on
+way makes the presenter's images stale, so the next presenter frame renders a
+Scene instead of only presenting: presenting with no image left the Scene
+empty for a frame, which flickered twice a second while a recording captured
+its thumbnails (`presenter_images_stale`). A frame that presents itself after presenter frames waits for them on
 the GPU, so drawables present in order.
 
 The HUD's FPS reports the Scene's rate while presentation-only frames run.

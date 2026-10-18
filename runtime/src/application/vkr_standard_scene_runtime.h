@@ -258,6 +258,10 @@ typedef struct VkrStandardSceneRuntime {
      while every frame presents the UI over the newest finished Scene image.
      Off without renderer support or with VKR_EDITOR_PRESENTER=0. */
   bool8_t presenter_enabled;
+  /* A frame rendered without the presenter, such as a capture's, so the
+     presenter dropped its Scene images (vkr_metal_packet_presenter_forget):
+     the next presenter frame renders a Scene instead of presenting none. */
+  bool8_t presenter_images_stale;
   /* Submit times of editor Scene frames the GPU has not finished, oldest
      first, and the renderer's count of finished ones last observed. */
   float64_t scene_submit_times[4];
