@@ -73,7 +73,13 @@ to finish within three quarters of an interval sets `present_wait_scene`, so
 cheap Scenes appear in their own frame as before. The display interval comes from
 `vkr_window_refresh_rate`.
 
-Captures, the animation preview, Render Stop and the backdrop blur keep one
+A capture whose channels all read images the Scene renders, such as the
+`editor_scene` thumbnails a recording takes twice a second, stays on the
+presenter: presentation-only frames leave it pending, and the next Scene frame
+the presenter renders carries it. Leaving the presenter for it rendered two
+Scenes back to back, which stalled the editor for about 25 ms on each
+thumbnail. Final-color captures, the animation preview, Render Stop and the
+backdrop blur keep one
 presentation per frame, through the frame's own graph. A Scene presented that
 way makes the presenter's images stale, so the next presenter frame renders a
 Scene instead of only presenting: presenting with no image left the Scene

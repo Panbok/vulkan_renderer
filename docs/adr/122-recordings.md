@@ -411,6 +411,18 @@ an agent must read one without the editor.
   pipeline's views, the shadow views (cascades, shadow factor, map depth) on
   both, and Pass output, which draws a pass's image, such as a shadow cascade,
   depth or bloom, over the Scene (ADR-044). F6 cycles the shadow views.
+- **The recorded level.** Watch, Drive and Re-simulate of a recording made in
+  another scene of the open project first open that scene, with a toast, and
+  run once it has loaded; the scene comes from the id in `summary.json`'s
+  scene path. A switch that does not finish within 3600 editor builds drops
+  the request with a warning. On the Testbed project the switch from Bistro to
+  Level Design Test took 4.9 to 7.5 s headless.
+- **Thumbnails stay on the presenter.** The 2 Hz thumbnail captures read the
+  `editor_scene` image, so they ride the next Scene frame the editor presenter
+  renders (ADR-111). Taking them outside it rendered two Scenes back to back,
+  a 25 to 27 ms frame on each thumbnail in a Level Design Test recording. A
+  windowed Bistro Play recording of 725 frames afterwards wrote 12 thumbnails
+  with a p99 frame of 9.15 ms and no frame over 12 ms at a thumbnail.
 - **Analysis.** At stop the runtime reads the stream back and writes
   statistics, the time-based 1% low and spikes (over 1.2 times the median of
   19 neighbours and 4 ms above it, or over twice the budget) into

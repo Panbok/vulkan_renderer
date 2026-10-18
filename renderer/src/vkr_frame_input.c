@@ -1343,22 +1343,37 @@ vkr_internal VkrRendererError vkr_frame_input_validate_editor(
         !editor->presenter)
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.present_only", "requires the presenter");
-    /* Captures, the animation preview and a stopped Scene keep their passes
-       in the frame's own graph (ADR-111). */
+    /* The animation preview and a stopped Scene keep their passes in the
+       frame's own graph (ADR-111). */
     if (editor->presenter &&
-        (editor->scene_rendering_stopped || packet->animation_preview ||
-         (packet->debug && packet->debug->capture)))
+        (editor->scene_rendering_stopped || packet->animation_preview))
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                         "packet.editor.presenter",
-                        "excludes captures, the animation preview and a "
-                        "stopped Scene");
-    if (editor->scene_rendering_stopped && packet->debug &&
-        packet->debug->capture) {
-      const VkrCaptureBatchRequest *capture = packet->debug->capture;
-      if (capture->item_count > VKR_CAPTURE_MAX_ITEMS ||
-          (capture->item_count > 0u && !capture->items))
+                        "excludes the animation preview and a stopped Scene");
+    const VkrCaptureBatchRequest *capture =
+        packet->debug ? packet->debug->capture : NULL;
+    if (capture && (capture->item_count > VKR_CAPTURE_MAX_ITEMS ||
+                    (capture->item_count > 0u && !capture->items)))
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.debug.capture", "invalid capture item array");
+    /* A presenter Scene frame captures what its Scene renders; the final
+       color is composited by a presenter frame, and a presentation-only
+       frame renders no Scene (ADR-111). */
+    if (capture && editor->presenter) {
+      if (editor->present_only)
         VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
-                          "packet.debug.capture", "invalid capture item array");
+                          "packet.debug.capture",
+                          "a presentation-only frame captures nothing");
+      for (uint32_t i = 0u; i < capture->item_count; ++i) {
+        const VkrCaptureChannelDescription *channel =
+            vkr_renderer_capture_channel_get(capture->items[i].channel);
+        if (!channel || string_equals(channel->source_name, "swapchain"))
+          VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                            "packet.debug.capture",
+                            "a presenter frame has no final color to capture");
+      }
+    }
+    if (editor->scene_rendering_stopped && capture) {
       for (uint32_t i = 0u; i < capture->item_count; ++i) {
         const VkrCaptureChannelDescription *channel =
             vkr_renderer_capture_channel_get(capture->items[i].channel);

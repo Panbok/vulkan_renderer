@@ -1460,8 +1460,24 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
   }
 }
 
+/* Whether every item of `request` reads an image the Scene renders, which a
+   presenter Scene frame renders too (ADR-111). The final color needs the
+   frame's own presentation. */
+vkr_internal bool8_t vkr_standard_scene_runtime_capture_reads_scene(
+    const VkrCaptureBatchRequest *request) {
+  for (uint32_t i = 0u; i < request->item_count; ++i) {
+    const VkrCaptureChannelDescription *channel =
+        vkr_renderer_capture_channel_get(request->items[i].channel);
+    if (!channel || string_equals(channel->source_name, "swapchain")) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
 /* The capture request this frame carries: the caller's, unless the frame still
-   rendering already carries it. */
+   rendering already carries it. A presentation-only frame renders no Scene,
+   so a Scene capture waits for the next presenter frame that does. */
 vkr_internal const VkrCaptureBatchRequest *
 vkr_standard_scene_runtime_frame_capture(
     const VkrStandardSceneRuntime *application) {
@@ -1469,6 +1485,9 @@ vkr_standard_scene_runtime_frame_capture(
   const VkrStandardSceneRuntimeFrame *in_flight = application->frame_in_flight;
   if (request && in_flight && in_flight->draw.capture_request == request &&
       in_flight->draw.capture_request_id == request->request_id) {
+    return NULL;
+  }
+  if (request && application->frame && application->frame->present_only) {
     return NULL;
   }
   return request;
@@ -3308,11 +3327,13 @@ vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
    next Scene is always queued without queueing Scenes deep. Any other frame
    only presents the UI over the newest finished Scene image, so the UI keeps
    the display's rate while the Scene takes longer. A Scene expected to finish
-   well within the interval is shown in its own frame. Captures, the
-   animation preview and a stopped Scene keep one presentation per frame;
-   after them the presenter holds no Scene image, so its first frame renders
-   one rather than presenting the UI over an empty Scene, which flickered
-   twice a second while a recording took its thumbnails. */
+   well within the interval is shown in its own frame. A capture of a Scene
+   image, as a recording's thumbnails are, rides the next Scene frame the
+   presenter renders anyway: leaving the presenter for it rendered two Scenes
+   back to back, a 25 ms frame twice a second while recording. Final-color
+   captures, the animation preview and a stopped Scene keep one presentation
+   per frame; after them the presenter holds no Scene image, so its first
+   frame renders one rather than presenting the UI over an empty Scene. */
 vkr_internal void vkr_standard_scene_runtime_choose_presentation(
     VkrStandardSceneRuntime *application) {
   VkrStandardSceneRuntimeFrame *frame = application->frame;
@@ -3327,7 +3348,10 @@ vkr_internal void vkr_standard_scene_runtime_choose_presentation(
       !application->editor_viewport.enabled ||
       vkr_standard_scene_runtime_editor_scene_rendering_stopped(application) ||
       application->editor_viewport.scene_backdrop_blur ||
-      application->capture_request || application->animation_preview.player) {
+      (application->capture_request &&
+       !vkr_standard_scene_runtime_capture_reads_scene(
+           application->capture_request)) ||
+      application->animation_preview.player) {
     application->presenter_images_stale = true_v;
     return;
   }
