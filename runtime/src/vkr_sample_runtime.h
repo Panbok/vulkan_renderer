@@ -545,6 +545,9 @@ typedef struct VkrSampleUiFrame {
   bool8_t simulation_running;
   /** Script modules drive the Scene camera and HUD this frame. */
   bool8_t scripts_running;
+  /** An open playback shows a frame of a Play session, so the Scene shows
+   * what Play drew, without editor markers. */
+  bool8_t replaying_play;
   /** The game plays with script instances or engine IO components (relays,
    * timers, movers), so inputs fired at entities reach them. */
   bool8_t io_running;

@@ -1496,9 +1496,11 @@ void vkr_editor_physics_build(VkrEditorUi *editor,
   }
   const uint32_t bodies =
       frame->scene && !model ? vkr_scene_physics_body_count(frame->scene) : 0u;
-  const uint32_t starts = frame->scripts_running || model
-                              ? 0u
-                              : physics_player_start_count(editor, frame);
+  /* Play hides Player Starts, and so does its playback. */
+  const uint32_t starts =
+      frame->scripts_running || frame->replaying_play || model
+          ? 0u
+          : physics_player_start_count(editor, frame);
   /* Pending agent changes and a brush being drawn draw in this overlay too
      (ADR-084). */
   const VkrEditorLevelReport *report = editor->level_report;

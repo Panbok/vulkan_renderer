@@ -5855,6 +5855,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .simulation_running = application->editor_viewport.simulation_running,
       .scripts_running = vkr_script_host_active(&state->scripts) &&
                          application->editor_viewport.simulation_running,
+      .replaying_play = sample_replaying_play(application),
       .io_running = (vkr_script_host_active(&state->scripts) ||
                      vkr_io_router_active(&state->scripts.io)) &&
                     application->editor_viewport.simulation_running,
