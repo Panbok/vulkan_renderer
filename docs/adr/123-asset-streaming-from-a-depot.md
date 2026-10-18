@@ -207,7 +207,7 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     cooked textures, so the times say nothing about Bistro's 511. In both,
     one scene's `recook_textures` failed with "Re-cook scene does not match
     project membership", from the unchanged re-cook step.
-  - On the LAN: `windows-d` (`D:kr-depot\store`) holds `main`
+  - On the LAN: `windows-d` (`D:\vkr-depot\store`) holds `main`
     `74c285f3ea6d` and `main.cooked.bc` `2650088eb830`, published from its
     working copy with `vkr_depot cooked`. A Release editor's Get from
     `192.168.3.2:7320` into an empty home took 85 s, took the 5 cooked
