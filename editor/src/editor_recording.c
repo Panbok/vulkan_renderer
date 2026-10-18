@@ -33,6 +33,106 @@ uint64_t vkr_editor_recording_send(VkrEditorUi *editor,
   return request.token;
 }
 
+/* Builds a Watch or Drive waits for its recording's scene to open before
+   it opens without it: about half a minute, as an unsaved-edits question
+   may hold the switch. */
+#define EDITOR_RECORDING_SCENE_WAIT 3600u
+
+vkr_internal void editor_recording_text(VkrJsonReader *reader, const char *key,
+                                        char *out, uint64_t capacity);
+
+/* The project scene a recording was made in, by the id its scene path
+   names (<project>/scenes/<id>/...); false outside a project, or when the
+   project has no such scene. */
+vkr_internal bool8_t editor_recording_scene_id(const VkrEditorUi *editor,
+                                               const char *bundle_path,
+                                               char *out, uint64_t capacity) {
+  if (!editor->projects) {
+    return false_v;
+  }
+  char path[VKR_RECORDING_PATH_MAX + 32u];
+  string_format(path, sizeof(path), "%s/%s", bundle_path,
+                VKR_RECORDING_SUMMARY_FILE);
+  FileMapping mapping = {0};
+  const FilePath file = file_path_view(path);
+  if (file_map_readonly(&file, &mapping) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  char scene[VKR_RECORDING_PATH_MAX];
+  scene[0] = '\0';
+  VkrJsonReader reader = vkr_json_reader_create(mapping.data, mapping.size);
+  editor_recording_text(&reader, "scene", scene, sizeof(scene));
+  file_unmap(&mapping);
+  const char *marker = "/scenes/";
+  const uint64_t marker_length = string_length(marker);
+  const uint64_t length = string_length(scene);
+  for (uint64_t at = 0u; at + marker_length < length; ++at) {
+    if (!string_n_equals(scene + at, marker, marker_length)) {
+      continue;
+    }
+    const char *id = scene + at + marker_length;
+    uint64_t id_length = 0u;
+    while (id[id_length] && id[id_length] != '/' && id[id_length] != '\\') {
+      ++id_length;
+    }
+    if (id_length == 0u || id_length >= capacity) {
+      return false_v;
+    }
+    string_format(out, capacity, "%.*s", (int)id_length, id);
+    return vkr_editor_projects_scene_name_of(editor->projects, out).length > 0u;
+  }
+  return false_v;
+}
+
+/* Whether the scene a queued Watch or Drive of `request` was recorded in is
+   open; opens it first when the project has it, so a recording plays in
+   its own level. A switch that does not finish in time drops the request. */
+vkr_internal bool8_t
+editor_recording_scene_ready(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+                             const VkrSampleRecordingRequest *request) {
+  VkrEditorRecording *recording = &editor->recording;
+  char scene_id[64];
+  if (!editor_recording_scene_id(editor, request->path, scene_id,
+                                 sizeof(scene_id))) {
+    return true_v;
+  }
+  const String8 open = vkr_editor_projects_scene_id(editor->projects);
+  const bool8_t current =
+      open.length == string_length(scene_id) &&
+      string_n_equals((const char *)open.str, scene_id, open.length);
+  if (current && !frame->scene_loading && frame->scene) {
+    recording->scene_wait = 0u;
+    return true_v;
+  }
+  const String8 name =
+      vkr_editor_projects_scene_name_of(editor->projects, scene_id);
+  const VkrUiTheme *theme = vkr_ui_theme();
+  if (recording->scene_wait == 0u && !current) {
+    if (!vkr_editor_projects_show_scene(editor->projects, editor, frame,
+                                        scene_id)) {
+      /* A job holds the project; ask again next build. */
+      return false_v;
+    }
+    char text[160];
+    string_format(text, sizeof(text),
+                  "Opening %.*s, the level this recording was made in.",
+                  (int)name.length, (const char *)name.str);
+    vkr_editor_toast(editor, VKR_UI_ICON_SPINNER, theme->text, text);
+  }
+  if (++recording->scene_wait > EDITOR_RECORDING_SCENE_WAIT) {
+    char text[160];
+    string_format(text, sizeof(text),
+                  "%.*s did not open, so the recording was not opened.",
+                  (int)name.length, (const char *)name.str);
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, text);
+    recording->scene_wait = 0u;
+    --recording->queue_count;
+    MemCopy(recording->queue, recording->queue + 1u,
+            sizeof(recording->queue[0]) * recording->queue_count);
+  }
+  return false_v;
+}
+
 /* Shows the outcome of a request the editor's own controls sent. */
 vkr_internal void
 editor_recording_report(VkrEditorUi *editor,
@@ -97,6 +197,13 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
   vkr_editor_recording_requests_update(editor, frame);
   if (recording->queue_count == 0u || !frame->recording_request ||
       frame->recording_request->command != VKR_SAMPLE_RECORDING_NONE) {
+    return;
+  }
+  /* Watch, Drive and Re-simulate play in the level they were recorded in. */
+  const VkrSampleRecordingCommand next = recording->queue[0].command;
+  if ((next == VKR_SAMPLE_RECORDING_OPEN ||
+       next == VKR_SAMPLE_RECORDING_DRIVE) &&
+      !editor_recording_scene_ready(editor, frame, &recording->queue[0])) {
     return;
   }
   *frame->recording_request = recording->queue[0];

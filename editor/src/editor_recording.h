@@ -391,6 +391,9 @@ typedef struct VkrEditorRecording {
   /* Requests waiting for a frame; the runtime takes one per frame. */
   VkrSampleRecordingRequest queue[VKR_EDITOR_RECORDING_QUEUE];
   uint32_t queue_count;
+  /* Builds the first queued Watch or Drive has waited for the project
+     scene it was recorded in to open; zero before it asked for one. */
+  uint32_t scene_wait;
   uint64_t next_token;
   /* Tokens the editor's own controls sent; their outcomes show as toasts. */
   uint64_t toast_tokens[VKR_EDITOR_RECORDING_QUEUE];

@@ -14976,7 +14976,8 @@ static VkrEditorOpStatus ops_recording_wait(OpsContext *ctx,
     return VKR_EDITOR_OP_WAIT;
   }
   if (status->token != call->token) {
-    if (++call->frames > 600u) {
+    /* A Watch waiting for its recording's level to open is not late. */
+    if (ctx->editor->recording.scene_wait == 0u && ++call->frames > 600u) {
       ops_fail(ctx, OPS_BUSY, "The runtime did not answer the request");
       return VKR_EDITOR_OP_DONE;
     }
