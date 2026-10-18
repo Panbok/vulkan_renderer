@@ -64,6 +64,9 @@ typedef enum VkrEditorWindowKind {
   VKR_EDITOR_WINDOW_RECORDINGS,
   /* A recording's statistics, charts and spikes (editor_recording_perf.c). */
   VKR_EDITOR_WINDOW_PERFORMANCE,
+  /* A recording's threads and GPU around the playhead
+     (editor_recording_flame.c). */
+  VKR_EDITOR_WINDOW_TIMELINE,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 

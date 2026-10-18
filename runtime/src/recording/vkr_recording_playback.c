@@ -1,5 +1,7 @@
 #include "recording/vkr_recording_playback.h"
 
+#include "core/vkr_zone.h"
+
 #include "assets/vkr_recording_format.h"
 #include "containers/str.h"
 #include "containers/vkr_sort.h"
@@ -13,6 +15,39 @@ typedef struct VkrRecordingPoseLoad {
   VkrRecordingPose pose;
   uint64_t frame;
 } VkrRecordingPoseLoad;
+
+/* One frame's pass rows or GPU starts as read, before the join. */
+typedef struct VkrRecordingTimelinePasses {
+  uint64_t frame;
+  uint32_t first;
+  uint32_t rows;
+} VkrRecordingTimelinePasses;
+
+typedef struct VkrRecordingTimelineStarts {
+  uint64_t frame;
+  uint64_t gpu_start_ns;
+  uint64_t gpu_end_ns;
+  uint32_t first;
+  uint32_t rows;
+} VkrRecordingTimelineStarts;
+
+typedef struct VkrRecordingTimelineRow {
+  uint16_t pass;
+  uint16_t flags;
+  float32_t gpu_ms;
+} VkrRecordingTimelineRow;
+
+typedef struct VkrRecordingTimelineLoad {
+  uint32_t zones;
+  uint32_t passes_records;
+  uint32_t passes_rows;
+  uint32_t starts_records;
+  uint32_t starts_rows;
+  VkrRecordingTimelinePasses *passes;
+  VkrRecordingTimelineRow *rows;
+  VkrRecordingTimelineStarts *starts;
+  float32_t *offsets;
+} VkrRecordingTimelineLoad;
 
 typedef struct VkrRecordingLoad {
   VkrRecordingPlayback *playback;
@@ -31,6 +66,13 @@ typedef struct VkrRecordingLoad {
   /* The same for each VkrRecordingSystemField. */
   uint32_t system_offset[VKR_RECORDING_SYSTEM_FIELDS];
   uint32_t system_bit[VKR_RECORDING_SYSTEM_FIELDS];
+  /* Timeline sources, counted on the first pass: each frame's pass rows
+     (from "passes") and their GPU starts (from "pass_starts"), joined into
+     GPU spans once every record is read; the record capacities the second
+     pass fills up to. */
+  VkrRecordingTimelineLoad timeline;
+  uint32_t timeline_passes_capacity;
+  uint32_t timeline_starts_capacity;
   char *error;
   uint64_t error_capacity;
 } VkrRecordingLoad;
@@ -161,9 +203,76 @@ vkr_internal bool8_t vkr_recording_load_records(VkrRecordingLoad *load,
   return true_v;
 }
 
+/* The id a name record names, and whether the record is one; its text
+   follows the id. */
+vkr_internal bool8_t vkr_recording_timeline_name_id(
+    const VkrRecordingRecord *record, uint32_t *out_id) {
+  if ((record->stream != VKR_RECORDING_STREAM_ZONE_NAME &&
+       record->stream != VKR_RECORDING_STREAM_PASS_NAME) ||
+      record->size < 4u) {
+    return false_v;
+  }
+  MemCopy(out_id, record->data, sizeof(*out_id));
+  return true_v;
+}
+
+/* The row count of a passes or pass_starts record whose size matches it,
+   else zero. */
+vkr_internal uint32_t
+vkr_recording_timeline_rows(const VkrRecordingRecord *record) {
+  uint32_t rows = 0u;
+  if (record->size < 4u) {
+    return 0u;
+  }
+  MemCopy(&rows, record->data, sizeof(rows));
+  if (record->stream == VKR_RECORDING_STREAM_PASSES &&
+      rows <= VKR_RECORDING_PASS_MAX &&
+      record->size == VKR_RECORDING_PASSES_HEADER_SIZE +
+                          (uint64_t)rows * VKR_RECORDING_PASS_ROW_SIZE) {
+    return rows;
+  }
+  if (record->stream == VKR_RECORDING_STREAM_PASS_STARTS &&
+      rows <= VKR_RECORDING_PASS_MAX &&
+      record->size ==
+          VKR_RECORDING_PASS_STARTS_HEADER_SIZE + (uint64_t)rows * 4u) {
+    return rows;
+  }
+  return 0u;
+}
+
+/* First pass: counts the timeline's records and the names it needs. */
+vkr_internal void
+vkr_recording_timeline_count(VkrRecordingLoad *load,
+                             const VkrRecordingRecord *record) {
+  VkrRecordingPlayback *playback = load->playback;
+  VkrRecordingTimelineLoad *timeline = &load->timeline;
+  uint32_t id = 0u;
+  if (record->stream == VKR_RECORDING_STREAM_ZONE &&
+      record->size == sizeof(VkrZoneRecord)) {
+    ++timeline->zones;
+  } else if (vkr_recording_timeline_name_id(record, &id)) {
+    if (record->stream == VKR_RECORDING_STREAM_ZONE_NAME &&
+        id < VKR_ZONE_SITE_MAX) {
+      playback->zone_name_count = Max(playback->zone_name_count, id + 1u);
+    } else if (record->stream == VKR_RECORDING_STREAM_PASS_NAME &&
+               id < VKR_RECORDING_PASS_MAX) {
+      playback->pass_name_count = Max(playback->pass_name_count, id + 1u);
+    }
+  } else if (record->stream == VKR_RECORDING_STREAM_PASSES) {
+    const uint32_t rows = vkr_recording_timeline_rows(record);
+    timeline->passes_records += rows > 0u ? 1u : 0u;
+    timeline->passes_rows += rows;
+  } else if (record->stream == VKR_RECORDING_STREAM_PASS_STARTS) {
+    const uint32_t rows = vkr_recording_timeline_rows(record);
+    timeline->starts_records += rows > 0u ? 1u : 0u;
+    timeline->starts_rows += rows;
+  }
+}
+
 vkr_internal bool8_t vkr_recording_count(VkrRecordingLoad *load,
                                          const VkrRecordingRecord *record) {
   VkrRecordingPlayback *playback = load->playback;
+  vkr_recording_timeline_count(load, record);
   if (record->stream == VKR_RECORDING_STREAM_FRAME) {
     playback->frame_count = Max(playback->frame_count, record->frame + 1u);
   } else if (record->stream == VKR_RECORDING_STREAM_MARKER &&
@@ -271,9 +380,96 @@ vkr_internal void vkr_recording_fill_event(VkrRecordingPlayback *playback,
   };
 }
 
+/* Second pass: copies the timeline's records. Names come first, since a
+   stopping recording writes its last names after its last frame. */
+vkr_internal void
+vkr_recording_timeline_fill(VkrRecordingLoad *load,
+                            const VkrRecordingRecord *record) {
+  VkrRecordingPlayback *playback = load->playback;
+  VkrRecordingTimelineLoad *timeline = &load->timeline;
+  uint32_t id = 0u;
+  if (vkr_recording_timeline_name_id(record, &id)) {
+    const bool8_t zone = record->stream == VKR_RECORDING_STREAM_ZONE_NAME;
+    const uint32_t count =
+        zone ? playback->zone_name_count : playback->pass_name_count;
+    char *name = id < count ? (zone ? playback->zone_names[id]
+                                    : playback->pass_names[id])
+                            : NULL;
+    /* The first name record of an id wins. */
+    if (name && name[0] == '\0') {
+      const uint32_t length =
+          Min(record->size - 4u, (uint32_t)VKR_RECORDING_PLAYBACK_NAME_MAX);
+      MemCopy(name, record->data + 4u, length);
+      name[length] = '\0';
+    }
+    return;
+  }
+  if (record->frame >= playback->frame_count) {
+    return;
+  }
+  if (record->stream == VKR_RECORDING_STREAM_ZONE &&
+      record->size == sizeof(VkrZoneRecord) &&
+      playback->zone_count < timeline->zones) {
+    VkrZoneRecord zone;
+    MemCopy(&zone, record->data, sizeof(zone));
+    if (zone.end_ns < zone.begin_ns) {
+      return;
+    }
+    playback->zones[playback->zone_count++] = (VkrRecordingPlaybackZone){
+        .begin_ns = zone.begin_ns,
+        .end_ns = zone.end_ns,
+        .frame = record->frame,
+        .zone = zone.zone,
+        .thread = zone.thread,
+        .depth = zone.depth,
+    };
+    if (zone.thread < 32u) {
+      playback->zone_threads |= 1u << zone.thread;
+    }
+    return;
+  }
+  const uint32_t rows = vkr_recording_timeline_rows(record);
+  if (rows == 0u) {
+    return;
+  }
+  if (record->stream == VKR_RECORDING_STREAM_PASSES &&
+      timeline->passes_records < load->timeline_passes_capacity) {
+    VkrRecordingTimelinePasses *entry =
+        &timeline->passes[timeline->passes_records++];
+    *entry = (VkrRecordingTimelinePasses){
+        .frame = record->frame, .first = timeline->passes_rows, .rows = rows};
+    const uint8_t *row = record->data + VKR_RECORDING_PASSES_HEADER_SIZE;
+    for (uint32_t i = 0u; i < rows; ++i) {
+      VkrRecordingTimelineRow *out = &timeline->rows[timeline->passes_rows++];
+      MemCopy(&out->pass, row, sizeof(out->pass));
+      MemCopy(&out->flags, row + 2u, sizeof(out->flags));
+      MemCopy(&out->gpu_ms, row + 8u, sizeof(out->gpu_ms));
+      row += VKR_RECORDING_PASS_ROW_SIZE;
+    }
+  } else if (record->stream == VKR_RECORDING_STREAM_PASS_STARTS &&
+             timeline->starts_records < load->timeline_starts_capacity) {
+    uint32_t flags = 0u;
+    MemCopy(&flags, record->data + 4u, sizeof(flags));
+    if (!(flags & VKR_RECORDING_PASS_STARTS_HOST_CLOCK)) {
+      return;
+    }
+    VkrRecordingTimelineStarts *entry =
+        &timeline->starts[timeline->starts_records++];
+    *entry = (VkrRecordingTimelineStarts){
+        .frame = record->frame, .first = timeline->starts_rows, .rows = rows};
+    MemCopy(&entry->gpu_start_ns, record->data + 8u, sizeof(uint64_t));
+    MemCopy(&entry->gpu_end_ns, record->data + 16u, sizeof(uint64_t));
+    MemCopy(timeline->offsets + timeline->starts_rows,
+            record->data + VKR_RECORDING_PASS_STARTS_HEADER_SIZE,
+            sizeof(float32_t) * rows);
+    timeline->starts_rows += rows;
+  }
+}
+
 vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
                                         const VkrRecordingRecord *record) {
   VkrRecordingPlayback *playback = load->playback;
+  vkr_recording_timeline_fill(load, record);
   if (record->frame >= playback->frame_count) {
     return true_v;
   }
@@ -546,6 +742,181 @@ vkr_recording_playback_allocate(VkrRecordingPlayback *playback) {
   return true_v;
 }
 
+/* Between the passes: storage for the timeline the first pass counted, and
+   counts reset for the second pass to fill. Recordings without zones or
+   GPU starts get none. */
+vkr_internal bool8_t vkr_recording_timeline_allocate(VkrRecordingLoad *load) {
+  VkrRecordingPlayback *playback = load->playback;
+  VkrRecordingTimelineLoad *timeline = &load->timeline;
+  playback->has_timeline =
+      timeline->zones > 0u || timeline->starts_records > 0u;
+  if (!playback->has_timeline) {
+    return true_v;
+  }
+  VkrAllocator *allocator = &playback->allocator;
+  const uint64_t name_bytes = VKR_RECORDING_PLAYBACK_NAME_MAX + 1u;
+  playback->zones = vkr_allocator_alloc(
+      allocator, sizeof(*playback->zones) * ((uint64_t)timeline->zones + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->zone_names = vkr_allocator_alloc(
+      allocator, name_bytes * ((uint64_t)playback->zone_name_count + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  playback->pass_names = vkr_allocator_alloc(
+      allocator, name_bytes * ((uint64_t)playback->pass_name_count + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  playback->frame_begin_ns =
+      vkr_allocator_alloc(allocator, sizeof(uint64_t) * playback->frame_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->gpu_spans = vkr_allocator_alloc(
+      allocator,
+      sizeof(*playback->gpu_spans) *
+          ((uint64_t)timeline->starts_rows + timeline->starts_records + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  timeline->passes = vkr_allocator_alloc(
+      allocator,
+      sizeof(*timeline->passes) * ((uint64_t)timeline->passes_records + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  timeline->rows = vkr_allocator_alloc(
+      allocator,
+      sizeof(*timeline->rows) * ((uint64_t)timeline->passes_rows + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  timeline->starts = vkr_allocator_alloc(
+      allocator,
+      sizeof(*timeline->starts) * ((uint64_t)timeline->starts_records + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  timeline->offsets = vkr_allocator_alloc(
+      allocator,
+      sizeof(*timeline->offsets) * ((uint64_t)timeline->starts_rows + 1u),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!playback->zones || !playback->zone_names || !playback->pass_names ||
+      !playback->frame_begin_ns || !playback->gpu_spans || !timeline->passes ||
+      !timeline->rows || !timeline->starts || !timeline->offsets) {
+    return false_v;
+  }
+  MemZero(playback->zone_names,
+          name_bytes * ((uint64_t)playback->zone_name_count + 1u));
+  MemZero(playback->pass_names,
+          name_bytes * ((uint64_t)playback->pass_name_count + 1u));
+  MemZero(playback->frame_begin_ns, sizeof(uint64_t) * playback->frame_count);
+  load->timeline_passes_capacity = timeline->passes_records;
+  load->timeline_starts_capacity = timeline->starts_records;
+  timeline->passes_records = 0u;
+  timeline->passes_rows = 0u;
+  timeline->starts_records = 0u;
+  timeline->starts_rows = 0u;
+  return true_v;
+}
+
+vkr_internal int32_t vkr_recording_compare_zones(const void *lhs,
+                                                 const void *rhs) {
+  const VkrRecordingPlaybackZone *a = lhs;
+  const VkrRecordingPlaybackZone *b = rhs;
+  if (a->begin_ns != b->begin_ns) {
+    return a->begin_ns < b->begin_ns ? -1 : 1;
+  }
+  if (a->thread != b->thread) {
+    return a->thread < b->thread ? -1 : 1;
+  }
+  return a->depth < b->depth ? -1 : (a->depth > b->depth ? 1 : 0);
+}
+
+vkr_internal int32_t vkr_recording_compare_gpu_spans(const void *lhs,
+                                                     const void *rhs) {
+  const VkrRecordingPlaybackGpuSpan *a = lhs;
+  const VkrRecordingPlaybackGpuSpan *b = rhs;
+  if (a->begin_ns != b->begin_ns) {
+    return a->begin_ns < b->begin_ns ? -1 : 1;
+  }
+  return a->pass < b->pass ? -1 : (a->pass > b->pass ? 1 : 0);
+}
+
+/* After the second pass: joins each frame's GPU starts with its pass rows,
+   in the order both carry, sorts zones and spans by begin, and finds each
+   frame's "Frame" zone. Frames whose rows and starts disagree in count keep
+   only their GPU frame span. */
+vkr_internal bool8_t vkr_recording_timeline_finish(VkrRecordingLoad *load) {
+  VkrRecordingPlayback *playback = load->playback;
+  VkrRecordingTimelineLoad *timeline = &load->timeline;
+  if (!playback->has_timeline) {
+    return true_v;
+  }
+  VkrAllocator *allocator = &playback->allocator;
+  uint32_t *passes_of_frame =
+      vkr_allocator_alloc(allocator, sizeof(uint32_t) * playback->frame_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!passes_of_frame) {
+    return false_v;
+  }
+  MemZero(passes_of_frame, sizeof(uint32_t) * playback->frame_count);
+  for (uint32_t i = 0u; i < timeline->passes_records; ++i) {
+    const uint64_t frame = timeline->passes[i].frame;
+    if (frame < playback->frame_count && passes_of_frame[frame] == 0u) {
+      passes_of_frame[frame] = i + 1u;
+    }
+  }
+  for (uint32_t s = 0u; s < timeline->starts_records; ++s) {
+    const VkrRecordingTimelineStarts *starts = &timeline->starts[s];
+    if (starts->frame >= playback->frame_count ||
+        starts->gpu_end_ns < starts->gpu_start_ns) {
+      continue;
+    }
+    playback->gpu_spans[playback->gpu_span_count++] =
+        (VkrRecordingPlaybackGpuSpan){
+            .begin_ns = starts->gpu_start_ns,
+            .end_ns = starts->gpu_end_ns,
+            .frame = starts->frame,
+            .pass = VKR_RECORDING_PLAYBACK_GPU_FRAME,
+        };
+    const uint32_t found = passes_of_frame[starts->frame];
+    if (found == 0u || timeline->passes[found - 1u].rows != starts->rows) {
+      continue;
+    }
+    const VkrRecordingTimelinePasses *passes = &timeline->passes[found - 1u];
+    for (uint32_t r = 0u; r < starts->rows; ++r) {
+      const VkrRecordingTimelineRow *row = &timeline->rows[passes->first + r];
+      const float32_t offset_ms = timeline->offsets[starts->first + r];
+      if (!(row->flags & VKR_RECORDING_PASS_GPU_VALID) ||
+          !vkr_is_finite_f32(offset_ms) || offset_ms < 0.0f ||
+          !vkr_is_finite_f32(row->gpu_ms) || row->gpu_ms < 0.0f) {
+        continue;
+      }
+      const uint64_t begin =
+          starts->gpu_start_ns + (uint64_t)((float64_t)offset_ms * 1.0e6);
+      playback->gpu_spans[playback->gpu_span_count++] =
+          (VkrRecordingPlaybackGpuSpan){
+              .begin_ns = begin,
+              .end_ns = begin + (uint64_t)((float64_t)row->gpu_ms * 1.0e6),
+              .frame = starts->frame,
+              .pass = row->pass,
+          };
+    }
+  }
+  vkr_allocator_free(allocator, passes_of_frame,
+                     sizeof(uint32_t) * playback->frame_count,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  vkr_sort(playback->zones, playback->zone_count, sizeof(*playback->zones),
+           vkr_recording_compare_zones);
+  vkr_sort(playback->gpu_spans, playback->gpu_span_count,
+           sizeof(*playback->gpu_spans), vkr_recording_compare_gpu_spans);
+  for (uint32_t i = 0u; i < playback->zone_count; ++i) {
+    const VkrRecordingPlaybackZone *zone = &playback->zones[i];
+    playback->zone_longest_ns =
+        Max(playback->zone_longest_ns, zone->end_ns - zone->begin_ns);
+    if (zone->thread == VKR_ZONE_THREAD_MAIN &&
+        zone->zone < playback->zone_name_count &&
+        string_equals(playback->zone_names[zone->zone], "Frame")) {
+      playback->frame_begin_ns[zone->frame] = zone->begin_ns;
+    }
+  }
+  for (uint32_t i = 0u; i < playback->gpu_span_count; ++i) {
+    const VkrRecordingPlaybackGpuSpan *span = &playback->gpu_spans[i];
+    playback->gpu_longest_ns =
+        Max(playback->gpu_longest_ns, span->end_ns - span->begin_ns);
+  }
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   VkrRecordingPlayback *playback = load->playback;
   if (!vkr_recording_load_dictionary(load) ||
@@ -555,7 +926,8 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   if (playback->frame_count == 0u) {
     return vkr_recording_load_fail(load, "the recording has no frames");
   }
-  if (!vkr_recording_playback_allocate(playback)) {
+  if (!vkr_recording_playback_allocate(playback) ||
+      !vkr_recording_timeline_allocate(load)) {
     return vkr_recording_load_fail(load, "out of memory");
   }
   load->present =
@@ -612,6 +984,9 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
     return false_v;
   }
   vkr_recording_playback_finish(load);
+  if (!vkr_recording_timeline_finish(load)) {
+    return vkr_recording_load_fail(load, "out of memory");
+  }
   return true_v;
 }
 
@@ -673,6 +1048,68 @@ bool8_t vkr_recording_playback_open(VkrRecordingPlayback *playback,
   playback->speed = 1.0f;
   playback->open = true_v;
   return true_v;
+}
+
+/* The first of `count` spans of `stride` bytes, begin_ns first, whose begin
+   is at or after `at`. */
+vkr_internal uint32_t vkr_recording_lower_bound(const void *spans,
+                                                uint32_t count, uint64_t stride,
+                                                uint64_t at) {
+  uint32_t low = 0u;
+  uint32_t high = count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    uint64_t begin = 0u;
+    MemCopy(&begin, (const uint8_t *)spans + stride * middle, sizeof(begin));
+    if (begin < at) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+uint32_t vkr_recording_playback_zones_in(const VkrRecordingPlayback *playback,
+                                         uint64_t begin_ns, uint64_t end_ns,
+                                         uint32_t *out_first) {
+  *out_first = 0u;
+  if (!playback->zones || playback->zone_count == 0u || end_ns <= begin_ns) {
+    return 0u;
+  }
+  /* A zone that began up to the longest zone's length earlier may still
+     cover begin_ns. */
+  const uint64_t from = begin_ns > playback->zone_longest_ns
+                            ? begin_ns - playback->zone_longest_ns
+                            : 0u;
+  const uint32_t first = vkr_recording_lower_bound(
+      playback->zones, playback->zone_count, sizeof(*playback->zones), from);
+  const uint32_t last = vkr_recording_lower_bound(
+      playback->zones, playback->zone_count, sizeof(*playback->zones), end_ns);
+  *out_first = first;
+  return last - first;
+}
+
+uint32_t
+vkr_recording_playback_gpu_spans_in(const VkrRecordingPlayback *playback,
+                                    uint64_t begin_ns, uint64_t end_ns,
+                                    uint32_t *out_first) {
+  *out_first = 0u;
+  if (!playback->gpu_spans || playback->gpu_span_count == 0u ||
+      end_ns <= begin_ns) {
+    return 0u;
+  }
+  const uint64_t from = begin_ns > playback->gpu_longest_ns
+                            ? begin_ns - playback->gpu_longest_ns
+                            : 0u;
+  const uint32_t first =
+      vkr_recording_lower_bound(playback->gpu_spans, playback->gpu_span_count,
+                                sizeof(*playback->gpu_spans), from);
+  const uint32_t last =
+      vkr_recording_lower_bound(playback->gpu_spans, playback->gpu_span_count,
+                                sizeof(*playback->gpu_spans), end_ns);
+  *out_first = first;
+  return last - first;
 }
 
 void vkr_recording_playback_close(VkrRecordingPlayback *playback) {

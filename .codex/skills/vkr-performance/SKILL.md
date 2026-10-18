@@ -24,7 +24,8 @@ a scoped Bistro case without weakening the evidence profile.
    reads both live; `os.*` and `cpu.process_time` show throttling, memory
    pressure and process CPU time. For a thread and GPU timeline, record with
    `rec.start {"tier": "1", "zones": true}` and run `vkr_rec export <bundle>
-   --perfetto <out.json>`; open it in ui.perfetto.dev. `vkr_rec explain
+   --perfetto <out.json>`; open it in ui.perfetto.dev, or open the recording
+   in the editor and its Thread timeline (`window timeline`). `vkr_rec explain
    <bundle> --spike N` (or `rec.explain`) ranks a slow frame's causes. To
    keep a hitch that already happened, run a rolling recording
    (`rec.start {"rolling": 30}`) and `rec.save_last` after it. Read

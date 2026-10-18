@@ -37,6 +37,8 @@ static Vec2 editor_window_min_size(VkrEditorWindowKind kind) {
     return (Vec2){360.0f, 220.0f};
   case VKR_EDITOR_WINDOW_PERFORMANCE:
     return (Vec2){720.0f, 480.0f};
+  case VKR_EDITOR_WINDOW_TIMELINE:
+    return (Vec2){640.0f, 320.0f};
   default:
     return (Vec2){EDITOR_WINDOW_MIN_WIDTH_PT, EDITOR_WINDOW_MIN_HEIGHT_PT};
   }
@@ -2324,6 +2326,13 @@ static void editor_window_build_body(VkrEditorUi *editor, VkrUiSystem *ui,
       vkr_editor_recording_perf_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
+  } else if (kind == VKR_EDITOR_WINDOW_TIMELINE) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("timeline.body"),
+                                 &bounds)) {
+      vkr_editor_recording_flame_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else if (kind == VKR_EDITOR_WINDOW_RECORDINGS) {
     VkrUiRect bounds = {0};
     if (editor_window_body_begin(ui, window, string8_lit("recordings.body"),
@@ -2458,6 +2467,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   case VKR_EDITOR_WINDOW_PERFORMANCE:
     title_text = string8_lit("Performance");
     title_icon = VKR_UI_ICON_CHART_BAR;
+    break;
+  case VKR_EDITOR_WINDOW_TIMELINE:
+    title_text = string8_lit("Thread timeline");
+    title_icon = VKR_UI_ICON_LAYERS;
     break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");

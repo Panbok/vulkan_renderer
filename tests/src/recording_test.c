@@ -1,4 +1,5 @@
 #include "recording_test.h"
+#include "core/vkr_zone.h"
 
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
@@ -1919,6 +1920,200 @@ static void test_recording_loop_metrics(void) {
   printf("  test_recording_loop_metrics PASSED\n");
 }
 
+/* Writes one zone or pass name record. */
+static void recording_timeline_name(VkrRecorder *recorder, uint16_t stream,
+                                    uint64_t frame, uint32_t id,
+                                    const char *name) {
+  uint8_t record[4u + 32u];
+  const uint32_t length = (uint32_t)strlen(name);
+  MemCopy(record, &id, sizeof(id));
+  MemCopy(record + 4u, name, length);
+  assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN, stream, frame,
+                            record, 4u + length));
+}
+
+/* Writes a passes record of `rows` rows, every row GPU-timed. */
+static void recording_timeline_passes(VkrRecorder *recorder, uint64_t frame,
+                                      uint32_t rows, const float32_t *gpu_ms) {
+  uint8_t record[VKR_RECORDING_PASSES_HEADER_SIZE +
+                 4u * VKR_RECORDING_PASS_ROW_SIZE] = {0};
+  const uint32_t flags = VKR_RECORDING_PASSES_GPU_TIMED;
+  MemCopy(record, &rows, sizeof(rows));
+  MemCopy(record + 4u, &flags, sizeof(flags));
+  for (uint32_t i = 0u; i < rows; ++i) {
+    uint8_t *row = record + VKR_RECORDING_PASSES_HEADER_SIZE +
+                   VKR_RECORDING_PASS_ROW_SIZE * i;
+    const uint16_t id = (uint16_t)i;
+    const uint16_t row_flags = VKR_RECORDING_PASS_GPU_VALID;
+    MemCopy(row, &id, sizeof(id));
+    MemCopy(row + 2u, &row_flags, sizeof(row_flags));
+    MemCopy(row + 8u, &gpu_ms[i], sizeof(float32_t));
+  }
+  assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                            VKR_RECORDING_STREAM_PASSES, frame, record,
+                            VKR_RECORDING_PASSES_HEADER_SIZE +
+                                VKR_RECORDING_PASS_ROW_SIZE * rows));
+}
+
+/* Writes a pass_starts record on the CPU clock. */
+static void recording_timeline_starts(VkrRecorder *recorder, uint64_t frame,
+                                      uint64_t start_ns, uint64_t end_ns,
+                                      uint32_t rows,
+                                      const float32_t *start_ms) {
+  uint8_t record[VKR_RECORDING_PASS_STARTS_HEADER_SIZE + 4u * 4u] = {0};
+  const uint32_t flags = VKR_RECORDING_PASS_STARTS_HOST_CLOCK;
+  MemCopy(record, &rows, sizeof(rows));
+  MemCopy(record + 4u, &flags, sizeof(flags));
+  MemCopy(record + 8u, &start_ns, sizeof(start_ns));
+  MemCopy(record + 16u, &end_ns, sizeof(end_ns));
+  MemCopy(record + VKR_RECORDING_PASS_STARTS_HEADER_SIZE, start_ms,
+          sizeof(float32_t) * rows);
+  assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                            VKR_RECORDING_STREAM_PASS_STARTS, frame, record,
+                            VKR_RECORDING_PASS_STARTS_HEADER_SIZE + 4u * rows));
+}
+
+/* Detects: zones left in arrival order, a name lost because its record came
+   after the zones it names, pass rows joined to the wrong starts, a frame
+   whose row counts disagree drawing misplaced passes, a missing "Frame"
+   begin, and range queries that miss a zone covering their start. */
+static void test_recording_playback_timeline(void) {
+  printf("  Running test_recording_playback_timeline...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("timeline", path, sizeof(path));
+  uint32_t base_count = 0u;
+  const VkrRecordingStream *base = vkr_recording_streams(&base_count);
+  VkrRecordingStream streams[32];
+  MemCopy(streams, base, sizeof(*base) * base_count);
+  uint32_t count = base_count;
+  streams[count++] = (VkrRecordingStream){.id = VKR_RECORDING_STREAM_ZONE_NAME,
+                                          .name = "zone_name"};
+  streams[count++] = (VkrRecordingStream){.id = VKR_RECORDING_STREAM_ZONE,
+                                          .name = "zone",
+                                          .record_size = sizeof(VkrZoneRecord)};
+  streams[count++] = (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASS_NAME,
+                                          .name = "pass_name"};
+  streams[count++] =
+      (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASSES, .name = "passes"};
+  streams[count++] = (VkrRecordingStream){
+      .id = VKR_RECORDING_STREAM_PASS_STARTS, .name = "pass_starts"};
+  const VkrRecorderConfig config = {
+      .stream_path = path,
+      .codec = vkr_depot_zstd_codec(),
+      .streams = streams,
+      .stream_count = count,
+  };
+  VkrRecorder *recorder = vkr_recorder_start(&memory.allocator, &config);
+  assert(recorder != NULL);
+  for (uint64_t f = 0u; f < 4u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 0.016};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                              VKR_RECORDING_STREAM_FRAME, f, &frame,
+                              sizeof(frame)));
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                              VKR_RECORDING_STREAM_CAMERA, f, &camera,
+                              sizeof(camera)));
+  }
+  /* Frame 1's zone arrives before frame 0's, and the names after both. */
+  const VkrZoneRecord zones[] = {
+      {.zone = 0u,
+       .thread = 0u,
+       .depth = 0u,
+       .begin_ns = 2000u,
+       .end_ns = 3000u},
+      {.zone = 0u,
+       .thread = 0u,
+       .depth = 0u,
+       .begin_ns = 1000u,
+       .end_ns = 1900u},
+      {.zone = 1u,
+       .thread = 2u,
+       .depth = 0u,
+       .begin_ns = 1100u,
+       .end_ns = 1500u},
+  };
+  const uint64_t zone_frames[] = {1u, 0u, 0u};
+  for (uint32_t i = 0u; i < ArrayCount(zones); ++i) {
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                              VKR_RECORDING_STREAM_ZONE, zone_frames[i],
+                              &zones[i], sizeof(zones[i])));
+  }
+  recording_timeline_name(recorder, VKR_RECORDING_STREAM_ZONE_NAME, 3u, 0u,
+                          "Frame");
+  recording_timeline_name(recorder, VKR_RECORDING_STREAM_ZONE_NAME, 3u, 1u,
+                          "Work");
+  recording_timeline_name(recorder, VKR_RECORDING_STREAM_PASS_NAME, 0u, 0u,
+                          "A");
+  recording_timeline_name(recorder, VKR_RECORDING_STREAM_PASS_NAME, 0u, 1u,
+                          "B");
+  const float32_t gpu_ms[] = {0.5f, 0.25f};
+  const float32_t start_ms[] = {0.0f, 0.5f};
+  recording_timeline_passes(recorder, 1u, 2u, gpu_ms);
+  recording_timeline_starts(recorder, 1u, 10000000u, 11000000u, 2u, start_ms);
+  /* Frame 2's rows and starts disagree in count. */
+  recording_timeline_passes(recorder, 2u, 1u, gpu_ms);
+  recording_timeline_starts(recorder, 2u, 20000000u, 21000000u, 2u, start_ms);
+  VkrRecorderStats stats;
+  assert(vkr_recorder_stop(recorder, &stats));
+
+  static VkrRecordingPlayback playback;
+  char error[128];
+  assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
+                                     error, sizeof(error)));
+  assert(playback.has_timeline && playback.zone_count == 3u);
+  assert(playback.zones[0].begin_ns == 1000u &&
+         playback.zones[1].begin_ns == 1100u &&
+         playback.zones[2].begin_ns == 2000u);
+  assert(string_equals(playback.zone_names[0], "Frame") &&
+         string_equals(playback.zone_names[1], "Work"));
+  assert(playback.zone_threads == ((1u << 0u) | (1u << 2u)));
+  assert(playback.frame_begin_ns[0] == 1000u &&
+         playback.frame_begin_ns[1] == 2000u &&
+         playback.frame_begin_ns[2] == 0u);
+  /* Two GPU frames, and frame 1's two passes. */
+  assert(playback.gpu_span_count == 4u);
+  uint32_t passes_seen = 0u;
+  for (uint32_t i = 0u; i < playback.gpu_span_count; ++i) {
+    const VkrRecordingPlaybackGpuSpan *span = &playback.gpu_spans[i];
+    if (span->pass == VKR_RECORDING_PLAYBACK_GPU_FRAME) {
+      continue;
+    }
+    assert(span->frame == 1u);
+    if (span->pass == 0u) {
+      assert(span->begin_ns == 10000000u && span->end_ns == 10500000u);
+    } else {
+      assert(span->pass == 1u && span->begin_ns == 10500000u &&
+             span->end_ns == 10750000u);
+    }
+    ++passes_seen;
+  }
+  assert(passes_seen == 2u);
+  assert(string_equals(playback.pass_names[1], "B"));
+  /* A window inside the 1000 to 1900 zone still finds it. */
+  uint32_t first = 0u;
+  uint32_t found =
+      vkr_recording_playback_zones_in(&playback, 1600u, 1800u, &first);
+  bool8_t covered = false_v;
+  for (uint32_t i = first; i < first + found; ++i) {
+    covered = covered || playback.zones[i].begin_ns == 1000u;
+  }
+  assert(covered);
+  found = vkr_recording_playback_gpu_spans_in(&playback, 10600000u, 10700000u,
+                                              &first);
+  covered = false_v;
+  for (uint32_t i = first; i < first + found; ++i) {
+    covered = covered || playback.gpu_spans[i].pass == 1u;
+  }
+  assert(covered);
+  vkr_recording_playback_close(&playback);
+  recording_test_remove(path);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_playback_timeline PASSED\n");
+}
+
 /* Detects: a loop span that lets the playhead run past its end, a wrap
    that loses the overshoot, a playhead before the span that never enters
    it, and an empty span that stops looping the whole recording. */
@@ -2106,6 +2301,7 @@ bool32_t run_recording_tests(void) {
   test_recording_drive();
   test_recording_resim();
   test_recording_playback_loop_range();
+  test_recording_playback_timeline();
   test_recording_annotations();
   printf("--- Recording Tests Completed ---\n");
   return true_v;

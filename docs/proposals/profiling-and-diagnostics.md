@@ -22,8 +22,7 @@ latency, the recording timeline's System lane, `perf.snapshot` and
 
 Remaining gaps:
 
-- The editor has no timeline view of zones and passes; Vulkan records no
-  pass starts.
+- Vulkan records no pass starts.
 - Windows platform signals, present latency and other processes' GPU use
   are not recorded.
 - The Performance window opens only on a recording; there is no live view.
@@ -57,7 +56,8 @@ Remaining:
 ## P2: timeline (remaining)
 
 CPU zones per thread, Metal and Vulkan GPU pass starts on the CPU clock,
-the Perfetto export and rolling recordings are implemented in
+the Perfetto export, rolling recordings and the editor's Thread timeline are
+implemented in
 [ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md); `rec.explain` and
 `vkr_rec explain` in [ADR-122](../adr/122-recordings.md); `vkr_harness
 perf-compare` in [ADR-051](../adr/051-renderer-harness-and-evidence.md).
@@ -67,8 +67,6 @@ Remaining:
   so native profilers show the zones.
 - More zones where cost hides: asset loads, physics steps inside jobs,
   script ticks, shadow updates.
-- The editor's Timeline window: thread tracks, a GPU track and a flame
-  chart.
 - Counters and markers for recordings without `Frame` zones in the export.
 - Acceptance: the overhead gate with zones on; zone sums match stage metrics.
 

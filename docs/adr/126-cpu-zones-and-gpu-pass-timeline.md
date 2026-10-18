@@ -11,8 +11,8 @@ authority: adr
 Accepted (partial). The first part of phase P2 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
 implemented: CPU zones recorded per thread, GPU pass starts on the CPU clock
-on Metal and Vulkan, the Perfetto export and rolling recordings. The editor's
-Timeline window is not built.
+on Metal and Vulkan, the Perfetto export, rolling recordings and the
+editor's Thread timeline window.
 
 ## Context
 
@@ -109,6 +109,32 @@ Chrome trace-event JSON that ui.perfetto.dev and chrome://tracing open:
 
 The export caps output at 4,000,000 events.
 
+**Playback timeline** ([vkr_recording_playback.c](../../runtime/src/recording/vkr_recording_playback.c)).
+Opening a recording loads its zones, zone and pass names, and GPU spans:
+
+- Each frame's pass rows are joined with its pass starts in row order; a
+  frame whose counts disagree keeps only its GPU frame span.
+- Zones and spans are sorted by begin, and each frame maps to its `Frame`
+  zone's begin.
+- `vkr_recording_playback_zones_in` and `vkr_recording_playback_gpu_spans_in`
+  find the candidates for a time range by binary search, widened by the
+  longest span.
+
+**Thread timeline window** ([editor_recording_flame.c](../../editor/src/editor_recording_flame.c)).
+The window (`window timeline`, or the playback bar's layers button) shows
+the playhead frame and one frame either side:
+
+- one flame track per thread slot that recorded zones, one row per depth;
+- GPU frames and GPU passes;
+- a ruler with frame starts.
+
+It is drawn as one path widget with up to 160 labels. Spans narrower than
+a pixel merge, and at most 2,400 draw per build. Hover names a span, a click
+selects it and seeks to its frame, the wheel zooms about the pointer, a drag
+or Shift+wheel pans, and the header steps frames, zooms and fits. GPU spans
+belong to the frame that submitted them, so on the tiled pipeline they show
+about three frames after their CPU frame.
+
 **Rolling recordings** ([vkr_recorder.c](../../runtime/src/recording/vkr_recorder.c)).
 `VkrRecordingConfig.rolling_seconds` keeps a recording in memory:
 
@@ -152,7 +178,8 @@ The export caps output at 4,000,000 events.
 
 - A Vulkan host without the `QueryPerformanceCounter` domain needs another
   host clock (`CLOCK_MONOTONIC` on Linux).
-- The editor gains its Timeline window, or the rolling buffer lands.
+- The Thread timeline needs more than 2,400 spans in one view, or keyboard
+  navigation.
 - A timing run shows the zones' cost matters.
 
 ## Evidence
@@ -197,3 +224,13 @@ The export caps output at 4,000,000 events.
   frame at 15.75 ms with 182 timed passes summing 14.0 ms. Spike 2, frame
   107, followed a 42 ms GPU frame. The rolling start left a
   `.rolling.vkrrec` directory holding only a thumbnail.
+- `test_recording_playback_timeline`: zones written out of order load
+  sorted, names written after their zones resolve, pass rows join their
+  starts, a frame whose counts disagree keeps only its GPU frame, `Frame`
+  begins map to frames, and range queries find a zone that covers their
+  start.
+- A headless Bistro editor recorded 3 s at Tier 1 with zones and opened the
+  Thread timeline. It showed Main and Render tracks, GPU frames and 29 GPU
+  passes around frames 298 to 300, with a selected `Tiled.Opaque` pass
+  (2.259 ms, frame 296). The empty states, fit, frame steps, zoom, click and
+  drag were checked on screenshots.

@@ -769,7 +769,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                   playback->loop_start, playback->loop_end);
   }
   VkrUiWidgetConfig timeline = editor_recording_button(
-      13u,
+      14u,
       editor->recording.timeline.open ? VKR_UI_ICON_CHEVRON_DOWN
                                       : VKR_UI_ICON_CHEVRON_UP,
       editor->recording.timeline.open
@@ -792,6 +792,17 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                        vkr_ui_theme()->warning, error);
     }
   }
+  const bool8_t threads_open =
+      editor->windows[VKR_EDITOR_WINDOW_TIMELINE].visible;
+  VkrUiWidgetConfig threads = editor_recording_button(
+      13u, VKR_UI_ICON_LAYERS,
+      string8_lit("Thread timeline: what each thread and the GPU did around "
+                  "this frame"));
+  vkr_editor_toggle_style(&threads, threads_open);
+  if (vkr_ui_button(ui, string8_lit("threads"), (String8){0}, &threads)) {
+    vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_TIMELINE,
+                                  !threads_open);
+  }
 }
 
 /* Bottom of the Scene in Playback, above the corner chips: close, play,
@@ -806,8 +817,8 @@ vkr_internal bool8_t editor_recording_bar_rect(const VkrSampleUiFrame *frame,
   const Vec4 viewport = frame->mapping.panel_rect_px;
   const float32_t left = 104.0f;
   const float32_t width = viewport.z / scale - left - 10.0f;
-  /* Ten buttons, the clock and the speed leave the track 60 pt. */
-  if (width < 520.0f) {
+  /* The buttons, the clock and the speed leave the track some 30 pt. */
+  if (width < 546.0f) {
     return false_v;
   }
   *out_pt = (Vec3){viewport.x / scale + left,
@@ -892,6 +903,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
       {.value = 150.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
       {.value = 44.0f, .unit = VKR_UI_TRACK_PX},
+      button,
       button,
       button,
       button,

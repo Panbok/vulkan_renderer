@@ -85,6 +85,32 @@ typedef enum VkrRecordingSystemField {
   VKR_RECORDING_SYSTEM_FIELDS,
 } VkrRecordingSystemField;
 
+/* Names a playback's timeline keeps per zone or pass. */
+#define VKR_RECORDING_PLAYBACK_NAME_MAX 63u
+/* A GPU span that is a whole GPU frame rather than one pass. */
+#define VKR_RECORDING_PLAYBACK_GPU_FRAME UINT16_MAX
+
+/* One CPU zone (ADR-126) on the recording machine's monotonic clock: its
+   name's index in zone_names, its thread slot (0 frame loop, 1 render
+   thread, 2 + k job worker k) and nesting depth. */
+typedef struct VkrRecordingPlaybackZone {
+  uint64_t begin_ns;
+  uint64_t end_ns;
+  uint64_t frame;
+  uint16_t zone;
+  uint16_t thread;
+  uint32_t depth;
+} VkrRecordingPlaybackZone;
+
+/* One timed GPU pass, its name's index in pass_names, or a whole GPU frame
+   (pass VKR_RECORDING_PLAYBACK_GPU_FRAME), on the same clock as the zones. */
+typedef struct VkrRecordingPlaybackGpuSpan {
+  uint64_t begin_ns;
+  uint64_t end_ns;
+  uint64_t frame;
+  uint16_t pass;
+} VkrRecordingPlaybackGpuSpan;
+
 typedef struct VkrRecordingPlayback {
   bool8_t open;
   VkrDMemory memory;
@@ -122,6 +148,24 @@ typedef struct VkrRecordingPlayback {
   bool8_t has_system;
   float64_t *system_values;
   uint8_t *system_valid;
+  /* The timeline (ADR-126), for recordings with zones or GPU pass starts:
+     zones and GPU spans sorted by begin, with the longest of each for range
+     queries; zone and pass names by id; each frame's "Frame" zone begin,
+     zero without one; and one bit per thread slot that recorded zones.
+     Without a timeline the arrays are NULL. */
+  bool8_t has_timeline;
+  VkrRecordingPlaybackZone *zones;
+  uint32_t zone_count;
+  uint64_t zone_longest_ns;
+  VkrRecordingPlaybackGpuSpan *gpu_spans;
+  uint32_t gpu_span_count;
+  uint64_t gpu_longest_ns;
+  char (*zone_names)[VKR_RECORDING_PLAYBACK_NAME_MAX + 1u];
+  uint32_t zone_name_count;
+  char (*pass_names)[VKR_RECORDING_PLAYBACK_NAME_MAX + 1u];
+  uint32_t pass_name_count;
+  uint64_t *frame_begin_ns;
+  uint32_t zone_threads;
   /* The player of each frame's last tick (vkr_rec_player): three per frame,
      where player_valid is 1; has_player says any frame has one. */
   bool8_t has_player;
@@ -201,6 +245,18 @@ bool8_t vkr_recording_playback_open(VkrRecordingPlayback *playback,
                                     char *error, uint64_t error_capacity);
 
 void vkr_recording_playback_close(VkrRecordingPlayback *playback);
+
+/** The zones that may overlap [begin_ns, end_ns): zones[*out_first] on, as
+ * many as returned. Some may end before begin_ns; callers test each. */
+uint32_t vkr_recording_playback_zones_in(const VkrRecordingPlayback *playback,
+                                         uint64_t begin_ns, uint64_t end_ns,
+                                         uint32_t *out_first);
+
+/** The GPU spans that may overlap [begin_ns, end_ns), as for zones. */
+uint32_t
+vkr_recording_playback_gpu_spans_in(const VkrRecordingPlayback *playback,
+                                    uint64_t begin_ns, uint64_t end_ns,
+                                    uint32_t *out_first);
 
 /** Loops between recorded times `start` and `end`, clamped to the
     recording; an empty span loops the whole recording. */

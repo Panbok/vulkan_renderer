@@ -344,6 +344,27 @@ typedef struct VkrEditorRecordingTimeline {
   bool8_t previewed;
 } VkrEditorRecordingTimeline;
 
+/* The Thread timeline window (editor_recording_flame.c): the span of the
+   open playback's clock it shows, in ns, the playhead frame it last
+   followed and a seek of its own it waits for, its vertical scroll, the
+   selected zone or GPU span by index, and the pointer's drag. Another
+   bundle resets it. */
+typedef struct VkrEditorRecordingFlame {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  int64_t view_begin_ns;
+  int64_t view_end_ns;
+  uint64_t followed_frame;
+  uint64_t awaited_frame;
+  uint32_t awaited_builds;
+  float32_t scroll_pt;
+  bool8_t selected;
+  bool8_t selected_gpu;
+  uint32_t selected_index;
+  /* The pointer drags the view; drag_px is where it was last build. */
+  bool8_t dragging;
+  Vec2 drag_px;
+} VkrEditorRecordingFlame;
+
 /* One thumbnail on its way to disk: pixels sampled from the capture on the
    main thread, then encoded and written by a thread of its own. */
 typedef struct VkrEditorRecordingThumbJob {
@@ -459,6 +480,7 @@ typedef struct VkrEditorRecording {
   VkrEditorRecordingRequests requests;
   VkrEditorRecordingNotes notes;
   VkrEditorRecordingTimeline timeline;
+  VkrEditorRecordingFlame flame;
   /* Reused while the list reads each bundle's annotations. */
   VkrRecordingAnnotations list_annotations;
   /* One past the entry whose Delete was pressed once, or zero; a second
@@ -570,6 +592,14 @@ void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
 void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds);
+
+/* ---- Thread timeline (editor_recording_flame.c) ---- */
+
+/** The Thread timeline window's body: each thread's CPU zones and the GPU's
+ * frames and passes around the open playback's playhead (ADR-126). */
+void vkr_editor_recording_flame_build(struct VkrEditorUi *editor,
+                                      const VkrSampleUiFrame *frame,
+                                      VkrUiRect bounds);
 
 /* ---- Recording requests (editor_recording_requests.c) ---- */
 
