@@ -268,6 +268,34 @@ bool8_t vkr_vulkan_renderer_get_and_reset_frame_upload_exhaustion_count(
     VkrVulkanRenderer *renderer, uint64_t *out_exhaustion_count);
 bool8_t vkr_vulkan_renderer_get_and_reset_command_slot_wait_count(
     VkrVulkanRenderer *renderer, uint64_t *out_wait_count);
+/* A RenderDoc frame capture for debug.gpu_capture and where it stands; the
+   states are the frontend's VkrRendererGpuCaptureState, in the same order. */
+typedef enum VkrVulkanGpuCaptureState {
+  VKR_VULKAN_GPU_CAPTURE_IDLE = 0,
+  VKR_VULKAN_GPU_CAPTURE_REQUESTED,
+  VKR_VULKAN_GPU_CAPTURE_CAPTURING,
+  VKR_VULKAN_GPU_CAPTURE_DONE,
+  VKR_VULKAN_GPU_CAPTURE_FAILED,
+} VkrVulkanGpuCaptureState;
+
+typedef struct VkrVulkanGpuCaptureStatus {
+  VkrVulkanGpuCaptureState state;
+  uint32_t frames;
+  /** The path template while capturing; the written .rdc once done. */
+  char path[1024];
+  char message[256];
+} VkrVulkanGpuCaptureStatus;
+
+/** Render thread (the frontend joins it): captures the next `frames`
+ * submitted frames with RenderDoc into a .rdc named from `path_template` (a
+ * path without extension). Returns false while a capture is pending or
+ * running, or when RenderDoc is not in the process; the status says why. */
+bool8_t vkr_vulkan_renderer_request_gpu_capture(VkrVulkanRenderer *renderer,
+                                                const char *path_template,
+                                                uint32_t frames);
+/** Render thread (the frontend joins it). */
+void vkr_vulkan_renderer_gpu_capture_status(const VkrVulkanRenderer *renderer,
+                                            VkrVulkanGpuCaptureStatus *out);
 /** Render thread only; the metrics collector is the sole caller. */
 bool8_t vkr_vulkan_renderer_get_and_reset_present_timing(
     VkrVulkanRenderer *renderer, VkrRendererImplPresentTiming *out_timing);

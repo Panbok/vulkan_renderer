@@ -4,6 +4,7 @@
 #include "core/vkr_atomic.h"
 #include "platform/vkr_platform.h"
 #include "vkr_renderer.h"
+#include "vulkan/vkr_vulkan_gpu_capture.h"
 #include "vulkan/vkr_vulkan_wsi.h"
 
 enum { VKR_VULKAN_MAX_EXTENSIONS = 256 };
@@ -110,6 +111,8 @@ struct VkrVulkanDevice {
   // Names graph resources and pipelines for captures and validation
   // messages; null without VK_EXT_debug_utils.
   PFN_vkSetDebugUtilsObjectNameEXT set_object_name;
+  /* RenderDoc's in-application API when its layer is in the process. */
+  VkrVulkanGpuCaptureTool gpu_capture_tool;
   /* Loaded only when VK_EXT_device_fault and its deviceFault feature are
      enabled. */
   PFN_vkGetDeviceFaultInfoEXT get_device_fault_info;
@@ -520,9 +523,11 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
       .enabledExtensionCount = enabled_extension_count,
       .ppEnabledExtensionNames = enabled_extensions,
   };
+  vkr_vulkan_gpu_capture_tool_prepare();
   if (vkCreateInstance(&create_info, NULL, &device->instance) != VK_SUCCESS) {
     return false_v;
   }
+  vkr_vulkan_gpu_capture_tool_open(&device->gpu_capture_tool);
 
   if (!vkr_vk_create_debug_messenger(device, messenger_info)) {
     return false_v;
@@ -1657,6 +1662,13 @@ vkr_internal bool8_t vkr_vk_select_device(VkrVulkanDevice *device) {
     log_error("Vulkan found no physical device");
   for (uint32_t i = 0; i < device->candidate_count; ++i)
     vkr_vk_report_log_rejected(&device->profile.candidates[i]);
+  /* RenderDoc's layer exposes VK_EXT_descriptor_buffer only on a driver with
+     descriptorBufferCaptureReplay, so a capture-enabled run on any other
+     driver fails here with that extension missing. */
+  if (vkr_vulkan_gpu_capture_tool_available(&device->gpu_capture_tool))
+    log_error("RenderDoc's layer is active: it hides VK_EXT_descriptor_buffer "
+              "unless the driver supports descriptorBufferCaptureReplay, so "
+              "RenderDoc cannot capture this renderer on this driver");
   return false_v;
 }
 
@@ -1718,6 +1730,7 @@ void vkr_vulkan_device_destroy(VkrVulkanDevice *device) {
   if (device->instance) {
     vkDestroyInstance(device->instance, NULL);
   }
+  vkr_vulkan_gpu_capture_tool_close(&device->gpu_capture_tool);
   vkr_allocator_free(allocator, device, sizeof(*device),
                      VKR_ALLOCATOR_MEMORY_TAG_VULKAN);
 }
@@ -1906,6 +1919,11 @@ vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device) {
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device) {
   return device ? device->cmd_end_debug_label : NULL;
+}
+
+const VkrVulkanGpuCaptureTool *
+vkr_vulkan_device_gpu_capture_tool(const VkrVulkanDevice *device) {
+  return device ? &device->gpu_capture_tool : NULL;
 }
 
 void vkr_vulkan_device_set_object_name(const VkrVulkanDevice *device,

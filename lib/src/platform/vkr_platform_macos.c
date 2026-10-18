@@ -114,6 +114,10 @@ bool8_t vkr_platform_environment_is_set(const char *name) {
   return name && getenv(name) ? true_v : false_v;
 }
 
+bool8_t vkr_platform_environment_set(const char *name, const char *value) {
+  return name && value && setenv(name, value, 1) == 0 ? true_v : false_v;
+}
+
 bool8_t vkr_platform_random_bytes(void *out, uint64_t size) {
   if (!out && size) {
     return false_v;

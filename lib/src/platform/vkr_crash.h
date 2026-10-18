@@ -21,8 +21,13 @@
  * writer thread; a crash can read a slot mid-copy, so its text can come out
  * torn, never longer than VKR_CRASH_TEXT_CAPACITY.
  *
- * Windows has no implementation yet: install returns false and reports go
- * nowhere (vkr_crash_windows.c describes the expected behaviour). */
+ * On Windows an unhandled-exception filter writes the same report, with the
+ * exception code and address as its reason and module+offset frames, and
+ * first a minidump beside it (crash-<program>-<pid>-<unix seconds>.dmp, no
+ * dump without a directory). A SIGABRT handler reports abort() the same way
+ * and then calls abort() again under the default action, so the exit code
+ * and the system report stay as before. __fastfail and /GS buffer-overrun
+ * failures end the process without reaching either. */
 
 #define VKR_CRASH_TEXT_CAPACITY 256u
 
@@ -40,17 +45,21 @@ typedef enum VkrCrashText {
 } VkrCrashText;
 
 /**
- * Installs the fatal-signal handlers on an alternate signal stack, so a
- * main-thread stack overflow still reports. `report_directory` may be NULL to
+ * Installs the fatal-signal handlers on an alternate signal stack (Windows:
+ * the unhandled-exception filter with a stack guarantee, and a SIGABRT
+ * handler), so a stack overflow
+ * on the installing thread still reports. `report_directory` may be NULL to
  * follow the session log; `program_name` names the report file (NULL keeps
  * "vkr"). Both are copied. A second call replaces the directory and program
  * and keeps the handlers. A signal that already has a handler, such as a
- * sanitizer's, keeps it. False when no handler could be installed.
+ * sanitizer's, keeps it; on Windows the previous filter runs after the
+ * report. False when no handler could be installed.
  */
 bool8_t vkr_crash_install(const char *report_directory,
                           const char *program_name);
 
-/** Restores the signal actions vkr_crash_install replaced. */
+/** Restores the signal actions (Windows: the exception filter and SIGABRT
+    action) vkr_crash_install replaced. */
 void vkr_crash_uninstall(void);
 
 /** Records the frame the application host is running. */

@@ -2384,11 +2384,15 @@ bool8_t vkr_renderer_request_gpu_capture(VkrRenderer *renderer,
   }
   vkr_renderer_join_render_thread(renderer);
 #if defined(PLATFORM_APPLE)
+  /* Each backend names its own file type after the base path. */
+  char trace_path[sizeof(((VkrRendererGpuCaptureStatus *)0)->path)];
+  string_format(trace_path, sizeof(trace_path), "%s.gputrace", path);
   return vkr_metal_packet_renderer_request_gpu_trace(renderer->metal_renderer,
-                                                     path, frames);
+                                                     trace_path, frames);
 #else
-  (void)frames;
-  return false_v;
+  /* RenderDoc appends its own frame number and .rdc to the template. */
+  return vkr_vulkan_renderer_request_gpu_capture(renderer->vulkan_renderer,
+                                                 path, frames);
 #endif
 }
 
@@ -2408,10 +2412,15 @@ vkr_renderer_gpu_capture_status(VkrRenderer *renderer) {
   MemCopy(status.path, trace.path, sizeof(status.path));
   MemCopy(status.message, trace.message, sizeof(status.message));
 #else
-  status.state = VKR_RENDERER_GPU_CAPTURE_FAILED;
-  string_format(status.message, sizeof(status.message),
-                "Vulkan has no GPU capture yet (RenderDoc in-app capture is "
-                "planned)");
+  _Static_assert((int)VKR_RENDERER_GPU_CAPTURE_FAILED ==
+                     (int)VKR_VULKAN_GPU_CAPTURE_FAILED,
+                 "frontend and Vulkan capture states match");
+  VkrVulkanGpuCaptureStatus capture = {0};
+  vkr_vulkan_renderer_gpu_capture_status(renderer->vulkan_renderer, &capture);
+  status.state = (VkrRendererGpuCaptureState)capture.state;
+  status.frames = capture.frames;
+  MemCopy(status.path, capture.path, sizeof(status.path));
+  MemCopy(status.message, capture.message, sizeof(status.message));
 #endif
   return status;
 }

@@ -113,6 +113,21 @@ bool8_t vkr_platform_environment_variable(const char *name, char *value,
   return true_v;
 }
 
+bool8_t vkr_platform_environment_set(const char *name, const char *value) {
+  wchar_t wide_name[256];
+  wchar_t wide_value[1024];
+  if (!name || !value ||
+      !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name, -1, wide_name,
+                           (int)ArrayCount(wide_name)) ||
+      !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, wide_value,
+                           (int)ArrayCount(wide_value))) {
+    return false_v;
+  }
+  /* The process environment block, which GetEnvironmentVariableW and
+     loaders read; the CRT's getenv copy is not consulted by the engine. */
+  return SetEnvironmentVariableW(wide_name, wide_value) ? true_v : false_v;
+}
+
 bool8_t vkr_platform_environment_is_set(const char *name) {
   wchar_t wide_name[256];
   if (!name || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name, -1,

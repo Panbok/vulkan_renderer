@@ -10,11 +10,12 @@ authority: adr
 
 Accepted (partial). Phase P3 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
-implemented on the Mac up to its debug views: crash reports with the active
-pass, the `debug.gpu_capture` request, the `debug.graph` description, the
-Render graph window and debug drawing. The Windows crash handler and a Vulkan
-capture (RenderDoc) are stubs. Metal programmatic capture is refused by
-macOS 26 for Metal 4 compute encoders.
+implemented: crash reports with the active pass on macOS and Windows, the
+`debug.gpu_capture` request with Metal and RenderDoc backends, the
+`debug.graph` description, the Render graph window and debug drawing. Metal
+programmatic capture is refused by macOS 26 for Metal 4 compute encoders,
+and RenderDoc cannot capture this renderer on a driver without
+`descriptorBufferCaptureReplay`, such as the Windows RX 6700 XT's.
 
 ## Context
 
@@ -51,9 +52,22 @@ SIGBUS, SIGILL, SIGFPE, SIGABRT and SIGTRAP on an alternate signal stack
   (`log_history_emergency_write`), so a record being written can come out
   torn. `backtrace` is not on the POSIX async-signal-safe list. Everything
   before the backtrace is already written if it fails.
-- Windows: `vkr_crash_windows.c` is a stub. Its comment states the contract:
-  an unhandled-exception filter, a minidump with thread info, the same text
-  report, then `EXCEPTION_CONTINUE_SEARCH`.
+- Windows ([vkr_crash_windows.c](../../lib/src/platform/vkr_crash_windows.c)):
+  an unhandled-exception filter, with a 64 KiB `SetThreadStackGuarantee` so
+  a stack overflow still reports, writes `crash-<program>-<pid>-<time>.dmp`
+  through `MiniDumpWriteDump` (`MiniDumpWithThreadInfo`; dbghelp loaded at
+  install from System32 only) and the same text report: the exception name,
+  code and address, for an access violation the access and its address,
+  then the context and a backtrace as module+offset frames with the
+  faulting instruction first. Large buffers are static, guarded by the
+  re-entry flag, so the filter allocates nothing. It then hands the
+  exception to the previous filter, normally the C runtime's, or answers
+  `EXCEPTION_CONTINUE_SEARCH`, so Windows Error Reporting and the exit code
+  stay as before.
+- A `SIGABRT` handler, installed only over the default action, writes a
+  dump and the report for `abort()` (every failed `assert`), then restores
+  the default and calls `abort()` again, so the process still fast-fails
+  with `0xc0000409`. `__fastfail` and `/GS` failures bypass both.
 
 **GPU capture** ([vkr_renderer.h](../../renderer/src/vkr_renderer.h)).
 `vkr_renderer_request_gpu_capture(path, frames)` and
@@ -70,7 +84,23 @@ SIGBUS, SIGILL, SIGFPE, SIGABRT and SIGTRAP on an alternate signal stack
   `supportsAIRNT` selector sent to a dispatch queue), as the shader
   validator does. So capture-enabled runs compile pipelines from source
   ([vkr_metal_packet_setup.inc](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc)).
-- Vulkan reports that it has no capture.
+- On Vulkan ([vkr_vulkan_gpu_capture.c](../../renderer/src/vulkan/vkr_vulkan_gpu_capture.c))
+  RenderDoc captures through its implicit layer, which the loader enables
+  when `ENABLE_VULKAN_RENDERDOC_CAPTURE` is 1 at instance creation:
+  RenderDoc sets it for a process it launches, and `VKR_RENDERDOC_CAPTURE=1`
+  makes the device set it through `vkr_platform_environment_set`. After the
+  instance exists, the device opens the already loaded `renderdoc.dll` by
+  name and binds the in-application API 1.6 from the vendored
+  `renderdoc_app.h` (`vendor/renderdoc.md`). The render thread calls
+  `StartFrameCapture` with the instance and no window before the next
+  frame's first API call, and `EndFrameCapture` after the last captured
+  frame's submission and present; the status answers the `.rdc` RenderDoc
+  wrote. Without RenderDoc the request answers how to start it.
+- RenderDoc exposes `VK_EXT_descriptor_buffer`, which this renderer
+  requires, only on a driver with `descriptorBufferCaptureReplay`; on any
+  other driver device creation fails under its layer, and the log says so.
+- The frontend passes each backend a base path: Metal adds `.gputrace`,
+  RenderDoc its frame number and `.rdc`.
 - `debug.gpu_capture {name, frames}` (1 to 8) writes into the recording
   directory and answers the path, or the failure with its reason
   ([editor_ops.c](../../editor/src/editor_ops.c)).
@@ -149,7 +179,8 @@ Develop > Render graph, or `window graph`, shows the same description.
 ## Revisit when
 
 - macOS supports capturing Metal 4 compute encoders.
-- The Windows crash handler and RenderDoc capture land.
+- RenderDoc or the AMD driver supports descriptor buffers for capture, so
+  a Vulkan capture can run on the Windows machine.
 - A crash on another thread's stack overflow needs a report (per-thread
   alternate stacks).
 
@@ -185,5 +216,28 @@ Develop > Render graph, or `window graph`, shows the same description.
   nothing, and added a 12-segment camera frustum. A window capture showed
   every shape and label at its place; after `debug.clear {group: probe}`
   only the frustum remained.
-- Windows: stubs only. The Vulkan pass breadcrumb is compiled on the Mac
-  only.
+- Windows crash reports, 2026-10-19: a scratch driver linked against the
+  Release `vkr_foundation` wrote, for a null write, a 29 KB minidump and
+  `EXCEPTION_ACCESS_VIOLATION (code 0xc0000005, …, write 0x0)` with
+  `#0 crash_probe.exe+0x3cb7` (exit `0xc0000005`); for a stack overflow a
+  1.0 MB dump and 54 frames (exit `0xc00000fd`); for `abort()` and
+  `raise(SIGABRT)` a dump and `reason: SIGABRT (abort)` (exit
+  `0xc0000409`, as without the handler); and `vkr_crash_write_report` a
+  554-byte report with the frame and breadcrumbs. No WerFault dialog stayed
+  open.
+- Vulkan capture, RX 6700 XT, Adrenalin 26.6.3, RenderDoc v1.45: with
+  `VKR_RENDERDOC_CAPTURE=1` the editor logged `RenderDoc capture available
+  (API 1.7.0)`, then no device: the driver reports
+  `descriptorBufferCaptureReplay` false, so the layer hid
+  `VK_EXT_descriptor_buffer`, and the new log line named that cause. No
+  `.rdc` was taken. Without the variable, `debug.gpu_capture` answered how
+  to enable RenderDoc.
+- `debug.graph` on a headless Release Bistro editor on Vulkan answered 200
+  executed passes (135 graphics, 57 compute, 8 transfer), none culled, in
+  unique ascending order and matching `perf.snapshot`'s 200 pass rows, and
+  66 resources (29 transient, 17 per frame slot, 11 retained, 7 history, 1
+  imported, 1 graph); it wrote a 153 KB DOT file. `IBL.Bake`,
+  `DiffuseVolume.Compose` and `Clouds.SkyLight` list no reads or writes:
+  they write backend-owned images the graph does not declare.
+- The Vulkan pass breadcrumb now builds on Windows (Release, editor and
+  848 tests); no Windows crash has yet shown it in a report.

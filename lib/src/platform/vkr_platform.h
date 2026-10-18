@@ -136,6 +136,11 @@ bool8_t vkr_platform_environment_variable(const char *name, char *value,
  * string; a caller that gives "set but empty" its own meaning asks this. */
 bool8_t vkr_platform_environment_is_set(const char *name);
 
+/** Sets the variable `name` to `value` (UTF-8) in this process's environment,
+ * which libraries loaded afterwards, such as a graphics loader reading a
+ * layer switch, see. Not thread safe against concurrent readers. */
+bool8_t vkr_platform_environment_set(const char *name, const char *value);
+
 /** True when the variable `name` is set to a value other than empty or "0".
  * A value longer than 63 bytes is not a flag and reads as false. */
 vkr_internal INLINE bool8_t vkr_platform_environment_flag(const char *name) {

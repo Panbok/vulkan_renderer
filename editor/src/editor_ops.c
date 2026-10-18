@@ -15502,10 +15502,11 @@ static VkrEditorOpStatus ops_run_debug_gpu_capture(OpsContext *ctx) {
       return VKR_EDITOR_OP_DONE;
     }
     char path[1024];
+    /* The renderer adds its backend's file type. */
     if (name[0]) {
-      string_format(path, sizeof(path), "%s/%s.gputrace", directory, name);
+      string_format(path, sizeof(path), "%s/%s", directory, name);
     } else {
-      string_format(path, sizeof(path), "%s/gpu-%lld.gputrace", directory,
+      string_format(path, sizeof(path), "%s/gpu-%lld", directory,
                     (long long)vkr_platform_get_unix_time());
     }
     if (!frame->gpu_capture_request(frame->gpu_capture_context, path,
@@ -19048,9 +19049,11 @@ static const OpsDef s_ops[] = {
     {"debug.gpu_capture",
      "Capture the next 'frames' (1 to 8, default 1) Scene frames for a GPU "
      "debugger into the recording directory as 'name' (a time stamp when "
-     "absent): a .gputrace document Xcode opens on Metal. Metal capture needs "
-     "the editor started with MTL_CAPTURE_ENABLED=1, else the call answers "
-     "that; Vulkan has no capture yet. Answers the path once written.",
+     "absent): a .gputrace document Xcode opens on Metal, a RenderDoc .rdc on "
+     "Vulkan. Metal capture needs the editor started with "
+     "MTL_CAPTURE_ENABLED=1, Vulkan capture RenderDoc's layer "
+     "(VKR_RENDERDOC_CAPTURE=1 or a launch from RenderDoc), else the call "
+     "answers that. Answers the path once written.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"frames\":{\"type\":\"integer\",\"minimum\":1,"
      "\"maximum\":8}}}",

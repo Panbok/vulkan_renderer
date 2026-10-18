@@ -196,6 +196,11 @@ PFN_vkCmdBeginDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device);
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device);
+typedef struct VkrVulkanGpuCaptureTool VkrVulkanGpuCaptureTool;
+/** RenderDoc's capture API for this device's instance; see
+    vkr_vulkan_gpu_capture.h. */
+const VkrVulkanGpuCaptureTool *
+vkr_vulkan_device_gpu_capture_tool(const VkrVulkanDevice *device);
 /** Names a Vulkan object for captures (RenderDoc, Nsight, RGP) and validation
     messages; `name` need not be terminated and is cut at 127 bytes. Does
     nothing without VK_EXT_debug_utils. Call at creation, never per frame. */

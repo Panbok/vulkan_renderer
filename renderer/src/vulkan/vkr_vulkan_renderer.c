@@ -2,6 +2,7 @@
 #include "platform/vkr_crash.h"
 #include "vkr_render_graph_frame.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
+#include "vulkan/vkr_vulkan_gpu_capture.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
 vkr_internal VkrTextureFormat vkr_vk_present_texture_format(VkFormat format) {
@@ -1577,10 +1578,61 @@ vkr_internal bool8_t vkr_vk_present_submitted_image(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Starts a requested RenderDoc capture before the frame's first API call,
+   so the capture holds the frame's uploads, recording and submission. */
+vkr_internal void vkr_vk_gpu_capture_frame_begin(VkrVulkanRenderer *renderer) {
+  VkrVulkanGpuCaptureStatus *capture = &renderer->gpu_capture;
+  if (capture->state != VKR_VULKAN_GPU_CAPTURE_REQUESTED)
+    return;
+  if (!vkr_vulkan_gpu_capture_tool_start(
+          vkr_vulkan_device_gpu_capture_tool(renderer->device),
+          vkr_vulkan_device_instance(renderer->device), capture->path)) {
+    capture->state = VKR_VULKAN_GPU_CAPTURE_FAILED;
+    string_format(capture->message, sizeof(capture->message),
+                  "RenderDoc did not start the capture");
+    return;
+  }
+  capture->state = VKR_VULKAN_GPU_CAPTURE_CAPTURING;
+  renderer->gpu_capture_frames_left = capture->frames;
+  log_info("RenderDoc capture started: %u frames to %s", capture->frames,
+           capture->path);
+}
+
+/* Counts a submitted (and presented) frame of a running capture and ends the
+   capture after the last one; RenderDoc writes the .rdc as it ends. */
+vkr_internal void vkr_vk_gpu_capture_frame_done(VkrVulkanRenderer *renderer) {
+  VkrVulkanGpuCaptureStatus *capture = &renderer->gpu_capture;
+  if (capture->state != VKR_VULKAN_GPU_CAPTURE_CAPTURING)
+    return;
+  if (renderer->gpu_capture_frames_left > 1u) {
+    --renderer->gpu_capture_frames_left;
+    return;
+  }
+  renderer->gpu_capture_frames_left = 0u;
+  char written[sizeof(capture->path)];
+  if (!vkr_vulkan_gpu_capture_tool_end(
+          vkr_vulkan_device_gpu_capture_tool(renderer->device),
+          vkr_vulkan_device_instance(renderer->device), written,
+          sizeof(written))) {
+    capture->state = VKR_VULKAN_GPU_CAPTURE_FAILED;
+    string_format(capture->message, sizeof(capture->message),
+                  "RenderDoc wrote no capture");
+    log_warn("RenderDoc capture to %s wrote nothing", capture->path);
+    return;
+  }
+  capture->state = VKR_VULKAN_GPU_CAPTURE_DONE;
+  string_format(capture->path, sizeof(capture->path), "%s", written);
+  string_format(capture->message, sizeof(capture->message),
+                "Captured %u frames; open the .rdc in RenderDoc.",
+                capture->frames);
+  log_info("RenderDoc capture written to %s", capture->path);
+}
+
 bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
                                           const VkrPreparedFrame *packet,
                                           VkrVulkanResult *out_result) {
   renderer->submit_error = VKR_RENDERER_ERROR_NONE;
+  vkr_vk_gpu_capture_frame_begin(renderer);
   vkr_render_graph_prepare_frame(
       packet, &renderer->bloom_config, &renderer->gtao_config,
       &renderer->prepared_frame, &renderer->gtao_params);
@@ -1697,6 +1749,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
       !vkr_vk_present_submitted_image(renderer, slot, signal_value)) {
     return false_v;
   }
+  vkr_vk_gpu_capture_frame_done(renderer);
   renderer->sentinel_uploaded = true_v;
   renderer->frame_active = false_v;
   vkr_rg_end_frame(renderer->graph);
@@ -2026,6 +2079,42 @@ bool8_t vkr_vulkan_renderer_get_and_reset_command_slot_wait_count(
   *out_wait_count = renderer->command_slot_wait_count;
   renderer->command_slot_wait_count = 0u;
   return true_v;
+}
+
+bool8_t vkr_vulkan_renderer_request_gpu_capture(VkrVulkanRenderer *renderer,
+                                                const char *path_template,
+                                                uint32_t frames) {
+  if (!renderer || !path_template || !path_template[0] || frames == 0u)
+    return false_v;
+  VkrVulkanGpuCaptureStatus *capture = &renderer->gpu_capture;
+  if (capture->state == VKR_VULKAN_GPU_CAPTURE_REQUESTED ||
+      capture->state == VKR_VULKAN_GPU_CAPTURE_CAPTURING ||
+      string_length(path_template) >= sizeof(capture->path))
+    return false_v;
+  if (!vkr_vulkan_gpu_capture_tool_available(
+          vkr_vulkan_device_gpu_capture_tool(renderer->device))) {
+    *capture = (VkrVulkanGpuCaptureStatus){
+        .state = VKR_VULKAN_GPU_CAPTURE_FAILED,
+        .frames = frames,
+    };
+    string_format(capture->message, sizeof(capture->message),
+                  "RenderDoc is not in this process; start the editor with "
+                  "VKR_RENDERDOC_CAPTURE=1 or launch it from RenderDoc");
+    return false_v;
+  }
+  *capture = (VkrVulkanGpuCaptureStatus){
+      .state = VKR_VULKAN_GPU_CAPTURE_REQUESTED,
+      .frames = frames,
+  };
+  string_format(capture->path, sizeof(capture->path), "%s", path_template);
+  return true_v;
+}
+
+void vkr_vulkan_renderer_gpu_capture_status(const VkrVulkanRenderer *renderer,
+                                            VkrVulkanGpuCaptureStatus *out) {
+  if (!out)
+    return;
+  *out = renderer ? renderer->gpu_capture : (VkrVulkanGpuCaptureStatus){0};
 }
 
 bool8_t vkr_vulkan_renderer_get_and_reset_present_timing(

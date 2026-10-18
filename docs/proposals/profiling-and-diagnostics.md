@@ -77,11 +77,16 @@ Crash reports with the pass breadcrumb, the `debug.gpu_capture` request,
 [ADR-127](../adr/127-crash-reports-gpu-capture-and-graph-description.md).
 Remaining:
 
-- The Windows crash handler (exception filter, minidump) and Vulkan
-  checkpoints or buffer markers.
-- RenderDoc in-app capture behind `debug.gpu_capture` on Vulkan; a Capture GPU
-  frame button once a backend can capture (Metal 4 compute encoders are not
-  capturable programmatically on macOS 26).
+- Vulkan checkpoints or buffer markers (`VK_AMD_buffer_marker` and
+  device-coherent memory exist on the Windows RX 6700 XT) naming the last
+  pass before a device loss.
+- A Capture GPU frame button once a backend can capture on its machine
+  (Metal 4 compute encoders are not capturable programmatically on macOS
+  26; RenderDoc needs `descriptorBufferCaptureReplay`, which the Windows AMD
+  driver lacks).
+- Graph declarations for the resources `IBL.Bake`, `DiffuseVolume.Compose`
+  and `Clouds.SkyLight` write, which `debug.graph` shows without reads or
+  writes on Vulkan.
 - Freeze culling, overdraw, LOD and light-count views; optional vendor
   counters and an `xctrace` table importer.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.

@@ -3830,6 +3830,9 @@ struct VkrVulkanRenderer {
   /* CPU time in vkQueuePresentKHR and vkAcquireNextImageKHR since the metrics
      collector last read it. Render thread only. */
   VkrRendererImplPresentTiming present_timing;
+  /* The RenderDoc capture debug.gpu_capture asked for; render thread. */
+  VkrVulkanGpuCaptureStatus gpu_capture;
+  uint32_t gpu_capture_frames_left;
   uint32_t active_frame_slot;
   uint32_t history_output_index;
   uint32_t next_image_index;

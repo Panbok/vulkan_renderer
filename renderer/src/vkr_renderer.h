@@ -1415,18 +1415,21 @@ typedef enum VkrRendererGpuCaptureState {
 typedef struct VkrRendererGpuCaptureStatus {
   VkrRendererGpuCaptureState state;
   uint32_t frames;
-  /** The capture file: a .gputrace bundle on Metal. */
+  /** The capture file: a .gputrace bundle on Metal, a RenderDoc .rdc on
+   * Vulkan. */
   char path[1024];
   /** Why it failed, or what to do with the file. */
   char message[256];
 } VkrRendererGpuCaptureStatus;
 
 /**
- * Captures the next `frames` submitted frames into `path` for a GPU
- * debugger: a .gputrace document for Xcode on Metal, which needs the process
- * started with MTL_CAPTURE_ENABLED=1. Vulkan has no capture yet. Joins the
- * render thread. Returns false while a capture is pending or running, or
- * when the backend cannot capture; the status says why.
+ * Captures the next `frames` submitted frames for a GPU debugger under
+ * `path`, a path without extension: a `path`.gputrace document for Xcode on
+ * Metal, which needs the process started with MTL_CAPTURE_ENABLED=1; a
+ * RenderDoc .rdc named from `path` on Vulkan, which needs RenderDoc's layer
+ * (VKR_RENDERDOC_CAPTURE=1, or a launch from RenderDoc). Joins the render
+ * thread. Returns false while a capture is pending or running, or when the
+ * backend cannot capture; the status says why.
  */
 bool8_t vkr_renderer_request_gpu_capture(VkrRenderer *renderer,
                                          const char *path, uint32_t frames);
