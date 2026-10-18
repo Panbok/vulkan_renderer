@@ -18,6 +18,7 @@
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_json.h"
 #include "vkr_bakery_os.h"
+#include "vkr_depot_remote.h"
 #include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
 #include "vkr_depot_zstd.h"
@@ -142,6 +143,13 @@ typedef struct DepotProject {
 
 struct VkrEditorDepot {
   VkrAllocator *allocator;
+  /* Asset streaming: the remote content directory's server, installed as
+     the VFS remote and overlay until the editor closes. */
+  VkrDepotRemote *stream;
+  char stream_directory[DEPOT_PATH];
+  /* Platform clock seconds when it opened, and how long opening took. */
+  float64_t stream_opened_at;
+  float64_t stream_open_seconds;
   bool8_t registry_loaded;
   DepotKnown known[DEPOT_KNOWN_MAX];
   uint32_t known_count;
@@ -1625,6 +1633,11 @@ void vkr_editor_depot_destroy(VkrEditorDepot *depot) {
   depot_service_stop(depot);
   if (depot->browser_open) {
     vkr_depot_browser_close(&depot->browser);
+  }
+  if (depot->stream) {
+    /* Reads stop asking before the remote goes. */
+    (void)vkr_vfs_set_remote(NULL, NULL, NULL);
+    vkr_depot_remote_close(depot->stream);
   }
   vkr_heap_free(depot->job);
   vkr_allocator_free(depot->allocator, depot, sizeof(*depot),
@@ -3244,6 +3257,107 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
 // =============================================================================
 // Status for agents
 // =============================================================================
+
+bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
+                                const char *key_hex, const char *directory,
+                                const char *branch, bool8_t no_cooked,
+                                char *error, uint32_t capacity) {
+  uint8_t key[32];
+  if (depot->stream) {
+    string_format(error, capacity, "a stream is open already");
+    return false_v;
+  }
+  if (!depot_key_parse(key_hex, key)) {
+    string_format(error, capacity, "the server key needs 64 hex digits");
+    return false_v;
+  }
+  if (!vkr_bakery_path_absolute(directory, depot->stream_directory,
+                                sizeof(depot->stream_directory))) {
+    string_format(error, capacity, "the stream directory path is too long");
+    return false_v;
+  }
+  const VkrDepotRemoteConfig config = {.directory = depot->stream_directory,
+                                       .address = address,
+                                       .server_key = key,
+                                       .branch = branch,
+                                       .codec = vkr_depot_zstd_codec(),
+                                       .no_cooked = no_cooked};
+  depot->stream_opened_at = vkr_platform_get_absolute_time();
+  depot->stream =
+      vkr_depot_remote_open(depot->allocator, &config, error, capacity);
+  if (!depot->stream) {
+    return false_v;
+  }
+  depot->stream_open_seconds =
+      vkr_platform_get_absolute_time() - depot->stream_opened_at;
+  if (!vkr_vfs_set_remote(depot->stream_directory, vkr_depot_remote_fetch,
+                          depot->stream) ||
+      !vkr_vfs_set_overlay_root(depot->stream_directory)) {
+    (void)vkr_vfs_set_remote(NULL, NULL, NULL);
+    vkr_depot_remote_close(depot->stream);
+    depot->stream = NULL;
+    string_format(error, capacity, "the stream directory path is too long");
+    return false_v;
+  }
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(depot->stream, &stats);
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&stats.commit, hex);
+  log_info(
+      "Streaming %u files of %.12s%s from %s into %s (listed in %.0f ms)",
+      stats.listed, hex,
+      vkr_depot_id_zero(&stats.cooked_commit) ? "" : " and its cooked branch",
+      address, depot->stream_directory, depot->stream_open_seconds * 1000.0);
+  return true_v;
+}
+
+VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
+                                            Arena *arena) {
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, result, "streaming",
+                      vkr_bakery_json_bool(arena, depot->stream != NULL));
+  if (!depot->stream) {
+    return result;
+  }
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(depot->stream, &stats);
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&stats.commit, hex);
+  vkr_bakery_json_set(arena, result, "commit",
+                      vkr_bakery_json_cstr(arena, hex));
+  vkr_depot_id_hex(&stats.cooked_commit, hex);
+  vkr_bakery_json_set(
+      arena, result, "cooked_commit",
+      vkr_bakery_json_cstr(arena,
+                           vkr_depot_id_zero(&stats.cooked_commit) ? "" : hex));
+  vkr_bakery_json_set(arena, result, "directory",
+                      vkr_bakery_json_cstr(arena, depot->stream_directory));
+  vkr_bakery_json_set(arena, result, "listed",
+                      vkr_bakery_json_int(arena, stats.listed));
+  vkr_bakery_json_set(arena, result, "present",
+                      vkr_bakery_json_int(arena, stats.present));
+  vkr_bakery_json_set(arena, result, "fetched",
+                      vkr_bakery_json_int(arena, stats.fetched));
+  vkr_bakery_json_set(arena, result, "failed",
+                      vkr_bakery_json_int(arena, stats.failed));
+  vkr_bakery_json_set(arena, result, "stored_bytes",
+                      vkr_bakery_json_int(arena, (int64_t)stats.stored_bytes));
+  vkr_bakery_json_set(
+      arena, result, "wait_ms",
+      vkr_bakery_json_float(arena, (float64_t)stats.wait_us / 1000.0));
+  vkr_bakery_json_set(
+      arena, result, "last_fetch_ms",
+      vkr_bakery_json_float(arena, (float64_t)stats.last_write_us / 1000.0));
+  vkr_bakery_json_set(
+      arena, result, "open_ms",
+      vkr_bakery_json_float(arena, depot->stream_open_seconds * 1000.0));
+  vkr_bakery_json_set(
+      arena, result, "since_open_ms",
+      vkr_bakery_json_float(
+          arena, (vkr_platform_get_absolute_time() - depot->stream_opened_at) *
+                     1000.0));
+  return result;
+}
 
 VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
                                             Arena *arena) {

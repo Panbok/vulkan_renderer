@@ -1,10 +1,14 @@
 #include "depot_test.h"
+#include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
+#include "vkr_depot_remote.h"
 #include "vkr_depot_server.h"
 #include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
@@ -805,6 +809,34 @@ static void test_depot_transfer(void) {
   assert(vkr_depot_client_refs(client, refs, 4u, &ref_count));
   assert(ref_count == 1u && strcmp(refs[0].name, "main") == 0 &&
          vkr_depot_id_equal(&refs[0].commit, &first));
+  /* A sparse fetch brings the trees, which list every file, and no file;
+     one file then arrives on its own and equals Alice's. */
+  assert(vkr_depot_client_fetch_trees(client, &first, &stats));
+  assert(stats.objects == 3u);
+  uint8_t *sparse_bytes = NULL;
+  uint64_t sparse_size = 0u;
+  VkrDepotCommit sparse_commit;
+  assert(vkr_depot_store_get(&bob.store, &first, &sparse_bytes, &sparse_size));
+  assert(vkr_depot_commit_parse(sparse_bytes, sparse_size, &sparse_commit));
+  free(sparse_bytes);
+  VkrDepotFileList listed = {0};
+  assert(vkr_depot_tree_files(&bob.store, &sparse_commit.tree, &listed));
+  assert(listed.count == 2u &&
+         strcmp(listed.entries[1].path, "textures/big.bin") == 0);
+  const VkrDepotId big_blob = listed.entries[1].blob;
+  vkr_depot_file_list_free(&listed);
+  assert(!vkr_depot_store_has(&bob.store, &big_blob));
+  assert(vkr_depot_client_fetch_files(client, &big_blob, 1u, &stats));
+  assert(vkr_depot_store_has(&bob.store, &big_blob) && stats.objects > 1u);
+  char sparse_a[VKR_DEPOT_PATH_CAPACITY];
+  char sparse_b[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(sparse_a, sizeof(sparse_a), alice_root,
+                              "textures/big.bin"));
+  assert(vkr_bakery_path_join(sparse_b, sizeof(sparse_b), bob_root,
+                              "sparse_big.bin"));
+  assert(vkr_depot_write_blob(&bob.store, &big_blob, sparse_b));
+  assert(depot_test_files_equal(sparse_a, sparse_b));
+  assert(vkr_bakery_remove_file(sparse_b));
   assert(vkr_depot_client_fetch(client, &first, &stats));
   printf("    fetch: %llu objects, %llu bytes\n",
          (unsigned long long)stats.objects,
@@ -1422,6 +1454,198 @@ static void test_depot_service(void) {
   printf("  test_depot_service PASSED\n");
 }
 
+typedef struct DepotRemoteReader {
+  VkrDepotRemote *remote;
+  const char *path;
+  bool8_t ok;
+} DepotRemoteReader;
+
+static void *depot_remote_read(void *argument) {
+  DepotRemoteReader *reader = argument;
+  reader->ok = vkr_depot_remote_fetch(reader->remote, reader->path);
+  return NULL;
+}
+
+/* Asset streaming over loopback (vkr_depot_remote.h). A working copy pushes
+   its project and publishes its ignored cooked texture to the cooked side
+   branch; a remote then lists both without fetching any file. Fails when a
+   listed file does not arrive through a VFS read below the directory, when
+   it arrives with other bytes, when readers asking at once on several
+   threads see a failure, when an unlisted path is served, when a second
+   remote fetches a file already present, or when publishing the same cooked
+   files again commits. */
+static void test_depot_remote(void) {
+  printf("  Running test_depot_remote...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char author_root[VKR_DEPOT_PATH_CAPACITY];
+  char stream_root[VKR_DEPOT_PATH_CAPACITY];
+  char key_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("remote_store", store_root, sizeof(store_root));
+  depot_test_dir("remote_author", author_root, sizeof(author_root));
+  depot_test_dir("remote_stream", stream_root, sizeof(stream_root));
+  depot_test_dir("remote_key", key_root, sizeof(key_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), key_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const VkrDepotServiceConfig config = {.store_root = store_root,
+                                        .bind = "127.0.0.1:0",
+                                        .discovery_port = 7351u,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info.address.port);
+
+  /* The author's project: a scene, a texture source and its cooked file,
+     which the ignore rules keep out of the history. */
+  static uint8_t cooked[600000];
+  depot_test_random(cooked, sizeof(cooked));
+  depot_test_write(author_root, ".vkrdepotignore", "*.vkt\n", 6u);
+  depot_test_write(author_root, "scene.json", "{\"entities\":[]}", 15u);
+  depot_test_write(author_root, "textures/wall.png", "png bytes", 9u);
+  depot_test_write(author_root, "textures/wall.png.vkt", cooked,
+                   sizeof(cooked));
+  VkrDepotWorkspace author;
+  assert(vkr_depot_workspace_create(&author, author_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = info.server_key,
+                                         .store = &author.store,
+                                         .timeout_ms = 5000u};
+  VkrDepotConnection *connection =
+      vkr_depot_connect(&allocator, &connect, NULL, error, sizeof(error));
+  assert(connection);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  const VkrDepotId zero = {0};
+  VkrDepotPendingCommit pending;
+  assert(vkr_depot_commit_snapshot(&author, &zero, "project", &pending, error,
+                                   sizeof(error)));
+  assert(pending.files.count == 3u);
+  if (!vkr_depot_commit_push(&author, client, "main", &zero, &zero, &pending,
+                             error, sizeof(error))) {
+    printf("    push failed: %s\n", error);
+    assert(false && "push");
+  }
+  vkr_depot_pending_commit_free(&pending);
+  VkrDepotId cooked_tree;
+  uint32_t cooked_files = 0u;
+  assert(vkr_depot_cooked_snapshot(&author, &cooked_tree, &cooked_files, error,
+                                   sizeof(error)) &&
+         cooked_files == 1u);
+  VkrDepotCookedResult published;
+  if (!vkr_depot_publish_cooked(&author, client, "main", &cooked_tree,
+                                cooked_files, &published, error,
+                                sizeof(error))) {
+    printf("    cooked publish failed: %s\n", error);
+    assert(false && "cooked publish");
+  }
+  assert(published.files == 1u && !published.unchanged);
+  /* The same cooked files publish nothing; the index stays the project's. */
+  VkrDepotCookedResult again;
+  assert(vkr_depot_publish_cooked(&author, client, "main", &cooked_tree,
+                                  cooked_files, &again, error, sizeof(error)));
+  assert(again.unchanged &&
+         vkr_depot_id_equal(&again.commit, &published.commit));
+  assert(author.index.count == 3u);
+  vkr_depot_disconnect(connection);
+
+  /* A remote lists the four files and holds none of them yet. */
+  const VkrDepotRemoteConfig remote_config = {.directory = stream_root,
+                                              .address = address,
+                                              .server_key = info.server_key,
+                                              .codec = vkr_depot_zstd_codec()};
+  VkrDepotRemote *remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  if (!remote) {
+    printf("    remote failed: %s\n", error);
+    assert(false && "remote open");
+  }
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.listed == 4u && stats.present == 0u && stats.fetched == 0u &&
+         vkr_depot_id_equal(&stats.cooked_commit, &published.commit));
+
+  /* A read below the directory fetches the cooked file through the VFS. */
+  assert(vkr_vfs_set_remote(stream_root, vkr_depot_remote_fetch, remote));
+  char streamed[VKR_DEPOT_PATH_CAPACITY];
+  char original[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(streamed, sizeof(streamed), stream_root,
+                              "textures/wall.png.vkt"));
+  assert(vkr_bakery_path_join(original, sizeof(original), author_root,
+                              "textures/wall.png.vkt"));
+  const FilePath streamed_path = {
+      .path = {.str = (uint8_t *)streamed, .length = strlen(streamed)},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_exists(&streamed_path));
+  assert(depot_test_files_equal(streamed, original));
+  char unlisted[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(unlisted, sizeof(unlisted), stream_root,
+                              "textures/none.vkt"));
+  const FilePath unlisted_path = {
+      .path = {.str = (uint8_t *)unlisted, .length = strlen(unlisted)},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(!file_exists(&unlisted_path));
+  assert(vkr_vfs_set_remote(NULL, NULL, NULL));
+
+  /* Readers asking at once on several threads all get their files. */
+  DepotRemoteReader readers[4] = {
+      {.remote = remote, .path = "scene.json"},
+      {.remote = remote, .path = "textures/wall.png"},
+      {.remote = remote, .path = "scene.json"},
+      {.remote = remote, .path = ".vkrdepotignore"}};
+  VkrThread threads[4];
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    assert(vkr_thread_create(&allocator, &threads[i], depot_remote_read,
+                             &readers[i]));
+  }
+  for (uint32_t i = 0u; i < 4u; ++i) {
+    assert(vkr_thread_join(threads[i]));
+    (void)vkr_thread_destroy(&allocator, &threads[i]);
+    assert(readers[i].ok);
+  }
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.fetched == 4u && stats.failed == 0u);
+  vkr_depot_remote_close(remote);
+
+  /* A second remote finds the files in place and fetches none. */
+  remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  assert(remote);
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.present == 4u);
+  assert(vkr_depot_remote_fetch(remote, "textures/wall.png.vkt"));
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.fetched == 0u);
+  vkr_depot_remote_close(remote);
+
+  vkr_vfs_unmount_all();
+  vkr_depot_workspace_close(&author);
+  vkr_depot_service_stop(service);
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(author_root));
+  assert(vkr_bakery_remove_tree(stream_root));
+  assert(vkr_bakery_remove_tree(key_root));
+  printf("  test_depot_remote PASSED\n");
+}
+
 /* Stores a tree of `count` entries into `store`. */
 static void depot_test_tree(const VkrDepotStore *store,
                             VkrDepotTreeEntry *entries, uint32_t count,
@@ -1708,6 +1932,7 @@ bool32_t run_depot_tests(void) {
   test_depot_cancel();
   test_depot_identity_migration();
   test_depot_service();
+  test_depot_remote();
   test_depot_tree_limits();
   test_depot_checkout_safety();
   test_depot_server_refusals();

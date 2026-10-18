@@ -199,6 +199,43 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
                               VkrDepotPendingCommit *pending, char *error,
                               uint32_t capacity);
 
+/* `<branch>.cooked.<family>`: `bc` for BC7 and BC5 blocks, `astc` on Apple
+   GPUs, as the texture producer encodes for this computer. */
+void vkr_depot_cooked_branch(const char *branch, char *out, uint32_t capacity);
+
+/* Branches a cooked publish lists to find its side branch. */
+#define VKR_DEPOT_COOKED_REFS_MAX 1024u
+
+typedef struct VkrDepotCookedResult {
+  /* `<branch>.cooked.<family>` (vkr_depot_cooked_branch). */
+  char branch[VKR_DEPOT_BRANCH_NAME];
+  VkrDepotId commit;
+  uint32_t files;
+  uint64_t uploaded_bytes;
+  /* The side branch held these files already; nothing was committed. */
+  bool8_t unchanged;
+} VkrDepotCookedResult;
+
+/* Hashes the working copy's cooked platform files into its store and
+   returns their tree. Needs no connection: hashing hundreds of megabytes
+   outlasts the transport's idle timeout, so connect after it. False with a
+   message, also when there are none. */
+bool8_t vkr_depot_cooked_snapshot(VkrDepotWorkspace *workspace,
+                                  VkrDepotId *out_tree, uint32_t *out_files,
+                                  char *error, uint32_t capacity);
+
+/* Publishes a cooked snapshot's `tree` of `files` files to the cooked side
+   branch of `branch` for this computer's GPU family, so a streaming client
+   of the same family (vkr_depot_remote.h) fetches them instead of cooking.
+   The commit holds only those files, names the working copy's base in its
+   message and follows the side branch's newest commit; the project's
+   history and the working copy's index stay as they are. */
+bool8_t vkr_depot_publish_cooked(VkrDepotWorkspace *workspace,
+                                 VkrDepotClient *client, const char *branch,
+                                 const VkrDepotId *tree, uint32_t files,
+                                 VkrDepotCookedResult *out_result, char *error,
+                                 uint32_t capacity);
+
 typedef enum VkrDepotMirrorAction {
   VKR_DEPOT_MIRROR_SAME = 0,
   /* The peer moved to this server's commit. */

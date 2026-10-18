@@ -1248,6 +1248,108 @@ vkr_internal void test_vfs_workspace_overlay(void) {
   printf("  test_vfs_workspace_overlay PASSED\n");
 }
 
+/* A remote that holds `held.txt` and `assets/zz_vfs_remote/b.txt` and writes
+   each into its directory when asked. */
+typedef struct FsTestRemote {
+  char directory[1024];
+  uint32_t calls;
+  uint32_t fetched;
+} FsTestRemote;
+
+vkr_internal bool8_t fs_test_remote_fetch(void *context, const char *relative) {
+  FsTestRemote *remote = context;
+  remote->calls += 1u;
+  char path[1100];
+  if (strcmp(relative, "held.txt") == 0) {
+    snprintf(path, sizeof(path), "%s/held.txt", remote->directory);
+  } else if (strcmp(relative, "assets/zz_vfs_remote/b.txt") == 0) {
+    snprintf(path, sizeof(path), "%s/assets/zz_vfs_remote/b.txt",
+             remote->directory);
+  } else {
+    return false_v;
+  }
+  FILE *existing = fopen(path, "rb");
+  if (existing) {
+    fclose(existing);
+    return true_v;
+  }
+  fs_test_write_text(path, "fetched");
+  remote->fetched += 1u;
+  return true_v;
+}
+
+/* Asset streaming (vkr_vfs_set_remote). Fails when a read below the remote
+   directory does not ask the remote before the disk, when a file the remote
+   lacks appears, when a path outside the directory asks the remote, or when
+   the workspace overlay does not ask for its copy there. */
+vkr_internal void test_vfs_remote_directory(void) {
+  printf("  Running test_vfs_remote_directory...\n");
+  FsTestRemote remote = {0};
+  snprintf(remote.directory, sizeof(remote.directory), "%s%s/remote",
+           PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR);
+  char assets[1100];
+  char assets_dir[1100];
+  snprintf(assets, sizeof(assets), "%s/assets", remote.directory);
+  snprintf(assets_dir, sizeof(assets_dir), "%s/zz_vfs_remote", assets);
+  assert(fs_test_make_dir(remote.directory) && fs_test_make_dir(assets) &&
+         fs_test_make_dir(assets_dir));
+  Arena *arena = arena_create(KB(64), KB(64));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  char held_text[1100];
+  char missing_text[1100];
+  snprintf(held_text, sizeof(held_text), "%s/held.txt", remote.directory);
+  snprintf(missing_text, sizeof(missing_text), "%s/missing.txt",
+           remote.directory);
+  const FilePath held = {
+      .path = {.str = (uint8_t *)held_text, .length = strlen(held_text)},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+  const FilePath missing = {
+      .path = {.str = (uint8_t *)missing_text, .length = strlen(missing_text)},
+      .type = FILE_PATH_TYPE_ABSOLUTE};
+
+  /* Without a remote nothing arrives. */
+  assert(!file_exists(&held));
+  assert(vkr_vfs_set_remote(remote.directory, fs_test_remote_fetch, &remote));
+  assert(file_exists(&held) && remote.fetched == 1u);
+  assert(fs_test_reads(&held, &allocator, "fetched"));
+  FileStats stats = {0};
+  assert(file_stats(&held, &stats) == FILE_ERROR_NONE && stats.size == 7u);
+  FileMapping mapping = {0};
+  assert(file_map_readonly(&held, &mapping) == FILE_ERROR_NONE &&
+         mapping.size == 7u && MemCompare(mapping.data, "fetched", 7u) == 0);
+  file_unmap(&mapping);
+  assert(remote.fetched == 1u);
+  const uint32_t calls = remote.calls;
+  assert(!file_exists(&missing) && remote.calls == calls + 1u);
+
+  /* A path outside the directory never asks. */
+  FilePath outside = file_path_create("assets/zz_vfs_remote_none.txt",
+                                      &allocator, FILE_PATH_TYPE_RELATIVE);
+  assert(!file_exists(&outside) && remote.calls == calls + 1u);
+
+  /* The directory as the workspace overlay: the overlay's copy of an
+     `assets/` identity arrives before the root's is used. */
+  assert(vkr_vfs_set_overlay_root(remote.directory));
+  FilePath overlaid = file_path_create("assets/zz_vfs_remote/b.txt", &allocator,
+                                       FILE_PATH_TYPE_RELATIVE);
+  assert(fs_test_reads(&overlaid, &allocator, "fetched"));
+  assert(remote.fetched == 2u);
+
+  assert(vkr_vfs_set_remote(NULL, NULL, NULL));
+  assert(vkr_vfs_set_overlay_root(NULL));
+  vkr_vfs_unmount_all();
+  arena_destroy(arena);
+  char overlaid_text[1100];
+  snprintf(overlaid_text, sizeof(overlaid_text), "%s/b.txt", assets_dir);
+  fs_test_remove_file(held_text);
+  fs_test_remove_file(overlaid_text);
+  fs_test_remove_dir(assets_dir);
+  fs_test_remove_dir(assets);
+  fs_test_remove_dir(remote.directory);
+  printf("  test_vfs_remote_directory PASSED\n");
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -1271,6 +1373,7 @@ bool32_t run_filesystem_tests(void) {
   test_vfs_pack_mount();
   test_vfs_pack_compressed();
   test_vfs_workspace_overlay();
+  test_vfs_remote_directory();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;

@@ -14730,6 +14730,12 @@ static VkrEditorOpStatus ops_run_depot_status(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+static VkrEditorOpStatus ops_run_stream_status(OpsContext *ctx) {
+  ctx->call->result =
+      vkr_editor_depot_stream_json(ctx->editor->depot, ops_arena(ctx));
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_depot_trust(OpsContext *ctx) {
   vkr_editor_depot_trust_scripts(ctx->editor->depot, ctx->editor);
   ctx->call->result = ops_depot_status(ctx);
@@ -17886,6 +17892,12 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"state\":{\"type\":"
      "\"string\"}}}",
      ops_run_task_list, NULL, OPS_QUICK},
+    {"stream.status",
+     "Asset streaming (--stream): the commits it reads, the files they list, "
+     "and how many were fetched, found present or failed, the bytes stored "
+     "and the time loaders waited.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_stream_status, NULL,
+     OPS_QUICK},
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "
      "order, edits waiting to apply, the last error, the digest of this "

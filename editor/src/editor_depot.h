@@ -80,6 +80,22 @@ struct Arena;
 struct VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
                                                    struct Arena *arena);
 
+/* Asset streaming (docs/proposals/network-protocol.md, "Asset
+   streaming"): `directory` becomes a remote content directory the depot
+   server at `address` fills on demand (vkr_depot_remote.h) and the
+   workspace overlay, so every `assets/` read the branch lists comes from
+   the server, cooked textures from its side branch for this computer. Call
+   before the scene loads. False with the reason; reads then stay local. */
+bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
+                                const char *key_hex, const char *directory,
+                                const char *branch, bool8_t no_cooked,
+                                char *error, uint32_t capacity);
+
+/* The stream's commits, files listed, fetched and present, bytes and the
+   time readers waited; `streaming` false without one. */
+struct VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
+                                                   struct Arena *arena);
+
 /* Each starts a step and returns false with the reason when it cannot. */
 bool8_t vkr_editor_depot_share(VkrEditorDepot *depot, VkrEditorUi *editor,
                                const VkrSampleUiFrame *frame,

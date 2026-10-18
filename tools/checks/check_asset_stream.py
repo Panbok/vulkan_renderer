@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""End-to-end check of asset streaming from a depot (vkr_depot_remote.h,
+docs/proposals/network-protocol.md, "Asset streaming").
+
+1. A headless editor opens Bistro from this checkout with VKR_VFS_RECORD
+   set, waits and captures one view; a second local run captures it again,
+   which measures how much two identical loads differ.
+2. Every file below `assets/` that run read is copied into a depot working
+   copy in the repository's layout and committed to `main` of a loopback
+   depot; the cooked `.vkt` textures, which the ignore rules keep out of the
+   history, go to `main.cooked.<family>` with `vkr_depot cooked`.
+3. A second headless editor starts with `--stream` into an empty directory
+   and opens the same scene: every read the branch lists arrives from the
+   depot. It reports `stream.status` when the scene is ready and every 5 s
+   for `--stream-settle` seconds, then captures the same view.
+
+The check passes when the streamed editor fetched files and none failed,
+every file it wrote equals the local file byte for byte, no file
+arrived in the 15 s before its capture (it had reached full detail), and
+its capture
+differs from the first local one by no more than the second local one does
+(with a floor of 0.5 levels of 255, since final colour varies between
+identical runs). It prints the times to the scene and to the last fetched
+file, and removes its depot and stream directory afterwards.
+
+    python tools/checks/check_asset_stream.py \\
+        --editor build_release/editor/vkr_editor.exe \\
+        --depot build_release/tools/depot/vkr_depot.exe
+"""
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import zlib
+
+from check_editor_session import ROOT, SCENE, editor_env
+
+VIEW = '"eye":[-24,5,-14],"target":[0,3,0],"max_width":960'
+
+LOCAL_SCRIPT = f"""wait.scene
+wait {{settle}}
+op view.capture {{{{{VIEW}}}}}
+wait 3
+echo capture-done
+"""
+
+# The streamed run reports every 5 s while its files arrive, then captures.
+STREAM_SCRIPT = f"""wait.scene
+op stream.status
+{{polls}}
+op stream.status
+op view.capture {{{{{VIEW}}}}}
+wait 3
+op stream.status
+echo capture-done
+"""
+
+
+def png_pixels(path: pathlib.Path):
+    """Decodes an 8-bit, non-interlaced RGB or RGBA PNG: (width, height,
+    channels, rows of bytes)."""
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", path
+    offset = 8
+    width = height = channels = 0
+    idat = b""
+    while offset < len(data):
+        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+        body = data[offset + 8:offset + 8 + length]
+        offset += 12 + length
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(
+                ">IIBBBBB", body)
+            assert depth == 8 and interlace == 0 and color in (2, 6), path
+            channels = 3 if color == 2 else 4
+        elif kind == b"IDAT":
+            idat += body
+        elif kind == b"IEND":
+            break
+    raw = zlib.decompress(idat)
+    stride = width * channels
+    rows = []
+    previous = bytearray(stride)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind = raw[start]
+        row = bytearray(raw[start + 1:start + 1 + stride])
+        for x in range(stride):
+            left = row[x - channels] if x >= channels else 0
+            up = previous[x]
+            corner = previous[x - channels] if x >= channels else 0
+            if kind == 1:
+                row[x] = (row[x] + left) & 255
+            elif kind == 2:
+                row[x] = (row[x] + up) & 255
+            elif kind == 3:
+                row[x] = (row[x] + ((left + up) >> 1)) & 255
+            elif kind == 4:
+                p = left + up - corner
+                pa, pb, pc = abs(p - left), abs(p - up), abs(p - corner)
+                predictor = left if pa <= pb and pa <= pc else (
+                    up if pb <= pc else corner)
+                row[x] = (row[x] + predictor) & 255
+        rows.append(bytes(row))
+        previous = row
+    return width, height, channels, rows
+
+
+def compare(a: pathlib.Path, b: pathlib.Path):
+    """Mean absolute difference per channel (0-255) and the share of pixels
+    that differ by more than 2 in any channel."""
+    wa, ha, ca, rows_a = png_pixels(a)
+    wb, hb, cb, rows_b = png_pixels(b)
+    if (wa, ha, ca) != (wb, hb, cb):
+        return None, None
+    total = 0
+    differing = 0
+    for row_a, row_b in zip(rows_a, rows_b):
+        for x in range(0, len(row_a), ca):
+            worst = 0
+            for c in range(3):
+                d = abs(row_a[x + c] - row_b[x + c])
+                total += d
+                worst = max(worst, d)
+            differing += worst > 2
+    return total / (wa * ha * 3), differing / (wa * ha)
+
+
+def agent_results(text: str) -> list:
+    found = []
+    for match in re.finditer(r"\[agent\] (\{.*\})", text):
+        try:
+            found.append(json.loads(match.group(1)))
+        except json.JSONDecodeError:
+            pass
+    return found
+
+
+def captures(text: str) -> list:
+    paths = []
+    for answer in agent_results(text):
+        result = answer.get("result")
+        if isinstance(result, dict) and result.get("path", "").endswith(
+                ".png"):
+            paths.append(pathlib.Path(result["path"]))
+    return paths
+
+
+def stream_statuses(text: str) -> list:
+    return [answer["result"] for answer in agent_results(text)
+            if isinstance(answer.get("result"), dict) and
+            "streaming" in answer["result"]]
+
+
+def run_editor(editor: str, work: pathlib.Path, script: str, log: pathlib.Path,
+               extra_args: list, env_extra: dict, timeout: float) -> str:
+    work.mkdir(parents=True, exist_ok=True)
+    env = editor_env(work, autoclose=int(timeout))
+    env.update(env_extra)
+    with open(log, "w", encoding="utf-8", errors="replace") as out:
+        process = subprocess.Popen(
+            [editor, "--headless", "--no-agent-socket", *extra_args,
+             "--scene", SCENE, "--exec", script],
+            cwd=ROOT, env=env, stdout=out, stderr=subprocess.STDOUT)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    return log.read_text(encoding="utf-8", errors="replace")
+
+
+def depot(command: list, env: dict, log) -> str:
+    log.write("$ " + " ".join(command) + "\n")
+    result = subprocess.run(command, env=env, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", cwd=ROOT)
+    log.write(result.stdout + result.stderr)
+    log.flush()
+    if result.returncode != 0:
+        raise RuntimeError(f"{command[1]} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--editor", required=True)
+    parser.add_argument("--depot", required=True)
+    parser.add_argument("--port", type=int, default=7353)
+    parser.add_argument("--settle", type=int, default=30,
+                        help="seconds the scene loads before the captures")
+    parser.add_argument("--stream-settle", type=int, default=120,
+                        help="seconds the streamed run reports before its "
+                        "capture")
+    parser.add_argument("--work", default=str(ROOT / ".scratch" /
+                                              "asset-stream"))
+    parser.add_argument("--timeout", type=float, default=900.0)
+    parser.add_argument("--keep", action="store_true",
+                        help="keep the depot and stream directory")
+    args = parser.parse_args()
+    editor = str(pathlib.Path(args.editor).resolve())
+    depot_exe = str(pathlib.Path(args.depot).resolve())
+    work = pathlib.Path(args.work).resolve()
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    failures = []
+    server = None
+    made = []
+    log = open(work / "depot.log", "w", encoding="utf-8")
+    env = dict(os.environ)
+    env["VKR_DEPOT_IDENTITY"] = str(work / "identity.key")
+    try:
+        # 1. The local run and its reads.
+        reads = work / "reads.txt"
+        local_text = run_editor(
+            editor, work / "local", LOCAL_SCRIPT.format(settle=args.settle),
+            work / "local.log", [], {"VKR_VFS_RECORD": str(reads)},
+            args.timeout)
+        local_captures = captures(local_text)
+        made += local_captures
+        if "capture-done" not in local_text or not local_captures:
+            raise RuntimeError("the local run did not capture; see "
+                               f"{work / 'local.log'}")
+        again_text = run_editor(
+            editor, work / "again", LOCAL_SCRIPT.format(settle=args.settle),
+            work / "again.log", [], {}, args.timeout)
+        again_captures = captures(again_text)
+        made += again_captures
+        if "capture-done" not in again_text or not again_captures:
+            raise RuntimeError("the second local run did not capture; see "
+                               f"{work / 'again.log'}")
+        identities = sorted(
+            {line.strip()
+             for line in reads.read_text(encoding="utf-8",
+                                         errors="replace").splitlines()
+             if line.startswith("assets/")})
+        files = [i for i in identities if (ROOT / i).is_file()]
+
+        # 2. The depot: main holds the files, the side branch the cooked.
+        depot([depot_exe, "keygen"], env, log)
+        store = work / "store"
+        output = depot([depot_exe, "init", str(store)], env, log)
+        key = re.search(r"server key ([0-9a-f]{64})", output).group(1)
+        address = f"127.0.0.1:{args.port}"
+        server = subprocess.Popen(
+            [depot_exe, "serve", str(store), "--bind", address, "--open"],
+            env=env, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT)
+        time.sleep(1.0)
+        seed = work / "seed"
+        depot([depot_exe, "clone", address, key, str(seed)], env, log)
+        cooked = 0
+        seed_bytes = 0
+        for identity in files:
+            target = seed / identity
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / identity, target)
+            cooked += identity.endswith(".vkt")
+            seed_bytes += target.stat().st_size
+        (seed / ".vkrdepotignore").write_text("*.vkt\n", encoding="utf-8")
+        depot([depot_exe, "commit", str(seed), "-m", "Bistro"], env, log)
+        published = depot([depot_exe, "cooked", str(seed)], env, log)
+
+        # 3. The streamed run.
+        stream_dir = work / "stream"
+        stream_text = run_editor(
+            editor, work / "streamed",
+            STREAM_SCRIPT.format(polls="\n".join(
+                ["wait 5", "op stream.status"] * (args.stream_settle // 5))),
+            work / "stream.log", ["--stream", address, key, str(stream_dir)],
+            {}, args.timeout)
+        statuses = stream_statuses(stream_text)
+        stream_captures = captures(stream_text)
+        made += stream_captures
+        if "capture-done" not in stream_text or not stream_captures:
+            raise RuntimeError("the streamed run did not capture; see "
+                               f"{work / 'stream.log'}")
+        if not statuses or not statuses[0].get("streaming"):
+            raise RuntimeError("the editor did not stream; see "
+                               f"{work / 'stream.log'}")
+        first, last = statuses[0], statuses[-1]
+        # The status just before the capture: nothing may have arrived in
+        # the 15 s before it.
+        before = statuses[-2] if len(statuses) >= 2 else last
+        if before.get("since_open_ms", 0) - before.get("last_fetch_ms", 0) < \
+                15000.0:
+            failures.append("files still arrived within 15 s of the capture; "
+                            "raise --stream-settle")
+        if last.get("fetched", 0) == 0:
+            failures.append("the streamed editor fetched no file")
+        if last.get("failed", 0):
+            failures.append(f"{last['failed']} fetches failed")
+        # Every streamed file holds the local file's bytes.
+        mismatched = []
+        written = 0
+        for path in stream_dir.rglob("*"):
+            relative = path.relative_to(stream_dir).as_posix()
+            if not path.is_file() or relative.startswith(".vkrdepot"):
+                continue
+            written += 1
+            if path.read_bytes() != (ROOT / relative).read_bytes():
+                mismatched.append(relative)
+        if mismatched:
+            failures.append(f"{len(mismatched)} streamed files differ from "
+                            f"the local ones, such as {mismatched[0]}")
+        noise_mean, noise_share = compare(local_captures[0],
+                                          again_captures[0])
+        final_mean, final_share = compare(local_captures[0],
+                                          stream_captures[0])
+        if final_mean is None or noise_mean is None:
+            failures.append("the captures differ in size")
+        elif final_mean > max(1.5 * noise_mean, 0.5):
+            failures.append(f"the streamed capture differs by {final_mean:.3f} "
+                            f"against {noise_mean:.3f} between local runs")
+        print(f"seed: {len(files)} files read by the local run, {cooked} "
+              f"cooked, {seed_bytes / 1e6:.1f} MB; {published.strip()}")
+        print(f"stream: {last.get('listed')} listed, {last.get('fetched')} "
+              f"fetched, {last.get('failed')} failed, "
+              f"{last.get('stored_bytes', 0) / 1e6:.1f} MB stored; branch "
+              f"listed in {first.get('open_ms', 0):.0f} ms")
+        print(f"times since the stream opened: scene ready "
+              f"{first.get('since_open_ms', 0):.0f} ms, last file "
+              f"{last.get('last_fetch_ms', 0):.0f} ms; loaders waited "
+              f"{last.get('wait_ms', 0):.0f} ms in all")
+        print(f"files: {written} written under the stream directory, "
+              f"{len(mismatched)} differ from the local ones")
+        if final_mean is not None and noise_mean is not None:
+            print(f"capture: streamed against local, mean difference "
+                  f"{final_mean:.3f} ({final_share:.3%} of pixels by more "
+                  f"than 2); local against local {noise_mean:.3f} "
+                  f"({noise_share:.3%})")
+    except RuntimeError as error:
+        failures.append(str(error))
+    finally:
+        if server:
+            server.kill()
+            server.wait()
+        log.close()
+        for capture in made if not failures else []:
+            capture.unlink(missing_ok=True)
+        if not args.keep and not failures:
+            for name in ("store", "seed", "stream"):
+                shutil.rmtree(work / name, ignore_errors=True)
+    for failure in failures:
+        print("FAIL:", failure)
+    print("logs:", work)
+    if failures:
+        return 1
+    print("PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

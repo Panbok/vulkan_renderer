@@ -530,6 +530,9 @@ typedef struct WalkState {
   uint32_t pending_capacity;
   uint64_t pending_bytes;
   DepotIgnore ignore;
+  /* A cooked snapshot: only untracked platform files (VKR_DEPOT_COOKED_SUFFIX),
+     which the ignore rules keep out of an ordinary snapshot. */
+  bool8_t cooked;
 } WalkState;
 
 /* Ignore rules apply to untracked paths only, as in git: a pulled
@@ -539,6 +542,16 @@ static bool8_t walk_ignored(const WalkState *state, const char *relative,
                             bool8_t is_directory) {
   return ignore_matches(&state->ignore, relative, is_directory) &&
          !index_tracks(&state->workspace->index, relative, is_directory);
+}
+
+/* Whether a cooked snapshot skips the file `relative`: anything but an
+   untracked platform file. */
+static bool8_t walk_not_cooked(const WalkState *state, const char *relative) {
+  const size_t length = strlen(relative);
+  const size_t suffix = sizeof(VKR_DEPOT_COOKED_SUFFIX) - 1u;
+  return length <= suffix ||
+         strcmp(relative + length - suffix, VKR_DEPOT_COOKED_SUFFIX) != 0 ||
+         vkr_depot_file_list_find(&state->workspace->index, relative) != NULL;
 }
 
 /* Chunks a file's bytes into the store and stores its blob manifest. */
@@ -606,7 +619,9 @@ static bool8_t walk_visit(void *context, const char *name,
   }
   const char *relative = state->relative;
   bool8_t ok = true_v;
-  if (walk_ignored(state, relative, is_directory)) {
+  if (!is_directory && state->cooked
+          ? walk_not_cooked(state, relative)
+          : walk_ignored(state, relative, is_directory)) {
     goto done;
   }
   if (is_directory) {
@@ -634,7 +649,9 @@ static bool8_t walk_visit(void *context, const char *name,
   }
   /* An unchanged file keeps the blob the index recorded. */
   const VkrDepotIndexEntry *known =
-      vkr_depot_file_list_find(&state->workspace->index, relative);
+      state->cooked
+          ? NULL
+          : vkr_depot_file_list_find(&state->workspace->index, relative);
   if (known && known->size == stat.size && known->mtime_ns == stat.mtime_ns &&
       vkr_depot_store_has(&state->workspace->store, &known->blob)) {
     ok = vkr_depot_file_list_add(state->files, relative, stat.size,
@@ -756,9 +773,9 @@ static bool8_t workspace_build_tree(const VkrDepotStore *store,
   return ok;
 }
 
-bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
-                                     VkrDepotId *out_tree,
-                                     VkrDepotFileList *out_files) {
+static bool8_t workspace_snapshot(VkrDepotWorkspace *workspace, bool8_t cooked,
+                                  VkrDepotId *out_tree,
+                                  VkrDepotFileList *out_files) {
   MemZero(out_files, sizeof(*out_files));
   WalkState *state = calloc(1u, sizeof(WalkState));
   if (!state) {
@@ -766,6 +783,7 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
   }
   state->workspace = workspace;
   state->files = out_files;
+  state->cooked = cooked;
   const bool8_t walked =
       ignore_load(workspace->root, &state->ignore) &&
       vkr_bakery_list_directory(workspace->root, walk_visit, state) &&
@@ -784,6 +802,18 @@ bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
     return false_v;
   }
   return true_v;
+}
+
+bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
+                                     VkrDepotId *out_tree,
+                                     VkrDepotFileList *out_files) {
+  return workspace_snapshot(workspace, false_v, out_tree, out_files);
+}
+
+bool8_t vkr_depot_workspace_snapshot_cooked(VkrDepotWorkspace *workspace,
+                                            VkrDepotId *out_tree,
+                                            VkrDepotFileList *out_files) {
+  return workspace_snapshot(workspace, true_v, out_tree, out_files);
 }
 
 // =============================================================================

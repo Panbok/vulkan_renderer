@@ -150,6 +150,8 @@ struct VkrDepotClient {
   IdSet seen;
   WantList want;
   bool8_t fetch_failed;
+  /* A sparse fetch: trees list their files without fetching them. */
+  bool8_t trees_only;
   /* Trees being walked below the commit: a present tree's children are
      walked at once, so a deep tree would recurse without this bound. */
   uint32_t depth;
@@ -213,6 +215,9 @@ static bool8_t client_chunk_child(void *context,
 static bool8_t client_entry_child(void *context,
                                   const VkrDepotTreeEntry *entry) {
   ChildContext *child = context;
+  if (child->client->trees_only && entry->kind == VKR_DEPOT_ENTRY_FILE) {
+    return true_v;
+  }
   child->ok =
       client_process(child->client, &entry->id,
                      entry->kind == VKR_DEPOT_ENTRY_TREE ? VKR_DEPOT_KIND_TREE
@@ -614,21 +619,28 @@ static bool8_t client_gets_live(const VkrDepotClient *client) {
   return false_v;
 }
 
-bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,
-                               VkrDepotTransferStats *out_stats) {
+/* Downloads the `count` objects `ids` of `kind` and what they list that
+   the store lacks; a sparse fetch stops at the files a tree lists. */
+static bool8_t client_fetch_from(VkrDepotClient *client, const VkrDepotId *ids,
+                                 uint32_t count, uint8_t kind,
+                                 bool8_t trees_only,
+                                 VkrDepotTransferStats *out_stats) {
   idset_free(&client->seen);
   want_free(&client->want);
   MemZero(client->gets, sizeof(client->gets));
   MemZero(&client->stats, sizeof(client->stats));
   client->fetch_failed = false_v;
+  client->trees_only = trees_only;
   client->error[0] = '\0';
   if (!client->store) {
     client_fail(client, "the connection has no store to fetch into%s", "");
     return false_v;
   }
   vkr_depot_progress_phase(client->progress, VKR_DEPOT_PHASE_FETCH, 0u, 0u);
-  if (!client_process(client, commit, VKR_DEPOT_KIND_COMMIT, 0u)) {
-    return false_v;
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!client_process(client, &ids[i], kind, 0u)) {
+      return false_v;
+    }
   }
   client->last_progress_us = client->link.now(client->link.context);
   while (client->want.head < client->want.count || client_gets_live(client)) {
@@ -649,6 +661,26 @@ bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,
     *out_stats = client->stats;
   }
   return true_v;
+}
+
+bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,
+                               VkrDepotTransferStats *out_stats) {
+  return client_fetch_from(client, commit, 1u, VKR_DEPOT_KIND_COMMIT, false_v,
+                           out_stats);
+}
+
+bool8_t vkr_depot_client_fetch_trees(VkrDepotClient *client,
+                                     const VkrDepotId *commit,
+                                     VkrDepotTransferStats *out_stats) {
+  return client_fetch_from(client, commit, 1u, VKR_DEPOT_KIND_COMMIT, true_v,
+                           out_stats);
+}
+
+bool8_t vkr_depot_client_fetch_files(VkrDepotClient *client,
+                                     const VkrDepotId *blobs, uint32_t count,
+                                     VkrDepotTransferStats *out_stats) {
+  return client_fetch_from(client, blobs, count, VKR_DEPOT_KIND_BLOB, false_v,
+                           out_stats);
 }
 
 // =============================================================================

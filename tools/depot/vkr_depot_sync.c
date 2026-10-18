@@ -707,54 +707,169 @@ void vkr_depot_pending_commit_free(VkrDepotPendingCommit *pending) {
   vkr_depot_file_list_free(&pending->files);
 }
 
-bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
-                                  const VkrDepotId *parent, const char *message,
-                                  VkrDepotPendingCommit *out_pending,
-                                  char *error, uint32_t capacity) {
+void vkr_depot_cooked_branch(const char *branch, char *out, uint32_t capacity) {
+#if defined(__APPLE__)
+  const char *family = "astc";
+#else
+  const char *family = "bc";
+#endif
+  snprintf(out, capacity, "%s.cooked.%s", branch, family);
+}
+
+/* Stores a commit of `tree` with `parent` (none when zero) by this user's
+   identity. */
+static bool8_t depot_make_commit(const VkrDepotStore *store,
+                                 const VkrDepotId *tree,
+                                 const VkrDepotId *parent, const char *message,
+                                 VkrDepotId *out_commit, char *error,
+                                 uint32_t capacity) {
   VkrNetKeyPair identity;
-  VkrDepotId tree;
-  VkrDepotFileList files = {0};
-  uint8_t *commit_bytes = NULL;
-  uint64_t commit_size = 0u;
-  bool8_t ok = false_v;
-  MemZero(out_pending, sizeof(*out_pending));
   if (!vkr_depot_identity(&identity, true_v)) {
     snprintf(error, capacity, "no depot identity key");
     return false_v;
   }
-  if (!vkr_depot_workspace_snapshot(workspace, &tree, &files)) {
-    depot_step_error(workspace, error, capacity,
-                     "the working directory snapshot failed", NULL);
-    goto cleanup;
-  }
-  VkrDepotCommit commit = {.tree = tree,
+  VkrDepotCommit commit = {.tree = *tree,
                            .time_us =
                                (uint64_t)vkr_bakery_unix_seconds() * 1000000u,
                            .message = message,
                            .message_size = (uint32_t)strlen(message)};
   memcpy(commit.author, identity.public_key, 32u);
+  vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
   if (parent && !vkr_depot_id_zero(parent)) {
     commit.parents[0] = *parent;
     commit.parent_count = 1u;
   }
-  if (!vkr_depot_commit_encode(&commit, &commit_bytes, &commit_size)) {
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!vkr_depot_commit_encode(&commit, &bytes, &size)) {
     snprintf(error, capacity, "the commit message is too long");
-    goto cleanup;
+    return false_v;
   }
-  vkr_depot_id_of(commit_bytes, commit_size, &out_pending->commit);
-  if (!vkr_depot_store_put(&workspace->store, &out_pending->commit,
-                           commit_bytes, commit_size)) {
+  vkr_depot_id_of(bytes, size, out_commit);
+  const bool8_t stored = vkr_depot_store_put(store, out_commit, bytes, size);
+  free(bytes);
+  if (!stored) {
     snprintf(error, capacity, "the commit could not be stored");
-    goto cleanup;
+  }
+  return stored;
+}
+
+bool8_t vkr_depot_commit_snapshot(VkrDepotWorkspace *workspace,
+                                  const VkrDepotId *parent, const char *message,
+                                  VkrDepotPendingCommit *out_pending,
+                                  char *error, uint32_t capacity) {
+  VkrDepotId tree;
+  VkrDepotFileList files = {0};
+  MemZero(out_pending, sizeof(*out_pending));
+  if (!vkr_depot_workspace_snapshot(workspace, &tree, &files)) {
+    depot_step_error(workspace, error, capacity,
+                     "the working directory snapshot failed", NULL);
+    return false_v;
+  }
+  if (!depot_make_commit(&workspace->store, &tree, parent, message,
+                         &out_pending->commit, error, capacity)) {
+    vkr_depot_file_list_free(&files);
+    return false_v;
   }
   out_pending->files = files;
-  MemZero(&files, sizeof(files));
-  ok = true_v;
-cleanup:
-  vkr_net_random(identity.secret_key, sizeof(identity.secret_key));
-  free(commit_bytes);
+  return true_v;
+}
+
+bool8_t vkr_depot_cooked_snapshot(VkrDepotWorkspace *workspace,
+                                  VkrDepotId *out_tree, uint32_t *out_files,
+                                  char *error, uint32_t capacity) {
+  VkrDepotFileList files = {0};
+  if (!vkr_depot_workspace_snapshot_cooked(workspace, out_tree, &files)) {
+    depot_step_error(workspace, error, capacity,
+                     "the cooked files could not be read", NULL);
+    return false_v;
+  }
+  *out_files = files.count;
   vkr_depot_file_list_free(&files);
-  return ok;
+  if (*out_files == 0u) {
+    snprintf(error, capacity, "the working copy holds no cooked files");
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_depot_publish_cooked(VkrDepotWorkspace *workspace,
+                                 VkrDepotClient *client, const char *branch,
+                                 const VkrDepotId *tree, uint32_t files,
+                                 VkrDepotCookedResult *out_result, char *error,
+                                 uint32_t capacity) {
+  MemZero(out_result, sizeof(*out_result));
+  out_result->files = files;
+  vkr_depot_cooked_branch(branch, out_result->branch,
+                          sizeof(out_result->branch));
+  VkrDepotRef *refs = calloc(VKR_DEPOT_COOKED_REFS_MAX, sizeof(VkrDepotRef));
+  if (!refs) {
+    snprintf(error, capacity, "out of memory");
+    return false_v;
+  }
+  uint32_t ref_count = 0u;
+  const bool8_t listed = vkr_depot_client_refs(
+      client, refs, VKR_DEPOT_COOKED_REFS_MAX, &ref_count);
+  VkrDepotId parent = {0};
+  for (uint32_t i = 0u; listed && i < ref_count; ++i) {
+    if (strcmp(refs[i].name, out_result->branch) == 0) {
+      parent = refs[i].commit;
+    }
+  }
+  free(refs);
+  if (!listed) {
+    snprintf(error, capacity, "the branches did not arrive: %s",
+             vkr_depot_client_error(client));
+    return false_v;
+  }
+  /* The files the side branch holds already publish nothing. Its commit is
+     in the store once this working copy published or fetched it. */
+  if (!vkr_depot_id_zero(&parent)) {
+    uint8_t *bytes = NULL;
+    uint64_t size = 0u;
+    VkrDepotCommit current;
+    const bool8_t same =
+        vkr_depot_store_get(&workspace->store, &parent, &bytes, &size) &&
+        vkr_depot_commit_parse(bytes, size, &current) &&
+        vkr_depot_id_equal(&current.tree, tree);
+    free(bytes);
+    if (same) {
+      out_result->commit = parent;
+      out_result->unchanged = true_v;
+      return true_v;
+    }
+  }
+  char base[VKR_DEPOT_ID_HEX];
+  char message[160];
+  vkr_depot_id_hex(&workspace->base, base);
+  snprintf(message, sizeof(message), "Cooked for %.12s", base);
+  if (!depot_make_commit(&workspace->store, tree, &parent, message,
+                         &out_result->commit, error, capacity)) {
+    return false_v;
+  }
+  vkr_depot_client_set_progress(client, workspace->progress);
+  VkrDepotTransferStats stats = {0};
+  if (!vkr_depot_client_upload(client, &out_result->commit, &parent, &stats)) {
+    depot_step_error(workspace, error, capacity, "upload failed",
+                     vkr_depot_client_error(client));
+    return false_v;
+  }
+  VkrDepotId current;
+  const VkrDepotRefStatus status = vkr_depot_client_update_ref(
+      client, out_result->branch, &parent, &out_result->commit, &current);
+  if (status == VKR_DEPOT_REF_CONFLICT) {
+    snprintf(error, capacity, "%s moved meanwhile; publish again",
+             out_result->branch);
+    return false_v;
+  }
+  if (status != VKR_DEPOT_REF_OK) {
+    snprintf(error, capacity,
+             "the server refused the cooked commit (status %u)", status);
+    return false_v;
+  }
+  out_result->uploaded_bytes = stats.stored_bytes;
+  depot_step_done(workspace);
+  return true_v;
 }
 
 bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,

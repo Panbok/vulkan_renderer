@@ -188,6 +188,24 @@ bool8_t vkr_vfs_overlay_write_path(const FilePath *path, FilePath *out_path,
  */
 const char *vkr_vfs_read_path(const char *path, char *buffer,
                               uint64_t capacity);
+/**
+ * Asks for a file of a remote content directory (asset streaming, ADR-105):
+ * makes `relative` ('/'-separated, below the directory) exist on disk and
+ * returns true, or returns false at once when the remote holds no such
+ * file. Blocks while the file downloads; any thread may call it at once.
+ */
+typedef bool8_t (*VkrVfsRemoteFetch)(void *context, const char *relative);
+/**
+ * Sets the directory a remote fills on demand: before a read-only open, map,
+ * existence check or stat of a path below `directory` reaches the disk, and
+ * before the workspace overlay looks for its copy there, `fetch` gets the
+ * path's chance to arrive. `directory` must be absolute. NULL `fetch` clears
+ * it. Call from one thread; `context` must outlive every read until the
+ * remote is cleared and no read can still use it. Returns false when
+ * `directory` is too long.
+ */
+bool8_t vkr_vfs_set_remote(const char *directory, VkrVfsRemoteFetch fetch,
+                           void *context);
 /** Maps and validates one archive and appends it to the mount order. */
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**

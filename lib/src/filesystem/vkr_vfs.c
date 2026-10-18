@@ -35,6 +35,16 @@ typedef struct VkrVfsOverlay {
   char root[];
 } VkrVfsOverlay;
 
+/* A directory a remote fills on demand (vkr_vfs_set_remote). */
+typedef struct VkrVfsRemote {
+  struct VkrVfsRemote *previous;
+  VkrVfsRemoteFetch fetch;
+  void *context;
+  /* `root` with its trailing '/'. */
+  uint64_t length;
+  char root[];
+} VkrVfsRemote;
+
 /* Written only while mounting at startup; read-only afterwards, except
    `overlay`, which is published atomically. */
 typedef struct VkrVfsState {
@@ -54,6 +64,10 @@ typedef struct VkrVfsState {
   VkrAtomicUint64 overlay;
   /* Every overlay ever published, newest first, freed at unmount. */
   VkrVfsOverlay *overlays;
+  /* The current VkrVfsRemote as uintptr_t, zero when none is set; every
+     one published, newest first, freed at unmount. */
+  VkrAtomicUint64 remote;
+  VkrVfsRemote *remotes;
 } VkrVfsState;
 
 vkr_global VkrVfsState vkr_vfs = {0};
@@ -540,6 +554,12 @@ void vkr_vfs_unmount_all(void) {
     free(vkr_vfs.overlays);
     vkr_vfs.overlays = previous;
   }
+  vkr_atomic_uint64_store(&vkr_vfs.remote, 0u, VKR_MEMORY_ORDER_RELEASE);
+  while (vkr_vfs.remotes) {
+    VkrVfsRemote *previous = vkr_vfs.remotes->previous;
+    free(vkr_vfs.remotes);
+    vkr_vfs.remotes = previous;
+  }
 }
 
 /* Reads a whole bundle description into malloc storage the caller frees. */
@@ -670,7 +690,10 @@ bool8_t vkr_vfs_mount_startup(void) {
   if (record && record[0] && !vkr_vfs.record) {
     vkr_vfs.record = file_fopen(record, "ab");
     if (vkr_vfs.record) {
-      (void)setvbuf(vkr_vfs.record, NULL, _IOLBF, 0);
+      /* Unbuffered: each record is one fwrite, so lines stay whole. The
+         Windows runtime takes line buffering with a zero size as an invalid
+         parameter and ends the process. */
+      (void)setvbuf(vkr_vfs.record, NULL, _IONBF, 0);
     } else {
       vkr_vfs_report("Cannot record content reads to %s", record);
     }
@@ -851,6 +874,7 @@ bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
   *out_path = (FilePath){
       .path = {.str = (uint8_t *)buffer, .length = overlay->length + length},
       .type = FILE_PATH_TYPE_ABSOLUTE};
+  fs_vfs_remote(out_path);
 
   /* An overlay that spells the root another way (`root/.`) names the same
      identity again; following it would never end. */
@@ -860,6 +884,72 @@ bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
     return false_v;
   }
   return file_exists(out_path);
+}
+
+// =============================================================================
+// Remote content
+// =============================================================================
+
+bool8_t vkr_vfs_set_remote(const char *directory, VkrVfsRemoteFetch fetch,
+                           void *context) {
+  if (!fetch || !directory || !directory[0]) {
+    vkr_atomic_uint64_store(&vkr_vfs.remote, 0u, VKR_MEMORY_ORDER_RELEASE);
+    return true_v;
+  }
+  uint64_t length = strlen(directory);
+  while (length > 1u && vkr_vfs_is_separator((uint8_t)directory[length - 1u])) {
+    --length;
+  }
+  if (length + 2u > VKR_VFS_PATH_MAX) {
+    return false_v;
+  }
+  VkrVfsRemote *remote = malloc(sizeof(VkrVfsRemote) + length + 2u);
+  if (!remote) {
+    return false_v;
+  }
+  remote->fetch = fetch;
+  remote->context = context;
+  for (uint64_t i = 0u; i < length; ++i) {
+    remote->root[i] =
+        vkr_vfs_is_separator((uint8_t)directory[i]) ? '/' : directory[i];
+  }
+  remote->root[length] = '/';
+  remote->root[length + 1u] = 0;
+  remote->length = length + 1u;
+  remote->previous = vkr_vfs.remotes;
+  vkr_vfs.remotes = remote;
+  vkr_atomic_uint64_store(&vkr_vfs.remote, (uint64_t)(uintptr_t)remote,
+                          VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+void fs_vfs_remote(const FilePath *path) {
+  const VkrVfsRemote *remote =
+      (const VkrVfsRemote *)(uintptr_t)vkr_atomic_uint64_load(
+          &vkr_vfs.remote, VKR_MEMORY_ORDER_ACQUIRE);
+  if (!remote || !path || !path->path.str ||
+      path->path.length <= remote->length ||
+      path->path.length - remote->length >= VKR_VFS_PATH_MAX) {
+    return;
+  }
+  for (uint64_t i = 0u; i < remote->length; ++i) {
+    const uint8_t byte = path->path.str[i];
+    const bool8_t same =
+        remote->root[i] == '/'
+            ? vkr_vfs_is_separator(byte)
+            : vkr_vfs_same_byte(byte, (uint8_t)remote->root[i]);
+    if (!same) {
+      return;
+    }
+  }
+  char relative[VKR_VFS_PATH_MAX];
+  const uint64_t length = path->path.length - remote->length;
+  for (uint64_t i = 0u; i < length; ++i) {
+    const uint8_t byte = path->path.str[remote->length + i];
+    relative[i] = vkr_vfs_is_separator(byte) ? '/' : (char)byte;
+  }
+  relative[length] = 0;
+  (void)remote->fetch(remote->context, relative);
 }
 
 // =============================================================================

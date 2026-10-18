@@ -84,9 +84,13 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
       .path = {.str = (uint8_t *)utf8_path, .length = strlen(utf8_path)}};
   FilePath overlay;
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
-  if (mode[0] == 'r' && !strchr(mode, '+') &&
-      fs_vfs_overlay(&path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
-    path = overlay;
+  if (mode[0] == 'r' && !strchr(mode, '+')) {
+    if (fs_vfs_overlay(&path, &overlay, overlay_buffer,
+                       sizeof(overlay_buffer))) {
+      path = overlay;
+    } else {
+      fs_vfs_remote(&path);
+    }
   }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   wchar_t native_mode[16];
@@ -127,6 +131,7 @@ bool8_t file_exists(const FilePath *path) {
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
     return true_v;
   }
+  fs_vfs_remote(path);
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   return file_windows_native_path(path, native) &&
          GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
@@ -142,9 +147,12 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   }
   FilePath overlay;
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
-  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer)) &&
-      !file_windows_native_path(&overlay, native)) {
-    return FILE_ERROR_INVALID_PATH;
+  if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
+    if (!file_windows_native_path(&overlay, native)) {
+      return FILE_ERROR_INVALID_PATH;
+    }
+  } else {
+    fs_vfs_remote(path);
   }
   WIN32_FILE_ATTRIBUTE_DATA data;
   if (!GetFileAttributesExW(native, GetFileExInfoStandard, &data)) {
@@ -362,9 +370,13 @@ FileError file_open(const FilePath *path, FileMode mode,
   const FilePath *native_path = path;
   FilePath overlay;
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
-  if (!has_write && !has_append && !has_create && !has_truncate &&
-      fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
-    native_path = &overlay;
+  if (!has_write && !has_append && !has_create && !has_truncate) {
+    if (fs_vfs_overlay(path, &overlay, overlay_buffer,
+                       sizeof(overlay_buffer))) {
+      native_path = &overlay;
+    } else {
+      fs_vfs_remote(path);
+    }
   }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!file_windows_native_path(native_path, native)) {
@@ -393,6 +405,8 @@ FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping) {
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
     path = &overlay;
+  } else {
+    fs_vfs_remote(path);
   }
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
   if (!file_windows_native_path(path, native)) {

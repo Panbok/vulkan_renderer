@@ -27,6 +27,10 @@
 #define VKR_DEPOT_IGNORE_FILE ".vkrdepotignore"
 #define VKR_DEPOT_IGNORE_MAX 128u
 #define VKR_DEPOT_REMOTE_MAX 256u
+/* Platform files a computer cooks for its own GPU family, which the ignore
+   rules keep out of the project's history and a cooked side branch carries
+   (vkr_depot_publish_cooked). */
+#define VKR_DEPOT_COOKED_SUFFIX ".vkt"
 
 typedef struct VkrDepotIndexEntry {
   /* Portable relative path with '/' separators; malloc storage. */
@@ -91,6 +95,13 @@ void vkr_depot_workspace_close(VkrDepotWorkspace *workspace);
 bool8_t vkr_depot_workspace_snapshot(VkrDepotWorkspace *workspace,
                                      VkrDepotId *out_tree,
                                      VkrDepotFileList *out_files);
+
+/* As vkr_depot_workspace_snapshot, but of the untracked platform files only
+   (VKR_DEPOT_COOKED_SUFFIX), wherever the ignore rules leave their folder
+   walked; the tracked files and the index stay out of it. */
+bool8_t vkr_depot_workspace_snapshot_cooked(VkrDepotWorkspace *workspace,
+                                            VkrDepotId *out_tree,
+                                            VkrDepotFileList *out_files);
 
 /* Whether `path` ('/' separators, relative to the root) matches the
    ignore `pattern`; `is_directory` for a folder. */

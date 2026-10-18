@@ -65,6 +65,18 @@ bool8_t vkr_depot_client_refs(VkrDepotClient *client, VkrDepotRef *out_refs,
 bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,
                                VkrDepotTransferStats *out_stats);
 
+/* A sparse fetch: downloads `commit` and every tree below it the store
+   lacks, but none of the files those trees list. */
+bool8_t vkr_depot_client_fetch_trees(VkrDepotClient *client,
+                                     const VkrDepotId *commit,
+                                     VkrDepotTransferStats *out_stats);
+
+/* Downloads files a tree lists: each of the `count` blobs and the chunks
+   the store lacks, in one pipelined transfer. */
+bool8_t vkr_depot_client_fetch_files(VkrDepotClient *client,
+                                     const VkrDepotId *blobs, uint32_t count,
+                                     VkrDepotTransferStats *out_stats);
+
 /* Uploads every object of `commit` that is not part of `base` (zero for
    none) and that the server lacks. */
 bool8_t vkr_depot_client_upload(VkrDepotClient *client,

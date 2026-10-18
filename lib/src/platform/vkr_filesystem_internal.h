@@ -19,6 +19,10 @@ FILE *fs_vfs_fopen(const char *path, const char *mode, bool8_t *out_served);
 bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
                        uint64_t capacity);
 #define FS_VFS_OVERLAY_PATH_MAX 4096u
+/* The remote content directory (vkr_vfs_set_remote): gives a path below it
+ * the chance to arrive before a native read-only access. Callers decide that
+ * the access only reads. */
+void fs_vfs_remote(const FilePath *path);
 FileError fs_memory_read_into(FileHandle *handle, void *buffer, uint64_t size,
                               uint64_t *bytes_read);
 FileError fs_memory_remaining(FileHandle *handle, uint64_t *out_size);

@@ -34,6 +34,7 @@
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
 #include "vkr_depot_discovery.h"
+#include "vkr_depot_remote.h"
 #include "vkr_depot_server.h"
 #include "vkr_depot_service.h"
 #include "vkr_depot_sync.h"
@@ -359,6 +360,93 @@ static int depot_commit(const char *directory, const char *message) {
   return result;
 }
 
+/* Publishes the working copy's cooked platform files to its branch's
+   cooked side branch for this computer. */
+static int depot_cooked(const char *directory) {
+  VkrDepotWorkspace workspace;
+  if (!vkr_depot_workspace_open(&workspace, directory,
+                                vkr_depot_zstd_codec())) {
+    fprintf(stderr, "no working copy at %s\n", directory);
+    return 1;
+  }
+  /* The snapshot comes first, as for a commit. */
+  VkrDepotId tree;
+  uint32_t files = 0u;
+  char error[256];
+  if (!vkr_depot_cooked_snapshot(&workspace, &tree, &files, error,
+                                 sizeof(error))) {
+    fprintf(stderr, "%s\n", error);
+    vkr_depot_workspace_close(&workspace);
+    return 1;
+  }
+  VkrDepotConnection *connection = depot_connect(&workspace);
+  VkrDepotClient *client = vkr_depot_connection_client(connection);
+  int result = 1;
+  if (client) {
+    char branch[VKR_DEPOT_BRANCH_NAME];
+    snprintf(branch, sizeof(branch), "%s", workspace.branch);
+    VkrDepotCookedResult cooked;
+    if (vkr_depot_publish_cooked(&workspace, client, branch, &tree, files,
+                                 &cooked, error, sizeof(error))) {
+      char hex[VKR_DEPOT_ID_HEX];
+      vkr_depot_id_hex(&cooked.commit, hex);
+      printf("%s %s at %.12s: %u files, %llu bytes uploaded\n",
+             cooked.unchanged ? "unchanged" : "published", cooked.branch, hex,
+             cooked.files, (unsigned long long)cooked.uploaded_bytes);
+      result = 0;
+    } else {
+      fprintf(stderr, "%s\n", error);
+    }
+  }
+  vkr_depot_disconnect(connection);
+  vkr_depot_workspace_close(&workspace);
+  return result;
+}
+
+/* Lists a branch's files into `directory` without fetching them, then
+   fetches `path` as a streaming reader would and prints the timing. */
+static int depot_stream(const char *address, const char *key_hex,
+                        const char *directory, const char *path,
+                        const char *branch) {
+  uint8_t key[32];
+  char absolute[VKR_DEPOT_PATH_CAPACITY];
+  if (!depot_parse_key(key_hex, key) ||
+      !vkr_bakery_path_absolute(directory, absolute, sizeof(absolute))) {
+    fprintf(stderr, "stream needs a 64-digit server key and a directory\n");
+    return 1;
+  }
+  const VkrDepotRemoteConfig config = {.directory = absolute,
+                                       .address = address,
+                                       .server_key = key,
+                                       .branch = branch,
+                                       .codec = vkr_depot_zstd_codec()};
+  char error[256];
+  const float64_t opened_at = vkr_platform_get_absolute_time();
+  VkrDepotRemote *remote =
+      vkr_depot_remote_open(&depot_allocator, &config, error, sizeof(error));
+  if (!remote) {
+    fprintf(stderr, "%s\n", error);
+    return 1;
+  }
+  const float64_t listed_at = vkr_platform_get_absolute_time();
+  const bool8_t fetched = vkr_depot_remote_fetch(remote, path);
+  const float64_t fetched_at = vkr_platform_get_absolute_time();
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(remote, &stats);
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(&stats.commit, hex);
+  printf(
+      "listed %u files of %.12s%s in %.1f ms; %s %s in %.1f ms "
+      "(%llu bytes stored)\n",
+      stats.listed, hex,
+      vkr_depot_id_zero(&stats.cooked_commit) ? "" : " and its cooked branch",
+      (listed_at - opened_at) * 1000.0, fetched ? "fetched" : "could not fetch",
+      path, (fetched_at - listed_at) * 1000.0,
+      (unsigned long long)stats.stored_bytes);
+  vkr_depot_remote_close(remote);
+  return fetched ? 0 : 1;
+}
+
 static int depot_pull(const char *directory, VkrDepotConflictPolicy policy) {
   VkrDepotWorkspace workspace;
   if (!vkr_depot_workspace_open(&workspace, directory,
@@ -520,6 +608,8 @@ static void depot_usage(void) {
       "  vkr_depot status|refs|locks [DIR]\n"
       "  vkr_depot pull [DIR] [--take-theirs|--keep-mine]\n"
       "  vkr_depot commit [DIR] -m MESSAGE\n"
+      "  vkr_depot cooked [DIR]\n"
+      "  vkr_depot stream ADDR SERVER-KEY DIR PATH [--branch NAME]\n"
       "  vkr_depot log [DIR] [--count N]\n"
       "  vkr_depot lock|unlock PATH [--dir DIR] [--force]\n");
 }
@@ -641,6 +731,13 @@ static int depot_main(int argc, char **argv) {
   }
   if (strcmp(command, "pull") == 0) {
     return depot_pull(first, policy);
+  }
+  if (strcmp(command, "cooked") == 0) {
+    return depot_cooked(first);
+  }
+  if (strcmp(command, "stream") == 0 && positional_count == 4u) {
+    return depot_stream(positional[0], positional[1], positional[2],
+                        positional[3], branch);
   }
   if (strcmp(command, "refs") == 0) {
     return depot_refs(first);

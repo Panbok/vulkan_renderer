@@ -31,6 +31,7 @@ FILE *file_fopen(const char *utf8_path, const char *mode) {
     if (fs_vfs_overlay(&path, &overlay, buffer, sizeof(buffer))) {
       return fopen(buffer, mode);
     }
+    fs_vfs_remote(&path);
   }
   return fopen(utf8_path, mode);
 }
@@ -51,6 +52,7 @@ bool8_t file_exists(const FilePath *path) {
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
     return true_v;
   }
+  fs_vfs_remote(path);
   struct stat buffer;
   return stat((char *)path->path.str, &buffer) == 0;
 }
@@ -66,6 +68,8 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
     path = &overlay;
+  } else {
+    fs_vfs_remote(path);
   }
   struct stat buffer;
   if (stat((char *)path->path.str, &buffer) == 0) {
@@ -232,9 +236,13 @@ FileError file_open(const FilePath *path, FileMode mode,
   const FilePath *native = path;
   FilePath overlay;
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
-  if (!has_write && !has_append && !has_create && !has_truncate &&
-      fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
-    native = &overlay;
+  if (!has_write && !has_append && !has_create && !has_truncate) {
+    if (fs_vfs_overlay(path, &overlay, overlay_buffer,
+                       sizeof(overlay_buffer))) {
+      native = &overlay;
+    } else {
+      fs_vfs_remote(path);
+    }
   }
   int fd = open((char *)native->path.str, flags, access_mode);
   if (fd == -1) {
@@ -265,6 +273,8 @@ FileError file_map_readonly(const FilePath *path, FileMapping *out_mapping) {
   char overlay_buffer[FS_VFS_OVERLAY_PATH_MAX];
   if (fs_vfs_overlay(path, &overlay, overlay_buffer, sizeof(overlay_buffer))) {
     path = &overlay;
+  } else {
+    fs_vfs_remote(path);
   }
   const int fd = open((const char *)path->path.str, O_RDONLY);
   if (fd < 0) {

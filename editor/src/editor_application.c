@@ -114,6 +114,17 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       !editor->ui.materials || !editor->ui.agent || !editor->ui.session ||
       !editor->ui.depot)
     goto cleanup;
+  /* Streaming starts before the scene loads, so its reads already ask. */
+  if (editor->stream_address) {
+    char error[256];
+    if (!vkr_editor_depot_stream(
+            editor->ui.depot, editor->stream_address, editor->stream_key,
+            editor->stream_directory, editor->stream_branch,
+            editor->stream_no_cooked, error, sizeof(error))) {
+      log_error("Streaming from %s failed: %s; assets load from this computer",
+                editor->stream_address, error);
+    }
+  }
   /* Startup Cmd scripts: the environment first, then --exec. */
   editor->ui.cmd_quit_when_done = editor->headless;
   editor->ui.headless = editor->headless;
@@ -480,6 +491,15 @@ vkr_editor_application_config(VkrEditorApplication *editor, int argc,
       editor->agent_disabled = true_v;
     if (string_equals(argv[i], "--scripts") && i + 1 < argc)
       editor->scripts_directory = argv[i + 1];
+    if (string_equals(argv[i], "--stream") && i + 3 < argc) {
+      editor->stream_address = argv[i + 1];
+      editor->stream_key = argv[i + 2];
+      editor->stream_directory = argv[i + 3];
+    }
+    if (string_equals(argv[i], "--stream-branch") && i + 1 < argc)
+      editor->stream_branch = argv[i + 1];
+    if (string_equals(argv[i], "--stream-no-cooked"))
+      editor->stream_no_cooked = true_v;
     if (string_equals(argv[i], "--scene-only"))
       scene_only = true_v;
     else if (string_equals(argv[i], "--paneled"))

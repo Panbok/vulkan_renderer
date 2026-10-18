@@ -27,6 +27,14 @@ typedef struct VkrEditorApplication {
    * hot reload without a project (ADR-079); opened on the first frame. */
   const char *scripts_directory;
   bool8_t scripts_opened;
+  /** `--stream <address> <server key> <directory>`, `--stream-branch <name>`
+   * and `--stream-no-cooked`: assets stream from a depot server into the
+   * directory (vkr_editor_depot_stream). */
+  const char *stream_address;
+  const char *stream_key;
+  const char *stream_directory;
+  const char *stream_branch;
+  bool8_t stream_no_cooked;
   /** Window shape last requested: the compact launcher or the editor. */
   bool8_t window_launcher;
   /** Plain frames left around a launcher/editor resize; the resize is
