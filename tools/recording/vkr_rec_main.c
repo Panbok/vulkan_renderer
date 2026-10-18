@@ -10,6 +10,12 @@
  *   vkr_rec spikes <bundle|stream> [--top N] [--budget MS]
  *                                     JSON: frame-time statistics and the N
  *                                     worst spikes (default 20)
+ *   vkr_rec explain <bundle|stream> (--spike N | --frame F) [--budget MS]
+ *                                     JSON: why spike N (in spikes order)
+ *                                     or frame F was slow: CPU stages, GPU
+ *                                     submission and passes against their
+ *                                     medians, engine events, flags,
+ *                                     system signals and ranked causes
  *   --budget sets the frame budget in milliseconds, for a recording made
  *   before frame.present_interval, such as one on a 75 Hz display (13.333);
  *   without it the analysis takes that series' median, else 16.667.
@@ -623,6 +629,59 @@ static int rec_passes(const char *path, uint32_t top, uint64_t frame) {
   vkr_recording_analysis_free(&analysis);
   vkr_recording_data_free(&data);
   return status;
+}
+
+/* Explains spike `spike` (1 for the largest, in `vkr_rec spikes` order) or,
+   with `spike` 0, `frame`. */
+static int rec_explain(const char *path, uint32_t spike, uint64_t frame,
+                       float64_t budget_ms) {
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    return REC_EXIT_DAMAGED;
+  }
+  /* Enough spikes to rank the asked one, or to name a frame's spike. */
+  const VkrRecordingAnalysisOptions options = {
+      .spike_max = spike > 0u ? spike : REC_TOP_MAX,
+      .budget_ms = budget_ms,
+  };
+  VkrRecordingAnalysis analysis;
+  if (!vkr_recording_analyze(&data, &options, &rec_allocator, &analysis)) {
+    fprintf(stderr, "vkr_rec: out of memory analyzing '%s'\n", path);
+    vkr_recording_data_free(&data);
+    return REC_EXIT_DAMAGED;
+  }
+  int result = REC_EXIT_DAMAGED;
+  if (spike > analysis.spike_count) {
+    fprintf(stderr, "vkr_rec: the recording has %u spikes\n",
+            analysis.spike_count);
+    goto cleanup;
+  }
+  if (spike > 0u) {
+    frame = analysis.spikes[spike - 1u].frame;
+  }
+  static VkrRecordingExplanation explanation;
+  if (!vkr_recording_explain(&data, &analysis, frame, &explanation)) {
+    fprintf(stderr, "vkr_rec: --frame must be below %llu\n",
+            (unsigned long long)data.frame_count);
+    goto cleanup;
+  }
+  const RecExit status = rec_data_status(&data);
+  VkrJsonWriter json;
+  vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+  vkr_json_writer_begin_object(&json);
+  vkr_json_writer_name(&json, rec_str("status"));
+  vkr_json_writer_string(&json, rec_str(rec_status_name(status)));
+  vkr_json_writer_name(&json, rec_str("explain"));
+  vkr_recording_explain_write_json(&json, &data, &analysis, &explanation);
+  vkr_json_writer_end_object(&json);
+  vkr_json_writer_complete(&json);
+  fputc('\n', stdout);
+  result = status;
+
+cleanup:
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  return result;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1639,6 +1698,8 @@ static void rec_usage(void) {
       "usage: vkr_rec summary <bundle|stream> [--budget MS]\n"
       "       vkr_rec verify <bundle|stream>\n"
       "       vkr_rec spikes <bundle|stream> [--top N] [--budget MS]\n"
+      "       vkr_rec explain <bundle|stream> (--spike N | --frame F) "
+      "[--budget MS]\n"
       "       vkr_rec frames <bundle|stream> --range A:B "
       "[--fields name,name]\n"
       "       vkr_rec passes <bundle|stream> [--top N] [--frame F]\n"
@@ -1710,6 +1771,44 @@ static int rec_run_passes(int argc, char **argv) {
     }
   }
   return rec_passes(argv[2], top, frame);
+}
+
+static int rec_run_explain(int argc, char **argv) {
+  uint32_t spike = 0u;
+  uint64_t frame = UINT64_MAX;
+  float64_t budget_ms = 0.0;
+  for (int i = 3; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+    if (strcmp(argv[i], "--spike") == 0) {
+      if (!string_to_u32(argv[i + 1], &spike) || spike == 0u ||
+          spike > REC_TOP_MAX) {
+        fprintf(stderr, "vkr_rec: --spike takes a rank from 1 to %u\n",
+                REC_TOP_MAX);
+        return REC_EXIT_DAMAGED;
+      }
+    } else if (strcmp(argv[i], "--frame") == 0) {
+      if (!string_to_u64(argv[i + 1], &frame) || frame == UINT64_MAX) {
+        fprintf(stderr, "vkr_rec: --frame takes a frame number\n");
+        return REC_EXIT_DAMAGED;
+      }
+    } else if (strcmp(argv[i], "--budget") == 0) {
+      /* The pair alone, wherever it stands among the options. */
+      if (!rec_parse_budget(i + 2, argv, i, &budget_ms)) {
+        return REC_EXIT_DAMAGED;
+      }
+    } else {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  if ((spike > 0u) == (frame != UINT64_MAX)) {
+    fprintf(stderr, "vkr_rec: explain takes --spike N or --frame F\n");
+    return REC_EXIT_DAMAGED;
+  }
+  return rec_explain(argv[2], spike, frame, budget_ms);
 }
 
 static int rec_run_frames(int argc, char **argv) {
@@ -1807,6 +1906,8 @@ VKR_MAIN(argc, argv) {
     result = rec_report(argv[2], false_v, 0.0);
   } else if (strcmp(argv[1], "spikes") == 0) {
     result = rec_run_spikes(argc, argv);
+  } else if (strcmp(argv[1], "explain") == 0) {
+    result = rec_run_explain(argc, argv);
   } else if (strcmp(argv[1], "frames") == 0) {
     result = rec_run_frames(argc, argv);
   } else if (strcmp(argv[1], "passes") == 0) {

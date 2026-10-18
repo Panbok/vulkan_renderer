@@ -16140,11 +16140,22 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
     }
     const bool8_t all = string_equals(measurements, "all");
     const bool8_t zones = ops_arg_bool(call->args, "zones", all);
+    float64_t rolling = 0.0;
+    if (ops_arg_number(call->args, "rolling", &rolling) &&
+        (rolling < 1.0 || rolling > 300.0)) {
+      ops_fail(ctx, OPS_INVALID, "'rolling' must be 1 to 300 seconds");
+      return VKR_EDITOR_OP_DONE;
+    }
     char error[128];
     const char *author = call->author[0] ? call->author : "agent";
+    /* Rolling keeps the last seconds at Tier 1 with zones and writes only
+       on rec.save_last. */
     call->token =
-        vkr_editor_recording_start(ctx->editor, name, author, tier, all, zones,
-                                   false_v, error, sizeof(error));
+        rolling > 0.0
+            ? vkr_editor_recording_start_rolling(ctx->editor, rolling, false_v,
+                                                 error, sizeof(error))
+            : vkr_editor_recording_start(ctx->editor, name, author, tier, all,
+                                         zones, false_v, error, sizeof(error));
     if (!call->token) {
       ops_fail(ctx, OPS_REJECTED, "%s", error);
       return VKR_EDITOR_OP_DONE;
@@ -16166,6 +16177,27 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
 static VkrEditorOpStatus ops_run_rec_stop(OpsContext *ctx) {
   return ops_recording_wait(
       ctx, (VkrSampleRecordingRequest){.command = VKR_SAMPLE_RECORDING_STOP});
+}
+
+static VkrEditorOpStatus ops_run_rec_save_last(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  if (call->stage == 0u) {
+    char name[VKR_RECORDING_LABEL_MAX + 1u] = {0};
+    if (!ops_arg_string(ctx, call->args, "name", name, sizeof(name))) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    char error[128];
+    call->token = vkr_editor_recording_save_window(ctx->editor, name, false_v,
+                                                   error, sizeof(error));
+    if (!call->token) {
+      ops_fail(ctx, OPS_REJECTED, "%s", error);
+      return VKR_EDITOR_OP_DONE;
+    }
+    call->stage = 1u;
+    return VKR_EDITOR_OP_WAIT;
+  }
+  /* The request is queued; the shared wait answers it. */
+  return ops_recording_wait(ctx, (VkrSampleRecordingRequest){0});
 }
 
 static VkrEditorOpStatus ops_run_rec_mark(OpsContext *ctx) {
@@ -16410,6 +16442,78 @@ static VkrEditorOpStatus ops_run_rec_spikes(OpsContext *ctx) {
             vkr_bakery_json_cstr(ops_arena(ctx),
                                  ops_recording_read_status(&read.data)));
     ops_set(ctx, ctx->call->result, "analysis", analysis);
+  }
+  ops_recording_read_free(&read);
+  return VKR_EDITOR_OP_DONE;
+}
+
+typedef struct OpsExplainWrite {
+  const OpsRecordingRead *read;
+  VkrRecordingExplanation explanation;
+} OpsExplainWrite;
+
+static void ops_write_explain(VkrJsonWriter *json, void *context) {
+  const OpsExplainWrite *explain = context;
+  vkr_recording_explain_write_json(json, &explain->read->data,
+                                   &explain->read->analysis,
+                                   &explain->explanation);
+}
+
+static VkrEditorOpStatus ops_run_rec_explain(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  float64_t spike = 0.0;
+  float64_t frame = 0.0;
+  const bool8_t by_spike = ops_arg_number(ctx->call->args, "spike", &spike);
+  const bool8_t by_frame = ops_arg_number(ctx->call->args, "frame", &frame);
+  if (by_spike == by_frame) {
+    ops_fail(ctx, OPS_INVALID, "rec.explain needs 'spike' or 'frame'");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (by_spike && !(spike >= 1.0 && spike <= OPS_RECORDING_SPIKE_MAX)) {
+    ops_fail(ctx, OPS_INVALID, "'spike' is a rank in [1, %u]",
+             OPS_RECORDING_SPIKE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (by_frame && frame < 0.0) {
+    ops_fail(ctx, OPS_INVALID, "'frame' is a frame number");
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* Enough spikes to rank the asked one, or to name a frame's spike. */
+  const uint32_t spike_max =
+      by_spike ? (uint32_t)spike : OPS_RECORDING_SPIKE_MAX;
+  OpsRecordingRead read;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_recording_read(ctx, bundle, spike_max, &read)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  OpsExplainWrite query = {.read = &read};
+  uint64_t target = (uint64_t)frame;
+  VkrBakeryJson *explain = NULL;
+  if (by_spike && (uint32_t)spike > read.analysis.spike_count) {
+    ops_fail(ctx, OPS_INVALID, "The recording has %u spikes",
+             read.analysis.spike_count);
+  } else {
+    if (by_spike) {
+      target = read.analysis.spikes[(uint32_t)spike - 1u].frame;
+    }
+    if (!vkr_recording_explain(&read.data, &read.analysis, target,
+                               &query.explanation)) {
+      ops_fail(ctx, OPS_INVALID, "'frame' must be below %llu",
+               (unsigned long long)read.data.frame_count);
+    } else {
+      explain = ops_written_json(ctx, ops_write_explain, &query);
+    }
+  }
+  if (explain) {
+    ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+    ops_set(ctx, ctx->call->result, "path",
+            vkr_bakery_json_cstr(ops_arena(ctx), bundle));
+    ops_set(ctx, ctx->call->result, "status",
+            vkr_bakery_json_cstr(ops_arena(ctx),
+                                 ops_recording_read_status(&read.data)));
+    ops_set(ctx, ctx->call->result, "explain", explain);
+    ops_recording_thumb(ctx, ctx->call->result, bundle, target);
   }
   ops_recording_read_free(&read);
   return VKR_EDITOR_OP_DONE;
@@ -16918,12 +17022,24 @@ static const OpsDef s_ops[] = {
      "frame on tiled too, event subjects); it costs frame time, so time "
      "comparisons use standard (default). 'zones' (default: with "
      "measurements all) records every thread's CPU zones and, at tier 1, the "
-     "GPU pass starts, for vkr_rec export --perfetto.",
+     "GPU pass starts, for vkr_rec export --perfetto. 'rolling' (1 to 300 "
+     "seconds) instead keeps only the last seconds in memory at tier 1 with "
+     "zones, writing nothing until rec.save_last; rec.stop then discards "
+     "them.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]},"
      "\"measurements\":{\"enum\":[\"standard\",\"all\"]},\"zones\":{"
-     "\"type\":\"boolean\"}}}",
+     "\"type\":\"boolean\"},\"rolling\":{\"type\":\"number\","
+     "\"minimum\":1,\"maximum\":300}}}",
      ops_run_rec_start, NULL},
+    {"rec.save_last",
+     "Save what a rolling recording (rec.start 'rolling') holds, about its "
+     "last seconds, as a recording named 'name' (a time stamp when absent), "
+     "frames renumbered from zero; the rolling recording keeps running. Use "
+     "it right after a hitch to keep the frames that led to it.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_rec_save_last, NULL},
     {"rec.stop", "Stop the recording in progress and write its summary.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_rec_stop, NULL},
     {"rec.mark",
@@ -16982,6 +17098,20 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"top\":{\"type\":\"integer\"}}}",
      ops_run_rec_spikes, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.explain",
+     "Why spike 'spike' (a rec.spikes rank, at most 100) or frame 'frame' "
+     "of recording 'name' (default: the open one) was slow: frame time "
+     "against the local median and the budget, CPU stages, gpu.submission "
+     "and passes against their recording medians, engine events, repack "
+     "and publication flags, system signals, and 'causes' ranked by excess "
+     "ms with conditions (thermal, memory pressure, page faults, errors, "
+     "missed presents) after them, each with its evidence; 'thumb' is the "
+     "Scene thumbnail at or before the frame. vkr_rec explain answers the "
+     "same 'explain' object.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"},\"spike\":{\"type\":\"integer\"},\"frame\":{"
+     "\"type\":\"integer\"}}}",
+     ops_run_rec_explain, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.frames",
      "Frames 'first' to 'last' of recording 'name' (default: the open one) "
      "as columns and rows: frame, time, camera x, y, z, then 'fields' "

@@ -9,6 +9,7 @@
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 
 /* The recorder's rings, chunk buffer and writer scratch live here; the
@@ -405,10 +406,15 @@ vkr_internal void vkr_recording_copy_text(char *destination, uint64_t capacity,
 
 /* Creates each missing directory above the bundle, then the bundle itself,
    which must not exist yet. */
-vkr_internal bool8_t vkr_recording_create_bundle(VkrRecording *recording) {
+/* Creates `bundle_path` and its missing parents; the bundle itself must not
+   exist yet. */
+vkr_internal bool8_t vkr_recording_create_directory(const char *bundle_path) {
   char prefix[VKR_RECORDING_PATH_MAX];
-  const uint64_t length = string_length(recording->bundle_path);
-  MemCopy(prefix, recording->bundle_path, length + 1u);
+  const uint64_t length = string_length(bundle_path);
+  if (length >= sizeof(prefix)) {
+    return false_v;
+  }
+  MemCopy(prefix, bundle_path, length + 1u);
   for (uint64_t i = 1u; i < length; ++i) {
     if (prefix[i] != '/' && prefix[i] != '\\') {
       continue;
@@ -423,8 +429,12 @@ vkr_internal bool8_t vkr_recording_create_bundle(VkrRecording *recording) {
     }
     prefix[i] = separator;
   }
-  const FilePath path = file_path_view(recording->bundle_path);
+  const FilePath path = file_path_view(bundle_path);
   return file_create_directory_exclusive(&path) == FILE_ERROR_NONE;
+}
+
+vkr_internal bool8_t vkr_recording_create_bundle(VkrRecording *recording) {
+  return vkr_recording_create_directory(recording->bundle_path);
 }
 
 vkr_internal const char *vkr_recording_unit(VkrMetricUnit unit) {
@@ -743,8 +753,12 @@ bool8_t vkr_recording_start(VkrRecording *recording,
       .stream_count = stream_count,
       .ring_bytes = VKR_RECORDING_RING_BYTES,
       .worker_ring_bytes = config->zones ? VKR_RECORDING_WORKER_RING_BYTES : 0u,
+      .rolling_seconds = config->rolling_seconds,
   };
-  if (!vkr_recording_create_bundle(recording)) {
+  recording->rolling_seconds = Max(config->rolling_seconds, 0.0);
+  /* A rolling recording creates its bundles at each save. */
+  if (recording->rolling_seconds <= 0.0 &&
+      !vkr_recording_create_bundle(recording)) {
     goto cleanup;
   }
   recording->recorder =
@@ -1568,21 +1582,21 @@ vkr_internal void vkr_recording_write_markers(VkrJsonWriter *json,
 
 /* Reads the stream back and writes its statistics and spikes as the
    summary's "analysis": once, at stop, off the frame path. */
-vkr_internal void vkr_recording_write_analysis(VkrRecording *recording,
+vkr_internal void vkr_recording_write_analysis(const char *bundle_path,
+                                               VkrAllocator *allocator,
                                                VkrJsonWriter *json) {
   char stream[VKR_RECORDING_PATH_MAX];
-  string_format(stream, sizeof(stream), "%s/%s", recording->bundle_path,
+  string_format(stream, sizeof(stream), "%s/%s", bundle_path,
                 VKR_RECORDING_STREAM_FILE);
   VkrRecordingData data;
-  if (vkr_recording_data_load(&data, &recording->allocator, stream,
+  if (vkr_recording_data_load(&data, allocator, stream,
                               vkr_content_codec_zstd_decoder()) !=
       VKR_RECORDING_DATA_OK) {
     return;
   }
   VkrRecordingAnalysis analysis;
   const VkrRecordingAnalysisOptions options = {0};
-  if (vkr_recording_analyze(&data, &options, &recording->allocator,
-                            &analysis)) {
+  if (vkr_recording_analyze(&data, &options, allocator, &analysis)) {
     const VkrRecordingAnalysisJsonOptions json_options = {
         .budget_bytes = 8192u,
         .include_series = true_v,
@@ -1597,11 +1611,22 @@ vkr_internal void vkr_recording_write_analysis(VkrRecording *recording,
 
 /* summary.json: the small file an agent or the Library reads first; readers
    ignore names they do not know. */
-vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
-                                                 const VkrRecorderStats *stats,
-                                                 bool8_t stream_ok) {
+/* The facts of one written bundle: where it is, the frames and seconds it
+   holds, whether it carries the recording's markers, and the allocator its
+   analysis may use. */
+typedef struct VkrRecordingSummaryTarget {
+  const char *bundle_path;
+  uint64_t frames;
+  float64_t seconds;
+  bool8_t markers;
+  VkrAllocator *allocator;
+} VkrRecordingSummaryTarget;
+
+vkr_internal bool8_t vkr_recording_write_summary_at(
+    VkrRecording *recording, const VkrRecordingSummaryTarget *target,
+    const VkrRecorderStats *stats, bool8_t stream_ok) {
   char path[VKR_RECORDING_PATH_MAX];
-  string_format(path, sizeof(path), "%s/%s", recording->bundle_path,
+  string_format(path, sizeof(path), "%s/%s", target->bundle_path,
                 VKR_RECORDING_SUMMARY_FILE);
   VkrJsonFileWriter file;
   if (!vkr_json_file_writer_begin(
@@ -1628,7 +1653,7 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
     vkr_recording_json_u64(json, "pass_gpu_period", recording->pass_gpu_period);
     vkr_recording_json_u64(json, "pass_rows", recording->pass_rows_written);
   }
-  vkr_recording_json_u64(json, "frames", recording->frame);
+  vkr_recording_json_u64(json, "frames", target->frames);
   if (recording->poses_enabled) {
     vkr_recording_json_u64(json, "poses", recording->poses_written);
     vkr_recording_json_u64(json, "spawns", recording->spawn_count);
@@ -1639,17 +1664,127 @@ vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
   /* Re-simulate needs them too. */
   vkr_recording_json_u64(json, "tick_hashes", recording->tick_hashes_written);
   vkr_recording_json_u64(json, "measurements", recording->measurement_count);
-  vkr_recording_json_f64(json, "duration_seconds", recording->time);
+  vkr_recording_json_f64(json, "duration_seconds", target->seconds);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
   vkr_recording_json_u64(json, "lost_records", stats->lost_records);
   vkr_recording_json_u64(json, "stream_bytes", stats->stored_bytes);
   vkr_recording_json_f64(json, "writer_seconds", stats->writer_seconds);
-  vkr_recording_write_markers(json, recording);
+  if (target->markers) {
+    vkr_recording_write_markers(json, recording);
+  }
   if (recording->metrics_enabled && stream_ok) {
-    vkr_recording_write_analysis(recording, json);
+    vkr_recording_write_analysis(target->bundle_path, target->allocator, json);
   }
   vkr_json_writer_end_object(json);
   return vkr_json_file_writer_commit(&file);
+}
+
+vkr_internal bool8_t vkr_recording_write_summary(VkrRecording *recording,
+                                                 const VkrRecorderStats *stats,
+                                                 bool8_t stream_ok) {
+  const VkrRecordingSummaryTarget target = {
+      .bundle_path = recording->bundle_path,
+      .frames = recording->frame,
+      .seconds = recording->time,
+      .markers = true_v,
+      .allocator = &recording->allocator,
+  };
+  return vkr_recording_write_summary_at(recording, &target, stats, stream_ok);
+}
+
+/* The names the window's records refer to: every pass and zone name, as
+   records in the chunk layout, so a saved window resolves them although
+   their first records left the window. Heap storage; the caller frees it. */
+vkr_internal uint8_t *vkr_recording_window_preamble(VkrRecording *recording,
+                                                    uint64_t *out_size) {
+  const uint32_t passes =
+      recording->passes_enabled ? recording->pass_count : 0u;
+  const uint32_t zones = recording->zones_enabled ? vkr_zone_site_count() : 0u;
+  const uint64_t capacity =
+      (uint64_t)passes *
+          vkr_recording_record_bytes(4u + VKR_RECORDING_PASS_NAME_MAX) +
+      (uint64_t)zones * vkr_recording_record_bytes(4u + VKR_RECORDING_TEXT_MAX);
+  *out_size = 0u;
+  if (capacity == 0u) {
+    return NULL;
+  }
+  uint8_t *preamble = vkr_heap_alloc_zeroed(1u, capacity);
+  if (!preamble) {
+    return NULL;
+  }
+  uint64_t size = 0u;
+  for (uint32_t id = 0u; id < passes + zones; ++id) {
+    const bool8_t pass = id < passes;
+    const uint32_t key = pass ? id : id - passes;
+    const char *name =
+        pass ? recording->pass_names[key] : vkr_zone_site_name(key);
+    if (!name) {
+      continue;
+    }
+    const uint32_t length = (uint32_t)Min(
+        string_length(name), (uint64_t)(pass ? VKR_RECORDING_PASS_NAME_MAX
+                                             : VKR_RECORDING_TEXT_MAX));
+    uint8_t *record = preamble + size;
+    vkr_recording_record_header_store(record,
+                                      pass ? VKR_RECORDING_STREAM_PASS_NAME
+                                           : VKR_RECORDING_STREAM_ZONE_NAME,
+                                      0u, 4u + length, 0u);
+    MemCopy(record + VKR_RECORDING_RECORD_HEADER_SIZE, &key, sizeof(key));
+    MemCopy(record + VKR_RECORDING_RECORD_HEADER_SIZE + 4u, name, length);
+    size += vkr_recording_record_bytes(4u + length);
+  }
+  *out_size = size;
+  return preamble;
+}
+
+bool8_t vkr_recording_save_window(VkrRecording *recording,
+                                  const char *bundle_path,
+                                  VkrRecordingWindow *out_window) {
+  vkr_assert(recording != NULL && bundle_path != NULL);
+  if (!recording->active || recording->rolling_seconds <= 0.0 ||
+      string_length(bundle_path) + 16u >= VKR_RECORDING_PATH_MAX ||
+      !vkr_recording_create_directory(bundle_path)) {
+    return false_v;
+  }
+  char stream_path[VKR_RECORDING_PATH_MAX];
+  string_format(stream_path, sizeof(stream_path), "%s/%s", bundle_path,
+                VKR_RECORDING_STREAM_FILE);
+  uint64_t preamble_size = 0u;
+  uint8_t *preamble = vkr_recording_window_preamble(recording, &preamble_size);
+  VkrRecorderSaveResult result = {0};
+  const bool8_t stream_ok = vkr_recorder_save(recording->recorder, stream_path,
+                                              preamble, preamble_size, &result);
+  if (preamble) {
+    vkr_heap_free(preamble);
+  }
+  if (!stream_ok) {
+    return false_v;
+  }
+  /* The writer thread keeps allocating from the recording's memory while it
+     runs, so the summary's analysis takes memory of its own. */
+  VkrDMemory memory = {0};
+  if (!vkr_dmemory_create(MB(4), GB(1), &memory)) {
+    return false_v;
+  }
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  VkrRecorderStats stats = {0};
+  vkr_recorder_stats(recording->recorder, &stats);
+  const VkrRecordingSummaryTarget target = {
+      .bundle_path = bundle_path,
+      .frames = result.frame_count,
+      .seconds = result.seconds,
+      .markers = false_v,
+      .allocator = &allocator,
+  };
+  const bool8_t summary_ok =
+      vkr_recording_write_summary_at(recording, &target, &stats, true_v);
+  vkr_dmemory_allocator_destroy(&allocator);
+  if (out_window) {
+    *out_window = (VkrRecordingWindow){.frames = result.frame_count,
+                                       .seconds = result.seconds};
+  }
+  return summary_ok;
 }
 
 bool8_t vkr_recording_stop(VkrRecording *recording,
@@ -1667,7 +1802,9 @@ bool8_t vkr_recording_stop(VkrRecording *recording,
   }
   VkrRecorderStats stats;
   const bool8_t stream_ok = vkr_recorder_stop(recording->recorder, &stats);
+  /* A rolling recording wrote its saves; it has no bundle of its own. */
   const bool8_t summary_ok =
+      recording->rolling_seconds > 0.0 ||
       vkr_recording_write_summary(recording, &stats, stream_ok);
   if (out_stats) {
     *out_stats = stats;

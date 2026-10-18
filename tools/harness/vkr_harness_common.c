@@ -19,6 +19,24 @@ bool8_t vkr_harness_metric_is_current_frame_work(const char *name) {
          !string_find(name, ".indirect_");
 }
 
+bool8_t vkr_harness_metric_is_work_volume(const char *name) {
+  if (!name) {
+    return false_v;
+  }
+  /* HZB history selection is scheduling state: a history whose producer has
+     not completed is rejected as incomplete before the world, extent, camera
+     and raster checks run, so the selection and every rejection count depend
+     on GPU completion timing. */
+  if (string_equals(name, "visibility.hzb.history_valid") ||
+      string_n_equals(name, "visibility.hzb.history_rejection.",
+                      sizeof("visibility.hzb.history_rejection.") - 1u)) {
+    return false_v;
+  }
+  return string_n_equals(name, "draw.", 5u) ||
+         string_n_equals(name, "visibility.", 11u) ||
+         string_find(name, "overflow") || string_find(name, "capture");
+}
+
 bool8_t
 vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
                                      const char *environment_request,

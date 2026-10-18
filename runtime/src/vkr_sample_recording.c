@@ -107,11 +107,15 @@ vkr_internal void vkr_sample_recording_start(
           request->tier != VKR_RECORDING_TIER_NONE || request->all_measurements
               ? runtime->metrics
               : NULL,
-      .poses = true_v,
+      .poses = request->rolling_seconds <= 0.0,
       .passes =
           request->tier == VKR_RECORDING_TIER_1 || request->all_measurements,
-      .all_measurements = request->all_measurements,
+      /* A rolling window holds no world state and no catalog-wide
+         measurements: its saves resolve only pass and zone names. */
+      .all_measurements =
+          request->all_measurements && request->rolling_seconds <= 0.0,
       .zones = request->zones,
+      .rolling_seconds = request->rolling_seconds,
       /* Per-pass stamps split the tiled pipeline's shared compute encoder
          (about 0.5 ms per Bistro frame), so Tier 1 samples them there;
          desktop stamps are cheap and run every frame (D2). All
@@ -160,6 +164,7 @@ vkr_sample_recording_stop(VkrStandardSceneRuntime *runtime,
   }
   const uint64_t frames = runtime->recording.frame;
   const float64_t seconds = runtime->recording.time;
+  const bool8_t rolling = runtime->recording.rolling_seconds > 0.0;
   char path[VKR_RECORDING_PATH_MAX];
   string_format(path, sizeof(path), "%s", runtime->recording.bundle_path);
   VkrRecorderStats stats;
@@ -171,12 +176,41 @@ vkr_sample_recording_stop(VkrStandardSceneRuntime *runtime,
     state->restore_gpu_timing = false_v;
   }
   char message[VKR_RECORDING_PATH_MAX + 96u];
-  if (ok) {
+  if (ok && rolling) {
+    /* A rolling recording keeps nothing past its saves. */
+    string_format(message, sizeof(message),
+                  "Stopped keeping the last seconds; nothing more was saved.");
+  } else if (ok) {
     string_format(message, sizeof(message), "Saved %llu frames (%.1f s) to %s.",
                   (unsigned long long)frames, seconds, path);
   } else {
     string_format(message, sizeof(message),
                   "The recording %s did not save cleanly.", path);
+  }
+  log_info("%s", message);
+  vkr_sample_recording_result(state, request->token, ok, message);
+}
+
+vkr_internal void
+vkr_sample_recording_save_window(VkrStandardSceneRuntime *runtime,
+                                 VkrSampleRecordingState *state,
+                                 const VkrSampleRecordingRequest *request) {
+  if (!runtime->recording.active || runtime->recording.rolling_seconds <= 0.0) {
+    vkr_sample_recording_result(state, request->token, false_v,
+                                "No rolling recording is running.");
+    return;
+  }
+  VkrRecordingWindow window = {0};
+  const bool8_t ok =
+      vkr_recording_save_window(&runtime->recording, request->path, &window);
+  char message[VKR_RECORDING_PATH_MAX + 96u];
+  if (ok) {
+    string_format(
+        message, sizeof(message), "Saved the last %llu frames (%.1f s) to %s.",
+        (unsigned long long)window.frames, window.seconds, request->path);
+  } else {
+    string_format(message, sizeof(message),
+                  "Could not save the rolling window to %s.", request->path);
   }
   log_info("%s", message);
   vkr_sample_recording_result(state, request->token, ok, message);
@@ -499,6 +533,9 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
   case VKR_SAMPLE_RECORDING_STOP:
     vkr_sample_recording_stop(runtime, state, request);
     return;
+  case VKR_SAMPLE_RECORDING_SAVE_WINDOW:
+    vkr_sample_recording_save_window(runtime, state, request);
+    return;
   case VKR_SAMPLE_RECORDING_MARK:
     if (!runtime->recording.active) {
       vkr_sample_recording_result(state, request->token, false_v,
@@ -559,6 +596,8 @@ void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
   status->recording = runtime->recording.active;
   status->recording_all_measurements =
       runtime->recording.active && runtime->recording.measurement_count > 0u;
+  status->recording_rolling_seconds =
+      runtime->recording.active ? runtime->recording.rolling_seconds : 0.0;
   if (status->recording) {
     string_format(status->recording_path, sizeof(status->recording_path), "%s",
                   runtime->recording.bundle_path);

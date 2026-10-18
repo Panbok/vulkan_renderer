@@ -514,6 +514,25 @@ uint64_t vkr_editor_recording_start(struct VkrEditorUi *editor,
                                     bool8_t toast, char *error,
                                     uint64_t error_capacity);
 
+/* Seconds the Recordings window's Keep last control keeps. */
+#define VKR_EDITOR_RECORDING_ROLLING_SECONDS 30.0
+
+/** Starts keeping the last `seconds` in memory (a rolling recording at Tier
+ * 1 with CPU zones); nothing is written until
+ * vkr_editor_recording_save_window. Returns its token, or zero with the
+ * reason in `error`. */
+uint64_t vkr_editor_recording_start_rolling(struct VkrEditorUi *editor,
+                                            float64_t seconds, bool8_t toast,
+                                            char *error,
+                                            uint64_t error_capacity);
+
+/** Saves the rolling recording's held seconds as a recording named `name`
+ * (a time stamp when empty) in the recording directory; the rolling
+ * recording keeps running. Returns its token, or zero with the reason. */
+uint64_t vkr_editor_recording_save_window(struct VkrEditorUi *editor,
+                                          const char *name, bool8_t toast,
+                                          char *error, uint64_t error_capacity);
+
 /** Resolves a recording argument: a path, or a bundle name in the recording
  * directory with or without its extension. */
 bool8_t vkr_editor_recording_resolve(struct VkrEditorUi *editor,

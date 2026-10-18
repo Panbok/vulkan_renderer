@@ -27,6 +27,28 @@ typedef struct VkrRecorderLane {
   bool8_t any_frame;
 } VkrRecorderLane;
 
+/* Rolling mode keeps at most this many closed chunks. */
+#define VKR_RECORDER_HELD_MAX 256u
+/* Rolling chunks close this often, so the window trims finely. */
+#define VKR_RECORDER_ROLLING_CHUNK_SECONDS 0.25
+
+enum {
+  VKR_RECORDER_SAVE_IDLE = 0,
+  VKR_RECORDER_SAVE_REQUESTED,
+  VKR_RECORDER_SAVE_DONE,
+};
+
+/* One closed chunk kept in rolling mode: its records in the chunk layout,
+   the frames they span, and when it opened and closed. */
+typedef struct VkrRecorderHeldChunk {
+  uint8_t *data;
+  uint64_t size;
+  uint64_t first_frame;
+  uint64_t last_frame;
+  float64_t opened;
+  float64_t closed;
+} VkrRecorderHeldChunk;
+
 struct s_VkrRecorder {
   VkrAllocator *allocator;
   char *path;
@@ -61,6 +83,27 @@ struct s_VkrRecorder {
   VkrAtomicUint64 chunks;
   VkrAtomicUint64 writer_nanoseconds;
   VkrAtomicBool failed;
+
+  /* Rolling mode (VkrRecorderConfig.rolling_seconds): the codec, identity
+     and dictionary a save writes, and the closed chunks kept, oldest first
+     in a ring the writer thread owns. */
+  float64_t rolling_seconds;
+  const VkrCodec *codec;
+  char *identity;
+  uint64_t identity_bytes;
+  uint8_t *dictionary;
+  uint64_t dictionary_size;
+  VkrRecorderHeldChunk held[VKR_RECORDER_HELD_MAX];
+  uint32_t held_first;
+  uint32_t held_count;
+  /* A save the caller posted: VKR_RECORDER_SAVE_* state, its inputs, and
+     its result once the state is DONE. */
+  VkrAtomicUint32 save_state;
+  const char *save_path;
+  const uint8_t *save_preamble;
+  uint64_t save_preamble_size;
+  VkrRecorderSaveResult save_result;
+  bool8_t save_ok;
 };
 
 vkr_internal const VkrRecordingField VKR_RECORDER_GAP_FIELDS[] = {
@@ -172,8 +215,57 @@ vkr_internal bool8_t vkr_recorder_chunk_reserve(VkrRecorder *recorder,
   return true_v;
 }
 
+/* Rolling mode: keeps the open chunk in the ring and drops the chunks the
+   window no longer covers. The writer thread is the only allocator user. */
+vkr_internal void vkr_recorder_hold(VkrRecorder *recorder) {
+  const float64_t now = vkr_platform_get_absolute_time();
+  if (recorder->held_count == VKR_RECORDER_HELD_MAX) {
+    VkrRecorderHeldChunk *oldest = &recorder->held[recorder->held_first];
+    vkr_allocator_free(recorder->allocator, oldest->data, oldest->size,
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+    recorder->held_first = (recorder->held_first + 1u) % VKR_RECORDER_HELD_MAX;
+    --recorder->held_count;
+  }
+  uint8_t *data = vkr_allocator_alloc(recorder->allocator, recorder->chunk_size,
+                                      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  if (!data) {
+    vkr_atomic_bool_store(&recorder->failed, true_v, VKR_MEMORY_ORDER_RELEASE);
+    return;
+  }
+  MemCopy(data, recorder->chunk, recorder->chunk_size);
+  const uint32_t slot =
+      (recorder->held_first + recorder->held_count) % VKR_RECORDER_HELD_MAX;
+  recorder->held[slot] = (VkrRecorderHeldChunk){
+      .data = data,
+      .size = recorder->chunk_size,
+      .first_frame = recorder->chunk_first,
+      .last_frame = recorder->chunk_last,
+      .opened = recorder->chunk_started,
+      .closed = now,
+  };
+  ++recorder->held_count;
+  /* The window is the last rolling_seconds: a chunk that closed before it
+     goes, and the newest chunk always stays. */
+  while (recorder->held_count > 1u) {
+    VkrRecorderHeldChunk *oldest = &recorder->held[recorder->held_first];
+    if (now - oldest->closed <= recorder->rolling_seconds) {
+      break;
+    }
+    vkr_allocator_free(recorder->allocator, oldest->data, oldest->size,
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+    recorder->held_first = (recorder->held_first + 1u) % VKR_RECORDER_HELD_MAX;
+    --recorder->held_count;
+  }
+  vkr_atomic_uint64_fetch_add(&recorder->chunks, 1u, VKR_MEMORY_ORDER_RELAXED);
+  recorder->chunk_size = 0u;
+}
+
 vkr_internal void vkr_recorder_flush(VkrRecorder *recorder) {
   if (recorder->chunk_size == 0u) {
+    return;
+  }
+  if (recorder->rolling_seconds > 0.0) {
+    vkr_recorder_hold(recorder);
     return;
   }
   const float64_t start = vkr_platform_get_absolute_time();
@@ -276,6 +368,110 @@ vkr_internal uint64_t vkr_recorder_drain(VkrRecorder *recorder,
   return drained;
 }
 
+/* Rewrites each record's frame in place: to zero with `to_zero`, else to its
+   frame minus `base`. Returns the records. */
+vkr_internal uint64_t vkr_recorder_renumber(uint8_t *records, uint64_t size,
+                                            uint64_t base, bool8_t to_zero) {
+  uint64_t count = 0u;
+  uint64_t offset = 0u;
+  while (offset + VKR_RECORDING_RECORD_HEADER_SIZE <= size) {
+    uint8_t *record = records + offset;
+    const uint32_t payload = vkr_load_le_u32(record + 4u);
+    const uint64_t frame = vkr_load_le_u64(record + 8u);
+    vkr_store_le_u64(record + 8u, to_zero || frame < base ? 0u : frame - base);
+    offset += vkr_recording_record_bytes(payload);
+    ++count;
+  }
+  return count;
+}
+
+/* Copies `size` bytes of records into the scratch chunk, renumbers them and
+   writes them as one RECORDS chunk. The open chunk is empty here. */
+vkr_internal bool8_t vkr_recorder_save_chunk(VkrRecorder *recorder,
+                                             VkrRecordingWriter *writer,
+                                             const uint8_t *records,
+                                             uint64_t size, uint64_t base,
+                                             bool8_t to_zero, uint64_t first,
+                                             uint64_t last, uint64_t *count) {
+  if (!vkr_recorder_chunk_reserve(recorder, size)) {
+    return false_v;
+  }
+  MemCopy(recorder->chunk, records, size);
+  *count += vkr_recorder_renumber(recorder->chunk, size, base, to_zero);
+  return vkr_recording_writer_chunk(writer, VKR_RECORDING_CHUNK_RECORDS, first,
+                                    last, recorder->chunk, size);
+}
+
+/* Rolling mode, writer thread: writes the kept chunks, after the caller's
+   preamble, as a complete stream file with frames from zero, then hands the
+   result back. */
+vkr_internal void vkr_recorder_perform_save(VkrRecorder *recorder) {
+  vkr_recorder_flush(recorder);
+  VkrRecorderSaveResult result = {0};
+  VkrRecordingWriter writer = {0};
+  bool8_t ok = recorder->held_count > 0u;
+  uint64_t base = UINT64_MAX;
+  uint64_t last = 0u;
+  for (uint32_t i = 0u; ok && i < recorder->held_count; ++i) {
+    const VkrRecorderHeldChunk *held =
+        &recorder->held[(recorder->held_first + i) % VKR_RECORDER_HELD_MAX];
+    base = Min(base, held->first_frame);
+    last = Max(last, held->last_frame);
+  }
+  ok = ok && vkr_recording_writer_open(&writer, recorder->allocator,
+                                       recorder->save_path, recorder->codec);
+  const bool8_t opened = ok;
+  ok = ok &&
+       vkr_recording_writer_chunk(&writer, VKR_RECORDING_CHUNK_IDENTITY, 0u, 0u,
+                                  recorder->identity,
+                                  recorder->identity_bytes) &&
+       vkr_recording_writer_chunk(&writer, VKR_RECORDING_CHUNK_DICTIONARY, 0u,
+                                  0u, recorder->dictionary,
+                                  recorder->dictionary_size);
+  if (ok && recorder->save_preamble_size > 0u) {
+    ok = vkr_recorder_save_chunk(recorder, &writer, recorder->save_preamble,
+                                 recorder->save_preamble_size, 0u, true_v, 0u,
+                                 0u, &result.records);
+  }
+  for (uint32_t i = 0u; ok && i < recorder->held_count; ++i) {
+    const VkrRecorderHeldChunk *held =
+        &recorder->held[(recorder->held_first + i) % VKR_RECORDER_HELD_MAX];
+    ok = vkr_recorder_save_chunk(recorder, &writer, held->data, held->size,
+                                 base, false_v, held->first_frame - base,
+                                 held->last_frame - base, &result.records);
+  }
+  recorder->chunk_size = 0u;
+  if (ok) {
+    const VkrRecorderHeldChunk *oldest = &recorder->held[recorder->held_first];
+    const VkrRecorderHeldChunk *newest =
+        &recorder->held[(recorder->held_first + recorder->held_count - 1u) %
+                        VKR_RECORDER_HELD_MAX];
+    result.first_frame = base;
+    result.frame_count = last - base + 1u;
+    result.seconds = newest->closed - oldest->opened;
+    const VkrRecordingEnd end = {
+        .first_frame = 0u,
+        .last_frame = last - base,
+        .records = result.records,
+        .raw_bytes = writer.raw_bytes,
+        .stored_bytes = writer.stored_bytes,
+        .chunks = recorder->held_count,
+        .seconds = result.seconds,
+    };
+    uint8_t encoded[VKR_RECORDING_END_SIZE];
+    vkr_recording_end_encode(&end, encoded);
+    ok = vkr_recording_writer_chunk(&writer, VKR_RECORDING_CHUNK_END, 0u,
+                                    last - base, encoded, sizeof(encoded));
+  }
+  if (opened) {
+    ok = vkr_recording_writer_close(&writer) && ok;
+  }
+  recorder->save_result = result;
+  recorder->save_ok = ok;
+  vkr_atomic_uint32_store(&recorder->save_state, VKR_RECORDER_SAVE_DONE,
+                          VKR_MEMORY_ORDER_RELEASE);
+}
+
 vkr_internal void *vkr_recorder_thread(void *argument) {
   VkrRecorder *recorder = (VkrRecorder *)argument;
   vkr_thread_set_utility();
@@ -294,6 +490,12 @@ vkr_internal void *vkr_recorder_thread(void *argument) {
         vkr_platform_get_absolute_time() - recorder->chunk_started >=
             recorder->chunk_seconds) {
       vkr_recorder_flush(recorder);
+    }
+    if (vkr_atomic_uint32_load(&recorder->save_state,
+                               VKR_MEMORY_ORDER_ACQUIRE) ==
+        VKR_RECORDER_SAVE_REQUESTED) {
+      vkr_recorder_perform_save(recorder);
+      continue;
     }
     if (drained == 0u) {
       if (stopping) {
@@ -332,9 +534,12 @@ vkr_internal bool8_t vkr_recorder_configure(VkrRecorder *recorder,
   recorder->chunk_bytes = config->chunk_bytes
                               ? config->chunk_bytes
                               : VKR_RECORDER_DEFAULT_CHUNK_BYTES;
-  recorder->chunk_seconds = config->chunk_seconds > 0.0
-                                ? config->chunk_seconds
+  recorder->chunk_seconds = config->chunk_seconds > 0.0 ? config->chunk_seconds
+                            : config->rolling_seconds > 0.0
+                                ? VKR_RECORDER_ROLLING_CHUNK_SECONDS
                                 : VKR_RECORDER_DEFAULT_CHUNK_SECONDS;
+  recorder->rolling_seconds = Max(config->rolling_seconds, 0.0);
+  recorder->codec = config->codec;
   recorder->path_bytes = string_length(config->stream_path) + 1u;
   recorder->path =
       vkr_allocator_alloc(recorder->allocator, recorder->path_bytes,
@@ -348,12 +553,24 @@ vkr_internal bool8_t vkr_recorder_configure(VkrRecorder *recorder,
 
 /* Writes the IDENTITY and DICTIONARY chunks; the recorder's gap stream
    comes first in the dictionary. */
+/* Writes the identity and dictionary chunks, or in rolling mode keeps them
+   for the saves to write. */
 vkr_internal bool8_t vkr_recorder_write_preamble(
     VkrRecorder *recorder, const VkrRecorderConfig *config) {
   const char *identity = config->identity_json ? config->identity_json : "{}";
-  if (!vkr_recording_writer_chunk(&recorder->writer,
-                                  VKR_RECORDING_CHUNK_IDENTITY, 0u, 0u,
-                                  identity, string_length(identity))) {
+  const bool8_t rolling = recorder->rolling_seconds > 0.0;
+  if (rolling) {
+    recorder->identity_bytes = string_length(identity);
+    recorder->identity =
+        vkr_allocator_alloc(recorder->allocator, recorder->identity_bytes + 1u,
+                            VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    if (!recorder->identity) {
+      return false_v;
+    }
+    MemCopy(recorder->identity, identity, recorder->identity_bytes + 1u);
+  } else if (!vkr_recording_writer_chunk(&recorder->writer,
+                                         VKR_RECORDING_CHUNK_IDENTITY, 0u, 0u,
+                                         identity, string_length(identity))) {
     return false_v;
   }
 
@@ -377,6 +594,11 @@ vkr_internal bool8_t vkr_recorder_write_preamble(
   if (!ok) {
     return false_v;
   }
+  if (rolling) {
+    recorder->dictionary = dictionary;
+    recorder->dictionary_size = dictionary_size;
+    return true_v;
+  }
   ok = vkr_recording_writer_chunk(&recorder->writer,
                                   VKR_RECORDING_CHUNK_DICTIONARY, 0u, 0u,
                                   dictionary, dictionary_size);
@@ -386,6 +608,22 @@ vkr_internal bool8_t vkr_recorder_write_preamble(
 }
 
 vkr_internal void vkr_recorder_release(VkrRecorder *recorder) {
+  for (uint32_t i = 0u; i < recorder->held_count; ++i) {
+    VkrRecorderHeldChunk *held =
+        &recorder->held[(recorder->held_first + i) % VKR_RECORDER_HELD_MAX];
+    vkr_allocator_free(recorder->allocator, held->data, held->size,
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  }
+  if (recorder->identity) {
+    vkr_allocator_free(recorder->allocator, recorder->identity,
+                       recorder->identity_bytes + 1u,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  if (recorder->dictionary) {
+    vkr_allocator_free(recorder->allocator, recorder->dictionary,
+                       recorder->dictionary_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  }
   for (uint32_t i = 0u; i < VKR_RECORDER_PRODUCER_COUNT; ++i) {
     if (recorder->lanes[i].ring.data) {
       vkr_spsc_ring_destroy(recorder->allocator, &recorder->lanes[i].ring);
@@ -428,18 +666,24 @@ VkrRecorder *vkr_recorder_start(VkrAllocator *allocator,
       goto cleanup;
     }
   }
-  if (!vkr_recording_writer_open(&recorder->writer, allocator, recorder->path,
-                                 config->codec)) {
+  /* Rolling mode opens no file until a save. */
+  const bool8_t rolling = recorder->rolling_seconds > 0.0;
+  if (!rolling && !vkr_recording_writer_open(&recorder->writer, allocator,
+                                             recorder->path, config->codec)) {
     goto cleanup;
   }
   if (!vkr_recorder_write_preamble(recorder, config)) {
-    vkr_recording_writer_abandon(&recorder->writer);
+    if (!rolling) {
+      vkr_recording_writer_abandon(&recorder->writer);
+    }
     goto cleanup;
   }
   recorder->start_time = vkr_platform_get_absolute_time();
   if (!vkr_thread_create(allocator, &recorder->thread, vkr_recorder_thread,
                          recorder)) {
-    vkr_recording_writer_abandon(&recorder->writer);
+    if (!rolling) {
+      vkr_recording_writer_abandon(&recorder->writer);
+    }
     goto cleanup;
   }
   return recorder;
@@ -447,6 +691,38 @@ VkrRecorder *vkr_recorder_start(VkrAllocator *allocator,
 cleanup:
   vkr_recorder_release(recorder);
   return NULL;
+}
+
+bool8_t vkr_recorder_save(VkrRecorder *recorder, const char *stream_path,
+                          const void *preamble, uint64_t preamble_size,
+                          VkrRecorderSaveResult *out_result) {
+  vkr_assert(recorder != NULL && stream_path != NULL);
+  if (recorder->rolling_seconds <= 0.0) {
+    return false_v;
+  }
+  recorder->save_path = stream_path;
+  recorder->save_preamble = (const uint8_t *)preamble;
+  recorder->save_preamble_size = preamble ? preamble_size : 0u;
+  vkr_atomic_uint32_store(&recorder->save_state, VKR_RECORDER_SAVE_REQUESTED,
+                          VKR_MEMORY_ORDER_RELEASE);
+  /* The writer thread reads the path and preamble, which the caller owns,
+     until it reports DONE, so this waits for it however long the I/O takes;
+     the writer never blocks on producers. */
+  while (
+      vkr_atomic_uint32_load(&recorder->save_state, VKR_MEMORY_ORDER_ACQUIRE) !=
+      VKR_RECORDER_SAVE_DONE) {
+    vkr_thread_sleep(1u);
+  }
+  const bool8_t ok = recorder->save_ok;
+  if (out_result) {
+    *out_result = recorder->save_result;
+  }
+  recorder->save_path = NULL;
+  recorder->save_preamble = NULL;
+  recorder->save_preamble_size = 0u;
+  vkr_atomic_uint32_store(&recorder->save_state, VKR_RECORDER_SAVE_IDLE,
+                          VKR_MEMORY_ORDER_RELEASE);
+  return ok;
 }
 
 void vkr_recorder_stats(const VkrRecorder *recorder,
@@ -503,11 +779,16 @@ bool8_t vkr_recorder_stop(VkrRecorder *recorder, VkrRecorderStats *out_stats) {
   };
   uint8_t encoded[VKR_RECORDING_END_SIZE];
   vkr_recording_end_encode(&end, encoded);
-  bool8_t ok = !stats.failed && vkr_recording_writer_chunk(
-                                    &recorder->writer, VKR_RECORDING_CHUNK_END,
+  bool8_t ok = !stats.failed;
+  /* A rolling recorder wrote its saves already; the window it still holds
+     is discarded. */
+  if (recorder->rolling_seconds <= 0.0) {
+    ok = ok &&
+         vkr_recording_writer_chunk(&recorder->writer, VKR_RECORDING_CHUNK_END,
                                     recorder->first_frame, recorder->last_frame,
                                     encoded, sizeof(encoded));
-  ok = vkr_recording_writer_close(&recorder->writer) && ok;
+    ok = vkr_recording_writer_close(&recorder->writer) && ok;
+  }
   stats.failed = !ok;
   if (out_stats) {
     *out_stats = stats;

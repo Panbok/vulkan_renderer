@@ -958,21 +958,27 @@ vkr_internal void vkr_recording_stats_compute(float64_t *samples,
   out->p99 = vkr_recording_rank(samples, count, 990u);
 }
 
-/* The nearest-rank median of the valid frame times in the window of
-   VKR_RECORDING_ANALYSIS_WINDOW frames centred on `centre`, shifted inward
-   at the ends of the recording. */
+/* First frame of the window of VKR_RECORDING_ANALYSIS_WINDOW frames
+   centred on `centre`, shifted inward at the ends of the recording. */
+vkr_internal uint64_t vkr_recording_window_first(uint64_t count,
+                                                 uint64_t centre) {
+  const uint64_t window = VKR_RECORDING_ANALYSIS_WINDOW;
+  if (count <= window) {
+    return 0u;
+  }
+  const uint64_t first = centre > window / 2u ? centre - window / 2u : 0u;
+  return Min(first, count - window);
+}
+
+/* The nearest-rank median of the valid frame times in the window around
+   `centre` (vkr_recording_window_first). */
 vkr_internal bool8_t vkr_recording_window_median(const float64_t *frame_ms,
                                                  const uint8_t *valid,
                                                  uint64_t count,
                                                  uint64_t centre,
                                                  float64_t *out_median) {
-  const uint64_t window = VKR_RECORDING_ANALYSIS_WINDOW;
-  uint64_t first = 0u;
-  if (count > window) {
-    first = centre > window / 2u ? centre - window / 2u : 0u;
-    first = Min(first, count - window);
-  }
-  const uint64_t end = Min(first + window, count);
+  const uint64_t first = vkr_recording_window_first(count, centre);
+  const uint64_t end = Min(first + VKR_RECORDING_ANALYSIS_WINDOW, count);
   float64_t samples[VKR_RECORDING_ANALYSIS_WINDOW];
   uint32_t sample_count = 0u;
   for (uint64_t i = first; i < end; ++i) {
@@ -1202,8 +1208,71 @@ vkr_internal uint64_t vkr_recording_spike_pass_frame(
   return count > 0u ? spike->frame : UINT64_MAX;
 }
 
-/* The passes of `pass_frame` that grew most over their medians. `rank` maps
-   a pass id to its index in analysis->passes. */
+/* The statistics of pass id `pass`: through `rank`, which maps a pass id to
+   its index in analysis->passes, when given, else by search. */
+vkr_internal const VkrRecordingPassStats *
+vkr_recording_pass_stats_of(const VkrRecordingAnalysis *analysis,
+                            const uint32_t *rank, uint32_t pass) {
+  if (rank) {
+    return &analysis->passes[rank[pass]];
+  }
+  for (uint32_t i = 0u; i < analysis->pass_count; ++i) {
+    if (analysis->passes[i].pass == pass) {
+      return &analysis->passes[i];
+    }
+  }
+  return NULL;
+}
+
+/* The passes of `pass_frame` that grew most over their medians, GPU or CPU
+   times as `gpu` says, at most `capacity`, largest first; returns how
+   many. `rank` is as vkr_recording_pass_stats_of takes it. */
+vkr_internal uint32_t vkr_recording_frame_passes(
+    const VkrRecordingData *data, const VkrRecordingAnalysis *analysis,
+    const uint32_t *rank, uint64_t pass_frame, bool8_t gpu,
+    VkrRecordingPassContributor *out, uint32_t capacity) {
+  uint32_t kept = 0u;
+  uint32_t count = 0u;
+  const VkrRecordingPassRow *rows =
+      vkr_recording_data_pass_rows(data, pass_frame, &count);
+  for (uint32_t i = 0u; i < count && capacity > 0u; ++i) {
+    const VkrRecordingPassRow *row = &rows[i];
+    if (gpu && !(row->flags & VKR_RECORDING_PASS_GPU_VALID)) {
+      continue;
+    }
+    const VkrRecordingPassStats *stats =
+        vkr_recording_pass_stats_of(analysis, rank, row->pass);
+    if (!stats) {
+      continue;
+    }
+    const float64_t value =
+        gpu ? (float64_t)row->gpu_ms : (float64_t)row->cpu_ms;
+    const float64_t excess = value - (gpu ? stats->gpu.p50 : stats->cpu.p50);
+    if (excess <= 0.0) {
+      continue;
+    }
+    /* Insert in descending order; an equal excess stays behind the earlier
+       row. */
+    uint32_t at = kept;
+    if (at == capacity) {
+      if (excess <= out[at - 1u].excess) {
+        continue;
+      }
+      --at;
+    } else {
+      ++kept;
+    }
+    while (at > 0u && out[at - 1u].excess < excess) {
+      out[at] = out[at - 1u];
+      --at;
+    }
+    out[at] = (VkrRecordingPassContributor){
+        .pass = row->pass, .value = value, .excess = excess};
+  }
+  return kept;
+}
+
+/* The passes of the spike's pass frame that grew most over their medians. */
 vkr_internal void
 vkr_recording_spike_passes(const VkrRecordingData *data,
                            const VkrRecordingAnalysis *analysis,
@@ -1211,38 +1280,9 @@ vkr_recording_spike_passes(const VkrRecordingData *data,
                            const uint8_t *valid, VkrRecordingSpike *spike) {
   spike->pass_frame = vkr_recording_spike_pass_frame(data, frame_ms, valid,
                                                      spike, &spike->pass_gpu);
-  uint32_t count = 0u;
-  const VkrRecordingPassRow *rows =
-      vkr_recording_data_pass_rows(data, spike->pass_frame, &count);
-  for (uint32_t i = 0u; i < count; ++i) {
-    const VkrRecordingPassRow *row = &rows[i];
-    if (spike->pass_gpu && !(row->flags & VKR_RECORDING_PASS_GPU_VALID)) {
-      continue;
-    }
-    const VkrRecordingPassStats *stats = &analysis->passes[rank[row->pass]];
-    const float64_t value =
-        spike->pass_gpu ? (float64_t)row->gpu_ms : (float64_t)row->cpu_ms;
-    const float64_t excess =
-        value - (spike->pass_gpu ? stats->gpu.p50 : stats->cpu.p50);
-    if (excess <= 0.0) {
-      continue;
-    }
-    uint32_t at = spike->pass_contributor_count;
-    if (at == VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX) {
-      if (excess <= spike->passes[at - 1u].excess) {
-        continue;
-      }
-      --at;
-    } else {
-      ++spike->pass_contributor_count;
-    }
-    while (at > 0u && spike->passes[at - 1u].excess < excess) {
-      spike->passes[at] = spike->passes[at - 1u];
-      --at;
-    }
-    spike->passes[at] = (VkrRecordingPassContributor){
-        .pass = row->pass, .value = value, .excess = excess};
-  }
+  spike->pass_contributor_count = vkr_recording_frame_passes(
+      data, analysis, rank, spike->pass_frame, spike->pass_gpu, spike->passes,
+      VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX);
 }
 
 /* Bits of the flag series slow frames are compared on: why a slot packed
@@ -1507,6 +1547,339 @@ vkr_internal void vkr_recording_slow_frames(const VkrRecordingData *data,
   out->flag_count = share_count;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Causes                                                                    */
+
+static const char *const VKR_RECORDING_CAUSE_KIND_NAMES[] = {
+    [VKR_RECORDING_CAUSE_UNKNOWN] = "unknown",
+    [VKR_RECORDING_CAUSE_CPU_STAGE] = "cpu_stage",
+    [VKR_RECORDING_CAUSE_GPU_PASS] = "gpu_pass",
+    [VKR_RECORDING_CAUSE_CPU_PASS] = "cpu_pass",
+    [VKR_RECORDING_CAUSE_GPU_FRAME] = "gpu_frame",
+    [VKR_RECORDING_CAUSE_PRESENT] = "present",
+    [VKR_RECORDING_CAUSE_METRIC] = "metric",
+    [VKR_RECORDING_CAUSE_PIPELINE_CREATION] = "pipeline_creation",
+    [VKR_RECORDING_CAUSE_SHADER_LOAD] = "shader_load",
+    [VKR_RECORDING_CAUSE_ASSET_LOAD] = "asset_load",
+    [VKR_RECORDING_CAUSE_SCRIPT_RELOAD] = "script_reload",
+    [VKR_RECORDING_CAUSE_THERMAL] = "thermal",
+    [VKR_RECORDING_CAUSE_MEMORY_PRESSURE] = "memory_pressure",
+    [VKR_RECORDING_CAUSE_PAGE_FAULTS] = "page_faults",
+    [VKR_RECORDING_CAUSE_ERRORS] = "errors",
+};
+_Static_assert(ArrayCount(VKR_RECORDING_CAUSE_KIND_NAMES) ==
+                   VKR_RECORDING_CAUSE_KIND_COUNT,
+               "a name per cause kind");
+
+const char *vkr_recording_cause_kind_name(VkrRecordingCauseKind kind) {
+  return (uint32_t)kind < VKR_RECORDING_CAUSE_KIND_COUNT
+             ? VKR_RECORDING_CAUSE_KIND_NAMES[kind]
+             : "unknown";
+}
+
+/* Engine events whose time adds to a frame, and what they cause. Late
+   pipelines skip draws and carry no time; cell unloads free memory. */
+typedef struct VkrRecordingEventCause {
+  const char *event;
+  VkrRecordingCauseKind kind;
+} VkrRecordingEventCause;
+
+static const VkrRecordingEventCause VKR_RECORDING_EVENT_CAUSES[] = {
+    {VKR_RECORDING_EVENT_PIPELINE, VKR_RECORDING_CAUSE_PIPELINE_CREATION},
+    {VKR_RECORDING_EVENT_SHADER, VKR_RECORDING_CAUSE_SHADER_LOAD},
+    {VKR_RECORDING_EVENT_TEXTURE, VKR_RECORDING_CAUSE_ASSET_LOAD},
+    {VKR_RECORDING_EVENT_MESH, VKR_RECORDING_CAUSE_ASSET_LOAD},
+    {VKR_RECORDING_EVENT_MATERIAL, VKR_RECORDING_CAUSE_ASSET_LOAD},
+    {VKR_RECORDING_EVENT_SCENE, VKR_RECORDING_CAUSE_ASSET_LOAD},
+    {VKR_RECORDING_EVENT_CELL_LOAD, VKR_RECORDING_CAUSE_ASSET_LOAD},
+    {VKR_RECORDING_EVENT_SCRIPT_RELOAD, VKR_RECORDING_CAUSE_SCRIPT_RELOAD},
+};
+
+/* A condition that slows frames without a time of its own: a series whose
+   sample reaches `threshold`. */
+typedef struct VkrRecordingCondition {
+  const char *series;
+  VkrRecordingCauseKind kind;
+  float64_t threshold;
+  const char *text;
+} VkrRecordingCondition;
+
+/* In rank order (ADR-125): thermal level 2 is serious and 3 critical,
+   memory pressure 2 critical; the counters count the frame's events. */
+static const VkrRecordingCondition VKR_RECORDING_CONDITIONS[] = {
+    {"os.thermal.level", VKR_RECORDING_CAUSE_THERMAL, 2.0,
+     "thermal level (2 serious, 3 critical): the system throttles"},
+    {"os.memory.pressure", VKR_RECORDING_CAUSE_MEMORY_PRESSURE, 2.0,
+     "critical memory pressure"},
+    {"os.page_faults.major", VKR_RECORDING_CAUSE_PAGE_FAULTS, 1.0,
+     "major page faults, each a read from disk"},
+    {"gpu.errors", VKR_RECORDING_CAUSE_ERRORS, 1.0, "GPU errors"},
+    {"log.errors", VKR_RECORDING_CAUSE_ERRORS, 1.0, "errors logged"},
+    {"gpu.present.missed", VKR_RECORDING_CAUSE_PRESENT, 1.0,
+     "presents that never reached the display"},
+};
+_Static_assert(ArrayCount(VKR_RECORDING_CONDITIONS) <
+                   VKR_RECORDING_EXPLAIN_CAUSE_MAX,
+               "room for every condition and a measured cause");
+
+/* The kind of cause an "ms" series names. */
+vkr_internal VkrRecordingCauseKind
+vkr_recording_series_cause(const char *name) {
+  if (string_n_equals(name, "cpu.", 4u)) {
+    return VKR_RECORDING_CAUSE_CPU_STAGE;
+  }
+  if (string_equals(name, "gpu.submission")) {
+    return VKR_RECORDING_CAUSE_GPU_FRAME;
+  }
+  if (string_n_equals(name, "gpu.present.", 12u) ||
+      string_equals(name, VKR_RECORDING_PRESENT_INTERVAL_SERIES)) {
+    return VKR_RECORDING_CAUSE_PRESENT;
+  }
+  return VKR_RECORDING_CAUSE_METRIC;
+}
+
+/* The kind of cause an engine event's time is; UNKNOWN for none. */
+vkr_internal VkrRecordingCauseKind vkr_recording_event_cause(const char *name) {
+  for (uint32_t i = 0u; i < ArrayCount(VKR_RECORDING_EVENT_CAUSES); ++i) {
+    if (string_equals(name, VKR_RECORDING_EVENT_CAUSES[i].event)) {
+      return VKR_RECORDING_EVENT_CAUSES[i].kind;
+    }
+  }
+  return VKR_RECORDING_CAUSE_UNKNOWN;
+}
+
+/* The engine events of `frame`, merged by name in first-seen order, at most
+   VKR_RECORDING_EXPLAIN_EVENT_MAX names; returns how many. */
+vkr_internal uint32_t
+vkr_recording_frame_events(const VkrRecordingData *data, uint64_t frame,
+                           VkrRecordingExplainEvent *out) {
+  /* Events are sorted by frame: the first of `frame` by bisection. */
+  uint32_t low = 0u;
+  uint32_t high = data->event_count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    if (data->events[middle].frame < frame) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  uint32_t count = 0u;
+  for (uint32_t i = low;
+       i < data->event_count && data->events[i].frame == frame; ++i) {
+    const VkrRecordingDataEvent *event = &data->events[i];
+    if (!event->engine) {
+      continue;
+    }
+    uint32_t at = 0u;
+    while (at < count && out[at].name != event->name) {
+      ++at;
+    }
+    if (at == count) {
+      if (count == VKR_RECORDING_EXPLAIN_EVENT_MAX) {
+        continue;
+      }
+      out[count++] = (VkrRecordingExplainEvent){.name = event->name};
+    }
+    out[at].count += event->count;
+    out[at].ms += (float64_t)event->ms;
+  }
+  return count;
+}
+
+/* Inserts `cause` into `list` by excess, largest first, an equal excess
+   behind the earlier cause, keeping at most `capacity`. */
+vkr_internal void vkr_recording_keep_cause(VkrRecordingCause *list,
+                                           uint32_t *count, uint32_t capacity,
+                                           const VkrRecordingCause *cause) {
+  if (capacity == 0u) {
+    return;
+  }
+  uint32_t at = *count;
+  if (at == capacity) {
+    if (cause->excess_ms <= list[at - 1u].excess_ms) {
+      return;
+    }
+    --at;
+  } else {
+    ++*count;
+  }
+  while (at > 0u && list[at - 1u].excess_ms < cause->excess_ms) {
+    list[at] = list[at - 1u];
+    --at;
+  }
+  list[at] = *cause;
+}
+
+/* The series that grew in the spike's frame, its frame-loop wait named as
+   the GPU frame it stalled on. */
+vkr_internal void vkr_recording_series_causes(const VkrRecordingData *data,
+                                              const VkrRecordingSpike *spike,
+                                              VkrRecordingCause *out,
+                                              uint32_t *count,
+                                              uint32_t capacity) {
+  for (uint32_t i = 0u; i < spike->contributor_count; ++i) {
+    const VkrRecordingContributor *contributor = &spike->contributors[i];
+    if (contributor->excess < VKR_RECORDING_EXPLAIN_MIN_EXCESS_MS) {
+      continue;
+    }
+    const char *name = data->series[contributor->series].name;
+    VkrRecordingCause cause = {
+        .kind = vkr_recording_series_cause(name),
+        .frame = spike->frame,
+        .measured = true_v,
+        .excess_ms = contributor->excess,
+        .value = contributor->value,
+    };
+    /* gpu_frame is set only when the first contributor is the wait. */
+    if (i == 0u && spike->gpu_frame != UINT64_MAX) {
+      cause.kind = VKR_RECORDING_CAUSE_GPU_FRAME;
+      cause.frame = spike->gpu_frame;
+      cause.value = spike->gpu_ms;
+      string_format(cause.name, sizeof(cause.name), "%s", "gpu.submission");
+      string_format(cause.evidence, sizeof(cause.evidence),
+                    "%s waited %.3g ms over its median for frame %llu, "
+                    "whose gpu.submission took %.3g ms (+%.3g)",
+                    name, contributor->excess,
+                    (unsigned long long)spike->gpu_frame, spike->gpu_ms,
+                    spike->gpu_excess);
+    } else {
+      string_format(cause.name, sizeof(cause.name), "%s", name);
+      string_format(cause.evidence, sizeof(cause.evidence),
+                    "%s took %.3g ms against a median of %.3g ms", name,
+                    contributor->value,
+                    contributor->value - contributor->excess);
+    }
+    vkr_recording_keep_cause(out, count, capacity, &cause);
+  }
+}
+
+/* The passes that grew in the spike's pass frame, and the timed engine
+   events of its frame. */
+vkr_internal void vkr_recording_pass_event_causes(
+    const VkrRecordingData *data, const VkrRecordingSpike *spike,
+    VkrRecordingCause *out, uint32_t *count, uint32_t capacity) {
+  for (uint32_t i = 0u; i < spike->pass_contributor_count; ++i) {
+    const VkrRecordingPassContributor *pass = &spike->passes[i];
+    if (pass->excess < VKR_RECORDING_EXPLAIN_MIN_EXCESS_MS) {
+      continue;
+    }
+    const char *name = data->passes[pass->pass].name;
+    VkrRecordingCause cause = {
+        .kind = spike->pass_gpu ? VKR_RECORDING_CAUSE_GPU_PASS
+                                : VKR_RECORDING_CAUSE_CPU_PASS,
+        .frame = spike->pass_frame,
+        .measured = true_v,
+        .excess_ms = pass->excess,
+        .value = pass->value,
+    };
+    string_format(cause.name, sizeof(cause.name), "%s", name);
+    string_format(cause.evidence, sizeof(cause.evidence),
+                  "pass %s took %.3g ms of %s time against a median of "
+                  "%.3g ms in frame %llu",
+                  name, pass->value, spike->pass_gpu ? "GPU" : "CPU",
+                  pass->value - pass->excess,
+                  (unsigned long long)spike->pass_frame);
+    vkr_recording_keep_cause(out, count, capacity, &cause);
+  }
+
+  VkrRecordingExplainEvent events[VKR_RECORDING_EXPLAIN_EVENT_MAX];
+  const uint32_t event_count =
+      vkr_recording_frame_events(data, spike->frame, events);
+  for (uint32_t i = 0u; i < event_count; ++i) {
+    const char *name = data->event_names[events[i].name].name;
+    const VkrRecordingCauseKind kind = vkr_recording_event_cause(name);
+    if (kind == VKR_RECORDING_CAUSE_UNKNOWN ||
+        events[i].ms < VKR_RECORDING_EXPLAIN_MIN_EXCESS_MS) {
+      continue;
+    }
+    /* A typical frame has no such event: all its time is excess. */
+    VkrRecordingCause cause = {
+        .kind = kind,
+        .frame = spike->frame,
+        .measured = true_v,
+        .excess_ms = events[i].ms,
+        .value = (float64_t)events[i].count,
+    };
+    string_format(cause.name, sizeof(cause.name), "%s", name);
+    string_format(cause.evidence, sizeof(cause.evidence),
+                  "%u %s event%s took %.3g ms in the frame", events[i].count,
+                  name, events[i].count == 1u ? "" : "s", events[i].ms);
+    vkr_recording_keep_cause(out, count, capacity, &cause);
+  }
+}
+
+/* The conditions that hold in `frame`, in table order; returns how many. */
+vkr_internal uint32_t vkr_recording_conditions(const VkrRecordingData *data,
+                                               uint64_t frame,
+                                               VkrRecordingCause *out) {
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < ArrayCount(VKR_RECORDING_CONDITIONS); ++i) {
+    const VkrRecordingCondition *condition = &VKR_RECORDING_CONDITIONS[i];
+    const uint32_t s = vkr_recording_data_find_series(data, condition->series);
+    if (s == UINT32_MAX || !data->series[s].valid[frame] ||
+        data->series[s].values[frame] < condition->threshold) {
+      continue;
+    }
+    VkrRecordingCause *cause = &out[count++];
+    *cause = (VkrRecordingCause){
+        .kind = condition->kind,
+        .frame = frame,
+        .value = data->series[s].values[frame],
+    };
+    string_format(cause->name, sizeof(cause->name), "%s", condition->series);
+    string_format(cause->evidence, sizeof(cause->evidence), "%s: %g",
+                  condition->text, cause->value);
+  }
+  return count;
+}
+
+/* The ranked causes of the spike's frame (the rule above
+   vkr_recording_explain); returns how many, at least one. `spike` holds
+   the frame's time, window median, contributors, GPU wait and passes; a
+   frame without a time or median holds zero for it. */
+vkr_internal uint32_t vkr_recording_rank_causes(
+    const VkrRecordingData *data, const VkrRecordingAnalysis *analysis,
+    const VkrRecordingSpike *spike, VkrRecordingCause *out) {
+  VkrRecordingCause conditions[ArrayCount(VKR_RECORDING_CONDITIONS)];
+  const uint32_t condition_count =
+      vkr_recording_conditions(data, spike->frame, conditions);
+  const uint32_t capacity = VKR_RECORDING_EXPLAIN_CAUSE_MAX - condition_count;
+  /* The typical frame is the lower median, so a frame on a slow plateau,
+     at its window median, is still measured against the recording. */
+  const float64_t typical_ms = Min(spike->median_ms, analysis->frame_time.p50);
+  const bool8_t slower = spike->frame_ms > typical_ms;
+  uint32_t count = 0u;
+  if (slower) {
+    vkr_recording_series_causes(data, spike, out, &count, capacity);
+    vkr_recording_pass_event_causes(data, spike, out, &count, capacity);
+  }
+  MemCopy(out + count, conditions, sizeof(*conditions) * condition_count);
+  count += condition_count;
+  if (count > 0u) {
+    return count;
+  }
+  out[0] = (VkrRecordingCause){
+      .kind = VKR_RECORDING_CAUSE_UNKNOWN,
+      .frame = spike->frame,
+  };
+  if (slower) {
+    string_format(out[0].evidence, sizeof(out[0].evidence),
+                  "no series, pass or engine event grew %.3g ms over its "
+                  "median and no condition holds",
+                  VKR_RECORDING_EXPLAIN_MIN_EXCESS_MS);
+  } else if (spike->frame_ms > 0.0) {
+    string_format(out[0].evidence, sizeof(out[0].evidence),
+                  "the frame took %.3g ms, not above its typical %.3g ms, "
+                  "and no condition holds",
+                  spike->frame_ms, typical_ms);
+  } else {
+    string_format(out[0].evidence, sizeof(out[0].evidence), "%s",
+                  "the frame has no frame time and no condition holds");
+  }
+  return 1u;
+}
+
 bool8_t vkr_recording_analyze(const VkrRecordingData *data,
                               const VkrRecordingAnalysisOptions *options,
                               VkrAllocator *allocator,
@@ -1682,6 +2055,9 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
     vkr_recording_spike_contributors(data, out, spike);
     vkr_recording_spike_gpu_wait(data, out, spike);
     vkr_recording_spike_passes(data, out, pass_rank, frame_ms, valid, spike);
+    VkrRecordingCause causes[VKR_RECORDING_EXPLAIN_CAUSE_MAX];
+    (void)vkr_recording_rank_causes(data, out, spike, causes);
+    spike->cause = causes[0];
   }
   vkr_recording_slow_frames(data, classes, pass_sums, &out->slow);
 
@@ -1697,6 +2073,229 @@ void vkr_recording_analysis_free(VkrRecordingAnalysis *analysis) {
                        analysis->block_bytes, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
   MemZero(analysis, sizeof(*analysis));
+}
+
+/* ------------------------------------------------------------------------ */
+/* Explanation                                                               */
+
+/* The CPU stages of the Tier 0 metrics an explanation lists. */
+static const char *const VKR_RECORDING_EXPLAIN_STAGES[] = {
+    "cpu.update",
+    "cpu.simulation",
+    "cpu.physics",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "cpu.render_wait",
+    "cpu.shadow_update",
+    "cpu.world_payload_build",
+    "cpu.graph_build",
+    "cpu.graph_compile",
+    "cpu.packet_candidate_pack",
+    "cpu.backend_frame_wait",
+    "cpu.backend_present",
+    "cpu.drawable_acquire",
+    "cpu.process_time",
+};
+_Static_assert(ArrayCount(VKR_RECORDING_EXPLAIN_STAGES) <=
+                   VKR_RECORDING_EXPLAIN_STAGE_MAX,
+               "room for every stage");
+
+/* Platform and health series (ADR-125) an explanation lists. */
+#define VKR_RECORDING_FOOTPRINT_SERIES "os.memory.footprint_bytes"
+static const char *const VKR_RECORDING_EXPLAIN_SYSTEM_SERIES[] = {
+    "os.thermal.level",
+    "os.memory.pressure",
+    "os.power.low_power",
+    "os.page_faults.major",
+    VKR_RECORDING_FOOTPRINT_SERIES,
+    "gpu.present.latency",
+    "gpu.present.missed",
+    "gpu.errors",
+    "log.errors",
+};
+_Static_assert(ArrayCount(VKR_RECORDING_EXPLAIN_SYSTEM_SERIES) <=
+                   VKR_RECORDING_EXPLAIN_SYSTEM_MAX,
+               "room for every system series");
+_Static_assert(2u * ArrayCount(VKR_RECORDING_FLAG_NAMES) <=
+                   VKR_RECORDING_EXPLAIN_FLAG_MAX,
+               "room for every flag at both lags");
+
+/* The window median of `frame` (vkr_recording_window_median), read from
+   the data. */
+vkr_internal bool8_t vkr_recording_frame_median(const VkrRecordingData *data,
+                                                uint64_t frame,
+                                                float64_t *out_median) {
+  const uint64_t first = vkr_recording_window_first(data->frame_count, frame);
+  const uint64_t end =
+      Min(first + VKR_RECORDING_ANALYSIS_WINDOW, data->frame_count);
+  float64_t frame_ms[VKR_RECORDING_ANALYSIS_WINDOW] = {0};
+  uint8_t valid[VKR_RECORDING_ANALYSIS_WINDOW] = {0};
+  for (uint64_t i = first; i < end; ++i) {
+    valid[i - first] =
+        vkr_recording_data_frame_ms(data, i, &frame_ms[i - first]) ? 1u : 0u;
+  }
+  return vkr_recording_window_median(frame_ms, valid, end - first,
+                                     frame - first, out_median);
+}
+
+/* The frame whose pass rows explain a frame outside a spike: itself or the
+   nearest within reach with GPU times, else its own CPU times. */
+vkr_internal uint64_t vkr_recording_explain_pass_frame(
+    const VkrRecordingData *data, uint64_t frame, bool8_t *out_gpu) {
+  *out_gpu = true_v;
+  const uint64_t near = vkr_recording_data_gpu_frame_near(
+      data, frame, VKR_RECORDING_EXPLAIN_PASS_REACH);
+  if (near != UINT64_MAX) {
+    return near;
+  }
+  *out_gpu = false_v;
+  uint32_t count = 0u;
+  (void)vkr_recording_data_pass_rows(data, frame, &count);
+  return count > 0u ? frame : UINT64_MAX;
+}
+
+/* The stages valid in the frame, largest excess first. */
+vkr_internal void
+vkr_recording_explain_stages(const VkrRecordingData *data,
+                             const VkrRecordingAnalysis *analysis,
+                             VkrRecordingExplanation *out) {
+  for (uint32_t i = 0u; i < ArrayCount(VKR_RECORDING_EXPLAIN_STAGES); ++i) {
+    const uint32_t s =
+        vkr_recording_data_find_series(data, VKR_RECORDING_EXPLAIN_STAGES[i]);
+    if (s == UINT32_MAX || !data->series[s].valid[out->frame]) {
+      continue;
+    }
+    const float64_t value = data->series[s].values[out->frame];
+    const float64_t median = analysis->series[s].p50;
+    const VkrRecordingExplainValue stage = {
+        .index = s, .value = value, .median = median, .excess = value - median};
+    uint32_t at = out->stage_count++;
+    while (at > 0u && out->stages[at - 1u].excess < stage.excess) {
+      out->stages[at] = out->stages[at - 1u];
+      --at;
+    }
+    out->stages[at] = stage;
+  }
+}
+
+/* The system series the recording has, and the flags set in the frame or
+   the row before it. */
+vkr_internal void vkr_recording_explain_system(const VkrRecordingData *data,
+                                               VkrRecordingExplanation *out) {
+  const uint64_t frame = out->frame;
+  for (uint32_t i = 0u; i < ArrayCount(VKR_RECORDING_EXPLAIN_SYSTEM_SERIES);
+       ++i) {
+    const char *name = VKR_RECORDING_EXPLAIN_SYSTEM_SERIES[i];
+    const uint32_t s = vkr_recording_data_find_series(data, name);
+    if (s == UINT32_MAX) {
+      continue;
+    }
+    const VkrRecordingSeries *series = &data->series[s];
+    VkrRecordingExplainSystem *entry = &out->system[out->system_count++];
+    *entry = (VkrRecordingExplainSystem){
+        .series = s,
+        .valid = series->valid[frame],
+        .value = series->values[frame],
+    };
+    if (entry->valid && frame > 0u && series->valid[frame - 1u] &&
+        string_equals(name, VKR_RECORDING_FOOTPRINT_SERIES)) {
+      entry->has_delta = true_v;
+      entry->delta = series->values[frame] - series->values[frame - 1u];
+    }
+  }
+
+  for (uint32_t f = 0u; f < ArrayCount(VKR_RECORDING_FLAG_NAMES); ++f) {
+    const VkrRecordingFlagName *name = &VKR_RECORDING_FLAG_NAMES[f];
+    const uint32_t s = vkr_recording_data_find_series(data, name->series);
+    if (s == UINT32_MAX) {
+      continue;
+    }
+    const VkrRecordingSeries *series = &data->series[s];
+    for (uint32_t lag = 0u; lag < 2u && lag <= frame; ++lag) {
+      const uint64_t row = frame - lag;
+      if (series->valid[row] && ((uint64_t)series->values[row] & name->bit)) {
+        out->flags[out->flag_count++] =
+            (VkrRecordingExplainFlag){.flag = f, .lag = lag};
+      }
+    }
+  }
+}
+
+bool8_t vkr_recording_explain(const VkrRecordingData *data,
+                              const VkrRecordingAnalysis *analysis,
+                              uint64_t frame, VkrRecordingExplanation *out) {
+  vkr_assert(data != NULL && analysis != NULL && out != NULL);
+  MemZero(out, sizeof(*out));
+  if (frame >= data->frame_count) {
+    return false_v;
+  }
+  out->frame = frame;
+  out->time = data->times[frame];
+  out->budget_ms = analysis->budget_ms;
+  out->frame_valid = vkr_recording_data_frame_ms(data, frame, &out->frame_ms);
+  out->median_valid = vkr_recording_frame_median(data, frame, &out->median_ms);
+
+  /* A kept spike's own findings, so its cause stays the first one here;
+     any other frame takes the same rules alone. */
+  VkrRecordingSpike spike = {
+      .frame = frame,
+      .first_frame = frame,
+      .last_frame = frame,
+      .frame_ms = out->frame_ms,
+      .median_ms = out->median_ms,
+  };
+  for (uint32_t k = 0u; k < analysis->spike_count; ++k) {
+    if (analysis->spikes[k].frame == frame) {
+      spike = analysis->spikes[k];
+      out->spike_rank = k + 1u;
+      break;
+    }
+  }
+  if (out->spike_rank == 0u) {
+    vkr_recording_spike_contributors(data, analysis, &spike);
+    vkr_recording_spike_gpu_wait(data, analysis, &spike);
+    spike.pass_frame =
+        vkr_recording_explain_pass_frame(data, frame, &spike.pass_gpu);
+    /* Rows borrowed from another frame describe that frame: they fill the
+       pass table but rank no cause. A spike borrows only within its run. */
+    if (spike.pass_frame == frame) {
+      spike.pass_contributor_count = vkr_recording_frame_passes(
+          data, analysis, NULL, spike.pass_frame, spike.pass_gpu, spike.passes,
+          VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX);
+    }
+  }
+  out->gpu_wait_frame = spike.gpu_frame;
+  out->gpu_wait_ms = spike.gpu_ms;
+  out->gpu_wait_excess = spike.gpu_excess;
+
+  /* The same pass rule as the spike's, keeping more passes. */
+  out->pass_frame = spike.pass_frame;
+  out->pass_gpu = spike.pass_gpu;
+  VkrRecordingPassContributor passes[VKR_RECORDING_EXPLAIN_PASS_MAX];
+  out->pass_count = vkr_recording_frame_passes(
+      data, analysis, NULL, spike.pass_frame, spike.pass_gpu, passes,
+      VKR_RECORDING_EXPLAIN_PASS_MAX);
+  for (uint32_t i = 0u; i < out->pass_count; ++i) {
+    out->passes[i] = (VkrRecordingExplainValue){
+        .index = passes[i].pass,
+        .value = passes[i].value,
+        .median = passes[i].value - passes[i].excess,
+        .excess = passes[i].excess,
+    };
+  }
+
+  vkr_recording_explain_stages(data, analysis, out);
+  const uint32_t gpu = vkr_recording_data_find_series(data, "gpu.submission");
+  if (gpu != UINT32_MAX && data->series[gpu].valid[frame]) {
+    out->gpu_valid = true_v;
+    out->gpu_ms = data->series[gpu].values[frame];
+    out->gpu_median = analysis->series[gpu].p50;
+  }
+  out->event_count = vkr_recording_frame_events(data, frame, out->events);
+  vkr_recording_explain_system(data, out);
+  out->cause_count =
+      vkr_recording_rank_causes(data, analysis, &spike, out->causes);
+  return true_v;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1950,6 +2549,29 @@ vkr_internal void vkr_recording_write_spike_events(VkrJsonWriter *json,
   vkr_json_writer_end_array(json);
 }
 
+/* {kind, name, frame, excess_ms or value[, evidence]}: excess_ms for a
+   measured cause, value for a condition. */
+vkr_internal void vkr_recording_write_cause(VkrJsonWriter *json,
+                                            const VkrRecordingCause *cause,
+                                            bool8_t evidence) {
+  vkr_json_writer_begin_object(json);
+  vkr_recording_json_key(json, "kind");
+  vkr_recording_json_text(json, vkr_recording_cause_kind_name(cause->kind));
+  vkr_recording_json_key(json, "name");
+  vkr_recording_json_text(json, cause->name);
+  vkr_recording_json_named_u64(json, "frame", cause->frame);
+  if (cause->measured) {
+    vkr_recording_json_named_number(json, "excess_ms", cause->excess_ms);
+  } else if (cause->kind != VKR_RECORDING_CAUSE_UNKNOWN) {
+    vkr_recording_json_named_number(json, "value", cause->value);
+  }
+  if (evidence) {
+    vkr_recording_json_key(json, "evidence");
+    vkr_recording_json_text(json, cause->evidence);
+  }
+  vkr_json_writer_end_object(json);
+}
+
 vkr_internal void
 vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
                           const VkrRecordingAnalysis *analysis, uint32_t rank) {
@@ -1964,6 +2586,10 @@ vkr_recording_write_spike(VkrJsonWriter *json, const VkrRecordingData *data,
   vkr_recording_json_named_number(json, "ms", spike->frame_ms);
   vkr_recording_json_named_number(json, "median", spike->median_ms);
   vkr_recording_json_named_number(json, "ratio", spike->ratio);
+  /* The first cause rec.explain and vkr_rec explain rank for the frame;
+     they also give its evidence. */
+  vkr_recording_json_key(json, "cause");
+  vkr_recording_write_cause(json, &spike->cause, false_v);
 
   vkr_recording_json_key(json, "position");
   if (data->camera_valid[frame]) {
@@ -2531,6 +3157,163 @@ bool8_t vkr_recording_frames_write_json(VkrJsonWriter *json,
   vkr_json_writer_end_array(json);
   vkr_recording_json_key(json, "events_truncated");
   vkr_json_writer_bool(json, events < events_total);
+  vkr_json_writer_end_object(json);
+  return !json->failed;
+}
+
+/* [name, ms, median, excess] per value, names from the series or, for
+   passes, the pass table. */
+vkr_internal void vkr_recording_write_explain_values(
+    VkrJsonWriter *json, const VkrRecordingData *data,
+    const VkrRecordingExplainValue *values, uint32_t count, bool8_t passes) {
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrRecordingExplainValue *value = &values[i];
+    vkr_json_writer_begin_array(json);
+    vkr_recording_json_text(json, passes ? data->passes[value->index].name
+                                         : data->series[value->index].name);
+    vkr_recording_json_number(json, value->value);
+    vkr_recording_json_number(json, value->median);
+    vkr_recording_json_number(json, value->excess);
+    vkr_json_writer_end_array(json);
+  }
+  vkr_json_writer_end_array(json);
+}
+
+/* "gpu": the frame's submission against its median, the GPU frame its wait
+   stalled on, and the passes that grew in the pass frame. */
+vkr_internal void
+vkr_recording_write_explain_gpu(VkrJsonWriter *json,
+                                const VkrRecordingData *data,
+                                const VkrRecordingExplanation *explanation) {
+  vkr_recording_json_key(json, "gpu");
+  vkr_json_writer_begin_object(json);
+  vkr_recording_json_named_optional(
+      json, "submission_ms", explanation->gpu_valid, explanation->gpu_ms);
+  vkr_recording_json_named_optional(json, "median_ms", explanation->gpu_valid,
+                                    explanation->gpu_median);
+  vkr_recording_json_key(json, "wait");
+  if (explanation->gpu_wait_frame != UINT64_MAX) {
+    vkr_json_writer_begin_object(json);
+    vkr_recording_json_named_u64(json, "frame", explanation->gpu_wait_frame);
+    vkr_recording_json_named_number(json, "ms", explanation->gpu_wait_ms);
+    vkr_recording_json_named_number(json, "excess",
+                                    explanation->gpu_wait_excess);
+    vkr_json_writer_end_object(json);
+  } else {
+    vkr_json_writer_null(json);
+  }
+  const bool8_t rows = explanation->pass_frame != UINT64_MAX;
+  vkr_recording_json_named_optional(json, "pass_frame", rows,
+                                    (float64_t)explanation->pass_frame);
+  vkr_recording_json_key(json, "pass_time");
+  if (rows) {
+    vkr_recording_json_text(json, explanation->pass_gpu ? "gpu" : "cpu");
+  } else {
+    vkr_json_writer_null(json);
+  }
+  vkr_recording_json_key(json, "passes");
+  vkr_recording_write_explain_values(json, data, explanation->passes,
+                                     explanation->pass_count, true_v);
+  vkr_json_writer_end_object(json);
+}
+
+/* "events", "flags" and "system": what else happened in the frame. */
+vkr_internal void vkr_recording_write_explain_context(
+    VkrJsonWriter *json, const VkrRecordingData *data,
+    const VkrRecordingExplanation *explanation) {
+  /* [name, count, ms] per engine event name. */
+  vkr_recording_json_key(json, "events");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < explanation->event_count; ++i) {
+    const VkrRecordingExplainEvent *event = &explanation->events[i];
+    vkr_json_writer_begin_array(json);
+    vkr_recording_json_text(json, data->event_names[event->name].name);
+    vkr_json_writer_u64(json, event->count);
+    vkr_recording_json_number(json, event->ms);
+    vkr_json_writer_end_array(json);
+  }
+  vkr_json_writer_end_array(json);
+
+  /* [name, lag] per flag set in the frame (0) or the row before it (1). */
+  vkr_recording_json_key(json, "flags");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < explanation->flag_count; ++i) {
+    vkr_json_writer_begin_array(json);
+    vkr_recording_json_text(
+        json, vkr_recording_analysis_flag_name(explanation->flags[i].flag));
+    vkr_json_writer_u64(json, explanation->flags[i].lag);
+    vkr_json_writer_end_array(json);
+  }
+  vkr_json_writer_end_array(json);
+
+  /* name: sample or null; the footprint adds its change from the previous
+     frame. */
+  vkr_recording_json_key(json, "system");
+  vkr_json_writer_begin_object(json);
+  for (uint32_t i = 0u; i < explanation->system_count; ++i) {
+    const VkrRecordingExplainSystem *entry = &explanation->system[i];
+    vkr_recording_json_named_optional(json, data->series[entry->series].name,
+                                      entry->valid, entry->value);
+    if (string_equals(data->series[entry->series].name,
+                      VKR_RECORDING_FOOTPRINT_SERIES)) {
+      vkr_recording_json_named_optional(json, "os.memory.footprint_delta_bytes",
+                                        entry->has_delta, entry->delta);
+    }
+  }
+  vkr_json_writer_end_object(json);
+}
+
+bool8_t
+vkr_recording_explain_write_json(VkrJsonWriter *json,
+                                 const VkrRecordingData *data,
+                                 const VkrRecordingAnalysis *analysis,
+                                 const VkrRecordingExplanation *explanation) {
+  vkr_assert(json != NULL && data != NULL && analysis != NULL &&
+             explanation != NULL);
+  const bool8_t compared =
+      explanation->frame_valid && explanation->median_valid;
+  vkr_json_writer_begin_object(json);
+  vkr_recording_json_named_u64(json, "frame", explanation->frame);
+  vkr_recording_json_named_number(json, "time", explanation->time);
+  vkr_recording_json_named_optional(json, "spike", explanation->spike_rank > 0u,
+                                    (float64_t)explanation->spike_rank);
+  vkr_recording_json_named_optional(json, "frame_ms", explanation->frame_valid,
+                                    explanation->frame_ms);
+  vkr_recording_json_named_optional(
+      json, "median_ms", explanation->median_valid, explanation->median_ms);
+  vkr_recording_json_named_u64(json, "median_frames",
+                               VKR_RECORDING_ANALYSIS_WINDOW);
+  vkr_recording_json_named_number(json, "budget_ms", explanation->budget_ms);
+  vkr_recording_json_key(json, "budget_source");
+  vkr_recording_json_text(json, analysis->budget_source);
+  vkr_recording_json_named_optional(
+      json, "ratio", compared && explanation->median_ms > 0.0,
+      explanation->frame_ms / explanation->median_ms);
+  vkr_recording_json_named_optional(json, "excess_ms", compared,
+                                    explanation->frame_ms -
+                                        explanation->median_ms);
+
+  /* Stage and pass rows; medians are over the recording. */
+  vkr_recording_json_key(json, "columns");
+  vkr_json_writer_begin_array(json);
+  vkr_recording_json_text(json, "name");
+  vkr_recording_json_text(json, "ms");
+  vkr_recording_json_text(json, "median");
+  vkr_recording_json_text(json, "excess");
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_key(json, "cpu");
+  vkr_recording_write_explain_values(json, data, explanation->stages,
+                                     explanation->stage_count, false_v);
+  vkr_recording_write_explain_gpu(json, data, explanation);
+  vkr_recording_write_explain_context(json, data, explanation);
+
+  vkr_recording_json_key(json, "causes");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < explanation->cause_count; ++i) {
+    vkr_recording_write_cause(json, &explanation->causes[i], true_v);
+  }
+  vkr_json_writer_end_array(json);
   vkr_json_writer_end_object(json);
   return !json->failed;
 }

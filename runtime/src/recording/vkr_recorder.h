@@ -61,6 +61,10 @@ typedef struct VkrRecorderConfig {
   uint64_t chunk_bytes;
   /* A chunk closes after this long; zero selects one second. */
   float64_t chunk_seconds;
+  /* Rolling mode: write no file; keep the closed chunks of about this many
+     seconds in memory until vkr_recorder_save writes them out. Zero records
+     to `stream_path` as usual. */
+  float64_t rolling_seconds;
 } VkrRecorderConfig;
 
 typedef struct VkrRecorderStats {
@@ -75,6 +79,15 @@ typedef struct VkrRecorderStats {
   /* The stream file could not be written; records are discarded. */
   bool8_t failed;
 } VkrRecorderStats;
+
+/* What vkr_recorder_save wrote: the recorded frames it kept, renumbered
+   from zero, and the seconds of recording they span. */
+typedef struct VkrRecorderSaveResult {
+  uint64_t first_frame;
+  uint64_t frame_count;
+  float64_t seconds;
+  uint64_t records;
+} VkrRecorderSaveResult;
 
 typedef struct s_VkrRecorder VkrRecorder;
 
@@ -106,6 +119,19 @@ void vkr_recorder_commit(VkrRecorder *recorder, VkrRecorderProducer producer);
 bool8_t vkr_recorder_write(VkrRecorder *recorder, VkrRecorderProducer producer,
                            uint16_t stream, uint64_t frame, const void *data,
                            uint32_t size);
+
+/**
+ * @brief Rolling mode: writes the kept chunks as a complete stream file at
+ * `stream_path`, frames renumbered from zero, after `preamble`: records in
+ * the chunk layout that later records need, such as their names, written
+ * first under frame zero. The writer thread does the I/O; the caller waits,
+ * up to a few seconds, for it. The recording keeps running.
+ * @return false_v when the recorder is not rolling, holds no chunks, or the
+ * file could not be written.
+ */
+bool8_t vkr_recorder_save(VkrRecorder *recorder, const char *stream_path,
+                          const void *preamble, uint64_t preamble_size,
+                          VkrRecorderSaveResult *out_result);
 
 /** Live counters for an overlay; any thread, values may lag by a chunk. */
 void vkr_recorder_stats(const VkrRecorder *recorder,

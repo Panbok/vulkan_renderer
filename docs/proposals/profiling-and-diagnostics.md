@@ -55,9 +55,12 @@ Remaining gaps:
 
 ## P2: timeline (remaining)
 
-CPU zones per thread, Metal GPU pass starts on the CPU clock and the Perfetto
-export are implemented in
-[ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md). Remaining:
+CPU zones per thread, Metal GPU pass starts on the CPU clock, the Perfetto
+export and rolling recordings are implemented in
+[ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md); `rec.explain` and
+`vkr_rec explain` in [ADR-122](../adr/122-recordings.md); `vkr_harness
+perf-compare` in [ADR-051](../adr/051-renderer-harness-and-evidence.md).
+Remaining:
 
 - Vulkan pass starts (`gpu_start_ms`) and host GPU times through
   `VK_KHR_calibrated_timestamps`.
@@ -65,9 +68,8 @@ export are implemented in
   so native profilers show the zones.
 - More zones where cost hides: asset loads, physics steps inside jobs,
   script ticks, shadow updates.
-- A rolling in-memory buffer saved by hotkey or `perf.capture_last`.
 - The editor's Timeline window: thread tracks, a GPU track and a flame
-  chart; `rec.explain {spike}`; `vkr_harness perf-compare`.
+  chart.
 - Counters and markers for recordings without `Frame` zones in the export.
 - Acceptance: the overhead gate with zones on; zone sums match stage metrics.
 

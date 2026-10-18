@@ -29,6 +29,83 @@ static bool8_t vkr_harness_flag(int argc, char **argv, const char *name) {
   return false_v;
 }
 
+vkr_internal void vkr_harness_usage(void) {
+  vkr_harness_stderr(
+      "usage: vkr_harness <profile|snapshot|autotest|compare|baseline|"
+      "perf-compare> ...\n"
+      "  vkr_harness perf-compare --before <report.json|run dir> "
+      "--after <report.json|run dir>\n"
+      "      [--threshold-pct P] [--metric NAME]... [--passes N]\n"
+      "      [--cross-environment] [--allow-local]\n"
+      "    Prints one JSON verdict on stdout. Exit 0 compared, 4 "
+      "incompatible, 2 usage or unreadable report.\n");
+}
+
+/**
+ * Parses `perf-compare` options. `--metric` repeats, so the first-match
+ * option lookup the other commands use cannot read it.
+ */
+vkr_internal int vkr_harness_perf_compare_command(int argc, char **argv) {
+  VkrHarnessPerfOptions options = {
+      .threshold_pct = 2.0,
+      .pass_limit = 10u,
+  };
+  const char *before = NULL;
+  const char *after = NULL;
+  for (int i = 2; i < argc; ++i) {
+    const char *name = argv[i];
+    if (string_equals(name, "--cross-environment")) {
+      options.cross_environment = true_v;
+      continue;
+    }
+    if (string_equals(name, "--allow-local")) {
+      options.allow_local = true_v;
+      continue;
+    }
+    const char *value = i + 1 < argc ? argv[++i] : NULL;
+    bool8_t valid = value != NULL;
+    if (valid && string_equals(name, "--before")) {
+      before = value;
+    } else if (valid && string_equals(name, "--after")) {
+      after = value;
+    } else if (valid && string_equals(name, "--threshold-pct")) {
+      valid = string_to_f64(value, &options.threshold_pct) &&
+              vkr_is_finite_f64(options.threshold_pct) &&
+              options.threshold_pct > 0.0;
+    } else if (valid && string_equals(name, "--passes")) {
+      valid = string_to_u32(value, &options.pass_limit) &&
+              options.pass_limit <= VKR_HARNESS_PERF_MAX_PASSES;
+    } else if (valid && string_equals(name, "--metric")) {
+      valid = options.metric_count < VKR_HARNESS_PERF_MAX_METRICS &&
+              string_length(value) > 0u &&
+              string_length(value) < VKR_HARNESS_PERF_NAME_MAX;
+      if (valid) {
+        string_format(options.metrics[options.metric_count++],
+                      VKR_HARNESS_PERF_NAME_MAX, "%s", value);
+      }
+    } else {
+      valid = false_v;
+    }
+    if (!valid) {
+      vkr_harness_stderr("perf-compare: invalid or incomplete option '%s'\n",
+                         name);
+      vkr_harness_usage();
+      return VKR_HARNESS_EXIT_INVALID;
+    }
+  }
+  if (!before || !after) {
+    vkr_harness_stderr("perf-compare: --before and --after are required\n");
+    vkr_harness_usage();
+    return VKR_HARNESS_EXIT_INVALID;
+  }
+  if (!vkr_platform_init()) {
+    return VKR_HARNESS_EXIT_ERROR;
+  }
+  const int result = vkr_harness_perf_compare_run(before, after, &options);
+  vkr_platform_shutdown();
+  return result;
+}
+
 /**
  * A child writes into a directory chosen by its parent, so that directory is
  * re-validated here rather than trusted from the command line.
@@ -65,10 +142,12 @@ VKR_MAIN(argc, argv) {
   const bool8_t compare_command = argc > 1 && string_equals(argv[1], "compare");
   const bool8_t autotest_command =
       argc > 1 && string_equals(argv[1], "autotest");
+  if (argc > 1 && string_equals(argv[1], "perf-compare")) {
+    return vkr_harness_perf_compare_command(argc, argv);
+  }
   if (!child && !profile_command && !snapshot_command && !baseline_command &&
       !compare_command && !autotest_command) {
-    vkr_harness_stderr("usage: vkr_harness "
-                       "<profile|snapshot|autotest|compare|baseline> ...\n");
+    vkr_harness_usage();
     return VKR_HARNESS_EXIT_INVALID;
   }
   const char *case_path = vkr_harness_option(argc, argv, "--case");

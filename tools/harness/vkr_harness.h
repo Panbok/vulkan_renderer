@@ -1053,6 +1053,9 @@ const char *
 vkr_harness_diagnostic_metric_name(VkrHarnessDiagnosticMetric metric);
 /** The engine gauge a system condition is read from and reported as. */
 const char *vkr_harness_condition_metric_name(VkrHarnessConditionMetric metric);
+/** The `diagnostic_counts.output` member an output line class is counted
+    under. */
+const char *vkr_harness_output_class_name(VkrHarnessOutputClass output_class);
 const char *vkr_harness_operator_name(VkrHarnessAssertionOperator operation);
 bool8_t vkr_harness_statistic_from_name(const char *name,
                                         VkrHarnessStatisticKind *out_statistic);

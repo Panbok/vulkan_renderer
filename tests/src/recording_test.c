@@ -506,6 +506,131 @@ static void *recording_render_producer(void *argument) {
    counters that do not add up (written + dropped or lost = attempted), gap
    records whose lost counts disagree with the END chunk, and records of one
    lane delivered out of order. */
+/* Reads the camera records of `path` in file order: their frames, and the
+   frame each pose was written for (its x position over 0.25). */
+static uint32_t recording_test_camera_frames(VkrAllocator *allocator,
+                                             const char *path, uint64_t *frames,
+                                             uint64_t *written,
+                                             uint32_t capacity,
+                                             VkrRecordingEnd *out_end) {
+  VkrRecordingReader reader;
+  assert(vkr_recording_reader_open(&reader, allocator, path) ==
+         VKR_RECORDING_READ_OK);
+  assert(reader.indexed && !reader.truncated);
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < reader.chunk_count; ++i) {
+    uint8_t *payload = NULL;
+    uint64_t size = 0u;
+    if (reader.chunks[i].type == VKR_RECORDING_CHUNK_END) {
+      assert(vkr_recording_reader_chunk(&reader, i, NULL, allocator, &payload,
+                                        &size));
+      assert(vkr_recording_end_decode(payload, size, out_end));
+      vkr_recording_reader_chunk_free(allocator, payload, size);
+      continue;
+    }
+    if (reader.chunks[i].type != VKR_RECORDING_CHUNK_RECORDS) {
+      continue;
+    }
+    assert(vkr_recording_reader_chunk(&reader, i, vkr_depot_zstd_codec(),
+                                      allocator, &payload, &size));
+    uint64_t cursor = 0u;
+    VkrRecordingRecord record;
+    while (vkr_recording_records_next(payload, size, &cursor, &record)) {
+      if (record.stream != 1u) {
+        continue;
+      }
+      assert(count < capacity);
+      RecordingTestPose pose;
+      MemCopy(&pose, record.data, sizeof(pose));
+      frames[count] = record.frame;
+      written[count] = (uint64_t)(pose.position[0] / 0.25 + 0.5);
+      ++count;
+    }
+    vkr_recording_reader_chunk_free(allocator, payload, size);
+  }
+  vkr_recording_reader_close(&reader);
+  return count;
+}
+
+static void test_recorder_rolling_save(void) {
+  printf("  Running test_recorder_rolling_save...\n");
+  RecordingTestMemory memory;
+  RecordingTestMemory test_memory;
+  recording_memory_create(&memory);
+  recording_memory_create(&test_memory);
+  char unused[1024];
+  char first[1024];
+  char second[1024];
+  recording_test_path("rolling_unused", unused, sizeof(unused));
+  recording_test_path("rolling_first", first, sizeof(first));
+  recording_test_path("rolling_second", second, sizeof(second));
+  const VkrRecorderConfig config = {
+      .stream_path = unused,
+      .codec = vkr_depot_zstd_codec(),
+      .streams = RECORDING_TEST_STREAMS,
+      .stream_count = 2u,
+      .chunk_seconds = 0.01,
+      .rolling_seconds = 0.15,
+  };
+  VkrRecorder *recorder = vkr_recorder_start(&memory.allocator, &config);
+  assert(recorder != NULL);
+  /* Frames 0 to 9 age out of the window during the pause. */
+  for (uint64_t frame = 0u; frame < 10u; ++frame) {
+    const RecordingTestPose pose = recording_test_pose(frame);
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN, 1u, frame,
+                              &pose, sizeof(pose)));
+  }
+  vkr_thread_sleep(400u);
+  for (uint64_t frame = 100u; frame < 110u; ++frame) {
+    const RecordingTestPose pose = recording_test_pose(frame);
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN, 1u, frame,
+                              &pose, sizeof(pose)));
+  }
+  vkr_thread_sleep(30u);
+  /* The preamble's record goes first, under frame zero. */
+  uint8_t
+      preamble[VKR_RECORDING_RECORD_HEADER_SIZE + sizeof(RecordingTestPose)];
+  const RecordingTestPose named = recording_test_pose(777u);
+  vkr_recording_record_header_store(preamble, 1u, 0u, sizeof(named), 777u);
+  MemCopy(preamble + VKR_RECORDING_RECORD_HEADER_SIZE, &named, sizeof(named));
+  VkrRecorderSaveResult result;
+  assert(
+      vkr_recorder_save(recorder, first, preamble, sizeof(preamble), &result));
+  assert(result.first_frame == 100u && result.frame_count == 10u);
+
+  uint64_t frames[32];
+  uint64_t written[32];
+  VkrRecordingEnd end;
+  uint32_t count = recording_test_camera_frames(
+      &test_memory.allocator, first, frames, written, ArrayCount(frames), &end);
+  assert(count == 11u);
+  assert(frames[0] == 0u && written[0] == 777u);
+  for (uint32_t i = 1u; i < count; ++i) {
+    assert(frames[i] == i - 1u && written[i] == 99u + i);
+  }
+  assert(end.first_frame == 0u && end.last_frame == 9u);
+
+  /* The recording keeps running after a save. */
+  const RecordingTestPose late = recording_test_pose(110u);
+  assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN, 1u, 110u,
+                            &late, sizeof(late)));
+  vkr_thread_sleep(30u);
+  assert(vkr_recorder_save(recorder, second, NULL, 0u, &result));
+  count = recording_test_camera_frames(&test_memory.allocator, second, frames,
+                                       written, ArrayCount(frames), &end);
+  assert(count == 11u && frames[count - 1u] == 10u &&
+         written[count - 1u] == 110u);
+
+  VkrRecorderStats stats;
+  assert(vkr_recorder_stop(recorder, &stats));
+  /* A rolling recorder writes no stream of its own. */
+  const FilePath never = file_path_view(unused);
+  assert(!file_exists(&never));
+  recording_memory_destroy(&test_memory);
+  recording_memory_destroy(&memory);
+  printf("  test_recorder_rolling_save PASSED\n");
+}
+
 static void test_recorder_accounting(void) {
   printf("  Running test_recorder_accounting...\n");
   /* The writer thread allocates from the recorder's memory, so the test's
@@ -1969,6 +2094,7 @@ bool32_t run_recording_tests(void) {
   test_recording_format_round_trip();
   test_recording_truncated_recovery();
   test_recorder_accounting();
+  test_recorder_rolling_save();
   test_recording_pass_rows();
   test_recording_gpu_submission();
   test_recording_loop_metrics();

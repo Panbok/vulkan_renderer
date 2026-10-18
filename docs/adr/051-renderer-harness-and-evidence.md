@@ -325,5 +325,16 @@ a benchmark cannot establish comparability with the current fingerprints.
   [capture catalog](../../tools/harness/vkr_harness_capture.c).
 - [Baseline publication](../../tools/harness/vkr_harness_baseline.c),
   [comparison](../../tools/harness/vkr_harness_compare.c).
+- `perf-compare --before <report> --after <report>` (same file) judges a
+  timing change. Both reports must pass and share workload and policy
+  fingerprints; an environment change needs `--cross-environment`, and then
+  costs authority. A metric changes when its p50 moves by at least the
+  threshold (2%) and the after repetitions' medians all lie beyond the
+  before range (with one repetition, by more than twice the larger
+  standard deviation). Without authority every verdict is `inconclusive`
+  unless `--allow-local`. The primary metric is `frame.wall`, or
+  `gpu.submission` then `cpu.frame_work` under FIFO or a frame limiter;
+  changed work rows make the verdict `mixed`. Two runs of one Bistro case
+  under `local-windowed` gave `no_change` (`frame.wall` +0.2%).
 - [Commands and artifact handling](../../.codex/skills/vkr-harness/SKILL.md),
   [performance evidence](../../.codex/skills/vkr-performance/SKILL.md).

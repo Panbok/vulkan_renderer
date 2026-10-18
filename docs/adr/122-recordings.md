@@ -478,7 +478,18 @@ an agent must read one without the editor.
   `summary.json`), `rec.spikes` (at most 100, its object bounded to 32 KB),
   `rec.frames` (at most 500 rows) and `rec.passes`, which name the
   recording or default to the open one; each spike and the frames' range
-  also name their thumbnails, and `rec.seek` takes a spike rank. The editor's
+  also name their thumbnails, and `rec.seek` takes a spike rank. Each spike
+  carries a `cause`, the first of the causes `vkr_recording_explain` ranks
+  for its frame ([vkr_recording_analysis.c](../../runtime/src/assets/vkr_recording_analysis.c)).
+  `rec.explain {spike|frame}` and `vkr_rec explain (--spike N | --frame F)`
+  answer one frame against its typical frame (the 19-frame window median
+  for frame time, recording medians for stages, GPU time and passes): CPU
+  stages and passes by excess, engine events, platform signals, and causes
+  ranked by excess of at least 0.25 ms (stages, passes, the GPU frame a wait
+  stalled on, timed events), then conditions (serious thermal level,
+  critical memory pressure, major page faults, GPU or log errors, missed
+  presents), else `unknown`. Pass rows borrowed from a frame within ±8 for
+  context never count as a cause. The editor's
   Performance window draws it with `vkr_ui_plot`,
   including a GPU-by-pass chart over the frames with GPU times, and lists
   spikes and passes in column tables (`editor_table.c`: resizable, sortable
@@ -548,8 +559,9 @@ an agent must read one without the editor.
   agents without a tool. The write thread keeps the file count off the
   frame.
 
-CPU zones, GPU pass starts and the Perfetto export extend recordings with
-three streams; [ADR-126](126-cpu-zones-and-gpu-pass-timeline.md) owns them.
+CPU zones, GPU pass starts, the Perfetto export and rolling recordings
+(`rec.start` `rolling`, `rec.save_last`, Keep last 30 s) extend recordings;
+[ADR-126](126-cpu-zones-and-gpu-pass-timeline.md) owns them.
 
 ## Revisit when
 

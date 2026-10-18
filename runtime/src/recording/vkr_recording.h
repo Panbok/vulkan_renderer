@@ -332,6 +332,11 @@ typedef struct VkrRecordingConfig {
      recording installs the process's zone sink while it runs, so at most
      one recording records zones. */
   bool8_t zones;
+  /* Rolling: keep only about this many recent seconds in memory, create no
+     bundle, and write one only through vkr_recording_save_window; stopping
+     discards the window. Zero records a bundle as usual. A rolling
+     recording takes no poses and no all-measurements streams. */
+  float64_t rolling_seconds;
 } VkrRecordingConfig;
 
 typedef struct VkrRecordingFrameIndex {
@@ -393,6 +398,8 @@ typedef struct VkrRecording {
   /* The renderer frame index of recent recorded frames. */
   VkrRecordingFrameIndex frame_history[VKR_RECORDING_FRAME_INDEX_HISTORY];
   uint32_t frame_history_next;
+  /* Seconds a rolling recording keeps; zero for a bundle recording. */
+  float64_t rolling_seconds;
   /* CPU zones: the sink is installed, the zone names written so far, and
      the recorded frame zones from other threads file under. */
   bool8_t zones_enabled;
@@ -586,6 +593,23 @@ bool8_t vkr_recording_mark(VkrRecording *recording, VkrRecordingMarkerKind kind,
  * @brief Stops the recorder, writes summary.json and releases the memory.
  * @return false_v when the stream or the summary could not be written.
  */
+/* What vkr_recording_save_window wrote. */
+typedef struct VkrRecordingWindow {
+  uint64_t frames;
+  float64_t seconds;
+} VkrRecordingWindow;
+
+/**
+ * @brief Rolling recordings: writes the frames still held as a bundle at
+ * `bundle_path` (created; must not exist), renumbered from frame zero, with
+ * its stream and summary. The recording keeps running. Frame-loop thread.
+ * @return false_v when the recording is not rolling, holds nothing yet, or
+ * the bundle could not be written.
+ */
+bool8_t vkr_recording_save_window(VkrRecording *recording,
+                                  const char *bundle_path,
+                                  VkrRecordingWindow *out_window);
+
 bool8_t vkr_recording_stop(VkrRecording *recording,
                            VkrRecorderStats *out_stats);
 

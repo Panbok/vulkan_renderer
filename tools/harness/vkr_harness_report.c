@@ -967,6 +967,12 @@ vkr_global const char
         "log_errors",        "log_warnings",
 };
 
+const char *vkr_harness_output_class_name(VkrHarnessOutputClass output_class) {
+  return output_class < VKR_HARNESS_OUTPUT_CLASS_COUNT
+             ? vkr_harness_output_class_names[output_class]
+             : "unknown";
+}
+
 /**
  * Emits `diagnostic_counts`. A counter without frames to sum is `null` with
  * an `unavailable_reason`, so a missing source never reads as zero errors.

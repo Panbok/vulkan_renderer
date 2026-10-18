@@ -42,6 +42,9 @@ typedef enum VkrSampleRecordingCommand {
   VKR_SAMPLE_RECORDING_DRIVE,
   /* Ends the drive and pauses the session. */
   VKR_SAMPLE_RECORDING_DRIVE_STOP,
+  /* Writes a rolling recording's held seconds into `path`, a new bundle
+     directory; the rolling recording keeps running. */
+  VKR_SAMPLE_RECORDING_SAVE_WINDOW,
 } VkrSampleRecordingCommand;
 
 /* Transport the client applies for a recording request: Drive resets the
@@ -120,6 +123,10 @@ typedef struct VkrSampleRecordingRequest {
   /* START: every thread's CPU zones and the GPU pass starts for a timeline
      (VkrRecordingConfig.zones). */
   bool8_t zones;
+  /* START: keep only this many recent seconds in memory and write a bundle
+     only on SAVE_WINDOW (VkrRecordingConfig.rolling_seconds); zero records
+     into `path`. */
+  float64_t rolling_seconds;
   /* DRIVE: modules steer the driven player back toward the recorded one. */
   bool8_t follow;
   /* DRIVE: re-simulate: replay the session's seed and clock and stop at the
@@ -137,6 +144,9 @@ typedef struct VkrSampleRecordingStatus {
   /* The recording in progress takes every measurement
      (VkrRecordingConfig.all_measurements). */
   bool8_t recording_all_measurements;
+  /* The recording in progress keeps only its last this many seconds; zero
+     for a recording into a bundle. */
+  float64_t recording_rolling_seconds;
   char recording_path[VKR_RECORDING_PATH_MAX];
   uint64_t frames;
   float64_t seconds;

@@ -297,6 +297,50 @@ typedef struct VkrRecordingPassStats {
    frames either backend keeps in flight, plus one. */
 #define VKR_RECORDING_ANALYSIS_GPU_LOOKBACK 4u
 
+/* Bytes of a cause's evidence text, with its terminator. */
+#define VKR_RECORDING_CAUSE_EVIDENCE_MAX 160u
+
+/* What a cause of a slow frame is (vkr_recording_explain): time a CPU
+   stage, a pass, the GPU frame, presentation, another "ms" series or an
+   engine event added to the frame, or a condition that slows frames
+   without a time of its own (thermal and below). */
+typedef enum VkrRecordingCauseKind {
+  VKR_RECORDING_CAUSE_UNKNOWN = 0,
+  VKR_RECORDING_CAUSE_CPU_STAGE,
+  VKR_RECORDING_CAUSE_GPU_PASS,
+  VKR_RECORDING_CAUSE_CPU_PASS,
+  VKR_RECORDING_CAUSE_GPU_FRAME,
+  VKR_RECORDING_CAUSE_PRESENT,
+  VKR_RECORDING_CAUSE_METRIC,
+  VKR_RECORDING_CAUSE_PIPELINE_CREATION,
+  VKR_RECORDING_CAUSE_SHADER_LOAD,
+  VKR_RECORDING_CAUSE_ASSET_LOAD,
+  VKR_RECORDING_CAUSE_SCRIPT_RELOAD,
+  VKR_RECORDING_CAUSE_THERMAL,
+  VKR_RECORDING_CAUSE_MEMORY_PRESSURE,
+  VKR_RECORDING_CAUSE_PAGE_FAULTS,
+  VKR_RECORDING_CAUSE_ERRORS,
+  VKR_RECORDING_CAUSE_KIND_COUNT,
+} VkrRecordingCauseKind;
+
+typedef struct VkrRecordingCause {
+  VkrRecordingCauseKind kind;
+  /* The series, pass or event; empty for VKR_RECORDING_CAUSE_UNKNOWN. */
+  char name[VKR_RECORDING_NAME_MAX + 1u];
+  /* Where the measurement comes from: the explained frame, the GPU frame
+     its wait stalled on, or the frame whose pass rows stand in for it. */
+  uint64_t frame;
+  /* true_v: excess_ms is time over the typical frame. false_v: a
+     condition, and value is its sample. */
+  bool8_t measured;
+  float64_t excess_ms;
+  float64_t value;
+  char evidence[VKR_RECORDING_CAUSE_EVIDENCE_MAX];
+} VkrRecordingCause;
+
+/** "cpu_stage", "gpu_pass", ..., "unknown": the JSON name of `kind`. */
+const char *vkr_recording_cause_kind_name(VkrRecordingCauseKind kind);
+
 typedef struct VkrRecordingSpike {
   /* The worst frame of the run. */
   uint64_t frame;
@@ -329,6 +373,8 @@ typedef struct VkrRecordingSpike {
   bool8_t pass_gpu;
   VkrRecordingPassContributor passes[VKR_RECORDING_ANALYSIS_CONTRIBUTOR_MAX];
   uint32_t pass_contributor_count;
+  /* The first cause vkr_recording_explain ranks for `frame`. */
+  VkrRecordingCause cause;
 } VkrRecordingSpike;
 
 /* Slow frames: valid frames over VKR_RECORDING_ANALYSIS_SLOW_FACTOR times
@@ -441,7 +487,139 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
 void vkr_recording_analysis_free(VkrRecordingAnalysis *analysis);
 
 /* ------------------------------------------------------------------------ */
+/* Explanation                                                               */
+
+/*
+ * Why one frame was slow, against the typical frame: its frame time against
+ * the median of the VKR_RECORDING_ANALYSIS_WINDOW frames around it (a
+ * spike's median), and every series and pass against its median over the
+ * whole recording (the analysis statistics).
+ *
+ * Causes rank in two groups. Measured causes come first, largest excess
+ * first, when the frame took longer than its typical frame (the lower of
+ * its window median and the recording's median frame time): the "ms"
+ * series a spike's contributors take, with a frame-loop
+ * wait for the renderer named as the GPU frame it stalled on (as a spike's
+ * gpu_wait), the passes that grew in the pass frame when it is the frame
+ * itself or in a spike's run, and the engine events of the frame by their
+ * time. Each needs at least
+ * VKR_RECORDING_EXPLAIN_MIN_EXCESS_MS. Conditions follow, in this order:
+ * thermal level serious or critical, critical memory pressure, major page
+ * faults, GPU errors, log errors and missed presents. With neither, the
+ * one cause is VKR_RECORDING_CAUSE_UNKNOWN. A kept spike's `cause` is the
+ * first cause of its frame.
+ */
+#define VKR_RECORDING_EXPLAIN_STAGE_MAX 16u
+#define VKR_RECORDING_EXPLAIN_PASS_MAX 5u
+#define VKR_RECORDING_EXPLAIN_EVENT_MAX 8u
+#define VKR_RECORDING_EXPLAIN_SYSTEM_MAX 10u
+#define VKR_RECORDING_EXPLAIN_FLAG_MAX 24u
+#define VKR_RECORDING_EXPLAIN_CAUSE_MAX 12u
+/* Frames searched either side for pass rows with GPU times: one tiled
+   sampling period. */
+#define VKR_RECORDING_EXPLAIN_PASS_REACH 8u
+#define VKR_RECORDING_EXPLAIN_MIN_EXCESS_MS 0.25
+
+/* A series (index into VkrRecordingData.series) or a pass (pass id) in the
+   frame: its value, its median over the recording and the difference. */
+typedef struct VkrRecordingExplainValue {
+  uint32_t index;
+  float64_t value;
+  float64_t median;
+  float64_t excess;
+} VkrRecordingExplainValue;
+
+/* The engine events of one name in the frame. */
+typedef struct VkrRecordingExplainEvent {
+  /* Index into VkrRecordingData.event_names. */
+  uint32_t name;
+  uint32_t count;
+  float64_t ms;
+} VkrRecordingExplainEvent;
+
+/* A platform or health series in the frame (ADR-125). */
+typedef struct VkrRecordingExplainSystem {
+  uint32_t series;
+  bool8_t valid;
+  float64_t value;
+  /* os.memory.footprint_bytes only: value minus the previous frame's. */
+  bool8_t has_delta;
+  float64_t delta;
+} VkrRecordingExplainSystem;
+
+/* A flag bit (vkr_recording_analysis_flag_name) set in the frame (lag 0)
+   or in the row before it (lag 1), where render-thread work lands. */
+typedef struct VkrRecordingExplainFlag {
+  uint32_t flag;
+  uint32_t lag;
+} VkrRecordingExplainFlag;
+
+typedef struct VkrRecordingExplanation {
+  uint64_t frame;
+  float64_t time;
+  /* 1-based rank of the kept spike whose worst frame this is; 0 for none. */
+  uint32_t spike_rank;
+  bool8_t frame_valid;
+  float64_t frame_ms;
+  /* Window median; median_valid is false_v when the window has no frame. */
+  bool8_t median_valid;
+  float64_t median_ms;
+  float64_t budget_ms;
+  /* The cpu.* stages valid in the frame, largest excess first. */
+  VkrRecordingExplainValue stages[VKR_RECORDING_EXPLAIN_STAGE_MAX];
+  uint32_t stage_count;
+  /* gpu.submission of the frame, when valid. */
+  bool8_t gpu_valid;
+  float64_t gpu_ms;
+  float64_t gpu_median;
+  /* As VkrRecordingSpike.gpu_frame; UINT64_MAX for none. */
+  uint64_t gpu_wait_frame;
+  float64_t gpu_wait_ms;
+  float64_t gpu_wait_excess;
+  /* The frame whose rows explain this one: a spike's pass_frame, else the
+     frame itself or the nearest frame with GPU times within
+     VKR_RECORDING_EXPLAIN_PASS_REACH, else the frame's CPU times;
+     UINT64_MAX without rows. Passes are those that grew, largest excess
+     first. */
+  uint64_t pass_frame;
+  bool8_t pass_gpu;
+  VkrRecordingExplainValue passes[VKR_RECORDING_EXPLAIN_PASS_MAX];
+  uint32_t pass_count;
+  /* Engine events of the frame, by name in first-seen order. */
+  VkrRecordingExplainEvent events[VKR_RECORDING_EXPLAIN_EVENT_MAX];
+  uint32_t event_count;
+  /* The series of the system table the recording has. */
+  VkrRecordingExplainSystem system[VKR_RECORDING_EXPLAIN_SYSTEM_MAX];
+  uint32_t system_count;
+  VkrRecordingExplainFlag flags[VKR_RECORDING_EXPLAIN_FLAG_MAX];
+  uint32_t flag_count;
+  /* Ranked; at least one. */
+  VkrRecordingCause causes[VKR_RECORDING_EXPLAIN_CAUSE_MAX];
+  uint32_t cause_count;
+} VkrRecordingExplanation;
+
+/**
+ * @brief Explains `frame` of an analyzed recording. Allocates nothing.
+ * @return false_v when `frame` is not below data->frame_count.
+ */
+bool8_t vkr_recording_explain(const VkrRecordingData *data,
+                              const VkrRecordingAnalysis *analysis,
+                              uint64_t frame, VkrRecordingExplanation *out);
+
+/* ------------------------------------------------------------------------ */
 /* JSON                                                                      */
+
+/**
+ * @brief Writes an explanation as one JSON object: frame, time, spike,
+ * frame_ms, median_ms, median_frames, budget_ms, budget_source, ratio,
+ * excess_ms, columns, cpu, gpu, events, flags, system and causes.
+ * @return false_v when the writer failed.
+ */
+bool8_t
+vkr_recording_explain_write_json(VkrJsonWriter *json,
+                                 const VkrRecordingData *data,
+                                 const VkrRecordingAnalysis *analysis,
+                                 const VkrRecordingExplanation *explanation);
 
 typedef struct VkrRecordingAnalysisJsonOptions {
   /* Upper bound of the written object in bytes; zero for none. Series, in

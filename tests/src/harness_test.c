@@ -2787,6 +2787,72 @@ vkr_internal void test_harness_capture_replays(void) {
   printf("  test_harness_capture_replays PASSED\n");
 }
 
+/*
+ * perf-compare's rule: a change needs the threshold and a separation. With
+ * repetition medians on both sides the ranges must not overlap; without them
+ * the delta must exceed twice the larger pooled standard deviation.
+ */
+vkr_internal void test_harness_perf_classify(void) {
+  printf("  Running test_harness_perf_classify...\n");
+  const VkrHarnessPerfSpread before = {.p50 = 10.0,
+                                       .stddev = 2.0,
+                                       .run_min = 9.8,
+                                       .run_max = 10.2,
+                                       .run_count = 5u};
+
+  /* 5% faster and the after medians all sit below the before medians. */
+  VkrHarnessPerfSpread after = {.p50 = 9.5,
+                                .stddev = 2.0,
+                                .run_min = 9.4,
+                                .run_max = 9.6,
+                                .run_count = 5u};
+  assert(vkr_harness_perf_classify(&before, &after, 2.0) ==
+         VKR_HARNESS_PERF_DECREASED);
+  /* The same medians are not a change under a 6% threshold. */
+  assert(vkr_harness_perf_classify(&before, &after, 6.0) ==
+         VKR_HARNESS_PERF_NO_CHANGE);
+
+  /* 5% faster in the pooled median, but one repetition reached the before
+     range: the repetitions do not separate the two builds. */
+  after.run_max = 9.9;
+  assert(vkr_harness_perf_classify(&before, &after, 2.0) ==
+         VKR_HARNESS_PERF_NO_CHANGE);
+
+  /* 1% slower with separated ranges stays under the 2% threshold. */
+  after = (VkrHarnessPerfSpread){.p50 = 10.1,
+                                 .stddev = 2.0,
+                                 .run_min = 10.25,
+                                 .run_max = 10.3,
+                                 .run_count = 5u};
+  assert(vkr_harness_perf_classify(&before, &after, 2.0) ==
+         VKR_HARNESS_PERF_NO_CHANGE);
+  after.p50 = 10.5;
+  assert(vkr_harness_perf_classify(&before, &after, 2.0) ==
+         VKR_HARNESS_PERF_INCREASED);
+
+  /* Without repetition medians the pooled spread decides: a 5% delta inside
+     two standard deviations is noise, outside them it is a change. */
+  VkrHarnessPerfSpread pooled_before = {.p50 = 10.0, .stddev = 2.0};
+  VkrHarnessPerfSpread pooled_after = {.p50 = 10.5, .stddev = 1.0};
+  assert(vkr_harness_perf_classify(&pooled_before, &pooled_after, 2.0) ==
+         VKR_HARNESS_PERF_NO_CHANGE);
+  pooled_before.stddev = 0.2;
+  pooled_after.stddev = 0.2;
+  assert(vkr_harness_perf_classify(&pooled_before, &pooled_after, 2.0) ==
+         VKR_HARNESS_PERF_INCREASED);
+  /* One repetition per side is not a range; the pooled rule still applies. */
+  pooled_before.run_count = 1u;
+  pooled_after.run_count = 1u;
+  pooled_before.stddev = 2.0;
+  assert(vkr_harness_perf_classify(&pooled_before, &pooled_after, 2.0) ==
+         VKR_HARNESS_PERF_NO_CHANGE);
+
+  /* A zero before median has no percentage and never reads as a change. */
+  const VkrHarnessPerfSpread zero = {0};
+  assert(vkr_harness_perf_classify(&zero, &pooled_after, 2.0) ==
+         VKR_HARNESS_PERF_NO_CHANGE);
+}
+
 vkr_internal void test_harness_comparison_algorithms(void) {
   printf("  Running test_harness_comparison_algorithms...\n");
   const VkrHarnessCompareConfig thresholds = {
@@ -3393,6 +3459,7 @@ bool32_t run_harness_tests(void) {
   test_harness_capture_catalog_and_converters();
   test_harness_capture_replays();
   test_harness_comparison_algorithms();
+  test_harness_perf_classify();
   test_harness_cross_backend_baseline_compatibility();
   test_harness_guarded_baseline_accept();
   printf("--- Harness tests completed. ---\n");

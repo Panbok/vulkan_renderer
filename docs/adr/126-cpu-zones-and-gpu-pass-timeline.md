@@ -11,7 +11,7 @@ authority: adr
 Accepted (partial). The first part of phase P2 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
 implemented: CPU zones recorded per thread, GPU pass starts on the CPU clock
-on Metal, and the Perfetto export. The Vulkan pass starts, the rolling buffer
+on Metal, the Perfetto export and rolling recordings. The Vulkan pass starts
 and the editor's Timeline window are not built.
 
 ## Context
@@ -89,6 +89,27 @@ Chrome trace-event JSON that ui.perfetto.dev and chrome://tracing open:
 
 The export caps output at 4,000,000 events.
 
+**Rolling recordings** ([vkr_recorder.c](../../runtime/src/recording/vkr_recorder.c)).
+`VkrRecordingConfig.rolling_seconds` keeps a recording in memory:
+
+- The recorder writes no file. Its writer thread closes chunks every
+  0.25 s, keeps them in a ring of up to 256, and drops any chunk that closed
+  more than the window ago.
+- `vkr_recording_save_window` asks the writer thread to write identity,
+  dictionary, a preamble of every pass and zone name, and the kept chunks.
+  Frames are renumbered from zero, so playback, analysis and the export
+  read the bundle as any other. The caller waits for the save, and the
+  recording keeps running.
+- The save writes a summary with its analysis, using its own memory while
+  the writer thread still owns the recording's.
+- Stopping discards the window.
+- A rolling recording records Tier 1 with zones, but no poses and no
+  all-measurements streams.
+- `rec.start {"rolling": seconds}` (1 to 300) starts one and `rec.save_last
+  {name}` saves it. In the Recordings window, Keep last 30 s starts one;
+  Record then reads Save last 30 s, and the Scene's LAST chip and the record
+  shortcut save too.
+
 ## Consequences
 
 - One recording answers which thread and pass made a frame slow, and how
@@ -128,4 +149,13 @@ The export caps output at 4,000,000 events.
   samples 1 frame in 8), every pass lay within its frame's GPU span. No job
   ran in that idle scene, so worker zones have only the CPU test as
   evidence.
+- `test_recorder_rolling_save`: chunks older than the window go, frames
+  are renumbered from zero, the preamble record comes first, the recording
+  continues after a save, and no file of its own is written.
+- A headless Bistro editor kept 4 s with `rec.start {"rolling": 4}` and
+  ran 7 s. `rec.save_last` wrote 825 frames (4.2 s). `vkr_rec verify` read
+  frames 0 to 824, indexed and complete, with no bad chunks. The Perfetto
+  export resolved every pass and zone name (6,557 zones, 2,956 passes). A
+  `vkr_rec explain --frame 400` answered `unknown` for a normal frame.
+  `rec.stop` wrote nothing.
 - Vulkan: compile only; no pass starts.

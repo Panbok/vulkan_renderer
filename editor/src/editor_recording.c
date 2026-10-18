@@ -315,8 +315,107 @@ uint64_t vkr_editor_recording_start(VkrEditorUi *editor, const char *name,
   return token;
 }
 
+uint64_t vkr_editor_recording_start_rolling(VkrEditorUi *editor,
+                                            float64_t seconds, bool8_t toast,
+                                            char *error,
+                                            uint64_t error_capacity) {
+  char directory[VKR_RECORDING_PATH_MAX];
+  if (!vkr_editor_recording_directory(editor, directory, sizeof(directory))) {
+    string_format(error, error_capacity, "No directory for recordings.");
+    return 0u;
+  }
+  /* The path names no bundle: a rolling recording writes only its saves. */
+  VkrSampleRecordingRequest request = {
+      .command = VKR_SAMPLE_RECORDING_START,
+      .codec = vkr_depot_zstd_codec(),
+      .tier = VKR_RECORDING_TIER_1,
+      .zones = true_v,
+      .rolling_seconds = seconds,
+  };
+  string_format(request.name, sizeof(request.name), "last");
+  string_format(request.author, sizeof(request.author), "user");
+  string_format(request.path, sizeof(request.path), "%s/.rolling%s", directory,
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const uint64_t token = vkr_editor_recording_send(editor, request, toast);
+  if (!token) {
+    string_format(error, error_capacity, "Too many recording requests.");
+  }
+  return token;
+}
+
+uint64_t vkr_editor_recording_save_window(VkrEditorUi *editor, const char *name,
+                                          bool8_t toast, char *error,
+                                          uint64_t error_capacity) {
+  char directory[VKR_RECORDING_PATH_MAX];
+  if (!vkr_editor_recording_directory(editor, directory, sizeof(directory))) {
+    string_format(error, error_capacity, "No directory for recordings.");
+    return 0u;
+  }
+  VkrSampleRecordingRequest request = {
+      .command = VKR_SAMPLE_RECORDING_SAVE_WINDOW,
+  };
+  editor_recording_name(name, request.name, sizeof(request.name));
+  if (string_format(request.path, sizeof(request.path), "%s/%s%s", directory,
+                    request.name, VKR_RECORDING_BUNDLE_EXTENSION) >=
+      (int32_t)sizeof(request.path)) {
+    string_format(error, error_capacity, "The recording path is too long.");
+    return 0u;
+  }
+  const uint64_t token = vkr_editor_recording_send(editor, request, toast);
+  if (!token) {
+    string_format(error, error_capacity, "Too many recording requests.");
+  }
+  if (token) {
+    /* The new bundle appears in the list. */
+    editor->recording.listed = false_v;
+  }
+  return token;
+}
+
 /* ------------------------------------------------------------------------ */
 /* REC indicator                                                             */
+
+/* Top left of the Scene while a rolling recording keeps the last seconds:
+   a steady dot, since nothing is written yet. A click saves them. */
+vkr_internal void
+editor_recording_rolling_indicator_build(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame) {
+  const VkrSampleRecordingStatus *status = frame->recording;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = frame->ui;
+  const float32_t scale = ui->content_scale;
+  const Vec4 viewport = frame->mapping.panel_rect_px;
+  VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+  chip.placement = VKR_UI_PLACEMENT_DEFAULT;
+  chip.placement.column = chip.placement.row = 0u;
+  chip.placement.justify = chip.placement.align = VKR_UI_ALIGN_START;
+  chip.placement.margin_pt =
+      (VkrUiEdges){viewport.y / scale + vkr_editor_scene_top_pt(frame) + 44.0f,
+                   0.0f, 0.0f, viewport.x / scale + 10.0f};
+  chip.style = vkr_editor_overlay_style();
+  chip.style.padding_pt = (VkrUiEdges){4.0f, 10.0f, 4.0f, 8.0f};
+  chip.style.font_size_pt = theme->font_caption;
+  chip.style.text_color = theme->text_secondary;
+  chip.style.hover_background_color = theme->popup;
+  chip.icon = VKR_UI_ICON_RECORD;
+  chip.icon_size_pt = 12.0f;
+  chip.icon_color = theme->text_secondary;
+  char save_key[32] = "the Save button";
+  (void)vkr_editor_command_shortcut(CMD_RECORD, save_key, sizeof(save_key));
+  chip.tooltip = string8_create_formatted(
+      ui->frame_allocator,
+      "Keeping the last %.0f s in memory; nothing is written until you save.\n"
+      "Click or %s to save them as a recording; clear Keep last in Recordings "
+      "to stop.",
+      status->recording_rolling_seconds, save_key);
+  if (vkr_ui_button(ui, string8_lit("editor.recording.rolling"),
+                    string8_create_formatted(ui->frame_allocator,
+                                             "LAST %.0f s  \xc2\xb7  save",
+                                             status->recording_rolling_seconds),
+                    &chip)) {
+    vkr_editor_command_execute(CMD_RECORD, editor, frame);
+  }
+}
 
 /* Top left of the Scene while recording: time, size and losses. A click
    stops the recording. */
@@ -331,6 +430,10 @@ editor_recording_indicator_build(VkrEditorUi *editor,
   VkrUiSystem *ui = frame->ui;
   const float32_t scale = ui->content_scale;
   const Vec4 viewport = frame->mapping.panel_rect_px;
+  if (status->recording_rolling_seconds > 0.0) {
+    editor_recording_rolling_indicator_build(editor, frame);
+    return;
+  }
   const uint64_t lost =
       status->stats.dropped_records + status->stats.lost_records;
   const uint32_t minutes = (uint32_t)(status->seconds / 60.0);
@@ -1654,18 +1757,21 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
   const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                 {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
                                 {.unit = VKR_UI_TRACK_AUTO},
+                                {.unit = VKR_UI_TRACK_AUTO},
                                 {.unit = VKR_UI_TRACK_AUTO}};
-  /* Narrow: the title and Refresh, then All measurements and Record. */
+  /* Narrow: the title and Refresh, then All measurements and Record, then
+     Keep last. */
   const VkrUiTrack narrow_columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                        {.unit = VKR_UI_TRACK_AUTO}};
   const VkrUiTrack rows[] = {{.value = 28.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
                              {.value = 28.0f, .unit = VKR_UI_TRACK_PX}};
   VkrUiPanelConfig header = vkr_ui_panel_config_default();
   header.placement = editor_recording_cell(0u, row_index);
   header.columns = wide ? columns : narrow_columns;
-  header.column_count = wide ? 4u : 2u;
+  header.column_count = wide ? 5u : 2u;
   header.rows = rows;
-  header.row_count = wide ? 1u : 2u;
+  header.row_count = wide ? 1u : 3u;
   header.style.gap_pt = theme->space_sm;
   if (!vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
     return;
@@ -1688,6 +1794,8 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
     recording->listed = false_v;
   }
   const bool8_t active = frame->recording && frame->recording->recording;
+  const bool8_t rolling =
+      active && frame->recording->recording_rolling_seconds > 0.0;
   /* Every measurement, for investigations: it costs frame time, so timing
      comparisons record without it. */
   VkrUiWidgetConfig all = vkr_ui_widget_config_default();
@@ -1705,20 +1813,57 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
                       string8_lit("All measurements"), &take_all, &all)) {
     recording->all_measurements = take_all;
   }
+  /* Keep last: a rolling recording that holds the last seconds so a hitch
+     that already happened can still be saved. */
+  VkrUiWidgetConfig keep = vkr_ui_widget_config_default();
+  keep.placement =
+      wide ? editor_recording_cell(3u, 0u) : editor_recording_cell(0u, 2u);
+  keep.placement.justify = VKR_UI_ALIGN_START;
+  keep.disabled =
+      (active && !rolling) ||
+      (!active && !vkr_editor_command_enabled(CMD_RECORD, editor, frame));
+  keep.tooltip = string8_lit(
+      "Keep the last 30 s in memory, with pass times and every thread's CPU "
+      "zones, and write nothing until you save; Record then saves them, so a "
+      "hitch that just happened can still be kept. Costs about what a "
+      "recording costs.");
+  bool8_t keep_last = rolling;
+  char error[128];
+  if (vkr_ui_checkbox(ui, string8_lit("keep_last"),
+                      string8_lit("Keep last 30 s"), &keep_last, &keep)) {
+    if (keep_last && !rolling) {
+      if (!vkr_editor_recording_start_rolling(
+              editor, VKR_EDITOR_RECORDING_ROLLING_SECONDS, true_v, error,
+              sizeof(error))) {
+        vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                         error);
+      }
+    } else if (!keep_last && rolling) {
+      (void)vkr_editor_recording_send(
+          editor,
+          (VkrSampleRecordingRequest){.command = VKR_SAMPLE_RECORDING_STOP},
+          false_v);
+    }
+  }
   VkrUiWidgetConfig record = vkr_ui_widget_config_default();
   record.placement =
-      wide ? editor_recording_cell(3u, 0u) : editor_recording_cell(1u, 1u);
+      wide ? editor_recording_cell(4u, 0u) : editor_recording_cell(1u, 1u);
   /* Narrow, Record ends the second row under Refresh. */
   record.placement.justify = VKR_UI_ALIGN_END;
   vkr_editor_action_style(&record, editor->heading_font);
-  record.icon = active ? VKR_UI_ICON_STOP : VKR_UI_ICON_RECORD;
+  record.icon = active && !rolling ? VKR_UI_ICON_STOP : VKR_UI_ICON_RECORD;
   record.icon_size_pt = 12.0f;
   record.icon_color = theme->error;
   vkr_editor_button_size(&record);
   record.disabled = !vkr_editor_command_enabled(CMD_RECORD, editor, frame);
-  record.tooltip = vkr_editor_command_tooltip(ui, CMD_RECORD, NULL);
+  record.tooltip =
+      rolling
+          ? string8_lit("Save the last 30 s as a recording; keeping goes on")
+          : vkr_editor_command_tooltip(ui, CMD_RECORD, NULL);
   if (vkr_ui_button(ui, string8_lit("record"),
-                    active ? string8_lit("Stop") : string8_lit("Record"),
+                    rolling  ? string8_lit("Save last 30 s")
+                    : active ? string8_lit("Stop")
+                             : string8_lit("Record"),
                     &record)) {
     vkr_editor_command_execute(CMD_RECORD, editor, frame);
   }
@@ -1748,7 +1893,7 @@ void vkr_editor_recording_window_build(VkrEditorUi *editor,
       content_pt - 10.0f >= EDITOR_RECORDING_CARD_WIDE_PT;
   const VkrUiTrack rows[] = {
       {.unit = VKR_UI_TRACK_AUTO},
-      {.value = header_wide ? 28.0f : 28.0f * 2.0f + theme->space_sm,
+      {.value = header_wide ? 28.0f : 28.0f * 3.0f + theme->space_sm * 2.0f,
        .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR}};
   VkrUiPanelConfig body = vkr_ui_panel_config_default();

@@ -527,9 +527,20 @@ static bool8_t editor_can_undo(const VkrEditorUi *editor,
   return false_v;
 }
 
-/* Starts a recording under a time-stamp name, or stops the one running. */
+/* Starts a recording under a time-stamp name, or stops the one running; a
+   rolling recording saves its last seconds instead and keeps running. */
 static void editor_record_toggle(VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
+  char error[128];
+  if (frame->recording && frame->recording->recording &&
+      frame->recording->recording_rolling_seconds > 0.0) {
+    if (!vkr_editor_recording_save_window(editor, NULL, true_v, error,
+                                          sizeof(error))) {
+      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL,
+                       vkr_ui_theme()->warning, error);
+    }
+    return;
+  }
   if (frame->recording && frame->recording->recording) {
     (void)vkr_editor_recording_send(
         editor,
@@ -537,7 +548,6 @@ static void editor_record_toggle(VkrEditorUi *editor,
         true_v);
     return;
   }
-  char error[128];
   if (!vkr_editor_recording_start(editor, NULL, "user", VKR_RECORDING_TIER_1,
                                   editor->recording.all_measurements,
                                   editor->recording.all_measurements, true_v,

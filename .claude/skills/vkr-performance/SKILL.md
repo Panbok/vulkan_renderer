@@ -24,13 +24,17 @@ a scoped Bistro case without weakening the evidence profile.
    reads both live; `os.*` and `cpu.process_time` show throttling, memory
    pressure and process CPU time. For a thread and GPU timeline, record with
    `rec.start {"tier": "1", "zones": true}` and run `vkr_rec export <bundle>
-   --perfetto <out.json>`; open it in ui.perfetto.dev. Read
+   --perfetto <out.json>`; open it in ui.perfetto.dev. `vkr_rec explain
+   <bundle> --spike N` (or `rec.explain`) ranks a slow frame's causes. To
+   keep a hitch that already happened, run a rolling recording
+   (`rec.start {"rolling": 30}`) and `rec.save_last` after it. Read
    [GPU-TRACE.md](GPU-TRACE.md) only when hardware counters or encoder
    attribution are needed.
 4. Change one attributable cause. Preserve the measured workload or state
    the intentional change. Select correctness checks through `vkr-validation`.
 5. Rerun the same configuration. Compare valid samples and spread, work-volume
-   rows, and affected captures. Investigate an unexplained change before
+   rows, and affected captures; `vkr_harness perf-compare --before A --after B`
+   gives the verdict. Investigate an unexplained change before
    claiming improvement. Stop when the stated gate passes; do not add broad
    suites or speculative tests.
 

@@ -105,6 +105,14 @@ typedef struct VkrHarnessSampleSet {
  */
 bool8_t vkr_harness_metric_is_current_frame_work(const char *name);
 
+/**
+ * Returns whether a metric counts deterministic work (draws, visibility,
+ * overflow and capture rows) that repetitions of one case and build must
+ * reproduce bit for bit. HZB history selection is excluded: it depends on GPU
+ * completion timing.
+ */
+bool8_t vkr_harness_metric_is_work_volume(const char *name);
+
 bool8_t vkr_harness_samples_write(const char *path,
                                   const VkrHarnessSampleFileHeader *header,
                                   const VkrHarnessSampleSet *samples,
@@ -231,6 +239,69 @@ int vkr_harness_baseline_accept(const char *repo_root, const char *plan_path,
                                 const char *confirmation);
 int vkr_harness_compare_run(const char *repo_root, const char *run_path,
                             bool8_t cross_backend);
+
+/** `--metric` names one perf-compare accepts beyond its default rows. */
+#define VKR_HARNESS_PERF_MAX_METRICS 32u
+#define VKR_HARNESS_PERF_NAME_MAX 128u
+/** Pass rows one perf-compare holds; also the `--passes` ceiling. */
+#define VKR_HARNESS_PERF_MAX_PASSES 256u
+
+typedef struct VkrHarnessPerfOptions {
+  /** Smallest |p50 delta| in percent that can count as a change. */
+  float64_t threshold_pct;
+  /** Pass rows to list, largest |GPU p50 delta| first. */
+  uint32_t pass_limit;
+  /** Accept different environment fingerprints; the result loses authority. */
+  bool8_t cross_environment;
+  /** Give verdicts from non-authoritative reports, labelled local evidence. */
+  bool8_t allow_local;
+  uint32_t metric_count;
+  char metrics[VKR_HARNESS_PERF_MAX_METRICS][VKR_HARNESS_PERF_NAME_MAX];
+} VkrHarnessPerfOptions;
+
+/**
+ * One side of a perf-compare row in its display unit: the pooled statistics
+ * and the range of per-repetition medians. `run_count` is zero when the
+ * repetitions' own reports could not supply a median.
+ */
+typedef struct VkrHarnessPerfSpread {
+  float64_t p50;
+  float64_t stddev;
+  float64_t run_min;
+  float64_t run_max;
+  uint32_t run_count;
+} VkrHarnessPerfSpread;
+
+typedef enum VkrHarnessPerfChange {
+  VKR_HARNESS_PERF_NO_CHANGE = 0,
+  VKR_HARNESS_PERF_DECREASED,
+  VKR_HARNESS_PERF_INCREASED,
+} VkrHarnessPerfChange;
+
+/**
+ * The perf-compare rule for one metric. A change needs |p50 delta| of at least
+ * `threshold_pct` percent and a separation: with two or more repetition
+ * medians on each side, the after range lies wholly beyond the before range in
+ * the delta's direction; otherwise |delta| exceeds twice the larger pooled
+ * standard deviation. A zero before median never counts as a change.
+ */
+VkrHarnessPerfChange
+vkr_harness_perf_classify(const VkrHarnessPerfSpread *before,
+                          const VkrHarnessPerfSpread *after,
+                          float64_t threshold_pct);
+
+/**
+ * Compares two profile reports (a `report.json` path or its run directory)
+ * and prints one JSON verdict object on stdout.
+ *
+ * @return VKR_HARNESS_EXIT_PASS when a comparison was produced,
+ *         VKR_HARNESS_EXIT_MISSING_BASELINE (4) when the reports are
+ *         incompatible, VKR_HARNESS_EXIT_INVALID for bad options or an
+ *         unreadable report.
+ */
+int vkr_harness_perf_compare_run(const char *before_path,
+                                 const char *after_path,
+                                 const VkrHarnessPerfOptions *options);
 
 typedef struct VkrHarnessCaptureSummary {
   VkrHarnessTool tool;

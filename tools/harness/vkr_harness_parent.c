@@ -180,20 +180,6 @@ vkr_internal bool8_t vkr_harness_child_sample_digest_matches(
  * repetitions of the same case and build. A difference invalidates the timing
  * evidence regardless of its average.
  */
-vkr_internal bool8_t vkr_harness_work_metric(const char *name) {
-  /* HZB history selection is scheduling state: a history whose producer has
-     not completed is rejected as incomplete before the world, extent, camera
-     and raster checks run, so the selection and every rejection count depend
-     on GPU completion timing. */
-  if (string_equals(name, "visibility.hzb.history_valid") ||
-      string_n_equals(name, "visibility.hzb.history_rejection.",
-                      sizeof("visibility.hzb.history_rejection.") - 1u))
-    return false_v;
-  return string_n_equals(name, "draw.", 5u) ||
-         string_n_equals(name, "visibility.", 11u) ||
-         string_find(name, "overflow") || string_find(name, "capture");
-}
-
 vkr_internal bool8_t vkr_harness_work_volume_matches(
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
     const VkrHarnessSampleSet *runs, uint32_t run_count) {
@@ -208,7 +194,7 @@ vkr_internal bool8_t vkr_harness_work_volume_matches(
     const char *name = runs[0].metrics[metric].name;
     is_work[metric] = current_frame_only
                           ? vkr_harness_metric_is_current_frame_work(name)
-                          : vkr_harness_work_metric(name);
+                          : vkr_harness_metric_is_work_volume(name);
   }
   const uint64_t first = (uint64_t)case_manifest->warmup_frames * metric_count;
   const uint64_t count = (uint64_t)case_manifest->measure_frames * metric_count;

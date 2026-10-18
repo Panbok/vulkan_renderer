@@ -1595,6 +1595,255 @@ static void test_recording_analysis_slow_frames(void) {
   printf("  test_recording_analysis_slow_frames PASSED\n");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Explain scenario: 200 frames at 16 ms. Frame 60 takes 30 ms with          */
+/* cpu.render_submit 10 ms and cpu.update 2 ms over their medians and three  */
+/* major page faults; frame 120 takes 26 ms with an 8 ms shader load and     */
+/* cpu.update 1 ms over; frame 140 takes 15 ms with cpu.update 2 ms over.    */
+/* The footprint grows 4 KiB a frame.                                        */
+
+static const VkrRecordingField ANALYSIS_TEST_EXPLAIN_METRIC_FIELDS[] = {
+    {.name = "valid",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 0u},
+    {.name = "frame.wall",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 8u},
+    {.name = "cpu.update",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 16u},
+    {.name = "cpu.render_submit",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 24u},
+    {.name = "gpu.submission",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 32u},
+    {.name = "os.page_faults.major",
+     .unit = "count",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 40u},
+    {.name = "os.memory.footprint_bytes",
+     .unit = "bytes",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 48u},
+};
+_Static_assert(ArrayCount(ANALYSIS_TEST_EXPLAIN_METRIC_FIELDS) ==
+                   ArrayCount(ANALYSIS_TEST_METRIC_FIELDS),
+               "the explain fields keep the metrics record layout");
+
+static void analysis_test_explain_metrics(uint64_t frame,
+                                          AnalysisTestMetrics *out) {
+  MemZero(out, sizeof(*out));
+  out->valid = (1ull << ANALYSIS_TEST_METRIC_COUNT) - 1u;
+  /* Slots in ANALYSIS_TEST_EXPLAIN_METRIC_FIELDS order: frame.wall,
+     cpu.update, cpu.render_submit, gpu.submission, major faults and the
+     footprint. */
+  float64_t *values = out->values;
+  values[0] = 16.0;
+  values[1] = 5.0;
+  values[2] = 2.0;
+  values[3] = 10.0;
+  values[4] = 0.0;
+  values[5] = 1.0e9 + (float64_t)frame * 4096.0;
+  if (frame == 60u) {
+    values[0] = 30.0;
+    values[1] = 7.0;
+    values[2] = 12.0;
+    values[4] = 3.0;
+  } else if (frame == 120u) {
+    values[0] = 26.0;
+    values[1] = 6.0;
+  } else if (frame == 140u) {
+    values[0] = 15.0;
+    values[1] = 7.0;
+  }
+}
+
+static void analysis_test_explain_events(AnalysisTestChunk *chunk,
+                                         uint64_t frame) {
+  if (frame == 120u) {
+    analysis_test_engine_event(chunk, frame, VKR_RECORDING_EVENT_SHADER, 1u,
+                               8.0f);
+  }
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_EXPLAIN = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_NO_FRAME,
+    .metrics = analysis_test_explain_metrics,
+    .events = analysis_test_explain_events,
+    .metric_fields = ANALYSIS_TEST_EXPLAIN_METRIC_FIELDS,
+};
+
+/* The pass scenario with frame 101 at 19 ms: slower than its medians, but
+   too little for a spike. */
+static void analysis_test_explain_pass_metrics(uint64_t frame,
+                                               AnalysisTestMetrics *out) {
+  analysis_test_main_metrics(frame, out);
+  if (frame == 101u) {
+    out->values[ANALYSIS_TEST_WALL] = 19.0;
+  }
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_EXPLAIN_PASSES = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_MAIN_MISSING,
+    .metrics = analysis_test_explain_pass_metrics,
+    .passes = analysis_test_put_passes,
+};
+
+static bool8_t analysis_test_cause_is(const VkrRecordingCause *cause,
+                                      VkrRecordingCauseKind kind,
+                                      const char *name, float64_t excess_ms) {
+  return cause->kind == kind && cause->measured &&
+         strcmp(cause->name, name) == 0 &&
+         analysis_test_near(cause->excess_ms, excess_ms);
+}
+
+/* Detects: an inflated stage that does not rank first or ranks below a
+   smaller one, a spike whose cause differs from the explanation's first, a
+   condition ranked above measured time, an engine event's time left out of
+   the causes, a frame no slower than typical or slower without any growth
+   given a cause other than unknown, pass
+   rows of a frame without GPU times not taken from the nearest timed frame,
+   such borrowed rows ranked as this frame's cause, and JSON that drops the
+   ranking, the stage table or the footprint change. */
+static void test_recording_analysis_explain(void) {
+  printf("  Running test_recording_analysis_explain...\n");
+  AnalysisTestMemory memory;
+  analysis_memory_create(&memory);
+  Arena *arena = arena_create(MB(16), MB(1));
+  assert(arena != NULL);
+  char path[1024];
+  VkrRecordingData data;
+  analysis_test_load("explain", &ANALYSIS_TEST_EXPLAIN, &memory, path,
+                     sizeof(path), &data);
+  VkrRecordingAnalysis analysis;
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  assert(analysis.spike_count == 2u && analysis.spikes[0].frame == 60u &&
+         analysis.spikes[1].frame == 120u);
+
+  static VkrRecordingExplanation explanation;
+  assert(vkr_recording_explain(&data, &analysis, 60u, &explanation));
+  assert(explanation.spike_rank == 1u && explanation.frame_ms == 30.0 &&
+         explanation.median_ms == 16.0);
+  assert(explanation.stage_count == 2u &&
+         strcmp(data.series[explanation.stages[0].index].name,
+                "cpu.render_submit") == 0 &&
+         explanation.stages[0].excess == 10.0 &&
+         explanation.stages[1].excess == 2.0);
+  /* Measured time first, largest first; the faults follow as a condition. */
+  assert(explanation.cause_count == 3u);
+  assert(analysis_test_cause_is(&explanation.causes[0],
+                                VKR_RECORDING_CAUSE_CPU_STAGE,
+                                "cpu.render_submit", 10.0));
+  assert(analysis_test_cause_is(&explanation.causes[1],
+                                VKR_RECORDING_CAUSE_CPU_STAGE, "cpu.update",
+                                2.0));
+  const VkrRecordingCause *faults = &explanation.causes[2];
+  assert(faults->kind == VKR_RECORDING_CAUSE_PAGE_FAULTS && !faults->measured &&
+         faults->value == 3.0);
+  const VkrRecordingCause *spike_cause = &analysis.spikes[0].cause;
+  assert(analysis_test_cause_is(spike_cause, explanation.causes[0].kind,
+                                explanation.causes[0].name,
+                                explanation.causes[0].excess_ms));
+
+  /* The shader load's time outranks the smaller stage growth. */
+  assert(vkr_recording_explain(&data, &analysis, 120u, &explanation));
+  assert(explanation.spike_rank == 2u && explanation.event_count == 1u &&
+         explanation.events[0].count == 1u && explanation.events[0].ms == 8.0);
+  assert(explanation.cause_count == 2u);
+  assert(analysis_test_cause_is(&explanation.causes[0],
+                                VKR_RECORDING_CAUSE_SHADER_LOAD,
+                                VKR_RECORDING_EVENT_SHADER, 8.0));
+  assert(analysis_test_cause_is(&explanation.causes[1],
+                                VKR_RECORDING_CAUSE_CPU_STAGE, "cpu.update",
+                                1.0));
+  assert(analysis.spikes[1].cause.kind == VKR_RECORDING_CAUSE_SHADER_LOAD);
+
+  /* A frame no slower than typical has nothing to rank, though a stage
+     grew; the stage table still shows it. */
+  assert(vkr_recording_explain(&data, &analysis, 140u, &explanation));
+  assert(explanation.spike_rank == 0u && explanation.cause_count == 1u &&
+         explanation.causes[0].kind == VKR_RECORDING_CAUSE_UNKNOWN &&
+         explanation.stages[0].excess == 2.0);
+  assert(!vkr_recording_explain(&data, &analysis, 200u, &explanation));
+
+  assert(vkr_recording_explain(&data, &analysis, 60u, &explanation));
+  VkrJsonWriter writer;
+  assert(vkr_recording_explain_write_json(analysis_test_json_begin(&writer),
+                                          &data, &analysis, &explanation));
+  assert(vkr_json_writer_complete(&writer));
+  const VkrBakeryJson *root = analysis_test_parse(arena);
+  assert(analysis_test_number(root, "spike") == 1.0 &&
+         analysis_test_number(root, "excess_ms") == 14.0);
+  const VkrBakeryJson *stage =
+      vkr_bakery_json_at(analysis_test_member(root, "cpu"), 0u);
+  assert(vkr_bakery_json_is_string(vkr_bakery_json_at(stage, 0u),
+                                   "cpu.render_submit") &&
+         vkr_bakery_json_at(stage, 3u)->number == 10.0);
+  const VkrBakeryJson *causes = analysis_test_member(root, "causes");
+  const VkrBakeryJson *first = vkr_bakery_json_at(causes, 0u);
+  assert(causes->count == 3u &&
+         vkr_bakery_json_is_string(analysis_test_member(first, "kind"),
+                                   "cpu_stage") &&
+         analysis_test_number(first, "excess_ms") == 10.0);
+  assert(vkr_bakery_json_is_string(
+             analysis_test_member(vkr_bakery_json_at(causes, 2u), "kind"),
+             "page_faults") &&
+         analysis_test_number(vkr_bakery_json_at(causes, 2u), "value") == 3.0);
+  const VkrBakeryJson *system = analysis_test_member(root, "system");
+  assert(analysis_test_number(system, "os.page_faults.major") == 3.0 &&
+         analysis_test_number(system, "os.memory.footprint_delta_bytes") ==
+             4096.0);
+  /* rec.spikes names the same cause. */
+  assert(vkr_recording_analysis_write_json(analysis_test_json_begin(&writer),
+                                           &data, &analysis, NULL));
+  assert(vkr_json_writer_complete(&writer));
+  root = analysis_test_parse(arena);
+  const VkrBakeryJson *spike_json = analysis_test_member(
+      vkr_bakery_json_at(analysis_test_member(root, "spikes"), 0u), "cause");
+  assert(vkr_bakery_json_is_string(analysis_test_member(spike_json, "name"),
+                                   "cpu.render_submit"));
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  analysis_test_remove(path);
+
+  /* Pass rows: frame 101, 3 ms slow but no spike, has no GPU times; frame
+     100, one frame away, has them with Lighting 4 ms over. They fill the
+     table, not the causes. */
+  analysis_test_load("explain_passes", &ANALYSIS_TEST_EXPLAIN_PASSES, &memory,
+                     path, sizeof(path), &data);
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  assert(vkr_recording_explain(&data, &analysis, 101u, &explanation));
+  assert(explanation.spike_rank == 0u && explanation.frame_ms == 19.0 &&
+         explanation.pass_frame == 100u && explanation.pass_gpu &&
+         explanation.pass_count == 1u &&
+         explanation.passes[0].index ==
+             vkr_recording_data_find_pass(&data, "Lighting") &&
+         explanation.passes[0].excess == 4.0);
+  assert(explanation.cause_count == 1u &&
+         explanation.causes[0].kind == VKR_RECORDING_CAUSE_UNKNOWN);
+
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  analysis_test_remove(path);
+  arena_destroy(arena);
+  analysis_memory_destroy(&memory);
+  printf("  test_recording_analysis_explain PASSED\n");
+}
+
 bool32_t run_recording_analysis_tests(void) {
   printf("--- Starting Recording Analysis Tests ---\n");
   test_recording_analysis_statistics();
@@ -1605,6 +1854,7 @@ bool32_t run_recording_analysis_tests(void) {
   test_recording_analysis_passes();
   test_recording_analysis_events();
   test_recording_analysis_slow_frames();
+  test_recording_analysis_explain();
   test_recording_compare();
   printf("--- Recording Analysis Tests Completed ---\n");
   return true_v;
