@@ -85,7 +85,8 @@ thread reads finished results and progress counters only.
   address for a server discovery misses.
 - Get clones into `~/VKR Projects/<name>`, waits for approval if needed,
   cooks every texture source without a cooked file for this computer,
-  re-cooks each scene's build textures and the project's own
+  re-cooks the build textures of each scene the copy holds (a project
+  may list a scene it does not share) and the project's own
   (`recook_textures`), then opens the project.
 - A copy whose server moved to another address follows its key through
   discovery and saves the new address.

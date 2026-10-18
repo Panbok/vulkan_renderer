@@ -211,8 +211,19 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     `74c285f3ea6d` and `main.cooked.bc` `2650088eb830`, published from its
     working copy with `vkr_depot cooked`. A Release editor's Get from
     `192.168.3.2:7320` into an empty home took 85 s, took the 5 cooked
-    textures from the side branch and cooked none. The Mac's ASTC side of
-    the test is pending.
+    textures from the side branch and cooked none.
+  - Mac M1, Release at `feab49e5`, two Gets from `windows-d` over Wi-Fi,
+    each into an empty home: the first (108 s) fetched nothing, cooked the
+    5 textures and published them to `main.cooked.astc`; the second (82 s)
+    took all 5 from it and cooked none. Its 5 `.vkt` files are KTX2 format
+    166 (ASTC 6x6 sRGB) with the first Get's SHA-256 hashes; none came
+    from `main.cooked.bc`. The Mac's mirror then copied
+    `main.cooked.astc` into its own store.
+  - Every Get of that project counted one failure: its `project.json`
+    lists the Bistro scene, which the depot does not share, and
+    `recook_textures` for a missing scene fails. Get now skips a listed
+    scene whose `scene.json` the working copy lacks; a Windows Get from
+    `windows-d` then took the 5 BC textures and reported no failure.
   - That run found the depot reading `VKR_DEPOT_IDENTITY`, the user name
     and the host name with `getenv`, which on Windows gives the active
     code page: a key under a non-ASCII user folder failed with "no depot

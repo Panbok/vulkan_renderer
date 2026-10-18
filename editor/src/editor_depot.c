@@ -1219,11 +1219,19 @@ static void depot_job_recook(DepotJob *job, const char *folder) {
        scene = scene->next) {
     char scene_id[40] = {0};
     char relative[DEPOT_PATH] = {0};
+    char scene_path[DEPOT_PATH] = {0};
     if (depot_json_text(scene, "id", scene_id, sizeof(scene_id)) &&
         depot_json_text(scene, "path", relative, sizeof(relative))) {
-      char scene_path[DEPOT_PATH];
       string_format(scene_path, sizeof(scene_path), "%s/%s/%s", projects,
                     project_id, relative);
+    }
+    /* A project may list a scene it does not share; that scene has nothing
+       here to cook for. */
+    if (scene_path[0] && !vkr_bakery_is_file(scene_path)) {
+      log_info("Project sharing: scene %s is not in this copy; its textures "
+               "are not prepared",
+               scene_id);
+    } else if (scene_path[0]) {
       VkrBakeryJson *request = vkr_bakery_json_object(arena);
       vkr_bakery_json_set(arena, request, "operation",
                           vkr_bakery_json_cstr(arena, "recook_textures"));
