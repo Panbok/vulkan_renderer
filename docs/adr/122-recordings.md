@@ -424,7 +424,11 @@ an agent must read one without the editor.
   renders (ADR-111). Taking them outside it rendered two Scenes back to back,
   a 25 to 27 ms frame on each thumbnail in a Level Design Test recording. A
   windowed Bistro Play recording of 725 frames afterwards wrote 12 thumbnails
-  with a p99 frame of 9.15 ms and no frame over 12 ms at a thumbnail.
+  with a p99 frame of 9.15 ms and no frame over 12 ms at a thumbnail. The
+  editor asks for thumbnails and the warm-up capture only while the Scene
+  renders: during a project scene's opening the renderer refused three
+  warm-up captures, cancelling their frames, and the warm-up never ran again
+  in that session.
 - **Analysis.** At stop the runtime reads the stream back and writes
   statistics, the time-based 1% low and spikes (over 1.2 times the median of
   19 neighbours and 4 ms above it, or over twice the budget) into
