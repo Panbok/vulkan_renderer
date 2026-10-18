@@ -407,8 +407,9 @@ during the transport runs, so loopback numbers are noisy.
   Header protection changes the wire format, so both sides need binaries
   from 2026-10-12 or later.
 - Registered I/O and NAT traversal with a rendezvous and relay.
-- The depot's sparse working copy and remote content mount (proposal
-  phase 6) and the shared Bakery cache.
+- The depot's sparse working copy. Reads of a scene stream from a depot
+  through a remote content directory and a cooked side branch
+  ([ADR-123](123-asset-streaming-from-a-depot.md)).
 - An independent security review.
 
 ## Revisit when

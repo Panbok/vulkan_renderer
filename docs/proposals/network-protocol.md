@@ -106,8 +106,8 @@ fallback.
 |---|---|---|
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
 | Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session pumps on the host thread too (ADR-106) | The frame time of both measured with the other editor on another machine |
-| Sparse working copy | Files fetched when opened, through the remote content mount of asset streaming | A Bistro scene opens from a sparse working copy |
-| Shared Bakery cache | Action keys to output hashes in a depot; a cook downloads instead of re-encoding | A second machine's cook of Bistro hits the cache |
+| Sparse working copy | A working copy whose files arrive when opened, through the remote content directory (ADR-123), with its index telling unfetched files from deleted ones | A Bistro scene opens from a sparse working copy and commits only what changed |
+| Cooked files for project sharing | Get and Get latest fetch the cooked side branch for this computer (ADR-123) before cooking, and a sharer publishes it after a cook | A second machine's Get of Bistro cooks no texture the side branch holds |
 | Security | An independent review; the fuzzers run under ASan and UBSan (ADR-105) | Review closed before use outside a trusted network |
 | Privacy | NAT traversal with a rendezvous and relay; packet numbers are already masked (ADR-105) | Decided by the owner before internet deployment |
 
@@ -117,18 +117,11 @@ fallback.
 
 Asset streaming loads a scene from a remote depot or a streaming server
 without a full download.
+[ADR-123](../adr/123-asset-streaming-from-a-depot.md) implements step 1: a
+remote content directory that fetches each file a loader asks for, through
+a VFS remote, with cooked platform files on a side branch per GPU family.
+The rest:
 
-- **Remote content mount.** A new VFS mount kind resolves an identity to a
-  hash and size through a depot tree, and fetches missing chunks into the
-  local store. VFS mounts are fixed at startup today, so this mount needs
-  thread-safe lookups of fetch state. Phase 1 blocks a loader worker until
-  the bytes arrive; loaders already prepare resources on workers
-  ([ADR-045](../adr/045-resource-prepare-and-render-thread-finalize.md)).
-- **Platform variants.** The client states its platform when it opens the
-  service. The server serves the host-native cooked variant (ASTC for
-  Metal, BC for x86-64, [ADR-012](../adr/012-texture-compression-pipeline.md)),
-  or refuses an identity without one. A server with Bakery can cook the
-  missing variant first.
 - **Progressive order.** Phase 2 requests texture mips from the smallest
   level upward, and mesh LOD ranges from the coarsest level
   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
@@ -156,8 +149,8 @@ partition cells they need, publishing files on their own and the host
 thread. The rest:
 
 - A file published during a session reaches other platforms as authored;
-  each cooks its own variant, or takes it from the shared Bakery cache
-  once that exists (see [Gaps](#gaps-of-phases-0-to-3)).
+  each cooks its own variant, or fetches it from the cooked side branch
+  (ADR-123) once project sharing does (see [Gaps](#gaps-of-phases-0-to-3)).
 - Play stays local to each participant in this proposal.
 
 ### Agent federation (use case 5)
@@ -215,7 +208,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 
 | Owner | Path | Contents |
 |---|---|---|
-| `vkr_runtime` | `runtime/src/net/` | `stream` and `view` services, the remote content mount |
+| `vkr_runtime` | `runtime/src/net/` | `stream` and `view` services |
 | Editor | `editor/src/editor_session.c` | The `collab` service, Session window, Scene overlay, access and agent federation (ADR-106); next partition edits |
 | Renderer | Encoder and decoder hooks | Separate design and ADR in phase 7 |
 | `vkr_net` | `net/src/` | Threaded host |
@@ -231,7 +224,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Phase | Scope | Exit evidence |
 |---|---|---|
 | 4. Editor collaboration and agents | Remaining after ADR-106: the same evidence between two machines | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
-| 6. Asset streaming | Remote content mount, then progressive mips and LOD ranges | Bistro streamed from a depot: time to first frame and to full detail; captures equal to a local load |
+| 6. Asset streaming | Remote content directory and cooked side branch (ADR-123); then progressive mips and LOD ranges, and fetched bytes placed for the GPU | Bistro streamed from a depot between two machines: time to first frame and to full detail against a local load; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
 
 Phase 4 comes first because the editor uses it first and the depot it needs
