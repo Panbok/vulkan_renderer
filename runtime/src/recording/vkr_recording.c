@@ -292,6 +292,8 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
        (ADR-124, docs/proposals/profiling-and-diagnostics.md). */
     "cpu.backend_present",
     "cpu.drawable_acquire",
+    "gpu.present.latency",
+    "gpu.present.missed",
     "cpu.process_time",
     "gpu.errors",
     "log.errors",

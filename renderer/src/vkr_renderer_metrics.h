@@ -259,6 +259,8 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId backend_present;
   VkrMetricId drawable_acquire;
   VkrMetricId backend_frame_wait;
+  VkrMetricId present_latency;
+  VkrMetricId present_missed;
   VkrMetricId gpu_errors;
   VkrMetricId gpu_validation_errors;
   VkrMetricId gpu_validation_warnings;

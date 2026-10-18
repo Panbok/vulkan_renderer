@@ -836,6 +836,17 @@ vkr_internal bool8_t vkr_renderer_metrics_register_backend(
           VKR_METRIC_SCALAR_U64, &ids->drawable_acquire)) {
     return false_v;
   }
+  // Present call to display; one mean sample per frame (ADR-125).
+  if (!vkr_renderer_metric_register(
+          metrics, "gpu.present.latency", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
+          VKR_METRIC_SCALAR_U64, &ids->present_latency) ||
+      !vkr_renderer_metric_register(
+          metrics, "gpu.present.missed", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_COUNTER, VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
+          &ids->present_missed)) {
+    return false_v;
+  }
   // Faults since the previous frame; the renderer's totals only grow.
   if (!vkr_renderer_metric_register(
           metrics, "gpu.errors", VKR_METRIC_DOMAIN_FRAME,
@@ -2006,6 +2017,25 @@ vkr_renderer_metrics_collect_backend(VkrMetrics *metrics,
                                 present.acquire_ns);
   } else {
     vkr_metrics_mark(metrics, ids->drawable_acquire,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+  // Display feedback arrives a few refresh intervals after its present, so a
+  // frame reports the presents the display finished since the last one. The
+  // editor presenter can finish several; their mean is the frame's sample.
+  if (present_read && present.latency_count > 0u) {
+    vkr_metrics_duration_add_ns(metrics, ids->present_latency,
+                                present.latency_ns / present.latency_count);
+  } else {
+    vkr_metrics_mark(metrics, ids->present_latency,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+  if (present_read &&
+      (present.latency_count > 0u || present.missed_count > 0u)) {
+    vkr_metrics_counter_add(metrics, ids->present_missed, present.missed_count);
+  } else {
+    vkr_metrics_mark(metrics, ids->present_missed,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                      VKR_METRIC_REASON_NOT_SAMPLED);
   }

@@ -27,14 +27,44 @@
 #define EDITOR_TIMELINE_TICK_WIDTH_PT 4.0f
 /* The hover preview's image width. */
 #define EDITOR_TIMELINE_PREVIEW_PT 192.0f
+/* The System lane: its legend line, then one band per platform signal and
+   a row of error ticks, each band this tall with this gap, and the room
+   under the last. */
+#define EDITOR_TIMELINE_SYSTEM_TOP_PT 16.0f
+#define EDITOR_TIMELINE_SYSTEM_BAND_PT 4.0f
+#define EDITOR_TIMELINE_SYSTEM_BAND_GAP_PT 2.0f
+#define EDITOR_TIMELINE_SYSTEM_BOTTOM_PT 2.0f
 
-/* The panel's height: taller by the memory lane when it shows. */
+/* The System lane's rows: the three signal bands, and the error ticks when
+   the recording counts errors. */
+vkr_internal uint32_t
+editor_timeline_system_rows(const VkrEditorRecordingTimeline *timeline) {
+  return timeline->system_errors ? VKR_EDITOR_TIMELINE_SYSTEM_ROWS
+                                 : VKR_EDITOR_TIMELINE_SYSTEM_ROWS - 1u;
+}
+
+/* The System lane's height: as tall as the memory lane with three bands. */
+vkr_internal float32_t
+editor_timeline_system_height(const VkrEditorRecordingTimeline *timeline) {
+  const float32_t rows = (float32_t)editor_timeline_system_rows(timeline);
+  return EDITOR_TIMELINE_SYSTEM_TOP_PT + rows * EDITOR_TIMELINE_SYSTEM_BAND_PT +
+         (rows - 1.0f) * EDITOR_TIMELINE_SYSTEM_BAND_GAP_PT +
+         EDITOR_TIMELINE_SYSTEM_BOTTOM_PT;
+}
+
+/* The panel's height: taller by the memory and System lanes when they
+   show. */
 vkr_internal float32_t
 editor_timeline_panel_height(const VkrEditorRecordingTimeline *timeline) {
-  return EDITOR_TIMELINE_HEIGHT_PT +
-         (timeline->memory_lane
-              ? EDITOR_TIMELINE_MEMORY_PT + EDITOR_TIMELINE_ROW_GAP_PT
-              : 0.0f);
+  float32_t height = EDITOR_TIMELINE_HEIGHT_PT;
+  if (timeline->memory_lane) {
+    height += EDITOR_TIMELINE_MEMORY_PT + EDITOR_TIMELINE_ROW_GAP_PT;
+  }
+  if (timeline->system_lane) {
+    height +=
+        editor_timeline_system_height(timeline) + EDITOR_TIMELINE_ROW_GAP_PT;
+  }
+  return height;
 }
 
 float32_t vkr_editor_recording_timeline_height(VkrEditorUi *editor) {
@@ -61,6 +91,7 @@ vkr_internal void editor_timeline_reset(VkrEditorRecordingTimeline *timeline,
   timeline->column_count = 0u;
   timeline->hovered_column = VKR_UI_PLOT_NONE;
   timeline->memory_hovered = VKR_UI_PLOT_NONE;
+  timeline->system_hovered = VKR_UI_PLOT_NONE;
 }
 
 /* Sets the view to `first` + `span` frames, kept inside the recording. */
@@ -143,13 +174,100 @@ editor_timeline_memory_columns(VkrEditorRecordingTimeline *timeline,
   }
 }
 
-/* Each column's slowest frame over the view, built when the view changes. */
+/* Each column's worst thermal level, memory pressure and low-power state,
+   the errors any of its frames counted, and its highest footprint, from the
+   playback's platform fields (ADR-125). A recording without them, as from
+   before them, has no System lane. */
+vkr_internal void
+editor_timeline_system_columns(VkrEditorRecordingTimeline *timeline,
+                               const VkrRecordingPlayback *playback) {
+  timeline->system_source = playback->system_values;
+  timeline->system_lane = playback->has_system;
+  timeline->system_errors = false_v;
+  if (!playback->has_system) {
+    return;
+  }
+  static const VkrRecordingSystemField level_fields[] = {
+      VKR_RECORDING_SYSTEM_THERMAL, VKR_RECORDING_SYSTEM_MEMORY_PRESSURE,
+      VKR_RECORDING_SYSTEM_LOW_POWER};
+  static const uint8_t level_max[] = {3u, 2u, 1u};
+  /* Bit 0 GPU errors, bit 1 log errors: both count since the frame before. */
+  static const VkrRecordingSystemField error_fields[] = {
+      VKR_RECORDING_SYSTEM_GPU_ERRORS, VKR_RECORDING_SYSTEM_LOG_ERRORS};
+  const uint32_t stride = VKR_RECORDING_SYSTEM_FIELDS;
+  const uint64_t frame_count = playback->frame_count;
+
+  const uint32_t error_row = VKR_EDITOR_TIMELINE_SYSTEM_ROWS - 1u;
+  MemZero(timeline->system_worst, sizeof(timeline->system_worst));
+  for (uint32_t c = 0u; c < timeline->column_count; ++c) {
+    const uint64_t first = editor_timeline_column_start(timeline, c);
+    const uint64_t end =
+        Min(c + 1u < timeline->column_count
+                ? editor_timeline_column_start(timeline, c + 1u)
+                : timeline->view_last + 1u,
+            frame_count);
+    uint8_t worst[VKR_EDITOR_TIMELINE_SYSTEM_ROWS];
+    MemSet(worst, VKR_EDITOR_TIMELINE_SYSTEM_NONE, sizeof(worst));
+    float64_t highest = -1.0;
+    for (uint64_t f = first; f < end; ++f) {
+      const uint8_t valid = playback->system_valid[f];
+      const float64_t *values = &playback->system_values[f * stride];
+      for (uint32_t r = 0u; r < ArrayCount(level_fields); ++r) {
+        const uint32_t k = (uint32_t)level_fields[r];
+        if (!(valid & (1u << k)) || !vkr_is_finite_f64(values[k])) {
+          continue;
+        }
+        /* Levels are small whole numbers; a value past the top is the
+           top. */
+        const float64_t value =
+            vkr_clamp_f64(values[k], 0.0, (float64_t)level_max[r]);
+        const uint8_t level = (uint8_t)(value + 0.5);
+        worst[r] = worst[r] == VKR_EDITOR_TIMELINE_SYSTEM_NONE
+                       ? level
+                       : Max(worst[r], level);
+      }
+      for (uint32_t e = 0u; e < ArrayCount(error_fields); ++e) {
+        const uint32_t k = (uint32_t)error_fields[e];
+        if (!(valid & (1u << k))) {
+          continue;
+        }
+        timeline->system_errors = true_v;
+        if (worst[error_row] == VKR_EDITOR_TIMELINE_SYSTEM_NONE) {
+          worst[error_row] = 0u;
+        }
+        if (values[k] > 0.0) {
+          worst[error_row] |= (uint8_t)(1u << e);
+        }
+      }
+      const uint32_t footprint = VKR_RECORDING_SYSTEM_FOOTPRINT;
+      if (valid & (1u << footprint)) {
+        highest = Max(highest, values[footprint]);
+      }
+    }
+    for (uint32_t r = 0u; r < VKR_EDITOR_TIMELINE_SYSTEM_ROWS; ++r) {
+      const bool8_t drawn =
+          worst[r] != VKR_EDITOR_TIMELINE_SYSTEM_NONE && worst[r] > 0u;
+      timeline->system_level[r][c] = worst[r];
+      timeline->system_band[r][c] = drawn ? 1.0f : 0.0f;
+      if (drawn) {
+        timeline->system_worst[r] =
+            r == error_row ? timeline->system_worst[r] | worst[r]
+                           : Max(timeline->system_worst[r], worst[r]);
+      }
+    }
+    timeline->system_footprint[c] = (float32_t)highest;
+  }
+}
+
+/* Each column's slowest frame over the view, built when the view or the
+   System lane's data changes. */
 vkr_internal void
 editor_timeline_columns(VkrEditorRecordingTimeline *timeline,
                         const VkrRecordingPlayback *playback) {
   if (timeline->column_count > 0u &&
       timeline->columns_first == timeline->view_first &&
-      timeline->columns_last == timeline->view_last) {
+      timeline->columns_last == timeline->view_last &&
+      timeline->system_source == playback->system_values) {
     return;
   }
   const float64_t budget = VKR_RECORDING_ANALYSIS_BUDGET_MS;
@@ -177,6 +295,7 @@ editor_timeline_columns(VkrEditorRecordingTimeline *timeline,
     slowest = Max(slowest, (float32_t)ms);
   }
   editor_timeline_memory_columns(timeline, playback);
+  editor_timeline_system_columns(timeline, playback);
   /* Room above the slowest bar, and the budget line always in view. */
   timeline->top_ms = Max(slowest * 1.08f, (float32_t)budget * 1.25f);
 }
@@ -650,6 +769,217 @@ vkr_internal void editor_timeline_memory(VkrEditorUi *editor,
   }
 }
 
+/* Appends `word` to `text` after a separator, keeping it terminated when
+   it runs out of room. */
+vkr_internal void editor_timeline_append(char *text, uint64_t capacity,
+                                         int32_t *length, const char *word) {
+  if (*length < 0 || (uint64_t)*length >= capacity) {
+    return;
+  }
+  *length += string_format(text + *length, capacity - (uint64_t)*length,
+                           *length > 0 ? "  \xc2\xb7  %s" : "%s", word);
+}
+
+/* The words of a System row's `level`: the thermal level, the memory
+   pressure, low-power mode, or which errors a frame counted. */
+vkr_internal const char *editor_timeline_system_word(uint32_t row,
+                                                     uint8_t level) {
+  static const char *const thermal[] = {"Thermal nominal", "Thermal fair",
+                                        "Thermal serious", "Thermal critical"};
+  static const char *const pressure[] = {"Memory normal", "Memory warn",
+                                         "Memory critical"};
+  static const char *const power[] = {"Low power off", "Low power on"};
+  static const char *const errors[] = {"No errors", "GPU errors", "Log errors",
+                                       "GPU and log errors"};
+  switch (row) {
+  case 0u:
+    return thermal[Min(level, 3u)];
+  case 1u:
+    return pressure[Min(level, 2u)];
+  case 2u:
+    return power[Min(level, 1u)];
+  default:
+    return errors[level & 3u];
+  }
+}
+
+/* Platform signals per column as thin bands under a legend of the view's
+   worst: thermal level, memory pressure and low-power mode, coloured by
+   severity and left empty when nominal, then ticks where frames counted
+   GPU (critical colour) or log (warning colour) errors. Hover reads a
+   column, a click seeks. */
+vkr_internal void editor_timeline_system(VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrRecordingPlayback *playback,
+                                         uint32_t row) {
+  VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const uint64_t current =
+      vkr_recording_playback_frame_at(playback, playback->time);
+  const uint32_t cursor = editor_timeline_column_of(timeline, current);
+  const uint32_t rows = editor_timeline_system_rows(timeline);
+
+  /* The hovered column: its frames, then each signal it sampled. */
+  String8 tooltip = {0};
+  const uint32_t hovered = timeline->system_hovered;
+  if (hovered != VKR_UI_PLOT_NONE && hovered < timeline->column_count) {
+    const uint64_t first = editor_timeline_column_start(timeline, hovered);
+    const uint64_t last =
+        hovered + 1u < timeline->column_count
+            ? editor_timeline_column_start(timeline, hovered + 1u) - 1u
+            : timeline->view_last;
+    char words[192];
+    int32_t length = 0;
+    words[0] = '\0';
+    for (uint32_t r = 0u; r < rows; ++r) {
+      const uint8_t level = timeline->system_level[r][hovered];
+      if (level != VKR_EDITOR_TIMELINE_SYSTEM_NONE) {
+        editor_timeline_append(words, sizeof(words), &length,
+                               editor_timeline_system_word(r, level));
+      }
+    }
+    /* The footprint takes its own line, in the memory lane's binary
+       units. */
+    const float32_t bytes = timeline->system_footprint[hovered];
+    char footprint[48] = {0};
+    if (bytes >= 0.0f) {
+      const float32_t gib = bytes / (1024.0f * 1024.0f * 1024.0f);
+      string_format(footprint, sizeof(footprint),
+                    gib >= 1.0f ? "\nFootprint %.1f GiB"
+                                : "\nFootprint %.0f MiB",
+                    gib >= 1.0f ? gib : bytes / (1024.0f * 1024.0f));
+    }
+    tooltip =
+        first == last
+            ? string8_create_formatted(ui->frame_allocator, "Frame %llu\n%s%s",
+                                       (unsigned long long)first, words,
+                                       footprint)
+            : string8_create_formatted(
+                  ui->frame_allocator, "Frames %llu\xe2\x80\x93%llu\n%s%s",
+                  (unsigned long long)first, (unsigned long long)last, words,
+                  footprint);
+  }
+
+  /* The lane: its background, the playhead, hover and a click to seek. */
+  const VkrUiPlotConfig lane_plot = {
+      .sample_count = timeline->column_count,
+      .y_min = 0.0f,
+      .y_max = 1.0f,
+      .cursor = cursor,
+      .cursor_color = theme->text,
+      .range_first = VKR_UI_PLOT_NONE,
+      .range_last = VKR_UI_PLOT_NONE,
+      .hover_color = vkr_ui_color_alpha(theme->text, 0.08f),
+  };
+  VkrUiWidgetConfig config = vkr_ui_widget_config_default();
+  config.placement = editor_timeline_cell(0u, row);
+  config.placement.align = VKR_UI_ALIGN_STRETCH;
+  config.style.background_color = vkr_ui_color_alpha(theme->window, 0.6f);
+  config.style.corner_radius_pt = (Vec4){4.0f, 4.0f, 4.0f, 4.0f};
+  config.tooltip = tooltip;
+  const VkrUiPlotResult result = vkr_ui_plot(
+      ui, string8_lit("editor.recording.timeline.system"), &lane_plot, &config);
+  timeline->system_hovered = result.hovered;
+  uint32_t clicked = result.clicked;
+
+  /* One band per row, over the lane, with its columns' severity colours.
+     Each shares the lane's columns, tooltip and playhead, and a press on
+     it lands on it, so it seeks too. */
+  const Vec4 faint = vkr_ui_color_alpha(theme->warning, 0.45f);
+  const Vec4 none = {0};
+  const Vec4 palettes[VKR_EDITOR_TIMELINE_SYSTEM_ROWS][4] = {
+      {none, faint, theme->warning, theme->error},
+      {none, faint, theme->error, theme->error},
+      {none, theme->warning, theme->warning, theme->warning},
+      {none, theme->error, theme->warning, theme->error},
+  };
+  for (uint32_t r = 0u; r < rows; ++r) {
+    const VkrUiPlotSeries band = {.values = timeline->system_band[r],
+                                  .color = theme->warning};
+    const VkrUiPlotConfig band_plot = {
+        .sample_count = timeline->column_count,
+        .y_min = 0.0f,
+        .y_max = 1.0f,
+        .bars = &band,
+        .bar_count = 1u,
+        .bar_colors = timeline->system_level[r],
+        .palette = palettes[r],
+        .palette_count = ArrayCount(palettes[r]),
+        .cursor = cursor,
+        .cursor_color = theme->text,
+        .range_first = VKR_UI_PLOT_NONE,
+        .range_last = VKR_UI_PLOT_NONE,
+    };
+    VkrUiWidgetConfig track = vkr_ui_widget_config_default();
+    track.placement = editor_timeline_cell(0u, row);
+    track.placement.align = VKR_UI_ALIGN_START;
+    track.placement.margin_pt.top =
+        EDITOR_TIMELINE_SYSTEM_TOP_PT +
+        (float32_t)r * (EDITOR_TIMELINE_SYSTEM_BAND_PT +
+                        EDITOR_TIMELINE_SYSTEM_BAND_GAP_PT);
+    track.style.min_size_pt.y = track.style.max_size_pt.y =
+        EDITOR_TIMELINE_SYSTEM_BAND_PT;
+    track.style.background_color = vkr_ui_color_alpha(theme->text, 0.06f);
+    track.style.corner_radius_pt = (Vec4){1.5f, 1.5f, 1.5f, 1.5f};
+    track.tooltip = tooltip;
+    (void)vkr_ui_push_id_u64(ui, r);
+    const VkrUiPlotResult band_result =
+        vkr_ui_plot(ui, string8_lit("editor.recording.timeline.system.band"),
+                    &band_plot, &track);
+    (void)vkr_ui_pop_id(ui);
+    if (band_result.clicked != VKR_UI_PLOT_NONE) {
+      clicked = band_result.clicked;
+    }
+  }
+  if (clicked != VKR_UI_PLOT_NONE) {
+    VkrSampleRecordingRequest seek = {
+        .command = VKR_SAMPLE_RECORDING_SEEK_FRAME,
+        .frame = editor_timeline_column_start(timeline, clicked)};
+    (void)vkr_editor_recording_send(editor, seek, false_v);
+  }
+
+  /* The legend, over the lane's top-left corner like the memory lane's:
+     its name, then the view's worst of each signal that is not nominal. */
+  char legend[192];
+  int32_t length = 0;
+  legend[0] = '\0';
+  editor_timeline_append(legend, sizeof(legend), &length, "System");
+  bool8_t flagged = false_v;
+  for (uint32_t r = 0u; r < rows; ++r) {
+    if (timeline->system_worst[r] > 0u) {
+      flagged = true_v;
+      editor_timeline_append(
+          legend, sizeof(legend), &length,
+          editor_timeline_system_word(r, timeline->system_worst[r]));
+    }
+  }
+  /* Empty bands need words too: the view had nothing to flag. */
+  if (!flagged) {
+    editor_timeline_append(legend, sizeof(legend), &length,
+                           "Thermal, memory, power and errors nominal");
+  }
+  VkrUiWidgetConfig label =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  label.placement = editor_timeline_cell(0u, row);
+  label.placement.justify = VKR_UI_ALIGN_START;
+  label.placement.align = VKR_UI_ALIGN_START;
+  label.placement.margin_pt = (VkrUiEdges){2.0f, 0.0f, 0.0f, 6.0f};
+  label.icon = VKR_UI_ICON_DOT;
+  label.icon_size_pt = 7.0f;
+  /* The dot takes the view's strongest band colour; the faint fair and warn
+     levels leave it neutral, as warn is a 16 GB Mac's normal state. */
+  label.icon_color =
+      timeline->system_worst[0] >= 3u || timeline->system_worst[1] >= 2u
+          ? theme->error
+      : timeline->system_worst[0] >= 2u || timeline->system_worst[2] > 0u
+          ? theme->warning
+          : theme->text_secondary;
+  vkr_ui_label(ui, string8_lit("system.legend"),
+               string8_create_formatted(ui->frame_allocator, "%s", legend),
+               &label);
+}
+
 /* The lane's x, in points from the lane's left edge, of `frame`. */
 vkr_internal float32_t
 editor_timeline_x(const VkrEditorRecordingTimeline *timeline,
@@ -1030,11 +1360,11 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   }
   editor_timeline_columns(timeline, playback);
 
-  /* The engine-event and memory lanes show only for recordings that have
-     events or memory samples. */
+  /* The engine-event, memory and System lanes show only for recordings that
+     have events, memory samples or platform signals. */
   const bool8_t engine_lane = playback->event_count > 0u;
   timeline->memory_lane = playback->has_memory;
-  VkrUiTrack rows[6] = {
+  VkrUiTrack rows[7] = {
       {.value = 24.0f, .unit = VKR_UI_TRACK_PX},
       {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
   };
@@ -1048,6 +1378,12 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   if (timeline->memory_lane) {
     rows[row_count++] = (VkrUiTrack){.value = EDITOR_TIMELINE_MEMORY_PT,
                                      .unit = VKR_UI_TRACK_PX};
+  }
+  const uint32_t system_row = row_count;
+  if (timeline->system_lane) {
+    rows[row_count++] =
+        (VkrUiTrack){.value = editor_timeline_system_height(timeline),
+                     .unit = VKR_UI_TRACK_PX};
   }
   const uint32_t marks_row = row_count;
   rows[row_count++] = (VkrUiTrack){.value = EDITOR_TIMELINE_MARK_PT + 2.0f,
@@ -1080,6 +1416,9 @@ void vkr_editor_recording_timeline_build(VkrEditorUi *editor,
   editor_timeline_plot(editor, frame, playback);
   if (timeline->memory_lane) {
     editor_timeline_memory(editor, frame, playback, memory_row);
+  }
+  if (timeline->system_lane) {
+    editor_timeline_system(editor, frame, playback, system_row);
   }
   /* Marks and labels follow the lane's width from its last drawing. */
   VkrUiRect lane = {0};

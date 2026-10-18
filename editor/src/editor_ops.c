@@ -14984,6 +14984,187 @@ static VkrEditorOpStatus ops_run_health_status(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+#define OPS_PERF_SNAPSHOT_LIMIT_MAX 400u
+
+static const char *const ops_metric_reason_names[] = {
+    [VKR_METRIC_REASON_NONE] = "none",
+    [VKR_METRIC_REASON_NOT_SAMPLED] = "not_sampled",
+    [VKR_METRIC_REASON_DISABLED] = "disabled",
+    [VKR_METRIC_REASON_UNSUPPORTED] = "unsupported",
+    [VKR_METRIC_REASON_NOT_READY] = "not_ready",
+    [VKR_METRIC_REASON_SOURCE_INEXACT] = "source_inexact",
+    [VKR_METRIC_REASON_PUBLICATION_DROPPED] = "publication_dropped",
+};
+
+/* One published sample as JSON: a number for a counter or gauge, an object
+   with the mean, count and maximum in milliseconds for a duration, and the
+   reason for an unavailable slot. */
+static VkrBakeryJson *ops_metric_sample_json(OpsContext *ctx,
+                                             const VkrMetricsFrame *frame,
+                                             const VkrMetricCatalogEntry *entry,
+                                             VkrMetricId id) {
+  Arena *arena = ops_arena(ctx);
+  uint64_t u64 = 0u;
+  float64_t f64 = 0.0;
+  VkrMetricDurationSample duration = {0};
+  if (entry->kind == VKR_METRIC_KIND_DURATION &&
+      vkr_metrics_frame_read_duration(frame, id, &duration)) {
+    VkrBakeryJson *value = vkr_bakery_json_object(arena);
+    const float64_t mean_ms =
+        duration.count
+            ? (float64_t)duration.sum_ns / (float64_t)duration.count * 1.0e-6
+            : 0.0;
+    ops_set(ctx, value, "ms", ops_number(ctx, mean_ms));
+    ops_set(ctx, value, "count",
+            vkr_bakery_json_int(arena, (int64_t)duration.count));
+    ops_set(ctx, value, "max_ms",
+            ops_number(ctx, (float64_t)duration.max_ns * 1.0e-6));
+    return value;
+  }
+  if (entry->scalar == VKR_METRIC_SCALAR_U64 &&
+      vkr_metrics_frame_read_u64(frame, id, &u64)) {
+    return vkr_bakery_json_int(arena, (int64_t)Min(u64, (uint64_t)INT64_MAX));
+  }
+  if (entry->scalar == VKR_METRIC_SCALAR_F64 &&
+      vkr_metrics_frame_read_f64(frame, id, &f64)) {
+    return ops_number(ctx, f64);
+  }
+  const VkrMetricSample *sample = vkr_metrics_frame_get(frame, id);
+  const uint32_t reason = sample ? (uint32_t)sample->reason : 0u;
+  VkrBakeryJson *value = vkr_bakery_json_object(arena);
+  ops_set(
+      ctx, value, "unavailable",
+      vkr_bakery_json_cstr(arena, reason < ArrayCount(ops_metric_reason_names)
+                                      ? ops_metric_reason_names[reason]
+                                      : "unknown"));
+  return value;
+}
+
+static VkrEditorOpStatus ops_run_perf_snapshot(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char prefix[VKR_METRIC_NAME_MAX + 1u] = {0};
+  if (!ops_arg_string(ctx, args, "prefix", prefix, sizeof(prefix))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t limit_value = 200.0;
+  (void)ops_arg_number(args, "limit", &limit_value);
+  if (limit_value < 1.0 ||
+      limit_value > (float64_t)OPS_PERF_SNAPSHOT_LIMIT_MAX) {
+    ops_fail(ctx, OPS_INVALID, "'limit' must be 1 to %u",
+             OPS_PERF_SNAPSHOT_LIMIT_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  const bool8_t available_only = ops_arg_bool(args, "available_only", true_v);
+  const bool8_t want_passes = ops_arg_bool(args, "passes", false_v);
+  VkrMetrics *metrics = ctx->frame->metrics;
+  VkrMetricsSnapshotView view = {0};
+  if (!metrics || !vkr_metrics_snapshot_acquire(metrics, &view)) {
+    ops_fail(ctx, OPS_INVALID, "no published metrics frame yet");
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  const uint64_t prefix_length = string_length(prefix);
+  uint32_t catalog_count = 0u;
+  const VkrMetricCatalogEntry *catalog =
+      vkr_metrics_get_catalog(metrics, &catalog_count);
+  VkrBakeryJson *values = vkr_bakery_json_object(arena);
+  uint32_t matched = 0u;
+  uint32_t written = 0u;
+  for (uint32_t i = 0u; i < catalog_count && i < view.frame->slot_count; ++i) {
+    const VkrMetricCatalogEntry *entry = &catalog[i];
+    if (prefix_length &&
+        (entry->name_length < prefix_length ||
+         MemCompare(entry->name, prefix, prefix_length) != 0)) {
+      continue;
+    }
+    const VkrMetricId id =
+        ((VkrMetricId)view.frame->registry_generation << 16u) | i;
+    const VkrMetricSample *sample = vkr_metrics_frame_get(view.frame, id);
+    if (available_only &&
+        (!sample ||
+         sample->availability == VKR_METRIC_AVAILABILITY_UNAVAILABLE)) {
+      continue;
+    }
+    matched += 1u;
+    if (written >= (uint32_t)limit_value) {
+      continue;
+    }
+    written += 1u;
+    vkr_bakery_json_set(arena, values, entry->name,
+                        ops_metric_sample_json(ctx, view.frame, entry, id));
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "frame",
+          vkr_bakery_json_int(arena, (int64_t)view.frame->cpu_frame_index));
+  ops_set(ctx, result, "publication",
+          vkr_bakery_json_int(arena, (int64_t)view.publication_serial));
+  ops_set(ctx, result, "pass_timing",
+          vkr_bakery_json_bool(arena, metrics->config.pass_gpu_timings));
+  ops_set(ctx, result, "submission_timing",
+          vkr_bakery_json_bool(arena, metrics->config.submission_gpu_timings));
+  ops_set(ctx, result, "matched", vkr_bakery_json_int(arena, matched));
+  ops_set(ctx, result, "truncated",
+          vkr_bakery_json_bool(arena, matched > written));
+  ops_set(ctx, result, "metrics", values);
+  const VkrRendererMetricsPassTable *table = ctx->frame->pass_table;
+  if (want_passes && table) {
+    /* Executed passes in graph order. A GPU duration is null with its
+       reason when that pass was not timed (pass timing off, or a scope the
+       backend cannot stamp). */
+    VkrBakeryJson *passes = vkr_bakery_json_array(arena);
+    for (uint32_t i = 0u; i < table->count; ++i) {
+      const VkrRendererMetricsPassSample *row = &table->samples[i];
+      if (row->culled || row->disabled) {
+        continue;
+      }
+      VkrBakeryJson *item = vkr_bakery_json_object(arena);
+      ops_set(ctx, item, "name",
+              ops_string(ctx, (String8){.str = (uint8_t *)row->name,
+                                        .length = row->name_length}));
+      ops_set(ctx, item, "cpu_ms", ops_number(ctx, row->cpu_ms));
+      ops_set(ctx, item, "gpu_ms",
+              row->gpu_valid ? ops_number(ctx, row->gpu_ms)
+                             : vkr_bakery_json_null(arena));
+      if (!row->gpu_valid) {
+        ops_set(ctx, item, "gpu",
+                vkr_bakery_json_cstr(arena,
+                                     vkr_renderer_impl_gpu_timing_reason_name(
+                                         row->gpu_unavailable_reason)));
+      }
+      vkr_bakery_json_append(passes, item);
+    }
+    ops_set(ctx, result, "passes_frame",
+            vkr_bakery_json_int(arena, (int64_t)table->cpu_frame_index));
+    ops_set(ctx, result, "passes", passes);
+  }
+  vkr_metrics_snapshot_release(metrics, &view);
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_perf_set(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  VkrMetrics *metrics = ctx->frame->metrics;
+  if (!metrics) {
+    ops_fail(ctx, OPS_INVALID, "no metrics registry");
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* The same switches as VKR_RG_GPU_TIMING, VKR_GPU_SUBMISSION_TIMING and the
+     F7 key; a recording sets them per frame and restores them at stop. */
+  metrics->config.pass_gpu_timings =
+      ops_arg_bool(args, "pass_timing", metrics->config.pass_gpu_timings);
+  metrics->config.submission_gpu_timings = ops_arg_bool(
+      args, "submission_timing", metrics->config.submission_gpu_timings);
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  ops_set(ctx, result, "pass_timing",
+          vkr_bakery_json_bool(arena, metrics->config.pass_gpu_timings));
+  ops_set(ctx, result, "submission_timing",
+          vkr_bakery_json_bool(arena, metrics->config.submission_gpu_timings));
+  ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
 static VkrEditorOpStatus ops_run_depot_trust(OpsContext *ctx) {
   vkr_editor_depot_trust_scripts(ctx->editor->depot, ctx->editor);
   ctx->call->result = ops_depot_status(ctx);
@@ -18170,6 +18351,30 @@ static const OpsDef s_ops[] = {
      "error records.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_health_status, NULL,
      OPS_QUICK},
+    {"perf.snapshot",
+     "The newest published frame's metrics from the live registry: a number "
+     "for a counter or gauge, {ms, count, max_ms} for a duration, "
+     "{unavailable: reason} for a slot without a sample. 'prefix' keeps names "
+     "that start with it (for example 'cpu.', 'os.', 'gpu.'); "
+     "'available_only' (default true) drops unavailable slots; 'limit' caps "
+     "the metrics answered (default 200); 'passes' adds each executed render "
+     "graph pass with its CPU and GPU milliseconds (GPU null with a reason "
+     "when untimed; perf.set pass_timing turns timing on). Also answers "
+     "whether pass and submission GPU timing are on.",
+     "{\"type\":\"object\",\"properties\":{\"prefix\":{\"type\":"
+     "\"string\"},\"available_only\":{\"type\":\"boolean\"},\"passes\":{"
+     "\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\","
+     "\"minimum\":1,\"maximum\":400}}}",
+     ops_run_perf_snapshot, NULL, OPS_QUICK},
+    {"perf.set",
+     "Turns GPU timing on or off at runtime: 'pass_timing' times every render "
+     "graph pass (per-pass rows in perf.snapshot and recordings; on the tiled "
+     "pipeline it costs about 0.5 ms a Bistro frame), 'submission_timing' "
+     "times whole GPU frames. A recording controls both while it runs and "
+     "restores them at stop. Answers the new state.",
+     "{\"type\":\"object\",\"properties\":{\"pass_timing\":{\"type\":"
+     "\"boolean\"},\"submission_timing\":{\"type\":\"boolean\"}}}",
+     ops_run_perf_set, NULL},
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "
      "order, edits waiting to apply, the last error, the digest of this "

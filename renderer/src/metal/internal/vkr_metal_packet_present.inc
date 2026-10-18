@@ -294,6 +294,30 @@ vkr_internal uint32_t vkr_metal_packet_presenter_shown_image(
   return chosen != UINT32_MAX ? chosen : newest_written;
 }
 
+/* Records the drawable a present is about to show and the CPU time of the
+   call, then asks for display feedback. Without a presented handler (an
+   offscreen target) it does nothing. */
+vkr_internal void
+vkr_metal_packet_mark_present(VkrMetalPacketRenderer *renderer,
+                              id<MTLDrawable> drawable,
+                              float64_t present_seconds) {
+  VkrMetalPresentFeedback *feedback = renderer->present_feedback;
+  if (!feedback || !renderer->presented_handler || !drawable)
+    return;
+  const uint32_t index = renderer->next_present_mark;
+  renderer->next_present_mark = (index + 1u) % VKR_METAL_PACKET_PRESENT_MARKS;
+  vkr_atomic_uint64_store(&feedback->marks[index].present_time_ns,
+                          (uint64_t)(present_seconds * 1000000000.0),
+                          VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint64_store(&feedback->marks[index].drawable_id,
+                          (uint64_t)drawable.drawableID,
+                          VKR_MEMORY_ORDER_RELEASE);
+  /* The handler drops this reference when the display reports. */
+  vkr_atomic_uint32_fetch_add(&feedback->references, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+  [drawable addPresentedHandler:renderer->presented_handler];
+}
+
 /* Records, commits and presents one presenter frame into the acquired
    drawable. `scene_value` is the frame-queue value of the Scene this frame
    submitted, or zero. */
@@ -507,6 +531,7 @@ vkr_internal bool8_t vkr_metal_packet_present_frame(
   [presenter->queue signalEvent:presenter->completion value:present_value];
   [presenter->queue signalDrawable:drawable];
   const float64_t present_start = vkr_platform_get_absolute_time();
+  vkr_metal_packet_mark_present(renderer, drawable, present_start);
   [drawable present];
   renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
   renderer->present_timing.present_count += 1u;
@@ -615,6 +640,7 @@ vkr_internal void vkr_metal_packet_present_committed_frame(
     return;
   [renderer->queue signalDrawable:renderer->drawable];
   const float64_t present_start = vkr_platform_get_absolute_time();
+  vkr_metal_packet_mark_present(renderer, renderer->drawable, present_start);
   [renderer->drawable present];
   renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
   renderer->present_timing.present_count += 1u;

@@ -2960,6 +2960,45 @@ vkr_internal bool8_t vkr_metal_packet_create_command_slots(
   return command_slots_created;
 }
 
+/* Creates the display feedback state and the one presented handler every
+   window present shares, so a present allocates nothing. The handler reads the
+   marks, adds to atomics and drops the reference its present took. Without
+   the state, presents simply report no latency. */
+vkr_internal void
+vkr_metal_packet_create_presented_handler(VkrMetalPacketRenderer *renderer) {
+  VkrMetalPresentFeedback *feedback =
+      vkr_heap_alloc_zeroed(1u, sizeof(VkrMetalPresentFeedback));
+  if (!feedback)
+    return;
+  vkr_atomic_uint32_store(&feedback->references, 1u, VKR_MEMORY_ORDER_RELAXED);
+  renderer->present_feedback = feedback;
+  renderer->presented_handler = Block_copy(^(id<MTLDrawable> drawable) {
+    const uint64_t drawable_id = (uint64_t)drawable.drawableID;
+    const CFTimeInterval presented = drawable.presentedTime;
+    for (uint32_t i = 0u; i < VKR_METAL_PACKET_PRESENT_MARKS; ++i) {
+      if (vkr_atomic_uint64_load(&feedback->marks[i].drawable_id,
+                                 VKR_MEMORY_ORDER_ACQUIRE) != drawable_id) {
+        continue;
+      }
+      const uint64_t present_ns = vkr_atomic_uint64_load(
+          &feedback->marks[i].present_time_ns, VKR_MEMORY_ORDER_RELAXED);
+      const uint64_t presented_ns = (uint64_t)(presented * 1000000000.0);
+      if (presented <= 0.0) {
+        vkr_atomic_uint32_fetch_add(&feedback->missed_count, 1u,
+                                    VKR_MEMORY_ORDER_RELAXED);
+      } else if (presented_ns >= present_ns) {
+        vkr_atomic_uint64_fetch_add(&feedback->latency_ns,
+                                    presented_ns - present_ns,
+                                    VKR_MEMORY_ORDER_RELAXED);
+        vkr_atomic_uint32_fetch_add(&feedback->latency_count, 1u,
+                                    VKR_MEMORY_ORDER_RELAXED);
+      }
+      break;
+    }
+    vkr_metal_present_feedback_release(feedback);
+  });
+}
+
 /* Creates each reusable commit option and feedback handler pair until one is
  * missing. */
 vkr_internal bool8_t vkr_metal_packet_create_commit_feedback_records(
@@ -3144,8 +3183,10 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
           vkr_metal_packet_create_command_slots(renderer, config);
       const bool8_t commit_feedback_created =
           vkr_metal_packet_create_commit_feedback_records(renderer);
-      if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW)
+      if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
         renderer->layer = [(CAMetalLayer *)config->metal_layer retain];
+        vkr_metal_packet_create_presented_handler(renderer);
+      }
       bool8_t passed =
           renderer->graph_frame_arena &&
           vkr_allocator_arena(&renderer->graph_frame_allocator) &&

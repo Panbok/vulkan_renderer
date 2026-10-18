@@ -301,6 +301,15 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_present_timing(
     return false_v;
   *out_timing = renderer->present_timing;
   renderer->present_timing = (VkrRendererImplPresentTiming){0};
+  VkrMetalPresentFeedback *feedback = renderer->present_feedback;
+  if (feedback) {
+    out_timing->latency_ns = vkr_atomic_uint64_exchange(
+        &feedback->latency_ns, 0u, VKR_MEMORY_ORDER_RELAXED);
+    out_timing->latency_count = vkr_atomic_uint32_exchange(
+        &feedback->latency_count, 0u, VKR_MEMORY_ORDER_RELAXED);
+    out_timing->missed_count = vkr_atomic_uint32_exchange(
+        &feedback->missed_count, 0u, VKR_MEMORY_ORDER_RELAXED);
+  }
   return true_v;
 }
 
@@ -939,6 +948,11 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       [renderer->drawable release];
       [renderer->layer release];
       [renderer->device release];
+      /* A drawable still on its way to the display keeps its own copy of
+         the handler and its reference to the feedback state. */
+      if (renderer->presented_handler)
+        Block_release(renderer->presented_handler);
+      vkr_metal_present_feedback_release(renderer->present_feedback);
     }
     vkr_rg_destroy(renderer->graph);
     arena_destroy(renderer->graph_frame_arena);

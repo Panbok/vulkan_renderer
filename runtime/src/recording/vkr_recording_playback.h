@@ -74,6 +74,17 @@ typedef struct VkrRecordingPlaybackEvent {
   bool8_t engine;
 } VkrRecordingPlaybackEvent;
 
+/** The per-frame platform fields a playback loads, in storage order. */
+typedef enum VkrRecordingSystemField {
+  VKR_RECORDING_SYSTEM_THERMAL = 0,
+  VKR_RECORDING_SYSTEM_MEMORY_PRESSURE,
+  VKR_RECORDING_SYSTEM_LOW_POWER,
+  VKR_RECORDING_SYSTEM_FOOTPRINT,
+  VKR_RECORDING_SYSTEM_GPU_ERRORS,
+  VKR_RECORDING_SYSTEM_LOG_ERRORS,
+  VKR_RECORDING_SYSTEM_FIELDS,
+} VkrRecordingSystemField;
+
 typedef struct VkrRecordingPlayback {
   bool8_t open;
   VkrDMemory memory;
@@ -103,6 +114,14 @@ typedef struct VkrRecordingPlayback {
   bool8_t has_memory;
   float64_t *memory_bytes;
   uint8_t *memory_valid;
+  /* Platform signals and fault counts of each frame from its metrics (Tier
+     0, ADR-125): VKR_RECORDING_SYSTEM_FIELDS per frame in the order of
+     VkrRecordingSystemField, where bit k of system_valid says field k was
+     sampled. has_system says the recording declares any; without it both
+     arrays are NULL. */
+  bool8_t has_system;
+  float64_t *system_values;
+  uint8_t *system_valid;
   /* The player of each frame's last tick (vkr_rec_player): three per frame,
      where player_valid is 1; has_player says any frame has one. */
   bool8_t has_player;

@@ -16,7 +16,9 @@ all of them. Phase P0, renderer health and diagnostic reads, is implemented in
 [ADR-124](../adr/124-renderer-health-and-diagnostic-reads.md). The first part
 of P1, the lib telemetry API with its macOS sources, the `os.*` and
 `cpu.process_time` metrics and the harness's system conditions, is implemented
-in [ADR-125](../adr/125-platform-telemetry-metrics.md).
+in [ADR-125](../adr/125-platform-telemetry-metrics.md), with Metal present
+latency, the recording timeline's System lane, `perf.snapshot` and
+`perf.set`.
 
 Remaining gaps:
 
@@ -44,24 +46,24 @@ Remaining gaps:
   `GetProcessTimes`, `GetSystemPowerStatus`; plus
   `IDXGIAdapter3::QueryVideoMemoryInfo` and PDH GPU engine use of other
   processes as new metrics. Thermal state stays unavailable.
-- Present latency: `MTLDrawable.addPresentedHandler`, `VK_KHR_present_id` and
-  `present_wait`. CPU/GPU clock link: `sampleTimestamps:gpuTimestamp:`,
-  `VK_KHR_calibrated_timestamps`.
+- Vulkan present latency (`VK_KHR_present_id`, `present_wait`) behind the
+  present timing's latency and missed counts.
 - Vulkan object names (`vkSetDebugUtilsObjectNameEXT`) and optional pipeline
   statistics per pass, gated like pass timing.
 - The harness authority reason `gpu.peer_load`.
-- A System lane under the Performance window's frame-time lane; agent ops
-  `perf.snapshot {prefix}` and `perf.set {pass_timing, pipeline_stats}`.
 - Acceptance: the Tier 0 overhead gate rerun with the added Tier 0 fields; a
-  Windows Bistro run with the Windows sources valid.
+  Windows Bistro run with the Windows sources valid; present latency on a
+  visible window.
 
 ## P2: timeline
 
 - A runtime-gated zone macro writing begin and end into per-thread recorder
   rings (the unused RENDER producer and one ring per job worker), also
   emitting `os_signpost` and PIX events.
-- A start offset in each pass row; `vkr_rec export --perfetto`; a rolling
-  in-memory buffer saved by hotkey or `perf.capture_last`.
+- A start offset in each pass row, placed on the CPU clock through
+  `sampleTimestamps:gpuTimestamp:` and `VK_KHR_calibrated_timestamps`;
+  `vkr_rec export --perfetto`; a rolling in-memory buffer saved by hotkey or
+  `perf.capture_last`.
 - A Timeline window with thread tracks, a GPU track and a flame chart;
   `rec.explain {spike}`; `vkr_harness perf-compare` for before/after verdicts.
 - Acceptance: the overhead gate with zones on; zone sums match stage metrics.

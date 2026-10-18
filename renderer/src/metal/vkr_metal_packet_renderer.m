@@ -22,6 +22,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "memory/vkr_heap.h"
 #include "metal/internal/vkr_metal_packet_waits.h"
 #include "metal/vkr_metal_dependency.h"
 #include "metal/vkr_metal_diagnostics.h"
@@ -55,6 +56,9 @@ enum {
   VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX =
       VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX,
   VKR_METAL_PACKET_COMMIT_FEEDBACK_CAPACITY = 16,
+  /* Presents awaiting display feedback; the display reports within a few
+     refresh intervals, so eight cover the editor presenter's rate. */
+  VKR_METAL_PACKET_PRESENT_MARKS = 8,
   /* Must match the shared atmosphere kernel's workgroup reduction width. */
   VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS = 64,
   /* Cloud base volume, detail volume and weather map (ADR-074). */
@@ -555,6 +559,33 @@ vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
 }
 
 /**
+ * Display feedback of window presents. Each present records its drawable's ID
+ * and the CPU time of the call in the next mark; the presented handler, called
+ * on a Core Animation thread, finds the mark and adds the time to the display,
+ * or a miss, to the totals the metrics collector takes. A drawable still on
+ * its way to the display holds the handler after the renderer is gone, so the
+ * state is its own allocation: the renderer and each pending present hold a
+ * reference, and the last one frees it.
+ */
+typedef struct VkrMetalPresentFeedback {
+  VkrAtomicUint32 references;
+  struct {
+    VkrAtomicUint64 drawable_id;
+    VkrAtomicUint64 present_time_ns;
+  } marks[VKR_METAL_PACKET_PRESENT_MARKS];
+  VkrAtomicUint64 latency_ns;
+  VkrAtomicUint32 latency_count;
+  VkrAtomicUint32 missed_count;
+} VkrMetalPresentFeedback;
+
+vkr_internal void
+vkr_metal_present_feedback_release(VkrMetalPresentFeedback *feedback) {
+  if (feedback && vkr_atomic_uint32_fetch_sub(&feedback->references, 1u,
+                                              VKR_MEMORY_ORDER_ACQ_REL) == 1u)
+    vkr_heap_free(feedback);
+}
+
+/**
  * Commit feedback outlives the command slot that produced it. The render
  * thread owns acquisition and recycling; Metal's serial callback queue only
  * writes the feedback half and publishes it with `feedback_ready`.
@@ -928,6 +959,11 @@ struct VkrMetalPacketRenderer {
   /* Present and drawable-acquire CPU time since the metrics collector last
      read it; render thread only. */
   VkrRendererImplPresentTiming present_timing;
+  /* Display feedback for window presents: shared state, the one handler
+     every present adds, and the next mark a present writes. */
+  VkrMetalPresentFeedback *present_feedback;
+  void (^presented_handler)(id<MTLDrawable>);
+  uint32_t next_present_mark;
   /* Submissions the GPU finished with an error; read from any thread. */
   VkrAtomicUint64 gpu_error_count;
   /* Active-slot aliases keep encoding code independent of slot selection. */

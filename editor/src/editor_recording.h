@@ -281,6 +281,11 @@ typedef struct VkrEditorRecordingNotes {
 /* Columns the timeline's frame-time lane draws at most; each shows the
    slowest frame of its run of frames. */
 #define VKR_EDITOR_TIMELINE_COLUMNS 512u
+/* The System lane's rows (ADR-125): thermal level (0 to 3), memory pressure
+   (0 to 2), low-power mode (0 or 1) and errors (bit 0 GPU, bit 1 log); a
+   column without a sample of a row holds VKR_EDITOR_TIMELINE_SYSTEM_NONE. */
+#define VKR_EDITOR_TIMELINE_SYSTEM_ROWS 4u
+#define VKR_EDITOR_TIMELINE_SYSTEM_NONE 0xFFu
 
 /* The timeline over the playback bar: the frames it shows, the frames
    brushed on it, and the frame-time columns built for that view. */
@@ -313,6 +318,23 @@ typedef struct VkrEditorRecordingTimeline {
   float32_t memory_max_gb[2];
   VkrUiId memory_id;
   uint32_t memory_hovered;
+  /* With a System lane: the platform signals of each column's frames, read
+     from the playback's platform fields. Each row keeps the column's worst
+     value, 1 in system_band where it is drawn, and the view's worst in
+     system_worst; system_footprint is each column's highest footprint in
+     bytes, negative without a sample. system_source is the playback's
+     field array, compared only, so another recording rebuilds the columns;
+     system_errors says the recording counts GPU or log errors. */
+  bool8_t system_lane;
+  bool8_t system_errors;
+  const void *system_source;
+  uint8_t system_level[VKR_EDITOR_TIMELINE_SYSTEM_ROWS]
+                      [VKR_EDITOR_TIMELINE_COLUMNS];
+  float32_t system_band[VKR_EDITOR_TIMELINE_SYSTEM_ROWS]
+                       [VKR_EDITOR_TIMELINE_COLUMNS];
+  uint8_t system_worst[VKR_EDITOR_TIMELINE_SYSTEM_ROWS];
+  float32_t system_footprint[VKR_EDITOR_TIMELINE_COLUMNS];
+  uint32_t system_hovered;
   /* The frame-time lane's id, for its last drawn rectangle, and the column
      the pointer was over in the last build, for the tooltip. */
   VkrUiId plot_id;

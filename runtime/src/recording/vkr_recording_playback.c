@@ -28,6 +28,9 @@ typedef struct VkrRecordingLoad {
   uint32_t metrics_valid_offset;
   uint32_t memory_offset[2];
   uint32_t memory_bit[2];
+  /* The same for each VkrRecordingSystemField. */
+  uint32_t system_offset[VKR_RECORDING_SYSTEM_FIELDS];
+  uint32_t system_bit[VKR_RECORDING_SYSTEM_FIELDS];
   char *error;
   uint64_t error_capacity;
 } VkrRecordingLoad;
@@ -38,6 +41,9 @@ vkr_internal bool8_t vkr_recording_load_fail(VkrRecordingLoad *load,
   return false_v;
 }
 
+_Static_assert(VKR_RECORDING_SYSTEM_FIELDS <= 8,
+               "system_valid holds one bit per field");
+
 /* The memory fields of the metrics stream: float64 values after a u64
    valid mask whose bit i covers the i-th field after it. */
 vkr_internal void
@@ -46,7 +52,16 @@ vkr_recording_load_memory_fields(VkrRecordingLoad *load,
   static const char *const names[2] = {
       VKR_RECORDING_RESIDENT_FIELD,
       "memory.gpu.driver.current_allocated_bytes"};
+  static const char *const system_names[VKR_RECORDING_SYSTEM_FIELDS] = {
+      [VKR_RECORDING_SYSTEM_THERMAL] = "os.thermal.level",
+      [VKR_RECORDING_SYSTEM_MEMORY_PRESSURE] = "os.memory.pressure",
+      [VKR_RECORDING_SYSTEM_LOW_POWER] = "os.power.low_power",
+      [VKR_RECORDING_SYSTEM_FOOTPRINT] = "os.memory.footprint_bytes",
+      [VKR_RECORDING_SYSTEM_GPU_ERRORS] = "gpu.errors",
+      [VKR_RECORDING_SYSTEM_LOG_ERRORS] = "log.errors",
+  };
   load->memory_offset[0] = load->memory_offset[1] = UINT32_MAX;
+  MemSet(load->system_offset, 0xff, sizeof(load->system_offset));
   if (!metrics || !string_equals(metrics->name, "metrics") ||
       metrics->field_count < 2u ||
       !string_equals(metrics->fields[0].name, "valid") ||
@@ -64,6 +79,15 @@ vkr_recording_load_memory_fields(VkrRecordingLoad *load,
         load->memory_offset[m] = field->offset;
         load->memory_bit[m] = i - 1u;
         load->playback->has_memory = true_v;
+      }
+    }
+    for (uint32_t k = 0u; k < VKR_RECORDING_SYSTEM_FIELDS; ++k) {
+      if (field->type == VKR_RECORDING_FIELD_F64 &&
+          string_equals(field->name, system_names[k]) &&
+          field->offset + sizeof(float64_t) <= metrics->record_size) {
+        load->system_offset[k] = field->offset;
+        load->system_bit[k] = i - 1u;
+        load->playback->has_system = true_v;
       }
     }
   }
@@ -275,7 +299,8 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
   } else if (record->stream == VKR_RECORDING_STREAM_EVENT) {
     vkr_recording_fill_event(playback, record);
   } else if (record->stream == VKR_RECORDING_STREAM_METRICS &&
-             playback->has_memory && record->size == load->metrics_size) {
+             (playback->has_memory || playback->has_system) &&
+             record->size == load->metrics_size) {
     /* Partial records merge: each carries only its valid fields. */
     uint64_t valid = 0u;
     MemCopy(&valid, record->data + load->metrics_valid_offset, sizeof(valid));
@@ -287,6 +312,18 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
       MemCopy(&playback->memory_bytes[record->frame * 2u + m],
               record->data + load->memory_offset[m], sizeof(float64_t));
       playback->memory_valid[record->frame] |= (uint8_t)(1u << m);
+    }
+    for (uint32_t k = 0u;
+         playback->has_system && k < VKR_RECORDING_SYSTEM_FIELDS; ++k) {
+      if (load->system_offset[k] == UINT32_MAX ||
+          !(valid & (1ull << load->system_bit[k]))) {
+        continue;
+      }
+      MemCopy(
+          &playback
+               ->system_values[record->frame * VKR_RECORDING_SYSTEM_FIELDS + k],
+          record->data + load->system_offset[k], sizeof(float64_t));
+      playback->system_valid[record->frame] |= (uint8_t)(1u << k);
     }
   } else if (record->stream == VKR_RECORDING_STREAM_PLAYER &&
              record->size == sizeof(VkrRecordingPlayer)) {
@@ -483,14 +520,27 @@ vkr_recording_playback_allocate(VkrRecordingPlayback *playback) {
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   playback->memory_valid = vkr_allocator_alloc(&playback->allocator, frames,
                                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (playback->has_system) {
+    playback->system_values = vkr_allocator_alloc(
+        &playback->allocator,
+        sizeof(float64_t) * frames * VKR_RECORDING_SYSTEM_FIELDS,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    playback->system_valid = vkr_allocator_alloc(
+        &playback->allocator, frames, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   if (!playback->frames || !playback->cameras || !playback->times ||
       !playback->markers || !playback->events || !playback->player_positions ||
       !playback->player_valid || !playback->memory_bytes ||
-      !playback->memory_valid) {
+      !playback->memory_valid ||
+      (playback->has_system &&
+       (!playback->system_values || !playback->system_valid))) {
     return false_v;
   }
   MemZero(playback->player_valid, frames);
   MemZero(playback->memory_valid, frames);
+  if (playback->has_system) {
+    MemZero(playback->system_valid, frames);
+  }
   MemZero(playback->frames, sizeof(VkrRecordingFrame) * frames);
   MemZero(playback->cameras, sizeof(VkrRecordingCamera) * frames);
   return true_v;

@@ -567,6 +567,13 @@ typedef struct VkrSampleUiFrame {
   /** GPU errors, validation counts and device loss since the renderer was
    * created. */
   VkrRendererHealth renderer_health;
+  /** The metrics registry, borrowed for the build on the frame-loop thread:
+   * readers take a published snapshot; `config` may change instrumentation,
+   * as the F7 key does. */
+  struct VkrMetrics *metrics;
+  /** Per-pass CPU and GPU rows of the newest collected frame, borrowed for
+   * the build like the Draws and render graph window's text. */
+  const struct VkrRendererMetricsPassTable *pass_table;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
   /** Recordings (docs/proposals/recordings.md): one request applied after

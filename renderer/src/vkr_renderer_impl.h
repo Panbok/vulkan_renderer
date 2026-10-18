@@ -43,12 +43,19 @@ enum {
 /** CPU time spent presenting and acquiring presentable images since the
  * last read. The render thread accumulates; the metrics collector is the only
  * reader and reset owner. Acquire covers only the wait for the next image
- * (Metal `nextDrawable`, `vkAcquireNextImageKHR`), not frame-slot reuse. */
+ * (Metal `nextDrawable`, `vkAcquireNextImageKHR`), not frame-slot reuse.
+ * Latency runs from the present call to the image reaching the display, for
+ * the presents the display reported since the last read; a missed present
+ * never reached it (Metal `presentedTime` 0). A backend without display
+ * feedback leaves the latency and missed counts zero. */
 typedef struct VkrRendererImplPresentTiming {
   uint64_t present_ns;
   uint64_t acquire_ns;
+  uint64_t latency_ns;
   uint32_t present_count;
   uint32_t acquire_count;
+  uint32_t latency_count;
+  uint32_t missed_count;
 } VkrRendererImplPresentTiming;
 
 /** Why a requested GPU duration could not be published. */

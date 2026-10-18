@@ -19,8 +19,11 @@ a scoped Bistro case without weakening the evidence profile.
 2. Run the smallest representative Release case. Use local observations to
    locate cost; use authoritative matched runs to support a speed claim.
 3. Attribute the cost before changing code. CPU scopes locate host work;
-   valid pass timestamps locate GPU work. Read [GPU-TRACE.md](GPU-TRACE.md)
-   only when hardware counters or encoder attribution are needed.
+   valid pass timestamps locate GPU work. In a running editor,
+   `perf.set {"pass_timing": true}` then `perf.snapshot {"passes": true}`
+   reads both live; `os.*` and `cpu.process_time` show throttling, memory
+   pressure and process CPU time. Read [GPU-TRACE.md](GPU-TRACE.md) only
+   when hardware counters or encoder attribution are needed.
 4. Change one attributable cause. Preserve the measured workload or state
    the intentional change. Select correctness checks through `vkr-validation`.
 5. Rerun the same configuration. Compare valid samples and spread, work-volume

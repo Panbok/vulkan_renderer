@@ -5866,6 +5866,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .pipeline_pending_count = pipelines.pending_graphs,
       .pipeline_late_draws = pipelines.late_draws,
       .renderer_health = vkr_renderer_get_health(&application->renderer),
+      .metrics = application->metrics,
+      .pass_table =
+          vkr_renderer_metrics_get_pass_table(&application->renderer_metrics),
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
       .scene_output_scale = application->scene_output_scale,
       .scene_render_width = application->editor_viewport.enabled

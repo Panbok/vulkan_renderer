@@ -8,12 +8,13 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The first part of phase P1 of
+Accepted (partial). Phase P1 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
-implemented: the lib telemetry API, its macOS sources, the registry metrics,
-their Tier 0 recording fields, `health.status` and the harness's system
-conditions. The Windows sources are a stub that reports every signal
-unavailable.
+implemented on the Mac: the lib telemetry API, its macOS sources, the registry
+metrics, their Tier 0 recording fields, `health.status`, the harness's system
+conditions, Metal present latency, the recording timeline's System lane and
+the `perf.snapshot` and `perf.set` operations. The Windows sources are a stub
+that reports every signal unavailable, and Vulkan reports no present latency.
 
 ## Context
 
@@ -79,6 +80,37 @@ or critical thermal level, `memory.pressure` at critical pressure and
 `power.low_power` in low-power mode, at any counted frame or at start or end.
 On battery is reported only.
 
+**Present latency** ([vkr_metal_packet_present.inc](../../renderer/src/metal/internal/vkr_metal_packet_present.inc)):
+each window present writes the drawable's ID and the CPU time of the call
+into one of 8 marks and adds a presented handler created once at setup. The
+handler, on a Core Animation thread, adds `presentedTime` minus that time to
+atomics, or counts a miss when `presentedTime` is 0. Both clocks are
+`mach_absolute_time`. A drawable on its way to the display keeps the handler
+after the renderer is destroyed, so the marks and totals live in a separate
+allocation that the renderer and each pending present reference; the last
+reference frees it. The collector publishes `gpu.present.latency` (one mean
+sample per frame) and `gpu.present.missed` (counter), both in Tier 0.
+
+**Live reads** ([editor_ops.c](../../editor/src/editor_ops.c)):
+`perf.snapshot` answers the newest published metrics frame from the live
+registry, filtered by name prefix, with `{ms, count, max_ms}` per duration,
+`{unavailable: reason}` per empty slot and, with `passes`, each executed
+render graph pass's CPU and GPU milliseconds. `perf.set` switches pass and
+submission GPU timing as `VKR_RG_GPU_TIMING`, `VKR_GPU_SUBMISSION_TIMING`
+and the F7 key do; a recording still controls them while it runs. The UI
+frame borrows the registry and the pass table for the build.
+
+**System lane** ([editor_recording_timeline.c](../../editor/src/editor_recording_timeline.c)):
+a recording playback loads the thermal level, memory pressure, low-power
+mode, footprint, GPU errors and log errors of each frame
+([vkr_recording_playback.c](../../runtime/src/recording/vkr_recording_playback.c)),
+and the timeline shows them under the memory lane for recordings that carry
+them. Each column keeps its worst value: fair thermal and warn pressure are
+faint warning bands, serious thermal and low power warning bands, critical
+levels error bands, with error ticks for frames that counted GPU or log
+errors. The legend names the view's worst signals or says that all were
+nominal; hovering names a column's states and footprint, and a click seeks.
+
 ## Consequences
 
 - A slow frame in a recording or report can be checked against throttling,
@@ -89,6 +121,8 @@ On battery is reported only.
 - Each frame does about 2.5 µs more work on the publishing thread, and a frame
   once a second about 90 µs more for the power source. Neither was measured
   in a timing run.
+- A hidden harness window never reaches the display: every present there is
+  a miss and no latency is sampled.
 
 ## Alternatives considered
 
@@ -119,4 +153,13 @@ On battery is reported only.
   the critical threshold and lost authority to `memory.pressure` at warn.
 - A headless Bistro editor's `health.status` returned thermal nominal,
   pressure warn, footprint 4066 MiB, AC power and low power off.
+- Present feedback: a hidden-window Bistro run counted 240 of 240 presents
+  as missed (`presentedTime` 0) and sampled no latency; latency on a visible
+  window has no run yet.
+- A headless Bistro editor: `perf.snapshot` with `prefix` `os.` answered the
+  six platform gauges; after `perf.set` `pass_timing` true, `passes` answered
+  GPU milliseconds per pass and `unsupported_timestamp_scope` for transfer
+  passes. A 4 s Tier 0 recording opened in Watch showed the System lane
+  without Analyze, all nominal, and a click on frame 416 showed its states
+  and a 3.9 GiB footprint.
 - Windows: stub only.

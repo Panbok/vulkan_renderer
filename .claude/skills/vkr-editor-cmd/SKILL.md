@@ -125,5 +125,7 @@ statement: use `content.place`, `content.drop`, `content.move` and
 as unverified. It does not capture images; use the harness (`vkr-harness`)
 for pixel evidence. Results also reach the Console and the session log in
 `<workspace>/logs/`; stdout is the record for scripts. Through the agent
-channel, `log.read` returns log records by level and text and
-`health.status` returns GPU errors, validation counts and log totals.
+channel, `log.read` returns log records by level and text,
+`health.status` returns GPU errors, validation counts, log totals and system
+telemetry, `perf.snapshot` returns the newest metrics frame (add `passes` for
+per-pass times) and `perf.set` switches pass and submission GPU timing.
