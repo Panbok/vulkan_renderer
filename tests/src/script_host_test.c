@@ -368,12 +368,12 @@ static void script_order_session(VkrScriptHost *host, uint32_t filler,
   Spin value;
   type->defaults(&value);
   for (uint32_t i = 0; i < 2u; ++i) {
-    const bool8_t far = (i == 0u) == far_first;
+    const bool8_t is_far = (i == 0u) == far_first;
     const VkrEntityId entity = vkr_scene_create_entity(&scene, NULL);
     assert(vkr_scene_set_transform(&scene, entity, vec3_zero(),
                                    vkr_quat_identity(), vec3_one()));
-    assert(vkr_scene_set_name(&scene, entity,
-                              far ? string8_lit("Far") : string8_lit("Near")));
+    assert(vkr_scene_set_name(
+        &scene, entity, is_far ? string8_lit("Far") : string8_lit("Near")));
     assert(vkr_scene_set_typed(&scene, entity, type, &value));
   }
   /* A re-simulating drive makes the session deterministic. */
