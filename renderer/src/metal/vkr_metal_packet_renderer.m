@@ -578,6 +578,24 @@ typedef struct VkrMetalPacketCommitFeedbackRecord {
 #define VKR_METAL_SDF_SCRATCH_VOXELS                                           \
   (4u * VKR_METAL_SDF_MAX_DIM * VKR_METAL_SDF_MAX_DIM * VKR_METAL_SDF_MAX_DIM)
 
+/* An ICB group's command pool holds at least this many views of every
+   candidate before the frames' visible draws ask for more (ADR-024). */
+#define VKR_METAL_PACKET_GPU_DRAW_POOL_FLOOR_VIEWS 4u
+/* The pool grows once a frame needs this share of its target, to twice
+   that need in whole steps. */
+#define VKR_METAL_PACKET_GPU_DRAW_POOL_HEADROOM_NUM 3u
+#define VKR_METAL_PACKET_GPU_DRAW_POOL_HEADROOM_DEN 2u
+#define VKR_METAL_PACKET_GPU_DRAW_POOL_STEP 32768u
+
+/* VkrMetalPacketCommandSlot.gpu_draw_view_targets: the kind above the
+   cascade or local atlas layer in the low byte. */
+enum {
+  VKR_METAL_PACKET_VIEW_TARGET_NONE = 0u,
+  VKR_METAL_PACKET_VIEW_TARGET_CASCADE = 0x100u,
+  VKR_METAL_PACKET_VIEW_TARGET_LOCAL = 0x200u,
+  VKR_METAL_PACKET_VIEW_TARGET_LAYER_MASK = 0xFFu,
+};
+
 typedef struct VkrMetalPacketCommandSlot {
   /* The frame's count of late Custom draws in the readback slice, which
      the result reads once the frame completes (ADR-096); NULL without
@@ -612,6 +630,10 @@ typedef struct VkrMetalPacketCommandSlot {
   /** Cascades whose dynamic-caster view drew over a copied layer. */
   uint32_t shadow_cascade_dynamic_render_mask;
   uint32_t gpu_draw_view_count;
+  /** What each culling view of the slot's frame drew into, for repair when
+      the command pool cut its draws: VKR_METAL_PACKET_VIEW_TARGET_* above
+      the cascade or the local atlas layer. */
+  uint16_t gpu_draw_view_targets[VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX];
   bool8_t gpu_draw_diagnostics_requested;
   bool8_t exposure_requested;
   uint32_t gpu_draw_icb_residency_count;
@@ -1178,6 +1200,9 @@ struct VkrMetalPacketRenderer {
   uint32_t max_instances;
   uint32_t gpu_draw_icb_view_group_size;
   uint32_t gpu_draw_icb_group_count;
+  /* The commands an ICB group's pool takes, from the frames' visible draws
+     read back at completion with headroom; each slot grows to it. */
+  uint32_t gpu_draw_pool_target;
   uint64_t upload_slot_size;
   uint32_t resize_count;
   /* Only allocation failure enables the cold resize retirement prepass. */

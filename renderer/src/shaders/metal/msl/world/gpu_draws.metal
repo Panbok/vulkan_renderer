@@ -39,7 +39,9 @@ struct VkrMetalPacketGpuDrawRoot {
   const device struct VkrMetalSdfVolumeRow *sdf_volume_rows;
   const device uint2 *sdf_mesh_volumes;
   uint sdf_mesh_count;
-  uint reserved_3;
+  // Commands each ICB group's pool holds: the prefix places the views'
+  // ranges one after another within it.
+  uint command_capacity;
 };
 
 // SDF sun shadows (vkr_metal_packet_sdf.inc): one submesh's distance volume
@@ -421,36 +423,31 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                             memory_order_relaxed);
 }
 
-kernel void
-vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
-                                 [[buffer(0)]],
-                                 uint view_index [[thread_position_in_grid]]) {
-  if (view_index >= root.view_count)
-    return;
+/* One view's buckets from `pool_base` in its ICB group's pool: each takes
+   its whole count while the view's rows and the pool hold it, and the rest
+   counts as overflow. Returns the commands the view placed. */
+static uint vkr_metal_packet_gpu_draw_place_view(
+    constant VkrMetalPacketGpuDrawRoot &root, uint view_index, uint pool_base,
+    uint pool_left) {
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
-  // Commands use the candidate count; visible rows use the prepared stride
-  // shared by classification, raster, resolve and picking for this frame.
-  // Each bucket's range follows the previous one and takes its whole count
-  // within the view's rows, which hold every candidate, so no bucket drops
-  // the draws that reach it last.
-  uint command_base =
-      (view_index % root.icb_view_group_size) * root.candidate_count;
+  /* A retained cascade's pass does not run this frame: it takes no
+     commands, and its counts are no overflow. */
+  const bool idle = root.views[view_index].encode_idle != 0u;
+  uint capacity = idle ? 0u : min(root.visible_capacity, pool_left);
   uint visible_count = 0u;
   uint overflow_count = 0u;
   for (uint bucket = 0u; bucket < 8u; ++bucket) {
     uint bucket_count = atomic_load_explicit(&state.bucket_counts[bucket],
                                              memory_order_relaxed);
-    uint written_count =
-        min(bucket_count, root.visible_capacity - visible_count);
+    uint written_count = min(bucket_count, capacity - visible_count);
     state.execution_ranges[bucket] =
-        uint2(command_base + visible_count, written_count);
+        uint2(pool_base + visible_count, written_count);
     visible_count += written_count;
-    overflow_count += bucket_count - written_count;
+    overflow_count += idle ? 0u : bucket_count - written_count;
     atomic_store_explicit(&state.bucket_cursors[bucket], 0u,
                           memory_order_relaxed);
   }
-  /* The camera's Custom buckets follow its Standard ones, in the view's
-     remaining capacity. */
+  /* The camera's Custom buckets follow its Standard ones. */
   if (view_index == 0u && root.custom_compaction != nullptr) {
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
     for (uint plane = 0u; plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
@@ -460,10 +457,9 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
           uint bucket_count = atomic_load_explicit(
               &custom.bucket_counts[plane][slot][bucket],
               memory_order_relaxed);
-          uint written_count =
-              min(bucket_count, root.visible_capacity - visible_count);
+          uint written_count = min(bucket_count, capacity - visible_count);
           custom.execution_ranges[plane][slot][bucket] =
-              uint2(command_base + visible_count, written_count);
+              uint2(pool_base + visible_count, written_count);
           visible_count += written_count;
           overflow_count += bucket_count - written_count;
           atomic_store_explicit(&custom.bucket_cursors[plane][slot][bucket],
@@ -475,6 +471,28 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
   state.visible_count = visible_count;
   atomic_store_explicit(&state.overflow_count, overflow_count,
                         memory_order_relaxed);
+  return visible_count;
+}
+
+/* One thread per ICB group places its views' ranges one after another in
+   the group's pool, the camera first, so the pool holds the frame's visible
+   draws rather than every candidate per view. Each view's first range
+   starts its commands; visible rows keep each view's own stride, shared by
+   classification, raster, resolve and picking. A view the pool cannot hold
+   whole reports the rest as overflow, which the host repairs (ADR-024). */
+kernel void
+vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
+                                 [[buffer(0)]],
+                                 uint group [[thread_position_in_grid]]) {
+  const uint first_view = group * root.icb_view_group_size;
+  if (first_view >= root.view_count)
+    return;
+  const uint end_view =
+      min(first_view + root.icb_view_group_size, root.view_count);
+  uint pool_used = 0u;
+  for (uint view_index = first_view; view_index < end_view; ++view_index)
+    pool_used += vkr_metal_packet_gpu_draw_place_view(
+        root, view_index, pool_used, root.command_capacity - pool_used);
 }
 
 // Where a probe's influence reaches one half against a world sphere: 0 nowhere
@@ -556,8 +574,8 @@ kernel void vkr_metal_packet_gpu_draw_encode(
     return;
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   uint bucket = (classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) - 1u;
-  uint command_base =
-      (view_index % root.icb_view_group_size) * root.candidate_count;
+  /* The prefix starts the view's commands at its first range. */
+  uint command_base = state.execution_ranges[0].x;
   uint visible_index = 0u;
   if ((classification &
        (VKR_METAL_CUSTOM_CLASS_BIT | VKR_METAL_BRDF_CLASS_BIT)) != 0u) {

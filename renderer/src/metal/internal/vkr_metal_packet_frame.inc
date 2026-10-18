@@ -1307,6 +1307,16 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   root->visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity;
   root->view_count = view_count;
   root->icb_view_group_size = renderer->gpu_draw_icb_view_group_size;
+  const uint32_t group_count =
+      (view_count + root->icb_view_group_size - 1u) / root->icb_view_group_size;
+  if (group_count > VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX)
+    return false_v;
+  /* Every group's pool holds at least the smallest one's commands. */
+  root->command_capacity = UINT32_MAX;
+  for (uint32_t group = 0u; group < group_count; ++group)
+    root->command_capacity =
+        MIN(root->command_capacity,
+            renderer->active_command_slot->gpu_draw_icb_capacities[group]);
   root->static_candidate_count = renderer->gpu_draw_static_count;
   root->views = upload->gpu_draw_views_gpu;
   root->lod_views = upload->gpu_draw_lod_views_gpu;
@@ -1374,11 +1384,12 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     if (!state)
       return false_v;
     root->compaction_state = state->resource.gpu_address;
+    /* One thread places each ICB group's views in its pool. */
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->gpu_draw_prefix_pipeline,
         .root = root_gpu,
-        .threads = MTLSizeMake(view_count, 1u, 1u),
-        .group_size = MTLSizeMake(view_count, 1u, 1u),
+        .threads = MTLSizeMake(group_count, 1u, 1u),
+        .group_size = MTLSizeMake(group_count, 1u, 1u),
     };
     prepared->active = true_v;
     return true_v;
@@ -1460,6 +1471,22 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
         !vkr_metal_packet_attach_temporal_draw_state(
             renderer, packet, upload, frame_root_gpu))
       return false_v;
+    /* What the view draws into, which a cut command pool invalidates. */
+    const uint32_t cascade =
+        camera_view || local_view
+            ? 0u
+            : vkr_render_graph_view_cascade(&renderer->prepared_frame, view);
+    renderer->active_command_slot->gpu_draw_view_targets[view] =
+        (uint16_t)(camera_view ? VKR_METAL_PACKET_VIEW_TARGET_NONE
+                   : local_view
+                       ? VKR_METAL_PACKET_VIEW_TARGET_LOCAL |
+                             ((uint32_t)packet->input.local_shadow
+                                  ->views[local_face]
+                                  .atlas_rect.w &
+                              VKR_METAL_PACKET_VIEW_TARGET_LAYER_MASK)
+                       : VKR_METAL_PACKET_VIEW_TARGET_CASCADE |
+                             (cascade &
+                              VKR_METAL_PACKET_VIEW_TARGET_LAYER_MASK));
     draw_roots[view] = (VkrMetalPacketDrawRoot){
         .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
         .visible_rows = visible->resource.gpu_address +
@@ -1479,14 +1506,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   root->visible_rows = visible->resource.gpu_address;
   root->draw_roots = draw_roots_gpu;
   const uint32_t encode_group_size = root->icb_view_group_size;
-  const uint32_t encode_group_count =
-      (view_count + encode_group_size - 1u) / encode_group_size;
-  if (encode_group_count > VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX)
-    return false_v;
+  const uint32_t encode_group_count = group_count;
   prepared->gpu_encode.group_count = encode_group_count;
   prepared->gpu_encode.candidate_count = candidate_count;
-  prepared->gpu_encode.idle_view_mask =
-      vkr_render_graph_cascade_idle_view_mask(&renderer->prepared_frame);
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =
@@ -1513,6 +1535,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
         .arguments = icb_argument_gpu,
         .first_view = first_view,
         .view_count = group_view_count,
+        .command_capacity = root->command_capacity,
     };
   }
   prepared->active = true_v;

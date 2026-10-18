@@ -667,7 +667,9 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   uint64_t sdf_volume_rows;
   uint64_t sdf_mesh_volumes;
   uint32_t sdf_mesh_count;
-  uint32_t reserved_3;
+  /** Commands each ICB group's pool holds; the prefix places the views'
+      ranges one after another within it. */
+  uint32_t command_capacity;
 } VkrMetalPacketGpuDrawRoot;
 
 /* Custom graph slots: slot 0 is the Standard tier; graphs take 1 onward

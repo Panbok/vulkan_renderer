@@ -635,8 +635,13 @@ Both native shader paths compile. A focused Bistro editor reload and
 cancellation passes Metal API validation with visible backdrop blur; native
 Vulkan evidence of the blur is not recorded.
 
-Metal command-buffer demand growth uses the existing candidate count as its
-per-view ICB command stride. Graph draw-table storage follows scene demand on
+Metal command-buffer demand growth places the views' commands one after
+another in each ICB group's pool since 2026-10-18 (ADR-024): the prefix
+kernel runs one thread per group, each view's commands start at its first
+range (`execution_ranges[0].x`), which encode subtracts to index the view's
+visible rows, and draws the pool cannot hold count as overflow. The root's
+former `reserved_3` is `command_capacity`. Before, each view's commands
+started at the view's index times the candidate count. Graph draw-table storage follows scene demand on
 both backends through existing native capacity fields. Source capacity is
 `C = pow2(max(candidate_count, 1))`. Metal's visible, classification and
 argument stride is `V = 8 * min(C, 65536)`, which holds every candidate

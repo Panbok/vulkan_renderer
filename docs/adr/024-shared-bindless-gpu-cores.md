@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -182,8 +182,23 @@ allocation failures continue through the approved bounded Scene-relief path.
 Metal ICBs are also demand-created. Each acquired command slot retains separately
 sized main and transmission command buffers. Preflight rounds candidate capacity
 up to a power of two within the existing 262,144 candidate limit, after proving
-that slot's previous submissions complete. View command offsets use actual
-candidate count. Graph draw tables follow the demand-capacity contract in
+that slot's previous submissions complete. Since 2026-10-18 an ICB group's
+views share one command pool: the prefix kernel, one thread per group, places
+each view's ranges after the previous view's, the camera first, and a
+retained cascade whose pass does not run takes none. The pool holds what the
+frames' views needed, read back with the compaction state at completion: once
+a frame needs two thirds of it, it grows to twice that need in steps of 32,768
+commands, never below four views of every candidate and never above every
+candidate in every view, which cannot overflow. A view the pool cannot hold
+whole reports the rest as overflow, and its shadow layer (the local atlas
+layer, or the cascade's static and per-slot layers) loses its retained
+content so it draws again; a cut camera view loses those draws for its frame.
+The encode pass resets the pool once instead of each view's range. Before,
+each view took every candidate's command: on the M1 Pro an ICB command takes
+about 700 bytes whatever its bindings, so the Level Design Test's 31 views
+held 682 MiB per slot, and each new high in the frame's view count released
+and reallocated it on the render thread, 11 to 214 ms with its residency
+commit, the 90 to 250 ms play stalls of rec-20261018-120657. Graph draw tables follow the demand-capacity contract in
 [ADR-002](002-render-graph.md), preserving the existing maximum bucket limits.
 Growth removes and releases the completed old ICB before charging its
 replacement. Failure leaves an empty slot for normal frame cancellation/retry;
@@ -198,6 +213,20 @@ recovery support full 1528×1074 editor output with all textures resident in the
 bounded two-load check recorded in
 [ADR-046](046-editor-viewport-mapping-and-picking.md#verification-and-limits).
 These are diagnostic checks, not panic-causality or long-session stability proof.
+
+The shared pool (2026-10-18, Release, M1 Pro, headless editor, `rec.drive`
+of rec-20261018-120657 in the Level Design Test, local and non-authoritative):
+each slot's ICB grew to 88 MiB during load instead of 682 MiB, the largest
+growth taking 16.5 ms; the drive had no frame over 50 ms against 100 to
+250 ms stalls before, GPU memory stayed at 4,341 MiB instead of rising from
+4,951 to 5,301 MiB, and `Cull.Encode` fell from 1.14 to 0.45 ms while
+`Cull.Prefix` rose from 0.135 to 0.155 ms. Fixed Edit-mode captures of four
+views, lit and shadow factor, differ from the per-view build within the
+run-to-run noise of one build (38 to 51 dB PSNR against 40 to 50 dB), and
+picking selects the same entities. A build whose floor held one view cut
+draws in the first frames, invalidated their local layers and grew the pool
+to 98,304 commands; its settled captures match within the same noise. Metal
+API validation was not run; the desktop pipeline (Vulkan) is unchanged.
 The command-capacity API report SHA-256 is
 `819dfb4ee766c027d61ee4144e01bd3e2112aa607304276e0476b419db8022a5`; the
 matching Release captures have SHA-256

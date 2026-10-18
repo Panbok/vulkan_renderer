@@ -171,21 +171,13 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     }
     break;
   case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE: {
+    /* The prefix places this frame's views anywhere in the pool, so the
+       whole pool resets; a retained cascade takes none of it, since its
+       pass does not run. */
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
-      for (uint32_t view = 0u; view < group->view_count; ++view) {
-        /* A retained cascade's pass does not run, so its stale commands are
-           never executed; the frame that redraws it resets them first. */
-        const uint32_t global_view = group->first_view + view;
-        if (global_view < 64u &&
-            (pass->gpu_encode.idle_view_mask & (UINT64_C(1) << global_view)))
-          continue;
-        [encoder resetCommandsInBuffer:group->commands
-                             withRange:NSMakeRange(
-                                           (uint64_t)view *
-                                               pass->gpu_encode.candidate_count,
-                                           pass->gpu_encode.candidate_count)];
-      }
+      [encoder resetCommandsInBuffer:group->commands
+                           withRange:NSMakeRange(0u, group->command_capacity)];
     }
     /* Metal 4 resets execute at the blit stage, concurrently with dispatches
        unless this intra-pass dependency orders command generation after them.

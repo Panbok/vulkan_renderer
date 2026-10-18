@@ -1887,11 +1887,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_icbs(
       const uint32_t group_view_count =
           MIN(renderer->gpu_draw_icb_view_group_size,
               view_count - group * renderer->gpu_draw_icb_view_group_size);
+      /* The pool takes what the frames' visible draws needed, at least a
+         few views of every candidate and never more than every candidate
+         in every view, which cannot overflow. */
+      const uint64_t every_draw =
+          (uint64_t)candidate_capacity * group_view_count;
+      const uint64_t floor = (uint64_t)candidate_capacity *
+                             VKR_METAL_PACKET_GPU_DRAW_POOL_FLOOR_VIEWS;
+      const uint32_t commands = (uint32_t)Min(
+          every_draw, Max(floor, (uint64_t)renderer->gpu_draw_pool_target));
       if (!vkr_metal_packet_reserve_gpu_draw_icb(
               renderer, slot->gpu_draw_icb_residencies[group],
               &slot->gpu_draw_icbs[group],
-              &slot->gpu_draw_icb_capacities[group],
-              candidate_capacity * group_view_count, out_error))
+              &slot->gpu_draw_icb_capacities[group], commands, out_error))
         return false_v;
     }
   }

@@ -749,7 +749,8 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {
                   "sdf_mesh_volumes", 208),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, sdf_mesh_count, "sdf_mesh_count",
                   216),
-    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, reserved_3, "reserved_3", 220),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, command_capacity,
+                  "command_capacity", 220),
 };
 
 vkr_global const VkrMetalPacketAbiField

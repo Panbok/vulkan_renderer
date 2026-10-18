@@ -71,6 +71,9 @@ typedef struct VkrMetalPacketGpuEncodeGroup {
   uint64_t arguments;
   uint32_t first_view;
   uint32_t view_count;
+  /* The pool's commands, which the encode pass resets before it fills
+     them. */
+  uint32_t command_capacity;
 } VkrMetalPacketGpuEncodeGroup;
 
 typedef struct VkrMetalPacketBufferCopy {
@@ -146,9 +149,6 @@ typedef struct VkrMetalPacketPreparedPass {
           groups[VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX];
       uint32_t group_count;
       uint32_t candidate_count;
-      /** Culling views of retained cascades, a bit each at their view index;
-       * their commands are neither reset nor encoded. */
-      uint64_t idle_view_mask;
     } gpu_encode;
     struct {
       VkrMetalPacketDirectPass direct;

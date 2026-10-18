@@ -165,6 +165,77 @@ vkr_metal_packet_harvest_commit_feedback(VkrMetalPacketRenderer *renderer) {
   }
 }
 
+/* Marks `layer` of every instance of the one-mip retained image `name`
+   as holding no content, so the next frame that reads it draws it again. */
+vkr_internal void
+vkr_metal_packet_invalidate_retained_layer(VkrMetalPacketRenderer *renderer,
+                                           const char *name, uint32_t layer) {
+  for (uint64_t i = 0u; i < renderer->graph->images.length; ++i) {
+    const VkrRgImage *image = array_get_VkrRgImage(&renderer->graph->images, i);
+    if (!image || !vkr_string8_equals_cstr(&image->name, name))
+      continue;
+    VkrMetalPacketImage *slot = &renderer->images[i];
+    if (!slot->live || slot->desc.mip_levels != 1u ||
+        layer >= MIN(slot->desc.layers, VKR_METAL_PACKET_MAX_TEXTURE_LAYERS))
+      return;
+    for (uint32_t instance = 0u; instance < slot->instance_count; ++instance)
+      slot->instances[instance].retained_states[layer].content_valid = false_v;
+    return;
+  }
+}
+
+/* Grows the GPU-draw command pool from the commands a completed frame's
+   views needed, the visible draws and those the pool cut, per ICB group:
+   once a frame needs two thirds of the target, the target becomes twice
+   that need, so a pool grows in few, large steps. A cut view drew a shadow
+   layer later frames would reuse without the cut casters, so that layer
+   draws again; a cut camera view loses those draws for its frame only. */
+vkr_internal void
+vkr_metal_packet_gpu_draw_pool_feedback(VkrMetalPacketRenderer *renderer,
+                                        const VkrMetalPacketCommandSlot *slot) {
+  const VkrGpuDrawCompactionState *states =
+      (const VkrGpuDrawCompactionState *)slot->gpu_draw_diagnostics_readback;
+  const uint32_t view_count =
+      MIN(slot->gpu_draw_view_count, VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX);
+  const uint32_t group_size = renderer->gpu_draw_icb_view_group_size;
+  uint64_t needed = 0u;
+  uint64_t group_needed = 0u;
+  for (uint32_t view = 0u; view < view_count; ++view) {
+    if (view % group_size == 0u) {
+      needed = Max(needed, group_needed);
+      group_needed = 0u;
+    }
+    group_needed +=
+        (uint64_t)states[view].visible_count + states[view].overflow_count;
+    if (states[view].overflow_count == 0u)
+      continue;
+    const uint32_t target = slot->gpu_draw_view_targets[view];
+    const uint32_t layer = target & VKR_METAL_PACKET_VIEW_TARGET_LAYER_MASK;
+    if (target & VKR_METAL_PACKET_VIEW_TARGET_LOCAL) {
+      vkr_metal_packet_invalidate_retained_layer(renderer, "local_shadow_map",
+                                                 layer);
+    } else if (target & VKR_METAL_PACKET_VIEW_TARGET_CASCADE) {
+      vkr_metal_packet_invalidate_retained_layer(
+          renderer, "shadow_cascade_static", layer);
+      vkr_metal_packet_invalidate_retained_layer(renderer, "shadow_map", layer);
+    }
+    log_warn("Metal GPU-draw pool cut %u draws of view %u (pool target %u)",
+             states[view].overflow_count, view, renderer->gpu_draw_pool_target);
+  }
+  needed = Max(needed, group_needed);
+  if (needed * VKR_METAL_PACKET_GPU_DRAW_POOL_HEADROOM_NUM <=
+      (uint64_t)renderer->gpu_draw_pool_target *
+          VKR_METAL_PACKET_GPU_DRAW_POOL_HEADROOM_DEN)
+    return;
+  const uint64_t step = VKR_METAL_PACKET_GPU_DRAW_POOL_STEP;
+  const uint64_t grown = (needed * 2u + step - 1u) / step * step;
+  log_info("Metal GPU-draw pool target %u -> %llu commands (a frame needed "
+           "%llu)",
+           renderer->gpu_draw_pool_target, (unsigned long long)grown,
+           (unsigned long long)needed);
+  renderer->gpu_draw_pool_target = (uint32_t)Min(grown, (uint64_t)UINT32_MAX);
+}
+
 vkr_internal void
 vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketCommandSlot *slot) {
@@ -177,6 +248,7 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
         &slot->pending_result, slot->gpu_draw_diagnostics_readback,
         slot->shadow_cascade_count, slot->shadow_cascade_dynamic_render_mask,
         slot->gpu_draw_view_count);
+    vkr_metal_packet_gpu_draw_pool_feedback(renderer, slot);
   }
   if (slot->custom_late_readback) {
     slot->pending_result.custom_late_count = *slot->custom_late_readback;
