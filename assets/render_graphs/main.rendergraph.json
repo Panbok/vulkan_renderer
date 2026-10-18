@@ -1684,7 +1684,7 @@
     {
       "name": "temporal_history_accept",
       "type": "image",
-      "condition": "scene_rendering",
+      "condition": "scene_rendering && !fsr31_enabled",
       "extent": {
         "mode": "viewport"
       },

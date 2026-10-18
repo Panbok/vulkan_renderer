@@ -485,9 +485,12 @@ and every tiled Pass output source on Bistro in a headless Release editor, live
 and during a recording's playback, with no ABI mismatch; a source the frame
 lacked (the sun shadow trace) drew stripes. The desktop build compiles both
 Vulkan entries, `spirv-val` accepts `packet.pass_output.frag.spv`, and its
-reflected root offsets match `VkrVulkanPassOutputRoot`. Native Vulkan
-evidence for both views is unavailable on the Mac and waits for the Windows
-host.
+reflected root offsets match `VkrVulkanPassOutputRoot`. On the Windows host
+(RX 6700 XT, Release at 69b3f530) the desktop pipeline drew the shadow views,
+the seven desktop modes and the Pass output sources on Bistro with no Khronos
+validation message. Under FSR 3.1 no pass writes `temporal_history_accept`,
+so History accepted read an unwritten image; the image now exists only while
+FSR is off (`!fsr31_enabled`), and that view draws stripes under FSR.
 
 ## Decision
 
