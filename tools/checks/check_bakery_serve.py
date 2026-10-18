@@ -5,12 +5,17 @@ Covers runs with tagged events, watches with one background rebuild per
 edit (the daemon's own outputs do not retrigger it), cancellation of a
 running command, disconnection, a second daemon for the same socket, stale
 socket recovery, shutdown and idle exit.
+
+Runs on macOS and Windows. Windows Python has no socket.AF_UNIX, so there the
+client calls Winsock's AF_UNIX through ctypes.
 """
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path
 import random
+import signal
 import socket
 import struct
 import subprocess
@@ -22,6 +27,71 @@ import project_jobs as jobs
 
 # Seconds a watch event may take to arrive; see the watch case in main().
 WATCH_DELIVERY_TIMEOUT = 120.0
+WINDOWS = os.name == 'nt'
+
+
+def same_path(a, b):
+    """The daemon reports '/' paths; Windows also ignores case."""
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+class WinsockUnixSocket:
+    """The part of socket.socket the checks use, over Winsock AF_UNIX."""
+
+    AF_UNIX = 1
+    SOL_SOCKET = 0xffff
+    SO_RCVTIMEO = 0x1006
+    WSAETIMEDOUT = 10060
+
+    class Address(ctypes.Structure):
+        _fields_ = [('family', ctypes.c_ushort), ('path', ctypes.c_char * 108)]
+
+    def __init__(self):
+        ws2 = ctypes.WinDLL('ws2_32')
+        ws2.socket.restype = ctypes.c_size_t
+        ws2.connect.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_int]
+        ws2.send.argtypes = [ctypes.c_size_t, ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        ws2.recv.argtypes = [ctypes.c_size_t, ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+        ws2.setsockopt.argtypes = [ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_void_p, ctypes.c_int]
+        ws2.closesocket.argtypes = [ctypes.c_size_t]
+        # WSADATA is about 400 bytes; Winsock stays started for the process.
+        if ws2.WSAStartup(0x0202, ctypes.create_string_buffer(1024)) != 0:
+            raise OSError('WSAStartup failed')
+        self.ws2 = ws2
+        self.handle = ws2.socket(self.AF_UNIX, socket.SOCK_STREAM, 0)
+        if self.handle == ctypes.c_size_t(-1).value:
+            raise OSError(ws2.WSAGetLastError(), 'socket(AF_UNIX) failed')
+
+    def connect(self, path):
+        address = self.Address(self.AF_UNIX, str(path).encode())
+        if self.ws2.connect(self.handle, ctypes.byref(address), ctypes.sizeof(address)) != 0:
+            raise ConnectionError(self.ws2.WSAGetLastError(), f'cannot connect to {path}')
+
+    def settimeout(self, seconds):
+        milliseconds = ctypes.c_uint32(max(1, int(seconds * 1000)))
+        self.ws2.setsockopt(self.handle, self.SOL_SOCKET, self.SO_RCVTIMEO,
+                            ctypes.byref(milliseconds), ctypes.sizeof(milliseconds))
+
+    def sendall(self, data):
+        while data:
+            sent = self.ws2.send(self.handle, data, len(data), 0)
+            if sent < 0:
+                raise ConnectionError(self.ws2.WSAGetLastError(), 'send failed')
+            data = data[sent:]
+
+    def recv(self, size):
+        buffer = ctypes.create_string_buffer(size)
+        received = self.ws2.recv(self.handle, buffer, size, 0)
+        if received < 0:
+            error = self.ws2.WSAGetLastError()
+            if error == self.WSAETIMEDOUT:
+                raise socket.timeout('timed out')
+            raise ConnectionError(error, 'recv failed')
+        return buffer.raw[:received]
+
+    def close(self):
+        self.ws2.closesocket(self.handle)
 
 
 def write_png(path, width, height, seed):
@@ -41,7 +111,10 @@ def write_png(path, width, height, seed):
 
 class Client:
     def __init__(self, path):
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if hasattr(socket, 'AF_UNIX'):
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        else:
+            self.socket = WinsockUnixSocket()
         self.socket.connect(str(path))
         self.buffer = b''
         self.next_id = 1
@@ -84,13 +157,24 @@ class Client:
 
 
 def start(bakery, root, socket_path, cache, *extra):
+    # Its own process group on Windows, so stop() can raise SIGBREAK in it.
     process = subprocess.Popen([str(bakery), 'serve', '--root', str(root), '--socket',
                                 str(socket_path), *extra],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                               env={**os.environ, 'VKR_BAKERY_CACHE': str(cache)})
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               encoding='utf-8',
+                               env={**os.environ, 'VKR_BAKERY_CACHE': str(cache)},
+                               creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0)
     listening = json.loads(process.stdout.readline())
     assert listening['ev'] == 'listening' and listening['socket'] == str(socket_path), listening
     return process
+
+
+def stop(process):
+    """SIGTERM; Windows has none, and the daemon takes Ctrl+Break as it."""
+    if WINDOWS:
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        process.terminate()
 
 
 def main():
@@ -105,7 +189,8 @@ def main():
         sources.mkdir()
         write_png(sources / 'small.png', 16, 16, 1)
         # A short socket path: Unix socket names are limited to ~100 bytes.
-        socket_path = Path('/tmp') / f'vkr-serve-check-{os.getpid()}.sock'
+        socket_directory = Path(tempfile.gettempdir()) if WINDOWS else Path('/tmp')
+        socket_path = socket_directory / f'vkr-serve-check-{os.getpid()}.sock'
         daemon = start(bakery, root, socket_path, cache, '--idle-exit', '60')
         try:
             client = Client(socket_path)
@@ -118,7 +203,8 @@ def main():
             assert events[-1]['exit'] == 0, events
             assert all(event.get('req') == run for event in events)
             done = [event for event in events if event.get('ev') == 'done']
-            assert done and done[0]['outputs'] == [str(sources / 'small.png.vkt')]
+            assert done and len(done[0]['outputs']) == 1, done
+            assert same_path(done[0]['outputs'][0], sources / 'small.png.vkt'), done
             assert (sources / 'small.png.vkt').is_file()
             rejected = client.send('run', argv=['project', '--request', 'x'])
             assert client.reply(rejected)[-1]['exit'] == 2
@@ -134,7 +220,8 @@ def main():
             events = client.until(lambda e: e.get('ev') == 'reply' and e.get('watch') == watch,
                                   timeout=WATCH_DELIVERY_TIMEOUT)
             changed = [event for event in events if event.get('ev') == 'changed']
-            assert len(changed) == 1 and changed[0]['paths'] == [str(sources / 'small.png')], changed
+            assert (len(changed) == 1 and len(changed[0]['paths']) == 1 and
+                    same_path(changed[0]['paths'][0], sources / 'small.png')), changed
             assert events[-1]['exit'] == 0
             client.socket.settimeout(2.0)
             try:
@@ -203,7 +290,7 @@ def main():
             client = Client(socket_path)
             slow = client.send('run', argv=['cook', 'src/large.png'])
             client.until(lambda e: e.get('ev') == 'start' and e.get('req') == slow)
-            stopped.terminate()
+            stop(stopped)
             assert client.reply(slow, timeout=60)[-1]['exit'] == 3
             assert stopped.wait(timeout=30) == 0
             assert not socket_path.exists()

@@ -1629,8 +1629,26 @@ static void content_read_builtins(VkrEditorContent *content) {
   }
 }
 
+/* Canonical form of a path, as the listing resolves entry paths; a path
+   that does not exist keeps its spelling. */
+static bool8_t content_real_path(const char *path, char *out,
+                                 uint32_t capacity) {
+  if (!path[0]) {
+    return false_v;
+  }
+  /* Larger than the host PATH_MAX, so only a failed resolve falls back. */
+  char resolved[4096];
+  const FilePath input = file_path_view(path);
+  if (file_path_resolve(&input, resolved, sizeof(resolved)) ==
+      FILE_ERROR_NONE) {
+    return content_copy(out, capacity, resolved);
+  }
+  return content_copy(out, capacity, path);
+}
+
 /* Watches the open project's directory; a project change replaces the
-   watch. */
+   watch. The daemon watches the resolved directory, so a report of a
+   removed file still spells the project's part as the listing does. */
 static void content_watch_project(VkrEditorContent *content) {
   char root[CONTENT_PATH] = {0};
   if (content->service && content->project[0]) {
@@ -1644,30 +1662,14 @@ static void content_watch_project(VkrEditorContent *content) {
   content->watch = EDITOR_BAKERY_SERVICE_NONE;
   content_copy(content->watched, sizeof(content->watched), root);
   if (root[0]) {
-    const char *paths[] = {root};
+    char resolved[CONTENT_PATH];
+    if (!content_real_path(root, resolved, sizeof(resolved))) {
+      content_copy(resolved, sizeof(resolved), root);
+    }
+    const char *paths[] = {resolved};
     content->watch = editor_bakery_service_watch(content->service, paths,
                                                  ArrayCount(paths), NULL, 0u);
   }
-}
-
-/* Canonical form of an entry path: change reports name real paths. */
-static bool8_t content_real_path(const char *path, char *out,
-                                 uint32_t capacity) {
-  if (!path[0]) {
-    return false_v;
-  }
-#if defined(_WIN32)
-  return content_copy(out, capacity, path);
-#else
-  /* Larger than the host PATH_MAX, so only a failed resolve falls back. */
-  char resolved[4096];
-  const FilePath input = file_path_view(path);
-  if (file_path_resolve(&input, resolved, sizeof(resolved)) ==
-      FILE_ERROR_NONE) {
-    return content_copy(out, capacity, resolved);
-  }
-  return content_copy(out, capacity, path);
-#endif
 }
 
 /* Whether `kind` is an asset a build job makes from a source; scenes,
@@ -1699,10 +1701,12 @@ static bool8_t content_rebuildable(const VkrEditorContent *content,
   if (entry->scope == 1u) {
     return true_v;
   }
+  /* The host's path rules: Windows ignores case and accepts either
+     separator. */
   char source[CONTENT_PATH];
   return entry->scope == 0u &&
          content_real_path(entry->source, source, sizeof(source)) &&
-         string_n_equals(source, resolved_scene, string_length(resolved_scene));
+         file_path_starts_with(source, resolved_scene);
 }
 
 /* Queues a rebuild of `entry` once; a full queue drops it with a warning,
@@ -1778,7 +1782,15 @@ static bool8_t content_file_matches(const char *path, const char *fingerprint) {
    source, or an edited or removed build file, queues a rebuild of a project
    asset or one of the open scene (ADR-077); the rebuild swaps into the open
    scene in place. */
-static void content_apply_change(VkrEditorContent *content, const char *path) {
+static void content_apply_change(VkrEditorContent *content,
+                                 const char *report) {
+  /* The listing resolved every entry path; the report is resolved once, and
+     the host's path rules compare the two (Windows ignores case and accepts
+     either separator). */
+  char path[CONTENT_PATH];
+  if (!content_real_path(report, path, sizeof(path))) {
+    return;
+  }
   FileStats stats = {0};
   FilePath file = {.path = content_string(path),
                    .type = FILE_PATH_TYPE_ABSOLUTE};
@@ -1798,19 +1810,16 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
                 sizeof(resolved_scene) - scene_length, "/");
   for (uint32_t i = 0u; i < content->asset_count; ++i) {
     ContentAsset *entry = &content->entries[i];
-    char source[CONTENT_PATH];
-    char artifact[CONTENT_PATH];
-    const bool8_t is_source =
-        content_real_path(entry->source, source, sizeof(source)) &&
-        string_equals(source, path);
-    const bool8_t is_artifact =
-        !is_source &&
-        content_real_path(entry->path, artifact, sizeof(artifact)) &&
-        string_equals(artifact, path);
     /* One report per file until the listing is read again: an editor can
        save one file as several writes. */
-    if ((!is_source && !is_artifact) || entry->changed || entry->missing ||
-        !content_built_kind(entry->kind)) {
+    if (entry->changed || entry->missing || !content_built_kind(entry->kind)) {
+      continue;
+    }
+    const bool8_t is_source =
+        entry->source[0] && file_path_equals(entry->source, path);
+    const bool8_t is_artifact =
+        !is_source && entry->path[0] && file_path_equals(entry->path, path);
+    if (!is_source && !is_artifact) {
       continue;
     }
     /* The record's own build file (a texture's source is one) proves an
@@ -1818,9 +1827,7 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
        was read again; another file by its time. */
     const bool8_t recorded =
         exists && entry->fingerprint[0] &&
-        (is_artifact ||
-         (content_real_path(entry->path, artifact, sizeof(artifact)) &&
-          string_equals(artifact, path)));
+        (is_artifact || file_path_equals(entry->path, path));
     if (recorded ? content_file_matches(path, entry->fingerprint) : listed) {
       continue;
     }
@@ -1829,7 +1836,7 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
        (content_start_pending_rebuild). */
     if (is_artifact && content->busy) {
       if (content_rebuildable(content, entry, resolved_scene)) {
-        content_queue_rebuild(content, entry, artifact);
+        content_queue_rebuild(content, entry, entry->path);
       }
       continue;
     }
@@ -1855,7 +1862,7 @@ static void content_apply_change(VkrEditorContent *content, const char *path) {
                   : exists
                       ? "Artifact changed on disk; rebuilding from source."
                       : "Artifact removed on disk; rebuilding from source.");
-    content_queue_rebuild(content, entry, is_artifact ? artifact : "");
+    content_queue_rebuild(content, entry, is_artifact ? entry->path : "");
   }
 }
 
@@ -1890,9 +1897,7 @@ static void content_start_pending_rebuild(VkrEditorContent *content) {
         entry != NULL && content_rebuildable(content, entry, resolved_scene);
     const char *artifact = content->pending_rebuilds[pending].artifact;
     if (start && artifact[0]) {
-      char current[CONTENT_PATH];
-      start = content_real_path(entry->path, current, sizeof(current)) &&
-              string_equals(current, artifact) &&
+      start = entry->path[0] && file_path_equals(entry->path, artifact) &&
               !content_file_matches(artifact, entry->fingerprint);
     }
     if (start) {
