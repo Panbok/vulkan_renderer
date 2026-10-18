@@ -753,9 +753,11 @@ against the Windows daemon: tagged runs, a watch with one rebuild per edit
 that its own outputs do not retrigger, cancellation, disconnection, one daemon
 per socket, a stale socket, shutdown, idle exit, and Ctrl+Break as SIGTERM.
 Windows Python has no `socket.AF_UNIX`, so the check's client calls Winsock's
-`AF_UNIX` through ctypes. The run set `TEMP` to an ASCII directory. Below the
-non-ASCII user directory, the texture packer's log line prints its output path
-in the ANSI code page, so a strict UTF-8 JSON reader rejects that event.
+`AF_UNIX` through ctypes. The check passes with `TEMP` below the non-ASCII
+user directory. The texture and HDR cube packers print paths through
+`vkr_filesystem_quoted_utf8`, because `operator<<` on a path converts through
+the ANSI code page on Windows, and a strict UTF-8 JSON reader rejected those
+log events.
 
 Unavailable: a Bistro diffuse bake (memory limit of the measurement host),
 native Vulkan execution of the catalog path (MoltenVK 1.2), a Vulkan bundle
