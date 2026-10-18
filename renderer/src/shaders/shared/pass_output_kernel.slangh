@@ -1,0 +1,124 @@
+// The editor's Pass output view (VkrPassOutputKind, vkr_renderer.h): where an
+// output pixel reads one graph image, and how its texel becomes a
+// display-linear colour. Both backends' pass output entries call these and own
+// the texture reads and the display encoding.
+
+// VkrPassOutputKind.
+#define VKR_PASS_OUTPUT_KIND_HDR 0u
+#define VKR_PASS_OUTPUT_KIND_COLOR 1u
+#define VKR_PASS_OUTPUT_KIND_NORMAL 2u
+#define VKR_PASS_OUTPUT_KIND_DEPTH 3u
+#define VKR_PASS_OUTPUT_KIND_SHADOW_DEPTH 4u
+#define VKR_PASS_OUTPUT_KIND_VIEW_DEPTH 5u
+#define VKR_PASS_OUTPUT_KIND_VECTOR 6u
+#define VKR_PASS_OUTPUT_KIND_OCCLUSION 7u
+#define VKR_PASS_OUTPUT_KIND_SCALAR 8u
+// No source: the frame's graph lacks the image, such as bloom with bloom off.
+#define VKR_PASS_OUTPUT_KIND_MISSING 9u
+
+// The source texel an output pixel shows: the source fitted inside the output,
+// centred, at its own aspect. A source with the output's aspect, such as one
+// at the render scale, fills it; a square shadow map shows between bars.
+// Returns -1 outside the source.
+int2 vkr_pass_output_texel(uint2 pixel, uint2 output_extent,
+                           uint2 source_extent)
+{
+    float2 output = float2(output_extent);
+    float2 source = float2(source_extent);
+    float scale = min(output.x / source.x, output.y / source.y);
+    float2 origin = (output - source * scale) * 0.5f;
+    float2 position = (float2(pixel) + 0.5f - origin) / scale;
+    if (any(position < float2(0.0f)) || any(position >= source))
+    {
+        return int2(-1, -1);
+    }
+    return int2(min(uint2(position), source_extent - uint2(1u)));
+}
+
+// The fill of a source the frame's graph lacks: dark diagonal stripes, so the
+// view never passes for the lit image.
+float3 vkr_pass_output_missing_color(uint2 pixel)
+{
+    return ((pixel.x + pixel.y) / 12u) % 2u == 0u ? float3(0.02f)
+                                                  : float3(0.05f);
+}
+
+// The unit normal of an octahedral encoding in [-1, 1]^2, as the desktop
+// pipeline's G-buffer stores it.
+float3 vkr_octahedral_decode(float2 encoded)
+{
+    float3 normal = float3(encoded, 1.0f - abs(encoded.x) - abs(encoded.y));
+    if (normal.z < 0.0f)
+    {
+        float2 sign_value = float2(normal.x >= 0.0f ? 1.0f : -1.0f,
+                                   normal.y >= 0.0f ? 1.0f : -1.0f);
+        normal.xy = (1.0f - abs(normal.yx)) * sign_value;
+    }
+    return normalize(normal);
+}
+
+// The farthest distance the depth views tell apart; a camera's far plane can
+// lie kilometres out.
+#define VKR_PASS_OUTPUT_DEPTH_RANGE_M 1000.0f
+
+// A distance in metres as display-linear grey: white at the near plane to
+// black at VKR_PASS_OUTPUT_DEPTH_RANGE_M or the far plane, on a log scale so
+// near and far detail both show, and squared so the display's encoding keeps
+// the steps even.
+float vkr_pass_output_distance_grey(float distance, float near_plane,
+                                    float far_plane)
+{
+    float range = min(far_plane, VKR_PASS_OUTPUT_DEPTH_RANGE_M);
+    float grey = 1.0f - saturate(log2(max(distance, near_plane) / near_plane) /
+                                 log2(range / near_plane));
+    return grey * grey;
+}
+
+// The display-linear colour of one texel of a `kind` source. `params` holds
+// x the exposure of pre-exposed radiance, y and z the camera's near and far
+// planes in metres (zero for an orthographic view), and w the scale a
+// vector's components show at.
+float3 vkr_pass_output_color(uint kind, float4 texel, float4 params)
+{
+    if (kind == VKR_PASS_OUTPUT_KIND_HDR)
+    {
+        float3 exposed = max(texel.rgb * params.x, float3(0.0f));
+        return exposed / (1.0f + exposed);
+    }
+    if (kind == VKR_PASS_OUTPUT_KIND_COLOR)
+    {
+        return saturate(texel.rgb);
+    }
+    if (kind == VKR_PASS_OUTPUT_KIND_NORMAL)
+    {
+        return vkr_octahedral_decode(texel.xy) * 0.5f + 0.5f;
+    }
+    if (kind == VKR_PASS_OUTPUT_KIND_DEPTH)
+    {
+        // Reversed depth: 1 at the near plane, 0 at the far plane and sky.
+        // An orthographic view's depth is linear and passes no planes.
+        if (texel.r <= 0.0f || params.z <= params.y)
+        {
+            return float3(saturate(texel.r));
+        }
+        float distance = params.y * params.z /
+                         (texel.r * (params.z - params.y) + params.y);
+        return float3(vkr_pass_output_distance_grey(distance, params.y,
+                                                    params.z));
+    }
+    if (kind == VKR_PASS_OUTPUT_KIND_VIEW_DEPTH)
+    {
+        return float3(vkr_pass_output_distance_grey(texel.r, params.y,
+                                                    params.z));
+    }
+    if (kind == VKR_PASS_OUTPUT_KIND_VECTOR)
+    {
+        return float3(saturate(abs(texel.xy) * params.w), 0.0f);
+    }
+    if (kind == VKR_PASS_OUTPUT_KIND_OCCLUSION)
+    {
+        return float3(saturate(texel.w));
+    }
+    // SHADOW_DEPTH and SCALAR show their first component.
+    return float3(saturate(texel.r));
+}

@@ -329,6 +329,8 @@ typedef struct VkrStandardSceneRuntime {
   VkrFrameGlobals globals;
   VkrSubsystemPlan subsystem_plan;
   uint32_t shadow_debug_mode;
+  /* The editor's Pass output view (VkrGpuDebugPayload.pass_output). */
+  uint32_t pass_output;
   /* Iterations of pass Debug.GpuSpike the next built frame runs; that frame
      takes them (VkrGpuDebugPayload.gpu_spike_iterations). */
   uint32_t debug_gpu_spike_iterations;

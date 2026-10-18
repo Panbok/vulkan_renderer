@@ -105,6 +105,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"transmission_depth_diagnostic_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC},
     {"debug_gpu_spike", VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE},
+    {"editor_pass_output", VKR_RG_JSON_CONDITION_EDITOR_PASS_OUTPUT},
     {"deferred_emissive_capture_enabled",
      VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE},
     {"resolve_barycentric_lod_capture_enabled",
@@ -1658,14 +1659,21 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
         goto cleanup;
       }
 
+      /* The Pass output view's image is the frame's choice of any declared
+         image (VkrRenderGraphFrameInfo.pass_output_image). */
+      const bool8_t pass_output =
+          use.is_image &&
+          vkr_string8_equals_cstr_i(&use.name, "${pass_output_image}");
       const VkrRgJsonResource *resource =
-          vkr_rg_json_find_resource(ctx->graph, use.name);
-      if (!resource) {
+          pass_output ? NULL : vkr_rg_json_find_resource(ctx->graph, use.name);
+      if (!resource && !pass_output) {
         ok = vkr_rg_json_error(ctx, use_path, "resource not declared");
         goto cleanup;
       }
-      if (use.is_image !=
-          (resource->type == VKR_RG_JSON_RESOURCE_IMAGE ? true_v : false_v)) {
+      if (resource &&
+          use.is_image != (resource->type == VKR_RG_JSON_RESOURCE_IMAGE
+                               ? true_v
+                               : false_v)) {
         ok = vkr_rg_json_error(ctx, use_path,
                                "resource use type does not match declaration");
         goto cleanup;
@@ -2208,6 +2216,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->transmission_depth_diagnostic_enabled;
   case VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE:
     return frame->debug_gpu_spike;
+  case VKR_RG_JSON_CONDITION_EDITOR_PASS_OUTPUT:
+    return frame->editor_pass_output;
   case VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE:
     return frame->deferred_emissive_capture_enabled;
   case VKR_RG_JSON_CONDITION_RESOLVE_BARYCENTRIC_LOD_CAPTURE:
@@ -3180,14 +3190,24 @@ vkr_internal bool8_t vkr_rg_json_add_pass_reads(
     for (uint32_t ur = 0; ur < use_repeat; ++ur) {
       String8 resolved_name = {0};
       bool8_t owned_name = false_v;
-      if (!vkr_rg_expand_name(frame_allocator, use->name, ur, &resolved_name,
-                              &owned_name)) {
+      /* The image the editor's Pass output view shows. A frame whose graph
+         lacks it, such as bloom with bloom off, reads nothing, and the pass
+         leaves the lit image. */
+      const bool8_t pass_output =
+          vkr_string8_equals_cstr_i(&use->name, "${pass_output_image}");
+      if (pass_output) {
+        resolved_name = frame->pass_output_image;
+      } else if (!vkr_rg_expand_name(frame_allocator, use->name, ur,
+                                     &resolved_name, &owned_name)) {
         return false_v;
       }
 
       if (use->is_image) {
         VkrRgImageHandle handle = vkr_rg_find_image(rg, resolved_name);
         vkr_rg_release_name(frame_allocator, resolved_name, owned_name);
+        if (pass_output && !vkr_rg_image_handle_valid(handle)) {
+          continue;
+        }
         if (!vkr_rg_image_handle_valid(handle)) {
           log_error("RenderGraph JSON: missing image '%.*s'",
                     (int)use->name.length, use->name.str);

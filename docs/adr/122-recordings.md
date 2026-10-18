@@ -395,7 +395,16 @@ an agent must read one without the editor.
   recording of 966 frames carried 474 measurements with no dropped records
   and GPU pass times on every frame with pass rows. On tiled the stamps
   split the shared compute encoder in every frame, so timing comparisons
-  still use Tier 0.
+  still use Tier 0. The renderer also publishes each shadow cascade's fit,
+  `draw.shadow.cascadeN.split_near`, `split_far` and `texel_size` in metres,
+  and `draw.shadow.cascades`; a Bistro all-measurements recording carried 499
+  measurements, the cascades' fits among them. The metric catalog holds 1024
+  slots and a recording 1024 measurements.
+- **Debug views during playback.** Watch and Re-simulate render the Scene
+  live, so the render menu's views apply to a playing recording: each
+  pipeline's views, the shadow views (cascades, shadow factor, map depth) on
+  both, and Pass output, which draws a pass's image, such as a shadow cascade,
+  depth or bloom, over the Scene (ADR-044). F6 cycles the shadow views.
 - **Analysis.** At stop the runtime reads the stream back and writes
   statistics, the time-based 1% low and spikes (over 1.2 times the median of
   19 neighbours and 4 ms above it, or over twice the budget) into

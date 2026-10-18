@@ -1906,13 +1906,15 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
       .shadow_debug_mode =
           draw->scene_stopped ? 0u : application->shadow_debug_mode,
       .gpu_spike_iterations = gpu_spike,
+      .pass_output = draw->scene_stopped ? 0u : application->pass_output,
       .capture = capture,
   };
   draw->capture_request = capture;
   draw->capture_request_id = capture ? capture->request_id : 0u;
   draw->debug_ptr = (gpu_timing || capture ||
                      application->transmission_depth_diagnostic_enabled ||
-                     application->shadow_debug_mode != 0u || gpu_spike != 0u)
+                     application->shadow_debug_mode != 0u || gpu_spike != 0u ||
+                     application->pass_output != 0u)
                         ? &draw->debug_payload
                         : NULL;
 }
@@ -2508,7 +2510,13 @@ vkr_internal void vkr_standard_scene_runtime_finish_submit(
     metrics->shadow.composited[cascade] = shadow_frame->composited[cascade];
     metrics->shadow.static_rendered[cascade] =
         shadow_frame->static_rendered[cascade];
+    metrics->shadow.split_near[cascade] = shadow_frame->split_near[cascade];
+    metrics->shadow.split_far[cascade] = shadow_frame->split_far[cascade];
+    metrics->shadow.world_units_per_texel[cascade] =
+        shadow_frame->world_units_per_texel[cascade];
   }
+  metrics->shadow.cascade_count =
+      shadow_frame->enabled ? shadow_frame->cascade_count : 0u;
   metrics->shadow.sdsm_status = (uint32_t)shadow_frame->sdsm_status;
   metrics->shadow.sdsm_source_lag = shadow_frame->sdsm_source_lag;
   metrics->shadow.sdsm_occupied_count = shadow_frame->sdsm_occupied_count;

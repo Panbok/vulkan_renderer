@@ -1520,14 +1520,7 @@ float2 vkr_vk_octahedral_encode(float3 normal)
 
 float3 vkr_vk_octahedral_decode(float2 encoded)
 {
-    float3 normal = float3(encoded, 1.0f - abs(encoded.x) - abs(encoded.y));
-    if (normal.z < 0.0f)
-    {
-        float2 sign_value = float2(normal.x >= 0.0f ? 1.0f : -1.0f,
-                                   normal.y >= 0.0f ? 1.0f : -1.0f);
-        normal.xy = (1.0f - abs(normal.yx)) * sign_value;
-    }
-    return normalize(normal);
+    return vkr_octahedral_decode(encoded);
 }
 
 bool vkr_vk_perspective_barycentric(float2 point, float4 ca, float4 cb,

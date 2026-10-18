@@ -92,14 +92,28 @@ static const char *const eval_entity_members[] = {
     "name",  "position", "rotation",       "scale", "visible",
     "light", "id",       "world_position", NULL};
 static const char *const eval_vec_members[] = {"x", "y", "z", "length", NULL};
-static const char *const eval_view_members[] = {
-    "camera",       "mode",          "grid",
-    "grid_spacing", "camera_speed",  "tool",
-    "grid_labels",  "grid_through",  "collision",
-    "snap",         "snap_offset",   "snap_yaw",
-    "snap_align",   "snap_centers",  "camera_sensitivity",
-    "grid_height",  "snap_magnet",   "snap_moves",
-    "snap_turns",   "draw_distance", NULL};
+static const char *const eval_view_members[] = {"camera",
+                                                "mode",
+                                                "grid",
+                                                "grid_spacing",
+                                                "camera_speed",
+                                                "tool",
+                                                "grid_labels",
+                                                "grid_through",
+                                                "collision",
+                                                "snap",
+                                                "snap_offset",
+                                                "snap_yaw",
+                                                "snap_align",
+                                                "snap_centers",
+                                                "camera_sensitivity",
+                                                "grid_height",
+                                                "snap_magnet",
+                                                "snap_moves",
+                                                "snap_turns",
+                                                "draw_distance",
+                                                "pass",
+                                                NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
 /* `maximized`: the Scene fills the window (layout.maximize, G). `icons`:
@@ -599,15 +613,15 @@ static bool8_t eval_view_member(Eval *eval, String8 name, Value *out) {
                                  (uint32_t)view->camera_view,
                                  (uint32_t)VKR_SAMPLE_CAMERA_VIEW_COUNT - 1u)]);
     return true_v;
-  case 1:
-    for (uint32_t i = 0; vkr_editor_cmd_render_modes[i]; ++i) {
-      if (vkr_editor_cmd_render_mode_values[i] == view->render_mode) {
-        *out = eval_string("%s", vkr_editor_cmd_render_modes[i]);
-        return true_v;
-      }
+  case 1: {
+    const int32_t mode = vkr_editor_cmd_render_mode_index(view);
+    if (mode >= 0) {
+      *out = eval_string("%s", vkr_editor_cmd_render_modes[mode]);
+      return true_v;
     }
     *out = eval_number(view->render_mode);
     return true_v;
+  }
   case 2:
     *out = eval_bool(view->grid_enabled);
     return true_v;
@@ -659,6 +673,13 @@ static bool8_t eval_view_member(Eval *eval, String8 name, Value *out) {
   case 19:
     *out = eval_bool(!view->draw_distance_off);
     return true_v;
+  case 20: {
+    const char *const *passes = vkr_editor_cmd_pass_outputs();
+    *out = eval_string("%s", view->pass_output <= vkr_pass_output_source_count()
+                                 ? passes[view->pass_output]
+                                 : "off");
+    return true_v;
+  }
   case 5:
     for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
       if (vkr_editor_cmd_tool_modes[i] == view->gizmo_tool) {
@@ -1712,23 +1733,30 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
     return eval_fail(eval, "Another view change is pending this frame");
   VkrSampleViewState next = frame->view_state;
   const int32_t index = eval_word_index(eval_view_members, member);
-  if (index == 0 || index == 1 || index == 5) {
+  if (index == 0 || index == 1 || index == 5 || index == 20) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_STRING, member))
       return false_v;
     const String8 word = {.str = (uint8_t *)value->text,
                           .length = string_length(value->text)};
-    const char *const *words = index == 0   ? vkr_editor_cmd_camera_views
-                               : index == 1 ? vkr_editor_cmd_render_modes
-                                            : vkr_editor_cmd_tools;
+    const char *const *words = index == 0    ? vkr_editor_cmd_camera_views
+                               : index == 1  ? vkr_editor_cmd_render_modes
+                               : index == 20 ? vkr_editor_cmd_pass_outputs()
+                                             : vkr_editor_cmd_tools;
     const int32_t choice = eval_word_index(words, word);
     if (choice < 0)
       return eval_fail(eval, "Unknown %.*s '%s'", (int)member.length,
                        member.str, value->text);
     if (index == 0)
       next.camera_view = (VkrSampleCameraView)choice;
-    else if (index == 1)
-      next.render_mode = vkr_editor_cmd_render_mode_values[choice];
-    else
+    else if (index == 1 || index == 20) {
+      const char *refused =
+          index == 1
+              ? vkr_editor_cmd_render_mode_apply(frame, (uint32_t)choice, &next)
+              : vkr_editor_cmd_pass_output_apply(frame, (uint32_t)choice,
+                                                 &next);
+      if (refused)
+        return eval_fail(eval, "'%s' %s", value->text, refused);
+    } else
       next.gizmo_tool = vkr_editor_cmd_tool_modes[choice];
   } else if (index == 2 || index == 6 || index == 7 || index == 19) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))

@@ -68,6 +68,11 @@
       "stage": "fragment"
     },
     {
+      "name": "packet.pass_output.frag",
+      "entry": "pass_output_fragment",
+      "stage": "fragment"
+    },
+    {
       "name": "packet.fullscreen.vert",
       "entry": "fullscreen_vertex",
       "stage": "vertex"

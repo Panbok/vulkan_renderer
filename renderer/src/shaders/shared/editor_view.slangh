@@ -54,6 +54,40 @@ bool vkr_editor_data_view(uint mode)
     return mode == 2u || (mode >= 13u && mode <= 17u) || mode == 19u;
 }
 
+// The shadow views' colour (VkrGpuDebugPayload.shadow_debug_mode) of the
+// sun's shadow at a surface: 1 the cascade that shades it, red, green, blue
+// and yellow for the first four and magenta past them, such as a far level;
+// 2 its shadow factor; 3 the depth the cascade's map stores under it.
+float3 vkr_editor_shadow_debug_color(uint mode, uint cascade, float factor,
+                                     float map_depth, bool valid)
+{
+    if (mode == 1u)
+    {
+        switch (min(cascade, 4u))
+        {
+        case 0u:
+            return float3(1.0f, 0.2f, 0.2f);
+        case 1u:
+            return float3(0.2f, 1.0f, 0.2f);
+        case 2u:
+            return float3(0.2f, 0.4f, 1.0f);
+        case 3u:
+            return float3(1.0f, 0.85f, 0.2f);
+        default:
+            return float3(1.0f, 0.2f, 1.0f);
+        }
+    }
+    if (mode == 2u)
+    {
+        return float3(factor);
+    }
+    if (mode == 3u)
+    {
+        return float3(map_depth);
+    }
+    return float3(valid ? factor : 1.0f);
+}
+
 // The draw reach view's colour of a vkr_gpu_draw_reach_code: grey for a
 // draw the camera view did not classify (blended surfaces), magenta past a
 // limit, red at the limit through yellow at 4x to green at 16x headroom or

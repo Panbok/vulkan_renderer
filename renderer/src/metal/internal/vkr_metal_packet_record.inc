@@ -623,13 +623,20 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     break;
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
   case VKR_RG_EXECUTOR_EDITOR_GRID:
+  case VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT:
+    /* A frame without a Pass output source prepares no root. */
+    if (!pass->tonemap.root)
+      break;
     [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
     [encoder setViewport:pass->tonemap.viewport];
     [encoder setScissorRect:pass->tonemap.scissor];
-    [encoder setRenderPipelineState:pass->kind == VKR_RG_EXECUTOR_EDITOR_GRID
-                                        ? renderer->editor_grid_pipeline
-                                        : renderer->
-                                          editor_selection_outline_pipeline];
+    [encoder
+        setRenderPipelineState:
+            pass->kind == VKR_RG_EXECUTOR_EDITOR_GRID
+                ? renderer->editor_grid_pipeline
+            : pass->kind == VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT
+                ? renderer->editor_pass_output_pipeline
+                : renderer->editor_selection_outline_pipeline];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageFragment];
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle

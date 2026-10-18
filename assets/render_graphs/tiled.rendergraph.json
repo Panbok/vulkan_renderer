@@ -2639,6 +2639,36 @@
       "execute": "pass.tonemap"
     },
     {
+      "name": "Editor.PassOutput",
+      "type": "graphics",
+      "domain": "POST",
+      "condition": "editor_pass_output",
+      "reads": [
+        {
+          "image": "${pass_output_image}",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        },
+        {
+          "buffer": "exposure_state",
+          "access": "STORAGE_READ",
+          "binding": 1,
+          "when": "exposure_automatic"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "editor_scene_image",
+            "load": "LOAD",
+            "store": "STORE"
+          }
+        ]
+      },
+      "execute": "pass.editor.pass_output"
+    },
+    {
       "name": "Editor.Grid",
       "type": "graphics",
       "domain": "UI",

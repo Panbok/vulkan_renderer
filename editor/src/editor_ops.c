@@ -9024,10 +9024,38 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
       return ops_fail(ctx, OPS_INVALID,
                       "'mode' is lit, unlit, detail-lighting, lighting-only, "
                       "wireframe, base-color, roughness, metallic, normals, "
-                      "material-cost, texel-density, exposure or "
-                      "draw-reach");
+                      "material-cost, texel-density, exposure, draw-reach, "
+                      "direct-light, direct-diffuse, direct-specular, "
+                      "indirect-diffuse, material-params, motion-vectors, "
+                      "history-rejection, shadow-cascades, shadow-factor or "
+                      "shadow-depth");
     }
-    next.render_mode = vkr_editor_cmd_render_mode_values[i];
+    const char *refused =
+        vkr_editor_cmd_render_mode_apply(ctx->frame, i, &next);
+    if (refused) {
+      return ops_fail(ctx, OPS_INVALID, "'mode' %.*s %s", (int)mode.length,
+                      (const char *)mode.str, refused);
+    }
+  }
+  /* A render pass's output by its view.pass name (VkrPassOutputSource). */
+  String8 pass = {0};
+  if (vkr_bakery_json_get_string(spec, "pass", &pass)) {
+    const char *const *passes = vkr_editor_cmd_pass_outputs();
+    uint32_t i = 0u;
+    while (passes[i] && !ops_equals(pass, passes[i])) {
+      ++i;
+    }
+    if (!passes[i]) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "'pass' is off or a view.pass name, such as depth or "
+                      "shadow-cascade-0");
+    }
+    const char *refused =
+        vkr_editor_cmd_pass_output_apply(ctx->frame, i, &next);
+    if (refused) {
+      return ops_fail(ctx, OPS_INVALID, "'pass' %.*s %s", (int)pass.length,
+                      (const char *)pass.str, refused);
+    }
   }
   out->request = (VkrSampleViewRequest){.value = next, .apply = true_v};
   const VkrBakeryJson *focus = vkr_bakery_json_get(spec, "focus");
@@ -9568,7 +9596,9 @@ static VkrEditorOpStatus ops_run_capture(OpsContext *ctx) {
         first->request.value.camera_view != frame->view_state.camera_view ||
         first->request.value.grid_labels != frame->view_state.grid_labels ||
         first->request.value.grid_enabled != frame->view_state.grid_enabled ||
-        first->request.value.render_mode != frame->view_state.render_mode;
+        first->request.value.render_mode != frame->view_state.render_mode ||
+        first->request.value.shadow_view != frame->view_state.shadow_view ||
+        first->request.value.pass_output != frame->view_state.pass_output;
     ops_capture_view_apply(frame, first);
     pending->view_since = vkr_platform_get_absolute_time();
     call->state = pending;
@@ -12157,7 +12187,13 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "{\"type\":\"string\",\"enum\":[\"lit\",\"unlit\",\"detail-lighting\","      \
   "\"lighting-only\",\"wireframe\",\"base-color\",\"roughness\","              \
   "\"metallic\",\"normals\",\"material-cost\",\"texel-density\","              \
-  "\"exposure\",\"draw-reach\"]}"
+  "\"exposure\",\"draw-reach\",\"direct-light\",\"direct-diffuse\","           \
+  "\"direct-specular\",\"indirect-diffuse\",\"material-params\","              \
+  "\"motion-vectors\",\"history-rejection\",\"shadow-cascades\","              \
+  "\"shadow-factor\",\"shadow-depth\"]}"
+#define OPS_CAPTURE_PASS_SCHEMA                                                \
+  "{\"type\":\"string\",\"description\":\"A Pass output source by its "        \
+  "view.pass name, shown instead of the lit image, or off\"}"
 #define OPS_CAPTURE_FOCUS_SCHEMA                                               \
   "{\"oneOf\":[" OPS_ENTITY_SCHEMA ",{\"type\":\"object\",\"properties\":{"    \
   "\"min\":" OPS_VEC3_SCHEMA ",\"max\":" OPS_VEC3_SCHEMA "},\"required\":["    \
@@ -17719,12 +17755,12 @@ static const OpsDef s_ops[] = {
      "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
-     ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA
+     ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA ",\"pass\":" OPS_CAPTURE_PASS_SCHEMA
      ",\"views\":{\"type\":\"array\",\"maxItems\":4,\"items\":{\"type\":"
      "\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA
-     ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA
+     ",\"mode\":" OPS_CAPTURE_MODE_SCHEMA ",\"pass\":" OPS_CAPTURE_PASS_SCHEMA
      "}}},\"max_width\":{\"type\":\"integer\",\"minimum\":64,\"maximum\":"
      "8192},\"marks\":{\"type\":\"array\",\"maxItems\":32,\"items\":{"
      "\"oneOf\":[" OPS_VEC3_SCHEMA ",{\"type\":\"object\",\"properties\":{"

@@ -138,7 +138,7 @@ bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
  */
 /* All measurements (the recorder's measurement_name and measurements
  * streams): series a recording may name, and values one record holds. */
-#define VKR_RECORDING_MEASUREMENT_MAX 512u
+#define VKR_RECORDING_MEASUREMENT_MAX 1024u
 #define VKR_RECORDING_MEASUREMENT_PAGE 64u
 #define VKR_RECORDING_PASS_NAME_MAX 63u
 #define VKR_RECORDING_PASS_MAX 512u

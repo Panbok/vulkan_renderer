@@ -21,6 +21,7 @@ struct VkrVulkanPreparedGraphPass {
   VkrVulkanPreparedOverlay overlay;
   VkrVulkanPreparedSelectionOutline selection_outline;
   VkrVulkanPreparedEditorGrid editor_grid;
+  VkrVulkanPreparedPassOutput pass_output;
   VkrVulkanPreparedVbufferSplitDepth vbuffer_split_depth;
   VkrVulkanPreparedText text;
   VkrVulkanPreparedUi ui;
@@ -1687,6 +1688,9 @@ vkr_internal bool8_t vkr_vk_prepare_graphics_body(
                                       depth_texture, target_width,
                                       target_height);
   }
+  case VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT:
+    return vkr_vk_prepare_pass_output(renderer, &prepared->pass_output, pass,
+                                      target_width, target_height);
   case VKR_RG_EXECUTOR_EDITOR: {
     /* The retained sRGB texture already contains exposure, tonemap and SMAA.
        Decode/sample/re-encode it without applying those operations again. */
@@ -2087,6 +2091,7 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
   case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
   case VKR_RG_EXECUTOR_EDITOR_GRID:
+  case VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT:
   case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH:
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_RG_EXECUTOR_UI:
@@ -2484,6 +2489,9 @@ vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
   case VKR_RG_EXECUTOR_EDITOR_GRID:
     vkr_vk_record_editor_grid(renderer, command, &prepared->editor_grid);
     break;
+  case VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT:
+    vkr_vk_record_pass_output(renderer, command, &prepared->pass_output);
+    break;
   case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH:
     vkr_vk_record_vbuffer_split_depth(renderer, command,
                                       &prepared->vbuffer_split_depth);
@@ -2553,6 +2561,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_MASK:
     case VKR_RG_EXECUTOR_EDITOR_SELECTION_OUTLINE:
     case VKR_RG_EXECUTOR_EDITOR_GRID:
+    case VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT:
     case VKR_RG_EXECUTOR_VBUFFER_SPLIT_DEPTH:
     case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
     case VKR_RG_EXECUTOR_UI:

@@ -1787,6 +1787,91 @@ void vkr_vk_record_editor_grid(VkrVulkanRenderer *renderer,
   vkCmdDraw(command, 3u, 1u, 0u, 0u);
 }
 
+bool8_t vkr_vk_prepare_pass_output(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedPassOutput *out,
+                                   const VkrRgPass *pass, uint32_t width,
+                                   uint32_t height) {
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  const VkrPassOutputSource *source =
+      packet->input.debug && packet->input.debug->pass_output > 0u
+          ? vkr_pass_output_source(packet->input.debug->pass_output - 1u)
+          : NULL;
+  if (!source)
+    return true_v;
+  const VkrRgImageUse *read = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  VkrVulkanGraphImageInstance *image =
+      read ? vkr_vk_graph_image(renderer, read->image,
+                                renderer->prepared_frame.image_index)
+           : NULL;
+  /* The shader reads mip 0, and a shadow cascade its layer of the array,
+     through the whole image's sampled slot. */
+  if (read && (!image || !image->has_sampled_slot))
+    return false_v;
+  /* A source the frame's graph lacks shows as stripes, not the lit image. */
+  const bool8_t missing =
+      !image || (source->kind == VKR_PASS_OUTPUT_KIND_SHADOW_DEPTH &&
+                 source->layer >= image->image.array_layers);
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  uint64_t address = 0u;
+  VkrVulkanPassOutputRoot *root = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*root), _Alignof(VkrVulkanPassOutputRoot), &address, NULL);
+  uint64_t manual_state_address = 0u;
+  VkrExposureGpuState *manual_state = vkr_vk_frame_upload_allocate(
+      slot, sizeof(*manual_state), _Alignof(VkrExposureGpuState),
+      &manual_state_address, NULL);
+  if (!root || !manual_state)
+    return false_v;
+  *manual_state = (VkrExposureGpuState){
+      .exposure_multiplier = packet->exposure.manual,
+  };
+  const VkrRgBufferUse *exposure_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+  VkrVulkanGraphBufferInstance *exposure_state =
+      exposure_use ? vkr_vk_graph_buffer(renderer, exposure_use->buffer) : NULL;
+  /* An orthographic view's depth is already linear: no planes show it raw. */
+  const Mat4 projection = packet->input.globals.projection;
+  const bool8_t perspective = projection.m33 == 0.0f;
+  *root = (VkrVulkanPassOutputRoot){
+      .params = {0.0f,
+                 perspective ? mat4_perspective_reversed_near(projection)
+                             : 0.0f,
+                 perspective ? mat4_perspective_reversed_far(projection) : 0.0f,
+                 missing ? 1.0f
+                         : vkr_pass_output_vector_scale(source,
+                                                        image->image.width)},
+      .extent = {width, height},
+      .kind = missing ? (uint32_t)VKR_PASS_OUTPUT_KIND_MISSING
+                      : (uint32_t)source->kind,
+      .layer = source->layer,
+      .exposure_state = exposure_state ? exposure_state->buffer.address
+                                       : manual_state_address,
+      .display_output = slot->display_output,
+      .source_texture = missing ? 0u : image->sampled_slot.index,
+      .inverse_pre_exposure = 1.0f / packet->exposure.pre_exposure,
+  };
+  *out =
+      (VkrVulkanPreparedPassOutput){.root_address = address, .enabled = true_v};
+  return true_v;
+}
+
+void vkr_vk_record_pass_output(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedPassOutput *output) {
+  if (!output->enabled)
+    return;
+  vkCmdBindPipeline(
+      command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+      renderer
+          ->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_EDITOR_PASS_OUTPUT]);
+  const VkrVulkanPushConstants push = {.root = output->root_address};
+  vkCmdPushConstants(command, renderer->pipeline_layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+                         VK_SHADER_STAGE_COMPUTE_BIT,
+                     0u, sizeof(push), &push);
+  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+}
+
 bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
     VkrVulkanPacketPipeline pipeline, uint64_t instances, Mat4 view_projection,

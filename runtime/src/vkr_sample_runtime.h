@@ -82,6 +82,13 @@ typedef enum VkrSampleCameraView {
 typedef struct VkrSampleViewState {
   VkrSampleCameraView camera_view;
   VkrRenderMode render_mode;
+  /* The sun's shadow shown instead of light, over any render mode
+     (VkrGpuDebugPayload.shadow_debug_mode): 0 off, 1 the cascade that
+     shades each surface, 2 its shadow factor, 3 the map's stored depth. */
+  uint32_t shadow_view;
+  /* A graph image shown over the Scene instead of the lit image: Pass output
+     source pass_output - 1 (vkr_pass_output_source), or 0 for none. */
+  uint32_t pass_output;
   float32_t grid_spacing;
   /* World Y of the ground grid and of placement onto it, per scene: a floor
      modelled above the origin hides a grid at zero. */
@@ -113,6 +120,9 @@ typedef struct VkrSampleViewState {
      (VkrStandardSceneRuntime::draw_distance_off). */
   bool8_t draw_distance_off;
 } VkrSampleViewState;
+
+/* The last VkrSampleViewState.shadow_view: the map's stored depth. */
+#define VKR_SAMPLE_SHADOW_VIEW_MAX 3u
 
 /* The free-camera speeds, in world units per second, that the Scene's speed
  * control and the wheel while flying span on a logarithmic scale. */

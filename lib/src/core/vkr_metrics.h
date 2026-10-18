@@ -16,11 +16,12 @@
 
 /**
  * Catalog capacity. The renderer adapter's fixed set plus its worst-case
- * device-dependent rows (2 per memory type, 3 per heap, 7 per shadow cascade)
- * must fit with headroom; exhaustion degrades instrumentation and is never
- * allowed to fail startup. See vkr_renderer_metrics_register_device_memory().
+ * device-dependent rows (2 per memory type, 3 per heap, 14 per shadow
+ * cascade) must fit with headroom; exhaustion degrades instrumentation and is
+ * never allowed to fail startup. A Bistro editor session needs more than 512.
+ * See vkr_renderer_metrics_register_device_memory().
  */
-#define VKR_METRICS_MAX_SLOTS 512u
+#define VKR_METRICS_MAX_SLOTS 1024u
 #define VKR_METRIC_NAME_MAX 63u
 #define VKR_METRICS_SNAPSHOT_BUFFER_COUNT 3u
 #define VKR_METRIC_EVENT_CAPACITY 4096u

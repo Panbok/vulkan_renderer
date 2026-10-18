@@ -78,7 +78,8 @@ asks for these views and a luminance query.
    holds the mode predicates and the cost, density and stop ramps, so the
    desktop pipeline can draw the same views later.
 5. **Editor.**
-   - The Scene toolbar's render menu lists the views.
+   - The Scene toolbar's render menu lists the views on the tiled
+     pipeline; it lists only the views the Scene's pipeline draws.
    - Cmd `view.mode` takes `base-color`, `roughness`, `metallic`,
      `normals`, `material-cost`, `texel-density` and `exposure`.
    - The Lighting palette adds Exposure.

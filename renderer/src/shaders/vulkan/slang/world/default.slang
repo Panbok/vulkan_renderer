@@ -871,28 +871,8 @@ packet_directional_shadow_debug(VkrVulkanPacketFrameRoot *root,
 
 float3 packet_shadow_debug_color(uint mode, VkrVulkanShadowDebugSample sample)
 {
-    if (mode == 1u)
-    {
-        // Cascades past the fourth, such as a far level, show magenta.
-        switch (min(sample.cascade, 4u))
-        {
-        case 0u:
-            return float3(1.0f, 0.2f, 0.2f);
-        case 1u:
-            return float3(0.2f, 1.0f, 0.2f);
-        case 2u:
-            return float3(0.2f, 0.4f, 1.0f);
-        case 3u:
-            return float3(1.0f, 0.85f, 0.2f);
-        default:
-            return float3(1.0f, 0.2f, 1.0f);
-        }
-    }
-    if (mode == 2u)
-        return sample.factor;
-    if (mode == 3u)
-        return sample.map_depth;
-    return sample.valid != 0u ? sample.factor : 1.0f;
+    return vkr_editor_shadow_debug_color(mode, sample.cascade, sample.factor,
+                                         sample.map_depth, sample.valid != 0u);
 }
 
 // Where a draw takes its baked diffuse light and its reflection probes: its

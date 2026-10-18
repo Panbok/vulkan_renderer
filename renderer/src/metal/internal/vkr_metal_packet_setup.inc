@@ -626,6 +626,7 @@ typedef struct VkrMetalPacketPresentationPipelines {
   id<MTLRenderPipelineState> editor_overlay;
   id<MTLRenderPipelineState> editor_selection_outline;
   id<MTLRenderPipelineState> editor_grid;
+  id<MTLRenderPipelineState> editor_pass_output;
   id<MTLRenderPipelineState> tonemap;
 } VkrMetalPacketPresentationPipelines;
 
@@ -635,6 +636,7 @@ vkr_internal void vkr_metal_packet_release_presentation_pipelines(
   [pipelines->editor_overlay release];
   [pipelines->editor_selection_outline release];
   [pipelines->editor_grid release];
+  [pipelines->editor_pass_output release];
   [pipelines->tonemap release];
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
@@ -666,6 +668,12 @@ vkr_internal bool8_t vkr_metal_packet_create_presentation_pipelines(
       "vkr_metal_packet_editor_grid_fragment", target_format,
       VKR_METAL_PACKET_BLEND_ALPHA, VKR_METAL_PACKET_ABI_RECORD_COUNT,
       VKR_METAL_PACKET_ABI_EDITOR_GRID_ROOT, false_v, @"VKR Metal editor grid");
+  out_pipelines->editor_pass_output = vkr_metal_packet_create_pipeline(
+      renderer, fragment, "vkr_metal_packet_editor_grid_vertex", fragment,
+      "vkr_metal_packet_pass_output_fragment", target_format,
+      VKR_METAL_PACKET_BLEND_NONE, VKR_METAL_PACKET_ABI_RECORD_COUNT,
+      VKR_METAL_PACKET_ABI_PASS_OUTPUT_ROOT, false_v,
+      @"VKR Metal editor pass output");
   out_pipelines->tonemap = vkr_metal_packet_create_pipeline(
       renderer, fragment, "vkr_metal_packet_tonemap_vertex", fragment,
       "vkr_metal_packet_tonemap_fragment", target_format,
@@ -673,7 +681,7 @@ vkr_internal bool8_t vkr_metal_packet_create_presentation_pipelines(
       VKR_METAL_PACKET_ABI_TONEMAP_ROOT, false_v, @"VKR Metal packet tonemap");
   if (out_pipelines->ui && out_pipelines->editor_overlay &&
       out_pipelines->editor_selection_outline && out_pipelines->editor_grid &&
-      out_pipelines->tonemap)
+      out_pipelines->editor_pass_output && out_pipelines->tonemap)
     return true_v;
   vkr_metal_packet_release_presentation_pipelines(out_pipelines);
   return false_v;
@@ -686,12 +694,14 @@ vkr_internal void vkr_metal_packet_install_presentation_pipelines(
   [renderer->editor_overlay_pipeline release];
   [renderer->editor_selection_outline_pipeline release];
   [renderer->editor_grid_pipeline release];
+  [renderer->editor_pass_output_pipeline release];
   [renderer->tonemap_pipeline release];
   renderer->ui_pipeline = pipelines->ui;
   renderer->editor_overlay_pipeline = pipelines->editor_overlay;
   renderer->editor_selection_outline_pipeline =
       pipelines->editor_selection_outline;
   renderer->editor_grid_pipeline = pipelines->editor_grid;
+  renderer->editor_pass_output_pipeline = pipelines->editor_pass_output;
   renderer->tonemap_pipeline = pipelines->tonemap;
   *pipelines = (VkrMetalPacketPresentationPipelines){0};
 }
@@ -1575,6 +1585,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->editor_selection_outline_pipeline,
        "editor selection outline pipeline"},
       {renderer->editor_grid_pipeline, "editor grid pipeline"},
+      {renderer->editor_pass_output_pipeline, "editor pass output pipeline"},
       {renderer->picking_text_pipeline, "picking text pipeline"},
       {renderer->animation_preview_pipeline, "animation preview pipeline"},
       {renderer->ibl_prefilter_pipeline, "IBL prefilter pipeline"},

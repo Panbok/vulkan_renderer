@@ -939,6 +939,62 @@ bool8_t
 vkr_graphics_pipeline_draws_render_mode(VkrGraphicsPipelineClass graphics,
                                         uint32_t mode);
 
+/** How the editor's Pass output view turns a graph image into colour; the
+ * shared pass output kernel (shaders/shared/pass_output_kernel.slangh)
+ * keeps these values. */
+typedef enum VkrPassOutputKind {
+  /** Pre-exposed scene-linear radiance: exposed and tone mapped. */
+  VKR_PASS_OUTPUT_KIND_HDR = 0,
+  /** Stored values shown as they are, such as G-buffer albedo. */
+  VKR_PASS_OUTPUT_KIND_COLOR = 1,
+  /** An octahedral normal in RG: the normal mapped to colour. */
+  VKR_PASS_OUTPUT_KIND_NORMAL = 2,
+  /** Reversed camera depth: near white to far black on a log scale. */
+  VKR_PASS_OUTPUT_KIND_DEPTH = 3,
+  /** A shadow cascade's stored light depth as grey. */
+  VKR_PASS_OUTPUT_KIND_SHADOW_DEPTH = 4,
+  /** Linear view depth in metres, as DEPTH shows it. */
+  VKR_PASS_OUTPUT_KIND_VIEW_DEPTH = 5,
+  /** A two-component vector, such as motion or a circle of confusion, as the
+   * magnitude of each component in red and green
+   * (vkr_pass_output_vector_scale). */
+  VKR_PASS_OUTPUT_KIND_VECTOR = 6,
+  /** Ambient occlusion visibility in alpha as grey. */
+  VKR_PASS_OUTPUT_KIND_OCCLUSION = 7,
+  /** One value in red as grey. */
+  VKR_PASS_OUTPUT_KIND_SCALAR = 8,
+  /** No source: the frame's graph lacks the image, drawn as dark stripes. */
+  VKR_PASS_OUTPUT_KIND_MISSING = 9,
+} VkrPassOutputKind;
+
+/** One graph image the Pass output view can show
+ * (VkrGpuDebugPayload.pass_output). A pipeline without the image has a NULL
+ * name for it. */
+typedef struct VkrPassOutputSource {
+  /** Cmd word, such as "shadow-cascade-0". */
+  const char *name;
+  /** Menu label, such as "Shadow cascade 0". */
+  const char *label;
+  /** Graph image on the desktop and the tiled pipeline (ADR-087). */
+  const char *image[VKR_GRAPHICS_PIPELINE_COUNT];
+  /** Array layer of the image it shows. */
+  uint32_t layer;
+  VkrPassOutputKind kind;
+  /** A VECTOR source in UV units rather than texels, such as motion. */
+  bool8_t vector_in_uv;
+} VkrPassOutputSource;
+
+/** The scale a VECTOR source's components show at: full colour at 16
+ * texels of a `width`-texel source. */
+float32_t vkr_pass_output_vector_scale(const VkrPassOutputSource *source,
+                                       uint32_t width);
+
+/** Sources the Pass output view knows, over both pipelines. */
+uint32_t vkr_pass_output_source_count(void);
+
+/** Pass output source `index`, or NULL past the last. */
+const VkrPassOutputSource *vkr_pass_output_source(uint32_t index);
+
 // =============================================================================
 // Text
 // =============================================================================

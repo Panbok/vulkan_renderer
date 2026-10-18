@@ -449,6 +449,46 @@ captures of Unlit, Detail lighting, Lighting only and Wireframe render (ADR-087,
 Unbaked lights, terrain, inspection and atmosphere). No frame-budget claim is
 made.
 
+### Shadow views and Pass output
+
+The shadow views (`VkrGpuDebugPayload.shadow_debug_mode`: 1 the cascade that
+shades a surface, 2 its shadow factor, 3 the map's stored depth) take their
+colour from `vkr_editor_shadow_debug_color` in
+[`shared/editor_view.slangh`](../../renderer/src/shaders/shared/editor_view.slangh);
+the Vulkan forward and deferred consumers call it in place of their own
+palette, which it reproduces. The Metal tiled inspection variant draws them
+from `vkr_metal_packet_directional_shadow_sample` with the geometric normal,
+as shading does, and the tonemap shows them as data views. The editor's
+render menu and Cmd `view.mode` (`shadow-cascades`, `shadow-factor`,
+`shadow-depth`) select them on both pipelines.
+
+The Pass output view (`VkrGpuDebugPayload.pass_output`,
+`vkr_pass_output_source`) draws one graph image over the editor's Scene image
+in pass `Editor.PassOutput`, after `Editor.Resolve` in both graphs. The pass
+reads `${pass_output_image}`, the frame's chosen image, whole; a frame whose
+graph lacks it reads nothing and the pass draws dark stripes. The grid,
+selection outline and overlay stay off while it shows.
+[`shared/pass_output_kernel.slangh`](../../renderer/src/shaders/shared/pass_output_kernel.slangh)
+owns the texel mapping (the source fitted at its own aspect) and the colour of
+each `VkrPassOutputKind`: exposed and Reinhard-mapped radiance, stored colour,
+octahedral normals, reversed camera depth and linear view depth on a squared
+log scale to 1 km, shadow depth, vector magnitudes, occlusion alpha and
+scalars. It also owns `vkr_octahedral_decode`, which the desktop G-buffer
+decode calls. The Metal `editor/pass_output.metal` and Vulkan
+`editor/pass_output.slang` entries own the reads and the display encoding.
+The tiled pipeline keeps its G-buffer, occlusion and per-sample data in tile
+memory, so it offers the images its graph stores: scene radiance, depth, the
+four shadow cascades, the sun shadow trace, motion vectors and bloom.
+
+Native evidence: on 2026-10-18 the tiled pipeline drew the three shadow views
+and every tiled Pass output source on Bistro in a headless Release editor, live
+and during a recording's playback, with no ABI mismatch; a source the frame
+lacked (the sun shadow trace) drew stripes. The desktop build compiles both
+Vulkan entries, `spirv-val` accepts `packet.pass_output.frag.spv`, and its
+reflected root offsets match `VkrVulkanPassOutputRoot`. Native Vulkan
+evidence for both views is unavailable on the Mac and waits for the Windows
+host.
+
 ## Decision
 
 Keep portable arithmetic shared where both shader languages can consume it.

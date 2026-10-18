@@ -1638,6 +1638,11 @@ vkr_frame_input_validate(const VkrFrameInput *packet,
     VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
                       "packet.debug.gpu_spike_iterations",
                       "must be at most VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX");
+  if (packet->debug &&
+      packet->debug->pass_output > vkr_pass_output_source_count())
+    VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                      "packet.debug.pass_output",
+                      "must name a Pass output source");
 
 #undef VKR_REJECT_PACKET
   if (out_validation_error)

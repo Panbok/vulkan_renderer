@@ -632,6 +632,15 @@ vkr_internal bool8_t vkr_metal_packet_data_view(uint32_t mode) {
          mode == VKR_RENDER_MODE_DRAW_REACH;
 }
 
+/* The frame shows a data view: an artist view, or a shadow view
+   (VkrGpuDebugPayload.shadow_debug_mode), which the inspection variant
+   writes as a value per pixel too. */
+vkr_internal bool8_t
+vkr_metal_packet_frame_data_view(const VkrPreparedFrame *packet) {
+  return vkr_metal_packet_data_view(packet->input.globals.render_mode) ||
+         (packet->input.debug && packet->input.debug->shadow_debug_mode != 0u);
+}
+
 vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -669,14 +678,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
     return false_v;
   const uint32_t render_mode = packet->input.globals.render_mode;
   const bool8_t data_view =
-      !editor_rect && vkr_metal_packet_data_view(render_mode);
+      !editor_rect && vkr_metal_packet_frame_data_view(packet);
   const bool8_t false_color =
       !editor_rect && render_mode == VKR_RENDER_MODE_EXPOSURE;
   if (data_view || false_color) {
     bloom = nil;
   }
-  *color_grading = !editor_rect && packet->input.globals.render_mode ==
-                                       VKR_RENDER_MODE_DEFAULT
+  *color_grading = !editor_rect && !data_view &&
+                           packet->input.globals.render_mode ==
+                               VKR_RENDER_MODE_DEFAULT
                        ? packet->color_grading
                        : (VkrColorGradingGpu){0};
   *manual_state = (VkrExposureGpuState){
@@ -713,7 +723,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
                : 0u) |
           (bloom ? VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM : 0u),
       .image_sharpness =
-          !editor_rect && !prepare_display_linear &&
+          !editor_rect && !prepare_display_linear && !data_view &&
                   packet->input.globals.render_mode == VKR_RENDER_MODE_DEFAULT
               ? packet->input.globals.image_sharpness
               : 0.0f,
@@ -825,6 +835,82 @@ vkr_internal bool8_t vkr_metal_packet_prepare_editor_grid(
   prepared->tonemap.scissor =
       (MTLScissorRect){0u, 0u, target_width, target_height};
   prepared->active = true_v;
+  return true_v;
+}
+
+/* The Pass output view (VkrGpuDebugPayload.pass_output): the source the
+ * graph bound at binding 0, coloured by its kind over the whole Scene image,
+ * or stripes when the frame's graph lacks it. Radiance takes the frame's
+ * exposure, as the tonemap does. */
+vkr_internal bool8_t vkr_metal_packet_prepare_pass_output(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload, uint32_t target_width,
+    uint32_t target_height) API_AVAILABLE(macos(26.0)) {
+  prepared->tonemap.root = 0u;
+  prepared->active = true_v;
+  const VkrPassOutputSource *source =
+      packet->input.debug && packet->input.debug->pass_output > 0u
+          ? vkr_pass_output_source(packet->input.debug->pass_output - 1u)
+          : NULL;
+  if (!source)
+    return true_v;
+  const VkrRgImageUse *use = vkr_rg_pass_find_image_use(&pass->desc, 0u, 0u);
+  const bool8_t shadow = source->kind == VKR_PASS_OUTPUT_KIND_SHADOW_DEPTH;
+  /* The shader reads mip 0, and a shadow cascade its layer of the array. */
+  id<MTLTexture> texture =
+      use ? vkr_metal_packet_texture(renderer, use->image) : nil;
+  if (use && !texture)
+    return false_v;
+  /* A source the frame's graph lacks shows as stripes, not the lit image. */
+  const bool8_t missing =
+      !texture || (shadow && source->layer >= texture.arrayLength);
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketPassOutputRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  uint64_t manual_state_gpu = 0u;
+  VkrExposureGpuState *manual_state = vkr_metal_packet_next_root(
+      upload, sizeof(*manual_state), &manual_state_gpu);
+  if (!root || !manual_state)
+    return false_v;
+  *manual_state = (VkrExposureGpuState){
+      .exposure_multiplier = packet->exposure.manual,
+  };
+  /* An orthographic view's depth is already linear: no planes show it raw. */
+  const Mat4 projection = packet->input.globals.projection;
+  const bool8_t perspective = projection.m33 == 0.0f;
+  *root = (VkrMetalPacketPassOutputRoot){
+      .params = {0.0f,
+                 perspective ? mat4_perspective_reversed_near(projection)
+                             : 0.0f,
+                 perspective ? mat4_perspective_reversed_far(projection)
+                             : 0.0f,
+                 missing ? 1.0f
+                         : vkr_pass_output_vector_scale(
+                               source, (uint32_t)texture.width)},
+      .extent = {target_width, target_height},
+      .kind = missing ? (uint32_t)VKR_PASS_OUTPUT_KIND_MISSING
+                      : (uint32_t)source->kind,
+      .layer = source->layer,
+      .exposure_state = manual_state_gpu,
+      .display_output = upload->display_output_gpu,
+      .source = missing || shadow ? 0u : texture.gpuResourceID._impl,
+      .shadow = !missing && shadow ? texture.gpuResourceID._impl : 0u,
+      .inverse_pre_exposure = 1.0f / packet->exposure.pre_exposure,
+  };
+  const VkrRgBufferUse *exposure_use =
+      vkr_rg_pass_find_buffer_use(&pass->desc, 1u, 0u);
+  VkrMetalPacketGraphBufferInstance *exposure_state =
+      exposure_use
+          ? vkr_metal_packet_graph_buffer(renderer, exposure_use->buffer)
+          : NULL;
+  if (exposure_state)
+    root->exposure_state = exposure_state->resource.gpu_address;
+  prepared->tonemap.root = root_gpu;
+  prepared->tonemap.viewport =
+      (MTLViewport){0.0, 0.0, target_width, target_height, 0.0, 1.0};
+  prepared->tonemap.scissor =
+      (MTLScissorRect){0u, 0u, target_width, target_height};
   return true_v;
 }
 
@@ -2229,7 +2315,8 @@ vkr_metal_packet_tiled_lighting(const VkrPreparedFrame *packet) {
   if (mode == VKR_RENDER_MODE_UNLIT ||
       mode == VKR_RENDER_MODE_DETAIL_LIGHTING ||
       mode == VKR_RENDER_MODE_LIGHTING_ONLY ||
-      mode == VKR_RENDER_MODE_WIREFRAME || vkr_metal_packet_data_view(mode)) {
+      mode == VKR_RENDER_MODE_WIREFRAME ||
+      vkr_metal_packet_frame_data_view(packet)) {
     return VKR_METAL_TILED_LIGHTING_INSPECT;
   }
   const VkrFrameLighting *lighting = packet->input.lighting;
@@ -2963,6 +3050,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
         (uint32_t)target.height);
   if (kind == VKR_RG_EXECUTOR_EDITOR_GRID)
     return vkr_metal_packet_prepare_editor_grid(
+        renderer, pass, packet, prepared, upload, (uint32_t)target.width,
+        (uint32_t)target.height);
+  if (kind == VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT)
+    return vkr_metal_packet_prepare_pass_output(
         renderer, pass, packet, prepared, upload, (uint32_t)target.width,
         (uint32_t)target.height);
   if (kind == VKR_RG_EXECUTOR_TONEMAP ||

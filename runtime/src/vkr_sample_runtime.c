@@ -5652,6 +5652,8 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
       !vkr_is_finite_f32(next.grid_height) ||
       next.gizmo_tool > VKR_GIZMO_MODE_SCALE ||
       next.gizmo_space > VKR_GIZMO_SPACE_LOCAL || next.collision_display > 2u ||
+      next.shadow_view > VKR_SAMPLE_SHADOW_VIEW_MAX ||
+      next.pass_output > vkr_pass_output_source_count() ||
       (next.hidden_kinds & ~VKR_SCENE_SHOW_HIDE_ALL) ||
       !vkr_is_finite_f32(next.camera_speed) || next.camera_speed <= 0.0f ||
       !vkr_is_finite_f32(next.camera_sensitivity) ||
@@ -5758,6 +5760,8 @@ static void sample_view_apply(VkrStandardSceneRuntime *application,
   }
   state->view_state = next;
   application->globals.render_mode = next.render_mode;
+  application->shadow_debug_mode = next.shadow_view;
+  application->pass_output = next.pass_output;
 }
 
 /* Requests the UI client fills during one build. The runtime consumes them
@@ -7619,15 +7623,14 @@ vkr_sample_runtime_update(void *state_ptr, VkrStandardSceneRuntime *application,
   }
 
   /* Q/W/E/R belong to editor transform tools; the View menu selects render
-   * modes. F6 cycles shadow diagnostics. */
+   * modes. F6 cycles the shadow views the View menu lists too. */
   if (!application->ui_capture.keyboard &&
       input_is_key_up(state->input_state, KEY_F6) &&
       input_was_key_down(state->input_state, KEY_F6)) {
-    application->shadow_debug_mode =
-        (application->shadow_debug_mode + 1u) % 14u;
-    log_debug("SHADOW DEBUG MODE: %u "
-              "(0=off,1=cascades,2=factor,3=depth,4=map0,5=map1,6=map2,7=map3,"
-              "8=map4,9=map5,10=map6,11=map7,12=frustum,13=camera)",
+    application->shadow_debug_mode = (application->shadow_debug_mode + 1u) %
+                                     (VKR_SAMPLE_SHADOW_VIEW_MAX + 1u);
+    state->view_state.shadow_view = application->shadow_debug_mode;
+    log_debug("SHADOW DEBUG MODE: %u (0=off,1=cascades,2=factor,3=depth)",
               application->shadow_debug_mode);
   }
 

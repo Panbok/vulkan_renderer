@@ -33,6 +33,8 @@ typedef enum CmdArg {
   CMD_ARG_WINDOW,
   CMD_ARG_CAMERA_VIEW,
   CMD_ARG_RENDER_MODE,
+  /* "off" and the Pass output view's sources (vkr_pass_output_source). */
+  CMD_ARG_PASS_OUTPUT,
   CMD_ARG_TOOL,
   CMD_ARG_SWITCH,
   CMD_ARG_ZOOM,
@@ -99,15 +101,99 @@ const char *const vkr_editor_cmd_render_modes[] = {"lit",
                                                    "texel-density",
                                                    "exposure",
                                                    "draw-reach",
+                                                   "direct-light",
+                                                   "direct-diffuse",
+                                                   "direct-specular",
+                                                   "indirect-diffuse",
+                                                   "material-params",
+                                                   "motion-vectors",
+                                                   "history-rejection",
+                                                   "shadow-cascades",
+                                                   "shadow-factor",
+                                                   "shadow-depth",
                                                    NULL};
-const VkrRenderMode vkr_editor_cmd_render_mode_values[] = {
-    VKR_RENDER_MODE_DEFAULT,         VKR_RENDER_MODE_UNLIT,
-    VKR_RENDER_MODE_DETAIL_LIGHTING, VKR_RENDER_MODE_LIGHTING_ONLY,
-    VKR_RENDER_MODE_WIREFRAME,       VKR_RENDER_MODE_BASE_COLOR,
-    VKR_RENDER_MODE_ROUGHNESS,       VKR_RENDER_MODE_METALLIC,
-    VKR_RENDER_MODE_NORMAL,          VKR_RENDER_MODE_MATERIAL_COST,
-    VKR_RENDER_MODE_TEXEL_DENSITY,   VKR_RENDER_MODE_EXPOSURE,
-    VKR_RENDER_MODE_DRAW_REACH};
+const VkrEditorCmdRenderMode vkr_editor_cmd_render_mode_values[] = {
+    {VKR_RENDER_MODE_DEFAULT, 0u},
+    {VKR_RENDER_MODE_UNLIT, 0u},
+    {VKR_RENDER_MODE_DETAIL_LIGHTING, 0u},
+    {VKR_RENDER_MODE_LIGHTING_ONLY, 0u},
+    {VKR_RENDER_MODE_WIREFRAME, 0u},
+    {VKR_RENDER_MODE_BASE_COLOR, 0u},
+    {VKR_RENDER_MODE_ROUGHNESS, 0u},
+    {VKR_RENDER_MODE_METALLIC, 0u},
+    {VKR_RENDER_MODE_NORMAL, 0u},
+    {VKR_RENDER_MODE_MATERIAL_COST, 0u},
+    {VKR_RENDER_MODE_TEXEL_DENSITY, 0u},
+    {VKR_RENDER_MODE_EXPOSURE, 0u},
+    {VKR_RENDER_MODE_DRAW_REACH, 0u},
+    {VKR_RENDER_MODE_LIGHTING, 0u},
+    {VKR_RENDER_MODE_DIRECT_DIFFUSE, 0u},
+    {VKR_RENDER_MODE_DIRECT_SPECULAR, 0u},
+    {VKR_RENDER_MODE_INDIRECT_DIFFUSE, 0u},
+    {VKR_RENDER_MODE_MATERIAL_PARAMS, 0u},
+    {VKR_RENDER_MODE_TEMPORAL_MOTION, 0u},
+    {VKR_RENDER_MODE_TEMPORAL_HISTORY, 0u},
+    {VKR_RENDER_MODE_DEFAULT, 1u},
+    {VKR_RENDER_MODE_DEFAULT, 2u},
+    {VKR_RENDER_MODE_DEFAULT, 3u},
+};
+
+int32_t vkr_editor_cmd_render_mode_index(const VkrSampleViewState *view) {
+  for (uint32_t i = 0; vkr_editor_cmd_render_modes[i]; ++i) {
+    const VkrEditorCmdRenderMode *value = &vkr_editor_cmd_render_mode_values[i];
+    if (value->mode == view->render_mode &&
+        value->shadow_view == view->shadow_view) {
+      return (int32_t)i;
+    }
+  }
+  return -1;
+}
+
+const char *vkr_editor_cmd_render_mode_apply(const VkrSampleUiFrame *frame,
+                                             uint32_t index,
+                                             VkrSampleViewState *next) {
+  const VkrEditorCmdRenderMode *value =
+      &vkr_editor_cmd_render_mode_values[index];
+  /* Both pipelines draw the shadow views. */
+  if (frame->graphics && !vkr_graphics_pipeline_draws_render_mode(
+                             frame->graphics->graphics_pipeline, value->mode)) {
+    return frame->graphics->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
+               ? "draws on the desktop pipeline (Vulkan) only"
+               : "draws on the tiled pipeline (Metal) only";
+  }
+  next->render_mode = value->mode;
+  next->shadow_view = value->shadow_view;
+  next->pass_output = 0u;
+  return NULL;
+}
+
+const char *const *vkr_editor_cmd_pass_outputs(void) {
+  static const char *words[VKR_EDITOR_PASS_OUTPUT_WORDS_MAX + 2u];
+  if (!words[0]) {
+    const uint32_t count =
+        Min(vkr_pass_output_source_count(), VKR_EDITOR_PASS_OUTPUT_WORDS_MAX);
+    for (uint32_t i = 0u; i < count; ++i) {
+      words[i + 1u] = vkr_pass_output_source(i)->name;
+    }
+    words[0] = "off";
+  }
+  return words;
+}
+
+const char *vkr_editor_cmd_pass_output_apply(const VkrSampleUiFrame *frame,
+                                             uint32_t index,
+                                             VkrSampleViewState *next) {
+  const VkrPassOutputSource *source =
+      index > 0u ? vkr_pass_output_source(index - 1u) : NULL;
+  if (source && frame->graphics &&
+      !source->image[frame->graphics->graphics_pipeline]) {
+    return frame->graphics->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
+               ? "is in the desktop pipeline (Vulkan) only"
+               : "is in the tiled pipeline (Metal) only";
+  }
+  next->pass_output = index;
+  return NULL;
+}
 
 const char *const vkr_editor_cmd_tools[] = {"select", "move", "rotate", "scale",
                                             NULL};
@@ -162,6 +248,8 @@ static const char *const *cmd_arg_words(CmdArg arg) {
     return vkr_editor_cmd_camera_views;
   case CMD_ARG_RENDER_MODE:
     return vkr_editor_cmd_render_modes;
+  case CMD_ARG_PASS_OUTPUT:
+    return vkr_editor_cmd_pass_outputs();
   case CMD_ARG_TOOL:
     return vkr_editor_cmd_tools;
   case CMD_ARG_SWITCH:
@@ -834,9 +922,19 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
     }
     if (def->arg == CMD_ARG_CAMERA_VIEW)
       next.camera_view = (VkrSampleCameraView)index;
-    else if (def->arg == CMD_ARG_RENDER_MODE)
-      next.render_mode = vkr_editor_cmd_render_mode_values[index];
-    else if (def->arg == CMD_ARG_TOOL)
+    else if (def->arg == CMD_ARG_RENDER_MODE ||
+             def->arg == CMD_ARG_PASS_OUTPUT) {
+      const char *refused = def->arg == CMD_ARG_RENDER_MODE
+                                ? vkr_editor_cmd_render_mode_apply(
+                                      ctx->frame, (uint32_t)index, &next)
+                                : vkr_editor_cmd_pass_output_apply(
+                                      ctx->frame, (uint32_t)index, &next);
+      if (refused) {
+        string_format(ctx->message, sizeof(ctx->message), "'%.*s' %s",
+                      (int)word.length, word.str, refused);
+        return false_v;
+      }
+    } else if (def->arg == CMD_ARG_TOOL)
       next.gizmo_tool = vkr_editor_cmd_tool_modes[index];
     else if (def->value == 2u) {
       if (!cmd_switch(ctx, word, next.grid_labels, &next.grid_labels))
@@ -2439,6 +2537,9 @@ static const CmdDef cmd_defs[] = {
     {"camera.speed", CMD_ARG_NUMBER, "<units/s>",
      "Set free-camera flight speed", cmd_run_view, CMD_COUNT, 0u},
     {"view.mode", CMD_ARG_RENDER_MODE, "<mode>", "Switch the Scene render mode",
+     cmd_run_view, CMD_COUNT, 0u},
+    {"view.pass", CMD_ARG_PASS_OUTPUT, "<pass>|off",
+     "Show a render pass's output in the Scene instead of the lit image",
      cmd_run_view, CMD_COUNT, 0u},
     {"tool", CMD_ARG_TOOL, "<tool>", "Pick the transform tool", cmd_run_view,
      CMD_COUNT, 0u},

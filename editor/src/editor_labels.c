@@ -341,8 +341,11 @@ void vkr_editor_labels_build(VkrEditorUi *editor,
   for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
     scenes[2u + i] = frame->additive[i];
   }
+  /* A Pass output view shows a graph image, such as a shadow map, that the
+     icons' world positions do not land on. */
   if (!editor->labels_enabled || !frame->mapping_valid ||
-      frame->scene_rendering_stopped || (!frame->scene && !frame->world))
+      frame->scene_rendering_stopped || frame->view_state.pass_output != 0u ||
+      (!frame->scene && !frame->world))
     return;
   VkrUiSystem *ui = frame->ui;
   uint32_t capacity = 0;

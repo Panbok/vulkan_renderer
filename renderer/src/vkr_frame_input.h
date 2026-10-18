@@ -891,6 +891,11 @@ typedef struct VkrGpuDebugPayload {
       (docs/proposals/recordings.md, gate 4). At most
       VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX. */
   uint32_t gpu_spike_iterations;
+  /** Nonzero shows Pass output source pass_output - 1
+      (vkr_pass_output_source) over the editor's Scene image instead of the
+      lit image. A source the frame's pipeline or graph lacks leaves the lit
+      image. */
+  uint32_t pass_output;
   /** Optional batch reserved and copied by this frame. Borrowed for submit. */
   const VkrCaptureBatchRequest *capture;
 } VkrGpuDebugPayload;

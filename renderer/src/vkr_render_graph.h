@@ -629,6 +629,11 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t transmission_depth_diagnostic_enabled;
   /** True when the debug payload asks for pass Debug.GpuSpike. */
   bool8_t debug_gpu_spike;
+  /** True when pass Editor.PassOutput reads `pass_output_image` whole and
+   * shows it over the editor's Scene image (VkrGpuDebugPayload.pass_output);
+   * its executor reads the source's layer and mip 0. */
+  bool8_t editor_pass_output;
+  String8 pass_output_image;
   /** True only when capture requests the resolve emissive diagnostic. */
   bool8_t deferred_emissive_capture_enabled;
   /** True only when capture requests resolve barycentrics and LOD. */

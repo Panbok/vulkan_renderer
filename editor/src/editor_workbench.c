@@ -1173,14 +1173,22 @@ static float32_t workbench_lighting_palette(VkrEditorUi *editor,
       {"Exposure", VKR_UI_ICON_CAMERA, VKR_RENDER_MODE_EXPOSURE},
   };
   for (uint32_t i = 0u; i < ArrayCount(modes); ++i) {
+    /* Exposure draws on the tiled pipeline only. */
+    if (frame->graphics &&
+        !vkr_graphics_pipeline_draws_render_mode(
+            frame->graphics->graphics_pipeline, modes[i].mode)) {
+      continue;
+    }
     (void)vkr_ui_push_id_u64(frame->ui, i);
     if (vkr_editor_palette_button(&palette, string8_lit("lighting.mode"),
                                   modes[i].label, modes[i].icon, (String8){0},
                                   frame->view_state.render_mode ==
-                                      modes[i].mode,
+                                          modes[i].mode &&
+                                      frame->view_state.shadow_view == 0u,
                                   !frame->view_request)) {
       VkrSampleViewState next = frame->view_state;
       next.render_mode = modes[i].mode;
+      next.shadow_view = 0u;
       *frame->view_request =
           (VkrSampleViewRequest){.value = next, .apply = true_v};
     }

@@ -564,6 +564,32 @@ _Static_assert(offsetof(VkrMetalPacketEditorGridRoot, camera_position) == 64u &&
 _Static_assert(sizeof(VkrMetalPacketEditorGridRoot) == 128,
                "Metal editor grid root ABI size drift");
 
+/** Editor.PassOutput over the Scene image (VkrGpuDebugPayload.pass_output):
+ * `source` is a 2D graph image's GPU resource ID and `shadow` the shadow
+ * map's, of which `layer` shows; the one the kind does not read is zero. */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketPassOutputRoot {
+  Vec4 params;
+  uint32_t extent[2];
+  uint32_t kind;
+  uint32_t layer;
+  uint64_t exposure_state;
+  uint64_t display_output;
+  uint64_t source;
+  uint64_t shadow;
+  float32_t inverse_pre_exposure;
+  uint32_t reserved[3];
+} VkrMetalPacketPassOutputRoot;
+
+_Static_assert(offsetof(VkrMetalPacketPassOutputRoot, extent) == 16u &&
+                   offsetof(VkrMetalPacketPassOutputRoot, exposure_state) ==
+                       32u &&
+                   offsetof(VkrMetalPacketPassOutputRoot, source) == 48u &&
+                   offsetof(VkrMetalPacketPassOutputRoot,
+                            inverse_pre_exposure) == 64u,
+               "Metal pass output ABI offset drift");
+_Static_assert(sizeof(VkrMetalPacketPassOutputRoot) == 80,
+               "Metal pass output root ABI size drift");
+
 /** The only record written per indexed packet draw. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t geometry_rows;
@@ -1140,6 +1166,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GRID_ROOT,
   VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT,
+  VKR_METAL_PACKET_ABI_PASS_OUTPUT_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

@@ -2942,6 +2942,82 @@ test_graph_json_allocation_failures_release_owned_storage(void) {
   assert(completed);
 }
 
+/* The editor's Pass output view reads the image its source names, after the
+   Scene image's resolve, in both graphs. A source the frame's graph lacks,
+   such as bloom with bloom off, reads nothing instead of failing the frame. */
+vkr_internal void test_editor_pass_output_reads_named_image(void) {
+  printf("  Running test_editor_pass_output_reads_named_image...\n");
+  const char *paths[] = {"assets/render_graphs/tiled.rendergraph.json",
+                         "assets/render_graphs/main.rendergraph.json"};
+  const char *sources[] = {"shadow_map", "bloom_accum"};
+  for (uint32_t path = 0u; path < ArrayCount(paths); ++path) {
+    for (uint32_t source = 0u; source < ArrayCount(sources); ++source) {
+      Arena *arena = arena_create(MB(16), MB(2));
+      VkrAllocator allocator = {.ctx = arena};
+      assert(vkr_allocator_arena(&allocator));
+      VkrRgJsonGraph json = {0};
+      assert(vkr_rg_json_load_file(&allocator, paths[path], &json));
+      VkrRgExecutorRegistry registry = {0};
+      assert(vkr_rg_executor_registry_init(&registry, &allocator));
+      assert(vkr_render_graph_register_executors(&registry));
+      assert(vkr_rg_json_bind_executors(&json, &registry));
+      VkrRenderGraph *graph = vkr_rg_create(&allocator);
+      assert(graph);
+      VkrRenderGraphFrameInfo frame = {
+          .scene_rendering = true_v,
+          .gpu_draw_candidate_capacity = 1u,
+          .gpu_draw_visible_capacity = 8u,
+          .transmission_gpu_draw_candidate_capacity = 1u,
+          .target_width = 1000u,
+          .target_height = 800u,
+          .window_width = 1000u,
+          .window_height = 800u,
+          .scene_output_width = 1000u,
+          .scene_output_height = 800u,
+          .viewport_width = 1000u,
+          .viewport_height = 800u,
+          .render_scale = 1.0f,
+          .editor_enabled = true_v,
+          .editor_image_available = true_v,
+          .editor_image_width = 1000u,
+          .editor_image_height = 800u,
+          .target_color_format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+          .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+          .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+          .shadow_map_size = 2048u,
+          .shadow_map_layer_count = 4u,
+          .shadow_cascade_count = 4u,
+          .shadow_cascade_render_mask = 0xfu,
+          .exposure_automatic = true_v,
+          .editor_pass_output = true_v,
+          .pass_output_image = string8_create_from_cstr(
+              (const uint8_t *)sources[source], string_length(sources[source])),
+      };
+      assert(vkr_rg_begin_frame(graph, &frame));
+      assert(vkr_rg_build_from_json(graph, &json, &frame));
+      assert(vkr_rg_compile_schedule(graph));
+      uint64_t resolve_order = 0u;
+      uint64_t output_order = 0u;
+      assert(rg_find_named_pass(graph, "Editor.Resolve", &resolve_order));
+      const VkrRgPass *output =
+          rg_find_named_pass(graph, "Editor.PassOutput", &output_order);
+      assert(output && resolve_order < output_order);
+      const VkrRgImageUse *read =
+          vkr_rg_pass_find_image_use(&output->desc, 0u, 0u);
+      const VkrRgImageHandle shadow_map =
+          vkr_rg_find_image(graph, string8_lit("shadow_map"));
+      if (source == 0u) {
+        assert(read && read->image.id == shadow_map.id);
+      } else {
+        assert(!read);
+      }
+      vkr_rg_end_frame(graph);
+      arena_destroy(arena);
+    }
+  }
+  printf("  test_editor_pass_output_reads_named_image PASSED\n");
+}
+
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
@@ -2986,6 +3062,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_capture_read_uses_exact_array_slice();
   test_same_image_layer_copy_barriers();
   test_cascade_static_layer_copy_barriers();
+  test_editor_pass_output_reads_named_image();
   test_composed_cascade_frame_lowering();
 
   printf("--- RenderGraph barrier tests completed. ---\n");

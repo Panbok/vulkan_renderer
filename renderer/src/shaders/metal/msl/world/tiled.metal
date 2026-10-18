@@ -180,7 +180,8 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_sky_fragment(
     VkrMetalTiledSkyOutput input [[stage_in]],
     constant VkrMetalTiledSkyRoot &root [[buffer(1)]]) {
   if (root.frame->render_mode == 9u || root.frame->render_mode == 12u ||
-      vkr_editor_data_view(root.frame->render_mode))
+      vkr_editor_data_view(root.frame->render_mode) ||
+      root.frame->shadow_debug_mode != 0u)
     return {float4(0.0f), half4(0.0h)};
   return {float4(vkr_metal_tiled_sky_background(root, uint2(input.position.xy)),
                  0.0f),
@@ -337,7 +338,8 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   constant VkrMetalPacketFrameRoot *frame = root.frame;
   uint2 pixel = uint2(input.position.xy);
   if (frame->render_mode == 9u || frame->render_mode == 12u ||
-      vkr_editor_data_view(frame->render_mode))
+      vkr_editor_data_view(frame->render_mode) ||
+      frame->shadow_debug_mode != 0u)
     discard_fragment();
   const float depth = root.depth.read(pixel);
   // Reversed depth 0 is the far plane: only sky reached the pixel.
@@ -1340,6 +1342,25 @@ static float vkr_metal_tiled_texel_density(
   return metres > 0.0f ? texels / metres : 0.0f;
 }
 
+// The shading normal the inspection views show: the interpolated normal
+// facing the viewer, with the material's normal map when it has one.
+static float3
+vkr_metal_tiled_inspect_normal(thread const VkrMetalTiledVertexOutput &input,
+                               thread const VkrMetalTiledSurface &surface,
+                               bool front_facing) {
+  float3 normal = normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f);
+  if (surface.normal_mapped) {
+    float3 tangent = normalize(input.world_tangent.xyz);
+    tangent = normalize(tangent - dot(tangent, normal) * normal);
+    const float3 bitangent =
+        normalize(cross(normal, tangent)) * input.world_tangent.w;
+    normal = normalize(tangent * surface.tangent_normal.x +
+                       bitangent * surface.tangent_normal.y +
+                       normal * surface.tangent_normal.z);
+  }
+  return normal;
+}
+
 // The editor's modes that replace shading; false for the modes that shade.
 // Unlit shows the base colour and the pre-exposed emission; wireframe draws
 // one-pixel edges over a dark fill, as the visibility-buffer resolve does.
@@ -1355,6 +1376,21 @@ static bool vkr_metal_tiled_inspect(
     const device VkrMetalPacketMaterial &material,
     thread const VkrMetalTiledSurface &surface, float3 barycentric,
     bool front_facing, uint state_flags, thread float3 &out_color) {
+  // The shadow views show the sun's shadow at the surface instead of light:
+  // the cascade that shades it, its shadow factor or the map's stored depth.
+  // They sample with the geometric normal, as shading does
+  // (vkr_metal_tiled_sun_visibility).
+  if (frame->shadow_debug_mode != 0u) {
+    const VkrMetalPacketShadowSample shadow =
+        vkr_metal_packet_directional_shadow_sample(
+            frame, input.world_position,
+            normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f));
+    out_color = vkr_editor_shadow_debug_color(
+                    frame->shadow_debug_mode, shadow.cascade, shadow.factor,
+                    shadow.map_depth, shadow.valid) *
+                frame->pre_exposure;
+    return true;
+  }
   const uint mode = frame->render_mode;
   if (mode == 12u) {
     out_color = vkr_editor_wire_color(barycentric, dfdx(barycentric),
@@ -1370,18 +1406,9 @@ static bool vkr_metal_tiled_inspect(
   }
   float3 value = float3(0.0f);
   if (mode == 2u) {
-    float3 normal =
-        normalize(input.world_normal) * (front_facing ? 1.0f : -1.0f);
-    if (surface.normal_mapped) {
-      float3 tangent = normalize(input.world_tangent.xyz);
-      tangent = normalize(tangent - dot(tangent, normal) * normal);
-      const float3 bitangent =
-          normalize(cross(normal, tangent)) * input.world_tangent.w;
-      normal = normalize(tangent * surface.tangent_normal.x +
-                         bitangent * surface.tangent_normal.y +
-                         normal * surface.tangent_normal.z);
-    }
-    value = normal * 0.5f + 0.5f;
+    value = vkr_metal_tiled_inspect_normal(input, surface, front_facing) *
+                0.5f +
+            0.5f;
   } else if (mode == 13u) {
     value = surface.base.rgb;
   } else if (mode == 14u) {

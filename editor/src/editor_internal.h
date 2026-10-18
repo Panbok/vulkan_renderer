@@ -475,7 +475,30 @@ void vkr_editor_cmd_bar_build(VkrEditorUi *editor,
  * index-aligned with their value tables. */
 extern const char *const vkr_editor_cmd_camera_views[];
 extern const char *const vkr_editor_cmd_render_modes[];
-extern const VkrRenderMode vkr_editor_cmd_render_mode_values[];
+/* A Cmd render mode: the renderer's mode, or a shadow view over the lit
+ * image (VkrSampleViewState.shadow_view). */
+typedef struct VkrEditorCmdRenderMode {
+  VkrRenderMode mode;
+  uint32_t shadow_view;
+} VkrEditorCmdRenderMode;
+extern const VkrEditorCmdRenderMode vkr_editor_cmd_render_mode_values[];
+/* The Cmd render mode `view` shows, or -1. */
+int32_t vkr_editor_cmd_render_mode_index(const VkrSampleViewState *view);
+/* Sets `next` to show Cmd render mode `index`. Returns NULL, or why the
+ * Scene's pipeline cannot draw it. */
+const char *vkr_editor_cmd_render_mode_apply(const VkrSampleUiFrame *frame,
+                                             uint32_t index,
+                                             VkrSampleViewState *next);
+/* Bounds the Pass output sources Cmd names. */
+#define VKR_EDITOR_PASS_OUTPUT_WORDS_MAX 32u
+/* Cmd words of the Pass output view, NULL-terminated: "off", then source i
+ * (vkr_pass_output_source) at word i + 1. */
+const char *const *vkr_editor_cmd_pass_outputs(void);
+/* Sets `next` to show Pass output word `index`, 0 for none. Returns NULL, or
+ * why the Scene's pipeline lacks the source. */
+const char *vkr_editor_cmd_pass_output_apply(const VkrSampleUiFrame *frame,
+                                             uint32_t index,
+                                             VkrSampleViewState *next);
 extern const char *const vkr_editor_cmd_tools[];
 extern const uint32_t vkr_editor_cmd_tool_modes[];
 /* The Cmd `window` name of a floating window. */

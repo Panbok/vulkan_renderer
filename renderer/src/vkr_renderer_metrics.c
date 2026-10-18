@@ -730,7 +730,20 @@ vkr_internal bool8_t vkr_renderer_metrics_register_shadows(
     VKR_REGISTER_CASCADE(shadow_composited, "composited");
     VKR_REGISTER_CASCADE(shadow_static_rendered, "static_rendered");
 #undef VKR_REGISTER_CASCADE
+    /* The cascade's fit: its view-depth span and texel size in metres. */
+#define VKR_REGISTER_CASCADE_F64(FIELD, SUFFIX)                                \
+  string_format(name, sizeof(name), "draw.shadow.cascade%u." SUFFIX, i);       \
+  if (!vkr_renderer_metric_register(                                           \
+          metrics, name, VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_KIND_GAUGE,        \
+          VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_F64, &ids->FIELD[i]))       \
+  return false_v
+    VKR_REGISTER_CASCADE_F64(shadow_split_near, "split_near");
+    VKR_REGISTER_CASCADE_F64(shadow_split_far, "split_far");
+    VKR_REGISTER_CASCADE_F64(shadow_texel_size, "texel_size");
+#undef VKR_REGISTER_CASCADE_F64
   }
+  VKR_REGISTER_U64(shadow_cascade_count, "draw.shadow.cascades",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(shadow_sdsm_status, "draw.shadow.sdsm.status",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(shadow_sdsm_source_lag, "draw.shadow.sdsm.source_lag",
@@ -1844,7 +1857,29 @@ vkr_internal void vkr_renderer_metrics_collect_shadows(
                               shadow->composited[i]);
     vkr_metrics_gauge_set_u64(metrics, ids->shadow_static_rendered[i],
                               shadow->static_rendered[i]);
+    /* A cascade the frame does not shade with has no fit. */
+    const VkrMetricId fit_ids[] = {
+        ids->shadow_split_near[i],
+        ids->shadow_split_far[i],
+        ids->shadow_texel_size[i],
+    };
+    const float32_t fit_values[] = {
+        shadow->split_near[i],
+        shadow->split_far[i],
+        shadow->world_units_per_texel[i],
+    };
+    for (uint32_t id = 0u; id < ArrayCount(fit_ids); ++id) {
+      if (i < shadow->cascade_count) {
+        vkr_metrics_gauge_set_f64(metrics, fit_ids[id],
+                                  (float64_t)fit_values[id]);
+      } else {
+        vkr_metrics_mark(metrics, fit_ids[id],
+                         VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                         VKR_METRIC_REASON_NOT_SAMPLED);
+      }
+    }
   }
+  VKR_SET_U64(shadow_cascade_count, shadow->cascade_count);
   VKR_SET_U64(shadow_sdsm_status, shadow->sdsm_status);
   VKR_SET_U64(shadow_sdsm_source_lag, shadow->sdsm_source_lag);
   VKR_SET_U64(shadow_sdsm_occupied_pixels, shadow->sdsm_occupied_count);

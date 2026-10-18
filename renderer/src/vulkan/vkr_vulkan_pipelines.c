@@ -2114,6 +2114,23 @@ vkr_internal bool8_t vkr_vk_validate_ui_root_abi(VkrVulkanRenderer *renderer) {
                                   sizeof(VkrVulkanUiRoot));
 }
 
+vkr_internal bool8_t
+vkr_vk_validate_pass_output_root_abi(VkrVulkanRenderer *renderer) {
+  static const VkrVulkanReflectedField fields[] = {
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, params),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, extent),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, kind),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, layer),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, exposure_state),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, display_output),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, source_texture),
+      VKR_VULKAN_REFLECTED_FIELD(VkrVulkanPassOutputRoot, inverse_pre_exposure),
+  };
+  return vkr_vk_validate_root_abi(
+      renderer, VKR_VULKAN_PACKET_PASS_OUTPUT_FRAG_SPV, "pass_output_fragment",
+      fields, ArrayCount(fields), sizeof(VkrVulkanPassOutputRoot));
+}
+
 #undef VKR_VULKAN_REFLECTED_FIELD
 
 vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
@@ -2144,6 +2161,7 @@ bool8_t vkr_vk_validate_shader_abi(VkrVulkanRenderer *renderer) {
          vkr_vk_validate_editor_overlay_root_abi(renderer) &&
          vkr_vk_validate_selection_outline_root_abi(renderer) &&
          vkr_vk_validate_editor_grid_root_abi(renderer) &&
+         vkr_vk_validate_pass_output_root_abi(renderer) &&
          vkr_vk_validate_fullscreen_root_abi(renderer) &&
          vkr_vk_validate_ui_root_abi(renderer) &&
          vkr_vk_validate_packet_root_abi(renderer) &&
@@ -2355,6 +2373,8 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
                   ? "selection_outline_fragment"
               : fragment_shader == VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT
                   ? "editor_grid_fragment"
+              : fragment_shader == VKR_VULKAN_PACKET_SHADER_PASS_OUTPUT_FRAGMENT
+                  ? "pass_output_fragment"
               : fragment_shader ==
                       VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_FRAGMENT
                   ? "vk_vbuffer_split_depth_fragment"
@@ -2536,12 +2556,14 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
       VKR_VULKAN_PACKET_PIPELINE_EDITOR_OVERLAY,
       VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
       VKR_VULKAN_PACKET_PIPELINE_EDITOR_GRID,
+      VKR_VULKAN_PACKET_PIPELINE_EDITOR_PASS_OUTPUT,
       VKR_VULKAN_PACKET_PIPELINE_FULLSCREEN_FINAL,
       VKR_VULKAN_PACKET_PIPELINE_UI,
   };
   const VkrVulkanPacketShader vertex_shaders[] = {
       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_VERTEX,
       VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_VERTEX,
+      VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
       VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
       VKR_VULKAN_PACKET_SHADER_FULLSCREEN_VERTEX,
       VKR_VULKAN_PACKET_SHADER_UI_VERTEX,
@@ -2550,10 +2572,11 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
       VKR_VULKAN_PACKET_SHADER_EDITOR_OVERLAY_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT,
+      VKR_VULKAN_PACKET_SHADER_PASS_OUTPUT_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_FULLSCREEN_FRAGMENT,
       VKR_VULKAN_PACKET_SHADER_UI_FRAGMENT,
   };
-  const bool8_t blends[] = {false_v, true_v, true_v, false_v, true_v};
+  const bool8_t blends[] = {false_v, true_v, true_v, false_v, false_v, true_v};
   /* The only pipelines built while the application runs; a recording files
      their pipeline.create event on the frame that rebuilt them (ADR-122). */
 #if VKR_METRICS_ENABLED
@@ -2626,6 +2649,7 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_SELECTION_OUTLINE_FRAG_SPV,
       VKR_VULKAN_PACKET_EDITOR_GRID_VERT_SPV,
       VKR_VULKAN_PACKET_EDITOR_GRID_FRAG_SPV,
+      VKR_VULKAN_PACKET_PASS_OUTPUT_FRAG_SPV,
       VKR_VULKAN_PACKET_REFLECTION_VERT_SPV,
       VKR_VULKAN_PACKET_REFLECTION_FRAG_SPV,
       VKR_VULKAN_PACKET_VBUFFER_SPLIT_DEPTH_VERT_SPV,
@@ -2675,6 +2699,11 @@ vkr_vk_create_packet_pipelines(VkrVulkanRenderer *renderer) {
              VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
              VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT, presentation_format,
              VK_FORMAT_UNDEFINED, false_v, false_v, true_v, false_v) &&
+         vkr_vk_create_packet_pipeline(
+             renderer, VKR_VULKAN_PACKET_PIPELINE_EDITOR_PASS_OUTPUT,
+             VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
+             VKR_VULKAN_PACKET_SHADER_PASS_OUTPUT_FRAGMENT, presentation_format,
+             VK_FORMAT_UNDEFINED, false_v, false_v, false_v, false_v) &&
          vkr_vk_create_packet_pipeline(
              renderer, VKR_VULKAN_PACKET_PIPELINE_PICKING,
              VKR_VULKAN_PACKET_SHADER_WORLD_VERTEX,

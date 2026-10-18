@@ -127,6 +127,38 @@ vkr_render_graph_prepare_local_shadow(const VkrPreparedFrame *packet,
           frame->local_shadow_map_size, frame->local_shadow_map_layer_count);
 }
 
+/* The editor's Pass output view (VkrGpuDebugPayload.pass_output) names the
+   graph image pass Editor.PassOutput reads. It replaces the Scene image, so
+   the grid, selection outline and overlay that belong over the lit image stay
+   off. Needs the editor flags set first. */
+vkr_internal void
+vkr_render_graph_prepare_pass_output(const VkrPreparedFrame *packet,
+                                     VkrRenderGraphFrameInfo *frame) {
+  const VkrPassOutputSource *pass_output =
+      packet->input.debug && packet->input.debug->pass_output > 0u
+          ? vkr_pass_output_source(packet->input.debug->pass_output - 1u)
+          : NULL;
+  const char *pass_output_image =
+      pass_output
+          ? pass_output
+                ->image[packet->tiled_pipeline ? VKR_GRAPHICS_PIPELINE_TILED
+                                               : VKR_GRAPHICS_PIPELINE_DESKTOP]
+          : NULL;
+  frame->editor_pass_output =
+      packet->scene_rendering && frame->editor_enabled &&
+      frame->editor_image_available && pass_output_image != NULL;
+  frame->pass_output_image =
+      frame->editor_pass_output
+          ? string8_create_from_cstr((const uint8_t *)pass_output_image,
+                                     string_length(pass_output_image))
+          : (String8){0};
+  if (frame->editor_pass_output) {
+    frame->editor_overlay_enabled = false_v;
+    frame->editor_selection_enabled = false_v;
+    frame->editor_grid_enabled = false_v;
+  }
+}
+
 void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrBloomConfig *bloom_config,
                                     const VkrGtaoConfig *gtao_config,
@@ -290,6 +322,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
            "transmission_visibility_ids_layer_4"));
   frame->debug_gpu_spike =
       packet->input.debug && packet->input.debug->gpu_spike_iterations > 0u;
+  vkr_render_graph_prepare_pass_output(packet, frame);
   frame->deferred_emissive_capture_enabled =
       packet->scene_rendering && packet->input.debug &&
       vkr_renderer_capture_request_contains(packet->input.debug->capture,
@@ -667,6 +700,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE] = {"pass.debug.gpu_spike",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT] = {"pass.editor.pass_output",
+                                            VKR_RG_PASS_TYPE_GRAPHICS},
 };
 
 bool8_t vkr_render_graph_register_executors(VkrRgExecutorRegistry *registry) {

@@ -200,6 +200,10 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId shadow_dynamic_forced[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_composited[VKR_SHADOW_CASCADE_COUNT_MAX];
   VkrMetricId shadow_static_rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_split_near[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_texel_size[VKR_SHADOW_CASCADE_COUNT_MAX];
+  VkrMetricId shadow_cascade_count;
   VkrMetricId shadow_sdsm_status;
   VkrMetricId shadow_sdsm_source_lag;
   VkrMetricId shadow_sdsm_occupied_pixels;

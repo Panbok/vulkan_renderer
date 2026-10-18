@@ -34,6 +34,9 @@ enum {
   /* Whether the Scene applies the game's draw distances, and the View
      distance setting that scales them. */
   VIEW_POPUP_DISTANCE,
+  /* The render popup's Pass output list: a graph image instead of the lit
+     image (VkrSampleViewState.pass_output). */
+  VIEW_POPUP_PASS,
   VIEW_POPUP_COUNT,
 };
 
@@ -59,25 +62,48 @@ static const char *const view_camera_names[] = {
 static const char *const view_distance_names[] = {"Near", "Medium", "Far",
                                                   "Epic"};
 
+/* The render popup's section headers; a header shows before the first mode
+   of its section the Scene's pipeline draws. */
+static const char *const view_render_sections[] = {NULL, "Light", "Material",
+                                                   "Shadows", "Frame"};
+
+/* The render popup's modes in their sections. */
 static const struct {
   const char *name;
   VkrRenderMode mode;
+  /* VkrSampleViewState.shadow_view over the lit image, or 0. */
+  uint32_t shadow_view;
+  /* Index into view_render_sections. */
+  uint32_t section;
 } view_render_modes[] = {
-    {"Lit", VKR_RENDER_MODE_DEFAULT},
-    {"Unlit", VKR_RENDER_MODE_UNLIT},
-    {"Detail lighting", VKR_RENDER_MODE_DETAIL_LIGHTING},
-    {"Lighting only", VKR_RENDER_MODE_LIGHTING_ONLY},
-    {"Wireframe", VKR_RENDER_MODE_WIREFRAME},
-    /* Artist views (ADR-099); the tiled pipeline draws them. */
-    {"Base colour", VKR_RENDER_MODE_BASE_COLOR},
-    {"Roughness", VKR_RENDER_MODE_ROUGHNESS},
-    {"Metallic", VKR_RENDER_MODE_METALLIC},
-    {"Normals", VKR_RENDER_MODE_NORMAL},
-    {"Material cost", VKR_RENDER_MODE_MATERIAL_COST},
-    {"Texel density", VKR_RENDER_MODE_TEXEL_DENSITY},
-    {"Exposure", VKR_RENDER_MODE_EXPOSURE},
-    /* How far each object still draws (ADR-114). */
-    {"Draw reach", VKR_RENDER_MODE_DRAW_REACH},
+    {"Lit", VKR_RENDER_MODE_DEFAULT, 0u, 0u},
+    {"Unlit", VKR_RENDER_MODE_UNLIT, 0u, 0u},
+    {"Detail lighting", VKR_RENDER_MODE_DETAIL_LIGHTING, 0u, 0u},
+    {"Lighting only", VKR_RENDER_MODE_LIGHTING_ONLY, 0u, 0u},
+    {"Wireframe", VKR_RENDER_MODE_WIREFRAME, 0u, 0u},
+    /* The desktop pipeline's light terms. */
+    {"Direct light", VKR_RENDER_MODE_LIGHTING, 0u, 1u},
+    {"Direct diffuse", VKR_RENDER_MODE_DIRECT_DIFFUSE, 0u, 1u},
+    {"Direct specular", VKR_RENDER_MODE_DIRECT_SPECULAR, 0u, 1u},
+    {"Indirect diffuse", VKR_RENDER_MODE_INDIRECT_DIFFUSE, 0u, 1u},
+    {"Exposure", VKR_RENDER_MODE_EXPOSURE, 0u, 1u},
+    /* Artist views (ADR-099); the tiled pipeline draws most of them. */
+    {"Base colour", VKR_RENDER_MODE_BASE_COLOR, 0u, 2u},
+    {"Roughness", VKR_RENDER_MODE_ROUGHNESS, 0u, 2u},
+    {"Metallic", VKR_RENDER_MODE_METALLIC, 0u, 2u},
+    {"Normals", VKR_RENDER_MODE_NORMAL, 0u, 2u},
+    {"Material params", VKR_RENDER_MODE_MATERIAL_PARAMS, 0u, 2u},
+    {"Material cost", VKR_RENDER_MODE_MATERIAL_COST, 0u, 2u},
+    {"Texel density", VKR_RENDER_MODE_TEXEL_DENSITY, 0u, 2u},
+    /* The sun's shadow; both pipelines draw these. */
+    {"Shadow cascades", VKR_RENDER_MODE_DEFAULT, 1u, 3u},
+    {"Shadow factor", VKR_RENDER_MODE_DEFAULT, 2u, 3u},
+    {"Shadow depth", VKR_RENDER_MODE_DEFAULT, 3u, 3u},
+    /* How far each object still draws (ADR-114), and the desktop
+       pipeline's temporal reprojection. */
+    {"Draw reach", VKR_RENDER_MODE_DRAW_REACH, 0u, 4u},
+    {"Motion vectors", VKR_RENDER_MODE_TEMPORAL_MOTION, 0u, 4u},
+    {"History rejection", VKR_RENDER_MODE_TEMPORAL_HISTORY, 0u, 4u},
 };
 
 static const struct {
@@ -187,19 +213,36 @@ typedef struct ViewRow {
   float32_t value;
   float32_t minimum;
   float32_t maximum;
+  /* The entry an option row of a filtered list stands for. */
+  uint32_t item;
 } ViewRow;
 
 static String8 view_string(const char *text) {
   return string8_create_from_cstr((const uint8_t *)text, string_length(text));
 }
 
-static const char *view_render_name(VkrRenderMode mode) {
+static const char *view_render_name(const VkrSampleViewState *state) {
+  const VkrPassOutputSource *pass =
+      state->pass_output ? vkr_pass_output_source(state->pass_output - 1u)
+                         : NULL;
+  if (pass) {
+    return pass->label;
+  }
   for (uint32_t i = 0; i < ArrayCount(view_render_modes); ++i) {
-    if (view_render_modes[i].mode == mode) {
+    if (view_render_modes[i].mode == state->render_mode &&
+        view_render_modes[i].shadow_view == state->shadow_view) {
       return view_render_modes[i].name;
     }
   }
   return "Diagnostic";
+}
+
+/* Whether the Scene's pipeline draws render popup mode `index`. */
+static bool8_t view_render_drawn(const VkrSampleUiFrame *frame,
+                                 uint32_t index) {
+  return !frame->graphics || view_render_modes[index].shadow_view != 0u ||
+         vkr_graphics_pipeline_draws_render_mode(
+             frame->graphics->graphics_pipeline, view_render_modes[index].mode);
 }
 
 static void view_speed_text(float32_t speed, char text[24]) {
@@ -280,7 +323,7 @@ static void view_chip_text(const VkrEditorUi *editor,
                 camera < ArrayCount(view_camera_names)
                     ? view_camera_names[camera]
                     : "Perspective");
-  string_format(text[1], 48, "%s", view_render_name(state->render_mode));
+  string_format(text[1], 48, "%s", view_render_name(state));
   if (state->grid_enabled)
     string_format(text[2], 48, "%.4g",
                   (double)(editor->grid_spacing > 0 ? editor->grid_spacing
@@ -522,10 +565,22 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     }
     break;
   case VIEW_POPUP_RENDER: {
+    uint32_t section = 0u;
     for (uint32_t i = 0; i < ArrayCount(view_render_modes); ++i) {
+      if (!view_render_drawn(frame, i)) {
+        continue;
+      }
+      if (view_render_modes[i].section != section) {
+        section = view_render_modes[i].section;
+        rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+        string_format(rows[count++].text, sizeof(rows[0].text), "%s",
+                      view_render_sections[section]);
+      }
       ViewRow *row = &rows[count++];
-      *row =
-          (ViewRow){.checked = state->render_mode == view_render_modes[i].mode};
+      *row = (ViewRow){
+          .checked = state->render_mode == view_render_modes[i].mode &&
+                     state->shadow_view == view_render_modes[i].shadow_view,
+          .item = i};
       string_format(row->text, sizeof(row->text), "%s",
                     view_render_modes[i].name);
     }
@@ -533,8 +588,42 @@ static uint32_t view_popup_rows(VkrEditorUi *editor,
     rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
     string_format(rows[count++].text, sizeof(rows[0].text), "Level design");
     ViewRow *greybox = &rows[count++];
-    *greybox = (ViewRow){.checked = state->greybox_view};
+    *greybox = (ViewRow){.checked = state->greybox_view,
+                         .item = ArrayCount(view_render_modes)};
     string_format(greybox->text, sizeof(greybox->text), "Greybox");
+    /* A render pass's output instead of the lit image, from its own list. */
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    string_format(rows[count++].text, sizeof(rows[0].text), "Debug");
+    ViewRow *pass = &rows[count++];
+    *pass = (ViewRow){.checked = state->pass_output != 0u,
+                      .icon = VKR_UI_ICON_LAYERS,
+                      .item = ArrayCount(view_render_modes) + 1u};
+    string_format(pass->text, sizeof(pass->text), "Pass output...");
+    break;
+  }
+  case VIEW_POPUP_PASS: {
+    /* Back to the render modes, Off, then the sources the Scene's pipeline
+       has. */
+    ViewRow *back = &rows[count++];
+    *back = (ViewRow){.icon = VKR_UI_ICON_CHEVRON_LEFT, .item = UINT32_MAX};
+    string_format(back->text, sizeof(back->text), "View modes");
+    rows[count] = (ViewRow){.kind = VIEW_ROW_HEADER};
+    string_format(rows[count++].text, sizeof(rows[0].text), "Pass output");
+    ViewRow *off = &rows[count++];
+    *off = (ViewRow){.checked = state->pass_output == 0u, .item = 0u};
+    string_format(off->text, sizeof(off->text), "Off (lit image)");
+    for (uint32_t i = 0u;
+         i < vkr_pass_output_source_count() && count < VIEW_POPUP_ROW_MAX;
+         ++i) {
+      const VkrPassOutputSource *source = vkr_pass_output_source(i);
+      if (frame->graphics &&
+          !source->image[frame->graphics->graphics_pipeline]) {
+        continue;
+      }
+      ViewRow *row = &rows[count++];
+      *row = (ViewRow){.checked = state->pass_output == i + 1u, .item = i + 1u};
+      string_format(row->text, sizeof(row->text), "%s", source->label);
+    }
     break;
   }
   case VIEW_POPUP_GRID:
@@ -2617,7 +2706,11 @@ static bool8_t view_chip(VkrEditorUi *editor, VkrUiSystem *ui, const char *id,
           (Vec4){rect.x / scale, rect.y / scale, rect.width / scale,
                  rect.height / scale};
     }
-    editor->view_popup = editor->view_popup == popup ? VIEW_POPUP_NONE : popup;
+    /* The render chip's Pass output list closes with it too. */
+    const bool8_t shown =
+        editor->view_popup == popup ||
+        (popup == VIEW_POPUP_RENDER && editor->view_popup == VIEW_POPUP_PASS);
+    editor->view_popup = shown ? VIEW_POPUP_NONE : popup;
   }
   return clicked;
 }
@@ -2692,21 +2785,33 @@ static void view_scene_textures_apply(const VkrSampleUiFrame *frame,
 static bool8_t view_popup_activate(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
                                    uint32_t popup, uint32_t index,
+                                   const ViewRow *row,
                                    VkrSampleViewState *next) {
   switch (popup) {
   case VIEW_POPUP_CAMERA:
     next->camera_view = (VkrSampleCameraView)index;
     return false_v;
   case VIEW_POPUP_RENDER:
-    /* Rows: the render modes, then a header and the greybox view. */
-    if (index < ArrayCount(view_render_modes)) {
-      next->render_mode = view_render_modes[index].mode;
+    /* Rows: the modes the pipeline draws, then the greybox view. */
+    if (row->item < ArrayCount(view_render_modes)) {
+      next->render_mode = view_render_modes[row->item].mode;
+      next->shadow_view = view_render_modes[row->item].shadow_view;
+      next->pass_output = 0u;
       return false_v;
     }
-    if (index == ArrayCount(view_render_modes) + 1u) {
-      next->greybox_view = !next->greybox_view;
+    if (row->item == ArrayCount(view_render_modes) + 1u) {
+      editor->view_popup = VIEW_POPUP_PASS;
+      return true_v;
     }
+    next->greybox_view = !next->greybox_view;
     return true_v;
+  case VIEW_POPUP_PASS:
+    if (row->item == UINT32_MAX) {
+      editor->view_popup = VIEW_POPUP_RENDER;
+      return true_v;
+    }
+    next->pass_output = row->item;
+    return false_v;
   case VIEW_POPUP_GRID:
     if (index == 0) {
       next->grid_enabled = !next->grid_enabled;
@@ -2943,7 +3048,7 @@ static void view_popup_build(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         item.style.padding_pt.left += 20.0f;
       if (vkr_ui_button(ui, string8_lit("option"), view_string(row->text),
                         &item)) {
-        if (!view_popup_activate(editor, frame, popup, i, &next))
+        if (!view_popup_activate(editor, frame, popup, i, row, &next))
           editor->view_popup = VIEW_POPUP_NONE;
         changed = true_v;
       }
@@ -3050,9 +3155,11 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                     "Camera projection and orthographic direction",
                     VIEW_POPUP_CAMERA);
     (void)view_chip(editor, ui, "render", 1, VKR_UI_ICON_VIEW_MODE, text[1],
-                    editor->view_popup == VIEW_POPUP_RENDER,
-                    state->render_mode != VKR_RENDER_MODE_DEFAULT, disabled,
-                    layout.compact, "Viewport rendering mode",
+                    editor->view_popup == VIEW_POPUP_RENDER ||
+                        editor->view_popup == VIEW_POPUP_PASS,
+                    state->render_mode != VKR_RENDER_MODE_DEFAULT ||
+                        state->shadow_view != 0u || state->pass_output != 0u,
+                    disabled, layout.compact, "Viewport rendering mode",
                     VIEW_POPUP_RENDER);
     (void)view_chip(editor, ui, "grid", 2, VKR_UI_ICON_GRID, text[2],
                     editor->view_popup == VIEW_POPUP_GRID, state->grid_enabled,

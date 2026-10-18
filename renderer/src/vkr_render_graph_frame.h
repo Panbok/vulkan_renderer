@@ -178,6 +178,9 @@ typedef enum VkrRgExecutorKind {
   VKR_RG_EXECUTOR_TILED_SUN_SHADOW,
   /** A fixed GPU cost the debug payload asks for (VkrGpuDebugPayload). */
   VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE,
+  /** The editor's Pass output view: one graph image drawn over the Scene
+   * image (VkrGpuDebugPayload.pass_output). */
+  VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

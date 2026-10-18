@@ -78,6 +78,12 @@ typedef struct VkrShadowMetrics {
   /** Layer copied from the static cascade layer; that layer drawn too. */
   uint32_t composited[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t static_rendered[VKR_SHADOW_CASCADE_COUNT_MAX];
+  /** The directional cascades the frame shades with, each one's view-depth
+   * span in metres and its world size of a map texel. */
+  uint32_t cascade_count;
+  float32_t split_near[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t world_units_per_texel[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t sdsm_status;
   uint32_t sdsm_source_lag;
   uint32_t sdsm_occupied_count;

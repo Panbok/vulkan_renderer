@@ -1051,6 +1051,7 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> editor_selection_mask_pipeline;
   id<MTLRenderPipelineState> editor_selection_outline_pipeline;
   id<MTLRenderPipelineState> editor_grid_pipeline;
+  id<MTLRenderPipelineState> editor_pass_output_pipeline;
   id<MTLRenderPipelineState> animation_preview_pipeline;
   id<MTLRenderPipelineState> tonemap_pipeline;
   id<MTLRenderPipelineState> display_linear_pipeline;

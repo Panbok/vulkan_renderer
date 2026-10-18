@@ -67,6 +67,7 @@
   "packet.selection_outline.frag.spv"
 #define VKR_VULKAN_PACKET_EDITOR_GRID_VERT_SPV "packet.editor_grid.vert.spv"
 #define VKR_VULKAN_PACKET_EDITOR_GRID_FRAG_SPV "packet.editor_grid.frag.spv"
+#define VKR_VULKAN_PACKET_PASS_OUTPUT_FRAG_SPV "packet.pass_output.frag.spv"
 #define VKR_VULKAN_PACKET_FULLSCREEN_VERT_SPV "packet.fullscreen.vert.spv"
 #define VKR_VULKAN_PACKET_FULLSCREEN_FRAG_SPV "packet.fullscreen.frag.spv"
 #define VKR_VULKAN_PACKET_TEXT_VERT_SPV "packet.text.vert.spv"
@@ -342,6 +343,8 @@ typedef enum VkrVulkanPacketPipeline {
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_MASK,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE,
   VKR_VULKAN_PACKET_PIPELINE_EDITOR_GRID,
+  /* Editor.PassOutput over the Scene image (VkrGpuDebugPayload.pass_output). */
+  VKR_VULKAN_PACKET_PIPELINE_EDITOR_PASS_OUTPUT,
   VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW,
   /* A planar reflection's mirrored view, shaded forward (ADR-087). */
   VKR_VULKAN_PACKET_PIPELINE_REFLECTION,
@@ -389,6 +392,7 @@ typedef enum VkrVulkanPacketShader {
   VKR_VULKAN_PACKET_SHADER_SELECTION_OUTLINE_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_VERTEX,
   VKR_VULKAN_PACKET_SHADER_EDITOR_GRID_FRAGMENT,
+  VKR_VULKAN_PACKET_SHADER_PASS_OUTPUT_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_REFLECTION_VERTEX,
   VKR_VULKAN_PACKET_SHADER_REFLECTION_FRAGMENT,
   VKR_VULKAN_PACKET_SHADER_VBUFFER_SPLIT_DEPTH_VERTEX,
@@ -1856,6 +1860,24 @@ _Static_assert(sizeof(VkrVulkanEditorGridRoot) == 128u &&
                    offsetof(VkrVulkanEditorGridRoot, display_output) == 112u,
                "Editor grid root ABI drift");
 
+/** Editor.PassOutput (shaders/vulkan/slang/editor/pass_output.slang). */
+typedef struct VKR_SIMD_ALIGN VkrVulkanPassOutputRoot {
+  Vec4 params;
+  uint32_t extent[2];
+  uint32_t kind;
+  uint32_t layer;
+  uint64_t exposure_state;
+  uint64_t display_output;
+  uint32_t source_texture;
+  float32_t inverse_pre_exposure;
+  uint32_t reserved[2];
+} VkrVulkanPassOutputRoot;
+_Static_assert(sizeof(VkrVulkanPassOutputRoot) == 64u &&
+                   offsetof(VkrVulkanPassOutputRoot, extent) == 16u &&
+                   offsetof(VkrVulkanPassOutputRoot, exposure_state) == 32u &&
+                   offsetof(VkrVulkanPassOutputRoot, source_texture) == 48u,
+               "Pass output root ABI drift");
+
 typedef struct VKR_SIMD_ALIGN VkrVulkanUiRoot {
   uint64_t vertices;
   uint32_t texture;
@@ -2566,6 +2588,11 @@ typedef struct VkrVulkanPreparedEditorGrid {
   uint64_t root_address;
   bool8_t enabled;
 } VkrVulkanPreparedEditorGrid;
+
+typedef struct VkrVulkanPreparedPassOutput {
+  uint64_t root_address;
+  bool8_t enabled;
+} VkrVulkanPreparedPassOutput;
 
 typedef struct VkrVulkanPreparedVbufferSplitDepth {
   uint64_t root_address;
@@ -4223,6 +4250,16 @@ bool8_t vkr_vk_prepare_editor_grid(VkrVulkanRenderer *renderer,
 void vkr_vk_record_editor_grid(VkrVulkanRenderer *renderer,
                                VkCommandBuffer command,
                                const VkrVulkanPreparedEditorGrid *grid);
+/** The Pass output view over the Scene image from the source at `pass`
+ * binding 0, with the automatic exposure at binding 1 when the frame has it.
+ * A frame whose graph lacks the source draws stripes. */
+bool8_t vkr_vk_prepare_pass_output(VkrVulkanRenderer *renderer,
+                                   VkrVulkanPreparedPassOutput *out,
+                                   const VkrRgPass *pass, uint32_t width,
+                                   uint32_t height);
+void vkr_vk_record_pass_output(VkrVulkanRenderer *renderer,
+                               VkCommandBuffer command,
+                               const VkrVulkanPreparedPassOutput *output);
 
 bool8_t vkr_vk_prepare_packet_draws(
     VkrVulkanRenderer *renderer, VkrVulkanPreparedWorldDraws *out,
