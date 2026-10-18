@@ -4090,7 +4090,9 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
                             VkrScene *scene, VkrSceneHandle handle,
                             float64_t delta_time) {
   const float64_t start = vkr_platform_get_absolute_time();
+#if VKR_METRICS_ENABLED
   const uint64_t ticks_before = vkr_scene_physics_clock(scene).completed;
+#endif
   sample_simulate_steps(application, scene, handle, delta_time);
   VKR_METRICS_ADD_ELAPSED_NS(application->metrics,
                              application->metric_ids.simulation, start);
@@ -4100,6 +4102,7 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
                                 application->metric_ids.physics, physics_ns);
   }
   /* What the step simulated, while the simulation runs. */
+#if VKR_METRICS_ENABLED
   if (application->editor_viewport.simulation_running) {
     VkrScenePhysicsStats stats;
     vkr_scene_physics_stats(scene, &stats);
@@ -4117,6 +4120,7 @@ static void sample_simulate(VkrStandardSceneRuntime *application,
         application->metrics, ids->physics_ticks,
         ticks_after >= ticks_before ? ticks_after - ticks_before : 0u);
   }
+#endif
 }
 
 /* A partitioned primary scene's cell documents sit beside its document:

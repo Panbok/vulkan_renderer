@@ -2556,8 +2556,10 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
   const bool8_t blends[] = {false_v, true_v, true_v, false_v, true_v};
   /* The only pipelines built while the application runs; a recording files
      their pipeline.create event on the frame that rebuilt them (ADR-122). */
+#if VKR_METRICS_ENABLED
   const uint64_t start_ns =
       (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+#endif
   VkPipeline replacements[ArrayCount(pipelines)] = {0};
   bool8_t created = true_v;
   for (uint32_t i = 0u; i < ArrayCount(pipelines); ++i) {
@@ -2571,6 +2573,7 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
     created = false_v;
     break;
   }
+#if VKR_METRICS_ENABLED
   const uint64_t end_ns =
       (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
   (void)vkr_metrics_event_record(
@@ -2578,6 +2581,7 @@ bool8_t vkr_vk_recreate_presentation_pipelines(VkrVulkanRenderer *renderer,
       end_ns >= start_ns ? end_ns - start_ns : 0u, 0u,
       created ? VKR_METRIC_EVENT_STATUS_SUCCESS
               : VKR_METRIC_EVENT_STATUS_FAILED);
+#endif
   if (!created) {
     return false_v;
   }
