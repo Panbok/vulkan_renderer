@@ -10,8 +10,8 @@ authority: adr
 
 Accepted (partial). Phase P0 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
-implemented on both backends. The Metal path has a native Bistro run; the
-Vulkan path compiles but has no native run (Windows).
+implemented on both backends, and each has a native Bistro run. On Vulkan no
+long healthy GPU job has yet run against the 5 s completion bound.
 
 ## Context
 
@@ -46,6 +46,8 @@ them while the render thread runs.
   The first `VK_ERROR_DEVICE_LOST` from any call marks the device lost, sets
   the renderer's terminal failure and logs the `VK_EXT_device_fault` report
   when the device supports that extension and its `deviceFault` feature.
+  The startup capability report names the `deviceFault` feature, so a log
+  shows whether a lost device will explain itself.
 
 **Bounded Vulkan completion waits.** Frame-slot reuse, swapchain image reuse,
 idle, FSR slot and graph resource waits wait at most 5 s
@@ -109,7 +111,8 @@ A run loses authority with `gpu.errors` when a GPU error occurred and with
 
 - Metal shader logging (`MTLLogState`) routes validation through the engine.
 - The crash handler and GPU breadcrumbs of the proposal's P3 land.
-- A native Windows run exercises device fault reporting and the bounded waits.
+- A long healthy Vulkan GPU job, such as a reflection probe bake, runs
+  against the bounded waits, or a device loss exercises the fault report.
 
 ## Evidence
 
@@ -124,4 +127,29 @@ A run loses authority with `gpu.errors` when a GPU error occurred and with
 - A headless Bistro editor answered `health.status` (`ok` true, no GPU errors,
   validation not counted) and `log.read` in tail, `grep`, `after` and invalid
   `level` forms.
-- Vulkan: `clang -fsyntax-only` and the macOS build only; no native run.
+- Vulkan on Windows, 2026-10-18, Ryzen 5 2600, RX 6700 XT, Adrenalin
+  26.6.3, API 1.4.315, at `ef733a9b` plus the capability-report row:
+  `build_release.bat`, `build_editor.bat Release` and `build_test.bat`
+  (Debug) passed, 841 test cases passed, and no changed Vulkan file warned.
+- `vkr_harness profile --case
+  tools/cases/local/p21_vulkan_bistro_windowed_validation.case.json
+  --profile tools/profiles/local-windowed.json` (hidden window, immediate
+  present, 2 repetitions of 256 warmup and 60 measured frames). Release,
+  report `sha256:bab6be25200832ad1e9378ed893e8eff1c6d59e357c9d82259da9f5791a9104b`:
+  `cpu.backend_present` valid in 120 of 120 samples, p50 150 µs and p95
+  225 µs; `cpu.drawable_acquire` valid in 120 of 120, p50 124 µs and p95
+  221 µs; `gpu.errors` and `log.errors` 0 over 632 counted frames; the
+  validation counters unavailable. Debug, with the Khronos layer and
+  synchronization validation, report
+  `sha256:9be63deddeacc4970c658784f0f4bdf91d278d1ab2cfd0a079dcbdcb59f1024a`:
+  `gpu.validation.errors` 0 over 632 counted frames, equal to the
+  `Validation Error` lines in each child's output. No validation message
+  occurred, so a nonzero count and its authority reason are unexercised.
+  Both runs are local and not authoritative.
+- A headless Debug Bistro editor answered `health.status` with validation
+  counted and 0 errors, and `log.read` at `warn` returned the same 2 records
+  as the session log's `[WARN]` lines. The startup log read `Vulkan
+  capability feature deviceFault: present (optional)`.
+- A windowed Release Bistro editor stayed minimized for 40 s, recreated its
+  swapchain on restore, answered `health.status` throughout and logged no
+  completion timeout.

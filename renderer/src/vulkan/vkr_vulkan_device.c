@@ -736,6 +736,17 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                     candidate->has_memory_budget_extension
                         ? "driver memory usage and budget metrics"
                         : "driver memory metrics unsupported");
+  /* ADR-124 logs a fault report on device loss only when this is present, so
+     the startup log states whether a lost device will explain itself. */
+  const bool8_t device_fault_present =
+      candidate->has_device_fault_extension && candidate->features.device_fault;
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, "deviceFault", false_v,
+                    device_fault_present,
+                    device_fault_present ? "device-lost fault report enabled"
+                    : candidate->has_device_fault_extension
+                        ? "feature unsupported: no device-lost fault report"
+                        : "VK_EXT_device_fault missing: no device-lost fault "
+                          "report");
   vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
   vkr_vk_add_feature(report, "geometryShader",
                      candidate->features.geometry_shader);
