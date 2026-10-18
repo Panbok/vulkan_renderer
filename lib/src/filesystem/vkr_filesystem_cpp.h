@@ -36,6 +36,23 @@ vkr_filesystem_native_utf8_path(const std::string &utf8) {
   return vkr_filesystem_native_path(std::filesystem::u8path(utf8));
 }
 
+/* `path` for a log line: quoted and escaped as operator<< writes a path, but
+ * in UTF-8. On Windows operator<< and string() convert through the ANSI code
+ * page, and Bakery carries tool output in UTF-8 JSON events. */
+inline std::string
+vkr_filesystem_quoted_utf8(const std::filesystem::path &path) {
+  const std::string utf8 = path.u8string();
+  std::string quoted = "\"";
+  for (const char c : utf8) {
+    if (c == '"' || c == '\\') {
+      quoted += '\\';
+    }
+    quoted += c;
+  }
+  quoted += '"';
+  return quoted;
+}
+
 /* The native path to read content `utf8` from: the workspace overlay's copy
  * of an `assets/` identity when the process has one (vkr_vfs_read_path),
  * else `utf8`. For reads only; writes use vkr_filesystem_native_utf8_path. */

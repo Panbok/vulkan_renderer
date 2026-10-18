@@ -1265,20 +1265,22 @@ struct PackedSource {
 bool load_source_rgba8(const fs::path &path, LevelImage &image) {
   std::ifstream source_file(path, std::ios::binary | std::ios::ate);
   if (!source_file) {
-    std::cerr << "Failed to open texture: " << path << "\n";
+    std::cerr << "Failed to open texture: " << vkr_filesystem_quoted_utf8(path)
+              << "\n";
     return false;
   }
   const std::streamoff source_size = source_file.tellg();
   if (source_size <= 0 || source_size > INT_MAX) {
-    std::cerr << "Texture source exceeds the decoder byte limit: " << path
-              << "\n";
+    std::cerr << "Texture source exceeds the decoder byte limit: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   PixelBuffer encoded(static_cast<size_t>(source_size));
   source_file.seekg(0);
   if (!source_file.read(reinterpret_cast<char *>(encoded.data()),
                         source_size)) {
-    std::cerr << "Failed to read texture: " << path << "\n";
+    std::cerr << "Failed to read texture: " << vkr_filesystem_quoted_utf8(path)
+              << "\n";
     return false;
   }
   int source_width = 0;
@@ -1289,8 +1291,8 @@ bool load_source_rgba8(const fs::path &path, LevelImage &image) {
       source_width <= 0 || source_height <= 0 ||
       source_width > static_cast<int>(kMaxTextureDimension) ||
       source_height > static_cast<int>(kMaxTextureDimension)) {
-    std::cerr << "Texture extent exceeds the runtime contract: " << path
-              << "\n";
+    std::cerr << "Texture extent exceeds the runtime contract: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   // The packed texture stores rows bottom first, decoded straight into the
@@ -1314,7 +1316,8 @@ bool load_source_rgba8(const fs::path &path, LevelImage &image) {
                                    &target) ||
       image.width > kMaxTextureDimension ||
       image.height > kMaxTextureDimension) {
-    std::cerr << "Failed to decode texture: " << path << "\n";
+    std::cerr << "Failed to decode texture: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   return true;
@@ -1977,7 +1980,8 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
     result = vkr_ktx_write_file(ktxTexture((encoded ? encoded.get() : texture)),
                                 tmp_path.u8string().c_str());
     if (result != KTX_SUCCESS) {
-      std::cerr << "Failed to write temporary output '" << tmp_path
+      std::cerr << "Failed to write temporary output '"
+                << vkr_filesystem_quoted_utf8(tmp_path)
                 << "': " << ktxErrorString(result) << "\n";
       fs::remove(tmp_path, ec);
       break;
@@ -1999,8 +2003,9 @@ bool write_packed_sources(const std::vector<SourceImage> &source_images,
       break;
     }
     if (!publish_temporary_output(tmp_path, dst_path, &ec)) {
-      std::cerr << "Failed to publish layered output '" << dst_path
-                << "': " << ec.message() << "\n";
+      std::cerr << "Failed to publish layered output '"
+                << vkr_filesystem_quoted_utf8(dst_path) << "': " << ec.message()
+                << "\n";
       fs::remove(tmp_path, ec);
       break;
     }
@@ -2681,7 +2686,8 @@ int vkr_vkt_packer_main(int argc, char **argv) {
   if (config.layered_mode) {
     for (const fs::path &layer : config.layers) {
       if (!fs::exists(layer) || !fs::is_regular_file(layer)) {
-        std::cerr << "Layer source does not exist: " << layer << "\n";
+        std::cerr << "Layer source does not exist: "
+                  << vkr_filesystem_quoted_utf8(layer) << "\n";
         return 1;
       }
     }
@@ -2701,8 +2707,10 @@ int vkr_vkt_packer_main(int argc, char **argv) {
       if (result == VKR_VKT_PACK_INCOMPATIBLE) {
         std::cerr << "The paired sources differ in extent\n";
       }
-      std::cout << "vkt paired pack: normal=" << config.paired_normal_output
-                << " metal_roughness=" << config.output << " status="
+      std::cout << "vkt paired pack: normal="
+                << vkr_filesystem_quoted_utf8(config.paired_normal_output)
+                << " metal_roughness="
+                << vkr_filesystem_quoted_utf8(config.output) << " status="
                 << (result == VKR_VKT_PACK_SUCCESS ? "packed" : "failed")
                 << "\n";
       return result == VKR_VKT_PACK_SUCCESS ? 0 : 1;
@@ -2714,31 +2722,36 @@ int vkr_vkt_packer_main(int argc, char **argv) {
     const std::vector<SourceImage> layers = file_sources(config.layers);
     if (should_skip_output(layers, config.output, texture_class, config.shape,
                            config)) {
-      std::cout << "Layered output is up to date: " << config.output << "\n";
+      std::cout << "Layered output is up to date: "
+                << vkr_filesystem_quoted_utf8(config.output) << "\n";
       return 0;
     }
     const bool packed = pack_texture_set_to_vkt(
         layers, config.output, texture_class, config.shape, config);
-    std::cout << "vkt layered pack: output=" << config.output
+    std::cout << "vkt layered pack: output="
+              << vkr_filesystem_quoted_utf8(config.output)
               << " sources=" << config.layers.size()
               << " status=" << (packed ? "packed" : "failed") << "\n";
     return packed ? 0 : 1;
   }
 
   if (!fs::exists(config.input_dir) || !fs::is_directory(config.input_dir)) {
-    std::cerr << "Input directory does not exist: " << config.input_dir << "\n";
+    std::cerr << "Input directory does not exist: "
+              << vkr_filesystem_quoted_utf8(config.input_dir) << "\n";
     return config.strict ? 1 : 0;
   }
 
   std::vector<fs::path> sources;
   std::error_code discovery_error;
   if (!discover_source_textures(config.input_dir, &sources, &discovery_error)) {
-    std::cerr << "Unable to enumerate textures under " << config.input_dir
-              << ": " << discovery_error.message() << "\n";
+    std::cerr << "Unable to enumerate textures under "
+              << vkr_filesystem_quoted_utf8(config.input_dir) << ": "
+              << discovery_error.message() << "\n";
     return 1;
   }
   if (sources.empty()) {
-    std::cout << "No source textures found under " << config.input_dir << "\n";
+    std::cout << "No source textures found under "
+              << vkr_filesystem_quoted_utf8(config.input_dir) << "\n";
     return 0;
   }
 
@@ -2768,7 +2781,7 @@ int vkr_vkt_packer_main(int argc, char **argv) {
     std::error_code rel_ec;
     fs::path rel_path = fs::relative(src_path, config.input_dir, rel_ec);
     const std::string label =
-        (rel_ec ? src_path.generic_string() : rel_path.generic_string());
+        (rel_ec ? src_path.generic_u8string() : rel_path.generic_u8string());
 
     if (config.progress) {
       const auto now = std::chrono::steady_clock::now();

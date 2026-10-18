@@ -198,9 +198,9 @@ bool validate_rgba16f(const std::vector<uint8_t> &bytes, const fs::path &path) {
     const uint8_t *const sample = bytes.data() + texel * kBytesPerTexel;
     for (uint32_t component = 0u; component < 4u; ++component) {
       if (!half_bits_are_finite(read_u16_le(sample + component * 2u))) {
-        std::cerr << "Non-finite RGBA16F component in '" << path
-                  << "' at texel " << texel << ", component " << component
-                  << "\n";
+        std::cerr << "Non-finite RGBA16F component in '"
+                  << vkr_filesystem_quoted_utf8(path) << "' at texel " << texel
+                  << ", component " << component << "\n";
         return false;
       }
     }
@@ -215,7 +215,8 @@ bool read_face(const fs::path &path, uint64_t expected_bytes,
   }
   std::error_code error;
   if (!fs::is_regular_file(path, error) || error) {
-    std::cerr << "Face input is not a regular file: " << path << "\n";
+    std::cerr << "Face input is not a regular file: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   const uint64_t actual_bytes = fs::file_size(path, error);
@@ -223,7 +224,8 @@ bool read_face(const fs::path &path, uint64_t expected_bytes,
     std::cerr << "Face input has "
               << (error ? std::string("an unreadable size")
                         : std::to_string(actual_bytes) + " bytes")
-              << "; expected " << expected_bytes << ": " << path << "\n";
+              << "; expected " << expected_bytes << ": "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   out_bytes->resize(static_cast<size_t>(expected_bytes));
@@ -231,7 +233,8 @@ bool read_face(const fs::path &path, uint64_t expected_bytes,
   if (!input.read(reinterpret_cast<char *>(out_bytes->data()),
                   static_cast<std::streamsize>(out_bytes->size())) ||
       !validate_rgba16f(*out_bytes, path)) {
-    std::cerr << "Failed to read RGBA16F face: " << path << "\n";
+    std::cerr << "Failed to read RGBA16F face: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   return true;
@@ -446,20 +449,23 @@ bool read_probe_capture(const fs::path &path, std::vector<uint8_t> *out_bytes) {
   const uint64_t bytes = fs::file_size(path, error);
   if (error || bytes == 0u || bytes > VKR_PROBE_CAPTURE_MAX_BYTES) {
     std::cerr << "Probe capture record is missing or larger than "
-              << VKR_PROBE_CAPTURE_MAX_BYTES << " bytes: " << path << "\n";
+              << VKR_PROBE_CAPTURE_MAX_BYTES
+              << " bytes: " << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   out_bytes->resize(static_cast<size_t>(bytes));
   std::ifstream input(path, std::ios::binary);
   if (!input.read(reinterpret_cast<char *>(out_bytes->data()),
                   static_cast<std::streamsize>(out_bytes->size()))) {
-    std::cerr << "Failed to read probe capture record: " << path << "\n";
+    std::cerr << "Failed to read probe capture record: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   VkrProbeCapture capture = {};
   if (!vkr_probe_capture_decode(out_bytes->data(), out_bytes->size(),
                                 &capture)) {
-    std::cerr << "Probe capture record is invalid: " << path << "\n";
+    std::cerr << "Probe capture record is invalid: "
+              << vkr_filesystem_quoted_utf8(path) << "\n";
     return false;
   }
   return true;
@@ -578,7 +584,8 @@ bool pack_hdr_cube(const Config &config) {
     fs::remove(temporary, error);
     return false;
   }
-  std::cout << "vkr_hdr_cube_packer: status=packed output=" << config.output
+  std::cout << "vkr_hdr_cube_packer: status=packed output="
+            << vkr_filesystem_quoted_utf8(config.output)
             << " size=" << config.size << " supersample=" << config.supersample
             << " faces=" << kFaceCount
             << " levels=" << cube_level_count(config.size)
