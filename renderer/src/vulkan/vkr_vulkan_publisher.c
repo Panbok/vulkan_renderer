@@ -9,8 +9,12 @@ void vkr_vk_advance_radiance_revision(VkrVulkanRenderer *renderer) {
   ++renderer->radiance_revision;
 }
 
+/* Moves the candidate publication generation for a publication of `change`
+   (VkrPublicationChange), which the next packet build reports. */
 vkr_internal void
-vkr_vk_advance_candidate_publication_generation(VkrVulkanRenderer *renderer) {
+vkr_vk_advance_candidate_publication_generation(VkrVulkanRenderer *renderer,
+                                                uint32_t change) {
+  renderer->candidate_publication_changes |= change;
   if (renderer->candidate_publication_generation == UINT64_MAX) {
     renderer->candidate_publication_generation = 0u;
     log_fatal("Vulkan candidate publication generation exhausted");
@@ -149,7 +153,8 @@ vkr_vk_refresh_material_texture_readiness(VkrVulkanRenderer *renderer) {
   }
   // Static candidate residency caches omitted rows as well as published rows.
   if (changed)
-    vkr_vk_advance_candidate_publication_generation(renderer);
+    vkr_vk_advance_candidate_publication_generation(
+        renderer, VKR_PUBLICATION_CHANGE_TEXTURE_READINESS);
 }
 
 vkr_internal bool8_t vkr_vk_enqueue_texture_initialization(
@@ -960,7 +965,8 @@ bool8_t vkr_vk_commit_buffer_initializations(VkrVulkanRenderer *renderer,
         renderer->geometry_table_rows[initialization->geometry_record_index] =
             geometry->gpu_row;
         vkr_vk_advance_geometry_table_generation(renderer);
-        vkr_vk_advance_candidate_publication_generation(renderer);
+        vkr_vk_advance_candidate_publication_generation(
+            renderer, VKR_PUBLICATION_CHANGE_GEOMETRY);
       }
       vkr_vk_release_buffer_initialization(renderer, initialization);
       continue;
@@ -1992,7 +1998,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
           vkr_vk_submesh_range(&submeshes[i], geometry->decodes);
     }
     record->submesh_count = submesh_count;
-    vkr_vk_advance_candidate_publication_generation(renderer);
+    vkr_vk_advance_candidate_publication_generation(
+        renderer, VKR_PUBLICATION_CHANGE_GEOMETRY);
     return true_v;
   }
   if (record->pending_retire) {
@@ -2117,7 +2124,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_geometry_internal(
       [renderer->pending_buffer_initialization_count++] = initializations[1];
   renderer->pending_buffer_initializations
       [renderer->pending_buffer_initialization_count++] = initializations[2];
-  vkr_vk_advance_candidate_publication_generation(renderer);
+  vkr_vk_advance_candidate_publication_generation(
+      renderer, VKR_PUBLICATION_CHANGE_GEOMETRY);
   return true_v;
 }
 
@@ -2453,7 +2461,8 @@ vkr_vk_asset_update_texture_sampler(void *state, VkrTextureHandle handle,
   vkr_vk_collect_samplers(renderer, completed);
   vkr_vk_advance_radiance_revision(renderer);
   if (dependent_material_count)
-    vkr_vk_advance_candidate_publication_generation(renderer);
+    vkr_vk_advance_candidate_publication_generation(
+        renderer, VKR_PUBLICATION_CHANGE_SAMPLER);
   return true_v;
 }
 
@@ -2533,7 +2542,8 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   vkr_vk_collect_asset_publications(renderer,
                                     vkr_vk_refresh_completed(renderer));
   if (!record->pending_retire) {
-    vkr_vk_advance_candidate_publication_generation(renderer);
+    vkr_vk_advance_candidate_publication_generation(
+        renderer, VKR_PUBLICATION_CHANGE_GEOMETRY_RETIRE);
     return true_v;
   }
   VkrVulkanPublishedGeometry *retired =
@@ -2544,7 +2554,8 @@ bool8_t vkr_vk_asset_unpublish_geometry(void *state, VkrGeometryHandle handle) {
   }
   *retired = *record;
   MemZero(record, sizeof(*record));
-  vkr_vk_advance_candidate_publication_generation(renderer);
+  vkr_vk_advance_candidate_publication_generation(
+      renderer, VKR_PUBLICATION_CHANGE_GEOMETRY_RETIRE);
   return true_v;
 }
 
@@ -2900,7 +2911,8 @@ vkr_internal bool8_t vkr_vk_asset_publish_material(
           sizeof(record->texture_record_indices));
   record->pending_texture_count =
       vkr_vk_material_pending_texture_count(renderer, record);
-  vkr_vk_advance_candidate_publication_generation(renderer);
+  vkr_vk_advance_candidate_publication_generation(
+      renderer, VKR_PUBLICATION_CHANGE_MATERIAL);
   return true_v;
 }
 
@@ -2926,7 +2938,8 @@ bool8_t vkr_vk_asset_unpublish_material(void *state, VkrMaterialHandle handle) {
   MemCopy(retirement->texture_record_indices, record->texture_record_indices,
           sizeof(retirement->texture_record_indices));
   record->live = false_v;
-  vkr_vk_advance_candidate_publication_generation(renderer);
+  vkr_vk_advance_candidate_publication_generation(
+      renderer, VKR_PUBLICATION_CHANGE_MATERIAL);
   return true_v;
 }
 

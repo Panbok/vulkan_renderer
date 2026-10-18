@@ -4,6 +4,7 @@
 #include "containers/vkr_sort.h"
 #include "core/vkr_byte_io.h"
 #include "math/vkr_math.h"
+#include "vkr_candidate_residency.h"
 
 #define VKR_RECORDING_DATA_PATH_MAX 4096u
 /* A spike candidate exceeds its window median by this factor and by at
@@ -16,6 +17,8 @@
 /* "false" is one byte longer than "true"; a measured header may hold three
    truncation flags that turn false. */
 #define VKR_RECORDING_JSON_FLAG_SLACK 3u
+/* The series whose median paces the frames, the budget without an option. */
+#define VKR_RECORDING_PRESENT_INTERVAL_SERIES "frame.present_interval"
 /* Column of vkr_recording_frames_write_json that reads the frame time, and
    one that names no series. */
 #define VKR_RECORDING_COLUMN_FRAME_MS (UINT32_MAX - 1u)
@@ -1242,6 +1245,268 @@ vkr_recording_spike_passes(const VkrRecordingData *data,
   }
 }
 
+/* Bits of the flag series slow frames are compared on: why a slot packed
+   its static candidate rows again, which publications moved their
+   generation, and whether the world waited on a publication. */
+typedef struct VkrRecordingFlagName {
+  const char *series;
+  uint32_t bit;
+  const char *name;
+} VkrRecordingFlagName;
+
+static const VkrRecordingFlagName VKR_RECORDING_FLAG_NAMES[] = {
+    {"packet.static_repack_reasons", VKR_STATIC_REPACK_UNPACKED,
+     "repack.unpacked"},
+    {"packet.static_repack_reasons", VKR_STATIC_REPACK_STATIC_CONTENT,
+     "repack.static_content"},
+    {"packet.static_repack_reasons", VKR_STATIC_REPACK_PUBLICATION,
+     "repack.publication"},
+    {"packet.static_repack_reasons", VKR_STATIC_REPACK_RESOURCE,
+     "repack.resource"},
+    {"packet.static_repack_reasons", VKR_STATIC_REPACK_CULL, "repack.cull"},
+    {"packet.publication_changes", VKR_PUBLICATION_CHANGE_TEXTURE_READINESS,
+     "publication.texture_readiness"},
+    {"packet.publication_changes", VKR_PUBLICATION_CHANGE_GEOMETRY,
+     "publication.geometry"},
+    {"packet.publication_changes", VKR_PUBLICATION_CHANGE_GEOMETRY_RETIRE,
+     "publication.geometry_retire"},
+    {"packet.publication_changes", VKR_PUBLICATION_CHANGE_MATERIAL,
+     "publication.material"},
+    {"packet.publication_changes", VKR_PUBLICATION_CHANGE_SAMPLER,
+     "publication.sampler"},
+    {"packet.publication_pending", 1u, "publication.pending"},
+};
+
+const char *vkr_recording_analysis_flag_name(uint32_t flag) {
+  return flag < ArrayCount(VKR_RECORDING_FLAG_NAMES)
+             ? VKR_RECORDING_FLAG_NAMES[flag].name
+             : "";
+}
+
+/* Frame classes of the slow-frame comparison. */
+#define VKR_RECORDING_FRAME_OTHER 0u
+#define VKR_RECORDING_FRAME_NORMAL 1u
+#define VKR_RECORDING_FRAME_SLOW 2u
+
+/* Sums and counts per class (normal, slow) and lag (0, 1). */
+typedef struct VkrRecordingSlowSums {
+  float64_t sum[2][2];
+  uint64_t count[2][2];
+} VkrRecordingSlowSums;
+
+/* The lag whose slow mean exceeds its normal mean most; false_v when
+   neither does or a class has no sample. */
+vkr_internal bool8_t vkr_recording_slow_pick(const VkrRecordingSlowSums *sums,
+                                             VkrRecordingSlowDelta *out) {
+  bool8_t found = false_v;
+  float64_t best = 0.0;
+  for (uint32_t lag = 0u; lag < 2u; ++lag) {
+    if (sums->count[0][lag] == 0u || sums->count[1][lag] == 0u) {
+      continue;
+    }
+    const float64_t normal = sums->sum[0][lag] / (float64_t)sums->count[0][lag];
+    const float64_t slow = sums->sum[1][lag] / (float64_t)sums->count[1][lag];
+    if (slow - normal > best) {
+      best = slow - normal;
+      out->lag = lag;
+      out->normal_ms = normal;
+      out->slow_ms = slow;
+      found = true_v;
+    }
+  }
+  return found;
+}
+
+/* Inserts `delta` into `list`, largest difference first, keeping at most
+   VKR_RECORDING_ANALYSIS_SLOW_MAX. */
+vkr_internal void vkr_recording_slow_keep(VkrRecordingSlowDelta *list,
+                                          uint32_t *count,
+                                          VkrRecordingSlowDelta delta) {
+  const float64_t difference = delta.slow_ms - delta.normal_ms;
+  uint32_t at = *count;
+  while (at > 0u &&
+         list[at - 1u].slow_ms - list[at - 1u].normal_ms < difference) {
+    --at;
+  }
+  if (at >= VKR_RECORDING_ANALYSIS_SLOW_MAX) {
+    return;
+  }
+  const uint32_t kept = Min(*count, VKR_RECORDING_ANALYSIS_SLOW_MAX - 1u);
+  for (uint32_t i = kept; i > at; --i) {
+    list[i] = list[i - 1u];
+  }
+  list[at] = delta;
+  *count = kept + 1u;
+}
+
+/* Whether an "ms" series can explain a slow frame: not the frame time
+   itself, nor the interval it is measured against. */
+vkr_internal bool8_t vkr_recording_slow_series(const VkrRecordingData *data,
+                                               uint32_t index) {
+  const VkrRecordingSeries *series = &data->series[index];
+  return string_equals(series->unit, "ms") &&
+         !string_equals(series->name, vkr_recording_data_frame_source(data)) &&
+         !string_equals(series->name, "cpu.frame_work") &&
+         !string_equals(series->name, VKR_RECORDING_PRESENT_INTERVAL_SERIES);
+}
+
+/* Adds row `row` of `series` to `sums` under class `slow` and `lag`; flag
+   series add whether `bit` is set instead of the value. */
+vkr_internal void vkr_recording_slow_add(const VkrRecordingSeries *series,
+                                         uint64_t row, uint32_t slow,
+                                         uint32_t lag, uint32_t bit,
+                                         VkrRecordingSlowSums *sums) {
+  if (!series->valid[row]) {
+    return;
+  }
+  const float64_t value = series->values[row];
+  sums->sum[slow][lag] += bit ? (((uint64_t)value & bit) ? 1.0 : 0.0) : value;
+  ++sums->count[slow][lag];
+}
+
+/* `series` (or one bit of it) over the frames of each class, at both
+   lags. */
+vkr_internal void
+vkr_recording_slow_series_sums(const VkrRecordingData *data,
+                               const uint8_t *classes,
+                               const VkrRecordingSeries *series, uint32_t bit,
+                               VkrRecordingSlowSums *sums) {
+  MemZero(sums, sizeof(*sums));
+  for (uint64_t i = 0u; i < data->frame_count; ++i) {
+    if (classes[i] == VKR_RECORDING_FRAME_OTHER) {
+      continue;
+    }
+    const uint32_t slow = classes[i] == VKR_RECORDING_FRAME_SLOW ? 1u : 0u;
+    vkr_recording_slow_add(series, i, slow, 0u, bit, sums);
+    if (i > 0u) {
+      vkr_recording_slow_add(series, i - 1u, slow, 1u, bit, sums);
+    }
+  }
+}
+
+/* Counts the slow frames and their runs by length. */
+vkr_internal void vkr_recording_slow_runs(const uint8_t *classes,
+                                          uint64_t count,
+                                          VkrRecordingSlowFrames *out) {
+  uint64_t run = 0u;
+  for (uint64_t i = 0u; i <= count; ++i) {
+    const uint8_t frame_class =
+        i < count ? classes[i] : VKR_RECORDING_FRAME_OTHER;
+    out->frames += frame_class == VKR_RECORDING_FRAME_SLOW ? 1u : 0u;
+    out->normal_frames += frame_class == VKR_RECORDING_FRAME_NORMAL ? 1u : 0u;
+    if (frame_class == VKR_RECORDING_FRAME_SLOW) {
+      ++run;
+      continue;
+    }
+    if (run == 0u) {
+      continue;
+    }
+    ++out->runs;
+    ++out->run_bins[Min(run, (uint64_t)VKR_RECORDING_ANALYSIS_RUN_BINS) - 1u];
+    if (run > out->longest_run) {
+      out->longest_run = run;
+      out->longest_run_first = i - run;
+    }
+    run = 0u;
+  }
+}
+
+/* GPU pass times over the frames of each class, at both lags; a frame
+   without the pass adds zero. `pass_sums` holds one entry per pass. */
+vkr_internal void vkr_recording_slow_passes(const VkrRecordingData *data,
+                                            const uint8_t *classes,
+                                            VkrRecordingSlowSums *pass_sums,
+                                            VkrRecordingSlowFrames *out) {
+  MemZero(pass_sums, sizeof(*pass_sums) * data->pass_count);
+  uint64_t frames[2][2] = {{0u}};
+  for (uint64_t i = 0u; i < data->frame_count; ++i) {
+    if (classes[i] == VKR_RECORDING_FRAME_OTHER) {
+      continue;
+    }
+    const uint32_t slow = classes[i] == VKR_RECORDING_FRAME_SLOW ? 1u : 0u;
+    for (uint32_t lag = 0u; lag < 2u && lag <= i; ++lag) {
+      if (!vkr_recording_gpu_timed(data, i - lag)) {
+        continue;
+      }
+      ++frames[slow][lag];
+      uint32_t row_count = 0u;
+      const VkrRecordingPassRow *rows =
+          vkr_recording_data_pass_rows(data, i - lag, &row_count);
+      for (uint32_t r = 0u; r < row_count; ++r) {
+        if (rows[r].pass < data->pass_count &&
+            (rows[r].flags & VKR_RECORDING_PASS_GPU_VALID)) {
+          pass_sums[rows[r].pass].sum[slow][lag] += rows[r].gpu_ms;
+        }
+      }
+    }
+  }
+  for (uint32_t pass = 0u; pass < data->pass_count; ++pass) {
+    VkrRecordingSlowSums *sums = &pass_sums[pass];
+    MemCopy(sums->count, frames, sizeof(frames));
+    VkrRecordingSlowDelta delta = {.index = pass};
+    if (vkr_recording_slow_pick(sums, &delta)) {
+      vkr_recording_slow_keep(out->passes, &out->pass_count, delta);
+    }
+  }
+}
+
+/* Compares the slow frames, classed in `classes`, with the normal ones:
+   runs of slow frames, then series, pass GPU times and flag bits. */
+vkr_internal void vkr_recording_slow_frames(const VkrRecordingData *data,
+                                            const uint8_t *classes,
+                                            VkrRecordingSlowSums *pass_sums,
+                                            VkrRecordingSlowFrames *out) {
+  vkr_recording_slow_runs(classes, data->frame_count, out);
+  if (out->frames == 0u || out->normal_frames == 0u) {
+    return;
+  }
+
+  VkrRecordingSlowSums sums;
+  for (uint32_t s = 0u; s < data->series_count; ++s) {
+    if (!vkr_recording_slow_series(data, s)) {
+      continue;
+    }
+    vkr_recording_slow_series_sums(data, classes, &data->series[s], 0u, &sums);
+    VkrRecordingSlowDelta delta = {.index = s};
+    if (vkr_recording_slow_pick(&sums, &delta)) {
+      vkr_recording_slow_keep(out->series, &out->series_count, delta);
+    }
+  }
+
+  if (data->pass_block && data->pass_count > 0u) {
+    vkr_recording_slow_passes(data, classes, pass_sums, out);
+  }
+
+  /* Flags rank by their share difference, as deltas do; a delta's index
+     names the flag, and its means are the shares. */
+  VkrRecordingSlowDelta shares[VKR_RECORDING_ANALYSIS_SLOW_MAX];
+  uint32_t share_count = 0u;
+  for (uint32_t f = 0u; f < ArrayCount(VKR_RECORDING_FLAG_NAMES); ++f) {
+    const VkrRecordingFlagName *name = &VKR_RECORDING_FLAG_NAMES[f];
+    const uint32_t s = vkr_recording_data_find_series(data, name->series);
+    if (s == UINT32_MAX) {
+      continue;
+    }
+    vkr_recording_slow_series_sums(data, classes, &data->series[s], name->bit,
+                                   &sums);
+    VkrRecordingSlowDelta share = {.index = f};
+    if (vkr_recording_slow_pick(&sums, &share)) {
+      vkr_recording_slow_keep(shares, &share_count, share);
+    }
+  }
+  for (uint32_t i = 0u; i < share_count; ++i) {
+    out->flags[i] = (VkrRecordingSlowFlag){
+        .series = vkr_recording_data_find_series(
+            data, VKR_RECORDING_FLAG_NAMES[shares[i].index].series),
+        .flag = shares[i].index,
+        .lag = shares[i].lag,
+        .normal_share = shares[i].normal_ms,
+        .slow_share = shares[i].slow_ms,
+    };
+  }
+  out->flag_count = share_count;
+}
+
 bool8_t vkr_recording_analyze(const VkrRecordingData *data,
                               const VkrRecordingAnalysisOptions *options,
                               VkrAllocator *allocator,
@@ -1249,9 +1514,8 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
   vkr_assert(data != NULL && allocator != NULL && out != NULL);
   MemZero(out, sizeof(*out));
   out->allocator = allocator;
-  out->budget_ms = options && options->budget_ms > 0.0
-                       ? options->budget_ms
-                       : VKR_RECORDING_ANALYSIS_BUDGET_MS;
+  out->budget_ms = VKR_RECORDING_ANALYSIS_BUDGET_MS;
+  out->budget_source = "default";
   const uint32_t spike_max = options && options->spike_max > 0u
                                  ? options->spike_max
                                  : VKR_RECORDING_ANALYSIS_SPIKE_MAX;
@@ -1277,9 +1541,9 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
   out->passes = (VkrRecordingPassStats *)(block + stats_bytes + spike_bytes);
 
   /* Scratch: frame times, sorted samples, window medians, spike runs, pass
-     samples (two per row), pass counts and ranks, and the frame-time flags.
-     Adjacent candidates merge, so runs are at most half the frames, rounded
-     up. */
+     samples (two per row), pass counts and ranks, the slow-frame pass sums,
+     the frame-time flags and the frame classes. Adjacent candidates merge,
+     so runs are at most half the frames, rounded up. */
   const uint64_t run_capacity = (count + 1u) / 2u;
   const uint64_t pass_sample_count = 2u * data->pass_row_count;
   const uint64_t pass_offset_count = 3u * (uint64_t)data->pass_count;
@@ -1288,7 +1552,7 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
       sizeof(VkrRecordingSpikeRun) * run_capacity +
       sizeof(uint64_t) * pass_offset_count +
       vkr_align_up_u64(sizeof(uint32_t) * (uint64_t)data->pass_count, 8u) +
-      count;
+      sizeof(VkrRecordingSlowSums) * (uint64_t)data->pass_count + count * 2u;
   uint8_t *scratch = vkr_allocator_alloc(allocator, scratch_bytes,
                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!scratch) {
@@ -1303,12 +1567,47 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
       (VkrRecordingSpikeRun *)(pass_samples + pass_sample_count);
   uint64_t *pass_offsets = (uint64_t *)(runs + run_capacity);
   uint32_t *pass_rank = (uint32_t *)(pass_offsets + pass_offset_count);
-  uint8_t *valid =
-      (uint8_t *)pass_rank +
-      vkr_align_up_u64(sizeof(uint32_t) * (uint64_t)data->pass_count, 8u);
+  VkrRecordingSlowSums *pass_sums =
+      (VkrRecordingSlowSums *)((uint8_t *)pass_rank +
+                               vkr_align_up_u64(sizeof(uint32_t) *
+                                                    (uint64_t)data->pass_count,
+                                                8u));
+  uint8_t *valid = (uint8_t *)(pass_sums + data->pass_count);
+  uint8_t *classes = valid + count;
 
+  /* The budget: the option, else the interval presentation paced the
+     frames to, else the default. */
+  const uint32_t interval = vkr_recording_data_find_series(
+      data, VKR_RECORDING_PRESENT_INTERVAL_SERIES);
+  if (options && options->budget_ms > 0.0) {
+    out->budget_ms = options->budget_ms;
+    out->budget_source = "option";
+  } else if (interval != UINT32_MAX) {
+    uint64_t interval_count = 0u;
+    for (uint64_t i = 0u; i < count; ++i) {
+      if (data->series[interval].valid[i] &&
+          data->series[interval].values[i] > 0.0) {
+        samples[interval_count++] = data->series[interval].values[i];
+      }
+    }
+    VkrRecordingStats interval_stats;
+    vkr_recording_stats_compute(samples, interval_count, &interval_stats);
+    if (interval_stats.valid > 0u) {
+      out->budget_ms = interval_stats.p50;
+      out->budget_source = VKR_RECORDING_PRESENT_INTERVAL_SERIES;
+    }
+  }
+
+  out->slow.threshold_ms = VKR_RECORDING_ANALYSIS_SLOW_FACTOR * out->budget_ms;
   for (uint64_t i = 0u; i < count; ++i) {
     valid[i] = vkr_recording_data_frame_ms(data, i, &frame_ms[i]) ? 1u : 0u;
+    if (!valid[i]) {
+      classes[i] = VKR_RECORDING_FRAME_OTHER;
+    } else if (frame_ms[i] > out->slow.threshold_ms) {
+      classes[i] = VKR_RECORDING_FRAME_SLOW;
+    } else {
+      classes[i] = VKR_RECORDING_FRAME_NORMAL;
+    }
   }
   vkr_recording_frame_stats(out, frame_ms, valid, count, samples);
   for (uint32_t i = 0u; i < data->event_count; ++i) {
@@ -1384,6 +1683,7 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
     vkr_recording_spike_gpu_wait(data, out, spike);
     vkr_recording_spike_passes(data, out, pass_rank, frame_ms, valid, spike);
   }
+  vkr_recording_slow_frames(data, classes, pass_sums, &out->slow);
 
   vkr_allocator_free(allocator, scratch, scratch_bytes,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -1490,9 +1790,81 @@ vkr_recording_write_frame_time(VkrJsonWriter *json,
   vkr_recording_json_named_optional(json, "low_1pct", any,
                                     analysis->low_1pct_ms);
   vkr_recording_json_named_number(json, "budget_ms", analysis->budget_ms);
+  vkr_recording_json_key(json, "budget_source");
+  vkr_recording_json_text(json, analysis->budget_source);
   vkr_recording_json_named_u64(json, "over_budget", analysis->over_budget);
   vkr_recording_json_named_u64(json, "over_2x_budget",
                                analysis->over_double_budget);
+  vkr_json_writer_end_object(json);
+}
+
+/* [name, lag, normal, slow] per kept delta. */
+vkr_internal void vkr_recording_write_slow_deltas(
+    VkrJsonWriter *json, const VkrRecordingData *data,
+    const VkrRecordingSlowDelta *deltas, uint32_t count, bool8_t passes) {
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrRecordingSlowDelta *delta = &deltas[i];
+    vkr_json_writer_begin_array(json);
+    vkr_recording_json_text(json, passes ? data->passes[delta->index].name
+                                         : data->series[delta->index].name);
+    vkr_json_writer_u64(json, delta->lag);
+    vkr_recording_json_number(json, delta->normal_ms);
+    vkr_recording_json_number(json, delta->slow_ms);
+    vkr_json_writer_end_array(json);
+  }
+  vkr_json_writer_end_array(json);
+}
+
+/* The slow frames against the others: how many, their runs by length, and
+   what differs most in them. */
+vkr_internal void
+vkr_recording_write_slow_frames(VkrJsonWriter *json,
+                                const VkrRecordingData *data,
+                                const VkrRecordingAnalysis *analysis) {
+  const VkrRecordingSlowFrames *slow = &analysis->slow;
+  vkr_recording_json_key(json, "slow_frames");
+  vkr_json_writer_begin_object(json);
+  vkr_recording_json_named_number(json, "threshold_ms", slow->threshold_ms);
+  vkr_recording_json_named_u64(json, "frames", slow->frames);
+  vkr_recording_json_named_u64(json, "normal_frames", slow->normal_frames);
+  vkr_recording_json_named_u64(json, "runs", slow->runs);
+  vkr_recording_json_key(json, "run_lengths");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < VKR_RECORDING_ANALYSIS_RUN_BINS; ++i) {
+    vkr_json_writer_u64(json, slow->run_bins[i]);
+  }
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_named_u64(json, "longest_run", slow->longest_run);
+  vkr_recording_json_named_u64(json, "longest_run_first",
+                               slow->longest_run_first);
+  vkr_recording_json_key(json, "columns");
+  vkr_json_writer_begin_array(json);
+  vkr_recording_json_text(json, "name");
+  vkr_recording_json_text(json, "lag");
+  vkr_recording_json_text(json, "normal");
+  vkr_recording_json_text(json, "slow");
+  vkr_json_writer_end_array(json);
+  vkr_recording_json_key(json, "series");
+  vkr_recording_write_slow_deltas(json, data, slow->series, slow->series_count,
+                                  false_v);
+  vkr_recording_json_key(json, "passes");
+  vkr_recording_write_slow_deltas(json, data, slow->passes, slow->pass_count,
+                                  true_v);
+  /* The same columns; normal and slow are the shares of frames with the
+     flag set. */
+  vkr_recording_json_key(json, "flags");
+  vkr_json_writer_begin_array(json);
+  for (uint32_t i = 0u; i < slow->flag_count; ++i) {
+    const VkrRecordingSlowFlag *flag = &slow->flags[i];
+    vkr_json_writer_begin_array(json);
+    vkr_recording_json_text(json, vkr_recording_analysis_flag_name(flag->flag));
+    vkr_json_writer_u64(json, flag->lag);
+    vkr_recording_json_number(json, flag->normal_share);
+    vkr_recording_json_number(json, flag->slow_share);
+    vkr_json_writer_end_array(json);
+  }
+  vkr_json_writer_end_array(json);
   vkr_json_writer_end_object(json);
 }
 
@@ -1738,6 +2110,7 @@ vkr_recording_write_analysis(VkrJsonWriter *json, const VkrRecordingData *data,
   vkr_recording_json_named_u64(json, "frames", data->frame_count);
   vkr_recording_json_named_u64(json, "missing_frames", data->missing_frames);
   vkr_recording_write_frame_time(json, data, analysis);
+  vkr_recording_write_slow_frames(json, data, analysis);
 
   if (include_series) {
     vkr_recording_json_key(json, "series_columns");

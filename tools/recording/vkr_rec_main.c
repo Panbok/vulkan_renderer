@@ -2,13 +2,17 @@
  * vkr_rec: reads a recording without the editor or the GPU
  * (docs/proposals/recordings.md, "Offline command").
  *
- *   vkr_rec summary <bundle|stream>   JSON: identity, streams, counters
+ *   vkr_rec summary <bundle|stream> [--budget MS]
+ *                                     JSON: identity, streams, counters
  *                                     and, with a metrics stream, the
  *                                     analysis summary.json carries
  *   vkr_rec verify <bundle|stream>    decodes every chunk and record
- *   vkr_rec spikes <bundle|stream> [--top N]
+ *   vkr_rec spikes <bundle|stream> [--top N] [--budget MS]
  *                                     JSON: frame-time statistics and the N
  *                                     worst spikes (default 20)
+ *   --budget sets the frame budget in milliseconds, for a recording made
+ *   before frame.present_interval, such as one on a 75 Hz display (13.333);
+ *   without it the analysis takes that series' median, else 16.667.
  *   vkr_rec frames <bundle|stream> --range A:B [--fields a,b,...]
  *                                     JSON rows of frames A to B inclusive:
  *                                     frame, time, camera position, then
@@ -286,15 +290,17 @@ static bool8_t rec_load(const char *path, VkrRecordingData *data) {
 }
 
 /* The bounded analysis object summary.json carries, or null. */
-static void rec_write_analysis(VkrJsonWriter *json, const char *path) {
+static void rec_write_analysis(VkrJsonWriter *json, const char *path,
+                               float64_t budget_ms) {
   vkr_json_writer_name(json, rec_str("analysis"));
   VkrRecordingData data;
   if (!rec_load(path, &data)) {
     vkr_json_writer_null(json);
     return;
   }
+  const VkrRecordingAnalysisOptions options = {.budget_ms = budget_ms};
   VkrRecordingAnalysis analysis;
-  if (vkr_recording_analyze(&data, NULL, &rec_allocator, &analysis)) {
+  if (vkr_recording_analyze(&data, &options, &rec_allocator, &analysis)) {
     vkr_recording_analysis_write_json(json, &data, &analysis, NULL);
     vkr_recording_analysis_free(&analysis);
   } else {
@@ -378,7 +384,7 @@ static const char *rec_status_name(RecExit status) {
   return "damaged";
 }
 
-static int rec_report(const char *path, bool8_t verbose) {
+static int rec_report(const char *path, bool8_t verbose, float64_t budget_ms) {
   VkrRecordingReader reader;
   const VkrRecordingReadError error = rec_open(path, &reader);
   if (error != VKR_RECORDING_READ_OK) {
@@ -425,7 +431,7 @@ static int rec_report(const char *path, bool8_t verbose) {
     rec_write_streams(&json, &scan);
     rec_write_end(&json, &scan);
     if (rec_has_stream(&scan, "metrics")) {
-      rec_write_analysis(&json, path);
+      rec_write_analysis(&json, path, budget_ms);
     }
     rec_write_annotations(&json, path);
   }
@@ -448,12 +454,13 @@ static RecExit rec_data_status(const VkrRecordingData *data) {
   return data->truncated ? REC_EXIT_TRUNCATED : REC_EXIT_OK;
 }
 
-static int rec_spikes(const char *path, uint32_t top) {
+static int rec_spikes(const char *path, uint32_t top, float64_t budget_ms) {
   VkrRecordingData data;
   if (!rec_load(path, &data)) {
     return REC_EXIT_DAMAGED;
   }
-  const VkrRecordingAnalysisOptions options = {.spike_max = top};
+  const VkrRecordingAnalysisOptions options = {.spike_max = top,
+                                               .budget_ms = budget_ms};
   VkrRecordingAnalysis analysis;
   if (!vkr_recording_analyze(&data, &options, &rec_allocator, &analysis)) {
     fprintf(stderr, "vkr_rec: out of memory analyzing '%s'\n", path);
@@ -698,30 +705,52 @@ static int rec_run_compare(int argc, char **argv) {
 static void rec_usage(void) {
   fprintf(
       stderr,
-      "usage: vkr_rec summary <bundle|stream>\n"
+      "usage: vkr_rec summary <bundle|stream> [--budget MS]\n"
       "       vkr_rec verify <bundle|stream>\n"
-      "       vkr_rec spikes <bundle|stream> [--top N]\n"
+      "       vkr_rec spikes <bundle|stream> [--top N] [--budget MS]\n"
       "       vkr_rec frames <bundle|stream> --range A:B "
       "[--fields name,name]\n"
       "       vkr_rec passes <bundle|stream> [--top N] [--frame F]\n"
       "       vkr_rec compare <a> <b> [--align time|marker|distance|frame]"
       " [--marker label]\n"
       "A:B is inclusive; frame_ms names the frame time, pass.gpu:<pass> and\n"
-      "pass.cpu:<pass> a pass's times; at most 500 rows\n");
+      "pass.cpu:<pass> a pass's times; at most 500 rows. --budget is the\n"
+      "frame budget in ms (default: the recorded present interval)\n");
+}
+
+/* Reads `--budget MS` at argv[at]; true when it is absent or valid. */
+static bool8_t rec_parse_budget(int argc, char **argv, int at,
+                                float64_t *out_budget_ms) {
+  *out_budget_ms = 0.0;
+  if (at >= argc) {
+    return true_v;
+  }
+  if (at + 2 != argc || strcmp(argv[at], "--budget") != 0 ||
+      !string_to_f64(argv[at + 1], out_budget_ms) || *out_budget_ms <= 0.0 ||
+      *out_budget_ms > 1000.0) {
+    fprintf(stderr, "vkr_rec: --budget takes milliseconds above 0, up to "
+                    "1000\n");
+    return false_v;
+  }
+  return true_v;
 }
 
 static int rec_run_spikes(int argc, char **argv) {
   uint32_t top = VKR_RECORDING_ANALYSIS_SPIKE_MAX;
-  if (argc == 5 && strcmp(argv[3], "--top") == 0) {
+  int next = 3;
+  if (argc >= 5 && strcmp(argv[3], "--top") == 0) {
     if (!string_to_u32(argv[4], &top) || top == 0u || top > REC_TOP_MAX) {
       fprintf(stderr, "vkr_rec: --top takes 1 to %u\n", REC_TOP_MAX);
       return REC_EXIT_DAMAGED;
     }
-  } else if (argc != 3) {
+    next = 5;
+  }
+  float64_t budget_ms = 0.0;
+  if (argc < 3 || !rec_parse_budget(argc, argv, next, &budget_ms)) {
     rec_usage();
     return REC_EXIT_DAMAGED;
   }
-  return rec_spikes(argv[2], top);
+  return rec_spikes(argv[2], top, budget_ms);
 }
 
 static int rec_run_passes(int argc, char **argv) {
@@ -809,10 +838,12 @@ VKR_MAIN(argc, argv) {
   vkr_dmemory_allocator_create(&rec_allocator);
 
   int result = REC_EXIT_DAMAGED;
-  if (strcmp(argv[1], "summary") == 0 && argc == 3) {
-    result = rec_report(argv[2], true_v);
+  float64_t budget_ms = 0.0;
+  if (strcmp(argv[1], "summary") == 0 && argc >= 3 &&
+      rec_parse_budget(argc, argv, 3, &budget_ms)) {
+    result = rec_report(argv[2], true_v, budget_ms);
   } else if (strcmp(argv[1], "verify") == 0 && argc == 3) {
-    result = rec_report(argv[2], false_v);
+    result = rec_report(argv[2], false_v, 0.0);
   } else if (strcmp(argv[1], "spikes") == 0) {
     result = rec_run_spikes(argc, argv);
   } else if (strcmp(argv[1], "frames") == 0) {

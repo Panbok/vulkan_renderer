@@ -250,6 +250,26 @@ typedef struct VkrPacketBuildMetrics {
   uint64_t dynamic_candidate_row_bytes;
   uint32_t publication_omitted_count;
   uint64_t geometry_row_bytes;
+  /* VkrStaticRepackReason bits (vkr_candidate_residency.h) of a frame that
+     packed its static rows again; zero when the resident rows were reused. */
+  uint32_t static_repack_reasons;
+  /* VkrPublicationChange bits (vkr_candidate_residency.h) of the
+     publications that moved the candidate publication generation since the
+     previous packet. */
+  uint32_t publication_changes;
+  /* The frame's world waited on a publication, so retained shadows drew
+     whole. */
+  bool8_t publication_pending;
+  /* Time the frame's begin blocked on the GPU or the display: its command
+     slot's retirement, the image acquire, the image's present fence and
+     its previous submit. A frame paced by vsync waits here; unlike
+     `cpu.drawable_acquire` it includes the slot's retirement, the wait of a
+     GPU-bound frame. */
+  uint64_t frame_wait_ns;
+  bool8_t frame_wait_valid;
+  /* The frame presented in a mode that waits for the display's vertical
+     blank (FIFO); `cpu.backend_present` times the call itself. */
+  bool8_t present_paced;
   bool8_t valid;
 } VkrPacketBuildMetrics;
 

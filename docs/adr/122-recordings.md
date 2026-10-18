@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-17
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -359,7 +359,23 @@ an agent must read one without the editor.
   completion repeated across publications is written once, and frames still
   on the GPU at stop have none. With a render thread a frame is published
   during a later frame-loop iteration (ADR-082), which runs its update and
-  waits for the frame before it closes the metrics frame. That iteration's
+  waits for the frame before it closes the metrics frame. The Tier 0 list
+  ([vkr_recording.c](../../runtime/src/recording/vkr_recording.c)) also
+  carries the render thread's static candidate pack time
+  (`cpu.packet_candidate_pack`), the Vulkan frame-begin waits for the
+  command slot, image acquire, present fence and image reuse
+  (`cpu.backend_frame_wait`, which unlike `cpu.drawable_acquire` includes a
+  GPU-bound frame's wait for its slot), the interval presentation paces the
+  frame to (`frame.present_interval`: the display's refresh interval when
+  the frame presented with vertical sync, raised to the frame limit's,
+  unsampled otherwise; Metal does not yet report its vertical sync, so it
+  samples only a frame limit), and three bit sets: why a slot packed its static candidate
+  rows again (`packet.static_repack_reasons`, `VkrStaticRepackReason`),
+  which publications moved the candidate publication generation
+  (`packet.publication_changes`, `VkrPublicationChange`, both in
+  [vkr_candidate_residency.h](../../renderer/src/vkr_candidate_residency.h)),
+  and whether the world waited on a publication
+  (`packet.publication_pending`). That iteration's
   `cpu.update`, `cpu.simulation`, `cpu.physics` and `cpu.render_wait`, and
   its `cpu.world_payload_build` when it built a decoupled frame first, are
   written on the iteration's own recorded frame, again as a record whose
@@ -434,6 +450,27 @@ an agent must read one without the editor.
   19 neighbours and 4 ms above it, or over twice the budget) into
   `summary.json` within 8 KB
   ([vkr_recording_analysis.h](../../runtime/src/assets/vkr_recording_analysis.h)).
+  The budget is the median `frame.present_interval`, 13.33 ms on a 75 Hz
+  display with vertical sync, else 16.667 ms; `frame_time.budget_source`
+  names it, and `vkr_rec summary` and `vkr_rec spikes` take `--budget MS`
+  for recordings made before the series. Before 2026-10-18 every recording
+  used 16.667 ms, so a 75 Hz session that dropped to 20 ms frames counted
+  only the frames past 16.7 ms. `slow_frames` compares the frames over 1.2 times the
+  budget (`threshold_ms`, so a vsync-paced frame a little past its interval
+  does not count, and one that missed it does) with the others: their count, their runs of adjacent frames by
+  length (1 to 7 and longer), the longest run, and the five `ms` series,
+  GPU passes and flag bits (the three bit sets above, one name per bit)
+  whose slow-frame mean or share exceeds the others' most. Each comparison
+  also tries the row before every frame and keeps the larger difference as
+  lag 1, since a render-thread frame's work and GPU time land one row before
+  the frame-loop iteration that waits for it; a pass absent from a frame
+  counts as zero, so a pass that runs only in slow frames shows. Spikes
+  cannot find a run of slow frames that the neighbour median absorbs. On a
+  user's 46 s, 75 Hz warehouse recording (`vkr_rec summary --budget
+  13.333`) the section found 683 slow frames in 115 runs, 52 of exactly six
+  frames, with `cpu.render_submit` at 18.5 against 8.8 ms (lag 1) and
+  `Cull.Upload` and whole `Shadow.Cascade.N` passes only in slow frames,
+  while spikes ranked single frames.
   Pass statistics rank by total time; a spike names the passes that grew
   most in its frame, or in the run's slowest frame with GPU times.
   `vkr_rec spikes`, `vkr_rec frames` and `vkr_rec passes` query the same

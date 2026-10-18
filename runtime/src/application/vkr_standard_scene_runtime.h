@@ -168,6 +168,10 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   VkrMetricId os_low_power;
   VkrMetricId process_time;
   VkrMetricId major_page_faults;
+  // The frame time presentation paces to: the display's refresh interval
+  // when the frame presented with vertical sync, raised to the frame
+  // limit's. Unsampled for unpaced frames, which have no such floor.
+  VkrMetricId present_interval;
   // Nested inside update: the simulated container's step (scripts, physics,
   // animation and transforms), and of it the native physics step.
   VkrMetricId simulation;

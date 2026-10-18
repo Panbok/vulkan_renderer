@@ -357,6 +357,16 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
           application->metrics, "physics.ticks", &ids->physics_ticks) ||
       !vkr_metrics_register(application->metrics,
                             &(VkrMetricDescription){
+                                .name = string8_lit("frame.present_interval"),
+                                .domain = VKR_METRIC_DOMAIN_FRAME,
+                                .kind = VKR_METRIC_KIND_GAUGE,
+                                .unit = VKR_METRIC_UNIT_NANOSECONDS,
+                                .scalar = VKR_METRIC_SCALAR_U64,
+                                .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+                            },
+                            &ids->present_interval) ||
+      !vkr_metrics_register(application->metrics,
+                            &(VkrMetricDescription){
                                 .name = string8_lit("frame.decoupled"),
                                 .domain = VKR_METRIC_DOMAIN_FRAME,
                                 .kind = VKR_METRIC_KIND_COUNTER,
@@ -3063,6 +3073,20 @@ vkr_standard_scene_runtime_finish_frame(VkrStandardSceneRuntime *application,
     VkrPlatformTelemetry telemetry = {0};
     (void)vkr_platform_get_telemetry(&telemetry);
     vkr_standard_scene_runtime_publish_telemetry(application, &telemetry);
+    /* A recording's frame budget: what this frame's presentation paced to. */
+    const float64_t frame_limit =
+        (float64_t)application->host.config.target_frame_rate;
+    float64_t paced_interval = metrics->packet_build.present_paced
+                                   ? application->refresh_interval
+                                   : 0.0;
+    if (frame_limit > 0.0) {
+      paced_interval = Max(paced_interval, 1.0 / frame_limit);
+    }
+    if (paced_interval > 0.0) {
+      vkr_metrics_gauge_set_u64(application->metrics,
+                                application->metric_ids.present_interval,
+                                (uint64_t)(paced_interval * 1.0e9));
+    }
     VkrRendererMetricsCollectContext metrics_context = {
         .application = vkr_application_metrics_snapshot(
             &application->assets, &application->ui_system,

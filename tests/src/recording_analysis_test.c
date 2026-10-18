@@ -7,6 +7,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_json.h"
+#include "vkr_candidate_residency.h"
 #include "vkr_depot_zstd.h"
 
 /* Recording analysis (docs/proposals/recordings.md, "Performance view"):
@@ -148,6 +149,48 @@ static const VkrRecordingField ANALYSIS_TEST_METRIC_FIELDS[] = {
      .offset = 48u},
 };
 
+/* The slow-frame scenario's metrics: the same layout with the frame's
+   present interval and the static repack reasons in the last two slots. */
+static const VkrRecordingField ANALYSIS_TEST_SLOW_METRIC_FIELDS[] = {
+    {.name = "valid",
+     .type = VKR_RECORDING_FIELD_U64,
+     .count = 1u,
+     .offset = 0u},
+    {.name = "frame.wall",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 8u},
+    {.name = "cpu.update",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 16u},
+    {.name = "cpu.render_wait",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 24u},
+    {.name = "gpu.submission",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 32u},
+    {.name = "frame.present_interval",
+     .unit = "ms",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 40u},
+    {.name = "packet.static_repack_reasons",
+     .unit = "count",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 1u,
+     .offset = 48u},
+};
+_Static_assert(ArrayCount(ANALYSIS_TEST_SLOW_METRIC_FIELDS) ==
+                   ArrayCount(ANALYSIS_TEST_METRIC_FIELDS),
+               "the slow-frame fields keep the metrics record layout");
+
 /* The runtime's stream ids and names (recording/vkr_recording.h). */
 static const VkrRecordingStream ANALYSIS_TEST_STREAMS[] = {
     {.id = 1u,
@@ -196,6 +239,8 @@ typedef struct AnalysisTestScenario {
   float64_t camera_scale;
   /* The frame the camera stops at; zero never stops. */
   uint64_t hold_from;
+  /* The metrics stream's fields; NULL is ANALYSIS_TEST_METRIC_FIELDS. */
+  const VkrRecordingField *metric_fields;
 } AnalysisTestScenario;
 
 typedef struct AnalysisTestMemory {
@@ -304,9 +349,13 @@ static void analysis_test_write(const char *path, VkrAllocator *allocator,
   const uint32_t stream_count =
       ArrayCount(ANALYSIS_TEST_STREAMS) -
       (scenario->passes ? 0u : ANALYSIS_TEST_PASS_STREAMS);
-  assert(vkr_recording_dictionary_encode(ANALYSIS_TEST_STREAMS, stream_count,
-                                         allocator, &dictionary,
-                                         &dictionary_size));
+  VkrRecordingStream streams[ArrayCount(ANALYSIS_TEST_STREAMS)];
+  MemCopy(streams, ANALYSIS_TEST_STREAMS, sizeof(streams));
+  if (scenario->metric_fields) {
+    streams[3].fields = scenario->metric_fields;
+  }
+  assert(vkr_recording_dictionary_encode(streams, stream_count, allocator,
+                                         &dictionary, &dictionary_size));
   assert(vkr_recording_writer_chunk(&writer, VKR_RECORDING_CHUNK_DICTIONARY, 0u,
                                     0u, dictionary, dictionary_size));
   vkr_allocator_free(allocator, dictionary, dictionary_size,
@@ -1392,6 +1441,160 @@ static void test_recording_analysis_events(void) {
   printf("  test_recording_analysis_events PASSED\n");
 }
 
+/* ------------------------------------------------------------------------ */
+/* Slow-frame scenario: 200 frames paced to 12.5 ms that take 12 ms, and runs */
+/* of 20 ms frames at 50 to 55, 120 to 122 and 170. The render wait and the   */
+/* static repack reasons rise in the row before each slow frame, and an      */
+/* Upload pass runs only in slow frames.                                     */
+
+static bool8_t analysis_test_slow(uint64_t frame) {
+  return (frame >= 50u && frame <= 55u) || (frame >= 120u && frame <= 122u) ||
+         frame == 170u;
+}
+
+static void analysis_test_slow_metrics(uint64_t frame,
+                                       AnalysisTestMetrics *out) {
+  MemZero(out, sizeof(*out));
+  out->valid = (1ull << ANALYSIS_TEST_METRIC_COUNT) - 1u;
+  const bool8_t before_slow = analysis_test_slow(frame + 1u);
+  out->values[ANALYSIS_TEST_WALL] = analysis_test_slow(frame) ? 20.0 : 12.0;
+  out->values[ANALYSIS_TEST_UPDATE] = 5.0;
+  out->values[ANALYSIS_TEST_RENDER_WAIT] = before_slow ? 9.0 : 1.0;
+  out->values[ANALYSIS_TEST_GPU] = 10.0;
+  /* frame.present_interval and packet.static_repack_reasons. */
+  out->values[ANALYSIS_TEST_BYTES_LIVE] = 12.5;
+  out->values[ANALYSIS_TEST_DRAW_CALLS] =
+      before_slow ? (float64_t)VKR_STATIC_REPACK_PUBLICATION : 0.0;
+}
+
+static void analysis_test_slow_pass_row(uint8_t *row, uint16_t pass,
+                                        float32_t gpu_ms) {
+  const uint16_t flags = VKR_RECORDING_PASS_GPU_VALID;
+  const float32_t cpu_ms = 0.1f;
+  MemCopy(row, &pass, sizeof(pass));
+  MemCopy(row + 2u, &flags, sizeof(flags));
+  MemCopy(row + 4u, &cpu_ms, sizeof(cpu_ms));
+  MemCopy(row + 8u, &gpu_ms, sizeof(gpu_ms));
+}
+
+static void analysis_test_slow_passes(AnalysisTestChunk *chunk, uint64_t frame,
+                                      uint64_t frames) {
+  (void)frames;
+  if (frame == 0u) {
+    static const char *const names[] = {"Lighting", "Upload"};
+    for (uint32_t id = 0u; id < ArrayCount(names); ++id) {
+      uint8_t record[4u + 16u];
+      const uint32_t length = (uint32_t)strlen(names[id]);
+      MemCopy(record, &id, sizeof(id));
+      MemCopy(record + 4u, names[id], length);
+      analysis_test_put(chunk, 5u, frame, record, 4u + length);
+    }
+  }
+  uint8_t record[VKR_RECORDING_PASSES_HEADER_SIZE +
+                 2u * VKR_RECORDING_PASS_ROW_SIZE];
+  const uint32_t rows = analysis_test_slow(frame) ? 2u : 1u;
+  const uint32_t flags = VKR_RECORDING_PASSES_GPU_TIMED;
+  MemCopy(record, &rows, sizeof(rows));
+  MemCopy(record + 4u, &flags, sizeof(flags));
+  analysis_test_slow_pass_row(record + VKR_RECORDING_PASSES_HEADER_SIZE, 0u,
+                              2.0f);
+  if (rows == 2u) {
+    analysis_test_slow_pass_row(record + VKR_RECORDING_PASSES_HEADER_SIZE +
+                                    VKR_RECORDING_PASS_ROW_SIZE,
+                                1u, 0.5f);
+  }
+  analysis_test_put(chunk, 6u, frame, record,
+                    VKR_RECORDING_PASSES_HEADER_SIZE +
+                        rows * VKR_RECORDING_PASS_ROW_SIZE);
+}
+
+static const AnalysisTestScenario ANALYSIS_TEST_SLOW = {
+    .frames = 200u,
+    .missing_frame = ANALYSIS_TEST_NO_FRAME,
+    .metrics = analysis_test_slow_metrics,
+    .passes = analysis_test_slow_passes,
+    .metric_fields = ANALYSIS_TEST_SLOW_METRIC_FIELDS,
+};
+
+/* Detects: a budget that ignores the recorded present interval or overrides
+   an explicit option, slow runs miscounted or mislocated, a render-thread
+   series compared in the slow frame's own row instead of the row before
+   it, a pass that runs only in slow frames left out because its absent
+   frames do not count as zero, a pass that did not change listed, an
+   unchanged series listed, and a repack reason that is not named. */
+static void test_recording_analysis_slow_frames(void) {
+  printf("  Running test_recording_analysis_slow_frames...\n");
+  AnalysisTestMemory memory;
+  analysis_memory_create(&memory);
+  Arena *arena = arena_create(MB(16), MB(1));
+  char path[1024];
+  VkrRecordingData data;
+  analysis_test_load("slow_frames", &ANALYSIS_TEST_SLOW, &memory, path,
+                     sizeof(path), &data);
+
+  VkrRecordingAnalysis analysis;
+  assert(vkr_recording_analyze(&data, NULL, &memory.allocator, &analysis));
+  assert(analysis.budget_ms == 12.5 &&
+         strcmp(analysis.budget_source, "frame.present_interval") == 0);
+  assert(analysis.over_budget == 10u);
+  const VkrRecordingSlowFrames *slow = &analysis.slow;
+  assert(slow->frames == 10u && slow->normal_frames == 190u &&
+         slow->runs == 3u);
+  assert(slow->run_bins[0] == 1u && slow->run_bins[2] == 1u &&
+         slow->run_bins[5] == 1u);
+  assert(slow->longest_run == 6u && slow->longest_run_first == 50u);
+
+  const uint32_t render_wait =
+      vkr_recording_data_find_series(&data, "cpu.render_wait");
+  assert(slow->series_count == 1u && slow->series[0].index == render_wait &&
+         slow->series[0].lag == 1u &&
+         analysis_test_near(slow->series[0].normal_ms, 1.0) &&
+         analysis_test_near(slow->series[0].slow_ms, 9.0));
+
+  const uint32_t upload = vkr_recording_data_find_pass(&data, "Upload");
+  assert(slow->pass_count == 1u && slow->passes[0].index == upload &&
+         slow->passes[0].lag == 0u &&
+         analysis_test_near(slow->passes[0].normal_ms, 0.0) &&
+         analysis_test_near(slow->passes[0].slow_ms, 0.5));
+
+  assert(slow->flag_count == 1u && slow->flags[0].lag == 1u &&
+         strcmp(vkr_recording_analysis_flag_name(slow->flags[0].flag),
+                "repack.publication") == 0 &&
+         analysis_test_near(slow->flags[0].normal_share, 0.0) &&
+         analysis_test_near(slow->flags[0].slow_share, 1.0));
+
+  VkrJsonWriter writer;
+  assert(vkr_recording_analysis_write_json(analysis_test_json_begin(&writer),
+                                           &data, &analysis, NULL));
+  assert(vkr_json_writer_complete(&writer));
+  const VkrBakeryJson *root = analysis_test_parse(arena);
+  String8 source = {0};
+  assert(vkr_bakery_json_get_string(analysis_test_member(root, "frame_time"),
+                                    "budget_source", &source) &&
+         vkr_string8_equals_cstr(&source, "frame.present_interval"));
+  const VkrBakeryJson *json_slow = analysis_test_member(root, "slow_frames");
+  assert(analysis_test_number(json_slow, "threshold_ms") == 15.0 &&
+         analysis_test_number(json_slow, "frames") == 10.0 &&
+         analysis_test_number(json_slow, "longest_run_first") == 50.0);
+  const VkrBakeryJson *flags = analysis_test_member(json_slow, "flags");
+  assert(flags->count == 1u);
+  vkr_recording_analysis_free(&analysis);
+
+  /* An explicit budget wins over the recorded interval. */
+  const VkrRecordingAnalysisOptions options = {.budget_ms = 25.0};
+  assert(vkr_recording_analyze(&data, &options, &memory.allocator, &analysis));
+  assert(analysis.budget_ms == 25.0 &&
+         strcmp(analysis.budget_source, "option") == 0 &&
+         analysis.slow.frames == 0u && analysis.slow.series_count == 0u);
+  vkr_recording_analysis_free(&analysis);
+
+  vkr_recording_data_free(&data);
+  analysis_test_remove(path);
+  arena_destroy(arena);
+  analysis_memory_destroy(&memory);
+  printf("  test_recording_analysis_slow_frames PASSED\n");
+}
+
 bool32_t run_recording_analysis_tests(void) {
   printf("--- Starting Recording Analysis Tests ---\n");
   test_recording_analysis_statistics();
@@ -1401,6 +1604,7 @@ bool32_t run_recording_analysis_tests(void) {
   test_recording_analysis_json_bound();
   test_recording_analysis_passes();
   test_recording_analysis_events();
+  test_recording_analysis_slow_frames();
   test_recording_compare();
   printf("--- Recording Analysis Tests Completed ---\n");
   return true_v;

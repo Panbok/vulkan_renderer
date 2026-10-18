@@ -3794,6 +3794,10 @@ struct VkrVulkanRenderer {
   uint64_t picking_completed_order;
   uint64_t picking_consumed_order;
   uint64_t candidate_publication_generation;
+  /* VkrPublicationChange bits since the previous packet build. */
+  uint32_t candidate_publication_changes;
+  /* The current frame's begin waits (VkrPacketBuildMetrics::frame_wait_ns). */
+  uint64_t frame_wait_ns;
   uint64_t geometry_table_generation;
   uint64_t radiance_revision;
   uint64_t graph_revision;

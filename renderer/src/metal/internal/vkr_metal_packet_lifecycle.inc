@@ -501,10 +501,13 @@ bool8_t vkr_metal_packet_renderer_drain(
   }
 }
 
+/* Moves the candidate publication generation after a publication of
+   `change` (VkrPublicationChange) succeeded. */
 vkr_internal bool8_t vkr_metal_packet_publish_candidate_result(
-    VkrMetalPacketRenderer *renderer, bool8_t result) {
+    VkrMetalPacketRenderer *renderer, uint32_t change, bool8_t result) {
   if (!result)
     return false_v;
+  renderer->candidate_publication_changes |= change;
   if (renderer->candidate_publication_generation == UINT64_MAX) {
     renderer->candidate_publication_generation = 0u;
     log_fatal("Metal candidate publication generation exhausted");
@@ -524,7 +527,7 @@ vkr_internal bool8_t vkr_metal_packet_publish_geometry_adapter(
     void *state, VkrGeometryHandle handle,
     const struct VkrGeometryConfig *geometry) {
   return vkr_metal_packet_publish_candidate_result(
-      state,
+      state, VKR_PUBLICATION_CHANGE_GEOMETRY,
       vkr_metal_packet_renderer_publish_geometry(state, handle, geometry));
 }
 
@@ -532,14 +535,15 @@ vkr_internal bool8_t vkr_metal_packet_publish_loaded_mesh_adapter(
     void *state, VkrGeometryHandle handle,
     const struct VkrGeometryUpload *mesh) {
   return vkr_metal_packet_publish_candidate_result(
-      state,
+      state, VKR_PUBLICATION_CHANGE_GEOMETRY,
       vkr_metal_packet_renderer_publish_loaded_mesh(state, handle, mesh));
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_geometry_adapter(
     void *state, VkrGeometryHandle handle) {
   return vkr_metal_packet_publish_candidate_result(
-      state, vkr_metal_packet_renderer_destroy_mesh(
+      state, VKR_PUBLICATION_CHANGE_GEOMETRY_RETIRE,
+      vkr_metal_packet_renderer_destroy_mesh(
                  state, (VkrMeshHandle){.id = handle.id,
                                         .generation = handle.generation}));
 }
@@ -612,14 +616,15 @@ vkr_internal bool8_t vkr_metal_packet_unpublish_texture_adapter(
 vkr_internal bool8_t vkr_metal_packet_publish_material_adapter(
     void *state, VkrMaterialHandle handle, const struct VkrMaterial *material) {
   return vkr_metal_packet_publish_candidate_result(
-      state,
+      state, VKR_PUBLICATION_CHANGE_MATERIAL,
       vkr_metal_packet_renderer_publish_material(state, handle, material));
 }
 
 vkr_internal bool8_t vkr_metal_packet_unpublish_material_adapter(
     void *state, VkrMaterialHandle handle) {
   return vkr_metal_packet_publish_candidate_result(
-      state, vkr_metal_packet_renderer_destroy_material(state, handle));
+      state, VKR_PUBLICATION_CHANGE_MATERIAL,
+      vkr_metal_packet_renderer_destroy_material(state, handle));
 }
 
 vkr_internal bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {

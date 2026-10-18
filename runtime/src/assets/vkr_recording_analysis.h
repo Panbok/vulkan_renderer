@@ -245,7 +245,8 @@ uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
 /* Analysis                                                                  */
 
 typedef struct VkrRecordingAnalysisOptions {
-  /* Zero selects VKR_RECORDING_ANALYSIS_BUDGET_MS. */
+  /* Zero selects the median of the recording's frame.present_interval, or
+     VKR_RECORDING_ANALYSIS_BUDGET_MS without one. */
   float64_t budget_ms;
   /* Spikes kept; zero selects VKR_RECORDING_ANALYSIS_SPIKE_MAX. */
   uint32_t spike_max;
@@ -330,6 +331,61 @@ typedef struct VkrRecordingSpike {
   uint32_t pass_contributor_count;
 } VkrRecordingSpike;
 
+/* Slow frames: valid frames over VKR_RECORDING_ANALYSIS_SLOW_FACTOR times
+   the budget, so a vsync-paced frame that ran a little long does not count
+   while one that missed its interval does. The analysis compares them
+   with the frames within it and keeps, per kind, this many largest
+   differences, and counts runs of adjacent slow frames by length, the last
+   bin holding longer runs. */
+#define VKR_RECORDING_ANALYSIS_SLOW_FACTOR 1.2
+#define VKR_RECORDING_ANALYSIS_SLOW_MAX 5u
+#define VKR_RECORDING_ANALYSIS_RUN_BINS 8u
+
+/* An "ms" series or a pass whose mean over the slow frames exceeds its mean
+   over the other frames. `lag` 1 compares the row before each frame: a
+   frame's render-thread work and GPU time land in the row before the frame
+   loop iteration that waits for them. A pass absent from a frame counts as
+   zero, so a pass that runs only in slow frames shows. */
+typedef struct VkrRecordingSlowDelta {
+  uint32_t index;
+  uint32_t lag;
+  float64_t normal_ms;
+  float64_t slow_ms;
+} VkrRecordingSlowDelta;
+
+/* A bit of a flag series (packet.static_repack_reasons,
+   packet.publication_changes, packet.publication_pending) set in a larger
+   share of the slow frames than of the others, at the same lag rule. */
+typedef struct VkrRecordingSlowFlag {
+  uint32_t series;
+  /* Index into the analysis's flag name table: the name of the bit. */
+  uint32_t flag;
+  uint32_t lag;
+  float64_t normal_share;
+  float64_t slow_share;
+} VkrRecordingSlowFlag;
+
+typedef struct VkrRecordingSlowFrames {
+  float64_t threshold_ms;
+  uint64_t frames;
+  uint64_t normal_frames;
+  uint64_t runs;
+  uint64_t run_bins[VKR_RECORDING_ANALYSIS_RUN_BINS];
+  uint64_t longest_run;
+  uint64_t longest_run_first;
+  /* Largest difference first. */
+  VkrRecordingSlowDelta series[VKR_RECORDING_ANALYSIS_SLOW_MAX];
+  uint32_t series_count;
+  /* GPU times of frames whose rows carry them. */
+  VkrRecordingSlowDelta passes[VKR_RECORDING_ANALYSIS_SLOW_MAX];
+  uint32_t pass_count;
+  VkrRecordingSlowFlag flags[VKR_RECORDING_ANALYSIS_SLOW_MAX];
+  uint32_t flag_count;
+} VkrRecordingSlowFrames;
+
+/** The name of flag `flag` of a VkrRecordingSlowFlag. */
+const char *vkr_recording_analysis_flag_name(uint32_t flag);
+
 typedef struct VkrRecordingEventTotal {
   uint64_t records;
   uint64_t count;
@@ -342,6 +398,11 @@ typedef struct VkrRecordingAnalysis {
   uint64_t block_bytes;
 
   float64_t budget_ms;
+  /* Where budget_ms came from: "option", "frame.present_interval" (the
+     median interval presentation paced the frames to: the display's
+     refresh with vertical sync, or the frame limit) or "default"
+     (VKR_RECORDING_ANALYSIS_BUDGET_MS). */
+  const char *budget_source;
   VkrRecordingStats frame_time;
   /*
    * Time-based 1% low: frame times sorted from slowest, summed until the sum
@@ -365,6 +426,7 @@ typedef struct VkrRecordingAnalysis {
   /* Per event name, in VkrRecordingData.event_names order: records, the
      events they count and their milliseconds. */
   VkrRecordingEventTotal event_totals[VKR_RECORDING_DATA_EVENT_NAME_MAX];
+  VkrRecordingSlowFrames slow;
 } VkrRecordingAnalysis;
 
 /**

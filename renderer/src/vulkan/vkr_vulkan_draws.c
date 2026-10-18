@@ -1099,12 +1099,17 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
       const uint32_t source_static_count = world->static_candidate_count;
       const uint32_t source_dynamic_count =
           world->gpu_candidate_count - source_static_count;
-      const bool8_t repack_static =
-          vkr_candidate_residency_needs_static_repack(
+      const uint32_t repack_reasons =
+          vkr_candidate_residency_static_repack_reasons(
               &slot->candidate_residency, world->static_generation,
               world->publication_generation, resource_generation,
-              world->static_cull_generation) ||
-          !vkr_vk_static_bucket_counts_current(slot);
+              world->static_cull_generation) |
+          (vkr_vk_static_bucket_counts_current(slot)
+               ? 0u
+               : (uint32_t)VKR_STATIC_REPACK_UNPACKED);
+      const bool8_t repack_static = repack_reasons != 0u;
+      slot->packet_build.static_repack_reasons = repack_reasons;
+      slot->packet_build.publication_pending = world->publication_pending;
       uint32_t packed_static_count =
           repack_static ? 0u : slot->candidate_residency.packed_static_count;
       uint32_t omitted_static_count =
@@ -1190,6 +1195,11 @@ bool8_t vkr_vk_prepare_packet_uploads(VkrVulkanRenderer *renderer,
   slot->packet_build.dynamic_candidate_row_bytes =
       (uint64_t)dynamic_rows_written * sizeof(VkrGpuCandidateDrawRow);
   slot->packet_build.publication_omitted_count = omitted_count;
+  /* Publications that ran since the previous packet, whichever slot it
+     used. */
+  slot->packet_build.publication_changes =
+      renderer->candidate_publication_changes;
+  renderer->candidate_publication_changes = 0u;
   slot->packet_build.valid = packed;
   return packed;
 }

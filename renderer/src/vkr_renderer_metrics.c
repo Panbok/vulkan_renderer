@@ -822,6 +822,14 @@ vkr_internal bool8_t vkr_renderer_metrics_register_backend(
           VKR_METRIC_SCALAR_U64, &ids->backend_present)) {
     return false_v;
   }
+  /* The frame's begin blocked on its slot, image or display: vsync pacing
+     and GPU-bound frames wait here, CPU-bound ones do not. */
+  if (!vkr_renderer_metric_register(
+          metrics, "cpu.backend_frame_wait", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
+          VKR_METRIC_SCALAR_U64, &ids->backend_frame_wait)) {
+    return false_v;
+  }
   if (!vkr_renderer_metric_register(
           metrics, "cpu.drawable_acquire", VKR_METRIC_DOMAIN_FRAME,
           VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
@@ -883,6 +891,12 @@ vkr_internal bool8_t vkr_renderer_metrics_register_packet_build(
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(packet_geometry_row_bytes, "packet.geometry_row_bytes",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(packet_static_repack_reasons, "packet.static_repack_reasons",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(packet_publication_changes, "packet.publication_changes",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(packet_publication_pending, "packet.publication_pending",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   return true_v;
 }
 
@@ -1550,6 +1564,15 @@ vkr_internal void vkr_renderer_metrics_collect_submission_timings(
     vkr_metrics_mark(metrics, ids->gpu_submission,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE, reason);
   }
+  if (context->frame_metrics->packet_build.frame_wait_valid) {
+    vkr_metrics_duration_add_ns(
+        metrics, ids->backend_frame_wait,
+        context->frame_metrics->packet_build.frame_wait_ns);
+  } else {
+    vkr_metrics_mark(metrics, ids->backend_frame_wait,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
 }
 
 vkr_internal void vkr_renderer_metrics_collect_packet_build(
@@ -1598,6 +1621,11 @@ vkr_internal void vkr_renderer_metrics_collect_packet_build(
     VKR_SET_U64(packet_publication_omitted,
                 packet_build->publication_omitted_count);
     VKR_SET_U64(packet_geometry_row_bytes, packet_build->geometry_row_bytes);
+    VKR_SET_U64(packet_static_repack_reasons,
+                packet_build->static_repack_reasons);
+    VKR_SET_U64(packet_publication_changes, packet_build->publication_changes);
+    VKR_SET_U64(packet_publication_pending,
+                packet_build->publication_pending ? 1u : 0u);
   } else {
     const VkrMetricId packet_build_ids[] = {
         ids->packet_candidate_hash,
@@ -1609,6 +1637,9 @@ vkr_internal void vkr_renderer_metrics_collect_packet_build(
         ids->packet_dynamic_candidate_row_bytes,
         ids->packet_publication_omitted,
         ids->packet_geometry_row_bytes,
+        ids->packet_static_repack_reasons,
+        ids->packet_publication_changes,
+        ids->packet_publication_pending,
     };
     for (uint32_t i = 0u; i < ArrayCount(packet_build_ids); ++i) {
       vkr_metrics_mark(metrics, packet_build_ids[i],

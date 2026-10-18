@@ -1187,6 +1187,8 @@ struct VkrMetalPacketRenderer {
   VkrRenderGraphFrameInfo prepared_frame;
   uint64_t submit_value;
   uint64_t candidate_publication_generation;
+  /* VkrPublicationChange bits since the previous packet build. */
+  uint32_t candidate_publication_changes;
   uint32_t gpu_draw_count;
   /** Packed static candidates, which precede the dynamic ones. */
   uint32_t gpu_draw_static_count;

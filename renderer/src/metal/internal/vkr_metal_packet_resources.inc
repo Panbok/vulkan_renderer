@@ -2363,6 +2363,8 @@ typedef struct VkrMetalPacketUploadPlan {
   uint32_t world_text_count;
   uint32_t direct_draw_count;
   bool8_t repack_static;
+  /* VkrStaticRepackReason bits behind repack_static. */
+  uint32_t static_repack_reasons;
   /* Draw-root cells and the slice size that ends with them. */
   uint64_t root_count;
   uint64_t root_offset;
@@ -2476,12 +2478,15 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_sources(
           &plan->gpu_draw_instances_buffer, &plan->resource_generation);
   if (!graph_buffers_ready)
     return false_v;
-  plan->repack_static =
-      plan->world &&
-      vkr_candidate_residency_needs_static_repack(
-          &plan->slot->candidate_residency, plan->world->static_generation,
-          plan->world->publication_generation, plan->resource_generation,
-          plan->world->static_cull_generation);
+  plan->static_repack_reasons =
+      plan->world ? vkr_candidate_residency_static_repack_reasons(
+                        &plan->slot->candidate_residency,
+                        plan->world->static_generation,
+                        plan->world->publication_generation,
+                        plan->resource_generation,
+                        plan->world->static_cull_generation)
+                  : 0u;
+  plan->repack_static = plan->static_repack_reasons != 0u;
   plan->gpu_draw_stage_count =
       plan->source_dynamic_count +
       (plan->repack_static ? plan->source_static_count : 0u);
@@ -2987,6 +2992,12 @@ vkr_internal bool8_t vkr_metal_packet_pack_upload_candidates(
   renderer->packet_build.dynamic_candidate_row_bytes =
       (uint64_t)dynamic_rows_written * sizeof(VkrGpuCandidateDrawRow);
   renderer->packet_build.publication_omitted_count = omitted_count;
+  renderer->packet_build.static_repack_reasons = plan->static_repack_reasons;
+  renderer->packet_build.publication_changes =
+      renderer->candidate_publication_changes;
+  renderer->candidate_publication_changes = 0u;
+  renderer->packet_build.publication_pending =
+      plan->world && plan->world->publication_pending;
   renderer->packet_build.valid = packed;
   if (!packed)
     return false_v;

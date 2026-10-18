@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-16
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -80,7 +80,12 @@ partition's first row for its argument offset and its size for
 `maxDrawCount`, and an empty bucket records no draw. Static bucket counts
 belong to the static residency they were counted for, and a frame whose
 committed residency differs repacks the static rows
-([`vkr_vulkan_draws.c`](../../renderer/src/vulkan/vkr_vulkan_draws.c)). A
+([`vkr_vulkan_draws.c`](../../renderer/src/vulkan/vkr_vulkan_draws.c)).
+`vkr_candidate_residency_static_repack_reasons`
+([`vkr_candidate_residency.h`](../../renderer/src/vkr_candidate_residency.h))
+names the stale inputs, and the packet metrics report them with the
+publications that moved the publication generation
+(`packet.static_repack_reasons`, `packet.publication_changes`). A
 disagreement between counts and rows would show as an overflow count, not as
 a write outside the partition. The transmission stream partitions its own
 candidates for its one view. The tiled pipeline keeps a stride of eight

@@ -244,6 +244,11 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId packet_dynamic_candidate_row_bytes;
   VkrMetricId packet_publication_omitted;
   VkrMetricId packet_geometry_row_bytes;
+  /* Why the static rows were packed again, which publications ran, and
+     whether the world waited on one (VkrPacketBuildMetrics). */
+  VkrMetricId packet_static_repack_reasons;
+  VkrMetricId packet_publication_changes;
+  VkrMetricId packet_publication_pending;
 
   VkrMetricId upload_fence_waits;
   VkrMetricId upload_queue_idle_waits;
@@ -253,6 +258,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId gpu_submission;
   VkrMetricId backend_present;
   VkrMetricId drawable_acquire;
+  VkrMetricId backend_frame_wait;
   VkrMetricId gpu_errors;
   VkrMetricId gpu_validation_errors;
   VkrMetricId gpu_validation_warnings;

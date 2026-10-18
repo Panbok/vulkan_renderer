@@ -538,6 +538,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   if (renderer->terminal_failure) {
     return false_v;
   }
+  renderer->frame_wait_ns = 0u;
   uint64_t completed = vkr_vk_refresh_completed(renderer);
   if (!vkr_vk_collect_captures(renderer, completed))
     return false_v;
@@ -570,10 +571,16 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   const uint32_t slot_index = renderer->command_ring.next_slot;
   VkrVulkanFrameSlot *slot = &renderer->frame_slots[slot_index];
   if (slot->retire_value > completed) {
+#if VKR_METRICS_ENABLED
+    const float64_t slot_wait_start = vkr_platform_get_absolute_time();
+#endif
     if (vkr_vk_wait_timeline(renderer, slot->retire_value,
                              "frame-slot reuse") != VK_SUCCESS) {
       return false_v;
     }
+#if VKR_METRICS_ENABLED
+    renderer->frame_wait_ns += vkr_metrics_elapsed_ns(slot_wait_start);
+#endif
     renderer->command_slot_wait_count++;
     completed = vkr_vk_refresh_completed(renderer);
     if (!vkr_vk_collect_captures(renderer, completed))
@@ -665,6 +672,9 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
         return false_v;
       }
     }
+#if VKR_METRICS_ENABLED
+    renderer->frame_wait_ns += vkr_metrics_elapsed_ns(acquire_start);
+#endif
   }
   const VkrVulkanImage *target = &renderer->targets.images[slot->image_index];
   *out_setup = (VkrFrame){
@@ -754,6 +764,10 @@ vkr_internal bool8_t vkr_vk_prepare_frame_commands(VkrVulkanRenderer *renderer,
     vkr_vk_report_upload_exhaustion(renderer, slot);
     return false_v;
   }
+#if VKR_METRICS_ENABLED
+  slot->packet_build.frame_wait_ns = renderer->frame_wait_ns;
+  slot->packet_build.frame_wait_valid = true_v;
+#endif
   if (!vkr_vk_prepare_initializations(renderer)) {
     log_error("Vulkan failed to prepare pending resource initializations");
     vkr_vk_report_upload_exhaustion(renderer, slot);
@@ -1447,6 +1461,9 @@ vkr_internal bool8_t vkr_vk_present_submitted_image(VkrVulkanRenderer *renderer,
   renderer->present_timing.present_ns += vkr_metrics_elapsed_ns(present_start);
   renderer->present_timing.present_count++;
   (void)vkr_vk_observe_result(renderer, present_result, "queue present");
+  slot->packet_build.present_paced =
+      window->present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+      window->present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
   const VkrVulkanPresentResult disposition =
       vkr_vulkan_present_result_classify(present_result);
   if (disposition.present_completion_tracking_required) {
