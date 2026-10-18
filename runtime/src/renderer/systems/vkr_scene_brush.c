@@ -59,6 +59,8 @@ typedef struct BrushRecord {
   bool8_t shape_body;
   uint32_t serial;
   uint8_t settle;
+  /* Its last move came from a stepping physics body (brush_simulated). */
+  bool8_t simulated_move;
   bool8_t built;
   bool8_t dirty;
   bool8_t trigger_body;
@@ -1674,6 +1676,14 @@ static bool8_t brush_matrix_equal(const Mat4 *a, const Mat4 *b) {
   return MemCompare(a->elements, b->elements, sizeof(a->elements)) == 0;
 }
 
+/* Whether a non-static physics body at or above `entity` moves it while the
+   scene's physics steps; paused physics, as while the editor edits, leaves
+   moves to rebuild the brush. */
+static bool8_t brush_simulated(const VkrScene *scene, VkrEntityId entity) {
+  return !vkr_scene_physics_is_paused(scene) &&
+         vkr_scene_entity_moves(scene, entity);
+}
+
 /* Marks every brush to rebuild at once; blockout shapes show only greybox
    looks and keep theirs. */
 static void brush_dirty_all(VkrScene *scene, VkrSceneBrushes *state) {
@@ -1804,10 +1814,20 @@ void vkr_scene_brush_update(VkrScene *scene) {
       if (!brush_matrix_equal(&transform->world, &record->last_world)) {
         record->last_world = transform->world;
         record->settle = 0u;
+        record->simulated_move = brush_simulated(scene, record->entity);
       } else if (record->settle < UINT8_MAX) {
         record->settle++;
       }
-      if (!brush_matrix_equal(&transform->world, &record->built_world)) {
+      /* A brush that a stepping physics body moved keeps the mesh it built
+         at rest, as a mover's brush does: the mesh follows its model, also
+         once the simulation pauses, until a move of its own, such as an
+         editor drag, rebuilds it. A rebuild each time the body rested
+         re-projected its UVs onto the world and republished its geometry,
+         which repacked every frame slot's static draw rows and redrew the
+         retained shadows; pushed warehouse crates did that every few
+         frames. */
+      if (!brush_matrix_equal(&transform->world, &record->built_world) &&
+          !record->simulated_move) {
         brush_set_dirty(state, record, true_v);
       }
     }

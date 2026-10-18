@@ -416,7 +416,24 @@ scene bakes build solid and visual brushes from their faces
 rebuilds a brush after a change to it or its faces, or after its transform
 moved and then rested for two updates, at most 256 brushes and about 6 ms of
 rebuilds per update (`VKR_SCENE_BRUSH_REBUILD_BUDGET_MS`, checked after each
-rebuild, so an update rebuilds at least one brush). A rebuild makes one
+rebuild, so an update rebuilds at least one brush). A brush whose last
+move a non-static physics body at or above it made while the scene's
+physics stepped keeps its mesh, as a mover's brush does, also once the
+simulation pauses: the mesh follows its model and its UVs stay on the brush.
+A move made while physics is paused, such as an editor drag, rebuilds it
+(`brush_simulated`, `BrushRecord.simulated_move`); a reset that returns the
+brush to where it built needs no rebuild. Before 2026-10-18 each rest of a
+pushed warehouse crate rebuilt its visual brushes; every rebuild published
+three geometries and retired three, which on Vulkan repacked all static
+draw rows in each of the 3 frame slots (about 7.5 ms each on the render
+thread) and redrew the retained shadows, six slow frames per push. A
+headless Release replay of the user's 46 s recording on Windows/Vulkan (RX
+6700 XT; Drive with follow, 2,761 ticks, the same 205.8 m path; dirty tree,
+one run each, not authoritative) went from 548 to 98 frames over 16.7 ms,
+frame p95 20.9 to 15.5 ms and p99 25.3 to 18.0 ms, `cpu.render_submit` p95
+18.8 to 13.2 ms and `cpu.packet_candidate_pack` p95 7.6 to 0.9 ms, and the
+frames that repacked static rows went from 488 in 61 runs, 34 of them six
+frames long, to 15 in 2 (`vkr_rec summary`, `vkr_rec frames`). A rebuild makes one
 generated mesh with one submesh per face material (16 at most), attached as
 the entity's runtime shape through `vkr_scene_attach_generated_mesh`, so
 transform sync, picking, visibility and the Show filter follow the shape
