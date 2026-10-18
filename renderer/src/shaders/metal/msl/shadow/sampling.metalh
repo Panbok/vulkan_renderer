@@ -374,11 +374,16 @@ static float vkr_metal_local_shadow_blocker_forward(
 // fixed radius, since sparse taps do not prove the receiver is lit. Without
 // SoftFilter every light takes the one hardware-filtered tap, or with Tent
 // four of them half a texel apart, a 3x3 tent kept a texel inside the face so
-// no tap reads a neighbouring one. Without Transmission the refractive layers
-// are not read. The tiled pipeline takes neither: its glass casts no local
-// shadow, and the registers of the Poisson filter and those reads cost its
-// opaque pass; its fully shadowed lights take the tent (ADR-087).
-template <bool Transmission = true, bool SoftFilter = true, bool Tent = false>
+// no tap reads a neighbouring one. WideTent widens Tent to a 3x3 grid of
+// those taps a texel apart, weighted (1,2,1)x(1,2,1)/16: a tent two texels in
+// radius over the 4x4 texels around the receiver, kept one and a half texels
+// inside the face for the same reason. Without Transmission the refractive
+// layers are not read. The tiled pipeline takes neither: its glass casts no
+// local shadow, and the registers of the Poisson filter and those reads cost
+// its opaque pass; its fully shadowed lights take the tent (ADR-087), and its
+// moving-caster subtraction the wide tent (ADR-108).
+template <bool Transmission = true, bool SoftFilter = true, bool Tent = false,
+          bool WideTent = false>
 float3 vkr_metal_packet_local_shadow_sample(
     constant VkrMetalPacketFrameRoot *root, uint first_view_encoded, uint kind,
     float3 world_position, float3 normal,
@@ -422,7 +427,30 @@ float3 vkr_metal_packet_local_shadow_sample(
       root->local_shadow_views[first_view].shadow_params.z > 0.5) {
     // Lights past the most important few take one hardware-filtered tap.
     float opaque;
-    if (Tent && root->local_shadow_views[first_view].shadow_params.z <= 0.5) {
+    if (WideTent &&
+        root->local_shadow_views[first_view].shadow_params.z <= 0.5) {
+      // The outer taps lie a texel from the centre and read half a texel
+      // past it, so the centre keeps one and a half texels inside the face.
+      const float face_texel = view.projection_params.y;
+      const float margin = 1.5 * face_texel;
+      const float2 center =
+          view.atlas_rect.xy +
+          clamp(uv, margin, 1.0 - margin) * view.atlas_rect.z;
+      const float step = face_texel * view.atlas_rect.z;
+      const uint layer = uint(view.atlas_rect.w);
+      opaque = 0.0;
+      for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+          const float weight = float((2 - abs(x)) * (2 - abs(y)));
+          opaque += weight * root->local_shadow_map.sample_compare(
+                                 vkr_metal_shadow_compare_sampler,
+                                 center + float2(float(x), float(y)) * step,
+                                 layer, projected.z);
+        }
+      }
+      opaque *= 1.0 / 16.0;
+    } else if (Tent &&
+               root->local_shadow_views[first_view].shadow_params.z <= 0.5) {
       const float face_texel = view.projection_params.y;
       const float2 center =
           view.atlas_rect.xy +

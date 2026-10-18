@@ -782,7 +782,11 @@ vkr_metal_tiled_lighting_position(constant VkrMetalPacketFrameRoot *frame,
 // The irradiance the moving casters take from a lightmapped surface
 // (ADR-104, ADR-108): per selected baked lamp, its light at the surface
 // times the share its static shadow passes and its composite shadow stops,
-// through the same filter taps. The light is pre-exposed.
+// through the same filter taps. Both lookups take the wide tent, a 3x3 grid
+// of hardware-filtered taps a texel apart weighted (1,2,1)x(1,2,1)/16, not
+// the four taps of the tiled lights: a moving caster's edge moves in whole
+// shadow texels, and the narrow tent left each step sharp against the
+// lamp's soft baked light. The light is pre-exposed.
 static float3 vkr_metal_tiled_moving_shadow(
     constant VkrMetalPacketFrameRoot *frame, float3 world_position,
     float3 normal, float3 geometric_normal) {
@@ -824,16 +828,18 @@ static float3 vkr_metal_tiled_moving_shadow(
             frame->local_shadow_views[lamp.composite_first_view + face]
                 .atlas_rect))
       continue;
-    const float passed = vkr_metal_packet_local_shadow_sample<false, false, true>(
-                             frame, lamp.static_first_view + 1u, term.kind,
-                             world_position, geometric_normal)
-                             .x;
+    const float passed =
+        vkr_metal_packet_local_shadow_sample<false, false, true, true>(
+            frame, lamp.static_first_view + 1u, term.kind, world_position,
+            geometric_normal)
+            .x;
     if (passed <= 0.0f)
       continue;
-    const float kept = vkr_metal_packet_local_shadow_sample<false, false, true>(
-                           frame, lamp.composite_first_view + 1u, term.kind,
-                           world_position, geometric_normal)
-                           .x;
+    const float kept =
+        vkr_metal_packet_local_shadow_sample<false, false, true, true>(
+            frame, lamp.composite_first_view + 1u, term.kind, world_position,
+            geometric_normal)
+            .x;
     removed += lamp.light.p1.rgb * lamp.light.p2.x *
                (term.attenuation * term.cone * facing * max(passed - kept, 0.0f));
   }

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-15
+updated: 2026-10-18
 authority: adr
 ---
 
@@ -93,9 +93,18 @@ take runtime shadows from the lamps that light them most.
    lamps, at most two, take static and composite shadow views (ADR-104).
    Frames with such lamps take a tiled moving-caster variant, which
    subtracts from a lightmapped surface's irradiance each lamp's light times
-   its static view's visibility minus its composite view's, through the
-   tiled tent filter (`vkr_metal_tiled_moving_shadow`); the inspection
-   variant does too. `CASTERS` shades the point and spot lights with their
+   its static view's visibility minus its composite view's, through one
+   wide tent for both views (`vkr_metal_tiled_moving_shadow`): a 3×3 grid
+   of hardware-filtered taps one texel apart, weighted (1,2,1)×(1,2,1)/16,
+   a tent two texels in radius whose centre keeps one and a half texels
+   inside the face. Since 2026-10-18 it replaces the tiled lights' four-tap
+   tent there, and a selected lamp's faces take the map size whatever its
+   range (`vkr_local_shadow_gather_candidates`); its own layer and the band
+   already held faces of that size. A moving caster's edge moves through
+   the map a whole texel at a time: with the 10 m freight-shaft lamp's
+   512² faces the lift's bar shadows jumped about 6 cm on the shaft wall
+   every four or five frames. The inspection variant subtracts too.
+   `CASTERS` shades the point and spot lights with their
    local shadows, as `SHADOWED` does, without rectangle lights;
    `CASTERS_ALL` adds rectangle lights, as `ALL` does, and is
    taken only when the frame has rectangle lights, since the rectangle
@@ -218,3 +227,21 @@ Release, M1-class Mac, Metal, 2026-10-15; local and non-authoritative.
   `CASTERS` without rectangle-light code 2.61 and 2.71 ms. These are
   diagnostic editor measurements, not authoritative harness timing.
 - **Unavailable.** No native Vulkan run (the Windows host was not used).
+
+Release, M1 Pro, Metal, 2026-10-18; local and non-authoritative.
+
+- **Moving-caster steps.** Watch playback of recording
+  `rec-20261018-120657` (Level Design Test, Epic, render scale 0.6),
+  frames 2585 to 2604 of the freight lift ride, each captured after a seek:
+  the frame-to-frame PSNR dipped to 22.6–25.6 dB every four or five frames
+  with 512² faces and the four-tap tent, and dipped the same with the wide
+  tent alone; with the map-size faces it stays at 27.0–29.0 dB on every
+  frame after the first. The Metal shaders compiled at runtime.
+- **Cost.** Two `rec.drive` replays of that recording in the headless
+  editor (1146×667), recorded with every pass timed, before and after the
+  change, same tree otherwise: over the lift ride `Tiled.Opaque` median
+  2.992 → 3.014 ms and the GPU submission 7.896 → 7.986 ms; over the
+  warehouse 2.873 → 2.899 ms and 7.796 → 7.838 ms. Diagnostic editor
+  measurements, not authoritative harness timing; no Bistro case has baked
+  lamps with moving casters.
+- **Unavailable.** No native Vulkan run; the change is tiled only.

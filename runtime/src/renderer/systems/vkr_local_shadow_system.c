@@ -869,8 +869,12 @@ vkr_internal uint32_t vkr_local_shadow_gather_candidates(
         .score = score,
         .size_score = size_score,
         .distance_fade = distance_fade,
-        .face_size =
-            vkr_local_shadow_face_size_for_range(light->range, input->map_size),
+        /* A baked lamp's shadow is the moving casters' alone, which steps a
+           texel at a time as they move: its faces take the map size, which
+           its own layer and the band hold at any range. */
+        .face_size = baked ? input->map_size
+                           : vkr_local_shadow_face_size_for_range(
+                                 light->range, input->map_size),
         .baked = baked,
         .fading = fading,
     };
