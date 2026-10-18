@@ -1330,6 +1330,10 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
       sample->gpu_start_ms = source->gpu_start_ms;
       sample->gpu_start_valid =
           source->gpu_start_valid && vkr_is_finite_f64(source->gpu_start_ms);
+      sample->vertex_invocations = source->vertex_invocations;
+      sample->fragment_invocations = source->fragment_invocations;
+      sample->compute_invocations = source->compute_invocations;
+      sample->statistics_valid = source->statistics_valid;
       sample->cpu_frame_index = cpu_frame_index;
       sample->gpu_source_frame_index = result->source_frame_index;
       sample->gpu_source_submit_serial = result->submit_value;

@@ -252,6 +252,22 @@ vkr_internal bool8_t vkr_vk_collect_slot_timings(VkrVulkanRenderer *renderer,
       }
     }
   }
+  if (slot->statistics_requested && slot->pass_timing_count) {
+    uint64_t counts[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS]
+                   [VKR_VULKAN_PIPELINE_STATISTIC_COUNT];
+    if (vkGetQueryPoolResults(device, slot->statistics_pool, 0u,
+                              slot->pass_timing_count, sizeof(counts), counts,
+                              sizeof(counts[0]),
+                              VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+      return false_v;
+    for (uint32_t i = 0; i < slot->pass_timing_count; ++i) {
+      VkrRendererImplPassTiming *timing = &slot->pass_timings[i];
+      timing->vertex_invocations = counts[i][0];
+      timing->fragment_invocations = counts[i][1];
+      timing->compute_invocations = counts[i][2];
+      timing->statistics_valid = true_v;
+    }
+  }
   slot->timing_collected = true_v;
   return true_v;
 }
@@ -1073,6 +1089,9 @@ vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
   if (slot->submission_timing_requested)
     vkResetQueryPool(vkr_vk_renderer_device(renderer), slot->timestamp_pool,
                      VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY, 2u);
+  if (slot->statistics_requested)
+    vkResetQueryPool(vkr_vk_renderer_device(renderer), slot->statistics_pool,
+                     0u, VKR_RENDERER_IMPL_MAX_PASS_TIMINGS);
   if (vkBeginCommandBuffer(command, &begin_info) != VK_SUCCESS) {
     log_error("Vulkan failed to begin the frame command buffer");
     return false_v;
@@ -1169,8 +1188,12 @@ vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
   slot->timing_requested = renderer->prepared_frame.timing_enabled;
   slot->submission_timing_requested =
       renderer->prepared_frame.submission_timing_enabled;
-  slot->timing_collected =
-      !slot->timing_requested && !slot->submission_timing_requested;
+  slot->statistics_requested =
+      renderer->prepared_frame.pipeline_statistics_enabled &&
+      slot->statistics_pool != VK_NULL_HANDLE;
+  slot->timing_collected = !slot->timing_requested &&
+                           !slot->submission_timing_requested &&
+                           !slot->statistics_requested;
   slot->gpu_submission_valid = false_v;
   slot->gpu_host_valid = false_v;
   slot->sdsm_requested = renderer->prepared_frame.sdsm_enabled;

@@ -143,6 +143,17 @@ submission GPU timing as `VKR_RG_GPU_TIMING`, `VKR_GPU_SUBMISSION_TIMING`
 and the F7 key do; a recording still controls them while it runs. The UI
 frame borrows the registry and the pass table for the build.
 
+**Pipeline statistics** ([vkr_vulkan_graph.c](../../renderer/src/vulkan/vkr_vulkan_graph.c)).
+`perf.set` `pipeline_stats` sets `VkrMetricsConfig.pass_pipeline_statistics`,
+off by default; then each Vulkan frame slot brackets every pass with a
+`VK_QUERY_TYPE_PIPELINE_STATISTICS` query at its timestamps, outside the
+pass's rendering scope, counting vertex, fragment and compute shader
+invocations. The device enables `pipelineStatisticsQuery` when present and
+the startup report names it. The counts ride the pass rows, and
+`perf.snapshot` `passes` answers them as `invocations`. They are not in
+recordings, and the harness never turns them on, so no run fingerprint
+changes. Metal reports none.
+
 **System lane** ([editor_recording_timeline.c](../../editor/src/editor_recording_timeline.c)):
 a recording playback loads the thermal level, memory pressure, low-power
 mode, footprint, GPU errors and log errors of each frame
@@ -237,3 +248,13 @@ nominal; hovering names a column's states and footprint, and a click seeks.
   ranges, but neither run is authoritative. A standalone probe of the monitor
   found the adapter by LUID and measured one PDH collection at about 1 ms
   over 318 instances.
+- Pipeline statistics, Windows, RX 6700 XT (`pipelineStatisticsQuery`
+  present): a headless Bistro editor answered `perf.set` `pipeline_stats`,
+  then `perf.snapshot` `passes` gave `invocations` for all 200 executed
+  passes, alone and with pass timing: 133 raster passes with vertex and
+  fragment counts (`VBuffer.Opaque` 2,534,142 vertex and 925,142 fragment,
+  `Shadow.Cascade.0` 2,180,410 vertex), 55 compute passes with compute
+  counts only, 10 passes with none (`Cull.Upload`, `IBL.Bake`). Turning it
+  off removed the counts. The same sequence in a Debug editor with the
+  Khronos layer and synchronization validation counted 0 validation errors
+  and 0 warnings.

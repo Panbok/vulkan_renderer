@@ -2957,11 +2957,21 @@ typedef enum VkrVulkanSunRayStage {
   (VKR_RENDERER_IMPL_MAX_PASS_TIMINGS * 2u)
 #define VKR_VULKAN_SUBMISSION_TIMESTAMP_QUERY VKR_VULKAN_PASS_TIMESTAMP_QUERIES
 #define VKR_VULKAN_TIMESTAMP_QUERIES (VKR_VULKAN_PASS_TIMESTAMP_QUERIES + 2u)
+/* Vertex, fragment and compute shader invocations, in the bit order the
+   query writes them. */
+#define VKR_VULKAN_PIPELINE_STATISTICS                                         \
+  (VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT |                 \
+   VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |               \
+   VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT)
+#define VKR_VULKAN_PIPELINE_STATISTIC_COUNT 3u
 
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
   VkCommandBuffer command_buffer;
   VkQueryPool timestamp_pool;
+  /* One pipeline-statistics query per pass; VK_NULL_HANDLE when the device
+     lacks pipelineStatisticsQuery. */
+  VkQueryPool statistics_pool;
   VkrVulkanBuffer readback;
   VkrVulkanBuffer capture_readback;
   VkrVulkanBuffer frame_upload;
@@ -2984,6 +2994,8 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t gpu_host_valid;
   bool8_t timing_requested;
   bool8_t submission_timing_requested;
+  /** Each pass's shader invocations were requested and can be counted. */
+  bool8_t statistics_requested;
   /** Every timestamp this slot requested has been read back. */
   bool8_t timing_collected;
   bool8_t gpu_submission_valid;

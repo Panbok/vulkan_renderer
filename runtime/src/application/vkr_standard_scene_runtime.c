@@ -2120,6 +2120,8 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = pass_gpu_timing,
       .capture_submission_timing = submission_gpu_timing,
+      .capture_pass_pipeline_statistics =
+          application->metrics->config.pass_pipeline_statistics,
       .transmission_depth_diagnostic_enabled =
           !draw->scene_stopped &&
           application->transmission_depth_diagnostic_enabled,
@@ -2132,6 +2134,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
   draw->capture_request = capture;
   draw->capture_request_id = capture ? capture->request_id : 0u;
   draw->debug_ptr = (gpu_timing || capture ||
+                     application->metrics->config.pass_pipeline_statistics ||
                      application->transmission_depth_diagnostic_enabled ||
                      application->shadow_debug_mode != 0u || gpu_spike != 0u ||
                      application->pass_output != 0u)

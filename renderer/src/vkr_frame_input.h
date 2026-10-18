@@ -893,6 +893,8 @@ typedef struct VkrGpuDebugPayload {
   bool8_t enable_timing;
   bool8_t capture_pass_timestamps;
   bool8_t capture_submission_timing;
+  /** Counts each pass's shader invocations where the backend can. */
+  bool8_t capture_pass_pipeline_statistics;
   /** Enables the graph-declared fifth transmission peel for focused evidence.
    */
   bool8_t transmission_depth_diagnostic_enabled;

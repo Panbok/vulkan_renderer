@@ -1715,10 +1715,19 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
         .queryType = VK_QUERY_TYPE_TIMESTAMP,
         .queryCount = VKR_VULKAN_TIMESTAMP_QUERIES,
     };
+    const VkQueryPoolCreateInfo statistics_info = {
+        .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+        .queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS,
+        .queryCount = VKR_RENDERER_IMPL_MAX_PASS_TIMINGS,
+        .pipelineStatistics = VKR_VULKAN_PIPELINE_STATISTICS,
+    };
     if (vkAllocateCommandBuffers(device, &command_info,
                                  &slot->command_buffer) != VK_SUCCESS ||
         vkCreateQueryPool(device, &query_info, NULL, &slot->timestamp_pool) !=
             VK_SUCCESS ||
+        (vkr_vulkan_device_pipeline_statistics(renderer->device) &&
+         vkCreateQueryPool(device, &statistics_info, NULL,
+                           &slot->statistics_pool) != VK_SUCCESS) ||
         /* The picking resolve also stores its depth here directly. */
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
                               VKR_GPU_ALLOCATION_OWNER_READBACK, readback_size,
@@ -1764,6 +1773,8 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
     vkr_vk_destroy_buffer(renderer, &slot->readback);
     if (slot->timestamp_pool)
       vkDestroyQueryPool(device, slot->timestamp_pool, NULL);
+    if (slot->statistics_pool)
+      vkDestroyQueryPool(device, slot->statistics_pool, NULL);
     if (slot->command_pool) {
       vkDestroyCommandPool(device, slot->command_pool, NULL);
     }

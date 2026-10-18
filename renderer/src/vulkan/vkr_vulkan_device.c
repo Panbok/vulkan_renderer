@@ -19,6 +19,8 @@ typedef struct VkrVulkanFeatureSet {
   bool8_t geometry_shader;
   bool8_t independent_blend;
   bool8_t sampler_anisotropy;
+  /* Optional: per-pass shader invocation counts for agents (perf.set). */
+  bool8_t pipeline_statistics_query;
   bool8_t storage_image_extended_formats;
   bool8_t shader_draw_parameters;
   bool8_t buffer_device_address;
@@ -620,6 +622,7 @@ vkr_vk_query_candidate_features(VkrVulkanCandidate *candidate) {
       .geometry_shader = features2.features.geometryShader,
       .independent_blend = features2.features.independentBlend,
       .sampler_anisotropy = features2.features.samplerAnisotropy,
+      .pipeline_statistics_query = features2.features.pipelineStatisticsQuery,
       .storage_image_extended_formats =
           features2.features.shaderStorageImageExtendedFormats,
       .shader_draw_parameters = features11.shaderDrawParameters,
@@ -851,6 +854,12 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                     candidate->features.sampler_anisotropy
                         ? "enabled when selected"
                         : "unavailable");
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE,
+                    "pipelineStatisticsQuery", false_v,
+                    candidate->features.pipeline_statistics_query,
+                    candidate->features.pipeline_statistics_query
+                        ? "per-pass shader invocations on request"
+                        : "unavailable: no per-pass invocation counts");
   vkr_vk_add_feature(report, "shaderDrawParameters",
                      candidate->features.shader_draw_parameters);
   vkr_vk_add_feature(report, "bufferDeviceAddress",
@@ -1544,7 +1553,9 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                    .shaderStorageImageExtendedFormats =
                        device->config.fsr31_enabled &&
                        candidate->features.storage_image_extended_formats,
-                   .samplerAnisotropy = candidate->features.sampler_anisotropy},
+                   .samplerAnisotropy = candidate->features.sampler_anisotropy,
+                   .pipelineStatisticsQuery =
+                       candidate->features.pipeline_statistics_query},
   };
   const char *extensions[12] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
@@ -1777,6 +1788,11 @@ uint32_t vkr_vulkan_device_queue_family(const VkrVulkanDevice *device) {
 const VkPhysicalDeviceProperties2 *
 vkr_vulkan_device_properties(const VkrVulkanDevice *device) {
   return device && device->selected ? &device->selected->properties : NULL;
+}
+
+bool8_t vkr_vulkan_device_pipeline_statistics(const VkrVulkanDevice *device) {
+  return device && device->selected &&
+         device->selected->features.pipeline_statistics_query;
 }
 
 float32_t vkr_vulkan_device_max_anisotropy(const VkrVulkanDevice *device) {

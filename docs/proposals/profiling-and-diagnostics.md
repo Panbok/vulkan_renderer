@@ -41,15 +41,15 @@ Remaining gaps:
 
 ## P1: platform signals (remaining)
 
-The Windows sources, the OS's GPU memory view, other processes' GPU use and
-`gpu.peer_load` are in [ADR-125](../adr/125-platform-telemetry-metrics.md);
+The Windows sources, the OS's GPU memory view, other processes' GPU use,
+`gpu.peer_load` and per-pass pipeline statistics are in
+[ADR-125](../adr/125-platform-telemetry-metrics.md);
 Vulkan object names in [ADR-124](../adr/124-renderer-health-and-diagnostic-reads.md).
 Remaining:
 
 - Vulkan present latency (`VK_KHR_present_id`, `present_wait`) behind the
   present timing's latency and missed counts, on a driver that exposes them
   (the Windows RX 6700 XT driver does not).
-- Optional pipeline statistics per pass, gated like pass timing.
 - Acceptance: the Tier 0 overhead gate rerun with the added Tier 0 fields;
   present latency on a visible window.
 

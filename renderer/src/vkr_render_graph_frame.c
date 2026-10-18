@@ -159,6 +159,19 @@ vkr_render_graph_prepare_pass_output(const VkrPreparedFrame *packet,
   }
 }
 
+/* The GPU measurements the frame's debug payload asks the backend for: pass
+   timestamps, whole-frame GPU time and per-pass pipeline statistics. */
+vkr_internal void
+vkr_render_graph_prepare_gpu_measurement(const VkrGpuDebugPayload *debug,
+                                         VkrRenderGraphFrameInfo *frame) {
+  frame->timing_enabled =
+      debug && debug->enable_timing && debug->capture_pass_timestamps;
+  frame->submission_timing_enabled =
+      debug && debug->enable_timing && debug->capture_submission_timing;
+  frame->pipeline_statistics_enabled =
+      debug && debug->capture_pass_pipeline_statistics;
+}
+
 void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrBloomConfig *bloom_config,
                                     const VkrGtaoConfig *gtao_config,
@@ -331,12 +344,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->scene_rendering && packet->input.debug &&
       vkr_renderer_capture_request_contains(packet->input.debug->capture,
                                             "resolve_barycentric_lod");
-  frame->timing_enabled = packet->input.debug &&
-                          packet->input.debug->enable_timing &&
-                          packet->input.debug->capture_pass_timestamps;
-  frame->submission_timing_enabled =
-      packet->input.debug && packet->input.debug->enable_timing &&
-      packet->input.debug->capture_submission_timing;
+  vkr_render_graph_prepare_gpu_measurement(packet->input.debug, frame);
   /* Sample-distribution shadow fitting reduces the visibility buffer, which
      the tiled pipeline does not draw. */
   frame->sdsm_enabled = !packet->tiled_pipeline && packet->input.shadow &&

@@ -219,6 +219,10 @@ typedef struct VkrMetricsConfig {
   bool8_t pass_gpu_timings;
   bool8_t submission_gpu_timings;
   bool8_t event_subjects;
+  /* Shader invocations per render graph pass (Vulkan pipeline statistics).
+     Off by default and set only by an agent's perf.set; the harness never
+     enables it, so it is in no run's fingerprint. */
+  bool8_t pass_pipeline_statistics;
 } VkrMetricsConfig;
 
 typedef struct VkrMetrics {

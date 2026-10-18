@@ -208,9 +208,15 @@ typedef struct VkrRendererImplPassTiming {
   /** GPU start after the submission's first timed pass began, in ms; a
    * backend that cannot place passes leaves gpu_start_valid false. */
   float64_t gpu_start_ms;
+  /** Shader invocations the pass ran (Vulkan pipeline statistics); valid
+   * with statistics_valid. A backend without the query leaves it false. */
+  uint64_t vertex_invocations;
+  uint64_t fragment_invocations;
+  uint64_t compute_invocations;
   uint32_t pass_index;
   bool8_t valid;
   bool8_t gpu_start_valid;
+  bool8_t statistics_valid;
   VkrRendererImplGpuTimingReason unavailable_reason;
 } VkrRendererImplPassTiming;
 

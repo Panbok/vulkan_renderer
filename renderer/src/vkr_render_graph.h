@@ -692,6 +692,8 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t timing_enabled;
   /** True when this frame requests its whole-frame GPU time. */
   bool8_t submission_timing_enabled;
+  /** True when this frame requests each pass's shader invocation counts. */
+  bool8_t pipeline_statistics_enabled;
   /**
    * Whether this frame's packet requests a pick. Gates the picking resources
    * and passes so a non-picking frame pays nothing for them.

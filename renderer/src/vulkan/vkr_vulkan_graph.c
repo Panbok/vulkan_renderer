@@ -2542,6 +2542,10 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     if (slot->timing_requested)
       vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                            slot->timestamp_pool, i * 2u);
+    /* The query brackets the pass outside its rendering scope, as the
+       timestamps do, so it never spans a vkCmdBeginRendering boundary. */
+    if (slot->statistics_requested)
+      vkCmdBeginQuery(command, slot->statistics_pool, i, 0u);
     if (prepared->dependencies.imageMemoryBarrierCount ||
         prepared->dependencies.bufferMemoryBarrierCount)
       vkCmdPipelineBarrier2(command, &prepared->dependencies);
@@ -2643,6 +2647,8 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);
       break;
     }
+    if (slot->statistics_requested)
+      vkCmdEndQuery(command, slot->statistics_pool, i);
     if (slot->timing_requested)
       vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                            slot->timestamp_pool, i * 2u + 1u);

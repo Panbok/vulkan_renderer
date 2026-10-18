@@ -15105,6 +15105,9 @@ static VkrEditorOpStatus ops_run_perf_snapshot(OpsContext *ctx) {
           vkr_bakery_json_bool(arena, metrics->config.pass_gpu_timings));
   ops_set(ctx, result, "submission_timing",
           vkr_bakery_json_bool(arena, metrics->config.submission_gpu_timings));
+  ops_set(
+      ctx, result, "pipeline_stats",
+      vkr_bakery_json_bool(arena, metrics->config.pass_pipeline_statistics));
   ops_set(ctx, result, "matched", vkr_bakery_json_int(arena, matched));
   ops_set(ctx, result, "truncated",
           vkr_bakery_json_bool(arena, matched > written));
@@ -15133,6 +15136,16 @@ static VkrEditorOpStatus ops_run_perf_snapshot(OpsContext *ctx) {
                 vkr_bakery_json_cstr(arena,
                                      vkr_renderer_impl_gpu_timing_reason_name(
                                          row->gpu_unavailable_reason)));
+      }
+      if (row->statistics_valid) {
+        VkrBakeryJson *invocations = vkr_bakery_json_object(arena);
+        ops_set(ctx, invocations, "vertex",
+                vkr_bakery_json_int(arena, (int64_t)row->vertex_invocations));
+        ops_set(ctx, invocations, "fragment",
+                vkr_bakery_json_int(arena, (int64_t)row->fragment_invocations));
+        ops_set(ctx, invocations, "compute",
+                vkr_bakery_json_int(arena, (int64_t)row->compute_invocations));
+        ops_set(ctx, item, "invocations", invocations);
       }
       vkr_bakery_json_append(passes, item);
     }
@@ -15493,12 +15506,17 @@ static VkrEditorOpStatus ops_run_perf_set(OpsContext *ctx) {
       ops_arg_bool(args, "pass_timing", metrics->config.pass_gpu_timings);
   metrics->config.submission_gpu_timings = ops_arg_bool(
       args, "submission_timing", metrics->config.submission_gpu_timings);
+  metrics->config.pass_pipeline_statistics = ops_arg_bool(
+      args, "pipeline_stats", metrics->config.pass_pipeline_statistics);
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
   ops_set(ctx, result, "pass_timing",
           vkr_bakery_json_bool(arena, metrics->config.pass_gpu_timings));
   ops_set(ctx, result, "submission_timing",
           vkr_bakery_json_bool(arena, metrics->config.submission_gpu_timings));
+  ops_set(
+      ctx, result, "pipeline_stats",
+      vkr_bakery_json_bool(arena, metrics->config.pass_pipeline_statistics));
   ctx->call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -18874,9 +18892,12 @@ static const OpsDef s_ops[] = {
      "graph pass (per-pass rows in perf.snapshot and recordings; on the tiled "
      "pipeline it costs about 0.5 ms a Bistro frame), 'submission_timing' "
      "times whole GPU frames. A recording controls both while it runs and "
-     "restores them at stop. Answers the new state.",
+     "restores them at stop. 'pipeline_stats' counts each pass's vertex, "
+     "fragment and compute shader invocations (Vulkan; perf.snapshot passes "
+     "answer them as 'invocations'; not recorded). Answers the new state.",
      "{\"type\":\"object\",\"properties\":{\"pass_timing\":{\"type\":"
-     "\"boolean\"},\"submission_timing\":{\"type\":\"boolean\"}}}",
+     "\"boolean\"},\"submission_timing\":{\"type\":\"boolean\"},"
+     "\"pipeline_stats\":{\"type\":\"boolean\"}}}",
      ops_run_perf_set, NULL},
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "

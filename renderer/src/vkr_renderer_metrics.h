@@ -47,6 +47,10 @@ typedef struct VkrRendererMetricsPassSample {
   /* GPU start after the frame's first timed pass began, in ms; valid with
      gpu_start_valid. */
   float64_t gpu_start_ms;
+  /* Shader invocations the pass ran; valid with statistics_valid. */
+  uint64_t vertex_invocations;
+  uint64_t fragment_invocations;
+  uint64_t compute_invocations;
   uint64_t cpu_frame_index;
   uint64_t gpu_source_frame_index;
   uint64_t gpu_source_submit_serial;
@@ -54,6 +58,7 @@ typedef struct VkrRendererMetricsPassSample {
   bool8_t disabled;
   bool8_t gpu_valid;
   bool8_t gpu_start_valid;
+  bool8_t statistics_valid;
   VkrRendererImplGpuTimingReason gpu_unavailable_reason;
 } VkrRendererMetricsPassSample;
 

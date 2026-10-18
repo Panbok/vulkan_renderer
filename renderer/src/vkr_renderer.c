@@ -494,6 +494,7 @@ vkr_renderer_impl_lower_metal_result(const VkrMetalPacketResult *source,
     destination_timing->pass_index = source_timing->pass_index;
     destination_timing->valid = source_timing->valid;
     destination_timing->gpu_start_valid = source_timing->valid;
+    destination_timing->statistics_valid = false_v;
     destination_timing->unavailable_reason = source_timing->unavailable_reason;
   }
 }

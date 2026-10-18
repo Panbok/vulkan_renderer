@@ -123,6 +123,8 @@ bool8_t vkr_vulkan_device_extended_linear_present_enabled(
 uint32_t vkr_vulkan_device_queue_family(const VkrVulkanDevice *device);
 const VkPhysicalDeviceProperties2 *
 vkr_vulkan_device_properties(const VkrVulkanDevice *device);
+/** True when the device enabled pipelineStatisticsQuery. */
+bool8_t vkr_vulkan_device_pipeline_statistics(const VkrVulkanDevice *device);
 float32_t vkr_vulkan_device_max_anisotropy(const VkrVulkanDevice *device);
 const VkPhysicalDeviceMemoryProperties *
 vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device);
