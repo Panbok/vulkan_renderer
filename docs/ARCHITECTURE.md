@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-19
 authority: architecture
 ---
 
@@ -1424,8 +1424,10 @@ faults ([ADR-125](adr/125-platform-telemetry-metrics.md)), and on Windows the
 OS's video memory view and other processes' GPU use; the harness takes
 authority from throttled, critically pressed, low-power or GPU-shared runs.
 A crash or GPU completion timeout writes a crash report with the frame,
-scene, agent operation, log tail and backtrace beside the session log, and
-agents read the compiled render graph through `debug.graph`
+scene, agent operation, render pass, log tail and backtrace beside the
+session log. Agents read the compiled render graph through `debug.graph`
+and people through the Render graph window; agents mark positions, bounds
+and frusta over the Scene with `debug.draw`
 ([ADR-127](adr/127-crash-reports-gpu-capture-and-graph-description.md)).
 The harness owns case identity, artifacts, comparison and performance authority.
 After resource/bootstrap readiness it starts authored warmup at the common zero

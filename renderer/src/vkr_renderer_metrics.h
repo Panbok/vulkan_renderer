@@ -482,6 +482,11 @@ void vkr_renderer_metrics_collect(
     const VkrRendererMetricsCollectContext *context);
 const VkrRendererMetricsPassTable *
 vkr_renderer_metrics_get_pass_table(const VkrRendererMetrics *renderer_metrics);
+/** The row of the pass named `name`, matched as the table stores names (cut
+ * to VKR_METRIC_NAME_MAX); NULL for no table or no such pass. */
+const VkrRendererMetricsPassSample *
+vkr_renderer_metrics_pass_find(const VkrRendererMetricsPassTable *table,
+                               String8 name);
 const VkrRendererMetricsSubmission *
 vkr_renderer_metrics_get_submission(const VkrRendererMetrics *renderer_metrics);
 bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,

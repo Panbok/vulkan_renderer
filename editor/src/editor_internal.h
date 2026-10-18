@@ -121,6 +121,8 @@ typedef enum EditorCommand {
   CMD_REQUEST_NEXT_STEP,
   /* The Recordings window. */
   CMD_RECORDINGS,
+  /* The Render graph window. */
+  CMD_RENDER_GRAPH,
   CMD_COUNT
 } EditorCommand;
 

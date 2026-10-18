@@ -1,4 +1,5 @@
 #include "math/vkr_frustum.h"
+#include "platform/vkr_crash.h"
 #include "vkr_render_graph_frame.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
@@ -2417,6 +2418,9 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
     const VkrRgPass *pass = &renderer->graph->passes.data[pass_index];
     VkrVulkanPreparedGraphPass *prepared =
         &renderer->prepared_graph_passes[order];
+    vkr_crash_set_text_bytes(VKR_CRASH_TEXT_PASS,
+                             (const char *)pass->desc.name.str,
+                             pass->desc.name.length);
     if (!vkr_vk_prepare_graph_pass_barriers(renderer, pass,
                                             &prepared->dependencies) ||
         !vkr_vk_prepare_graph_pass(renderer, prepared, pass)) {
@@ -2533,6 +2537,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
         &renderer->prepared_graph_passes[i];
     VkrRendererImplPassTiming *timing = &slot->pass_timings[i];
     const float64_t cpu_begin = vkr_platform_get_absolute_time();
+    vkr_crash_set_text(VKR_CRASH_TEXT_PASS, timing->name);
     if (begin_label) {
       const VkDebugUtilsLabelEXT label = {
           .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
@@ -2658,5 +2663,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
   }
   if (renderer->prepared_terminal_barriers.imageMemoryBarrierCount)
     vkCmdPipelineBarrier2(command, &renderer->prepared_terminal_barriers);
+  /* A failed pass keeps its name for a later report. */
+  vkr_crash_set_text(VKR_CRASH_TEXT_PASS, NULL);
   return true_v;
 }

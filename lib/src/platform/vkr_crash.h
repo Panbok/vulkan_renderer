@@ -59,6 +59,11 @@ void vkr_crash_set_frame(uint64_t frame);
 /** Copies `text` (NULL clears) into a breadcrumb slot, truncated to fit. */
 void vkr_crash_set_text(VkrCrashText slot, const char *text);
 
+/** Copies `length` bytes of unterminated `text`, such as a String8, into a
+ * breadcrumb slot, truncated to fit. */
+void vkr_crash_set_text_bytes(VkrCrashText slot, const char *text,
+                              uint64_t length);
+
 /**
  * Writes a report for a fatal exit that is not a signal, such as a GPU
  * completion timeout, with `reason` as its reason line. Works without

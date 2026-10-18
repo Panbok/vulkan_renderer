@@ -9,6 +9,7 @@
 #include "camera_rig_test.h"
 #include "character_test.h"
 #include "collision_asset_test.h"
+#include "debug_draw_test.h"
 #include "depot_test.h"
 #include "editor_project_store_test.h"
 #include "gameplay_input_test.h"
@@ -83,6 +84,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_zone_tests),
     VKR_TEST_SUITE(run_input_tests),
     VKR_TEST_SUITE(run_debug_overlay_tests),
+    VKR_TEST_SUITE(run_debug_draw_tests),
     VKR_TEST_SUITE(run_json_tests),
     VKR_TEST_SUITE(run_json_writer_tests),
     VKR_TEST_SUITE(run_type_desc_tests),

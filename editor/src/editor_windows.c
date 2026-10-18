@@ -1,4 +1,5 @@
 #include "editor_brush_grid.h"
+#include "editor_debug_draw.h"
 #include "editor_depot.h"
 #include "editor_environment.h"
 #include "editor_internal.h"
@@ -39,6 +40,8 @@ static Vec2 editor_window_min_size(VkrEditorWindowKind kind) {
     return (Vec2){720.0f, 480.0f};
   case VKR_EDITOR_WINDOW_TIMELINE:
     return (Vec2){640.0f, 320.0f};
+  case VKR_EDITOR_WINDOW_RENDER_GRAPH:
+    return (Vec2){640.0f, 400.0f};
   default:
     return (Vec2){EDITOR_WINDOW_MIN_WIDTH_PT, EDITOR_WINDOW_MIN_HEIGHT_PT};
   }
@@ -241,6 +244,7 @@ static const EditorCommandInfo s_commands[CMD_COUNT] = {
                         false_v},
     [CMD_REQUEST_NEXT_STEP] = {"Next request step", VKR_UI_ICON_CHECK, false_v},
     [CMD_RECORDINGS] = {"Recordings", VKR_UI_ICON_VIDEO, false_v},
+    [CMD_RENDER_GRAPH] = {"Render graph", VKR_UI_ICON_GRAPH, false_v},
 };
 
 /* The keymap, after Unity's: a key and the exact modifiers held with it.
@@ -752,6 +756,8 @@ static int32_t editor_command_checked(EditorCommand command,
     return frame->recording && frame->recording->recording;
   case CMD_RECORDINGS:
     return editor->windows[VKR_EDITOR_WINDOW_RECORDINGS].visible;
+  case CMD_RENDER_GRAPH:
+    return editor->windows[VKR_EDITOR_WINDOW_RENDER_GRAPH].visible;
   default:
     return -1;
   }
@@ -891,6 +897,9 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     break;
   case CMD_RECORDINGS:
     editor_window_toggle(editor, VKR_EDITOR_WINDOW_RECORDINGS);
+    break;
+  case CMD_RENDER_GRAPH:
+    editor_window_toggle(editor, VKR_EDITOR_WINDOW_RENDER_GRAPH);
     break;
   case CMD_REQUEST_NEXT_STEP:
     (void)vkr_editor_recording_request_next_step(editor);
@@ -1136,6 +1145,7 @@ static const EditorMenuEntry s_build_menu[] = {
 static const EditorMenuEntry s_develop_menu[] = {
     {CMD_BAKERY},
     {CMD_DRAWS, true_v},
+    {CMD_RENDER_GRAPH},
     {CMD_MEMORY},
 };
 static const EditorMenuEntry s_help_menu[] = {
@@ -1928,6 +1938,8 @@ static void editor_scene_cooking_build(VkrEditorUi *editor,
 
 void vkr_editor_scene_overlays_build(VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame) {
+  /* Debug shapes take no input and lie under the Scene's chips. */
+  vkr_editor_debug_draw_build(editor, frame);
   (void)vkr_ui_input_layer_set(frame->ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER);
   editor_scene_stats_build(frame);
   editor_scene_cooking_build(editor, frame);
@@ -2333,6 +2345,13 @@ static void editor_window_build_body(VkrEditorUi *editor, VkrUiSystem *ui,
       vkr_editor_recording_flame_build(editor, frame, bounds);
       (void)vkr_ui_panel_end(ui);
     }
+  } else if (kind == VKR_EDITOR_WINDOW_RENDER_GRAPH) {
+    VkrUiRect bounds = {0};
+    if (editor_window_body_begin(ui, window, string8_lit("render_graph.body"),
+                                 &bounds)) {
+      vkr_editor_render_graph_build(editor, frame, bounds);
+      (void)vkr_ui_panel_end(ui);
+    }
   } else if (kind == VKR_EDITOR_WINDOW_RECORDINGS) {
     VkrUiRect bounds = {0};
     if (editor_window_body_begin(ui, window, string8_lit("recordings.body"),
@@ -2471,6 +2490,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
   case VKR_EDITOR_WINDOW_TIMELINE:
     title_text = string8_lit("Thread timeline");
     title_icon = VKR_UI_ICON_LAYERS;
+    break;
+  case VKR_EDITOR_WINDOW_RENDER_GRAPH:
+    title_text = string8_lit("Render graph");
+    title_icon = VKR_UI_ICON_GRAPH;
     break;
   case VKR_EDITOR_WINDOW_CREATE:
     title_text = string8_lit("Create or import");

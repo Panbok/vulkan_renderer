@@ -16,6 +16,7 @@
 #include "containers/vkr_sort.h"
 #include "core/logger.h"
 #include "core/vkr_content_codec.h"
+#include "core/vkr_debug_draw.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
@@ -15172,24 +15173,6 @@ typedef struct OpsGraphVisit {
   uint32_t stale_resources;
 } OpsGraphVisit;
 
-/* The newest collected timing row of a pass, matched by its name as the
-   pass table stores it (truncated to VKR_METRIC_NAME_MAX). */
-static const VkrRendererMetricsPassSample *
-ops_graph_pass_timing(const VkrRendererMetricsPassTable *table, String8 name) {
-  if (!table) {
-    return NULL;
-  }
-  const uint64_t length = Min(name.length, (uint64_t)VKR_METRIC_NAME_MAX);
-  for (uint32_t i = 0u; i < table->count; ++i) {
-    const VkrRendererMetricsPassSample *row = &table->samples[i];
-    if (row->name_length == length &&
-        MemCompare(row->name, name.str, length) == 0) {
-      return row;
-    }
-  }
-  return NULL;
-}
-
 static VkrBakeryJson *ops_graph_order(OpsContext *ctx, uint32_t order) {
   return order == UINT32_MAX ? vkr_bakery_json_null(ops_arena(ctx))
                              : vkr_bakery_json_int(ops_arena(ctx), order);
@@ -15232,8 +15215,9 @@ static void ops_graph_visit_pass(void *user, const VkrRgDescribedPass *pass) {
   /* Timings of the newest collected frame, which may be a frame older or
      newer than this build; a culled pass has none. */
   const VkrRendererMetricsPassSample *row =
-      pass->culled ? NULL
-                   : ops_graph_pass_timing(ctx->frame->pass_table, pass->name);
+      pass->culled
+          ? NULL
+          : vkr_renderer_metrics_pass_find(ctx->frame->pass_table, pass->name);
   if (row && !row->culled && !row->disabled) {
     ops_set(ctx, item, "cpu_ms", ops_number(ctx, row->cpu_ms));
     ops_set(ctx, item, "gpu_ms",
@@ -15312,6 +15296,184 @@ ops_gpu_capture_answer(OpsContext *ctx,
           vkr_bakery_json_int(arena, (int64_t)status->frames));
   ops_set(ctx, result, "message", vkr_bakery_json_cstr(arena, status->message));
   ctx->call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* One debug.draw list item's colour: its own 'color', else the call's. */
+static bool8_t ops_debug_draw_style(OpsContext *ctx, const VkrBakeryJson *item,
+                                    VkrDebugDrawStyle base,
+                                    VkrDebugDrawStyle *out) {
+  char name[16] = {0};
+  if (!ops_arg_string(ctx, item, "color", name, sizeof(name))) {
+    return false_v;
+  }
+  *out = base;
+  if (name[0] && !vkr_debug_draw_color_from_name(name, &out->color)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'color' must be red, green, blue, yellow, cyan, "
+                    "magenta, white or orange");
+  }
+  return true_v;
+}
+
+/* Reads the lists of a debug.draw call, and adds their shapes when
+   `commit`; the first pass checks every item, so a bad item adds
+   nothing. `stored` counts the segments and labels added. */
+static bool8_t ops_debug_draw_items(OpsContext *ctx, VkrDebugDraw *draw,
+                                    VkrDebugDrawStyle base, bool8_t commit,
+                                    uint32_t *stored) {
+  static const char *const lists[] = {"lines", "boxes", "spheres", "labels"};
+  const VkrBakeryJson *args = ctx->call->args;
+  for (uint32_t list = 0u; list < ArrayCount(lists); ++list) {
+    const VkrBakeryJson *items = vkr_bakery_json_get(args, lists[list]);
+    if (!items) {
+      continue;
+    }
+    if (items->type != VKR_BAKERY_JSON_ARRAY) {
+      return ops_fail(ctx, OPS_INVALID, "'%s' must be an array", lists[list]);
+    }
+    for (uint32_t i = 0u; i < items->count; ++i) {
+      const VkrBakeryJson *item = vkr_bakery_json_at(items, i);
+      if (item->type != VKR_BAKERY_JSON_OBJECT) {
+        return ops_fail(ctx, OPS_INVALID, "Each of '%s' must be an object",
+                        lists[list]);
+      }
+      VkrDebugDrawStyle style = base;
+      if (!ops_debug_draw_style(ctx, item, base, &style)) {
+        return false_v;
+      }
+      Vec3 a = vec3_zero();
+      Vec3 b = vec3_zero();
+      bool8_t has_a = false_v;
+      bool8_t has_b = false_v;
+      if (list == 0u) {
+        if (!ops_arg_vec3(ctx, item, "from", &a, &has_a) ||
+            !ops_arg_vec3(ctx, item, "to", &b, &has_b)) {
+          return false_v;
+        }
+        if (!has_a || !has_b) {
+          return ops_fail(ctx, OPS_INVALID, "A line needs 'from' and 'to'");
+        }
+        *stored += commit ? vkr_debug_draw_line(draw, a, b, style) : 0u;
+      } else if (list == 1u) {
+        if (!ops_arg_vec3(ctx, item, "min", &a, &has_a) ||
+            !ops_arg_vec3(ctx, item, "max", &b, &has_b)) {
+          return false_v;
+        }
+        if (!has_a || !has_b) {
+          return ops_fail(ctx, OPS_INVALID, "A box needs 'min' and 'max'");
+        }
+        const Vec3 lo = vec3_new(Min(a.x, b.x), Min(a.y, b.y), Min(a.z, b.z));
+        const Vec3 hi = vec3_new(Max(a.x, b.x), Max(a.y, b.y), Max(a.z, b.z));
+        *stored += commit ? vkr_debug_draw_box(draw, lo, hi, style) : 0u;
+      } else if (list == 2u) {
+        float64_t radius = 0.0;
+        if (!ops_arg_vec3(ctx, item, "center", &a, &has_a)) {
+          return false_v;
+        }
+        if (!has_a || !ops_arg_number(item, "radius", &radius) ||
+            !vkr_is_finite_f64(radius) || radius <= 0.0) {
+          return ops_fail(ctx, OPS_INVALID,
+                          "A sphere needs 'center' and a positive 'radius'");
+        }
+        *stored +=
+            commit ? vkr_debug_draw_sphere(draw, a, (float32_t)radius, style)
+                   : 0u;
+      } else {
+        char text[VKR_DEBUG_DRAW_LABEL_TEXT] = {0};
+        if (!ops_arg_vec3(ctx, item, "at", &a, &has_a) ||
+            !ops_arg_string(ctx, item, "text", text, sizeof(text))) {
+          return false_v;
+        }
+        if (!has_a || !text[0]) {
+          return ops_fail(ctx, OPS_INVALID, "A label needs 'at' and 'text'");
+        }
+        *stored += commit ? vkr_debug_draw_label(draw, a, text, style) : 0u;
+      }
+    }
+  }
+  return true_v;
+}
+
+static void ops_debug_draw_totals(OpsContext *ctx, VkrBakeryJson *result,
+                                  const VkrDebugDraw *draw) {
+  ops_set(ctx, result, "segments",
+          vkr_bakery_json_int(ops_arena(ctx), draw->segment_count));
+  ops_set(ctx, result, "labels",
+          vkr_bakery_json_int(ops_arena(ctx), draw->label_count));
+  ops_set(ctx, result, "dropped",
+          vkr_bakery_json_int(ops_arena(ctx), draw->dropped));
+}
+
+static VkrEditorOpStatus ops_run_debug_draw(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  const VkrSampleUiFrame *frame = ctx->frame;
+  VkrDebugDraw *draw = frame->debug_draw;
+  if (!draw) {
+    ops_fail(ctx, OPS_REJECTED, "This editor has no debug drawing");
+    return VKR_EDITOR_OP_DONE;
+  }
+  char group[64] = {0};
+  if (!ops_arg_string(ctx, call->args, "group", group, sizeof(group))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  float64_t seconds = 0.0;
+  if (ops_arg_number(call->args, "seconds", &seconds) &&
+      (!vkr_is_finite_f64(seconds) || seconds < 0.0)) {
+    ops_fail(ctx, OPS_INVALID, "'seconds' must be zero or more");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrDebugDrawStyle base = {
+      .expires =
+          seconds > 0.0 ? vkr_platform_get_absolute_time() + seconds : 0.0,
+      .group = vkr_debug_draw_group(group),
+      .color = VKR_DEBUG_DRAW_YELLOW,
+  };
+  if (!ops_debug_draw_style(ctx, call->args, base, &base)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  bool8_t frustum = ops_arg_bool(call->args, "frustum", false_v);
+  uint32_t stored = 0u;
+  if (!ops_debug_draw_items(ctx, draw, base, false_v, &stored)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const uint32_t dropped = draw->dropped;
+  (void)ops_debug_draw_items(ctx, draw, base, true_v, &stored);
+  /* The Scene camera's frustum, in level coordinates. */
+  if (frustum) {
+    const VkrScene *level = frame->scene ? frame->scene : frame->world;
+    const Vec3 origin = level ? level->origin_offset : vec3_zero();
+    const Mat4 inverse =
+        mat4_mul(mat4_translate(origin), mat4_inverse(frame->view_projection));
+    stored += vkr_debug_draw_frustum(draw, inverse, base);
+  }
+  VkrBakeryJson *result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, result, "stored", vkr_bakery_json_int(ops_arena(ctx), stored));
+  ops_set(ctx, result, "refused",
+          vkr_bakery_json_int(ops_arena(ctx), draw->dropped - dropped));
+  ops_debug_draw_totals(ctx, result, draw);
+  call->result = result;
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_debug_clear(OpsContext *ctx) {
+  VkrEditorOpCall *call = ctx->call;
+  VkrDebugDraw *draw = ctx->frame->debug_draw;
+  if (!draw) {
+    ops_fail(ctx, OPS_REJECTED, "This editor has no debug drawing");
+    return VKR_EDITOR_OP_DONE;
+  }
+  char group[64] = {0};
+  if (!ops_arg_string(ctx, call->args, "group", group, sizeof(group))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const bool8_t all = ops_arg_bool(call->args, "all", false_v);
+  const uint32_t removed =
+      vkr_debug_draw_clear(draw, vkr_debug_draw_group(group), all);
+  VkrBakeryJson *result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, result, "removed", vkr_bakery_json_int(ops_arena(ctx), removed));
+  ops_debug_draw_totals(ctx, result, draw);
+  call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -18857,6 +19019,32 @@ static const OpsDef s_ops[] = {
      "\"type\":\"boolean\"},\"limit\":{\"type\":\"integer\","
      "\"minimum\":1,\"maximum\":400}}}",
      ops_run_perf_snapshot, NULL, OPS_QUICK},
+    {"debug.draw",
+     "Draw world-space shapes over the Scene, on top without depth, in "
+     "level coordinates: 'lines' [{from, to}], 'boxes' [{min, max}], "
+     "'spheres' [{center, radius}] and 'labels' [{at, text}]; 'frustum' "
+     "true adds the Scene camera's current frustum. 'color' (red, green, "
+     "blue, yellow, cyan, magenta, white, orange; default yellow) applies "
+     "to every item without its own 'color'. Shapes last 'seconds' (0 or "
+     "absent: until debug.clear) and belong to 'group' (default group when "
+     "absent). Storage holds 8192 segments and 64 labels; a box takes 12 "
+     "segments, a sphere 72. Answers 'stored', 'refused' (no room), and the "
+     "totals 'segments', 'labels' and 'dropped' since the last clear of all. "
+     "A bad item adds nothing.",
+     "{\"type\":\"object\",\"properties\":{\"lines\":{\"type\":"
+     "\"array\"},\"boxes\":{\"type\":\"array\"},\"spheres\":{"
+     "\"type\":\"array\"},\"labels\":{\"type\":\"array\"},\"frustum\""
+     ":{\"type\":\"boolean\"},\"color\":{\"type\":\"string\"},"
+     "\"seconds\":{\"type\":\"number\",\"minimum\":0},\"group\":{"
+     "\"type\":\"string\"}}}",
+     ops_run_debug_draw, NULL},
+    {"debug.clear",
+     "Remove the debug.draw shapes of 'group' (the default group when "
+     "absent), or every shape when 'all' is true. Answers 'removed' and the "
+     "totals left.",
+     "{\"type\":\"object\",\"properties\":{\"group\":{\"type\":"
+     "\"string\"},\"all\":{\"type\":\"boolean\"}}}",
+     ops_run_debug_clear, NULL},
     {"debug.gpu_capture",
      "Capture the next 'frames' (1 to 8, default 1) Scene frames for a GPU "
      "debugger into the recording directory as 'name' (a time stamp when "

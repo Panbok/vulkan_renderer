@@ -4261,6 +4261,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
       ++order;
       continue;
     }
+    /* A batched compute run names its first pass. */
+    vkr_crash_set_text_bytes(VKR_CRASH_TEXT_PASS,
+                             (const char *)prepared->source->desc.name.str,
+                             prepared->source->desc.name.length);
     if (prepared->kind == VKR_RG_EXECUTOR_TILED_TEMPORAL) {
       vkr_metal_packet_encode_tiled_temporal(renderer, submission, prepared,
                                              out_result);
@@ -4281,6 +4285,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
     passed = vkr_metal_packet_encode_compute_run(renderer, submission, order,
                                                  end, out_result);
     order = end;
+  }
+  /* A failed pass keeps its name for a later report. */
+  if (passed) {
+    vkr_crash_set_text(VKR_CRASH_TEXT_PASS, NULL);
   }
   passed = passed && vkr_metal_packet_encode_frame_readback(
                          renderer, packet, submission, out_result);

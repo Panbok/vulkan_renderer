@@ -1356,6 +1356,23 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
   }
 }
 
+const VkrRendererMetricsPassSample *
+vkr_renderer_metrics_pass_find(const VkrRendererMetricsPassTable *table,
+                               String8 name) {
+  if (!table) {
+    return NULL;
+  }
+  const uint64_t length = Min(name.length, (uint64_t)VKR_METRIC_NAME_MAX);
+  for (uint32_t i = 0u; i < table->count; ++i) {
+    const VkrRendererMetricsPassSample *row = &table->samples[i];
+    if (row->name_length == length &&
+        MemCompare(row->name, name.str, length) == 0) {
+      return row;
+    }
+  }
+  return NULL;
+}
+
 bool8_t vkr_renderer_metrics_publish_pass_samples(
     VkrRendererMetrics *renderer_metrics,
     const VkrRendererMetricsPassSample *samples, uint32_t sample_count,

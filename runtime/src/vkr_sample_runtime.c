@@ -1,5 +1,6 @@
 #include "vkr_sample_runtime.h"
 #include "core/vkr_content_codec.h"
+#include "core/vkr_debug_draw.h"
 #include "core/vkr_json.h"
 #include "core/vkr_subsystem_plan.h"
 #include "core/vkr_zone.h"
@@ -456,6 +457,9 @@ typedef struct State {
   bool8_t draw_distance_diagnostic_off;
   /* Recordings: the client's latest outcome and the saved editor view. */
   VkrSampleRecordingState recording;
+  /* World-space lines, boxes and labels tools and agents draw over the
+     Scene (core/vkr_debug_draw.h), expired once per UI build. */
+  VkrDebugDraw debug_draw;
 } State;
 
 vkr_global State *state = NULL;
@@ -5853,6 +5857,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
           &application->assets.material_system);
   const VkrRendererPipelineStats pipelines =
       vkr_renderer_get_pipeline_stats(&application->renderer);
+  vkr_debug_draw_expire(&state->debug_draw, vkr_platform_get_absolute_time());
   /* The open scene, for a crash report (lib/src/platform/vkr_crash.h). */
   char crash_scene[VKR_CRASH_TEXT_CAPACITY];
   const uint64_t crash_scene_length =
@@ -5907,6 +5912,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .gpu_capture_request = vkr_standard_scene_runtime_gpu_capture_request,
       .gpu_capture_status = vkr_standard_scene_runtime_gpu_capture_status,
       .gpu_capture_context = &application->renderer,
+      .debug_draw = &state->debug_draw,
       .texture_demanded_missing_count = texture_streams.demanded_missing_count,
       .scene_output_scale = application->scene_output_scale,
       .scene_render_width = application->editor_viewport.enabled
@@ -7669,6 +7675,7 @@ vkr_standard_scene_runtime_project_ui(VkrStandardSceneRuntime *application,
           vkr_standard_scene_runtime_editor_scene_rendering_stopped(
               application),
       .recording = &state->recording.status,
+      .debug_draw = &state->debug_draw,
   };
   /* Containers still loaded after this frame's edits; projection must not
      touch one removed since the UI build. */

@@ -39,6 +39,19 @@ void vkr_crash_set_text(VkrCrashText slot, const char *text) {
   crash_copy_text(g_crash_text[slot], VKR_CRASH_TEXT_CAPACITY, text);
 }
 
+void vkr_crash_set_text_bytes(VkrCrashText slot, const char *text,
+                              uint64_t length) {
+  if ((uint32_t)slot >= VKR_CRASH_TEXT_COUNT) {
+    return;
+  }
+  char *out = g_crash_text[slot];
+  length = text ? Min(length, (uint64_t)VKR_CRASH_TEXT_CAPACITY - 1u) : 0u;
+  if (length > 0u) {
+    MemCopy(out, text, length);
+  }
+  out[length] = '\0';
+}
+
 void vkr_crash_configure(const char *report_directory,
                          const char *program_name) {
   crash_copy_text(g_crash_directory, sizeof(g_crash_directory),

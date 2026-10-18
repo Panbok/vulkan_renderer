@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-19
 authority: adr
 ---
 # ADR-084: Agent channel and level design toolkit
@@ -104,7 +104,7 @@ thread during the editor's build.
 | `undo`, `redo`, `cmd` | Cmd statements through the Cmd queue, returning the `[cmd]` lines they printed |
 | `log.read`, `health.status` | Log history records by level and text, and GPU errors, validation counts, device loss, log totals and system telemetry ([ADR-124](124-renderer-health-and-diagnostic-reads.md), [ADR-125](125-platform-telemetry-metrics.md)) |
 | `perf.snapshot`, `perf.set` | The newest published metrics frame by name prefix with optional pass rows, and pass and submission GPU timing switched at runtime ([ADR-125](125-platform-telemetry-metrics.md)) |
-| `debug.graph`, `debug.gpu_capture` | The compiled render graph's passes and resources with timings and an optional DOT file, and a native GPU capture request ([ADR-127](127-crash-reports-gpu-capture-and-graph-description.md)) |
+| `debug.graph`, `debug.gpu_capture`, `debug.draw`, `debug.clear` | The compiled render graph's passes and resources with timings and an optional DOT file, a native GPU capture request, and grouped world-space lines, boxes, spheres, frusta and labels over the Scene ([ADR-127](127-crash-reports-gpu-capture-and-graph-description.md)) |
 | `query.raycast` | First physics surface along a ray |
 | `view.capture` | A PNG of the Scene or the whole window, optionally from another view, framed on an entity or box, with grid labels |
 | `session.host`, `session.join`, `session.publish`, `session.access`, `session.leave`, `session.status` | The collaborative editing session ([ADR-106](106-collaborative-editing-session.md)) |

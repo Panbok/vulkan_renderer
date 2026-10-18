@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-18
+updated: 2026-10-19
 authority: proposal
 ---
 
@@ -72,8 +72,9 @@ Remaining:
 
 ## P3: deep tools (remaining)
 
-Crash reports, the `debug.gpu_capture` request and `debug.graph` are
-implemented in [ADR-127](../adr/127-crash-reports-gpu-capture-and-graph-description.md).
+Crash reports with the pass breadcrumb, the `debug.gpu_capture` request,
+`debug.graph`, the Render graph window and debug drawing are implemented in
+[ADR-127](../adr/127-crash-reports-gpu-capture-and-graph-description.md).
 Remaining:
 
 - The Windows crash handler (exception filter, minidump) and Vulkan
@@ -81,10 +82,8 @@ Remaining:
 - RenderDoc in-app capture behind `debug.gpu_capture` on Vulkan; a Capture GPU
   frame button once a backend can capture (Metal 4 compute encoders are not
   capturable programmatically on macOS 26).
-- A render graph window over `vkr_renderer_describe_graph`; the crash
-  report's pass breadcrumb.
-- Debug line and box drawing, freeze culling, overdraw, LOD and light-count
-  views; optional vendor counters and an `xctrace` table importer.
+- Freeze culling, overdraw, LOD and light-count views; optional vendor
+  counters and an `xctrace` table importer.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
 
 ## Open items

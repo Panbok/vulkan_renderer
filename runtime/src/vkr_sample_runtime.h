@@ -590,6 +590,9 @@ typedef struct VkrSampleUiFrame {
                                  uint32_t frames);
   VkrRendererGpuCaptureStatus (*gpu_capture_status)(void *context);
   void *gpu_capture_context;
+  /** Debug shapes over the Scene (core/vkr_debug_draw.h), owned by the
+   * runtime; the build may add, clear and read them. */
+  struct VkrDebugDraw *debug_draw;
   /** One typed request, consumed by the runtime after build returns. */
   VkrSampleTransportAction *transport_action;
   /** Recordings (docs/proposals/recordings.md): one request applied after

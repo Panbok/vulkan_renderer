@@ -25,7 +25,10 @@ vkr_internal void test_crash_write_report(void) {
   memset(long_pass, 'p', sizeof(long_pass) - 1u);
   long_pass[sizeof(long_pass) - 1u] = '\0';
   vkr_crash_set_frame(4242u);
-  vkr_crash_set_text(VKR_CRASH_TEXT_SCENE, "assets/scenes/bistro.scene");
+  /* An unterminated slice, as a String8 pass name is, stops at its length. */
+  const char *scene = "assets/scenes/bistro.scene.json";
+  vkr_crash_set_text_bytes(VKR_CRASH_TEXT_SCENE, scene,
+                           strlen("assets/scenes/bistro.scene"));
   vkr_crash_set_text(VKR_CRASH_TEXT_STAGE, "frame");
   vkr_crash_set_text(VKR_CRASH_TEXT_PASS, long_pass);
   vkr_crash_set_text(VKR_CRASH_TEXT_OPERATION, "level.lint");

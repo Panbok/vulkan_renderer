@@ -3,6 +3,7 @@
 #include "editor_blockout.h"
 #include "editor_brush_grid.h"
 #include "editor_content.h"
+#include "editor_debug_draw.h"
 #include "editor_depot.h"
 #include "editor_install.h"
 #include "editor_internal.h"
@@ -416,6 +417,7 @@ static void editor_application_project_scene(void *state,
   vkr_editor_recording_project(&editor->ui, frame);
   vkr_editor_physics_project(&editor->ui, frame);
   vkr_editor_grid_project(&editor->ui, frame);
+  vkr_editor_debug_draw_project(&editor->ui, frame);
 }
 
 static Vec3 editor_application_snap_move(void *state, const VkrScene *scene,

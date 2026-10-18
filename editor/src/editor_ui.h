@@ -67,6 +67,9 @@ typedef enum VkrEditorWindowKind {
   /* A recording's threads and GPU around the playhead
      (editor_recording_flame.c). */
   VKR_EDITOR_WINDOW_TIMELINE,
+  /* The Scene renderer's last compiled render graph
+     (editor_render_graph.c). */
+  VKR_EDITOR_WINDOW_RENDER_GRAPH,
   VKR_EDITOR_WINDOW_COUNT,
 } VkrEditorWindowKind;
 
@@ -486,6 +489,127 @@ typedef struct VkrEditorModelView {
   bool8_t orbiting;
 } VkrEditorModelView;
 
+/* The Render graph window (editor_render_graph.c) copies the Scene
+   renderer's last compiled graph into these rows a few times a second,
+   since a description joins the render thread. Rows past the caps are
+   counted, not kept; names are cut to NAME_MAX - 1 bytes. */
+#define VKR_EDITOR_RENDER_GRAPH_ROW_MAX 512u
+#define VKR_EDITOR_RENDER_GRAPH_USE_MAX 4096u
+#define VKR_EDITOR_RENDER_GRAPH_NAME_MAX 64u
+
+/* One pass: scheduled passes in execution order, then culled ones with
+   `order` UINT32_MAX. Its uses are uses[use_first, use_first + use_count). */
+typedef struct VkrEditorRenderGraphPass {
+  char name[VKR_EDITOR_RENDER_GRAPH_NAME_MAX];
+  char kind[12];
+  uint32_t order;
+  uint32_t use_first;
+  uint16_t use_count;
+  uint16_t reads;
+  uint16_t writes;
+  /* The pass has more uses than the description reports. */
+  bool8_t uses_truncated;
+  bool8_t culled;
+  bool8_t disabled;
+  /* Times of the newest collected frame at the refresh; GPU only when
+     that pass was timed. */
+  bool8_t timed;
+  bool8_t gpu_valid;
+  float32_t cpu_ms;
+  float32_t gpu_ms;
+} VkrEditorRenderGraphPass;
+
+/* One image or buffer this frame's build declared. `first_order` is
+   UINT32_MAX for a resource no scheduled pass uses. */
+typedef struct VkrEditorRenderGraphResource {
+  char name[VKR_EDITOR_RENDER_GRAPH_NAME_MAX];
+  char format[24];
+  char lifetime[16];
+  /* The full name's hash, which uses match. */
+  uint64_t name_hash;
+  uint64_t bytes;
+  uint32_t width;
+  uint32_t height;
+  uint32_t depth;
+  uint32_t layers;
+  uint32_t mip_levels;
+  uint32_t samples;
+  uint32_t first_order;
+  uint32_t last_order;
+  bool8_t buffer;
+  bool8_t imported;
+  bool8_t exported;
+  bool8_t present;
+} VkrEditorRenderGraphResource;
+
+/* A pass's read or write of a resource; `resource` is its row, or
+   UINT16_MAX when the resource is past the row cap. */
+typedef struct VkrEditorRenderGraphUse {
+  uint64_t resource_hash;
+  uint16_t pass;
+  uint16_t resource;
+  uint8_t role;
+  bool8_t buffer;
+  bool8_t write;
+} VkrEditorRenderGraphUse;
+
+typedef struct VkrEditorRenderGraph {
+  VkrEditorRenderGraphPass passes[VKR_EDITOR_RENDER_GRAPH_ROW_MAX];
+  VkrEditorRenderGraphResource resources[VKR_EDITOR_RENDER_GRAPH_ROW_MAX];
+  VkrEditorRenderGraphUse uses[VKR_EDITOR_RENDER_GRAPH_USE_MAX];
+  uint32_t pass_count;
+  uint32_t resource_count;
+  uint32_t use_count;
+  /* Rows the graph had before the caps. */
+  uint32_t pass_seen;
+  uint32_t resource_seen;
+  bool8_t uses_capped;
+  /* The last refresh found a graph, and its compile scheduled it. */
+  bool8_t has_graph;
+  bool8_t compiled;
+  bool8_t initialized;
+  /* Refresh four times a second while the window shows. */
+  bool8_t paused;
+  bool8_t show_resources;
+  float64_t refreshed_at;
+  /* The graph's totals and the backend's realized instances. */
+  char backend[12];
+  char pipeline[12];
+  uint32_t frame_index;
+  uint32_t viewport_width;
+  uint32_t viewport_height;
+  float32_t render_scale;
+  uint32_t scheduled_count;
+  uint32_t culled_count;
+  uint32_t image_count;
+  uint32_t buffer_count;
+  uint64_t declared_image_bytes;
+  uint64_t declared_buffer_bytes;
+  uint32_t live_images;
+  uint32_t live_buffers;
+  uint64_t live_image_bytes;
+  uint64_t live_buffer_bytes;
+  bool8_t live_valid;
+  uint64_t timings_frame;
+  /* The name filter, the selected row of each list or UINT32_MAX, and a
+     selection to scroll into view at the next build. */
+  uint8_t search[64];
+  uint32_t search_length;
+  uint32_t selected_pass;
+  uint32_t selected_resource;
+  bool8_t reveal;
+  /* The shown list's rows after the filter and sort, rebuilt when dirty. */
+  uint16_t view_rows[VKR_EDITOR_RENDER_GRAPH_ROW_MAX];
+  uint32_t view_count;
+  bool8_t view_dirty;
+  VkrEditorTable pass_table;
+  VkrEditorTable resource_table;
+  VkrEditorTable uses_table;
+  VkrEditorTable users_table;
+  /* The list over the selection's uses. */
+  VkrEditorSplit split;
+} VkrEditorRenderGraph;
+
 typedef struct VkrEditorUi {
   VkrEditorPhysicsLine *physics_lines;
   uint32_t physics_line_count;
@@ -879,6 +1003,7 @@ typedef struct VkrEditorUi {
   /* Recording requests and the Scene's REC indicator and playback bar
      (editor_recording.h). */
   VkrEditorRecording recording;
+  VkrEditorRenderGraph render_graph;
   /* Additive scene path and sidecar a Cmd request borrows until the
      runtime consumes it (ADR-076). */
   char cmd_scene_path[1024];
@@ -894,5 +1019,10 @@ typedef struct VkrEditorUi {
 } VkrEditorUi;
 
 void vkr_editor_ui_init(VkrEditorUi *editor);
+/** The Render graph window's body (editor_render_graph.c): the Scene
+ * renderer's passes, resources and memory, refreshed while it shows. */
+void vkr_editor_render_graph_build(VkrEditorUi *editor,
+                                   const VkrSampleUiFrame *frame,
+                                   VkrUiRect bounds);
 VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame);

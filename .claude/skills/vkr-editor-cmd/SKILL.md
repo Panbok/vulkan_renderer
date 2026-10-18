@@ -130,5 +130,7 @@ channel, `log.read` returns log records by level and text,
 telemetry, `perf.snapshot` returns the newest metrics frame (add `passes` for
 per-pass times) and `perf.set` switches pass and submission GPU timing.
 `debug.graph` returns the compiled render graph (add `dot` for a Graphviz
-file). After a crash, read `crash-*.txt` beside the session log in
+file; `window graph` shows it). `debug.draw` puts lines, boxes, spheres,
+the camera frustum and labels over the Scene by `group`, for `seconds` or
+until `debug.clear`; check them with `view.capture {area: window}`. After a crash, read `crash-*.txt` beside the session log in
 `<workspace>/logs/` (stderr for a run without a workspace).
