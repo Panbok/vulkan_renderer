@@ -29,6 +29,19 @@
 #define EDITOR_WINDOW_MIN_WIDTH_PT 280.0f
 #define EDITOR_WINDOW_MIN_HEIGHT_PT 140.0f
 
+/* The smallest size `kind` resizes to: windows whose lists and charts need
+   more room than a form keep it. */
+static Vec2 editor_window_min_size(VkrEditorWindowKind kind) {
+  switch (kind) {
+  case VKR_EDITOR_WINDOW_RECORDINGS:
+    return (Vec2){360.0f, 220.0f};
+  case VKR_EDITOR_WINDOW_PERFORMANCE:
+    return (Vec2){720.0f, 480.0f};
+  default:
+    return (Vec2){EDITOR_WINDOW_MIN_WIDTH_PT, EDITOR_WINDOW_MIN_HEIGHT_PT};
+  }
+}
+
 #if defined(PLATFORM_APPLE)
 #define EDITOR_SHORTCUT(apple, other) apple
 #else
@@ -2054,8 +2067,10 @@ static bool8_t editor_window_body_begin(VkrUiSystem *ui,
 /* Moves and resizes the window as the pointer drags its title or borders. */
 static void editor_window_track_pointer(VkrEditorUi *editor, VkrUiSystem *ui,
                                         InputState *input,
+                                        VkrEditorWindowKind kind,
                                         VkrEditorWindowState *window,
                                         const VkrSampleUiFrame *frame) {
+  const Vec2 minimum = editor_window_min_size(kind);
   /* The pointer reaches this window when no window, menu or popup above it
      covers the point; only then do its title and borders take a press. */
   const bool8_t topmost = ui->mouse_input_layer == window->z_order + 2u;
@@ -2092,13 +2107,11 @@ static void editor_window_track_pointer(VkrEditorUi *editor, VkrUiSystem *ui,
         (float32_t)ui->target_height / ui->content_scale;
     if (window->resize_edges & VKR_EDITOR_WINDOW_EDGE_RIGHT) {
       const float32_t right = Min(mouse.x - window->drag_grab_pt.x, width_pt);
-      window->size_pt.x =
-          Max(EDITOR_WINDOW_MIN_WIDTH_PT, right - window->position_pt.x);
+      window->size_pt.x = Max(minimum.x, right - window->position_pt.x);
     }
     if (window->resize_edges & VKR_EDITOR_WINDOW_EDGE_BOTTOM) {
       const float32_t bottom = Min(mouse.y - window->drag_grab_pt.y, height_pt);
-      window->size_pt.y =
-          Max(EDITOR_WINDOW_MIN_HEIGHT_PT, bottom - window->position_pt.y);
+      window->size_pt.y = Max(minimum.y, bottom - window->position_pt.y);
     }
     ui->capture.mouse = true_v;
     ui->cursor = editor_window_edge_cursor(window->resize_edges);
@@ -2369,6 +2382,10 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
                                 InputState *input, VkrEditorWindowKind kind,
                                 const VkrSampleUiFrame *frame) {
   VkrEditorWindowState *window = &editor->windows[kind];
+  /* A size saved before the window had its minimum grows to it. */
+  const Vec2 minimum = editor_window_min_size(kind);
+  window->size_pt.x = Max(window->size_pt.x, minimum.x);
+  window->size_pt.y = Max(window->size_pt.y, minimum.y);
   const VkrUiTheme *theme = vkr_ui_theme();
   String8 title_text = {0};
   String8 body_text = {0};
@@ -2463,7 +2480,7 @@ static void editor_build_window(VkrEditorUi *editor, VkrUiSystem *ui,
     return;
   }
 
-  editor_window_track_pointer(editor, ui, input, window, frame);
+  editor_window_track_pointer(editor, ui, input, kind, window, frame);
   editor_window_clamp(ui, window);
   (void)vkr_ui_input_layer_set(ui, window->z_order + 2u);
   (void)vkr_ui_push_id_u64(ui, kind);
