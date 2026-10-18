@@ -3,6 +3,7 @@
 #include "containers/vkr_sort.h"
 #include "editor_internal.h"
 #include "editor_ops.h"
+#include "editor_projects.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
@@ -119,11 +120,18 @@ vkr_internal void editor_thumbs_start(VkrEditorRecordingThumbs *thumbs,
                                    editor_thumbs_write, job);
 }
 
-/* Whether the capture slot is free for a capture asked in this build. */
-vkr_internal bool8_t editor_thumbs_slot_free(const VkrSampleUiFrame *frame) {
+/* Whether the capture slot is free for a capture asked in this build. A
+   project scene opening blurs the Scene, and the launcher replaces it, so
+   neither renders a Scene image: the renderer refused such captures and
+   cancelled their frames, and three refusals at startup kept the warm-up
+   capture from ever running. */
+vkr_internal bool8_t editor_thumbs_slot_free(const VkrEditorUi *editor,
+                                             const VkrSampleUiFrame *frame) {
   return frame->capture_request && !frame->capture_request->request &&
          !frame->capture_busy && frame->mapping_valid &&
-         !frame->scene_rendering_stopped;
+         !frame->scene_rendering_stopped &&
+         !vkr_editor_projects_loading(editor->projects) &&
+         !vkr_editor_projects_modal(editor->projects);
 }
 
 /* The renderer grows its readback memory the first time a capture needs
@@ -131,7 +139,8 @@ vkr_internal bool8_t editor_thumbs_slot_free(const VkrSampleUiFrame *frame) {
    While nothing records, one capture of a Scene image that has kept its
    size for a while grows it, so a recording's first thumbnail does not
    carry that frame. */
-vkr_internal void editor_thumbs_warm(VkrEditorRecordingThumbs *thumbs,
+vkr_internal void editor_thumbs_warm(const VkrEditorUi *editor,
+                                     VkrEditorRecordingThumbs *thumbs,
                                      const VkrSampleUiFrame *frame) {
   if (thumbs->warm_token) {
     const VkrSampleCaptureReady *ready = frame->capture_ready;
@@ -163,7 +172,7 @@ vkr_internal void editor_thumbs_warm(VkrEditorRecordingThumbs *thumbs,
   if (bytes == 0u || bytes <= thumbs->warm_bytes ||
       thumbs->warm_failures >= EDITOR_THUMBS_FAILURES ||
       ++thumbs->warm_stable < EDITOR_THUMBS_WARM_STABLE ||
-      !editor_thumbs_slot_free(frame)) {
+      !editor_thumbs_slot_free(editor, frame)) {
     return;
   }
   thumbs->warm_token = EDITOR_THUMBS_TOKEN | ++thumbs->serial;
@@ -180,7 +189,7 @@ void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
   const VkrSampleRecordingStatus *status = frame->recording;
   if (!status || !status->recording) {
     thumbs->token = 0u;
-    editor_thumbs_warm(thumbs, frame);
+    editor_thumbs_warm(editor, thumbs, frame);
     return;
   }
   if (!string_equals(thumbs->bundle, status->recording_path)) {
@@ -215,7 +224,7 @@ void vkr_editor_recording_thumbs_update(VkrEditorUi *editor,
   const float64_t now = vkr_platform_get_absolute_time();
   if (thumbs->failures >= EDITOR_THUMBS_FAILURES ||
       thumbs->wait < EDITOR_THUMBS_DELAY || now < thumbs->next_time ||
-      thumbs->job.running || !editor_thumbs_slot_free(frame)) {
+      thumbs->job.running || !editor_thumbs_slot_free(editor, frame)) {
     return;
   }
   thumbs->token = EDITOR_THUMBS_TOKEN | ++thumbs->serial;
