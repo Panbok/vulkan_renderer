@@ -63,8 +63,10 @@ implemented in
 perf-compare` in [ADR-051](../adr/051-renderer-harness-and-evidence.md).
 Remaining:
 
-- PIX event output of the zone macro on Windows and `os_signpost` on macOS,
-  so native profilers show the zones.
+- `os_signpost` output of the zone macro on macOS, so Instruments shows the
+  zones. PIX output was dropped on 2026-10-19 (owner): PIX fits only a
+  Direct3D 12 backend, and Radeon GPU Profiler covers Vulkan GPU work on
+  AMD.
 - More zones where cost hides: asset loads, physics steps inside jobs,
   script ticks, shadow updates.
 - Counters and markers for recordings without `Frame` zones in the export.
