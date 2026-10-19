@@ -398,10 +398,15 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
         _Alignof(Vec4), &planes_address, NULL);
     if (!views || !planes)
       return false_v;
-    views[0] =
-        mat4_mul(packet->input.globals.projection, packet->input.globals.view);
-    const VkrFrustum camera = vkr_frustum_from_view_projection(
-        packet->input.globals.view, packet->input.globals.projection);
+    /* A frozen culling camera culls the camera view (ADR-127). */
+    const VkrCullCamera *frozen =
+        packet->input.world ? packet->input.world->frozen_cull : NULL;
+    const Mat4 cull_view = frozen ? frozen->view : packet->input.globals.view;
+    const Mat4 cull_projection =
+        frozen ? frozen->projection : packet->input.globals.projection;
+    views[0] = mat4_mul(cull_projection, cull_view);
+    const VkrFrustum camera =
+        vkr_frustum_from_view_projection(cull_view, cull_projection);
     for (uint32_t plane = 0u; plane < VKR_FRUSTUM_PLANE_COUNT; ++plane) {
       const VkrPlane *source = &camera.planes[plane];
       planes[plane] = (Vec4){source->normal.x, source->normal.y,
@@ -508,10 +513,13 @@ vkr_internal bool8_t vkr_vk_deferred_cull_root(
     if (!renderer->prepared_frame.hzb_build_enabled)
       slot->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
   }
+  /* Occlusion is off under a frozen culling camera: the depth pyramid
+     follows the frame's camera. */
   if (pipeline == VKR_VULKAN_DEFERRED_PIPELINE_CLASSIFY && !transmission &&
       renderer->prepared_frame.hzb_build_enabled &&
       (!renderer->graph->packet->input.world ||
-       !renderer->graph->packet->input.world->skinning_count)) {
+       (!renderer->graph->packet->input.world->skinning_count &&
+        !renderer->graph->packet->input.world->frozen_cull))) {
     const VkrRgImageUse *hzb_use =
         vkr_rg_pass_find_image_use(&pass->desc, 3u, 0u);
     if (hzb_use && vkr_rg_image_handle_valid(hzb_use->image)) {

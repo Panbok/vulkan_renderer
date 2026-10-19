@@ -285,6 +285,15 @@ structures, and put a cutout around a room before the ground reaches it.
   colours each object by how many times farther it could be before it
   stops drawing: red at 1x, yellow at 4x, green at 16x or more, blue never,
   magenta already past (only with `draw_distance off`), grey for glass.
+- `view.freeze_culling {on: true}` keeps culling (frustum, distance, size,
+  levels, rooms, proxies) from where the camera stands, with its frustum in
+  cyan; move the camera with `view.camera` and capture to see what that view
+  draws. Occlusion is off while frozen; `view.cull_report` answers
+  `frozen`. Turn it off when done.
+- `view.capture` mode `lod` colours each object's level (grey 0, red 1,
+  green 2, blue 3, yellow 4); `light-count` ramps the local lights reaching
+  each surface from blue (1) through green (4), yellow (8), red (12) to
+  white (16 or more).
 
 ## Rooms and portals
 

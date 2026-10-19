@@ -1367,6 +1367,48 @@ vkr_metal_tiled_inspect_normal(thread const VkrMetalTiledVertexOutput &input,
   return normal;
 }
 
+// The local lights that reach `world_position`, for the light count view
+// (ADR-127): its light grid cell's punctual lights within their range and
+// cone, and the rectangle lights it faces whose diffuse light can pass the
+// shading cut-off. The sun is not counted.
+static uint vkr_metal_tiled_light_count(constant VkrMetalPacketFrameRoot *frame,
+                                        float3 world_position) {
+  uint count = 0u;
+  const uint4 point_mask =
+      vkr_metal_packet_point_light_mask(frame, world_position);
+  const uint point_count = min(frame->point_light_count, 128u);
+  for (uint word = 0u; word < 4u; ++word) {
+    uint remaining = point_mask[word];
+    while (remaining != 0u) {
+      const uint light_index = word * 32u + ctz(remaining);
+      remaining &= remaining - 1u;
+      if (light_index >= point_count)
+        continue;
+      const device VkrGpuPointLightRow &light =
+          frame->point_light_data[light_index];
+      const VkrPunctualLightTerm term = vkr_punctual_light_term(
+          light.p0, light.p1, light.p2, light.p3, world_position);
+      if (term.in_range && term.cone > 0.0f)
+        ++count;
+    }
+  }
+  const constant VkrMetalPacketLtc &ltc = *frame->ltc;
+  const uint rectangle_count = min(ltc.light_count, 8u);
+  for (uint index = 0u; index < rectangle_count; ++index) {
+    const device VkrGpuRectangleLightRow &row = ltc.lights[index];
+    const float3 right = row.right_half_height.xyz * row.center_half_width.w;
+    const float3 up = row.up_radiance.xyz * row.right_half_height.w;
+    if (dot(world_position - row.center_half_width.xyz, -cross(right, up)) >
+            0.0f &&
+        vkr_metal_rectangle_contribution_bound(row, world_position,
+                                               1.0f / M_PI_F,
+                                               frame->pre_exposure) >=
+            VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
+      ++count;
+  }
+  return count;
+}
+
 // The editor's modes that replace shading; false for the modes that shade.
 // Unlit shows the base colour and the pre-exposed emission; wireframe draws
 // one-pixel edges over a dark fill, as the visibility-buffer resolve does.
@@ -1374,7 +1416,9 @@ vkr_metal_tiled_inspect_normal(thread const VkrMetalTiledVertexOutput &input,
 // tonemap shows without exposure or the tone curve: the shading normal,
 // base colour, roughness, metallic, the material's texture samples, the
 // base colour texture's texels per metre against art.lint's default range,
-// and the draw's reach before the camera stops drawing it (ADR-114).
+// the draw's reach before the camera stops drawing it (ADR-114), and the
+// draw's level of detail and the local lights that reach the surface
+// (ADR-127), those two shaded by the angle to the viewer so shapes read.
 // A Custom graph's pixels show the cost of their fallback, tinted magenta.
 static bool vkr_metal_tiled_inspect(
     thread const VkrMetalTiledVertexOutput &input,
@@ -1425,6 +1469,20 @@ static bool vkr_metal_tiled_inspect(
     // The encode kernel left the draw's reach code in its probe bits.
     value = vkr_editor_reach_color((state_flags >> VKR_GPU_DRAW_PROBE_SHIFT) &
                                    VKR_GPU_DRAW_PROBE_MASK);
+  } else if (mode == 20u || mode == 21u) {
+    // The visible row keeps the level the camera view selected.
+    value = mode == 20u
+                ? vkr_editor_lod_color(
+                      vkr_gpu_draw_lod_level(state_flags),
+                      vkr_gpu_draw_geomorph(state_flags)
+                          ? vkr_gpu_draw_morph(state_flags)
+                          : 0.0f)
+                : vkr_editor_light_count_color(
+                      vkr_metal_tiled_light_count(frame, input.world_position));
+    const float facing = saturate(
+        dot(vkr_metal_tiled_inspect_normal(input, surface, front_facing),
+            vkr_metal_packet_view_direction(frame, input.world_position)));
+    value *= 0.55f + 0.45f * facing;
   } else if (mode == 16u) {
     value = vkr_editor_cost_color(vkr_metal_tiled_material_samples(material));
     if (((material.flags >> 24u) & 63u) != 0u) {

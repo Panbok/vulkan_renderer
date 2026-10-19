@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-18
+updated: 2026-10-19
 authority: adr
 ---
 
@@ -1097,7 +1097,13 @@ candidate state in the visible row. In the Draw reach view (render mode 19)
 the Metal encode kernel writes the shared `vkr_gpu_draw_reach_code` into
 the camera rows' probe bits instead of a probe, and the tiled inspection
 variant colours it with `editor_view.slangh`'s `vkr_editor_reach_color`;
-the desktop pipeline does not draw the view. The host mirror
+the desktop pipeline does not draw the view. The LOD view (mode 20) colours
+the visible row's level and morph with `vkr_editor_lod_color`, and the light
+count view (mode 21) the tiled shader's count of reaching local lights with
+`vkr_editor_light_count_color`; both are tiled-only, natively checked on
+Metal (ADR-127). A frozen culling camera (`VkrWorldPassPayload.frozen_cull`)
+replaces the camera view's frustum and `VkrGpuLodView` 0 on both backends
+and turns its occlusion off; the Vulkan path is compiled only. The host mirror
 `vkr_gpu_draw_distance_culled` in `vkr_gpu_abi.c` serves the blend list and
 editor ring. Bit 20 of the cull word hides a candidate from the camera (rooms,
 [ADR-115](115-rooms-and-portals.md); proxy cells,

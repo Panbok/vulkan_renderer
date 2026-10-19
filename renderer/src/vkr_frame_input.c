@@ -441,6 +441,15 @@ vkr_internal VkrRendererError vkr_frame_input_validate_world(
         }
       }
     }
+    if (world->frozen_cull &&
+        (!mat4_is_finite(&world->frozen_cull->view) ||
+         !mat4_is_finite(&world->frozen_cull->projection) ||
+         !vkr_is_finite_f32(world->frozen_cull->view_position.x) ||
+         !vkr_is_finite_f32(world->frozen_cull->view_position.y) ||
+         !vkr_is_finite_f32(world->frozen_cull->view_position.z))) {
+      VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+                        "packet.world.frozen_cull", "non-finite camera");
+    }
     if (world->opaque_material_features_valid > true_v ||
         (world->opaque_material_features & ~VKR_WORLD_MATERIAL_FEATURE_ALL)) {
       VKR_REJECT_PACKET(VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,

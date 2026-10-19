@@ -935,6 +935,12 @@ typedef enum VkrRenderMode {
   /** How many times farther each draw could be before the camera stops
    * drawing it (ADR-114), as a colour ramp; a data view. */
   VKR_RENDER_MODE_DRAW_REACH = 19,
+  /** Each draw's level of detail as a colour per level (ADR-127); a data
+   * view. */
+  VKR_RENDER_MODE_LOD = 20,
+  /** The local lights that reach each surface as a colour ramp (ADR-127);
+   * a data view. */
+  VKR_RENDER_MODE_LIGHT_COUNT = 21,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 

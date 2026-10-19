@@ -102,6 +102,8 @@ const char *const vkr_editor_cmd_render_modes[] = {"lit",
                                                    "texel-density",
                                                    "exposure",
                                                    "draw-reach",
+                                                   "lod",
+                                                   "light-count",
                                                    "direct-light",
                                                    "direct-diffuse",
                                                    "direct-specular",
@@ -127,6 +129,8 @@ const VkrEditorCmdRenderMode vkr_editor_cmd_render_mode_values[] = {
     {VKR_RENDER_MODE_TEXEL_DENSITY, 0u},
     {VKR_RENDER_MODE_EXPOSURE, 0u},
     {VKR_RENDER_MODE_DRAW_REACH, 0u},
+    {VKR_RENDER_MODE_LOD, 0u},
+    {VKR_RENDER_MODE_LIGHT_COUNT, 0u},
     {VKR_RENDER_MODE_LIGHTING, 0u},
     {VKR_RENDER_MODE_DIRECT_DIFFUSE, 0u},
     {VKR_RENDER_MODE_DIRECT_SPECULAR, 0u},
@@ -955,6 +959,12 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
       next.draw_distance_off = !game;
       string_format(ctx->message, sizeof(ctx->message), "Draw distances %s",
                     game ? "on" : "off");
+    } else if (def->value == 5u) {
+      if (!cmd_switch(ctx, word, next.freeze_culling, &next.freeze_culling)) {
+        return false_v;
+      }
+      string_format(ctx->message, sizeof(ctx->message), "Freeze culling %s",
+                    next.freeze_culling ? "on" : "off");
     } else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
       return false_v;
   } else {
@@ -2598,6 +2608,10 @@ static const CmdDef cmd_defs[] = {
      "Apply the game's draw distances in the Scene, or draw every object at "
      "any distance",
      cmd_run_view, CMD_COUNT, 4u},
+    {"view.freeze_culling", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Keep culling from where the camera stands now, with its frustum drawn, "
+     "while the camera moves on",
+     cmd_run_view, CMD_COUNT, 5u},
     {"grid.spacing", CMD_ARG_NUMBER, "<units>",
      "Set the grid cell size and show the grid", cmd_run_view, CMD_COUNT, 1u},
     {"grid.height", CMD_ARG_NUMBER, "<y>",

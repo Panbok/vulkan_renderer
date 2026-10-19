@@ -102,6 +102,10 @@ static const struct {
     /* How far each object still draws (ADR-114), and the desktop
        pipeline's temporal reprojection. */
     {"Draw reach", VKR_RENDER_MODE_DRAW_REACH, 0u, 4u},
+    /* Each draw's level of detail and the local lights that reach each
+       surface (ADR-127). */
+    {"LOD", VKR_RENDER_MODE_LOD, 0u, 4u},
+    {"Light count", VKR_RENDER_MODE_LIGHT_COUNT, 0u, 4u},
     {"Motion vectors", VKR_RENDER_MODE_TEMPORAL_MOTION, 0u, 4u},
     {"History rejection", VKR_RENDER_MODE_TEMPORAL_HISTORY, 0u, 4u},
 };
@@ -358,7 +362,8 @@ static void view_chip_text(const VkrEditorUi *editor,
   } else {
     string_format(text[4], 48, "Quality");
   }
-  string_format(text[5], 48, "%s", state->draw_distance_off ? "All" : "Game");
+  string_format(text[5], 48, "%s%s", state->draw_distance_off ? "All" : "Game",
+                state->freeze_culling ? " \xc2\xb7 Frozen" : "");
 }
 
 /* The chip's content: padding, icon, gap, text, gap and caret. */
@@ -446,8 +451,8 @@ static bool8_t *view_icon_flag(VkrEditorUi *editor, uint32_t offset) {
   return (bool8_t *)((uint8_t *)editor + offset);
 }
 
-/* The draw distance chip's rows: the two modes, then the View distance
-   header and its values. Returns how many. */
+/* The draw distance chip's rows: the two modes, Freeze culling, then the
+   View distance header and its values. Returns how many. */
 static uint32_t view_distance_rows(VkrEditorUi *editor,
                                    const VkrSampleUiFrame *frame,
                                    ViewRow *rows) {
@@ -459,6 +464,10 @@ static uint32_t view_distance_rows(VkrEditorUi *editor,
   ViewRow *all = &rows[count++];
   *all = (ViewRow){.checked = state->draw_distance_off};
   string_format(all->text, sizeof(all->text), "Draw every object");
+  /* Culling stays where the camera stood while it moves on (ADR-127). */
+  ViewRow *freeze = &rows[count++];
+  *freeze = (ViewRow){.checked = state->freeze_culling};
+  string_format(freeze->text, sizeof(freeze->text), "Freeze culling");
   if (!frame->graphics) {
     return count;
   }
@@ -2894,15 +2903,20 @@ static bool8_t view_popup_activate(VkrEditorUi *editor,
     return true_v;
   }
   case VIEW_POPUP_DISTANCE: {
-    /* Rows: the two modes, a header, then the View distance values. */
+    /* Rows: the two modes, Freeze culling, a header, then the View
+       distance values. */
     if (index < 2u) {
       next->draw_distance_off = index == 1u;
       return false_v;
     }
-    if (index >= 3u && index - 3u < ArrayCount(view_distance_names) &&
+    if (index == 2u) {
+      next->freeze_culling = !next->freeze_culling;
+      return false_v;
+    }
+    if (index >= 4u && index - 4u < ArrayCount(view_distance_names) &&
         frame->graphics && frame->graphics_request) {
       VkrGraphicsSettings settings = view_graphics(editor, frame);
-      settings.view_distance = index - 3u;
+      settings.view_distance = index - 4u;
       view_quality_apply(frame, settings);
     }
     return true_v;
@@ -3180,9 +3194,11 @@ void vkr_editor_viewport_build(VkrEditorUi *editor,
                     VIEW_POPUP_QUALITY);
     (void)view_chip(editor, ui, "distance", 5, VKR_UI_ICON_RULER, text[5],
                     editor->view_popup == VIEW_POPUP_DISTANCE,
-                    state->draw_distance_off, disabled, layout.compact,
+                    state->draw_distance_off || state->freeze_culling, disabled,
+                    layout.compact,
                     "Draw distance: the Scene draws what the game draws, or "
-                    "every object at any distance",
+                    "every object at any distance; Freeze culling keeps "
+                    "culling where the camera stood",
                     VIEW_POPUP_DISTANCE);
     (void)vkr_ui_panel_end(ui);
   }

@@ -26,7 +26,7 @@
 #include "vkr_ui_draw_types.h"
 
 /** Version constant for VkrFrameInput.version validation. */
-#define VKR_FRAME_INPUT_VERSION 53u
+#define VKR_FRAME_INPUT_VERSION 54u
 
 #define VKR_FRAME_IBL_PROBE_MAX 16u
 
@@ -348,6 +348,20 @@ typedef struct VkrStaticChange {
 } VkrStaticChange;
 
 /**
+ * @brief A camera that culls the camera view in place of the frame's camera
+ * (the editor's Freeze culling, packet 54, ADR-127).
+ *
+ * Its view and projection give the camera view's frustum, and its position
+ * the distance that draw distance, smallest drawn size and level selection
+ * measure. The frame's camera still rasterizes and shades.
+ */
+typedef struct VkrCullCamera {
+  Mat4 view;
+  Mat4 projection;
+  Vec3 view_position;
+} VkrCullCamera;
+
+/**
  * @brief Payload for GPU-driven world stages and retained ordinary blend.
  */
 typedef struct VkrWorldPassPayload {
@@ -366,6 +380,10 @@ typedef struct VkrWorldPassPayload {
    * of their smallest drawn diameters (VkrGpuLodView::distance_scale); zero
    * draws every candidate at any distance. */
   float32_t draw_distance_scale;
+  /** Optional; a frozen camera that culls the camera view instead of the
+   * frame's camera. Occlusion is off while it is set, since the depth
+   * pyramid follows the frame's camera. Valid until submit returns. */
+  const VkrCullCamera *frozen_cull;
   /** Rows in gpu_candidates eligible for the camera opaque/cutout view. */
   uint32_t gpu_camera_opaque_candidate_count;
   /** Rows in gpu_candidates eligible for shadow-cascade views. */

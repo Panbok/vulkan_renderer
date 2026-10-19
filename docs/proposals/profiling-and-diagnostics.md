@@ -73,7 +73,8 @@ Remaining:
 ## P3: deep tools (remaining)
 
 Crash reports with the pass breadcrumb, the `debug.gpu_capture` request,
-`debug.graph`, the Render graph window and debug drawing are implemented in
+`debug.graph`, the Render graph window, debug drawing, freeze culling and
+the LOD and light count views are implemented in
 [ADR-127](../adr/127-crash-reports-gpu-capture-and-graph-description.md).
 Remaining:
 
@@ -91,8 +92,11 @@ Remaining:
   readers, the cloud sky light's radiance chain), now fixed. Declaring them
   needs per-frame imports of published textures and native buffer imports,
   which the Vulkan graph lacks.
-- Freeze culling, overdraw, LOD and light-count views; optional vendor
-  counters and an `xctrace` table importer.
+- An overdraw view: a pipeline variant with no depth test and additive
+  blending, since hidden-surface removal makes a shader counter measure
+  something other than the cost. Occlusion under freeze culling, which
+  needs the depth pyramid kept from the frozen frame.
+- Optional vendor counters and an `xctrace` table importer.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
 
 ## Open items

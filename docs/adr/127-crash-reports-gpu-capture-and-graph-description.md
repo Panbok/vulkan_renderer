@@ -12,7 +12,8 @@ Accepted (partial). Phase P3 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
 implemented: crash reports with the active pass on macOS and Windows, the
 `debug.gpu_capture` request with Metal and RenderDoc backends, the
-`debug.graph` description, the Render graph window and debug drawing. Metal
+`debug.graph` description, the Render graph window, debug drawing, freeze
+culling and the LOD and light count views. No overdraw view exists. Metal
 programmatic capture is refused by macOS 26 for Metal 4 compute encoders,
 and RenderDoc cannot capture this renderer on a driver without
 `descriptorBufferCaptureReplay`, such as the Windows RX 6700 XT's.
@@ -157,6 +158,59 @@ Develop > Render graph, or `window graph`, shows the same description.
   thread. It keeps at most 512 passes, 512 resources and 4096 uses, and
   writes DOT through an icon button.
 
+**Freeze culling.** `VkrWorldPassPayload.frozen_cull` (frame input
+version 54, [vkr_frame_input.h](../../renderer/src/vkr_frame_input.h)) is an
+optional `VkrCullCamera`: a view, projection and position that cull the
+camera view in place of the frame's camera, which still rasterizes and
+shades.
+
+- The camera view's frustum comes from it on both backends
+  ([vkr_metal_packet_resources.inc](../../renderer/src/metal/internal/vkr_metal_packet_resources.inc),
+  [vkr_vulkan_deferred.c](../../renderer/src/vulkan/vkr_vulkan_deferred.c)),
+  and `vkr_packet_write_lod_views` measures draw distance, smallest drawn
+  size and levels from its position, without morph motion. The motion view
+  copies the camera view.
+- Occlusion is off while it is set: the depth pyramid and its history
+  follow the frame's camera, and Metal accepts a history only for an
+  unchanged camera.
+- The scene runtime keeps the camera of the first world payload after
+  `freeze_culling` turns on and builds rooms, scatter proxies, the blend
+  list and `view.cull_report` from it
+  ([vkr_standard_scene_runtime.c](../../runtime/src/application/vkr_standard_scene_runtime.c)).
+  Room-gated lights, shadows and light selection keep the live camera. A
+  probe capture never freezes.
+- The editor's switch is `VkrSampleViewState.freeze_culling`: the Scene's
+  draw distance chip row Freeze culling (the chip then reads Frozen), Cmd
+  `view.freeze_culling`, `view.freeze_culling = true`, and op
+  `view.freeze_culling {on}`. While frozen, the sample runtime keeps the
+  frozen frustum in debug group "freeze culling", in cyan.
+
+**LOD and light count views.** Render modes `LOD` (20) and `LIGHT_COUNT`
+(21) are tiled-pipeline data views beside the artist views of
+[ADR-099](099-artist-views-and-luminance-queries.md), selected as `lod` and
+`light-count` (Cmd `view.mode`, `view.capture`) or `lod` and `light_count`
+(harness cases).
+
+- `LOD` colours each draw by the level the camera view selected,
+  `vkr_editor_lod_color` in
+  [editor_view.slangh](../../renderer/src/shaders/shared/editor_view.slangh):
+  grey 0, red 1, green 2, blue 3, yellow 4, magenta 5, cyan 6, orange 7.
+  A geomorphing draw moves toward the next level's colour as it morphs.
+- `LIGHT_COUNT` counts the local lights that reach each surface
+  (`vkr_metal_tiled_light_count` in
+  [tiled.metal](../../renderer/src/shaders/metal/msl/world/tiled.metal)):
+  its light grid cell's punctual lights within range and cone, and the
+  rectangle lights it faces whose diffuse bound passes the shading cut-off.
+  `vkr_editor_light_count_color` ramps dark blue (none), blue (1), green
+  (4), yellow (8), red (12) to white (16 or more). The sun is not counted.
+- Both shade by the angle to the viewer so shapes read. The desktop
+  pipeline draws no artist view, so neither runs on Vulkan.
+
+An overdraw view is not implemented. Hidden-surface removal on the tiled
+GPU shades opaque pixels once, so a shader counter would count a different
+thing than the cost; a useful view needs a pipeline with no depth test and
+additive blending.
+
 ## Consequences
 
 - A crash or GPU timeout leaves a report that names the frame, the scene,
@@ -165,6 +219,9 @@ Develop > Render graph, or `window graph`, shows the same description.
   to Graphviz.
 - An agent can mark positions, bounds and camera frusta in the Scene and
   check them in a window capture.
+- An agent or a user can fly around a frozen camera's culling result, and
+  see which levels draws select and where many lights overlap. The frozen
+  result draws more than the live camera would, since occlusion is off.
 - A Metal GPU capture from inside the engine waits for Apple to support
   Metal 4 compute encoders in programmatic capture. Xcode's capture layer
   no longer crashes the editor at startup.
@@ -181,6 +238,7 @@ Develop > Render graph, or `window graph`, shows the same description.
 - macOS supports capturing Metal 4 compute encoders.
 - RenderDoc or the AMD driver supports descriptor buffers for capture, so
   a Vulkan capture can run on the Windows machine.
+- An overdraw view is needed: add a no-depth additive pipeline variant.
 - A crash on another thread's stack overflow needs a report (per-thread
   alternate stacks).
 
@@ -256,3 +314,16 @@ Develop > Render graph, or `window graph`, shows the same description.
   `gpu_draw_classifications` to the resource (passes 9 to 13, written by
   `Cull.Classify`, read by `Cull.Encode`), and wrote a 1,694-line DOT
   file. `run_debug_draw_tests` passed on Windows.
+- Freeze culling, 2026-10-19, same builds, 860 test cases passed, on a
+  headless Bistro editor at the tiled pipeline's defaults. At eye
+  (-12, 6, 14) `view.cull_report` counted 2567 candidates, 670 outside the
+  view, 126 too small and 1771 drawn; the GPU drew 171 after occlusion.
+  Frozen there and moved to (-70, 60, 75), the report was unchanged with
+  `frozen` true, the GPU drew exactly 1771 and the blend list kept its 277
+  draws. A capture showed only the frozen view's buildings and the cyan
+  frustum. Unfrozen at the same eye the report counted 1054 drawn and the
+  blend list 342.
+- LOD view from (-70, 60, 75): Bistro's draws showed levels 0, 1 and 2.
+  Light count view at (-12, 6, 14): ramps followed the lamps' ranges. The
+  tiled shaders compiled at runtime with no error.
+- The Vulkan freeze culling path is compiled on the Mac only.

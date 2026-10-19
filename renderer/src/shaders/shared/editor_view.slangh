@@ -47,11 +47,14 @@ float3 vkr_editor_triangle_barycentric(float3 point, float3 a, float3 b,
 
 // Artist view modes (ADR-099). The data views show one value per pixel
 // instead of light: 2 normals, 13 base colour, 14 roughness, 15 metallic,
-// 16 material cost, 17 texel density and 19 draw reach (ADR-114). Mode 18
-// shades as usual and false colours the exposed image by stops.
+// 16 material cost, 17 texel density, 19 draw reach (ADR-114), 20 the
+// draw's level of detail and 21 the local lights that reach the surface
+// (ADR-127). Mode 18 shades as usual and false colours the exposed image by
+// stops.
 bool vkr_editor_data_view(uint mode)
 {
-    return mode == 2u || (mode >= 13u && mode <= 17u) || mode == 19u;
+    return mode == 2u || (mode >= 13u && mode <= 17u) ||
+           (mode >= 19u && mode <= 21u);
 }
 
 // The shadow views' colour (VkrGpuDebugPayload.shadow_debug_mode) of the
@@ -109,6 +112,74 @@ float3 vkr_editor_reach_color(uint code)
     float t = saturate(float(code - 2u) / 16.0f);
     return t < 0.5f ? float3(1.0f, 2.0f * t, 0.0f)
                     : float3(2.0f - 2.0f * t, 1.0f, 0.0f);
+}
+
+// The LOD view's colour of one level: light grey for level 0, then red,
+// green, blue, yellow, magenta, cyan and orange.
+float3 vkr_editor_level_color(uint level)
+{
+    switch (level)
+    {
+    case 0u:
+        return float3(0.8f, 0.8f, 0.8f);
+    case 1u:
+        return float3(1.0f, 0.15f, 0.1f);
+    case 2u:
+        return float3(0.15f, 0.85f, 0.2f);
+    case 3u:
+        return float3(0.15f, 0.35f, 1.0f);
+    case 4u:
+        return float3(1.0f, 0.9f, 0.1f);
+    case 5u:
+        return float3(1.0f, 0.2f, 1.0f);
+    case 6u:
+        return float3(0.1f, 0.9f, 1.0f);
+    default:
+        return float3(1.0f, 0.55f, 0.1f);
+    }
+}
+
+// The LOD view's colour of a draw's level. A geomorphing draw (terrain)
+// moves toward the next level's colour as it morphs.
+float3 vkr_editor_lod_color(uint level, float morph)
+{
+    float3 color = vkr_editor_level_color(level);
+    float3 next = vkr_editor_level_color(min(level + 1u, 7u));
+    return color + (next - color) * saturate(morph);
+}
+
+// The light count view's colour of the local lights that reach a surface:
+// dark blue for none, then blue at one through green at four, yellow at
+// eight and red at twelve to white at sixteen or more.
+float3 vkr_editor_light_count_color(uint count)
+{
+    if (count == 0u)
+    {
+        return float3(0.03f, 0.03f, 0.12f);
+    }
+    float t = float(min(count, 16u));
+    float3 from = float3(1.0f, 0.1f, 0.05f);
+    float3 to = float3(1.0f, 1.0f, 1.0f);
+    float share = (t - 12.0f) / 4.0f;
+    if (t <= 4.0f)
+    {
+        from = float3(0.1f, 0.25f, 1.0f);
+        to = float3(0.1f, 0.9f, 0.2f);
+        share = (t - 1.0f) / 3.0f;
+    }
+    else if (t <= 8.0f)
+    {
+        from = float3(0.1f, 0.9f, 0.2f);
+        to = float3(1.0f, 0.9f, 0.1f);
+        share = (t - 4.0f) / 4.0f;
+    }
+    else if (t <= 12.0f)
+    {
+        from = float3(1.0f, 0.9f, 0.1f);
+        to = float3(1.0f, 0.1f, 0.05f);
+        share = (t - 8.0f) / 4.0f;
+    }
+    return from + (to - from) * share;
 }
 
 bool vkr_editor_false_color(uint mode)

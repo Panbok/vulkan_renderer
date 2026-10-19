@@ -119,6 +119,11 @@ typedef struct VkrSampleViewState {
      edits, instead of the game's draw distances; Play keeps them
      (VkrStandardSceneRuntime::draw_distance_off). */
   bool8_t draw_distance_off;
+  /* Freeze culling (ADR-127): the camera view, rooms, proxies and the blend
+     list keep culling from where the camera stood when it turned on, and
+     the Scene draws that camera's frustum, while the camera moves on
+     (VkrStandardSceneRuntime::freeze_culling). */
+  bool8_t freeze_culling;
 } VkrSampleViewState;
 
 /* The last VkrSampleViewState.shadow_view: the map's stored depth. */

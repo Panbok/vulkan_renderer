@@ -6917,6 +6917,30 @@ static VkrEditorOpStatus ops_run_greybox(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* view.freeze_culling: culling keeps the camera of the next frame while
+   the camera moves on, with its frustum drawn (ADR-127). */
+static VkrEditorOpStatus ops_run_freeze_culling(OpsContext *ctx) {
+  const VkrBakeryJson *on = vkr_bakery_json_get(ctx->call->args, "on");
+  if (!on || on->type != VKR_BAKERY_JSON_BOOL) {
+    ops_fail(ctx, OPS_INVALID, "'on' is true or false");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ctx->frame->view_request) {
+    ops_fail(ctx, OPS_REJECTED, "This editor has no Scene view");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrSampleViewState next = ctx->frame->view_request->apply
+                                ? ctx->frame->view_request->value
+                                : ctx->frame->view_state;
+  next.freeze_culling = on->boolean;
+  ctx->frame->view_request->value = next;
+  ctx->frame->view_request->apply = true_v;
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "freeze_culling",
+          vkr_bakery_json_bool(ops_arena(ctx), on->boolean));
+  return VKR_EDITOR_OP_DONE;
+}
+
 /* debug.gpu_spike: has the next rendered frame run pass Debug.GpuSpike, a
    GPU cost with no CPU cost (docs/proposals/recordings.md, gate 4). */
 static VkrEditorOpStatus ops_run_gpu_spike(OpsContext *ctx) {
@@ -6986,6 +7010,7 @@ static VkrEditorOpStatus ops_run_cull_report(OpsContext *ctx) {
   ops_set(ctx, result, "drawn", vkr_bakery_json_int(arena, report->drawn));
   ops_set(ctx, result, "distance_scale",
           ops_number(ctx, report->distance_scale));
+  ops_set(ctx, result, "frozen", vkr_bakery_json_bool(arena, report->frozen));
   call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -9025,14 +9050,15 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
       ++i;
     }
     if (!vkr_editor_cmd_render_modes[i]) {
-      return ops_fail(ctx, OPS_INVALID,
-                      "'mode' is lit, unlit, detail-lighting, lighting-only, "
-                      "wireframe, base-color, roughness, metallic, normals, "
-                      "material-cost, texel-density, exposure, draw-reach, "
-                      "direct-light, direct-diffuse, direct-specular, "
-                      "indirect-diffuse, material-params, motion-vectors, "
-                      "history-rejection, shadow-cascades, shadow-factor or "
-                      "shadow-depth");
+      return ops_fail(
+          ctx, OPS_INVALID,
+          "'mode' is lit, unlit, detail-lighting, lighting-only, "
+          "wireframe, base-color, roughness, metallic, normals, "
+          "material-cost, texel-density, exposure, draw-reach, "
+          "lod, light-count, direct-light, direct-diffuse, direct-specular, "
+          "indirect-diffuse, material-params, motion-vectors, "
+          "history-rejection, shadow-cascades, shadow-factor or "
+          "shadow-depth");
     }
     const char *refused =
         vkr_editor_cmd_render_mode_apply(ctx->frame, i, &next);
@@ -12191,7 +12217,8 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "{\"type\":\"string\",\"enum\":[\"lit\",\"unlit\",\"detail-lighting\","      \
   "\"lighting-only\",\"wireframe\",\"base-color\",\"roughness\","              \
   "\"metallic\",\"normals\",\"material-cost\",\"texel-density\","              \
-  "\"exposure\",\"draw-reach\",\"direct-light\",\"direct-diffuse\","           \
+  "\"exposure\",\"draw-reach\",\"lod\",\"light-count\",\"direct-light\","      \
+  "\"direct-diffuse\","                                                        \
   "\"direct-specular\",\"indirect-diffuse\",\"material-params\","              \
   "\"motion-vectors\",\"history-rejection\",\"shadow-cascades\","              \
   "\"shadow-factor\",\"shadow-depth\"]}"
@@ -18815,8 +18842,19 @@ static const OpsDef s_ops[] = {
      "copies a proxy cell draws in place of), past their draw 'distance', "
      "below their smallest drawn 'size', and 'drawn' (still subject to "
      "occlusion), with the 'distance_scale' the View distance setting gave "
-     "(0 when the Scene's draw distance chip shows All).",
+     "(0 when the Scene's draw distance chip shows All). 'frozen' is true "
+     "when the tests used the frozen camera of view.freeze_culling.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_cull_report, NULL},
+    {"view.freeze_culling",
+     "Freeze culling ('on' true): from the next frame, the camera view's "
+     "frustum, draw distance, size and level tests, rooms, scatter proxies "
+     "and the blend list cull from where the camera stands then, while the "
+     "camera moves on, and the Scene draws that camera's frustum in cyan "
+     "(debug group 'freeze culling'). Occlusion culling is off while "
+     "frozen. 'on' false culls from the camera again.",
+     "{\"type\":\"object\",\"properties\":{\"on\":{\"type\":"
+     "\"boolean\"}},\"required\":[\"on\"]}",
+     ops_run_freeze_culling, NULL},
     {"view.greybox",
      "Show every brush face's surface greybox look, art-owned materials "
      "too ('on' true), or return to them ('on' false). The view persists "
@@ -18839,9 +18877,13 @@ static const OpsDef s_ops[] = {
      "answers each one's pixel ('at') and 'hidden', or null where it lies "
      "outside the view. 'mode' renders a view in a render mode, such as the "
      "artist views base-color, roughness, metallic, normals, material-cost, "
-     "texel-density and exposure (false colour by stops), and draw-reach "
+     "texel-density and exposure (false colour by stops), draw-reach "
      "(how many times farther each object still draws: magenta past its "
-     "limit, red to green from 1x to 16x, blue without one).",
+     "limit, red to green from 1x to 16x, blue without one), lod (each "
+     "draw's level: grey 0, red 1, green 2, blue 3, yellow 4, magenta 5, "
+     "cyan 6, orange 7) and light-count (local lights reaching each "
+     "surface: dark blue none, blue 1, green 4, yellow 8, red 12, white 16 "
+     "or more).",
      "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA

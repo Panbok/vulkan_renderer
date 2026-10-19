@@ -393,6 +393,13 @@ typedef struct VkrStandardSceneRuntime {
   /** Diagnostic: VKR_PROXIES=0 draws every scatter copy and no merged far
       cell. */
   bool8_t proxies_off;
+  /** Freeze culling (ADR-127): the first world payload after it turns on
+      keeps the camera in `frozen_cull`, and later payloads cull the camera
+      view, rooms, proxies and the blend list from it while the camera moves
+      on. `cull_frozen` is set while `frozen_cull` holds that camera. */
+  bool8_t freeze_culling;
+  bool8_t cull_frozen;
+  VkrCullCamera frozen_cull;
   /** The next world payload sorts its camera candidates into `cull_report`
       (view.cull_report) and advances `cull_report_serial`. */
   bool8_t cull_report_request;

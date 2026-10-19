@@ -132,5 +132,8 @@ per-pass times) and `perf.set` switches pass and submission GPU timing.
 `debug.graph` returns the compiled render graph (add `dot` for a Graphviz
 file; `window graph` shows it). `debug.draw` puts lines, boxes, spheres,
 the camera frustum and labels over the Scene by `group`, for `seconds` or
-until `debug.clear`; check them with `view.capture {area: window}`. After a crash, read `crash-*.txt` beside the session log in
+until `debug.clear`; check them with `view.capture {area: window}`.
+`view.freeze_culling {on}` (Cmd `view.freeze_culling`) keeps culling from the
+current camera while it moves, and `view.capture` modes `lod` and
+`light-count` show draw levels and overlapping lights. After a crash, read `crash-*.txt` beside the session log in
 `<workspace>/logs/` (stderr for a run without a workspace).

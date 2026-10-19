@@ -137,11 +137,20 @@ vkr_packet_derive_material_constants(const VkrPbrProperties *pbr,
 void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
                                 const VkrRenderGraphFrameInfo *frame,
                                 VkrGpuLodView *out_views, uint32_t view_count) {
-  out_views[0] = vkr_gpu_lod_view(
-      packet->temporal.current_view_projection,
-      (float32_t)frame->scene_output_height * frame->render_scale,
-      packet->input.globals.view_position,
-      packet->temporal.previous_view_position, true_v);
+  /* A frozen culling camera selects levels and measures distances from
+     where it stood, with no morph motion (ADR-127). */
+  const VkrCullCamera *frozen =
+      packet->input.world ? packet->input.world->frozen_cull : NULL;
+  out_views[0] =
+      frozen ? vkr_gpu_lod_view(
+                   mat4_mul(frozen->projection, frozen->view),
+                   (float32_t)frame->scene_output_height * frame->render_scale,
+                   frozen->view_position, frozen->view_position, true_v)
+             : vkr_gpu_lod_view(
+                   packet->temporal.current_view_projection,
+                   (float32_t)frame->scene_output_height * frame->render_scale,
+                   packet->input.globals.view_position,
+                   packet->temporal.previous_view_position, true_v);
   /* The camera alone culls by draw distance and screen size. */
   out_views[0].distance_scale =
       packet->input.world ? packet->input.world->draw_distance_scale : 0.0f;

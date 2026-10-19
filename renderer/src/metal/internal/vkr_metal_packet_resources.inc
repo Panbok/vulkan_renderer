@@ -3435,11 +3435,20 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
   if (plan->gpu_draw_view_count > 0u) {
     VkrMetalPacketGpuDrawView *views =
         (VkrMetalPacketGpuDrawView *)(cpu + plan->gpu_draw_views_offset);
-    const VkrFrustum camera = vkr_frustum_from_view_projection(
-        packet->input.globals.view, packet->input.globals.projection);
+    /* A frozen culling camera culls the camera view without occlusion: the
+       depth pyramid follows the frame's camera (ADR-127). */
+    const VkrCullCamera *frozen =
+        packet->input.world ? packet->input.world->frozen_cull : NULL;
+    const VkrFrustum camera =
+        frozen ? vkr_frustum_from_view_projection(frozen->view,
+                                                  frozen->projection)
+               : vkr_frustum_from_view_projection(
+                     packet->input.globals.view,
+                     packet->input.globals.projection);
     vkr_metal_packet_pack_gpu_draw_view(
         &views[0], &camera, VKR_WORLD_DRAW_CANDIDATE_CAMERA_OPAQUE,
-        renderer->prepared_frame.hzb_history_valid, renderer->frustum_enabled);
+        renderer->prepared_frame.hzb_history_valid && !frozen,
+        renderer->frustum_enabled);
     vkr_packet_write_lod_views(
         packet, &renderer->prepared_frame,
         (VkrGpuLodView *)(cpu + plan->gpu_draw_lod_views_offset),

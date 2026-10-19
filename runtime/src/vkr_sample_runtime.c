@@ -460,6 +460,8 @@ typedef struct State {
   /* World-space lines, boxes and labels tools and agents draw over the
      Scene (core/vkr_debug_draw.h), expired once per UI build. */
   VkrDebugDraw debug_draw;
+  /* The frozen culling camera's frustum is in `debug_draw`. */
+  bool8_t freeze_frustum_drawn;
 } State;
 
 vkr_global State *state = NULL;
@@ -5848,6 +5850,32 @@ vkr_internal bool8_t vkr_standard_scene_runtime_describe_graph(
                                      out_graph, out_info);
 }
 
+/* Applies the Scene view's Freeze culling switch (ADR-127). While the
+   runtime culls from a frozen camera, that camera's frustum stays drawn in
+   debug group "freeze culling", in level coordinates. */
+vkr_internal void
+sample_freeze_culling_apply(VkrStandardSceneRuntime *application) {
+  application->freeze_culling = state->view_state.freeze_culling;
+  if (application->cull_frozen == state->freeze_frustum_drawn) {
+    return;
+  }
+  const uint32_t group = vkr_debug_draw_group("freeze culling");
+  (void)vkr_debug_draw_clear(&state->debug_draw, group, false_v);
+  state->freeze_frustum_drawn = application->cull_frozen;
+  if (!application->cull_frozen) {
+    return;
+  }
+  const VkrScene *level = vkr_standard_scene_runtime_level_scene(application);
+  const Vec3 origin = level ? level->origin_offset : vec3_zero();
+  const Mat4 inverse =
+      mat4_mul(mat4_translate(origin),
+               mat4_inverse(mat4_mul(application->frozen_cull.projection,
+                                     application->frozen_cull.view)));
+  (void)vkr_debug_draw_frustum(
+      &state->debug_draw, inverse,
+      (VkrDebugDrawStyle){.group = group, .color = VKR_DEBUG_DRAW_CYAN});
+}
+
 /* Describes this frame to the UI client and runs its build. The frame lends
    the client `requests` until build returns. */
 vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
@@ -5858,6 +5886,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
   const VkrRendererPipelineStats pipelines =
       vkr_renderer_get_pipeline_stats(&application->renderer);
   vkr_debug_draw_expire(&state->debug_draw, vkr_platform_get_absolute_time());
+  sample_freeze_culling_apply(application);
   /* The open scene, for a crash report (lib/src/platform/vkr_crash.h). */
   char crash_scene[VKR_CRASH_TEXT_CAPACITY];
   const uint64_t crash_scene_length =

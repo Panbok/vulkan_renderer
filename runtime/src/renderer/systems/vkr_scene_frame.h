@@ -65,6 +65,8 @@ typedef struct VkrSceneCullReport {
   uint32_t size;
   uint32_t drawn;
   float32_t distance_scale;
+  /** The camera was the frozen culling camera (Freeze culling, ADR-127). */
+  bool8_t frozen;
 } VkrSceneCullReport;
 
 /** Sorts `world`'s camera candidates as the classify kernels do, through

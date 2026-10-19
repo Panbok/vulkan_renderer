@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-09
+updated: 2026-10-19
 authority: adr
 ---
 
@@ -40,7 +40,9 @@ asks for these views and a luminance query.
    - `EXPOSURE` (18).
 
    `NORMAL` (2) joins the data views on the tiled pipeline, and
-   `DRAW_REACH` (19) of [ADR-114](114-per-object-draw-distance.md) is one
+   `DRAW_REACH` (19) of [ADR-114](114-per-object-draw-distance.md) and
+   `LOD` (20) and `LIGHT_COUNT` (21) of
+   [ADR-127](127-crash-reports-gpu-capture-and-graph-description.md) are
    too.
    `vkr_graphics_pipeline_draws_render_mode` reports them for the tiled
    pipeline only. The desktop pipeline draws the modes before 13.

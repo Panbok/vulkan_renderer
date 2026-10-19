@@ -113,6 +113,7 @@ static const char *const eval_view_members[] = {"camera",
                                                 "snap_turns",
                                                 "draw_distance",
                                                 "pass",
+                                                "freeze_culling",
                                                 NULL};
 static const char *const eval_snap_targets[] = {"free", "surface", "grid",
                                                 NULL};
@@ -680,6 +681,9 @@ static bool8_t eval_view_member(Eval *eval, String8 name, Value *out) {
                                  : "off");
     return true_v;
   }
+  case 21:
+    *out = eval_bool(view->freeze_culling);
+    return true_v;
   case 5:
     for (uint32_t i = 0; vkr_editor_cmd_tools[i]; ++i) {
       if (vkr_editor_cmd_tool_modes[i] == view->gizmo_tool) {
@@ -1758,7 +1762,8 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
         return eval_fail(eval, "'%s' %s", value->text, refused);
     } else
       next.gizmo_tool = vkr_editor_cmd_tool_modes[choice];
-  } else if (index == 2 || index == 6 || index == 7 || index == 19) {
+  } else if (index == 2 || index == 6 || index == 7 || index == 19 ||
+             index == 21) {
     if (!eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member))
       return false_v;
     if (index == 2)
@@ -1767,6 +1772,8 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
       next.grid_labels = value->number != 0.0;
     else if (index == 19)
       next.draw_distance_off = value->number == 0.0;
+    else if (index == 21)
+      next.freeze_culling = value->number != 0.0;
     else
       next.grid_through_geometry = value->number != 0.0;
   } else if (index == 8) {

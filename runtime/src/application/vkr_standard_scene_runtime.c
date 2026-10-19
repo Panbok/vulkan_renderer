@@ -1374,6 +1374,21 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     VkrStandardSceneRuntimeDrawContext *draw) {
   VkrVisibilityStats visibility_stats = {0};
   VkrRendererError world_error = VKR_RENDERER_ERROR_NONE;
+  /* Freeze culling keeps the camera of the first payload after it turns on
+     and culls from it; a probe capture always culls from its own camera. */
+  const VkrCullCamera live = {
+      .view = application->globals.view,
+      .projection = application->globals.projection,
+      .view_position = application->globals.view_position,
+  };
+  if (!application->freeze_culling || application->static_capture) {
+    application->cull_frozen = false_v;
+  } else if (!application->cull_frozen && !draw->scene_stopped) {
+    application->frozen_cull = live;
+    application->cull_frozen = true_v;
+  }
+  const VkrCullCamera cull =
+      application->cull_frozen ? application->frozen_cull : live;
   /* The renderer's publication state joins the payload once the frame is
      acquired (vkr_standard_scene_runtime_prepare_acquired). */
   VKR_ZONE_BEGIN(payload_zone, "World.Payload");
@@ -1398,9 +1413,8 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
       gate.rooms =
           everything || application->rooms_off
               ? NULL
-              : vkr_scene_rooms_frame(scene, application->globals.view_position,
-                                      mat4_mul(application->globals.projection,
-                                               application->globals.view));
+              : vkr_scene_rooms_frame(scene, cull.view_position,
+                                      mat4_mul(cull.projection, cull.view));
       draw->room_frame = gate.rooms;
       /* Every rendered scene's far cells, the added ones too, since each
          draws both a cell and its copies unless marked; drawing
@@ -1427,13 +1441,12 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
         MemZero(proxy_frame.instance_hidden, proxy_frame.instance_slot_count);
         MemZero(proxy_frame.mesh_hidden, proxy_frame.mesh_slot_count);
         const bool8_t copies_only = everything || application->proxies_off;
-        vkr_scene_population_mark_proxies(scene,
-                                          application->globals.view_position,
+        vkr_scene_population_mark_proxies(scene, cull.view_position,
                                           copies_only, &proxy_frame);
         for (uint32_t i = 0; i < application->additive_count; ++i) {
           vkr_scene_population_mark_proxies(application->additive_scenes[i],
-                                            application->globals.view_position,
-                                            copies_only, &proxy_frame);
+                                            cull.view_position, copies_only,
+                                            &proxy_frame);
         }
         gate.proxies = &proxy_frame;
       }
@@ -1441,9 +1454,8 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
     if (!draw->scene_stopped)
       world_error = vkr_scene_build_world_draws(
           &application->assets.mesh_manager,
-          &application->assets.material_system, false_v, 1u,
-          application->globals.view, application->globals.projection,
-          application->globals.view_position,
+          &application->assets.material_system, false_v, 1u, cull.view,
+          cull.projection, cull.view_position,
           /* A probe capture keeps every static object, near or far. */
           application->static_capture || application->draw_distance_off
               ? 0.0f
@@ -1460,17 +1472,19 @@ vkr_internal VkrRendererError vkr_standard_scene_runtime_build_world_payload(
   }
   /* A requested cull report, once, over the payload just built. */
   if (application->cull_report_request && !draw->scene_stopped) {
-    vkr_scene_cull_report(
-        &draw->world_payload,
-        mat4_mul(application->globals.projection, application->globals.view),
-        (float32_t)application->renderer.scene_output_height *
-            application->renderer.render_scale,
-        application->globals.view_position, &application->cull_report);
+    vkr_scene_cull_report(&draw->world_payload,
+                          mat4_mul(cull.projection, cull.view),
+                          (float32_t)application->renderer.scene_output_height *
+                              application->renderer.render_scale,
+                          cull.view_position, &application->cull_report);
+    application->cull_report.frozen = application->cull_frozen;
     application->cull_report_serial++;
     application->cull_report_request = false_v;
   }
   draw->world_payload.caster_publication_generation =
       application->assets.caster_publication_generation;
+  draw->world_payload.frozen_cull =
+      application->cull_frozen ? &application->frozen_cull : NULL;
   /* Both pipelines draw decals (ADR-092); their textures join this frame's
      residency demand. */
   if (!draw->scene_stopped) {

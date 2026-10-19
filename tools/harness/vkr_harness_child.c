@@ -1753,6 +1753,8 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
         {"texel_density", VKR_RENDER_MODE_TEXEL_DENSITY},
         {"exposure", VKR_RENDER_MODE_EXPOSURE},
         {"draw_reach", VKR_RENDER_MODE_DRAW_REACH},
+        {"lod", VKR_RENDER_MODE_LOD},
+        {"light_count", VKR_RENDER_MODE_LIGHT_COUNT},
     };
     for (uint32_t i = 0; i < ArrayCount(artist_views); ++i) {
       if (string_equals(case_manifest->renderer.render_mode,
