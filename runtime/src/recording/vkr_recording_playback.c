@@ -4,17 +4,24 @@
 
 #include "assets/vkr_recording_format.h"
 #include "containers/str.h"
+#include "containers/vkr_hashtable.h"
 #include "containers/vkr_sort.h"
 #include "memory/vkr_dmemory_allocator.h"
 
+/* Address space only; pages commit as the recording's data needs them. A
+   long recording of a busy level holds tens of millions of poses. */
 #define VKR_RECORDING_PLAYBACK_MEMORY_COMMIT (1ull * 1024ull * 1024ull)
 #define VKR_RECORDING_PLAYBACK_MEMORY_RESERVE                                  \
-  (2ull * 1024ull * 1024ull * 1024ull)
+  (8ull * 1024ull * 1024ull * 1024ull)
+/* Key slots the first pass starts with; it doubles them at half load. */
+#define VKR_RECORDING_POSE_SLOTS_INITIAL 4096u
 
-typedef struct VkrRecordingPoseLoad {
-  VkrRecordingPose pose;
-  uint64_t frame;
-} VkrRecordingPoseLoad;
+/* A pose key as the first pass found it, with its index in that pass's
+   order, for sorting. */
+typedef struct VkrRecordingPoseKeyLoad {
+  VkrRecordingPoseKey key;
+  uint32_t index;
+} VkrRecordingPoseKeyLoad;
 
 /* One frame's pass rows or GPU starts as read, before the join. */
 typedef struct VkrRecordingTimelinePasses {
@@ -55,8 +62,16 @@ typedef struct VkrRecordingLoad {
   const VkrCodec *codec;
   /* Which frames had a frame and a camera record. */
   uint8_t *present;
-  /* Poses as recorded, with their frame, before they are grouped. */
-  VkrRecordingPoseLoad *poses;
+  /* The pose keys the first pass found, in the order it found them, with
+     their pose counts; open-addressed slots hold index + 1, zero empty. The
+     second pass writes each pose at its key's place in pose_samples, through
+     key_order (first-pass index to sorted index). */
+  VkrRecordingPoseKey *keys;
+  uint32_t key_count;
+  uint32_t key_capacity;
+  uint32_t *key_slots;
+  uint32_t key_slot_count;
+  uint32_t *key_order;
   /* The metrics record's size, its valid mask's offset, and per memory
      field its offset and valid bit, or UINT32_MAX without it. */
   uint32_t metrics_size;
@@ -269,6 +284,148 @@ vkr_recording_timeline_count(VkrRecordingLoad *load,
   }
 }
 
+/* Container, then ref, then node, then kind, then document. */
+vkr_internal int32_t vkr_recording_compare_keys(const void *lhs,
+                                                const void *rhs) {
+  const VkrRecordingPoseKey *a = &((const VkrRecordingPoseKeyLoad *)lhs)->key;
+  const VkrRecordingPoseKey *b = &((const VkrRecordingPoseKeyLoad *)rhs)->key;
+  if (a->container != b->container) {
+    return a->container < b->container ? -1 : 1;
+  }
+  const int32_t ref = MemCompare(&a->ref, &b->ref, sizeof(a->ref));
+  if (ref != 0) {
+    return ref;
+  }
+  if (a->node != b->node) {
+    return a->node < b->node ? -1 : 1;
+  }
+  if (a->kind != b->kind) {
+    return a->kind < b->kind ? -1 : 1;
+  }
+  if (a->document != b->document) {
+    return a->document < b->document ? -1 : 1;
+  }
+  return 0;
+}
+
+vkr_internal bool8_t vkr_recording_pose_same_key(const VkrRecordingPoseKey *a,
+                                                 const VkrRecordingPose *b) {
+  return a->container == b->container && a->node == b->node &&
+         a->kind == b->kind && a->document == b->document &&
+         MemCompare(&a->ref, &b->ref, sizeof(a->ref)) == 0;
+}
+
+vkr_internal uint32_t
+vkr_recording_pose_key_hash(const VkrRecordingPose *pose) {
+  uint8_t bytes[sizeof(VkrEntityRef) + 10u];
+  bytes[0] = pose->container;
+  bytes[1] = pose->kind;
+  MemCopy(bytes + 2u, &pose->ref, sizeof(pose->ref));
+  MemCopy(bytes + 2u + sizeof(pose->ref), &pose->node, sizeof(pose->node));
+  MemCopy(bytes + 6u + sizeof(pose->ref), &pose->document,
+          sizeof(pose->document));
+  return (uint32_t)vkr_hash_table_key_string8(
+             string8_create_from_cstr(bytes, sizeof(bytes)))
+      .hash;
+}
+
+/* The first-pass index of `pose`'s key, or UINT32_MAX when the first pass
+   did not find it. */
+vkr_internal uint32_t vkr_recording_pose_key_find(
+    const VkrRecordingLoad *load, const VkrRecordingPose *pose) {
+  if (load->key_slot_count == 0u) {
+    return UINT32_MAX;
+  }
+  const uint32_t mask = load->key_slot_count - 1u;
+  uint32_t probe = vkr_recording_pose_key_hash(pose) & mask;
+  while (load->key_slots[probe] != 0u) {
+    const uint32_t index = load->key_slots[probe] - 1u;
+    if (vkr_recording_pose_same_key(&load->keys[index], pose)) {
+      return index;
+    }
+    probe = (probe + 1u) & mask;
+  }
+  return UINT32_MAX;
+}
+
+/* Doubles the key slots and rehashes the keys into them. */
+vkr_internal bool8_t vkr_recording_pose_slots_grow(VkrRecordingLoad *load) {
+  VkrAllocator *allocator = &load->playback->allocator;
+  const uint32_t slot_count = load->key_slot_count == 0u
+                                  ? VKR_RECORDING_POSE_SLOTS_INITIAL
+                                  : load->key_slot_count * 2u;
+  uint32_t *slots =
+      vkr_allocator_alloc(allocator, sizeof(uint32_t) * slot_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  if (!slots) {
+    return false_v;
+  }
+  MemZero(slots, sizeof(uint32_t) * slot_count);
+  const uint32_t mask = slot_count - 1u;
+  for (uint32_t i = 0u; i < load->key_count; ++i) {
+    const VkrRecordingPoseKey *key = &load->keys[i];
+    const VkrRecordingPose named = {.ref = key->ref,
+                                    .node = key->node,
+                                    .container = key->container,
+                                    .kind = key->kind,
+                                    .document = key->document};
+    uint32_t probe = vkr_recording_pose_key_hash(&named) & mask;
+    while (slots[probe] != 0u) {
+      probe = (probe + 1u) & mask;
+    }
+    slots[probe] = i + 1u;
+  }
+  if (load->key_slots) {
+    vkr_allocator_free(allocator, load->key_slots,
+                       sizeof(uint32_t) * load->key_slot_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  }
+  load->key_slots = slots;
+  load->key_slot_count = slot_count;
+  return true_v;
+}
+
+/* First pass: counts a pose under its key, adding the key when new. */
+vkr_internal bool8_t vkr_recording_pose_count(VkrRecordingLoad *load,
+                                              const VkrRecordingPose *pose) {
+  uint32_t index = vkr_recording_pose_key_find(load, pose);
+  if (index == UINT32_MAX) {
+    if ((load->key_count + 1u) * 2u > load->key_slot_count &&
+        !vkr_recording_pose_slots_grow(load)) {
+      return false_v;
+    }
+    if (load->key_count == load->key_capacity) {
+      const uint32_t capacity = Max(load->key_capacity * 2u, 1024u);
+      VkrRecordingPoseKey *keys = vkr_allocator_realloc(
+          &load->playback->allocator, load->keys,
+          sizeof(VkrRecordingPoseKey) * load->key_capacity,
+          sizeof(VkrRecordingPoseKey) * capacity,
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (!keys) {
+        return false_v;
+      }
+      load->keys = keys;
+      load->key_capacity = capacity;
+    }
+    index = load->key_count++;
+    load->keys[index] = (VkrRecordingPoseKey){
+        .ref = pose->ref,
+        .node = pose->node,
+        .document = pose->document,
+        .container = pose->container,
+        .kind = pose->kind,
+    };
+    const uint32_t mask = load->key_slot_count - 1u;
+    uint32_t probe = vkr_recording_pose_key_hash(pose) & mask;
+    while (load->key_slots[probe] != 0u) {
+      probe = (probe + 1u) & mask;
+    }
+    load->key_slots[probe] = index + 1u;
+  }
+  ++load->keys[index].count;
+  return true_v;
+}
+
 vkr_internal bool8_t vkr_recording_count(VkrRecordingLoad *load,
                                          const VkrRecordingRecord *record) {
   VkrRecordingPlayback *playback = load->playback;
@@ -283,7 +440,15 @@ vkr_internal bool8_t vkr_recording_count(VkrRecordingLoad *load,
     ++playback->event_count;
   } else if (record->stream == VKR_RECORDING_STREAM_POSE &&
              record->size % sizeof(VkrRecordingPose) == 0u) {
-    playback->pose_sample_count += record->size / sizeof(VkrRecordingPose);
+    const uint32_t count = record->size / (uint32_t)sizeof(VkrRecordingPose);
+    for (uint32_t i = 0u; i < count; ++i) {
+      VkrRecordingPose pose;
+      MemCopy(&pose, record->data + i * sizeof(VkrRecordingPose), sizeof(pose));
+      if (!vkr_recording_pose_count(load, &pose)) {
+        return vkr_recording_load_fail(load, "out of memory for pose keys");
+      }
+    }
+    playback->pose_sample_count += count;
   } else if (record->stream == VKR_RECORDING_STREAM_EDIT &&
              record->size == sizeof(uint64_t)) {
     ++playback->edit_count;
@@ -549,99 +714,132 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
              record->size % sizeof(VkrRecordingPose) == 0u) {
     const uint32_t count = record->size / (uint32_t)sizeof(VkrRecordingPose);
     for (uint32_t i = 0u; i < count; ++i) {
-      VkrRecordingPoseLoad *pose = &load->poses[playback->pose_sample_count++];
-      MemCopy(&pose->pose, record->data + i * sizeof(VkrRecordingPose),
-              sizeof(VkrRecordingPose));
-      pose->frame = record->frame;
+      VkrRecordingPose pose;
+      MemCopy(&pose, record->data + i * sizeof(VkrRecordingPose), sizeof(pose));
+      const uint32_t found = vkr_recording_pose_key_find(load, &pose);
+      if (found == UINT32_MAX) {
+        continue;
+      }
+      VkrRecordingPoseKey *key = &playback->pose_keys[load->key_order[found]];
+      VkrRecordingPoseSample *sample =
+          &playback->pose_samples[key->first + key->count++];
+      sample->frame = record->frame;
+      MemCopy(sample->translation, pose.translation,
+              sizeof(sample->translation));
+      MemCopy(sample->linear, pose.linear, sizeof(sample->linear));
+      sample->flags = pose.flags;
+      ++playback->pose_sample_count;
     }
   }
   return true_v;
 }
 
-/* Container, then ref, then node, then document, then frame. */
-vkr_internal int32_t vkr_recording_compare_poses(const void *lhs,
-                                                 const void *rhs) {
-  const VkrRecordingPoseLoad *a = lhs;
-  const VkrRecordingPoseLoad *b = rhs;
-  if (a->pose.container != b->pose.container) {
-    return a->pose.container < b->pose.container ? -1 : 1;
+/* Between the passes: the keys sorted, each given its place in
+   pose_samples, and the first pass's order mapped to the sorted one. The
+   second pass counts each key's samples again as it writes them. */
+vkr_internal bool8_t vkr_recording_playback_place_keys(VkrRecordingLoad *load) {
+  VkrRecordingPlayback *playback = load->playback;
+  VkrAllocator *allocator = &playback->allocator;
+  const uint32_t keys = load->key_count;
+  if (keys == 0u) {
+    return true_v;
   }
-  const int32_t ref =
-      MemCompare(&a->pose.ref, &b->pose.ref, sizeof(a->pose.ref));
-  if (ref != 0) {
-    return ref;
+  VkrRecordingPoseKeyLoad *sorted =
+      vkr_allocator_alloc(allocator, sizeof(VkrRecordingPoseKeyLoad) * keys,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  load->key_order = vkr_allocator_alloc(allocator, sizeof(uint32_t) * keys,
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->pose_keys =
+      vkr_allocator_alloc(allocator, sizeof(VkrRecordingPoseKey) * keys,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->pose_samples = vkr_allocator_alloc(
+      allocator, sizeof(VkrRecordingPoseSample) * playback->pose_sample_count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!sorted || !load->key_order || !playback->pose_keys ||
+      !playback->pose_samples) {
+    if (sorted) {
+      vkr_allocator_free(allocator, sorted,
+                         sizeof(VkrRecordingPoseKeyLoad) * keys,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    return false_v;
   }
-  if (a->pose.node != b->pose.node) {
-    return a->pose.node < b->pose.node ? -1 : 1;
+  for (uint32_t i = 0u; i < keys; ++i) {
+    sorted[i] = (VkrRecordingPoseKeyLoad){.key = load->keys[i], .index = i};
   }
-  if (a->pose.kind != b->pose.kind) {
-    return a->pose.kind < b->pose.kind ? -1 : 1;
+  vkr_sort(sorted, keys, sizeof(*sorted), vkr_recording_compare_keys);
+  uint32_t first = 0u;
+  for (uint32_t k = 0u; k < keys; ++k) {
+    playback->pose_keys[k] = sorted[k].key;
+    playback->pose_keys[k].first = first;
+    playback->pose_keys[k].count = 0u;
+    first += sorted[k].key.count;
+    load->key_order[sorted[k].index] = k;
   }
-  if (a->pose.document != b->pose.document) {
-    return a->pose.document < b->pose.document ? -1 : 1;
-  }
+  playback->pose_key_count = keys;
+  vkr_allocator_free(allocator, sorted, sizeof(VkrRecordingPoseKeyLoad) * keys,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return true_v;
+}
+
+vkr_internal int32_t vkr_recording_compare_samples(const void *lhs,
+                                                   const void *rhs) {
+  const VkrRecordingPoseSample *a = lhs;
+  const VkrRecordingPoseSample *b = rhs;
   return a->frame < b->frame ? -1 : (a->frame > b->frame ? 1 : 0);
 }
 
-vkr_internal bool8_t vkr_recording_pose_same_key(const VkrRecordingPose *a,
-                                                 const VkrRecordingPose *b) {
-  return a->container == b->container && a->node == b->node &&
-         a->kind == b->kind && a->document == b->document &&
-         MemCompare(&a->ref, &b->ref, sizeof(a->ref)) == 0;
+/* After the second pass: orders each key's samples by frame, and closes the
+   gaps poses past the last frame left, dropping keys they emptied. */
+vkr_internal void vkr_recording_playback_group_poses(VkrRecordingLoad *load) {
+  VkrRecordingPlayback *playback = load->playback;
+  uint32_t keys = 0u;
+  uint32_t samples = 0u;
+  for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
+    VkrRecordingPoseKey key = playback->pose_keys[k];
+    if (key.count == 0u) {
+      continue;
+    }
+    VkrRecordingPoseSample *range = &playback->pose_samples[key.first];
+    for (uint32_t i = 1u; i < key.count; ++i) {
+      if (range[i].frame < range[i - 1u].frame) {
+        vkr_sort(range, key.count, sizeof(*range),
+                 vkr_recording_compare_samples);
+        break;
+      }
+    }
+    if (key.first != samples) {
+      MemCopy(&playback->pose_samples[samples], range,
+              sizeof(*range) * key.count);
+    }
+    key.first = samples;
+    samples += key.count;
+    playback->pose_keys[keys++] = key;
+  }
+  playback->pose_key_count = keys;
 }
 
-/* Groups the loaded poses into keys with their samples by frame. */
-vkr_internal bool8_t
-vkr_recording_playback_group_poses(VkrRecordingLoad *load) {
-  VkrRecordingPlayback *playback = load->playback;
-  const uint64_t count = playback->pose_sample_count;
-  if (count == 0u) {
-    return true_v;
+/* Releases the first pass's key table. */
+vkr_internal void vkr_recording_load_keys_free(VkrRecordingLoad *load) {
+  VkrAllocator *allocator = &load->playback->allocator;
+  if (load->key_slots) {
+    vkr_allocator_free(allocator, load->key_slots,
+                       sizeof(uint32_t) * load->key_slot_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
   }
-  vkr_sort(load->poses, count, sizeof(VkrRecordingPoseLoad),
-           vkr_recording_compare_poses);
-  uint64_t keys = 0u;
-  for (uint64_t i = 0u; i < count; ++i) {
-    keys += i == 0u || !vkr_recording_pose_same_key(&load->poses[i].pose,
-                                                    &load->poses[i - 1u].pose)
-                ? 1u
-                : 0u;
+  if (load->keys) {
+    vkr_allocator_free(allocator, load->keys,
+                       sizeof(VkrRecordingPoseKey) * load->key_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  playback->pose_samples = vkr_allocator_alloc(
-      &playback->allocator, sizeof(VkrRecordingPoseSample) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  playback->pose_keys = vkr_allocator_alloc(&playback->allocator,
-                                            sizeof(VkrRecordingPoseKey) * keys,
-                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!playback->pose_samples || !playback->pose_keys) {
-    return vkr_recording_load_fail(load, "out of memory");
+  if (load->key_order) {
+    vkr_allocator_free(allocator, load->key_order,
+                       sizeof(uint32_t) * load->key_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  uint32_t key = UINT32_MAX;
-  for (uint64_t i = 0u; i < count; ++i) {
-    const VkrRecordingPoseLoad *loaded = &load->poses[i];
-    if (i == 0u || !vkr_recording_pose_same_key(&loaded->pose,
-                                                &load->poses[i - 1u].pose)) {
-      key = key == UINT32_MAX ? 0u : key + 1u;
-      playback->pose_keys[key] = (VkrRecordingPoseKey){
-          .ref = loaded->pose.ref,
-          .node = loaded->pose.node,
-          .document = loaded->pose.document,
-          .kind = loaded->pose.kind,
-          .container = loaded->pose.container,
-          .first = (uint32_t)i,
-      };
-    }
-    ++playback->pose_keys[key].count;
-    VkrRecordingPoseSample *sample = &playback->pose_samples[i];
-    sample->frame = loaded->frame;
-    sample->key = key;
-    MemCopy(sample->translation, loaded->pose.translation,
-            sizeof(sample->translation));
-    MemCopy(sample->linear, loaded->pose.linear, sizeof(sample->linear));
-    sample->flags = loaded->pose.flags;
-  }
-  playback->pose_key_count = (uint32_t)keys;
-  return true_v;
+  load->key_slots = NULL;
+  load->keys = NULL;
+  load->key_order = NULL;
 }
 
 /* By frame, then name, then count: a total order. */
@@ -937,16 +1135,18 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
     return vkr_recording_load_fail(load, "out of memory");
   }
   MemZero(load->present, playback->frame_count);
-  /* Sample indices are u32, two values short of their maximum. */
-  if (playback->pose_sample_count >= UINT32_MAX - 2u) {
+  /* Sample indices are u32, below the VKR_RECORDING_POSE_APPLIED_* values. */
+  if (playback->pose_sample_count >= VKR_RECORDING_POSE_APPLIED_FOLLOWS) {
     return vkr_recording_load_fail(load, "the recording holds too many poses");
   }
-  load->poses = vkr_allocator_alloc(&playback->allocator,
-                                    sizeof(VkrRecordingPoseLoad) *
-                                        (playback->pose_sample_count + 1u),
-                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!load->poses) {
-    return vkr_recording_load_fail(load, "out of memory");
+  if (!vkr_recording_playback_place_keys(load)) {
+    string_format(load->error, load->error_capacity,
+                  "out of memory for %llu poses (%.1f GB)",
+                  (unsigned long long)playback->pose_sample_count,
+                  (float64_t)(playback->pose_sample_count *
+                              sizeof(VkrRecordingPoseSample)) /
+                      (1024.0 * 1024.0 * 1024.0));
+    return false_v;
   }
   playback->edit_frames = vkr_allocator_alloc(
       &playback->allocator, sizeof(uint64_t) * (playback->edit_count + 1u),
@@ -979,10 +1179,11 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   playback->event_name_count = 0u;
   playback->pose_sample_count = 0u;
   playback->edit_count = 0u;
-  if (!vkr_recording_load_records(load, vkr_recording_fill) ||
-      !vkr_recording_playback_group_poses(load)) {
+  if (!vkr_recording_load_records(load, vkr_recording_fill)) {
     return false_v;
   }
+  vkr_recording_playback_group_poses(load);
+  vkr_recording_load_keys_free(load);
   vkr_recording_playback_finish(load);
   if (!vkr_recording_timeline_finish(load)) {
     return vkr_recording_load_fail(load, "out of memory");

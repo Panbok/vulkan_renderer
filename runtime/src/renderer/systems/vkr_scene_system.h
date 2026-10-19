@@ -79,6 +79,12 @@ typedef struct SceneName {
 /* The world matrix changed since the change list was last drained
    (vkr_scene_track_changes); set only while changes are tracked. */
 #define SCENE_TRANSFORM_CHANGED 0x10
+/* The world matrix was computed at least once. */
+#define SCENE_TRANSFORM_PLACED 0x20
+/* The parent changed after the entity was placed, so its hierarchy is no
+   longer the one it was created or loaded with; the change list lists every
+   change of its world matrix. */
+#define SCENE_TRANSFORM_REPARENTED 0x40
 
 /**
  * @brief Transform component with TRS, cached matrices, and hierarchy support.
@@ -2458,7 +2464,10 @@ bool8_t vkr_scene_set_local_matrix(VkrScene *scene, VkrEntityId entity,
 /**
  * @brief Starts or stops listing the entities whose world matrix changes.
  * Starting lists every entity with a transform once, so the first drain
- * holds the whole scene. Stopping clears the list and its marks.
+ * holds the whole scene. Stopping clears the list and its marks. An entity
+ * whose world matrix changed only because its parent's did is not listed:
+ * its pose relative to its parent stays. Transient entities and
+ * SCENE_TRANSFORM_REPARENTED ones are listed for every change.
  * @return false_v when the first list could not be allocated; tracking
  * then starts with the list overflowed.
  */

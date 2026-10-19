@@ -3284,6 +3284,11 @@ void vkr_scene_update_transforms(VkrScene *scene) {
     if (!transform)
       continue;
 
+    /* Dirty before its parent passes it on: its pose relative to its
+       parent changed. */
+    const bool8_t dirty_own =
+        (transform->flags & SCENE_TRANSFORM_DIRTY_WORLD) != 0;
+
     // Single parent lookup for both dirty propagation and matrix computation
     SceneTransform *parent_transform = NULL;
     if (transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64) {
@@ -3323,13 +3328,18 @@ void vkr_scene_update_transforms(VkrScene *scene) {
     }
 
     transform->flags &= ~SCENE_TRANSFORM_DIRTY_WORLD;
-    transform->flags |=
-        SCENE_TRANSFORM_WORLD_UPDATED; // Mark for child propagation
+    transform->flags |= SCENE_TRANSFORM_WORLD_UPDATED | // child propagation
+                        SCENE_TRANSFORM_PLACED;
     recomputed = true_v;
 
     // Mark for render sync
     scene_mark_render_dirty(scene, entity);
-    if (scene->changes_tracked) {
+    /* A child its parent carried keeps its relative pose and is not listed;
+       an overridden one is, since its override does not follow. */
+    if (scene->changes_tracked &&
+        (dirty_own || physics_override || !parent_transform ||
+         (transform->flags & SCENE_TRANSFORM_REPARENTED) ||
+         vkr_entity_has_component(world, entity, scene->comp_transient))) {
       scene_mark_changed(scene, entity, transform);
     }
   }
@@ -3730,6 +3740,10 @@ bool8_t vkr_scene_set_transform(VkrScene *scene, VkrEntityId entity,
   };
   comp.world = comp.local; // Updated below in parent-before-child order.
   if (previous) {
+    /* The entity stays listed, placed and reparented as it was. */
+    comp.flags |=
+        previous->flags & (SCENE_TRANSFORM_CHANGED | SCENE_TRANSFORM_PLACED |
+                           SCENE_TRANSFORM_REPARENTED);
     *previous = comp;
     return true_v;
   }
@@ -3954,6 +3968,9 @@ void vkr_scene_set_parent(VkrScene *scene, VkrEntityId entity,
   VkrEntityId old_parent = t->parent;
   if (old_parent.u64 == parent.u64) {
     return;
+  }
+  if (t->flags & SCENE_TRANSFORM_PLACED) {
+    t->flags |= SCENE_TRANSFORM_REPARENTED;
   }
 
   if (scene->child_index_valid) {

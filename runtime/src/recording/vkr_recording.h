@@ -41,9 +41,11 @@
    id, then the rows of each rendered frame. Rows are droppable. */
 #define VKR_RECORDING_STREAM_PASS_NAME 5u
 #define VKR_RECORDING_STREAM_PASSES 6u
-/* World poses of entities whose transform changed (VkrRecordingPose), in
-   records of up to VKR_RECORDING_POSE_BATCH entries; the first frames list
-   every entity once. Not droppable: a lost pose would show a stale one. */
+/* Poses of entities whose transform changed (VkrRecordingPose), in records
+   of up to VKR_RECORDING_POSE_BATCH entries; the first frames list every
+   entity once. An entity with a parent is posed relative to it
+   (VKR_RECORDING_POSE_FLAG_PARENTED) and gets no pose when only an ancestor
+   moved. Not droppable: a lost pose would show a stale one. */
 #define VKR_RECORDING_STREAM_POSE 7u
 #define VKR_RECORDING_POSE_BATCH 256u
 /* Poses a frame writes at most; a larger change list, such as the first
@@ -61,6 +63,11 @@
    such as a first-person player's body; a change of visibility writes a
    pose. */
 #define VKR_RECORDING_POSE_FLAG_HIDDEN 1u
+/* VkrRecordingPose.flags: the translation and 3x3 are the entity's pose in
+   its parent's space, without the origin offset; its world pose is its
+   parent's times it. Recordings before the flag pose every entity in world
+   space. */
+#define VKR_RECORDING_POSE_FLAG_PARENTED 2u
 /* VkrRecordingPose.container */
 #define VKR_RECORDING_CONTAINER_ACTIVE 0u
 #define VKR_RECORDING_CONTAINER_WORLD 1u
@@ -243,12 +250,14 @@ typedef struct VkrRecordingCamera {
   uint32_t projection;
 } VkrRecordingCamera;
 
-/* One entity's world pose. An entity is named by the container that holds
-   it and its document-stable ref, or, for a node of an imported model, by
-   the ref of the nearest ancestor that has one and the glTF node index. A
-   document without refs names its entities by document index instead, with
-   a zero ref: stable while the document is unchanged. A script spawn, or a
-   node of a model spawned under one, is named by spawn id (kind SPAWN). */
+/* One entity's pose, in world space or, with
+   VKR_RECORDING_POSE_FLAG_PARENTED, in its parent's. An entity is named by the
+   container that holds it and its document-stable ref, or, for a node of an
+   imported model, by the ref of the nearest ancestor that has one and the glTF
+   node index. A document without refs names its entities by document index
+   instead, with a zero ref: stable while the document is unchanged. A script
+   spawn, or a node of a model spawned under one, is named by spawn id (kind
+   SPAWN). */
 typedef struct VkrRecordingPose {
   VkrEntityRef ref;
   uint32_t node;
@@ -257,9 +266,10 @@ typedef struct VkrRecordingPose {
   /* VKR_RECORDING_POSE_FLAG_*; zero in recordings before them. */
   uint8_t flags;
   uint8_t reserved;
-  /* World translation plus the scene's origin offset. */
+  /* World translation plus the scene's origin offset, or the translation
+     in the parent's space. */
   float64_t translation[3];
-  /* The world matrix's upper 3x3, column-major. */
+  /* The world or parent-space matrix's upper 3x3, column-major. */
   float32_t linear[9];
   uint32_t document;
 } VkrRecordingPose;

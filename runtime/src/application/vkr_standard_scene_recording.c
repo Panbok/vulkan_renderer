@@ -135,16 +135,34 @@ vkr_standard_scene_recording_pose(VkrStandardSceneRuntime *runtime,
   if (visibility && !visibility->visible) {
     pose.flags |= VKR_RECORDING_POSE_FLAG_HIDDEN;
   }
-  const Mat4 *world = &transform->world;
-  pose.translation[0] =
-      (float64_t)world->m03 + (float64_t)scene->origin_offset.x;
-  pose.translation[1] =
-      (float64_t)world->m13 + (float64_t)scene->origin_offset.y;
-  pose.translation[2] =
-      (float64_t)world->m23 + (float64_t)scene->origin_offset.z;
+  /* Relative to its parent, unless Watch's hierarchy may differ from this
+     one: a spawn's stand-in is a root, and a reparented entity's parent is
+     no longer the one the document gave it. */
+  const SceneTransform *parent =
+      transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64 &&
+              !(transform->flags & SCENE_TRANSFORM_REPARENTED) &&
+              !(pose.kind == VKR_RECORDING_POSE_KIND_SPAWN &&
+                pose.node == VKR_RECORDING_POSE_NODE_NONE)
+          ? vkr_scene_get_transform(scene, transform->parent)
+          : NULL;
+  Mat4 matrix = transform->world;
+  Vec3 offset = scene->origin_offset;
+  if (parent) {
+    /* Its local matrix when nothing overrides its world, so Watch finds it
+       unchanged and leaves it to the scene. */
+    const Mat4 carried = mat4_mul(parent->world, transform->local);
+    matrix = MemCompare(&carried, &transform->world, sizeof(carried)) == 0
+                 ? transform->local
+                 : mat4_mul(mat4_inverse(parent->world), transform->world);
+    offset = vec3_zero();
+    pose.flags |= VKR_RECORDING_POSE_FLAG_PARENTED;
+  }
+  pose.translation[0] = (float64_t)matrix.m03 + (float64_t)offset.x;
+  pose.translation[1] = (float64_t)matrix.m13 + (float64_t)offset.y;
+  pose.translation[2] = (float64_t)matrix.m23 + (float64_t)offset.z;
   for (uint32_t column = 0u; column < 3u; ++column) {
     for (uint32_t row = 0u; row < 3u; ++row) {
-      pose.linear[column * 3u + row] = world->elements[column * 4u + row];
+      pose.linear[column * 3u + row] = matrix.elements[column * 4u + row];
     }
   }
   vkr_recording_pose(&runtime->recording, &pose);
@@ -247,22 +265,133 @@ vkr_standard_scene_recording_untrack(VkrStandardSceneRuntime *runtime) {
   }
 }
 
-/* The world matrix of a recorded pose in `scene`'s space. */
-vkr_internal Mat4 vkr_standard_scene_recording_pose_world(
+/* A recorded pose's matrix: its world matrix in `scene`'s space, or, for
+   a parented pose, its matrix in its parent's space. */
+vkr_internal Mat4 vkr_standard_scene_recording_pose_matrix(
     const VkrScene *scene, const VkrRecordingPoseSample *sample) {
-  Mat4 world = mat4_identity();
+  Mat4 matrix = mat4_identity();
   for (uint32_t column = 0u; column < 3u; ++column) {
     for (uint32_t row = 0u; row < 3u; ++row) {
-      world.elements[column * 4u + row] = sample->linear[column * 3u + row];
+      matrix.elements[column * 4u + row] = sample->linear[column * 3u + row];
     }
   }
-  world.m03 =
-      (float32_t)(sample->translation[0] - (float64_t)scene->origin_offset.x);
-  world.m13 =
-      (float32_t)(sample->translation[1] - (float64_t)scene->origin_offset.y);
-  world.m23 =
-      (float32_t)(sample->translation[2] - (float64_t)scene->origin_offset.z);
+  const bool8_t parented =
+      (sample->flags & VKR_RECORDING_POSE_FLAG_PARENTED) != 0u;
+  const Vec3 offset = parented || !scene ? vec3_zero() : scene->origin_offset;
+  matrix.m03 = (float32_t)(sample->translation[0] - (float64_t)offset.x);
+  matrix.m13 = (float32_t)(sample->translation[1] - (float64_t)offset.y);
+  matrix.m23 = (float32_t)(sample->translation[2] - (float64_t)offset.z);
+  return matrix;
+}
+
+/* The world pose key `k`'s entity has at `frame`: its recorded world pose,
+   or its parent's world pose times its recorded pose relative to it, or,
+   before its first pose, its live local one. Computed once per frame. */
+vkr_internal Mat4 vkr_standard_scene_recording_key_world(
+    VkrStandardSceneRuntime *runtime, uint32_t k, uint64_t frame) {
+  VkrRecordingPlayback *playback = &runtime->playback;
+  if (playback->pose_world_frames[k] == frame) {
+    return playback->pose_worlds[k];
+  }
+  VkrScene *scene = vkr_standard_scene_recording_container(
+      runtime, playback->pose_keys[k].container);
+  const VkrEntityId entity = {.u64 = playback->pose_entities[k]};
+  const SceneTransform *transform =
+      scene && entity.u64 != VKR_ENTITY_ID_INVALID.u64
+          ? vkr_scene_get_transform(scene, entity)
+          : NULL;
+  const uint32_t sample = vkr_recording_playback_pose_at(playback, k, frame);
+  Mat4 world = transform ? transform->world : mat4_identity();
+  if (sample != UINT32_MAX && !(playback->pose_samples[sample].flags &
+                                VKR_RECORDING_POSE_FLAG_PARENTED)) {
+    world = vkr_standard_scene_recording_pose_matrix(
+        scene, &playback->pose_samples[sample]);
+  } else if (sample != UINT32_MAX || playback->pose_parents[k] != UINT32_MAX) {
+    const Mat4 relative =
+        sample != UINT32_MAX ? vkr_standard_scene_recording_pose_matrix(
+                                   scene, &playback->pose_samples[sample])
+                             : (transform ? transform->local : mat4_identity());
+    const SceneTransform *parent =
+        transform && transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64
+            ? vkr_scene_get_transform(scene, transform->parent)
+            : NULL;
+    if (playback->pose_parents[k] != UINT32_MAX) {
+      world = mat4_mul(vkr_standard_scene_recording_key_world(
+                           runtime, playback->pose_parents[k], frame),
+                       relative);
+    } else {
+      world = parent ? mat4_mul(parent->world, relative) : relative;
+    }
+  }
+  playback->pose_worlds[k] = world;
+  playback->pose_world_frames[k] = frame;
   return world;
+}
+
+/* Finds each bound key's parent key through its entity's live parent, and
+   forgets the world poses composed so far. */
+vkr_internal bool8_t
+vkr_standard_scene_recording_bind_parents(VkrStandardSceneRuntime *runtime) {
+  VkrRecordingPlayback *playback = &runtime->playback;
+  const uint32_t keys = playback->pose_key_count;
+  uint32_t slot_count = 16u;
+  while (slot_count < keys * 2u) {
+    slot_count *= 2u;
+  }
+  uint32_t *slots =
+      vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * slot_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  if (!slots) {
+    return false_v;
+  }
+  /* Slots hold key + 1 by entity and container; zero is empty. */
+  MemZero(slots, sizeof(uint32_t) * slot_count);
+  const uint32_t mask = slot_count - 1u;
+  for (uint32_t k = 0u; k < keys; ++k) {
+    playback->pose_parents[k] = UINT32_MAX;
+    playback->pose_world_frames[k] = UINT64_MAX;
+    const uint64_t entity = playback->pose_entities[k];
+    if (entity == VKR_ENTITY_ID_INVALID.u64) {
+      continue;
+    }
+    uint32_t probe =
+        (uint32_t)vkr_hash_table_finalize(
+            entity ^ ((uint64_t)playback->pose_keys[k].container << 56u)) &
+        mask;
+    while (slots[probe] != 0u) {
+      probe = (probe + 1u) & mask;
+    }
+    slots[probe] = k + 1u;
+  }
+  for (uint32_t k = 0u; k < keys; ++k) {
+    const uint8_t container = playback->pose_keys[k].container;
+    VkrScene *scene =
+        vkr_standard_scene_recording_container(runtime, container);
+    const VkrEntityId entity = {.u64 = playback->pose_entities[k]};
+    const SceneTransform *transform =
+        scene && entity.u64 != VKR_ENTITY_ID_INVALID.u64
+            ? vkr_scene_get_transform(scene, entity)
+            : NULL;
+    if (!transform || transform->parent.u64 == VKR_ENTITY_ID_INVALID.u64) {
+      continue;
+    }
+    const uint64_t parent = transform->parent.u64;
+    uint32_t probe = (uint32_t)vkr_hash_table_finalize(
+                         parent ^ ((uint64_t)container << 56u)) &
+                     mask;
+    while (slots[probe] != 0u) {
+      const uint32_t candidate = slots[probe] - 1u;
+      if (playback->pose_entities[candidate] == parent &&
+          playback->pose_keys[candidate].container == container) {
+        playback->pose_parents[k] = candidate;
+        break;
+      }
+      probe = (probe + 1u) & mask;
+    }
+  }
+  vkr_allocator_free(&playback->allocator, slots, sizeof(uint32_t) * slot_count,
+                     VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
+  return true_v;
 }
 
 /* A hash of a pose key's name. */
@@ -396,11 +525,12 @@ vkr_standard_scene_recording_spawn_proxies(VkrStandardSceneRuntime *runtime) {
 
 /* Binds the spawn keys still unbound: a spawn's own key to its stand-in,
    a node's key to the node once the stand-in's model is ready. Sets
-   poses_pending while some wait for a model. */
-vkr_internal void
+   poses_pending while some wait for a model. Returns how many it bound. */
+vkr_internal uint32_t
 vkr_standard_scene_recording_bind_spawns(VkrStandardSceneRuntime *runtime) {
   VkrRecordingPlayback *playback = &runtime->playback;
   playback->poses_pending = false_v;
+  uint32_t bound = 0u;
   for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
     const VkrRecordingPoseKey *key = &playback->pose_keys[k];
     if (key->kind != VKR_RECORDING_POSE_KIND_SPAWN ||
@@ -416,16 +546,19 @@ vkr_standard_scene_recording_bind_spawns(VkrStandardSceneRuntime *runtime) {
     }
     if (key->node == VKR_RECORDING_POSE_NODE_NONE) {
       playback->pose_entities[k] = proxy.u64;
+      ++bound;
       continue;
     }
     const VkrEntityId node = vkr_scene_model_node(scene, proxy, key->node);
     if (node.u64 != VKR_ENTITY_ID_INVALID.u64) {
       playback->pose_entities[k] = node.u64;
+      ++bound;
     } else if (vkr_scene_model_status(scene, proxy, NULL) ==
                VKR_SCENE_MODEL_LOADING) {
       playback->poses_pending = true_v;
     }
   }
+  return bound;
 }
 
 /* An animated stand-in draws its skin from its player's pose, not from its
@@ -457,8 +590,8 @@ vkr_standard_scene_recording_pose_skins(VkrStandardSceneRuntime *runtime,
     if (!player || self_sample == UINT32_MAX) {
       continue;
     }
-    const Mat4 inverse = mat4_inverse(vkr_standard_scene_recording_pose_world(
-        scene, &playback->pose_samples[self_sample]));
+    const Mat4 inverse = mat4_inverse(
+        vkr_standard_scene_recording_key_world(runtime, self, frame));
     vkr_animation_player_set_playing(player, false_v);
     uint32_t nodes[256];
     Mat4 globals[256];
@@ -473,9 +606,8 @@ vkr_standard_scene_recording_pose_skins(VkrStandardSceneRuntime *runtime,
         continue;
       }
       nodes[count] = playback->pose_keys[k].node;
-      Mat4 global =
-          mat4_mul(inverse, vkr_standard_scene_recording_pose_world(
-                                scene, &playback->pose_samples[sample]));
+      Mat4 global = mat4_mul(
+          inverse, vkr_standard_scene_recording_key_world(runtime, k, frame));
       /* Both are affine; the inverse's rounding must not leave the bottom
          row the player checks. */
       global.elements[3] = 0.0f;
@@ -513,8 +645,10 @@ vkr_standard_scene_recording_show_spawns(VkrStandardSceneRuntime *runtime,
   }
 }
 
-/* Finds each pose key's live entity with one walk over the containers, and
-   marks a key whose only pose matches its entity already as static. */
+/* Finds each pose key's live entity with one walk over the containers and
+   its parent's key, and marks a key whose only pose matches its entity
+   already as static: the same world pose, or the same local pose under its
+   parent. */
 vkr_internal bool8_t
 vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
   VkrRecordingPlayback *playback = &runtime->playback;
@@ -529,6 +663,15 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
     playback->pose_hidden =
         vkr_allocator_alloc(&playback->allocator, sizeof(uint8_t) * keys,
                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    playback->pose_parents =
+        vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * keys,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    playback->pose_worlds =
+        vkr_allocator_alloc(&playback->allocator, sizeof(Mat4) * keys,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    playback->pose_world_frames =
+        vkr_allocator_alloc(&playback->allocator, sizeof(uint64_t) * keys,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   uint32_t slot_count = 16u;
   while (slot_count < keys * 2u) {
@@ -538,7 +681,8 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
       vkr_allocator_alloc(&playback->allocator, sizeof(uint32_t) * slot_count,
                           VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
   if (!playback->pose_entities || !playback->pose_applied ||
-      !playback->pose_hidden || !slots ||
+      !playback->pose_hidden || !playback->pose_parents ||
+      !playback->pose_worlds || !playback->pose_world_frames || !slots ||
       (!playback->spawn_proxies &&
        !vkr_standard_scene_recording_spawn_proxies(runtime))) {
     return false_v;
@@ -604,15 +748,21 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
     if (!transform) {
       continue;
     }
-    const Mat4 world = vkr_standard_scene_recording_pose_world(
-        scene, &playback->pose_samples[key->first]);
-    if (MemCompare(&world, &transform->world, sizeof(world)) == 0) {
+    const VkrRecordingPoseSample *pose = &playback->pose_samples[key->first];
+    const Mat4 matrix = vkr_standard_scene_recording_pose_matrix(scene, pose);
+    const Mat4 *live = (pose->flags & VKR_RECORDING_POSE_FLAG_PARENTED)
+                           ? &transform->local
+                           : &transform->world;
+    if (MemCompare(&matrix, live, sizeof(matrix)) == 0) {
       playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_STATIC;
     }
   }
   vkr_allocator_free(&playback->allocator, slots, sizeof(uint32_t) * slot_count,
                      VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
   vkr_standard_scene_recording_bind_spawns(runtime);
+  if (!vkr_standard_scene_recording_bind_parents(runtime)) {
+    return false_v;
+  }
   uint32_t bound = 0u;
   uint32_t still = 0u;
   for (uint32_t k = 0u; k < keys; ++k) {
@@ -630,7 +780,8 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
 
 /* Poses each bound entity as the recording had it at the playhead's frame:
    its last pose until then as an evaluated override, or its own transform
-   before the recording first moved it. */
+   before the recording first moved it. A pose relative to its parent that
+   is its own local pose needs no override: the parent carries it. */
 vkr_internal void
 vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
   VkrRecordingPlayback *playback = &runtime->playback;
@@ -648,8 +799,10 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
       return;
     }
   }
-  if (playback->poses_pending) {
-    vkr_standard_scene_recording_bind_spawns(runtime);
+  if (playback->poses_pending &&
+      vkr_standard_scene_recording_bind_spawns(runtime) > 0u &&
+      !vkr_standard_scene_recording_bind_parents(runtime)) {
+    return;
   }
   const uint64_t frame =
       vkr_recording_playback_frame_at(playback, playback->time);
@@ -668,12 +821,37 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
     if (!scene) {
       continue;
     }
-    if (sample != applied) {
+    const VkrRecordingPoseSample *pose =
+        sample != UINT32_MAX ? &playback->pose_samples[sample] : NULL;
+    const SceneTransform *transform =
+        pose && (pose->flags & VKR_RECORDING_POSE_FLAG_PARENTED)
+            ? vkr_scene_get_transform(scene, entity)
+            : NULL;
+    if (transform) {
+      const Mat4 relative =
+          vkr_standard_scene_recording_pose_matrix(scene, pose);
+      if (MemCompare(&relative, &transform->local, sizeof(relative)) == 0) {
+        /* Its parent carries it as the recording had it. */
+        if (applied < VKR_RECORDING_POSE_APPLIED_FOLLOWS) {
+          (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
+        }
+        playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_FOLLOWS;
+      } else {
+        /* Its parent may move under the same relative pose. */
+        const Mat4 world =
+            vkr_standard_scene_recording_key_world(runtime, k, frame);
+        if (sample != applied ||
+            MemCompare(&world, &transform->world, sizeof(world)) != 0) {
+          (void)vkr_scene_set_evaluated_transform(scene, entity, &world);
+          playback->pose_applied[k] = sample;
+        }
+      }
+    } else if (sample != applied) {
       if (sample == UINT32_MAX) {
         (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
       } else {
-        const Mat4 world = vkr_standard_scene_recording_pose_world(
-            scene, &playback->pose_samples[sample]);
+        const Mat4 world =
+            vkr_standard_scene_recording_pose_matrix(scene, pose);
         (void)vkr_scene_set_evaluated_transform(scene, entity, &world);
       }
       playback->pose_applied[k] = sample;
@@ -710,8 +888,7 @@ void vkr_standard_scene_recording_release_poses(
     VkrScene *scene = vkr_standard_scene_recording_container(
         runtime, playback->pose_keys[k].container);
     if (scene && entity.u64 != VKR_ENTITY_ID_INVALID.u64 &&
-        applied != VKR_RECORDING_POSE_APPLIED_NONE &&
-        applied != VKR_RECORDING_POSE_APPLIED_STATIC) {
+        applied < VKR_RECORDING_POSE_APPLIED_FOLLOWS) {
       (void)vkr_scene_set_evaluated_transform(scene, entity, NULL);
     }
     if (scene && entity.u64 != VKR_ENTITY_ID_INVALID.u64 &&

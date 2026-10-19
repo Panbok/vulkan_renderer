@@ -2,6 +2,7 @@
 
 #include "core/vkr_codec.h"
 #include "defines.h"
+#include "math/mat.h"
 #include "memory/vkr_dmemory.h"
 #include "recording/vkr_recording.h"
 
@@ -14,15 +15,19 @@
  * the recorded camera.
  */
 
-/* One recorded pose of one entity. */
+/* One recorded pose of one entity: its world pose, or with
+   VKR_RECORDING_POSE_FLAG_PARENTED its pose relative to its parent. A long
+   recording holds tens of millions, so it stays 72 bytes. */
 typedef struct VkrRecordingPoseSample {
   uint64_t frame;
   float64_t translation[3];
   float32_t linear[9];
-  uint32_t key;
   /* VKR_RECORDING_POSE_FLAG_* */
   uint32_t flags;
 } VkrRecordingPoseSample;
+
+_Static_assert(sizeof(VkrRecordingPoseSample) == 72u,
+               "pose samples dominate a playback's memory");
 
 /* An entity the recording posed, named as in VkrRecordingPose; its samples
    are pose_samples[first, first + count), by frame. */
@@ -55,10 +60,13 @@ typedef struct VkrRecordingSpawn {
 } VkrRecordingSpawn;
 
 /* VkrRecordingPlayback.pose_applied: no sample applied, as before the
-   entity's first recorded pose (vkr_recording_playback_pose_at), or a key
-   whose only sample matched the scene when it was bound, which needs none. */
+   entity's first recorded pose (vkr_recording_playback_pose_at), a key
+   whose only sample matched the scene when it was bound, which needs none,
+   or one whose pose relative to its parent is its own local pose, which its
+   parent carries without an override. */
 #define VKR_RECORDING_POSE_APPLIED_NONE UINT32_MAX
 #define VKR_RECORDING_POSE_APPLIED_STATIC (UINT32_MAX - 1u)
+#define VKR_RECORDING_POSE_APPLIED_FOLLOWS (UINT32_MAX - 2u)
 
 /* Event names a playback keeps; events of later names are dropped. */
 #define VKR_RECORDING_PLAYBACK_EVENT_NAMES 32u
@@ -212,6 +220,12 @@ typedef struct VkrRecordingPlayback {
   bool8_t poses_pending;
   uint64_t *pose_entities;
   uint32_t *pose_applied;
+  /* Each key's entity's parent's key, UINT32_MAX for none, and the world
+     pose each key's entity has at pose_world_frames[k], composed from its
+     ancestors' for a parented one (UINT64_MAX for none yet). */
+  uint32_t *pose_parents;
+  Mat4 *pose_worlds;
+  uint64_t *pose_world_frames;
   /* Keys whose entity the playback hid because the pose it shows was
      recorded hidden; closing shows them again. */
   uint8_t *pose_hidden;

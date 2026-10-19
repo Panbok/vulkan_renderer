@@ -88,19 +88,44 @@ an agent must read one without the editor.
   scene edited after the recording, or a history that dropped its edits,
   shows the scene as it is now; `rec.status` reports `edits` as `replayed`,
   `unavailable` or `none`.
-- **Entity poses (R3).** An editor recording adds stream `pose`: the world
-  pose of every entity whose world matrix changed that frame, as an f64
+- **Entity poses (R3).** An editor recording adds stream `pose`: the pose
+  of every entity whose world matrix changed that frame, as an f64
   translation plus the matrix's 3x3, written by the frame-loop thread after
   the update. The scene lists changed entities only while a recording tracks
   it (`vkr_scene_track_changes`, `SCENE_TRANSFORM_CHANGED`), so several
   transform passes in one frame lose none. Tracking starts by listing every
   entity once, at most 2048 a frame. An entity is named by its
   document-stable ref, a model node by its nearest ref'd ancestor and glTF
-  node, and a document without refs by document index. Watch groups the
-  poses per entity, binds them to live entities once per scene generation,
-  skips entities whose only pose matches the scene, and applies the pose at
-  the playhead as an evaluated override before the frame's transform update;
-  closing removes the overrides, so authored transforms never change. A
+  node, and a document without refs by document index.
+- **Parented poses (2026-10-19).** An entity with a parent is posed in its
+  parent's space (`VKR_RECORDING_POSE_FLAG_PARENTED`): its local matrix
+  when nothing overrides its world, else its world under the parent's
+  inverse. The scene does not list an entity whose world changed only
+  because its parent's did, so a moving lift, tram or rotor writes one pose
+  a frame, not one per brush face it carries; on the Testbed level such
+  children were about 1,400 of the 1,749 entities posed every frame. Three
+  kinds keep world poses or every change, because Watch's hierarchy can
+  differ for them: a root; a spawn's own pose (its stand-in is a root),
+  whose changes the scene lists since it is transient; and an entity
+  reparented after its world was first computed
+  (`SCENE_TRANSFORM_REPARENTED`, such as by a script), which the scene lists
+  for every change. An overridden child is listed when its parent moves,
+  since its override does not follow. Recordings before the flag pose every
+  entity in world space and play as before.
+- **Watch of poses.** Watch groups the poses per entity, binds them to live
+  entities once per scene generation, finds each entity's parent key
+  through the live hierarchy, skips entities whose only pose matches the
+  scene (its world pose, or for a parented one its local pose), and applies
+  the pose at the playhead as an evaluated override before the frame's
+  transform update. A parented pose equal to its entity's local pose needs
+  no override: the scene's propagation carries it with its parent. Another
+  parented pose becomes its parent's world pose at that frame times it, the
+  parent's composed the same way. Closing removes the overrides, so
+  authored transforms never change. The player's first pass counts poses per
+  key and its second writes each pose in place, 72 bytes each; a 137 s
+  Testbed recording of 22,109,504 poses that ran out of the player's 2 GB
+  memory before opens within an 8 GB address reservation that commits only
+  what the poses use. A
   pose carries `VKR_RECORDING_POSE_FLAG_HIDDEN` while its entity's own
   visibility is off, and a visibility change writes a pose, so Watch hides
   what the session hid, such as a first-person player's body around the

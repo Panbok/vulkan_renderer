@@ -915,10 +915,11 @@ static uint32_t recording_changed_count(VkrScene *scene) {
 }
 
 /* Detects: a change lost when a later transform pass in the same frame
-   clears WORLD_UPDATED, an entity listed twice, a child of a moved parent
-   left out, an evaluated override that is not a change, a partial consume
-   that drops or keeps the wrong entries, changes listed while untracked,
-   and a start that does not list the whole scene once. */
+   clears WORLD_UPDATED, an entity listed twice, a child its parent carried
+   listed although its relative pose stayed, a reparented or transient child
+   of a moved parent left out, an evaluated override that is not a change, a
+   partial consume that drops or keeps the wrong entries, changes listed
+   while untracked, and a start that does not list the whole scene once. */
 static void test_scene_change_tracking(void) {
   printf("  Running test_scene_change_tracking...\n");
   RecordingTestMemory memory;
@@ -926,7 +927,7 @@ static void test_scene_change_tracking(void) {
   VkrScene scene;
   VkrSceneError error = VKR_SCENE_ERROR_NONE;
   assert(vkr_scene_init(&scene, &memory.allocator, 31, 8, &error));
-  VkrEntityId entities[3];
+  VkrEntityId entities[4];
   for (uint32_t i = 0u; i < ArrayCount(entities); ++i) {
     entities[i] = vkr_scene_create_entity(&scene, &error);
     assert(entities[i].u64 && error == VKR_SCENE_ERROR_NONE);
@@ -936,33 +937,57 @@ static void test_scene_change_tracking(void) {
   const VkrEntityId parent = entities[0];
   const VkrEntityId child = entities[1];
   const VkrEntityId other = entities[2];
+  const VkrEntityId spawned = entities[3];
   vkr_scene_set_parent(&scene, child, parent);
+  assert(vkr_scene_set_transient(&scene, spawned));
+  vkr_scene_set_parent(&scene, spawned, parent);
   vkr_scene_update_transforms(&scene);
   assert(recording_changed_count(&scene) == 0u);
 
   /* Starting lists every entity once. */
   assert(vkr_scene_track_changes(&scene, true_v));
-  assert(recording_changed_count(&scene) == 3u &&
+  assert(recording_changed_count(&scene) == 4u &&
          recording_listed(&scene, parent) && recording_listed(&scene, child) &&
-         recording_listed(&scene, other));
+         recording_listed(&scene, other) && recording_listed(&scene, spawned));
   vkr_scene_changed_entities_consume(&scene, 1u);
-  assert(recording_changed_count(&scene) == 2u);
-  vkr_scene_changed_entities_consume(&scene, 2u);
+  assert(recording_changed_count(&scene) == 3u);
+  vkr_scene_changed_entities_consume(&scene, 3u);
   assert(recording_changed_count(&scene) == 0u);
 
-  /* A move survives a second pass in the same frame, and its child
-     follows. */
+  /* A move survives a second pass in the same frame. Its child keeps its
+     pose relative to it and is not listed; its transient child is. */
   vkr_scene_set_position(&scene, parent, vec3_new(1.0f, 2.0f, 3.0f));
   vkr_scene_update_transforms(&scene);
   vkr_scene_update_transforms(&scene);
   assert(recording_changed_count(&scene) == 2u &&
-         recording_listed(&scene, parent) && recording_listed(&scene, child) &&
-         !recording_listed(&scene, other));
+         recording_listed(&scene, parent) && !recording_listed(&scene, child) &&
+         !recording_listed(&scene, other) && recording_listed(&scene, spawned));
   /* A second move before the drain lists nothing twice. */
   vkr_scene_set_position(&scene, parent, vec3_new(4.0f, 2.0f, 3.0f));
   vkr_scene_update_transforms(&scene);
   assert(recording_changed_count(&scene) == 2u);
   vkr_scene_changed_entities_consume(&scene, 2u);
+
+  /* A child's own move is listed. */
+  vkr_scene_set_position(&scene, child, vec3_new(0.0f, 1.0f, 0.0f));
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 1u &&
+         recording_listed(&scene, child));
+  vkr_scene_changed_entities_consume(&scene, 1u);
+
+  /* An entity reparented after it was placed is listed whenever its new
+     parent carries it. */
+  vkr_scene_set_parent(&scene, other, parent);
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 1u &&
+         recording_listed(&scene, other));
+  vkr_scene_changed_entities_consume(&scene, 1u);
+  vkr_scene_set_position(&scene, parent, vec3_new(5.0f, 2.0f, 3.0f));
+  vkr_scene_update_transforms(&scene);
+  assert(recording_changed_count(&scene) == 3u &&
+         recording_listed(&scene, parent) && recording_listed(&scene, other) &&
+         !recording_listed(&scene, child));
+  vkr_scene_changed_entities_consume(&scene, 3u);
 
   /* An evaluated override changes the world matrix. */
   const Mat4 pose = mat4_translate(vec3_new(0.0f, 5.0f, 0.0f));
@@ -979,7 +1004,7 @@ static void test_scene_change_tracking(void) {
   assert(recording_changed_count(&scene) == 0u);
   /* Tracking again starts from the whole scene, with no stale marks. */
   assert(vkr_scene_track_changes(&scene, true_v));
-  assert(recording_changed_count(&scene) == 3u);
+  assert(recording_changed_count(&scene) == 4u);
 
   vkr_scene_shutdown(&scene, NULL);
   recording_memory_destroy(&memory);
