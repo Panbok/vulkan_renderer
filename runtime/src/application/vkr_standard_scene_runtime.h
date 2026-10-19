@@ -290,6 +290,9 @@ typedef struct VkrStandardSceneRuntime {
   uint64_t completed_submit_serial_seen;
   VkrDeviceMemoryStats device_memory_seen;
   bool8_t device_memory_seen_valid;
+  /* The OS's last GPU telemetry sample, published with the frame's metrics;
+     the memory overlay shows it beside the driver's budget as a cross-check. */
+  VkrPlatformGpuTelemetry gpu_telemetry_seen;
   /* Frames submitted and how many of them the render thread acquired. */
   uint64_t frames_submitted;
   uint64_t frames_decoupled;

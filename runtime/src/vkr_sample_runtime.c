@@ -2745,8 +2745,17 @@ vkr_internal void vkr_standard_scene_runtime_update_memory_text(
                   (metal || gpu.live_totals_exact) ? "" : "~",
                   (float64_t)gpu_bytes / MB(1));
   }
-  string_format(state->system_text, sizeof(state->system_text), "%s\n%s\n%s",
-                state->hardware_text, ram, vram);
+  /* The driver's budget is the figure every Vulkan device and Metal report;
+     the Memory window keeps the OS's view of it as a cross-check. */
+  char driver[96] = "GPU budget (driver): unavailable";
+  if (have_gpu && gpu.driver_memory_valid) {
+    string_format(driver, sizeof(driver),
+                  "GPU budget (driver): %.1f / %.1f MiB",
+                  (float64_t)gpu.driver_usage_bytes / MB(1),
+                  (float64_t)gpu.driver_budget_bytes / MB(1));
+  }
+  string_format(state->system_text, sizeof(state->system_text),
+                "%s\n%s\n%s\n%s", state->hardware_text, ram, vram, driver);
   if (complete && have_gpu) {
     uint64_t logical_live = 0u;
     for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner)
@@ -2791,6 +2800,33 @@ vkr_internal void vkr_standard_scene_runtime_update_memory_text(
   } else if (complete) {
     complete = vkr_standard_scene_runtime_memory_text_append(
         &write, &remaining, "  Metrics unavailable\n");
+  }
+
+  /* The driver's budget, then the OS's view of the same memory where the
+     platform has one (Windows DXGI): the two should agree, so a gap points
+     at the source rather than at the renderer. */
+  const VkrPlatformGpuTelemetry os_gpu = application->gpu_telemetry_seen;
+  if (complete) {
+    complete = vkr_standard_scene_runtime_memory_text_append(&write, &remaining,
+                                                             "\nGPU budget\n");
+  }
+  if (complete && have_gpu && gpu.driver_memory_valid) {
+    complete =
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Driver usage", gpu.driver_usage_bytes) &&
+        vkr_standard_scene_runtime_memory_text_append_size(
+            &write, &remaining, "  Driver budget", gpu.driver_budget_bytes);
+  } else if (complete) {
+    complete = vkr_standard_scene_runtime_memory_text_append(
+        &write, &remaining, "  Driver: unavailable\n");
+  }
+  if (complete && os_gpu.memory_valid) {
+    complete = vkr_standard_scene_runtime_memory_text_append_size(
+                   &write, &remaining, "  OS usage (cross-check)",
+                   os_gpu.memory_usage_bytes) &&
+               vkr_standard_scene_runtime_memory_text_append_size(
+                   &write, &remaining, "  OS budget (cross-check)",
+                   os_gpu.memory_budget_bytes);
   }
 
   if (!complete)
@@ -7972,7 +8008,8 @@ vkr_internal void vkr_sample_runtime_log_device_information(
                 system_info.cpu[0] ? system_info.cpu : "unavailable",
                 (int32_t)gpu_name.length, gpu_name.str);
   string_format(state->system_text, sizeof(state->system_text),
-                "%s\nRAM (resident): pending\nGPU memory (managed): pending",
+                "%s\nRAM (resident): pending\nGPU memory (managed): pending\n"
+                "GPU budget (driver): pending",
                 state->hardware_text);
   state->anisotropy_supported = bitset8_is_set(
       &device_information.sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);

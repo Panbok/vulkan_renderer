@@ -1939,6 +1939,10 @@ vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
   out_stats->texture_heap_capacity_bytes = metrics.texture_heap_capacity_bytes;
   out_stats->texture_heap_capacity_valid = true_v;
   out_stats->heap_usage_valid = metrics.managed_budget_size > 0u;
+  out_stats->driver_usage_bytes = metrics.driver_current_allocated_size;
+  out_stats->driver_budget_bytes = metrics.driver_recommended_working_set_size;
+  out_stats->driver_memory_valid =
+      metrics.driver_recommended_working_set_size > 0u;
   return true_v;
 #else
   if (!renderer || !renderer->vulkan_renderer || !out_stats)

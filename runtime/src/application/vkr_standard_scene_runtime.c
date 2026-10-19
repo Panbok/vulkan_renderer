@@ -298,6 +298,7 @@ vkr_internal void vkr_standard_scene_runtime_publish_gpu_telemetry(
   const VkrStandardSceneRuntimeMetricIds *ids = &application->metric_ids;
   VkrPlatformGpuTelemetry gpu = {0};
   (void)vkr_platform_gpu_monitor_sample(application->gpu_monitor, &gpu);
+  application->gpu_telemetry_seen = gpu;
   if (gpu.memory_valid) {
     vkr_metrics_gauge_set_u64(metrics, ids->os_gpu_memory_budget,
                               gpu.memory_budget_bytes);

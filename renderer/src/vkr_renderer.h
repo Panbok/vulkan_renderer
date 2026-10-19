@@ -1286,6 +1286,13 @@ typedef struct VkrDeviceMemoryStats {
   uint64_t texture_heap_capacity_bytes;
   bool8_t texture_heap_capacity_valid;
   bool8_t heap_usage_valid;
+  /** The driver's view of this process's GPU memory: what it has placed and
+   * the budget it recommends. Vulkan sums VK_EXT_memory_budget over the
+   * device-local heaps; Metal reports the device's currentAllocatedSize and
+   * recommendedMaxWorkingSetSize. Sampled when a frame completes. */
+  uint64_t driver_usage_bytes;
+  uint64_t driver_budget_bytes;
+  bool8_t driver_memory_valid;
 } VkrDeviceMemoryStats;
 
 // ============================================================================

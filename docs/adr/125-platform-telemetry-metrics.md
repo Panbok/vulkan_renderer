@@ -104,6 +104,13 @@ frame's read collects once a second and publishes through an atomic; destroy
 joins it. The frame's read costs about 1 µs. macOS has no source yet and
 reports all three unsupported. The three are in Tier 0 recordings.
 
+The editor shows the driver's figure, which every Vulkan device and Metal
+report: the stats chip's detail reads `GPU budget (driver)` from
+`VkrDeviceMemoryStats.driver_usage_bytes` and `driver_budget_bytes`, the same
+values as `memory.gpu.driver.*`. The Memory window lists them under
+`GPU budget` and, where the platform has a source, the OS's usage and budget
+beside them as a cross-check.
+
 **Harness** ([vkr_harness_report.c](../../tools/harness/vkr_harness_report.c)):
 the parent samples the system when a profile, snapshot or autotest starts and
 ends and writes `thermal_state_*`, `power_source_*`, `low_power_*` and

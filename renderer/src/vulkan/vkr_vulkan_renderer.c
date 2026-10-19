@@ -2216,6 +2216,9 @@ void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
       Min(memory->memoryHeapCount, (uint32_t)VKR_DEVICE_MEMORY_HEAP_MAX);
   for (uint32_t heap = 0; heap < out_stats->heap_count; ++heap)
     out_stats->heap_size_bytes[heap] = memory->memoryHeaps[heap].size;
+  out_stats->driver_usage_bytes = renderer->driver_memory_usage_bytes;
+  out_stats->driver_budget_bytes = renderer->driver_memory_budget_bytes;
+  out_stats->driver_memory_valid = renderer->driver_memory_valid;
 }
 
 void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
