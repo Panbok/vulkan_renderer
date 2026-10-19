@@ -359,8 +359,18 @@ the geometry itself.
   committed) dumped the markers on the 600th frame: the frame then on the
   GPU read began pass 78 (`Shadow.Local.Transmission0.20`) and finished
   pass 76, and the two completed slots read pass 200 (`UI.Editor`, the
-  last pass) for both markers. No device loss has yet shown them in a
-  real report.
+  last pass) for both markers.
+- One owner-approved device loss, 2026-10-19: a temporary build raised
+  the `debug.gpu_spike` cap, and one spike of 4,026,531,840 dependent
+  multiply-adds tripped the Windows TDR. The editor logged `Vulkan device
+  lost: frame submission`, the AMD fault report "No fault detected", then
+  the breadcrumbs: the hung frame had finished through pass 7
+  (`Clouds.SkyLight`) while the front-end had begun pass 10. A Tier 1
+  recording of a small spike showed pass 8 of such a frame is
+  `Debug.GpuSpike`, the hang. The log line was then changed to name that
+  first unfinished pass and to number passes from zero, as `debug.graph`
+  does. The editor stopped with "Renderer device is unusable" (exit 5),
+  and the machine recovered.
 - Freeze culling, 2026-10-19, same builds, 860 test cases passed, on a
   headless Bistro editor at the tiled pipeline's defaults. At eye
   (-12, 6, 14) `view.cull_report` counted 2567 candidates, 670 outside the

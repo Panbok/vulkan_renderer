@@ -148,11 +148,28 @@ void vkr_vk_breadcrumbs_log(VkrVulkanRenderer *renderer) {
                                            VKR_VULKAN_BREADCRUMB_BEGUN];
     const uint32_t finished = crumbs->markers[i * VKR_VULKAN_BREADCRUMB_WORDS +
                                               VKR_VULKAN_BREADCRUMB_FINISHED];
-    log_error("Vulkan GPU breadcrumbs, frame slot %u (last submit %u): began "
-              "'%s' (submit %u, pass %u), finished '%s' (submit %u, pass %u)",
-              i, (uint32_t)(slot->retire_value & 0xffffu),
-              vkr_vk_breadcrumb_pass_name(slot, begun), begun >> 16u,
-              begun & 0xffffu, vkr_vk_breadcrumb_pass_name(slot, finished),
-              finished >> 16u, finished & 0xffffu);
+    /* Markers count passes from one; the log numbers them from zero, as
+       debug.graph does. */
+    const uint32_t begun_count = begun & 0xffffu;
+    const uint32_t finished_count =
+        (finished >> 16u) == (begun >> 16u) ? finished & 0xffffu : 0u;
+    if (begun_count == 0u || begun_count <= finished_count) {
+      log_error("Vulkan GPU breadcrumbs, frame slot %u (last submit %u): "
+                "submit %u finished through pass %u '%s'",
+                i, (uint32_t)(slot->retire_value & 0xffffu), finished >> 16u,
+                (finished & 0xffffu) ? (finished & 0xffffu) - 1u : 0u,
+                vkr_vk_breadcrumb_pass_name(slot, finished));
+      continue;
+    }
+    /* The front-end may run ahead of finished work: the GPU stopped in the
+       first pass that has not finished. */
+    const uint32_t stuck = (begun & 0xffff0000u) | (finished_count + 1u);
+    log_error("Vulkan GPU breadcrumbs, frame slot %u (last submit %u): "
+              "submit %u stopped in pass %u '%s' (finished through pass %d, "
+              "began up to pass %u '%s')",
+              i, (uint32_t)(slot->retire_value & 0xffffu), begun >> 16u,
+              finished_count, vkr_vk_breadcrumb_pass_name(slot, stuck),
+              (int32_t)finished_count - 1, begun_count - 1u,
+              vkr_vk_breadcrumb_pass_name(slot, begun));
   }
 }
