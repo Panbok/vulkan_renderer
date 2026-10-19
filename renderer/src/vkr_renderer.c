@@ -240,6 +240,7 @@ vkr_internal void *vkr_renderer_worker_main(void *arg) {
      every frame; a created thread starts at the default class, where other
      processes' default-class work time-slices it. */
   (void)vkr_thread_set_interactive();
+  (void)vkr_thread_set_name("VKR Render");
   vkr_zone_thread_set(VKR_ZONE_THREAD_RENDER);
   vkr_mutex_lock(worker->mutex);
   for (;;) {

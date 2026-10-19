@@ -18,6 +18,10 @@
  *
  * Only threads that named their slot with vkr_zone_thread_set record; zones
  * on other threads cost the same atomic load and record nothing.
+ *
+ * With signposts on, the same zones also open and close native profiler
+ * intervals (vkr_platform_signpost_begin: Instruments on macOS), whether or
+ * not a sink records them.
  */
 
 #define VKR_ZONE_SITE_MAX 1024u
@@ -60,6 +64,8 @@ typedef struct VkrZoneScope {
   uint64_t begin_ns;
   uint32_t depth;
   bool8_t open;
+  /* The native interval's id, or 0 without one. */
+  uint64_t signpost;
 } VkrZoneScope;
 
 /**
@@ -68,6 +74,10 @@ typedef struct VkrZoneScope {
  * when it returns. `sink` is copied.
  */
 void vkr_zone_sink_set(const VkrZoneSink *sink);
+
+/** Turns the zones' native profiler intervals on or off, and reads it. */
+void vkr_zone_signposts_set(bool8_t on);
+bool8_t vkr_zone_signposts(void);
 
 /** Names the calling thread's slot; VKR_ZONE_THREAD_NONE stops its zones. */
 void vkr_zone_thread_set(uint16_t slot);

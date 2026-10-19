@@ -2,6 +2,7 @@
 
 #include "containers/vkr_sort.h"
 #include "core/logger.h"
+#include "core/vkr_zone.h"
 #include "memory/vkr_dmemory.h"
 #include "physics/vkr_collision_asset.h"
 #include "platform/vkr_platform.h"
@@ -2325,8 +2326,10 @@ bool8_t vkr_scene_physics_tick(VkrScene *scene, const char **error) {
     return physics_fail(error, vkr_physics_last_error(physics->world));
   }
   const float64_t step_start = vkr_platform_get_absolute_time();
+  VKR_ZONE_BEGIN(step_zone, "Physics.Step");
   const bool8_t stepped =
       vkr_physics_step(physics->world, (float32_t)VKR_SCENE_PHYSICS_FIXED_DT);
+  VKR_ZONE_END(step_zone);
   physics->step_ns +=
       (uint64_t)((vkr_platform_get_absolute_time() - step_start) *
                  1000000000.0);

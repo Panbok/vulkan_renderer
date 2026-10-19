@@ -163,6 +163,27 @@ bool32_t vkr_thread_set_interactive(void) {
          0;
 }
 
+typedef HRESULT(WINAPI *VkrSetThreadDescription)(HANDLE thread,
+                                                 PCWSTR description);
+
+/* SetThreadDescription exists from Windows 10 1607, so it is looked up. */
+bool32_t vkr_thread_set_name(const char *name) {
+  WCHAR wide[64];
+  if (!name || MultiByteToWideChar(CP_UTF8, 0, name, -1, wide,
+                                   (int)ArrayCount(wide)) == 0) {
+    return false_v;
+  }
+  const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+  if (!kernel) {
+    return false_v;
+  }
+  /* Through void (*)(void), as vkr_crash_windows.c does. */
+  const FARPROC address = GetProcAddress(kernel, "SetThreadDescription");
+  const VkrSetThreadDescription set =
+      (VkrSetThreadDescription)(void (*)(void))address;
+  return set && SUCCEEDED(set(GetCurrentThread(), wide));
+}
+
 bool32_t vkr_thread_set_utility(void) {
   return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) !=
          0;

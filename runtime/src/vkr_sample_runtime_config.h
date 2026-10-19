@@ -20,6 +20,9 @@ typedef struct VkrSampleRuntimeOptions {
   bool8_t rg_gpu_timing;
   bool8_t submission_gpu_timing;
   bool8_t metrics_event_subjects;
+  /* VKR_SIGNPOSTS: zones also open native profiler intervals
+     (vkr_zone_signposts_set; Instruments on macOS). */
+  bool8_t signposts;
   bool8_t assert_no_upload_waits;
   bool8_t scene_memory_verbose;
   /* Zero disables. A rejected value is kept for the warning logged once the

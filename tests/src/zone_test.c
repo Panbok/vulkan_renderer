@@ -80,6 +80,38 @@ static void test_zone_without_sink_records_nothing(void) {
   printf("  test_zone_without_sink_records_nothing PASSED\n");
 }
 
+/* Signposts open zones without a sink: nested intervals get distinct ids,
+   nothing reaches a sink, and the depth they took is back at zero when a
+   recording starts. */
+static void test_zone_signposts_without_sink(void) {
+  printf("  Running test_zone_signposts_without_sink...\n");
+  zone_test_reset();
+  vkr_zone_thread_set(VKR_ZONE_THREAD_MAIN);
+  vkr_zone_signposts_set(true_v);
+  assert(vkr_zone_signposts());
+  VKR_ZONE_BEGIN(outer, "Test.SignpostOuter");
+  VKR_ZONE_BEGIN(inner, "Test.SignpostInner");
+  assert(outer.open && inner.open);
+  assert(outer.signpost != 0u && inner.signpost != 0u);
+  assert(outer.signpost != inner.signpost);
+  assert(outer.depth == 0u && inner.depth == 1u);
+  VKR_ZONE_END(inner);
+  VKR_ZONE_END(outer);
+  vkr_zone_signposts_set(false_v);
+  const VkrZoneSink sink = {.write = zone_test_write,
+                            .context = &zone_test_sink};
+  vkr_zone_sink_set(&sink);
+  VKR_ZONE_BEGIN(recorded, "Test.AfterSignposts");
+  assert(recorded.signpost == 0u);
+  VKR_ZONE_END(recorded);
+  vkr_zone_sink_set(NULL);
+  assert(vkr_atomic_uint32_load(&zone_test_sink.counts[VKR_ZONE_THREAD_MAIN],
+                                VKR_MEMORY_ORDER_RELAXED) == 1u);
+  assert(zone_test_sink.records[VKR_ZONE_THREAD_MAIN][0].depth == 0u);
+  vkr_zone_thread_set(VKR_ZONE_THREAD_NONE);
+  printf("  test_zone_signposts_without_sink PASSED\n");
+}
+
 static void test_zone_threads_record_nested_zones(VkrAllocator *allocator) {
   printf("  Running test_zone_threads_record_nested_zones...\n");
   zone_test_reset();
@@ -157,6 +189,7 @@ bool32_t run_zone_tests(void) {
   VkrAllocator allocator = {.ctx = arena};
   assert(vkr_allocator_arena(&allocator));
   test_zone_without_sink_records_nothing();
+  test_zone_signposts_without_sink();
   test_zone_threads_record_nested_zones(&allocator);
   test_zone_stop_waits_for_writes(&allocator);
   arena_destroy(arena);

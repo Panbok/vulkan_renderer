@@ -12,6 +12,8 @@
 vkr_global VkrZoneSink g_zone_sink = {0};
 vkr_global VkrAtomicBool g_zone_active = false_v;
 vkr_global VkrAtomicUint32 g_zone_writers = 0u;
+/* Zones also open native profiler intervals. */
+vkr_global VkrAtomicBool g_zone_signposts = false_v;
 
 /* Registered site names by zone id; a name is published before the count
    that covers it. */
@@ -34,6 +36,14 @@ void vkr_zone_sink_set(const VkrZoneSink *sink) {
     vkr_thread_yield();
   }
   g_zone_sink = (VkrZoneSink){0};
+}
+
+void vkr_zone_signposts_set(bool8_t on) {
+  vkr_atomic_bool_store(&g_zone_signposts, on, VKR_MEMORY_ORDER_RELAXED);
+}
+
+bool8_t vkr_zone_signposts(void) {
+  return vkr_atomic_bool_load(&g_zone_signposts, VKR_MEMORY_ORDER_RELAXED);
 }
 
 void vkr_zone_thread_set(uint16_t slot) {
@@ -82,12 +92,27 @@ vkr_internal uint32_t vkr_zone_site_id(VkrZoneSite *site) {
 
 VkrZoneScope vkr_zone_begin(VkrZoneSite *site) {
   VkrZoneScope scope = {.site = site};
-  if (g_zone_thread == VKR_ZONE_THREAD_NONE ||
-      !vkr_atomic_bool_load(&g_zone_active, VKR_MEMORY_ORDER_RELAXED)) {
+  if (g_zone_thread == VKR_ZONE_THREAD_NONE) {
+    return scope;
+  }
+  const bool8_t recording =
+      vkr_atomic_bool_load(&g_zone_active, VKR_MEMORY_ORDER_RELAXED);
+  const bool8_t signposts =
+      vkr_atomic_bool_load(&g_zone_signposts, VKR_MEMORY_ORDER_RELAXED);
+  if (!recording && !signposts) {
     return scope;
   }
   scope.open = true_v;
   scope.depth = g_zone_depth++;
+  /* One zone is open per thread slot and depth, so the slot, the depth and
+     the site's address name its interval; the low bit keeps it nonzero. */
+  if (signposts) {
+    scope.signpost = (((uint64_t)g_zone_thread << 56u) |
+                      ((uint64_t)(scope.depth & 0xffu) << 48u) |
+                      ((uint64_t)(uintptr_t)site & 0xfffffffffffeull)) |
+                     1u;
+    vkr_platform_signpost_begin(site->name, scope.signpost);
+  }
   scope.begin_ns = vkr_platform_get_monotonic_ns();
   return scope;
 }
@@ -99,6 +124,9 @@ void vkr_zone_end(VkrZoneScope *scope) {
   const uint64_t end_ns = vkr_platform_get_monotonic_ns();
   scope->open = false_v;
   g_zone_depth = scope->depth;
+  if (scope->signpost != 0u) {
+    vkr_platform_signpost_end(scope->signpost);
+  }
   vkr_atomic_uint32_fetch_add(&g_zone_writers, 1u, VKR_MEMORY_ORDER_SEQ_CST);
   if (vkr_atomic_bool_load(&g_zone_active, VKR_MEMORY_ORDER_SEQ_CST)) {
     const uint32_t zone = vkr_zone_site_id(scope->site);

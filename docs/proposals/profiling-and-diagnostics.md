@@ -56,19 +56,16 @@ Remaining:
 ## P2: timeline (remaining)
 
 CPU zones per thread, Metal and Vulkan GPU pass starts on the CPU clock,
-the Perfetto export, rolling recordings and the editor's Thread timeline are
-implemented in
+the Perfetto export, rolling recordings, the editor's Thread timeline, and
+zones as os_signpost intervals with `xctrace_zones.py` are implemented in
 [ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md); `rec.explain` and
 `vkr_rec explain` in [ADR-122](../adr/122-recordings.md); `vkr_harness
 perf-compare` in [ADR-051](../adr/051-renderer-harness-and-evidence.md).
-Remaining:
+PIX output was dropped on 2026-10-19 (owner): PIX fits only a Direct3D 12
+backend, and Radeon GPU Profiler covers Vulkan GPU work on AMD. Remaining:
 
-- `os_signpost` output of the zone macro on macOS, so Instruments shows the
-  zones. PIX output was dropped on 2026-10-19 (owner): PIX fits only a
-  Direct3D 12 backend, and Radeon GPU Profiler covers Vulkan GPU work on
-  AMD.
-- More zones where cost hides: asset loads, physics steps inside jobs,
-  script ticks, shadow updates.
+- Evidence for `Physics.Step` and `Scripts.Frame` in a Bistro case with
+  physics bodies and scripts.
 - Counters and markers for recordings without `Frame` zones in the export.
 - Acceptance: the overhead gate with zones on; zone sums match stage metrics.
 
@@ -97,7 +94,8 @@ Remaining:
   which the Vulkan graph lacks.
 - Overdraw, LOD and light count views on the desktop pipeline, and
   occlusion under freeze culling on Vulkan (it keeps no frozen pyramid).
-- Optional vendor counters and an `xctrace` table importer.
+- Optional vendor counters; `xctrace_zones.py` reads only os-signpost
+  tables, not Metal System Trace GPU intervals.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
 
 ## Open items

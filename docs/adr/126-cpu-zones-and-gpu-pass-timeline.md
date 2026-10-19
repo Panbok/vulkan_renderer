@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-19
 authority: adr
 ---
 
@@ -11,8 +11,9 @@ authority: adr
 Accepted (partial). The first part of phase P2 of
 [Profiling and diagnostics](../proposals/profiling-and-diagnostics.md) is
 implemented: CPU zones recorded per thread, GPU pass starts on the CPU clock
-on Metal and Vulkan, the Perfetto export, rolling recordings and the
-editor's Thread timeline window.
+on Metal and Vulkan, the Perfetto export, rolling recordings, the
+editor's Thread timeline window, and zones as os_signpost intervals for
+Instruments with `xctrace_zones.py` to read them back.
 
 ## Context
 
@@ -40,6 +41,32 @@ for a `break` or `return` to skip.
 - Stopping the sink waits until no thread is inside a write. The writer
   count and the active flag use sequentially consistent order, because each
   side writes one and reads the other.
+
+**Native profiler intervals.** `vkr_zone_signposts_set(true)`
+(`VKR_SIGNPOSTS=1` at start, or `perf.set {signposts}`) makes every zone on
+a slotted thread also open and close a native interval, with or without a
+sink, through `vkr_platform_signpost_begin` and `_end`
+([vkr_platform.h](../../lib/src/platform/vkr_platform.h)).
+
+- On macOS each is an os_signpost interval named `Zone` in subsystem
+  `dev.vkr`, category `Zones`, whose message is the zone's name:
+  os_signpost takes its interval name only as a literal. Windows emits
+  nothing; PIX output was dropped on 2026-10-19 because PIX fits only a
+  Direct3D 12 backend.
+- An interval's id packs the thread slot, the depth and the site's
+  address, which is unique among the zones open at once, so begin and end
+  pair without a stored id.
+- `vkr_thread_set_name` names the render thread `VKR Render` and job
+  workers `VKR Job N` (pthread_setname_np; SetThreadDescription on
+  Windows), so Instruments, debuggers and crash reports label them.
+- [xctrace_zones.py](../../tools/recording/xctrace_zones.py) exports a
+  trace's os-signpost table through `xctrace export`, pairs the `dev.vkr`
+  intervals and prints count, median, p95, max and total ms per zone, as
+  text or `--json`, and writes `--perfetto` trace-event JSON with a track
+  per named thread. Record with only the os_signpost instrument:
+  `xcrun xctrace record --instrument os_signpost --attach <pid>
+  --time-limit 5s --output zones.trace`. xctrace also leaves a `ktrace`
+  file of about 15 MB per run in `$TMPDIR`.
 
 **Recording** ([vkr_recording.c](../../runtime/src/recording/vkr_recording.c)).
 `VkrRecordingConfig.zones` installs the sink while the recording runs.
@@ -92,10 +119,11 @@ timestamps with `QueryPerformanceCounter`, the counter behind
 |---|---|
 | `Frame`, `Frame.Limiter` | Frame loop |
 | `Update`, `Simulation`, `World.Payload`, `Render.Prepare`, `Render.Wait` | Frame loop |
+| `Scripts.Frame` (the script host's frame), `Physics.Step` (one fixed physics step) | Frame loop |
 | `Render` (the frame loop's when rendering inline) | Render thread |
-| `Metal.Graph`, `Metal.Encode` | Render thread |
+| `Metal.Graph`, `Metal.Encode`, `Shadows.Update` (shadow payload planning) | Render thread |
 | `Vulkan.Graph` (graph realization), `Vulkan.Record` (command recording) | Render thread |
-| `Job` (each job run) | Job workers |
+| `Job` (each job run), `Assets.Load` (a resource loader's decode inside it) | Job workers |
 
 **Export** ([vkr_rec_main.c](../../tools/recording/vkr_rec_main.c)).
 `vkr_rec export <bundle> --perfetto <out.json> [--range A:B]` writes the
@@ -181,6 +209,8 @@ about three frames after their CPU frame.
 - The Thread timeline needs more than 2,400 spans in one view, or keyboard
   navigation.
 - A timing run shows the zones' cost matters.
+- Instruments accepts dynamic signpost names, or another platform gets a
+  native profiler worth feeding.
 
 ## Evidence
 
@@ -234,3 +264,15 @@ about three frames after their CPU frame.
   passes around frames 298 to 300, with a selected `Tiled.Opaque` pass
   (2.259 ms, frame 296). The empty states, fit, frame steps, zoom, click and
   drag were checked on screenshots.
+- Signposts, 2026-10-19, `./build_release.sh` and `./build_editor.sh
+  Release` on the M1 Pro: a headless Bistro editor with `perf.set
+  {signposts: true}`, recorded 3 s with only the os_signpost instrument
+  (9.6 MB trace), held 6,444 matched `dev.vkr` intervals of Frame, Render,
+  Render.Wait, Metal.Encode, Metal.Graph, Update, World.Payload, Simulation
+  and Shadows.Update. Started with `VKR_SIGNPOSTS=1` and traced through the
+  scene load, `xctrace_zones.py` read 20,884 intervals over 15.7 s, 4 left
+  open at the cut: 599 `Assets.Load` (median 2.2 ms, total 2.35 s) inside
+  600 `Job` zones on `VKR Job 0` to `6`, a 875 ms load frame, and the
+  `Main Thread` and `VKR Render` tracks. Bistro has no physics bodies or
+  scripts, so `Physics.Step` and `Scripts.Frame` did not run (Play steps no
+  physics there); they are compiled only.

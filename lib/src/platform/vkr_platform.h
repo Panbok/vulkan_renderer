@@ -92,6 +92,17 @@ uint64_t vkr_platform_get_monotonic_ns(void);
  * that function's nanoseconds, such as a GPU driver's calibrated host stamp. */
 uint64_t vkr_platform_monotonic_ns_from_counter(uint64_t counter);
 
+/**
+ * Interval markers a native profiler shows: on macOS an os_signpost interval
+ * named "Zone" whose message is `name`, in subsystem "dev.vkr" and category
+ * "Zones" (Instruments' os_signpost instrument), and nothing elsewhere. `id`
+ * pairs an end with its begin and must be unique among the intervals open
+ * at once and not 0 or UINT64_MAX. Safe from any thread after
+ * vkr_platform_init.
+ */
+void vkr_platform_signpost_begin(const char *name, uint64_t id);
+void vkr_platform_signpost_end(uint64_t id);
+
 VkrTime vkr_platform_get_local_time();
 
 /** Returns wall-clock UTC with millisecond precision. */

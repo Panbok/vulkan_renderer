@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "containers/vkr_hashtable.h"
+#include "core/vkr_zone.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_allocator.h"
 #include "platform/vkr_platform.h"
@@ -777,6 +778,8 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
   completion.loader_id = loader ? loader->id : VKR_INVALID_ID;
   completion.load_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
 
+  /* The loader's decode on the worker, inside the worker's Job zone. */
+  VKR_ZONE_BEGIN(load_zone, "Assets.Load");
   if (loader && loader->prepare_async && loader->finalize_async) {
     void *async_payload = NULL;
     VkrRendererError prepare_error = VKR_RENDERER_ERROR_NONE;
@@ -820,6 +823,7 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
       completion.loader_id = loaded_info.loader_id;
     }
   }
+  VKR_ZONE_END(load_zone);
 
   if (!vkr_mutex_lock(system->mutex)) {
     if (completion.loaded) {

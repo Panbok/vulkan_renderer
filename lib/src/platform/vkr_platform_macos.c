@@ -17,6 +17,8 @@
 #include <notify.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <os/log.h>
+#include <os/signpost.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,6 +147,9 @@ bool8_t vkr_platform_file_manager_command(const char *path, bool8_t select,
 }
 
 static bool32_t timebase_initialized = false;
+/* The zones' signpost log, made once by vkr_platform_init before other
+   threads run. */
+static os_log_t signpost_log = NULL;
 
 bool8_t vkr_platform_init() {
   // Every clock conversion divides by the timebase denominator.
@@ -153,7 +158,25 @@ bool8_t vkr_platform_init() {
     return false_v;
   }
   timebase_initialized = true;
+  if (!signpost_log) {
+    signpost_log = os_log_create("dev.vkr", "Zones");
+  }
   return true_v;
+}
+
+/* os_signpost takes its interval name as a literal, so every zone is a
+   "Zone" interval and carries its own name as the message. */
+void vkr_platform_signpost_begin(const char *name, uint64_t id) {
+  if (signpost_log && os_signpost_enabled(signpost_log)) {
+    os_signpost_interval_begin(signpost_log, (os_signpost_id_t)id, "Zone",
+                               "%{public}s", name);
+  }
+}
+
+void vkr_platform_signpost_end(uint64_t id) {
+  if (signpost_log && os_signpost_enabled(signpost_log)) {
+    os_signpost_interval_end(signpost_log, (os_signpost_id_t)id, "Zone");
+  }
 }
 
 void *vkr_platform_mem_reserve(uint64_t size) {

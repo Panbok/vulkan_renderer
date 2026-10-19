@@ -1443,7 +1443,10 @@ Recordings write per-frame records through one lock-free ring per producer
 thread; a writer thread at utility priority compresses and appends checksummed
 chunks, and frame threads never block on it. Watch playback drives the camera
 from a recording with simulation stopped. See
-[ADR-122](adr/122-recordings.md).
+[ADR-122](adr/122-recordings.md). CPU zones record into recordings and, with
+signposts on, also open os_signpost intervals that Instruments shows and
+`tools/recording/xctrace_zones.py` reads back
+([ADR-126](adr/126-cpu-zones-and-gpu-pass-timeline.md)).
 
 ## Remaining implementation and evidence boundaries
 

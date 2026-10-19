@@ -133,6 +133,15 @@ bool32_t vkr_thread_set_interactive(void);
 bool32_t vkr_thread_set_utility(void);
 
 /**
+ * @brief Names the calling thread for debuggers and native profilers.
+ *
+ * Instruments, Xcode, Visual Studio and crash reports show the name.
+ * `name` is UTF-8; macOS keeps at most 63 bytes of it.
+ * @return true_v when the platform accepted the name.
+ */
+bool32_t vkr_thread_set_name(const char *name);
+
+/**
  * @brief Retrieves the id of the provided thread handle.
  * @param thread VkrThread to query.
  * @return Thread id on success, 0 on failure.

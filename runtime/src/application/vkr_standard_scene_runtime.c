@@ -1548,6 +1548,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
   }
   if (input->update) {
     const float64_t update_start = vkr_platform_get_absolute_time();
+    VKR_ZONE_BEGIN(shadow_zone, "Shadows.Update");
     vkr_shadow_system_set_depth_range_sample(
         &application->shadow_system,
         input->depth_range.submit_value > 0u ? &input->depth_range : NULL,
@@ -1555,6 +1556,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     vkr_shadow_system_update(&application->shadow_system, &input->camera,
                              input->light_enabled, input->light_direction,
                              &input->caster_bounds);
+    VKR_ZONE_END(shadow_zone);
     frame->shadow_ns =
         (uint64_t)((vkr_platform_get_absolute_time() - update_start) *
                    1000000000.0);

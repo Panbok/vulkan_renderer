@@ -4057,7 +4057,9 @@ static void sample_simulate_steps(VkrStandardSceneRuntime *application,
     vkr_recording_sim_frame(&application->recording, &clock);
   }
   if (!join_wait) {
+    VKR_ZONE_BEGIN(scripts_zone, "Scripts.Frame");
     vkr_script_host_frame(&state->scripts, &frame);
+    VKR_ZONE_END(scripts_zone);
   }
   vkr_scene_handle_update(handle, frame.scene_delta);
   if (scene->physics_paused &&
@@ -8117,6 +8119,10 @@ int vkr_sample_runtime_run(int argc, char **argv,
   }
   if (options.metrics_event_subjects) {
     log_info("Metrics event subjects enabled via VKR_METRICS_EVENT_SUBJECTS");
+  }
+  if (options.signposts) {
+    vkr_zone_signposts_set(true_v);
+    log_info("Zone signposts enabled via VKR_SIGNPOSTS");
   }
 
   state->assert_no_upload_waits = options.assert_no_upload_waits;

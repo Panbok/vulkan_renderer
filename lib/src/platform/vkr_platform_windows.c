@@ -385,6 +385,15 @@ uint64_t vkr_platform_monotonic_ns_from_counter(uint64_t counter) {
   return whole * 1000000000ull + part * 1000000000ull / clock_ticks_per_second;
 }
 
+/* No native marker on Windows: PIX fits only a Direct3D 12 backend, and
+   Radeon GPU Profiler covers Vulkan GPU work. */
+void vkr_platform_signpost_begin(const char *name, uint64_t id) {
+  (void)name;
+  (void)id;
+}
+
+void vkr_platform_signpost_end(uint64_t id) { (void)id; }
+
 VkrTime vkr_platform_get_local_time() {
   VkrTime result = {0};
 

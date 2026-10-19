@@ -19,6 +19,7 @@
 #include "core/vkr_debug_draw.h"
 #include "core/vkr_json.h"
 #include "core/vkr_json_writer.h"
+#include "core/vkr_zone.h"
 #include "filesystem/filesystem.h"
 #include "filesystem/vkr_asset_path.h"
 #include "filesystem/vkr_vfs.h"
@@ -15699,6 +15700,7 @@ static VkrEditorOpStatus ops_run_perf_set(OpsContext *ctx) {
       args, "submission_timing", metrics->config.submission_gpu_timings);
   metrics->config.pass_pipeline_statistics = ops_arg_bool(
       args, "pipeline_stats", metrics->config.pass_pipeline_statistics);
+  vkr_zone_signposts_set(ops_arg_bool(args, "signposts", vkr_zone_signposts()));
   Arena *arena = ops_arena(ctx);
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
   ops_set(ctx, result, "pass_timing",
@@ -15708,6 +15710,8 @@ static VkrEditorOpStatus ops_run_perf_set(OpsContext *ctx) {
   ops_set(
       ctx, result, "pipeline_stats",
       vkr_bakery_json_bool(arena, metrics->config.pass_pipeline_statistics));
+  ops_set(ctx, result, "signposts",
+          vkr_bakery_json_bool(arena, vkr_zone_signposts()));
   ctx->call->result = result;
   return VKR_EDITOR_OP_DONE;
 }
@@ -19132,10 +19136,14 @@ static const OpsDef s_ops[] = {
      "times whole GPU frames. A recording controls both while it runs and "
      "restores them at stop. 'pipeline_stats' counts each pass's vertex, "
      "fragment and compute shader invocations (Vulkan; perf.snapshot passes "
-     "answer them as 'invocations'; not recorded). Answers the new state.",
+     "answer them as 'invocations'; not recorded). 'signposts' makes CPU "
+     "zones open os_signpost intervals (subsystem dev.vkr, category Zones, "
+     "interval 'Zone' with the zone's name) for Instruments on macOS; the "
+     "same as VKR_SIGNPOSTS=1. Answers the new state.",
      "{\"type\":\"object\",\"properties\":{\"pass_timing\":{\"type\":"
      "\"boolean\"},\"submission_timing\":{\"type\":\"boolean\"},"
-     "\"pipeline_stats\":{\"type\":\"boolean\"}}}",
+     "\"pipeline_stats\":{\"type\":\"boolean\"},\"signposts\":{"
+     "\"type\":\"boolean\"}}}",
      ops_run_perf_set, NULL},
     {"session.status",
      "The session's mode, address and key, this editor's place in the edit "

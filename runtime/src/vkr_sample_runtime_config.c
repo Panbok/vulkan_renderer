@@ -255,6 +255,7 @@ vkr_sample_runtime_options_parse(int argc, char **argv,
       sample_env_flag("VKR_GPU_SUBMISSION_TIMING", false_v);
   options->metrics_event_subjects =
       sample_env_flag("VKR_METRICS_EVENT_SUBJECTS", false_v);
+  options->signposts = sample_env_flag("VKR_SIGNPOSTS", false_v);
 
   if (runtime_config->project_managed &&
       !sample_bootstrap_font_directory(

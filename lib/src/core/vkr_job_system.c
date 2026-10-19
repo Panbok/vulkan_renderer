@@ -1,4 +1,5 @@
 #include "core/vkr_job_system.h"
+#include "containers/str.h"
 #include "core/logger.h"
 #include "core/vkr_zone.h"
 #include "memory/vkr_allocator.h"
@@ -282,6 +283,10 @@ vkr_internal void *job_worker_thread(void *param) {
 
   VkrJobWorker *worker = (VkrJobWorker *)param;
   VkrJobSystem *system = worker->system;
+  char thread_name[32];
+  string_format(thread_name, sizeof(thread_name), "VKR Job %u",
+                (unsigned)worker->index);
+  (void)vkr_thread_set_name(thread_name);
   /* Workers past the zone slots record no zones. */
   vkr_zone_thread_set(
       worker->index < VKR_ZONE_THREAD_MAX - VKR_ZONE_THREAD_WORKER_FIRST

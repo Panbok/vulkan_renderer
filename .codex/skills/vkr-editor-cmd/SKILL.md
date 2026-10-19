@@ -128,7 +128,8 @@ for pixel evidence. Results also reach the Console and the session log in
 channel, `log.read` returns log records by level and text,
 `health.status` returns GPU errors, validation counts, log totals and system
 telemetry, `perf.snapshot` returns the newest metrics frame (add `passes` for
-per-pass times) and `perf.set` switches pass and submission GPU timing.
+per-pass times) and `perf.set` switches pass and submission GPU timing and
+`signposts` (CPU zones as os_signpost intervals for Instruments).
 `debug.graph` returns the compiled render graph (add `dot` for a Graphviz
 file; `window graph` shows it). `debug.draw` puts lines, boxes, spheres,
 the camera frustum and labels over the Scene by `group`, for `seconds` or
