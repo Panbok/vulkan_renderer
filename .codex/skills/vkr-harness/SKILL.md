@@ -51,7 +51,7 @@ use `vkr-performance`. Native backend evidence remains backend-specific;
 | `autotest --case <case.json> --profile <profile.json>` | Separate nested primary-profile and snapshot reports |
 | `compare --run <snapshot-run-directory>` | Recheck completed snapshot digests and compare to its accepted baseline |
 | `perf-compare --before <report.json> --after <report.json> [--allow-local]` | Timing verdict per metric (p50 delta, repetition ranges, threshold) with pass deltas and warnings; `inconclusive` without authority, exit `4` for incompatible fingerprints |
-| `baseline propose --from <snapshot-run-directory> --actor '<actor>' --reason '<reason>'` | Verify snapshot and write a reviewable promotion proposal |
+| `baseline propose --from <snapshot-run-directory> --actor '<actor>' --reason '<reason>'` | Verify snapshot (refused, exit 1, if it lost authority to `gpu.errors` or `validation.messages`) and write a reviewable promotion proposal |
 
 All commands use `./build_release/tools/vkr_harness`. Windows multi-config
 builds may place the executable under `build_release/tools/Release/`.

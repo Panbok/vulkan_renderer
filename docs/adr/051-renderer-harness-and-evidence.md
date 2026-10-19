@@ -223,7 +223,9 @@ Work-volume and stability checks govern timing authority independently of
 execution success.
 
 Run artifacts live under `build/_artifacts/`. Ordinary runs do not change
-`tools/baselines/`. `baseline propose` writes a digest-addressed review plan;
+`tools/baselines/`. `baseline propose` refuses a snapshot whose report, or a replay child's,
+lost authority to `gpu.errors` or `validation.messages` (exit 1), and
+otherwise writes a digest-addressed review plan;
 `baseline accept` verifies its confirmation digest, source artifacts, and prior
 generation before publishing an immutable generation and atomically replacing
 `current.json`. Cross-backend comparison is explicit and still requires

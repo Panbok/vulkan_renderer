@@ -103,5 +103,3 @@ Remaining:
 - Memory pressure costs authority only at critical (ADR-125); confirm that
   warn, the 16 GB Mac's normal state under Bistro, stays report-only.
 
-- `baseline propose` does not check `authoritative`, so a snapshot that lost
-  authority to `validation.messages` can still be proposed.

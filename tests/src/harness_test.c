@@ -3053,9 +3053,24 @@ vkr_internal void test_harness_guarded_baseline_accept(void) {
   snprintf(report_path, sizeof(report_path), "%s/report.json", source);
   snprintf(summary_path, sizeof(summary_path), "%s/capture-summary.bin",
            source);
-  assert(vkr_harness_atomic_write(report_path, "{}\n", 3u, &error));
   assert(
       vkr_harness_capture_summary_write(summary_path, &report, arena, &error));
+  /* A replay child that counted a validation message bars the snapshot, even
+     with the reason nested and other reasons beside it. */
+  const char barred_report[] =
+      "{\"authority_reasons\":[\"profile.local_only\"],\"auxiliary_runs\":["
+      "{\"authority_reasons\":[\"provenance.dirty\","
+      "\"validation.messages\"]}]}\n";
+  assert(vkr_harness_atomic_write(report_path, barred_report,
+                                  sizeof(barred_report) - 1u, &error));
+  assert(vkr_harness_baseline_propose(
+             root, "build/_artifacts/snapshot/source", "unit-test",
+             "guarded acceptance fixture") == VKR_HARNESS_EXIT_FAIL);
+  /* Ordinary local reasons do not. */
+  const char local_report[] = "{\"authority_reasons\":[\"profile.local_only\","
+                              "\"provenance.dirty\"]}\n";
+  assert(vkr_harness_atomic_write(report_path, local_report,
+                                  sizeof(local_report) - 1u, &error));
   assert(vkr_harness_baseline_propose(
              root, "build/_artifacts/snapshot/source", "unit-test",
              "guarded acceptance fixture") == VKR_HARNESS_EXIT_PASS);

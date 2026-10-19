@@ -158,6 +158,48 @@ vkr_harness_baseline_write_plan(const char *path,
  * Appends one `entries.ndjson` line naming a verified source file and where the
  * generation copy of it belongs.
  */
+/* The first `needle` in report[from, size), or `size` when absent. */
+static uint64_t vkr_harness_baseline_find(const uint8_t *report, uint64_t size,
+                                          uint64_t from, const char *needle) {
+  const uint64_t length = string_length(needle);
+  for (uint64_t at = from; length && at + length <= size; ++at) {
+    if (MemCompare(report + at, needle, length) == 0) {
+      return at;
+    }
+  }
+  return size;
+}
+
+/* Finds a reason that bars a snapshot from becoming a baseline: a GPU error
+   or a validation message in any of the report's authority_reasons arrays,
+   the snapshot's own or a replay child's. The report is too large for the
+   token parser, and its reasons are plain tokens, so the arrays are scanned
+   as text. Writes the reason found into `out_reason`. */
+static bool8_t vkr_harness_baseline_barred(const uint8_t *report, uint64_t size,
+                                           char *out_reason,
+                                           uint32_t capacity) {
+  static const char *const barred[] = {"gpu.errors", "validation.messages"};
+  uint64_t at = 0u;
+  for (;;) {
+    const uint64_t key =
+        vkr_harness_baseline_find(report, size, at, "\"authority_reasons\"");
+    const uint64_t open = vkr_harness_baseline_find(report, size, key, "[");
+    const uint64_t close = vkr_harness_baseline_find(report, size, open, "]");
+    if (key >= size || close >= size) {
+      return false_v;
+    }
+    for (uint32_t i = 0u; i < ArrayCount(barred); ++i) {
+      char quoted[32];
+      string_format(quoted, sizeof(quoted), "\"%s\"", barred[i]);
+      if (vkr_harness_baseline_find(report, close, open, quoted) < close) {
+        string_format(out_reason, capacity, "%s", barred[i]);
+        return true_v;
+      }
+    }
+    at = close + 1u;
+  }
+}
+
 static bool8_t vkr_harness_baseline_append_entry(
     char *entries, uint64_t capacity, uint64_t *used, const char *source_run,
     const char *source_relative, const char *destination, const char *digest,
@@ -211,6 +253,23 @@ int vkr_harness_baseline_propose(const char *repo_root, const char *from_run,
       !vkr_harness_sha256_file(report_path, plan.source_report_sha256)) {
     vkr_harness_stderr(
         "Snapshot run is incomplete or its summary is invalid\n");
+    goto cleanup;
+  }
+  /* A snapshot whose run hit a GPU error or a validation message is not
+     evidence of correct output, whatever its pixels show. */
+  uint8_t *report_bytes = NULL;
+  uint64_t report_size = 0u;
+  char barred_reason[64];
+  if (!vkr_harness_read_file(report_path, arena, &report_bytes, &report_size)) {
+    vkr_harness_stderr("Snapshot report is unreadable\n");
+    goto cleanup;
+  }
+  if (vkr_harness_baseline_barred(report_bytes, report_size, barred_reason,
+                                  sizeof(barred_reason))) {
+    vkr_harness_stderr("Snapshot lost authority to %s; fix the run before "
+                       "proposing it as a baseline\n",
+                       barred_reason);
+    result = VKR_HARNESS_EXIT_FAIL;
     goto cleanup;
   }
   string_format(plan.source_run, sizeof(plan.source_run), "%s", from_run);
