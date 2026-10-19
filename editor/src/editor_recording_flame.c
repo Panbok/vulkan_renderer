@@ -24,9 +24,10 @@
 /* Span names: their size, and the room either side of one in its span. */
 #define EDITOR_FLAME_NAME_PT 10.5f
 #define EDITOR_FLAME_NAME_PAD_PT 4.0f
-/* Main, Render and 16 job workers, then the GPU frames and passes, each
-   with at most this many rows. */
+/* Main, Render and 16 job workers, and the GPU frames and passes, each
+   with at most this many rows; job workers start at this thread. */
 #define EDITOR_FLAME_THREAD_MAX 18u
+#define EDITOR_FLAME_FIRST_JOB_THREAD 2u
 #define EDITOR_FLAME_TRACK_MAX (EDITOR_FLAME_THREAD_MAX + 2u)
 #define EDITOR_FLAME_DEPTH_MAX 24u
 #define EDITOR_FLAME_GPU_LANES 4u
@@ -204,7 +205,8 @@ vkr_internal String8 editor_flame_track_name(VkrUiSystem *ui,
     return string8_lit("Render");
   }
   return string8_create_formatted(ui->frame_allocator, "Worker %u",
-                                  track->thread - 2u);
+                                  track->thread -
+                                      EDITOR_FLAME_FIRST_JOB_THREAD);
 }
 
 /* The first of the lanes free at `begin`, else the last; it stays busy
@@ -443,8 +445,13 @@ vkr_internal void editor_flame_layout(const VkrRecordingPlayback *playback,
                                       const VkrEditorRecordingFlame *flame,
                                       EditorFlameLayout *layout) {
   MemZero(layout, sizeof(*layout));
+  /* Main and Render, then the GPU's tracks beside the Render thread that
+     feeds them, then the job workers, so that the GPU stays in view
+     however many workers recorded zones. */
   for (uint32_t t = 0u; t < EDITOR_FLAME_THREAD_MAX; ++t) {
     layout->thread_track[t] = UINT32_MAX;
+  }
+  for (uint32_t t = 0u; t < EDITOR_FLAME_FIRST_JOB_THREAD; ++t) {
     if ((playback->zone_threads >> t) & 1u) {
       layout->thread_track[t] =
           editor_flame_add_track(layout, EDITOR_FLAME_TRACK_CPU, t);
@@ -457,6 +464,13 @@ vkr_internal void editor_flame_layout(const VkrRecordingPlayback *playback,
         editor_flame_add_track(layout, EDITOR_FLAME_TRACK_GPU_FRAMES, 0u);
     layout->gpu_passes_track =
         editor_flame_add_track(layout, EDITOR_FLAME_TRACK_GPU_PASSES, 0u);
+  }
+  for (uint32_t t = EDITOR_FLAME_FIRST_JOB_THREAD; t < EDITOR_FLAME_THREAD_MAX;
+       ++t) {
+    if ((playback->zone_threads >> t) & 1u) {
+      layout->thread_track[t] =
+          editor_flame_add_track(layout, EDITOR_FLAME_TRACK_CPU, t);
+    }
   }
 
   const int64_t view_begin = flame->view_begin_ns;

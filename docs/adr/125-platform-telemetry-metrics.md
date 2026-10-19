@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-19
 authority: adr
 ---
 
@@ -184,7 +184,8 @@ nominal; hovering names a column's states and footprint, and a click seeks.
   while recording, and harness and editor runs need the signals too.
 - `NSProcessInfo.thermalState` for thermal state: rejected; the `notify(3)`
   key works in processes without Foundation, such as the harness parent.
-- Charging authority at warn pressure: rejected for the reason above.
+- Charging authority at warn pressure: rejected for the reason above, and
+  confirmed by the owner on 2026-10-19.
 
 ## Revisit when
 

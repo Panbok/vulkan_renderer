@@ -171,7 +171,9 @@ The window (`window timeline`, or the playback bar's layers button) shows
 the playhead frame and one frame either side:
 
 - one flame track per thread slot that recorded zones, one row per depth;
-- GPU frames and GPU passes;
+- GPU frames and GPU passes, after the Main and Render tracks and before
+  the job workers' tracks, so they stay in view however many workers
+  recorded zones;
 - a ruler with frame starts.
 
 It is drawn as one path widget with up to 160 labels. Spans narrower than

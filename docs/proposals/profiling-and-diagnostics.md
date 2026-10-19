@@ -20,13 +20,13 @@ in [ADR-125](../adr/125-platform-telemetry-metrics.md), with Metal present
 latency, the recording timeline's System lane, `perf.snapshot` and
 `perf.set`.
 
-Remaining gaps:
+Remaining gaps, detailed in the sections below:
 
-- Vulkan records no pass starts.
-- Windows platform signals, present latency and other processes' GPU use
-  are not recorded.
+- Vulkan present latency, on a driver that exposes it.
 - The Performance window opens only on a recording; there is no live view.
-- No op or button triggers a native GPU capture; there is no crash handler.
+- No button triggers a native GPU capture; `debug.gpu_capture` requests one.
+- The overdraw, LOD and light count views and frozen occlusion exist only on
+  the tiled pipeline.
 
 ## Owner decisions (2026-10-18)
 
@@ -97,9 +97,3 @@ Remaining:
   instrument, read from `gpu-counter-value`; `vkr_xctrace.py gpu` reads the
   GPU intervals.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
-
-## Open items
-
-- Memory pressure costs authority only at critical (ADR-125); confirm that
-  warn, the 16 GB Mac's normal state under Bistro, stays report-only.
-
