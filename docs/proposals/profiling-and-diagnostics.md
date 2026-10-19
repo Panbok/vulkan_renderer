@@ -66,8 +66,8 @@ backend, and Radeon GPU Profiler covers Vulkan GPU work on AMD. Remaining:
 
 - Evidence for `Physics.Step` and `Scripts.Frame` in a Bistro case with
   physics bodies and scripts.
-- Counters and markers for recordings without `Frame` zones in the export.
-- Acceptance: the overhead gate with zones on; zone sums match stage metrics.
+- A matched harness timing run with zones recorded; the per-zone cost and
+  the zone sums against stage metrics are in ADR-126.
 
 ## P3: deep tools (remaining)
 
@@ -94,8 +94,11 @@ Remaining:
   which the Vulkan graph lacks.
 - Overdraw, LOD and light count views on the desktop pipeline, and
   occlusion under freeze culling on Vulkan (it keeps no frozen pyramid).
-- Optional vendor counters; `xctrace_zones.py` reads only os-signpost
-  tables, not Metal System Trace GPU intervals.
+- Vendor counters through `VK_KHR_performance_query` on Vulkan (optional).
+  Metal on the M1 Pro exposes only the `timestamp` counter set
+  (`GPUTimestamp`) at stage boundaries, so the Mac has none to read.
+- `xctrace_zones.py` reads only os-signpost tables, not Metal System Trace
+  GPU intervals, whose traces reach several GB.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
 
 ## Open items

@@ -605,8 +605,10 @@ vkr_internal void vkr_recording_zone_write(void *context,
   if (producer == VKR_RECORDER_PRODUCER_COUNT) {
     return;
   }
-  const uint64_t frame =
-      vkr_atomic_uint64_load(&recording->zone_frame, VKR_MEMORY_ORDER_RELAXED);
+  const uint64_t frame = vkr_atomic_uint64_load(
+      producer == VKR_RECORDER_PRODUCER_RENDER ? &recording->zone_render_frame
+                                               : &recording->zone_frame,
+      VKR_MEMORY_ORDER_RELAXED);
   (void)vkr_recorder_write(recording->recorder, producer,
                            VKR_RECORDING_STREAM_ZONE, frame, record,
                            sizeof(*record));
@@ -804,10 +806,22 @@ void vkr_recording_frame(VkrRecording *recording,
                            camera, sizeof(*camera));
   if (recording->zones_enabled) {
     vkr_recording_zone_names(recording, recording->frame);
+  }
+  ++recording->frame;
+}
+
+void vkr_recording_loop_begin(VkrRecording *recording) {
+  if (recording->active && recording->zones_enabled) {
     vkr_atomic_uint64_store(&recording->zone_frame, recording->frame,
                             VKR_MEMORY_ORDER_RELAXED);
   }
-  ++recording->frame;
+}
+
+void vkr_recording_render_frame(VkrRecording *recording, uint64_t frame) {
+  if (recording->active && recording->zones_enabled && frame != UINT64_MAX) {
+    vkr_atomic_uint64_store(&recording->zone_render_frame, frame,
+                            VKR_MEMORY_ORDER_RELAXED);
+  }
 }
 
 /* A u16 length and `head`, then `tail`: the layout of tags and events. */

@@ -400,11 +400,14 @@ typedef struct VkrRecording {
   uint32_t frame_history_next;
   /* Seconds a rolling recording keeps; zero for a bundle recording. */
   float64_t rolling_seconds;
-  /* CPU zones: the sink is installed, the zone names written so far, and
-     the recorded frame zones from other threads file under. */
+  /* CPU zones: the sink is installed, the zone names written so far, the
+     recorded frame of the frame-loop iteration that runs, which the frame
+     loop's and the job workers' zones file under, and the recorded frame
+     the render thread renders, which its zones file under. */
   bool8_t zones_enabled;
   uint32_t zone_names_written;
   VkrAtomicUint64 zone_frame;
+  VkrAtomicUint64 zone_render_frame;
   /* Tier 1. */
   bool8_t passes_enabled;
   uint32_t pass_gpu_period;
@@ -443,6 +446,15 @@ typedef struct VkrRecording {
  */
 bool8_t vkr_recording_start(VkrRecording *recording,
                             const VkrRecordingConfig *config);
+
+/** Starts a frame-loop iteration: its zones, those before its frame record
+ * too, file under the frame it records next (the frame of its frame.wall
+ * and of its loop metrics, ADR-082). Frame-loop thread. */
+void vkr_recording_loop_begin(VkrRecording *recording);
+
+/** The recorded frame the render thread renders next, which its zones file
+ * under; call before handing it that frame. Frame-loop thread. */
+void vkr_recording_render_frame(VkrRecording *recording, uint64_t frame);
 
 /** Writes one frame's records; the frame number advances. */
 void vkr_recording_frame(VkrRecording *recording,

@@ -40,8 +40,10 @@
  *                                     chrome://tracing: CPU zones per
  *                                     thread, GPU passes, Tier 0 counters
  *                                     and markers of frames A to B
- *                                     inclusive (default all); JSON: event
- *                                     counts
+ *                                     inclusive (default all), at the
+ *                                     recorder's frame times when the
+ *                                     recording has no zones or pass
+ *                                     starts; JSON: event counts
  *
  * Every command prints one compact JSON object on stdout. Exit status: 0 for
  * a whole recording, 2 for a recording cut off by a crash whose whole chunks
@@ -819,6 +821,8 @@ typedef struct RecExport {
   uint64_t counter_events;
   uint64_t marker_events;
   uint64_t markers_untimed;
+  /* Frames start at the recorder's frame times, not at Frame zones. */
+  bool8_t recorder_clock;
 } RecExport;
 
 static RecExport rec_export_state;
@@ -1171,6 +1175,35 @@ static void rec_export_prepare(RecExport *ex) {
   if (ex->base_ns == UINT64_MAX) {
     ex->base_ns = 0u;
   }
+}
+
+/* A recording with neither zones nor GPU pass starts, such as a Tier 0
+   harness recording, starts each valid frame at its recorder frame time
+   instead, so its counters and markers still have times. The trace then
+   counts from frame 0's time; nothing else in it reads the monotonic
+   clock. */
+static void rec_export_recorder_frame_times(RecExport *ex,
+                                            const VkrRecordingData *data) {
+  if (ex->frame_starts.length > 0u || ex->zones.length > 0u ||
+      ex->starts.length > 0u || !data->times) {
+    return;
+  }
+  for (uint64_t frame = ex->first_frame;
+       frame <= ex->last_frame && frame < data->frame_count; ++frame) {
+    if (!data->frame_valid[frame] || !(data->times[frame] >= 0.0)) {
+      continue;
+    }
+    const RecFrameStart start = {
+        .frame = frame,
+        .begin_ns = (uint64_t)(data->times[frame] * 1.0e9 + 0.5),
+    };
+    if (!array_push_RecFrameStart(&ex->frame_starts, start)) {
+      ex->out_of_memory = true_v;
+      return;
+    }
+  }
+  ex->recorder_clock = ex->frame_starts.length > 0u;
+  ex->base_ns = 0u;
 }
 
 /* The frame's start time, or false for a frame without a Frame zone. */
@@ -1550,6 +1583,7 @@ static int rec_export(const char *path, const char *out_path, uint64_t first,
     goto cleanup;
   }
   rec_export_prepare(ex);
+  rec_export_recorder_frame_times(ex, &data);
   if (ex->out_of_memory) {
     fprintf(stderr, "vkr_rec: out of memory exporting '%s'\n", path);
     goto cleanup;
@@ -1590,6 +1624,9 @@ static int rec_export(const char *path, const char *out_path, uint64_t first,
   vkr_json_writer_u64(&json, ex->marker_events);
   vkr_json_writer_name(&json, rec_str("markers_untimed"));
   vkr_json_writer_u64(&json, ex->markers_untimed);
+  vkr_json_writer_name(&json, rec_str("frame_clock"));
+  vkr_json_writer_string(&json,
+                         rec_str(ex->recorder_clock ? "recorder" : "zones"));
   vkr_json_writer_name(&json, rec_str("bad_records"));
   vkr_json_writer_u64(&json, ex->bad_records);
   vkr_json_writer_end_object(&json);

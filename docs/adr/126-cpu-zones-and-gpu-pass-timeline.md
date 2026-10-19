@@ -84,6 +84,15 @@ sink, through `vkr_platform_signpost_begin` and `_end`
     record.
 - Old recordings and readers are unaffected: the 12-byte pass rows keep
   their layout.
+- A zone record files under a recorded frame. The frame loop's and job
+  workers' zones take the frame their loop iteration records:
+  `vkr_recording_loop_begin` sets it at the start of the iteration, before
+  `Update`, so zones that end before the iteration's frame record agree
+  with ADR-082's loop metrics. Render-thread zones take the frame the
+  render thread renders: `vkr_recording_render_frame` sets it before each
+  frame goes to the render thread. Recordings made before 2026-10-19 file
+  zones that end before the frame record (`Update`, `Simulation`) one
+  frame early and render-thread zones under the frame loop's frame.
 - `rec.start` takes `zones` (default: on with `measurements` all), and the
   Recordings window's All measurements includes zones.
 
@@ -188,10 +197,15 @@ about three frames after their CPU frame.
 
 - One recording answers which thread and pass made a frame slow, and how
   CPU and GPU work overlap, in an external viewer today.
-- Zones cost about two clock reads and one ring copy each while recording;
-  the instrumented set is a few per frame plus one per job. No timing run
-  measured their cost.
-- A recording without `Frame` zones exports no counters or markers.
+- A zone costs 1.3 ns while nothing records, about 37 ns with a sink that
+  copies its record into a ring as the recorder does, and 350 to 460 ns
+  with signposts on even with no tool attached, so signposts stay off by
+  default. A Bistro frame records about a dozen zones plus one per job:
+  under 1 us of a 7 ms frame while recording, about 5 us with signposts.
+- A recording with neither zones nor GPU pass starts, such as a Tier 0
+  harness recording, exports its counters and markers at the recorder's
+  frame times (`frame_clock` `recorder` in the status line); one with zones
+  but without a frame's `Frame` zone leaves that frame's counters out.
 
 ## Alternatives considered
 
@@ -276,3 +290,24 @@ about three frames after their CPU frame.
   `Main Thread` and `VKR Render` tracks. Bistro has no physics bodies or
   scripts, so `Physics.Step` and `Scripts.Frame` did not run (Play steps no
   physics there); they are compiled only.
+- Overhead, 2026-10-19: a Release benchmark against `libvkr_foundation.a`
+  (2,000,000 zones a run, three runs) took 1.2 to 1.3 ns per zone without a
+  slot or a sink, 36.8 to 37.9 ns with a sink that copies the record into a
+  ring with a release store, and 347 to 462 ns with signposts on and no
+  tool. The sink stands in for `vkr_recorder_write` (reserve, copy,
+  commit); no matched harness timing run was made.
+- Zone sums against stage metrics: a headless Bistro editor recorded 20 s
+  at Tier 0 with zones and all measurements (2,687 frames). Over frames
+  1,500 to 1,999 the zones of each frame match its Tier 0 metrics on the
+  same frame, median absolute difference: `Frame` and `frame.wall` 0.21
+  us, `Render.Wait` and `cpu.render_wait` 0.16 us, `World.Payload` and
+  `cpu.world_payload_build` 0.04 us, `Update` and `cpu.update` 0.04 us,
+  `Simulation` and `cpu.simulation` 0.25 us. Before the frame labelling
+  change `Update` and `Simulation` matched only one frame later. Every GPU
+  frame began after its frame's `Metal.Encode` zone ended (at least 4.7
+  ms later, the GPU queue's depth); filed one frame later, all but one
+  frame would have started before its encode ended.
+- `vkr_rec export --perfetto` of two zone-free Tier 0 editor recordings
+  wrote 12,516 and 13,871 counter events at the recorder clock, before
+  none; the frame.wall counters' median spacing (8.35 ms) equals the
+  median frame.wall.

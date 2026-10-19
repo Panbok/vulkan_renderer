@@ -3476,9 +3476,11 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     vkr_standard_scene_runtime_complete_frame(application);
     const VkrFrameConfig config =
         vkr_standard_scene_runtime_frame_config(application);
+    vkr_recording_render_frame(&application->recording, frame->recording_frame);
     submit_error = vkr_renderer_submit_unacquired_frame(
         &application->renderer, &config, &frame->packet, &hooks);
   } else if (render_thread) {
+    vkr_recording_render_frame(&application->recording, frame->recording_frame);
     submit_error =
         vkr_renderer_submit_frame(setup, &frame->packet, &hooks, &validation);
   } else {
@@ -3653,6 +3655,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_host_frame(
   if (vkr_allocator_supports_scopes(frame_alloc))
     frame_scope = vkr_allocator_begin_scope(frame_alloc);
 
+  /* This iteration's zones file under the frame it records. */
+  vkr_recording_loop_begin(&application->recording);
   /* Recorded poses land before the client's scene update transforms them. */
   vkr_standard_scene_recording_advance(application, delta);
   VKR_ZONE_BEGIN(update_zone, "Update");
