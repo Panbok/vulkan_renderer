@@ -13,7 +13,8 @@ Accepted (partial). The first part of phase P2 of
 implemented: CPU zones recorded per thread, GPU pass starts on the CPU clock
 on Metal and Vulkan, the Perfetto export, rolling recordings, the
 editor's Thread timeline window, and zones as os_signpost intervals for
-Instruments with `xctrace_zones.py` to read them back.
+Instruments, and `vkr_xctrace.py` to read zones and Metal GPU work back
+from traces.
 
 ## Context
 
@@ -59,14 +60,22 @@ sink, through `vkr_platform_signpost_begin` and `_end`
 - `vkr_thread_set_name` names the render thread `VKR Render` and job
   workers `VKR Job N` (pthread_setname_np; SetThreadDescription on
   Windows), so Instruments, debuggers and crash reports label them.
-- [xctrace_zones.py](../../tools/recording/xctrace_zones.py) exports a
-  trace's os-signpost table through `xctrace export`, pairs the `dev.vkr`
+- [vkr_xctrace.py](../../tools/recording/vkr_xctrace.py) reads traces
+  through `xctrace export`. `zones` pairs a trace's `dev.vkr` os-signpost
   intervals and prints count, median, p95, max and total ms per zone, as
-  text or `--json`, and writes `--perfetto` trace-event JSON with a track
-  per named thread. Record with only the os_signpost instrument:
-  `xcrun xctrace record --instrument os_signpost --attach <pid>
-  --time-limit 5s --output zones.trace`. xctrace also leaves a `ktrace`
-  file of about 15 MB per run in `$TMPDIR`.
+  text or `--json`. `gpu` reads a Metal System Trace's
+  `metal-gpu-intervals` of one process (default `vkr_editor`): Metal labels
+  each encoder `Command Buffer N:<pass>`, so GPU time sums per pass label
+  (a batched compute encoder under its first pass) and per channel. Both
+  write `--perfetto` trace-event JSON, and `timeline` writes zones and GPU
+  intervals into one file. Record zones with only the os_signpost
+  instrument (`xcrun xctrace record --instrument os_signpost --attach <pid>
+  --time-limit 5s`), or both with `--template "Metal System Trace"
+  --instrument os_signpost`: the tables share the trace clock, and the
+  os_signpost window starts and ends later than the Metal tables'. A 3 s
+  os_signpost trace is about 10 MB plus a 15 MB ktrace in `$TMPDIR`; a 3 s
+  Metal System Trace of Bistro was 43 MB plus a 195 MB ktrace. Its GPU
+  counter tables stay empty without the GPU counters instrument.
 
 **Recording** ([vkr_recording.c](../../runtime/src/recording/vkr_recording.c)).
 `VkrRecordingConfig.zones` installs the sink while the recording runs.
@@ -284,12 +293,17 @@ about three frames after their CPU frame.
   (9.6 MB trace), held 6,444 matched `dev.vkr` intervals of Frame, Render,
   Render.Wait, Metal.Encode, Metal.Graph, Update, World.Payload, Simulation
   and Shadows.Update. Started with `VKR_SIGNPOSTS=1` and traced through the
-  scene load, `xctrace_zones.py` read 20,884 intervals over 15.7 s, 4 left
+  scene load, `vkr_xctrace.py zones` read 20,884 intervals over 15.7 s, 4 left
   open at the cut: 599 `Assets.Load` (median 2.2 ms, total 2.35 s) inside
   600 `Job` zones on `VKR Job 0` to `6`, a 875 ms load frame, and the
   `Main Thread` and `VKR Render` tracks. Bistro has no physics bodies or
-  scripts, so `Physics.Step` and `Scripts.Frame` did not run (Play steps no
-  physics there); they are compiled only.
+  scripts, so neither ran there.
+- `Physics.Step`: a dynamic body added to a headless Bistro (`entity.create`,
+  then Cmd `component.add physics_body` and `physics.motion dynamic`, not
+  saved) and `sim.play` gave 213 `Physics.Step` zones in 3.55 s, the 60 Hz
+  fixed step, median 19 us, and `Simulation` rose from 0.03 to 0.14 ms.
+  `Scripts.Frame` needs a script instance from a project's compiled script
+  library; Bistro opened with `--scene` has none, so it is compiled only.
 - Overhead, 2026-10-19: a Release benchmark against `libvkr_foundation.a`
   (2,000,000 zones a run, three runs) took 1.2 to 1.3 ns per zone without a
   slot or a sink, 36.8 to 37.9 ns with a sink that copies the record into a
@@ -311,3 +325,26 @@ about three frames after their CPU frame.
   wrote 12,516 and 13,871 counter events at the recorder clock, before
   none; the frame.wall counters' median spacing (8.35 ms) equals the
   median frame.wall.
+- Matched harness runs, 2026-10-19: Bistro `performance.bistro.shadow_orbit`
+  (1280×720, windowed hidden, immediate, 120 warmup and 300 measured frames)
+  under a dirty-tree copy of `performance-windowed`, five children each, in
+  the order `--record`, `--record-zones`, `--record` (reports
+  `sha256:ca80ec16…`, `sha256:5ea0bec2…`, `sha256:f91fa3de…`). Environment,
+  workload and policy fingerprints matched, thermal level 0 and memory
+  pressure warn in all three. All failed the warmup gate on
+  `cpu.render_submit` and are non-authoritative (recording, dirty tree,
+  local profile), so `perf-compare` refused them; the per-child means
+  compare. Zones run against the second `--record` run: `frame.wall`
+  23,116.6 against 23,124.5 us (child spread 22.8 and 19.3),
+  `cpu.render_submit` 525.9 against 575.5, `cpu.update` 46.0 against 52.6,
+  `cpu.world_payload_build` 139.0 against 147.4. Zones cost nothing
+  measurable at about ±20 us a frame; the first `--record` run was 300 us
+  slower than both, the drift of run order. Each zones repetition recorded
+  about 7,650 zones (18 a frame); the plain runs none.
+- Metal System Trace with signposts, 3 s of headless Bistro: `vkr_xctrace.py
+  gpu` read 12,491 of the editor's GPU intervals in 501 frames (552 rows of
+  other processes), `Tiled.Opaque` 2.66 ms median a command buffer,
+  `Tiled.Blend` 0.46 ms, the compute batch under `IBL.Bake` 0.42 ms; all
+  6,634 CPU encoder intervals (`metal-application-encoders-list`) inside the
+  zones' window lay inside a `Metal.Encode` zone at zero offset, so the two
+  tables share one clock.

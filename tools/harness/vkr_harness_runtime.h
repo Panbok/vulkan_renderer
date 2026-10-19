@@ -201,12 +201,22 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *run_dir, bool8_t prewarm,
                           int32_t capture_index, const char *replay_mode,
                           const char *scene_content_digest);
+/** What each repetition of a profile records. */
+typedef enum VkrHarnessRecord {
+  VKR_HARNESS_RECORD_NONE = 0,
+  /** A Tier 0 recording of the run (`--record`). */
+  VKR_HARNESS_RECORD_RUN = 1,
+  /** The same with every thread's CPU zones (`--record-zones`, ADR-126). */
+  VKR_HARNESS_RECORD_ZONES = 2,
+} VkrHarnessRecord;
+
 /** `record` gives every repetition a recording of its run (ADR-122) in
  * runs/<i>/recording/, listed among the artifacts; it costs the run its
  * authority. */
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,
-                            const char *artifact_root_override, bool8_t record);
+                            const char *artifact_root_override,
+                            VkrHarnessRecord record);
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path,
                              const char *artifact_root_override,

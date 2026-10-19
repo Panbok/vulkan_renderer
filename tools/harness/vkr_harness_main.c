@@ -225,6 +225,10 @@ VKR_MAIN(argc, argv) {
     vkr_harness_stderr("Unable to initialize the platform layer\n");
     return VKR_HARNESS_EXIT_ERROR;
   }
+  const VkrHarnessRecord record =
+      vkr_harness_flag(argc, argv, "--record-zones") ? VKR_HARNESS_RECORD_ZONES
+      : vkr_harness_flag(argc, argv, "--record")     ? VKR_HARNESS_RECORD_RUN
+                                                     : VKR_HARNESS_RECORD_NONE;
   const int result =
       autotest_command ? vkr_harness_autotest_run(executable, repo_root,
                                                   case_path, profile_path)
@@ -235,7 +239,7 @@ VKR_MAIN(argc, argv) {
                 vkr_harness_flag(argc, argv, "--cross-backend"))
           : vkr_harness_profile_run(executable, repo_root, case_path,
                                     profile_path, artifact_root_override,
-                                    vkr_harness_flag(argc, argv, "--record"));
+                                    record);
   vkr_platform_shutdown();
   return result;
 }

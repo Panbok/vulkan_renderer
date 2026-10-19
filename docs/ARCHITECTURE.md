@@ -1445,7 +1445,7 @@ chunks, and frame threads never block on it. Watch playback drives the camera
 from a recording with simulation stopped. See
 [ADR-122](adr/122-recordings.md). CPU zones record into recordings and, with
 signposts on, also open os_signpost intervals that Instruments shows and
-`tools/recording/xctrace_zones.py` reads back
+`tools/recording/vkr_xctrace.py` reads back with Metal GPU work
 ([ADR-126](adr/126-cpu-zones-and-gpu-pass-timeline.md)).
 
 ## Remaining implementation and evidence boundaries

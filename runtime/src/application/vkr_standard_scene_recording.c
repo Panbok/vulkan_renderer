@@ -800,11 +800,19 @@ vkr_internal void vkr_standard_scene_recording_from_environment(
                 vkr_platform_get_process_id(),
                 (long long)vkr_platform_get_unix_time(),
                 VKR_RECORDING_BUNDLE_EXTENSION);
+  /* VKR_RECORDING_ZONES=1 (profile --record-zones) adds every thread's CPU
+     zones (ADR-126). */
+  char zones[8] = {0};
+  const bool8_t record_zones =
+      vkr_platform_environment_variable("VKR_RECORDING_ZONES", zones,
+                                        sizeof(zones)) &&
+      zones[0] == '1';
   const VkrRecordingConfig config = {
       .bundle_path = path,
       .name = "run",
       .author = "environment",
       .metrics = runtime->metrics,
+      .zones = record_zones,
       .identity_json =
           runtime->renderer.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED
               ? "{\"source\":\"VKR_RECORDING_DIRECTORY\",\"pipeline\":"

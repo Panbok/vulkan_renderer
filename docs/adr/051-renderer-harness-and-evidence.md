@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-18
+updated: 2026-10-19
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -29,9 +29,12 @@ Children record a run (ADR-122) only under `profile --record`: each repetition
 writes a Tier 0 bundle in `runs/<i>/recording/`, its stream and `summary.json`
 join the artifacts, the report's `recording` is true and the run gains the
 authority reason `recording.enabled`; a repetition without exactly one bundle
-leaves the run incomplete (`recording.missing`). Otherwise the parent unsets
-`VKR_RECORDING_DIRECTORY` for every child, so an inherited one records
-nothing. Every run, auxiliary run and report carries `diagnostic_counts`:
+leaves the run incomplete (`recording.missing`). `profile --record-zones`
+records the same with every thread's CPU zones (ADR-126): the parent passes
+`VKR_RECORDING_ZONES=1` and the run also gains `recording.zones`, so
+`--record` and `--record-zones` runs keep matching fingerprints and differ
+only in the zones. Otherwise the parent unsets `VKR_RECORDING_DIRECTORY` and
+`VKR_RECORDING_ZONES` for every child, so inherited ones record nothing. Every run, auxiliary run and report carries `diagnostic_counts`:
 GPU error, validation and log counters summed over warmup and measured frames,
 and validation text found in the child's output; a GPU error costs the
 authority reason `gpu.errors` and a validation error `validation.messages`

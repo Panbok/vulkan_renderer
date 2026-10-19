@@ -57,17 +57,16 @@ Remaining:
 
 CPU zones per thread, Metal and Vulkan GPU pass starts on the CPU clock,
 the Perfetto export, rolling recordings, the editor's Thread timeline, and
-zones as os_signpost intervals with `xctrace_zones.py` are implemented in
+zones as os_signpost intervals with `vkr_xctrace.py` are implemented in
 [ADR-126](../adr/126-cpu-zones-and-gpu-pass-timeline.md); `rec.explain` and
 `vkr_rec explain` in [ADR-122](../adr/122-recordings.md); `vkr_harness
 perf-compare` in [ADR-051](../adr/051-renderer-harness-and-evidence.md).
 PIX output was dropped on 2026-10-19 (owner): PIX fits only a Direct3D 12
 backend, and Radeon GPU Profiler covers Vulkan GPU work on AMD. Remaining:
 
-- Evidence for `Physics.Step` and `Scripts.Frame` in a Bistro case with
-  physics bodies and scripts.
-- A matched harness timing run with zones recorded; the per-zone cost and
-  the zone sums against stage metrics are in ADR-126.
+- Evidence for `Scripts.Frame`, which needs a project holding Bistro and a
+  compiled script library. The overhead gate (`profile --record-zones`),
+  the zone sums against stage metrics and `Physics.Step` are in ADR-126.
 
 ## P3: deep tools (remaining)
 
@@ -94,8 +93,9 @@ Remaining:
 - Vendor counters through `VK_KHR_performance_query` on Vulkan (optional).
   Metal on the M1 Pro exposes only the `timestamp` counter set
   (`GPUTimestamp`) at stage boundaries, so the Mac has none to read.
-- `xctrace_zones.py` reads only os-signpost tables, not Metal System Trace
-  GPU intervals, whose traces reach several GB.
+- Apple's hardware GPU counters through Instruments' GPU counters
+  instrument, read from `gpu-counter-value`; `vkr_xctrace.py gpu` reads the
+  GPU intervals.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
 
 ## Open items
