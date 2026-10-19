@@ -6,7 +6,7 @@
 
 /* The timeline (docs/proposals/recordings.md, "Player"): a panel over the
    playback bar with the frame time of the frames it shows, the markers,
-   notes and ranges on them, a ruler, zoom, and actions on frames brushed
+   notes and segments on them, a ruler, zoom, and actions on frames brushed
    across the frame-time lane. The bar's scrub still covers the whole
    recording; the timeline looks closer. */
 
@@ -104,6 +104,25 @@ vkr_internal void editor_timeline_view(VkrEditorRecordingTimeline *timeline,
   first = Min(first, (int64_t)(count - span));
   timeline->view_first = (uint64_t)first;
   timeline->view_last = (uint64_t)first + span - 1u;
+}
+
+void vkr_editor_recording_timeline_show(VkrEditorUi *editor,
+                                        const VkrRecordingPlayback *playback,
+                                        uint64_t first, uint64_t last) {
+  VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
+  if (playback->frame_count == 0u) {
+    return;
+  }
+  editor_timeline_reset(timeline, playback);
+  timeline->open = true_v;
+  if (first == UINT64_MAX) {
+    editor_timeline_view(timeline, playback, 0, playback->frame_count);
+    return;
+  }
+  const uint64_t span = last - first + 1u;
+  const uint64_t margin = Max(span / 10u, (uint64_t)1u);
+  editor_timeline_view(timeline, playback, (int64_t)first - (int64_t)margin,
+                       span + 2u * margin);
 }
 
 vkr_internal uint64_t
@@ -345,34 +364,6 @@ vkr_internal void editor_timeline_loop(VkrEditorUi *editor,
                                 playback->times[timeline->select_last]);
 }
 
-/* Names the selection as a range of the recording's annotations. */
-vkr_internal void
-editor_timeline_add_range(VkrEditorUi *editor,
-                          const VkrRecordingPlayback *playback) {
-  const VkrEditorRecordingTimeline *timeline = &editor->recording.timeline;
-  const VkrUiTheme *theme = vkr_ui_theme();
-  char error[192];
-  VkrRecordingAnnotations *annotations = vkr_editor_recording_annotations(
-      editor, playback->bundle_path, error, sizeof(error));
-  char name[VKR_RECORDING_RANGE_NAME_MAX];
-  if (annotations) {
-    string_format(name, sizeof(name), "Range %u",
-                  annotations->range_count + 1u);
-  }
-  if (!annotations ||
-      !vkr_recording_annotations_add_range(
-          annotations, timeline->select_first, timeline->select_last, "user",
-          string8_create_from_cstr((const uint8_t *)name,
-                                   string_length(name))) ||
-      !vkr_editor_recording_annotations_save(editor)) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
-                     annotations ? "The range could not be added." : error);
-    return;
-  }
-  vkr_editor_toast(editor, VKR_UI_ICON_RULER, theme->text,
-                   "Added the selection as a range.");
-}
-
 /* Writes a perf re-run of the selection and copies its command. */
 vkr_internal void editor_timeline_rerun(VkrEditorUi *editor,
                                         const VkrRecordingPlayback *playback) {
@@ -396,7 +387,7 @@ vkr_internal void editor_timeline_rerun(VkrEditorUi *editor,
   vkr_editor_toast(editor, VKR_UI_ICON_SPEED, theme->text, text);
 }
 
-/* The selection and its actions: loop, name as a range, re-run, zoom to,
+/* The selection and its actions: loop, mark as a segment, re-run, zoom to,
    clear. */
 vkr_internal void
 editor_timeline_selection(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
@@ -443,11 +434,14 @@ editor_timeline_selection(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   if (vkr_ui_button(ui, string8_lit("loop"), string8_lit("Loop"), &loop)) {
     editor_timeline_loop(editor, playback, looping);
   }
-  VkrUiWidgetConfig range = editor_timeline_button(
+  VkrUiWidgetConfig segment = editor_timeline_button(
       editor, 2u, VKR_UI_ICON_RULER,
-      string8_lit("Name the selection as a range of the recording"));
-  if (vkr_ui_button(ui, string8_lit("range"), string8_lit("Range"), &range)) {
-    editor_timeline_add_range(editor, playback);
+      string8_lit("Mark the selection as a segment and say why it matters"));
+  if (vkr_ui_button(ui, string8_lit("segment"), string8_lit("Segment"),
+                    &segment) &&
+      vkr_editor_recording_segment_add(editor, playback, timeline->select_first,
+                                       timeline->select_last)) {
+    timeline->selected = false_v;
   }
   VkrUiWidgetConfig rerun = editor_timeline_button(
       editor, 3u, VKR_UI_ICON_SPEED,
@@ -991,11 +985,12 @@ editor_timeline_x(const VkrEditorRecordingTimeline *timeline,
 /* A mark of `size_pt` in lane `row` at `x`: a dot, a note's square, a
    range's span or a column's engine events; a click seeks to `seek_frame`.
    */
-vkr_internal void editor_timeline_mark(VkrEditorUi *editor, VkrUiSystem *ui,
-                                       const char *id, uint64_t index,
-                                       uint32_t row, Vec2 size_pt, float32_t x,
-                                       Vec4 color, float32_t radius,
-                                       uint64_t seek_frame, String8 tooltip) {
+vkr_internal bool8_t editor_timeline_mark(VkrEditorUi *editor, VkrUiSystem *ui,
+                                          const char *id, uint64_t index,
+                                          uint32_t row, Vec2 size_pt,
+                                          float32_t x, Vec4 color,
+                                          float32_t radius, uint64_t seek_frame,
+                                          String8 tooltip) {
   VkrUiWidgetConfig mark = vkr_ui_widget_config_default();
   mark.placement = editor_timeline_cell(0u, row);
   mark.placement.justify = VKR_UI_ALIGN_START;
@@ -1006,18 +1001,20 @@ vkr_internal void editor_timeline_mark(VkrEditorUi *editor, VkrUiSystem *ui,
   mark.style.corner_radius_pt = (Vec4){radius, radius, radius, radius};
   mark.tooltip = tooltip;
   (void)vkr_ui_push_id_u64(ui, index);
-  if (vkr_ui_button(
-          ui, string8_create_from_cstr((const uint8_t *)id, string_length(id)),
-          (String8){0}, &mark)) {
+  const bool8_t clicked = vkr_ui_button(
+      ui, string8_create_from_cstr((const uint8_t *)id, string_length(id)),
+      (String8){0}, &mark);
+  if (clicked) {
     VkrSampleRecordingRequest seek = {
         .command = VKR_SAMPLE_RECORDING_SEEK_FRAME, .frame = seek_frame};
     (void)vkr_editor_recording_send(editor, seek, false_v);
   }
   (void)vkr_ui_pop_id(ui);
+  return clicked;
 }
 
-/* Markers, then ranges, then notes in the view, placed under the frame-time
-   lane's last drawn width. */
+/* Segments, then markers, then notes in the view, placed under the
+   frame-time lane's last drawn width. */
 vkr_internal void editor_timeline_events(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrRecordingPlayback *playback,
@@ -1029,23 +1026,29 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
   char error[192];
   const VkrRecordingAnnotations *annotations = vkr_editor_recording_annotations(
       editor, playback->bundle_path, error, sizeof(error));
-  for (uint32_t i = 0u; annotations && i < annotations->range_count; ++i) {
-    const VkrRecordingRange *range = &annotations->ranges[i];
-    if (range->last < timeline->view_first ||
-        range->first > timeline->view_last) {
+  for (uint32_t i = 0u; annotations && i < annotations->segment_count; ++i) {
+    const VkrRecordingSegment *segment = &annotations->segments[i];
+    if (segment->last < timeline->view_first ||
+        segment->first > timeline->view_last) {
       continue;
     }
     const float32_t x0 = editor_timeline_x(
-        timeline, width, Max(range->first, timeline->view_first));
+        timeline, width, Max(segment->first, timeline->view_first));
     const float32_t x1 = editor_timeline_x(
-        timeline, width, Min(range->last, timeline->view_last));
-    editor_timeline_mark(
-        editor, ui, "range", i, row,
-        (Vec2){Max(x1 - x0, EDITOR_TIMELINE_MARK_PT), EDITOR_TIMELINE_MARK_PT},
-        x0, vkr_ui_color_alpha(theme->text, 0.3f), 3.0f, range->first,
-        string8_create_formatted(ui->frame_allocator, "%s: frames %llu to %llu",
-                                 range->name, (unsigned long long)range->first,
-                                 (unsigned long long)range->last));
+        timeline, width, Min(segment->last, timeline->view_last));
+    /* A click also opens the segment's panel. */
+    if (editor_timeline_mark(
+            editor, ui, "segment", i, row,
+            (Vec2){Max(x1 - x0, EDITOR_TIMELINE_MARK_PT),
+                   EDITOR_TIMELINE_MARK_PT},
+            x0, vkr_ui_color_alpha(theme->accent, 0.45f), 3.0f, segment->first,
+            string8_create_formatted(
+                ui->frame_allocator, "%s: frames %llu to %llu%s%s",
+                segment->name, (unsigned long long)segment->first,
+                (unsigned long long)segment->last, segment->note[0] ? "\n" : "",
+                segment->note))) {
+      vkr_editor_recording_segment_select(editor, i);
+    }
   }
   for (uint32_t i = 0u; i < playback->marker_count; ++i) {
     const VkrRecordingMarker *marker = &playback->markers[i];
@@ -1053,7 +1056,7 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
         marker->frame > timeline->view_last) {
       continue;
     }
-    editor_timeline_mark(
+    (void)editor_timeline_mark(
         editor, ui, "marker", i, row,
         (Vec2){EDITOR_TIMELINE_MARK_PT, EDITOR_TIMELINE_MARK_PT},
         editor_timeline_x(timeline, width, marker->frame) - half,
@@ -1069,7 +1072,7 @@ vkr_internal void editor_timeline_events(VkrEditorUi *editor,
         note->frame > timeline->view_last) {
       continue;
     }
-    editor_timeline_mark(
+    (void)editor_timeline_mark(
         editor, ui, "note", i, row,
         (Vec2){EDITOR_TIMELINE_MARK_PT, EDITOR_TIMELINE_MARK_PT},
         editor_timeline_x(timeline, width, note->frame) - half, theme->text,
@@ -1195,7 +1198,7 @@ vkr_internal void editor_timeline_engine(VkrEditorUi *editor,
     const float32_t x =
         editor_timeline_x(timeline, width, (first + last) / 2u) -
         EDITOR_TIMELINE_TICK_WIDTH_PT * 0.5f;
-    editor_timeline_mark(
+    (void)editor_timeline_mark(
         editor, ui, "engine", column, row,
         (Vec2){EDITOR_TIMELINE_TICK_WIDTH_PT, EDITOR_TIMELINE_ENGINE_PT}, x,
         editor_timeline_event_kind(playback->event_names[heaviest]).color, 1.0f,

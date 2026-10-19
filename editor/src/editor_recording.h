@@ -51,7 +51,7 @@ typedef struct VkrEditorRecordingEntry {
   bool8_t all_measurements;
   /* From annotations.json. */
   uint32_t notes;
-  uint32_t ranges;
+  uint32_t segments;
   VkrRecordingReview review;
   /* thumb.png as a UI texture, loaded when the card first shows; released
      when the list is read again. */
@@ -251,11 +251,11 @@ typedef struct VkrEditorRecordingRequests {
 typedef enum VkrEditorRecordingSelection {
   VKR_EDITOR_RECORDING_SELECTION_NONE = 0,
   VKR_EDITOR_RECORDING_SELECTION_NOTE,
-  VKR_EDITOR_RECORDING_SELECTION_RANGE,
+  VKR_EDITOR_RECORDING_SELECTION_SEGMENT,
 } VkrEditorRecordingSelection;
 
 /* The annotations of one recording, cached while its playback is open or an
-   operation edits them, and the playback bar's note and range tools. */
+   operation edits them, and the playback bar's note and segment tools. */
 typedef struct VkrEditorRecordingNotes {
   /* The bundle the cache holds; empty when none. */
   char bundle[VKR_RECORDING_PATH_MAX];
@@ -266,16 +266,29 @@ typedef struct VkrEditorRecordingNotes {
   bool8_t focus;
   char text[VKR_RECORDING_NOTE_TEXT_MAX];
   uint64_t text_length;
-  /* A range being marked: its first frame, until a second press ends it. */
+  /* A segment being marked: its first frame, until a second press ends it. */
   bool8_t marking;
-  uint64_t range_first;
-  /* The note or range clicked on the track, by index into the cached
-     annotations, and the range name being edited; any change to the
-     annotations clears it, as indices move. */
+  uint64_t segment_first;
+  /* The note or segment selected on the track or in the Segments list, by
+     index into the cached annotations; any change to the annotations clears
+     it, as indices move. A selected segment's title and note are edited
+     here and written on Save, Enter, Close or another selection; `edit_focus`
+     gives the title the keyboard on the next build. */
   VkrEditorRecordingSelection selected;
   uint32_t selected_index;
-  char name[VKR_RECORDING_RANGE_NAME_MAX];
-  uint64_t name_length;
+  char title[VKR_RECORDING_SEGMENT_NAME_MAX];
+  uint64_t title_length;
+  char note[VKR_RECORDING_SEGMENT_NOTE_MAX];
+  uint64_t note_length;
+  bool8_t edit_focus;
+  /* The Segments list over the bar, and its page of rows. */
+  bool8_t listing;
+  uint32_t list_page;
+  /* Viewing one segment alone: the timeline shows its frames and the
+     playback loops them. Kept by frames, which survive index changes. */
+  bool8_t focusing;
+  uint64_t focus_first;
+  uint64_t focus_last;
 } VkrEditorRecordingNotes;
 
 /* Columns the timeline's frame-time lane draws at most; each shows the
@@ -653,12 +666,18 @@ vkr_editor_recording_newest(struct VkrEditorUi *editor);
  * zero. */
 float32_t vkr_editor_recording_timeline_height(struct VkrEditorUi *editor);
 /** The timeline above the playback bar, whose top-left corner and width are
- * `bar_pt`: the frame-time lane, markers, notes and ranges, a ruler, zoom,
+ * `bar_pt`: the frame-time lane, markers, notes and segments, a ruler, zoom,
  * and actions on a brushed selection. */
 void vkr_editor_recording_timeline_build(struct VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrRecordingPlayback *playback,
                                          Vec3 bar_pt);
+/** Opens the timeline on frames `first` to `last` with a margin of a tenth
+ * of their span each side, or on the whole recording when `first` is
+ * UINT64_MAX. */
+void vkr_editor_recording_timeline_show(struct VkrEditorUi *editor,
+                                        const VkrRecordingPlayback *playback,
+                                        uint64_t first, uint64_t last);
 
 /* ---- Thumbnails (editor_recording_thumbs.c) ---- */
 
@@ -728,23 +747,33 @@ bool8_t vkr_editor_recording_annotations_save(struct VkrEditorUi *editor);
  * summary.json's; zero when unknown. */
 uint64_t vkr_editor_recording_frame_count(const VkrSampleUiFrame *frame,
                                           const char *bundle_path);
-/** The playback bar's tools: open or close the note field, mark a range's
- * first or last frame at the playhead, and set the review state, flagging it
- * when `flag`. */
+/** The playback bar's tools: open or close the note field, mark a
+ * segment's first or last frame at the playhead, open or close the Segments
+ * list, and set the review state, flagging it when `flag`. */
 void vkr_editor_recording_note_toggle(struct VkrEditorUi *editor);
-void vkr_editor_recording_range_mark(struct VkrEditorUi *editor,
-                                     const VkrRecordingPlayback *playback);
+void vkr_editor_recording_segment_mark(struct VkrEditorUi *editor,
+                                       const VkrRecordingPlayback *playback);
+void vkr_editor_recording_segments_toggle(struct VkrEditorUi *editor);
+/** Selects segment `index` of the cached annotations and opens its panel,
+ * writing the open segment's unsaved title and note first. */
+void vkr_editor_recording_segment_select(struct VkrEditorUi *editor,
+                                         uint32_t index);
+/** Adds frames `first` to `last` as a new segment and opens it for its
+ * title and note; false after a toast saying why not. */
+bool8_t vkr_editor_recording_segment_add(struct VkrEditorUi *editor,
+                                         const VkrRecordingPlayback *playback,
+                                         uint64_t first, uint64_t last);
 void vkr_editor_recording_review_toggle(struct VkrEditorUi *editor,
                                         const VkrRecordingPlayback *playback,
                                         bool8_t flag);
-/** The open playback's ranges and notes on the playback bar's track, whose
+/** The open playback's segments and notes on the playback bar's track, whose
  * pixel rectangle is `slider_px`. */
 void vkr_editor_recording_annotations_track(
     struct VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     const VkrRecordingPlayback *playback, VkrUiRect slider_px);
 /** The rectangle in points of the panel over the playback bar (the note
- * field, or the selected note or range) while one is open, from the bar's
- * top-left corner and width. */
+ * field, the Segments list, or the selected note or segment) while one is
+ * open, from the bar's top-left corner and width. */
 bool8_t vkr_editor_recording_composer_rect(const struct VkrEditorUi *editor,
                                            Vec3 bar_pt, Vec4 *out_pt);
 /** The note field over the playback bar, whose top-left corner and width
@@ -754,12 +783,12 @@ void vkr_editor_recording_composer_build(struct VkrEditorUi *editor,
                                          const VkrRecordingPlayback *playback,
                                          Vec3 bar_pt);
 /** Puts a prompt on the clipboard that points an agent at the recording:
- * its facts, markers, notes, ranges, review, the request it answers and
- * the playhead when it is open. */
+ * its facts, markers, notes, segments with their notes, review, the request
+ * it answers and the playhead when it is open. */
 void vkr_editor_recording_copy_prompt(struct VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame,
                                       const VkrEditorRecordingEntry *entry);
-/** Fills the entry's note and range counts and review state. */
+/** Fills the entry's note and segment counts and review state. */
 void vkr_editor_recording_entry_annotations(struct VkrEditorUi *editor,
                                             const char *bundle_path,
                                             VkrEditorRecordingEntry *entry);

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-19
 authority: adr
 ---
 
@@ -206,24 +206,51 @@ an agent must read one without the editor.
   wanted one loads
   ([editor_recording_thumbs.c](../../editor/src/editor_recording_thumbs.c)).
 - **Annotations (R4).** A bundle's `annotations.json` (kind
-  `vkr.recording.annotations`) holds notes on frames (at most 64), named
-  frame ranges (at most 32) and a review state: unreviewed, reviewed or
-  flagged, with who set it. It is rewritten whole on every change, so the
-  stream and `summary.json` never change after the recording stops; a bundle
-  without it has none
+  `vkr.recording.annotations`, version 2) holds notes on frames (at most
+  64), segments (at most 64) and a review state: unreviewed, reviewed or
+  flagged, with who set it. A segment marks frames `first` to `last` with a
+  title (64 bytes), a note of up to 1 KiB that says what happens there and
+  why it matters, its author and when it was marked, so a person or an
+  agent can be pointed at the parts that matter. A version 1 file's named
+  ranges read as segments without notes; the file is rewritten whole on
+  every change, so the stream and `summary.json` never change after the
+  recording stops, and a bundle without it has none
   ([vkr_recording_annotations.h](../../runtime/src/assets/vkr_recording_annotations.h)).
-  Agents read it with `rec.annotations` and change it with `rec.note`,
-  `rec.range` and `rec.review`, which take the open recording when they name
-  none; `rec.list` and `vkr_rec summary` report it. The playback bar adds a
-  note at the playhead from a field above it, marks a range with two presses
-  of Range, and toggles the review (Shift flags it); notes show as squares
-  and ranges as outlined spans on its track. Clicking one seeks to it and
-  opens a panel over the bar: a note's text, author and Delete, or a range's
-  name to rename (Enter) and Delete (`rec.range` `rename` for agents). A
-  card shows the note count and the review. Copy agent prompt puts the recording's facts, its first
-  markers, notes and ranges, the review, the request it answers and the
-  playhead on the clipboard
-  ([editor_recording_annotations.c](../../editor/src/editor_recording_annotations.c)).
+  - Agents read the annotations with `rec.annotations` and change them with
+    `rec.note`, `rec.segment` (add with `first`, `last`, `title` and
+    `note`; with `segment`, an index or a title, edit the title or note or
+    `remove` it) and `rec.review`, which take the open recording when they
+    name none. `rec.segments` answers each segment with its start, length,
+    frame-time p50, p95 and max, frames over the budget, spikes inside and
+    worst frame (`vkr_recording_segment_stats` in
+    [vkr_recording_analysis.h](../../runtime/src/assets/vkr_recording_analysis.h)).
+    `rec.frames` and `rec.rerun` take a `segment` in place of frames.
+    Offline, `vkr_rec segments` prints the same statistics, `vkr_rec frames`
+    and `export` take `--segment NAME`, and `vkr_rec summary` and `rec.list`
+    report the segments.
+  - The playback bar adds a note at the playhead from a field above it,
+    marks a segment with two presses of the ruler (the timeline's selection
+    has a Segment button too), opens the Segments list, and toggles the
+    review (Shift flags it). Notes show as squares and segments as outlined
+    spans on the bar's track, and as spans on the timeline; hovering one
+    shows its note. A new segment opens its panel with the title taking the
+    keyboard.
+  - The segment panel over the bar edits the title and a multi-line note,
+    steps to the previous or next segment, and has Focus, Re-run, Delete and
+    Save; Enter in the title or Cmd+Enter (Ctrl+Enter) in the note saves, and
+    closing or opening another segment saves unsaved edits. Its footer gives
+    the frames, the length, the author and the note's size.
+  - The Segments list shows every segment by first frame, six to a page,
+    each with its title, span and the first line of its note; a row opens
+    the segment, and Focus views it alone: the timeline opens on its frames
+    with a tenth of their span each side, playback loops them from the
+    first frame, and the focused segment shows in the accent colour until
+    Exit focus.
+  - A card shows the note count and the review. Copy agent prompt puts the
+    recording's facts, its segments with their notes first, its markers and
+    notes, the review, the request it answers and the playhead on the
+    clipboard
+    ([editor_recording_annotations.c](../../editor/src/editor_recording_annotations.c)).
 - **Harness recordings (R5).** `vkr_harness profile --record` gives each
   repetition a Tier 0 recording of its run in `runs/<i>/recording/` and lists
   its stream and `summary.json` among the report's artifacts; the run is not
@@ -567,3 +594,19 @@ CPU zones, GPU pass starts, the Perfetto export and rolling recordings
 
 Play recording (R3) adds world state, or frame metrics (R2) add render-thread
 records, which bring the recorder frame number join described in the proposal.
+- Segments, 2026-10-19, M1 Pro, Release: `run_recording_tests` round-trips
+  segments with notes holding quotes, line breaks and UTF-8, keeps them by
+  first frame, edits a title or a note alone, refuses an empty title,
+  reads a version 1 file's ranges as segments, and checks
+  `vkr_recording_segment_stats` on a synthetic recording (cut to the
+  recording, an invalid frame left out, budget misses, the worst frame and
+  one spike inside). On a headless Bistro editor a Tier 1 recording of 1,233
+  frames took three segments through `rec.segment`, which kept them by
+  first frame, edited a note by title and refused an empty title and an
+  unknown segment; `rec.segments` and `vkr_rec segments` gave the same
+  medians (7.02, 7.11 and 7.10 ms), and `rec.frames` and `vkr_rec frames`
+  with a segment answered its 201 and 241 rows. By clicks: the Segments
+  list showed the three; a row opened its panel; typing in the note and
+  Cmd+Enter saved it; Focus opened the timeline on frames 680 to 920 of a
+  700 to 900 segment and looped them; two presses of the ruler at frames
+  1,000 and 1,100 opened a new segment whose typed title Enter saved.

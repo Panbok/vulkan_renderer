@@ -6,17 +6,32 @@
 #include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
 
-/* Annotations in the editor (docs/proposals/recordings.md, "Bundle"): the
-   cache of one recording's annotations.json, the playback bar's note field,
-   range marking and review toggle, the notes and ranges on its track, and
-   the agent prompt a recording's card copies. */
+/* Annotations in the editor (ADR-122): the cache of one recording's
+   annotations.json, the playback bar's note field, segment marking, the
+   Segments list, a segment's panel with its title and note, focus on one
+   segment, the review toggle, the notes and segments on the bar's track,
+   and the agent prompt a recording's card copies. */
 
-/* Notes and ranges the agent prompt lists; the rest are counted. */
+/* Notes and segments the agent prompt lists; the rest are counted. */
 #define EDITOR_ANNOTATIONS_PROMPT_ITEMS 10u
-#define EDITOR_ANNOTATIONS_PROMPT_BYTES 4096u
-/* A note's square on the track and a range's band height, ring included. */
+#define EDITOR_ANNOTATIONS_PROMPT_BYTES 16384u
+/* A note's square on the track and a segment's band height, ring
+   included. */
 #define EDITOR_ANNOTATIONS_NOTE_PT 10.0f
-#define EDITOR_ANNOTATIONS_RANGE_PT 14.0f
+#define EDITOR_ANNOTATIONS_SEGMENT_PT 14.0f
+/* The segment panel and the Segments list: wider than the note field, the
+   panel with a title row, a note of about five lines and a footer. */
+#define EDITOR_ANNOTATIONS_WIDE_PT 640.0f
+#define EDITOR_ANNOTATIONS_SEGMENT_PANEL_HEIGHT_PT 196.0f
+#define EDITOR_ANNOTATIONS_LIST_ROWS 6u
+/* A list entry: its title line over its note line, and the gap between
+   grid rows. */
+#define EDITOR_ANNOTATIONS_LIST_TITLE_PT 20.0f
+#define EDITOR_ANNOTATIONS_LIST_NOTE_PT 16.0f
+#define EDITOR_ANNOTATIONS_LIST_GAP_PT 4.0f
+#define EDITOR_ANNOTATIONS_LIST_HEADER_PT 26.0f
+/* The segment panel's padding and gap between its rows. */
+#define EDITOR_ANNOTATIONS_PANEL_PAD_PT 8.0f
 /* The note field over the playback bar. */
 #define EDITOR_ANNOTATIONS_COMPOSER_PT 440.0f
 #define EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT 44.0f
@@ -52,7 +67,7 @@ bool8_t vkr_editor_recording_annotations_save(VkrEditorUi *editor) {
       !vkr_recording_annotations_write(notes->bundle, &notes->annotations)) {
     return false_v;
   }
-  /* Indices move when notes or ranges come and go. */
+  /* Indices move when notes or segments come and go. */
   notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
   /* The card of the same bundle shows the new counts at once. */
   for (uint32_t i = 0u; i < recording->entry_count; ++i) {
@@ -62,7 +77,7 @@ bool8_t vkr_editor_recording_annotations_save(VkrEditorUi *editor) {
                   entry->bundle);
     if (string_equals(path, notes->bundle)) {
       entry->notes = notes->annotations.note_count;
-      entry->ranges = notes->annotations.range_count;
+      entry->segments = notes->annotations.segment_count;
       entry->review = notes->annotations.review;
     }
   }
@@ -77,7 +92,7 @@ void vkr_editor_recording_entry_annotations(VkrEditorUi *editor,
     return;
   }
   entry->notes = read->note_count;
-  entry->ranges = read->range_count;
+  entry->segments = read->segment_count;
   entry->review = read->review;
 }
 
@@ -149,36 +164,192 @@ void vkr_editor_recording_note_toggle(VkrEditorUi *editor) {
   notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
 }
 
-void vkr_editor_recording_range_mark(VkrEditorUi *editor,
-                                     const VkrRecordingPlayback *playback) {
+/* Loads segment `index`'s title and note into the panel's fields. */
+vkr_internal void
+editor_annotations_segment_load(VkrEditorRecordingNotes *notes,
+                                uint32_t index) {
+  const VkrRecordingSegment *segment = &notes->annotations.segments[index];
+  notes->title_length =
+      Min(string_length(segment->name), sizeof(notes->title) - 1u);
+  MemCopy(notes->title, segment->name, notes->title_length);
+  notes->note_length =
+      Min(string_length(segment->note), sizeof(notes->note) - 1u);
+  MemCopy(notes->note, segment->note, notes->note_length);
+}
+
+/* Whether the panel's fields differ from the selected segment's title and
+   note. */
+vkr_internal bool8_t
+editor_annotations_segment_dirty(const VkrEditorRecordingNotes *notes) {
+  if (notes->selected != VKR_EDITOR_RECORDING_SELECTION_SEGMENT ||
+      notes->selected_index >= notes->annotations.segment_count) {
+    return false_v;
+  }
+  const VkrRecordingSegment *segment =
+      &notes->annotations.segments[notes->selected_index];
+  return notes->title_length != string_length(segment->name) ||
+         MemCompare(notes->title, segment->name, notes->title_length) != 0 ||
+         notes->note_length != string_length(segment->note) ||
+         MemCompare(notes->note, segment->note, notes->note_length) != 0;
+}
+
+/* Writes the panel's title and note to the selected segment when they
+   changed; the segment stays selected. False when the title is empty,
+   which keeps the fields as typed. */
+vkr_internal bool8_t editor_annotations_segment_commit(VkrEditorUi *editor) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  if (!editor_annotations_segment_dirty(notes)) {
+    return true_v;
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const uint32_t index = notes->selected_index;
+  const String8 title = {.str = (uint8_t *)notes->title,
+                         .length = notes->title_length};
+  const String8 note = {.str = (uint8_t *)notes->note,
+                        .length = notes->note_length};
+  if (!vkr_recording_annotations_edit_segment(&notes->annotations, index,
+                                              &title, &note)) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                     "A segment needs a title.");
+    return false_v;
+  }
+  if (!vkr_editor_recording_annotations_save(editor)) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                     "The recording's annotations could not be written.");
+    return false_v;
+  }
+  /* An edit moves no index, so the segment stays open. */
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_SEGMENT;
+  notes->selected_index = index;
+  vkr_editor_toast(editor, VKR_UI_ICON_SAVE, theme->text, "Saved the segment.");
+  return true_v;
+}
+
+void vkr_editor_recording_segment_select(VkrEditorUi *editor, uint32_t index) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  if (!editor_annotations_segment_commit(editor) ||
+      index >= notes->annotations.segment_count) {
+    return;
+  }
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_SEGMENT;
+  notes->selected_index = index;
+  notes->composing = false_v;
+  notes->listing = false_v;
+  notes->edit_focus = false_v;
+  editor_annotations_segment_load(notes, index);
+}
+
+bool8_t vkr_editor_recording_segment_add(VkrEditorUi *editor,
+                                         const VkrRecordingPlayback *playback,
+                                         uint64_t first, uint64_t last) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  if (!editor_annotations_segment_commit(editor)) {
+    return false_v;
+  }
+  VkrRecordingAnnotations *annotations =
+      editor_annotations_open(editor, playback);
+  if (!annotations) {
+    return false_v;
+  }
+  char title[VKR_RECORDING_SEGMENT_NAME_MAX];
+  string_format(title, sizeof(title), "Segment %u",
+                annotations->segment_count + 1u);
+  const uint32_t index = vkr_recording_annotations_add_segment(
+      annotations, first, last, "user",
+      string8_create_from_cstr((const uint8_t *)title, string_length(title)),
+      (String8){0});
+  if (index == UINT32_MAX) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                     "This recording has as many segments as it can hold.");
+    return false_v;
+  }
+  if (!vkr_editor_recording_annotations_save(editor)) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning,
+                     "The recording's annotations could not be written.");
+    return false_v;
+  }
+  /* The new segment opens with its title taking the keyboard. */
+  vkr_editor_recording_segment_select(editor, index);
+  notes->edit_focus = true_v;
+  char text[128];
+  string_format(text, sizeof(text),
+                "Marked frames %llu to %llu; name the segment and say why it "
+                "matters.",
+                (unsigned long long)Min(first, last),
+                (unsigned long long)Max(first, last));
+  vkr_editor_toast(editor, VKR_UI_ICON_RULER, theme->text, text);
+  return true_v;
+}
+
+void vkr_editor_recording_segment_mark(VkrEditorUi *editor,
+                                       const VkrRecordingPlayback *playback) {
   VkrEditorRecordingNotes *notes = &editor->recording.notes;
   const uint64_t current = editor_annotations_playhead(playback);
   if (!notes->marking) {
     notes->marking = true_v;
-    notes->range_first = current;
+    notes->segment_first = current;
     return;
   }
   notes->marking = false_v;
-  VkrRecordingAnnotations *annotations =
-      editor_annotations_open(editor, playback);
-  if (!annotations) {
+  (void)vkr_editor_recording_segment_add(editor, playback, notes->segment_first,
+                                         current);
+}
+
+void vkr_editor_recording_segments_toggle(VkrEditorUi *editor) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  if (!editor_annotations_segment_commit(editor)) {
     return;
   }
-  char name[VKR_RECORDING_RANGE_NAME_MAX];
-  string_format(name, sizeof(name), "Range %u", annotations->range_count + 1u);
-  if (!vkr_recording_annotations_add_range(
-          annotations, notes->range_first, current, "user",
-          string8_create_from_cstr((const uint8_t *)name,
-                                   string_length(name)))) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
-                     "This recording has as many ranges as it can hold.");
-    return;
+  notes->listing = !notes->listing;
+  notes->composing = false_v;
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+}
+
+/* Views segment `index` alone: the timeline opens on its frames, playback
+   loops them from its first frame, and the bar's track shows it in the
+   accent colour. */
+vkr_internal void editor_annotations_focus(VkrEditorUi *editor,
+                                           const VkrRecordingPlayback *playback,
+                                           uint32_t index) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  const VkrRecordingSegment *segment = &notes->annotations.segments[index];
+  const uint64_t last_frame = playback->frame_count - 1u;
+  notes->focusing = true_v;
+  notes->focus_first = Min(segment->first, last_frame);
+  notes->focus_last = Min(segment->last, last_frame);
+  vkr_editor_recording_timeline_show(editor, playback, notes->focus_first,
+                                     notes->focus_last);
+  vkr_editor_recording_settings(editor, playback->speed, true_v,
+                                playback->times[notes->focus_first],
+                                playback->times[notes->focus_last]);
+  VkrSampleRecordingRequest seek = {.command = VKR_SAMPLE_RECORDING_SEEK_FRAME,
+                                    .frame = notes->focus_first};
+  (void)vkr_editor_recording_send(editor, seek, false_v);
+  VkrSampleRecordingRequest play = {.command = VKR_SAMPLE_RECORDING_PLAY};
+  (void)vkr_editor_recording_send(editor, play, false_v);
+}
+
+/* Ends the focus: the whole recording shows and playback stops looping. */
+vkr_internal void
+editor_annotations_unfocus(VkrEditorUi *editor,
+                           const VkrRecordingPlayback *playback) {
+  editor->recording.notes.focusing = false_v;
+  vkr_editor_recording_settings(editor, playback->speed, false_v, 0.0, 0.0);
+  vkr_editor_recording_timeline_show(editor, playback, UINT64_MAX, 0u);
+}
+
+/* Whether the focus is on segment `index`. */
+vkr_internal bool8_t editor_annotations_focused(
+    const VkrEditorRecordingNotes *notes, const VkrRecordingPlayback *playback,
+    uint32_t index) {
+  if (!notes->focusing || index >= notes->annotations.segment_count) {
+    return false_v;
   }
-  char text[96];
-  string_format(text, sizeof(text), "Added %s: frames %llu to %llu.", name,
-                (unsigned long long)Min(notes->range_first, current),
-                (unsigned long long)Max(notes->range_first, current));
-  editor_annotations_saved(editor, VKR_UI_ICON_RULER, text);
+  const VkrRecordingSegment *segment = &notes->annotations.segments[index];
+  const uint64_t last_frame = playback->frame_count - 1u;
+  return Min(segment->first, last_frame) == notes->focus_first &&
+         Min(segment->last, last_frame) == notes->focus_last;
 }
 
 void vkr_editor_recording_review_toggle(VkrEditorUi *editor,
@@ -209,23 +380,23 @@ void vkr_editor_recording_review_toggle(VkrEditorUi *editor,
 /* ------------------------------------------------------------------------ */
 /* Track                                                                     */
 
-/* Selects a note or range, or deselects it when it was selected; the note
-   field closes. A range's name fills the rename field. */
-vkr_internal void editor_annotations_select(VkrEditorRecordingNotes *notes,
-                                            VkrEditorRecordingSelection kind,
-                                            uint32_t index, const char *name) {
-  if (notes->selected == kind && notes->selected_index == index) {
+/* Selects a note, or deselects it when it was selected; the note field
+   closes. */
+vkr_internal void editor_annotations_select_note(VkrEditorUi *editor,
+                                                 uint32_t index) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  if (!editor_annotations_segment_commit(editor)) {
+    return;
+  }
+  if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE &&
+      notes->selected_index == index) {
     notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
     return;
   }
-  notes->selected = kind;
+  notes->selected = VKR_EDITOR_RECORDING_SELECTION_NOTE;
   notes->selected_index = index;
   notes->composing = false_v;
-  notes->name_length = 0u;
-  if (name) {
-    notes->name_length = Min(string_length(name), sizeof(notes->name) - 1u);
-    MemCopy(notes->name, name, notes->name_length);
-  }
+  notes->listing = false_v;
 }
 
 /* The track's x, in points, of frame `frame`. */
@@ -245,7 +416,7 @@ vkr_internal VkrUiWidgetConfig editor_annotations_band(VkrUiRect slider_px,
                                                        float32_t x0,
                                                        float32_t x1,
                                                        Vec4 color) {
-  const float32_t height = EDITOR_ANNOTATIONS_RANGE_PT;
+  const float32_t height = EDITOR_ANNOTATIONS_SEGMENT_PT;
   VkrUiWidgetConfig band = vkr_ui_widget_config_default();
   band.placement = VKR_UI_PLACEMENT_DEFAULT;
   band.placement.column = band.placement.row = 0u;
@@ -280,41 +451,50 @@ void vkr_editor_recording_annotations_track(
   if (notes->marking) {
     const uint64_t current = editor_annotations_playhead(playback);
     const float32_t a =
-        editor_annotations_x(playback, slider_px, scale, notes->range_first);
+        editor_annotations_x(playback, slider_px, scale, notes->segment_first);
     const float32_t b =
         editor_annotations_x(playback, slider_px, scale, current);
     VkrUiWidgetConfig pending = editor_annotations_band(
         slider_px, scale, Min(a, b), Max(a, b), theme->warning);
-    vkr_ui_label(ui, string8_lit("editor.recording.range.pending"),
+    vkr_ui_label(ui, string8_lit("editor.recording.segment.pending"),
                  (String8){0}, &pending);
   }
   if (!annotations) {
     return;
   }
-  for (uint32_t i = 0u; i < annotations->range_count; ++i) {
-    const VkrRecordingRange *range = &annotations->ranges[i];
+  for (uint32_t i = 0u; i < annotations->segment_count; ++i) {
+    const VkrRecordingSegment *segment = &annotations->segments[i];
+    /* The focused segment in the accent colour, the others in the text's. */
+    const bool8_t focused = editor_annotations_focused(notes, playback, i);
+    const Vec4 color = focused ? theme->accent : theme->text;
     VkrUiWidgetConfig band = editor_annotations_band(
         slider_px, scale,
-        editor_annotations_x(playback, slider_px, scale, range->first),
-        editor_annotations_x(playback, slider_px, scale, range->last),
-        theme->text);
-    band.style.hover_background_color = vkr_ui_color_alpha(theme->text, 0.4f);
+        editor_annotations_x(playback, slider_px, scale, segment->first),
+        editor_annotations_x(playback, slider_px, scale, segment->last), color);
+    band.style.hover_background_color = vkr_ui_color_alpha(color, 0.4f);
     band.tooltip = string8_create_formatted(
-        ui->frame_allocator, "%s: frames %llu to %llu%s%s", range->name,
-        (unsigned long long)range->first, (unsigned long long)range->last,
-        range->author[0] ? ", by " : "", range->author);
+        ui->frame_allocator, "%s: frames %llu to %llu%s%s%s%s", segment->name,
+        (unsigned long long)segment->first, (unsigned long long)segment->last,
+        segment->author[0] ? ", by " : "", segment->author,
+        segment->note[0] ? "\n" : "", segment->note);
     (void)vkr_ui_push_id_u64(ui, i);
-    if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_RANGE &&
+    if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_SEGMENT &&
         notes->selected_index == i) {
-      band.style.background_color = vkr_ui_color_alpha(theme->text, 0.4f);
+      band.style.background_color = vkr_ui_color_alpha(color, 0.4f);
     }
-    if (vkr_ui_button(ui, string8_lit("editor.recording.range"), (String8){0},
+    if (vkr_ui_button(ui, string8_lit("editor.recording.segment"), (String8){0},
                       &band)) {
       VkrSampleRecordingRequest seek = {
-          .command = VKR_SAMPLE_RECORDING_SEEK_FRAME, .frame = range->first};
+          .command = VKR_SAMPLE_RECORDING_SEEK_FRAME, .frame = segment->first};
       (void)vkr_editor_recording_send(editor, seek, false_v);
-      editor_annotations_select(notes, VKR_EDITOR_RECORDING_SELECTION_RANGE, i,
-                                range->name);
+      if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_SEGMENT &&
+          notes->selected_index == i) {
+        if (editor_annotations_segment_commit(editor)) {
+          notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+        }
+      } else {
+        vkr_editor_recording_segment_select(editor, i);
+      }
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -350,8 +530,7 @@ void vkr_editor_recording_annotations_track(
       VkrSampleRecordingRequest seek = {
           .command = VKR_SAMPLE_RECORDING_SEEK_FRAME, .frame = note->frame};
       (void)vkr_editor_recording_send(editor, seek, false_v);
-      editor_annotations_select(notes, VKR_EDITOR_RECORDING_SELECTION_NOTE, i,
-                                NULL);
+      editor_annotations_select_note(editor, i);
     }
     (void)vkr_ui_pop_id(ui);
   }
@@ -395,32 +574,54 @@ editor_annotations_add_note(VkrEditorUi *editor,
   editor_annotations_saved(editor, VKR_UI_ICON_PENCIL_LINE, message);
 }
 
-/* Whether the selection still names a note or range of the cache. */
+/* Whether the selection still names a note or segment of the cache. */
 vkr_internal bool8_t
 editor_annotations_selection_valid(const VkrEditorRecordingNotes *notes) {
   return (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE &&
           notes->selected_index < notes->annotations.note_count) ||
-         (notes->selected == VKR_EDITOR_RECORDING_SELECTION_RANGE &&
-          notes->selected_index < notes->annotations.range_count);
+         (notes->selected == VKR_EDITOR_RECORDING_SELECTION_SEGMENT &&
+          notes->selected_index < notes->annotations.segment_count);
+}
+
+/* Rows the Segments list shows on its page; at least one for its hint. */
+vkr_internal uint32_t
+editor_annotations_list_rows(const VkrEditorRecordingNotes *notes) {
+  const uint32_t count = notes->annotations.segment_count;
+  const uint32_t first = notes->list_page * EDITOR_ANNOTATIONS_LIST_ROWS;
+  return count > first ? Min(count - first, EDITOR_ANNOTATIONS_LIST_ROWS) : 1u;
 }
 
 bool8_t vkr_editor_recording_composer_rect(const VkrEditorUi *editor,
                                            Vec3 bar_pt, Vec4 *out_pt) {
   const VkrEditorRecordingNotes *notes = &editor->recording.notes;
   float32_t height = 0.0f;
+  float32_t width = EDITOR_ANNOTATIONS_COMPOSER_PT;
   if (notes->composing) {
     height = EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT;
+  } else if (notes->listing) {
+    /* The header and two grid rows per entry inside the panel's padding,
+       a gap before each grid row after the header. */
+    const uint32_t rows = editor_annotations_list_rows(notes);
+    height = 2.0f * EDITOR_ANNOTATIONS_PANEL_PAD_PT +
+             EDITOR_ANNOTATIONS_LIST_HEADER_PT +
+             (float32_t)rows * (EDITOR_ANNOTATIONS_LIST_TITLE_PT +
+                                EDITOR_ANNOTATIONS_LIST_NOTE_PT +
+                                2.0f * EDITOR_ANNOTATIONS_LIST_GAP_PT);
+    width = EDITOR_ANNOTATIONS_WIDE_PT;
   } else if (editor_annotations_selection_valid(notes)) {
-    height = notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE
-                 ? EDITOR_ANNOTATIONS_NOTE_PANEL_HEIGHT_PT
-                 : EDITOR_ANNOTATIONS_COMPOSER_HEIGHT_PT;
+    if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE) {
+      height = EDITOR_ANNOTATIONS_NOTE_PANEL_HEIGHT_PT;
+    } else {
+      height = EDITOR_ANNOTATIONS_SEGMENT_PANEL_HEIGHT_PT;
+      width = EDITOR_ANNOTATIONS_WIDE_PT;
+    }
   }
   if (height <= 0.0f) {
     return false_v;
   }
   /* Above the bar, from its left edge, so it reads as the bar's own. */
-  *out_pt = (Vec4){bar_pt.x, bar_pt.y - height - 6.0f,
-                   Min(EDITOR_ANNOTATIONS_COMPOSER_PT, bar_pt.z), height};
+  *out_pt =
+      (Vec4){bar_pt.x, bar_pt.y - height - 6.0f, Min(width, bar_pt.z), height};
   return true_v;
 }
 
@@ -607,113 +808,522 @@ editor_annotations_note_panel(VkrEditorUi *editor,
   }
 }
 
-/* The selected range: its name to edit, its frames, Delete and Close. */
-vkr_internal void editor_annotations_range_panel(
+/* A text button of the panels, sized as the bar's text buttons. */
+vkr_internal VkrUiWidgetConfig
+editor_annotations_text_button(VkrEditorUi *editor, uint32_t column,
+                               uint32_t row, VkrUiIcon icon, String8 tooltip) {
+  VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+  button.placement = editor_annotations_cell(column);
+  button.placement.row = row;
+  vkr_editor_action_style(&button, editor->heading_font);
+  button.icon = icon;
+  vkr_editor_button_size(&button);
+  button.style.min_size_pt.y = button.style.max_size_pt.y = 26.0f;
+  button.tooltip = tooltip;
+  return button;
+}
+
+/* Writes a perf re-run of frames `first` to `last` and copies its command. */
+vkr_internal void editor_annotations_rerun(VkrEditorUi *editor,
+                                           const VkrRecordingPlayback *playback,
+                                           uint64_t first, uint64_t last) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrEditorRecordingRerun written;
+  char error[192];
+  if (!vkr_editor_recording_rerun(editor, playback->bundle_path, first, last,
+                                  &written, error, sizeof(error))) {
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
+    return;
+  }
+  (void)vkr_platform_clipboard_write_text(
+      (const uint8_t *)written.command,
+      (uint32_t)string_length(written.command));
+  char text[VKR_RECORDING_PATH_MAX + 64u];
+  string_format(text, sizeof(text),
+                "Wrote %s; its harness command is on the clipboard.",
+                written.case_path);
+  vkr_editor_toast(editor, VKR_UI_ICON_SPEED, theme->text, text);
+}
+
+/* The segment panel's first row: the title field, the previous and next
+   segment, Focus, Re-run, Delete and Close. */
+typedef enum EditorSegmentAction {
+  EDITOR_SEGMENT_NONE = 0,
+  EDITOR_SEGMENT_PREVIOUS,
+  EDITOR_SEGMENT_NEXT,
+  EDITOR_SEGMENT_FOCUS,
+  EDITOR_SEGMENT_RERUN,
+  EDITOR_SEGMENT_DELETE,
+  EDITOR_SEGMENT_SAVE,
+  EDITOR_SEGMENT_CLOSE,
+} EditorSegmentAction;
+
+vkr_internal EditorSegmentAction editor_annotations_segment_header(
+    VkrEditorUi *editor, const VkrSampleUiFrame *frame, bool8_t focused) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiSystem *ui = frame->ui;
+  EditorSegmentAction action = EDITOR_SEGMENT_NONE;
+  VkrUiWidgetConfig field = vkr_ui_widget_config_default();
+  field.placement = editor_annotations_cell(0u);
+  vkr_editor_field_style(&field);
+  field.style.min_size_pt.y = field.style.max_size_pt.y = 26.0f;
+  field.tooltip = string8_lit("The segment's title; Enter saves");
+  const VkrUiId title_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("title"));
+  /* A new segment's title takes the keyboard until the field owns it. */
+  if (notes->edit_focus) {
+    ui->focused_id = title_id;
+    ui->focused_is_text = true_v;
+    (void)vkr_ui_keyboard_layer_set(ui, ui->input_layer);
+  }
+  VkrUiTextEditBuffer title = {.data = (uint8_t *)notes->title,
+                               .length = notes->title_length,
+                               .capacity = sizeof(notes->title) - 1u};
+  (void)vkr_ui_text_field(ui, string8_lit("title"), &title, &field);
+  notes->title_length = title.length;
+  if (notes->edit_focus && ui->focused_id == title_id &&
+      ui->keyboard_input_layer == ui->input_layer &&
+      vkr_ui_widget_rect(ui, title_id, &(VkrUiRect){0})) {
+    notes->edit_focus = false_v;
+  }
+  if (ui->focused_id == title_id &&
+      input_key_just_pressed(ui->input, KEY_ENTER)) {
+    action = EDITOR_SEGMENT_SAVE;
+  }
+  const uint32_t count = notes->annotations.segment_count;
+  VkrUiWidgetConfig previous = vkr_editor_icon_button_config(
+      1u, 0u, VKR_UI_ICON_CHEVRON_LEFT, string8_lit("Previous segment"));
+  previous.disabled = notes->selected_index == 0u;
+  if (vkr_ui_button(ui, string8_lit("previous"), (String8){0}, &previous)) {
+    action = EDITOR_SEGMENT_PREVIOUS;
+  }
+  VkrUiWidgetConfig next = vkr_editor_icon_button_config(
+      2u, 0u, VKR_UI_ICON_CHEVRON_RIGHT, string8_lit("Next segment"));
+  next.disabled = notes->selected_index + 1u >= count;
+  if (vkr_ui_button(ui, string8_lit("next"), (String8){0}, &next)) {
+    action = EDITOR_SEGMENT_NEXT;
+  }
+  VkrUiWidgetConfig focus = editor_annotations_text_button(
+      editor, 3u, 0u, VKR_UI_ICON_CROSSHAIR,
+      focused ? string8_lit("Show the whole recording again")
+              : string8_lit("View this segment alone: zoom the timeline to "
+                            "it and loop its frames"));
+  vkr_editor_toggle_style(&focus, focused);
+  if (vkr_ui_button(ui, string8_lit("focus"),
+                    focused ? string8_lit("Exit focus") : string8_lit("Focus"),
+                    &focus)) {
+    action = EDITOR_SEGMENT_FOCUS;
+  }
+  VkrUiWidgetConfig rerun = editor_annotations_text_button(
+      editor, 4u, 0u, VKR_UI_ICON_SPEED,
+      string8_lit("Benchmark this segment: write a harness case that "
+                  "replays it and copy its command"));
+  if (vkr_ui_button(ui, string8_lit("rerun"), string8_lit("Re-run"), &rerun)) {
+    action = EDITOR_SEGMENT_RERUN;
+  }
+  VkrUiWidgetConfig remove = editor_annotations_delete_button(
+      editor, 5u, 0u, string8_lit("Delete this segment"));
+  if (vkr_ui_button(ui, string8_lit("delete"), string8_lit("Delete"),
+                    &remove)) {
+    action = EDITOR_SEGMENT_DELETE;
+  }
+  VkrUiWidgetConfig close = vkr_editor_icon_button_config(
+      6u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close and save (Escape)"));
+  if (vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) ||
+      input_key_just_pressed(ui->input, KEY_ESCAPE)) {
+    action = EDITOR_SEGMENT_CLOSE;
+  }
+  return action;
+}
+
+/* The segment panel's note field and footer: its frames and length, who
+   marked it, the note's size, and Save. */
+vkr_internal EditorSegmentAction editor_annotations_segment_note(
+    VkrEditorUi *editor, const VkrSampleUiFrame *frame,
+    const VkrRecordingPlayback *playback, const VkrRecordingSegment *segment,
+    float32_t note_height) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  EditorSegmentAction action = EDITOR_SEGMENT_NONE;
+  VkrUiWidgetConfig field = vkr_ui_widget_config_default();
+  field.placement = editor_annotations_cell(0u);
+  field.placement.row = 1u;
+  field.placement.column_span = 7u;
+  field.placement.align = VKR_UI_ALIGN_STRETCH;
+  vkr_editor_field_style(&field);
+  field.style.padding_pt = (VkrUiEdges){5, 6, 5, 6};
+  field.style.font_size_pt = theme->font_body;
+  field.multiline = true_v;
+  /* The note fills its row; a text field keeps its own height otherwise. */
+  field.style.min_size_pt.y = field.style.max_size_pt.y = note_height;
+  field.tooltip = string8_lit("Why this segment matters: what happens here and "
+                              "what to look at");
+  const VkrUiId note_id =
+      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("note"));
+  VkrUiTextEditBuffer note = {.data = (uint8_t *)notes->note,
+                              .length = notes->note_length,
+                              .capacity = sizeof(notes->note) - 1u};
+  (void)vkr_ui_text_field(ui, string8_lit("note"), &note, &field);
+  notes->note_length = note.length;
+#if defined(PLATFORM_APPLE)
+  const Keys primary = KEY_LWIN;
+#else
+  const Keys primary = KEY_LCONTROL;
+#endif
+  if (ui->focused_id == note_id && input_is_key_down(ui->input, primary) &&
+      input_key_just_pressed(ui->input, KEY_ENTER)) {
+    action = EDITOR_SEGMENT_SAVE;
+  }
+  const bool8_t dirty = editor_annotations_segment_dirty(notes);
+  VkrUiWidgetConfig footer =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  footer.placement = editor_annotations_cell(0u);
+  footer.placement.row = 2u;
+  footer.placement.column_span = 5u;
+  footer.placement.justify = VKR_UI_ALIGN_START;
+  footer.icon = VKR_UI_ICON_RULER;
+  footer.icon_size_pt = 12.0f;
+  const uint64_t last_frame = playback->frame_count - 1u;
+  const float64_t seconds = playback->times[Min(segment->last, last_frame)] -
+                            playback->times[Min(segment->first, last_frame)];
+  vkr_ui_label(ui, string8_lit("footer"),
+               string8_create_formatted(
+                   ui->frame_allocator,
+                   "Frames %llu\xe2\x80\x93%llu  \xc2\xb7  %.2f s  \xc2\xb7  "
+                   "%s%s%s%u of 1024 bytes%s",
+                   (unsigned long long)segment->first,
+                   (unsigned long long)segment->last, seconds,
+                   segment->author[0] ? "by " : "", segment->author,
+                   segment->author[0] ? "  \xc2\xb7  " : "",
+                   (uint32_t)notes->note_length,
+#if defined(PLATFORM_APPLE)
+                   dirty ? "  \xc2\xb7  unsaved: Cmd+Enter saves" : ""
+#else
+                   dirty ? "  \xc2\xb7  unsaved: Ctrl+Enter saves" : ""
+#endif
+                   ),
+               &footer);
+  VkrUiWidgetConfig save = vkr_ui_widget_config_default();
+  save.placement = editor_annotations_cell(5u);
+  save.placement.row = 2u;
+  save.placement.column_span = 2u;
+  /* Prominent only while there is something to save. */
+  if (dirty) {
+    vkr_editor_primary_style(&save, editor->heading_font);
+  } else {
+    vkr_editor_action_style(&save, editor->heading_font);
+  }
+  save.icon = VKR_UI_ICON_SAVE;
+  vkr_editor_button_size(&save);
+  save.style.min_size_pt.y = save.style.max_size_pt.y = 22.0f;
+  save.disabled = !dirty;
+  save.tooltip = string8_lit("Save the title and note");
+  if (vkr_ui_button(ui, string8_lit("save"), string8_lit("Save"), &save)) {
+    action = EDITOR_SEGMENT_SAVE;
+  }
+  return action;
+}
+
+/* The selected segment: its title and note to edit, its frames, the
+   neighbouring segments, Focus, Re-run, Delete, Save and Close. */
+vkr_internal void editor_annotations_segment_panel(
     VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     const VkrRecordingPlayback *playback, Vec4 rect) {
   VkrEditorRecordingNotes *notes = &editor->recording.notes;
   VkrUiSystem *ui = frame->ui;
-  const VkrUiTheme *theme = vkr_ui_theme();
   const uint32_t index = notes->selected_index;
-  const VkrRecordingRange *range = &notes->annotations.ranges[index];
-  const VkrUiTrack columns[] = {{.unit = VKR_UI_TRACK_AUTO},
-                                {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
-                                {.unit = VKR_UI_TRACK_AUTO},
-                                {.unit = VKR_UI_TRACK_AUTO},
-                                {.value = 24.0f, .unit = VKR_UI_TRACK_PX}};
-  const VkrUiTrack row = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  if (!editor_annotations_panel_begin(ui, string8_lit("editor.recording.range"),
-                                      rect, columns, ArrayCount(columns), &row,
-                                      1u)) {
+  const VkrRecordingSegment segment = notes->annotations.segments[index];
+  const bool8_t focused = editor_annotations_focused(notes, playback, index);
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  const VkrUiTrack icon_track = {.value = 24.0f, .unit = VKR_UI_TRACK_PX};
+  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                icon_track,
+                                icon_track,
+                                auto_track,
+                                auto_track,
+                                auto_track,
+                                icon_track};
+  const VkrUiTrack rows[] = {{.value = 26.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                             {.value = 22.0f, .unit = VKR_UI_TRACK_PX}};
+  if (!editor_annotations_panel_begin(
+          ui, string8_lit("editor.recording.segment"), rect, columns,
+          ArrayCount(columns), rows, ArrayCount(rows))) {
     return;
   }
-  VkrUiWidgetConfig frames =
-      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
-  frames.placement = editor_annotations_cell(0u);
-  frames.icon = VKR_UI_ICON_RULER;
-  frames.icon_size_pt = 12.0f;
-  vkr_ui_label(ui, string8_lit("frames"),
-               string8_create_formatted(ui->frame_allocator,
-                                        "%llu\xe2\x80\x93%llu",
-                                        (unsigned long long)range->first,
-                                        (unsigned long long)range->last),
-               &frames);
-  VkrUiWidgetConfig field = vkr_ui_widget_config_default();
-  field.placement = editor_annotations_cell(1u);
-  vkr_editor_field_style(&field);
-  field.style.min_size_pt.y = field.style.max_size_pt.y = 26.0f;
-  field.tooltip = string8_lit("The range's name; Enter renames it");
-  const VkrUiId field_id =
-      vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("name"));
-  VkrUiTextEditBuffer buffer = {.data = (uint8_t *)notes->name,
-                                .length = notes->name_length,
-                                .capacity = sizeof(notes->name) - 1u};
-  (void)vkr_ui_text_field(ui, string8_lit("name"), &buffer, &field);
-  notes->name_length = buffer.length;
-  const bool8_t focused = ui->focused_id == field_id;
-  const bool8_t enter = focused && input_key_just_pressed(ui->input, KEY_ENTER);
-  const bool8_t escape = input_key_just_pressed(ui->input, KEY_ESCAPE) &&
-                         (focused || !ui->focused_is_text);
-  /* A perf re-run of the range: the case is written, the harness command
-     goes to the clipboard. */
-  VkrUiWidgetConfig rerun = vkr_ui_widget_config_default();
-  rerun.placement = editor_annotations_cell(2u);
-  vkr_editor_action_style(&rerun, editor->heading_font);
-  rerun.icon = VKR_UI_ICON_SPEED;
-  vkr_editor_button_size(&rerun);
-  rerun.style.min_size_pt.y = rerun.style.max_size_pt.y = 26.0f;
-  rerun.tooltip = string8_lit("Benchmark this range: write a harness case "
-                              "that replays it and copy its command");
-  if (vkr_ui_button(ui, string8_lit("rerun"), string8_lit("Re-run"), &rerun)) {
-    VkrEditorRecordingRerun written;
-    char error[192];
-    if (vkr_editor_recording_rerun(editor, playback->bundle_path, range->first,
-                                   range->last, &written, error,
-                                   sizeof(error))) {
-      (void)vkr_platform_clipboard_write_text(
-          (const uint8_t *)written.command,
-          (uint32_t)string_length(written.command));
-      char text[VKR_RECORDING_PATH_MAX + 64u];
-      string_format(text, sizeof(text),
-                    "Wrote %s; its harness command is on the clipboard.",
-                    written.case_path);
-      vkr_editor_toast(editor, VKR_UI_ICON_SPEED, theme->text, text);
+  EditorSegmentAction action =
+      editor_annotations_segment_header(editor, frame, focused);
+  /* The note row: the panel less its padding, the title row, the footer
+     and the gaps between the three rows. */
+  const float32_t note_height = rect.w -
+                                2.0f * EDITOR_ANNOTATIONS_PANEL_PAD_PT - 26.0f -
+                                22.0f - 2.0f * vkr_ui_theme()->space_md;
+  const EditorSegmentAction footer = editor_annotations_segment_note(
+      editor, frame, playback, &segment, note_height);
+  if (action == EDITOR_SEGMENT_NONE) {
+    action = footer;
+  }
+  (void)vkr_ui_panel_end(ui);
+
+  switch (action) {
+  case EDITOR_SEGMENT_SAVE:
+    (void)editor_annotations_segment_commit(editor);
+    break;
+  case EDITOR_SEGMENT_PREVIOUS:
+  case EDITOR_SEGMENT_NEXT: {
+    const uint32_t other =
+        action == EDITOR_SEGMENT_PREVIOUS ? index - 1u : index + 1u;
+    vkr_editor_recording_segment_select(editor, other);
+    if (notes->selected_index == other) {
+      VkrSampleRecordingRequest seek = {
+          .command = VKR_SAMPLE_RECORDING_SEEK_FRAME,
+          .frame = notes->annotations.segments[other].first};
+      (void)vkr_editor_recording_send(editor, seek, false_v);
+      /* The focus follows to the neighbour. */
+      if (focused) {
+        editor_annotations_focus(editor, playback, other);
+      }
+    }
+    break;
+  }
+  case EDITOR_SEGMENT_FOCUS:
+    if (focused) {
+      editor_annotations_unfocus(editor, playback);
     } else {
-      vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
+      editor_annotations_focus(editor, playback, index);
+    }
+    break;
+  case EDITOR_SEGMENT_RERUN:
+    editor_annotations_rerun(editor, playback, segment.first, segment.last);
+    break;
+  case EDITOR_SEGMENT_DELETE: {
+    VkrRecordingAnnotations *annotations =
+        editor_annotations_open(editor, playback);
+    if (annotations) {
+      if (focused) {
+        editor_annotations_unfocus(editor, playback);
+      }
+      vkr_recording_annotations_remove_segment(annotations, index);
+      editor_annotations_saved(editor, VKR_UI_ICON_TRASH,
+                               "Deleted the segment.");
+    }
+    break;
+  }
+  case EDITOR_SEGMENT_CLOSE:
+    if (editor_annotations_segment_commit(editor)) {
+      notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+    }
+    break;
+  case EDITOR_SEGMENT_NONE:
+    break;
+  }
+}
+
+/* One entry of the Segments list on grid rows `row` and `row` + 1: its
+   title and span over the note's first line, and Focus beside both.
+   Returns 1 when the entry was clicked and 2 when its Focus was. */
+vkr_internal uint32_t editor_annotations_list_row(
+    VkrEditorUi *editor, VkrUiSystem *ui, const VkrRecordingPlayback *playback,
+    uint32_t index, uint32_t row, Vec4 rect) {
+  const VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrRecordingSegment *segment = &notes->annotations.segments[index];
+  const bool8_t focused = editor_annotations_focused(notes, playback, index);
+  const uint64_t last_frame = playback->frame_count - 1u;
+  const float64_t start = playback->times[Min(segment->first, last_frame)];
+  const float64_t end = playback->times[Min(segment->last, last_frame)];
+  /* The note's first line, cut to what fits one row. */
+  uint64_t line = 0u;
+  while (segment->note[line] && segment->note[line] != '\n' && line < 120u) {
+    ++line;
+  }
+  const String8 tooltip =
+      segment->note[0]
+          ? string8_create_from_cstr((const uint8_t *)segment->note,
+                                     string_length(segment->note))
+          : string8_lit("No note yet: open it to say why it matters");
+  uint32_t result = 0u;
+  (void)vkr_ui_push_id_u64(ui, index);
+  VkrUiWidgetConfig title = vkr_ui_widget_config_default();
+  title.placement = editor_annotations_cell(0u);
+  title.placement.row = row;
+  title.placement.column_span = 2u;
+  vkr_editor_ghost_style(&title);
+  title.text.font = editor->heading_font;
+  title.style.padding_pt = (VkrUiEdges){1.0f, 6.0f, 1.0f, 6.0f};
+  title.style.min_size_pt.y = title.style.max_size_pt.y =
+      EDITOR_ANNOTATIONS_LIST_TITLE_PT;
+  title.style.text_color = focused ? theme->accent : theme->text;
+  title.text.layout.max_width = rect.z - 150.0f;
+  title.tooltip = tooltip;
+  if (vkr_ui_button(
+          ui, string8_lit("title"),
+          string8_create_formatted(ui->frame_allocator,
+                                   "%s   %.2f\xe2\x80\x93%.2f s  (%.2f s)",
+                                   segment->name, start, end, end - start),
+          &title)) {
+    result = 1u;
+  }
+  VkrUiWidgetConfig note = title;
+  note.placement.row = row + 1u;
+  note.text.font = VKR_FONT_HANDLE_INVALID;
+  note.style.font_size_pt = theme->font_caption;
+  note.style.min_size_pt.y = note.style.max_size_pt.y =
+      EDITOR_ANNOTATIONS_LIST_NOTE_PT;
+  note.style.text_color = theme->text_secondary;
+  if (vkr_ui_button(ui, string8_lit("note"),
+                    string8_create_formatted(
+                        ui->frame_allocator, "%.*s", (int32_t)line,
+                        segment->note[0] ? segment->note : "No note yet"),
+                    &note)) {
+    result = 1u;
+  }
+  VkrUiWidgetConfig focus = editor_annotations_text_button(
+      editor, 2u, row, VKR_UI_ICON_CROSSHAIR,
+      focused ? string8_lit("Show the whole recording again")
+              : string8_lit("View this segment alone"));
+  focus.placement.row_span = 2u;
+  vkr_editor_toggle_style(&focus, focused);
+  if (vkr_ui_button(ui, string8_lit("focus"),
+                    focused ? string8_lit("Exit") : string8_lit("Focus"),
+                    &focus)) {
+    result = 2u;
+  }
+  (void)vkr_ui_pop_id(ui);
+  return result;
+}
+
+/* The Segments list over the bar: every segment by first frame, a page of
+   rows at a time; a row opens its segment, Focus views it alone. */
+vkr_internal void
+editor_annotations_list_panel(VkrEditorUi *editor,
+                              const VkrSampleUiFrame *frame,
+                              const VkrRecordingPlayback *playback, Vec4 rect) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const uint32_t count = notes->annotations.segment_count;
+  const uint32_t pages = Max((count + EDITOR_ANNOTATIONS_LIST_ROWS - 1u) /
+                                 EDITOR_ANNOTATIONS_LIST_ROWS,
+                             1u);
+  notes->list_page = Min(notes->list_page, pages - 1u);
+  const uint32_t first = notes->list_page * EDITOR_ANNOTATIONS_LIST_ROWS;
+  const uint32_t shown = editor_annotations_list_rows(notes);
+  VkrUiTrack rows[1u + 2u * EDITOR_ANNOTATIONS_LIST_ROWS];
+  rows[0] = (VkrUiTrack){.value = EDITOR_ANNOTATIONS_LIST_HEADER_PT,
+                         .unit = VKR_UI_TRACK_PX};
+  for (uint32_t i = 0u; i < shown; ++i) {
+    rows[1u + 2u * i] = (VkrUiTrack){.value = EDITOR_ANNOTATIONS_LIST_TITLE_PT,
+                                     .unit = VKR_UI_TRACK_PX};
+    rows[2u + 2u * i] = (VkrUiTrack){.value = EDITOR_ANNOTATIONS_LIST_NOTE_PT,
+                                     .unit = VKR_UI_TRACK_PX};
+  }
+  const VkrUiTrack icon_track = {.value = 24.0f, .unit = VKR_UI_TRACK_PX};
+  const VkrUiTrack columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
+                                icon_track,
+                                {.unit = VKR_UI_TRACK_AUTO},
+                                icon_track,
+                                icon_track};
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = VKR_UI_PLACEMENT_DEFAULT;
+  panel.placement.column = panel.placement.row = 0u;
+  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  panel.placement.margin_pt = (VkrUiEdges){rect.y, 0.0f, 0.0f, rect.x};
+  panel.style = vkr_editor_glass_style();
+  panel.style.padding_pt = (VkrUiEdges){EDITOR_ANNOTATIONS_PANEL_PAD_PT, 10.0f,
+                                        EDITOR_ANNOTATIONS_PANEL_PAD_PT, 10.0f};
+  panel.style.gap_pt = EDITOR_ANNOTATIONS_LIST_GAP_PT;
+  panel.style.min_size_pt = panel.style.max_size_pt = (Vec2){rect.z, rect.w};
+  panel.columns = columns;
+  panel.column_count = ArrayCount(columns);
+  panel.rows = rows;
+  panel.row_count = 1u + 2u * shown;
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.segments"),
+                          &panel)) {
+    return;
+  }
+  VkrUiWidgetConfig header =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  header.placement = editor_annotations_cell(0u);
+  header.placement.column_span = 2u;
+  header.placement.justify = VKR_UI_ALIGN_START;
+  header.icon = VKR_UI_ICON_LIST;
+  header.icon_size_pt = 12.0f;
+  vkr_ui_label(ui, string8_lit("header"),
+               count == 0u ? string8_lit("Segments")
+                           : string8_create_formatted(ui->frame_allocator,
+                                                      "Segments  %u", count),
+               &header);
+  VkrUiWidgetConfig page =
+      vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+  page.placement = editor_annotations_cell(2u);
+  vkr_ui_label(ui, string8_lit("page"),
+               pages > 1u
+                   ? string8_create_formatted(ui->frame_allocator, "%u / %u",
+                                              notes->list_page + 1u, pages)
+                   : (String8){0},
+               &page);
+  /* Pages turn only when the segments fill more than one. */
+  if (pages > 1u) {
+    VkrUiWidgetConfig previous = vkr_editor_icon_button_config(
+        1u, 0u, VKR_UI_ICON_CHEVRON_LEFT, string8_lit("Previous page"));
+    previous.disabled = notes->list_page == 0u;
+    if (vkr_ui_button(ui, string8_lit("previous"), (String8){0}, &previous)) {
+      --notes->list_page;
+    }
+    VkrUiWidgetConfig next = vkr_editor_icon_button_config(
+        3u, 0u, VKR_UI_ICON_CHEVRON_RIGHT, string8_lit("Next page"));
+    next.disabled = notes->list_page + 1u >= pages;
+    if (vkr_ui_button(ui, string8_lit("next"), (String8){0}, &next)) {
+      ++notes->list_page;
     }
   }
-  VkrUiWidgetConfig remove = editor_annotations_delete_button(
-      editor, 3u, 0u, string8_lit("Delete this range"));
-  const bool8_t deleting =
-      vkr_ui_button(ui, string8_lit("delete"), string8_lit("Delete"), &remove);
   VkrUiWidgetConfig close = vkr_editor_icon_button_config(
       4u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close (Escape)"));
   const bool8_t closing =
-      vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) || escape;
+      vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) ||
+      (!ui->focused_is_text && input_key_just_pressed(ui->input, KEY_ESCAPE));
+  uint32_t opened = UINT32_MAX;
+  uint32_t focus = UINT32_MAX;
+  if (count == 0u) {
+    VkrUiWidgetConfig hint =
+        vkr_editor_text_config(theme->font_body, theme->text_secondary);
+    hint.placement = editor_annotations_cell(0u);
+    hint.placement.row = 1u;
+    hint.placement.row_span = 2u;
+    hint.placement.column_span = 5u;
+    hint.placement.justify = VKR_UI_ALIGN_START;
+    vkr_ui_label(ui, string8_lit("hint"),
+                 string8_lit("No segments yet. Mark one with the ruler: click "
+                             "at its first frame, then at its last, or select "
+                             "frames on the timeline."),
+                 &hint);
+  }
+  for (uint32_t i = 0u; count > 0u && i < shown; ++i) {
+    const uint32_t clicked = editor_annotations_list_row(
+        editor, ui, playback, first + i, 1u + 2u * i, rect);
+    if (clicked == 1u) {
+      opened = first + i;
+    } else if (clicked == 2u) {
+      focus = first + i;
+    }
+  }
   (void)vkr_ui_panel_end(ui);
-
-  if (deleting || enter) {
-    VkrRecordingAnnotations *annotations =
-        editor_annotations_open(editor, playback);
-    if (!annotations) {
-      return;
+  if (focus != UINT32_MAX) {
+    if (editor_annotations_focused(notes, playback, focus)) {
+      editor_annotations_unfocus(editor, playback);
+    } else {
+      editor_annotations_focus(editor, playback, focus);
     }
-    if (deleting) {
-      vkr_recording_annotations_remove_range(annotations, index);
-      editor_annotations_saved(editor, VKR_UI_ICON_TRASH, "Deleted the range.");
-      return;
-    }
-    const String8 name = {.str = (uint8_t *)notes->name,
-                          .length = notes->name_length};
-    if (!vkr_recording_annotations_rename_range(annotations, index, name)) {
-      return;
-    }
-    editor_annotations_saved(editor, VKR_UI_ICON_RULER, "Renamed the range.");
-    /* A rename moves no index; the range stays selected. */
-    notes->selected = VKR_EDITOR_RECORDING_SELECTION_RANGE;
-    notes->selected_index = index;
+  } else if (opened != UINT32_MAX) {
+    VkrSampleRecordingRequest seek = {
+        .command = VKR_SAMPLE_RECORDING_SEEK_FRAME,
+        .frame = notes->annotations.segments[opened].first};
+    (void)vkr_editor_recording_send(editor, seek, false_v);
+    vkr_editor_recording_segment_select(editor, opened);
   } else if (closing) {
-    notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+    notes->listing = false_v;
   }
 }
 
@@ -725,6 +1335,8 @@ void vkr_editor_recording_composer_build(VkrEditorUi *editor,
   /* The panel describes the open playback's cache only. */
   if (!string_equals(notes->bundle, playback->bundle_path)) {
     notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+    notes->listing = false_v;
+    notes->focusing = false_v;
   }
   Vec4 rect;
   if (!vkr_editor_recording_composer_rect(editor, bar_pt, &rect)) {
@@ -732,10 +1344,12 @@ void vkr_editor_recording_composer_build(VkrEditorUi *editor,
   }
   if (notes->composing) {
     editor_annotations_composer(editor, frame, playback, rect);
+  } else if (notes->listing) {
+    editor_annotations_list_panel(editor, frame, playback, rect);
   } else if (notes->selected == VKR_EDITOR_RECORDING_SELECTION_NOTE) {
     editor_annotations_note_panel(editor, frame, playback, rect);
   } else {
-    editor_annotations_range_panel(editor, frame, playback, rect);
+    editor_annotations_segment_panel(editor, frame, playback, rect);
   }
 }
 
@@ -819,6 +1433,21 @@ vkr_internal void editor_prompt_annotations(EditorPrompt *prompt,
                       vkr_recording_review_name(a->review),
                       a->review_by[0] ? " by " : "", a->review_by);
   }
+  /* Segments first: the parts someone marked as worth looking at. */
+  for (uint32_t i = 0u;
+       i < Min(a->segment_count, EDITOR_ANNOTATIONS_PROMPT_ITEMS); ++i) {
+    const VkrRecordingSegment *segment = &a->segments[i];
+    editor_prompt_add(prompt, "%s- \"%s\": frames %llu to %llu%s%s%s\n",
+                      i == 0u ? "Segments to look at:\n" : "", segment->name,
+                      (unsigned long long)segment->first,
+                      (unsigned long long)segment->last,
+                      segment->note[0] ? ". Why: \"" : "", segment->note,
+                      segment->note[0] ? "\"" : "");
+  }
+  if (a->segment_count > EDITOR_ANNOTATIONS_PROMPT_ITEMS) {
+    editor_prompt_add(prompt, "- and %u more segments\n",
+                      a->segment_count - EDITOR_ANNOTATIONS_PROMPT_ITEMS);
+  }
   for (uint32_t i = 0u; i < Min(a->note_count, EDITOR_ANNOTATIONS_PROMPT_ITEMS);
        ++i) {
     const VkrRecordingNote *note = &a->notes[i];
@@ -830,18 +1459,6 @@ vkr_internal void editor_prompt_annotations(EditorPrompt *prompt,
   if (a->note_count > EDITOR_ANNOTATIONS_PROMPT_ITEMS) {
     editor_prompt_add(prompt, "- and %u more notes\n",
                       a->note_count - EDITOR_ANNOTATIONS_PROMPT_ITEMS);
-  }
-  for (uint32_t i = 0u;
-       i < Min(a->range_count, EDITOR_ANNOTATIONS_PROMPT_ITEMS); ++i) {
-    const VkrRecordingRange *range = &a->ranges[i];
-    editor_prompt_add(prompt, "%s- \"%s\": frames %llu to %llu\n",
-                      i == 0u ? "Ranges:\n" : "", range->name,
-                      (unsigned long long)range->first,
-                      (unsigned long long)range->last);
-  }
-  if (a->range_count > EDITOR_ANNOTATIONS_PROMPT_ITEMS) {
-    editor_prompt_add(prompt, "- and %u more ranges\n",
-                      a->range_count - EDITOR_ANNOTATIONS_PROMPT_ITEMS);
   }
 }
 
@@ -885,10 +1502,11 @@ void vkr_editor_recording_copy_prompt(VkrEditorUi *editor,
       &prompt,
       "Read %s in the bundle first. In the editor, rec.open {\"name\": "
       "\"%s\"} opens it, rec.seek takes a frame, a time or a marker, and "
-      "view.capture shows the frame; rec.annotations reads the notes and "
-      "ranges, and rec.note and rec.range add yours. Offline, vkr_rec "
-      "summary, spikes, frames and passes read the bundle, and %s/ holds "
-      "a JPEG of the Scene twice a second named by its frame.\n",
+      "view.capture shows the frame; rec.segments lists the segments with "
+      "their frame-time statistics, rec.frames and rec.rerun take a "
+      "'segment', and rec.segment and rec.note add yours. Offline, vkr_rec "
+      "segments, summary, spikes, frames and passes read the bundle, and %s/ "
+      "holds a JPEG of the Scene twice a second named by its frame.\n",
       VKR_RECORDING_SUMMARY_FILE, entry->bundle,
       VKR_EDITOR_RECORDING_THUMBS_DIRECTORY);
   (void)vkr_platform_clipboard_write_text((const uint8_t *)prompt.text,

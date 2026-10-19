@@ -8,8 +8,9 @@
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
 
-/* Larger files are not annotations this module wrote. */
-#define VKR_RECORDING_ANNOTATIONS_FILE_MAX (256ull * 1024ull)
+/* Larger files are not annotations this module wrote: 64 notes and 64
+   segment notes, every byte escaped, stay under it. */
+#define VKR_RECORDING_ANNOTATIONS_FILE_MAX (1024ull * 1024ull)
 
 static const char *const VKR_RECORDING_REVIEW_NAMES[] = {
     "unreviewed",
@@ -137,12 +138,14 @@ vkr_internal bool8_t vkr_recording_annotations_read_note(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_recording_annotations_read_range(
+/* A segment, or a version 1 range, which has no note or creation time. */
+vkr_internal bool8_t vkr_recording_annotations_read_segment(
     VkrRecordingAnnotationsRead *read, String8 object) {
   VkrRecordingAnnotations *out = read->out;
   float64_t first = 0.0;
   float64_t last = 0.0;
-  if (out->range_count == VKR_RECORDING_RANGE_MAX) {
+  float64_t created = 0.0;
+  if (out->segment_count == VKR_RECORDING_SEGMENT_MAX) {
     return true_v;
   }
   if (!vkr_recording_annotations_number(object, "first", &first) ||
@@ -150,15 +153,20 @@ vkr_internal bool8_t vkr_recording_annotations_read_range(
       last < first) {
     return false_v;
   }
-  VkrRecordingRange *range = &out->ranges[out->range_count];
-  *range =
-      (VkrRecordingRange){.first = (uint64_t)first, .last = (uint64_t)last};
-  vkr_recording_annotations_text(read, object, "author", range->author,
-                                 sizeof(range->author));
-  vkr_recording_annotations_text(read, object, "name", range->name,
-                                 sizeof(range->name));
-  if (range->name[0]) {
-    ++out->range_count;
+  VkrRecordingSegment *segment = &out->segments[out->segment_count];
+  *segment =
+      (VkrRecordingSegment){.first = (uint64_t)first, .last = (uint64_t)last};
+  if (vkr_recording_annotations_number(object, "created", &created)) {
+    segment->created = (int64_t)created;
+  }
+  vkr_recording_annotations_text(read, object, "author", segment->author,
+                                 sizeof(segment->author));
+  vkr_recording_annotations_text(read, object, "name", segment->name,
+                                 sizeof(segment->name));
+  vkr_recording_annotations_text(read, object, "note", segment->note,
+                                 sizeof(segment->note));
+  if (segment->name[0]) {
+    ++out->segment_count;
   }
   return true_v;
 }
@@ -191,10 +199,13 @@ vkr_internal bool8_t vkr_recording_annotations_parse(
       out->review_at = (int64_t)at;
     }
   }
+  /* Version 1 named its segments "ranges". */
   return vkr_recording_annotations_each(read, file, "notes",
                                         vkr_recording_annotations_read_note) &&
+         vkr_recording_annotations_each(
+             read, file, "segments", vkr_recording_annotations_read_segment) &&
          vkr_recording_annotations_each(read, file, "ranges",
-                                        vkr_recording_annotations_read_range);
+                                        vkr_recording_annotations_read_segment);
 }
 
 vkr_internal bool8_t vkr_recording_annotations_path(const char *bundle_path,
@@ -228,7 +239,7 @@ bool8_t vkr_recording_annotations_read(const char *bundle_path,
     goto cleanup;
   }
   /* Decoded strings live until the read returns. */
-  arena = arena_create(KB(256), KB(64));
+  arena = arena_create(MB(1), KB(64));
   scratch.ctx = arena;
   if (!arena || !vkr_allocator_arena(&scratch)) {
     goto cleanup;
@@ -278,7 +289,7 @@ bool8_t vkr_recording_annotations_write(const char *bundle_path,
   VkrJsonWriter *json = &file.writer;
   vkr_json_writer_begin_object(json);
   vkr_recording_annotations_field(json, "kind", "vkr.recording.annotations");
-  vkr_recording_annotations_u64(json, "version", 1u);
+  vkr_recording_annotations_u64(json, "version", 2u);
   vkr_json_writer_name(json, string8_lit("review"));
   vkr_json_writer_begin_object(json);
   vkr_recording_annotations_field(json, "state",
@@ -302,15 +313,18 @@ bool8_t vkr_recording_annotations_write(const char *bundle_path,
   }
   vkr_json_writer_end_array(json);
 
-  vkr_json_writer_name(json, string8_lit("ranges"));
+  vkr_json_writer_name(json, string8_lit("segments"));
   vkr_json_writer_begin_array(json);
-  for (uint32_t i = 0u; i < in->range_count; ++i) {
-    const VkrRecordingRange *range = &in->ranges[i];
+  for (uint32_t i = 0u; i < in->segment_count; ++i) {
+    const VkrRecordingSegment *segment = &in->segments[i];
     vkr_json_writer_begin_object(json);
-    vkr_recording_annotations_u64(json, "first", range->first);
-    vkr_recording_annotations_u64(json, "last", range->last);
-    vkr_recording_annotations_field(json, "author", range->author);
-    vkr_recording_annotations_field(json, "name", range->name);
+    vkr_recording_annotations_u64(json, "first", segment->first);
+    vkr_recording_annotations_u64(json, "last", segment->last);
+    vkr_json_writer_name(json, string8_lit("created"));
+    vkr_json_writer_i64(json, segment->created);
+    vkr_recording_annotations_field(json, "author", segment->author);
+    vkr_recording_annotations_field(json, "name", segment->name);
+    vkr_recording_annotations_field(json, "note", segment->note);
     vkr_json_writer_end_object(json);
   }
   vkr_json_writer_end_array(json);
@@ -347,40 +361,64 @@ bool8_t vkr_recording_annotations_add_note(VkrRecordingAnnotations *a,
   return true_v;
 }
 
-bool8_t vkr_recording_annotations_add_range(VkrRecordingAnnotations *a,
-                                            uint64_t first, uint64_t last,
-                                            const char *author, String8 name) {
+uint32_t vkr_recording_annotations_add_segment(VkrRecordingAnnotations *a,
+                                               uint64_t first, uint64_t last,
+                                               const char *author, String8 name,
+                                               String8 note) {
   vkr_assert(a != NULL);
-  if (name.length == 0u || a->range_count == VKR_RECORDING_RANGE_MAX) {
-    return false_v;
+  if (name.length == 0u || a->segment_count == VKR_RECORDING_SEGMENT_MAX) {
+    return UINT32_MAX;
   }
   const uint64_t low = Min(first, last);
   const uint64_t high = Max(first, last);
-  uint32_t at = a->range_count;
-  while (at > 0u && a->ranges[at - 1u].first > low) {
+  /* After the segments that start earlier or at the same frame, so equal
+     starts keep the order they were marked in. */
+  uint32_t at = a->segment_count;
+  while (at > 0u && a->segments[at - 1u].first > low) {
     --at;
   }
-  MemCopy(&a->ranges[at + 1u], &a->ranges[at],
-          sizeof(a->ranges[0]) * (a->range_count - at));
-  VkrRecordingRange *range = &a->ranges[at];
-  *range = (VkrRecordingRange){.first = low, .last = high};
+  MemCopy(&a->segments[at + 1u], &a->segments[at],
+          sizeof(a->segments[0]) * (a->segment_count - at));
+  VkrRecordingSegment *segment = &a->segments[at];
+  *segment = (VkrRecordingSegment){
+      .first = low, .last = high, .created = vkr_platform_get_unix_time()};
   vkr_recording_annotations_copy(
-      range->author, sizeof(range->author),
+      segment->author, sizeof(segment->author),
       vkr_recording_annotations_str(author ? author : ""));
-  vkr_recording_annotations_copy(range->name, sizeof(range->name), name);
-  ++a->range_count;
+  vkr_recording_annotations_copy(segment->name, sizeof(segment->name), name);
+  vkr_recording_annotations_copy(segment->note, sizeof(segment->note), note);
+  ++a->segment_count;
+  return at;
+}
+
+bool8_t vkr_recording_annotations_edit_segment(VkrRecordingAnnotations *a,
+                                               uint32_t index,
+                                               const String8 *name,
+                                               const String8 *note) {
+  vkr_assert(a != NULL);
+  if (index >= a->segment_count || (name && name->length == 0u)) {
+    return false_v;
+  }
+  VkrRecordingSegment *segment = &a->segments[index];
+  if (name) {
+    vkr_recording_annotations_copy(segment->name, sizeof(segment->name), *name);
+  }
+  if (note) {
+    vkr_recording_annotations_copy(segment->note, sizeof(segment->note), *note);
+  }
   return true_v;
 }
 
-bool8_t vkr_recording_annotations_rename_range(VkrRecordingAnnotations *a,
-                                               uint32_t index, String8 name) {
+uint32_t
+vkr_recording_annotations_find_segment(const VkrRecordingAnnotations *a,
+                                       String8 name) {
   vkr_assert(a != NULL);
-  if (name.length == 0u || index >= a->range_count) {
-    return false_v;
+  for (uint32_t i = 0u; i < a->segment_count; ++i) {
+    if (vkr_string8_equals_cstr(&name, a->segments[i].name)) {
+      return i;
+    }
   }
-  vkr_recording_annotations_copy(a->ranges[index].name,
-                                 sizeof(a->ranges[index].name), name);
-  return true_v;
+  return UINT32_MAX;
 }
 
 void vkr_recording_annotations_remove_note(VkrRecordingAnnotations *a,
@@ -394,15 +432,15 @@ void vkr_recording_annotations_remove_note(VkrRecordingAnnotations *a,
   --a->note_count;
 }
 
-void vkr_recording_annotations_remove_range(VkrRecordingAnnotations *a,
-                                            uint32_t index) {
+void vkr_recording_annotations_remove_segment(VkrRecordingAnnotations *a,
+                                              uint32_t index) {
   vkr_assert(a != NULL);
-  if (index >= a->range_count) {
+  if (index >= a->segment_count) {
     return;
   }
-  MemCopy(&a->ranges[index], &a->ranges[index + 1u],
-          sizeof(a->ranges[0]) * (a->range_count - index - 1u));
-  --a->range_count;
+  MemCopy(&a->segments[index], &a->segments[index + 1u],
+          sizeof(a->segments[0]) * (a->segment_count - index - 1u));
+  --a->segment_count;
 }
 
 void vkr_recording_annotations_set_review(VkrRecordingAnnotations *a,

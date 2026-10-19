@@ -2171,11 +2171,13 @@ static void test_recording_playback_loop_range(void) {
   printf("  test_recording_playback_loop_range PASSED\n");
 }
 
-/* Detects: notes or ranges out of order after an add, a note lost or
+/* Detects: notes or segments out of order after an add, a note lost or
    reordered on its frame, escapes (quotes, newlines, UTF-8) damaged by the
-   write and read, a cut inside a UTF-8 sequence, a reversed range kept
-   reversed, a missing file read as an error, and a foreign file read as
-   annotations. */
+   write and read, a cut inside a UTF-8 sequence, a reversed segment kept
+   reversed, a segment's note lost by the write, an edit that drops the
+   field it was not given or accepts an empty title, a version 1 file's
+   ranges not read as segments, a missing file read as an error, and a
+   foreign file read as annotations. */
 static void test_recording_annotations(void) {
   printf("  Running test_recording_annotations...\n");
   char path[1024];
@@ -2189,7 +2191,7 @@ static void test_recording_annotations(void) {
   static VkrRecordingAnnotations written;
   static VkrRecordingAnnotations read;
   assert(vkr_recording_annotations_read(path, &read));
-  assert(read.note_count == 0u && read.range_count == 0u &&
+  assert(read.note_count == 0u && read.segment_count == 0u &&
          read.review == VKR_RECORDING_REVIEW_UNREVIEWED);
 
   MemZero(&written, sizeof(written));
@@ -2213,22 +2215,34 @@ static void test_recording_annotations(void) {
   assert(vkr_recording_annotations_add_note(
       &written, 5u, "user",
       string8_create_from_cstr((const uint8_t *)long_text, 256u)));
-  assert(vkr_recording_annotations_add_range(&written, 50u, 20u, "agent",
-                                             string8_lit("Hitch")));
-  assert(vkr_recording_annotations_add_range(&written, 5u, 6u, "user",
-                                             string8_lit("Start")));
+  const char *why = "Door opens:\n\"streaming\" hitch \xe2\x9c\x93";
+  assert(vkr_recording_annotations_add_segment(
+             &written, 50u, 20u, "agent", string8_lit("Hitch"),
+             string8_create_from_cstr((const uint8_t *)why, strlen(why))) ==
+         0u);
+  /* An earlier first frame goes ahead; its index says where. */
+  assert(vkr_recording_annotations_add_segment(&written, 5u, 6u, "user",
+                                               string8_lit("Start"),
+                                               (String8){0}) == 0u);
+  assert(vkr_recording_annotations_add_segment(&written, 7u, 8u, "user",
+                                               (String8){0},
+                                               string8_lit("x")) == UINT32_MAX);
   vkr_recording_annotations_set_review(&written, VKR_RECORDING_REVIEW_FLAGGED,
                                        "agent");
   assert(written.notes[0].frame == 5u && written.notes[1].frame == 10u);
   assert(strcmp(written.notes[2].text, "second") == 0 &&
          strcmp(written.notes[3].text, "third") == 0);
   assert(strlen(written.notes[0].text) == 254u);
-  assert(written.ranges[0].first == 5u && written.ranges[1].first == 20u &&
-         written.ranges[1].last == 50u);
+  assert(written.segments[0].first == 5u && written.segments[1].first == 20u &&
+         written.segments[1].last == 50u);
+  assert(vkr_recording_annotations_find_segment(&written,
+                                                string8_lit("Hitch")) == 1u);
+  assert(vkr_recording_annotations_find_segment(
+             &written, string8_lit("missing")) == UINT32_MAX);
 
   assert(vkr_recording_annotations_write(path, &written));
   assert(vkr_recording_annotations_read(path, &read));
-  assert(read.note_count == 4u && read.range_count == 2u);
+  assert(read.note_count == 4u && read.segment_count == 2u);
   for (uint32_t i = 0u; i < read.note_count; ++i) {
     assert(read.notes[i].frame == written.notes[i].frame);
     assert(read.notes[i].created == written.notes[i].created);
@@ -2236,30 +2250,64 @@ static void test_recording_annotations(void) {
     assert(strcmp(read.notes[i].text, written.notes[i].text) == 0);
   }
   assert(strcmp(read.notes[1].text, quoted) == 0);
-  for (uint32_t i = 0u; i < read.range_count; ++i) {
-    assert(read.ranges[i].first == written.ranges[i].first &&
-           read.ranges[i].last == written.ranges[i].last);
-    assert(strcmp(read.ranges[i].name, written.ranges[i].name) == 0);
-    assert(strcmp(read.ranges[i].author, written.ranges[i].author) == 0);
+  for (uint32_t i = 0u; i < read.segment_count; ++i) {
+    assert(read.segments[i].first == written.segments[i].first &&
+           read.segments[i].last == written.segments[i].last);
+    assert(read.segments[i].created == written.segments[i].created);
+    assert(strcmp(read.segments[i].name, written.segments[i].name) == 0);
+    assert(strcmp(read.segments[i].author, written.segments[i].author) == 0);
+    assert(strcmp(read.segments[i].note, written.segments[i].note) == 0);
   }
+  assert(strcmp(read.segments[1].note, why) == 0);
   assert(read.review == VKR_RECORDING_REVIEW_FLAGGED &&
          strcmp(read.review_by, "agent") == 0 &&
          read.review_at == written.review_at);
 
   vkr_recording_annotations_remove_note(&read, 1u);
-  vkr_recording_annotations_remove_range(&read, 0u);
+  vkr_recording_annotations_remove_segment(&read, 0u);
   assert(read.note_count == 3u && read.notes[1].frame == 30u);
-  assert(read.range_count == 1u && strcmp(read.ranges[0].name, "Hitch") == 0);
-  assert(vkr_recording_annotations_rename_range(&read, 0u,
-                                                string8_lit("Hitch at door")));
-  assert(strcmp(read.ranges[0].name, "Hitch at door") == 0);
-  assert(!vkr_recording_annotations_rename_range(&read, 0u, (String8){0}));
-  assert(!vkr_recording_annotations_rename_range(&read, 1u,
-                                                 string8_lit("missing")));
+  assert(read.segment_count == 1u &&
+         strcmp(read.segments[0].name, "Hitch") == 0);
+  /* A title alone keeps the note; a note alone keeps the title. */
+  const String8 retitle = string8_lit("Hitch at door");
+  assert(vkr_recording_annotations_edit_segment(&read, 0u, &retitle, NULL));
+  assert(strcmp(read.segments[0].name, "Hitch at door") == 0 &&
+         strcmp(read.segments[0].note, why) == 0);
+  const String8 renote = string8_lit("Fixed by prefetch");
+  assert(vkr_recording_annotations_edit_segment(&read, 0u, NULL, &renote));
+  assert(strcmp(read.segments[0].name, "Hitch at door") == 0 &&
+         strcmp(read.segments[0].note, "Fixed by prefetch") == 0);
+  const String8 empty = {0};
+  assert(!vkr_recording_annotations_edit_segment(&read, 0u, &empty, &renote));
+  assert(!vkr_recording_annotations_edit_segment(&read, 1u, &retitle, NULL));
+  assert(strcmp(read.segments[0].name, "Hitch at door") == 0);
 
   char file[1100];
   string_format(file, sizeof(file), "%s/%s", path,
                 VKR_RECORDING_ANNOTATIONS_FILE);
+  /* A version 1 file named its segments "ranges" and had no notes. */
+  {
+    const FilePath legacy = file_path_view(file);
+    FileHandle handle = {0};
+    FileMode mode = bitset8_create();
+    bitset8_set(&mode, FILE_MODE_WRITE);
+    bitset8_set(&mode, FILE_MODE_TRUNCATE);
+    bitset8_set(&mode, FILE_MODE_CREATE);
+    assert(file_open(&legacy, mode, &handle) == FILE_ERROR_NONE);
+    const char *old =
+        "{\"kind\":\"vkr.recording.annotations\",\"version\":1,\"notes\":[],"
+        "\"ranges\":[{\"first\":3,\"last\":9,\"author\":\"user\","
+        "\"name\":\"Old range\"}]}";
+    uint64_t wrote = 0u;
+    assert(file_write(&handle, strlen(old), (const uint8_t *)old, &wrote) ==
+           FILE_ERROR_NONE);
+    file_close(&handle);
+  }
+  assert(vkr_recording_annotations_read(path, &read));
+  assert(read.segment_count == 1u && read.segments[0].first == 3u &&
+         read.segments[0].last == 9u &&
+         strcmp(read.segments[0].name, "Old range") == 0 &&
+         read.segments[0].note[0] == '\0');
   {
     const FilePath foreign = file_path_view(file);
     FileHandle handle = {0};
@@ -2280,6 +2328,52 @@ static void test_recording_annotations(void) {
   recording_test_remove(file);
   assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
   printf("  test_recording_annotations PASSED\n");
+}
+
+/* Detects: a segment's frames not cut to the recording, a frame outside it
+   counted, an invalid frame counted in its statistics, budget misses or
+   its worst frame miscounted, a spike outside it counted, and a segment
+   that starts past the end answering statistics. */
+static void test_recording_segment_stats(void) {
+  printf("  Running test_recording_segment_stats...\n");
+  /* Ten frames of 10 ms, frame 6 at 40 ms, frame 7 invalid. */
+  float64_t times[10];
+  float64_t display_dt[10];
+  uint8_t valid[10];
+  for (uint32_t f = 0u; f < 10u; ++f) {
+    display_dt[f] = f == 6u ? 0.040 : 0.010;
+    times[f] = f == 0u ? 0.0 : times[f - 1u] + display_dt[f - 1u];
+    valid[f] = f == 7u ? 0u : 1u;
+  }
+  const VkrRecordingData data = {.frame_count = 10u,
+                                 .times = times,
+                                 .display_dt = display_dt,
+                                 .frame_valid = valid,
+                                 .frame_time_series = UINT32_MAX};
+  VkrRecordingSpike spikes[2] = {{.frame = 6u}, {.frame = 1u}};
+  const VkrRecordingAnalysis analysis = {
+      .budget_ms = 16.0, .spikes = spikes, .spike_count = 2u};
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrRecordingSegmentStats stats;
+  /* Frames 4 to 20, cut to 4 to 9; frame 7 is invalid. */
+  assert(vkr_recording_segment_stats(&data, &analysis, 4u, 20u,
+                                     &memory.allocator, &stats));
+  assert(stats.first == 4u && stats.last == 9u);
+  assert(stats.start_seconds == times[4] && stats.end_seconds == times[9]);
+  assert(stats.frame_time.valid == 5u && stats.frame_time.max == 40.0 &&
+         stats.frame_time.p50 == 10.0);
+  assert(stats.over_budget == 1u && stats.over_double_budget == 1u);
+  assert(stats.worst_frame == 6u && stats.worst_ms == 40.0);
+  assert(stats.spikes == 1u);
+  /* Reversed frames read the same span. */
+  assert(vkr_recording_segment_stats(&data, &analysis, 9u, 4u,
+                                     &memory.allocator, &stats));
+  assert(stats.first == 4u && stats.last == 9u && stats.spikes == 1u);
+  assert(!vkr_recording_segment_stats(&data, &analysis, 10u, 12u,
+                                      &memory.allocator, &stats));
+  recording_memory_destroy(&memory);
+  printf("  test_recording_segment_stats PASSED\n");
 }
 
 bool32_t run_recording_tests(void) {
@@ -2303,6 +2397,7 @@ bool32_t run_recording_tests(void) {
   test_recording_playback_loop_range();
   test_recording_playback_timeline();
   test_recording_annotations();
+  test_recording_segment_stats();
   printf("--- Recording Tests Completed ---\n");
   return true_v;
 }

@@ -16373,22 +16373,45 @@ ops_recording_annotations_json(OpsContext *ctx,
     vkr_bakery_json_append(notes, note);
   }
   ops_set(ctx, object, "notes", notes);
-  VkrBakeryJson *ranges = vkr_bakery_json_array(arena);
-  for (uint32_t i = 0u; i < a->range_count; ++i) {
-    VkrBakeryJson *range = vkr_bakery_json_object(arena);
-    ops_set(ctx, range, "index", vkr_bakery_json_int(arena, i));
-    ops_set(ctx, range, "first",
-            vkr_bakery_json_int(arena, (int64_t)a->ranges[i].first));
-    ops_set(ctx, range, "last",
-            vkr_bakery_json_int(arena, (int64_t)a->ranges[i].last));
-    ops_set(ctx, range, "label",
-            vkr_bakery_json_cstr(arena, a->ranges[i].name));
-    ops_set(ctx, range, "author",
-            vkr_bakery_json_cstr(arena, a->ranges[i].author));
-    vkr_bakery_json_append(ranges, range);
+  VkrBakeryJson *segments = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < a->segment_count; ++i) {
+    const VkrRecordingSegment *source = &a->segments[i];
+    VkrBakeryJson *segment = vkr_bakery_json_object(arena);
+    ops_set(ctx, segment, "index", vkr_bakery_json_int(arena, i));
+    ops_set(ctx, segment, "title", vkr_bakery_json_cstr(arena, source->name));
+    ops_set(ctx, segment, "note", vkr_bakery_json_cstr(arena, source->note));
+    ops_set(ctx, segment, "first",
+            vkr_bakery_json_int(arena, (int64_t)source->first));
+    ops_set(ctx, segment, "last",
+            vkr_bakery_json_int(arena, (int64_t)source->last));
+    ops_set(ctx, segment, "author",
+            vkr_bakery_json_cstr(arena, source->author));
+    ops_set(ctx, segment, "created",
+            vkr_bakery_json_int(arena, source->created));
+    vkr_bakery_json_append(segments, segment);
   }
-  ops_set(ctx, object, "ranges", ranges);
+  ops_set(ctx, object, "segments", segments);
   return object;
+}
+
+/* The segment argument `key`: an index, or the title of a segment. False
+   after failing the call when it names none. */
+static bool8_t ops_segment_index(OpsContext *ctx,
+                                 const VkrRecordingAnnotations *a,
+                                 const char *key, uint32_t *out) {
+  const VkrBakeryJson *value = vkr_bakery_json_get(ctx->call->args, key);
+  *out = UINT32_MAX;
+  if (value && value->type == VKR_BAKERY_JSON_STRING) {
+    *out = vkr_recording_annotations_find_segment(a, value->string);
+  } else if (value && value->type == VKR_BAKERY_JSON_INT &&
+             value->integer >= 0 && value->integer < a->segment_count) {
+    *out = (uint32_t)value->integer;
+  }
+  if (*out == UINT32_MAX) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' must be a segment's index or title",
+                    key);
+  }
+  return true_v;
 }
 
 /* Writes the changed annotations and answers with all of them. */
@@ -16495,51 +16518,55 @@ static VkrEditorOpStatus ops_run_rec_note(OpsContext *ctx) {
   return ops_recording_annotations_done(ctx, annotations);
 }
 
-static VkrEditorOpStatus ops_run_rec_range(OpsContext *ctx) {
+/* rec.segment: marks frames with a title and a note, edits a segment's
+   title or note, or removes one (ADR-122). */
+static VkrEditorOpStatus ops_run_rec_segment(OpsContext *ctx) {
   char bundle[VKR_RECORDING_PATH_MAX];
   uint64_t frames = 0u;
   uint64_t first = 0u;
   uint64_t last = 0u;
-  uint64_t remove = 0u;
-  uint64_t rename = 0u;
   bool8_t has_first = false_v;
   bool8_t has_last = false_v;
-  bool8_t removing = false_v;
-  bool8_t renaming = false_v;
   if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
       !ops_arg_index(ctx, "first", &first, &has_first) ||
-      !ops_arg_index(ctx, "last", &last, &has_last) ||
-      !ops_arg_index(ctx, "remove", &remove, &removing) ||
-      !ops_arg_index(ctx, "rename", &rename, &renaming)) {
+      !ops_arg_index(ctx, "last", &last, &has_last)) {
     return VKR_EDITOR_OP_DONE;
   }
   VkrRecordingAnnotations *annotations = ops_recording_annotations(ctx, bundle);
   if (!annotations) {
     return VKR_EDITOR_OP_DONE;
   }
-  if (removing) {
-    if (remove >= annotations->range_count) {
-      ops_fail(ctx, OPS_INVALID, "No range %llu", (unsigned long long)remove);
+  String8 title = {0};
+  String8 note = {0};
+  const bool8_t has_title =
+      vkr_bakery_json_get_string(ctx->call->args, "title", &title);
+  const bool8_t has_note =
+      vkr_bakery_json_get_string(ctx->call->args, "note", &note);
+  /* An existing segment: removed, or its title and note changed. */
+  if (vkr_bakery_json_get(ctx->call->args, "segment")) {
+    uint32_t index = 0u;
+    if (!ops_segment_index(ctx, annotations, "segment", &index)) {
       return VKR_EDITOR_OP_DONE;
     }
-    vkr_recording_annotations_remove_range(annotations, (uint32_t)remove);
-    return ops_recording_annotations_done(ctx, annotations);
-  }
-  String8 label = {0};
-  if (renaming) {
-    if (!vkr_bakery_json_get_string(ctx->call->args, "label", &label) ||
-        rename >= annotations->range_count ||
-        !vkr_recording_annotations_rename_range(annotations, (uint32_t)rename,
-                                                label)) {
-      ops_fail(ctx, OPS_INVALID, "Renaming needs range 'rename' and a 'label'");
+    if (ops_arg_bool(ctx->call->args, "remove", false_v)) {
+      vkr_recording_annotations_remove_segment(annotations, index);
+      return ops_recording_annotations_done(ctx, annotations);
+    }
+    if ((!has_title && !has_note) || has_first || has_last ||
+        !vkr_recording_annotations_edit_segment(annotations, index,
+                                                has_title ? &title : NULL,
+                                                has_note ? &note : NULL)) {
+      ops_fail(ctx, OPS_INVALID,
+               "Editing a segment takes a non-empty 'title' or a 'note'; its "
+               "frames stay");
       return VKR_EDITOR_OP_DONE;
     }
     return ops_recording_annotations_done(ctx, annotations);
   }
-  if (!has_first || !has_last ||
-      !vkr_bakery_json_get_string(ctx->call->args, "label", &label) ||
-      label.length == 0u) {
-    ops_fail(ctx, OPS_INVALID, "A range needs 'first', 'last' and a 'label'");
+  if (!has_first || !has_last || !has_title || title.length == 0u) {
+    ops_fail(ctx, OPS_INVALID,
+             "A segment needs 'first', 'last' and a 'title'; 'note' says why "
+             "it matters");
     return VKR_EDITOR_OP_DONE;
   }
   if (Max(first, last) >= frames) {
@@ -16547,13 +16574,20 @@ static VkrEditorOpStatus ops_run_rec_range(OpsContext *ctx) {
              (unsigned long long)Max(first, last), (unsigned long long)frames);
     return VKR_EDITOR_OP_DONE;
   }
-  if (!vkr_recording_annotations_add_range(annotations, first, last,
-                                           ops_author(ctx), label)) {
-    ops_fail(ctx, OPS_LIMIT, "The recording holds %u ranges at most",
-             VKR_RECORDING_RANGE_MAX);
+  const uint32_t index = vkr_recording_annotations_add_segment(
+      annotations, first, last, ops_author(ctx), title, note);
+  if (index == UINT32_MAX) {
+    ops_fail(ctx, OPS_LIMIT, "The recording holds %u segments at most",
+             VKR_RECORDING_SEGMENT_MAX);
     return VKR_EDITOR_OP_DONE;
   }
-  return ops_recording_annotations_done(ctx, annotations);
+  const VkrEditorOpStatus status =
+      ops_recording_annotations_done(ctx, annotations);
+  if (ctx->call->result) {
+    ops_set(ctx, ctx->call->result, "added",
+            vkr_bakery_json_int(ops_arena(ctx), index));
+  }
+  return status;
 }
 
 static VkrEditorOpStatus ops_run_rec_rerun(OpsContext *ctx) {
@@ -16561,31 +16595,29 @@ static VkrEditorOpStatus ops_run_rec_rerun(OpsContext *ctx) {
   uint64_t frames = 0u;
   uint64_t first = 0u;
   uint64_t last = UINT64_MAX;
-  uint64_t range = 0u;
   bool8_t has_first = false_v;
   bool8_t has_last = false_v;
-  bool8_t has_range = false_v;
   if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
       !ops_arg_index(ctx, "first", &first, &has_first) ||
-      !ops_arg_index(ctx, "last", &last, &has_last) ||
-      !ops_arg_index(ctx, "range", &range, &has_range)) {
+      !ops_arg_index(ctx, "last", &last, &has_last)) {
     return VKR_EDITOR_OP_DONE;
   }
-  /* A named range supplies the frames. */
-  if (has_range) {
+  /* A segment supplies the frames. */
+  if (vkr_bakery_json_get(ctx->call->args, "segment")) {
     const VkrRecordingAnnotations *annotations =
         ops_recording_annotations(ctx, bundle);
-    if (!annotations) {
+    uint32_t segment = 0u;
+    if (!annotations ||
+        !ops_segment_index(ctx, annotations, "segment", &segment)) {
       return VKR_EDITOR_OP_DONE;
     }
-    if (range >= annotations->range_count || has_first || has_last) {
+    if (has_first || has_last) {
       ops_fail(ctx, OPS_INVALID,
-               "'range' names one of the recording's ranges, without "
-               "'first' or 'last'");
+               "'segment' supplies the frames, without 'first' or 'last'");
       return VKR_EDITOR_OP_DONE;
     }
-    first = annotations->ranges[range].first;
-    last = annotations->ranges[range].last;
+    first = annotations->segments[segment].first;
+    last = annotations->segments[segment].last;
   }
   VkrEditorRecordingRerun rerun;
   char error[192];
@@ -17155,19 +17187,40 @@ static VkrBakeryJson *ops_recording_thumb_list(OpsContext *ctx,
   return list;
 }
 
+/* Frames 'first' to 'last', or those of 'segment' (an index or a title);
+   false after failing the call. */
+static bool8_t ops_recording_span(OpsContext *ctx, const char *bundle,
+                                  float64_t *first, float64_t *last) {
+  if (vkr_bakery_json_get(ctx->call->args, "segment")) {
+    const VkrRecordingAnnotations *annotations =
+        ops_recording_annotations(ctx, bundle);
+    uint32_t segment = 0u;
+    if (!annotations ||
+        !ops_segment_index(ctx, annotations, "segment", &segment)) {
+      return false_v;
+    }
+    *first = (float64_t)annotations->segments[segment].first;
+    *last = (float64_t)annotations->segments[segment].last;
+    return true_v;
+  }
+  if (!ops_arg_number(ctx->call->args, "first", first) ||
+      !ops_arg_number(ctx->call->args, "last", last) || *first < 0.0 ||
+      *last < *first) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "rec.frames needs 'first' <= 'last' frames or a "
+                    "'segment'");
+  }
+  return true_v;
+}
+
 static VkrEditorOpStatus ops_run_rec_frames(OpsContext *ctx) {
   char bundle[VKR_RECORDING_PATH_MAX];
   uint64_t frames = 0u;
   float64_t first = 0.0;
   float64_t last = 0.0;
-  if (!ops_arg_number(ctx->call->args, "first", &first) ||
-      !ops_arg_number(ctx->call->args, "last", &last) || first < 0.0 ||
-      last < first) {
-    ops_fail(ctx, OPS_INVALID, "rec.frames needs 'first' <= 'last' frames");
-    return VKR_EDITOR_OP_DONE;
-  }
   OpsRecordingRead read;
   if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames) ||
+      !ops_recording_span(ctx, bundle, &first, &last) ||
       !ops_recording_read(ctx, bundle, 1u, &read)) {
     return VKR_EDITOR_OP_DONE;
   }
@@ -17193,6 +17246,63 @@ static VkrEditorOpStatus ops_run_rec_frames(OpsContext *ctx) {
     ops_set(ctx, ctx->call->result, "thumbs",
             ops_recording_thumb_list(ctx, bundle, query.first, query.last));
   }
+  ops_recording_read_free(&read);
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* rec.segments: each segment with its note and its frames' statistics
+   against the recording's budget and spikes (ADR-122). */
+static VkrEditorOpStatus ops_run_rec_segments(OpsContext *ctx) {
+  char bundle[VKR_RECORDING_PATH_MAX];
+  uint64_t frames = 0u;
+  OpsRecordingRead read;
+  if (!ops_recording_bundle(ctx, bundle, sizeof(bundle), &frames)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const VkrRecordingAnnotations *annotations =
+      ops_recording_annotations(ctx, bundle);
+  if (!annotations ||
+      !ops_recording_read(ctx, bundle, OPS_RECORDING_SPIKE_MAX, &read)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *list = vkr_bakery_json_array(arena);
+  for (uint32_t i = 0u; i < annotations->segment_count; ++i) {
+    const VkrRecordingSegment *source = &annotations->segments[i];
+    VkrBakeryJson *segment = vkr_bakery_json_object(arena);
+    ops_set(ctx, segment, "index", vkr_bakery_json_int(arena, i));
+    ops_set(ctx, segment, "title", vkr_bakery_json_cstr(arena, source->name));
+    ops_set(ctx, segment, "note", vkr_bakery_json_cstr(arena, source->note));
+    ops_set(ctx, segment, "author",
+            vkr_bakery_json_cstr(arena, source->author));
+    ops_set(ctx, segment, "first",
+            vkr_bakery_json_int(arena, (int64_t)source->first));
+    ops_set(ctx, segment, "last",
+            vkr_bakery_json_int(arena, (int64_t)source->last));
+    VkrRecordingSegmentStats stats;
+    if (vkr_recording_segment_stats(&read.data, &read.analysis, source->first,
+                                    source->last, &read.allocator, &stats)) {
+      ops_set(ctx, segment, "seconds", ops_number(ctx, stats.start_seconds));
+      ops_set(ctx, segment, "duration",
+              ops_number(ctx, stats.end_seconds - stats.start_seconds));
+      VkrBakeryJson *frame_ms = vkr_bakery_json_object(arena);
+      ops_set(ctx, frame_ms, "p50", ops_number(ctx, stats.frame_time.p50));
+      ops_set(ctx, frame_ms, "p95", ops_number(ctx, stats.frame_time.p95));
+      ops_set(ctx, frame_ms, "max", ops_number(ctx, stats.frame_time.max));
+      ops_set(ctx, segment, "frame_ms", frame_ms);
+      ops_set(ctx, segment, "over_budget",
+              vkr_bakery_json_int(arena, (int64_t)stats.over_budget));
+      ops_set(ctx, segment, "spikes", vkr_bakery_json_int(arena, stats.spikes));
+      ops_set(ctx, segment, "worst_frame",
+              vkr_bakery_json_int(arena, (int64_t)stats.worst_frame));
+    }
+    vkr_bakery_json_append(list, segment);
+  }
+  ctx->call->result = vkr_bakery_json_object(arena);
+  ops_set(ctx, ctx->call->result, "path", vkr_bakery_json_cstr(arena, bundle));
+  ops_set(ctx, ctx->call->result, "budget_ms",
+          ops_number(ctx, read.analysis.budget_ms));
+  ops_set(ctx, ctx->call->result, "segments", list);
   ops_recording_read_free(&read);
   return VKR_EDITOR_OP_DONE;
 }
@@ -17520,8 +17630,8 @@ static bool8_t ops_recording_list_visit(void *context, const char *name,
   string_format(path, sizeof(path), "%s/%s", list->directory, name);
   vkr_editor_recording_entry_annotations(list->ctx->editor, path, &counts);
   ops_set(list->ctx, entry, "notes", vkr_bakery_json_int(arena, counts.notes));
-  ops_set(list->ctx, entry, "ranges",
-          vkr_bakery_json_int(arena, counts.ranges));
+  ops_set(list->ctx, entry, "segments",
+          vkr_bakery_json_int(arena, counts.segments));
   ops_set(
       list->ctx, entry, "review",
       vkr_bakery_json_cstr(arena, vkr_recording_review_name(counts.review)));
@@ -17668,12 +17778,13 @@ static const OpsDef s_ops[] = {
      "as columns and rows: frame, time, camera x, y, z, then 'fields' "
      "(default frame_ms; a series name, player.x/.y/.z/.speed, or "
      "pass.gpu:<pass> / pass.cpu:<pass>). At most 500 rows; 'truncated' "
-     "says so. 'thumbs' lists the [frame, path] thumbnails over the range.",
+     "says so. 'thumbs' lists the [frame, path] thumbnails over the range. "
+     "'segment' (an index or a title) gives the frames instead.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{"
-     "\"type\":\"integer\"},\"fields\":{\"type\":\"array\","
-     "\"items\":{\"type\":\"string\"}}},\"required\":[\"first\","
-     "\"last\"]}",
+     "\"type\":\"integer\"},\"segment\":{\"type\":[\"integer\","
+     "\"string\"]},\"fields\":{\"type\":\"array\",\"items\":{"
+     "\"type\":\"string\"}}}}",
      ops_run_rec_frames, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.passes",
      "Per-pass CPU and GPU statistics of tier 1 recording 'name' (default: "
@@ -17716,9 +17827,9 @@ static const OpsDef s_ops[] = {
      "\"string\"}},\"required\":[\"b\"]}",
      ops_run_rec_compare, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.annotations",
-     "The notes, named ranges and review state of recording 'name', or of "
-     "the open one; notes and ranges carry the index rec.note and rec.range "
-     "remove by.",
+     "The notes, segments and review state of recording 'name', or of the "
+     "open one; notes and segments carry the index rec.note and rec.segment "
+     "take.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"}}}",
      ops_run_rec_annotations, NULL, OPS_QUICK | OPS_NO_SCENE},
@@ -17730,24 +17841,37 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"frame\":{\"type\":\"integer\"},\"text\":{\"type\":"
      "\"string\"},\"remove\":{\"type\":\"integer\"}}}",
      ops_run_rec_note, NULL, OPS_QUICK | OPS_NO_SCENE},
-    {"rec.range",
-     "Name frames 'first' to 'last' of recording 'name' (default: the open "
-     "one) with 'label', 'rename' range index to 'label', or 'remove' range "
-     "index.",
+    {"rec.segment",
+     "Mark frames 'first' to 'last' of recording 'name' (default: the open "
+     "one) as a segment with a short 'title' and a 'note' saying what "
+     "happens there and why it matters (up to 1 KiB); answers 'added', its "
+     "index. With 'segment' (an index or a title), change its 'title' or "
+     "'note', or 'remove' it. The player shows segments on its track and in "
+     "its Segments list.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{\"type\":"
-     "\"integer\"},\"label\":{\"type\":\"string\"},\"remove\":{"
-     "\"type\":\"integer\"},\"rename\":{\"type\":\"integer\"}}}",
-     ops_run_rec_range, NULL, OPS_QUICK | OPS_NO_SCENE},
+     "\"integer\"},\"title\":{\"type\":\"string\"},\"note\":{\"type\":"
+     "\"string\"},\"segment\":{\"type\":[\"integer\",\"string\"]},"
+     "\"remove\":{\"type\":\"boolean\"}}}",
+     ops_run_rec_segment, NULL, OPS_QUICK | OPS_NO_SCENE},
+    {"rec.segments",
+     "Recording 'name''s (default: the open one) segments, each with its "
+     "title, note, frames, start 'seconds' and 'duration', frame_ms p50, "
+     "p95 and max, frames over the budget, spikes inside and its worst "
+     "frame, for pointing at the parts that matter. rec.frames and "
+     "rec.rerun take a 'segment' in place of frames.",
+     "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
+     "\"string\"}}}",
+     ops_run_rec_segments, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.rerun",
      "Write a perf re-run: a harness case under tools/cases/rerun that "
-     "replays frames 'first' to 'last', or named 'range' index, of "
+     "replays frames 'first' to 'last', or a 'segment' (index or title), of "
      "recording 'name' (default: the open one) with the windowed timing "
      "case's settings. Answers the case and the harness command to run; "
      "the editor does not run it.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"first\":{\"type\":\"integer\"},\"last\":{\"type\":"
-     "\"integer\"},\"range\":{\"type\":\"integer\"}}}",
+     "\"integer\"},\"segment\":{\"type\":[\"integer\",\"string\"]}}}",
      ops_run_rec_rerun, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.review",
      "Set recording 'name' (default: the open one) to 'state' unreviewed, "

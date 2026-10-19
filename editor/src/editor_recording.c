@@ -654,24 +654,32 @@ editor_recording_bar_controls(VkrEditorUi *editor,
   if (vkr_ui_button(ui, string8_lit("note"), (String8){0}, &note)) {
     vkr_editor_recording_note_toggle(editor);
   }
-  VkrUiWidgetConfig range = editor_recording_button(
+  VkrUiWidgetConfig segment = editor_recording_button(
       6u, VKR_UI_ICON_RULER,
       notes->marking
           ? string8_create_formatted(
                 ui->frame_allocator,
-                "Range from frame %llu: move the playhead to its end and "
+                "Segment from frame %llu: move the playhead to its end and "
                 "click again",
-                (unsigned long long)notes->range_first)
-          : string8_lit("Mark a range: click at its first frame, then at "
-                        "its last"));
-  vkr_editor_toggle_style(&range, notes->marking);
-  if (vkr_ui_button(ui, string8_lit("range"), (String8){0}, &range)) {
-    vkr_editor_recording_range_mark(editor, playback);
+                (unsigned long long)notes->segment_first)
+          : string8_lit("Mark a segment: click at its first frame, then at "
+                        "its last, then say why it matters"));
+  vkr_editor_toggle_style(&segment, notes->marking);
+  if (vkr_ui_button(ui, string8_lit("segment"), (String8){0}, &segment)) {
+    vkr_editor_recording_segment_mark(editor, playback);
+  }
+  VkrUiWidgetConfig segments = editor_recording_button(
+      7u, VKR_UI_ICON_LIST,
+      string8_lit("Segments: every marked part with its note; open one or "
+                  "view it alone"));
+  vkr_editor_toggle_style(&segments, notes->listing);
+  if (vkr_ui_button(ui, string8_lit("segments"), (String8){0}, &segments)) {
+    vkr_editor_recording_segments_toggle(editor);
   }
 
   VkrUiWidgetConfig time =
       vkr_editor_text_config(theme->font_caption, theme->text);
-  time.placement.column = 7u;
+  time.placement.column = 8u;
   time.placement.row = 0u;
   time.placement.justify = VKR_UI_ALIGN_START;
   time.placement.align = VKR_UI_ALIGN_CENTER;
@@ -691,7 +699,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   VkrUiSystem *ui = frame->ui;
   VkrUiWidgetConfig scrub = vkr_ui_widget_config_default();
   scrub.placement = VKR_UI_PLACEMENT_DEFAULT;
-  scrub.placement.column = 8u;
+  scrub.placement.column = 9u;
   scrub.placement.row = 0u;
   scrub.placement.justify = VKR_UI_ALIGN_STRETCH;
   scrub.placement.align = VKR_UI_ALIGN_CENTER;
@@ -717,7 +725,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   }
   VkrUiWidgetConfig speed = vkr_ui_widget_config_default();
   speed.placement = VKR_UI_PLACEMENT_DEFAULT;
-  speed.placement.column = 9u;
+  speed.placement.column = 10u;
   speed.placement.row = 0u;
   speed.placement.justify = speed.placement.align = VKR_UI_ALIGN_CENTER;
   vkr_editor_ghost_style(&speed);
@@ -738,7 +746,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   const VkrRecordingReview review =
       annotations ? annotations->review : VKR_RECORDING_REVIEW_UNREVIEWED;
   VkrUiWidgetConfig reviewed = editor_recording_button(
-      10u,
+      11u,
       review == VKR_RECORDING_REVIEW_FLAGGED ? VKR_UI_ICON_WARNING_FILL
                                              : VKR_UI_ICON_CHECK_CIRCLE,
       review == VKR_RECORDING_REVIEW_REVIEWED
@@ -760,7 +768,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         editor, playback, shift && review != VKR_RECORDING_REVIEW_FLAGGED);
   }
   VkrUiWidgetConfig loop = editor_recording_button(
-      11u, VKR_UI_ICON_REFRESH,
+      12u, VKR_UI_ICON_REFRESH,
       playback->loop ? string8_lit("Looping; click to play once")
                      : string8_lit("Play once; click to loop"));
   vkr_editor_toggle_style(&loop, playback->loop);
@@ -769,19 +777,19 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                   playback->loop_start, playback->loop_end);
   }
   VkrUiWidgetConfig timeline = editor_recording_button(
-      14u,
+      15u,
       editor->recording.timeline.open ? VKR_UI_ICON_CHEVRON_DOWN
                                       : VKR_UI_ICON_CHEVRON_UP,
       editor->recording.timeline.open
           ? string8_lit("Hide the timeline")
           : string8_lit("Show the timeline: frame times, markers and "
-                        "ranges up close, with zoom and selection"));
+                        "segments up close, with zoom and selection"));
   vkr_editor_toggle_style(&timeline, editor->recording.timeline.open);
   if (vkr_ui_button(ui, string8_lit("timeline"), (String8){0}, &timeline)) {
     editor->recording.timeline.open = !editor->recording.timeline.open;
   }
   VkrUiWidgetConfig analyze = editor_recording_button(
-      12u, VKR_UI_ICON_CHART_BAR,
+      13u, VKR_UI_ICON_CHART_BAR,
       string8_lit("Analyze this recording: statistics, charts and spikes"));
   vkr_editor_toggle_style(
       &analyze, editor->windows[VKR_EDITOR_WINDOW_PERFORMANCE].visible);
@@ -795,7 +803,7 @@ editor_recording_bar_scrub(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   const bool8_t threads_open =
       editor->windows[VKR_EDITOR_WINDOW_TIMELINE].visible;
   VkrUiWidgetConfig threads = editor_recording_button(
-      13u, VKR_UI_ICON_LAYERS,
+      14u, VKR_UI_ICON_LAYERS,
       string8_lit("Thread timeline: what each thread and the GPU did around "
                   "this frame"));
   vkr_editor_toggle_style(&threads, threads_open);
@@ -818,7 +826,7 @@ vkr_internal bool8_t editor_recording_bar_rect(const VkrSampleUiFrame *frame,
   const float32_t left = 104.0f;
   const float32_t width = viewport.z / scale - left - 10.0f;
   /* The buttons, the clock and the speed leave the track some 30 pt. */
-  if (width < 546.0f) {
+  if (width < 576.0f) {
     return false_v;
   }
   *out_pt = (Vec3){viewport.x / scale + left,
@@ -881,6 +889,8 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
     /* The tools end with the playback they belong to. */
     editor->recording.notes.composing = false_v;
     editor->recording.notes.marking = false_v;
+    editor->recording.notes.listing = false_v;
+    editor->recording.notes.focusing = false_v;
   }
   if (!playback || !frame->mapping_valid) {
     return;
@@ -893,6 +903,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   const VkrUiTrack button = {.value = EDITOR_RECORDING_BUTTON_PT,
                              .unit = VKR_UI_TRACK_PX};
   const VkrUiTrack columns[] = {
+      button,
       button,
       button,
       button,
@@ -933,7 +944,7 @@ vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
   vkr_editor_recording_annotations_track(editor, frame, playback, slider_px);
   editor_recording_markers_build(editor, frame, playback, slider_px);
-  /* The timeline sits on the bar; the note and range panels on top. */
+  /* The timeline sits on the bar; the note and segment panels on top. */
   vkr_editor_recording_timeline_build(editor, frame, playback, bar_pt);
   Vec3 stack_pt = bar_pt;
   stack_pt.y -= vkr_editor_recording_timeline_height(editor);

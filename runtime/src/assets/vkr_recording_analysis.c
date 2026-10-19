@@ -2075,6 +2075,51 @@ void vkr_recording_analysis_free(VkrRecordingAnalysis *analysis) {
   MemZero(analysis, sizeof(*analysis));
 }
 
+bool8_t vkr_recording_segment_stats(const VkrRecordingData *data,
+                                    const VkrRecordingAnalysis *analysis,
+                                    uint64_t first, uint64_t last,
+                                    VkrAllocator *scratch,
+                                    VkrRecordingSegmentStats *out) {
+  vkr_assert(data != NULL && analysis != NULL && scratch != NULL &&
+             out != NULL);
+  MemZero(out, sizeof(*out));
+  if (data->frame_count == 0u || first >= data->frame_count) {
+    return false_v;
+  }
+  out->first = Min(first, last);
+  out->last = Min(Max(first, last), data->frame_count - 1u);
+  out->start_seconds = data->times[out->first];
+  out->end_seconds = data->times[out->last];
+  const uint64_t count = out->last - out->first + 1u;
+  const uint64_t bytes = sizeof(float64_t) * count;
+  float64_t *samples =
+      vkr_allocator_alloc(scratch, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!samples) {
+    return false_v;
+  }
+  uint64_t sample_count = 0u;
+  for (uint64_t frame = out->first; frame <= out->last; ++frame) {
+    float64_t ms = 0.0;
+    if (!vkr_recording_data_frame_ms(data, frame, &ms)) {
+      continue;
+    }
+    samples[sample_count++] = ms;
+    out->over_budget += ms > analysis->budget_ms ? 1u : 0u;
+    out->over_double_budget += ms > 2.0 * analysis->budget_ms ? 1u : 0u;
+    if (sample_count == 1u || ms > out->worst_ms) {
+      out->worst_ms = ms;
+      out->worst_frame = frame;
+    }
+  }
+  vkr_recording_stats_compute(samples, sample_count, &out->frame_time);
+  vkr_allocator_free(scratch, samples, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  for (uint32_t i = 0u; i < analysis->spike_count; ++i) {
+    const uint64_t frame = analysis->spikes[i].frame;
+    out->spikes += frame >= out->first && frame <= out->last ? 1u : 0u;
+  }
+  return true_v;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Explanation                                                               */
 

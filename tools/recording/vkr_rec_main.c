@@ -34,6 +34,12 @@
  *                                     total first, and with --frame that
  *                                     frame's rows (or the nearest frame
  *                                     with GPU times)
+ *   vkr_rec segments <bundle|stream> [--budget MS]
+ *                                     JSON: each annotated segment (ADR-122)
+ *                                     with its name, note, frames, seconds,
+ *                                     frame-time statistics, budget misses,
+ *                                     spikes and slowest frame
+ *   frames and export take --segment NAME in place of --range
  *   vkr_rec export <bundle|stream> --perfetto OUT [--range A:B]
  *                                     writes OUT, a Chrome trace-event JSON
  *                                     file for ui.perfetto.dev or
@@ -329,17 +335,52 @@ static void rec_write_analysis(VkrJsonWriter *json, const char *path,
   vkr_recording_data_free(&data);
 }
 
-/* The bundle's annotations.json, or null when the bundle has none or it
-   cannot be read; `path` is the bundle or its stream file. */
-static void rec_write_annotations(VkrJsonWriter *json, const char *path) {
-  char bundle[VKR_RECORDING_ANNOTATIONS_PATH_MAX];
-  string_format(bundle, sizeof(bundle), "%s", path);
+/* The bundle of `path`, a bundle or its stream file. */
+static void rec_bundle_path(const char *path, char *bundle, uint64_t capacity) {
+  string_format(bundle, capacity, "%s", path);
   const uint64_t length = string_length(bundle);
   const uint64_t stream = sizeof("/stream.vkrs") - 1u;
   if (length > stream &&
       string_equals(bundle + length - stream, "/stream.vkrs")) {
     bundle[length - stream] = '\0';
   }
+}
+
+/* The annotations of the bundle of `path`; false after a message. */
+static bool8_t rec_read_annotations(const char *path,
+                                    VkrRecordingAnnotations *out) {
+  char bundle[VKR_RECORDING_ANNOTATIONS_PATH_MAX];
+  rec_bundle_path(path, bundle, sizeof(bundle));
+  if (!vkr_recording_annotations_read(bundle, out)) {
+    fprintf(stderr, "vkr_rec: cannot read the annotations of '%s'\n", path);
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Frames A to B of the segment named `name`; false after a message. */
+static bool8_t rec_segment_range(const char *path, const char *name,
+                                 uint64_t *out_first, uint64_t *out_last) {
+  static VkrRecordingAnnotations annotations;
+  if (!rec_read_annotations(path, &annotations)) {
+    return false_v;
+  }
+  const uint32_t index =
+      vkr_recording_annotations_find_segment(&annotations, rec_str(name));
+  if (index == UINT32_MAX) {
+    fprintf(stderr, "vkr_rec: no segment is named '%s'\n", name);
+    return false_v;
+  }
+  *out_first = annotations.segments[index].first;
+  *out_last = annotations.segments[index].last;
+  return true_v;
+}
+
+/* The bundle's annotations.json, or null when the bundle has none or it
+   cannot be read; `path` is the bundle or its stream file. */
+static void rec_write_annotations(VkrJsonWriter *json, const char *path) {
+  char bundle[VKR_RECORDING_ANNOTATIONS_PATH_MAX];
+  rec_bundle_path(path, bundle, sizeof(bundle));
   vkr_json_writer_name(json, rec_str("annotations"));
   static VkrRecordingAnnotations annotations;
   if (!vkr_recording_annotations_read(bundle, &annotations)) {
@@ -366,17 +407,19 @@ static void rec_write_annotations(VkrJsonWriter *json, const char *path) {
     vkr_json_writer_end_object(json);
   }
   vkr_json_writer_end_array(json);
-  vkr_json_writer_name(json, rec_str("ranges"));
+  vkr_json_writer_name(json, rec_str("segments"));
   vkr_json_writer_begin_array(json);
-  for (uint32_t i = 0u; i < annotations.range_count; ++i) {
-    const VkrRecordingRange *range = &annotations.ranges[i];
+  for (uint32_t i = 0u; i < annotations.segment_count; ++i) {
+    const VkrRecordingSegment *segment = &annotations.segments[i];
     vkr_json_writer_begin_object(json);
     vkr_json_writer_name(json, rec_str("first"));
-    vkr_json_writer_u64(json, range->first);
+    vkr_json_writer_u64(json, segment->first);
     vkr_json_writer_name(json, rec_str("last"));
-    vkr_json_writer_u64(json, range->last);
-    vkr_json_writer_name(json, rec_str("label"));
-    vkr_json_writer_string(json, rec_str(range->name));
+    vkr_json_writer_u64(json, segment->last);
+    vkr_json_writer_name(json, rec_str("name"));
+    vkr_json_writer_string(json, rec_str(segment->name));
+    vkr_json_writer_name(json, rec_str("note"));
+    vkr_json_writer_string(json, rec_str(segment->note));
     vkr_json_writer_end_object(json);
   }
   vkr_json_writer_end_array(json);
@@ -506,6 +549,93 @@ static int rec_spikes(const char *path, uint32_t top, float64_t budget_ms) {
   vkr_json_writer_complete(&json);
   fputc('\n', stdout);
 
+  vkr_recording_analysis_free(&analysis);
+  vkr_recording_data_free(&data);
+  return status;
+}
+
+/* Every segment of the recording at `path` with its statistics. */
+static int rec_segments(const char *path, float64_t budget_ms) {
+  static VkrRecordingAnnotations annotations;
+  if (!rec_read_annotations(path, &annotations)) {
+    return REC_EXIT_DAMAGED;
+  }
+  VkrRecordingData data;
+  if (!rec_load(path, &data)) {
+    return REC_EXIT_DAMAGED;
+  }
+  const VkrRecordingAnalysisOptions options = {.budget_ms = budget_ms};
+  VkrRecordingAnalysis analysis;
+  if (!vkr_recording_analyze(&data, &options, &rec_allocator, &analysis)) {
+    fprintf(stderr, "vkr_rec: out of memory analyzing '%s'\n", path);
+    vkr_recording_data_free(&data);
+    return REC_EXIT_DAMAGED;
+  }
+  const RecExit status = rec_data_status(&data);
+  VkrJsonWriter json;
+  vkr_json_writer_init(&json, rec_stdout_sink, NULL);
+  vkr_json_writer_begin_object(&json);
+  vkr_json_writer_name(&json, rec_str("status"));
+  vkr_json_writer_string(&json, rec_str(rec_status_name(status)));
+  vkr_json_writer_name(&json, rec_str("budget_ms"));
+  vkr_json_writer_f64(&json, analysis.budget_ms);
+  vkr_json_writer_name(&json, rec_str("segments"));
+  vkr_json_writer_begin_array(&json);
+  for (uint32_t i = 0u; i < annotations.segment_count; ++i) {
+    const VkrRecordingSegment *segment = &annotations.segments[i];
+    VkrRecordingSegmentStats stats;
+    const bool8_t in_recording =
+        vkr_recording_segment_stats(&data, &analysis, segment->first,
+                                    segment->last, &rec_allocator, &stats);
+    vkr_json_writer_begin_object(&json);
+    vkr_json_writer_name(&json, rec_str("name"));
+    vkr_json_writer_string(&json, rec_str(segment->name));
+    vkr_json_writer_name(&json, rec_str("note"));
+    vkr_json_writer_string(&json, rec_str(segment->note));
+    vkr_json_writer_name(&json, rec_str("author"));
+    vkr_json_writer_string(&json, rec_str(segment->author));
+    vkr_json_writer_name(&json, rec_str("first"));
+    vkr_json_writer_u64(&json, segment->first);
+    vkr_json_writer_name(&json, rec_str("last"));
+    vkr_json_writer_u64(&json, segment->last);
+    if (in_recording) {
+      vkr_json_writer_name(&json, rec_str("start_seconds"));
+      vkr_json_writer_f64(&json, stats.start_seconds);
+      vkr_json_writer_name(&json, rec_str("end_seconds"));
+      vkr_json_writer_f64(&json, stats.end_seconds);
+      vkr_json_writer_name(&json, rec_str("frame_ms"));
+      vkr_json_writer_begin_object(&json);
+      vkr_json_writer_name(&json, rec_str("valid"));
+      vkr_json_writer_u64(&json, stats.frame_time.valid);
+      vkr_json_writer_name(&json, rec_str("mean"));
+      vkr_json_writer_f64(&json, stats.frame_time.mean);
+      vkr_json_writer_name(&json, rec_str("p50"));
+      vkr_json_writer_f64(&json, stats.frame_time.p50);
+      vkr_json_writer_name(&json, rec_str("p95"));
+      vkr_json_writer_f64(&json, stats.frame_time.p95);
+      vkr_json_writer_name(&json, rec_str("max"));
+      vkr_json_writer_f64(&json, stats.frame_time.max);
+      vkr_json_writer_end_object(&json);
+      vkr_json_writer_name(&json, rec_str("over_budget"));
+      vkr_json_writer_u64(&json, stats.over_budget);
+      vkr_json_writer_name(&json, rec_str("over_double_budget"));
+      vkr_json_writer_u64(&json, stats.over_double_budget);
+      vkr_json_writer_name(&json, rec_str("spikes"));
+      vkr_json_writer_u64(&json, stats.spikes);
+      vkr_json_writer_name(&json, rec_str("worst_frame"));
+      vkr_json_writer_u64(&json, stats.worst_frame);
+      vkr_json_writer_name(&json, rec_str("worst_ms"));
+      vkr_json_writer_f64(&json, stats.worst_ms);
+    } else {
+      vkr_json_writer_name(&json, rec_str("outside_recording"));
+      vkr_json_writer_bool(&json, true_v);
+    }
+    vkr_json_writer_end_object(&json);
+  }
+  vkr_json_writer_end_array(&json);
+  vkr_json_writer_end_object(&json);
+  vkr_json_writer_complete(&json);
+  fputc('\n', stdout);
   vkr_recording_analysis_free(&analysis);
   vkr_recording_data_free(&data);
   return status;
@@ -1744,6 +1874,8 @@ static void rec_usage(void) {
       " [--marker label]\n"
       "       vkr_rec export <bundle|stream> --perfetto <out.json> "
       "[--range A:B]\n"
+      "       vkr_rec segments <bundle|stream> [--budget MS]\n"
+      "frames and export take --segment NAME in place of --range A:B.\n"
       "A:B is inclusive; frame_ms names the frame time, pass.gpu:<pass> and\n"
       "pass.cpu:<pass> a pass's times; at most 500 rows. --budget is the\n"
       "frame budget in ms (default: the recorded present interval)\n");
@@ -1866,6 +1998,11 @@ static int rec_run_frames(int argc, char **argv) {
         fprintf(stderr, "vkr_rec: --range takes A:B with A <= B\n");
         return REC_EXIT_DAMAGED;
       }
+    } else if (strcmp(argv[i], "--segment") == 0) {
+      has_range = rec_segment_range(argv[2], argv[i + 1], &first, &last);
+      if (!has_range) {
+        return REC_EXIT_DAMAGED;
+      }
     } else if (strcmp(argv[i], "--fields") == 0) {
       const size_t length = strlen(argv[i + 1]);
       if (length >= sizeof(fields_text)) {
@@ -1906,6 +2043,10 @@ static int rec_run_export(int argc, char **argv) {
     } else if (strcmp(argv[i], "--range") == 0) {
       if (!rec_parse_range(argv[i + 1], &first, &last)) {
         fprintf(stderr, "vkr_rec: --range takes A:B with A <= B\n");
+        return REC_EXIT_DAMAGED;
+      }
+    } else if (strcmp(argv[i], "--segment") == 0) {
+      if (!rec_segment_range(argv[2], argv[i + 1], &first, &last)) {
         return REC_EXIT_DAMAGED;
       }
     } else {
@@ -1953,6 +2094,9 @@ VKR_MAIN(argc, argv) {
     result = rec_run_compare(argc, argv);
   } else if (strcmp(argv[1], "export") == 0) {
     result = rec_run_export(argc, argv);
+  } else if (strcmp(argv[1], "segments") == 0 && argc >= 3 &&
+             rec_parse_budget(argc, argv, 3, &budget_ms)) {
+    result = rec_segments(argv[2], budget_ms);
   } else {
     rec_usage();
   }

@@ -486,6 +486,35 @@ bool8_t vkr_recording_analyze(const VkrRecordingData *data,
 
 void vkr_recording_analysis_free(VkrRecordingAnalysis *analysis);
 
+/* One segment of a recording (ADR-122): its frames, cut to the recording,
+   their times, frame-time statistics over its valid frames, the frames over
+   the analysis's budget and twice it, the analysis's spikes whose worst
+   frame lies inside, and its slowest frame. */
+typedef struct VkrRecordingSegmentStats {
+  uint64_t first;
+  uint64_t last;
+  float64_t start_seconds;
+  float64_t end_seconds;
+  VkrRecordingStats frame_time;
+  uint64_t over_budget;
+  uint64_t over_double_budget;
+  uint32_t spikes;
+  uint64_t worst_frame;
+  float64_t worst_ms;
+} VkrRecordingSegmentStats;
+
+/**
+ * @brief Describes frames `first` to `last` of `data`, analyzed as
+ * `analysis`; `scratch` lends the frame-time samples until it returns.
+ * @return false when no frame of the span is in the recording or the
+ * samples cannot be allocated.
+ */
+bool8_t vkr_recording_segment_stats(const VkrRecordingData *data,
+                                    const VkrRecordingAnalysis *analysis,
+                                    uint64_t first, uint64_t last,
+                                    VkrAllocator *scratch,
+                                    VkrRecordingSegmentStats *out);
+
 /* ------------------------------------------------------------------------ */
 /* Explanation                                                               */
 
