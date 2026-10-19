@@ -315,6 +315,49 @@ vkr_internal void test_cascade_texel_grid_is_fixed_in_world(void) {
   }
 }
 
+/* Edges along the world axes, which level geometry mostly runs along, must
+   cross the cascade's texel grid well away from its rows and columns: a few
+   degrees off, an edge rasterizes as a staircase of one-texel steps tens of
+   texels long, which the filters cannot hide. Three directions on the light
+   plane, repeating every quarter turn against the grid, always leave a gap
+   of 30 degrees, so each axis can keep 15 degrees from the grid; the light
+   view's own up and right axes keep 0 for a sun in a world axis plane. */
+vkr_internal void test_light_view_turns_texel_grid_off_world_axes(void) {
+  const VkrShadowConfig config = VKR_SHADOW_CONFIG_DEFAULT;
+  const float32_t elevations_degrees[] = {20.0f, 45.0f, 70.0f, 89.5f};
+  const Vec3 world_axes[3] = {vec3_new(1.0f, 0.0f, 0.0f),
+                              vec3_new(0.0f, 1.0f, 0.0f),
+                              vec3_new(0.0f, 0.0f, 1.0f)};
+  const float32_t quarter = 0.5f * VKR_PI;
+  for (uint32_t e = 0u; e < ArrayCount(elevations_degrees); ++e) {
+    const float32_t elevation = elevations_degrees[e] * VKR_DEG2RAD_MULTIPLIER;
+    for (uint32_t step = 0u; step < 48u; ++step) {
+      const float32_t azimuth = (float32_t)step * (2.0f * VKR_PI / 48.0f);
+      const Vec3 light =
+          vec3_new(vkr_cos_f32(elevation) * vkr_cos_f32(azimuth),
+                   -vkr_sin_f32(elevation),
+                   vkr_cos_f32(elevation) * vkr_sin_f32(azimuth));
+      VkrShadowSystem system = {0};
+      assert(vkr_shadow_system_init(&system, &config));
+      VkrCamera camera = test_camera();
+      vkr_shadow_system_update(&system, &camera, true_v, light, NULL);
+      const Mat4 light_view = system.cascades[0].light_view;
+      for (uint32_t a = 0u; a < ArrayCount(world_axes); ++a) {
+        const Vec4 on_plane =
+            mat4_mul_vec4(light_view, vec3_to_vec4(world_axes[a], 0.0f));
+        if (on_plane.x * on_plane.x + on_plane.y * on_plane.y < 0.25f * 0.25f) {
+          continue;
+        }
+        float32_t angle = vkr_atan2_f32(on_plane.y, on_plane.x);
+        angle -= quarter * vkr_floor_f32(angle / quarter);
+        const float32_t from_grid = vkr_min_f32(angle, quarter - angle);
+        assert(from_grid > 14.9f * VKR_DEG2RAD_MULTIPLIER);
+      }
+      vkr_shadow_system_shutdown(&system);
+    }
+  }
+}
+
 /* The maps a receiver samples are drawn with the guarded fit, not the raw
    one. Two rides that redraw at different places after different motion
    must still draw every cascade with one texel size on one world lattice,
@@ -3805,6 +3848,7 @@ bool32_t run_shadow_system_tests(void) {
   printf("  Running test_disabled_stabilization_does_not_publish_history...\n");
   test_disabled_stabilization_does_not_publish_history();
   test_cascade_texel_grid_is_fixed_in_world();
+  test_light_view_turns_texel_grid_off_world_axes();
   test_drawn_cascade_lattice_is_fixed_in_world();
   printf("  test_disabled_stabilization_does_not_publish_history PASSED\n");
   printf("  Running retained cascade reuse tests...\n");

@@ -38,6 +38,27 @@ cascade's texel snap lays its grid at whole texels of world space. Until
 whole shadow frustum (about 4–6 m), a fraction of a texel of each cascade, and
 every shadow edge jumped a few times a second while the camera rode a mover;
 `test_cascade_texel_grid_is_fixed_in_world` holds the world grid.
+The light view also rolls about the light direction so that the world axes,
+along which level geometry mostly runs, cross the texel grid away from its
+rows and columns (`vkr_shadow_light_view_roll`). An edge a few degrees off the
+rows rasterizes as a staircase of one-texel steps tens of texels long, which no
+receiver filter hides and which crawls while the caster moves: the railing of
+the Level Design Test's freight car stepped once every ~20 cascade-0 texels.
+The axes that cross the light plane at least a quarter of their length fold
+into one quarter turn, and the texel axis takes the middle of the widest gap
+between them, at least 15 degrees from each
+(`test_light_view_turns_texel_grid_off_world_axes`). Until 2026-10-20 the
+light view's right axis was horizontal, so vertical edges ran along the
+columns and a sun in a world axis plane put the other horizontal axis on the
+rows. The roll depends on the direction alone, so retained fits stay valid
+while it holds. Jittering the receiver lookup, or the dynamic-caster raster by
+a sub-texel offset under the temporal upscaler, left the steps visible on
+Metal: the lookup shift moves the whole staircase, and MetalFX keeps too few
+frames of a shading change to average the raster shifts. Evidence
+(2026-10-20, M1 Pro, Metal Release, headless editor): looped playback of the
+freight ride in `rec-20261019-231623`, frames 11590 to 11610, shows the
+railing's shadow edge straight with the roll and stepped without it; no
+Vulkan run.
 
 A map is drawn with the guarded fit (`vkr_shadow_guarded_fit`): the raw fit
 widened by the reuse guard band, its extent quantized like the raw one, led by

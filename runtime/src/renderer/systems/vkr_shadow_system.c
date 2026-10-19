@@ -573,6 +573,59 @@ vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
   out_corners[7] = vec3_sub(vec3_sub(far_center, far_right), far_up);
 }
 
+/* A world axis that crosses the light plane shorter than this, as a share of
+   its length, casts short edges and does not steer the light view's roll. */
+#define VKR_SHADOW_ROLL_MIN_PROJECTED_LENGTH 0.25f
+
+/* The roll about the light direction, in radians from `right` toward `up`,
+   that turns the map's texel axes away from the world axes. Level geometry
+   runs mostly along the world axes, and a shadow edge a few degrees off the
+   texel rows rasterizes as a staircase of one-texel steps tens of texels
+   long, which the receiver filter cannot hide and which crawls while the
+   caster moves; an edge near the diagonal steps every texel and filters
+   smooth. The axes' directions on the light plane repeat every quarter
+   turn against the grid, so the texel axis takes the middle of the widest
+   gap between them in that period: the farthest any roll keeps it from all
+   of them. The roll depends on the light direction alone, so a cascade's
+   fit and retained depth stay valid while that direction holds. */
+vkr_internal float32_t vkr_shadow_light_view_roll(Vec3 right, Vec3 up) {
+  const float32_t period = 0.5f * VKR_PI;
+  const Vec3 axes[3] = {vec3_new(1.0f, 0.0f, 0.0f), vec3_new(0.0f, 1.0f, 0.0f),
+                        vec3_new(0.0f, 0.0f, 1.0f)};
+  float32_t angles[3];
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < ArrayCount(axes); ++i) {
+    const float32_t x = vec3_dot(axes[i], right);
+    const float32_t y = vec3_dot(axes[i], up);
+    if (x * x + y * y < VKR_SHADOW_ROLL_MIN_PROJECTED_LENGTH *
+                            VKR_SHADOW_ROLL_MIN_PROJECTED_LENGTH) {
+      continue;
+    }
+    float32_t angle = vkr_atan2_f32(y, x);
+    angle -= period * vkr_floor_f32(angle / period);
+    uint32_t slot = count++;
+    while (slot > 0u && angles[slot - 1u] > angle) {
+      angles[slot] = angles[slot - 1u];
+      --slot;
+    }
+    angles[slot] = angle;
+  }
+  if (count == 0u) {
+    return 0.0f;
+  }
+
+  float32_t widest_gap = angles[0] + period - angles[count - 1u];
+  float32_t roll = angles[count - 1u] + 0.5f * widest_gap;
+  for (uint32_t i = 1u; i < count; ++i) {
+    const float32_t gap = angles[i] - angles[i - 1u];
+    if (gap > widest_gap) {
+      widest_gap = gap;
+      roll = angles[i - 1u] + 0.5f * gap;
+    }
+  }
+  return roll;
+}
+
 vkr_internal Mat4 vkr_shadow_compute_light_view(
     const VkrCamera *camera, const VkrShadowSceneBounds *scene_bounds,
     Vec3 light_direction, float32_t max_shadow_distance,
@@ -587,6 +640,11 @@ vkr_internal Mat4 vkr_shadow_compute_light_view(
                                              : vec3_new(0.0f, 1.0f, 0.0f);
   Vec3 right = vec3_normalize(vec3_cross(up_ref, dir));
   Vec3 up = vec3_cross(dir, right);
+  /* Rolled by r about the light, the texel axes become right·cos r + up·sin r
+     and up·cos r − right·sin r. */
+  const float32_t roll = vkr_shadow_light_view_roll(right, up);
+  up = vec3_sub(vec3_scale(up, vkr_cos_f32(roll)),
+                vec3_scale(right, vkr_sin_f32(roll)));
 
   Vec3 anchor = vec3_zero();
   float32_t radius = 1.0f;
