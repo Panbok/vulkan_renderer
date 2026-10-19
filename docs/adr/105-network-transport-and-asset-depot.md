@@ -69,7 +69,11 @@ from the caller's thread, or from a thread of its own
 lock until the core's deadline, a datagram, a wake or 100 ms, then pumps and
 runs the caller's step with the lock held; any other thread takes the lock
 to touch the core, and its unlock wakes the thread. Waits shorter than a
-millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
+millisecond use `select` on POSIX; Windows rounds them up to 1 ms. An
+allocator is not thread-safe, so while the thread pumps, the host's
+allocator belongs to whoever holds that lock: an owner that keeps
+allocating on its own thread gives the host memory of its own (the depot
+service, the remote content directory and the editor session do).
 
 - **Packets.** A short header is a flags byte (bit 6 set, bits 1–0 the
   packet-number length), the receiver's 32-bit connection ID and 1 to 4
@@ -207,7 +211,11 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms.
   readable by their owner only.
 - **Service thread** ([vkr_depot_service.h](../../tools/depot/vkr_depot_service.h)):
   the store, server, session, UDP host and discovery responder on a host
-  thread, safe to call from any thread. It binds `[::]:7320` or the next of
+  thread, safe to call from any thread. They allocate from the service's own
+  memory (8 MB, growing to 1 GB); the caller's allocator makes only the
+  thread handle. Sharing the caller's allocator corrupted its free list
+  while the caller kept allocating, which hung or stalled transfers until
+  2026-10-19. It binds `[::]:7320` or the next of
   eight ports, treating a port another socket holds for IPv4 as taken, and
   makes the local identity the admin of a store without an access file
   when asked. `serve` and the sharing editor run it.

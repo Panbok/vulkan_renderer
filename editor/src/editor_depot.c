@@ -170,12 +170,9 @@ struct VkrEditorDepot {
   /* The address jobs use: the server's loopback port when sharing. */
   char address[DEPOT_TEXT];
 
+  /* Allocates its networking from memory of its own; the retained
+     allocator makes only its thread's handle, on the UI thread. */
   VkrDepotService *service;
-  /* The server's own memory: it buffers object chunks of up to 1 MiB for
-     every connection, which the editor's retained allocator cannot hold. */
-  VkrDMemory service_memory;
-  VkrAllocator service_allocator;
-  bool8_t service_memory_ready;
   VkrDepotServiceInfo service_info;
   char service_error[DEPOT_TEXT];
   float64_t service_polled;
@@ -1529,10 +1526,6 @@ static void depot_service_stop(VkrEditorDepot *depot) {
     vkr_depot_service_stop(depot->service);
     depot->service = NULL;
   }
-  if (depot->service_memory_ready) {
-    vkr_dmemory_allocator_destroy(&depot->service_allocator);
-    depot->service_memory_ready = false_v;
-  }
   MemZero(&depot->service_info, sizeof(depot->service_info));
   depot->request_count = 0u;
   depot->access_count = 0u;
@@ -1551,20 +1544,10 @@ static bool8_t depot_service_start(VkrEditorDepot *depot) {
       .codec = vkr_depot_zstd_codec(),
       .owner_admin = true_v,
   };
-  if (!vkr_dmemory_create(MB(8), GB(1), &depot->service_memory)) {
-    string_format(depot->service_error, sizeof(depot->service_error),
-                  "out of memory");
-    return false_v;
-  }
-  depot->service_allocator = (VkrAllocator){.ctx = &depot->service_memory};
-  vkr_dmemory_allocator_create(&depot->service_allocator);
-  depot->service_memory_ready = true_v;
-  depot->service = vkr_depot_service_start(&depot->service_allocator, &config,
-                                           depot->service_error,
-                                           sizeof(depot->service_error));
+  depot->service =
+      vkr_depot_service_start(depot->allocator, &config, depot->service_error,
+                              sizeof(depot->service_error));
   if (!depot->service) {
-    vkr_dmemory_allocator_destroy(&depot->service_allocator);
-    depot->service_memory_ready = false_v;
     log_warn("Project sharing: the server did not start: %s",
              depot->service_error);
     return false_v;

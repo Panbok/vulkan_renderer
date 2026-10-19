@@ -418,6 +418,44 @@ vkr_internal bool8_t vkr_bakery_remove_visit(void *context, const char *name,
   return true_v;
 }
 
+#if defined(_WIN32)
+/* A virus scanner or the search indexer opens a file just written and holds
+   it for tens of milliseconds. Deleting it meanwhile fails with a sharing
+   violation or access denied, or succeeds but stays pending, and then its
+   directory is not empty until the handle closes. Those errors clear on
+   their own, so a removal retries them for about 200 ms. */
+#define BAKERY_REMOVE_ATTEMPTS 10u
+#define BAKERY_REMOVE_WAIT_MS 20u
+
+vkr_internal bool8_t vkr_bakery_remove_native(const char *path,
+                                              bool8_t is_directory) {
+  wchar_t *native = vkr_bakery_native(path);
+  if (!native) {
+    return false_v;
+  }
+  bool8_t removed = false_v;
+  for (uint32_t attempt = 1u;; ++attempt) {
+    const BOOL done =
+        is_directory ? RemoveDirectoryW(native) : DeleteFileW(native);
+    const DWORD error = done ? ERROR_SUCCESS : GetLastError();
+    if (done || error == ERROR_FILE_NOT_FOUND ||
+        error == ERROR_PATH_NOT_FOUND) {
+      removed = true_v;
+      break;
+    }
+    const bool8_t transient = error == ERROR_DIR_NOT_EMPTY ||
+                              error == ERROR_ACCESS_DENIED ||
+                              error == ERROR_SHARING_VIOLATION;
+    if (!transient || attempt == BAKERY_REMOVE_ATTEMPTS) {
+      break;
+    }
+    vkr_platform_sleep(BAKERY_REMOVE_WAIT_MS);
+  }
+  free(native);
+  return removed;
+}
+#endif
+
 bool8_t vkr_bakery_remove_tree(const char *path) {
   VkrBakeryStat info;
   if (!vkr_bakery_stat(path, &info)) {
@@ -427,7 +465,11 @@ bool8_t vkr_bakery_remove_tree(const char *path) {
     return true_v;
   }
   if (!info.is_directory) {
+#if defined(_WIN32)
+    return vkr_bakery_remove_native(path, false_v);
+#else
     return vkr_bakery_remove_file(path);
+#endif
   }
   VkrBakeryRemoveContext context = {.parent = path, .ok = true_v};
   if (!vkr_bakery_list_directory(path, vkr_bakery_remove_visit, &context) ||
@@ -435,13 +477,7 @@ bool8_t vkr_bakery_remove_tree(const char *path) {
     return false_v;
   }
 #if defined(_WIN32)
-  wchar_t *native = vkr_bakery_native(path);
-  if (!native) {
-    return false_v;
-  }
-  const BOOL removed = RemoveDirectoryW(native);
-  free(native);
-  return removed != 0;
+  return vkr_bakery_remove_native(path, true_v);
 #else
   return rmdir(path) == 0 || errno == ENOENT;
 #endif

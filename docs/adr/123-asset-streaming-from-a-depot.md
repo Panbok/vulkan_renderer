@@ -36,7 +36,8 @@ per GPU family, outside the project's history.
 
 ### Remote content directory
 
-[vkr_depot_remote.h](../../tools/depot/vkr_depot_remote.h) makes a local
+[vkr_depot_remote.h](../../tools/depot/vkr_depot_remote.h) (its connection
+allocates from memory of its own while its worker pumps it) makes a local
 directory that a depot server fills on demand:
 
 - Opening connects, resolves a branch (default `main`) to its newest commit

@@ -329,10 +329,19 @@ typedef struct SessionInflight {
 } SessionInflight;
 
 struct VkrEditorSession {
+  /* The UI's: the network thread's and the depot job's handles, made and
+     freed on the UI thread. */
   VkrAllocator *allocator;
   uint8_t mode;
   VkrNetHost *host;
   VkrNetSession *net;
+  /* The host and the net session allocate from memory of their own: the
+     network thread allocates from it while it pumps, and an allocator is
+     not thread-safe, so the UI's, which the UI keeps using, would corrupt.
+     Only holders of the host lock use it while the thread runs. */
+  VkrDMemory net_memory;
+  VkrAllocator net_allocator;
+  bool8_t net_memory_ready;
   /* Pumps `host`, so acknowledgments, resends and pacing keep their timing
      however long a frame takes. Messages are still read and handled on the
      UI thread: the public calls that reach the network hold its lock
@@ -2137,9 +2146,18 @@ static bool8_t session_start_network(VkrEditorSession *session,
   if (!vkr_net_crypto_init()) {
     return false_v;
   }
-  session->host = vkr_net_host_create(session->allocator, config);
+  /* Messages of up to SESSION_MESSAGE_MAX in flight on every link. */
+  if (!session->net_memory_ready) {
+    if (!vkr_dmemory_create(MB(8), GB(1), &session->net_memory)) {
+      return false_v;
+    }
+    session->net_allocator = (VkrAllocator){.ctx = &session->net_memory};
+    vkr_dmemory_allocator_create(&session->net_allocator);
+    session->net_memory_ready = true_v;
+  }
+  session->host = vkr_net_host_create(&session->net_allocator, config);
   session->net = session->host
-                     ? vkr_net_session_create(session->allocator,
+                     ? vkr_net_session_create(&session->net_allocator,
                                               vkr_net_host_core(session->host))
                      : NULL;
   if (!session->net) {
@@ -3940,6 +3958,10 @@ static void session_reset(VkrEditorSession *session) {
   }
   vkr_net_session_destroy(session->net);
   vkr_net_host_destroy(session->host);
+  /* The thread stopped and the host is gone: nothing uses it any more. */
+  if (session->net_memory_ready) {
+    vkr_dmemory_allocator_destroy(&session->net_allocator);
+  }
   for (uint32_t i = session->log_first; i < session->log_count; ++i) {
     vkr_heap_free(session->log[i].data);
   }

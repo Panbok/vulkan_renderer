@@ -1,6 +1,8 @@
 #include "vkr_depot_remote.h"
 
 #include "core/vkr_threads.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_client.h"
@@ -23,6 +25,8 @@ typedef enum RemoteFileState {
 } RemoteFileState;
 
 struct VkrDepotRemote {
+  /* The caller's: the worker, its lock and its signals, made and freed on
+     the caller's thread. */
   VkrAllocator *allocator;
   char directory[VKR_DEPOT_PATH_CAPACITY];
   VkrDepotStore store;
@@ -30,6 +34,12 @@ struct VkrDepotRemote {
      the transport's idle timeout may close it; a failed transfer then
      reconnects once and tries again. */
   VkrDepotConnection *connection;
+  /* The connection allocates from memory of its own while the worker pumps
+     it: an allocator is not thread-safe, and the caller keeps using its
+     own on its thread. */
+  VkrDMemory connection_memory;
+  VkrAllocator connection_allocator;
+  bool8_t connection_memory_ready;
   char address[VKR_DEPOT_REMOTE_MAX];
   uint8_t server_key[32];
   /* Every listed file, sorted by path, and its state. */
@@ -121,8 +131,8 @@ static bool8_t remote_transfer(VkrDepotRemote *remote, const VkrDepotId *blobs,
                                            .server_key = remote->server_key,
                                            .store = &remote->store};
     char error[256];
-    remote->connection = vkr_depot_connect(remote->allocator, &connect, NULL,
-                                           error, sizeof(error));
+    remote->connection = vkr_depot_connect(
+        &remote->connection_allocator, &connect, NULL, error, sizeof(error));
     if (!remote->connection) {
       fprintf(stderr, "remote content: reconnecting failed: %s\n", error);
       return false_v;
@@ -201,6 +211,9 @@ static void remote_free(VkrDepotRemote *remote) {
   if (remote->done) {
     vkr_cond_destroy(remote->allocator, &remote->done);
   }
+  if (remote->connection_memory_ready) {
+    vkr_dmemory_allocator_destroy(&remote->connection_allocator);
+  }
   free(remote);
 }
 
@@ -215,6 +228,15 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
     goto fail;
   }
   remote->allocator = allocator;
+  /* Object chunks of up to 1 MiB in flight on the connection. */
+  if (!vkr_dmemory_create(MB(4), GB(1), &remote->connection_memory)) {
+    snprintf(error, capacity, "out of memory");
+    goto fail;
+  }
+  remote->connection_allocator =
+      (VkrAllocator){.ctx = &remote->connection_memory};
+  vkr_dmemory_allocator_create(&remote->connection_allocator);
+  remote->connection_memory_ready = true_v;
   const char *branch = config->branch ? config->branch : "main";
   char store_root[VKR_DEPOT_PATH_CAPACITY];
   snprintf(remote->directory, sizeof(remote->directory), "%s",
@@ -237,8 +259,8 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
   const VkrDepotConnectConfig connect = {.address = config->address,
                                          .server_key = config->server_key,
                                          .store = &remote->store};
-  remote->connection =
-      vkr_depot_connect(allocator, &connect, NULL, error, capacity);
+  remote->connection = vkr_depot_connect(&remote->connection_allocator,
+                                         &connect, NULL, error, capacity);
   if (!remote->connection) {
     goto fail;
   }

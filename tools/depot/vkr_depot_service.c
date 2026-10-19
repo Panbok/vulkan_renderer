@@ -1,5 +1,7 @@
 #include "vkr_depot_service.h"
 
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_sync.h"
 #include "vkr_net_host.h"
@@ -10,7 +12,17 @@
 #include <string.h>
 
 struct VkrDepotService {
+  /* The caller's: only the host thread's handle, made and freed on the
+     caller's thread. */
   VkrAllocator *allocator;
+  /* The host, session and server allocate from the service's own memory:
+     the host thread allocates while it pumps, and an allocator is not
+     thread-safe, so a caller that shared its allocator with the service
+     corrupted it (a stalled transfer, a freelist that looped forever). The
+     host lock serializes every use of this one. */
+  VkrDMemory memory;
+  VkrAllocator memory_allocator;
+  bool8_t memory_ready;
   VkrNetHost *host;
   VkrNetSession *session;
   VkrDepotServer *server;
@@ -127,7 +139,8 @@ static bool8_t service_bind(VkrDepotService *service,
   for (uint32_t i = 0u; i < attempts && !service->host; ++i) {
     host_config->bind.port = (uint16_t)(first + i);
     if (service_port_free(&host_config->bind)) {
-      service->host = vkr_net_host_create(service->allocator, host_config);
+      service->host =
+          vkr_net_host_create(&service->memory_allocator, host_config);
     }
   }
   if (!service->host) {
@@ -154,6 +167,14 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
   service->responder.socket.handle = VKR_UDP_SOCKET_INVALID;
   service->on_accept = config->on_accept;
   service->on_accept_context = config->on_accept_context;
+  /* Object chunks of up to 1 MiB in flight on every connection. */
+  if (!vkr_dmemory_create(MB(8), GB(1), &service->memory)) {
+    snprintf(error, capacity, "out of memory");
+    goto failed;
+  }
+  service->memory_allocator = (VkrAllocator){.ctx = &service->memory};
+  vkr_dmemory_allocator_create(&service->memory_allocator);
+  service->memory_ready = true_v;
   VkrNetHostConfig host_config = {
       .socket = {.receive_buffer = 16u << 20, .send_buffer = 16u << 20}};
   if (!vkr_depot_server_key(config->store_root,
@@ -179,15 +200,16 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
   if (!bound) {
     goto failed;
   }
-  service->session =
-      vkr_net_session_create(allocator, vkr_net_host_core(service->host));
+  service->session = vkr_net_session_create(&service->memory_allocator,
+                                            vkr_net_host_core(service->host));
   const VkrDepotServerConfig server_config = {.store_root = config->store_root,
                                               .codec = config->codec,
                                               .open_access =
                                                   config->open_access};
   service->server =
       service->session
-          ? vkr_depot_server_create(allocator, vkr_net_host_core(service->host),
+          ? vkr_depot_server_create(&service->memory_allocator,
+                                    vkr_net_host_core(service->host),
                                     service->session, &server_config)
           : NULL;
   if (!service->server) {
@@ -243,6 +265,9 @@ void vkr_depot_service_stop(VkrDepotService *service) {
   vkr_depot_server_destroy(service->server);
   vkr_net_session_destroy(service->session);
   vkr_net_host_destroy(service->host);
+  if (service->memory_ready) {
+    vkr_dmemory_allocator_destroy(&service->memory_allocator);
+  }
   free(service);
 }
 

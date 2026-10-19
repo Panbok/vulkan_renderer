@@ -63,7 +63,10 @@ container's journal.
   acknowledgments, resends and pacing keep their timing however long a
   frame takes. Messages are still read, handled and applied on the UI
   thread: the public session calls that reach the network hold the
-  thread's lock, nested calls only counting. Leaving stops the thread
+  thread's lock, nested calls only counting. The host and the net session
+  allocate from the session's own memory, created with the network and
+  destroyed after the thread stops, not from the UI's retained allocator,
+  which the UI keeps using on its own thread. Leaving stops the thread
   before the closing packets go. If the thread cannot start, the UI thread
   pumps the socket each build, as before.
 

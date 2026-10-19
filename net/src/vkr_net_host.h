@@ -67,7 +67,12 @@ typedef struct VkrNetHostThread VkrNetHostThread;
    the service. The thread waits without the lock until the core's next
    deadline, a datagram, a wake or 100 ms, so the step runs at least ten
    times a second. The caller keeps owning `host` and destroys it after
-   stopping the thread. NULL on failure. */
+   stopping the thread. NULL on failure.
+
+   The core allocates from the allocator `host` was made with while the
+   thread pumps, and an allocator is not thread-safe: until the thread
+   stops, only holders of the lock may use that allocator. `allocator` here
+   makes the thread's handle on the calling thread. */
 VkrNetHostThread *vkr_net_host_thread_start(VkrAllocator *allocator,
                                             VkrNetHost *host,
                                             VkrNetHostStep step, void *context);

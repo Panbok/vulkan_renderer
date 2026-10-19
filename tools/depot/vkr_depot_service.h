@@ -64,7 +64,10 @@ typedef struct VkrDepotServiceInfo {
 
 typedef struct VkrDepotService VkrDepotService;
 
-/* Opens the store, binds and starts the thread. NULL with a message. */
+/* Opens the store, binds and starts the thread. NULL with a message.
+   `allocator` makes only the thread's handle, on the calling thread; the
+   host, session and server allocate from the service's own memory, which
+   the host thread uses while it pumps. */
 VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
                                          const VkrDepotServiceConfig *config,
                                          char *error, uint32_t capacity);

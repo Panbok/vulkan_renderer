@@ -57,7 +57,9 @@ typedef struct VkrDepotRemoteStats {
 
 typedef struct VkrDepotRemote VkrDepotRemote;
 
-/* Connects, fetches the trees and starts the worker. NULL with a message. */
+/* Connects, fetches the trees and starts the worker. NULL with a message.
+   `allocator` makes the worker, its lock and signals on the calling thread;
+   the connection the worker pumps allocates from the remote's own memory. */
 VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
                                       const VkrDepotRemoteConfig *config,
                                       char *error, uint32_t capacity);
