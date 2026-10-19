@@ -606,13 +606,17 @@ void vkr_vk_record_ibl_bakes(VkrVulkanRenderer *renderer,
     }
     if (bake->project)
       vkr_vk_record_prepared_compute(renderer, command, &bake->projection);
+    /* Forward shading samples the prefilter in fragment shaders and deferred
+       lighting in compute, from this frame on, since the texture is
+       published when the bake is queued. */
     for (uint32_t mip = 0u; mip < bake->mip_count; ++mip) {
       vkr_vk_record_prepared_compute(renderer, command, &bake->mips[mip]);
       vkr_vk_cmd_ibl_image_barrier(command, bake->prefilter->image.handle, mip,
                                    bake->prefilter->image.array_layers,
                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                    VK_IMAGE_LAYOUT_GENERAL,
                                    VK_IMAGE_LAYOUT_GENERAL);

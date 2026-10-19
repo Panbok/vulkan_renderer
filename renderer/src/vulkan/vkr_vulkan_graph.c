@@ -2635,8 +2635,26 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       break;
     case VKR_RG_EXECUTOR_CLOUD_SKY_LIGHT:
       vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);
-      if (prepared->compute.dispatch_count)
+      if (prepared->compute.dispatch_count) {
         vkr_vk_record_sh_visibility(renderer, command);
+        /* The radiance chain lives in the frame-upload buffer, which the
+           SH barrier does not cover; global reflections read it by address
+           in compute and fragment shaders later this frame. */
+        const VkMemoryBarrier2 radiance_barrier = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+        };
+        const VkDependencyInfo radiance_dependency = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .memoryBarrierCount = 1u,
+            .pMemoryBarriers = &radiance_barrier,
+        };
+        vkCmdPipelineBarrier2(command, &radiance_dependency);
+      }
       break;
     case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
       vkr_vk_record_diffuse_volume_compose(renderer, command,

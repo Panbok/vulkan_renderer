@@ -86,7 +86,11 @@ Remaining:
   driver lacks).
 - Graph declarations for the resources `IBL.Bake`, `DiffuseVolume.Compose`
   and `Clouds.SkyLight` write, which `debug.graph` shows without reads or
-  writes on Vulkan.
+  writes on Vulkan. ADR-002 leaves their barriers to the executors; an audit
+  on 2026-10-19 found two that missed readers (the IBL prefilter's compute
+  readers, the cloud sky light's radiance chain), now fixed. Declaring them
+  needs per-frame imports of published textures and native buffer imports,
+  which the Vulkan graph lacks.
 - Freeze culling, overdraw, LOD and light-count views; optional vendor
   counters and an `xctrace` table importer.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.
