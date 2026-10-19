@@ -239,5 +239,20 @@ Develop > Render graph, or `window graph`, shows the same description.
   imported, 1 graph); it wrote a 153 KB DOT file. `IBL.Bake`,
   `DiffuseVolume.Compose` and `Clouds.SkyLight` list no reads or writes:
   they write backend-owned images the graph does not declare.
-- The Vulkan pass breadcrumb now builds on Windows (Release, editor and
-  848 tests); no Windows crash has yet shown it in a report.
+- The Vulkan pass breadcrumb on Windows, 2026-10-19: a Release editor built
+  with a temporary trigger that wrote through a null pointer while
+  recording `Cull.Classify` (removed afterwards) exited with `0xc0000005`
+  on frame 2 of a headless Bistro run. Without a workspace its report went
+  to stderr, naming the access violation, the scene, stage `frame`, `pass:
+  Cull.Classify`, the log tail and render-thread frames from
+  `vkr_editor.exe+0x7113fd`.
+- On a headless Release Bistro editor on Vulkan, `debug.draw` stored a box,
+  a sphere and a label (85 shapes, cyan, group `probe`) and a red line
+  (group `keep`). A window capture showed them where the camera places
+  them, drawn over the scene, and after `debug.clear {group: probe}` only
+  the line remained. The Render graph window showed "Desktop pipeline ·
+  Vulkan · 1275×700" with 75 passes and 66 resources, listed
+  `Cull.Classify`'s two reads and two writes, jumped from
+  `gpu_draw_classifications` to the resource (passes 9 to 13, written by
+  `Cull.Classify`, read by `Cull.Encode`), and wrote a 1,694-line DOT
+  file. `run_debug_draw_tests` passed on Windows.
