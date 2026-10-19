@@ -70,6 +70,24 @@ SIGBUS, SIGILL, SIGFPE, SIGABRT and SIGTRAP on an alternate signal stack
   the default and calls `abort()` again, so the process still fast-fails
   with `0xc0000409`. `__fastfail` and `/GS` failures bypass both.
 
+**GPU breadcrumbs** ([vkr_vulkan_breadcrumbs.c](../../renderer/src/vulkan/vkr_vulkan_breadcrumbs.c)).
+With `VKR_VULKAN_BREADCRUMBS=1` on a device with `VK_AMD_buffer_marker` and
+the `deviceCoherentMemory` feature, every Vulkan graph pass writes a marker
+at the top of the pipe when the command front-end reaches it and one at the
+bottom when all work before it has finished.
+
+- The markers land in a small host-visible buffer of device-coherent
+  (uncached where offered) memory, one begun and one finished word per frame
+  slot; each packs the submission's low 16 bits and the pass index plus one.
+- On the first device loss, and before a GPU-completion timeout exits, the
+  log names each slot's last begun and finished pass. A slot's pass names
+  belong to its last recorded frame, so a marker from an older submission
+  keeps its index only; a hung frame's slot cannot be reused, so its names
+  hold.
+- It is opt-in because the coherent memory bypasses the GPU's caches and
+  each pass adds two writes; the startup report's `gpuBreadcrumbs` row says
+  whether the device can and whether it is on.
+
 **GPU capture** ([vkr_renderer.h](../../renderer/src/vkr_renderer.h)).
 `vkr_renderer_request_gpu_capture(path, frames)` and
 `vkr_renderer_gpu_capture_status` drive a capture for a GPU debugger.
@@ -335,6 +353,14 @@ the geometry itself.
   `gpu_draw_classifications` to the resource (passes 9 to 13, written by
   `Cull.Classify`, read by `Cull.Encode`), and wrote a 1,694-line DOT
   file. `run_debug_draw_tests` passed on Windows.
+- GPU breadcrumbs on the RX 6700 XT (Adrenalin 26.6.3): a headless Release
+  Bistro editor with `VKR_VULKAN_BREADCRUMBS=1` logged `gpuBreadcrumbs:
+  present ... enabled` and created the buffer. A temporary hook (not
+  committed) dumped the markers on the 600th frame: the frame then on the
+  GPU read began pass 78 (`Shadow.Local.Transmission0.20`) and finished
+  pass 76, and the two completed slots read pass 200 (`UI.Editor`, the
+  last pass) for both markers. No device loss has yet shown them in a
+  real report.
 - Freeze culling, 2026-10-19, same builds, 860 test cases passed, on a
   headless Bistro editor at the tiled pipeline's defaults. At eye
   (-12, 6, 14) `view.cull_report` counted 2567 candidates, 670 outside the

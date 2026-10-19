@@ -196,6 +196,10 @@ PFN_vkCmdBeginDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device);
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device);
+/** vkCmdWriteBufferMarkerAMD when VKR_VULKAN_BREADCRUMBS enabled GPU
+    breadcrumbs; NULL otherwise. */
+PFN_vkCmdWriteBufferMarkerAMD
+vkr_vulkan_device_buffer_marker(const VkrVulkanDevice *device);
 typedef struct VkrVulkanGpuCaptureTool VkrVulkanGpuCaptureTool;
 /** RenderDoc's capture API for this device's instance; see
     vkr_vulkan_gpu_capture.h. */

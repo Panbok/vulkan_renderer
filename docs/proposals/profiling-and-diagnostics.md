@@ -78,9 +78,9 @@ implemented in
 [ADR-127](../adr/127-crash-reports-gpu-capture-and-graph-description.md).
 Remaining:
 
-- Vulkan checkpoints or buffer markers (`VK_AMD_buffer_marker` and
-  device-coherent memory exist on the Windows RX 6700 XT) naming the last
-  pass before a device loss.
+- A device-loss run showing the Vulkan GPU breadcrumbs (ADR-127) name the
+  hung pass; one TDR risks freezing the Windows machine, so it waits for
+  the owner.
 - A Capture GPU frame button once a backend can capture on its machine
   (Metal 4 compute encoders are not capturable programmatically on macOS
   26; RenderDoc needs `descriptorBufferCaptureReplay`, which the Windows AMD

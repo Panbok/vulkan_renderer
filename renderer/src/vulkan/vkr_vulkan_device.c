@@ -50,6 +50,9 @@ typedef struct VkrVulkanFeatureSet {
   bool8_t ray_query;
   /* Optional: VK_EXT_device_fault reports why a device was lost. */
   bool8_t device_fault;
+  /* Optional: host-visible memory the GPU writes through its caches, so
+     breadcrumb markers survive a hang (VK_AMD_device_coherent_memory). */
+  bool8_t device_coherent_memory;
 } VkrVulkanFeatureSet;
 
 typedef struct VkrVulkanCandidate {
@@ -70,6 +73,10 @@ typedef struct VkrVulkanCandidate {
   bool8_t has_ray_query_extensions;
   bool8_t has_memory_budget_extension;
   bool8_t has_device_fault_extension;
+  /* VK_AMD_buffer_marker and VK_AMD_device_coherent_memory: GPU breadcrumbs
+     that name the last pass before a hang. */
+  bool8_t has_buffer_marker_extension;
+  bool8_t has_device_coherent_memory_extension;
   /* VK_KHR_calibrated_timestamps, or the EXT it was promoted from; NULL when
      the device names neither. The pair of domains it must calibrate is the
      device's timestamps against QueryPerformanceCounter, the counter behind
@@ -119,6 +126,9 @@ struct VkrVulkanDevice {
   /* Loaded only when calibrated timestamps are enabled (the KHR and EXT entry
      points share one signature). */
   PFN_vkGetCalibratedTimestampsKHR get_calibrated_timestamps;
+  /* Loaded only when VKR_VULKAN_BREADCRUMBS enabled the AMD marker and
+     coherent-memory extensions. */
+  PFN_vkCmdWriteBufferMarkerAMD cmd_write_buffer_marker;
   /* Loaded only when ray queries are enabled. */
   VkrVulkanRayQueryFunctions ray_query_functions;
   bool8_t ray_query_enabled;
@@ -727,6 +737,11 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
         extensions, extension_count, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     candidate->has_device_fault_extension = vkr_vk_extension_present(
         extensions, extension_count, VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
+    candidate->has_buffer_marker_extension = vkr_vk_extension_present(
+        extensions, extension_count, VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+    candidate->has_device_coherent_memory_extension =
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME);
     candidate->calibrated_timestamps_extension =
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
@@ -750,6 +765,17 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
     };
     vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
     candidate->features.device_fault = device_fault.deviceFault;
+  }
+  if (candidate->has_device_coherent_memory_extension) {
+    VkPhysicalDeviceCoherentMemoryFeaturesAMD coherent = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COHERENT_MEMORY_FEATURES_AMD,
+    };
+    VkPhysicalDeviceFeatures2 features2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &coherent,
+    };
+    vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
+    candidate->features.device_coherent_memory = coherent.deviceCoherentMemory;
   }
   /* The ray-query structures may chain only for a device that names their
      extensions. */
@@ -841,6 +867,17 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
             "device-relative"
           : "VK_KHR_calibrated_timestamps missing: GPU times stay "
             "device-relative");
+  const bool8_t breadcrumbs_present =
+      candidate->has_buffer_marker_extension &&
+      candidate->features.device_coherent_memory;
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, "gpuBreadcrumbs",
+                    false_v, breadcrumbs_present,
+                    !breadcrumbs_present
+                        ? "VK_AMD_buffer_marker or device-coherent memory "
+                          "missing"
+                    : vkr_platform_environment_flag("VKR_VULKAN_BREADCRUMBS")
+                        ? "enabled: a hang names the last pass"
+                        : "available with VKR_VULKAN_BREADCRUMBS=1");
   vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
   vkr_vk_add_feature(report, "geometryShader",
                      candidate->features.geometry_shader);
@@ -1326,6 +1363,7 @@ vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   device->cmd_set_descriptor_offsets = NULL;
   device->get_device_fault_info = NULL;
   device->get_calibrated_timestamps = NULL;
+  device->cmd_write_buffer_marker = NULL;
   MemZero(&device->resource_layout, sizeof(device->resource_layout));
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
@@ -1548,10 +1586,23 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       .pNext = &features11,
       .deviceFault = VK_TRUE,
   };
-  VkPhysicalDeviceFeatures2 features2 = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+  /* Opt-in: the markers cost two writes a pass and the coherent memory
+     bypasses GPU caches, so a timing run never carries them. */
+  const bool8_t enable_breadcrumbs =
+      candidate->has_buffer_marker_extension &&
+      candidate->features.device_coherent_memory &&
+      vkr_platform_environment_flag("VKR_VULKAN_BREADCRUMBS");
+  VkPhysicalDeviceCoherentMemoryFeaturesAMD coherent_memory = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COHERENT_MEMORY_FEATURES_AMD,
       .pNext =
           enable_device_fault ? (void *)&device_fault : (void *)&features11,
+      .deviceCoherentMemory = VK_TRUE,
+  };
+  VkPhysicalDeviceFeatures2 features2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+      .pNext = enable_breadcrumbs    ? (void *)&coherent_memory
+               : enable_device_fault ? (void *)&device_fault
+                                     : (void *)&features11,
       .features = {.shaderInt64 = VK_TRUE,
                    .geometryShader = VK_TRUE,
                    .independentBlend = VK_TRUE,
@@ -1582,6 +1633,11 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
     extensions[extension_count++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME;
   if (candidate->calibrated_host_domain)
     extensions[extension_count++] = candidate->calibrated_timestamps_extension;
+  if (enable_breadcrumbs) {
+    extensions[extension_count++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME;
+    extensions[extension_count++] =
+        VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME;
+  }
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1608,6 +1664,10 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
       enable_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(
                                 device->device, "vkGetDeviceFaultInfoEXT")
                           : NULL;
+  device->cmd_write_buffer_marker =
+      enable_breadcrumbs ? (PFN_vkCmdWriteBufferMarkerAMD)vkGetDeviceProcAddr(
+                               device->device, "vkCmdWriteBufferMarkerAMD")
+                         : NULL;
   device->get_calibrated_timestamps =
       candidate->calibrated_host_domain
           ? (PFN_vkGetCalibratedTimestampsKHR)vkGetDeviceProcAddr(
@@ -1919,6 +1979,11 @@ vkr_vulkan_device_cmd_begin_debug_label(const VkrVulkanDevice *device) {
 PFN_vkCmdEndDebugUtilsLabelEXT
 vkr_vulkan_device_cmd_end_debug_label(const VkrVulkanDevice *device) {
   return device ? device->cmd_end_debug_label : NULL;
+}
+
+PFN_vkCmdWriteBufferMarkerAMD
+vkr_vulkan_device_buffer_marker(const VkrVulkanDevice *device) {
+  return device ? device->cmd_write_buffer_marker : NULL;
 }
 
 const VkrVulkanGpuCaptureTool *

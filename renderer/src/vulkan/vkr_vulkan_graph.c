@@ -2551,6 +2551,8 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
        timestamps do, so it never spans a vkCmdBeginRendering boundary. */
     if (slot->statistics_requested)
       vkCmdBeginQuery(command, slot->statistics_pool, i, 0u);
+    vkr_vk_breadcrumbs_mark(renderer, command, renderer->active_frame_slot, i,
+                            false_v);
     if (prepared->dependencies.imageMemoryBarrierCount ||
         prepared->dependencies.bufferMemoryBarrierCount)
       vkCmdPipelineBarrier2(command, &prepared->dependencies);
@@ -2670,6 +2672,8 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       vkr_vk_record_prepared_compute(renderer, command, &prepared->compute);
       break;
     }
+    vkr_vk_breadcrumbs_mark(renderer, command, renderer->active_frame_slot, i,
+                            true_v);
     if (slot->statistics_requested)
       vkCmdEndQuery(command, slot->statistics_pool, i);
     if (slot->timing_requested)

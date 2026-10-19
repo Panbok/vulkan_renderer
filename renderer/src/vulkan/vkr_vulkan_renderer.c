@@ -82,6 +82,7 @@ VkResult vkr_vk_observe_result(VkrVulkanRenderer *renderer, VkResult result,
   if (result == VK_ERROR_DEVICE_LOST) {
     vkr_vulkan_device_mark_lost(renderer->device, where);
     renderer->terminal_failure = true_v;
+    vkr_vk_breadcrumbs_log(renderer);
   }
   return result;
 }
@@ -96,6 +97,7 @@ vkr_internal void vkr_vk_completion_timeout_exit(VkrVulkanRenderer *renderer,
                                      renderer->timeline, &completed);
   /* The session log keeps the fault records; the fatal line follows them. */
   vkr_vulkan_device_log_fault_info(renderer->device);
+  vkr_vk_breadcrumbs_log(renderer);
   char message[512];
   string_format(
       message, sizeof(message),
@@ -443,7 +445,8 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
   };
   if (!vkr_vulkan_device_create(&device_config, &renderer->device) ||
       !vkr_vk_create_timeline(renderer) ||
-      !vkr_vk_pipeline_cache_initialize(renderer)) {
+      !vkr_vk_pipeline_cache_initialize(renderer) ||
+      !vkr_vk_breadcrumbs_create(renderer)) {
     log_error("Vulkan failed to create the selected device, timeline, "
               "or pipeline cache");
     goto cleanup;
@@ -2685,6 +2688,7 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
     if (renderer->timeline) {
       vkDestroySemaphore(device, renderer->timeline, NULL);
     }
+    vkr_vk_breadcrumbs_destroy(renderer);
     vkr_vk_pipeline_cache_shutdown(renderer);
   }
   vkr_vk_free_descriptor_slot_tables(renderer, allocator);

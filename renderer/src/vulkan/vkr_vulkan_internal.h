@@ -2965,6 +2965,17 @@ typedef enum VkrVulkanSunRayStage {
    VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT)
 #define VKR_VULKAN_PIPELINE_STATISTIC_COUNT 3u
 
+/* GPU breadcrumbs (vkr_vulkan_breadcrumbs.c): one begun and one finished
+   marker per frame slot in device-coherent host memory; markers is NULL
+   when VKR_VULKAN_BREADCRUMBS did not enable them. */
+typedef struct VkrVulkanBreadcrumbs {
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+  volatile uint32_t *markers;
+  /* Set by the first report; later device-lost results add nothing. */
+  bool8_t logged;
+} VkrVulkanBreadcrumbs;
+
 typedef struct VkrVulkanFrameSlot {
   VkCommandPool command_pool;
   VkCommandBuffer command_buffer;
@@ -3830,6 +3841,7 @@ struct VkrVulkanRenderer {
   /* CPU time in vkQueuePresentKHR and vkAcquireNextImageKHR since the metrics
      collector last read it. Render thread only. */
   VkrRendererImplPresentTiming present_timing;
+  VkrVulkanBreadcrumbs breadcrumbs;
   /* The RenderDoc capture debug.gpu_capture asked for; render thread. */
   VkrVulkanGpuCaptureStatus gpu_capture;
   uint32_t gpu_capture_frames_left;
@@ -4334,6 +4346,14 @@ bool8_t vkr_vk_window_presents_complete(VkrVulkanRenderer *renderer,
 uint64_t vkr_vk_refresh_completed(VkrVulkanRenderer *renderer);
 /* Records VK_ERROR_DEVICE_LOST from any Vulkan call: the device reports the
    loss once and the renderer fails terminally. Other results pass through. */
+/* GPU breadcrumbs; every call does nothing when they are off. */
+bool8_t vkr_vk_breadcrumbs_create(VkrVulkanRenderer *renderer);
+void vkr_vk_breadcrumbs_destroy(VkrVulkanRenderer *renderer);
+void vkr_vk_breadcrumbs_mark(VkrVulkanRenderer *renderer,
+                             VkCommandBuffer command, uint32_t slot_index,
+                             uint32_t pass_index, bool8_t finished);
+/* Logs each frame slot's last begun and finished pass, once. */
+void vkr_vk_breadcrumbs_log(VkrVulkanRenderer *renderer);
 VkResult vkr_vk_observe_result(VkrVulkanRenderer *renderer, VkResult result,
                                const char *where);
 /* GPU-completion waits. Each waits at most VKR_VULKAN_COMPLETION_TIMEOUT_NS;
