@@ -616,6 +616,11 @@ typedef struct VkrRenderGraphFrameInfo {
       Shared preparation sets it to hzb_build_enabled; a backend that keeps
       a frozen history sets it alone. */
   bool8_t hzb_read_enabled;
+  /** The tiled pipeline culls the camera in two phases (ADR-032): draws an
+      earlier frame's pyramid hides wait for the late view, which tests them
+      against the pyramid of this frame's early depth and draws the ones it
+      shows. A backend sets it; shared preparation leaves it false. */
+  bool8_t tiled_two_phase_occlusion;
   /** Metal P6 occupied-depth feedback is enabled for this packet. */
   bool8_t sdsm_enabled;
   /** Number of graph-authored reductions after the HZB base mip. */
@@ -827,7 +832,8 @@ typedef struct VkrRenderGraphFrameInfo {
  * GPU culling views, in order: the camera; one view per cascade, which draws
  * the cascade whole or its static layer; one dynamic-caster view per cascade
  * while any cascade draws its dynamic casters over a copy; the drawn local
- * faces; their transmission views; then a planar reflection's mirrored view.
+ * faces; their transmission views; then a planar reflection's mirrored view;
+ * the tiled pipeline's motion view; and its late occlusion view.
  */
 
 /** Culling view of the dynamic casters of `cascade`'s composed layer. */
@@ -874,10 +880,19 @@ vkr_render_graph_motion_view(const VkrRenderGraphFrameInfo *frame) {
          (frame->planar_reflection_active ? 1u : 0u);
 }
 
+/** The tiled pipeline's late occlusion view, last of all: the camera's
+    draws that an earlier frame's pyramid deferred, confirmed against this
+    frame's (ADR-032). */
 vkr_internal INLINE uint32_t
-vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+vkr_render_graph_late_view(const VkrRenderGraphFrameInfo *frame) {
   return vkr_render_graph_motion_view(frame) +
          (frame->tiled_temporal_enabled ? 1u : 0u);
+}
+
+vkr_internal INLINE uint32_t
+vkr_render_graph_gpu_draw_view_count(const VkrRenderGraphFrameInfo *frame) {
+  return vkr_render_graph_late_view(frame) +
+         (frame->tiled_two_phase_occlusion ? 1u : 0u);
 }
 
 /**

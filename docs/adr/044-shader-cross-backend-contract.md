@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-19
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -119,6 +119,11 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     `custom_time` at byte 292 takes the first reserved point-light word. The
     GPU draw root's `custom_compaction` at byte 184, its former reserved
     word, addresses the frame's 4,240-byte `VkrMetalCustomCompaction`.
+  - The GPU draw root grew to 240 bytes for two-phase camera occlusion
+    ([ADR-128](128-tiled-two-phase-occlusion.md)): `late_view` at byte 224
+    and `classify_view_base` at byte 228, then two reserved words. The late
+    phase's root points `custom_compaction` at the late view's own table.
+    Native evidence is in ADR-128; the kernels have no Vulkan consumer.
   - The tiled resolve kernel leaves in the resolved colour's alpha the share
     of each pixel's resolve weight that surfaces hold, as the sky writes
     alpha zero. The atmosphere draw reads it through programmable blending

@@ -1464,6 +1464,11 @@ vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_gpu_draw_prefix",
       VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, false_v,
       @"VKR Metal packet GPU draw prefix");
+  renderer->gpu_draw_prefix_late_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_packet_gpu_draw_prefix_late",
+          VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, false_v,
+          @"VKR Metal packet GPU draw late prefix");
   renderer->gpu_draw_encode_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
       VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
@@ -1636,6 +1641,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->depth_clear_pipeline, "depth clear pipeline"},
       {renderer->gpu_draw_classify_pipeline, "draw classify pipeline"},
       {renderer->gpu_draw_prefix_pipeline, "draw prefix pipeline"},
+      {renderer->gpu_draw_prefix_late_pipeline, "draw late prefix pipeline"},
       {renderer->gpu_draw_encode_pipeline, "draw encode pipeline"},
       {renderer->gpu_draw_icb_argument_encoder,
        "indirect command argument encoder"},

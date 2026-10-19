@@ -174,6 +174,8 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"tiled_refraction_pending",
      VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING},
     {"tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED},
+    {"tiled_two_phase_occlusion",
+     VKR_RG_JSON_CONDITION_TILED_TWO_PHASE_OCCLUSION},
     {"!tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISABLED},
     {"tiled_temporal_staged", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STAGED},
     {"!tiled_temporal_staged", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_UNSTAGED},
@@ -2317,6 +2319,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->tiled_refraction_pending;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED:
     return frame->tiled_temporal_enabled;
+  case VKR_RG_JSON_CONDITION_TILED_TWO_PHASE_OCCLUSION:
+    return frame->tiled_two_phase_occlusion;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_DISABLED:
     return !frame->tiled_temporal_enabled;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_STAGED:

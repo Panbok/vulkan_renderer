@@ -925,7 +925,11 @@ by the frame's packed candidates (ADR-028); direct blend preparation
 splits contiguous parity runs without changing instance order. HZB metadata
 separates camera compatibility from its exact raster producer grid. Jittered
 frames skip history construction because the accepted conservative policy cannot
-reuse another sampling grid. Optional emissive/debug resolve images are realized
+reuse another sampling grid, except on the tiled pipeline's one-sample path:
+it culls the camera in two phases. `Tiled.Opaque` draws what the previous
+frame's pyramid shows, the pyramid of that early depth confirms the deferred
+draws in `Cull.Late`, and `Tiled.Opaque.Late` draws them before the sky and
+the resolve ([ADR-128](adr/128-tiled-two-phase-occlusion.md)). Optional emissive/debug resolve images are realized
 only for requested captures, with specialized no-write production variants.
 
 PBR materials use prepared metallic-roughness data with retained dielectric

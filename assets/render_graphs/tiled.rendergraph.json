@@ -1640,6 +1640,123 @@
       "execute": "pass.hzb.build"
     },
     {
+      "name": "Cull.Late",
+      "condition": "tiled_two_phase_occlusion",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "image": "hzb_history",
+          "access": "STORAGE_READ",
+          "binding": 3
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "gpu_draw_classifications",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_WRITE",
+          "binding": 4
+        }
+      ],
+      "execute": "pass.gpu_draw_late"
+    },
+    {
+      "name": "Tiled.Opaque.Late",
+      "condition": "tiled_two_phase_occlusion",
+      "type": "graphics",
+      "domain": "WORLD",
+      "reads": [
+        {
+          "buffer": "gpu_visible_draws",
+          "access": "STORAGE_READ",
+          "binding": 1
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_compaction_state",
+          "access": "INDIRECT_READ",
+          "binding": 2
+        },
+        {
+          "buffer": "skinning_output",
+          "access": "STORAGE_READ",
+          "binding": 31,
+          "when": "skinning_enabled"
+        },
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 5,
+          "when": "shadow_cascades_active"
+        },
+        {
+          "image": "sky_view_lut",
+          "access": "SAMPLED",
+          "binding": 15,
+          "when": "atmosphere_enabled"
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        },
+        {
+          "image": "local_shadow_map",
+          "access": "SAMPLED",
+          "binding": 8,
+          "when": "local_shadows_active"
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "hdr_scene_color",
+            "load": "LOAD",
+            "store": "STORE"
+          },
+          {
+            "image": "tiled_sun_light",
+            "load": "LOAD",
+            "store": "STORE",
+            "when": "tiled_sun_light"
+          }
+        ],
+        "depth": {
+          "image": "opaque_vbuffer_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.tiled.opaque_late"
+    },
+    {
       "name": "Clouds.Trace",
       "type": "compute",
       "condition": "scene_rendering && clouds_enabled",

@@ -853,6 +853,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->exposure_histogram_pipeline release];
   [renderer->exposure_clear_pipeline release];
   [renderer->gpu_draw_prefix_pipeline release];
+  [renderer->gpu_draw_prefix_late_pipeline release];
   [renderer->gpu_draw_classify_pipeline release];
   [renderer->gpu_shadow_pipeline release];
   [renderer->gpu_shadow_opaque_pipeline release];

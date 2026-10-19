@@ -1282,6 +1282,13 @@ vkr_internal bool8_t vkr_metal_packet_attach_temporal_draw_state(
   return true_v;
 }
 
+/* Keeps the occlusion comparison conservative across projected-sphere and
+   depth-buffer quantization; a smaller tolerance self-rejected static
+   fixture geometry. Reversed depth has the same slope magnitude as the
+   forward convention, so the tolerance keeps its distance meaning; the
+   shader subtracts it. */
+#define VKR_METAL_PACKET_HZB_DEPTH_EPSILON 1e-3f
+
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -1300,9 +1307,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   const uint64_t instances_gpu = upload->gpu_draw_instances_gpu;
   /* The camera, the directional cascades, their dynamic-caster views and
      the drawn local faces; tiled frames draw no local transmission layers
-     (ADR-087). */
+     (ADR-087). The late occlusion view, last, waits for the late cull pass
+     (ADR-032). */
   const uint32_t view_count =
       vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
+  const uint32_t late_view =
+      renderer->prepared_frame.tiled_two_phase_occlusion
+          ? vkr_render_graph_late_view(&renderer->prepared_frame)
+          : 0u;
+  const uint32_t early_view_count = late_view != 0u ? late_view : view_count;
   if (candidate_count == 0u)
     return true_v;
   uint64_t root_gpu = 0u;
@@ -1312,13 +1325,18 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     return false_v;
   root->candidate_count = candidate_count;
   root->visible_capacity = renderer->prepared_frame.gpu_draw_visible_capacity;
-  root->view_count = view_count;
+  root->view_count = early_view_count;
+  root->late_view = late_view;
   root->icb_view_group_size = renderer->gpu_draw_icb_view_group_size;
   const uint32_t group_count =
       (view_count + root->icb_view_group_size - 1u) / root->icb_view_group_size;
+  const uint32_t early_group_count =
+      (early_view_count + root->icb_view_group_size - 1u) /
+      root->icb_view_group_size;
   if (group_count > VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX)
     return false_v;
-  /* Every group's pool holds at least the smallest one's commands. */
+  /* Every group's pool holds at least the smallest one's commands, the
+     late view's group included, so both prefixes share one capacity. */
   root->command_capacity = UINT32_MAX;
   for (uint32_t group = 0u; group < group_count; ++group)
     root->command_capacity =
@@ -1361,11 +1379,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     root->hzb_extent[1] = renderer->prepared_frame.viewport_height;
     root->hzb_mip_count = renderer->prepared_frame.hzb_reduce_pass_count + 1u;
     root->hzb_enabled = hzb ? 1u : 0u;
-    // Keep the comparison conservative across projected-sphere and depth-buffer
-    // quantization; a smaller tolerance self-rejected static fixture geometry.
-    // Reversed depth has the same slope magnitude as the forward convention,
-    // so the tolerance keeps its distance meaning; the shader subtracts it.
-    root->hzb_depth_epsilon = 1e-3f;
+    root->hzb_depth_epsilon = VKR_METAL_PACKET_HZB_DEPTH_EPSILON;
     /* With SDF sun shadows the far level leaves out the casters the trace
        covers, which the frame's field table names. */
     if (upload->sdf_volume_rows_gpu) {
@@ -1375,12 +1389,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
       root->sdf_mesh_volumes = upload->sdf_mesh_volumes_gpu;
       root->sdf_mesh_count = upload->sdf_mesh_count;
     }
-    prepared->dispatch = (VkrMetalPacketDispatch){
+    prepared->gpu_classify.dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->gpu_draw_classify_pipeline,
         .root = root_gpu,
-        .threads = MTLSizeMake(candidate_count, view_count, 1u),
+        .threads = MTLSizeMake(candidate_count, early_view_count, 1u),
         .group_size = MTLSizeMake(64u, 1u, 1u),
     };
+    prepared->gpu_classify.history_in_flight =
+        hzb != nil && renderer->hzb_history_in_flight;
     prepared->active = true_v;
     return true_v;
   }
@@ -1395,8 +1411,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
     prepared->dispatch = (VkrMetalPacketDispatch){
         .pipeline = renderer->gpu_draw_prefix_pipeline,
         .root = root_gpu,
-        .threads = MTLSizeMake(group_count, 1u, 1u),
-        .group_size = MTLSizeMake(group_count, 1u, 1u),
+        .threads = MTLSizeMake(early_group_count, 1u, 1u),
+        .group_size = MTLSizeMake(early_group_count, 1u, 1u),
     };
     prepared->active = true_v;
     return true_v;
@@ -1436,6 +1452,18 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
           ? vkr_render_graph_motion_view(&renderer->prepared_frame)
           : UINT32_MAX;
   for (uint32_t view = 0u; view < view_count; ++view) {
+    /* The late view draws the camera's deferred draws with the camera's
+       frame root, from its own visible rows (ADR-032). */
+    if (late_view != 0u && view == late_view) {
+      draw_roots[view] = draw_roots[0];
+      draw_roots[view].visible_rows =
+          visible->resource.gpu_address + (uint64_t)view *
+                                              root->visible_capacity *
+                                              sizeof(VkrGpuVisibleDrawRow);
+      renderer->active_command_slot->gpu_draw_view_targets[view] =
+          VKR_METAL_PACKET_VIEW_TARGET_NONE;
+      continue;
+    }
     /* The motion view draws as the camera does. */
     const bool8_t camera_view = view == 0u || view == motion_view;
     const bool8_t local_view = view >= first_local_view && !camera_view;
@@ -1512,14 +1540,15 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
   root->compaction_state = state->resource.gpu_address;
   root->visible_rows = visible->resource.gpu_address;
   root->draw_roots = draw_roots_gpu;
+  renderer->gpu_draw_roots_gpu = draw_roots_gpu;
   const uint32_t encode_group_size = root->icb_view_group_size;
-  const uint32_t encode_group_count = group_count;
+  const uint32_t encode_group_count = early_group_count;
   prepared->gpu_encode.group_count = encode_group_count;
   prepared->gpu_encode.candidate_count = candidate_count;
   for (uint32_t group = 0u; group < encode_group_count; ++group) {
     const uint32_t first_view = group * encode_group_size;
     const uint32_t group_view_count =
-        MIN(encode_group_size, view_count - first_view);
+        MIN(encode_group_size, early_view_count - first_view);
     uint64_t view_root_gpu = root_gpu;
     VkrMetalPacketGpuDrawRoot *view_root = root;
     if (group > 0u) {
@@ -1545,6 +1574,113 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_compute(
         .command_capacity = root->command_capacity,
     };
   }
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* The late occlusion phase (ADR-032): one root drives the late view's
+   classification against the pyramid of this frame's early depth, its
+   placement after the early commands in its ICB group's pool, and its
+   encode. The late view's Custom draws fill their own compaction table,
+   made with the camera's ready masks. Bindings: candidates 0,
+   classifications 1, compaction state 2, the pyramid 3, visible rows 4. */
+vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_late(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  const uint32_t candidate_count = renderer->gpu_draw_count;
+  if (candidate_count == 0u)
+    return true_v;
+  const VkrRenderGraphFrameInfo *frame = &renderer->prepared_frame;
+  if (!frame->tiled_two_phase_occlusion || !renderer->gpu_draw_roots_gpu)
+    return false_v;
+  const uint32_t view_count = vkr_render_graph_gpu_draw_view_count(frame);
+  const uint32_t late_view = vkr_render_graph_late_view(frame);
+  const uint32_t group_size = renderer->gpu_draw_icb_view_group_size;
+  const uint32_t group = late_view / group_size;
+  const uint32_t group_count = (view_count + group_size - 1u) / group_size;
+  VkrMetalPacketGraphBufferInstance *candidates =
+      vkr_metal_packet_pass_buffer(renderer, pass, 0u);
+  VkrMetalPacketGraphBufferInstance *classifications =
+      vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+  VkrMetalPacketGraphBufferInstance *state =
+      vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+  VkrMetalPacketGraphBufferInstance *visible =
+      vkr_metal_packet_pass_buffer(renderer, pass, 4u);
+  id<MTLTexture> hzb = vkr_metal_packet_pass_texture(renderer, pass, 3u);
+  if (!candidates || !classifications || !state || !visible || !hzb ||
+      group_count > VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX ||
+      !renderer->active_command_slot->gpu_draw_icbs[group] ||
+      !upload->gpu_draw_views_gpu || !upload->gpu_draw_lod_views_gpu)
+    return false_v;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketGpuDrawRoot *root =
+      vkr_metal_packet_next_gpu_draw_root(upload, &root_gpu);
+  if (!root)
+    return false_v;
+  /* Both prefixes share the smallest pool of all the frame's groups. */
+  uint32_t command_capacity = UINT32_MAX;
+  for (uint32_t i = 0u; i < group_count; ++i)
+    command_capacity =
+        MIN(command_capacity,
+            renderer->active_command_slot->gpu_draw_icb_capacities[i]);
+  *root = (VkrMetalPacketGpuDrawRoot){
+      .candidates = candidates->resource.gpu_address,
+      .geometry_rows = upload->gpu_draw_geometry_rows_gpu,
+      .instances = upload->gpu_draw_instances_gpu,
+      .classifications = classifications->resource.gpu_address,
+      .compaction_state = state->resource.gpu_address,
+      .visible_rows = visible->resource.gpu_address,
+      .draw_roots = renderer->gpu_draw_roots_gpu,
+      .views = upload->gpu_draw_views_gpu,
+      .candidate_count = candidate_count,
+      .visible_capacity = frame->gpu_draw_visible_capacity,
+      .view_count = view_count,
+      .encode_view_index = late_view,
+      .hzb_texture_id = hzb.gpuResourceID._impl,
+      .lod_views = upload->gpu_draw_lod_views_gpu,
+      /* This frame's pyramid holds its jittered early depth. */
+      .history_view_projection = renderer->current_hzb_raster_view_projection,
+      .hzb_extent = {frame->viewport_width, frame->viewport_height},
+      .hzb_mip_count = frame->hzb_reduce_pass_count + 1u,
+      .hzb_enabled = 1u,
+      .hzb_depth_epsilon = VKR_METAL_PACKET_HZB_DEPTH_EPSILON,
+      .icb_view_group_size = group_size,
+      .static_candidate_count = renderer->gpu_draw_static_count,
+      .command_capacity = command_capacity,
+      .late_view = late_view,
+      .classify_view_base = late_view,
+  };
+  /* The late view's Custom table starts with the camera's ready masks and
+     material table, and counts its own buckets. */
+  if (renderer->custom_compaction) {
+    uint64_t late_custom_gpu = 0u;
+    VkrMetalCustomCompaction *late_custom = vkr_metal_packet_next_root_span(
+        upload, sizeof(VkrMetalCustomCompaction), &late_custom_gpu);
+    if (!late_custom)
+      return false_v;
+    MemZero(late_custom, sizeof(*late_custom));
+    late_custom->ready_mask = renderer->custom_compaction->ready_mask;
+    late_custom->pending_mask = renderer->custom_compaction->pending_mask;
+    late_custom->brdf_ready = renderer->custom_compaction->brdf_ready;
+    late_custom->brdf_ready_mask =
+        renderer->custom_compaction->brdf_ready_mask;
+    late_custom->materials = renderer->custom_compaction->materials;
+    renderer->late_custom_compaction_gpu = late_custom_gpu;
+    root->custom_compaction = late_custom_gpu;
+  }
+  prepared->gpu_late.group = (VkrMetalPacketGpuEncodeGroup){
+      .commands = renderer->active_command_slot->gpu_draw_icbs[group],
+      .root = root_gpu,
+      .arguments = upload->gpu_draw_icb_argument_gpu +
+                   (uint64_t)group * upload->gpu_draw_icb_argument_stride,
+      .first_view = late_view,
+      .view_count = 1u,
+      .command_capacity = command_capacity,
+  };
+  prepared->gpu_late.candidate_count = candidate_count;
+  /* The early encode reset only the pools of the groups it encoded. */
+  prepared->gpu_late.reset = late_view % group_size == 0u;
   prepared->active = true_v;
   return true_v;
 }
@@ -2139,27 +2275,48 @@ vkr_internal bool8_t vkr_metal_packet_prepare_bloom(
   return true_v;
 }
 
-/* The camera's culled draws in the first indirect command buffer. */
+/* The indirect command buffer, bucket ranges and Custom ranges of camera
+   culling view `view`: the camera, or the late occlusion view, whose
+   Custom ranges the late cull pass made (ADR-032). The ranges are the
+   view's compaction state in the pass's binding 2. */
+vkr_internal bool8_t vkr_metal_packet_camera_draw_ranges(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass, uint32_t view,
+    id<MTLIndirectCommandBuffer> *out_commands, uint64_t *out_arguments,
+    uint64_t *out_custom_arguments) {
+  VkrMetalPacketGraphBufferInstance *state =
+      vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+  const uint32_t group = view / renderer->gpu_draw_icb_view_group_size;
+  if (!state || group >= VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX ||
+      !renderer->active_command_slot->gpu_draw_icbs[group])
+    return false_v;
+  const uint64_t custom = view == 0u ? renderer->custom_compaction_gpu
+                                     : renderer->late_custom_compaction_gpu;
+  *out_commands = renderer->active_command_slot->gpu_draw_icbs[group];
+  *out_arguments = state->resource.gpu_address +
+                   (uint64_t)view * sizeof(VkrGpuDrawCompactionState);
+  *out_custom_arguments =
+      custom ? custom + offsetof(VkrMetalCustomCompaction, execution_ranges)
+             : 0u;
+  return true_v;
+}
+
+/* Camera culling view `view`'s culled draws: the camera's, or in a
+   two-phase frame the late view's (ADR-032). */
 vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     VkrMetalPacketPreparedPass *prepared, id<MTLRenderPipelineState> pipeline,
-    id<MTLRenderPipelineState> opaque_pipeline) API_AVAILABLE(macos(26.0)) {
-  VkrMetalPacketGraphBufferInstance *state =
-      vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+    id<MTLRenderPipelineState> opaque_pipeline, uint32_t view)
+    API_AVAILABLE(macos(26.0)) {
   if (renderer->gpu_draw_count == 0u)
     return true_v;
-  id<MTLIndirectCommandBuffer> icb =
-      renderer->active_command_slot->gpu_draw_icbs[0];
-  if (!state || !icb || !pipeline)
+  if (!pipeline ||
+      !vkr_metal_packet_camera_draw_ranges(
+          renderer, pass, view, &prepared->indirect.commands,
+          &prepared->indirect.arguments, &prepared->indirect.custom_arguments))
     return false_v;
-  prepared->indirect.commands = icb;
   prepared->indirect.pipeline = pipeline;
   prepared->indirect.opaque_pipeline = opaque_pipeline;
-  prepared->indirect.arguments = state->resource.gpu_address;
-  if (renderer->custom_compaction) {
-    prepared->indirect.custom_arguments =
-        renderer->custom_compaction_gpu +
-        offsetof(VkrMetalCustomCompaction, execution_ranges);
+  if (prepared->indirect.custom_arguments) {
     prepared->indirect.custom_ready_mask = renderer->custom_ready_mask;
     prepared->indirect.brdf_ready = renderer->tiled_brdf_draws;
     prepared->indirect.brdf_ready_mask = renderer->custom_brdf_ready_mask;
@@ -2452,6 +2609,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
       packet->input.globals.render_mode == VKR_RENDER_MODE_OVERDRAW;
   id<MTLRenderPipelineState> overdraw_pipeline =
       renderer->tiled_overdraw_pipelines[sun_light ? 1u : 0u];
+  /* In two phases the early pass draws the camera view and the late pass
+     the late view, then the sky and the resolve; one pass does it all
+     otherwise (ADR-032). */
+  const bool8_t two_phase = renderer->prepared_frame.tiled_two_phase_occlusion;
+  const bool8_t late = prepared->kind == VKR_RG_EXECUTOR_TILED_OPAQUE_LATE;
+  const bool8_t multisampled = renderer->tiled_sample_count > 1u;
+  if (late && (!two_phase || multisampled))
+    return false_v;
   if ((overdraw && !overdraw_pipeline) ||
       !vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
@@ -2460,20 +2625,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
                                                        [lighting],
           overdraw ? overdraw_pipeline
                    : renderer->tiled_forward_pipelines[sun][decals][probes]
-                                                      [lighting])) {
+                                                      [lighting],
+          late ? vkr_render_graph_late_view(&renderer->prepared_frame) : 0u)) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
   const uint32_t width = (uint32_t)target.width;
   const uint32_t height = (uint32_t)target.height;
   draws.viewport = (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
+  const bool8_t finish = !two_phase || late;
   uint64_t sky_root = 0u;
-  const bool8_t multisampled = renderer->tiled_sample_count > 1u;
   if ((multisampled && !vkr_metal_packet_tiled_ensure_targets(
                            renderer, width, height, sun_light)) ||
-      !vkr_metal_packet_prepare_tiled_sky_root(renderer, pass, packet, upload,
-                                               width, height, 15u, nil,
-                                               &sky_root, NULL))
+      (finish && !vkr_metal_packet_prepare_tiled_sky_root(
+                     renderer, pass, packet, upload, width, height, 15u, nil,
+                     &sky_root, NULL)))
     return false_v;
   MTL4RenderPassDescriptor *descriptor =
       renderer->render_passes[prepared->index];
@@ -2507,6 +2673,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   prepared->tiled.lighting = lighting;
   prepared->tiled.sun = sun;
   prepared->tiled.overdraw = overdraw;
+  prepared->tiled.finish = finish;
   prepared->active = true_v;
   return true_v;
 }
@@ -2982,7 +3149,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     prepared->active = true_v;
     return true_v;
   }
-  if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE)
+  if (kind == VKR_RG_EXECUTOR_TILED_OPAQUE ||
+      kind == VKR_RG_EXECUTOR_TILED_OPAQUE_LATE)
     return vkr_metal_packet_prepare_tiled_opaque(renderer, pass, packet,
                                                  prepared, upload, target);
   if (kind == VKR_RG_EXECUTOR_TILED_ATMOSPHERE)
@@ -2991,9 +3159,24 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
   if (kind == VKR_RG_EXECUTOR_TILED_OBJECT_MOTION)
     return vkr_metal_packet_prepare_tiled_object_motion(renderer, pass, packet,
                                                         prepared, target);
-  if (kind == VKR_RG_EXECUTOR_TILED_PICKING)
-    return vkr_metal_packet_prepare_gpu_draws(
-        renderer, pass, prepared, renderer->tiled_picking_pipeline, nil);
+  if (kind == VKR_RG_EXECUTOR_TILED_PICKING) {
+    /* A pick draws every camera draw: in two phases the late view's too
+       (ADR-032). */
+    if (!vkr_metal_packet_prepare_gpu_draws(renderer, pass, prepared,
+                                            renderer->tiled_picking_pipeline,
+                                            nil, 0u))
+      return false_v;
+    if (renderer->gpu_draw_count > 0u &&
+        renderer->prepared_frame.tiled_two_phase_occlusion &&
+        !vkr_metal_packet_camera_draw_ranges(
+            renderer, pass,
+            vkr_render_graph_late_view(&renderer->prepared_frame),
+            &prepared->indirect.late_commands,
+            &prepared->indirect.late_arguments,
+            &prepared->indirect.late_custom_arguments))
+      return false_v;
+    return true_v;
+  }
   /* The tiled blend pass draws the sorted blended list, glass included,
      with its own single-target pipelines (ADR-087). */
   if (kind == VKR_RG_EXECUTOR_TILED_BLEND) {
@@ -3217,6 +3400,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE:
     return vkr_metal_packet_prepare_gpu_draw_compute(renderer, pass, packet,
                                                      prepared, upload);
+  case VKR_RG_EXECUTOR_GPU_DRAW_LATE:
+    return vkr_metal_packet_prepare_gpu_draw_late(renderer, pass, prepared,
+                                                  upload);
   case VKR_RG_EXECUTOR_PICKING_READBACK:
     return vkr_metal_packet_prepare_picking_readback(
         renderer, pass, packet, prepared, readback, readback_offset);
@@ -3490,6 +3676,18 @@ vkr_metal_packet_prepare_frame_state(VkrMetalPacketRenderer *renderer,
                    renderer->convert_vulkan_clip_y,
                    mat4_mul(frozen->projection, frozen->view))
              : renderer->current_hzb_view_projection;
+  /* One-sample frames cull the camera in two phases (ADR-032): their opaque
+     pass stores the images a multisampled pass would keep in tile memory,
+     so splitting it costs one load of them. An earlier frame's pyramid then
+     only defers draws, whatever the camera, jitter or world since, because
+     the late view confirms them against the pyramid of this frame's early
+     depth. A frozen culling camera keeps its one-phase pyramid (ADR-127). */
+  renderer->prepared_frame.tiled_two_phase_occlusion =
+      renderer->hzb_enabled && renderer->tiled_sample_count == 1u &&
+      packet->scene_rendering && !renderer->hzb_frozen &&
+      packet->input.globals.render_mode != VKR_RENDER_MODE_OVERDRAW;
+  if (renderer->prepared_frame.tiled_two_phase_occlusion)
+    renderer->prepared_frame.hzb_build_enabled = true_v;
   renderer->prepared_frame.hzb_read_enabled =
       renderer->prepared_frame.hzb_build_enabled;
   if (renderer->hzb_enabled && vkr_metal_packet_hzb_frozen_history(renderer)) {
@@ -4407,6 +4605,10 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
           : 0u;
   command_slot->gpu_draw_view_count =
       vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame);
+  command_slot->gpu_draw_late_view =
+      renderer->prepared_frame.tiled_two_phase_occlusion
+          ? vkr_render_graph_late_view(&renderer->prepared_frame)
+          : 0u;
   if (submission->deferred_diagnostics) {
     command_slot->gpu_draw_diagnostics_readback =
         (const uint8_t *)submission->readback.cpu_address +
@@ -4466,7 +4668,7 @@ vkr_internal void vkr_metal_packet_read_synchronous_results(
             submission->readback_layout.deferred_diagnostics,
         renderer->prepared_frame.shadow_cascade_count,
         command_slot->shadow_cascade_dynamic_render_mask,
-        command_slot->gpu_draw_view_count);
+        command_slot->gpu_draw_view_count, command_slot->gpu_draw_late_view);
     out_result->hzb_history_valid = renderer->prepared_frame.hzb_history_valid;
     log_info("Metal deferred validation: candidates=%u visible=%u buckets="
              "%u/%u/%u/%u/%u/%u/%u/%u overflow=%u resolve_invalid=%u "

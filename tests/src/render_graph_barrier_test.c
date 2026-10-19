@@ -2055,6 +2055,43 @@ vkr_internal void test_tiled_graph_topology(void) {
   assert(vkr_rg_compile_schedule(graph));
   vkr_rg_end_frame(graph);
 
+  /* A two-phase frame (ADR-032): the early pass's depth builds the pyramid
+     the late cull reads, and the late pass draws over the early pass's
+     images before the cloud trace reads the finished depth. */
+  frame.tiled_two_phase_occlusion = true_v;
+  assert(vkr_rg_begin_frame(graph, &frame));
+  assert(vkr_rg_build_from_json(graph, &json, &frame));
+  uint64_t early = UINT64_MAX;
+  uint64_t last_hzb = UINT64_MAX;
+  uint64_t late_cull = UINT64_MAX;
+  uint64_t late_opaque = UINT64_MAX;
+  uint64_t late_trace = UINT64_MAX;
+  for (uint64_t i = 0u; i < graph->passes.length; ++i) {
+    const VkrRgPass *pass = rg_barrier_test_pass(graph, (uint32_t)i);
+    assert(pass);
+    if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Opaque")) {
+      early = i;
+    } else if (vkr_string8_starts_with(&pass->desc.name, "HZB.Build")) {
+      last_hzb = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Cull.Late")) {
+      late_cull = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Tiled.Opaque.Late")) {
+      const VkrRgAttachment *attachment =
+          array_get_VkrRgAttachment(&pass->desc.color_attachments, 0u);
+      assert(attachment && attachment->image.id == color.id);
+      assert(pass->desc.has_depth_attachment &&
+             pass->desc.depth_attachment.image.id == depth.id);
+      late_opaque = i;
+    } else if (vkr_string8_equals_cstr(&pass->desc.name, "Clouds.Trace")) {
+      late_trace = i;
+    }
+  }
+  assert(early < last_hzb && last_hzb < late_cull && late_cull < late_opaque);
+  assert(late_opaque < late_trace && late_trace != UINT64_MAX);
+  assert(vkr_rg_compile_schedule(graph));
+  vkr_rg_end_frame(graph);
+  frame.tiled_two_phase_occlusion = false_v;
+
   /* An editor frame that picks: the pick draws after the resolved depth it
      reads back, and the Scene image resolves the tiled colour. */
   frame.editor_enabled = true_v;

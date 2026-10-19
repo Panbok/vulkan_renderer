@@ -42,7 +42,27 @@ struct VkrMetalPacketGpuDrawRoot {
   // Commands each ICB group's pool holds: the prefix places the views'
   // ranges one after another within it.
   uint command_capacity;
+  // The late occlusion view, or zero while the camera culls in one phase
+  // (ADR-032). The late phase's root points `custom_compaction` at the late
+  // view's own table.
+  uint late_view;
+  // The first view a classify dispatch's rows cover: zero, or the late view.
+  uint classify_view_base;
+  uint reserved[2];
 };
+
+// A camera classification the earlier frame's pyramid hides while the camera
+// culls in two phases: no draw, but the late view tests the candidate again
+// against this frame's pyramid (ADR-032). A drawn classification's bucket
+// field never reaches 15, so it is never this value.
+#define VKR_METAL_GPU_DRAW_DEFERRED 0xFFFFFFFFu
+
+// Whether `view_index` draws the camera: the camera view or the late view.
+static bool vkr_metal_packet_camera_view(
+    constant VkrMetalPacketGpuDrawRoot &root, uint view_index) {
+  return view_index == 0u ||
+         (root.late_view != 0u && view_index == root.late_view);
+}
 
 // SDF sun shadows (vkr_metal_packet_sdf.inc): one submesh's distance volume
 // in the frame's field table; mirrors VkrMetalSdfVolumeRow. A mesh's rows
@@ -311,12 +331,21 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                                    [[buffer(0)]],
                                    uint2 position [[thread_position_in_grid]]) {
   uint index = position.x;
-  uint view_index = position.y;
+  uint view_index = root.classify_view_base + position.y;
   if (index >= root.candidate_count || view_index >= root.view_count)
     return;
+  uint classification_index = view_index * root.visible_capacity + index;
+  /* The late view classifies only the candidates the camera deferred. They
+     passed every camera test but the earlier frame's pyramid, so they pass
+     them again here; this frame's pyramid then decides (ADR-032). */
+  if (root.late_view != 0u && view_index == root.late_view &&
+      root.classifications[index] != VKR_METAL_GPU_DRAW_DEFERRED) {
+    root.classifications[classification_index] = 0u;
+    return;
+  }
+  const bool camera = vkr_metal_packet_camera_view(root, view_index);
   const constant VkrMetalPacketGpuDrawView &view = root.views[view_index];
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
-  uint classification_index = view_index * root.visible_capacity + index;
   uint candidate_flags = vkr_gpu_draw_candidate_flags(candidate.state_flags);
   uint bucket = vkr_gpu_draw_state_bucket(candidate.state_flags);
   /* A static square or cascade layer holds the static casters; a dynamic
@@ -358,7 +387,7 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
      slice start and keep them. */
   const uint cull = vkr_gpu_draw_cull_word(candidate.state_flags);
   if (cull != 0u && (candidate_flags & 1u) != 0u &&
-      (view_index == 0u
+      (camera
            ? vkr_gpu_draw_distance_culled(
                  cull, lod_view.position_scale.w, lod_view.flags,
                  lod_view.distance_scale,
@@ -373,16 +402,21 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
     return;
   }
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
-  if (view.hzb_enabled != 0u &&
+  /* A deformed draw's bounds need not hold its pose, so occlusion never
+     rejects it. In two phases an earlier frame's pyramid only defers a
+     camera candidate; the late view's count holds the final rejections. */
+  if (view.hzb_enabled != 0u && instance.deformation_address == 0ul &&
       vkr_metal_packet_candidate_occluded(root, candidate)) {
-    root.classifications[classification_index] = 0u;
+    root.classifications[classification_index] =
+        view_index == 0u && root.late_view != 0u ? VKR_METAL_GPU_DRAW_DEFERRED
+                                                 : 0u;
     atomic_fetch_add_explicit(&state.occlusion_culled_count, 1u,
                               memory_order_relaxed);
     return;
   }
   /* Sub-texel casters, and copies below their larger limit, skip the
      directional cascades. */
-  if (view_index != 0u && (candidate_flags & 1u) != 0u &&
+  if (!camera && (candidate_flags & 1u) != 0u &&
       vkr_gpu_cascade_caster_too_small(cull, lod_view.position_scale.w,
                                        lod_view.flags, radius)) {
     root.classifications[classification_index] = 0u;
@@ -401,11 +435,10 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
      whose material uses a BRDF extension into plane 1, which the tiled
      pipeline shades with the extension variant. */
   const uint slot =
-      view_index == 0u ? vkr_metal_packet_custom_slot(root, candidate) : 0u;
+      camera ? vkr_metal_packet_custom_slot(root, candidate) : 0u;
   const uint plane =
-      view_index == 0u && vkr_metal_packet_brdf_extended(root, candidate, slot)
-          ? 1u
-          : 0u;
+      camera && vkr_metal_packet_brdf_extended(root, candidate, slot) ? 1u
+                                                                     : 0u;
   if (plane != 0u || (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS)) {
     root.classifications[classification_index] =
         (bucket + 1u) | lod_state |
@@ -448,7 +481,8 @@ static uint vkr_metal_packet_gpu_draw_place_view(
                           memory_order_relaxed);
   }
   /* The camera's Custom buckets follow its Standard ones. */
-  if (view_index == 0u && root.custom_compaction != nullptr) {
+  if (vkr_metal_packet_camera_view(root, view_index) &&
+      root.custom_compaction != nullptr) {
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
     for (uint plane = 0u; plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
          ++plane) {
@@ -493,6 +527,24 @@ vkr_metal_packet_gpu_draw_prefix(constant VkrMetalPacketGpuDrawRoot &root
   for (uint view_index = first_view; view_index < end_view; ++view_index)
     pool_used += vkr_metal_packet_gpu_draw_place_view(
         root, view_index, pool_used, root.command_capacity - pool_used);
+}
+
+/* The late phase's prefix: one thread places the late view's ranges in its
+   ICB group's pool after the commands the early prefix placed there, which
+   the early opaque pass has drawn (ADR-032). The late view comes last, so
+   the views before it in its group are exactly the early ones. */
+kernel void vkr_metal_packet_gpu_draw_prefix_late(
+    constant VkrMetalPacketGpuDrawRoot &root [[buffer(0)]],
+    uint position [[thread_position_in_grid]]) {
+  const uint late_view = root.late_view;
+  if (position != 0u || late_view == 0u || late_view >= root.view_count)
+    return;
+  const uint first_view = late_view - late_view % root.icb_view_group_size;
+  uint pool_used = 0u;
+  for (uint view_index = first_view; view_index < late_view; ++view_index)
+    pool_used += root.compaction_state[view_index].visible_count;
+  vkr_metal_packet_gpu_draw_place_view(root, late_view, pool_used,
+                                       root.command_capacity - pool_used);
 }
 
 // Where a probe's influence reaches one half against a world sphere: 0 nowhere
@@ -570,7 +622,7 @@ kernel void vkr_metal_packet_gpu_draw_encode(
     return;
   uint view_base = view_index * root.visible_capacity;
   uint classification = root.classifications[view_base + index];
-  if (classification == 0u)
+  if (classification == 0u || classification == VKR_METAL_GPU_DRAW_DEFERRED)
     return;
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   uint bucket = (classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) - 1u;
@@ -621,7 +673,8 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   }
   constant VkrMetalPacketDrawRoot &draw_root = root.draw_roots[view_index];
   uint probe_state = 0u;
-  if (view_index == 0u && draw_root.frame->render_mode == 19u) {
+  if (vkr_metal_packet_camera_view(root, view_index) &&
+      draw_root.frame->render_mode == 19u) {
     /* The Draw reach view lights nothing, so the probe bits carry the
        draw's reach code to its inspection instead (ADR-114). */
     const device VkrMetalPacketInstance &instance =
@@ -880,8 +933,8 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
 
 static_assert(sizeof(VkrGpuDrawCompactionState) == 144,
               "GPU draw compaction state ABI must remain 144 bytes");
-static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 224,
-              "GPU draw root ABI must remain 224 bytes");
+static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 240,
+              "GPU draw root ABI must remain 240 bytes");
 static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
               "GPU draw view ABI must remain 112 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,

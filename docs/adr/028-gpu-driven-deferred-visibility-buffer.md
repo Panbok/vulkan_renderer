@@ -102,7 +102,10 @@ when raster and unjittered projections differ, or HZB is explicitly disabled.
 Both culling passes declare history reads only under that same enable condition;
 disabled history has neither a producer nor a declared consumer in the graph.
 History rejection metrics distinguish disabled, invalid, incomplete, world,
-extent, camera and raster-grid failures. Candidate
+extent, camera and raster-grid failures. The tiled pipeline's one-sample path
+replaces these gates with two-phase culling: an earlier frame's pyramid only
+defers camera draws, and a late view confirms them against the pyramid of the
+frame's early depth ([ADR-128](128-tiled-two-phase-occlusion.md)). Candidate
 capacity is checked before recording. Completion-gated GPU diagnostics expose
 visible/bucket/overflow/resolve-invalid counts; overflow is not permission to
 silently claim a complete frame. Resolve-invalid counts degenerate triangles and

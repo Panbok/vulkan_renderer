@@ -311,6 +311,7 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:
   case VKR_RG_EXECUTOR_GPU_DRAW_PREFIX:
   case VKR_RG_EXECUTOR_GPU_DRAW_ENCODE:
+  case VKR_RG_EXECUTOR_GPU_DRAW_LATE:
   case VKR_RG_EXECUTOR_SKINNING:
   case VKR_RG_EXECUTOR_SKY_VIEW_LUT:
   case VKR_RG_EXECUTOR_AERIAL_PERSPECTIVE:
@@ -339,6 +340,7 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_ANIMATION_PREVIEW:
   case VKR_RG_EXECUTOR_UI:
   case VKR_RG_EXECUTOR_TILED_OPAQUE:
+  case VKR_RG_EXECUTOR_TILED_OPAQUE_LATE:
   case VKR_RG_EXECUTOR_TILED_ATMOSPHERE:
   case VKR_RG_EXECUTOR_TILED_PICKING:
   case VKR_RG_EXECUTOR_TILED_BLEND:
@@ -834,23 +836,32 @@ vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
 }
 
 /* Whether HZB history instance `instance` holds a pyramid this frame's
-   culling may test: valid, of this world and extent, built at
+   culling may test: complete, valid, of this world and extent, built at
    `hzb_select_view_projection`. A rebuilt history must also share the
    current raster grid; a frozen culling camera's history is never rebuilt,
-   so its grid is the one it froze with (ADR-127). Returns the reason it may
-   not, or VKR_HZB_HISTORY_REJECTION_COUNT. */
+   so its grid is the one it froze with (ADR-127). A two-phase frame needs
+   only a submitted pyramid of its extent, which its classify waits for: it
+   defers what that pyramid hides and confirms it against its own, so the
+   newest submitted pyramid, the previous frame's, serves whatever the GPU
+   has completed (ADR-032). Returns the reason it may not, or
+   VKR_HZB_HISTORY_REJECTION_COUNT. */
 vkr_internal VkrHzbHistoryRejection
 vkr_metal_packet_hzb_history_rejection(
     const VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketImageInstance *instance, uint64_t completed) {
   if (!instance->live || !instance->history_valid)
     return VKR_HZB_HISTORY_INVALID;
+  const bool8_t extent_changed =
+      instance->history_width != renderer->prepared_frame.viewport_width ||
+      instance->history_height != renderer->prepared_frame.viewport_height;
+  if (renderer->prepared_frame.tiled_two_phase_occlusion)
+    return extent_changed ? VKR_HZB_HISTORY_EXTENT_CHANGED
+                          : VKR_HZB_HISTORY_REJECTION_COUNT;
   if (instance->history_producer_submit_value > completed)
     return VKR_HZB_HISTORY_INCOMPLETE;
   if (instance->history_world_epoch != renderer->current_hzb_world_epoch)
     return VKR_HZB_HISTORY_WORLD_CHANGED;
-  if (instance->history_width != renderer->prepared_frame.viewport_width ||
-      instance->history_height != renderer->prepared_frame.viewport_height)
+  if (extent_changed)
     return VKR_HZB_HISTORY_EXTENT_CHANGED;
   if (MemCompare(&instance->history_view_projection,
                  &renderer->hzb_select_view_projection, sizeof(Mat4)) != 0)
@@ -889,9 +900,14 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
     return false_v;
   renderer->selected_hzb_history_instance = UINT32_MAX;
   renderer->prepared_frame.hzb_history_valid = false_v;
+  renderer->hzb_history_in_flight = false_v;
   renderer->packet_build.hzb_history_checks_valid = true_v;
+  /* A skinned occluder moves under a still camera, so one-phase culling
+     needs a skinless frame; two phases confirm every rejection against
+     this frame's depth, and the classify kernel exempts deformed draws. */
   if (!renderer->prepared_frame.hzb_read_enabled ||
-      (renderer->graph->packet->input.world &&
+      (!renderer->prepared_frame.tiled_two_phase_occlusion &&
+       renderer->graph->packet->input.world &&
        renderer->graph->packet->input.world->skinning_count)) {
     renderer->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
     return true_v;
@@ -922,6 +938,8 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   }
   renderer->prepared_frame.hzb_history_valid =
       renderer->selected_hzb_history_instance != UINT32_MAX;
+  renderer->hzb_history_in_flight =
+      renderer->prepared_frame.hzb_history_valid && newest_producer > completed;
   return true_v;
 }
 
@@ -1787,7 +1805,7 @@ vkr_internal bool8_t vkr_metal_packet_capture_plan(
 vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
     VkrMetalPacketResult *result, const uint8_t *camera_and_shadow_readback,
     uint32_t shadow_cascade_count, uint32_t dynamic_render_mask,
-    uint32_t gpu_draw_view_count) {
+    uint32_t gpu_draw_view_count, uint32_t late_view) {
   if (!result || !camera_and_shadow_readback)
     return;
   const VkrGpuDrawCompactionState *camera =
@@ -1798,6 +1816,17 @@ vkr_internal void vkr_metal_packet_decode_gpu_draw_diagnostics(
   result->gpu_overflow_count = camera->overflow_count;
   result->gpu_resolve_invalid_count = camera->resolve_invalid_count;
   result->gpu_occlusion_culled_count = camera->occlusion_culled_count;
+  /* In two phases the camera draws in both views; the late view's count
+     holds the final rejections, the camera's only the deferrals
+     (ADR-032). */
+  if (late_view != 0u && late_view < gpu_draw_view_count) {
+    const VkrGpuDrawCompactionState *late = camera + late_view;
+    result->gpu_visible_count += late->visible_count;
+    for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+         ++bucket)
+      result->gpu_bucket_counts[bucket] += late->bucket_counts[bucket];
+    result->gpu_occlusion_culled_count = late->occlusion_culled_count;
+  }
   for (uint32_t cascade = 0u;
        cascade < Min(shadow_cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
        ++cascade) {

@@ -751,6 +751,9 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_root_fields[] = {
                   216),
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, command_capacity,
                   "command_capacity", 220),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, late_view, "late_view", 224),
+    VKR_ABI_FIELD(VkrMetalPacketGpuDrawRoot, classify_view_base,
+                  "classify_view_base", 228),
 };
 
 vkr_global const VkrMetalPacketAbiField
@@ -1088,7 +1091,7 @@ vkr_global const VkrMetalPacketAbiRecord
             VkrMetalPacketGpuDrawView, "VkrMetalPacketGpuDrawView", 112, 16,
             vkr_gpu_draw_view_fields),
         [VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT] = VKR_ABI_RECORD(
-            VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 224, 16,
+            VkrMetalPacketGpuDrawRoot, "VkrMetalPacketGpuDrawRoot", 240, 16,
             vkr_gpu_draw_root_fields),
         [VKR_METAL_PACKET_ABI_ANIMATION_PREVIEW_ROOT] =
             VKR_ABI_RECORD(VkrMetalPacketAnimationPreviewRoot,

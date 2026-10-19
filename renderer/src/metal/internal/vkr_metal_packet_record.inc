@@ -200,6 +200,41 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     }
     break;
   }
+  case VKR_RG_EXECUTOR_GPU_DRAW_LATE: {
+    /* The late view's classification, placement and encode, each reading
+       what the last wrote (ADR-032). */
+    const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_late.group;
+    const VkrMetalDependency dispatch_to_dispatch = {
+        .src_stages = MTLStageDispatch,
+        .dst_stages = MTLStageDispatch,
+        .visibility_options = MTL4VisibilityOptionDevice,
+    };
+    if (pass->gpu_late.reset) {
+      [encoder resetCommandsInBuffer:group->commands
+                           withRange:NSMakeRange(0u, group->command_capacity)];
+      const VkrMetalDependency reset_to_encode = {
+          .src_stages = MTLStageBlit,
+          .dst_stages = MTLStageDispatch,
+          .visibility_options = MTL4VisibilityOptionDevice,
+      };
+      vkr_metal_dependency_encode_intra(encoder, &reset_to_encode);
+    }
+    [renderer->argument_table setAddress:group->root atIndex:0u];
+    [renderer->argument_table setAddress:group->arguments atIndex:1u];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder setComputePipelineState:renderer->gpu_draw_classify_pipeline];
+    [encoder dispatchThreads:MTLSizeMake(pass->gpu_late.candidate_count, 1u, 1u)
+        threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    vkr_metal_dependency_encode_intra(encoder, &dispatch_to_dispatch);
+    [encoder setComputePipelineState:renderer->gpu_draw_prefix_late_pipeline];
+    [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
+        threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
+    vkr_metal_dependency_encode_intra(encoder, &dispatch_to_dispatch);
+    [encoder setComputePipelineState:renderer->gpu_draw_encode_pipeline];
+    [encoder dispatchThreads:MTLSizeMake(pass->gpu_late.candidate_count, 1u, 1u)
+        threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    break;
+  }
   case VKR_RG_EXECUTOR_IBL_BAKE:
     vkr_metal_packet_record_ibl_bakes(renderer, encoder);
     break;
@@ -247,6 +282,17 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                      visibilityOptions:MTL4VisibilityOptionDevice];
     break;
   }
+  case VKR_RG_EXECUTOR_GPU_DRAW_CLASSIFY:
+    /* In two phases the pyramid can be the previous frame's, built in an
+       earlier command buffer that may still run; Metal 4 does not order
+       command buffers, so wait for the queue's earlier dispatches. */
+    if (pass->gpu_classify.history_in_flight)
+      [encoder barrierAfterQueueStages:MTLStageDispatch
+                          beforeStages:MTLStageDispatch
+                     visibilityOptions:MTL4VisibilityOptionDevice];
+    vkr_metal_packet_record_dispatch(renderer, encoder,
+                                     &pass->gpu_classify.dispatch);
+    break;
   case VKR_RG_EXECUTOR_CLOUD_TRACE:
     /* The history can be the previous frame's output, written by its trace in
        an earlier command buffer that may still run; Metal 4 does not order
@@ -350,6 +396,52 @@ vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
                                        2u * sizeof(uint32_t)];
 }
 
+/* Executes `draw`'s bucket ranges, then every filled compaction range of
+   a camera pass, the Custom graphs' and the extended draws', with the
+   pass's own pipelines: it writes no shading. */
+vkr_internal void vkr_metal_packet_record_indirect_ranges(
+    id<MTL4RenderCommandEncoder> encoder, const VkrMetalPacketIndirectPass *draw,
+    id<MTLRenderPipelineState> *bound_pipeline) API_AVAILABLE(macos(26.0)) {
+  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+       ++bucket) {
+    id<MTLRenderPipelineState> pipeline =
+        draw->opaque_pipeline && (bucket & 2u) == 0u ? draw->opaque_pipeline
+                                                     : draw->pipeline;
+    if (pipeline != *bound_pipeline) {
+      [encoder setRenderPipelineState:pipeline];
+      *bound_pipeline = pipeline;
+    }
+    [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
+    [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
+                                       ? MTLWindingClockwise
+                                       : MTLWindingCounterClockwise];
+    [encoder executeCommandsInBuffer:draw->commands
+                      indirectBuffer:draw->arguments +
+                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
+  }
+  for (uint32_t plane = 0u;
+       draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
+       ++plane) {
+    for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+      if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
+        continue;
+      for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
+           ++bucket) {
+        id<MTLRenderPipelineState> pipeline =
+            draw->opaque_pipeline && (bucket & 2u) == 0u
+                ? draw->opaque_pipeline
+                : draw->pipeline;
+        if (pipeline != *bound_pipeline) {
+          [encoder setRenderPipelineState:pipeline];
+          *bound_pipeline = pipeline;
+        }
+        vkr_metal_packet_record_custom_bucket(encoder, draw, plane, slot,
+                                              bucket);
+      }
+    }
+  }
+}
+
 vkr_internal void vkr_metal_packet_record_indirect_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
@@ -382,45 +474,15 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                slopeScale:draw->depth_bias.depth_bias_slope
                     clamp:draw->depth_bias.depth_bias_clamp];
   id<MTLRenderPipelineState> bound_pipeline = nil;
-  for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-       ++bucket) {
-    id<MTLRenderPipelineState> pipeline =
-        draw->opaque_pipeline && (bucket & 2u) == 0u ? draw->opaque_pipeline
-                                                     : draw->pipeline;
-    if (pipeline != bound_pipeline) {
-      [encoder setRenderPipelineState:pipeline];
-      bound_pipeline = pipeline;
-    }
-    [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
-    [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
-                                       ? MTLWindingClockwise
-                                       : MTLWindingCounterClockwise];
-    [encoder executeCommandsInBuffer:draw->commands
-                      indirectBuffer:draw->arguments +
-                                     (uint64_t)bucket * 2u * sizeof(uint32_t)];
-  }
-  /* A camera pass draws every filled compaction range, the Custom graphs'
-     and the extended draws', with its own pipeline: it writes no shading. */
-  for (uint32_t plane = 0u;
-       draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
-       ++plane) {
-    for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
-      if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
-        continue;
-      for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
-           ++bucket) {
-        id<MTLRenderPipelineState> pipeline =
-            draw->opaque_pipeline && (bucket & 2u) == 0u
-                ? draw->opaque_pipeline
-                : draw->pipeline;
-        if (pipeline != bound_pipeline) {
-          [encoder setRenderPipelineState:pipeline];
-          bound_pipeline = pipeline;
-        }
-        vkr_metal_packet_record_custom_bucket(encoder, draw, plane, slot,
-                                              bucket);
-      }
-    }
+  vkr_metal_packet_record_indirect_ranges(encoder, draw, &bound_pipeline);
+  /* A pass that draws every camera draw of a two-phase frame also draws
+     the late view's (ADR-032). */
+  if (draw->late_commands) {
+    VkrMetalPacketIndirectPass late = *draw;
+    late.commands = draw->late_commands;
+    late.arguments = draw->late_arguments;
+    late.custom_arguments = draw->late_custom_arguments;
+    vkr_metal_packet_record_indirect_ranges(encoder, &late, &bound_pipeline);
   }
 }
 
@@ -498,6 +560,10 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
       }
     }
   }
+  /* An early pass of a two-phase frame leaves the sky and the resolve to
+     the late pass (ADR-032). */
+  if (!pass->tiled.finish)
+    return;
   /* The overdraw view leaves no depth, so a sky draw would cover it. */
   const uint32_t sun = pass->tiled.sun != 0u ? 1u : 0u;
   if (!pass->tiled.overdraw) {
@@ -574,6 +640,7 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     vkr_metal_packet_record_tiled_object_motion(renderer, encoder, pass);
     break;
   case VKR_RG_EXECUTOR_TILED_OPAQUE:
+  case VKR_RG_EXECUTOR_TILED_OPAQUE_LATE:
     vkr_metal_packet_record_tiled_opaque(renderer, encoder, pass);
     break;
   case VKR_RG_EXECUTOR_TILED_ATMOSPHERE:

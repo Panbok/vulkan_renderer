@@ -412,6 +412,8 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       MemCompare(&packet->temporal.jittered_projection,
                  &packet->input.globals.projection, sizeof(Mat4)) == 0;
   frame->hzb_read_enabled = frame->hzb_build_enabled;
+  /* The Metal backend decides two-phase culling after this (ADR-032). */
+  frame->tiled_two_phase_occlusion = false_v;
   uint32_t hzb_mip_count = 1u;
   uint32_t hzb_extent = Max(frame->viewport_width, frame->viewport_height);
   while (hzb_extent > 1u) {
@@ -709,6 +711,10 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE] = {"pass.debug.gpu_spike",
                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_GPU_DRAW_LATE] = {"pass.gpu_draw_late",
+                                       VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_OPAQUE_LATE] = {"pass.tiled.opaque_late",
+                                           VKR_RG_PASS_TYPE_GRAPHICS},
     [VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT] = {"pass.editor.pass_output",
                                             VKR_RG_PASS_TYPE_GRAPHICS},
 };

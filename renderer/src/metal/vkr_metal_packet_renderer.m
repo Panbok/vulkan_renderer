@@ -668,6 +668,9 @@ typedef struct VkrMetalPacketCommandSlot {
   /** Cascades whose dynamic-caster view drew over a copied layer. */
   uint32_t shadow_cascade_dynamic_render_mask;
   uint32_t gpu_draw_view_count;
+  /** The slot's late occlusion view, or zero for a one-phase frame
+      (ADR-032). */
+  uint32_t gpu_draw_late_view;
   /** What each culling view of the slot's frame drew into, for repair when
       the command pool cut its draws: VKR_METAL_PACKET_VIEW_TARGET_* above
       the cascade or the local atlas layer. */
@@ -1059,6 +1062,17 @@ struct VkrMetalPacketRenderer {
      mask. */
   VkrMetalCustomCompaction *custom_compaction;
   uint64_t custom_compaction_gpu;
+  /* The late occlusion view's Custom compaction (ADR-032), which the late
+     cull pass makes from the camera's ready masks; zero before it or
+     without Custom graphs. */
+  uint64_t late_custom_compaction_gpu;
+  /* The frame's per-view draw roots, which the early encode pass writes and
+     the late cull pass reads for the late view. */
+  /* The selected HZB history's producer had not completed at preparation,
+     so the camera's classify waits for the queue's earlier dispatches
+     (ADR-032). */
+  bool8_t hzb_history_in_flight;
+  uint64_t gpu_draw_roots_gpu;
   uint32_t custom_ready_mask;
   /* This frame buckets extended Standard draws into Custom slot 0, which the
      tiled pipeline shades with its extension variant (ADR-113): a scene
@@ -1194,6 +1208,8 @@ struct VkrMetalPacketRenderer {
   bool8_t diffuse_volume_composed_direct;
   id<MTLComputePipelineState> gpu_draw_classify_pipeline;
   id<MTLComputePipelineState> gpu_draw_prefix_pipeline;
+  /* The late occlusion phase's prefix (ADR-032). */
+  id<MTLComputePipelineState> gpu_draw_prefix_late_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_pipeline;
   id<MTLComputePipelineState> gpu_draw_encode_inherited_pipeline;
   id<MTLRenderPipelineState> preview_pipeline;

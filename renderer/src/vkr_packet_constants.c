@@ -161,7 +161,16 @@ void vkr_packet_write_lod_views(const VkrPreparedFrame *packet,
   const uint32_t motion_view = frame->tiled_temporal_enabled
                                    ? vkr_render_graph_motion_view(frame)
                                    : UINT32_MAX;
+  const uint32_t late_view = frame->tiled_two_phase_occlusion
+                                 ? vkr_render_graph_late_view(frame)
+                                 : UINT32_MAX;
   for (uint32_t view = 1u; view < view_count; ++view) {
+    /* The late occlusion view classifies the camera's deferred draws, with
+       the camera's levels and culling (ADR-032). */
+    if (view == late_view) {
+      out_views[view] = out_views[0];
+      continue;
+    }
     /* The motion view takes the camera's levels and culling over the
        dynamic draws only, so it redraws the surfaces the camera drew. */
     if (view == motion_view) {

@@ -181,6 +181,13 @@ typedef enum VkrRgExecutorKind {
   /** The editor's Pass output view: one graph image drawn over the Scene
    * image (VkrGpuDebugPayload.pass_output). */
   VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT,
+  /** The tiled pipeline's late occlusion phase: classifies, places and
+   * encodes the camera draws the previous frame's pyramid deferred, against
+   * the pyramid of this frame's early depth (ADR-032). */
+  VKR_RG_EXECUTOR_GPU_DRAW_LATE,
+  /** Draws the late phase's camera draws over the opaque pass's images,
+   * then the clear sky and the resolve (ADR-032). */
+  VKR_RG_EXECUTOR_TILED_OPAQUE_LATE,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

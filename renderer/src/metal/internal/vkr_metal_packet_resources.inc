@@ -2565,9 +2565,14 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
         renderer->custom_graph_count || renderer->tiled_brdf_draws
             ? VKR_METAL_CUSTOM_COMPACTION_CELL_COUNT
             : 0u;
+    /* Two phases add the late cull pass's root and the late view's own
+       Custom compaction table (ADR-032). */
+    const uint32_t late_cells =
+        renderer->prepared_frame.tiled_two_phase_occlusion ? 1u + custom_cells
+                                                           : 0u;
     plan->root_count += 10u + draw_root_slots +
                         renderer->prepared_frame.hzb_reduce_pass_count +
-                        gpu_draw_icb_group_count + custom_cells;
+                        gpu_draw_icb_group_count + custom_cells + late_cells;
   }
   plan->root_count += frame_root_gpu_draw_view_count - 1u;
   if (packet->input.picking && packet->input.picking->pending)
@@ -2605,6 +2610,8 @@ vkr_internal bool8_t vkr_metal_packet_plan_upload_roots(
         vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_GPU_DRAW_ENCODE)) {
       frame_root_count += frame_root_gpu_draw_view_count;
     } else if (vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_TILED_OPAQUE) ||
+               vkr_render_graph_pass_is(pass,
+                                        VKR_RG_EXECUTOR_TILED_OPAQUE_LATE) ||
                vkr_render_graph_pass_is(pass,
                                         VKR_RG_EXECUTOR_TILED_ATMOSPHERE) ||
                vkr_render_graph_pass_is(pass, VKR_RG_EXECUTOR_CLOUD_TRACE) ||
@@ -3493,10 +3500,26 @@ vkr_internal void vkr_metal_packet_write_upload_draw_views(
           VKR_WORLD_DRAW_CANDIDATE_SHADOW_TRANSMISSION;
     }
     /* The motion view culls as the camera does; its LOD view keeps only
-       the dynamic draws (vkr_packet_write_lod_views). */
-    if (renderer->prepared_frame.tiled_temporal_enabled)
-      views[vkr_render_graph_motion_view(&renderer->prepared_frame)] =
-          views[0];
+       the dynamic draws (vkr_packet_write_lod_views). In two phases an
+       earlier frame's pyramid only defers the camera's draws, so the motion
+       view tests none, and redraws every dynamic draw the late view may
+       show. The late view tests the camera's deferred draws against this
+       frame's pyramid (ADR-032). */
+    const bool8_t two_phase =
+        renderer->prepared_frame.tiled_two_phase_occlusion;
+    if (renderer->prepared_frame.tiled_temporal_enabled) {
+      const uint32_t motion_view =
+          vkr_render_graph_motion_view(&renderer->prepared_frame);
+      views[motion_view] = views[0];
+      if (two_phase)
+        views[motion_view].hzb_enabled = 0u;
+    }
+    if (two_phase) {
+      const uint32_t late_view =
+          vkr_render_graph_late_view(&renderer->prepared_frame);
+      views[late_view] = views[0];
+      views[late_view].hzb_enabled = 1u;
+    }
     upload->gpu_draw_views_gpu = gpu + plan->gpu_draw_views_offset;
   }
 }
@@ -3635,6 +3658,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_upload(
   upload->root_cursor = 0u;
   renderer->custom_compaction = NULL;
   renderer->custom_compaction_gpu = 0u;
+  renderer->late_custom_compaction_gpu = 0u;
+  renderer->gpu_draw_roots_gpu = 0u;
   upload->overlay_draw_count = plan.overlay_count;
   if (plan.overlay_count > 0u &&
       !vkr_metal_packet_prepare_editor_draws(

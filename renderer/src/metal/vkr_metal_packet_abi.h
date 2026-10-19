@@ -612,10 +612,11 @@ enum {
 
 enum {
   /* Camera, directional cascades, their dynamic-caster views, the local
-     render slots, then the MetalFX upscaler's motion view. */
+     render slots, the MetalFX upscaler's motion view, then the late
+     occlusion view (ADR-032). */
   VKR_METAL_PACKET_GPU_DRAW_VIEW_COUNT_MAX =
       1u + 2u * VKR_SHADOW_CASCADE_COUNT_MAX +
-      VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX + 1u,
+      VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX + 2u,
 };
 
 /** One frustum and routing policy in the bounded multi-view cull set. */
@@ -670,6 +671,15 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
   /** Commands each ICB group's pool holds; the prefix places the views'
       ranges one after another within it. */
   uint32_t command_capacity;
+  /** The late occlusion view, or zero while the camera culls in one phase
+      (ADR-032). The early camera classification defers the candidates an
+      earlier frame's pyramid hides; the late phase classifies only them. */
+  uint32_t late_view;
+  /** The first view a classify dispatch's rows cover: zero, or the late
+      view in the late phase, whose root's `custom_compaction` is the late
+      view's own table. */
+  uint32_t classify_view_base;
+  uint32_t reserved[2];
 } VkrMetalPacketGpuDrawRoot;
 
 /* Custom graph slots: slot 0 is the Standard tier; graphs take 1 onward
@@ -729,8 +739,8 @@ enum {
       VKR_METAL_PACKET_DRAW_ROOT_STRIDE,
 };
 
-_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 224,
-               "Metal GPU draw root ABI must remain 224 bytes");
+_Static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 240,
+               "Metal GPU draw root ABI must remain 240 bytes");
 
 /** One HZB base/reduction dispatch over explicit source/destination views. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketHzbBuildRoot {

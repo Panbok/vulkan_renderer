@@ -1,6 +1,6 @@
 ---
 status: declined
-updated: 2026-10-07
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -8,7 +8,11 @@ authority: adr
 
 ## Status
 
-Declined: two-phase experiment; the one-phase production decision remains in force.
+Declined: two-phase experiment; the one-phase production decision remains in
+force for the desktop pipeline and for the tiled pipeline's four-sample path,
+frozen culling camera and overdraw view. The tiled pipeline's one-sample
+(MetalFX) path met the revisit condition on an indoor level and culls in two
+phases since 2026-10-20 ([ADR-128](128-tiled-two-phase-occlusion.md)).
 
 ## Context
 

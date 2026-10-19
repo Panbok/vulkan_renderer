@@ -63,6 +63,12 @@ typedef struct VkrMetalPacketIndirectPass {
      (ADR-113). */
   bool8_t brdf_ready;
   uint32_t brdf_ready_mask;
+  /* A pass that draws every camera draw in a two-phase frame also executes
+     the late view's ranges and its Custom ranges (ADR-032); nil and zero
+     otherwise. */
+  id<MTLIndirectCommandBuffer> late_commands;
+  uint64_t late_arguments;
+  uint64_t late_custom_arguments;
 } VkrMetalPacketIndirectPass;
 
 typedef struct VkrMetalPacketGpuEncodeGroup {
@@ -136,6 +142,12 @@ typedef struct VkrMetalPacketPreparedPass {
       /* The history's producer was not known complete at preparation. */
       bool8_t history_in_flight;
     } cloud_trace;
+    /* Cull.Classify: in two phases the camera may test the previous frame's
+       pyramid while its command buffer still runs (ADR-032). */
+    struct {
+      VkrMetalPacketDispatch dispatch;
+      bool8_t history_in_flight;
+    } gpu_classify;
     struct {
       uint64_t root;
       uint32_t extent;
@@ -150,6 +162,15 @@ typedef struct VkrMetalPacketPreparedPass {
       uint32_t group_count;
       uint32_t candidate_count;
     } gpu_encode;
+    /* The late occlusion phase (ADR-032): one root for its classify, prefix
+       and encode dispatches, and the late view's ICB group, whose pool the
+       pass resets only when the late view starts a group the early encode
+       left alone. */
+    struct {
+      VkrMetalPacketGpuEncodeGroup group;
+      uint32_t candidate_count;
+      bool8_t reset;
+    } gpu_late;
     struct {
       VkrMetalPacketDirectPass direct;
       VkrMetalPacketTextPass text;
@@ -170,6 +191,10 @@ typedef struct VkrMetalPacketPreparedPass {
       /* The overdraw view: every draw adds a layer without a depth test,
          and no sky is drawn (ADR-127). */
       bool8_t overdraw;
+      /* The pass ends the opaque image: it draws the clear sky and the
+         resolve. A two-phase frame's early pass leaves them to the late
+         one (ADR-032). */
+      bool8_t finish;
     } tiled;
     /* The tiled pipeline's atmosphere draw over the resolved image; `sun`
        selects the pipeline that also corrects the sun's light. */
