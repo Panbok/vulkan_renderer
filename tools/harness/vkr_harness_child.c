@@ -1755,6 +1755,7 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
         {"draw_reach", VKR_RENDER_MODE_DRAW_REACH},
         {"lod", VKR_RENDER_MODE_LOD},
         {"light_count", VKR_RENDER_MODE_LIGHT_COUNT},
+        {"overdraw", VKR_RENDER_MODE_OVERDRAW},
     };
     for (uint32_t i = 0; i < ArrayCount(artist_views); ++i) {
       if (string_equals(case_manifest->renderer.render_mode,

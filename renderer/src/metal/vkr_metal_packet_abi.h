@@ -995,6 +995,8 @@ enum {
   VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM = 1u << 8u,
   /* The exposed scene shows in false colour by stops (ADR-099). */
   VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR = 1u << 9u,
+  /* The scene holds overdraw layers, shown as a colour ramp (ADR-127). */
+  VKR_METAL_PACKET_TONEMAP_FLAG_OVERDRAW = 1u << 10u,
 };
 
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketTonemapRoot {

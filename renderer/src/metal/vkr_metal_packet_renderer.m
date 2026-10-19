@@ -1002,6 +1002,11 @@ struct VkrMetalPacketRenderer {
   id<MTLRenderPipelineState> tiled_sky_pipelines[2];
   id<MTLRenderPipelineState> tiled_resolve_pipelines[2];
   id<MTLRenderPipelineState> tiled_atmosphere_pipelines[2];
+  /* The overdraw view (ADR-127): every opaque and alpha-tested draw adds a
+     layer in the opaque pass, by sun variant, and every blended draw one in
+     the blend pass, with no depth test. */
+  id<MTLRenderPipelineState> tiled_overdraw_pipelines[2];
+  id<MTLRenderPipelineState> tiled_overdraw_blend_pipeline;
   /* Object ids of the camera's opaque draws, single-sampled, for a pick. */
   id<MTLRenderPipelineState> tiled_picking_pipeline;
   /* Glass and blended surfaces, and world text, over the resolved image. */
@@ -1065,6 +1070,7 @@ struct VkrMetalPacketRenderer {
   uint32_t custom_brdf_ready_mask;
   id<MTLDepthStencilState> tiled_shade_state;
   id<MTLDepthStencilState> tiled_sky_state;
+  id<MTLDepthStencilState> tiled_overdraw_state;
   id<MTLTexture> tiled_msaa_color;
   id<MTLTexture> tiled_msaa_depth;
   /* The multisampled sun light of sun contact frames; nil until one runs. */
@@ -1236,6 +1242,11 @@ struct VkrMetalPacketRenderer {
   uint64_t current_hzb_world_epoch;
   Mat4 current_hzb_view_projection;
   Mat4 current_hzb_raster_view_projection;
+  /** The view-projection a selected HZB history must match: the current
+      one, or a frozen culling camera's (ADR-127), whose history keeps
+      without a rebuild while `hzb_frozen` is set. */
+  Mat4 hzb_select_view_projection;
+  bool8_t hzb_frozen;
   uint32_t selected_hzb_history_instance;
   uint32_t selected_exposure_history_instance;
   /** Accumulated during this frame's packet lowering; copied into the result.

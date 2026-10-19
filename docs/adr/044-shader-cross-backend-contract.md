@@ -1100,10 +1100,14 @@ variant colours it with `editor_view.slangh`'s `vkr_editor_reach_color`;
 the desktop pipeline does not draw the view. The LOD view (mode 20) colours
 the visible row's level and morph with `vkr_editor_lod_color`, and the light
 count view (mode 21) the tiled shader's count of reaching local lights with
-`vkr_editor_light_count_color`; both are tiled-only, natively checked on
-Metal (ADR-127). A frozen culling camera (`VkrWorldPassPayload.frozen_cull`)
-replaces the camera view's frustum and `VkrGpuLodView` 0 on both backends
-and turns its occlusion off; the Vulkan path is compiled only. The host mirror
+`vkr_editor_light_count_color`, and the overdraw view (mode 22) the sum of
+`VKR_EDITOR_OVERDRAW_LAYER` the tiled overdraw entries add with
+`vkr_editor_overdraw_color` in the tonemap; all three are tiled-only,
+natively checked on Metal (ADR-127). A frozen culling camera
+(`VkrWorldPassPayload.frozen_cull`) replaces the camera view's frustum and
+`VkrGpuLodView` 0 on both backends; Metal tests occlusion against the
+pyramid kept from the frozen frame, Vulkan turns it off, and the Vulkan path
+is compiled only. The host mirror
 `vkr_gpu_draw_distance_culled` in `vkr_gpu_abi.c` serves the blend list and
 editor ring. Bit 20 of the cull word hides a candidate from the camera (rooms,
 [ADR-115](115-rooms-and-portals.md); proxy cells,

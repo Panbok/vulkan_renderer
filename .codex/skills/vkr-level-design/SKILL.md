@@ -288,12 +288,16 @@ structures, and put a cutout around a room before the ground reaches it.
 - `view.freeze_culling {on: true}` keeps culling (frustum, distance, size,
   levels, rooms, proxies) from where the camera stands, with its frustum in
   cyan; move the camera with `view.camera` and capture to see what that view
-  draws. Occlusion is off while frozen; `view.cull_report` answers
-  `frozen`. Turn it off when done.
+  draws. Occlusion follows the frozen frame: freeze in an unjittered view
+  such as `view.mode lod` to keep its occlusion; the lit view under MetalFX
+  has none, live or frozen. `view.cull_report` answers `frozen`. Turn it
+  off when done.
 - `view.capture` mode `lod` colours each object's level (grey 0, red 1,
   green 2, blue 3, yellow 4); `light-count` ramps the local lights reaching
   each surface from blue (1) through green (4), yellow (8), red (12) to
-  white (16 or more).
+  white (16 or more); `overdraw` counts the surfaces rasterized under each
+  pixel, hidden or not, from dark blue (1) through green (4), yellow (8),
+  red (16) to white (32 or more).
 
 ## Rooms and portals
 

@@ -102,10 +102,11 @@ static const struct {
     /* How far each object still draws (ADR-114), and the desktop
        pipeline's temporal reprojection. */
     {"Draw reach", VKR_RENDER_MODE_DRAW_REACH, 0u, 4u},
-    /* Each draw's level of detail and the local lights that reach each
-       surface (ADR-127). */
+    /* Each draw's level of detail, the local lights that reach each
+       surface and the surfaces under each pixel (ADR-127). */
     {"LOD", VKR_RENDER_MODE_LOD, 0u, 4u},
     {"Light count", VKR_RENDER_MODE_LIGHT_COUNT, 0u, 4u},
+    {"Overdraw", VKR_RENDER_MODE_OVERDRAW, 0u, 4u},
     {"Motion vectors", VKR_RENDER_MODE_TEMPORAL_MOTION, 0u, 4u},
     {"History rejection", VKR_RENDER_MODE_TEMPORAL_HISTORY, 0u, 4u},
 };

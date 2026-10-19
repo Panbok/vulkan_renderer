@@ -48,13 +48,58 @@ float3 vkr_editor_triangle_barycentric(float3 point, float3 a, float3 b,
 // Artist view modes (ADR-099). The data views show one value per pixel
 // instead of light: 2 normals, 13 base colour, 14 roughness, 15 metallic,
 // 16 material cost, 17 texel density, 19 draw reach (ADR-114), 20 the
-// draw's level of detail and 21 the local lights that reach the surface
-// (ADR-127). Mode 18 shades as usual and false colours the exposed image by
-// stops.
+// draw's level of detail, 21 the local lights that reach the surface and 22
+// the surfaces that rasterize under each pixel (ADR-127). Mode 18 shades as
+// usual and false colours the exposed image by stops.
 bool vkr_editor_data_view(uint mode)
 {
     return mode == 2u || (mode >= 13u && mode <= 17u) ||
-           (mode >= 19u && mode <= 21u);
+           (mode >= 19u && mode <= 22u);
+}
+
+// What each surface adds to the overdraw view's colour target, blended
+// additively; small enough that 256 layers stay within half precision's
+// exact steps.
+#define VKR_EDITOR_OVERDRAW_LAYER (1.0f / 32.0f)
+
+// The overdraw view's colour of `layers` surfaces under a pixel, by octaves:
+// near black for none, dark blue at one, blue at two, green at four, yellow
+// at eight, red at sixteen and white at 32 or more.
+float3 vkr_editor_overdraw_color(float layers)
+{
+    if (layers < 0.5f)
+    {
+        return float3(0.02f, 0.02f, 0.04f);
+    }
+    float octave = clamp(log2(layers), 0.0f, 5.0f);
+    float3 from = float3(1.0f, 0.15f, 0.05f);
+    float3 to = float3(1.0f, 1.0f, 1.0f);
+    float share = octave - 4.0f;
+    if (octave < 1.0f)
+    {
+        from = float3(0.05f, 0.1f, 0.45f);
+        to = float3(0.1f, 0.3f, 1.0f);
+        share = octave;
+    }
+    else if (octave < 2.0f)
+    {
+        from = float3(0.1f, 0.3f, 1.0f);
+        to = float3(0.1f, 0.85f, 0.25f);
+        share = octave - 1.0f;
+    }
+    else if (octave < 3.0f)
+    {
+        from = float3(0.1f, 0.85f, 0.25f);
+        to = float3(1.0f, 0.9f, 0.1f);
+        share = octave - 2.0f;
+    }
+    else if (octave < 4.0f)
+    {
+        from = float3(1.0f, 0.9f, 0.1f);
+        to = float3(1.0f, 0.15f, 0.05f);
+        share = octave - 3.0f;
+    }
+    return from + (to - from) * share;
 }
 
 // The shadow views' colour (VkrGpuDebugPayload.shadow_debug_mode) of the

@@ -893,7 +893,7 @@
           "image": "hzb_history",
           "access": "STORAGE_READ",
           "binding": 3,
-          "when": "hzb_build_enabled"
+          "when": "hzb_read_enabled"
         }
       ],
       "writes": [

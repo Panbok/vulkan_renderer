@@ -1827,6 +1827,18 @@ fragment VkrMetalTiledForwardOutput vkr_metal_tiled_forward_all_coverage_probes_
       input, root, front_facing, float3(0.0f));
 }
 
+// The overdraw view (ADR-127): the opaque pass draws every opaque and
+// alpha-tested surface with this entry, without a depth test or depth write,
+// and the blend pass every blended one with the next, each adding one layer
+// under the pixels it covers, hidden or not. The tonemap colours the sum.
+fragment VkrMetalTiledForwardOutput vkr_metal_tiled_overdraw_fragment() {
+  return {float4(float3(VKR_EDITOR_OVERDRAW_LAYER), 1.0f), half4(0.0h)};
+}
+
+fragment float4 vkr_metal_tiled_overdraw_blend_fragment() {
+  return float4(float3(VKR_EDITOR_OVERDRAW_LAYER), 0.0f);
+}
+
 // The opaque pass's multisample resolve (ADR-087). A hardware resolve
 // averages scene-linear samples, so a bright sample dominates its pixel and
 // edges against light sources keep their steps. This tile kernel replaces a

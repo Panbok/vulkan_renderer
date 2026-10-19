@@ -411,6 +411,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
       packet->scene_rendering &&
       MemCompare(&packet->temporal.jittered_projection,
                  &packet->input.globals.projection, sizeof(Mat4)) == 0;
+  frame->hzb_read_enabled = frame->hzb_build_enabled;
   uint32_t hzb_mip_count = 1u;
   uint32_t hzb_extent = Max(frame->viewport_width, frame->viewport_height);
   while (hzb_extent > 1u) {

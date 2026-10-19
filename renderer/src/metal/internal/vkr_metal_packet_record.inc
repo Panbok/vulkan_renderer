@@ -436,8 +436,11 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
   [encoder setViewport:draw->viewport];
   if (draw->commands) {
     /* Opaque buckets shade first, without discard, then the alpha-tested
-       ones write the samples their alpha covers. */
-    [encoder setDepthStencilState:renderer->tiled_shade_state];
+       ones write the samples their alpha covers. The overdraw view draws
+       them all without a depth test (ADR-127). */
+    const bool8_t overdraw = pass->tiled.overdraw;
+    [encoder setDepthStencilState:overdraw ? renderer->tiled_overdraw_state
+                                           : renderer->tiled_shade_state];
     for (uint32_t cutout = 0u; cutout < 2u; ++cutout) {
       [encoder setRenderPipelineState:cutout ? draw->pipeline
                                              : draw->opaque_pipeline];
@@ -473,7 +476,8 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
             continue;
           const VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
           id<MTLRenderPipelineState> pipeline =
-              slot == 0u
+              overdraw    ? draw->opaque_pipeline
+              : slot == 0u
                   ? (cutout
                          ? renderer->tiled_coverage_pipelines[variant][decals]
                                                              [probes][lighting]
@@ -494,16 +498,19 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
       }
     }
   }
-  [renderer->argument_table setAddress:pass->tiled.sky_root atIndex:1u];
-  [encoder setArgumentTable:renderer->argument_table
-                   atStages:MTLRenderStageVertex | MTLRenderStageFragment];
-  [encoder setDepthStencilState:renderer->tiled_sky_state];
+  /* The overdraw view leaves no depth, so a sky draw would cover it. */
   const uint32_t sun = pass->tiled.sun != 0u ? 1u : 0u;
-  [encoder setRenderPipelineState:renderer->tiled_sky_pipelines[sun]];
-  [encoder setCullMode:MTLCullModeNone];
-  [encoder drawPrimitives:MTLPrimitiveTypeTriangle
-              vertexStart:0u
-              vertexCount:3u];
+  if (!pass->tiled.overdraw) {
+    [renderer->argument_table setAddress:pass->tiled.sky_root atIndex:1u];
+    [encoder setArgumentTable:renderer->argument_table
+                     atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    [encoder setDepthStencilState:renderer->tiled_sky_state];
+    [encoder setRenderPipelineState:renderer->tiled_sky_pipelines[sun]];
+    [encoder setCullMode:MTLCullModeNone];
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:0u
+                vertexCount:3u];
+  }
   [encoder setRenderPipelineState:renderer->tiled_resolve_pipelines[sun]];
   [encoder dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
                                               VKR_METAL_TILED_TILE_HEIGHT, 1u)];

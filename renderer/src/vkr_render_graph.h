@@ -611,6 +611,11 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t hzb_history_valid;
   /** Build HZB only when its raster grid can support the reuse policy. */
   bool8_t hzb_build_enabled;
+  /** The camera's culling reads an HZB history: one is built this frame, or
+      a frozen culling camera keeps the one built where it stood (ADR-127).
+      Shared preparation sets it to hzb_build_enabled; a backend that keeps
+      a frozen history sets it alone. */
+  bool8_t hzb_read_enabled;
   /** Metal P6 occupied-depth feedback is enabled for this packet. */
   bool8_t sdsm_enabled;
   /** Number of graph-authored reductions after the HZB base mip. */

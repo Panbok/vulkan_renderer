@@ -9050,15 +9050,15 @@ static bool8_t ops_capture_view_parse(OpsContext *ctx,
       ++i;
     }
     if (!vkr_editor_cmd_render_modes[i]) {
-      return ops_fail(
-          ctx, OPS_INVALID,
-          "'mode' is lit, unlit, detail-lighting, lighting-only, "
-          "wireframe, base-color, roughness, metallic, normals, "
-          "material-cost, texel-density, exposure, draw-reach, "
-          "lod, light-count, direct-light, direct-diffuse, direct-specular, "
-          "indirect-diffuse, material-params, motion-vectors, "
-          "history-rejection, shadow-cascades, shadow-factor or "
-          "shadow-depth");
+      return ops_fail(ctx, OPS_INVALID,
+                      "'mode' is lit, unlit, detail-lighting, lighting-only, "
+                      "wireframe, base-color, roughness, metallic, normals, "
+                      "material-cost, texel-density, exposure, draw-reach, "
+                      "lod, light-count, overdraw, direct-light, "
+                      "direct-diffuse, direct-specular, "
+                      "indirect-diffuse, material-params, motion-vectors, "
+                      "history-rejection, shadow-cascades, shadow-factor or "
+                      "shadow-depth");
     }
     const char *refused =
         vkr_editor_cmd_render_mode_apply(ctx->frame, i, &next);
@@ -12217,7 +12217,8 @@ static bool8_t ops_build_move(OpsContext *ctx, const VkrBakeryJson *args,
   "{\"type\":\"string\",\"enum\":[\"lit\",\"unlit\",\"detail-lighting\","      \
   "\"lighting-only\",\"wireframe\",\"base-color\",\"roughness\","              \
   "\"metallic\",\"normals\",\"material-cost\",\"texel-density\","              \
-  "\"exposure\",\"draw-reach\",\"lod\",\"light-count\",\"direct-light\","      \
+  "\"exposure\",\"draw-reach\",\"lod\",\"light-count\",\"overdraw\",\"direct-" \
+  "light\","                                                                   \
   "\"direct-diffuse\","                                                        \
   "\"direct-specular\",\"indirect-diffuse\",\"material-params\","              \
   "\"motion-vectors\",\"history-rejection\",\"shadow-cascades\","              \
@@ -18850,8 +18851,10 @@ static const OpsDef s_ops[] = {
      "frustum, draw distance, size and level tests, rooms, scatter proxies "
      "and the blend list cull from where the camera stands then, while the "
      "camera moves on, and the Scene draws that camera's frustum in cyan "
-     "(debug group 'freeze culling'). Occlusion culling is off while "
-     "frozen. 'on' false culls from the camera again.",
+     "(debug group 'freeze culling'). Occlusion tests the depth pyramid "
+     "of the frame it froze at, when that frame built one (Metal, unjittered "
+     "frames such as the data views), and is off otherwise. 'on' false "
+     "culls from the camera again.",
      "{\"type\":\"object\",\"properties\":{\"on\":{\"type\":"
      "\"boolean\"}},\"required\":[\"on\"]}",
      ops_run_freeze_culling, NULL},
@@ -18883,7 +18886,9 @@ static const OpsDef s_ops[] = {
      "draw's level: grey 0, red 1, green 2, blue 3, yellow 4, magenta 5, "
      "cyan 6, orange 7) and light-count (local lights reaching each "
      "surface: dark blue none, blue 1, green 4, yellow 8, red 12, white 16 "
-     "or more).",
+     "or more) and overdraw (surfaces rasterized under each pixel, hidden or "
+     "not, opaque, alpha-tested and blended: dark blue 1, blue 2, green 4, "
+     "yellow 8, red 16, white 32 or more; it writes no depth).",
      "{\"type\":\"object\",\"properties\":{\"view\":" OPS_CAPTURE_VIEW_SCHEMA
      ",\"focus\":" OPS_CAPTURE_FOCUS_SCHEMA ",\"grid_labels\":{\"type\":"
      "\"boolean\"},\"eye\":" OPS_VEC3_SCHEMA ",\"target\":" OPS_VEC3_SCHEMA

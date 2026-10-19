@@ -84,6 +84,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_VALID},
     {"!hzb_history_valid", VKR_RG_JSON_CONDITION_HZB_HISTORY_INVALID},
     {"hzb_build_enabled", VKR_RG_JSON_CONDITION_HZB_BUILD_ENABLED},
+    {"hzb_read_enabled", VKR_RG_JSON_CONDITION_HZB_READ_ENABLED},
     {"local_shadows_active", VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE},
     {"local_shadow_mask_active",
      VKR_RG_JSON_CONDITION_LOCAL_SHADOW_MASK_ACTIVE},
@@ -2193,6 +2194,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return !frame->hzb_history_valid;
   case VKR_RG_JSON_CONDITION_HZB_BUILD_ENABLED:
     return frame->hzb_build_enabled;
+  case VKR_RG_JSON_CONDITION_HZB_READ_ENABLED:
+    return frame->hzb_read_enabled;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOWS_ACTIVE:
     return frame->local_shadow_view_count > 0u;
   case VKR_RG_JSON_CONDITION_LOCAL_SHADOW_MASK_ACTIVE:

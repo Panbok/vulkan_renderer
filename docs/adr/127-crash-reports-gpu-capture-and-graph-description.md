@@ -13,7 +13,7 @@ Accepted (partial). Phase P3 of
 implemented: crash reports with the active pass on macOS and Windows, the
 `debug.gpu_capture` request with Metal and RenderDoc backends, the
 `debug.graph` description, the Render graph window, debug drawing, freeze
-culling and the LOD and light count views. No overdraw view exists. Metal
+culling and the LOD, light count and overdraw views. Metal
 programmatic capture is refused by macOS 26 for Metal 4 compute encoders,
 and RenderDoc cannot capture this renderer on a driver without
 `descriptorBufferCaptureReplay`, such as the Windows RX 6700 XT's.
@@ -170,9 +170,16 @@ shades.
   and `vkr_packet_write_lod_views` measures draw distance, smallest drawn
   size and levels from its position, without morph motion. The motion view
   copies the camera view.
-- Occlusion is off while it is set: the depth pyramid and its history
-  follow the frame's camera, and Metal accepts a history only for an
-  unchanged camera.
+- On Metal, occlusion tests the depth pyramid built at the frozen camera.
+  `vkr_metal_packet_hzb_frozen_history` looks for a history instance of
+  the frozen view-projection, world and extent before the graph is built;
+  when one exists the frame skips the HZB build, so the instance keeps, and
+  the new graph condition `hzb_read_enabled` keeps `Cull.Classify`'s read.
+  Until one exists the frame builds as usual, and only a build at the
+  frozen camera matches. A history needs an unjittered frame: under the
+  MetalFX upscaler's jitter no pyramid is built, so live and frozen culling
+  both run without occlusion, and frozen culling repeats what live culling
+  did in each configuration. Vulkan turns occlusion off while frozen.
 - The scene runtime keeps the camera of the first world payload after
   `freeze_culling` turns on and builds rooms, scatter proxies, the blend
   list and `view.cull_report` from it
@@ -206,10 +213,25 @@ shades.
 - Both shade by the angle to the viewer so shapes read. The desktop
   pipeline draws no artist view, so neither runs on Vulkan.
 
-An overdraw view is not implemented. Hidden-surface removal on the tiled
-GPU shades opaque pixels once, so a shader counter would count a different
-thing than the cost; a useful view needs a pipeline with no depth test and
-additive blending.
+**Overdraw view.** Render mode `OVERDRAW` (22, `overdraw`) counts the
+surfaces that rasterize under each pixel, hidden or not. Hidden-surface
+removal shades an opaque pixel once on the tiled GPU, so a counter in the
+shading would measure something other than raster load; this view draws
+the geometry itself.
+
+- `Tiled.Opaque` draws every opaque, alpha-tested and Custom-graph bucket
+  with `vkr_metal_tiled_overdraw_fragment`, an additive pipeline
+  (`VKR_METAL_PACKET_BLEND_ADD`) under `tiled_overdraw_state` (no depth
+  test, no depth write), and skips the sky draw. `Tiled.Blend` draws the
+  blended list with `vkr_metal_tiled_overdraw_blend_fragment`. Each surface
+  adds `VKR_EDITOR_OVERDRAW_LAYER` (1/32); the tonemap's
+  `VKR_METAL_PACKET_TONEMAP_FLAG_OVERDRAW` colours the sum with
+  `vkr_editor_overdraw_color`: dark blue 1, blue 2, green 4, yellow 8, red
+  16, white 32 or more.
+- Alpha-tested surfaces count whole triangles, and a Custom graph's draws
+  take the Standard vertex function. The view writes no depth, so the
+  editor's grid shows through, and it builds no depth pyramid.
+- The desktop pipeline does not draw it.
 
 ## Consequences
 
@@ -220,8 +242,8 @@ additive blending.
 - An agent can mark positions, bounds and camera frusta in the Scene and
   check them in a window capture.
 - An agent or a user can fly around a frozen camera's culling result, and
-  see which levels draws select and where many lights overlap. The frozen
-  result draws more than the live camera would, since occlusion is off.
+  see which levels draws select, where many lights overlap and where
+  surfaces stack.
 - A Metal GPU capture from inside the engine waits for Apple to support
   Metal 4 compute encoders in programmatic capture. Xcode's capture layer
   no longer crashes the editor at startup.
@@ -238,7 +260,6 @@ additive blending.
 - macOS supports capturing Metal 4 compute encoders.
 - RenderDoc or the AMD driver supports descriptor buffers for capture, so
   a Vulkan capture can run on the Windows machine.
-- An overdraw view is needed: add a no-depth additive pipeline variant.
 - A crash on another thread's stack overflow needs a report (per-thread
   alternate stacks).
 
@@ -317,13 +338,24 @@ additive blending.
 - Freeze culling, 2026-10-19, same builds, 860 test cases passed, on a
   headless Bistro editor at the tiled pipeline's defaults. At eye
   (-12, 6, 14) `view.cull_report` counted 2567 candidates, 670 outside the
-  view, 126 too small and 1771 drawn; the GPU drew 171 after occlusion.
-  Frozen there and moved to (-70, 60, 75), the report was unchanged with
-  `frozen` true, the GPU drew exactly 1771 and the blend list kept its 277
-  draws. A capture showed only the frozen view's buildings and the cyan
+  view, 126 too small and 1771 drawn, and the GPU drew 1771 in the lit
+  view: under MetalFX's jitter no HZB is built
+  (`visibility.hzb.history_rejection.disabled`). Frozen there and moved to
+  (-70, 60, 75), the report was unchanged with `frozen` true, the GPU drew
+  exactly 1771 and the blend list kept its 277 draws. A capture showed only the frozen view's buildings and the cyan
   frustum. Unfrozen at the same eye the report counted 1054 drawn and the
   blend list 342.
 - LOD view from (-70, 60, 75): Bistro's draws showed levels 0, 1 and 2.
   Light count view at (-12, 6, 14): ramps followed the lamps' ranges. The
   tiled shaders compiled at runtime with no error.
+- Frozen occlusion, same editor: in the LOD view at (-12, 6, 14), which
+  renders unjittered, the GPU drew 171 with `visibility.hzb.rejected`
+  1600. Frozen there and moved to (-70, 60, 75), still in the LOD view, it
+  drew 171 with 1600 rejected and `history_valid` 1, so the frame kept the
+  frozen pyramid. Switched to the lit view (another extent, jittered) it
+  drew 1771 with the HZB disabled, as live culling does there.
+- Overdraw view at (-12, 6, 14): foliage and the tree reached 32 layers or
+  more and walls 4 to 16; frozen and moved away, the frozen draws showed
+  their layers under the cyan frustum. Live in that view the HZB stayed
+  disabled.
 - The Vulkan freeze culling path is compiled on the Mac only.

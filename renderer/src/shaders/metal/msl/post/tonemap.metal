@@ -26,6 +26,8 @@ static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_SCENE_BLUR = 1u << 7u;
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_BLOOM = 1u << 8u;
 // The exposed scene shows in false colour by stops (ADR-099).
 static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR = 1u << 9u;
+// The scene holds overdraw layers, which show as a colour ramp (ADR-127).
+static constant uint VKR_METAL_PACKET_TONEMAP_FLAG_OVERDRAW = 1u << 10u;
 
 // The bloom a tonemap tap adds to its scene-linear sample.
 struct VkrMetalPacketTonemapBloom {
@@ -65,6 +67,10 @@ vkr_metal_packet_post_sample(texture2d<float, access::sample> source,
     float3 bloomed = hdr.rgb + bloom.texture.sample(source_sampler, uv).rgb *
                                    bloom.intensity;
     hdr.rgb = float3(half3(bloomed));
+  }
+  if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_OVERDRAW) != 0u) {
+    hdr.rgb = vkr_editor_overdraw_color(hdr.r / VKR_EDITOR_OVERDRAW_LAYER);
+    return hdr;
   }
   if ((flags & VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR) != 0u) {
     const float luminance =

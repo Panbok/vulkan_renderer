@@ -833,6 +833,56 @@ vkr_metal_packet_select_history_output(VkrMetalPacketRenderer *renderer) {
   return true_v;
 }
 
+/* Whether HZB history instance `instance` holds a pyramid this frame's
+   culling may test: valid, of this world and extent, built at
+   `hzb_select_view_projection`. A rebuilt history must also share the
+   current raster grid; a frozen culling camera's history is never rebuilt,
+   so its grid is the one it froze with (ADR-127). Returns the reason it may
+   not, or VKR_HZB_HISTORY_REJECTION_COUNT. */
+vkr_internal VkrHzbHistoryRejection
+vkr_metal_packet_hzb_history_rejection(
+    const VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketImageInstance *instance, uint64_t completed) {
+  if (!instance->live || !instance->history_valid)
+    return VKR_HZB_HISTORY_INVALID;
+  if (instance->history_producer_submit_value > completed)
+    return VKR_HZB_HISTORY_INCOMPLETE;
+  if (instance->history_world_epoch != renderer->current_hzb_world_epoch)
+    return VKR_HZB_HISTORY_WORLD_CHANGED;
+  if (instance->history_width != renderer->prepared_frame.viewport_width ||
+      instance->history_height != renderer->prepared_frame.viewport_height)
+    return VKR_HZB_HISTORY_EXTENT_CHANGED;
+  if (MemCompare(&instance->history_view_projection,
+                 &renderer->hzb_select_view_projection, sizeof(Mat4)) != 0)
+    return VKR_HZB_HISTORY_CAMERA_CHANGED;
+  /* Another jitter phase does not prove coverage at the current sample. */
+  if (!renderer->hzb_frozen &&
+      MemCompare(&instance->history_raster_view_projection,
+                 &renderer->current_hzb_raster_view_projection,
+                 sizeof(Mat4)) != 0)
+    return VKR_HZB_HISTORY_RASTER_CHANGED;
+  return VKR_HZB_HISTORY_REJECTION_COUNT;
+}
+
+/* Under a frozen culling camera, whether a history built where it stood
+   exists, so the frame keeps it instead of building one from the moving
+   camera's depth. It may still be completing; selection checks that. */
+vkr_internal bool8_t
+vkr_metal_packet_hzb_frozen_history(VkrMetalPacketRenderer *renderer) {
+  VkrMetalPacketImage *slot =
+      vkr_metal_packet_named_image_slot(renderer, "hzb_history");
+  if (!renderer->hzb_frozen || !slot)
+    return false_v;
+  for (uint32_t i = 0u; i < slot->instance_count; ++i) {
+    const VkrHzbHistoryRejection rejection =
+        vkr_metal_packet_hzb_history_rejection(renderer, &slot->instances[i],
+                                               UINT64_MAX);
+    if (rejection == VKR_HZB_HISTORY_REJECTION_COUNT)
+      return true_v;
+  }
+  return false_v;
+}
+
 vkr_internal bool8_t
 vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   if (!renderer || !renderer->active_command_slot)
@@ -840,7 +890,7 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   renderer->selected_hzb_history_instance = UINT32_MAX;
   renderer->prepared_frame.hzb_history_valid = false_v;
   renderer->packet_build.hzb_history_checks_valid = true_v;
-  if (!renderer->prepared_frame.hzb_build_enabled ||
+  if (!renderer->prepared_frame.hzb_read_enabled ||
       (renderer->graph->packet->input.world &&
        renderer->graph->packet->input.world->skinning_count)) {
     renderer->packet_build.hzb_history_rejections[VKR_HZB_HISTORY_DISABLED]++;
@@ -855,26 +905,11 @@ vkr_metal_packet_select_hzb_history(VkrMetalPacketRenderer *renderer) {
   uint64_t newest_producer = 0u;
   for (uint32_t i = 0u; i < slot->instance_count; ++i) {
     const VkrMetalPacketImageInstance *instance = &slot->instances[i];
-    if (i == current)
+    /* The instance this frame builds holds no finished pyramid. */
+    if (i == current && renderer->prepared_frame.hzb_build_enabled)
       continue;
-    VkrHzbHistoryRejection rejection = VKR_HZB_HISTORY_REJECTION_COUNT;
-    if (!instance->live || !instance->history_valid)
-      rejection = VKR_HZB_HISTORY_INVALID;
-    else if (instance->history_producer_submit_value > completed)
-      rejection = VKR_HZB_HISTORY_INCOMPLETE;
-    else if (instance->history_world_epoch != renderer->current_hzb_world_epoch)
-      rejection = VKR_HZB_HISTORY_WORLD_CHANGED;
-    else if (instance->history_width != renderer->prepared_frame.viewport_width ||
-             instance->history_height != renderer->prepared_frame.viewport_height)
-      rejection = VKR_HZB_HISTORY_EXTENT_CHANGED;
-    else if (MemCompare(&instance->history_view_projection,
-                        &renderer->current_hzb_view_projection, sizeof(Mat4)) != 0)
-      rejection = VKR_HZB_HISTORY_CAMERA_CHANGED;
-    /* Another jitter phase does not prove coverage at the current sample. */
-    else if (MemCompare(&instance->history_raster_view_projection,
-                        &renderer->current_hzb_raster_view_projection,
-                        sizeof(Mat4)) != 0)
-      rejection = VKR_HZB_HISTORY_RASTER_CHANGED;
+    const VkrHzbHistoryRejection rejection =
+        vkr_metal_packet_hzb_history_rejection(renderer, instance, completed);
     if (rejection != VKR_HZB_HISTORY_REJECTION_COUNT) {
       renderer->packet_build.hzb_history_rejections[rejection]++;
       continue;

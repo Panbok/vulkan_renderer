@@ -134,6 +134,7 @@ file; `window graph` shows it). `debug.draw` puts lines, boxes, spheres,
 the camera frustum and labels over the Scene by `group`, for `seconds` or
 until `debug.clear`; check them with `view.capture {area: window}`.
 `view.freeze_culling {on}` (Cmd `view.freeze_culling`) keeps culling from the
-current camera while it moves, and `view.capture` modes `lod` and
-`light-count` show draw levels and overlapping lights. After a crash, read `crash-*.txt` beside the session log in
+current camera while it moves, and `view.capture` modes `lod`,
+`light-count` and `overdraw` show draw levels, overlapping lights and
+stacked surfaces. After a crash, read `crash-*.txt` beside the session log in
 `<workspace>/logs/` (stderr for a run without a workspace).

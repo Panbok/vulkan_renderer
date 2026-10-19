@@ -881,11 +881,14 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
     [renderer->tiled_sky_pipelines[sun] release];
     [renderer->tiled_resolve_pipelines[sun] release];
     [renderer->tiled_atmosphere_pipelines[sun] release];
+    [renderer->tiled_overdraw_pipelines[sun] release];
   }
+  [renderer->tiled_overdraw_blend_pipeline release];
   [renderer->tiled_picking_pipeline release];
   [renderer->tiled_text_pipeline release];
   [renderer->tiled_shade_state release];
   [renderer->tiled_sky_state release];
+  [renderer->tiled_overdraw_state release];
   [renderer->tiled_msaa_color release];
   [renderer->tiled_msaa_depth release];
   [renderer->tiled_msaa_sun release];

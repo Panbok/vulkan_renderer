@@ -608,8 +608,9 @@ static const char *const s_render_mode_names[VKR_RENDER_MODE_COUNT] = {
     [VKR_RENDER_MODE_DRAW_REACH] = "draw_reach",
     [VKR_RENDER_MODE_LOD] = "lod",
     [VKR_RENDER_MODE_LIGHT_COUNT] = "light_count",
+    [VKR_RENDER_MODE_OVERDRAW] = "overdraw",
 };
-_Static_assert(VKR_RENDER_MODE_COUNT == 22u,
+_Static_assert(VKR_RENDER_MODE_COUNT == 23u,
                "Name every render mode a case can select");
 
 const char *vkr_harness_shadow_sdf_name(uint8_t mode) {

@@ -627,7 +627,8 @@ vkr_metal_packet_subresource_texture(VkrMetalPacketRenderer *renderer,
 
 /* The artist views that show a value per pixel instead of light (ADR-099):
    normals, base colour, roughness, metallic, material cost, texel density,
-   draw reach (ADR-114), level of detail and light count (ADR-127). The
+   draw reach (ADR-114), level of detail, light count and overdraw
+   (ADR-127). The
    inspection variant writes them, and the tonemap shows them without
    exposure, grading, bloom or the tone curve. */
 vkr_internal bool8_t vkr_metal_packet_data_view(uint32_t mode) {
@@ -635,7 +636,8 @@ vkr_internal bool8_t vkr_metal_packet_data_view(uint32_t mode) {
          (mode >= VKR_RENDER_MODE_BASE_COLOR &&
           mode <= VKR_RENDER_MODE_TEXEL_DENSITY) ||
          mode == VKR_RENDER_MODE_DRAW_REACH || mode == VKR_RENDER_MODE_LOD ||
-         mode == VKR_RENDER_MODE_LIGHT_COUNT;
+         mode == VKR_RENDER_MODE_LIGHT_COUNT ||
+         mode == VKR_RENDER_MODE_OVERDRAW;
 }
 
 /* The frame shows a data view: an artist view, or a shadow view
@@ -714,6 +716,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tonemap(
                ? 1u
                : 0u) |
           (false_color ? VKR_METAL_PACKET_TONEMAP_FLAG_FALSE_COLOR : 0u) |
+          (!editor_rect && render_mode == VKR_RENDER_MODE_OVERDRAW
+               ? VKR_METAL_PACKET_TONEMAP_FLAG_OVERDRAW
+               : 0u) |
           (packet->input.globals.display_transform ==
                    VKR_DISPLAY_TRANSFORM_ACES_FITTED
                ? 4u
@@ -2441,11 +2446,21 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   if (sun_light && pass->desc.color_attachments.length < 2u)
     return false_v;
   /* Standard draws take the base BRDF variant; slot 0's extended ones take
-     the extension variant as they record (ADR-113). */
-  if (!vkr_metal_packet_prepare_gpu_draws(
+     the extension variant as they record (ADR-113). The overdraw view
+     draws every bucket with its layer pipeline. */
+  const bool8_t overdraw =
+      packet->input.globals.render_mode == VKR_RENDER_MODE_OVERDRAW;
+  id<MTLRenderPipelineState> overdraw_pipeline =
+      renderer->tiled_overdraw_pipelines[sun_light ? 1u : 0u];
+  if ((overdraw && !overdraw_pipeline) ||
+      !vkr_metal_packet_prepare_gpu_draws(
           renderer, pass, prepared,
-          renderer->tiled_coverage_pipelines[sun][decals][probes][lighting],
-          renderer->tiled_forward_pipelines[sun][decals][probes][lighting])) {
+          overdraw ? overdraw_pipeline
+                   : renderer->tiled_coverage_pipelines[sun][decals][probes]
+                                                       [lighting],
+          overdraw ? overdraw_pipeline
+                   : renderer->tiled_forward_pipelines[sun][decals][probes]
+                                                      [lighting])) {
     return false_v;
   }
   VkrMetalPacketIndirectPass draws = prepared->indirect;
@@ -2491,6 +2506,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_opaque(
   prepared->tiled.probes = probes;
   prepared->tiled.lighting = lighting;
   prepared->tiled.sun = sun;
+  prepared->tiled.overdraw = overdraw;
   prepared->active = true_v;
   return true_v;
 }
@@ -2991,9 +3007,14 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
     const VkrMetalTiledLighting lighting =
         vkr_metal_packet_tiled_lighting(packet);
     const uint32_t probes = vkr_metal_packet_tiled_probe_variant(packet);
+    /* The overdraw view adds a layer per blended surface; the opaque pass
+       left no depth, so none is hidden (ADR-127). */
+    const bool8_t overdraw =
+        packet->input.globals.render_mode == VKR_RENDER_MODE_OVERDRAW;
     if (!vkr_metal_packet_prepare_draws(
             renderer, &prepared->world.direct,
-            renderer->tiled_blend_pipelines[0][probes][lighting],
+            overdraw ? renderer->tiled_overdraw_blend_pipeline
+                     : renderer->tiled_blend_pipelines[0][probes][lighting],
             renderer->depth_read_state, upload->direct_draws,
             upload->direct_draw_count, upload->world_instances_gpu,
             (uint32_t)target.width, (uint32_t)target.height, view_projection,
@@ -3001,7 +3022,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
       return false_v;
     /* Extended blended draws take the extension variant (ADR-113). */
     prepared->world.direct.extended_pipeline =
-        renderer->tiled_brdf_draws
+        renderer->tiled_brdf_draws && !overdraw
             ? renderer->tiled_blend_pipelines[1][probes][lighting]
             : nil;
     return vkr_metal_packet_prepare_text_draws(
@@ -3419,7 +3440,11 @@ vkr_metal_packet_prepare_frame_state(VkrMetalPacketRenderer *renderer,
   VkrGtaoGpuParams gtao_params = {0};
   vkr_render_graph_prepare_frame(packet, &renderer->bloom_config, &gtao_config,
                                  &renderer->prepared_frame, &gtao_params);
-  renderer->prepared_frame.hzb_build_enabled &= renderer->hzb_enabled;
+  /* The overdraw view writes no depth, so its pyramid would hide nothing
+     (ADR-127). */
+  renderer->prepared_frame.hzb_build_enabled &=
+      renderer->hzb_enabled &&
+      packet->input.globals.render_mode != VKR_RENDER_MODE_OVERDRAW;
   VKR_METAL_DIAGNOSTIC(renderer, "frame_packet",
                        "frame=%llu scene_rendering=%u retained=%u "
                        "retained_extent=%ux%u",
@@ -3453,6 +3478,24 @@ vkr_metal_packet_prepare_frame_state(VkrMetalPacketRenderer *renderer,
   renderer->packet_build.candidate_hash_ns =
       vkr_metrics_elapsed_ns(candidate_hash_start);
 #endif
+  /* A frozen culling camera tests occlusion against the pyramid built where
+     it stood, which the frame keeps instead of rebuilding from the moving
+     camera's depth; until one exists the frame builds as usual, and only a
+     build at the frozen camera can become it (ADR-127). */
+  const VkrCullCamera *frozen =
+      packet->input.world ? packet->input.world->frozen_cull : NULL;
+  renderer->hzb_frozen = frozen != NULL;
+  renderer->hzb_select_view_projection =
+      frozen ? vkr_metal_packet_clip_matrix(
+                   renderer->convert_vulkan_clip_y,
+                   mat4_mul(frozen->projection, frozen->view))
+             : renderer->current_hzb_view_projection;
+  renderer->prepared_frame.hzb_read_enabled =
+      renderer->prepared_frame.hzb_build_enabled;
+  if (renderer->hzb_enabled && vkr_metal_packet_hzb_frozen_history(renderer)) {
+    renderer->prepared_frame.hzb_build_enabled = false_v;
+    renderer->prepared_frame.hzb_read_enabled = true_v;
+  }
 }
 
 /* Builds, compiles and realizes the frame graph. Allocation failures leave

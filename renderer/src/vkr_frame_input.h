@@ -381,8 +381,10 @@ typedef struct VkrWorldPassPayload {
    * draws every candidate at any distance. */
   float32_t draw_distance_scale;
   /** Optional; a frozen camera that culls the camera view instead of the
-   * frame's camera. Occlusion is off while it is set, since the depth
-   * pyramid follows the frame's camera. Valid until submit returns. */
+   * frame's camera. Occlusion tests the depth pyramid built where it stood
+   * when the backend kept one (Metal), and is off otherwise, since a
+   * rebuilt pyramid follows the frame's camera. Valid until submit
+   * returns. */
   const VkrCullCamera *frozen_cull;
   /** Rows in gpu_candidates eligible for the camera opaque/cutout view. */
   uint32_t gpu_camera_opaque_candidate_count;

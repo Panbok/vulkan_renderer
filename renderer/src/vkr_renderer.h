@@ -941,6 +941,9 @@ typedef enum VkrRenderMode {
   /** The local lights that reach each surface as a colour ramp (ADR-127);
    * a data view. */
   VKR_RENDER_MODE_LIGHT_COUNT = 21,
+  /** How many surfaces rasterize under each pixel, hidden or not, opaque,
+   * alpha-tested and blended, as a colour ramp (ADR-127); a data view. */
+  VKR_RENDER_MODE_OVERDRAW = 22,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 

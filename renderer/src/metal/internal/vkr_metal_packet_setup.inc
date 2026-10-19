@@ -468,6 +468,8 @@ typedef enum VkrMetalPacketBlend {
   /* No blending; the first output's alpha selects the samples written
      (alpha to coverage) and is stored as one. */
   VKR_METAL_PACKET_BLEND_COVERAGE,
+  /* The output added to the destination, colour and alpha. */
+  VKR_METAL_PACKET_BLEND_ADD,
 } VkrMetalPacketBlend;
 
 vkr_internal id<MTLRenderPipelineState>
@@ -538,6 +540,14 @@ vkr_metal_packet_create_pipeline_with_targets(
           MTLBlendFactorSource1Color;
       descriptor.colorAttachments[0].sourceAlphaBlendFactor =
           MTLBlendFactorZero;
+      descriptor.colorAttachments[0].destinationAlphaBlendFactor =
+          MTLBlendFactorOne;
+    } else if (blend == VKR_METAL_PACKET_BLEND_ADD) {
+      descriptor.colorAttachments[0].blendingState = MTL4BlendStateEnabled;
+      descriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+      descriptor.colorAttachments[0].destinationRGBBlendFactor =
+          MTLBlendFactorOne;
+      descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
       descriptor.colorAttachments[0].destinationAlphaBlendFactor =
           MTLBlendFactorOne;
     } else if (blend == VKR_METAL_PACKET_BLEND_COVERAGE) {
@@ -1031,6 +1041,26 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
           VKR_METAL_PACKET_ABI_TILED_SKY_ROOT, false_v,
           renderer->tiled_sample_count, constants,
           sun ? @"VKR tiled sky with sun light" : @"VKR tiled sky");
+  /* The overdraw view's layer count over the opaque pass's targets, and
+     over the resolved image in the blend pass (ADR-127). */
+  renderer->tiled_overdraw_pipelines[sun] =
+      vkr_metal_packet_create_pipeline_with_targets(
+          renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+          "vkr_metal_tiled_overdraw_fragment", MTLPixelFormatRGBA16Float,
+          sun_format, VKR_METAL_PACKET_BLEND_ADD,
+          VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+          VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
+          renderer->tiled_sample_count, constants,
+          sun ? @"VKR tiled overdraw with sun light" : @"VKR tiled overdraw");
+  if (!sun)
+    renderer->tiled_overdraw_blend_pipeline =
+        vkr_metal_packet_create_pipeline_with_targets(
+            renderer, fragment, "vkr_metal_tiled_vertex", fragment,
+            "vkr_metal_tiled_overdraw_blend_fragment",
+            MTLPixelFormatRGBA16Float, MTLPixelFormatInvalid,
+            VKR_METAL_PACKET_BLEND_ADD, VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+            VKR_METAL_PACKET_ABI_RECORD_COUNT, false_v, 1u, constants,
+            @"VKR tiled blend overdraw");
   {
     MTL4LibraryFunctionDescriptor *function =
         [MTL4LibraryFunctionDescriptor new];
@@ -1167,6 +1197,7 @@ vkr_metal_packet_build_tiled_sun_pipelines(VkrMetalPacketRenderer *renderer)
     vkr_metal_packet_create_tiled_pass_pipelines(
         renderer, renderer->fragment_library, 1u);
     ok &= renderer->tiled_sky_pipelines[1] != nil &&
+          renderer->tiled_overdraw_pipelines[1] != nil &&
           renderer->tiled_resolve_pipelines[1] != nil &&
           renderer->tiled_atmosphere_pipelines[1] != nil;
     if (ok)
@@ -1553,6 +1584,10 @@ vkr_metal_packet_create_render_states(VkrMetalPacketRenderer *renderer)
   depth.depthWriteEnabled = NO;
   renderer->tiled_sky_state =
       [renderer->device newDepthStencilStateWithDescriptor:depth];
+  /* The overdraw view counts every surface, hidden or not. */
+  depth.depthCompareFunction = MTLCompareFunctionAlways;
+  renderer->tiled_overdraw_state =
+      [renderer->device newDepthStencilStateWithDescriptor:depth];
   [depth release];
   MTL4ArgumentTableDescriptor *table = [MTL4ArgumentTableDescriptor new];
   table.maxBufferBindCount = 3;
@@ -1636,6 +1671,9 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->tiled_atmosphere_pipelines[0], "tiled atmosphere pipeline"},
       {renderer->tiled_resolve_pipelines[0], "tiled resolve pipeline"},
       {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
+      {renderer->tiled_overdraw_pipelines[0], "tiled overdraw pipeline"},
+      {renderer->tiled_overdraw_blend_pipeline,
+       "tiled blend overdraw pipeline"},
       {renderer->sdf_clear_pipeline, "SDF clear pipeline"},
       {renderer->sdf_splat_pipeline, "SDF splat pipeline"},
       {renderer->sdf_convert_pipeline, "SDF convert pipeline"},
@@ -1653,6 +1691,7 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->depth_read_state, "depth-read state"},
       {renderer->tiled_shade_state, "tiled shading depth state"},
       {renderer->tiled_sky_state, "tiled sky depth state"},
+      {renderer->tiled_overdraw_state, "tiled overdraw depth state"},
       {renderer->argument_table, "argument table"},
   };
   for (uint32_t i = 0u; i < ArrayCount(required); ++i) {
