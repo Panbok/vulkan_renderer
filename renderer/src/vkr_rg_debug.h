@@ -163,6 +163,9 @@ bool8_t vkr_rg_describe(const VkrRenderGraph *graph,
 #define VKR_RG_SNAPSHOT_RESOURCE_MAX 512u
 #define VKR_RG_SNAPSHOT_USE_MAX 4096u
 #define VKR_RG_SNAPSHOT_NAME_BYTES 32768u
+/** Slots of the name table; a power of two above the distinct names a full
+ * snapshot holds (pass, resource, format and lifetime names). */
+#define VKR_RG_SNAPSHOT_NAME_SLOTS 2048u
 
 /** How a pass uses a resource, from VkrRgDescribedUse.role. */
 typedef enum VkrRgSnapshotRole {
@@ -247,6 +250,10 @@ typedef struct VkrRgSnapshot {
   uint32_t resource_count;
   char names[VKR_RG_SNAPSHOT_NAME_BYTES];
   uint32_t name_bytes;
+  /** Each distinct name once, open-addressed by its hash; a zero length is
+   * an empty slot. A use names its resource with the resource's own text,
+   * so the many uses of one resource share it. */
+  VkrRgSnapshotName name_slots[VKR_RG_SNAPSHOT_NAME_SLOTS];
   /** Something did not fit: passes, uses, resources or names. */
   bool8_t truncated;
 } VkrRgSnapshot;

@@ -713,6 +713,28 @@ vkr_internal VkrRgSnapshotName vkr_rg_snapshot_name(VkrRgSnapshot *snapshot,
   if (!text || length == 0u) {
     return (VkrRgSnapshotName){0};
   }
+
+  /* A name already stored is shared: every use repeats its resource's name,
+     and a large graph's copies would otherwise fill the table before the
+     resources' own names. */
+  const VkrHashTableKey key = vkr_hash_table_key_string8(
+      (String8){.str = (uint8_t *)text, .length = length});
+  const uint32_t mask = VKR_RG_SNAPSHOT_NAME_SLOTS - 1u;
+  uint32_t slot = (uint32_t)key.hash & mask;
+  uint32_t free_slot = UINT32_MAX;
+  for (uint32_t probe = 0u; probe < VKR_RG_SNAPSHOT_NAME_SLOTS; ++probe) {
+    const VkrRgSnapshotName stored = snapshot->name_slots[slot];
+    if (stored.length == 0u) {
+      free_slot = slot;
+      break;
+    }
+    if (stored.length == length &&
+        MemCompare(snapshot->names + stored.offset, text, length) == 0) {
+      return stored;
+    }
+    slot = (slot + 1u) & mask;
+  }
+
   if (snapshot->name_bytes + length > VKR_RG_SNAPSHOT_NAME_BYTES) {
     snapshot->truncated = true_v;
     return (VkrRgSnapshotName){0};
@@ -721,6 +743,10 @@ vkr_internal VkrRgSnapshotName vkr_rg_snapshot_name(VkrRgSnapshot *snapshot,
                                   .length = (uint32_t)length};
   MemCopy(snapshot->names + snapshot->name_bytes, text, length);
   snapshot->name_bytes += (uint32_t)length;
+  /* A full table still stores the name, only unshared. */
+  if (free_slot != UINT32_MAX) {
+    snapshot->name_slots[free_slot] = name;
+  }
   return name;
 }
 
@@ -828,6 +854,7 @@ bool8_t vkr_rg_snapshot(const VkrRenderGraph *graph, VkrRgSnapshot *out) {
   out->resource_count = 0u;
   out->name_bytes = 0u;
   out->truncated = false_v;
+  MemZero(out->name_slots, sizeof(out->name_slots));
   const VkrRgDescribeVisitor visitor = {
       .user = out,
       .pass = vkr_rg_snapshot_pass,
