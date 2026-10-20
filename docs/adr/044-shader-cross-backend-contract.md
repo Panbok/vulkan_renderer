@@ -559,6 +559,22 @@ with forward `-Z`; depth is `[0,1]`, reversed for cameras (near 1, far 0) and
 forward for shadow maps ([ADR-109](109-reversed-camera-depth.md)), and
 projection/viewport Y lowering is backend aware. Rounded dispatches retain guards required for valid edges. Material
 normal decode reconstructs positive tangent Z; output transfer follows ADR-043.
+A normal-mapped surface whose mesh tangent is zero or parallel to its normal
+has no tangent frame. Since 2026-10-20 the desktop pipeline keeps the
+interpolated normal there, and the clearcoat its geometric normal
+(`vkr_vk_finish_surface_normal` and `vk_gbuffer_resolve` in
+[`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang)).
+Before, the G-buffer resolve rejected the surface: one pixel of the High
+Bistro street walk at 2560×1440 became background in frame 319 of every run,
+and `visibility.gbuffer.resolve_invalid` read 1. Native evidence (Vulkan, RX
+6700 XT, Release): the walk reads 0 and passes
+(`sha256:367f17d723ceec73b79f55f45dc26c5fb476ebd1ee6dcbeb5dd1e2b3b54d0125`),
+and `depth`, `gbuffer_normal`, `gbuffer_diffuse` and
+`resolve_barycentric_lod` at its frame 79 match the build before the change
+bit for bit. The tiled forward shader
+([`tiled.metal`](../../renderer/src/shaders/metal/msl/world/tiled.metal))
+and the shared `vkr_anisotropy_axis` still normalize such a tangent without
+a guard; their result for that case has no native Metal evidence.
 
 The frame input's source instance is 112 bytes, including a CPU skinning index. Native publication/upload
 lowers it once into a 160-byte `VkrPreparedInstanceGPU` with three prepared normal-transform

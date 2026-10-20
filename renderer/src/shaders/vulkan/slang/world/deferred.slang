@@ -2192,25 +2192,32 @@ bool vkr_vk_finish_surface_normal(VkrVkSurfaceSource source,
     if (surface.normal_mapped != 0u)
     {
         if (!vkr_vk_finite_nonzero(surface.tangent_normal) ||
-            !vkr_vk_finite_nonzero(transformed_tangent))
+            !all(isfinite(transformed_tangent)))
             return vkr_vk_reject_surface(source);
-        float3 tangent = normalize(transformed_tangent);
+        // A mesh tangent that is zero, or parallel to the normal at this
+        // point, leaves the normal map no tangent frame. The surface keeps
+        // its interpolated normal there, as the clearcoat normal does, rather
+        // than resolving as a hole.
+        float3 tangent = vkr_vk_finite_nonzero(transformed_tangent)
+                             ? normalize(transformed_tangent)
+                             : float3(0.0f);
         tangent -= dot(tangent, normal) * normal;
-        if (!vkr_vk_finite_nonzero(tangent))
-            return vkr_vk_reject_surface(source);
-        tangent = normalize(tangent);
-        float tangent_handedness =
-            surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
-        // `normal` and `tangent` are unit and orthogonal by the Gram-Schmidt
-        // step above, so the cross product is unit and `mapped` has exactly the
-        // magnitude of `tangent_normal`, which the guard above already
-        // established as nonzero. Both former checks were implied.
-        float3 bitangent =
-            normalize(cross(normal, tangent)) * tangent_handedness;
-        float3 mapped = tangent * surface.tangent_normal.x +
-                        bitangent * surface.tangent_normal.y +
-                        normal * surface.tangent_normal.z;
-        normal = normalize(mapped);
+        if (vkr_vk_finite_nonzero(tangent))
+        {
+            tangent = normalize(tangent);
+            float tangent_handedness =
+                surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
+            // `normal` and `tangent` are unit and orthogonal by the
+            // Gram-Schmidt step above, so the cross product is unit and
+            // `mapped` has exactly the magnitude of `tangent_normal`, which
+            // the guard above already established as nonzero.
+            float3 bitangent =
+                normalize(cross(normal, tangent)) * tangent_handedness;
+            float3 mapped = tangent * surface.tangent_normal.x +
+                            bitangent * surface.tangent_normal.y +
+                            normal * surface.tangent_normal.z;
+            normal = normalize(mapped);
+        }
     }
     surface.normal = normal;
     return true;
@@ -2491,14 +2498,22 @@ void vk_gbuffer_resolve(uint3 dispatch_id : SV_DispatchThreadID,
                 material.material_clearcoat.z);
             float3 tangent = mul(instance.model,
                                  float4(surface.object_tangent.xyz, 0.0f)).xyz;
-            tangent = normalize(tangent - dot(tangent, surface.geometric_normal) *
-                                            surface.geometric_normal);
-            float tangent_handedness =
-                surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
-            float3 bitangent = normalize(cross(surface.geometric_normal, tangent)) *
-                              tangent_handedness;
-            clearcoat_normal = normalize(tangent * sampled.x + bitangent * sampled.y +
-                                         surface.geometric_normal * sampled.z);
+            tangent -= dot(tangent, surface.geometric_normal) *
+                       surface.geometric_normal;
+            // Without a tangent frame the coat keeps the geometric normal,
+            // as in the transmission shading.
+            if (vkr_vk_finite_nonzero(tangent))
+            {
+                tangent = normalize(tangent);
+                float tangent_handedness =
+                    surface.object_tangent.w < 0.0f ? -1.0f : 1.0f;
+                float3 bitangent =
+                    normalize(cross(surface.geometric_normal, tangent)) *
+                    tangent_handedness;
+                clearcoat_normal =
+                    normalize(tangent * sampled.x + bitangent * sampled.y +
+                              surface.geometric_normal * sampled.z);
+            }
         }
     }
     if (root.clearcoat_texture != 0u)

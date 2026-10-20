@@ -151,12 +151,12 @@ features; each needs this baseline before it can claim a gain.
    pass set is High's: `AO.*`, `Post.Bloom.*` and `FSR31.*` run,
    `Shadow.SunContact` and `Shadow.SunRay*` do not; no `Froxel.*` pass runs
    because Bistro has no froxel fog volume. The orbit passes
-   (`sha256:59aa55c1…`). The walk fails one assertion in two runs
-   (`sha256:6c33184a…`, `35606b2f…`): `visibility.gbuffer.resolve_invalid`
-   counts one rejected surface at frame 319, the same frame each time, and
-   does so on the clean commit `9ef1c728` too, so it predates the peer
-   edits. It must be explained or fixed before the walk can pass; the
-   assertion stays.
+   (`sha256:59aa55c1…`). The walk failed one assertion in every run,
+   including on the clean commit `9ef1c728`:
+   `visibility.gbuffer.resolve_invalid` counted one rejected surface at
+   frame 319, a normal-mapped pixel whose mesh tangent was parallel to its
+   normal. Since 2026-10-20 such a surface keeps its interpolated normal
+   (ADR-044), and the walk passes.
 3. **Budget lines.**
    [`desktop.pass_groups.json`](../../tools/budgets/desktop.pass_groups.json)
    groups the graph passes, and `vkr_harness profile --pass-groups <file>`
@@ -256,5 +256,3 @@ features; each needs this baseline before it can claim a gain.
   `graphics_preset_gates` changes High, the two cases must change with it.
 - A hidden window never reaches the display; the presentation cost of a
   visible full-screen window is not in the measurement.
-- The walk's rejected surface at frame 319 blocks a passing walk report
-  until it is explained.
