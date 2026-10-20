@@ -148,13 +148,14 @@ typedef struct VkrEditorPerfGraph {
   uint64_t median_first;
   uint64_t median_last;
   /* The flow's layout of graph `layout_graph`: each pass's dependency depth
-     and its place in its row. */
+     and its place in its row, and its producer-to-consumer edges. */
   uint32_t layout_graph;
   uint16_t depth[VKR_EDITOR_PERF_GRAPH_PASSES];
   uint16_t slot[VKR_EDITOR_PERF_GRAPH_PASSES];
   uint16_t row_width[VKR_EDITOR_PERF_GRAPH_PASSES];
   uint32_t depth_count;
   uint32_t widest;
+  uint32_t edge_count;
 } VkrEditorPerfGraph;
 
 /* Series the Memory tab stacks: the largest allocators or GPU owners, then

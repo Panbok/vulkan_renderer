@@ -31,6 +31,11 @@ static const char *const GRAPH_VALUE_TIP[VKR_EDITOR_PERF_GRAPH_VALUE_COUNT] = {
 #define GRAPH_NODE_H 40.0f
 #define GRAPH_COLUMN_W 200.0f
 #define GRAPH_ROW_H 66.0f
+/* Curved flow edges at most. A curve is 24 quads of the UI's geometry, a
+   straight edge one, and a desktop graph has hundreds of edges: past this,
+   only the selected pass's lineage curves, up to this many, and the rest are
+   straight, so the wires leave room for the nodes drawn over them. */
+#define GRAPH_CURVED_EDGES_MAX 160u
 /* Rows of the detail panel's lines at most. */
 #define GRAPH_DETAIL_LINES 96u
 
@@ -698,6 +703,33 @@ vkr_internal void graph_list(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
 /* ------------------------------------------------------------------------ */
 /* Flow                                                                      */
 
+/* The producer of use `u` of scheduled pass `pass` when that use draws an
+   edge: a read of what a pass wrote, the first use of its pair. UINT32_MAX
+   otherwise. */
+vkr_internal uint32_t graph_edge_producer(const VkrRecordingGraph *shape,
+                                          const VkrRecordingGraphPass *pass,
+                                          uint32_t u) {
+  const VkrRecordingGraphUse *use = &shape->uses[pass->first_use + u];
+  if (use->resource == UINT32_MAX ||
+      (use->flags & VKR_RECORDING_GRAPH_USE_WRITE)) {
+    return UINT32_MAX;
+  }
+  const uint32_t producer = graph_producer(shape, use->resource, pass->order);
+  if (producer >= graph_pass_count(shape)) {
+    return UINT32_MAX;
+  }
+  /* An earlier use of this pair draws the edge. */
+  for (uint32_t e = 0u; e < u; ++e) {
+    const VkrRecordingGraphUse *before = &shape->uses[pass->first_use + e];
+    if (before->resource != UINT32_MAX &&
+        !(before->flags & VKR_RECORDING_GRAPH_USE_WRITE) &&
+        graph_producer(shape, before->resource, pass->order) == producer) {
+      return UINT32_MAX;
+    }
+  }
+  return producer;
+}
+
 /* Depth of each scheduled pass: one past the deepest pass whose writes it
    reads; and its place among its depth's passes, in execution order. */
 vkr_internal void graph_layout(VkrEditorPerfGraph *graph,
@@ -728,6 +760,7 @@ vkr_internal void graph_layout(VkrEditorPerfGraph *graph,
   }
   graph->depth_count = 0u;
   graph->widest = 0u;
+  graph->edge_count = 0u;
   MemZero(graph->row_width, sizeof(graph->row_width));
   for (uint32_t i = 0u; i < scheduled; ++i) {
     const uint32_t p = by_order[i];
@@ -744,6 +777,10 @@ vkr_internal void graph_layout(VkrEditorPerfGraph *graph,
       if (producer < passes && graph->depth[producer] != UINT16_MAX) {
         depth = Max(depth, (uint32_t)graph->depth[producer] + 1u);
       }
+    }
+    for (uint32_t u = 0u; u < pass->use_count; ++u) {
+      graph->edge_count +=
+          graph_edge_producer(shape, pass, u) != UINT32_MAX ? 1u : 0u;
     }
     depth = Min(depth, (uint32_t)VKR_EDITOR_PERF_GRAPH_PASSES - 1u);
     graph->depth[p] = (uint16_t)depth;
@@ -859,33 +896,15 @@ vkr_internal void graph_flow(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   graph_lineage(shape, selected, marks);
 
   /* Edges: one per producer and consumer pair, under the nodes. */
-  uint32_t edges = 0u;
+  uint32_t curved_edges = 0u;
   for (uint32_t p = 0u; p < passes && canvas->zoom > 0.0f; ++p) {
     const VkrRecordingGraphPass *pass = &shape->passes[p];
     if (!graph_scheduled(pass)) {
       continue;
     }
     for (uint32_t u = 0u; u < pass->use_count; ++u) {
-      const VkrRecordingGraphUse *use = &shape->uses[pass->first_use + u];
-      if (use->resource == UINT32_MAX ||
-          (use->flags & VKR_RECORDING_GRAPH_USE_WRITE)) {
-        continue;
-      }
-      const uint32_t producer =
-          graph_producer(shape, use->resource, pass->order);
-      if (producer >= passes) {
-        continue;
-      }
-      /* An earlier use of this pair drew the edge already. */
-      bool8_t drawn = false_v;
-      for (uint32_t e = 0u; e < u && !drawn; ++e) {
-        const VkrRecordingGraphUse *before = &shape->uses[pass->first_use + e];
-        drawn =
-            before->resource != UINT32_MAX &&
-            !(before->flags & VKR_RECORDING_GRAPH_USE_WRITE) &&
-            graph_producer(shape, before->resource, pass->order) == producer;
-      }
-      if (drawn) {
+      const uint32_t producer = graph_edge_producer(shape, pass, u);
+      if (producer == UINT32_MAX) {
         continue;
       }
       const Vec2 from_node = graph_node_at(graph, producer);
@@ -895,13 +914,32 @@ vkr_internal void graph_flow(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                          from_node.y + GRAPH_NODE_H});
       const Vec2 to = vkr_editor_perf_canvas_point(
           canvas, (Vec2){to_node.x + GRAPH_NODE_W * 0.5f, to_node.y});
-      const float32_t bow = Max((to.y - from.y) * 0.5f, 18.0f * zoom);
-      const Vec2 points[4] = {
-          from, {from.x, from.y + bow}, {to.x, to.y - bow}, to};
       const bool8_t upstream =
           (marks[producer] == 1u) && (marks[p] == 1u || p == selected);
       const bool8_t downstream =
           (marks[p] == 2u) && (marks[producer] == 2u || producer == selected);
+      const bool8_t curved = curved_edges < GRAPH_CURVED_EDGES_MAX &&
+                             (graph->edge_count <= GRAPH_CURVED_EDGES_MAX ||
+                              upstream || downstream);
+      /* Equal end and control points draw a straight wire. */
+      const float32_t bow =
+          curved ? Max((to.y - from.y) * 0.5f, 18.0f * zoom) : 0.0f;
+      const Vec2 points[4] = {
+          from, {from.x, from.y + bow}, {to.x, to.y - bow}, to};
+      /* The wire lies inside its points' box; one wholly off the canvas
+         is left out. */
+      Vec2 low = points[0];
+      Vec2 high = points[0];
+      for (uint32_t i = 1u; i < ArrayCount(points); ++i) {
+        low = (Vec2){Min(low.x, points[i].x), Min(low.y, points[i].y)};
+        high = (Vec2){Max(high.x, points[i].x), Max(high.y, points[i].y)};
+      }
+      if (high.x < 0.0f || low.x > canvas->size_pt.x || high.y < 0.0f ||
+          low.y > canvas->size_pt.y) {
+        continue;
+      }
+      curved_edges += curved ? 1u : 0u;
+      const VkrRecordingGraphUse *use = &shape->uses[pass->first_use + u];
       const VkrRecordingGraphResource *resource =
           &shape->resources[use->resource];
       /* Wider for larger resources: a few MB reads as a thick wire. */
@@ -919,7 +957,6 @@ vkr_internal void graph_flow(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
       (void)vkr_ui_push_id_u64(ui, (uint64_t)p * 4096u + u);
       vkr_ui_bezier(ui, string8_lit("edge"), points, width, &wire);
       (void)vkr_ui_pop_id(ui);
-      ++edges;
     }
   }
 
@@ -1054,7 +1091,8 @@ vkr_internal void graph_flow(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
           ui->frame_allocator,
           "%u passes, %u links%s%s  \xc2\xb7  wheel zooms, drag pans  "
           "\xc2\xb7  a pass's inputs in violet, what reads it in orange",
-          shape->scheduled_count, edges, hidden ? "  \xc2\xb7  " : "",
+          shape->scheduled_count, graph->edge_count,
+          hidden ? "  \xc2\xb7  " : "",
           hidden ? (hidden == 1u ? "1 culled pass not shown"
                                  : "culled passes not shown")
                  : ""),
