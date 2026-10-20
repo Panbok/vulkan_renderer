@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "id": "performance.bistro.vulkan.high_orbit_1440",
+  "suite": "performance",
+  "description": "ADR-087 desktop budget, steady cost: the material orbit on the Vulkan desktop pipeline at 2560x1440 physical pixels. Cases do not read the Graphics settings, so the renderer block spells out the High preset.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [
+    2560,
+    1440
+  ],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 120,
+    "measure": 300
+  },
+  "renderer": {
+    "backend": "vulkan",
+    "editor": false,
+    "skybox": true,
+    "taa_enabled": true,
+    "antialiasing": "fsr",
+    "image_sharpness": 0.25,
+    "render_scale": 1.0,
+    "dynamic_resolution": false,
+    "texture_max_load_dimension": 0,
+    "shadow_preset": "high",
+    "shadow_cascades": 4,
+    "shadow_contact": false,
+    "shadow_sdf": "off",
+    "render_mode": "default",
+    "exposure_mode": "automatic",
+    "manual_exposure": 0.3,
+    "exposure_compensation_ev": 0.0,
+    "exposure_reset_frame": 4294967295,
+    "bloom_enabled": true,
+    "bloom_threshold": 1.0,
+    "bloom_knee": 0.5,
+    "bloom_intensity": 0.05,
+    "gtao_enabled": true,
+    "gtao_radius": 0.5,
+    "gtao_power": 2.2,
+    "dof_enabled": false,
+    "motion_blur_enabled": false
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [
+      -20,
+      6,
+      6
+    ],
+    "radius": 18,
+    "height": 7,
+    "revolutions": 1.4,
+    "duration_seconds": 7,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    {
+      "metric": "draw.world.calls_issued",
+      "stat": "min",
+      "min": 1
+    },
+    {
+      "metric": "visibility.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    },
+    {
+      "metric": "visibility.transmission.gpu_visible.overflow",
+      "stat": "max",
+      "max": 0
+    }
+  ]
+}
