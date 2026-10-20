@@ -79,18 +79,19 @@ static void test_registry_counts_registered_dmemory(void) {
   assert(allocator.registry_slot != 0);
   assert(!vkr_allocator_register_name(&allocator, "test.registry.twice"));
 
-  void *small =
+  void *small_block =
       vkr_allocator_alloc(&allocator, KB(1), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  void *medium =
+  void *medium_block =
       vkr_allocator_alloc(&allocator, KB(2), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  void *large =
+  void *large_block =
       vkr_allocator_alloc(&allocator, KB(4), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  assert(small != NULL && medium != NULL && large != NULL);
+  assert(small_block != NULL && medium_block != NULL && large_block != NULL);
 
-  vkr_allocator_free(&allocator, medium, KB(2), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  small = vkr_allocator_realloc(&allocator, small, KB(1), KB(3),
-                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  assert(small != NULL);
+  vkr_allocator_free(&allocator, medium_block, KB(2),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  small_block = vkr_allocator_realloc(&allocator, small_block, KB(1), KB(3),
+                                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  assert(small_block != NULL);
 
   VkrAllocatorRegistrySample sample = registry_find(allocator.registry_slot);
   assert(registry_name_equals(sample.name, "test.registry.dmemory"));
@@ -102,8 +103,10 @@ static void test_registry_counts_registered_dmemory(void) {
   assert(sample.live_bytes == KB(3) + KB(4));
   assert(!sample.has_arena);
 
-  vkr_allocator_free(&allocator, small, KB(3), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  vkr_allocator_free(&allocator, large, KB(4), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(&allocator, small_block, KB(3),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(&allocator, large_block, KB(4),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   sample = registry_find(allocator.registry_slot);
   assert(sample.free_count == 3);
   assert(sample.live_bytes == 0);

@@ -92,7 +92,7 @@ vkr_internal void test_draw_census_camera_state(void) {
   const uint32_t frustum = vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FRUSTUM);
   const uint32_t distance = vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_DISTANCE);
   const uint32_t occluded = vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_OCCLUDED);
-  const uint32_t small =
+  const uint32_t caster_small =
       vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_CASTER_SMALL);
   const struct {
     uint32_t early;
@@ -106,7 +106,7 @@ vkr_internal void test_draw_census_camera_state(void) {
       {frustum, drawn, VKR_GPU_DRAW_CENSUS_FRUSTUM},
       {distance, drawn, VKR_GPU_DRAW_CENSUS_DISTANCE},
       {occluded, drawn, VKR_GPU_DRAW_CENSUS_OCCLUDED},
-      {small, drawn, VKR_GPU_DRAW_CENSUS_NOT_CAMERA},
+      {caster_small, drawn, VKR_GPU_DRAW_CENSUS_NOT_CAMERA},
       /* Deferred by the earlier frame's pyramid. */
       {VKR_GPU_DRAW_DEFERRED, drawn, VKR_GPU_DRAW_CENSUS_DRAWN_LATE},
       {VKR_GPU_DRAW_DEFERRED, occluded, VKR_GPU_DRAW_CENSUS_OCCLUDED},
