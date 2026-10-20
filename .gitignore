@@ -20,6 +20,8 @@ build_novcpkg
 # Perf re-run cases the editor writes beside the recordings they replay;
 # local inputs like the scene assets, so authoritative runs stay clean.
 /tools/cases/rerun/
+# Scratch files the CPU test suites write; the tester creates the directory.
+/tests/tmp/
 # Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*
 !assets/textures/bistro_cafe_probe.vkt.bake.json
