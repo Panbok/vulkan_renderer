@@ -22,7 +22,10 @@ the budget; 16 dynamic lights reach 20.7 ms at native scale and, before the
 levels, 17.1 to 17.5 ms at the lowest scale (see
 [Adaptive quality measurement](#adaptive-quality-measurement)).
 The remaining design is in
-[Tiled graphics pipeline](../proposals/tiled-pipeline.md).
+[Tiled graphics pipeline](../proposals/tiled-pipeline.md). The desktop
+pipeline's budget (decision 4, 2026-10-20) has a first baseline that misses
+it by 7.1 to 10.0 ms at p95
+([Desktop pipeline baseline](#desktop-pipeline-baseline)).
 
 ## Context
 
@@ -111,8 +114,10 @@ pipeline rather than a backend mechanism.
    image in motion: preset gates, cuts inside the most expensive pass group
    and SMAA T2x come first. Epic has no budget. The cases, profile and
    budget lines are in
-   [Desktop frame budget](../proposals/desktop-frame-budget.md); no
-   baseline is recorded yet.
+   [Desktop frame budget](../proposals/desktop-frame-budget.md). The first
+   baseline, accepted on 2026-10-20, misses the budget by 7.1 ms (orbit)
+   and 10.0 ms (street walk) at p95
+   ([Desktop pipeline baseline](#desktop-pipeline-baseline)).
 5. The tiled pipeline shades opaque surfaces forward in one multisampled
    render pass (owner decision 2026-10-05). On Bistro, with a depth pre-pass
    in both, it costs the same as a G-buffer kept in tile memory without
@@ -525,6 +530,61 @@ trace and cloud draw 0.35 and 0.32 ms. By inspection, street-view captures
 of both pipelines (`tiled_bistro_capture` and the removed Metal desktop case
 `tiled_bistro_capture_desktop`) match in sky and sunlit surfaces; the tiled
 one lacks lamp light, glass and ambient occlusion.
+
+### Desktop pipeline baseline
+
+The owner accepted this first measurement of decision 4's desktop budget on
+2026-10-20. Release, commit `117122e6` in a clean worktree (`dirty: false`),
+RX 6700 XT with driver 26.6.3, Windows 10, Ryzen 5 2600; Bistro with the High
+preset at 2560×1440 physical pixels in a hidden window with immediate
+presentation. Each report has five children, stable warmup and an exclusive
+GPU lane, and is authoritative with no authority reason, GPU error or memory
+pressure:
+
+```sh
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/bistro_vulkan_high_orbit_1440.case.json \
+  --profile tools/profiles/performance-windowed-gpu-submission-vulkan.json
+```
+
+The street walk uses `bistro_vulkan_high_street_walk_1440.case.json`, and
+the budget lines `performance-windowed-gpu.json` with
+`--pass-groups tools/budgets/desktop.pass_groups.json`.
+
+| Case | `gpu.submission` median / p95 / max | Child medians / p95s | `frame.wall` p95 | Report |
+|---|---|---|---|---|
+| Orbit | 18.31 / 23.76 / 25.37 ms | 18.29–18.41 / 23.56–24.02 ms | 24.09 ms | `sha256:8c08b1eaef80a96fb1d2b8d625847bf7ed589cd5729b896751325a87864d09dc` |
+| Street walk | 22.43 / 26.68 / 35.49 ms | 22.33–22.49 / 26.65–26.71 ms | 27.02 ms | `sha256:90b9cb9a0c9f5bf0157ddef60d7cf289fafed44c7ed669fda45662c8725f216d` |
+
+Budget lines, median / p95 in ms, from per-pass timestamps (orbit
+`sha256:31a25ff104a6a72ae2d458baca00bf1bf4faf2dc94163ff74716d52c37acb1b0`,
+walk
+`sha256:00aecef575851cc79ad6da6ea26aa5fe722e6287fb519e92b31e6212af4aea30`):
+
+| Line | Orbit | Street walk |
+|---|---|---|
+| Culling | 0.04 / 0.04 | 0.04 / 0.04 |
+| Shadows | 0.23 / 0.80 | 0.00 / 0.42 |
+| Visibility | 0.58 / 0.67 | 0.65 / 0.84 |
+| Surface | 2.67 / 2.78 | 2.69 / 2.80 |
+| Lighting | 8.80 / 12.90 | 12.28 / 15.39 |
+| Media | 0.54 / 0.76 | 0.57 / 0.66 |
+| Glass and blend | 2.44 / 3.59 | 2.93 / 3.94 |
+| Reconstruction and post | 2.86 / 2.96 | 2.94 / 2.99 |
+| Editor and debug | 0 / 0 | 0 / 0 |
+
+Lighting is the largest line: `Lighting.Deferred.Fullscreen` takes 6.74 and
+8.14 ms at the median and `Shadow.LocalMask` 2.05 and 4.24 ms. Next come
+`FSR31.Upscale` (1.87 and 1.95 ms), `GBuffer.Resolve.Fullscreen` (1.10 and
+1.14 ms) and `AO.Evaluate` (1.01 and 0.99 ms). Shadow-map redraws stay at
+0.23 ms median or less. Bistro has no froxel fog volume, so the Media line
+holds no `Froxel.*` pass. Passes can overlap, so the lines are not a
+partition of `gpu.submission`; the orbit's medians sum to 18.2 ms. The same
+runs at `9ef1c728`, before the tangent-frame fix
+([ADR-044](044-shader-cross-backend-contract.md)), gave 18.21 / 23.50 ms
+and 22.18 / 26.45 ms, and the walk failed its
+`visibility.gbuffer.resolve_invalid` assertion. A speed claim against this
+baseline still needs its own matched before and after reports.
 
 ### Glass evidence
 
@@ -1368,6 +1428,9 @@ multisampled target.
 
 - The tiled-pipeline prototype cannot reach the budget with the planned
   techniques.
+- The desktop pipeline still misses its budget after the fixed-resolution
+  levers of the desktop frame budget proposal; dynamic resolution then
+  reopens [ADR-052](052-vulkan-fsr31-upscaling.md).
 - Apple9 dynamic register allocation changes the measured cost structure on M3
   or M4 ([ADR-083](083-supported-hardware-matrix.md)).
 - An opaque fragment variant must discard or write depth: hidden-surface
