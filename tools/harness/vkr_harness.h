@@ -388,6 +388,14 @@ typedef struct VkrHarnessRendererConfig {
       while `taa_enabled` holds: `fsr` (FSR 3.1 native anti-aliasing, the
       default) or `smaa_t2x`. */
   char antialiasing[16];
+  /** The Graphics settings' soft shadows (the sun's angular diameter and
+      local lights' source radii) and local-light shadows. Both default on,
+      as in the High preset; stored summaries before version 20 read as on. */
+  bool8_t shadow_soft;
+  bool8_t shadow_local;
+  /** World draw-distance multiplier, the Graphics settings' view distance;
+      1, the default, is High's. */
+  float32_t draw_distance_scale;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {

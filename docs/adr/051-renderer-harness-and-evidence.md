@@ -140,6 +140,15 @@ cases without temporal antialiasing keep their identities, and
 `effective_config` always reports it. Capture-summary version 19 stores it; readers migrate version 18
 and older as `smaa_t2x`, the only method they ran.
 
+`renderer.shadow_soft` and `renderer.shadow_local` (default true) and
+`renderer.draw_distance_scale` (finite, above 0 and at most 4; default 1) set
+the Graphics settings' soft shadows, local-light shadows and view distance,
+which act on the runtime rather than the frame globals. The defaults are the
+High preset's values and the ones children ran before the controls existed, so
+only a value away from them enters the workload fingerprint.
+Capture-summary version 20 stores them in former padding before the camera;
+readers migrate version 19 and older with the defaults.
+
 `profile` collects capture-free repetitions. `snapshot` runs replay children,
 produces canonical captures with metadata and digests, and compares compatible
 baselines. `autotest` keeps these two results separate. `compare` rechecks a

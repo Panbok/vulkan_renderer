@@ -570,6 +570,7 @@ typedef struct VkrHarnessRendererFields {
   float64_t motion_blur_shutter_angle;
   float64_t image_sharpness;
   float64_t render_scale;
+  float64_t draw_distance_scale;
   float64_t dynamic_resolution_min_scale;
   float64_t dynamic_resolution_max_scale;
   float64_t dynamic_resolution_target_frame_ms;
@@ -655,6 +656,10 @@ void vkr_harness_renderer_set_defaults(VkrHarnessRendererConfig *renderer) {
   /* Unset means "do not clamp", so an existing case keeps every packed probe
      and its workload fingerprint is unchanged by these controls existing. */
   renderer->ibl_probe_limit = UINT32_MAX;
+  /* The runtime's values when no Graphics settings apply, which are High's. */
+  renderer->shadow_soft = true_v;
+  renderer->shadow_local = true_v;
+  renderer->draw_distance_scale = 1.0f;
 }
 
 /** Parses the renderer fields, staging the controls validated later. */
@@ -692,6 +697,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer_fields(
           &renderer->transmission_depth_diagnostic_enabled, error) ||
       !vkr_harness_manifest_f64(doc, token, "render_scale", false_v,
                                 &fields->render_scale, error) ||
+      !vkr_harness_manifest_f64(doc, token, "draw_distance_scale", false_v,
+                                &fields->draw_distance_scale, error) ||
       !vkr_harness_manifest_bool(doc, token, "dynamic_resolution", false_v,
                                  &renderer->dynamic_resolution, error) ||
       !vkr_harness_manifest_f64(doc, token, "dynamic_resolution_min_scale",
@@ -930,7 +937,8 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
       fields->exposure_compensation_ev < -FLT_MAX ||
       fields->exposure_compensation_ev > FLT_MAX ||
       !isfinite(fields->image_sharpness) || fields->image_sharpness < 0.0 ||
-      fields->image_sharpness > 1.0 ||
+      fields->image_sharpness > 1.0 || !isfinite(fields->draw_distance_scale) ||
+      fields->draw_distance_scale <= 0.0 || fields->draw_distance_scale > 4.0 ||
       !isfinite(fields->white_balance_temperature) ||
       fields->white_balance_temperature < -1.0 ||
       fields->white_balance_temperature > 1.0 ||
@@ -945,7 +953,7 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
         "Renderer backend, preset, "
         "render/exposure/display-transform/anti-aliasing mode, "
         "exposure/white-balance/grading/bloom/GTAO/DoF/motion-blur/"
-        "image-sharpness controls, "
+        "image-sharpness/draw-distance controls, "
         "probe limit, or cascade count is invalid");
     return false_v;
   }
@@ -976,6 +984,7 @@ vkr_internal bool8_t vkr_harness_apply_renderer_controls(
   renderer->motion_blur_shutter_angle =
       (float32_t)fields->motion_blur_shutter_angle;
   renderer->image_sharpness = (float32_t)fields->image_sharpness;
+  renderer->draw_distance_scale = (float32_t)fields->draw_distance_scale;
   return true_v;
 }
 
@@ -1081,6 +1090,10 @@ vkr_internal bool8_t vkr_harness_parse_renderer_shadows(
                                  &renderer->shadow_sdsm, error) ||
       !vkr_harness_manifest_bool(doc, token, "shadow_contact", false_v,
                                  &renderer->shadow_contact, error) ||
+      !vkr_harness_manifest_bool(doc, token, "shadow_soft", false_v,
+                                 &renderer->shadow_soft, error) ||
+      !vkr_harness_manifest_bool(doc, token, "shadow_local", false_v,
+                                 &renderer->shadow_local, error) ||
       !vkr_harness_manifest_string(doc, token, "shadow_sdf", false_v,
                                    shadow_sdf, sizeof(shadow_sdf), error)) {
     return false_v;
@@ -1136,6 +1149,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "transmission_depth_diagnostic_enabled",
       "image_sharpness",
       "render_scale",
+      "draw_distance_scale",
       "texture_max_load_dimension",
       "dynamic_resolution",
       "dynamic_resolution_min_scale",
@@ -1150,6 +1164,8 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       "shadow_pcf_early_out",
       "shadow_sdsm",
       "shadow_contact",
+      "shadow_soft",
+      "shadow_local",
       "shadow_sdf",
       "render_mode",
       "exposure_mode",
@@ -1207,6 +1223,7 @@ vkr_internal bool8_t vkr_harness_parse_renderer(
       .motion_blur_shutter_angle = renderer->motion_blur_shutter_angle,
       .image_sharpness = renderer->image_sharpness,
       .render_scale = renderer->render_scale,
+      .draw_distance_scale = renderer->draw_distance_scale,
       .dynamic_resolution_min_scale = VKR_DYNAMIC_RESOLUTION_DEFAULT_MIN_SCALE,
       .dynamic_resolution_max_scale = VKR_DYNAMIC_RESOLUTION_DEFAULT_MAX_SCALE,
       .dynamic_resolution_target_frame_ms =

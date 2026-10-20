@@ -219,6 +219,12 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
   /* Off keeps the identity cases had before far-cascade EVSM existed. */
   if (vkr_harness_shadow_evsm_enabled(renderer))
     ADD("renderer.shadow_evsm", "%u", 1u);
+  /* On, the runtime's value before these were case controls, keeps the
+     identity those cases had. */
+  if (!renderer->shadow_soft)
+    ADD("renderer.shadow_soft", "%u", 0u);
+  if (!renderer->shadow_local)
+    ADD("renderer.shadow_local", "%u", 0u);
   ADD("renderer.render_mode", "%s", renderer->render_mode);
   ADD("renderer.display_transform", "%s", renderer->display_transform);
   ADD("renderer.white_balance", "%.9g,%.9g",
@@ -265,6 +271,11 @@ vkr_internal bool8_t vkr_harness_renderer_fields(
      support. Non-default scale remains a distinct deterministic workload. */
   if (renderer->render_scale != 1.0f) {
     ADD("renderer.render_scale", "%.9g", renderer->render_scale);
+  }
+  /* One, the runtime's value before this was a case control, keeps the
+     identity those cases had. */
+  if (renderer->draw_distance_scale != 1.0f) {
+    ADD("renderer.draw_distance_scale", "%.9g", renderer->draw_distance_scale);
   }
   /* Zero, the full chain, preserves identities authored before the limit. */
   if (renderer->texture_max_load_dimension != 0u) {

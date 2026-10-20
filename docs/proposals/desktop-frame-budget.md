@@ -45,9 +45,12 @@ reports.
   has no preset field (`vkr_harness_child_apply_renderer` in
   [`vkr_harness_child.c`](../../tools/harness/vkr_harness_child.c)), and it
   leaves bloom and GTAO off unless it turns them on. The two cases spell out
-  High gate by gate. Soft, local and filtered far shadows, fog, volumetric
-  fog, subsurface scattering, reflection probes and view distance have no
-  case field and take High's values. These variables change gates without a
+  High gate by gate. Soft and local shadows and the draw distance
+  (`shadow_soft`, `shadow_local`, `draw_distance_scale`), reflection probes
+  (`ibl_probe_limit`) and filtered far shadows (the shadow preset) default to
+  High's values. Fog, volumetric fog and subsurface scattering have no case
+  field; Bistro has no fog, froxel volume or subsurface data, so they do no
+  work there. These variables change gates without a
   change to the workload fingerprint, which records only `VKR_SHADOW_EVSM`
   and `VKR_POST_TRANSFORM_CACHE`: `VKR_SUN_RAY_SHADOWS`,
   `VKR_SUN_CONTACT_SHADOWS`, `VKR_BLOOM_DISABLED`, `VKR_GTAO_DISABLED`,

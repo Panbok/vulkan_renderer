@@ -216,8 +216,14 @@ static const VkrHarnessSummaryLayout s_summary_layouts[] = {
         offsetof(VkrHarnessCaseV18, content_scale),
         offsetof(VkrHarnessCaseV18, asset_context),
         offsetof(VkrHarnessCaseV18, single_capture_session)),
+    [19] = VKR_HARNESS_SUMMARY_LAYOUT_SESSION(
+        VkrHarnessCaptureSummaryHeaderV19, VkrHarnessCaseV19,
+        sizeof(VkrHarnessRendererConfigV19),
+        offsetof(VkrHarnessCaseV19, content_scale),
+        offsetof(VkrHarnessCaseV19, asset_context),
+        offsetof(VkrHarnessCaseV19, single_capture_session)),
     [VKR_HARNESS_CAPTURE_SUMMARY_VERSION] = VKR_HARNESS_SUMMARY_LAYOUT_SESSION(
-        VkrHarnessCaptureSummaryHeaderV19, VkrHarnessCase,
+        VkrHarnessCaptureSummaryHeaderV20, VkrHarnessCase,
         sizeof(VkrHarnessRendererConfig),
         offsetof(VkrHarnessCase, content_scale),
         offsetof(VkrHarnessCase, asset_context),
@@ -378,6 +384,13 @@ static void vkr_harness_case_from_stored(uint32_t version,
     /* Summaries before the anti-aliasing method ran SMAA T2x, or the portable
        TAA it replaced; neither was FSR. */
     VKR_STRING_COPY_LITERAL(renderer->antialiasing, "smaa_t2x");
+  }
+  if (version <= 19u) {
+    /* Children before these controls left the runtime's soft and local
+       shadows on and its draw distance at one. */
+    renderer->shadow_soft = true_v;
+    renderer->shadow_local = true_v;
+    renderer->draw_distance_scale = 1.0f;
   }
 }
 
@@ -1141,7 +1154,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
       (uint64_t)report->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
       (uint64_t)report->artifact_count * sizeof(VkrHarnessArtifact);
-  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV19) +
+  const uint64_t size = sizeof(VkrHarnessCaptureSummaryHeaderV20) +
                         capture_bytes + artifact_bytes;
   Scratch scratch = scratch_create(transient);
   uint8_t *bytes = arena_alloc(transient, size, ARENA_MEMORY_TAG_ARRAY);
@@ -1150,8 +1163,8 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
     return false_v;
   }
   MemZero(bytes, size);
-  VkrHarnessCaptureSummaryHeaderV19 *header =
-      (VkrHarnessCaptureSummaryHeaderV19 *)bytes;
+  VkrHarnessCaptureSummaryHeaderV20 *header =
+      (VkrHarnessCaptureSummaryHeaderV20 *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
   header->version = VKR_HARNESS_CAPTURE_SUMMARY_VERSION;
   header->capture_count = report->capture_count;

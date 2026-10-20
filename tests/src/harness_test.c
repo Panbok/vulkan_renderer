@@ -457,6 +457,9 @@ vkr_internal void test_harness_case_parser(void) {
   assert(parsed.renderer.gtao_power == VKR_GTAO_DEFAULT_POWER);
   assert(!parsed.renderer.transmission_depth_diagnostic_enabled);
   assert(parsed.renderer.ibl_probe_limit == UINT32_MAX);
+  assert(parsed.renderer.shadow_soft);
+  assert(parsed.renderer.shadow_local);
+  assert(parsed.renderer.draw_distance_scale == 1.0f);
   assert(parsed.renderer.render_scale == 1.0f);
   assert(parsed.renderer.render_width == 0u);
   assert(parsed.renderer.render_height == 0u);
@@ -646,6 +649,21 @@ vkr_internal void test_harness_case_parser(void) {
            dynamic_case, dynamic_key);
   assert(!vkr_harness_case_parse(antialiasing_case, strlen(antialiasing_case),
                                  "memory", &parsed, &backend_error));
+  /* The Graphics settings' gates a case turns away from High. */
+  char gate_case[2048];
+  snprintf(gate_case, sizeof(gate_case),
+           "%.*s\"shadow_soft\":false,\"shadow_local\":false,"
+           "\"draw_distance_scale\":0.75,%s",
+           (int)(dynamic_key - dynamic_case), dynamic_case, dynamic_key);
+  assert(vkr_harness_case_parse(gate_case, strlen(gate_case), "memory", &parsed,
+                                &backend_error));
+  assert(!parsed.renderer.shadow_soft);
+  assert(!parsed.renderer.shadow_local);
+  assert(parsed.renderer.draw_distance_scale == 0.75f);
+  snprintf(gate_case, sizeof(gate_case), "%.*s\"draw_distance_scale\":0,%s",
+           (int)(dynamic_key - dynamic_case), dynamic_case, dynamic_key);
+  assert(!vkr_harness_case_parse(gate_case, strlen(gate_case), "memory",
+                                 &parsed, &backend_error));
   char editor_dynamic[2048];
   snprintf(editor_dynamic, sizeof(editor_dynamic), "%s", dynamic_case);
   editor_value = strstr(editor_dynamic, "\"editor\":false");
@@ -1105,6 +1123,30 @@ vkr_internal void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.shadow_map_size = 2048u;
+  /* Soft and local shadows on and draw distance one are what children ran
+     before these were case controls; only a case that turns one away from
+     them names a new workload. */
+  case_manifest.renderer.shadow_soft = false_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.shadow_soft = true_v;
+  case_manifest.renderer.shadow_local = false_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.shadow_local = true_v;
+  case_manifest.renderer.draw_distance_scale = 0.75f;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.draw_distance_scale = 1.0f;
   case_manifest.resize_round_trip = true_v;
   case_manifest.resize_width = 80u;
   case_manifest.resize_height = 72u;
@@ -1737,6 +1779,9 @@ vkr_internal void test_harness_report_shape(void) {
   report.case_manifest.renderer.taa_enabled = false_v;
   VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.antialiasing,
                           "smaa_t2x");
+  report.case_manifest.renderer.shadow_soft = false_v;
+  report.case_manifest.renderer.shadow_local = true_v;
+  report.case_manifest.renderer.draw_distance_scale = 0.75f;
   snprintf(report.case_manifest.renderer.exposure_mode,
            sizeof(report.case_manifest.renderer.exposure_mode), "automatic");
   snprintf(report.case_manifest.renderer.display_transform,
@@ -1823,6 +1868,9 @@ vkr_internal void test_harness_report_shape(void) {
   assert(strstr(json, "\"shadow_map_size\":4096") != NULL);
   assert(strstr(json, "\"taa_enabled\":false") != NULL);
   assert(strstr(json, "\"antialiasing\":\"smaa_t2x\"") != NULL);
+  assert(strstr(json, "\"shadow_soft\":false") != NULL);
+  assert(strstr(json, "\"shadow_local\":true") != NULL);
+  assert(strstr(json, "\"draw_distance_scale\":0.75") != NULL);
   assert(strstr(json, "\"display_transform\":\"gt7\"") != NULL);
   assert(strstr(json, "\"white_balance_temperature\":-0.25") != NULL);
   assert(strstr(json, "\"white_balance_tint\":0.125") != NULL);
@@ -1984,6 +2032,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   char legacy_v15_path[VKR_HARNESS_PATH_MAX];
   char legacy_v17_path[VKR_HARNESS_PATH_MAX];
   char legacy_v18_path[VKR_HARNESS_PATH_MAX];
+  char legacy_v19_path[VKR_HARNESS_PATH_MAX];
   char current_path[VKR_HARNESS_PATH_MAX];
   snprintf(legacy_path, sizeof(legacy_path), "%s/legacy.bin", directory);
   snprintf(legacy_v2_path, sizeof(legacy_v2_path), "%s/legacy-v2.bin",
@@ -2001,6 +2050,8 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   snprintf(legacy_v17_path, sizeof(legacy_v17_path), "%s/legacy-v17.bin",
            directory);
   snprintf(legacy_v18_path, sizeof(legacy_v18_path), "%s/legacy-v18.bin",
+           directory);
+  snprintf(legacy_v19_path, sizeof(legacy_v19_path), "%s/legacy-v19.bin",
            directory);
   snprintf(current_path, sizeof(current_path), "%s/current.bin", directory);
   VkrHarnessCaptureSummaryHeaderV3 *legacy = calloc(1u, sizeof(*legacy));
@@ -2400,6 +2451,30 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(summary.case_manifest.content_scale == 1.25f);
   assert(strcmp(summary.profile.id, "legacy.v18.profile") == 0);
 
+  /* Version 20 added soft and local shadows and the draw distance after the
+   * anti-aliasing method; version-19 children ran all three as High. */
+  VkrHarnessCaptureSummaryHeaderV19 *legacy_v19 =
+      calloc(1u, sizeof(*legacy_v19));
+  assert(legacy_v19);
+  MemCopy(legacy_v19->magic, magic, sizeof(magic));
+  legacy_v19->version = 19u;
+  legacy_v19->tool = VKR_HARNESS_TOOL_SNAPSHOT;
+  legacy_v19->exit_code = VKR_HARNESS_EXIT_PASS;
+  VKR_STRING_COPY_LITERAL(legacy_v19->case_manifest.renderer.antialiasing,
+                          "fsr");
+  legacy_v19->case_manifest.content_scale = 1.75f;
+  VKR_STRING_COPY_LITERAL(legacy_v19->profile.id, "legacy.v19.profile");
+  assert(vkr_harness_atomic_write(legacy_v19_path, legacy_v19,
+                                  sizeof(*legacy_v19), &error));
+  free(legacy_v19);
+  assert(vkr_harness_capture_summary_read(legacy_v19_path, arena, &summary));
+  assert(strcmp(summary.case_manifest.renderer.antialiasing, "fsr") == 0);
+  assert(summary.case_manifest.renderer.shadow_soft);
+  assert(summary.case_manifest.renderer.shadow_local);
+  assert(summary.case_manifest.renderer.draw_distance_scale == 1.0f);
+  assert(summary.case_manifest.content_scale == 1.75f);
+  assert(strcmp(summary.profile.id, "legacy.v19.profile") == 0);
+
   report.case_manifest.single_capture_session = true_v;
   report.case_manifest.capture_count = 1u;
   report.case_manifest.captures[0].at_frame = 8u;
@@ -2408,6 +2483,9 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   report.case_manifest.renderer.texture_max_load_dimension = 2048u;
   report.case_manifest.renderer.graphics_pipeline = VKR_GRAPHICS_PIPELINE_TILED;
   VKR_STRING_COPY_LITERAL(report.case_manifest.renderer.antialiasing, "fsr");
+  report.case_manifest.renderer.shadow_soft = false_v;
+  report.case_manifest.renderer.shadow_local = false_v;
+  report.case_manifest.renderer.draw_distance_scale = 0.5f;
   assert(
       vkr_harness_capture_summary_write(current_path, &report, arena, &error));
   uint8_t *current_bytes = NULL;
@@ -2417,9 +2495,12 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   uint32_t current_version = 0u;
   assert(current_size >= 12u);
   MemCopy(&current_version, current_bytes + 8u, sizeof(current_version));
-  assert(current_version == 19u);
+  assert(current_version == 20u);
   assert(vkr_harness_capture_summary_read(current_path, arena, &summary));
   assert(strcmp(summary.case_manifest.renderer.antialiasing, "fsr") == 0);
+  assert(!summary.case_manifest.renderer.shadow_soft);
+  assert(!summary.case_manifest.renderer.shadow_local);
+  assert(summary.case_manifest.renderer.draw_distance_scale == 0.5f);
   assert(summary.capture_count == 1u);
   assert(summary.case_manifest.single_capture_session);
   assert(summary.case_manifest.captures[0].at_frame == 8u);
@@ -2479,6 +2560,7 @@ vkr_internal void test_harness_capture_summary_legacy_compatibility(void) {
   assert(unlink(legacy_v15_path) == 0);
   assert(unlink(legacy_v17_path) == 0);
   assert(unlink(legacy_v18_path) == 0);
+  assert(unlink(legacy_v19_path) == 0);
   assert(unlink(current_path) == 0);
   assert(rmdir(directory) == 0);
   arena_destroy(arena);

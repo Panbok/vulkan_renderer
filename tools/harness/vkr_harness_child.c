@@ -1678,6 +1678,9 @@ vkr_harness_child_shadow_config(const VkrHarnessCase *case_manifest) {
   config.pcf_uniform_early_out = case_manifest->renderer.shadow_pcf_early_out;
   config.sdsm_enabled = case_manifest->renderer.shadow_sdsm;
   config.sun_contact = case_manifest->renderer.shadow_contact;
+  /* Soft shadows also cover local lights' authored source radii, as the
+     Graphics settings apply them. */
+  config.local_shadow_soft = case_manifest->renderer.shadow_soft;
   config.sun_sdf_mode = case_manifest->renderer.shadow_sdf_mode;
   config.far_cascade_evsm =
       vkr_harness_shadow_evsm_enabled(&case_manifest->renderer);
@@ -1708,6 +1711,12 @@ vkr_internal bool8_t vkr_harness_child_apply_renderer(
     return false_v;
   }
   application->shadow_config = application->shadow_system.config;
+  /* The Graphics settings' gates that act on the runtime rather than the
+     frame globals. */
+  application->disable_soft_shadows = !case_manifest->renderer.shadow_soft;
+  application->disable_local_shadows = !case_manifest->renderer.shadow_local;
+  application->draw_distance_scale =
+      case_manifest->renderer.draw_distance_scale;
   if (string_equals(case_manifest->renderer.render_mode, "lighting")) {
     application->globals.render_mode = VKR_RENDER_MODE_LIGHTING;
   } else if (string_equals(case_manifest->renderer.render_mode, "normal")) {
