@@ -169,6 +169,140 @@ vkr_internal void test_harness_hash_and_statistics(void) {
   printf("  test_harness_hash_and_statistics PASSED\n");
 }
 
+vkr_internal void test_harness_pass_groups(void) {
+  printf("  Running test_harness_pass_groups...\n");
+  VkrHarnessPassGroups groups = {0};
+  VkrHarnessError error = {0};
+  const char *invalid_groups[] = {
+      "[]",
+      "[{\"name\":\"\",\"passes\":[\"A.*\"]}]",
+      "[{\"name\":\"unassigned\",\"passes\":[\"A.*\"]}]",
+      "[{\"name\":\"A\",\"passes\":[\"A.*\"]},"
+      "{\"name\":\"A\",\"passes\":[\"B.*\"]}]",
+      "[{\"name\":\"A\",\"passes\":[\"\"]}]",
+      "[{\"name\":\"A\",\"passes\":[\"A*.B\"]}]",
+      "[{\"name\":\"A\",\"passes\":[\"A.*\"]},"
+      "{\"name\":\"B\",\"passes\":[\"A.*\"]}]",
+      "[{\"name\":\"A\",\"passes\":[\"A.*\"],\"budget_ms\":1}]",
+  };
+  for (uint32_t i = 0; i < ArrayCount(invalid_groups); ++i) {
+    char json[512];
+    snprintf(json, sizeof(json),
+             "{\"schema_version\":1,\"id\":\"budget.test\",\"groups\":%s}",
+             invalid_groups[i]);
+    assert(!vkr_harness_pass_groups_parse(json, strlen(json), "memory", &groups,
+                                          &error));
+    assert(strncmp(error.code, "pass_groups.", 12u) == 0);
+  }
+
+  /* "HZB.Build" sits in two groups: exactly in Visibility and as the text of
+     the Mips wildcard. */
+  const char *groups_json =
+      "{\"schema_version\":1,\"id\":\"budget.test\",\"groups\":["
+      "{\"name\":\"Culling\",\"passes\":[\"Cull.*\",\"Transmission.Cull.*\"]},"
+      "{\"name\":\"Glass\",\"passes\":[\"Transmission.*\","
+      "\"VBuffer.Transmission.*\"]},"
+      "{\"name\":\"Visibility\",\"passes\":[\"VBuffer.*\",\"HZB.Build\"]},"
+      "{\"name\":\"Mips\",\"passes\":[\"HZB.Build*\"]},"
+      "{\"name\":\"Empty\",\"passes\":[\"Missing.*\"]}]}";
+  assert(vkr_harness_pass_groups_parse(groups_json, strlen(groups_json),
+                                       "memory", &groups, &error));
+  assert(groups.group_count == 5u && strcmp(groups.id, "budget.test") == 0);
+
+  /* Catalog order; each comment names the group the most specific pattern
+     picks. */
+  const char *names[] = {
+      "Cull.Classify",            /* Culling */
+      "Transmission.Cull.Encode", /* Culling, not Transmission.* */
+      "Transmission.Shade.0",     /* Glass */
+      "VBuffer.Transmission.0",   /* Glass, not VBuffer.* */
+      "VBuffer.Opaque",           /* Visibility */
+      "HZB.Build",                /* Visibility, not HZB.Build* */
+      "HZB.BuildMip.0",           /* Mips */
+      "Editor.Grid",              /* unassigned */
+  };
+  VkrHarnessPassResult passes[ArrayCount(names)];
+  MemZero(passes, sizeof(passes));
+  for (uint32_t i = 0; i < ArrayCount(names); ++i) {
+    snprintf(passes[i].name, sizeof(passes[i].name), "%s", names[i]);
+  }
+  /* Frame 1 culls, omits, and disables passes, whose 9 ms must not count,
+     and times one pass in an unsupported scope. */
+  const uint8_t timed =
+      VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID;
+  const uint8_t flags[] = {
+      timed,
+      timed,
+      timed,
+      timed,
+      timed,
+      timed,
+      timed,
+      timed,
+      VKR_HARNESS_PASS_FLAG_CULLED,
+      VKR_HARNESS_PASS_FLAG_OMITTED,
+      timed,
+      VKR_HARNESS_PASS_FLAG_CPU_VALID |
+          VKR_HARNESS_PASS_FLAG_GPU_UNSUPPORTED_SCOPE,
+      VKR_HARNESS_PASS_FLAG_DISABLED,
+      timed,
+      timed,
+      timed,
+  };
+  const float64_t gpu[] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0,
+                           9.0, 9.0, 4.0, 9.0, 9.0,  32.0, 64.0, 128.0};
+  Arena *persistent = arena_create(MB(1), MB(1));
+  Arena *transient = arena_create(MB(1), MB(1));
+  assert(persistent && transient);
+  const VkrHarnessArenas arenas = {.persistent = persistent,
+                                   .transient = transient};
+  VkrHarnessPassGroupResult *results = NULL;
+  uint32_t result_count = 0u;
+  assert(vkr_harness_compute_pass_group_results(
+      &arenas, &groups, 2u, ArrayCount(names), passes, gpu, flags, &results,
+      &result_count, &error));
+  assert(result_count == 6u);
+
+  const struct {
+    const char *name;
+    uint32_t first_pass;
+    uint32_t pass_count;
+    uint64_t sample_count;
+    uint64_t invalid_count;
+    float64_t total;
+  } expected[] = {
+      {"Culling", 0u, 2u, 2u, 0u, 3.0},
+      /* Only Glass loses frame 1 to the unsupported scope. */
+      {"Glass", 2u, 2u, 1u, 1u, 12.0},
+      {"Visibility", 4u, 2u, 2u, 0u, 80.0},
+      {"Mips", 6u, 1u, 2u, 0u, 128.0},
+      /* A group that matched no pass costs nothing in every frame. */
+      {"Empty", 0u, 0u, 2u, 0u, 0.0},
+      {"unassigned", 7u, 1u, 2u, 0u, 256.0},
+  };
+  for (uint32_t i = 0; i < ArrayCount(expected); ++i) {
+    const VkrHarnessPassGroupResult *result = &results[i];
+    assert(strcmp(result->name, expected[i].name) == 0);
+    assert(result->pass_count == expected[i].pass_count);
+    for (uint32_t member = 0; member < result->pass_count; ++member) {
+      assert(result->passes[member] == expected[i].first_pass + member);
+    }
+    assert(result->gpu_ms.sample_count == expected[i].sample_count);
+    assert(result->gpu_ms.invalid_count == expected[i].invalid_count);
+    assert(result->gpu_ms.total == expected[i].total);
+  }
+
+  /* With every pass assigned, no "unassigned" line is written. */
+  assert(vkr_harness_compute_pass_group_results(
+      &arenas, &groups, 1u, ArrayCount(names) - 1u, passes, gpu, flags,
+      &results, &result_count, &error));
+  assert(result_count == 5u &&
+         strcmp(results[result_count - 1u].name, "Empty") == 0);
+  arena_destroy(transient);
+  arena_destroy(persistent);
+  printf("  test_harness_pass_groups PASSED\n");
+}
+
 vkr_internal void test_harness_current_frame_work_metrics(void) {
   printf("  Running test_harness_current_frame_work_metrics...\n");
   assert(vkr_harness_metric_is_current_frame_work("visibility.objects_tested"));
@@ -3446,6 +3580,7 @@ bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_json_integer_and_escaped_key_boundaries();
   test_harness_hash_and_statistics();
+  test_harness_pass_groups();
   test_harness_current_frame_work_metrics();
   test_harness_case_parser();
   test_harness_case_assertion_limits();

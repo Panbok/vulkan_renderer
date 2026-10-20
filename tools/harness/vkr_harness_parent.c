@@ -508,6 +508,15 @@ vkr_internal bool8_t vkr_harness_aggregate_runs(
   } else {
     ok = false_v;
   }
+  /* Budget lines read the same window and catalog order as the pass rows.
+     They are reporting only and feed no verdict or fingerprint. */
+  if (ok && report->pass_groups_source &&
+      !vkr_harness_compute_pass_group_results(
+          arenas, report->pass_groups_source, aggregate_frames, pass_count,
+          report->passes, pass_gpu, pass_flags, &report->pass_groups,
+          &report->pass_group_count, error)) {
+    ok = false_v;
+  }
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
   return ok;
 }
@@ -847,12 +856,26 @@ vkr_internal void vkr_harness_apply_verdict(VkrHarnessReport *report,
                                         "environment.profile_constraint");
   }
 }
+
+/** Rejects a run whose profile or pass-groups file failed to load. An
+    unreadable file is a missing instrument, not a malformed one. */
+vkr_internal VkrHarnessExitCode
+vkr_harness_reject_manifest(const VkrHarnessError *error) {
+  const bool8_t missing = vkr_harness_manifest_error_missing(error);
+  vkr_harness_stderr("%s: %s\n", error->code, error->message);
+  const VkrHarnessExitCode exit_code =
+      missing ? VKR_HARNESS_EXIT_MISSING_BASELINE : VKR_HARNESS_EXIT_INVALID;
+  vkr_harness_emit_result(missing ? "missing_baseline" : "invalid", exit_code,
+                          NULL, NULL);
+  return exit_code;
+}
 #endif
 
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,
                             const char *artifact_root_override,
-                            VkrHarnessRecord record) {
+                            VkrHarnessRecord record,
+                            const char *pass_groups_path) {
 #if !VKR_METRICS_ENABLED
   (void)executable;
   (void)repo_root;
@@ -860,6 +883,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   (void)profile_path;
   (void)artifact_root_override;
   (void)record;
+  (void)pass_groups_path;
   vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                           NULL);
@@ -884,15 +908,15 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   if (!vkr_harness_profile_load_context(repo_root, profile_path,
                                         case_manifest.asset_context, &profile,
                                         &error)) {
-    /* An unreadable profile is a missing instrument, not a malformed one. */
-    const bool8_t missing = string_n_equals(error.code, "path.", 5u) ||
-                            string_equals(error.code, "manifest.read");
-    vkr_harness_stderr("%s: %s\n", error.code, error.message);
-    const VkrHarnessExitCode exit_code =
-        missing ? VKR_HARNESS_EXIT_MISSING_BASELINE : VKR_HARNESS_EXIT_INVALID;
-    vkr_harness_emit_result(missing ? "missing_baseline" : "invalid", exit_code,
-                            NULL, NULL);
-    return exit_code;
+    return vkr_harness_reject_manifest(&error);
+  }
+  /* Loaded once before any child runs, so a bad file costs no repetition.
+     The report borrows it until the report is written below. */
+  VkrHarnessPassGroups pass_groups = {0};
+  if (pass_groups_path &&
+      !vkr_harness_pass_groups_load(repo_root, pass_groups_path, &pass_groups,
+                                    &error)) {
+    return vkr_harness_reject_manifest(&error);
   }
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   if (!vkr_harness_renderer_backend_resolve(
@@ -931,6 +955,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       .profile = profile,
       .profile_compatible = true_v,
       .recording = record != VKR_HARNESS_RECORD_NONE,
+      .pass_groups_source = pass_groups_path ? &pass_groups : NULL,
       .subsystem_mask = subsystem_plan.effective_mask,
       /* A profile may raise the repetition count but never lower it. */
       .requested_repetitions =

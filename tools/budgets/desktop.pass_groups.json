@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "id": "budget.desktop",
+  "description": "ADR-087 desktop budget lines: Vulkan graph passes grouped by frame stage.",
+  "groups": [
+    {
+      "name": "Culling",
+      "passes": [
+        "Cull.*",
+        "Transmission.Cull.*",
+        "Animation.Skinning"
+      ]
+    },
+    {
+      "name": "Shadows",
+      "passes": [
+        "Shadow.Cascade.*",
+        "Shadow.Far.*",
+        "Shadow.Local.*",
+        "Shadow.Moments.*"
+      ]
+    },
+    {
+      "name": "Visibility",
+      "passes": [
+        "VBuffer.*",
+        "HZB.*",
+        "SDSM.Reduce"
+      ]
+    },
+    {
+      "name": "Surface",
+      "passes": [
+        "GBuffer.Resolve.*",
+        "AO.*",
+        "Subsurface.Gather"
+      ]
+    },
+    {
+      "name": "Lighting",
+      "passes": [
+        "Shadow.LocalMask",
+        "Shadow.Sun*",
+        "Volume.*",
+        "DiffuseVolume.*",
+        "IBL.Bake",
+        "Reflection.Raster",
+        "Lighting.Deferred.*"
+      ]
+    },
+    {
+      "name": "Media",
+      "passes": [
+        "Sky.*",
+        "Clouds.*",
+        "Froxel.*",
+        "Fog.Apply.*"
+      ]
+    },
+    {
+      "name": "Glass and blend",
+      "passes": [
+        "Transmission.*",
+        "VBuffer.Transmission.*",
+        "World.Blend.*",
+        "World.FeedbackCopy.*"
+      ]
+    },
+    {
+      "name": "Reconstruction and post",
+      "passes": [
+        "FSR31.*",
+        "Temporal.*",
+        "Post.*",
+        "MSAA.Compose",
+        "UI.*"
+      ]
+    },
+    {
+      "name": "Editor and debug",
+      "passes": [
+        "Editor.*",
+        "Picking.*",
+        "Animation.Preview",
+        "Debug.GpuSpike"
+      ]
+    }
+  ]
+}

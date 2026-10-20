@@ -569,6 +569,50 @@ typedef struct VkrHarnessPassResult {
   uint64_t gpu_unsupported_scope_count;
 } VkrHarnessPassResult;
 
+/**
+ * Bounds of a `profile --pass-groups` file: named frame budget lines, each a
+ * list of pass-name patterns. A pattern ending in `*` matches every pass name
+ * that starts with the text before it; any other pattern matches one name.
+ */
+#define VKR_HARNESS_PASS_GROUPS_SCHEMA_VERSION 1u
+#define VKR_HARNESS_MAX_PASS_GROUPS 16u
+#define VKR_HARNESS_MAX_PASS_GROUP_PATTERNS 16u
+#define VKR_HARNESS_PASS_GROUP_NAME_MAX 64u
+#define VKR_HARNESS_PASS_GROUP_PATTERN_MAX 128u
+
+typedef struct VkrHarnessPassGroup {
+  char name[VKR_HARNESS_PASS_GROUP_NAME_MAX];
+  char patterns[VKR_HARNESS_MAX_PASS_GROUP_PATTERNS]
+               [VKR_HARNESS_PASS_GROUP_PATTERN_MAX];
+  uint32_t pattern_count;
+} VkrHarnessPassGroup;
+
+/**
+ * A parsed pass-groups file. It is reporting only: no fingerprint, policy, or
+ * verdict reads it.
+ */
+typedef struct VkrHarnessPassGroups {
+  /* The repository-relative path as given, and the digest of its bytes. */
+  char path[VKR_HARNESS_PATH_MAX];
+  char sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  VkrHarnessPassGroup groups[VKR_HARNESS_MAX_PASS_GROUPS];
+  uint32_t group_count;
+} VkrHarnessPassGroups;
+
+/**
+ * One budget line over the aggregated measured frames: statistics of the
+ * per-frame sum of GPU time over its passes. `passes` indexes
+ * `VkrHarnessReport.passes` in catalog order and lives in the arena that holds
+ * the results.
+ */
+typedef struct VkrHarnessPassGroupResult {
+  char name[VKR_HARNESS_PASS_GROUP_NAME_MAX];
+  const uint32_t *passes;
+  uint32_t pass_count;
+  VkrHarnessStatistics gpu_ms;
+} VkrHarnessPassGroupResult;
+
 typedef struct VkrHarnessProvenance {
   char started_at[40];
   char ended_at[40];
@@ -800,6 +844,12 @@ typedef struct VkrHarnessReport {
   uint32_t metric_count;
   VkrHarnessPassResult *passes;
   uint32_t pass_count;
+  /* Set by `profile --pass-groups` only and written beside `passes`. The
+     source is borrowed from vkr_harness_profile_run(), which outlives the
+     report write; the results come from the persistent arena like `passes`. */
+  const VkrHarnessPassGroups *pass_groups_source;
+  VkrHarnessPassGroupResult *pass_groups;
+  uint32_t pass_group_count;
   uint64_t events_dropped;
   uint64_t event_subjects_truncated;
   VkrHarnessEvent *events;
@@ -869,6 +919,32 @@ bool8_t vkr_harness_profile_load(const char *repository_root,
                                  const char *relative_manifest_path,
                                  VkrHarnessProfile *out_profile,
                                  VkrHarnessError *out_error);
+/**
+ * Whether a manifest load failed because the file is missing or unreadable
+ * (`path.*`, `manifest.read`) rather than malformed. Such a file is a missing
+ * instrument, not an invalid one.
+ */
+bool8_t vkr_harness_manifest_error_missing(const VkrHarnessError *error);
+/**
+ * Parses a pass-groups file (schema_version 1). Rejects unknown keys, an empty
+ * or oversized group list, an empty, repeated, or reserved ("unassigned")
+ * group name, a group without patterns, an empty pattern, a `*` anywhere but
+ * last, and a pattern listed twice in the file. Failures carry a
+ * `pass_groups.*` code. `source_path` and the digest of `json` name the file
+ * in reports.
+ */
+bool8_t vkr_harness_pass_groups_parse(const char *json, uint64_t json_length,
+                                      const char *source_path,
+                                      VkrHarnessPassGroups *out_groups,
+                                      VkrHarnessError *out_error);
+/**
+ * Reads and parses a repository-relative pass-groups file. A missing or
+ * unreadable file keeps the code vkr_harness_manifest_error_missing() accepts.
+ */
+bool8_t vkr_harness_pass_groups_load(const char *repository_root,
+                                     const char *relative_path,
+                                     VkrHarnessPassGroups *out_groups,
+                                     VkrHarnessError *out_error);
 
 bool8_t vkr_harness_camera_is_orthographic(VkrHarnessCameraMode mode);
 bool8_t vkr_harness_camera_prepare(VkrHarnessCamera *camera,
@@ -1027,6 +1103,28 @@ bool8_t vkr_harness_statistics_compute(const float64_t *samples,
  */
 bool8_t vkr_harness_gpu_pass_samples_complete(const uint8_t *flags,
                                               uint64_t sample_count);
+
+/**
+ * Statistics of each pass group's per-frame GPU sum over `frame_count` frames
+ * of `gpu_ms` and `flags`, indexed `frame * pass_count + pass` in the order of
+ * `passes`.
+ *
+ * A pass joins the group of its most specific matching pattern: the longest
+ * literal text wins, and an exact pattern beats a wildcard of the same text.
+ * Passes no pattern matches form a trailing "unassigned" group, emitted only
+ * when it is non-empty. In a frame, a GPU-valid pass adds its time, a culled,
+ * disabled, or omitted pass adds zero, and any other pass leaves the frame
+ * invalid for its group alone.
+ *
+ * Results and their pass indices come from `arenas->persistent`; the scratch
+ * buffers are scoped to `arenas->transient`.
+ */
+bool8_t vkr_harness_compute_pass_group_results(
+    const VkrHarnessArenas *arenas, const VkrHarnessPassGroups *groups,
+    uint32_t frame_count, uint32_t pass_count,
+    const VkrHarnessPassResult *passes, const float64_t *gpu_ms,
+    const uint8_t *flags, VkrHarnessPassGroupResult **out_groups,
+    uint32_t *out_group_count, VkrHarnessError *out_error);
 
 VkrHarnessComparisonResult vkr_harness_compare_rgba8(
     const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,

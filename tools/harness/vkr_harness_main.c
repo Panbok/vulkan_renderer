@@ -33,6 +33,8 @@ vkr_internal void vkr_harness_usage(void) {
   vkr_harness_stderr(
       "usage: vkr_harness <profile|snapshot|autotest|compare|baseline|"
       "perf-compare> ...\n"
+      "  vkr_harness profile ... [--pass-groups <groups.json>]\n"
+      "    Adds aggregate.pass_groups: per-frame GPU sums over pass groups.\n"
       "  vkr_harness perf-compare --before <report.json|run dir> "
       "--after <report.json|run dir>\n"
       "      [--threshold-pct P] [--metric NAME]... [--passes N]\n"
@@ -156,6 +158,15 @@ VKR_MAIN(argc, argv) {
   const char *run_dir = vkr_harness_option(argc, argv, "--run-dir");
   const char *artifact_root_override =
       vkr_harness_option(argc, argv, "--artifact-root");
+  /* Budget lines summarize a profile's aggregate; no other command has one. */
+  const char *pass_groups_path =
+      vkr_harness_option(argc, argv, "--pass-groups");
+  if (vkr_harness_flag(argc, argv, "--pass-groups") &&
+      (!profile_command || !pass_groups_path)) {
+    vkr_harness_stderr("--pass-groups <file> applies to profile only\n");
+    vkr_harness_usage();
+    return VKR_HARNESS_EXIT_INVALID;
+  }
   if (!repo_root) {
     repo_root = vkr_content_root();
   }
@@ -239,7 +250,7 @@ VKR_MAIN(argc, argv) {
                 vkr_harness_flag(argc, argv, "--cross-backend"))
           : vkr_harness_profile_run(executable, repo_root, case_path,
                                     profile_path, artifact_root_override,
-                                    record);
+                                    record, pass_groups_path);
   vkr_platform_shutdown();
   return result;
 }

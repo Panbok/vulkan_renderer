@@ -1138,6 +1138,61 @@ vkr_internal bool8_t vkr_harness_report_write_run_references(
   return ok && vkr_json_writer_end_array(writer);
 }
 
+/** Why a GPU series has no valid sample, or NULL when it has one. */
+vkr_internal const char *
+vkr_harness_report_gpu_unavailable_reason(const VkrHarnessReport *report,
+                                          uint64_t sample_count,
+                                          bool8_t unsupported_scope) {
+  if (sample_count > 0u) {
+    return NULL;
+  }
+  if (unsupported_scope) {
+    return "unsupported_timestamp_scope";
+  }
+  return report->profile.gpu_timing ? "no_valid_samples" : "disabled";
+}
+
+/**
+ * Emits `pass_groups` and `pass_groups_source` for a run given a pass-groups
+ * file. Each line names its passes, so it can be checked against `passes`
+ * without the file.
+ */
+vkr_internal bool8_t vkr_harness_report_write_pass_groups(
+    VkrJsonWriter *writer, const VkrHarnessReport *report) {
+  bool8_t ok = vkr_harness_json_emit_name(writer, "pass_groups") &&
+               vkr_json_writer_begin_array(writer);
+  for (uint32_t i = 0; ok && i < report->pass_group_count; ++i) {
+    const VkrHarnessPassGroupResult *group = &report->pass_groups[i];
+    ok = vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_string(writer, "name", group->name) &&
+         vkr_harness_json_emit_name(writer, "passes") &&
+         vkr_json_writer_begin_array(writer);
+    bool8_t unsupported_scope = false_v;
+    for (uint32_t member = 0; ok && member < group->pass_count; ++member) {
+      const VkrHarnessPassResult *pass = &report->passes[group->passes[member]];
+      unsupported_scope |= pass->gpu_unsupported_scope_count > 0u;
+      ok = vkr_json_writer_string(writer, vkr_harness_string(pass->name));
+    }
+    VkrHarnessMetricResult gpu = {.statistics = group->gpu_ms};
+    string_format(gpu.unit, sizeof(gpu.unit), "ms");
+    ok = ok && vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_name(writer, "gpu_ms") &&
+         vkr_harness_report_write_statistics_reason(
+             writer, &gpu,
+             vkr_harness_report_gpu_unavailable_reason(
+                 report, gpu.statistics.sample_count, unsupported_scope)) &&
+         vkr_json_writer_end_object(writer);
+  }
+  const VkrHarnessPassGroups *source = report->pass_groups_source;
+  return ok && vkr_json_writer_end_array(writer) &&
+         vkr_harness_json_emit_name(writer, "pass_groups_source") &&
+         vkr_json_writer_begin_object(writer) &&
+         vkr_harness_json_emit_string(writer, "path", source->path) &&
+         vkr_harness_json_emit_string(writer, "sha256", source->sha256) &&
+         vkr_harness_json_emit_string(writer, "id", source->id) &&
+         vkr_json_writer_end_object(writer);
+}
+
 vkr_internal bool8_t vkr_harness_report_write_aggregate(
     VkrJsonWriter *writer, const VkrHarnessReport *report) {
   bool8_t ok = vkr_harness_json_emit_name(writer, "aggregate") &&
@@ -1165,12 +1220,9 @@ vkr_internal bool8_t vkr_harness_report_write_aggregate(
         vkr_harness_json_emit_name(writer, "gpu_ms") &&
         vkr_harness_report_write_statistics_reason(
             writer, &gpu,
-            gpu.statistics.sample_count == 0u
-                ? (pass->gpu_unsupported_scope_count > 0u
-                       ? "unsupported_timestamp_scope"
-                       : (report->profile.gpu_timing ? "no_valid_samples"
-                                                     : "disabled"))
-                : NULL) &&
+            vkr_harness_report_gpu_unavailable_reason(
+                report, gpu.statistics.sample_count,
+                pass->gpu_unsupported_scope_count > 0u)) &&
         vkr_harness_json_emit_u64(writer, "culled_count", pass->culled_count) &&
         vkr_harness_json_emit_u64(writer, "disabled_count",
                                   pass->disabled_count) &&
@@ -1180,8 +1232,11 @@ vkr_internal bool8_t vkr_harness_report_write_aggregate(
                                   pass->gpu_unsupported_scope_count) &&
         vkr_json_writer_end_object(writer);
   }
-  return ok && vkr_json_writer_end_array(writer) &&
-         vkr_json_writer_end_object(writer);
+  ok = ok && vkr_json_writer_end_array(writer);
+  if (ok && report->pass_groups_source) {
+    ok = vkr_harness_report_write_pass_groups(writer, report);
+  }
+  return ok && vkr_json_writer_end_object(writer);
 }
 
 vkr_internal bool8_t vkr_harness_report_write_events(

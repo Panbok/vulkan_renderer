@@ -2349,3 +2349,227 @@ bool8_t vkr_harness_profile_load(const char *repository_root,
       repository_root, relative_manifest_path, VKR_HARNESS_ASSET_CONTEXT_LEGACY,
       out_profile, out_error);
 }
+
+bool8_t vkr_harness_manifest_error_missing(const VkrHarnessError *error) {
+  return error && (string_n_equals(error->code, "path.", 5u) ||
+                   string_equals(error->code, "manifest.read"));
+}
+
+/* The shared JSON and manifest helpers report `json.*` and `manifest.*` codes;
+   the prefix names the pass-groups file as the input that failed. A missing
+   or unreadable file keeps its code for vkr_harness_manifest_error_missing().
+ */
+vkr_internal void vkr_harness_pass_groups_error_scope(VkrHarnessError *error) {
+  const char prefix[] = "pass_groups.";
+  if (!error || vkr_harness_manifest_error_missing(error) ||
+      string_n_equals(error->code, prefix, sizeof(prefix) - 1u)) {
+    return;
+  }
+  char code[sizeof(error->code)];
+  string_format(code, sizeof(code), "%s%s", prefix, error->code);
+  MemCopy(error->code, code, sizeof(code));
+}
+
+/**
+ * Reads one group's patterns into `group`. A pattern may end in `*` but hold
+ * no other; one listed twice anywhere in the file, here or in an earlier group,
+ * is rejected, so no two patterns can tie for a pass.
+ */
+vkr_internal bool8_t vkr_harness_pass_group_parse_patterns(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    const VkrHarnessPassGroups *groups, VkrHarnessPassGroup *group,
+    VkrHarnessError *error) {
+  if (doc->tokens[token].type != VKR_HARNESS_JSON_ARRAY ||
+      doc->tokens[token].child_count == 0u ||
+      doc->tokens[token].child_count > VKR_HARNESS_MAX_PASS_GROUP_PATTERNS) {
+    vkr_harness_error_set(error, "pass_groups.patterns", "$.groups[].passes",
+                          "Group '%s' needs between 1 and %u patterns",
+                          group->name, VKR_HARNESS_MAX_PASS_GROUP_PATTERNS);
+    return false_v;
+  }
+  int32_t item = token + 1;
+  while (item >= 0 && group->pattern_count < doc->tokens[token].child_count) {
+    char *pattern = group->patterns[group->pattern_count];
+    if (!vkr_harness_json_string(doc, item, pattern,
+                                 VKR_HARNESS_PASS_GROUP_PATTERN_MAX,
+                                 "$.groups[].passes[]", error)) {
+      return false_v;
+    }
+    const uint64_t length = string_length(pattern);
+    if (length == 0u) {
+      vkr_harness_error_set(error, "pass_groups.empty_pattern",
+                            "$.groups[].passes[]",
+                            "Group '%s' lists an empty pattern", group->name);
+      return false_v;
+    }
+    const char *star = string_find_char(pattern, '*');
+    if (star && star != pattern + length - 1u) {
+      vkr_harness_error_set(error, "pass_groups.wildcard",
+                            "$.groups[].passes[]",
+                            "Pattern '%s' may hold '*' only as its last "
+                            "character",
+                            pattern);
+      return false_v;
+    }
+
+    /* `group` is not yet counted in `groups`, so it is searched apart. */
+    const char *owner = NULL;
+    for (uint32_t prior = 0; !owner && prior < group->pattern_count; ++prior) {
+      if (string_equals(group->patterns[prior], pattern)) {
+        owner = group->name;
+      }
+    }
+    for (uint32_t other = 0; !owner && other < groups->group_count; ++other) {
+      const VkrHarnessPassGroup *earlier = &groups->groups[other];
+      for (uint32_t prior = 0; !owner && prior < earlier->pattern_count;
+           ++prior) {
+        if (string_equals(earlier->patterns[prior], pattern)) {
+          owner = earlier->name;
+        }
+      }
+    }
+    if (owner) {
+      vkr_harness_error_set(error, "pass_groups.duplicate_pattern",
+                            "$.groups[].passes[]",
+                            "Pattern '%s' is listed by '%s' and again by '%s'",
+                            pattern, owner, group->name);
+      return false_v;
+    }
+    group->pattern_count++;
+    item = vkr_harness_json_next(doc, item);
+  }
+  return true_v;
+}
+
+/** Reads every group of `$.groups`, rejecting empty, reserved, and repeated
+    names. */
+vkr_internal bool8_t vkr_harness_pass_groups_parse_groups(
+    const VkrHarnessJsonDocument *doc, int32_t token,
+    VkrHarnessPassGroups *groups, VkrHarnessError *error) {
+  if (doc->tokens[token].type != VKR_HARNESS_JSON_ARRAY ||
+      doc->tokens[token].child_count == 0u ||
+      doc->tokens[token].child_count > VKR_HARNESS_MAX_PASS_GROUPS) {
+    vkr_harness_error_set(error, "pass_groups.groups", "$.groups",
+                          "groups must be an array of 1 to %u groups",
+                          VKR_HARNESS_MAX_PASS_GROUPS);
+    return false_v;
+  }
+  vkr_local_persist const char *const fields[] = {"name", "passes"};
+  int32_t item = token + 1;
+  while (item >= 0 && groups->group_count < doc->tokens[token].child_count) {
+    VkrHarnessPassGroup *group = &groups->groups[groups->group_count];
+    int32_t patterns = -1;
+    if (!vkr_harness_json_object_validate(doc, item, fields, ArrayCount(fields),
+                                          fields, ArrayCount(fields),
+                                          "$.groups[]", error) ||
+        !vkr_harness_manifest_string(doc, item, "name", true_v, group->name,
+                                     sizeof(group->name), error) ||
+        !vkr_harness_manifest_field(doc, item, "passes", true_v, &patterns,
+                                    error)) {
+      return false_v;
+    }
+    if (group->name[0] == '\0') {
+      vkr_harness_error_set(error, "pass_groups.group_name", "$.groups[].name",
+                            "A group name must not be empty");
+      return false_v;
+    }
+    /* The implicit group of passes no pattern matches owns this name. */
+    if (string_equals(group->name, "unassigned")) {
+      vkr_harness_error_set(error, "pass_groups.reserved_name",
+                            "$.groups[].name",
+                            "The group name 'unassigned' is reserved");
+      return false_v;
+    }
+    for (uint32_t prior = 0; prior < groups->group_count; ++prior) {
+      if (string_equals(groups->groups[prior].name, group->name)) {
+        vkr_harness_error_set(error, "pass_groups.duplicate_group",
+                              "$.groups[].name", "Duplicate group '%s'",
+                              group->name);
+        return false_v;
+      }
+    }
+    if (!vkr_harness_pass_group_parse_patterns(doc, patterns, groups, group,
+                                               error)) {
+      return false_v;
+    }
+    groups->group_count++;
+    item = vkr_harness_json_next(doc, item);
+  }
+  return true_v;
+}
+
+bool8_t vkr_harness_pass_groups_parse(const char *json, uint64_t json_length,
+                                      const char *source_path,
+                                      VkrHarnessPassGroups *out_groups,
+                                      VkrHarnessError *out_error) {
+  vkr_harness_error_clear(out_error);
+  if (!out_groups) {
+    return false_v;
+  }
+  MemZero(out_groups, sizeof(*out_groups));
+  vkr_local_persist const char *const allowed[] = {"schema_version", "id",
+                                                   "description", "groups"};
+  vkr_local_persist const char *const required[] = {"schema_version", "id",
+                                                    "groups"};
+  VkrHarnessJsonDocument doc;
+  uint64_t schema = 0u;
+  char description[VKR_HARNESS_TEXT_MAX];
+  int32_t groups = -1;
+  bool8_t ok =
+      vkr_harness_json_parse(&doc, json, json_length, out_error) &&
+      vkr_harness_json_object_validate(&doc, 0, allowed, ArrayCount(allowed),
+                                       required, ArrayCount(required), "$",
+                                       out_error) &&
+      vkr_harness_manifest_u64(&doc, 0, "schema_version", true_v, &schema,
+                               out_error) &&
+      vkr_harness_manifest_string(&doc, 0, "id", true_v, out_groups->id,
+                                  sizeof(out_groups->id), out_error) &&
+      vkr_harness_manifest_string(&doc, 0, "description", false_v, description,
+                                  sizeof(description), out_error) &&
+      vkr_harness_manifest_field(&doc, 0, "groups", true_v, &groups, out_error);
+  if (ok && schema != VKR_HARNESS_PASS_GROUPS_SCHEMA_VERSION) {
+    vkr_harness_error_set(out_error, "pass_groups.schema_version",
+                          "$.schema_version", "schema_version must be %u",
+                          VKR_HARNESS_PASS_GROUPS_SCHEMA_VERSION);
+    ok = false_v;
+  }
+  if (ok && !vkr_harness_manifest_id_valid(out_groups->id)) {
+    vkr_harness_error_set(out_error, "pass_groups.id", "$.id",
+                          "id must be a dotted lowercase identifier");
+    ok = false_v;
+  }
+  ok = ok && vkr_harness_pass_groups_parse_groups(&doc, groups, out_groups,
+                                                  out_error);
+  if (!ok) {
+    vkr_harness_pass_groups_error_scope(out_error);
+    return false_v;
+  }
+  string_format(out_groups->path, sizeof(out_groups->path), "%s",
+                source_path ? source_path : "<memory>");
+  vkr_harness_sha256_bytes(json, json_length, out_groups->sha256);
+  return true_v;
+}
+
+bool8_t vkr_harness_pass_groups_load(const char *repository_root,
+                                     const char *relative_path,
+                                     VkrHarnessPassGroups *out_groups,
+                                     VkrHarnessError *out_error) {
+  char path[VKR_HARNESS_PATH_MAX];
+  if (!vkr_harness_resolve_existing_path(repository_root, relative_path, path,
+                                         out_error)) {
+    return false_v;
+  }
+  char *json = NULL;
+  uint64_t length = 0;
+  Arena *load_arena = arena_create(MB(2), KB(4));
+  if (!load_arena ||
+      !vkr_harness_load_text(path, load_arena, &json, &length, out_error)) {
+    arena_destroy(load_arena);
+    vkr_harness_pass_groups_error_scope(out_error);
+    return false_v;
+  }
+  const bool8_t parsed = vkr_harness_pass_groups_parse(
+      json, length, relative_path, out_groups, out_error);
+  arena_destroy(load_arena);
+  return parsed;
+}

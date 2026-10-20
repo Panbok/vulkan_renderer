@@ -212,11 +212,14 @@ typedef enum VkrHarnessRecord {
 
 /** `record` gives every repetition a recording of its run (ADR-122) in
  * runs/<i>/recording/, listed among the artifacts; it costs the run its
- * authority. */
+ * authority. `pass_groups_path`, a repository-relative pass-groups file or
+ * NULL, adds `aggregate.pass_groups` budget lines without touching authority,
+ * verdict, or fingerprints. */
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,
                             const char *artifact_root_override,
-                            VkrHarnessRecord record);
+                            VkrHarnessRecord record,
+                            const char *pass_groups_path);
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path,
                              const char *artifact_root_override,

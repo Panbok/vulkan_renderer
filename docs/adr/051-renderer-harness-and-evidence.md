@@ -34,7 +34,17 @@ records the same with every thread's CPU zones (ADR-126): the parent passes
 `VKR_RECORDING_ZONES=1` and the run also gains `recording.zones`, so
 `--record` and `--record-zones` runs keep matching fingerprints and differ
 only in the zones. Otherwise the parent unsets `VKR_RECORDING_DIRECTORY` and
-`VKR_RECORDING_ZONES` for every child, so inherited ones record nothing. Every run, auxiliary run and report carries `diagnostic_counts`:
+`VKR_RECORDING_ZONES` for every child, so inherited ones record nothing.
+`profile --pass-groups <file>` adds budget lines to the aggregate
+(`aggregate.pass_groups`, and `pass_groups_source` with the file's path,
+digest and id): each group of pass-name patterns, where a trailing `*`
+matches a prefix and the most specific pattern takes a pass, reports
+statistics of its per-frame GPU sum. A culled, disabled or omitted pass adds
+zero; an unsupported or missing timestamp leaves that frame invalid for its
+group only; passes no pattern matches form `unassigned`. The file loads
+before any child runs and enters no fingerprint or verdict
+([desktop budget lines](../../tools/budgets/desktop.pass_groups.json)).
+Every run, auxiliary run and report carries `diagnostic_counts`:
 GPU error, validation and log counters summed over warmup and measured frames,
 and validation text found in the child's output; a GPU error costs the
 authority reason `gpu.errors` and a validation error `validation.messages`
