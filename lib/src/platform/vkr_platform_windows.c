@@ -1011,7 +1011,9 @@ static bool8_t vkr_platform_child_handles_begin(VkrPlatformChildHandles *child,
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
                                  bool8_t *out_timed_out) {
+  /* Streamed stdout (on_stdout) has no Windows implementation yet. */
   if (!config || !config->executable || !out_exit_code || !out_timed_out ||
+      config->on_stdout ||
       (config->environment_count > 0u && !config->environment) ||
       (config->argument_count > 0u && !config->arguments) ||
       config->environment_count > 16u) {

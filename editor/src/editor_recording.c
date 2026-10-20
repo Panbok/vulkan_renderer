@@ -163,6 +163,7 @@ void vkr_editor_recording_update(VkrEditorUi *editor,
   VkrEditorRecording *recording = &editor->recording;
   recording->jobs = frame->jobs;
   vkr_editor_recording_perf_poll(editor);
+  vkr_editor_recording_counters_update(editor, frame);
   if (frame->recording) {
     editor_recording_report(editor, frame->recording);
     /* A drive's measurement arrives with its end. */
@@ -1065,6 +1066,14 @@ void vkr_editor_recording_register_input(VkrEditorUi *editor,
           &chip)) {
     (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER, chip);
   }
+  if (editor->recording.counter_job &&
+      vkr_ui_widget_rect(
+          ui,
+          vkr_ui_id_stack_widget_label(
+              &ui->id_stack, string8_lit("editor.recording.counters")),
+          &chip)) {
+    (void)vkr_ui_input_layer_register(ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER, chip);
+  }
 }
 
 vkr_internal void editor_recording_bar_build(VkrEditorUi *editor,
@@ -1350,6 +1359,15 @@ void vkr_editor_recording_overlays_build(VkrEditorUi *editor,
   editor_recording_path_build(editor, frame);
   vkr_editor_recording_request_overlay_build(editor, frame);
   editor_recording_indicator_build(editor, frame);
+  /* The counters chip sits under the REC chip, or in its place. */
+  if (frame->mapping_valid) {
+    const float32_t scale = frame->ui->content_scale;
+    const bool8_t rec = frame->recording && frame->recording->recording;
+    vkr_editor_recording_counters_chip(editor, frame,
+                                       frame->mapping.panel_rect_px.y / scale +
+                                           vkr_editor_scene_top_pt(frame) +
+                                           44.0f + (rec ? 30.0f : 0.0f));
+  }
   editor_recording_bar_build(editor, frame);
   editor_recording_opening_build(editor, frame);
 }
@@ -1478,6 +1496,7 @@ editor_recording_release_thumbs(VkrEditorRecording *recording) {
 }
 
 void vkr_editor_recording_shutdown(VkrEditorUi *editor) {
+  vkr_editor_recording_counters_shutdown(editor);
   vkr_editor_recording_thumbs_shutdown(editor);
   editor_recording_release_thumbs(&editor->recording);
   vkr_editor_recording_perf_release(&editor->recording.perf);
@@ -1693,9 +1712,9 @@ editor_recording_meta(VkrUiSystem *ui, const VkrEditorRecordingEntry *entry) {
 /* The card width from which Watch and the actions fit beside the name;
    narrower cards put them on a row of their own under the facts. */
 #define EDITOR_RECORDING_CARD_WIDE_PT 540.0f
-/* The window width from which Record and All measurements sit beside the
-   title; narrower windows put them on a second row. */
-#define EDITOR_RECORDING_HEADER_WIDE_PT 440.0f
+/* The window width from which Record and the checkboxes sit beside the
+   title; narrower windows put them on rows of their own. */
+#define EDITOR_RECORDING_HEADER_WIDE_PT 680.0f
 
 /* One card: name and status, the facts line, Watch, Analyze, Compare, Drive,
    prompt, Delete. A `wide` card puts the actions beside the name. */
@@ -1996,9 +2015,10 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
                                 {.value = 28.0f, .unit = VKR_UI_TRACK_PX},
                                 {.unit = VKR_UI_TRACK_AUTO},
                                 {.unit = VKR_UI_TRACK_AUTO},
+                                {.unit = VKR_UI_TRACK_AUTO},
                                 {.unit = VKR_UI_TRACK_AUTO}};
   /* Narrow: the title and Refresh, then All measurements and Record, then
-     Keep last. */
+     Keep last and GPU counters. */
   const VkrUiTrack narrow_columns[] = {{.value = 1.0f, .unit = VKR_UI_TRACK_FR},
                                        {.unit = VKR_UI_TRACK_AUTO}};
   const VkrUiTrack rows[] = {{.value = 28.0f, .unit = VKR_UI_TRACK_PX},
@@ -2007,7 +2027,7 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
   VkrUiPanelConfig header = vkr_ui_panel_config_default();
   header.placement = editor_recording_cell(0u, row_index);
   header.columns = wide ? columns : narrow_columns;
-  header.column_count = wide ? 5u : 2u;
+  header.column_count = wide ? 6u : 2u;
   header.rows = rows;
   header.row_count = wide ? 1u : 3u;
   header.style.gap_pt = theme->space_sm;
@@ -2051,11 +2071,42 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
                       string8_lit("All measurements"), &take_all, &all)) {
     recording->all_measurements = take_all;
   }
+  /* GPU counters: Apple GPUs give their occupancy and limiters only to
+     Instruments, so a recording can trace itself and import them. */
+  VkrUiWidgetConfig counters = vkr_ui_widget_config_default();
+  counters.placement =
+      wide ? editor_recording_cell(3u, 0u) : editor_recording_cell(1u, 2u);
+  counters.placement.justify = wide ? VKR_UI_ALIGN_START : VKR_UI_ALIGN_END;
+#if defined(PLATFORM_APPLE)
+  const bool8_t tiled = frame->graphics && frame->graphics->graphics_pipeline ==
+                                               VKR_GRAPHICS_PIPELINE_TILED;
+#else
+  const bool8_t tiled = false_v;
+#endif
+  counters.disabled = active || !tiled;
+  counters.tooltip =
+      tiled ? string8_create_formatted(
+                  ui->frame_allocator,
+                  "Trace the GPU's counters with Instruments for %u s once "
+                  "recording starts, then import them into the recording for "
+                  "the Performance window's HW tab: occupancy and the ALU, "
+                  "texture and memory limiters per frame and per pass. The "
+                  "import takes about 47 s per traced second in the "
+                  "background. Needs Xcode; turns signposts on while it "
+                  "traces.",
+                  VKR_EDITOR_RECORDING_COUNTER_SECONDS)
+            : string8_lit("GPU counters come from Instruments, for the "
+                          "tiled pipeline on a Mac.");
+  bool8_t take_counters = recording->gpu_counters && tiled;
+  if (vkr_ui_checkbox(ui, string8_lit("gpu_counters"),
+                      string8_lit("GPU counters"), &take_counters, &counters)) {
+    recording->gpu_counters = take_counters;
+  }
   /* Keep last: a rolling recording that holds the last seconds so a hitch
      that already happened can still be saved. */
   VkrUiWidgetConfig keep = vkr_ui_widget_config_default();
   keep.placement =
-      wide ? editor_recording_cell(3u, 0u) : editor_recording_cell(0u, 2u);
+      wide ? editor_recording_cell(4u, 0u) : editor_recording_cell(0u, 2u);
   keep.placement.justify = VKR_UI_ALIGN_START;
   keep.disabled =
       (active && !rolling) ||
@@ -2085,7 +2136,7 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
   }
   VkrUiWidgetConfig record = vkr_ui_widget_config_default();
   record.placement =
-      wide ? editor_recording_cell(4u, 0u) : editor_recording_cell(1u, 1u);
+      wide ? editor_recording_cell(5u, 0u) : editor_recording_cell(1u, 1u);
   /* Narrow, Record ends the second row under Refresh. */
   record.placement.justify = VKR_UI_ALIGN_END;
   vkr_editor_action_style(&record, editor->heading_font);

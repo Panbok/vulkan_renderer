@@ -1673,10 +1673,10 @@ vkr_internal void hw_counters_missing(VkrEditorUi *editor, VkrUiSystem *ui,
       string_equals(data->pipeline, "desktop")
           ? "Counter imports read Instruments traces of Apple GPUs. Radeon "
             "GPU Profiler and Nsight Graphics show this GPU's counters."
-          : "While recording with signposts on (perf.set signposts), trace "
-            "2 to 5 s with Instruments' Metal GPU Counters and os_signpost "
-            "instruments, then run tools/recording/vkr_xctrace.py counters "
-            "TRACE --recording BUNDLE.");
+          : "Check GPU counters in the Recordings window before you "
+            "record: the editor traces 3 s with Instruments and imports the "
+            "counters in the background. rec.counters traces a recording in "
+            "progress.");
 }
 
 /* The counters view under the cards: the limiter and occupancy charts and

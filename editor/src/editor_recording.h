@@ -3,6 +3,7 @@
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
 #include "assets/vkr_recording_compare.h"
+#include "assets/vkr_recording_counters.h"
 #include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "editor_table.h"
@@ -804,9 +805,64 @@ typedef struct VkrEditorRecording {
   float32_t scroll;
   VkrEditorRecordingThumbs thumbs;
   VkrEditorRecordingPerf perf;
+  /* GPU counters (editor_recording_counters.c): the Recordings window's
+     checkbox, a trace rec.start asked for (seconds, zero for none), whether
+     the last build recorded, the trace or import in progress, a serial for
+     trace names, and the outcome of the last one (the bundle's name, or
+     why it failed). */
+  bool8_t gpu_counters;
+  uint32_t counters_requested;
+  bool8_t counters_was_recording;
+  struct VkrEditorCounterJob *counter_job;
+  uint64_t counter_serial;
+  bool8_t counters_last_ok;
+  char counters_last[VKR_RECORDING_COUNTERS_ERROR_MAX];
 } VkrEditorRecording;
 
 struct VkrEditorUi;
+
+/* ---- GPU counters (editor_recording_counters.c) ---- */
+
+/* Seconds the Recordings window's GPU counters checkbox traces. */
+#define VKR_EDITOR_RECORDING_COUNTER_SECONDS 3u
+
+typedef struct VkrEditorCounterJob VkrEditorCounterJob;
+
+/* A GPU counter trace or import in progress, and the last one's outcome. */
+typedef struct VkrEditorCountersState {
+  bool8_t importing;
+  uint32_t seconds;
+  float64_t elapsed;
+  uint64_t samples;
+  char bundle[VKR_RECORDING_PATH_MAX];
+  bool8_t last_ok;
+  char last[VKR_RECORDING_COUNTERS_ERROR_MAX];
+} VkrEditorCountersState;
+
+/** Traces the recording in progress with Instruments' GPU counters for
+ * `seconds`, then imports the trace into its bundle, on a thread of its
+ * own. False with the reason in `error`. */
+bool8_t vkr_editor_recording_counters_start(struct VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            uint32_t seconds, char *error,
+                                            uint64_t error_capacity);
+/** Starts the trace a recording that just started asked for, and reports
+ * one that finished; called by vkr_editor_recording_update. */
+void vkr_editor_recording_counters_update(struct VkrEditorUi *editor,
+                                          const VkrSampleUiFrame *frame);
+/** Stops the trace or import in progress; the next update reports it. */
+void vkr_editor_recording_counters_cancel(struct VkrEditorUi *editor);
+/** Stops and joins the trace or import in progress. */
+void vkr_editor_recording_counters_shutdown(struct VkrEditorUi *editor);
+/** True while a trace or import runs, with its state; `out` always carries
+ * the last outcome. */
+bool8_t vkr_editor_recording_counters_state(struct VkrEditorUi *editor,
+                                            VkrEditorCountersState *out);
+/** The Scene chip of a trace or import in progress, `top_pt` from the
+ * window's top; a click cancels it. */
+void vkr_editor_recording_counters_chip(struct VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        float32_t top_pt);
 
 /** Gives the Scene overlays that take clicks (the playback bar, its note
  * field and the REC chip) the pointer over their rectangles. Call with the

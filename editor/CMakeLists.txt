@@ -54,6 +54,7 @@ add_executable(vkr_editor
     src/editor_recording_rerun.c
     src/editor_recording_timeline.c
     src/editor_recording_thumbs.c
+    src/editor_recording_counters.c
     src/editor_table.c
     src/editor_graphics.c
     src/editor_content.c

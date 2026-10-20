@@ -10,6 +10,7 @@
 #include <IOKit/ps/IOPSKeys.h>
 #include <IOKit/ps/IOPowerSources.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <libkern/OSThermalNotification.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
@@ -19,6 +20,7 @@
 #include <objc/runtime.h>
 #include <os/log.h>
 #include <os/signpost.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -702,23 +704,72 @@ vkr_internal bool8_t vkr_platform_process_stop(pid_t pid, bool8_t process_tree,
   return vkr_platform_process_wait_blocking(pid, status, out_reaped);
 }
 
+/* Hands what the child wrote to stdout so far to config->on_stdout, waiting
+   up to `wait_ms` for some. Clears `*open` at the end of the stream, sets
+   `*out_read` when it read any, and returns false when the callback refuses
+   more. */
+vkr_internal bool8_t vkr_platform_process_drain(
+    const VkrPlatformProcessConfig *config, int descriptor, uint32_t wait_ms,
+    bool8_t *open, bool8_t *out_read) {
+  *out_read = false_v;
+  struct pollfd ready = {.fd = descriptor, .events = POLLIN};
+  if (poll(&ready, 1, (int)wait_ms) <= 0) {
+    return true_v;
+  }
+  uint8_t buffer[65536];
+  for (;;) {
+    const ssize_t count = read(descriptor, buffer, sizeof(buffer));
+    if (count > 0) {
+      *out_read = true_v;
+      if (!config->on_stdout(config->stdout_context, buffer, (uint64_t)count)) {
+        return false_v;
+      }
+      continue;
+    }
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count == 0) {
+      *open = false_v;
+    }
+    return true_v;
+  }
+}
+
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
                                  bool8_t *out_timed_out) {
   if (!config || !config->executable || !out_exit_code || !out_timed_out ||
       config->argument_count > 63u ||
       (config->argument_count > 0u && !config->arguments) ||
-      (config->environment_count > 0u && !config->environment)) {
+      (config->environment_count > 0u && !config->environment) ||
+      (config->on_stdout && config->stdout_path)) {
     return false_v;
   }
   *out_exit_code = -1;
   *out_timed_out = false_v;
+  /* Streamed stdout comes through a pipe the waiting loop reads. */
+  int stream[2] = {-1, -1};
+  if (config->on_stdout && pipe(stream) != 0) {
+    return false_v;
+  }
   const pid_t pid = fork();
   if (pid < 0) {
+    if (config->on_stdout) {
+      close(stream[0]);
+      close(stream[1]);
+    }
     return false_v;
   }
   if (pid == 0) {
     vkr_platform_process_child_setup(config);
+    if (config->on_stdout) {
+      if (dup2(stream[1], STDOUT_FILENO) < 0) {
+        _exit(127);
+      }
+      close(stream[0]);
+      close(stream[1]);
+    }
     char *arguments[65];
     arguments[0] = (char *)config->executable;
     for (uint32_t i = 0; i < config->argument_count; ++i) {
@@ -729,6 +780,11 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     _exit(127);
   }
 
+  bool8_t stream_open = config->on_stdout != NULL;
+  if (stream_open) {
+    close(stream[1]);
+    (void)fcntl(stream[0], F_SETFL, fcntl(stream[0], F_GETFL) | O_NONBLOCK);
+  }
   if (config->terminate_process_tree && setpgid(pid, pid) != 0 &&
       getpgid(pid) != pid) {
     (void)vkr_platform_process_signal(pid, false_v, SIGKILL);
@@ -736,12 +792,16 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     bool8_t failed_reaped = false_v;
     (void)vkr_platform_process_wait_blocking(pid, &failed_status,
                                              &failed_reaped);
+    if (config->on_stdout) {
+      close(stream[0]);
+    }
     return false_v;
   }
 
   int status = 0;
   bool8_t reaped = false_v;
-  if (config->timeout_ms == 0u && !config->is_cancelled) {
+  bool8_t refused = false_v;
+  if (config->timeout_ms == 0u && !config->is_cancelled && !config->on_stdout) {
     if (!vkr_platform_process_wait_blocking(pid, &status, &reaped)) {
       return false_v;
     }
@@ -754,8 +814,13 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       if (reaped) {
         break;
       }
+      bool8_t got = false_v;
+      refused = refused || (stream_open &&
+                            !vkr_platform_process_drain(config, stream[0], 10u,
+                                                        &stream_open, &got));
       const bool8_t cancelled =
-          config->is_cancelled && config->is_cancelled(config->cancel_context);
+          refused || (config->is_cancelled &&
+                      config->is_cancelled(config->cancel_context));
       const bool8_t timed_out =
           config->timeout_ms > 0u &&
           (vkr_platform_monotonic_seconds() - started) * 1000.0 >=
@@ -769,8 +834,25 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
         }
         break;
       }
-      vkr_platform_poll_sleep(10u);
+      if (!stream_open) {
+        vkr_platform_poll_sleep(10u);
+      }
     }
+  }
+  /* What the child wrote before it ended; a descendant that keeps the pipe
+     open ends the reading after a second without output. */
+  float64_t quiet_since = vkr_platform_monotonic_seconds();
+  while (stream_open && !refused &&
+         vkr_platform_monotonic_seconds() - quiet_since < 1.0) {
+    bool8_t got = false_v;
+    refused = !vkr_platform_process_drain(config, stream[0], 100u, &stream_open,
+                                          &got);
+    if (got) {
+      quiet_since = vkr_platform_monotonic_seconds();
+    }
+  }
+  if (config->on_stdout) {
+    close(stream[0]);
   }
   if (config->terminate_process_tree &&
       vkr_platform_process_group_exists(pid) &&

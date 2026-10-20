@@ -50,6 +50,12 @@
  *                                     recorder's frame times when the
  *                                     recording has no zones or pass
  *                                     starts; JSON: event counts
+ *   vkr_rec counters <trace> --recording <bundle> [--bucket-us N]
+ *                                     imports an Instruments trace's Apple
+ *                                     GPU counters into the bundle's
+ *                                     gpu_counters.bin (ADR-130); JSON:
+ *                                     counters, samples, buckets, clock
+ *                                     signposts and file size
  *
  * Every command prints one compact JSON object on stdout. Exit status: 0 for
  * a whole recording, 2 for a recording cut off by a crash whose whole chunks
@@ -58,6 +64,7 @@
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
 #include "assets/vkr_recording_compare.h"
+#include "assets/vkr_recording_counters.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/array.h"
 #include "containers/str.h"
@@ -1875,6 +1882,8 @@ static void rec_usage(void) {
       "       vkr_rec export <bundle|stream> --perfetto <out.json> "
       "[--range A:B]\n"
       "       vkr_rec segments <bundle|stream> [--budget MS]\n"
+      "       vkr_rec counters <trace> --recording <bundle> "
+      "[--bucket-us N]\n"
       "frames and export take --segment NAME in place of --range A:B.\n"
       "A:B is inclusive; frame_ms names the frame time, pass.gpu:<pass> and\n"
       "pass.cpu:<pass> a pass's times; at most 500 rows. --budget is the\n"
@@ -2061,6 +2070,50 @@ static int rec_run_export(int argc, char **argv) {
   return rec_export(argv[2], out_path, first, last);
 }
 
+/* counters: imports a trace's GPU counters into a recording bundle. */
+static int rec_run_counters(int argc, char **argv) {
+  const char *bundle = NULL;
+  int64_t bucket_us = 0;
+  for (int i = 3; i < argc; i += 2) {
+    if (i + 1 >= argc) {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+    if (strcmp(argv[i], "--recording") == 0) {
+      bundle = argv[i + 1];
+    } else if (strcmp(argv[i], "--bucket-us") == 0 &&
+               string_to_i64(argv[i + 1], &bucket_us) && bucket_us > 0 &&
+               bucket_us <= 10000) {
+      continue;
+    } else {
+      rec_usage();
+      return REC_EXIT_DAMAGED;
+    }
+  }
+  if (!bundle) {
+    rec_usage();
+    return REC_EXIT_DAMAGED;
+  }
+  const VkrRecordingCountersImport import = {
+      .trace_path = argv[2],
+      .bundle_path = bundle,
+      .bucket_us = (uint32_t)bucket_us,
+  };
+  VkrRecordingCountersResult result;
+  if (!vkr_recording_counters_import(&import, &result)) {
+    fprintf(stderr, "vkr_rec: %s\n", result.error);
+    return REC_EXIT_DAMAGED;
+  }
+  printf("{\"counters\":%u,\"samples\":%llu,\"buckets\":%u,"
+         "\"bucket_us\":%u,\"clock_signposts\":%u,"
+         "\"clock_spread_us\":%.3f,\"bytes\":%llu}\n",
+         result.counters, (unsigned long long)result.samples, result.buckets,
+         result.bucket_ns / 1000u, result.anchors,
+         (float64_t)result.spread_ns / 1000.0,
+         (unsigned long long)result.file_bytes);
+  return REC_EXIT_OK;
+}
+
 VKR_MAIN(argc, argv) {
   if (argc < 3) {
     rec_usage();
@@ -2094,6 +2147,8 @@ VKR_MAIN(argc, argv) {
     result = rec_run_compare(argc, argv);
   } else if (strcmp(argv[1], "export") == 0) {
     result = rec_run_export(argc, argv);
+  } else if (strcmp(argv[1], "counters") == 0) {
+    result = rec_run_counters(argc, argv);
   } else if (strcmp(argv[1], "segments") == 0 && argc >= 3 &&
              rec_parse_budget(argc, argv, 3, &budget_ms)) {
     result = rec_segments(argv[2], budget_ms);

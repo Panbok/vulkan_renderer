@@ -3,6 +3,7 @@
 
 #include "assets/vkr_recording_analysis.h"
 #include "assets/vkr_recording_annotations.h"
+#include "assets/vkr_recording_counters.h"
 #include "assets/vkr_recording_format.h"
 #include "containers/vkr_spsc_ring.h"
 #include "core/vkr_threads.h"
@@ -2638,6 +2639,157 @@ static void test_recording_gpu_counters(void) {
   printf("  test_recording_gpu_counters PASSED\n");
 }
 
+/* The three tables of a synthetic trace, as xctrace exports them. Clock
+   events carry the CPU clock 5 s after the trace's: offsets of 0, 100 and
+   50 ns above it. */
+static const char *const COUNTER_TRACE_TABLES[] = {
+    "<?xml version=\"1.0\"?>\n<trace-query-result>\n<node><schema "
+    "name=\"os-signpost\"><col><mnemonic>time</mnemonic></col><col>"
+    "<mnemonic>thread</mnemonic></col><col><mnemonic>event-type</mnemonic>"
+    "</col><col><mnemonic>name</mnemonic></col><col><mnemonic>backtrace"
+    "</mnemonic></col><col><mnemonic>subsystem</mnemonic></col><col>"
+    "<mnemonic>message</mnemonic></col></schema><row><event-time id=\"1\" "
+    "fmt=\"00:00.001\">1000000</event-time><thread id=\"2\" fmt=\"Main\">"
+    "<tid id=\"3\" fmt=\"0x1\">1</tid></thread><event-type id=\"4\" "
+    "fmt=\"Event\">Event</event-type><signpost-name id=\"5\" fmt=\"Clock\">"
+    "Clock</signpost-name><sentinel/><subsystem id=\"6\" fmt=\"dev.vkr\">"
+    "dev.vkr</subsystem><os-log-metadata id=\"7\" fmt=\"5\xc2\xa0"
+    "001\xc2\xa0"
+    "000\xc2\xa0"
+    "000\"><uint64 id=\"8\" fmt=\"5\xc2\xa0"
+    "001\">"
+    "5001000000</uint64></os-log-metadata></row>\n"
+    "<row><event-time id=\"9\" fmt=\"00:00.002\">2000000</event-time>"
+    "<thread ref=\"2\"/><event-type ref=\"4\"/><signpost-name ref=\"5\"/>"
+    "<sentinel/><subsystem ref=\"6\"/><os-log-metadata id=\"10\" fmt=\"x\">"
+    "<uint64 id=\"11\" fmt=\"x\">5002000100</uint64></os-log-metadata>"
+    "</row>\n<row><event-time id=\"12\" fmt=\"t\">2500000</event-time>"
+    "<thread ref=\"2\"/><event-type ref=\"4\"/><signpost-name id=\"13\" "
+    "fmt=\"Zone\">Zone</signpost-name><sentinel/><subsystem ref=\"6\"/>"
+    "<os-log-metadata id=\"14\" fmt=\"Frame\"><string id=\"15\" "
+    "fmt=\"Frame\">Frame</string></os-log-metadata></row>\n<row>"
+    "<event-time id=\"16\" fmt=\"t\">2600000</event-time><thread ref=\"2\"/>"
+    "<event-type ref=\"4\"/><signpost-name ref=\"5\"/><sentinel/>"
+    "<subsystem id=\"17\" fmt=\"com.apple.ane\">com.apple.ane</subsystem>"
+    "<os-log-metadata id=\"18\" fmt=\"1\"><uint64 id=\"19\" fmt=\"1\">1"
+    "</uint64></os-log-metadata></row>\n<row><event-time id=\"20\" "
+    "fmt=\"t\">3000000</event-time><thread ref=\"2\"/><event-type ref=\"4\"/>"
+    "<signpost-name ref=\"5\"/><sentinel/><subsystem ref=\"6\"/>"
+    "<os-log-metadata id=\"21\" fmt=\"x\"><uint64 id=\"22\" fmt=\"x\">"
+    "5003000050</uint64></os-log-metadata></row>\n</node></trace-query-result>"
+    "\n",
+    "<?xml version=\"1.0\"?>\n<trace-query-result>\n<node><schema "
+    "name=\"gpu-counter-info\"><col><mnemonic>timestamp</mnemonic></col>"
+    "<col><mnemonic>counter-id</mnemonic></col><col><mnemonic>name"
+    "</mnemonic></col><col><mnemonic>type</mnemonic></col></schema><row>"
+    "<event-time id=\"1\" fmt=\"0\">0</event-time><uint32 id=\"2\" "
+    "fmt=\"0\">0</uint32><gpu-counter-name id=\"3\" fmt=\"ALU Limiter\">ALU "
+    "Limiter</gpu-counter-name><string id=\"4\" fmt=\"Percentage\">"
+    "Percentage</string></row>\n<row><event-time ref=\"1\"/><uint32 id=\"5\" "
+    "fmt=\"2\">2</uint32><gpu-counter-name id=\"6\" fmt=\"Partial Renders "
+    "Count\">Partial Renders Count</gpu-counter-name><string id=\"7\" "
+    "fmt=\"Value\">Value</string></row>\n<row><event-time ref=\"1\"/><uint32 "
+    "id=\"8\" fmt=\"1\">1</uint32><gpu-counter-name id=\"9\" fmt=\"GPU Read "
+    "Bandwidth\">GPU Read Bandwidth</gpu-counter-name><string ref=\"7\"/>"
+    "</row>\n</node></trace-query-result>\n",
+    "<?xml version=\"1.0\"?>\n<trace-query-result>\n<node><schema "
+    "name=\"gpu-counter-value\"><col><mnemonic>timestamp</mnemonic></col>"
+    "<col><mnemonic>counter-id</mnemonic></col><col><mnemonic>value"
+    "</mnemonic></col><col><mnemonic>ring-buffer-index</mnemonic></col>"
+    "</schema><row><event-time id=\"1\" fmt=\"t\">100000</event-time>"
+    "<uint32 id=\"2\" fmt=\"0\">0</uint32><fixed-decimal id=\"3\" "
+    "fmt=\"10,0\">10.000000000</fixed-decimal><uint32 ref=\"2\"/></row>\n"
+    "<row><event-time ref=\"1\"/><uint32 id=\"4\" fmt=\"1\">1</uint32>"
+    "<fixed-decimal id=\"5\" fmt=\"6,25\">6.250000000</fixed-decimal>"
+    "<uint32 ref=\"2\"/></row>\n<row><event-time id=\"6\" fmt=\"t\">110000"
+    "</event-time><uint32 ref=\"2\"/><fixed-decimal id=\"7\" fmt=\"30\">"
+    "30.000000000</fixed-decimal><uint32 ref=\"4\"/></row>\n<row>"
+    "<event-time id=\"8\" fmt=\"t\">160000</event-time><uint32 ref=\"2\"/>"
+    "<fixed-decimal id=\"9\" fmt=\"40,5\">40.500000000</fixed-decimal>"
+    "<uint32 ref=\"2\"/></row>\n<row><event-time id=\"10\" fmt=\"t\">300000"
+    "</event-time><uint32 ref=\"2\"/><fixed-decimal id=\"11\" fmt=\"1\">"
+    "1.000000000</fixed-decimal><uint32 ref=\"2\"/></row>\n</node>"
+    "</trace-query-result>\n",
+};
+
+/* Feeds a table in 7-byte chunks, so rows, elements and characters split
+   across chunks. */
+static bool8_t recording_counter_source(void *context,
+                                        VkrRecordingCountersTable table,
+                                        VkrRecordingCountersSink sink,
+                                        void *sink_context) {
+  (void)context;
+  const char *xml = COUNTER_TRACE_TABLES[table];
+  const uint64_t length = strlen(xml);
+  for (uint64_t at = 0u; at < length; at += 7u) {
+    if (!sink(sink_context, (const uint8_t *)xml + at, Min(length - at, 7u))) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Detects: an import that misreads xctrace's referenced values (ids, refs,
+   nested message numbers, grouped digits), takes Clock events of another
+   subsystem or name, places buckets from another origin than the median
+   clock offset, averages two ring buffers' samples wrongly, writes values
+   where no sample fell, or breaks when the export arrives in pieces. */
+static void test_recording_counter_import(void) {
+  printf("  Running test_recording_counter_import...\n");
+  char path[1024];
+  recording_test_path("import", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  const FilePath bundle = file_path_view(path);
+  assert(file_create_directory(&bundle));
+  const VkrRecordingCountersImport import = {
+      .bundle_path = path,
+      .bucket_us = 50u,
+      .source = recording_counter_source,
+  };
+  VkrRecordingCountersResult result;
+  assert(vkr_recording_counters_import(&import, &result));
+  assert(result.counters == 3u && result.samples == 5u &&
+         result.buckets == 5u && result.anchors == 3u &&
+         result.spread_ns == 100u);
+
+  char file[1100];
+  snprintf(file, sizeof(file), "%s/%s", path, VKR_RECORDING_GPU_COUNTERS_FILE);
+  uint8_t bytes[256] = {0};
+  FILE *in = fopen(file, "rb");
+  assert(in != NULL);
+  const size_t size = fread(bytes, 1u, sizeof(bytes), in);
+  fclose(in);
+  assert(size == 156u && result.file_bytes == 156u);
+  assert(memcmp(bytes, VKR_RECORDING_GPU_COUNTERS_MAGIC, 8u) == 0);
+  uint32_t header[4];
+  uint64_t first_ns = 0u;
+  MemCopy(header, bytes + 8u, sizeof(header));
+  MemCopy(&first_ns, bytes + 24u, sizeof(first_ns));
+  assert(header[1] == 3u && header[2] == 5u && header[3] == 50000u);
+  /* The median offset, plus the two empty buckets before the first
+     sample. */
+  assert(first_ns == 5000000050u + 2u * 50000u);
+  /* Counters in id order with their units. */
+  assert(bytes[40] == VKR_RECORDING_GPU_COUNTER_PERCENT && bytes[41] == 11u &&
+         memcmp(bytes + 42u, "ALU Limiter", 11u) == 0);
+  assert(bytes[53] == VKR_RECORDING_GPU_COUNTER_GB_PER_SECOND &&
+         bytes[54] == 18u);
+  assert(bytes[73] == VKR_RECORDING_GPU_COUNTER_COUNT && bytes[74] == 21u);
+  float32_t values[15];
+  MemCopy(values, bytes + 96u, sizeof(values));
+  assert(values[0] == 20.0f && values[1] == 40.5f &&
+         !vkr_is_finite_f32(values[2]) && !vkr_is_finite_f32(values[3]) &&
+         values[4] == 1.0f);
+  assert(values[5] == 6.25f && !vkr_is_finite_f32(values[6]));
+  for (uint32_t i = 10u; i < 15u; ++i) {
+    assert(!vkr_is_finite_f32(values[i]));
+  }
+
+  recording_test_remove(file);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  printf("  test_recording_counter_import PASSED\n");
+}
+
 /* Detects: zones left in arrival order, a name lost because its record came
    after the zones it names, pass rows joined to the wrong starts, a frame
    whose row counts disagree drawing misplaced passes, a missing "Frame"
@@ -3053,6 +3205,7 @@ bool32_t run_recording_tests(void) {
   test_recording_graph_allocators_census();
   test_recording_hardware_pipelines();
   test_recording_gpu_counters();
+  test_recording_counter_import();
   test_recording_gpu_submission();
   test_recording_loop_metrics();
   test_recording_all_measurements();

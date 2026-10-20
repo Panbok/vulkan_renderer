@@ -93,10 +93,7 @@ Remaining:
 - Vendor counters through `VK_KHR_performance_query` on Vulkan (optional).
   Metal on the M1 Pro exposes only the `timestamp` counter set
   (`GPUTimestamp`) at stage boundaries, so the Mac has none to read.
-- Starting the Instruments trace from the editor. Apple's GPU counters
-  import into a recording after the fact
-  ([ADR-130](../adr/130-performance-window-tabs.md)), with `xctrace record`
-  and `vkr_xctrace.py counters` run by hand; the editor could spawn both
-  around a recording, which needs a process service in the lib and an
-  export that takes less than its 47 s per traced second.
+- Streamed process output on Windows (`vkr_platform_process_run`'s
+  `on_stdout`), when a Windows tool needs it; the GPU counter import that
+  uses it is macOS only ([ADR-130](../adr/130-performance-window-tabs.md)).
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.

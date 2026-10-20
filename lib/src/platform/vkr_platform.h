@@ -57,6 +57,12 @@ typedef struct VkrPlatformProcessConfig {
    * through process_run; the callback synchronizes its own state. */
   bool8_t (*is_cancelled)(void *context);
   void *cancel_context;
+  /** Optional: receives the child's stdout as it arrives, in chunks on the
+   * waiting thread, instead of `stdout_path` (setting both fails). Returning
+   * false stops the child as a cancellation does. Not yet on Windows, where
+   * process_run refuses a config that sets it. */
+  bool8_t (*on_stdout)(void *context, const uint8_t *bytes, uint64_t size);
+  void *stdout_context;
 } VkrPlatformProcessConfig;
 
 /** Opaque storage for one non-recursive cross-process lock. */

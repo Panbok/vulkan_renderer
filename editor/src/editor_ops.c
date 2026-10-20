@@ -16045,6 +16045,28 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
             vkr_bakery_json_int(arena, (int64_t)status->stats.stored_bytes));
     ops_set(ctx, ctx->call->result, "recording", recording);
   }
+  /* A GPU counter trace or import in progress, and the last outcome. */
+  VkrEditorCountersState counters;
+  const bool8_t counting =
+      vkr_editor_recording_counters_state(ctx->editor, &counters);
+  if (counting || counters.last[0]) {
+    VkrBakeryJson *gpu = vkr_bakery_json_object(arena);
+    ops_set(ctx, gpu, "state",
+            vkr_bakery_json_cstr(arena, !counting            ? "idle"
+                                        : counters.importing ? "importing"
+                                                             : "tracing"));
+    if (counting) {
+      ops_set(ctx, gpu, "path", vkr_bakery_json_cstr(arena, counters.bundle));
+      ops_set(ctx, gpu, "samples",
+              vkr_bakery_json_int(arena, (int64_t)counters.samples));
+      ops_set(ctx, gpu, "elapsed", ops_number(ctx, counters.elapsed));
+    }
+    if (counters.last[0]) {
+      ops_set(ctx, gpu, counters.last_ok ? "last_imported" : "last_error",
+              vkr_bakery_json_cstr(arena, counters.last));
+    }
+    ops_set(ctx, ctx->call->result, "gpu_counters", gpu);
+  }
   const VkrRecordingPlayback *playback = status ? status->playback : NULL;
   if (playback) {
     VkrBakeryJson *open = vkr_bakery_json_object(arena);
@@ -16731,6 +16753,15 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
       ops_fail(ctx, OPS_INVALID, "'rolling' must be 1 to 300 seconds");
       return VKR_EDITOR_OP_DONE;
     }
+    float64_t counters = 0.0;
+    if (ops_arg_number(call->args, "gpu_counters", &counters) &&
+        (counters < 1.0 || counters > VKR_RECORDING_COUNTERS_TRACE_MAX_S ||
+         rolling > 0.0)) {
+      ops_fail(ctx, OPS_INVALID,
+               "'gpu_counters' is 1 to %u seconds, without 'rolling'",
+               VKR_RECORDING_COUNTERS_TRACE_MAX_S);
+      return VKR_EDITOR_OP_DONE;
+    }
     char error[128];
     const char *author = call->author[0] ? call->author : "agent";
     /* Rolling keeps the last seconds at Tier 1 with zones and writes only
@@ -16745,6 +16776,8 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
       ops_fail(ctx, OPS_REJECTED, "%s", error);
       return VKR_EDITOR_OP_DONE;
     }
+    /* The trace starts once the recording runs. */
+    ctx->editor->recording.counters_requested = (uint32_t)counters;
     call->stage = 1u;
     return VKR_EDITOR_OP_WAIT;
   }
@@ -16757,6 +16790,26 @@ static VkrEditorOpStatus ops_run_rec_start(OpsContext *ctx) {
                                  ctx->frame->recording->recording_path));
   }
   return status;
+}
+
+static VkrEditorOpStatus ops_run_rec_counters(OpsContext *ctx) {
+  float64_t seconds = VKR_EDITOR_RECORDING_COUNTER_SECONDS;
+  if (ops_arg_number(ctx->call->args, "seconds", &seconds) &&
+      (seconds < 1.0 || seconds > VKR_RECORDING_COUNTERS_TRACE_MAX_S)) {
+    ops_fail(ctx, OPS_INVALID, "'seconds' is 1 to %u",
+             VKR_RECORDING_COUNTERS_TRACE_MAX_S);
+    return VKR_EDITOR_OP_DONE;
+  }
+  char error[160];
+  if (!vkr_editor_recording_counters_start(
+          ctx->editor, ctx->frame, (uint32_t)seconds, error, sizeof(error))) {
+    ops_fail(ctx, OPS_REJECTED, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "seconds",
+          vkr_bakery_json_int(ops_arena(ctx), (int64_t)seconds));
+  return VKR_EDITOR_OP_DONE;
 }
 
 static VkrEditorOpStatus ops_run_rec_stop(OpsContext *ctx) {
@@ -17749,7 +17802,10 @@ static const OpsDef s_ops[] = {
      "frame on tiled too, event subjects); it costs frame time, so time "
      "comparisons use standard (default). 'zones' (default: with "
      "measurements all) records every thread's CPU zones and, at tier 1, the "
-     "GPU pass starts, for vkr_rec export --perfetto. 'rolling' (1 to 300 "
+     "GPU pass starts, for vkr_rec export --perfetto. 'gpu_counters' (1 to "
+     "10 seconds, macOS on the tiled pipeline) traces Instruments' GPU "
+     "counters once the recording runs and imports them into it in the "
+     "background (rec.status gpu_counters). 'rolling' (1 to 300 "
      "seconds) instead keeps only the last seconds in memory at tier 1 with "
      "zones, writing nothing until rec.save_last; rec.stop then discards "
      "them.",
@@ -17757,8 +17813,19 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"tier\":{\"enum\":[\"none\",\"0\",\"1\"]},"
      "\"measurements\":{\"enum\":[\"standard\",\"all\"]},\"zones\":{"
      "\"type\":\"boolean\"},\"rolling\":{\"type\":\"number\","
-     "\"minimum\":1,\"maximum\":300}}}",
+     "\"minimum\":1,\"maximum\":300},\"gpu_counters\":{\"type\":"
+     "\"number\",\"minimum\":1,\"maximum\":10}}}",
      ops_run_rec_start, NULL},
+    {"rec.counters",
+     "Trace the recording in progress with Instruments' Metal GPU Counters "
+     "for 'seconds' (1 to 10, default 3) from now, with signposts on while "
+     "it traces, then import the counters into the recording in the "
+     "background: about 47 s per traced second on an M1 Pro. rec.status "
+     "answers its progress under gpu_counters; the HW tab of rec.analyze "
+     "shows them. macOS with Xcode, tiled pipeline.",
+     "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":"
+     "\"number\",\"minimum\":1,\"maximum\":10}}}",
+     ops_run_rec_counters, NULL, OPS_QUICK},
     {"rec.save_last",
      "Save what a rolling recording (rec.start 'rolling') holds, about its "
      "last seconds, as a recording named 'name' (a time stamp when absent), "

@@ -151,13 +151,27 @@ needed a live editor, a GPU capture or a debugger.
    `vkr_platform_get_monotonic_ns` ([ADR-126](126-cpu-zones-and-gpu-pass-timeline.md)).
    A trace of the Metal GPU Counters and os_signpost instruments, taken
    while the recording runs, holds a sample of each of 31 counters about
-   every 39 us from each of two counter ring buffers. `vkr_xctrace.py counters TRACE
-   --recording BUNDLE` ([vkr_xctrace.py](../../tools/recording/vkr_xctrace.py))
-   streams the trace's `gpu-counter-value` export, maps trace time to the
-   CPU clock by the median offset of the `Clock` events, averages the
-   samples of both partitions into buckets (50 us by default) and writes the
-   bundle's `gpu_counters.bin`
+   every 39 us from each of two counter ring buffers.
+   [`vkr_recording_counters_import`](../../runtime/src/assets/vkr_recording_counters.c)
+   streams the trace's os-signpost, `gpu-counter-info` and
+   `gpu-counter-value` tables out of `xcrun xctrace export` through
+   `vkr_platform_process_run`'s stdout callback (POSIX only; Windows refuses
+   it), resolving xctrace's id and ref values as it reads, maps trace time
+   to the CPU clock by the median offset of the `Clock` events, averages
+   the samples of both ring buffers into buckets (50 us by default) and
+   writes the bundle's `gpu_counters.bin`
    ([`vkr_recording_format.h`](../../runtime/src/assets/vkr_recording_format.h)).
+   `vkr_recording_counters_trace` runs `xcrun xctrace record` on a process.
+   The editor takes the trace itself
+   ([editor_recording_counters.c](../../editor/src/editor_recording_counters.c)):
+   with the Recordings window's GPU counters checkbox (macOS, tiled
+   pipeline), `rec.start {gpu_counters: seconds}` or `rec.counters
+   {seconds}` during a recording, it turns signposts on, traces its own
+   process for 3 s (1 to 10) and imports into the recording on a thread of
+   its own; a Scene chip under the REC chip shows tracing or the samples
+   imported (a click cancels), a toast the outcome, and `rec.status`
+   `gpu_counters` the state. `vkr_rec counters TRACE --recording BUNDLE`
+   imports a trace taken by hand.
    The loader ([`vkr_recording_data_finish_counters`](../../runtime/src/assets/vkr_recording_analysis.c))
    reads each frame's GPU span from `pass_starts` and averages each counter
    over it, and over each pass's span on GPU-timed frames (one in 8 on the
@@ -169,7 +183,7 @@ needed a live editor, a GPU capture or a debugger.
    occupancy; limiter and occupancy charts over the frames with samples; a
    table of every counter's mean, p95, max and focused-frame value; and the
    passes with the limiter that bounds each, the two top limiters and
-   occupancy. Without counters it says how to import them.
+   occupancy. Without counters it says how to take them.
 10. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
    so a map draws up to 16,384 footprints per widget within the frame's
    widget budget. Editor tables take per-cell text colours, fills and share
@@ -228,6 +242,18 @@ captured both views without layout failures. `test_recording_gpu_counters`
 checks frame and pass means, buckets without samples, rows dropped before a
 pass and a cut file; it failed with `pass_starts` rows mapped by position.
 
+Metal, M1 Pro, Release editor, headless Bistro, 2026-10-20, the editor's own
+trace: `rec.start {tier: "1", gpu_counters: 3}` reported `tracing` at once;
+`xctrace record` (start, 3 s, save) took about 35 s, the import about 2 min
+(5.1 M samples), and `rec.status` reported `last_imported` 154 s after
+`rec.stop`, with the trace removed from `$TMPDIR`. The 11.7 s recording's
+683 frames from 772 to 1,775 carry counters, 750 `Clock` events within
+0.1 us; Tiled.Opaque again read ALU 19 % and fragment occupancy 5.5 %. The
+chip and the HW tab captured without layout failures.
+`test_recording_counter_import` feeds a synthetic three-table export in
+7-byte pieces through a source callback and checks the file byte for byte;
+its first run found a row lost when a chunk ended inside `<row>`.
+
 ## Consequences
 
 - A Tier 1 recording grows by the measurement values (396 on Bistro, about
@@ -251,8 +277,10 @@ pass and a cut file; it failed with `pass_starts` rows mapped by position.
 - The Apple driver's statistics are undocumented IORegistry keys; one that
   changes leaves its value unavailable, never wrong.
 - A counter import costs about 47 s of `xctrace export` per traced second
-  on an M1 Pro and writes about 4 MB per traced second at 50 us buckets, so
-  traces stay at 2 to 5 s. Counters cover the whole GPU, other processes
+  on an M1 Pro, on its own thread, and writes about 4 MB per traced second
+  at 50 us buckets, so traces stay at 1 to 10 s (3 s by default). Each
+  trace leaves a few-megabyte `instruments*.ktrace` in `$TMPDIR` that
+  xctrace names, which the editor does not remove. Counters cover the whole GPU, other processes
   too; passes that overlap share samples, and a pass shorter than two
   buckets reads its neighbours' work.
 - Signposts cost about 5 us a frame while on, so a recording with counters
@@ -273,7 +301,7 @@ pass and a cut file; it failed with `pass_starts` rows mapped by position.
 ## Revisit when
 
 The Vulkan census, counters, readback and pipeline statistics get their
-native run; Instruments exports counters faster, or the editor should start
-the trace itself; a recording's size or the census pass's cost fails the
+native run; Instruments exports counters faster or another platform gets a
+counter trace; a recording's size or the census pass's cost fails the
 Tier 1 budget; or the map needs entity names, which needs picking ids joined
 to entities in the recording.
