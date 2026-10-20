@@ -65,7 +65,10 @@ automatic exposure or the manual one, which trails the tonemap by the frames
 in flight (`vkr_bloom_gpu_params`). Since 2026-10-16 a dark interior and
 daylight bloom the same over-white highlights; with scene-linear levels the
 Level Design Test's lamps (peak 49) clamped at 32 and bloomed as wide white
-discs at the interior's exposure of 7.4. Bloom can bypass independently.
+discs at the interior's exposure of 7.4. Since 2026-10-19 the firefly clamp
+is 8, three stops over white: daylight through a gate gap in a tunnel (peak
+31.8 at exposure 6.44, about 205 exposed) clamped at 32 and bloomed over a
+third of the screen. Bloom can bypass independently.
 Combine intensity is multiplied once by configured maximum mip count divided
 by the actual contributing count. This preserves the usual full six-level look
 and its constant-field gain on shorter chains. Fewer than two levels disables

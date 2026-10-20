@@ -15,7 +15,10 @@ VkrBloomConfig vkr_bloom_config_default(void) {
   return (VkrBloomConfig){
       .max_mip_count = 6u,
       .min_mip_extent = 8u,
-      .firefly_clamp = 32.0f,
+      /* Exposed luminance: three stops over white. Daylight through a gap
+         in a dark interior reaches 200 at the interior's exposure, and a
+         clamp of 32 bloomed it over a third of the screen. */
+      .firefly_clamp = 8.0f,
       .filter = VKR_BLOOM_FILTER_TENT_13,
   };
 }
