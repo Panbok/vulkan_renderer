@@ -109,18 +109,15 @@ features; each needs this baseline before it can claim a gain.
   stable): frame wall 20.40 ms p50 with SMAA T2x and 21.02 ms with FSR
   (ADR-052), over the budget at the median. In a Windows editor flight over
   the streamed 8 km terrain, not Bistro, the slowest frames were local
-  shadow redraws (verification record, H7). The first High runs at
-  2560×1440 (local, dirty tree, one child, 2026-10-20): the orbit took
-  18.2 ms p50 and 23.5 ms p95 `gpu.submission`, the walk 22.3 ms p50 and
-  26.5 ms p95. Orbit lines at the median: Lighting 8.8 ms
-  (`Lighting.Deferred` 6.7, `Shadow.LocalMask` 2.1), Reconstruction and post
-  2.9 (`FSR31.Upscale` 1.9), Surface 2.7, Glass and blend 2.4, Visibility
-  0.6, Media 0.5, Shadows 0.2 (0.8 at p95), Culling 0.04.
+  shadow redraws (verification record, H7). The first authoritative
+  High measurements are under step 5.
 - **Feature budgets.** The dynamic diffuse layer has 1.0 ms at 2560×1440
   ([ADR-119](../adr/119-dynamic-diffuse-volume-layer.md)). The
   [shadow quality](shadow-quality.md#budgets) targets for Bistro High at
   1440p: sun 2.0 ms median, 0.5 ms extra in any one frame, local shadows
-  3.0 ms median against about 6.3 ms now (scaled from 1080p, not measured).
+  3.0 ms median against about 6.3 ms (scaled from 1080p, not measured);
+  the step 5 baseline measures `Shadow.LocalMask` at 2.1 to 4.2 ms and the
+  shadow-map redraws at 0.2 ms or less at the median.
   Ray-traced sun shadows join High at 1.5 ms or less, and 3 ms is the limit
   for any preset.
 
@@ -156,8 +153,9 @@ features; each needs this baseline before it can claim a gain.
    because Bistro has no froxel fog volume. The orbit passes
    (`sha256:59aa55c1…`). The walk fails one assertion in two runs
    (`sha256:6c33184a…`, `35606b2f…`): `visibility.gbuffer.resolve_invalid`
-   counts one rejected surface at frame 319, the same frame each time. It
-   must be explained or fixed on a clean revision before the baseline; the
+   counts one rejected surface at frame 319, the same frame each time, and
+   does so on the clean commit `9ef1c728` too, so it predates the peer
+   edits. It must be explained or fixed before the walk can pass; the
    assertion stays.
 3. **Budget lines.**
    [`desktop.pass_groups.json`](../../tools/budgets/desktop.pass_groups.json)
@@ -166,10 +164,9 @@ features; each needs this baseline before it can claim a gain.
    `aggregate.pass_groups`. A pass belongs to the group with its most
    specific pattern; a pass that matches none goes to `unassigned`. Passes
    can overlap on the GPU, so the lines do not add up to `gpu.submission`.
-   Set each line's target from the first baseline. The first local orbit
-   (`local-windowed-gpu-single`, `sha256:32cbe867…`) assigned every pass and
-   left none unassigned; its line medians summed to 18.1 ms against an
-   18.5 ms `frame.wall` median.
+   Set each line's target from the first baseline. The baseline runs below
+   assigned every pass and left none unassigned; the orbit's line medians
+   sum to 18.1 ms against an 18.5 ms `frame.wall` median.
 
    | Line | Graph passes |
    |---|---|
@@ -185,15 +182,55 @@ features; each needs this baseline before it can claim a gain.
 
 4. **Levers in order.** When the baseline misses the budget: (a) move or
    retune preset gates, using a measured cost for each gate; (b) cut work
-   inside the largest line through its own proposal: local shadows, about
-   6.3 ms against a 3.0 ms target, through
+   inside the largest line, Lighting, through its own proposal:
+   `Lighting.Deferred` (6.7 to 8.1 ms median) through
+   [lighting efficiency](lighting-efficiency.md) and binning, and
+   `Shadow.LocalMask` (2.1 to 4.2 ms) through
    [local shadow architecture](local-shadow-architecture.md) and shadow
-   quality, then lighting efficiency and binning; (c) SMAA T2x instead of
+   quality. The shadow-map redraws themselves (the Shadows line) take
+   0.2 ms or less at the median and 0.8 ms at p95; (c) SMAA T2x instead of
    FSR's antialiasing, which ADR-052 lists as cheaper but less stable; (d)
    only then dynamic resolution, which needs a Vulkan scene scale and an FSR
    upscale mode and reopens ADR-052.
-5. **Baseline.** Propose the first baseline through the harness. Only the
-   owner may publish it (AGENTS.md).
+5. **Baseline.** Proposed 2026-10-20, awaiting the owner's acceptance
+   (AGENTS.md). `vkr_harness baseline` publishes image snapshots only, so a
+   timing baseline is its authoritative reports, recorded with their
+   digests; once accepted it moves to ADR-087 beside the tiled table. All
+   runs: Release, commit `9ef1c728` in a clean worktree (`dirty: false`),
+   RX 6700 XT, driver 26.6.3, five children, stable warmup, immediate
+   present, exclusive GPU lane, `authoritative: true` with no authority
+   reason, no GPU error, no memory pressure.
+
+   | Case | Profile | Status | `gpu.submission` median / p95 / max | Child medians / p95s | Report |
+   |---|---|---|---|---|---|
+   | Orbit | `performance-windowed-gpu-submission-vulkan` | pass | 18.21 / 23.50 / 24.95 ms | 18.15–18.22 / 23.42–23.51 ms | `sha256:b6add114d3155ea4ffecad8582c4451a01d958648d48def2d2ec24d5a4286285` |
+   | Walk | `performance-windowed-gpu-submission-vulkan` | fail (rejected surface) | 22.18 / 26.45 / 35.77 ms | 22.13–22.21 / 26.45–26.46 ms | `sha256:2bf6839db2da01d9df4a7e3f0ee4b806e4399a0d0db33482ad099f8c7d5f7795` |
+
+   `frame.wall` p95 was 23.87 ms (orbit) and 26.77 ms (walk). Both miss
+   the 16.7 ms p95 budget, by 6.8 and 9.8 ms. Budget lines, median / p95
+   in ms, from `performance-windowed-gpu --pass-groups` (orbit
+   `sha256:113f3d8b1aa941dd49ae1cf15b753dc3cbffecd72fa201fb99c30bd5c901e3bf`,
+   pass; walk
+   `sha256:e98437b29c06955bfd6324286f4dd4f8c35bc7092e63f943f0ad981ec4dd73e0`,
+   fail for the same rejected surface):
+
+   | Line | Orbit | Walk |
+   |---|---|---|
+   | Culling | 0.04 / 0.04 | 0.04 / 0.04 |
+   | Shadows | 0.23 / 0.80 | 0.00 / 0.42 |
+   | Visibility | 0.58 / 0.68 | 0.66 / 0.84 |
+   | Surface | 2.66 / 2.77 | 2.69 / 2.80 |
+   | Lighting | 8.78 / 12.88 | 12.30 / 15.38 |
+   | Media | 0.54 / 0.67 | 0.57 / 0.66 |
+   | Glass and blend | 2.43 / 3.55 | 2.94 / 3.94 |
+   | Reconstruction and post | 2.84 / 2.93 | 2.93 / 2.98 |
+   | Editor and debug | 0 / 0 | 0 / 0 |
+
+   The largest passes at the median: `Lighting.Deferred.Fullscreen` 6.73
+   and 8.13 ms, `Shadow.LocalMask` 2.05 and 4.24 ms, `FSR31.Upscale` 1.85
+   and 1.93 ms, `GBuffer.Resolve.Fullscreen` 1.10 and 1.13 ms,
+   `AO.Evaluate` 1.01 and 0.99 ms. Bistro has no froxel fog volume, so the
+   Media line has no `Froxel.*` pass.
 
 ## Evidence needed
 
