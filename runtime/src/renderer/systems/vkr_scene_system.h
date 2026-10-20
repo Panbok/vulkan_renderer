@@ -1944,6 +1944,13 @@ void vkr_scene_set_stream_sources(VkrScene *scene, const Vec3 *sources,
 /* Propagate authored/evaluated transforms without advancing simulation time. */
 void vkr_scene_update_transforms(VkrScene *scene);
 
+/* Recomputes `root`'s world matrix and its descendants' at once, as
+   vkr_scene_update_transforms would, for a pose set after the frame's world
+   pass, such as a script's render pose in late update: the frame draws it
+   without a pass over the whole scene. Outside simulation ticks; a pending
+   hierarchy change waits for the next pass. */
+void vkr_scene_update_subtree_transforms(VkrScene *scene, VkrEntityId root);
+
 // ============================================================================
 // Scene Runtime Handle API (preferred for renderer/resource integration)
 // ============================================================================

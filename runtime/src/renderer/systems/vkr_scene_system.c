@@ -3348,6 +3348,77 @@ void vkr_scene_update_transforms(VkrScene *scene) {
   }
 }
 
+/* Hierarchies deeper than this keep their deeper levels for the next
+   world pass. */
+#define SCENE_SUBTREE_DEPTH_MAX 64u
+
+/* One entity of vkr_scene_update_subtree_transforms and its descendants,
+   computed as the world pass computes them. True when a world changed. */
+static bool8_t scene_update_subtree(VkrScene *scene, VkrEntityId entity,
+                                    const SceneTransform *parent,
+                                    VkrComponentTypeId character,
+                                    const VkrScenePhysicsClock *clock,
+                                    uint32_t depth) {
+  SceneTransform *transform = vkr_entity_get_component_if_alive(
+      scene->world, entity, scene->comp_transform);
+  if (!transform) {
+    return false_v;
+  }
+  if (transform->flags & SCENE_TRANSFORM_DIRTY_LOCAL) {
+    transform->local = scene_compute_local_matrix(
+        transform->position, transform->rotation, transform->scale);
+    transform->flags &= (uint8_t)~SCENE_TRANSFORM_DIRTY_LOCAL;
+  }
+  Mat4 world;
+  if (!scene_transform_override(scene, entity, character, clock, &world)) {
+    world =
+        parent ? mat4_mul(parent->world, transform->local) : transform->local;
+  }
+  transform->flags &= (uint8_t)~SCENE_TRANSFORM_DIRTY_WORLD;
+  bool8_t changed = false_v;
+  if (MemCompare(&world, &transform->world, sizeof(world)) != 0) {
+    transform->world = world;
+    scene_mark_render_dirty(scene, entity);
+    if (scene->changes_tracked) {
+      scene_mark_changed(scene, entity, transform);
+    }
+    changed = true_v;
+  }
+  if (depth + 1u >= SCENE_SUBTREE_DEPTH_MAX) {
+    return changed;
+  }
+  uint32_t count = 0u;
+  const VkrEntityId *children = vkr_scene_get_children(scene, entity, &count);
+  for (uint32_t i = 0u; i < count; ++i) {
+    changed |= scene_update_subtree(scene, children[i], transform, character,
+                                    clock, depth + 1u);
+  }
+  return changed;
+}
+
+void vkr_scene_update_subtree_transforms(VkrScene *scene, VkrEntityId root) {
+  if (!scene || scene->simulation.active || !scene_compile_queries(scene) ||
+      scene->hierarchy_dirty || !vkr_scene_entity_alive(scene, root)) {
+    return;
+  }
+  const SceneTransform *transform = vkr_entity_get_component_if_alive_const(
+      scene->world, root, scene->comp_transform);
+  if (!transform) {
+    return;
+  }
+  const SceneTransform *parent =
+      transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64
+          ? vkr_entity_get_component_if_alive_const(
+                scene->world, transform->parent, scene->comp_transform)
+          : NULL;
+  const VkrScenePhysicsClock clock = vkr_scene_physics_clock(scene);
+  if (scene_update_subtree(scene, root, parent,
+                           vkr_scene_physics_character_component(scene), &clock,
+                           0u)) {
+    scene->transform_revision++;
+  }
+}
+
 // ============================================================================
 // Entity Management
 // ============================================================================

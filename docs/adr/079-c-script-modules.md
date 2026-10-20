@@ -568,7 +568,15 @@ Each descriptor is built once, on first use, in writable static storage the
 host binds to its registered copy.
 
 A render pose (`vkr_set_render_pose`) replaces the rigid-body pose until the
-scope that set it ends. `vkr_spawn_model`, `vkr_anim_blend` and
+scope that set it ends. Set outside a tick, it recomputes the entity's and its
+descendants' world matrices at once (`vkr_scene_update_subtree_transforms`),
+so a pose set from the camera in late update draws in the same frame. Since
+2026-10-19; before, it waited for the next frame's world pass, and the FPS
+module's first-person weapon and body trailed the view by one frame of
+motion (12 to 24 cm on a freight ride at 9 to 18 m/s). Marking the container
+dirty instead ran a second full world pass: in a re-drive of that ride, a
+54k-node level, the mean frame update rose from 7.8 to 12.1 ms; the subtree
+update showed 8.4 ms in an unmatched run. `vkr_spawn_model`, `vkr_anim_blend` and
 `vkr_has_visual` serve the default mannequin
 ([ADR-080](080-default-mannequin-character.md)). `vkr_spawn_model` only
 requests the model: its files load on the resource system's workers and its

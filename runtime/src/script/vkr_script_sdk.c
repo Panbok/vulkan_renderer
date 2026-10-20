@@ -539,7 +539,10 @@ static bool8_t sdk_set_render_pose(VkrCtx *ctx, VkrEntity entity,
   }
   if (!world) {
     script_ledger_forget(script, SCRIPT_LEDGER_RENDER_POSE, entity.id, 0u);
-    return vkr_scene_set_evaluated_transform(scene, sdk_id(entity), NULL);
+    const bool8_t cleared =
+        vkr_scene_set_evaluated_transform(scene, sdk_id(entity), NULL);
+    vkr_scene_update_subtree_transforms(scene, sdk_id(entity));
+    return cleared;
   }
   /* The first override in a scope records its release. */
   const bool8_t had = vkr_entity_has_component(scene->world, sdk_id(entity),
@@ -552,6 +555,10 @@ static bool8_t sdk_set_render_pose(VkrCtx *ctx, VkrEntity entity,
     (void)vkr_scene_set_evaluated_transform(scene, sdk_id(entity), NULL);
     return false_v;
   }
+  /* The pose and its subtree draw this frame. A pose set from the camera in
+     late update, such as a first-person weapon's, otherwise waited for the
+     next frame's world pass and trailed the view by a frame of motion. */
+  vkr_scene_update_subtree_transforms(scene, sdk_id(entity));
   return true_v;
 }
 
