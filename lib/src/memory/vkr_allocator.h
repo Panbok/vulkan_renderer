@@ -37,6 +37,10 @@
 // header).
 typedef struct s_VkrMutex *VkrMutex;
 
+// Forward declaration to avoid including arena.h; the registry reads an
+// arena's footprint for arena-backed registry entries.
+typedef struct Arena Arena;
+
 typedef enum VkrAllocatorMemoryTag {
   VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN,
   VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
@@ -105,6 +109,8 @@ typedef struct VkrAllocatorScope {
   uint64_t bytes_at_start; // Bytes allocated when scope was created
   uint64_t total_allocated_at_start; // Allocator stats snapshot at scope start
   uint64_t tagged_allocs_at_start[VKR_ALLOCATOR_MEMORY_TAG_MAX];
+  // Registry live bytes at scope start; ending the scope restores them.
+  uint64_t registry_live_at_start;
   bool8_t tags_snapshot_valid;
 } VkrAllocatorScope;
 
@@ -124,6 +130,11 @@ struct VkrAllocator {
   // Internal scope state
   uint32_t scope_depth;           // How many scopes deep we are (0 = none)
   uint64_t scope_bytes_allocated; // Bytes allocated in current scope stack
+
+  // 1-based named-registry slot; 0 when unregistered. Zero-initialize the
+  // allocator before creation and change this only through
+  // vkr_allocator_register_name()/vkr_allocator_unregister().
+  uint32_t registry_slot;
 
   // Allocate size bytes. Alignment can be handled inside if you prefer.
   void *(*alloc)(void *ctx, uint64_t size, VkrAllocatorMemoryTag tag);
@@ -443,3 +454,154 @@ bool8_t vkr_allocator_in_scope(const VkrAllocator *allocator);
  * @return Current scope depth (0 = no active scope).
  */
 uint32_t vkr_allocator_scope_depth(const VkrAllocator *allocator);
+
+// =============================================================================
+// Named allocator registry
+// =============================================================================
+
+/**
+ * The registry publishes per-allocator counters to a sampler on any thread,
+ * such as a recording that reads one sample per frame. It holds at most
+ * VKR_ALLOCATOR_REGISTRY_CAPACITY live entries in static storage.
+ *
+ * Writers: the thread that owns a registered allocator or arena updates its
+ * entry with relaxed atomic loads and stores. The owner is a single writer,
+ * as the VkrAllocator contract already requires; `_ts` callers serialize
+ * through their mutex. An unregistered allocator or arena tests one slot index
+ * and does not touch the registry.
+ *
+ * Registration: register after creation and unregister before the backing
+ * store is destroyed, from the owner thread or while the owner does not
+ * allocate. Claiming and releasing a slot is lock-free and safe against other
+ * registrations and samplers on any thread. Counting starts at registration.
+ *
+ * Sampling: vkr_allocator_registry_sample() takes no lock and does not
+ * allocate. A slot generation detects a slot that was released or reused
+ * during the copy; that entry is left out of the sample.
+ */
+
+#define VKR_ALLOCATOR_REGISTRY_CAPACITY 64
+#define VKR_ALLOCATOR_REGISTRY_NAME_CAPACITY 48
+
+typedef enum VkrAllocatorRegistryOwner {
+  // A VkrAllocator registered with vkr_allocator_register_name().
+  VKR_ALLOCATOR_REGISTRY_OWNER_ALLOCATOR,
+  // A raw Arena registered with vkr_allocator_register_arena_name(); its
+  // alloc_count counts arena pushes and live_bytes is its used size.
+  VKR_ALLOCATOR_REGISTRY_OWNER_ARENA,
+} VkrAllocatorRegistryOwner;
+
+/**
+ * @brief One registry entry copied by vkr_allocator_registry_sample().
+ *
+ * Counts marked cumulative grow from registration; a consumer computes
+ * per-frame values as the difference between two samples with the same slot
+ * and generation.
+ */
+typedef struct VkrAllocatorRegistrySample {
+  char name[VKR_ALLOCATOR_REGISTRY_NAME_CAPACITY]; // Null-terminated.
+  VkrAllocatorType type;
+  VkrAllocatorRegistryOwner owner;
+  uint32_t slot;       // 1-based slot.
+  uint32_t generation; // Differs whenever the slot holds another entry.
+
+  uint64_t alloc_count;   // Cumulative.
+  uint64_t free_count;    // Cumulative.
+  uint64_t realloc_count; // Cumulative.
+  // Bytes requested through the allocator and not yet freed or rewound by a
+  // scope end, counted from registration. Independent of
+  // VKR_ALLOCATOR_DISABLE_STATS.
+  uint64_t live_bytes;
+
+  uint64_t scope_count;       // Cumulative scopes begun.
+  uint64_t scope_alloc_bytes; // Cumulative bytes allocated inside scopes.
+  uint32_t scope_depth;       // Depth when sampled.
+  // Deepest scope nesting since the previous sample, including scope_depth.
+  uint32_t scope_depth_high;
+
+  // Arena footprint; zero unless has_arena. Used bytes sum every block in
+  // the live chain, alignment padding included. Committed and reserved bytes
+  // include blocks kept on the arena's free list.
+  bool8_t has_arena;
+  uint64_t arena_used_bytes;
+  uint64_t arena_committed_bytes;
+  uint64_t arena_reserved_bytes;
+  uint64_t arena_peak_used_bytes; // Highest used size since registration.
+  // Highest used size since the previous sample, including the current one.
+  uint64_t arena_interval_peak_used_bytes;
+} VkrAllocatorRegistrySample;
+
+/**
+ * @brief Registers an allocator under a display name.
+ *
+ * An arena-backed allocator also publishes its arena footprint unless that
+ * arena is already registered through another entry. A name longer than
+ * VKR_ALLOCATOR_REGISTRY_NAME_CAPACITY - 1 bytes is truncated.
+ *
+ * @return true_v on success; false_v when allocator or name is NULL, the
+ * allocator is already registered, or every slot is in use (counted by
+ * vkr_allocator_registry_rejected_count()).
+ */
+bool8_t vkr_allocator_register_name(VkrAllocator *allocator, const char *name);
+
+/**
+ * @brief Releases the allocator's registry slot. No-op when unregistered.
+ * Call before destroying the allocator's backing store.
+ */
+void vkr_allocator_unregister(VkrAllocator *allocator);
+
+/**
+ * @brief Registers a raw arena that is not used through a VkrAllocator.
+ *
+ * arena_alloc() counts as an allocation and the used size is the live size.
+ * arena_destroy() releases the slot when the caller has not.
+ *
+ * @return true_v on success; false_v when arena or name is NULL, the arena is
+ * already registered, or every slot is in use.
+ */
+bool8_t vkr_allocator_register_arena_name(Arena *arena, const char *name);
+
+/**
+ * @brief Releases a raw arena's registry slot. No-op when the arena is
+ * unregistered; an arena bound to a registered VkrAllocator is released by
+ * vkr_allocator_unregister() instead.
+ */
+void vkr_allocator_unregister_arena(Arena *arena);
+
+/**
+ * @brief Copies every live registry entry and resets their interval maxima.
+ *
+ * Safe on any thread; takes no lock and does not allocate. Each copied entry's
+ * scope_depth_high and arena_interval_peak_used_bytes restart from the current
+ * depth and used size, so the next sample reports maxima since this one.
+ * Entries beyond capacity are counted but neither copied nor reset. Sampling
+ * from two threads splits the intervals between them.
+ *
+ * @param out Destination array; may be NULL when capacity is 0.
+ * @param capacity Number of elements in out.
+ * @return Number of live entries found. A value above capacity means the
+ * sample was truncated.
+ */
+uint32_t vkr_allocator_registry_sample(VkrAllocatorRegistrySample *out,
+                                       uint32_t capacity);
+
+/**
+ * @brief Number of registrations refused because every slot was in use.
+ */
+uint32_t vkr_allocator_registry_rejected_count(void);
+
+/**
+ * @brief Lib-internal arena hook: publishes a registered arena's footprint.
+ * @param arena First block of a registered arena.
+ * @param rewound_from_bytes Used size before a rewind, or 0 after a push.
+ * @param pushed true_v after a successful arena push.
+ */
+void vkr_allocator_registry_note_arena(Arena *arena,
+                                       uint64_t rewound_from_bytes,
+                                       bool8_t pushed);
+
+/**
+ * @brief Lib-internal arena hook: arena_destroy() detaches a registered arena.
+ * Releases a raw arena's slot; clears the footprint of an allocator entry.
+ */
+void vkr_allocator_registry_detach_arena(Arena *arena);

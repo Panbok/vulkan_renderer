@@ -28,6 +28,7 @@
 #include "vkr_packed_geometry.h"
 #include "vkr_packet_constants.h"
 #include "vkr_render_graph_internal.h"
+#include "vkr_renderer_metrics.h"
 #include "vkr_rg_json.h"
 #include "vkr_sheen_lut.h"
 #include "vkr_subsurface.h"
@@ -44,6 +45,104 @@
 
 #include <spirv_reflect.h>
 #include <stddef.h>
+
+/* Native work recorded since the last frame submission, for the backend.*
+   metrics (vkr_vulkan_renderer_frame_counters), and the pipeline each bind
+   point of the command buffer being recorded last bound. Only the thread
+   rendering frames records commands, or one that joined it, and a process
+   runs one Vulkan renderer, so the counts take neither a renderer nor a
+   lock. The renderer takes them at each frame submission. */
+extern VkrBackendFrameCounters vkr_vk_recorded_counters;
+extern VkPipeline vkr_vk_counted_pipelines[2];
+
+static INLINE void vkr_vk_count(VkrBackendCounter counter, uint32_t amount) {
+  vkr_vk_recorded_counters.values[counter] += amount;
+}
+
+static INLINE VkResult vkr_vk_begin_command_buffer(
+    VkCommandBuffer command, const VkCommandBufferBeginInfo *info) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_COMMAND_BUFFERS, 1u);
+  vkr_vk_counted_pipelines[0] = VK_NULL_HANDLE;
+  vkr_vk_counted_pipelines[1] = VK_NULL_HANDLE;
+  return vkBeginCommandBuffer(command, info);
+}
+
+static INLINE VkResult vkr_vk_queue_submit2(VkQueue queue, uint32_t count,
+                                            const VkSubmitInfo2 *submits,
+                                            VkFence fence) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_QUEUE_SUBMITS, 1u);
+  return vkQueueSubmit2(queue, count, submits, fence);
+}
+
+/* A bind changes its bind point's pipeline unless it binds the one bound
+   last in this command buffer. */
+static INLINE void vkr_vk_cmd_bind_pipeline(VkCommandBuffer command,
+                                            VkPipelineBindPoint bind_point,
+                                            VkPipeline pipeline) {
+  const uint32_t point = bind_point == VK_PIPELINE_BIND_POINT_COMPUTE ? 1u : 0u;
+  vkr_vk_count(VKR_BACKEND_COUNTER_PIPELINE_BINDS, 1u);
+  if (pipeline != vkr_vk_counted_pipelines[point]) {
+    vkr_vk_count(VKR_BACKEND_COUNTER_PIPELINE_CHANGES, 1u);
+  }
+  vkr_vk_counted_pipelines[point] = pipeline;
+  vkCmdBindPipeline(command, bind_point, pipeline);
+}
+
+static INLINE void vkr_vk_cmd_pipeline_barrier2(VkCommandBuffer command,
+                                                const VkDependencyInfo *info) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_BARRIERS_IMAGE,
+               info->imageMemoryBarrierCount);
+  vkr_vk_count(VKR_BACKEND_COUNTER_BARRIERS_BUFFER,
+               info->bufferMemoryBarrierCount);
+  vkCmdPipelineBarrier2(command, info);
+}
+
+static INLINE void vkr_vk_cmd_begin_rendering(VkCommandBuffer command,
+                                              const VkRenderingInfo *info) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_RENDER_PASSES, 1u);
+  vkCmdBeginRendering(command, info);
+}
+
+static INLINE void vkr_vk_cmd_draw(VkCommandBuffer command,
+                                   uint32_t vertex_count,
+                                   uint32_t instance_count,
+                                   uint32_t first_vertex,
+                                   uint32_t first_instance) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_DRAWS_DIRECT, 1u);
+  vkCmdDraw(command, vertex_count, instance_count, first_vertex,
+            first_instance);
+}
+
+static INLINE void
+vkr_vk_cmd_draw_indexed(VkCommandBuffer command, uint32_t index_count,
+                        uint32_t instance_count, uint32_t first_index,
+                        int32_t vertex_offset, uint32_t first_instance) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_DRAWS_DIRECT, 1u);
+  vkCmdDrawIndexed(command, index_count, instance_count, first_index,
+                   vertex_offset, first_instance);
+}
+
+static INLINE void vkr_vk_cmd_draw_indexed_indirect_count(
+    VkCommandBuffer command, VkBuffer buffer, VkDeviceSize offset,
+    VkBuffer count_buffer, VkDeviceSize count_offset, uint32_t max_draw_count,
+    uint32_t stride) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_DRAWS_INDIRECT, 1u);
+  vkCmdDrawIndexedIndirectCount(command, buffer, offset, count_buffer,
+                                count_offset, max_draw_count, stride);
+}
+
+static INLINE void vkr_vk_cmd_dispatch(VkCommandBuffer command, uint32_t x,
+                                       uint32_t y, uint32_t z) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_DISPATCHES, 1u);
+  vkCmdDispatch(command, x, y, z);
+}
+
+static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
+                                                VkBuffer buffer,
+                                                VkDeviceSize offset) {
+  vkr_vk_count(VKR_BACKEND_COUNTER_DISPATCHES, 1u);
+  vkCmdDispatchIndirect(command, buffer, offset);
+}
 
 /* SPIR-V file names in the shader catalog (vkr_shader_catalog.h). The
  * entry table lives in renderer/src/shaders/vulkan/slang/library.recipe.json
@@ -156,6 +255,8 @@
 #define VKR_VULKAN_PACKET_EXPOSURE_RESOLVE_COMP_SPV                            \
   "packet.exposure_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_GPU_SPIKE_COMP_SPV "packet.gpu_spike.comp.spv"
+#define VKR_VULKAN_PACKET_GPU_DRAW_CENSUS_COMP_SPV                             \
+  "packet.gpu_draw_census.comp.spv"
 #define VKR_VULKAN_PACKET_SUBSURFACE_GATHER_COMP_SPV                           \
   "packet.subsurface_gather.comp.spv"
 #define VKR_VULKAN_PACKET_MOTION_BLUR_TILE_MAX_COMP_SPV                        \
@@ -501,6 +602,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_FSR31_PREPARE,
   /** Debug.GpuSpike (VkrGpuDebugPayload.gpu_spike_iterations). */
   VKR_VULKAN_DEFERRED_PIPELINE_GPU_SPIKE,
+  /** Cull.Census (VkrGpuDebugPayload.draw_census). */
+  VKR_VULKAN_DEFERRED_PIPELINE_GPU_DRAW_CENSUS,
   VKR_VULKAN_DEFERRED_PIPELINE_COUNT,
 } VkrVulkanDeferredPipeline;
 
@@ -2985,6 +3088,16 @@ typedef struct VkrVulkanFrameSlot {
   VkQueryPool statistics_pool;
   VkrVulkanBuffer readback;
   VkrVulkanBuffer capture_readback;
+  /** Host-visible draw census (Cull.Census) of the slot's frame: packed
+   * states, then object ids at vkr_vk_census_ids_offset; grows to the
+   * largest census the slot carried. */
+  VkrVulkanBuffer census_readback;
+  /** The census pass's outputs and the candidates and VkrDrawCensusFlag
+   * bits of the slot's frame; zero count without a census. */
+  VkrVulkanGraphBufferInstance *census_states;
+  VkrVulkanGraphBufferInstance *census_ids;
+  uint32_t census_count;
+  uint32_t census_flags;
   VkrVulkanBuffer frame_upload;
   VkrVulkanBuffer candidate_upload;
   VkrCaptureBackendItemPlan capture_plans[VKR_CAPTURE_MAX_ITEMS];
@@ -3566,6 +3679,11 @@ typedef struct VkrVulkanFsr31History {
 
 struct VkrVulkanRenderer {
   VkrAllocator *allocator;
+  /** The newest completed draw census, copied from its slot's readback when
+   * the slot's result is polled; storage from `allocator`. */
+  VkrDrawCensusStore draw_census;
+  /** The native work the last submitted frame recorded (backend.*). */
+  VkrBackendFrameCounters submitted_counters;
   VkrVulkanRendererConfig config;
   VkrExposureMeteringConfig exposure_metering;
   /** Bounded simulation time of the last submitted automatic exposure. */
@@ -4178,6 +4296,15 @@ bool8_t vkr_vk_prepare_exposure_histogram(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_prepare_gpu_spike(VkrVulkanRenderer *renderer,
                                  VkrVulkanPreparedCompute *prepared,
                                  const VkrRgPass *pass);
+bool8_t vkr_vk_prepare_gpu_draw_census(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass);
+/** Publishes a completed slot's draw census, if it carried one, to
+ * renderer->draw_census; `overflow_count` counts the camera draws the
+ * compaction cut. */
+bool8_t vkr_vk_decode_census_readback(VkrVulkanRenderer *renderer,
+                                      const VkrVulkanFrameSlot *slot,
+                                      uint32_t overflow_count);
 bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);

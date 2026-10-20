@@ -419,6 +419,44 @@
       ]
     },
     {
+      "name": "gpu_draw_census_states",
+      "condition": "scene_rendering && gpu_draw_census",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_candidate_capacity",
+        "bytes_per_element": 4
+      },
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
+      "name": "gpu_draw_census_ids",
+      "condition": "scene_rendering && gpu_draw_census",
+      "type": "buffer",
+      "size": {
+        "mode": "draw_elements",
+        "count_source": "gpu_draw_candidate_capacity",
+        "bytes_per_element": 4
+      },
+      "usage": [
+        "STORAGE",
+        "TRANSFER_SRC"
+      ],
+      "flags": [
+        "PER_FRAME_SLOT",
+        "RESIZABLE",
+        "GROW_ONLY"
+      ]
+    },
+    {
       "name": "gpu_draw_arguments",
       "condition": "scene_rendering",
       "type": "buffer",
@@ -1681,6 +1719,44 @@
         }
       ],
       "execute": "pass.gpu_draw_late"
+    },
+    {
+      "name": "Cull.Census",
+      "condition": "scene_rendering && gpu_draw_census",
+      "type": "compute",
+      "flags": [
+        "NO_CULL"
+      ],
+      "reads": [
+        {
+          "buffer": "gpu_draw_candidates",
+          "access": "STORAGE_READ",
+          "binding": 0
+        },
+        {
+          "buffer": "gpu_draw_instances",
+          "access": "STORAGE_READ",
+          "binding": 9
+        },
+        {
+          "buffer": "gpu_draw_classifications",
+          "access": "STORAGE_READ",
+          "binding": 1
+        }
+      ],
+      "writes": [
+        {
+          "buffer": "gpu_draw_census_states",
+          "access": "STORAGE_WRITE",
+          "binding": 2
+        },
+        {
+          "buffer": "gpu_draw_census_ids",
+          "access": "STORAGE_WRITE",
+          "binding": 3
+        }
+      ],
+      "execute": "pass.gpu_draw_census"
     },
     {
       "name": "Tiled.Opaque.Late",

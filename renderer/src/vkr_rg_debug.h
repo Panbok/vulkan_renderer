@@ -152,3 +152,108 @@ typedef struct VkrRgDescription {
 bool8_t vkr_rg_describe(const VkrRenderGraph *graph,
                         const VkrRgDescribeVisitor *visitor,
                         VkrRgDescription *out_description);
+
+// =============================================================================
+// Graph snapshot
+// =============================================================================
+
+/** Capacities of a VkrRgSnapshot; a larger graph is cut and marked
+ * truncated. */
+#define VKR_RG_SNAPSHOT_PASS_MAX 256u
+#define VKR_RG_SNAPSHOT_RESOURCE_MAX 512u
+#define VKR_RG_SNAPSHOT_USE_MAX 4096u
+#define VKR_RG_SNAPSHOT_NAME_BYTES 32768u
+
+/** How a pass uses a resource, from VkrRgDescribedUse.role. */
+typedef enum VkrRgSnapshotRole {
+  VKR_RG_SNAPSHOT_ROLE_READ = 0,
+  VKR_RG_SNAPSHOT_ROLE_WRITE,
+  VKR_RG_SNAPSHOT_ROLE_COLOR,
+  VKR_RG_SNAPSHOT_ROLE_DEPTH,
+  VKR_RG_SNAPSHOT_ROLE_DEPTH_READ,
+  VKR_RG_SNAPSHOT_ROLE_COUNT,
+} VkrRgSnapshotRole;
+
+/** Text in a VkrRgSnapshot's name table. */
+typedef struct VkrRgSnapshotName {
+  uint32_t offset;
+  uint32_t length;
+} VkrRgSnapshotName;
+
+#define VKR_RG_SNAPSHOT_PASS_CULLED (1u << 0)
+#define VKR_RG_SNAPSHOT_PASS_DISABLED (1u << 1)
+/* The pass has more uses than VKR_RG_DESCRIBED_USE_MAX. */
+#define VKR_RG_SNAPSHOT_PASS_USES_CUT (1u << 2)
+
+/** A pass and its uses, uses[first_use, first_use + use_count). */
+typedef struct VkrRgSnapshotPass {
+  VkrRgSnapshotName name;
+  VkrRgPassType type;
+  uint32_t flags;
+  /** Execution position; UINT32_MAX when not scheduled. */
+  uint32_t order;
+  uint32_t first_use;
+  uint32_t use_count;
+} VkrRgSnapshotPass;
+
+typedef struct VkrRgSnapshotUse {
+  /** The resource by name; a pass names an image or buffer the graph
+   * knows. */
+  VkrRgSnapshotName resource;
+  VkrRgSnapshotRole role;
+  bool8_t buffer;
+  bool8_t write;
+} VkrRgSnapshotUse;
+
+#define VKR_RG_SNAPSHOT_RESOURCE_BUFFER (1u << 0)
+#define VKR_RG_SNAPSHOT_RESOURCE_IMPORTED (1u << 1)
+#define VKR_RG_SNAPSHOT_RESOURCE_EXPORTED (1u << 2)
+#define VKR_RG_SNAPSHOT_RESOURCE_PRESENT (1u << 3)
+
+/** A resource this frame's build declared (VkrRgDescribedResource). */
+typedef struct VkrRgSnapshotResource {
+  VkrRgSnapshotName name;
+  /** Authored format token, empty for a buffer or an unknown format. */
+  VkrRgSnapshotName format;
+  VkrRgSnapshotName lifetime;
+  uint32_t flags;
+  uint32_t width;
+  uint32_t height;
+  uint32_t depth;
+  uint32_t layers;
+  uint32_t mip_levels;
+  uint32_t samples;
+  uint64_t bytes;
+  uint32_t first_order;
+  uint32_t last_order;
+} VkrRgSnapshotResource;
+
+/**
+ * The shape of the graph's last build in caller-owned storage of the fixed
+ * capacities above, for a recording (docs/proposals/recordings.md): passes in
+ * execution order then the unscheduled ones, their uses, the declared
+ * resources, and every name they hold. No pointer into the graph survives.
+ */
+typedef struct VkrRgSnapshot {
+  uint64_t frame_index;
+  uint32_t viewport_width;
+  uint32_t viewport_height;
+  float32_t render_scale;
+  VkrRgSnapshotPass passes[VKR_RG_SNAPSHOT_PASS_MAX];
+  uint32_t pass_count;
+  VkrRgSnapshotUse uses[VKR_RG_SNAPSHOT_USE_MAX];
+  uint32_t use_count;
+  VkrRgSnapshotResource resources[VKR_RG_SNAPSHOT_RESOURCE_MAX];
+  uint32_t resource_count;
+  char names[VKR_RG_SNAPSHOT_NAME_BYTES];
+  uint32_t name_bytes;
+  /** Something did not fit: passes, uses, resources or names. */
+  bool8_t truncated;
+} VkrRgSnapshot;
+
+/**
+ * @brief Fills `out` with the shape of the graph's last build. Same
+ * threading rule as vkr_rg_describe.
+ * @return false for a NULL graph or `out`.
+ */
+bool8_t vkr_rg_snapshot(const VkrRenderGraph *graph, VkrRgSnapshot *out);

@@ -1,6 +1,7 @@
 #pragma once
 #include "vkr_asset_publisher.h"
 
+#include "core/vkr_atomic.h"
 #include "memory/arena.h"
 #include "memory/vkr_dmemory.h"
 #include "vkr_asset_metrics.h"
@@ -272,6 +273,13 @@ struct VkrRenderer {
   /* Written by the frame's work; the caller collects it after the wait. */
   VkrRendererFrameResult frame_result;
   bool8_t frame_result_ready;
+  /* A graph snapshot for a recording: requested by the caller, filled by
+     the thread rendering the next frame, which then marks it ready
+     (VKR_RENDERER_GRAPH_SNAPSHOT_*). That thread allocates it from
+     render_graph_allocator on the first request; it is released with the
+     renderer. */
+  struct VkrRgSnapshot *graph_snapshot;
+  VkrAtomicUint32 graph_snapshot_state;
 };
 
 /* Waits until no submitted frame is rendering. Public entry points call it

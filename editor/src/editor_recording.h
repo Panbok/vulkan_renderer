@@ -74,11 +74,192 @@ typedef struct VkrEditorRecordingEntry {
    the rest as one. */
 #define VKR_EDITOR_PERF_PASS_SERIES 8u
 
+/* Options a segmented control holds at most. */
+#define VKR_EDITOR_PERF_SEGMENTS_MAX 8u
+
+/* A 2D view the pointer pans and zooms, such as the render graph's flow or
+   the level map: a world point shows at (world - center) * zoom points from
+   the middle of the canvas. */
+typedef struct VkrEditorPerfCanvas {
+  Vec2 center;
+  /* Points per world unit; zero until fitted. */
+  float32_t zoom;
+  float32_t fit_zoom;
+  bool8_t fitted;
+  /* The canvas's size in points, from its last layout. */
+  Vec2 size_pt;
+  bool8_t dragging;
+  Vec2 drag_px;
+} VkrEditorPerfCanvas;
+
+/* What the pointer did on a canvas this build: over it, clicked without a
+   drag, and where it is in world units. */
+typedef struct VkrEditorPerfCanvasInput {
+  bool8_t hovered;
+  bool8_t clicked;
+  Vec2 pointer;
+} VkrEditorPerfCanvasInput;
+
+/* Passes the Render graph tab follows, and the updates its trends keep. */
+#define VKR_EDITOR_PERF_GRAPH_PASSES 256u
+#define VKR_EDITOR_PERF_GRAPH_HISTORY 60u
+
+/* The value each pass shows in the Render graph tab: its mean or slowest
+   time over the update window, or its time in the shown frame. */
+typedef enum VkrEditorPerfGraphValue {
+  VKR_EDITOR_PERF_GRAPH_MEAN = 0,
+  VKR_EDITOR_PERF_GRAPH_MAX,
+  VKR_EDITOR_PERF_GRAPH_FRAME,
+  VKR_EDITOR_PERF_GRAPH_VALUE_COUNT,
+} VkrEditorPerfGraphValue;
+
+/* The Render graph tab's numbers for one recording, indexed like the shown
+   graph's passes. They change only when the update window steps, so they
+   hold still while a playback plays. */
+typedef struct VkrEditorPerfGraph {
+  bool8_t valid;
+  /* What the values were computed for: the graph, the window step, the
+     update period in ms (zero every frame) and the value. */
+  uint32_t graph;
+  uint64_t step;
+  uint32_t rate_ms;
+  uint32_t value;
+  /* The window's frames, and those of them with pass times. */
+  uint64_t first;
+  uint64_t last;
+  uint32_t timed_frames;
+  /* GPU times, else CPU times when the recording has none. */
+  bool8_t gpu;
+  float32_t ms[VKR_EDITOR_PERF_GRAPH_PASSES];
+  float32_t cpu_ms[VKR_EDITOR_PERF_GRAPH_PASSES];
+  bool8_t has[VKR_EDITOR_PERF_GRAPH_PASSES];
+  float32_t total_ms;
+  /* When each value last moved by more than VKR_EDITOR_PERF_GRAPH_FLASH,
+     in platform seconds, for its cell's fading highlight. */
+  float64_t changed_at[VKR_EDITOR_PERF_GRAPH_PASSES];
+  /* Each pass's value at the window and the 59 windows before it, oldest
+     first. */
+  float32_t history[VKR_EDITOR_PERF_GRAPH_PASSES]
+                   [VKR_EDITOR_PERF_GRAPH_HISTORY];
+  /* Each pass's median time over the shown frames. */
+  float32_t median[VKR_EDITOR_PERF_GRAPH_PASSES];
+  uint32_t median_graph;
+  uint64_t median_first;
+  uint64_t median_last;
+  /* The flow's layout of graph `layout_graph`: each pass's dependency depth
+     and its place in its row. */
+  uint32_t layout_graph;
+  uint16_t depth[VKR_EDITOR_PERF_GRAPH_PASSES];
+  uint16_t slot[VKR_EDITOR_PERF_GRAPH_PASSES];
+  uint16_t row_width[VKR_EDITOR_PERF_GRAPH_PASSES];
+  uint32_t depth_count;
+  uint32_t widest;
+} VkrEditorPerfGraph;
+
+/* Series the Memory tab stacks: the largest allocators or GPU owners, then
+   the rest as one. */
+#define VKR_EDITOR_PERF_MEMORY_SERIES 7u
+/* GPU allocation owners the Memory tab reads at most. */
+#define VKR_EDITOR_PERF_GPU_OWNERS 16u
+
+/* The Memory tab's charts over the frame chart's columns and its
+   statistics over the shown frames, rebuilt when the columns are. */
+typedef struct VkrEditorPerfMemory {
+  uint32_t columns_version;
+  bool8_t valid;
+  /* RAM by allocator: the stacked allocator ids, the last series the
+     rest; and the process's resident size when no allocator is named. */
+  uint32_t ram_series[VKR_EDITOR_PERF_MEMORY_SERIES];
+  uint32_t ram_series_count;
+  bool8_t ram_by_allocator;
+  float32_t ram_mb[VKR_EDITOR_PERF_MEMORY_SERIES][VKR_EDITOR_PERF_COLUMNS];
+  float32_t ram_top;
+  /* VRAM by owner: the stacked owners (indices into owner_series), the
+     last series the rest. */
+  uint32_t owner_count;
+  uint32_t owner_series[VKR_EDITOR_PERF_GPU_OWNERS];
+  uint32_t owner_allocations[VKR_EDITOR_PERF_GPU_OWNERS];
+  uint32_t owner_created[VKR_EDITOR_PERF_GPU_OWNERS];
+  uint32_t vram_series[VKR_EDITOR_PERF_MEMORY_SERIES];
+  uint32_t vram_series_count;
+  float32_t vram_mb[VKR_EDITOR_PERF_MEMORY_SERIES][VKR_EDITOR_PERF_COLUMNS];
+  float32_t vram_top;
+  /* Allocations up and frees down per column, from the named allocators. */
+  float32_t allocs[VKR_EDITOR_PERF_COLUMNS];
+  float32_t frees[VKR_EDITOR_PERF_COLUMNS];
+  float32_t rate_top;
+  /* Over the shown frames. */
+  float64_t allocs_per_frame;
+  float64_t frees_per_frame;
+  float64_t scopes_per_frame;
+  uint32_t deepest_scope;
+  int64_t live_growth;
+} VkrEditorPerfMemory;
+
+/* CPU stages of the frame's recording the Backend tab stacks. */
+#define VKR_EDITOR_PERF_RECORD_STAGES 6u
+
+/* The Backend tab's chart over the frame chart's columns, rebuilt when the
+   columns are. */
+typedef struct VkrEditorPerfBackend {
+  uint32_t columns_version;
+  bool8_t valid;
+  uint32_t stage_series[VKR_EDITOR_PERF_RECORD_STAGES];
+  float32_t stage_ms[VKR_EDITOR_PERF_RECORD_STAGES][VKR_EDITOR_PERF_COLUMNS];
+  float32_t stage_top;
+  bool8_t has_stages;
+} VkrEditorPerfBackend;
+
+/* Census states the Draws tab stacks over time: drawn, drawn late,
+   occluded, outside the frustum and past the draw distance. */
+#define VKR_EDITOR_PERF_DRAW_SERIES 5u
+
+/* The Draws tab's per-object view of one frame and its chart over the frame
+   chart's columns. The object arrays come from the Performance window's
+   memory and follow the box set in effect. */
+typedef struct VkrEditorPerfDraws {
+  uint32_t columns_version;
+  bool8_t valid;
+  float32_t counts[VKR_EDITOR_PERF_DRAW_SERIES][VKR_EDITOR_PERF_COLUMNS];
+  float32_t top;
+  /* The box set the arrays below follow, its objects' extent on the ground
+     (x, z) and their order by footprint, largest first. */
+  uint32_t bounds;
+  uint32_t object_count;
+  uint32_t *order;
+  Vec2 extent_min;
+  Vec2 extent_max;
+  /* Each candidate of id table `ids`'s object index, or UINT32_MAX. */
+  uint32_t ids;
+  uint32_t candidate_count;
+  uint32_t *candidate_object;
+  /* Each object's VKR_RECORDING_DRAW_STATE_* in frame `state_frame`, its
+     most visible candidate's, or UINT8_MAX without one. */
+  uint64_t state_frame;
+  uint8_t *object_state;
+  /* That frame's candidates by state. */
+  uint32_t state_counts[VKR_RECORDING_DRAW_STATE_DISTANCE + 1u];
+} VkrEditorPerfDraws;
+
+/* The Performance window's tabs. Overview holds the frame charts, the
+   inspector, the spikes and the passes; the others each read one part of
+   the recording around the frame the window shows. */
+typedef enum VkrEditorPerfTab {
+  VKR_EDITOR_PERF_TAB_OVERVIEW = 0,
+  VKR_EDITOR_PERF_TAB_BACKEND,
+  VKR_EDITOR_PERF_TAB_MEMORY,
+  VKR_EDITOR_PERF_TAB_DRAWS,
+  VKR_EDITOR_PERF_TAB_GRAPH,
+  VKR_EDITOR_PERF_TAB_COUNT,
+} VkrEditorPerfTab;
+
 /* The performance view of one recording (docs/proposals/recordings.md,
    "Performance view"): its loaded data, analysis and plot columns. */
 /* The Performance window's layout and tables, kept when another recording
    loads. */
 typedef struct VkrEditorRecordingPerfView {
+  /* The shown tab, a VkrEditorPerfTab. */
+  uint32_t tab;
   /* Charts above the lists, spikes beside passes, and the charts beside the
      frame inspector. */
   VkrEditorSplit charts;
@@ -95,6 +276,31 @@ typedef struct VkrEditorRecordingPerfView {
   /* Series whose name holds this text, ASCII case-insensitive. */
   uint8_t series_search[64];
   uint32_t series_search_length;
+  /* Render graph tab: the flow instead of the list, the update period as
+     an index into its choices plus one (zero for the default), the value
+     shown (VkrEditorPerfGraphValue), the pass table, the flow's canvas, and
+     the selected pass by name. */
+  bool8_t graph_flow;
+  uint32_t graph_rate;
+  uint32_t graph_value;
+  VkrEditorTable graph_table;
+  VkrEditorPerfCanvas graph_canvas;
+  char graph_selected[VKR_RECORDING_PASS_NAME_MAX + 1u];
+  /* Memory tab: its two tables. */
+  VkrEditorTable memory_where;
+  VkrEditorTable memory_arenas;
+  /* Backend tab: its three tables. */
+  VkrEditorTable backend_passes;
+  VkrEditorTable backend_counters;
+  VkrEditorTable backend_functions;
+  /* Draws tab: the map, its layers (VKR_EDITOR_PERF_DRAW_LAYER_* bits plus
+     one, zero for the default), whether it follows the camera, the section
+     table's kind (0 counters, 1 cells) and the table. */
+  VkrEditorPerfCanvas draws_canvas;
+  uint32_t draws_layers;
+  bool8_t draws_follow;
+  uint32_t draws_sections;
+  VkrEditorTable draws_table;
 } VkrEditorRecordingPerfView;
 
 typedef struct VkrEditorRecordingPerf {
@@ -107,6 +313,8 @@ typedef struct VkrEditorRecordingPerf {
   VkrRecordingData data;
   VkrRecordingAnalysis analysis;
   uint32_t column_count;
+  /* Grows whenever the columns are rebuilt, so tabs know to rebuild theirs. */
+  uint32_t columns_version;
   /* The frame each column shows. */
   uint64_t column_frame[VKR_EDITOR_PERF_COLUMNS];
   float32_t frame_ms[VKR_EDITOR_PERF_COLUMNS];
@@ -176,6 +384,14 @@ typedef struct VkrEditorRecordingPerf {
   VkrRecordingAnalysis compare_analysis;
   VkrRecordingCompare compare;
   float32_t compare_ms[VKR_EDITOR_PERF_COLUMNS];
+  /* The Render graph tab's numbers. */
+  VkrEditorPerfGraph graph;
+  /* The Memory tab's charts and statistics. */
+  VkrEditorPerfMemory memory_tab;
+  /* The Backend tab's chart. */
+  VkrEditorPerfBackend backend;
+  /* The Draws tab's objects and chart. */
+  VkrEditorPerfDraws draws;
 } VkrEditorRecordingPerf;
 
 /* Recording requests (docs/proposals/recordings.md, "Recording requests"):
@@ -605,6 +821,112 @@ void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
 void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds);
+
+/** The frame the Performance window's tabs describe: the open playback's
+ * playhead while it plays, else the selected frame, else the playhead, else
+ * the frame under the pointer on a chart; UINT64_MAX when there is none. */
+uint64_t vkr_editor_perf_focus(const VkrEditorRecordingPerf *perf,
+                               const VkrSampleUiFrame *frame);
+
+/** A tab's message in the middle of `placement`, such as what a recording
+ * lacks for it and how to record it. */
+void vkr_editor_perf_empty(struct VkrEditorUi *editor, VkrUiSystem *ui,
+                           VkrUiPlacement placement, VkrUiIcon icon,
+                           const char *title, const char *text);
+
+/* Layout helpers of the Performance window's tab files. */
+VkrUiPlacement vkr_editor_perf_cell(uint32_t column, uint32_t row);
+VkrUiPanelConfig vkr_editor_perf_grid(VkrUiPlacement placement,
+                                      const VkrUiTrack *columns,
+                                      uint32_t column_count,
+                                      const VkrUiTrack *rows,
+                                      uint32_t row_count);
+/** Caption-size text at `placement`, left and vertically centred. */
+void vkr_editor_perf_caption(VkrUiSystem *ui, const char *id, String8 text,
+                             VkrUiPlacement placement, Vec4 color);
+
+/** Selects `target` for every tab, and moves an open playback of this
+ * recording to it. */
+void vkr_editor_perf_select(struct VkrEditorUi *editor,
+                            const VkrSampleUiFrame *frame, uint64_t target);
+
+/** A row of `count` options of which `selected` is on; returns the option
+ * clicked this build, else `selected`. `tips` may be NULL. */
+uint32_t vkr_editor_perf_segmented(VkrUiSystem *ui, const char *id,
+                                   VkrUiPlacement placement,
+                                   const char *const *labels,
+                                   const char *const *tips, uint32_t count,
+                                   uint32_t selected);
+
+/** A stat card in column `column` of a row of cards: a caption, a value in
+ * `color`, and an optional last line. */
+void vkr_editor_perf_card(struct VkrEditorUi *editor, VkrUiSystem *ui,
+                          uint32_t column, const char *caption, String8 value,
+                          Vec4 color, String8 line, Vec4 line_color);
+
+/** A chart of the shown frames over the frame chart's columns
+ * (VkrEditorRecordingPerf.column_frame); with `passes`, over the pass
+ * chart's. It marks the selected frame and the one under the pointer on any
+ * chart, a click selects a column's frame and a drag zooms every chart.
+ * An empty `tooltip` describes the hovered column's frame time. */
+void vkr_editor_perf_plot(struct VkrEditorUi *editor,
+                          const VkrSampleUiFrame *frame, const char *id,
+                          VkrUiPlacement placement, VkrUiPlotConfig *plot,
+                          bool8_t passes, String8 tooltip);
+
+/* Height of a chart title with keys: the title over a line of keys. */
+#define VKR_EDITOR_PERF_CHART_TITLE_PT 34.0f
+
+/** A chart's title in caption text over a line with a dot and a name per
+ * key; VKR_EDITOR_PERF_CHART_TITLE_PT tall with keys, 16 without. */
+void vkr_editor_perf_chart_title(VkrUiSystem *ui, const char *id,
+                                 VkrUiPlacement placement, String8 title,
+                                 const char *const *keys, const Vec4 *colors,
+                                 uint32_t key_count);
+
+/** The Backend tab's body (editor_recording_perf_backend.c). */
+void vkr_editor_recording_perf_backend_build(struct VkrEditorUi *editor,
+                                             const VkrSampleUiFrame *frame,
+                                             VkrUiPlacement placement);
+
+/** The backend that made the analyzed recording, from its pipeline class:
+ * "Metal" for tiled, "Vulkan" for desktop, else "Backend". */
+const char *vkr_editor_perf_backend_name(const VkrEditorRecordingPerf *perf);
+
+/** The Draws tab's body (editor_recording_perf_draws.c). */
+void vkr_editor_recording_perf_draws_build(struct VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           VkrUiPlacement placement);
+
+/** Releases the Draws tab's object arrays. */
+void vkr_editor_recording_perf_draws_release(VkrEditorRecordingPerf *perf);
+
+/** The Memory tab's body (editor_recording_perf_memory.c). */
+void vkr_editor_recording_perf_memory_build(struct VkrEditorUi *editor,
+                                            const VkrSampleUiFrame *frame,
+                                            VkrUiPlacement placement);
+
+/** The Render graph tab's body (editor_recording_perf_graph.c). */
+void vkr_editor_recording_perf_graph_build(struct VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           VkrUiPlacement placement);
+
+/** World point `world` in the canvas's points, from its top-left. */
+Vec2 vkr_editor_perf_canvas_point(const VkrEditorPerfCanvas *canvas,
+                                  Vec2 world);
+
+/** Centres [min, max] in the canvas with `margin_pt` around it; zoom then
+ * ranges about this fit. */
+void vkr_editor_perf_canvas_fit(VkrEditorPerfCanvas *canvas, Vec2 min, Vec2 max,
+                                float32_t margin_pt);
+
+/** The pointer on a canvas at `placement`: build it first in its cell, then
+ * what it shows over it. The wheel zooms about the pointer and a drag pans;
+ * `tooltip` follows the pointer. */
+VkrEditorPerfCanvasInput
+vkr_editor_perf_canvas_input(VkrUiSystem *ui, const char *id,
+                             VkrEditorPerfCanvas *canvas,
+                             VkrUiPlacement placement, String8 tooltip);
 
 /* ---- Thread timeline (editor_recording_flame.c) ---- */
 

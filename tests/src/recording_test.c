@@ -15,7 +15,9 @@
 #include "recording/vkr_recording_playback.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "vkr_depot_zstd.h"
+#include "vkr_frame_input.h"
 #include "vkr_renderer_metrics.h"
+#include "vkr_rg_debug.h"
 
 /* Recordings (docs/proposals/recordings.md, phase R0): the producer ring,
  * the stream format and the recorder. Each test names the failure it
@@ -888,6 +890,331 @@ static void test_recording_pass_rows(void) {
   assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
   recording_memory_destroy(&memory);
   printf("  test_recording_pass_rows PASSED\n");
+}
+
+/* A graph snapshot of renderer frame `index`: A writes "color" and the
+   buffer "args", B reads both and writes "out", and C, culled, reads "out";
+   with `wide` D runs after B and the viewport is 1920x1080, else
+   1280x720. */
+static void recording_graph_snapshot(uint64_t index, bool8_t wide,
+                                     VkrRgSnapshot *out) {
+  MemZero(out, sizeof(*out));
+  out->frame_index = index;
+  out->viewport_width = wide ? 1920u : 1280u;
+  out->viewport_height = wide ? 1080u : 720u;
+  out->render_scale = 0.75f;
+  const char *names = "ABCcolorargsoutRGBA16FtransientD";
+  MemCopy(out->names, names, string_length(names));
+  out->name_bytes = (uint32_t)string_length(names);
+  const VkrRgSnapshotName a = {0u, 1u};
+  const VkrRgSnapshotName b = {1u, 1u};
+  const VkrRgSnapshotName c = {2u, 1u};
+  const VkrRgSnapshotName color = {3u, 5u};
+  const VkrRgSnapshotName args = {8u, 4u};
+  const VkrRgSnapshotName result = {12u, 3u};
+  const VkrRgSnapshotName format = {15u, 7u};
+  const VkrRgSnapshotName lifetime = {22u, 9u};
+  const VkrRgSnapshotName d = {31u, 1u};
+  out->passes[0] = (VkrRgSnapshotPass){.name = a,
+                                       .type = VKR_RG_PASS_TYPE_GRAPHICS,
+                                       .order = 0u,
+                                       .first_use = 0u,
+                                       .use_count = 2u};
+  out->passes[1] = (VkrRgSnapshotPass){.name = b,
+                                       .type = VKR_RG_PASS_TYPE_COMPUTE,
+                                       .order = 1u,
+                                       .first_use = 2u,
+                                       .use_count = 3u};
+  /* Scheduled passes come first, then the culled C. */
+  if (wide) {
+    out->passes[2] = (VkrRgSnapshotPass){.name = d,
+                                         .type = VKR_RG_PASS_TYPE_GRAPHICS,
+                                         .order = 2u,
+                                         .first_use = 6u};
+  }
+  out->passes[wide ? 3u : 2u] =
+      (VkrRgSnapshotPass){.name = c,
+                          .type = VKR_RG_PASS_TYPE_COMPUTE,
+                          .flags = VKR_RG_SNAPSHOT_PASS_CULLED,
+                          .order = UINT32_MAX,
+                          .first_use = 5u,
+                          .use_count = 1u};
+  out->pass_count = wide ? 4u : 3u;
+  out->uses[0] = (VkrRgSnapshotUse){
+      .resource = color, .role = VKR_RG_SNAPSHOT_ROLE_COLOR, .write = true_v};
+  out->uses[1] = (VkrRgSnapshotUse){.resource = args,
+                                    .role = VKR_RG_SNAPSHOT_ROLE_WRITE,
+                                    .buffer = true_v,
+                                    .write = true_v};
+  out->uses[2] =
+      (VkrRgSnapshotUse){.resource = color, .role = VKR_RG_SNAPSHOT_ROLE_READ};
+  out->uses[3] = (VkrRgSnapshotUse){
+      .resource = args, .role = VKR_RG_SNAPSHOT_ROLE_READ, .buffer = true_v};
+  out->uses[4] = (VkrRgSnapshotUse){
+      .resource = result, .role = VKR_RG_SNAPSHOT_ROLE_WRITE, .write = true_v};
+  out->uses[5] =
+      (VkrRgSnapshotUse){.resource = result, .role = VKR_RG_SNAPSHOT_ROLE_READ};
+  out->use_count = 6u;
+  out->resources[0] = (VkrRgSnapshotResource){.name = color,
+                                              .format = format,
+                                              .lifetime = lifetime,
+                                              .width = out->viewport_width,
+                                              .height = out->viewport_height,
+                                              .depth = 1u,
+                                              .layers = 1u,
+                                              .mip_levels = 1u,
+                                              .samples = 1u,
+                                              .bytes = 8ull * 1920u * 1080u,
+                                              .first_order = 0u,
+                                              .last_order = 1u};
+  out->resources[1] =
+      (VkrRgSnapshotResource){.name = args,
+                              .lifetime = lifetime,
+                              .flags = VKR_RG_SNAPSHOT_RESOURCE_BUFFER,
+                              .bytes = 4096u,
+                              .first_order = 0u,
+                              .last_order = 1u};
+  out->resources[2] =
+      (VkrRgSnapshotResource){.name = result,
+                              .format = format,
+                              .lifetime = lifetime,
+                              .flags = VKR_RG_SNAPSHOT_RESOURCE_EXPORTED,
+                              .width = 64u,
+                              .height = 64u,
+                              .depth = 1u,
+                              .layers = 1u,
+                              .mip_levels = 7u,
+                              .samples = 1u,
+                              .bytes = 65536u,
+                              .first_order = 1u,
+                              .last_order = 1u};
+  out->resource_count = 3u;
+}
+
+static bool8_t recording_text_is(const VkrRecordingGraph *graph,
+                                 VkrRecordingGraphText text,
+                                 const char *expected) {
+  const String8 value = vkr_recording_graph_text(graph, text);
+  return value.length == string_length(expected) &&
+         MemCompare(value.str, expected, value.length) == 0;
+}
+
+/* Detects, for the Performance window's tabs: a graph filed under the frame
+   that collected it instead of the frame that rendered it, a graph asked
+   for again when no new pass ran or not asked when one did, pass,
+   use and resource fields read at the wrong offsets, a use resolved to the
+   wrong resource or a pass joined to the wrong recorded pass; allocator
+   rows whose counts are not per frame or whose id lost its name; and
+   census states read against the wrong ids, at the wrong frame, or
+   unpacked at the wrong nibble. */
+static void test_recording_graph_allocators_census(void) {
+  printf("  Running test_recording_graph_allocators_census...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  char path[1024];
+  recording_test_path("tabs", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path,
+      .codec = vkr_depot_zstd_codec(),
+      .metrics = metrics,
+      .passes = true_v,
+      .pass_gpu_period = 1u,
+  };
+  /* An allocator the registry samples each frame: frame f allocates f + 1
+     blocks and frees one from frame 2 on. Registered before the recording,
+     it counts from the recording's start, not its own. */
+  VkrDMemory tracked_memory;
+  assert(vkr_dmemory_create(KB(64), MB(1), &tracked_memory));
+  VkrAllocator tracked = {.ctx = &tracked_memory};
+  vkr_dmemory_allocator_create(&tracked);
+  assert(vkr_allocator_register_name(&tracked, "test.tabs"));
+  void *before =
+      vkr_allocator_alloc(&tracked, 64u, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  void *blocks[128];
+  uint32_t block_count = 0u;
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+
+  static VkrRgSnapshot snapshot;
+  VkrRendererMetricsPassSample samples[4];
+  uint32_t graphs_asked = 0u;
+  /* Census: objects 5, 9 and 12; candidates in the order 9, 5, 12, 9. */
+  const VkrWorldObjectBounds bounds[] = {
+      {.object_id = 5u, .min = {0.0f, 0.0f, 0.0f}, .max = {1.0f, 2.0f, 3.0f}},
+      {.object_id = 9u, .min = {4.0f, 0.0f, 4.0f}, .max = {6.0f, 1.0f, 8.0f}},
+      {.object_id = 12u,
+       .min = {-2.0f, 0.0f, -2.0f},
+       .max = {-1.0f, 1.0f, -1.0f}},
+  };
+  const uint32_t ids[] = {9u, 5u, 12u, 9u};
+  for (uint64_t f = 0u; f < RECORDING_PASS_TEST_FRAMES; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    if (f == 0u) {
+      vkr_recording_draw_bounds(&recording, f, 1u, bounds, ArrayCount(bounds),
+                                32.0f);
+      assert(!vkr_recording_draw_bounds_wanted(&recording, 1u));
+      assert(vkr_recording_draw_bounds_wanted(&recording, 2u));
+    }
+    const uint64_t index = RECORDING_PASS_TEST_BASE + f;
+    const uint64_t source = f >= 2u ? index - 2u : index;
+    const VkrRendererMetricsPassTable table = {
+        .samples = samples,
+        .count = recording_pass_table(source, samples),
+        .capacity = ArrayCount(samples),
+        .cpu_frame_index = index,
+    };
+    vkr_recording_passes(&recording, f, index, &table);
+    /* The first table and the one that adds D (source 105, rendered by
+       frame 5 and collected at frame 7) ask for the graph. */
+    if (vkr_recording_graph_wanted(&recording)) {
+      ++graphs_asked;
+      recording_graph_snapshot(source, graphs_asked > 1u, &snapshot);
+      vkr_recording_graph(&recording, f, &snapshot);
+    }
+    for (uint64_t k = 0u; k <= f && block_count < ArrayCount(blocks); ++k) {
+      blocks[block_count++] =
+          vkr_allocator_alloc(&tracked, 64u, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    if (f >= 2u && block_count > 0u) {
+      vkr_allocator_free(&tracked, blocks[--block_count], 64u,
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    vkr_recording_allocators(&recording, f);
+    /* Census of the source frame: candidate i's state is (source + i) % 6
+       but never 0, which no camera candidate has. */
+    uint32_t words[1] = {0u};
+    for (uint32_t i = 0u; i < ArrayCount(ids); ++i) {
+      const uint32_t state = 1u + (uint32_t)((source + i) % 5u);
+      words[0] |= state << (4u * i);
+    }
+    const VkrRendererMetricsDrawCensus census = {
+        .cpu_frame_index = index,
+        .source_frame_index = source,
+        .ids_generation = 7u,
+        .states = words,
+        .object_ids = ids,
+        .candidate_count = ArrayCount(ids),
+        .flags = VKR_DRAW_CENSUS_TWO_PHASE,
+        .valid = true_v,
+    };
+    vkr_recording_draws(&recording, &census);
+  }
+  assert(graphs_asked == 2u);
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+  for (uint32_t i = 0u; i < block_count; ++i) {
+    vkr_allocator_free(&tracked, blocks[i], 64u,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  vkr_allocator_free(&tracked, before, 64u, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_unregister(&tracked);
+  vkr_dmemory_allocator_destroy(&tracked);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  /* Graphs: under the frames that rendered sources 100 and 105, in order. */
+  assert(data.graph_count == 2u);
+  assert(data.graphs[0].frame == 0u && data.graphs[1].frame == 5u);
+  assert(vkr_recording_data_graph_at(&data, 2u) == 0u);
+  assert(vkr_recording_data_graph_at(&data, 9u) == 1u);
+  const VkrRecordingGraph *graph = &data.graphs[1];
+  assert(graph->viewport_width == 1920u && graph->viewport_height == 1080u);
+  assert(graph->render_scale == 0.75f && !graph->truncated);
+  assert(graph->pass_count == 4u && graph->scheduled_count == 3u);
+  assert(recording_text_is(graph, graph->passes[1].name, "B"));
+  assert(graph->passes[1].kind == VKR_RECORDING_GRAPH_KIND_COMPUTE);
+  assert(graph->passes[3].flags & VKR_RECORDING_GRAPH_PASS_CULLED);
+  assert(graph->passes[3].order == UINT32_MAX);
+  assert(graph->passes[0].pass == vkr_recording_data_find_pass(&data, "A"));
+  assert(graph->passes[2].pass == vkr_recording_data_find_pass(&data, "D"));
+  /* C is culled, so no rows name it. */
+  assert(graph->passes[3].pass == UINT32_MAX);
+  assert(graph->passes[1].first_use == 2u && graph->passes[1].use_count == 3u);
+  const VkrRecordingGraphUse *reads_args = &graph->uses[3];
+  assert(reads_args->resource == 1u);
+  assert(reads_args->flags == VKR_RECORDING_GRAPH_USE_BUFFER);
+  assert(graph->uses[0].role == VKR_RECORDING_GRAPH_ROLE_COLOR);
+  assert(graph->uses[4].flags == VKR_RECORDING_GRAPH_USE_WRITE);
+  const VkrRecordingGraphResource *out = &graph->resources[2];
+  assert(recording_text_is(graph, out->name, "out"));
+  assert(recording_text_is(graph, out->format, "RGBA16F"));
+  assert(recording_text_is(graph, out->lifetime, "transient"));
+  assert(out->flags == VKR_RECORDING_GRAPH_RESOURCE_EXPORTED);
+  assert(out->width == 64u && out->mip_levels == 7u && out->bytes == 65536u);
+  assert(out->first_order == 1u && out->last_order == 1u);
+  assert(graph->resources[1].flags == VKR_RECORDING_GRAPH_RESOURCE_BUFFER);
+
+  /* Allocator rows: per-frame counts, under the allocator's name. */
+  uint32_t tracked_id = UINT32_MAX;
+  for (uint32_t i = 0u; i < data.allocator_count; ++i) {
+    if (string_equals(data.allocators[i].name, "test.tabs")) {
+      tracked_id = i;
+    }
+  }
+  assert(tracked_id != UINT32_MAX);
+  for (uint64_t f = 0u; f < RECORDING_PASS_TEST_FRAMES; ++f) {
+    uint32_t count = 0u;
+    const VkrRecordingAllocatorRow *rows =
+        vkr_recording_data_allocator_rows(&data, f, &count);
+    bool8_t found = false_v;
+    for (uint32_t r = 0u; r < count; ++r) {
+      if (rows[r].allocator != tracked_id) {
+        continue;
+      }
+      found = true_v;
+      assert(rows[r].allocs == f + 1u);
+      assert(rows[r].frees == (f >= 2u ? 1u : 0u));
+    }
+    assert(found);
+  }
+
+  /* Census: the box set, the ids, and each frame's states under the frame
+     that rendered its source; frames 10 and 11 rendered sources whose
+     census never arrived. */
+  assert(data.draw_bounds_count == 1u && data.draw_ids_count == 1u);
+  const VkrRecordingDrawBounds *set = &data.draw_bounds[0];
+  assert(set->object_count == 3u && set->cell_size == 32.0f);
+  assert(set->objects[1].object_id == 9u && set->objects[1].max[2] == 8.0f);
+  assert(data.draw_ids[0].generation == 7u && data.draw_ids[0].count == 4u);
+  assert(data.draw_ids[0].ids[3] == 9u);
+  for (uint64_t f = 0u; f < RECORDING_PASS_TEST_FRAMES; ++f) {
+    VkrRecordingDrawFrame census;
+    const bool8_t has = vkr_recording_data_draw_frame(&data, f, &census);
+    assert(has == (f < 10u));
+    if (!has) {
+      continue;
+    }
+    const uint64_t source = RECORDING_PASS_TEST_BASE + f;
+    assert(census.count == 4u && census.ids == &data.draw_ids[0]);
+    assert(census.flags == VKR_RECORDING_DRAW_STATES_TWO_PHASE);
+    for (uint32_t i = 0u; i < census.count; ++i) {
+      assert(vkr_recording_draw_state(census.words, i) ==
+             1u + (uint32_t)((source + i) % 5u));
+    }
+  }
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_graph_allocators_census PASSED\n");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2410,6 +2737,7 @@ bool32_t run_recording_tests(void) {
   test_recorder_accounting();
   test_recorder_rolling_save();
   test_recording_pass_rows();
+  test_recording_graph_allocators_census();
   test_recording_gpu_submission();
   test_recording_loop_metrics();
   test_recording_all_measurements();

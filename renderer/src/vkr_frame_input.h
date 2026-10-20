@@ -480,6 +480,34 @@ bool8_t vkr_world_static_changes_reach(const VkrWorldPassPayload *world,
 uint64_t
 vkr_world_content_publication_generation(const VkrWorldPassPayload *world);
 
+/** One object's world-space box: the union of its candidates' boxes. */
+typedef struct VkrWorldObjectBounds {
+  uint32_t object_id;
+  float32_t min[3];
+  float32_t max[3];
+} VkrWorldObjectBounds;
+
+/**
+ * Writes one row per distinct VkrInstanceDataGPU::object_id of
+ * `world->gpu_candidates`, sorted by object id, each the union of that
+ * object's candidates' world boxes: the local box (the bounding sphere's
+ * centre and `local_half_extents`) under the instance's model matrix, or
+ * the sphere when the candidate has no box. `out_rows` holds at least
+ * `world->gpu_candidate_count` rows; it is also the sort's scratch. Returns
+ * the rows written, zero when `capacity` is too small. Pure: it reads only
+ * its arguments.
+ */
+uint32_t vkr_world_object_bounds(const VkrWorldPassPayload *world,
+                                 VkrWorldObjectBounds *out_rows,
+                                 uint32_t capacity);
+
+/**
+ * A key of what vkr_world_object_bounds describes: it changes when the
+ * world's static generation or publication generation does. Moving
+ * dynamic instances change their boxes without changing it.
+ */
+uint64_t vkr_world_object_bounds_generation(const VkrWorldPassPayload *world);
+
 /**
  * @brief Optional overrides for shadow depth bias settings.
  */
@@ -926,6 +954,12 @@ typedef struct VkrGpuDebugPayload {
       (docs/proposals/recordings.md, gate 4). At most
       VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX. */
   uint32_t gpu_spike_iterations;
+  /** Runs pass Cull.Census in a scene frame with GPU draw candidates: each
+      camera candidate's culling state and object id, read back with the
+      culling counters (vkr_renderer_metrics_get_draw_census). A recording
+      asks for it each frame it wants one; off, the pass and its buffers do
+      not exist. */
+  bool8_t draw_census;
   /** Nonzero shows Pass output source pass_output - 1
       (vkr_pass_output_source) over the editor's Scene image instead of the
       lit image. A source the frame's pipeline or graph lacks leaves the lit

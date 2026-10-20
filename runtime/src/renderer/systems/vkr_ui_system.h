@@ -740,8 +740,10 @@ VkrUiPlotResult vkr_ui_plot(VkrUiSystem *system, String8 id_label,
 
 #define VKR_UI_PATH_PALETTE_CAPACITY 8u
 #define VKR_UI_PATH_POINT_MAX 16384u
+#define VKR_UI_PATH_FILL_MAX 16384u
 
-/** A stroked open path, such as a route projected into the Scene. */
+/** A stroked open path, such as a route projected into the Scene, over
+ * optional filled rectangles, such as the footprints of a level map. */
 typedef struct VkrUiPathConfig {
   /** Points from the content box's top-left, in points; a non-finite point
    * ends one stroke and the next finite point starts another. */
@@ -753,12 +755,19 @@ typedef struct VkrUiPathConfig {
   const Vec4 *palette;
   uint32_t palette_count;
   float32_t width_pt;
+  /** Rectangles filled under the strokes, in points from the content box's
+   * top-left, each in its `fill_colors` palette entry (NULL for palette[0]).
+   * A path may hold fills alone. */
+  const VkrUiRect *fills;
+  const uint8_t *fill_colors;
+  uint32_t fill_count;
 } VkrUiPathConfig;
 
 /**
- * @brief A path widget: the stroke of `path` over the widget box, clipped to
- * it. It takes no input, so pointer events reach what is under it. Points
- * past VKR_UI_PATH_POINT_MAX are left out.
+ * @brief A path widget: the fills and stroke of `path` over the widget box,
+ * clipped to it. It takes no input, so pointer events reach what is under
+ * it. Points past VKR_UI_PATH_POINT_MAX and fills past VKR_UI_PATH_FILL_MAX
+ * are left out.
  * @return The widget's id, for vkr_ui_path_set.
  */
 VkrUiId vkr_ui_path(VkrUiSystem *system, String8 id_label,

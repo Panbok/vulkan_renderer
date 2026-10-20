@@ -923,6 +923,26 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuSpikeRoot {
 _Static_assert(sizeof(VkrMetalPacketGpuSpikeRoot) == 16u,
                "Metal GPU spike root ABI drift");
 
+/** Mirrors VkrMetalPacketGpuDrawCensusRoot in
+ * shaders/metal/msl/world/gpu_draws.metal: pass Cull.Census reads the camera
+ * and late views' classification words and writes packed census states and
+ * object ids (VkrGpuDrawCensusState). */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawCensusRoot {
+  uint64_t classifications;
+  uint64_t candidates;
+  uint64_t instances;
+  uint64_t states;
+  uint64_t object_ids;
+  uint32_t candidate_count;
+  /** The late view's first classification row, zero while the camera culls
+   * in one phase (ADR-032). */
+  uint32_t late_base;
+  uint32_t reserved[4];
+} VkrMetalPacketGpuDrawCensusRoot;
+
+_Static_assert(sizeof(VkrMetalPacketGpuDrawCensusRoot) == 64u,
+               "Metal GPU draw census root ABI drift");
+
 /** Mirrors VkrMetalPacketBloomRoot in shaders/metal/msl/post/bloom.metal. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketBloomRoot {
   uint64_t source_texture_id;
@@ -1191,6 +1211,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_SDF_GRID_ROOT,
   VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT,
   VKR_METAL_PACKET_ABI_PASS_OUTPUT_ROOT,
+  VKR_METAL_PACKET_ABI_GPU_DRAW_CENSUS_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

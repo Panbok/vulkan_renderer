@@ -221,7 +221,7 @@ void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
           .imageMemoryBarrierCount = 1u,
           .pImageMemoryBarriers = &prepared->barrier};
-      vkCmdPipelineBarrier2(command, &dependency);
+      vkr_vk_cmd_pipeline_barrier2(command, &dependency);
     }
     const VkCopyImageToBufferInfo2 copy = {
         .sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
@@ -247,7 +247,7 @@ void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
           .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
           .imageMemoryBarrierCount = 1u,
           .pImageMemoryBarriers = &restore};
-      vkCmdPipelineBarrier2(command, &restore_dependency);
+      vkr_vk_cmd_pipeline_barrier2(command, &restore_dependency);
     }
   }
   const VkBufferMemoryBarrier2 barrier = {
@@ -266,7 +266,7 @@ void vkr_vk_record_capture(VkrVulkanRenderer *renderer, VkCommandBuffer command,
       .bufferMemoryBarrierCount = 1u,
       .pBufferMemoryBarriers = &barrier,
   };
-  vkCmdPipelineBarrier2(command, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &dependency);
 }
 
 bool8_t vkr_vk_collect_captures(VkrVulkanRenderer *renderer,

@@ -133,6 +133,8 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE,
   /** The editor's Pass output view shows a graph image this frame. */
   VKR_RG_JSON_CONDITION_EDITOR_PASS_OUTPUT,
+  /** The frame's debug payload asks for the draw census (Cull.Census). */
+  VKR_RG_JSON_CONDITION_GPU_DRAW_CENSUS,
 } VkrRgJsonConditionKind;
 
 /**

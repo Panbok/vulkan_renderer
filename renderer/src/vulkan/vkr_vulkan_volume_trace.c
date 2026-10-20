@@ -772,6 +772,7 @@ vkr_internal bool8_t vkr_vk_prepare_tlas(VkrVulkanRenderer *renderer,
     const VkDeviceSize offset =
         layout->acceleration_structure_offset +
         (VkDeviceSize)renderer->active_frame_slot * functions->descriptor_size;
+    vkr_vk_count(VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES, 1u);
     vkr_vulkan_device_get_descriptor(renderer->device)(
         device, &get_info, functions->descriptor_size,
         (uint8_t *)renderer->resource_descriptors.allocation.mapped + offset);
@@ -997,7 +998,7 @@ vkr_internal void vkr_vk_volume_memory_barrier(VkCommandBuffer command,
       .memoryBarrierCount = 1u,
       .pMemoryBarriers = &barrier,
   };
-  vkCmdPipelineBarrier2(command, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &dependency);
 }
 
 vkr_internal void vkr_vk_volume_push(VkrVulkanRenderer *renderer,
@@ -1046,7 +1047,7 @@ void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
   }
   const uint32_t build_count = slot->blas_job_count + slot->skinned_job_count;
   if (build_count) {
-    vkCmdBindPipeline(
+    vkr_vk_cmd_bind_pipeline(
         command, VK_PIPELINE_BIND_POINT_COMPUTE,
         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_BLAS_DECODE]);
     for (uint32_t i = 0u; i < build_count; ++i) {
@@ -1055,7 +1056,7 @@ void vkr_vk_record_volume_build(VkrVulkanRenderer *renderer,
               ? &slot->volume_lists->blas_jobs[i]
               : &slot->volume_lists->skinned_jobs[i - slot->blas_job_count];
       vkr_vk_volume_push(renderer, command, job->decode_root);
-      vkCmdDispatch(command, (job->index_count + 63u) / 64u, 1u, 1u);
+      vkr_vk_cmd_dispatch(command, (job->index_count + 63u) / 64u, 1u, 1u);
     }
     vkr_vk_volume_memory_barrier(
         command, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1404,7 +1405,7 @@ vkr_internal void vkr_vk_volume_image_barrier(VkCommandBuffer command,
       .imageMemoryBarrierCount = 1u,
       .pImageMemoryBarriers = &barrier,
   };
-  vkCmdPipelineBarrier2(command, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &dependency);
 }
 
 /* Clears `image` to `value` ahead of the trace's reads and writes. */
@@ -1468,10 +1469,11 @@ void vkr_vk_record_volume_trace(VkrVulkanRenderer *renderer,
   }
   vkr_vk_volume_push(renderer, command, slot->volume_trace_root);
   if (slot->volume_clear_count) {
-    vkCmdBindPipeline(
+    vkr_vk_cmd_bind_pipeline(
         command, VK_PIPELINE_BIND_POINT_COMPUTE,
         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_CLEAR]);
-    vkCmdDispatch(command, (slot->volume_clear_count + 63u) / 64u, 1u, 1u);
+    vkr_vk_cmd_dispatch(command, (slot->volume_clear_count + 63u) / 64u, 1u,
+                        1u);
     vkr_vk_volume_image_barrier(command, slot->volume_dynamic_image,
                                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                 VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -1480,10 +1482,10 @@ void vkr_vk_record_volume_trace(VkrVulkanRenderer *renderer,
                                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
   }
   if (slot->volume_trace_count) {
-    vkCmdBindPipeline(
+    vkr_vk_cmd_bind_pipeline(
         command, VK_PIPELINE_BIND_POINT_COMPUTE,
         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_TRACE]);
-    vkCmdDispatch(command, slot->volume_trace_count, 1u, 1u);
+    vkr_vk_cmd_dispatch(command, slot->volume_trace_count, 1u, 1u);
     vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          slot->volume_timing_pool, 2u);
     slot->volume_timing_recorded = true_v;
@@ -1504,10 +1506,11 @@ void vkr_vk_record_volume_trace(VkrVulkanRenderer *renderer,
   /* The probes' relight reads the layer the trace wrote; this frame's
      lighting reads the factors. */
   if (slot->volume_relight_count) {
-    vkCmdBindPipeline(
+    vkr_vk_cmd_bind_pipeline(
         command, VK_PIPELINE_BIND_POINT_COMPUTE,
         renderer->volume_pipelines[VKR_VULKAN_VOLUME_PIPELINE_PROBE_RELIGHT]);
-    vkCmdDispatch(command, (slot->volume_relight_count + 63u) / 64u, 1u, 1u);
+    vkr_vk_cmd_dispatch(command, (slot->volume_relight_count + 63u) / 64u, 1u,
+                        1u);
     vkr_vk_volume_memory_barrier(command,
                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                                  VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,

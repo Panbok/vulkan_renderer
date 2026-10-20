@@ -467,6 +467,10 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
     worker->allocator = (VkrAllocator){.ctx = worker->arena};
     if (!vkr_allocator_arena(&worker->allocator))
       goto cleanup;
+    /* Named before its thread starts, so the worker is its only writer. */
+    char name[VKR_ALLOCATOR_REGISTRY_NAME_CAPACITY];
+    string_format(name, sizeof(name), "job.scratch.%u", i);
+    (void)vkr_allocator_register_name(&worker->allocator, name);
 
     if (!vkr_thread_create(&out_system->allocator, &worker->thread,
                            job_worker_thread, worker)) {
@@ -529,6 +533,7 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
       vkr_thread_destroy(&system->allocator, &worker->thread);
     }
     if (worker->arena) {
+      vkr_allocator_unregister(&worker->allocator);
       vkr_allocator_release_global_accounting(&worker->allocator);
       arena_destroy(worker->arena);
     }

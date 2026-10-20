@@ -275,7 +275,7 @@ vkr_internal void vkr_metal_packet_record_prepared_draws(
   MTLCullMode active_cull_mode = MTLCullModeNone;
   [encoder setCullMode:active_cull_mode];
   [encoder setDepthStencilState:depth_state];
-  [encoder setRenderPipelineState:pipeline];
+  vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
   id<MTLRenderPipelineState> bound_pipeline = pipeline;
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrMetalPacketPreparedDraw *draw = &draws[i];
@@ -284,7 +284,7 @@ vkr_internal void vkr_metal_packet_record_prepared_draws(
         extended_pipeline && draw->brdf_extended ? extended_pipeline
                                                  : pipeline;
     if (draw_pipeline != bound_pipeline) {
-      [encoder setRenderPipelineState:draw_pipeline];
+      vkr_metal_packet_set_render_pipeline(renderer, encoder, draw_pipeline);
       bound_pipeline = draw_pipeline;
     }
     [encoder setFrontFacingWinding:draw->winding];
@@ -296,6 +296,7 @@ vkr_internal void vkr_metal_packet_record_prepared_draws(
     [renderer->argument_table setAddress:root_gpu atIndex:1];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                         indexCount:draw->visible.index_count
                          indexType:MTLIndexTypeUInt32
@@ -412,13 +413,14 @@ vkr_internal void vkr_metal_packet_record_prepared_text_draws(
   [encoder setDepthBias:VKR_WORLD_TEXT_DEPTH_BIAS_CONSTANT
              slopeScale:VKR_WORLD_TEXT_DEPTH_BIAS_SLOPE
                   clamp:0.0f];
-  [encoder setRenderPipelineState:pipeline];
+  vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrMetalPacketPreparedTextDraw *draw =
         (const VkrMetalPacketPreparedTextDraw *)root_cpu;
     [renderer->argument_table setAddress:root_gpu atIndex:1];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                         indexCount:draw->index_count
                          indexType:MTLIndexTypeUInt32
@@ -510,13 +512,14 @@ vkr_internal void vkr_metal_packet_record_prepared_ui_draws(
     const VkrMetalPacketPreparedUiDraw *draw =
         (const VkrMetalPacketPreparedUiDraw *)root_cpu;
     if (draw->pipeline != bound_pipeline) {
-      [encoder setRenderPipelineState:draw->pipeline];
+      vkr_metal_packet_set_render_pipeline(renderer, encoder, draw->pipeline);
       bound_pipeline = draw->pipeline;
     }
     [encoder setScissorRect:draw->scissor];
     [renderer->argument_table setAddress:root_gpu atIndex:1u];
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                         indexCount:draw->index_count
                          indexType:MTLIndexTypeUInt32
@@ -2176,6 +2179,57 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_spike(
   return true_v;
 }
 
+/* Cull.Census: one thread per eight packed candidates, after the late
+   occlusion phase when the camera culls in two. Bindings: candidates 0,
+   classifications 1, states 2, object ids 3. Without its pipeline the pass
+   does nothing and the frame reads no census back. */
+vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_census(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    VkrMetalPacketPreparedPass *prepared, VkrMetalPacketFrameUpload *upload)
+    API_AVAILABLE(macos(26.0)) {
+  const uint32_t candidate_count = renderer->gpu_draw_count;
+  if (!renderer->gpu_draw_census_pipeline || candidate_count == 0u)
+    return true_v;
+  VkrMetalPacketGraphBufferInstance *candidates =
+      vkr_metal_packet_pass_buffer(renderer, pass, 0u);
+  VkrMetalPacketGraphBufferInstance *classifications =
+      vkr_metal_packet_pass_buffer(renderer, pass, 1u);
+  VkrMetalPacketGraphBufferInstance *states =
+      vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+  VkrMetalPacketGraphBufferInstance *object_ids =
+      vkr_metal_packet_pass_buffer(renderer, pass, 3u);
+  if (!candidates || !classifications || !states || !object_ids ||
+      !upload->gpu_draw_instances_gpu)
+    return false_v;
+  const VkrRenderGraphFrameInfo *frame = &renderer->prepared_frame;
+  const uint32_t late_view = frame->tiled_two_phase_occlusion
+                                 ? vkr_render_graph_late_view(frame)
+                                 : 0u;
+  uint64_t root_gpu = 0u;
+  VkrMetalPacketGpuDrawCensusRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root)
+    return false_v;
+  *root = (VkrMetalPacketGpuDrawCensusRoot){
+      .classifications = classifications->resource.gpu_address,
+      .candidates = candidates->resource.gpu_address,
+      .instances = upload->gpu_draw_instances_gpu,
+      .states = states->resource.gpu_address,
+      .object_ids = object_ids->resource.gpu_address,
+      .candidate_count = candidate_count,
+      .late_base = late_view * frame->gpu_draw_visible_capacity,
+  };
+  prepared->dispatch = (VkrMetalPacketDispatch){
+      .pipeline = renderer->gpu_draw_census_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(vkr_gpu_draw_census_word_count(candidate_count),
+                             1u, 1u),
+      .group_size = MTLSizeMake(64u, 1u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
 /**
  * @brief Encodes one bloom chain step.
  *
@@ -3407,6 +3461,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
   case VKR_RG_EXECUTOR_GPU_DRAW_LATE:
     return vkr_metal_packet_prepare_gpu_draw_late(renderer, pass, prepared,
                                                   upload);
+  case VKR_RG_EXECUTOR_GPU_DRAW_CENSUS:
+    return vkr_metal_packet_prepare_gpu_draw_census(renderer, pass, prepared,
+                                                    upload);
   case VKR_RG_EXECUTOR_PICKING_READBACK:
     return vkr_metal_packet_prepare_picking_readback(
         renderer, pass, packet, prepared, readback, readback_offset);
@@ -3584,6 +3641,10 @@ typedef struct VkrMetalPacketFrameSubmission {
   VkrMetalPacketGraphBufferInstance *deferred_state;
   VkrMetalPacketGraphBufferInstance *exposure_histogram;
   VkrMetalPacketGraphBufferInstance *exposure_state;
+  /* Cull.Census's outputs and the candidates it covered, when it ran. */
+  VkrMetalPacketGraphBufferInstance *census_states;
+  VkrMetalPacketGraphBufferInstance *census_ids;
+  uint32_t census_count;
   id<MTLTexture> present;
   id<MTLTexture> shadow;
   /* MetalFX encoded its work since the last encoder: the next one waits for
@@ -3842,10 +3903,19 @@ vkr_internal void vkr_metal_packet_plan_frame_submission(
   submission->synchronous_deferred_validation =
       renderer->synchronous_validation_readback &&
       submission->deferred_diagnostics;
+  /* The census reads back as many candidates as the frame offers; packing
+     can drop unpublished ones but never adds any. */
+  const uint32_t census_candidates =
+      submission->deferred_diagnostics &&
+              renderer->prepared_frame.gpu_draw_census &&
+              renderer->gpu_draw_census_pipeline
+          ? packet->input.world->gpu_candidate_count
+          : 0u;
   submission->readback_layout = vkr_metal_packet_readback_layout(
       submission->deferred_diagnostics,
       renderer->prepared_frame.exposure_automatic,
-      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame));
+      vkr_render_graph_gpu_draw_view_count(&renderer->prepared_frame),
+      census_candidates);
 }
 
 /* Plans capture copies after the readback prefix and reserves their capture
@@ -4032,6 +4102,19 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
       submission->exposure_state =
           vkr_metal_packet_pass_buffer(renderer, pass, 1u);
       break;
+    /* The readback reserved room for the frame's candidates; packing never
+       adds any. */
+    case VKR_RG_EXECUTOR_GPU_DRAW_CENSUS:
+      if (prepared->active &&
+          renderer->gpu_draw_count <=
+              submission->readback_layout.census_candidates) {
+        submission->census_states =
+            vkr_metal_packet_pass_buffer(renderer, pass, 2u);
+        submission->census_ids =
+            vkr_metal_packet_pass_buffer(renderer, pass, 3u);
+        submission->census_count = renderer->gpu_draw_count;
+      }
+      break;
     default:
       break;
     }
@@ -4118,6 +4201,7 @@ vkr_internal void vkr_metal_packet_wait_tiled_temporal(
     API_AVAILABLE(macos(26.0)) {
   if (!submission->tiled_temporal_fence_pending)
     return;
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
   [encoder waitForFence:renderer->tiled_temporal_fence
       beforeEncoderStages:stages];
   submission->tiled_temporal_fence_pending = false_v;
@@ -4182,6 +4266,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_graph_pass(
     submission->failed_pass = pass;
     return false_v;
   }
+  vkr_metal_packet_count_encoder(renderer,
+                                 VKR_BACKEND_COUNTER_RENDER_ENCODERS);
   encoder.label = prepared->label;
   vkr_metal_packet_wait_tiled_temporal(
       renderer, submission, encoder,
@@ -4271,6 +4357,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_compute_run(
     submission->failed_pass = submission->prepared_passes[first].source;
     return false_v;
   }
+  vkr_metal_packet_count_encoder(renderer,
+                                 VKR_BACKEND_COUNTER_COMPUTE_ENCODERS);
   encoder.label = submission->prepared_passes[first].label;
   vkr_metal_packet_wait_tiled_temporal(
       renderer, submission, encoder,
@@ -4363,6 +4451,8 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_readback(
       [renderer->command_buffer computeCommandEncoder];
   if (capture_encoder == nil)
     return false_v;
+  vkr_metal_packet_count_encoder(renderer,
+                                 VKR_BACKEND_COUNTER_COMPUTE_ENCODERS);
   vkr_metal_dependency_encode_consumer(capture_encoder,
                                        &submission->capture_barrier);
   out_result->dependency_count++;
@@ -4428,6 +4518,27 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_readback(
                           submission->readback_layout.custom_late
                      size:sizeof(uint32_t)];
   }
+  if (submission->census_count > 0u) {
+    [capture_encoder
+           copyFromBuffer:(id<MTLBuffer>)
+                              submission->census_states->resource.metal_buffer
+             sourceOffset:0u
+                 toBuffer:(id<MTLBuffer>)submission->readback_object
+        destinationOffset:submission->readback_slice.offset +
+                          submission->readback_layout.census_states
+                     size:(uint64_t)vkr_gpu_draw_census_word_count(
+                              submission->census_count) *
+                          sizeof(uint32_t)];
+    [capture_encoder
+           copyFromBuffer:(id<MTLBuffer>)
+                              submission->census_ids->resource.metal_buffer
+             sourceOffset:0u
+                 toBuffer:(id<MTLBuffer>)submission->readback_object
+        destinationOffset:submission->readback_slice.offset +
+                          submission->readback_layout.census_ids
+                     size:(uint64_t)submission->census_count *
+                          sizeof(uint32_t)];
+  }
   if (submission->readback_layout.exposure_size > 0u) {
     [capture_encoder
            copyFromBuffer:(id<MTLBuffer>)
@@ -4482,6 +4593,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
 
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_COMMAND_BUFFERS);
   id<MTLResidencySet>
       residency_sets[3u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
           (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
@@ -4629,6 +4741,23 @@ vkr_internal void vkr_metal_packet_record_slot_readbacks(
           ? (const uint8_t *)submission->readback.cpu_address +
                 submission->readback_layout.exposure
           : NULL;
+  if (submission->census_count > 0u) {
+    const VkrRenderGraphFrameInfo *frame = &renderer->prepared_frame;
+    command_slot->census_states_readback =
+        (const uint32_t *)((const uint8_t *)submission->readback.cpu_address +
+                           submission->readback_layout.census_states);
+    command_slot->census_ids_readback =
+        (const uint32_t *)((const uint8_t *)submission->readback.cpu_address +
+                           submission->readback_layout.census_ids);
+    command_slot->census_count = submission->census_count;
+    command_slot->census_flags =
+        (frame->tiled_two_phase_occlusion ? VKR_DRAW_CENSUS_TWO_PHASE : 0u) |
+        (frame->hzb_history_valid ? VKR_DRAW_CENSUS_HZB_HISTORY_VALID : 0u) |
+        (renderer->graph->packet && renderer->graph->packet->input.world &&
+                 renderer->graph->packet->input.world->frozen_cull
+             ? VKR_DRAW_CENSUS_FROZEN_CULL
+             : 0u);
+  }
 }
 
 /* Decodes the readback fields a synchronous validation frame waited for. */
@@ -4958,6 +5087,10 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                       options:commit_feedback->options];
     else
       [renderer->queue commit:submissions count:1];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_QUEUE_SUBMITS);
+    vkr_metal_packet_commit_frame_counters(renderer,
+                                           packet->input.frame.frame_index,
+                                           out_result->dependency_count);
     [renderer->queue signalEvent:renderer->completion value:submit_value];
     vkr_metal_packet_presenter_frame_committed(renderer, packet, submit_value);
     if (submission.picking) {

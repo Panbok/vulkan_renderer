@@ -1,6 +1,8 @@
 #include "vkr_frame_input.h"
 
 #include "containers/str.h"
+#include "containers/vkr_sort.h"
+#include "math/vkr_math.h"
 
 vkr_internal VkrRendererError vkr_renderer_validation_fail(
     VkrValidationError *out_error, VkrRendererError code,
@@ -1763,4 +1765,88 @@ vkr_world_content_publication_generation(const VkrWorldPassPayload *world) {
   return world->caster_publication_generation
              ? world->caster_publication_generation
              : world->publication_generation;
+}
+
+/* One candidate's world box: its local box, centred on the bounding
+   sphere's centre, under the instance's affine model matrix, which widens
+   each axis by the absolute matrix; a candidate without a box takes its
+   sphere, grown by the matrix's largest axis scale. */
+vkr_internal VkrWorldObjectBounds
+vkr_world_candidate_bounds(const VkrWorldDrawCandidate *candidate) {
+  const Mat4 model = candidate->instance.model;
+  const Vec4 sphere = candidate->local_bounding_sphere;
+  const Vec3 center =
+      mat4_mul_vec3(model, vec3_new(sphere.x, sphere.y, sphere.z));
+  const Vec3 half = candidate->local_half_extents;
+  float32_t extent[3] = {0.0f, 0.0f, 0.0f};
+  if (half.x > 0.0f || half.y > 0.0f || half.z > 0.0f) {
+    const float32_t local[3] = {half.x, half.y, half.z};
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const Vec4 column = model.cols[axis];
+      extent[0] += vkr_abs_f32(column.x) * local[axis];
+      extent[1] += vkr_abs_f32(column.y) * local[axis];
+      extent[2] += vkr_abs_f32(column.z) * local[axis];
+    }
+  } else if (sphere.w > 0.0f) {
+    float32_t scale = 0.0f;
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      const Vec4 column = model.cols[axis];
+      scale = vkr_max_f32(scale, vkr_sqrt_f32(column.x * column.x +
+                                              column.y * column.y +
+                                              column.z * column.z));
+    }
+    extent[0] = extent[1] = extent[2] = sphere.w * scale;
+  }
+  return (VkrWorldObjectBounds){
+      .object_id = candidate->instance.object_id,
+      .min = {center.x - extent[0], center.y - extent[1], center.z - extent[2]},
+      .max = {center.x + extent[0], center.y + extent[1], center.z + extent[2]},
+  };
+}
+
+vkr_internal int32_t vkr_world_object_bounds_compare(const void *lhs,
+                                                     const void *rhs) {
+  const uint32_t a = ((const VkrWorldObjectBounds *)lhs)->object_id;
+  const uint32_t b = ((const VkrWorldObjectBounds *)rhs)->object_id;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+uint32_t vkr_world_object_bounds(const VkrWorldPassPayload *world,
+                                 VkrWorldObjectBounds *out_rows,
+                                 uint32_t capacity) {
+  if (!world || !out_rows || world->gpu_candidate_count == 0u ||
+      !world->gpu_candidates || capacity < world->gpu_candidate_count) {
+    return 0u;
+  }
+  const uint32_t count = world->gpu_candidate_count;
+  for (uint32_t i = 0u; i < count; ++i) {
+    out_rows[i] = vkr_world_candidate_bounds(&world->gpu_candidates[i]);
+  }
+  vkr_sort(out_rows, count, sizeof(*out_rows), vkr_world_object_bounds_compare);
+
+  /* Each run of one object id folds into its first row. */
+  uint32_t written = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrWorldObjectBounds *row = &out_rows[i];
+    if (written > 0u && out_rows[written - 1u].object_id == row->object_id) {
+      VkrWorldObjectBounds *object = &out_rows[written - 1u];
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        object->min[axis] = vkr_min_f32(object->min[axis], row->min[axis]);
+        object->max[axis] = vkr_max_f32(object->max[axis], row->max[axis]);
+      }
+      continue;
+    }
+    out_rows[written++] = *row;
+  }
+  return written;
+}
+
+uint64_t vkr_world_object_bounds_generation(const VkrWorldPassPayload *world) {
+  if (!world) {
+    return 0u;
+  }
+  /* Two counters into one key; the odd multiplier keeps distinct static
+     generations distinct before the publication generation mixes in. */
+  return (world->static_generation * 0x9E3779B97F4A7C15ull) ^
+         (world->publication_generation + 0x632BE59BD9B4E019ull);
 }

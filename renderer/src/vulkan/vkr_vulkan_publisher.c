@@ -64,7 +64,7 @@ void vkr_vk_cmd_image_barrier_range(
       .imageMemoryBarrierCount = 1u,
       .pImageMemoryBarriers = &barrier,
   };
-  vkCmdPipelineBarrier2(command_buffer, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command_buffer, &dependency);
 }
 
 void vkr_vk_cmd_image_barrier(VkCommandBuffer command_buffer, VkImage image,
@@ -743,7 +743,7 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
         .bufferMemoryBarrierCount = ArrayCount(source_barriers),
         .pBufferMemoryBarriers = source_barriers,
     };
-    vkCmdPipelineBarrier2(command, &source_dependency);
+    vkr_vk_cmd_pipeline_barrier2(command, &source_dependency);
     VkBufferCopy2 regions[2] = {
         {.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
          .size = mega->copy_vertex_size},
@@ -801,7 +801,7 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
         .bufferMemoryBarrierCount = ArrayCount(barriers),
         .pBufferMemoryBarriers = barriers,
     };
-    vkCmdPipelineBarrier2(command, &dependency);
+    vkr_vk_cmd_pipeline_barrier2(command, &dependency);
   }
   VkPipelineStageFlags2 ready_stages = VK_PIPELINE_STAGE_2_NONE;
   VkAccessFlags2 ready_access = VK_ACCESS_2_NONE;
@@ -848,7 +848,7 @@ void vkr_vk_record_buffer_initializations(VkrVulkanRenderer *renderer,
       .memoryBarrierCount = 1u,
       .pMemoryBarriers = &barrier,
   };
-  vkCmdPipelineBarrier2(command, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &dependency);
 }
 
 vkr_internal VkrVulkanRetiredStagingBuffer *
@@ -1173,6 +1173,7 @@ bool8_t vkr_vk_publish_sampled_view(VkrVulkanRenderer *renderer,
       .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
       .data.pSampledImage = &image_info,
   };
+  vkr_vk_count(VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES, 1u);
   vkr_vulkan_device_get_descriptor(renderer->device)(
       vkr_vk_renderer_device(renderer), &get_info,
       properties->sampledImageDescriptorSize, renderer->descriptor_scratch);
@@ -1211,6 +1212,7 @@ bool8_t vkr_vk_publish_storage_view(VkrVulkanRenderer *renderer,
       .type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
       .data.pStorageImage = &image_info,
   };
+  vkr_vk_count(VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES, 1u);
   vkr_vulkan_device_get_descriptor(renderer->device)(
       vkr_vk_renderer_device(renderer), &get_info,
       properties->storageImageDescriptorSize, renderer->descriptor_scratch);
@@ -1245,6 +1247,7 @@ vkr_internal bool8_t vkr_vk_publish_sampler(VkrVulkanRenderer *renderer,
       .type = VK_DESCRIPTOR_TYPE_SAMPLER,
       .data.pSampler = &sampler,
   };
+  vkr_vk_count(VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES, 1u);
   vkr_vulkan_device_get_descriptor(renderer->device)(
       vkr_vk_renderer_device(renderer), &get_info,
       properties->samplerDescriptorSize, renderer->descriptor_scratch);

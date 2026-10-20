@@ -700,3 +700,146 @@ bool8_t vkr_rg_describe(const VkrRenderGraph *graph,
   }
   return true_v;
 }
+
+// =============================================================================
+// Graph snapshot
+// =============================================================================
+
+/* Copies `text` into the snapshot's name table; an empty name when it does
+   not fit. */
+vkr_internal VkrRgSnapshotName vkr_rg_snapshot_name(VkrRgSnapshot *snapshot,
+                                                    const uint8_t *text,
+                                                    uint64_t length) {
+  if (!text || length == 0u) {
+    return (VkrRgSnapshotName){0};
+  }
+  if (snapshot->name_bytes + length > VKR_RG_SNAPSHOT_NAME_BYTES) {
+    snapshot->truncated = true_v;
+    return (VkrRgSnapshotName){0};
+  }
+  const VkrRgSnapshotName name = {.offset = snapshot->name_bytes,
+                                  .length = (uint32_t)length};
+  MemCopy(snapshot->names + snapshot->name_bytes, text, length);
+  snapshot->name_bytes += (uint32_t)length;
+  return name;
+}
+
+vkr_internal VkrRgSnapshotName vkr_rg_snapshot_cstr(VkrRgSnapshot *snapshot,
+                                                    const char *text) {
+  return text ? vkr_rg_snapshot_name(snapshot, (const uint8_t *)text,
+                                     string_length(text))
+              : (VkrRgSnapshotName){0};
+}
+
+vkr_internal VkrRgSnapshotRole vkr_rg_snapshot_role(const char *role) {
+  if (!role) {
+    return VKR_RG_SNAPSHOT_ROLE_READ;
+  }
+  if (string_equals(role, "write")) {
+    return VKR_RG_SNAPSHOT_ROLE_WRITE;
+  }
+  if (string_equals(role, "color")) {
+    return VKR_RG_SNAPSHOT_ROLE_COLOR;
+  }
+  if (string_equals(role, "depth")) {
+    return VKR_RG_SNAPSHOT_ROLE_DEPTH;
+  }
+  if (string_equals(role, "depth_read")) {
+    return VKR_RG_SNAPSHOT_ROLE_DEPTH_READ;
+  }
+  return VKR_RG_SNAPSHOT_ROLE_READ;
+}
+
+vkr_internal void vkr_rg_snapshot_pass(void *user,
+                                       const VkrRgDescribedPass *pass) {
+  VkrRgSnapshot *snapshot = user;
+  if (snapshot->pass_count == VKR_RG_SNAPSHOT_PASS_MAX) {
+    snapshot->truncated = true_v;
+    return;
+  }
+  VkrRgSnapshotPass *out = &snapshot->passes[snapshot->pass_count++];
+  *out = (VkrRgSnapshotPass){
+      .name = vkr_rg_snapshot_name(snapshot, pass->name.str, pass->name.length),
+      .type = pass->type,
+      .order = pass->order,
+      .first_use = snapshot->use_count,
+  };
+  out->flags |= pass->culled ? VKR_RG_SNAPSHOT_PASS_CULLED : 0u;
+  out->flags |= pass->disabled ? VKR_RG_SNAPSHOT_PASS_DISABLED : 0u;
+  out->flags |=
+      pass->use_total > pass->use_count ? VKR_RG_SNAPSHOT_PASS_USES_CUT : 0u;
+  for (uint32_t i = 0u; i < pass->use_count; ++i) {
+    if (snapshot->use_count == VKR_RG_SNAPSHOT_USE_MAX) {
+      snapshot->truncated = true_v;
+      break;
+    }
+    const VkrRgDescribedUse *use = &pass->uses[i];
+    snapshot->uses[snapshot->use_count++] = (VkrRgSnapshotUse){
+        .resource = vkr_rg_snapshot_name(snapshot, use->resource.str,
+                                         use->resource.length),
+        .role = vkr_rg_snapshot_role(use->role),
+        .buffer = use->buffer,
+        .write = use->write,
+    };
+    ++out->use_count;
+  }
+}
+
+vkr_internal void
+vkr_rg_snapshot_resource(void *user, const VkrRgDescribedResource *resource) {
+  VkrRgSnapshot *snapshot = user;
+  /* A resource of an earlier build stays known; only this one's count. */
+  if (!resource->declared) {
+    return;
+  }
+  if (snapshot->resource_count == VKR_RG_SNAPSHOT_RESOURCE_MAX) {
+    snapshot->truncated = true_v;
+    return;
+  }
+  uint32_t flags = 0u;
+  flags |= resource->buffer ? VKR_RG_SNAPSHOT_RESOURCE_BUFFER : 0u;
+  flags |= resource->imported ? VKR_RG_SNAPSHOT_RESOURCE_IMPORTED : 0u;
+  flags |= resource->exported ? VKR_RG_SNAPSHOT_RESOURCE_EXPORTED : 0u;
+  flags |= resource->present ? VKR_RG_SNAPSHOT_RESOURCE_PRESENT : 0u;
+  snapshot->resources[snapshot->resource_count++] = (VkrRgSnapshotResource){
+      .name = vkr_rg_snapshot_name(snapshot, resource->name.str,
+                                   resource->name.length),
+      .format = vkr_rg_snapshot_cstr(snapshot, resource->format_name),
+      .lifetime = vkr_rg_snapshot_cstr(snapshot, resource->lifetime),
+      .flags = flags,
+      .width = resource->width,
+      .height = resource->height,
+      .depth = resource->depth,
+      .layers = resource->layers,
+      .mip_levels = resource->mip_levels,
+      .samples = resource->samples,
+      .bytes = resource->bytes,
+      .first_order = resource->first_order,
+      .last_order = resource->last_order,
+  };
+}
+
+bool8_t vkr_rg_snapshot(const VkrRenderGraph *graph, VkrRgSnapshot *out) {
+  if (!graph || !out) {
+    return false_v;
+  }
+  out->pass_count = 0u;
+  out->use_count = 0u;
+  out->resource_count = 0u;
+  out->name_bytes = 0u;
+  out->truncated = false_v;
+  const VkrRgDescribeVisitor visitor = {
+      .user = out,
+      .pass = vkr_rg_snapshot_pass,
+      .resource = vkr_rg_snapshot_resource,
+  };
+  VkrRgDescription description = {0};
+  if (!vkr_rg_describe(graph, &visitor, &description)) {
+    return false_v;
+  }
+  out->frame_index = description.frame_index;
+  out->viewport_width = description.viewport_width;
+  out->viewport_height = description.viewport_height;
+  out->render_scale = description.render_scale;
+  return true_v;
+}

@@ -352,7 +352,8 @@ vkr_internal bool8_t vkr_vk_present_cancelled_frame(VkrVulkanRenderer *renderer,
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
-  if (vkBeginCommandBuffer(slot->command_buffer, &begin_info) != VK_SUCCESS)
+  if (vkr_vk_begin_command_buffer(slot->command_buffer, &begin_info) !=
+      VK_SUCCESS)
     return false_v;
   if (!window->image_presented[image_index]) {
     vkr_vk_cmd_image_barrier(
@@ -397,8 +398,8 @@ vkr_internal bool8_t vkr_vk_present_cancelled_frame(VkrVulkanRenderer *renderer,
       .pSignalSemaphoreInfos = signals,
   };
   const VkResult submit_result =
-      vkQueueSubmit2(vkr_vulkan_device_queue(renderer->device), 1u,
-                     &submit_info, VK_NULL_HANDLE);
+      vkr_vk_queue_submit2(vkr_vulkan_device_queue(renderer->device), 1u,
+                           &submit_info, VK_NULL_HANDLE);
   if (vkr_vk_observe_result(renderer, submit_result,
                             "cancelled-frame submission") != VK_SUCCESS)
     return false_v;

@@ -1219,8 +1219,14 @@ vkr_internal void editor_recording_entry_read(const char *directory,
                     editor_recording_number(&reader, "player_ticks") > 0.0;
   /* A Play session with tick hashes re-simulates with or without input. */
   entry->resimulable = editor_recording_number(&reader, "tick_hashes") > 0.0;
+  /* Tier 1 carries some measurements too; older recordings that name no
+     kind carried them only with every measurement. */
+  float64_t all = 0.0;
+  vkr_json_reader_reset(&reader);
   entry->all_measurements =
-      editor_recording_number(&reader, "measurements") > 0.0;
+      vkr_json_get_double(&reader, "all_measurements", &all)
+          ? all > 0.0
+          : editor_recording_number(&reader, "measurements") > 0.0;
   /* Markers are an array of objects, each with one "kind". */
   vkr_json_reader_reset(&reader);
   if (vkr_json_find_array(&reader, "markers")) {

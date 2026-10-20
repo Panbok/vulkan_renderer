@@ -639,6 +639,10 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t transmission_depth_diagnostic_enabled;
   /** True when the debug payload asks for pass Debug.GpuSpike. */
   bool8_t debug_gpu_spike;
+  /** True when the debug payload asks for the draw census of a scene frame
+   * with GPU draw candidates (VkrGpuDebugPayload.draw_census): pass
+   * Cull.Census and its buffers exist only then. */
+  bool8_t gpu_draw_census;
   /** True when pass Editor.PassOutput reads `pass_output_image` whole and
    * shows it over the editor's Scene image (VkrGpuDebugPayload.pass_output);
    * its executor reads the source's layer and mip 0. */

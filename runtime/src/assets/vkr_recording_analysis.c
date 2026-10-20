@@ -3,6 +3,8 @@
 #include "containers/str.h"
 #include "containers/vkr_sort.h"
 #include "core/vkr_byte_io.h"
+#include "core/vkr_json.h"
+#include "core/vkr_zone.h"
 #include "math/vkr_math.h"
 #include "vkr_candidate_residency.h"
 
@@ -47,6 +49,14 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *metrics;
   const VkrRecordingStream *pass_name;
   const VkrRecordingStream *passes;
+  const VkrRecordingStream *graph;
+  const VkrRecordingStream *allocator_name;
+  const VkrRecordingStream *allocators;
+  const VkrRecordingStream *zone_name;
+  const VkrRecordingStream *zone;
+  const VkrRecordingStream *draw_bounds;
+  const VkrRecordingStream *draw_ids;
+  const VkrRecordingStream *draw_states;
   const VkrRecordingStream *player;
   /* All measurements: series after the metrics stream's, named by
      measurement_name records. */
@@ -58,6 +68,9 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingField *display_dt;
   const VkrRecordingField *position;
   const VkrRecordingField *yaw;
+  const VkrRecordingField *pitch;
+  const VkrRecordingField *fov;
+  const VkrRecordingField *far_clip;
   const VkrRecordingField *valid_mask;
   /* The metrics field of each series, in dictionary order. */
   const VkrRecordingField *metric_fields[VKR_RECORDING_FIELD_MAX];
@@ -69,6 +82,30 @@ typedef struct VkrRecordingDataLoad {
   uint32_t event_capacity;
   uint32_t pass_capacity;
   uint64_t pass_rows;
+  /* Graph records that parse, and the bytes their parsed arrays and names
+     take. */
+  uint32_t graph_capacity;
+  uint64_t graph_bytes;
+  /* Parsed bytes the graphs filled so far. */
+  uint64_t graph_used;
+  /* Allocator ids named, and allocator rows. */
+  uint32_t allocator_capacity;
+  uint64_t allocator_rows;
+  /* Zone ids named and zone records, and the records the fill keeps before
+     they are reduced per frame. */
+  uint32_t zone_capacity;
+  uint64_t zone_records;
+  struct VkrRecordingZoneCall *zone_calls;
+  uint64_t zone_call_count;
+  /* Census records that fit, their objects, ids and state words, and the
+     ones filled so far. */
+  uint32_t draw_bounds_capacity;
+  uint64_t draw_objects;
+  uint64_t draw_objects_used;
+  uint32_t draw_ids_capacity;
+  uint64_t draw_id_values;
+  uint64_t draw_id_values_used;
+  uint64_t draw_words;
   bool8_t too_large;
 } VkrRecordingDataLoad;
 
@@ -190,6 +227,15 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->metrics = vkr_recording_find_stream(dictionary, "metrics");
   load->pass_name = vkr_recording_find_stream(dictionary, "pass_name");
   load->passes = vkr_recording_find_stream(dictionary, "passes");
+  load->graph = vkr_recording_find_stream(dictionary, "graph");
+  load->allocator_name =
+      vkr_recording_find_stream(dictionary, "allocator_name");
+  load->allocators = vkr_recording_find_stream(dictionary, "allocators");
+  load->zone_name = vkr_recording_find_stream(dictionary, "zone_name");
+  load->zone = vkr_recording_find_stream(dictionary, "zone");
+  load->draw_bounds = vkr_recording_find_stream(dictionary, "draw_bounds");
+  load->draw_ids = vkr_recording_find_stream(dictionary, "draw_ids");
+  load->draw_states = vkr_recording_find_stream(dictionary, "draw_states");
   load->player = vkr_recording_find_stream(dictionary, "player");
   load->measurement_name =
       vkr_recording_find_stream(dictionary, "measurement_name");
@@ -201,6 +247,9 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->display_dt = vkr_recording_find_field(load->frame, "display_dt", 1u);
   load->position = vkr_recording_find_field(load->camera, "position", 3u);
   load->yaw = vkr_recording_find_field(load->camera, "yaw", 1u);
+  load->pitch = vkr_recording_find_field(load->camera, "pitch", 1u);
+  load->fov = vkr_recording_find_field(load->camera, "fov", 1u);
+  load->far_clip = vkr_recording_find_field(load->camera, "far_clip", 1u);
   load->valid_mask = vkr_recording_find_field(load->metrics, "valid", 1u);
 
   for (uint32_t i = 0u; load->metrics && i < load->metrics->field_count; ++i) {
@@ -246,6 +295,171 @@ vkr_recording_pass_name_id(const VkrRecordingRecord *record) {
   }
   const uint32_t id = vkr_load_le_u32(record->data);
   return id < VKR_RECORDING_PASS_MAX ? id : UINT32_MAX;
+}
+
+/* One finished zone as the fill keeps it until the reduction. */
+typedef struct VkrRecordingZoneCall {
+  uint32_t frame;
+  uint16_t zone;
+  uint8_t thread;
+  uint8_t depth;
+  float32_t ms;
+} VkrRecordingZoneCall;
+
+/* The object count of a draw_bounds record that fits, else UINT32_MAX. */
+vkr_internal uint32_t
+vkr_recording_draw_bounds_rows(const VkrRecordingRecord *record) {
+  if (record->size < VKR_RECORDING_DRAW_BOUNDS_HEADER_SIZE) {
+    return UINT32_MAX;
+  }
+  const uint32_t rows = vkr_load_le_u32(record->data);
+  const uint64_t size = VKR_RECORDING_DRAW_BOUNDS_HEADER_SIZE +
+                        (uint64_t)VKR_RECORDING_DRAW_BOUNDS_ROW_SIZE * rows;
+  return rows <= VKR_RECORDING_DRAW_CANDIDATE_MAX && size == record->size
+             ? rows
+             : UINT32_MAX;
+}
+
+/* The candidate count of a draw_ids record that fits, else UINT32_MAX. */
+vkr_internal uint32_t
+vkr_recording_draw_ids_count(const VkrRecordingRecord *record) {
+  if (record->size < VKR_RECORDING_DRAW_IDS_HEADER_SIZE) {
+    return UINT32_MAX;
+  }
+  const uint32_t count = vkr_load_le_u32(record->data);
+  const uint64_t size = VKR_RECORDING_DRAW_IDS_HEADER_SIZE + 4ull * count;
+  return count <= VKR_RECORDING_DRAW_CANDIDATE_MAX && size == record->size
+             ? count
+             : UINT32_MAX;
+}
+
+/* The state words of a draw_states record that fits, else UINT32_MAX. */
+vkr_internal uint32_t
+vkr_recording_draw_state_words(const VkrRecordingRecord *record) {
+  if (record->size < VKR_RECORDING_DRAW_STATES_HEADER_SIZE) {
+    return UINT32_MAX;
+  }
+  const uint32_t count = vkr_load_le_u32(record->data);
+  const uint32_t words = (count + VKR_RECORDING_DRAW_STATES_PER_WORD - 1u) /
+                         VKR_RECORDING_DRAW_STATES_PER_WORD;
+  const uint64_t size = VKR_RECORDING_DRAW_STATES_HEADER_SIZE + 4ull * words;
+  return count <= VKR_RECORDING_DRAW_CANDIDATE_MAX && size == record->size
+             ? words
+             : UINT32_MAX;
+}
+
+/* The id of a zone_name record that fits, else UINT32_MAX. */
+vkr_internal uint32_t
+vkr_recording_zone_name_id(const VkrRecordingRecord *record) {
+  if (record->size < 4u || record->size - 4u > VKR_RECORDING_NAME_MAX) {
+    return UINT32_MAX;
+  }
+  const uint32_t id = vkr_load_le_u32(record->data);
+  return id < VKR_RECORDING_DATA_ZONE_MAX ? id : UINT32_MAX;
+}
+
+/* The row count of an allocators record whose size matches it, else zero. */
+vkr_internal uint32_t
+vkr_recording_allocator_record_rows(const VkrRecordingRecord *record) {
+  if (record->size < VKR_RECORDING_ALLOCATORS_HEADER_SIZE) {
+    return 0u;
+  }
+  const uint32_t rows = vkr_load_le_u32(record->data);
+  const uint64_t size = VKR_RECORDING_ALLOCATORS_HEADER_SIZE +
+                        (uint64_t)VKR_RECORDING_ALLOCATOR_ROW_SIZE * rows;
+  return rows <= VKR_RECORDING_ALLOCATOR_MAX && size == record->size ? rows
+                                                                     : 0u;
+}
+
+/* The id of an allocator_name record that fits, else UINT32_MAX. */
+vkr_internal uint32_t
+vkr_recording_allocator_name_id(const VkrRecordingRecord *record) {
+  if (record->size < 8u ||
+      record->size - 8u != vkr_load_le_u16(record->data + 6u) ||
+      record->size - 8u > VKR_RECORDING_ALLOCATOR_NAME_MAX) {
+    return UINT32_MAX;
+  }
+  const uint32_t id = vkr_load_le_u32(record->data);
+  return id < VKR_RECORDING_ALLOCATOR_MAX ? id : UINT32_MAX;
+}
+
+/* A graph record's counts, read from its header. */
+typedef struct VkrRecordingGraphCounts {
+  uint32_t passes;
+  uint32_t uses;
+  uint32_t resources;
+  uint32_t name_bytes;
+} VkrRecordingGraphCounts;
+
+/* Every parsed part of a graph starts 8-byte aligned in the graph block. */
+vkr_internal uint64_t
+vkr_recording_graph_parsed_bytes(const VkrRecordingGraphCounts *counts) {
+  return vkr_align_up_u64(sizeof(VkrRecordingGraphPass) * counts->passes, 8u) +
+         vkr_align_up_u64(sizeof(VkrRecordingGraphUse) * counts->uses, 8u) +
+         vkr_align_up_u64(sizeof(VkrRecordingGraphResource) * counts->resources,
+                          8u) +
+         vkr_align_up_u64(counts->name_bytes, 8u);
+}
+
+/* The counts of a graph record of a known version whose size matches them;
+   false for any other. */
+vkr_internal bool8_t vkr_recording_graph_counts(
+    const VkrRecordingRecord *record, VkrRecordingGraphCounts *out) {
+  if (record->size < VKR_RECORDING_GRAPH_HEADER_SIZE ||
+      vkr_load_le_u32(record->data) != VKR_RECORDING_GRAPH_VERSION) {
+    return false_v;
+  }
+  *out = (VkrRecordingGraphCounts){
+      .passes = vkr_load_le_u32(record->data + 4u),
+      .uses = vkr_load_le_u32(record->data + 8u),
+      .resources = vkr_load_le_u32(record->data + 12u),
+      .name_bytes = vkr_load_le_u32(record->data + 16u),
+  };
+  const uint64_t size =
+      VKR_RECORDING_GRAPH_HEADER_SIZE +
+      (uint64_t)VKR_RECORDING_GRAPH_PASS_SIZE * out->passes +
+      (uint64_t)VKR_RECORDING_GRAPH_USE_SIZE * out->uses +
+      (uint64_t)VKR_RECORDING_GRAPH_RESOURCE_SIZE * out->resources +
+      out->name_bytes;
+  return size == record->size;
+}
+
+/* The pipeline and OS the IDENTITY chunk names. */
+vkr_internal void vkr_recording_data_identity(VkrRecordingDataLoad *load) {
+  VkrAllocator *allocator = load->data->allocator;
+  for (uint32_t i = 0u; i < load->reader.chunk_count; ++i) {
+    if (load->reader.chunks[i].type != VKR_RECORDING_CHUNK_IDENTITY) {
+      continue;
+    }
+    uint8_t *payload = NULL;
+    uint64_t size = 0u;
+    if (!vkr_recording_reader_chunk(&load->reader, i, load->codec, allocator,
+                                    &payload, &size)) {
+      return;
+    }
+    VkrJsonReader reader = vkr_json_reader_create(payload, size);
+    String8 value = {0};
+    if (vkr_json_get_string(&reader, "pipeline", &value)) {
+      string_format(load->data->pipeline, sizeof(load->data->pipeline), "%.*s",
+                    (int32_t)value.length, (const char *)value.str);
+    }
+    vkr_json_reader_reset(&reader);
+    if (vkr_json_get_string(&reader, "os", &value)) {
+      string_format(load->data->os, sizeof(load->data->os), "%.*s",
+                    (int32_t)value.length, (const char *)value.str);
+    }
+    float64_t number = 0.0;
+    vkr_json_reader_reset(&reader);
+    if (vkr_json_get_double(&reader, "output_width", &number)) {
+      load->data->output_width = (uint32_t)Max(number, 0.0);
+    }
+    vkr_json_reader_reset(&reader);
+    if (vkr_json_get_double(&reader, "output_height", &number)) {
+      load->data->output_height = (uint32_t)Max(number, 0.0);
+    }
+    vkr_recording_reader_chunk_free(allocator, payload, size);
+    return;
+  }
 }
 
 typedef void (*VkrRecordingDataVisit)(VkrRecordingDataLoad *load,
@@ -305,6 +519,57 @@ vkr_internal void vkr_recording_data_count(VkrRecordingDataLoad *load,
   }
   if (vkr_recording_is_stream(load->passes, record)) {
     load->pass_rows += vkr_recording_pass_record_rows(record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->allocator_name, record)) {
+    const uint32_t id = vkr_recording_allocator_name_id(record);
+    if (id != UINT32_MAX) {
+      load->allocator_capacity = Max(load->allocator_capacity, id + 1u);
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->zone_name, record)) {
+    const uint32_t id = vkr_recording_zone_name_id(record);
+    if (id != UINT32_MAX) {
+      load->zone_capacity = Max(load->zone_capacity, id + 1u);
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->zone, record)) {
+    load->zone_records += record->size == sizeof(VkrZoneRecord) ? 1u : 0u;
+    return;
+  }
+  if (vkr_recording_is_stream(load->draw_bounds, record)) {
+    const uint32_t rows = vkr_recording_draw_bounds_rows(record);
+    if (rows != UINT32_MAX) {
+      ++load->draw_bounds_capacity;
+      load->draw_objects += rows;
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->draw_ids, record)) {
+    const uint32_t count = vkr_recording_draw_ids_count(record);
+    if (count != UINT32_MAX) {
+      ++load->draw_ids_capacity;
+      load->draw_id_values += count;
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->draw_states, record)) {
+    const uint32_t words = vkr_recording_draw_state_words(record);
+    load->draw_words += words != UINT32_MAX ? words : 0u;
+    return;
+  }
+  if (vkr_recording_is_stream(load->allocators, record)) {
+    load->allocator_rows += vkr_recording_allocator_record_rows(record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->graph, record)) {
+    VkrRecordingGraphCounts counts;
+    if (vkr_recording_graph_counts(record, &counts)) {
+      ++load->graph_capacity;
+      load->graph_bytes += vkr_recording_graph_parsed_bytes(&counts);
+    }
     return;
   }
   if (vkr_recording_is_stream(load->measurement_name, record)) {
@@ -454,6 +719,274 @@ vkr_recording_data_fill_passes(VkrRecordingDataLoad *load,
                                             VKR_RECORDING_PASSES_GPU_TIMED);
 }
 
+/* An allocators record: the frame's rows, after the rows of earlier
+   records. A second record for a frame is ignored. */
+vkr_internal void
+vkr_recording_data_fill_allocators(VkrRecordingDataLoad *load,
+                                   const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  const uint64_t frame = record->frame;
+  const uint32_t rows = vkr_recording_allocator_record_rows(record);
+  if (!data->allocator_block || rows == 0u || frame >= data->frame_count ||
+      data->allocator_row_counts[frame] > 0u ||
+      data->allocator_row_count + rows > load->allocator_rows) {
+    return;
+  }
+  const uint64_t first = data->allocator_row_count;
+  const uint8_t *at = record->data + VKR_RECORDING_ALLOCATORS_HEADER_SIZE;
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < rows; ++i, at += VKR_RECORDING_ALLOCATOR_ROW_SIZE) {
+    const uint32_t id = vkr_load_le_u32(at);
+    if (id >= data->allocator_count) {
+      continue;
+    }
+    VkrRecordingAllocatorRow *row = &data->allocator_rows[first + kept++];
+    *row = (VkrRecordingAllocatorRow){
+        .allocator = id,
+        .scope_depth_high = vkr_load_le_u32(at + 4u),
+        .allocs = vkr_load_le_u32(at + 8u),
+        .frees = vkr_load_le_u32(at + 12u),
+        .reallocs = vkr_load_le_u32(at + 16u),
+        .scopes = vkr_load_le_u32(at + 20u),
+        .live_bytes = vkr_load_le_u64(at + 24u),
+        .used_bytes = vkr_load_le_u64(at + 32u),
+        .committed_bytes = vkr_load_le_u64(at + 40u),
+        .reserved_bytes = vkr_load_le_u64(at + 48u),
+        .peak_used_bytes = vkr_load_le_u64(at + 56u),
+    };
+  }
+  data->allocator_row_count += kept;
+  data->allocator_first[frame] = first;
+  data->allocator_row_counts[frame] = (uint16_t)kept;
+}
+
+/* A census record: a box set or candidate order into the next slot, or a
+   frame's states after the words of earlier frames. */
+vkr_internal void
+vkr_recording_data_fill_draws(VkrRecordingDataLoad *load,
+                              const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  if (!data->draw_block || record->frame >= data->frame_count) {
+    return;
+  }
+  if (vkr_recording_is_stream(load->draw_bounds, record)) {
+    const uint32_t rows = vkr_recording_draw_bounds_rows(record);
+    if (rows == UINT32_MAX ||
+        data->draw_bounds_count >= load->draw_bounds_capacity ||
+        load->draw_objects_used + rows > load->draw_objects) {
+      return;
+    }
+    VkrRecordingDrawBounds *bounds =
+        &data->draw_bounds[data->draw_bounds_count++];
+    VkrRecordingDrawObject *objects =
+        (VkrRecordingDrawObject *)(data->draw_bounds +
+                                   load->draw_bounds_capacity) +
+        load->draw_objects_used;
+    load->draw_objects_used += rows;
+    *bounds = (VkrRecordingDrawBounds){
+        .frame = record->frame,
+        .cell_size = vkr_load_le_f32(record->data + 8u),
+        .objects = objects,
+        .object_count = rows,
+    };
+    const uint8_t *at = record->data + VKR_RECORDING_DRAW_BOUNDS_HEADER_SIZE;
+    for (uint32_t i = 0u; i < rows;
+         ++i, at += VKR_RECORDING_DRAW_BOUNDS_ROW_SIZE) {
+      objects[i].object_id = vkr_load_le_u32(at);
+      for (uint32_t axis = 0u; axis < 3u; ++axis) {
+        objects[i].min[axis] = vkr_load_le_f32(at + 4u + 4u * axis);
+        objects[i].max[axis] = vkr_load_le_f32(at + 16u + 4u * axis);
+      }
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->draw_ids, record)) {
+    const uint32_t count = vkr_recording_draw_ids_count(record);
+    if (count == UINT32_MAX ||
+        data->draw_ids_count >= load->draw_ids_capacity ||
+        load->draw_id_values_used + count > load->draw_id_values) {
+      return;
+    }
+    VkrRecordingDrawIds *ids = &data->draw_ids[data->draw_ids_count++];
+    uint32_t *values = (uint32_t *)(data->draw_ids + load->draw_ids_capacity) +
+                       load->draw_id_values_used;
+    load->draw_id_values_used += count;
+    *ids = (VkrRecordingDrawIds){
+        .frame = record->frame,
+        .generation = vkr_load_le_u64(record->data + 8u),
+        .ids = values,
+        .count = count,
+    };
+    MemCopy(values, record->data + VKR_RECORDING_DRAW_IDS_HEADER_SIZE,
+            4ull * count);
+    return;
+  }
+  const uint32_t words = vkr_recording_draw_state_words(record);
+  const uint64_t frame = record->frame;
+  if (words == UINT32_MAX || data->draw_id_table[frame] != UINT32_MAX) {
+    return;
+  }
+  if (data->draw_word_count + words > load->draw_words) {
+    data->draw_words_cut += words;
+    return;
+  }
+  /* The ids it follows: the newest of its generation recorded so far. */
+  const uint64_t generation = vkr_load_le_u64(record->data + 16u);
+  const uint32_t count = vkr_load_le_u32(record->data);
+  uint32_t table = UINT32_MAX;
+  for (uint32_t i = data->draw_ids_count; i-- > 0u;) {
+    if (data->draw_ids[i].generation == generation &&
+        data->draw_ids[i].count == count) {
+      table = i;
+      break;
+    }
+  }
+  if (table == UINT32_MAX) {
+    return;
+  }
+  data->draw_first[frame] = data->draw_word_count;
+  data->draw_candidates[frame] = count;
+  data->draw_id_table[frame] = table;
+  data->draw_flags[frame] = vkr_load_le_u32(record->data + 4u);
+  data->draw_overflow[frame] = vkr_load_le_u32(record->data + 8u);
+  MemCopy(data->draw_words + data->draw_word_count,
+          record->data + VKR_RECORDING_DRAW_STATES_HEADER_SIZE, 4ull * words);
+  data->draw_word_count += words;
+  ++data->draw_frames;
+}
+
+/* Text at `offset` of a record, kept when it lies inside the names. */
+vkr_internal VkrRecordingGraphText vkr_recording_graph_load_text(
+    const uint8_t *at, uint32_t length, uint32_t name_bytes) {
+  const uint32_t offset = vkr_load_le_u32(at);
+  if (offset > name_bytes || length > name_bytes - offset) {
+    return (VkrRecordingGraphText){0};
+  }
+  return (VkrRecordingGraphText){.offset = offset, .length = length};
+}
+
+/* A graph record, parsed into the next graph of the graph block. */
+vkr_internal void
+vkr_recording_data_fill_graph(VkrRecordingDataLoad *load,
+                              const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  VkrRecordingGraphCounts counts;
+  if (!data->graph_block || data->graph_count >= load->graph_capacity ||
+      !vkr_recording_graph_counts(record, &counts)) {
+    return;
+  }
+  /* The parsed parts follow the graphs and every graph parsed before. */
+  uint8_t *storage =
+      (uint8_t *)data->graph_block +
+      vkr_align_up_u64(sizeof(VkrRecordingGraph) * load->graph_capacity, 8u) +
+      load->graph_used;
+  load->graph_used += vkr_recording_graph_parsed_bytes(&counts);
+  VkrRecordingGraph *graph = &data->graphs[data->graph_count++];
+  const uint8_t *header = record->data;
+  *graph = (VkrRecordingGraph){
+      .frame = record->frame,
+      .viewport_width = vkr_load_le_u32(header + 24u),
+      .viewport_height = vkr_load_le_u32(header + 28u),
+      .render_scale = vkr_load_le_f32(header + 32u),
+      .truncated =
+          (vkr_load_le_u32(header + 20u) & VKR_RECORDING_GRAPH_TRUNCATED) != 0u,
+      .pass_count = counts.passes,
+      .use_count = counts.uses,
+      .resource_count = counts.resources,
+      .name_bytes = counts.name_bytes,
+  };
+  graph->passes = (VkrRecordingGraphPass *)storage;
+  storage +=
+      vkr_align_up_u64(sizeof(VkrRecordingGraphPass) * counts.passes, 8u);
+  graph->uses = (VkrRecordingGraphUse *)storage;
+  storage += vkr_align_up_u64(sizeof(VkrRecordingGraphUse) * counts.uses, 8u);
+  graph->resources = (VkrRecordingGraphResource *)storage;
+  storage += vkr_align_up_u64(
+      sizeof(VkrRecordingGraphResource) * counts.resources, 8u);
+  char *names = (char *)storage;
+  graph->names = names;
+
+  const uint8_t *at = header + VKR_RECORDING_GRAPH_HEADER_SIZE;
+  const uint8_t *use_at =
+      at + (uint64_t)VKR_RECORDING_GRAPH_PASS_SIZE * counts.passes;
+  const uint8_t *resource_at =
+      use_at + (uint64_t)VKR_RECORDING_GRAPH_USE_SIZE * counts.uses;
+  const uint8_t *name_at =
+      resource_at +
+      (uint64_t)VKR_RECORDING_GRAPH_RESOURCE_SIZE * counts.resources;
+  MemCopy(names, name_at, counts.name_bytes);
+
+  for (uint32_t i = 0u; i < counts.passes;
+       ++i, at += VKR_RECORDING_GRAPH_PASS_SIZE) {
+    const uint32_t first_use = vkr_load_le_u32(at + 12u);
+    const uint32_t use_count = vkr_load_le_u32(at + 16u);
+    const bool8_t uses_fit =
+        first_use <= counts.uses && use_count <= counts.uses - first_use;
+    const uint32_t order = vkr_load_le_u32(at + 8u);
+    graph->passes[i] = (VkrRecordingGraphPass){
+        .name = vkr_recording_graph_load_text(at, vkr_load_le_u16(at + 4u),
+                                              counts.name_bytes),
+        .kind = at[6],
+        .flags = at[7],
+        .order = order,
+        .first_use = uses_fit ? first_use : 0u,
+        .use_count = uses_fit ? use_count : 0u,
+        .pass = UINT32_MAX,
+    };
+    graph->scheduled_count += order != UINT32_MAX ? 1u : 0u;
+  }
+  for (uint32_t i = 0u; i < counts.uses;
+       ++i, use_at += VKR_RECORDING_GRAPH_USE_SIZE) {
+    graph->uses[i] = (VkrRecordingGraphUse){
+        .resource = UINT32_MAX,
+        .role = use_at[6],
+        .flags = use_at[7],
+    };
+  }
+  for (uint32_t i = 0u; i < counts.resources;
+       ++i, resource_at += VKR_RECORDING_GRAPH_RESOURCE_SIZE) {
+    const uint8_t *r = resource_at;
+    uint64_t bytes = 0u;
+    MemCopy(&bytes, r + 40u, sizeof(bytes));
+    graph->resources[i] = (VkrRecordingGraphResource){
+        .name = vkr_recording_graph_load_text(r, vkr_load_le_u16(r + 4u),
+                                              counts.name_bytes),
+        .flags = vkr_load_le_u16(r + 6u),
+        .format = vkr_recording_graph_load_text(
+            r + 8u, vkr_load_le_u16(r + 12u), counts.name_bytes),
+        .lifetime = vkr_recording_graph_load_text(
+            r + 16u, vkr_load_le_u16(r + 14u), counts.name_bytes),
+        .width = vkr_load_le_u32(r + 20u),
+        .height = vkr_load_le_u32(r + 24u),
+        .depth = vkr_load_le_u32(r + 28u),
+        .layers = vkr_load_le_u16(r + 32u),
+        .mip_levels = vkr_load_le_u16(r + 34u),
+        .samples = vkr_load_le_u16(r + 36u),
+        .bytes = bytes,
+        .first_order = vkr_load_le_u32(r + 48u),
+        .last_order = vkr_load_le_u32(r + 52u),
+    };
+  }
+  /* Each use names its resource; resolve it to the graph's own. */
+  const uint8_t *name_use =
+      header + VKR_RECORDING_GRAPH_HEADER_SIZE +
+      (uint64_t)VKR_RECORDING_GRAPH_PASS_SIZE * counts.passes;
+  for (uint32_t i = 0u; i < counts.uses;
+       ++i, name_use += VKR_RECORDING_GRAPH_USE_SIZE) {
+    const VkrRecordingGraphText text = vkr_recording_graph_load_text(
+        name_use, vkr_load_le_u16(name_use + 4u), counts.name_bytes);
+    for (uint32_t r = 0u; text.length > 0u && r < counts.resources; ++r) {
+      const VkrRecordingGraphText known = graph->resources[r].name;
+      if (known.length == text.length &&
+          MemCompare(names + known.offset, names + text.offset, text.length) ==
+              0) {
+        graph->uses[i].resource = r;
+        break;
+      }
+    }
+  }
+}
+
 /* The index of event name `name` (`length` bytes), added when new;
    UINT32_MAX when the table is full. */
 vkr_internal uint32_t vkr_recording_data_event_name(VkrRecordingData *data,
@@ -518,6 +1051,68 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
     vkr_recording_data_fill_passes(load, record);
     return;
   }
+  if (vkr_recording_is_stream(load->graph, record)) {
+    vkr_recording_data_fill_graph(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->allocator_name, record)) {
+    const uint32_t id = vkr_recording_allocator_name_id(record);
+    if (data->allocator_block && id < data->allocator_count) {
+      VkrRecordingAllocator *allocator = &data->allocators[id];
+      const uint32_t length = record->size - 8u;
+      allocator->type = record->data[4];
+      allocator->arena = record->data[5];
+      MemCopy(allocator->name, record->data + 8u, length);
+      allocator->name[length] = '\0';
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->allocators, record)) {
+    vkr_recording_data_fill_allocators(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->draw_bounds, record) ||
+      vkr_recording_is_stream(load->draw_ids, record) ||
+      vkr_recording_is_stream(load->draw_states, record)) {
+    vkr_recording_data_fill_draws(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->zone_name, record)) {
+    const uint32_t id = vkr_recording_zone_name_id(record);
+    if (data->zone_block && id < data->zone_name_count) {
+      const uint32_t length = record->size - 4u;
+      MemCopy(data->zone_names[id].name, record->data + 4u, length);
+      data->zone_names[id].name[length] = '\0';
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->zone, record)) {
+    if (!load->zone_calls || record->size != sizeof(VkrZoneRecord) ||
+        record->frame >= data->frame_count) {
+      return;
+    }
+    if (load->zone_call_count >= load->zone_records) {
+      ++data->zones_cut;
+      return;
+    }
+    VkrZoneRecord zone;
+    MemCopy(&zone, record->data, sizeof(zone));
+    if (zone.zone >= data->zone_name_count || zone.end_ns < zone.begin_ns) {
+      return;
+    }
+    load->zone_calls[load->zone_call_count++] = (VkrRecordingZoneCall){
+        .frame = (uint32_t)record->frame,
+        .zone = zone.zone,
+        .thread = zone.thread == VKR_ZONE_THREAD_MAIN
+                      ? VKR_RECORDING_ZONE_THREAD_MAIN
+                  : zone.thread == VKR_ZONE_THREAD_RENDER
+                      ? VKR_RECORDING_ZONE_THREAD_RENDER
+                      : VKR_RECORDING_ZONE_THREAD_WORKER,
+        .depth = (uint8_t)Min(zone.depth, 255u),
+        .ms = (float32_t)((float64_t)(zone.end_ns - zone.begin_ns) * 1.0e-6),
+    };
+    return;
+  }
   if (vkr_recording_is_stream(load->measurement_name, record)) {
     vkr_recording_data_fill_measurement_name(load, record);
     return;
@@ -564,6 +1159,17 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
         load->yaw
             ? (float32_t)vkr_recording_field_value(load->yaw, record->data, 0u)
             : 0.0f;
+    data->pitches[frame] = load->pitch ? (float32_t)vkr_recording_field_value(
+                                             load->pitch, record->data, 0u)
+                                       : 0.0f;
+    data->fovs[frame] =
+        load->fov
+            ? (float32_t)vkr_recording_field_value(load->fov, record->data, 0u)
+            : 0.0f;
+    data->far_clips[frame] =
+        load->far_clip ? (float32_t)vkr_recording_field_value(load->far_clip,
+                                                              record->data, 0u)
+                       : 0.0f;
     data->camera_valid[frame] = 1u;
   } else if (vkr_recording_record_fits(load->metrics, record)) {
     vkr_recording_data_fill_metrics(load, record);
@@ -604,7 +1210,7 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
       8u);
   const uint64_t f64_bytes = sizeof(float64_t) * frames * (8u + series);
   const uint64_t f32_bytes =
-      vkr_align_up_u64(sizeof(float32_t) * frames * 2u, 8u);
+      vkr_align_up_u64(sizeof(float32_t) * frames * 5u, 8u);
   const uint64_t flag_bytes = frames * (3u + series);
   const uint64_t block_bytes = series_bytes + marker_bytes + event_bytes +
                                f64_bytes + f32_bytes + flag_bytes;
@@ -639,6 +1245,9 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   cursor += f64_bytes;
   data->yaws = (float32_t *)cursor;
   data->player_speeds = data->yaws + frames;
+  data->pitches = data->yaws + frames * 2u;
+  data->fovs = data->yaws + frames * 3u;
+  data->far_clips = data->yaws + frames * 4u;
   cursor += f32_bytes;
   data->frame_valid = cursor;
   data->camera_valid = cursor + frames;
@@ -690,6 +1299,235 @@ vkr_recording_data_allocate_passes(VkrRecordingDataLoad *load) {
   return true_v;
 }
 
+/* The allocator block: names, rows, then the per-frame row index and
+   counts. Nothing without allocator names. */
+vkr_internal bool8_t
+vkr_recording_data_allocate_allocators(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (load->allocator_capacity == 0u) {
+    return true_v;
+  }
+  const uint64_t frames = data->frame_count;
+  load->allocator_rows =
+      Min(load->allocator_rows, VKR_RECORDING_DATA_PASS_ROW_MAX);
+  const uint64_t name_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingAllocator) * (uint64_t)load->allocator_capacity, 8u);
+  const uint64_t row_bytes =
+      sizeof(VkrRecordingAllocatorRow) * load->allocator_rows;
+  const uint64_t first_bytes = sizeof(uint64_t) * frames;
+  const uint64_t count_bytes = sizeof(uint16_t) * frames;
+  const uint64_t block_bytes =
+      name_bytes + row_bytes + first_bytes + count_bytes;
+  uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!block) {
+    return false_v;
+  }
+  MemZero(block, block_bytes);
+  data->allocator_block = block;
+  data->allocator_block_bytes = block_bytes;
+  data->allocators = (VkrRecordingAllocator *)block;
+  data->allocator_count = load->allocator_capacity;
+  data->allocator_rows = (VkrRecordingAllocatorRow *)(block + name_bytes);
+  data->allocator_first = (uint64_t *)(block + name_bytes + row_bytes);
+  data->allocator_row_counts = (uint16_t *)(data->allocator_first + frames);
+  return true_v;
+}
+
+/* The zone block: names, then the per-frame row index and counts; the rows
+   come once the calls are reduced. The calls take scratch until then.
+   Nothing without zone names. */
+vkr_internal bool8_t
+vkr_recording_data_allocate_zones(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (load->zone_capacity == 0u) {
+    return true_v;
+  }
+  const uint64_t frames = data->frame_count;
+  load->zone_records = Min(load->zone_records, VKR_RECORDING_DATA_PASS_ROW_MAX);
+  /* Every call may be its own row. */
+  const uint64_t name_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingZoneName) * (uint64_t)load->zone_capacity, 8u);
+  const uint64_t row_bytes = sizeof(VkrRecordingZoneRow) * load->zone_records;
+  const uint64_t first_bytes = sizeof(uint64_t) * frames;
+  const uint64_t count_bytes = sizeof(uint32_t) * frames;
+  const uint64_t block_bytes =
+      name_bytes + row_bytes + first_bytes + count_bytes;
+  uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!block) {
+    return false_v;
+  }
+  MemZero(block, block_bytes);
+  data->zone_block = block;
+  data->zone_block_bytes = block_bytes;
+  data->zone_names = (VkrRecordingZoneName *)block;
+  data->zone_name_count = load->zone_capacity;
+  data->zone_rows = (VkrRecordingZoneRow *)(block + name_bytes);
+  data->zone_first = (uint64_t *)(block + name_bytes + row_bytes);
+  data->zone_row_counts = (uint32_t *)(data->zone_first + frames);
+  if (load->zone_records > 0u) {
+    load->zone_calls = vkr_allocator_alloc(
+        data->allocator, sizeof(VkrRecordingZoneCall) * load->zone_records,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!load->zone_calls) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* By frame, zone and thread. */
+vkr_internal int32_t vkr_recording_compare_zone_calls(const void *lhs,
+                                                      const void *rhs) {
+  const VkrRecordingZoneCall *a = lhs;
+  const VkrRecordingZoneCall *b = rhs;
+  if (a->frame != b->frame) {
+    return a->frame < b->frame ? -1 : 1;
+  }
+  if (a->zone != b->zone) {
+    return a->zone < b->zone ? -1 : 1;
+  }
+  return a->thread < b->thread ? -1 : (a->thread > b->thread ? 1 : 0);
+}
+
+/* Reduces the calls to a row per frame, zone and thread, then frees them. */
+vkr_internal void vkr_recording_data_finish_zones(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (!load->zone_calls) {
+    return;
+  }
+  VkrRecordingZoneCall *calls = load->zone_calls;
+  const uint64_t count = load->zone_call_count;
+  vkr_sort(calls, count, sizeof(*calls), vkr_recording_compare_zone_calls);
+  uint64_t i = 0u;
+  while (i < count) {
+    const VkrRecordingZoneCall *head = &calls[i];
+    VkrRecordingZoneRow row = {
+        .zone = head->zone, .thread = head->thread, .depth = head->depth};
+    uint64_t j = i;
+    while (j < count && calls[j].frame == head->frame &&
+           calls[j].zone == head->zone && calls[j].thread == head->thread) {
+      ++row.calls;
+      row.total_ms += calls[j].ms;
+      row.max_ms = Max(row.max_ms, calls[j].ms);
+      row.depth = (uint8_t)Min(row.depth, calls[j].depth);
+      ++j;
+    }
+    if (data->zone_row_counts[head->frame] == 0u) {
+      data->zone_first[head->frame] = data->zone_row_count;
+    }
+    data->zone_rows[data->zone_row_count++] = row;
+    ++data->zone_row_counts[head->frame];
+    i = j;
+  }
+  vkr_allocator_free(data->allocator, load->zone_calls,
+                     sizeof(VkrRecordingZoneCall) * load->zone_records,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  load->zone_calls = NULL;
+}
+
+/* The census block: the box sets and their objects, the candidate orders
+   and their ids, the state words, then the per-frame index. Nothing without
+   census records. */
+vkr_internal bool8_t
+vkr_recording_data_allocate_draws(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (load->draw_words == 0u && load->draw_bounds_capacity == 0u) {
+    return true_v;
+  }
+  const uint64_t frames = data->frame_count;
+  load->draw_words =
+      Min(load->draw_words, 4ull * VKR_RECORDING_DATA_PASS_ROW_MAX);
+  const uint64_t bounds_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingDrawBounds) * load->draw_bounds_capacity +
+          sizeof(VkrRecordingDrawObject) * load->draw_objects,
+      8u);
+  const uint64_t ids_bytes =
+      vkr_align_up_u64(sizeof(VkrRecordingDrawIds) * load->draw_ids_capacity +
+                           sizeof(uint32_t) * load->draw_id_values,
+                       8u);
+  const uint64_t word_bytes =
+      vkr_align_up_u64(sizeof(uint32_t) * load->draw_words, 8u);
+  const uint64_t frame_bytes =
+      (sizeof(uint64_t) + 4u * sizeof(uint32_t)) * frames;
+  const uint64_t block_bytes =
+      bounds_bytes + ids_bytes + word_bytes + frame_bytes;
+  uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!block) {
+    return false_v;
+  }
+  MemZero(block, block_bytes);
+  data->draw_block = block;
+  data->draw_block_bytes = block_bytes;
+  data->draw_bounds = (VkrRecordingDrawBounds *)block;
+  data->draw_ids = (VkrRecordingDrawIds *)(block + bounds_bytes);
+  data->draw_words = (uint32_t *)(block + bounds_bytes + ids_bytes);
+  data->draw_first =
+      (uint64_t *)(block + bounds_bytes + ids_bytes + word_bytes);
+  data->draw_candidates = (uint32_t *)(data->draw_first + frames);
+  data->draw_id_table = data->draw_candidates + frames;
+  data->draw_flags = data->draw_id_table + frames;
+  data->draw_overflow = data->draw_flags + frames;
+  for (uint64_t f = 0u; f < frames; ++f) {
+    data->draw_id_table[f] = UINT32_MAX;
+  }
+  return true_v;
+}
+
+/* The graph block: the graphs, then each one's parsed parts. Nothing
+   without graph records. */
+vkr_internal bool8_t
+vkr_recording_data_allocate_graphs(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (load->graph_capacity == 0u) {
+    return true_v;
+  }
+  const uint64_t block_bytes =
+      vkr_align_up_u64(sizeof(VkrRecordingGraph) * load->graph_capacity, 8u) +
+      load->graph_bytes;
+  uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!block) {
+    return false_v;
+  }
+  MemZero(block, block_bytes);
+  data->graph_block = block;
+  data->graph_block_bytes = block_bytes;
+  data->graphs = (VkrRecordingGraph *)block;
+  return true_v;
+}
+
+/* Orders the graphs by frame, keeping record order for equal frames, and
+   joins each pass to the recording's pass of the same name. */
+vkr_internal void vkr_recording_data_finish_graphs(VkrRecordingData *data) {
+  for (uint32_t i = 1u; i < data->graph_count; ++i) {
+    const VkrRecordingGraph moved = data->graphs[i];
+    uint32_t j = i;
+    while (j > 0u && data->graphs[j - 1u].frame > moved.frame) {
+      data->graphs[j] = data->graphs[j - 1u];
+      --j;
+    }
+    data->graphs[j] = moved;
+  }
+  for (uint32_t g = 0u; g < data->graph_count; ++g) {
+    VkrRecordingGraph *graph = &data->graphs[g];
+    for (uint32_t i = 0u; i < graph->pass_count; ++i) {
+      const String8 name =
+          vkr_recording_graph_text(graph, graph->passes[i].name);
+      for (uint32_t p = 0u; name.length > 0u && p < data->pass_count; ++p) {
+        const char *known = data->passes[p].name;
+        if (string_length(known) == name.length &&
+            MemCompare(known, name.str, name.length) == 0) {
+          graph->passes[i].pass = p;
+          break;
+        }
+      }
+    }
+  }
+}
+
 /* By frame, then by name, then by count: a total order, so equal inputs
    sort alike. */
 vkr_internal int32_t vkr_recording_compare_events(const void *lhs,
@@ -722,6 +1560,9 @@ vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
       MemCopy(&data->positions[i * 3u], &data->positions[(i - 1u) * 3u],
               sizeof(float64_t) * 3u);
       data->yaws[i] = data->yaws[i - 1u];
+      data->pitches[i] = data->pitches[i - 1u];
+      data->fovs[i] = data->fovs[i - 1u];
+      data->far_clips[i] = data->far_clips[i - 1u];
     }
     data->times[i] = i == 0u ? 0.0 : data->times[i - 1u] + data->display_dt[i];
   }
@@ -775,6 +1616,7 @@ VkrRecordingDataError vkr_recording_data_load(VkrRecordingData *out,
   if (error != VKR_RECORDING_DATA_OK) {
     goto cleanup;
   }
+  vkr_recording_data_identity(&load);
   out->bad_chunks = vkr_recording_data_records(&load, vkr_recording_data_count);
   if (load.too_large) {
     error = VKR_RECORDING_DATA_TOO_LARGE;
@@ -785,14 +1627,25 @@ VkrRecordingDataError vkr_recording_data_load(VkrRecordingData *out,
     goto cleanup;
   }
   if (!vkr_recording_data_allocate(&load) ||
-      !vkr_recording_data_allocate_passes(&load)) {
+      !vkr_recording_data_allocate_passes(&load) ||
+      !vkr_recording_data_allocate_graphs(&load) ||
+      !vkr_recording_data_allocate_allocators(&load) ||
+      !vkr_recording_data_allocate_zones(&load) ||
+      !vkr_recording_data_allocate_draws(&load)) {
     error = VKR_RECORDING_DATA_MEMORY;
     goto cleanup;
   }
   (void)vkr_recording_data_records(&load, vkr_recording_data_fill);
   vkr_recording_data_finish(out);
+  vkr_recording_data_finish_graphs(out);
+  vkr_recording_data_finish_zones(&load);
 
 cleanup:
+  if (load.zone_calls) {
+    vkr_allocator_free(allocator, load.zone_calls,
+                       sizeof(VkrRecordingZoneCall) * load.zone_records,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   if (load.has_dictionary) {
     vkr_recording_dictionary_free(allocator, &load.dictionary);
   }
@@ -812,6 +1665,23 @@ void vkr_recording_data_free(VkrRecordingData *data) {
   if (data->pass_block) {
     vkr_allocator_free(data->allocator, data->pass_block,
                        data->pass_block_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (data->graph_block) {
+    vkr_allocator_free(data->allocator, data->graph_block,
+                       data->graph_block_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (data->allocator_block) {
+    vkr_allocator_free(data->allocator, data->allocator_block,
+                       data->allocator_block_bytes,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (data->zone_block) {
+    vkr_allocator_free(data->allocator, data->zone_block,
+                       data->zone_block_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (data->draw_block) {
+    vkr_allocator_free(data->allocator, data->draw_block,
+                       data->draw_block_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   MemZero(data, sizeof(*data));
   data->frame_time_series = UINT32_MAX;
@@ -898,6 +1768,87 @@ uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
     }
   }
   return UINT64_MAX;
+}
+
+bool8_t vkr_recording_data_draw_frame(const VkrRecordingData *data,
+                                      uint64_t frame,
+                                      VkrRecordingDrawFrame *out) {
+  if (!data->draw_block || frame >= data->frame_count ||
+      data->draw_id_table[frame] == UINT32_MAX) {
+    return false_v;
+  }
+  *out = (VkrRecordingDrawFrame){
+      .words = data->draw_words + data->draw_first[frame],
+      .count = data->draw_candidates[frame],
+      .ids = &data->draw_ids[data->draw_id_table[frame]],
+      .flags = data->draw_flags[frame],
+      .overflow = data->draw_overflow[frame],
+  };
+  return true_v;
+}
+
+uint32_t vkr_recording_data_draw_bounds_at(const VkrRecordingData *data,
+                                           uint64_t frame) {
+  if (data->draw_bounds_count == 0u) {
+    return UINT32_MAX;
+  }
+  uint32_t at = 0u;
+  for (uint32_t i = 1u; i < data->draw_bounds_count; ++i) {
+    if (data->draw_bounds[i].frame > frame) {
+      break;
+    }
+    at = i;
+  }
+  return at;
+}
+
+const VkrRecordingZoneRow *
+vkr_recording_data_zone_rows(const VkrRecordingData *data, uint64_t frame,
+                             uint32_t *out_count) {
+  *out_count = 0u;
+  if (!data->zone_block || frame >= data->frame_count ||
+      data->zone_row_counts[frame] == 0u) {
+    return NULL;
+  }
+  *out_count = data->zone_row_counts[frame];
+  return &data->zone_rows[data->zone_first[frame]];
+}
+
+const VkrRecordingAllocatorRow *
+vkr_recording_data_allocator_rows(const VkrRecordingData *data, uint64_t frame,
+                                  uint32_t *out_count) {
+  *out_count = 0u;
+  if (!data->allocator_block || frame >= data->frame_count ||
+      data->allocator_row_counts[frame] == 0u) {
+    return NULL;
+  }
+  *out_count = data->allocator_row_counts[frame];
+  return &data->allocator_rows[data->allocator_first[frame]];
+}
+
+uint32_t vkr_recording_data_graph_at(const VkrRecordingData *data,
+                                     uint64_t frame) {
+  if (data->graph_count == 0u) {
+    return UINT32_MAX;
+  }
+  uint32_t at = 0u;
+  for (uint32_t i = 1u; i < data->graph_count; ++i) {
+    if (data->graphs[i].frame > frame) {
+      break;
+    }
+    at = i;
+  }
+  return at;
+}
+
+String8 vkr_recording_graph_text(const VkrRecordingGraph *graph,
+                                 VkrRecordingGraphText text) {
+  if (!graph->names || text.length == 0u ||
+      text.offset + text.length > graph->name_bytes) {
+    return (String8){0};
+  }
+  return (String8){.str = (uint8_t *)(graph->names + text.offset),
+                   .length = text.length};
 }
 
 /* ------------------------------------------------------------------------ */

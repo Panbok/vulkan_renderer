@@ -2239,6 +2239,8 @@ vkr_internal bool8_t vkr_vk_prepare_graph_pass(
     return vkr_vk_prepare_exposure_resolve(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE:
     return vkr_vk_prepare_gpu_spike(renderer, &prepared->compute, pass);
+  case VKR_RG_EXECUTOR_GPU_DRAW_CENSUS:
+    return vkr_vk_prepare_gpu_draw_census(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_SUBSURFACE_GATHER:
     return vkr_vk_prepare_subsurface(renderer, &prepared->compute, pass);
   case VKR_RG_EXECUTOR_MOTION_BLUR_TILE_MAX:
@@ -2358,6 +2360,10 @@ bool8_t vkr_vk_prepare_graph(VkrVulkanRenderer *renderer) {
   slot->pass_timing_count = 0u;
   slot->gpu_compaction_state = NULL;
   slot->transmission_gpu_compaction_state = NULL;
+  slot->census_states = NULL;
+  slot->census_ids = NULL;
+  slot->census_count = 0u;
+  slot->census_flags = 0u;
   slot->hzb_history_input = NULL;
   slot->hzb_history_output = NULL;
   slot->temporal_transform_input = NULL;
@@ -2450,7 +2456,7 @@ vkr_internal void
 vkr_vk_record_graph_graphics_pass(VkrVulkanRenderer *renderer,
                                   VkCommandBuffer command,
                                   const VkrVulkanPreparedGraphPass *prepared) {
-  vkCmdBeginRendering(command, &prepared->rendering);
+  vkr_vk_cmd_begin_rendering(command, &prepared->rendering);
   vkCmdSetViewport(command, 0u, 1u, &prepared->viewport);
   vkCmdSetScissor(command, 0u, 1u, &prepared->scissor);
   vkCmdSetCullMode(command, VK_CULL_MODE_NONE);
@@ -2555,7 +2561,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
                             false_v);
     if (prepared->dependencies.imageMemoryBarrierCount ||
         prepared->dependencies.bufferMemoryBarrierCount)
-      vkCmdPipelineBarrier2(command, &prepared->dependencies);
+      vkr_vk_cmd_pipeline_barrier2(command, &prepared->dependencies);
     switch (prepared->kind) {
     case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION0:
     case VKR_RG_EXECUTOR_LOCAL_SHADOW_TRANSMISSION1:
@@ -2655,7 +2661,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
             .memoryBarrierCount = 1u,
             .pMemoryBarriers = &radiance_barrier,
         };
-        vkCmdPipelineBarrier2(command, &radiance_dependency);
+        vkr_vk_cmd_pipeline_barrier2(command, &radiance_dependency);
       }
       break;
     case VKR_RG_EXECUTOR_DIFFUSE_VOLUME_COMPOSE:
@@ -2684,7 +2690,8 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     timing->cpu_ms += (vkr_platform_get_absolute_time() - cpu_begin) * 1000.0;
   }
   if (renderer->prepared_terminal_barriers.imageMemoryBarrierCount)
-    vkCmdPipelineBarrier2(command, &renderer->prepared_terminal_barriers);
+    vkr_vk_cmd_pipeline_barrier2(command,
+                                 &renderer->prepared_terminal_barriers);
   /* A failed pass keeps its name for a later report. */
   vkr_crash_set_text(VKR_CRASH_TEXT_PASS, NULL);
   return true_v;

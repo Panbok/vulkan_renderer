@@ -151,6 +151,11 @@
       "stage": "compute"
     },
     {
+      "name": "packet.gpu_draw_census.comp",
+      "entry": "vk_gpu_draw_census",
+      "stage": "compute"
+    },
+    {
       "name": "packet.animation_preview.vert",
       "entry": "animation_preview_vertex",
       "stage": "vertex"

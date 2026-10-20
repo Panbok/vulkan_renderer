@@ -313,6 +313,17 @@ vkr_vulkan_renderer_texture_format_supported(const VkrVulkanRenderer *renderer,
                                              VkrTextureFormat format);
 bool8_t vkr_vulkan_renderer_graph_resource_stats(
     const VkrVulkanRenderer *renderer, VkrRenderGraphResourceStats *out_stats);
+struct VkrDrawCensusStore;
+struct VkrBackendFrameCounters;
+/** Render thread (the frontend joins it): the native work the last
+ * submitted frame recorded (backend.* metrics). */
+void vkr_vulkan_renderer_frame_counters(
+    const VkrVulkanRenderer *renderer,
+    struct VkrBackendFrameCounters *out_counters);
+/** Render thread (the frontend joins it): the newest completed draw census,
+ * which the next completed census overwrites. */
+const struct VkrDrawCensusStore *
+vkr_vulkan_renderer_draw_census(const VkrVulkanRenderer *renderer);
 /** Render thread (the frontend joins it): the graph of the last submitted
  * packet, valid until the next submit; NULL before the graph exists. */
 const VkrRenderGraph *

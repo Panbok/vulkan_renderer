@@ -365,6 +365,163 @@ _Static_assert(VKR_GPU_DRAW_PREVIOUS_MORPH_SHIFT + 8u ==
                    VKR_GPU_DRAW_PROBE_SHIFT,
                "The probe bits follow the previous morph factor");
 
+/* A view's classification word for a candidate it rejects: all ones in the
+   four bucket bits, which no drawn word holds (Vulkan stores the bucket,
+   Metal bucket + 1), and the rejecting test above them. Every encode skips
+   such a word. VKR_GPU_DRAW_DEFERRED, every bit set, is the tiled camera's
+   word for a candidate the earlier frame's pyramid hides while it culls in
+   two phases (ADR-032). Mirrors shared/lod_kernel.slangh. */
+#define VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK 0xFu
+#define VKR_GPU_DRAW_REJECTED_BUCKET 0xFu
+#define VKR_GPU_DRAW_REJECT_REASON_SHIFT 4u
+typedef enum VkrGpuDrawRejectReason {
+  /* The view's candidate flags or mobility exclude it, or another path draws
+     it (the SDF trace, a planar reflector's own view). */
+  VKR_GPU_DRAW_REJECT_FILTERED = 0,
+  VKR_GPU_DRAW_REJECT_FRUSTUM = 1,
+  /* The camera's room, draw distance or smallest-size tests; a cascade's
+     sealed rooms or shadow distance. */
+  VKR_GPU_DRAW_REJECT_DISTANCE = 2,
+  VKR_GPU_DRAW_REJECT_OCCLUDED = 3,
+  /* Below a directional cascade's smallest caster size. */
+  VKR_GPU_DRAW_REJECT_CASTER_SMALL = 4,
+} VkrGpuDrawRejectReason;
+#define VKR_GPU_DRAW_DEFERRED 0xFFFFFFFFu
+
+/* The draw census: what became of each camera candidate this frame, four
+   bits per candidate and eight per word, candidate i in bits 4 * (i % 8) of
+   word i / 8. */
+typedef enum VkrGpuDrawCensusState {
+  /* The camera view does not draw the candidate at all (its flags or
+     mobility exclude it). */
+  VKR_GPU_DRAW_CENSUS_NOT_CAMERA = 0,
+  VKR_GPU_DRAW_CENSUS_DRAWN = 1,
+  /* Deferred by the earlier frame's pyramid, then drawn by the late view. */
+  VKR_GPU_DRAW_CENSUS_DRAWN_LATE = 2,
+  VKR_GPU_DRAW_CENSUS_OCCLUDED = 3,
+  VKR_GPU_DRAW_CENSUS_FRUSTUM = 4,
+  /* Hidden rooms, past its draw distance or below its smallest size. */
+  VKR_GPU_DRAW_CENSUS_DISTANCE = 5,
+  VKR_GPU_DRAW_CENSUS_STATE_COUNT,
+} VkrGpuDrawCensusState;
+#define VKR_GPU_DRAW_CENSUS_STATE_BITS 4u
+#define VKR_GPU_DRAW_CENSUS_STATE_MASK 0xFu
+#define VKR_GPU_DRAW_CENSUS_STATES_PER_WORD 8u
+
+_Static_assert(VKR_WORLD_DRAW_STATE_BUCKET_COUNT < VKR_GPU_DRAW_REJECTED_BUCKET,
+               "Metal's bucket + 1 never reaches the rejected bucket bits");
+_Static_assert(VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK == 0xFu &&
+                   (VKR_GPU_DRAW_DEFERRED &
+                    VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) ==
+                       VKR_GPU_DRAW_REJECTED_BUCKET,
+               "the deferred word skips encoding as a rejected one does");
+_Static_assert(VKR_GPU_DRAW_REJECT_REASON_SHIFT == 4u &&
+                   (VKR_GPU_DRAW_REJECT_CASTER_SMALL
+                    << VKR_GPU_DRAW_REJECT_REASON_SHIFT) <
+                       VKR_GPU_DRAW_DEFERRED,
+               "no reason word equals the deferred word");
+_Static_assert(VKR_GPU_DRAW_CENSUS_STATE_COUNT <=
+                       VKR_GPU_DRAW_CENSUS_STATE_MASK + 1u &&
+                   VKR_GPU_DRAW_CENSUS_STATE_BITS *
+                           VKR_GPU_DRAW_CENSUS_STATES_PER_WORD ==
+                       32u,
+               "eight four-bit census states fill a word");
+
+static INLINE uint32_t vkr_gpu_draw_rejected(VkrGpuDrawRejectReason reason) {
+  return VKR_GPU_DRAW_REJECTED_BUCKET |
+         ((uint32_t)reason << VKR_GPU_DRAW_REJECT_REASON_SHIFT);
+}
+
+static INLINE bool8_t vkr_gpu_draw_word_drawn(uint32_t word) {
+  return (word & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) !=
+         VKR_GPU_DRAW_REJECTED_BUCKET;
+}
+
+/** The census state of a camera word that draws nothing; mirrors
+    vkr_gpu_draw_rejected_state. */
+static INLINE uint32_t vkr_gpu_draw_rejected_state(uint32_t word) {
+  if (word == VKR_GPU_DRAW_DEFERRED) {
+    return VKR_GPU_DRAW_CENSUS_OCCLUDED;
+  }
+  switch (word >> VKR_GPU_DRAW_REJECT_REASON_SHIFT) {
+  case VKR_GPU_DRAW_REJECT_FRUSTUM:
+    return VKR_GPU_DRAW_CENSUS_FRUSTUM;
+  case VKR_GPU_DRAW_REJECT_DISTANCE:
+    return VKR_GPU_DRAW_CENSUS_DISTANCE;
+  case VKR_GPU_DRAW_REJECT_OCCLUDED:
+    return VKR_GPU_DRAW_CENSUS_OCCLUDED;
+  default:
+    return VKR_GPU_DRAW_CENSUS_NOT_CAMERA;
+  }
+}
+
+/** A camera candidate's census state from its early camera word and, when
+    that word deferred it, the late view's word; mirrors
+    vkr_gpu_draw_camera_state. */
+static INLINE uint32_t vkr_gpu_draw_camera_state(uint32_t early,
+                                                 uint32_t late) {
+  if (vkr_gpu_draw_word_drawn(early)) {
+    return VKR_GPU_DRAW_CENSUS_DRAWN;
+  }
+  if (early != VKR_GPU_DRAW_DEFERRED) {
+    return vkr_gpu_draw_rejected_state(early);
+  }
+  if (vkr_gpu_draw_word_drawn(late)) {
+    return VKR_GPU_DRAW_CENSUS_DRAWN_LATE;
+  }
+  const uint32_t state = vkr_gpu_draw_rejected_state(late);
+  return state == VKR_GPU_DRAW_CENSUS_NOT_CAMERA ? VKR_GPU_DRAW_CENSUS_OCCLUDED
+                                                 : state;
+}
+
+/** `word` with census state `state` in lane `lane` of eight; mirrors
+    vkr_gpu_draw_census_put. */
+static INLINE uint32_t vkr_gpu_draw_census_put(uint32_t word, uint32_t lane,
+                                               uint32_t state) {
+  return word | (state << (lane * VKR_GPU_DRAW_CENSUS_STATE_BITS));
+}
+
+/** Words of packed census states for `count` candidates. */
+static INLINE uint32_t vkr_gpu_draw_census_word_count(uint32_t count) {
+  return (count + VKR_GPU_DRAW_CENSUS_STATES_PER_WORD - 1u) /
+         VKR_GPU_DRAW_CENSUS_STATES_PER_WORD;
+}
+
+/** Candidate `index`'s census state in packed `states`. */
+static INLINE uint32_t vkr_gpu_draw_census_get(const uint32_t *states,
+                                               uint32_t index) {
+  const uint32_t lane = index % VKR_GPU_DRAW_CENSUS_STATES_PER_WORD;
+  return (states[index / VKR_GPU_DRAW_CENSUS_STATES_PER_WORD] >>
+          (lane * VKR_GPU_DRAW_CENSUS_STATE_BITS)) &
+         VKR_GPU_DRAW_CENSUS_STATE_MASK;
+}
+
+/** A census state's precedence when one object merges its candidates. */
+static INLINE uint32_t vkr_gpu_draw_census_rank(uint32_t state) {
+  switch (state) {
+  case VKR_GPU_DRAW_CENSUS_DRAWN:
+    return 5u;
+  case VKR_GPU_DRAW_CENSUS_DRAWN_LATE:
+    return 4u;
+  case VKR_GPU_DRAW_CENSUS_OCCLUDED:
+    return 3u;
+  case VKR_GPU_DRAW_CENSUS_FRUSTUM:
+    return 2u;
+  case VKR_GPU_DRAW_CENSUS_DISTANCE:
+    return 1u;
+  default:
+    return 0u;
+  }
+}
+
+/** One object's state from two of its candidates' states (its submeshes):
+    the object counts as drawn if any candidate drew, then drawn late,
+    occluded, outside the frustum, past its distance, and not a camera
+    candidate only when none is one. */
+static INLINE uint32_t vkr_gpu_draw_census_merge(uint32_t a, uint32_t b) {
+  return vkr_gpu_draw_census_rank(b) > vkr_gpu_draw_census_rank(a) ? b : a;
+}
+
 /** Compute output indexed in geometry-local vertex order. */
 typedef struct VkrDeformedVertex {
   float32_t position[3];

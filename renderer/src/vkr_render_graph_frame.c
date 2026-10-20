@@ -159,6 +159,15 @@ vkr_render_graph_prepare_pass_output(const VkrPreparedFrame *packet,
   }
 }
 
+/* The debug payload asks for the draw census of a scene frame that has GPU
+   draw candidates. */
+vkr_internal bool8_t
+vkr_render_graph_draw_census_requested(const VkrPreparedFrame *packet) {
+  return packet->scene_rendering && packet->input.debug &&
+         packet->input.debug->draw_census && packet->input.world &&
+         packet->input.world->gpu_candidate_count > 0u;
+}
+
 /* The GPU measurements the frame's debug payload asks the backend for: pass
    timestamps, whole-frame GPU time and per-pass pipeline statistics. */
 vkr_internal void
@@ -335,6 +344,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
            "transmission_visibility_ids_layer_4"));
   frame->debug_gpu_spike =
       packet->input.debug && packet->input.debug->gpu_spike_iterations > 0u;
+  frame->gpu_draw_census = vkr_render_graph_draw_census_requested(packet);
   vkr_render_graph_prepare_pass_output(packet, frame);
   frame->deferred_emissive_capture_enabled =
       packet->scene_rendering && packet->input.debug &&
@@ -715,6 +725,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
                                        VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TILED_OPAQUE_LATE] = {"pass.tiled.opaque_late",
                                            VKR_RG_PASS_TYPE_GRAPHICS},
+    [VKR_RG_EXECUTOR_GPU_DRAW_CENSUS] = {"pass.gpu_draw_census",
+                                         VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT] = {"pass.editor.pass_output",
                                             VKR_RG_PASS_TYPE_GRAPHICS},
 };

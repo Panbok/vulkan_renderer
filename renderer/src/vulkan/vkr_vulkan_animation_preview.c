@@ -76,7 +76,7 @@ void vkr_vk_record_animation_preview(VkrVulkanRenderer *renderer,
   if (!preview->count) {
     return;
   }
-  vkCmdBindPipeline(
+  vkr_vk_cmd_bind_pipeline(
       command, VK_PIPELINE_BIND_POINT_GRAPHICS,
       renderer->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_ANIMATION_PREVIEW]);
   const VkrVulkanPreviewDrawUpload *draws = preview->draws;
@@ -91,8 +91,8 @@ void vkr_vk_record_animation_preview(VkrVulkanRenderer *renderer,
                            VK_SHADER_STAGE_FRAGMENT_BIT |
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, draw->index_count, 1u, draw->first_index,
-                     draw->vertex_offset, 0u);
+    vkr_vk_cmd_draw_indexed(command, draw->index_count, 1u, draw->first_index,
+                            draw->vertex_offset, 0u);
   }
   renderer->frame_slots[renderer->active_frame_slot].indexed_draw_count +=
       preview->count;

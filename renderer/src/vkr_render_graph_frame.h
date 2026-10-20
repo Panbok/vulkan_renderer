@@ -188,6 +188,9 @@ typedef enum VkrRgExecutorKind {
   /** Draws the late phase's camera draws over the opaque pass's images,
    * then the clear sky and the resolve (ADR-032). */
   VKR_RG_EXECUTOR_TILED_OPAQUE_LATE,
+  /** The draw census: each camera candidate's culling state and object id
+   * for a recording (VkrGpuDebugPayload.draw_census). */
+  VKR_RG_EXECUTOR_GPU_DRAW_CENSUS,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

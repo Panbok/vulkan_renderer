@@ -11,6 +11,7 @@
 #include "collision_asset_test.h"
 #include "debug_draw_test.h"
 #include "depot_test.h"
+#include "draw_census_test.h"
 #include "editor_project_store_test.h"
 #include "gameplay_input_test.h"
 #include "gameplay_player_test.h"
@@ -46,6 +47,7 @@ bool32_t run_asset_path_tests(void);
 bool32_t run_local_shadow_tests(void);
 bool32_t run_local_socket_tests(void);
 bool32_t run_crash_tests(void);
+bool32_t run_allocator_registry_tests(void);
 
 typedef bool32_t (*VkrTestSuite)(void);
 
@@ -71,6 +73,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_character_tests),
     VKR_TEST_SUITE(run_hash_tests),
     VKR_TEST_SUITE(run_allocator_tests),
+    VKR_TEST_SUITE(run_allocator_registry_tests),
     VKR_TEST_SUITE(run_atomic_tests),
     VKR_TEST_SUITE(run_metrics_tests),
     VKR_TEST_SUITE(run_arena_tests),
@@ -124,6 +127,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_bloom_tests),
     VKR_TEST_SUITE(run_gtao_tests),
     VKR_TEST_SUITE(run_visibility_tests),
+    VKR_TEST_SUITE(run_draw_census_tests),
     VKR_TEST_SUITE(run_editor_viewport_tests),
     VKR_TEST_SUITE(run_editor_label_sight_tests),
     VKR_TEST_SUITE(run_ui_layout_tests),

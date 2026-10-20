@@ -299,6 +299,29 @@ vkr_metal_packet_gpu_draw_pool_feedback(VkrMetalPacketRenderer *renderer,
   renderer->gpu_draw_pool_target = (uint32_t)Min(grown, (uint64_t)UINT32_MAX);
 }
 
+/* Copies a completed frame's draw census out of its readback slice, which
+   a later frame reuses. Draws the compaction pool cut from the camera and
+   late views still count as drawn; the census reports how many. */
+vkr_internal void
+vkr_metal_packet_publish_draw_census(VkrMetalPacketRenderer *renderer,
+                                     const VkrMetalPacketCommandSlot *slot) {
+  if (!slot->census_states_readback || !slot->census_ids_readback ||
+      slot->census_count == 0u)
+    return;
+  const VkrGpuDrawCompactionState *states =
+      (const VkrGpuDrawCompactionState *)slot->gpu_draw_diagnostics_readback;
+  uint32_t overflow_count = states[0].overflow_count;
+  if (slot->gpu_draw_late_view != 0u &&
+      slot->gpu_draw_late_view < slot->gpu_draw_view_count)
+    overflow_count += states[slot->gpu_draw_late_view].overflow_count;
+  /* A failed copy leaves the store invalid; the next census retries. */
+  (void)vkr_draw_census_store_publish(
+      &renderer->draw_census, renderer->allocator,
+      slot->pending_result.source_frame_index, slot->census_flags,
+      overflow_count, slot->census_count, slot->census_states_readback,
+      slot->census_ids_readback);
+}
+
 vkr_internal void
 vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketCommandSlot *slot) {
@@ -312,6 +335,7 @@ vkr_metal_packet_cache_slot_result(VkrMetalPacketRenderer *renderer,
         slot->shadow_cascade_count, slot->shadow_cascade_dynamic_render_mask,
         slot->gpu_draw_view_count, slot->gpu_draw_late_view);
     vkr_metal_packet_gpu_draw_pool_feedback(renderer, slot);
+    vkr_metal_packet_publish_draw_census(renderer, slot);
   }
   if (slot->custom_late_readback) {
     slot->pending_result.custom_late_count = *slot->custom_late_readback;
@@ -432,6 +456,10 @@ vkr_internal bool8_t vkr_metal_packet_complete_command_slot(
   slot->gpu_draw_diagnostics_readback = NULL;
   slot->custom_late_readback = NULL;
   slot->exposure_readback = NULL;
+  slot->census_states_readback = NULL;
+  slot->census_ids_readback = NULL;
+  slot->census_count = 0u;
+  slot->census_flags = 0u;
   slot->shadow_cascade_count = 0u;
   slot->shadow_cascade_dynamic_render_mask = 0u;
   slot->gpu_draw_view_count = 0u;
@@ -607,12 +635,15 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_start(
   batch->capacity = capacity;
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_COMMAND_BUFFERS);
   [renderer->command_buffer
       useResidencySet:(id<MTLResidencySet>)
                           vkr_metal_memory_device_residency_set(
                               renderer->memory)];
   /* The open batch spans publisher calls and their autorelease pools. */
   batch->encoder = [[renderer->command_buffer computeCommandEncoder] retain];
+  vkr_metal_packet_count_encoder(renderer,
+                                 VKR_BACKEND_COUNTER_COMPUTE_ENCODERS);
   if (!batch->encoder) {
     [renderer->command_buffer endCommandBuffer];
     vkr_metal_memory_device_cancel_ring(
@@ -657,6 +688,7 @@ vkr_internal bool8_t vkr_metal_packet_texture_upload_batch_flush(
                        (unsigned long long)batch->used);
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
   [renderer->queue commit:submissions count:1];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_QUEUE_SUBMITS);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   VKR_METAL_DIAGNOSTIC(renderer, "upload_batch_commit_end", "slot=%u",
                        (uint32_t)(slot - renderer->upload_slots));
@@ -733,11 +765,14 @@ vkr_internal bool8_t vkr_metal_packet_begin_upload(
   *out_buffer = (id<MTLBuffer>)buffer;
   [renderer->command_buffer
       beginCommandBufferWithAllocator:renderer->command_allocator];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_COMMAND_BUFFERS);
   [renderer->command_buffer
       useResidencySet:(id<MTLResidencySet>)
                           vkr_metal_memory_device_residency_set(
                               renderer->memory)];
   *out_encoder = [renderer->command_buffer computeCommandEncoder];
+  vkr_metal_packet_count_encoder(renderer,
+                                 VKR_BACKEND_COUNTER_COMPUTE_ENCODERS);
   if (*out_encoder)
     return true_v;
   [renderer->command_buffer endCommandBuffer];
@@ -760,6 +795,7 @@ vkr_internal bool8_t vkr_metal_packet_submit_upload(
                        (uint32_t)(slot - renderer->upload_slots));
   VKR_METAL_DIAGNOSTIC_FLUSH(renderer);
   [renderer->queue commit:submissions count:1];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_QUEUE_SUBMITS);
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   VKR_METAL_DIAGNOSTIC(renderer, "upload_commit_end", "slot=%u",
                        (uint32_t)(slot - renderer->upload_slots));

@@ -4,6 +4,7 @@
 
 #include "core/vkr_json_writer.h"
 #include "memory/vkr_allocator.h"
+#include "vkr_gpu_abi.h"
 #include "vkr_render_graph.h"
 #include "vkr_renderer.h"
 #include "vulkan/vkr_vulkan_renderer.h"
@@ -984,8 +985,34 @@ vkr_internal bool8_t vkr_renderer_metrics_register_gpu_memory(
   return true_v;
 }
 
+/* Report names of the backend counters, by VkrBackendCounter; pipeline
+   changes publish as pipeline.frame_changes instead. */
+vkr_global const char
+    *const vkr_backend_counter_names[VKR_BACKEND_COUNTER_COUNT] = {
+        "backend.command_buffers", "backend.queue_submits",
+        "backend.render_encoders", "backend.compute_encoders",
+        "backend.blit_encoders",   "backend.render_passes",
+        "backend.icb_executions",  "backend.draws_direct",
+        "backend.draws_indirect",  "backend.dispatches",
+        "backend.barriers",        "backend.barriers_image",
+        "backend.barriers_buffer", "backend.descriptor_writes",
+        "backend.pipeline_binds",  NULL,
+};
+
 vkr_internal bool8_t vkr_renderer_metrics_register_pipelines(
     VkrMetrics *metrics, VkrRendererMetricIds *ids) {
+  for (uint32_t counter = 0u; counter < VKR_BACKEND_COUNTER_COUNT; ++counter) {
+    ids->backend[counter] = VKR_METRIC_ID_INVALID;
+    if (!vkr_backend_counter_names[counter]) {
+      continue;
+    }
+    if (!vkr_renderer_metric_register(
+            metrics, vkr_backend_counter_names[counter], VKR_METRIC_DOMAIN_DRAW,
+            VKR_METRIC_KIND_COUNTER, VKR_METRIC_UNIT_COUNT,
+            VKR_METRIC_SCALAR_U64, &ids->backend[counter])) {
+      return false_v;
+    }
+  }
   VKR_REGISTER_COUNTER(pipelines_created, "pipeline.created",
                        VKR_METRIC_DOMAIN_PIPELINE);
   VKR_REGISTER_COUNTER(pipeline_binds, "pipeline.binds",
@@ -1234,7 +1261,78 @@ vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
   renderer_metrics->passes.capacity = (uint32_t)capacity;
   renderer_metrics->passes.count = 0;
   renderer_metrics->passes.truncated = false_v;
+  /* The draw census copy takes its storage from the same allocator, on the
+     first census a recording asks for. */
+  renderer_metrics->census_allocator = allocator;
   return true_v;
+}
+
+bool8_t vkr_draw_census_store_publish(VkrDrawCensusStore *store,
+                                      VkrAllocator *allocator,
+                                      uint64_t source_frame_index,
+                                      uint32_t flags, uint32_t overflow_count,
+                                      uint32_t candidate_count,
+                                      const uint32_t *states,
+                                      const uint32_t *object_ids) {
+  if (!store || !allocator || !states || !object_ids ||
+      candidate_count > VKR_GPU_DRAW_CANDIDATE_CAPACITY) {
+    return false_v;
+  }
+  store->valid = false_v;
+  if (candidate_count > store->capacity) {
+    /* Grow in powers of two, so a scene that streams candidates in
+       reallocates a few times rather than every frame. */
+    uint32_t capacity = Max(store->capacity, 1024u);
+    while (capacity < candidate_count) {
+      capacity *= 2u;
+    }
+    const uint64_t bytes =
+        ((uint64_t)vkr_gpu_draw_census_word_count(capacity) + capacity) *
+        sizeof(uint32_t);
+    uint32_t *storage =
+        vkr_allocator_alloc(allocator, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!storage) {
+      return false_v;
+    }
+    vkr_draw_census_store_release(store, allocator);
+    store->storage = storage;
+    store->capacity = capacity;
+  }
+  const uint32_t word_count = vkr_gpu_draw_census_word_count(candidate_count);
+  MemCopy(store->storage, states, (uint64_t)word_count * sizeof(uint32_t));
+  MemCopy(store->storage + vkr_gpu_draw_census_word_count(store->capacity),
+          object_ids, (uint64_t)candidate_count * sizeof(uint32_t));
+  store->candidate_count = candidate_count;
+  store->flags = flags;
+  store->overflow_count = overflow_count;
+  store->source_frame_index = source_frame_index;
+  store->valid = true_v;
+  return true_v;
+}
+
+const uint32_t *vkr_draw_census_store_states(const VkrDrawCensusStore *store) {
+  return store->storage;
+}
+
+const uint32_t *
+vkr_draw_census_store_object_ids(const VkrDrawCensusStore *store) {
+  return store->storage
+             ? store->storage + vkr_gpu_draw_census_word_count(store->capacity)
+             : NULL;
+}
+
+void vkr_draw_census_store_release(VkrDrawCensusStore *store,
+                                   VkrAllocator *allocator) {
+  if (!store || !store->storage) {
+    return;
+  }
+  vkr_allocator_free(
+      allocator, store->storage,
+      ((uint64_t)vkr_gpu_draw_census_word_count(store->capacity) +
+       store->capacity) *
+          sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  *store = (VkrDrawCensusStore){0};
 }
 
 /* The frame collectors below exist only to write metrics. Compiling
@@ -1982,6 +2080,69 @@ vkr_internal void vkr_renderer_metrics_collect_shadows(
   VKR_SET_U64(shadow_baked_lamp_candidates, shadow->baked_lamp_candidates);
 }
 
+/* Copies the backend's newest census when it is newer than the copy the
+   metrics hold. The ids move only when they changed, which also advances
+   their generation. */
+vkr_internal void
+vkr_renderer_metrics_collect_draw_census(VkrRendererMetrics *renderer_metrics,
+                                         VkrRenderer *renderer,
+                                         uint64_t cpu_frame_index) {
+  const VkrDrawCensusStore *store = NULL;
+  if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
+    store = vkr_vulkan_renderer_draw_census(renderer->vulkan_renderer);
+#if defined(PLATFORM_APPLE)
+  } else if (renderer->impl.kind == VKR_RENDERER_IMPL_METAL) {
+    store = vkr_metal_packet_renderer_draw_census(renderer->metal_renderer);
+#endif
+  }
+  VkrRendererMetricsDrawCensus *census = &renderer_metrics->draw_census;
+  if (!store || !store->valid ||
+      (census->valid &&
+       store->source_frame_index <= census->source_frame_index)) {
+    return;
+  }
+  /* Storage for the largest census, once; the allocator outlives the
+     metrics. */
+  VkrAllocator *allocator = renderer_metrics->census_allocator;
+  if (allocator && !renderer_metrics->census_ids) {
+    renderer_metrics->census_ids = vkr_allocator_alloc(
+        allocator, (uint64_t)VKR_GPU_DRAW_CANDIDATE_CAPACITY * sizeof(uint32_t),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (allocator && !renderer_metrics->census_states) {
+    renderer_metrics->census_states =
+        vkr_allocator_alloc(allocator,
+                            (uint64_t)vkr_gpu_draw_census_word_count(
+                                VKR_GPU_DRAW_CANDIDATE_CAPACITY) *
+                                sizeof(uint32_t),
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (!renderer_metrics->census_ids || !renderer_metrics->census_states) {
+    return;
+  }
+  const uint32_t count = store->candidate_count;
+  const uint32_t *ids = vkr_draw_census_store_object_ids(store);
+  const bool8_t ids_changed =
+      !census->valid || census->candidate_count != count ||
+      MemCompare(renderer_metrics->census_ids, ids,
+                 (uint64_t)count * sizeof(uint32_t)) != 0;
+  if (ids_changed) {
+    MemCopy(renderer_metrics->census_ids, ids,
+            (uint64_t)count * sizeof(uint32_t));
+    census->ids_generation++;
+  }
+  MemCopy(renderer_metrics->census_states, vkr_draw_census_store_states(store),
+          (uint64_t)vkr_gpu_draw_census_word_count(count) * sizeof(uint32_t));
+  census->cpu_frame_index = cpu_frame_index;
+  census->source_frame_index = store->source_frame_index;
+  census->states = renderer_metrics->census_states;
+  census->object_ids = renderer_metrics->census_ids;
+  census->candidate_count = count;
+  census->flags = store->flags;
+  census->overflow_count = store->overflow_count;
+  census->valid = true_v;
+}
+
 vkr_internal void
 vkr_renderer_metrics_collect_backend(VkrMetrics *metrics,
                                      const VkrRendererMetricIds *ids,
@@ -2220,6 +2381,57 @@ vkr_renderer_metrics_collect_gpu_memory(VkrRendererMetrics *renderer_metrics,
   }
 }
 
+/* The backend counters of the collected frame; a counter the backend does
+   not count, or a frame it did not submit, is unavailable. Pipeline binds
+   and changes also fill pipeline.binds and pipeline.frame_changes. */
+vkr_internal void vkr_renderer_metrics_collect_backend_counters(
+    VkrMetrics *metrics, const VkrRendererMetricIds *ids, VkrRenderer *renderer,
+    uint64_t cpu_frame_index) {
+  VkrBackendFrameCounters counters = {0};
+  if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
+    vkr_vulkan_renderer_frame_counters(renderer->vulkan_renderer, &counters);
+#if defined(PLATFORM_APPLE)
+  } else if (renderer->impl.kind == VKR_RENDERER_IMPL_METAL) {
+    vkr_metal_packet_renderer_frame_counters(renderer->metal_renderer,
+                                             &counters);
+#endif
+  }
+  const bool8_t current =
+      counters.valid && counters.frame_index == cpu_frame_index;
+  for (uint32_t counter = 0u; counter < VKR_BACKEND_COUNTER_COUNT; ++counter) {
+    VkrMetricId id = ids->backend[counter];
+    if (counter == VKR_BACKEND_COUNTER_PIPELINE_BINDS) {
+      id = ids->pipeline_binds;
+    } else if (counter == VKR_BACKEND_COUNTER_PIPELINE_CHANGES) {
+      id = ids->frame_pipeline_changes;
+    }
+    const bool8_t counted =
+        (counters.supported_mask & VKR_BACKEND_COUNTER_BIT(counter)) != 0u;
+    if (!current || !counted) {
+      vkr_metrics_mark(metrics, id, VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       counted ? VKR_METRIC_REASON_NOT_READY
+                               : VKR_METRIC_REASON_UNSUPPORTED);
+      if (counter == VKR_BACKEND_COUNTER_PIPELINE_BINDS) {
+        vkr_metrics_mark(metrics, ids->backend[counter],
+                         VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                         counted ? VKR_METRIC_REASON_NOT_READY
+                                 : VKR_METRIC_REASON_UNSUPPORTED);
+      }
+      continue;
+    }
+    if (counter == VKR_BACKEND_COUNTER_PIPELINE_CHANGES) {
+      VKR_SET_U64(frame_pipeline_changes, counters.values[counter]);
+      continue;
+    }
+    vkr_metrics_counter_add(metrics, ids->backend[counter],
+                            counters.values[counter]);
+    if (counter == VKR_BACKEND_COUNTER_PIPELINE_BINDS) {
+      vkr_metrics_counter_add(metrics, ids->pipeline_binds,
+                              counters.values[counter]);
+    }
+  }
+}
+
 vkr_internal void
 vkr_renderer_metrics_collect_pipelines(VkrMetrics *metrics,
                                        const VkrRendererMetricIds *ids) {
@@ -2233,16 +2445,12 @@ vkr_renderer_metrics_collect_pipelines(VkrMetrics *metrics,
   // warmup gate fails closed on any non-VALID reading of this counter, so an
   // "unknown" here silently made every Metal profile non-authoritative.
   vkr_metrics_counter_add(metrics, ids->pipelines_created, 0u);
-  vkr_metrics_mark(metrics, ids->pipeline_binds,
-                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
-                   VKR_METRIC_REASON_UNSUPPORTED);
+  /* pipeline.binds and pipeline.frame_changes come from the backend
+     counters (vkr_renderer_metrics_collect_backend_counters). */
   vkr_metrics_mark(metrics, ids->redundant_binds_avoided,
                    VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                    VKR_METRIC_REASON_UNSUPPORTED);
   vkr_metrics_mark(metrics, ids->meshes_batched,
-                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
-                   VKR_METRIC_REASON_UNSUPPORTED);
-  vkr_metrics_mark(metrics, ids->frame_pipeline_changes,
                    VKR_METRIC_AVAILABILITY_UNAVAILABLE,
                    VKR_METRIC_REASON_UNSUPPORTED);
   vkr_metrics_mark(metrics, ids->frame_redundant_binds_avoided,
@@ -2264,6 +2472,8 @@ void vkr_renderer_metrics_collect(
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
   VkrRenderer *renderer = (VkrRenderer *)context->renderer;
   vkr_renderer_join_render_thread(renderer);
+  vkr_renderer_metrics_collect_draw_census(renderer_metrics, renderer,
+                                           context->cpu_frame_index);
   const VkrWorldBatchMetrics *world = &context->frame_metrics->world;
   const VkrShadowMetrics *shadow = &context->frame_metrics->shadow;
   const VkrVisibilityStats *visibility = context->visibility;
@@ -2371,6 +2581,8 @@ void vkr_renderer_metrics_collect(
   vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
 
   vkr_renderer_metrics_collect_pipelines(metrics, ids);
+  vkr_renderer_metrics_collect_backend_counters(metrics, ids, renderer,
+                                                context->cpu_frame_index);
 
   VkrAllocatorStatistics cpu = vkr_allocator_get_global_statistics();
   VKR_SET_U64(cpu_live_bytes, cpu.total_allocated);
@@ -2394,6 +2606,11 @@ const VkrRendererMetricsPassTable *vkr_renderer_metrics_get_pass_table(
 const VkrRendererMetricsSubmission *vkr_renderer_metrics_get_submission(
     const VkrRendererMetrics *renderer_metrics) {
   return renderer_metrics ? &renderer_metrics->submission : NULL;
+}
+
+const VkrRendererMetricsDrawCensus *vkr_renderer_metrics_get_draw_census(
+    const VkrRendererMetrics *renderer_metrics) {
+  return renderer_metrics ? &renderer_metrics->draw_census : NULL;
 }
 
 bool8_t

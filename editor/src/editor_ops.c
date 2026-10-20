@@ -17507,15 +17507,55 @@ static VkrEditorOpStatus ops_run_rec_set(OpsContext *ctx) {
 
 static VkrEditorOpStatus ops_run_rec_analyze(OpsContext *ctx) {
   char name[VKR_RECORDING_PATH_MAX] = {0};
-  if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name))) {
+  char tab[16] = {0};
+  if (!ops_arg_string(ctx, ctx->call->args, "name", name, sizeof(name)) ||
+      !ops_arg_string(ctx, ctx->call->args, "tab", tab, sizeof(tab))) {
     return VKR_EDITOR_OP_DONE;
   }
+  static const char *const tabs[VKR_EDITOR_PERF_TAB_COUNT] = {
+      "overview", "backend", "memory", "draws", "graph"};
+  uint32_t shown = UINT32_MAX;
+  for (uint32_t i = 0u; i < VKR_EDITOR_PERF_TAB_COUNT && tab[0]; ++i) {
+    shown = string_equals(tab, tabs[i]) ? i : shown;
+  }
+  if (tab[0] && shown == UINT32_MAX) {
+    ops_fail(ctx, OPS_INVALID,
+             "'tab' is overview, backend, memory, draws or graph");
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* The same recording keeps its zoom and selection; another loads. */
+  VkrEditorRecordingPerf *perf = &ctx->editor->recording.perf;
+  char path[VKR_RECORDING_PATH_MAX];
+  const bool8_t loaded =
+      perf->loaded &&
+      vkr_editor_recording_resolve(ctx->editor, name, path, sizeof(path)) &&
+      string_equals(path, perf->path);
   char error[160];
-  if (!vkr_editor_recording_analyze(ctx->editor, name, error, sizeof(error))) {
+  if (!loaded &&
+      !vkr_editor_recording_analyze(ctx->editor, name, error, sizeof(error))) {
     ops_fail(ctx, OPS_INVALID, "%s", error);
     return VKR_EDITOR_OP_DONE;
   }
-  const VkrEditorRecordingPerf *perf = &ctx->editor->recording.perf;
+  vkr_editor_window_set_visible(ctx->editor, VKR_EDITOR_WINDOW_PERFORMANCE,
+                                true_v);
+  if (shown != UINT32_MAX) {
+    perf->view.tab = shown;
+  }
+  float64_t frame = 0.0;
+  if (ops_arg_number(ctx->call->args, "frame", &frame) && frame >= 0.0 &&
+      (uint64_t)frame < perf->data.frame_count) {
+    perf->selected = (uint64_t)frame;
+  }
+  perf->view.graph_flow =
+      ops_arg_bool(ctx->call->args, "flow", perf->view.graph_flow);
+  char pass[VKR_RECORDING_PASS_NAME_MAX + 1u] = {0};
+  if (!ops_arg_string(ctx, ctx->call->args, "pass", pass, sizeof(pass))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (pass[0]) {
+    string_format(perf->view.graph_selected, sizeof(perf->view.graph_selected),
+                  "%s", pass);
+  }
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "frames",
           vkr_bakery_json_int(ops_arena(ctx), (int64_t)perf->data.frame_count));
@@ -17737,11 +17777,19 @@ static const OpsDef s_ops[] = {
      ops_run_rec_set, NULL},
     {"rec.analyze",
      "Show a recording ('name' or a path) in the Performance window: "
-     "statistics, frame-time, CPU-stage and memory charts and spikes. Read "
-     "the numbers from its summary.json or `vkr_rec`; this op is for the "
-     "designer's view and captures of it.",
+     "statistics, frame-time, CPU-stage and memory charts and spikes. 'tab' "
+     "shows overview, backend (the recording backend's passes, counters "
+     "and CPU functions), memory (RAM by named allocator, VRAM by owner, "
+     "arenas), draws (the top-down culling map) or graph (the render "
+     "graph's passes; 'flow' true for its flow chart, 'pass' selects one by "
+     "name); 'frame' selects the "
+     "frame the tabs describe. Read the numbers from its summary.json or "
+     "`vkr_rec`; this op is for the designer's view and captures of it.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
-     "\"string\"}},\"required\":[\"name\"]}",
+     "\"string\"},\"tab\":{\"enum\":[\"overview\",\"backend\",\"memory\","
+     "\"draws\",\"graph\"]},\"frame\":{\"type\":\"integer\",\"minimum\":0},"
+     "\"flow\":{\"type\":\"boolean\"},\"pass\":{\"type\":\"string\"}},"
+     "\"required\":[\"name\"]}",
      ops_run_rec_analyze, NULL, OPS_NO_SCENE},
     {"rec.summary",
      "The summary.json of recording 'name' (default: the open one): "

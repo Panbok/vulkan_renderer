@@ -20,7 +20,7 @@
 #define VKR_GPU_GEOMETRY_LOD_TERRAIN_GRID 1u
 #define VKR_GPU_DRAW_CANDIDATE_FLAG_MASK 15u
 // Bits of a classification word below the LOD state: the bucket (Metal stores
-// bucket + 1, zero rejecting) or Vulkan's rejection sentinel.
+// bucket + 1) of a drawn word, or all ones in a rejected one.
 #define VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK 15u
 #define VKR_GPU_DRAW_GEOMORPH_BIT 128u
 #define VKR_GPU_DRAW_LOD_SHIFT 8u
@@ -201,6 +201,106 @@ bool vkr_gpu_draw_shadow_culled(uint cull, float shadow_near)
     uint code =
         (cull >> VKR_GPU_DRAW_CULL_SHADOW_SHIFT) & VKR_GPU_DRAW_CULL_CODE_MASK;
     return code != 0u && vkr_gpu_draw_cull_metres(code) < shadow_near;
+}
+
+// A view's classification word for a candidate it rejects: all ones in the
+// bucket bits, which a drawn word never holds (its bucket, or bucket + 1 on
+// Metal, stays below 15), and above them the first test that rejected it.
+// Encoding skips every word whose bucket bits are all ones. The host mirror
+// is renderer/src/vkr_gpu_abi.h.
+#define VKR_GPU_DRAW_REJECTED_BUCKET 15u
+#define VKR_GPU_DRAW_REJECT_REASON_SHIFT 4u
+// The view's candidate flags or mobility exclude the candidate, or another
+// path draws it (the SDF trace, a planar reflector's own view).
+#define VKR_GPU_DRAW_REJECT_FILTERED 0u
+#define VKR_GPU_DRAW_REJECT_FRUSTUM 1u
+// The camera's room, draw distance or smallest-size tests; a cascade's sealed
+// rooms or shadow distance.
+#define VKR_GPU_DRAW_REJECT_DISTANCE 2u
+#define VKR_GPU_DRAW_REJECT_OCCLUDED 3u
+// Below a directional cascade's smallest caster size.
+#define VKR_GPU_DRAW_REJECT_CASTER_SMALL 4u
+// A camera candidate the earlier frame's pyramid hides while the tiled
+// pipeline culls in two phases: no draw, but the late view tests it again
+// against the pyramid of this frame's early depth (ADR-032).
+#define VKR_GPU_DRAW_DEFERRED 0xFFFFFFFFu
+
+// What became of a camera candidate this frame, for the draw census: four
+// bits per candidate, eight candidates per word, candidate i in bits
+// 4 * (i % 8) of word i / 8.
+#define VKR_GPU_DRAW_CENSUS_NOT_CAMERA 0u
+#define VKR_GPU_DRAW_CENSUS_DRAWN 1u
+#define VKR_GPU_DRAW_CENSUS_DRAWN_LATE 2u
+#define VKR_GPU_DRAW_CENSUS_OCCLUDED 3u
+#define VKR_GPU_DRAW_CENSUS_FRUSTUM 4u
+#define VKR_GPU_DRAW_CENSUS_DISTANCE 5u
+#define VKR_GPU_DRAW_CENSUS_STATE_BITS 4u
+#define VKR_GPU_DRAW_CENSUS_STATES_PER_WORD 8u
+
+uint vkr_gpu_draw_rejected(uint reason)
+{
+    return VKR_GPU_DRAW_REJECTED_BUCKET |
+           (reason << VKR_GPU_DRAW_REJECT_REASON_SHIFT);
+}
+
+bool vkr_gpu_draw_word_drawn(uint word)
+{
+    return (word & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) !=
+           VKR_GPU_DRAW_REJECTED_BUCKET;
+}
+
+// The census state of a camera word that draws nothing.
+uint vkr_gpu_draw_rejected_state(uint word)
+{
+    if (word == VKR_GPU_DRAW_DEFERRED)
+    {
+        return VKR_GPU_DRAW_CENSUS_OCCLUDED;
+    }
+    uint reason = word >> VKR_GPU_DRAW_REJECT_REASON_SHIFT;
+    if (reason == VKR_GPU_DRAW_REJECT_FRUSTUM)
+    {
+        return VKR_GPU_DRAW_CENSUS_FRUSTUM;
+    }
+    if (reason == VKR_GPU_DRAW_REJECT_DISTANCE)
+    {
+        return VKR_GPU_DRAW_CENSUS_DISTANCE;
+    }
+    if (reason == VKR_GPU_DRAW_REJECT_OCCLUDED)
+    {
+        return VKR_GPU_DRAW_CENSUS_OCCLUDED;
+    }
+    return VKR_GPU_DRAW_CENSUS_NOT_CAMERA;
+}
+
+// A camera candidate's census state from its early camera word and, when
+// the early word deferred it, the late view's word. A deferred candidate is
+// a camera candidate, so a late word that draws nothing for a reason the
+// census does not name still counts as occluded. Without a late view
+// `late` is not read.
+uint vkr_gpu_draw_camera_state(uint early, uint late)
+{
+    if (vkr_gpu_draw_word_drawn(early))
+    {
+        return VKR_GPU_DRAW_CENSUS_DRAWN;
+    }
+    if (early != VKR_GPU_DRAW_DEFERRED)
+    {
+        return vkr_gpu_draw_rejected_state(early);
+    }
+    if (vkr_gpu_draw_word_drawn(late))
+    {
+        return VKR_GPU_DRAW_CENSUS_DRAWN_LATE;
+    }
+    uint state = vkr_gpu_draw_rejected_state(late);
+    return state == VKR_GPU_DRAW_CENSUS_NOT_CAMERA
+               ? VKR_GPU_DRAW_CENSUS_OCCLUDED
+               : state;
+}
+
+// `word` with census state `state` in lane `lane` of eight.
+uint vkr_gpu_draw_census_put(uint word, uint lane, uint state)
+{
+    return word | (state << (lane * VKR_GPU_DRAW_CENSUS_STATE_BITS));
 }
 
 // How far a level has morphed toward the next one, from the next level's

@@ -6,6 +6,7 @@
 #include "platform/vkr_platform.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_model.h"
+#include "renderer/systems/vkr_scene_partition.h"
 
 /* The frame's part of recordings (docs/proposals/recordings.md): what the
    recording in progress writes after the camera update, and how an open
@@ -1035,6 +1036,21 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
       &runtime->recording, frame, view.frame->cpu_frame_index,
       passes && passes->cpu_frame_index == view.frame->cpu_frame_index ? passes
                                                                        : NULL);
+  /* A change of passes asks the render thread for the graph's shape,
+     which a later frame hands over. */
+  if (vkr_recording_graph_wanted(&runtime->recording)) {
+    (void)vkr_renderer_request_graph_snapshot(&runtime->renderer);
+  }
+  vkr_recording_graph(&runtime->recording, frame,
+                      vkr_renderer_take_graph_snapshot(&runtime->renderer));
+  vkr_recording_allocators(&runtime->recording, frame);
+  /* The census, like the pass table, belongs to this publication only when
+     both name the same renderer frame. */
+  const VkrRendererMetricsDrawCensus *census =
+      vkr_renderer_metrics_get_draw_census(&runtime->renderer_metrics);
+  if (census && census->cpu_frame_index == view.frame->cpu_frame_index) {
+    vkr_recording_draws(&runtime->recording, census);
+  }
   /* The published gpu.submission measures an earlier frame; the sample
      beside it names which, so the recording files it there. */
   const VkrRendererMetricsSubmission *submission =
@@ -1046,6 +1062,40 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
                                  (float64_t)submission->gpu_ns * 1.0e-6);
   }
   vkr_metrics_snapshot_release(runtime->metrics, &view);
+}
+
+void vkr_standard_scene_recording_draw_bounds(
+    VkrStandardSceneRuntime *runtime, uint64_t frame,
+    const VkrWorldPassPayload *world) {
+  VkrRecording *recording = &runtime->recording;
+  if (!recording->active || !world || world->gpu_candidate_count == 0u) {
+    return;
+  }
+  const uint64_t generation = vkr_world_object_bounds_generation(world);
+  if (!vkr_recording_draw_bounds_wanted(recording, generation)) {
+    return;
+  }
+  /* Rows for every candidate: the helper also sorts in them. */
+  const uint32_t capacity = world->gpu_candidate_count;
+  const uint64_t bytes = sizeof(VkrWorldObjectBounds) * (uint64_t)capacity;
+  VkrWorldObjectBounds *rows = vkr_allocator_alloc(
+      &recording->allocator, bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!rows) {
+    return;
+  }
+  const uint32_t count = vkr_world_object_bounds(world, rows, capacity);
+  /* The ground's cells, where the scene streams by world partition. */
+  const VkrScene *scene =
+      runtime->world_scene ? runtime->world_scene : runtime->active_scene;
+  SceneWorldPartition partition = {0};
+  const float32_t cell_size =
+      scene && vkr_scene_partition_settings(scene, &partition)
+          ? partition.cell_size
+          : 0.0f;
+  vkr_recording_draw_bounds(recording, frame, generation, rows, count,
+                            cell_size);
+  vkr_allocator_free(&recording->allocator, rows, bytes,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
 void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,

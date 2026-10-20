@@ -282,7 +282,7 @@ void vkr_vk_record_diffuse_volume_compose(
       .imageMemoryBarrierCount = 1u,
       .pImageMemoryBarriers = &barrier,
   };
-  vkCmdPipelineBarrier2(command, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &dependency);
 }
 
 void vkr_vk_commit_diffuse_volume_compose(VkrVulkanRenderer *renderer,

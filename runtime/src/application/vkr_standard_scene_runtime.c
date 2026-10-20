@@ -340,6 +340,8 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
   if (!vkr_allocator_arena(&application->metrics_allocator)) {
     return false_v;
   }
+  (void)vkr_allocator_register_name(&application->metrics_allocator,
+                                    "app.metrics");
   vkr_metrics_init(application->metrics);
   application->metrics->config = application->config->metrics_config;
   VkrStandardSceneRuntimeMetricIds *ids = &application->metric_ids;
@@ -535,6 +537,10 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
     if (!vkr_allocator_arena(&application->frame_allocators[i])) {
       return false_v;
     }
+    /* Named for recordings' Memory tab; the frames alternate between the
+       two with a render thread. */
+    (void)vkr_allocator_register_name(&application->frame_allocators[i],
+                                      i == 0u ? "frame.0" : "frame.1");
   }
   application->frame_allocator = &application->frame_allocators[0];
   for (uint32_t i = 0u; i < ArrayCount(application->frames); ++i) {
@@ -676,6 +682,7 @@ vkr_internal void vkr_standard_scene_runtime_rendering_shutdown(
     if (!application->frame_arenas[i]) {
       continue;
     }
+    vkr_allocator_unregister(&application->frame_allocators[i]);
     vkr_allocator_release_global_accounting(&application->frame_allocators[i]);
     arena_destroy(application->frame_arenas[i]);
     application->frame_arenas[i] = NULL;
@@ -730,6 +737,8 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
     vkr_platform_stderr_write("Failed to initialize app allocator\n");
     goto cleanup;
   }
+  (void)vkr_allocator_register_name(&application->app_allocator,
+                                    "app.persistent");
 
   ArenaFlags log_arena_flags = bitset8_create();
   bitset8_set(&log_arena_flags, ARENA_FLAG_LARGE_PAGES);
@@ -926,8 +935,10 @@ cleanup:
   }
   if (host_ready)
     vkr_application_host_destroy(&application->host);
+  vkr_allocator_unregister(&application->metrics_allocator);
   vkr_allocator_release_global_accounting(&application->metrics_allocator);
   arena_destroy(application->metrics_arena);
+  vkr_allocator_unregister(&application->app_allocator);
   vkr_allocator_release_global_accounting(&application->app_allocator);
   if (log_ready)
     log_shutdown();
@@ -2133,6 +2144,9 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
   /* A GPU spike is one frame's: this frame takes it. */
   const uint32_t gpu_spike = application->debug_gpu_spike_iterations;
   application->debug_gpu_spike_iterations = 0u;
+  /* A Tier 1 recording takes the draw census of every frame it records. */
+  const bool8_t draw_census =
+      application->recording.active && application->recording.passes_enabled;
   draw->debug_payload = (VkrGpuDebugPayload){
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = pass_gpu_timing,
@@ -2145,6 +2159,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
       .shadow_debug_mode =
           draw->scene_stopped ? 0u : application->shadow_debug_mode,
       .gpu_spike_iterations = gpu_spike,
+      .draw_census = draw_census,
       .pass_output = draw->scene_stopped ? 0u : application->pass_output,
       .capture = capture,
   };
@@ -2154,7 +2169,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_debug_payload(
                      application->metrics->config.pass_pipeline_statistics ||
                      application->transmission_depth_diagnostic_enabled ||
                      application->shadow_debug_mode != 0u || gpu_spike != 0u ||
-                     application->pass_output != 0u)
+                     draw_census || application->pass_output != 0u)
                         ? &draw->debug_payload
                         : NULL;
 }
@@ -3471,6 +3486,8 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
   };
   VkrValidationError validation = {0};
   VkrRendererError submit_error = VKR_RENDERER_ERROR_NONE;
+  vkr_standard_scene_recording_draw_bounds(application, frame->recording_frame,
+                                           &frame->draw.world_payload);
   if (frame->decoupled) {
     /* The previous frame finishes only now, after this one was built beside
        it. */
@@ -4035,11 +4052,13 @@ void vkr_standard_scene_runtime_shutdown(VkrStandardSceneRuntime *application) {
   vkr_renderer_destroy(&application->renderer);
   vkr_application_host_destroy(&application->host);
 
+  vkr_allocator_unregister(&application->metrics_allocator);
   vkr_allocator_release_global_accounting(&application->metrics_allocator);
   arena_destroy(application->metrics_arena);
   application->metrics_arena = NULL;
   application->metrics = NULL;
 
+  vkr_allocator_unregister(&application->app_allocator);
   vkr_allocator_release_global_accounting(&application->app_allocator);
   log_shutdown();
   arena_destroy(application->log_arena);

@@ -515,12 +515,17 @@ typedef struct VkrMetalPacketReadbackLayout {
   uint64_t deferred_diagnostics_size;
   uint64_t exposure;
   uint64_t exposure_size;
+  /* The draw census's packed states and object ids, sized for
+     `census_candidates` candidates; zero without a census. */
+  uint64_t census_states;
+  uint64_t census_ids;
+  uint32_t census_candidates;
   uint64_t prefix_size;
 } VkrMetalPacketReadbackLayout;
 
-vkr_internal VkrMetalPacketReadbackLayout
-vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
-                                 uint32_t gpu_draw_view_count) {
+vkr_internal VkrMetalPacketReadbackLayout vkr_metal_packet_readback_layout(
+    bool8_t deferred_diagnostics, bool8_t exposure,
+    uint32_t gpu_draw_view_count, uint32_t census_candidates) {
   /* The final target can be RGBA8 or RGBA16F. Reserve an eight-byte pixel
      before the fixed diagnostic fields so the transfer stays valid across an
      extended-linear target transition. */
@@ -542,10 +547,20 @@ vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
   const uint64_t exposure_bytes =
       exposure ? sizeof(VkrExposureGpuState) + sizeof(VkrExposureGpuHistogram)
                : 0u;
-  const uint64_t prefix_size =
+  const uint64_t diagnostics_end =
       exposure_bytes > 0u    ? exposure_offset + exposure_bytes
       : deferred_diagnostics ? deferred_offset + deferred_bytes
                              : fixed_size;
+  const uint64_t census_states_offset = vkr_align_up_u64(diagnostics_end, 16u);
+  const uint64_t census_ids_offset = vkr_align_up_u64(
+      census_states_offset +
+          (uint64_t)vkr_gpu_draw_census_word_count(census_candidates) *
+              sizeof(uint32_t),
+      16u);
+  const uint64_t prefix_size =
+      census_candidates > 0u
+          ? census_ids_offset + (uint64_t)census_candidates * sizeof(uint32_t)
+          : diagnostics_end;
   return (VkrMetalPacketReadbackLayout){
       .shadow_depth = shadow_depth_offset,
       .picking = picking_offset,
@@ -555,6 +570,9 @@ vkr_metal_packet_readback_layout(bool8_t deferred_diagnostics, bool8_t exposure,
       .deferred_diagnostics_size = deferred_bytes,
       .exposure = exposure_offset,
       .exposure_size = exposure_bytes,
+      .census_states = census_states_offset,
+      .census_ids = census_ids_offset,
+      .census_candidates = census_candidates,
       .prefix_size = prefix_size,
   };
 }
@@ -664,6 +682,12 @@ typedef struct VkrMetalPacketCommandSlot {
   const uint8_t *picking_readback;
   const uint8_t *gpu_draw_diagnostics_readback;
   const uint8_t *exposure_readback;
+  /* The frame's draw census in the readback slice, NULL without one: its
+     packed states, object ids, candidates and VkrDrawCensusFlag bits. */
+  const uint32_t *census_states_readback;
+  const uint32_t *census_ids_readback;
+  uint32_t census_count;
+  uint32_t census_flags;
   uint32_t shadow_cascade_count;
   /** Cascades whose dynamic-caster view drew over a copied layer. */
   uint32_t shadow_cascade_dynamic_render_mask;
@@ -1065,6 +1089,16 @@ struct VkrMetalPacketRenderer {
   /* Late Custom draws of every completed frame, read beside the render
      thread (vkr_metal_packet_renderer_pipeline_stats). */
   VkrAtomicUint64 custom_late_draws;
+  /* The newest completed draw census, copied from its frame's readback
+     when the frame's result is decoded; storage from `allocator`. */
+  VkrDrawCensusStore draw_census;
+  /* Native work the render thread recorded since the last frame commit,
+     the counts of that commit's frame (backend.* metrics), and the
+     pipeline the current encoder last bound, which tells a bind that
+     changes it from one that does not. */
+  VkrBackendFrameCounters frame_counters;
+  VkrBackendFrameCounters submitted_counters;
+  const void *counted_pipeline;
   /* This frame's Custom compaction in the upload ring, and its ready
      mask. */
   VkrMetalCustomCompaction *custom_compaction;
@@ -1229,6 +1263,8 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> exposure_histogram_pipeline;
   id<MTLComputePipelineState> exposure_resolve_pipeline;
   id<MTLComputePipelineState> gpu_spike_pipeline;
+  /* Cull.Census (VkrGpuDebugPayload.draw_census); NULL skips the census. */
+  id<MTLComputePipelineState> gpu_draw_census_pipeline;
   id<MTLComputePipelineState> bloom_prefilter_pipeline;
   /* Both filters are resident; the cold configuration selects which one a
      build measures. Neither is a fallback for the other. */
@@ -1504,6 +1540,76 @@ vkr_metal_packet_completed(const VkrMetalPacketRenderer *renderer) {
   return completed;
 }
 
+/* The VkrBackendCounter kinds Metal counts. Metal 4 copies on compute
+   encoders, so it has no blit encoders; render passes, indirect draw calls,
+   per-resource barriers and descriptor writes are Vulkan's. */
+#define VKR_METAL_PACKET_COUNTED_MASK                                          \
+  (VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_COMMAND_BUFFERS) |              \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_QUEUE_SUBMITS) |                \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_RENDER_ENCODERS) |              \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_COMPUTE_ENCODERS) |             \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_ICB_EXECUTIONS) |               \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_DRAWS_DIRECT) |                 \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_DISPATCHES) |                   \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_BARRIERS) |                     \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_PIPELINE_BINDS) |               \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_PIPELINE_CHANGES))
+
+/* Counts native work for the backend.* metrics; render thread only. */
+vkr_internal INLINE void
+vkr_metal_packet_count(VkrMetalPacketRenderer *renderer,
+                       VkrBackendCounter counter) {
+  renderer->frame_counters.values[counter]++;
+}
+
+/* A new encoder: it starts without a bound pipeline. */
+vkr_internal INLINE void
+vkr_metal_packet_count_encoder(VkrMetalPacketRenderer *renderer,
+                               VkrBackendCounter counter) {
+  renderer->frame_counters.values[counter]++;
+  renderer->counted_pipeline = NULL;
+}
+
+/* A pipeline bind, which changes the encoder's pipeline unless it binds
+   the one bound last. */
+vkr_internal INLINE void
+vkr_metal_packet_count_pipeline(VkrMetalPacketRenderer *renderer,
+                                const void *pipeline) {
+  renderer->frame_counters.values[VKR_BACKEND_COUNTER_PIPELINE_BINDS]++;
+  if (pipeline != renderer->counted_pipeline)
+    renderer->frame_counters.values[VKR_BACKEND_COUNTER_PIPELINE_CHANGES]++;
+  renderer->counted_pipeline = pipeline;
+}
+
+vkr_internal INLINE void vkr_metal_packet_set_render_pipeline(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    id<MTLRenderPipelineState> pipeline) API_AVAILABLE(macos(26.0)) {
+  [encoder setRenderPipelineState:pipeline];
+  vkr_metal_packet_count_pipeline(renderer, (const void *)pipeline);
+}
+
+vkr_internal INLINE void vkr_metal_packet_set_compute_pipeline(
+    VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
+    id<MTLComputePipelineState> pipeline) API_AVAILABLE(macos(26.0)) {
+  [encoder setComputePipelineState:pipeline];
+  vkr_metal_packet_count_pipeline(renderer, (const void *)pipeline);
+}
+
+/* At a frame's commit: its counts, the graph's dependencies included, and
+   a fresh count for the next frame. */
+vkr_internal void
+vkr_metal_packet_commit_frame_counters(VkrMetalPacketRenderer *renderer,
+                                       uint64_t frame_index,
+                                       uint32_t dependency_count) {
+  renderer->frame_counters.values[VKR_BACKEND_COUNTER_BARRIERS] +=
+      dependency_count;
+  renderer->submitted_counters = renderer->frame_counters;
+  renderer->submitted_counters.frame_index = frame_index;
+  renderer->submitted_counters.supported_mask = VKR_METAL_PACKET_COUNTED_MASK;
+  renderer->submitted_counters.valid = true_v;
+  renderer->frame_counters = (VkrBackendFrameCounters){0};
+}
+
 #include "metal/internal/vkr_metal_packet_graph.inc"
 /* The presenter (vkr_metal_packet_present.inc) records with the frame's
    helpers, so it follows them; setup and pass preparation call into it. */
@@ -1586,6 +1692,18 @@ vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer) {
 const VkrRenderGraph *
 vkr_metal_packet_renderer_graph(const VkrMetalPacketRenderer *renderer) {
   return renderer ? renderer->graph : NULL;
+}
+
+const VkrDrawCensusStore *
+vkr_metal_packet_renderer_draw_census(const VkrMetalPacketRenderer *renderer) {
+  return renderer ? &renderer->draw_census : NULL;
+}
+
+void vkr_metal_packet_renderer_frame_counters(
+    const VkrMetalPacketRenderer *renderer,
+    VkrBackendFrameCounters *out_counters) {
+  *out_counters =
+      renderer ? renderer->submitted_counters : (VkrBackendFrameCounters){0};
 }
 
 bool8_t vkr_metal_packet_renderer_graph_resource_stats(

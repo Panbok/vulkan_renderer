@@ -3,8 +3,9 @@ vkr_internal void vkr_metal_packet_record_dispatch(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketDispatch *dispatch) API_AVAILABLE(macos(26.0)) {
   [renderer->argument_table setAddress:dispatch->root atIndex:0u];
-  [encoder setComputePipelineState:dispatch->pipeline];
+  vkr_metal_packet_set_compute_pipeline(renderer, encoder, dispatch->pipeline);
   [encoder setArgumentTable:renderer->argument_table];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
   [encoder dispatchThreads:dispatch->threads
       threadsPerThreadgroup:dispatch->group_size];
 }
@@ -19,6 +20,7 @@ vkr_metal_packet_record_ibl_bakes(VkrMetalPacketRenderer *renderer,
     API_AVAILABLE(macos(26.0)) {
   /* A source can come from an earlier texture-upload submission, and Metal 4
      does not order separate command buffers, so wait before reading it. */
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
   [encoder barrierAfterQueueStages:MTLStageDispatch | MTLStageBlit
                       beforeStages:MTLStageDispatch | MTLStageBlit
                  visibilityOptions:MTL4VisibilityOptionDevice];
@@ -32,21 +34,24 @@ vkr_metal_packet_record_ibl_bakes(VkrMetalPacketRenderer *renderer,
       id<MTLTexture> source_texture =
           (id<MTLTexture>)source->resource.metal_texture;
       [renderer->argument_table setAddress:job->atmosphere_roots[0] atIndex:0u];
-      [encoder
-          setComputePipelineState:renderer->atmosphere_transmittance_pipeline];
+      vkr_metal_packet_set_compute_pipeline(
+          renderer, encoder, renderer->atmosphere_transmittance_pipeline);
       [encoder setArgumentTable:renderer->argument_table];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
       [encoder dispatchThreads:MTLSizeMake(VKR_ATMOSPHERE_TRANSMITTANCE_WIDTH,
                                            VKR_ATMOSPHERE_TRANSMITTANCE_HEIGHT,
                                            1u)
           threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];
 
       [renderer->argument_table setAddress:job->atmosphere_roots[1] atIndex:0u];
-      [encoder setComputePipelineState:renderer->
-                                       atmosphere_multiple_scattering_pipeline];
+      vkr_metal_packet_set_compute_pipeline(
+          renderer, encoder, renderer->atmosphere_multiple_scattering_pipeline);
       [encoder setArgumentTable:renderer->argument_table];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
       [encoder
            dispatchThreadgroups:MTLSizeMake(
                                     VKR_ATMOSPHERE_MULTIPLE_SCATTERING_SIZE,
@@ -54,21 +59,26 @@ vkr_metal_packet_record_ibl_bakes(VkrMetalPacketRenderer *renderer,
           threadsPerThreadgroup:
               MTLSizeMake(1u, 1u,
                           VKR_METAL_PACKET_ATMOSPHERE_MULTI_DIRECTIONS)];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];
 
       [renderer->argument_table setAddress:job->atmosphere_roots[2] atIndex:0u];
-      [encoder setComputePipelineState:renderer->atmosphere_source_pipeline];
+      vkr_metal_packet_set_compute_pipeline(
+          renderer, encoder, renderer->atmosphere_source_pipeline);
       [encoder setArgumentTable:renderer->argument_table];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
       [encoder dispatchThreads:MTLSizeMake(source_texture.width,
                                            source_texture.height, 6u)
           threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageBlit
                        visibilityOptions:MTL4VisibilityOptionDevice];
       if (source_texture.mipmapLevelCount > 1u)
         [encoder generateMipmapsForTexture:source_texture];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterEncoderStages:MTLStageBlit
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];
@@ -86,15 +96,18 @@ vkr_metal_packet_record_ibl_bakes(VkrMetalPacketRenderer *renderer,
     }
     if (job->sh_root) {
       [renderer->argument_table setAddress:job->sh_root atIndex:0u];
-      [encoder setComputePipelineState:renderer->ibl_sh_pipeline];
+      vkr_metal_packet_set_compute_pipeline(
+          renderer, encoder, renderer->ibl_sh_pipeline);
       [encoder setArgumentTable:renderer->argument_table];
       /* One workgroup per destination slot; the kernel's fixed reduction is
          what makes the result deterministic, so this must stay a single
          group. */
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
       [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 1u)
               threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
     }
   }
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
   [encoder
       barrierAfterEncoderStages:MTLStageDispatch
             beforeEncoderStages:(MTLStages)(MTLStageDispatch | MTLStageBlit)
@@ -127,6 +140,7 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
         };
         vkr_metal_packet_record_dispatch(renderer, encoder, &dispatch);
       }
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];
@@ -135,16 +149,19 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
          ++step) {
       vkr_metal_packet_record_dispatch(renderer, encoder,
                                        &pass->sun_shadow.grid[step]);
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterEncoderStages:MTLStageDispatch
                      beforeEncoderStages:MTLStageDispatch
                        visibilityOptions:MTL4VisibilityOptionDevice];
     }
     /* Generated volumes come from dispatches, cooked ones from copies. */
-    if (pass->sun_shadow.volumes_in_flight)
+    if (pass->sun_shadow.volumes_in_flight) {
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterQueueStages:(MTLStages)(MTLStageDispatch |
                                                    MTLStageBlit)
                           beforeStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
+    }
     vkr_metal_packet_record_dispatch(renderer, encoder,
                                      &pass->sun_shadow.trace);
     break;
@@ -152,10 +169,12 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
   case VKR_RG_EXECUTOR_TILED_STABILIZE:
     /* The previous mean comes from an earlier command buffer, which Metal 4
        does not order. */
-    if (pass->stabilize.history_in_flight)
+    if (pass->stabilize.history_in_flight) {
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterQueueStages:MTLStageDispatch
                           beforeStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
+    }
     vkr_metal_packet_record_dispatch(renderer, encoder,
                                      &pass->stabilize.dispatch);
     break;
@@ -188,12 +207,14 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
         .visibility_options = MTL4VisibilityOptionDevice,
     };
     vkr_metal_dependency_encode_intra(encoder, &reset_to_encode);
-    [encoder setComputePipelineState:renderer->gpu_draw_encode_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->gpu_draw_encode_pipeline);
     for (uint32_t i = 0u; i < pass->gpu_encode.group_count; ++i) {
       const VkrMetalPacketGpuEncodeGroup *group = &pass->gpu_encode.groups[i];
       [renderer->argument_table setAddress:group->root atIndex:0u];
       [renderer->argument_table setAddress:group->arguments atIndex:1u];
       [encoder setArgumentTable:renderer->argument_table];
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
       [encoder dispatchThreads:MTLSizeMake(pass->gpu_encode.candidate_count,
                                            group->view_count, 1u)
           threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
@@ -222,15 +243,21 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     [renderer->argument_table setAddress:group->root atIndex:0u];
     [renderer->argument_table setAddress:group->arguments atIndex:1u];
     [encoder setArgumentTable:renderer->argument_table];
-    [encoder setComputePipelineState:renderer->gpu_draw_classify_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->gpu_draw_classify_pipeline);
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreads:MTLSizeMake(pass->gpu_late.candidate_count, 1u, 1u)
         threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
     vkr_metal_dependency_encode_intra(encoder, &dispatch_to_dispatch);
-    [encoder setComputePipelineState:renderer->gpu_draw_prefix_late_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->gpu_draw_prefix_late_pipeline);
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreads:MTLSizeMake(1u, 1u, 1u)
         threadsPerThreadgroup:MTLSizeMake(1u, 1u, 1u)];
     vkr_metal_dependency_encode_intra(encoder, &dispatch_to_dispatch);
-    [encoder setComputePipelineState:renderer->gpu_draw_encode_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->gpu_draw_encode_pipeline);
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreads:MTLSizeMake(pass->gpu_late.candidate_count, 1u, 1u)
         threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
     break;
@@ -240,16 +267,21 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     break;
   case VKR_RG_EXECUTOR_EXPOSURE_HISTOGRAM:
     [renderer->argument_table setAddress:pass->histogram.root atIndex:0u];
-    [encoder setComputePipelineState:renderer->exposure_clear_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->exposure_clear_pipeline);
     [encoder setArgumentTable:renderer->argument_table];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreads:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u,
                                          1u)
         threadsPerThreadgroup:MTLSizeMake(VKR_EXPOSURE_HISTOGRAM_BIN_COUNT, 1u,
                                           1u)];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
-    [encoder setComputePipelineState:renderer->exposure_histogram_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->exposure_histogram_pipeline);
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreadgroups:pass->histogram.groups
             threadsPerThreadgroup:MTLSizeMake(16u, 16u, 1u)];
     break;
@@ -259,24 +291,33 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
        which no graph resource orders. */
     const uint32_t extent = pass->cloud_sky_light.extent;
     [renderer->argument_table setAddress:pass->cloud_sky_light.root atIndex:0u];
-    [encoder setComputePipelineState:renderer->cloud_sky_light_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->cloud_sky_light_pipeline);
     [encoder setArgumentTable:renderer->argument_table];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreads:MTLSizeMake(extent, extent, 6u)
         threadsPerThreadgroup:MTLSizeMake(8u, 8u, 1u)];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
-    [encoder setComputePipelineState:renderer->cloud_sky_light_sh_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->cloud_sky_light_sh_pipeline);
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 1u)
             threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
-    [encoder setComputePipelineState:renderer->cloud_sky_light_mips_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->cloud_sky_light_mips_pipeline);
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreadgroups:MTLSizeMake(1u, 1u, 6u)
             threadsPerThreadgroup:MTLSizeMake(VKR_CLOUD_SKY_LIGHT_FACE_SIZE,
                                               VKR_CLOUD_SKY_LIGHT_FACE_SIZE,
                                               1u)];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
@@ -286,10 +327,12 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     /* In two phases the pyramid can be the previous frame's, built in an
        earlier command buffer that may still run; Metal 4 does not order
        command buffers, so wait for the queue's earlier dispatches. */
-    if (pass->gpu_classify.history_in_flight)
+    if (pass->gpu_classify.history_in_flight) {
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterQueueStages:MTLStageDispatch
                           beforeStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
+    }
     vkr_metal_packet_record_dispatch(renderer, encoder,
                                      &pass->gpu_classify.dispatch);
     break;
@@ -297,10 +340,12 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
     /* The history can be the previous frame's output, written by its trace in
        an earlier command buffer that may still run; Metal 4 does not order
        command buffers, so wait for the queue's earlier dispatches. */
-    if (pass->cloud_trace.history_in_flight)
+    if (pass->cloud_trace.history_in_flight) {
+      vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
       [encoder barrierAfterQueueStages:MTLStageDispatch
                           beforeStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
+    }
     vkr_metal_packet_record_dispatch(renderer, encoder,
                                      &pass->cloud_trace.dispatch);
     break;
@@ -310,18 +355,22 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
        texture-upload submission; Metal 4 orders neither across command
        buffers, so wait for both. Later passes in this encoder and later
        encoders read the composed SH, which no graph resource orders. */
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterQueueStages:MTLStageFragment | MTLStageDispatch |
                                      MTLStageBlit
                         beforeStages:MTLStageDispatch
                    visibilityOptions:MTL4VisibilityOptionDevice];
     [renderer->argument_table setAddress:pass->diffuse_volume_compose.root
                                  atIndex:0u];
-    [encoder setComputePipelineState:renderer->diffuse_volume_compose_pipeline];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->diffuse_volume_compose_pipeline);
     [encoder setArgumentTable:renderer->argument_table];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder
           dispatchThreads:MTLSizeMake(pass->diffuse_volume_compose.probe_count,
                                       1u, 1u)
         threadsPerThreadgroup:MTLSizeMake(64u, 1u, 1u)];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterEncoderStages:MTLStageDispatch
                    beforeEncoderStages:MTLStageDispatch
                      visibilityOptions:MTL4VisibilityOptionDevice];
@@ -382,16 +431,15 @@ vkr_metal_packet_custom_range_ready(const VkrMetalPacketIndirectPass *draw,
 
 /* Executes compaction plane `plane` and slot `slot`'s range of camera
    bucket `bucket` (ADR-096, ADR-113). */
-vkr_internal void
-vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
-                                      const VkrMetalPacketIndirectPass *draw,
-                                      uint32_t plane, uint32_t slot,
-                                      uint32_t bucket)
-    API_AVAILABLE(macos(26.0)) {
+vkr_internal void vkr_metal_packet_record_custom_bucket(
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrMetalPacketIndirectPass *draw, uint32_t plane, uint32_t slot,
+    uint32_t bucket) API_AVAILABLE(macos(26.0)) {
   [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
   [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
                                      ? MTLWindingClockwise
                                      : MTLWindingCounterClockwise];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_ICB_EXECUTIONS);
   [encoder executeCommandsInBuffer:draw->commands
                     indirectBuffer:draw->custom_arguments +
                                    (((uint64_t)plane *
@@ -406,7 +454,8 @@ vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
    a camera pass, the Custom graphs' and the extended draws', with the
    pass's own pipelines: it writes no shading. */
 vkr_internal void vkr_metal_packet_record_indirect_ranges(
-    id<MTL4RenderCommandEncoder> encoder, const VkrMetalPacketIndirectPass *draw,
+    VkrMetalPacketRenderer *renderer, id<MTL4RenderCommandEncoder> encoder,
+    const VkrMetalPacketIndirectPass *draw,
     id<MTLRenderPipelineState> *bound_pipeline) API_AVAILABLE(macos(26.0)) {
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
@@ -414,13 +463,14 @@ vkr_internal void vkr_metal_packet_record_indirect_ranges(
         draw->opaque_pipeline && (bucket & 2u) == 0u ? draw->opaque_pipeline
                                                      : draw->pipeline;
     if (pipeline != *bound_pipeline) {
-      [encoder setRenderPipelineState:pipeline];
+      vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
       *bound_pipeline = pipeline;
     }
     [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
     [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
                                        ? MTLWindingClockwise
                                        : MTLWindingCounterClockwise];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_ICB_EXECUTIONS);
     [encoder executeCommandsInBuffer:draw->commands
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];
@@ -438,11 +488,11 @@ vkr_internal void vkr_metal_packet_record_indirect_ranges(
                 ? draw->opaque_pipeline
                 : draw->pipeline;
         if (pipeline != *bound_pipeline) {
-          [encoder setRenderPipelineState:pipeline];
+          vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
           *bound_pipeline = pipeline;
         }
-        vkr_metal_packet_record_custom_bucket(encoder, draw, plane, slot,
-                                              bucket);
+        vkr_metal_packet_record_custom_bucket(renderer, encoder, draw, plane,
+                                              slot, bucket);
       }
     }
   }
@@ -456,8 +506,10 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
   if (draw->clear_depth) {
     [encoder setScissorRect:draw->clear_rect];
     [encoder setDepthStencilState:renderer->depth_clear_state];
-    [encoder setRenderPipelineState:renderer->depth_clear_pipeline];
+    vkr_metal_packet_set_render_pipeline(
+        renderer, encoder, renderer->depth_clear_pipeline);
     [encoder setCullMode:MTLCullModeNone];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0u
                 vertexCount:3u];
@@ -480,7 +532,8 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
                slopeScale:draw->depth_bias.depth_bias_slope
                     clamp:draw->depth_bias.depth_bias_clamp];
   id<MTLRenderPipelineState> bound_pipeline = nil;
-  vkr_metal_packet_record_indirect_ranges(encoder, draw, &bound_pipeline);
+  vkr_metal_packet_record_indirect_ranges(renderer, encoder, draw,
+                                          &bound_pipeline);
   /* A pass that draws every camera draw of a two-phase frame also draws
      the late view's (ADR-032). */
   if (draw->late_commands) {
@@ -488,7 +541,8 @@ vkr_internal void vkr_metal_packet_record_indirect_pass(
     late.commands = draw->late_commands;
     late.arguments = draw->late_arguments;
     late.custom_arguments = draw->late_custom_arguments;
-    vkr_metal_packet_record_indirect_ranges(encoder, &late, &bound_pipeline);
+    vkr_metal_packet_record_indirect_ranges(renderer, encoder, &late,
+                                            &bound_pipeline);
   }
 }
 
@@ -510,8 +564,8 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
     [encoder setDepthStencilState:overdraw ? renderer->tiled_overdraw_state
                                            : renderer->tiled_shade_state];
     for (uint32_t cutout = 0u; cutout < 2u; ++cutout) {
-      [encoder setRenderPipelineState:cutout ? draw->pipeline
-                                             : draw->opaque_pipeline];
+      vkr_metal_packet_set_render_pipeline(
+          renderer, encoder, cutout ? draw->pipeline : draw->opaque_pipeline);
       for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
            ++bucket) {
         if (((bucket & 2u) != 0u) != (cutout != 0u)) {
@@ -522,6 +576,7 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
             setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
                                       ? MTLWindingClockwise
                                       : MTLWindingCounterClockwise];
+        vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_ICB_EXECUTIONS);
         [encoder
             executeCommandsInBuffer:draw->commands
                      indirectBuffer:draw->arguments +
@@ -559,13 +614,13 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
                   : (cutout
                          ? graph->coverage[variant][decals][probes][lighting]
                          : graph->forward[variant][decals][probes][lighting]);
-          [encoder setRenderPipelineState:pipeline];
+          vkr_metal_packet_set_render_pipeline(renderer, encoder, pipeline);
           for (uint32_t bucket = 0u;
                bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT; ++bucket) {
             if (((bucket & 2u) != 0u) != (cutout != 0u))
               continue;
-            vkr_metal_packet_record_custom_bucket(encoder, draw, plane, slot,
-                                                  bucket);
+            vkr_metal_packet_record_custom_bucket(renderer, encoder, draw,
+                                                  plane, slot, bucket);
           }
         }
       }
@@ -582,13 +637,17 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder setDepthStencilState:renderer->tiled_sky_state];
-    [encoder setRenderPipelineState:renderer->tiled_sky_pipelines[sun]];
+    vkr_metal_packet_set_render_pipeline(
+        renderer, encoder, renderer->tiled_sky_pipelines[sun]);
     [encoder setCullMode:MTLCullModeNone];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0u
                 vertexCount:3u];
   }
-  [encoder setRenderPipelineState:renderer->tiled_resolve_pipelines[sun]];
+  vkr_metal_packet_set_render_pipeline(
+      renderer, encoder, renderer->tiled_resolve_pipelines[sun]);
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
   [encoder dispatchThreadsPerTile:MTLSizeMake(VKR_METAL_TILED_TILE_WIDTH,
                                               VKR_METAL_TILED_TILE_HEIGHT, 1u)];
 }
@@ -602,9 +661,11 @@ vkr_internal void vkr_metal_packet_record_tiled_atmosphere(
   [renderer->argument_table setAddress:pass->tiled_atmosphere.root atIndex:1u];
   [encoder setArgumentTable:renderer->argument_table
                    atStages:MTLRenderStageVertex | MTLRenderStageFragment];
-  [encoder setRenderPipelineState:renderer->tiled_atmosphere_pipelines
-                                      [pass->tiled_atmosphere.sun]];
+  vkr_metal_packet_set_render_pipeline(
+      renderer, encoder,
+      renderer->tiled_atmosphere_pipelines[pass->tiled_atmosphere.sun]);
   [encoder setCullMode:MTLCullModeNone];
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle
               vertexStart:0u
               vertexCount:3u];
@@ -623,20 +684,23 @@ vkr_internal void vkr_metal_packet_record_tiled_object_motion(
   const VkrMetalPacketIndirectPass *draw = &pass->indirect;
   if (!draw->commands)
     return;
-  if (draw->history_in_flight)
+  if (draw->history_in_flight) {
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
     [encoder barrierAfterQueueStages:MTLStageDispatch
                         beforeStages:MTLStageVertex
                    visibilityOptions:MTL4VisibilityOptionDevice];
+  }
   [encoder setViewport:draw->viewport];
   [encoder setDepthStencilState:renderer->depth_read_state];
   [encoder setDepthBias:16.0f slopeScale:1.0f clamp:0.0f];
-  [encoder setRenderPipelineState:draw->pipeline];
+  vkr_metal_packet_set_render_pipeline(renderer, encoder, draw->pipeline);
   for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
        ++bucket) {
     [encoder setCullMode:(bucket & 1u) ? MTLCullModeNone : MTLCullModeBack];
     [encoder setFrontFacingWinding:(bucket & VKR_GPU_DRAW_STATE_MIRRORED_BIT)
                                        ? MTLWindingClockwise
                                        : MTLWindingCounterClockwise];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_ICB_EXECUTIONS);
     [encoder executeCommandsInBuffer:draw->commands
                       indirectBuffer:draw->arguments +
                                      (uint64_t)bucket * 2u * sizeof(uint32_t)];
@@ -707,15 +771,16 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
     [encoder setViewport:pass->tonemap.viewport];
     [encoder setScissorRect:pass->tonemap.scissor];
-    [encoder
-        setRenderPipelineState:
-            pass->kind == VKR_RG_EXECUTOR_EDITOR_GRID
-                ? renderer->editor_grid_pipeline
-            : pass->kind == VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT
-                ? renderer->editor_pass_output_pipeline
-                : renderer->editor_selection_outline_pipeline];
+    vkr_metal_packet_set_render_pipeline(
+        renderer, encoder,
+        pass->kind == VKR_RG_EXECUTOR_EDITOR_GRID
+            ? renderer->editor_grid_pipeline
+        : pass->kind == VKR_RG_EXECUTOR_EDITOR_PASS_OUTPUT
+            ? renderer->editor_pass_output_pipeline
+            : renderer->editor_selection_outline_pipeline);
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageFragment];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0u
                 vertexCount:3u];
@@ -726,12 +791,14 @@ vkr_internal void vkr_metal_packet_record_graphics_pass(
     [renderer->argument_table setAddress:pass->tonemap.root atIndex:1u];
     [encoder setViewport:pass->tonemap.viewport];
     [encoder setScissorRect:pass->tonemap.scissor];
-    [encoder
-        setRenderPipelineState:pass->kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE
-                                   ? renderer->display_linear_pipeline
-                                   : renderer->tonemap_pipeline];
+    vkr_metal_packet_set_render_pipeline(
+        renderer, encoder,
+        pass->kind == VKR_RG_EXECUTOR_TONEMAP_PREPARE
+            ? renderer->display_linear_pipeline
+            : renderer->tonemap_pipeline);
     [encoder setArgumentTable:renderer->argument_table
                      atStages:MTLRenderStageFragment];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
     [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                 vertexStart:0u
                 vertexCount:3u];

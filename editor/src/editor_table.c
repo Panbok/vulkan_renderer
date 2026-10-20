@@ -48,16 +48,43 @@ vkr_internal VkrUiPanelConfig editor_table_row_panel(VkrUiPlacement placement,
   return panel;
 }
 
-/* Text in a clipped cell, so a long value stops at its column's edge. */
+/* A cell's optional parts beyond its text (VkrEditorTableRow). */
+typedef struct EditorTableCellLook {
+  Vec4 fill;
+  /* A bar of `bar_pt` points, or none at zero. */
+  float32_t bar_pt;
+  Vec4 bar_color;
+} EditorTableCellLook;
+
+/* Text in a clipped cell, so a long value stops at its column's edge, over
+   its fill and bar. */
 vkr_internal void editor_table_text(VkrUiSystem *ui, uint32_t column,
                                     String8 text, bool8_t numeric,
-                                    VkrUiWidgetConfig label) {
+                                    VkrUiWidgetConfig label,
+                                    const EditorTableCellLook *look) {
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   VkrUiPanelConfig cell =
       editor_table_row_panel(editor_table_cell(column, 0u), &fill, 1u, &fill);
   cell.clip_children = true_v;
+  if (look && look->fill.w > 0.0f) {
+    cell.style.background_color = look->fill;
+    cell.style.corner_radius_pt = (Vec4){3.0f, 3.0f, 3.0f, 3.0f};
+  }
   (void)vkr_ui_push_id_u64(ui, column);
   if (vkr_ui_panel_begin(ui, string8_lit("cell"), &cell)) {
+    if (look && look->bar_pt > 0.0f) {
+      VkrUiWidgetConfig bar = vkr_ui_widget_config_default();
+      bar.placement = editor_table_cell(0u, 0u);
+      bar.placement.justify = VKR_UI_ALIGN_START;
+      bar.placement.align = VKR_UI_ALIGN_END;
+      bar.placement.margin_pt =
+          (VkrUiEdges){0.0f, 0.0f, 3.0f, EDITOR_TABLE_CELL_PAD_PT};
+      bar.style.min_size_pt = bar.style.max_size_pt =
+          (Vec2){look->bar_pt, 3.0f};
+      bar.style.background_color = look->bar_color;
+      bar.style.corner_radius_pt = (Vec4){1.5f, 1.5f, 1.5f, 1.5f};
+      vkr_ui_label(ui, string8_lit("bar"), (String8){0}, &bar);
+    }
     label.placement = editor_table_cell(0u, 0u);
     label.placement.justify = numeric ? VKR_UI_ALIGN_END : VKR_UI_ALIGN_START;
     label.placement.align = VKR_UI_ALIGN_CENTER;
@@ -149,7 +176,7 @@ vkr_internal bool8_t editor_table_header(VkrUiSystem *ui, VkrEditorTable *table,
     editor_table_text(ui, c,
                       string8_create_from_cstr((const uint8_t *)column->title,
                                                string_length(column->title)),
-                      column->numeric, text);
+                      column->numeric, text, NULL);
     /* The right edge of a fixed column resizes it. */
     if (table->width_pt[c] > 0.0f) {
       const VkrUiId edge_id =
@@ -318,7 +345,22 @@ bool8_t vkr_editor_table_row(VkrUiSystem *ui, VkrEditorTable *table,
         cell.icon_size_pt = 10.0f;
         cell.icon_color = row->dot;
       }
-      editor_table_text(ui, c, row->cells[c], columns[c].numeric, cell);
+      if (row->cell_colors && row->cell_colors[c].w > 0.0f) {
+        cell.style.text_color = row->cell_colors[c];
+      }
+      EditorTableCellLook look = {0};
+      if (row->cell_fills) {
+        look.fill = row->cell_fills[c];
+      }
+      /* A bar needs the column's width: fixed columns only. */
+      if (row->cell_bars && row->bar_colors && row->cell_bars[c] >= 0.0f &&
+          table->width_pt[c] > 0.0f) {
+        const float32_t room =
+            table->width_pt[c] - 2.0f * EDITOR_TABLE_CELL_PAD_PT;
+        look.bar_pt = Max(room * Min(row->cell_bars[c], 1.0f), 0.0f);
+        look.bar_color = row->bar_colors[c];
+      }
+      editor_table_text(ui, c, row->cells[c], columns[c].numeric, cell, &look);
     }
     (void)vkr_ui_panel_end(ui);
   }

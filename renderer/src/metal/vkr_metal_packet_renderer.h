@@ -501,6 +501,17 @@ vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);
 bool8_t vkr_metal_packet_renderer_graph_resource_stats(
     const VkrMetalPacketRenderer *renderer,
     VkrRenderGraphResourceStats *out_stats);
+struct VkrDrawCensusStore;
+struct VkrBackendFrameCounters;
+/** Render thread (the frontend joins it): the native work the last
+ * committed frame recorded (backend.* metrics). */
+void vkr_metal_packet_renderer_frame_counters(
+    const VkrMetalPacketRenderer *renderer,
+    struct VkrBackendFrameCounters *out_counters);
+/** Render thread (the frontend joins it): the newest completed draw census,
+ * which the next completed census overwrites. */
+const struct VkrDrawCensusStore *
+vkr_metal_packet_renderer_draw_census(const VkrMetalPacketRenderer *renderer);
 /** Render thread (the frontend joins it): the graph of the last submitted
  * packet, valid until the next submit; NULL before the graph exists. */
 const VkrRenderGraph *

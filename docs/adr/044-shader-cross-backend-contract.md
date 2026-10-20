@@ -923,6 +923,7 @@ domain under the [evidence rules](#evidence-rules).
 | SMAA 4x and T2x | Desktop | — | — | `vulkan/slang/post/smaa.slang`; S2x's visibility split, second-sample resolve and lighting, and compose in `world/deferred.slang` |
 | FSR 3.1 native antialiasing inputs | Desktop | — | — | `vulkan/slang/post/fsr31.slang` (`vk_fsr31_prepare`); the reconstruction is the FidelityFX SDK's own shaders (ADR-052) |
 | Text/UI | Shared | native coverage; fixed MTSDF atlas sampling; per-vertex SDF box, text and image modes | `metal/msl/text/`, `ui/` | `vulkan/slang/text/`, `ui/` |
+| Draw census (pass `Cull.Census`, `VkrGpuDebugPayload.draw_census`): reason-coded rejected classification words, each camera candidate's state packed eight to a word and its object id | Shared | `shared/lod_kernel.slangh` (`vkr_gpu_draw_rejected`, `vkr_gpu_draw_camera_state`, `vkr_gpu_draw_census_put`); host mirror and CPU test in `vkr_gpu_abi.h`, `tests/src/draw_census_test.c` | `metal/msl/world/gpu_draws.metal` (classify, encode, `vkr_metal_packet_gpu_draw_census`); Metal native evidence pending | `vulkan/slang/world/deferred.slang` (`vk_gpu_draw_classify`, `vk_gpu_draw_encode`, `vk_gpu_draw_census`); compiles to SPIR-V, Vulkan native evidence unavailable |
 | Debug GPU spike (pass `Debug.GpuSpike`, `VkrGpuDebugPayload.gpu_spike_iterations`): a dependent multiply-add chain for a GPU cost with no CPU cost | Shared semantics, one implementation per backend | — | `metal/msl/editor/gpu_spike.metal`; Metal native: on Bistro (M1 Pro, Release) 2,000,000 iterations ran about 60 ms on the frame that carried them | `vulkan/slang/editor/gpu_spike.slang` (`vk_gpu_spike`); compiles to SPIR-V, Vulkan native evidence unavailable |
 
 Metal also compiles `metal/slang/` support sources; native MSL geometry decode
@@ -1096,6 +1097,17 @@ the shared `vkr_gpu_cascade_caster_too_small` (`lod_kernel.slangh`) finds its
 bounding-sphere diameter below one texel of the view's LOD scale, or below
 four for a candidate with the copy bit of its cull word. Native Vulkan
 evidence of the skip is not recorded.
+
+Both classify kernels write a rejected word as all ones in the four bucket
+bits and the first failing test above them (`vkr_gpu_draw_rejected`:
+filtered, frustum, distance, occluded, cascade caster size); a drawn word's
+bucket bits hold the bucket on Vulkan and bucket + 1 on Metal, never 15, and
+Metal's two-phase deferral stays `VKR_GPU_DRAW_DEFERRED`, every bit set. Both
+encode kernels skip every word whose bucket bits are all ones. Pass
+`Cull.Census` exists only while the debug payload asks for it; it maps the
+camera word, and on Metal the late view's word of a deferred candidate,
+through `vkr_gpu_draw_camera_state` and is read back with the culling
+counters.
 
 Both classify kernels also apply the per-object draw distance
 ([ADR-114](114-per-object-draw-distance.md)) through the shared

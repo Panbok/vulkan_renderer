@@ -1454,6 +1454,11 @@ from a recording with simulation stopped. See
 signposts on, also open os_signpost intervals that Instruments shows and
 `tools/recording/vkr_xctrace.py` reads back with Metal GPU work
 ([ADR-126](adr/126-cpu-zones-and-gpu-pass-timeline.md)).
+Tier 1 recordings also carry the render graph's shape on each change, the
+catalog's memory, draw, culling and backend measurements, the named
+allocators of the lib's registry, and the GPU draw census; the editor's
+Performance window reads them in its Backend, Memory, Draws and Render graph
+tabs ([ADR-130](adr/130-performance-window-tabs.md)).
 
 ## Remaining implementation and evidence boundaries
 

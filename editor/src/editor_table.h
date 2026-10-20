@@ -56,6 +56,15 @@ typedef struct VkrEditorTableRow {
   bool8_t has_dot;
   Vec4 text_color;
   String8 tooltip;
+  /* Optional, one per column: a text colour where its alpha is above zero,
+     over the row's; a fill behind the cell where its alpha is above zero,
+     such as a value that just changed; and a bar along the cell's bottom
+     filling that share of a fixed-width column, from 0 to 1, in its
+     bar_colors entry (negative draws none). */
+  const Vec4 *cell_colors;
+  const Vec4 *cell_fills;
+  const float32_t *cell_bars;
+  const Vec4 *bar_colors;
 } VkrEditorTableRow;
 
 /** Draws the header (a click sorts, a column's right edge resizes it) and

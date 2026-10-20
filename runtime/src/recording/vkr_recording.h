@@ -120,7 +120,9 @@
    measurement_name record (a u32 index, a u16 name length, a u16 unit
    length, the name, the unit) and recorded each frame in measurements
    records of up to 64: a u32 first index, a u32 count, a u64 valid mask,
-   then `count` float64 values in the unit named. */
+   then `count` float64 values in the unit named. Tier 1 recordings carry
+   the metrics named by VKR_RECORDING_TIER1_MEASUREMENTS the same way: what
+   the Performance window's Memory, Backend and Draws tabs read. */
 #define VKR_RECORDING_STREAM_MEASUREMENT_NAME 21u
 #define VKR_RECORDING_STREAM_MEASUREMENTS 22u
 /* CPU zones (VkrRecordingConfig.zones, lib/src/core/vkr_zone.h): a
@@ -138,6 +140,21 @@
    for an untimed pass). */
 #define VKR_RECORDING_STREAM_PASS_STARTS 25u
 #define VKR_RECORDING_PASS_STARTS_HEADER_SIZE 24u
+/* The render graph's shape (Tier 1, vkr_recording_format.h): when the
+   recording starts and whenever the frame's passes change. Not droppable: a
+   lost one would show another graph's shape. */
+#define VKR_RECORDING_STREAM_GRAPH 26u
+/* Named allocators (Tier 1, vkr_recording_format.h): an allocator_name
+   record per registry entry, then each frame's samples. Samples are
+   droppable. */
+#define VKR_RECORDING_STREAM_ALLOCATOR_NAME 27u
+#define VKR_RECORDING_STREAM_ALLOCATORS 28u
+/* The draw census (Tier 1, vkr_recording_format.h): object bounds and
+   candidate ids when they change, not droppable; each rendered frame's
+   culling states, droppable. */
+#define VKR_RECORDING_STREAM_DRAW_BOUNDS 29u
+#define VKR_RECORDING_STREAM_DRAW_IDS 30u
+#define VKR_RECORDING_STREAM_DRAW_STATES 31u
 /* The GPU start and end are on the CPU clock. */
 #define VKR_RECORDING_PASS_STARTS_HOST_CLOCK 1u
 /* Ring bytes of each job worker's producer when zones are recorded. */
@@ -378,6 +395,8 @@ typedef struct VkrRecording {
      ids, and 1e-6 for nanosecond durations, else 1. The resident memory
      field follows them. */
   bool8_t metrics_enabled;
+  /* The measurements are every catalog metric, not Tier 1's set. */
+  bool8_t all_measurements;
   uint32_t metric_count;
   VkrMetricId metric_ids[VKR_RECORDING_METRIC_MAX];
   float64_t metric_scale[VKR_RECORDING_METRIC_MAX];
@@ -429,6 +448,29 @@ typedef struct VkrRecording {
   char (*pass_names)[VKR_RECORDING_PASS_NAME_MAX + 1u];
   uint16_t *pass_slots;
   uint64_t pass_rows_written;
+  /* The allocator registry's entries by recorded id: each id's slot and
+     generation, and its cumulative counts at the last sample. */
+  uint32_t allocator_count;
+  uint32_t allocator_slot[VKR_RECORDING_ALLOCATOR_MAX];
+  uint32_t allocator_generation[VKR_RECORDING_ALLOCATOR_MAX];
+  uint64_t allocator_counts[VKR_RECORDING_ALLOCATOR_MAX][4];
+  /* The draw census: the bounds generation and ids generation written, and
+     the newest renderer frame whose states were written, plus one. */
+  uint64_t draw_bounds_generation;
+  bool8_t draw_bounds_written;
+  uint64_t draw_ids_generation;
+  bool8_t draw_ids_written;
+  uint64_t draw_frame_written;
+  /* Pass ids a recorded graph shape holds; a frame that runs a pass none
+     holds asks the caller for a snapshot (vkr_recording_graph_wanted). The
+     passes a frame culls change often and its rows show them, so they make
+     no new shape. */
+  uint8_t *graph_covered;
+  /* Uncovered passes that asked for the snapshot not yet written; it covers
+     them too, so a pass that runs only now and then asks once. */
+  uint8_t *graph_pending;
+  bool8_t graph_wanted;
+  uint32_t graphs_written;
   /* Poses waiting for vkr_recording_poses_flush, from the recording's
      memory. */
   bool8_t poses_enabled;
@@ -504,6 +546,52 @@ void vkr_recording_metrics(VkrRecording *recording, uint64_t frame,
 void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
                           uint64_t frame_index,
                           const VkrRendererMetricsPassTable *passes);
+
+/**
+ * @brief Whether the passes changed since the graph was last recorded, so
+ * the caller should ask the renderer for a graph snapshot; true once per
+ * change. Tier 1 only.
+ */
+bool8_t vkr_recording_graph_wanted(VkrRecording *recording);
+
+/**
+ * @brief Writes the render graph shape `snapshot` describes under the
+ * recorded frame that rendered its frame, or `frame` when that left the
+ * history. Tier 1 only.
+ */
+void vkr_recording_graph(VkrRecording *recording, uint64_t frame,
+                         const struct VkrRgSnapshot *snapshot);
+
+/**
+ * @brief Whether the draw census wants object bounds of generation
+ * `generation`: Tier 1 and none written yet for it.
+ */
+bool8_t vkr_recording_draw_bounds_wanted(const VkrRecording *recording,
+                                         uint64_t generation);
+
+/**
+ * @brief Writes the world boxes of `count` objects (VkrWorldObjectBounds rows)
+ * of bounds generation `generation` under recorded frame `frame`, with the
+ * world partition's cell size (zero without one).
+ */
+void vkr_recording_draw_bounds(VkrRecording *recording, uint64_t frame,
+                               uint64_t generation,
+                               const struct VkrWorldObjectBounds *rows,
+                               uint32_t count, float32_t cell_size);
+
+/**
+ * @brief Writes the culling states of `census` under the recorded frame that
+ * rendered its source frame, after its candidate ids when they changed; a
+ * census already written or older than the history is skipped. Tier 1 only.
+ */
+void vkr_recording_draws(VkrRecording *recording,
+                         const VkrRendererMetricsDrawCensus *census);
+
+/**
+ * @brief Samples the lib's allocator registry and writes recorded frame
+ * `frame`'s allocator rows, naming new entries first. Tier 1 only.
+ */
+void vkr_recording_allocators(VkrRecording *recording, uint64_t frame);
 
 /**
  * @brief Writes gpu.submission, `gpu_ms` of renderer frame

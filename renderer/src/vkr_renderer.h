@@ -1402,6 +1402,23 @@ bool8_t vkr_renderer_describe_graph(VkrRenderer *renderer,
                                     struct VkrRgDescription *out_graph,
                                     VkrRendererGraphInfo *out_info);
 
+/**
+ * Asks the thread that renders the next frame to snapshot its render graph's
+ * shape (vkr_rg_snapshot) after rendering it, for a recording that saw the
+ * graph change. It does not wait for the render thread. The first call
+ * allocates the snapshot; a request while one is pending or unread does
+ * nothing. False when the storage could not be allocated.
+ */
+bool8_t vkr_renderer_request_graph_snapshot(VkrRenderer *renderer);
+
+/**
+ * The snapshot a request produced, once a frame rendered it, else NULL. Its
+ * frame_index names the renderer frame it describes. It stays valid and
+ * unchanged until the next request; taking it once clears it.
+ */
+const struct VkrRgSnapshot *
+vkr_renderer_take_graph_snapshot(VkrRenderer *renderer);
+
 /** GPU and API faults the renderer saw since creation. Counts only grow. */
 typedef struct VkrRendererHealth {
   /** Submissions the GPU finished with an error. */

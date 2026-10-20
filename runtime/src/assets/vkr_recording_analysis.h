@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/vkr_recording_format.h"
+#include "containers/str.h"
 #include "core/vkr_codec.h"
 #include "core/vkr_json_writer.h"
 #include "defines.h"
@@ -133,9 +134,160 @@ typedef struct VkrRecordingPassRow {
   float32_t gpu_ms;
 } VkrRecordingPassRow;
 
+/* A named allocator of a Tier 1 recording, by the id its rows carry. */
+typedef struct VkrRecordingAllocator {
+  char name[VKR_RECORDING_ALLOCATOR_NAME_MAX + 1u];
+  /* VkrAllocatorType, and 1 for a raw arena. */
+  uint8_t type;
+  uint8_t arena;
+} VkrRecordingAllocator;
+
+/* One allocator's sample in one frame (vkr_recording_format.h). Counts are
+   since its previous sample; arena bytes are zero without an arena. */
+typedef struct VkrRecordingAllocatorRow {
+  uint32_t allocator;
+  uint32_t scope_depth_high;
+  uint32_t allocs;
+  uint32_t frees;
+  uint32_t reallocs;
+  uint32_t scopes;
+  uint64_t live_bytes;
+  uint64_t used_bytes;
+  uint64_t committed_bytes;
+  uint64_t reserved_bytes;
+  uint64_t peak_used_bytes;
+} VkrRecordingAllocatorRow;
+
+/* An object of the draw census and its world box. */
+typedef struct VkrRecordingDrawObject {
+  uint32_t object_id;
+  float32_t min[3];
+  float32_t max[3];
+} VkrRecordingDrawObject;
+
+/* The objects' boxes as recorded at `frame`, sorted by object id, in effect
+   until the next set. */
+typedef struct VkrRecordingDrawBounds {
+  uint64_t frame;
+  /* World partition cell size in metres; zero without a partition. */
+  float32_t cell_size;
+  VkrRecordingDrawObject *objects;
+  uint32_t object_count;
+} VkrRecordingDrawBounds;
+
+/* One candidate order of the census: each candidate's object id. */
+typedef struct VkrRecordingDrawIds {
+  uint64_t frame;
+  uint64_t generation;
+  uint32_t *ids;
+  uint32_t count;
+} VkrRecordingDrawIds;
+
+/* One frame's census: its candidates' 4-bit VKR_RECORDING_DRAW_STATE_*
+   values, eight per word, the ids they follow and its flags. */
+typedef struct VkrRecordingDrawFrame {
+  const uint32_t *words;
+  uint32_t count;
+  const VkrRecordingDrawIds *ids;
+  /* VKR_RECORDING_DRAW_STATES_* */
+  uint32_t flags;
+  uint32_t overflow;
+} VkrRecordingDrawFrame;
+
+/* Zone ids a recording names at most, as the loader keeps them. */
+#define VKR_RECORDING_DATA_ZONE_MAX 4096u
+
+/* The thread class of a zone: the frame loop, the render thread, or a job
+   worker. */
+#define VKR_RECORDING_ZONE_THREAD_MAIN 0u
+#define VKR_RECORDING_ZONE_THREAD_RENDER 1u
+#define VKR_RECORDING_ZONE_THREAD_WORKER 2u
+
+typedef struct VkrRecordingZoneName {
+  char name[VKR_RECORDING_NAME_MAX + 1u];
+} VkrRecordingZoneName;
+
+/* One zone's calls on one thread class in one frame: how many ended there,
+   their summed and longest time. */
+typedef struct VkrRecordingZoneRow {
+  uint16_t zone;
+  uint8_t thread;
+  uint8_t depth;
+  uint32_t calls;
+  float32_t total_ms;
+  float32_t max_ms;
+} VkrRecordingZoneRow;
+
+/* Text in a recorded graph's names, by offset and length. */
+typedef struct VkrRecordingGraphText {
+  uint32_t offset;
+  uint32_t length;
+} VkrRecordingGraphText;
+
+/* A pass of a recorded graph shape (vkr_recording_format.h, "graph"). */
+typedef struct VkrRecordingGraphPass {
+  VkrRecordingGraphText name;
+  /* VKR_RECORDING_GRAPH_KIND_* and VKR_RECORDING_GRAPH_PASS_* */
+  uint8_t kind;
+  uint8_t flags;
+  /* Execution position; UINT32_MAX when not scheduled. */
+  uint32_t order;
+  /* uses[first_use, first_use + use_count) of the graph. */
+  uint32_t first_use;
+  uint32_t use_count;
+  /* The recording's pass of the same name, whose rows time it, or
+     UINT32_MAX. */
+  uint32_t pass;
+} VkrRecordingGraphPass;
+
+typedef struct VkrRecordingGraphUse {
+  /* The graph's resource of that name, or UINT32_MAX. */
+  uint32_t resource;
+  /* VKR_RECORDING_GRAPH_ROLE_* and VKR_RECORDING_GRAPH_USE_* */
+  uint8_t role;
+  uint8_t flags;
+} VkrRecordingGraphUse;
+
+typedef struct VkrRecordingGraphResource {
+  VkrRecordingGraphText name;
+  VkrRecordingGraphText format;
+  VkrRecordingGraphText lifetime;
+  /* VKR_RECORDING_GRAPH_RESOURCE_* */
+  uint32_t flags;
+  uint32_t width;
+  uint32_t height;
+  uint32_t depth;
+  uint32_t layers;
+  uint32_t mip_levels;
+  uint32_t samples;
+  uint64_t bytes;
+  uint32_t first_order;
+  uint32_t last_order;
+} VkrRecordingGraphResource;
+
+/* One shape of the render graph, in effect from `frame` until the next
+   graph's frame. */
+typedef struct VkrRecordingGraph {
+  uint64_t frame;
+  uint32_t viewport_width;
+  uint32_t viewport_height;
+  float32_t render_scale;
+  bool8_t truncated;
+  /* Scheduled passes in execution order, then the unscheduled ones. */
+  VkrRecordingGraphPass *passes;
+  uint32_t pass_count;
+  uint32_t scheduled_count;
+  VkrRecordingGraphUse *uses;
+  uint32_t use_count;
+  VkrRecordingGraphResource *resources;
+  uint32_t resource_count;
+  const char *names;
+  uint32_t name_bytes;
+} VkrRecordingGraph;
+
 /* A loaded recording. Every array lives in one allocation, the pass rows in
-   a second, that vkr_recording_data_free releases; pointers stay valid until
-   then. */
+   a second and the graphs in a third, that vkr_recording_data_free
+   releases; pointers stay valid until then. */
 typedef struct VkrRecordingData {
   VkrAllocator *allocator;
   void *block;
@@ -152,6 +304,11 @@ typedef struct VkrRecordingData {
   /* Three per frame; a lost camera record repeats the previous pose. */
   float64_t *positions;
   float32_t *yaws;
+  /* Degrees and metres, as VkrRecordingCamera; zero in recordings whose
+     camera records lack them. */
+  float32_t *pitches;
+  float32_t *fovs;
+  float32_t *far_clips;
   uint8_t *camera_valid;
   /* The player of the frame's last tick (vkr_rec_player): three positions
      and a speed per frame where player_valid is 1. has_player says any
@@ -198,6 +355,64 @@ typedef struct VkrRecordingData {
   uint64_t pass_gpu_frames;
   uint64_t pass_rows_cut;
 
+  /* Tier 1 named allocators: frame f's samples are allocator_row_counts[f]
+     rows from allocator_rows[allocator_first[f]]. NULL without any. */
+  void *allocator_block;
+  uint64_t allocator_block_bytes;
+  VkrRecordingAllocator *allocators;
+  uint32_t allocator_count;
+  VkrRecordingAllocatorRow *allocator_rows;
+  uint64_t allocator_row_count;
+  uint64_t *allocator_first;
+  uint16_t *allocator_row_counts;
+
+  /* CPU zones (rec.start zones), reduced per frame: frame f's rows are
+     zone_row_counts[f] rows from zone_rows[zone_first[f]], by zone then
+     thread. NULL without zones. */
+  void *zone_block;
+  uint64_t zone_block_bytes;
+  VkrRecordingZoneName *zone_names;
+  uint32_t zone_name_count;
+  VkrRecordingZoneRow *zone_rows;
+  uint64_t zone_row_count;
+  uint64_t *zone_first;
+  uint32_t *zone_row_counts;
+  uint64_t zones_cut;
+
+  /* Tier 1 draw census: box sets and candidate orders by frame, oldest
+     first, and per frame the state words from draw_words[draw_first[f]]
+     for draw_candidates[f] candidates following draw_id_table[f]
+     (UINT32_MAX without a census). NULL without a census. */
+  void *draw_block;
+  uint64_t draw_block_bytes;
+  VkrRecordingDrawBounds *draw_bounds;
+  uint32_t draw_bounds_count;
+  VkrRecordingDrawIds *draw_ids;
+  uint32_t draw_ids_count;
+  uint32_t *draw_words;
+  uint64_t draw_word_count;
+  uint64_t *draw_first;
+  uint32_t *draw_candidates;
+  uint32_t *draw_id_table;
+  uint32_t *draw_flags;
+  uint32_t *draw_overflow;
+  uint64_t draw_frames;
+  uint64_t draw_words_cut;
+
+  /* Tier 1 render graph shapes by frame, oldest first; NULL without any. */
+  void *graph_block;
+  uint64_t graph_block_bytes;
+  VkrRecordingGraph *graphs;
+  uint32_t graph_count;
+
+  /* From the IDENTITY chunk: the graphics pipeline class, "tiled" (Metal) or
+     "desktop" (Vulkan), and the OS; empty when it names none. */
+  char pipeline[16];
+  char os[16];
+  /* The Scene's output size when recording started; zero when unnamed. */
+  uint32_t output_width;
+  uint32_t output_height;
+
   /* Reader state: whole chunks after a crash, and records chunks that failed
      their CRC or decode and were skipped. */
   bool8_t truncated;
@@ -240,6 +455,43 @@ uint32_t vkr_recording_data_find_pass(const VkrRecordingData *data,
     a tie, within `reach` frames; UINT64_MAX when there is none. */
 uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
                                            uint64_t frame, uint64_t reach);
+
+/** The census of `frame`; false without one. */
+bool8_t vkr_recording_data_draw_frame(const VkrRecordingData *data,
+                                      uint64_t frame,
+                                      VkrRecordingDrawFrame *out);
+
+/** The box set in effect at `frame`: the last at or before it, else the
+    first; UINT32_MAX without any. */
+uint32_t vkr_recording_data_draw_bounds_at(const VkrRecordingData *data,
+                                           uint64_t frame);
+
+/** Candidate `index`'s VKR_RECORDING_DRAW_STATE_* value. */
+static inline uint32_t vkr_recording_draw_state(const uint32_t *words,
+                                                uint32_t index) {
+  return (words[index / VKR_RECORDING_DRAW_STATES_PER_WORD] >>
+          (4u * (index % VKR_RECORDING_DRAW_STATES_PER_WORD))) &
+         0xFu;
+}
+
+/** The zone rows of `frame`; NULL with a zero count without any. */
+const VkrRecordingZoneRow *
+vkr_recording_data_zone_rows(const VkrRecordingData *data, uint64_t frame,
+                             uint32_t *out_count);
+
+/** The allocator samples of `frame`; NULL with a zero count without any. */
+const VkrRecordingAllocatorRow *
+vkr_recording_data_allocator_rows(const VkrRecordingData *data, uint64_t frame,
+                                  uint32_t *out_count);
+
+/** The graph shape in effect at `frame`: the last one recorded at or before
+    it, else the first; UINT32_MAX without graphs. */
+uint32_t vkr_recording_data_graph_at(const VkrRecordingData *data,
+                                     uint64_t frame);
+
+/** Text of a graph's names, not null-terminated. */
+String8 vkr_recording_graph_text(const VkrRecordingGraph *graph,
+                                 VkrRecordingGraphText text);
 
 /* ------------------------------------------------------------------------ */
 /* Analysis                                                                  */

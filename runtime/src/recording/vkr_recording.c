@@ -11,6 +11,9 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
+#include "vkr_frame_input.h"
+#include "vkr_gpu_abi.h"
+#include "vkr_rg_debug.h"
 
 /* The recorder's rings, chunk buffer and writer scratch live here; the
    reservation only commits pages the recording touches. */
@@ -549,11 +552,18 @@ vkr_internal bool8_t vkr_recording_passes_create(VkrRecording *recording) {
                                               VKR_ALLOCATOR_MEMORY_TAG_STRING);
   recording->pass_slots = vkr_allocator_alloc(
       &recording->allocator, slot_bytes, VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE);
-  if (!recording->pass_names || !recording->pass_slots) {
+  /* Covered ids, then pending ids. */
+  recording->graph_covered =
+      vkr_allocator_alloc(&recording->allocator, 2u * VKR_RECORDING_PASS_MAX,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!recording->pass_names || !recording->pass_slots ||
+      !recording->graph_covered) {
     return false_v;
   }
+  recording->graph_pending = recording->graph_covered + VKR_RECORDING_PASS_MAX;
   MemZero(recording->pass_names, name_bytes);
   MemZero(recording->pass_slots, slot_bytes);
+  MemZero(recording->graph_covered, 2u * VKR_RECORDING_PASS_MAX);
   recording->passes_enabled = true_v;
   return true_v;
 }
@@ -582,7 +592,11 @@ vkr_internal bool8_t vkr_recording_spawns_create(VkrRecording *recording) {
 }
 
 vkr_internal void vkr_recording_measurements_start(VkrRecording *recording,
-                                                   const VkrMetrics *metrics);
+                                                   const VkrMetrics *metrics,
+                                                   bool8_t tier1);
+vkr_internal uint32_t
+vkr_recording_allocator_id(VkrRecording *recording, uint64_t frame,
+                           const VkrAllocatorRegistrySample *sample);
 
 /* The zone sink: files a finished zone in the ring of the thread that ran
    it, under the recorded frame current now. Each slot is one thread, so
@@ -677,8 +691,9 @@ bool8_t vkr_recording_start(VkrRecording *recording,
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
   VkrRecordingStream streams[32];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 11u <= 32u,
-                 "room for the metrics, pose, pass and zone streams");
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 17u <= 32u,
+                 "room for the metrics, pose, pass, graph, allocator, draw "
+                 "and zone streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
   uint32_t stream_count = base_count;
@@ -696,7 +711,12 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         .fields = metric_fields,
     };
   }
-  if (config->metrics && config->all_measurements) {
+  /* A rolling window keeps no start-time records, so it names no
+     measurements. */
+  const bool8_t measured =
+      config->metrics && (config->all_measurements ||
+                          (config->passes && config->rolling_seconds <= 0.0));
+  if (measured) {
     streams[stream_count++] =
         (VkrRecordingStream){.id = VKR_RECORDING_STREAM_MEASUREMENT_NAME,
                              .name = "measurement_name"};
@@ -737,6 +757,22 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASS_STARTS,
                              .flags = VKR_RECORDING_STREAM_DROPPABLE,
                              .name = "pass_starts"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_GRAPH, .name = "graph"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_ALLOCATOR_NAME, .name = "allocator_name"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_ALLOCATORS,
+                             .flags = VKR_RECORDING_STREAM_DROPPABLE,
+                             .name = "allocators"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_DRAW_BOUNDS, .name = "draw_bounds"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_DRAW_IDS, .name = "draw_ids"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_DRAW_STATES,
+                             .flags = VKR_RECORDING_STREAM_DROPPABLE,
+                             .name = "draw_states"};
   }
   if (config->zones) {
     streams[stream_count++] = (VkrRecordingStream){
@@ -772,8 +808,20 @@ bool8_t vkr_recording_start(VkrRecording *recording,
     goto cleanup;
   }
   recording->active = true_v;
-  if (config->metrics && config->all_measurements) {
-    vkr_recording_measurements_start(recording, config->metrics);
+  /* The allocators registered now count from here, so the first frame's
+     rows hold only that frame's work. */
+  if (recording->passes_enabled) {
+    VkrAllocatorRegistrySample samples[VKR_ALLOCATOR_REGISTRY_CAPACITY];
+    const uint32_t found =
+        vkr_allocator_registry_sample(samples, ArrayCount(samples));
+    for (uint32_t i = 0u; i < Min(found, (uint32_t)ArrayCount(samples)); ++i) {
+      (void)vkr_recording_allocator_id(recording, 0u, &samples[i]);
+    }
+  }
+  if (measured) {
+    recording->all_measurements = config->all_measurements;
+    vkr_recording_measurements_start(recording, config->metrics,
+                                     !config->all_measurements);
   }
   if (config->zones) {
     recording->zones_enabled = true_v;
@@ -895,14 +943,47 @@ vkr_internal bool8_t vkr_recording_metric_value(
 
 /* All measurements: every catalog metric the metrics stream does not
    carry, named once at the start. */
+/* Name prefixes of the metrics a Tier 1 recording carries beyond Tier 0's:
+   GPU memory by owner and the driver's view, draws and culling, pipeline
+   and backend counters, render graph memory, uploads and streaming. */
+static const char *const VKR_RECORDING_TIER1_MEASUREMENTS[] = {
+    "memory.gpu.",
+    "draw.",
+    "visibility.",
+    "pipeline.",
+    "backend.",
+    "rg.",
+    "upload.",
+    "material.texture_stream.",
+    "geometry.megabuffer.",
+};
+
+vkr_internal bool8_t vkr_recording_tier1_measurement(const char *name) {
+  for (uint32_t i = 0u; i < ArrayCount(VKR_RECORDING_TIER1_MEASUREMENTS); ++i) {
+    const char *prefix = VKR_RECORDING_TIER1_MEASUREMENTS[i];
+    const uint64_t length = string_length(prefix);
+    if (string_length_bounded(name, length) == length &&
+        MemCompare(name, prefix, length) == 0) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Names the measurements and keeps their ids: every catalog metric, or
+   with `tier1` those of VKR_RECORDING_TIER1_MEASUREMENTS. */
 vkr_internal void vkr_recording_measurements_start(VkrRecording *recording,
-                                                   const VkrMetrics *metrics) {
+                                                   const VkrMetrics *metrics,
+                                                   bool8_t tier1) {
   uint32_t catalog_count = 0u;
   const VkrMetricCatalogEntry *catalog =
       vkr_metrics_get_catalog(metrics, &catalog_count);
   for (uint32_t i = 0u; i < catalog_count && recording->measurement_count <
                                                  VKR_RECORDING_MEASUREMENT_MAX;
        ++i) {
+    if (tier1 && !vkr_recording_tier1_measurement(catalog[i].name)) {
+      continue;
+    }
     const VkrMetricId id =
         ((VkrMetricId)metrics->registry_generation << 16u) | i;
     bool8_t carried = false_v;
@@ -1196,6 +1277,10 @@ void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
     }
     ++rows;
     flags |= sample->gpu_valid ? VKR_RECORDING_PASSES_GPU_TIMED : 0u;
+    if (!recording->graph_covered[ids[i]]) {
+      recording->graph_pending[ids[i]] = 1u;
+      recording->graph_wanted = true_v;
+    }
   }
   uint8_t *record = vkr_recorder_reserve(
       recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
@@ -1228,6 +1313,369 @@ void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
   if (passes->gpu_host_valid) {
     vkr_recording_pass_starts(recording, target, passes, ids, count, rows);
   }
+}
+
+bool8_t vkr_recording_graph_wanted(VkrRecording *recording) {
+  vkr_assert(recording != NULL && recording->active);
+  const bool8_t wanted = recording->passes_enabled && recording->graph_wanted;
+  recording->graph_wanted = false_v;
+  return wanted;
+}
+
+_Static_assert(VKR_RG_PASS_TYPE_GRAPHICS == VKR_RECORDING_GRAPH_KIND_GRAPHICS &&
+                   VKR_RG_PASS_TYPE_COMPUTE ==
+                       VKR_RECORDING_GRAPH_KIND_COMPUTE &&
+                   VKR_RG_PASS_TYPE_TRANSFER ==
+                       VKR_RECORDING_GRAPH_KIND_TRANSFER,
+               "recorded pass kinds are the graph's");
+_Static_assert(VKR_RG_SNAPSHOT_PASS_CULLED == VKR_RECORDING_GRAPH_PASS_CULLED &&
+                   VKR_RG_SNAPSHOT_PASS_DISABLED ==
+                       VKR_RECORDING_GRAPH_PASS_DISABLED &&
+                   VKR_RG_SNAPSHOT_PASS_USES_CUT ==
+                       VKR_RECORDING_GRAPH_PASS_USES_CUT,
+               "recorded pass flags are the snapshot's");
+_Static_assert(
+    VKR_RG_SNAPSHOT_ROLE_READ == VKR_RECORDING_GRAPH_ROLE_READ &&
+        VKR_RG_SNAPSHOT_ROLE_WRITE == VKR_RECORDING_GRAPH_ROLE_WRITE &&
+        VKR_RG_SNAPSHOT_ROLE_COLOR == VKR_RECORDING_GRAPH_ROLE_COLOR &&
+        VKR_RG_SNAPSHOT_ROLE_DEPTH == VKR_RECORDING_GRAPH_ROLE_DEPTH &&
+        VKR_RG_SNAPSHOT_ROLE_DEPTH_READ == VKR_RECORDING_GRAPH_ROLE_DEPTH_READ,
+    "recorded use roles are the snapshot's");
+_Static_assert(VKR_RG_SNAPSHOT_RESOURCE_BUFFER ==
+                       VKR_RECORDING_GRAPH_RESOURCE_BUFFER &&
+                   VKR_RG_SNAPSHOT_RESOURCE_IMPORTED ==
+                       VKR_RECORDING_GRAPH_RESOURCE_IMPORTED &&
+                   VKR_RG_SNAPSHOT_RESOURCE_EXPORTED ==
+                       VKR_RECORDING_GRAPH_RESOURCE_EXPORTED &&
+                   VKR_RG_SNAPSHOT_RESOURCE_PRESENT ==
+                       VKR_RECORDING_GRAPH_RESOURCE_PRESENT,
+               "recorded resource flags are the snapshot's");
+
+vkr_internal uint8_t *vkr_recording_put_u16(uint8_t *at, uint32_t value) {
+  const uint16_t v = (uint16_t)Min(value, (uint32_t)UINT16_MAX);
+  MemCopy(at, &v, sizeof(v));
+  return at + sizeof(v);
+}
+
+vkr_internal uint8_t *vkr_recording_put_u32(uint8_t *at, uint32_t value) {
+  MemCopy(at, &value, sizeof(value));
+  return at + sizeof(value);
+}
+
+vkr_internal uint8_t *vkr_recording_put_name(uint8_t *at,
+                                             VkrRgSnapshotName name) {
+  at = vkr_recording_put_u32(at, name.offset);
+  return vkr_recording_put_u16(at, name.length);
+}
+
+void vkr_recording_graph(VkrRecording *recording, uint64_t frame,
+                         const VkrRgSnapshot *snapshot) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled || !snapshot) {
+    return;
+  }
+  const uint64_t rendered =
+      vkr_recording_frame_of(recording, snapshot->frame_index);
+  const uint64_t target = rendered != UINT64_MAX ? rendered : frame;
+  const uint64_t size =
+      VKR_RECORDING_GRAPH_HEADER_SIZE +
+      (uint64_t)VKR_RECORDING_GRAPH_PASS_SIZE * snapshot->pass_count +
+      (uint64_t)VKR_RECORDING_GRAPH_USE_SIZE * snapshot->use_count +
+      (uint64_t)VKR_RECORDING_GRAPH_RESOURCE_SIZE * snapshot->resource_count +
+      snapshot->name_bytes;
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_GRAPH, target, (uint32_t)size);
+  /* A lost record leaves its passes uncovered, so the next frame that runs
+     them asks again. */
+  if (!record) {
+    return;
+  }
+  uint8_t *at = record;
+  at = vkr_recording_put_u32(at, VKR_RECORDING_GRAPH_VERSION);
+  at = vkr_recording_put_u32(at, snapshot->pass_count);
+  at = vkr_recording_put_u32(at, snapshot->use_count);
+  at = vkr_recording_put_u32(at, snapshot->resource_count);
+  at = vkr_recording_put_u32(at, snapshot->name_bytes);
+  at = vkr_recording_put_u32(
+      at, snapshot->truncated ? VKR_RECORDING_GRAPH_TRUNCATED : 0u);
+  at = vkr_recording_put_u32(at, snapshot->viewport_width);
+  at = vkr_recording_put_u32(at, snapshot->viewport_height);
+  MemCopy(at, &snapshot->render_scale, sizeof(float32_t));
+  at += sizeof(float32_t);
+
+  for (uint32_t i = 0u; i < snapshot->pass_count; ++i) {
+    const VkrRgSnapshotPass *pass = &snapshot->passes[i];
+    at = vkr_recording_put_name(at, pass->name);
+    *at++ = (uint8_t)pass->type;
+    *at++ = (uint8_t)pass->flags;
+    at = vkr_recording_put_u32(at, pass->order);
+    at = vkr_recording_put_u32(at, pass->first_use);
+    at = vkr_recording_put_u32(at, pass->use_count);
+  }
+  for (uint32_t i = 0u; i < snapshot->use_count; ++i) {
+    const VkrRgSnapshotUse *use = &snapshot->uses[i];
+    at = vkr_recording_put_name(at, use->resource);
+    *at++ = (uint8_t)use->role;
+    *at++ = (uint8_t)((use->buffer ? VKR_RECORDING_GRAPH_USE_BUFFER : 0u) |
+                      (use->write ? VKR_RECORDING_GRAPH_USE_WRITE : 0u));
+  }
+  for (uint32_t i = 0u; i < snapshot->resource_count; ++i) {
+    const VkrRgSnapshotResource *resource = &snapshot->resources[i];
+    at = vkr_recording_put_name(at, resource->name);
+    at = vkr_recording_put_u16(at, resource->flags);
+    at = vkr_recording_put_u32(at, resource->format.offset);
+    at = vkr_recording_put_u16(at, resource->format.length);
+    at = vkr_recording_put_u16(at, resource->lifetime.length);
+    at = vkr_recording_put_u32(at, resource->lifetime.offset);
+    at = vkr_recording_put_u32(at, resource->width);
+    at = vkr_recording_put_u32(at, resource->height);
+    at = vkr_recording_put_u32(at, resource->depth);
+    at = vkr_recording_put_u16(at, resource->layers);
+    at = vkr_recording_put_u16(at, resource->mip_levels);
+    at = vkr_recording_put_u16(at, resource->samples);
+    at = vkr_recording_put_u16(at, 0u);
+    MemCopy(at, &resource->bytes, sizeof(uint64_t));
+    at += sizeof(uint64_t);
+    at = vkr_recording_put_u32(at, resource->first_order);
+    at = vkr_recording_put_u32(at, resource->last_order);
+  }
+  MemCopy(at, snapshot->names, snapshot->name_bytes);
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  ++recording->graphs_written;
+  /* Its scheduled passes are covered, and so are the ones that asked for
+     it; naming a new one writes its name record, so only after the graph's
+     is committed. */
+  for (uint32_t id = 0u; id < VKR_RECORDING_PASS_MAX; ++id) {
+    recording->graph_covered[id] |= recording->graph_pending[id];
+    recording->graph_pending[id] = 0u;
+  }
+  for (uint32_t i = 0u; i < snapshot->pass_count; ++i) {
+    const VkrRgSnapshotPass *pass = &snapshot->passes[i];
+    if (pass->order == UINT32_MAX || pass->name.length == 0u ||
+        pass->name.length > VKR_RECORDING_PASS_NAME_MAX) {
+      continue;
+    }
+    const uint16_t id = vkr_recording_pass_id(
+        recording, target, snapshot->names + pass->name.offset,
+        pass->name.length);
+    if (id != UINT16_MAX) {
+      recording->graph_covered[id] = 1u;
+    }
+  }
+}
+
+/* The recorded id of registry entry `sample`, naming a new one first;
+   UINT32_MAX when the ids ran out or the name record was lost. */
+vkr_internal uint32_t
+vkr_recording_allocator_id(VkrRecording *recording, uint64_t frame,
+                           const VkrAllocatorRegistrySample *sample) {
+  for (uint32_t i = 0u; i < recording->allocator_count; ++i) {
+    if (recording->allocator_slot[i] == sample->slot &&
+        recording->allocator_generation[i] == sample->generation) {
+      return i;
+    }
+  }
+  if (recording->allocator_count == VKR_RECORDING_ALLOCATOR_MAX) {
+    return UINT32_MAX;
+  }
+  const uint32_t length = (uint32_t)string_length_bounded(
+      sample->name, VKR_RECORDING_ALLOCATOR_NAME_MAX);
+  uint8_t *record = vkr_recorder_reserve(
+      recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+      VKR_RECORDING_STREAM_ALLOCATOR_NAME, frame, 8u + length);
+  if (!record) {
+    return UINT32_MAX;
+  }
+  const uint32_t id = recording->allocator_count++;
+  const uint16_t name_length = (uint16_t)length;
+  MemCopy(record, &id, sizeof(id));
+  record[4] = (uint8_t)sample->type;
+  record[5] = sample->owner == VKR_ALLOCATOR_REGISTRY_OWNER_ARENA ? 1u : 0u;
+  MemCopy(record + 6u, &name_length, sizeof(name_length));
+  MemCopy(record + 8u, sample->name, length);
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  recording->allocator_slot[id] = sample->slot;
+  recording->allocator_generation[id] = sample->generation;
+  /* Counting starts here: an allocator older than the recording does not
+     report its whole history on its first row. One registered while the
+     recording runs loses the work before its first sample. */
+  recording->allocator_counts[id][0] = sample->alloc_count;
+  recording->allocator_counts[id][1] = sample->free_count;
+  recording->allocator_counts[id][2] = sample->realloc_count;
+  recording->allocator_counts[id][3] = sample->scope_count;
+  return id;
+}
+
+void vkr_recording_allocators(VkrRecording *recording, uint64_t frame) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled) {
+    return;
+  }
+  VkrAllocatorRegistrySample samples[VKR_ALLOCATOR_REGISTRY_CAPACITY];
+  const uint32_t found =
+      vkr_allocator_registry_sample(samples, ArrayCount(samples));
+  const uint32_t count = Min(found, (uint32_t)ArrayCount(samples));
+  uint32_t ids[VKR_ALLOCATOR_REGISTRY_CAPACITY];
+  uint32_t rows = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    ids[i] = vkr_recording_allocator_id(recording, frame, &samples[i]);
+    rows += ids[i] != UINT32_MAX ? 1u : 0u;
+  }
+  if (rows == 0u) {
+    return;
+  }
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_ALLOCATORS, frame,
+                           VKR_RECORDING_ALLOCATORS_HEADER_SIZE +
+                               VKR_RECORDING_ALLOCATOR_ROW_SIZE * rows);
+  /* A dropped record leaves the counts, so the next row covers both
+     frames. */
+  if (!record) {
+    return;
+  }
+  uint8_t *at = vkr_recording_put_u32(record, rows);
+  at = vkr_recording_put_u32(at, 0u);
+  for (uint32_t i = 0u; i < count; ++i) {
+    const uint32_t id = ids[i];
+    if (id == UINT32_MAX) {
+      continue;
+    }
+    const VkrAllocatorRegistrySample *sample = &samples[i];
+    const uint64_t counts[4] = {sample->alloc_count, sample->free_count,
+                                sample->realloc_count, sample->scope_count};
+    at = vkr_recording_put_u32(at, id);
+    at = vkr_recording_put_u32(at, sample->scope_depth_high);
+    for (uint32_t c = 0u; c < 4u; ++c) {
+      const uint64_t since = counts[c] - recording->allocator_counts[id][c];
+      at =
+          vkr_recording_put_u32(at, (uint32_t)Min(since, (uint64_t)UINT32_MAX));
+      recording->allocator_counts[id][c] = counts[c];
+    }
+    const uint64_t bytes[5] = {sample->live_bytes, sample->arena_used_bytes,
+                               sample->arena_committed_bytes,
+                               sample->arena_reserved_bytes,
+                               sample->arena_interval_peak_used_bytes};
+    MemCopy(at, bytes, sizeof(bytes));
+    at += sizeof(bytes);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+}
+
+_Static_assert(
+    VKR_GPU_DRAW_CENSUS_NOT_CAMERA == VKR_RECORDING_DRAW_STATE_NOT_CAMERA &&
+        VKR_GPU_DRAW_CENSUS_DRAWN == VKR_RECORDING_DRAW_STATE_DRAWN &&
+        VKR_GPU_DRAW_CENSUS_DRAWN_LATE == VKR_RECORDING_DRAW_STATE_DRAWN_LATE &&
+        VKR_GPU_DRAW_CENSUS_OCCLUDED == VKR_RECORDING_DRAW_STATE_OCCLUDED &&
+        VKR_GPU_DRAW_CENSUS_FRUSTUM == VKR_RECORDING_DRAW_STATE_FRUSTUM &&
+        VKR_GPU_DRAW_CENSUS_DISTANCE == VKR_RECORDING_DRAW_STATE_DISTANCE,
+    "recorded draw states are the census's");
+_Static_assert(VKR_GPU_DRAW_CENSUS_STATES_PER_WORD ==
+                   VKR_RECORDING_DRAW_STATES_PER_WORD,
+               "recorded state words pack like the census");
+
+bool8_t vkr_recording_draw_bounds_wanted(const VkrRecording *recording,
+                                         uint64_t generation) {
+  return recording->active && recording->passes_enabled &&
+         (!recording->draw_bounds_written ||
+          recording->draw_bounds_generation != generation);
+}
+
+void vkr_recording_draw_bounds(VkrRecording *recording, uint64_t frame,
+                               uint64_t generation,
+                               const VkrWorldObjectBounds *rows, uint32_t count,
+                               float32_t cell_size) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled || !rows ||
+      count > VKR_RECORDING_DRAW_CANDIDATE_MAX) {
+    return;
+  }
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_DRAW_BOUNDS, frame,
+                           VKR_RECORDING_DRAW_BOUNDS_HEADER_SIZE +
+                               VKR_RECORDING_DRAW_BOUNDS_ROW_SIZE * count);
+  /* A full ring leaves the bounds wanted for the next frame. */
+  if (!record) {
+    return;
+  }
+  uint8_t *at = vkr_recording_put_u32(record, count);
+  at = vkr_recording_put_u32(at, 0u);
+  MemCopy(at, &cell_size, sizeof(cell_size));
+  at = vkr_recording_put_u32(at + sizeof(cell_size), 0u);
+  for (uint32_t i = 0u; i < count; ++i) {
+    at = vkr_recording_put_u32(at, rows[i].object_id);
+    MemCopy(at, rows[i].min, sizeof(rows[i].min));
+    at += sizeof(rows[i].min);
+    MemCopy(at, rows[i].max, sizeof(rows[i].max));
+    at += sizeof(rows[i].max);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  recording->draw_bounds_generation = generation;
+  recording->draw_bounds_written = true_v;
+}
+
+void vkr_recording_draws(VkrRecording *recording,
+                         const VkrRendererMetricsDrawCensus *census) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled || !census || !census->valid ||
+      !census->states || !census->object_ids ||
+      census->candidate_count > VKR_RECORDING_DRAW_CANDIDATE_MAX ||
+      census->source_frame_index < recording->draw_frame_written) {
+    return;
+  }
+  const uint64_t target =
+      vkr_recording_frame_of(recording, census->source_frame_index);
+  if (target == UINT64_MAX) {
+    return;
+  }
+  recording->draw_frame_written = census->source_frame_index + 1u;
+  const uint32_t count = census->candidate_count;
+  if (!recording->draw_ids_written ||
+      recording->draw_ids_generation != census->ids_generation) {
+    uint8_t *ids =
+        vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                             VKR_RECORDING_STREAM_DRAW_IDS, target,
+                             VKR_RECORDING_DRAW_IDS_HEADER_SIZE + 4u * count);
+    /* States without their ids would name the wrong objects. */
+    if (!ids) {
+      return;
+    }
+    uint8_t *at = vkr_recording_put_u32(ids, count);
+    at = vkr_recording_put_u32(at, 0u);
+    MemCopy(at, &census->ids_generation, sizeof(uint64_t));
+    MemCopy(at + sizeof(uint64_t), census->object_ids, 4u * (uint64_t)count);
+    vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+    recording->draw_ids_generation = census->ids_generation;
+    recording->draw_ids_written = true_v;
+  }
+  const uint32_t words = (count + VKR_RECORDING_DRAW_STATES_PER_WORD - 1u) /
+                         VKR_RECORDING_DRAW_STATES_PER_WORD;
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_DRAW_STATES, target,
+                           VKR_RECORDING_DRAW_STATES_HEADER_SIZE + 4u * words);
+  if (!record) {
+    return;
+  }
+  uint32_t flags = 0u;
+  flags |= (census->flags & VKR_DRAW_CENSUS_TWO_PHASE)
+               ? VKR_RECORDING_DRAW_STATES_TWO_PHASE
+               : 0u;
+  flags |= (census->flags & VKR_DRAW_CENSUS_HZB_HISTORY_VALID)
+               ? VKR_RECORDING_DRAW_STATES_HZB_VALID
+               : 0u;
+  flags |= (census->flags & VKR_DRAW_CENSUS_FROZEN_CULL)
+               ? VKR_RECORDING_DRAW_STATES_FROZEN
+               : 0u;
+  uint8_t *at = vkr_recording_put_u32(record, count);
+  at = vkr_recording_put_u32(at, flags);
+  at = vkr_recording_put_u32(at, census->overflow_count);
+  at = vkr_recording_put_u32(at, 0u);
+  MemCopy(at, &census->ids_generation, sizeof(uint64_t));
+  MemCopy(at + sizeof(uint64_t), census->states, 4u * (uint64_t)words);
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
 }
 
 void vkr_recording_gpu_submission(VkrRecording *recording,
@@ -1681,6 +2129,8 @@ vkr_internal bool8_t vkr_recording_write_summary_at(
   /* Re-simulate needs them too. */
   vkr_recording_json_u64(json, "tick_hashes", recording->tick_hashes_written);
   vkr_recording_json_u64(json, "measurements", recording->measurement_count);
+  vkr_recording_json_u64(json, "all_measurements",
+                         recording->all_measurements ? 1u : 0u);
   vkr_recording_json_f64(json, "duration_seconds", target->seconds);
   vkr_recording_json_u64(json, "dropped_records", stats->dropped_records);
   vkr_recording_json_u64(json, "lost_records", stats->lost_records);

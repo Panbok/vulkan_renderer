@@ -107,6 +107,7 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"transmission_depth_diagnostic_enabled",
      VKR_RG_JSON_CONDITION_TRANSMISSION_DEPTH_DIAGNOSTIC},
     {"debug_gpu_spike", VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE},
+    {"gpu_draw_census", VKR_RG_JSON_CONDITION_GPU_DRAW_CENSUS},
     {"editor_pass_output", VKR_RG_JSON_CONDITION_EDITOR_PASS_OUTPUT},
     {"deferred_emissive_capture_enabled",
      VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE},
@@ -2233,6 +2234,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->transmission_depth_diagnostic_enabled;
   case VKR_RG_JSON_CONDITION_DEBUG_GPU_SPIKE:
     return frame->debug_gpu_spike;
+  case VKR_RG_JSON_CONDITION_GPU_DRAW_CENSUS:
+    return frame->gpu_draw_census;
   case VKR_RG_JSON_CONDITION_EDITOR_PASS_OUTPUT:
     return frame->editor_pass_output;
   case VKR_RG_JSON_CONDITION_DEFERRED_EMISSIVE_CAPTURE:

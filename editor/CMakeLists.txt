@@ -41,6 +41,10 @@ add_executable(vkr_editor
     src/editor_physics_settings.c
     src/editor_recording.c
     src/editor_recording_perf.c
+    src/editor_recording_perf_backend.c
+    src/editor_recording_perf_draws.c
+    src/editor_recording_perf_graph.c
+    src/editor_recording_perf_memory.c
     src/editor_recording_flame.c
     src/editor_debug_draw.c
     src/editor_render_graph.c

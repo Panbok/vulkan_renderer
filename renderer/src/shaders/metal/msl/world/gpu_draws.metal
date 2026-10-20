@@ -51,12 +51,6 @@ struct VkrMetalPacketGpuDrawRoot {
   uint reserved[2];
 };
 
-// A camera classification the earlier frame's pyramid hides while the camera
-// culls in two phases: no draw, but the late view tests the candidate again
-// against this frame's pyramid (ADR-032). A drawn classification's bucket
-// field never reaches 15, so it is never this value.
-#define VKR_METAL_GPU_DRAW_DEFERRED 0xFFFFFFFFu
-
 // Whether `view_index` draws the camera: the camera view or the late view.
 static bool vkr_metal_packet_camera_view(
     constant VkrMetalPacketGpuDrawRoot &root, uint view_index) {
@@ -387,10 +381,12 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   uint classification_index = view_index * root.visible_capacity + index;
   /* The late view classifies only the candidates the camera deferred. They
      passed every camera test but the earlier frame's pyramid, so they pass
-     them again here; this frame's pyramid then decides (ADR-032). */
+     them again here; this frame's pyramid then decides (ADR-032). A
+     rejected word names the first test that failed (lod_kernel.slangh). */
   if (root.late_view != 0u && view_index == root.late_view &&
-      root.classifications[index] != VKR_METAL_GPU_DRAW_DEFERRED) {
-    root.classifications[classification_index] = 0u;
+      root.classifications[index] != VKR_GPU_DRAW_DEFERRED) {
+    root.classifications[classification_index] =
+        vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FILTERED);
     return;
   }
   const bool camera = vkr_metal_packet_camera_view(root, view_index);
@@ -410,9 +406,14 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   if ((candidate_flags & view.required_candidate_flags) !=
           view.required_candidate_flags ||
       (candidate_flags & view.excluded_candidate_flags) != 0u ||
-      mobility_excluded ||
-      !vkr_metal_packet_candidate_in_frustum(root, view, candidate)) {
-    root.classifications[classification_index] = 0u;
+      mobility_excluded) {
+    root.classifications[classification_index] =
+        vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FILTERED);
+    return;
+  }
+  if (!vkr_metal_packet_candidate_in_frustum(root, view, candidate)) {
+    root.classifications[classification_index] =
+        vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FRUSTUM);
     return;
   }
   const device VkrMetalPacketInstance &instance =
@@ -425,7 +426,8 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                               root.sdf_mesh_count, candidate,
                               root.geometry_rows[candidate.geometry_index],
                               instance) != VKR_METAL_SDF_NO_ROW) {
-    root.classifications[classification_index] = 0u;
+    root.classifications[classification_index] =
+        vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FILTERED);
     return;
   }
   constant VkrGpuLodView &lod_view = root.lod_views[view_index];
@@ -448,7 +450,8 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
                      radius),
                  radius)
            : vkr_gpu_draw_shadow_culled(cull, lod_view.shadow_near))) {
-    root.classifications[classification_index] = 0u;
+    root.classifications[classification_index] =
+        vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_DISTANCE);
     return;
   }
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
@@ -458,8 +461,9 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   if (view.hzb_enabled != 0u && instance.deformation_address == 0ul &&
       vkr_metal_packet_candidate_occluded(root, candidate)) {
     root.classifications[classification_index] =
-        view_index == 0u && root.late_view != 0u ? VKR_METAL_GPU_DRAW_DEFERRED
-                                                 : 0u;
+        view_index == 0u && root.late_view != 0u
+            ? VKR_GPU_DRAW_DEFERRED
+            : vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_OCCLUDED);
     atomic_fetch_add_explicit(&state.occlusion_culled_count, 1u,
                               memory_order_relaxed);
     return;
@@ -469,7 +473,8 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   if (!camera && (candidate_flags & 1u) != 0u &&
       vkr_gpu_cascade_caster_too_small(cull, lod_view.position_scale.w,
                                        lod_view.flags, radius)) {
-    root.classifications[classification_index] = 0u;
+    root.classifications[classification_index] =
+        vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_CASTER_SMALL);
     return;
   }
   const device VkrGpuGeometryRow &geometry =
@@ -711,7 +716,8 @@ kernel void vkr_metal_packet_gpu_draw_encode(
     return;
   uint view_base = view_index * root.visible_capacity;
   uint classification = root.classifications[view_base + index];
-  if (classification == 0u || classification == VKR_METAL_GPU_DRAW_DEFERRED)
+  /* Rejected and deferred words have all four bucket bits set. */
+  if (!vkr_gpu_draw_word_drawn(classification))
     return;
   device VkrGpuDrawCompactionState &state = root.compaction_state[view_index];
   uint bucket = (classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK) - 1u;
@@ -811,6 +817,47 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   command.draw_indexed_primitives(primitive_type::triangle, index_count,
                                   indices, 1u, candidate.vertex_offset,
                                   visible_index);
+}
+
+/* The draw census (VkrGpuDebugPayload.draw_census): mirrors
+   VkrMetalPacketGpuDrawCensusRoot in metal/vkr_metal_packet_abi.h. */
+struct VkrMetalPacketGpuDrawCensusRoot {
+  const device uint *classifications;
+  const device VkrGpuCandidateDrawRow *candidates;
+  const device VkrMetalPacketInstance *instances;
+  device uint *states;
+  device uint *object_ids;
+  uint candidate_count;
+  // The late view's first classification row, or zero while the camera
+  // culls in one phase (ADR-032).
+  uint late_base;
+  uint reserved[4];
+};
+
+/* One thread per eight candidates: each candidate's camera state from the
+   early camera word and, for a deferred one, the late view's word, packed
+   eight to a word, and its object id. A tail word's unused lanes stay
+   zero. */
+kernel void vkr_metal_packet_gpu_draw_census(
+    constant VkrMetalPacketGpuDrawCensusRoot &root [[buffer(0)]],
+    uint word_index [[thread_position_in_grid]]) {
+  const uint first = word_index * VKR_GPU_DRAW_CENSUS_STATES_PER_WORD;
+  if (first >= root.candidate_count)
+    return;
+  const uint end =
+      min(first + VKR_GPU_DRAW_CENSUS_STATES_PER_WORD, root.candidate_count);
+  uint word = 0u;
+  for (uint index = first; index < end; ++index) {
+    const uint early = root.classifications[index];
+    const uint late = root.late_base != 0u && early == VKR_GPU_DRAW_DEFERRED
+                          ? root.classifications[root.late_base + index]
+                          : early;
+    word = vkr_gpu_draw_census_put(word, index - first,
+                                   vkr_gpu_draw_camera_state(early, late));
+    root.object_ids[index] =
+        root.instances[root.candidates[index].instance_index].object_id;
+  }
+  root.states[word_index] = word;
 }
 
 static float2 vkr_metal_packet_resolve_ndc(float2 pixel, uint2 extent) {
@@ -1036,5 +1083,7 @@ static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 240,
               "GPU draw root ABI must remain 240 bytes");
 static_assert(sizeof(VkrMetalPacketGpuDrawView) == 112,
               "GPU draw view ABI must remain 112 bytes");
+static_assert(sizeof(VkrMetalPacketGpuDrawCensusRoot) == 64u,
+              "GPU draw census root ABI must remain 64 bytes");
 static_assert(sizeof(VkrMetalPacketHzbBuildRoot) == 48,
               "HZB build root ABI must remain 48 bytes");

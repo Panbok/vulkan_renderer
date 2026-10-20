@@ -39,6 +39,55 @@ typedef enum VkrGpuOwnerMetricRow {
   VKR_GPU_OWNER_METRIC_ROW_COUNT,
 } VkrGpuOwnerMetricRow;
 
+/**
+ * @brief Native command work counted while recording one frame, published
+ * as per-frame `backend.*` counters.
+ *
+ * A backend counts on its render thread from one frame submission to the
+ * next, so work it records between frames (texture upload batches) joins
+ * the next frame. Order matches the name table in vkr_renderer_metrics.c.
+ */
+typedef enum VkrBackendCounter {
+  VKR_BACKEND_COUNTER_COMMAND_BUFFERS = 0,
+  VKR_BACKEND_COUNTER_QUEUE_SUBMITS,
+  /** Metal render command encoders. */
+  VKR_BACKEND_COUNTER_RENDER_ENCODERS,
+  /** Metal compute command encoders, which also carry Metal 4's copies. */
+  VKR_BACKEND_COUNTER_COMPUTE_ENCODERS,
+  VKR_BACKEND_COUNTER_BLIT_ENCODERS,
+  /** Vulkan dynamic rendering scopes. */
+  VKR_BACKEND_COUNTER_RENDER_PASSES,
+  /** Metal indirect command buffer executions. */
+  VKR_BACKEND_COUNTER_ICB_EXECUTIONS,
+  VKR_BACKEND_COUNTER_DRAWS_DIRECT,
+  /** Vulkan indirect draw calls, each of any draw count. */
+  VKR_BACKEND_COUNTER_DRAWS_INDIRECT,
+  VKR_BACKEND_COUNTER_DISPATCHES,
+  /** Metal barriers and fence waits and updates. */
+  VKR_BACKEND_COUNTER_BARRIERS,
+  /** Vulkan image and buffer memory barriers. */
+  VKR_BACKEND_COUNTER_BARRIERS_IMAGE,
+  VKR_BACKEND_COUNTER_BARRIERS_BUFFER,
+  /** Vulkan descriptors written into the descriptor buffers. */
+  VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES,
+  VKR_BACKEND_COUNTER_PIPELINE_BINDS,
+  /** Pipeline binds that changed the bound pipeline of their encoder or
+   * command buffer; published as `pipeline.frame_changes`. */
+  VKR_BACKEND_COUNTER_PIPELINE_CHANGES,
+  VKR_BACKEND_COUNTER_COUNT,
+} VkrBackendCounter;
+
+typedef struct VkrBackendFrameCounters {
+  uint32_t values[VKR_BACKEND_COUNTER_COUNT];
+  /** The packet frame index of the frame the counts belong to. */
+  uint64_t frame_index;
+  /** Bit per VkrBackendCounter the backend counts. */
+  uint32_t supported_mask;
+  bool8_t valid;
+} VkrBackendFrameCounters;
+
+#define VKR_BACKEND_COUNTER_BIT(counter) (1u << (uint32_t)(counter))
+
 typedef struct VkrRendererMetricsPassSample {
   char name[VKR_METRIC_NAME_MAX + 1u];
   uint8_t name_length;
@@ -316,6 +365,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId meshes_batched;
   VkrMetricId frame_pipeline_changes;
   VkrMetricId frame_redundant_binds_avoided;
+  VkrMetricId backend[VKR_BACKEND_COUNTER_COUNT];
 
   VkrMetricId cpu_live_bytes;
   VkrMetricId cpu_tag_bytes[VKR_ALLOCATOR_MEMORY_TAG_MAX];
@@ -386,11 +436,97 @@ typedef struct VkrRendererMetricsSubmission {
   bool8_t valid;
 } VkrRendererMetricsSubmission;
 
+/** VkrRendererMetricsDrawCensus::flags. */
+typedef enum VkrDrawCensusFlag {
+  /** The tiled camera culled in two phases (ADR-032); only then can a
+   * candidate be VKR_GPU_DRAW_CENSUS_DRAWN_LATE. */
+  VKR_DRAW_CENSUS_TWO_PHASE = 1u << 0u,
+  /** Occlusion tested a valid depth pyramid; without one no candidate is
+   * occluded. */
+  VKR_DRAW_CENSUS_HZB_HISTORY_VALID = 1u << 1u,
+  /** A frozen culling camera culled the camera view (ADR-127). */
+  VKR_DRAW_CENSUS_FROZEN_CULL = 1u << 2u,
+} VkrDrawCensusFlag;
+
+/**
+ * @brief A backend's newest completed draw census (pass Cull.Census).
+ *
+ * The backend copies it out of a completed frame's readback when it decodes
+ * that frame's culling counters, so it has their frame latency. Storage
+ * grows to the largest census and is released with the backend; each
+ * publish overwrites it.
+ */
+typedef struct VkrDrawCensusStore {
+  /* vkr_gpu_draw_census_word_count(capacity) words, then capacity ids. */
+  uint32_t *storage;
+  uint32_t capacity;
+  uint32_t candidate_count;
+  uint32_t flags;
+  uint32_t overflow_count;
+  uint64_t source_frame_index;
+  bool8_t valid;
+} VkrDrawCensusStore;
+
+/** Copies one completed census into `store`, growing its storage from
+ * `allocator`; false, leaving the store invalid, when the storage cannot
+ * grow. `states` holds vkr_gpu_draw_census_word_count(candidate_count)
+ * words. */
+bool8_t vkr_draw_census_store_publish(VkrDrawCensusStore *store,
+                                      VkrAllocator *allocator,
+                                      uint64_t source_frame_index,
+                                      uint32_t flags, uint32_t overflow_count,
+                                      uint32_t candidate_count,
+                                      const uint32_t *states,
+                                      const uint32_t *object_ids);
+const uint32_t *vkr_draw_census_store_states(const VkrDrawCensusStore *store);
+const uint32_t *
+vkr_draw_census_store_object_ids(const VkrDrawCensusStore *store);
+void vkr_draw_census_store_release(VkrDrawCensusStore *store,
+                                   VkrAllocator *allocator);
+
+/**
+ * @brief The newest draw census the renderer completed, as of the most
+ * recently collected frame.
+ *
+ * Each camera candidate of renderer frame `source_frame_index` (the
+ * numbering of VkrRendererMetricsPassSample.gpu_source_frame_index) has a
+ * VkrGpuDrawCensusState in `states`, read with vkr_gpu_draw_census_get, and
+ * its instance's object id in `object_ids`, in the frame's packed candidate
+ * order. Candidate order is not stable across frames; object ids are.
+ * `ids_generation` advances only when `object_ids` differs from the
+ * previous census's. `overflow_count` counts camera draws the compaction
+ * pool cut, which the census still reports as drawn.
+ *
+ * Like the pass table, it is single-buffered and owned by the collecting
+ * thread: vkr_renderer_metrics_collect copies a newer census into storage
+ * the metrics own and stamps `cpu_frame_index` with the collected frame.
+ * The arrays stay valid and unchanged until the next collect; a collect
+ * with no newer census leaves the whole record as it was.
+ */
+typedef struct VkrRendererMetricsDrawCensus {
+  uint64_t cpu_frame_index;
+  uint64_t source_frame_index;
+  uint64_t ids_generation;
+  const uint32_t *states;
+  const uint32_t *object_ids;
+  uint32_t candidate_count;
+  uint32_t flags;
+  uint32_t overflow_count;
+  bool8_t valid;
+} VkrRendererMetricsDrawCensus;
+
 typedef struct VkrRendererMetrics {
   VkrMetrics *metrics;
   VkrRendererMetricIds ids;
   VkrRendererMetricsPassTable passes;
   VkrRendererMetricsSubmission submission;
+  VkrRendererMetricsDrawCensus draw_census;
+  /* The census copy: VKR_GPU_DRAW_CANDIDATE_CAPACITY ids and their state
+     words, allocated from `census_allocator` (the pass table's) on the
+     first census. */
+  uint32_t *census_states;
+  uint32_t *census_ids;
+  VkrAllocator *census_allocator;
   /* A collected frame whose valid pass GPU times sum to at least this logs
      its slowest passes, so a headless run can attribute hitches; zero
      disables. Diagnostic only: no metric or report reads it. */
@@ -489,6 +625,11 @@ vkr_renderer_metrics_pass_find(const VkrRendererMetricsPassTable *table,
                                String8 name);
 const VkrRendererMetricsSubmission *
 vkr_renderer_metrics_get_submission(const VkrRendererMetrics *renderer_metrics);
+/** The newest draw census (VkrGpuDebugPayload.draw_census); `valid` stays
+ * false until one completes. See VkrRendererMetricsDrawCensus for its
+ * lifetime. */
+const VkrRendererMetricsDrawCensus *vkr_renderer_metrics_get_draw_census(
+    const VkrRendererMetrics *renderer_metrics);
 bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
                                         String8 path);
 

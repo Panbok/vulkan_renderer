@@ -869,7 +869,8 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         (candidate_flags & excluded_flags) != 0u || mobility_excluded)
     {
         root.classifications[view_index * root.candidate_capacity +
-                             candidate_index] = 0xffffffffu;
+                             candidate_index] =
+            vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FILTERED);
         return;
     }
     VkrVulkanInstance instance = root.instances[candidate.instance_index];
@@ -886,14 +887,16 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
           dot(root.reflection_plane.xyz, world_center.xyz) +
                   root.reflection_plane.w < -world_radius)))
     {
-        root.classifications[classification_index] = 0xffffffffu;
+        root.classifications[classification_index] =
+            vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FILTERED);
         return;
     }
     float4 world_sphere = float4(world_center.xyz, world_radius);
     if ((candidate_flags & 1u) != 0u &&
         !vkr_vk_sphere_visible(root, world_sphere, view_index))
     {
-        root.classifications[classification_index] = 0xffffffffu;
+        root.classifications[classification_index] =
+            vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_FRUSTUM);
         return;
     }
     // The camera skips candidates in hidden rooms, past their draw distance
@@ -912,7 +915,8 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
                    world_radius)
              : vkr_gpu_draw_shadow_culled(cull, lod_view.shadow_near)))
     {
-        root.classifications[classification_index] = 0xffffffffu;
+        root.classifications[classification_index] =
+            vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_DISTANCE);
         return;
     }
     // Sub-texel casters, and copies below their larger limit, skip the
@@ -921,12 +925,14 @@ void vk_gpu_draw_classify(uint3 thread_id : SV_DispatchThreadID)
         vkr_gpu_cascade_caster_too_small(cull, lod_view.position_scale.w,
                                          lod_view.flags, world_radius))
     {
-        root.classifications[classification_index] = 0xffffffffu;
+        root.classifications[classification_index] =
+            vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_CASTER_SMALL);
         return;
     }
     if (view_index == 0u && vkr_vk_candidate_occluded(root, candidate))
     {
-        root.classifications[classification_index] = 0xffffffffu;
+        root.classifications[classification_index] =
+            vkr_gpu_draw_rejected(VKR_GPU_DRAW_REJECT_OCCLUDED);
         uint ignored;
         InterlockedAdd(root.states[view_index].occlusion_culled_count, 1u,
                        ignored);
@@ -991,6 +997,7 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     uint classification = root.classifications[classification_index];
     uint bucket = classification & VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK;
     uint lod_state = classification & ~VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK;
+    // A rejected word's bucket bits are all ones (vkr_gpu_draw_rejected).
     if (bucket >= VKR_VK_DRAW_BUCKET_COUNT)
         return;
     uint local_index;
@@ -1036,6 +1043,54 @@ void vk_gpu_draw_encode(uint3 thread_id : SV_DispatchThreadID)
     command.vertex_offset = candidate.vertex_offset;
     command.first_instance = 0u;
     root.commands[argument_index] = command;
+}
+
+// The draw census (VkrGpuDebugPayload.draw_census); mirrors
+// VkrVulkanGpuDrawCensusRoot in vulkan/vkr_vulkan_deferred.c. The desktop
+// pipeline culls the camera in one phase, so only view 0's words count.
+struct VkrVkGpuDrawCensusRoot
+{
+    uint *classifications;
+    VkrGpuCandidateDrawRow *candidates;
+    VkrVulkanInstance *instances;
+    uint *states;
+    uint *object_ids;
+    uint candidate_count;
+    uint reserved[3];
+};
+
+struct VkrVkGpuDrawCensusPush
+{
+    VkrVkGpuDrawCensusRoot *root;
+    uint2 reserved;
+};
+
+[[vk::push_constant]] ConstantBuffer<VkrVkGpuDrawCensusPush> g_gpu_draw_census_push;
+
+// One thread per eight candidates: each candidate's camera state from the
+// camera view's word, packed eight to a word, and its object id. A tail
+// word's unused lanes stay zero.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void vk_gpu_draw_census(uint3 thread_id : SV_DispatchThreadID)
+{
+    VkrVkGpuDrawCensusRoot root =
+        vkr_vk_uniform_root(*g_gpu_draw_census_push.root);
+    uint first = thread_id.x * VKR_GPU_DRAW_CENSUS_STATES_PER_WORD;
+    if (first >= root.candidate_count)
+        return;
+    uint end =
+        min(first + VKR_GPU_DRAW_CENSUS_STATES_PER_WORD, root.candidate_count);
+    uint word = 0u;
+    for (uint index = first; index < end; ++index)
+    {
+        uint early = root.classifications[index];
+        word = vkr_gpu_draw_census_put(word, index - first,
+                                       vkr_gpu_draw_camera_state(early, early));
+        root.object_ids[index] =
+            root.instances[root.candidates[index].instance_index].object_id;
+    }
+    root.states[thread_id.x] = word;
 }
 
 [shader("compute")]

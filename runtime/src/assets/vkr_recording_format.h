@@ -149,6 +149,110 @@ bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
 /* The row's GPU time is a measurement. */
 #define VKR_RECORDING_PASS_GPU_VALID 1u
 
+/*
+ * Render graph shape (stream "graph" of runtime recordings with Tier 1
+ * metrics), written for the first rendered frame and again whenever the
+ * frame's passes change, under the recorded frame it describes. Every
+ * integer is little-endian. A record is a VKR_RECORDING_GRAPH_HEADER_SIZE
+ * header of u32 fields: version, pass count, use count, resource count, name
+ * bytes, VKR_RECORDING_GRAPH_* flags, viewport width and height, and an f32
+ * render scale. Then come the passes in execution order and then the
+ * unscheduled ones, each VKR_RECORDING_GRAPH_PASS_SIZE bytes: u32 name offset,
+ * u16 name length, u8 VKR_RECORDING_GRAPH_KIND_*, u8 VKR_RECORDING_GRAPH_PASS_*
+ * flags, u32 order (UINT32_MAX unscheduled), u32 first use, u32 use count.
+ * Then the uses, each VKR_RECORDING_GRAPH_USE_SIZE bytes: u32 resource name
+ * offset, u16 its length, u8 VKR_RECORDING_GRAPH_ROLE_*, u8
+ * VKR_RECORDING_GRAPH_USE_* flags. Then the resources, each
+ * VKR_RECORDING_GRAPH_RESOURCE_SIZE bytes: u32 name offset, u16 name length,
+ * u16 VKR_RECORDING_GRAPH_RESOURCE_* flags, u32 format
+ * offset, u16 format length, u16 lifetime length, u32 lifetime offset, u32
+ * width, height and depth, u16 layers, mip levels and samples, u16 zero, u64
+ * bytes, u32 first and last order. Then the names: offsets count from the
+ * first name byte.
+ */
+#define VKR_RECORDING_GRAPH_VERSION 1u
+#define VKR_RECORDING_GRAPH_HEADER_SIZE 36u
+#define VKR_RECORDING_GRAPH_PASS_SIZE 20u
+#define VKR_RECORDING_GRAPH_USE_SIZE 8u
+#define VKR_RECORDING_GRAPH_RESOURCE_SIZE 56u
+/* Something did not fit the renderer's snapshot. */
+#define VKR_RECORDING_GRAPH_TRUNCATED 1u
+/* A pass's kind. */
+#define VKR_RECORDING_GRAPH_KIND_GRAPHICS 0u
+#define VKR_RECORDING_GRAPH_KIND_COMPUTE 1u
+#define VKR_RECORDING_GRAPH_KIND_TRANSFER 2u
+/* A pass's flags: not scheduled, disabled, more uses than recorded. */
+#define VKR_RECORDING_GRAPH_PASS_CULLED 1u
+#define VKR_RECORDING_GRAPH_PASS_DISABLED 2u
+#define VKR_RECORDING_GRAPH_PASS_USES_CUT 4u
+/* How a pass uses a resource. */
+#define VKR_RECORDING_GRAPH_ROLE_READ 0u
+#define VKR_RECORDING_GRAPH_ROLE_WRITE 1u
+#define VKR_RECORDING_GRAPH_ROLE_COLOR 2u
+#define VKR_RECORDING_GRAPH_ROLE_DEPTH 3u
+#define VKR_RECORDING_GRAPH_ROLE_DEPTH_READ 4u
+#define VKR_RECORDING_GRAPH_USE_BUFFER 1u
+#define VKR_RECORDING_GRAPH_USE_WRITE 2u
+/*
+ * Named allocators (streams "allocator_name" and "allocators" of runtime
+ * recordings with Tier 1 metrics), from the lib's allocator registry. An
+ * allocator_name record is a u32 allocator id, u8 VkrAllocatorType, u8 owner
+ * (0 an allocator, 1 a raw arena), u16 name length, then the UTF-8 name; it
+ * comes before the first allocators record that uses the id, and a slot the
+ * registry reuses gets a new id. An allocators record holds one frame's
+ * samples, under that frame's number: a u32 row count, u32 zero, then per row
+ * VKR_RECORDING_ALLOCATOR_ROW_SIZE bytes: u32 id, u32 deepest scope since the
+ * last row, u32 allocations, frees, reallocations and scopes begun since the
+ * last row, u64 live bytes, then the arena's u64 used, committed and
+ * reserved bytes and u64 highest used since the last row (all zero without
+ * an arena).
+ */
+#define VKR_RECORDING_ALLOCATOR_MAX 256u
+#define VKR_RECORDING_ALLOCATORS_HEADER_SIZE 8u
+#define VKR_RECORDING_ALLOCATOR_ROW_SIZE 64u
+#define VKR_RECORDING_ALLOCATOR_NAME_MAX 47u
+
+/*
+ * Draw census (streams "draw_bounds", "draw_ids" and "draw_states" of
+ * runtime recordings with Tier 1 metrics): what the GPU's camera culling did
+ * with every draw candidate. A draw_bounds record is a header of a u32 row
+ * count, u32 zero, f32 world partition cell size in metres (zero without a
+ * partition) and u32 zero, then per object VKR_RECORDING_DRAW_BOUNDS_ROW_SIZE
+ * bytes: u32 object id, f32 min x, y, z and f32 max x, y, z of its world box;
+ * written when the world's objects change, under the frame that built them.
+ * A draw_ids record is a u32 candidate count, u32 zero, u64 ids generation,
+ * then each candidate's u32 object id in the census's packed order; written
+ * when the ids change. A draw_states record holds one rendered frame's census
+ * under that frame's number: u32 candidate count, u32
+ * VKR_RECORDING_DRAW_STATES_* flags, u32 draws the compaction pool cut, u32
+ * zero, u64 the generation of the ids it follows, then 4-bit
+ * VKR_RECORDING_DRAW_STATE_* values, eight per u32 from the low bits.
+ */
+#define VKR_RECORDING_DRAW_BOUNDS_HEADER_SIZE 16u
+#define VKR_RECORDING_DRAW_BOUNDS_ROW_SIZE 28u
+#define VKR_RECORDING_DRAW_IDS_HEADER_SIZE 16u
+#define VKR_RECORDING_DRAW_STATES_HEADER_SIZE 24u
+#define VKR_RECORDING_DRAW_STATES_PER_WORD 8u
+/* Candidates a census record holds at most. */
+#define VKR_RECORDING_DRAW_CANDIDATE_MAX (1u << 20u)
+#define VKR_RECORDING_DRAW_STATE_NOT_CAMERA 0u
+#define VKR_RECORDING_DRAW_STATE_DRAWN 1u
+/* Deferred by the tiled camera's first phase, then drawn by its second. */
+#define VKR_RECORDING_DRAW_STATE_DRAWN_LATE 2u
+#define VKR_RECORDING_DRAW_STATE_OCCLUDED 3u
+#define VKR_RECORDING_DRAW_STATE_FRUSTUM 4u
+/* Past the draw distance, too small, or in a hidden room. */
+#define VKR_RECORDING_DRAW_STATE_DISTANCE 5u
+#define VKR_RECORDING_DRAW_STATES_TWO_PHASE 1u
+#define VKR_RECORDING_DRAW_STATES_HZB_VALID 2u
+#define VKR_RECORDING_DRAW_STATES_FROZEN 4u
+
+/* A resource's flags. */
+#define VKR_RECORDING_GRAPH_RESOURCE_BUFFER 1u
+#define VKR_RECORDING_GRAPH_RESOURCE_IMPORTED 2u
+#define VKR_RECORDING_GRAPH_RESOURCE_EXPORTED 4u
+#define VKR_RECORDING_GRAPH_RESOURCE_PRESENT 8u
+
 typedef struct VkrRecordingField {
   const char *name;
   /* Empty or a unit such as "ms", "bytes", "m". */

@@ -850,6 +850,7 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->bloom_prefilter_pipeline release];
   [renderer->exposure_resolve_pipeline release];
   [renderer->gpu_spike_pipeline release];
+  [renderer->gpu_draw_census_pipeline release];
   [renderer->exposure_histogram_pipeline release];
   [renderer->exposure_clear_pipeline release];
   [renderer->gpu_draw_prefix_pipeline release];
@@ -984,6 +985,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
       vkr_metal_present_feedback_release(renderer->present_feedback);
     }
     vkr_rg_destroy(renderer->graph);
+    vkr_allocator_unregister(&renderer->graph_frame_allocator);
     arena_destroy(renderer->graph_frame_arena);
     vkr_rg_json_destroy(&renderer->json_graph);
     vkr_rg_executor_registry_destroy(&renderer->executors);
@@ -992,6 +994,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
     vkr_metal_diagnostics_flush(&renderer->diagnostics);
     vkr_metal_diagnostics_close(&renderer->diagnostics);
     VkrAllocator *allocator = renderer->allocator;
+    vkr_draw_census_store_release(&renderer->draw_census, allocator);
     vkr_metal_packet_release_record_storage(renderer);
     vkr_metal_packet_free_sized(allocator, renderer, sizeof(*renderer));
   }

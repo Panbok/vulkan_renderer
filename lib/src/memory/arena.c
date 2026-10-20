@@ -25,6 +25,7 @@
  * adjustment if the `Arena` struct changes significantly.
  */
 #include "arena.h"
+#include "vkr_allocator.h"
 
 Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
                              ArenaFlags flags) {
@@ -71,6 +72,10 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
   arena->free_size = 0;
   arena->free_last = NULL;
   arena->owns_memory = true_v;
+  arena->registry_slot = 0;
+  arena->used_before = 0;
+  arena->total_cmt = s_cmt_size;
+  arena->total_rsv = s_rsv_size;
   return arena;
 }
 
@@ -109,6 +114,10 @@ Arena *arena_create_from_buffer(void *buffer, uint64_t size) {
   arena->free_size = 0;
   arena->free_last = NULL;
   arena->owns_memory = false_v; // Caller owns the buffer
+  arena->registry_slot = 0;
+  arena->used_before = 0;
+  arena->total_cmt = size;
+  arena->total_rsv = size;
 
   return arena;
 }
@@ -116,6 +125,10 @@ Arena *arena_create_from_buffer(void *buffer, uint64_t size) {
 void arena_destroy(Arena *arena) {
   if (arena == NULL) {
     return;
+  }
+
+  if (arena->registry_slot != 0) {
+    vkr_allocator_registry_detach_arena(arena);
   }
 
   bool8_t arena_owns_memory = arena->owns_memory;
@@ -231,12 +244,18 @@ vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
 
       new_block =
           arena_create_internal(s_rsv_size, s_cmt_size, new_block_flags);
+      if (new_block != NULL) {
+        arena->total_cmt += new_block->cmt;
+        arena->total_rsv += new_block->rsv;
+      }
     }
 
     if (!new_block) {
       return NULL;
     }
     new_block->base_pos = current->base_pos + current->rsv;
+    new_block->used_before =
+        current->used_before + (current->pos - ARENA_HEADER_SIZE);
     SingleListAppend(arena->current, new_block, prev);
 
     current = new_block;
@@ -266,6 +285,7 @@ vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
       }
 
       current->cmt = required_cmt_from_block_start;
+      arena->total_cmt += commit_size;
     }
   }
 
@@ -276,6 +296,10 @@ vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
 
     if (tag < ARENA_MEMORY_TAG_MAX) {
       arena->tags[tag].size += size;
+    }
+
+    if (arena->registry_slot != 0) {
+      vkr_allocator_registry_note_arena(arena, 0, true_v);
     }
   }
 
@@ -296,11 +320,25 @@ uint64_t arena_pos(Arena *arena) {
   return current->pos + current->base_pos;
 }
 
+ArenaFootprint arena_footprint(const Arena *arena) {
+  const Arena *current = arena->current;
+
+  return (ArenaFootprint){
+      .used_bytes = current->used_before + (current->pos - ARENA_HEADER_SIZE),
+      .committed_bytes = arena->total_cmt,
+      .reserved_bytes = arena->total_rsv,
+  };
+}
+
 /* Reset later blocks onto the reusable list, retaining their committed pages.
  * The surviving block keeps its header and clamps the requested local position
  * to its reserved range. No virtual memory is decommitted by reset. */
 void arena_reset_to(Arena *arena, uint64_t pos, ArenaMemoryTag tag) {
   uint64_t pos_before_reset = arena_pos(arena);
+  uint64_t used_before_reset = 0;
+  if (arena->registry_slot != 0) {
+    used_before_reset = arena_footprint(arena).used_bytes;
+  }
 
   uint64_t big_pos = ClampBot(ARENA_HEADER_SIZE, pos);
   Arena *current_block_iter = arena->current;
@@ -335,6 +373,10 @@ void arena_reset_to(Arena *arena, uint64_t pos, ArenaMemoryTag tag) {
         arena->tags[tag].size = 0;
       }
     }
+  }
+
+  if (arena->registry_slot != 0) {
+    vkr_allocator_registry_note_arena(arena, used_before_reset, false_v);
   }
 }
 

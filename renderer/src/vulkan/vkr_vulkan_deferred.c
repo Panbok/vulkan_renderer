@@ -277,6 +277,9 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
   return true_v;
 }
 
+vkr_internal void vkr_vk_record_census_readback(VkrVulkanRenderer *renderer,
+                                                VkCommandBuffer command);
+
 void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
                                      VkCommandBuffer command) {
   VkrVulkanFrameSlot *slot =
@@ -287,7 +290,7 @@ void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
       .bufferMemoryBarrierCount = prepared->count,
       .pBufferMemoryBarriers = prepared->barriers,
   };
-  vkCmdPipelineBarrier2(command, &dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &dependency);
   vkCmdFillBuffer(
       command, slot->readback.handle, VKR_VULKAN_READBACK_DRAW_STATE_OFFSET,
       VKR_VULKAN_READBACK_SIZE - VKR_VULKAN_READBACK_DRAW_STATE_OFFSET, 0u);
@@ -308,10 +311,11 @@ void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
       .bufferMemoryBarrierCount = 1u,
       .pBufferMemoryBarriers = &clear_barrier,
   };
-  vkCmdPipelineBarrier2(command, &clear_dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &clear_dependency);
   for (uint32_t i = 0u; i < prepared->count; ++i)
     vkCmdCopyBuffer(command, prepared->barriers[i].buffer,
                     slot->readback.handle, 1u, &prepared->copies[i]);
+  vkr_vk_record_census_readback(renderer, command);
 }
 
 /* The mirrored view-projection cropped to the reflector's screen rectangle,
@@ -3325,6 +3329,169 @@ bool8_t vkr_vk_prepare_gpu_spike(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+/* Pass Cull.Census's root; mirrors VkrVkGpuDrawCensusRoot in
+   shaders/vulkan/slang/world/deferred.slang. */
+typedef struct VkrVulkanGpuDrawCensusRoot {
+  uint64_t classifications;
+  uint64_t candidates;
+  uint64_t instances;
+  uint64_t states;
+  uint64_t object_ids;
+  uint32_t candidate_count;
+  uint32_t reserved[3];
+} VkrVulkanGpuDrawCensusRoot;
+
+_Static_assert(sizeof(VkrVulkanGpuDrawCensusRoot) == 56u,
+               "Vulkan GPU draw census root ABI drift");
+
+/* Byte offset of the object ids in a slot's census readback, after the
+   packed states of `capacity` candidates. */
+vkr_internal uint64_t vkr_vk_census_ids_offset(uint32_t capacity) {
+  return vkr_align_up_u64((uint64_t)vkr_gpu_draw_census_word_count(capacity) *
+                              sizeof(uint32_t),
+                          16u);
+}
+
+/* Cull.Census: one thread per eight packed candidates of the camera view.
+   Bindings: candidates 0, classifications 1, states 2, object ids 3. The
+   slot's host-visible census readback grows to the frame's candidates; the
+   slot's earlier submission has completed, so it is free to replace. */
+bool8_t vkr_vk_prepare_gpu_draw_census(VkrVulkanRenderer *renderer,
+                                       VkrVulkanPreparedCompute *prepared,
+                                       const VkrRgPass *pass) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  const uint32_t candidate_count = slot->gpu_candidate_count;
+  if (candidate_count == 0u)
+    return true_v;
+  VkrVulkanGraphBufferInstance *candidates =
+      vkr_vk_deferred_buffer(renderer, pass, 0u);
+  VkrVulkanGraphBufferInstance *classifications =
+      vkr_vk_deferred_buffer(renderer, pass, 1u);
+  VkrVulkanGraphBufferInstance *states =
+      vkr_vk_deferred_buffer(renderer, pass, 2u);
+  VkrVulkanGraphBufferInstance *object_ids =
+      vkr_vk_deferred_buffer(renderer, pass, 3u);
+  if (!candidates || !classifications || !states || !object_ids ||
+      !slot->gpu_candidate_instances)
+    return false_v;
+  const uint64_t readback_size = vkr_vk_census_ids_offset(candidate_count) +
+                                 (uint64_t)candidate_count * sizeof(uint32_t);
+  if (slot->census_readback.size < readback_size) {
+    vkr_vk_destroy_buffer(renderer, &slot->census_readback);
+    if (!vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
+                              VKR_GPU_ALLOCATION_OWNER_READBACK, readback_size,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                              &slot->census_readback))
+      return false_v;
+  }
+  const VkrVulkanGpuDrawCensusRoot root = {
+      .classifications = classifications->buffer.address,
+      .candidates = candidates->buffer.address,
+      .instances = slot->gpu_candidate_instances,
+      .states = states->buffer.address,
+      .object_ids = object_ids->buffer.address,
+      .candidate_count = candidate_count,
+  };
+  if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
+                                 _Alignof(VkrVulkanGpuDrawCensusRoot),
+                                 &prepared->root_address))
+    return false_v;
+  const uint32_t word_count = vkr_gpu_draw_census_word_count(candidate_count);
+  prepared->pipelines[prepared->dispatch_count] =
+      renderer
+          ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_GPU_DRAW_CENSUS];
+  prepared->groups[prepared->dispatch_count][0] = (word_count + 63u) / 64u;
+  prepared->groups[prepared->dispatch_count][1] = 1u;
+  prepared->groups[prepared->dispatch_count][2] = 1u;
+  prepared->dispatch_count++;
+  const VkrPreparedFrame *packet = renderer->graph->packet;
+  slot->census_states = states;
+  slot->census_ids = object_ids;
+  slot->census_count = candidate_count;
+  slot->census_flags =
+      (slot->hzb_history_valid ? VKR_DRAW_CENSUS_HZB_HISTORY_VALID : 0u) |
+      (packet->input.world && packet->input.world->frozen_cull
+           ? VKR_DRAW_CENSUS_FROZEN_CULL
+           : 0u);
+  return true_v;
+}
+
+/* Copies the frame's census into its slot's census readback, after the
+   census pass. */
+vkr_internal void vkr_vk_record_census_readback(VkrVulkanRenderer *renderer,
+                                                VkCommandBuffer command) {
+  const VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (slot->census_count == 0u)
+    return;
+  const VkBuffer sources[] = {slot->census_states->buffer.handle,
+                              slot->census_ids->buffer.handle};
+  VkBufferMemoryBarrier2 barriers[ArrayCount(sources) + 1u];
+  for (uint32_t i = 0u; i < ArrayCount(sources); ++i) {
+    barriers[i] = (VkBufferMemoryBarrier2){
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = sources[i],
+        .size = VK_WHOLE_SIZE,
+    };
+  }
+  const VkDependencyInfo copy_dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = ArrayCount(sources),
+      .pBufferMemoryBarriers = barriers,
+  };
+  vkr_vk_cmd_pipeline_barrier2(command, &copy_dependency);
+  const VkBufferCopy copies[] = {
+      {.size = (uint64_t)vkr_gpu_draw_census_word_count(slot->census_count) *
+               sizeof(uint32_t)},
+      {.dstOffset = vkr_vk_census_ids_offset(slot->census_count),
+       .size = (uint64_t)slot->census_count * sizeof(uint32_t)},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(sources); ++i)
+    vkCmdCopyBuffer(command, sources[i], slot->census_readback.handle, 1u,
+                    &copies[i]);
+  barriers[ArrayCount(sources)] = (VkBufferMemoryBarrier2){
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+      .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = slot->census_readback.handle,
+      .size = VK_WHOLE_SIZE,
+  };
+  const VkDependencyInfo host_dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1u,
+      .pBufferMemoryBarriers = &barriers[ArrayCount(sources)],
+  };
+  vkr_vk_cmd_pipeline_barrier2(command, &host_dependency);
+}
+
+bool8_t vkr_vk_decode_census_readback(VkrVulkanRenderer *renderer,
+                                      const VkrVulkanFrameSlot *slot,
+                                      uint32_t overflow_count) {
+  if (slot->census_count == 0u)
+    return true_v;
+  if (!vkr_vk_invalidate(renderer, &slot->census_readback.allocation, 0u,
+                         slot->census_readback.size))
+    return false_v;
+  const uint8_t *mapped = slot->census_readback.allocation.mapped;
+  return vkr_draw_census_store_publish(
+      &renderer->draw_census, renderer->allocator, slot->source_frame_index,
+      slot->census_flags, overflow_count, slot->census_count,
+      (const uint32_t *)mapped,
+      (const uint32_t *)(mapped +
+                         vkr_vk_census_ids_offset(slot->census_count)));
+}
+
 void vkr_vk_mark_exposure_submitted(VkrVulkanRenderer *renderer,
                                     uint64_t submit_value) {
   VkrVulkanFrameSlot *slot =
@@ -4472,7 +4639,7 @@ void vkr_vk_record_prepared_compute(VkrVulkanRenderer *renderer,
       .pBufferMemoryBarriers = &prepared->buffer_barrier,
   };
   if (history.imageMemoryBarrierCount || history.bufferMemoryBarrierCount)
-    vkCmdPipelineBarrier2(command, &history);
+    vkr_vk_cmd_pipeline_barrier2(command, &history);
   const VkrVulkanPushConstants push = {.root = prepared->root_address};
   if (prepared->dispatch_count)
     vkCmdPushConstants(command, renderer->pipeline_layout,
@@ -4481,10 +4648,10 @@ void vkr_vk_record_prepared_compute(VkrVulkanRenderer *renderer,
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
   if (prepared->indirect_buffer) {
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      prepared->pipelines[0]);
-    vkCmdDispatchIndirect(command, prepared->indirect_buffer,
-                          prepared->indirect_offset);
+    vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                             prepared->pipelines[0]);
+    vkr_vk_cmd_dispatch_indirect(command, prepared->indirect_buffer,
+                                 prepared->indirect_offset);
     return;
   }
   const VkMemoryBarrier2 barrier = {
@@ -4502,11 +4669,11 @@ void vkr_vk_record_prepared_compute(VkrVulkanRenderer *renderer,
   };
   for (uint32_t i = 0u; i < prepared->dispatch_count; ++i) {
     if (i)
-      vkCmdPipelineBarrier2(command, &dependency);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      prepared->pipelines[i]);
-    vkCmdDispatch(command, prepared->groups[i][0], prepared->groups[i][1],
-                  prepared->groups[i][2]);
+      vkr_vk_cmd_pipeline_barrier2(command, &dependency);
+    vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                             prepared->pipelines[i]);
+    vkr_vk_cmd_dispatch(command, prepared->groups[i][0], prepared->groups[i][1],
+                        prepared->groups[i][2]);
   }
 }
 
@@ -4538,7 +4705,7 @@ void vkr_vk_record_prepared_raster(VkrVulkanRenderer *renderer,
       continue;
     if (prepared->pipelines[bucket] != bound) {
       bound = prepared->pipelines[bucket];
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
+      vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
     }
     const VkrVulkanPushConstants push = {.root = prepared->root_address,
                                          .material_index = bucket};
@@ -4549,7 +4716,7 @@ void vkr_vk_record_prepared_raster(VkrVulkanRenderer *renderer,
                        0u, sizeof(push), &push);
     vkCmdSetCullMode(command, prepared->cull_modes[bucket]);
     vkCmdSetFrontFace(command, prepared->front_faces[bucket]);
-    vkCmdDrawIndexedIndirectCount(
+    vkr_vk_cmd_draw_indexed_indirect_count(
         command, prepared->arguments, prepared->argument_offsets[bucket],
         prepared->counts, prepared->count_offsets[bucket],
         prepared->max_draw_counts[bucket],
@@ -4593,6 +4760,6 @@ void vkr_vk_record_prepared_upload(VkCommandBuffer command,
         .bufferMemoryBarrierCount = 1u,
         .pBufferMemoryBarriers = &barrier,
     };
-    vkCmdPipelineBarrier2(command, &dependency);
+    vkr_vk_cmd_pipeline_barrier2(command, &dependency);
   }
 }

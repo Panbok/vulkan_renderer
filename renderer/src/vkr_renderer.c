@@ -1140,6 +1140,8 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   renderer->render_graph_allocator =
       (VkrAllocator){.ctx = &renderer->render_graph_dmemory};
   vkr_dmemory_allocator_create(&renderer->render_graph_allocator);
+  (void)vkr_allocator_register_name(&renderer->render_graph_allocator,
+                                    "render.persistent");
 
   VkrSurfaceSize initial = requested_target.kind ==
                                        VKR_PRESENT_TARGET_OFFSCREEN
@@ -1207,8 +1209,10 @@ initialize_failure:
   vkr_publication_queue_destroy(&renderer->publications);
   if (renderer->metal_renderer || renderer->vulkan_renderer)
     vkr_renderer_backend_destroy(renderer);
-  if (renderer->render_graph_allocator.ctx)
+  if (renderer->render_graph_allocator.ctx) {
+    vkr_allocator_unregister(&renderer->render_graph_allocator);
     vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
+  }
   renderer->render_graph_allocator = (VkrAllocator){0};
   return false_v;
 }
@@ -1218,8 +1222,16 @@ void vkr_renderer_destroy(VkrRenderer *renderer) {
   vkr_renderer_worker_destroy(renderer);
   vkr_publication_queue_destroy(&renderer->publications);
   vkr_renderer_backend_destroy(renderer);
-  if (renderer->render_graph_allocator.ctx)
+  if (renderer->graph_snapshot) {
+    vkr_allocator_free(&renderer->render_graph_allocator,
+                       renderer->graph_snapshot, sizeof(VkrRgSnapshot),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    renderer->graph_snapshot = NULL;
+  }
+  if (renderer->render_graph_allocator.ctx) {
+    vkr_allocator_unregister(&renderer->render_graph_allocator);
     vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
+  }
 }
 
 vkr_internal void vkr_renderer_backend_destroy(VkrRenderer *renderer) {
@@ -2326,6 +2338,87 @@ vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer) {
   return stats;
 }
 
+/* The backend's render graph, or NULL before it has one. Only the thread
+   rendering frames, or a caller that joined it, may read it. */
+vkr_internal const VkrRenderGraph *
+vkr_renderer_backend_graph(const VkrRenderer *renderer) {
+  if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
+    return vkr_vulkan_renderer_graph(renderer->vulkan_renderer);
+  }
+#if defined(PLATFORM_APPLE)
+  if (renderer->impl.kind == VKR_RENDERER_IMPL_METAL) {
+    return vkr_metal_packet_renderer_graph(renderer->metal_renderer);
+  }
+#endif
+  return NULL;
+}
+
+/* VkrRenderer.graph_snapshot_state: no request, a request the next rendered
+   frame fills, and a snapshot the caller has not taken. */
+enum {
+  VKR_RENDERER_GRAPH_SNAPSHOT_IDLE = 0u,
+  VKR_RENDERER_GRAPH_SNAPSHOT_REQUESTED,
+  VKR_RENDERER_GRAPH_SNAPSHOT_READY,
+};
+
+bool8_t vkr_renderer_request_graph_snapshot(VkrRenderer *renderer) {
+  if (!renderer) {
+    return false_v;
+  }
+  uint32_t expected = VKR_RENDERER_GRAPH_SNAPSHOT_IDLE;
+  (void)vkr_atomic_uint32_compare_exchange(
+      &renderer->graph_snapshot_state, &expected,
+      VKR_RENDERER_GRAPH_SNAPSHOT_REQUESTED, VKR_MEMORY_ORDER_ACQ_REL,
+      VKR_MEMORY_ORDER_ACQUIRE);
+  return true_v;
+}
+
+const VkrRgSnapshot *vkr_renderer_take_graph_snapshot(VkrRenderer *renderer) {
+  if (!renderer) {
+    return NULL;
+  }
+  uint32_t expected = VKR_RENDERER_GRAPH_SNAPSHOT_READY;
+  if (!vkr_atomic_uint32_compare_exchange(
+          &renderer->graph_snapshot_state, &expected,
+          VKR_RENDERER_GRAPH_SNAPSHOT_IDLE, VKR_MEMORY_ORDER_ACQ_REL,
+          VKR_MEMORY_ORDER_ACQUIRE)) {
+    return NULL;
+  }
+  return renderer->graph_snapshot;
+}
+
+/* On the thread that rendered frame `frame_index`: fills a requested
+   snapshot from the graph that rendered it. A frame without a graph leaves
+   the request for the next one. */
+vkr_internal void vkr_renderer_fill_graph_snapshot(VkrRenderer *renderer,
+                                                   uint64_t frame_index) {
+  if (vkr_atomic_uint32_load(&renderer->graph_snapshot_state,
+                             VKR_MEMORY_ORDER_ACQUIRE) !=
+      VKR_RENDERER_GRAPH_SNAPSHOT_REQUESTED) {
+    return;
+  }
+  const VkrRenderGraph *graph = vkr_renderer_backend_graph(renderer);
+  if (!graph) {
+    return;
+  }
+  if (!renderer->graph_snapshot) {
+    renderer->graph_snapshot = vkr_allocator_alloc(
+        &renderer->render_graph_allocator, sizeof(VkrRgSnapshot),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!renderer->graph_snapshot) {
+      return;
+    }
+  }
+  if (!vkr_rg_snapshot(graph, renderer->graph_snapshot) ||
+      renderer->graph_snapshot->pass_count == 0u) {
+    return;
+  }
+  renderer->graph_snapshot->frame_index = frame_index;
+  vkr_atomic_uint32_store(&renderer->graph_snapshot_state,
+                          VKR_RENDERER_GRAPH_SNAPSHOT_READY,
+                          VKR_MEMORY_ORDER_RELEASE);
+}
+
 bool8_t vkr_renderer_describe_graph(VkrRenderer *renderer,
                                     const VkrRgDescribeVisitor *visitor,
                                     const char *dot_path,
@@ -2341,17 +2434,15 @@ bool8_t vkr_renderer_describe_graph(VkrRenderer *renderer,
                       ? "tiled"
                       : "desktop",
   };
-  const VkrRenderGraph *graph = NULL;
+  const VkrRenderGraph *graph = vkr_renderer_backend_graph(renderer);
   VkrRenderGraphResourceStats live = {0};
   if (renderer->impl.kind == VKR_RENDERER_IMPL_VULKAN) {
     info.backend = "vulkan";
-    graph = vkr_vulkan_renderer_graph(renderer->vulkan_renderer);
     info.live_valid = vkr_vulkan_renderer_graph_resource_stats(
         renderer->vulkan_renderer, &live);
 #if defined(PLATFORM_APPLE)
   } else if (renderer->impl.kind == VKR_RENDERER_IMPL_METAL) {
     info.backend = "metal";
-    graph = vkr_metal_packet_renderer_graph(renderer->metal_renderer);
     info.live_valid = vkr_metal_packet_renderer_graph_resource_stats(
         renderer->metal_renderer, &live);
 #endif
@@ -3198,6 +3289,11 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   } else {
     error = vkr_renderer_backend_render_frame(
         renderer, packet, &result->metrics, &result->validation);
+  }
+  /* A presentation-only frame shows the last Scene without a graph of its
+     own (ADR-111). */
+  if (error == VKR_RENDERER_ERROR_NONE && !present_only) {
+    vkr_renderer_fill_graph_snapshot(renderer, packet->frame.frame_index);
   }
   if (hooks->finish) {
     hooks->finish(hooks->state, &work->frame, error);

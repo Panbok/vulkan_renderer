@@ -518,6 +518,11 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
                                           uint64_t frame,
                                           const VkrRecordingMetricsLoop *loop,
                                           bool8_t published);
+/** Writes the world's object boxes for the draw census of a Tier 1
+ * recording when they changed, under recorded frame `frame`. */
+void vkr_standard_scene_recording_draw_bounds(VkrStandardSceneRuntime *runtime,
+                                              uint64_t frame,
+                                              const VkrWorldPassPayload *world);
 /** Writes this frame's records when a recording is in progress. */
 void vkr_standard_scene_recording_capture(VkrStandardSceneRuntime *runtime,
                                           const VkrCamera *camera,

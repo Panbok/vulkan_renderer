@@ -158,6 +158,16 @@ typedef struct Arena {
                           (LIFO). Only valid in the *first* block's header. */
   bool8_t owns_memory; /**< If true, arena_destroy releases memory. If false
                           (buffer-backed), caller is responsible for memory. */
+  uint32_t registry_slot; /**< 1-based named-registry slot that receives this
+                             arena's footprint, 0 when unregistered. Only valid
+                             in the *first* block's header. */
+  uint64_t used_before;   /**< Used bytes (pos minus header) of every earlier
+                             block in the live chain. Set when the block becomes
+                             current. */
+  uint64_t total_cmt; /**< Committed bytes of all blocks, free list included.
+                         Only valid in the *first* block's header. */
+  uint64_t total_rsv; /**< Reserved bytes of all blocks, free list included.
+                         Only valid in the *first* block's header. */
   ArenaMemoryTagInfo
       tags[ARENA_MEMORY_TAG_MAX]; /**< Array storing memory usage statistics for
                                each `ArenaMemoryTag`. Each element tracks the
@@ -237,6 +247,12 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
  *         failure.
  */
 Arena *arena_create_from_buffer(void *buffer, uint64_t size);
+
+/**
+ * @brief Releases the arena's blocks. A raw arena still in the allocator
+ * registry leaves it here; an arena bound to a registered VkrAllocator stops
+ * publishing its footprint and the allocator entry stays registered.
+ */
 void arena_destroy(Arena *arena);
 
 /**
@@ -273,6 +289,21 @@ void *arena_alloc_aligned(Arena *arena, uint64_t size, uint64_t alignment,
  * @return The current absolute position offset.
  */
 uint64_t arena_pos(Arena *arena);
+
+/**
+ * @brief Memory held by an arena across all of its blocks.
+ */
+typedef struct ArenaFootprint {
+  uint64_t used_bytes; /**< Bytes pushed in the live chain, padding included. */
+  uint64_t committed_bytes; /**< Committed bytes, free-list blocks included. */
+  uint64_t reserved_bytes;  /**< Reserved bytes, free-list blocks included. */
+} ArenaFootprint;
+
+/**
+ * @brief Gets the arena's used, committed and reserved bytes in O(1).
+ * @param arena Pointer to the first block of the arena.
+ */
+ArenaFootprint arena_footprint(const Arena *arena);
 
 /**
  * @brief Resets the arena's allocation position back to a specific absolute

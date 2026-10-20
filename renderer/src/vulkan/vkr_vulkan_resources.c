@@ -1769,6 +1769,7 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
     vkr_vk_destroy_buffer(renderer, &slot->frame_upload);
     vkr_vk_destroy_buffer(renderer, &slot->candidate_upload);
     vkr_vk_destroy_buffer(renderer, &slot->capture_readback);
+    vkr_vk_destroy_buffer(renderer, &slot->census_readback);
     vkr_vk_destroy_buffer(renderer, &slot->light_contribution);
     vkr_vk_destroy_buffer(renderer, &slot->readback);
     if (slot->timestamp_pool)
@@ -2123,6 +2124,7 @@ vkr_internal bool8_t vkr_vk_publish_fixed_descriptor(
     uint32_t expected_index, VkrGpuSlotHandle *out_handle) {
   PFN_vkGetDescriptorEXT get_descriptor =
       vkr_vulkan_device_get_descriptor(renderer->device);
+  vkr_vk_count(VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES, 1u);
   get_descriptor(vkr_vk_renderer_device(renderer), get_info, descriptor_size,
                  renderer->descriptor_scratch);
   VkrGpuSlotHandle handle = {0};

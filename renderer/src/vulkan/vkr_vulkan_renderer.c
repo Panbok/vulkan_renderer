@@ -419,6 +419,10 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
       vkr_rg_json_load_file(renderer->allocator, renderer->config.graph_path,
                             &renderer->json_graph) &&
       vkr_rg_json_bind_executors(&renderer->json_graph, &renderer->executors);
+  if (renderer->graph_frame_allocator.alloc) {
+    (void)vkr_allocator_register_name(&renderer->graph_frame_allocator,
+                                      "render.graph");
+  }
   renderer->graph =
       graph_source_ready ? vkr_rg_create(renderer->allocator) : NULL;
   if (!renderer->graph ||
@@ -1074,7 +1078,7 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
       .bufferMemoryBarrierCount = 1u,
       .pBufferMemoryBarriers = &readback_barrier,
   };
-  vkCmdPipelineBarrier2(command, &readback_dependency);
+  vkr_vk_cmd_pipeline_barrier2(command, &readback_dependency);
   return true_v;
 }
 
@@ -1096,7 +1100,7 @@ vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
   if (slot->statistics_requested)
     vkResetQueryPool(vkr_vk_renderer_device(renderer), slot->statistics_pool,
                      0u, VKR_RENDERER_IMPL_MAX_PASS_TIMINGS);
-  if (vkBeginCommandBuffer(command, &begin_info) != VK_SUCCESS) {
+  if (vkr_vk_begin_command_buffer(command, &begin_info) != VK_SUCCESS) {
     log_error("Vulkan failed to begin the frame command buffer");
     return false_v;
   }
@@ -1260,6 +1264,36 @@ vkr_vk_set_light_contribution_source(VkrVulkanFrameSlot *slot,
     source->render_ids[i] = packet->input.lighting->point_lights[i].render_id;
 }
 
+VkrBackendFrameCounters vkr_vk_recorded_counters;
+VkPipeline vkr_vk_counted_pipelines[2];
+
+/* The VkrBackendCounter kinds Vulkan counts: Metal's encoders and indirect
+   command buffers have no Vulkan counterpart, and Vulkan's barriers count
+   by resource kind. */
+#define VKR_VK_COUNTED_MASK                                                    \
+  (VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_COMMAND_BUFFERS) |              \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_QUEUE_SUBMITS) |                \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_RENDER_PASSES) |                \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_DRAWS_DIRECT) |                 \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_DRAWS_INDIRECT) |               \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_DISPATCHES) |                   \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_BARRIERS_IMAGE) |               \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_BARRIERS_BUFFER) |              \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_DESCRIPTOR_WRITES) |            \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_PIPELINE_BINDS) |               \
+   VKR_BACKEND_COUNTER_BIT(VKR_BACKEND_COUNTER_PIPELINE_CHANGES))
+
+/* At a frame's submission: the work recorded since the previous one is
+   this frame's, and the count starts again. */
+vkr_internal void vkr_vk_take_frame_counters(VkrVulkanRenderer *renderer,
+                                             uint64_t frame_index) {
+  renderer->submitted_counters = vkr_vk_recorded_counters;
+  renderer->submitted_counters.frame_index = frame_index;
+  renderer->submitted_counters.supported_mask = VKR_VK_COUNTED_MASK;
+  renderer->submitted_counters.valid = true_v;
+  vkr_vk_recorded_counters = (VkrBackendFrameCounters){0};
+}
+
 vkr_internal VkResult vkr_vk_queue_submit_frame(VkrVulkanRenderer *renderer,
                                                 const VkrVulkanFrameSlot *slot,
                                                 uint64_t signal_value) {
@@ -1301,8 +1335,8 @@ vkr_internal VkResult vkr_vk_queue_submit_frame(VkrVulkanRenderer *renderer,
       .signalSemaphoreInfoCount = signal_count,
       .pSignalSemaphoreInfos = signals,
   };
-  return vkQueueSubmit2(vkr_vulkan_device_queue(renderer->device), 1u,
-                        &submit_info, VK_NULL_HANDLE);
+  return vkr_vk_queue_submit2(vkr_vulkan_device_queue(renderer->device), 1u,
+                              &submit_info, VK_NULL_HANDLE);
 }
 
 /* Resolves the recorded uses of a frame whose queue submission failed and
@@ -1728,6 +1762,7 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
     vkr_vk_unwind_rejected_submission(renderer, slot);
     return false_v;
   }
+  vkr_vk_take_frame_counters(renderer, packet->input.frame.frame_index);
   if (!vkr_vk_commit_submission(renderer, packet, slot, signal_value)) {
     return false_v;
   }
@@ -1887,6 +1922,9 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
       .has_gpu_draw_diagnostics = true_v,
       .has_transmission_coverage = best->transmission_coverage_requested,
   };
+  /* A failed census copy leaves the census invalid; the frame's other
+     results stand. */
+  (void)vkr_vk_decode_census_readback(renderer, best, opaque[0].overflow_count);
   vkr_vk_decode_sdsm_result(best, color, &out_result->shadow_depth_range);
   vkr_vk_decode_light_contribution(best, color,
                                    &out_result->local_light_contribution);
@@ -2241,6 +2279,17 @@ void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
 const VkrVulkanCapabilityProfile *
 vkr_vulkan_renderer_profile(const VkrVulkanRenderer *renderer) {
   return renderer ? vkr_vulkan_device_profile(renderer->device) : NULL;
+}
+
+const VkrDrawCensusStore *
+vkr_vulkan_renderer_draw_census(const VkrVulkanRenderer *renderer) {
+  return renderer ? &renderer->draw_census : NULL;
+}
+
+void vkr_vulkan_renderer_frame_counters(const VkrVulkanRenderer *renderer,
+                                        VkrBackendFrameCounters *out_counters) {
+  *out_counters =
+      renderer ? renderer->submitted_counters : (VkrBackendFrameCounters){0};
 }
 
 VkrAllocator *vkr_vulkan_renderer_allocator(VkrVulkanRenderer *renderer) {
@@ -2627,6 +2676,7 @@ vkr_internal void vkr_vk_destroy_graph_source(VkrVulkanRenderer *renderer,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   vkr_rg_destroy(renderer->graph);
+  vkr_allocator_unregister(&renderer->graph_frame_allocator);
   arena_destroy(renderer->graph_frame_arena);
   vkr_rg_json_destroy(&renderer->json_graph);
   vkr_rg_executor_registry_destroy(&renderer->executors);
@@ -2701,6 +2751,7 @@ void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer) {
   /* The frame slots released their ray rows and work lists above. */
   vkr_vk_destroy_volume_memory(renderer);
   vkr_vk_destroy_graph_source(renderer, allocator);
+  vkr_draw_census_store_release(&renderer->draw_census, allocator);
   vkr_vulkan_device_destroy(renderer->device);
   if (renderer->publication_staging_memory.base_memory)
     vkr_dmemory_destroy(&renderer->publication_staging_memory);

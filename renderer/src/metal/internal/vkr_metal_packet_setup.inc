@@ -120,6 +120,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT:
+  case VKR_METAL_PACKET_ABI_GPU_DRAW_CENSUS_ROOT:
     return 0;
   default:
     return 1;
@@ -1473,6 +1474,12 @@ vkr_internal void vkr_metal_packet_create_scene_compute_pipelines(
       renderer, fragment, "vkr_metal_packet_gpu_draw_encode",
       VKR_METAL_PACKET_ABI_GPU_DRAW_ROOT, true_v,
       @"VKR Metal packet GPU draw encode");
+  /* Diagnostic only: a frame that asks for the draw census skips it
+     without this pipeline. */
+  renderer->gpu_draw_census_pipeline = vkr_metal_packet_create_compute_pipeline(
+      renderer, fragment, "vkr_metal_packet_gpu_draw_census",
+      VKR_METAL_PACKET_ABI_GPU_DRAW_CENSUS_ROOT, false_v,
+      @"VKR Metal packet GPU draw census");
   renderer->skinning_pipeline = vkr_metal_packet_create_compute_pipeline(
       renderer, fragment, "vkr_metal_packet_skinning",
       VKR_METAL_PACKET_ABI_SKINNING_ROOT, false_v, @"VKR compute skinning");
@@ -2384,8 +2391,10 @@ vkr_internal bool8_t vkr_metal_packet_create_cloud_noise(
   [renderer->argument_table setAddress:upload.gpu_address atIndex:0u];
   for (uint32_t i = 0u; i < VKR_METAL_PACKET_CLOUD_NOISE_COUNT; ++i) {
     const bool8_t volume = i < 2u;
-    [encoder setComputePipelineState:renderer->cloud_noise_pipelines[i]];
+    vkr_metal_packet_set_compute_pipeline(
+        renderer, encoder, renderer->cloud_noise_pipelines[i]);
     [encoder setArgumentTable:renderer->argument_table];
+    vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DISPATCHES);
     [encoder dispatchThreads:MTLSizeMake(sizes[i], sizes[i],
                                          volume ? sizes[i] : 1u)
         threadsPerThreadgroup:volume ? MTLSizeMake(4u, 4u, 4u)
@@ -2756,7 +2765,8 @@ vkr_internal bool8_t vkr_metal_packet_create_capacities(
     VkrMetalPacketCreateCapacities *out_capacities) {
   const VkrMetalPacketReadbackLayout maximum_readback =
       vkr_metal_packet_readback_layout(true_v, true_v,
-                                       VKR_SHADOW_CASCADE_COUNT_MAX);
+                                       VKR_SHADOW_CASCADE_COUNT_MAX,
+                                       VKR_GPU_DRAW_CANDIDATE_CAPACITY);
   const uint64_t readback_prefix_size = vkr_align_up_u64(
       maximum_readback.prefix_size, VKR_CAPTURE_BUFFER_ALIGNMENT);
   if (config->capture_max_batch_bytes > UINT64_MAX - 3u)
@@ -3250,6 +3260,12 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                            config->pipeline_archive_path) &&
           renderer->queue && renderer->completion && commit_feedback_created &&
           renderer->timestamp_frequency > 0u;
+      /* The renderer's storage is final; the render thread has not used the
+         allocator yet. */
+      if (renderer->graph_frame_allocator.alloc) {
+        (void)vkr_allocator_register_name(&renderer->graph_frame_allocator,
+                                          "render.graph");
+      }
       if (config->target_kind == VKR_METAL_PACKET_TARGET_WINDOW) {
         passed = passed && renderer->layer;
         renderer->actual_present_mode =

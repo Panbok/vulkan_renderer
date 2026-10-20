@@ -1523,8 +1523,8 @@ vkr_internal void vkr_vk_record_prepared_direct_draws(
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
   const uint32_t draw_count = slot->direct_draw_count;
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines[pipeline]);
+  vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           renderer->packet_pipelines[pipeline]);
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrVulkanPreparedDirectDraw *draw = &slot->direct_draws[i];
     vkCmdSetFrontFace(command, draw->front_face);
@@ -1549,8 +1549,8 @@ vkr_internal void vkr_vk_record_prepared_direct_draws(
                            VK_SHADER_STAGE_FRAGMENT_BIT |
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, range->index_count, draw->instance_count,
-                     range->first_index, range->vertex_offset, 0u);
+    vkr_vk_cmd_draw_indexed(command, range->index_count, draw->instance_count,
+                            range->first_index, range->vertex_offset, 0u);
   }
   slot->indexed_draw_count += draw_count;
   vkCmdSetFrontFace(command, VK_FRONT_FACE_COUNTER_CLOCKWISE);
@@ -1636,8 +1636,8 @@ void vkr_vk_record_editor_overlay(VkrVulkanRenderer *renderer,
                                   const VkrVulkanPreparedOverlay *overlay) {
   if (!overlay->count)
     return;
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines[overlay->pipeline]);
+  vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           renderer->packet_pipelines[overlay->pipeline]);
   for (uint32_t i = 0u; i < overlay->count; ++i) {
     const VkrVulkanPreparedOverlayDraw *draw = &overlay->draws[i];
     const VkrVulkanPushConstants push = {
@@ -1650,8 +1650,8 @@ void vkr_vk_record_editor_overlay(VkrVulkanRenderer *renderer,
                            VK_SHADER_STAGE_FRAGMENT_BIT |
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, draw->index_count, 1u, draw->first_index,
-                     draw->vertex_offset, 0u);
+    vkr_vk_cmd_draw_indexed(command, draw->index_count, 1u, draw->first_index,
+                            draw->vertex_offset, 0u);
   }
   renderer->frame_slots[renderer->active_frame_slot].indexed_draw_count +=
       overlay->count;
@@ -1689,15 +1689,16 @@ void vkr_vk_record_selection_outline(
     const VkrVulkanPreparedSelectionOutline *outline) {
   if (!outline->enabled)
     return;
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines
-                        [VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE]);
+  vkr_vk_cmd_bind_pipeline(
+      command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+      renderer->packet_pipelines
+          [VKR_VULKAN_PACKET_PIPELINE_EDITOR_SELECTION_OUTLINE]);
   const VkrVulkanPushConstants push = {.root = outline->root_address};
   vkCmdPushConstants(command, renderer->pipeline_layout,
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                          VK_SHADER_STAGE_COMPUTE_BIT,
                      0u, sizeof(push), &push);
-  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+  vkr_vk_cmd_draw(command, 3u, 1u, 0u, 0u);
 }
 
 bool8_t vkr_vk_prepare_vbuffer_split_depth(
@@ -1723,7 +1724,7 @@ bool8_t vkr_vk_prepare_vbuffer_split_depth(
 void vkr_vk_record_vbuffer_split_depth(
     VkrVulkanRenderer *renderer, VkCommandBuffer command,
     const VkrVulkanPreparedVbufferSplitDepth *split) {
-  vkCmdBindPipeline(
+  vkr_vk_cmd_bind_pipeline(
       command, VK_PIPELINE_BIND_POINT_GRAPHICS,
       renderer
           ->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_VBUFFER_SPLIT_DEPTH]);
@@ -1732,7 +1733,7 @@ void vkr_vk_record_vbuffer_split_depth(
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                          VK_SHADER_STAGE_COMPUTE_BIT,
                      0u, sizeof(push), &push);
-  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+  vkr_vk_cmd_draw(command, 3u, 1u, 0u, 0u);
 }
 
 /* The grid's rays use the unjittered camera, like the editor handles. */
@@ -1786,7 +1787,7 @@ void vkr_vk_record_editor_grid(VkrVulkanRenderer *renderer,
                                const VkrVulkanPreparedEditorGrid *grid) {
   if (!grid->enabled)
     return;
-  vkCmdBindPipeline(
+  vkr_vk_cmd_bind_pipeline(
       command, VK_PIPELINE_BIND_POINT_GRAPHICS,
       renderer->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_EDITOR_GRID]);
   const VkrVulkanPushConstants push = {.root = grid->root_address};
@@ -1794,7 +1795,7 @@ void vkr_vk_record_editor_grid(VkrVulkanRenderer *renderer,
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                          VK_SHADER_STAGE_COMPUTE_BIT,
                      0u, sizeof(push), &push);
-  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+  vkr_vk_cmd_draw(command, 3u, 1u, 0u, 0u);
 }
 
 bool8_t vkr_vk_prepare_pass_output(VkrVulkanRenderer *renderer,
@@ -1870,7 +1871,7 @@ void vkr_vk_record_pass_output(VkrVulkanRenderer *renderer,
                                const VkrVulkanPreparedPassOutput *output) {
   if (!output->enabled)
     return;
-  vkCmdBindPipeline(
+  vkr_vk_cmd_bind_pipeline(
       command, VK_PIPELINE_BIND_POINT_GRAPHICS,
       renderer
           ->packet_pipelines[VKR_VULKAN_PACKET_PIPELINE_EDITOR_PASS_OUTPUT]);
@@ -1879,7 +1880,7 @@ void vkr_vk_record_pass_output(VkrVulkanRenderer *renderer,
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                          VK_SHADER_STAGE_COMPUTE_BIT,
                      0u, sizeof(push), &push);
-  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+  vkr_vk_cmd_draw(command, 3u, 1u, 0u, 0u);
 }
 
 bool8_t vkr_vk_prepare_packet_draws(
@@ -1993,8 +1994,8 @@ vkr_internal void vkr_vk_record_prepared_text_draws(
     uint32_t draw_count, uint64_t roots_address) {
   VkrVulkanFrameSlot *slot =
       &renderer->frame_slots[renderer->active_frame_slot];
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    renderer->packet_pipelines[pipeline]);
+  vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           renderer->packet_pipelines[pipeline]);
   vkCmdSetDepthBias(command, VKR_WORLD_TEXT_DEPTH_BIAS_CONSTANT, 0.0f,
                     VKR_WORLD_TEXT_DEPTH_BIAS_SLOPE);
   for (uint32_t i = 0u; i < draw_count; ++i) {
@@ -2009,7 +2010,7 @@ vkr_internal void vkr_vk_record_prepared_text_draws(
                            VK_SHADER_STAGE_FRAGMENT_BIT |
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, draw->index_count, 1u, 0u, 0, 0u);
+    vkr_vk_cmd_draw_indexed(command, draw->index_count, 1u, 0u, 0, 0u);
   }
   slot->indexed_draw_count += draw_count;
 }
@@ -2106,8 +2107,8 @@ vkr_internal void vkr_vk_record_prepared_ui_draws(
   for (uint32_t i = 0u; i < draw_count; ++i) {
     const VkrVulkanPreparedUiDraw *draw = &draws[i];
     if (draw->pipeline != bound_pipeline) {
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        renderer->packet_pipelines[draw->pipeline]);
+      vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                               renderer->packet_pipelines[draw->pipeline]);
       bound_pipeline = draw->pipeline;
     }
     vkCmdSetScissor(command, 0u, 1u, &draw->scissor);
@@ -2118,7 +2119,8 @@ vkr_internal void vkr_vk_record_prepared_ui_draws(
                            VK_SHADER_STAGE_FRAGMENT_BIT |
                            VK_SHADER_STAGE_COMPUTE_BIT,
                        0u, sizeof(push), &push);
-    vkCmdDrawIndexed(command, draw->index_count, 1u, draw->first_index, 0, 0u);
+    vkr_vk_cmd_draw_indexed(command, draw->index_count, 1u, draw->first_index,
+                            0, 0u);
   }
   slot->indexed_draw_count += draw_count;
 }
@@ -2282,11 +2284,11 @@ void vkr_vk_record_ui(VkrVulkanRenderer *renderer, VkCommandBuffer command,
 void vkr_vk_record_fullscreen(VkrVulkanRenderer *renderer,
                               VkCommandBuffer command,
                               const VkrVulkanPreparedFullscreen *fullscreen) {
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    fullscreen->pipeline);
+  vkr_vk_cmd_bind_pipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           fullscreen->pipeline);
   vkCmdPushConstants(command, renderer->pipeline_layout,
                      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
                          VK_SHADER_STAGE_COMPUTE_BIT,
                      0u, sizeof(fullscreen->push), &fullscreen->push);
-  vkCmdDraw(command, 3u, 1u, 0u, 0u);
+  vkr_vk_cmd_draw(command, 3u, 1u, 0u, 0u);
 }
