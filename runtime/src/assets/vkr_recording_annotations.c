@@ -195,6 +195,8 @@ vkr_internal bool8_t vkr_recording_annotations_parse(
     }
     vkr_recording_annotations_text(read, review, "by", out->review_by,
                                    sizeof(out->review_by));
+    vkr_recording_annotations_text(read, review, "note", out->review_note,
+                                   sizeof(out->review_note));
     if (vkr_recording_annotations_number(review, "at", &at)) {
       out->review_at = (int64_t)at;
     }
@@ -297,6 +299,9 @@ bool8_t vkr_recording_annotations_write(const char *bundle_path,
   vkr_recording_annotations_field(json, "by", in->review_by);
   vkr_json_writer_name(json, string8_lit("at"));
   vkr_json_writer_i64(json, in->review_at);
+  if (in->review_note[0]) {
+    vkr_recording_annotations_field(json, "note", in->review_note);
+  }
   vkr_json_writer_end_object(json);
 
   vkr_json_writer_name(json, string8_lit("notes"));
@@ -454,4 +459,13 @@ void vkr_recording_annotations_set_review(VkrRecordingAnnotations *a,
   vkr_recording_annotations_copy(
       a->review_by, sizeof(a->review_by),
       vkr_recording_annotations_str(author ? author : ""));
+  if (a->review == VKR_RECORDING_REVIEW_UNREVIEWED) {
+    a->review_note[0] = '\0';
+  }
+}
+
+void vkr_recording_annotations_set_review_note(VkrRecordingAnnotations *a,
+                                               String8 note) {
+  vkr_assert(a != NULL);
+  vkr_recording_annotations_copy(a->review_note, sizeof(a->review_note), note);
 }

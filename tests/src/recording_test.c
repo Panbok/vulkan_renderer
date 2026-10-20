@@ -3172,6 +3172,8 @@ static void test_recording_annotations(void) {
                                                string8_lit("x")) == UINT32_MAX);
   vkr_recording_annotations_set_review(&written, VKR_RECORDING_REVIEW_FLAGGED,
                                        "agent");
+  vkr_recording_annotations_set_review_note(
+      &written, string8_lit("Bloom \"blinds\"\nthe player"));
   assert(written.notes[0].frame == 5u && written.notes[1].frame == 10u);
   assert(strcmp(written.notes[2].text, "second") == 0 &&
          strcmp(written.notes[3].text, "third") == 0);
@@ -3205,6 +3207,11 @@ static void test_recording_annotations(void) {
   assert(read.review == VKR_RECORDING_REVIEW_FLAGGED &&
          strcmp(read.review_by, "agent") == 0 &&
          read.review_at == written.review_at);
+  assert(strcmp(read.review_note, "Bloom \"blinds\"\nthe player") == 0);
+  /* Clearing the review clears its note. */
+  vkr_recording_annotations_set_review(&written,
+                                       VKR_RECORDING_REVIEW_UNREVIEWED, "user");
+  assert(written.review_note[0] == '\0');
 
   vkr_recording_annotations_remove_note(&read, 1u);
   vkr_recording_annotations_remove_segment(&read, 0u);

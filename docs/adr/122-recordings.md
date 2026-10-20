@@ -244,7 +244,13 @@ an agent must read one without the editor.
 - **Annotations (R4).** A bundle's `annotations.json` (kind
   `vkr.recording.annotations`, version 2) holds notes on frames (at most
   64), segments (at most 64) and a review state: unreviewed, reviewed or
-  flagged, with who set it. A segment marks frames `first` to `last` with a
+  flagged, with who set it and an optional note of up to 1 KiB on what the
+  review found (`review.note`; clearing the review clears it). Marking a
+  recording reviewed or flagged on the playback bar opens the note field
+  in review mode, holding the note the review has; Enter saves it, and an
+  empty note removes it. `rec.review` takes a `note`, and
+  `rec.annotations`, `vkr_rec summary` and the agent prompt report it. A
+  segment marks frames `first` to `last` with a
   title (64 bytes), a note of up to 1 KiB that says what happens there and
   why it matters, its author and when it was marked, so a person or an
   agent can be pointed at the parts that matter. A version 1 file's named

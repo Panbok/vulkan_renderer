@@ -574,8 +574,10 @@ typedef struct VkrEditorRecordingNotes {
   char bundle[VKR_RECORDING_PATH_MAX];
   VkrRecordingAnnotations annotations;
   /* The note field above the playback bar, and whether it takes the
-     keyboard on its next build. */
+     keyboard on its next build. `reviewing` makes it the review's note,
+     which marking the recording reviewed or flagged opens. */
   bool8_t composing;
+  bool8_t reviewing;
   bool8_t focus;
   char text[VKR_RECORDING_NOTE_TEXT_MAX];
   uint64_t text_length;

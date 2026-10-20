@@ -158,7 +158,8 @@ vkr_internal void editor_annotations_saved(VkrEditorUi *editor, VkrUiIcon icon,
 
 void vkr_editor_recording_note_toggle(VkrEditorUi *editor) {
   VkrEditorRecordingNotes *notes = &editor->recording.notes;
-  notes->composing = !notes->composing;
+  notes->composing = !notes->composing || notes->reviewing;
+  notes->reviewing = false_v;
   notes->focus = notes->composing;
   notes->text_length = 0u;
   notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
@@ -367,6 +368,22 @@ void vkr_editor_recording_review_toggle(VkrEditorUi *editor,
           ? VKR_RECORDING_REVIEW_UNREVIEWED
           : VKR_RECORDING_REVIEW_REVIEWED;
   vkr_recording_annotations_set_review(annotations, review, "user");
+  /* A review opens the field for its note, holding the note it has;
+     clearing it closes the field. */
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  if (review != VKR_RECORDING_REVIEW_UNREVIEWED) {
+    notes->composing = true_v;
+    notes->reviewing = true_v;
+    notes->focus = true_v;
+    notes->selected = VKR_EDITOR_RECORDING_SELECTION_NONE;
+    /* The review's note is as long as a segment's, so it edits in the
+       segment note's buffer, free while nothing is selected. */
+    notes->note_length = string_length(annotations->review_note);
+    MemCopy(notes->note, annotations->review_note, notes->note_length);
+  } else if (notes->reviewing) {
+    notes->composing = false_v;
+    notes->reviewing = false_v;
+  }
   editor_annotations_saved(
       editor,
       review == VKR_RECORDING_REVIEW_FLAGGED ? VKR_UI_ICON_WARNING_FILL
@@ -663,7 +680,28 @@ vkr_internal VkrUiWidgetConfig editor_annotations_delete_button(
   return remove;
 }
 
-/* The note field: the playhead's frame, the text, Add note and Close. */
+/* Writes the field's text as the review's note and closes the field. */
+vkr_internal void
+editor_annotations_save_review_note(VkrEditorUi *editor,
+                                    const VkrRecordingPlayback *playback) {
+  VkrEditorRecordingNotes *notes = &editor->recording.notes;
+  VkrRecordingAnnotations *annotations =
+      editor_annotations_open(editor, playback);
+  if (!annotations) {
+    return;
+  }
+  vkr_recording_annotations_set_review_note(
+      annotations,
+      (String8){.str = (uint8_t *)notes->note, .length = notes->note_length});
+  notes->composing = false_v;
+  notes->reviewing = false_v;
+  editor_annotations_saved(editor, VKR_UI_ICON_CHECK_CIRCLE,
+                           notes->note_length ? "Saved the review's note."
+                                              : "Removed the review's note.");
+}
+
+/* The note field: the playhead's frame, the text, Add note and Close; for
+   a review, the review's state, its note and Save note. */
 vkr_internal void
 editor_annotations_composer(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                             const VkrRecordingPlayback *playback, Vec4 rect) {
@@ -680,22 +718,31 @@ editor_annotations_composer(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
           ArrayCount(columns), &row, 1u)) {
     return;
   }
+  const bool8_t reviewing = notes->reviewing;
   const uint64_t current = editor_annotations_playhead(playback);
   VkrUiWidgetConfig where =
       vkr_editor_text_config(theme->font_caption, theme->text_secondary);
   where.placement = editor_annotations_cell(0u);
-  where.icon = VKR_UI_ICON_PENCIL_LINE;
+  where.icon = reviewing ? VKR_UI_ICON_CHECK_CIRCLE : VKR_UI_ICON_PENCIL_LINE;
   where.icon_size_pt = 12.0f;
+  const bool8_t flagged =
+      notes->annotations.review == VKR_RECORDING_REVIEW_FLAGGED;
   vkr_ui_label(ui, string8_lit("where"),
-               string8_create_formatted(ui->frame_allocator, "Frame %llu",
-                                        (unsigned long long)current),
+               reviewing
+                   ? (flagged ? string8_lit("Flagged note")
+                              : string8_lit("Reviewed note"))
+                   : string8_create_formatted(ui->frame_allocator, "Frame %llu",
+                                              (unsigned long long)current),
                &where);
 
   VkrUiWidgetConfig field = vkr_ui_widget_config_default();
   field.placement = editor_annotations_cell(1u);
   vkr_editor_field_style(&field);
   field.style.min_size_pt.y = field.style.max_size_pt.y = 26.0f;
-  field.tooltip = string8_lit("The note; Enter adds it, Escape closes");
+  field.tooltip =
+      reviewing
+          ? string8_lit("What the review found; Enter saves it, Escape closes")
+          : string8_lit("The note; Enter adds it, Escape closes");
   /* The field takes the keyboard when it opens; the request holds until
      the field owns it, as the Script editor's name field does. */
   const VkrUiId field_id =
@@ -705,11 +752,19 @@ editor_annotations_composer(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
     ui->focused_is_text = true_v;
     (void)vkr_ui_keyboard_layer_set(ui, ui->input_layer);
   }
-  VkrUiTextEditBuffer buffer = {.data = (uint8_t *)notes->text,
-                                .length = notes->text_length,
-                                .capacity = sizeof(notes->text) - 1u};
+  VkrUiTextEditBuffer buffer =
+      reviewing ? (VkrUiTextEditBuffer){.data = (uint8_t *)notes->note,
+                                        .length = notes->note_length,
+                                        .capacity = sizeof(notes->note) - 1u}
+                : (VkrUiTextEditBuffer){.data = (uint8_t *)notes->text,
+                                        .length = notes->text_length,
+                                        .capacity = sizeof(notes->text) - 1u};
   (void)vkr_ui_text_field(ui, string8_lit("text"), &buffer, &field);
-  notes->text_length = buffer.length;
+  if (reviewing) {
+    notes->note_length = buffer.length;
+  } else {
+    notes->text_length = buffer.length;
+  }
   const bool8_t focused = ui->focused_id == field_id;
   if (notes->focus && ui->focused_id == field_id &&
       ui->keyboard_input_layer == ui->input_layer &&
@@ -726,14 +781,23 @@ editor_annotations_composer(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   add.icon = VKR_UI_ICON_ADD;
   vkr_editor_button_size(&add);
   add.style.min_size_pt.y = add.style.max_size_pt.y = 26.0f;
-  add.disabled = notes->text_length == 0u;
-  add.tooltip = string8_lit("Add the note at the playhead (Enter)");
-  const bool8_t clicked =
-      vkr_ui_button(ui, string8_lit("add"), string8_lit("Add note"), &add);
+  /* A review saves an empty note too, which removes it. */
+  add.disabled = !reviewing && notes->text_length == 0u;
+  add.tooltip = reviewing ? string8_lit("Save the review's note (Enter)")
+                          : string8_lit("Add the note at the playhead (Enter)");
+  if (reviewing) {
+    add.icon = VKR_UI_ICON_CHECK_CIRCLE;
+  }
+  const bool8_t clicked = vkr_ui_button(
+      ui, string8_lit("add"),
+      reviewing ? string8_lit("Save note") : string8_lit("Add note"), &add);
   VkrUiWidgetConfig close = vkr_editor_icon_button_config(
       3u, 0u, VKR_UI_ICON_CLOSE, string8_lit("Close (Escape)"));
   if (vkr_ui_button(ui, string8_lit("close"), (String8){0}, &close) || escape) {
     notes->composing = false_v;
+    notes->reviewing = false_v;
+  } else if (reviewing && (clicked || enter)) {
+    editor_annotations_save_review_note(editor, playback);
   } else if ((clicked || enter) && notes->text_length > 0u) {
     editor_annotations_add_note(editor, playback);
   }
@@ -1432,6 +1496,9 @@ vkr_internal void editor_prompt_annotations(EditorPrompt *prompt,
     editor_prompt_add(prompt, "Review: %s%s%s.\n",
                       vkr_recording_review_name(a->review),
                       a->review_by[0] ? " by " : "", a->review_by);
+    if (a->review_note[0]) {
+      editor_prompt_add(prompt, "Review note: \"%s\"\n", a->review_note);
+    }
   }
   /* Segments first: the parts someone marked as worth looking at. */
   for (uint32_t i = 0u;

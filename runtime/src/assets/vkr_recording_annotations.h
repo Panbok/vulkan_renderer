@@ -58,6 +58,9 @@ typedef struct VkrRecordingAnnotations {
   VkrRecordingReview review;
   char review_by[VKR_RECORDING_AUTHOR_MAX];
   int64_t review_at;
+  /* What the reviewer concluded; empty without a note. Clearing the review
+     clears it. */
+  char review_note[VKR_RECORDING_SEGMENT_NOTE_MAX];
   /* By frame. */
   VkrRecordingNote notes[VKR_RECORDING_NOTE_MAX];
   uint32_t note_count;
@@ -128,3 +131,8 @@ void vkr_recording_annotations_remove_segment(VkrRecordingAnnotations *a,
 void vkr_recording_annotations_set_review(VkrRecordingAnnotations *a,
                                           VkrRecordingReview review,
                                           const char *author);
+
+/** Sets the review's note, cut on a UTF-8 boundary to fit; empty removes
+ * it. */
+void vkr_recording_annotations_set_review_note(VkrRecordingAnnotations *a,
+                                               String8 note);

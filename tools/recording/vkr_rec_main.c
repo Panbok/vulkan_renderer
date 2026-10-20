@@ -400,6 +400,8 @@ static void rec_write_annotations(VkrJsonWriter *json, const char *path) {
       json, rec_str(vkr_recording_review_name(annotations.review)));
   vkr_json_writer_name(json, rec_str("review_by"));
   vkr_json_writer_string(json, rec_str(annotations.review_by));
+  vkr_json_writer_name(json, rec_str("review_note"));
+  vkr_json_writer_string(json, rec_str(annotations.review_note));
   vkr_json_writer_name(json, rec_str("notes"));
   vkr_json_writer_begin_array(json);
   for (uint32_t i = 0u; i < annotations.note_count; ++i) {

@@ -16384,6 +16384,7 @@ ops_recording_annotations_json(OpsContext *ctx,
           vkr_bakery_json_cstr(arena, vkr_recording_review_name(a->review)));
   ops_set(ctx, review, "by", vkr_bakery_json_cstr(arena, a->review_by));
   ops_set(ctx, review, "at", vkr_bakery_json_int(arena, a->review_at));
+  ops_set(ctx, review, "note", vkr_bakery_json_cstr(arena, a->review_note));
   ops_set(ctx, object, "review", review);
   VkrBakeryJson *notes = vkr_bakery_json_array(arena);
   for (uint32_t i = 0u; i < a->note_count; ++i) {
@@ -16686,6 +16687,12 @@ static VkrEditorOpStatus ops_run_rec_review(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   vkr_recording_annotations_set_review(annotations, review, ops_author(ctx));
+  /* A note replaces the review's; without one the note stays, unless the
+     review was cleared. */
+  String8 note = {0};
+  if (vkr_bakery_json_get_string(ctx->call->args, "note", &note)) {
+    vkr_recording_annotations_set_review_note(annotations, note);
+  }
   return ops_recording_annotations_done(ctx, annotations);
 }
 
@@ -18021,10 +18028,12 @@ static const OpsDef s_ops[] = {
      ops_run_rec_rerun, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.review",
      "Set recording 'name' (default: the open one) to 'state' unreviewed, "
-     "reviewed or flagged.",
+     "reviewed or flagged, with an optional 'note' on what the review found "
+     "(empty removes it; unreviewed clears it).",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"state\":{\"enum\":[\"unreviewed\",\"reviewed\","
-     "\"flagged\"]}},\"required\":[\"state\"]}",
+     "\"flagged\"]},\"note\":{\"type\":\"string\"}},\"required\":["
+     "\"state\"]}",
      ops_run_rec_review, NULL, OPS_QUICK | OPS_NO_SCENE},
     {"rec.request.create",
      "Ask the user to record something: a 'question' the recording must "
