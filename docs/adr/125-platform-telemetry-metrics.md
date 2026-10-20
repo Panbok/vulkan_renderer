@@ -110,7 +110,12 @@ dictionary of its IOAccelerator service
 One read costs 80 to 450 µs on an M1 Pro, so a utility-class sampler thread
 started by the first frame's read reads every 250 ms and publishes through
 atomics. The keys are undocumented; a missing one leaves its metric
-unavailable. The driver's own refresh period is unknown.
+unavailable. The driver refreshes them at least every 20 ms: on
+2026-10-20, 285 reads of `ioreg -c AGXAccelerator` about 20 ms apart over
+6 s saw the utilizations and `TiledSceneBytes` change between reads as
+little as 18 to 20 ms apart, the reads' own spacing. The 250 ms sampler,
+not the driver, sets the metrics' time resolution; it keeps the read cost
+under 2 ms a second.
 
 | Metric | Driver key |
 |---|---|

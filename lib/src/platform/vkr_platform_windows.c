@@ -1008,12 +1008,43 @@ static bool8_t vkr_platform_child_handles_begin(VkrPlatformChildHandles *child,
   return true_v;
 }
 
+/* Hands what the child wrote to its stdout pipe so far to config->on_stdout.
+   Clears `*open` once every write end is closed and the pipe is empty, sets
+   `*out_read` when it read any, and returns false when the callback refuses
+   more. */
+static bool8_t vkr_platform_stream_drain(const VkrPlatformProcessConfig *config,
+                                         HANDLE stream, bool8_t *open,
+                                         bool8_t *out_read) {
+  *out_read = false_v;
+  uint8_t buffer[65536];
+  for (;;) {
+    DWORD available = 0u;
+    if (!PeekNamedPipe(stream, NULL, 0u, NULL, &available, NULL)) {
+      *open = false_v;
+      return true_v;
+    }
+    if (available == 0u) {
+      return true_v;
+    }
+    DWORD count = 0u;
+    if (!ReadFile(stream, buffer, Min(available, (DWORD)sizeof(buffer)), &count,
+                  NULL) ||
+        count == 0u) {
+      *open = false_v;
+      return true_v;
+    }
+    *out_read = true_v;
+    if (!config->on_stdout(config->stdout_context, buffer, (uint64_t)count)) {
+      return false_v;
+    }
+  }
+}
+
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
                                  bool8_t *out_timed_out) {
-  /* Streamed stdout (on_stdout) has no Windows implementation yet. */
   if (!config || !config->executable || !out_exit_code || !out_timed_out ||
-      config->on_stdout ||
+      (config->on_stdout && config->stdout_path) ||
       (config->environment_count > 0u && !config->environment) ||
       (config->argument_count > 0u && !config->arguments) ||
       config->environment_count > 16u) {
@@ -1071,6 +1102,20 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   if (shared_output) {
     output[1] = output[0];
   }
+  /* Streamed stdout: the child writes a pipe whose read end the waiting
+     loop drains; a large buffer keeps a fast writer from stalling between
+     reads. */
+  HANDLE stream_read = NULL;
+  HANDLE stream_write = NULL;
+  if (config->on_stdout) {
+    if (!CreatePipe(&stream_read, &stream_write, NULL, 4u << 20u)) {
+      if (paths[1]) {
+        CloseHandle(output[1]);
+      }
+      return false_v;
+    }
+    output[0] = stream_write;
+  }
   VkrPlatformChildHandles child;
   if (!vkr_platform_child_handles_begin(&child, GetStdHandle(STD_INPUT_HANDLE),
                                         output[0], output[1])) {
@@ -1078,6 +1123,10 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       if (paths[i]) {
         CloseHandle(output[i]);
       }
+    }
+    if (stream_read) {
+      CloseHandle(stream_read);
+      CloseHandle(stream_write);
     }
     return false_v;
   }
@@ -1099,6 +1148,10 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
         if (paths[i]) {
           CloseHandle(output[i]);
         }
+      }
+      if (stream_read) {
+        CloseHandle(stream_read);
+        CloseHandle(stream_write);
       }
       return false_v;
     }
@@ -1127,9 +1180,17 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       CloseHandle(output[i]);
     }
   }
+  /* Only the child's copy of the write end stays open, so the pipe breaks
+     when the child and its descendants are done with it. */
+  if (stream_write) {
+    CloseHandle(stream_write);
+  }
   if (!created) {
     if (job) {
       CloseHandle(job);
+    }
+    if (stream_read) {
+      CloseHandle(stream_read);
     }
     return false_v;
   }
@@ -1142,23 +1203,37 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     CloseHandle(job);
+    if (stream_read) {
+      CloseHandle(stream_read);
+    }
     return false_v;
   }
   *out_exit_code = -1;
   *out_timed_out = false_v;
   const ULONGLONG started = GetTickCount64();
   bool8_t tree_stopped = true_v;
+  bool8_t stream_open = stream_read != NULL;
+  bool8_t refused = false_v;
+  bool8_t streaming = false_v;
   DWORD wait;
   for (;;) {
+    /* While output keeps arriving the loop reads again at once. */
     wait = WaitForSingleObject(
         process.hProcess,
-        config->is_cancelled
+        streaming ? 0u
+        : config->is_cancelled || stream_open
             ? 10u
             : (config->timeout_ms ? config->timeout_ms : INFINITE));
     if (wait != WAIT_TIMEOUT)
       break;
+    streaming = false_v;
+    if (stream_open) {
+      refused = !vkr_platform_stream_drain(config, stream_read, &stream_open,
+                                           &streaming);
+    }
     const bool8_t cancelled =
-        config->is_cancelled && config->is_cancelled(config->cancel_context);
+        refused ||
+        (config->is_cancelled && config->is_cancelled(config->cancel_context));
     const bool8_t timed_out = config->timeout_ms > 0u &&
                               GetTickCount64() - started >= config->timeout_ms;
     if (cancelled || timed_out) {
@@ -1172,6 +1247,22 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  vkr_platform_process_stop_wait_ms);
       break;
     }
+  }
+  /* What the child wrote before it ended; a descendant that keeps the pipe
+     open ends the reading after a second without output. */
+  ULONGLONG quiet_since = GetTickCount64();
+  while (stream_open && !refused && GetTickCount64() - quiet_since < 1000u) {
+    bool8_t got = false_v;
+    refused =
+        !vkr_platform_stream_drain(config, stream_read, &stream_open, &got);
+    if (got) {
+      quiet_since = GetTickCount64();
+    } else if (stream_open) {
+      Sleep(10u);
+    }
+  }
+  if (stream_read) {
+    CloseHandle(stream_read);
   }
   if (wait == WAIT_OBJECT_0) {
     DWORD exit_code = 0u;

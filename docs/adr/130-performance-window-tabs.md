@@ -11,8 +11,9 @@ authority: adr
 Accepted (partial). The editor's Performance window has six tabs, and Tier 1
 recordings carry the data the five new ones read; Apple GPU counters from an
 Instruments trace can be imported into a recording for the HW tab. Metal
-evidence is on this Mac; the Vulkan backend's census pass, counters, readback
-and pipeline statistics have no native run yet (Windows machine).
+evidence is on this Mac, and the HW tab's Vulkan pipeline statistics ran
+on an RX 6700 XT; the Vulkan backend's census pass, readback and command
+counters have no native run yet (Windows machine).
 
 ## Context
 
@@ -126,9 +127,13 @@ needed a live editor, a GPU capture or a debugger.
    statistics (off by default, applies at the next start, hidden on the
    tiled pipeline) on a device with `VK_KHR_pipeline_executable_properties`,
    creates pipelines with `VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR` and
-   adds each executable's driver statistics, summarized into registers,
-   spill bytes, instructions and shared memory by name fragment because the
-   names are driver-defined. `VkrDeviceInformation` gains the GPU
+   adds each executable's driver statistics, summarized into vector
+   registers, spill bytes, instructions and shared memory used by name
+   fragment because the names are driver-defined (AMD: `numUsedVgprs`,
+   `scratchMemUsageInBytes`, `ldsUsageSizeInBytes`; its
+   `ldsSizePerLocalWorkGroup` is the limit and is left out). The HW tab
+   adds an SGPRs column from the statistics whose name holds `sgpr`
+   (`numUsedSgprs`), which needs no recording field. `VkrDeviceInformation` gains the GPU
    architecture (Metal) or driver name (Vulkan), unified memory, the
    working set, threadgroup memory and thread limits and the SIMD width. A
    Tier 1 recording writes the device's facts once (`hardware`, with the
@@ -155,8 +160,8 @@ needed a live editor, a GPU capture or a debugger.
    [`vkr_recording_counters_import`](../../runtime/src/assets/vkr_recording_counters.c)
    streams the trace's os-signpost, `gpu-counter-info` and
    `gpu-counter-value` tables out of `xcrun xctrace export` through
-   `vkr_platform_process_run`'s stdout callback (POSIX only; Windows refuses
-   it), resolving xctrace's id and ref values as it reads, maps trace time
+   `vkr_platform_process_run`'s stdout callback (a pipe on macOS and
+   Windows), resolving xctrace's id and ref values as it reads, maps trace time
    to the CPU clock by the median offset of the `Clock` events, averages
    the samples of both ring buffers into buckets (50 us by default) and
    writes the bundle's `gpu_counters.bin`
@@ -224,6 +229,24 @@ the reader's pipeline kind offset moved by one byte. Unavailable: the Vulkan
 statistics path on hardware (it compiles here; MoltenVK lacks the
 extension) and the driver's own refresh period of its utilization figures.
 
+Vulkan, AMD Radeon RX 6700 XT, AMD driver 26.6.3, Windows 10 19045, Release
+(clang and lld-link, MSVC ABI), 2026-10-20, built at `a06a6906` with the
+fixes of `032cbbc5` and `854ebf05`: two headless Bistro runs, Capture
+shader statistics off and on. Off, the HW tab listed 119 pipelines with
+compile times, hid the register columns and pointed at the setting; the
+feature report said `pipelineExecutableInfo` "available with Capture
+shader statistics". On, it said "enabled", every pipeline showed
+registers, the selected pipeline listed `ShaderProperties.cs|gs|ps:
+<statistic>` rows, and the device facts read Captured. AMD reports five
+statistics per executable and no instruction count: `vk_deferred_lighting`
+228 VGPRs, 102 SGPRs, 512 B of LDS and 27,040 B of scratch. Cold-cache
+compiles took 254,513 ms off and 255,101 ms on (+0.2 %), 24 ms warm; the
+slowest pipeline, `vk_transmission_shade_partitioned`, 62 s. The run found
+the TG memory column showing `ldsSizePerLocalWorkGroup` (64 KiB on every
+pipeline) and the utilization chart drawn empty for a series with no
+valid sample; both are fixed. Unavailable there: the counter import
+(macOS only) and a build of `99cdc379`.
+
 Metal, M1 Pro, Release editor, headless Bistro, 2026-10-20: a 14 s Tier 1
 recording (2,974 frames, `perf.set {signposts: true}`) with a 3 s trace
 (`xcrun xctrace record --instrument "Metal GPU Counters" --instrument
@@ -272,17 +295,30 @@ its first run found a row lost when a chunk ended inside `<row>`.
   the heap for the renderer's lifetime (about 0.3 MB for Bistro's 478
   Metal pipelines); a rebuilt variant adds another entry.
 - Turning Capture shader statistics on changes Vulkan pipeline cache keys:
-  the first start compiles again, and compile times with it on are not
-  comparable with it off.
+  the first start compiles again. On the RX 6700 XT it added 0.2 % to a
+  cold Bistro compile of about 4 minutes.
 - The Apple driver's statistics are undocumented IORegistry keys; one that
   changes leaves its value unavailable, never wrong.
 - A counter import costs about 47 s of `xctrace export` per traced second
   on an M1 Pro, on its own thread, and writes about 4 MB per traced second
-  at 50 us buckets, so traces stay at 1 to 10 s (3 s by default). Each
-  trace leaves a few-megabyte `instruments*.ktrace` in `$TMPDIR` that
-  xctrace names, which the editor does not remove. Counters cover the whole GPU, other processes
-  too; passes that overlap share samples, and a pass shorter than two
-  buckets reads its neighbours' work.
+  at 50 us buckets, so traces stay at 1 to 10 s (3 s by default). The
+  export has no faster form: its XPath selects whole tables, not rows; the
+  instrument offers no recording options (`--show-recording-options`); and
+  the trace's `metal-gpu-counter-profile` and `gpu-aps-stream` tables are
+  empty. Counters cover the whole GPU, other processes too; passes that
+  overlap share samples, and a pass shorter than two buckets reads its
+  neighbours' work: the samples come from each ring buffer about every
+  39 us, so a finer bucket would not resolve shorter passes.
+- xctrace writes a kernel trace of a few megabytes, `instruments*.ktrace`,
+  to the user's temporary directory under a name the trace does not record,
+  and ignores a child's `TMPDIR`. The trace call lists those files before
+  and after its recording and removes the one that appeared; when two or
+  more appear, another recording ran at the same time and none is removed.
+- Per-pass counters come from the tiled pipeline's GPU-timed frames, one in
+  8. Timing every frame while tracing would give 8 times the frames but
+  splits the shared compute encoder (about 0.5 ms a Bistro frame), changing
+  the work the counters measure; a 3 s trace's 90 timed frames per pass
+  gave stable means, so the period stays.
 - Signposts cost about 5 us a frame while on, so a recording with counters
   is not a timing reference.
 

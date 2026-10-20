@@ -716,6 +716,7 @@ enum {
   PIPE_WIDTH,
   PIPE_MEMORY,
   PIPE_REGISTERS,
+  PIPE_SCALAR,
   PIPE_SPILL,
   PIPE_INSTRUCTIONS,
   PIPE_FRAME,
@@ -752,8 +753,15 @@ static const VkrEditorTableColumn PIPE_TABLE[PIPE_COLUMNS] = {
      .width_pt = 74.0f,
      .min_pt = 56.0f,
      .numeric = true_v,
-     .tooltip = "Most registers one of its stages uses, as the driver "
-                "reports them (Vulkan with Capture shader statistics)"},
+     .tooltip = "Most vector registers (VGPRs) one of its stages uses, as "
+                "the driver reports them (Vulkan with Capture shader "
+                "statistics)"},
+    {.title = "SGPRs",
+     .width_pt = 62.0f,
+     .min_pt = 48.0f,
+     .numeric = true_v,
+     .tooltip = "Most scalar registers one of its stages uses, from its "
+                "driver statistics (AMD)"},
     {.title = "Spill",
      .width_pt = 64.0f,
      .min_pt = 48.0f,
@@ -793,7 +801,34 @@ vkr_internal int32_t hw_compare_items(const void *lhs, const void *rhs) {
   return a->index < b->index ? -1 : a->index > b->index ? 1 : 0;
 }
 
-vkr_internal float64_t hw_pipeline_key(const VkrRecordingPipeline *pipeline,
+/* Whether `text` holds "sgpr" in any case: AMD's numUsedSgprs. */
+vkr_internal bool8_t hw_names_sgpr(const char *text) {
+  for (const char *at = text; at[0] && at[1] && at[2] && at[3]; ++at) {
+    if ((at[0] | 0x20) == 's' && (at[1] | 0x20) == 'g' &&
+        (at[2] | 0x20) == 'p' && (at[3] | 0x20) == 'r') {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* The most scalar registers a stage of the pipeline uses, from its driver
+   statistics; zero where the driver reports none. */
+vkr_internal uint32_t hw_scalar_registers(
+    const VkrRecordingData *data, const VkrRecordingPipeline *pipeline) {
+  float64_t most = 0.0;
+  for (uint32_t s = 0u; s < pipeline->stat_count; ++s) {
+    const VkrRecordingPipelineStat *stat =
+        &data->pipeline_stats[pipeline->stat_first + s];
+    if (hw_names_sgpr(stat->name)) {
+      most = Max(most, stat->value);
+    }
+  }
+  return most > 0.0 && most < 4294967295.0 ? (uint32_t)most : 0u;
+}
+
+vkr_internal float64_t hw_pipeline_key(const VkrRecordingData *data,
+                                       const VkrRecordingPipeline *pipeline,
                                        uint32_t column, uint32_t index) {
   switch (column) {
   case PIPE_KIND:
@@ -808,6 +843,8 @@ vkr_internal float64_t hw_pipeline_key(const VkrRecordingPipeline *pipeline,
     return pipeline->threadgroup_memory;
   case PIPE_REGISTERS:
     return pipeline->registers;
+  case PIPE_SCALAR:
+    return hw_scalar_registers(data, pipeline);
   case PIPE_SPILL:
     return pipeline->spill_bytes;
   case PIPE_INSTRUCTIONS:
@@ -852,6 +889,8 @@ vkr_internal uint32_t hw_pipeline_columns(const VkrEditorRecordingPerf *perf) {
     mask |= pipeline->execution_width > 0u ? 1u << PIPE_WIDTH : 0u;
     mask |= pipeline->threadgroup_memory > 0u ? 1u << PIPE_MEMORY : 0u;
     mask |= pipeline->registers > 0u ? 1u << PIPE_REGISTERS : 0u;
+    mask |= hw_scalar_registers(&perf->data, pipeline) > 0u ? 1u << PIPE_SCALAR
+                                                            : 0u;
     mask |= pipeline->spill_bytes > 0u ? 1u << PIPE_SPILL : 0u;
     mask |= pipeline->instructions > 0u ? 1u << PIPE_INSTRUCTIONS : 0u;
     mask |= pipeline->frame > 0u ? 1u << PIPE_FRAME : 0u;
@@ -928,7 +967,7 @@ vkr_internal void hw_pipelines(VkrEditorUi *editor,
   if (sort != VKR_EDITOR_TABLE_NONE) {
     for (uint32_t r = 0u; r < count; ++r) {
       const VkrRecordingPipeline *pipeline = &data->pipelines[items[r].index];
-      items[r].key = hw_pipeline_key(pipeline, sort, items[r].index);
+      items[r].key = hw_pipeline_key(data, pipeline, sort, items[r].index);
       items[r].name = sort == PIPE_NAME ? pipeline->name : NULL;
     }
     vkr_sort(items, count, sizeof(HwSortItem), hw_compare_items);
@@ -961,6 +1000,7 @@ vkr_internal void hw_pipelines(VkrEditorUi *editor,
         hw_count_cell(allocator, pipeline->execution_width),
         hw_bytes_cell(allocator, pipeline->threadgroup_memory),
         hw_count_cell(allocator, pipeline->registers),
+        hw_count_cell(allocator, hw_scalar_registers(data, pipeline)),
         hw_bytes_cell(allocator, pipeline->spill_bytes),
         hw_count_cell(allocator, pipeline->instructions),
         string8_create_formatted(allocator, "%llu",

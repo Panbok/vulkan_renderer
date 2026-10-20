@@ -13,6 +13,7 @@
 #include "depot_test.h"
 #include "draw_census_test.h"
 #include "editor_project_store_test.h"
+#include "filesystem/filesystem.h"
 #include "gameplay_input_test.h"
 #include "gameplay_player_test.h"
 #include "hash_test.h"
@@ -43,6 +44,7 @@
 bool32_t run_path_io_tests(void);
 bool32_t run_process_path_tests(void);
 int32_t process_path_test_child(void);
+int32_t process_stream_test_child(void);
 bool32_t run_asset_path_tests(void);
 bool32_t run_local_shadow_tests(void);
 bool32_t run_local_socket_tests(void);
@@ -178,6 +180,9 @@ int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "--process-path-test-child") == 0) {
     return process_path_test_child();
   }
+  if (argc == 2 && strcmp(argv[1], "--process-stream-test-child") == 0) {
+    return process_stream_test_child();
+  }
   if (argc == 4 && strcmp(argv[1], "--lock-owner-test-child") == 0) {
     /* The child times the background process it starts. */
     vkr_platform_init();
@@ -186,13 +191,26 @@ int main(int argc, char **argv) {
   printf("Running tests...\n\n");
 
   vkr_platform_init();
+  /* Suites write their scratch files under tests/tmp, which a fresh
+     checkout or worktree lacks. */
+  const FilePath scratch = file_path_view(PROJECT_SOURCE_DIR "tests/tmp");
+  (void)file_create_directories(&scratch);
 
   Arena *log_arena = arena_create(MB(1), MB(1));
   assert(log_init(log_arena));
 
-  // `--suite <text>` runs only the suites whose registered name contains it.
+  // `--suite <text>` runs only the suites whose registered name contains it;
+  // any other argument is refused rather than ignored, so a run never looks
+  // filtered when it was not.
   const char *filter =
       argc == 3 && strcmp(argv[1], "--suite") == 0 ? argv[2] : NULL;
+  if (argc > 1 && !filter) {
+    printf("usage: vulkan_renderer_tester [--suite <text>]\n"
+           "The build_test scripts build the Debug tester; pass them only "
+           "--suite <text>.\n");
+    vkr_platform_shutdown();
+    return 2;
+  }
   bool32_t all_passed = true;
   uint32_t suites_run = 0u;
   for (uint32_t i = 0u; i < ArrayCount(VKR_TEST_SUITES); ++i) {

@@ -2,6 +2,12 @@
 
 set -e # Exit early if any commands fail
 
+# The tester is always the Debug build; its only argument is --suite <text>.
+if [ "$#" -gt 0 ] && [ "$1" != "--suite" ]; then
+  echo "usage: $0 [--suite <text>]  (builds and runs the Debug tester)" >&2
+  exit 2
+fi
+
 python3 "$(dirname "$0")/tools/checks/check_format.py"
 python3 "$(dirname "$0")/tools/checks/check_path_boundaries.py"
 python3 "$(dirname "$0")/tools/checks/check_libc_boundary.py"

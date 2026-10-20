@@ -93,7 +93,4 @@ Remaining:
 - Vendor counters through `VK_KHR_performance_query` on Vulkan (optional).
   Metal on the M1 Pro exposes only the `timestamp` counter set
   (`GPUTimestamp`) at stage boundaries, so the Mac has none to read.
-- Streamed process output on Windows (`vkr_platform_process_run`'s
-  `on_stdout`), when a Windows tool needs it; the GPU counter import that
-  uses it is macOS only ([ADR-130](../adr/130-performance-window-tabs.md)).
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.

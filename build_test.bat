@@ -1,6 +1,12 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+rem The tester is always the Debug build; its only argument is --suite <text>.
+if not "%~1"=="" if /I not "%~1"=="--suite" (
+    echo usage: %~nx0 [--suite ^<text^>]  ^(builds and runs the Debug tester^)
+    exit /b 2
+)
+
 rem Ensure compile steps are run within the repository directory
 pushd "%~dp0" || exit /b 1
 

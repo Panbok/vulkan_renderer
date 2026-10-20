@@ -878,6 +878,77 @@ bool8_t vkr_recording_counters_import(const VkrRecordingCountersImport *import,
   return ok;
 }
 
+/* The kernel traces xctrace leaves in the user's temporary directory, by
+   name: it writes one per recording there under a name of its own, which
+   the trace does not record. */
+#define COUNTERS_KTRACE_MAX 64u
+#define COUNTERS_KTRACE_NAME_MAX 63u
+typedef struct CountersKtraces {
+  char names[COUNTERS_KTRACE_MAX][COUNTERS_KTRACE_NAME_MAX + 1u];
+  uint32_t count;
+  bool8_t overflow;
+} CountersKtraces;
+
+vkr_internal bool8_t counters_ktrace_visit(void *context, const char *name,
+                                           bool8_t is_directory) {
+  CountersKtraces *list = context;
+  const uint64_t length = string_length(name);
+  if (is_directory || length <= 18u || length > COUNTERS_KTRACE_NAME_MAX ||
+      MemCompare(name, "instruments", 11u) != 0 ||
+      !string_equals(name + length - 7u, ".ktrace")) {
+    return true_v;
+  }
+  if (list->count == COUNTERS_KTRACE_MAX) {
+    list->overflow = true_v;
+    return false_v;
+  }
+  string_format(list->names[list->count++], COUNTERS_KTRACE_NAME_MAX + 1u, "%s",
+                name);
+  return true_v;
+}
+
+vkr_internal bool8_t counters_ktraces(const char *directory,
+                                      CountersKtraces *out) {
+  MemZero(out, sizeof(*out));
+  const FilePath path = file_path_view(directory);
+  return file_list_directory(&path, counters_ktrace_visit, out) ==
+             FILE_ERROR_NONE &&
+         !out->overflow;
+}
+
+/* Removes the kernel trace this recording left: the one name that appeared
+   while it ran. Two or more mean another recording ran at the same time,
+   and none is removed, since one may still be in use. */
+vkr_internal void counters_remove_ktrace(const char *directory,
+                                         const CountersKtraces *before) {
+  CountersKtraces *after = vkr_heap_alloc_zeroed(1u, sizeof(*after));
+  if (!after || !counters_ktraces(directory, after)) {
+    vkr_heap_free(after);
+    return;
+  }
+  const char *added = NULL;
+  uint32_t added_count = 0u;
+  for (uint32_t a = 0u; a < after->count; ++a) {
+    bool8_t known = false_v;
+    for (uint32_t b = 0u; b < before->count && !known; ++b) {
+      known = string_equals(after->names[a], before->names[b]);
+    }
+    if (!known) {
+      added = after->names[a];
+      ++added_count;
+    }
+  }
+  if (added_count == 1u) {
+    char path[COUNTERS_PATH_MAX];
+    if (string_format(path, sizeof(path), "%s/%s", directory, added) <
+        (int32_t)sizeof(path)) {
+      const FilePath file = file_path_view(path);
+      (void)file_remove(&file);
+    }
+  }
+  vkr_heap_free(after);
+}
+
 bool8_t vkr_recording_counters_trace(uint32_t pid, uint32_t seconds,
                                      const char *trace_path,
                                      bool8_t (*is_cancelled)(void *context),
@@ -900,6 +971,14 @@ bool8_t vkr_recording_counters_trace(uint32_t pid, uint32_t seconds,
     string_format(error, error_capacity, "the trace path is too long");
     return false_v;
   }
+  /* The kernel traces before this recording, so the one it adds can be
+     told apart (xctrace ignores a child's TMPDIR). */
+  char temp[COUNTERS_PATH_MAX];
+  CountersKtraces *before = vkr_heap_alloc_zeroed(1u, sizeof(*before));
+  const bool8_t listed =
+      before &&
+      vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, temp, sizeof(temp)) &&
+      counters_ktraces(temp, before);
   const char *const arguments[] = {
       "xctrace",      "record",      "--instrument", "Metal GPU Counters",
       "--instrument", "os_signpost", "--attach",     process,
@@ -922,6 +1001,10 @@ bool8_t vkr_recording_counters_trace(uint32_t pid, uint32_t seconds,
   int32_t exit_code = -1;
   bool8_t timed_out = false_v;
   const bool8_t ran = vkr_platform_process_run(&config, &exit_code, &timed_out);
+  if (ran && listed) {
+    counters_remove_ktrace(temp, before);
+  }
+  vkr_heap_free(before);
   const FilePath log_path = file_path_view(log);
   const FilePath trace = file_path_view(trace_path);
   if (!ran) {

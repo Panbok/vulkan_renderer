@@ -809,6 +809,9 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     const float64_t started = vkr_platform_monotonic_seconds();
     for (;;) {
       if (!vkr_platform_process_wait_nonblocking(pid, &status, &reaped)) {
+        if (config->on_stdout) {
+          close(stream[0]);
+        }
         return false_v;
       }
       if (reaped) {

@@ -59,8 +59,7 @@ typedef struct VkrPlatformProcessConfig {
   void *cancel_context;
   /** Optional: receives the child's stdout as it arrives, in chunks on the
    * waiting thread, instead of `stdout_path` (setting both fails). Returning
-   * false stops the child as a cancellation does. Not yet on Windows, where
-   * process_run refuses a config that sets it. */
+   * false stops the child as a cancellation does. */
   bool8_t (*on_stdout)(void *context, const uint8_t *bytes, uint64_t size);
   void *stdout_context;
 } VkrPlatformProcessConfig;

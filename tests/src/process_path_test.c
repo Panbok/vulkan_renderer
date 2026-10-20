@@ -9,6 +9,89 @@
 
 bool32_t run_process_path_tests(void);
 int32_t process_path_test_child(void);
+int32_t process_stream_test_child(void);
+
+/* Bytes the stream child writes, 6 MB: more than any pipe buffer holds (4 MB on
+   Windows), so the parent must read while the child still writes. */
+#define PROCESS_STREAM_TEST_LINES 6144u
+#define PROCESS_STREAM_TEST_LINE 1024u
+
+/* Writes PROCESS_STREAM_TEST_LINES lines whose bytes follow from their
+   position, each ending in a line break. */
+int32_t process_stream_test_child(void) {
+  char line[PROCESS_STREAM_TEST_LINE + 1u];
+  for (uint32_t l = 0u; l < PROCESS_STREAM_TEST_LINES; ++l) {
+    for (uint32_t i = 0u; i + 1u < PROCESS_STREAM_TEST_LINE; ++i) {
+      line[i] = (char)('a' + (l * 7u + i) % 26u);
+    }
+    line[PROCESS_STREAM_TEST_LINE - 1u] = '\n';
+    line[PROCESS_STREAM_TEST_LINE] = '\0';
+    vkr_platform_stdout_write(line);
+  }
+  return 7;
+}
+
+typedef struct ProcessStreamRead {
+  uint64_t bytes;
+  uint32_t calls;
+  bool8_t ordered;
+  /* Calls after which the callback refuses more; zero never refuses. */
+  uint32_t refuse_after;
+} ProcessStreamRead;
+
+static bool8_t process_stream_receive(void *context, const uint8_t *bytes,
+                                      uint64_t size) {
+  ProcessStreamRead *read = context;
+  for (uint64_t i = 0u; i < size; ++i) {
+    const uint64_t at = read->bytes + i;
+    const uint32_t l = (uint32_t)(at / PROCESS_STREAM_TEST_LINE);
+    const uint32_t c = (uint32_t)(at % PROCESS_STREAM_TEST_LINE);
+    const uint8_t expected = c + 1u == PROCESS_STREAM_TEST_LINE
+                                 ? (uint8_t)'\n'
+                                 : (uint8_t)('a' + (l * 7u + c) % 26u);
+    read->ordered = read->ordered && bytes[i] == expected;
+  }
+  read->bytes += size;
+  ++read->calls;
+  return read->refuse_after == 0u || read->calls < read->refuse_after;
+}
+
+/* Detects: streamed stdout that loses, reorders or truncates bytes past a
+   pipe's buffer, waits for the child to end before reading (which deadlocks
+   a child that fills the pipe), keeps reading after the callback refuses,
+   or accepts both a stream and an output file. */
+static void process_stream_test(void) {
+  printf("  Running process_stream_test...\n");
+  char executable[4096];
+  assert(vkr_platform_executable_path(executable, sizeof(executable)));
+  const char *arguments[] = {"--process-stream-test-child"};
+  ProcessStreamRead read = {.ordered = true_v};
+  VkrPlatformProcessConfig config = {
+      .executable = executable,
+      .arguments = arguments,
+      .argument_count = ArrayCount(arguments),
+      .timeout_ms = 60000u,
+      .termination_grace_ms = 2000u,
+      .hidden = true_v,
+      .on_stdout = process_stream_receive,
+      .stdout_context = &read,
+  };
+  int32_t exit_code = -1;
+  bool8_t timed_out = false_v;
+  assert(vkr_platform_process_run(&config, &exit_code, &timed_out));
+  assert(!timed_out && exit_code == 7);
+  assert(read.ordered && read.bytes == (uint64_t)PROCESS_STREAM_TEST_LINES *
+                                           PROCESS_STREAM_TEST_LINE);
+
+  /* A refusal stops the child before it writes everything. */
+  read = (ProcessStreamRead){.ordered = true_v, .refuse_after = 1u};
+  assert(vkr_platform_process_run(&config, &exit_code, &timed_out));
+  assert(!timed_out && exit_code != 7 && read.calls == 1u && read.ordered);
+
+  config.stdout_path = "unused.txt";
+  assert(!vkr_platform_process_run(&config, &exit_code, &timed_out));
+  printf("  process_stream_test PASSED\n");
+}
 
 /* A non-ASCII value the launcher sets for the child, as the Bakery hands its
    tools a usage-report path inside a cache below a non-ASCII profile. */
@@ -70,6 +153,7 @@ static void process_path_test_contents(const char *path, const char *expected) {
 #endif
 
 bool32_t run_process_path_tests(void) {
+  process_stream_test();
 #if defined(PLATFORM_WINDOWS)
   printf("--- Starting Windows Process Path Tests ---\n");
   char directories[7][1024];
