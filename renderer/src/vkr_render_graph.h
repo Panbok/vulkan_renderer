@@ -572,8 +572,12 @@ typedef struct VkrRenderGraphFrameInfo {
   uint32_t planar_reflection_divisor;
   /** The frame updates the diffuse volume's dynamic layer (ADR-119). */
   bool8_t dynamic_volume_active;
-  /** The frame traces ray-query sun shadows, one ray per 2x2 block. */
+  /** The frame traces ray-query sun shadows, one ray per 2x2 block, or one
+      per pixel at `sun_ray_trace_divisor` 1. */
   bool8_t sun_ray_shadows_active;
+  /** The sun-ray trace grid's divisor of the viewport: 2 at half rate, 1 at
+      full rate (graph extent divisor source "sun_ray_trace_divisor"). */
+  uint32_t sun_ray_trace_divisor;
   /** Deferred lighting marches camera depth toward the sun for contacts
       beyond the rays' cover. */
   bool8_t sun_contact_shadows;

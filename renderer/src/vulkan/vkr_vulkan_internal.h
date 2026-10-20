@@ -3032,7 +3032,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanSunRayShadowRoot {
   uint32_t history_next_texture;
   uint32_t temporal_texture;
   uint32_t history_valid;
-  uint32_t reserved;
+  /* Pixels per trace texel on each axis: 2 traces one pixel of each 2x2
+     block, turning with the frame; 1 traces every pixel. */
+  uint32_t trace_step;
 } VkrVulkanSunRayShadowRoot;
 _Static_assert(sizeof(VkrVulkanSunRayShadowRoot) == 208u &&
                    offsetof(VkrVulkanSunRayShadowRoot, motion_texture) ==

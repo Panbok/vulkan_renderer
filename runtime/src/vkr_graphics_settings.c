@@ -159,6 +159,13 @@ static const VkrPropertyDesc s_graphics_properties[] = {
                 "tracing",
      .offset = GRAPHICS_OFFSET(ray_traced_shadows),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "full_rate_ray_shadows",
+     .label = "Full-rate ray traced shadows",
+     .tooltip = "Trace a ray for every pixel instead of every fourth, so thin "
+                "shadows such as rails' stay steady; costs about 2.4 times "
+                "as much",
+     .offset = GRAPHICS_OFFSET(full_rate_ray_shadows),
+     .kind = VKR_PROPERTY_BOOL},
     {.name = "texture_resolution",
      .label = "Texture resolution",
      .tooltip = "Largest texture size to load; lower values use less memory. "
@@ -274,7 +281,8 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
   }
   /* Ray traced shadows are the desktop pipeline's (ADR-044). */
   if (state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
-      offset == offsetof(VkrGraphicsSettings, ray_traced_shadows)) {
+      (offset == offsetof(VkrGraphicsSettings, ray_traced_shadows) ||
+       offset == offsetof(VkrGraphicsSettings, full_rate_ray_shadows))) {
     result.flags |= VKR_PROPERTY_STATE_DISABLED;
   }
   if (state && state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED &&
@@ -321,6 +329,10 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
     /* Both pipelines march contact shadows for the sun, the desktop
        pipeline also for the nearest local lights. */
     if (settings->shadow_quality == 0u) {
+      result.flags |= VKR_PROPERTY_STATE_DISABLED;
+    }
+  } else if (offset == offsetof(VkrGraphicsSettings, full_rate_ray_shadows)) {
+    if (settings->shadow_quality == 0u || !settings->ray_traced_shadows) {
       result.flags |= VKR_PROPERTY_STATE_DISABLED;
     }
   } else if (offset == offsetof(VkrGraphicsSettings, volumetric_fog)) {
@@ -416,6 +428,10 @@ graphics_preset_gates(const VkrGraphicsSettings *base, VkrGraphicsPreset preset,
   /* About 0.7 ms at 2560x1440 on an RX 6700 XT in Bistro (the shadow
      quality proposal's hybrid prototype). */
   out.ray_traced_shadows = epic && pipeline != VKR_GRAPHICS_PIPELINE_TILED;
+  /* One ray per pixel cost 3.2 ms against 1.34 ms in the Bistro plaza at
+     2560x1440, past the 3 ms the shadow quality proposal allows a preset;
+     it stays a choice of its own. */
+  out.full_rate_ray_shadows = false_v;
   out.ambient_occlusion = medium;
   out.reflection_probes = true_v;
   out.subsurface_scattering = medium;
@@ -451,6 +467,7 @@ vkr_graphics_settings_preset(const VkrGraphicsSettings *settings,
         gates.contact_shadows == settings->contact_shadows &&
         gates.distance_field_shadows == settings->distance_field_shadows &&
         gates.ray_traced_shadows == settings->ray_traced_shadows &&
+        gates.full_rate_ray_shadows == settings->full_rate_ray_shadows &&
         gates.ambient_occlusion == settings->ambient_occlusion &&
         gates.reflection_probes == settings->reflection_probes &&
         gates.subsurface_scattering == settings->subsurface_scattering &&

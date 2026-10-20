@@ -44,6 +44,10 @@ typedef struct VkrGraphicsSettings {
    * the GPU traces ray queries; the cascades take over past 50 m. The Epic
    * preset enables them; the tiled pipeline ignores them. */
   bool8_t ray_traced_shadows;
+  /* With ray traced shadows, one ray per pixel instead of one per 2x2
+   * block: thin shadows such as a rail's on its sleepers stop flickering,
+   * for about 2.4 times the rays' cost. No preset enables it. */
+  bool8_t full_rate_ray_shadows;
   /* Exponential variance moments filter the two farthest cascades instead of
    * PCF on the desktop pipeline; the High and Epic presets enable them. */
   bool8_t filtered_far_shadows;

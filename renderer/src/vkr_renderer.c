@@ -1096,15 +1096,19 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   /* SMAA 4x is opt-in: on the Bistro street view it cost 2.7 ms at
      2560 x 1440 for about 9 % less edge shimmer in motion (ADR-037). */
   renderer->msaa_enabled = vkr_platform_environment_flag("VKR_MSAA_ENABLED");
-  /* Ray-query sun shadows follow the Ray traced shadows setting; "0" or "1"
-     overrides it for a matched capture. An unset variable reads empty. */
+  /* Ray-query sun shadows follow the Ray traced shadows settings; "0", "1"
+     (half rate) or "2" (full rate) overrides them for a matched capture. An
+     unset variable reads empty. */
   char sun_ray_shadows[8];
   renderer->sun_ray_shadow_forced =
       vkr_platform_environment_variable("VKR_SUN_RAY_SHADOWS", sun_ray_shadows,
                                         sizeof(sun_ray_shadows)) &&
       sun_ray_shadows[0] != '\0';
-  renderer->sun_ray_shadow_forced_on =
-      renderer->sun_ray_shadow_forced && string_equals(sun_ray_shadows, "1");
+  renderer->sun_ray_full_rate_forced_on =
+      renderer->sun_ray_shadow_forced && string_equals(sun_ray_shadows, "2");
+  renderer->sun_ray_shadow_forced_on = renderer->sun_ray_shadow_forced &&
+                                       (string_equals(sun_ray_shadows, "1") ||
+                                        renderer->sun_ray_full_rate_forced_on);
   /* Desktop sun contact shadows follow the shadow settings, as the tiled
      pipeline's do; "0" or "1" overrides them for a matched capture. */
   char sun_contact_shadows[8];
@@ -1279,6 +1283,11 @@ vkr_internal void vkr_renderer_prepare_desktop_sun(VkrRenderer *rf,
                                 : packet->shadow && packet->shadow->sun_rays;
   frame->sun_ray_shadows =
       desktop && sun_ray_asked && vkr_renderer_sun_ray_shadows_supported(rf);
+  frame->sun_ray_full_rate =
+      frame->sun_ray_shadows &&
+      (rf->sun_ray_shadow_forced
+           ? rf->sun_ray_full_rate_forced_on
+           : packet->shadow && packet->shadow->sun_ray_full_rate);
   const bool8_t sun_contact_asked =
       rf->sun_contact_forced
           ? rf->sun_contact_forced_on

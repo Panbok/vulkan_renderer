@@ -1481,7 +1481,7 @@
       "condition": "scene_rendering && sun_ray_shadows_active",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor_source": "sun_ray_trace_divisor"
       },
       "format": "R16G16B16A16_SFLOAT",
       "usage": [
@@ -1499,7 +1499,7 @@
       "condition": "scene_rendering && sun_ray_shadows_active",
       "extent": {
         "mode": "viewport",
-        "divisor": 2
+        "divisor_source": "sun_ray_trace_divisor"
       },
       "format": "R16G16_SFLOAT",
       "usage": [

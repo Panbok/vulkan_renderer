@@ -1558,6 +1558,7 @@ vkr_global const VkrVulkanReflectedField s_vk_sun_ray_shadow_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, history_next_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, temporal_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, history_valid),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanSunRayShadowRoot, trace_step),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_atmosphere_fields[] = {

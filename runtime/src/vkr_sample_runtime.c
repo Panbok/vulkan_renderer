@@ -527,6 +527,8 @@ static void sample_graphics_apply_live(VkrStandardSceneRuntime *application,
                                                 ? VKR_SHADOW_SDF_MODE_ADD
                                                 : VKR_SHADOW_SDF_MODE_OFF;
   application->shadow_config.sun_ray_shadows = settings->ray_traced_shadows;
+  application->shadow_config.sun_ray_full_rate =
+      settings->full_rate_ray_shadows;
   /* Soft shadows also covers local lights' authored source radii. */
   application->shadow_config.local_shadow_soft = settings->soft_shadows;
   application->shadow_config.far_cascade_evsm = settings->filtered_far_shadows;
@@ -613,6 +615,7 @@ static void sample_graphics_request(VkrStandardSceneRuntime *application,
       old.contact_shadows != settings.contact_shadows ||
       old.distance_field_shadows != settings.distance_field_shadows ||
       old.ray_traced_shadows != settings.ray_traced_shadows ||
+      old.full_rate_ray_shadows != settings.full_rate_ray_shadows ||
       old.ambient_occlusion != settings.ambient_occlusion ||
       old.reflection_probes != settings.reflection_probes ||
       old.subsurface_scattering != settings.subsurface_scattering ||

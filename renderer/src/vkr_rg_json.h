@@ -222,6 +222,12 @@ typedef struct VkrRgJsonExtent {
    * half the viewport, and a fixed extent could not follow a resize.
    */
   uint32_t divisor;
+  /**
+   * A viewport extent's divisor taken from the frame instead, by name:
+   * "sun_ray_trace_divisor". Excludes `divisor`; a resizable image follows
+   * it when it changes.
+   */
+  String8 divisor_source;
 } VkrRgJsonExtent;
 
 /**

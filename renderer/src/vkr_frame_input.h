@@ -748,6 +748,11 @@ typedef struct VkrShadowPassPayload {
    * traces where the device supports ray queries
    * (VkrPreparedFrame.sun_ray_shadows). */
   bool8_t sun_rays;
+  /** With `sun_rays`, one ray per pixel instead of one per 2x2 block
+   * (VkrPreparedFrame.sun_ray_full_rate): thin shadows such as a rail's
+   * on its sleepers stay steady, for about 2.4 times the rays' cost (3.2
+   * against 1.34 ms in the Bistro plaza at 2560x1440). */
+  bool8_t sun_ray_full_rate;
   /** SDF sun shadows, a VkrShadowSdfMode; the tiled pipeline draws them. */
   uint32_t sdf_mode;
   /** Cascades from VKR_SHADOW_EVSM_FIRST_CASCADE keep filtered exponential

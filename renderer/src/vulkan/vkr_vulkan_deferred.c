@@ -1660,9 +1660,10 @@ vkr_internal uint32_t vkr_vk_sun_noise_index(const VkrPreparedFrame *packet) {
   return packet->input.frame.frame_index % phases;
 }
 
-/* Shadow.SunRay traces into the half-resolution trace texture at binding 16;
-   Shadow.SunRayResolve filters it into the half-resolution mask at binding
-   17;
+/* Shadow.SunRay traces into the trace texture at binding 16, half or full
+   resolution (VkrRenderGraphFrameInfo.sun_ray_trace_divisor);
+   Shadow.SunRayResolve filters it into the mask at binding 17 on the same
+   grid;
    Shadow.SunRayTemporal accumulates the mask with the history at binding 19
    along the motion at 11 and its validity at 12 into the lighting mask at 18
    and the next history at 20, which Shadow.SunRayHistory copies over 19. */
@@ -1729,6 +1730,8 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
       VKR_VULKAN_SENTINEL_SLOT_INDEX, VKR_VULKAN_SENTINEL_SLOT_INDEX, true_v);
   const uint32_t width = renderer->prepared_frame.viewport_width;
   const uint32_t height = renderer->prepared_frame.viewport_height;
+  /* The graph sized the trace images by the same divisor. */
+  const uint32_t trace_step = renderer->prepared_frame.sun_ray_trace_divisor;
   const VkrVulkanSunRayShadowRoot root = {
       .frame = frame_address,
       .inverse_view_projection = mat4_inverse(view_projection),
@@ -1745,8 +1748,10 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
       .tlas_slot = renderer->active_frame_slot,
       .extent = {width, height},
       /* One ray per whole 2x2 block, as the graph's half-size trace image
-         floors the viewport. */
-      .trace_extent = {Max(width / 2u, 1u), Max(height / 2u, 1u)},
+         floors the viewport, or one per pixel at full rate. */
+      .trace_extent = {Max(width / trace_step, 1u),
+                       Max(height / trace_step, 1u)},
+      .trace_step = trace_step,
       /* Without a built TLAS that holds every row the trace stores no
          sample and lighting keeps the cascades, so casters whose BLAS is
          still queued after a load do not lose their shadow. */
@@ -1768,7 +1773,7 @@ bool8_t vkr_vk_prepare_sun_ray_shadow(VkrVulkanRenderer *renderer,
                                  _Alignof(VkrVulkanSunRayShadowRoot),
                                  &prepared->root_address))
     return false_v;
-  /* The trace and the resolve run on the half-resolution grid. */
+  /* The trace and the resolve run on the trace grid. */
   const uint32_t *dispatch = stage == VKR_VULKAN_SUN_RAY_STAGE_TEMPORAL
                                  ? root.extent
                                  : root.trace_extent;

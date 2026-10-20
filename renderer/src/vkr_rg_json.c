@@ -507,6 +507,25 @@ vkr_internal bool8_t vkr_rg_json_parse_extent(VkrRgJsonParseContext *ctx,
     out_extent->divisor = (uint32_t)divisor;
   }
 
+  VkrJsonReader source_reader = extent_obj;
+  if (vkr_json_find_field(&source_reader, "divisor_source")) {
+    if (out_extent->mode != VKR_RG_JSON_EXTENT_VIEWPORT ||
+        out_extent->divisor != 0u) {
+      return vkr_rg_json_error(ctx, field_path,
+                               "extent.divisor_source applies only to a "
+                               "viewport extent without a divisor");
+    }
+    source_reader = extent_obj;
+    if (!vkr_json_get_string(&source_reader, "divisor_source",
+                             &out_extent->divisor_source) ||
+        !vkr_string8_equals_cstr_i(&out_extent->divisor_source,
+                                   "sun_ray_trace_divisor")) {
+      return vkr_rg_json_error(
+          ctx, field_path,
+          "extent.divisor_source must be \"sun_ray_trace_divisor\"");
+    }
+  }
+
   return true_v;
 }
 
@@ -2544,12 +2563,15 @@ vkr_internal bool8_t vkr_rg_json_resolve_extent(
         frame->scene_output_height / VKR_MOTION_BLUR_TILE_SIZE +
         (frame->scene_output_height % VKR_MOTION_BLUR_TILE_SIZE != 0u);
     return true_v;
-  case VKR_RG_JSON_EXTENT_VIEWPORT:
-    *out_width =
-        vkr_rg_json_divide_extent(frame->viewport_width, extent->divisor);
-    *out_height =
-        vkr_rg_json_divide_extent(frame->viewport_height, extent->divisor);
+  case VKR_RG_JSON_EXTENT_VIEWPORT: {
+    /* The only divisor source, validated at load. */
+    const uint32_t divisor = extent->divisor_source.length
+                                 ? frame->sun_ray_trace_divisor
+                                 : extent->divisor;
+    *out_width = vkr_rg_json_divide_extent(frame->viewport_width, divisor);
+    *out_height = vkr_rg_json_divide_extent(frame->viewport_height, divisor);
     return true_v;
+  }
   case VKR_RG_JSON_EXTENT_VIEWPORT_CAPACITY:
     *out_width = vkr_rg_json_divide_extent(frame->viewport_capacity_width,
                                            extent->divisor);

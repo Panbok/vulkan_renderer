@@ -225,9 +225,11 @@ struct VkrRenderer {
   bool8_t smaa_enabled;
   bool8_t msaa_enabled;
   /* VKR_SUN_RAY_SHADOWS is set: ray-query sun shadows follow
-     `sun_ray_shadow_forced_on` ("1") instead of the shadow settings. */
+     `sun_ray_shadow_forced_on` ("1", or "2" at full rate) and
+     `sun_ray_full_rate_forced_on` ("2") instead of the shadow settings. */
   bool8_t sun_ray_shadow_forced;
   bool8_t sun_ray_shadow_forced_on;
+  bool8_t sun_ray_full_rate_forced_on;
   /* VKR_SUN_CONTACT_SHADOWS is set: desktop sun contact shadows follow
      `sun_contact_forced_on` instead of the shadow settings. */
   bool8_t sun_contact_forced;

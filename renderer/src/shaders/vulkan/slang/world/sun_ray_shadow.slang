@@ -1,12 +1,14 @@
 // Ray-query sun shadows on the desktop pipeline (prototype for the
 // shadow-quality proposal's D2). Shadow.SunRay traces one first-hit ray per
 // traced pixel toward a point on the sun's disk against the frame slot's TLAS
-// (ADR-119): one pixel of each 2x2 block, whose position turns with the
-// frame. Shadow.SunRayResolve filters the samples with depth and normal
-// weights on that half-resolution grid. Shadow.SunRayTemporal upsamples
-// them by depth and accumulates the visibility over frames along the camera
-// motion into the mask that deferred lighting takes in place of the cascades
-// within the ray range.
+// (ADR-119): at half rate one pixel of each 2x2 block, whose position turns
+// with the frame; at full rate every pixel. Shadow.SunRayResolve filters the
+// samples with depth and normal weights on that trace grid.
+// Shadow.SunRayTemporal upsamples them by depth and accumulates the
+// visibility over frames along the camera motion into the mask that deferred
+// lighting takes in place of the cascades within the ray range. At half rate
+// a rail's shadow on its sleepers, a pixel or two wide, is sampled one frame
+// in two and flickers; full rate samples it every frame.
 
 // Bit of VkrVkSunRayShadowRoot::flags: the frame slot's TLAS is built.
 #define VKR_SUN_RAY_TLAS 1u
@@ -31,13 +33,13 @@ struct VkrVkSunRayShadowRoot
     uint vbuffer_texture;
     uint depth_texture;
     uint normal_texture;
-    // RGBA16F, one texel per 2x2 block: the traced visibility, the traced
-    // pixel's view depth, or VKR_SUN_RAY_NO_SAMPLE, and its octahedral
-    // normal, which the resolve weights by.
+    // RGBA16F, one texel per trace_step x trace_step block: the traced
+    // visibility, the traced pixel's view depth, or VKR_SUN_RAY_NO_SAMPLE,
+    // and its octahedral normal, which the resolve weights by.
     uint trace_texture;
-    // RG16F, one texel per 2x2 block: the filtered visibility and the
-    // sample's view depth, or VKR_SUN_RAY_NO_SAMPLE: Shadow.SunRayResolve's
-    // output, Shadow.SunRayTemporal's input.
+    // RG16F, on the trace grid: the filtered visibility and the sample's
+    // view depth, or VKR_SUN_RAY_NO_SAMPLE: Shadow.SunRayResolve's output,
+    // Shadow.SunRayTemporal's input.
     uint mask_texture;
     // The frame slot's acceleration structure in g_volume_tlas.
     uint tlas_slot;
@@ -64,7 +66,8 @@ struct VkrVkSunRayShadowRoot
     uint temporal_texture;
     // Nonzero when the history holds the previous frame's result.
     uint history_valid;
-    uint reserved;
+    // Pixels per trace texel on each axis: 2 at half rate, 1 at full rate.
+    uint trace_step;
 };
 
 struct VkrVkSunRayShadowPush
@@ -74,10 +77,12 @@ struct VkrVkSunRayShadowPush
 };
 [[vk::push_constant]] ConstantBuffer<VkrVkSunRayShadowPush> g_sun_ray_shadow_push;
 
-// The full-resolution pixel a trace texel samples this frame: one corner of
-// its 2x2 block in a four-frame cycle.
+// The full-resolution pixel a trace texel samples this frame: at half rate
+// one corner of its 2x2 block in a four-frame cycle, at full rate its own.
 uint2 vk_sun_ray_trace_pixel(VkrVkSunRayShadowRoot root, uint2 texel)
 {
+    if (root.trace_step == 1u)
+        return texel;
     const uint2 corners[4] = {uint2(0u, 0u), uint2(1u, 1u), uint2(1u, 0u),
                               uint2(0u, 1u)};
     return texel * 2u + corners[root.frame_index & 3u];
@@ -237,7 +242,7 @@ float vk_sun_ray_spatial_weight(float2 offset, float sigma)
 }
 
 // Filters each trace texel's sample with the samples around it on its
-// surface (depth and normal weights) into the half-resolution mask: the
+// surface (depth and normal weights) into the trace grid's mask: the
 // filtered visibility and the sample's view depth, or VKR_SUN_RAY_NO_SAMPLE.
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -303,7 +308,7 @@ void vk_sun_ray_shadow_resolve(uint3 thread_id : SV_DispatchThreadID)
 // over view depth, so this is about the same fraction of view depth.
 #define VKR_SUN_RAY_TEMPORAL_DEPTH_TOLERANCE 0.02f
 
-// Upsamples the half-resolution mask to each pixel from the 3x3 blocks
+// Upsamples the trace grid's mask to each pixel from the 3x3 texels
 // around its own, weighted by their sample's distance and depth match, and
 // accumulates it over frames along the camera motion into the mask lighting
 // reads: the visibility and the rays' weight over the cascades, which falls
@@ -333,7 +338,7 @@ void vk_sun_ray_shadow_temporal(uint3 thread_id : SV_DispatchThreadID)
         if (range_weight > 0.0f)
         {
             float depth_tolerance = 0.02f * view_depth + 0.02f;
-            int2 center = int2(pixel / 2u);
+            int2 center = int2(pixel / root.trace_step);
             float total = 0.0f;
             float weight_sum = 0.0f;
             // The neighbourhood's mean and spread bound the history, so a

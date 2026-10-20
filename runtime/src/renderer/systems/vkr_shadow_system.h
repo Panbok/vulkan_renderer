@@ -213,6 +213,9 @@ typedef struct VkrShadowConfig {
    * setting); the desktop pipeline traces them where the device supports
    * ray queries. */
   bool8_t sun_ray_shadows;
+  /** One ray per pixel instead of one per 2x2 block (the Full-rate ray
+   * traced shadows setting). */
+  bool8_t sun_ray_full_rate;
   /** SDF sun shadows past the near cascades, a VkrShadowSdfMode; the tiled
    * pipeline only, from the Distance field shadows setting (the shadow
    * quality proposal's T5). */

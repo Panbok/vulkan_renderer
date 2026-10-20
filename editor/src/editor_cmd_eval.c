@@ -139,6 +139,7 @@ static const char *const eval_gfx_members[] = {"render_scale",
                                                "distance_field_shadows",
                                                "contact_shadows",
                                                "ray_traced_shadows",
+                                               "full_rate_ray_shadows",
                                                NULL};
 static const char *const eval_gfx_presets[] = {"low",  "medium", "high",
                                                "epic", "custom", NULL};
@@ -745,6 +746,9 @@ static bool8_t eval_gfx_member(Eval *eval, String8 name, Value *out) {
     return true_v;
   case 12:
     *out = eval_bool(settings->ray_traced_shadows);
+    return true_v;
+  case 13:
+    *out = eval_bool(settings->full_rate_ray_shadows);
     return true_v;
   default:
     break;
@@ -1652,6 +1656,10 @@ static bool8_t eval_assign_object(Eval *eval, uint32_t object, String8 member,
                eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
       /* The desktop pipeline's ray-query sun shadows (ADR-044). */
       settings.ray_traced_shadows = value->number != 0.0;
+    } else if (index == 13 &&
+               eval_expect(eval, value, VKR_EDITOR_CMD_VALUE_BOOL, member)) {
+      /* One ray per pixel instead of one per 2x2 block. */
+      settings.full_rate_ray_shadows = value->number != 0.0;
     } else {
       return eval->error[0] ? false_v
                             : eval_fail(eval, "Cannot assign gfx.%.*s",

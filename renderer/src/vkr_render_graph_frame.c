@@ -207,6 +207,8 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->sun_ray_shadows_active = packet->scene_rendering &&
                                   !packet->tiled_pipeline &&
                                   packet->sun_ray_shadows;
+  frame->sun_ray_trace_divisor =
+      frame->sun_ray_shadows_active && packet->sun_ray_full_rate ? 1u : 2u;
   frame->sun_contact_shadows = packet->scene_rendering &&
                                !packet->tiled_pipeline &&
                                packet->sun_contact_shadows;

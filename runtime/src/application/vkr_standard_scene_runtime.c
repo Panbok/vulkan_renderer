@@ -1705,6 +1705,7 @@ vkr_internal void vkr_standard_scene_runtime_prepare_shadow_payloads(
     shadow_payload->sdsm_enabled = shadow_config->sdsm_enabled;
     shadow_payload->contact_shadows = shadow_config->sun_contact;
     shadow_payload->sun_rays = shadow_config->sun_ray_shadows;
+    shadow_payload->sun_ray_full_rate = shadow_config->sun_ray_full_rate;
     shadow_payload->sdf_mode = shadow_config->sun_sdf_mode;
     shadow_payload->evsm_enabled =
         shadow_config->far_cascade_evsm &&
