@@ -155,6 +155,10 @@
    on a later frame. */
 #define VKR_RECORDING_STREAM_HARDWARE 32u
 #define VKR_RECORDING_STREAM_PIPELINE 33u
+/* The cloud layer's wind offset each frame rendered (VkrRecordingClouds),
+   under the frame's number, so playback draws the clouds and their shadows
+   where the session had them. Absent while the scene has no clouds. */
+#define VKR_RECORDING_STREAM_CLOUDS 34u
 /* Ring bytes of each job worker's producer when zones are recorded. */
 #define VKR_RECORDING_WORKER_RING_BYTES (1024u * 1024u)
 /* Transform hashes are split by stable entity key
@@ -200,6 +204,12 @@ typedef struct VkrRecordingFrame {
   float32_t time_of_day;
   uint32_t flags;
 } VkrRecordingFrame;
+
+/* The cloud layer's wind offset in metres, [0, VKR_CLOUD_WIND_PERIOD_M),
+   before the scene's origin rebase. */
+typedef struct VkrRecordingClouds {
+  float64_t wind_offset_m[2];
+} VkrRecordingClouds;
 
 /* The Play session that started while recording: the seed of its modules'
    generators. Its ticks count from one. */
@@ -514,6 +524,10 @@ void vkr_recording_render_frame(VkrRecording *recording, uint64_t frame);
 void vkr_recording_frame(VkrRecording *recording,
                          const VkrRecordingFrame *frame,
                          const VkrRecordingCamera *camera);
+
+/** Writes the cloud wind offset the last written frame renders with. */
+void vkr_recording_clouds(VkrRecording *recording,
+                          const VkrRecordingClouds *clouds);
 
 /* Where a publication's frame-loop work belongs when a render thread
    completed its frame during a later frame-loop iteration (ADR-082): that

@@ -61,10 +61,16 @@ an agent must read one without the editor.
   kind plus label. Frame 0 is at time zero and each later frame follows its
   display dt ([vkr_recording.h](../../runtime/src/recording/vkr_recording.h),
   [vkr_standard_scene_recording.c](../../runtime/src/application/vkr_standard_scene_recording.c)).
+  While the scene has clouds, stream `clouds` (since 2026-10-19) holds the
+  cloud layer's wind offset each frame rendered with. The offset follows
+  the wall clock, so playback without it drew clouds, and their shadows on
+  a valley, wherever they had drifted since the editor started: one
+  playback frame captured twice 30 s apart differed in 72% of its pixels.
   `$VKR_RECORDING_DIRECTORY` records a whole run.
-- **Playback.** An open `VkrRecordingPlayback` drives the camera and the
-  level's hour before the camera controller, interpolating between frames and
-  exact at a frame's time
+- **Playback.** An open `VkrRecordingPlayback` drives the camera, the
+  level's hour and, when recorded, the cloud wind offset before the camera
+  controller, interpolating the camera and hour between frames and exact at
+  a frame's time; the clouds take the frame's offset
   ([vkr_recording_playback.h](../../runtime/src/recording/vkr_recording_playback.h)).
   Playback is a transport state: Play and Step are refused, scene edits and
   edit batches are refused, and closing restores the editor camera and hour
@@ -132,7 +138,16 @@ an agent must read one without the editor.
   no override: the scene's propagation carries it with its parent. Another
   parented pose becomes its parent's world pose at that frame times it, the
   parent's composed the same way. Closing removes the overrides, so
-  authored transforms never change. The player's first pass counts poses per
+  authored transforms never change. An entity that moved into the next frame is
+  blended toward its world pose at that frame by the playhead's fraction
+  between the two (origin lerped, turn slerped), as the camera is
+  interpolated; an overridden child blends its composed world pose too,
+  so it stays with a moving parent. Since 2026-10-19; before, poses held
+  the frame's and a camera riding a moving entity slid against it by up
+  to a frame of motion and snapped back (a freight ride at 14 m/s: about
+  100 px at 1858 px wide). The pose is the one the frame drew: the
+  renderer's sync comes before the capture, and a live re-drive changed
+  no world matrix between capture and the next frame in 4389 frames. The player's first pass counts poses per
   key and its second writes each pose in place, 72 bytes each; a 137 s
   Testbed recording of 22,109,504 poses that ran out of the player's 2 GB
   memory before opens within an 8 GB address reservation that commits only

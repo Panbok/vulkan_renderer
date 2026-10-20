@@ -63,11 +63,13 @@ typedef struct VkrRecordingSpawn {
 /* VkrRecordingPlayback.pose_applied: no sample applied, as before the
    entity's first recorded pose (vkr_recording_playback_pose_at), a key
    whose only sample matched the scene when it was bound, which needs none,
-   or one whose pose relative to its parent is its own local pose, which its
-   parent carries without an override. */
+   one whose pose relative to its parent is its own local pose, which its
+   parent carries without an override, or a pose blended between two
+   samples, which the next frame sets again. */
 #define VKR_RECORDING_POSE_APPLIED_NONE UINT32_MAX
 #define VKR_RECORDING_POSE_APPLIED_STATIC (UINT32_MAX - 1u)
 #define VKR_RECORDING_POSE_APPLIED_FOLLOWS (UINT32_MAX - 2u)
+#define VKR_RECORDING_POSE_APPLIED_BLENDED (UINT32_MAX - 3u)
 
 /* Event names a playback keeps; events of later names are dropped. */
 #define VKR_RECORDING_PLAYBACK_EVENT_NAMES 32u
@@ -180,6 +182,13 @@ typedef struct VkrRecordingPlayback {
   bool8_t has_player;
   float64_t *player_positions;
   uint8_t *player_valid;
+  /* The cloud wind offset each frame rendered with
+     (VKR_RECORDING_STREAM_CLOUDS): two per frame where cloud_valid is 1, a
+     frame without a record keeping the one before; has_clouds says the
+     recording carries any. */
+  bool8_t has_clouds;
+  float64_t *cloud_offsets;
+  uint8_t *cloud_valid;
   /* The stream ends without a clean stop. */
   bool8_t truncated;
 
@@ -246,8 +255,15 @@ typedef struct VkrRecordingPlayback {
 typedef struct VkrRecordingPlaybackPose {
   VkrRecordingCamera camera;
   float32_t time_of_day;
+  /* How far the playhead is from `frame` toward the next one, [0, 1]; the
+     camera is interpolated by it. */
+  float32_t blend;
   /* The recorded frame at or before the playhead. */
   uint64_t frame;
+  /* The cloud wind offset `frame` rendered with, when the recording
+     carries one. */
+  bool8_t has_clouds;
+  float64_t cloud_wind_offset_m[2];
 } VkrRecordingPlaybackPose;
 
 /* Where an open on another thread stands: thousandths of the stream read
@@ -327,6 +343,6 @@ bool8_t vkr_recording_playback_spawn_model(const VkrRecordingPlayback *playback,
 bool8_t vkr_recording_playback_edit_at(const VkrRecordingPlayback *playback,
                                        uint64_t frame, uint64_t *out_sequence);
 
-/** The camera and time of day at the playhead. */
+/** The camera, time of day and cloud wind offset at the playhead. */
 VkrRecordingPlaybackPose
 vkr_recording_playback_pose(const VkrRecordingPlayback *playback);

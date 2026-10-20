@@ -395,6 +395,30 @@ vkr_standard_scene_recording_bind_parents(VkrStandardSceneRuntime *runtime) {
   return true_v;
 }
 
+/* The world matrix `blend` of the way from `from` to `to`, the world poses
+   an entity had at a frame and at the next, as the playback camera moves
+   between frames: the turn between their bases slerped and the origin
+   lerped, both poses being rigid motions of one rest pose. */
+vkr_internal Mat4 vkr_standard_scene_recording_pose_blend(Mat4 from, Mat4 to,
+                                                          float32_t blend) {
+  Mat4 from_basis = from;
+  Mat4 to_basis = to;
+  from_basis.m03 = from_basis.m13 = from_basis.m23 = 0.0f;
+  to_basis.m03 = to_basis.m13 = to_basis.m23 = 0.0f;
+  Mat4 world = from_basis;
+  if (MemCompare(&from_basis, &to_basis, sizeof(from_basis)) != 0) {
+    const VkrQuat turn = vkr_quat_normalize(
+        mat4_to_quat(mat4_mul(to_basis, mat4_inverse_affine(from_basis))));
+    world = mat4_mul(
+        vkr_quat_to_mat4(vkr_quat_slerp(vkr_quat_identity(), turn, blend)),
+        from_basis);
+  }
+  world.m03 = from.m03 + (to.m03 - from.m03) * blend;
+  world.m13 = from.m13 + (to.m13 - from.m13) * blend;
+  world.m23 = from.m23 + (to.m23 - from.m23) * blend;
+  return world;
+}
+
 /* A hash of a pose key's name. */
 vkr_internal uint64_t vkr_standard_scene_recording_key_hash(
     uint8_t container, uint8_t kind, const VkrEntityRef *ref, uint32_t node,
@@ -779,10 +803,13 @@ vkr_standard_scene_recording_bind_poses(VkrStandardSceneRuntime *runtime) {
   return true_v;
 }
 
-/* Poses each bound entity as the recording had it at the playhead's frame:
-   its last pose until then as an evaluated override, or its own transform
-   before the recording first moved it. A pose relative to its parent that
-   is its own local pose needs no override: the parent carries it. */
+/* Poses each bound entity as the recording had it at the playhead: its
+   last pose until the playhead's frame as an evaluated override, or its own
+   transform before the recording first moved it. An entity that moved into
+   the next frame, or an overridden child whose parent may have, is blended
+   toward its world pose at that frame, as the camera is. A pose relative to
+   its parent that is its own local pose needs no override: the parent
+   carries it. */
 vkr_internal void
 vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
   VkrRecordingPlayback *playback = &runtime->playback;
@@ -805,8 +832,8 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
       !vkr_standard_scene_recording_bind_parents(runtime)) {
     return;
   }
-  const uint64_t frame =
-      vkr_recording_playback_frame_at(playback, playback->time);
+  const VkrRecordingPlaybackPose at = vkr_recording_playback_pose(playback);
+  const uint64_t frame = at.frame;
   vkr_standard_scene_recording_show_spawns(runtime, frame);
   vkr_standard_scene_recording_pose_skins(runtime, frame);
   for (uint32_t k = 0u; k < playback->pose_key_count; ++k) {
@@ -824,11 +851,30 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
     }
     const VkrRecordingPoseSample *pose =
         sample != UINT32_MAX ? &playback->pose_samples[sample] : NULL;
+    /* The playhead lies between `frame` and the next one. */
+    const bool8_t between =
+        at.blend > 0.0f && frame + 1u < playback->frame_count;
+    /* The next frame's sample, when the entity moved into that frame. */
+    const VkrRecordingPoseKey *key = &playback->pose_keys[k];
+    const uint32_t next =
+        between && sample != UINT32_MAX &&
+                sample + 1u < key->first + key->count &&
+                playback->pose_samples[sample + 1u].frame == frame + 1u
+            ? sample + 1u
+            : UINT32_MAX;
     const SceneTransform *transform =
         pose && (pose->flags & VKR_RECORDING_POSE_FLAG_PARENTED)
             ? vkr_scene_get_transform(scene, entity)
             : NULL;
-    if (transform) {
+    if (next != UINT32_MAX) {
+      /* World poses composed through the parents at both frames. */
+      const Mat4 world = vkr_standard_scene_recording_pose_blend(
+          vkr_standard_scene_recording_key_world(runtime, k, frame),
+          vkr_standard_scene_recording_key_world(runtime, k, frame + 1u),
+          at.blend);
+      (void)vkr_scene_set_evaluated_transform(scene, entity, &world);
+      playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_BLENDED;
+    } else if (transform) {
       const Mat4 relative =
           vkr_standard_scene_recording_pose_matrix(scene, pose);
       if (MemCompare(&relative, &transform->local, sizeof(relative)) == 0) {
@@ -838,9 +884,17 @@ vkr_standard_scene_recording_apply_poses(VkrStandardSceneRuntime *runtime) {
         }
         playback->pose_applied[k] = VKR_RECORDING_POSE_APPLIED_FOLLOWS;
       } else {
-        /* Its parent may move under the same relative pose. */
-        const Mat4 world =
+        /* Its parent may move under the same relative pose, so it blends
+           with its parent. */
+        const Mat4 at_frame =
             vkr_standard_scene_recording_key_world(runtime, k, frame);
+        Mat4 world = at_frame;
+        if (between && playback->pose_parents[k] != UINT32_MAX) {
+          world = vkr_standard_scene_recording_pose_blend(
+              at_frame,
+              vkr_standard_scene_recording_key_world(runtime, k, frame + 1u),
+              at.blend);
+        }
         if (sample != applied ||
             MemCompare(&world, &transform->world, sizeof(world)) != 0) {
           (void)vkr_scene_set_evaluated_transform(scene, entity, &world);
@@ -956,6 +1010,12 @@ vkr_standard_scene_recording_drive_camera(VkrStandardSceneRuntime *runtime,
   VkrScene *level = vkr_standard_scene_runtime_level_scene(runtime);
   if (level && level->clock.hour != (float64_t)pose.time_of_day) {
     (void)vkr_scene_set_time_of_day_hour(level, pose.time_of_day);
+  }
+  /* Clouds and their shadows stand where the session had them; a recording
+     without them leaves the clouds drifting. */
+  if (pose.has_clouds) {
+    runtime->cloud_wind_offset_m[0] = pose.cloud_wind_offset_m[0];
+    runtime->cloud_wind_offset_m[1] = pose.cloud_wind_offset_m[1];
   }
   return true_v;
 }

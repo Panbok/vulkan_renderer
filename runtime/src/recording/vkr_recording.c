@@ -150,6 +150,13 @@ static const VkrRecordingField VKR_RECORDING_SESSION_FIELDS[] = {
     {.name = "seed", .type = VKR_RECORDING_FIELD_U64, .count = 1u},
 };
 
+static const VkrRecordingField VKR_RECORDING_CLOUDS_FIELDS[] = {
+    {.name = "wind_offset",
+     .unit = "m",
+     .type = VKR_RECORDING_FIELD_F64,
+     .count = 2u},
+};
+
 static const VkrRecordingField VKR_RECORDING_SIM_FRAME_FIELDS[] = {
     {.name = "now", .unit = "s", .type = VKR_RECORDING_FIELD_F64, .count = 1u},
     {.name = "delta",
@@ -286,6 +293,11 @@ static const VkrRecordingStream VKR_RECORDING_STREAMS[] = {
      .record_size = sizeof(VkrRecordingJoin),
      .field_count = ArrayCount(VKR_RECORDING_JOIN_FIELDS),
      .fields = VKR_RECORDING_JOIN_FIELDS},
+    {.id = VKR_RECORDING_STREAM_CLOUDS,
+     .name = "clouds",
+     .record_size = sizeof(VkrRecordingClouds),
+     .field_count = ArrayCount(VKR_RECORDING_CLOUDS_FIELDS),
+     .fields = VKR_RECORDING_CLOUDS_FIELDS},
 };
 
 /* Tier 0 (docs/proposals/recordings.md, "Metrics and capture tiers"):
@@ -862,6 +874,17 @@ void vkr_recording_frame(VkrRecording *recording,
     vkr_recording_zone_names(recording, recording->frame);
   }
   ++recording->frame;
+}
+
+void vkr_recording_clouds(VkrRecording *recording,
+                          const VkrRecordingClouds *clouds) {
+  vkr_assert(recording != NULL && recording->active && clouds != NULL);
+  if (recording->frame == 0u) {
+    return;
+  }
+  (void)vkr_recorder_write(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_CLOUDS, recording->frame - 1u,
+                           clouds, sizeof(*clouds));
 }
 
 void vkr_recording_loop_begin(VkrRecording *recording) {

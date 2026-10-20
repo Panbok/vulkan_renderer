@@ -710,6 +710,12 @@ vkr_internal bool8_t vkr_recording_fill(VkrRecordingLoad *load,
             sizeof(player.position));
     playback->player_valid[record->frame] = 1u;
     playback->has_player = true_v;
+  } else if (record->stream == VKR_RECORDING_STREAM_CLOUDS &&
+             record->size == sizeof(VkrRecordingClouds)) {
+    MemCopy(&playback->cloud_offsets[record->frame * 2u], record->data,
+            sizeof(VkrRecordingClouds));
+    playback->cloud_valid[record->frame] = 1u;
+    playback->has_clouds = true_v;
   } else if (record->stream == VKR_RECORDING_STREAM_SPAWN) {
     vkr_recording_fill_spawn(playback, record);
   } else if (record->stream == VKR_RECORDING_STREAM_DESPAWN &&
@@ -882,6 +888,14 @@ vkr_internal void vkr_recording_playback_finish(VkrRecordingLoad *load) {
         playback->cameras[i] = playback->cameras[i - 1u];
       }
     }
+    /* Clouds write only while the scene has them; a frame without a
+       record keeps the offset before it. */
+    if (!playback->cloud_valid[i] && i > 0u && playback->cloud_valid[i - 1u]) {
+      playback->cloud_offsets[i * 2u] = playback->cloud_offsets[i * 2u - 2u];
+      playback->cloud_offsets[i * 2u + 1u] =
+          playback->cloud_offsets[i * 2u - 1u];
+      playback->cloud_valid[i] = 1u;
+    }
     playback->times[i] =
         i == 0u ? 0.0
                 : playback->times[i - 1u] + playback->frames[i].display_dt;
@@ -924,6 +938,11 @@ vkr_recording_playback_allocate(VkrRecordingPlayback *playback) {
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   playback->player_valid = vkr_allocator_alloc(&playback->allocator, frames,
                                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->cloud_offsets =
+      vkr_allocator_alloc(&playback->allocator, sizeof(float64_t) * frames * 2u,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  playback->cloud_valid = vkr_allocator_alloc(&playback->allocator, frames,
+                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   playback->memory_bytes =
       vkr_allocator_alloc(&playback->allocator, sizeof(float64_t) * frames * 2u,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -939,13 +958,15 @@ vkr_recording_playback_allocate(VkrRecordingPlayback *playback) {
   }
   if (!playback->frames || !playback->cameras || !playback->times ||
       !playback->markers || !playback->events || !playback->player_positions ||
-      !playback->player_valid || !playback->memory_bytes ||
+      !playback->player_valid || !playback->cloud_offsets ||
+      !playback->cloud_valid || !playback->memory_bytes ||
       !playback->memory_valid ||
       (playback->has_system &&
        (!playback->system_values || !playback->system_valid))) {
     return false_v;
   }
   MemZero(playback->player_valid, frames);
+  MemZero(playback->cloud_valid, frames);
   MemZero(playback->memory_valid, frames);
   if (playback->has_system) {
     MemZero(playback->system_valid, frames);
@@ -1151,7 +1172,7 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   }
   MemZero(load->present, playback->frame_count);
   /* Sample indices are u32, below the VKR_RECORDING_POSE_APPLIED_* values. */
-  if (playback->pose_sample_count >= VKR_RECORDING_POSE_APPLIED_FOLLOWS) {
+  if (playback->pose_sample_count >= VKR_RECORDING_POSE_APPLIED_BLENDED) {
     return vkr_recording_load_fail(load, "the recording holds too many poses");
   }
   if (!vkr_recording_playback_place_keys(load)) {
@@ -1486,7 +1507,7 @@ vkr_recording_playback_pose(const VkrRecordingPlayback *playback) {
   const VkrRecordingCamera *a = &playback->cameras[frame];
   const VkrRecordingCamera *b = &playback->cameras[next];
 
-  VkrRecordingPlaybackPose pose = {.camera = *a, .frame = frame};
+  VkrRecordingPlaybackPose pose = {.camera = *a, .blend = tf, .frame = frame};
   for (uint32_t i = 0u; i < 3u; ++i) {
     pose.camera.position[i] =
         a->position[i] + (b->position[i] - a->position[i]) * t;
@@ -1505,5 +1526,12 @@ vkr_recording_playback_pose(const VkrRecordingPlayback *playback) {
     hour -= 24.0f;
   }
   pose.time_of_day = hour;
+  /* Clouds drift centimetres a frame, so the frame's own offset serves;
+     interpolating would also have to wrap at the weather period. */
+  if (playback->cloud_valid[frame]) {
+    pose.has_clouds = true_v;
+    pose.cloud_wind_offset_m[0] = playback->cloud_offsets[frame * 2u];
+    pose.cloud_wind_offset_m[1] = playback->cloud_offsets[frame * 2u + 1u];
+  }
   return pose;
 }

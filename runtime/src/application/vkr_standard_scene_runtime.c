@@ -1915,7 +1915,9 @@ vkr_internal void vkr_standard_scene_runtime_scale_picking_payload(
 }
 
 /* The published cloud layer drifts with its wind. Offsets wrap at the weather
-   period, where the cloud noise tiles without a seam. */
+   period, where the cloud noise tiles without a seam. A recording takes the
+   offset each frame renders with; a playback that carries them sets it
+   instead (vkr_standard_scene_recording_drive_camera). */
 vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
     VkrStandardSceneRuntime *application, float64_t delta) {
   const VkrScene *scene = vkr_standard_scene_runtime_render_scene(application);
@@ -1923,6 +1925,9 @@ vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
       !scene->atmosphere.active_clouds.enabled || !vkr_is_finite_f64(delta) ||
       delta <= 0.0)
     return;
+  if (application->playback.open && application->playback.has_clouds) {
+    return;
+  }
   const float64_t period = (float64_t)VKR_CLOUD_WIND_PERIOD_M;
   const float64_t wind[2] = {scene->atmosphere.active_clouds.wind_mps.x,
                              scene->atmosphere.active_clouds.wind_mps.y};
@@ -1931,6 +1936,13 @@ vkr_internal void vkr_standard_scene_runtime_advance_cloud_wind(
         application->cloud_wind_offset_m[i] + wind[i] * delta, period);
     application->cloud_wind_offset_m[i] =
         offset < 0.0 ? offset + period : offset;
+  }
+  if (application->recording.active) {
+    const VkrRecordingClouds clouds = {
+        .wind_offset_m = {application->cloud_wind_offset_m[0],
+                          application->cloud_wind_offset_m[1]},
+    };
+    vkr_recording_clouds(&application->recording, &clouds);
   }
 }
 
