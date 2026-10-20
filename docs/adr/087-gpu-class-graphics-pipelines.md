@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-17
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -100,6 +100,19 @@ pipeline rather than a backend mechanism.
    upscaler; since then it is measured with the default MetalFX upscaling
    ([ADR-121](121-tiled-temporal-upscaling.md)). Quality tiers that lower M1
    cost are allowed.
+   The desktop pipeline budget (owner decision, 2026-10-20) is Bistro at
+   2560×1440 physical pixels on the RX 6700 XT, the Vulkan reference device
+   of [ADR-083](083-supported-hardware-matrix.md) and the only one with
+   native evidence, with the High preset, the settings' default:
+   16.7 ms p95 `gpu.submission` (60 fps), and `frame.wall` p95 under the
+   same 16.7 ms as the CPU check. The Scene renders at unit scale with FSR
+   3.1 native antialiasing ([ADR-052](052-vulkan-fsr31-upscaling.md)).
+   Dynamic resolution comes last, since a changing resolution blurs the
+   image in motion: preset gates, cuts inside the most expensive pass group
+   and SMAA T2x come first. Epic has no budget. The cases, profile and
+   budget lines are in
+   [Desktop frame budget](../proposals/desktop-frame-budget.md); no
+   baseline is recorded yet.
 5. The tiled pipeline shades opaque surfaces forward in one multisampled
    render pass (owner decision 2026-10-05). On Bistro, with a depth pre-pass
    in both, it costs the same as a G-buffer kept in tile memory without

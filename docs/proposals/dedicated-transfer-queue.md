@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-09-05
+updated: 2026-10-20
 authority: proposal
 ---
 # Dedicated transfer queue
@@ -11,7 +11,9 @@ Vulkan resource publication uses bounded staging allocations and records upload
 work in the active frame command path. The graph has transfer passes for packet
 uploads, and staging retirement follows submitted work. Metal has its own
 publication path. No selected renderer creates or synchronizes a dedicated
-transfer queue family.
+transfer queue family. Render passes on a second queue are proposed
+separately in [Asynchronous compute](async-compute.md); this proposal stays
+limited to uploads.
 
 ## Proposed change
 

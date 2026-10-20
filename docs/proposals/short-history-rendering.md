@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-16
+updated: 2026-10-20
 authority: proposal
 ---
 
@@ -17,8 +17,9 @@ without its convergence pass, by the owner's decision after measurement
 (2026-10-12; [ADR-019](../adr/019-bounded-forward-spatial-lighting.md)); its
 table marks the open rows. Sections 2 to 4 are implemented on the desktop
 pipeline (2026-10-13), and so are section 5's planar water reflections
-([ADR-117](../adr/117-desktop-planar-reflections.md)). Section 6 is not
-implemented.
+([ADR-117](../adr/117-desktop-planar-reflections.md)). Section 6 is
+implemented on the desktop pipeline (2026-10-14,
+[ADR-119](../adr/119-dynamic-diffuse-volume-layer.md)).
 
 ## Owner decisions (2026-10-12)
 
@@ -402,6 +403,8 @@ runtime grid. The owner's decisions of 2026-10-12, 2026-10-13 and
 volume with light records and a capture of a changed static light; the
 editor writing `runtime_grid` for an unbaked volume; the all-light layer for
 time of day ([Sparse diffuse volumes](sparse-diffuse-volumes.md), item 2).
+Making the bake optional on the desktop pipeline, with camera cascades and a
+hit-shading cache, is in [Dynamic diffuse GI](dynamic-diffuse-gi.md).
 
 ## Order
 

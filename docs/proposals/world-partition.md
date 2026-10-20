@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-11
+updated: 2026-10-20
 authority: proposal
 ---
 # World partition
@@ -50,3 +50,5 @@ where imported content streams as well as authored content.
   tight leave holes near fast sources.
 - Cell assignment by position can split content a designer sees as one piece;
   children follow their root to limit this.
+- Texture mip residency inside a loaded cell belongs to
+  [texture streaming](texture-streaming.md).

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-12
+updated: 2026-10-20
 authority: proposal
 ---
 # Lighting efficiency
@@ -124,9 +124,11 @@ In order of measured payoff on Vulkan:
    the full-precision loop on RDNA 2 and Ampere; on the M1, 16-bit arithmetic
    gave no ALU gain in the tiled prototype
    ([Tiled graphics pipeline](tiled-pipeline.md#first-prototype-measurements)).
-4. **Deferred for Bistro-class scenes: camera-space clustered culling.** It
-   remains useful above the 128-light table or for scenes with short-range
-   lights, but it does not pay off here.
+4. **Clustered culling: see
+   [Clustered light and decal binning](clustered-light-and-decal-binning.md).**
+   Finer binning does not pay on Bistro as it is (the 89 times finer grid
+   above saved 0.13 ms); that proposal raises the 128-light and 64-decal
+   limits and needs a scoped Bistro case with many short-range lights.
 
 Compute tile lists that skip sky tiles, the compute form of a sky stencil, are
 not worth timing on Bistro. The twelve distinct views of the Vulkan Bistro

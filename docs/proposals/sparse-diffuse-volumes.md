@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-14
+updated: 2026-10-20
 authority: proposal
 ---
 
@@ -38,7 +38,8 @@ time per sun key and 183 s for the lamp group.
    holding all light that replaces the baked layers for time of day without
    sun keys, a finer grid than 1024 bricks for large unbaked scenes, and the
    editor writing `runtime_grid` for a volume not baked yet. The tiled
-   pipeline stays baked.
+   pipeline stays baked. The step past it, a desktop pipeline where the bake
+   is optional, is in [Dynamic diffuse GI](dynamic-diffuse-gi.md).
 
 ## Evidence needed
 

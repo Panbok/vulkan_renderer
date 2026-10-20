@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-16
+updated: 2026-10-20
 authority: proposal
 ---
 # Network protocol
@@ -125,7 +125,9 @@ The rest:
   level upward, and mesh LOD ranges from the coarsest level
   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
   Priority comes from the streaming sources and the screen size. A request
-  for an asset that leaves interest is cancelled with CANCEL.
+  for an asset that leaves interest is cancelled with CANCEL. Mip priority
+  comes from the required mips that [texture streaming](texture-streaming.md)
+  computes; this service orders the remote fetches.
 - **GPU placement.** Fragments decrypt into staging memory supplied by the
   receiver. The resource then goes through the ordered publication queue
   with confirm-before-use. Staging memory returns to its pool after GPU

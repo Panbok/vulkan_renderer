@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-12
+updated: 2026-10-20
 authority: proposal
 ---
 
@@ -35,7 +35,7 @@ rendering contracts before assets relying on them can be accepted.
 | Rendering | Both backends run compute skinning. Vulkan's desktop pipeline consumes the deformation in visibility, shadows, picking, material reconstruction, blend and motion; Metal's tiled pipeline in its shadow, forward, blend and picking draws. Previous deformation comes from compatible submitted history. The animated Bistro snapshot ran on the removed Metal desktop implementation; skinned captures on the tiled pipeline and on Vulkan are pending ([ADR-044](../adr/044-shader-cross-backend-contract.md)). |
 | Editor | A movable window has typed blend nodes, parameter/state editing, clip transport and a 16-block sequence with crossfades and undo/redo. Workspace settings preserve authoring; Apply installs a copied controller in the live scene. Managed controller assets and scene-override serialization remain future work. |
 | Preview | An independent player and orbit camera render actual deformed geometry into a 512-square graph target consumed by UI. The initial neutral directional material omits authored materials and main-scene postprocessing. |
-| Scheduling | The existing graph orders skinning, consumers and UI on the graphics submission path. There is no asynchronous compute queue. |
+| Scheduling | The existing graph orders skinning, consumers and UI on the graphics submission path. There is no asynchronous compute queue; [Asynchronous compute](async-compute.md) proposes an opt-in one for graph passes. |
 
 See [ADR-030](../adr/030-offline-mesh-optimization-and-cooking.md),
 [ADR-031](../adr/031-versioned-packed-static-geometry-abi.md),

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-12
+updated: 2026-10-20
 authority: proposal
 ---
 
@@ -10,7 +10,8 @@ authority: proposal
 every opaque surface inside their box. This proposal covers the next
 decal features. Each one changes the shared decal contract, so both
 pipeline classes must implement it ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
-decision 3).
+decision 3). How many decals a frame carries, and how they are binned, is
+in [Clustered light and decal binning](clustered-light-and-decal-binning.md).
 
 ## Current baseline
 
