@@ -124,6 +124,12 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     and `classify_view_base` at byte 228, then two reserved words. The late
     phase's root points `custom_compaction` at the late view's own table.
     Native evidence is in ADR-128; the kernels have no Vulkan consumer.
+  - The Standard draw kinds ([ADR-129](129-tiled-standard-draw-kinds.md))
+    add function constants 2 and 3 to the tiled forward fragments, which
+    compile out the lightmap path and the terrain layers when set, and grow
+    `VkrMetalCustomCompaction` to 35 slots per plane (8,992 bytes) with a
+    `kind_ready_mask` in its former reserved word. Classification bit 6
+    marks a kind draw. Native evidence is in ADR-129; no Vulkan consumer.
   - The tiled resolve kernel leaves in the resolved colour's alpha the share
     of each pixel's resolve weight that surfaces hold, as the sky writes
     alpha zero. The atmosphere draw reads it through programmable blending

@@ -63,6 +63,9 @@ typedef struct VkrMetalPacketIndirectPass {
      (ADR-113). */
   bool8_t brdf_ready;
   uint32_t brdf_ready_mask;
+  /* The Standard kinds whose ranges the pass draws, bit
+     plane * VKR_METAL_STANDARD_KIND_COUNT + kind (ADR-129). */
+  uint32_t kind_ready_mask;
   /* A pass that draws every camera draw in a two-phase frame also executes
      the late view's ranges and its Custom ranges (ADR-032); nil and zero
      otherwise. */

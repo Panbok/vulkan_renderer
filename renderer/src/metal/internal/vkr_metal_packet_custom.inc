@@ -120,9 +120,95 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
   }
 }
 
+/* The Standard draw kinds (ADR-129), in the order of their compaction slots:
+   draws that cannot be lightmapped, on non-terrain and on terrain
+   materials. Lightmapped draws keep the general pipelines: a lightmapped
+   kind without the terrain layers cost more in executes and pipeline
+   changes than it saved. */
+enum {
+  VKR_METAL_STANDARD_KIND_UNLIT = 0,
+  VKR_METAL_STANDARD_KIND_TERRAIN = 1,
+};
+
+/* Creates Standard kind `kind`'s forward and alpha-tested pipelines of
+   shading variant `variant` from the Standard entries, with the function
+   constants that compile out the code the kind's draws never run, then
+   marks the variant ready or failed. Runs as a background build. */
+vkr_internal void
+vkr_metal_packet_standard_kind_create(VkrMetalPacketRenderer *renderer,
+                                      uint32_t kind, uint32_t variant)
+    API_AVAILABLE(macos(26.0)) {
+  VkrMetalCustomGraph *graph = &renderer->standard_kinds[kind];
+  const MTLPixelFormat sun_format = (variant & VKR_METAL_TILED_SUN_VARIANT)
+                                        ? VKR_METAL_TILED_SUN_LIGHT_FORMAT
+                                        : MTLPixelFormatInvalid;
+  @autoreleasepool {
+    const float64_t start = vkr_platform_get_absolute_time();
+    const bool8_t extension = (variant & 1u) != 0u;
+    const bool8_t sun = (variant & VKR_METAL_TILED_SUN_VARIANT) != 0u;
+    const bool8_t no_lightmap = true_v;
+    const bool8_t no_terrain = kind != VKR_METAL_STANDARD_KIND_TERRAIN;
+    MTLFunctionConstantValues *constants =
+        [[MTLFunctionConstantValues new] autorelease];
+    [constants setConstantValue:&extension type:MTLDataTypeBool atIndex:0];
+    [constants setConstantValue:&sun type:MTLDataTypeBool atIndex:1];
+    [constants setConstantValue:&no_lightmap type:MTLDataTypeBool atIndex:2];
+    [constants setConstantValue:&no_terrain type:MTLDataTypeBool atIndex:3];
+    static NSString *const labels[VKR_METAL_STANDARD_KIND_COUNT] = {
+        @"VKR tiled forward, unlightmapped kind",
+        @"VKR tiled forward, unlightmapped terrain kind",
+    };
+    bool8_t ok = renderer->fragment_library != nil;
+    for (uint32_t decals = 0;
+         ok && decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT; ++decals) {
+      for (uint32_t probes = 0;
+           ok && probes < VKR_METAL_TILED_PROBE_VARIANT_COUNT; ++probes) {
+        for (uint32_t i = 0; ok && i < VKR_METAL_TILED_LIGHTING_COUNT; ++i) {
+          graph->forward[variant][decals][probes][i] =
+              vkr_metal_packet_create_pipeline_with_targets(
+                  renderer, renderer->fragment_library,
+                  "vkr_metal_tiled_vertex", renderer->fragment_library,
+                  tiled_lighting[i].forward[decals][probes],
+                  MTLPixelFormatRGBA16Float, sun_format,
+                  VKR_METAL_PACKET_BLEND_NONE,
+                  VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+                  VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                  renderer->tiled_sample_count, constants, labels[kind]);
+          graph->coverage[variant][decals][probes][i] =
+              vkr_metal_packet_create_pipeline_with_targets(
+                  renderer, renderer->fragment_library,
+                  "vkr_metal_tiled_vertex", renderer->fragment_library,
+                  tiled_lighting[i].coverage[decals][probes],
+                  MTLPixelFormatRGBA16Float, sun_format,
+                  VKR_METAL_PACKET_BLEND_COVERAGE,
+                  VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
+                  VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                  renderer->tiled_sample_count, constants, labels[kind]);
+          ok = graph->forward[variant][decals][probes][i] != nil &&
+               graph->coverage[variant][decals][probes][i] != nil;
+        }
+      }
+    }
+    graph->create_seconds = vkr_platform_get_absolute_time() - start;
+    vkr_atomic_uint32_store(&graph->state[variant],
+                            ok ? VKR_METAL_CUSTOM_GRAPH_READY
+                               : VKR_METAL_CUSTOM_GRAPH_FAILED,
+                            VKR_MEMORY_ORDER_RELEASE);
+    if (ok)
+      log_info("Metal: Standard kind %u of shading variant %u ready in "
+               "%.1f ms",
+               kind, variant, graph->create_seconds * 1.0e3);
+    else
+      log_warn("Metal: Standard kind %u of shading variant %u has no "
+               "pipelines; its draws keep the general ones",
+               kind, variant);
+  }
+}
+
 /* One background pipeline creation: Custom graph `slot` in shading variant
-   `variant`, or when `slot` is 0 the tiled BRDF extension variant (variant
-   1) or the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT). */
+   `variant`; Standard kind `slot - VKR_METAL_CUSTOM_GRAPH_SLOTS` past the
+   Custom slots; or when `slot` is 0 the tiled BRDF extension variant
+   (variant 1) or the tiled sun variants (VKR_METAL_TILED_SUN_VARIANT). */
 typedef struct VkrMetalBackgroundBuild {
   VkrMetalPacketRenderer *renderer;
   uint32_t slot;
@@ -136,7 +222,12 @@ vkr_metal_packet_background_run(const VkrMetalBackgroundBuild *build)
   const uint64_t start_ns = vkr_metal_packet_now_ns();
   const char *subject = NULL;
   VkrAtomicUint32 *state = NULL;
-  if (build->slot != 0u) {
+  if (build->slot >= VKR_METAL_CUSTOM_GRAPH_SLOTS) {
+    const uint32_t kind = build->slot - VKR_METAL_CUSTOM_GRAPH_SLOTS;
+    vkr_metal_packet_standard_kind_create(renderer, kind, build->variant);
+    subject = "tiled.kind";
+    state = &renderer->standard_kinds[kind].state[build->variant];
+  } else if (build->slot != 0u) {
     vkr_metal_packet_custom_create(renderer, build->slot, build->variant);
     subject = renderer->custom_graphs[build->slot].function;
     state = &renderer->custom_graphs[build->slot].state[build->variant];
@@ -210,8 +301,53 @@ vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
       (void)vkr_job_wait(renderer->job_system,
                          renderer->custom_graphs[slot].jobs[variant]);
   }
+  for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
+    for (uint32_t variant = 0u; variant < VKR_METAL_TILED_SHADING_VARIANT_COUNT;
+         ++variant)
+      (void)vkr_job_wait(renderer->job_system,
+                         renderer->standard_kinds[kind].jobs[variant]);
+  }
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_brdf_job);
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_sun_job);
+}
+
+/* This frame's ready Standard kinds (ADR-129), bit
+   plane * VKR_METAL_STANDARD_KIND_COUNT + kind, for the frame's sun
+   variant in plane 0 and, when it buckets extended draws, plane 1. A kind
+   variant a frame first asks for starts creating in the background; its
+   draws keep the general pipelines until it is READY. The
+   VKR_STANDARD_KINDS_DISABLED diagnostic keeps every draw on them. */
+vkr_internal uint32_t
+vkr_metal_packet_standard_kind_mask(VkrMetalPacketRenderer *renderer,
+                                    bool8_t sun, bool8_t brdf_frame)
+    API_AVAILABLE(macos(26.0)) {
+  static int32_t disabled = -1;
+  if (disabled < 0)
+    disabled =
+        vkr_platform_environment_flag("VKR_STANDARD_KINDS_DISABLED") ? 1 : 0;
+  if (disabled == 1 || !renderer->fragment_library)
+    return 0u;
+
+  uint32_t mask = 0u;
+  for (uint32_t plane = 0u; plane < (brdf_frame ? 2u : 1u); ++plane) {
+    const uint32_t variant = plane | (sun ? VKR_METAL_TILED_SUN_VARIANT : 0u);
+    for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
+      VkrMetalCustomGraph *graph = &renderer->standard_kinds[kind];
+      const uint32_t state = vkr_atomic_uint32_load(&graph->state[variant],
+                                                    VKR_MEMORY_ORDER_ACQUIRE);
+      if (state == VKR_METAL_CUSTOM_GRAPH_EMPTY) {
+        vkr_atomic_uint32_store(&graph->state[variant],
+                                VKR_METAL_CUSTOM_GRAPH_PENDING,
+                                VKR_MEMORY_ORDER_RELEASE);
+        vkr_metal_packet_background_build(
+            renderer, VKR_METAL_CUSTOM_GRAPH_SLOTS + kind, variant,
+            &graph->jobs[variant]);
+      } else if (state == VKR_METAL_CUSTOM_GRAPH_READY) {
+        mask |= 1u << (plane * VKR_METAL_STANDARD_KIND_COUNT + kind);
+      }
+    }
+  }
+  return mask;
 }
 
 /* Starts creating slot `slot`'s pipelines of shading variant `variant`. */
@@ -377,6 +513,14 @@ void vkr_metal_packet_renderer_pipeline_stats(
   pending += vkr_atomic_uint32_load(&renderer->tiled_sun_state,
                                     VKR_MEMORY_ORDER_ACQUIRE) ==
              VKR_METAL_CUSTOM_GRAPH_PENDING;
+  /* So does each Standard kind variant (ADR-129). */
+  for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
+    for (uint32_t variant = 0u; variant < VKR_METAL_TILED_SHADING_VARIANT_COUNT;
+         ++variant)
+      pending += vkr_atomic_uint32_load(
+                     &renderer->standard_kinds[kind].state[variant],
+                     VKR_MEMORY_ORDER_ACQUIRE) == VKR_METAL_CUSTOM_GRAPH_PENDING;
+  }
   *out_pending_graphs = pending;
 }
 
@@ -415,6 +559,14 @@ vkr_metal_packet_custom_release(VkrMetalPacketRenderer *renderer)
             sizeof(renderer->custom_graphs[slot]));
   }
   renderer->custom_graph_count = 0u;
+  for (uint32_t kind = 0u; kind < VKR_METAL_STANDARD_KIND_COUNT; ++kind) {
+    for (uint32_t variant = 0u; variant < VKR_METAL_TILED_SHADING_VARIANT_COUNT;
+         ++variant)
+      vkr_metal_packet_custom_release_pipelines(&renderer->standard_kinds[kind],
+                                                variant);
+    MemZero(&renderer->standard_kinds[kind],
+            sizeof(renderer->standard_kinds[kind]));
+  }
   [renderer->custom_library release];
   renderer->custom_library = nil;
 }

@@ -1198,7 +1198,8 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
                                    VkrMetalPacketFrameUpload *upload,
                                    uint64_t *out_gpu_address) {
   *out_gpu_address = 0u;
-  if (renderer->custom_graph_count == 0u && !renderer->tiled_brdf_draws)
+  if (renderer->custom_graph_count == 0u && !renderer->tiled_brdf_draws &&
+      renderer->standard_kind_mask == 0u)
     return;
   if (!renderer->custom_compaction) {
     uint64_t gpu_address = 0u;
@@ -1224,6 +1225,7 @@ vkr_metal_packet_custom_compaction(VkrMetalPacketRenderer *renderer,
                   renderer, VKR_METAL_CUSTOM_GRAPH_READY, 1u | sun)
             : 0u;
     compaction->brdf_ready_mask = renderer->custom_brdf_ready_mask;
+    compaction->kind_ready_mask = renderer->standard_kind_mask;
     compaction->materials =
         vkr_metal_material_table_device_gpu_address(renderer->materials);
     renderer->custom_compaction = compaction;
@@ -1659,12 +1661,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draw_late(
         upload, sizeof(VkrMetalCustomCompaction), &late_custom_gpu);
     if (!late_custom)
       return false_v;
-    MemZero(late_custom, sizeof(*late_custom));
     late_custom->ready_mask = renderer->custom_compaction->ready_mask;
     late_custom->pending_mask = renderer->custom_compaction->pending_mask;
     late_custom->brdf_ready = renderer->custom_compaction->brdf_ready;
     late_custom->brdf_ready_mask =
         renderer->custom_compaction->brdf_ready_mask;
+    late_custom->kind_ready_mask =
+        renderer->custom_compaction->kind_ready_mask;
     late_custom->materials = renderer->custom_compaction->materials;
     renderer->late_custom_compaction_gpu = late_custom_gpu;
     root->custom_compaction = late_custom_gpu;
@@ -2320,6 +2323,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_gpu_draws(
     prepared->indirect.custom_ready_mask = renderer->custom_ready_mask;
     prepared->indirect.brdf_ready = renderer->tiled_brdf_draws;
     prepared->indirect.brdf_ready_mask = renderer->custom_brdf_ready_mask;
+    prepared->indirect.kind_ready_mask = renderer->standard_kind_mask;
   }
   prepared->indirect.viewport =
       (MTLViewport){0.0,

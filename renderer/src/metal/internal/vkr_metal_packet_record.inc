@@ -369,6 +369,12 @@ vkr_metal_packet_custom_range_ready(const VkrMetalPacketIndirectPass *draw,
                                     uint32_t plane, uint32_t slot) {
   if (slot == 0u)
     return plane != 0u && draw->brdf_ready;
+  /* A Standard kind's range (ADR-129). */
+  if (slot >= VKR_METAL_CUSTOM_GRAPH_SLOTS)
+    return ((draw->kind_ready_mask >>
+             (plane * VKR_METAL_STANDARD_KIND_COUNT + slot -
+              VKR_METAL_CUSTOM_GRAPH_SLOTS)) &
+            1u) != 0u;
   const uint32_t mask =
       plane == 0u ? draw->custom_ready_mask : draw->brdf_ready_mask;
   return (mask & (1u << (slot - 1u))) != 0u;
@@ -389,7 +395,7 @@ vkr_metal_packet_record_custom_bucket(id<MTL4RenderCommandEncoder> encoder,
   [encoder executeCommandsInBuffer:draw->commands
                     indirectBuffer:draw->custom_arguments +
                                    (((uint64_t)plane *
-                                         VKR_METAL_CUSTOM_GRAPH_SLOTS +
+                                         VKR_METAL_COMPACTION_SLOTS +
                                      slot) *
                                         VKR_WORLD_DRAW_STATE_BUCKET_COUNT +
                                     bucket) *
@@ -422,7 +428,7 @@ vkr_internal void vkr_metal_packet_record_indirect_ranges(
   for (uint32_t plane = 0u;
        draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
        ++plane) {
-    for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+    for (uint32_t slot = 0u; slot < VKR_METAL_COMPACTION_SLOTS; ++slot) {
       if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
         continue;
       for (uint32_t bucket = 0u; bucket < VKR_WORLD_DRAW_STATE_BUCKET_COUNT;
@@ -533,10 +539,15 @@ vkr_internal void vkr_metal_packet_record_tiled_opaque(
            draw->custom_arguments && plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
            ++plane) {
         const uint32_t variant = plane | pass->tiled.sun;
-        for (uint32_t slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+        for (uint32_t slot = 0u; slot < VKR_METAL_COMPACTION_SLOTS; ++slot) {
           if (!vkr_metal_packet_custom_range_ready(draw, plane, slot))
             continue;
-          const VkrMetalCustomGraph *graph = &renderer->custom_graphs[slot];
+          /* Past the Custom slots, a Standard kind's pipelines (ADR-129). */
+          const VkrMetalCustomGraph *graph =
+              slot < VKR_METAL_CUSTOM_GRAPH_SLOTS
+                  ? &renderer->custom_graphs[slot]
+                  : &renderer->standard_kinds[slot -
+                                              VKR_METAL_CUSTOM_GRAPH_SLOTS];
           id<MTLRenderPipelineState> pipeline =
               overdraw    ? draw->opaque_pipeline
               : slot == 0u

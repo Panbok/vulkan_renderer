@@ -1053,6 +1053,13 @@ struct VkrMetalPacketRenderer {
   VkrAtomicUint32 background_builds;
   bool8_t custom_loaded;
   VkrMetalCustomGraph custom_graphs[VKR_METAL_CUSTOM_GRAPH_SLOTS];
+  /* The Standard draw kinds' pipelines (ADR-129): the Standard entries with
+     the kind's function constants, created in the background per shading
+     variant the first time a frame asks for it. `function` stays empty. */
+  VkrMetalCustomGraph standard_kinds[VKR_METAL_STANDARD_KIND_COUNT];
+  /* This frame's ready kinds, bit plane * VKR_METAL_STANDARD_KIND_COUNT +
+     kind; the upload plan sets it. */
+  uint32_t standard_kind_mask;
   /* Slots given to graphs; slots stay given until the pipelines release. */
   uint32_t custom_graph_count;
   /* Late Custom draws of every completed frame, read beside the render

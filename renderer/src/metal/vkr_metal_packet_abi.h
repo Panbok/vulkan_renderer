@@ -701,15 +701,23 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuDrawRoot {
    buckets. */
 #define VKR_METAL_CUSTOM_COMPACTION_PLANES 2u
 
+/* The Standard draw kinds (ADR-129): Standard camera draws that cannot be
+   lightmapped, on non-terrain and on terrain materials. Each kind shades
+   with pipelines that compile out the code its draws never run, in the
+   compaction slots after the Custom graphs'. */
+#define VKR_METAL_STANDARD_KIND_COUNT 2u
+#define VKR_METAL_COMPACTION_SLOTS                                             \
+  (VKR_METAL_CUSTOM_GRAPH_SLOTS + VKR_METAL_STANDARD_KIND_COUNT)
+
 typedef struct VkrMetalCustomCompaction {
   uint32_t execution_ranges[VKR_METAL_CUSTOM_COMPACTION_PLANES]
-                           [VKR_METAL_CUSTOM_GRAPH_SLOTS]
+                           [VKR_METAL_COMPACTION_SLOTS]
                            [VKR_WORLD_DRAW_STATE_BUCKET_COUNT][2];
   uint32_t bucket_counts[VKR_METAL_CUSTOM_COMPACTION_PLANES]
-                        [VKR_METAL_CUSTOM_GRAPH_SLOTS]
+                        [VKR_METAL_COMPACTION_SLOTS]
                         [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t bucket_cursors[VKR_METAL_CUSTOM_COMPACTION_PLANES]
-                         [VKR_METAL_CUSTOM_GRAPH_SLOTS]
+                         [VKR_METAL_COMPACTION_SLOTS]
                          [VKR_WORLD_DRAW_STATE_BUCKET_COUNT];
   uint32_t late_count;
   uint32_t ready_mask;
@@ -720,13 +728,15 @@ typedef struct VkrMetalCustomCompaction {
   /* The Custom slots whose BRDF extension pipelines exist this frame, bit
      slot - 1; their extended draws take plane 1. */
   uint32_t brdf_ready_mask;
-  uint32_t reserved;
+  /* The Standard kinds whose pipelines exist this frame, bit
+     plane * VKR_METAL_STANDARD_KIND_COUNT + kind. */
+  uint32_t kind_ready_mask;
   uint64_t materials;
 } VkrMetalCustomCompaction;
 
 _Static_assert(sizeof(VkrMetalCustomCompaction) ==
                    VKR_METAL_CUSTOM_COMPACTION_PLANES *
-                           VKR_METAL_CUSTOM_GRAPH_SLOTS *
+                           VKR_METAL_COMPACTION_SLOTS *
                            VKR_WORLD_DRAW_STATE_BUCKET_COUNT * 16u +
                        32u,
                "Metal Custom compaction ABI drift");

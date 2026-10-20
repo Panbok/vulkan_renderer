@@ -19,6 +19,20 @@
 // entries specializes it.
 constant bool vkr_tiled_sun_output [[function_constant(1)]];
 
+// The Standard draw kinds' pipelines (ADR-129) set these: their draws
+// cannot be lightmapped, so they compile out the lightmap path, and a kind
+// without terrain materials also the terrain layers. The general pipelines'
+// registers for code those draws never run then do not lower their
+// occupancy. Pipelines that leave them undefined keep both paths.
+constant bool vkr_tiled_kind_no_lightmap_constant [[function_constant(2)]];
+constant bool vkr_tiled_kind_no_lightmap =
+    is_function_constant_defined(vkr_tiled_kind_no_lightmap_constant) &&
+    vkr_tiled_kind_no_lightmap_constant;
+constant bool vkr_tiled_kind_no_terrain_constant [[function_constant(3)]];
+constant bool vkr_tiled_kind_no_terrain =
+    is_function_constant_defined(vkr_tiled_kind_no_terrain_constant) &&
+    vkr_tiled_kind_no_terrain_constant;
+
 // The opaque pass's outputs: the lit colour and, in sun contact frames, the
 // sun's light within it, after its cascades and cloud shadow.
 struct VkrMetalTiledForwardOutput {
@@ -505,7 +519,8 @@ static float4
 vkr_metal_tiled_base(thread const VkrMetalTiledVertexOutput &input,
                      constant VkrMetalPacketFrameRoot *frame,
                      const device VkrMetalPacketMaterial &material) {
-  const bool terrain = (material.flags & 2048u) != 0u;
+  const bool terrain =
+      !vkr_tiled_kind_no_terrain && (material.flags & 2048u) != 0u;
   return material.base_color_texture.sample(material.base_color_sampler,
                                             input.texcoord,
                                             bias(frame->texture_lod_bias)) *
@@ -519,7 +534,8 @@ vkr_metal_tiled_surface(thread const VkrMetalTiledVertexOutput &input,
                         uint material_index, float4 base) {
   // A draw's material decides `terrain`, so the samples under it keep their
   // implicit derivatives.
-  const bool terrain = (material.flags & 2048u) != 0u;
+  const bool terrain =
+      !vkr_tiled_kind_no_terrain && (material.flags & 2048u) != 0u;
   VkrMetalTiledSurface surface;
   surface.base = base;
   surface.normal_mapped = terrain || (material.flags & 1u) != 0u;
@@ -1055,7 +1071,7 @@ vkr_metal_tiled_shade(thread const VkrMetalTiledVertexOutput &input,
   // Read after the direct light, so the light loops keep no more live state.
   const float3 lighting_position = vkr_metal_tiled_lighting_position(
       frame, instance_index, input.world_position);
-  if (input.lightmap_page != ~0u) {
+  if (!vkr_tiled_kind_no_lightmap && input.lightmap_page != ~0u) {
     float sky_luminance;
     float4 lightmap = vkr_metal_tiled_lightmap_irradiance(
         *frame->lightmap, input.lightmap_uv, input.lightmap_page,

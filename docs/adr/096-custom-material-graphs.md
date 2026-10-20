@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-14
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -98,9 +98,11 @@ The owner settled three points on 2026-10-09:
    ([ADR-118](118-renderer-libc-boundary.md)).
    `vkr_renderer_get_pipeline_stats` reports the graphs still pending.
 7. **Drawing.** Each frame takes a ready mask of the slots whose pipelines
-   exist and allocates one `VkrMetalCustomCompaction` table (8,480 bytes)
+   exist and allocates one `VkrMetalCustomCompaction` table (8,992 bytes)
    in its upload ring. Its second plane holds the draws whose material
-   uses a BRDF extension ([ADR-113](113-brdf-material-extensions.md)).
+   uses a BRDF extension ([ADR-113](113-brdf-material-extensions.md)), and
+   slots 33 and 34 of both planes the Standard draw kinds
+   ([ADR-129](129-tiled-standard-draw-kinds.md)).
    - The classify kernel sorts the camera view's draws of ready slots into
      per-slot buckets. It marks them in the classification word with bit 4
      and the slot in bits 27 to 31, which the encode kernel clears. Bit 5

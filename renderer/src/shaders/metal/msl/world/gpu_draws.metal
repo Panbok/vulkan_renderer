@@ -131,7 +131,11 @@ static uint vkr_metal_sdf_field_row(
 // planes by BRDF variant (ADR-113): plane 0 holds the Custom graphs' draws;
 // plane 1 the draws whose material uses a BRDF extension, Standard ones in
 // slot 0 and Custom ones in their graph's slot. Plane 0's slot 0 stays empty.
+// The Standard draw kinds (ADR-129) follow the Custom slots in both planes.
 #define VKR_METAL_CUSTOM_GRAPH_SLOTS 33u
+#define VKR_METAL_STANDARD_KIND_COUNT 2u
+#define VKR_METAL_COMPACTION_SLOTS                                              \
+  (VKR_METAL_CUSTOM_GRAPH_SLOTS + VKR_METAL_STANDARD_KIND_COUNT)
 #define VKR_METAL_CUSTOM_COMPACTION_PLANES 2u
 #define VKR_METAL_MATERIAL_CUSTOM_SHIFT 24u
 #define VKR_METAL_MATERIAL_CUSTOM_MASK 63u
@@ -141,14 +145,25 @@ static uint vkr_metal_sdf_field_row(
 // A camera classification of a draw in plane 1: an extended Standard draw
 // alone, an extended Custom draw with the Custom bit and slot.
 #define VKR_METAL_BRDF_CLASS_BIT 32u
+// A camera classification of a Standard draw of a kind: this bit, and the
+// kind in the slot bits, which a Standard draw leaves free.
+#define VKR_METAL_KIND_CLASS_BIT 64u
 #define VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT 27u
+// The Standard draw kinds: draws that cannot be lightmapped on non-terrain
+// materials, and on terrain materials. A draw that can be lightmapped keeps
+// the general pipelines.
+#define VKR_METAL_STANDARD_KIND_UNLIT 0u
+#define VKR_METAL_STANDARD_KIND_TERRAIN 1u
+#define VKR_METAL_STANDARD_KIND_NONE 2u
+// Mirrors the terrain bit of VkrMetalPacketMaterial.flags.
+#define VKR_METAL_MATERIAL_TERRAIN 2048u
 struct VkrMetalCustomCompaction {
   uint2 execution_ranges[VKR_METAL_CUSTOM_COMPACTION_PLANES]
-                        [VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+                        [VKR_METAL_COMPACTION_SLOTS][8];
   atomic_uint bucket_counts[VKR_METAL_CUSTOM_COMPACTION_PLANES]
-                           [VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+                           [VKR_METAL_COMPACTION_SLOTS][8];
   atomic_uint bucket_cursors[VKR_METAL_CUSTOM_COMPACTION_PLANES]
-                            [VKR_METAL_CUSTOM_GRAPH_SLOTS][8];
+                            [VKR_METAL_COMPACTION_SLOTS][8];
   atomic_uint late_count;
   // Slots whose pipelines exist this frame, and those still being created,
   // bit slot - 1.
@@ -160,7 +175,9 @@ struct VkrMetalCustomCompaction {
   // The Custom slots whose BRDF extension pipelines exist this frame, bit
   // slot - 1; their extended draws take plane 1.
   uint brdf_ready_mask;
-  uint reserved;
+  // The Standard kinds whose pipelines exist this frame, bit
+  // plane * VKR_METAL_STANDARD_KIND_COUNT + kind.
+  uint kind_ready_mask;
   // The frame's material table; row flags carry each material's slot.
   const device VkrMetalPacketMaterial *materials;
 };
@@ -206,6 +223,39 @@ static bool vkr_metal_packet_brdf_extended(
       root.custom_compaction->materials[candidate.material_index];
   return vkr_brdf_extension_active(vkr_brdf_extension_unpack(
       material.material_brdf, material.material_specular_tint));
+}
+
+// The Standard kind of a camera-view candidate of plane `plane` whose
+// pipelines exist this frame, or VKR_METAL_STANDARD_KIND_NONE. A draw can be
+// lightmapped when its instance has a lightmap slot and its geometry
+// lightmap UVs, as the vertex tests; such a draw keeps the general
+// pipelines.
+static uint vkr_metal_packet_standard_kind(
+    constant VkrMetalPacketGpuDrawRoot &root,
+    const device VkrGpuCandidateDrawRow &candidate,
+    const device VkrMetalPacketInstance &instance,
+    const device VkrGpuGeometryRow &geometry, uint plane) {
+  if (root.custom_compaction == nullptr ||
+      root.custom_compaction->kind_ready_mask == 0u)
+    return VKR_METAL_STANDARD_KIND_NONE;
+  const bool terrain =
+      (root.custom_compaction->materials[candidate.material_index].flags &
+       VKR_METAL_MATERIAL_TERRAIN) != 0u;
+  const device VkrGpuGeometryDecodeRecord *records =
+      (const device VkrGpuGeometryDecodeRecord *)geometry.decode_address;
+  const bool lightmapped =
+      uint(instance.normal_column2.w) != 0u &&
+      (records[candidate.decode_index].flags &
+       VKR_GPU_GEOMETRY_DECODE_LIGHTMAP_UV) != 0u;
+  const uint kind = lightmapped ? VKR_METAL_STANDARD_KIND_NONE
+                    : terrain   ? VKR_METAL_STANDARD_KIND_TERRAIN
+                                : VKR_METAL_STANDARD_KIND_UNLIT;
+  if (kind == VKR_METAL_STANDARD_KIND_NONE ||
+      ((root.custom_compaction->kind_ready_mask >>
+        (plane * VKR_METAL_STANDARD_KIND_COUNT + kind)) &
+       1u) == 0u)
+    return VKR_METAL_STANDARD_KIND_NONE;
+  return kind;
 }
 
 struct VkrMetalPacketGpuDrawView {
@@ -439,6 +489,25 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   const uint plane =
       camera && vkr_metal_packet_brdf_extended(root, candidate, slot) ? 1u
                                                                      : 0u;
+  /* A Standard camera draw of a kind whose pipelines exist takes its
+     kind's range in its plane (ADR-129). */
+  const uint kind = camera && slot == 0u
+                        ? vkr_metal_packet_standard_kind(root, candidate,
+                                                         instance, geometry,
+                                                         plane)
+                        : VKR_METAL_STANDARD_KIND_NONE;
+  if (kind != VKR_METAL_STANDARD_KIND_NONE) {
+    root.classifications[classification_index] =
+        (bucket + 1u) | lod_state |
+        (plane != 0u ? VKR_METAL_BRDF_CLASS_BIT : 0u) |
+        VKR_METAL_KIND_CLASS_BIT | (kind << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT);
+    atomic_fetch_add_explicit(
+        &root.custom_compaction
+             ->bucket_counts[plane][VKR_METAL_CUSTOM_GRAPH_SLOTS + kind]
+                            [bucket],
+        1u, memory_order_relaxed);
+    return;
+  }
   if (plane != 0u || (slot != 0u && slot < VKR_METAL_CUSTOM_GRAPH_SLOTS)) {
     root.classifications[classification_index] =
         (bucket + 1u) | lod_state |
@@ -454,6 +523,23 @@ vkr_metal_packet_gpu_draw_classify(constant VkrMetalPacketGpuDrawRoot &root
   root.classifications[classification_index] = (bucket + 1u) | lod_state;
   atomic_fetch_add_explicit(&state.bucket_counts[bucket], 1u,
                             memory_order_relaxed);
+}
+
+/* Whether compaction plane `plane`'s slot `slot` draws this frame: the
+   extended Standard slot, a Custom slot or a Standard kind whose pipelines
+   exist. Mirrors vkr_metal_packet_custom_range_ready on the host, which
+   executes only these ranges; classification fills no other. */
+static bool vkr_metal_packet_compaction_range_ready(
+    device const VkrMetalCustomCompaction &custom, uint plane, uint slot) {
+  if (slot == 0u)
+    return plane != 0u && custom.brdf_ready != 0u;
+  if (slot >= VKR_METAL_CUSTOM_GRAPH_SLOTS)
+    return ((custom.kind_ready_mask >>
+             (plane * VKR_METAL_STANDARD_KIND_COUNT + slot -
+              VKR_METAL_CUSTOM_GRAPH_SLOTS)) &
+            1u) != 0u;
+  const uint mask = plane == 0u ? custom.ready_mask : custom.brdf_ready_mask;
+  return ((mask >> (slot - 1u)) & 1u) != 0u;
 }
 
 /* One view's buckets from `pool_base` in its ICB group's pool: each takes
@@ -486,7 +572,10 @@ static uint vkr_metal_packet_gpu_draw_place_view(
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
     for (uint plane = 0u; plane < VKR_METAL_CUSTOM_COMPACTION_PLANES;
          ++plane) {
-      for (uint slot = 0u; slot < VKR_METAL_CUSTOM_GRAPH_SLOTS; ++slot) {
+      for (uint slot = 0u; slot < VKR_METAL_COMPACTION_SLOTS; ++slot) {
+        /* A range no pass draws stays empty, as the table starts zeroed. */
+        if (!vkr_metal_packet_compaction_range_ready(custom, plane, slot))
+          continue;
         for (uint bucket = 0u; bucket < 8u; ++bucket) {
           uint bucket_count = atomic_load_explicit(
               &custom.bucket_counts[plane][slot][bucket],
@@ -629,14 +718,18 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   /* The prefix starts the view's commands at its first range. */
   uint command_base = state.execution_ranges[0].x;
   uint visible_index = 0u;
-  if ((classification &
-       (VKR_METAL_CUSTOM_CLASS_BIT | VKR_METAL_BRDF_CLASS_BIT)) != 0u) {
-    /* A Custom or extended draw fills its plane and slot's bucket after
-       the Standard ones. */
+  if ((classification & (VKR_METAL_CUSTOM_CLASS_BIT | VKR_METAL_BRDF_CLASS_BIT |
+                         VKR_METAL_KIND_CLASS_BIT)) != 0u) {
+    /* A Custom, extended or kind draw fills its plane and slot's bucket
+       after the Standard ones. */
     uint plane = (classification & VKR_METAL_BRDF_CLASS_BIT) != 0u ? 1u : 0u;
-    uint slot = (classification & VKR_METAL_CUSTOM_CLASS_BIT) != 0u
-                    ? (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT) + 1u
-                    : 0u;
+    uint slot =
+        (classification & VKR_METAL_CUSTOM_CLASS_BIT) != 0u
+            ? (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT) + 1u
+        : (classification & VKR_METAL_KIND_CLASS_BIT) != 0u
+            ? VKR_METAL_CUSTOM_GRAPH_SLOTS +
+                  (classification >> VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT)
+            : 0u;
     device VkrMetalCustomCompaction &custom = *root.custom_compaction;
     uint local_index = atomic_fetch_add_explicit(
         &custom.bucket_cursors[plane][slot][bucket], 1u, memory_order_relaxed);
@@ -656,6 +749,7 @@ kernel void vkr_metal_packet_gpu_draw_encode(
   uint lod_state = classification & ~(VKR_GPU_DRAW_STATE_BUCKET_WORD_MASK |
                                       VKR_METAL_CUSTOM_CLASS_BIT |
                                       VKR_METAL_BRDF_CLASS_BIT |
+                                      VKR_METAL_KIND_CLASS_BIT |
                                       (31u << VKR_METAL_CUSTOM_CLASS_SLOT_SHIFT));
 
   const device VkrGpuCandidateDrawRow &candidate = root.candidates[index];
@@ -931,6 +1025,11 @@ kernel void vkr_metal_packet_hzb_build(constant VkrMetalPacketHzbBuildRoot &root
   root.destination.write(float4(farthest_depth), pixel);
 }
 
+static_assert(sizeof(VkrMetalCustomCompaction) ==
+                  VKR_METAL_CUSTOM_COMPACTION_PLANES *
+                          VKR_METAL_COMPACTION_SLOTS * 8u * 16u +
+                      32u,
+              "Custom compaction ABI drift");
 static_assert(sizeof(VkrGpuDrawCompactionState) == 144,
               "GPU draw compaction state ABI must remain 144 bytes");
 static_assert(sizeof(VkrMetalPacketGpuDrawRoot) == 240,
