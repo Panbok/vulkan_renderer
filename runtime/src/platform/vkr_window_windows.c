@@ -54,6 +54,11 @@ typedef struct PlatformState {
   // Window state
   uint32_t window_width;
   uint32_t window_height;
+  /* Frame size vkr_window_resize last asked for. A hidden window may exceed
+     the desktop, whose size Windows otherwise caps every captioned window
+     at; WM_GETMINMAXINFO lifts the cap to this size. */
+  LONG requested_frame_width;
+  LONG requested_frame_height;
   uint16_t pending_high_surrogate;
   /* The window pump owns DXGI and DisplayConfig. The render thread only
    * requests and copies this seqlock-published capability snapshot. */
@@ -734,6 +739,8 @@ bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
               width, height, dpi, (unsigned long)GetLastError());
     return false_v;
   }
+  state->requested_frame_width = rect.right - rect.left;
+  state->requested_frame_height = rect.bottom - rect.top;
   if (!SetWindowPos(state->window, NULL, 0, 0, rect.right - rect.left,
                     rect.bottom - rect.top,
                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
@@ -1031,6 +1038,19 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
                 (unsigned long)GetLastError());
     }
     return FALSE;
+  }
+
+  case WM_GETMINMAXINFO: {
+    /* A hidden window's client is a render target, not a view of the
+     * desktop: a harness case may render 2560x1440 on a 1920x1080 monitor. */
+    if (!state->owner->hidden)
+      return DefWindowProc(hwnd, msg, wparam, lparam);
+    MINMAXINFO *info = (MINMAXINFO *)lparam;
+    info->ptMaxTrackSize.x =
+        Max(info->ptMaxTrackSize.x, state->requested_frame_width);
+    info->ptMaxTrackSize.y =
+        Max(info->ptMaxTrackSize.y, state->requested_frame_height);
+    return 0;
   }
 
   case WM_DISPLAYCHANGE:
