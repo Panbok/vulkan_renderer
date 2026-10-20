@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/vkr_atomic.h"
 #include "core/vkr_codec.h"
 #include "defines.h"
 #include "math/mat.h"
@@ -249,14 +250,30 @@ typedef struct VkrRecordingPlaybackPose {
   uint64_t frame;
 } VkrRecordingPlaybackPose;
 
+/* Where an open on another thread stands: thousandths of the stream read
+   twice (once to count, once to fill), and a request to stop early, which
+   fails the open with "cancelled". */
+typedef struct VkrRecordingPlaybackProgress {
+  VkrAtomicUint32 permille;
+  VkrAtomicUint32 cancel;
+} VkrRecordingPlaybackProgress;
+
 /**
- * @brief Loads a bundle directory or a stream file.
+ * @brief Loads a bundle directory or a stream file. It touches only
+ * `playback`, the file and the codec, so it may run on any thread.
  * @param codec Decodes compressed chunks; the runtime's zstd decoder.
+ * @param progress Optional: written as the load reads, read for a cancel.
  * @param error Receives a one-line reason on failure.
  */
 bool8_t vkr_recording_playback_open(VkrRecordingPlayback *playback,
                                     const char *path, const VkrCodec *codec,
+                                    VkrRecordingPlaybackProgress *progress,
                                     char *error, uint64_t error_capacity);
+
+/** Moves an open playback from `from` into the closed `to`, leaving `from`
+ * closed: its memory follows it. */
+void vkr_recording_playback_move(VkrRecordingPlayback *to,
+                                 VkrRecordingPlayback *from);
 
 void vkr_recording_playback_close(VkrRecordingPlayback *playback);
 

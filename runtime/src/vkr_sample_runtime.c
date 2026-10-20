@@ -5999,6 +5999,7 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .transport_action = &requests->transport_action,
       .recording_request = &requests->recording_request,
       .recording = &state->recording.status,
+      .jobs = &application->job_system,
       .script_request = &requests->script_request,
       .script_results = state->script_results,
       .script_result_count = state->script_result_count,
@@ -8246,6 +8247,8 @@ int vkr_sample_runtime_run(int argc, char **argv,
       exit_code == 0)
     exit_code = 6;
 
+  /* A playback still being read stops before the job system does. */
+  vkr_sample_recording_shutdown(&application, &state->recording);
   vkr_standard_scene_runtime_shutdown(&application);
 
   return exit_code;

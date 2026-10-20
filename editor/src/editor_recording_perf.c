@@ -1,10 +1,14 @@
 #include "editor_recording.h"
 
 #include "containers/vkr_sort.h"
+#include "core/vkr_atomic.h"
 #include "core/vkr_content_codec.h"
+#include "core/vkr_job_system.h"
 #include "editor_internal.h"
 #include "editor_ui.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "memory/vkr_heap.h"
+#include "platform/vkr_platform.h"
 
 /* The Performance window (docs/proposals/recordings.md, "Performance
    view"): a recording's statistics, its frame-time, CPU-stage, pass and
@@ -69,6 +73,9 @@ static const Vec4 PERF_PASS_COLOR[VKR_EDITOR_PERF_PASS_SERIES] = {
 /* ------------------------------------------------------------------------ */
 /* Data                                                                      */
 
+typedef struct VkrEditorPerfLoad VkrEditorPerfLoad;
+vkr_internal void perf_load_drop(VkrEditorPerfLoad *load);
+
 void vkr_editor_recording_compare_stop(VkrEditorRecordingPerf *perf) {
   if (perf->comparing) {
     vkr_recording_compare_free(&perf->compare);
@@ -84,8 +91,16 @@ void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf) {
     vkr_editor_recording_perf_draws_release(perf);
     vkr_recording_analysis_free(&perf->analysis);
     vkr_recording_data_free(&perf->data);
-    vkr_dmemory_allocator_destroy(&perf->allocator);
+    perf_load_drop(perf->source);
   }
+  perf_load_drop(perf->loading);
+  perf->loading = NULL;
+  for (uint32_t i = 0u; i < perf->retired_count; ++i) {
+    perf_load_drop(perf->retired[i]);
+  }
+  perf->retired_count = 0u;
+  perf->source = NULL;
+  perf->allocator = NULL;
   perf->loaded = false_v;
   perf->column_count = 0u;
 }
@@ -128,7 +143,7 @@ vkr_internal void perf_view_stats(VkrEditorRecordingPerf *perf) {
   perf->view_low_1pct = 0.0;
   perf->view_over_budget = 0u;
   float64_t *values =
-      vkr_allocator_alloc(&perf->allocator, sizeof(float64_t) * count,
+      vkr_allocator_alloc(perf->allocator, sizeof(float64_t) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!values) {
     return;
@@ -164,7 +179,7 @@ vkr_internal void perf_view_stats(VkrEditorRecordingPerf *perf) {
       }
     }
   }
-  vkr_allocator_free(&perf->allocator, values, sizeof(float64_t) * count,
+  vkr_allocator_free(perf->allocator, values, sizeof(float64_t) * count,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
@@ -457,6 +472,12 @@ bool8_t vkr_editor_recording_compare(VkrEditorUi *editor, const char *name,
                   "Analyze a recording first; it is what B is compared with.");
     return false_v;
   }
+  /* A is about to change: B would be compared with the wrong one. */
+  if (perf->loading) {
+    string_format(error, error_capacity,
+                  "Wait for the recording being read; it becomes A.");
+    return false_v;
+  }
   char path[VKR_RECORDING_PATH_MAX];
   if (!vkr_editor_recording_resolve(editor, name, path, sizeof(path))) {
     string_format(error, error_capacity, "No recording named '%s'.",
@@ -469,7 +490,7 @@ bool8_t vkr_editor_recording_compare(VkrEditorUi *editor, const char *name,
   VkrRecordingData data = perf->compare_data;
   VkrRecordingAnalysis analysis = perf->compare_analysis;
   if (!same) {
-    if (vkr_recording_data_load(&data, &perf->allocator, path,
+    if (vkr_recording_data_load(&data, perf->allocator, path,
                                 vkr_content_codec_zstd_decoder()) !=
             VKR_RECORDING_DATA_OK ||
         data.frame_count == 0u) {
@@ -477,7 +498,7 @@ bool8_t vkr_editor_recording_compare(VkrEditorUi *editor, const char *name,
                     path);
       return false_v;
     }
-    if (!vkr_recording_analyze(&data, NULL, &perf->allocator, &analysis)) {
+    if (!vkr_recording_analyze(&data, NULL, perf->allocator, &analysis)) {
       vkr_recording_data_free(&data);
       string_format(error, error_capacity,
                     "The recording could not be analyzed.");
@@ -487,7 +508,7 @@ bool8_t vkr_editor_recording_compare(VkrEditorUi *editor, const char *name,
   const VkrRecordingCompareOptions options = {.align = align, .marker = marker};
   VkrRecordingCompare compare;
   if (!vkr_recording_compare(&perf->data, &perf->analysis, &data, &analysis,
-                             &options, &perf->allocator, &compare, error,
+                             &options, perf->allocator, &compare, error,
                              error_capacity)) {
     if (!same) {
       vkr_recording_analysis_free(&analysis);
@@ -512,6 +533,183 @@ bool8_t vkr_editor_recording_compare(VkrEditorUi *editor, const char *name,
   return true_v;
 }
 
+/* A recording read and analyzed off the frame loop, in memory it owns; the
+   Performance window adopts it whole and keeps it as `source`. Allocated
+   from the process heap, because the job worker reads into it and the
+   frame loop frees it. */
+struct VkrEditorPerfLoad {
+  /* The job system it was read on, to wait for before freeing it. */
+  VkrJobSystem *jobs;
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  bool8_t memory_ready;
+  char path[VKR_RECORDING_PATH_MAX];
+  VkrRecordingData data;
+  VkrRecordingAnalysis analysis;
+  /* Set when the read is given up on, so the job skips what is left. */
+  VkrAtomicUint32 cancel;
+  /* Set by the job last; until then only the job touches the rest. */
+  VkrAtomicUint32 done;
+  bool8_t ok;
+  char error[160];
+  VkrJobHandle job;
+  bool8_t queued;
+  /* When the read was asked for, for the elapsed time it shows. */
+  float64_t started;
+};
+
+/* Frees a load and the memory everything read lives in. */
+vkr_internal void perf_load_free(VkrEditorPerfLoad *load) {
+  if (!load) {
+    return;
+  }
+  if (load->memory_ready) {
+    vkr_dmemory_allocator_destroy(&load->allocator);
+  }
+  vkr_heap_free(load);
+}
+
+/* On a job worker: reads and analyzes the load's recording. */
+vkr_internal bool8_t perf_load_job(VkrJobContext *context, void *payload) {
+  (void)context;
+  VkrEditorPerfLoad *load = *(VkrEditorPerfLoad **)payload;
+  load->ok = false_v;
+  if (!vkr_dmemory_create(PERF_MEMORY_COMMIT, PERF_MEMORY_RESERVE,
+                          &load->memory)) {
+    string_format(load->error, sizeof(load->error), "Out of memory.");
+  } else {
+    load->memory_ready = true_v;
+    load->allocator = (VkrAllocator){.ctx = &load->memory};
+    vkr_dmemory_allocator_create(&load->allocator);
+    if (vkr_recording_data_load(&load->data, &load->allocator, load->path,
+                                vkr_content_codec_zstd_decoder()) !=
+            VKR_RECORDING_DATA_OK ||
+        load->data.frame_count == 0u) {
+      string_format(load->error, sizeof(load->error),
+                    "'%s' is not a readable recording.", load->path);
+    } else if (vkr_atomic_uint32_load(&load->cancel,
+                                      VKR_MEMORY_ORDER_RELAXED)) {
+      vkr_recording_data_free(&load->data);
+      string_format(load->error, sizeof(load->error), "Cancelled.");
+    } else if (!vkr_recording_analyze(&load->data, NULL, &load->allocator,
+                                      &load->analysis)) {
+      vkr_recording_data_free(&load->data);
+      string_format(load->error, sizeof(load->error),
+                    "The recording could not be analyzed.");
+    } else {
+      load->ok = true_v;
+    }
+  }
+  vkr_atomic_uint32_store(&load->done, 1u, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+/* Waits for a load's job, if it has one, then frees it. */
+vkr_internal void perf_load_drop(VkrEditorPerfLoad *load) {
+  if (!load) {
+    return;
+  }
+  if (load->queued) {
+    vkr_atomic_uint32_store(&load->cancel, 1u, VKR_MEMORY_ORDER_RELAXED);
+    (void)vkr_job_wait(load->jobs, load->job);
+    load->queued = false_v;
+  }
+  perf_load_free(load);
+}
+
+/* Gives up on a read without waiting for it: a finished one is freed now,
+   a running one when the poll sees it done. */
+vkr_internal void perf_load_abandon(VkrEditorRecordingPerf *perf,
+                                    VkrEditorPerfLoad *load) {
+  if (!load) {
+    return;
+  }
+  vkr_atomic_uint32_store(&load->cancel, 1u, VKR_MEMORY_ORDER_RELAXED);
+  if (vkr_atomic_uint32_load(&load->done, VKR_MEMORY_ORDER_ACQUIRE) ||
+      perf->retired_count >= VKR_EDITOR_PERF_RETIRED) {
+    perf_load_drop(load);
+    return;
+  }
+  perf->retired[perf->retired_count++] = load;
+}
+
+/* Frees the given-up reads that have finished. */
+vkr_internal void perf_retired_sweep(VkrEditorRecordingPerf *perf) {
+  uint32_t kept = 0u;
+  for (uint32_t i = 0u; i < perf->retired_count; ++i) {
+    VkrEditorPerfLoad *load = perf->retired[i];
+    if (vkr_atomic_uint32_load(&load->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+      perf_load_drop(load);
+    } else {
+      perf->retired[kept++] = load;
+    }
+  }
+  perf->retired_count = kept;
+}
+
+void vkr_editor_recording_perf_cancel(VkrEditorRecordingPerf *perf) {
+  perf_load_abandon(perf, perf->loading);
+  perf->loading = NULL;
+}
+
+/* Shows a read recording in place of the shown one, keeping the window's
+   layout, its tables and the reads still finishing. */
+vkr_internal void perf_adopt(VkrEditorUi *editor, VkrEditorPerfLoad *load) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  VkrEditorPerfLoad *retired[VKR_EDITOR_PERF_RETIRED];
+  const uint32_t retired_count = perf->retired_count;
+  MemCopy(retired, perf->retired, sizeof(retired));
+  perf->retired_count = 0u;
+  vkr_editor_recording_perf_release(perf);
+  const VkrEditorRecordingPerfView view = perf->view;
+  MemZero(perf, sizeof(*perf));
+  perf->view = view;
+  MemCopy(perf->retired, retired, sizeof(retired));
+  perf->retired_count = retired_count;
+  perf->selected = UINT64_MAX;
+  perf->hover_frame = perf->hover_next = UINT64_MAX;
+  perf->chart_series = UINT32_MAX;
+  perf->view_first = 0u;
+  perf->view_last = UINT64_MAX;
+  perf->pass_focus = UINT32_MAX;
+  perf->source = load;
+  perf->allocator = &load->allocator;
+  perf->data = load->data;
+  perf->analysis = load->analysis;
+  perf->loaded = true_v;
+  string_format(perf->path, sizeof(perf->path), "%s", load->path);
+  perf_bundle_name(load->path, perf->name, sizeof(perf->name));
+  perf_columns(perf);
+  perf_pass_columns(perf);
+}
+
+void vkr_editor_recording_perf_poll(VkrEditorUi *editor) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  perf_retired_sweep(perf);
+  VkrEditorPerfLoad *load = perf->loading;
+  if (!load || !vkr_atomic_uint32_load(&load->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    return;
+  }
+  perf->loading = NULL;
+  if (load->queued) {
+    (void)vkr_job_wait(load->jobs, load->job);
+    load->queued = false_v;
+  }
+  if (!load->ok) {
+    string_format(perf->error, sizeof(perf->error), "%s", load->error);
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->warning,
+                     load->error);
+    perf_load_free(load);
+    return;
+  }
+  perf_adopt(editor, load);
+}
+
+const char *
+vkr_editor_recording_perf_loading(const VkrEditorRecordingPerf *perf) {
+  return perf->loading ? perf->loading->path : NULL;
+}
+
 bool8_t vkr_editor_recording_analyze(VkrEditorUi *editor, const char *name,
                                      char *error, uint64_t error_capacity) {
   VkrEditorRecordingPerf *perf = &editor->recording.perf;
@@ -521,46 +719,42 @@ bool8_t vkr_editor_recording_analyze(VkrEditorUi *editor, const char *name,
                   name ? name : "");
     return false_v;
   }
-  vkr_editor_recording_perf_release(perf);
-  const VkrEditorRecordingPerfView view = perf->view;
-  MemZero(perf, sizeof(*perf));
-  perf->view = view;
-  perf->selected = UINT64_MAX;
-  perf->hover_frame = perf->hover_next = UINT64_MAX;
-  perf->chart_series = UINT32_MAX;
-  perf->view_first = 0u;
-  perf->view_last = UINT64_MAX;
-  perf->pass_focus = UINT32_MAX;
-  if (!vkr_dmemory_create(PERF_MEMORY_COMMIT, PERF_MEMORY_RESERVE,
-                          &perf->memory)) {
+  vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_PERFORMANCE, true_v);
+  /* The same recording being read keeps its read. */
+  if (perf->loading && string_equals(perf->loading->path, path)) {
+    return true_v;
+  }
+  vkr_editor_recording_perf_cancel(perf);
+  perf->error[0] = '\0';
+  /* The shown recording keeps its zoom and selection. */
+  if (perf->loaded && string_equals(perf->path, path)) {
+    return true_v;
+  }
+  VkrEditorPerfLoad *load = vkr_heap_alloc_zeroed(1u, sizeof(*load));
+  if (!load) {
     string_format(error, error_capacity, "Out of memory.");
     return false_v;
   }
-  perf->allocator = (VkrAllocator){.ctx = &perf->memory};
-  vkr_dmemory_allocator_create(&perf->allocator);
-  if (vkr_recording_data_load(&perf->data, &perf->allocator, path,
-                              vkr_content_codec_zstd_decoder()) !=
-          VKR_RECORDING_DATA_OK ||
-      perf->data.frame_count == 0u) {
-    string_format(error, error_capacity, "'%s' is not a readable recording.",
-                  path);
-    vkr_dmemory_allocator_destroy(&perf->allocator);
-    return false_v;
+  string_format(load->path, sizeof(load->path), "%s", path);
+  load->jobs = editor->recording.jobs;
+  load->started = vkr_platform_get_absolute_time();
+  perf->loading = load;
+  /* The payload is copied, so it carries the load's address. */
+  VkrEditorPerfLoad *payload = load;
+  const VkrJobDesc job = {
+      .priority = VKR_JOB_PRIORITY_LOW,
+      .type_mask = vkr_job_type_mask_all(),
+      .run = perf_load_job,
+      .payload = &payload,
+      .payload_size = sizeof(payload),
+  };
+  load->queued = editor->recording.jobs &&
+                 vkr_job_submit(editor->recording.jobs, &job, &load->job);
+  if (!load->queued) {
+    /* Without a job system it reads here. */
+    VkrJobContext context = {0};
+    (void)perf_load_job(&context, &payload);
   }
-  if (!vkr_recording_analyze(&perf->data, NULL, &perf->allocator,
-                             &perf->analysis)) {
-    string_format(error, error_capacity,
-                  "The recording could not be analyzed.");
-    vkr_recording_data_free(&perf->data);
-    vkr_dmemory_allocator_destroy(&perf->allocator);
-    return false_v;
-  }
-  perf->loaded = true_v;
-  string_format(perf->path, sizeof(perf->path), "%s", path);
-  perf_bundle_name(path, perf->name, sizeof(perf->name));
-  perf_columns(perf);
-  perf_pass_columns(perf);
-  vkr_editor_window_set_visible(editor, VKR_EDITOR_WINDOW_PERFORMANCE, true_v);
   return true_v;
 }
 
@@ -2935,6 +3129,131 @@ vkr_internal void perf_empty(VkrEditorUi *editor,
   (void)vkr_ui_panel_end(ui);
 }
 
+/* A recording being read with nothing shown yet: its name, the time
+   spent, a bar that sweeps while a worker reads, and Cancel. The editor
+   stays usable meanwhile. */
+vkr_internal void perf_reading(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  const VkrEditorPerfLoad *load = perf->loading;
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  const float32_t track_pt = 260.0f;
+  const VkrUiTrack column = {.value = track_pt, .unit = VKR_UI_TRACK_PX};
+  const VkrUiTrack rows[] = {auto_track,
+                             auto_track,
+                             auto_track,
+                             {.value = 4.0f, .unit = VKR_UI_TRACK_PX},
+                             auto_track};
+  VkrUiPanelConfig body =
+      vkr_editor_perf_grid(vkr_editor_perf_cell(0u, 0u), &fill, 1u, &fill, 1u);
+  if (!vkr_ui_panel_begin(ui, string8_lit("perf.reading"), &body)) {
+    return;
+  }
+  VkrUiPanelConfig stack = vkr_editor_perf_grid(
+      vkr_editor_perf_cell(0u, 0u), &column, 1u, rows, ArrayCount(rows));
+  stack.placement.justify = stack.placement.align = VKR_UI_ALIGN_CENTER;
+  stack.style.gap_pt = theme->space_md;
+  if (vkr_ui_panel_begin(ui, string8_lit("stack"), &stack)) {
+    VkrUiWidgetConfig icon = vkr_ui_widget_config_default();
+    icon.placement = vkr_editor_perf_cell(0u, 0u);
+    icon.placement.justify = VKR_UI_ALIGN_CENTER;
+    icon.icon = VKR_UI_ICON_SPINNER;
+    icon.icon_size_pt = 28.0f;
+    icon.icon_color = theme->accent_hover;
+    vkr_ui_label(ui, string8_lit("icon"), (String8){0}, &icon);
+    char name[VKR_RECORDING_LABEL_MAX + 1u];
+    perf_bundle_name(load->path, name, sizeof(name));
+    VkrUiWidgetConfig title =
+        vkr_editor_text_config(theme->font_body, theme->text);
+    title.placement = vkr_editor_perf_cell(0u, 1u);
+    title.placement.justify = VKR_UI_ALIGN_CENTER;
+    title.text.font = editor->heading_font;
+    title.tooltip =
+        string8_create_formatted(ui->frame_allocator, "%s", load->path);
+    vkr_ui_label(
+        ui, string8_lit("title"),
+        string8_create_formatted(ui->frame_allocator, "Reading %s", name),
+        &title);
+    const float64_t elapsed = vkr_platform_get_absolute_time() - load->started;
+    VkrUiWidgetConfig text =
+        vkr_editor_text_config(theme->font_caption, theme->text_secondary);
+    text.placement = vkr_editor_perf_cell(0u, 2u);
+    text.placement.justify = VKR_UI_ALIGN_CENTER;
+    text.text.layout.word_wrap = true_v;
+    text.text.layout.max_width = track_pt;
+    text.text.layout.anchor.horizontal = VKR_TEXT_ALIGN_CENTER;
+    vkr_ui_label(ui, string8_lit("text"),
+                 string8_create_formatted(
+                     ui->frame_allocator,
+                     "Decoding its frames and finding spikes  \xc2\xb7  %.1f s",
+                     elapsed),
+                 &text);
+    /* No share of the work is known, so a segment sweeps the track. */
+    VkrUiWidgetConfig track = vkr_ui_widget_config_default();
+    track.placement = vkr_editor_perf_cell(0u, 3u);
+    track.placement.justify = VKR_UI_ALIGN_START;
+    track.placement.align = VKR_UI_ALIGN_CENTER;
+    track.style.min_size_pt = track.style.max_size_pt = (Vec2){track_pt, 4.0f};
+    track.style.background_color = vkr_ui_color_alpha(theme->text, 0.12f);
+    track.style.corner_radius_pt = (Vec4){2.0f, 2.0f, 2.0f, 2.0f};
+    vkr_ui_label(ui, string8_lit("track"), (String8){0}, &track);
+    const float32_t segment_pt = 0.3f * track_pt;
+    const float32_t phase =
+        0.5f - 0.5f * vkr_cos_f32((float32_t)(elapsed * 2.4));
+    VkrUiWidgetConfig bar = track;
+    bar.placement.justify = VKR_UI_ALIGN_START;
+    bar.placement.margin_pt.left = phase * (track_pt - segment_pt);
+    bar.style.min_size_pt = bar.style.max_size_pt = (Vec2){segment_pt, 4.0f};
+    bar.style.background_color = theme->accent;
+    vkr_ui_label(ui, string8_lit("bar"), (String8){0}, &bar);
+    VkrUiWidgetConfig cancel = vkr_ui_widget_config_default();
+    cancel.placement = vkr_editor_perf_cell(0u, 4u);
+    cancel.placement.justify = VKR_UI_ALIGN_CENTER;
+    cancel.style.margin_pt.top = theme->space_sm;
+    vkr_editor_ghost_style(&cancel);
+    vkr_editor_button_size(&cancel);
+    cancel.tooltip = perf->loaded
+                         ? string8_lit("Stop reading; keep the shown recording")
+                         : string8_lit("Stop reading this recording");
+    if (vkr_ui_button(ui, string8_lit("cancel"), string8_lit("Cancel"),
+                      &cancel)) {
+      vkr_editor_recording_perf_cancel(perf);
+    }
+    (void)vkr_ui_panel_end(ui);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
+/* The header's sign of another recording being read to replace the shown
+   one; a click gives up on it. */
+vkr_internal void perf_reading_chip(VkrEditorUi *editor, VkrUiSystem *ui,
+                                    uint32_t column) {
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char name[VKR_RECORDING_LABEL_MAX + 1u];
+  perf_bundle_name(perf->loading->path, name, sizeof(name));
+  VkrUiWidgetConfig chip = vkr_ui_widget_config_default();
+  chip.placement = vkr_editor_perf_cell(column, 0u);
+  chip.placement.align = VKR_UI_ALIGN_CENTER;
+  vkr_editor_ghost_style(&chip);
+  chip.style.font_size_pt = theme->font_caption;
+  chip.style.padding_pt = (VkrUiEdges){2.0f, 8.0f, 2.0f, 6.0f};
+  chip.icon = VKR_UI_ICON_SPINNER;
+  chip.icon_size_pt = 12.0f;
+  chip.icon_color = theme->accent_hover;
+  chip.tooltip = string8_lit(
+      "Shown here once read and analyzed. Click to stop reading it.");
+  if (vkr_ui_button(ui, string8_lit("reading"),
+                    string8_create_formatted(ui->frame_allocator,
+                                             "Reading %s\xe2\x80\xa6", name),
+                    &chip)) {
+    vkr_editor_recording_perf_cancel(perf);
+  }
+}
+
 /* ------------------------------------------------------------------------ */
 /* Compare                                                                   */
 
@@ -3073,15 +3392,20 @@ vkr_internal void perf_header(VkrEditorUi *editor,
   const VkrRecordingData *data = &perf->data;
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
-  const VkrUiTrack columns[] = {fill, auto_track, auto_track};
-  VkrUiPanelConfig header =
-      vkr_editor_perf_grid(vkr_editor_perf_cell(0u, row), columns,
-                           perf->comparing ? 3u : 2u, &fill, 1u);
+  const VkrUiTrack columns[] = {fill, auto_track, auto_track, auto_track};
+  const uint32_t reading_column = 2u;
+  const uint32_t compare_column = perf->loading ? 3u : 2u;
+  VkrUiPanelConfig header = vkr_editor_perf_grid(
+      vkr_editor_perf_cell(0u, row), columns,
+      compare_column + (perf->comparing ? 1u : 0u), &fill, 1u);
   header.style.gap_pt = vkr_ui_theme()->space_md;
   if (!vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
     return;
   }
   perf_zoom_controls(editor, ui, 1u);
+  if (perf->loading) {
+    perf_reading_chip(editor, ui, reading_column);
+  }
   /* Where B is slower, when it is anywhere; else how much faster. */
   char window[112] = "";
   const VkrRecordingCompare *compare = &perf->compare;
@@ -3108,7 +3432,7 @@ vkr_internal void perf_header(VkrEditorUi *editor,
                  data->truncated ? "  \xc2\xb7  cut off" : "", window),
              vkr_editor_perf_cell(0u, 0u), false_v);
   if (perf->comparing) {
-    perf_compare_controls(editor, frame, 2u);
+    perf_compare_controls(editor, frame, compare_column);
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -3563,7 +3887,11 @@ void vkr_editor_recording_perf_build(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   if (!perf->loaded) {
-    perf_empty(editor, frame);
+    if (perf->loading) {
+      perf_reading(editor, frame);
+    } else {
+      perf_empty(editor, frame);
+    }
     return;
   }
   /* The charts over the lists, and the spikes beside the passes, each

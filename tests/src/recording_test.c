@@ -1425,7 +1425,7 @@ static void test_recording_pose_playback(void) {
   static VkrRecordingPlayback playback;
   char error[192];
   assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
-                                     error, sizeof(error)));
+                                     NULL, error, sizeof(error)));
   assert(playback.pose_key_count == 4u && playback.pose_sample_count == 10u);
   assert(playback.spawn_count == 2u && playback.spawns[0].first_frame == 2u &&
          playback.spawns[0].last_frame == 5u && !playback.spawns[0].has_shape);
@@ -2414,7 +2414,7 @@ static void test_recording_playback_timeline(void) {
   static VkrRecordingPlayback playback;
   char error[128];
   assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
-                                     error, sizeof(error)));
+                                     NULL, error, sizeof(error)));
   assert(playback.has_timeline && playback.zone_count == 3u);
   assert(playback.zones[0].begin_ns == 1000u &&
          playback.zones[1].begin_ns == 1100u &&
@@ -2492,7 +2492,7 @@ static void test_recording_playback_loop_range(void) {
   static VkrRecordingPlayback playback;
   char error[128];
   assert(vkr_recording_playback_open(&playback, path, vkr_depot_zstd_codec(),
-                                     error, sizeof(error)));
+                                     NULL, error, sizeof(error)));
   const float64_t epsilon = 1.0e-9;
   playback.loop = true_v;
   playback.playing = true_v;

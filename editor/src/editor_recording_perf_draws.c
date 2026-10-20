@@ -85,16 +85,16 @@ static const uint8_t DRAWS_RANK[DRAWS_COLOR_COUNT] = {5u, 0u, 1u, 2u, 3u, 4u};
 void vkr_editor_recording_perf_draws_release(VkrEditorRecordingPerf *perf) {
   VkrEditorPerfDraws *draws = &perf->draws;
   if (draws->order) {
-    vkr_allocator_free(&perf->allocator, draws->order,
+    vkr_allocator_free(perf->allocator, draws->order,
                        sizeof(uint32_t) * draws->object_count,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (draws->object_state) {
-    vkr_allocator_free(&perf->allocator, draws->object_state,
+    vkr_allocator_free(perf->allocator, draws->object_state,
                        draws->object_count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (draws->candidate_object) {
-    vkr_allocator_free(&perf->allocator, draws->candidate_object,
+    vkr_allocator_free(perf->allocator, draws->candidate_object,
                        sizeof(uint32_t) * draws->candidate_count,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
@@ -137,17 +137,17 @@ vkr_internal bool8_t draws_take_bounds(VkrEditorRecordingPerf *perf,
   vkr_editor_recording_perf_draws_release(perf);
   const VkrRecordingDrawBounds *set = &perf->data.draw_bounds[bounds];
   const uint32_t count = set->object_count;
-  draws->order = vkr_allocator_alloc(&perf->allocator, sizeof(uint32_t) * count,
+  draws->order = vkr_allocator_alloc(perf->allocator, sizeof(uint32_t) * count,
                                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  draws->object_state = vkr_allocator_alloc(&perf->allocator, count,
+  draws->object_state = vkr_allocator_alloc(perf->allocator, count,
                                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   DrawsArea *areas =
-      vkr_allocator_alloc(&perf->allocator, sizeof(DrawsArea) * count,
+      vkr_allocator_alloc(perf->allocator, sizeof(DrawsArea) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   draws->object_count = count;
   if (!draws->order || !draws->object_state || !areas) {
     if (areas) {
-      vkr_allocator_free(&perf->allocator, areas, sizeof(DrawsArea) * count,
+      vkr_allocator_free(perf->allocator, areas, sizeof(DrawsArea) * count,
                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     }
     vkr_editor_recording_perf_draws_release(perf);
@@ -172,7 +172,7 @@ vkr_internal bool8_t draws_take_bounds(VkrEditorRecordingPerf *perf,
   for (uint32_t i = 0u; i < count; ++i) {
     draws->order[i] = areas[i].index;
   }
-  vkr_allocator_free(&perf->allocator, areas, sizeof(DrawsArea) * count,
+  vkr_allocator_free(perf->allocator, areas, sizeof(DrawsArea) * count,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   /* The camera's path widens the extent. */
   const VkrRecordingData *data = &perf->data;
@@ -216,13 +216,13 @@ vkr_internal bool8_t draws_take_ids(VkrEditorRecordingPerf *perf,
     return true_v;
   }
   if (draws->candidate_object) {
-    vkr_allocator_free(&perf->allocator, draws->candidate_object,
+    vkr_allocator_free(perf->allocator, draws->candidate_object,
                        sizeof(uint32_t) * draws->candidate_count,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   const uint32_t count = census->ids->count;
   draws->candidate_object =
-      vkr_allocator_alloc(&perf->allocator, sizeof(uint32_t) * count,
+      vkr_allocator_alloc(perf->allocator, sizeof(uint32_t) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   draws->candidate_count = draws->candidate_object ? count : 0u;
   draws->ids = draws->candidate_object ? table : UINT32_MAX;

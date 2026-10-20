@@ -1211,8 +1211,8 @@ vkr_internal bool8_t vkr_harness_child_open_recording(
   string_format(path, sizeof(path), "%s/%s", repo_root, camera->recording.path);
   char error[192];
   if (!vkr_recording_playback_open(&application->playback, path,
-                                   vkr_content_codec_zstd_decoder(), error,
-                                   sizeof(error))) {
+                                   vkr_content_codec_zstd_decoder(), NULL,
+                                   error, sizeof(error))) {
     vkr_harness_stderr("Recording camera: %s\n", error);
     return false_v;
   }

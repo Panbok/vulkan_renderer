@@ -605,6 +605,9 @@ typedef struct VkrSampleUiFrame {
    * and the open playback, borrowed for the build. */
   VkrSampleRecordingRequest *recording_request;
   const VkrSampleRecordingStatus *recording;
+  /** The runtime's worker pool, for client work that must not hold a frame
+   * (reading a recording for analysis); outlives every build. */
+  struct VkrJobSystem *jobs;
   VkrSampleScriptRequest *script_request;
   /** The latest applied loads, most recent last; borrowed for the build. */
   const VkrSampleScriptResult *script_results;

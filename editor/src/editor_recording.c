@@ -161,6 +161,8 @@ editor_recording_report(VkrEditorUi *editor,
 void vkr_editor_recording_update(VkrEditorUi *editor,
                                  const VkrSampleUiFrame *frame) {
   VkrEditorRecording *recording = &editor->recording;
+  recording->jobs = frame->jobs;
+  vkr_editor_recording_perf_poll(editor);
   if (frame->recording) {
     editor_recording_report(editor, frame->recording);
     /* A drive's measurement arrives with its end. */
@@ -836,6 +838,179 @@ vkr_internal bool8_t editor_recording_bar_rect(const VkrSampleUiFrame *frame,
   return true_v;
 }
 
+/* A Watch on its way into the Scene: the bundle path, the share read, and
+   whether it still waits for its level to open; false without one. */
+typedef struct EditorRecordingOpening {
+  const char *path;
+  float32_t progress;
+  bool8_t waiting_scene;
+} EditorRecordingOpening;
+
+vkr_internal bool8_t editor_recording_opening(const VkrEditorUi *editor,
+                                              const VkrSampleUiFrame *frame,
+                                              EditorRecordingOpening *out) {
+  const VkrEditorRecording *recording = &editor->recording;
+  if (frame->recording && frame->recording->opening) {
+    *out = (EditorRecordingOpening){
+        .path = frame->recording->opening_path,
+        .progress = frame->recording->opening_progress,
+    };
+    return true_v;
+  }
+  /* A queued Watch waits for the level it was recorded in. */
+  if (recording->queue_count > 0u &&
+      recording->queue[0].command == VKR_SAMPLE_RECORDING_OPEN) {
+    *out = (EditorRecordingOpening){.path = recording->queue[0].path,
+                                    .waiting_scene = true_v};
+    return true_v;
+  }
+  return false_v;
+}
+
+/* The bundle's name without its directory and extension. */
+vkr_internal String8 editor_recording_bundle_name(VkrUiSystem *ui,
+                                                  const char *path) {
+  const char *name = path;
+  for (const char *c = path; *c; ++c) {
+    if (*c == '/' || *c == '\\') {
+      name = c + 1;
+    }
+  }
+  uint64_t length = string_length(name);
+  const uint64_t extension = sizeof(VKR_RECORDING_BUNDLE_EXTENSION) - 1u;
+  if (length > extension && string_equals(name + length - extension,
+                                          VKR_RECORDING_BUNDLE_EXTENSION)) {
+    length -= extension;
+  }
+  return string8_create_formatted(ui->frame_allocator, "%.*s", (int32_t)length,
+                                  name);
+}
+
+#define EDITOR_RECORDING_OPENING_WIDTH_PT 420.0f
+
+/* Where the opening panel stands: centred where the playback bar will. */
+vkr_internal bool8_t
+editor_recording_opening_rect(const VkrSampleUiFrame *frame, Vec3 *out_pt) {
+  Vec3 bar;
+  if (!editor_recording_bar_rect(frame, &bar)) {
+    return false_v;
+  }
+  const float32_t width = Min(EDITOR_RECORDING_OPENING_WIDTH_PT, bar.z);
+  *out_pt = (Vec3){bar.x + (bar.z - width) * 0.5f, bar.y, width};
+  return true_v;
+}
+
+/* While a Watch opens: its name, how much is read over a bar, and Cancel,
+   where the playback bar will stand; frames keep running meanwhile. */
+vkr_internal void
+editor_recording_opening_build(VkrEditorUi *editor,
+                               const VkrSampleUiFrame *frame) {
+  EditorRecordingOpening opening;
+  Vec3 at;
+  if (!frame->mapping_valid ||
+      (frame->recording && frame->recording->playback) ||
+      !editor_recording_opening(editor, frame, &opening) ||
+      !editor_recording_opening_rect(frame, &at)) {
+    return;
+  }
+  VkrUiSystem *ui = frame->ui;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack columns[] = {fill, auto_track};
+  const VkrUiTrack rows[] = {{.value = 18.0f, .unit = VKR_UI_TRACK_PX},
+                             {.value = 4.0f, .unit = VKR_UI_TRACK_PX}};
+  VkrUiPanelConfig panel = vkr_ui_panel_config_default();
+  panel.placement = VKR_UI_PLACEMENT_DEFAULT;
+  panel.placement.column = panel.placement.row = 0u;
+  panel.placement.justify = panel.placement.align = VKR_UI_ALIGN_START;
+  panel.placement.margin_pt = (VkrUiEdges){at.y, 0.0f, 0.0f, at.x};
+  panel.columns = columns;
+  panel.column_count = ArrayCount(columns);
+  panel.rows = rows;
+  panel.row_count = ArrayCount(rows);
+  panel.style = vkr_editor_glass_style();
+  panel.style.padding_pt = (VkrUiEdges){6.0f, 8.0f, 6.0f, 12.0f};
+  panel.style.gap_pt = theme->space_xs;
+  panel.style.min_size_pt = panel.style.max_size_pt =
+      (Vec2){at.z, EDITOR_RECORDING_BAR_HEIGHT_PT};
+  if (!vkr_ui_panel_begin(ui, string8_lit("editor.recording.opening"),
+                          &panel)) {
+    return;
+  }
+  const String8 name = editor_recording_bundle_name(ui, opening.path);
+  VkrUiWidgetConfig label =
+      vkr_editor_text_config(theme->font_body, theme->text);
+  label.placement = (VkrUiPlacement){.column = 0u,
+                                     .row = 0u,
+                                     .column_span = 1u,
+                                     .row_span = 1u,
+                                     .justify = VKR_UI_ALIGN_START,
+                                     .align = VKR_UI_ALIGN_CENTER};
+  label.icon = VKR_UI_ICON_SPINNER;
+  label.icon_size_pt = 13.0f;
+  label.icon_color = theme->accent_hover;
+  vkr_ui_label(ui, string8_lit("text"),
+               opening.waiting_scene
+                   ? string8_create_formatted(
+                         ui->frame_allocator,
+                         "Opening the level %.*s was recorded in",
+                         (int32_t)name.length, (const char *)name.str)
+                   : string8_create_formatted(
+                         ui->frame_allocator, "Reading %.*s  \xc2\xb7  %.0f%%",
+                         (int32_t)name.length, (const char *)name.str,
+                         100.0f * opening.progress),
+               &label);
+  VkrUiWidgetConfig cancel = vkr_ui_widget_config_default();
+  cancel.placement = (VkrUiPlacement){.column = 1u,
+                                      .row = 0u,
+                                      .column_span = 1u,
+                                      .row_span = 2u,
+                                      .justify = VKR_UI_ALIGN_END,
+                                      .align = VKR_UI_ALIGN_CENTER};
+  vkr_editor_ghost_style(&cancel);
+  cancel.style.font_size_pt = theme->font_caption;
+  cancel.style.padding_pt = (VkrUiEdges){2.0f, 8.0f, 2.0f, 8.0f};
+  cancel.tooltip = string8_lit("Stop opening this recording");
+  if (vkr_ui_button(ui, string8_lit("cancel"), string8_lit("Cancel"),
+                    &cancel)) {
+    VkrEditorRecording *recording = &editor->recording;
+    if (opening.waiting_scene) {
+      --recording->queue_count;
+      MemCopy(recording->queue, recording->queue + 1u,
+              sizeof(recording->queue[0]) * recording->queue_count);
+    } else {
+      (void)vkr_editor_recording_send(
+          editor,
+          (VkrSampleRecordingRequest){.command = VKR_SAMPLE_RECORDING_CLOSE},
+          false_v);
+    }
+  }
+  /* The share read, as a bar under the name. */
+  VkrUiWidgetConfig track = vkr_ui_widget_config_default();
+  track.placement = (VkrUiPlacement){.column = 0u,
+                                     .row = 1u,
+                                     .column_span = 1u,
+                                     .row_span = 1u,
+                                     .justify = VKR_UI_ALIGN_START,
+                                     .align = VKR_UI_ALIGN_CENTER};
+  /* The width beside Cancel; an empty label keeps no width of its own. */
+  const float32_t track_pt = at.z - 120.0f;
+  track.style.min_size_pt = track.style.max_size_pt = (Vec2){track_pt, 4.0f};
+  track.style.background_color = vkr_ui_color_alpha(theme->text, 0.12f);
+  track.style.corner_radius_pt = (Vec4){2.0f, 2.0f, 2.0f, 2.0f};
+  vkr_ui_label(ui, string8_lit("track"), (String8){0}, &track);
+  if (opening.progress > 0.0f) {
+    VkrUiWidgetConfig bar = track;
+    bar.placement.justify = VKR_UI_ALIGN_START;
+    bar.style.min_size_pt = bar.style.max_size_pt =
+        (Vec2){track_pt * Min(opening.progress, 1.0f), 4.0f};
+    bar.style.background_color = theme->accent;
+    vkr_ui_label(ui, string8_lit("bar"), (String8){0}, &bar);
+  }
+  (void)vkr_ui_panel_end(ui);
+}
+
 void vkr_editor_recording_register_input(VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame) {
   if (!frame->mapping_valid || !frame->recording) {
@@ -868,6 +1043,17 @@ void vkr_editor_recording_register_input(VkrEditorUi *editor,
           (VkrUiRect){composer.x * scale, composer.y * scale,
                       composer.z * scale, composer.w * scale});
     }
+  }
+  EditorRecordingOpening opening;
+  Vec3 opening_at;
+  if (!frame->recording->playback &&
+      editor_recording_opening(editor, frame, &opening) &&
+      editor_recording_opening_rect(frame, &opening_at)) {
+    (void)vkr_ui_input_layer_register(
+        ui, VKR_EDITOR_SCENE_TOOLBAR_LAYER,
+        (VkrUiRect){opening_at.x * scale, opening_at.y * scale,
+                    opening_at.z * scale,
+                    EDITOR_RECORDING_BAR_HEIGHT_PT * scale});
   }
   /* The REC chip sizes to its text; its last drawn rectangle stands. */
   VkrUiRect chip;
@@ -1165,6 +1351,7 @@ void vkr_editor_recording_overlays_build(VkrEditorUi *editor,
   vkr_editor_recording_request_overlay_build(editor, frame);
   editor_recording_indicator_build(editor, frame);
   editor_recording_bar_build(editor, frame);
+  editor_recording_opening_build(editor, frame);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1665,25 +1852,46 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
   watch.icon = VKR_UI_ICON_PLAY;
   watch.icon_size_pt = 12.0f;
   vkr_editor_button_size(&watch);
-  watch.disabled = !can_watch || !entry->has_summary;
-  watch.tooltip = can_watch ? string8_lit("Watch it in the Scene")
-                            : string8_lit("Stop the simulation or the "
-                                          "recording first");
-  if (vkr_ui_button(ui, string8_lit("watch"), string8_lit("Watch"), &watch)) {
+  /* This card's Watch on its way into the Scene reads as such. */
+  char path[VKR_RECORDING_PATH_MAX];
+  string_format(path, sizeof(path), "%s/%s", recording->directory,
+                entry->bundle);
+  EditorRecordingOpening opening;
+  const bool8_t opening_this =
+      editor_recording_opening(editor, frame, &opening) &&
+      string_equals(opening.path, path);
+  watch.disabled = !can_watch || !entry->has_summary || opening_this;
+  watch.tooltip = opening_this
+                      ? string8_lit("Opening in the Scene; frames keep "
+                                    "running meanwhile")
+                  : can_watch ? string8_lit("Watch it in the Scene")
+                              : string8_lit("Stop the simulation or the "
+                                            "recording first");
+  if (opening_this) {
+    watch.icon = VKR_UI_ICON_SPINNER;
+  }
+  const String8 watch_text =
+      !opening_this ? string8_lit("Watch")
+      : opening.waiting_scene
+          ? string8_lit("Level")
+          : string8_create_formatted(ui->frame_allocator, "%.0f%%",
+                                     100.0f * opening.progress);
+  if (vkr_ui_button(ui, string8_lit("watch"), watch_text, &watch)) {
     VkrSampleRecordingRequest request = {.command = VKR_SAMPLE_RECORDING_OPEN};
     string_format(request.path, sizeof(request.path), "%s/%s",
                   recording->directory, entry->bundle);
     (void)vkr_editor_recording_send(editor, request, true_v);
   }
+  const char *reading = vkr_editor_recording_perf_loading(&recording->perf);
+  const bool8_t analyzing = reading && string_equals(reading, path);
   VkrUiWidgetConfig analyze = vkr_editor_icon_button_config(
-      1u, 0u, VKR_UI_ICON_CHART_BAR,
-      string8_lit("Analyze: statistics, charts and spikes"));
+      1u, 0u, analyzing ? VKR_UI_ICON_SPINNER : VKR_UI_ICON_CHART_BAR,
+      analyzing ? string8_lit("Reading and analyzing; the Performance window "
+                              "shows it when done")
+                : string8_lit("Analyze: statistics, charts and spikes"));
   analyze.disabled = !entry->has_summary;
   if (vkr_ui_button(ui, string8_lit("analyze"), (String8){0}, &analyze)) {
     char error[160];
-    char path[VKR_RECORDING_PATH_MAX];
-    string_format(path, sizeof(path), "%s/%s", recording->directory,
-                  entry->bundle);
     if (!vkr_editor_recording_analyze(editor, path, error, sizeof(error))) {
       vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, theme->warning, error);
     }
@@ -1705,7 +1913,8 @@ vkr_internal void editor_recording_card(VkrEditorUi *editor,
                    "Compare with %s: its frame times, statistics and passes "
                           "beside this one's",
                    perf->name));
-  compare.disabled = !perf->loaded || is_a || !entry->has_summary;
+  compare.disabled =
+      !perf->loaded || perf->loading || is_a || !entry->has_summary;
   vkr_editor_toggle_style(&compare,
                           perf->comparing &&
                               string_equals(perf->compare_path, bundle_path));

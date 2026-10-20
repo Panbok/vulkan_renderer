@@ -303,13 +303,27 @@ typedef struct VkrEditorRecordingPerfView {
   VkrEditorTable draws_table;
 } VkrEditorRecordingPerfView;
 
+/* Reads given up on that may still be finishing at once. */
+#define VKR_EDITOR_PERF_RETIRED 4u
+
 typedef struct VkrEditorRecordingPerf {
   bool8_t loaded;
   char path[VKR_RECORDING_PATH_MAX];
   char name[VKR_RECORDING_LABEL_MAX + 1u];
+  /* Why the last read failed; empty after a read starts. */
   char error[160];
-  VkrDMemory memory;
-  VkrAllocator allocator;
+  /* The memory the data, analysis, comparison and tab arrays live in: the
+     load that read them owns it (VkrEditorPerfLoad), and `allocator` is
+     its allocator. */
+  struct VkrEditorPerfLoad *source;
+  VkrAllocator *allocator;
+  /* A recording being read and analyzed on a job worker, adopted when it
+     is done (vkr_editor_recording_perf_poll); NULL without one. */
+  struct VkrEditorPerfLoad *loading;
+  /* Reads given up on that a worker is still finishing, freed by the poll
+     once done, so giving up on one never waits for it. */
+  struct VkrEditorPerfLoad *retired[VKR_EDITOR_PERF_RETIRED];
+  uint32_t retired_count;
   VkrRecordingData data;
   VkrRecordingAnalysis analysis;
   uint32_t column_count;
@@ -660,6 +674,9 @@ typedef struct VkrEditorRecordingThumbs {
 } VkrEditorRecordingThumbs;
 
 typedef struct VkrEditorRecording {
+  /* The engine's job system from the latest frame, for reads off the frame
+     loop; NULL reads on it. */
+  struct VkrJobSystem *jobs;
   /* Requests waiting for a frame; the runtime takes one per frame. */
   VkrSampleRecordingRequest queue[VKR_EDITOR_RECORDING_QUEUE];
   uint32_t queue_count;
@@ -796,8 +813,11 @@ void vkr_editor_recording_window_build(struct VkrEditorUi *editor,
                                        const VkrSampleUiFrame *frame,
                                        VkrUiRect bounds);
 
-/** Loads a recording (a bundle path or name) into the Performance window and
- * shows it. False with the reason in `error`. */
+/** Starts reading a recording (a bundle path or name) for the Performance
+ * window on a job worker and shows the window, which says it is reading;
+ * the recording replaces the shown one once read. False with the reason in
+ * `error` when there is no such recording; a read that fails is reported
+ * then (vkr_editor_recording_perf_poll). */
 bool8_t vkr_editor_recording_analyze(struct VkrEditorUi *editor,
                                      const char *name, char *error,
                                      uint64_t error_capacity);
@@ -814,8 +834,21 @@ bool8_t vkr_editor_recording_compare(struct VkrEditorUi *editor,
 /** Ends the comparison; A stays analyzed. */
 void vkr_editor_recording_compare_stop(VkrEditorRecordingPerf *perf);
 
-/** Frees the Performance window's data. */
+/** Frees the Performance window's data, and waits for and drops a recording
+ * still being read. */
 void vkr_editor_recording_perf_release(VkrEditorRecordingPerf *perf);
+
+/** Adopts a recording the Performance window finished reading, or reports
+ * why it could not; once per frame. */
+void vkr_editor_recording_perf_poll(struct VkrEditorUi *editor);
+
+/** The recording the Performance window is reading, or NULL. */
+const char *
+vkr_editor_recording_perf_loading(const VkrEditorRecordingPerf *perf);
+
+/** Gives up on the recording being read, without waiting for its worker;
+ * the shown recording stays. */
+void vkr_editor_recording_perf_cancel(VkrEditorRecordingPerf *perf);
 
 /** The Performance window's body. */
 void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,

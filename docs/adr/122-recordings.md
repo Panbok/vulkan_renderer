@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-19
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -69,6 +69,17 @@ an agent must read one without the editor.
   Playback is a transport state: Play and Step are refused, scene edits and
   edit batches are refused, and closing restores the editor camera and hour
   ([vkr_sample_recording.h](../../runtime/src/vkr_sample_recording.h)).
+  An open reads the bundle on a low-priority job worker into a staging
+  playback, publishing the share read in the status
+  (`opening`, `opening_progress`) and checking a cancel flag per chunk;
+  frames keep running, and the frame that sees it done closes the old
+  playback, moves the new one in (`vkr_recording_playback_move`) and answers
+  the request. Play, Pause, Seek and settings sent meanwhile apply once it
+  is open; Start and Drive are refused, and Close or another open cancels
+  it. Watch shows the read on its card and in a panel where the playback
+  bar will stand, with Cancel. Opening the 16,463-frame Level Design Test
+  recording in the Bistro editor took 2.9 s with no editor frame over
+  30 ms (Release, M1 Pro, 2026-10-20); it held one frame for 3.2 s before.
 - **Editor and agents.** One request per frame travels in
   `VkrSampleUiFrame.recording_request`; the status, live camera and open
   playback come back in `VkrSampleUiFrame.recording`. Recordings go to the
@@ -555,6 +566,12 @@ an agent must read one without the editor.
   playback there (opening it). A drag across a chart zooms every chart and
   the frame-time cards to its frames until Show all. The stage legend hides
   stages, and a Series row charts its series under the memory charts.
+  Analyze reads and analyzes on a job worker as well
+  (`vkr_editor_recording_perf_poll` adopts the result): the window shows
+  the read with its elapsed time and Cancel, or a header chip while another
+  recording stays shown, and `rec.analyze` and `rec.compare` answer once
+  the read is done. A given-up read finishes on its worker and is freed
+  without waiting for it.
 
 ## Consequences
 

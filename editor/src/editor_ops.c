@@ -15956,8 +15956,10 @@ static VkrEditorOpStatus ops_recording_wait(OpsContext *ctx,
     return VKR_EDITOR_OP_WAIT;
   }
   if (status->token != call->token) {
-    /* A Watch waiting for its recording's level to open is not late. */
-    if (ctx->editor->recording.scene_wait == 0u && ++call->frames > 600u) {
+    /* A Watch waiting for its recording's level, or still reading its
+       recording on a worker, is not late. */
+    if (ctx->editor->recording.scene_wait == 0u && !status->opening &&
+        ++call->frames > 600u) {
       ops_fail(ctx, OPS_BUSY, "The runtime did not answer the request");
       return VKR_EDITOR_OP_DONE;
     }
@@ -17523,21 +17525,29 @@ static VkrEditorOpStatus ops_run_rec_analyze(OpsContext *ctx) {
              "'tab' is overview, backend, memory, draws or graph");
     return VKR_EDITOR_OP_DONE;
   }
-  /* The same recording keeps its zoom and selection; another loads. */
+  /* The same recording keeps its zoom and selection; another is read on
+     a worker, and the answer waits for it. */
   VkrEditorRecordingPerf *perf = &ctx->editor->recording.perf;
+  if (ctx->call->stage == 0u) {
+    char error[160];
+    if (!vkr_editor_recording_analyze(ctx->editor, name, error,
+                                      sizeof(error))) {
+      ops_fail(ctx, OPS_INVALID, "%s", error);
+      return VKR_EDITOR_OP_DONE;
+    }
+    ctx->call->stage = 1u;
+  }
+  if (perf->loading) {
+    return VKR_EDITOR_OP_WAIT;
+  }
   char path[VKR_RECORDING_PATH_MAX];
-  const bool8_t loaded =
-      perf->loaded &&
-      vkr_editor_recording_resolve(ctx->editor, name, path, sizeof(path)) &&
-      string_equals(path, perf->path);
-  char error[160];
-  if (!loaded &&
-      !vkr_editor_recording_analyze(ctx->editor, name, error, sizeof(error))) {
-    ops_fail(ctx, OPS_INVALID, "%s", error);
+  if (!perf->loaded ||
+      !vkr_editor_recording_resolve(ctx->editor, name, path, sizeof(path)) ||
+      !string_equals(path, perf->path)) {
+    ops_fail(ctx, OPS_INVALID, "%s",
+             perf->error[0] ? perf->error : "The read was cancelled.");
     return VKR_EDITOR_OP_DONE;
   }
-  vkr_editor_window_set_visible(ctx->editor, VKR_EDITOR_WINDOW_PERFORMANCE,
-                                true_v);
   if (shown != UINT32_MAX) {
     perf->view.tab = shown;
   }
@@ -17589,10 +17599,26 @@ static VkrEditorOpStatus ops_run_rec_compare(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   char error[160];
-  /* A defaults to the analyzed recording. */
+  /* A defaults to the analyzed recording; another is read first. */
+  VkrEditorRecordingPerf *shown = &ctx->editor->recording.perf;
+  if (ctx->call->stage == 0u) {
+    if (a[0] &&
+        !vkr_editor_recording_analyze(ctx->editor, a, error, sizeof(error))) {
+      ops_fail(ctx, OPS_INVALID, "%s", error);
+      return VKR_EDITOR_OP_DONE;
+    }
+    ctx->call->stage = 1u;
+  }
+  if (shown->loading) {
+    return VKR_EDITOR_OP_WAIT;
+  }
+  char a_path[VKR_RECORDING_PATH_MAX];
   if (a[0] &&
-      !vkr_editor_recording_analyze(ctx->editor, a, error, sizeof(error))) {
-    ops_fail(ctx, OPS_INVALID, "%s", error);
+      (!shown->loaded ||
+       !vkr_editor_recording_resolve(ctx->editor, a, a_path, sizeof(a_path)) ||
+       !string_equals(a_path, shown->path))) {
+    ops_fail(ctx, OPS_INVALID, "%s",
+             shown->error[0] ? shown->error : "The read of A was cancelled.");
     return VKR_EDITOR_OP_DONE;
   }
   if (!vkr_editor_recording_compare(ctx->editor, b, align,
@@ -17783,7 +17809,8 @@ static const OpsDef s_ops[] = {
      "arenas), draws (the top-down culling map) or graph (the render "
      "graph's passes; 'flow' true for its flow chart, 'pass' selects one by "
      "name); 'frame' selects the "
-     "frame the tabs describe. Read the numbers from its summary.json or "
+     "frame the tabs describe. Answers once the recording is read. Read "
+     "the numbers from its summary.json or "
      "`vkr_rec`; this op is for the designer's view and captures of it.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"tab\":{\"enum\":[\"overview\",\"backend\",\"memory\","
@@ -17873,7 +17900,7 @@ static const OpsDef s_ops[] = {
      "\"b\":{\"type\":\"string\"},\"align\":{\"enum\":[\"time\","
      "\"marker\",\"distance\",\"frame\"]},\"marker\":{\"type\":"
      "\"string\"}},\"required\":[\"b\"]}",
-     ops_run_rec_compare, NULL, OPS_QUICK | OPS_NO_SCENE},
+     ops_run_rec_compare, NULL, OPS_NO_SCENE},
     {"rec.annotations",
      "The notes, segments and review state of recording 'name', or of the "
      "open one; notes and segments carry the index rec.note and rec.segment "

@@ -216,29 +216,59 @@ vkr_sample_recording_save_window(VkrStandardSceneRuntime *runtime,
   vkr_sample_recording_result(state, request->token, ok, message);
 }
 
-/* Entering Playback saves the editor camera and hour; leaving restores them. */
 vkr_internal void
-vkr_sample_recording_open(VkrStandardSceneRuntime *runtime,
-                          VkrSampleRecordingState *state,
-                          const VkrSampleRecordingRequest *request) {
-  if (runtime->recording.active ||
-      runtime->editor_viewport.simulation_running) {
-    vkr_sample_recording_result(
-        state, request->token, false_v,
-        runtime->recording.active
-            ? "Stop the recording before opening a playback."
-            : "Stop the simulation before opening a playback.");
+vkr_sample_recording_transport(VkrStandardSceneRuntime *runtime,
+                               VkrSampleRecordingState *state,
+                               const VkrSampleRecordingRequest *request);
+
+/* Reads the playback on a job worker; it touches only the opening's
+   playback and atomics until it marks itself done. */
+vkr_internal bool8_t vkr_sample_recording_open_job(VkrJobContext *context,
+                                                   void *payload) {
+  (void)context;
+  VkrSampleRecordingOpen *opening = *(VkrSampleRecordingOpen **)payload;
+  opening->ok = vkr_recording_playback_open(
+      &opening->playback, opening->request.path,
+      vkr_content_codec_zstd_decoder(), &opening->progress, opening->error,
+      sizeof(opening->error));
+  vkr_atomic_uint32_store(&opening->done, 1u, VKR_MEMORY_ORDER_RELEASE);
+  return true_v;
+}
+
+/* Stops a playback being opened and drops what it read. */
+vkr_internal void
+vkr_sample_recording_open_cancel(VkrStandardSceneRuntime *runtime,
+                                 VkrSampleRecordingOpen *opening) {
+  if (!opening->active) {
+    return;
+  }
+  vkr_atomic_uint32_store(&opening->progress.cancel, 1u,
+                          VKR_MEMORY_ORDER_RELAXED);
+  (void)vkr_job_wait(&runtime->job_system, opening->job);
+  if (opening->ok) {
+    vkr_recording_playback_close(&opening->playback);
+  }
+  opening->active = false_v;
+  opening->pending_count = 0u;
+}
+
+/* Enters Playback with the read playback, or reports why it could not be
+   read. Entering Playback saves the editor camera and hour; leaving
+   restores them. */
+vkr_internal void
+vkr_sample_recording_open_finish(VkrStandardSceneRuntime *runtime,
+                                 VkrSampleRecordingState *state) {
+  VkrSampleRecordingOpen *opening = &state->opening;
+  opening->active = false_v;
+  if (!opening->ok) {
+    opening->pending_count = 0u;
+    vkr_sample_recording_result(state, opening->request.token, false_v,
+                                opening->error);
     return;
   }
   vkr_standard_scene_recording_close_world(runtime);
   vkr_recording_playback_close(&runtime->playback);
-  char error[192];
-  if (!vkr_recording_playback_open(&runtime->playback, request->path,
-                                   vkr_content_codec_zstd_decoder(), error,
-                                   sizeof(error))) {
-    vkr_sample_recording_result(state, request->token, false_v, error);
-    return;
-  }
+  vkr_recording_playback_move(&runtime->playback, &opening->playback);
   ++runtime->playback_serial;
   const VkrCamera *camera = vkr_camera_registry_get_by_handle(
       &runtime->camera_system, runtime->active_camera);
@@ -258,12 +288,69 @@ vkr_sample_recording_open(VkrStandardSceneRuntime *runtime,
                 (unsigned long long)runtime->playback.frame_count,
                 runtime->playback.duration,
                 runtime->playback.truncated ? ", cut off at its end" : "");
-  vkr_sample_recording_result(state, request->token, true_v, message);
+  /* The transport that arrived while reading applies now; each was
+     answered on arrival, so the open's outcome is the one reported. */
+  for (uint32_t i = 0u; i < opening->pending_count; ++i) {
+    vkr_sample_recording_transport(runtime, state, &opening->pending[i]);
+  }
+  opening->pending_count = 0u;
+  vkr_sample_recording_result(state, opening->request.token, true_v, message);
+}
+
+/* Starts reading `request->path` on a job worker; the outcome comes when it
+   is read (vkr_sample_recording_publish). Another open in progress is
+   cancelled. */
+vkr_internal void
+vkr_sample_recording_open(VkrStandardSceneRuntime *runtime,
+                          VkrSampleRecordingState *state,
+                          const VkrSampleRecordingRequest *request) {
+  if (runtime->recording.active ||
+      runtime->editor_viewport.simulation_running) {
+    vkr_sample_recording_result(
+        state, request->token, false_v,
+        runtime->recording.active
+            ? "Stop the recording before opening a playback."
+            : "Stop the simulation before opening a playback.");
+    return;
+  }
+  VkrSampleRecordingOpen *opening = &state->opening;
+  vkr_sample_recording_open_cancel(runtime, opening);
+  opening->request = *request;
+  opening->ok = false_v;
+  opening->error[0] = '\0';
+  opening->pending_count = 0u;
+  vkr_atomic_uint32_store(&opening->done, 0u, VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint32_store(&opening->progress.permille, 0u,
+                          VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint32_store(&opening->progress.cancel, 0u,
+                          VKR_MEMORY_ORDER_RELAXED);
+  opening->active = true_v;
+  /* The payload is copied, so it carries the opening's address. */
+  VkrSampleRecordingOpen *payload = opening;
+  const VkrJobDesc job = {
+      .priority = VKR_JOB_PRIORITY_LOW,
+      .type_mask = vkr_job_type_mask_all(),
+      .run = vkr_sample_recording_open_job,
+      .payload = &payload,
+      .payload_size = sizeof(payload),
+  };
+  if (!vkr_job_submit(&runtime->job_system, &job, &opening->job)) {
+    /* Without a worker it reads here, as it did before the job. */
+    VkrJobContext context = {0};
+    (void)vkr_sample_recording_open_job(&context, &payload);
+    vkr_sample_recording_open_finish(runtime, state);
+  }
+}
+
+void vkr_sample_recording_shutdown(VkrStandardSceneRuntime *runtime,
+                                   VkrSampleRecordingState *state) {
+  vkr_sample_recording_open_cancel(runtime, &state->opening);
 }
 
 vkr_internal void vkr_sample_recording_close(VkrStandardSceneRuntime *runtime,
                                              VkrSampleRecordingState *state,
                                              uint64_t token) {
+  vkr_sample_recording_open_cancel(runtime, &state->opening);
   vkr_standard_scene_recording_close_world(runtime);
   vkr_recording_playback_close(&runtime->playback);
   VkrCamera *camera = vkr_camera_registry_get_by_handle(&runtime->camera_system,
@@ -528,6 +615,11 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
   case VKR_SAMPLE_RECORDING_NONE:
     return;
   case VKR_SAMPLE_RECORDING_START:
+    if (state->opening.active) {
+      vkr_sample_recording_result(state, request->token, false_v,
+                                  "A playback is opening.");
+      return;
+    }
     vkr_sample_recording_start(runtime, state, request, scene_path);
     return;
   case VKR_SAMPLE_RECORDING_STOP:
@@ -560,9 +652,27 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
   case VKR_SAMPLE_RECORDING_SEEK_TIME:
   case VKR_SAMPLE_RECORDING_SEEK_FRAME:
   case VKR_SAMPLE_RECORDING_SETTINGS:
+    /* A playback being read takes its transport once it is open. */
+    if (state->opening.active) {
+      VkrSampleRecordingOpen *opening = &state->opening;
+      if (opening->pending_count == VKR_SAMPLE_RECORDING_OPEN_PENDING) {
+        vkr_sample_recording_result(state, request->token, false_v,
+                                    "The playback is still opening.");
+        return;
+      }
+      opening->pending[opening->pending_count++] = *request;
+      vkr_sample_recording_result(state, request->token, true_v,
+                                  "Applies once the playback is open.");
+      return;
+    }
     vkr_sample_recording_transport(runtime, state, request);
     return;
   case VKR_SAMPLE_RECORDING_DRIVE:
+    if (state->opening.active) {
+      vkr_sample_recording_result(state, request->token, false_v,
+                                  "A playback is opening.");
+      return;
+    }
     vkr_sample_recording_drive(runtime, state, request);
     return;
   case VKR_SAMPLE_RECORDING_DRIVE_STOP:
@@ -593,9 +703,27 @@ void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
     vkr_recording_edit(&runtime->recording, edit_sequence);
   }
   state->edit_revision = edit_revision;
+  /* A playback read on a job worker enters Playback once it is read. */
+  VkrSampleRecordingOpen *opening = &state->opening;
+  if (opening->active &&
+      vkr_atomic_uint32_load(&opening->done, VKR_MEMORY_ORDER_ACQUIRE)) {
+    (void)vkr_job_wait(&runtime->job_system, opening->job);
+    vkr_sample_recording_open_finish(runtime, state);
+  }
+  status->opening = opening->active;
+  if (opening->active) {
+    string_format(status->opening_path, sizeof(status->opening_path), "%s",
+                  opening->request.path);
+    status->opening_progress =
+        (float32_t)vkr_atomic_uint32_load(&opening->progress.permille,
+                                          VKR_MEMORY_ORDER_RELAXED) /
+        1000.0f;
+  }
   status->recording = runtime->recording.active;
+  /* Tier 1 carries some measurements too; only an all-measurements
+     recording carries every one. */
   status->recording_all_measurements =
-      runtime->recording.active && runtime->recording.measurement_count > 0u;
+      runtime->recording.active && runtime->recording.all_measurements;
   status->recording_rolling_seconds =
       runtime->recording.active ? runtime->recording.rolling_seconds : 0.0;
   if (status->recording) {

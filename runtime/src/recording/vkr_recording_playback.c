@@ -60,6 +60,9 @@ typedef struct VkrRecordingLoad {
   VkrRecordingPlayback *playback;
   const VkrRecordingReader *reader;
   const VkrCodec *codec;
+  /* Optional; and which of the two reads of the stream runs. */
+  VkrRecordingPlaybackProgress *progress;
+  uint32_t read_index;
   /* Which frames had a frame and a camera record. */
   uint8_t *present;
   /* The pose keys the first pass found, in the order it found them, with
@@ -193,7 +196,19 @@ typedef bool8_t (*VkrRecordingVisit)(VkrRecordingLoad *load,
 
 vkr_internal bool8_t vkr_recording_load_records(VkrRecordingLoad *load,
                                                 VkrRecordingVisit visit) {
-  for (uint32_t i = 0u; i < load->reader->chunk_count; ++i) {
+  const uint32_t chunks = load->reader->chunk_count;
+  for (uint32_t i = 0u; i < chunks; ++i) {
+    if (load->progress) {
+      if (vkr_atomic_uint32_load(&load->progress->cancel,
+                                 VKR_MEMORY_ORDER_RELAXED)) {
+        return vkr_recording_load_fail(load, "cancelled");
+      }
+      const uint64_t read = (uint64_t)load->read_index * chunks + i;
+      vkr_atomic_uint32_store(
+          &load->progress->permille,
+          (uint32_t)(read * 1000u / (2u * (uint64_t)chunks)),
+          VKR_MEMORY_ORDER_RELAXED);
+    }
     if (load->reader->chunks[i].type != VKR_RECORDING_CHUNK_RECORDS) {
       continue;
     }
@@ -1179,6 +1194,7 @@ vkr_internal bool8_t vkr_recording_playback_load(VkrRecordingLoad *load) {
   playback->event_name_count = 0u;
   playback->pose_sample_count = 0u;
   playback->edit_count = 0u;
+  load->read_index = 1u;
   if (!vkr_recording_load_records(load, vkr_recording_fill)) {
     return false_v;
   }
@@ -1208,6 +1224,7 @@ vkr_recording_playback_reader(VkrRecordingPlayback *playback,
 
 bool8_t vkr_recording_playback_open(VkrRecordingPlayback *playback,
                                     const char *path, const VkrCodec *codec,
+                                    VkrRecordingPlaybackProgress *progress,
                                     char *error, uint64_t error_capacity) {
   vkr_assert(playback != NULL && path != NULL && error != NULL);
   vkr_assert(!playback->open && "close the open playback first");
@@ -1236,6 +1253,7 @@ bool8_t vkr_recording_playback_open(VkrRecordingPlayback *playback,
   VkrRecordingLoad load = {.playback = playback,
                            .reader = &reader,
                            .codec = codec,
+                           .progress = progress,
                            .error = error,
                            .error_capacity = error_capacity};
   const bool8_t loaded = vkr_recording_playback_load(&load);
@@ -1311,6 +1329,16 @@ vkr_recording_playback_gpu_spans_in(const VkrRecordingPlayback *playback,
                                 sizeof(*playback->gpu_spans), end_ns);
   *out_first = first;
   return last - first;
+}
+
+void vkr_recording_playback_move(VkrRecordingPlayback *to,
+                                 VkrRecordingPlayback *from) {
+  vkr_assert(to != NULL && from != NULL && !to->open);
+  *to = *from;
+  /* The allocator names the memory beside it; the memory's own pointers
+     reach only the blocks it reserved. */
+  to->allocator.ctx = &to->memory;
+  MemZero(from, sizeof(*from));
 }
 
 void vkr_recording_playback_close(VkrRecordingPlayback *playback) {

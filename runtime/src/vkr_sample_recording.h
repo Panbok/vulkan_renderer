@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/vkr_codec.h"
+#include "core/vkr_job_system.h"
 #include "math/vec.h"
 #include "recording/vkr_recording.h"
 #include "recording/vkr_recording_drive.h"
@@ -154,6 +155,11 @@ typedef struct VkrSampleRecordingStatus {
   VkrRecorderStats stats;
   /* The open playback, borrowed for the build; NULL outside Playback. */
   const VkrRecordingPlayback *playback;
+  /* A playback being read on a job worker: its bundle and how much of its
+     stream was read, from 0 to 1. */
+  bool8_t opening;
+  char opening_path[VKR_RECORDING_PATH_MAX];
+  float32_t opening_progress;
   /* The camera the last frame rendered with, in world space as recordings
      store it: what a recording wrote for its last frame, and what playback
      placed. */
@@ -169,8 +175,30 @@ typedef struct VkrSampleRecordingStatus {
   VkrSampleRecordingDriveResult drive;
 } VkrSampleRecordingStatus;
 
+/* Requests a playback being opened holds until it is open. */
+#define VKR_SAMPLE_RECORDING_OPEN_PENDING 8u
+
+/* An OPEN read on a job worker so frames keep running: the request, the
+   playback it fills, the job, its progress, and its outcome once `done`.
+   Transport requests that arrive meanwhile wait in `pending`. */
+typedef struct VkrSampleRecordingOpen {
+  bool8_t active;
+  VkrSampleRecordingRequest request;
+  VkrRecordingPlayback playback;
+  VkrJobHandle job;
+  VkrRecordingPlaybackProgress progress;
+  VkrAtomicUint32 done;
+  bool8_t ok;
+  char error[192];
+  VkrSampleRecordingRequest pending[VKR_SAMPLE_RECORDING_OPEN_PENDING];
+  uint32_t pending_count;
+} VkrSampleRecordingOpen;
+
 typedef struct VkrSampleRecordingState {
   VkrSampleRecordingStatus status;
+  /* Owned by the job while `opening.active`; the frame loop reads only
+     its atomics until `done`. */
+  VkrSampleRecordingOpen opening;
   /* The editor camera and the level's hour from before Playback. */
   bool8_t saved;
   Vec3 position;
@@ -203,6 +231,11 @@ typedef struct VkrSampleRecordingState {
   bool8_t drive_started;
   uint64_t drive_token;
 } VkrSampleRecordingState;
+
+/** Cancels a playback being opened and waits for its job; before the job
+ * system shuts down. */
+void vkr_sample_recording_shutdown(struct VkrStandardSceneRuntime *runtime,
+                                   VkrSampleRecordingState *state);
 
 /** Applies one request; `scene_path` names the level for the summary. */
 void vkr_sample_recording_apply(struct VkrStandardSceneRuntime *runtime,
