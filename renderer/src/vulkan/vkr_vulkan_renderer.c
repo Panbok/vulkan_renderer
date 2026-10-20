@@ -446,6 +446,7 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
           config->enable_synchronization_validation,
       .enable_gpu_assisted = config->enable_gpu_assisted,
       .fsr31_enabled = config->fsr31_enabled,
+      .capture_shader_statistics = config->capture_shader_statistics,
   };
   if (!vkr_vulkan_device_create(&device_config, &renderer->device) ||
       !vkr_vk_create_timeline(renderer) ||
@@ -2279,6 +2280,29 @@ void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
 const VkrVulkanCapabilityProfile *
 vkr_vulkan_renderer_profile(const VkrVulkanRenderer *renderer) {
   return renderer ? vkr_vulkan_device_profile(renderer->device) : NULL;
+}
+
+void vkr_vulkan_renderer_hardware_information(
+    const VkrVulkanRenderer *renderer, VkrDeviceInformation *out_information) {
+  if (!renderer || !out_information) {
+    return;
+  }
+  const VkPhysicalDeviceProperties2 *properties =
+      vkr_vulkan_device_properties(renderer->device);
+  if (!properties) {
+    return;
+  }
+  const VkPhysicalDeviceLimits *limits = &properties->properties.limits;
+  out_information->unified_memory = properties->properties.deviceType ==
+                                    VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  out_information->max_threadgroup_memory = limits->maxComputeSharedMemorySize;
+  out_information->max_threads_per_threadgroup =
+      limits->maxComputeWorkGroupInvocations;
+  vkr_vulkan_device_subgroup_size_range(renderer->device,
+                                        &out_information->simd_width_min,
+                                        &out_information->simd_width_max);
+  out_information->shader_statistics_captured =
+      vkr_vulkan_device_pipeline_executable_functions(renderer->device) != NULL;
 }
 
 const VkrDrawCensusStore *

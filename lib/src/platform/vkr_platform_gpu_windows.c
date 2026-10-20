@@ -351,6 +351,8 @@ vkr_platform_gpu_monitor_sample(VkrPlatformGpuMonitor monitor,
       telemetry.memory_valid = true_v;
     }
   }
+  /* The driver statistics have no Windows source and stay invalid. */
+  telemetry.other_process_util_supported = true_v;
   const uint32_t util = vkr_atomic_uint32_load(&monitor->other_process_util,
                                                VKR_MEMORY_ORDER_ACQUIRE);
   if (util != VKR_GPU_MONITOR_UTIL_UNAVAILABLE) {
@@ -378,5 +380,14 @@ void vkr_platform_gpu_monitor_destroy(VkrAllocator *allocator,
   vkr_allocator_free(allocator, owned, sizeof(*owned),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   *monitor = NULL;
+}
+
+/* Windows has no cheap source of the GPU's model and core count here; the
+   graphics API's device name stays the renderer's. */
+bool8_t vkr_platform_get_gpu_info(VkrPlatformGpuInfo *out_info) {
+  if (out_info) {
+    MemZero(out_info, sizeof(*out_info));
+  }
+  return false_v;
 }
 #endif

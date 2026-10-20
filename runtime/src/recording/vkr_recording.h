@@ -155,6 +155,11 @@
 #define VKR_RECORDING_STREAM_DRAW_BOUNDS 29u
 #define VKR_RECORDING_STREAM_DRAW_IDS 30u
 #define VKR_RECORDING_STREAM_DRAW_STATES 31u
+/* Hardware facts and the renderer's pipelines (Tier 1,
+   vkr_recording_format.h): not droppable, so a lost record is written again
+   on a later frame. */
+#define VKR_RECORDING_STREAM_HARDWARE 32u
+#define VKR_RECORDING_STREAM_PIPELINE 33u
 /* The GPU start and end are on the CPU clock. */
 #define VKR_RECORDING_PASS_STARTS_HOST_CLOCK 1u
 /* Ring bytes of each job worker's producer when zones are recorded. */
@@ -461,6 +466,10 @@ typedef struct VkrRecording {
   uint64_t draw_ids_generation;
   bool8_t draw_ids_written;
   uint64_t draw_frame_written;
+  /* Hardware facts are written, and the renderer pipelines written so
+     far (ADR-130). */
+  bool8_t hardware_written;
+  uint32_t pipelines_written;
   /* Pass ids a recorded graph shape holds; a frame that runs a pass none
      holds asks the caller for a snapshot (vkr_recording_graph_wanted). The
      passes a frame culls change often and its rows show them, so they make
@@ -592,6 +601,23 @@ void vkr_recording_draws(VkrRecording *recording,
  * `frame`'s allocator rows, naming new entries first. Tier 1 only.
  */
 void vkr_recording_allocators(VkrRecording *recording, uint64_t frame);
+
+/**
+ * @brief Writes the device's hardware facts once, under recorded frame
+ * `frame`; later calls write nothing. Tier 1 only.
+ */
+void vkr_recording_hardware(VkrRecording *recording, uint64_t frame,
+                            const VkrRecordingHardwareFact *facts,
+                            uint32_t count);
+
+struct VkrPipelineRegistry;
+
+/**
+ * @brief Writes the pipelines `registry` gained since the last call under
+ * recorded frame `frame`, the earlier ones at the first call. Tier 1 only.
+ */
+void vkr_recording_pipelines(VkrRecording *recording, uint64_t frame,
+                             struct VkrPipelineRegistry *registry);
 
 /**
  * @brief Writes gpu.submission, `gpu_ms` of renderer frame

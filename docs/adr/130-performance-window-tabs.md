@@ -8,10 +8,10 @@ authority: adr
 
 ## Status
 
-Accepted (partial). The editor's Performance window has five tabs, and Tier 1
-recordings carry the data the four new ones read. Metal evidence is on this
-Mac; the Vulkan backend's census pass, counters and readback have no native
-run yet (Windows machine).
+Accepted (partial). The editor's Performance window has six tabs, and Tier 1
+recordings carry the data the five new ones read. Metal evidence is on this
+Mac; the Vulkan backend's census pass, counters, readback and pipeline
+statistics have no native run yet (Windows machine).
 
 ## Context
 
@@ -30,13 +30,13 @@ needed a live editor, a GPU capture or a debugger.
    ([`perf_tabs`](../../editor/src/editor_recording_perf.c)): Overview (the
    previous page, unchanged), the backend named after the recording's
    pipeline class (Metal for tiled, Vulkan for desktop, from the IDENTITY
-   chunk), Memory, Draws and Render graph. Every tab but Overview shows a
+   chunk), Memory, Draws, Render graph and HW. Every tab but Overview shows a
    frame-time strip that selects and zooms like the Overview charts, and
    describes one frame: the playhead while a playback plays, else the
    selected frame, else the playhead, else the frame under the pointer
    (`vkr_editor_perf_focus`). Selection, zoom and hover are shared by all
    tabs. Each tab lives in its own file
-   (`editor/src/editor_recording_perf_{backend,memory,draws,graph}.c`) and
+   (`editor/src/editor_recording_perf_{backend,memory,draws,graph,hw}.c`) and
    shows what a recording lacks and how to record it instead of empty charts. The
    agent operation `rec.analyze` takes `tab`, `frame` and `flow` to show one.
 2. **Render graph shape.** When a Tier 1 recording's frame runs a pass that
@@ -113,7 +113,37 @@ needed a live editor, a GPU capture or a debugger.
    funnel, the frame's draw counters by pass and cascade or objects by cell
    of the ground (the world partition's cell size, else 32 m), and below the
    candidates by state over the shown frames.
-8. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
+8. **Hardware (HW tab).** The renderer owns a pipeline registry
+   ([`vkr_pipeline_registry.h`](../../renderer/src/vkr_pipeline_registry.h)):
+   each backend adds every pipeline it creates, on any thread, with its
+   compile time and what its API reports about the hardware it needs.
+   Metal adds compute and tile pipelines' `maxTotalThreadsPerThreadgroup`,
+   `threadExecutionWidth` and static threadgroup memory; an Apple GPU lowers
+   the first below the device's 1024 when a kernel holds many registers, the
+   only public sign of register pressure there, and reports nothing about
+   render stages. Vulkan, with the graphics setting Capture shader
+   statistics (off by default, applies at the next start, hidden on the
+   tiled pipeline) on a device with `VK_KHR_pipeline_executable_properties`,
+   creates pipelines with `VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR` and
+   adds each executable's driver statistics, summarized into registers,
+   spill bytes, instructions and shared memory by name fragment because the
+   names are driver-defined. `VkrDeviceInformation` gains the GPU
+   architecture (Metal) or driver name (Vulkan), unified memory, the
+   working set, threadgroup memory and thread limits and the SIMD width. A
+   Tier 1 recording writes the device's facts once (`hardware`, with the
+   OS's GPU model and core count) and the registry's pipelines as they
+   appear (`pipeline`, those created before it under its first frame). The
+   lib's GPU monitor reads, on macOS, the Apple GPU driver's statistics
+   every 250 ms on its own thread ([ADR-125](125-platform-telemetry-metrics.md)),
+   recorded as `os.gpu.*` Tier 1 measurements. The HW tab shows cards of
+   utilization, the parameter buffer, scene splits, GPU recoveries and
+   register-limited pipelines; charts of device, renderer and tiler
+   utilization and of the tiled scene, parameter buffer and splits; the
+   device's facts; the pipelines, filtered by kind, with only the columns
+   the recording has values for; the selected pipeline's driver statistics;
+   and a note that occupancy and limiter counters of Apple GPUs reach only
+   Instruments and those of desktop GPUs only vendor profilers.
+9. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
    so a map draws up to 16,384 footprints per widget within the frame's
    widget budget. Editor tables take per-cell text colours, fills and share
    bars.
@@ -137,6 +167,22 @@ counters and readback on hardware (they compile, and the SPIR-V builds,
 on this Mac), recording overhead timing at Tier 1, and the census pass's
 GPU cost.
 
+Metal, M1 Pro, Release editor, headless Bistro, 2026-10-20: a Tier 1
+recording of a 2,539-frame walk (`rec.start {tier: "1"}`, 600 gliding
+`view.camera` steps) held 478 pipelines (593 ms of compiling; the slowest,
+the animation preview, 11.1 ms) and the device's facts (Apple M1 Pro,
+`applegpu_g13s`, 14 cores, 11.84 GiB working set, 32 KiB threadgroup
+memory). Three compute kernels, among them the cloud sky-light SH and the
+atmosphere multiple scattering at 896 threads, report fewer than the
+device's 1,024 threads per threadgroup: their registers limit them. The driver read 100 % device, renderer and tiler
+utilization (the headless editor renders without a frame limit), an 87 MiB
+parameter buffer, no scene splits and no recoveries. `rec.analyze {tab:
+"hw"}` and the kind filter captured without layout failures.
+`test_recording_hardware_pipelines` round-trips both streams; it failed with
+the reader's pipeline kind offset moved by one byte. Unavailable: the Vulkan
+statistics path on hardware (it compiles here; MoltenVK lacks the
+extension) and the driver's own refresh period of its utilization figures.
+
 ## Consequences
 
 - A Tier 1 recording grows by the measurement values (396 on Bistro, about
@@ -151,6 +197,14 @@ GPU cost.
 - Blended draws, culled on the CPU, are not in the census.
 - Zone recordings load every zone into memory once to reduce them per frame;
   a long zone recording costs up to about 100 MB while loading.
+- The pipeline registry keeps up to 4,096 entries and 32,768 statistics on
+  the heap for the renderer's lifetime (about 0.3 MB for Bistro's 478
+  Metal pipelines); a rebuilt variant adds another entry.
+- Turning Capture shader statistics on changes Vulkan pipeline cache keys:
+  the first start compiles again, and compile times with it on are not
+  comparable with it off.
+- The Apple driver's statistics are undocumented IORegistry keys; one that
+  changes leaves its value unavailable, never wrong.
 
 ## Alternatives considered
 
@@ -166,6 +220,8 @@ GPU cost.
 
 ## Revisit when
 
-The Vulkan census, counters and readback get their native run; a recording's
+The Vulkan census, counters, readback and pipeline statistics get their
+native run; Instruments' GPU counters are imported into recordings
+([profiling and diagnostics](../proposals/profiling-and-diagnostics.md)); a recording's
 size or the census pass's cost fails the Tier 1 budget; or the map needs
 entity names, which needs picking ids joined to entities in the recording.

@@ -53,6 +53,9 @@ typedef struct VkrVulkanFeatureSet {
   /* Optional: host-visible memory the GPU writes through its caches, so
      breadcrumb markers survive a hang (VK_AMD_device_coherent_memory). */
   bool8_t device_coherent_memory;
+  /* Optional: per-pipeline register, spill and instruction statistics
+     (VK_KHR_pipeline_executable_properties), enabled only on request. */
+  bool8_t pipeline_executable_info;
 } VkrVulkanFeatureSet;
 
 typedef struct VkrVulkanCandidate {
@@ -77,6 +80,7 @@ typedef struct VkrVulkanCandidate {
      that name the last pass before a hang. */
   bool8_t has_buffer_marker_extension;
   bool8_t has_device_coherent_memory_extension;
+  bool8_t has_pipeline_executable_properties_extension;
   /* VK_KHR_calibrated_timestamps, or the EXT it was promoted from; NULL when
      the device names neither. The pair of domains it must calibrate is the
      device's timestamps against QueryPerformanceCounter, the counter behind
@@ -87,6 +91,10 @@ typedef struct VkrVulkanCandidate {
   uint32_t timestamp_valid_bits;
   VkPhysicalDeviceAccelerationStructurePropertiesKHR
       acceleration_structure_properties;
+  /* The subgroup sizes the device may run (minSubgroupSize and
+     maxSubgroupSize, or subgroupSize twice before Vulkan 1.3). */
+  uint32_t subgroup_size_min;
+  uint32_t subgroup_size_max;
 } VkrVulkanCandidate;
 
 struct VkrVulkanDevice {
@@ -132,6 +140,10 @@ struct VkrVulkanDevice {
   /* Loaded only when ray queries are enabled. */
   VkrVulkanRayQueryFunctions ray_query_functions;
   bool8_t ray_query_enabled;
+  /* Loaded only when capture_shader_statistics enabled
+     pipelineExecutableInfo. */
+  VkrVulkanPipelineExecutableFunctions pipeline_executable_functions;
+  bool8_t pipeline_executable_enabled;
   /* VK_EXT_memory_budget: the driver's per-heap usage and budget. */
   bool8_t memory_budget_enabled;
   bool8_t swapchain_colorspace_enabled;
@@ -599,6 +611,31 @@ vkr_vk_query_candidate_properties(VkrVulkanCandidate *candidate,
   if (report->device_luid_valid) {
     MemCopy(report->device_luid, id.deviceLUID, sizeof(report->device_luid));
   }
+
+  /* Subgroup sizes for the HW tab (ADR-130). Vulkan 1.3's properties may
+     chain only on a device that reports 1.3; an older candidate keeps its
+     one subgroupSize. */
+  VkPhysicalDeviceVulkan13Properties properties13 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES,
+  };
+  VkPhysicalDeviceSubgroupProperties subgroup = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
+  };
+  const bool8_t vulkan13 =
+      candidate->properties.properties.apiVersion >= VK_API_VERSION_1_3;
+  subgroup.pNext = vulkan13 ? &properties13 : NULL;
+  VkPhysicalDeviceProperties2 subgroup_properties = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+      .pNext = &subgroup,
+  };
+  vkGetPhysicalDeviceProperties2(candidate->physical, &subgroup_properties);
+  candidate->subgroup_size_min = subgroup.subgroupSize;
+  candidate->subgroup_size_max = subgroup.subgroupSize;
+  if (vulkan13 && properties13.minSubgroupSize &&
+      properties13.maxSubgroupSize >= properties13.minSubgroupSize) {
+    candidate->subgroup_size_min = properties13.minSubgroupSize;
+    candidate->subgroup_size_max = properties13.maxSubgroupSize;
+  }
 }
 
 vkr_internal void
@@ -742,6 +779,10 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
     candidate->has_device_coherent_memory_extension =
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME);
+    candidate->has_pipeline_executable_properties_extension =
+        vkr_vk_extension_present(
+            extensions, extension_count,
+            VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     candidate->calibrated_timestamps_extension =
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
@@ -776,6 +817,19 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
     };
     vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
     candidate->features.device_coherent_memory = coherent.deviceCoherentMemory;
+  }
+  if (candidate->has_pipeline_executable_properties_extension) {
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executable = {
+        .sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
+    };
+    VkPhysicalDeviceFeatures2 features2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = &executable,
+    };
+    vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
+    candidate->features.pipeline_executable_info =
+        executable.pipelineExecutableInfo;
   }
   /* The ray-query structures may chain only for a device that names their
      extensions. */
@@ -902,6 +956,16 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                     candidate->features.pipeline_statistics_query
                         ? "per-pass shader invocations on request"
                         : "unavailable: no per-pass invocation counts");
+  const bool8_t executable_info_present =
+      candidate->has_pipeline_executable_properties_extension &&
+      candidate->features.pipeline_executable_info;
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, "pipelineExecutableInfo",
+                    false_v, executable_info_present,
+                    !executable_info_present
+                        ? "unavailable: no pipeline register statistics"
+                    : device->config.capture_shader_statistics
+                        ? "enabled: pipelines capture their statistics"
+                        : "available with Capture shader statistics");
   vkr_vk_add_feature(report, "shaderDrawParameters",
                      candidate->features.shader_draw_parameters);
   vkr_vk_add_feature(report, "bufferDeviceAddress",
@@ -1364,6 +1428,9 @@ vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
   device->get_device_fault_info = NULL;
   device->get_calibrated_timestamps = NULL;
   device->cmd_write_buffer_marker = NULL;
+  MemZero(&device->pipeline_executable_functions,
+          sizeof(device->pipeline_executable_functions));
+  device->pipeline_executable_enabled = false_v;
   MemZero(&device->resource_layout, sizeof(device->resource_layout));
   MemZero(&device->sampler_layout, sizeof(device->sampler_layout));
 }
@@ -1598,11 +1665,26 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
           enable_device_fault ? (void *)&device_fault : (void *)&features11,
       .deviceCoherentMemory = VK_TRUE,
   };
-  VkPhysicalDeviceFeatures2 features2 = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+  /* Opt-in (ADR-130): capturing statistics can change pipeline cache keys
+     and compile work, so only the user's setting enables it. */
+  const bool8_t enable_pipeline_executable =
+      device->config.capture_shader_statistics &&
+      candidate->has_pipeline_executable_properties_extension &&
+      candidate->features.pipeline_executable_info;
+  VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipeline_executable = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR,
       .pNext = enable_breadcrumbs    ? (void *)&coherent_memory
                : enable_device_fault ? (void *)&device_fault
                                      : (void *)&features11,
+      .pipelineExecutableInfo = VK_TRUE,
+  };
+  VkPhysicalDeviceFeatures2 features2 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+      .pNext = enable_pipeline_executable ? (void *)&pipeline_executable
+               : enable_breadcrumbs       ? (void *)&coherent_memory
+               : enable_device_fault      ? (void *)&device_fault
+                                          : (void *)&features11,
       .features = {.shaderInt64 = VK_TRUE,
                    .geometryShader = VK_TRUE,
                    .independentBlend = VK_TRUE,
@@ -1613,7 +1695,7 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                    .pipelineStatisticsQuery =
                        candidate->features.pipeline_statistics_query},
   };
-  const char *extensions[12] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  const char *extensions[16] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
   uint32_t extension_count = 1u;
   if (device->config.windowed)
     extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -1638,6 +1720,9 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
     extensions[extension_count++] =
         VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME;
   }
+  if (enable_pipeline_executable)
+    extensions[extension_count++] =
+        VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1677,6 +1762,18 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
                     ? "vkGetCalibratedTimestampsKHR"
                     : "vkGetCalibratedTimestampsEXT")
           : NULL;
+  if (enable_pipeline_executable) {
+    VkrVulkanPipelineExecutableFunctions *executable =
+        &device->pipeline_executable_functions;
+    executable->get_properties =
+        (PFN_vkGetPipelineExecutablePropertiesKHR)vkGetDeviceProcAddr(
+            device->device, "vkGetPipelineExecutablePropertiesKHR");
+    executable->get_statistics =
+        (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(
+            device->device, "vkGetPipelineExecutableStatisticsKHR");
+    device->pipeline_executable_enabled =
+        executable->get_properties && executable->get_statistics;
+  }
   const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
                     "descriptor-buffer function table", true_v,
@@ -1844,6 +1941,21 @@ const VkrVulkanRayQueryFunctions *
 vkr_vulkan_device_ray_query_functions(const VkrVulkanDevice *device) {
   return device && device->ray_query_enabled ? &device->ray_query_functions
                                              : NULL;
+}
+
+const VkrVulkanPipelineExecutableFunctions *
+vkr_vulkan_device_pipeline_executable_functions(const VkrVulkanDevice *device) {
+  return device && device->pipeline_executable_enabled
+             ? &device->pipeline_executable_functions
+             : NULL;
+}
+
+void vkr_vulkan_device_subgroup_size_range(const VkrVulkanDevice *device,
+                                           uint32_t *out_min,
+                                           uint32_t *out_max) {
+  const bool8_t selected = device && device->selected;
+  *out_min = selected ? device->selected->subgroup_size_min : 0u;
+  *out_max = selected ? device->selected->subgroup_size_max : 0u;
 }
 
 bool8_t

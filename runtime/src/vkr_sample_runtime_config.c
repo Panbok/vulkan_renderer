@@ -349,6 +349,7 @@ vkr_sample_runtime_scene_config(const VkrSampleRuntimeConfig *runtime_config,
       .render_scale =
           vkr_graphics_settings_render_scale(&options->graphics, graphics),
       .tiled_upscaler = graphics->upscaler,
+      .capture_shader_statistics = graphics->shader_statistics,
       /* MetalFX rebuilds detail from half of each axis; the spatial upscale
          keeps 0.65 at least (ADR-087). The budget follows the target frame
          rate setting. */

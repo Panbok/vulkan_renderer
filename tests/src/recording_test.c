@@ -16,6 +16,7 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "vkr_depot_zstd.h"
 #include "vkr_frame_input.h"
+#include "vkr_pipeline_registry.h"
 #include "vkr_renderer_metrics.h"
 #include "vkr_rg_debug.h"
 
@@ -1215,6 +1216,128 @@ static void test_recording_graph_allocators_census(void) {
   assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
   recording_memory_destroy(&memory);
   printf("  test_recording_graph_allocators_census PASSED\n");
+}
+
+/* Detects: a hardware or pipeline record the reader does not parse as the
+   writer wrote it, facts written twice, a pipeline written again or skipped
+   when the registry grows between frames, and statistics attached to the
+   wrong pipeline. */
+static void test_recording_hardware_pipelines(void) {
+  printf("  Running test_recording_hardware_pipelines...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  char path[1024];
+  recording_test_path("hardware", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path,
+      .codec = vkr_depot_zstd_codec(),
+      .metrics = metrics,
+      .passes = true_v,
+      .pass_gpu_period = 1u,
+  };
+  VkrPipelineRegistry registry;
+  assert(vkr_pipeline_registry_create(&memory.allocator, &registry));
+  /* Two pipelines before the recording: a register-limited kernel and a
+     render pipeline with driver statistics. */
+  const VkrPipelineInfo kernel = {
+      .name = "cull.classify",
+      .kind = VKR_PIPELINE_KIND_COMPUTE,
+      .compile_ms = 3.5f,
+      .max_threads = 512u,
+      .execution_width = 32u,
+      .threadgroup_memory = 4096u,
+  };
+  vkr_pipeline_registry_add(&registry, &kernel, NULL, 0u);
+  const VkrPipelineInfo opaque = {
+      .name = "tiled.opaque",
+      .kind = VKR_PIPELINE_KIND_RENDER,
+      .compile_ms = 12.25f,
+      .registers = 96u,
+      .spill_bytes = 256u,
+      .instructions = 1800u,
+  };
+  const VkrPipelineStat opaque_stats[] = {
+      {.name = "Fragment Shader: VGPRs", .value = 96.0},
+      {.name = "Fragment Shader: Scratch size", .value = 256.0},
+      {.name = "Vertex Shader: Instruction count", .value = 120.0},
+  };
+  vkr_pipeline_registry_add(&registry, &opaque, opaque_stats,
+                            ArrayCount(opaque_stats));
+  const VkrRecordingHardwareFact facts[] = {
+      {.key = "GPU", .value = "Apple M1 Pro"},
+      {.key = "GPU cores", .value = "14"},
+  };
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  for (uint64_t f = 0u; f < 3u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    /* A variant built while frame 1 ran. */
+    if (f == 1u) {
+      const VkrPipelineInfo variant = {
+          .name = "tiled.opaque.sun",
+          .kind = VKR_PIPELINE_KIND_RENDER,
+          .compile_ms = 8.0f,
+      };
+      const VkrPipelineStat variant_stats[] = {
+          {.name = "Fragment Shader: VGPRs", .value = 104.0},
+      };
+      vkr_pipeline_registry_add(&registry, &variant, variant_stats,
+                                ArrayCount(variant_stats));
+    }
+    vkr_recording_hardware(&recording, f, facts, ArrayCount(facts));
+    vkr_recording_pipelines(&recording, f, &registry);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+  vkr_pipeline_registry_destroy(&registry);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  assert(data.hardware_count == 2u);
+  assert(string_equals(data.hardware[0].key, "GPU"));
+  assert(string_equals(data.hardware[0].value, "Apple M1 Pro"));
+  assert(string_equals(data.hardware[1].value, "14"));
+  assert(data.pipeline_count == 3u && data.pipeline_stat_count == 4u);
+  const VkrRecordingPipeline *read = &data.pipelines[0];
+  assert(string_equals(read->name, "cull.classify") && read->frame == 0u);
+  assert(read->kind == VKR_PIPELINE_KIND_COMPUTE && read->compile_ms == 3.5f);
+  assert(read->max_threads == 512u && read->execution_width == 32u);
+  assert(read->threadgroup_memory == 4096u && read->stat_count == 0u);
+  read = &data.pipelines[1];
+  assert(string_equals(read->name, "tiled.opaque") && read->frame == 0u);
+  assert(read->registers == 96u && read->spill_bytes == 256u);
+  assert(read->instructions == 1800u && read->stat_count == 3u);
+  const VkrRecordingPipelineStat *stat =
+      &data.pipeline_stats[read->stat_first + 2u];
+  assert(string_equals(stat->name, "Vertex Shader: Instruction count"));
+  assert(stat->value == 120.0);
+  read = &data.pipelines[2];
+  assert(string_equals(read->name, "tiled.opaque.sun") && read->frame == 1u);
+  assert(read->stat_count == 1u);
+  assert(data.pipeline_stats[read->stat_first].value == 104.0);
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_hardware_pipelines PASSED\n");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2738,6 +2861,7 @@ bool32_t run_recording_tests(void) {
   test_recorder_rolling_save();
   test_recording_pass_rows();
   test_recording_graph_allocators_census();
+  test_recording_hardware_pipelines();
   test_recording_gpu_submission();
   test_recording_loop_metrics();
   test_recording_all_measurements();

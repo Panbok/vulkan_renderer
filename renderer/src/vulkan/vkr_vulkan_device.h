@@ -72,6 +72,10 @@ typedef struct VkrVulkanDeviceConfig {
   /** Requests shaderStorageImageExtendedFormats for FSR 3.1; a device
       without it is still selected and reports FSR unavailable. */
   bool8_t fsr31_enabled;
+  /** Enables VK_KHR_pipeline_executable_properties' pipelineExecutableInfo
+      where the device has it, so pipelines can be created with their
+      statistics captured (ADR-130). */
+  bool8_t capture_shader_statistics;
 } VkrVulkanDeviceConfig;
 
 /* Acceleration-structure descriptors of the resource layout's binding 2,
@@ -177,6 +181,25 @@ typedef struct VkrVulkanRayQueryFunctions {
  * capability; the desktop pipeline's volume stays baked without it). */
 const VkrVulkanRayQueryFunctions *
 vkr_vulkan_device_ray_query_functions(const VkrVulkanDevice *device);
+
+/** Entry points of an enabled VK_KHR_pipeline_executable_properties. */
+typedef struct VkrVulkanPipelineExecutableFunctions {
+  PFN_vkGetPipelineExecutablePropertiesKHR get_properties;
+  PFN_vkGetPipelineExecutableStatisticsKHR get_statistics;
+} VkrVulkanPipelineExecutableFunctions;
+
+/** Null unless capture_shader_statistics was requested and the device
+ * enabled pipelineExecutableInfo; pipelines then carry
+ * VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR. */
+const VkrVulkanPipelineExecutableFunctions *
+vkr_vulkan_device_pipeline_executable_functions(const VkrVulkanDevice *device);
+
+/** The subgroup sizes the device may run: Vulkan 1.3's subgroup size
+ * control bounds, or the one subgroupSize where it reports none. Both zero
+ * for a NULL device. */
+void vkr_vulkan_device_subgroup_size_range(const VkrVulkanDevice *device,
+                                           uint32_t *out_min,
+                                           uint32_t *out_max);
 
 struct VkrRendererHealth;
 

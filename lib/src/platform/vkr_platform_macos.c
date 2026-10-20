@@ -547,37 +547,6 @@ bool8_t vkr_platform_get_telemetry(VkrPlatformTelemetry *out_telemetry) {
          telemetry.power_valid || telemetry.low_power_valid;
 }
 
-/* macOS reports no OS budget of GPU memory and no GPU use of other
-   processes; Metal's own memory figures stay in the renderer's metrics. */
-bool8_t vkr_platform_gpu_monitor_create(VkrAllocator *allocator,
-                                        const uint8_t *adapter_luid,
-                                        VkrPlatformGpuMonitor *out_monitor) {
-  (void)allocator;
-  (void)adapter_luid;
-  if (out_monitor) {
-    *out_monitor = NULL;
-  }
-  return false_v;
-}
-
-bool8_t
-vkr_platform_gpu_monitor_sample(VkrPlatformGpuMonitor monitor,
-                                VkrPlatformGpuTelemetry *out_telemetry) {
-  (void)monitor;
-  if (out_telemetry) {
-    *out_telemetry = (VkrPlatformGpuTelemetry){0};
-  }
-  return false_v;
-}
-
-void vkr_platform_gpu_monitor_destroy(VkrAllocator *allocator,
-                                      VkrPlatformGpuMonitor *monitor) {
-  (void)allocator;
-  if (monitor) {
-    *monitor = NULL;
-  }
-}
-
 void vkr_platform_exit_immediate(int32_t exit_code) { _Exit(exit_code); }
 
 void vkr_platform_stdout_write(const char *message) {

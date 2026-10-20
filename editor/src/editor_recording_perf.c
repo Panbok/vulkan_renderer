@@ -3571,6 +3571,11 @@ static const struct {
      "The render graph's passes in order with their times, and how each "
      "pass flows into the next",
      VKR_UI_ICON_GRAPH},
+    {"HW",
+     "The GPU: its device facts, the driver's utilization and tiled-scene "
+     "figures, and every pipeline with its compile time, threadgroup "
+     "limits and register statistics",
+     VKR_UI_ICON_GPU},
 };
 
 uint64_t vkr_editor_perf_focus(const VkrEditorRecordingPerf *perf,
@@ -3759,6 +3764,10 @@ vkr_internal void perf_tab_body(VkrEditorUi *editor,
   }
   if (tab == VKR_EDITOR_PERF_TAB_DRAWS) {
     vkr_editor_recording_perf_draws_build(editor, frame, placement);
+    return;
+  }
+  if (tab == VKR_EDITOR_PERF_TAB_HW) {
+    vkr_editor_recording_perf_hw_build(editor, frame, placement);
     return;
   }
   vkr_editor_perf_empty(

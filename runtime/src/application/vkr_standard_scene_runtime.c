@@ -204,6 +204,31 @@ vkr_internal bool8_t vkr_standard_scene_runtime_register_telemetry_metrics(
       {"os.gpu.other_process_util", VKR_METRIC_DOMAIN_FRAME,
        VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_PERCENT,
        &ids->os_gpu_other_process_util},
+      {"os.gpu.device_util", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_PERCENT, &ids->os_gpu_device_util},
+      {"os.gpu.renderer_util", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_PERCENT, &ids->os_gpu_renderer_util},
+      {"os.gpu.tiler_util", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_PERCENT, &ids->os_gpu_tiler_util},
+      {"os.gpu.tiled_scene_bytes", VKR_METRIC_DOMAIN_FRAME,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES,
+       &ids->os_gpu_tiled_scene_bytes},
+      {"os.gpu.split_scenes", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_COUNT, &ids->os_gpu_split_scenes},
+      {"os.gpu.parameter_buffer_bytes", VKR_METRIC_DOMAIN_FRAME,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES,
+       &ids->os_gpu_parameter_buffer_bytes},
+      {"os.gpu.recoveries", VKR_METRIC_DOMAIN_FRAME, VKR_METRIC_KIND_GAUGE,
+       VKR_METRIC_UNIT_COUNT, &ids->os_gpu_recoveries},
+      {"os.gpu.memory_in_use_bytes", VKR_METRIC_DOMAIN_MEMORY_GPU,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES,
+       &ids->os_gpu_memory_in_use},
+      {"os.gpu.driver_memory_bytes", VKR_METRIC_DOMAIN_MEMORY_GPU,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES,
+       &ids->os_gpu_driver_memory},
+      {"os.gpu.memory_allocated_bytes", VKR_METRIC_DOMAIN_MEMORY_GPU,
+       VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES,
+       &ids->os_gpu_memory_allocated},
   };
   for (uint32_t i = 0u; i < ArrayCount(rows); ++i) {
     const VkrMetricDescription description = {
@@ -290,8 +315,10 @@ vkr_internal void vkr_standard_scene_runtime_publish_telemetry(
 }
 
 /* Publishes the OS's view of the renderer's adapter. Without a monitor or a
-   source every value reads unsupported; other processes' GPU use reads not
-   sampled until the sampler's first complete period. */
+   source every value reads unsupported; other processes' GPU use and the
+   GPU driver's statistics read not sampled until the sampler's first
+   complete read. The driver's counts are published as the cumulative values
+   it reports. */
 vkr_internal void vkr_standard_scene_runtime_publish_gpu_telemetry(
     VkrStandardSceneRuntime *application) {
   VkrMetrics *metrics = application->metrics;
@@ -318,8 +345,44 @@ vkr_internal void vkr_standard_scene_runtime_publish_gpu_telemetry(
   } else {
     vkr_metrics_mark(metrics, ids->os_gpu_other_process_util,
                      VKR_METRIC_AVAILABILITY_UNAVAILABLE,
-                     application->gpu_monitor ? VKR_METRIC_REASON_NOT_SAMPLED
-                                              : VKR_METRIC_REASON_UNSUPPORTED);
+                     gpu.other_process_util_supported
+                         ? VKR_METRIC_REASON_NOT_SAMPLED
+                         : VKR_METRIC_REASON_UNSUPPORTED);
+  }
+
+  const struct {
+    VkrMetricId id;
+    uint64_t value;
+    bool8_t valid;
+  } driver[] = {
+      {ids->os_gpu_device_util, gpu.device_util_percent, gpu.device_util_valid},
+      {ids->os_gpu_renderer_util, gpu.renderer_util_percent,
+       gpu.renderer_util_valid},
+      {ids->os_gpu_tiler_util, gpu.tiler_util_percent, gpu.tiler_util_valid},
+      {ids->os_gpu_tiled_scene_bytes, gpu.tiled_scene_bytes,
+       gpu.tiled_scene_bytes_valid},
+      {ids->os_gpu_split_scenes, gpu.split_scene_count,
+       gpu.split_scene_count_valid},
+      {ids->os_gpu_parameter_buffer_bytes, gpu.parameter_buffer_bytes,
+       gpu.parameter_buffer_bytes_valid},
+      {ids->os_gpu_recoveries, gpu.recovery_count, gpu.recovery_count_valid},
+      {ids->os_gpu_memory_in_use, gpu.memory_in_use_bytes,
+       gpu.memory_in_use_valid},
+      {ids->os_gpu_driver_memory, gpu.driver_memory_in_use_bytes,
+       gpu.driver_memory_in_use_valid},
+      {ids->os_gpu_memory_allocated, gpu.memory_allocated_bytes,
+       gpu.memory_allocated_valid},
+  };
+  const VkrMetricReason driver_reason = gpu.driver_statistics_supported
+                                            ? VKR_METRIC_REASON_NOT_SAMPLED
+                                            : VKR_METRIC_REASON_UNSUPPORTED;
+  for (uint32_t i = 0u; i < ArrayCount(driver); ++i) {
+    if (driver[i].valid) {
+      vkr_metrics_gauge_set_u64(metrics, driver[i].id, driver[i].value);
+    } else {
+      vkr_metrics_mark(metrics, driver[i].id,
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE, driver_reason);
+    }
   }
 }
 #endif
@@ -563,8 +626,9 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
   vkr_renderer_get_device_information(&application->renderer, &device,
                                       application->frame_arenas[0]);
 #if VKR_METRICS_ENABLED
-  /* Only frame metrics read the monitor. A platform without a source leaves
-     it NULL and its metrics unsupported. */
+  /* Only frame metrics read the monitor. Windows reads its adapter's video
+     memory and other processes' GPU use, macOS the GPU driver's statistics;
+     a value without a source reads unsupported. */
   _Static_assert(VKR_DEVICE_ADAPTER_LUID_SIZE == VKR_PLATFORM_ADAPTER_LUID_SIZE,
                  "the renderer and the platform name an adapter alike");
   (void)vkr_platform_gpu_monitor_create(
@@ -807,6 +871,7 @@ vkr_standard_scene_runtime_create(VkrStandardSceneRuntime *application,
       .render_scale = config->render_scale,
       .dynamic_resolution = config->dynamic_resolution,
       .tiled_upscaler = config->tiled_upscaler,
+      .capture_shader_statistics = config->capture_shader_statistics,
       .capture_enabled = config->capture_enabled,
       .capture_ring_capacity = config->capture_ring_capacity,
       .capture_max_batch_bytes = config->capture_max_batch_bytes,

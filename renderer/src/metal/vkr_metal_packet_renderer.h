@@ -88,6 +88,9 @@ typedef struct VkrMetalPacketRendererConfig {
   VkrMetricEventProducer pipeline_create;
   /** Receives each shader library load with its time (shader.load). */
   VkrMetricEventProducer shader_load;
+  /** Borrowed for the renderer's lifetime: each pipeline created is added
+   * with its compile time and threadgroup limits; NULL adds none. */
+  struct VkrPipelineRegistry *pipeline_registry;
   VkrMetalPacketTargetKind target_kind;
   uint32_t target_width;
   uint32_t target_height;
@@ -495,6 +498,10 @@ uint64_t vkr_metal_packet_renderer_completed_value(
 /** Borrowed UTF-8 model name; storage lives until renderer destruction. */
 String8
 vkr_metal_packet_renderer_device_name(const VkrMetalPacketRenderer *renderer);
+/** Fills the hardware facts of `info` (gpu_architecture through
+ * simd_width_max) from the device (ADR-130). */
+void vkr_metal_packet_renderer_hardware(const VkrMetalPacketRenderer *renderer,
+                                        struct VkrDeviceInformation *info);
 /** Returns the presentation mode actually applied to the Metal target. */
 VkrPresentMode
 vkr_metal_packet_renderer_present_mode(const VkrMetalPacketRenderer *renderer);

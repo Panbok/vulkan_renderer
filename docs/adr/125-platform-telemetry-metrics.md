@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-19
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -101,8 +101,27 @@ monitor with rendering and destroys it at shutdown. On Windows:
 
 One PDH collection takes about 1 ms, so a sampler thread created by the first
 frame's read collects once a second and publishes through an atomic; destroy
-joins it. The frame's read costs about 1 µs. macOS has no source yet and
-reports all three unsupported. The three are in Tier 0 recordings.
+joins it. The frame's read costs about 1 µs. The three are in Tier 0
+recordings; macOS reports them unsupported.
+
+On macOS the monitor reads the Apple GPU driver's `PerformanceStatistics`
+dictionary of its IOAccelerator service
+([vkr_platform_gpu_macos.c](../../lib/src/platform/vkr_platform_gpu_macos.c)).
+One read costs 80 to 450 µs on an M1 Pro, so a utility-class sampler thread
+started by the first frame's read reads every 250 ms and publishes through
+atomics. The keys are undocumented; a missing one leaves its metric
+unavailable. The driver's own refresh period is unknown.
+
+| Metric | Driver key |
+|---|---|
+| `os.gpu.device_util`, `os.gpu.renderer_util`, `os.gpu.tiler_util` (gauges, percent) | `Device Utilization %`, `Renderer Utilization %`, `Tiler Utilization %` |
+| `os.gpu.tiled_scene_bytes`, `os.gpu.parameter_buffer_bytes` (gauges, bytes) | `TiledSceneBytes`, `Allocated PB Size` |
+| `os.gpu.split_scenes`, `os.gpu.recoveries` (gauges, the driver's running counts) | `SplitSceneCount`, `recoveryCount` |
+| `os.gpu.memory_in_use_bytes`, `os.gpu.driver_memory_bytes`, `os.gpu.memory_allocated_bytes` (gauges, bytes) | `In use system memory`, `In use system memory (driver)`, `Alloc system memory` |
+
+They are Tier 1 measurements ([ADR-130](130-performance-window-tabs.md)).
+`vkr_platform_get_gpu_info` reads the GPU's model and core count from the
+same service; it walks the IORegistry, so callers read it once.
 
 The editor shows the driver's figure, which every Vulkan device and Metal
 report: the stats chip's detail reads `GPU budget (driver)` from
@@ -201,6 +220,7 @@ nominal; hovering names a column's states and footprint, and a click seeks.
 - A matched timing run shows the per-frame sample or the power read matters.
 - A Windows driver exposes `VK_KHR_present_wait`, or a macOS source for the
   OS's GPU memory view or other processes' GPU use is chosen.
+- A macOS release renames or drops the GPU driver's statistics keys.
 
 ## Evidence
 

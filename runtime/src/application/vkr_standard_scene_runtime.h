@@ -117,6 +117,8 @@ typedef struct VkrStandardSceneRuntimeConfig {
   VkrDynamicResolutionConfig dynamic_resolution;
   /** VkrTiledUpscaler for the tiled pipeline; zero selects MetalFX. */
   uint32_t tiled_upscaler;
+  /** VkrRendererBackendConfig.capture_shader_statistics. */
+  bool8_t capture_shader_statistics;
   bool8_t capture_enabled;
   const char *bootstrap_font_directory;
   /** Largest loaded texture extent; mips above it are skipped at load. Zero
@@ -175,6 +177,21 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   VkrMetricId os_gpu_memory_budget;
   VkrMetricId os_gpu_memory_usage;
   VkrMetricId os_gpu_other_process_util;
+  // The Apple GPU driver's statistics (VkrPlatformGpuTelemetry), read by the
+  // monitor's sampler thread about every 250 ms: device, renderer and tiler
+  // utilization, the last tiled scene's bytes, the cumulative split scene
+  // count, the parameter buffer's bytes, the recovery count and the GPU's
+  // system memory in use, the driver's part of it and the allocated total.
+  VkrMetricId os_gpu_device_util;
+  VkrMetricId os_gpu_renderer_util;
+  VkrMetricId os_gpu_tiler_util;
+  VkrMetricId os_gpu_tiled_scene_bytes;
+  VkrMetricId os_gpu_split_scenes;
+  VkrMetricId os_gpu_parameter_buffer_bytes;
+  VkrMetricId os_gpu_recoveries;
+  VkrMetricId os_gpu_memory_in_use;
+  VkrMetricId os_gpu_driver_memory;
+  VkrMetricId os_gpu_memory_allocated;
   // The frame time presentation paces to: the display's refresh interval
   // when the frame presented with vertical sync, raised to the frame
   // limit's. Unsampled for unpaced frames, which have no such floor.

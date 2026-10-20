@@ -285,6 +285,29 @@ typedef struct VkrRecordingGraph {
   uint32_t name_bytes;
 } VkrRecordingGraph;
 
+/* A pipeline the renderer created (Tier 1, ADR-130): the fields of its
+   pipeline record, the first frame it was recorded under and its
+   statistics, pipeline_stat_count from pipeline_stats[stat_first]. */
+typedef struct VkrRecordingPipeline {
+  char name[VKR_RECORDING_PIPELINE_NAME_MAX + 1u];
+  uint64_t frame;
+  uint32_t kind;
+  float32_t compile_ms;
+  uint32_t max_threads;
+  uint32_t execution_width;
+  uint32_t threadgroup_memory;
+  uint32_t registers;
+  uint32_t spill_bytes;
+  uint32_t instructions;
+  uint32_t stat_first;
+  uint32_t stat_count;
+} VkrRecordingPipeline;
+
+typedef struct VkrRecordingPipelineStat {
+  char name[VKR_RECORDING_PIPELINE_STAT_NAME_MAX + 1u];
+  float64_t value;
+} VkrRecordingPipelineStat;
+
 /* A loaded recording. Every array lives in one allocation, the pass rows in
    a second and the graphs in a third, that vkr_recording_data_free
    releases; pointers stay valid until then. */
@@ -404,6 +427,18 @@ typedef struct VkrRecordingData {
   uint64_t graph_block_bytes;
   VkrRecordingGraph *graphs;
   uint32_t graph_count;
+
+  /* Tier 1 hardware (ADR-130): the device's facts, the first of each key,
+     and the renderer's pipelines in creation order with their statistics.
+     NULL without any. */
+  void *hardware_block;
+  uint64_t hardware_block_bytes;
+  VkrRecordingHardwareFact *hardware;
+  uint32_t hardware_count;
+  VkrRecordingPipeline *pipelines;
+  uint32_t pipeline_count;
+  VkrRecordingPipelineStat *pipeline_stats;
+  uint32_t pipeline_stat_count;
 
   /* From the IDENTITY chunk: the graphics pipeline class, "tiled" (Metal) or
      "desktop" (Vulkan), and the OS; empty when it names none. */

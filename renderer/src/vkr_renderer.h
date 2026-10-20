@@ -8,6 +8,7 @@
 #include "math/vkr_transform.h"
 #include "vkr_exposure.h"
 #include "vkr_native_surface.h"
+#include "vkr_pipeline_registry.h"
 
 /* Public packet-renderer contracts shared by the selected Metal and Vulkan
    implementations. Resource publication and frame submission are coarse
@@ -482,6 +483,27 @@ typedef struct VkrDeviceInformation {
    * Vulkan's deviceLUID where the driver reports one; Metal has none. */
   uint8_t adapter_luid[VKR_DEVICE_ADAPTER_LUID_SIZE];
   bool8_t adapter_luid_valid;
+  /** Hardware facts the Performance window's HW tab shows (ADR-130); zero
+   * or empty where the API reports none. Metal: the GPU architecture's
+   * name; Vulkan: the driver's name. */
+  char gpu_architecture[48];
+  /** Memory the GPU shares with the CPU (Apple GPUs, integrated GPUs). */
+  bool8_t unified_memory;
+  /** Bytes the device can use without hurting performance: Metal's
+   * recommendedMaxWorkingSetSize. */
+  uint64_t working_set_bytes;
+  /** Threadgroup (workgroup shared) memory one threadgroup may use. */
+  uint32_t max_threadgroup_memory;
+  /** Threads one threadgroup may hold. */
+  uint32_t max_threads_per_threadgroup;
+  /** Threads a SIMD group or subgroup holds: Metal 32; Vulkan the subgroup
+   * size control's bounds. */
+  uint32_t simd_width_min;
+  uint32_t simd_width_max;
+  /** Vulkan: pipelines carry executable statistics in the pipeline
+   * registry (VkrRendererBackendConfig.capture_shader_statistics on a
+   * device with VK_KHR_pipeline_executable_properties). */
+  bool8_t shader_statistics_captured;
 } VkrDeviceInformation;
 
 // ============================================================================
@@ -1126,6 +1148,12 @@ typedef struct VkrRendererBackendConfig {
    * (shader.load); an invalid source publishes none. Metal publishes its
    * startup libraries and each project material library load. */
   VkrMetricEventProducer shader_load;
+  /** Vulkan: creates pipelines with
+   * VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR where the device has
+   * VK_KHR_pipeline_executable_properties, so the pipeline registry carries
+   * their register, spill and instruction counts. Off by default: the flag can
+   * change pipeline cache keys. Metal ignores it. */
+  bool8_t capture_shader_statistics;
 } VkrRendererBackendConfig;
 
 typedef enum VkrPresentTargetAttachment {
@@ -1369,6 +1397,10 @@ typedef struct VkrRendererPipelineStats {
  * Custom material's fallback until it gains Custom graphs. */
 VkrRendererPipelineStats
 vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer);
+
+/** What the backend reported about each pipeline it created (ADR-130);
+ * lives as long as the renderer and is safe to visit from any thread. */
+VkrPipelineRegistry *vkr_renderer_pipeline_registry(VkrRenderer *renderer);
 
 struct VkrRgDescribeVisitor;
 struct VkrRgDescription;

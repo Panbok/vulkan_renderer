@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-19
+updated: 2026-10-20
 authority: proposal
 ---
 
@@ -95,5 +95,11 @@ Remaining:
   (`GPUTimestamp`) at stage boundaries, so the Mac has none to read.
 - Apple's hardware GPU counters through Instruments' GPU counters
   instrument, read from `gpu-counter-value`; `vkr_xctrace.py gpu` reads the
-  GPU intervals.
+  GPU intervals. The owner chose on 2026-10-20 to import them into a
+  recording as a follow-up: an occupancy and limiter (ALU, texture, memory)
+  series per frame and per pass, which the HW tab
+  ([ADR-130](../adr/130-performance-window-tabs.md)) would chart beside the
+  driver's utilization. Open: how a capture span maps to recorded frames
+  (signposted frame zones), and the trace size, since such a trace writes
+  gigabytes to `$TMPDIR` on a 16 GB Mac.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.

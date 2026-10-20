@@ -1,5 +1,6 @@
 #include "metal/vkr_metal_packet_renderer.h"
 #include "vkr_packed_geometry.h"
+#include "vkr_pipeline_registry.h"
 #include "vkr_texture_upload.h"
 
 #if defined(PLATFORM_APPLE)
@@ -1073,6 +1074,9 @@ struct VkrMetalPacketRenderer {
   VkrMetricEventProducer pipeline_create;
   /* Publishes each shader library load's time (shader.load). */
   VkrMetricEventProducer shader_load;
+  /* Borrowed from the renderer: each pipeline created, with its compile
+     time and threadgroup limits (ADR-130); NULL records none. */
+  VkrPipelineRegistry *pipeline_registry;
   /* Background creations requested and not yet finished. */
   VkrAtomicUint32 background_builds;
   bool8_t custom_loaded;
@@ -1682,6 +1686,27 @@ String8
 vkr_metal_packet_renderer_device_name(const VkrMetalPacketRenderer *renderer) {
   return string8_create_from_cstr((const uint8_t *)renderer->device_name,
                                   string_length(renderer->device_name));
+}
+
+void vkr_metal_packet_renderer_hardware(const VkrMetalPacketRenderer *renderer,
+                                        VkrDeviceInformation *info) {
+  if (!renderer || !renderer->device || !info) {
+    return;
+  }
+  if (@available(macOS 14.0, *)) {
+    NSString *architecture = renderer->device.architecture.name;
+    string_format(info->gpu_architecture, sizeof(info->gpu_architecture), "%s",
+                  architecture ? architecture.UTF8String : "");
+  }
+  info->unified_memory = renderer->device.hasUnifiedMemory ? true_v : false_v;
+  info->working_set_bytes = renderer->device.recommendedMaxWorkingSetSize;
+  info->max_threadgroup_memory =
+      (uint32_t)renderer->device.maxThreadgroupMemoryLength;
+  info->max_threads_per_threadgroup =
+      (uint32_t)renderer->device.maxThreadsPerThreadgroup.width;
+  /* Every Apple GPU runs 32-thread SIMD groups. */
+  info->simd_width_min = 32u;
+  info->simd_width_max = 32u;
 }
 
 VkrPresentMode

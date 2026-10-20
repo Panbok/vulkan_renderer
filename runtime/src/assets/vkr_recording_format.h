@@ -247,6 +247,38 @@ bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
 #define VKR_RECORDING_DRAW_STATES_HZB_VALID 2u
 #define VKR_RECORDING_DRAW_STATES_FROZEN 4u
 
+/*
+ * Hardware (streams "hardware" and "pipeline" of runtime recordings with
+ * Tier 1 metrics, ADR-130). A hardware record is one fact about the device
+ * the recording ran on, written once under its first measured frame: a u16
+ * key length, a u16 value length, then the UTF-8 key and value, such as
+ * "GPU cores" and "14". A pipeline record is one pipeline the renderer
+ * created, in creation order, under the frame that saw it (pipelines
+ * created before the recording come under its first frame):
+ * VKR_RECORDING_PIPELINE_HEADER_SIZE bytes of u32 index, u8
+ * VkrPipelineKind, u8 zero, u16 name length, f32 compile ms (negative when
+ * untimed), then u32 max threads per threadgroup, execution width,
+ * threadgroup memory bytes, registers, spill bytes, instructions and
+ * statistic count (zero where the API reports none); then the name; then
+ * per statistic a u16 name length, the name and an unaligned f64 value.
+ */
+#define VKR_RECORDING_HARDWARE_KEY_MAX 47u
+#define VKR_RECORDING_HARDWARE_VALUE_MAX 95u
+#define VKR_RECORDING_PIPELINE_HEADER_SIZE 40u
+#define VKR_RECORDING_PIPELINE_NAME_MAX 63u
+#define VKR_RECORDING_PIPELINE_STAT_NAME_MAX 47u
+/* Statistics one pipeline record carries at most (the renderer's
+   VKR_PIPELINE_STATS_PER_ENTRY). */
+#define VKR_RECORDING_PIPELINE_STATS_PER_RECORD 64u
+/* Pipelines and statistics a recording carries at most. */
+#define VKR_RECORDING_PIPELINE_MAX 4096u
+#define VKR_RECORDING_PIPELINE_STATS_MAX 32768u
+
+typedef struct VkrRecordingHardwareFact {
+  char key[VKR_RECORDING_HARDWARE_KEY_MAX + 1u];
+  char value[VKR_RECORDING_HARDWARE_VALUE_MAX + 1u];
+} VkrRecordingHardwareFact;
+
 /* A resource's flags. */
 #define VKR_RECORDING_GRAPH_RESOURCE_BUFFER 1u
 #define VKR_RECORDING_GRAPH_RESOURCE_IMPORTED 2u

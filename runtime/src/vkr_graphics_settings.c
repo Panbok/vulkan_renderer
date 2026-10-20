@@ -220,6 +220,14 @@ static const VkrPropertyDesc s_graphics_properties[] = {
      .tooltip = "Blur fast movement",
      .offset = GRAPHICS_OFFSET(motion_blur),
      .kind = VKR_PROPERTY_BOOL},
+    {.name = "shader_statistics",
+     .label = "Capture shader statistics",
+     .tooltip = "Ask the driver for each pipeline's registers, spills and "
+                "instructions, which the Performance window's HW tab shows. "
+                "Pipelines may compile again; applies after restart",
+     .group = "Diagnostics",
+     .offset = GRAPHICS_OFFSET(shader_statistics),
+     .kind = VKR_PROPERTY_BOOL},
 };
 #undef GRAPHICS_OFFSET
 
@@ -276,6 +284,11 @@ static VkrPropertyState graphics_state(const void *value, uint32_t property,
   /* Only the tiled pipeline upscales its Scene (ADR-087). */
   if (offset == offsetof(VkrGraphicsSettings, upscaler) && state &&
       state->graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED) {
+    result.flags |= VKR_PROPERTY_STATE_HIDDEN;
+  }
+  /* Metal has no driver statistics to capture (ADR-130). */
+  if (offset == offsetof(VkrGraphicsSettings, shader_statistics) && state &&
+      state->graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED) {
     result.flags |= VKR_PROPERTY_STATE_HIDDEN;
   }
   if (offset == offsetof(VkrGraphicsSettings, dynamic_resolution)) {
@@ -461,7 +474,8 @@ bool8_t vkr_graphics_settings_restart_required(const VkrGraphicsSettings *a,
                                                const VkrGraphicsSettings *b) {
   return a->vsync != b->vsync || a->hdr != b->hdr ||
          a->dynamic_resolution != b->dynamic_resolution ||
-         a->render_scale != b->render_scale || a->upscaler != b->upscaler;
+         a->render_scale != b->render_scale || a->upscaler != b->upscaler ||
+         a->shader_statistics != b->shader_statistics;
 }
 
 void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
@@ -472,6 +486,7 @@ void vkr_graphics_settings_keep_restart(VkrGraphicsSettings *settings,
   settings->dynamic_resolution = running->dynamic_resolution;
   settings->render_scale = running->render_scale;
   settings->upscaler = running->upscaler;
+  settings->shader_statistics = running->shader_statistics;
 }
 
 float32_t vkr_graphics_settings_dynamic_resolution_budget_ms(

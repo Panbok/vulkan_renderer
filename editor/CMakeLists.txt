@@ -44,6 +44,7 @@ add_executable(vkr_editor
     src/editor_recording_perf_backend.c
     src/editor_recording_perf_draws.c
     src/editor_recording_perf_graph.c
+    src/editor_recording_perf_hw.c
     src/editor_recording_perf_memory.c
     src/editor_recording_flame.c
     src/editor_debug_draw.c

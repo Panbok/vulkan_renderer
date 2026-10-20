@@ -210,6 +210,34 @@ typedef struct VkrEditorPerfBackend {
   bool8_t has_stages;
 } VkrEditorPerfBackend;
 
+/* Utilizations the HW tab charts: the device's, the renderer's and the
+   tiler's, as the GPU driver reports them. */
+#define VKR_EDITOR_PERF_HW_UTILS 3u
+
+/* The HW tab's driver figures over the frame chart's columns, rebuilt when
+   the columns are (editor_recording_perf_hw.c). Series are UINT32_MAX when
+   the recording lacks them. */
+typedef struct VkrEditorPerfHw {
+  uint32_t columns_version;
+  bool8_t valid;
+  uint32_t util_series[VKR_EDITOR_PERF_HW_UTILS];
+  uint32_t scene_series;
+  uint32_t buffer_series;
+  uint32_t split_series;
+  uint32_t recovery_series;
+  bool8_t has_util;
+  bool8_t has_scene;
+  float32_t util[VKR_EDITOR_PERF_HW_UTILS][VKR_EDITOR_PERF_COLUMNS];
+  /* Tiled scene and parameter buffer MiB, and the scene splits since the
+     previous column. */
+  float32_t scene_mib[VKR_EDITOR_PERF_COLUMNS];
+  float32_t buffer_mib[VKR_EDITOR_PERF_COLUMNS];
+  float32_t splits[VKR_EDITOR_PERF_COLUMNS];
+  float32_t memory_top;
+  /* The device's most threads per threadgroup, from the hardware facts. */
+  uint32_t device_threads;
+} VkrEditorPerfHw;
+
 /* Census states the Draws tab stacks over time: drawn, drawn late,
    occluded, outside the frustum and past the draw distance. */
 #define VKR_EDITOR_PERF_DRAW_SERIES 5u
@@ -250,6 +278,7 @@ typedef enum VkrEditorPerfTab {
   VKR_EDITOR_PERF_TAB_MEMORY,
   VKR_EDITOR_PERF_TAB_DRAWS,
   VKR_EDITOR_PERF_TAB_GRAPH,
+  VKR_EDITOR_PERF_TAB_HW,
   VKR_EDITOR_PERF_TAB_COUNT,
 } VkrEditorPerfTab;
 
@@ -293,6 +322,14 @@ typedef struct VkrEditorRecordingPerfView {
   VkrEditorTable backend_passes;
   VkrEditorTable backend_counters;
   VkrEditorTable backend_functions;
+  /* HW tab: its pipeline kind filter (0 all, else a VkrPipelineKind plus
+     one) and its three tables. */
+  uint32_t hw_kind;
+  /* The pipeline table's shown columns, a bit each; a change resets it. */
+  uint32_t hw_columns;
+  VkrEditorTable hw_device;
+  VkrEditorTable hw_pipelines;
+  VkrEditorTable hw_stats;
   /* Draws tab: the map, its layers (VKR_EDITOR_PERF_DRAW_LAYER_* bits plus
      one, zero for the default), whether it follows the camera, the section
      table's kind (0 counters, 1 cells) and the table. */
@@ -404,6 +441,8 @@ typedef struct VkrEditorRecordingPerf {
   VkrEditorPerfMemory memory_tab;
   /* The Backend tab's chart. */
   VkrEditorPerfBackend backend;
+  /* The HW tab's charts. */
+  VkrEditorPerfHw hw;
   /* The Draws tab's objects and chart. */
   VkrEditorPerfDraws draws;
 } VkrEditorRecordingPerf;
@@ -938,6 +977,13 @@ void vkr_editor_recording_perf_draws_release(VkrEditorRecordingPerf *perf);
 void vkr_editor_recording_perf_memory_build(struct VkrEditorUi *editor,
                                             const VkrSampleUiFrame *frame,
                                             VkrUiPlacement placement);
+
+/** The HW tab's body (editor_recording_perf_hw.c): the device, the GPU
+ * driver's utilization and tiled-scene figures, and the pipelines the
+ * renderer created with their threadgroup limits and driver statistics. */
+void vkr_editor_recording_perf_hw_build(struct VkrEditorUi *editor,
+                                        const VkrSampleUiFrame *frame,
+                                        VkrUiPlacement placement);
 
 /** The Render graph tab's body (editor_recording_perf_graph.c). */
 void vkr_editor_recording_perf_graph_build(struct VkrEditorUi *editor,

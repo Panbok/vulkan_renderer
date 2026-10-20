@@ -247,6 +247,62 @@ typedef struct VkrPlatformGpuTelemetry {
   uint32_t other_process_util_percent;
   bool8_t memory_valid;
   bool8_t other_process_util_valid;
+  /** The platform has a source of other processes' GPU use (Windows PDH):
+   * an invalid value is not sampled yet rather than unsupported. */
+  bool8_t other_process_util_supported;
+
+  /*
+   * The Apple GPU driver's statistics: the `PerformanceStatistics`
+   * dictionary of the AGX IOAccelerator service, read about every 250 ms.
+   * The keys are undocumented driver properties, so each value has its own
+   * validity flag. They describe the whole GPU, every process included.
+   * Other platforms leave every one invalid.
+   */
+  /** "Device Utilization %": the share of time the GPU was busy, 0 to
+   * 100. */
+  uint32_t device_util_percent;
+  /** "Renderer Utilization %": the fragment (renderer) stage's busy share,
+   * 0 to 100. */
+  uint32_t renderer_util_percent;
+  /** "Tiler Utilization %": the vertex and tiling stage's busy share, 0 to
+   * 100. */
+  uint32_t tiler_util_percent;
+  /** "TiledSceneBytes": the tiled geometry of the scene the tiler built
+   * last. */
+  uint64_t tiled_scene_bytes;
+  /** "SplitSceneCount": render passes the driver split because their tiled
+   * geometry overflowed the parameter buffer, cumulative as the driver
+   * reports it. */
+  uint64_t split_scene_count;
+  /** "Allocated PB Size": the bytes of the parameter buffer the tiler writes
+   * tiled geometry into. */
+  uint64_t parameter_buffer_bytes;
+  /** "recoveryCount": GPU recoveries (resets after a hang or fault) since
+   * the driver started. */
+  uint64_t recovery_count;
+  /** "In use system memory": system memory the GPU uses, every process
+   * included. */
+  uint64_t memory_in_use_bytes;
+  /** "In use system memory (driver)": the part of it the driver uses for
+   * itself. */
+  uint64_t driver_memory_in_use_bytes;
+  /** "Alloc system memory": system memory allocated for the GPU, in use or
+   * not. */
+  uint64_t memory_allocated_bytes;
+  bool8_t device_util_valid;
+  bool8_t renderer_util_valid;
+  bool8_t tiler_util_valid;
+  bool8_t tiled_scene_bytes_valid;
+  bool8_t split_scene_count_valid;
+  bool8_t parameter_buffer_bytes_valid;
+  bool8_t recovery_count_valid;
+  bool8_t memory_in_use_valid;
+  bool8_t driver_memory_in_use_valid;
+  bool8_t memory_allocated_valid;
+  /** The platform has a source of the driver statistics (macOS with an AGX
+   * service): an invalid value is not sampled yet, or the last read lacked
+   * it, rather than unsupported. */
+  bool8_t driver_statistics_supported;
 } VkrPlatformGpuTelemetry;
 
 /** Samples one GPU adapter for VkrPlatformGpuTelemetry; opaque. */
@@ -256,21 +312,25 @@ typedef struct VkrAllocator VkrAllocator;
 /**
  * Opens a monitor of the adapter `adapter_luid` names
  * (VKR_PLATFORM_ADAPTER_LUID_SIZE bytes), or of every adapter when it is
- * NULL; without an adapter the memory values stay unavailable. The monitor
+ * NULL; without an adapter the memory values stay unavailable. macOS ignores
+ * the LUID and monitors the Apple GPU's IOAccelerator service. The monitor
  * and, at the first sample, its sampler thread come from `allocator`.
- * Returns false where the platform has no source (macOS) or on failure.
+ * Returns false on failure.
  */
 bool8_t vkr_platform_gpu_monitor_create(VkrAllocator *allocator,
                                         const uint8_t *adapter_luid,
                                         VkrPlatformGpuMonitor *out_monitor);
 
 /**
- * Reads the adapter's memory now and the other processes' GPU use from the
- * last background sample, an atomic load. The first call starts a sampler
- * thread at about 1 Hz, because one collection of the per-process engine
- * counters takes milliseconds; call from the thread that may allocate from
- * the monitor's allocator. A NULL monitor reports nothing. Returns false
- * when no value is available.
+ * Reads the adapter's memory now and the other processes' GPU use or the
+ * driver statistics from the last background sample, atomic loads. The
+ * first call starts a sampler thread, because one read takes too long for a
+ * frame: one collection of the Windows per-process engine counters takes
+ * milliseconds and is read about once a second; one read of the AGX
+ * driver's statistics takes 80 to 450 us and is read about every 250 ms.
+ * Values of one call may come from two adjacent background reads. Call from
+ * the thread that may allocate from the monitor's allocator. A NULL monitor
+ * reports nothing. Returns false when no value is available.
  */
 bool8_t vkr_platform_gpu_monitor_sample(VkrPlatformGpuMonitor monitor,
                                         VkrPlatformGpuTelemetry *out_telemetry);
@@ -278,6 +338,27 @@ bool8_t vkr_platform_gpu_monitor_sample(VkrPlatformGpuMonitor monitor,
 /** Stops and joins the sampler thread and releases the monitor; NULL-safe. */
 void vkr_platform_gpu_monitor_destroy(VkrAllocator *allocator,
                                       VkrPlatformGpuMonitor *monitor);
+
+/** Bytes of VkrPlatformGpuInfo.model, its terminating zero included. */
+#define VKR_PLATFORM_GPU_MODEL_SIZE 64u
+
+/** The GPU's identity as the OS reports it. */
+typedef struct VkrPlatformGpuInfo {
+  /** The GPU's model name, zero-terminated, such as "Apple M1 Pro" (macOS
+   * IOAccelerator `model`); empty when unknown or longer than the array. */
+  char model[VKR_PLATFORM_GPU_MODEL_SIZE];
+  /** GPU cores (macOS IOAccelerator `gpu-core-count`). */
+  uint32_t core_count;
+  bool8_t core_count_valid;
+} VkrPlatformGpuInfo;
+
+/**
+ * Reads the GPU's model name and core count from the OS. On macOS it walks
+ * the IORegistry, which can take a millisecond, so call it once, off the
+ * frame. Returns false and clears `out_info` where the platform has no source
+ * (Windows) or neither value is found.
+ */
+bool8_t vkr_platform_get_gpu_info(VkrPlatformGpuInfo *out_info);
 
 /** True when the variable `name` is set to exactly `expected`, such as an
  * off switch spelled "0". A value longer than 63 bytes never matches. */

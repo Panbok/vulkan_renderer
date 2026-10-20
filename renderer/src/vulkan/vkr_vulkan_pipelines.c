@@ -1,3 +1,4 @@
+#include "vkr_pipeline_registry.h"
 #include "vkr_shader_catalog.h"
 #include "vulkan/vkr_vulkan_internal.h"
 #include <spirv_reflect.h>
@@ -2142,6 +2143,227 @@ vkr_internal void vkr_vk_name_pipeline(VkrVulkanRenderer *renderer,
                                     string_length(name));
 }
 
+/* Executables one pipeline reports, and statistics one executable reports,
+   that the pipeline registry reads; a driver reporting more keeps the first
+   ones (VK_INCOMPLETE). */
+enum {
+  VKR_VULKAN_PIPELINE_EXECUTABLE_MAX = 8,
+  VKR_VULKAN_EXECUTABLE_STATISTIC_MAX = 32,
+};
+
+/* A statistic's value as the registry stores it. */
+vkr_internal float64_t
+vkr_vk_statistic_value(const VkPipelineExecutableStatisticKHR *statistic) {
+  switch (statistic->format) {
+  case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR:
+    return statistic->value.b32 ? 1.0 : 0.0;
+  case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR:
+    return (float64_t)statistic->value.i64;
+  case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR:
+    return (float64_t)statistic->value.u64;
+  case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR:
+    return statistic->value.f64;
+  default:
+    return 0.0;
+  }
+}
+
+vkr_internal uint32_t vkr_vk_statistic_u32(float64_t value) {
+  if (!(value > 0.0)) {
+    return 0u;
+  }
+  if (value >= (float64_t)UINT32_MAX) {
+    return UINT32_MAX;
+  }
+  return (uint32_t)value;
+}
+
+/* Folds one statistic into the entry's summary fields. Statistic names are
+   driver-defined (RADV says "VGPRs" and "LDS size", ANV "Instruction Count"
+   and "Scratch Memory Size"), so this matches name fragments without case:
+   registers is the most any stage uses of a "vgpr" or "register" count
+   other than a spill count; spill_bytes sums the byte sizes of "spill" and
+   "scratch" statistics; instructions sums "instruction" counts; and
+   threadgroup_memory is the largest "lds" or "shared" size. A driver that
+   names them otherwise leaves the fields zero; its statistics still list
+   under their own names. */
+vkr_internal void
+vkr_vk_summarize_statistic(VkrPipelineInfo *info,
+                           const VkPipelineExecutableStatisticKHR *statistic,
+                           float64_t value) {
+  char name[VK_MAX_DESCRIPTION_SIZE];
+  char description[VK_MAX_DESCRIPTION_SIZE];
+  for (uint32_t i = 0u; i < VK_MAX_DESCRIPTION_SIZE; ++i) {
+    name[i] = vkr_char_to_lower(statistic->name[i]);
+    description[i] = vkr_char_to_lower(statistic->description[i]);
+  }
+  name[VK_MAX_DESCRIPTION_SIZE - 1u] = '\0';
+  description[VK_MAX_DESCRIPTION_SIZE - 1u] = '\0';
+
+  const uint32_t amount = vkr_vk_statistic_u32(value);
+  const bool8_t spill =
+      string_contains(name, "spill") || string_contains(name, "scratch");
+  const bool8_t bytes = string_contains(name, "byte") ||
+                        string_contains(name, "size") ||
+                        string_contains(description, "byte");
+  if (!spill &&
+      (string_contains(name, "vgpr") || string_contains(name, "register"))) {
+    info->registers = Max(info->registers, amount);
+  }
+  if (spill && bytes) {
+    info->spill_bytes =
+        vkr_vk_statistic_u32((float64_t)info->spill_bytes + (float64_t)amount);
+  }
+  if (string_contains(name, "instruction")) {
+    info->instructions =
+        vkr_vk_statistic_u32((float64_t)info->instructions + (float64_t)amount);
+  }
+  if (string_contains(name, "lds") || string_contains(name, "shared")) {
+    info->threadgroup_memory = Max(info->threadgroup_memory, amount);
+  }
+}
+
+/* Reads every executable's statistics of a pipeline created with
+   VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR into `stats`, named
+   "<executable>: <statistic>", and folds them into the summary fields. Runs
+   once per created pipeline, never per frame. */
+vkr_internal uint32_t vkr_vk_capture_pipeline_statistics(
+    VkrVulkanRenderer *renderer,
+    const VkrVulkanPipelineExecutableFunctions *functions, VkPipeline pipeline,
+    VkrPipelineInfo *info, VkrPipelineStat *stats, uint32_t stat_capacity) {
+  VkDevice device = vkr_vk_renderer_device(renderer);
+  const VkPipelineInfoKHR pipeline_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR,
+      .pipeline = pipeline,
+  };
+  VkPipelineExecutablePropertiesKHR
+      executables[VKR_VULKAN_PIPELINE_EXECUTABLE_MAX];
+  for (uint32_t i = 0u; i < ArrayCount(executables); ++i) {
+    executables[i] = (VkPipelineExecutablePropertiesKHR){
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR,
+    };
+  }
+  uint32_t executable_count = ArrayCount(executables);
+  const VkResult executable_result = functions->get_properties(
+      device, &pipeline_info, &executable_count, executables);
+  if (executable_result != VK_SUCCESS && executable_result != VK_INCOMPLETE) {
+    return 0u;
+  }
+  executable_count = Min(executable_count, (uint32_t)ArrayCount(executables));
+
+  uint32_t stat_count = 0u;
+  VkPipelineExecutableStatisticKHR
+      statistics[VKR_VULKAN_EXECUTABLE_STATISTIC_MAX];
+  for (uint32_t executable = 0u; executable < executable_count; ++executable) {
+    for (uint32_t i = 0u; i < ArrayCount(statistics); ++i) {
+      statistics[i] = (VkPipelineExecutableStatisticKHR){
+          .sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR,
+      };
+    }
+    const VkPipelineExecutableInfoKHR executable_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR,
+        .pipeline = pipeline,
+        .executableIndex = executable,
+    };
+    uint32_t statistic_count = ArrayCount(statistics);
+    const VkResult statistic_result = functions->get_statistics(
+        device, &executable_info, &statistic_count, statistics);
+    if (statistic_result != VK_SUCCESS && statistic_result != VK_INCOMPLETE) {
+      continue;
+    }
+    statistic_count = Min(statistic_count, (uint32_t)ArrayCount(statistics));
+
+    for (uint32_t i = 0u; i < statistic_count; ++i) {
+      const float64_t value = vkr_vk_statistic_value(&statistics[i]);
+      vkr_vk_summarize_statistic(info, &statistics[i], value);
+      if (stat_count < stat_capacity) {
+        VkrPipelineStat *stat = &stats[stat_count++];
+        string_format(stat->name, sizeof(stat->name), "%s: %s",
+                      executables[executable].name, statistics[i].name);
+        stat->value = value;
+      }
+    }
+  }
+  return stat_count;
+}
+
+/* Names a created pipeline and adds it to the renderer's pipeline registry
+   with its compile time and, when the device captures them, its
+   executables' statistics (ADR-130). */
+vkr_internal void vkr_vk_publish_pipeline(VkrVulkanRenderer *renderer,
+                                          VkPipeline pipeline,
+                                          VkrPipelineKind kind,
+                                          const char *name,
+                                          float32_t compile_ms) {
+  vkr_vk_name_pipeline(renderer, pipeline, name);
+  VkrPipelineRegistry *registry = renderer->config.pipeline_registry;
+  if (!registry) {
+    return;
+  }
+
+  VkrPipelineInfo info = {
+      .kind = kind,
+      .compile_ms = compile_ms,
+  };
+  vkr_pipeline_registry_name(info.name, sizeof(info.name), name);
+  VkrPipelineStat stats[VKR_PIPELINE_STATS_PER_ENTRY];
+  uint32_t stat_count = 0u;
+  const VkrVulkanPipelineExecutableFunctions *functions =
+      vkr_vulkan_device_pipeline_executable_functions(renderer->device);
+  if (functions) {
+    stat_count = vkr_vk_capture_pipeline_statistics(
+        renderer, functions, pipeline, &info, stats, ArrayCount(stats));
+  }
+  vkr_pipeline_registry_add(registry, &info, stats, stat_count);
+}
+
+/* Create flags every pipeline adds: statistics capture when the device
+   enabled it, which changes the pipeline's cache key. */
+vkr_internal VkPipelineCreateFlags
+vkr_vk_pipeline_capture_flags(const VkrVulkanRenderer *renderer) {
+  return vkr_vulkan_device_pipeline_executable_functions(renderer->device)
+             ? VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR
+             : 0u;
+}
+
+/* Creates one compute pipeline through the pipeline cache, timed, then
+   names and registers it. */
+vkr_internal VkResult vkr_vk_create_compute_pipeline(
+    VkrVulkanRenderer *renderer, const VkComputePipelineCreateInfo *info,
+    const char *name, VkPipeline *out_pipeline) {
+  VkComputePipelineCreateInfo create_info = *info;
+  create_info.flags |= vkr_vk_pipeline_capture_flags(renderer);
+  const float64_t start = vkr_platform_get_absolute_time();
+  const VkResult result = vkCreateComputePipelines(
+      vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
+      &create_info, NULL, out_pipeline);
+  const float64_t end = vkr_platform_get_absolute_time();
+  if (result == VK_SUCCESS) {
+    vkr_vk_publish_pipeline(renderer, *out_pipeline, VKR_PIPELINE_KIND_COMPUTE,
+                            name, (float32_t)((end - start) * 1000.0));
+  }
+  return result;
+}
+
+/* Creates one graphics pipeline through the pipeline cache, timed, then
+   names and registers it. */
+vkr_internal VkResult vkr_vk_create_graphics_pipeline(
+    VkrVulkanRenderer *renderer, const VkGraphicsPipelineCreateInfo *info,
+    const char *name, VkPipeline *out_pipeline) {
+  VkGraphicsPipelineCreateInfo create_info = *info;
+  create_info.flags |= vkr_vk_pipeline_capture_flags(renderer);
+  const float64_t start = vkr_platform_get_absolute_time();
+  const VkResult result = vkCreateGraphicsPipelines(
+      vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
+      &create_info, NULL, out_pipeline);
+  const float64_t end = vkr_platform_get_absolute_time();
+  if (result == VK_SUCCESS) {
+    vkr_vk_publish_pipeline(renderer, *out_pipeline, VKR_PIPELINE_KIND_RENDER,
+                            name, (float32_t)((end - start) * 1000.0));
+  }
+  return result;
+}
+
 vkr_internal bool8_t vkr_vk_create_shader_module(VkrVulkanRenderer *renderer,
                                                  const char *path,
                                                  VkShaderModule *out_module) {
@@ -2264,15 +2486,13 @@ bool8_t vkr_vk_create_volume_pipelines(VkrVulkanRenderer *renderer) {
             },
         .layout = renderer->pipeline_layout,
     };
-    const VkResult result = vkCreateComputePipelines(
-        vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u, &info,
-        NULL, &renderer->volume_pipelines[i]);
+    const VkResult result = vkr_vk_create_compute_pipeline(
+        renderer, &info, entries[i], &renderer->volume_pipelines[i]);
     if (result != VK_SUCCESS) {
       log_error("Vulkan volume pipeline %s creation failed: %d", entries[i],
                 result);
       return false_v;
     }
-    vkr_vk_name_pipeline(renderer, renderer->volume_pipelines[i], entries[i]);
   }
   return true_v;
 }
@@ -2526,18 +2746,16 @@ vkr_internal bool8_t vkr_vk_create_packet_pipeline_at(
       .pDynamicState = &dynamic,
       .layout = renderer->pipeline_layout,
   };
-  const VkResult result = vkCreateGraphicsPipelines(
-      vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
-      &create_info, NULL, out_pipeline);
+  char name[128];
+  string_format(name, sizeof(name), "%s%s%s", stages[0].pName,
+                depth_only ? "" : " + ", depth_only ? "" : stages[1].pName);
+  const VkResult result = vkr_vk_create_graphics_pipeline(
+      renderer, &create_info, name, out_pipeline);
   if (result != VK_SUCCESS) {
     log_error("Vulkan packet pipeline %u creation failed: %d", pipeline,
               result);
     return false_v;
   }
-  char name[128];
-  string_format(name, sizeof(name), "%s%s%s", stages[0].pName,
-                depth_only ? "" : " + ", depth_only ? "" : stages[1].pName);
-  vkr_vk_name_pipeline(renderer, *out_pipeline, name);
   return true_v;
 }
 
@@ -2854,11 +3072,10 @@ vkr_internal bool8_t vkr_vk_create_ibl_pipelines(VkrVulkanRenderer *renderer) {
         .stage = stage,
         .layout = renderer->pipeline_layout,
     };
-    if (vkCreateComputePipelines(vkr_vk_renderer_device(renderer),
-                                 renderer->pipeline_cache, 1u, &info, NULL,
-                                 &renderer->ibl_pipelines[i]) != VK_SUCCESS)
+    if (vkr_vk_create_compute_pipeline(renderer, &info, stage.pName,
+                                       &renderer->ibl_pipelines[i]) !=
+        VK_SUCCESS)
       return false_v;
-    vkr_vk_name_pipeline(renderer, renderer->ibl_pipelines[i], stage.pName);
   }
   return true_v;
 }
@@ -2890,12 +3107,10 @@ vkr_vk_create_atmosphere_pipelines(VkrVulkanRenderer *renderer) {
                   .pName = entries[i]},
         .layout = renderer->pipeline_layout,
     };
-    if (vkCreateComputePipelines(
-            vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
-            &info, NULL, &renderer->atmosphere_pipelines[i]) != VK_SUCCESS)
+    if (vkr_vk_create_compute_pipeline(renderer, &info, entries[i],
+                                       &renderer->atmosphere_pipelines[i]) !=
+        VK_SUCCESS)
       return false_v;
-    vkr_vk_name_pipeline(renderer, renderer->atmosphere_pipelines[i],
-                         entries[i]);
   }
   return true_v;
 }
@@ -3087,11 +3302,10 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
         .stage = stage,
         .layout = renderer->pipeline_layout,
     };
-    if (vkCreateComputePipelines(
-            vkr_vk_renderer_device(renderer), renderer->pipeline_cache, 1u,
-            &info, NULL, &renderer->deferred_pipelines[i]) != VK_SUCCESS)
+    if (vkr_vk_create_compute_pipeline(renderer, &info, entries[i],
+                                       &renderer->deferred_pipelines[i]) !=
+        VK_SUCCESS)
       return false_v;
-    vkr_vk_name_pipeline(renderer, renderer->deferred_pipelines[i], entries[i]);
   }
   return true_v;
 }

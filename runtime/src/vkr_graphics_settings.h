@@ -60,6 +60,10 @@ typedef struct VkrGraphicsSettings {
   bool8_t bloom, depth_of_field, motion_blur;
   /* Captured mouse look turns down for upward motion, as flight controls do. */
   bool8_t invert_mouse_y;
+  /* The desktop pipeline captures each pipeline's driver statistics
+   * (VkrRendererBackendConfig.capture_shader_statistics); off by default,
+   * applies at the next start, ignored by the tiled pipeline. */
+  bool8_t shader_statistics;
 } VkrGraphicsSettings;
 
 typedef struct VkrGraphicsSettingsState {

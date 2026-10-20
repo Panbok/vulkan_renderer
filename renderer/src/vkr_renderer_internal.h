@@ -194,6 +194,9 @@ struct VkrRenderer {
 
   VkrDMemory render_graph_dmemory;
   VkrAllocator render_graph_allocator;
+  /** What the backend reports about each pipeline it creates
+      (vkr_renderer_pipeline_registry). */
+  VkrPipelineRegistry pipeline_registry;
   /* Last successfully submitted editor Scene image; native graph owns storage.
    */
   uint32_t editor_image_width;

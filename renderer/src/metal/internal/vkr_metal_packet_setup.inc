@@ -42,6 +42,48 @@ vkr_metal_packet_shader_event(VkrMetalPacketRenderer *renderer,
              : VKR_METRIC_EVENT_STATUS_FAILED);
 }
 
+/* Adds a created pipeline to the renderer's registry (ADR-130): its compile
+   time since `start_ns` and, for compute and tile pipelines, the limits an
+   Apple GPU derives from the kernel. maxTotalThreadsPerThreadgroup falls
+   below the device's 1024 when the kernel holds many registers, the only
+   public sign of register pressure. Render stages report none. */
+vkr_internal void vkr_metal_packet_register_pipeline(
+    VkrMetalPacketRenderer *renderer, NSString *label, VkrPipelineKind kind,
+    uint64_t start_ns, id pipeline) API_AVAILABLE(macos(26.0)) {
+  if (!renderer->pipeline_registry || !pipeline) {
+    return;
+  }
+  const uint64_t end_ns = vkr_metal_packet_now_ns();
+  VkrPipelineInfo info = {
+      .kind = kind,
+      .compile_ms = (float32_t)((float64_t)(end_ns >= start_ns
+                                                ? end_ns - start_ns
+                                                : 0u) /
+                                1000000.0),
+  };
+  vkr_pipeline_registry_name(info.name, sizeof(info.name),
+                             label ? label.UTF8String : "unnamed");
+  VkrPipelineStat stats[2];
+  uint32_t stat_count = 0u;
+  if (kind == VKR_PIPELINE_KIND_COMPUTE) {
+    id<MTLComputePipelineState> compute = pipeline;
+    info.max_threads = (uint32_t)compute.maxTotalThreadsPerThreadgroup;
+    info.execution_width = (uint32_t)compute.threadExecutionWidth;
+    info.threadgroup_memory = (uint32_t)compute.staticThreadgroupMemoryLength;
+  } else if (kind == VKR_PIPELINE_KIND_TILE) {
+    id<MTLRenderPipelineState> tile = pipeline;
+    info.max_threads = (uint32_t)tile.maxTotalThreadsPerThreadgroup;
+    stats[stat_count] = (VkrPipelineStat){
+        .value = (float64_t)tile.imageblockSampleLength};
+    vkr_pipeline_registry_name(stats[stat_count].name,
+                               sizeof(stats[stat_count].name),
+                               "Imageblock bytes per sample");
+    ++stat_count;
+  }
+  vkr_pipeline_registry_add(renderer->pipeline_registry, &info, stats,
+                            stat_count);
+}
+
 vkr_internal id<MTLLibrary>
 vkr_metal_packet_create_library(VkrMetalPacketRenderer *renderer,
                                 const char *path, const char *metallib_path,
@@ -560,12 +602,15 @@ vkr_metal_packet_create_pipeline_with_targets(
      light of sun contact frames. */
   descriptor.colorAttachments[1].pixelFormat = second_color_format;
   NSError *error = nil;
+  const uint64_t start_ns = vkr_metal_packet_now_ns();
   id<MTLRenderPipelineState> pipeline = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
                        compilerTaskOptions:renderer->compiler_options
                                      error:&error];
   if (!pipeline)
     vkr_metal_packet_print_error("pipeline_compile", error);
+  vkr_metal_packet_register_pipeline(renderer, label, VKR_PIPELINE_KIND_RENDER,
+                                     start_ns, pipeline);
   if (pipeline && (!vkr_metal_packet_validate_abi_binding(
                        label, pipeline.reflection.vertexBindings, vertex_abi) ||
                    (fragment && !vkr_metal_packet_validate_abi_binding(
@@ -616,12 +661,15 @@ vkr_metal_packet_create_compute_pipeline(VkrMetalPacketRenderer *renderer,
   descriptor.options = options;
   [options release];
   NSError *error = nil;
+  const uint64_t start_ns = vkr_metal_packet_now_ns();
   id<MTLComputePipelineState> pipeline = [renderer->compiler
       newComputePipelineStateWithDescriptor:descriptor
                         compilerTaskOptions:renderer->compiler_options
                                       error:&error];
   if (!pipeline)
     vkr_metal_packet_print_error("compute_pipeline_compile", error);
+  vkr_metal_packet_register_pipeline(renderer, label, VKR_PIPELINE_KIND_COMPUTE,
+                                     start_ns, pipeline);
   if (pipeline && !vkr_metal_packet_validate_abi_binding(
                       label, pipeline.reflection.bindings, abi)) {
     [pipeline release];
@@ -1078,12 +1126,16 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
     descriptor.colorAttachments[1].pixelFormat = sun_format;
     descriptor.threadgroupSizeMatchesTileSize = YES;
     NSError *error = nil;
+    const uint64_t start_ns = vkr_metal_packet_now_ns();
     renderer->tiled_resolve_pipelines[sun] = [renderer->compiler
         newRenderPipelineStateWithDescriptor:descriptor
                          compilerTaskOptions:renderer->compiler_options
                                        error:&error];
     if (!renderer->tiled_resolve_pipelines[sun])
       vkr_metal_packet_print_error("tiled_resolve", error);
+    vkr_metal_packet_register_pipeline(
+        renderer, descriptor.label, VKR_PIPELINE_KIND_TILE, start_ns,
+        renderer->tiled_resolve_pipelines[sun]);
     [descriptor release];
     [function release];
   }
@@ -1115,12 +1167,16 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
   descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
   descriptor.colorAttachments[0].blendingState = MTL4BlendStateDisabled;
   NSError *error = nil;
+  const uint64_t start_ns = vkr_metal_packet_now_ns();
   id<MTLRenderPipelineState> atmosphere = [renderer->compiler
       newRenderPipelineStateWithDescriptor:descriptor
                        compilerTaskOptions:renderer->compiler_options
                                      error:&error];
   if (!atmosphere)
     vkr_metal_packet_print_error("tiled_atmosphere_pipeline", error);
+  vkr_metal_packet_register_pipeline(renderer, descriptor.label,
+                                     VKR_PIPELINE_KIND_RENDER, start_ns,
+                                     atmosphere);
   if (atmosphere &&
       !vkr_metal_packet_validate_abi_binding(
           descriptor.label, atmosphere.reflection.fragmentBindings,
@@ -2817,6 +2873,7 @@ vkr_metal_packet_configure_renderer(VkrMetalPacketRenderer *renderer,
   renderer->job_system = config->job_system;
   renderer->pipeline_create = config->pipeline_create;
   renderer->shader_load = config->shader_load;
+  renderer->pipeline_registry = config->pipeline_registry;
   /* A path: the wide Windows environment keeps non-ASCII names (ADR-070). */
   char diagnostics_directory[1024];
   if (vkr_platform_environment_variable("VKR_METAL_DIAGNOSTICS_DIR",

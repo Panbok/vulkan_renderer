@@ -13,6 +13,7 @@
 #include "platform/vkr_platform.h"
 #include "vkr_frame_input.h"
 #include "vkr_gpu_abi.h"
+#include "vkr_pipeline_registry.h"
 #include "vkr_rg_debug.h"
 
 /* The recorder's rings, chunk buffer and writer scratch live here; the
@@ -773,6 +774,10 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         (VkrRecordingStream){.id = VKR_RECORDING_STREAM_DRAW_STATES,
                              .flags = VKR_RECORDING_STREAM_DROPPABLE,
                              .name = "draw_states"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_HARDWARE, .name = "hardware"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_PIPELINE, .name = "pipeline"};
   }
   if (config->zones) {
     streams[stream_count++] = (VkrRecordingStream){
@@ -945,9 +950,11 @@ vkr_internal bool8_t vkr_recording_metric_value(
    carry, named once at the start. */
 /* Name prefixes of the metrics a Tier 1 recording carries beyond Tier 0's:
    GPU memory by owner and the driver's view, draws and culling, pipeline
-   and backend counters, render graph memory, uploads and streaming. */
+   and backend counters, render graph memory, uploads and streaming, and
+   the GPU driver's own statistics (ADR-130). */
 static const char *const VKR_RECORDING_TIER1_MEASUREMENTS[] = {
     "memory.gpu.",
+    "os.gpu.",
     "draw.",
     "visibility.",
     "pipeline.",
@@ -1505,6 +1512,113 @@ vkr_recording_allocator_id(VkrRecording *recording, uint64_t frame,
   recording->allocator_counts[id][2] = sample->realloc_count;
   recording->allocator_counts[id][3] = sample->scope_count;
   return id;
+}
+
+void vkr_recording_hardware(VkrRecording *recording, uint64_t frame,
+                            const VkrRecordingHardwareFact *facts,
+                            uint32_t count) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled || recording->hardware_written) {
+    return;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    const uint16_t key_length = (uint16_t)string_length_bounded(
+        facts[i].key, VKR_RECORDING_HARDWARE_KEY_MAX);
+    const uint16_t value_length = (uint16_t)string_length_bounded(
+        facts[i].value, VKR_RECORDING_HARDWARE_VALUE_MAX);
+    uint8_t *record =
+        vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                             VKR_RECORDING_STREAM_HARDWARE, frame,
+                             4u + (uint32_t)key_length + value_length);
+    /* A full ring writes every fact again on a later frame; the reader
+       keeps the first of each key. */
+    if (!record) {
+      return;
+    }
+    MemCopy(record, &key_length, sizeof(key_length));
+    MemCopy(record + 2u, &value_length, sizeof(value_length));
+    MemCopy(record + 4u, facts[i].key, key_length);
+    MemCopy(record + 4u + key_length, facts[i].value, value_length);
+    vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  }
+  recording->hardware_written = true_v;
+}
+
+typedef struct VkrRecordingPipelineWrite {
+  VkrRecording *recording;
+  uint64_t frame;
+  /* A record did not fit the ring: it and later ones wait for the next
+     call. */
+  bool8_t stopped;
+} VkrRecordingPipelineWrite;
+
+vkr_internal void vkr_recording_pipeline_visit(void *context, uint32_t index,
+                                               const VkrPipelineInfo *info,
+                                               const VkrPipelineStat *stats,
+                                               uint32_t stat_count) {
+  VkrRecordingPipelineWrite *write = context;
+  VkrRecording *recording = write->recording;
+  if (write->stopped || index != recording->pipelines_written ||
+      index >= VKR_RECORDING_PIPELINE_MAX) {
+    return;
+  }
+  _Static_assert(VKR_PIPELINE_STATS_PER_ENTRY <=
+                     VKR_RECORDING_PIPELINE_STATS_PER_RECORD,
+                 "a record holds every statistic of an entry");
+  const uint16_t name_length = (uint16_t)string_length_bounded(
+      info->name, VKR_RECORDING_PIPELINE_NAME_MAX);
+  uint32_t size = VKR_RECORDING_PIPELINE_HEADER_SIZE + name_length;
+  for (uint32_t i = 0u; i < stat_count; ++i) {
+    size += 2u + 8u +
+            (uint32_t)string_length_bounded(
+                stats[i].name, VKR_RECORDING_PIPELINE_STAT_NAME_MAX);
+  }
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_PIPELINE, write->frame, size);
+  if (!record) {
+    write->stopped = true_v;
+    return;
+  }
+  uint8_t *at = vkr_recording_put_u32(record, index);
+  at[0] = (uint8_t)info->kind;
+  at[1] = 0u;
+  MemCopy(at + 2u, &name_length, sizeof(name_length));
+  at += 4u;
+  MemCopy(at, &info->compile_ms, sizeof(info->compile_ms));
+  at += sizeof(info->compile_ms);
+  at = vkr_recording_put_u32(at, info->max_threads);
+  at = vkr_recording_put_u32(at, info->execution_width);
+  at = vkr_recording_put_u32(at, info->threadgroup_memory);
+  at = vkr_recording_put_u32(at, info->registers);
+  at = vkr_recording_put_u32(at, info->spill_bytes);
+  at = vkr_recording_put_u32(at, info->instructions);
+  at = vkr_recording_put_u32(at, stat_count);
+  MemCopy(at, info->name, name_length);
+  at += name_length;
+  for (uint32_t i = 0u; i < stat_count; ++i) {
+    const uint16_t length = (uint16_t)string_length_bounded(
+        stats[i].name, VKR_RECORDING_PIPELINE_STAT_NAME_MAX);
+    MemCopy(at, &length, sizeof(length));
+    at += sizeof(length);
+    MemCopy(at, stats[i].name, length);
+    at += length;
+    MemCopy(at, &stats[i].value, sizeof(stats[i].value));
+    at += sizeof(stats[i].value);
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  ++recording->pipelines_written;
+}
+
+void vkr_recording_pipelines(VkrRecording *recording, uint64_t frame,
+                             VkrPipelineRegistry *registry) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled || !registry) {
+    return;
+  }
+  VkrRecordingPipelineWrite write = {.recording = recording, .frame = frame};
+  (void)vkr_pipeline_registry_visit(registry, recording->pipelines_written,
+                                    vkr_recording_pipeline_visit, &write);
 }
 
 void vkr_recording_allocators(VkrRecording *recording, uint64_t frame) {

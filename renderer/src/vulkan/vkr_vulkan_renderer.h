@@ -109,6 +109,12 @@ typedef struct VkrVulkanRendererConfig {
    * rebuilds. Creation builds every other pipeline before the application
    * runs. An invalid source publishes none. */
   VkrMetricEventProducer pipeline_create;
+  /** Borrowed for the renderer's lifetime: each pipeline created is added
+   * with its compile time and, with capture_shader_statistics on a device
+   * that has VK_KHR_pipeline_executable_properties, its executables'
+   * statistics; NULL adds none. */
+  struct VkrPipelineRegistry *pipeline_registry;
+  bool8_t capture_shader_statistics;
 } VkrVulkanRendererConfig;
 
 typedef struct VkrVulkanResult {
@@ -338,6 +344,11 @@ vkr_vulkan_renderer_display_output(const VkrVulkanRenderer *renderer);
 
 const VkrVulkanCapabilityProfile *
 vkr_vulkan_renderer_profile(const VkrVulkanRenderer *renderer);
+/** Fills the device's hardware facts for the Performance window's HW tab
+ * (ADR-130): unified memory, workgroup limits, subgroup sizes and whether
+ * pipelines capture their statistics. Leaves the other fields alone. */
+void vkr_vulkan_renderer_hardware_information(
+    const VkrVulkanRenderer *renderer, VkrDeviceInformation *out_information);
 VkrAllocator *vkr_vulkan_renderer_allocator(VkrVulkanRenderer *renderer);
 void vkr_vulkan_renderer_get_asset_publisher(VkrVulkanRenderer *renderer,
                                              VkrAssetPublisher *out_publisher);

@@ -1005,6 +1005,114 @@ vkr_internal void vkr_standard_scene_recording_from_environment(
   }
 }
 
+/* Appends one hardware fact; an empty value says the API reports none. */
+vkr_internal void
+vkr_standard_scene_recording_fact(VkrRecordingHardwareFact *facts,
+                                  uint32_t *count, uint32_t capacity,
+                                  const char *key, const char *value) {
+  if (*count >= capacity || !value || !value[0]) {
+    return;
+  }
+  VkrRecordingHardwareFact *fact = &facts[(*count)++];
+  string_format(fact->key, sizeof(fact->key), "%s", key);
+  string_format(fact->value, sizeof(fact->value), "%s", value);
+}
+
+/* A byte count as the HW tab shows it: GiB, MiB or KiB. */
+vkr_internal void vkr_standard_scene_recording_bytes(char *out,
+                                                     uint64_t capacity,
+                                                     uint64_t bytes) {
+  if (bytes == 0u) {
+    out[0] = '\0';
+  } else if (bytes >= GB(1)) {
+    string_format(out, capacity, "%.2f GiB",
+                  (float64_t)bytes / (float64_t)GB(1));
+  } else if (bytes >= MB(1)) {
+    string_format(out, capacity, "%.1f MiB",
+                  (float64_t)bytes / (float64_t)MB(1));
+  } else {
+    string_format(out, capacity, "%llu KiB",
+                  (unsigned long long)(bytes / KB(1)));
+  }
+}
+
+/* The device the recording runs on, as facts the HW tab lists
+   (ADR-130): what the graphics API reports, then what the OS does. */
+vkr_internal uint32_t vkr_standard_scene_recording_hardware_facts(
+    VkrStandardSceneRuntime *runtime, VkrRecordingHardwareFact *facts,
+    uint32_t capacity) {
+  VkrDeviceInformation device = {0};
+  vkr_renderer_get_device_information(&runtime->renderer, &device,
+                                      runtime->frame_arenas[0]);
+  uint32_t count = 0u;
+  char value[VKR_RECORDING_HARDWARE_VALUE_MAX + 1u];
+  string_format(value, sizeof(value), "%.*s",
+                (int32_t)device.device_name.length,
+                (const char *)device.device_name.str);
+  vkr_standard_scene_recording_fact(facts, &count, capacity, "GPU", value);
+  vkr_standard_scene_recording_fact(facts, &count, capacity, "Architecture",
+                                    device.gpu_architecture);
+  /* The OS names the GPU's cores; it walks the IORegistry, once per
+     recording. */
+  VkrPlatformGpuInfo gpu = {0};
+  if (vkr_platform_get_gpu_info(&gpu) && gpu.core_count_valid) {
+    string_format(value, sizeof(value), "%u", gpu.core_count);
+    vkr_standard_scene_recording_fact(facts, &count, capacity, "GPU cores",
+                                      value);
+  }
+  string_format(value, sizeof(value), "%.*s",
+                (int32_t)device.api_version.length,
+                (const char *)device.api_version.str);
+  vkr_standard_scene_recording_fact(facts, &count, capacity, "API", value);
+  /* Metal names no driver beside its API. */
+  if (!string8_equals(&device.driver_version, &device.api_version)) {
+    string_format(value, sizeof(value), "%.*s",
+                  (int32_t)device.driver_version.length,
+                  (const char *)device.driver_version.str);
+    vkr_standard_scene_recording_fact(facts, &count, capacity, "Driver", value);
+  }
+  vkr_standard_scene_recording_fact(
+      facts, &count, capacity, "Pipeline",
+      device.graphics_pipeline == VKR_GRAPHICS_PIPELINE_TILED ? "Tiled"
+                                                              : "Desktop");
+  vkr_standard_scene_recording_fact(facts, &count, capacity, "Unified memory",
+                                    device.unified_memory ? "Yes" : "No");
+  vkr_standard_scene_recording_bytes(value, sizeof(value),
+                                     device.working_set_bytes);
+  vkr_standard_scene_recording_fact(facts, &count, capacity,
+                                    "Recommended working set", value);
+  vkr_standard_scene_recording_bytes(value, sizeof(value),
+                                     device.vram_local_size);
+  vkr_standard_scene_recording_fact(facts, &count, capacity, "Device memory",
+                                    value);
+  vkr_standard_scene_recording_bytes(value, sizeof(value),
+                                     device.max_threadgroup_memory);
+  vkr_standard_scene_recording_fact(facts, &count, capacity,
+                                    "Threadgroup memory", value);
+  if (device.max_threads_per_threadgroup > 0u) {
+    string_format(value, sizeof(value), "%u",
+                  device.max_threads_per_threadgroup);
+    vkr_standard_scene_recording_fact(facts, &count, capacity,
+                                      "Threads per threadgroup", value);
+  }
+  if (device.simd_width_max > 0u) {
+    if (device.simd_width_min == device.simd_width_max) {
+      string_format(value, sizeof(value), "%u", device.simd_width_max);
+    } else {
+      string_format(value, sizeof(value), "%u to %u", device.simd_width_min,
+                    device.simd_width_max);
+    }
+    vkr_standard_scene_recording_fact(facts, &count, capacity, "SIMD width",
+                                      value);
+  }
+  if (device.graphics_pipeline != VKR_GRAPHICS_PIPELINE_TILED) {
+    vkr_standard_scene_recording_fact(
+        facts, &count, capacity, "Shader statistics",
+        device.shader_statistics_captured ? "Captured" : "Off");
+  }
+  return count;
+}
+
 void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
                                           uint64_t frame,
                                           const VkrRecordingMetricsLoop *loop,
@@ -1044,6 +1152,16 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
   vkr_recording_graph(&runtime->recording, frame,
                       vkr_renderer_take_graph_snapshot(&runtime->renderer));
   vkr_recording_allocators(&runtime->recording, frame);
+  /* The device once, then each pipeline the renderer creates. */
+  if (runtime->recording.passes_enabled &&
+      !runtime->recording.hardware_written) {
+    VkrRecordingHardwareFact facts[24];
+    const uint32_t fact_count = vkr_standard_scene_recording_hardware_facts(
+        runtime, facts, ArrayCount(facts));
+    vkr_recording_hardware(&runtime->recording, frame, facts, fact_count);
+  }
+  vkr_recording_pipelines(&runtime->recording, frame,
+                          vkr_renderer_pipeline_registry(&runtime->renderer));
   /* The census, like the pass table, belongs to this publication only when
      both name the same renderer frame. */
   const VkrRendererMetricsDrawCensus *census =

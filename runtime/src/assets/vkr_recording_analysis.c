@@ -57,6 +57,8 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *draw_bounds;
   const VkrRecordingStream *draw_ids;
   const VkrRecordingStream *draw_states;
+  const VkrRecordingStream *hardware;
+  const VkrRecordingStream *pipeline;
   const VkrRecordingStream *player;
   /* All measurements: series after the metrics stream's, named by
      measurement_name records. */
@@ -106,6 +108,11 @@ typedef struct VkrRecordingDataLoad {
   uint64_t draw_id_values;
   uint64_t draw_id_values_used;
   uint64_t draw_words;
+  /* Hardware facts and pipeline records that parse, and their
+     statistics. */
+  uint32_t hardware_capacity;
+  uint32_t pipeline_capacity;
+  uint32_t pipeline_stat_capacity;
   bool8_t too_large;
 } VkrRecordingDataLoad;
 
@@ -236,6 +243,8 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->draw_bounds = vkr_recording_find_stream(dictionary, "draw_bounds");
   load->draw_ids = vkr_recording_find_stream(dictionary, "draw_ids");
   load->draw_states = vkr_recording_find_stream(dictionary, "draw_states");
+  load->hardware = vkr_recording_find_stream(dictionary, "hardware");
+  load->pipeline = vkr_recording_find_stream(dictionary, "pipeline");
   load->player = vkr_recording_find_stream(dictionary, "player");
   load->measurement_name =
       vkr_recording_find_stream(dictionary, "measurement_name");
@@ -425,6 +434,79 @@ vkr_internal bool8_t vkr_recording_graph_counts(
 }
 
 /* The pipeline and OS the IDENTITY chunk names. */
+/* A hardware record's key and value, or false when it does not parse. */
+vkr_internal bool8_t vkr_recording_hardware_parse(
+    const VkrRecordingRecord *record, VkrRecordingHardwareFact *out) {
+  if (record->size < 4u) {
+    return false_v;
+  }
+  const uint32_t key_length = vkr_load_le_u16(record->data);
+  const uint32_t value_length = vkr_load_le_u16(record->data + 2u);
+  if (key_length == 0u || key_length > VKR_RECORDING_HARDWARE_KEY_MAX ||
+      value_length > VKR_RECORDING_HARDWARE_VALUE_MAX ||
+      record->size != 4u + key_length + value_length) {
+    return false_v;
+  }
+  if (out) {
+    MemZero(out, sizeof(*out));
+    MemCopy(out->key, record->data + 4u, key_length);
+    MemCopy(out->value, record->data + 4u + key_length, value_length);
+  }
+  return true_v;
+}
+
+/* A pipeline record's fields and statistic count, its statistics written
+   to `stats` when given; false when it does not parse. */
+vkr_internal bool8_t vkr_recording_pipeline_parse(
+    const VkrRecordingRecord *record, VkrRecordingPipeline *out,
+    VkrRecordingPipelineStat *stats) {
+  if (record->size < VKR_RECORDING_PIPELINE_HEADER_SIZE) {
+    return false_v;
+  }
+  const uint8_t *data = record->data;
+  const uint32_t name_length = vkr_load_le_u16(data + 6u);
+  const uint32_t stat_count = vkr_load_le_u32(data + 36u);
+  if (name_length > VKR_RECORDING_PIPELINE_NAME_MAX ||
+      stat_count > VKR_RECORDING_PIPELINE_STATS_PER_RECORD ||
+      record->size < VKR_RECORDING_PIPELINE_HEADER_SIZE + name_length) {
+    return false_v;
+  }
+  uint64_t cursor = VKR_RECORDING_PIPELINE_HEADER_SIZE + name_length;
+  for (uint32_t i = 0u; i < stat_count; ++i) {
+    if (cursor + 2u > record->size) {
+      return false_v;
+    }
+    const uint32_t length = vkr_load_le_u16(data + cursor);
+    if (length > VKR_RECORDING_PIPELINE_STAT_NAME_MAX ||
+        cursor + 2u + length + 8u > record->size) {
+      return false_v;
+    }
+    if (stats) {
+      MemZero(stats[i].name, sizeof(stats[i].name));
+      MemCopy(stats[i].name, data + cursor + 2u, length);
+      MemCopy(&stats[i].value, data + cursor + 2u + length,
+              sizeof(stats[i].value));
+    }
+    cursor += 2u + length + 8u;
+  }
+  if (cursor != record->size) {
+    return false_v;
+  }
+  MemZero(out, sizeof(*out));
+  out->frame = record->frame;
+  out->kind = data[4];
+  MemCopy(&out->compile_ms, data + 8u, sizeof(out->compile_ms));
+  out->max_threads = vkr_load_le_u32(data + 12u);
+  out->execution_width = vkr_load_le_u32(data + 16u);
+  out->threadgroup_memory = vkr_load_le_u32(data + 20u);
+  out->registers = vkr_load_le_u32(data + 24u);
+  out->spill_bytes = vkr_load_le_u32(data + 28u);
+  out->instructions = vkr_load_le_u32(data + 32u);
+  out->stat_count = stat_count;
+  MemCopy(out->name, data + VKR_RECORDING_PIPELINE_HEADER_SIZE, name_length);
+  return true_v;
+}
+
 vkr_internal void vkr_recording_data_identity(VkrRecordingDataLoad *load) {
   VkrAllocator *allocator = load->data->allocator;
   for (uint32_t i = 0u; i < load->reader.chunk_count; ++i) {
@@ -562,6 +644,22 @@ vkr_internal void vkr_recording_data_count(VkrRecordingDataLoad *load,
   }
   if (vkr_recording_is_stream(load->allocators, record)) {
     load->allocator_rows += vkr_recording_allocator_record_rows(record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->hardware, record)) {
+    if (vkr_recording_hardware_parse(record, NULL) &&
+        load->hardware_capacity < VKR_RECORDING_PIPELINE_MAX) {
+      ++load->hardware_capacity;
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->pipeline, record)) {
+    VkrRecordingPipeline pipeline;
+    if (vkr_recording_pipeline_parse(record, &pipeline, NULL) &&
+        load->pipeline_capacity < VKR_RECORDING_PIPELINE_MAX) {
+      ++load->pipeline_capacity;
+      load->pipeline_stat_capacity += pipeline.stat_count;
+    }
     return;
   }
   if (vkr_recording_is_stream(load->graph, record)) {
@@ -1035,6 +1133,47 @@ vkr_recording_data_fill_event(VkrRecordingDataLoad *load,
   };
 }
 
+/* Keeps the first fact of each key: a fact written again after a full ring
+   repeats it. */
+vkr_internal void
+vkr_recording_data_fill_hardware(VkrRecordingDataLoad *load,
+                                 const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  VkrRecordingHardwareFact fact;
+  if (!data->hardware_block ||
+      data->hardware_count >= load->hardware_capacity ||
+      !vkr_recording_hardware_parse(record, &fact)) {
+    return;
+  }
+  for (uint32_t i = 0u; i < data->hardware_count; ++i) {
+    if (string_equals(data->hardware[i].key, fact.key)) {
+      return;
+    }
+  }
+  data->hardware[data->hardware_count++] = fact;
+}
+
+vkr_internal void
+vkr_recording_data_fill_pipeline(VkrRecordingDataLoad *load,
+                                 const VkrRecordingRecord *record) {
+  VkrRecordingData *data = load->data;
+  if (!data->hardware_block ||
+      data->pipeline_count >= load->pipeline_capacity) {
+    return;
+  }
+  VkrRecordingPipeline pipeline;
+  if (!vkr_recording_pipeline_parse(record, &pipeline, NULL) ||
+      data->pipeline_stat_count + pipeline.stat_count >
+          load->pipeline_stat_capacity) {
+    return;
+  }
+  (void)vkr_recording_pipeline_parse(
+      record, &pipeline, data->pipeline_stats + data->pipeline_stat_count);
+  pipeline.stat_first = data->pipeline_stat_count;
+  data->pipeline_stat_count += pipeline.stat_count;
+  data->pipelines[data->pipeline_count++] = pipeline;
+}
+
 vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
                                           const VkrRecordingRecord *record) {
   VkrRecordingData *data = load->data;
@@ -1053,6 +1192,14 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
   }
   if (vkr_recording_is_stream(load->graph, record)) {
     vkr_recording_data_fill_graph(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->hardware, record)) {
+    vkr_recording_data_fill_hardware(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->pipeline, record)) {
+    vkr_recording_data_fill_pipeline(load, record);
     return;
   }
   if (vkr_recording_is_stream(load->allocator_name, record)) {
@@ -1296,6 +1443,38 @@ vkr_recording_data_allocate_passes(VkrRecordingDataLoad *load) {
   data->pass_first = (uint64_t *)(block + name_bytes + row_bytes);
   data->pass_row_counts = (uint16_t *)(data->pass_first + frames);
   data->pass_frame_flags = (uint8_t *)(data->pass_row_counts + frames);
+  return true_v;
+}
+
+/* The hardware block: facts, pipelines, then their statistics. Nothing
+   without either. */
+vkr_internal bool8_t
+vkr_recording_data_allocate_hardware(VkrRecordingDataLoad *load) {
+  VkrRecordingData *data = load->data;
+  if (load->hardware_capacity == 0u && load->pipeline_capacity == 0u) {
+    return true_v;
+  }
+  load->pipeline_stat_capacity =
+      Min(load->pipeline_stat_capacity, VKR_RECORDING_PIPELINE_STATS_MAX);
+  const uint64_t fact_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingHardwareFact) * (uint64_t)load->hardware_capacity, 8u);
+  const uint64_t pipeline_bytes = vkr_align_up_u64(
+      sizeof(VkrRecordingPipeline) * (uint64_t)load->pipeline_capacity, 8u);
+  const uint64_t stat_bytes =
+      sizeof(VkrRecordingPipelineStat) * (uint64_t)load->pipeline_stat_capacity;
+  const uint64_t block_bytes = fact_bytes + pipeline_bytes + stat_bytes;
+  uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!block) {
+    return false_v;
+  }
+  MemZero(block, block_bytes);
+  data->hardware_block = block;
+  data->hardware_block_bytes = block_bytes;
+  data->hardware = (VkrRecordingHardwareFact *)block;
+  data->pipelines = (VkrRecordingPipeline *)(block + fact_bytes);
+  data->pipeline_stats =
+      (VkrRecordingPipelineStat *)(block + fact_bytes + pipeline_bytes);
   return true_v;
 }
 
@@ -1631,7 +1810,8 @@ VkrRecordingDataError vkr_recording_data_load(VkrRecordingData *out,
       !vkr_recording_data_allocate_graphs(&load) ||
       !vkr_recording_data_allocate_allocators(&load) ||
       !vkr_recording_data_allocate_zones(&load) ||
-      !vkr_recording_data_allocate_draws(&load)) {
+      !vkr_recording_data_allocate_draws(&load) ||
+      !vkr_recording_data_allocate_hardware(&load)) {
     error = VKR_RECORDING_DATA_MEMORY;
     goto cleanup;
   }
@@ -1682,6 +1862,11 @@ void vkr_recording_data_free(VkrRecordingData *data) {
   if (data->draw_block) {
     vkr_allocator_free(data->allocator, data->draw_block,
                        data->draw_block_bytes, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (data->hardware_block) {
+    vkr_allocator_free(data->allocator, data->hardware_block,
+                       data->hardware_block_bytes,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   MemZero(data, sizeof(*data));
   data->frame_time_series = UINT32_MAX;

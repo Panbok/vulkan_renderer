@@ -723,6 +723,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .job_system = backend_config ? backend_config->job_system : NULL,
       .pipeline_create = backend_config ? backend_config->pipeline_create
                                         : (VkrMetricEventProducer){0},
+      .pipeline_registry = &renderer->pipeline_registry,
       .shader_load = backend_config ? backend_config->shader_load
                                     : (VkrMetricEventProducer){0},
       .target_kind =
@@ -856,6 +857,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
           vkr_platform_environment_flag("VKR_VULKAN_GPU_VALIDATION"),
       .fsr31_enabled = true_v,
       .pipeline_create = backend_config->pipeline_create,
+      .pipeline_registry = &renderer->pipeline_registry,
+      .capture_shader_statistics = backend_config->capture_shader_statistics,
   };
   config.enable_validation = config.enable_validation ||
                              backend_config->validation_enabled ||
@@ -1032,6 +1035,7 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   renderer->render_graph_dmemory = (VkrDMemory){0};
   renderer->render_graph_allocator = (VkrAllocator){0};
+  renderer->pipeline_registry = (VkrPipelineRegistry){0};
   renderer->metal_renderer = NULL;
   renderer->vulkan_renderer = NULL;
   renderer->worker = NULL;
@@ -1142,6 +1146,11 @@ bool32_t vkr_renderer_initialize(VkrRenderer *renderer,
   vkr_dmemory_allocator_create(&renderer->render_graph_allocator);
   (void)vkr_allocator_register_name(&renderer->render_graph_allocator,
                                     "render.persistent");
+  if (!vkr_pipeline_registry_create(&renderer->render_graph_allocator,
+                                    &renderer->pipeline_registry)) {
+    log_error("Failed to create the pipeline registry");
+    goto initialize_failure;
+  }
 
   VkrSurfaceSize initial = requested_target.kind ==
                                        VKR_PRESENT_TARGET_OFFSCREEN
@@ -1209,6 +1218,7 @@ initialize_failure:
   vkr_publication_queue_destroy(&renderer->publications);
   if (renderer->metal_renderer || renderer->vulkan_renderer)
     vkr_renderer_backend_destroy(renderer);
+  vkr_pipeline_registry_destroy(&renderer->pipeline_registry);
   if (renderer->render_graph_allocator.ctx) {
     vkr_allocator_unregister(&renderer->render_graph_allocator);
     vkr_dmemory_allocator_destroy(&renderer->render_graph_allocator);
@@ -1222,6 +1232,7 @@ void vkr_renderer_destroy(VkrRenderer *renderer) {
   vkr_renderer_worker_destroy(renderer);
   vkr_publication_queue_destroy(&renderer->publications);
   vkr_renderer_backend_destroy(renderer);
+  vkr_pipeline_registry_destroy(&renderer->pipeline_registry);
   if (renderer->graph_snapshot) {
     vkr_allocator_free(&renderer->render_graph_allocator,
                        renderer->graph_snapshot, sizeof(VkrRgSnapshot),
@@ -1751,6 +1762,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .display_output = display_output,
       .actual_world_renderer_topology = VKR_WORLD_RENDERER_TOPOLOGY_DEFERRED,
   };
+  vkr_metal_packet_renderer_hardware(renderer->metal_renderer,
+                                     device_information);
 #else
   (void)temp_arena;
   const VkrVulkanCapabilityProfile *profile =
@@ -1814,6 +1827,9 @@ vkr_internal void vkr_renderer_backend_get_device_information(
       .vram_size = vram_size,
       .vram_local_size = vram_local_size,
       .vram_shared_size = vram_shared_size,
+      /* Vulkan has no recommended working set; the device-local heaps are
+         the closest bound. */
+      .working_set_bytes = vram_local_size,
       .device_types = device_types,
       .device_queues = device_queues,
       .sampler_filters = sampler_filters,
@@ -1848,6 +1864,15 @@ vkr_internal void vkr_renderer_backend_get_device_information(
     MemCopy(device_information->adapter_luid, selected->device_luid,
             sizeof(device_information->adapter_luid));
   }
+  /* Vulkan names no GPU architecture; the driver's name (RADV, NVIDIA,
+     Intel open-source Mesa driver) stands for it in the HW tab. */
+  if (selected) {
+    string_format(device_information->gpu_architecture,
+                  sizeof(device_information->gpu_architecture), "%s",
+                  selected->driver_name);
+  }
+  vkr_vulkan_renderer_hardware_information(renderer->vulkan_renderer,
+                                           device_information);
 #endif
 }
 
@@ -2336,6 +2361,10 @@ vkr_renderer_get_pipeline_stats(const VkrRenderer *renderer) {
 #endif
   (void)renderer;
   return stats;
+}
+
+VkrPipelineRegistry *vkr_renderer_pipeline_registry(VkrRenderer *renderer) {
+  return renderer ? &renderer->pipeline_registry : NULL;
 }
 
 /* The backend's render graph, or NULL before it has one. Only the thread

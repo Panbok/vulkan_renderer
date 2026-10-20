@@ -17515,14 +17515,14 @@ static VkrEditorOpStatus ops_run_rec_analyze(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
   static const char *const tabs[VKR_EDITOR_PERF_TAB_COUNT] = {
-      "overview", "backend", "memory", "draws", "graph"};
+      "overview", "backend", "memory", "draws", "graph", "hw"};
   uint32_t shown = UINT32_MAX;
   for (uint32_t i = 0u; i < VKR_EDITOR_PERF_TAB_COUNT && tab[0]; ++i) {
     shown = string_equals(tab, tabs[i]) ? i : shown;
   }
   if (tab[0] && shown == UINT32_MAX) {
     ops_fail(ctx, OPS_INVALID,
-             "'tab' is overview, backend, memory, draws or graph");
+             "'tab' is overview, backend, memory, draws, graph or hw");
     return VKR_EDITOR_OP_DONE;
   }
   /* The same recording keeps its zoom and selection; another is read on
@@ -17808,13 +17808,16 @@ static const OpsDef s_ops[] = {
      "and CPU functions), memory (RAM by named allocator, VRAM by owner, "
      "arenas), draws (the top-down culling map) or graph (the render "
      "graph's passes; 'flow' true for its flow chart, 'pass' selects one by "
-     "name); 'frame' selects the "
+     "name) or hw (the device, the GPU driver's utilization and "
+     "tiled-scene figures, and the pipelines with their limits and "
+     "statistics); 'frame' selects the "
      "frame the tabs describe. Answers once the recording is read. Read "
      "the numbers from its summary.json or "
      "`vkr_rec`; this op is for the designer's view and captures of it.",
      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":"
      "\"string\"},\"tab\":{\"enum\":[\"overview\",\"backend\",\"memory\","
-     "\"draws\",\"graph\"]},\"frame\":{\"type\":\"integer\",\"minimum\":0},"
+     "\"draws\",\"graph\",\"hw\"]},\"frame\":{\"type\":\"integer\",\"minimum\":"
+     "0},"
      "\"flow\":{\"type\":\"boolean\"},\"pass\":{\"type\":\"string\"}},"
      "\"required\":[\"name\"]}",
      ops_run_rec_analyze, NULL, OPS_NO_SCENE},
