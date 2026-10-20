@@ -311,6 +311,7 @@ static const char *const VKR_RECORDING_TIER0_METRICS[] = {
     "gpu.submission",
     "frame.render_scale",
     "frame.present_interval",
+    "frame.scene_interval",
     "draw.world.calls_issued",
     "draw.world.commands_issued",
     "visibility.objects_tested",

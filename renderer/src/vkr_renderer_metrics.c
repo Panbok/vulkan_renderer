@@ -2530,19 +2530,25 @@ void vkr_renderer_metrics_collect(
                   : 0.0);
   VKR_SET_DELTA(job_completed_total, jobs_completed, jobs.jobs_completed_total);
 
-  VKR_SET_U64(world_draws_collected, world->draws_collected);
-  VKR_SET_U64(world_opaque_draws, world->opaque_draws);
-  VKR_SET_U64(world_transmission_draws, world->transmission_draws);
-  VKR_SET_U64(world_transparent_draws, world->transparent_draws);
-  VKR_SET_U64(world_opaque_batches, world->opaque_batches);
-  VKR_SET_U64(world_draws_issued, world->draws_issued);
-  VKR_SET_U64(world_draw_calls_issued, world->draw_calls_issued);
-  VKR_SET_U64(world_batches_created, world->batches_created);
-  VKR_SET_U64(world_draws_merged, world->draws_merged);
-  VKR_SET_U64(world_indirect_draws_issued, world->indirect_draws_issued);
-  VKR_SET_U64(world_indirect_calls_issued, world->indirect_calls_issued);
-  VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
-  VKR_SET_U64(world_max_batch_size, world->max_batch_size);
+  /* The world's draws are culled on the GPU, so their counts come with the
+     GPU's diagnostics readback. A frame without one (Metal reads them back
+     on some frames) would count only the editor's overlay draws: its world
+     counts stay unsampled rather than wrong. */
+  if (world->gpu_diagnostics_valid) {
+    VKR_SET_U64(world_draws_collected, world->draws_collected);
+    VKR_SET_U64(world_opaque_draws, world->opaque_draws);
+    VKR_SET_U64(world_transmission_draws, world->transmission_draws);
+    VKR_SET_U64(world_transparent_draws, world->transparent_draws);
+    VKR_SET_U64(world_opaque_batches, world->opaque_batches);
+    VKR_SET_U64(world_draws_issued, world->draws_issued);
+    VKR_SET_U64(world_draw_calls_issued, world->draw_calls_issued);
+    VKR_SET_U64(world_batches_created, world->batches_created);
+    VKR_SET_U64(world_draws_merged, world->draws_merged);
+    VKR_SET_U64(world_indirect_draws_issued, world->indirect_draws_issued);
+    VKR_SET_U64(world_indirect_calls_issued, world->indirect_calls_issued);
+    VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
+    VKR_SET_U64(world_max_batch_size, world->max_batch_size);
+  }
   VKR_SET_U64(lighting_ibl_probes_packed, renderer->ibl_probes_packed);
   VKR_SET_U64(lighting_point_selected,
               context->application.lighting_point_selected);

@@ -189,7 +189,42 @@ needed a live editor, a GPU capture or a debugger.
    table of every counter's mean, p95, max and focused-frame value; and the
    passes with the limiter that bounds each, the two top limiters and
    occupancy. Without counters it says how to take them.
-10. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
+10. **Scene frame time and rendered frames.** With the editor presenter
+   ([ADR-111](111-editor-presenter.md)) the editor loop runs at the
+   display's rate while the Scene renders on some of its iterations, so
+   `frame.wall` is not what the Scene shows. The runtime records
+   `frame.scene_interval` (Tier 0): the time between the GPU finishing one
+   editor Scene frame and the next, from `vkr_renderer_scene_frames_completed`,
+   restarted when the Scene stops. The analysis treats a frame with
+   `cpu.graph_build` as one that rendered a Scene, and when under 95 % of
+   frames did, takes `frame.scene_interval` as the frame time, or for older
+   recordings the derived `frame.scene`, the loop time between frames that
+   built a Scene; a series that is never non-zero on the other frames
+   (draws, passes, GPU) leaves them unsampled, so means and medians cover
+   rendered frames. Each frame keeps its GPU span from `pass_starts`, and
+   the pass chart stacks the GPU time outside any timed pass on top of its
+   passes, so a column reaches the GPU frame. The window's focus snaps to
+   the newest rendered frame at or before it, and frame steps move between
+   rendered frames. Metal reads the world's draw counts back with its GPU
+   diagnostics on some frames; frames without them leave `draw.world.*`
+   unsampled instead of counting only the editor's overlay draws.
+11. **One update period.** The header's Update control (Frame, 200 ms, the
+   default, or 1 s of the recording) holds a playing recording's focus for
+   the period, so the tabs change at most that often, and sets the span the
+   Render graph averages over, which had its own control. Paused, stepped
+   or selected frames show exactly.
+12. **Map fit and labels.** The Draws map fits the camera's route with room
+   around it (Route), or the level (Level): the 1st to 99th percentile of
+   object centres with the route, so one kilometre-wide terrain does not
+   shrink the level to a dot. A census over the loader's word budget keeps
+   every k-th frame across the recording, and the map and chart read the
+   nearest kept frame, where the cut used to drop the recording's end. The
+   Draws and Metal counter tables name metrics in words
+   (`vkr_editor_perf_metric_label`), the raw name in the tooltip; the
+   Overview's cards name Scene percentiles and a GPU frame p50 / p95, and
+   the inspector lists Scene frame, GPU frame and editor loop, then the
+   passes' share of the GPU frame with the time outside any pass.
+13. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
    so a map draws up to 16,384 footprints per widget within the frame's
    widget budget. Editor tables take per-cell text colours, fills and share
    bars.
@@ -277,6 +312,27 @@ chip and the HW tab captured without layout failures.
 7-byte pieces through a source callback and checks the file byte for byte;
 its first run found a row lost when a chunk ended inside `<row>`.
 
+Metal, M1 Pro, Release editor, headless, 2026-10-20, the designer's
+190 s windowed recording of the Level Design Test (22,789 loop frames,
+`rec-20261020-201539`): 12,637 frames built a Scene. Before, the window
+showed a frame time of p50 8.33 ms and p95 8.69 ms (`frame.wall`, the
+editor loop at 120 Hz) and 5 frames over 20 ms; with the derived Scene frame
+time it shows p50 16.59, p95 17.28, p99 25.00 and worst 90.45 ms with 495
+frames over 20 ms, as the designer saw. `gpu.submission` read p50 14.8 and
+p95 18.5 ms; at frame 3242 the passes summed to 9.89 of a 15.75 ms GPU
+frame, 5.85 ms outside any pass. The census needed about 42 M words
+(30,555 candidates on about 11,150 frames) against a 16 M budget and had
+dropped everything after about a third of the recording; it now keeps
+about one frame in four across all of it. The Draws
+table's `draws_collected` median was 72 (zeros of frames that rendered
+nothing, and overlay-only counts); its rows now compare rendered frames.
+`test_recording_scene_frames` checks the derived and recorded Scene frame
+times, unsampled render-side zeros and the dropped derived series; the
+full tester passed (873). Unavailable: a windowed run with the presenter
+recording `frame.scene_interval` (headless renders a Scene every frame,
+where the frame time stays `frame.wall`), and recordings made before this
+change keep overlay-only world draw counts.
+
 ## Consequences
 
 - A Tier 1 recording grows by the measurement values (396 on Bistro, about
@@ -284,7 +340,11 @@ its first run found a row lost when a chunk ended inside `<row>`.
   and the census states (half a byte per candidate per frame: about 1.3 KB a
   frame on Bistro, 25 KB at 50,000 candidates), before compression; the
   Bistro walk's whole stream compressed to about 0.8 KB per frame.
-- Tier 0 recordings and the overhead gate they passed do not change.
+- Tier 0 recordings and the overhead gate they passed do not change, save
+  for `frame.scene_interval`, one gauge per Scene frame.
+- On Metal with the presenter, `draw.world.*` hold samples only on frames
+  whose GPU diagnostics read back, about one in ten rendered frames in the
+  designer's recording; their means and medians come from those.
 - The census pass costs GPU time only while a Tier 1 recording runs.
 - Object boxes of moving objects go stale between world generations; their
   states stay exact.

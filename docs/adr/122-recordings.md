@@ -546,7 +546,9 @@ an agent must read one without the editor.
   for its frame ([vkr_recording_analysis.c](../../runtime/src/assets/vkr_recording_analysis.c)).
   `rec.explain {spike|frame}` and `vkr_rec explain (--spike N | --frame F)`
   answer one frame against its typical frame (the 19-frame window median
-  for frame time, recording medians for stages, GPU time and passes): CPU
+  for frame time, which is the Scene's when the editor presenter renders
+  it on fewer frames than the loop runs (ADR-130), recording medians for
+  stages, GPU time and passes): CPU
   stages and passes by excess, engine events, platform signals, and causes
   ranked by excess of at least 0.25 ms (stages, passes, the GPU frame a wait
   stalled on, timed events), then conditions (serious thermal level,

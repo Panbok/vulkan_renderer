@@ -10,6 +10,17 @@
 #include "memory/vkr_heap.h"
 #include "platform/vkr_platform.h"
 
+/* Frames of the update period, VkrEditorRecordingPerfView.update_rate:
+   every frame, 200 ms or 1 s of the recording. */
+static const uint32_t PERF_UPDATE_MS[] = {0u, 200u, 1000u};
+static const char *const PERF_UPDATE_LABEL[] = {"Frame", "200 ms", "1 s"};
+static const char *const PERF_UPDATE_TIP[] = {
+    "While a recording plays, follow every frame",
+    "While a recording plays, update the tabs every 200 ms of the recording",
+    "While a recording plays, update the tabs every second of the recording",
+};
+#define PERF_UPDATE_DEFAULT 1u
+
 /* The Performance window (docs/proposals/recordings.md, "Performance
    view"): a recording's statistics, its frame-time, CPU-stage, pass and
    memory charts, its spikes and its passes. A click on a chart or a spike
@@ -21,6 +32,10 @@
 #define PERF_GB (1024.0 * 1024.0 * 1024.0)
 /* pass_series entry of the series that sums every other pass. */
 #define PERF_PASS_OTHER UINT32_MAX
+/* The pass chart's band for GPU time outside any timed pass: a frame's GPU
+   time from start to end less its passes (waits, untimed work, the editor
+   UI), which the pass rows alone never show. */
+#define PERF_PASS_OUTSIDE (UINT32_MAX - 1u)
 /* A frame without GPU pass times shows the nearest one within this many
    frames: one tiled sampling period. */
 #define PERF_PASS_REACH 8u
@@ -69,6 +84,9 @@ static const Vec4 PERF_PASS_COLOR[VKR_EDITOR_PERF_PASS_SERIES] = {
     {0.541f, 0.388f, 0.824f, 1.0f}, {0.769f, 0.271f, 0.561f, 1.0f},
     {0.184f, 0.651f, 0.722f, 1.0f}, {0.500f, 0.500f, 0.520f, 1.0f},
 };
+/* Outside any pass: a light veil over the passes' colors, so it reads as
+   time not accounted to them. */
+static const Vec4 PERF_PASS_OUTSIDE_COLOR = {0.86f, 0.87f, 0.90f, 0.30f};
 
 /* ------------------------------------------------------------------------ */
 /* Data                                                                      */
@@ -136,18 +154,56 @@ vkr_internal int32_t perf_compare_f64(const void *lhs, const void *rhs) {
 /* The shown frames' frame-time statistics for the cards: percentiles of the
    valid frame times, the time-based 1% low (the frame time the slowest 1% of
    the shown time reaches), and the frames over the budget. */
+/* Series `name`'s statistics over the shown frames into `out`, zero
+   without samples; `values` holds room for every shown frame. */
+vkr_internal void perf_view_series(const VkrEditorRecordingPerf *perf,
+                                   const char *name, float64_t *values,
+                                   VkrRecordingStats *out) {
+  const VkrRecordingData *data = &perf->data;
+  *out = (VkrRecordingStats){0};
+  const uint32_t series = vkr_recording_data_find_series(data, name);
+  if (series == UINT32_MAX) {
+    return;
+  }
+  uint64_t valid = 0u;
+  float64_t sum = 0.0;
+  for (uint64_t f = perf->view_first; f <= perf->view_last; ++f) {
+    if (data->series[series].valid[f]) {
+      values[valid++] = data->series[series].values[f];
+      sum += data->series[series].values[f];
+    }
+  }
+  if (valid == 0u) {
+    return;
+  }
+  vkr_sort(values, valid, sizeof(float64_t), perf_compare_f64);
+  *out = (VkrRecordingStats){
+      .valid = valid,
+      .min = values[0],
+      .max = values[valid - 1u],
+      .mean = sum / (float64_t)valid,
+      .p50 = values[(valid - 1u) * 50u / 100u],
+      .p95 = values[(valid - 1u) * 95u / 100u],
+      .p99 = values[(valid - 1u) * 99u / 100u],
+  };
+}
+
 vkr_internal void perf_view_stats(VkrEditorRecordingPerf *perf) {
   const VkrRecordingData *data = &perf->data;
   const uint64_t count = perf->view_last + 1u - perf->view_first;
   perf->view_time = (VkrRecordingStats){0};
   perf->view_low_1pct = 0.0;
   perf->view_over_budget = 0u;
+  perf->view_gpu = (VkrRecordingStats){0};
+  perf->view_loop = (VkrRecordingStats){0};
   float64_t *values =
       vkr_allocator_alloc(perf->allocator, sizeof(float64_t) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!values) {
     return;
   }
+  perf_view_series(perf, "gpu.submission", values, &perf->view_gpu);
+  perf_view_series(perf, "frame.wall", values, &perf->view_loop);
   uint64_t valid = 0u;
   float64_t sum = 0.0;
   for (uint64_t f = perf->view_first; f <= perf->view_last; ++f) {
@@ -305,11 +361,12 @@ vkr_internal uint32_t perf_pass_series_of(const VkrEditorRecordingPerf *perf,
       return s;
     }
   }
-  const uint32_t last = perf->pass_series_count - 1u;
-  return perf->pass_series_count > 0u &&
-                 perf->pass_series[last] == PERF_PASS_OTHER
-             ? last
-             : UINT32_MAX;
+  for (uint32_t s = 0u; s < perf->pass_series_count; ++s) {
+    if (perf->pass_series[s] == PERF_PASS_OTHER) {
+      return s;
+    }
+  }
+  return UINT32_MAX;
 }
 
 /* The time the pass chart shows for a row: GPU or CPU; false_v when the
@@ -363,17 +420,24 @@ vkr_internal void perf_pass_columns(VkrEditorRecordingPerf *perf) {
   }
   perf->pass_gpu = data->pass_gpu_frames > 0u;
   perf->pass_series_count = 0u;
+  /* Every pass at once stacks to the frame's GPU time with the band
+     outside any pass on top. */
+  const bool8_t outside = perf->pass_gpu && perf->pass_focus == UINT32_MAX;
   if (perf->pass_focus != UINT32_MAX) {
     perf->pass_series[perf->pass_series_count++] = perf->pass_focus;
   } else {
     const uint32_t named =
-        Min(analysis->pass_count, VKR_EDITOR_PERF_PASS_SERIES - 1u);
+        Min(analysis->pass_count,
+            VKR_EDITOR_PERF_PASS_SERIES - (outside ? 2u : 1u));
     for (uint32_t i = 0u; i < named; ++i) {
       perf->pass_series[perf->pass_series_count++] = analysis->passes[i].pass;
     }
     if (analysis->pass_count > named) {
       perf->pass_series[perf->pass_series_count++] = PERF_PASS_OTHER;
     }
+  }
+  if (outside) {
+    perf->pass_series[perf->pass_series_count++] = PERF_PASS_OUTSIDE;
   }
 
   /* The shown frames that carry the chart's times. */
@@ -413,6 +477,20 @@ vkr_internal void perf_pass_columns(VkrEditorRecordingPerf *perf) {
       if (series != UINT32_MAX && perf_row_ms(perf, &rows[i], &ms)) {
         perf->pass_ms[series][c] += ms;
       }
+    }
+    float32_t gpu_ms = 0.0f;
+    if (outside && vkr_recording_data_gpu_frame(
+                       data, perf->pass_column_frame[c], &gpu_ms)) {
+      float32_t passes = 0.0f;
+      for (uint32_t s = 0u; s + 1u < perf->pass_series_count; ++s) {
+        passes += perf->pass_ms[s][c];
+      }
+      perf->pass_ms[perf->pass_series_count - 1u][c] =
+          Max(gpu_ms - passes, 0.0f);
+    }
+    totals[c] = 0.0f;
+    for (uint32_t s = 0u; s < perf->pass_series_count; ++s) {
+      totals[c] += perf->pass_ms[s][c];
     }
   }
   perf->pass_column_count = columns;
@@ -756,6 +834,99 @@ bool8_t vkr_editor_recording_analyze(VkrEditorUi *editor, const char *name,
     (void)perf_load_job(&context, &payload);
   }
   return true_v;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Metric labels                                                             */
+
+/* Names whose words alone would mislead; the rest are spelled from their
+   parts. */
+static const char *const PERF_METRIC_LABELS[][2] = {
+    {"draw.world.calls_issued", "World \xc2\xb7 Draw calls"},
+    {"draw.world.commands_issued", "World \xc2\xb7 Draw commands"},
+    {"draw.world.draws_collected", "World \xc2\xb7 Candidates collected"},
+    {"draw.world.transparent_draws", "World \xc2\xb7 Blended draws"},
+    {"draw.world.batches_created", "World \xc2\xb7 Batches made"},
+    {"draw.world.indirect_commands_issued", "World \xc2\xb7 Indirect commands"},
+    {"draw.world.indirect_calls_issued", "World \xc2\xb7 Indirect calls"},
+    {"draw.world.avg_batch_size", "World \xc2\xb7 Mean batch size"},
+    {"draw.world.max_batch_size", "World \xc2\xb7 Largest batch"},
+    {"draw.shadow.cascades", "Sun shadow \xc2\xb7 Cascades"},
+    {"backend.draws_direct", "Direct draws"},
+};
+
+/* Short words a label keeps in capitals. */
+static const char *const PERF_METRIC_ACRONYMS[] = {"icb", "gpu", "cpu", "sdsm",
+                                                   "lod", "ui",  "ibl", "sh"};
+
+/* Appends `length` bytes of word `word`, capitalized as an acronym or, when
+   `capital`, its first letter. */
+vkr_internal void perf_label_word(char *out, uint64_t capacity, uint64_t *at,
+                                  const char *word, uint64_t length,
+                                  bool8_t capital) {
+  bool8_t acronym = false_v;
+  for (uint32_t i = 0u; i < ArrayCount(PERF_METRIC_ACRONYMS); ++i) {
+    acronym =
+        acronym || (string_length(PERF_METRIC_ACRONYMS[i]) == length &&
+                    MemCompare(PERF_METRIC_ACRONYMS[i], word, length) == 0);
+  }
+  for (uint64_t i = 0u; i < length && *at + 1u < capacity; ++i) {
+    char c = word[i];
+    if ((acronym || (capital && i == 0u)) && c >= 'a' && c <= 'z') {
+      c = (char)(c - 'a' + 'A');
+    }
+    out[(*at)++] = c;
+  }
+  out[*at] = '\0';
+}
+
+void vkr_editor_perf_metric_label(const char *name, char *out,
+                                  uint64_t capacity) {
+  if (capacity == 0u) {
+    return;
+  }
+  out[0] = '\0';
+  for (uint32_t i = 0u; i < ArrayCount(PERF_METRIC_LABELS); ++i) {
+    if (string_equals(name, PERF_METRIC_LABELS[i][0])) {
+      string_format(out, capacity, "%s", PERF_METRIC_LABELS[i][1]);
+      return;
+    }
+  }
+  /* The domain (draw, backend) goes; middle parts name a group, the last
+     the figure: draw.local_shadow.faces_full is "Local shadow · faces
+     full". */
+  const char *parts = name;
+  const char *dot = name;
+  while (*dot && *dot != '.') {
+    ++dot;
+  }
+  if (*dot == '.' && dot[1]) {
+    parts = dot + 1;
+  }
+  uint64_t at = 0u;
+  const char *word = parts;
+  bool8_t first_in_part = true_v;
+  for (const char *c = parts;; ++c) {
+    if (*c == '_' || *c == '.' || *c == '\0') {
+      if (c > word) {
+        if (!first_in_part && at + 1u < capacity) {
+          out[at++] = ' ';
+        }
+        perf_label_word(out, capacity, &at, word, (uint64_t)(c - word),
+                        first_in_part);
+        first_in_part = false_v;
+      }
+      if (*c == '.') {
+        string_format(out + at, capacity - at, " \xc2\xb7 ");
+        at += string_length(out + at);
+        first_in_part = true_v;
+      }
+      if (*c == '\0') {
+        break;
+      }
+      word = c + 1;
+    }
+  }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1213,8 +1384,6 @@ vkr_internal void perf_cards(VkrEditorUi *editor, VkrUiSystem *ui,
   const bool8_t zoomed = perf_zoomed(perf);
   const VkrRecordingStats *time =
       zoomed ? &perf->view_time : &analysis->frame_time;
-  const float64_t low_1pct =
-      zoomed ? perf->view_low_1pct : analysis->low_1pct_ms;
   const uint64_t over_budget =
       zoomed ? perf->view_over_budget : analysis->over_budget;
   const VkrUiTheme *theme = vkr_ui_theme();
@@ -1233,26 +1402,34 @@ vkr_internal void perf_cards(VkrEditorUi *editor, VkrUiSystem *ui,
   const Vec4 max_color = time->max > 2.0 * budget ? theme->error
                          : time->max > budget     ? theme->warning
                                                   : theme->text;
+  /* With the presenter the frame time is the Scene's, which the captions
+     say, since the editor loop runs more often. */
+  const bool8_t scene = perf->data.scene_decoupled;
   perf_stat_card(
-      editor, ui, 0u, "p50",
+      editor, ui, 0u, scene ? "Scene p50" : "p50",
       string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p50),
       theme->text, VKR_RECORDING_COMPARE_P50, 1.0, "");
   perf_stat_card(
-      editor, ui, 1u, "p95",
+      editor, ui, 1u, scene ? "Scene p95" : "p95",
       string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p95),
       theme->text, VKR_RECORDING_COMPARE_P95, 1.0, "");
   perf_stat_card(
-      editor, ui, 2u, "p99",
+      editor, ui, 2u, scene ? "Scene p99" : "p99",
       string8_create_formatted(ui->frame_allocator, "%.2f ms", time->p99),
       p99_color, VKR_RECORDING_COMPARE_P99, 1.0, "");
   perf_stat_card(
-      editor, ui, 3u, "max",
+      editor, ui, 3u, scene ? "Scene worst" : "max",
       string8_create_formatted(ui->frame_allocator, "%.2f ms", time->max),
       max_color, VKR_RECORDING_COMPARE_MAX, 1.0, "");
-  perf_stat_card(
-      editor, ui, 4u, "1% low",
-      string8_create_formatted(ui->frame_allocator, "%.2f ms", low_1pct),
-      theme->text, VKR_RECORDING_COMPARE_LOW_1PCT, 1.0, "");
+  /* The GPU frame beside them. */
+  const VkrRecordingStats *gpu = &perf->view_gpu;
+  vkr_editor_perf_card(editor, ui, 4u, "GPU p50 / p95",
+                       gpu->valid ? string8_create_formatted(
+                                        ui->frame_allocator, "%.1f / %.1f ms",
+                                        gpu->p50, gpu->p95)
+                                  : string8_lit("not measured"),
+                       gpu->valid ? theme->text : theme->text_disabled,
+                       (String8){0}, theme->text_secondary);
   perf_stat_card(editor, ui, 5u, "over 16.7 ms",
                  string8_create_formatted(ui->frame_allocator, "%llu frame%s",
                                           (unsigned long long)over_budget,
@@ -1351,6 +1528,14 @@ vkr_internal String8 perf_pass_tooltip(VkrUiSystem *ui,
     text = string8_create_formatted(
         ui->frame_allocator, "%.*s\n%s  %.2f ms", (int32_t)text.length,
         text.str, data->passes[rows[top[rank]].pass].name, top_ms[rank]);
+  }
+  float32_t gpu_ms = 0.0f;
+  if (perf->pass_gpu && vkr_recording_data_gpu_frame(data, f, &gpu_ms)) {
+    text = string8_create_formatted(
+        ui->frame_allocator,
+        "%.*s\nOutside any pass  %.2f ms of a %.2f ms GPU frame",
+        (int32_t)text.length, text.str,
+        Max(gpu_ms - perf_pass_total(perf, f), 0.0f), gpu_ms);
   }
   return string8_create_formatted(
       ui->frame_allocator, "%.*s\nClick to inspect  \xc2\xb7  drag to zoom",
@@ -1583,14 +1768,27 @@ vkr_internal void perf_frame_chart(VkrEditorUi *editor,
                                    uint32_t row) {
   const VkrEditorRecordingPerf *perf = &editor->recording.perf;
   const float64_t budget = perf->analysis.budget_ms;
+  /* With the presenter, how often the Scene's image changed: the editor
+     loop runs faster and is not what the Scene shows. */
+  const VkrRecordingData *data = &perf->data;
+  VkrAllocator *allocator = frame->ui->frame_allocator;
+  const String8 loop =
+      data->scene_decoupled
+          ? string8_create_formatted(allocator,
+                                     "  \xc2\xb7  the editor loop ran %.1f ms",
+                                     perf->view_loop.p50)
+          : string8_lit("");
   perf_title(
       frame->ui, "frame.title",
       string8_create_formatted(
-          frame->ui->frame_allocator,
-          "Frame time (ms, %s)  \xc2\xb7  top %.1f ms  \xc2\xb7  dashed at "
-          "%.1f ms and twice it%s%s",
-          vkr_recording_data_frame_source(&perf->data), perf->frame_ms_top,
-          budget, perf->comparing ? "  \xc2\xb7  line: B aligned by " : "",
+          allocator,
+          "%s (ms)  \xc2\xb7  top %.1f ms  \xc2\xb7  dashed at %.1f ms and "
+          "twice it%.*s%s%s",
+          data->scene_decoupled
+              ? "Scene frame time, how often its image changed"
+              : "Frame time",
+          perf->frame_ms_top, budget, (int32_t)loop.length, loop.str,
+          perf->comparing ? "  \xc2\xb7  line: B aligned by " : "",
           perf->comparing ? vkr_recording_align_name(perf->compare.align) : ""),
       vkr_editor_perf_cell(0u, row), false_v);
   perf_frame_plot(editor, frame, "frame.plot",
@@ -1712,12 +1910,13 @@ vkr_internal String8 perf_pass_title(VkrUiSystem *ui,
         (unsigned long long)perf->pass_view_frames, perf->pass_ms_top);
   }
   if (data->pass_gpu_frames == data->pass_frames) {
-    return string8_lit("GPU by pass (ms), stacked  \xc2\xb7  every frame");
+    return string8_lit("GPU frame by pass (ms), stacked  \xc2\xb7  light band: "
+                       "GPU time outside any pass");
   }
   return string8_create_formatted(
       ui->frame_allocator,
-      "GPU by pass (ms), stacked  \xc2\xb7  sampled in %llu of %llu frames; "
-      "sampled frames pay for the stamps",
+      "GPU frame by pass (ms), stacked  \xc2\xb7  light band: outside any "
+      "pass  \xc2\xb7  sampled in %llu of %llu frames",
       (unsigned long long)data->pass_gpu_frames,
       (unsigned long long)data->pass_frames);
 }
@@ -1735,7 +1934,8 @@ vkr_internal void perf_pass_chart(VkrEditorUi *editor,
     const uint32_t pass = perf->pass_series[s];
     bars[s] = (VkrUiPlotSeries){
         .values = perf->pass_ms[s],
-        .color = pass == PERF_PASS_OTHER
+        .color = pass == PERF_PASS_OUTSIDE ? PERF_PASS_OUTSIDE_COLOR
+                 : pass == PERF_PASS_OTHER
                      ? PERF_PASS_COLOR[VKR_EDITOR_PERF_PASS_SERIES - 1u]
                      : perf_pass_color(perf, pass),
     };
@@ -2588,7 +2788,6 @@ static const struct {
   const char *series;
   const char *label;
 } PERF_INSPECTOR_COUNTERS[] = {
-    {"gpu.submission", "GPU frame"},
     {"frame.render_scale", "Render scale"},
     {"draw.world.calls_issued", "Draw calls"},
     {"draw.world.commands_issued", "Draw commands"},
@@ -2599,6 +2798,53 @@ static const struct {
     {"physics.contacts", "Contacts"},
 };
 
+/* The frame's times: the frame time the charts show (the Scene's when the
+   presenter renders it on fewer loop iterations than the editor runs),
+   its GPU frame and the editor loop. */
+vkr_internal void perf_inspect_frame(VkrUiSystem *ui,
+                                     const VkrEditorRecordingPerf *perf,
+                                     uint64_t at, float64_t frame_ms,
+                                     bool8_t timed, PerfLines *lines) {
+  const VkrRecordingData *data = &perf->data;
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const float64_t budget = perf->analysis.budget_ms;
+  PerfLine *time = perf_line(
+      lines, PERF_LINE_VALUE,
+      data->scene_decoupled ? string8_lit("Scene frame")
+                            : string8_lit("Frame time"),
+      timed ? string8_create_formatted(ui->frame_allocator, "%.2f ms", frame_ms)
+            : string8_lit("not measured"));
+  if (time && timed) {
+    time->color = frame_ms > 2.0 * budget ? theme->error
+                  : frame_ms > budget     ? theme->warning
+                                          : theme->success;
+  }
+  float32_t gpu_ms = 0.0f;
+  float64_t submission = 0.0;
+  const uint32_t submission_series =
+      vkr_recording_data_find_series(data, "gpu.submission");
+  if (vkr_recording_data_gpu_frame(data, at, &gpu_ms) ||
+      perf_value(data, submission_series, at, &submission)) {
+    (void)perf_line(lines, PERF_LINE_VALUE, string8_lit("GPU frame"),
+                    string8_create_formatted(ui->frame_allocator, "%.2f ms",
+                                             gpu_ms > 0.0f ? (float64_t)gpu_ms
+                                                           : submission));
+  }
+  const uint32_t wall = vkr_recording_data_find_series(data, "frame.wall");
+  float64_t wall_ms = 0.0;
+  if (data->scene_decoupled && perf_value(data, wall, at, &wall_ms)) {
+    PerfLine *loop = perf_line(
+        lines, PERF_LINE_VALUE, string8_lit("Editor loop"),
+        string8_create_formatted(ui->frame_allocator, "%.2f ms", wall_ms));
+    if (loop) {
+      loop->color = theme->text_secondary;
+    }
+  }
+  (void)perf_line(
+      lines, PERF_LINE_VALUE, string8_lit("Time"),
+      string8_create_formatted(ui->frame_allocator, "%.3f s", data->times[at]));
+}
+
 /* The frame's CPU stages, each with its share of the frame time. */
 vkr_internal void perf_inspect_stages(VkrUiSystem *ui,
                                       const VkrEditorRecordingPerf *perf,
@@ -2606,7 +2852,12 @@ vkr_internal void perf_inspect_stages(VkrUiSystem *ui,
   if (!perf->has_stages) {
     return;
   }
-  (void)perf_line(lines, PERF_LINE_SECTION, string8_lit("CPU stages"),
+  /* With the presenter the stages are the editor loop's, which runs more
+     often than the Scene renders. */
+  (void)perf_line(lines, PERF_LINE_SECTION,
+                  perf->data.scene_decoupled
+                      ? string8_lit("Editor loop, CPU stages")
+                      : string8_lit("CPU stages"),
                   (String8){0});
   for (uint32_t s = 0u; s < VKR_EDITOR_PERF_STAGES; ++s) {
     const uint32_t index =
@@ -2678,16 +2929,28 @@ vkr_internal void perf_inspect_passes(VkrUiSystem *ui,
     top[slot] = i;
     top_ms[slot] = ms;
   }
+  /* The passes of a GPU frame add up to less than it: the rest ran outside
+     any timed pass. */
+  float32_t gpu_ms = 0.0f;
+  const bool8_t spanned =
+      perf->pass_gpu && vkr_recording_data_gpu_frame(data, source, &gpu_ms);
+  const String8 where =
+      source == at
+          ? string8_lit("")
+          : string8_create_formatted(ui->frame_allocator, " at frame %llu",
+                                     (unsigned long long)source);
   (void)perf_line(lines, PERF_LINE_SECTION,
-                  source == at
-                      ? string8_create_formatted(
-                            ui->frame_allocator, "%s passes  \xc2\xb7  %.2f ms",
-                            perf->pass_gpu ? "GPU" : "CPU encode", total)
-                      : string8_create_formatted(
-                            ui->frame_allocator,
-                            "GPU passes at frame %llu  \xc2\xb7  %.2f ms",
-                            (unsigned long long)source, total),
+                  spanned ? string8_create_formatted(
+                                ui->frame_allocator,
+                                "GPU passes%.*s  \xc2\xb7  %.2f of %.2f ms",
+                                (int32_t)where.length, where.str, total, gpu_ms)
+                          : string8_create_formatted(
+                                ui->frame_allocator,
+                                "%s passes%.*s  \xc2\xb7  %.2f ms",
+                                perf->pass_gpu ? "GPU" : "CPU encode",
+                                (int32_t)where.length, where.str, total),
                   (String8){0});
+  const float32_t share_of = spanned ? Max(gpu_ms, total) : total;
   for (uint32_t r = 0u; r < taken; ++r) {
     const VkrRecordingPassRow *row = &rows[top[r]];
     PerfLine *line = perf_line(
@@ -2696,9 +2959,22 @@ vkr_internal void perf_inspect_passes(VkrUiSystem *ui,
                                  data->passes[row->pass].name),
         string8_create_formatted(
             ui->frame_allocator, "%.2f ms  \xc2\xb7  %3.0f%%", top_ms[r],
-            total > 0.0f ? 100.0f * top_ms[r] / total : 0.0f));
+            share_of > 0.0f ? 100.0f * top_ms[r] / share_of : 0.0f));
     if (line) {
       line->dot = perf_pass_color(perf, row->pass);
+      line->has_dot = true_v;
+    }
+  }
+  if (spanned) {
+    const float32_t outside = Max(gpu_ms - total, 0.0f);
+    PerfLine *line = perf_line(
+        lines, PERF_LINE_VALUE, string8_lit("Outside any pass"),
+        string8_create_formatted(
+            ui->frame_allocator, "%.2f ms  \xc2\xb7  %3.0f%%", outside,
+            share_of > 0.0f ? 100.0f * outside / share_of : 0.0f));
+    if (line) {
+      line->dot = PERF_PASS_OUTSIDE_COLOR;
+      line->dot.w = 1.0f;
       line->has_dot = true_v;
     }
   }
@@ -2853,6 +3129,24 @@ vkr_internal void perf_inspector_row(VkrEditorUi *editor, VkrUiSystem *ui,
 }
 
 /* The spike before or after `at`, or UINT64_MAX. */
+/* The frame before or after `at` a step goes to: the neighbouring frame,
+   or, when the Scene renders on fewer frames than the loop runs, the
+   neighbouring frame that rendered one. UINT64_MAX past either end. */
+vkr_internal uint64_t perf_step_frame(const VkrEditorRecordingPerf *perf,
+                                      uint64_t at, bool8_t forward) {
+  const VkrRecordingData *data = &perf->data;
+  uint64_t f = at;
+  for (;;) {
+    if (forward ? f + 1u >= data->frame_count : f == 0u) {
+      return UINT64_MAX;
+    }
+    f = forward ? f + 1u : f - 1u;
+    if (vkr_recording_data_rendered(data, f)) {
+      return f;
+    }
+  }
+}
+
 vkr_internal uint64_t perf_spike_near(const VkrEditorRecordingPerf *perf,
                                       uint64_t at, bool8_t forward) {
   uint64_t best = UINT64_MAX;
@@ -2909,10 +3203,12 @@ vkr_internal void perf_inspector_title(VkrEditorUi *editor,
   } steps[] = {
       {VKR_UI_ICON_ARROW_LEFT, "Previous spike",
        perf_spike_near(perf, at, false_v)},
-      {VKR_UI_ICON_CHEVRON_LEFT, "Previous frame",
-       at > 0u ? at - 1u : UINT64_MAX},
-      {VKR_UI_ICON_CHEVRON_RIGHT, "Next frame",
-       at < last ? at + 1u : UINT64_MAX},
+      {VKR_UI_ICON_CHEVRON_LEFT,
+       perf->data.scene_decoupled ? "Previous Scene frame" : "Previous frame",
+       perf_step_frame(perf, at, false_v)},
+      {VKR_UI_ICON_CHEVRON_RIGHT,
+       perf->data.scene_decoupled ? "Next Scene frame" : "Next frame",
+       perf_step_frame(perf, at, true_v)},
       {VKR_UI_ICON_ARROW_RIGHT, "Next spike",
        perf_spike_near(perf, at, true_v)},
   };
@@ -2959,7 +3255,11 @@ vkr_internal void perf_inspector(VkrEditorUi *editor,
   VkrUiSystem *ui = frame->ui;
   const VkrUiTheme *theme = vkr_ui_theme();
   const bool8_t selected = perf->selected < perf->data.frame_count;
-  const uint64_t at = selected ? perf->selected : perf->hover_frame;
+  const uint64_t pointed = selected ? perf->selected : perf->hover_frame;
+  /* Frames that only presented the editor UI hold no Scene figures. */
+  const uint64_t at = pointed < perf->data.frame_count
+                          ? vkr_recording_data_rendered_at(&perf->data, pointed)
+                          : pointed;
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack rows[] = {
       {.value = theme->control_height, .unit = VKR_UI_TRACK_PX}, fill};
@@ -3001,34 +3301,7 @@ vkr_internal void perf_inspector(VkrEditorUi *editor,
     float64_t frame_ms = 0.0;
     const bool8_t timed =
         vkr_recording_data_frame_ms(&perf->data, at, &frame_ms);
-    const float64_t budget = perf->analysis.budget_ms;
-    PerfLine *time =
-        perf_line(lines, PERF_LINE_VALUE, string8_lit("Frame time"),
-                  timed ? string8_create_formatted(ui->frame_allocator,
-                                                   "%.2f ms", frame_ms)
-                        : string8_lit("not measured"));
-    if (time && timed) {
-      time->color = frame_ms > 2.0 * budget ? theme->error
-                    : frame_ms > budget     ? theme->warning
-                                            : theme->success;
-    }
-    (void)perf_line(lines, PERF_LINE_VALUE, string8_lit("Time"),
-                    string8_create_formatted(ui->frame_allocator, "%.3f s",
-                                             perf->data.times[at]));
-    /* With the presenter (ADR-111) some frames only present the UI over
-       the last Scene: they built no render graph. */
-    const uint32_t graph =
-        vkr_recording_data_find_series(&perf->data, "cpu.graph_build");
-    float64_t built = 0.0;
-    if (graph != UINT32_MAX && !perf_value(&perf->data, graph, at, &built)) {
-      PerfLine *note =
-          perf_line(lines, PERF_LINE_NOTE,
-                    string8_lit("UI-only frame: it presented the last Scene"),
-                    (String8){0});
-      if (note) {
-        note->color = theme->text_secondary;
-      }
-    }
+    perf_inspect_frame(ui, perf, at, frame_ms, timed, lines);
     perf_inspect_spike(ui, perf, at, lines);
     perf_inspect_stages(ui, perf, at, lines);
     perf_inspect_passes(ui, perf, at, lines);
@@ -3387,14 +3660,15 @@ vkr_internal void perf_zoom_controls(VkrEditorUi *editor, VkrUiSystem *ui,
 /* The window's first row: what A is, and the comparison when one is open. */
 vkr_internal void perf_header(VkrEditorUi *editor,
                               const VkrSampleUiFrame *frame, uint32_t row) {
-  const VkrEditorRecordingPerf *perf = &editor->recording.perf;
+  VkrEditorRecordingPerf *perf = &editor->recording.perf;
   VkrUiSystem *ui = frame->ui;
   const VkrRecordingData *data = &perf->data;
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
   const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
-  const VkrUiTrack columns[] = {fill, auto_track, auto_track, auto_track};
-  const uint32_t reading_column = 2u;
-  const uint32_t compare_column = perf->loading ? 3u : 2u;
+  const VkrUiTrack columns[] = {fill,       auto_track, auto_track,
+                                auto_track, auto_track, auto_track};
+  const uint32_t reading_column = 4u;
+  const uint32_t compare_column = perf->loading ? 5u : 4u;
   VkrUiPanelConfig header = vkr_editor_perf_grid(
       vkr_editor_perf_cell(0u, row), columns,
       compare_column + (perf->comparing ? 1u : 0u), &fill, 1u);
@@ -3402,7 +3676,24 @@ vkr_internal void perf_header(VkrEditorUi *editor,
   if (!vkr_ui_panel_begin(ui, string8_lit("header"), &header)) {
     return;
   }
-  perf_zoom_controls(editor, ui, 1u);
+  /* How often the tabs follow a playing recording, which is also the span
+     the Render graph averages over. */
+  vkr_editor_perf_caption(ui, "update.caption", string8_lit("Update"),
+                          vkr_editor_perf_cell(1u, 0u),
+                          vkr_ui_theme()->text_secondary);
+  VkrUiPlacement update = vkr_editor_perf_cell(2u, 0u);
+  update.align = VKR_UI_ALIGN_CENTER;
+  const uint32_t rate =
+      perf->view.update_rate > 0u &&
+              perf->view.update_rate <= ArrayCount(PERF_UPDATE_MS)
+          ? perf->view.update_rate - 1u
+          : PERF_UPDATE_DEFAULT;
+  perf->view.update_rate =
+      vkr_editor_perf_segmented(ui, "update", update, PERF_UPDATE_LABEL,
+                                PERF_UPDATE_TIP, ArrayCount(PERF_UPDATE_MS),
+                                rate) +
+      1u;
+  perf_zoom_controls(editor, ui, 3u);
   if (perf->loading) {
     perf_reading_chip(editor, ui, reading_column);
   }
@@ -3578,14 +3869,54 @@ static const struct {
      VKR_UI_ICON_GPU},
 };
 
-uint64_t vkr_editor_perf_focus(const VkrEditorRecordingPerf *perf,
-                               const VkrSampleUiFrame *frame) {
+uint32_t vkr_editor_perf_update_ms(const VkrEditorRecordingPerf *perf) {
+  const uint32_t rate = perf->view.update_rate;
+  return rate > 0u && rate <= ArrayCount(PERF_UPDATE_MS)
+             ? PERF_UPDATE_MS[rate - 1u]
+             : PERF_UPDATE_MS[PERF_UPDATE_DEFAULT];
+}
+
+uint64_t vkr_editor_perf_window(const VkrEditorRecordingPerf *perf, uint64_t at,
+                                uint32_t rate_ms, uint64_t *first,
+                                uint64_t *last) {
+  const VkrRecordingData *data = &perf->data;
+  if (rate_ms == 0u || at >= data->frame_count) {
+    *first = *last = at;
+    return at;
+  }
+  const float64_t period = (float64_t)rate_ms * 1.0e-3;
+  const uint64_t step = (uint64_t)(data->times[at] / period);
+  uint64_t a = at;
+  while (a > 0u && (uint64_t)(data->times[a - 1u] / period) == step) {
+    --a;
+  }
+  uint64_t b = at;
+  while (b + 1u < data->frame_count &&
+         (uint64_t)(data->times[b + 1u] / period) == step) {
+    ++b;
+  }
+  *first = a;
+  *last = b;
+  return step;
+}
+
+/* The frame the tabs describe, before it snaps to a rendered one: a playing
+   playback's, held for the update period, else the selection, the
+   playhead, or the frame under the pointer. */
+vkr_internal uint64_t perf_focus_raw(const VkrEditorRecordingPerf *perf,
+                                     const VkrSampleUiFrame *frame) {
   const VkrRecordingPlayback *playback = perf_playback(perf, frame);
   const uint64_t playhead =
       playback ? vkr_recording_playback_frame_at(playback, playback->time)
                : UINT64_MAX;
   if (playback && playback->playing && playhead < perf->data.frame_count) {
-    return playhead;
+    /* A playing recording moves the tabs once per update period, at the
+       period's first frame, so the numbers can be read. */
+    uint64_t first = playhead;
+    uint64_t last = playhead;
+    (void)vkr_editor_perf_window(
+        perf, playhead, vkr_editor_perf_update_ms(perf), &first, &last);
+    return first;
   }
   if (perf->selected < perf->data.frame_count) {
     return perf->selected;
@@ -3595,6 +3926,14 @@ uint64_t vkr_editor_perf_focus(const VkrEditorRecordingPerf *perf,
   }
   return perf->hover_frame < perf->data.frame_count ? perf->hover_frame
                                                     : UINT64_MAX;
+}
+
+uint64_t vkr_editor_perf_focus(const VkrEditorRecordingPerf *perf,
+                               const VkrSampleUiFrame *frame) {
+  const uint64_t at = perf_focus_raw(perf, frame);
+  /* Frames that only presented the editor UI hold no Scene figures. */
+  return at == UINT64_MAX ? at
+                          : vkr_recording_data_rendered_at(&perf->data, at);
 }
 
 void vkr_editor_perf_empty(VkrEditorUi *editor, VkrUiSystem *ui,

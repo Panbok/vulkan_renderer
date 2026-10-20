@@ -275,13 +275,17 @@ typedef struct VkrEditorPerfDraws {
   bool8_t valid;
   float32_t counts[VKR_EDITOR_PERF_DRAW_SERIES][VKR_EDITOR_PERF_COLUMNS];
   float32_t top;
-  /* The box set the arrays below follow, its objects' extent on the ground
-     (x, z) and their order by footprint, largest first. */
+  /* The box set the arrays below follow, the level's extent on the ground
+     (x, z: the 1st to 99th percentile of object centres with the camera's
+     route, so one huge terrain does not set it), the route's own extent,
+     and the objects' order by footprint, largest first. */
   uint32_t bounds;
   uint32_t object_count;
   uint32_t *order;
   Vec2 extent_min;
   Vec2 extent_max;
+  Vec2 route_min;
+  Vec2 route_max;
   /* Each candidate of id table `ids`'s object index, or UINT32_MAX. */
   uint32_t ids;
   uint32_t candidate_count;
@@ -330,12 +334,14 @@ typedef struct VkrEditorRecordingPerfView {
   /* Series whose name holds this text, ASCII case-insensitive. */
   uint8_t series_search[64];
   uint32_t series_search_length;
-  /* Render graph tab: the flow instead of the list, the update period as
-     an index into its choices plus one (zero for the default), the value
-     shown (VkrEditorPerfGraphValue), the pass table, the flow's canvas, and
-     the selected pass by name. */
+  /* How often the tabs follow a playing recording and the span the Render
+     graph averages over: an index into Frame, 200 ms and 1 s plus one, zero
+     for the default 200 ms (vkr_editor_perf_update_ms). */
+  uint32_t update_rate;
+  /* Render graph tab: the flow instead of the list, the value shown
+     (VkrEditorPerfGraphValue), the pass table, the flow's canvas, and the
+     selected pass by name. */
   bool8_t graph_flow;
-  uint32_t graph_rate;
   uint32_t graph_value;
   VkrEditorTable graph_table;
   VkrEditorPerfCanvas graph_canvas;
@@ -367,6 +373,8 @@ typedef struct VkrEditorRecordingPerfView {
   VkrEditorPerfCanvas draws_canvas;
   uint32_t draws_layers;
   bool8_t draws_follow;
+  /* What a fit shows: 0 the camera's route, 1 the level. */
+  uint32_t draws_fit;
   uint32_t draws_sections;
   VkrEditorTable draws_table;
 } VkrEditorRecordingPerfView;
@@ -450,6 +458,10 @@ typedef struct VkrEditorRecordingPerf {
   VkrRecordingStats view_time;
   float64_t view_low_1pct;
   uint64_t view_over_budget;
+  /* The shown frames' GPU frame (gpu.submission) and editor loop
+     (frame.wall) statistics, which the cards show beside the frame time. */
+  VkrRecordingStats view_gpu;
+  VkrRecordingStats view_loop;
   /* A metrics series the Series table charted, or UINT32_MAX, and its
      columns and range. */
   uint32_t chart_series;
@@ -980,9 +992,27 @@ void vkr_editor_recording_perf_build(struct VkrEditorUi *editor,
                                      const VkrSampleUiFrame *frame,
                                      VkrUiRect bounds);
 
+/** A metric's readable label: "draw.local_shadow.faces_full" reads "Local
+ * shadow · faces full", with a few names spelled out. */
+void vkr_editor_perf_metric_label(const char *name, char *out,
+                                  uint64_t capacity);
+
+/** The update period in ms (VkrEditorRecordingPerfView.update_rate); zero
+ * follows every frame. */
+uint32_t vkr_editor_perf_update_ms(const struct VkrEditorRecordingPerf *perf);
+
+/** The frames [first, last] of the `rate_ms` period of recording time that
+ * holds `at`, and the period's index; every frame is its own period at rate
+ * zero. */
+uint64_t vkr_editor_perf_window(const struct VkrEditorRecordingPerf *perf,
+                                uint64_t at, uint32_t rate_ms, uint64_t *first,
+                                uint64_t *last);
+
 /** The frame the Performance window's tabs describe: the open playback's
- * playhead while it plays, else the selected frame, else the playhead, else
- * the frame under the pointer on a chart; UINT64_MAX when there is none. */
+ * playhead while it plays, held for the update period, else the selected
+ * frame, else the playhead, else the frame under the pointer on a chart;
+ * then the newest frame at or before it that rendered a Scene. UINT64_MAX
+ * when there is none. */
 uint64_t vkr_editor_perf_focus(const VkrEditorRecordingPerf *perf,
                                const VkrSampleUiFrame *frame);
 

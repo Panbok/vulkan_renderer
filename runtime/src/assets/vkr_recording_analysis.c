@@ -109,6 +109,11 @@ typedef struct VkrRecordingDataLoad {
   uint64_t draw_id_values;
   uint64_t draw_id_values_used;
   uint64_t draw_words;
+  /* Census frames kept: one of every draw_stride, so a recording whose
+     census exceeds the word budget keeps frames across all of it rather
+     than its beginning; and the census records seen so far. */
+  uint32_t draw_stride;
+  uint64_t draw_seen;
   /* Hardware facts and pipeline records that parse, and their
      statistics. */
   uint32_t hardware_capacity;
@@ -852,14 +857,15 @@ vkr_recording_data_fill_passes(VkrRecordingDataLoad *load,
   load->raw_rows = Min(rows, VKR_RECORDING_PASS_MAX);
 }
 
-/* A pass_starts record, kept only to place imported GPU counters: the
-   frame's GPU span, and its rows' starts when the passes record before it
-   was the same frame's. */
+/* A pass_starts record: the frame's GPU time from its first command
+   buffer's start to its last's end, and, to place imported GPU counters,
+   that span on the CPU clock and its rows' starts when the passes record
+   before it was the same frame's. */
 vkr_internal void
 vkr_recording_data_fill_pass_starts(VkrRecordingDataLoad *load,
                                     const VkrRecordingRecord *record) {
   const uint64_t frame = record->frame;
-  if (!load->gpu_spans || frame >= load->data->frame_count ||
+  if (!load->data->pass_block || frame >= load->data->frame_count ||
       record->size < VKR_RECORDING_PASS_STARTS_HEADER_SIZE) {
     return;
   }
@@ -873,6 +879,11 @@ vkr_recording_data_fill_pass_starts(VkrRecordingDataLoad *load,
   const uint64_t start_ns = vkr_load_le_u64(record->data + 8u);
   const uint64_t end_ns = vkr_load_le_u64(record->data + 16u);
   if (start_ns == 0u || end_ns <= start_ns) {
+    return;
+  }
+  load->data->gpu_frame_ms[frame] =
+      (float32_t)((float64_t)(end_ns - start_ns) * 1.0e-6);
+  if (!load->gpu_spans) {
     return;
   }
   load->gpu_spans[frame * 2u] = start_ns;
@@ -995,7 +1006,8 @@ vkr_recording_data_fill_draws(VkrRecordingDataLoad *load,
   if (words == UINT32_MAX || data->draw_id_table[frame] != UINT32_MAX) {
     return;
   }
-  if (data->draw_word_count + words > load->draw_words) {
+  if (load->draw_seen++ % load->draw_stride != 0u ||
+      data->draw_word_count + words > load->draw_words) {
     data->draw_words_cut += words;
     return;
   }
@@ -1419,8 +1431,9 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
 vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
   VkrRecordingData *data = load->data;
   const uint64_t frames = load->frame_count;
+  /* The metrics, the measurements, then the derived Scene frame time. */
   const uint64_t series =
-      (uint64_t)load->metric_count + load->measurement_capacity;
+      (uint64_t)load->metric_count + load->measurement_capacity + 1u;
   const uint64_t series_bytes =
       vkr_align_up_u64(sizeof(VkrRecordingSeries) * series, 8u);
   const uint64_t marker_bytes = vkr_align_up_u64(
@@ -1483,6 +1496,10 @@ vkr_internal bool8_t vkr_recording_data_allocate(VkrRecordingDataLoad *load) {
     MemCopy(data->series[i].name, field->name, string_length(field->name));
     MemCopy(data->series[i].unit, field->unit, string_length(field->unit));
   }
+  VkrRecordingSeries *scene = &data->series[series - 1u];
+  string_format(scene->name, sizeof(scene->name), "%s",
+                VKR_RECORDING_SCENE_FRAME_SERIES);
+  string_format(scene->unit, sizeof(scene->unit), "ms");
   return true_v;
 }
 
@@ -1502,8 +1519,9 @@ vkr_recording_data_allocate_passes(VkrRecordingDataLoad *load) {
       vkr_align_up_u64(sizeof(VkrRecordingPassRow) * load->pass_rows, 8u);
   const uint64_t first_bytes = sizeof(uint64_t) * frames;
   const uint64_t count_bytes = sizeof(uint16_t) * frames;
+  const uint64_t span_bytes = sizeof(float32_t) * frames;
   const uint64_t block_bytes =
-      name_bytes + row_bytes + first_bytes + count_bytes + frames;
+      name_bytes + row_bytes + first_bytes + span_bytes + count_bytes + frames;
   uint8_t *block = vkr_allocator_alloc(data->allocator, block_bytes,
                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!block) {
@@ -1516,8 +1534,12 @@ vkr_recording_data_allocate_passes(VkrRecordingDataLoad *load) {
   data->pass_count = load->pass_capacity;
   data->pass_rows = (VkrRecordingPassRow *)(block + name_bytes);
   data->pass_first = (uint64_t *)(block + name_bytes + row_bytes);
-  data->pass_row_counts = (uint16_t *)(data->pass_first + frames);
+  data->gpu_frame_ms = (float32_t *)(data->pass_first + frames);
+  data->pass_row_counts = (uint16_t *)(data->gpu_frame_ms + frames);
   data->pass_frame_flags = (uint8_t *)(data->pass_row_counts + frames);
+  for (uint64_t i = 0u; i < frames; ++i) {
+    data->gpu_frame_ms[i] = (float32_t)VKR_FLOAT_NAN;
+  }
   return true_v;
 }
 
@@ -1691,8 +1713,15 @@ vkr_recording_data_allocate_draws(VkrRecordingDataLoad *load) {
     return true_v;
   }
   const uint64_t frames = data->frame_count;
-  load->draw_words =
-      Min(load->draw_words, 4ull * VKR_RECORDING_DATA_PASS_ROW_MAX);
+  /* A census over the budget keeps every draw_stride-th frame, with a
+     frame's worth of room for records that differ in size. */
+  const uint64_t budget = 4ull * VKR_RECORDING_DATA_PASS_ROW_MAX;
+  load->draw_stride =
+      load->draw_words > budget
+          ? (uint32_t)((load->draw_words + budget - 1u) / budget) + 1u
+          : 1u;
+  data->draw_stride = load->draw_stride;
+  load->draw_words = Min(load->draw_words, budget);
   const uint64_t bounds_bytes = vkr_align_up_u64(
       sizeof(VkrRecordingDrawBounds) * load->draw_bounds_capacity +
           sizeof(VkrRecordingDrawObject) * load->draw_objects,
@@ -1800,6 +1829,82 @@ vkr_internal int32_t vkr_recording_compare_events(const void *lhs,
   return a->ms < b->ms ? -1 : (a->ms > b->ms ? 1 : 0);
 }
 
+/* Whether series `series` has a sample. */
+vkr_internal bool8_t
+vkr_recording_data_has_samples(const VkrRecordingData *data, uint32_t series) {
+  for (uint64_t i = 0u; series != UINT32_MAX && i < data->frame_count; ++i) {
+    if (data->series[series].valid[i]) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Which frames rendered a Scene, and the Scene's frame time when it renders
+   on fewer frames than the loop runs (the editor presenter, ADR-111): the
+   recorded frame.scene_interval, from GPU completions, or for recordings
+   without it the derived frame.scene, the loop time between the frames that
+   built a Scene. Either becomes the frame-time series; the derived series
+   is dropped when unused. cpu.graph_build is measured only while a Scene
+   frame is built. */
+vkr_internal void vkr_recording_data_finish_scene(VkrRecordingData *data) {
+  const uint32_t derived = data->series_count - 1u;
+  data->rendered_series =
+      vkr_recording_data_find_series(data, "cpu.graph_build");
+  data->rendered_frames = data->frame_count;
+  if (data->rendered_series != UINT32_MAX) {
+    uint64_t rendered = 0u;
+    for (uint64_t i = 0u; i < data->frame_count; ++i) {
+      rendered += data->series[data->rendered_series].valid[i] ? 1u : 0u;
+    }
+    /* Every frame renders outside the presenter, save a few around loads. */
+    data->scene_decoupled =
+        rendered > 0u && rendered * 20u < data->frame_count * 19u;
+    data->rendered_frames =
+        data->scene_decoupled ? rendered : data->frame_count;
+  }
+  /* A render-side figure (draws, passes, GPU) is a counter that reads zero
+     on frames that rendered no Scene, which is not a measurement: series
+     that are never non-zero there leave those frames unsampled, so their
+     means and medians cover rendered frames only. */
+  if (data->scene_decoupled) {
+    const uint8_t *rendered = data->series[data->rendered_series].valid;
+    for (uint32_t s = 0u; s < derived; ++s) {
+      VkrRecordingSeries *series = &data->series[s];
+      bool8_t idle_value = false_v;
+      for (uint64_t i = 0u; i < data->frame_count && !idle_value; ++i) {
+        idle_value =
+            !rendered[i] && series->valid[i] && series->values[i] != 0.0;
+      }
+      for (uint64_t i = 0u; i < data->frame_count && !idle_value; ++i) {
+        series->valid[i] = rendered[i] ? series->valid[i] : 0u;
+      }
+    }
+  }
+  const uint32_t interval =
+      vkr_recording_data_find_series(data, "frame.scene_interval");
+  if (vkr_recording_data_has_samples(data, interval)) {
+    data->frame_time_series = interval;
+  } else if (data->scene_decoupled) {
+    VkrRecordingSeries *scene = &data->series[derived];
+    const uint8_t *rendered = data->series[data->rendered_series].valid;
+    uint64_t previous = UINT64_MAX;
+    for (uint64_t i = 0u; i < data->frame_count; ++i) {
+      if (!rendered[i]) {
+        continue;
+      }
+      if (previous != UINT64_MAX) {
+        scene->values[i] = (data->times[i] - data->times[previous]) * 1000.0;
+        scene->valid[i] = 1u;
+      }
+      previous = i;
+    }
+    data->frame_time_series = derived;
+    return;
+  }
+  data->series_count = derived;
+}
+
 /* Repeats the last frame and pose over lost ones, builds the clock and picks
    the frame-time series. */
 vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
@@ -1838,6 +1943,10 @@ vkr_internal void vkr_recording_data_finish(VkrRecordingData *data) {
   }
 
   data->frame_time_series = UINT32_MAX;
+  vkr_recording_data_finish_scene(data);
+  if (data->frame_time_series != UINT32_MAX) {
+    return;
+  }
   const uint32_t wall = vkr_recording_data_find_series(data, "frame.wall");
   if (wall == UINT32_MAX) {
     return;
@@ -2296,7 +2405,9 @@ bool8_t vkr_recording_data_frame_ms(const VkrRecordingData *data,
 }
 
 const char *vkr_recording_data_frame_source(const VkrRecordingData *data) {
-  return data->frame_time_series != UINT32_MAX ? "frame.wall" : "display_dt";
+  return data->frame_time_series != UINT32_MAX
+             ? data->series[data->frame_time_series].name
+             : "display_dt";
 }
 
 const VkrRecordingPassRow *
@@ -2342,6 +2453,23 @@ uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
       return frame + distance;
     }
     if (distance > frame && frame + distance >= data->frame_count) {
+      break;
+    }
+  }
+  return UINT64_MAX;
+}
+
+uint64_t vkr_recording_data_draw_frame_near(const VkrRecordingData *data,
+                                            uint64_t frame) {
+  if (!data->draw_block || frame >= data->frame_count) {
+    return UINT64_MAX;
+  }
+  const uint64_t reach = 8u + 4u * (uint64_t)data->draw_stride;
+  for (uint64_t f = frame, n = 0u; n <= reach; --f, ++n) {
+    if (data->draw_id_table[f] != UINT32_MAX) {
+      return f;
+    }
+    if (f == 0u) {
       break;
     }
   }

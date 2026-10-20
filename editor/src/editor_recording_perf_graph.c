@@ -10,18 +10,6 @@
    detail. Times hold still between updates of a chosen period, so they can
    be read while a playback plays; a value that moved flashes. */
 
-/* Update periods: every frame, then milliseconds of the recording. */
-static const uint32_t GRAPH_RATE_MS[] = {0u, 100u, 250u, 1000u};
-static const char *const GRAPH_RATE_LABEL[] = {"Frame", "100 ms", "250 ms",
-                                               "1 s"};
-static const char *const GRAPH_RATE_TIP[] = {
-    "Update with every frame",
-    "Update every 100 ms of the recording",
-    "Update every 250 ms of the recording",
-    "Update every second of the recording",
-};
-#define GRAPH_RATE_DEFAULT 2u
-
 static const char *const GRAPH_VALUE_LABEL[VKR_EDITOR_PERF_GRAPH_VALUE_COUNT] =
     {"Mean", "Max", "Frame"};
 static const char *const GRAPH_VALUE_TIP[VKR_EDITOR_PERF_GRAPH_VALUE_COUNT] = {
@@ -182,37 +170,6 @@ vkr_internal uint32_t graph_find(const VkrRecordingGraph *graph,
 /* ------------------------------------------------------------------------ */
 /* Values                                                                    */
 
-vkr_internal uint32_t graph_rate_index(const VkrEditorRecordingPerfView *view) {
-  return view->graph_rate > 0u && view->graph_rate <= ArrayCount(GRAPH_RATE_MS)
-             ? view->graph_rate - 1u
-             : GRAPH_RATE_DEFAULT;
-}
-
-/* The update window holding frame `at`: its step and frames. Every frame
-   is its own window at rate zero. */
-vkr_internal uint64_t graph_window(const VkrRecordingData *data, uint64_t at,
-                                   uint32_t rate_ms, uint64_t *first,
-                                   uint64_t *last) {
-  if (rate_ms == 0u) {
-    *first = *last = at;
-    return at;
-  }
-  const float64_t period = (float64_t)rate_ms * 1.0e-3;
-  const uint64_t step = (uint64_t)(data->times[at] / period);
-  uint64_t a = at;
-  while (a > 0u && (uint64_t)(data->times[a - 1u] / period) == step) {
-    --a;
-  }
-  uint64_t b = at;
-  while (b + 1u < data->frame_count &&
-         (uint64_t)(data->times[b + 1u] / period) == step) {
-    ++b;
-  }
-  *first = a;
-  *last = b;
-  return step;
-}
-
 /* Whether frame `f` has rows the shown times can use. */
 vkr_internal bool8_t graph_timed(const VkrRecordingData *data, uint64_t f,
                                  bool8_t gpu) {
@@ -353,12 +310,13 @@ vkr_internal void graph_update(VkrEditorRecordingPerf *perf, VkrUiSystem *ui,
   const VkrRecordingData *data = &perf->data;
   const VkrEditorRecordingPerfView *view = &perf->view;
   const uint32_t index = vkr_recording_data_graph_at(data, at);
-  const uint32_t rate = GRAPH_RATE_MS[graph_rate_index(view)];
+  /* The window's update period, which the times average over. */
+  const uint32_t rate = vkr_editor_perf_update_ms(perf);
   const uint32_t value =
       Min(view->graph_value, (uint32_t)VKR_EDITOR_PERF_GRAPH_VALUE_COUNT - 1u);
   uint64_t first = 0u;
   uint64_t last = 0u;
-  const uint64_t step = graph_window(data, at, rate, &first, &last);
+  const uint64_t step = vkr_editor_perf_window(perf, at, rate, &first, &last);
   /* The frame value follows every frame whatever the period. */
   const uint64_t key = value == VKR_EDITOR_PERF_GRAPH_FRAME ? at : step;
   const bool8_t same_view = graph->valid && graph->graph == index &&
@@ -416,7 +374,7 @@ vkr_internal void graph_update(VkrEditorRecordingPerf *perf, VkrUiSystem *ui,
     uint64_t a = 0u;
     uint64_t b = 0u;
     if (any) {
-      (void)graph_window(data, end - 1u, rate, &a, &b);
+      (void)vkr_editor_perf_window(perf, end - 1u, rate, &a, &b);
       end = a;
       (void)graph_values(data, map, passes, graph->gpu, value, b, a, b, ms,
                          cpu_ms, has);
@@ -443,8 +401,8 @@ vkr_internal void graph_toolbar(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  const VkrUiTrack columns[] = {auto_track, auto_track, auto_track, auto_track,
-                                fill,       auto_track, auto_track, auto_track};
+  const VkrUiTrack columns[] = {auto_track, auto_track, fill,
+                                auto_track, auto_track, auto_track};
   VkrUiPanelConfig row =
       vkr_editor_perf_grid(placement, columns, ArrayCount(columns), &fill, 1u);
   row.style.gap_pt = theme->space_md;
@@ -458,15 +416,8 @@ vkr_internal void graph_toolbar(VkrEditorUi *editor,
   view->graph_flow =
       vkr_editor_perf_segmented(ui, "graph.view", vkr_editor_perf_cell(0u, 0u),
                                 views, view_tips, 2u, view->graph_flow) == 1u;
-  VkrUiPlacement caption = vkr_editor_perf_cell(1u, 0u);
-  vkr_editor_perf_caption(ui, "graph.every", string8_lit("Update every"),
-                          caption, theme->text_secondary);
-  const uint32_t rate = vkr_editor_perf_segmented(
-      ui, "graph.rate", vkr_editor_perf_cell(2u, 0u), GRAPH_RATE_LABEL,
-      GRAPH_RATE_TIP, ArrayCount(GRAPH_RATE_MS), graph_rate_index(view));
-  view->graph_rate = rate + 1u;
   view->graph_value = vkr_editor_perf_segmented(
-      ui, "graph.value", vkr_editor_perf_cell(3u, 0u), GRAPH_VALUE_LABEL,
+      ui, "graph.value", vkr_editor_perf_cell(1u, 0u), GRAPH_VALUE_LABEL,
       GRAPH_VALUE_TIP, VKR_EDITOR_PERF_GRAPH_VALUE_COUNT,
       Min(view->graph_value, (uint32_t)VKR_EDITOR_PERF_GRAPH_VALUE_COUNT - 1u));
 
@@ -477,7 +428,7 @@ vkr_internal void graph_toolbar(VkrEditorUi *editor,
     const VkrRecordingGraph *shape = &data->graphs[index];
     VkrUiWidgetConfig version =
         vkr_editor_text_config(theme->font_caption, theme->text_secondary);
-    version.placement = vkr_editor_perf_cell(5u, 0u);
+    version.placement = vkr_editor_perf_cell(3u, 0u);
     version.placement.align = VKR_UI_ALIGN_CENTER;
     version.tooltip = string8_lit(
         "The graph's shape changes when passes are added, removed or culled; "
@@ -507,7 +458,7 @@ vkr_internal void graph_toolbar(VkrEditorUi *editor,
     };
     for (uint32_t i = 0u; i < ArrayCount(steps); ++i) {
       VkrUiWidgetConfig button = vkr_editor_icon_button_config(
-          6u + i, 0u, steps[i].icon,
+          4u + i, 0u, steps[i].icon,
           string8_create_from_cstr((const uint8_t *)steps[i].tip,
                                    string_length(steps[i].tip)));
       button.disabled = steps[i].target == UINT32_MAX;

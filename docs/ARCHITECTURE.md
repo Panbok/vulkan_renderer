@@ -1464,7 +1464,11 @@ The editor traces itself with Instruments' GPU counters while it records
 (the Recordings window's GPU counters, `rec.start {gpu_counters}`,
 `rec.counters`) and imports them into the bundle on its own thread, placed
 on frames by per-frame `Clock` signposts; `vkr_rec counters` imports a trace
-taken by hand, and the HW tab shows them per frame and per pass.
+taken by hand, and the HW tab shows them per frame and per pass. With the
+editor presenter the window's frame time is the Scene's
+(`frame.scene_interval`, the time between finished Scene frames), its
+render-side figures cover the frames that rendered a Scene, and a playing
+recording updates the tabs every 200 ms by default.
 
 ## Remaining implementation and evidence boundaries
 

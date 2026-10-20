@@ -584,9 +584,10 @@ vkr_internal void backend_counters(VkrEditorUi *editor,
         ++valid;
       }
     }
+    char label[96];
+    vkr_editor_perf_metric_label(s->name, label, sizeof(label));
     String8 cells[COUNTER_COLUMNS] = {
-        string8_create_from_cstr((const uint8_t *)s->name,
-                                 string_length(s->name)),
+        string8_create_formatted(ui->frame_allocator, "%s", label),
         at < data->frame_count && s->valid[at]
             ? backend_number(ui, s->values[at], s->unit)
             : string8_lit("\xe2\x80\x94"),

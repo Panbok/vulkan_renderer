@@ -126,6 +126,65 @@ vkr_internal float32_t draws_footprint(const VkrRecordingDrawObject *object) {
          Max(object->max[2] - object->min[2], 0.0f);
 }
 
+vkr_internal int32_t draws_compare_f32(const void *lhs, const void *rhs) {
+  const float32_t a = *(const float32_t *)lhs;
+  const float32_t b = *(const float32_t *)rhs;
+  return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+/* The camera's route on the ground, and the level's: the 1st to 99th
+   percentile of object centres, so a terrain kilometres wide or a stray
+   far object does not shrink everything else to a dot, widened by the
+   route. */
+vkr_internal void draws_extents(VkrEditorRecordingPerf *perf,
+                                const VkrRecordingDrawBounds *set) {
+  VkrEditorPerfDraws *draws = &perf->draws;
+  const VkrRecordingData *data = &perf->data;
+  draws->route_min = (Vec2){1.0e30f, 1.0e30f};
+  draws->route_max = (Vec2){-1.0e30f, -1.0e30f};
+  for (uint64_t f = 0u; f < data->frame_count; ++f) {
+    const float32_t x = (float32_t)data->positions[f * 3u];
+    const float32_t z = (float32_t)data->positions[f * 3u + 2u];
+    draws->route_min =
+        (Vec2){Min(draws->route_min.x, x), Min(draws->route_min.y, z)};
+    draws->route_max =
+        (Vec2){Max(draws->route_max.x, x), Max(draws->route_max.y, z)};
+  }
+  draws->extent_min = draws->route_min;
+  draws->extent_max = draws->route_max;
+  const uint32_t count = set->object_count;
+  float32_t *xs = count ? vkr_allocator_alloc(perf->allocator,
+                                              sizeof(float32_t) * 2u * count,
+                                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+                        : NULL;
+  if (!xs) {
+    return;
+  }
+  float32_t *zs = xs + count;
+  uint32_t centres = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrRecordingDrawObject *object = &set->objects[i];
+    const float32_t x = (object->min[0] + object->max[0]) * 0.5f;
+    const float32_t z = (object->min[2] + object->max[2]) * 0.5f;
+    if (vkr_is_finite_f32(x) && vkr_is_finite_f32(z)) {
+      xs[centres] = x;
+      zs[centres++] = z;
+    }
+  }
+  if (centres > 0u) {
+    vkr_sort(xs, centres, sizeof(float32_t), draws_compare_f32);
+    vkr_sort(zs, centres, sizeof(float32_t), draws_compare_f32);
+    const uint32_t low = centres / 100u;
+    const uint32_t high = centres - 1u - centres / 100u;
+    draws->extent_min = (Vec2){Min(draws->extent_min.x, xs[low]),
+                               Min(draws->extent_min.y, zs[low])};
+    draws->extent_max = (Vec2){Max(draws->extent_max.x, xs[high]),
+                               Max(draws->extent_max.y, zs[high])};
+  }
+  vkr_allocator_free(perf->allocator, xs, sizeof(float32_t) * 2u * count,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+}
+
 /* Takes box set `bounds`: the objects' order by footprint and the level's
    extent. False without memory. */
 vkr_internal bool8_t draws_take_bounds(VkrEditorRecordingPerf *perf,
@@ -155,18 +214,9 @@ vkr_internal bool8_t draws_take_bounds(VkrEditorRecordingPerf *perf,
   }
   draws->bounds = bounds;
   draws->state_frame = UINT64_MAX;
-  draws->extent_min = (Vec2){1.0e30f, 1.0e30f};
-  draws->extent_max = (Vec2){-1.0e30f, -1.0e30f};
   for (uint32_t i = 0u; i < count; ++i) {
-    const VkrRecordingDrawObject *object = &set->objects[i];
-    areas[i] = (DrawsArea){.index = i, .area = draws_footprint(object)};
-    if (vkr_is_finite_f32(object->min[0]) &&
-        vkr_is_finite_f32(object->max[2])) {
-      draws->extent_min.x = Min(draws->extent_min.x, object->min[0]);
-      draws->extent_min.y = Min(draws->extent_min.y, object->min[2]);
-      draws->extent_max.x = Max(draws->extent_max.x, object->max[0]);
-      draws->extent_max.y = Max(draws->extent_max.y, object->max[2]);
-    }
+    areas[i] =
+        (DrawsArea){.index = i, .area = draws_footprint(&set->objects[i])};
   }
   vkr_sort(areas, count, sizeof(DrawsArea), draws_compare_area);
   for (uint32_t i = 0u; i < count; ++i) {
@@ -174,16 +224,7 @@ vkr_internal bool8_t draws_take_bounds(VkrEditorRecordingPerf *perf,
   }
   vkr_allocator_free(perf->allocator, areas, sizeof(DrawsArea) * count,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  /* The camera's path widens the extent. */
-  const VkrRecordingData *data = &perf->data;
-  for (uint64_t f = 0u; f < data->frame_count; ++f) {
-    const float32_t x = (float32_t)data->positions[f * 3u];
-    const float32_t z = (float32_t)data->positions[f * 3u + 2u];
-    draws->extent_min =
-        (Vec2){Min(draws->extent_min.x, x), Min(draws->extent_min.y, z)};
-    draws->extent_max =
-        (Vec2){Max(draws->extent_max.x, x), Max(draws->extent_max.y, z)};
-  }
+  draws_extents(perf, set);
   return true_v;
 }
 
@@ -252,7 +293,8 @@ vkr_internal void draws_take_frame(VkrEditorRecordingPerf *perf,
   MemSet(draws->object_state, UINT8_MAX, draws->object_count);
   MemZero(draws->state_counts, sizeof(draws->state_counts));
   VkrRecordingDrawFrame census;
-  if (!vkr_recording_data_draw_frame(data, frame, &census) ||
+  if (!vkr_recording_data_draw_frame(
+          data, vkr_recording_data_draw_frame_near(data, frame), &census) ||
       !draws_take_ids(perf, &census)) {
     return;
   }
@@ -288,7 +330,8 @@ vkr_internal void draws_update(VkrEditorRecordingPerf *perf) {
     uint32_t counts[VKR_RECORDING_DRAW_STATE_DISTANCE + 1u] = {0};
     VkrRecordingDrawFrame census;
     const uint64_t frame = perf->column_frame[c];
-    if (vkr_recording_data_draw_frame(data, frame, &census)) {
+    if (vkr_recording_data_draw_frame(
+            data, vkr_recording_data_draw_frame_near(data, frame), &census)) {
       for (uint32_t i = 0u; i < census.count; ++i) {
         const uint32_t state = vkr_recording_draw_state(census.words, i);
         if (state <= VKR_RECORDING_DRAW_STATE_DISTANCE) {
@@ -339,7 +382,7 @@ vkr_internal void draws_toolbar(VkrEditorUi *editor,
   const VkrUiTheme *theme = vkr_ui_theme();
   const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
   const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
-  VkrUiTrack columns[2u + ArrayCount(DRAWS_LAYERS) + 2u];
+  VkrUiTrack columns[2u + ArrayCount(DRAWS_LAYERS) + 3u];
   columns[0] = fill;
   for (uint32_t i = 1u; i < ArrayCount(columns); ++i) {
     columns[i] = auto_track;
@@ -398,14 +441,28 @@ vkr_internal void draws_toolbar(VkrEditorUi *editor,
                     &follow)) {
     view->draws_follow = !view->draws_follow;
   }
-  VkrUiWidgetConfig fit = follow;
-  fit.placement = vkr_editor_perf_cell(follow_column + 1u, 0u);
-  vkr_editor_toggle_style(&fit, false_v);
-  fit.icon = VKR_UI_ICON_FRAME;
-  fit.tooltip = string8_lit("Fit the whole level in view");
-  if (vkr_ui_button(ui, string8_lit("fit"), string8_lit("Fit"), &fit)) {
-    view->draws_canvas.fitted = false_v;
-    view->draws_follow = false_v;
+  /* Fits: where the camera went, where culling matters, or the level. */
+  static const char *const fits[] = {"Route", "Level"};
+  static const char *const fit_tips[] = {
+      "Fit the camera's route, where this recording's culling happened",
+      "Fit the level, its outlying objects and kilometre-wide terrain aside"};
+  for (uint32_t i = 0u; i < ArrayCount(fits); ++i) {
+    VkrUiWidgetConfig fit = follow;
+    fit.placement = vkr_editor_perf_cell(follow_column + 1u + i, 0u);
+    vkr_editor_toggle_style(&fit, view->draws_fit == i && !view->draws_follow);
+    fit.icon = i == 0u ? VKR_UI_ICON_FRAME : VKR_UI_ICON_WORLD;
+    fit.tooltip = string8_create_from_cstr((const uint8_t *)fit_tips[i],
+                                           string_length(fit_tips[i]));
+    (void)vkr_ui_push_id_u64(ui, i);
+    if (vkr_ui_button(ui, string8_lit("fit"),
+                      string8_create_from_cstr((const uint8_t *)fits[i],
+                                               string_length(fits[i])),
+                      &fit)) {
+      view->draws_fit = i;
+      view->draws_canvas.fitted = false_v;
+      view->draws_follow = false_v;
+    }
+    (void)vkr_ui_pop_id(ui);
   }
   (void)vkr_ui_panel_end(ui);
 }
@@ -831,8 +888,17 @@ vkr_internal void draws_map(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
   const VkrEditorPerfCanvasInput input = vkr_editor_perf_canvas_input(
       ui, "draws.canvas", canvas, vkr_editor_perf_cell(0u, 0u), tip);
   if ((!canvas->fitted || canvas->zoom <= 0.0f) && canvas->size_pt.x > 1.0f) {
-    vkr_editor_perf_canvas_fit(canvas, draws->extent_min, draws->extent_max,
-                               20.0f);
+    /* The route with room for what the camera saw around it. */
+    Vec2 min = draws->extent_min;
+    Vec2 max = draws->extent_max;
+    if (view->draws_fit == 0u && draws->route_max.x >= draws->route_min.x) {
+      const float32_t margin =
+          Max(25.0f, 0.15f * Max(draws->route_max.x - draws->route_min.x,
+                                 draws->route_max.y - draws->route_min.y));
+      min = (Vec2){draws->route_min.x - margin, draws->route_min.y - margin};
+      max = (Vec2){draws->route_max.x + margin, draws->route_max.y + margin};
+    }
+    vkr_editor_perf_canvas_fit(canvas, min, max, 20.0f);
   }
   if (view->draws_follow && canvas->zoom > 0.0f) {
     canvas->center = (Vec2){(float32_t)perf->data.positions[at * 3u],
@@ -988,7 +1054,8 @@ vkr_internal void draws_funnel(VkrEditorUi *editor,
     return;
   }
   VkrRecordingDrawFrame census;
-  const bool8_t has = vkr_recording_data_draw_frame(data, at, &census);
+  const bool8_t has = vkr_recording_data_draw_frame(
+      data, vkr_recording_data_draw_frame_near(data, at), &census);
   VkrUiWidgetConfig title =
       vkr_editor_text_config(theme->font_body, theme->text);
   title.placement = vkr_editor_perf_cell(0u, 0u);
@@ -1130,9 +1197,10 @@ vkr_internal void draws_counters(VkrEditorUi *editor,
     }
     const bool8_t here = at < data->frame_count && s->valid[at];
     const float64_t difference = here ? s->values[at] - median : 0.0;
+    char label[96];
+    vkr_editor_perf_metric_label(s->name, label, sizeof(label));
     String8 cells[SECTION_COLUMNS] = {
-        string8_create_from_cstr((const uint8_t *)s->name + 5u,
-                                 string_length(s->name) - 5u),
+        string8_create_formatted(ui->frame_allocator, "%s", label),
         here ? string8_create_formatted(ui->frame_allocator, "%.0f",
                                         s->values[at])
              : string8_lit("\xe2\x80\x94"),

@@ -475,6 +475,16 @@ vkr_internal bool8_t vkr_standard_scene_runtime_metrics_initialize(
                             &ids->present_interval) ||
       !vkr_metrics_register(application->metrics,
                             &(VkrMetricDescription){
+                                .name = string8_lit("frame.scene_interval"),
+                                .domain = VKR_METRIC_DOMAIN_FRAME,
+                                .kind = VKR_METRIC_KIND_GAUGE,
+                                .unit = VKR_METRIC_UNIT_NANOSECONDS,
+                                .scalar = VKR_METRIC_SCALAR_U64,
+                                .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+                            },
+                            &ids->scene_interval) ||
+      !vkr_metrics_register(application->metrics,
+                            &(VkrMetricDescription){
                                 .name = string8_lit("frame.decoupled"),
                                 .domain = VKR_METRIC_DOMAIN_FRAME,
                                 .kind = VKR_METRIC_KIND_COUNTER,
@@ -3636,6 +3646,9 @@ vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
     return;
   const uint32_t capacity = ArrayCount(application->scene_submit_times);
   uint64_t finished = completed - application->scene_frames_seen;
+#if VKR_METRICS_ENABLED
+  const uint64_t finished_now = finished;
+#endif
   application->scene_frames_seen = completed;
   float64_t submitted = -1.0;
   while (finished > 0u && application->scene_submit_count > 0u) {
@@ -3656,7 +3669,21 @@ vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
                   (sample - application->scene_duration) * 0.25
             : sample;
   }
+#if VKR_METRICS_ENABLED
+  /* The Scene's frame time as the image changes: from the previous
+     completion, spread over the Scenes that finished since. */
+  if (application->scene_interval_from > 0.0 &&
+      completed_at > application->scene_interval_from) {
+    const float64_t interval =
+        (completed_at - application->scene_interval_from) /
+        (float64_t)finished_now;
+    vkr_metrics_gauge_set_u64(application->metrics,
+                              application->metric_ids.scene_interval,
+                              (uint64_t)(interval * 1.0e9));
+  }
+#endif
   application->scene_completed_at = completed_at;
+  application->scene_interval_from = completed_at;
 }
 
 /* Chooses how the editor presents this frame (ADR-111). With the presenter,
@@ -3692,6 +3719,11 @@ vkr_internal void vkr_standard_scene_runtime_choose_presentation(
            application->capture_request)) ||
       application->animation_preview.player) {
     application->presenter_images_stale = true_v;
+    /* A stopped Scene changes no image; its next completion starts over. */
+    if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(
+            application)) {
+      application->scene_interval_from = 0.0;
+    }
     return;
   }
   frame->presenter = true_v;

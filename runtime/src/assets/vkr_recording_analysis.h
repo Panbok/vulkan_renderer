@@ -38,6 +38,9 @@
 #define VKR_RECORDING_DATA_FRAME_MAX (1ull << 24u)
 /* Pass rows a load keeps, 48 MiB: about 8 minutes of 150 passes at 60
    frames per second. Later frames load without rows. */
+/* The Scene frame time derived for recordings without frame.scene_interval:
+   the loop time between frames that built a Scene. */
+#define VKR_RECORDING_SCENE_FRAME_SERIES "frame.scene"
 #define VKR_RECORDING_DATA_PASS_ROW_MAX (1ull << 22u)
 /* vkr_recording_frames_write_json columns of the player's last tick in a
    frame: its position and its speed in m/s. */
@@ -366,9 +369,18 @@ typedef struct VkrRecordingData {
   uint64_t events_dropped;
   VkrRecordingSeries *series;
   uint32_t series_count;
-  /* The series vkr_recording_data_frame_ms reads: "frame.wall" when it has a
-     valid sample, else UINT32_MAX for display_dt in milliseconds. */
+  /* The series vkr_recording_data_frame_ms reads: the Scene's frame time when
+     the Scene rendered on fewer frames than the loop ran (frame.scene_interval,
+     else the derived VKR_RECORDING_SCENE_FRAME_SERIES), else "frame.wall"
+     when it has a valid sample, else UINT32_MAX for display_dt in ms. */
   uint32_t frame_time_series;
+  /* Frames that rendered a Scene: those where rendered_series (cpu.graph_build)
+     has a sample, when scene_decoupled; every frame otherwise. Render-side
+     figures (draws, passes, census) exist only on them; read
+     vkr_recording_data_rendered. */
+  uint32_t rendered_series;
+  uint64_t rendered_frames;
+  bool8_t scene_decoupled;
 
   /* Tier 1, all NULL or zero without pass rows. Frame f's rows are
      pass_row_counts[f] rows from pass_rows[pass_first[f]];
@@ -384,6 +396,10 @@ typedef struct VkrRecordingData {
   uint64_t *pass_first;
   uint16_t *pass_row_counts;
   uint8_t *pass_frame_flags;
+  /* Each frame's GPU time from its first command buffer's start to its
+     last's end (stream pass_starts), NaN without it: what its pass rows
+     add up to with the GPU's time outside any pass. */
+  float32_t *gpu_frame_ms;
   /* Frames with rows, those whose rows carry GPU times, and rows past
      VKR_RECORDING_DATA_PASS_ROW_MAX that were not loaded. */
   uint64_t pass_frames;
@@ -433,6 +449,8 @@ typedef struct VkrRecordingData {
   uint32_t *draw_overflow;
   uint64_t draw_frames;
   uint64_t draw_words_cut;
+  /* One census frame of every draw_stride was kept, 1 when all fit. */
+  uint32_t draw_stride;
 
   /* Tier 1 render graph shapes by frame, oldest first; NULL without any. */
   void *graph_block;
@@ -530,6 +548,11 @@ uint64_t vkr_recording_data_gpu_frame_near(const VkrRecordingData *data,
                                            uint64_t frame, uint64_t reach);
 
 /** The census of `frame`; false without one. */
+/** The newest frame at or before `frame` with a census, within a reach
+    that covers frames the census thinned out; UINT64_MAX without one. */
+uint64_t vkr_recording_data_draw_frame_near(const VkrRecordingData *data,
+                                            uint64_t frame);
+
 bool8_t vkr_recording_data_draw_frame(const VkrRecordingData *data,
                                       uint64_t frame,
                                       VkrRecordingDrawFrame *out);
@@ -558,6 +581,43 @@ bool8_t vkr_recording_data_gpu_counter(const VkrRecordingData *data,
 bool8_t vkr_recording_data_gpu_counter_pass(const VkrRecordingData *data,
                                             uint32_t pass, uint32_t counter,
                                             float32_t *out_value);
+
+/** `frame`'s GPU time from start to end of its command buffers (the pass
+    rows' own frame); false without it. */
+static inline bool8_t vkr_recording_data_gpu_frame(const VkrRecordingData *data,
+                                                   uint64_t frame,
+                                                   float32_t *out_ms) {
+  if (!data->pass_block || frame >= data->frame_count ||
+      !(data->gpu_frame_ms[frame] == data->gpu_frame_ms[frame])) {
+    return false_v;
+  }
+  *out_ms = data->gpu_frame_ms[frame];
+  return true_v;
+}
+
+/** Whether `frame` rendered a Scene, which its render-side figures need. */
+static inline bool8_t vkr_recording_data_rendered(const VkrRecordingData *data,
+                                                  uint64_t frame) {
+  return !data->scene_decoupled ||
+         (frame < data->frame_count &&
+          data->series[data->rendered_series].valid[frame]);
+}
+
+/** The newest frame at or before `frame` that rendered a Scene, within 64
+    frames; `frame` itself when none did or every frame renders. */
+static inline uint64_t
+vkr_recording_data_rendered_at(const VkrRecordingData *data, uint64_t frame) {
+  for (uint64_t f = frame, n = 0u;
+       data->scene_decoupled && f < data->frame_count && n < 64u; --f, ++n) {
+    if (data->series[data->rendered_series].valid[f]) {
+      return f;
+    }
+    if (f == 0u) {
+      break;
+    }
+  }
+  return frame;
+}
 
 /** The zone rows of `frame`; NULL with a zero count without any. */
 const VkrRecordingZoneRow *

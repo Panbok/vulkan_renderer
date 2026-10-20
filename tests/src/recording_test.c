@@ -2298,6 +2298,132 @@ static void test_recording_resim_idle(void) {
    first iteration's update lost with the frame from before the recording
    that it published; and the split losing the published frame's other
    fields. */
+/* Records 20 loop frames of 1/120 s whose even frames build a Scene: the
+   graph build and the draw count on them, a draw count of zero on the
+   others, and with `interval` a frame.scene_interval of 15 ms. */
+static void recording_scene_frames(RecordingTestMemory *memory,
+                                   const char *path, bool8_t interval) {
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory->allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  VkrMetricDescription desc = {
+      .name = string8_lit("frame.wall"),
+      .domain = VKR_METRIC_DOMAIN_FRAME,
+      .kind = VKR_METRIC_KIND_DURATION,
+      .unit = VKR_METRIC_UNIT_NANOSECONDS,
+      .scalar = VKR_METRIC_SCALAR_U64,
+      .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+  };
+  VkrMetricId wall = VKR_METRIC_ID_INVALID;
+  VkrMetricId graph = VKR_METRIC_ID_INVALID;
+  VkrMetricId calls = VKR_METRIC_ID_INVALID;
+  VkrMetricId scene = VKR_METRIC_ID_INVALID;
+  assert(vkr_metrics_register(metrics, &desc, &wall));
+  desc.name = string8_lit("cpu.graph_build");
+  assert(vkr_metrics_register(metrics, &desc, &graph));
+  desc.name = string8_lit("draw.world.calls_issued");
+  desc.kind = VKR_METRIC_KIND_COUNTER;
+  desc.unit = VKR_METRIC_UNIT_COUNT;
+  assert(vkr_metrics_register(metrics, &desc, &calls));
+  desc.name = string8_lit("frame.scene_interval");
+  desc.kind = VKR_METRIC_KIND_GAUGE;
+  desc.unit = VKR_METRIC_UNIT_NANOSECONDS;
+  assert(vkr_metrics_register(metrics, &desc, &scene));
+  assert(vkr_metrics_seal(metrics));
+  const VkrRecordingConfig config = {
+      .bundle_path = path, .codec = vkr_depot_zstd_codec(), .metrics = metrics};
+  static VkrRecording recording;
+  assert(vkr_recording_start(&recording, &config));
+  for (uint64_t f = 0u; f < 20u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 120.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    vkr_metrics_begin_frame(metrics, f, f);
+    vkr_metrics_duration_add_ns(metrics, wall, 8000000u);
+    if (f % 2u == 0u) {
+      vkr_metrics_duration_add_ns(metrics, graph, 50000u);
+      vkr_metrics_counter_add(metrics, calls, 100u);
+      if (interval && f > 0u) {
+        vkr_metrics_gauge_set_u64(metrics, scene, 15000000u);
+      }
+    }
+    assert(vkr_metrics_end_frame(metrics));
+    VkrMetricsSnapshotView view = {0};
+    assert(vkr_metrics_snapshot_acquire(metrics, &view));
+    vkr_recording_metrics(&recording, f, view.frame, NULL);
+    vkr_metrics_snapshot_release(metrics, &view);
+  }
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  vkr_allocator_free(&memory->allocator, metrics, sizeof(VkrMetrics),
+                     VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+}
+
+/* Detects: a recording whose Scene renders on every other loop frame (the
+   editor presenter) reporting the loop's frame time as its frame time,
+   draw counts of zero on frames that rendered nothing pulling means and
+   medians down, a recorded Scene interval losing to the derived one, and
+   the derived series left in the list when unused. */
+static void test_recording_scene_frames(void) {
+  printf("  Running test_recording_scene_frames...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  for (uint32_t variant = 0u; variant < 2u; ++variant) {
+    char path[1024];
+    recording_test_path(variant ? "scene_interval" : "scene_derived", path,
+                        sizeof(path));
+    path[strlen(path) - strlen(".vkrs")] = '\0';
+    string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                  VKR_RECORDING_BUNDLE_EXTENSION);
+    recording_scene_frames(&memory, path, variant == 1u);
+    VkrRecordingData data;
+    assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                   vkr_depot_zstd_codec()) ==
+           VKR_RECORDING_DATA_OK);
+    assert(data.scene_decoupled && data.rendered_frames == 10u);
+    assert(vkr_recording_data_rendered(&data, 4u) &&
+           !vkr_recording_data_rendered(&data, 5u) &&
+           vkr_recording_data_rendered_at(&data, 5u) == 4u);
+    const VkrRecordingSeries *time = &data.series[data.frame_time_series];
+    float64_t ms = 0.0;
+    if (variant == 0u) {
+      /* Two loop frames of 1/120 s between Scenes. */
+      assert(string_equals(time->name, VKR_RECORDING_SCENE_FRAME_SERIES));
+      assert(vkr_recording_data_frame_ms(&data, 4u, &ms) &&
+             vkr_abs_f64(ms - 1000.0 / 60.0) < 1.0e-6);
+    } else {
+      assert(string_equals(time->name, "frame.scene_interval"));
+      assert(vkr_recording_data_frame_ms(&data, 4u, &ms) &&
+             vkr_abs_f64(ms - 15.0) < 1.0e-6);
+      assert(vkr_recording_data_find_series(
+                 &data, VKR_RECORDING_SCENE_FRAME_SERIES) == UINT32_MAX);
+    }
+    assert(!vkr_recording_data_frame_ms(&data, 5u, &ms));
+    /* The draw count only where a Scene was drawn; the loop's time on
+       every frame. */
+    const VkrRecordingSeries *calls =
+        &data.series[vkr_recording_data_find_series(&data,
+                                                    "draw.world.calls_issued")];
+    const VkrRecordingSeries *walls =
+        &data.series[vkr_recording_data_find_series(&data, "frame.wall")];
+    for (uint64_t f = 0u; f < 20u; ++f) {
+      assert(calls->valid[f] == (f % 2u == 0u));
+      assert(walls->valid[f]);
+    }
+    vkr_recording_data_free(&data);
+    char file[1100];
+    snprintf(file, sizeof(file), "%s/stream.vkrs", path);
+    recording_test_remove(file);
+    snprintf(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+    recording_test_remove(file);
+    const FilePath bundle = file_path_view(path);
+    assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  }
+  recording_memory_destroy(&memory);
+  printf("  test_recording_scene_frames PASSED\n");
+}
+
 static void test_recording_loop_metrics(void) {
   printf("  Running test_recording_loop_metrics...\n");
   RecordingTestMemory memory;
@@ -3205,6 +3331,7 @@ bool32_t run_recording_tests(void) {
   test_recording_graph_allocators_census();
   test_recording_hardware_pipelines();
   test_recording_gpu_counters();
+  test_recording_scene_frames();
   test_recording_counter_import();
   test_recording_gpu_submission();
   test_recording_loop_metrics();

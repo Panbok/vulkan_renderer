@@ -196,6 +196,11 @@ typedef struct VkrStandardSceneRuntimeMetricIds {
   // when the frame presented with vertical sync, raised to the frame
   // limit's. Unsampled for unpaced frames, which have no such floor.
   VkrMetricId present_interval;
+  // The time between the GPU finishing one editor Scene frame and the next:
+  // how often the Scene's image changes, which the editor loop's frame.wall
+  // does not show when the Scene renders on fewer loop iterations than it
+  // runs (ADR-111). Sampled on the iterations that see a Scene finish.
+  VkrMetricId scene_interval;
   // Nested inside update: the simulated container's step (scripts, physics,
   // animation and transforms), and of it the native physics step.
   VkrMetricId simulation;
@@ -329,6 +334,9 @@ typedef struct VkrStandardSceneRuntime {
   uint64_t scene_frames_seen;
   /* When the last observed Scene frame finished, and the smoothed seconds a
      Scene frame takes once the GPU starts it. */
+  /* The completion frame.scene_interval counts from; zero after the Scene
+     stopped rendering, so a resumed Scene starts a new run. */
+  float64_t scene_interval_from;
   float64_t scene_completed_at;
   float64_t scene_duration;
   /* Display refresh interval in seconds, sampled each frame. */
