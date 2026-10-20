@@ -3605,7 +3605,11 @@ void vkr_editor_perf_empty(VkrEditorUi *editor, VkrUiSystem *ui,
   const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
   const VkrUiTrack rows[] = {auto_track, auto_track, auto_track};
   VkrUiPanelConfig body = vkr_editor_perf_grid(placement, &fill, 1u, &fill, 1u);
-  if (!vkr_ui_panel_begin(ui, string8_lit("perf.tab.empty"), &body)) {
+  /* Keyed by its title: one panel may hold two of these, such as the HW
+     tab's utilization and tiled scene charts on a Windows recording. */
+  const String8 id =
+      string8_create_from_cstr((const uint8_t *)title, string_length(title));
+  if (!vkr_ui_panel_begin(ui, id, &body)) {
     return;
   }
   VkrUiPanelConfig stack = vkr_editor_perf_grid(

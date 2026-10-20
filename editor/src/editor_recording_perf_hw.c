@@ -108,6 +108,21 @@ vkr_internal bool8_t hw_value(const VkrRecordingData *data, uint32_t series,
   return true_v;
 }
 
+/* Whether series `series` has a value on any frame. A recording carries the
+   driver's series even where the driver reports none, as on Windows. */
+vkr_internal bool8_t hw_reported(const VkrRecordingData *data,
+                                 uint32_t series) {
+  if (series == UINT32_MAX) {
+    return false_v;
+  }
+  for (uint64_t f = 0u; f < data->frame_count; ++f) {
+    if (data->series[series].valid[f]) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 /* The imported counter named `name`, or UINT32_MAX. */
 vkr_internal uint32_t hw_counter_index(const VkrRecordingData *data,
                                        const char *name) {
@@ -299,15 +314,15 @@ vkr_internal void hw_update(VkrEditorRecordingPerf *perf) {
   for (uint32_t u = 0u; u < VKR_EDITOR_PERF_HW_UTILS; ++u) {
     hw->util_series[u] =
         vkr_recording_data_find_series(data, HW_UTIL_SERIES[u]);
-    hw->has_util = hw->has_util || hw->util_series[u] != UINT32_MAX;
+    hw->has_util = hw->has_util || hw_reported(data, hw->util_series[u]);
   }
   hw->scene_series = vkr_recording_data_find_series(data, HW_SCENE_SERIES);
   hw->buffer_series = vkr_recording_data_find_series(data, HW_BUFFER_SERIES);
   hw->split_series = vkr_recording_data_find_series(data, HW_SPLIT_SERIES);
   hw->recovery_series =
       vkr_recording_data_find_series(data, HW_RECOVERY_SERIES);
-  hw->has_scene =
-      hw->scene_series != UINT32_MAX || hw->buffer_series != UINT32_MAX;
+  hw->has_scene = hw_reported(data, hw->scene_series) ||
+                  hw_reported(data, hw->buffer_series);
   const char *threads = hw_fact(data, "Threads per threadgroup");
   int64_t parsed = 0;
   hw->device_threads = threads && string_to_i64(threads, &parsed) && parsed > 0

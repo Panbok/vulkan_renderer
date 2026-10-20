@@ -2180,13 +2180,15 @@ vkr_internal uint32_t vkr_vk_statistic_u32(float64_t value) {
 
 /* Folds one statistic into the entry's summary fields. Statistic names are
    driver-defined (RADV says "VGPRs" and "LDS size", ANV "Instruction Count"
-   and "Scratch Memory Size"), so this matches name fragments without case:
-   registers is the most any stage uses of a "vgpr" or "register" count
-   other than a spill count; spill_bytes sums the byte sizes of "spill" and
-   "scratch" statistics; instructions sums "instruction" counts; and
-   threadgroup_memory is the largest "lds" or "shared" size. A driver that
-   names them otherwise leaves the fields zero; its statistics still list
-   under their own names. */
+   and "Scratch Memory Size", AMD's driver "numUsedVgprs",
+   "ldsUsageSizeInBytes" and "scratchMemUsageInBytes"), so this matches name
+   fragments without case: registers is the most any stage uses of a "vgpr"
+   or "register" count other than a spill count; spill_bytes sums the byte
+   sizes of "spill" and "scratch" statistics; instructions sums "instruction"
+   counts; and threadgroup_memory is the largest "lds" or "shared" size other
+   than AMD's "ldsSizePerLocalWorkGroup", the workgroup's limit rather than
+   its use. A driver that names them otherwise leaves the fields zero; its
+   statistics still list under their own names. */
 vkr_internal void
 vkr_vk_summarize_statistic(VkrPipelineInfo *info,
                            const VkPipelineExecutableStatisticKHR *statistic,
@@ -2218,7 +2220,9 @@ vkr_vk_summarize_statistic(VkrPipelineInfo *info,
     info->instructions =
         vkr_vk_statistic_u32((float64_t)info->instructions + (float64_t)amount);
   }
-  if (string_contains(name, "lds") || string_contains(name, "shared")) {
+  const bool8_t limit = string_contains(name, "perlocalworkgroup");
+  if (!limit &&
+      (string_contains(name, "lds") || string_contains(name, "shared"))) {
     info->threadgroup_memory = Max(info->threadgroup_memory, amount);
   }
 }
