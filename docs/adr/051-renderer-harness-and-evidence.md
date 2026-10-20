@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-19
+updated: 2026-10-20
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -220,7 +220,15 @@ that also carries submission feedback waits at slot reuse for that feedback,
 so enabling both timings no longer leaves a frame without GPU pass rows. In
 three 600-frame Bistro repetitions with a moving sun and both timings, every
 frame had complete pass coverage and 1800 of 1800 submission samples were
-valid; before, most such runs lost one frame's pass timings. A bounded completion drain after the
+valid; before, most such runs lost one frame's pass timings. Vulkan, since
+2026-10-20, copies a completed frame's result into an eight-entry ring
+before a later frame reuses its slot and hands the ring's results out first,
+in submission order
+([`vkr_vulkan_renderer.c`](../../renderer/src/vulkan/vkr_vulkan_renderer.c)).
+Before, with all three frame slots in flight, a slot was reused before the
+harness polled it: a GPU-bound Bistro orbit at 2560×1440
+(`bistro_vulkan_high_orbit_1440`) kept only the final drain's 3 of 300
+submission samples, and after the change 300 of 300. A bounded completion drain after the
 measurement window does not turn missing results into valid zero durations.
 Work-volume and stability checks govern timing authority independently of
 execution success.

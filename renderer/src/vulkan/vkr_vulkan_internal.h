@@ -367,6 +367,8 @@ enum {
   VKR_VULKAN_SENTINEL_UPLOAD_SIZE = 4,
   VKR_VULKAN_SWAPCHAIN_IMAGE_MAX = 8,
   VKR_VULKAN_RETIRED_SWAPCHAIN_MAX = 8,
+  /* Completed frames whose slot a later frame reused, kept until polled. */
+  VKR_VULKAN_PRESERVED_RESULT_CAPACITY = 8,
   /* The local shadow transmission arrays, one layer per face of the face
      budget, are the largest layered graph images. Faces beyond the budget live
      in squares of the atlas, whose layers are fewer. Every graph image
@@ -3746,6 +3748,14 @@ struct VkrVulkanRenderer {
       retired_window_targets[VKR_VULKAN_RETIRED_SWAPCHAIN_MAX];
   VkSemaphore acquire_semaphores[VKR_VULKAN_FRAME_SLOT_COUNT];
   VkrVulkanFrameSlot frame_slots[VKR_VULKAN_FRAME_SLOT_COUNT];
+  /* A GPU-bound frame reuses a slot before a consumer polls the frame that
+     slot completed, so prepare copies each completed slot's result here first
+     and vkr_vulkan_renderer_poll_result returns these before live slots. */
+  VkrVulkanResult preserved_results[VKR_VULKAN_PRESERVED_RESULT_CAPACITY];
+  uint32_t preserved_result_next;
+  /* Submit value of the newest preserved result; a live slot at or below it
+     holds nothing the ring does not. */
+  uint64_t preserved_result_through;
   VkrGpuSubmitRing command_ring;
   VkrGpuSubmitRingSlot command_ring_slots[VKR_VULKAN_FRAME_SLOT_COUNT];
   VkrGpuRingSlice active_command_slice;

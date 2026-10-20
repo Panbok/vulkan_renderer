@@ -620,6 +620,9 @@ vkr_internal void vkr_vk_collect_picking_result(VkrVulkanRenderer *renderer,
   slot->picking_readback_pending = false_v;
 }
 
+vkr_internal void vkr_vk_preserve_slot_result(VkrVulkanRenderer *renderer,
+                                              VkrVulkanFrameSlot *slot);
+
 bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
                                           uint64_t source_frame_index,
                                           uint32_t shadow_map_size,
@@ -685,6 +688,7 @@ bool8_t vkr_vulkan_renderer_prepare_frame(VkrVulkanRenderer *renderer,
   if (slot->retire_value && slot->retire_value <= completed &&
       !slot->timing_collected && !vkr_vk_collect_slot_timings(renderer, slot))
     return false_v;
+  vkr_vk_preserve_slot_result(renderer, slot);
   if (!vkr_vk_stage_next_publication_batch(renderer))
     return false_v;
   if (vkResetCommandPool(vkr_vk_renderer_device(renderer), slot->command_pool,
@@ -1858,24 +1862,12 @@ vkr_vk_decode_sdsm_result(const VkrVulkanFrameSlot *slot,
           : false_v;
 }
 
-bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
-                                        uint64_t after_submit_value,
+/* Decodes a completed slot's readback and timings into its result. */
+vkr_internal bool8_t vkr_vk_slot_result(VkrVulkanRenderer *renderer,
+                                        VkrVulkanFrameSlot *best,
                                         VkrVulkanResult *out_result) {
-  if (!renderer || !out_result) {
-    return false_v;
-  }
-  const uint64_t completed = vkr_vk_refresh_completed(renderer);
-  VkrVulkanFrameSlot *best = NULL;
-  for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
-    VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
-    if (slot->retire_value > after_submit_value &&
-        slot->retire_value <= completed &&
-        (!best || slot->retire_value < best->retire_value)) {
-      best = slot;
-    }
-  }
-  if (!best || !vkr_vk_invalidate(renderer, &best->readback.allocation, 0u,
-                                  VKR_VULKAN_READBACK_SIZE)) {
+  if (!vkr_vk_invalidate(renderer, &best->readback.allocation, 0u,
+                         VKR_VULKAN_READBACK_SIZE)) {
     return false_v;
   }
   if (!best->timing_collected && !vkr_vk_collect_slot_timings(renderer, best))
@@ -2003,6 +1995,59 @@ bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
           (uint64_t)best->pass_timing_count *
               sizeof(*out_result->pass_timings));
   return true_v;
+}
+
+/* Copies a completed slot's result into the ring before a frame reuses the
+   slot. A failed copy leaves a gap a consumer sees as a missing frame, never
+   a result of the slot's next submission. */
+vkr_internal void vkr_vk_preserve_slot_result(VkrVulkanRenderer *renderer,
+                                              VkrVulkanFrameSlot *slot) {
+  if (!slot->retire_value ||
+      slot->retire_value <= renderer->preserved_result_through) {
+    return;
+  }
+  VkrVulkanResult *entry =
+      &renderer->preserved_results[renderer->preserved_result_next];
+  if (!vkr_vk_slot_result(renderer, slot, entry)) {
+    entry->submit_value = 0u;
+  }
+  renderer->preserved_result_next = (renderer->preserved_result_next + 1u) %
+                                    VKR_VULKAN_PRESERVED_RESULT_CAPACITY;
+  renderer->preserved_result_through = slot->retire_value;
+}
+
+bool8_t vkr_vulkan_renderer_poll_result(VkrVulkanRenderer *renderer,
+                                        uint64_t after_submit_value,
+                                        VkrVulkanResult *out_result) {
+  if (!renderer || !out_result) {
+    return false_v;
+  }
+  /* Results leave in submit order: every preserved result is older than any
+     live slot the ring has not taken. */
+  const VkrVulkanResult *preserved = NULL;
+  for (uint32_t i = 0; i < VKR_VULKAN_PRESERVED_RESULT_CAPACITY; ++i) {
+    const VkrVulkanResult *entry = &renderer->preserved_results[i];
+    if (entry->submit_value > after_submit_value &&
+        (!preserved || entry->submit_value < preserved->submit_value)) {
+      preserved = entry;
+    }
+  }
+  if (preserved) {
+    *out_result = *preserved;
+    return true_v;
+  }
+  const uint64_t completed = vkr_vk_refresh_completed(renderer);
+  const uint64_t after_live =
+      Max(after_submit_value, renderer->preserved_result_through);
+  VkrVulkanFrameSlot *best = NULL;
+  for (uint32_t i = 0; i < VKR_VULKAN_FRAME_SLOT_COUNT; ++i) {
+    VkrVulkanFrameSlot *slot = &renderer->frame_slots[i];
+    if (slot->retire_value > after_live && slot->retire_value <= completed &&
+        (!best || slot->retire_value < best->retire_value)) {
+      best = slot;
+    }
+  }
+  return best && vkr_vk_slot_result(renderer, best, out_result);
 }
 
 VkrCaptureStatus
