@@ -7,6 +7,8 @@
         [--perfetto OUT] [--process NAME]
     python3 tools/recording/vkr_xctrace.py timeline TRACE --perfetto OUT
         [--process NAME] [--subsystem dev.vkr]
+    python3 tools/recording/vkr_xctrace.py counters TRACE --recording BUNDLE
+        [--bucket-us 50] [--subsystem dev.vkr] [--json]
 
 `zones` reads the os-signpost table (ADR-126). A run with VKR_SIGNPOSTS=1,
 or `perf.set {signposts: true}`, opens an os_signpost interval named "Zone"
@@ -39,17 +41,50 @@ with signposts on. The os_signpost instrument's window starts later and
 ends later than the Metal tables', so the timeline is complete only where
 both cover.
 
+`counters` imports Apple's GPU counters (ALU, texture and memory limiters,
+vertex, fragment and compute occupancy, bandwidth) into a recording, whose
+Performance window HW tab then shows them per frame and per pass (ADR-130).
+Record the Metal GPU Counters and os_signpost instruments while a recording
+runs with signposts on (`perf.set {signposts: true}`):
+
+    xcrun xctrace record --instrument "Metal GPU Counters" \
+        --instrument os_signpost --attach <pid> --time-limit 3s \
+        --output counters.trace
+
+With signposts on, each frame emits a "Clock" signpost carrying the CPU
+clock the recording uses, which places the trace's samples on it. The
+counters cover the whole GPU, including other processes' work. Samples are
+averaged into buckets of --bucket-us microseconds and written to the
+bundle's gpu_counters.bin (runtime/src/assets/vkr_recording_format.h). A
+3 s trace of headless Bistro was 141 MB and exported 0.9 GB of counter rows,
+which the import streams; delete the trace and $TMPDIR's ktrace after it.
+
 Exit codes: 0 success, 1 no matching rows, 2 bad usage or an export failure.
 """
 import argparse
 import json
+import math
+import os
 import re
+import struct
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from array import array
 
 TABLE_XPATH = '/trace-toc/run[@number="1"]/data/table[@schema="{}"]'
 GPU_LABEL = re.compile(r"^Command Buffer \d+:(?P<label>.*?)\s+\((?P<process>.*)\)\s+0x")
+# One cell of a row as xctrace writes it: a value with an id, or a ref.
+ROW_CELL = re.compile(r'<([\w-]+) (?:id="(\d+)"(?: fmt="[^"]*")?>([^<]*)</\1>|ref="(\d+)"/>)')
+
+# The bundle file and its layout (vkr_recording_format.h).
+COUNTERS_FILE = "gpu_counters.bin"
+COUNTERS_MAGIC = b"VKRGPUCT"
+COUNTERS_VERSION = 1
+COUNTER_MAX = 64
+COUNTER_NAME_MAX = 63
+COUNTER_BUCKET_MAX = 1 << 20
+UNIT_PERCENT, UNIT_GB_PER_SECOND, UNIT_COUNT = 0, 1, 2
 
 
 def export_table(trace, schema):
@@ -202,6 +237,180 @@ def print_table(header, rows):
               f"{row['p95_ms']:9.3f} {row['max_ms']:9.3f} {row['total_ms']:10.1f}")
 
 
+def read_counter_info(xml_text):
+    """{counter id: (name, unit)} from the gpu-counter-info table."""
+    counters = {}
+    for cells in table_rows(xml_text):
+        counter_id = int(cells["counter-id"].text)
+        name = (cells["name"].text or "").strip()[:COUNTER_NAME_MAX]
+        kind = cells["type"].text or ""
+        if kind == "Percentage":
+            unit = UNIT_PERCENT
+        elif "Bandwidth" in name:
+            unit = UNIT_GB_PER_SECOND
+        else:
+            unit = UNIT_COUNT
+        counters.setdefault(counter_id, (name, unit))
+    return counters
+
+
+def read_clock_offsets(xml_text, subsystem):
+    """Per "Clock" signpost, the CPU clock it carries minus its trace time."""
+    offsets = []
+    for cells in table_rows(xml_text):
+        cell_subsystem = cells.get("subsystem")
+        name = cells.get("name")
+        message = cells.get("message")
+        if (cell_subsystem is None or cell_subsystem.get("fmt") != subsystem or
+                name is None or name.get("fmt") != "Clock" or message is None):
+            continue
+        # The message's own text groups digits; its uint64 holds the value.
+        value = message.find("uint64")
+        text = value.text if value is not None else re.sub(r"\D", "", message.get("fmt") or "")
+        try:
+            host_ns = int(text or "")
+        except ValueError:
+            continue
+        offsets.append(host_ns - int(cells["time"].text))
+    return offsets
+
+
+def stream_counter_values(trace):
+    """Yields (time ns, counter id, value) of the gpu-counter-value table,
+    streamed from xctrace, whose export of a few seconds is a gigabyte."""
+    process = subprocess.Popen(
+        ["xcrun", "xctrace", "export", "--input", trace, "--xpath",
+         TABLE_XPATH.format("gpu-counter-value")],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1 << 20)
+    # Every cell value by id: ids are dense, so an array holds them.
+    values = array("d")
+    try:
+        for line in process.stdout:
+            start = line.find("<row>")
+            if start < 0:
+                continue
+            row = []
+            for match in ROW_CELL.finditer(line, start):
+                if match.group(2) is not None:
+                    value_id = int(match.group(2))
+                    if value_id >= len(values):
+                        values.extend([math.nan] * (value_id + 1 - len(values) + 4096))
+                    value = float(match.group(3))
+                    values[value_id] = value
+                    row.append(value)
+                else:
+                    row.append(values[int(match.group(4))])
+            if len(row) >= 3:
+                yield int(row[0]), int(row[1]), row[2]
+    finally:
+        process.stdout.close()
+        stderr = process.stderr.read()
+        if process.wait() != 0:
+            raise RuntimeError(stderr.strip() or "xctrace export failed")
+
+
+def write_counters(path, counters, sums, samples, bucket_count, bucket_ns,
+                   first_ns, anchors, spread_ns):
+    """Writes the bundle file beside its stream, replacing an earlier one."""
+    header = COUNTERS_MAGIC + struct.pack("<IIIIQII", COUNTERS_VERSION, len(counters),
+                                          bucket_count, bucket_ns, first_ns, anchors,
+                                          min(spread_ns, 0xFFFFFFFF))
+    names = bytearray()
+    for name, unit in counters:
+        encoded = name.encode("utf-8")[:COUNTER_NAME_MAX]
+        names += struct.pack("<BB", unit, len(encoded)) + encoded
+    names += b"\0" * (-(len(header) + len(names)) % 4)
+    temporary = path + ".tmp"
+    with open(temporary, "wb") as output:
+        output.write(header)
+        output.write(names)
+        for index in range(len(counters)):
+            means = array("f", (s / n if n else math.nan
+                                for s, n in zip(sums[index], samples[index])))
+            means.extend([math.nan] * (bucket_count - len(means)))
+            if sys.byteorder != "little":
+                means.byteswap()
+            output.write(means.tobytes())
+    os.replace(temporary, path)
+
+
+def run_counters(args):
+    if not os.path.isfile(os.path.join(args.recording, "stream.vkrs")):
+        print(f"vkr_xctrace: {args.recording} is not a recording bundle", file=sys.stderr)
+        return 2
+    if args.bucket_us < 10 or args.bucket_us > 10000:
+        print("vkr_xctrace: --bucket-us lies in [10, 10000]", file=sys.stderr)
+        return 2
+    info = read_counter_info(export_table(args.trace, "gpu-counter-info"))
+    if not info:
+        print(f"vkr_xctrace: no GPU counters in {args.trace}; record the Metal GPU "
+              "Counters instrument", file=sys.stderr)
+        return 1
+    offsets = sorted(read_clock_offsets(export_table(args.trace, "os-signpost"),
+                                        args.subsystem))
+    if not offsets:
+        print(f"vkr_xctrace: no {args.subsystem} Clock signposts in {args.trace}; record "
+              "the os_signpost instrument of a run with signposts on", file=sys.stderr)
+        return 1
+    offset_ns = offsets[len(offsets) // 2]
+    spread_ns = offsets[-1] - offsets[0]
+
+    # Counters in id order; buckets from the trace's time zero.
+    ids = sorted(info)[:COUNTER_MAX]
+    slot = {counter_id: index for index, counter_id in enumerate(ids)}
+    bucket_ns = args.bucket_us * 1000
+    sums = [array("d") for _ in ids]
+    samples = [array("I") for _ in ids]
+    rows = 0
+    last_bucket = -1
+    for time_ns, counter_id, value in stream_counter_values(args.trace):
+        index = slot.get(counter_id)
+        if index is None or not math.isfinite(value):
+            continue
+        bucket = time_ns // bucket_ns
+        if bucket >= COUNTER_BUCKET_MAX:
+            break
+        counter_sums = sums[index]
+        if bucket >= len(counter_sums):
+            grow = bucket + 1 - len(counter_sums) + 1024
+            counter_sums.extend([0.0] * grow)
+            samples[index].extend([0] * grow)
+        counter_sums[bucket] += value
+        samples[index][bucket] += 1
+        last_bucket = max(last_bucket, bucket)
+        rows += 1
+    if rows == 0:
+        print(f"vkr_xctrace: no GPU counter samples in {args.trace}", file=sys.stderr)
+        return 1
+    # Buckets before the first sample and after the last are left out; the
+    # file's first bucket starts that many buckets after the trace's time
+    # zero, on the CPU clock.
+    first_bucket = min(next((b for b, n in enumerate(counter_samples) if n), last_bucket)
+                       for counter_samples in samples)
+    bucket_count = last_bucket + 1 - first_bucket
+    for index in range(len(ids)):
+        del sums[index][last_bucket + 1:]
+        del samples[index][last_bucket + 1:]
+        del sums[index][:first_bucket]
+        del samples[index][:first_bucket]
+    first_ns = offset_ns + first_bucket * bucket_ns
+    path = os.path.join(args.recording, COUNTERS_FILE)
+    write_counters(path, [info[i] for i in ids], sums, samples, bucket_count, bucket_ns,
+                   first_ns, len(offsets), spread_ns)
+    result = {"path": path, "bytes": os.path.getsize(path), "counters": len(ids),
+              "samples": rows, "buckets": bucket_count, "bucket_us": args.bucket_us,
+              "span_ms": round(bucket_count * bucket_ns / 1.0e6, 3),
+              "clock_anchors": len(offsets), "clock_spread_us": round(spread_ns / 1000.0, 3)}
+    if args.json:
+        print(json.dumps(result, indent=1))
+    else:
+        print(f"{rows} samples of {len(ids)} counters over {result['span_ms']:.1f} ms in "
+              f"{bucket_count} buckets of {args.bucket_us} us; {len(offsets)} clock "
+              f"signposts within {result['clock_spread_us']:.1f} us; wrote {path} "
+              f"({result['bytes']} bytes)")
+    return 0
+
+
 def run_zones(args):
     intervals, unpaired = read_zones(export_table(args.trace, "os-signpost"), args.subsystem)
     if not intervals:
@@ -275,13 +484,20 @@ def main():
     timeline.add_argument("--process", default="vkr_editor")
     timeline.add_argument("--subsystem", default="dev.vkr")
     timeline.add_argument("--perfetto", required=True, help="the trace-event file")
+    counters = commands.add_parser("counters", help="import GPU counters into a recording")
+    counters.add_argument("--recording", required=True, help="the recording bundle")
+    counters.add_argument("--bucket-us", type=int, default=50,
+                          help="microseconds the samples are averaged over")
+    counters.add_argument("--subsystem", default="dev.vkr")
+    counters.add_argument("--json", action="store_true", help="print JSON")
     for command in (zones, gpu):
         command.add_argument("--json", action="store_true", help="print JSON")
         command.add_argument("--perfetto", help="write a Chrome trace-event file")
-    for command in (zones, gpu, timeline):
+    for command in (zones, gpu, timeline, counters):
         command.add_argument("trace", help="an Instruments .trace bundle")
     args = parser.parse_args()
-    runners = {"zones": run_zones, "gpu": run_gpu, "timeline": run_timeline}
+    runners = {"zones": run_zones, "gpu": run_gpu, "timeline": run_timeline,
+               "counters": run_counters}
     try:
         return runners[args.command](args)
     except (RuntimeError, OSError, ET.ParseError, ValueError) as error:

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-19
+updated: 2026-10-20
 authority: adr
 ---
 
@@ -54,6 +54,11 @@ sink, through `vkr_platform_signpost_begin` and `_end`
   os_signpost takes its interval name only as a literal. Windows emits
   nothing; PIX output was dropped on 2026-10-19 because PIX fits only a
   Direct3D 12 backend.
+- With signposts on, the frame loop also emits an os_signpost event
+  `Clock` per frame whose message is `vkr_platform_get_monotonic_ns`
+  (`vkr_platform_signpost_clock`), so a trace's times map to the clock
+  recordings use; `vkr_xctrace.py counters` places imported GPU counters on
+  recorded frames by it ([ADR-130](130-performance-window-tabs.md)).
 - An interval's id packs the thread slot, the depth and the site's
   address, which is unique among the zones open at once, so begin and end
   pair without a stored id.
@@ -75,7 +80,9 @@ sink, through `vkr_platform_signpost_begin` and `_end`
   os_signpost window starts and ends later than the Metal tables'. A 3 s
   os_signpost trace is about 10 MB plus a 15 MB ktrace in `$TMPDIR`; a 3 s
   Metal System Trace of Bistro was 43 MB plus a 195 MB ktrace. Its GPU
-  counter tables stay empty without the GPU counters instrument.
+  counter tables stay empty without the GPU counters instrument. `counters`
+  imports the Metal GPU Counters instrument's samples into a recording
+  (ADR-130).
 
 **Recording** ([vkr_recording.c](../../runtime/src/recording/vkr_recording.c)).
 `VkrRecordingConfig.zones` installs the sink while the recording runs.

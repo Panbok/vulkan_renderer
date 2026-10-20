@@ -17810,7 +17810,8 @@ static const OpsDef s_ops[] = {
      "graph's passes; 'flow' true for its flow chart, 'pass' selects one by "
      "name) or hw (the device, the GPU driver's utilization and "
      "tiled-scene figures, and the pipelines with their limits and "
-     "statistics); 'frame' selects the "
+     "statistics; GPU counters per frame and pass when the bundle holds "
+     "an imported Instruments trace); 'frame' selects the "
      "frame the tabs describe. Answers once the recording is read. Read "
      "the numbers from its summary.json or "
      "`vkr_rec`; this op is for the designer's view and captures of it.",
@@ -19340,8 +19341,11 @@ static const OpsDef s_ops[] = {
      "fragment and compute shader invocations (Vulkan; perf.snapshot passes "
      "answer them as 'invocations'; not recorded). 'signposts' makes CPU "
      "zones open os_signpost intervals (subsystem dev.vkr, category Zones, "
-     "interval 'Zone' with the zone's name) for Instruments on macOS; the "
-     "same as VKR_SIGNPOSTS=1. Answers the new state.",
+     "interval 'Zone' with the zone's name) for Instruments on macOS, and "
+     "each frame emit a 'Clock' event carrying the CPU clock, which "
+     "tools/recording/vkr_xctrace.py counters uses to place a trace's GPU "
+     "counters on a recording's frames; the same as VKR_SIGNPOSTS=1. "
+     "Answers the new state.",
      "{\"type\":\"object\",\"properties\":{\"pass_timing\":{\"type\":"
      "\"boolean\"},\"submission_timing\":{\"type\":\"boolean\"},"
      "\"pipeline_stats\":{\"type\":\"boolean\"},\"signposts\":{"

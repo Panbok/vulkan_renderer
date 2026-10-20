@@ -133,13 +133,8 @@
    worker k; a "Frame" zone on slot 0 spans one frame-loop iteration. */
 #define VKR_RECORDING_STREAM_ZONE_NAME 23u
 #define VKR_RECORDING_STREAM_ZONE 24u
-/* GPU pass starts (Tier 1): per rendered frame, under its number, a u32 row
-   count, u32 VKR_RECORDING_PASS_STARTS_* flags, u64 GPU start and u64 GPU
-   end on the CPU's monotonic clock in ns, then per row of the frame's
-   passes record, in its order, an f32 start in ms after the GPU start (NaN
-   for an untimed pass). */
+/* GPU pass starts (Tier 1, vkr_recording_format.h). */
 #define VKR_RECORDING_STREAM_PASS_STARTS 25u
-#define VKR_RECORDING_PASS_STARTS_HEADER_SIZE 24u
 /* The render graph's shape (Tier 1, vkr_recording_format.h): when the
    recording starts and whenever the frame's passes change. Not droppable: a
    lost one would show another graph's shape. */
@@ -160,8 +155,6 @@
    on a later frame. */
 #define VKR_RECORDING_STREAM_HARDWARE 32u
 #define VKR_RECORDING_STREAM_PIPELINE 33u
-/* The GPU start and end are on the CPU clock. */
-#define VKR_RECORDING_PASS_STARTS_HOST_CLOCK 1u
 /* Ring bytes of each job worker's producer when zones are recorded. */
 #define VKR_RECORDING_WORKER_RING_BYTES (1024u * 1024u)
 /* Transform hashes are split by stable entity key

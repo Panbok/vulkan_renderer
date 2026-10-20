@@ -179,6 +179,16 @@ void vkr_platform_signpost_end(uint64_t id) {
   }
 }
 
+/* The reading comes before the event's own time stamp, well under a
+   microsecond earlier. */
+void vkr_platform_signpost_clock(void) {
+  if (signpost_log && os_signpost_enabled(signpost_log)) {
+    const uint64_t now_ns = vkr_platform_get_monotonic_ns();
+    os_signpost_event_emit(signpost_log, OS_SIGNPOST_ID_EXCLUSIVE, "Clock",
+                           "%llu", (unsigned long long)now_ns);
+  }
+}
+
 void *vkr_platform_mem_reserve(uint64_t size) {
   void *result = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   return result == MAP_FAILED ? NULL : result;

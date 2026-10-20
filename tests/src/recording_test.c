@@ -2448,6 +2448,196 @@ static void recording_timeline_starts(VkrRecorder *recorder, uint64_t frame,
                             VKR_RECORDING_PASS_STARTS_HEADER_SIZE + 4u * rows));
 }
 
+/* Writes a GPU counter file of two counters, "ALU Limiter" (percent) and
+   "GPU Read Bandwidth", over `buckets` buckets of 100 us from 9 ms on the
+   CPU clock, or `size` bytes of it when smaller. */
+static void recording_counter_file(const char *bundle, const float32_t *alu,
+                                   uint32_t buckets, uint64_t size) {
+  uint8_t bytes[VKR_RECORDING_GPU_COUNTERS_HEADER_SIZE + 64u + 2u * 4u * 140u] =
+      {0};
+  assert(buckets <= 140u);
+  MemCopy(bytes, VKR_RECORDING_GPU_COUNTERS_MAGIC, 8u);
+  const uint32_t header[] = {VKR_RECORDING_GPU_COUNTERS_VERSION, 2u, buckets,
+                             100000u};
+  MemCopy(bytes + 8u, header, sizeof(header));
+  const uint64_t first_ns = 9000000u;
+  MemCopy(bytes + 24u, &first_ns, sizeof(first_ns));
+  const uint32_t anchors[] = {12u, 400u};
+  MemCopy(bytes + 32u, anchors, sizeof(anchors));
+  uint64_t at = VKR_RECORDING_GPU_COUNTERS_HEADER_SIZE;
+  const char *names[] = {"ALU Limiter", "GPU Read Bandwidth"};
+  const uint8_t units[] = {VKR_RECORDING_GPU_COUNTER_PERCENT,
+                           VKR_RECORDING_GPU_COUNTER_GB_PER_SECOND};
+  for (uint32_t i = 0u; i < 2u; ++i) {
+    bytes[at] = units[i];
+    bytes[at + 1u] = (uint8_t)strlen(names[i]);
+    MemCopy(bytes + at + 2u, names[i], strlen(names[i]));
+    at += 2u + strlen(names[i]);
+  }
+  at = (at + 3u) & ~3ull;
+  MemCopy(bytes + at, alu, sizeof(float32_t) * buckets);
+  at += sizeof(float32_t) * buckets;
+  for (uint32_t b = 0u; b < buckets; ++b, at += 4u) {
+    const float32_t bandwidth = 6.0f;
+    MemCopy(bytes + at, &bandwidth, sizeof(bandwidth));
+  }
+  char path[1100];
+  snprintf(path, sizeof(path), "%s/%s", bundle,
+           VKR_RECORDING_GPU_COUNTERS_FILE);
+  FILE *file = fopen(path, "wb");
+  assert(file != NULL);
+  assert(fwrite(bytes, 1u, (size_t)Min(size, at), file) == Min(size, at));
+  fclose(file);
+}
+
+/* Detects: GPU counters placed on frames by the wrong clock or bucket,
+   buckets without samples counted as zero, a pass's starts taken from the
+   wrong row when an earlier row of its record was dropped, frames outside
+   the trace counted as covered, and a damaged counter file failing the
+   whole load instead of loading without counters. */
+static void test_recording_gpu_counters(void) {
+  printf("  Running test_recording_gpu_counters...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  char path[1024];
+  recording_test_path("counters", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  const FilePath bundle = file_path_view(path);
+  assert(file_create_directory(&bundle));
+  char stream[1100];
+  snprintf(stream, sizeof(stream), "%s/stream.vkrs", path);
+
+  uint32_t base_count = 0u;
+  const VkrRecordingStream *base = vkr_recording_streams(&base_count);
+  VkrRecordingStream streams[32];
+  MemCopy(streams, base, sizeof(*base) * base_count);
+  uint32_t count = base_count;
+  streams[count++] = (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASS_NAME,
+                                          .name = "pass_name"};
+  streams[count++] =
+      (VkrRecordingStream){.id = VKR_RECORDING_STREAM_PASSES, .name = "passes"};
+  streams[count++] = (VkrRecordingStream){
+      .id = VKR_RECORDING_STREAM_PASS_STARTS, .name = "pass_starts"};
+  const VkrRecorderConfig config = {
+      .stream_path = stream,
+      .codec = vkr_depot_zstd_codec(),
+      .streams = streams,
+      .stream_count = count,
+  };
+  VkrRecorder *recorder = vkr_recorder_start(&memory.allocator, &config);
+  assert(recorder != NULL);
+  for (uint64_t f = 0u; f < 4u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 0.016};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                              VKR_RECORDING_STREAM_FRAME, f, &frame,
+                              sizeof(frame)));
+    assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                              VKR_RECORDING_STREAM_CAMERA, f, &camera,
+                              sizeof(camera)));
+  }
+  recording_timeline_name(recorder, VKR_RECORDING_STREAM_PASS_NAME, 0u, 0u,
+                          "A");
+  recording_timeline_name(recorder, VKR_RECORDING_STREAM_PASS_NAME, 0u, 1u,
+                          "B");
+  /* Frame 1 runs a row whose pass has no name, then A (10.00 to 10.45 ms)
+     and B (10.50 to 10.75 ms) in its GPU span of 10.00 to 10.95 ms. */
+  uint8_t passes[VKR_RECORDING_PASSES_HEADER_SIZE +
+                 3u * VKR_RECORDING_PASS_ROW_SIZE] = {0};
+  const uint32_t rows = 3u;
+  const uint32_t passes_flags = VKR_RECORDING_PASSES_GPU_TIMED;
+  MemCopy(passes, &rows, sizeof(rows));
+  MemCopy(passes + 4u, &passes_flags, sizeof(passes_flags));
+  const uint16_t ids[] = {7u, 0u, 1u};
+  const float32_t gpu_ms[] = {0.2f, 0.45f, 0.25f};
+  for (uint32_t i = 0u; i < rows; ++i) {
+    uint8_t *row = passes + VKR_RECORDING_PASSES_HEADER_SIZE +
+                   VKR_RECORDING_PASS_ROW_SIZE * i;
+    const uint16_t row_flags = VKR_RECORDING_PASS_GPU_VALID;
+    MemCopy(row, &ids[i], sizeof(ids[i]));
+    MemCopy(row + 2u, &row_flags, sizeof(row_flags));
+    MemCopy(row + 8u, &gpu_ms[i], sizeof(float32_t));
+  }
+  assert(vkr_recorder_write(recorder, VKR_RECORDER_PRODUCER_MAIN,
+                            VKR_RECORDING_STREAM_PASSES, 1u, passes,
+                            sizeof(passes)));
+  const float32_t start_ms[] = {0.9f, 0.0f, 0.5f};
+  recording_timeline_starts(recorder, 1u, 10000000u, 10950000u, 3u, start_ms);
+  /* Frame 2 lies in the trace without timed passes, frame 3 after it. */
+  recording_timeline_starts(recorder, 2u, 20000000u, 20900000u, 0u, start_ms);
+  recording_timeline_starts(recorder, 3u, 30000000u, 30900000u, 0u, start_ms);
+  VkrRecorderStats stats;
+  assert(vkr_recorder_stop(recorder, &stats));
+
+  /* ALU limiter: 20% under A, 80% under B, no samples from 10.8 to 11.0 ms,
+     and 5% elsewhere. */
+  float32_t alu[130];
+  for (uint32_t b = 0u; b < ArrayCount(alu); ++b) {
+    alu[b] = 5.0f;
+  }
+  for (uint32_t b = 10u; b < 15u; ++b) {
+    alu[b] = 20.0f;
+  }
+  for (uint32_t b = 15u; b < 18u; ++b) {
+    alu[b] = 80.0f;
+  }
+  alu[18] = (float32_t)VKR_FLOAT_NAN;
+  alu[19] = (float32_t)VKR_FLOAT_NAN;
+  recording_counter_file(path, alu, ArrayCount(alu), UINT64_MAX);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  assert(!data.gpu_counters_bad && data.gpu_counter_count == 2u);
+  assert(string_equals(data.gpu_counters[0].name, "ALU Limiter") &&
+         data.gpu_counters[1].unit == VKR_RECORDING_GPU_COUNTER_GB_PER_SECOND);
+  assert(data.gpu_counter_bucket_ns == 100000u &&
+         data.gpu_counter_anchors == 12u && data.gpu_counter_spread_ns == 400u);
+  float32_t value = 0.0f;
+  /* Frame 1: five buckets at 20 and three at 80; the two without samples
+     do not count. */
+  assert(vkr_recording_data_gpu_counter(&data, 0u, 1u, &value) &&
+         vkr_abs_f32(value - 42.5f) < 1.0e-4f);
+  assert(vkr_recording_data_gpu_counter(&data, 1u, 1u, &value) &&
+         vkr_abs_f32(value - 6.0f) < 1.0e-4f);
+  assert(vkr_recording_data_gpu_counter(&data, 0u, 2u, &value) &&
+         vkr_abs_f32(value - 5.0f) < 1.0e-4f);
+  assert(!vkr_recording_data_gpu_counter(&data, 0u, 0u, &value));
+  assert(!vkr_recording_data_gpu_counter(&data, 0u, 3u, &value));
+  assert(data.gpu_counter_frame_count == 2u &&
+         data.gpu_counter_first_frame == 1u &&
+         data.gpu_counter_last_frame == 2u);
+  assert(vkr_abs_f32(data.gpu_counters[0].mean - 23.75f) < 1.0e-4f &&
+         vkr_abs_f32(data.gpu_counters[0].max - 42.5f) < 1.0e-4f);
+  /* Each pass reads the buckets under its own start. */
+  assert(data.pass_count >= 2u && string_equals(data.passes[0].name, "A"));
+  assert(vkr_recording_data_gpu_counter_pass(&data, 0u, 0u, &value) &&
+         vkr_abs_f32(value - 20.0f) < 1.0e-4f);
+  assert(vkr_recording_data_gpu_counter_pass(&data, 1u, 0u, &value) &&
+         vkr_abs_f32(value - 80.0f) < 1.0e-4f);
+  assert(data.gpu_counter_pass_frames[0] == 1u &&
+         data.gpu_counter_pass_frames[1] == 1u);
+  vkr_recording_data_free(&data);
+
+  /* A cut file loads the recording without counters. */
+  recording_counter_file(path, alu, ArrayCount(alu), 300u);
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  assert(data.gpu_counters_bad && data.gpu_counter_count == 0u &&
+         data.frame_count == 4u);
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  snprintf(file, sizeof(file), "%s/%s", path, VKR_RECORDING_GPU_COUNTERS_FILE);
+  recording_test_remove(file);
+  recording_test_remove(stream);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_gpu_counters PASSED\n");
+}
+
 /* Detects: zones left in arrival order, a name lost because its record came
    after the zones it names, pass rows joined to the wrong starts, a frame
    whose row counts disagree drawing misplaced passes, a missing "Frame"
@@ -2862,6 +3052,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pass_rows();
   test_recording_graph_allocators_census();
   test_recording_hardware_pipelines();
+  test_recording_gpu_counters();
   test_recording_gpu_submission();
   test_recording_loop_metrics();
   test_recording_all_measurements();

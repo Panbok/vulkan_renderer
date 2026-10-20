@@ -308,6 +308,18 @@ typedef struct VkrRecordingPipelineStat {
   float64_t value;
 } VkrRecordingPipelineStat;
 
+/* A GPU counter imported from an Instruments trace (ADR-130), with its
+   average, 95th percentile and largest frame mean over the frames the trace
+   covered; NaN without any. */
+typedef struct VkrRecordingGpuCounter {
+  char name[VKR_RECORDING_GPU_COUNTER_NAME_MAX + 1u];
+  /* VkrRecordingGpuCounterUnit */
+  uint32_t unit;
+  float32_t mean;
+  float32_t p95;
+  float32_t max;
+} VkrRecordingGpuCounter;
+
 /* A loaded recording. Every array lives in one allocation, the pass rows in
    a second and the graphs in a third, that vkr_recording_data_free
    releases; pointers stay valid until then. */
@@ -440,6 +452,32 @@ typedef struct VkrRecordingData {
   VkrRecordingPipelineStat *pipeline_stats;
   uint32_t pipeline_stat_count;
 
+  /* GPU counters imported from an Instruments trace
+     (VKR_RECORDING_GPU_COUNTERS_FILE in the bundle, ADR-130); NULL without
+     the file. Read them with vkr_recording_data_gpu_counter and
+     vkr_recording_data_gpu_counter_pass. A frame's value is the counter's
+     mean over its GPU work, from the start of the frame's first command
+     buffer to the end of its last; a pass's, the mean over its GPU work in
+     the GPU-timed frames the trace covered, gpu_counter_pass_frames[p] of
+     them. gpu_counters_bad says the bundle's file did not parse. */
+  void *gpu_counter_block;
+  uint64_t gpu_counter_block_bytes;
+  VkrRecordingGpuCounter *gpu_counters;
+  uint32_t gpu_counter_count;
+  float32_t *gpu_counter_frames;
+  float32_t *gpu_counter_passes;
+  uint32_t *gpu_counter_pass_frames;
+  /* Frames the trace covered, the first and the last of them. */
+  uint64_t gpu_counter_frame_count;
+  uint64_t gpu_counter_first_frame;
+  uint64_t gpu_counter_last_frame;
+  /* The ns the file's samples were averaged over; the trace's clock
+     signposts, and how far their offsets to the CPU clock spread, in ns. */
+  uint32_t gpu_counter_bucket_ns;
+  uint32_t gpu_counter_anchors;
+  uint32_t gpu_counter_spread_ns;
+  bool8_t gpu_counters_bad;
+
   /* From the IDENTITY chunk: the graphics pipeline class, "tiled" (Metal) or
      "desktop" (Vulkan), and the OS; empty when it names none. */
   char pipeline[16];
@@ -508,6 +546,18 @@ static inline uint32_t vkr_recording_draw_state(const uint32_t *words,
           (4u * (index % VKR_RECORDING_DRAW_STATES_PER_WORD))) &
          0xFu;
 }
+
+/** Counter `counter`'s mean over `frame`'s GPU work; false where the
+    trace did not cover it. */
+bool8_t vkr_recording_data_gpu_counter(const VkrRecordingData *data,
+                                       uint32_t counter, uint64_t frame,
+                                       float32_t *out_value);
+
+/** Counter `counter`'s mean over pass `pass`'s GPU work; false where no
+    GPU-timed frame of the trace ran it. */
+bool8_t vkr_recording_data_gpu_counter_pass(const VkrRecordingData *data,
+                                            uint32_t pass, uint32_t counter,
+                                            float32_t *out_value);
 
 /** The zone rows of `frame`; NULL with a zero count without any. */
 const VkrRecordingZoneRow *

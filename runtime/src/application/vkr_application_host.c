@@ -173,6 +173,11 @@ void vkr_application_host_run(VkrApplicationHost *host) {
     vkr_crash_set_text(VKR_CRASH_TEXT_STAGE, "frame");
     /* One frame-loop iteration, closed on every path out of it. */
     VKR_ZONE_BEGIN(frame_zone, "Frame");
+    /* Lets a trace's GPU counters be placed on recorded frames
+       (tools/recording/vkr_xctrace.py counters). */
+    if (vkr_zone_signposts()) {
+      vkr_platform_signpost_clock();
+    }
     if (!host->callbacks.frame(host->callbacks.state, &frame_with_delta)) {
       VKR_ZONE_END(frame_zone);
       vkr_application_host_close(host);

@@ -93,13 +93,10 @@ Remaining:
 - Vendor counters through `VK_KHR_performance_query` on Vulkan (optional).
   Metal on the M1 Pro exposes only the `timestamp` counter set
   (`GPUTimestamp`) at stage boundaries, so the Mac has none to read.
-- Apple's hardware GPU counters through Instruments' GPU counters
-  instrument, read from `gpu-counter-value`; `vkr_xctrace.py gpu` reads the
-  GPU intervals. The owner chose on 2026-10-20 to import them into a
-  recording as a follow-up: an occupancy and limiter (ALU, texture, memory)
-  series per frame and per pass, which the HW tab
-  ([ADR-130](../adr/130-performance-window-tabs.md)) would chart beside the
-  driver's utilization. Open: how a capture span maps to recorded frames
-  (signposted frame zones), and the trace size, since such a trace writes
-  gigabytes to `$TMPDIR` on a 16 GB Mac.
+- Starting the Instruments trace from the editor. Apple's GPU counters
+  import into a recording after the fact
+  ([ADR-130](../adr/130-performance-window-tabs.md)), with `xctrace record`
+  and `vkr_xctrace.py counters` run by hand; the editor could spawn both
+  around a recording, which needs a process service in the lib and an
+  export that takes less than its 47 s per traced second.
 - Acceptance: native runs on each backend; Vulkan needs the Windows machine.

@@ -394,6 +394,8 @@ void vkr_platform_signpost_begin(const char *name, uint64_t id) {
 
 void vkr_platform_signpost_end(uint64_t id) { (void)id; }
 
+void vkr_platform_signpost_clock(void) {}
+
 VkrTime vkr_platform_get_local_time() {
   VkrTime result = {0};
 

@@ -1460,6 +1460,9 @@ allocators of the lib's registry, the GPU draw census, the device's facts,
 the renderer's pipeline registry and, on macOS, the GPU driver's statistics;
 the editor's Performance window reads them in its Backend, Memory, Draws,
 Render graph and HW tabs ([ADR-130](adr/130-performance-window-tabs.md)).
+`vkr_xctrace.py counters` imports Apple GPU counters from an Instruments
+trace into a recording bundle, placed on frames by per-frame `Clock`
+signposts, and the HW tab shows them per frame and per pass.
 
 ## Remaining implementation and evidence boundaries
 

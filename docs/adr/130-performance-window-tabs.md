@@ -9,9 +9,10 @@ authority: adr
 ## Status
 
 Accepted (partial). The editor's Performance window has six tabs, and Tier 1
-recordings carry the data the five new ones read. Metal evidence is on this
-Mac; the Vulkan backend's census pass, counters, readback and pipeline
-statistics have no native run yet (Windows machine).
+recordings carry the data the five new ones read; Apple GPU counters from an
+Instruments trace can be imported into a recording for the HW tab. Metal
+evidence is on this Mac; the Vulkan backend's census pass, counters, readback
+and pipeline statistics have no native run yet (Windows machine).
 
 ## Context
 
@@ -141,9 +142,35 @@ needed a live editor, a GPU capture or a debugger.
    utilization and of the tiled scene, parameter buffer and splits; the
    device's facts; the pipelines, filtered by kind, with only the columns
    the recording has values for; the selected pipeline's driver statistics;
-   and a note that occupancy and limiter counters of Apple GPUs reach only
-   Instruments and those of desktop GPUs only vendor profilers.
-9. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
+   and a note that occupancy and limiter counters of desktop GPUs reach only
+   vendor profilers.
+9. **Imported GPU counters.** Apple's occupancy and limiter counters reach
+   only Instruments, so a recording imports them after the fact. With
+   signposts on (`perf.set {signposts}`), the frame loop emits an
+   os_signpost event `Clock` per frame carrying
+   `vkr_platform_get_monotonic_ns` ([ADR-126](126-cpu-zones-and-gpu-pass-timeline.md)).
+   A trace of the Metal GPU Counters and os_signpost instruments, taken
+   while the recording runs, holds a sample of each of 31 counters about
+   every 39 us from each of two counter ring buffers. `vkr_xctrace.py counters TRACE
+   --recording BUNDLE` ([vkr_xctrace.py](../../tools/recording/vkr_xctrace.py))
+   streams the trace's `gpu-counter-value` export, maps trace time to the
+   CPU clock by the median offset of the `Clock` events, averages the
+   samples of both partitions into buckets (50 us by default) and writes the
+   bundle's `gpu_counters.bin`
+   ([`vkr_recording_format.h`](../../runtime/src/assets/vkr_recording_format.h)).
+   The loader ([`vkr_recording_data_finish_counters`](../../runtime/src/assets/vkr_recording_analysis.c))
+   reads each frame's GPU span from `pass_starts` and averages each counter
+   over it, and over each pass's span on GPU-timed frames (one in 8 on the
+   tiled pipeline), mapping `pass_starts` rows to the kept pass rows; buckets
+   without samples do not count, and a file that does not parse leaves the
+   recording loaded without counters. The HW tab switches between Driver and
+   GPU counters (counters by default when the recording has them): cards of
+   the four limiters with the highest means and the fragment and compute
+   occupancy; limiter and occupancy charts over the frames with samples; a
+   table of every counter's mean, p95, max and focused-frame value; and the
+   passes with the limiter that bounds each, the two top limiters and
+   occupancy. Without counters it says how to import them.
+10. **UI primitives.** `vkr_ui_path` takes filled rectangles under its strokes,
    so a map draws up to 16,384 footprints per widget within the frame's
    widget budget. Editor tables take per-cell text colours, fills and share
    bars.
@@ -183,6 +210,24 @@ the reader's pipeline kind offset moved by one byte. Unavailable: the Vulkan
 statistics path on hardware (it compiles here; MoltenVK lacks the
 extension) and the driver's own refresh period of its utilization figures.
 
+Metal, M1 Pro, Release editor, headless Bistro, 2026-10-20: a 14 s Tier 1
+recording (2,974 frames, `perf.set {signposts: true}`) with a 3 s trace
+(`xcrun xctrace record --instrument "Metal GPU Counters" --instrument
+os_signpost --attach <pid> --time-limit 3s`, 137 MB) imported with
+`vkr_xctrace.py counters` in 2 min 23 s, nearly all of it `xctrace export`
+(2 min 21 s alone): 5,460,991 samples of 31 counters into 98,863 buckets
+of 50 us, a 12.3 MB file, 760 `Clock` events whose offsets spread 0.2 us.
+Instruments sampled 3.09 s, paused 1.54 s while it stopped and sampled
+0.31 s more, so 720 frames from 1,591 to 2,636 carry counters. Means over
+them: ALU limiter 26 %, texture sample limiter 19 %, last-level cache 17 %,
+fragment occupancy 8 %, compute occupancy 14 %. Tiled.Opaque (1.75 ms, 90
+GPU-timed frames) read ALU 19 %, texture sample 3 %, fragment occupancy
+5.5 %: no unit near its peak at low occupancy, a latency-bound pass;
+Post.Bloom.Downsample read texture sample 98 %. `rec.analyze {tab: "hw"}`
+captured both views without layout failures. `test_recording_gpu_counters`
+checks frame and pass means, buckets without samples, rows dropped before a
+pass and a cut file; it failed with `pass_starts` rows mapped by position.
+
 ## Consequences
 
 - A Tier 1 recording grows by the measurement values (396 on Bistro, about
@@ -205,6 +250,13 @@ extension) and the driver's own refresh period of its utilization figures.
   comparable with it off.
 - The Apple driver's statistics are undocumented IORegistry keys; one that
   changes leaves its value unavailable, never wrong.
+- A counter import costs about 47 s of `xctrace export` per traced second
+  on an M1 Pro and writes about 4 MB per traced second at 50 us buckets, so
+  traces stay at 2 to 5 s. Counters cover the whole GPU, other processes
+  too; passes that overlap share samples, and a pass shorter than two
+  buckets reads its neighbours' work.
+- Signposts cost about 5 us a frame while on, so a recording with counters
+  is not a timing reference.
 
 ## Alternatives considered
 
@@ -221,7 +273,7 @@ extension) and the driver's own refresh period of its utilization figures.
 ## Revisit when
 
 The Vulkan census, counters, readback and pipeline statistics get their
-native run; Instruments' GPU counters are imported into recordings
-([profiling and diagnostics](../proposals/profiling-and-diagnostics.md)); a recording's
-size or the census pass's cost fails the Tier 1 budget; or the map needs
-entity names, which needs picking ids joined to entities in the recording.
+native run; Instruments exports counters faster, or the editor should start
+the trace itself; a recording's size or the census pass's cost fails the
+Tier 1 budget; or the map needs entity names, which needs picking ids joined
+to entities in the recording.

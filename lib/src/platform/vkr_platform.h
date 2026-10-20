@@ -102,6 +102,14 @@ uint64_t vkr_platform_monotonic_ns_from_counter(uint64_t counter);
  */
 void vkr_platform_signpost_begin(const char *name, uint64_t id);
 void vkr_platform_signpost_end(uint64_t id);
+/**
+ * Marks the native profiler's timeline with a reading of
+ * vkr_platform_get_monotonic_ns, so a trace's own times map to that clock:
+ * on macOS an os_signpost event named "Clock" in the zones' subsystem and
+ * category whose message is the reading in decimal ns, and nothing
+ * elsewhere. Safe from any thread after vkr_platform_init.
+ */
+void vkr_platform_signpost_clock(void);
 
 VkrTime vkr_platform_get_local_time();
 

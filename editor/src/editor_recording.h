@@ -214,6 +214,13 @@ typedef struct VkrEditorPerfBackend {
    tiler's, as the GPU driver reports them. */
 #define VKR_EDITOR_PERF_HW_UTILS 3u
 
+/* GPU counters the HW tab charts from an Instruments trace: the limiters
+   with the highest means, and vertex, fragment and compute occupancy; and
+   the columns its counter charts divide the traced frames into. */
+#define VKR_EDITOR_PERF_HW_LIMITERS 4u
+#define VKR_EDITOR_PERF_HW_OCCUPANCY 3u
+#define VKR_EDITOR_PERF_HW_COUNTER_COLUMNS 512u
+
 /* The HW tab's driver figures over the frame chart's columns, rebuilt when
    the columns are (editor_recording_perf_hw.c). Series are UINT32_MAX when
    the recording lacks them. */
@@ -236,6 +243,23 @@ typedef struct VkrEditorPerfHw {
   float32_t memory_top;
   /* The device's most threads per threadgroup, from the hardware facts. */
   uint32_t device_threads;
+  /* Imported GPU counters: the charted counters by index (UINT32_MAX for
+     an occupancy the trace lacks), the columns over the traced frames with
+     samples, each one's first frame, the last traced frame and the charted
+     counters' means there, and the column under the pointer last build. */
+  uint32_t limiters[VKR_EDITOR_PERF_HW_LIMITERS];
+  uint32_t limiter_count;
+  uint32_t occupancy[VKR_EDITOR_PERF_HW_OCCUPANCY];
+  uint32_t counter_columns;
+  uint64_t counter_frame[VKR_EDITOR_PERF_HW_COUNTER_COLUMNS];
+  uint64_t counter_last;
+  float32_t limiter_values[VKR_EDITOR_PERF_HW_LIMITERS]
+                          [VKR_EDITOR_PERF_HW_COUNTER_COLUMNS];
+  float32_t occupancy_values[VKR_EDITOR_PERF_HW_OCCUPANCY]
+                            [VKR_EDITOR_PERF_HW_COUNTER_COLUMNS];
+  uint32_t counter_hovered;
+  /* Each pass's mean GPU ms over the traced GPU-timed frames that ran it. */
+  float32_t pass_gpu_ms[VKR_RECORDING_PASS_MAX];
 } VkrEditorPerfHw;
 
 /* Census states the Draws tab stacks over time: drawn, drawn late,
@@ -330,6 +354,12 @@ typedef struct VkrEditorRecordingPerfView {
   VkrEditorTable hw_device;
   VkrEditorTable hw_pipelines;
   VkrEditorTable hw_stats;
+  /* What the HW tab shows: 0 the driver's figures, or GPU counters when the
+     recording has them; 1 the driver's; 2 GPU counters. Then the counter
+     and pass tables of the counters view. */
+  uint32_t hw_source;
+  VkrEditorTable hw_counters;
+  VkrEditorTable hw_passes;
   /* Draws tab: the map, its layers (VKR_EDITOR_PERF_DRAW_LAYER_* bits plus
      one, zero for the default), whether it follows the camera, the section
      table's kind (0 counters, 1 cells) and the table. */
@@ -980,7 +1010,9 @@ void vkr_editor_recording_perf_memory_build(struct VkrEditorUi *editor,
 
 /** The HW tab's body (editor_recording_perf_hw.c): the device, the GPU
  * driver's utilization and tiled-scene figures, and the pipelines the
- * renderer created with their threadgroup limits and driver statistics. */
+ * renderer created with their threadgroup limits and driver statistics; or
+ * the GPU counters imported from an Instruments trace, per frame and per
+ * pass. */
 void vkr_editor_recording_perf_hw_build(struct VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame,
                                         VkrUiPlacement placement);

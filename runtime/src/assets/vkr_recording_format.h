@@ -150,6 +150,18 @@ bool8_t vkr_recording_event_parse(const uint8_t *data, uint32_t size,
 #define VKR_RECORDING_PASS_GPU_VALID 1u
 
 /*
+ * GPU pass starts (stream "pass_starts" of runtime recordings with Tier 1
+ * metrics): per rendered frame, under its number, a u32 row count, u32
+ * VKR_RECORDING_PASS_STARTS_* flags, u64 GPU start and u64 GPU end on the
+ * CPU's monotonic clock in ns, then per row of the frame's passes record, in
+ * its order, an f32 start in ms after the GPU start (NaN for an untimed
+ * pass).
+ */
+#define VKR_RECORDING_PASS_STARTS_HEADER_SIZE 24u
+/* The GPU start and end are on the CPU clock. */
+#define VKR_RECORDING_PASS_STARTS_HOST_CLOCK 1u
+
+/*
  * Render graph shape (stream "graph" of runtime recordings with Tier 1
  * metrics), written for the first rendered frame and again whenever the
  * frame's passes change, under the recorded frame it describes. Every
@@ -278,6 +290,37 @@ typedef struct VkrRecordingHardwareFact {
   char key[VKR_RECORDING_HARDWARE_KEY_MAX + 1u];
   char value[VKR_RECORDING_HARDWARE_VALUE_MAX + 1u];
 } VkrRecordingHardwareFact;
+
+/*
+ * GPU counters imported from an Instruments trace (ADR-130): the file
+ * VKR_RECORDING_GPU_COUNTERS_FILE beside a bundle's stream.vkrs, which
+ * tools/recording/vkr_xctrace.py counters writes after the recording. It
+ * holds each counter's samples averaged into buckets of equal length on the
+ * CPU's monotonic clock, the clock pass_starts records use. Little-endian:
+ *
+ *   header   magic "VKRGPUCT", u32 version, u32 counter count, u32 bucket
+ *            count, u32 bucket ns, u64 first bucket's start ns, u32 clock
+ *            anchors the trace held, u32 their spread in ns       40 bytes
+ *   counters per counter a u8 VkrRecordingGpuCounterUnit, a u8 name length
+ *            and the UTF-8 name; then zero padding to 4 bytes
+ *   values   per counter, per bucket an f32 mean (NaN where no sample fell)
+ */
+#define VKR_RECORDING_GPU_COUNTERS_FILE "gpu_counters.bin"
+#define VKR_RECORDING_GPU_COUNTERS_MAGIC "VKRGPUCT"
+#define VKR_RECORDING_GPU_COUNTERS_VERSION 1u
+#define VKR_RECORDING_GPU_COUNTERS_HEADER_SIZE 40u
+#define VKR_RECORDING_GPU_COUNTER_MAX 64u
+#define VKR_RECORDING_GPU_COUNTER_NAME_MAX 63u
+/* Buckets one file holds at most: 100 us buckets over about 100 s. */
+#define VKR_RECORDING_GPU_COUNTER_BUCKET_MAX (1u << 20u)
+
+typedef enum VkrRecordingGpuCounterUnit {
+  /* Percent of the counter's peak, 0 to 100. */
+  VKR_RECORDING_GPU_COUNTER_PERCENT = 0,
+  VKR_RECORDING_GPU_COUNTER_GB_PER_SECOND = 1,
+  /* A plain count, such as partial renders. */
+  VKR_RECORDING_GPU_COUNTER_COUNT = 2,
+} VkrRecordingGpuCounterUnit;
 
 /* A resource's flags. */
 #define VKR_RECORDING_GRAPH_RESOURCE_BUFFER 1u
