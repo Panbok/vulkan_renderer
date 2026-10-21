@@ -140,9 +140,11 @@ static bool8_t remote_file_present(const VkrDepotRemote *remote,
                                    const VkrDepotIndexEntry *entry) {
   char path[VKR_DEPOT_PATH_CAPACITY];
   VkrBakeryStat stat;
+  /* The disk alone: a process that answers stats from this remote
+     (vkr_bakery_os_read_remote) would count its own pending files. */
   if (!vkr_bakery_path_join(path, sizeof(path), remote->directory,
                             entry->path) ||
-      !vkr_bakery_stat(path, &stat) || !stat.exists) {
+      !vkr_bakery_stat_native(path, &stat) || !stat.exists) {
     return false_v;
   }
   /* A working copy's file on disk is its own, edited or not. */
@@ -704,6 +706,82 @@ void vkr_depot_remote_cancel(void *context, const char *relative) {
   vkr_mutex_unlock(remote->mutex);
 }
 
+typedef struct RemoteChild {
+  char *name;
+  bool8_t directory;
+} RemoteChild;
+
+bool8_t vkr_depot_remote_list(void *context, const char *relative,
+                              FileDirectoryVisit visit, void *visit_context) {
+  VkrDepotRemote *remote = context;
+  char prefix[VKR_DEPOT_PATH_CAPACITY];
+  const int prefix_length =
+      snprintf(prefix, sizeof(prefix), relative[0] ? "%s/" : "%s", relative);
+  if (!remote || prefix_length < 0 || (size_t)prefix_length >= sizeof(prefix)) {
+    return false_v;
+  }
+  RemoteChild *children = NULL;
+  uint32_t count = 0u;
+  uint32_t capacity = 0u;
+  bool8_t ok = true_v;
+  vkr_mutex_lock(remote->mutex);
+  /* Paths sort by byte order, so a folder's files form one run. */
+  uint32_t low = 0u;
+  uint32_t high = remote->files.count;
+  while (low < high) {
+    const uint32_t middle = low + (high - low) / 2u;
+    if (strcmp(remote->files.entries[middle].path, prefix) < 0) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  for (uint32_t i = low; ok && i < remote->files.count; ++i) {
+    const char *path = remote->files.entries[i].path;
+    if (strncmp(path, prefix, (size_t)prefix_length) != 0) {
+      break;
+    }
+    const uint8_t state = remote->states[i];
+    if (state == REMOTE_FILE_PRESENT || state == REMOTE_FILE_FAILED) {
+      continue;
+    }
+    const char *name = path + prefix_length;
+    const char *slash = strchr(name, '/');
+    const size_t length = slash ? (size_t)(slash - name) : strlen(name);
+    /* A folder's files follow one another: one name for all of them. */
+    if (count > 0u && strlen(children[count - 1u].name) == length &&
+        strncmp(children[count - 1u].name, name, length) == 0) {
+      continue;
+    }
+    if (count == capacity) {
+      capacity = capacity ? capacity * 2u : 32u;
+      RemoteChild *grown = realloc(children, capacity * sizeof(*grown));
+      if (!grown) {
+        ok = false_v;
+        break;
+      }
+      children = grown;
+    }
+    char *copy = malloc(length + 1u);
+    if (!copy) {
+      ok = false_v;
+      break;
+    }
+    MemCopy(copy, name, length);
+    copy[length] = '\0';
+    children[count++] = (RemoteChild){.name = copy, .directory = slash != NULL};
+  }
+  vkr_mutex_unlock(remote->mutex);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (ok && !visit(visit_context, children[i].name, children[i].directory)) {
+      ok = false_v;
+    }
+    free(children[i].name);
+  }
+  free(children);
+  return count > 0u;
+}
+
 uint64_t vkr_depot_remote_arrivals(void *context) {
   VkrDepotRemote *remote = context;
   return remote ? vkr_atomic_uint64_load(&remote->arrivals,
@@ -718,6 +796,7 @@ const VkrVfsRemoteCalls *vkr_depot_remote_vfs_calls(void) {
       .read = vkr_depot_remote_read,
       .prefetch = vkr_depot_remote_prefetch,
       .cancel = vkr_depot_remote_cancel,
+      .list = vkr_depot_remote_list,
       .arrivals = vkr_depot_remote_arrivals,
   };
   return &calls;

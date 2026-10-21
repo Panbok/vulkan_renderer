@@ -1,4 +1,5 @@
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_filesystem_internal.h"
 
 #if defined(PLATFORM_WINDOWS)
@@ -133,8 +134,9 @@ bool8_t file_exists(const FilePath *path) {
   }
   fs_vfs_remote(path);
   wchar_t native[VKR_WINDOWS_PATH_WCHARS];
-  return file_windows_native_path(path, native) &&
-         GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES;
+  return (file_windows_native_path(path, native) &&
+          GetFileAttributesW(native) != INVALID_FILE_ATTRIBUTES) ||
+         vkr_vfs_remote_directory(path);
 }
 
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
@@ -207,7 +209,10 @@ FileError file_path_resolve(const FilePath *path, char *out_path,
                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                   OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
   if (handle == INVALID_HANDLE_VALUE) {
-    return fs_windows_error(GetLastError());
+    const FileError error = fs_windows_error(GetLastError());
+    return error == FILE_ERROR_NOT_FOUND
+               ? fs_vfs_remote_resolve(path, out_path, out_capacity)
+               : error;
   }
   wchar_t resolved[VKR_WINDOWS_PATH_WCHARS];
   DWORD length =
@@ -869,8 +874,8 @@ cleanup:
   return error;
 }
 
-FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
-                              void *context) {
+FileError fs_platform_list_directory(const FilePath *path,
+                                     FileDirectoryVisit visit, void *context) {
   wchar_t pattern[VKR_WINDOWS_PATH_WCHARS];
   if (!path || !visit || !file_windows_native_path(path, pattern)) {
     return FILE_ERROR_INVALID_PATH;

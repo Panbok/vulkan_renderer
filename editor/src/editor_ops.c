@@ -15776,7 +15776,8 @@ static VkrEditorOpStatus ops_depot_action(OpsContext *ctx,
                                      sizeof(error));
     break;
   case OPS_DEPOT_CLONE:
-    ok = vkr_editor_depot_clone(depot, first, second, third, fourth, error,
+    ok = vkr_editor_depot_clone(depot, first, second, third, fourth,
+                                ops_arg_bool(args, "sparse", false_v), error,
                                 sizeof(error));
     break;
   case OPS_DEPOT_ALLOW:
@@ -19474,11 +19475,12 @@ static const OpsDef s_ops[] = {
      ops_run_depot_pull, NULL, OPS_NO_SCENE},
     {"depot.clone",
      "Gets the project another editor shares at 'address' with server 'key' "
-     "into 'destination' (default ~/VKR Projects/<name>) and opens it.",
+     "into 'destination' (default ~/VKR Projects/<name>) and opens it; "
+     "'sparse' fetches each file when something first reads it.",
      "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
      "\"string\"},\"key\":{\"type\":\"string\"},\"name\":{\"type\":"
-     "\"string\"},\"destination\":{\"type\":\"string\"}},\"required\":"
-     "[\"address\",\"key\"]}",
+     "\"string\"},\"destination\":{\"type\":\"string\"},\"sparse\":{"
+     "\"type\":\"boolean\"}},\"required\":[\"address\",\"key\"]}",
      ops_run_depot_clone, NULL, OPS_NO_SCENE},
     {"depot.allow",
      "Gives the identity 'key' a 'role' (write, read or none) on the project "

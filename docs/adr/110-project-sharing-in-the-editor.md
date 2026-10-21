@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-21
 authority: adr
 ---
 
@@ -87,7 +87,11 @@ thread reads finished results and progress counters only.
   cooks every texture source without a cooked file for this computer,
   re-cooks the build textures of each scene the copy holds (a project
   may list a scene it does not share) and the project's own
-  (`recook_textures`), then opens the project.
+  (`recook_textures`), then opens the project. With **Fetch files when
+  opened** the copy is a sparse working copy instead: the Get writes only
+  the ignore rules and each file arrives when the editor or a Bakery job
+  reads it
+  ([ADR-123](123-asset-streaming-from-a-depot.md#sparse-project-sharing)).
 - A copy whose server moved to another address follows its key through
   discovery and saves the new address.
 - Discovery is not authenticated: each found project shows its key's first

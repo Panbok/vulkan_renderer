@@ -2,6 +2,7 @@
 #include "containers/vkr_hashtable.h"
 #include "core/vkr_zone.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "memory/vkr_allocator.h"
 #include "platform/vkr_platform.h"
 #include "vkr_renderer_metrics.h"
@@ -164,7 +165,9 @@ vkr_resource_system_record_load(VkrResourceSystem *system, VkrResourceType type,
  * This is the size of the *source file*, not the bytes a loader ultimately
  * materialized: a scene that pulls a dependency closure reports only its own
  * manifest. Any query suffix is stripped first so the stat targets the real
- * file.
+ * file. A file still arriving from a remote content directory reports its
+ * listed size: a stat would wait for all of it, and a texture preview reads
+ * only its start (ADR-123).
  */
 vkr_internal uint64_t vkr_resource_system_metric_source_bytes(String8 path) {
 #if !VKR_METRICS_ENABLED
@@ -190,6 +193,10 @@ vkr_internal uint64_t vkr_resource_system_metric_source_bytes(String8 path) {
       .type =
           storage[0] == '/' ? FILE_PATH_TYPE_ABSOLUTE : FILE_PATH_TYPE_RELATIVE,
   };
+  uint64_t pending_size = 0u;
+  if (vkr_vfs_remote_pending(&file_path, &pending_size)) {
+    return pending_size;
+  }
   FileStats stats = {0};
   return file_stats(&file_path, &stats) == FILE_ERROR_NONE ? stats.size : 0;
 #endif

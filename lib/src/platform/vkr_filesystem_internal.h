@@ -23,6 +23,15 @@ bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
  * the chance to arrive before a native read-only access. Callers decide that
  * the access only reads. */
 void fs_vfs_remote(const FilePath *path);
+/* file_path_resolve of a path the disk lacks: a file or folder the remote has
+   not written resolves as its folder's resolved path plus its name, without
+   fetching it. FILE_ERROR_NOT_FOUND for any other path. */
+FileError fs_vfs_remote_resolve(const FilePath *path, char *out_path,
+                                uint64_t out_capacity);
+/* The native listing behind file_list_directory, which adds the files a
+   remote has not yet written (filesystem/vkr_vfs.c). */
+FileError fs_platform_list_directory(const FilePath *path,
+                                     FileDirectoryVisit visit, void *context);
 FileError fs_memory_read_into(FileHandle *handle, void *buffer, uint64_t size,
                               uint64_t *bytes_read);
 FileError fs_memory_remaining(FileHandle *handle, uint64_t *out_size);

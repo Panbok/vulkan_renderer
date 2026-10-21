@@ -1,4 +1,5 @@
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_filesystem_internal.h"
 
 #if defined(PLATFORM_APPLE)
@@ -54,7 +55,8 @@ bool8_t file_exists(const FilePath *path) {
   }
   fs_vfs_remote(path);
   struct stat buffer;
-  return stat((char *)path->path.str, &buffer) == 0;
+  return stat((char *)path->path.str, &buffer) == 0 ||
+         vkr_vfs_remote_directory(path);
 }
 
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
@@ -107,7 +109,8 @@ FileError file_path_resolve(const FilePath *path, char *out_path,
   }
   char resolved[PATH_MAX];
   if (!realpath((const char *)path->path.str, resolved)) {
-    return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
+    return errno == ENOENT ? fs_vfs_remote_resolve(path, out_path, out_capacity)
+                           : FILE_ERROR_IO_ERROR;
   }
   const uint64_t length = string_length(resolved);
   if (length + 1u > out_capacity) {
@@ -609,8 +612,8 @@ cleanup:
   return error;
 }
 
-FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
-                              void *context) {
+FileError fs_platform_list_directory(const FilePath *path,
+                                     FileDirectoryVisit visit, void *context) {
   if (!path || !path->path.str || !visit) {
     return FILE_ERROR_INVALID_PATH;
   }

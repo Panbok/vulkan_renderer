@@ -210,6 +210,12 @@ typedef struct VkrVfsRemoteCalls {
   /* Drops a queued prefetch whose download has not started; a fetch that
      asked for the file, or a transfer under way, goes on. */
   void (*cancel)(void *context, const char *relative);
+  /* Calls `visit` once for each name directly below the folder `relative`
+     ('' for the directory itself) that holds a file the remote has not yet
+     written: the file, or a folder when more of its path follows. True
+     when it called `visit` at all. Never blocks on the network. */
+  bool8_t (*list)(void *context, const char *relative, FileDirectoryVisit visit,
+                  void *visit_context);
   /* Files the remote has written whole so far; it only grows. */
   uint64_t (*arrivals)(void *context);
 } VkrVfsRemoteCalls;
@@ -251,6 +257,12 @@ void vkr_vfs_remote_cancel(const FilePath *path);
  * that waits for a pending file rechecks it only after this changes.
  */
 uint64_t vkr_vfs_remote_arrivals(void);
+/**
+ * Whether the remote holds files it has not yet written below the folder
+ * `path`, which then exists for file_exists and file_list_directory though
+ * the disk may lack it (a sparse working copy, ADR-123). Never fetches.
+ */
+bool8_t vkr_vfs_remote_directory(const FilePath *path);
 /** Maps and validates one archive and appends it to the mount order. */
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**

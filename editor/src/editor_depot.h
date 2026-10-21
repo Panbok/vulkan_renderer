@@ -110,11 +110,20 @@ bool8_t vkr_editor_depot_submit(VkrEditorDepot *depot, const char *message,
 bool8_t vkr_editor_depot_get_latest(VkrEditorDepot *depot, const char *policy,
                                     char *error, uint32_t capacity);
 /* Gets the project at `address` with `key_hex` into `destination` (empty
-   for the default folder) and opens it. */
+   for the default folder) and opens it. `sparse` makes a sparse working
+   copy (ADR-123): files, cooked textures included, arrive when the editor
+   or its Bakery jobs read them, and the Get cooks nothing. */
 bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
                                const char *key_hex, const char *name,
-                               const char *destination, char *error,
-                               uint32_t capacity);
+                               const char *destination, bool8_t sparse,
+                               char *error, uint32_t capacity);
+
+/* Makes `directory`, when it is a sparse depot working copy, a remote
+   content directory whose unfetched files arrive when read, for this
+   process and, through VKR_DEPOT_SPARSE_WORKSPACE_VARIABLE, for the Bakery
+   jobs it starts; ends the previous one. NULL ends it. One per process, as
+   the VFS remote is. Call before the workspace's files are read. */
+void vkr_editor_depot_workspace_sparse(const char *directory);
 /* Gives the key a role on this editor's server: "write", "read" or
    "none". */
 bool8_t vkr_editor_depot_allow(VkrEditorDepot *depot, const char *key_hex,

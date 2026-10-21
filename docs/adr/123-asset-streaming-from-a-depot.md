@@ -17,9 +17,10 @@ large texture first draws from the smallest mips at the start of its file,
 then from the whole file once a frame draws it. A sparse working copy holds
 on disk only the files a reader opened, and commits and pulls without the
 others. A queued download whose texture no frame draws any more is
-cancelled. Mesh LOD ranges, priority from the view, staging fetched bytes
-straight into GPU memory, sparse copies in the editor's project sharing and
-a run between two computers stay in the proposal.
+cancelled. The editor's Get can make a sparse working copy, whose project
+opens and Submits with Bakery processes that read the copy themselves. Mesh
+LOD ranges, priority from the view, staging fetched bytes straight into GPU
+memory and a run between two computers stay in the proposal.
 
 ## Context
 
@@ -100,13 +101,14 @@ range are known before any of them arrive
 `vkr_vfs_set_remote(directory, calls, context)` installs such a directory
 for the whole process ([vkr_vfs.c](../../lib/src/filesystem/vkr_vfs.c)).
 `VkrVfsRemoteCalls` ([vkr_vfs.h](../../lib/src/filesystem/vkr_vfs.h)) holds
-`fetch`, `pending`, `read`, `prefetch`, `cancel` and `arrivals`;
+`fetch`, `pending`, `read`, `prefetch`, `cancel`, `list` and `arrivals`;
 `vkr_depot_remote_vfs_calls()` returns the remote's. Before a read-only
 open, map, existence check, stat or `fopen` of a path below the directory
 reaches the disk, and before the workspace overlay looks for its copy
 there, the file seam (`fs_vfs_remote`,
 [vkr_filesystem_internal.h](../../lib/src/platform/vkr_filesystem_internal.h))
-passes the path, relative and `/`-separated, to `fetch`. Writes never ask.
+passes the path, relative and `/`-separated with each run of separators as
+one, to `fetch`. Writes never ask.
 Loader workers block in the fetch, so a scene's files download in the
 parallel batches its loaders ask for. `vkr_vfs_remote_pending`,
 `vkr_vfs_remote_read`, `vkr_vfs_remote_prefetch` and
@@ -114,6 +116,15 @@ parallel batches its loaders ask for. `vkr_vfs_remote_pending`,
 overlay's copy, then the path) and call the others without fetching; `vkr_vfs_remote_arrivals` returns the
 remote's count. The lib knows no depot: the program installs the calls, as
 it installs the content decompressor.
+
+Folders and names answer for files the remote has not written, without
+fetching them. `file_list_directory` adds a folder's unwritten files and
+subfolders from `list` to the disk's names, each once, and lists a folder
+that holds only such files. `file_exists` is true for that folder
+(`vkr_vfs_remote_directory`). `file_path_resolve` of an unwritten file or
+folder resolves its parent folder and appends the name
+(`fs_vfs_remote_resolve`), so a caller that resolves a manifest before it
+reads it, as project discovery does, finds the file.
 
 ### Progressive mips
 
@@ -133,7 +144,11 @@ complete chain of small mips:
   that end in the prefix upload. Only single-layer 2D chains of native
   blocks without supercompression take this path; everything else, and any
   failed read, reads the whole file as before. A Bistro texture of 4096
-  texels in ASTC 6x6 previews at 512 texels, one in BC7 at 256.
+  texels in ASTC 6x6 previews at 512 texels, one in BC7 at 256. The load's
+  metric takes such a file's size from the remote's list
+  (`vkr_resource_system_metric_source_bytes`,
+  [vkr_resource_system.c](../../runtime/src/renderer/systems/vkr_resource_system.c)),
+  since its stat would wait for the whole file before the preview.
 - The result reports the whole stored chain (`limit_source_extent` and
   `limit_source_mip_levels`), so the load-limit reload of
   [ADR-012](012-texture-compression-pipeline.md) sees that a load at the
@@ -238,6 +253,45 @@ the cook (`vkr_depot_fetch_cooked`), so the cook makes only what it lacks:
 - `depot.status` reports the textures the last Get cooked, fetched and
   failed to cook.
 
+### Sparse project sharing
+
+The Get dialog's **Fetch files when opened** (`get.sparse`, the
+`depot.clone` operation's `sparse`) makes the copy a sparse working copy
+(`vkr_editor_depot_clone`, [editor_depot.c](../../editor/src/editor_depot.c)):
+
+- The Get writes only the ignore rules: it fetches no cooked side branch
+  and cooks nothing, since every file arrives when a reader opens it. It
+  opens the first project its index tracks.
+- The editor holds one remote content directory on the open workspace
+  when that workspace is a sparse working copy
+  (`vkr_editor_depot_workspace_sparse`). It attaches the remote before the
+  workspace opens, since the project folders themselves arrive when read,
+  goes back to the previous workspace's remote when a switch does not
+  happen, and closes it with the workspace. The remote lists the cooked
+  side branch, so the copy's cooked textures come from it as they are
+  read.
+- The editor sets `VKR_DEPOT_SPARSE_WORKSPACE` to the copy's folder for
+  the processes it starts. A Bakery process with that variable opens its
+  own remote on the copy and installs it as its VFS remote
+  (`bakery_sparse_open`,
+  [vkr_bakery_main.c](../../tools/bakery/vkr_bakery_main.c)). Its file
+  tests (`vkr_bakery_stat`,
+  [vkr_bakery_os.c](../../tools/bakery/vkr_bakery_os.c)) answer an
+  unwritten file from the remote's list, with its listed size, and its
+  listings add unwritten names; reads fetch. A scene's preparation checks
+  that every artifact exists and so fetches only the files it reads.
+  The remote's own presence test stays native
+  (`vkr_bakery_stat_native`).
+- A sparse checkout creates the folder of every file it leaves unfetched,
+  so a native folder test, such as the workspace's real-path check, finds
+  it.
+- Get latest on a sparse copy pulls and reloads, and skips the cooked
+  fetch, the cook, the recook and the publish; Submit commits and skips
+  the cooked publish, since a copy that holds some cooked files would
+  publish a side branch without the others.
+- `stream.status` reports the editor's remote on a sparse copy with
+  `"sparse": true`.
+
 ### Editor
 
 `vkr_editor --stream <address> <server key> <directory>` (with
@@ -277,9 +331,11 @@ same way, for a quick check.
   detail arrives 3 to 6 s later than whole files alone (Evidence): the
   reads go first, and at most 32 reloads, so 32 prefetched files, wait at
   once.
-- A sparse working copy's directory listing shows only the files it
-  fetched, so a tool that scans a folder, such as the editor's Content
-  browser, does not see the others until something opens them.
+- Listings and existence tests through the lib and Bakery's file calls see
+  a sparse copy's unfetched files; a native call outside them, in a tool
+  without the remote, sees only the files on disk.
+- One process has one VFS remote, so an editor holds one sparse working
+  copy open at a time.
 - The scene sidecar's save does not ask the overlay
   (`vkr_vfs_overlay_write_path`): it writes beside the scene it loaded, so
   an edited repository scene saves into the repository, not the working
@@ -320,6 +376,11 @@ same way, for a quick check.
 - **A sparse checkout through the remote**: one writer for every file, but
   pull and commit would need the editor running; the fetched log lets the
   command line and the editor share the working copy.
+- **The editor fetching each scene's files before its first Bakery job**
+  (instead of Bakery processes reading the copy): Bakery would stay
+  unchanged, but the editor would have to know a scene's files before its
+  preparation computes them, and would fetch every file a job tests
+  whether or not the job reads it.
 
 ## Evidence
 
@@ -471,8 +532,8 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     and the material read back from the depot equals the working copy's.
     The capture differs from a local load's by 0.279 of 255, where two
     local loads differ by 0.323.
-  - Not measured: a sparse working copy on Windows, between two computers,
-    or through the editor's project sharing.
+  - Not measured: a sparse working copy on Windows or between two
+    computers.
 - 2026-10-21, cancelled downloads, Mac M1 Pro, Metal, loopback:
   - `--suite depot` passes `test_depot_remote_cancel` three times in a row:
     of three prefetched 6 MB files, the third, cancelled while the first
@@ -494,6 +555,50 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
   - A first attempt moved the camera 20 km away instead and cancelled
     nothing: a frame draws the materials of every visible world source,
     wherever the camera looks.
+- 2026-10-21, sparse project sharing, Mac M1 Pro, Metal, loopback:
+  - `--suite filesystem` (`build_debug`) passes `test_vfs_remote_directory`
+    with folders that hold only unwritten files: they exist, list their
+    files once beside the disk's names, resolve below the directory's
+    resolved path, and a path that doubles a separator finds its file, all
+    without a fetch. `--suite depot` passes the remote's listing and the
+    Bakery hooks: `vkr_bakery_stat` gives an unwritten file its listed size
+    where the native stat finds nothing, its listing names the file, and
+    neither downloads. `metrics`, `resource_async_state`, `texture_vkt` and
+    `texture_lifetime` pass.
+  - `python3 tools/checks/check_sparse_project.py --editor
+    build_release/editor/vkr_editor --depot
+    build_release/tools/depot/vkr_depot --bakery
+    build_release/tools/bakery/vkr_bakery`
+    ([check_sparse_project.py](../../tools/checks/check_sparse_project.py))
+    passes. Bakery's `share_project` shared the repository's Testbed project
+    trimmed to Bistro (618 tracked files, 509 cooked textures on
+    `main.cooked.astc`, the World's cloud wind set to zero so the captures
+    do not depend on run time). A second editor with a home of its own Got
+    it with `depot.clone` and `sparse` from the shared project, with no scene
+    open, and opened Bistro by name: 8.3 s against 4.2 s from the shared
+    folder (Bakery's preparation 4.8 s against 0.5 s). 536 previews (80.9
+    MB) were read and 782 files written, none failed, the last 86.8 s after
+    the remote opened.
+    After one new object, a save and a Submit, 343 of the 618 tracked files
+    were never fetched (source images, glTF sources and import records), the
+    Submit carried Bistro's new edits revision and `scene.json` alone and
+    added 2,430 bytes to the server, no change remained, and a second
+    sparse clone lists 618 files. With dynamic resolution off in every run,
+    the capture differs from a local load's by 0.306 of 255, where two
+    local loads differ by 0.250.
+  - Defects the check found and fixed: project discovery resolved
+    `project.json` with `realpath`, which failed for an unfetched file; the
+    World's path doubles a separator (`<project>//world.scene.json`), so
+    the remote did not list it and the editor wrote a blank World that a
+    Submit would publish; the load metric's stat downloaded each texture
+    whole before its preview; and missing project folders made a switch
+    to the copy retry every frame.
+  - An editor that opens Bistro before the Get reuses the first open's
+    materials, which the material system names by file name, so the check
+    starts the receiving editor with no scene open. The switch to another
+    workspace with Bistro's textures resident also rejects their sampler
+    updates; neither depends on the copy being sparse.
+  - Not measured: Windows, two computers, a link slower than loopback.
 
 ## Revisit when
 
@@ -503,5 +608,5 @@ preview and the drawn-first order), mesh LOD ranges need the same
 treatment, fetched bytes should land in GPU staging memory directly,
 texture demand follows the camera instead of the world's visible sources,
 a link is slow enough that
-loaders' waits show in frame pacing, or project sharing opens projects
-from sparse working copies.
+loaders' waits show in frame pacing, or a tool that reads a sparse copy
+outside the lib and Bakery's file calls joins project sharing.

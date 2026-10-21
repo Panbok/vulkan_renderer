@@ -43,6 +43,8 @@
 #define DEPOT_STATUS_SECONDS 20.0
 /* Seconds between retries while a server has not allowed this computer. */
 #define DEPOT_RETRY_SECONDS 3.0
+/* Between tries to open a workspace a Get or Share made. */
+#define DEPOT_OPEN_RETRY_SECONDS 2.0
 #define DEPOT_PROBE_SECONDS 2.0
 #define DEPOT_BRANCH "main"
 
@@ -90,6 +92,8 @@ typedef struct DepotJob {
   char address[DEPOT_TEXT];
   uint8_t server_key[32];
   bool8_t save_remote;
+  /* A Get that makes a sparse working copy, whose files arrive when read. */
+  bool8_t sparse;
   char message[DEPOT_TEXT];
   VkrDepotConflictPolicy policy;
   char source[DEPOT_PATH];
@@ -226,9 +230,12 @@ struct VkrEditorDepot {
   char dialog_address[VKR_NET_ADDRESS_TEXT];
   uint8_t dialog_key[32];
   char dialog_destination[DEPOT_PATH];
+  /* The Get makes a sparse working copy. */
+  bool8_t dialog_sparse;
   /* A finished clone the hub opens on its next build. */
   char open_directory[DEPOT_PATH];
   char open_project[40];
+  float64_t open_retry_at;
   /* A finished share the editor switches to. */
   bool8_t share_switch;
   float32_t window_scroll;
@@ -945,16 +952,20 @@ static void depot_job_pull(DepotWorker *worker) {
       vkr_depot_change_list_free(&conflicts);
     }
   }
-  if (job->ok && client) {
+  if (job->ok && client && !ws->sparse) {
     depot_job_fetch_cooked(job, ws, client);
   }
   vkr_depot_disconnect(connection);
   if (job->ok) {
     (void)vkr_depot_file_list_diff(&before, &ws->index, depot_pull_visit, job);
-    depot_job_cook(job, ws->root, &ws->index);
-    depot_job_recook(job, ws->root);
-    if (job->textures_cooked) {
-      depot_job_publish_cooked(worker);
+    /* A sparse working copy's textures come cooked from the side branch
+       when read; a cook would read every source. */
+    if (!ws->sparse) {
+      depot_job_cook(job, ws->root, &ws->index);
+      depot_job_recook(job, ws->root);
+      if (job->textures_cooked) {
+        depot_job_publish_cooked(worker);
+      }
     }
   }
   vkr_depot_file_list_free(&before);
@@ -1009,8 +1020,10 @@ static void depot_job_submit(DepotWorker *worker) {
   }
   vkr_depot_pending_commit_free(&pending);
   vkr_depot_disconnect(connection);
-  /* The new commit's cooked textures, for others of this GPU family. */
-  if (job->ok) {
+  /* The new commit's cooked textures, for others of this GPU family. A
+     sparse working copy holds only those it read: publishing them would
+     drop the rest from the side branch. */
+  if (job->ok && !ws->sparse) {
     depot_job_publish_cooked(worker);
   }
 }
@@ -1051,6 +1064,23 @@ static bool8_t depot_first_project_visit(void *context, const char *name,
   return true_v;
 }
 
+/* The first project a sparse working copy tracks: its folder may not be on
+   disk yet. */
+static void depot_first_tracked_project(const VkrDepotWorkspace *ws,
+                                        char out[40]) {
+  static const char prefix[] = ".vkreditor/projects/";
+  for (uint32_t i = 0u; i < ws->index.count; ++i) {
+    const char *path = ws->index.entries[i].path;
+    if (string_n_equals(path, prefix, sizeof(prefix) - 1u) &&
+        string_length(path) > sizeof(prefix) - 1u + 36u &&
+        path[sizeof(prefix) - 1u + 36u] == '/') {
+      string_format(out, 40u, "%.36s", path + sizeof(prefix) - 1u);
+      return;
+    }
+  }
+  out[0] = '\0';
+}
+
 static void depot_first_project(const char *directory, char out[40]) {
   char projects[DEPOT_PATH];
   string_format(projects, sizeof(projects), "%s/.vkreditor/projects",
@@ -1069,6 +1099,7 @@ static void depot_job_clone(DepotWorker *worker) {
       .branch = DEPOT_BRANCH,
       .codec = vkr_depot_zstd_codec(),
       .progress = &job->progress,
+      .sparse = job->sparse,
   };
   VkrDepotCloneResult result = {0};
   job->ok = vkr_depot_clone(&worker->allocator, &config, &result, job->error,
@@ -1085,7 +1116,17 @@ static void depot_job_clone(DepotWorker *worker) {
     return;
   }
   VkrDepotWorkspace *ws = worker->workspace;
-  if (vkr_depot_workspace_open(ws, job->directory, vkr_depot_zstd_codec())) {
+  const bool8_t opened =
+      vkr_depot_workspace_open(ws, job->directory, vkr_depot_zstd_codec());
+  if (opened && ws->sparse) {
+    /* Its files, cooked textures included, arrive when the editor and its
+       Bakery jobs read them. */
+    depot_job_history(job, ws);
+    depot_first_tracked_project(ws, job->opened_project);
+    vkr_depot_workspace_close(ws);
+    return;
+  }
+  if (opened) {
     ws->progress = &job->progress;
     VkrDepotConnection *connection = depot_job_connect(worker, &ws->store);
     VkrDepotClient *client = vkr_depot_connection_client(connection);
@@ -1862,13 +1903,19 @@ void vkr_editor_depot_update(VkrEditorDepot *depot, VkrEditorUi *editor,
   }
   depot_finish(depot, editor, frame);
   /* A finished clone or share opens its workspace from the hub's thread
-     of control, here, once nothing else runs. */
-  if (depot->open_directory[0]) {
+     of control, here, once nothing else runs. A switch that cannot happen
+     yet, behind unsaved edits or a failed open, tries again every few
+     seconds rather than every frame: a sparse working copy connects to its
+     server for each try. */
+  const float64_t opening = vkr_platform_get_absolute_time();
+  if (depot->open_directory[0] && opening >= depot->open_retry_at) {
     if (vkr_editor_projects_open_workspace(editor->projects, editor, frame,
                                            depot->open_directory,
                                            depot->open_project)) {
       depot->open_directory[0] = '\0';
       depot->open_project[0] = '\0';
+    } else {
+      depot->open_retry_at = opening + DEPOT_OPEN_RETRY_SECONDS;
     }
   }
   if (depot->share_switch && !depot_busy(depot)) {
@@ -2084,8 +2131,8 @@ bool8_t vkr_editor_depot_get_latest(VkrEditorDepot *depot, const char *policy,
 
 bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
                                const char *key_hex, const char *name,
-                               const char *destination, char *error,
-                               uint32_t capacity) {
+                               const char *destination, bool8_t sparse,
+                               char *error, uint32_t capacity) {
   if (!depot) {
     return false_v;
   }
@@ -2099,6 +2146,7 @@ bool8_t vkr_editor_depot_clone(VkrEditorDepot *depot, const char *address,
     return false_v;
   }
   string_format(job->address, sizeof(job->address), "%s", address);
+  job->sparse = sparse;
   string_format(depot->dialog_name, sizeof(depot->dialog_name), "%s",
                 name && name[0] ? name : "Project");
   /* The computer's name, when discovery heard this server. */
@@ -3111,13 +3159,21 @@ static float32_t depot_hub_dialog(VkrEditorDepot *depot, VkrEditorUi *editor,
     depot_field(ui, "get.destination", depot->dialog_destination,
                 sizeof(depot->dialog_destination), x + 12, y, width - 24);
     y += 34;
+    VkrUiWidgetConfig sparse = depot_widget(x + 12, y, width - 24, 22);
+    sparse.tooltip = string8_lit(
+        "Download each file when a scene or tool first reads it, instead "
+        "of the whole project now");
+    (void)vkr_ui_checkbox(ui, string8_lit("get.sparse"),
+                          string8_lit("Fetch files when opened"),
+                          &depot->dialog_sparse, &sparse);
+    y += 28;
     char key[VKR_DEPOT_ID_HEX];
     depot_key_hex(depot->dialog_key, key);
     if (depot_button(editor, ui, "get.go", "Get project", x + 12, y, 140,
                      true_v, depot_busy(depot)) &&
         !vkr_editor_depot_clone(depot, depot->dialog_address, key,
                                 depot->dialog_name, depot->dialog_destination,
-                                error, sizeof(error))) {
+                                depot->dialog_sparse, error, sizeof(error))) {
       string_format(depot->error, sizeof(depot->error), "%s", error);
     }
     if (depot_button(editor, ui, "get.cancel", "Cancel", x + 160, y, 100,
@@ -3338,6 +3394,92 @@ float32_t vkr_editor_depot_hub_build(VkrEditorDepot *depot, VkrEditorUi *editor,
 // Status for agents
 // =============================================================================
 
+/* The open workspace's sparse working copy and the remote that fetches its
+   files (vkr_editor_depot_workspace_sparse). The VFS remote is one per
+   process, so this is too. */
+typedef struct DepotSparseWorkspace {
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  bool8_t memory_ready;
+  VkrDepotRemote *remote;
+  float64_t opened_at;
+} DepotSparseWorkspace;
+
+vkr_global DepotSparseWorkspace depot_sparse = {0};
+
+static void depot_sparse_end(void) {
+  if (depot_sparse.remote) {
+    /* Reads stop asking before the remote goes. */
+    (void)vkr_vfs_set_remote(NULL, NULL, NULL);
+    (void)vkr_platform_environment_set(VKR_DEPOT_SPARSE_WORKSPACE_VARIABLE, "");
+    log_info("Sparse working copy %s closed",
+             vkr_depot_remote_directory(depot_sparse.remote));
+    vkr_depot_remote_close(depot_sparse.remote);
+    depot_sparse.remote = NULL;
+  }
+  if (depot_sparse.memory_ready) {
+    vkr_dmemory_allocator_destroy(&depot_sparse.allocator);
+    depot_sparse.memory_ready = false_v;
+  }
+}
+
+void vkr_editor_depot_workspace_sparse(const char *directory) {
+  if (depot_sparse.remote && directory &&
+      string_equals(vkr_depot_remote_directory(depot_sparse.remote),
+                    directory)) {
+    return;
+  }
+  depot_sparse_end();
+  char state[DEPOT_PATH];
+  if (!directory || !directory[0]) {
+    return;
+  }
+  string_format(state, sizeof(state), "%s/" VKR_DEPOT_META_DIR "/state",
+                directory);
+  if (!vkr_bakery_is_file(state)) {
+    return;
+  }
+  VkrDepotWorkspace *ws = vkr_heap_alloc_zeroed(1u, sizeof(*ws));
+  char root[DEPOT_PATH] = {0};
+  if (ws && vkr_depot_workspace_open(ws, directory, vkr_depot_zstd_codec()) &&
+      ws->sparse) {
+    string_format(root, sizeof(root), "%s", ws->root);
+  }
+  if (ws) {
+    vkr_depot_workspace_close(ws);
+    vkr_heap_free(ws);
+  }
+  if (!root[0] || !vkr_dmemory_create(MB(1), MB(64), &depot_sparse.memory)) {
+    return;
+  }
+  depot_sparse.allocator = (VkrAllocator){.ctx = &depot_sparse.memory};
+  vkr_dmemory_allocator_create(&depot_sparse.allocator);
+  depot_sparse.memory_ready = true_v;
+  const VkrDepotRemoteConfig config = {.workspace = root,
+                                       .codec = vkr_depot_zstd_codec()};
+  char error[DEPOT_TEXT];
+  depot_sparse.opened_at = vkr_platform_get_absolute_time();
+  depot_sparse.remote = vkr_depot_remote_open(&depot_sparse.allocator, &config,
+                                              error, sizeof(error));
+  if (!depot_sparse.remote) {
+    log_warn("Sparse working copy %s cannot fetch its files: %s", root, error);
+    depot_sparse_end();
+    return;
+  }
+  if (!vkr_vfs_set_remote(root, vkr_depot_remote_vfs_calls(),
+                          depot_sparse.remote) ||
+      !vkr_platform_environment_set(VKR_DEPOT_SPARSE_WORKSPACE_VARIABLE,
+                                    root)) {
+    log_warn("Sparse working copy %s cannot fetch its files", root);
+    depot_sparse_end();
+    return;
+  }
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(depot_sparse.remote, &stats);
+  log_info("Sparse working copy %s: %u files fetch when read", root,
+           stats.listed);
+}
+
 bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
                                 const char *key_hex, const char *directory,
                                 const char *branch, bool8_t no_cooked,
@@ -3400,13 +3542,17 @@ bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
 VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
                                             Arena *arena) {
   VkrBakeryJson *result = vkr_bakery_json_object(arena);
+  /* A stream, else the open sparse working copy's remote. */
+  VkrDepotRemote *remote = depot->stream ? depot->stream : depot_sparse.remote;
   vkr_bakery_json_set(arena, result, "streaming",
-                      vkr_bakery_json_bool(arena, depot->stream != NULL));
-  if (!depot->stream) {
+                      vkr_bakery_json_bool(arena, remote != NULL));
+  vkr_bakery_json_set(arena, result, "sparse",
+                      vkr_bakery_json_bool(arena, !depot->stream && remote));
+  if (!remote) {
     return result;
   }
   VkrDepotRemoteStats stats;
-  vkr_depot_remote_stats(depot->stream, &stats);
+  vkr_depot_remote_stats(remote, &stats);
   char hex[VKR_DEPOT_ID_HEX];
   vkr_depot_id_hex(&stats.commit, hex);
   vkr_bakery_json_set(arena, result, "commit",
@@ -3416,8 +3562,9 @@ VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
       arena, result, "cooked_commit",
       vkr_bakery_json_cstr(arena,
                            vkr_depot_id_zero(&stats.cooked_commit) ? "" : hex));
-  vkr_bakery_json_set(arena, result, "directory",
-                      vkr_bakery_json_cstr(arena, depot->stream_directory));
+  vkr_bakery_json_set(
+      arena, result, "directory",
+      vkr_bakery_json_cstr(arena, vkr_depot_remote_directory(remote)));
   vkr_bakery_json_set(arena, result, "listed",
                       vkr_bakery_json_int(arena, stats.listed));
   vkr_bakery_json_set(arena, result, "present",
@@ -3447,12 +3594,14 @@ VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
       vkr_bakery_json_float(arena, (float64_t)stats.last_read_us / 1000.0));
   vkr_bakery_json_set(
       arena, result, "open_ms",
-      vkr_bakery_json_float(arena, depot->stream_open_seconds * 1000.0));
+      vkr_bakery_json_float(
+          arena, depot->stream ? depot->stream_open_seconds * 1000.0 : 0.0));
   vkr_bakery_json_set(
       arena, result, "since_open_ms",
-      vkr_bakery_json_float(
-          arena, (vkr_platform_get_absolute_time() - depot->stream_opened_at) *
-                     1000.0));
+      vkr_bakery_json_float(arena, (vkr_platform_get_absolute_time() -
+                                    (depot->stream ? depot->stream_opened_at
+                                                   : depot_sparse.opened_at)) *
+                                       1000.0));
   return result;
 }
 

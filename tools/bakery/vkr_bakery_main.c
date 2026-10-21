@@ -4,6 +4,14 @@
 #include "project/vkr_project_internal.h"
 #include "vkr_bakery_bake.h"
 #endif
+#if VKR_BAKERY_WITH_DEPOT
+#include "filesystem/vkr_vfs.h"
+#include "memory/vkr_dmemory.h"
+#include "memory/vkr_dmemory_allocator.h"
+#include "vkr_bakery_os.h"
+#include "vkr_depot_remote.h"
+#include "vkr_depot_zstd.h"
+#endif
 
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_entry.h"
@@ -419,12 +427,74 @@ int vkr_bakery_run_command(int argc, char **argv, VkrBakeryEventSink sink,
   return code;
 }
 
+#if VKR_BAKERY_WITH_DEPOT
+/* A job the editor starts on a sparse depot working copy (ADR-123) reads
+   the copy's unfetched files through a remote of its own; its stats and
+   listings include them without a download. */
+typedef struct BakerySparse {
+  VkrDMemory memory;
+  VkrAllocator allocator;
+  bool8_t memory_ready;
+  VkrDepotRemote *remote;
+} BakerySparse;
+
+vkr_global BakerySparse bakery_sparse = {0};
+
+static void bakery_sparse_open(void) {
+  char root[VKR_BAKERY_PATH_CAPACITY];
+  if (!vkr_platform_environment_variable(VKR_DEPOT_SPARSE_WORKSPACE_VARIABLE,
+                                         root, sizeof(root)) ||
+      !root[0] || !vkr_dmemory_create(MB(1), MB(64), &bakery_sparse.memory)) {
+    return;
+  }
+  bakery_sparse.allocator = (VkrAllocator){.ctx = &bakery_sparse.memory};
+  vkr_dmemory_allocator_create(&bakery_sparse.allocator);
+  bakery_sparse.memory_ready = true_v;
+  const VkrDepotRemoteConfig config = {.workspace = root,
+                                       .codec = vkr_depot_zstd_codec()};
+  char error[256];
+  bakery_sparse.remote = vkr_depot_remote_open(&bakery_sparse.allocator,
+                                               &config, error, sizeof(error));
+  if (!bakery_sparse.remote) {
+    fprintf(stderr,
+            "warning: the sparse working copy %s cannot fetch files: %s\n",
+            root, error);
+    return;
+  }
+  if (!vkr_vfs_set_remote(vkr_depot_remote_directory(bakery_sparse.remote),
+                          vkr_depot_remote_vfs_calls(), bakery_sparse.remote)) {
+    vkr_depot_remote_close(bakery_sparse.remote);
+    bakery_sparse.remote = NULL;
+    return;
+  }
+  vkr_bakery_os_read_remote(true_v);
+}
+
+static void bakery_sparse_close(void) {
+  if (bakery_sparse.remote) {
+    vkr_bakery_os_read_remote(false_v);
+    (void)vkr_vfs_set_remote(NULL, NULL, NULL);
+    vkr_depot_remote_close(bakery_sparse.remote);
+    bakery_sparse.remote = NULL;
+  }
+  if (bakery_sparse.memory_ready) {
+    vkr_dmemory_allocator_destroy(&bakery_sparse.allocator);
+    bakery_sparse.memory_ready = false_v;
+  }
+}
+#else
+static void bakery_sparse_open(void) {}
+static void bakery_sparse_close(void) {}
+#endif
+
 VKR_MAIN(argc, argv) {
   if (argc >= 2 && strcmp(argv[1], "tool") == 0) {
     if (!vkr_platform_init()) {
       return VKR_BAKERY_EXIT_ENVIRONMENT;
     }
+    bakery_sparse_open();
     const int code = vkr_bakery_tool_main(argc - 1, argv + 1);
+    bakery_sparse_close();
     vkr_platform_shutdown();
     return code;
   }
@@ -434,6 +504,7 @@ VKR_MAIN(argc, argv) {
     if (!vkr_platform_init()) {
       return VKR_BAKERY_EXIT_ENVIRONMENT;
     }
+    bakery_sparse_open();
     VkrBakeryConfig *config = (VkrBakeryConfig *)calloc(1u, sizeof(*config));
     int code = VKR_BAKERY_EXIT_ENVIRONMENT;
     if (config && vkr_bakery_executable_path(config->self_path,
@@ -443,6 +514,7 @@ VKR_MAIN(argc, argv) {
                  : vkr_bakery_preview_main(config, argc - 2, argv + 2);
     }
     free(config);
+    bakery_sparse_close();
     vkr_platform_shutdown();
     return code;
   }
@@ -462,7 +534,9 @@ VKR_MAIN(argc, argv) {
   if (!vkr_platform_init()) {
     return VKR_BAKERY_EXIT_ENVIRONMENT;
   }
+  bakery_sparse_open();
   const int code = vkr_bakery_run_command(argc, argv, NULL, NULL);
+  bakery_sparse_close();
   vkr_platform_shutdown();
   return code;
 }

@@ -947,13 +947,177 @@ vkr_internal bool8_t vkr_vfs_remote_relative(const VkrVfsRemote *remote,
       return false_v;
     }
   }
-  const uint64_t length = path.length - remote->length;
-  for (uint64_t i = 0u; i < length; ++i) {
-    const uint8_t byte = path.str[remote->length + i];
-    relative[i] = vkr_vfs_is_separator(byte) ? '/' : (char)byte;
+  /* A run of separators names one, as the native calls read it. */
+  uint64_t length = 0u;
+  for (uint64_t i = remote->length; i < path.length; ++i) {
+    const uint8_t byte = path.str[i];
+    if (!vkr_vfs_is_separator(byte)) {
+      relative[length++] = (char)byte;
+    } else if (length && relative[length - 1u] != '/') {
+      relative[length++] = '/';
+    }
   }
   relative[length] = 0;
+  return length != 0u;
+}
+
+/* The folder `path` below the remote's directory, '/'-separated, into
+   `relative`: '' for the directory itself. False for a folder outside it. */
+vkr_internal bool8_t vkr_vfs_remote_folder(const VkrVfsRemote *remote,
+                                           String8 path,
+                                           char relative[VKR_VFS_PATH_MAX]) {
+  while (path.length > 1u && vkr_vfs_is_separator(path.str[path.length - 1u])) {
+    --path.length;
+  }
+  /* The directory itself, which `root` spells with its trailing '/'. */
+  if (path.length + 1u == remote->length) {
+    for (uint64_t i = 0u; i < path.length; ++i) {
+      const uint8_t byte = path.str[i];
+      if (remote->root[i] == '/'
+              ? !vkr_vfs_is_separator(byte)
+              : !vkr_vfs_same_byte(byte, (uint8_t)remote->root[i])) {
+        return false_v;
+      }
+    }
+    relative[0] = 0;
+    return true_v;
+  }
+  return vkr_vfs_remote_relative(remote, path, relative);
+}
+
+vkr_internal bool8_t vkr_vfs_stop_at_first(void *context, const char *name,
+                                           bool8_t is_directory) {
+  (void)context;
+  (void)name;
+  (void)is_directory;
+  return false_v;
+}
+
+bool8_t vkr_vfs_remote_directory(const FilePath *path) {
+  const VkrVfsRemote *remote = vkr_vfs_current_remote();
+  char relative[VKR_VFS_PATH_MAX];
+  return remote && remote->calls.list && path && path->path.str &&
+         vkr_vfs_remote_folder(remote, path->path, relative) &&
+         remote->calls.list(remote->context, relative, vkr_vfs_stop_at_first,
+                            NULL);
+}
+
+/* A folder's names the remote has not yet written, sorted for lookup while
+   the disk's listing runs; `seen` marks those the disk listed too. */
+typedef struct VkrVfsPendingName {
+  char *name;
+  bool8_t directory;
+  bool8_t seen;
+} VkrVfsPendingName;
+
+typedef struct VkrVfsPendingNames {
+  VkrVfsPendingName *entries;
+  uint32_t count;
+  uint32_t capacity;
+  bool8_t failed;
+} VkrVfsPendingNames;
+
+vkr_internal bool8_t vkr_vfs_pending_name(void *context, const char *name,
+                                          bool8_t is_directory) {
+  VkrVfsPendingNames *names = context;
+  if (names->count == names->capacity) {
+    const uint32_t capacity = names->capacity ? names->capacity * 2u : 32u;
+    VkrVfsPendingName *grown =
+        realloc(names->entries, capacity * sizeof(*grown));
+    if (!grown) {
+      names->failed = true_v;
+      return false_v;
+    }
+    names->entries = grown;
+    names->capacity = capacity;
+  }
+  const size_t length = strlen(name);
+  char *copy = malloc(length + 1u);
+  if (!copy) {
+    names->failed = true_v;
+    return false_v;
+  }
+  MemCopy(copy, name, length + 1u);
+  names->entries[names->count++] = (VkrVfsPendingName){
+      .name = copy, .directory = is_directory, .seen = false_v};
   return true_v;
+}
+
+vkr_internal void vkr_vfs_pending_names_free(VkrVfsPendingNames *names) {
+  for (uint32_t i = 0u; i < names->count; ++i) {
+    free(names->entries[i].name);
+  }
+  free(names->entries);
+  MemZero(names, sizeof(*names));
+}
+
+vkr_internal int vkr_vfs_pending_name_compare(const void *lhs,
+                                              const void *rhs) {
+  return strcmp(((const VkrVfsPendingName *)lhs)->name,
+                ((const VkrVfsPendingName *)rhs)->name);
+}
+
+typedef struct VkrVfsMergedListing {
+  VkrVfsPendingNames *pending;
+  FileDirectoryVisit visit;
+  void *context;
+  bool8_t stopped;
+} VkrVfsMergedListing;
+
+/* Passes one name of the disk's listing on, marking it among the pending. */
+vkr_internal bool8_t vkr_vfs_merged_visit(void *context, const char *name,
+                                          bool8_t is_directory) {
+  VkrVfsMergedListing *merged = context;
+  const VkrVfsPendingName key = {.name = (char *)name};
+  VkrVfsPendingName *found =
+      bsearch(&key, merged->pending->entries, merged->pending->count,
+              sizeof(key), vkr_vfs_pending_name_compare);
+  if (found) {
+    found->seen = true_v;
+  }
+  if (!merged->visit(merged->context, name, is_directory)) {
+    merged->stopped = true_v;
+    return false_v;
+  }
+  return true_v;
+}
+
+FileError file_list_directory(const FilePath *path, FileDirectoryVisit visit,
+                              void *context) {
+  if (!path || !path->path.str || !visit) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  const VkrVfsRemote *remote = vkr_vfs_current_remote();
+  char relative[VKR_VFS_PATH_MAX];
+  VkrVfsPendingNames pending = {0};
+  if (!remote || !remote->calls.list ||
+      !vkr_vfs_remote_folder(remote, path->path, relative) ||
+      !remote->calls.list(remote->context, relative, vkr_vfs_pending_name,
+                          &pending) ||
+      pending.failed) {
+    vkr_vfs_pending_names_free(&pending);
+    return fs_platform_list_directory(path, visit, context);
+  }
+  /* The disk's names first, then the folder's files the remote has not
+     written; a folder the disk lacks lists those alone. */
+  qsort(pending.entries, pending.count, sizeof(*pending.entries),
+        vkr_vfs_pending_name_compare);
+  VkrVfsMergedListing merged = {
+      .pending = &pending, .visit = visit, .context = context};
+  FileError error =
+      fs_platform_list_directory(path, vkr_vfs_merged_visit, &merged);
+  if (error == FILE_ERROR_NOT_FOUND) {
+    error = FILE_ERROR_NONE;
+  }
+  for (uint32_t i = 0u;
+       error == FILE_ERROR_NONE && !merged.stopped && i < pending.count; ++i) {
+    const VkrVfsPendingName *entry = &pending.entries[i];
+    if (!entry->seen && !visit(context, entry->name, entry->directory)) {
+      break;
+    }
+  }
+  vkr_vfs_pending_names_free(&pending);
+  return error;
 }
 
 void fs_vfs_remote(const FilePath *path) {
@@ -962,6 +1126,65 @@ void fs_vfs_remote(const FilePath *path) {
   if (remote && path && vkr_vfs_remote_relative(remote, path->path, relative)) {
     (void)remote->calls.fetch(remote->context, relative);
   }
+}
+
+FileError fs_vfs_remote_resolve(const FilePath *path, char *out_path,
+                                uint64_t out_capacity) {
+  const VkrVfsRemote *remote = vkr_vfs_current_remote();
+  if (!remote || !remote->calls.pending || !path || !path->path.str) {
+    return FILE_ERROR_NOT_FOUND;
+  }
+  String8 spelled = path->path;
+  while (spelled.length > 1u &&
+         vkr_vfs_is_separator(spelled.str[spelled.length - 1u])) {
+    --spelled.length;
+  }
+  char relative[VKR_VFS_PATH_MAX];
+  uint64_t size = 0u;
+  const FilePath trimmed = {.path = spelled, .type = path->type};
+  const bool8_t pending =
+      vkr_vfs_remote_relative(remote, spelled, relative) &&
+      remote->calls.pending(remote->context, relative, &size);
+  if (!pending && !vkr_vfs_remote_directory(&trimmed)) {
+    return FILE_ERROR_NOT_FOUND;
+  }
+
+  /* Its folder exists on disk or is itself unwritten; either resolves. */
+  uint64_t leaf = spelled.length;
+  while (leaf > 0u && !vkr_vfs_is_separator(spelled.str[leaf - 1u])) {
+    --leaf;
+  }
+  if (leaf < 2u || leaf == spelled.length || leaf > VKR_VFS_PATH_MAX) {
+    return FILE_ERROR_NOT_FOUND;
+  }
+  char parent[VKR_VFS_PATH_MAX];
+  MemCopy(parent, spelled.str, leaf - 1u);
+  parent[leaf - 1u] = 0;
+  const FilePath parent_path = {
+      .path = {.str = (uint8_t *)parent, .length = leaf - 1u},
+      .type = path->type};
+  const FileError error =
+      file_path_resolve(&parent_path, out_path, out_capacity);
+  if (error != FILE_ERROR_NONE) {
+    return error;
+  }
+  uint64_t length = string_length(out_path);
+  const uint64_t name = spelled.length - leaf;
+  const bool8_t separate =
+      length && !vkr_vfs_is_separator((uint8_t)out_path[length - 1u]);
+  if (length + separate + name + 1u > out_capacity) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (separate) {
+#if defined(PLATFORM_WINDOWS)
+    out_path[length++] = '\\';
+#else
+    out_path[length++] = '/';
+#endif
+  }
+  MemCopy(out_path + length, spelled.str + leaf, name);
+  out_path[length + name] = 0;
+  return FILE_ERROR_NONE;
 }
 
 /* The remote file a read-only open of `path` would wait for, as a read

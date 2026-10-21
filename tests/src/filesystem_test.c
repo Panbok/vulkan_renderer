@@ -1265,7 +1265,8 @@ vkr_internal bool8_t fs_test_remote_path(const FsTestRemote *remote,
                                          const char *relative, char *path,
                                          uint64_t capacity) {
   if (strcmp(relative, "held.txt") != 0 &&
-      strcmp(relative, "assets/zz_vfs_remote/b.txt") != 0) {
+      strcmp(relative, "assets/zz_vfs_remote/b.txt") != 0 &&
+      strcmp(relative, "deep/inner/c.txt") != 0) {
     return false_v;
   }
   snprintf(path, capacity, "%s/%s", remote->directory, relative);
@@ -1332,6 +1333,68 @@ vkr_internal void fs_test_remote_cancel(void *context, const char *relative) {
   ((FsTestRemote *)context)->cancels += 1u;
 }
 
+/* Every file the remote holds, `deep/inner/c.txt` never asked for, so its
+   folders exist only through the remote. */
+vkr_global const char *const fs_test_remote_files[] = {
+    "held.txt", "assets/zz_vfs_remote/b.txt", "deep/inner/c.txt"};
+
+vkr_internal bool8_t fs_test_remote_list(void *context, const char *relative,
+                                         FileDirectoryVisit visit,
+                                         void *visit_context) {
+  FsTestRemote *remote = context;
+  const size_t prefix = strlen(relative);
+  bool8_t any = false_v;
+  for (uint32_t i = 0u; i < ArrayCount(fs_test_remote_files); ++i) {
+    const char *path = fs_test_remote_files[i];
+    char disk[1100];
+    snprintf(disk, sizeof(disk), "%s/%s", remote->directory, path);
+    if (fs_test_path_on_disk(disk) ||
+        (prefix &&
+         (strncmp(path, relative, prefix) != 0 || path[prefix] != '/'))) {
+      continue;
+    }
+    const char *name = path + (prefix ? prefix + 1u : 0u);
+    const char *slash = strchr(name, '/');
+    char child[64];
+    snprintf(child, sizeof(child), "%.*s",
+             (int)(slash ? (size_t)(slash - name) : strlen(name)), name);
+    any = true_v;
+    if (!visit(visit_context, child, slash != NULL)) {
+      break;
+    }
+  }
+  return any;
+}
+
+typedef struct FsTestNames {
+  char names[8][64];
+  bool8_t directories[8];
+  uint32_t count;
+} FsTestNames;
+
+vkr_internal bool8_t fs_test_collect_name(void *context, const char *name,
+                                          bool8_t is_directory) {
+  FsTestNames *names = context;
+  if (names->count < ArrayCount(names->names)) {
+    snprintf(names->names[names->count], sizeof(names->names[0]), "%s", name);
+    names->directories[names->count] = is_directory;
+    names->count += 1u;
+  }
+  return true_v;
+}
+
+/* Whether `names` holds `name` once, as a folder or a file. */
+vkr_internal bool8_t fs_test_names_hold(const FsTestNames *names,
+                                        const char *name,
+                                        bool8_t is_directory) {
+  uint32_t found = 0u;
+  for (uint32_t i = 0u; i < names->count; ++i) {
+    found += strcmp(names->names[i], name) == 0 &&
+             names->directories[i] == is_directory;
+  }
+  return found == 1u;
+}
+
 vkr_internal uint64_t fs_test_remote_arrivals(void *context) {
   return ((FsTestRemote *)context)->fetched;
 }
@@ -1342,6 +1405,7 @@ vkr_global const VkrVfsRemoteCalls fs_test_remote_calls = {
     .read = fs_test_remote_read,
     .prefetch = fs_test_remote_prefetch,
     .cancel = fs_test_remote_cancel,
+    .list = fs_test_remote_list,
     .arrivals = fs_test_remote_arrivals,
 };
 
@@ -1351,7 +1415,11 @@ vkr_global const VkrVfsRemoteCalls fs_test_remote_calls = {
    the workspace overlay does not ask for its copy there. Also fails when
    asking whether a file is pending, reading part of it or queueing it
    fetches it, when a whole file still counts as pending, or when the
-   overlay's copy is not the one found pending. */
+   overlay's copy is not the one found pending. Then fails when a folder
+   holding only files not yet written does not exist or list them, when a
+   name on disk lists twice, when such a file or folder does not resolve
+   below the directory's resolved path, when a path that doubles a
+   separator does not find its file, or when any of these fetches. */
 vkr_internal void test_vfs_remote_directory(void) {
   printf("  Running test_vfs_remote_directory...\n");
   FsTestRemote remote = {0};
@@ -1429,6 +1497,67 @@ vkr_internal void test_vfs_remote_directory(void) {
   assert(fs_test_reads(&overlaid, &allocator, "fetched"));
   assert(remote.fetched == 2u);
   assert(!vkr_vfs_remote_pending(&overlaid, NULL));
+
+  /* Folders that hold only files the remote has not written exist and
+     list them, without a fetch; the disk's names list once. */
+  char deep_text[1100];
+  char inner_text[1100];
+  char nowhere_text[1100];
+  snprintf(deep_text, sizeof(deep_text), "%s/deep", remote.directory);
+  snprintf(inner_text, sizeof(inner_text), "%s/deep/inner", remote.directory);
+  snprintf(nowhere_text, sizeof(nowhere_text), "%s/nowhere", remote.directory);
+  const FilePath deep = file_path_view(deep_text);
+  const FilePath inner = file_path_view(inner_text);
+  const FilePath nowhere = file_path_view(nowhere_text);
+  const uint32_t fetched_before = remote.fetched;
+  assert(vkr_vfs_remote_directory(&deep) && file_exists(&deep) &&
+         file_exists(&inner));
+  assert(!vkr_vfs_remote_directory(&nowhere) && !file_exists(&nowhere));
+  assert(!vkr_vfs_remote_directory(&held));
+  FsTestNames names = {0};
+  assert(file_list_directory(&deep, fs_test_collect_name, &names) ==
+         FILE_ERROR_NONE);
+  assert(names.count == 1u && fs_test_names_hold(&names, "inner", true_v));
+  MemZero(&names, sizeof(names));
+  assert(file_list_directory(&inner, fs_test_collect_name, &names) ==
+         FILE_ERROR_NONE);
+  assert(names.count == 1u && fs_test_names_hold(&names, "c.txt", false_v));
+  MemZero(&names, sizeof(names));
+  const FilePath root = file_path_view(remote.directory);
+  assert(file_list_directory(&root, fs_test_collect_name, &names) ==
+         FILE_ERROR_NONE);
+  assert(names.count == 3u && fs_test_names_hold(&names, "held.txt", false_v) &&
+         fs_test_names_hold(&names, "assets", true_v) &&
+         fs_test_names_hold(&names, "deep", true_v));
+  assert(file_list_directory(&nowhere, fs_test_collect_name, &names) ==
+         FILE_ERROR_NOT_FOUND);
+  char resolved_root[1100];
+  char resolved[1100];
+  char expected[1200];
+  char deep_file_text[1100];
+  snprintf(deep_file_text, sizeof(deep_file_text), "%s/c.txt", inner_text);
+  const FilePath deep_file = file_path_view(deep_file_text);
+  assert(file_path_resolve(&root, resolved_root, sizeof(resolved_root)) ==
+         FILE_ERROR_NONE);
+  assert(file_path_resolve(&deep_file, resolved, sizeof(resolved)) ==
+         FILE_ERROR_NONE);
+  snprintf(expected, sizeof(expected), "%s/deep/inner/c.txt", resolved_root);
+  assert(file_path_equals(resolved, expected));
+  assert(file_path_resolve(&inner, resolved, sizeof(resolved)) ==
+         FILE_ERROR_NONE);
+  snprintf(expected, sizeof(expected), "%s/deep/inner", resolved_root);
+  assert(file_path_equals(resolved, expected));
+  assert(file_path_resolve(&nowhere, resolved, sizeof(resolved)) ==
+         FILE_ERROR_NOT_FOUND);
+  assert(file_path_resolve(&missing, resolved, sizeof(resolved)) ==
+         FILE_ERROR_NOT_FOUND);
+  char doubled_text[1100];
+  snprintf(doubled_text, sizeof(doubled_text), "%s//deep//inner/c.txt",
+           remote.directory);
+  const FilePath doubled = file_path_view(doubled_text);
+  pending_size = 0u;
+  assert(vkr_vfs_remote_pending(&doubled, &pending_size) && pending_size == 7u);
+  assert(remote.fetched == fetched_before);
 
   assert(vkr_vfs_set_remote(NULL, NULL, NULL));
   assert(vkr_vfs_set_overlay_root(NULL));

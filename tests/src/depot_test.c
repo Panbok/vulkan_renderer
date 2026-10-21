@@ -1927,6 +1927,30 @@ static bool8_t depot_test_exists(const char *root, const char *relative) {
          vkr_bakery_is_file(path);
 }
 
+typedef struct DepotTestNames {
+  char names[8][64];
+  bool8_t directories[8];
+  uint32_t count;
+} DepotTestNames;
+
+static bool8_t depot_test_collect_name(void *context, const char *name,
+                                       bool8_t is_directory) {
+  DepotTestNames *names = context;
+  if (names->count < 8u) {
+    snprintf(names->names[names->count], sizeof(names->names[0]), "%s", name);
+    names->directories[names->count] = is_directory;
+    names->count += 1u;
+  }
+  return true_v;
+}
+
+/* Whether the `index`th name is `name`, a folder or a file. */
+static bool8_t depot_test_name_is(const DepotTestNames *names, uint32_t index,
+                                  const char *name, bool8_t is_directory) {
+  return index < names->count && strcmp(names->names[index], name) == 0 &&
+         names->directories[index] == is_directory;
+}
+
 /* The state file's version: 1 for a working copy, 2 for a sparse one. */
 static uint32_t depot_test_state_version(const char *root) {
   char path[VKR_DEPOT_PATH_CAPACITY];
@@ -1943,7 +1967,8 @@ static uint32_t depot_test_state_version(const char *root) {
 }
 
 /* A sparse working copy over loopback (vkr_depot_workspace.h). Fails when a
-   sparse clone writes a file other than the root ignore rules, when a file
+   sparse clone writes a file other than the root ignore rules or leaves out
+   a folder of the tree, when a file
    it never fetched shows as a change, when a remote on the working copy
    lists a fetched file, writes over a file on disk or does not bring an
    unfetched one; when status misses a fetched file's deletion, an edit, a
@@ -1951,7 +1976,10 @@ static uint32_t depot_test_state_version(const char *root) {
    more than the changes or loses an unfetched file; or when a pull writes
    a file the copy never fetched, leaves a fetched one stale or the new
    content does not arrive on the next read. A plain working copy keeps
-   state version 1. */
+   state version 1. Also fails when the remote lists a file on disk or
+   misses an unfetched one, or when a process reading the remote (a Bakery
+   job) does not find an unfetched file in its stats and listings or
+   fetches it by asking. */
 static void test_depot_sparse(void) {
   printf("  Running test_depot_sparse...\n");
   char store_root[VKR_DEPOT_PATH_CAPACITY];
@@ -2016,6 +2044,12 @@ static void test_depot_sparse(void) {
   assert(depot_test_file_is(sparse_root, ".vkrdepotignore", "*.vkt\n"));
   assert(!depot_test_exists(sparse_root, "a.txt") &&
          !depot_test_exists(sparse_root, "dir/c.txt"));
+  /* The tree's folders exist, as a checkout of the files would leave
+     them. */
+  char clone_folder[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(clone_folder, sizeof(clone_folder), sparse_root,
+                              "dir") &&
+         vkr_bakery_is_directory(clone_folder));
   assert(depot_test_state_version(sparse_root) == 2u);
   VkrDepotWorkspace sparse;
   assert(
@@ -2043,6 +2077,38 @@ static void test_depot_sparse(void) {
   VkrDepotRemoteStats stats;
   vkr_depot_remote_stats(remote, &stats);
   assert(stats.listed == 4u && stats.present == 1u);
+
+  /* The remote lists the unfetched files by folder, and a process that
+     reads it, as a Bakery job does, finds them in stats and listings
+     without a download. */
+  DepotTestNames names = {0};
+  assert(vkr_depot_remote_list(remote, "", depot_test_collect_name, &names));
+  assert(names.count == 3u &&
+         depot_test_name_is(&names, 0u, "a.txt", false_v) &&
+         depot_test_name_is(&names, 1u, "b.txt", false_v) &&
+         depot_test_name_is(&names, 2u, "dir", true_v));
+  MemZero(&names, sizeof(names));
+  assert(vkr_depot_remote_list(remote, "dir", depot_test_collect_name, &names));
+  assert(names.count == 1u && depot_test_name_is(&names, 0u, "c.txt", false_v));
+  assert(vkr_vfs_set_remote(sparse_root, vkr_depot_remote_vfs_calls(), remote));
+  vkr_bakery_os_read_remote(true_v);
+  char unfetched_path[VKR_DEPOT_PATH_CAPACITY];
+  char folder[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(unfetched_path, sizeof(unfetched_path),
+                              sparse_root, "dir/c.txt") &&
+         vkr_bakery_path_join(folder, sizeof(folder), sparse_root, "dir"));
+  VkrBakeryStat stat;
+  assert(vkr_bakery_stat(unfetched_path, &stat) && stat.exists &&
+         !stat.is_directory && stat.size == 7u);
+  assert(vkr_bakery_stat_native(unfetched_path, &stat) && !stat.exists);
+  MemZero(&names, sizeof(names));
+  assert(vkr_bakery_list_directory(folder, depot_test_collect_name, &names));
+  assert(names.count == 2u &&
+         depot_test_name_is(&names, 0u, "c.txt", false_v) &&
+         depot_test_name_is(&names, 1u, "d.txt", false_v));
+  vkr_bakery_os_read_remote(false_v);
+  assert(vkr_vfs_set_remote(NULL, NULL, NULL));
+  assert(!depot_test_exists(sparse_root, "dir/c.txt"));
   assert(vkr_depot_remote_fetch(remote, "a.txt"));
   assert(vkr_depot_remote_fetch(remote, "b.txt"));
   assert(vkr_depot_remote_fetch(remote, "dir/d.txt"));

@@ -97,6 +97,16 @@ if(VKR_BUILD_TOOLS)
         "${CMAKE_SOURCE_DIR}/runtime/src"
         "${CMAKE_SOURCE_DIR}/vendor/ktx-software/external/basisu/zstd")
     target_compile_definitions(vkr_bakery PRIVATE VKR_BAKERY_WITH_COOKERS=1)
+    # A job on a sparse depot working copy reads its unfetched files
+    # through a remote of its own (ADR-123), with libktx's zstd.
+    if(TARGET vkr_depot_lib)
+        target_link_libraries(vkr_bakery PRIVATE vkr_depot_lib)
+        target_sources(vkr_bakery PRIVATE
+            "${CMAKE_SOURCE_DIR}/tools/depot/vkr_depot_zstd.c")
+        target_include_directories(vkr_bakery PRIVATE
+            "${CMAKE_SOURCE_DIR}/tools/depot")
+        target_compile_definitions(vkr_bakery PRIVATE VKR_BAKERY_WITH_DEPOT=1)
+    endif()
     target_link_libraries(vkr_bakery PRIVATE ktx vkr_asset_formats
         vkr_mesh_cooker vkr_animation_cooker vkr_collision_cooker
         vkr_font_cooker vkr_vkt_packer vkr_hdr_cube_packer

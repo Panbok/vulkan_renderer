@@ -1295,6 +1295,8 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
   uint32_t *writes = malloc((size_t)Max(target.count, 1u) * sizeof(uint32_t));
   uint32_t write_count = 0u;
   uint64_t write_bytes = 0u;
+  /* The folder a sparse checkout made last; sorted paths share it. */
+  char last_folder[VKR_DEPOT_PATH_CAPACITY] = {0};
   /* The rules as they stand before the checkout, which may bring others. */
   bool8_t ok = writes != NULL && ignore_load(workspace->root, &ignore) &&
                fold_index_build(keep, &kept);
@@ -1328,10 +1330,18 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
     const bool8_t present = vkr_bakery_stat(absolute, &stat) && stat.exists;
     /* A sparse working copy writes only the files it holds and its root
        ignore rules; every other file stays unfetched with the target's
-       blob. */
+       blob. Its folder is made, so the tree's folders exist on disk for
+       every reader, as a checkout of the files would leave them. */
     if (workspace->sparse && !present &&
         strcmp(entry->path, VKR_DEPOT_IGNORE_FILE) != 0) {
-      ok = vkr_depot_file_list_add(&index, entry->path, entry->size,
+      char folder[VKR_DEPOT_PATH_CAPACITY];
+      vkr_bakery_path_parent(folder, sizeof(folder), absolute);
+      if (strcmp(folder, last_folder) != 0) {
+        ok = vkr_bakery_make_directories(folder);
+        snprintf(last_folder, sizeof(last_folder), "%s", folder);
+      }
+      ok = ok &&
+           vkr_depot_file_list_add(&index, entry->path, entry->size,
                                    VKR_DEPOT_MTIME_UNFETCHED, &entry->blob);
       continue;
     }

@@ -3111,6 +3111,7 @@ static void project_create(VkrEditorProjects *projects, VkrEditorUi *editor,
     return;
   }
   if (!projects->workspace.initialized) {
+    vkr_editor_depot_workspace_sparse(projects->workspace_directory);
     if (!vkr_editor_workspace_open(projects->workspace_directory, true_v,
                                    &projects->workspace, &error) ||
         !vkr_editor_workspace_lease_acquire(&projects->workspace,
@@ -3845,16 +3846,23 @@ static bool8_t project_switch_workspace(VkrEditorProjects *projects,
                                         const char *selected) {
   VkrEditorProjectError error = {0};
   VkrEditorWorkspace workspace = {0};
+  /* A sparse working copy's files, its project folders included, arrive
+     when read (ADR-123), so its remote comes before the first read; a
+     switch that does not happen goes back to the current workspace's. */
+  vkr_editor_depot_workspace_sparse(selected);
   if (!vkr_editor_workspace_open(selected, project_workspace_clone(selected),
                                  &workspace, &error)) {
+    vkr_editor_depot_workspace_sparse(projects->workspace_directory);
     project_error(projects, &error);
     return false_v;
   }
   if (string_equals(workspace.root, projects->workspace.root)) {
+    vkr_editor_depot_workspace_sparse(projects->workspace_directory);
     projects->discard_edits = false_v;
     return false_v;
   }
   if (!vkr_editor_content_stop_previews(editor->content)) {
+    vkr_editor_depot_workspace_sparse(projects->workspace_directory);
     string_format(
         projects->message, sizeof(projects->message),
         "Unable to stop the asset preview worker. Retry switching workspaces.");
@@ -4010,6 +4018,7 @@ VkrEditorProjects *vkr_editor_projects_create(VkrAllocator *allocator, int argc,
   }
   if (projects->workspace_directory[0]) {
     VkrEditorProjectError error = {0};
+    vkr_editor_depot_workspace_sparse(projects->workspace_directory);
     if (!vkr_editor_workspace_open(
             projects->workspace_directory,
             project_workspace_clone(projects->workspace_directory),
@@ -4050,6 +4059,7 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
   project_release_template_previews(projects);
   vkr_editor_workspace_lease_release(&projects->lease);
   project_overlay_workspace(NULL);
+  vkr_editor_depot_workspace_sparse(NULL);
   if (projects->settings_save) {
     vkr_allocator_free(projects->allocator, projects->settings_save,
                        sizeof(*projects->settings_save) +

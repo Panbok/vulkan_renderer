@@ -3,6 +3,7 @@
 #include "core/vkr_atomic.h"
 #include "core/vkr_hash.h"
 #include "filesystem/filesystem.h"
+#include "filesystem/vkr_vfs.h"
 #include "platform/vkr_platform.h"
 
 #include <errno.h>
@@ -56,7 +57,37 @@ vkr_internal wchar_t *vkr_bakery_native(const char *path) {
 // Stat and directories
 // =============================================================================
 
+/* Set once at startup by a process that reads a remote's files; read-only
+   afterwards. */
+vkr_global bool8_t vkr_bakery_reads_remote = false_v;
+
+void vkr_bakery_os_read_remote(bool8_t enabled) {
+  vkr_bakery_reads_remote = enabled;
+}
+
 bool8_t vkr_bakery_stat(const char *path, VkrBakeryStat *out_stat) {
+  if (!vkr_bakery_stat_native(path, out_stat)) {
+    return false_v;
+  }
+  if (out_stat->exists || !vkr_bakery_reads_remote) {
+    return true_v;
+  }
+  /* The listing answers without a download: a job that only checks a file
+     exists, as a scene's preparation checks every artifact, leaves it to
+     arrive when something reads it. */
+  const FilePath file = file_path_view(path);
+  uint64_t size = 0u;
+  if (vkr_vfs_remote_pending(&file, &size)) {
+    out_stat->exists = true_v;
+    out_stat->size = size;
+  } else if (vkr_vfs_remote_directory(&file)) {
+    out_stat->exists = true_v;
+    out_stat->is_directory = true_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_bakery_stat_native(const char *path, VkrBakeryStat *out_stat) {
   MemZero(out_stat, sizeof(*out_stat));
 #if defined(_WIN32)
   wchar_t *native = vkr_bakery_native(path);
@@ -132,9 +163,67 @@ vkr_internal int vkr_bakery_compare_entries(const void *lhs, const void *rhs) {
   return strcmp(a->name, b->name);
 }
 
+typedef struct VkrBakeryListing {
+  VkrBakeryDirectoryEntry *entries;
+  uint32_t count;
+  uint32_t capacity;
+  bool8_t failed;
+} VkrBakeryListing;
+
+vkr_internal bool8_t vkr_bakery_listing_add(void *context, const char *name,
+                                            bool8_t is_directory) {
+  VkrBakeryListing *listing = context;
+  if (listing->count == listing->capacity) {
+    const uint32_t capacity = listing->capacity ? listing->capacity * 2u : 64u;
+    VkrBakeryDirectoryEntry *grown = (VkrBakeryDirectoryEntry *)realloc(
+        listing->entries, sizeof(*grown) * capacity);
+    if (!grown) {
+      listing->failed = true_v;
+      return false_v;
+    }
+    listing->entries = grown;
+    listing->capacity = capacity;
+  }
+  char *copy = strdup(name);
+  if (!copy) {
+    listing->failed = true_v;
+    return false_v;
+  }
+  listing->entries[listing->count++] =
+      (VkrBakeryDirectoryEntry){.name = copy, .is_directory = is_directory};
+  return true_v;
+}
+
+/* The listing of a process that reads a remote's files: the library's,
+   which adds the files the remote has not written, in byte order. */
+vkr_internal bool8_t vkr_bakery_list_with_remote(
+    const char *path, VkrBakeryDirectoryVisitor visit, void *context) {
+  VkrBakeryListing listing = {0};
+  const FilePath folder = file_path_view(path);
+  const FileError error =
+      file_list_directory(&folder, vkr_bakery_listing_add, &listing);
+  bool8_t ok = error == FILE_ERROR_NONE && !listing.failed;
+  if (ok && listing.count) {
+    qsort(listing.entries, listing.count, sizeof(*listing.entries),
+          vkr_bakery_compare_entries);
+  }
+  for (uint32_t i = 0u; i < listing.count; ++i) {
+    if (ok && !visit(context, listing.entries[i].name,
+                     listing.entries[i].is_directory)) {
+      ok = false_v;
+    }
+    free(listing.entries[i].name);
+  }
+  free(listing.entries);
+  return ok;
+}
+
 bool8_t vkr_bakery_list_directory(const char *path,
                                   VkrBakeryDirectoryVisitor visit,
                                   void *context) {
+  if (vkr_bakery_reads_remote) {
+    return vkr_bakery_list_with_remote(path, visit, context);
+  }
   VkrBakeryDirectoryEntry *entries = NULL;
   uint32_t count = 0u;
   uint32_t capacity = 0u;

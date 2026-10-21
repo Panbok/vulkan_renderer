@@ -117,6 +117,17 @@ bool8_t vkr_depot_remote_pending(void *remote, const char *relative,
    once; nothing for an unlisted file or one already queued or present. */
 void vkr_depot_remote_prefetch(void *remote, const char *relative);
 
+/* A VkrVfsRemoteCalls list: the names directly below the folder `relative`
+   that hold files not yet written, a folder name once for all of its
+   files. True when it visited any. */
+bool8_t vkr_depot_remote_list(void *remote, const char *relative,
+                              FileDirectoryVisit visit, void *visit_context);
+
+/* The environment variable that names a sparse working copy's root to a
+   process the editor starts on it, such as a Bakery job, which then opens
+   a remote on the copy (vkr_bakery_os_read_remote). */
+#define VKR_DEPOT_SPARSE_WORKSPACE_VARIABLE "VKR_DEPOT_SPARSE_WORKSPACE"
+
 /* Drops `relative`'s queued prefetch while its download has not started;
    a fetch that asked for it, or a transfer under way, goes on. A later
    read, fetch or prefetch asks again. Never blocks on the network. */

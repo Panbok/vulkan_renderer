@@ -19,12 +19,24 @@ typedef struct VkrBakeryStat {
   uint64_t file_id;
 } VkrBakeryStat;
 
+/** The disk's answer. In a process that reads a remote's files
+    (vkr_bakery_os_read_remote), a path the disk lacks exists when the
+    remote holds it: a file it has not yet written, with its listed size and
+    no time, or a folder that holds such files. Reads still fetch it. */
 bool8_t vkr_bakery_stat(const char *path, VkrBakeryStat *out_stat);
+/** The disk alone, whatever the process reads. */
+bool8_t vkr_bakery_stat_native(const char *path, VkrBakeryStat *out_stat);
 bool8_t vkr_bakery_is_file(const char *path);
 bool8_t vkr_bakery_is_directory(const char *path);
+/** Makes this process's stats and listings include the files the VFS
+    remote (vkr_vfs_set_remote) holds but has not written, so a Bakery job
+    on a sparse working copy finds every tracked file. Call once at
+    startup, after installing the remote. */
+void vkr_bakery_os_read_remote(bool8_t enabled);
 
-/** Calls `visit` for each entry except "." and "..", in byte order of names.
- * Returning false from `visit` stops the listing and returns false. */
+/** Calls `visit` for each entry except "." and "..", in byte order of names,
+ * the remote's unwritten files included where vkr_bakery_os_read_remote
+ * asks. Returning false from `visit` stops the listing and returns false. */
 typedef bool8_t (*VkrBakeryDirectoryVisitor)(void *context, const char *name,
                                              bool8_t is_directory);
 bool8_t vkr_bakery_list_directory(const char *path,

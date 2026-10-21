@@ -28,8 +28,9 @@
  * VKR_DEPOT_MTIME_UNFETCHED names a file that is not on disk and still holds
  * its blob. A snapshot keeps such an entry while its file is absent, so
  * only a file that was on disk and is gone counts as deleted. A checkout
- * writes only the files on disk and the root `.vkrdepotignore`; every other
- * file of the target stays unfetched with the target's blob. The files
+ * writes only the files on disk and the root `.vkrdepotignore` and makes
+ * every folder of the target; every other file of the target stays
+ * unfetched with the target's blob. The files
  * arrive when a reader opens them, through a remote content directory on
  * the working copy (vkr_depot_remote.h). */
 
