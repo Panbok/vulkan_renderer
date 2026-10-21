@@ -159,6 +159,11 @@
    under the frame's number, so playback draws the clouds and their shadows
    where the session had them. Absent while the scene has no clouds. */
 #define VKR_RECORDING_STREAM_CLOUDS 34u
+/* Per-pass hardware counters the renderer sampled (Tier 1,
+   vkr_recording_format.h): counter names once, then one record per
+   finished session. Not droppable. */
+#define VKR_RECORDING_STREAM_GPU_COUNTER_NAME 35u
+#define VKR_RECORDING_STREAM_GPU_COUNTERS 36u
 /* Ring bytes of each job worker's producer when zones are recorded. */
 #define VKR_RECORDING_WORKER_RING_BYTES (1024u * 1024u)
 /* Transform hashes are split by stable entity key
@@ -473,6 +478,15 @@ typedef struct VkrRecording {
      far (ADR-130). */
   bool8_t hardware_written;
   uint32_t pipelines_written;
+  /* Hardware counter names written so far, by recorded id, and the
+     counter sessions written. */
+  uint32_t gpu_counter_name_count;
+  char gpu_counter_names[VKR_RECORDING_GPU_COUNTER_MAX]
+                        [VKR_RECORDING_GPU_COUNTER_NAME_MAX + 1u];
+  uint64_t gpu_counter_sessions;
+  /* The session vkr_recording_gpu_counter_buffer hands out, from the
+     recording's memory on first use. */
+  struct VkrRendererImplGpuCounters *gpu_counter_buffer;
   /* Pass ids a recorded graph shape holds; a frame that runs a pass none
      holds asks the caller for a snapshot (vkr_recording_graph_wanted). The
      passes a frame culls change often and its rows show them, so they make
@@ -569,6 +583,22 @@ void vkr_recording_passes(VkrRecording *recording, uint64_t frame,
  * change. Tier 1 only.
  */
 bool8_t vkr_recording_graph_wanted(VkrRecording *recording);
+
+/**
+ * @brief Writes a finished hardware counter session (ADR-130) under the
+ * recorded frames its renderer frames map to, naming new counters and
+ * passes first. A session whose frames left the history is dropped. Tier 1
+ * only.
+ */
+struct VkrRendererImplGpuCounters;
+
+/** Storage for one counter session to take from the renderer, from the
+ * recording's memory on first use; NULL without Tier 1 or memory. */
+struct VkrRendererImplGpuCounters *
+vkr_recording_gpu_counter_buffer(VkrRecording *recording);
+
+void vkr_recording_gpu_counters(
+    VkrRecording *recording, const struct VkrRendererImplGpuCounters *session);
 
 /**
  * @brief Writes the render graph shape `snapshot` describes under the

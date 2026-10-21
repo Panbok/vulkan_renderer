@@ -4,6 +4,7 @@
 #include "core/vkr_atomic.h"
 #include "platform/vkr_platform.h"
 #include "vkr_renderer.h"
+#include "vulkan/vkr_vulkan_amd_counters.h"
 #include "vulkan/vkr_vulkan_gpu_capture.h"
 #include "vulkan/vkr_vulkan_wsi.h"
 
@@ -81,6 +82,11 @@ typedef struct VkrVulkanCandidate {
   bool8_t has_buffer_marker_extension;
   bool8_t has_device_coherent_memory_extension;
   bool8_t has_pipeline_executable_properties_extension;
+  /* VK_AMD_gpa_interface and VK_AMD_shader_core_properties, which
+     GPUPerfAPI's hardware counters need, and the optional
+     VK_AMD_shader_core_properties2. */
+  bool8_t has_amd_gpa_extensions;
+  bool8_t has_amd_shader_core_properties2;
   /* VK_KHR_calibrated_timestamps, or the EXT it was promoted from; NULL when
      the device names neither. The pair of domains it must calibrate is the
      device's timestamps against QueryPerformanceCounter, the counter behind
@@ -144,6 +150,9 @@ struct VkrVulkanDevice {
      pipelineExecutableInfo. */
   VkrVulkanPipelineExecutableFunctions pipeline_executable_functions;
   bool8_t pipeline_executable_enabled;
+  /* GPUPerfAPI's hardware counters on an AMD device that enabled the
+     extensions they need; NULL otherwise. */
+  VkrVulkanAmdCounters *amd_counters;
   /* VK_EXT_memory_budget: the driver's per-heap usage and budget. */
   bool8_t memory_budget_enabled;
   bool8_t swapchain_colorspace_enabled;
@@ -486,6 +495,18 @@ vkr_internal bool8_t vkr_vk_create_instance(VkrVulkanDevice *device) {
     enabled_extensions[enabled_extension_count++] =
         VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
   }
+#if VKR_HAS_GPA
+  /* GPUPerfAPI resolves vkGetPhysicalDeviceProperties2KHR through the
+     instance, so its AMD counters need the extension enabled although
+     Vulkan 1.1 made it core. The device is not chosen yet; it changes
+     nothing for others. */
+  if (vkr_vk_extension_present(
+          available, available_count,
+          VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME)) {
+    enabled_extensions[enabled_extension_count++] =
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
+  }
+#endif
 
   const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
   VkApplicationInfo application_info = {
@@ -596,6 +617,7 @@ vkr_vk_query_candidate_properties(VkrVulkanCandidate *candidate,
                 candidate->driver.driverInfo);
   report->api_version = candidate->properties.properties.apiVersion;
   report->driver_id = candidate->driver.driverID;
+  report->vendor_id = candidate->properties.properties.vendorID;
   report->conformance_version = candidate->driver.conformanceVersion;
 
   /* Queried apart so the candidate's kept chain points at no local. */
@@ -743,6 +765,14 @@ vkr_internal bool8_t vkr_vk_query_calibrated_host_domain(
   return device_domain && host_domain;
 }
 
+/* An AMD device with the extensions GPUPerfAPI's counters need. */
+vkr_internal bool8_t
+vkr_vk_amd_counters_candidate(const VkrVulkanCandidate *candidate) {
+  return candidate->properties.properties.vendorID ==
+             VKR_VULKAN_VENDOR_ID_AMD &&
+         candidate->has_amd_gpa_extensions;
+}
+
 vkr_internal void
 vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
                                   VkrVulkanCandidate *candidate) {
@@ -783,6 +813,14 @@ vkr_vk_query_candidate_extensions(VkrVulkanDevice *device,
         vkr_vk_extension_present(
             extensions, extension_count,
             VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    candidate->has_amd_gpa_extensions =
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VKR_VULKAN_AMD_GPA_INTERFACE_EXTENSION) &&
+        vkr_vk_extension_present(extensions, extension_count,
+                                 VK_AMD_SHADER_CORE_PROPERTIES_EXTENSION_NAME);
+    candidate->has_amd_shader_core_properties2 = vkr_vk_extension_present(
+        extensions, extension_count,
+        VK_AMD_SHADER_CORE_PROPERTIES_2_EXTENSION_NAME);
     candidate->calibrated_timestamps_extension =
         vkr_vk_extension_present(extensions, extension_count,
                                  VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)
@@ -932,6 +970,14 @@ vkr_vk_report_candidate_features(const VkrVulkanDevice *device,
                     : vkr_platform_environment_flag("VKR_VULKAN_BREADCRUMBS")
                         ? "enabled: a hang names the last pass"
                         : "available with VKR_VULKAN_BREADCRUMBS=1");
+  const bool8_t amd_counters_present = vkr_vk_amd_counters_candidate(candidate);
+  vkr_vk_report_add(report, VKR_VULKAN_REPORT_FEATURE, "amdGpuCounters",
+                    false_v, amd_counters_present,
+                    amd_counters_present
+                        ? "enabled when GPUPerfAPIVK-x64.dll loads beside the "
+                          "executable"
+                        : "unavailable: not an AMD device with "
+                          "VK_AMD_gpa_interface");
   vkr_vk_add_feature(report, "shaderInt64", candidate->features.shader_int64);
   vkr_vk_add_feature(report, "geometryShader",
                      candidate->features.geometry_shader);
@@ -1406,6 +1452,10 @@ vkr_internal bool8_t vkr_vk_load_ray_query_functions(
 }
 
 vkr_internal void vkr_vk_destroy_logical_device(VkrVulkanDevice *device) {
+  /* GPUPerfAPI closes its context before the device goes, and after a
+     failed vkCreateDevice too. */
+  vkr_vulkan_amd_counters_destroy(device->config.allocator,
+                                  &device->amd_counters);
   if (!device->device) {
     return;
   }
@@ -1723,6 +1773,22 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
   if (enable_pipeline_executable)
     extensions[extension_count++] =
         VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
+  /* Always on an AMD device that has them (ADR-130), so a recording samples
+     hardware counters without a restart. GPUPerfAPI initializes before the
+     device and its queue exist; without its library the extensions stay
+     off. */
+  const bool8_t enable_amd_counters =
+      vkr_vk_amd_counters_candidate(candidate) &&
+      vkr_vulkan_amd_counters_create(device->config.allocator,
+                                     &device->amd_counters);
+  if (enable_amd_counters) {
+    extensions[extension_count++] = VKR_VULKAN_AMD_GPA_INTERFACE_EXTENSION;
+    extensions[extension_count++] =
+        VK_AMD_SHADER_CORE_PROPERTIES_EXTENSION_NAME;
+    if (candidate->has_amd_shader_core_properties2)
+      extensions[extension_count++] =
+          VK_AMD_SHADER_CORE_PROPERTIES_2_EXTENSION_NAME;
+  }
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
@@ -1774,6 +1840,8 @@ vkr_internal bool8_t vkr_vk_try_candidate(VkrVulkanDevice *device,
     device->pipeline_executable_enabled =
         executable->get_properties && executable->get_statistics;
   }
+  vkr_vulkan_amd_counters_bind(device->amd_counters, device->instance,
+                               candidate->physical, device->device);
   const bool8_t functions_loaded = vkr_vk_load_descriptor_functions(device);
   vkr_vk_report_add(report, VKR_VULKAN_REPORT_DEVICE_CREATE,
                     "descriptor-buffer function table", true_v,
@@ -1948,6 +2016,11 @@ vkr_vulkan_device_pipeline_executable_functions(const VkrVulkanDevice *device) {
   return device && device->pipeline_executable_enabled
              ? &device->pipeline_executable_functions
              : NULL;
+}
+
+VkrVulkanAmdCounters *
+vkr_vulkan_device_amd_counters(const VkrVulkanDevice *device) {
+  return device ? device->amd_counters : NULL;
 }
 
 void vkr_vulkan_device_subgroup_size_range(const VkrVulkanDevice *device,

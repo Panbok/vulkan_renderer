@@ -5,6 +5,7 @@
 #include "assets/vkr_recording_analysis.h"
 #include "containers/str.h"
 #include "containers/vkr_hashtable.h"
+#include "core/vkr_byte_io.h"
 #include "core/vkr_content_codec.h"
 #include "core/vkr_json_writer.h"
 #include "filesystem/filesystem.h"
@@ -704,10 +705,10 @@ bool8_t vkr_recording_start(VkrRecording *recording,
                 recording->bundle_path, VKR_RECORDING_STREAM_FILE);
   uint32_t base_count = 0u;
   const VkrRecordingStream *base = vkr_recording_streams(&base_count);
-  VkrRecordingStream streams[32];
-  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 17u <= 32u,
-                 "room for the metrics, pose, pass, graph, allocator, draw "
-                 "and zone streams");
+  VkrRecordingStream streams[40];
+  _Static_assert(ArrayCount(VKR_RECORDING_STREAMS) + 19u <= 40u,
+                 "room for the metrics, pose, pass, graph, allocator, draw, "
+                 "GPU counter and zone streams");
   VkrRecordingField metric_fields[VKR_RECORDING_METRIC_MAX + 1u];
   MemCopy(streams, base, sizeof(*base) * base_count);
   uint32_t stream_count = base_count;
@@ -791,6 +792,11 @@ bool8_t vkr_recording_start(VkrRecording *recording,
         .id = VKR_RECORDING_STREAM_HARDWARE, .name = "hardware"};
     streams[stream_count++] = (VkrRecordingStream){
         .id = VKR_RECORDING_STREAM_PIPELINE, .name = "pipeline"};
+    streams[stream_count++] =
+        (VkrRecordingStream){.id = VKR_RECORDING_STREAM_GPU_COUNTER_NAME,
+                             .name = "gpu_counter_name"};
+    streams[stream_count++] = (VkrRecordingStream){
+        .id = VKR_RECORDING_STREAM_GPU_COUNTERS, .name = "gpu_counters"};
   }
   if (config->zones) {
     streams[stream_count++] = (VkrRecordingStream){
@@ -1494,6 +1500,129 @@ void vkr_recording_graph(VkrRecording *recording, uint64_t frame,
       recording->graph_covered[id] = 1u;
     }
   }
+}
+
+/* The recorded id of hardware counter `name`, writing its name record
+   first; UINT8_MAX when the ids ran out or the record was lost, so a later
+   session tries again. */
+vkr_internal uint8_t vkr_recording_gpu_counter_id(VkrRecording *recording,
+                                                  uint64_t frame,
+                                                  const char *name,
+                                                  uint8_t unit) {
+  for (uint32_t i = 0u; i < recording->gpu_counter_name_count; ++i) {
+    if (string_equals(recording->gpu_counter_names[i], name)) {
+      return (uint8_t)i;
+    }
+  }
+  if (recording->gpu_counter_name_count >= VKR_RECORDING_GPU_COUNTER_MAX) {
+    return UINT8_MAX;
+  }
+  const uint32_t length = (uint32_t)Min(
+      string_length(name), (uint64_t)VKR_RECORDING_GPU_COUNTER_NAME_MAX);
+  uint8_t *record = vkr_recorder_reserve(
+      recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+      VKR_RECORDING_STREAM_GPU_COUNTER_NAME, frame, 3u + length);
+  if (!record) {
+    return UINT8_MAX;
+  }
+  const uint8_t id = (uint8_t)recording->gpu_counter_name_count;
+  record[0] = id;
+  record[1] = unit;
+  record[2] = (uint8_t)length;
+  MemCopy(record + 3u, name, length);
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  MemCopy(recording->gpu_counter_names[id], name, length);
+  recording->gpu_counter_names[id][length] = '\0';
+  ++recording->gpu_counter_name_count;
+  return id;
+}
+
+VkrRendererImplGpuCounters *
+vkr_recording_gpu_counter_buffer(VkrRecording *recording) {
+  if (!recording || !recording->active || !recording->passes_enabled) {
+    return NULL;
+  }
+  if (!recording->gpu_counter_buffer) {
+    recording->gpu_counter_buffer = vkr_allocator_alloc(
+        &recording->allocator, sizeof(*recording->gpu_counter_buffer),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  return recording->gpu_counter_buffer;
+}
+
+void vkr_recording_gpu_counters(VkrRecording *recording,
+                                const VkrRendererImplGpuCounters *session) {
+  vkr_assert(recording != NULL && recording->active);
+  if (!recording->passes_enabled || !session || session->counter_count == 0u ||
+      session->counter_count > VKR_RENDERER_IMPL_GPU_COUNTER_MAX ||
+      session->pass_count == 0u ||
+      session->pass_count > VKR_RENDERER_IMPL_MAX_PASS_TIMINGS) {
+    return;
+  }
+  const uint64_t first =
+      vkr_recording_frame_of(recording, session->first_frame_index);
+  const uint64_t last =
+      vkr_recording_frame_of(recording, session->last_frame_index);
+  if (first == UINT64_MAX || last == UINT64_MAX || last < first) {
+    return;
+  }
+  const uint32_t counters = session->counter_count;
+  uint8_t ids[VKR_RENDERER_IMPL_GPU_COUNTER_MAX];
+  for (uint32_t e = 0u; e < counters; ++e) {
+    const uint8_t unit =
+        session->counter_units[e] == VKR_RENDERER_IMPL_GPU_COUNTER_PERCENT
+            ? (uint8_t)VKR_RECORDING_GPU_COUNTER_PERCENT
+            : (uint8_t)VKR_RECORDING_GPU_COUNTER_COUNT;
+    ids[e] = vkr_recording_gpu_counter_id(recording, last,
+                                          session->counter_names[e], unit);
+    if (ids[e] == UINT8_MAX) {
+      return;
+    }
+  }
+  /* Passes without an id are left out; a later session names them. */
+  uint16_t pass_ids[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS];
+  uint32_t rows = 0u;
+  for (uint32_t p = 0u; p < session->pass_count; ++p) {
+    const char *name = session->pass_names[p];
+    const uint32_t length = (uint32_t)Min(
+        string_length(name), (uint64_t)VKR_RECORDING_PASS_NAME_MAX);
+    pass_ids[p] = length > 0u
+                      ? vkr_recording_pass_id(recording, last, name, length)
+                      : UINT16_MAX;
+    rows += pass_ids[p] != UINT16_MAX ? 1u : 0u;
+  }
+  if (rows == 0u) {
+    return;
+  }
+  const uint32_t header = VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE +
+                          (uint32_t)vkr_align_up_u64(counters, 4u);
+  const uint32_t row_size = 4u + (uint32_t)sizeof(float32_t) * counters;
+  const uint32_t size = header + rows * row_size;
+  uint8_t *record =
+      vkr_recorder_reserve(recording->recorder, VKR_RECORDER_PRODUCER_MAIN,
+                           VKR_RECORDING_STREAM_GPU_COUNTERS, last, size);
+  if (!record) {
+    return;
+  }
+  MemZero(record, header);
+  MemCopy(record, &first, sizeof(first));
+  MemCopy(record + 8u, &last, sizeof(last));
+  record[16] = (uint8_t)counters;
+  (void)vkr_recording_put_u16(record + 18u, rows);
+  MemCopy(record + VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE, ids,
+          counters);
+  uint8_t *at = record + header;
+  for (uint32_t p = 0u; p < session->pass_count; ++p) {
+    if (pass_ids[p] == UINT16_MAX) {
+      continue;
+    }
+    at = vkr_recording_put_u16(at, pass_ids[p]);
+    at = vkr_recording_put_u16(at, 0u);
+    MemCopy(at, session->values[p], sizeof(float32_t) * counters);
+    at += sizeof(float32_t) * counters;
+  }
+  vkr_recorder_commit(recording->recorder, VKR_RECORDER_PRODUCER_MAIN);
+  ++recording->gpu_counter_sessions;
 }
 
 /* The recorded id of registry entry `sample`, naming a new one first;

@@ -162,6 +162,15 @@ else()
     target_compile_definitions(renderer_lib PRIVATE VKR_HAS_FSR3_UPSCALER=0)
 endif()
 
+# AMD hardware counters through GPUPerfAPI (cmake/vkr_gpa.cmake).
+include("${CMAKE_SOURCE_DIR}/cmake/vkr_gpa.cmake")
+if(VKR_GPA_AVAILABLE)
+    target_include_directories(renderer_lib SYSTEM PRIVATE "${VKR_GPA_INCLUDE_DIR}")
+    target_compile_definitions(renderer_lib PRIVATE VKR_HAS_GPA=1)
+else()
+    target_compile_definitions(renderer_lib PRIVATE VKR_HAS_GPA=0)
+endif()
+
 # Set platform-specific definitions and link libraries
 if(APPLE)
     target_compile_definitions(renderer_lib PRIVATE PLATFORM_APPLE=1)

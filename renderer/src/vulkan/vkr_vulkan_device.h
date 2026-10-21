@@ -12,6 +12,12 @@ enum {
   VKR_VULKAN_REPORT_DETAIL_CAPACITY = 192,
 };
 
+/* PCI vendor id of AMD devices (VkPhysicalDeviceProperties.vendorID). */
+#define VKR_VULKAN_VENDOR_ID_AMD 0x1002u
+/* AMD's counter interface, which GPUPerfAPI drives; the Vulkan headers do
+   not name it. */
+#define VKR_VULKAN_AMD_GPA_INTERFACE_EXTENSION "VK_AMD_gpa_interface"
+
 typedef enum VkrVulkanReportKind {
   VKR_VULKAN_REPORT_API_VERSION = 0,
   VKR_VULKAN_REPORT_INSTANCE_EXTENSION,
@@ -38,6 +44,8 @@ typedef struct VkrVulkanCandidateReport {
   char driver_info[VK_MAX_DRIVER_INFO_SIZE];
   uint32_t api_version;
   uint32_t driver_id;
+  /* PCI vendor id (VkPhysicalDeviceProperties.vendorID). */
+  uint32_t vendor_id;
   VkConformanceVersion conformance_version;
   /* The adapter's LUID (VkPhysicalDeviceIDProperties), which OS telemetry
      matches its adapters by; valid only where the driver reports one. */
@@ -193,6 +201,11 @@ typedef struct VkrVulkanPipelineExecutableFunctions {
  * VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR. */
 const VkrVulkanPipelineExecutableFunctions *
 vkr_vulkan_device_pipeline_executable_functions(const VkrVulkanDevice *device);
+
+/** GPUPerfAPI's hardware counters (vkr_vulkan_amd_counters.h) on an AMD
+ * device that enabled the extensions they need; NULL otherwise. */
+struct s_VkrVulkanAmdCounters *
+vkr_vulkan_device_amd_counters(const VkrVulkanDevice *device);
 
 /** The subgroup sizes the device may run: Vulkan 1.3's subgroup size
  * control bounds, or the one subgroupSize where it reports none. Both zero

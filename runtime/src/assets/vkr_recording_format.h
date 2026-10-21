@@ -322,6 +322,22 @@ typedef enum VkrRecordingGpuCounterUnit {
   VKR_RECORDING_GPU_COUNTER_COUNT = 2,
 } VkrRecordingGpuCounterUnit;
 
+/*
+ * Per-pass hardware counters a runtime recording sampled itself (ADR-130;
+ * AMD GPUs on Vulkan through GPUPerfAPI), little-endian:
+ *
+ *   stream "gpu_counter_name", once per counter: u8 id, u8
+ *   VkrRecordingGpuCounterUnit, u8 name length and the UTF-8 name.
+ *
+ *   stream "gpu_counters", per finished session under its last frame: u64
+ *   first and u64 last recorded frame it sampled, u8 counter count, u8
+ *   zero, u16 pass count, the counters' u8 ids and zero padding to 4
+ *   bytes; then per pass a u16 pass id (the "pass_name" ids), u16 zero and
+ *   an f32 value per counter (NaN where the pass has none). A pass's value
+ *   is its mean over the session's frames that ran it.
+ */
+#define VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE 20u
+
 /* A resource's flags. */
 #define VKR_RECORDING_GRAPH_RESOURCE_BUFFER 1u
 #define VKR_RECORDING_GRAPH_RESOURCE_IMPORTED 2u

@@ -46,6 +46,9 @@ typedef enum VkrSampleRecordingCommand {
   /* Writes a rolling recording's held seconds into `path`, a new bundle
      directory; the rolling recording keeps running. */
   VKR_SAMPLE_RECORDING_SAVE_WINDOW,
+  /* Samples per-pass hardware counters for `time` seconds of the Tier 1
+     recording in progress (ADR-130; AMD GPUs on Vulkan). */
+  VKR_SAMPLE_RECORDING_GPU_COUNTERS,
 } VkrSampleRecordingCommand;
 
 /* Transport the client applies for a recording request: Drive resets the
@@ -173,6 +176,10 @@ typedef struct VkrSampleRecordingStatus {
      measured. */
   bool8_t driving;
   VkrSampleRecordingDriveResult drive;
+  /* The renderer samples per-pass hardware counters (ADR-130), and the
+     counter sessions the recording in progress wrote. */
+  bool8_t gpu_counters_supported;
+  uint64_t gpu_counter_sessions;
 } VkrSampleRecordingStatus;
 
 /* Requests a playback being opened holds until it is open. */

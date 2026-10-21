@@ -1,6 +1,7 @@
 #include "math/vkr_frustum.h"
 #include "platform/vkr_crash.h"
 #include "vkr_render_graph_frame.h"
+#include "vulkan/vkr_vulkan_amd_counters.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_internal.h"
 
@@ -2538,6 +2539,13 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       vkr_vulkan_device_cmd_begin_debug_label(renderer->device);
   const PFN_vkCmdEndDebugUtilsLabelEXT end_label =
       vkr_vulkan_device_cmd_end_debug_label(renderer->device);
+  /* AMD hardware counters sample each pass of a frame a request covers
+     (ADR-130); NULL elsewhere. */
+  VkrVulkanAmdCounters *counters =
+      vkr_vulkan_device_amd_counters(renderer->device);
+  vkr_vulkan_amd_counters_begin_frame(
+      counters, command, renderer->graph->packet->input.frame.frame_index,
+      slot->pass_timings, slot->pass_timing_count);
   for (uint32_t i = 0u; i < slot->pass_timing_count; ++i) {
     const VkrVulkanPreparedGraphPass *prepared =
         &renderer->prepared_graph_passes[i];
@@ -2557,6 +2565,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
        timestamps do, so it never spans a vkCmdBeginRendering boundary. */
     if (slot->statistics_requested)
       vkCmdBeginQuery(command, slot->statistics_pool, i, 0u);
+    vkr_vulkan_amd_counters_begin_pass(counters, i);
     vkr_vk_breadcrumbs_mark(renderer, command, renderer->active_frame_slot, i,
                             false_v);
     if (prepared->dependencies.imageMemoryBarrierCount ||
@@ -2680,6 +2689,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
     }
     vkr_vk_breadcrumbs_mark(renderer, command, renderer->active_frame_slot, i,
                             true_v);
+    vkr_vulkan_amd_counters_end_pass(counters);
     if (slot->statistics_requested)
       vkCmdEndQuery(command, slot->statistics_pool, i);
     if (slot->timing_requested)
@@ -2689,6 +2699,7 @@ bool8_t vkr_vk_record_graph(VkrVulkanRenderer *renderer,
       end_label(command);
     timing->cpu_ms += (vkr_platform_get_absolute_time() - cpu_begin) * 1000.0;
   }
+  vkr_vulkan_amd_counters_end_frame(counters);
   if (renderer->prepared_terminal_barriers.imageMemoryBarrierCount)
     vkr_vk_cmd_pipeline_barrier2(command,
                                  &renderer->prepared_terminal_barriers);

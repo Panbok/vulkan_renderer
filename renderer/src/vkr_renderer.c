@@ -22,6 +22,7 @@
 #include "vkr_rg_debug.h"
 #include "vkr_rg_json.h"
 #include "vkr_shader_catalog.h"
+#include "vulkan/vkr_vulkan_amd_counters.h"
 #include "vulkan/vkr_vulkan_renderer.h"
 
 /* The render graph of a pipeline class (ADR-087) ships in the build tree
@@ -1715,6 +1716,29 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
         false_v, packet->globals.gtao_radius, packet->globals.gtao_power);
   }
 }
+#if !defined(PLATFORM_APPLE)
+/* The GPU maker by PCI vendor id, or "Vulkan" for one not listed. The
+   harness keeps VkrDeviceInformation.vendor_id zero on Vulkan so recorded
+   baselines stay comparable; recordings name the maker (ADR-130). */
+vkr_internal String8 vkr_renderer_vulkan_vendor_name(uint32_t vendor_id) {
+  switch (vendor_id) {
+  case 0x1002u:
+    return string8_lit("AMD");
+  case 0x10DEu:
+    return string8_lit("NVIDIA");
+  case 0x8086u:
+    return string8_lit("Intel");
+  case 0x106Bu:
+    return string8_lit("Apple");
+  case 0x13B5u:
+    return string8_lit("Arm");
+  case 0x5143u:
+    return string8_lit("Qualcomm");
+  default:
+    return string8_lit("Vulkan");
+  }
+}
+#endif
 
 vkr_internal void vkr_renderer_backend_get_device_information(
     VkrRenderer *renderer, VkrDeviceInformation *device_information,
@@ -1827,7 +1851,8 @@ vkr_internal void vkr_renderer_backend_get_device_information(
                                     (const uint8_t *)selected->device_name,
                                     string_length(selected->device_name))
                               : string8_lit("Vulkan 1.4 GPU"),
-      .vendor_name = string8_lit("Vulkan"),
+      .vendor_name =
+          vkr_renderer_vulkan_vendor_name(selected ? selected->vendor_id : 0u),
       .driver_version = selected ? string8_create_from_cstr(
                                        (const uint8_t *)selected->driver_info,
                                        string_length(selected->driver_info))
@@ -2409,6 +2434,42 @@ bool8_t vkr_renderer_request_graph_snapshot(VkrRenderer *renderer) {
       VKR_RENDERER_GRAPH_SNAPSHOT_REQUESTED, VKR_MEMORY_ORDER_ACQ_REL,
       VKR_MEMORY_ORDER_ACQUIRE);
   return true_v;
+}
+
+bool8_t vkr_renderer_gpu_counters_supported(const VkrRenderer *renderer) {
+#if defined(PLATFORM_APPLE)
+  (void)renderer;
+  return false_v;
+#else
+  return renderer &&
+         vkr_vulkan_renderer_amd_counters(renderer->vulkan_renderer) != NULL;
+#endif
+}
+
+void vkr_renderer_gpu_counters_request(VkrRenderer *renderer,
+                                       float64_t seconds) {
+#if defined(PLATFORM_APPLE)
+  (void)renderer;
+  (void)seconds;
+#else
+  if (renderer) {
+    vkr_vulkan_amd_counters_request(
+        vkr_vulkan_renderer_amd_counters(renderer->vulkan_renderer), seconds);
+  }
+#endif
+}
+
+bool8_t vkr_renderer_take_gpu_counters(VkrRenderer *renderer,
+                                       VkrRendererImplGpuCounters *out) {
+#if defined(PLATFORM_APPLE)
+  (void)renderer;
+  (void)out;
+  return false_v;
+#else
+  return renderer &&
+         vkr_vulkan_amd_counters_take(
+             vkr_vulkan_renderer_amd_counters(renderer->vulkan_renderer), out);
+#endif
 }
 
 const VkrRgSnapshot *vkr_renderer_take_graph_snapshot(VkrRenderer *renderer) {

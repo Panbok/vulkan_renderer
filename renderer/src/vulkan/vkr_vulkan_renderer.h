@@ -209,6 +209,10 @@ bool8_t vkr_vulkan_renderer_create(const VkrVulkanRendererConfig *config,
 /** True when this build carries the FSR 3.1 SDK and the device supports it;
     otherwise FSR frames fall back to SMAA T2x. */
 bool8_t vkr_vulkan_renderer_fsr31_available(const VkrVulkanRenderer *renderer);
+/** AMD hardware counters per pass (vkr_vulkan_amd_counters.h), or NULL on
+    other GPUs and builds without GPUPerfAPI. */
+struct s_VkrVulkanAmdCounters *
+vkr_vulkan_renderer_amd_counters(const VkrVulkanRenderer *renderer);
 void vkr_vulkan_renderer_destroy(VkrVulkanRenderer *renderer);
 /** Terminal submission/presentation faults prohibit further frame acquisition.
  */

@@ -220,6 +220,46 @@ typedef struct VkrRendererImplPassTiming {
   VkrRendererImplGpuTimingReason unavailable_reason;
 } VkrRendererImplPassTiming;
 
+enum {
+  /* Hardware counters one GPU counter session samples at most. */
+  VKR_RENDERER_IMPL_GPU_COUNTER_MAX = 16,
+  VKR_RENDERER_IMPL_GPU_COUNTER_NAME_CAPACITY = 48,
+};
+
+/** How a hardware counter's value reads. */
+typedef enum VkrRendererImplGpuCounterUnit {
+  /** Percent of the sample's GPU time, 0 to 100 (some may exceed it). */
+  VKR_RENDERER_IMPL_GPU_COUNTER_PERCENT = 0,
+  /** A count of items, cycles or bytes. */
+  VKR_RENDERER_IMPL_GPU_COUNTER_COUNT = 1,
+} VkrRendererImplGpuCounterUnit;
+
+/**
+ * @brief One finished GPU counter session (AMD's GPUPerfAPI on Vulkan,
+ * ADR-130): every enabled hardware counter for each graph pass of the
+ * sampled frames.
+ *
+ * A counter set the hardware cannot read at once is spread over consecutive
+ * frames, one replay each, so a pass's values combine those frames; they
+ * describe one frame exactly only while the frames render the same work.
+ * `values[p][c]` is counter `c` of pass `p`, NaN where the pass has none.
+ */
+typedef struct VkrRendererImplGpuCounters {
+  /* Packet frame indices of the session's first and last frame. */
+  uint64_t first_frame_index;
+  uint64_t last_frame_index;
+  uint32_t counter_count;
+  char counter_names[VKR_RENDERER_IMPL_GPU_COUNTER_MAX]
+                    [VKR_RENDERER_IMPL_GPU_COUNTER_NAME_CAPACITY];
+  uint8_t counter_units[VKR_RENDERER_IMPL_GPU_COUNTER_MAX];
+  /* The graph passes in execution order, as the pass timings name them. */
+  uint32_t pass_count;
+  char pass_names[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS]
+                 [VKR_RENDERER_IMPL_TIMING_NAME_CAPACITY];
+  float32_t values[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS]
+                  [VKR_RENDERER_IMPL_GPU_COUNTER_MAX];
+} VkrRendererImplGpuCounters;
+
 /**
  * @brief Backend-produced CPU cost of lowering one packet, per frame.
  *

@@ -168,6 +168,8 @@ vkr_sample_recording_stop(VkrStandardSceneRuntime *runtime,
   char path[VKR_RECORDING_PATH_MAX];
   string_format(path, sizeof(path), "%s", runtime->recording.bundle_path);
   VkrRecorderStats stats;
+  /* Counters sampled after the recording would go nowhere. */
+  vkr_renderer_gpu_counters_request(&runtime->renderer, 0.0);
   const bool8_t ok = vkr_recording_stop(&runtime->recording, &stats);
   if (state->restore_gpu_timing) {
     runtime->metrics->config.submission_gpu_timings = state->submission_timing;
@@ -628,6 +630,23 @@ void vkr_sample_recording_apply(VkrStandardSceneRuntime *runtime,
   case VKR_SAMPLE_RECORDING_SAVE_WINDOW:
     vkr_sample_recording_save_window(runtime, state, request);
     return;
+  case VKR_SAMPLE_RECORDING_GPU_COUNTERS:
+    if (!vkr_renderer_gpu_counters_supported(&runtime->renderer)) {
+      vkr_sample_recording_result(
+          state, request->token, false_v,
+          "This GPU samples no hardware counters (AMD on Vulkan only).");
+      return;
+    }
+    if (!runtime->recording.active || !runtime->recording.passes_enabled) {
+      vkr_sample_recording_result(state, request->token, false_v,
+                                  "GPU counters sample a Tier 1 recording in "
+                                  "progress.");
+      return;
+    }
+    vkr_renderer_gpu_counters_request(&runtime->renderer, request->time);
+    vkr_sample_recording_result(state, request->token, true_v,
+                                "Sampling GPU counters.");
+    return;
   case VKR_SAMPLE_RECORDING_MARK:
     if (!runtime->recording.active) {
       vkr_sample_recording_result(state, request->token, false_v,
@@ -720,6 +739,10 @@ void vkr_sample_recording_publish(VkrStandardSceneRuntime *runtime,
         1000.0f;
   }
   status->recording = runtime->recording.active;
+  status->gpu_counters_supported =
+      vkr_renderer_gpu_counters_supported(&runtime->renderer);
+  status->gpu_counter_sessions =
+      runtime->recording.active ? runtime->recording.gpu_counter_sessions : 0u;
   /* Tier 1 carries some measurements too; only an all-measurements
      recording carries every one. */
   status->recording_all_measurements =

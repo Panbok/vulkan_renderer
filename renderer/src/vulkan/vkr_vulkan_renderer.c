@@ -1,6 +1,7 @@
 #include "core/vkr_zone.h"
 #include "platform/vkr_crash.h"
 #include "vkr_render_graph_frame.h"
+#include "vulkan/vkr_vulkan_amd_counters.h"
 #include "vulkan/vkr_vulkan_fsr_sdk.h"
 #include "vulkan/vkr_vulkan_gpu_capture.h"
 #include "vulkan/vkr_vulkan_internal.h"
@@ -1087,8 +1088,17 @@ vkr_internal bool8_t vkr_vk_record_frame_commands(VkrVulkanRenderer *renderer,
   return true_v;
 }
 
+VkrVulkanAmdCounters *
+vkr_vulkan_renderer_amd_counters(const VkrVulkanRenderer *renderer) {
+  return renderer ? vkr_vulkan_device_amd_counters(renderer->device) : NULL;
+}
+
 vkr_internal bool8_t vkr_vk_build_command_buffer(VkrVulkanRenderer *renderer,
                                                  VkrVulkanFrameSlot *slot) {
+  /* A finished counter session publishes before this frame may start the
+     next one. */
+  vkr_vulkan_amd_counters_collect(
+      vkr_vulkan_device_amd_counters(renderer->device));
   if (!vkr_vk_prepare_frame_commands(renderer, slot))
     return false_v;
   VkCommandBuffer command = slot->command_buffer;

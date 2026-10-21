@@ -1341,6 +1341,154 @@ static void test_recording_hardware_pipelines(void) {
   printf("  test_recording_hardware_pipelines PASSED\n");
 }
 
+/* One pass of a counter test frame: `gpu_ms` long in renderer frame
+   `index`, its own source. */
+static VkrRendererMetricsPassSample
+recording_counter_pass(const char *name, float64_t gpu_ms, uint64_t index) {
+  VkrRendererMetricsPassSample sample = {
+      .gpu_ms = gpu_ms,
+      .cpu_frame_index = index,
+      .gpu_source_frame_index = index,
+      .gpu_valid = true_v,
+  };
+  string_format(sample.name, sizeof(sample.name), "%s", name);
+  sample.name_length = (uint8_t)strlen(name);
+  return sample;
+}
+
+/* Sampled hardware counters (ADR-130): sessions the runtime writes fold
+   into the same counter block an Instruments import fills. */
+static void test_recording_sampled_gpu_counters(void) {
+  printf("  Running test_recording_sampled_gpu_counters...\n");
+  RecordingTestMemory memory;
+  recording_memory_create(&memory);
+  VkrMetrics *metrics = vkr_allocator_alloc(
+      &memory.allocator, sizeof(VkrMetrics), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  assert(metrics);
+  vkr_metrics_init(metrics);
+  char path[1024];
+  recording_test_path("counters", path, sizeof(path));
+  path[strlen(path) - strlen(".vkrs")] = '\0';
+  string_format(path + strlen(path), sizeof(path) - strlen(path), "%s",
+                VKR_RECORDING_BUNDLE_EXTENSION);
+  const VkrRecordingConfig config = {
+      .bundle_path = path,
+      .codec = vkr_depot_zstd_codec(),
+      .metrics = metrics,
+      .passes = true_v,
+      .pass_gpu_period = 1u,
+  };
+  static VkrRecording recording;
+  static VkrRendererImplGpuCounters session;
+  assert(vkr_recording_start(&recording, &config));
+  for (uint64_t f = 0u; f < 4u; ++f) {
+    const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
+    const VkrRecordingCamera camera = {.fov = 60.0f};
+    vkr_recording_frame(&recording, &frame, &camera);
+    /* Shadow takes 1 ms of each frame and Lighting 3 ms. */
+    const uint64_t index = 100u + f;
+    VkrRendererMetricsPassSample samples[2] = {
+        recording_counter_pass("Shadow", 1.0, index),
+        recording_counter_pass("Lighting", 3.0, index),
+    };
+    const VkrRendererMetricsPassTable table = {
+        .samples = samples,
+        .count = 2u,
+        .capacity = 2u,
+        .cpu_frame_index = index,
+    };
+    vkr_recording_passes(&recording, f, index, &table);
+    /* Session A over frames 0 and 1: a percent and a count. Session B over
+       frames 2 and 3 samples another counter, which Shadow lacks. */
+    if (f == 1u || f == 3u) {
+      MemZero(&session, sizeof(session));
+      session.first_frame_index = index - 1u;
+      session.last_frame_index = index;
+      session.pass_count = 2u;
+      string_format(session.pass_names[0], sizeof(session.pass_names[0]),
+                    "Shadow");
+      string_format(session.pass_names[1], sizeof(session.pass_names[1]),
+                    "Lighting");
+      if (f == 1u) {
+        session.counter_count = 2u;
+        string_format(session.counter_names[0],
+                      sizeof(session.counter_names[0]), "PSBusy");
+        string_format(session.counter_names[1],
+                      sizeof(session.counter_names[1]), "Waves");
+        session.counter_units[0] = VKR_RENDERER_IMPL_GPU_COUNTER_PERCENT;
+        session.counter_units[1] = VKR_RENDERER_IMPL_GPU_COUNTER_COUNT;
+        session.values[0][0] = 20.0f;
+        session.values[0][1] = 10.0f;
+        session.values[1][0] = 60.0f;
+        session.values[1][1] = 30.0f;
+      } else {
+        session.counter_count = 1u;
+        string_format(session.counter_names[0],
+                      sizeof(session.counter_names[0]), "MemUnitBusy");
+        session.counter_units[0] = VKR_RENDERER_IMPL_GPU_COUNTER_PERCENT;
+        session.values[0][0] = VKR_FLOAT_NAN;
+        session.values[1][0] = 40.0f;
+      }
+      vkr_recording_gpu_counters(&recording, &session);
+    }
+  }
+  assert(recording.gpu_counter_sessions == 2u);
+  VkrRecorderStats stats;
+  assert(vkr_recording_stop(&recording, &stats));
+  assert(stats.lost_records == 0u && stats.dropped_records == 0u);
+
+  VkrRecordingData data;
+  assert(vkr_recording_data_load(&data, &memory.allocator, path,
+                                 vkr_depot_zstd_codec()) ==
+         VKR_RECORDING_DATA_OK);
+  assert(!data.gpu_counters_bad && data.gpu_counter_count == 3u);
+  assert(string_equals(data.gpu_counters[0].name, "PSBusy"));
+  assert(data.gpu_counters[0].unit == VKR_RECORDING_GPU_COUNTER_PERCENT);
+  assert(string_equals(data.gpu_counters[1].name, "Waves"));
+  assert(data.gpu_counters[1].unit == VKR_RECORDING_GPU_COUNTER_COUNT);
+  assert(string_equals(data.gpu_counters[2].name, "MemUnitBusy"));
+  assert(data.gpu_counter_frame_count == 4u);
+  assert(data.gpu_counter_first_frame == 0u &&
+         data.gpu_counter_last_frame == 3u);
+  float32_t value = 0.0f;
+  /* A frame's percent weighs each pass by its GPU time: (20 + 3 * 60) / 4;
+     a count sums the passes. */
+  for (uint64_t f = 0u; f < 2u; ++f) {
+    assert(vkr_recording_data_gpu_counter(&data, 0u, f, &value) &&
+           value == 50.0f);
+    assert(vkr_recording_data_gpu_counter(&data, 1u, f, &value) &&
+           value == 40.0f);
+    assert(!vkr_recording_data_gpu_counter(&data, 2u, f, &value));
+  }
+  for (uint64_t f = 2u; f < 4u; ++f) {
+    assert(!vkr_recording_data_gpu_counter(&data, 0u, f, &value));
+    assert(vkr_recording_data_gpu_counter(&data, 2u, f, &value) &&
+           value == 40.0f);
+  }
+  const uint32_t shadow = vkr_recording_data_find_pass(&data, "Shadow");
+  const uint32_t lighting = vkr_recording_data_find_pass(&data, "Lighting");
+  assert(shadow != UINT32_MAX && lighting != UINT32_MAX);
+  assert(vkr_recording_data_gpu_counter_pass(&data, shadow, 0u, &value) &&
+         value == 20.0f);
+  assert(vkr_recording_data_gpu_counter_pass(&data, lighting, 1u, &value) &&
+         value == 30.0f);
+  assert(vkr_recording_data_gpu_counter_pass(&data, lighting, 2u, &value) &&
+         value == 40.0f);
+  assert(!vkr_recording_data_gpu_counter_pass(&data, shadow, 2u, &value));
+  assert(data.gpu_counters[0].mean == 50.0f);
+  vkr_recording_data_free(&data);
+
+  char file[1100];
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_STREAM_FILE);
+  recording_test_remove(file);
+  string_format(file, sizeof(file), "%s/%s", path, VKR_RECORDING_SUMMARY_FILE);
+  recording_test_remove(file);
+  const FilePath bundle = file_path_view(path);
+  assert(file_remove_directory(&bundle) == FILE_ERROR_NONE);
+  recording_memory_destroy(&memory);
+  printf("  test_recording_sampled_gpu_counters PASSED\n");
+}
+
 /* ------------------------------------------------------------------------ */
 /* Entity poses                                                              */
 
@@ -3337,6 +3485,7 @@ bool32_t run_recording_tests(void) {
   test_recording_pass_rows();
   test_recording_graph_allocators_census();
   test_recording_hardware_pipelines();
+  test_recording_sampled_gpu_counters();
   test_recording_gpu_counters();
   test_recording_scene_frames();
   test_recording_counter_import();

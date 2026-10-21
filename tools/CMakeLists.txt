@@ -118,6 +118,8 @@ vkr_require_declared_c_functions(vkr_harness)
 # The child opens a renderer target and reaches the same unoptimized dispatch.
 vkr_set_main_stack_reserve(vkr_harness)
 vkr_configure_installed_rpath(vkr_harness)
+# AMD GPU counters open GPUPerfAPI beside the executable (cmake/vkr_gpa.cmake).
+vkr_gpa_copy_runtime(vkr_harness)
 
 # Children register the built-in script modules' component types, as the
 # editor does, so project scenes load.

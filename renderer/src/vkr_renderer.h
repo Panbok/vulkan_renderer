@@ -1451,6 +1451,26 @@ bool8_t vkr_renderer_request_graph_snapshot(VkrRenderer *renderer);
 const struct VkrRgSnapshot *
 vkr_renderer_take_graph_snapshot(VkrRenderer *renderer);
 
+/**
+ * True when the backend samples hardware counters per graph pass: an AMD
+ * GPU on the Vulkan backend with GPUPerfAPI beside the executable
+ * (ADR-130).
+ */
+bool8_t vkr_renderer_gpu_counters_supported(const VkrRenderer *renderer);
+
+/** Samples hardware counters in the frames of the next `seconds`; zero
+ * stops after the current session. Any thread. */
+void vkr_renderer_gpu_counters_request(VkrRenderer *renderer,
+                                       float64_t seconds);
+
+/**
+ * Copies the latest finished counter session into `out` once; false when
+ * none finished since the last take. Any thread.
+ */
+struct VkrRendererImplGpuCounters;
+bool8_t vkr_renderer_take_gpu_counters(VkrRenderer *renderer,
+                                       struct VkrRendererImplGpuCounters *out);
+
 /** GPU and API faults the renderer saw since creation. Counts only grow. */
 typedef struct VkrRendererHealth {
   /** Submissions the GPU finished with an error. */

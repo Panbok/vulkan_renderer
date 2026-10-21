@@ -60,6 +60,8 @@ typedef struct VkrRecordingDataLoad {
   const VkrRecordingStream *hardware;
   const VkrRecordingStream *pipeline;
   const VkrRecordingStream *pass_starts;
+  const VkrRecordingStream *gpu_counter_name;
+  const VkrRecordingStream *gpu_counters;
   const VkrRecordingStream *player;
   /* All measurements: series after the metrics stream's, named by
      measurement_name records. */
@@ -140,6 +142,18 @@ typedef struct VkrRecordingDataLoad {
   uint64_t raw_frame;
   uint32_t raw_rows;
   uint32_t raw_kept[VKR_RECORDING_PASS_MAX];
+  /* Counters the runtime sampled itself ("gpu_counter_name" and
+     "gpu_counters", ADR-130): the names packed as the imported file packs
+     them, so the same counter block holds them, and the session records,
+     copied by the fill and folded by vkr_recording_data_finish_counters. */
+  uint8_t sampled_names[VKR_RECORDING_GPU_COUNTER_MAX]
+                       [3u + VKR_RECORDING_GPU_COUNTER_NAME_MAX];
+  uint8_t sampled_packed[VKR_RECORDING_GPU_COUNTER_MAX *
+                         (2u + VKR_RECORDING_GPU_COUNTER_NAME_MAX)];
+  uint32_t sampled_count;
+  uint8_t *sessions;
+  uint64_t session_bytes;
+  uint64_t session_used;
   bool8_t too_large;
 } VkrRecordingDataLoad;
 
@@ -276,6 +290,9 @@ vkr_recording_data_dictionary(VkrRecordingDataLoad *load) {
   load->hardware = vkr_recording_find_stream(dictionary, "hardware");
   load->pipeline = vkr_recording_find_stream(dictionary, "pipeline");
   load->pass_starts = vkr_recording_find_stream(dictionary, "pass_starts");
+  load->gpu_counter_name =
+      vkr_recording_find_stream(dictionary, "gpu_counter_name");
+  load->gpu_counters = vkr_recording_find_stream(dictionary, "gpu_counters");
   load->player = vkr_recording_find_stream(dictionary, "player");
   load->measurement_name =
       vkr_recording_find_stream(dictionary, "measurement_name");
@@ -698,6 +715,23 @@ vkr_internal void vkr_recording_data_count(VkrRecordingDataLoad *load,
     if (vkr_recording_graph_counts(record, &counts)) {
       ++load->graph_capacity;
       load->graph_bytes += vkr_recording_graph_parsed_bytes(&counts);
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->gpu_counter_name, record)) {
+    /* u8 id, u8 unit, u8 length, name: kept whole for the packed names. */
+    const uint32_t id = record->size >= 3u ? record->data[0] : UINT32_MAX;
+    if (id < VKR_RECORDING_GPU_COUNTER_MAX &&
+        record->data[2] <= VKR_RECORDING_GPU_COUNTER_NAME_MAX &&
+        3u + (uint32_t)record->data[2] <= record->size) {
+      MemCopy(load->sampled_names[id], record->data, 3u + record->data[2]);
+      load->sampled_count = Max(load->sampled_count, id + 1u);
+    }
+    return;
+  }
+  if (vkr_recording_is_stream(load->gpu_counters, record)) {
+    if (record->size >= VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE) {
+      load->session_bytes += 8u + vkr_align_up_u64(record->size, 8u);
     }
     return;
   }
@@ -1287,6 +1321,19 @@ vkr_internal void vkr_recording_data_fill(VkrRecordingDataLoad *load,
   }
   if (vkr_recording_is_stream(load->pass_starts, record)) {
     vkr_recording_data_fill_pass_starts(load, record);
+    return;
+  }
+  if (vkr_recording_is_stream(load->gpu_counters, record)) {
+    const uint64_t bytes = 8u + vkr_align_up_u64(record->size, 8u);
+    if (load->sessions &&
+        record->size >= VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE &&
+        load->session_used + bytes <= load->session_bytes) {
+      const uint64_t size = record->size;
+      MemCopy(load->sessions + load->session_used, &size, sizeof(size));
+      MemCopy(load->sessions + load->session_used + 8u, record->data,
+              record->size);
+      load->session_used += bytes;
+    }
     return;
   }
   if (vkr_recording_is_stream(load->allocator_name, record)) {
@@ -2025,6 +2072,26 @@ vkr_internal void vkr_recording_data_open_counters(VkrRecordingDataLoad *load,
 vkr_internal bool8_t
 vkr_recording_data_allocate_counters(VkrRecordingDataLoad *load) {
   VkrRecordingData *data = load->data;
+  /* Counters the runtime sampled stand in for an imported file's; a
+     recording has one or the other. Names left unwritten pack empty. */
+  if (load->counter_count == 0u && load->sampled_count > 0u &&
+      load->session_bytes > 0u) {
+    uint8_t *at = load->sampled_packed;
+    for (uint32_t i = 0u; i < load->sampled_count; ++i) {
+      const uint8_t *named = load->sampled_names[i];
+      at[0] = named[1];
+      at[1] = named[2];
+      MemCopy(at + 2u, named + 3u, named[2]);
+      at += 2u + named[2];
+    }
+    load->counter_names = load->sampled_packed;
+    load->counter_count = load->sampled_count;
+    load->sessions = vkr_allocator_alloc(data->allocator, load->session_bytes,
+                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!load->sessions) {
+      return false_v;
+    }
+  }
   const uint32_t counters = load->counter_count;
   if (counters == 0u) {
     return true_v;
@@ -2132,6 +2199,118 @@ vkr_internal int32_t vkr_recording_compare_f32(const void *lhs,
   return a < b ? -1 : (a > b ? 1 : 0);
 }
 
+/* Folds the sampled counter sessions into the counter block: each pass's
+   value sums into pass_sums and pass_samples, and each frame a session
+   covered takes, per counter, its passes' mean weighted by their GPU time
+   in the session's frames (a percent) or their sum (a count). Counters a
+   session did not sample stay NaN on its frames. */
+vkr_internal bool8_t vkr_recording_data_fold_sessions(
+    VkrRecordingDataLoad *load, float64_t *pass_sums, uint32_t *pass_samples) {
+  VkrRecordingData *data = load->data;
+  const uint32_t counters = data->gpu_counter_count;
+  const uint64_t frames = data->frame_count;
+  const uint32_t passes = data->pass_count;
+  /* Each pass's GPU time and frames in the session being folded. */
+  const uint64_t weight_bytes = sizeof(float64_t) * passes;
+  const uint64_t ran_bytes = sizeof(uint32_t) * passes;
+  uint8_t *scratch =
+      vkr_allocator_alloc(data->allocator, weight_bytes + ran_bytes,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!scratch) {
+    return false_v;
+  }
+  float64_t *weights = (float64_t *)scratch;
+  uint32_t *ran = (uint32_t *)(scratch + weight_bytes);
+  for (uint64_t at = 0u; at < load->session_used;) {
+    uint64_t size = 0u;
+    MemCopy(&size, load->sessions + at, sizeof(size));
+    const uint8_t *record = load->sessions + at + 8u;
+    at += 8u + vkr_align_up_u64(size, 8u);
+    uint64_t first = 0u;
+    uint64_t last = 0u;
+    MemCopy(&first, record, sizeof(first));
+    MemCopy(&last, record + 8u, sizeof(last));
+    const uint32_t count = record[16];
+    const uint32_t rows = vkr_load_le_u16(record + 18u);
+    const uint64_t header = VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE +
+                            vkr_align_up_u64(count, 4u);
+    const uint64_t row_size = 4u + sizeof(float32_t) * (uint64_t)count;
+    if (count == 0u || first > last || last >= frames ||
+        header + rows * row_size > size) {
+      continue;
+    }
+    const uint8_t *ids =
+        record + VKR_RECORDING_GPU_COUNTERS_SESSION_HEADER_SIZE;
+
+    MemZero(weights, weight_bytes);
+    MemZero(ran, ran_bytes);
+    for (uint64_t f = first; data->pass_block && f <= last; ++f) {
+      for (uint32_t r = 0u; r < data->pass_row_counts[f]; ++r) {
+        const VkrRecordingPassRow *row =
+            &data->pass_rows[data->pass_first[f] + r];
+        if (row->pass < passes) {
+          ++ran[row->pass];
+          if (row->flags & VKR_RECORDING_PASS_GPU_VALID) {
+            weights[row->pass] += row->gpu_ms;
+          }
+        }
+      }
+    }
+
+    for (uint32_t e = 0u; e < count; ++e) {
+      const uint32_t c = ids[e];
+      if (c >= counters) {
+        continue;
+      }
+      const bool8_t percent =
+          data->gpu_counters[c].unit == VKR_RECORDING_GPU_COUNTER_PERCENT;
+      float64_t weighted = 0.0;
+      float64_t weight = 0.0;
+      float64_t sum = 0.0;
+      uint32_t samples = 0u;
+      for (uint32_t r = 0u; r < rows; ++r) {
+        const uint8_t *row = record + header + r * row_size;
+        const uint32_t pass = vkr_load_le_u16(row);
+        float32_t value = 0.0f;
+        MemCopy(&value, row + 4u + sizeof(float32_t) * e, sizeof(value));
+        if (pass >= passes || !vkr_is_finite_f32(value)) {
+          continue;
+        }
+        const uint64_t slot = (uint64_t)pass * counters + c;
+        pass_sums[slot] += value;
+        ++pass_samples[slot];
+        weighted += (float64_t)value * weights[pass];
+        weight += weights[pass];
+        sum += value;
+        ++samples;
+      }
+      if (samples == 0u) {
+        continue;
+      }
+      /* Without GPU times the passes count alike. */
+      const float64_t frame_value = !percent       ? sum
+                                    : weight > 0.0 ? weighted / weight
+                                                   : sum / (float64_t)samples;
+      for (uint64_t f = first; f <= last; ++f) {
+        data->gpu_counter_frames[(uint64_t)c * frames + f] =
+            (float32_t)frame_value;
+      }
+    }
+    for (uint32_t r = 0u; r < rows; ++r) {
+      const uint32_t pass = vkr_load_le_u16(record + header + r * row_size);
+      if (pass < passes) {
+        data->gpu_counter_pass_frames[pass] += ran[pass];
+      }
+    }
+    data->gpu_counter_frame_count += last - first + 1u;
+    data->gpu_counter_first_frame = Min(data->gpu_counter_first_frame, first);
+    data->gpu_counter_last_frame = Max(data->gpu_counter_last_frame, last);
+  }
+  vkr_allocator_free(data->allocator, scratch, weight_bytes + ran_bytes,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return true_v;
+}
+
 /* Each counter's mean over each frame's GPU span the trace covered, and over
    each pass's GPU work in the GPU-timed frames among them, then each
    counter's statistics over the covered frames. */
@@ -2159,7 +2338,13 @@ vkr_recording_data_finish_counters(VkrRecordingDataLoad *load) {
   float32_t *sorted = (float32_t *)(scratch + sum_bytes + count_bytes);
 
   data->gpu_counter_first_frame = UINT64_MAX;
-  for (uint64_t f = 0u; f < frames; ++f) {
+  if (load->sessions &&
+      !vkr_recording_data_fold_sessions(load, pass_sums, pass_samples)) {
+    vkr_allocator_free(data->allocator, scratch, scratch_bytes,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false_v;
+  }
+  for (uint64_t f = 0u; !load->sessions && f < frames; ++f) {
     const uint64_t start_ns = load->gpu_spans[f * 2u];
     const uint64_t end_ns = load->gpu_spans[f * 2u + 1u];
     uint32_t first = 0u;
@@ -2310,6 +2495,10 @@ VkrRecordingDataError vkr_recording_data_load(VkrRecordingData *out,
   }
 
 cleanup:
+  if (load.sessions) {
+    vkr_allocator_free(allocator, load.sessions, load.session_bytes,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   if (load.counter_scratch) {
     vkr_allocator_free(allocator, load.counter_scratch,
                        load.counter_scratch_bytes,

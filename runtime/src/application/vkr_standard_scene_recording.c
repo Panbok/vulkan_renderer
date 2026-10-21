@@ -1110,6 +1110,11 @@ vkr_internal uint32_t vkr_standard_scene_recording_hardware_facts(
                 (int32_t)device.device_name.length,
                 (const char *)device.device_name.str);
   vkr_standard_scene_recording_fact(facts, &count, capacity, "GPU", value);
+  /* The HW tab offers GPU counters by maker (ADR-130). */
+  string_format(value, sizeof(value), "%.*s",
+                (int32_t)device.vendor_name.length,
+                (const char *)device.vendor_name.str);
+  vkr_standard_scene_recording_fact(facts, &count, capacity, "Vendor", value);
   vkr_standard_scene_recording_fact(facts, &count, capacity, "Architecture",
                                     device.gpu_architecture);
   /* The OS names the GPU's cores; it walks the IORegistry, once per
@@ -1222,6 +1227,16 @@ void vkr_standard_scene_recording_metrics(VkrStandardSceneRuntime *runtime,
   }
   vkr_recording_pipelines(&runtime->recording, frame,
                           vkr_renderer_pipeline_registry(&runtime->renderer));
+  /* Hardware counters the renderer sampled (ADR-130), once a session
+     finished on the GPU. */
+  if (vkr_renderer_gpu_counters_supported(&runtime->renderer)) {
+    VkrRendererImplGpuCounters *session =
+        vkr_recording_gpu_counter_buffer(&runtime->recording);
+    if (session &&
+        vkr_renderer_take_gpu_counters(&runtime->renderer, session)) {
+      vkr_recording_gpu_counters(&runtime->recording, session);
+    }
+  }
   /* The census, like the pass table, belongs to this publication only when
      both name the same renderer frame. */
   const VkrRendererMetricsDrawCensus *census =
