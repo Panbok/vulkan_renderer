@@ -84,8 +84,11 @@ struct VkrBakeryJson *vkr_editor_depot_status_json(VkrEditorDepot *depot,
    streaming"): `directory` becomes a remote content directory the depot
    server at `address` fills on demand (vkr_depot_remote.h) and the
    workspace overlay, so every `assets/` read the branch lists comes from
-   the server, cooked textures from its side branch for this computer. Call
-   before the scene loads. False with the reason; reads then stay local. */
+   the server, cooked textures from its side branch for this computer. With
+   a NULL `address`, `directory` is a sparse working copy's root, whose
+   unfetched files come from the server it names; `key_hex` and `branch`
+   go unused. Call before the scene loads. False with the reason; reads
+   then stay local. */
 bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
                                 const char *key_hex, const char *directory,
                                 const char *branch, bool8_t no_cooked,

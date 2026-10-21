@@ -262,7 +262,7 @@ static int depot_access(const char *store_root, const char *key_hex,
 
 static int depot_clone(const char *address, const char *key_hex,
                        const char *directory, const char *branch,
-                       const char *store_root) {
+                       const char *store_root, bool8_t sparse) {
   uint8_t server_key[32];
   if (!depot_parse_key(key_hex, server_key) ||
       !vkr_depot_branch_valid(branch)) {
@@ -274,7 +274,8 @@ static int depot_clone(const char *address, const char *key_hex,
                                       .directory = directory,
                                       .branch = branch,
                                       .store_root = store_root,
-                                      .codec = vkr_depot_zstd_codec()};
+                                      .codec = vkr_depot_zstd_codec(),
+                                      .sparse = sparse};
   VkrDepotCloneResult result;
   char error[256];
   if (!vkr_depot_clone(&depot_allocator, &config, &result, error,
@@ -288,8 +289,19 @@ static int depot_clone(const char *address, const char *key_hex,
   }
   char hex[VKR_DEPOT_ID_HEX];
   vkr_depot_id_hex(&result.commit, hex);
-  printf("cloned %s at %.12s: %u files\n", branch, hex, result.files);
+  printf("cloned %s at %.12s: %u files%s\n", branch, hex, result.files,
+         sparse ? ", fetched when opened" : "");
   return 0;
+}
+
+/* Files a sparse working copy tracks but holds no copy of. */
+static uint32_t depot_unfetched(const VkrDepotWorkspace *workspace) {
+  uint32_t unfetched = 0u;
+  for (uint32_t i = 0u; i < workspace->index.count; ++i) {
+    unfetched +=
+        workspace->index.entries[i].mtime_ns == VKR_DEPOT_MTIME_UNFETCHED;
+  }
+  return unfetched;
 }
 
 static int depot_status(const char *directory) {
@@ -310,7 +322,12 @@ static int depot_status(const char *directory) {
     }
     char hex[VKR_DEPOT_ID_HEX];
     vkr_depot_id_hex(&workspace.base, hex);
-    printf("%u changes on %s at %.12s\n", changes.count, workspace.branch, hex);
+    printf("%u changes on %s at %.12s", changes.count, workspace.branch, hex);
+    if (workspace.sparse) {
+      printf("; %u of %u files not fetched", depot_unfetched(&workspace),
+             workspace.index.count);
+    }
+    printf("\n");
     vkr_depot_change_list_free(&changes);
     result = 0;
   } else {
@@ -348,7 +365,9 @@ static int depot_commit(const char *directory, const char *message) {
                               &pending, error, sizeof(error))) {
       char hex[VKR_DEPOT_ID_HEX];
       vkr_depot_id_hex(&pending.commit, hex);
-      printf("pushed %s at %.12s\n", branch, hex);
+      printf("pushed %s at %.12s: %llu objects, %llu bytes uploaded\n", branch,
+             hex, (unsigned long long)pending.uploaded.objects,
+             (unsigned long long)pending.uploaded.stored_bytes);
       result = 0;
     } else {
       fprintf(stderr, "%s\n", error);
@@ -605,6 +624,7 @@ static void depot_usage(void) {
       "                   [--branch NAME] [--watch SECONDS]\n"
       "  vkr_depot access STORE KEY none|read|write|admin\n"
       "  vkr_depot clone ADDR SERVER-KEY DIR [--branch NAME] [--store DIR]\n"
+      "                  [--sparse]\n"
       "  vkr_depot status|refs|locks [DIR]\n"
       "  vkr_depot pull [DIR] [--take-theirs|--keep-mine]\n"
       "  vkr_depot commit [DIR] -m MESSAGE\n"
@@ -637,12 +657,15 @@ static int depot_main(int argc, char **argv) {
   uint32_t count = 20u;
   bool8_t open_access = false_v;
   bool8_t force = false_v;
+  bool8_t sparse = false_v;
   VkrDepotConflictPolicy policy = VKR_DEPOT_CONFLICT_FAIL;
   for (int i = 2; i < argc; ++i) {
     const char *arg = argv[i];
     const char *value = i + 1 < argc ? argv[i + 1] : NULL;
     if (strcmp(arg, "--open") == 0) {
       open_access = true_v;
+    } else if (strcmp(arg, "--sparse") == 0) {
+      sparse = true_v;
     } else if (strcmp(arg, "--force") == 0) {
       force = true_v;
     } else if (strcmp(arg, "--take-theirs") == 0) {
@@ -721,7 +744,7 @@ static int depot_main(int argc, char **argv) {
   }
   if (strcmp(command, "clone") == 0 && positional_count == 3u) {
     return depot_clone(positional[0], positional[1], positional[2], branch,
-                       store);
+                       store, sparse);
   }
   if (strcmp(command, "status") == 0) {
     return depot_status(first);

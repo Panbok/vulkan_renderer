@@ -14,10 +14,11 @@ are implemented: a program reads a scene from a depot server without a full
 download, every file arriving when a loader first asks for it; cooked
 platform files travel on a side branch per GPU family; and a material's
 large texture first draws from the smallest mips at the start of its file,
-then from the whole file once a frame draws it. Mesh LOD ranges, staging
-fetched bytes straight into GPU memory, cancelling downloads that leave
-interest, a sparse working copy for editing and a run between two computers
-stay in the proposal.
+then from the whole file once a frame draws it. A sparse working copy holds
+on disk only the files a reader opened, and commits and pulls without the
+others. Mesh LOD ranges, staging fetched bytes straight into GPU memory,
+cancelling downloads that leave interest, sparse copies in the editor's
+project sharing and a run between two computers stay in the proposal.
 
 ## Context
 
@@ -148,6 +149,40 @@ complete chain of small mips:
   reads it as `stats.preview_textures`
   ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 
+### Sparse working copy
+
+A sparse working copy tracks every file of its base but holds on disk only
+the files it fetched
+([vkr_depot_workspace.h](../../tools/depot/vkr_depot_workspace.h)):
+
+- `vkr_depot clone ... --sparse` (`VkrDepotCloneConfig.sparse`) fetches
+  the commit and its trees and writes only the root `.vkrdepotignore`,
+  whose rules every snapshot needs. Each other index entry carries
+  `VKR_DEPOT_MTIME_UNFETCHED` with its blob. Such a working copy saves
+  state version 2 with a sparse flag, which earlier programs refuse
+  instead of reading every unfetched file as deleted; other working copies
+  keep version 1.
+- A remote content directory opened on the working copy
+  (`VkrDepotRemoteConfig.workspace`) lists its unfetched files at its base
+  and the cooked side branch's files it does not track, keeps their objects
+  in the working copy's store and takes its server, key and branch from the
+  working copy's state. It counts any file on disk as present and never
+  writes over one, and it appends `<blob> <path>` to `.vkrdepot/fetched`
+  for each file it writes.
+- A snapshot keeps an unfetched entry whose file is not on disk as
+  unchanged, with its blob, unless the fetched log names the path with that
+  blob: that file arrived and was deleted since, which is a deletion. A
+  file that arrived is walked and hashed like any other, and status records
+  its time when it is unchanged. A commit or pull clears the log once the
+  new index holds what it said.
+- A pull (`vkr_depot_fetch_checkout`) of a sparse working copy fetches the
+  commit's trees and only the blobs its checkout writes: files on disk that
+  the commit changed, and the root ignore rules. The checkout leaves every
+  other file of the target unfetched with the target's blob.
+- `vkr_depot status` reports how many of the tracked files are not
+  fetched, and `vkr_depot commit` the objects and bytes it uploaded
+  (`VkrDepotPendingCommit.uploaded`).
+
 ### Cooked side branch
 
 `<branch>.cooked.bc` or `<branch>.cooked.astc`
@@ -201,6 +236,9 @@ answers the commits, the files listed, fetched, present and failed, the
 bytes stored, the reads of parts of files with the bytes they brought, the
 files prefetched, the time loaders waited and the times of the last file
 and the last read.
+`vkr_editor --stream-workspace <directory>` opens such a directory on a
+sparse working copy instead, so a scene opens from the copy and the editor's
+writes through the overlay, such as a new material, land in it.
 `vkr_depot stream <address> <key> <directory> <path>` fetches one file the
 same way, for a quick check.
 
@@ -223,6 +261,13 @@ same way, for a quick check.
   detail arrives 3 to 6 s later than whole files alone (Evidence): the
   reads go first, and at most 32 reloads, so 32 prefetched files, wait at
   once.
+- A sparse working copy's directory listing shows only the files it
+  fetched, so a tool that scans a folder, such as the editor's Content
+  browser, does not see the others until something opens them.
+- The scene sidecar's save does not ask the overlay
+  (`vkr_vfs_overlay_write_path`): it writes beside the scene it loaded, so
+  an edited repository scene saves into the repository, not the working
+  copy. Material saves do ask it.
 - The cooked side branch grows by one commit per publish, each holding
   every cooked file of that working copy; unchanged files share their
   chunks.
@@ -252,6 +297,13 @@ same way, for a quick check.
 - **Upgrading a preview in place behind the same handle**: no second
   texture, but the publication would have to swap a resource under live
   materials and retire the old one; the reload path already does both.
+- **Telling a fetched file from an unfetched one by its blob in the
+  store**: no log, but a read of part of a file brings its blob without
+  writing it, and two paths share one blob, so a missing file would read as
+  deleted.
+- **A sparse checkout through the remote**: one writer for every file, but
+  pull and commit would need the editor running; the fetched log lets the
+  command line and the editor share the working copy.
 
 ## Evidence
 
@@ -372,6 +424,39 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     after its scene.
   - Not measured: BC previews on Windows and the desktop pipeline, two
     computers, a link slower than loopback.
+- 2026-10-21, sparse working copy, Mac M1 Pro, Metal, loopback:
+  - `--suite depot` (`build_debug`, ASan and UBSan) passes
+    `test_depot_sparse`. A sparse clone of five files writes only
+    `.vkrdepotignore` and saves state version 2 (a plain clone keeps 1), and
+    status shows no change. A remote on the copy lists the four unfetched
+    files, keeps a file written over an unfetched one and fetches the
+    others. After an edit, the deletion of a fetched file and an addition,
+    status lists exactly those, and the file never fetched stays unchanged.
+    The commit uploads at most 9 objects and keeps the unfetched file's
+    blob; a plain clone of it holds every file's content. A pull of another
+    user's commit rewrites the fetched file it changed and leaves the file
+    never fetched and a new one unfetched, and the next reads bring both
+    with the new content.
+  - `python3 tools/checks/check_sparse_workspace.py --editor
+    build_release/editor/vkr_editor --depot
+    build_release/tools/depot/vkr_depot`
+    ([check_sparse_workspace.py](../../tools/checks/check_sparse_workspace.py))
+    passes. `main` held the 271 files a local Bistro run read, the ignore
+    rules and the 36 files of `assets/characters` and `assets/models/alps`,
+    which Bistro never opens (308 files), with the cooked textures on
+    `main.cooked.astc`. The sparse clone held one file, 307 of 308 not
+    fetched. The editor opened Bistro with `--stream-workspace`: the scene
+    was ready 8.1 s after the stream opened and no texture was pending from
+    38.4 s; 775 files arrived (459 previews read), none failed. One
+    `material.create` copied a Bistro material into the working copy.
+    Status then listed that addition alone; 266 of 308 files were on disk,
+    every one a file the local run read and none of the 36. The commit
+    uploaded 4 objects (659 bytes), a second sparse clone lists 309 files,
+    and the material read back from the depot equals the working copy's.
+    The capture differs from a local load's by 0.279 of 255, where two
+    local loads differ by 0.323.
+  - Not measured: a sparse working copy on Windows, between two computers,
+    or through the editor's project sharing.
 
 ## Revisit when
 
@@ -381,5 +466,5 @@ preview and the drawn-first order), mesh LOD ranges need the same
 treatment, fetched bytes should land in GPU
 staging memory directly, a view moves fast enough that queued prefetches of
 textures it left delay those it reaches (CANCEL), a link is slow enough that
-loaders' waits show in frame pacing, or editing needs a sparse working
-copy.
+loaders' waits show in frame pacing, or project sharing opens projects
+from sparse working copies.

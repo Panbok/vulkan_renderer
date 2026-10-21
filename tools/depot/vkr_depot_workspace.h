@@ -21,7 +21,17 @@
  * rules apply to untracked paths only: a tracked file stays in snapshots
  * whatever a pulled `.vkrdepotignore` says. A checkout never writes or
  * removes an ignored path, so another machine's tree cannot plant files
- * this machine keeps for itself (such as scripts it builds and loads). */
+ * this machine keeps for itself (such as scripts it builds and loads).
+ *
+ * A sparse working copy tracks every file of its base but holds on disk only
+ * those it fetched: an index entry whose `mtime_ns` is
+ * VKR_DEPOT_MTIME_UNFETCHED names a file that is not on disk and still holds
+ * its blob. A snapshot keeps such an entry while its file is absent, so
+ * only a file that was on disk and is gone counts as deleted. A checkout
+ * writes only the files on disk and the root `.vkrdepotignore`; every other
+ * file of the target stays unfetched with the target's blob. The files
+ * arrive when a reader opens them, through a remote content directory on
+ * the working copy (vkr_depot_remote.h). */
 
 #define VKR_DEPOT_META_DIR ".vkrdepot"
 #define VKR_DEPOT_IGNORE_FILE ".vkrdepotignore"
@@ -31,6 +41,13 @@
    rules keep out of the project's history and a cooked side branch carries
    (vkr_depot_publish_cooked). */
 #define VKR_DEPOT_COOKED_SUFFIX ".vkt"
+/* VkrDepotIndexEntry.mtime_ns of a file a sparse working copy has not
+   fetched; -1 marks a file a checkout wrote that no snapshot has hashed. */
+#define VKR_DEPOT_MTIME_UNFETCHED (-2)
+/* `.vkrdepot/fetched`: a line `<blob> <path>` for each file a remote wrote
+   into a sparse working copy, so a snapshot tells a fetched file that was
+   deleted from one never fetched. A commit or checkout clears it. */
+#define VKR_DEPOT_FETCHED_LOG "fetched"
 
 typedef struct VkrDepotIndexEntry {
   /* Portable relative path with '/' separators; malloc storage. */
@@ -55,6 +72,8 @@ typedef struct VkrDepotWorkspace {
   VkrDepotId base;
   /* Tracked files at `base`, sorted by path. */
   VkrDepotFileList index;
+  /* Holds on disk only the files it fetched; saved with the state. */
+  bool8_t sparse;
   /* Borrowed; NULL for none. Open and create clear it. Snapshot, checkout
      and the sync steps report through it and stop when it is canceled. */
   VkrDepotProgress *progress;
@@ -148,6 +167,14 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
    saves the working copy. */
 uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
                                     const VkrDepotFileList *files);
+
+/* Records that a remote wrote `path` (relative, '/'-separated) with `blob`
+   into the sparse working copy at `root`. Any thread; one append per file. */
+bool8_t vkr_depot_workspace_note_fetched(const char *root, const char *path,
+                                         const VkrDepotId *blob);
+/* Empties the fetched log once an index recorded what it says: after a
+   commit or a checkout. */
+bool8_t vkr_depot_workspace_clear_fetched(const VkrDepotWorkspace *workspace);
 
 /* Writes one file of the store to `path` through a temporary. */
 bool8_t vkr_depot_write_blob(const VkrDepotStore *store, const VkrDepotId *blob,

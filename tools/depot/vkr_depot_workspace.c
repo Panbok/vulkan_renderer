@@ -10,6 +10,11 @@
 
 #define WORKSPACE_STATE_MAGIC 0x57444b56u /* "VKDW" */
 #define WORKSPACE_STATE_VERSION 1u
+/* A sparse working copy's state: version 1 plus a flags word, which a
+   program that predates sparse copies refuses instead of reading its
+   unfetched files as deleted. */
+#define WORKSPACE_STATE_VERSION_SPARSE 2u
+#define WORKSPACE_STATE_FLAG_SPARSE 1u
 /* `.vkrdepot/cooked`: the cooked files last hashed or written, so a cooked
    snapshot hashes only files whose size or time changed. */
 #define WORKSPACE_COOKED_MAGIC 0x43444b56u /* "VKDC" */
@@ -199,8 +204,9 @@ bool8_t vkr_depot_cooked_cache_load(const VkrDepotWorkspace *workspace,
 }
 
 bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
-  uint64_t size = 4u + 4u + 2u + strlen(workspace->remote) + 32u + 2u +
-                  strlen(workspace->branch) + VKR_DEPOT_ID_SIZE + 4u;
+  const uint32_t flags_size = workspace->sparse ? 4u : 0u;
+  uint64_t size = 4u + 4u + flags_size + 2u + strlen(workspace->remote) + 32u +
+                  2u + strlen(workspace->branch) + VKR_DEPOT_ID_SIZE + 4u;
   for (uint32_t i = 0u; i < workspace->index.count; ++i) {
     size += 2u + strlen(workspace->index.entries[i].path) + 8u + 8u +
             VKR_DEPOT_ID_SIZE;
@@ -211,8 +217,14 @@ bool8_t vkr_depot_workspace_save(const VkrDepotWorkspace *workspace) {
   }
   uint8_t *cursor = bytes;
   vkr_store_le_u32(cursor, WORKSPACE_STATE_MAGIC);
-  vkr_store_le_u32(cursor + 4, WORKSPACE_STATE_VERSION);
+  vkr_store_le_u32(cursor + 4, workspace->sparse
+                                   ? WORKSPACE_STATE_VERSION_SPARSE
+                                   : WORKSPACE_STATE_VERSION);
   cursor += 8u;
+  if (workspace->sparse) {
+    vkr_store_le_u32(cursor, WORKSPACE_STATE_FLAG_SPARSE);
+    cursor += 4u;
+  }
   const uint16_t remote_size = (uint16_t)strlen(workspace->remote);
   cursor[0] = (uint8_t)remote_size;
   cursor[1] = (uint8_t)(remote_size >> 8);
@@ -263,11 +275,24 @@ static bool8_t workspace_load_state(VkrDepotWorkspace *workspace) {
   const uint8_t *end = bytes + size;
   uint32_t count = 0u;
   uint16_t length = 0u;
-  if (size < 8u || vkr_load_le_u32(cursor) != WORKSPACE_STATE_MAGIC ||
-      vkr_load_le_u32(cursor + 4) != WORKSPACE_STATE_VERSION) {
+  uint32_t version = 0u;
+  if (size < 8u || vkr_load_le_u32(cursor) != WORKSPACE_STATE_MAGIC) {
+    goto cleanup;
+  }
+  version = vkr_load_le_u32(cursor + 4);
+  if (version != WORKSPACE_STATE_VERSION &&
+      version != WORKSPACE_STATE_VERSION_SPARSE) {
     goto cleanup;
   }
   cursor += 8u;
+  if (version == WORKSPACE_STATE_VERSION_SPARSE) {
+    if (end - cursor < 4) {
+      goto cleanup;
+    }
+    workspace->sparse =
+        (vkr_load_le_u32(cursor) & WORKSPACE_STATE_FLAG_SPARSE) != 0u;
+    cursor += 4u;
+  }
   if (end - cursor < 2) {
     goto cleanup;
   }
@@ -862,6 +887,112 @@ static bool8_t workspace_build_tree(const VkrDepotStore *store,
   return ok;
 }
 
+bool8_t vkr_depot_workspace_note_fetched(const char *root, const char *path,
+                                         const VkrDepotId *blob) {
+  char log[VKR_DEPOT_PATH_CAPACITY];
+  char line[VKR_DEPOT_ID_HEX + VKR_DEPOT_PATH_CAPACITY + 2u];
+  char hex[VKR_DEPOT_ID_HEX];
+  vkr_depot_id_hex(blob, hex);
+  const int length = snprintf(line, sizeof(line), "%s %s\n", hex, path);
+  return vkr_bakery_path_join(log, sizeof(log), root,
+                              VKR_DEPOT_META_DIR "/" VKR_DEPOT_FETCHED_LOG) &&
+         length > 0 && (size_t)length < sizeof(line) &&
+         vkr_bakery_append_file(log, line, (uint64_t)length);
+}
+
+bool8_t vkr_depot_workspace_clear_fetched(const VkrDepotWorkspace *workspace) {
+  char log[VKR_DEPOT_PATH_CAPACITY];
+  return workspace_meta_path(workspace, VKR_DEPOT_FETCHED_LOG, log,
+                             sizeof(log)) &&
+         vkr_bakery_remove_file(log);
+}
+
+/* The files the fetched log names, each with the blob written, sorted. A
+   missing log is empty; a torn last line is skipped. */
+static bool8_t workspace_fetched_load(const VkrDepotWorkspace *workspace,
+                                      VkrDepotFileList *out_files) {
+  MemZero(out_files, sizeof(*out_files));
+  char log[VKR_DEPOT_PATH_CAPACITY];
+  if (!workspace_meta_path(workspace, VKR_DEPOT_FETCHED_LOG, log,
+                           sizeof(log))) {
+    return false_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!vkr_bakery_is_file(log)) {
+    return true_v;
+  }
+  if (!vkr_bakery_read_file(log, 1ull << 30, &bytes, &size)) {
+    return false_v;
+  }
+  bool8_t ok = true_v;
+  uint64_t start = 0u;
+  for (uint64_t i = 0u; i < size && ok; ++i) {
+    if (bytes[i] != '\n') {
+      continue;
+    }
+    char hex[VKR_DEPOT_ID_HEX];
+    char path[VKR_DEPOT_PATH_CAPACITY];
+    const uint64_t length = i - start;
+    VkrDepotId blob;
+    if (length > VKR_DEPOT_ID_HEX && length - VKR_DEPOT_ID_HEX < sizeof(path) &&
+        bytes[start + VKR_DEPOT_ID_HEX - 1u] == ' ') {
+      MemCopy(hex, bytes + start, VKR_DEPOT_ID_HEX - 1u);
+      hex[VKR_DEPOT_ID_HEX - 1u] = '\0';
+      MemCopy(path, bytes + start + VKR_DEPOT_ID_HEX,
+              (size_t)(length - VKR_DEPOT_ID_HEX));
+      path[length - VKR_DEPOT_ID_HEX] = '\0';
+      if (vkr_depot_id_parse(hex, &blob) && vkr_depot_path_valid(path)) {
+        ok = vkr_depot_file_list_add(out_files, path, 0u, 0, &blob);
+      }
+    }
+    start = i + 1u;
+  }
+  free(bytes);
+  if (!ok) {
+    vkr_depot_file_list_free(out_files);
+    return false_v;
+  }
+  vkr_depot_file_list_sort(out_files);
+  return true_v;
+}
+
+/* Adds to the sorted `files` of a walk every file the index holds unfetched
+   that the walk did not find on disk: it is unchanged, with its blob, unless
+   the fetched log says it arrived with that blob, so it was deleted since. A
+   file that arrived and stays was walked and hashed like any other. */
+static bool8_t workspace_snapshot_unfetched(const VkrDepotWorkspace *workspace,
+                                            VkrDepotFileList *files) {
+  VkrDepotFileList fetched;
+  if (!workspace_fetched_load(workspace, &fetched)) {
+    return false_v;
+  }
+  const uint32_t walked = files->count;
+  bool8_t ok = true_v;
+  for (uint32_t i = 0u; i < workspace->index.count && ok; ++i) {
+    const VkrDepotIndexEntry *entry = &workspace->index.entries[i];
+    if (entry->mtime_ns != VKR_DEPOT_MTIME_UNFETCHED) {
+      continue;
+    }
+    /* The walk's own files are the first `walked`, sorted. */
+    const VkrDepotFileList found = {
+        .entries = files->entries, .count = walked, .capacity = walked};
+    const VkrDepotIndexEntry *arrived =
+        vkr_depot_file_list_find(&fetched, entry->path);
+    if (vkr_depot_file_list_find(&found, entry->path) ||
+        (arrived && vkr_depot_id_equal(&arrived->blob, &entry->blob))) {
+      continue;
+    }
+    ok = vkr_depot_file_list_add(files, entry->path, entry->size,
+                                 VKR_DEPOT_MTIME_UNFETCHED, &entry->blob);
+  }
+  vkr_depot_file_list_free(&fetched);
+  if (ok && files->count != walked) {
+    vkr_depot_file_list_sort(files);
+  }
+  return ok;
+}
+
 static bool8_t workspace_snapshot(VkrDepotWorkspace *workspace, bool8_t cooked,
                                   VkrDepotId *out_tree,
                                   VkrDepotFileList *out_files) {
@@ -888,6 +1019,10 @@ static bool8_t workspace_snapshot(VkrDepotWorkspace *workspace, bool8_t cooked,
     return false_v;
   }
   vkr_depot_file_list_sort(out_files);
+  if (!cooked && !workspace_snapshot_unfetched(workspace, out_files)) {
+    vkr_depot_file_list_free(out_files);
+    return false_v;
+  }
   if (!workspace_build_tree(&workspace->store, out_files, 0u, out_files->count,
                             0u, out_tree)) {
     vkr_depot_file_list_free(out_files);
@@ -1087,12 +1222,15 @@ uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
   uint32_t settled = 0u;
   for (uint32_t i = 0u; i < workspace->index.count; ++i) {
     VkrDepotIndexEntry *entry = &workspace->index.entries[i];
-    if (entry->mtime_ns != -1) {
+    /* Files a checkout wrote, and files a sparse working copy fetched. */
+    if (entry->mtime_ns != -1 && entry->mtime_ns != VKR_DEPOT_MTIME_UNFETCHED) {
       continue;
     }
     const VkrDepotIndexEntry *hashed =
         vkr_depot_file_list_find(files, entry->path);
+    /* A file the snapshot found on disk; one still unfetched stays so. */
     if (hashed && hashed->mtime_ns != -1 &&
+        hashed->mtime_ns != VKR_DEPOT_MTIME_UNFETCHED &&
         vkr_depot_id_equal(&hashed->blob, &entry->blob)) {
       entry->size = hashed->size;
       entry->mtime_ns = hashed->mtime_ns;
@@ -1188,13 +1326,27 @@ bool8_t vkr_depot_workspace_checkout(VkrDepotWorkspace *workspace,
         vkr_depot_file_list_find(&workspace->index, entry->path);
     VkrBakeryStat stat = {0};
     const bool8_t present = vkr_bakery_stat(absolute, &stat) && stat.exists;
+    /* A sparse working copy writes only the files it holds and its root
+       ignore rules; every other file stays unfetched with the target's
+       blob. */
+    if (workspace->sparse && !present &&
+        strcmp(entry->path, VKR_DEPOT_IGNORE_FILE) != 0) {
+      ok = vkr_depot_file_list_add(&index, entry->path, entry->size,
+                                   VKR_DEPOT_MTIME_UNFETCHED, &entry->blob);
+      continue;
+    }
     /* A file that already holds the blob stays, including one an earlier
-       checkout wrote that no snapshot has hashed yet (-1). */
+       checkout wrote, or a sparse working copy fetched, that no snapshot
+       has hashed yet; -1 makes the next one hash it. */
+    const bool8_t unhashed =
+        known &&
+        (known->mtime_ns == -1 || known->mtime_ns == VKR_DEPOT_MTIME_UNFETCHED);
     if (known && present && vkr_depot_id_equal(&known->blob, &entry->blob) &&
         known->size == stat.size &&
-        (known->mtime_ns == stat.mtime_ns || known->mtime_ns == -1)) {
+        (known->mtime_ns == stat.mtime_ns || unhashed)) {
       ok = vkr_depot_file_list_add(&index, entry->path, known->size,
-                                   known->mtime_ns, &entry->blob);
+                                   unhashed ? -1 : known->mtime_ns,
+                                   &entry->blob);
       continue;
     }
     writes[write_count++] = i;

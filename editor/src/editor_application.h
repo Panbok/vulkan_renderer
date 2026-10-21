@@ -35,6 +35,9 @@ typedef struct VkrEditorApplication {
   const char *stream_directory;
   const char *stream_branch;
   bool8_t stream_no_cooked;
+  /** `--stream-workspace <directory>`: a sparse depot working copy whose
+   * unfetched files stream from the server it names. */
+  const char *stream_workspace;
   /** Window shape last requested: the compact launcher or the editor. */
   bool8_t window_launcher;
   /** Plain frames left around a launcher/editor resize; the resize is

@@ -29,9 +29,19 @@
  * in transfers of at most 16 MiB of listed files, so a read or fetch never
  * waits behind a long background download. A file already under the
  * directory with the listed size and its blob in the store counts as
- * present, so a second run fetches nothing it already has. */
+ * present, so a second run fetches nothing it already has.
+ *
+ * Opened on a sparse working copy (`workspace`), the remote lists the
+ * copy's unfetched files at its base and the cooked files it does not
+ * track, keeps their objects in the copy's store, never writes over a file
+ * on disk and records each file it writes in the copy's fetched log, so a
+ * snapshot tells a fetched file that was deleted from one never fetched
+ * (vkr_depot_workspace.h). */
 
 typedef struct VkrDepotRemoteConfig {
+  /* A working copy's root, or NULL. When set, the working copy names the
+     directory, server, key, branch and store, and those fields go unused. */
+  const char *workspace;
   /* Absolute; files land below it and it is created when missing. */
   const char *directory;
   /* A numeric address or host name with an optional port. */
@@ -115,6 +125,10 @@ const VkrVfsRemoteCalls *vkr_depot_remote_vfs_calls(void);
 
 void vkr_depot_remote_stats(VkrDepotRemote *remote,
                             VkrDepotRemoteStats *out_stats);
+
+/* The directory files land below: a working copy's root when the remote
+   opened on one. */
+const char *vkr_depot_remote_directory(const VkrDepotRemote *remote);
 
 /* Stops the worker after its transfer and disconnects. Clear the VFS remote
    first: a read that still asks would use freed memory. */

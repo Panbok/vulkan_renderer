@@ -3342,12 +3342,12 @@ bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
                                 const char *key_hex, const char *directory,
                                 const char *branch, bool8_t no_cooked,
                                 char *error, uint32_t capacity) {
-  uint8_t key[32];
+  uint8_t key[32] = {0};
   if (depot->stream) {
     string_format(error, capacity, "a stream is open already");
     return false_v;
   }
-  if (!depot_key_parse(key_hex, key)) {
+  if (address && !depot_key_parse(key_hex, key)) {
     string_format(error, capacity, "the server key needs 64 hex digits");
     return false_v;
   }
@@ -3356,18 +3356,23 @@ bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
     string_format(error, capacity, "the stream directory path is too long");
     return false_v;
   }
-  const VkrDepotRemoteConfig config = {.directory = depot->stream_directory,
-                                       .address = address,
-                                       .server_key = key,
-                                       .branch = branch,
-                                       .codec = vkr_depot_zstd_codec(),
-                                       .no_cooked = no_cooked};
+  const VkrDepotRemoteConfig config = {
+      .workspace = address ? NULL : depot->stream_directory,
+      .directory = depot->stream_directory,
+      .address = address,
+      .server_key = key,
+      .branch = branch,
+      .codec = vkr_depot_zstd_codec(),
+      .no_cooked = no_cooked};
   depot->stream_opened_at = vkr_platform_get_absolute_time();
   depot->stream =
       vkr_depot_remote_open(depot->allocator, &config, error, capacity);
   if (!depot->stream) {
     return false_v;
   }
+  /* A working copy opened at a folder inside it streams into its root. */
+  string_format(depot->stream_directory, sizeof(depot->stream_directory), "%s",
+                vkr_depot_remote_directory(depot->stream));
   depot->stream_open_seconds =
       vkr_platform_get_absolute_time() - depot->stream_opened_at;
   if (!vkr_vfs_set_remote(depot->stream_directory, vkr_depot_remote_vfs_calls(),
@@ -3383,11 +3388,12 @@ bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
   vkr_depot_remote_stats(depot->stream, &stats);
   char hex[VKR_DEPOT_ID_HEX];
   vkr_depot_id_hex(&stats.commit, hex);
-  log_info(
-      "Streaming %u files of %.12s%s from %s into %s (listed in %.0f ms)",
-      stats.listed, hex,
-      vkr_depot_id_zero(&stats.cooked_commit) ? "" : " and its cooked branch",
-      address, depot->stream_directory, depot->stream_open_seconds * 1000.0);
+  log_info("Streaming %u files of %.12s%s from %s into %s (listed in %.0f ms)",
+           stats.listed, hex,
+           vkr_depot_id_zero(&stats.cooked_commit) ? ""
+                                                   : " and its cooked branch",
+           address ? address : "the working copy's server",
+           depot->stream_directory, depot->stream_open_seconds * 1000.0);
   return true_v;
 }
 

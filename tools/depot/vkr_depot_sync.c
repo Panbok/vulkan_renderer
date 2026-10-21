@@ -1088,6 +1088,7 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
              status);
     return false_v;
   }
+  pending->uploaded = stats;
   vkr_depot_file_list_free(&workspace->index);
   workspace->index = pending->files;
   MemZero(&pending->files, sizeof(pending->files));
@@ -1098,7 +1099,37 @@ bool8_t vkr_depot_commit_push(VkrDepotWorkspace *workspace,
              "pushed, but the working copy state did not save");
     return false_v;
   }
+  /* The new index recorded every file the log names, or its deletion. */
+  (void)vkr_depot_workspace_clear_fetched(workspace);
   depot_step_done(workspace);
+  return true_v;
+}
+
+/* The blobs a sparse checkout of `remote` writes: files on disk that the
+   commit changed, and the root ignore rules, unless `keep` holds them. */
+static bool8_t depot_sparse_writes(const VkrDepotFileList *local,
+                                   const VkrDepotFileList *remote,
+                                   const VkrDepotFileList *keep,
+                                   VkrDepotId **out_blobs,
+                                   uint32_t *out_count) {
+  *out_blobs = malloc((size_t)Max(remote->count, 1u) * sizeof(VkrDepotId));
+  *out_count = 0u;
+  if (!*out_blobs) {
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < remote->count; ++i) {
+    const VkrDepotIndexEntry *theirs = &remote->entries[i];
+    const VkrDepotIndexEntry *mine =
+        vkr_depot_file_list_find(local, theirs->path);
+    const bool8_t on_disk = mine && mine->mtime_ns != VKR_DEPOT_MTIME_UNFETCHED;
+    const bool8_t ignore_rules =
+        strcmp(theirs->path, VKR_DEPOT_IGNORE_FILE) == 0;
+    if ((on_disk || ignore_rules) &&
+        !vkr_depot_file_list_find(keep, theirs->path) &&
+        !(on_disk && vkr_depot_id_equal(&mine->blob, &theirs->blob))) {
+      (*out_blobs)[(*out_count)++] = theirs->blob;
+    }
+  }
   return true_v;
 }
 
@@ -1132,7 +1163,12 @@ bool8_t vkr_depot_fetch_checkout(
   }
   vkr_depot_client_set_progress(client, workspace->progress);
   VkrDepotTransferStats stats = {0};
-  if (!vkr_depot_client_fetch(client, commit, &stats)) {
+  /* A sparse working copy fetches the trees here, and below only the files
+     its checkout writes. */
+  const bool8_t fetched =
+      workspace->sparse ? vkr_depot_client_fetch_trees(client, commit, &stats)
+                        : vkr_depot_client_fetch(client, commit, &stats);
+  if (!fetched) {
     depot_step_error(workspace, error, capacity, "fetch failed",
                      vkr_depot_client_error(client));
     goto cleanup;
@@ -1193,6 +1229,25 @@ bool8_t vkr_depot_fetch_checkout(
     goto cleanup;
   }
   vkr_depot_file_list_sort(&keep);
+  if (workspace->sparse) {
+    VkrDepotId *blobs = NULL;
+    uint32_t blob_count = 0u;
+    bool8_t written =
+        depot_sparse_writes(&local, &remote, &keep, &blobs, &blob_count);
+    if (written && blob_count > 0u) {
+      written = vkr_depot_client_fetch_files(client, blobs, blob_count, &stats);
+      if (!written) {
+        depot_step_error(workspace, error, capacity, "fetch failed",
+                         vkr_depot_client_error(client));
+      }
+    } else if (!written) {
+      snprintf(error, capacity, "out of memory");
+    }
+    free(blobs);
+    if (!written) {
+      goto cleanup;
+    }
+  }
   if (!vkr_depot_workspace_checkout(workspace, &commit_tree, &keep, NULL)) {
     depot_step_error(workspace, error, capacity, "checkout failed", NULL);
     goto cleanup;
@@ -1202,6 +1257,7 @@ bool8_t vkr_depot_fetch_checkout(
     snprintf(error, capacity, "the working copy state did not save");
     goto cleanup;
   }
+  (void)vkr_depot_workspace_clear_fetched(workspace);
   *out_kept = keep.count;
   depot_step_done(workspace);
   ok = true_v;
@@ -1260,8 +1316,10 @@ bool8_t vkr_depot_clone(VkrAllocator *allocator,
       vkr_depot_workspace_close(&workspace);
       return false_v;
     }
-  } else if (!vkr_depot_workspace_create(&workspace, config->directory,
-                                         config->store_root, config->codec)) {
+  } else if (vkr_depot_workspace_create(&workspace, config->directory,
+                                        config->store_root, config->codec)) {
+    workspace.sparse = config->sparse;
+  } else {
     snprintf(error, capacity, "could not create the working copy at %s",
              config->directory);
     return false_v;

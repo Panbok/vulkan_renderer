@@ -1891,6 +1891,256 @@ static void test_depot_remote_ranges(void) {
   printf("  test_depot_remote_ranges PASSED\n");
 }
 
+/* Commits the working copy over a loopback connection and moves its branch
+   from its base; returns what the push uploaded. */
+static VkrDepotTransferStats
+depot_test_sparse_push(VkrAllocator *allocator, VkrDepotWorkspace *workspace,
+                       const char *address, const uint8_t *server_key,
+                       const char *message) {
+  char error[256];
+  const VkrDepotId base = workspace->base;
+  VkrDepotPendingCommit pending;
+  assert(vkr_depot_commit_snapshot(workspace, &base, message, &pending, error,
+                                   sizeof(error)));
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = server_key,
+                                         .store = &workspace->store,
+                                         .timeout_ms = 5000u};
+  VkrDepotConnection *connection =
+      vkr_depot_connect(allocator, &connect, NULL, error, sizeof(error));
+  assert(connection);
+  if (!vkr_depot_commit_push(workspace, vkr_depot_connection_client(connection),
+                             "main", &base, &base, &pending, error,
+                             sizeof(error))) {
+    printf("    push failed: %s\n", error);
+    assert(false && "push");
+  }
+  const VkrDepotTransferStats uploaded = pending.uploaded;
+  vkr_depot_pending_commit_free(&pending);
+  vkr_depot_disconnect(connection);
+  return uploaded;
+}
+
+static bool8_t depot_test_exists(const char *root, const char *relative) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  return vkr_bakery_path_join(path, sizeof(path), root, relative) &&
+         vkr_bakery_is_file(path);
+}
+
+/* The state file's version: 1 for a working copy, 2 for a sparse one. */
+static uint32_t depot_test_state_version(const char *root) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  assert(vkr_bakery_path_join(path, sizeof(path), root,
+                              VKR_DEPOT_META_DIR "/state") &&
+         vkr_bakery_read_file(path, 1u << 20, &bytes, &size) && size >= 8u);
+  const uint32_t version = (uint32_t)bytes[4] | ((uint32_t)bytes[5] << 8) |
+                           ((uint32_t)bytes[6] << 16) |
+                           ((uint32_t)bytes[7] << 24);
+  free(bytes);
+  return version;
+}
+
+/* A sparse working copy over loopback (vkr_depot_workspace.h). Fails when a
+   sparse clone writes a file other than the root ignore rules, when a file
+   it never fetched shows as a change, when a remote on the working copy
+   lists a fetched file, writes over a file on disk or does not bring an
+   unfetched one; when status misses a fetched file's deletion, an edit, a
+   file written over an unfetched one or an addition; when a commit carries
+   more than the changes or loses an unfetched file; or when a pull writes
+   a file the copy never fetched, leaves a fetched one stale or the new
+   content does not arrive on the next read. A plain working copy keeps
+   state version 1. */
+static void test_depot_sparse(void) {
+  printf("  Running test_depot_sparse...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char author_root[VKR_DEPOT_PATH_CAPACITY];
+  char sparse_root[VKR_DEPOT_PATH_CAPACITY];
+  char full_root[VKR_DEPOT_PATH_CAPACITY];
+  char key_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("sparse_store", store_root, sizeof(store_root));
+  depot_test_dir("sparse_author", author_root, sizeof(author_root));
+  depot_test_dir("sparse_copy", sparse_root, sizeof(sparse_root));
+  depot_test_dir("sparse_full", full_root, sizeof(full_root));
+  depot_test_dir("sparse_key", key_root, sizeof(key_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), key_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const VkrDepotServiceConfig config = {.store_root = store_root,
+                                        .bind = "127.0.0.1:0",
+                                        .discovery_port = 7353u,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info.address.port);
+
+  depot_test_write(author_root, ".vkrdepotignore", "*.vkt\n", 6u);
+  depot_test_write(author_root, "a.txt", "alpha", 5u);
+  depot_test_write(author_root, "b.txt", "bravo", 5u);
+  depot_test_write(author_root, "dir/c.txt", "charlie", 7u);
+  depot_test_write(author_root, "dir/d.txt", "delta", 5u);
+  VkrDepotWorkspace author;
+  assert(vkr_depot_workspace_create(&author, author_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  (void)depot_test_sparse_push(&allocator, &author, address, info.server_key,
+                               "files");
+  vkr_depot_workspace_close(&author);
+
+  /* The clone holds the trees and the ignore rules, no other file. */
+  VkrDepotCloneConfig clone = {.address = address,
+                               .server_key = info.server_key,
+                               .directory = sparse_root,
+                               .codec = vkr_depot_zstd_codec(),
+                               .sparse = true_v};
+  VkrDepotCloneResult cloned = {0};
+  assert(vkr_depot_clone(&allocator, &clone, &cloned, error, sizeof(error)));
+  assert(cloned.files == 5u);
+  assert(depot_test_file_is(sparse_root, ".vkrdepotignore", "*.vkt\n"));
+  assert(!depot_test_exists(sparse_root, "a.txt") &&
+         !depot_test_exists(sparse_root, "dir/c.txt"));
+  assert(depot_test_state_version(sparse_root) == 2u);
+  VkrDepotWorkspace sparse;
+  assert(
+      vkr_depot_workspace_open(&sparse, sparse_root, vkr_depot_zstd_codec()));
+  assert(sparse.sparse);
+  for (uint32_t i = 0u; i < sparse.index.count; ++i) {
+    const bool8_t ignore_rules =
+        strcmp(sparse.index.entries[i].path, ".vkrdepotignore") == 0;
+    assert((sparse.index.entries[i].mtime_ns == VKR_DEPOT_MTIME_UNFETCHED) !=
+           ignore_rules);
+  }
+  assert(depot_test_status_of(&sparse, "a.txt") == 0u);
+
+  /* A remote on the copy lists the unfetched files and keeps a file on
+     disk as it is. */
+  depot_test_write(sparse_root, "dir/d.txt", "mine", 4u);
+  const VkrDepotRemoteConfig remote_config = {.workspace = sparse_root,
+                                              .codec = vkr_depot_zstd_codec()};
+  VkrDepotRemote *remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  if (!remote) {
+    printf("    remote failed: %s\n", error);
+    assert(false && "remote open");
+  }
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.listed == 4u && stats.present == 1u);
+  assert(vkr_depot_remote_fetch(remote, "a.txt"));
+  assert(vkr_depot_remote_fetch(remote, "b.txt"));
+  assert(vkr_depot_remote_fetch(remote, "dir/d.txt"));
+  assert(!vkr_depot_remote_fetch(remote, ".vkrdepotignore"));
+  assert(depot_test_file_is(sparse_root, "a.txt", "alpha"));
+  assert(depot_test_file_is(sparse_root, "dir/d.txt", "mine"));
+  assert(!depot_test_exists(sparse_root, "dir/c.txt"));
+  vkr_depot_remote_close(remote);
+
+  /* Edit a fetched file, delete another, add one: exactly those change. */
+  depot_test_write(sparse_root, "a.txt", "alpha2", 6u);
+  char deleted[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(deleted, sizeof(deleted), sparse_root, "b.txt") &&
+         vkr_bakery_remove_file(deleted));
+  depot_test_write(sparse_root, "e.txt", "echo", 4u);
+  VkrDepotChangeList changes;
+  assert(vkr_depot_status(&sparse, &changes, error, sizeof(error)));
+  assert(changes.count == 4u);
+  vkr_depot_change_list_free(&changes);
+  assert(depot_test_status_of(&sparse, "a.txt") == VKR_DEPOT_CHANGE_MODIFIED);
+  assert(depot_test_status_of(&sparse, "b.txt") == VKR_DEPOT_CHANGE_DELETED);
+  assert(depot_test_status_of(&sparse, "dir/d.txt") ==
+         VKR_DEPOT_CHANGE_MODIFIED);
+  assert(depot_test_status_of(&sparse, "e.txt") == VKR_DEPOT_CHANGE_ADDED);
+  assert(depot_test_status_of(&sparse, "dir/c.txt") == 0u);
+
+  /* The commit carries those changes and the unfetched file's blob. */
+  const VkrDepotTransferStats uploaded = depot_test_sparse_push(
+      &allocator, &sparse, address, info.server_key, "sparse edit");
+  /* Three changed files of one chunk each (blob and chunk), two trees and
+     the commit. */
+  assert(uploaded.objects > 0u && uploaded.objects <= 9u);
+  const VkrDepotIndexEntry *unfetched =
+      vkr_depot_file_list_find(&sparse.index, "dir/c.txt");
+  assert(unfetched && unfetched->mtime_ns == VKR_DEPOT_MTIME_UNFETCHED);
+  assert(!vkr_depot_file_list_find(&sparse.index, "b.txt"));
+  assert(!depot_test_exists(sparse_root, VKR_DEPOT_META_DIR "/fetched"));
+  clone.directory = full_root;
+  clone.sparse = false_v;
+  assert(vkr_depot_clone(&allocator, &clone, &cloned, error, sizeof(error)));
+  assert(depot_test_state_version(full_root) == 1u);
+  assert(depot_test_file_is(full_root, "a.txt", "alpha2"));
+  assert(!depot_test_exists(full_root, "b.txt"));
+  assert(depot_test_file_is(full_root, "dir/c.txt", "charlie"));
+  assert(depot_test_file_is(full_root, "dir/d.txt", "mine"));
+  assert(depot_test_file_is(full_root, "e.txt", "echo"));
+
+  /* Another user changes a file the copy holds, one it never fetched, and
+     adds one: the pull writes only the first. */
+  VkrDepotWorkspace full;
+  assert(vkr_depot_workspace_open(&full, full_root, vkr_depot_zstd_codec()));
+  depot_test_write(full_root, "e.txt", "echo2", 5u);
+  depot_test_write(full_root, "dir/c.txt", "charlie2", 8u);
+  depot_test_write(full_root, "f.txt", "foxtrot", 7u);
+  (void)depot_test_sparse_push(&allocator, &full, address, info.server_key,
+                               "other user");
+  const VkrDepotId latest = full.base;
+  vkr_depot_workspace_close(&full);
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = info.server_key,
+                                         .store = &sparse.store,
+                                         .timeout_ms = 5000u};
+  VkrDepotConnection *connection =
+      vkr_depot_connect(&allocator, &connect, NULL, error, sizeof(error));
+  assert(connection);
+  uint32_t kept = 0u;
+  if (!vkr_depot_fetch_checkout(
+          &sparse, vkr_depot_connection_client(connection), &latest,
+          VKR_DEPOT_CONFLICT_FAIL, &kept, NULL, error, sizeof(error))) {
+    printf("    sparse pull failed: %s\n", error);
+    assert(false && "sparse pull");
+  }
+  vkr_depot_disconnect(connection);
+  assert(depot_test_file_is(sparse_root, "e.txt", "echo2"));
+  assert(!depot_test_exists(sparse_root, "dir/c.txt") &&
+         !depot_test_exists(sparse_root, "f.txt"));
+  assert(depot_test_status_of(&sparse, "dir/c.txt") == 0u);
+  vkr_depot_workspace_close(&sparse);
+  remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  assert(remote);
+  assert(vkr_depot_remote_fetch(remote, "dir/c.txt"));
+  assert(vkr_depot_remote_fetch(remote, "f.txt"));
+  vkr_depot_remote_close(remote);
+  assert(depot_test_file_is(sparse_root, "dir/c.txt", "charlie2"));
+  assert(depot_test_file_is(sparse_root, "f.txt", "foxtrot"));
+
+  vkr_depot_service_stop(service);
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(author_root));
+  assert(vkr_bakery_remove_tree(sparse_root));
+  assert(vkr_bakery_remove_tree(full_root));
+  assert(vkr_bakery_remove_tree(key_root));
+  printf("  test_depot_sparse PASSED\n");
+}
+
 /* Stores a tree of `count` entries into `store`. */
 static void depot_test_tree(const VkrDepotStore *store,
                             VkrDepotTreeEntry *entries, uint32_t count,
@@ -2179,6 +2429,7 @@ bool32_t run_depot_tests(void) {
   test_depot_service();
   test_depot_remote();
   test_depot_remote_ranges();
+  test_depot_sparse();
   test_depot_tree_limits();
   test_depot_checkout_safety();
   test_depot_server_refusals();

@@ -106,6 +106,10 @@ typedef struct VkrDepotCloneConfig {
   const VkrCodec *codec;
   /* Borrowed; NULL for none. */
   VkrDepotProgress *progress;
+  /* A sparse working copy (vkr_depot_workspace.h): the trees and the root
+     `.vkrdepotignore` arrive, every other file when a reader opens it. A
+     working copy the call continues keeps what it is. */
+  bool8_t sparse;
 } VkrDepotCloneConfig;
 
 typedef struct VkrDepotCloneResult {
@@ -175,6 +179,8 @@ uint32_t vkr_depot_log(const VkrDepotStore *store, const VkrDepotId *start,
 typedef struct VkrDepotPendingCommit {
   VkrDepotId commit;
   VkrDepotFileList files;
+  /* What vkr_depot_commit_push uploaded. */
+  VkrDepotTransferStats uploaded;
 } VkrDepotPendingCommit;
 
 /* Snapshots the working directory and makes a commit with `parent` (none
@@ -311,7 +317,10 @@ typedef enum VkrDepotConflictPolicy {
    local change: under FAIL the call then fails without changing anything.
    On success the commit is the working copy's base, saved; `out_kept`
    counts the local changes kept. Snapshot, fetch and checkout honour the
-   working copy's progress; a cancel leaves the base where it was. */
+   working copy's progress; a cancel leaves the base where it was. A sparse
+   working copy fetches the commit's trees and only the files its checkout
+   writes: those on disk that the commit changed, and the root ignore
+   rules. */
 bool8_t vkr_depot_fetch_checkout(
     VkrDepotWorkspace *workspace, VkrDepotClient *client,
     const VkrDepotId *commit, VkrDepotConflictPolicy policy, uint32_t *out_kept,

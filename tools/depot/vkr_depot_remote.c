@@ -63,6 +63,9 @@ struct VkrDepotRemote {
   bool8_t connection_memory_ready;
   char address[VKR_DEPOT_REMOTE_MAX];
   uint8_t server_key[32];
+  /* On a working copy: the files are its unfetched ones, any file on disk
+     is present, and a written file goes to its fetched log. */
+  bool8_t workspace;
   /* Every listed file, sorted by path, and its state. */
   VkrDepotFileList files;
   uint8_t *states;
@@ -134,11 +137,36 @@ static bool8_t remote_file_present(const VkrDepotRemote *remote,
                                    const VkrDepotIndexEntry *entry) {
   char path[VKR_DEPOT_PATH_CAPACITY];
   VkrBakeryStat stat;
-  return vkr_bakery_path_join(path, sizeof(path), remote->directory,
-                              entry->path) &&
-         vkr_bakery_stat(path, &stat) && stat.exists && !stat.is_directory &&
-         stat.size == entry->size &&
-         vkr_depot_store_has(&remote->store, &entry->blob);
+  if (!vkr_bakery_path_join(path, sizeof(path), remote->directory,
+                            entry->path) ||
+      !vkr_bakery_stat(path, &stat) || !stat.exists) {
+    return false_v;
+  }
+  /* A working copy's file on disk is its own, edited or not. */
+  return remote->workspace ||
+         (!stat.is_directory && stat.size == entry->size &&
+          vkr_depot_store_has(&remote->store, &entry->blob));
+}
+
+/* Writes one fetched file. In a working copy a file already on disk stays,
+   and a written one joins the fetched log. */
+static bool8_t remote_write_file(const VkrDepotRemote *remote,
+                                 const VkrDepotIndexEntry *entry) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_depot_store_has(&remote->store, &entry->blob) ||
+      !vkr_bakery_path_join(path, sizeof(path), remote->directory,
+                            entry->path)) {
+    return false_v;
+  }
+  if (!remote->workspace) {
+    return vkr_depot_write_blob(&remote->store, &entry->blob, path);
+  }
+  if (remote_file_present(remote, entry)) {
+    return true_v;
+  }
+  return vkr_depot_write_blob(&remote->store, &entry->blob, path) &&
+         vkr_depot_workspace_note_fetched(remote->directory, entry->path,
+                                          &entry->blob);
 }
 
 /* Downloads `count` whole files (`blobs`) or parts of files (`ranges`),
@@ -227,12 +255,7 @@ static void remote_fetch_batch(VkrDepotRemote *remote, const uint32_t *batch,
   uint8_t written[REMOTE_BATCH_MAX];
   uint32_t written_count = 0u;
   for (uint32_t i = 0u; i < count; ++i) {
-    const VkrDepotIndexEntry *entry = &remote->files.entries[batch[i]];
-    char path[VKR_DEPOT_PATH_CAPACITY];
-    written[i] = vkr_depot_store_has(&remote->store, &entry->blob) &&
-                 vkr_bakery_path_join(path, sizeof(path), remote->directory,
-                                      entry->path) &&
-                 vkr_depot_write_blob(&remote->store, &entry->blob, path);
+    written[i] = remote_write_file(remote, &remote->files.entries[batch[i]]);
     written_count += written[i];
   }
 
@@ -333,7 +356,9 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
   VkrDepotRemote *remote = calloc(1u, sizeof(VkrDepotRemote));
   VkrDepotRef *refs = calloc(REMOTE_REFS_MAX, sizeof(VkrDepotRef));
   VkrDepotFileList cooked = {0};
-  if (!remote || !refs) {
+  VkrDepotWorkspace *workspace =
+      config->workspace ? calloc(1u, sizeof(VkrDepotWorkspace)) : NULL;
+  if (!remote || !refs || (config->workspace && !workspace)) {
     snprintf(error, capacity, "out of memory");
     goto fail;
   }
@@ -348,27 +373,44 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
   vkr_dmemory_allocator_create(&remote->connection_allocator);
   remote->connection_memory_ready = true_v;
   const char *branch = config->branch ? config->branch : "main";
+  const char *address = config->address;
+  const uint8_t *server_key = config->server_key;
   char store_root[VKR_DEPOT_PATH_CAPACITY];
-  snprintf(remote->directory, sizeof(remote->directory), "%s",
-           config->directory);
-  if (config->store_root) {
-    snprintf(store_root, sizeof(store_root), "%s", config->store_root);
-  } else if (!vkr_bakery_path_join(store_root, sizeof(store_root),
-                                   config->directory, ".vkrdepot-stream")) {
-    snprintf(error, capacity, "the directory path is too long");
-    goto fail;
+  if (workspace) {
+    /* The working copy names its server, branch and store. */
+    if (!vkr_depot_workspace_open(workspace, config->workspace,
+                                  config->codec)) {
+      snprintf(error, capacity, "no working copy at %s", config->workspace);
+      goto fail;
+    }
+    remote->workspace = true_v;
+    snprintf(remote->directory, sizeof(remote->directory), "%s",
+             workspace->root);
+    snprintf(store_root, sizeof(store_root), "%s", workspace->store.root);
+    branch = workspace->branch;
+    address = workspace->remote;
+    server_key = workspace->server_key;
+  } else {
+    snprintf(remote->directory, sizeof(remote->directory), "%s",
+             config->directory);
+    if (config->store_root) {
+      snprintf(store_root, sizeof(store_root), "%s", config->store_root);
+    } else if (!vkr_bakery_path_join(store_root, sizeof(store_root),
+                                     config->directory, ".vkrdepot-stream")) {
+      snprintf(error, capacity, "the directory path is too long");
+      goto fail;
+    }
   }
-  if (!vkr_bakery_make_directories(config->directory) ||
+  if (!vkr_bakery_make_directories(remote->directory) ||
       !vkr_depot_store_open(&remote->store, store_root, config->codec)) {
     snprintf(error, capacity, "the store at %s could not open", store_root);
     goto fail;
   }
 
-  snprintf(remote->address, sizeof(remote->address), "%s", config->address);
-  MemCopy(remote->server_key, config->server_key, sizeof(remote->server_key));
-  const VkrDepotConnectConfig connect = {.address = config->address,
-                                         .server_key = config->server_key,
-                                         .store = &remote->store};
+  snprintf(remote->address, sizeof(remote->address), "%s", address);
+  MemCopy(remote->server_key, server_key, sizeof(remote->server_key));
+  const VkrDepotConnectConfig connect = {
+      .address = address, .server_key = server_key, .store = &remote->store};
   remote->connection = vkr_depot_connect(&remote->connection_allocator,
                                          &connect, NULL, error, capacity);
   if (!remote->connection) {
@@ -381,17 +423,33 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
              vkr_depot_client_error(client));
     goto fail;
   }
-  if (!remote_find_ref(refs, ref_count, branch, &remote->stats.commit)) {
-    snprintf(error, capacity, "the server has no branch %s", branch);
-    goto fail;
-  }
-  if (!remote_list(remote, client, &remote->stats.commit, &remote->files, error,
-                   capacity)) {
-    goto fail;
+  if (workspace) {
+    /* The working copy's base, of which only its unfetched files come. */
+    remote->stats.commit = workspace->base;
+    for (uint32_t i = 0u; i < workspace->index.count; ++i) {
+      const VkrDepotIndexEntry *entry = &workspace->index.entries[i];
+      if (entry->mtime_ns == VKR_DEPOT_MTIME_UNFETCHED &&
+          !vkr_depot_file_list_add(&remote->files, entry->path, entry->size,
+                                   entry->mtime_ns, &entry->blob)) {
+        snprintf(error, capacity, "out of memory");
+        goto fail;
+      }
+    }
+  } else {
+    if (!remote_find_ref(refs, ref_count, branch, &remote->stats.commit)) {
+      snprintf(error, capacity, "the server has no branch %s", branch);
+      goto fail;
+    }
+    if (!remote_list(remote, client, &remote->stats.commit, &remote->files,
+                     error, capacity)) {
+      goto fail;
+    }
   }
   vkr_depot_file_list_sort(&remote->files);
   /* Platform files the project's history leaves out: each joins the list
-     unless the main commit lists the same path. */
+     unless the main commit (or the working copy) tracks the same path. */
+  const VkrDepotFileList *tracked =
+      workspace ? &workspace->index : &remote->files;
   char cooked_branch[VKR_DEPOT_BRANCH_NAME];
   vkr_depot_cooked_branch(branch, cooked_branch, sizeof(cooked_branch));
   if (!config->no_cooked && remote_find_ref(refs, ref_count, cooked_branch,
@@ -403,7 +461,7 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
     VkrDepotFileList joined = {0};
     for (uint32_t i = 0u; i < cooked.count; ++i) {
       const VkrDepotIndexEntry *entry = &cooked.entries[i];
-      if (!vkr_depot_file_list_find(&remote->files, entry->path) &&
+      if (!vkr_depot_file_list_find(tracked, entry->path) &&
           !vkr_depot_file_list_add(&joined, entry->path, entry->size,
                                    entry->mtime_ns, &entry->blob)) {
         vkr_depot_file_list_free(&joined);
@@ -448,11 +506,19 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
   }
   vkr_depot_file_list_free(&cooked);
   free(refs);
+  if (workspace) {
+    vkr_depot_workspace_close(workspace);
+    free(workspace);
+  }
   return remote;
 
 fail:
   vkr_depot_file_list_free(&cooked);
   free(refs);
+  if (workspace) {
+    vkr_depot_workspace_close(workspace);
+    free(workspace);
+  }
   if (remote) {
     remote_free(remote);
   }
@@ -612,6 +678,10 @@ const VkrVfsRemoteCalls *vkr_depot_remote_vfs_calls(void) {
       .arrivals = vkr_depot_remote_arrivals,
   };
   return &calls;
+}
+
+const char *vkr_depot_remote_directory(const VkrDepotRemote *remote) {
+  return remote->directory;
 }
 
 void vkr_depot_remote_stats(VkrDepotRemote *remote,
