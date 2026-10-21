@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-20
+updated: 2026-10-21
 authority: proposal
 ---
 
@@ -62,7 +62,9 @@ reports.
   [shadow quality](shadow-quality.md#budgets) targets for Bistro High at
   1440p are sun 2.0 ms median, 0.5 ms extra in any one frame and local
   shadows 3.0 ms median against an estimated 6.3 ms; the baseline measures
-  `Shadow.LocalMask` at 2.1 to 4.2 ms and the redraws at 0.23 ms or less.
+  `Shadow.LocalMask` at 2.1 to 4.2 ms and the redraws at 0.23 ms or less,
+  and local shadows cost 3.0 and 6.0 ms in all
+  ([High gate costs](#high-gate-costs)).
   Ray-traced sun shadows join High at 1.5 ms or less, and 3 ms is the limit
   for any preset.
 - **Host.** The Windows host's only display is 1920×1080; a hidden window
@@ -72,20 +74,101 @@ reports.
   come from a separate worktree at the commit under test, with Bistro's
   untracked assets linked in.
 
+## High gate costs
+
+Each variant turns one desktop High gate the way its Graphics setting does and
+keeps the rest of the case. The variants are copies of the two tracked cases
+with one renderer field changed, in the ignored `tools/cases/rerun/`; filtered
+far shadows go off through `VKR_SHADOW_EVSM=0`, which the workload
+fingerprint records. Measured on 2026-10-21 on the RX 6700 XT, Release, from a
+clean worktree of the case-controls commit (75dc93fc on main; the measured
+tree is that commit before its rebase onto 52b37401 and c327aada, which
+change render graph debug names and the editor's graph view), with
+`vkr_harness profile --case <case> --profile
+tools/profiles/performance-windowed-gpu-submission-vulkan.json`. Every report
+is authoritative.
+
+The reference is the mean of the two High runs that bracket the variants:
+18.15 ms median and 23.50 ms p95 on the orbit (reports `a2d153e1`,
+`2ecdec11`), 22.06 and 26.25 ms on the walk (`a0052409`, `fab8a6df`). The two
+High runs of a case differ by 0.1 ms or less at the median, so a change under
+0.2 ms is noise. Each variant has its own workload fingerprint, so
+`vkr_harness perf-compare` refuses the pairs (`workload_fingerprint_differs`,
+exit 4) and the change below is read from the reports.
+
+| Gate, from High | Case change | Orbit median / p95 | Walk median / p95 |
+|---|---|---|---|
+| Local shadows off | `shadow_local: false` | −3.01 / −6.56 (`2e49b3ae`) | −5.98 / −8.24 (`4069fd99`) |
+| Ambient occlusion off | `gtao_enabled: false` | −1.52 / −1.52 (`a3f52518`) | −1.32 / −1.29 (`81bd632d`) |
+| Soft shadows off | `shadow_soft: false` | −0.41 / −0.64 (`aba1825b`) | −0.56 / −0.48 (`3cd2fef2`) |
+| Shadow quality Medium, High's filtered far shadows kept | `shadow_preset: balanced`, `shadow_cascades: 3`, `VKR_SHADOW_EVSM=1` | −0.03 / −0.78 (`0b82aeb5`) | −0.56 / −0.76 (`1b12eb57`) |
+| Bloom off | `bloom_enabled: false` | −0.16 / −0.17 (`1c998d9f`) | −0.06 / −0.01 (`566d06d1`) |
+| Reflection probe off | `ibl_probe_limit: 0` | −0.05 / −0.13 (`6cd47230`) | +0.05 / +0.01 (`36d3fa7e`) |
+| Filtered far shadows off | `VKR_SHADOW_EVSM=0` | +0.04 / +0.07 (`daca55f9`) | +0.15 / +0.20 (`e4d3bddd`) |
+| View distance Medium | `draw_distance_scale: 0.75` | +0.04 / 0.00 (`4e809034`) | +0.11 / +0.14 (`a083e42f`) |
+| SMAA T2x instead of FSR, lever (c) | `antialiasing: smaa_t2x` | −0.68 / −0.75 (`287b82be`) | −0.69 / −0.63 (`ab7a7f0a`) |
+
+Values are the change in `gpu.submission` in milliseconds, with the report
+digest prefix in brackets. Per-pass medians come from
+`performance-windowed-gpu.json` with `--pass-groups
+tools/budgets/desktop.pass_groups.json`, against a High run of the same
+profile:
+
+- **Local shadows.** Orbit 3.0 ms: `Shadow.LocalMask` 2.05,
+  `Lighting.Deferred` 0.54 for sampling the mask, glass and blend 0.26
+  (transmission shading), local shadow-map draws 0.15 (reports `ff32f813`
+  High, `fe60ff2e` off). Walk 6.0 ms: `Shadow.LocalMask` 4.19,
+  `Lighting.Deferred` 1.34, glass and blend 0.46 (`0dc54243`, `43c87ac8`).
+  Without local shadows `Lighting.Deferred` still takes 6.2 ms on the orbit
+  and 6.8 ms on the walk.
+- **Ambient occlusion**, orbit. `AO.Evaluate` 1.01, `AO.Denoise` 0.22,
+  `AO.DenoiseFinal` 0.21, `AO.PrefilterDepth` 0.07, and 0.29 ms of
+  `Lighting.Deferred`; the transmission passes take 0.25 ms more without it
+  (`3a48ef2f`).
+- **Soft shadows**, orbit. `Lighting.Deferred` 0.24 for the sun's filter,
+  `Shadow.LocalMask` 0.09 for the local penumbra (`c0b17997`).
+- **SMAA T2x**, orbit. `FSR31.Upscale` 1.84 and `FSR31.Prepare` 0.29 give way
+  to `Temporal.Resolve` 0.76 and four SMAA passes, 0.54 together;
+  reconstruction and post fall from 2.82 to 2.03 ms (`3bf866e1`).
+
+What the costs show:
+
+- No single gate brings a case under 16.7 ms p95. Local shadows off comes
+  closest, at 16.95 ms on the orbit and 18.01 ms on the walk.
+- Local shadows hold most of the tail. The p95 sits 5.35 ms above the median
+  on the orbit with them and 1.80 ms without; 4.19 and 1.93 ms on the walk.
+- Local shadows and ambient occlusion off together would leave the walk near
+  16.7 ms p95 if their savings add; the pair was not measured.
+- Filtered far shadows, view distance, the reflection probe and bloom cost
+  0.2 ms or less in Bistro, so moving them saves nothing measurable here.
+  View distance Medium does take effect: it removes 4% of the walk's opaque
+  draws (2267 to 2177) without a GPU time change.
+- Fog, volumetric fog and subsurface scattering do no work in Bistro and were
+  not measured.
+
 ## Proposed work
 
 1. **Line targets.** Set a p95 target for each budget line once the first
    lever has moved the frame. Until then the baseline values are the
    reference, and each lever reports every line before and after it.
-2. **Levers in order.** (a) Move or retune preset gates, using a measured
-   cost for each gate. (b) Cut work inside the largest line, Lighting,
+2. **Levers in order.** (a) Move or retune preset gates, using the
+   [measured cost of each gate](#high-gate-costs). No single move meets the
+   budget. The recommendation keeps every gate in High: the one move with a
+   large effect, local shadows out of High, takes the shadows of Bistro's
+   lamps and still leaves the walk at 18.01 ms p95, and the gates that cost
+   0.2 ms or less save nothing. Moving local shadows (3.0 and 6.0 ms
+   median) or ambient occlusion (1.5 and 1.3 ms) out of High is the owner's
+   decision. (b) Cut work inside the largest line, Lighting,
    through its own proposal: `Lighting.Deferred` through
    [lighting efficiency](lighting-efficiency.md) and binning, and
    `Shadow.LocalMask` through
    [local shadow architecture](local-shadow-architecture.md) and shadow
-   quality. (c) SMAA T2x instead of FSR's antialiasing, which
-   [ADR-052](../adr/052-vulkan-fsr31-upscaling.md) lists as cheaper but less
-   stable; FSR's chain costs 1.9 ms here. (d) Only then dynamic resolution,
+   quality. Local shadows cost 3.0 ms median on the orbit and 6.0 ms on the
+   walk, against shadow quality's 3.0 ms target, mostly in the mask and in
+   deferred lighting's reads of it. (c) SMAA T2x instead of FSR's
+   antialiasing, which [ADR-052](../adr/052-vulkan-fsr31-upscaling.md) lists
+   as cheaper but less stable; it measures 0.7 ms cheaper on both cases.
+   (d) Only then dynamic resolution,
    which needs a Vulkan scene scale and an FSR upscale mode and reopens
    ADR-052; the owner avoids it unless the budget cannot be met at a fixed
    resolution, because a changing resolution blurs the image in motion.
