@@ -146,6 +146,68 @@ What the costs show:
 - Fog, volumetric fog and subsurface scattering do no work in Bistro and were
   not measured.
 
+## Baked lamps
+
+The budget cases load the tracked Bistro scene, whose static lamps run as
+runtime lights: 72 point lights in the light grid, local shadow maps,
+`Shadow.LocalMask` and deferred lighting's per-light loop.
+[ADR-104](../adr/104-desktop-baked-lamps.md) bakes static lamps for the
+desktop pipeline instead. The tracked fixture
+[`bistro_desktop_lamps_local.scene.json`](../../assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json)
+is the same scene with a `lightmaps.desktop` set and the lamp model cooked
+with lightmap UVs (`bistro-lights-lightmapped.vkb`, cooked 2026-10-09).
+
+Measured on 2026-10-21 on the RX 6700 XT, Release, from a clean worktree at
+3a354239. The set was baked there with `vkr_bakery bake lightmap --scene
+assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json --output
+assets/textures/bistro_lamps_local.vklm` and its defaults (64 samples, 8
+texels per metre, 16 for direct light), in 445 s: VKLM version 6,
+`sha256:0de54f87bcec0c767f209eec67cfdea0a02a5c648ff963cd129684123910c056`.
+The baked cases copy the two tracked cases with only `scene` changed. The
+profile is the same as for the gate costs, and every report is authoritative.
+
+| Case | High, runtime lamps, median / p95 | Baked lamps, median / p95 | Change |
+|---|---|---|---|
+| Orbit | 18.07 / 23.45 (`97bc9a07`, `847c9f6d`) | 14.06 / 15.42 (`b66f2cd2`) | −4.01 / −8.02 |
+| Walk | 22.11 / 26.31 (`2974eba5`, `27f08975`) | 14.48 / 15.47 (`9c48fd91`) | −7.63 / −10.85 |
+
+Values are `gpu.submission` in milliseconds; the High value is the mean of
+the two High runs that bracket the baked run, which differ by 0.05 ms or
+less. Both cases meet 16.7 ms p95, by 1.2 ms.
+
+Per-pass medians (`performance-windowed-gpu.json` with `--pass-groups`):
+
+- **Orbit** (`4b49ff70` High, `a543aa59` baked). Lighting falls from 8.77
+  to 4.80 ms: `Shadow.LocalMask` 2.04 ms goes, `Lighting.Deferred` loses
+  1.91 ms. Glass and blend lose 0.32 ms.
+- **Walk** (`2d27c71d`, `1f7b2c55`). Lighting falls from 12.18 to 4.95 ms:
+  `Shadow.LocalMask` 4.19 ms goes, `Lighting.Deferred` loses 3.17 ms. Glass
+  and blend lose 0.48 ms.
+- **Added cost.** `GBuffer.Resolve` takes 0.17 and 0.19 ms more to read the
+  lightmaps. The lightmapped model has 24% more vertices, split at its
+  lightmap seams, and 5% fewer indices, so `VBuffer.Opaque` takes 0.07 ms
+  more, the four sun cascades 0.31 ms more together and the far level's
+  static draw 0.06 ms more.
+
+The work rows confirm the swap: runtime point lights and local shadows fall
+from 72 to 0, render graph images from 3.63 to 2.78 GB, and draws and
+visible instances do not change.
+
+The look changes. Captures of `final_color` (`vkr_harness snapshot` with
+`local-windowed.json`, the first and last measured frame) differ little on
+the orbit, whose camera stays near walls the lamps barely reach: a mean
+absolute difference of 1.5 and 4.0 of 255. On the walk the difference is 11.3
+and 15.4 of 255, and 62% and 67% of pixels move by more than 8 of 255. The
+lamps lose the hard shadows of their brackets and lanterns on walls and
+pavement, their light spreads in softer pools with bounce, and the colored
+string lights lose the blocky shadow-map edges of their pools. ADR-104
+records the softer shadows as a consequence of 8 texels per metre.
+
+Limits: one host and one bake, at the default recipe; the lamp model was
+cooked three days after the runtime one; static lamps only, since a lamp
+that moves or switches stays a runtime light; and each platform bakes its
+own set (ADR-104).
+
 ## Proposed work
 
 1. **Line targets.** Set a p95 target for each budget line once the first
@@ -164,7 +226,10 @@ What the costs show:
    [local shadow architecture](local-shadow-architecture.md) and shadow
    quality. Local shadows cost 3.0 ms median on the orbit and 6.0 ms on the
    walk, against shadow quality's 3.0 ms target, mostly in the mask and in
-   deferred lighting's reads of it. (c) SMAA T2x instead of FSR's
+   deferred lighting's reads of it. Baking Bistro's static lamps
+   ([Baked lamps](#baked-lamps)) removes that work and brings both cases
+   under the budget, at 15.42 and 15.47 ms p95, but changes their look;
+   whether the budget scene bakes its lamps is the owner's decision. (c) SMAA T2x instead of FSR's
    antialiasing measures 0.7 ms cheaper on both cases, but on 2026-10-21 the
    owner kept FSR for its image quality
    ([ADR-052](../adr/052-vulkan-fsr31-upscaling.md)); lever (c) is closed
