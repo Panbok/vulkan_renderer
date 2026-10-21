@@ -28,11 +28,22 @@
 
 #define VKR_DEPOT_REQUESTS_MAX 8u
 
+/* Loader threads one server may run at most. */
+#define VKR_DEPOT_SERVER_LOAD_THREADS_MAX 8u
+
 typedef struct VkrDepotServerConfig {
   const char *store_root;
   const VkrCodec *codec;
   /* Unknown keys write; for a trusted network only. */
   bool8_t open_access;
+  /* Threads that read and check queued objects ahead of their send; zero
+     reads each on the caller's thread as it is sent. */
+  uint32_t load_threads;
+  /* Called from a loader once an object is read, so that the thread that
+     calls vkr_depot_server_update runs it soon; NULL when that thread
+     updates often anyway. */
+  void (*wake)(void *context);
+  void *wake_context;
 } VkrDepotServerConfig;
 
 typedef struct VkrDepotServer VkrDepotServer;

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-21
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -214,8 +214,13 @@ its close frame is sent rather than 200 ms.
   at most two requests. The server reloads an access file changed on disk
   about once a second. Each peer may hold 128 MiB of object bytes ahead of
   their PUT and 8,192 queued GET replies; past them it is closed or told
-  the rest is missing. Its server key and the identity key are written
-  readable by their owner only.
+  the rest is missing. Two loader threads (`load_threads`) read and check
+  the first 32 queued objects of each peer ahead of their send and wake
+  the host thread through its socket, so the pump reads no file and hashes
+  nothing; on the host thread those reads and checks took about 40% of a
+  transfer. A peer that leaves while a loader holds one of its objects
+  leaves it to that loader to free. Its server key and the identity key
+  are written readable by their owner only.
 - **Service thread** ([vkr_depot_service.h](../../tools/depot/vkr_depot_service.h)):
   the store, server, session, UDP host and discovery responder on a host
   thread, safe to call from any thread. They allocate from the service's own
@@ -228,7 +233,12 @@ its close frame is sent rather than 200 ms.
   when asked. `serve` and the sharing editor run it.
 - **Client** ([vkr_depot_client.h](../../tools/depot/vkr_depot_client.h))
   fetches a commit's missing objects with pipelined GETs and uploads the
-  objects a commit adds over its base with HAVE and PUT.
+  objects a commit adds over its base with HAVE and PUT. It decodes and
+  hashes each received object once (`vkr_depot_store_put_stored` hands the
+  decoded bytes back); it did so twice before 2026-10-21. With an
+  allocator, two threads check and store received chunks while the caller
+  keeps pumping and acknowledging, at most 64 MiB of them waiting before
+  it asks for more, and a fetch returns once every check is done.
 - **Sync** ([vkr_depot_sync.h](../../tools/depot/vkr_depot_sync.h)): the
   user's identity key, kept in the user data folder
   (`~/Library/Application Support/VKR/depot/identity.key`,
@@ -412,6 +422,24 @@ during the transport runs, so loopback numbers are noisy.
   case-only renames that lost files, and smaller limits; each is fixed
   above or in [ADR-110](110-project-sharing-in-the-editor.md), and the
   core fuzzer ran 98,155 executions in 60 s after the handshake change.
+
+### Mac M1, 2026-10-21
+
+- `vkr_depot stream` of six 22 MB and eight 1.25 MB cooked Bistro textures
+  from a `check_asset_stream.py` store over loopback, each through a new
+  remote, idle machine (stored bytes over fetch time, file written): 33 to
+  34 and 42 MB/s before; 45 to 50 and 48 to 55 MB/s once each object was
+  decoded and hashed once; 53 to 56 and 44 to 51 MB/s with the client's
+  checker threads; 61 to 77 and 63 to 74 MB/s with the server's loaders
+  in the final runs. One loader and one checker were as fast as three of
+  each; skipping the server's read check altogether gave 79 MB/s, and
+  `vkr_net_bench` bulk moves 155 MB/s on the same loopback.
+- `--suite depot` passes in Debug with ASan and UBSan and twice with TSan
+  (`VKR_DEBUG_SANITIZER=thread`), with no report.
+  `test_depot_service_stop_mid_fetch` stops a service while a client
+  fetches a 24 MB file of about a hundred chunks, so loaders hold queued
+  objects; it fails under ASan when one is freed twice or after its loader
+  let it go.
 
 ## Gaps
 

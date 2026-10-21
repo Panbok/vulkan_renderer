@@ -11,6 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Server threads that read and check objects ahead of their send: one
+   kept up with loopback on an M1 Pro, the second is headroom for a slower
+   disk. */
+#define SERVICE_LOAD_THREADS 2u
+
 struct VkrDepotService {
   /* The caller's: only the host thread's handle, made and freed on the
      caller's thread. */
@@ -58,6 +63,15 @@ static void service_accept(void *context, const VkrNetAddress *address,
     service->on_accept(service->on_accept_context, address, peer_key, name,
                        out_result->code == 0u);
   }
+}
+
+/* From a loader of the server once it read an object: the host thread,
+   which may wait on the socket for up to 100 ms, sends it at once. A
+   datagram to the host's own socket ends the wait; the host outlives the
+   loaders, which stop with the server, while its thread stops first. */
+static void service_wake(void *context) {
+  VkrDepotService *service = context;
+  vkr_net_host_wake(service->host);
 }
 
 /* After every pump, with the lock held. */
@@ -202,10 +216,13 @@ VkrDepotService *vkr_depot_service_start(VkrAllocator *allocator,
   }
   service->session = vkr_net_session_create(&service->memory_allocator,
                                             vkr_net_host_core(service->host));
-  const VkrDepotServerConfig server_config = {.store_root = config->store_root,
-                                              .codec = config->codec,
-                                              .open_access =
-                                                  config->open_access};
+  const VkrDepotServerConfig server_config = {
+      .store_root = config->store_root,
+      .codec = config->codec,
+      .open_access = config->open_access,
+      .load_threads = SERVICE_LOAD_THREADS,
+      .wake = service_wake,
+      .wake_context = service};
   service->server =
       service->session
           ? vkr_depot_server_create(&service->memory_allocator,

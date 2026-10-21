@@ -141,7 +141,8 @@ bool8_t vkr_depot_stored_decode(const VkrCodec *codec, const uint8_t *stored,
 
 bool8_t vkr_depot_store_put_stored(const VkrDepotStore *store,
                                    const VkrDepotId *id, const uint8_t *stored,
-                                   uint64_t size) {
+                                   uint64_t size, uint8_t **out_bytes,
+                                   uint64_t *out_size) {
   uint8_t *bytes = NULL;
   uint64_t decoded = 0u;
   if (!vkr_depot_stored_decode(store->codec, stored, size, &bytes, &decoded)) {
@@ -149,11 +150,18 @@ bool8_t vkr_depot_store_put_stored(const VkrDepotStore *store,
   }
   VkrDepotId actual;
   vkr_depot_id_of(bytes, decoded, &actual);
-  free(bytes);
-  if (!vkr_depot_id_equal(&actual, id)) {
+  if (!vkr_depot_id_equal(&actual, id) ||
+      !store_write(store, id, stored, size)) {
+    free(bytes);
     return false_v;
   }
-  return store_write(store, id, stored, size);
+  if (out_bytes) {
+    *out_bytes = bytes;
+    *out_size = decoded;
+  } else {
+    free(bytes);
+  }
+  return true_v;
 }
 
 /* Reads `id`'s stored form and its decoded bytes, which must hash to `id`.

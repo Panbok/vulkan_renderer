@@ -299,7 +299,7 @@ VkrDepotConnection *vkr_depot_connect(VkrAllocator *allocator,
       .now = depot_connection_now,
   };
   link->client = vkr_depot_client_create(&client_link, config->store,
-                                         VKR_DEPOT_TIMEOUT_MS);
+                                         VKR_DEPOT_TIMEOUT_MS, allocator);
   if (!link->client) {
     const bool8_t denied = link->close_code == VKR_NET_CLOSE_ACCESS_DENIED;
     depot_connect_status(out_status, denied ? VKR_DEPOT_CONNECT_DENIED

@@ -1,6 +1,7 @@
 #include "vkr_depot_client.h"
 
 #include "core/vkr_byte_io.h"
+#include "core/vkr_threads.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,14 @@
 #define CLIENT_PUTS_MAX 8u
 #define CLIENT_HAVES_MAX 16u
 #define CLIENT_PUMP_MS 5
+/* Threads that check and store received chunks off the pumping thread,
+   which then keeps acknowledging while they decode, hash and write. One
+   kept up with loopback on an M1 Pro; the second is headroom, and more
+   only took cores from an editor loading the scene. */
+#define CLIENT_CHECK_THREADS 2u
+/* Received chunk bytes waiting for a check at most; past it the fetch asks
+   for nothing new until the checks catch up. */
+#define CLIENT_CHECK_BYTES_MAX (64ull * 1024ull * 1024ull)
 
 // =============================================================================
 // ID sets
@@ -133,6 +142,42 @@ typedef enum ClientFetchScope {
   CLIENT_FETCH_BLOBS,
 } ClientFetchScope;
 
+/* A received chunk waiting for its check. */
+typedef struct ClientCheck {
+  struct ClientCheck *next;
+  VkrDepotId id;
+  /* The decoded size its blob lists, for progress. */
+  uint32_t decoded_size;
+  uint64_t size;
+  uint8_t bytes[];
+} ClientCheck;
+
+/* Received chunks checked and stored on threads of their own
+   (CLIENT_CHECK_THREADS). The fields below the lock are guarded by it. */
+typedef struct ClientChecker {
+  VkrAllocator *allocator;
+  const VkrDepotStore *store;
+  VkrThread threads[CLIENT_CHECK_THREADS];
+  uint32_t thread_count;
+  VkrMutex mutex;
+  /* Wakes the checkers; and the fetch when a check ends. */
+  VkrCondVar work;
+  VkrCondVar done;
+  ClientCheck *head;
+  ClientCheck *tail;
+  /* The fetch's progress, which counts each checked chunk. */
+  VkrDepotProgress *progress;
+  /* Chunks queued or in a check, and their received bytes. */
+  uint32_t outstanding;
+  uint64_t outstanding_bytes;
+  bool8_t failed;
+  bool8_t stopping;
+  /* Checked chunks since the fetch last took them. */
+  uint64_t objects;
+  uint64_t stored_bytes;
+  uint64_t decoded_bytes;
+} ClientChecker;
+
 typedef struct ClientGet {
   bool8_t live;
   uint64_t request;
@@ -167,6 +212,8 @@ struct VkrDepotClient {
   uint32_t depth;
   uint64_t last_progress_us;
   VkrDepotTransferStats stats;
+  /* NULL checks chunks on the pumping thread. */
+  ClientChecker *checker;
   char error[256];
 };
 
@@ -302,6 +349,175 @@ static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
   return ok;
 }
 
+// =============================================================================
+// Chunk checks
+// =============================================================================
+
+static void *client_check_thread(void *argument) {
+  ClientChecker *checker = argument;
+  vkr_mutex_lock(checker->mutex);
+  for (;;) {
+    while (!checker->stopping && !checker->head) {
+      vkr_cond_wait(checker->work, checker->mutex);
+    }
+    if (!checker->head) {
+      break;
+    }
+    ClientCheck *check = checker->head;
+    checker->head = check->next;
+    if (!checker->head) {
+      checker->tail = NULL;
+    }
+    const VkrDepotStore *store = checker->store;
+    VkrDepotProgress *progress = checker->progress;
+    vkr_mutex_unlock(checker->mutex);
+
+    const bool8_t ok = vkr_depot_store_put_stored(
+        store, &check->id, check->bytes, check->size, NULL, NULL);
+    if (ok) {
+      vkr_depot_progress_add(progress, 1u, check->decoded_size);
+    }
+
+    vkr_mutex_lock(checker->mutex);
+    if (ok) {
+      checker->objects += 1u;
+      checker->stored_bytes += check->size;
+      checker->decoded_bytes += check->decoded_size;
+    } else {
+      checker->failed = true_v;
+    }
+    checker->outstanding -= 1u;
+    checker->outstanding_bytes -= check->size;
+    vkr_cond_broadcast(checker->done);
+    free(check);
+  }
+  vkr_mutex_unlock(checker->mutex);
+  return NULL;
+}
+
+static void client_checker_destroy(ClientChecker *checker) {
+  if (!checker) {
+    return;
+  }
+  if (checker->mutex) {
+    vkr_mutex_lock(checker->mutex);
+    checker->stopping = true_v;
+    vkr_cond_broadcast(checker->work);
+    vkr_mutex_unlock(checker->mutex);
+  }
+  for (uint32_t i = 0u; i < checker->thread_count; ++i) {
+    (void)vkr_thread_join(checker->threads[i]);
+    (void)vkr_thread_destroy(checker->allocator, &checker->threads[i]);
+  }
+  while (checker->head) {
+    ClientCheck *next = checker->head->next;
+    free(checker->head);
+    checker->head = next;
+  }
+  if (checker->done) {
+    (void)vkr_cond_destroy(checker->allocator, &checker->done);
+  }
+  if (checker->work) {
+    (void)vkr_cond_destroy(checker->allocator, &checker->work);
+  }
+  if (checker->mutex) {
+    (void)vkr_mutex_destroy(checker->allocator, &checker->mutex);
+  }
+  free(checker);
+}
+
+static ClientChecker *client_checker_create(VkrAllocator *allocator,
+                                            const VkrDepotStore *store) {
+  ClientChecker *checker = calloc(1u, sizeof(ClientChecker));
+  if (!checker) {
+    return NULL;
+  }
+  checker->allocator = allocator;
+  checker->store = store;
+  if (!vkr_mutex_create(allocator, &checker->mutex) ||
+      !vkr_cond_create(allocator, &checker->work) ||
+      !vkr_cond_create(allocator, &checker->done)) {
+    client_checker_destroy(checker);
+    return NULL;
+  }
+  for (uint32_t i = 0u; i < CLIENT_CHECK_THREADS; ++i) {
+    if (!vkr_thread_create(allocator, &checker->threads[i], client_check_thread,
+                           checker)) {
+      client_checker_destroy(checker);
+      return NULL;
+    }
+    checker->thread_count += 1u;
+  }
+  return checker;
+}
+
+/* Queues a copy of a received chunk; false when out of memory. */
+static bool8_t client_check_queue(VkrDepotClient *client, const WantItem *item,
+                                  const uint8_t *bytes, uint64_t size) {
+  ClientChecker *checker = client->checker;
+  ClientCheck *check = malloc(sizeof(ClientCheck) + (size_t)size);
+  if (!check) {
+    return false_v;
+  }
+  check->next = NULL;
+  check->id = item->id;
+  check->decoded_size = item->size;
+  check->size = size;
+  memcpy(check->bytes, bytes, (size_t)size);
+  vkr_mutex_lock(checker->mutex);
+  checker->progress = client->progress;
+  if (checker->tail) {
+    checker->tail->next = check;
+  } else {
+    checker->head = check;
+  }
+  checker->tail = check;
+  checker->outstanding += 1u;
+  checker->outstanding_bytes += size;
+  vkr_cond_signal(checker->work);
+  vkr_mutex_unlock(checker->mutex);
+  return true_v;
+}
+
+/* Whether the checks waiting hold fewer bytes than the fetch may ask for
+   beyond them. */
+static bool8_t client_check_room(VkrDepotClient *client) {
+  ClientChecker *checker = client->checker;
+  if (!checker) {
+    return true_v;
+  }
+  vkr_mutex_lock(checker->mutex);
+  const bool8_t room = checker->outstanding_bytes < CLIENT_CHECK_BYTES_MAX;
+  vkr_mutex_unlock(checker->mutex);
+  return room;
+}
+
+/* Waits for every queued check and takes their counts into the fetch's
+   statistics; false when one failed. */
+static bool8_t client_checks_finish(VkrDepotClient *client) {
+  ClientChecker *checker = client->checker;
+  if (!checker) {
+    return true_v;
+  }
+  vkr_mutex_lock(checker->mutex);
+  while (checker->outstanding > 0u) {
+    vkr_cond_wait(checker->done, checker->mutex);
+  }
+  const bool8_t ok = !checker->failed;
+  checker->failed = false_v;
+  client->stats.objects += checker->objects;
+  client->stats.stored_bytes += checker->stored_bytes;
+  client->stats.decoded_bytes += checker->decoded_bytes;
+  checker->objects = 0u;
+  checker->stored_bytes = 0u;
+  checker->decoded_bytes = 0u;
+  vkr_mutex_unlock(checker->mutex);
+  if (!ok && client->error[0] == '\0') {
+    client_fail(client, "received an object that failed its check%s", "");
+  }
+  return ok;
+}
+
 static void client_on_data(VkrDepotClient *client, const VkrNetEvent *event,
                            uint64_t now) {
   if (!event->has_tag) {
@@ -322,19 +538,27 @@ static void client_on_data(VkrDepotClient *client, const VkrNetEvent *event,
   const WantItem *item = &get->items[index];
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
-  bool8_t ok = vkr_depot_stored_decode(client->store->codec, event->data,
-                                       event->size, &bytes, &size);
-  if (ok) {
-    VkrDepotId actual;
-    vkr_depot_id_of(bytes, size, &actual);
-    ok = vkr_depot_id_equal(&actual, &item->id);
+  bool8_t ok = true_v;
+  if (client->checker && item->kind == VKR_DEPOT_KIND_CHUNK) {
+    /* Its check and store run on a checker; the fetch waits for them. */
+    if (!client_check_queue(client, item, event->data, event->size)) {
+      client->fetch_failed = true_v;
+      client_fail(client, "out of memory%s", "");
+    }
+    client_bit_set(get->done, index);
+    get->remaining -= 1u;
+    if (get->remaining == 0u) {
+      get->live = false_v;
+    }
+    client->last_progress_us = now;
+    return;
   }
+  /* One decode and hash checks the object, stores it and lists what it
+     names. */
+  ok = vkr_depot_store_put_stored(client->store, &item->id, event->data,
+                                  event->size, &bytes, &size);
   if (ok && item->kind != VKR_DEPOT_KIND_CHUNK) {
     ok = client_children(client, item->kind, bytes, size);
-  }
-  if (ok) {
-    ok = vkr_depot_store_put_stored(client->store, &item->id, event->data,
-                                    event->size);
   }
   if (!ok) {
     client->fetch_failed = true_v;
@@ -450,13 +674,21 @@ static bool8_t client_pump(VkrDepotClient *client, int32_t timeout_ms) {
 
 VkrDepotClient *vkr_depot_client_create(const VkrDepotLink *link,
                                         const VkrDepotStore *store,
-                                        uint32_t timeout_ms) {
+                                        uint32_t timeout_ms,
+                                        VkrAllocator *allocator) {
   VkrDepotClient *client = calloc(1u, sizeof(VkrDepotClient));
   if (!client) {
     return NULL;
   }
   client->link = *link;
   client->store = store;
+  if (allocator && store) {
+    client->checker = client_checker_create(allocator, store);
+    if (!client->checker) {
+      vkr_depot_client_destroy(client);
+      return NULL;
+    }
+  }
   client->timeout_ms = timeout_ms ? timeout_ms : 30000u;
   client->next_request = 1u;
   for (uint32_t i = 0u; i < CLIENT_REPLY_SLOTS; ++i) {
@@ -496,6 +728,7 @@ void vkr_depot_client_destroy(VkrDepotClient *client) {
   if (!client) {
     return;
   }
+  client_checker_destroy(client->checker);
   for (uint32_t i = 0u; i < CLIENT_REPLY_SLOTS; ++i) {
     free(client->replies[i].message);
   }
@@ -657,24 +890,27 @@ static bool8_t client_fetch_from(VkrDepotClient *client, const VkrDepotId *ids,
     }
   }
   client->last_progress_us = client->link.now(client->link.context);
-  while (client->want.head < client->want.count || client_gets_live(client)) {
-    if (!client_continue(client) || !client_issue_gets(client) ||
-        !client_pump(client, CLIENT_PUMP_MS)) {
-      return false_v;
-    }
-    if (client->fetch_failed) {
-      return false_v;
-    }
+  bool8_t ok = true_v;
+  while (ok &&
+         (client->want.head < client->want.count || client_gets_live(client))) {
+    /* While the checks lag by CLIENT_CHECK_BYTES_MAX, what is in flight
+       still arrives and nothing new is asked for. */
+    ok = client_continue(client) &&
+         (!client_check_room(client) || client_issue_gets(client)) &&
+         client_pump(client, CLIENT_PUMP_MS) && !client->fetch_failed;
     const uint64_t now = client->link.now(client->link.context);
-    if (now - client->last_progress_us > (uint64_t)client->timeout_ms * 1000u) {
+    if (ok &&
+        now - client->last_progress_us > (uint64_t)client->timeout_ms * 1000u) {
       client_fail(client, "the transfer stopped making progress%s", "");
-      return false_v;
+      ok = false_v;
     }
   }
-  if (out_stats) {
+  /* Every chunk is in the store, or failed, before the fetch returns. */
+  ok = client_checks_finish(client) && ok;
+  if (ok && out_stats) {
     *out_stats = client->stats;
   }
-  return true_v;
+  return ok;
 }
 
 bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,

@@ -61,8 +61,11 @@ from check_editor_session import ROOT, SCENE, editor_env
 
 VIEW = '"eye":[-24,5,-14],"target":[0,3,0],"max_width":960'
 
+# Dynamic resolution follows recent GPU frame times, which a streamed run's
+# reloads raise, so every run renders at the fixed scale.
 # A local run counts its pending textures every second, then captures.
 LOCAL_SCRIPT = f"""wait.scene
+gfx.dynamic = false
 stats.pending_textures
 {{polls}}
 op view.capture {{{{{VIEW}}}}}
@@ -73,6 +76,7 @@ LOCAL_POLL = "wait 1\nstats.pending_textures"
 
 # The streamed run reports every 2 s while its files arrive, then captures.
 STREAM_SCRIPT = f"""wait.scene
+gfx.dynamic = false
 op stream.status
 stats.pending_textures
 stats.preview_textures

@@ -45,10 +45,13 @@ bool8_t vkr_depot_store_has(const VkrDepotStore *store, const VkrDepotId *id);
 bool8_t vkr_depot_store_put(const VkrDepotStore *store, const VkrDepotId *id,
                             const uint8_t *bytes, uint64_t size);
 
-/* Stores a received representation after decoding and checking it. */
+/* Stores a received representation after decoding and checking it.
+   `out_bytes`, when given, receives the decoded bytes (the caller frees
+   them), so a caller that reads them decodes once. */
 bool8_t vkr_depot_store_put_stored(const VkrDepotStore *store,
                                    const VkrDepotId *id, const uint8_t *stored,
-                                   uint64_t size);
+                                   uint64_t size, uint8_t **out_bytes,
+                                   uint64_t *out_size);
 
 /* Decoded bytes in malloc storage the caller frees; false, with the file
    removed, for an object whose bytes no longer hash to `id`. */

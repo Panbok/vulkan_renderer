@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-21
+updated: 2026-10-22
 authority: proposal
 ---
 # Network protocol
@@ -139,12 +139,15 @@ before it enters the store (ADR-105). The rest:
   the fixed 256 KiB preview; this service orders the remote fetches.
   Priority from the streaming sources and the screen size for other assets
   remains; Bistro, one mesh and its textures, cannot show it.
-- **Throughput of short transfers.** Preview reads and whole files of a few
-  hundred KB arrive at about 13 to 16 MB/s over loopback, where the
-  transport moves 155 MB/s in bulk: each transfer starts near the
-  congestion window's 4-packet floor (ADR-123 evidence). Bistro's 538
-  previews (79 MB) take about 6 s of transfers, so time to the first
-  visible mip of every texture depends on it.
+- **Throughput of single files.** A received object is checked once,
+  chunks are checked and stored on threads of the client's own, and the
+  server reads and checks objects on loaders ahead of their send
+  (ADR-105): one 22 MB texture now arrives at 61 to 77 MB/s over loopback,
+  against 33 to 34 MB/s before, and a streamed Bistro reaches full detail
+  about 10 s sooner. The rest of the gap to the transport's 155 MB/s is the
+  read check of every object on both sides and the congestion window's
+  4-packet floor between requests; a Mac–Windows run on 1 GbE measures it
+  against the 110 MB/s target.
 - **GPU placement.** Fragments decrypt into staging memory supplied by the
   receiver. The resource then goes through the ordered publication queue
   with confirm-before-use. Staging memory returns to its pool after GPU

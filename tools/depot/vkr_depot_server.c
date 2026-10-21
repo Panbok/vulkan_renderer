@@ -1,6 +1,7 @@
 #include "vkr_depot_server.h"
 
 #include "core/vkr_byte_io.h"
+#include "core/vkr_threads.h"
 #include "vkr_bakery_os.h"
 #include "vkr_depot_workspace.h"
 
@@ -27,12 +28,54 @@
 #define SERVER_REQUESTS_PER_ADDRESS 2u
 /* How often the server looks for a changed access file. */
 #define SERVER_ACCESS_POLL_US 1000000u
+/* Objects at the front of one peer's queue that loaders read and check
+   ahead of their send. */
+#define SERVER_LOAD_AHEAD 32u
+
+typedef enum ServerLoadState {
+  SERVER_LOAD_WAITING = 0,
+  SERVER_LOAD_READY,
+  /* Gone or torn: the client times out on it, as on a synchronous read. */
+  SERVER_LOAD_MISSING,
+} ServerLoadState;
+
+/* One queued object a loader reads ahead of its send. The queued item owns
+   it until its peer leaves while it waits; the loader then frees it. The
+   fields after `id` are guarded by the loader's lock. */
+typedef struct ServerLoad {
+  struct ServerLoad *next;
+  VkrDepotId id;
+  bool8_t zstd;
+  uint8_t state;
+  bool8_t abandoned;
+  uint8_t *stored;
+  uint64_t size;
+} ServerLoad;
+
+/* Threads that read and check queued objects (VkrDepotServerConfig
+   load_threads), so the host thread's pump reads no file and hashes
+   nothing. */
+typedef struct ServerLoader {
+  VkrAllocator *allocator;
+  VkrThread threads[VKR_DEPOT_SERVER_LOAD_THREADS_MAX];
+  uint32_t thread_count;
+  VkrMutex mutex;
+  VkrCondVar work;
+  ServerLoad *head;
+  ServerLoad *tail;
+  bool8_t stopping;
+  const VkrDepotStore *store;
+  void (*wake)(void *context);
+  void *wake_context;
+} ServerLoader;
 
 typedef struct ServerSendItem {
   uint64_t request;
   uint32_t index;
   bool8_t zstd;
   VkrDepotId id;
+  /* NULL until a loader takes it. */
+  ServerLoad *load;
 } ServerSendItem;
 
 typedef struct ServerPut {
@@ -92,6 +135,8 @@ struct VkrDepotServer {
   VkrNetCore *core;
   VkrNetSession *session;
   VkrDepotStore store;
+  /* NULL reads each object on the host thread as it is sent. */
+  ServerLoader *loader;
   bool8_t open_access;
   ServerPeer peers[SERVER_PEER_MAX];
   ServerLock *locks;
@@ -645,7 +690,214 @@ static ServerPeer *server_peer(VkrDepotServer *server,
   return NULL;
 }
 
-static void server_peer_release(ServerPeer *peer) {
+/* The stored form of `id` a client receives: zstd frames only for a client
+   that decodes them. False when the object is gone or fails its check. */
+static bool8_t server_read_object(const VkrDepotStore *store,
+                                  const VkrDepotId *id, bool8_t zstd,
+                                  uint8_t **out_stored, uint64_t *out_size) {
+  uint8_t *stored = NULL;
+  uint64_t size = 0u;
+  if (!vkr_depot_store_get_stored(store, id, &stored, &size)) {
+    return false_v;
+  }
+  if (!zstd && size > 0u && stored[0] != 0u) {
+    uint8_t *decoded = NULL;
+    uint64_t decoded_size = 0u;
+    if (!vkr_depot_stored_decode(store->codec, stored, size, &decoded,
+                                 &decoded_size)) {
+      free(stored);
+      return false_v;
+    }
+    free(stored);
+    stored = malloc(VKR_DEPOT_STORED_HEADER + decoded_size);
+    if (!stored) {
+      free(decoded);
+      return false_v;
+    }
+    stored[0] = 0u;
+    vkr_store_le_u32(stored + 1, (uint32_t)decoded_size);
+    memcpy(stored + VKR_DEPOT_STORED_HEADER, decoded, decoded_size);
+    free(decoded);
+    size = VKR_DEPOT_STORED_HEADER + decoded_size;
+  }
+  *out_stored = stored;
+  *out_size = size;
+  return true_v;
+}
+
+// =============================================================================
+// Loaders
+// =============================================================================
+
+static void *server_load_thread(void *argument) {
+  ServerLoader *loader = argument;
+  vkr_mutex_lock(loader->mutex);
+  for (;;) {
+    while (!loader->stopping && !loader->head) {
+      vkr_cond_wait(loader->work, loader->mutex);
+    }
+    if (loader->stopping) {
+      break;
+    }
+    ServerLoad *load = loader->head;
+    loader->head = load->next;
+    if (!loader->head) {
+      loader->tail = NULL;
+    }
+    vkr_mutex_unlock(loader->mutex);
+
+    uint8_t *stored = NULL;
+    uint64_t size = 0u;
+    const bool8_t read = server_read_object(loader->store, &load->id,
+                                            load->zstd, &stored, &size);
+
+    vkr_mutex_lock(loader->mutex);
+    if (load->abandoned) {
+      free(stored);
+      free(load);
+    } else {
+      load->stored = stored;
+      load->size = size;
+      load->state = read ? SERVER_LOAD_READY : SERVER_LOAD_MISSING;
+    }
+    vkr_mutex_unlock(loader->mutex);
+    if (loader->wake) {
+      loader->wake(loader->wake_context);
+    }
+    vkr_mutex_lock(loader->mutex);
+  }
+  vkr_mutex_unlock(loader->mutex);
+  return NULL;
+}
+
+/* Stops the loaders. A load still queued then belongs to its item, or, when
+   abandoned, is freed here. */
+static void server_loader_destroy(ServerLoader *loader) {
+  if (!loader) {
+    return;
+  }
+  if (loader->mutex) {
+    vkr_mutex_lock(loader->mutex);
+    loader->stopping = true_v;
+    vkr_cond_broadcast(loader->work);
+    vkr_mutex_unlock(loader->mutex);
+  }
+  for (uint32_t i = 0u; i < loader->thread_count; ++i) {
+    (void)vkr_thread_join(loader->threads[i]);
+    (void)vkr_thread_destroy(loader->allocator, &loader->threads[i]);
+  }
+  for (ServerLoad *load = loader->head; load;) {
+    ServerLoad *next = load->next;
+    if (load->abandoned) {
+      free(load);
+    }
+    load = next;
+  }
+  if (loader->work) {
+    (void)vkr_cond_destroy(loader->allocator, &loader->work);
+  }
+  if (loader->mutex) {
+    (void)vkr_mutex_destroy(loader->allocator, &loader->mutex);
+  }
+  free(loader);
+}
+
+static ServerLoader *server_loader_create(VkrAllocator *allocator,
+                                          const VkrDepotStore *store,
+                                          const VkrDepotServerConfig *config) {
+  ServerLoader *loader = calloc(1u, sizeof(ServerLoader));
+  if (!loader) {
+    return NULL;
+  }
+  loader->allocator = allocator;
+  loader->store = store;
+  loader->wake = config->wake;
+  loader->wake_context = config->wake_context;
+  if (!vkr_mutex_create(allocator, &loader->mutex) ||
+      !vkr_cond_create(allocator, &loader->work)) {
+    server_loader_destroy(loader);
+    return NULL;
+  }
+  const uint32_t count =
+      Min(config->load_threads, (uint32_t)VKR_DEPOT_SERVER_LOAD_THREADS_MAX);
+  for (uint32_t i = 0u; i < count; ++i) {
+    if (!vkr_thread_create(allocator, &loader->threads[i], server_load_thread,
+                           loader)) {
+      server_loader_destroy(loader);
+      return NULL;
+    }
+    loader->thread_count += 1u;
+  }
+  return loader;
+}
+
+/* Gives the loaders the objects at the front of the peer's queue that none
+   has taken yet. */
+static void server_load_ahead(VkrDepotServer *server, ServerPeer *peer) {
+  ServerLoader *loader = server->loader;
+  const uint32_t ahead = Min(peer->queue_count, SERVER_LOAD_AHEAD);
+  bool8_t queued = false_v;
+  for (uint32_t i = 0u; i < ahead; ++i) {
+    ServerSendItem *item =
+        &peer->queue[(peer->queue_head + i) % peer->queue_capacity];
+    if (item->load) {
+      continue;
+    }
+    ServerLoad *load = calloc(1u, sizeof(ServerLoad));
+    if (!load) {
+      /* The item reads on the host thread when it is sent. */
+      break;
+    }
+    load->id = item->id;
+    load->zstd = item->zstd;
+    item->load = load;
+    if (!queued) {
+      vkr_mutex_lock(loader->mutex);
+      queued = true_v;
+    }
+    if (loader->tail) {
+      loader->tail->next = load;
+    } else {
+      loader->head = load;
+    }
+    loader->tail = load;
+  }
+  if (queued) {
+    vkr_cond_broadcast(loader->work);
+    vkr_mutex_unlock(loader->mutex);
+  }
+}
+
+/* Lets go of an item's load: freed now when its loader is done or gone,
+   else by the loader when it is. */
+static void server_load_release(ServerLoader *loader, ServerLoad *load) {
+  if (!load) {
+    return;
+  }
+  if (!loader) {
+    free(load->stored);
+    free(load);
+    return;
+  }
+  vkr_mutex_lock(loader->mutex);
+  const bool8_t waiting =
+      load->state == SERVER_LOAD_WAITING && !loader->stopping;
+  if (waiting) {
+    load->abandoned = true_v;
+  }
+  vkr_mutex_unlock(loader->mutex);
+  if (!waiting) {
+    free(load->stored);
+    free(load);
+  }
+}
+
+static void server_peer_release(ServerLoader *loader, ServerPeer *peer) {
+  for (uint32_t i = 0u; i < peer->queue_count; ++i) {
+    server_load_release(
+        loader,
+        peer->queue[(peer->queue_head + i) % peer->queue_capacity].load);
+  }
   free(peer->queue);
   for (uint32_t i = 0u; i < peer->orphan_count; ++i) {
     free(peer->orphans[i].bytes);
@@ -715,7 +967,7 @@ void vkr_depot_server_on_event(VkrDepotServer *server,
   } else if (event->type == VKR_NET_EVENT_CLOSED) {
     ServerPeer *peer = server_peer(server, event->connection);
     if (peer) {
-      server_peer_release(peer);
+      server_peer_release(server->loader, peer);
     }
   }
 }
@@ -1030,8 +1282,8 @@ static void server_put_bytes(VkrDepotServer *server, ServerPeer *peer,
     return;
   }
   bits_set(put->received, index);
-  if (!vkr_depot_store_put_stored(&server->store, &put->ids[index], bytes,
-                                  size)) {
+  if (!vkr_depot_store_put_stored(&server->store, &put->ids[index], bytes, size,
+                                  NULL, NULL)) {
     bits_set(put->bad, index);
   }
   put->remaining -= 1u;
@@ -1381,6 +1633,13 @@ VkrDepotServer *vkr_depot_server_create(VkrAllocator *allocator,
     vkr_depot_server_destroy(server);
     return NULL;
   }
+  if (config->load_threads > 0u) {
+    server->loader = server_loader_create(allocator, &server->store, config);
+    if (!server->loader) {
+      vkr_depot_server_destroy(server);
+      return NULL;
+    }
+  }
   VkrNetService service = vkr_depot_service_template();
   service.context = server;
   service.accept = server_service_accept;
@@ -1396,9 +1655,11 @@ void vkr_depot_server_destroy(VkrDepotServer *server) {
   if (!server) {
     return;
   }
+  /* Stopped loaders leave every load they did not finish to its item. */
+  server_loader_destroy(server->loader);
   for (uint32_t i = 0u; i < SERVER_PEER_MAX; ++i) {
     if (server->peers[i].live) {
-      server_peer_release(&server->peers[i]);
+      server_peer_release(NULL, &server->peers[i]);
     }
   }
   for (uint32_t i = 0u; i < server->lock_count; ++i) {
@@ -1408,47 +1669,53 @@ void vkr_depot_server_destroy(VkrDepotServer *server) {
   free(server);
 }
 
-/* Sends one queued item; false when the data channel is full. */
+/* Sends one queued item, or drops it when its object is gone or torn
+   (the client times out on it). False, with the item kept, when the data
+   channel is full or a loader has not read it yet. */
 static bool8_t server_send_item(VkrDepotServer *server, ServerPeer *peer,
-                                const ServerSendItem *item, uint64_t now) {
+                                ServerSendItem *item, uint64_t now) {
   uint8_t *stored = NULL;
   uint64_t size = 0u;
-  if (!vkr_depot_store_get_stored(&server->store, &item->id, &stored, &size)) {
-    /* Removed since the GET: the client times out on it. */
-    return true_v;
-  }
-  /* A client without zstd receives the raw representation. */
-  if (!item->zstd && size > 0u && stored[0] != 0u) {
-    uint8_t *decoded = NULL;
-    uint64_t decoded_size = 0u;
-    if (!vkr_depot_stored_decode(server->store.codec, stored, size, &decoded,
-                                 &decoded_size)) {
-      free(stored);
-      return true_v;
+  bool8_t found = false_v;
+  ServerLoad *load = item->load;
+  if (load) {
+    vkr_mutex_lock(server->loader->mutex);
+    const uint8_t state = load->state;
+    vkr_mutex_unlock(server->loader->mutex);
+    if (state == SERVER_LOAD_WAITING) {
+      return false_v;
     }
+    found = state == SERVER_LOAD_READY;
+    stored = load->stored;
+    size = load->size;
+  } else {
+    found = server_read_object(&server->store, &item->id, item->zstd, &stored,
+                               &size);
+  }
+  bool8_t sent = true_v;
+  if (found) {
+    const VkrNetSendOptions options = {
+        .flags = VKR_NET_SEND_TAG,
+        .tag = vkr_depot_tag(item->request, item->index)};
+    const VkrNetSendStatus status = vkr_net_session_send(
+        server->session, peer->connection, VKR_NET_SERVICE_DEPOT,
+        VKR_DEPOT_DATA_CHANNEL, stored, (uint32_t)size, &options, now);
+    if (status == VKR_NET_SEND_OK) {
+      server->stats.bytes_out += size;
+    }
+    sent = status != VKR_NET_SEND_QUEUE_FULL;
+  }
+  if (load) {
+    /* A full channel keeps the bytes for the next try. */
+    if (sent) {
+      free(load->stored);
+      free(load);
+      item->load = NULL;
+    }
+  } else {
     free(stored);
-    stored = malloc(VKR_DEPOT_STORED_HEADER + decoded_size);
-    if (!stored) {
-      free(decoded);
-      return true_v;
-    }
-    stored[0] = 0u;
-    vkr_store_le_u32(stored + 1, (uint32_t)decoded_size);
-    memcpy(stored + VKR_DEPOT_STORED_HEADER, decoded, decoded_size);
-    free(decoded);
-    size = VKR_DEPOT_STORED_HEADER + decoded_size;
   }
-  const VkrNetSendOptions options = {
-      .flags = VKR_NET_SEND_TAG,
-      .tag = vkr_depot_tag(item->request, item->index)};
-  const VkrNetSendStatus status = vkr_net_session_send(
-      server->session, peer->connection, VKR_NET_SERVICE_DEPOT,
-      VKR_DEPOT_DATA_CHANNEL, stored, (uint32_t)size, &options, now);
-  free(stored);
-  if (status == VKR_NET_SEND_OK) {
-    server->stats.bytes_out += size;
-  }
-  return status != VKR_NET_SEND_QUEUE_FULL;
+  return sent;
 }
 
 void vkr_depot_server_update(VkrDepotServer *server, uint64_t now_us) {
@@ -1469,8 +1736,11 @@ void vkr_depot_server_update(VkrDepotServer *server, uint64_t now_us) {
     if (!peer->live) {
       continue;
     }
+    if (server->loader) {
+      server_load_ahead(server, peer);
+    }
     while (peer->queue_count > 0u) {
-      const ServerSendItem *item = &peer->queue[peer->queue_head];
+      ServerSendItem *item = &peer->queue[peer->queue_head];
       if (!server_send_item(server, peer, item, now_us)) {
         break;
       }

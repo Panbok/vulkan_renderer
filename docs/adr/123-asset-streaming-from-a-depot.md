@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-21
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -645,9 +645,28 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     two local loads by 0.335.
   - Preview reads and whole-file transfers of a few hundred KB ran at
     about 13 to 16 MB/s (538 previews, 79 MB, in 5.9 s of transfers), where
-    `vkr_net_bench` moves 155 MB/s in bulk over the same loopback. The server's congestion window began such transfers at its
-    4-packet floor (5.8 KB), and a connection idle between requests never
-    leaves it for long.
+    `vkr_net_bench` moves 155 MB/s in bulk over the same loopback. The
+    server's congestion window began such transfers at its 4-packet floor
+    (5.8 KB), and a connection idle between requests never leaves it for
+    long.
+- 2026-10-22, transfers with one check per object, client checker threads
+  and server loaders (ADR-105), Mac M1 Pro, Metal, loopback:
+  - `check_asset_stream.py` now turns dynamic resolution off in every run:
+    the streamed run's reloads had dropped it to 50% against the local
+    runs' 60%, and its capture failed at 0.647 against 0.328.
+  - Four alternating pairs of `check_asset_stream.py --settle 30`, each
+    pair the new path and the old one on one object check (client checks
+    on the pumping thread, no loaders): no texture pending from 22.1 to
+    29.5 s against 34.1 to 38.4 s; scene ready 7.9 to 12.1 s against 7.8
+    to 10.0 s, which the runs do not separate. In a slow run the scene's
+    own loads ended 1.7 s after the stream opened, then no texture job
+    started for 8 s while the remote sat idle; the stall is the editor's
+    load, not the transfers. Before both changes the check reached no
+    pending texture at 36.5 to 41.3 s.
+  - `check_asset_stream.py` passes (no texture pending from 22.3 s,
+    capture 0.332 against 0.323 between local loads), and
+    `check_sparse_project.py` passes (open 8.8 s, preparation 1.3 s,
+    capture 0.324).
 
 ## Revisit when
 

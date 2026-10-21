@@ -44,10 +44,13 @@ typedef bool8_t (*VkrDepotLockVisitor)(void *context, const char *path,
 typedef struct VkrDepotClient VkrDepotClient;
 
 /* Registers the depot service on the link's session and opens it. `store`
-   may be NULL for a client that only lists refs and locks. */
+   may be NULL for a client that only lists refs and locks. With an
+   `allocator`, threads of the client's own check and store received chunks
+   while the caller pumps; NULL checks them on the pumping thread. */
 VkrDepotClient *vkr_depot_client_create(const VkrDepotLink *link,
                                         const VkrDepotStore *store,
-                                        uint32_t timeout_ms);
+                                        uint32_t timeout_ms,
+                                        VkrAllocator *allocator);
 void vkr_depot_client_destroy(VkrDepotClient *client);
 
 /* Why the last operation failed. */

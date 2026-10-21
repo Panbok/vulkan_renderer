@@ -282,9 +282,11 @@ static void test_depot_store(void) {
   VkrDepotStore other;
   assert(vkr_depot_store_open(&other, other_root, vkr_depot_zstd_codec()));
   stored[stored_size - 1u] ^= 0x40u;
-  assert(!vkr_depot_store_put_stored(&other, &id, stored, stored_size));
+  assert(!vkr_depot_store_put_stored(&other, &id, stored, stored_size, NULL,
+                                     NULL));
   stored[stored_size - 1u] ^= 0x40u;
-  assert(vkr_depot_store_put_stored(&other, &id, stored, stored_size));
+  assert(
+      vkr_depot_store_put_stored(&other, &id, stored, stored_size, NULL, NULL));
   free(stored);
 
   /* Random data stays raw. */
@@ -643,7 +645,7 @@ static VkrDepotClient *depot_world_client(DepotWorld *world,
                              .context = world,
                              .pump = depot_world_pump,
                              .now = depot_world_now};
-  return vkr_depot_client_create(&link, store, 60000u);
+  return vkr_depot_client_create(&link, store, 60000u, &world->allocator);
 }
 
 static bool8_t depot_test_count_lock(void *context, const char *path,
@@ -2343,6 +2345,86 @@ static void test_depot_remote_cancel(void) {
   printf("  test_depot_remote_cancel PASSED\n");
 }
 
+/* Stopping a depot service while a client fetches over loopback: the
+   server's loaders hold that peer's queued objects read or half read.
+   Fails, under ASan, when an object is freed twice or after its loader
+   let it go, or when the fetch does not end once the server is gone. */
+static void test_depot_service_stop_mid_fetch(void) {
+  printf("  Running test_depot_service_stop_mid_fetch...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char author_root[VKR_DEPOT_PATH_CAPACITY];
+  char stream_root[VKR_DEPOT_PATH_CAPACITY];
+  char key_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("stop_store", store_root, sizeof(store_root));
+  depot_test_dir("stop_author", author_root, sizeof(author_root));
+  depot_test_dir("stop_stream", stream_root, sizeof(stream_root));
+  depot_test_dir("stop_key", key_root, sizeof(key_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), key_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const VkrDepotServiceConfig config = {.store_root = store_root,
+                                        .bind = "127.0.0.1:0",
+                                        .discovery_port = 7355u,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info.address.port);
+
+  /* Random bytes: about a hundred chunks, more than the loaders read
+     ahead. */
+  static uint8_t data[24000000];
+  depot_test_random(data, sizeof(data));
+  depot_test_write(author_root, "big.bin", data, sizeof(data));
+  VkrDepotWorkspace author;
+  assert(vkr_depot_workspace_create(&author, author_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  (void)depot_test_sparse_push(&allocator, &author, address, info.server_key,
+                               "one big file");
+  vkr_depot_workspace_close(&author);
+
+  const VkrDepotRemoteConfig remote_config = {.directory = stream_root,
+                                              .address = address,
+                                              .server_key = info.server_key,
+                                              .codec = vkr_depot_zstd_codec()};
+  VkrDepotRemote *remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  assert(remote);
+  DepotRemoteReader fetcher = {.remote = remote, .path = "big.bin"};
+  VkrThread fetch_thread;
+  assert(vkr_thread_create(&allocator, &fetch_thread, depot_remote_read,
+                           &fetcher));
+  vkr_platform_sleep(20u);
+  vkr_depot_service_stop(service);
+  assert(vkr_thread_join(fetch_thread));
+  (void)vkr_thread_destroy(&allocator, &fetch_thread);
+  vkr_depot_remote_close(remote);
+
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(author_root));
+  assert(vkr_bakery_remove_tree(stream_root));
+  assert(vkr_bakery_remove_tree(key_root));
+  printf("  test_depot_service_stop_mid_fetch PASSED\n");
+}
+
 /* Stores a tree of `count` entries into `store`. */
 static void depot_test_tree(const VkrDepotStore *store,
                             VkrDepotTreeEntry *entries, uint32_t count,
@@ -2633,6 +2715,7 @@ bool32_t run_depot_tests(void) {
   test_depot_remote_ranges();
   test_depot_sparse();
   test_depot_remote_cancel();
+  test_depot_service_stop_mid_fetch();
   test_depot_tree_limits();
   test_depot_checkout_safety();
   test_depot_server_refusals();
