@@ -10,10 +10,13 @@ authority: adr
 
 Accepted (partial). The editor's Performance window has six tabs, and Tier 1
 recordings carry the data the five new ones read; Apple GPU counters from an
-Instruments trace can be imported into a recording for the HW tab. Metal
-evidence is on this Mac, and the HW tab's Vulkan pipeline statistics ran
-on an RX 6700 XT; the Vulkan backend's census pass, readback and command
-counters have no native run yet (Windows machine).
+Instruments trace can be imported into a recording for the HW tab, and
+AMD GPUs on Vulkan sample per-pass hardware counters into Tier 1
+recordings through GPUPerfAPI. Metal evidence is on this Mac, and the HW
+tab's Vulkan pipeline statistics ran on an RX 6700 XT; the Vulkan backend's
+census pass, readback and command counters have no native run yet (Windows
+machine), and the AMD counters' multi-frame sessions have no native run
+yet: the one-frame sessions before them hung the GPU on Adrenalin 26.6.3.
 
 ## Context
 
@@ -228,6 +231,52 @@ needed a live editor, a GPU capture or a debugger.
    so a map draws up to 16,384 footprints per widget within the frame's
    widget budget. Editor tables take per-cell text colours, fills and share
    bars.
+14. **Sampled AMD counters.** Desktop GPUs' occupancy and limiter counters
+   reach only vendor libraries; on AMD under Vulkan the renderer samples
+   them with GPUPerfAPI 4.4.1.3 (MIT). CMake downloads its release on
+   Windows x86-64 at configure time, pinned by SHA-256
+   ([`cmake/vkr_gpa.cmake`](../../cmake/vkr_gpa.cmake)), keeps the headers,
+   `GPUPerfAPIVK-x64.dll` and the licence, and copies the DLL beside the
+   editor and the harness; a failed download builds without counters
+   (`VKR_HAS_GPA=0`). The library must initialize before the device and
+   its queue exist, so device creation, on an AMD candidate (vendor
+   0x1002) with `VK_AMD_gpa_interface` and
+   `VK_AMD_shader_core_properties`, loads it and calls `GpaInitialize`
+   first, then enables those extensions (the instance enables
+   `VK_KHR_get_physical_device_properties2`); the device report's
+   `amdGpuCounters` line says whether it did. It is always on for such a
+   GPU and costs nothing until a request.
+   GPUPerfAPI's Vulkan backend offers discrete counters only (its
+   streaming counters return `ApiNotSupported`), so
+   [`vkr_vulkan_amd_counters.c`](../../renderer/src/vulkan/vkr_vulkan_amd_counters.c)
+   brackets every graph pass as one sample beside its timestamps. It asks
+   for 16 counters (the units' `*Busy`, `MemUnitStalled`,
+   `WriteUnitStalled`, the L0, L1 and L2 hit rates, `CSVALUUtilization`,
+   `CSLDSBankConflict`, `PSExportStalls`) and skips names a generation
+   lacks, and splits them into groups the hardware reads in one replay,
+   planned with probe sessions that never begin. A session samples one
+   group over up to 30 frames: frame k's pass p is sample
+   k × 416 + p, and passes match across frames by name. The counter
+   context keeps the driver's own clocks. Once the GPU finished a session,
+   the render thread reads 1,024 samples a frame without waiting and
+   publishes each pass's mean through a one-slot handoff; a session that
+   fails is deleted only 4 frames later, after the frames that may still
+   run its commands.
+   While a Tier 1 recording runs, the runtime writes each published
+   session into the `gpu_counter_name` and `gpu_counters` streams
+   ([`vkr_recording_format.h`](../../runtime/src/assets/vkr_recording_format.h))
+   and the device's vendor into a `Vendor` fact. The Recordings window's
+   GPU counters checkbox (on an AMD GPU), `rec.start {gpu_counters:
+   seconds}` and `rec.counters {seconds}` request sampling for 1 to 10 s;
+   `rec.status` reports `gpu_counter_sessions`. The loader packs the
+   sampled names like an imported file: a pass's value is its mean over
+   the sessions that sampled it; a frame's percentage is the mean of its
+   passes weighted by their GPU time and a frame's count their sum;
+   frames outside a session stay unsampled. With the `Vendor` fact AMD,
+   the HW tab takes the `*Busy` counters other than `GPUBusy` as the
+   limiters and `MemUnitStalled`, `WriteUnitStalled` and `L2CacheHit` in
+   place of occupancy. On other desktop GPUs a recording without counters
+   hides the GPU counters view.
 
 ## Evidence
 
@@ -308,6 +357,24 @@ trace: `rec.start {tier: "1", gpu_counters: 3}` reported `tracing` at once;
 683 frames from 772 to 1,775 carry counters, 750 `Clock` events within
 0.1 us; Tiled.Opaque again read ALU 19 % and fragment occupancy 5.5 %. The
 chip and the HW tab captured without layout failures.
+`test_recording_sampled_gpu_counters` writes two sampled sessions over
+four frames through the recording API and checks the loader's per-pass
+means, the GPU-time-weighted frame percentage, the summed frame count and
+a counter one session lacks staying NaN; the recording suite passed (36),
+and the editor, harness and tester built with the libc boundary check
+passing. Native AMD runs on an RX 6700 XT with Adrenalin 26.6.3 found three
+faults. A session spanning several replays could not end before every
+replay ran (`Not all passes have been executed`), and deleting it while
+its frame was in flight lost the device; one-replay groups and delayed
+deletion replaced both. One-frame sessions then hung the GPU three times
+(Windows event 4101): a breadcrumb run showed the last finished submit
+run all 66 passes and the next three never start their first, about 28
+sessions in, inside `GpaBeginCommandList`'s commands. GPUPerfAPI lists a
+hang after a few dozen consecutive sessions on AMD's Windows driver before
+Adrenalin 26.7.1, so sessions span up to 30 frames. Unavailable: a native
+run of the multi-frame sessions, which waits for that driver, and a check
+on a non-AMD desktop GPU, where only reasoning shows the view hidden.
+
 `test_recording_counter_import` feeds a synthetic three-table export in
 7-byte pieces through a source callback and checks the file byte for byte;
 its first run found a row lost when a chunk ended inside `<row>`.
@@ -381,6 +448,16 @@ change keep overlay-only world draw counts.
   gave stable means, so the period stays.
 - Signposts cost about 5 us a frame while on, so a recording with counters
   is not a timing reference.
+- Sampled AMD frames carry GPUPerfAPI's commands around every pass, so
+  their pass times are not a timing reference either. Each session reads
+  one counter group, so a request covers every counter only when it spans
+  as many sessions as there are groups; a short request leaves the later
+  groups' counters unsampled.
+- On AMD drivers before Adrenalin 26.7.1, a request that runs more than a
+  few dozen sessions can still hang the GPU; at 30 frames a session, 10 s
+  at 60 frames per second is 20 sessions.
+- The editor and harness carry `GPUPerfAPIVK-x64.dll` (MIT) beside them on
+  Windows; the configure step needs the network once per build tree.
 
 ## Alternatives considered
 
@@ -393,11 +470,20 @@ change keep overlay-only world draw counts.
   indoors.
 - **A rendered top-down backdrop.** Needs a second Scene render or a capture
   per level; the footprints carry the culling state, which an image cannot.
+- **AMD streaming counters over time.** The closest match to the Instruments
+  import, but GPUPerfAPI 4.4.1.3's Vulkan backend does not support them.
+- **One session per frame with every counter group.** A session of several
+  replays ends only after all of them ran, which a live frame cannot replay;
+  one-frame sessions of one group hit the driver's hang within seconds.
+- **AMD's Radeon Developer Panel or RGP captures.** Per-event detail, but a
+  separate tool and capture per look, with nothing in the recording.
 
 ## Revisit when
 
 The Vulkan census, counters, readback and pipeline statistics get their
-native run; Instruments exports counters faster or another platform gets a
-counter trace; a recording's size or the census pass's cost fails the
+native run; the AMD multi-frame sessions run natively on Adrenalin 26.7.1 or
+later; GPUPerfAPI's Vulkan backend offers streaming counters, or NVIDIA or
+Intel counters are wanted; Instruments exports counters faster or another
+platform gets a counter trace; a recording's size or the census pass's cost fails the
 Tier 1 budget; or the map needs entity names, which needs picking ids joined
 to entities in the recording.

@@ -16067,6 +16067,11 @@ static VkrEditorOpStatus ops_run_rec_status(OpsContext *ctx) {
     }
     ops_set(ctx, ctx->call->result, "gpu_counters", gpu);
   }
+  /* AMD GPUs on Vulkan: the counter sessions the recording wrote. */
+  if (status && status->gpu_counters_supported && status->recording) {
+    ops_set(ctx, ctx->call->result, "gpu_counter_sessions",
+            vkr_bakery_json_int(arena, (int64_t)status->gpu_counter_sessions));
+  }
   const VkrRecordingPlayback *playback = status ? status->playback : NULL;
   if (playback) {
     VkrBakeryJson *open = vkr_bakery_json_object(arena);
@@ -17810,9 +17815,11 @@ static const OpsDef s_ops[] = {
      "comparisons use standard (default). 'zones' (default: with "
      "measurements all) records every thread's CPU zones and, at tier 1, the "
      "GPU pass starts, for vkr_rec export --perfetto. 'gpu_counters' (1 to "
-     "10 seconds, macOS on the tiled pipeline) traces Instruments' GPU "
-     "counters once the recording runs and imports them into it in the "
-     "background (rec.status gpu_counters). 'rolling' (1 to 300 "
+     "10 seconds) samples GPU counters once the recording runs: on macOS's "
+     "tiled pipeline it traces Instruments' counters and imports them in "
+     "the background (rec.status gpu_counters); on an AMD GPU with Vulkan "
+     "the renderer samples each pass's counters into a tier 1 recording "
+     "(rec.status gpu_counter_sessions). 'rolling' (1 to 300 "
      "seconds) instead keeps only the last seconds in memory at tier 1 with "
      "zones, writing nothing until rec.save_last; rec.stop then discards "
      "them.",
@@ -17824,12 +17831,14 @@ static const OpsDef s_ops[] = {
      "\"number\",\"minimum\":1,\"maximum\":10}}}",
      ops_run_rec_start, NULL},
     {"rec.counters",
-     "Trace the recording in progress with Instruments' Metal GPU Counters "
-     "for 'seconds' (1 to 10, default 3) from now, with signposts on while "
-     "it traces, then import the counters into the recording in the "
-     "background: about 47 s per traced second on an M1 Pro. rec.status "
-     "answers its progress under gpu_counters; the HW tab of rec.analyze "
-     "shows them. macOS with Xcode, tiled pipeline.",
+     "Sample GPU counters in the recording in progress for 'seconds' (1 to "
+     "10, default 3) from now. macOS with Xcode on the tiled pipeline: "
+     "trace Instruments' Metal GPU Counters with signposts on, then import "
+     "them into the recording in the background, about 47 s per traced "
+     "second on an M1 Pro (rec.status gpu_counters). An AMD GPU with "
+     "Vulkan: the renderer samples each pass's counters into a tier 1 "
+     "recording as it runs (rec.status gpu_counter_sessions). The HW tab "
+     "of rec.analyze shows them.",
      "{\"type\":\"object\",\"properties\":{\"seconds\":{\"type\":"
      "\"number\",\"minimum\":1,\"maximum\":10}}}",
      ops_run_rec_counters, NULL, OPS_QUICK},
@@ -17885,7 +17894,8 @@ static const OpsDef s_ops[] = {
      "name) or hw (the device, the GPU driver's utilization and "
      "tiled-scene figures, and the pipelines with their limits and "
      "statistics; GPU counters per frame and pass when the bundle holds "
-     "an imported Instruments trace); 'frame' selects the "
+     "an imported Instruments trace or sampled AMD counters); 'frame' "
+     "selects the "
      "frame the tabs describe. Answers once the recording is read. Read "
      "the numbers from its summary.json or "
      "`vkr_rec`; this op is for the designer's view and captures of it.",

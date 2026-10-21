@@ -249,6 +249,10 @@ typedef struct VkrEditorPerfHw {
      an occupancy the trace lacks), the columns over the traced frames with
      samples, each one's first frame, the last traced frame and the charted
      counters' means there, and the column under the pointer last build. */
+  /* The recording ran on an AMD GPU, whose counters the renderer samples
+     (ADR-130): its busiest units stand in for Instruments' limiters and its
+     memory path for the occupancies. */
+  bool8_t amd;
   uint32_t limiters[VKR_EDITOR_PERF_HW_LIMITERS];
   uint32_t limiter_count;
   uint32_t occupancy[VKR_EDITOR_PERF_HW_OCCUPANCY];

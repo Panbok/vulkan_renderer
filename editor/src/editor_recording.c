@@ -2072,7 +2072,8 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
     recording->all_measurements = take_all;
   }
   /* GPU counters: Apple GPUs give their occupancy and limiters only to
-     Instruments, so a recording can trace itself and import them. */
+     Instruments, so a recording can trace itself and import them; AMD GPUs
+     on Vulkan sample each pass's counters during a Tier 1 recording. */
   VkrUiWidgetConfig counters = vkr_ui_widget_config_default();
   counters.placement =
       wide ? editor_recording_cell(3u, 0u) : editor_recording_cell(1u, 2u);
@@ -2083,21 +2084,32 @@ vkr_internal void editor_recording_window_header(VkrEditorUi *editor,
 #else
   const bool8_t tiled = false_v;
 #endif
-  counters.disabled = active || !tiled;
+  const bool8_t amd =
+      !tiled && frame->recording && frame->recording->gpu_counters_supported;
+  counters.disabled = active || (!tiled && !amd);
   counters.tooltip =
-      tiled ? string8_create_formatted(
-                  ui->frame_allocator,
-                  "Trace the GPU's counters with Instruments for %u s once "
-                  "recording starts, then import them into the recording for "
-                  "the Performance window's HW tab: occupancy and the ALU, "
-                  "texture and memory limiters per frame and per pass. The "
-                  "import takes about 47 s per traced second in the "
-                  "background. Needs Xcode; turns signposts on while it "
-                  "traces.",
-                  VKR_EDITOR_RECORDING_COUNTER_SECONDS)
-            : string8_lit("GPU counters come from Instruments, for the "
-                          "tiled pipeline on a Mac.");
-  bool8_t take_counters = recording->gpu_counters && tiled;
+      amd ? string8_create_formatted(
+                ui->frame_allocator,
+                "Sample this AMD GPU's counters for each pass for %u s once "
+                "a Tier 1 recording starts, for the Performance window's HW "
+                "tab: how busy each shader and memory unit is, memory "
+                "stalls and cache hit rates. The sampled frames run a "
+                "little slower.",
+                VKR_EDITOR_RECORDING_COUNTER_SECONDS)
+      : tiled ? string8_create_formatted(
+                    ui->frame_allocator,
+                    "Trace the GPU's counters with Instruments for %u s once "
+                    "recording starts, then import them into the recording for "
+                    "the Performance window's HW tab: occupancy and the ALU, "
+                    "texture and memory limiters per frame and per pass. The "
+                    "import takes about 47 s per traced second in the "
+                    "background. Needs Xcode; turns signposts on while it "
+                    "traces.",
+                    VKR_EDITOR_RECORDING_COUNTER_SECONDS)
+              : string8_lit("GPU counters come from Instruments for the "
+                            "tiled pipeline on a Mac, and from AMD GPUs on "
+                            "Vulkan.");
+  bool8_t take_counters = recording->gpu_counters && (tiled || amd);
   if (vkr_ui_checkbox(ui, string8_lit("gpu_counters"),
                       string8_lit("GPU counters"), &take_counters, &counters)) {
     recording->gpu_counters = take_counters;

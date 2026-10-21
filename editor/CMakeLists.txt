@@ -153,6 +153,8 @@ endforeach()
 # themselves, and keep writable state in per-user directories.
 include("${CMAKE_SOURCE_DIR}/cmake/vkr_engine_content.cmake")
 add_dependencies(vkr_editor vkr_engine_textures)
+# AMD GPU counters open GPUPerfAPI beside the executable (cmake/vkr_gpa.cmake).
+vkr_gpa_copy_runtime(vkr_editor)
 install(TARGETS vkr_editor vkr_bakery vkr_harness vkr_asset_preview vkr_mcp
     RUNTIME DESTINATION . COMPONENT editor)
 if(APPLE)

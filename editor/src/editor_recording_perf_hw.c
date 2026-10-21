@@ -57,6 +57,17 @@ static const char *const HW_OCCUPANCY_LABEL[VKR_EDITOR_PERF_HW_OCCUPANCY] = {
     "Fragment",
     "Compute",
 };
+/* AMD's memory path in the occupancies' places, sampled with GPUPerfAPI. */
+static const char *const HW_AMD_MEMORY_NAME[VKR_EDITOR_PERF_HW_OCCUPANCY] = {
+    "MemUnitStalled",
+    "WriteUnitStalled",
+    "L2CacheHit",
+};
+static const char *const HW_AMD_MEMORY_LABEL[VKR_EDITOR_PERF_HW_OCCUPANCY] = {
+    "Memory stall",
+    "Write stall",
+    "L2 hit",
+};
 static const Vec4 HW_LIMITER_COLOR[VKR_EDITOR_PERF_HW_LIMITERS] = {
     {0.224f, 0.529f, 0.898f, 1.0f},
     {0.851f, 0.349f, 0.149f, 1.0f},
@@ -73,6 +84,8 @@ static const char *const HW_COUNTER_SHORT[][2] = {
     {"Texture Filtering", "Texture filter"},
 };
 #define HW_LIMITER_SUFFIX " Limiter"
+/* AMD's unit busy counters end so; GPUBusy covers the whole GPU. */
+#define HW_BUSY_SUFFIX "Busy"
 
 /* Pipeline kinds as VkrPipelineKind numbers them. */
 static const char *const HW_KIND_NAME[] = {"render", "compute", "tile"};
@@ -134,15 +147,20 @@ vkr_internal uint32_t hw_counter_index(const VkrRecordingData *data,
   return UINT32_MAX;
 }
 
-/* A counter's name for a header or key: a limiter without "Limiter", and
-   Instruments' longest names shortened. Borrowed or frame-allocated. */
+/* A counter's name for a header or key: a limiter without "Limiter", an
+   AMD unit without "Busy", and Instruments' longest names shortened.
+   Borrowed or frame-allocated. */
 vkr_internal String8 hw_counter_short(VkrAllocator *allocator,
                                       const char *name) {
   uint64_t length = string_length(name);
   const uint64_t suffix = string_length(HW_LIMITER_SUFFIX);
+  const uint64_t busy = string_length(HW_BUSY_SUFFIX);
   if (length > suffix &&
       string_equals(name + length - suffix, HW_LIMITER_SUFFIX)) {
     length -= suffix;
+  } else if (length > busy &&
+             string_equals(name + length - busy, HW_BUSY_SUFFIX)) {
+    length -= busy;
   }
   for (uint32_t i = 0u; i < ArrayCount(HW_COUNTER_SHORT); ++i) {
     if (string_length(HW_COUNTER_SHORT[i][0]) == length &&
@@ -197,17 +215,31 @@ vkr_internal uint32_t hw_charted(const VkrEditorPerfHw *hw, uint32_t series) {
   return hw->occupancy[series - VKR_EDITOR_PERF_HW_LIMITERS];
 }
 
+/* Whether counter `name` measures a unit a pass may wait on: Instruments'
+   limiters, or an AMD unit's busy time other than the whole GPU's. */
+vkr_internal bool8_t hw_counter_limits(const VkrEditorPerfHw *hw,
+                                       const char *name) {
+  if (!hw->amd) {
+    return string_contains(name, HW_LIMITER_SUFFIX);
+  }
+  const uint64_t length = string_length(name);
+  const uint64_t busy = string_length(HW_BUSY_SUFFIX);
+  return length > busy && string_equals(name + length - busy, HW_BUSY_SUFFIX) &&
+         !string_equals(name, "GPUBusy");
+}
+
 /* The charted counters, the columns over the traced frames and each pass's
    GPU time there. The limiters are the four with the highest means. */
 vkr_internal void hw_update_counters(VkrEditorRecordingPerf *perf) {
   const VkrRecordingData *data = &perf->data;
   VkrEditorPerfHw *hw = &perf->hw;
   for (uint32_t o = 0u; o < VKR_EDITOR_PERF_HW_OCCUPANCY; ++o) {
-    hw->occupancy[o] = hw_counter_index(data, HW_OCCUPANCY_NAME[o]);
+    hw->occupancy[o] = hw_counter_index(data, hw->amd ? HW_AMD_MEMORY_NAME[o]
+                                                      : HW_OCCUPANCY_NAME[o]);
   }
   for (uint32_t i = 0u; i < data->gpu_counter_count; ++i) {
     const VkrRecordingGpuCounter *counter = &data->gpu_counters[i];
-    if (!string_contains(counter->name, HW_LIMITER_SUFFIX) ||
+    if (!hw_counter_limits(hw, counter->name) ||
         !vkr_is_finite_f32(counter->mean)) {
       continue;
     }
@@ -316,6 +348,8 @@ vkr_internal void hw_update(VkrEditorRecordingPerf *perf) {
         vkr_recording_data_find_series(data, HW_UTIL_SERIES[u]);
     hw->has_util = hw->has_util || hw_reported(data, hw->util_series[u]);
   }
+  const char *vendor = hw_fact(data, "Vendor");
+  hw->amd = vendor && string_equals(vendor, "AMD");
   hw->scene_series = vkr_recording_data_find_series(data, HW_SCENE_SERIES);
   hw->buffer_series = vkr_recording_data_find_series(data, HW_BUFFER_SERIES);
   hw->split_series = vkr_recording_data_find_series(data, HW_SPLIT_SERIES);
@@ -1141,11 +1175,20 @@ vkr_internal void hw_note(VkrEditorUi *editor, VkrUiSystem *ui,
 /* ------------------------------------------------------------------------ */
 /* GPU counters                                                              */
 
+/* Whether the recording can have GPU counters (ADR-130): it has some, or
+   it ran on the tiled pipeline (Instruments) or an AMD GPU (GPUPerfAPI).
+   Other desktop GPUs have none, so the view is not offered. */
+vkr_internal bool8_t hw_counters_offered(const VkrEditorRecordingPerf *perf) {
+  return perf->data.gpu_counter_count > 0u || perf->hw.amd ||
+         !string_equals(perf->data.pipeline, "desktop");
+}
+
 /* Whether the counters view is shown: the user's choice, else the
    recording's counters when it has them. */
 vkr_internal bool8_t hw_counters_shown(const VkrEditorRecordingPerf *perf) {
-  return perf->view.hw_source == 2u ||
-         (perf->view.hw_source == 0u && perf->data.gpu_counter_count > 0u);
+  return hw_counters_offered(perf) &&
+         (perf->view.hw_source == 2u ||
+          (perf->view.hw_source == 0u && perf->data.gpu_counter_count > 0u));
 }
 
 vkr_internal void hw_counter_cards(VkrEditorUi *editor, VkrUiSystem *ui,
@@ -1186,7 +1229,8 @@ vkr_internal void hw_counter_cards(VkrEditorUi *editor, VkrUiSystem *ui,
         &data->gpu_counters[hw->limiters[l]];
     const String8 name = hw_counter_short(allocator, counter->name);
     const char *caption = hw_text(string8_create_formatted(
-        allocator, "%.*s limiter", (int32_t)name.length, name.str));
+        allocator, hw->amd ? "%.*s busy" : "%.*s limiter", (int32_t)name.length,
+        name.str));
     vkr_editor_perf_card(
         editor, ui, 1u + l, caption,
         string8_create_formatted(allocator, "%.0f%%", counter->mean),
@@ -1201,7 +1245,9 @@ vkr_internal void hw_counter_cards(VkrEditorUi *editor, VkrUiSystem *ui,
                         vkr_is_finite_f32(data->gpu_counters[index].mean);
     vkr_editor_perf_card(
         editor, ui, 4u + o,
-        o == 1u ? "Fragment occupancy" : "Compute occupancy",
+        hw->amd   ? HW_AMD_MEMORY_LABEL[o]
+        : o == 1u ? "Fragment occupancy"
+                  : "Compute occupancy",
         has ? string8_create_formatted(allocator, "%.0f%%",
                                        data->gpu_counters[index].mean)
             : string8_lit("not traced"),
@@ -1314,9 +1360,10 @@ vkr_internal void hw_counter_chart(VkrEditorUi *editor,
     if (index == UINT32_MAX) {
       continue;
     }
-    keys[count] = occupancy ? HW_OCCUPANCY_LABEL[s]
-                            : hw_text(hw_counter_short(
-                                  allocator, data->gpu_counters[index].name));
+    keys[count] =
+        occupancy ? (hw->amd ? HW_AMD_MEMORY_LABEL[s] : HW_OCCUPANCY_LABEL[s])
+                  : hw_text(hw_counter_short(allocator,
+                                             data->gpu_counters[index].name));
     colors[count] = occupancy ? HW_UTIL_COLOR[s] : HW_LIMITER_COLOR[s];
     lines[count] = (VkrUiPlotSeries){
         .values = occupancy ? hw->occupancy_values[s] : hw->limiter_values[s],
@@ -1325,11 +1372,21 @@ vkr_internal void hw_counter_chart(VkrEditorUi *editor,
   }
   vkr_editor_perf_chart_title(
       ui, "title", vkr_editor_perf_cell(0u, 0u),
-      occupancy
+      occupancy && hw->amd
+          ? string8_create_formatted(allocator,
+                                     "Memory, %% stalled and L2 hit rate  "
+                                     "\xc2\xb7  top %.0f%%",
+                                     hw_chart_top(hw, true_v))
+      : occupancy
           ? string8_create_formatted(allocator,
                                      "Occupancy, %% of the GPU's thread slots  "
                                      "\xc2\xb7  top %.0f%%",
                                      hw_chart_top(hw, true_v))
+      : hw->amd
+          ? string8_create_formatted(allocator,
+                                     "Busiest units, %% of the GPU's time  "
+                                     "\xc2\xb7  top %.0f%%",
+                                     hw_chart_top(hw, false_v))
           : string8_create_formatted(allocator,
                                      "Top limiters, %% of each unit's peak  "
                                      "\xc2\xb7  top %.0f%%",
@@ -1471,10 +1528,9 @@ vkr_internal void hw_counter_table(VkrEditorUi *editor,
     if (counter->unit == VKR_RECORDING_GPU_COUNTER_PERCENT &&
         vkr_is_finite_f32(counter->mean)) {
       bars[COUNTER_MEAN] = Min(Max(counter->mean / 100.0f, 0.0f), 1.0f);
-      bar_colors[COUNTER_MEAN] =
-          string_contains(counter->name, HW_LIMITER_SUFFIX)
-              ? HW_LIMITER_COLOR[0]
-              : HW_UTIL_COLOR[2];
+      bar_colors[COUNTER_MEAN] = hw_counter_limits(&perf->hw, counter->name)
+                                     ? HW_LIMITER_COLOR[0]
+                                     : HW_UTIL_COLOR[2];
     }
     const VkrEditorTableRow row = {
         .key = i,
@@ -1505,13 +1561,14 @@ enum {
 
 /* The limiter with the highest mean over pass `pass`'s work, or
    UINT32_MAX. */
-vkr_internal uint32_t hw_pass_bound(const VkrRecordingData *data, uint32_t pass,
+vkr_internal uint32_t hw_pass_bound(const VkrEditorPerfHw *hw,
+                                    const VkrRecordingData *data, uint32_t pass,
                                     float32_t *out_value) {
   uint32_t bound = UINT32_MAX;
   *out_value = -1.0f;
   for (uint32_t c = 0u; c < data->gpu_counter_count; ++c) {
     float32_t value = 0.0f;
-    if (string_contains(data->gpu_counters[c].name, HW_LIMITER_SUFFIX) &&
+    if (hw_counter_limits(hw, data->gpu_counters[c].name) &&
         vkr_recording_data_gpu_counter_pass(data, pass, c, &value) &&
         value > *out_value) {
       *out_value = value;
@@ -1542,7 +1599,7 @@ vkr_internal float64_t hw_pass_key(const VkrEditorRecordingPerf *perf,
   case PASS_GPU:
     return perf->hw.pass_gpu_ms[pass];
   case PASS_BOUND:
-    (void)hw_pass_bound(data, pass, &value);
+    (void)hw_pass_bound(&perf->hw, data, pass, &value);
     return value;
   default: {
     const uint32_t counter = hw_pass_counter(&perf->hw, column);
@@ -1576,9 +1633,11 @@ vkr_internal void hw_pass_table(VkrEditorUi *editor,
   if (count == 0u) {
     vkr_editor_perf_empty(editor, ui, placement, VKR_UI_ICON_LIST,
                           "No passes in the trace",
-                          "Passes take GPU timestamps on one frame of every "
-                          "8 on the tiled pipeline; trace for longer to "
-                          "cover some of them.");
+                          hw->amd ? "The sampled frames held no GPU-timed "
+                                    "passes."
+                                  : "Passes take GPU timestamps on one frame "
+                                    "of every 8 on the tiled pipeline; trace "
+                                    "for longer to cover some of them.");
     return;
   }
   VkrEditorTableColumn columns[PASS_COLUMNS] = {
@@ -1605,6 +1664,8 @@ vkr_internal void hw_pass_table(VkrEditorUi *editor,
     const String8 name =
         c < PASS_FRAGMENT
             ? hw_counter_short(allocator, data->gpu_counters[counter].name)
+        : hw->amd
+            ? string8_lit(c == PASS_FRAGMENT ? "Write stall" : "L2 hit")
             : string8_lit(c == PASS_FRAGMENT ? "Frag. occ." : "Comp. occ.");
     columns[shown_count] = (VkrEditorTableColumn){
         .title = hw_text(name),
@@ -1652,7 +1713,7 @@ vkr_internal void hw_pass_table(VkrEditorUi *editor,
   for (uint32_t r = first; r < end; ++r) {
     const uint32_t p = items[r].index;
     float32_t bound_value = 0.0f;
-    const uint32_t bound = hw_pass_bound(data, p, &bound_value);
+    const uint32_t bound = hw_pass_bound(hw, data, p, &bound_value);
     String8 cells[PASS_COLUMNS];
     Vec4 colors[PASS_COLUMNS] = {0};
     float32_t bars[PASS_COLUMNS];
@@ -1721,6 +1782,14 @@ vkr_internal void hw_counters_missing(VkrEditorUi *editor, VkrUiSystem *ui,
                           "The GPU counter file did not load",
                           "gpu_counters.bin in this recording is damaged or "
                           "from another version; import the trace again.");
+    return;
+  }
+  if (editor->recording.perf.hw.amd) {
+    vkr_editor_perf_empty(
+        editor, ui, placement, VKR_UI_ICON_GPU, "No GPU counters sampled",
+        "Check GPU counters in the Recordings window before a Tier 1 "
+        "recording, or run rec.counters during one: the renderer samples "
+        "this AMD GPU's passes for a few seconds.");
     return;
   }
   vkr_editor_perf_empty(
@@ -1799,13 +1868,18 @@ vkr_internal void hw_counters_view(VkrEditorUi *editor,
     note.text.layout.max_width = 560.0f;
     vkr_ui_label(
         ui, string8_lit("hw.counter.note"),
-        string8_create_formatted(
-            ui->frame_allocator,
-            "Counters cover the whole GPU, other processes too. Overlapping "
-            "passes share samples, and passes under %u us read their "
-            "neighbours' work. Trace clock within %.1f us.",
-            2u * data->gpu_counter_bucket_ns / 1000u,
-            (float64_t)data->gpu_counter_spread_ns / 1000.0),
+        perf->hw.amd
+            ? string8_lit("Each pass is a sample of its own. Counter groups "
+                          "the GPU cannot read together come from successive "
+                          "sessions, so a pass's values average frames that "
+                          "may differ.")
+            : string8_create_formatted(
+                  ui->frame_allocator,
+                  "Counters cover the whole GPU, other processes too. "
+                  "Overlapping passes share samples, and passes under %u us "
+                  "read their neighbours' work. Trace clock within %.1f us.",
+                  2u * data->gpu_counter_bucket_ns / 1000u,
+                  (float64_t)data->gpu_counter_spread_ns / 1000.0),
         &note);
     (void)vkr_ui_panel_end(ui);
   }
@@ -1932,23 +2006,39 @@ vkr_internal void hw_header(VkrEditorUi *editor, VkrUiSystem *ui,
   if (!vkr_ui_panel_begin(ui, string8_lit("hw.head"), &head)) {
     return;
   }
-  static const char *const views[] = {"Driver", "GPU counters"};
-  static const char *const tips[] = {
-      "What the GPU driver reports to the engine, the device and the "
-      "pipelines",
-      "Apple GPU counters imported from an Instruments trace, per frame and "
-      "per pass"};
-  VkrUiPlacement switcher = vkr_editor_perf_cell(0u, 0u);
-  switcher.align = VKR_UI_ALIGN_CENTER;
-  const uint32_t picked =
-      vkr_editor_perf_segmented(ui, "source", switcher, views, tips,
-                                ArrayCount(views), counters ? 1u : 0u);
-  if (picked != (counters ? 1u : 0u)) {
-    perf->view.hw_source = picked + 1u;
+  /* Desktop GPUs other than AMD's give the engine no counters, so only the
+     driver view is offered there. */
+  if (hw_counters_offered(perf)) {
+    static const char *const views[] = {"Driver", "GPU counters"};
+    const char *tips[] = {
+        "What the GPU driver reports to the engine, the device and the "
+        "pipelines",
+        perf->hw.amd
+            ? "This AMD GPU's counters, sampled per pass during the recording"
+            : "Apple GPU counters imported from an Instruments trace, per "
+              "frame and per pass"};
+    VkrUiPlacement switcher = vkr_editor_perf_cell(0u, 0u);
+    switcher.align = VKR_UI_ALIGN_CENTER;
+    const uint32_t picked =
+        vkr_editor_perf_segmented(ui, "source", switcher, views, tips,
+                                  ArrayCount(views), counters ? 1u : 0u);
+    if (picked != (counters ? 1u : 0u)) {
+      perf->view.hw_source = picked + 1u;
+    }
   }
   String8 text = string8_lit("What the GPU driver reports, and the pipelines "
                              "the renderer created");
-  if (counters && data->gpu_counter_frame_count > 0u) {
+  if (counters && perf->hw.amd && data->gpu_counter_frame_count > 0u) {
+    text = string8_create_formatted(
+        ui->frame_allocator,
+        "Sampled with GPUPerfAPI  \xc2\xb7  frames %llu to %llu  "
+        "\xc2\xb7  each pass a sample of its own",
+        (unsigned long long)data->gpu_counter_first_frame,
+        (unsigned long long)data->gpu_counter_last_frame);
+  } else if (counters && perf->hw.amd) {
+    text = string8_lit("Busy units, memory stalls and cache hit rates of this "
+                       "AMD GPU, sampled during the recording");
+  } else if (counters && data->gpu_counter_frame_count > 0u) {
     text = string8_create_formatted(
         ui->frame_allocator,
         "Imported from Instruments  \xc2\xb7  frames %llu to %llu  \xc2\xb7  "

@@ -13,7 +13,9 @@
    signposts on so the trace carries the frame clock, and then imports the
    trace into the recording's bundle. Both run on a thread of their own,
    since the import exports about 47 s per traced second; a chip under the
-   recording indicator shows where it is, and a toast its outcome. */
+   recording indicator shows where it is, and a toast its outcome. AMD GPUs
+   on Vulkan need none of it: the renderer samples each pass's counters
+   during the recording, so starting them is one runtime request. */
 
 typedef enum EditorCountersPhase {
   EDITOR_COUNTERS_TRACING = 0,
@@ -43,6 +45,8 @@ struct VkrEditorCounterJob {
   bool8_t signposts_restored;
 };
 
+#if defined(PLATFORM_APPLE)
+/* The trace and import thread; other platforms start no job. */
 vkr_internal bool8_t editor_counters_cancelled(void *context) {
   VkrEditorCounterJob *job = context;
   return vkr_atomic_bool_load(&job->cancel, VKR_MEMORY_ORDER_RELAXED);
@@ -74,6 +78,8 @@ vkr_internal void *editor_counters_main(void *argument) {
                           VKR_MEMORY_ORDER_RELEASE);
   return NULL;
 }
+
+#endif
 
 /* Signposts back as the user had them once the trace no longer needs
    them. */
@@ -118,6 +124,25 @@ bool8_t vkr_editor_recording_counters_start(VkrEditorUi *editor,
                   VKR_RECORDING_COUNTERS_TRACE_MAX_S);
     return false_v;
   }
+#if !defined(PLATFORM_APPLE)
+  /* AMD GPUs on Vulkan: the renderer samples each pass's counters itself
+     during the recording, which writes them as it goes (ADR-130). */
+  if (!status->gpu_counters_supported) {
+    string_format(error, error_capacity,
+                  "This GPU samples no hardware counters: AMD GPUs on "
+                  "Vulkan do, and Apple GPUs through Instruments.");
+    return false_v;
+  }
+  const VkrSampleRecordingRequest request = {
+      .command = VKR_SAMPLE_RECORDING_GPU_COUNTERS,
+      .time = (float64_t)seconds,
+  };
+  if (!vkr_editor_recording_send(editor, request, false_v)) {
+    string_format(error, error_capacity, "Too many recording requests.");
+    return false_v;
+  }
+  return true_v;
+#else
   char temp[VKR_RECORDING_PATH_MAX];
   if (!vkr_platform_user_directory(VKR_PLATFORM_USER_TEMP, temp,
                                    sizeof(temp))) {
@@ -154,6 +179,7 @@ bool8_t vkr_editor_recording_counters_start(VkrEditorUi *editor,
   }
   recording->counter_job = job;
   return true_v;
+#endif
 }
 
 void vkr_editor_recording_counters_update(VkrEditorUi *editor,
