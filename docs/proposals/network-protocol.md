@@ -129,14 +129,22 @@ before it enters the store (ADR-105). The rest:
   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)); the
   mesh format must place the coarse ranges first, as KTX2 places small
   mips first.
-- **Priority.** Whole-file downloads follow the order in which drawn
-  previews reach their reload (ADR-012), and a queued download whose
-  texture no frame drew for 120 draw epochs is cancelled (ADR-123). Mip
+- **Priority.** The remote serves whole-file fetches before preview
+  reads and both before prefetches; whole-file downloads follow the order
+  in which drawn previews reach their reload (ADR-012), a queued download
+  whose texture no frame drew for 120 draw epochs is cancelled, and a
+  scene's preparation queues the materials it validates (ADR-123). Mip
   priority will come from the required mips that
   [texture streaming](texture-streaming.md) computes, which then replace
   the fixed 256 KiB preview; this service orders the remote fetches.
   Priority from the streaming sources and the screen size for other assets
-  remains.
+  remains; Bistro, one mesh and its textures, cannot show it.
+- **Throughput of short transfers.** Preview reads and whole files of a few
+  hundred KB arrive at about 13 to 16 MB/s over loopback, where the
+  transport moves 155 MB/s in bulk: each transfer starts near the
+  congestion window's 4-packet floor (ADR-123 evidence). Bistro's 538
+  previews (79 MB) take about 6 s of transfers, so time to the first
+  visible mip of every texture depends on it.
 - **GPU placement.** Fragments decrypt into staging memory supplied by the
   receiver. The resource then goes through the ordered publication queue
   with confirm-before-use. Staging memory returns to its pool after GPU

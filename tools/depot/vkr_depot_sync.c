@@ -145,10 +145,13 @@ struct VkrDepotConnection {
 
 static bool8_t depot_connection_pump(void *context, int32_t timeout_ms) {
   VkrDepotConnection *link = context;
+  VkrNetCore *core = vkr_net_host_core(link->host);
+  /* What the client queued since the last pump leaves in this pump's first
+     send, not after its wait: a request waited a whole pump otherwise. */
+  vkr_net_core_flush(core);
   if (!vkr_net_host_pump(link->host, timeout_ms)) {
     return false_v;
   }
-  VkrNetCore *core = vkr_net_host_core(link->host);
   const uint64_t now = vkr_net_host_now(link->host);
   VkrNetEvent event;
   while (vkr_net_core_poll(core, &event)) {
@@ -178,7 +181,10 @@ void vkr_depot_disconnect(VkrDepotConnection *link) {
   if (link->host && link->connected && !link->closed) {
     vkr_net_core_close(vkr_net_host_core(link->host), link->connection,
                        VKR_NET_CLOSE_APPLICATION, depot_connection_now(link));
-    for (uint32_t i = 0u; i < 20u; ++i) {
+    /* The core reports the connection closed as it queues the close frame,
+       so the pump that sends the frame ends the wait; a peer that misses it
+       closes at its idle timeout. */
+    for (uint32_t i = 0u; i < 20u && !link->closed; ++i) {
       (void)depot_connection_pump(link, 10);
     }
   }

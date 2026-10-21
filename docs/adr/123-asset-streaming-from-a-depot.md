@@ -59,7 +59,10 @@ directory that a depot server fills on demand:
   once and fetches their blobs in one pipelined transfer
   (`vkr_depot_client_fetch_files`), then writes each file through a
   temporary and a rename. Between transfers nothing pumps the connection,
-  so the transport's idle timeout may close it; a failed transfer
+  so the transport's idle timeout (15 s) may close it. A connection no
+  transfer used for 5 s is replaced before the next one
+  (`REMOTE_IDLE_RECONNECT_US`): on a connection the timeout had closed, the
+  next request waited another 15 s before it failed. A failed transfer
   reconnects once and tries again.
 - Fetched objects stay in a store inside the directory
   (`.vkrdepot-stream`). A file below the directory with its listed size and
@@ -88,10 +91,13 @@ range are known before any of them arrive
   prefetched again, so the prefetch queue compacts when it fills.
   `vkr_depot_remote_arrivals` counts the files written whole, without the
   lock.
-- The worker serves every waiting read in one transfer first, then every
-  waiting fetch, then prefetches in transfers of at most 16 MiB of listed
+- The worker serves every waiting fetch in one transfer first, then every
+  waiting read, then prefetches in transfers of at most 16 MiB of listed
   files, so a read or fetch waits behind at most that much background work.
-  A prefetched file that a loader then asks for moves to the fetch queue.
+  A fetch holds a loader that needs the whole file, such as the mesh a
+  scene waits for; serving reads first let the previews of hundreds of
+  textures hold it. A prefetched file that a loader then asks for moves to
+  the fetch queue.
 - A whole-file transfer passes every blob, including one the store holds: a
   read may have brought it with only some of its chunks. The chunks a read
   brought do not travel again.
@@ -279,7 +285,11 @@ The Get dialog's **Fetch files when opened** (`get.sparse`, the
   [vkr_bakery_os.c](../../tools/bakery/vkr_bakery_os.c)) answer an
   unwritten file from the remote's list, with its listed size, and its
   listings add unwritten names; reads fetch. A scene's preparation checks
-  that every artifact exists and so fetches only the files it reads.
+  that every artifact exists and so fetches only the files it reads. It
+  queues the materials a mesh's material map names
+  (`vkr_bakery_prefetch`, [vkr_bakery_os.h](../../tools/bakery/vkr_bakery_os.h))
+  before it reads them one by one, so they arrive in a few transfers
+  instead of one each.
   The remote's own presence test stays native
   (`vkr_bakery_stat_native`).
 - A sparse checkout creates the folder of every file it leaves unfetched,
@@ -599,6 +609,45 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     workspace with Bistro's textures resident also rejects their sampler
     updates; neither depends on the copy being sparse.
   - Not measured: Windows, two computers, a link slower than loopback.
+- 2026-10-21, fetch order and batched preparation, Mac M1 Pro, Metal,
+  loopback:
+  - A Bistro preparation replayed on a fresh sparse clone (the
+    `prepare_scene` request of the run above with its paths moved) took
+    4.9 s against 0.4 to 0.5 s on the shared folder. It made 271 transfers
+    of one file each at about 10 ms: each request waited one pump of the
+    connection before it left (ADR-105). With the flush before the pump a
+    transfer took 1.3 ms; with the material map queued first the 271 files
+    came in 20 transfers, and the preparation took 1.3 to 1.8 s.
+  - In 4 of 8 runs of `check_sparse_project.py` the sparse Bistro was ready
+    only 18.9 to 25.1 s after its preparation, against 3.3 to 4.9 s in the
+    others. A timeline of load jobs and transfers showed seven preview jobs
+    blocked 15 s on the first read after the editor's connection had sat
+    unused for 31 s since the Get; the read failed with the transport's
+    idle close and reconnected. With the reconnect after 5 s unused, four
+    runs were ready 3.4 to 5.8 s after preparation; the three with a
+    timeline had no transfer over 2 s.
+  - `--suite depot` passes `test_depot_remote_cancel`, whose new part fails
+    when a read queued after a fetch behind a running prefetch is served
+    first; it failed with the reads-first order.
+  - `python3 tools/checks/check_sparse_project.py --editor
+    build_release/editor/vkr_editor --depot
+    build_release/tools/depot/vkr_depot --bakery
+    build_release/tools/bakery/vkr_bakery` passes: the sparse Bistro opened
+    in 7.4 s (preparation 1.6 s) against 4.1 to 4.3 s from the shared
+    folder, its loaders waited 37 s in all against 132 to 162 s before, and
+    the capture differs from a local load's by 0.272 of 255, where two local
+    loads differ by 0.314.
+  - `python3 tools/checks/check_asset_stream.py --editor
+    build_release/editor/vkr_editor --depot
+    build_release/tools/depot/vkr_depot` passes: ready at 6.8 s, last
+    preview read at 11.5 s, no texture pending from 41.3 s (7.3 to 8.2,
+    11.3 to 12.3 and 36.5 to 39.7 s before); the capture differs by 0.334,
+    two local loads by 0.335.
+  - Preview reads and whole-file transfers of a few hundred KB ran at
+    about 13 to 16 MB/s (538 previews, 79 MB, in 5.9 s of transfers), where
+    `vkr_net_bench` moves 155 MB/s in bulk over the same loopback. The server's congestion window began such transfers at its
+    4-packet floor (5.8 KB), and a connection idle between requests never
+    leaves it for long.
 
 ## Revisit when
 

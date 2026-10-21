@@ -1264,6 +1264,36 @@ vkr_internal bool8_t vkr_project_bundle_dependency(
                                                     visited);
 }
 
+/* Queues the files a mesh's material map names to arrive from a remote
+   (vkr_bakery_prefetch) before the walk reads them one by one. */
+vkr_internal void
+vkr_project_prefetch_dependencies(const char *path,
+                                  const VkrBakeryJson *materials) {
+  if (!vkr_bakery_os_reads_remote()) {
+    return;
+  }
+  char directory[VKR_PROJECT_PATH];
+  vkr_bakery_path_parent(directory, sizeof(directory), path);
+  for (const VkrBakeryJson *value = materials->first; value;
+       value = value->next) {
+    if (value->type != VKR_BAKERY_JSON_STRING) {
+      continue;
+    }
+    char raw[VKR_PROJECT_PATH];
+    (void)snprintf(raw, sizeof(raw), "%s", (const char *)value->string.str);
+    char *query = strchr(raw, '?');
+    if (query) {
+      *query = 0;
+    }
+    char joined[VKR_PROJECT_PATH];
+    char target[VKR_PROJECT_PATH];
+    if (vkr_bakery_path_join(joined, sizeof(joined), directory, raw) &&
+        vkr_project_resolve(joined, true_v, target, sizeof(target))) {
+      vkr_bakery_prefetch(target);
+    }
+  }
+}
+
 bool8_t vkr_project_validate_bundle_dependencies(VkrProjectJob *job,
                                                  const char *owner_value,
                                                  const char *path_value,
@@ -1344,6 +1374,7 @@ vkr_internal bool8_t vkr_project_validate_resolved_dependencies(
       return vkr_project_fail(job, "Immutable material map does not match "
                                    "cooked dependency inventory");
     }
+    vkr_project_prefetch_dependencies(path, materials);
     for (const VkrBakeryJson *value = materials->first; value;
          value = value->next) {
       VKR_PROJECT_TRY(

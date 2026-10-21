@@ -65,6 +65,16 @@ void vkr_bakery_os_read_remote(bool8_t enabled) {
   vkr_bakery_reads_remote = enabled;
 }
 
+bool8_t vkr_bakery_os_reads_remote(void) { return vkr_bakery_reads_remote; }
+
+void vkr_bakery_prefetch(const char *path) {
+  if (!vkr_bakery_reads_remote || !path) {
+    return;
+  }
+  const FilePath file = file_path_view(path);
+  vkr_vfs_remote_prefetch(&file);
+}
+
 bool8_t vkr_bakery_stat(const char *path, VkrBakeryStat *out_stat) {
   if (!vkr_bakery_stat_native(path, out_stat)) {
     return false_v;

@@ -33,6 +33,13 @@ bool8_t vkr_bakery_is_directory(const char *path);
     on a sparse working copy finds every tracked file. Call once at
     startup, after installing the remote. */
 void vkr_bakery_os_read_remote(bool8_t enabled);
+/** Whether this process reads a remote's files (vkr_bakery_os_read_remote). */
+bool8_t vkr_bakery_os_reads_remote(void);
+/** Queues `path`, in a process that reads a remote's files, to arrive
+    before something reads it, and returns at once; elsewhere does nothing.
+    A job that reads many small files one after another queues them first,
+    so they arrive in a few transfers instead of one each. */
+void vkr_bakery_prefetch(const char *path);
 
 /** Calls `visit` for each entry except "." and "..", in byte order of names,
  * the remote's unwritten files included where vkr_bakery_os_read_remote

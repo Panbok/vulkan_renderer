@@ -2212,7 +2212,9 @@ static void test_depot_sparse(void) {
    the third waits while the first transfer runs. Fails when the cancelled
    file is written, when the other two do not arrive, when a fetch of the
    cancelled file no longer works, or when cancelling an arrived file
-   counts. */
+   counts. Then, on a fresh directory, a fetch and a read queued while a
+   prefetch transfer runs: fails when the read is served before the fetch,
+   which waits for a whole file a loader needs. */
 static void test_depot_remote_cancel(void) {
   printf("  Running test_depot_remote_cancel...\n");
   char store_root[VKR_DEPOT_PATH_CAPACITY];
@@ -2305,12 +2307,38 @@ static void test_depot_remote_cancel(void) {
   assert(depot_test_files_equal(streamed, original));
   vkr_depot_remote_close(remote);
 
+  /* A fetch queued behind a running prefetch goes before a read queued
+     after it. */
+  char order_root[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("cancel_order", order_root, sizeof(order_root));
+  const VkrDepotRemoteConfig order_config = {.directory = order_root,
+                                             .address = address,
+                                             .server_key = info.server_key,
+                                             .codec = vkr_depot_zstd_codec()};
+  remote =
+      vkr_depot_remote_open(&allocator, &order_config, error, sizeof(error));
+  assert(remote);
+  vkr_depot_remote_prefetch(remote, "one.bin");
+  DepotRemoteReader fetcher = {.remote = remote, .path = "three.bin"};
+  VkrThread fetch_thread;
+  assert(vkr_thread_create(&allocator, &fetch_thread, depot_remote_read,
+                           &fetcher));
+  vkr_platform_sleep(5u);
+  uint8_t part[4096];
+  assert(vkr_depot_remote_read(remote, "two.bin", 0u, sizeof(part), part));
+  assert(depot_test_exists(order_root, "three.bin"));
+  assert(vkr_thread_join(fetch_thread));
+  (void)vkr_thread_destroy(&allocator, &fetch_thread);
+  assert(fetcher.ok);
+  vkr_depot_remote_close(remote);
+
   vkr_depot_service_stop(service);
   vkr_dmemory_allocator_destroy(&allocator);
   depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
   assert(vkr_bakery_remove_tree(store_root));
   assert(vkr_bakery_remove_tree(author_root));
   assert(vkr_bakery_remove_tree(stream_root));
+  assert(vkr_bakery_remove_tree(order_root));
   assert(vkr_bakery_remove_tree(key_root));
   printf("  test_depot_remote_cancel PASSED\n");
 }

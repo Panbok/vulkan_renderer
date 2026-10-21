@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-21
 authority: adr
 ---
 
@@ -73,7 +73,14 @@ millisecond use `select` on POSIX; Windows rounds them up to 1 ms. An
 allocator is not thread-safe, so while the thread pumps, the host's
 allocator belongs to whoever holds that lock: an owner that keeps
 allocating on its own thread gives the host memory of its own (the depot
-service, the remote content directory and the editor session do).
+service, the remote content directory and the editor session do). A send
+without `VKR_NET_SEND_IMMEDIATE` waits for `vkr_net_core_flush`; a depot
+connection flushes before each pump (`depot_connection_pump`,
+[vkr_depot_sync.c](../../tools/depot/vkr_depot_sync.c)), so a request leaves
+in the pump that waits for its answer. Flushing only after the pump held
+each request for one wait of up to 5 ms: 271 one-file fetches in a row took
+2.5 s instead of 0.36 s on loopback (2026-10-21). A disconnect pumps until
+its close frame is sent rather than 200 ms.
 
 - **Packets.** A short header is a flags byte (bit 6 set, bits 1–0 the
   packet-number length), the receiver's 32-bit connection ID and 1 to 4

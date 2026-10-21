@@ -21,6 +21,11 @@
 /* Listed bytes one prefetch transfer takes at most (at least one file), so
    a read or fetch that arrives meanwhile waits behind no more than that. */
 #define REMOTE_PREFETCH_BATCH_BYTES (16ull * 1024ull * 1024ull)
+/* A connection the worker has not used for this long is replaced before
+   its next transfer. The transport closes an unpumped connection at its
+   idle timeout (15 s) and the next request on it then waited a whole idle
+   timeout more before it failed and reconnected. */
+#define REMOTE_IDLE_RECONNECT_US (5ull * 1000000ull)
 
 typedef enum RemoteFileState {
   REMOTE_FILE_ABSENT = 0,
@@ -54,9 +59,13 @@ struct VkrDepotRemote {
   char directory[VKR_DEPOT_PATH_CAPACITY];
   VkrDepotStore store;
   /* The worker's alone once it runs. Between transfers nothing pumps it, so
-     the transport's idle timeout may close it; a failed transfer then
-     reconnects once and tries again. */
+     the transport's idle timeout may close it: one unused for
+     REMOTE_IDLE_RECONNECT_US is replaced before the next transfer, and a
+     failed transfer reconnects once and tries again. */
   VkrDepotConnection *connection;
+  /* When a transfer last moved objects on the connection, on the platform
+     clock. */
+  uint64_t used_us;
   /* The connection allocates from memory of its own while the worker pumps
      it: an allocator is not thread-safe, and the caller keeps using its
      own on its thread. */
@@ -77,9 +86,12 @@ struct VkrDepotRemote {
   /* Wakes the worker; and the callers when a transfer ends. */
   VkrCondVar work;
   VkrCondVar done;
-  /* Served first, then fetches, then prefetches. A file enters the fetch
-     queue at most once, so it holds every listed file; a cancelled
-     prefetch may enter again, so its queue compacts when full. */
+  /* Fetches go first, then reads, then prefetches: a fetch holds a loader
+     that needs the whole file, such as the mesh a scene waits for, and the
+     preview reads of hundreds of textures would hold it for seconds. A
+     file enters the fetch queue at most once, so it holds every listed
+     file; a cancelled prefetch may enter again, so its queue compacts when
+     full. */
   RemoteRead *reads;
   uint32_t *queue;
   uint32_t queue_count;
@@ -174,11 +186,32 @@ static bool8_t remote_write_file(const VkrDepotRemote *remote,
                                           &entry->blob);
 }
 
+/* Replaces the worker's connection with a new one to the same server. */
+static bool8_t remote_reconnect(VkrDepotRemote *remote) {
+  vkr_depot_disconnect(remote->connection);
+  const VkrDepotConnectConfig connect = {.address = remote->address,
+                                         .server_key = remote->server_key,
+                                         .store = &remote->store};
+  char error[256];
+  remote->connection = vkr_depot_connect(&remote->connection_allocator,
+                                         &connect, NULL, error, sizeof(error));
+  if (!remote->connection) {
+    fprintf(stderr, "remote content: reconnecting failed: %s\n", error);
+    return false_v;
+  }
+  remote->used_us = remote_now_us();
+  return true_v;
+}
+
 /* Downloads `count` whole files (`blobs`) or parts of files (`ranges`),
    reconnecting once when the transfer fails. */
 static bool8_t remote_transfer(VkrDepotRemote *remote, const VkrDepotId *blobs,
                                const VkrDepotRange *ranges, uint32_t count,
                                VkrDepotTransferStats *out_transfer) {
+  if (remote_now_us() - remote->used_us > REMOTE_IDLE_RECONNECT_US &&
+      !remote_reconnect(remote)) {
+    return false_v;
+  }
   for (uint32_t attempt = 0u; attempt < 2u; ++attempt) {
     VkrDepotClient *client = vkr_depot_connection_client(remote->connection);
     const bool8_t fetched =
@@ -187,21 +220,17 @@ static bool8_t remote_transfer(VkrDepotRemote *remote, const VkrDepotId *blobs,
                          : vkr_depot_client_fetch_ranges(client, ranges, count,
                                                          out_transfer));
     if (fetched) {
+      /* Only objects that crossed the connection show it alive. */
+      if (out_transfer->objects) {
+        remote->used_us = remote_now_us();
+      }
       return true_v;
     }
     if (client) {
       fprintf(stderr, "remote content: a transfer failed: %s\n",
               vkr_depot_client_error(client));
     }
-    vkr_depot_disconnect(remote->connection);
-    const VkrDepotConnectConfig connect = {.address = remote->address,
-                                           .server_key = remote->server_key,
-                                           .store = &remote->store};
-    char error[256];
-    remote->connection = vkr_depot_connect(
-        &remote->connection_allocator, &connect, NULL, error, sizeof(error));
-    if (!remote->connection) {
-      fprintf(stderr, "remote content: reconnecting failed: %s\n", error);
+    if (!remote_reconnect(remote)) {
       return false_v;
     }
   }
@@ -292,7 +321,7 @@ static void *remote_worker(void *argument) {
       vkr_mutex_unlock(remote->mutex);
       break;
     }
-    if (remote->reads) {
+    if (remote->reads && remote->queue_count == 0u) {
       RemoteRead *reads = remote->reads;
       remote->reads = NULL;
       vkr_mutex_unlock(remote->mutex);
@@ -502,6 +531,7 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
     }
   }
   remote->opened_us = remote_now_us();
+  remote->used_us = remote->opened_us;
   if (!vkr_mutex_create(allocator, &remote->mutex) ||
       !vkr_cond_create(allocator, &remote->work) ||
       !vkr_cond_create(allocator, &remote->done) ||
