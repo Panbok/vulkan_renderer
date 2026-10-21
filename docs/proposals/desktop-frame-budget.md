@@ -153,12 +153,11 @@ What the costs show:
    reference, and each lever reports every line before and after it.
 2. **Levers in order.** (a) Move or retune preset gates, using the
    [measured cost of each gate](#high-gate-costs). No single move meets the
-   budget. The recommendation keeps every gate in High: the one move with a
-   large effect, local shadows out of High, takes the shadows of Bistro's
-   lamps and still leaves the walk at 18.01 ms p95, and the gates that cost
-   0.2 ms or less save nothing. Moving local shadows (3.0 and 6.0 ms
-   median) or ambient occlusion (1.5 and 1.3 ms) out of High is the owner's
-   decision. (b) Cut work inside the largest line, Lighting,
+   budget, and on 2026-10-21 the owner kept every gate in High: the one move
+   with a large effect, local shadows out of High, takes the shadows of
+   Bistro's lamps and still leaves the walk at 18.01 ms p95, and the gates
+   that cost 0.2 ms or less save nothing. Lever (a) is closed without a
+   change. (b) Cut work inside the largest line, Lighting,
    through its own proposal: `Lighting.Deferred` through
    [lighting efficiency](lighting-efficiency.md) and binning, and
    `Shadow.LocalMask` through
