@@ -5,6 +5,7 @@
 #include "math/mat.h"
 #include "math/vec.h"
 #include "math/vkr_transform.h"
+#include "platform/vkr_video.h"
 #include "vkr_atmosphere.h"
 #include "vkr_bloom.h"
 #include "vkr_buffer.h"
@@ -888,6 +889,22 @@ typedef struct VkrEditorGridPayload {
   float32_t height;
 } VkrEditorGridPayload;
 
+/**
+ * @brief Reports one Scene image export (ADR-131) from a backend thread:
+ * `written` once the GPU finished writing the Scene image into the surface,
+ * false when the frame wrote none. The surface is free to reuse once it
+ * returns.
+ */
+typedef void (*VkrViewExportDone)(void *context, uint64_t tag, bool8_t written);
+
+/** A surface the frame resamples its finished Scene image into. */
+typedef struct VkrViewExport {
+  VkrVideoSurface *surface;
+  uint64_t tag;
+  VkrViewExportDone done;
+  void *context;
+} VkrViewExport;
+
 typedef struct VkrEditorPassPayload {
   /** Scene destination in Y-down swapchain pixels: (x, y, width, height).
       Components are finite integral values validated at packet submission. */
@@ -920,6 +937,19 @@ typedef struct VkrEditorPassPayload {
   /** Outline reach in Scene-image pixels, 1..8. */
   uint32_t selection_width_px;
   VkrEditorGridPayload grid;
+  /** View streaming (ADR-131): the frame resamples its finished Scene
+      image into the export's surface, display-encoded. Once a submit call
+      accepts the frame, the renderer calls `done` exactly once: with
+      `written` true after the GPU finished the write, or false when the
+      frame made none. `done` runs on the rendering or a completion thread.
+      Requires vkr_renderer_view_streaming_supported(); the export is
+      borrowed through render. */
+  const VkrViewExport *view_export;
+  /** A decoded remote Scene image the UI draws through
+      VKR_UI_TEXTURE_REF_REMOTE_VIEW; the backend keeps a reference until the
+      GPU finished reading it. Frames with one composite without the
+      presenter. */
+  VkrVideoSurface *view_import;
 } VkrEditorPassPayload;
 
 /**

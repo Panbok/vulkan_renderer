@@ -923,6 +923,20 @@ typedef struct VKR_SIMD_ALIGN VkrMetalPacketGpuSpikeRoot {
 _Static_assert(sizeof(VkrMetalPacketGpuSpikeRoot) == 16u,
                "Metal GPU spike root ABI drift");
 
+/** Mirrors VkrMetalPacketViewExportRoot in
+ * shaders/metal/msl/editor/view_export.metal: the Scene image a frame
+ * exports and the video surface it writes (ADR-131). */
+typedef struct VKR_SIMD_ALIGN VkrMetalPacketViewExportRoot {
+  uint64_t source;
+  uint64_t destination;
+  uint32_t extent[2];
+  uint32_t source_encoded;
+  uint32_t reserved;
+} VkrMetalPacketViewExportRoot;
+
+_Static_assert(sizeof(VkrMetalPacketViewExportRoot) == 32u,
+               "Metal view export root ABI drift");
+
 /** Mirrors VkrMetalPacketGpuDrawCensusRoot in
  * shaders/metal/msl/world/gpu_draws.metal: pass Cull.Census reads the camera
  * and late views' classification words and writes packed census states and
@@ -1212,6 +1226,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT,
   VKR_METAL_PACKET_ABI_PASS_OUTPUT_ROOT,
   VKR_METAL_PACKET_ABI_GPU_DRAW_CENSUS_ROOT,
+  VKR_METAL_PACKET_ABI_VIEW_EXPORT_ROOT,
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 

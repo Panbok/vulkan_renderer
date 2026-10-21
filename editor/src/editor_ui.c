@@ -6,6 +6,7 @@
 #include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
+#include "editor_remote_view.h"
 #include "editor_scene_panels.h"
 #include "editor_session.h"
 #include "editor_terrain.h"
@@ -691,8 +692,11 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   const bool8_t preparing_scene =
       frame->scene_backdrop_blur && *frame->scene_backdrop_blur;
   /* The Model view's stage replaces the level, so the level's grid, icons,
-     shapes and outlines stay off it. */
-  const bool8_t level_shown = editor->view_shown != VKR_EDITOR_VIEW_MODEL;
+     shapes and outlines stay off it, as they stay off a remote Scene. */
+  vkr_editor_remote_view_build(editor->remote_view, frame);
+  const bool8_t level_shown =
+      editor->view_shown != VKR_EDITOR_VIEW_MODEL &&
+      !vkr_editor_remote_view_showing(editor->remote_view);
   if (level_shown) {
     vkr_editor_grid_build(editor, frame);
   }
@@ -759,6 +763,7 @@ VkrUiDockInputCapture vkr_editor_ui_build(VkrEditorUi *editor,
   vkr_editor_ui_publish_session_tool(editor, frame);
   vkr_editor_session_update(editor->session, frame);
   vkr_editor_depot_update(editor->depot, editor, frame);
+  vkr_editor_remote_view_update(editor->remote_view, frame);
   return dock_capture;
 }
 

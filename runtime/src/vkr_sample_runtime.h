@@ -175,6 +175,18 @@ typedef struct VkrSampleViewRequest {
   Vec3 frame_max;
 } VkrSampleViewRequest;
 
+/* View streaming (ADR-131), applied after build: `next_export` replaces
+ * the export waiting for an editor Scene frame (one without a surface
+ * withdraws it), and `import_surface` (NULL to stop) is the remote Scene
+ * image the UI draws while the local Scene stops rendering
+ * (vkr_standard_scene_runtime_set_view_export and _set_view_import). */
+typedef struct VkrSampleViewStreamRequest {
+  bool8_t set_export;
+  VkrViewExport next_export;
+  bool8_t set_import;
+  VkrVideoSurface *import_surface;
+} VkrSampleViewStreamRequest;
+
 /* Why the UI asked for a Scene pick; the answer carries it back. */
 typedef enum VkrSamplePickPurpose {
   /* A right click: open the picked object's menu. */
@@ -616,6 +628,11 @@ typedef struct VkrSampleUiFrame {
   const VkrScriptHost *scripts;
   VkrSampleViewState view_state;
   VkrSampleViewRequest *view_request;
+  /** The renderer takes view exports and imports
+   * (vkr_renderer_view_streaming_supported); the build's request is
+   * applied after it returns. */
+  bool8_t view_streaming;
+  VkrSampleViewStreamRequest *view_stream_request;
   /* Set when material or surface theme files changed on disk: every loaded
      scene's brushes read their themes and material sizes again
      (vkr_scene_brush_refresh_looks). */

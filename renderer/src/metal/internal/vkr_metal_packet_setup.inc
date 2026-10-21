@@ -163,6 +163,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT:
   case VKR_METAL_PACKET_ABI_GPU_DRAW_CENSUS_ROOT:
+  case VKR_METAL_PACKET_ABI_VIEW_EXPORT_ROOT:
     return 0;
   default:
     return 1;

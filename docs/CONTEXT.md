@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-22
 authority: context
 ---
 # Project vocabulary
@@ -267,4 +267,7 @@ Object model terms ([ADR-076](adr/076-project-object-model.md)):
 | Shared workspace | An editor workspace holding one project that is a depot working copy: the sharing editor serves its store; every other copy gets and submits through that editor. | [ADR-110](adr/110-project-sharing-in-the-editor.md) |
 | Access request | A key a depot server refused, remembered with the `user@computer` name it sent until the server's owner gives it a role. | [vkr_depot_server.h](../tools/depot/vkr_depot_server.h) |
 | Texture recipe | What a build texture is made from (source content, class, tier, speed); it names the texture on every platform and lets another host cook it again. | [ADR-077](adr/077-asset-build-system.md) |
+| Remote view | One editor's Scene image streamed to another as hardware-encoded video: the server applies the client's camera pose and the client shows the newest decoded frame in its Scene panel. | [ADR-131](adr/131-view-streaming.md) |
+| View export / view import | A video surface a frame resamples its finished Scene image into, reported once the GPU wrote it / a decoded remote Scene image the UI draws in place of the Scene. | [vkr_frame_input.h](../renderer/src/vkr_frame_input.h) |
+| Video surface | A reference-counted BGRA8 image the GPU and the hardware codecs share; on macOS an IOSurface-backed `CVPixelBuffer`. | [vkr_video.h](../lib/src/platform/vkr_video.h) |
 

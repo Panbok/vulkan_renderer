@@ -36,8 +36,9 @@ OS_HEADER = re.compile(
     r'sys/|mach/|mach-o/|os/|windows\.h|windowsx\.h|io\.h|shellapi\.h|'
     r'shlobj\.h|shobjidl\.h|objbase\.h|combaseapi\.h|dxgi|xinput\.h|'
     r'winsock|ws2tcpip\.h|timeapi\.h|Block\.h|dispatch/|TargetConditionals\.h|'
-    r'(AppKit|Cocoa|CoreFoundation|CoreGraphics|Foundation|GameController|'
-    r'Metal|QuartzCore|UniformTypeIdentifiers|simd)/)')
+    r'(AppKit|Cocoa|CoreFoundation|CoreGraphics|CoreMedia|CoreVideo|'
+    r'Foundation|GameController|IOSurface|Metal|QuartzCore|'
+    r'UniformTypeIdentifiers|VideoToolbox|simd)/)')
 
 MATH = '''
 acos acosf acosh acoshf asin asinf asinh asinhf atan atanf atan2 atan2f atanh
@@ -155,6 +156,7 @@ TREES = (
              'metal/internal/vkr_metal_packet_setup.inc': METAL_API_GCD,
              'metal/internal/vkr_metal_packet_lifecycle.inc': METAL_API_GCD,
              'metal/internal/vkr_metal_packet_commands.inc': METAL_API_GCD,
+             'metal/internal/vkr_metal_packet_view.inc': METAL_API_GCD,
          }),
     # runtime/src/platform/ is the runtime's window, gamepad and file-dialog
     # layer over AppKit, GameController, Win32, XInput and DXGI.

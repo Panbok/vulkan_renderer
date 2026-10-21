@@ -453,7 +453,7 @@ vkr_internal bool8_t vkr_metal_packet_present_frame(
   VkrMetalPacketResult result = {0};
   if (draw_list && !vkr_metal_packet_prepare_ui_draw_list(
                        renderer, &ui_pass, draw_list, target_width,
-                       target_height, NULL, &upload, &result)) {
+                       target_height, NULL, nil, &upload, &result)) {
     log_error("Metal presenter could not prepare %u UI batches", batch_count);
     return false_v;
   }
@@ -461,7 +461,8 @@ vkr_internal bool8_t vkr_metal_packet_present_frame(
   uint64_t upload_wait = 0u;
   for (uint32_t i = 0u; i < batch_count; ++i) {
     const VkrUiDrawBatch *batch = &draw_list->batches[i];
-    if (batch->texture.id == 0u || batch->texture.id == UINT32_MAX)
+    if (batch->texture.id == 0u || batch->texture.id == UINT32_MAX ||
+        batch->texture.id == VKR_UI_TEXTURE_REF_REMOTE_VIEW.id)
       continue;
     const VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(
         renderer, (VkrTextureHandle){.id = batch->texture.id,

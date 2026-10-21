@@ -534,13 +534,15 @@ vkr_internal void vkr_metal_packet_record_prepared_ui_draws(
 }
 
 /* `preview` names the frame's animation preview image, whose batches carry
-   texture id UINT32_MAX; NULL drops them. */
+   texture id UINT32_MAX; NULL drops them. `remote` is the frame's imported
+   remote view (VKR_UI_TEXTURE_REF_REMOTE_VIEW, ADR-131); nil drops its
+   batches. */
 vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
     VkrMetalPacketRenderer *renderer, VkrMetalPacketUiPass *prepared_pass,
     const VkrPreparedUiDrawList *draw_list, uint32_t target_width,
     uint32_t target_height, const VkrMetalPacketImageInstance *preview,
-    VkrMetalPacketFrameUpload *upload, VkrMetalPacketResult *result)
-    API_AVAILABLE(macos(26.0)) {
+    id<MTLTexture> remote, VkrMetalPacketFrameUpload *upload,
+    VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
   if (draw_list->batch_count == 0u)
     return true_v;
   if (upload->ui_vertices_gpu == 0u || upload->ui_indices_gpu == 0u ||
@@ -555,6 +557,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
   if (preview) {
     preview_texture.resource = preview->resource;
   }
+  VkrMetalPacketTexture remote_texture = {0};
+  if (remote) {
+    remote_texture.resource.resource_id = remote.gpuResourceID._impl;
+  }
   uint32_t prepared_count = 0u;
   for (uint32_t i = 0u; i < draw_list->batch_count; ++i) {
     const VkrUiDrawBatch *batch = &draw_list->batches[i];
@@ -564,6 +570,11 @@ vkr_internal bool8_t vkr_metal_packet_prepare_ui_draw_list(
         continue;
       }
       texture = &preview_texture;
+    } else if (batch->texture.id == VKR_UI_TEXTURE_REF_REMOTE_VIEW.id) {
+      if (!remote_texture.resource.resource_id) {
+        continue;
+      }
+      texture = &remote_texture;
     } else if (batch->texture.id != 0u) {
       texture = vkr_metal_packet_resolve_texture(
           renderer,
@@ -3374,8 +3385,8 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass_body(
             : NULL;
     return vkr_metal_packet_prepare_ui_draw_list(
         renderer, &prepared->ui, &packet->input.ui->draw_list,
-        (uint32_t)target.width, (uint32_t)target.height, preview, upload,
-        result);
+        (uint32_t)target.width, (uint32_t)target.height, preview,
+        renderer->view.import_texture, upload, result);
   }
   /* The graph's executor check admits no other graphics executor. */
   return false_v;
@@ -3475,6 +3486,7 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
 }
 
 #include "metal/internal/vkr_metal_packet_record.inc"
+#include "metal/internal/vkr_metal_packet_view.inc"
 
 /* Takes the layer's next drawable at the requested extent. A render thread
    acquires frames too: layer properties change only with the size, inside an
@@ -4000,9 +4012,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
     VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
     VkrMetalPacketFrameSubmission *submission, VkrMetalPacketResult *out_result)
     API_AVAILABLE(macos(26.0)) {
+  /* A view export resamples the Scene image in the readback encoder
+     (ADR-131). */
   const VkrGpuDependency capture_dependency = {
       .src_stages = VKR_GPU_STAGE_COLOR_OUTPUT,
-      .dst_stages = VKR_GPU_STAGE_TRANSFER,
+      .dst_stages = renderer->view.has_pending
+                        ? VKR_GPU_STAGE_TRANSFER | VKR_GPU_STAGE_COMPUTE_SHADER
+                        : VKR_GPU_STAGE_TRANSFER,
       .visibility = VKR_GPU_VISIBILITY_DEVICE,
   };
   const VkrGpuDependency shadow_capture_dependency = {
@@ -4130,6 +4146,10 @@ vkr_internal bool8_t vkr_metal_packet_prepare_frame_passes(
       packet->scene_rendering
           ? vkr_metal_packet_named_texture(renderer, "shadow_map")
           : nil;
+  if (passed) {
+    vkr_metal_packet_view_prepare_export(renderer, packet,
+                                         &submission->frame_upload);
+  }
   /* A presenter frame draws the drawable after its Scene (ADR-111). */
   passed = passed && (submission->present || packet->editor_presenter) &&
            (!packet->scene_rendering || submission->shadow) &&
@@ -4573,6 +4593,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_readback(
             destinationBytesPerImage:plan->result.data_size
                              options:MTLBlitOptionNone];
   }
+  vkr_metal_packet_view_record_export(renderer, capture_encoder);
   [capture_encoder endEncoding];
   return true_v;
 }
@@ -4595,7 +4616,7 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
       beginCommandBufferWithAllocator:renderer->command_allocator];
   vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_COMMAND_BUFFERS);
   id<MTLResidencySet>
-      residency_sets[3u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
+      residency_sets[4u + VKR_METAL_PACKET_GPU_DRAW_ICB_GROUP_COUNT_MAX] = {
           (id<MTLResidencySet>)vkr_metal_memory_device_residency_set(
               renderer->memory),
           (id<MTLResidencySet>)vkr_metal_material_table_device_residency_set(
@@ -4605,6 +4626,10 @@ vkr_internal bool8_t vkr_metal_packet_encode_frame_commands(
   /* Editor.Present copies into a presenter image (ADR-111). */
   if (packet->editor_presenter)
     residency_sets[residency_set_count++] = renderer->presenter.residency;
+  /* Exported and imported Scene images (ADR-131). */
+  if (vkr_metal_packet_view_frame_uses(renderer, packet)) {
+    residency_sets[residency_set_count++] = renderer->view.residency;
+  }
   for (uint32_t group = 0u;
        group < renderer->active_command_slot->gpu_draw_icb_residency_count;
        ++group)
@@ -4900,6 +4925,16 @@ vkr_metal_packet_gpu_trace_frame_done(VkrMetalPacketRenderer *renderer)
   log_info("Metal GPU capture written to %s", trace->path);
 }
 
+/* After a frame's commit: its completion signal and the reports that wait
+   for it, the presenter's (ADR-111) and the view export's (ADR-131). */
+vkr_internal void vkr_metal_packet_signal_frame_completion(
+    VkrMetalPacketRenderer *renderer, const VkrPreparedFrame *packet,
+    uint64_t submit_value) API_AVAILABLE(macos(26.0)) {
+  [renderer->queue signalEvent:renderer->completion value:submit_value];
+  vkr_metal_packet_presenter_frame_committed(renderer, packet, submit_value);
+  vkr_metal_packet_view_frame_committed(renderer, submit_value);
+}
+
 bool8_t
 vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
                                         const VkrPreparedFrame *packet,
@@ -4910,6 +4945,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, false_v, false_v);
       return false_v;
     }
+    /* First, so every path reports the frame's view export (ADR-131). */
+    vkr_metal_packet_view_begin_frame(renderer, packet);
 
     if (!renderer->frame_prepared || !renderer->reserved_frame_slot)
       return false_v;
@@ -5091,8 +5128,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     vkr_metal_packet_commit_frame_counters(renderer,
                                            packet->input.frame.frame_index,
                                            out_result->dependency_count);
-    [renderer->queue signalEvent:renderer->completion value:submit_value];
-    vkr_metal_packet_presenter_frame_committed(renderer, packet, submit_value);
+    vkr_metal_packet_signal_frame_completion(renderer, packet, submit_value);
     if (submission.picking) {
       command_slot->picking_readback =
           (const uint8_t *)submission.readback.cpu_address +

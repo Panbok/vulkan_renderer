@@ -855,6 +855,15 @@ vkr_global const VkrMetalPacketAbiField vkr_gpu_spike_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGpuSpikeRoot, reserved, "reserved", 12),
 };
 
+vkr_global const VkrMetalPacketAbiField vkr_view_export_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalPacketViewExportRoot, source, "source", 0),
+    VKR_ABI_FIELD(VkrMetalPacketViewExportRoot, destination, "destination", 8),
+    VKR_ABI_FIELD(VkrMetalPacketViewExportRoot, extent, "extent", 16),
+    VKR_ABI_FIELD(VkrMetalPacketViewExportRoot, source_encoded,
+                  "source_encoded", 24),
+    VKR_ABI_FIELD(VkrMetalPacketViewExportRoot, reserved, "reserved", 28),
+};
+
 vkr_global const VkrMetalPacketAbiField vkr_gpu_draw_census_root_fields[] = {
     VKR_ABI_FIELD(VkrMetalPacketGpuDrawCensusRoot, classifications,
                   "classifications", 0),
@@ -1051,6 +1060,9 @@ vkr_global const VkrMetalPacketAbiRecord
         [VKR_METAL_PACKET_ABI_GPU_DRAW_CENSUS_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketGpuDrawCensusRoot, "VkrMetalPacketGpuDrawCensusRoot",
             64, 16, vkr_gpu_draw_census_root_fields),
+        [VKR_METAL_PACKET_ABI_VIEW_EXPORT_ROOT] = VKR_ABI_RECORD(
+            VkrMetalPacketViewExportRoot, "VkrMetalPacketViewExportRoot", 32,
+            16, vkr_view_export_root_fields),
         [VKR_METAL_PACKET_ABI_PASS_OUTPUT_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketPassOutputRoot, "VkrMetalPacketPassOutputRoot", 80,
             16, vkr_pass_output_root_fields),

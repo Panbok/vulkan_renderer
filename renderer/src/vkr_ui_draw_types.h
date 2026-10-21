@@ -78,6 +78,9 @@ typedef struct VkrUiDrawOutput {
 
 /** Graph-owned animation preview, resolved by the current frame's backend. */
 #define VKR_UI_TEXTURE_REF_ANIMATION_PREVIEW ((VkrUiTextureRef){UINT32_MAX, 0u})
+/** The frame's imported remote view (VkrEditorPassPayload.view_import),
+    resolved by the backend; batches draw nothing without one (ADR-131). */
+#define VKR_UI_TEXTURE_REF_REMOTE_VIEW ((VkrUiTextureRef){UINT32_MAX - 1u, 0u})
 
 #define VKR_UI_TEXTURE_REF_NONE ((VkrUiTextureRef){0})
 

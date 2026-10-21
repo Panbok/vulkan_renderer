@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-20
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -502,6 +502,30 @@ the seven desktop modes and the Pass output sources on Bistro with no Khronos
 validation message. Under FSR 3.1 no pass writes `temporal_history_accept`,
 so History accepted read an unwritten image; the image now exists only while
 FSR is off (`!fsr31_enabled`), and that view draws stripes under FSR.
+
+### View export
+
+View streaming ([ADR-131](131-view-streaming.md)) runs only on Metal
+(`vkr_renderer_view_streaming_supported`), so its one kernel,
+`vkr_metal_packet_view_export` in
+[`editor/view_export.metal`](../../renderer/src/shaders/metal/msl/editor/view_export.metal),
+has no Vulkan consumer. It resamples `editor_scene_image` into an
+IOSurface-backed BGRA8 surface in the frame's readback encoder, after the
+barrier that waits for the Scene image's last writer: one thread per surface
+pixel in 8×8 groups, one bilinear sample at the pixel's centre (each Scene
+pixel exactly when the sizes match), clamped to [0, 1] and sRGB-encoded
+unless the Scene image is 8-bit UNORM and already holds display values; an
+EDR Scene image loses its range above 1. `VkrMetalPacketViewExportRoot` (32
+B: source, destination, extent, `source_encoded`) is checked against the
+reflected root like every other record. One dispatch runs per Scene frame,
+only while a client views.
+
+Native evidence: on 2026-10-22 `tools/checks/check_view_stream.py` streamed
+a headless Bistro Scene (RGBA8 sRGB, 1274×700) on the M1 Pro; the client's
+decoded image was 34.4 dB PSNR from the server's own capture on the plaza
+view and 43.1 dB on a wall, and Metal API validation reported nothing on the
+server or the client. A windowed BGRA8 sRGB source and an RGBA16F EDR source
+have not run.
 
 ## Decision
 

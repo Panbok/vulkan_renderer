@@ -16,6 +16,7 @@ add_executable(vkr_editor
     src/editor_cmd_eval.c
     src/editor_agent.c
     src/editor_session.c
+    src/editor_remote_view.c
     src/editor_level.c
     src/editor_blockout.c
     src/editor_brush_grid.c

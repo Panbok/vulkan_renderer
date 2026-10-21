@@ -5863,6 +5863,7 @@ typedef struct VkrSampleUiRequests {
   VkrSamplePickRequest pick_request;
   VkrSampleGridFitRequest grid_fit_request;
   VkrSampleTimeOfDayRequest time_of_day_request;
+  VkrSampleViewStreamRequest view_stream_request;
   bool8_t cull_report_request;
   uint32_t gpu_spike_iterations;
   VkrSampleCloseResponse close_response;
@@ -6035,6 +6036,9 @@ vkr_internal VkrUiDockInputCapture vkr_standard_scene_runtime_build_ui_frame(
       .time_of_day_request = &requests->time_of_day_request,
       .cull_report_request = &requests->cull_report_request,
       .gpu_spike_request = &requests->gpu_spike_iterations,
+      .view_streaming =
+          vkr_renderer_view_streaming_supported(&application->renderer),
+      .view_stream_request = &requests->view_stream_request,
       .cull_report = application->cull_report,
       .cull_report_serial = application->cull_report_serial,
       .grid_status =
@@ -7627,6 +7631,16 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   if (requests.gpu_spike_iterations) {
     application->debug_gpu_spike_iterations =
         Min(requests.gpu_spike_iterations, VKR_GPU_DEBUG_SPIKE_ITERATIONS_MAX);
+  }
+  const VkrSampleViewStreamRequest *view_stream = &requests.view_stream_request;
+  if (view_stream->set_export) {
+    vkr_standard_scene_runtime_set_view_export(
+        application,
+        view_stream->next_export.surface ? &view_stream->next_export : NULL);
+  }
+  if (view_stream->set_import) {
+    vkr_standard_scene_runtime_set_view_import(application,
+                                               view_stream->import_surface);
   }
   /* A UI pick runs as a context click does, at the given pixel. */
   if (requests.pick_request.request) {

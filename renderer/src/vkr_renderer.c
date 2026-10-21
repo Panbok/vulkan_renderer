@@ -638,6 +638,16 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
 vkr_internal VkrRendererError
 vkr_renderer_backend_cancel_frame(VkrRenderer *renderer);
 
+/* Reports the frame's view export unwritten (ADR-131): for every frame the
+   backend does not take. */
+vkr_internal void vkr_renderer_reject_view_export(const VkrFrameInput *packet) {
+  const VkrViewExport *view_export =
+      packet->editor ? packet->editor->view_export : NULL;
+  if (view_export && view_export->done) {
+    view_export->done(view_export->context, view_export->tag, false_v);
+  }
+}
+
 vkr_internal bool32_t vkr_renderer_backend_initialize(
     VkrRenderer *renderer, const VkrNativeSurface *surface, uint32_t width,
     uint32_t height, VkrDeviceRequirements *device_requirements,
@@ -3016,6 +3026,7 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
 #if defined(PLATFORM_APPLE)
   /* A presentation-only frame has no Scene, graph or histories (ADR-111). */
   if (packet->editor && packet->editor->present_only) {
+    vkr_renderer_reject_view_export(packet);
     const bool8_t presented =
         vkr_metal_packet_renderer_present(renderer->metal_renderer, packet);
     renderer->frame_active = false_v;
@@ -3305,7 +3316,8 @@ vkr_internal VkrRendererError vkr_renderer_backend_render_frame(
 
 /* The frame's work on whichever thread renders it: acquire when the caller
    did not, complete the input through the hooks, validate, then render or
-   cancel the acquisition. */
+   cancel the acquisition. A frame input's view export is reported once on
+   every path. */
 vkr_internal void
 vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
                               VkrRendererFrameResult *result) {
@@ -3325,6 +3337,7 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
     vkr_publication_queue_run(renderer, work->publications);
   }
   if (acquire_error != VKR_RENDERER_ERROR_NONE) {
+    vkr_renderer_reject_view_export(packet);
     vkr_publication_queue_observe(renderer);
     result->error = acquire_error;
     return;
@@ -3338,6 +3351,7 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
   if (work->acquire &&
       (packet->frame.window_width != work->frame.window_width ||
        packet->frame.window_height != work->frame.window_height)) {
+    vkr_renderer_reject_view_export(packet);
     const VkrRendererError cancel_error =
         vkr_renderer_backend_cancel_frame(renderer);
     result->error = cancel_error != VKR_RENDERER_ERROR_NONE
@@ -3370,6 +3384,19 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
         "packet.editor.presenter",
         "requires the presenter and a matching acquisition");
   }
+  /* View streaming needs a backend that wraps video surfaces, and an
+     imported view composites on the frame queue (ADR-131). */
+  const bool8_t view_export = packet->editor && packet->editor->view_export;
+  const bool8_t view_import = packet->editor && packet->editor->view_import;
+  if (error == VKR_RENDERER_ERROR_NONE &&
+      (((view_export || view_import) &&
+        !vkr_renderer_view_streaming_supported(renderer)) ||
+       (view_import && presenter))) {
+    error = vkr_renderer_validation_fail(
+        &result->validation, VKR_RENDERER_ERROR_UNSUPPORTED_INPUT,
+        "packet.editor.view_export",
+        "requires view streaming and, with an import, no presenter");
+  }
   if (error == VKR_RENDERER_ERROR_NONE &&
       (packet->frame.window_width != work->frame.window_width ||
        packet->frame.window_height != work->frame.window_height)) {
@@ -3378,6 +3405,7 @@ vkr_renderer_render_submitted(VkrRenderer *renderer, VkrRendererWork *work,
         "frame_input.frame", "target extent must match the acquired frame");
   }
   if (error != VKR_RENDERER_ERROR_NONE) {
+    vkr_renderer_reject_view_export(packet);
     const VkrRendererError cancel_error =
         vkr_renderer_backend_cancel_frame(renderer);
     if (cancel_error != VKR_RENDERER_ERROR_NONE) {
@@ -3535,6 +3563,15 @@ bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer) {
   return renderer && renderer->metal_renderer &&
          vkr_metal_packet_renderer_presenter_supported(
              renderer->metal_renderer);
+#else
+  (void)renderer;
+  return false_v;
+#endif
+}
+
+bool8_t vkr_renderer_view_streaming_supported(const VkrRenderer *renderer) {
+#if defined(PLATFORM_APPLE)
+  return renderer && renderer->metal_renderer;
 #else
   (void)renderer;
   return false_v;

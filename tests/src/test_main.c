@@ -161,6 +161,7 @@ static const VkrTestSuiteEntry VKR_TEST_SUITES[] = {
     VKR_TEST_SUITE(run_mesh_raycast_tests),
     VKR_TEST_SUITE(run_lightmap_bake_tests),
     VKR_TEST_SUITE(run_filesystem_tests),
+    VKR_TEST_SUITE(run_video_tests),
     VKR_TEST_SUITE(run_asset_path_tests),
     VKR_TEST_SUITE(run_path_io_tests),
     VKR_TEST_SUITE(run_process_path_tests),

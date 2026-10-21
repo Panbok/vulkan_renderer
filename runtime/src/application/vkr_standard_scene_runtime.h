@@ -405,6 +405,11 @@ typedef struct VkrStandardSceneRuntime {
   /* Iterations of pass Debug.GpuSpike the next built frame runs; that frame
      takes them (VkrGpuDebugPayload.gpu_spike_iterations). */
   uint32_t debug_gpu_spike_iterations;
+  /** View streaming (ADR-131): the export the next editor Scene frame
+      takes, with no surface for none, and the decoded remote Scene image
+      the UI draws instead of a local Scene, holding one reference. */
+  VkrViewExport view_export_next;
+  VkrVideoSurface *view_import;
   bool8_t transmission_depth_diagnostic_enabled;
   uint32_t ibl_probe_limit;
   /** A reflection-probe capture (vkr_bakery bake probe, ADR-019): world
@@ -515,6 +520,18 @@ vkr_internal INLINE bool8_t vkr_standard_scene_runtime_is_windowed(
     const VkrStandardSceneRuntime *application) {
   return vkr_application_host_is_windowed(&application->host);
 }
+
+/* View streaming (ADR-131), on renderers with
+ * vkr_renderer_view_streaming_supported(). `view_export` (NULL for none)
+ * replaces the export waiting for an editor Scene frame; the runtime or
+ * renderer reports every export it was given exactly once, a replaced one
+ * unwritten. `surface` (NULL to stop) is the remote Scene image the UI
+ * draws from the next frame on, while the local Scene stops rendering; the
+ * runtime takes its own reference. */
+void vkr_standard_scene_runtime_set_view_export(
+    VkrStandardSceneRuntime *application, const VkrViewExport *view_export);
+void vkr_standard_scene_runtime_set_view_import(
+    VkrStandardSceneRuntime *application, VkrVideoSurface *surface);
 
 bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
     const VkrStandardSceneRuntime *runtime);

@@ -1638,6 +1638,9 @@ bool8_t vkr_renderer_render_thread_enabled(const VkrRenderer *renderer);
 /** True when the editor payload may use the presenter (ADR-111): Metal
  * window targets. Fixed once the renderer is created; never waits. */
 bool8_t vkr_renderer_presenter_supported(const VkrRenderer *renderer);
+/** True when the editor payload may carry a view export or import
+ * (ADR-131): the Metal backend. Fixed once the renderer is created. */
+bool8_t vkr_renderer_view_streaming_supported(const VkrRenderer *renderer);
 /** True when frames may carry a dynamic volume update (ADR-119): the
  * desktop pipeline on a device with ray queries. Fixed once the renderer is
  * created. */

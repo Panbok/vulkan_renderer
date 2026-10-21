@@ -10,6 +10,10 @@ if(APPLE)
     # through the Objective-C runtime (vkr_platform_macos.c).
     target_link_libraries(vkr_foundation PRIVATE "-framework CoreGraphics"
         "-framework IOKit" "-framework CoreFoundation" objc)
+    # View streaming encodes and decodes through VideoToolbox over
+    # IOSurface-backed CoreVideo buffers (vkr_video_macos.c).
+    target_link_libraries(vkr_foundation PRIVATE "-framework VideoToolbox"
+        "-framework CoreVideo" "-framework CoreMedia" "-framework IOSurface")
 elseif(WIN32)
     # Local sockets (vkr_local_socket_windows.c) use Winsock and file DACLs;
     # UDP broadcast lists interfaces through the IP helper. GPU telemetry

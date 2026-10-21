@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-21
+updated: 2026-10-22
 authority: architecture
 ---
 
@@ -63,7 +63,10 @@ editor's collaborative session sends in the host's order
 ([ADR-106](adr/106-collaborative-editing-session.md)). The editor shares,
 gets and syncs projects through the depot, running the server on a host
 thread while it is open
-([ADR-110](adr/110-project-sharing-in-the-editor.md)).
+([ADR-110](adr/110-project-sharing-in-the-editor.md)). It also serves its
+Scene image to another editor over the transport's view service, encoded
+by the foundation's hardware video module (`lib/src/platform/vkr_video.h`)
+([ADR-131](adr/131-view-streaming.md)).
 
 `assets/` contains asset data only. Shared reader code lives in
 `runtime/src/assets/`, offline producers in `tools/assets/`, and renderer code
@@ -196,6 +199,7 @@ A successful configure or build does not establish sanitizer runtime coverage.
 | Asset streaming | The remote content directory and its reads of parts of files, the VFS remote, cooked side branches, texture previews from a file's smallest mips with their reload once drawn, sparse working copies, sparse project sharing (a Get that fetches files when opened, Bakery processes that read the copy through `VKR_DEPOT_SPARSE_WORKSPACE`), and the editor's `--stream` and `--stream-workspace` ([ADR-123](adr/123-asset-streaming-from-a-depot.md)) | `tools/depot/vkr_depot_remote.c`, `lib/src/filesystem/vkr_vfs.c`, `runtime/src/renderer/systems/vkr_texture_system.c`, `runtime/src/renderer/systems/vkr_material_system.c`, `editor/src/editor_depot.c`, `tools/bakery/vkr_bakery_os.c` |
 | Project sharing | Share, Get, Submit and Get latest in the editor; access approval, the top bar button, the Project sharing window, the hub's network list and the `depot.*` operations; Bakery's `share_project` and `recook_textures` ([ADR-110](adr/110-project-sharing-in-the-editor.md), [ADR-077](adr/077-asset-build-system.md)) | `editor/src/editor_depot.c`, `tools/bakery/project/vkr_project_share.c`, `tools/bakery/project/vkr_project_recook.c` |
 | Collaborative editing | Scene edits and typed values on the wire; the editor's `collab` service, edit ordering, replay and presence ([ADR-106](adr/106-collaborative-editing-session.md)) | `runtime/src/net/`, `editor/src/editor_session.c` |
+| View streaming | Hardware video coding over shared GPU surfaces, the renderer's Scene export (a Metal compute resample reported exactly once) and remote-image import, the runtime's export and import, and the editor's `view` service with the `remote_view.*` operations ([ADR-131](adr/131-view-streaming.md)) | `lib/src/platform/vkr_video.h`, `renderer/src/metal/internal/vkr_metal_packet_view.inc`, `runtime/src/application/vkr_standard_scene_runtime.c`, `editor/src/editor_remote_view.c` |
 | Surface tags | Brush faces' surface tags and marks, their fixed greybox looks per face orientation, the greybox view and the migration of retired dev materials; surface themes that bind tags to materials per container over the World's, and faces sized by a material's `world_size` ([ADR-094](adr/094-surface-themes-and-art-pass.md)) | `runtime/src/level/vkr_surface.c`, `runtime/src/renderer/systems/vkr_scene_brush.c` |
 | Material graphs | `.mtg` graphs, Standard lowering to `.mt` definitions, layered Standard materials blended by vertex colour, mask texture, slope or height ([ADR-095](adr/095-layered-standard-materials.md)), graph instances expanded by the material loader and the lightmap baker; the editor's material documents, their journal, the node canvas, the Graph view and `material.*` operations ([ADR-093](adr/093-material-graphs-and-art-workbench.md)); Custom graphs generated to MSL, the project library `vkr_bakery materials` compiles, per-graph tiled pipelines and GPU buckets with a Standard fallback on Metal ([ADR-096](adr/096-custom-material-graphs.md)) | `runtime/src/assets/vkr_material_graph.c`, `runtime/src/assets/vkr_material_codegen.c`, `runtime/src/renderer/resources/loaders/material_loader.c`, `renderer/src/metal/internal/vkr_metal_packet_custom.inc`, `tools/bakery/vkr_bakery_materials.c`, `editor/src/editor_material.c`, `editor/src/editor_graph.c` |
 | Look volumes | `look_volume` components gathered at world resolution and blended at the camera each frame into the post-process globals, height fog, sky light and the metering range ([ADR-097](adr/097-look-volumes.md)) | `runtime/src/renderer/systems/vkr_scene_look.c`, `runtime/src/application/vkr_standard_scene_runtime.c` |
@@ -492,8 +496,15 @@ the frame queue at the GPU's rate and copy their Scene image to it
 (`Editor.Present`); frames between them carry no Scene and only present
 (`VkrEditorPassPayload.present_only`). The runtime chooses each frame from the
 Scene's measured GPU time and the display interval, so the UI presents at the
-display's rate. Captures, the animation preview and Render Stop present once per
-frame; Vulkan always does. See [ADR-111](adr/111-editor-presenter.md).
+display's rate. Captures, the animation preview, a remote view and Render Stop
+present once per frame; Vulkan always does. See
+[ADR-111](adr/111-editor-presenter.md).
+
+On Metal the editor payload may also carry a view export, a video surface
+the frame resamples its finished Scene image into and reports once the GPU
+wrote it, and a view import, a decoded remote Scene image the UI draws in
+place of the Scene while the frame renders none. See
+[ADR-131](adr/131-view-streaming.md).
 
 `VkrFrame` identifies one acquisition and supplies resolved target facts. It must
 not be copied or modified; its renderer must outlive it. Consumed or stale frame

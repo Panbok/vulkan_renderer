@@ -137,6 +137,10 @@ struct VkrStandardSceneRuntimeFrame {
   /* The recording's number for this frame, or UINT64_MAX; its metrics join
      the recording under it when the frame completes. */
   uint64_t recording_frame;
+  /* View streaming (ADR-131): the export the frame took and a reference to
+     the import it draws, held until the frame is built again. */
+  VkrViewExport view_export;
+  VkrVideoSurface *view_import;
 };
 
 vkr_internal bool8_t vkr_standard_scene_runtime_register_duration_metric(
@@ -735,6 +739,14 @@ vkr_internal bool8_t vkr_standard_scene_runtime_rendering_initialize(
 vkr_internal void vkr_standard_scene_runtime_rendering_shutdown(
     VkrStandardSceneRuntime *application) {
   vkr_renderer_wait_idle(&application->renderer);
+  vkr_standard_scene_runtime_set_view_export(application, NULL);
+  vkr_standard_scene_runtime_set_view_import(application, NULL);
+  for (uint32_t i = 0u; i < ArrayCount(application->frames); ++i) {
+    if (application->frames[i] && application->frames[i]->view_import) {
+      vkr_video_surface_release(application->frames[i]->view_import);
+      application->frames[i]->view_import = NULL;
+    }
+  }
   vkr_platform_gpu_monitor_destroy(&application->app_allocator,
                                    &application->gpu_monitor);
   if (application->assets.resource_system_initialized)
@@ -1056,6 +1068,56 @@ vkr_internal bool8_t vkr_standard_scene_runtime_editor_viewport_panel_rect(
   }
   *out_panel_rect = (Vec4){panel.x, panel.y, panel.width, panel.height};
   return true_v;
+}
+
+void vkr_standard_scene_runtime_set_view_export(
+    VkrStandardSceneRuntime *application, const VkrViewExport *view_export) {
+  const VkrViewExport replaced = application->view_export_next;
+  application->view_export_next =
+      view_export ? *view_export : (VkrViewExport){0};
+  if (replaced.surface && replaced.done) {
+    replaced.done(replaced.context, replaced.tag, false_v);
+  }
+  /* The renderer would refuse the frame that carried it. */
+  if (view_export &&
+      !vkr_renderer_view_streaming_supported(&application->renderer)) {
+    vkr_standard_scene_runtime_set_view_export(application, NULL);
+  }
+}
+
+void vkr_standard_scene_runtime_set_view_import(
+    VkrStandardSceneRuntime *application, VkrVideoSurface *surface) {
+  if (!vkr_renderer_view_streaming_supported(&application->renderer)) {
+    surface = NULL;
+  }
+  if (surface) {
+    vkr_video_surface_retain(surface);
+  }
+  if (application->view_import) {
+    vkr_video_surface_release(application->view_import);
+  }
+  application->view_import = surface;
+}
+
+/* View streaming (ADR-131), last before the frame input is built: an
+   editor Scene frame takes the waiting export, and the frame holds a
+   reference to the import it draws until it is built again. */
+vkr_internal void vkr_standard_scene_runtime_attach_view_stream(
+    VkrStandardSceneRuntime *application, VkrStandardSceneRuntimeFrame *frame) {
+  VkrStandardSceneRuntimeDrawContext *draw = &frame->draw;
+  if (!draw->has_editor) {
+    return;
+  }
+  if (application->view_export_next.surface && !draw->scene_stopped) {
+    frame->view_export = application->view_export_next;
+    application->view_export_next = (VkrViewExport){0};
+    draw->editor_payload.view_export = &frame->view_export;
+  }
+  if (application->view_import) {
+    vkr_video_surface_retain(application->view_import);
+    frame->view_import = application->view_import;
+    draw->editor_payload.view_import = frame->view_import;
+  }
 }
 
 bool8_t vkr_standard_scene_runtime_editor_scene_rendering_stopped(
@@ -3438,6 +3500,13 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       application->renderer.backend_type == VKR_RENDERER_BACKEND_TYPE_METAL;
 
   VkrStandardSceneRuntimeFrame *frame = application->frame;
+  /* The frame completed when it was last built, so the renderer holds its
+     own reference to an import it drew. */
+  if (frame->view_import) {
+    vkr_video_surface_release(frame->view_import);
+    frame->view_import = NULL;
+  }
+  frame->view_export = (VkrViewExport){0};
   frame->decoupled = vkr_standard_scene_runtime_can_decouple(application);
   frame->shadow_ns = 0u;
   VkrFrame *setup = &frame->setup;
@@ -3492,12 +3561,13 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
       .setup = setup,
       .scratch = application->frame_allocator,
       .target_changed = target_changed,
-      /* A presentation-only frame builds no Scene either (ADR-111). */
+      /* A presentation-only frame builds no Scene either (ADR-111), nor
+         one that shows a remote Scene image (ADR-131). */
       .scene_stopped =
           vkr_standard_scene_runtime_editor_scene_rendering_stopped(
               application) ||
           application->editor_viewport.scene_backdrop_blur ||
-          frame->present_only,
+          frame->present_only || application->view_import,
   };
   const VkrRendererError world_error =
       vkr_standard_scene_runtime_build_world_payload(application, draw);
@@ -3564,6 +3634,7 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
         application, setup, VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED);
     return;
   }
+  vkr_standard_scene_runtime_attach_view_stream(application, frame);
   frame->packet =
       vkr_standard_scene_runtime_build_frame_input(application, draw, delta);
 
@@ -3599,6 +3670,11 @@ void vkr_standard_scene_runtime_draw_frame(VkrStandardSceneRuntime *application,
     VKR_ZONE_END(submit_zone);
   }
   if (submit_error != VKR_RENDERER_ERROR_NONE) {
+    /* The renderer reports the export of a frame it accepted only. */
+    if (draw->editor_payload.view_export && frame->view_export.done) {
+      frame->view_export.done(frame->view_export.context,
+                              frame->view_export.tag, false_v);
+    }
     VkrRendererFrameResult result = {
         .error = submit_error,
         .validation = validation,
@@ -3710,9 +3786,10 @@ vkr_internal void vkr_standard_scene_runtime_observe_scene_frames(
    image, as a recording's thumbnails are, rides the next Scene frame the
    presenter renders anyway: leaving the presenter for it rendered two Scenes
    back to back, a 25 ms frame twice a second while recording. Final-color
-   captures, the animation preview and a stopped Scene keep one presentation
-   per frame; after them the presenter holds no Scene image, so its first
-   frame renders one rather than presenting the UI over an empty Scene. */
+   captures, the animation preview, a remote view (ADR-131) and a stopped
+   Scene keep one presentation per frame; after them the presenter holds no
+   Scene image, so its first frame renders one rather than presenting the
+   UI over an empty Scene. */
 vkr_internal void vkr_standard_scene_runtime_choose_presentation(
     VkrStandardSceneRuntime *application) {
   VkrStandardSceneRuntimeFrame *frame = application->frame;
@@ -3730,7 +3807,7 @@ vkr_internal void vkr_standard_scene_runtime_choose_presentation(
       (application->capture_request &&
        !vkr_standard_scene_runtime_capture_reads_scene(
            application->capture_request)) ||
-      application->animation_preview.player) {
+      application->animation_preview.player || application->view_import) {
     application->presenter_images_stale = true_v;
     /* A stopped Scene changes no image; its next completion starts over. */
     if (vkr_standard_scene_runtime_editor_scene_rendering_stopped(

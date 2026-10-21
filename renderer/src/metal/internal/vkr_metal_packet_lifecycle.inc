@@ -961,6 +961,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
         (void)vkr_metal_packet_renderer_drain(renderer, NULL, NULL);
       vkr_metal_packet_presenter_wait_idle(renderer);
       vkr_metal_packet_presenter_destroy(renderer);
+      vkr_metal_packet_view_destroy(renderer);
       vkr_metal_packet_release_pass_descriptors(renderer);
       vkr_metal_packet_release_command_slots(renderer);
       vkr_metal_packet_release_commit_feedback_records(renderer);

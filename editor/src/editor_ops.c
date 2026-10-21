@@ -8,6 +8,7 @@
 #include "editor_lighting.h"
 #include "editor_material.h"
 #include "editor_projects.h"
+#include "editor_remote_view.h"
 #include "editor_session.h"
 #include "editor_workbench.h"
 
@@ -41,6 +42,7 @@
 #include "renderer/systems/vkr_scene_types.h"
 #include "script/vkr_io_router.h"
 #include "vkr_bakery_buffer.h"
+#include "vkr_depot_object.h"
 #include "vkr_rg_debug.h"
 
 #include "stb_image.h"
@@ -15933,6 +15935,88 @@ static VkrEditorOpStatus ops_run_session_leave(OpsContext *ctx) {
 }
 
 // =============================================================================
+// View streaming (editor_remote_view.h)
+// =============================================================================
+
+static VkrEditorOpStatus ops_run_remote_view_status(OpsContext *ctx) {
+  ctx->call->result = vkr_editor_remote_view_status_json(
+      ctx->editor->remote_view, ops_arena(ctx));
+  return VKR_EDITOR_OP_DONE;
+}
+
+static VkrEditorOpStatus ops_run_remote_view_serve(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char bind[64] = {0};
+  char error[192] = {0};
+  if (!ops_arg_string(ctx, args, "bind", bind, sizeof(bind))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  uint8_t allowed[VKR_EDITOR_REMOTE_VIEW_ALLOWED_MAX][32];
+  uint32_t allowed_count = 0u;
+  const VkrBakeryJson *allow = vkr_bakery_json_get(args, "allow");
+  if (allow && allow->type != VKR_BAKERY_JSON_ARRAY) {
+    ops_fail(ctx, OPS_INVALID, "'allow' is an array of identity keys");
+    return VKR_EDITOR_OP_DONE;
+  }
+  for (const VkrBakeryJson *entry = allow ? allow->first : NULL; entry;
+       entry = entry->next) {
+    char hex[VKR_DEPOT_ID_HEX] = {0};
+    VkrDepotId key;
+    if (entry->type != VKR_BAKERY_JSON_STRING || entry->string.length != 64u ||
+        allowed_count == VKR_EDITOR_REMOTE_VIEW_ALLOWED_MAX) {
+      ops_fail(ctx, OPS_INVALID,
+               "'allow' takes at most %u keys of 64 hexadecimal digits",
+               VKR_EDITOR_REMOTE_VIEW_ALLOWED_MAX);
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemCopy(hex, entry->string.str, entry->string.length);
+    if (!vkr_depot_id_parse(hex, &key)) {
+      ops_fail(ctx, OPS_INVALID, "'%s' is not a key of 64 hexadecimal digits",
+               hex);
+      return VKR_EDITOR_OP_DONE;
+    }
+    MemCopy(allowed[allowed_count++], key.bytes, 32u);
+  }
+  int64_t bitrate = 0;
+  if (vkr_bakery_json_get(args, "bitrate_max") &&
+      (!vkr_bakery_json_get_int(args, "bitrate_max", &bitrate) ||
+       bitrate < 1000000 || bitrate > 400000000)) {
+    ops_fail(ctx, OPS_INVALID,
+             "'bitrate_max' is bits per second, 1000000 to 400000000");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_remote_view_serve(ctx->editor->remote_view, ctx->frame, bind,
+                                    allowed, allowed_count, (uint32_t)bitrate,
+                                    error, sizeof(error))) {
+    ops_fail(ctx, OPS_BUSY, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  return ops_run_remote_view_status(ctx);
+}
+
+static VkrEditorOpStatus ops_run_remote_view_connect(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  char address[96] = {0};
+  char key[80] = {0};
+  char error[192] = {0};
+  if (!ops_arg_string(ctx, args, "address", address, sizeof(address)) ||
+      !ops_arg_string(ctx, args, "key", key, sizeof(key))) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_remote_view_connect(ctx->editor->remote_view, ctx->frame,
+                                      address, key, error, sizeof(error))) {
+    ops_fail(ctx, OPS_INVALID, "%s", error);
+    return VKR_EDITOR_OP_DONE;
+  }
+  return ops_run_remote_view_status(ctx);
+}
+
+static VkrEditorOpStatus ops_run_remote_view_stop(OpsContext *ctx) {
+  vkr_editor_remote_view_stop(ctx->editor->remote_view, ctx->frame);
+  return ops_run_remote_view_status(ctx);
+}
+
+// =============================================================================
 // Recordings (docs/proposals/recordings.md)
 // =============================================================================
 
@@ -19227,7 +19311,7 @@ static const OpsDef s_ops[] = {
      ",\"target\":" OPS_VEC3_SCHEMA ",\"far\":{\"type\":\"number\"},"
      "\"glide\":{\"type\":\"boolean\"}},"
      "\"required\":[\"eye\",\"target\"]}",
-     ops_run_camera, NULL},
+     ops_run_camera, NULL, OPS_NO_SCENE},
     {"cmd",
      "Run one editor Cmd statement (see 'cmd' with line 'help') and return "
      "the lines it printed.",
@@ -19445,6 +19529,36 @@ static const OpsDef s_ops[] = {
      "pointer ray, this editor's identity key and who may join.",
      "{\"type\":\"object\",\"properties\":{}}", ops_run_session_status, NULL,
      OPS_QUICK},
+    {"remote_view.serve",
+     "Serve this editor's Scene image to one other editor (ADR-131) on "
+     "'bind' (a numeric address, default every interface, port 7340); "
+     "answers the address and the key the client connects with. 'allow' "
+     "limits clients to those identity keys; without it anyone given the "
+     "key connects. The client's Scene camera steers this one. "
+     "'bitrate_max' caps the stream (bits per second, default 40000000).",
+     "{\"type\":\"object\",\"properties\":{\"bind\":{\"type\":"
+     "\"string\"},\"allow\":{\"type\":\"array\",\"items\":{\"type\":"
+     "\"string\"}},\"bitrate_max\":{\"type\":\"integer\"}}}",
+     ops_run_remote_view_serve, NULL, OPS_NO_SCENE},
+    {"remote_view.connect",
+     "Show the Scene another editor serves (remote_view.serve) at "
+     "'address' with its 64-digit 'key' in this editor's Scene panel, "
+     "instead of rendering one; this Scene camera steers the server's. Poll "
+     "remote_view.status for frames shown and the pose-to-display latency.",
+     "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":"
+     "\"string\"},\"key\":{\"type\":\"string\"}},\"required\":["
+     "\"address\",\"key\"]}",
+     ops_run_remote_view_connect, NULL, OPS_NO_SCENE},
+    {"remote_view.stop", "Stop serving or showing a remote Scene.",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_remote_view_stop, NULL,
+     OPS_NO_SCENE},
+    {"remote_view.status",
+     "View streaming: the role, address and key, the stream's size, rate "
+     "and frame counts; on a client the pose-to-display latency p50 and "
+     "p95 with its parts (client: arrival to display; decode; the server's "
+     "render and encode).",
+     "{\"type\":\"object\",\"properties\":{}}", ops_run_remote_view_status,
+     NULL, OPS_QUICK | OPS_NO_SCENE},
     {"depot.status",
      "Project sharing: whether this editor shares the open project or holds "
      "a copy of one, the server, its access requests and list, local changes, "
@@ -19590,9 +19704,15 @@ VkrEditorOpStatus vkr_editor_ops_run(VkrEditorOps *ops, VkrEditorUi *editor,
              (int)call->op.length, call->op.str);
     return ops_done(&ctx);
   }
+  /* A Scene panel showing another editor's Scene captures without a
+     scene of its own (editor_remote_view.h). */
+  const bool8_t remote_capture =
+      def->run == ops_run_capture &&
+      vkr_editor_remote_view_showing(editor->remote_view);
   if (!call->stage && !frame->scene && !frame->world &&
       !(def->flags & OPS_NO_SCENE) && def->run != ops_run_list &&
-      def->run != ops_run_cmd && def->run != ops_run_status) {
+      def->run != ops_run_cmd && def->run != ops_run_status &&
+      !remote_capture) {
     ops_fail(&ctx, OPS_BUSY, "No scene is loaded");
     return ops_done(&ctx);
   }

@@ -780,6 +780,9 @@ typedef struct VkrEditorUi {
   struct VkrEditorSession *session;
   /* Project sharing through the depot (editor_depot.h). */
   struct VkrEditorDepot *depot;
+  /* View streaming: this editor's Scene served to another, or another's
+     shown here (editor_remote_view.h). */
+  struct VkrEditorRemoteView *remote_view;
   /* The Level checks window's last report (editor_level.h). */
   struct VkrEditorLevelReport *level_report;
   /* Brush clipping on the selected brush's grid (editor_brush_grid.h). */

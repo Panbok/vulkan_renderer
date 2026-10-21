@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-22
 authority: adr
 ---
 # ADR-111: Editor presenter
@@ -78,8 +78,9 @@ A capture whose channels all read images the Scene renders, such as the
 presenter: presentation-only frames leave it pending, and the next Scene frame
 the presenter renders carries it. Leaving the presenter for it rendered two
 Scenes back to back, which stalled the editor for about 25 ms on each
-thumbnail. Final-color captures, the animation preview, Render Stop and the
-backdrop blur keep one
+thumbnail. Final-color captures, the animation preview, Render Stop, the
+backdrop blur and a remote view ([ADR-131](131-view-streaming.md), whose
+image the frame's own UI pass draws) keep one
 presentation per frame, through the frame's own graph. A Scene presented that
 way makes the presenter's images stale, so the next presenter frame renders a
 Scene instead of only presenting: presenting with no image left the Scene

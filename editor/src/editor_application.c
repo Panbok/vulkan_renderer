@@ -12,6 +12,7 @@
 #include "editor_material.h"
 #include "editor_physics.h"
 #include "editor_projects.h"
+#include "editor_remote_view.h"
 #include "editor_session.h"
 
 #include "core/logger.h"
@@ -111,10 +112,12 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
       &ui->retained_allocator, editor->agent_socket, !editor->agent_disabled);
   editor->ui.session = vkr_editor_session_create(&ui->retained_allocator);
   editor->ui.depot = vkr_editor_depot_create(&ui->retained_allocator);
+  editor->ui.remote_view =
+      vkr_editor_remote_view_create(&ui->retained_allocator);
   if (!editor->ui.bakery || !editor->ui.build || !editor->ui.scene_panels ||
       !editor->ui.physics_settings || !editor->ui.scripts || !editor->ui.code ||
       !editor->ui.materials || !editor->ui.agent || !editor->ui.session ||
-      !editor->ui.depot)
+      !editor->ui.depot || !editor->ui.remote_view)
     goto cleanup;
   /* Streaming starts before the scene loads, so its reads already ask. */
   if (editor->stream_address || editor->stream_workspace) {
@@ -192,6 +195,8 @@ static bool8_t editor_application_initialize(void *state, VkrUiDockTree *dock,
   }
   return true_v;
 cleanup:
+  vkr_editor_remote_view_destroy(editor->ui.remote_view);
+  editor->ui.remote_view = NULL;
   vkr_editor_depot_destroy(editor->ui.depot);
   editor->ui.depot = NULL;
   vkr_editor_session_destroy(editor->ui.session);
@@ -363,6 +368,8 @@ static bool8_t editor_application_shutdown(void *state,
   vkr_editor_content_destroy(editor->ui.content);
   editor->ui.content = NULL;
   vkr_editor_recording_shutdown(&editor->ui);
+  vkr_editor_remote_view_destroy(editor->ui.remote_view);
+  editor->ui.remote_view = NULL;
   vkr_editor_depot_destroy(editor->ui.depot);
   editor->ui.depot = NULL;
   vkr_editor_session_destroy(editor->ui.session);

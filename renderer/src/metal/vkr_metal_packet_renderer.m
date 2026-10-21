@@ -896,6 +896,44 @@ typedef struct VkrMetalPacketPresenter {
   bool8_t ready;
 } VkrMetalPacketPresenter;
 
+/** Surfaces wrapped for view streaming at once: an encoder's ring and the
+    decoder's recycled images (ADR-131). */
+#define VKR_METAL_PACKET_VIEW_TEXTURES 16u
+
+/** One lib video surface wrapped as a texture, kept with a reference to the
+    surface until the GPU finished the last frame that used it. */
+typedef struct VkrMetalPacketViewTexture {
+  VkrVideoSurface *surface;
+  IOSurfaceRef platform;
+  id<MTLTexture> texture;
+  uint64_t last_use_value;
+} VkrMetalPacketViewTexture;
+
+/** View streaming (vkr_metal_packet_view.inc): exported and imported Scene
+    images, made on first use. */
+typedef struct VkrMetalPacketView {
+  bool8_t ready;
+  id<MTLResidencySet> residency;
+  /** Reports finished exports off the render thread. */
+  MTLSharedEventListener *listener;
+  dispatch_queue_t listener_queue;
+  id<MTLComputePipelineState> export_pipeline;
+  VkrMetalPacketViewTexture textures[VKR_METAL_PACKET_VIEW_TEXTURES];
+  /** The export of the frame being recorded, reported once the frame
+      commits; `pending_written` once the frame copied into it. */
+  VkrViewExport pending;
+  bool8_t has_pending;
+  bool8_t pending_written;
+  /** The frame's prepared export dispatch, recorded in its readback
+      encoder: its root and the surface's extent. */
+  uint64_t export_root;
+  uint32_t export_width;
+  uint32_t export_height;
+  bool8_t export_active;
+  /** The frame's imported remote view the UI draws; nil without one. */
+  id<MTLTexture> import_texture;
+} VkrMetalPacketView;
+
 /* The depth fade scale of a decal without depth fade: every point inside its
    box keeps full weight. */
 #define VKR_METAL_DECAL_HARD_EDGE_SCALE 1.0e6f
@@ -962,6 +1000,7 @@ struct VkrMetalPacketRenderer {
   id<MTL4CommandQueue> queue;
   id<MTLSharedEvent> completion;
   VkrMetalPacketPresenter presenter;
+  VkrMetalPacketView view;
   VkrMetalPacketCommandSlot *command_slots;
   VkrMetalPacketResult *completed_timing_results;
   VkrMetalPacketCommitFeedbackRecord *commit_feedback_records;
