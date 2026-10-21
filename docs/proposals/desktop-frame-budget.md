@@ -165,9 +165,10 @@ What the costs show:
    quality. Local shadows cost 3.0 ms median on the orbit and 6.0 ms on the
    walk, against shadow quality's 3.0 ms target, mostly in the mask and in
    deferred lighting's reads of it. (c) SMAA T2x instead of FSR's
-   antialiasing, which [ADR-052](../adr/052-vulkan-fsr31-upscaling.md) lists
-   as cheaper but less stable; it measures 0.7 ms cheaper on both cases.
-   (d) Only then dynamic resolution,
+   antialiasing measures 0.7 ms cheaper on both cases, but on 2026-10-21 the
+   owner kept FSR for its image quality
+   ([ADR-052](../adr/052-vulkan-fsr31-upscaling.md)); lever (c) is closed
+   without a change. (d) Only then dynamic resolution,
    which needs a Vulkan scene scale and an FSR upscale mode and reopens
    ADR-052; the owner avoids it unless the budget cannot be met at a fixed
    resolution, because a changing resolution blurs the image in motion.

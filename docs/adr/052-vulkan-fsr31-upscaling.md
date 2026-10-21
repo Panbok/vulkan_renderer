@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-16
+updated: 2026-10-21
 authority: adr
 ---
 
@@ -101,6 +101,12 @@ Timing, `profile` with `local-offscreen-gpu-repeated.json` at 2560 × 1440,
 `FSR31.Upscale` 1.86, tonemap 0.20 ms) replaces T2x's 1.50 ms
 (`Temporal.Resolve` 0.57 plus the display-linear, SMAA and resolve passes).
 Debug with synchronization validation on the street view: no messages.
+
+On 2026-10-21 the owner kept FSR for the desktop frame budget as well: in
+the authoritative Bistro High cases at 2560 × 1440, SMAA T2x measures 0.7 ms
+cheaper at the median on the orbit and the street walk
+([Desktop frame budget](../proposals/desktop-frame-budget.md#high-gate-costs)),
+and FSR's image quality is worth that cost.
 
 Tuning, 2026-10-16, same oracle (references rendered again, so values
 differ slightly from the table above), FSR's defaults first; still edge /
