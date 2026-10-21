@@ -6,6 +6,17 @@ include_guard(GLOBAL)
 # beside the executables, opened only when a recording asks for counters on
 # an AMD device. Other hosts and GPUs build and run without it.
 
+# Copies the Vulkan GPUPerfAPI DLL beside `target`'s executable, where the
+# backend opens it by name. Defined before the host check below, so every
+# host's targets can call it; it copies nothing without GPUPerfAPI.
+function(vkr_gpa_copy_runtime target)
+    if(VKR_GPA_AVAILABLE)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${VKR_GPA_VK_DLL}" "$<TARGET_FILE_DIR:${target}>/GPUPerfAPIVK-x64.dll")
+    endif()
+endfunction()
+
 # Cache entries, so the editor's and tools' directories see them.
 set(VKR_GPA_AVAILABLE OFF CACHE INTERNAL "GPUPerfAPI downloaded")
 if(NOT WIN32 OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$")
@@ -42,13 +53,3 @@ set(VKR_GPA_INCLUDE_DIR "${_vkr_gpa_dir}/include" CACHE INTERNAL
     "GPUPerfAPI headers")
 set(VKR_GPA_VK_DLL "${_vkr_gpa_dir}/bin/GPUPerfAPIVK-x64.dll" CACHE INTERNAL
     "GPUPerfAPI Vulkan DLL")
-
-# Copies the Vulkan GPUPerfAPI DLL beside `target`'s executable, where the
-# backend opens it by name.
-function(vkr_gpa_copy_runtime target)
-    if(VKR_GPA_AVAILABLE)
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${VKR_GPA_VK_DLL}" "$<TARGET_FILE_DIR:${target}>/GPUPerfAPIVK-x64.dll")
-    endif()
-endfunction()
