@@ -133,6 +133,17 @@ bool8_t vkr_depot_blob_parse(const uint8_t *bytes, uint64_t size,
                              uint64_t *out_file_size,
                              VkrDepotChunkVisitor visit, void *context);
 
+/* Calls `visit` for each chunk of a blob that holds bytes of the file's
+   range [offset, offset + size), in order, with the file offset the chunk
+   starts at. False when the blob is invalid, the range is empty or passes
+   the file's end, or `visit` returns false. */
+typedef bool8_t (*VkrDepotRangeVisitor)(void *context,
+                                        const VkrDepotChunkRef *chunk,
+                                        uint64_t chunk_offset);
+bool8_t vkr_depot_blob_range(const uint8_t *bytes, uint64_t blob_size,
+                             uint64_t offset, uint64_t size,
+                             VkrDepotRangeVisitor visit, void *context);
+
 typedef bool8_t (*VkrDepotEntryVisitor)(void *context,
                                         const VkrDepotTreeEntry *entry);
 bool8_t vkr_depot_tree_parse(const uint8_t *bytes, uint64_t size,

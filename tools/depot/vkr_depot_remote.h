@@ -1,5 +1,6 @@
 #pragma once
 
+#include "filesystem/vkr_vfs.h"
 #include "memory/vkr_allocator.h"
 #include "vkr_depot_store.h"
 #include "vkr_depot_workspace.h"
@@ -17,10 +18,18 @@
  * directory. vkr_vfs_set_remote installs it, so every loader read below the
  * directory asks first.
  *
- * One worker thread owns the connection. It takes every waiting request at
- * once and downloads their blobs in one pipelined transfer. A file already
- * under the directory with the listed size and its blob in the store counts
- * as present, so a second run fetches nothing it already has. */
+ * Part of a file can arrive without the rest: vkr_depot_remote_read
+ * downloads only the chunks that hold the bytes it asks for, and a later
+ * fetch of the whole file downloads only the other chunks. A texture's
+ * smallest mips lie at the start of its file (KTX2), so a loader can draw
+ * them before the file is whole (ADR-123).
+ *
+ * One worker thread owns the connection. It serves every waiting read in
+ * one transfer, then every waiting fetch in one transfer, then prefetches
+ * in transfers of at most 16 MiB of listed files, so a read or fetch never
+ * waits behind a long background download. A file already under the
+ * directory with the listed size and its blob in the store counts as
+ * present, so a second run fetches nothing it already has. */
 
 typedef struct VkrDepotRemoteConfig {
   /* Absolute; files land below it and it is created when missing. */
@@ -47,10 +56,18 @@ typedef struct VkrDepotRemoteStats {
   /* Requests the remote could not serve. */
   uint32_t failed;
   uint64_t stored_bytes;
-  /* Microseconds callers spent waiting in vkr_depot_remote_fetch, and from
-     the end of opening to the newest file written. */
+  /* Reads of part of a file that went to the server, and the stored bytes
+     their transfers brought; `stored_bytes` counts whole-file transfers. */
+  uint32_t reads;
+  uint64_t read_bytes;
+  /* Files vkr_depot_remote_prefetch queued. */
+  uint32_t prefetched;
+  /* Microseconds callers spent waiting in vkr_depot_remote_fetch and
+     vkr_depot_remote_read, and from the end of opening to the newest file
+     written and to the newest read served from the server. */
   uint64_t wait_us;
   uint64_t last_write_us;
+  uint64_t last_read_us;
   VkrDepotId commit;
   VkrDepotId cooked_commit;
 } VkrDepotRemoteStats;
@@ -64,10 +81,37 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
                                       const VkrDepotRemoteConfig *config,
                                       char *error, uint32_t capacity);
 
-/* A VkrVfsRemoteFetch: makes `relative` ('/'-separated, below the
+/* A VkrVfsRemoteCalls fetch: makes `relative` ('/'-separated, below the
    directory) exist and returns true, or false at once when no commit lists
    it, or when its download failed. Any thread. */
 bool8_t vkr_depot_remote_fetch(void *remote, const char *relative);
+
+/* A VkrVfsRemoteCalls read: copies `size` bytes at `offset` of
+   `relative` into `destination`. A present file reads from the disk;
+   otherwise only the chunks holding those bytes download, ahead of every
+   fetch. Blocks; any thread. False when no commit lists the path, the
+   range passes its end, or the download failed. */
+bool8_t vkr_depot_remote_read(void *remote, const char *relative,
+                              uint64_t offset, uint64_t size,
+                              void *destination);
+
+/* A VkrVfsRemoteCalls pending: whether a commit lists `relative` and it
+   is not yet whole under the directory (and has not failed); its listed
+   size in `out_size`. Never blocks on the network. */
+bool8_t vkr_depot_remote_pending(void *remote, const char *relative,
+                                 uint64_t *out_size);
+
+/* Queues `relative`'s download behind every read and fetch and returns at
+   once; nothing for an unlisted file or one already queued or present. */
+void vkr_depot_remote_prefetch(void *remote, const char *relative);
+
+/* Files written whole under the directory since opening; it only grows.
+   Lock-free. */
+uint64_t vkr_depot_remote_arrivals(void *remote);
+
+/* The calls above as vkr_vfs_set_remote takes them, with the remote as
+   their context. */
+const VkrVfsRemoteCalls *vkr_depot_remote_vfs_calls(void);
 
 void vkr_depot_remote_stats(VkrDepotRemote *remote,
                             VkrDepotRemoteStats *out_stats);

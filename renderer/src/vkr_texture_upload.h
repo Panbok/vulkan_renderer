@@ -40,4 +40,8 @@ typedef struct VkrTexturePreparedLoad {
      texture; the renderer ignores them. */
   uint32_t limit_source_extent;
   uint32_t limit_source_mip_levels;
+  /* The smallest mips of a file still arriving from a remote, which a load
+     of the whole file at the same limit replaces (ADR-123). The texture
+     system keeps it with the texture; the renderer ignores it. */
+  bool8_t preview;
 } VkrTexturePreparedLoad;

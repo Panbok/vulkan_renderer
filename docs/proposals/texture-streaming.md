@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-20
+updated: 2026-10-21
 authority: proposal
 ---
 # Texture streaming
@@ -31,7 +31,11 @@ owns fetching bytes from a remote depot and their transport order, and
   material textures: the tighter of the Graphics `texture_resolution` setting
   and the scene's `texture_max_extent` (ADR-012). A changed limit reloads the
   affected textures through the material stream queue, at most 32 queued or
-  loading, recently drawn materials first.
+  loading, recently drawn materials first. Only a material's first load of a
+  file larger than 1 MiB still arriving from a remote content directory
+  reads less: the levels in its first 256 KiB, as a preview that this
+  reload replaces once a frame draws it
+  ([ADR-123](../adr/123-asset-streaming-from-a-depot.md)).
 - **Streams.** The material system holds up to 4,096 texture streams with 8
   in flight
   ([vkr_material_system.h](../../runtime/src/renderer/systems/vkr_material_system.h)).

@@ -1,6 +1,8 @@
 #include "vkr_depot_remote.h"
 
+#include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
@@ -16,13 +18,32 @@
 #define REMOTE_REFS_MAX 1024u
 /* Requests one transfer takes at most. */
 #define REMOTE_BATCH_MAX 256u
+/* Listed bytes one prefetch transfer takes at most (at least one file), so
+   a read or fetch that arrives meanwhile waits behind no more than that. */
+#define REMOTE_PREFETCH_BATCH_BYTES (16ull * 1024ull * 1024ull)
 
 typedef enum RemoteFileState {
   REMOTE_FILE_ABSENT = 0,
+  /* In the prefetch queue and not yet taken. */
+  REMOTE_FILE_PREFETCH,
+  /* In the fetch queue or a transfer. */
   REMOTE_FILE_QUEUED,
   REMOTE_FILE_PRESENT,
   REMOTE_FILE_FAILED,
 } RemoteFileState;
+
+/* A read of part of a file. It lives on its caller's stack: the caller
+   waits until the worker marks it done, or removes it from the list while
+   the worker has not taken it. */
+typedef struct RemoteRead {
+  struct RemoteRead *next;
+  uint32_t index;
+  uint64_t offset;
+  uint64_t size;
+  uint8_t *destination;
+  bool8_t done;
+  bool8_t ok;
+} RemoteRead;
 
 struct VkrDepotRemote {
   /* The caller's: the worker, its lock and its signals, made and freed on
@@ -51,8 +72,16 @@ struct VkrDepotRemote {
   /* Wakes the worker; and the callers when a transfer ends. */
   VkrCondVar work;
   VkrCondVar done;
+  /* Served first, then fetches, then prefetches. A file enters each queue
+     at most once, so both hold every listed file. */
+  RemoteRead *reads;
   uint32_t *queue;
   uint32_t queue_count;
+  uint32_t *prefetch;
+  uint32_t prefetch_head;
+  uint32_t prefetch_count;
+  /* Files written whole since opening; read without the lock. */
+  VkrAtomicUint64 arrivals;
   bool8_t stopping;
   /* When opening ended, on the platform clock. */
   uint64_t opened_us;
@@ -112,14 +141,19 @@ static bool8_t remote_file_present(const VkrDepotRemote *remote,
          vkr_depot_store_has(&remote->store, &entry->blob);
 }
 
-/* Downloads `count` blobs, reconnecting once when the transfer fails. */
+/* Downloads `count` whole files (`blobs`) or parts of files (`ranges`),
+   reconnecting once when the transfer fails. */
 static bool8_t remote_transfer(VkrDepotRemote *remote, const VkrDepotId *blobs,
-                               uint32_t count,
+                               const VkrDepotRange *ranges, uint32_t count,
                                VkrDepotTransferStats *out_transfer) {
   for (uint32_t attempt = 0u; attempt < 2u; ++attempt) {
     VkrDepotClient *client = vkr_depot_connection_client(remote->connection);
-    if (client &&
-        vkr_depot_client_fetch_files(client, blobs, count, out_transfer)) {
+    const bool8_t fetched =
+        client && (blobs ? vkr_depot_client_fetch_files(client, blobs, count,
+                                                        out_transfer)
+                         : vkr_depot_client_fetch_ranges(client, ranges, count,
+                                                         out_transfer));
+    if (fetched) {
       return true_v;
     }
     if (client) {
@@ -141,58 +175,133 @@ static bool8_t remote_transfer(VkrDepotRemote *remote, const VkrDepotId *blobs,
   return false_v;
 }
 
+/* Serves the reads of one list: the parts of files not yet present arrive
+   in one transfer, then each read copies its bytes out of the store. */
+static void remote_serve_reads(VkrDepotRemote *remote, RemoteRead *reads) {
+  VkrDepotRange ranges[REMOTE_BATCH_MAX];
+  while (reads) {
+    RemoteRead *group = reads;
+    uint32_t count = 0u;
+    for (; reads && count < REMOTE_BATCH_MAX; reads = reads->next) {
+      ranges[count++] = (VkrDepotRange){
+          .blob = remote->files.entries[reads->index].blob,
+          .offset = reads->offset,
+          .size = reads->size,
+      };
+    }
+    VkrDepotTransferStats transfer = {0};
+    (void)remote_transfer(remote, NULL, ranges, count, &transfer);
+    uint32_t i = 0u;
+    for (RemoteRead *read = group; read != reads; read = read->next, ++i) {
+      read->ok = vkr_depot_read_blob_range(&remote->store, &ranges[i].blob,
+                                           read->offset, read->size,
+                                           read->destination);
+    }
+
+    vkr_mutex_lock(remote->mutex);
+    remote->stats.reads += count;
+    remote->stats.read_bytes += transfer.stored_bytes;
+    remote->stats.last_read_us = remote_now_us() - remote->opened_us;
+    /* A read's caller may return once it is done: read `next` first. */
+    for (RemoteRead *read = group; read != reads;) {
+      RemoteRead *next = read->next;
+      read->done = true_v;
+      read = next;
+    }
+    vkr_cond_broadcast(remote->done);
+    vkr_mutex_unlock(remote->mutex);
+  }
+}
+
+/* Downloads the `count` files of `batch` and writes them under the
+   directory. Every blob goes to the transfer, even one the store holds: a
+   read may have brought it with only some of its chunks. */
+static void remote_fetch_batch(VkrDepotRemote *remote, const uint32_t *batch,
+                               uint32_t count) {
+  VkrDepotId blobs[REMOTE_BATCH_MAX];
+  for (uint32_t i = 0u; i < count; ++i) {
+    blobs[i] = remote->files.entries[batch[i]].blob;
+  }
+  VkrDepotTransferStats transfer = {0};
+  (void)remote_transfer(remote, blobs, NULL, count, &transfer);
+  uint8_t written[REMOTE_BATCH_MAX];
+  uint32_t written_count = 0u;
+  for (uint32_t i = 0u; i < count; ++i) {
+    const VkrDepotIndexEntry *entry = &remote->files.entries[batch[i]];
+    char path[VKR_DEPOT_PATH_CAPACITY];
+    written[i] = vkr_depot_store_has(&remote->store, &entry->blob) &&
+                 vkr_bakery_path_join(path, sizeof(path), remote->directory,
+                                      entry->path) &&
+                 vkr_depot_write_blob(&remote->store, &entry->blob, path);
+    written_count += written[i];
+  }
+
+  vkr_mutex_lock(remote->mutex);
+  for (uint32_t i = 0u; i < count; ++i) {
+    remote->states[batch[i]] =
+        written[i] ? REMOTE_FILE_PRESENT : REMOTE_FILE_FAILED;
+    remote->stats.fetched += written[i];
+    remote->stats.failed += !written[i];
+  }
+  remote->stats.stored_bytes += transfer.stored_bytes;
+  remote->stats.last_write_us = remote_now_us() - remote->opened_us;
+  vkr_atomic_uint64_fetch_add(&remote->arrivals, written_count,
+                              VKR_MEMORY_ORDER_RELEASE);
+  vkr_cond_broadcast(remote->done);
+  vkr_mutex_unlock(remote->mutex);
+}
+
 static void *remote_worker(void *argument) {
   VkrDepotRemote *remote = argument;
   uint32_t batch[REMOTE_BATCH_MAX];
-  VkrDepotId blobs[REMOTE_BATCH_MAX];
   for (;;) {
     vkr_mutex_lock(remote->mutex);
-    while (!remote->stopping && remote->queue_count == 0u) {
+    while (!remote->stopping && !remote->reads && remote->queue_count == 0u &&
+           remote->prefetch_head == remote->prefetch_count) {
       vkr_cond_wait(remote->work, remote->mutex);
     }
     if (remote->stopping) {
       vkr_mutex_unlock(remote->mutex);
       break;
     }
-    const uint32_t count = Min(remote->queue_count, REMOTE_BATCH_MAX);
-    MemCopy(batch, remote->queue, count * sizeof(batch[0]));
-    remote->queue_count -= count;
-    MemCopy(remote->queue, remote->queue + count,
-            remote->queue_count * sizeof(remote->queue[0]));
-    vkr_mutex_unlock(remote->mutex);
+    if (remote->reads) {
+      RemoteRead *reads = remote->reads;
+      remote->reads = NULL;
+      vkr_mutex_unlock(remote->mutex);
+      remote_serve_reads(remote, reads);
+      continue;
+    }
 
-    uint32_t missing = 0u;
-    for (uint32_t i = 0u; i < count; ++i) {
-      const VkrDepotId *blob = &remote->files.entries[batch[i]].blob;
-      if (!vkr_depot_store_has(&remote->store, blob)) {
-        blobs[missing++] = *blob;
+    uint32_t count = 0u;
+    if (remote->queue_count) {
+      count = Min(remote->queue_count, REMOTE_BATCH_MAX);
+      MemCopy(batch, remote->queue, count * sizeof(batch[0]));
+      remote->queue_count -= count;
+      MemCopy(remote->queue, remote->queue + count,
+              remote->queue_count * sizeof(remote->queue[0]));
+    } else {
+      /* A prefetched file a fetch has since asked for went with that
+         fetch's queue. */
+      uint64_t bytes = 0u;
+      while (remote->prefetch_head < remote->prefetch_count &&
+             count < REMOTE_BATCH_MAX) {
+        const uint32_t index = remote->prefetch[remote->prefetch_head];
+        const uint64_t size = remote->files.entries[index].size;
+        if (remote->states[index] == REMOTE_FILE_PREFETCH) {
+          if (count > 0u && bytes + size > REMOTE_PREFETCH_BATCH_BYTES) {
+            break;
+          }
+          remote->states[index] = REMOTE_FILE_QUEUED;
+          batch[count++] = index;
+          bytes += size;
+        }
+        remote->prefetch_head += 1u;
       }
     }
-    VkrDepotTransferStats transfer = {0};
-    if (missing) {
-      (void)remote_transfer(remote, blobs, missing, &transfer);
-    }
-    uint8_t written[REMOTE_BATCH_MAX];
-    for (uint32_t i = 0u; i < count; ++i) {
-      const VkrDepotIndexEntry *entry = &remote->files.entries[batch[i]];
-      char path[VKR_DEPOT_PATH_CAPACITY];
-      written[i] = vkr_depot_store_has(&remote->store, &entry->blob) &&
-                   vkr_bakery_path_join(path, sizeof(path), remote->directory,
-                                        entry->path) &&
-                   vkr_depot_write_blob(&remote->store, &entry->blob, path);
-    }
-
-    vkr_mutex_lock(remote->mutex);
-    for (uint32_t i = 0u; i < count; ++i) {
-      remote->states[batch[i]] =
-          written[i] ? REMOTE_FILE_PRESENT : REMOTE_FILE_FAILED;
-      remote->stats.fetched += written[i];
-      remote->stats.failed += !written[i];
-    }
-    remote->stats.stored_bytes += transfer.stored_bytes;
-    remote->stats.last_write_us = remote_now_us() - remote->opened_us;
-    vkr_cond_broadcast(remote->done);
     vkr_mutex_unlock(remote->mutex);
+    if (count) {
+      remote_fetch_batch(remote, batch, count);
+    }
   }
   return NULL;
 }
@@ -202,6 +311,7 @@ static void remote_free(VkrDepotRemote *remote) {
   vkr_depot_file_list_free(&remote->files);
   free(remote->states);
   free(remote->queue);
+  free(remote->prefetch);
   if (remote->mutex) {
     vkr_mutex_destroy(remote->allocator, &remote->mutex);
   }
@@ -316,7 +426,8 @@ VkrDepotRemote *vkr_depot_remote_open(VkrAllocator *allocator,
 
   remote->states = calloc(remote->files.count + 1u, 1u);
   remote->queue = calloc(remote->files.count + 1u, sizeof(uint32_t));
-  if (!remote->states || !remote->queue) {
+  remote->prefetch = calloc(remote->files.count + 1u, sizeof(uint32_t));
+  if (!remote->states || !remote->queue || !remote->prefetch) {
     snprintf(error, capacity, "out of memory");
     goto fail;
   }
@@ -358,7 +469,7 @@ bool8_t vkr_depot_remote_fetch(void *context, const char *relative) {
   const uint32_t index = (uint32_t)(entry - remote->files.entries);
   vkr_mutex_lock(remote->mutex);
   uint8_t state = remote->states[index];
-  if (state == REMOTE_FILE_ABSENT) {
+  if (state == REMOTE_FILE_ABSENT || state == REMOTE_FILE_PREFETCH) {
     remote->states[index] = REMOTE_FILE_QUEUED;
     remote->queue[remote->queue_count++] = index;
     vkr_cond_signal(remote->work);
@@ -374,6 +485,133 @@ bool8_t vkr_depot_remote_fetch(void *context, const char *relative) {
   }
   vkr_mutex_unlock(remote->mutex);
   return state == REMOTE_FILE_PRESENT;
+}
+
+/* Reads part of a file already written under the directory. */
+static bool8_t remote_read_present(const VkrDepotRemote *remote,
+                                   const VkrDepotIndexEntry *entry,
+                                   uint64_t offset, uint64_t size,
+                                   void *destination) {
+  char path[VKR_DEPOT_PATH_CAPACITY];
+  if (!vkr_bakery_path_join(path, sizeof(path), remote->directory,
+                            entry->path)) {
+    return false_v;
+  }
+  const FilePath file = file_path_view(path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle handle = {0};
+  if (file_open(&file, mode, &handle) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  uint64_t read = 0u;
+  const bool8_t ok =
+      file_seek(&handle, offset) == FILE_ERROR_NONE &&
+      file_read_into(&handle, destination, size, &read) == FILE_ERROR_NONE &&
+      read == size;
+  file_close(&handle);
+  return ok;
+}
+
+bool8_t vkr_depot_remote_read(void *context, const char *relative,
+                              uint64_t offset, uint64_t size,
+                              void *destination) {
+  VkrDepotRemote *remote = context;
+  const VkrDepotIndexEntry *entry =
+      remote ? vkr_depot_file_list_find(&remote->files, relative) : NULL;
+  if (!entry || !destination || size == 0u || offset > entry->size ||
+      size > entry->size - offset) {
+    return false_v;
+  }
+  const uint32_t index = (uint32_t)(entry - remote->files.entries);
+  vkr_mutex_lock(remote->mutex);
+  if (remote->states[index] == REMOTE_FILE_PRESENT) {
+    vkr_mutex_unlock(remote->mutex);
+    return remote_read_present(remote, entry, offset, size, destination);
+  }
+  RemoteRead read = {.next = remote->reads,
+                     .index = index,
+                     .offset = offset,
+                     .size = size,
+                     .destination = destination};
+  remote->reads = &read;
+  vkr_cond_signal(remote->work);
+  const uint64_t start = remote_now_us();
+  while (!read.done) {
+    if (remote->stopping) {
+      /* A read the worker has not taken leaves the list; a taken one is
+         marked done before the worker stops. */
+      RemoteRead **link = &remote->reads;
+      while (*link && *link != &read) {
+        link = &(*link)->next;
+      }
+      if (*link) {
+        *link = read.next;
+        break;
+      }
+    }
+    vkr_cond_wait(remote->done, remote->mutex);
+  }
+  remote->stats.wait_us += remote_now_us() - start;
+  vkr_mutex_unlock(remote->mutex);
+  return read.done && read.ok;
+}
+
+bool8_t vkr_depot_remote_pending(void *context, const char *relative,
+                                 uint64_t *out_size) {
+  VkrDepotRemote *remote = context;
+  const VkrDepotIndexEntry *entry =
+      remote ? vkr_depot_file_list_find(&remote->files, relative) : NULL;
+  if (!entry) {
+    return false_v;
+  }
+  const uint32_t index = (uint32_t)(entry - remote->files.entries);
+  vkr_mutex_lock(remote->mutex);
+  const uint8_t state = remote->states[index];
+  vkr_mutex_unlock(remote->mutex);
+  const bool8_t pending =
+      state != REMOTE_FILE_PRESENT && state != REMOTE_FILE_FAILED;
+  if (pending && out_size) {
+    *out_size = entry->size;
+  }
+  return pending;
+}
+
+void vkr_depot_remote_prefetch(void *context, const char *relative) {
+  VkrDepotRemote *remote = context;
+  const VkrDepotIndexEntry *entry =
+      remote ? vkr_depot_file_list_find(&remote->files, relative) : NULL;
+  if (!entry) {
+    return;
+  }
+  const uint32_t index = (uint32_t)(entry - remote->files.entries);
+  vkr_mutex_lock(remote->mutex);
+  if (remote->states[index] == REMOTE_FILE_ABSENT) {
+    remote->states[index] = REMOTE_FILE_PREFETCH;
+    remote->prefetch[remote->prefetch_count++] = index;
+    remote->stats.prefetched += 1u;
+    vkr_cond_signal(remote->work);
+  }
+  vkr_mutex_unlock(remote->mutex);
+}
+
+uint64_t vkr_depot_remote_arrivals(void *context) {
+  VkrDepotRemote *remote = context;
+  return remote ? vkr_atomic_uint64_load(&remote->arrivals,
+                                         VKR_MEMORY_ORDER_ACQUIRE)
+                : 0u;
+}
+
+const VkrVfsRemoteCalls *vkr_depot_remote_vfs_calls(void) {
+  static const VkrVfsRemoteCalls calls = {
+      .fetch = vkr_depot_remote_fetch,
+      .pending = vkr_depot_remote_pending,
+      .read = vkr_depot_remote_read,
+      .prefetch = vkr_depot_remote_prefetch,
+      .arrivals = vkr_depot_remote_arrivals,
+  };
+  return &calls;
 }
 
 void vkr_depot_remote_stats(VkrDepotRemote *remote,

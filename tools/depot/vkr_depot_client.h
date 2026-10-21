@@ -77,6 +77,22 @@ bool8_t vkr_depot_client_fetch_files(VkrDepotClient *client,
                                      const VkrDepotId *blobs, uint32_t count,
                                      VkrDepotTransferStats *out_stats);
 
+/* Bytes [offset, offset + size) of the file `blob` names. */
+typedef struct VkrDepotRange {
+  VkrDepotId blob;
+  uint64_t offset;
+  uint64_t size;
+} VkrDepotRange;
+
+/* Downloads parts of files: each range's blob, then only the chunks the
+   store lacks that hold bytes of the range, in two pipelined transfers.
+   The files' other chunks stay on the server; a later fetch of the whole
+   file downloads only those. */
+bool8_t vkr_depot_client_fetch_ranges(VkrDepotClient *client,
+                                      const VkrDepotRange *ranges,
+                                      uint32_t count,
+                                      VkrDepotTransferStats *out_stats);
+
 /* Uploads every object of `commit` that is not part of `base` (zero for
    none) and that the server lacks. */
 bool8_t vkr_depot_client_upload(VkrDepotClient *client,

@@ -1036,6 +1036,52 @@ bool8_t vkr_depot_write_blob(const VkrDepotStore *store, const VkrDepotId *blob,
   return true_v;
 }
 
+typedef struct BlobReadState {
+  const VkrDepotStore *store;
+  uint64_t offset;
+  uint64_t size;
+  uint8_t *destination;
+} BlobReadState;
+
+/* Copies the part of one chunk that lies in the range. */
+static bool8_t blob_read_chunk(void *context, const VkrDepotChunkRef *chunk,
+                               uint64_t chunk_offset) {
+  BlobReadState *state = context;
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!vkr_depot_store_get(state->store, &chunk->id, &bytes, &size)) {
+    return false_v;
+  }
+  const bool8_t ok = size == chunk->size;
+  if (ok) {
+    const uint64_t begin = Max(chunk_offset, state->offset);
+    const uint64_t end =
+        Min(chunk_offset + chunk->size, state->offset + state->size);
+    MemCopy(state->destination + (begin - state->offset),
+            bytes + (begin - chunk_offset), (size_t)(end - begin));
+  }
+  free(bytes);
+  return ok;
+}
+
+bool8_t vkr_depot_read_blob_range(const VkrDepotStore *store,
+                                  const VkrDepotId *blob, uint64_t offset,
+                                  uint64_t size, uint8_t *destination) {
+  uint8_t *manifest = NULL;
+  uint64_t manifest_size = 0u;
+  if (!vkr_depot_store_get(store, blob, &manifest, &manifest_size)) {
+    return false_v;
+  }
+  BlobReadState state = {.store = store,
+                         .offset = offset,
+                         .size = size,
+                         .destination = destination};
+  const bool8_t ok = vkr_depot_blob_range(manifest, manifest_size, offset, size,
+                                          blob_read_chunk, &state);
+  free(manifest);
+  return ok;
+}
+
 uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
                                     const VkrDepotFileList *files) {
   uint32_t settled = 0u;

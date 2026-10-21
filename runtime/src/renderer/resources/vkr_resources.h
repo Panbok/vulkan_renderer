@@ -54,6 +54,12 @@ typedef struct VkrTexture {
      can drop its mips, else zeros (VkrTexturePreparedLoad). */
   uint32_t limit_source_extent;
   uint32_t limit_source_mip_levels;
+  /* The smallest mips of a file still arriving from a remote content
+     directory (vkr_texture_system_full_file_ready), and the remote's
+     arrival count when the file was last found pending, UINT64_MAX before
+     the first check. */
+  bool8_t preview;
+  uint64_t preview_arrivals;
   /* Counts the texture's image publication and, for a prefilter, its IBL
      bakes. */
   VkrPublicationState publication;

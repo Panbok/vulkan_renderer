@@ -11,17 +11,27 @@ docs/proposals/network-protocol.md, "Asset streaming").
    history, go to `main.cooked.<family>` with `vkr_depot cooked`.
 3. A second headless editor starts with `--stream` into an empty directory
    and opens the same scene: every read the branch lists arrives from the
-   depot. It reports `stream.status` when the scene is ready and every 5 s
-   for `--stream-settle` seconds, then captures the same view.
+   depot, and a material's texture larger than 1 MiB first draws from the
+   smallest mips at the start of its file (a preview), then, once a frame
+   draws it, from the whole file (ADR-123). It reports `stream.status` and
+   its pending and preview textures when the scene is ready and every 2 s
+   for `--settle` seconds, then captures the same view.
 
-The check passes when the streamed editor fetched files and none failed,
-every file it wrote equals the local file byte for byte, no file
-arrived in the 15 s before its capture (it had reached full detail), and
-its capture
-differs from the first local one by no more than the second local one does
-(with a floor of 0.5 levels of 255, since final colour varies between
-identical runs). It prints the times to the scene and to the last fetched
-file, and removes its depot and stream directory afterwards.
+Both local runs report their pending textures every second, so the first
+gives the local times to the scene and to every texture loaded. Every run
+captures `--settle` seconds after its scene is ready: Bistro's final colour
+drifts while it runs (0.46 levels of 255 between 30 s and 100 s of one
+local run on the Mac), so captures taken at other times would differ by
+more than streaming changes.
+
+The check passes when the streamed editor read previews and fetched files
+and none failed, every file it wrote equals the local file byte for byte,
+no file arrived in the 15 s before its capture (it had reached full detail),
+and its capture differs from the first local one by no more than the second
+local one does (with a floor of 0.5 levels of 255, since final colour varies
+between identical runs). It prints the times to the scene, to the last
+preview read and to the last fetched file against the local times, and
+removes its depot and stream directory afterwards.
 
     python tools/checks/check_asset_stream.py \\
         --editor build_release/editor/vkr_editor.exe \\
@@ -44,23 +54,31 @@ from check_editor_session import ROOT, SCENE, editor_env
 
 VIEW = '"eye":[-24,5,-14],"target":[0,3,0],"max_width":960'
 
+# A local run counts its pending textures every second, then captures.
 LOCAL_SCRIPT = f"""wait.scene
-wait {{settle}}
+stats.pending_textures
+{{polls}}
 op view.capture {{{{{VIEW}}}}}
 wait 3
 echo capture-done
 """
+LOCAL_POLL = "wait 1\nstats.pending_textures"
 
-# The streamed run reports every 5 s while its files arrive, then captures.
+# The streamed run reports every 2 s while its files arrive, then captures.
 STREAM_SCRIPT = f"""wait.scene
 op stream.status
+stats.pending_textures
+stats.preview_textures
 {{polls}}
 op stream.status
 op view.capture {{{{{VIEW}}}}}
 wait 3
 op stream.status
+stats.preview_textures
 echo capture-done
 """
+STREAM_POLL = ("wait 2\nop stream.status\nstats.pending_textures\n"
+               "stats.preview_textures")
 
 
 def png_pixels(path: pathlib.Path):
@@ -153,6 +171,29 @@ def captures(text: str) -> list:
     return paths
 
 
+def cmd_values(text: str, statement: str) -> list:
+    """The numbers an `--exec` expression printed, in order: each
+    `[cmd] > statement` echo followed by its `[cmd] <value>` line."""
+    values = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.rstrip().endswith(f"[cmd] > {statement}"):
+            for following in lines[i + 1:i + 40]:
+                if "[cmd] >" in following or "[cmd] error" in following:
+                    break
+                match = re.search(r"\[cmd\] (-?[0-9.]+)\s*$", following)
+                if match:
+                    values.append(float(match.group(1)))
+                    break
+    return values
+
+
+def scene_seconds(text: str):
+    """The scene load time the editor logged, or None."""
+    match = re.search(r"SCENE_LOAD_TIME result=ready seconds=([0-9.]+)", text)
+    return float(match.group(1)) if match else None
+
+
 def stream_statuses(text: str) -> list:
     return [answer["result"] for answer in agent_results(text)
             if isinstance(answer.get("result"), dict) and
@@ -193,11 +234,9 @@ def main() -> int:
     parser.add_argument("--editor", required=True)
     parser.add_argument("--depot", required=True)
     parser.add_argument("--port", type=int, default=7353)
-    parser.add_argument("--settle", type=int, default=30,
-                        help="seconds the scene loads before the captures")
-    parser.add_argument("--stream-settle", type=int, default=120,
-                        help="seconds the streamed run reports before its "
-                        "capture")
+    parser.add_argument("--settle", type=int, default=120,
+                        help="seconds every run waits after its scene is "
+                        "ready before its capture")
     parser.add_argument("--work", default=str(ROOT / ".scratch" /
                                               "asset-stream"))
     parser.add_argument("--timeout", type=float, default=900.0)
@@ -219,18 +258,18 @@ def main() -> int:
     try:
         # 1. The local run and its reads.
         reads = work / "reads.txt"
+        local_script = LOCAL_SCRIPT.format(
+            polls="\n".join([LOCAL_POLL] * args.settle))
         local_text = run_editor(
-            editor, work / "local", LOCAL_SCRIPT.format(settle=args.settle),
-            work / "local.log", [], {"VKR_VFS_RECORD": str(reads)},
-            args.timeout)
+            editor, work / "local", local_script, work / "local.log", [],
+            {"VKR_VFS_RECORD": str(reads)}, args.timeout)
         local_captures = captures(local_text)
         made += local_captures
         if "capture-done" not in local_text or not local_captures:
             raise RuntimeError("the local run did not capture; see "
                                f"{work / 'local.log'}")
-        again_text = run_editor(
-            editor, work / "again", LOCAL_SCRIPT.format(settle=args.settle),
-            work / "again.log", [], {}, args.timeout)
+        again_text = run_editor(editor, work / "again", local_script,
+                                work / "again.log", [], {}, args.timeout)
         again_captures = captures(again_text)
         made += again_captures
         if "capture-done" not in again_text or not again_captures:
@@ -272,7 +311,7 @@ def main() -> int:
         stream_text = run_editor(
             editor, work / "streamed",
             STREAM_SCRIPT.format(polls="\n".join(
-                ["wait 5", "op stream.status"] * (args.stream_settle // 5))),
+                [STREAM_POLL] * (args.settle // 2))),
             work / "stream.log", ["--stream", address, key, str(stream_dir)],
             {}, args.timeout)
         statuses = stream_statuses(stream_text)
@@ -291,9 +330,11 @@ def main() -> int:
         if before.get("since_open_ms", 0) - before.get("last_fetch_ms", 0) < \
                 15000.0:
             failures.append("files still arrived within 15 s of the capture; "
-                            "raise --stream-settle")
+                            "raise --settle")
         if last.get("fetched", 0) == 0:
             failures.append("the streamed editor fetched no file")
+        if last.get("reads", 0) == 0:
+            failures.append("the streamed editor read no preview")
         if last.get("failed", 0):
             failures.append(f"{last['failed']} fetches failed")
         # Every streamed file holds the local file's bytes.
@@ -324,10 +365,38 @@ def main() -> int:
               f"fetched, {last.get('failed')} failed, "
               f"{last.get('stored_bytes', 0) / 1e6:.1f} MB stored; branch "
               f"listed in {first.get('open_ms', 0):.0f} ms")
+        print(f"previews: {last.get('reads', 0)} reads brought "
+              f"{last.get('read_bytes', 0) / 1e6:.1f} MB; "
+              f"{last.get('prefetched', 0)} whole files queued after them")
         print(f"times since the stream opened: scene ready "
-              f"{first.get('since_open_ms', 0):.0f} ms, last file "
+              f"{first.get('since_open_ms', 0):.0f} ms, last preview read "
+              f"{last.get('last_read_ms', 0):.0f} ms, last file "
               f"{last.get('last_fetch_ms', 0):.0f} ms; loaders waited "
               f"{last.get('wait_ms', 0):.0f} ms in all")
+        previews = cmd_values(stream_text, "stats.preview_textures")
+        pending = cmd_values(stream_text, "stats.pending_textures")
+        if previews:
+            print(f"preview textures: {previews[0]:.0f} at the scene, "
+                  f"{max(previews):.0f} at most, {previews[-1]:.0f} at the "
+                  f"capture (a preview no frame draws keeps its small mips)")
+        if pending:
+            # Each poll reads stream.status, then the pending textures.
+            settled = next((statuses[i].get("since_open_ms", 0)
+                            for i in range(min(len(statuses), len(pending)))
+                            if pending[i] == 0), None)
+            print(f"streamed pending textures: {pending[0]:.0f} at the "
+                  f"scene, {pending[-1]:.0f} before the capture; none "
+                  f"pending from "
+                  f"{'never' if settled is None else f'{settled:.0f} ms'} "
+                  f"after the stream opened")
+        local_pending = cmd_values(local_text, "stats.pending_textures")
+        local_scene = scene_seconds(local_text)
+        loaded = next((i for i, count in enumerate(local_pending)
+                       if count == 0), None)
+        print(f"local: scene ready {local_scene or 0:.1f} s after its load "
+              f"began; every texture loaded about "
+              f"{'never' if loaded is None else f'{loaded} s'} after the "
+              f"scene")
         print(f"files: {written} written under the stream directory, "
               f"{len(mismatched)} differ from the local ones")
         if final_mean is not None and noise_mean is not None:

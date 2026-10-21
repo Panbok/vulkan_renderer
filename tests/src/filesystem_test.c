@@ -1248,29 +1248,45 @@ vkr_internal void test_vfs_workspace_overlay(void) {
   printf("  test_vfs_workspace_overlay PASSED\n");
 }
 
-/* A remote that holds `held.txt` and `assets/zz_vfs_remote/b.txt` and writes
-   each into its directory when asked. */
+/* A remote that holds `held.txt` and `assets/zz_vfs_remote/b.txt`, both
+   "fetched", and writes each into its directory when asked. */
 typedef struct FsTestRemote {
   char directory[1024];
   uint32_t calls;
   uint32_t fetched;
+  uint32_t reads;
+  uint32_t prefetches;
 } FsTestRemote;
+
+/* The path below the directory of a file the remote holds; false for one
+   it lacks. */
+vkr_internal bool8_t fs_test_remote_path(const FsTestRemote *remote,
+                                         const char *relative, char *path,
+                                         uint64_t capacity) {
+  if (strcmp(relative, "held.txt") != 0 &&
+      strcmp(relative, "assets/zz_vfs_remote/b.txt") != 0) {
+    return false_v;
+  }
+  snprintf(path, capacity, "%s/%s", remote->directory, relative);
+  return true_v;
+}
+
+vkr_internal bool8_t fs_test_path_on_disk(const char *path) {
+  FILE *existing = fopen(path, "rb");
+  if (existing) {
+    fclose(existing);
+  }
+  return existing != NULL;
+}
 
 vkr_internal bool8_t fs_test_remote_fetch(void *context, const char *relative) {
   FsTestRemote *remote = context;
   remote->calls += 1u;
   char path[1100];
-  if (strcmp(relative, "held.txt") == 0) {
-    snprintf(path, sizeof(path), "%s/held.txt", remote->directory);
-  } else if (strcmp(relative, "assets/zz_vfs_remote/b.txt") == 0) {
-    snprintf(path, sizeof(path), "%s/assets/zz_vfs_remote/b.txt",
-             remote->directory);
-  } else {
+  if (!fs_test_remote_path(remote, relative, path, sizeof(path))) {
     return false_v;
   }
-  FILE *existing = fopen(path, "rb");
-  if (existing) {
-    fclose(existing);
+  if (fs_test_path_on_disk(path)) {
     return true_v;
   }
   fs_test_write_text(path, "fetched");
@@ -1278,10 +1294,57 @@ vkr_internal bool8_t fs_test_remote_fetch(void *context, const char *relative) {
   return true_v;
 }
 
+vkr_internal bool8_t fs_test_remote_pending(void *context, const char *relative,
+                                            uint64_t *out_size) {
+  FsTestRemote *remote = context;
+  char path[1100];
+  if (!fs_test_remote_path(remote, relative, path, sizeof(path)) ||
+      fs_test_path_on_disk(path)) {
+    return false_v;
+  }
+  *out_size = 7u;
+  return true_v;
+}
+
+vkr_internal bool8_t fs_test_remote_read(void *context, const char *relative,
+                                         uint64_t offset, uint64_t size,
+                                         void *destination) {
+  FsTestRemote *remote = context;
+  char path[1100];
+  if (!fs_test_remote_path(remote, relative, path, sizeof(path)) ||
+      offset > 7u || size > 7u - offset) {
+    return false_v;
+  }
+  remote->reads += 1u;
+  const char *text = "fetched";
+  MemCopy(destination, text + offset, (size_t)size);
+  return true_v;
+}
+
+vkr_internal void fs_test_remote_prefetch(void *context, const char *relative) {
+  (void)relative;
+  ((FsTestRemote *)context)->prefetches += 1u;
+}
+
+vkr_internal uint64_t fs_test_remote_arrivals(void *context) {
+  return ((FsTestRemote *)context)->fetched;
+}
+
+vkr_global const VkrVfsRemoteCalls fs_test_remote_calls = {
+    .fetch = fs_test_remote_fetch,
+    .pending = fs_test_remote_pending,
+    .read = fs_test_remote_read,
+    .prefetch = fs_test_remote_prefetch,
+    .arrivals = fs_test_remote_arrivals,
+};
+
 /* Asset streaming (vkr_vfs_set_remote). Fails when a read below the remote
    directory does not ask the remote before the disk, when a file the remote
    lacks appears, when a path outside the directory asks the remote, or when
-   the workspace overlay does not ask for its copy there. */
+   the workspace overlay does not ask for its copy there. Also fails when
+   asking whether a file is pending, reading part of it or queueing it
+   fetches it, when a whole file still counts as pending, or when the
+   overlay's copy is not the one found pending. */
 vkr_internal void test_vfs_remote_directory(void) {
   printf("  Running test_vfs_remote_directory...\n");
   FsTestRemote remote = {0};
@@ -1310,8 +1373,25 @@ vkr_internal void test_vfs_remote_directory(void) {
 
   /* Without a remote nothing arrives. */
   assert(!file_exists(&held));
-  assert(vkr_vfs_set_remote(remote.directory, fs_test_remote_fetch, &remote));
+  assert(!vkr_vfs_remote_pending(&held, NULL));
+  assert(vkr_vfs_set_remote(remote.directory, &fs_test_remote_calls, &remote));
+
+  /* A pending file reads in part and queues without arriving. */
+  uint64_t pending_size = 0u;
+  assert(vkr_vfs_remote_pending(&held, &pending_size) && pending_size == 7u);
+  char part[4] = {0};
+  assert(vkr_vfs_remote_read(&held, 2u, 3u, part) &&
+         MemCompare(part, "tch", 3u) == 0 && remote.reads == 1u);
+  vkr_vfs_remote_prefetch(&held);
+  assert(remote.prefetches == 1u && remote.calls == 0u &&
+         remote.fetched == 0u && vkr_vfs_remote_arrivals() == 0u);
+  assert(!vkr_vfs_remote_pending(&missing, NULL));
+  assert(!vkr_vfs_remote_read(&missing, 0u, 1u, part));
+
   assert(file_exists(&held) && remote.fetched == 1u);
+  assert(vkr_vfs_remote_arrivals() == 1u);
+  assert(!vkr_vfs_remote_pending(&held, NULL));
+  assert(!vkr_vfs_remote_read(&held, 0u, 1u, part));
   assert(fs_test_reads(&held, &allocator, "fetched"));
   FileStats stats = {0};
   assert(file_stats(&held, &stats) == FILE_ERROR_NONE && stats.size == 7u);
@@ -1327,14 +1407,19 @@ vkr_internal void test_vfs_remote_directory(void) {
   FilePath outside = file_path_create("assets/zz_vfs_remote_none.txt",
                                       &allocator, FILE_PATH_TYPE_RELATIVE);
   assert(!file_exists(&outside) && remote.calls == calls + 1u);
+  assert(!vkr_vfs_remote_pending(&outside, NULL));
 
   /* The directory as the workspace overlay: the overlay's copy of an
      `assets/` identity arrives before the root's is used. */
   assert(vkr_vfs_set_overlay_root(remote.directory));
   FilePath overlaid = file_path_create("assets/zz_vfs_remote/b.txt", &allocator,
                                        FILE_PATH_TYPE_RELATIVE);
+  assert(vkr_vfs_remote_pending(&overlaid, NULL));
+  assert(vkr_vfs_remote_read(&overlaid, 0u, 4u, part) &&
+         MemCompare(part, "fetc", 4u) == 0 && remote.reads == 2u);
   assert(fs_test_reads(&overlaid, &allocator, "fetched"));
   assert(remote.fetched == 2u);
+  assert(!vkr_vfs_remote_pending(&overlaid, NULL));
 
   assert(vkr_vfs_set_remote(NULL, NULL, NULL));
   assert(vkr_vfs_set_overlay_root(NULL));

@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-20
+updated: 2026-10-21
 authority: proposal
 ---
 # Network protocol
@@ -116,26 +116,32 @@ fallback.
 
 Asset streaming loads a scene from a remote depot or a streaming server
 without a full download.
-[ADR-123](../adr/123-asset-streaming-from-a-depot.md) implements step 1: a
-remote content directory that fetches each file a loader asks for, through
-a VFS remote, with cooked platform files on a side branch per GPU family.
-The rest:
+[ADR-123](../adr/123-asset-streaming-from-a-depot.md) implements steps 1
+and 2: a remote content directory that fetches each file a loader asks for,
+through a VFS remote, with cooked platform files on a side branch per GPU
+family; reads of parts of files that fetch only the chunks holding them; and
+progressive mips, where a material's large texture first draws from the
+smallest levels at the start of its file and its whole file downloads once
+a frame draws it. Every received chunk is checked against its SHA-256
+before it enters the store (ADR-105). The rest:
 
-- **Progressive order.** Phase 2 requests texture mips from the smallest
-  level upward, and mesh LOD ranges from the coarsest level
-  ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)).
-  Priority comes from the streaming sources and the screen size. A request
-  for an asset that leaves interest is cancelled with CANCEL. Mip priority
-  comes from the required mips that [texture streaming](texture-streaming.md)
-  computes; this service orders the remote fetches.
+- **Mesh LOD ranges.** Meshes stream from the coarsest LOD range upward
+  ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)); the
+  mesh format must place the coarse ranges first, as KTX2 places small
+  mips first.
+- **Priority and cancel.** Whole-file downloads follow the order in which
+  drawn previews reach their reload (ADR-012). Mip priority will come from
+  the required mips that [texture streaming](texture-streaming.md)
+  computes, which then replace the fixed 256 KiB preview; this service
+  orders the remote fetches. Priority from the streaming sources and the
+  screen size for other assets, and CANCEL of a queued download whose asset
+  left interest, remain.
 - **GPU placement.** Fragments decrypt into staging memory supplied by the
   receiver. The resource then goes through the ordered publication queue
   with confirm-before-use. Staging memory returns to its pool after GPU
   completion, not after a frame count. The
   [dedicated transfer queue](dedicated-transfer-queue.md) proposal owns
   any Vulkan transfer-queue path.
-- **Integrity.** The client checks the SHA-256 of each chunk before it
-  publishes the resource.
 
 ### Editor collaboration (use case 3)
 
@@ -225,7 +231,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Phase | Scope | Exit evidence |
 |---|---|---|
 | 4. Editor collaboration and agents | Remaining after ADR-106: the same evidence between two machines | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
-| 6. Asset streaming | Remote content directory and cooked side branch (ADR-123); then progressive mips and LOD ranges, and fetched bytes placed for the GPU | Bistro streamed from a depot between two machines: time to first frame and to full detail against a local load; captures equal to a local load |
+| 6. Asset streaming | Remote content directory, cooked side branch and progressive mips (ADR-123); then mesh LOD ranges, priority and cancel, and fetched bytes placed for the GPU | Bistro streamed from a depot between two machines: time to first frame and to full detail against a local load; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
 
 Phase 4 comes first because the editor uses it first and the depot it needs

@@ -3370,7 +3370,7 @@ bool8_t vkr_editor_depot_stream(VkrEditorDepot *depot, const char *address,
   }
   depot->stream_open_seconds =
       vkr_platform_get_absolute_time() - depot->stream_opened_at;
-  if (!vkr_vfs_set_remote(depot->stream_directory, vkr_depot_remote_fetch,
+  if (!vkr_vfs_set_remote(depot->stream_directory, vkr_depot_remote_vfs_calls(),
                           depot->stream) ||
       !vkr_vfs_set_overlay_root(depot->stream_directory)) {
     (void)vkr_vfs_set_remote(NULL, NULL, NULL);
@@ -3422,12 +3422,21 @@ VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
                       vkr_bakery_json_int(arena, stats.failed));
   vkr_bakery_json_set(arena, result, "stored_bytes",
                       vkr_bakery_json_int(arena, (int64_t)stats.stored_bytes));
+  vkr_bakery_json_set(arena, result, "reads",
+                      vkr_bakery_json_int(arena, stats.reads));
+  vkr_bakery_json_set(arena, result, "read_bytes",
+                      vkr_bakery_json_int(arena, (int64_t)stats.read_bytes));
+  vkr_bakery_json_set(arena, result, "prefetched",
+                      vkr_bakery_json_int(arena, stats.prefetched));
   vkr_bakery_json_set(
       arena, result, "wait_ms",
       vkr_bakery_json_float(arena, (float64_t)stats.wait_us / 1000.0));
   vkr_bakery_json_set(
       arena, result, "last_fetch_ms",
       vkr_bakery_json_float(arena, (float64_t)stats.last_write_us / 1000.0));
+  vkr_bakery_json_set(
+      arena, result, "last_read_ms",
+      vkr_bakery_json_float(arena, (float64_t)stats.last_read_us / 1000.0));
   vkr_bakery_json_set(
       arena, result, "open_ms",
       vkr_bakery_json_float(arena, depot->stream_open_seconds * 1000.0));

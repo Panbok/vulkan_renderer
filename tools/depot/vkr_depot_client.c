@@ -123,6 +123,16 @@ typedef struct ClientReply {
   VkrDepotMessage *message;
 } ClientReply;
 
+/* How far below its requested objects a fetch reaches. */
+typedef enum ClientFetchScope {
+  /* Every object the requested ones reach that the store lacks. */
+  CLIENT_FETCH_ALL = 0,
+  /* Commits and trees, not the files the trees list (a sparse fetch). */
+  CLIENT_FETCH_TREES,
+  /* The requested blobs alone, not their chunks. */
+  CLIENT_FETCH_BLOBS,
+} ClientFetchScope;
+
 typedef struct ClientGet {
   bool8_t live;
   uint64_t request;
@@ -150,8 +160,8 @@ struct VkrDepotClient {
   IdSet seen;
   WantList want;
   bool8_t fetch_failed;
-  /* A sparse fetch: trees list their files without fetching them. */
-  bool8_t trees_only;
+  /* How far below the requested objects the fetch reaches. */
+  ClientFetchScope scope;
   /* Trees being walked below the commit: a present tree's children are
      walked at once, so a deep tree would recurse without this bound. */
   uint32_t depth;
@@ -215,7 +225,8 @@ static bool8_t client_chunk_child(void *context,
 static bool8_t client_entry_child(void *context,
                                   const VkrDepotTreeEntry *entry) {
   ChildContext *child = context;
-  if (child->client->trees_only && entry->kind == VKR_DEPOT_ENTRY_FILE) {
+  if (child->client->scope == CLIENT_FETCH_TREES &&
+      entry->kind == VKR_DEPOT_ENTRY_FILE) {
     return true_v;
   }
   child->ok =
@@ -250,6 +261,9 @@ static bool8_t client_children(VkrDepotClient *client, uint8_t kind,
     client->depth -= 1u;
     return ok;
   }
+  if (client->scope == CLIENT_FETCH_BLOBS) {
+    return vkr_depot_blob_parse(bytes, size, NULL, NULL, NULL);
+  }
   return vkr_depot_blob_parse(bytes, size, NULL, client_chunk_child, &child) &&
          child.ok;
 }
@@ -273,7 +287,7 @@ static bool8_t client_process(VkrDepotClient *client, const VkrDepotId *id,
   if (!vkr_depot_store_has(client->store, id)) {
     return client_want(client, id, kind, size);
   }
-  if (kind == VKR_DEPOT_KIND_CHUNK) {
+  if (kind == VKR_DEPOT_KIND_CHUNK || client->scope == CLIENT_FETCH_BLOBS) {
     return true_v;
   }
   /* Present already: its children may still be missing. A read that fails
@@ -619,18 +633,18 @@ static bool8_t client_gets_live(const VkrDepotClient *client) {
   return false_v;
 }
 
-/* Downloads the `count` objects `ids` of `kind` and what they list that
-   the store lacks; a sparse fetch stops at the files a tree lists. */
+/* Downloads the `count` objects `ids` of `kind` and, as far as `scope`
+   reaches, what they list that the store lacks. */
 static bool8_t client_fetch_from(VkrDepotClient *client, const VkrDepotId *ids,
                                  uint32_t count, uint8_t kind,
-                                 bool8_t trees_only,
+                                 ClientFetchScope scope,
                                  VkrDepotTransferStats *out_stats) {
   idset_free(&client->seen);
   want_free(&client->want);
   MemZero(client->gets, sizeof(client->gets));
   MemZero(&client->stats, sizeof(client->stats));
   client->fetch_failed = false_v;
-  client->trees_only = trees_only;
+  client->scope = scope;
   client->error[0] = '\0';
   if (!client->store) {
     client_fail(client, "the connection has no store to fetch into%s", "");
@@ -665,22 +679,97 @@ static bool8_t client_fetch_from(VkrDepotClient *client, const VkrDepotId *ids,
 
 bool8_t vkr_depot_client_fetch(VkrDepotClient *client, const VkrDepotId *commit,
                                VkrDepotTransferStats *out_stats) {
-  return client_fetch_from(client, commit, 1u, VKR_DEPOT_KIND_COMMIT, false_v,
-                           out_stats);
+  return client_fetch_from(client, commit, 1u, VKR_DEPOT_KIND_COMMIT,
+                           CLIENT_FETCH_ALL, out_stats);
 }
 
 bool8_t vkr_depot_client_fetch_trees(VkrDepotClient *client,
                                      const VkrDepotId *commit,
                                      VkrDepotTransferStats *out_stats) {
-  return client_fetch_from(client, commit, 1u, VKR_DEPOT_KIND_COMMIT, true_v,
-                           out_stats);
+  return client_fetch_from(client, commit, 1u, VKR_DEPOT_KIND_COMMIT,
+                           CLIENT_FETCH_TREES, out_stats);
 }
 
 bool8_t vkr_depot_client_fetch_files(VkrDepotClient *client,
                                      const VkrDepotId *blobs, uint32_t count,
                                      VkrDepotTransferStats *out_stats) {
-  return client_fetch_from(client, blobs, count, VKR_DEPOT_KIND_BLOB, false_v,
-                           out_stats);
+  return client_fetch_from(client, blobs, count, VKR_DEPOT_KIND_BLOB,
+                           CLIENT_FETCH_ALL, out_stats);
+}
+
+typedef struct RangeChunks {
+  VkrDepotId *ids;
+  uint32_t count;
+  uint32_t capacity;
+} RangeChunks;
+
+static bool8_t range_chunk_add(void *context, const VkrDepotChunkRef *chunk,
+                               uint64_t chunk_offset) {
+  (void)chunk_offset;
+  RangeChunks *chunks = context;
+  if (chunks->count == chunks->capacity) {
+    const uint32_t capacity = chunks->capacity ? chunks->capacity * 2u : 64u;
+    VkrDepotId *ids = realloc(chunks->ids, (size_t)capacity * sizeof(*ids));
+    if (!ids) {
+      return false_v;
+    }
+    chunks->ids = ids;
+    chunks->capacity = capacity;
+  }
+  chunks->ids[chunks->count++] = chunk->id;
+  return true_v;
+}
+
+static void transfer_stats_add(VkrDepotTransferStats *total,
+                               const VkrDepotTransferStats *part) {
+  total->objects += part->objects;
+  total->stored_bytes += part->stored_bytes;
+  total->decoded_bytes += part->decoded_bytes;
+}
+
+bool8_t vkr_depot_client_fetch_ranges(VkrDepotClient *client,
+                                      const VkrDepotRange *ranges,
+                                      uint32_t count,
+                                      VkrDepotTransferStats *out_stats) {
+  VkrDepotTransferStats total = {0};
+  VkrDepotTransferStats part = {0};
+  RangeChunks chunks = {0};
+  VkrDepotId *blobs = malloc((size_t)Max(count, 1u) * sizeof(*blobs));
+  if (!blobs) {
+    client_fail(client, "out of memory%s", "");
+    return false_v;
+  }
+  for (uint32_t i = 0u; i < count; ++i) {
+    blobs[i] = ranges[i].blob;
+  }
+  /* First the blobs, which list their chunks; then only the chunks that
+     hold bytes of each range. */
+  bool8_t ok = client_fetch_from(client, blobs, count, VKR_DEPOT_KIND_BLOB,
+                                 CLIENT_FETCH_BLOBS, &part);
+  transfer_stats_add(&total, &part);
+  for (uint32_t i = 0u; ok && i < count; ++i) {
+    uint8_t *manifest = NULL;
+    uint64_t manifest_size = 0u;
+    ok = vkr_depot_store_get(client->store, &ranges[i].blob, &manifest,
+                             &manifest_size) &&
+         vkr_depot_blob_range(manifest, manifest_size, ranges[i].offset,
+                              ranges[i].size, range_chunk_add, &chunks);
+    free(manifest);
+    if (!ok) {
+      client_fail(client, "a range lies outside its file%s", "");
+    }
+  }
+  if (ok) {
+    ok = client_fetch_from(client, chunks.ids, chunks.count,
+                           VKR_DEPOT_KIND_CHUNK, CLIENT_FETCH_ALL, &part);
+    transfer_stats_add(&total, &part);
+  }
+  free(chunks.ids);
+  free(blobs);
+  if (ok && out_stats) {
+    *out_stats = total;
+  }
+  return ok;
 }
 
 // =============================================================================

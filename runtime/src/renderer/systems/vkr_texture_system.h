@@ -89,6 +89,9 @@ typedef struct VkrTextureSystem {
   VkrGraphicsPipelineClass graphics_pipeline;
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_bc5;
+  /* Live previews: textures holding the smallest mips of a file still
+     arriving from a remote (vkr_texture_system_full_file_ready). */
+  uint32_t preview_count;
 } VkrTextureSystem;
 
 /**
@@ -277,6 +280,17 @@ bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
 bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
                                             VkrTextureHandle handle,
                                             uint32_t max_extent);
+
+/**
+ * @brief For a preview (the smallest mips of a `.vkt` still arriving from a
+ * remote content directory, which a `preview=1` request loads): queues the
+ * whole file's download and returns false until it is on disk. True for
+ * every other texture, so a reload reads every mip without waiting for the
+ * network. Rechecks the file only after the remote wrote another one; call
+ * on the thread that loads textures synchronously.
+ */
+bool8_t vkr_texture_system_full_file_ready(VkrTextureSystem *system,
+                                           VkrTextureHandle handle);
 
 /**
  * @brief Gets a texture by index

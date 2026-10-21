@@ -152,3 +152,11 @@ uint32_t vkr_depot_workspace_settle(VkrDepotWorkspace *workspace,
 /* Writes one file of the store to `path` through a temporary. */
 bool8_t vkr_depot_write_blob(const VkrDepotStore *store, const VkrDepotId *blob,
                              const char *path);
+
+/* Copies `size` bytes at `offset` of the file `blob` names into
+   `destination`, from the chunks that hold them; the store may lack the
+   file's other chunks. False when it lacks the blob or one of those chunks,
+   or the range passes the file's end. */
+bool8_t vkr_depot_read_blob_range(const VkrDepotStore *store,
+                                  const VkrDepotId *blob, uint64_t offset,
+                                  uint64_t size, uint8_t *destination);

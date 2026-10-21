@@ -1,4 +1,5 @@
 #include "texture_vkt_tests.h"
+#include "filesystem/vkr_vfs.h"
 #include "vkr_vkt_mips.h"
 #include "vkr_vkt_normal_roughness.h"
 #include "vkr_vkt_pack_contract.h"
@@ -408,6 +409,251 @@ static void test_texture_ktx2_load_dimension_cap(void) {
   printf("  test_texture_ktx2_load_dimension_cap PASSED\n");
 }
 
+/* Writes a square BC7 chain of `level_count` levels whose blocks hold
+ * 0xa0 + level and the low byte of their index, as
+ * texture_vkt_test_write_blocks does for small extents. */
+static bool8_t texture_vkt_test_write_large_blocks(const char *path,
+                                                   uint32_t base_extent,
+                                                   uint32_t level_count) {
+  const ktxTextureCreateInfo create_info = {
+      .vkFormat = VK_FORMAT_BC7_UNORM_BLOCK,
+      .baseWidth = base_extent,
+      .baseHeight = base_extent,
+      .baseDepth = 1u,
+      .numDimensions = 2u,
+      .numLevels = level_count,
+      .numLayers = 1u,
+      .numFaces = 1u,
+      .isArray = KTX_FALSE,
+      .generateMipmaps = KTX_FALSE,
+  };
+  ktxTexture2 *texture = NULL;
+  ktxResult result = ktxTexture2_Create(
+      &create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
+  if (result != KTX_SUCCESS || !texture) {
+    return false_v;
+  }
+  const uint32_t largest_blocks = Max(1u, base_extent / 4u);
+  uint8_t *blocks = malloc((size_t)largest_blocks * largest_blocks * 16u);
+  for (uint32_t level = 0u; blocks && level < level_count; ++level) {
+    const uint32_t blocks_per_side = Max(1u, (base_extent >> level) / 4u);
+    const uint32_t block_count = blocks_per_side * blocks_per_side;
+    MemZero(blocks, (size_t)block_count * 16u);
+    for (uint32_t block = 0u; block < block_count; ++block) {
+      blocks[block * 16u] = (uint8_t)(0xa0u + level);
+      blocks[block * 16u + 1u] = (uint8_t)block;
+    }
+    result = ktxTexture_SetImageFromMemory(ktxTexture(texture), level, 0u, 0u,
+                                           blocks, block_count * 16u);
+    if (result != KTX_SUCCESS) {
+      break;
+    }
+  }
+  if (blocks && result == KTX_SUCCESS) {
+    result = ktxTexture_WriteToNamedFile(ktxTexture(texture), path);
+  }
+  free(blocks);
+  ktxTexture_Destroy(ktxTexture(texture));
+  return blocks && result == KTX_SUCCESS ? true_v : false_v;
+}
+
+/* A remote content directory at the content root that holds one file, in
+ * memory until a fetch writes it to `disk_path`. */
+typedef struct TexturePreviewRemote {
+  const char *relative;
+  const char *disk_path;
+  const uint8_t *bytes;
+  uint64_t size;
+  bool8_t arrived;
+  uint32_t fetches;
+  uint32_t reads;
+  uint64_t read_end;
+  uint32_t prefetches;
+} TexturePreviewRemote;
+
+static bool8_t texture_preview_remote_fetch(void *context,
+                                            const char *relative) {
+  TexturePreviewRemote *remote = context;
+  if (strcmp(relative, remote->relative) != 0) {
+    return false_v;
+  }
+  if (!remote->arrived) {
+    FILE *file = fopen(remote->disk_path, "wb");
+    assert(file);
+    assert(fwrite(remote->bytes, 1u, (size_t)remote->size, file) ==
+           remote->size);
+    fclose(file);
+    remote->arrived = true_v;
+    remote->fetches += 1u;
+  }
+  return true_v;
+}
+
+static bool8_t texture_preview_remote_pending(void *context,
+                                              const char *relative,
+                                              uint64_t *out_size) {
+  TexturePreviewRemote *remote = context;
+  if (strcmp(relative, remote->relative) != 0 || remote->arrived) {
+    return false_v;
+  }
+  *out_size = remote->size;
+  return true_v;
+}
+
+static bool8_t texture_preview_remote_read(void *context, const char *relative,
+                                           uint64_t offset, uint64_t size,
+                                           void *destination) {
+  TexturePreviewRemote *remote = context;
+  if (strcmp(relative, remote->relative) != 0 || offset > remote->size ||
+      size > remote->size - offset) {
+    return false_v;
+  }
+  MemCopy(destination, remote->bytes + offset, (size_t)size);
+  remote->reads += 1u;
+  remote->read_end = Max(remote->read_end, offset + size);
+  return true_v;
+}
+
+static void texture_preview_remote_prefetch(void *context,
+                                            const char *relative) {
+  (void)relative;
+  ((TexturePreviewRemote *)context)->prefetches += 1u;
+}
+
+static uint64_t texture_preview_remote_arrivals(void *context) {
+  return ((TexturePreviewRemote *)context)->arrived ? 1u : 0u;
+}
+
+/* Checks a native BC7 chain cut from `first_level` of a 1024-texel source of
+ * 11 levels. */
+static void texture_preview_assert_chain(const VkrTexturePreparedLoad *prepared,
+                                         uint32_t first_level) {
+  const uint32_t mip_count = 11u - first_level;
+  assert(prepared->description.width == 1024u >> first_level &&
+         prepared->description.height == 1024u >> first_level);
+  assert(prepared->description.mip_levels == mip_count);
+  assert(prepared->upload_region_count == mip_count);
+  assert(prepared->limit_source_extent == 1024u &&
+         prepared->limit_source_mip_levels == 11u);
+  for (uint32_t r = 0u; r < prepared->upload_region_count; ++r) {
+    const VkrTextureUploadRegion *region = &prepared->upload_regions[r];
+    const uint32_t level = first_level + region->mip_level;
+    const uint32_t blocks_per_side = Max(1u, (1024u >> level) / 4u);
+    assert(region->width == Max(1u, 1024u >> level));
+    assert(region->byte_size == blocks_per_side * blocks_per_side * 16u);
+    assert(region->byte_offset % 16u == 0u &&
+           region->byte_offset + region->byte_size <=
+               prepared->upload_data_size);
+    const uint8_t *blocks = prepared->upload_data + region->byte_offset;
+    for (uint32_t block = 0u; block < region->byte_size / 16u; ++block) {
+      assert(blocks[block * 16u] == 0xa0u + level);
+      assert(blocks[block * 16u + 1u] == (uint8_t)block);
+    }
+  }
+}
+
+/* Progressive mips over a remote content directory (ADR-123). Fails when a
+ * `preview=1` load of a pending file larger than 1 MiB waits for the whole
+ * file, reads past its first 256 KiB, holds other levels than the smallest
+ * that end there, or does not report the whole stored chain, so the limit's
+ * reload would not bring the rest; when a limit the prefix already covers
+ * is reported as a preview; or when a load without `preview=1`, or one
+ * after the file arrived, is anything but the whole chain. */
+static void test_texture_ktx2_remote_preview(void) {
+  printf("  Running test_texture_ktx2_remote_preview...\n");
+
+  char tmp_dir[1024];
+  snprintf(tmp_dir, sizeof(tmp_dir), "%stests/tmp", PROJECT_SOURCE_DIR);
+  assert(texture_vkt_test_make_dir(tmp_dir));
+  char source_path[1024];
+  char streamed_path[1024];
+  snprintf(source_path, sizeof(source_path), "%s/preview-source.vkt", tmp_dir);
+  snprintf(streamed_path, sizeof(streamed_path), "%s/preview-blocks.vkt",
+           tmp_dir);
+  remove(source_path);
+  remove(streamed_path);
+  /* 1024 texels of BC7 are 1 MiB at level 0 and about 1.4 MB in all; the
+     levels up to 256 texels end near 86 KB, the 512-texel level past
+     256 KiB. */
+  assert(texture_vkt_test_write_large_blocks(source_path, 1024u, 11u));
+  FILE *file = fopen(source_path, "rb");
+  assert(file);
+  assert(fseek(file, 0, SEEK_END) == 0);
+  const uint64_t size = (uint64_t)ftell(file);
+  assert(fseek(file, 0, SEEK_SET) == 0);
+  uint8_t *bytes = malloc((size_t)size);
+  assert(bytes && fread(bytes, 1u, (size_t)size, file) == size);
+  fclose(file);
+  remove(source_path);
+  assert(size > MB(1));
+
+  TexturePreviewRemote remote = {.relative = "tests/tmp/preview-blocks.vkt",
+                                 .disk_path = streamed_path,
+                                 .bytes = bytes,
+                                 .size = size};
+  const VkrVfsRemoteCalls calls = {
+      .fetch = texture_preview_remote_fetch,
+      .pending = texture_preview_remote_pending,
+      .read = texture_preview_remote_read,
+      .prefetch = texture_preview_remote_prefetch,
+      .arrivals = texture_preview_remote_arrivals,
+  };
+  assert(vkr_vfs_set_remote(vkr_content_root(), &calls, &remote));
+
+  Arena *arena = arena_create(MB(4), MB(4));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrTextureSystem system = {.supports_texture_bc7 = true_v};
+  VkrTexturePreparedLoad prepared = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
+
+  /* The preview: levels 2 to 10 from the first 256 KiB. */
+  assert(vkr_texture_system_prepare_load_from_file(
+      &system,
+      string8_lit("tests/tmp/preview-blocks.vkt?max_extent=0&preview=1"),
+      VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared, &error));
+  assert(error == VKR_RENDERER_ERROR_NONE && prepared.preview);
+  texture_preview_assert_chain(&prepared, 2u);
+  assert(remote.fetches == 0u && remote.reads == 1u &&
+         remote.read_end <= KB(256) && !remote.arrived);
+  vkr_texture_system_release_prepared_load(&prepared);
+
+  /* A 128-texel limit lies within the prefix: every mip it keeps loads, so
+     this is no preview. */
+  assert(vkr_texture_system_prepare_load_from_file(
+      &system,
+      string8_lit("tests/tmp/preview-blocks.vkt?max_extent=128&preview=1"),
+      VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared, &error));
+  assert(!prepared.preview);
+  texture_preview_assert_chain(&prepared, 3u);
+  assert(remote.fetches == 0u && remote.reads == 2u);
+  vkr_texture_system_release_prepared_load(&prepared);
+
+  /* Without `preview=1` the load waits for the whole file. */
+  assert(vkr_texture_system_prepare_load_from_file(
+      &system, string8_lit("tests/tmp/preview-blocks.vkt?max_extent=0"),
+      VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared, &error));
+  assert(!prepared.preview && remote.fetches == 1u && remote.reads == 2u);
+  texture_preview_assert_chain(&prepared, 0u);
+  vkr_texture_system_release_prepared_load(&prepared);
+
+  /* Once the file is whole, a preview request loads every mip from it. */
+  assert(vkr_texture_system_prepare_load_from_file(
+      &system,
+      string8_lit("tests/tmp/preview-blocks.vkt?max_extent=0&preview=1"),
+      VKR_TEXTURE_RGBA_CHANNELS, &allocator, &prepared, &error));
+  assert(!prepared.preview && remote.reads == 2u);
+  texture_preview_assert_chain(&prepared, 0u);
+  vkr_texture_system_release_prepared_load(&prepared);
+
+  assert(vkr_vfs_set_remote(NULL, NULL, NULL));
+  arena_destroy(arena);
+  free(bytes);
+  remove(streamed_path);
+  printf("  test_texture_ktx2_remote_preview PASSED\n");
+}
+
 /* A request's explicit `cs=` and `tc=` choose the sRGB or UNORM view of the
  * stored native blocks, as they chose the transcode target before; without
  * them the stored format stands. */
@@ -808,6 +1054,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_ktx2_rgba16f_cube_decode();
   test_texture_ktx2_native_block_decode();
   test_texture_ktx2_load_dimension_cap();
+  test_texture_ktx2_remote_preview();
   test_texture_native_request_view();
   test_texture_source_only_request();
   test_normal_roughness_material_moments();

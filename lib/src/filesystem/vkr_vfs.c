@@ -38,7 +38,7 @@ typedef struct VkrVfsOverlay {
 /* A directory a remote fills on demand (vkr_vfs_set_remote). */
 typedef struct VkrVfsRemote {
   struct VkrVfsRemote *previous;
-  VkrVfsRemoteFetch fetch;
+  VkrVfsRemoteCalls calls;
   void *context;
   /* `root` with its trailing '/'. */
   uint64_t length;
@@ -890,9 +890,9 @@ bool8_t fs_vfs_overlay(const FilePath *path, FilePath *out_path, char *buffer,
 // Remote content
 // =============================================================================
 
-bool8_t vkr_vfs_set_remote(const char *directory, VkrVfsRemoteFetch fetch,
-                           void *context) {
-  if (!fetch || !directory || !directory[0]) {
+bool8_t vkr_vfs_set_remote(const char *directory,
+                           const VkrVfsRemoteCalls *calls, void *context) {
+  if (!calls || !calls->fetch || !directory || !directory[0]) {
     vkr_atomic_uint64_store(&vkr_vfs.remote, 0u, VKR_MEMORY_ORDER_RELEASE);
     return true_v;
   }
@@ -907,7 +907,7 @@ bool8_t vkr_vfs_set_remote(const char *directory, VkrVfsRemoteFetch fetch,
   if (!remote) {
     return false_v;
   }
-  remote->fetch = fetch;
+  remote->calls = *calls;
   remote->context = context;
   for (uint64_t i = 0u; i < length; ++i) {
     remote->root[i] =
@@ -923,33 +923,122 @@ bool8_t vkr_vfs_set_remote(const char *directory, VkrVfsRemoteFetch fetch,
   return true_v;
 }
 
-void fs_vfs_remote(const FilePath *path) {
-  const VkrVfsRemote *remote =
-      (const VkrVfsRemote *)(uintptr_t)vkr_atomic_uint64_load(
-          &vkr_vfs.remote, VKR_MEMORY_ORDER_ACQUIRE);
-  if (!remote || !path || !path->path.str ||
-      path->path.length <= remote->length ||
-      path->path.length - remote->length >= VKR_VFS_PATH_MAX) {
-    return;
+vkr_internal const VkrVfsRemote *vkr_vfs_current_remote(void) {
+  return (const VkrVfsRemote *)(uintptr_t)vkr_atomic_uint64_load(
+      &vkr_vfs.remote, VKR_MEMORY_ORDER_ACQUIRE);
+}
+
+/* Writes `path`'s part below the remote's directory, '/'-separated, into
+   `relative`; false for a path outside it. */
+vkr_internal bool8_t vkr_vfs_remote_relative(const VkrVfsRemote *remote,
+                                             String8 path,
+                                             char relative[VKR_VFS_PATH_MAX]) {
+  if (!path.str || path.length <= remote->length ||
+      path.length - remote->length >= VKR_VFS_PATH_MAX) {
+    return false_v;
   }
   for (uint64_t i = 0u; i < remote->length; ++i) {
-    const uint8_t byte = path->path.str[i];
+    const uint8_t byte = path.str[i];
     const bool8_t same =
         remote->root[i] == '/'
             ? vkr_vfs_is_separator(byte)
             : vkr_vfs_same_byte(byte, (uint8_t)remote->root[i]);
     if (!same) {
-      return;
+      return false_v;
     }
   }
-  char relative[VKR_VFS_PATH_MAX];
-  const uint64_t length = path->path.length - remote->length;
+  const uint64_t length = path.length - remote->length;
   for (uint64_t i = 0u; i < length; ++i) {
-    const uint8_t byte = path->path.str[remote->length + i];
+    const uint8_t byte = path.str[remote->length + i];
     relative[i] = vkr_vfs_is_separator(byte) ? '/' : (char)byte;
   }
   relative[length] = 0;
-  (void)remote->fetch(remote->context, relative);
+  return true_v;
+}
+
+void fs_vfs_remote(const FilePath *path) {
+  const VkrVfsRemote *remote = vkr_vfs_current_remote();
+  char relative[VKR_VFS_PATH_MAX];
+  if (remote && path && vkr_vfs_remote_relative(remote, path->path, relative)) {
+    (void)remote->calls.fetch(remote->context, relative);
+  }
+}
+
+/* The remote file a read-only open of `path` would wait for, as a read
+   resolves it: archives first, then the workspace overlay's copy of an
+   `assets/` identity, then `path` itself. False when none is pending. */
+vkr_internal bool8_t vkr_vfs_remote_pending_relative(
+    const FilePath *path, const VkrVfsRemote **out_remote,
+    char relative[VKR_VFS_PATH_MAX], uint64_t *out_size) {
+  const VkrVfsRemote *remote = vkr_vfs_current_remote();
+  if (!remote || !remote->calls.pending || !path || !path->path.str ||
+      fs_vfs_stats(path, NULL)) {
+    return false_v;
+  }
+  uint64_t size = 0u;
+  const VkrVfsOverlay *overlay =
+      (const VkrVfsOverlay *)(uintptr_t)vkr_atomic_uint64_load(
+          &vkr_vfs.overlay, VKR_MEMORY_ORDER_ACQUIRE);
+  char identity[VKR_PACK_IDENTITY_MAX];
+  uint32_t identity_length = 0u;
+  if (overlay &&
+      vkr_vfs_overlay_identity(path->path, identity, &identity_length) &&
+      overlay->length + identity_length < VKR_VFS_PATH_MAX) {
+    char overlaid[VKR_VFS_PATH_MAX];
+    MemCopy(overlaid, overlay->root, overlay->length);
+    MemCopy(overlaid + overlay->length, identity, identity_length + 1u);
+    const String8 overlaid_path = {.str = (uint8_t *)overlaid,
+                                   .length = overlay->length + identity_length};
+    if (vkr_vfs_remote_relative(remote, overlaid_path, relative) &&
+        remote->calls.pending(remote->context, relative, &size)) {
+      *out_remote = remote;
+      if (out_size) {
+        *out_size = size;
+      }
+      return true_v;
+    }
+  }
+  if (vkr_vfs_remote_relative(remote, path->path, relative) &&
+      remote->calls.pending(remote->context, relative, &size)) {
+    *out_remote = remote;
+    if (out_size) {
+      *out_size = size;
+    }
+    return true_v;
+  }
+  return false_v;
+}
+
+bool8_t vkr_vfs_remote_pending(const FilePath *path, uint64_t *out_size) {
+  const VkrVfsRemote *remote = NULL;
+  char relative[VKR_VFS_PATH_MAX];
+  return vkr_vfs_remote_pending_relative(path, &remote, relative, out_size);
+}
+
+bool8_t vkr_vfs_remote_read(const FilePath *path, uint64_t offset,
+                            uint64_t size, void *destination) {
+  const VkrVfsRemote *remote = NULL;
+  char relative[VKR_VFS_PATH_MAX];
+  return vkr_vfs_remote_pending_relative(path, &remote, relative, NULL) &&
+         remote->calls.read &&
+         remote->calls.read(remote->context, relative, offset, size,
+                            destination);
+}
+
+void vkr_vfs_remote_prefetch(const FilePath *path) {
+  const VkrVfsRemote *remote = NULL;
+  char relative[VKR_VFS_PATH_MAX];
+  if (vkr_vfs_remote_pending_relative(path, &remote, relative, NULL) &&
+      remote->calls.prefetch) {
+    remote->calls.prefetch(remote->context, relative);
+  }
+}
+
+uint64_t vkr_vfs_remote_arrivals(void) {
+  const VkrVfsRemote *remote = vkr_vfs_current_remote();
+  return remote && remote->calls.arrivals
+             ? remote->calls.arrivals(remote->context)
+             : 0u;
 }
 
 // =============================================================================

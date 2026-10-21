@@ -1585,7 +1585,7 @@ static void test_depot_remote(void) {
          vkr_depot_id_equal(&stats.cooked_commit, &published.commit));
 
   /* A read below the directory fetches the cooked file through the VFS. */
-  assert(vkr_vfs_set_remote(stream_root, vkr_depot_remote_fetch, remote));
+  assert(vkr_vfs_set_remote(stream_root, vkr_depot_remote_vfs_calls(), remote));
   char streamed[VKR_DEPOT_PATH_CAPACITY];
   char original[VKR_DEPOT_PATH_CAPACITY];
   assert(vkr_bakery_path_join(streamed, sizeof(streamed), stream_root,
@@ -1719,6 +1719,176 @@ static void test_depot_remote(void) {
   assert(vkr_bakery_remove_tree(key_root));
   assert(vkr_bakery_remove_tree(member_root));
   printf("  test_depot_remote PASSED\n");
+}
+
+/* Decoded bytes of the chunks of `data` that hold bytes of [offset,
+   offset + size), from the same chunking the store uses. */
+static uint64_t depot_test_range_chunk_bytes(const uint8_t *data,
+                                             uint64_t data_size,
+                                             uint64_t offset, uint64_t size) {
+  uint64_t covered = 0u;
+  for (uint64_t start = 0u; start < data_size;) {
+    const uint32_t length =
+        vkr_depot_chunk_length(data + start, data_size - start);
+    if (start + length > offset && start < offset + size) {
+      covered += length;
+    }
+    start += length;
+  }
+  return covered;
+}
+
+/* Part of a streamed file over loopback (vkr_depot_remote_read). Fails when
+   a read brings chunks outside its range, returns other bytes than the
+   file's, writes the file, accepts a range past the end or an unlisted
+   path; when a prefetch does not make the file whole and equal to the
+   original, or downloads again the chunks the reads brought; or when a read
+   of a present file goes to the server. */
+static void test_depot_remote_ranges(void) {
+  printf("  Running test_depot_remote_ranges...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char author_root[VKR_DEPOT_PATH_CAPACITY];
+  char stream_root[VKR_DEPOT_PATH_CAPACITY];
+  char key_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("ranges_store", store_root, sizeof(store_root));
+  depot_test_dir("ranges_author", author_root, sizeof(author_root));
+  depot_test_dir("ranges_stream", stream_root, sizeof(stream_root));
+  depot_test_dir("ranges_key", key_root, sizeof(key_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), key_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const VkrDepotServiceConfig config = {.store_root = store_root,
+                                        .bind = "127.0.0.1:0",
+                                        .discovery_port = 7352u,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info.address.port);
+
+  /* Random bytes do not compress, so stored sizes follow decoded sizes, and
+     3 MB of them make about a dozen chunks. */
+  static uint8_t big[3000000];
+  depot_test_random(big, sizeof(big));
+  depot_test_write(author_root, "big.bin", big, sizeof(big));
+  depot_test_write(author_root, "small.txt", "small", 5u);
+  VkrDepotWorkspace author;
+  assert(vkr_depot_workspace_create(&author, author_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  const VkrDepotConnectConfig connect = {.address = address,
+                                         .server_key = info.server_key,
+                                         .store = &author.store,
+                                         .timeout_ms = 5000u};
+  VkrDepotConnection *connection =
+      vkr_depot_connect(&allocator, &connect, NULL, error, sizeof(error));
+  assert(connection);
+  const VkrDepotId zero = {0};
+  VkrDepotPendingCommit pending;
+  assert(vkr_depot_commit_snapshot(&author, &zero, "ranges", &pending, error,
+                                   sizeof(error)));
+  if (!vkr_depot_commit_push(&author, vkr_depot_connection_client(connection),
+                             "main", &zero, &zero, &pending, error,
+                             sizeof(error))) {
+    printf("    push failed: %s\n", error);
+    assert(false && "push");
+  }
+  vkr_depot_pending_commit_free(&pending);
+  vkr_depot_disconnect(connection);
+
+  const VkrDepotRemoteConfig remote_config = {.directory = stream_root,
+                                              .address = address,
+                                              .server_key = info.server_key,
+                                              .codec = vkr_depot_zstd_codec()};
+  VkrDepotRemote *remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  if (!remote) {
+    printf("    remote failed: %s\n", error);
+    assert(false && "remote open");
+  }
+  uint64_t listed_size = 0u;
+  assert(vkr_depot_remote_pending(remote, "big.bin", &listed_size) &&
+         listed_size == sizeof(big));
+  assert(!vkr_depot_remote_pending(remote, "none.bin", NULL));
+
+  /* The head of the file arrives alone, with the original's bytes. */
+  static uint8_t part[400000];
+  assert(vkr_depot_remote_read(remote, "big.bin", 0u, 200000u, part));
+  assert(MemCompare(part, big, 200000u) == 0);
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(remote, &stats);
+  const uint64_t head_chunks =
+      depot_test_range_chunk_bytes(big, sizeof(big), 0u, 200000u);
+  assert(stats.reads == 1u && stats.fetched == 0u);
+  assert(stats.read_bytes >= head_chunks &&
+         stats.read_bytes < head_chunks + KB(16));
+  assert(head_chunks < sizeof(big) / 2u);
+  assert(vkr_depot_remote_pending(remote, "big.bin", NULL));
+  char streamed[VKR_DEPOT_PATH_CAPACITY];
+  assert(
+      vkr_bakery_path_join(streamed, sizeof(streamed), stream_root, "big.bin"));
+  assert(!vkr_bakery_is_file(streamed));
+
+  /* A range in the middle, and ranges a read must refuse. */
+  assert(vkr_depot_remote_read(remote, "big.bin", 1500000u, 300000u, part));
+  assert(MemCompare(part, big + 1500000u, 300000u) == 0);
+  assert(
+      !vkr_depot_remote_read(remote, "big.bin", sizeof(big) - 10u, 20u, part));
+  assert(!vkr_depot_remote_read(remote, "none.bin", 0u, 4u, part));
+  vkr_depot_remote_stats(remote, &stats);
+  const uint64_t read_chunks =
+      head_chunks +
+      depot_test_range_chunk_bytes(big, sizeof(big), 1500000u, 300000u);
+  assert(stats.reads == 2u && stats.read_bytes < read_chunks + KB(16));
+
+  /* A prefetch makes the file whole and downloads only the other chunks. */
+  vkr_depot_remote_prefetch(remote, "big.bin");
+  for (uint32_t wait = 0u;
+       wait < 1000u && vkr_depot_remote_arrivals(remote) == 0u; ++wait) {
+    vkr_platform_sleep(10u);
+  }
+  assert(vkr_depot_remote_arrivals(remote) == 1u);
+  assert(!vkr_depot_remote_pending(remote, "big.bin", NULL));
+  char original[VKR_DEPOT_PATH_CAPACITY];
+  assert(
+      vkr_bakery_path_join(original, sizeof(original), author_root, "big.bin"));
+  assert(depot_test_files_equal(streamed, original));
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.prefetched == 1u && stats.fetched == 1u);
+  assert(stats.stored_bytes < sizeof(big) - read_chunks + KB(16));
+  assert(stats.stored_bytes + stats.read_bytes >= sizeof(big));
+
+  /* A present file reads from the disk. */
+  assert(vkr_depot_remote_read(remote, "big.bin", 2000000u, 1000u, part));
+  assert(MemCompare(part, big + 2000000u, 1000u) == 0);
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.reads == 2u);
+  vkr_depot_remote_close(remote);
+
+  vkr_depot_workspace_close(&author);
+  vkr_depot_service_stop(service);
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(author_root));
+  assert(vkr_bakery_remove_tree(stream_root));
+  assert(vkr_bakery_remove_tree(key_root));
+  printf("  test_depot_remote_ranges PASSED\n");
 }
 
 /* Stores a tree of `count` entries into `store`. */
@@ -2008,6 +2178,7 @@ bool32_t run_depot_tests(void) {
   test_depot_identity_migration();
   test_depot_service();
   test_depot_remote();
+  test_depot_remote_ranges();
   test_depot_tree_limits();
   test_depot_checkout_safety();
   test_depot_server_refusals();

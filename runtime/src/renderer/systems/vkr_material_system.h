@@ -68,6 +68,9 @@ typedef struct VkrMaterialTextureStream {
   bool8_t reload;
   /* This resident stream has such a reload in progress. */
   bool8_t reloading;
+  /* A reload's slot texture when it was queued; while that is a preview
+     (vkr_texture_system_full_file_ready), the reload waits for its file. */
+  VkrTextureHandle replaces;
   VkrMaterialTextureResidencyState state;
   VkrResourceHandleInfo request;
   VkrTextureHandle resident_texture;

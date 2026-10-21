@@ -151,12 +151,22 @@ static const char *const eval_sim_members[] = {"running", "time", NULL};
 static const char *const eval_scene_members[] = {"loaded", "entities", "added",
                                                  NULL};
 static const char *const eval_world_members[] = {"loaded", "entities", NULL};
-static const char *const eval_stats_members[] = {
-    "frame_ms",           "frame_ms_p95",         "finalizing",
-    "replaced_materials", "pending_replacements", "pending_textures",
-    "render_width",       "render_height",        "texture_mb",
-    "frame_ms_max",       "pending_pipelines",    "pipelines_late",
-    "scene_frames",       "present_frames",       NULL};
+static const char *const eval_stats_members[] = {"frame_ms",
+                                                 "frame_ms_p95",
+                                                 "finalizing",
+                                                 "replaced_materials",
+                                                 "pending_replacements",
+                                                 "pending_textures",
+                                                 "render_width",
+                                                 "render_height",
+                                                 "texture_mb",
+                                                 "frame_ms_max",
+                                                 "pending_pipelines",
+                                                 "pipelines_late",
+                                                 "scene_frames",
+                                                 "present_frames",
+                                                 "preview_textures",
+                                                 NULL};
 static const char *const eval_roots[] = {
     "sel",   "view",   "ui",   "sim",  "scene", "world",     "stats",
     "gfx",   "entity", "vec3", "len",  "sqrt",  "sin",       "cos",
@@ -875,6 +885,12 @@ static bool8_t eval_stats_member(Eval *eval, String8 name, Value *out) {
        UI over the newest finished one (ADR-111). */
     *out = eval_number(index == 12 ? (float64_t)frame->scene_frames
                                    : (float64_t)frame->present_frames);
+    return true_v;
+  }
+  if (index == 14) {
+    /* Textures that hold only the smallest mips of a file still streaming
+       from a depot (ADR-123). */
+    *out = eval_number(frame->assets->texture_system.preview_count);
     return true_v;
   }
   if (index == 8) {

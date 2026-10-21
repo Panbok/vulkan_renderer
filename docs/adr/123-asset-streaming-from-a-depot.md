@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-21
 authority: adr
 ---
 
@@ -8,14 +8,16 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Step 1 of phase 6 of the
+Accepted (partial). Steps 1 and 2 of phase 6 of the
 [network protocol proposal](../proposals/network-protocol.md#asset-streaming-use-case-4b)
-is implemented: a program reads a scene from a depot server without a full
-download, every file arriving when a loader first asks for it, and cooked
-platform files travel on a side branch per GPU family. Progressive mips and
-LOD ranges, staging fetched bytes straight into GPU memory, a sparse working
-copy for editing, macOS and a run between two computers stay in the
-proposal.
+are implemented: a program reads a scene from a depot server without a full
+download, every file arriving when a loader first asks for it; cooked
+platform files travel on a side branch per GPU family; and a material's
+large texture first draws from the smallest mips at the start of its file,
+then from the whole file once a frame draws it. Mesh LOD ranges, staging
+fetched bytes straight into GPU memory, cancelling downloads that leave
+interest, a sparse working copy for editing and a run between two computers
+stay in the proposal.
 
 ## Context
 
@@ -61,18 +63,90 @@ directory that a depot server fills on demand:
   its blob in that store counts as present, so a second run fetches only
   what changed.
 
+### Parts of files
+
+A blob lists its chunks with their sizes, so the chunks that hold a byte
+range are known before any of them arrive
+(`vkr_depot_blob_range`, [vkr_depot_object.h](../../tools/depot/vkr_depot_object.h)):
+
+- `vkr_depot_remote_read(remote, path, offset, size, destination)` copies a
+  range of a listed file. A present file reads from the disk. Otherwise
+  `vkr_depot_client_fetch_ranges`
+  ([vkr_depot_client.h](../../tools/depot/vkr_depot_client.h)) fetches the
+  blob alone, then only the chunks the store lacks that hold the range, and
+  `vkr_depot_read_blob_range`
+  ([vkr_depot_workspace.h](../../tools/depot/vkr_depot_workspace.h)) copies
+  the bytes out of them. The file is not written.
+- `vkr_depot_remote_pending` answers whether a listed file is not yet whole
+  under the directory, without the network. `vkr_depot_remote_prefetch`
+  queues a whole file and returns at once. `vkr_depot_remote_arrivals`
+  counts the files written whole, without the lock.
+- The worker serves every waiting read in one transfer first, then every
+  waiting fetch, then prefetches in transfers of at most 16 MiB of listed
+  files, so a read or fetch waits behind at most that much background work.
+  A prefetched file that a loader then asks for moves to the fetch queue.
+- A whole-file transfer passes every blob, including one the store holds: a
+  read may have brought it with only some of its chunks. The chunks a read
+  brought do not travel again.
+
 ### VFS remote
 
-`vkr_vfs_set_remote(directory, fetch, context)` installs such a directory
+`vkr_vfs_set_remote(directory, calls, context)` installs such a directory
 for the whole process ([vkr_vfs.c](../../lib/src/filesystem/vkr_vfs.c)).
-Before a read-only open, map, existence check, stat or `fopen` of a path
-below it reaches the disk, and before the workspace overlay looks for its
-copy there, the file seam (`fs_vfs_remote`,
+`VkrVfsRemoteCalls` ([vkr_vfs.h](../../lib/src/filesystem/vkr_vfs.h)) holds
+`fetch`, `pending`, `read`, `prefetch` and `arrivals`;
+`vkr_depot_remote_vfs_calls()` returns the remote's. Before a read-only
+open, map, existence check, stat or `fopen` of a path below the directory
+reaches the disk, and before the workspace overlay looks for its copy
+there, the file seam (`fs_vfs_remote`,
 [vkr_filesystem_internal.h](../../lib/src/platform/vkr_filesystem_internal.h))
 passes the path, relative and `/`-separated, to `fetch`. Writes never ask.
 Loader workers block in the fetch, so a scene's files download in the
-parallel batches its loaders ask for. The lib knows no depot: the program
-installs the callback, as it installs the content decompressor.
+parallel batches its loaders ask for. `vkr_vfs_remote_pending`,
+`vkr_vfs_remote_read` and `vkr_vfs_remote_prefetch` resolve a path as a
+read does (archives, then the overlay's copy, then the path) and call the
+other three without fetching; `vkr_vfs_remote_arrivals` returns the
+remote's count. The lib knows no depot: the program installs the calls, as
+it installs the content decompressor.
+
+### Progressive mips
+
+KTX2 stores a texture's levels from the smallest up, after a header, level
+index and key/value data of under 1 KB, so the start of a `.vkt` holds a
+complete chain of small mips:
+
+- The material system's first load of a texture outside a replacement adds
+  `&preview=1` to its request
+  ([vkr_material_system.c](../../runtime/src/renderer/systems/vkr_material_system.c)).
+- With that flag, a `.vkt` the remote holds but has not written whole and
+  that is larger than 1 MiB loads from its first 256 KiB alone
+  (`vkr_texture_decode_ktx2_prefix`,
+  [vkr_texture_system.c](../../runtime/src/renderer/systems/vkr_texture_system.c)):
+  KTX-Software parses the header, level index, format descriptor and
+  key/value data without image data, and the levels within the load limit
+  that end in the prefix upload. Only single-layer 2D chains of native
+  blocks without supercompression take this path; everything else, and any
+  failed read, reads the whole file as before. A Bistro texture of 4096
+  texels in ASTC 6x6 previews at 512 texels, one in BC7 at 256.
+- The result reports the whole stored chain (`limit_source_extent` and
+  `limit_source_mip_levels`), so the load-limit reload of
+  [ADR-012](012-texture-compression-pipeline.md) sees that a load at the
+  same limit would hold more mips. It is a preview
+  (`VkrTexture.preview`) only when it holds fewer mips than that load would;
+  a limit the prefix already covers loads complete. A preview registers
+  under its request name; any other result registers under the name without
+  `preview`, so it shares the texture of the plain request.
+- That reload follows ADR-012's order: drawn materials first, at most 32
+  outstanding, and a texture no frame draws keeps its preview until one
+  does. A preview's reload records the texture it replaces and waits in the
+  queue without a load slot until `vkr_texture_system_full_file_ready`
+  finds the file whole; its first check queues the file's prefetch, and
+  later checks run only after the remote wrote another file. Only drawn
+  previews therefore download whole, and the reload then reads the local
+  file without waiting.
+- `VkrTextureSystem.preview_count` counts live previews; the evaluator
+  reads it as `stats.preview_textures`
+  ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
 
 ### Cooked side branch
 
@@ -124,7 +198,9 @@ it both the VFS remote and the workspace overlay
 Every `assets/` read the branch lists then comes from the server, even
 where this checkout holds the same file. The `stream.status` operation
 answers the commits, the files listed, fetched, present and failed, the
-bytes stored, the time loaders waited and the time of the last file.
+bytes stored, the reads of parts of files with the bytes they brought, the
+files prefetched, the time loaders waited and the times of the last file
+and the last read.
 `vkr_depot stream <address> <key> <directory> <path>` fetches one file the
 same way, for a quick check.
 
@@ -136,8 +212,17 @@ same way, for a quick check.
   and does not stall the frame, but a slow link delays each texture's first
   draw, as loading from a slow disk does.
 - A path the branch does not list reads from the local disk as before.
-- A listed file is written whole before any reader sees it; a texture
-  arrives at full resolution or not at all until progressive mips exist.
+- A listed file is written whole before any reader of the file sees it; a
+  material's large texture draws from its preview until its file is whole
+  and a frame draws it. A texture that leaves the view before its file
+  arrives keeps the download queued: nothing cancels a prefetch.
+- A preview is a second texture and publication for the same slot; the
+  reload releases it through the texture system's retirement when the whole
+  chain binds.
+- On loopback, previews cover every texture about 21 s sooner and full
+  detail arrives 3 to 6 s later than whole files alone (Evidence): the
+  reads go first, and at most 32 reloads, so 32 prefetched files, wait at
+  once.
 - The cooked side branch grows by one commit per publish, each holding
   every cooked file of that working copy; unchanged files share their
   chunks.
@@ -159,6 +244,14 @@ same way, for a quick check.
 - **Prefetching the whole commit in the background**: simpler, but it
   fetches files no view reads and holds the first frame behind the
   download.
+- **A reload per level, smallest first**: each level a new texture and
+  publication; two steps give the first view most of the gain.
+- **Prefetching every previewed file at once**: downloads textures no frame
+  draws; the reload gate keeps downloads to drawn materials in ADR-012's
+  order.
+- **Upgrading a preview in place behind the same handle**: no second
+  texture, but the publication would have to swap a resource under live
+  materials and retire the old one; the reload path already does both.
 
 ## Evidence
 
@@ -231,9 +324,62 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     identity key". They are read as UTF-8 now
     (`vkr_platform_environment_variable`).
 
+- 2026-10-21, progressive mips, Mac M1 Pro (16 GB), Metal, loopback:
+  - `vulkan_renderer_tester` (`build_debug`, ASan and UBSan): `--suite
+    depot` passes `test_depot_remote_ranges`. A read of the first 200,000
+    bytes of a 3 MB file brings its blob and the chunks that hold them
+    (within 16 KiB of those chunks' sizes, under half the file), returns the
+    file's bytes and writes no file. A read past the end or of an unlisted
+    path fails. A prefetch then writes the whole file, equal to the
+    original, and stores less than the file minus the chunks the reads
+    brought. A read of the present file does not go to the server.
+    `--suite filesystem` passes `test_vfs_remote_directory`, whose pending
+    file reads in part and queues without arriving. `--suite vkt` passes
+    `test_texture_ktx2_remote_preview`: a `preview=1` load of a pending
+    1.4 MB BC7 chain of 1024 texels reads only its first 256 KiB, holds
+    levels 2 to 10 and reports 1024 texels in 11 levels; at a 128-texel
+    limit the prefix loads complete and is no preview; without the flag, or
+    once the file arrived, the whole chain loads. `--suite material`,
+    `texture`, `mesh` and `scene_edit` pass.
+  - `python3 tools/checks/check_asset_stream.py --editor
+    build_release/editor/vkr_editor --depot
+    build_release/tools/depot/vkr_depot`, Release, passes three times, the
+    last with this change on top of `e3952013`. The local run read 782
+    files (1,964 MB, 511 of them ASTC textures; `main.cooked.astc` uploaded
+    897 MB). Streamed: 775 files fetched, none failed, every one equal to
+    the local file; 457 to 460 reads brought 83.3 MB, 370 files were
+    prefetched and 846.1 MB more was stored. From the stream's opening: the
+    scene was ready at 7.3 to 8.2 s; from 11.3 to 12.3 s only the 32
+    waiting reloads were pending, so every texture had at least its preview
+    (at most 367 previews at once); no texture was pending from 36.5 to
+    39.7 s, and no preview was left at the capture. The captures differ
+    from a local load's by 0.107, 0.299 and 0.308 of 255, where two local
+    loads differ by 0.335, 0.345 and 0.229.
+  - The same check with the binaries of `590d704c`, before progressive
+    mips (a detached worktree with the same assets): the scene was ready at
+    7.0 s, 496 textures were still pending at 13.1 s, and none from 33.3 s;
+    it stored 929.4 MB, the sum of the streamed run's reads and fetches, so
+    no chunk travels twice. Previews put every texture on screen about 21 s
+    sooner and full detail arrives 3 to 6 s later, in one run before and
+    three after. A local load is ready 5.4 to 8.0 s after it begins, with
+    every texture about 2 s later.
+  - The first run with previews failed its capture comparison, 0.556
+    against 0.278: the local runs captured 30 s after their scene and the
+    streamed run about 100 s after, and Bistro's final colour drifts while
+    it runs. One local run's captures 30 s and 100 s after its scene differ
+    by 0.455, and the streamed capture differs from a local capture at
+    100 s by 0.421. Every run of the check now captures `--settle` (120) s
+    after its scene.
+  - Not measured: BC previews on Windows and the desktop pipeline, two
+    computers, a link slower than loopback.
+
 ## Revisit when
 
-A texture's first draw must not wait for its whole file (progressive mips),
-fetched bytes should land in GPU staging memory directly, a link is slow
-enough that loaders' waits show in frame pacing, or editing needs a sparse
-working copy.
+[Texture streaming](../proposals/texture-streaming.md) computes the mips
+each texture needs (its required mips then replace the fixed 256 KiB
+preview and the drawn-first order), mesh LOD ranges need the same
+treatment, fetched bytes should land in GPU
+staging memory directly, a view moves fast enough that queued prefetches of
+textures it left delay those it reaches (CANCEL), a link is slow enough that
+loaders' waits show in frame pacing, or editing needs a sparse working
+copy.

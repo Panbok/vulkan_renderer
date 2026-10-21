@@ -376,8 +376,9 @@ static void vkr_material_system_remove_texture_stream(VkrMaterialSystem *system,
           sizeof(system->texture_streams[last]));
 }
 
-/* Room for `&max_extent=` with ten digits and the terminator. */
-#define VKR_MATERIAL_TEXTURE_LIMIT_QUERY_MAX 24u
+/* Room for `&max_extent=` with ten digits, `&preview=1` and the
+   terminator. */
+#define VKR_MATERIAL_TEXTURE_LIMIT_QUERY_MAX 34u
 
 /* Whether a stream's path leaves room for the load limit's query. A path
  * without it loads under the texture system's own limit and never reloads. */
@@ -399,7 +400,9 @@ static bool8_t vkr_material_stream_stale(VkrMaterialSystem *system,
 
 /* Writes the stream's next request into `path`: the material's request and
  * its `max_extent` query, which names the limit, zero included, so requests
- * at different limits never share a texture. */
+ * at different limits never share a texture. A first load outside a
+ * replacement asks for a preview: a file still arriving from a remote then
+ * draws from its smallest mips, and the limit's reload brings the rest. */
 static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
                                            VkrMaterialTextureStream *stream) {
   uint32_t length = stream->path_length;
@@ -408,9 +411,11 @@ static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
     for (uint32_t i = 0u; i < stream->path_length && !has_query; ++i) {
       has_query = stream->path[i] == '?';
     }
+    const bool8_t preview = !stream->reload && !stream->replacement;
     length += (uint32_t)string_format(
         stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
-        "%cmax_extent=%u", has_query ? '&' : '?', system->texture_extent_limit);
+        "%cmax_extent=%u%s", has_query ? '&' : '?',
+        system->texture_extent_limit, preview ? "&preview=1" : "");
   }
   stream->path[length] = '\0';
   return string8_create((uint8_t *)stream->path, length);
@@ -1188,6 +1193,7 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
           .reload = true_v,
           .state = VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED,
           .resident_texture = VKR_TEXTURE_HANDLE_INVALID,
+          .replaces = stream->resident_texture,
       };
       MemCopy(reload->path, stream->path, stream->path_length);
       reload->path[stream->path_length] = '\0';
@@ -1529,6 +1535,15 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
                            system->texture_stream_budget_bytes;) {
     VkrMaterialTextureStream *stream = &system->texture_streams[i];
     if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED) {
+      ++i;
+      continue;
+    }
+    /* A preview's reload waits, holding no load slot, until its whole file
+       is on disk; the first check asks for the download. Undrawn previews
+       reach no reload (queue_texture_reloads), so only drawn ones download
+       whole. */
+    if (stream->reload && !vkr_texture_system_full_file_ready(
+                              system->texture_system, stream->replaces)) {
       ++i;
       continue;
     }

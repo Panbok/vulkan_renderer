@@ -189,23 +189,62 @@ bool8_t vkr_vfs_overlay_write_path(const FilePath *path, FilePath *out_path,
 const char *vkr_vfs_read_path(const char *path, char *buffer,
                               uint64_t capacity);
 /**
- * Asks for a file of a remote content directory (asset streaming, ADR-105):
- * makes `relative` ('/'-separated, below the directory) exist on disk and
- * returns true, or returns false at once when the remote holds no such
- * file. Blocks while the file downloads; any thread may call it at once.
+ * A remote content directory's calls (asset streaming, ADR-123). Each takes
+ * a path '/'-separated and relative to the directory; any thread may call
+ * each of them at once.
  */
-typedef bool8_t (*VkrVfsRemoteFetch)(void *context, const char *relative);
+typedef struct VkrVfsRemoteCalls {
+  /* Makes `relative` exist on disk and returns true, or returns false at
+     once when the remote holds no such file. Blocks while it downloads. */
+  bool8_t (*fetch)(void *context, const char *relative);
+  /* Whether the remote holds `relative` and has not yet written it whole,
+     with its size in `out_size`. Never blocks on the network. */
+  bool8_t (*pending)(void *context, const char *relative, uint64_t *out_size);
+  /* Copies `size` bytes at `offset` of `relative` into `destination`
+     without downloading the rest of the file; blocks while they download. */
+  bool8_t (*read)(void *context, const char *relative, uint64_t offset,
+                  uint64_t size, void *destination);
+  /* Queues the whole file's download behind every read and fetch and
+     returns at once. */
+  void (*prefetch)(void *context, const char *relative);
+  /* Files the remote has written whole so far; it only grows. */
+  uint64_t (*arrivals)(void *context);
+} VkrVfsRemoteCalls;
 /**
  * Sets the directory a remote fills on demand: before a read-only open, map,
  * existence check or stat of a path below `directory` reaches the disk, and
- * before the workspace overlay looks for its copy there, `fetch` gets the
- * path's chance to arrive. `directory` must be absolute. NULL `fetch` clears
- * it. Call from one thread; `context` must outlive every read until the
- * remote is cleared and no read can still use it. Returns false when
+ * before the workspace overlay looks for its copy there, `calls->fetch` gets
+ * the path's chance to arrive. `directory` must be absolute. `calls` is
+ * copied; `fetch` is required and the other calls may be NULL. NULL `calls`
+ * clears it. Call from one thread; `context` must outlive every read until
+ * the remote is cleared and no read can still use it. Returns false when
  * `directory` is too long.
  */
-bool8_t vkr_vfs_set_remote(const char *directory, VkrVfsRemoteFetch fetch,
-                           void *context);
+bool8_t vkr_vfs_set_remote(const char *directory,
+                           const VkrVfsRemoteCalls *calls, void *context);
+/**
+ * Whether a read of `path` would wait for the remote: the remote holds the
+ * file a read-only open of `path` resolves to (the workspace overlay's copy
+ * or `path` itself) and has not yet written it whole. Its size goes to
+ * `out_size` (may be NULL). Never blocks on the network and never fetches;
+ * false without a remote.
+ */
+bool8_t vkr_vfs_remote_pending(const FilePath *path, uint64_t *out_size);
+/**
+ * Copies `size` bytes at `offset` of the pending file `path` resolves to
+ * into `destination`, downloading only the bytes asked for. Blocks while
+ * they download. False when no remote file is pending for `path`, or the
+ * read fails.
+ */
+bool8_t vkr_vfs_remote_read(const FilePath *path, uint64_t offset,
+                            uint64_t size, void *destination);
+/** Queues the whole pending file `path` resolves to; returns at once. */
+void vkr_vfs_remote_prefetch(const FilePath *path);
+/**
+ * Files the remote has written whole so far, zero without one. A caller
+ * that waits for a pending file rechecks it only after this changes.
+ */
+uint64_t vkr_vfs_remote_arrivals(void);
 /** Maps and validates one archive and appends it to the mount order. */
 bool8_t vkr_vfs_mount_pack(const char *path);
 /**

@@ -339,6 +339,41 @@ bool8_t vkr_depot_blob_parse(const uint8_t *bytes, uint64_t size,
   return true_v;
 }
 
+typedef struct BlobRangeState {
+  uint64_t begin;
+  uint64_t end;
+  /* The file offset of the next chunk. */
+  uint64_t position;
+  VkrDepotRangeVisitor visit;
+  void *context;
+} BlobRangeState;
+
+static bool8_t blob_range_chunk(void *context, const VkrDepotChunkRef *chunk) {
+  BlobRangeState *state = context;
+  const uint64_t chunk_offset = state->position;
+  state->position += chunk->size;
+  if (state->position <= state->begin || chunk_offset >= state->end) {
+    return true_v;
+  }
+  return state->visit(state->context, chunk, chunk_offset);
+}
+
+bool8_t vkr_depot_blob_range(const uint8_t *bytes, uint64_t blob_size,
+                             uint64_t offset, uint64_t size,
+                             VkrDepotRangeVisitor visit, void *context) {
+  uint64_t file_size = 0u;
+  if (!vkr_depot_blob_parse(bytes, blob_size, &file_size, NULL, NULL) ||
+      size == 0u || offset > file_size || size > file_size - offset) {
+    return false_v;
+  }
+  BlobRangeState state = {.begin = offset,
+                          .end = offset + size,
+                          .position = 0u,
+                          .visit = visit,
+                          .context = context};
+  return vkr_depot_blob_parse(bytes, blob_size, NULL, blob_range_chunk, &state);
+}
+
 // =============================================================================
 // Tree
 // =============================================================================
