@@ -110,14 +110,19 @@ pipeline rather than a backend mechanism.
    16.7 ms p95 `gpu.submission` (60 fps), and `frame.wall` p95 under the
    same 16.7 ms as the CPU check. The Scene renders at unit scale with FSR
    3.1 native antialiasing ([ADR-052](052-vulkan-fsr31-upscaling.md)).
+   Since 2026-10-21 Bistro's static lamps are baked for the budget
+   ([ADR-104](104-desktop-baked-lamps.md)), by the owner's decision after
+   measurement: runtime lamps cost 4.0 and 7.6 ms at the median in the two
+   cases, and baking them softens their shadows. The owner kept every High
+   gate and FSR over the cheaper SMAA T2x on the same day.
    Dynamic resolution comes last, since a changing resolution blurs the
-   image in motion: preset gates, cuts inside the most expensive pass group
-   and SMAA T2x come first. Epic has no budget. The cases, profile and
+   image in motion. Epic has no budget. The cases, profile and
    budget lines are in
    [Desktop frame budget](../proposals/desktop-frame-budget.md). The first
-   baseline, accepted on 2026-10-20, misses the budget by 7.1 ms (orbit)
-   and 10.0 ms (street walk) at p95
-   ([Desktop pipeline baseline](#desktop-pipeline-baseline)).
+   baseline, accepted on 2026-10-20 with runtime lamps, misses the budget by
+   7.1 ms (orbit) and 10.0 ms (street walk) at p95
+   ([Desktop pipeline baseline](#desktop-pipeline-baseline)); a baked-lamp
+   baseline awaits the owner's acceptance.
 5. The tiled pipeline shades opaque surfaces forward in one multisampled
    render pass (owner decision 2026-10-05). On Bistro, with a depth pre-pass
    in both, it costs the same as a G-buffer kept in tile memory without

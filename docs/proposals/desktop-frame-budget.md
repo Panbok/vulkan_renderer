@@ -27,7 +27,11 @@ reports.
   [`bistro_vulkan_high_orbit_1440`](../../tools/cases/performance/bistro_vulkan_high_orbit_1440.case.json)
   for steady cost and
   [`bistro_vulkan_high_street_walk_1440`](../../tools/cases/performance/bistro_vulkan_high_street_walk_1440.case.json)
-  for shadow-redraw tails.
+  for tails. Since 2026-10-21 both load
+  [`bistro_desktop_lamps_local.scene.json`](../../assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json),
+  Bistro with its static lamps baked ([Baked lamps](#baked-lamps)); a host
+  bakes the set before it runs them, and a report whose
+  `lighting.point.selected` is not 0 ran runtime lamps.
   [`performance-windowed-gpu-submission-vulkan.json`](../../tools/profiles/performance-windowed-gpu-submission-vulkan.json)
   measures `gpu.submission` with five children on a clean tree, pinned to
   the RX 6700 XT, and `performance-windowed-gpu.json` with
@@ -228,8 +232,9 @@ own set (ADR-104).
    walk, against shadow quality's 3.0 ms target, mostly in the mask and in
    deferred lighting's reads of it. Baking Bistro's static lamps
    ([Baked lamps](#baked-lamps)) removes that work and brings both cases
-   under the budget, at 15.42 and 15.47 ms p95, but changes their look;
-   whether the budget scene bakes its lamps is the owner's decision. (c) SMAA T2x instead of FSR's
+   under the budget, at 15.42 and 15.47 ms p95, and softens the lamps'
+   shadows; on 2026-10-21 the owner chose baked lamps for the budget cases.
+   Runtime lamps keep this cost where a lamp moves or switches. (c) SMAA T2x instead of FSR's
    antialiasing measures 0.7 ms cheaper on both cases, but on 2026-10-21 the
    owner kept FSR for its image quality
    ([ADR-052](../adr/052-vulkan-fsr31-upscaling.md)); lever (c) is closed

@@ -2,8 +2,8 @@
   "schema_version": 1,
   "id": "performance.bistro.vulkan.high_orbit_1440",
   "suite": "performance",
-  "description": "ADR-087 desktop budget, steady cost: the material orbit on the Vulkan desktop pipeline at 2560x1440 physical pixels. Cases do not read the Graphics settings, so the renderer block spells out the High preset.",
-  "scene": "assets/scenes/bistro.scene.json",
+  "description": "ADR-087 desktop budget, steady cost: the material orbit on the Vulkan desktop pipeline at 2560x1440 physical pixels, in Bistro with its static lamps baked (ADR-104; bake the desktop set with vkr_bakery bake lightmap first). Cases do not read the Graphics settings, so the renderer block spells out the High preset.",
+  "scene": "assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json",
   "seed": 1,
   "resolution": [
     2560,

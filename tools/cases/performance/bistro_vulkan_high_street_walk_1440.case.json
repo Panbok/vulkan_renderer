@@ -2,8 +2,8 @@
   "schema_version": 1,
   "id": "performance.bistro.vulkan.high_street_walk_1440",
   "suite": "performance",
-  "description": "ADR-087 desktop budget, tails: the four-viewpoint Bistro street walk at about 2 m/s, where local shadow redraws set the slowest frames, on Vulkan at 2560x1440 physical pixels with the High preset.",
-  "scene": "assets/scenes/bistro.scene.json",
+  "description": "ADR-087 desktop budget, tails: the four-viewpoint Bistro street walk at about 2 m/s on Vulkan at 2560x1440 physical pixels with the High preset, in Bistro with its static lamps baked (ADR-104; bake the desktop set with vkr_bakery bake lightmap first).",
+  "scene": "assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json",
   "seed": 1,
   "resolution": [
     2560,
