@@ -376,6 +376,12 @@ static void vkr_material_system_remove_texture_stream(VkrMaterialSystem *system,
           sizeof(system->texture_streams[last]));
 }
 
+/* Draw epochs a reload that waits for a preview's file stays without a
+   draw of its material (a closed scene, a view that turned away) before it
+   lets the download go; the limit's deferral queues it again once a frame
+   draws the material. */
+#define VKR_MATERIAL_TEXTURE_INTEREST_EPOCHS 120u
+
 /* Room for `&max_extent=` with ten digits, `&preview=1` and the
    terminator. */
 #define VKR_MATERIAL_TEXTURE_LIMIT_QUERY_MAX 34u
@@ -400,9 +406,10 @@ static bool8_t vkr_material_stream_stale(VkrMaterialSystem *system,
 
 /* Writes the stream's next request into `path`: the material's request and
  * its `max_extent` query, which names the limit, zero included, so requests
- * at different limits never share a texture. A first load outside a
- * replacement asks for a preview: a file still arriving from a remote then
- * draws from its smallest mips, and the limit's reload brings the rest. */
+ * at different limits never share a texture. A load outside a replacement
+ * asks for a preview: a file still arriving from a remote then draws from
+ * its smallest mips, and the limit's reload brings the rest; a reload that
+ * shrinks a preview loads complete from those mips. */
 static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
                                            VkrMaterialTextureStream *stream) {
   uint32_t length = stream->path_length;
@@ -411,7 +418,7 @@ static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
     for (uint32_t i = 0u; i < stream->path_length && !has_query; ++i) {
       has_query = stream->path[i] == '?';
     }
-    const bool8_t preview = !stream->reload && !stream->replacement;
+    const bool8_t preview = !stream->replacement;
     length += (uint32_t)string_format(
         stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
         "%cmax_extent=%u%s", has_query ? '&' : '?',
@@ -1221,6 +1228,11 @@ void vkr_material_system_cancel_texture_streams(VkrMaterialSystem *system,
                                             string_length(stream->path));
     switch (stream->state) {
     case VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED:
+      /* A reload waiting for a preview's file lets its download go. */
+      if (stream->reload) {
+        vkr_texture_system_cancel_full_file(system->texture_system,
+                                            stream->replaces);
+      }
       system->texture_stream_queued_count--;
       break;
     case VKR_MATERIAL_TEXTURE_RESIDENCY_ACTIVE:
@@ -1538,16 +1550,33 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
       ++i;
       continue;
     }
-    /* A preview's reload waits, holding no load slot, until its whole file
-       is on disk; the first check asks for the download. Undrawn previews
-       reach no reload (queue_texture_reloads), so only drawn ones download
-       whole. */
-    if (stream->reload && !vkr_texture_system_full_file_ready(
-                              system->texture_system, stream->replaces)) {
+    /* A reload that grows a preview waits, holding no load slot, until its
+       whole file is on disk; the first check asks for the download. Undrawn
+       previews reach no reload (queue_texture_reloads), so only drawn ones
+       download whole. A reload that shrinks one loads from its mips. */
+    if (stream->reload &&
+        vkr_texture_system_load_limit_grows(system->texture_system,
+                                            stream->replaces,
+                                            system->texture_extent_limit) &&
+        !vkr_texture_system_full_file_ready(system->texture_system,
+                                            stream->replaces)) {
+      if (vkr_material_system_stream_last_used(system, stream) +
+              VKR_MATERIAL_TEXTURE_INTEREST_EPOCHS <
+          system->texture_stream_epoch) {
+        vkr_texture_system_cancel_full_file(system->texture_system,
+                                            stream->replaces);
+        system->texture_stream_queued_count--;
+        system->texture_reload_deferred = true_v;
+        vkr_material_system_reload_ended(system, stream);
+        vkr_material_system_remove_texture_stream(system, i);
+        continue;
+      }
       ++i;
       continue;
     }
     if (stream->reload && !vkr_material_system_reload_needed(system, stream)) {
+      vkr_texture_system_cancel_full_file(system->texture_system,
+                                          stream->replaces);
       system->texture_stream_queued_count--;
       vkr_material_system_reload_ended(system, stream);
       vkr_material_system_remove_texture_stream(system, i);

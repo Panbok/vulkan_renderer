@@ -293,6 +293,14 @@ bool8_t vkr_texture_system_full_file_ready(VkrTextureSystem *system,
                                            VkrTextureHandle handle);
 
 /**
+ * @brief Drops a preview's queued download that has not started, when no
+ * reload waits for it any more; the next vkr_texture_system_full_file_ready
+ * check queues it again. Nothing for other textures.
+ */
+void vkr_texture_system_cancel_full_file(VkrTextureSystem *system,
+                                         VkrTextureHandle handle);
+
+/**
  * @brief Gets a texture by index
  * @param system The texture system to get the texture from
  * @param index The index of the texture to get

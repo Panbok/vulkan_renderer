@@ -2141,6 +2141,114 @@ static void test_depot_sparse(void) {
   printf("  test_depot_sparse PASSED\n");
 }
 
+/* Cancelling a queued prefetch over loopback (vkr_depot_remote_cancel).
+   Three files of 6 MB fill two prefetch transfers (16 MiB each at most), so
+   the third waits while the first transfer runs. Fails when the cancelled
+   file is written, when the other two do not arrive, when a fetch of the
+   cancelled file no longer works, or when cancelling an arrived file
+   counts. */
+static void test_depot_remote_cancel(void) {
+  printf("  Running test_depot_remote_cancel...\n");
+  char store_root[VKR_DEPOT_PATH_CAPACITY];
+  char author_root[VKR_DEPOT_PATH_CAPACITY];
+  char stream_root[VKR_DEPOT_PATH_CAPACITY];
+  char key_root[VKR_DEPOT_PATH_CAPACITY];
+  char identity[VKR_DEPOT_PATH_CAPACITY];
+  depot_test_dir("cancel_store", store_root, sizeof(store_root));
+  depot_test_dir("cancel_author", author_root, sizeof(author_root));
+  depot_test_dir("cancel_stream", stream_root, sizeof(stream_root));
+  depot_test_dir("cancel_key", key_root, sizeof(key_root));
+  assert(vkr_bakery_path_join(identity, sizeof(identity), key_root,
+                              "identity.key"));
+  char saved_identity[VKR_DEPOT_PATH_CAPACITY] = {0};
+  const char *identity_value = getenv("VKR_DEPOT_IDENTITY");
+  const bool8_t had_identity = identity_value && identity_value[0];
+  snprintf(saved_identity, sizeof(saved_identity), "%s",
+           had_identity ? identity_value : "");
+  depot_test_setenv("VKR_DEPOT_IDENTITY", identity);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), GB(1), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  const VkrDepotServiceConfig config = {.store_root = store_root,
+                                        .bind = "127.0.0.1:0",
+                                        .discovery_port = 7354u,
+                                        .codec = vkr_depot_zstd_codec(),
+                                        .open_access = true_v};
+  char error[256];
+  VkrDepotService *service =
+      vkr_depot_service_start(&allocator, &config, error, sizeof(error));
+  assert(service);
+  VkrDepotServiceInfo info;
+  vkr_depot_service_info(service, &info);
+  char address[64];
+  snprintf(address, sizeof(address), "127.0.0.1:%u", info.address.port);
+
+  static uint8_t data[6000000];
+  const char *names[3] = {"one.bin", "two.bin", "three.bin"};
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    depot_test_random(data, sizeof(data));
+    depot_test_write(author_root, names[i], data, sizeof(data));
+  }
+  VkrDepotWorkspace author;
+  assert(vkr_depot_workspace_create(&author, author_root, NULL,
+                                    vkr_depot_zstd_codec()));
+  (void)depot_test_sparse_push(&allocator, &author, address, info.server_key,
+                               "three files");
+  vkr_depot_workspace_close(&author);
+
+  const VkrDepotRemoteConfig remote_config = {.directory = stream_root,
+                                              .address = address,
+                                              .server_key = info.server_key,
+                                              .codec = vkr_depot_zstd_codec()};
+  VkrDepotRemote *remote =
+      vkr_depot_remote_open(&allocator, &remote_config, error, sizeof(error));
+  assert(remote);
+  for (uint32_t i = 0u; i < 3u; ++i) {
+    vkr_depot_remote_prefetch(remote, names[i]);
+  }
+  vkr_depot_remote_cancel(remote, "three.bin");
+  for (uint32_t wait = 0u;
+       wait < 1000u && vkr_depot_remote_arrivals(remote) < 2u; ++wait) {
+    vkr_platform_sleep(10u);
+  }
+  /* Time for a third transfer, had the cancel not taken it out. */
+  vkr_platform_sleep(300u);
+  VkrDepotRemoteStats stats;
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.prefetched == 3u && stats.cancelled == 1u &&
+         stats.fetched == 2u);
+  assert(vkr_depot_remote_arrivals(remote) == 2u);
+  assert(depot_test_exists(stream_root, "one.bin") &&
+         depot_test_exists(stream_root, "two.bin") &&
+         !depot_test_exists(stream_root, "three.bin"));
+  assert(vkr_depot_remote_pending(remote, "three.bin", NULL));
+
+  /* A fetch still brings it; cancelling an arrived file changes nothing. */
+  assert(vkr_depot_remote_fetch(remote, "three.bin"));
+  vkr_depot_remote_cancel(remote, "one.bin");
+  vkr_depot_remote_stats(remote, &stats);
+  assert(stats.fetched == 3u && stats.cancelled == 1u);
+  char streamed[VKR_DEPOT_PATH_CAPACITY];
+  char original[VKR_DEPOT_PATH_CAPACITY];
+  assert(vkr_bakery_path_join(streamed, sizeof(streamed), stream_root,
+                              "three.bin") &&
+         vkr_bakery_path_join(original, sizeof(original), author_root,
+                              "three.bin"));
+  assert(depot_test_files_equal(streamed, original));
+  vkr_depot_remote_close(remote);
+
+  vkr_depot_service_stop(service);
+  vkr_dmemory_allocator_destroy(&allocator);
+  depot_test_setenv("VKR_DEPOT_IDENTITY", had_identity ? saved_identity : NULL);
+  assert(vkr_bakery_remove_tree(store_root));
+  assert(vkr_bakery_remove_tree(author_root));
+  assert(vkr_bakery_remove_tree(stream_root));
+  assert(vkr_bakery_remove_tree(key_root));
+  printf("  test_depot_remote_cancel PASSED\n");
+}
+
 /* Stores a tree of `count` entries into `store`. */
 static void depot_test_tree(const VkrDepotStore *store,
                             VkrDepotTreeEntry *entries, uint32_t count,
@@ -2430,6 +2538,7 @@ bool32_t run_depot_tests(void) {
   test_depot_remote();
   test_depot_remote_ranges();
   test_depot_sparse();
+  test_depot_remote_cancel();
   test_depot_tree_limits();
   test_depot_checkout_safety();
   test_depot_server_refusals();

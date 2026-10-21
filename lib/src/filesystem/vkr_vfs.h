@@ -207,6 +207,9 @@ typedef struct VkrVfsRemoteCalls {
   /* Queues the whole file's download behind every read and fetch and
      returns at once. */
   void (*prefetch)(void *context, const char *relative);
+  /* Drops a queued prefetch whose download has not started; a fetch that
+     asked for the file, or a transfer under way, goes on. */
+  void (*cancel)(void *context, const char *relative);
   /* Files the remote has written whole so far; it only grows. */
   uint64_t (*arrivals)(void *context);
 } VkrVfsRemoteCalls;
@@ -240,6 +243,9 @@ bool8_t vkr_vfs_remote_read(const FilePath *path, uint64_t offset,
                             uint64_t size, void *destination);
 /** Queues the whole pending file `path` resolves to; returns at once. */
 void vkr_vfs_remote_prefetch(const FilePath *path);
+/** Drops the queued prefetch of the pending file `path` resolves to, when
+    its download has not started. */
+void vkr_vfs_remote_cancel(const FilePath *path);
 /**
  * Files the remote has written whole so far, zero without one. A caller
  * that waits for a pending file rechecks it only after this changes.

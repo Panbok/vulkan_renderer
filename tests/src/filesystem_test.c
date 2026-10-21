@@ -1256,6 +1256,7 @@ typedef struct FsTestRemote {
   uint32_t fetched;
   uint32_t reads;
   uint32_t prefetches;
+  uint32_t cancels;
 } FsTestRemote;
 
 /* The path below the directory of a file the remote holds; false for one
@@ -1326,6 +1327,11 @@ vkr_internal void fs_test_remote_prefetch(void *context, const char *relative) {
   ((FsTestRemote *)context)->prefetches += 1u;
 }
 
+vkr_internal void fs_test_remote_cancel(void *context, const char *relative) {
+  (void)relative;
+  ((FsTestRemote *)context)->cancels += 1u;
+}
+
 vkr_internal uint64_t fs_test_remote_arrivals(void *context) {
   return ((FsTestRemote *)context)->fetched;
 }
@@ -1335,6 +1341,7 @@ vkr_global const VkrVfsRemoteCalls fs_test_remote_calls = {
     .pending = fs_test_remote_pending,
     .read = fs_test_remote_read,
     .prefetch = fs_test_remote_prefetch,
+    .cancel = fs_test_remote_cancel,
     .arrivals = fs_test_remote_arrivals,
 };
 
@@ -1383,8 +1390,10 @@ vkr_internal void test_vfs_remote_directory(void) {
   assert(vkr_vfs_remote_read(&held, 2u, 3u, part) &&
          MemCompare(part, "tch", 3u) == 0 && remote.reads == 1u);
   vkr_vfs_remote_prefetch(&held);
-  assert(remote.prefetches == 1u && remote.calls == 0u &&
-         remote.fetched == 0u && vkr_vfs_remote_arrivals() == 0u);
+  vkr_vfs_remote_cancel(&held);
+  assert(remote.prefetches == 1u && remote.cancels == 1u &&
+         remote.calls == 0u && remote.fetched == 0u &&
+         vkr_vfs_remote_arrivals() == 0u);
   assert(!vkr_vfs_remote_pending(&missing, NULL));
   assert(!vkr_vfs_remote_read(&missing, 0u, 1u, part));
 

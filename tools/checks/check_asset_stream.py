@@ -17,6 +17,13 @@ docs/proposals/network-protocol.md, "Asset streaming").
    its pending and preview textures when the scene is ready and every 2 s
    for `--settle` seconds, then captures the same view.
 
+With `--hide-after SECONDS`, the streamed run hides Bistro's geometry that
+many seconds after the scene is ready instead of capturing, so no frame
+draws its materials (texture demand follows the world's visible sources,
+not the camera), and the check passes when queued downloads were
+cancelled, none failed, every written file equals the local one and
+nothing arrived in the last 15 s.
+
 Both local runs report their pending textures every second, so the first
 gives the local times to the scene and to every texture loaded. Every run
 captures `--settle` seconds after its scene is ready: Bistro's final colour
@@ -79,6 +86,18 @@ echo capture-done
 """
 STREAM_POLL = ("wait 2\nop stream.status\nstats.pending_textures\n"
                "stats.preview_textures")
+
+# The streamed run hides Bistro while its files arrive.
+HIDE_SCRIPT = """wait.scene
+op stream.status
+wait {after}
+op stream.status
+op entity.set {{"entity":"Bistro Lights","visible":false}}
+{polls}
+op stream.status
+echo capture-done
+quit discard
+"""
 
 
 def png_pixels(path: pathlib.Path):
@@ -237,6 +256,10 @@ def main() -> int:
     parser.add_argument("--settle", type=int, default=120,
                         help="seconds every run waits after its scene is "
                         "ready before its capture")
+    parser.add_argument("--hide-after", type=int, default=0,
+                        help="seconds after the scene is ready at which the "
+                        "streamed run hides Bistro instead of capturing, to "
+                        "check that queued downloads stop")
     parser.add_argument("--work", default=str(ROOT / ".scratch" /
                                               "asset-stream"))
     parser.add_argument("--timeout", type=float, default=900.0)
@@ -268,11 +291,13 @@ def main() -> int:
         if "capture-done" not in local_text or not local_captures:
             raise RuntimeError("the local run did not capture; see "
                                f"{work / 'local.log'}")
-        again_text = run_editor(editor, work / "again", local_script,
-                                work / "again.log", [], {}, args.timeout)
+        again_text = "" if args.hide_after else run_editor(
+            editor, work / "again", local_script, work / "again.log", [], {},
+            args.timeout)
         again_captures = captures(again_text)
         made += again_captures
-        if "capture-done" not in again_text or not again_captures:
+        if not args.hide_after and ("capture-done" not in again_text or
+                                not again_captures):
             raise RuntimeError("the second local run did not capture; see "
                                f"{work / 'again.log'}")
         identities = sorted(
@@ -308,16 +333,21 @@ def main() -> int:
 
         # 3. The streamed run.
         stream_dir = work / "stream"
+        polls = "\n".join(["wait 2", "op stream.status"] *
+                           (args.settle // 2)) if args.hide_after else "\n".join(
+                               [STREAM_POLL] * (args.settle // 2))
+        script = HIDE_SCRIPT.format(
+            after=args.hide_after,
+            polls=polls) if args.hide_after else STREAM_SCRIPT.format(
+                polls=polls)
         stream_text = run_editor(
-            editor, work / "streamed",
-            STREAM_SCRIPT.format(polls="\n".join(
-                [STREAM_POLL] * (args.settle // 2))),
-            work / "stream.log", ["--stream", address, key, str(stream_dir)],
-            {}, args.timeout)
+            editor, work / "streamed", script, work / "stream.log",
+            ["--stream", address, key, str(stream_dir)], {}, args.timeout)
         statuses = stream_statuses(stream_text)
         stream_captures = captures(stream_text)
         made += stream_captures
-        if "capture-done" not in stream_text or not stream_captures:
+        if "capture-done" not in stream_text or (not args.hide_after and
+                                                 not stream_captures):
             raise RuntimeError("the streamed run did not capture; see "
                                f"{work / 'stream.log'}")
         if not statuses or not statuses[0].get("streaming"):
@@ -335,6 +365,8 @@ def main() -> int:
             failures.append("the streamed editor fetched no file")
         if last.get("reads", 0) == 0:
             failures.append("the streamed editor read no preview")
+        if args.hide_after and last.get("cancelled", 0) == 0:
+            failures.append("hiding Bistro cancelled no queued download")
         if last.get("failed", 0):
             failures.append(f"{last['failed']} fetches failed")
         # Every streamed file holds the local file's bytes.
@@ -350,15 +382,28 @@ def main() -> int:
         if mismatched:
             failures.append(f"{len(mismatched)} streamed files differ from "
                             f"the local ones, such as {mismatched[0]}")
-        noise_mean, noise_share = compare(local_captures[0],
-                                          again_captures[0])
-        final_mean, final_share = compare(local_captures[0],
-                                          stream_captures[0])
-        if final_mean is None or noise_mean is None:
-            failures.append("the captures differ in size")
-        elif final_mean > max(1.5 * noise_mean, 0.5):
-            failures.append(f"the streamed capture differs by {final_mean:.3f} "
-                            f"against {noise_mean:.3f} between local runs")
+        noise_mean = final_mean = None
+        if not args.hide_after:
+            noise_mean, noise_share = compare(local_captures[0],
+                                              again_captures[0])
+            final_mean, final_share = compare(local_captures[0],
+                                              stream_captures[0])
+            if final_mean is None or noise_mean is None:
+                failures.append("the captures differ in size")
+            elif final_mean > max(1.5 * noise_mean, 0.5):
+                failures.append(f"the streamed capture differs by "
+                                f"{final_mean:.3f} against {noise_mean:.3f} "
+                                f"between local runs")
+        if args.hide_after and len(statuses) >= 2:
+            at_switch = statuses[1]
+            print(f"hidden at "
+                  f"{at_switch.get('since_open_ms', 0):.0f} ms: "
+                  f"{at_switch.get('fetched', 0)} files fetched, "
+                  f"{at_switch.get('prefetched', 0)} prefetched by then; at "
+                  f"the end {last.get('fetched', 0)} of "
+                  f"{last.get('listed', 0)} fetched, "
+                  f"{last.get('prefetched', 0)} prefetched, "
+                  f"{last.get('cancelled', 0)} cancelled")
         print(f"seed: {len(files)} files read by the local run, {cooked} "
               f"cooked, {seed_bytes / 1e6:.1f} MB; {published.strip()}")
         print(f"stream: {last.get('listed')} listed, {last.get('fetched')} "

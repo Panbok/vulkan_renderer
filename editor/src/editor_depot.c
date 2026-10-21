@@ -3434,6 +3434,8 @@ VkrBakeryJson *vkr_editor_depot_stream_json(VkrEditorDepot *depot,
                       vkr_bakery_json_int(arena, (int64_t)stats.read_bytes));
   vkr_bakery_json_set(arena, result, "prefetched",
                       vkr_bakery_json_int(arena, stats.prefetched));
+  vkr_bakery_json_set(arena, result, "cancelled",
+                      vkr_bakery_json_int(arena, stats.cancelled));
   vkr_bakery_json_set(
       arena, result, "wait_ms",
       vkr_bakery_json_float(arena, (float64_t)stats.wait_us / 1000.0));

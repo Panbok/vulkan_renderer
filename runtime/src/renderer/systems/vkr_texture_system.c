@@ -2619,6 +2619,31 @@ bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
          texture->limit_source_mip_levels;
 }
 
+/* The `.vkt` a texture's name resolves to, allocated from `allocator`;
+   an empty path when it has none. */
+vkr_internal FilePath vkr_texture_system_file_of(VkrTextureSystem *system,
+                                                 VkrTextureHandle handle,
+                                                 VkrAllocator *allocator) {
+  const char *key = system->texture_keys_by_index[handle.id - 1u];
+  if (!key) {
+    return (FilePath){0};
+  }
+  String8 direct_vkt = {0};
+  String8 sidecar_vkt = {0};
+  vkr_texture_build_resolution_candidates(
+      allocator,
+      string8_create_from_cstr((const uint8_t *)key, string_length(key)),
+      &direct_vkt, &sidecar_vkt, NULL);
+  const String8 selected_vkt = direct_vkt.str ? direct_vkt : sidecar_vkt;
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, selected_vkt);
+  if (!path_cstr) {
+    return (FilePath){0};
+  }
+  const String8 path = string8_create_from_cstr((const uint8_t *)path_cstr,
+                                                string_length(path_cstr));
+  return vkr_asset_path_file(allocator, path);
+}
+
 bool8_t vkr_texture_system_full_file_ready(VkrTextureSystem *system,
                                            VkrTextureHandle handle) {
   VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
@@ -2631,35 +2656,36 @@ bool8_t vkr_texture_system_full_file_ready(VkrTextureSystem *system,
   if (arrivals == texture->preview_arrivals) {
     return false_v;
   }
-  const char *key = system->texture_keys_by_index[handle.id - 1u];
-  if (!key) {
-    return true_v;
-  }
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&system->allocator);
-  String8 direct_vkt = {0};
-  String8 sidecar_vkt = {0};
-  vkr_texture_build_resolution_candidates(
-      &system->allocator,
-      string8_create_from_cstr((const uint8_t *)key, string_length(key)),
-      &direct_vkt, &sidecar_vkt, NULL);
-  const String8 selected_vkt = direct_vkt.str ? direct_vkt : sidecar_vkt;
-  char *path_cstr = vkr_texture_path_to_cstr(&system->allocator, selected_vkt);
-  bool8_t pending = false_v;
-  if (path_cstr) {
-    const FilePath fp = vkr_asset_path_file(
-        &system->allocator, string8_create_from_cstr((const uint8_t *)path_cstr,
-                                                     string_length(path_cstr)));
-    pending = fp.path.str && vkr_vfs_remote_pending(&fp, NULL);
-    if (pending) {
-      vkr_vfs_remote_prefetch(&fp);
-    }
+  const FilePath fp =
+      vkr_texture_system_file_of(system, handle, &system->allocator);
+  const bool8_t pending = fp.path.str && vkr_vfs_remote_pending(&fp, NULL);
+  if (pending) {
+    vkr_vfs_remote_prefetch(&fp);
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (pending) {
     texture->preview_arrivals = arrivals;
   }
   return !pending;
+}
+
+void vkr_texture_system_cancel_full_file(VkrTextureSystem *system,
+                                         VkrTextureHandle handle) {
+  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || !texture->preview) {
+    return;
+  }
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&system->allocator);
+  const FilePath fp =
+      vkr_texture_system_file_of(system, handle, &system->allocator);
+  if (fp.path.str) {
+    vkr_vfs_remote_cancel(&fp);
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  /* The next check asks for the file again. */
+  texture->preview_arrivals = UINT64_MAX;
 }
 
 bool8_t vkr_texture_prepared_load_2d(uint8_t *pixels, uint64_t byte_size,

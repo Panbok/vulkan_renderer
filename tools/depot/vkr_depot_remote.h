@@ -70,8 +70,10 @@ typedef struct VkrDepotRemoteStats {
      their transfers brought; `stored_bytes` counts whole-file transfers. */
   uint32_t reads;
   uint64_t read_bytes;
-  /* Files vkr_depot_remote_prefetch queued. */
+  /* Files vkr_depot_remote_prefetch queued, and queued prefetches
+     vkr_depot_remote_cancel dropped before their download started. */
   uint32_t prefetched;
+  uint32_t cancelled;
   /* Microseconds callers spent waiting in vkr_depot_remote_fetch and
      vkr_depot_remote_read, and from the end of opening to the newest file
      written and to the newest read served from the server. */
@@ -114,6 +116,11 @@ bool8_t vkr_depot_remote_pending(void *remote, const char *relative,
 /* Queues `relative`'s download behind every read and fetch and returns at
    once; nothing for an unlisted file or one already queued or present. */
 void vkr_depot_remote_prefetch(void *remote, const char *relative);
+
+/* Drops `relative`'s queued prefetch while its download has not started;
+   a fetch that asked for it, or a transfer under way, goes on. A later
+   read, fetch or prefetch asks again. Never blocks on the network. */
+void vkr_depot_remote_cancel(void *remote, const char *relative);
 
 /* Files written whole under the directory since opening; it only grows.
    Lock-free. */

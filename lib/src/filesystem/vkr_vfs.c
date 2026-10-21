@@ -1034,6 +1034,15 @@ void vkr_vfs_remote_prefetch(const FilePath *path) {
   }
 }
 
+void vkr_vfs_remote_cancel(const FilePath *path) {
+  const VkrVfsRemote *remote = NULL;
+  char relative[VKR_VFS_PATH_MAX];
+  if (vkr_vfs_remote_pending_relative(path, &remote, relative, NULL) &&
+      remote->calls.cancel) {
+    remote->calls.cancel(remote->context, relative);
+  }
+}
+
 uint64_t vkr_vfs_remote_arrivals(void) {
   const VkrVfsRemote *remote = vkr_vfs_current_remote();
   return remote && remote->calls.arrivals

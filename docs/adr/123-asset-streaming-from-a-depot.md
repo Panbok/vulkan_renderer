@@ -16,9 +16,10 @@ platform files travel on a side branch per GPU family; and a material's
 large texture first draws from the smallest mips at the start of its file,
 then from the whole file once a frame draws it. A sparse working copy holds
 on disk only the files a reader opened, and commits and pulls without the
-others. Mesh LOD ranges, staging fetched bytes straight into GPU memory,
-cancelling downloads that leave interest, sparse copies in the editor's
-project sharing and a run between two computers stay in the proposal.
+others. A queued download whose texture no frame draws any more is
+cancelled. Mesh LOD ranges, priority from the view, staging fetched bytes
+straight into GPU memory, sparse copies in the editor's project sharing and
+a run between two computers stay in the proposal.
 
 ## Context
 
@@ -80,8 +81,12 @@ range are known before any of them arrive
   the bytes out of them. The file is not written.
 - `vkr_depot_remote_pending` answers whether a listed file is not yet whole
   under the directory, without the network. `vkr_depot_remote_prefetch`
-  queues a whole file and returns at once. `vkr_depot_remote_arrivals`
-  counts the files written whole, without the lock.
+  queues a whole file and returns at once, and `vkr_depot_remote_cancel`
+  drops a queued prefetch whose download has not started; a file a fetch
+  asked for, or one in a transfer, goes on. A cancelled file may be
+  prefetched again, so the prefetch queue compacts when it fills.
+  `vkr_depot_remote_arrivals` counts the files written whole, without the
+  lock.
 - The worker serves every waiting read in one transfer first, then every
   waiting fetch, then prefetches in transfers of at most 16 MiB of listed
   files, so a read or fetch waits behind at most that much background work.
@@ -95,7 +100,7 @@ range are known before any of them arrive
 `vkr_vfs_set_remote(directory, calls, context)` installs such a directory
 for the whole process ([vkr_vfs.c](../../lib/src/filesystem/vkr_vfs.c)).
 `VkrVfsRemoteCalls` ([vkr_vfs.h](../../lib/src/filesystem/vkr_vfs.h)) holds
-`fetch`, `pending`, `read`, `prefetch` and `arrivals`;
+`fetch`, `pending`, `read`, `prefetch`, `cancel` and `arrivals`;
 `vkr_depot_remote_vfs_calls()` returns the remote's. Before a read-only
 open, map, existence check, stat or `fopen` of a path below the directory
 reaches the disk, and before the workspace overlay looks for its copy
@@ -104,9 +109,9 @@ there, the file seam (`fs_vfs_remote`,
 passes the path, relative and `/`-separated, to `fetch`. Writes never ask.
 Loader workers block in the fetch, so a scene's files download in the
 parallel batches its loaders ask for. `vkr_vfs_remote_pending`,
-`vkr_vfs_remote_read` and `vkr_vfs_remote_prefetch` resolve a path as a
-read does (archives, then the overlay's copy, then the path) and call the
-other three without fetching; `vkr_vfs_remote_arrivals` returns the
+`vkr_vfs_remote_read`, `vkr_vfs_remote_prefetch` and
+`vkr_vfs_remote_cancel` resolve a path as a read does (archives, then the
+overlay's copy, then the path) and call the others without fetching; `vkr_vfs_remote_arrivals` returns the
 remote's count. The lib knows no depot: the program installs the calls, as
 it installs the content decompressor.
 
@@ -145,6 +150,16 @@ complete chain of small mips:
   later checks run only after the remote wrote another file. Only drawn
   previews therefore download whole, and the reload then reads the local
   file without waiting.
+- A waiting reload whose material no frame drew for 120 draw epochs ends
+  and cancels its queued download (`vkr_texture_system_cancel_full_file`).
+  A frame draws every material of a loaded, visible world source, wherever
+  the camera looks, so hidden or unloaded geometry ends a download's
+  interest and a turned camera does not. ADR-012's deferral queues it again
+  once a frame draws the material. A material's unload, and a reload the
+  limit no longer needs, cancel it too.
+- Reload requests ask for a preview too, and only a reload that grows a
+  preview waits for its file: one the limit shrinks loads complete from the
+  preview's mips without the download.
 - `VkrTextureSystem.preview_count` counts live previews; the evaluator
   reads it as `stats.preview_textures`
   ([ADR-075](075-editor-cmd-bar-and-evaluator.md)).
@@ -234,8 +249,8 @@ Every `assets/` read the branch lists then comes from the server, even
 where this checkout holds the same file. The `stream.status` operation
 answers the commits, the files listed, fetched, present and failed, the
 bytes stored, the reads of parts of files with the bytes they brought, the
-files prefetched, the time loaders waited and the times of the last file
-and the last read.
+files prefetched and the prefetches cancelled, the time loaders waited and
+the times of the last file and the last read.
 `vkr_editor --stream-workspace <directory>` opens such a directory on a
 sparse working copy instead, so a scene opens from the copy and the editor's
 writes through the overlay, such as a new material, land in it.
@@ -252,8 +267,9 @@ same way, for a quick check.
 - A path the branch does not list reads from the local disk as before.
 - A listed file is written whole before any reader of the file sees it; a
   material's large texture draws from its preview until its file is whole
-  and a frame draws it. A texture that leaves the view before its file
-  arrives keeps the download queued: nothing cancels a prefetch.
+  and a frame draws it. A texture no frame draws for 120 draw epochs before
+  its file arrives lets its queued download go; one already in a transfer
+  finishes.
 - A preview is a second texture and publication for the same slot; the
   reload releases it through the texture system's retirement when the whole
   chain binds.
@@ -457,14 +473,35 @@ Windows 10, Ryzen 5 2600, RX 6700 XT, clang, 2026-10-18.
     local loads differ by 0.323.
   - Not measured: a sparse working copy on Windows, between two computers,
     or through the editor's project sharing.
+- 2026-10-21, cancelled downloads, Mac M1 Pro, Metal, loopback:
+  - `--suite depot` passes `test_depot_remote_cancel` three times in a row:
+    of three prefetched 6 MB files, the third, cancelled while the first
+    transfer ran, is not written and stays pending, the other two arrive, a
+    fetch of the third still brings it with the author's bytes, and
+    cancelling an arrived file counts nothing. `--suite filesystem` passes
+    with `vkr_vfs_remote_cancel` reaching the remote; `material`, `vkt`,
+    `texture` and `mesh` pass.
+  - `python3 tools/checks/check_asset_stream.py --editor
+    build_release/editor/vkr_editor --depot
+    build_release/tools/depot/vkr_depot --hide-after 3 --settle 60`
+    passes. The streamed editor hid `Bistro Lights` 12.8 s after the stream
+    opened, when 389 files had arrived and no whole file was queued yet. The
+    reloads of the textures drawn until then queued 32 downloads; 30 were
+    cancelled once their materials went 120 draw epochs undrawn, the last
+    file arrived at 13.3 s, and 407 of 783 files arrived in all, with
+    65.7 MB stored against 846.1 MB when Bistro stays in view. Every file
+    written equals the local one, none failed.
+  - A first attempt moved the camera 20 km away instead and cancelled
+    nothing: a frame draws the materials of every visible world source,
+    wherever the camera looks.
 
 ## Revisit when
 
 [Texture streaming](../proposals/texture-streaming.md) computes the mips
 each texture needs (its required mips then replace the fixed 256 KiB
 preview and the drawn-first order), mesh LOD ranges need the same
-treatment, fetched bytes should land in GPU
-staging memory directly, a view moves fast enough that queued prefetches of
-textures it left delay those it reaches (CANCEL), a link is slow enough that
+treatment, fetched bytes should land in GPU staging memory directly,
+texture demand follows the camera instead of the world's visible sources,
+a link is slow enough that
 loaders' waits show in frame pacing, or project sharing opens projects
 from sparse working copies.

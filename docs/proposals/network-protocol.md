@@ -106,7 +106,7 @@ fallback.
 |---|---|---|
 | Cross-machine numbers | `vkr_net_bench` and a depot push and pull between a Mac and a Windows machine on 1 GbE; the depot already moves a 1.46 GB scene both ways over Wi-Fi (ADR-105), which measures neither | Raw UDP and transport RTT and throughput per direction; depot MB/s and cores per side against the 110 MB/s target |
 | Threaded host | The host thread runs the depot server inside the sharing editor; serving 2.71 GB moved the Bistro editor's median frame time from 23.8 to 25.1 ms on one Mac shared with the receiver (ADR-110). The collaborative session pumps on the host thread too (ADR-106) | The frame time of both measured with the other editor on another machine |
-| Sparse project sharing | Sparse working copies exist (ADR-123): `vkr_depot clone --sparse`, files fetched when opened, commits and pulls without the others. Get in the editor does not make one yet, the cook after a Get would read every source, and the Content browser lists only fetched files | A shared project opens from a sparse Get on another computer, its Content browser lists every tracked file, and a Submit carries only what changed |
+| Sparse project sharing | Sparse working copies exist (ADR-123): `vkr_depot clone --sparse`, files fetched when opened, commits and pulls without the others. Get in the editor does not make one yet: opening a project scene runs Bakery jobs (`prepare_scene`, the cook and recook after a Get) in processes of their own, which test files with native calls (`vkr_bakery_stat`) and so see every unfetched file as missing. The owner decided on 2026-10-21 to stop here for now; the choice left is a Bakery that reads sparse copies itself, or the editor fetching each scene's files before its first Bakery job. The Content browser also lists only fetched files | A shared project opens from a sparse Get on another computer, its Content browser lists every tracked file, and a Submit carries only what changed |
 | Security | An independent review; the fuzzers run under ASan and UBSan (ADR-105) | Review closed before use outside a trusted network |
 | Privacy | NAT traversal with a rendezvous and relay; packet numbers are already masked (ADR-105) | Decided by the owner before internet deployment |
 
@@ -129,13 +129,14 @@ before it enters the store (ADR-105). The rest:
   ([ADR-085](../adr/085-gpu-geometry-lod-and-terrain-geomorphing.md)); the
   mesh format must place the coarse ranges first, as KTX2 places small
   mips first.
-- **Priority and cancel.** Whole-file downloads follow the order in which
-  drawn previews reach their reload (ADR-012). Mip priority will come from
-  the required mips that [texture streaming](texture-streaming.md)
-  computes, which then replace the fixed 256 KiB preview; this service
-  orders the remote fetches. Priority from the streaming sources and the
-  screen size for other assets, and CANCEL of a queued download whose asset
-  left interest, remain.
+- **Priority.** Whole-file downloads follow the order in which drawn
+  previews reach their reload (ADR-012), and a queued download whose
+  texture no frame drew for 120 draw epochs is cancelled (ADR-123). Mip
+  priority will come from the required mips that
+  [texture streaming](texture-streaming.md) computes, which then replace
+  the fixed 256 KiB preview; this service orders the remote fetches.
+  Priority from the streaming sources and the screen size for other assets
+  remains.
 - **GPU placement.** Fragments decrypt into staging memory supplied by the
   receiver. The resource then goes through the ordered publication queue
   with confirm-before-use. Staging memory returns to its pool after GPU
@@ -231,7 +232,7 @@ local network at 2560×1440 and 60 Hz, at 20 to 40 Mbps.
 | Phase | Scope | Exit evidence |
 |---|---|---|
 | 4. Editor collaboration and agents | Remaining after ADR-106: the same evidence between two machines | Two editors and two agent groups edit Bistro; both saved scenes match byte for byte |
-| 6. Asset streaming | Remote content directory, cooked side branch and progressive mips (ADR-123); then mesh LOD ranges, priority and cancel, and fetched bytes placed for the GPU | Bistro streamed from a depot between two machines: time to first frame and to full detail against a local load; captures equal to a local load |
+| 6. Asset streaming | Remote content directory, cooked side branch, progressive mips and cancel (ADR-123); then mesh LOD ranges, priority, and fetched bytes placed for the GPU | Bistro streamed from a depot between two machines: time to first frame and to full detail against a local load; captures equal to a local load |
 | 7. View streaming | Encoder and decoder hooks, view channel with FEC | Glass-to-glass latency on Bistro, with a camera-flash or frame-counter method |
 
 Phase 4 comes first because the editor uses it first and the depot it needs

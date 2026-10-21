@@ -26,6 +26,8 @@ typedef enum RemoteFileState {
   REMOTE_FILE_ABSENT = 0,
   /* In the prefetch queue and not yet taken. */
   REMOTE_FILE_PREFETCH,
+  /* A prefetch kept while the queue compacts (remote_prefetch_compact). */
+  REMOTE_FILE_PREFETCH_KEPT,
   /* In the fetch queue or a transfer. */
   REMOTE_FILE_QUEUED,
   REMOTE_FILE_PRESENT,
@@ -75,8 +77,9 @@ struct VkrDepotRemote {
   /* Wakes the worker; and the callers when a transfer ends. */
   VkrCondVar work;
   VkrCondVar done;
-  /* Served first, then fetches, then prefetches. A file enters each queue
-     at most once, so both hold every listed file. */
+  /* Served first, then fetches, then prefetches. A file enters the fetch
+     queue at most once, so it holds every listed file; a cancelled
+     prefetch may enter again, so its queue compacts when full. */
   RemoteRead *reads;
   uint32_t *queue;
   uint32_t queue_count;
@@ -644,6 +647,25 @@ bool8_t vkr_depot_remote_pending(void *context, const char *relative,
   return pending;
 }
 
+/* Drops the prefetch queue's taken and cancelled entries and the later
+   copies of a file that entered again, so the queue, which holds every
+   listed file once, has room. Under the lock. */
+static void remote_prefetch_compact(VkrDepotRemote *remote) {
+  uint32_t kept = 0u;
+  for (uint32_t i = remote->prefetch_head; i < remote->prefetch_count; ++i) {
+    const uint32_t index = remote->prefetch[i];
+    if (remote->states[index] == REMOTE_FILE_PREFETCH) {
+      remote->states[index] = REMOTE_FILE_PREFETCH_KEPT;
+      remote->prefetch[kept++] = index;
+    }
+  }
+  for (uint32_t i = 0u; i < kept; ++i) {
+    remote->states[remote->prefetch[i]] = REMOTE_FILE_PREFETCH;
+  }
+  remote->prefetch_head = 0u;
+  remote->prefetch_count = kept;
+}
+
 void vkr_depot_remote_prefetch(void *context, const char *relative) {
   VkrDepotRemote *remote = context;
   const VkrDepotIndexEntry *entry =
@@ -654,10 +676,30 @@ void vkr_depot_remote_prefetch(void *context, const char *relative) {
   const uint32_t index = (uint32_t)(entry - remote->files.entries);
   vkr_mutex_lock(remote->mutex);
   if (remote->states[index] == REMOTE_FILE_ABSENT) {
+    if (remote->prefetch_count == remote->files.count + 1u) {
+      remote_prefetch_compact(remote);
+    }
     remote->states[index] = REMOTE_FILE_PREFETCH;
     remote->prefetch[remote->prefetch_count++] = index;
     remote->stats.prefetched += 1u;
     vkr_cond_signal(remote->work);
+  }
+  vkr_mutex_unlock(remote->mutex);
+}
+
+void vkr_depot_remote_cancel(void *context, const char *relative) {
+  VkrDepotRemote *remote = context;
+  const VkrDepotIndexEntry *entry =
+      remote ? vkr_depot_file_list_find(&remote->files, relative) : NULL;
+  if (!entry) {
+    return;
+  }
+  const uint32_t index = (uint32_t)(entry - remote->files.entries);
+  vkr_mutex_lock(remote->mutex);
+  /* The worker skips a prefetch queue entry whose file left this state. */
+  if (remote->states[index] == REMOTE_FILE_PREFETCH) {
+    remote->states[index] = REMOTE_FILE_ABSENT;
+    remote->stats.cancelled += 1u;
   }
   vkr_mutex_unlock(remote->mutex);
 }
@@ -675,6 +717,7 @@ const VkrVfsRemoteCalls *vkr_depot_remote_vfs_calls(void) {
       .pending = vkr_depot_remote_pending,
       .read = vkr_depot_remote_read,
       .prefetch = vkr_depot_remote_prefetch,
+      .cancel = vkr_depot_remote_cancel,
       .arrivals = vkr_depot_remote_arrivals,
   };
   return &calls;
