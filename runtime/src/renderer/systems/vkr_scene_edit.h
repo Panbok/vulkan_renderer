@@ -59,6 +59,10 @@ typedef enum VkrSceneEditAction {
   /* World partition (ADR-086): load and pin the open scene's cells in
      `partition_cells`, or with `partition_unload` unpin and unload them. */
   VKR_SCENE_EDIT_PARTITION,
+  /* Batch only: record the document entities from index `placement_first`
+     on, which an add_entities job appended and the reload loaded, as
+     created (vkr_scene_edit_record_placement). */
+  VKR_SCENE_EDIT_RECORD_PLACEMENT,
 } VkrSceneEditAction;
 
 typedef enum VkrSceneEditField {
@@ -120,6 +124,8 @@ typedef struct VkrSceneEditRequest {
   int32_t partition_cells[4];
   bool8_t partition_unload;
   bool8_t partition_all;
+  /* RECORD_PLACEMENT: the first document entity index the job added. */
+  uint32_t placement_first;
 } VkrSceneEditRequest;
 
 typedef enum VkrSceneEditEntryKind {
@@ -153,6 +159,27 @@ typedef struct VkrSceneEditCreated {
   uint32_t id;
 } VkrSceneEditCreated;
 
+/* Overlay records that bound to nothing when the overlay loaded: the
+   source they name is missing, ambiguous or already claimed, its fingerprint
+   changed and neither the saved name nor a document id binds it again, or
+   their fields no longer fit the entity. Each is kept as read, `lengths[i]`
+   bytes of `text` one after another, its document indices moved to this
+   scene's, and the save writes it back unchanged, so a reimport or a
+   document change never drops an edit. `ids` are the document ids they name
+   that the scene's document lacks; the save lists them after the
+   document's own, at the indices the records carry. */
+typedef struct VkrSceneEditKept {
+  uint8_t *text;
+  uint64_t bytes;
+  uint64_t capacity;
+  uint32_t *lengths;
+  uint32_t count;
+  uint32_t lengths_capacity;
+  VkrEntityRef *ids;
+  uint32_t id_count;
+  uint32_t id_capacity;
+} VkrSceneEditKept;
+
 /* Runtime owns the journal; UI borrows snapshots only for its current build.
    Journal storage is bounded and released when the scene is replaced. */
 typedef struct VkrSceneEditState {
@@ -185,11 +212,21 @@ typedef struct VkrSceneEditState {
   SceneSourceIdentity *deleted;
   uint32_t deleted_count;
   uint32_t deleted_capacity;
+  /* The overlay did not load; saving would drop its edits, so the save
+     refuses until the scene opens again. */
   bool8_t sidecar_conflict;
+  VkrSceneEditKept kept;
+  /* What the last overlay load could not apply: records kept unapplied, or
+     the whole file rejected (sidecar_conflict); empty when it all loaded.
+     Unlike `status`, later edits leave it. */
+  char overlay_problem[192];
   /* World partition (ADR-086): the directory of the scene's cell
      documents, empty when it has none, and the cell size its table uses. */
   char cells_root[1024];
   float32_t cell_size;
+  /* The mesh manager's asset_swap_generation the scene's source identities
+     last followed (vkr_scene_edit_follow_sources). */
+  uint64_t mesh_swap_generation;
   char status[192];
 } VkrSceneEditState;
 
@@ -385,6 +422,24 @@ bool8_t vkr_scene_edit_can_duplicate(const VkrScene *scene, VkrEntityId entity,
 VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *state, VkrScene *scene,
                                      VkrEntityId entity,
                                      const VkrEntityRef *seed);
+/** Records the document entities from index `first` on, which an
+ * add_entities job appended before the scene reloaded (model.place, the
+ * Add entity form), as one created step of the open group: undo removes
+ * them as a delete does, saving their deletion by source identity, and redo
+ * restores them, meshes loading again from their files. The scene does not
+ * change, and a journal without unsaved edits stays saved. Fails, recording
+ * nothing, when none is loaded or one could not be removed and restored. */
+bool8_t vkr_scene_edit_record_placement(VkrSceneEditState *state,
+                                        VkrScene *scene, uint32_t first);
+/** Follows a live mesh rebuild: once a mesh swap completed
+ * (VkrMeshManager.asset_swap_generation moved), gives the models of the
+ * rebuilt meshes the source identity a fresh load computes
+ * (vkr_scene_refresh_source_fingerprints) and moves the identities the
+ * journal keeps for deleted entities and undo snapshots with them. When an
+ * identity the overlay saves changed, the journal becomes unsaved, so a
+ * bake waits for the save that rewrites its overrides. Call once per frame;
+ * cheap while no swap completes. */
+void vkr_scene_edit_follow_sources(VkrSceneEditState *state, VkrScene *scene);
 /** Move `entity` under `parent` (invalid: root) keeping its world transform.
  * Rejects cycles and parents in another container. */
 bool8_t vkr_scene_edit_reparent(VkrSceneEditState *state, VkrScene *scene,

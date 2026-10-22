@@ -1499,6 +1499,11 @@ typedef struct VkrScene {
       none. Scene-owned and freed at shutdown; the loader fills them. */
   VkrEntityRef *document_ids;
   uint32_t document_id_count;
+  /** The document's source fingerprint, which its entities' source
+      identities start from (and a model's source nodes mix with their
+      mesh's, vkr_scene_source_node_fingerprint); zero for a scene no
+      document made. The loader sets it. */
+  uint64_t source_fingerprint;
   VkrComponentTypeId comp_source_identity;
   VkrComponentTypeId comp_name;
   VkrComponentTypeId comp_transform;

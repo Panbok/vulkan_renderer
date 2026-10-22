@@ -64,6 +64,10 @@ bool8_t vkr_json_writer_f64_digits(VkrJsonWriter *writer, float64_t value,
                                    uint32_t significant_digits);
 bool8_t vkr_json_writer_bool(VkrJsonWriter *writer, bool8_t value);
 bool8_t vkr_json_writer_null(VkrJsonWriter *writer);
+/** One complete JSON value already written as text, such as a record read
+ * from a document that is written back unchanged. The writer places it as
+ * the next value without checking it. */
+bool8_t vkr_json_writer_raw(VkrJsonWriter *writer, String8 value);
 
 bool8_t vkr_json_file_writer_begin(VkrJsonFileWriter *file_writer,
                                    String8 final_path);

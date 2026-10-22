@@ -1,5 +1,6 @@
 #include "vkr_scene_edit.h"
 #include "filesystem/filesystem.h"
+#include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_model.h"
@@ -239,6 +240,8 @@ bool8_t vkr_scene_edit_component_set(VkrSceneEditValues *values,
   }
 }
 
+static void edit_kept_free(VkrAllocator *allocator, VkrSceneEditKept *k);
+
 void vkr_scene_edit_reset(VkrSceneEditState *s, VkrAllocator *allocator,
                           uint64_t generation) {
   for (uint32_t i = 0; i < s->undo_count; ++i) {
@@ -258,6 +261,7 @@ void vkr_scene_edit_reset(VkrSceneEditState *s, VkrAllocator *allocator,
   if (s->deleted)
     vkr_allocator_free(s->allocator, s->deleted,
                        sizeof(*s->deleted) * s->deleted_capacity, EDIT_TAG);
+  edit_kept_free(s->allocator, &s->kept);
   *s = (VkrSceneEditState){.allocator = allocator, .generation = generation};
 }
 
@@ -2171,6 +2175,227 @@ static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,
   return true_v;
 }
 
+/* Whether `entity` is one the add_entities job appended after the
+   document's first `first` entities: a document entity, never one the
+   editor created, of index `first` or later. */
+static bool8_t edit_placed(const VkrSceneEditState *s, const VkrScene *scene,
+                           VkrEntityId entity, uint32_t first) {
+  const SceneSourceIdentity *source = vkr_entity_get_component(
+      scene->world, entity, scene->comp_source_identity);
+  return source && source->scene_entity_index != UINT32_MAX &&
+         source->scene_entity_index >= first &&
+         (!scene->document_id_count ||
+          source->scene_entity_index < scene->document_id_count) &&
+         !edit_created_id(s, entity) &&
+         !vkr_scene_entity_transient(scene, entity);
+}
+
+typedef struct EditPlaced {
+  VkrEntityId entity;
+  uint32_t depth;
+} EditPlaced;
+
+static int edit_placed_compare(const void *left, const void *right) {
+  const EditPlaced *a = left;
+  const EditPlaced *b = right;
+  if (a->depth != b->depth) {
+    return a->depth < b->depth ? -1 : 1;
+  }
+  return a->entity.u64 < b->entity.u64 ? -1 : (a->entity.u64 > b->entity.u64);
+}
+
+/* Whether the placed `entity` can leave on undo and come back on redo: its
+   parts restore, and every child is a part or was placed with it. */
+static bool8_t edit_placed_restorable(const VkrSceneEditState *s,
+                                      const VkrScene *scene, VkrEntityId entity,
+                                      uint32_t first, const char **reason) {
+  if (!edit_deletable_parts(scene, entity, reason)) {
+    return false_v;
+  }
+  uint32_t cursor = 0u;
+  for (VkrEntityId child = edit_next_child(scene, entity, &cursor); child.u64;
+       child = edit_next_child(scene, entity, &cursor)) {
+    if (!vkr_scene_entity_is_part(scene, child) &&
+        !edit_placed(s, scene, child, first)) {
+      *reason = "An object placed earlier is parented under it.";
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+bool8_t vkr_scene_edit_record_placement(VkrSceneEditState *s, VkrScene *scene,
+                                        uint32_t first) {
+  VkrWorld *world = scene->world;
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    count += vkr_scene_entity_alive(scene, entity) &&
+             edit_placed(s, scene, entity, first);
+  }
+  if (!count) {
+    string_format(s->status, sizeof(s->status),
+                  "The placed objects are not in the scene.");
+    return false_v;
+  }
+  if (count > VKR_SCENE_EDIT_GROUP_MAX ||
+      (s->group_open && s->group_entries + count > VKR_SCENE_EDIT_GROUP_MAX)) {
+    string_format(s->status, sizeof(s->status),
+                  "The placement has %u objects, more than one undo step "
+                  "holds (%u).",
+                  count, VKR_SCENE_EDIT_GROUP_MAX);
+    return false_v;
+  }
+  const uint64_t bytes = (uint64_t)count * sizeof(EditPlaced);
+  EditPlaced *placed = vkr_allocator_alloc(s->allocator, bytes, EDIT_TAG);
+  if (!placed) {
+    string_format(s->status, sizeof(s->status),
+                  "Out of memory for undo history.");
+    return false_v;
+  }
+  uint32_t found = 0u;
+  const char *reason = NULL;
+  for (uint32_t i = 0; i < world->dir.living && found < count; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    if (!vkr_scene_entity_alive(scene, entity) ||
+        !edit_placed(s, scene, entity, first)) {
+      continue;
+    }
+    const char *why = NULL;
+    if (!reason && !edit_placed_restorable(s, scene, entity, first, &why)) {
+      reason = why ? why : "It cannot be removed again.";
+    }
+    uint32_t depth = 0u;
+    for (VkrEntityId at = entity; depth < EDIT_DELETE_DEPTH_MAX; ++depth) {
+      const SceneTransform *transform =
+          vkr_entity_get_component(world, at, scene->comp_transform);
+      at = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
+      if (!at.u64) {
+        break;
+      }
+    }
+    placed[found++] = (EditPlaced){.entity = entity, .depth = depth};
+  }
+  if (reason) {
+    string_format(s->status, sizeof(s->status),
+                  "The placement cannot be undone: %s", reason);
+    vkr_allocator_free(s->allocator, placed, bytes, EDIT_TAG);
+    return false_v;
+  }
+  /* Parents first: undo removes children before their parents, as a
+     delete does, and redo restores parents first. */
+  vkr_sort(placed, found, sizeof(*placed), edit_placed_compare);
+
+  const bool8_t clean = s->revision == s->saved_revision;
+  const uint64_t revision = s->revision;
+  uint32_t appended = 0u;
+  for (uint32_t i = 0; i < found; ++i) {
+    EditStructure *structure = &s_edit_structure;
+    MemZero(structure, sizeof(*structure));
+    structure->op = EDIT_STRUCTURE_CREATE;
+    edit_object_capture(s, scene, placed[i].entity, &structure->object);
+    /* The document holds the placement's values, so its objects take no
+       overrides: the entry names its entity without touching it. */
+    EditStructure *payload =
+        edit_journal_prepare(s, VKR_ENTITY_ID_INVALID, sizeof(*payload));
+    if (!payload) {
+      break;
+    }
+    *payload = *structure;
+    edit_journal_append(
+        s, (VkrSceneEditEntry){.entity = placed[i].entity,
+                               .kind = VKR_SCENE_EDIT_ENTRY_STRUCTURE,
+                               .payload = payload,
+                               .payload_size = sizeof(*payload)});
+    appended++;
+  }
+  vkr_allocator_free(s->allocator, placed, bytes, EDIT_TAG);
+  if (appended < found) {
+    /* A part of the step would undo part of the placement; none stays. The
+       entries are the newest, since eviction takes the oldest. */
+    edit_journal_remove(s, s->undo_count - appended, appended);
+    if (s->group_open) {
+      s->group_entries -= appended;
+    }
+    s->revision = revision;
+    string_format(s->status, sizeof(s->status),
+                  "Out of memory for undo history.");
+    return false_v;
+  }
+  /* The document already holds what the step records. */
+  if (clean) {
+    s->saved_revision = s->revision;
+  }
+  string_format(s->status, sizeof(s->status),
+                "Placed %u objects; undo removes them.", found);
+  return true_v;
+}
+
+/* Source fingerprints one follow moves. */
+#define EDIT_SOURCE_REMAP_MAX 64u
+
+static bool8_t edit_source_remap(SceneSourceIdentity *source,
+                                 const VkrSceneSourceRemap *remaps,
+                                 uint32_t count) {
+  for (uint32_t i = 0; i < count; ++i) {
+    if (source->source_fingerprint == remaps[i].from &&
+        source->scene_entity_index != UINT32_MAX) {
+      source->source_fingerprint = remaps[i].to;
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+void vkr_scene_edit_follow_sources(VkrSceneEditState *s, VkrScene *scene) {
+  if (!s || !scene || !scene->assets) {
+    return;
+  }
+  const uint64_t generation = scene->assets->mesh_manager.asset_swap_generation;
+  if (generation == s->mesh_swap_generation) {
+    return;
+  }
+  s->mesh_swap_generation = generation;
+  VkrSceneSourceRemap remaps[EDIT_SOURCE_REMAP_MAX];
+  const uint32_t count =
+      vkr_scene_refresh_source_fingerprints(scene, remaps, ArrayCount(remaps));
+  if (!count) {
+    return;
+  }
+  /* The overlay writes deleted entities by their kept identity and touched
+     ones by their live one; undo restores the identity a snapshot kept. */
+  bool8_t saved = false_v;
+  for (uint32_t i = 0; i < s->deleted_count; ++i) {
+    saved |= edit_source_remap(&s->deleted[i], remaps, count);
+  }
+  for (uint32_t i = 0; i < s->undo_count; ++i) {
+    if (s->undo[i].kind != VKR_SCENE_EDIT_ENTRY_STRUCTURE) {
+      continue;
+    }
+    EditObject *object = &((EditStructure *)s->undo[i].payload)->object;
+    if (object->parts & EDIT_OBJECT_SOURCE) {
+      (void)edit_source_remap(&object->source, remaps, count);
+    }
+  }
+  for (uint32_t i = 0; !saved && i < s->touched_count; ++i) {
+    const SceneSourceIdentity *source = vkr_entity_get_component_if_alive_const(
+        scene->world, s->touched[i], scene->comp_source_identity);
+    for (uint32_t r = 0; source && r < count; ++r) {
+      saved |= source->source_fingerprint == remaps[r].to;
+    }
+  }
+  if (saved) {
+    /* Unsaved, so the next save writes the overrides a bake accepts. */
+    s->revision++;
+    string_format(s->status, sizeof(s->status),
+                  "A rebuilt model's nodes have a new source; save to keep "
+                  "their overrides bound.");
+  }
+  log_info("Scene edits: %u rebuilt meshes gave their models' nodes a new "
+           "source identity",
+           count);
+}
+
 /* The world matrix of `entity` from the local values along its parents. An
    earlier edit of the same batch, such as a snap before a move or a parent
    created and placed just before, leaves the cached world matrices behind
@@ -2854,7 +3079,10 @@ static bool8_t write_values(VkrJsonWriter *w, const VkrSceneEditValues *v) {
 /* The document ids in document order (version 5), so a load after the
    document is reordered maps each saved index to the entity's current one.
    Omitted when the document has none. */
-static bool8_t write_document_ids(VkrJsonWriter *w, const VkrScene *scene) {
+/* The scene's document ids by index, then the ids kept records name that
+   the document no longer holds, at the indices those records carry. */
+static bool8_t write_document_ids(VkrJsonWriter *w, const VkrScene *scene,
+                                  const VkrSceneEditKept *kept) {
   if (!scene->document_id_count) {
     return true_v;
   }
@@ -2862,9 +3090,13 @@ static bool8_t write_document_ids(VkrJsonWriter *w, const VkrScene *scene) {
       !vkr_json_writer_begin_array(w)) {
     return false_v;
   }
-  for (uint32_t i = 0; i < scene->document_id_count; ++i) {
+  const uint32_t count = scene->document_id_count + kept->id_count;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrEntityRef *id = i < scene->document_id_count
+                                 ? &scene->document_ids[i]
+                                 : &kept->ids[i - scene->document_id_count];
     char text[37];
-    vkr_entity_ref_format(&scene->document_ids[i], text);
+    vkr_entity_ref_format(id, text);
     if (!vkr_json_writer_string(w, string8_create((uint8_t *)text, 36))) {
       return false_v;
     }
@@ -3093,9 +3325,9 @@ static bool8_t edit_cells_commit(VkrSceneEditState *s, VkrScene *scene,
 bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
                             String8 path) {
   if (s->sidecar_conflict) {
-    string_format(
-        s->status, sizeof(s->status),
-        "Save blocked: resolve or move the conflicting sidecar, then reload.");
+    string_format(s->status, sizeof(s->status),
+                  "Save blocked: the scene's edit file did not load, and a "
+                  "save would drop its edits. Fix or move it, then reopen.");
     return false_v;
   }
   /* A rebased world (ADR-086) holds positions the documents do not. */
@@ -3133,7 +3365,7 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
     goto failed;
   VkrJsonWriter *w = &file.writer;
   if (!vkr_json_writer_begin_object(w) || !WRITE_INT("version", 5) ||
-      !write_document_ids(w, scene) ||
+      !write_document_ids(w, scene, &s->kept) ||
       !vkr_json_writer_name(w, string8_lit("overrides")) ||
       !vkr_json_writer_begin_array(w))
     goto failed;
@@ -3159,6 +3391,15 @@ bool8_t vkr_scene_edit_save(VkrSceneEditState *s, VkrScene *scene,
         !write_parent(w, s, scene, entity) || !write_values(w, &values) ||
         !write_components(w, scene, entity) || !vkr_json_writer_end_object(w))
       goto failed;
+  }
+  /* Records that bound to nothing at load go back as they were. */
+  uint64_t kept_at = 0u;
+  for (uint32_t i = 0; i < s->kept.count; ++i) {
+    const String8 record = {.str = s->kept.text + kept_at,
+                            .length = s->kept.lengths[i]};
+    if (!vkr_json_writer_raw(w, record))
+      goto failed;
+    kept_at += s->kept.lengths[i];
   }
   VkrSceneCollisionLayers settings;
   vkr_scene_collision_layers_read(scene, &settings);
@@ -4380,19 +4621,23 @@ static bool8_t edit_load_same_name(const VkrScene *scene, VkrEntityId entity,
 
 /* Claim the entity an override record names: it must exist, be unique and
    not already be claimed. A different source fingerprint, as a local
-   download that differs between machines gives, still binds when the node
-   keeps the name the record saved; `rebound` counts those. */
-static bool8_t
-edit_load_bind_source(const VkrScene *scene, EditSourceIndex *source,
-                      uint64_t fingerprint, const VkrSceneEditValues *values,
-                      uint32_t *rebound, EditSidecarFailure *failure) {
+   download that differs between machines or a reimport from another file
+   gives, still binds when the node keeps the name the record saved, or,
+   with `stable`, when a document id found its document entity, so its node
+   index names the node; `rebound` counts those. */
+static bool8_t edit_load_bind_source(const VkrScene *scene,
+                                     EditSourceIndex *source,
+                                     uint64_t fingerprint,
+                                     const VkrSceneEditValues *values,
+                                     bool8_t stable, uint32_t *rebound,
+                                     EditSidecarFailure *failure) {
   if (!source) {
     *failure = EDIT_SIDECAR_FAILURE_SOURCE_MISSING;
   } else if (source->ambiguous) {
     *failure = EDIT_SIDECAR_FAILURE_SOURCE_AMBIGUOUS;
   } else if (source->seen) {
     *failure = EDIT_SIDECAR_FAILURE_SOURCE_DUPLICATE;
-  } else if (source->fingerprint != fingerprint &&
+  } else if (source->fingerprint != fingerprint && !stable &&
              !edit_load_same_name(scene, source->entity, values)) {
     *failure = EDIT_SIDECAR_FAILURE_FINGERPRINT;
   } else {
@@ -5440,6 +5685,163 @@ static bool8_t edit_structure_links_ahead(VkrAllocator *allocator,
    editor allocator and die at this input boundary. No scene mutation occurs
    until the overrides bind, their identities resolve and every allocation
    passes. */
+/* Grows `*items` of `item_size` bytes to hold `needed`. */
+static bool8_t edit_kept_reserve(VkrAllocator *allocator, void **items,
+                                 uint64_t *capacity, uint64_t needed,
+                                 uint64_t item_size) {
+  if (needed <= *capacity) {
+    return true_v;
+  }
+  uint64_t next = Max(*capacity * 2u, (uint64_t)64u);
+  while (next < needed) {
+    next *= 2u;
+  }
+  void *grown = vkr_allocator_realloc(allocator, *items, *capacity * item_size,
+                                      next * item_size, EDIT_TAG);
+  if (!grown) {
+    return false_v;
+  }
+  *items = grown;
+  *capacity = next;
+  return true_v;
+}
+
+static bool8_t edit_kept_append(VkrAllocator *allocator, VkrSceneEditKept *k,
+                                const void *bytes, uint64_t length) {
+  void *text = k->text;
+  if (!edit_kept_reserve(allocator, &text, &k->capacity, k->bytes + length,
+                         1u)) {
+    return false_v;
+  }
+  k->text = text;
+  MemCopy(k->text + k->bytes, bytes, length);
+  k->bytes += length;
+  return true_v;
+}
+
+static void edit_kept_free(VkrAllocator *allocator, VkrSceneEditKept *k) {
+  if (k->text) {
+    vkr_allocator_free(allocator, k->text, k->capacity, EDIT_TAG);
+  }
+  if (k->lengths) {
+    vkr_allocator_free(allocator, k->lengths,
+                       k->lengths_capacity * sizeof(*k->lengths), EDIT_TAG);
+  }
+  if (k->ids) {
+    vkr_allocator_free(allocator, k->ids, k->id_capacity * sizeof(*k->ids),
+                       EDIT_TAG);
+  }
+  *k = (VkrSceneEditKept){0};
+}
+
+/* The index a kept record names saved document entity `saved` by in this
+   scene's overlay: its current index, or past the document's entities the
+   index of its id among those the document lost, so the id is saved with
+   the record. A saved index without an id stays as it was. */
+static bool8_t edit_kept_index(VkrAllocator *allocator, VkrSceneEditKept *k,
+                               uint64_t saved, const uint32_t *remap,
+                               uint32_t remap_count, const VkrEntityRef *ids,
+                               uint32_t id_count, uint32_t document_count,
+                               uint64_t *out) {
+  *out = saved;
+  if (saved < remap_count && remap[saved] != UINT32_MAX) {
+    *out = remap[saved];
+    return true_v;
+  }
+  if (saved >= id_count) {
+    return true_v;
+  }
+  uint32_t lost = 0u;
+  while (lost < k->id_count &&
+         MemCompare(&k->ids[lost], &ids[saved], sizeof(*ids)) != 0) {
+    lost++;
+  }
+  if (lost == k->id_count) {
+    void *grown = k->ids;
+    uint64_t capacity = k->id_capacity;
+    if (!edit_kept_reserve(allocator, &grown, &capacity, k->id_count + 1u,
+                           sizeof(*k->ids))) {
+      return false_v;
+    }
+    k->ids = grown;
+    k->id_capacity = (uint32_t)capacity;
+    k->ids[k->id_count++] = ids[saved];
+  }
+  *out = (uint64_t)document_count + lost;
+  return true_v;
+}
+
+/* Keeps one record that bound to nothing, `length` bytes at `text`, for the
+   save to write back. With a document id map (`remap` of `remap_count`
+   saved indices, the saved `ids`), each "scene_entity" the record names
+   (its identity, parent and physics sources) moves to the index this
+   scene's overlay gives it. Our writer escapes quotes inside strings, so
+   the key's text appears only as a key. */
+static bool8_t edit_kept_add(VkrAllocator *allocator, VkrSceneEditKept *k,
+                             const uint8_t *text, uint64_t length,
+                             const uint32_t *remap, uint32_t remap_count,
+                             const VkrEntityRef *ids, uint32_t id_count,
+                             uint32_t document_count) {
+  static const char key[] = "\"scene_entity\"";
+  const uint64_t key_length = sizeof(key) - 1u;
+  const uint64_t start = k->bytes;
+  uint64_t at = 0u;
+  while (at < length) {
+    if (!remap || length - at < key_length ||
+        MemCompare(text + at, key, key_length) != 0) {
+      if (!edit_kept_append(allocator, k, text + at, 1u)) {
+        return false_v;
+      }
+      at++;
+      continue;
+    }
+    uint64_t value_at = at + key_length;
+    while (value_at < length &&
+           (text[value_at] == ' ' || text[value_at] == '\t' ||
+            text[value_at] == '\n' || text[value_at] == '\r' ||
+            text[value_at] == ':')) {
+      value_at++;
+    }
+    uint64_t end = value_at;
+    uint64_t saved = 0u;
+    while (end < length && text[end] >= '0' && text[end] <= '9' &&
+           saved <= UINT32_MAX) {
+      saved = saved * 10u + (uint64_t)(text[end] - '0');
+      end++;
+    }
+    if (!edit_kept_append(allocator, k, text + at, value_at - at)) {
+      return false_v;
+    }
+    at = value_at;
+    if (end == value_at || saved > UINT32_MAX) {
+      continue;
+    }
+    uint64_t index = saved;
+    char digits[24];
+    if (!edit_kept_index(allocator, k, saved, remap, remap_count, ids, id_count,
+                         document_count, &index)) {
+      return false_v;
+    }
+    const int32_t written = string_format(digits, sizeof(digits), "%llu",
+                                          (unsigned long long)index);
+    if (written <= 0 ||
+        !edit_kept_append(allocator, k, digits, (uint64_t)written)) {
+      return false_v;
+    }
+    at = end;
+  }
+  void *lengths = k->lengths;
+  uint64_t capacity = k->lengths_capacity;
+  if (!edit_kept_reserve(allocator, &lengths, &capacity, k->count + 1u,
+                         sizeof(*k->lengths))) {
+    return false_v;
+  }
+  k->lengths = lengths;
+  k->lengths_capacity = (uint32_t)capacity;
+  k->lengths[k->count++] = (uint32_t)(k->bytes - start);
+  return true_v;
+}
+
 bool8_t vkr_scene_edit_overlay_begin(VkrSceneEditState *s, VkrScene *scene,
                                      VkrSceneEditOverlay *o) {
   EditRecordComponents *components = NULL;
@@ -5455,6 +5857,9 @@ bool8_t vkr_scene_edit_overlay_begin(VkrSceneEditState *s, VkrScene *scene,
   const uint32_t deleted_before = s->deleted_count;
   /* The overrides' parent links, which go ahead of the created objects'. */
   EditStructureLoad head = {0};
+  /* Records that bound to nothing, and why the first did not. */
+  VkrSceneEditKept kept = {0};
+  char kept_problem[sizeof(s->overlay_problem)] = {0};
   bool8_t success = false_v;
   EditSidecarDiagnostic diagnostic = o->diagnostic;
   /* Only a read overlay begins, once. */
@@ -5489,43 +5894,72 @@ bool8_t vkr_scene_edit_overlay_begin(VkrSceneEditState *s, VkrScene *scene,
     goto cleanup;
   }
   if (!edit_json_take(&json, ']')) {
-    for (;;) {
+    for (uint32_t record = 1u;; ++record) {
       VkrSceneEditValues values;
       EditRecordExtra extra;
       uint32_t wrapper;
       uint32_t node;
       uint64_t fingerprint;
+      edit_json_space(&json);
+      const uint8_t *record_at = json.at;
       if (!edit_json_record(&json, &values, &wrapper, &node, &fingerprint,
                             s->allocator, components, &extra, false_v)) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_SCHEMA;
-        diagnostic.record = count + 1u;
+        diagnostic.record = record;
         goto cleanup;
       }
+      const uint64_t record_length = (uint64_t)(json.at - record_at);
       EditSourceIndex *source =
           edit_source_find(o->index, o->index_count, wrapper, node);
       diagnostic = (EditSidecarDiagnostic){
-          .record = count + 1u,
+          .record = record,
           .wrapper = wrapper,
           .node = node,
           .saved_fingerprint = fingerprint,
           .current_fingerprint = source ? source->fingerprint : 0u,
       };
-      if (!edit_load_bind_source(scene, source, fingerprint, &values, &rebound,
-                                 &diagnostic.failure)) {
-        goto cleanup;
+      bool8_t bound =
+          edit_load_bind_source(scene, source, fingerprint, &values,
+                                remap != NULL, &rebound, &diagnostic.failure);
+      const uint32_t count_before = count;
+      const uint32_t touched_record = additional_touched;
+      if (bound && !edit_load_prepare_record(
+                       s, scene, source, &values, components, &extra,
+                       o->overrides_version >= 4, &pending, &count, &capacity,
+                       &additional_touched, &diagnostic.failure)) {
+        if (diagnostic.failure == EDIT_SIDECAR_FAILURE_ALLOC) {
+          goto cleanup;
+        }
+        /* Its fields no longer fit the entity: nothing of it applies. */
+        for (uint32_t i = count_before; i < count; ++i) {
+          edit_discard(scene, &pending[i]);
+        }
+        count = count_before;
+        additional_touched = touched_record;
+        bound = false_v;
       }
-      if (!edit_load_prepare_record(s, scene, source, &values, components,
-                                    &extra, o->overrides_version >= 4, &pending,
-                                    &count, &capacity, &additional_touched,
-                                    &diagnostic.failure)) {
-        goto cleanup;
-      }
-      if (extra.parent.kind != EDIT_PARENT_NONE &&
+      if (bound && extra.parent.kind != EDIT_PARENT_NONE &&
           !edit_structure_link(&o->allocator, &head,
                                (EditParentLink){.child = source->entity,
                                                 .parent = extra.parent})) {
         diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
         goto cleanup;
+      }
+      /* A record that binds to nothing stays as it was, for the save to
+         write back, instead of rejecting the whole overlay. */
+      if (!bound) {
+        if (!edit_kept_add(s->allocator, &kept, record_at, record_length, remap,
+                           json.remap_count, o->document_ids,
+                           o->document_id_count, scene->document_id_count)) {
+          diagnostic.failure = EDIT_SIDECAR_FAILURE_ALLOC;
+          goto cleanup;
+        }
+        edit_sidecar_reject_status(s, &diagnostic);
+        log_warn("Editor overrides of '%s': kept without applying: %s", o->path,
+                 s->status);
+        if (kept.count == 1u) {
+          string_format(kept_problem, sizeof(kept_problem), "%s", s->status);
+        }
       }
       if (edit_json_take(&json, ']')) {
         break;
@@ -5605,9 +6039,21 @@ bool8_t vkr_scene_edit_overlay_begin(VkrSceneEditState *s, VkrScene *scene,
     edit_commit(scene, &pending[i]);
   }
   if (rebound) {
-    log_warn("%u overrides of '%s' bound by node name: their source changed "
-             "since they were saved",
+    log_warn("%u overrides of '%s' bound by node name or document id: their "
+             "source changed since they were saved",
              rebound, o->path);
+  }
+  /* The kept records replace those of an earlier load of this journal. */
+  edit_kept_free(s->allocator, &s->kept);
+  s->kept = kept;
+  kept = (VkrSceneEditKept){0};
+  s->overlay_problem[0] = '\0';
+  if (s->kept.count) {
+    string_format(s->overlay_problem, sizeof(s->overlay_problem),
+                  "%u saved edits bind to nothing in this scene and stay as "
+                  "saved; first: %s",
+                  s->kept.count, kept_problem);
+    log_warn("Editor overrides of '%s': %s", o->path, s->overlay_problem);
   }
   o->prepared_count = count;
   o->total = o->structure.object_count + o->structure.link_count +
@@ -5627,6 +6073,7 @@ cleanup:
     vkr_allocator_free(s->allocator, components, sizeof(*components), EDIT_TAG);
   }
   edit_structure_load_free(&o->allocator, &head);
+  edit_kept_free(s->allocator, &kept);
   for (uint32_t i = 0; i < count; ++i) {
     edit_discard(scene, &pending[i]);
   }
@@ -5643,6 +6090,12 @@ cleanup:
     s->deleted_count = deleted_before;
     s->sidecar_conflict = true_v;
     edit_sidecar_reject_status(s, &diagnostic);
+    /* Saving now would write an overlay without the rejected file's edits;
+       the save refuses and names why. */
+    string_format(s->overlay_problem, sizeof(s->overlay_problem),
+                  "The scene's edit file did not load, so saving is blocked: "
+                  "%s",
+                  s->status);
     log_error("Editor overrides rejected: %s: %s", o->path, s->status);
   }
   return success;
@@ -5696,8 +6149,15 @@ static void edit_overlay_finish(VkrSceneEditState *s, VkrScene *scene,
     log_warn("Collision settings could not reach every loaded scene: %s",
              share_error ? share_error : "unknown error");
   }
-  string_format(s->status, sizeof(s->status), "Loaded %u node overrides.",
-                o->prepared_count);
+  if (s->kept.count) {
+    string_format(s->status, sizeof(s->status),
+                  "Loaded %u node overrides; %u saved edits bind to nothing "
+                  "and stay as saved.",
+                  o->prepared_count, s->kept.count);
+  } else {
+    string_format(s->status, sizeof(s->status), "Loaded %u node overrides.",
+                  o->prepared_count);
+  }
   s->sidecar_conflict = false_v;
 }
 

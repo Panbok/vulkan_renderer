@@ -3317,6 +3317,7 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     return false_v;
   }
   asset->load_metrics = mesh_result->load_metrics;
+  asset->source_fingerprint = mesh_result->source.fingerprint;
 
   uint32_t subset_count = use_merged ? (uint32_t)mesh_result->submeshes.length
                                      : (uint32_t)mesh_result->subsets.length;
@@ -3474,6 +3475,7 @@ vkr_internal VkrMeshAsset *vkr_mesh_manager_init_loaded_asset_slot(
   asset->last_error = VKR_RENDERER_ERROR_NONE;
   asset->pending_request_id = 0;
   asset->load_metrics = mesh_result->load_metrics;
+  asset->source_fingerprint = mesh_result->source.fingerprint;
 
   asset->mesh_path =
       string8_duplicate(&manager->asset_allocator, &desc->mesh_path);

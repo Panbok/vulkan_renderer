@@ -6871,10 +6871,31 @@ static bool8_t sample_batch_item(VkrStandardSceneRuntime *application,
   case VKR_SCENE_EDIT_TERRAIN:
     return vkr_scene_edit_terrain(edits, scene, request->entity,
                                   &request->terrain, 0u);
+  case VKR_SCENE_EDIT_RECORD_PLACEMENT:
+    return vkr_scene_edit_record_placement(edits, scene,
+                                           request->placement_first);
   default:
     string_format(edits->status, sizeof(edits->status),
                   "This edit cannot join a batch.");
     return false_v;
+  }
+}
+
+/* Lets every loaded container's journal follow the live mesh rebuilds that
+   completed (vkr_scene_edit_follow_sources). */
+static void sample_follow_sources(VkrStandardSceneRuntime *application) {
+  VkrScene *scenes[2u + VKR_SCENE_ADDITIVE_MAX] = {application->active_scene,
+                                                   application->world_scene};
+  VkrSceneEditState *journals[2u + VKR_SCENE_ADDITIVE_MAX] = {
+      &state->edits, &state->world_edits};
+  for (uint32_t i = 0; i < VKR_SCENE_ADDITIVE_MAX; ++i) {
+    scenes[2u + i] = vkr_scene_handle_get_scene(state->additive_handles[i]);
+    journals[2u + i] = &state->additive_edits[i];
+  }
+  for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
+    if (scenes[i]) {
+      vkr_scene_edit_follow_sources(journals[i], scenes[i]);
+    }
   }
 }
 
@@ -7714,6 +7735,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
   vkr_standard_scene_runtime_apply_scene_edit(application,
                                               &requests.scene_edit);
   sample_edit_batch(application, &requests.edit_batch);
+  sample_follow_sources(application);
   sample_capture_after_build(application, &requests.capture_request);
   vkr_standard_scene_runtime_apply_transport_action(application,
                                                     requests.transport_action);

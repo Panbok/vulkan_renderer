@@ -380,6 +380,17 @@ bool8_t vkr_json_writer_null(VkrJsonWriter *writer) {
   return vkr_json_writer_emit_cstr(writer, "null");
 }
 
+bool8_t vkr_json_writer_raw(VkrJsonWriter *writer, String8 value) {
+  if (!value.str || !value.length) {
+    if (writer) {
+      writer->failed = true_v;
+    }
+    return false_v;
+  }
+  return vkr_json_writer_before_value(writer) &&
+         vkr_json_writer_emit(writer, value.str, value.length);
+}
+
 bool8_t vkr_json_writer_complete(VkrJsonWriter *writer) {
   if (!writer || writer->failed || !writer->root_written ||
       writer->depth != 0) {

@@ -77,6 +77,30 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene,
  */
 VkrResourceLoader vkr_scene_loader_create(void);
 
+/* The source fingerprint of a model's wrapper and source nodes: the
+   wrapper's document fingerprint `document` mixed with the cooked mesh's
+   `mesh` (VkrMeshSource.fingerprint), or `mesh` alone for a wrapper no
+   document made. A bake computes the same value (vkr_project_mesh_identity),
+   so the overrides of a model's nodes bind to the mesh they were made on. */
+uint64_t vkr_scene_source_node_fingerprint(uint64_t document, uint64_t mesh);
+
+/* A change of the source fingerprint of the models of one mesh. */
+typedef struct VkrSceneSourceRemap {
+  uint64_t from;
+  uint64_t to;
+} VkrSceneSourceRemap;
+
+/* After a live mesh swap (vkr_mesh_manager_swap_asset_path) a source node's
+   instance draws a rebuilt mesh while its identity names the old one. Gives
+   every document model whose node draws another mesh, its wrapper and all
+   its nodes, and every other entity of the old fingerprint, the identity a
+   fresh load of the document computes. Writes the distinct changes, at most
+   `capacity`, to `out` and returns their count; zero for a scene no
+   document made. A cold pass over the scene's entities. */
+uint32_t vkr_scene_refresh_source_fingerprints(VkrScene *scene,
+                                               VkrSceneSourceRemap *out,
+                                               uint32_t capacity);
+
 /* CPU scene instantiation used by raw/cooked loading. out_nodes has one slot
    per source node and belongs to caller scratch. The scene owns copied names.
    Failure removes created nodes and leaves the wrapper identity unchanged.

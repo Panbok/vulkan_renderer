@@ -4184,6 +4184,18 @@ vkr_internal bool8_t scene_loader_source_fingerprint(String8 json,
   return true_v;
 }
 
+uint64_t vkr_scene_source_node_fingerprint(uint64_t document, uint64_t mesh) {
+  if (!document) {
+    return mesh;
+  }
+  uint64_t fingerprint = document;
+  for (uint32_t i = 0; i < 8u; ++i) {
+    fingerprint =
+        (fingerprint ^ ((mesh >> (i * 8u)) & 255u)) * UINT64_C(1099511628211);
+  }
+  return fingerprint;
+}
+
 bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
                                            const VkrMeshSource *source,
                                            VkrEntityId wrapper,
@@ -4195,15 +4207,9 @@ bool8_t vkr_scene_instantiate_source_nodes(VkrScene *scene,
     return false_v;
   const SceneSourceIdentity *wrapper_source = vkr_entity_get_component(
       scene->world, wrapper, scene->comp_source_identity);
-  uint64_t fingerprint =
-      wrapper_source ? wrapper_source->source_fingerprint : 0u;
-  if (fingerprint) {
-    for (uint32_t i = 0; i < 8u; ++i)
-      fingerprint = (fingerprint ^ ((source->fingerprint >> (i * 8u)) & 255u)) *
-                    UINT64_C(1099511628211);
-  } else {
-    fingerprint = source->fingerprint;
-  }
+  const uint64_t fingerprint = vkr_scene_source_node_fingerprint(
+      wrapper_source ? wrapper_source->source_fingerprint : 0u,
+      source->fingerprint);
   SceneSourceIdentity identity = {
       .scene_entity_index = scene_entity_index,
       .gltf_node_index = UINT32_MAX,
@@ -4298,6 +4304,84 @@ cleanup:
   if (out_error && *out_error == VKR_SCENE_ERROR_NONE)
     *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
   return false_v;
+}
+
+/* The fingerprint of the cooked mesh `entity`'s instance draws, or zero. */
+vkr_internal uint64_t scene_loader_drawn_mesh_fingerprint(VkrScene *scene,
+                                                          VkrEntityId entity) {
+  const SceneMeshRenderer *renderer =
+      vkr_entity_get_component(scene->world, entity, scene->comp_mesh_renderer);
+  VkrMeshManager *meshes = &scene->assets->mesh_manager;
+  const VkrMeshInstance *instance =
+      renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
+               : NULL;
+  const VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+               : NULL;
+  return asset ? asset->source_fingerprint : 0u;
+}
+
+uint32_t vkr_scene_refresh_source_fingerprints(VkrScene *scene,
+                                               VkrSceneSourceRemap *out,
+                                               uint32_t capacity) {
+  if (!scene || !scene->world || !scene->assets || !scene->source_fingerprint ||
+      !out || !capacity) {
+    return 0u;
+  }
+  VkrWorld *world = scene->world;
+  /* A source node whose instance draws another cooked mesh than its
+     identity came from names the change for every model of that mesh. */
+  uint32_t count = 0u;
+  for (uint32_t i = 0; i < world->dir.living && count < capacity; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    const SceneSourceIdentity *source =
+        vkr_entity_is_alive(world, entity)
+            ? vkr_entity_get_component(world, entity,
+                                       scene->comp_source_identity)
+            : NULL;
+    if (!source || source->gltf_node_index == UINT32_MAX ||
+        source->scene_entity_index == UINT32_MAX) {
+      continue;
+    }
+    const uint64_t mesh = scene_loader_drawn_mesh_fingerprint(scene, entity);
+    if (!mesh) {
+      continue;
+    }
+    const uint64_t expected =
+        vkr_scene_source_node_fingerprint(scene->source_fingerprint, mesh);
+    bool8_t known = expected == source->source_fingerprint;
+    for (uint32_t r = 0; !known && r < count; ++r) {
+      known = out[r].from == source->source_fingerprint;
+    }
+    if (!known) {
+      out[count++] = (VkrSceneSourceRemap){
+          .from = source->source_fingerprint,
+          .to = expected,
+      };
+    }
+  }
+  if (!count) {
+    return 0u;
+  }
+  /* Wrappers, nodes without a mesh and the nodes of other copies share the
+     fingerprint, so they move with it. A document entity outside a model
+     keeps the document's own, which no mixed value equals. */
+  for (uint32_t i = 0; i < world->dir.living; ++i) {
+    const VkrEntityId entity = vkr_entity_id_from_index(world, i);
+    SceneSourceIdentity *source =
+        vkr_entity_is_alive(world, entity)
+            ? vkr_entity_get_component_mut(world, entity,
+                                           scene->comp_source_identity)
+            : NULL;
+    for (uint32_t r = 0; source && r < count; ++r) {
+      if (source->source_fingerprint == out[r].from &&
+          source->scene_entity_index != UINT32_MAX) {
+        source->source_fingerprint = out[r].to;
+        break;
+      }
+    }
+  }
+  return count;
 }
 
 vkr_internal bool8_t scene_loader_attach_source_mesh(
@@ -4600,6 +4684,7 @@ scene_loader_ensure_scene_handle(VkrSceneLoaderAsyncPayload *payload,
   }
   payload->scene_handle = handle;
   payload->scene = scene;
+  scene->source_fingerprint = payload->scene_source_fingerprint;
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
@@ -6442,6 +6527,7 @@ vkr_internal bool8_t scene_load_json_now(VkrScene *scene,
   }
   payload->scene = scene;
   scene->assets = assets;
+  scene->source_fingerprint = payload->scene_source_fingerprint;
 
   bool8_t loaded = false_v;
   for (;;) {

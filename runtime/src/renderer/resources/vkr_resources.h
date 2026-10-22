@@ -257,6 +257,10 @@ typedef struct VkrMeshAsset {
 
   Array_VkrMeshAssetSubmesh submeshes;
   VkrMeshLoadMetrics load_metrics;
+  /* VkrMeshSource.fingerprint of the cooked file it was built from, the
+     value a model's source nodes take their identity from; zero when the
+     file has none. */
+  uint64_t source_fingerprint;
 
   bool8_t bounds_valid;
   Vec3 bounds_local_center;
