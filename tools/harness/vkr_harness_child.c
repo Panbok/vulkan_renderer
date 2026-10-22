@@ -117,6 +117,8 @@ typedef struct VkrHarnessChildContext {
   float64_t load_started;
   /** The scene resource is resident and installed on the renderer frontend. */
   bool8_t scene_active;
+  /** The log names when the scene's texture streams first became ready. */
+  bool8_t textures_ready_logged;
   bool8_t motion_blur_entity_ready;
   VkrEntityId motion_blur_entity;
   Vec3 motion_blur_entity_origin;
@@ -870,6 +872,12 @@ vkr_harness_child_texture_streams_ready(VkrStandardSceneRuntime *application) {
     return false_v;
   }
   if (stats.pending_count == 0u && stats.demanded_missing_count == 0u) {
+    if (!child->textures_ready_logged) {
+      child->textures_ready_logged = true_v;
+      vkr_harness_stderr("Scene textures ready after %.3f s (%u resident)\n",
+                         vkr_platform_get_absolute_time() - child->load_started,
+                         stats.resident_count);
+    }
     return true_v;
   }
 

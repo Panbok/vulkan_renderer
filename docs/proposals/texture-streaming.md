@@ -22,12 +22,12 @@ owns fetching bytes from a remote depot and their transport order, and
   texture chunks raw, not as zstd frames (`vkr_bundle_compress` in
   [vkr_bakery_bundle.c](../../tools/bakery/vkr_bakery_bundle.c)), so each
   level is a byte range of the file.
-- **Load.** The texture system reads the whole file and decodes every level
-  (`file_read_all`, then `ktxTexture2_CreateFromMemory` with
-  `KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT` in
-  [vkr_texture_system.c](../../runtime/src/renderer/systems/vkr_texture_system.c)).
-  A load limit (`max_extent=N`) then drops the mips above the limit and keeps
-  the smallest (`vkr_texture_limit_skip`). The limit is one value for all
+- **Load.** A load whose limit (`max_extent=N`) drops levels reads only the
+  file prefix that holds the levels it keeps, up to the end of the largest
+  (`vkr_texture_decode_ktx2_ranged` in
+  [vkr_texture_system.c](../../runtime/src/renderer/systems/vkr_texture_system.c),
+  ADR-012); a load that keeps every level reads the whole file. Either way
+  the smallest mip remains (`vkr_texture_limit_skip`). The limit is one value for all
   material textures: the tighter of the Graphics `texture_resolution` setting
   and the scene's `texture_max_extent` (ADR-012). A changed limit reloads the
   affected textures through the material stream queue, at most 32 queued or
@@ -121,23 +121,24 @@ every material sample for a workflow id itself abandoned.
    orders lowering by need instead of draw epoch and size. Passes outside the
    camera view (shadows, probe captures, planar reflections, bakes) still
    read what the camera's demand keeps resident.
-2. **Trim without pressure.** Once ranged loads (item 3) make a reload
-   cheap, lower textures to their measured need with no budget pressure, so
-   only the mips the camera needs stay resident (deferred by the owner on
-   2026-10-22 because each step now reloads the whole file).
-3. **Ranged loads.** Read only the levels needed, from the KTX2 level index,
-   with `file_seek` and `file_read_into` or `file_map_readonly`
-   ([filesystem.h](../../lib/src/filesystem/filesystem.h)). Load the floor
-   first, so a new texture appears at once at low detail.
-4. **Grow and shrink.** The backend adapter creates the new image, copies
-   the kept levels on the GPU and uploads the new level. It publishes the new
-   slot or resource ID after the copy completes and retires the old image
-   after its last submission (ADR-024). Material rows change through the
-   existing publication; per-draw work does not change.
+2. **Trim without pressure.** Once growing a texture back is cheap
+   (item 3), lower textures to their measured need with no budget pressure,
+   so only the mips the camera needs stay resident (deferred by the owner on
+   2026-10-22 because each step reloads and republishes the texture).
+3. **Grow and shrink.** The backend adapter creates the new image, copies
+   the kept levels on the GPU and uploads the new level, read from the file
+   range of the levels it adds. It publishes the new slot or resource ID
+   after the copy completes and retires the old image after its last
+   submission (ADR-024). Material rows change through the existing
+   publication; per-draw work does not change.
+4. **Floor first.** Once growing uploads only the added levels, load each new
+   texture first at its 128-texel floor, so it appears at once at low
+   detail. Done as a second full load it took Bistro's full detail from 27 to
+   35 s on the RX 6700 XT, and the owner deferred it on 2026-10-22 (ADR-012).
 5. **One priority for local and remote loads.** The network protocol's
    progressive phase requests remote mips smallest first by streaming source
-   and screen size. It consumes the required mips from item 1 instead of a
-   second estimate.
+   and screen size. It consumes the measured demand (ADR-024, and item 1 on
+   the tiled pipeline) instead of a second estimate.
 
 **Lifetime.** The texture system owns images, levels and slots; the material
 system owns streams and demand; each backend adapter owns native images, copy

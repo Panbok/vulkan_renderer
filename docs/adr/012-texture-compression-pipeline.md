@@ -183,6 +183,25 @@ follow the primary scene's limit. Under a texture budget a slot's request
 carries a lower limit when the budget has capped that slot, and the same
 reloads shrink and grow its texture
 ([ADR-024](024-shared-bindless-gpu-cores.md)).
+A load reads only the part of a local `.vkt` it keeps
+(`vkr_texture_decode_ktx2_ranged` in the
+[texture system](../../runtime/src/renderer/systems/vkr_texture_system.c)).
+KTX2 stores levels smallest first, so the levels at or below a limit, with
+the header, level index and metadata before them, are the file's first bytes:
+the load reads the header and level index, then the bytes up to the end of
+the largest kept level, and builds the upload from them as a remote preview
+does ([ADR-123](123-asset-streaming-from-a-depot.md)). A load that keeps
+every level, a supercompressed or non-2D file, or one still arriving from a
+remote reads the whole file as before. Bistro on the RX 6700 XT (Release,
+`vulkan_bistro_texture_pressure`, 2026-10-22, the harness's "Scene textures
+ready" line) had all 632 textures ready after 27.1 and 26.9 s with the
+driver's budget (26.8 and 27.4 s before) and after 27.2 and 27.8 s at
+`VKR_VULKAN_MEMORY_BUDGET_MB=6000`, where the budget lowers mips (28.6 and
+28.3 s before): decode and publication, not reading, dominate the load. Loading every texture first at its 128-texel floor, so it
+appears at once, took full detail from 27 to 35 s, because each texture
+then loads twice through publication; the owner deferred it (2026-10-22)
+until growing a texture copies its kept levels on the GPU (texture streaming
+proposal).
 Bistro on the M1 Pro (Debug editor, headless, Graphics limit 2048, isolated
 settings, 2026-10-03): `stats.texture_mb` read 1099.55 MiB at full, 347.69 MiB
 45 s after `scene.textures 1024`, and 1099.55 MiB again 45 s after `undo`.

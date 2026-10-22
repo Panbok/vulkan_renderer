@@ -2337,35 +2337,17 @@ vkr_internal bool8_t vkr_texture_ktx2_prefix_upload(
   return true_v;
 }
 
-/* Loads a `.vkt` still arriving from a remote content directory from the
- * first VKR_TEXTURE_PREVIEW_BYTES of its file: the levels within the load
- * limit that end there, without waiting for the rest. False, with the
- * result as it was, when the file is not pending, is small, or has another
- * shape; the caller then reads the whole file. */
-vkr_internal bool8_t vkr_texture_decode_ktx2_prefix(
+/* Decodes a `.vkt` from `prefix`, the first `prefix_size` of its
+ * `file_size` bytes: the levels within `max_dimension` that end in the
+ * prefix, a preview when that is fewer than the limit keeps. False, with the
+ * result as it was, when the header or shape does not allow it. */
+vkr_internal bool8_t vkr_texture_decode_ktx2_prefix_bytes(
     VkrAllocator *allocator, VkrTextureSystem *system, String8 vkt_path,
-    VkrTextureColorSpace colorspace, bool8_t has_explicit_colorspace,
-    VkrTextureClass texture_class, bool8_t has_explicit_class,
-    uint32_t max_dimension, VkrTextureDecodeResult *out_result) {
-  char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
-  if (!path_cstr) {
-    return false_v;
-  }
-  const FilePath fp = vkr_asset_path_file(
-      allocator, string8_create_from_cstr((const uint8_t *)path_cstr,
-                                          string_length(path_cstr)));
-  uint64_t file_size = 0u;
-  if (!fp.path.str || !vkr_vfs_remote_pending(&fp, &file_size) ||
-      file_size <= VKR_TEXTURE_PREVIEW_MIN_FILE_BYTES) {
-    return false_v;
-  }
-  const uint64_t prefix_size = Min(file_size, VKR_TEXTURE_PREVIEW_BYTES);
-  uint8_t *prefix = (uint8_t *)vkr_heap_alloc((size_t)prefix_size);
-  if (!prefix || !vkr_vfs_remote_read(&fp, 0u, prefix_size, prefix)) {
-    vkr_heap_free(prefix);
-    return false_v;
-  }
-
+    const char *path_cstr, VkrTextureColorSpace colorspace,
+    bool8_t has_explicit_colorspace, VkrTextureClass texture_class,
+    bool8_t has_explicit_class, const uint8_t *prefix, uint64_t prefix_size,
+    uint64_t file_size, uint32_t max_dimension,
+    VkrTextureDecodeResult *out_result) {
   /* Without image data, KTX-Software reads and checks the header, level
      index, format descriptor and key/value data, which all lie in the
      prefix. A failed decode leaves the caller's result untouched. */
@@ -2401,7 +2383,135 @@ vkr_internal bool8_t vkr_texture_decode_ktx2_prefix(
     vkr_heap_free(decode.upload_data);
     vkr_heap_free(decode.upload_regions);
   }
+  return success;
+}
+
+/* Loads a `.vkt` still arriving from a remote content directory from the
+ * first VKR_TEXTURE_PREVIEW_BYTES of its file: the levels within the load
+ * limit that end there, without waiting for the rest. False, with the
+ * result as it was, when the file is not pending, is small, or has another
+ * shape; the caller then reads the whole file. */
+vkr_internal bool8_t vkr_texture_decode_ktx2_prefix(
+    VkrAllocator *allocator, VkrTextureSystem *system, String8 vkt_path,
+    VkrTextureColorSpace colorspace, bool8_t has_explicit_colorspace,
+    VkrTextureClass texture_class, bool8_t has_explicit_class,
+    uint32_t max_dimension, VkrTextureDecodeResult *out_result) {
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
+  if (!path_cstr) {
+    return false_v;
+  }
+  const FilePath fp = vkr_asset_path_file(
+      allocator, string8_create_from_cstr((const uint8_t *)path_cstr,
+                                          string_length(path_cstr)));
+  uint64_t file_size = 0u;
+  if (!fp.path.str || !vkr_vfs_remote_pending(&fp, &file_size) ||
+      file_size <= VKR_TEXTURE_PREVIEW_MIN_FILE_BYTES) {
+    return false_v;
+  }
+  const uint64_t prefix_size = Min(file_size, VKR_TEXTURE_PREVIEW_BYTES);
+  uint8_t *prefix = (uint8_t *)vkr_heap_alloc((size_t)prefix_size);
+  if (!prefix || !vkr_vfs_remote_read(&fp, 0u, prefix_size, prefix)) {
+    vkr_heap_free(prefix);
+    return false_v;
+  }
+  const bool8_t success = vkr_texture_decode_ktx2_prefix_bytes(
+      allocator, system, vkt_path, path_cstr, colorspace,
+      has_explicit_colorspace, texture_class, has_explicit_class, prefix,
+      prefix_size, file_size, max_dimension, out_result);
   vkr_heap_free(prefix);
+  return success;
+}
+
+/* Loads a local `.vkt` from the start of its file only. KTX2 stores levels
+ * smallest first, so the levels a load keeps, with the header, level index
+ * and metadata before them, are the file's first bytes up to the end of the
+ * largest kept level; a load limit that drops levels reads only those.
+ * False, with the result as it was, when the limit keeps every
+ * level, the file is still arriving from a remote, or it has another shape;
+ * the caller then reads it whole. */
+vkr_internal bool8_t vkr_texture_decode_ktx2_ranged(
+    VkrAllocator *allocator, VkrTextureSystem *system, String8 vkt_path,
+    VkrTextureColorSpace colorspace, bool8_t has_explicit_colorspace,
+    VkrTextureClass texture_class, bool8_t has_explicit_class,
+    uint32_t max_dimension, VkrTextureDecodeResult *out_result) {
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
+  if (!path_cstr) {
+    return false_v;
+  }
+  const FilePath fp = vkr_asset_path_file(
+      allocator, string8_create_from_cstr((const uint8_t *)path_cstr,
+                                          string_length(path_cstr)));
+  if (!fp.path.str || vkr_vfs_remote_pending(&fp, NULL)) {
+    return false_v;
+  }
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle fh = {0};
+  if (file_open(&fp, mode, &fh) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+
+  bool8_t success = false_v;
+  uint8_t *prefix = NULL;
+  /* The header and the level index, at most one entry per supported level. */
+  uint8_t header[VKR_KTX2_HEADER_BYTES + VKR_TEXTURE_CAP_MAX_REGIONS *
+                                             VKR_KTX2_LEVEL_INDEX_ENTRY_BYTES];
+  uint64_t file_size = 0u;
+  uint64_t bytes_read = 0u;
+  if (file_remaining_size(&fh, &file_size) != FILE_ERROR_NONE ||
+      file_read_into(&fh, header, VKR_KTX2_HEADER_BYTES, &bytes_read) !=
+          FILE_ERROR_NONE ||
+      bytes_read != VKR_KTX2_HEADER_BYTES) {
+    goto cleanup;
+  }
+  /* KTX2 section 3: pixelWidth, pixelHeight, levelCount and
+     supercompressionScheme follow the 12-byte identifier, vkFormat and
+     typeSize. */
+  const uint32_t width = vkr_load_le_u32(header + 20u);
+  const uint32_t height = vkr_load_le_u32(header + 24u);
+  const uint32_t levels = vkr_load_le_u32(header + 40u);
+  const uint32_t supercompression = vkr_load_le_u32(header + 44u);
+  if (levels <= 1u || levels > VKR_TEXTURE_CAP_MAX_REGIONS ||
+      supercompression != 0u) {
+    goto cleanup;
+  }
+  const uint32_t skip =
+      vkr_texture_limit_skip(Max(width, height), levels, max_dimension);
+  if (skip == 0u) {
+    goto cleanup;
+  }
+  const uint64_t index_bytes =
+      (uint64_t)levels * VKR_KTX2_LEVEL_INDEX_ENTRY_BYTES;
+  if (file_read_into(&fh, header + VKR_KTX2_HEADER_BYTES, index_bytes,
+                     &bytes_read) != FILE_ERROR_NONE ||
+      bytes_read != index_bytes) {
+    goto cleanup;
+  }
+  const uint8_t *largest_kept =
+      header + VKR_KTX2_HEADER_BYTES +
+      (uint64_t)skip * VKR_KTX2_LEVEL_INDEX_ENTRY_BYTES;
+  const uint64_t offset = vkr_load_le_u64(largest_kept);
+  const uint64_t length = vkr_load_le_u64(largest_kept + 8u);
+  if (offset > file_size || length > file_size - offset) {
+    goto cleanup;
+  }
+  const uint64_t prefix_size = offset + length;
+  prefix = (uint8_t *)vkr_heap_alloc((size_t)prefix_size);
+  if (!prefix || file_seek(&fh, 0u) != FILE_ERROR_NONE ||
+      file_read_into(&fh, prefix, prefix_size, &bytes_read) !=
+          FILE_ERROR_NONE ||
+      bytes_read != prefix_size) {
+    goto cleanup;
+  }
+  success = vkr_texture_decode_ktx2_prefix_bytes(
+      allocator, system, vkt_path, path_cstr, colorspace,
+      has_explicit_colorspace, texture_class, has_explicit_class, prefix,
+      prefix_size, file_size, max_dimension, out_result);
+
+cleanup:
+  vkr_heap_free(prefix);
+  file_close(&fh);
   return success;
 }
 
@@ -2449,6 +2559,13 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
   const String8 selected_vkt = direct_vkt.str ? direct_vkt : sidecar_vkt;
   if (job->preview && selected_vkt.str &&
       vkr_texture_decode_ktx2_prefix(
+          scratch_allocator, job->system, selected_vkt, job->colorspace,
+          job->has_explicit_colorspace, job->texture_class,
+          job->has_explicit_class, job->max_dimension, result)) {
+    return true_v;
+  }
+  if (selected_vkt.str &&
+      vkr_texture_decode_ktx2_ranged(
           scratch_allocator, job->system, selected_vkt, job->colorspace,
           job->has_explicit_colorspace, job->texture_class,
           job->has_explicit_class, job->max_dimension, result)) {
