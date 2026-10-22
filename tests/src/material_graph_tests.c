@@ -1020,6 +1020,59 @@ static void test_graph_custom_settings(VkrAllocator *allocator) {
   printf("  test_graph_custom_settings PASSED\n");
 }
 
+/* A Custom graph whose function body outgrows one formatted line of the
+   generator (1,024 bytes) still lowers, and its function name hashes the
+   whole body: graphs that differ only in the last constant differ. */
+static void graph_test_long_chain(char *json, uint64_t capacity,
+                                  float32_t last) {
+  int written = snprintf(json, capacity,
+                         "{\"version\":1,\"nodes\":["
+                         "{\"id\":\"n0\",\"type\":\"time\"}");
+  for (uint32_t i = 1u; i <= 96u; ++i) {
+    written += snprintf(json + written, capacity - (uint64_t)written,
+                        ",{\"id\":\"n%u\",\"type\":\"sine\",\"inputs\":"
+                        "{\"x\":\"n%u\"}}",
+                        i, i - 1u);
+  }
+  written += snprintf(json + written, capacity - (uint64_t)written,
+                      ",{\"id\":\"k\",\"type\":\"scalar\",\"value\":%g},"
+                      "{\"id\":\"m\",\"type\":\"multiply\",\"inputs\":"
+                      "{\"a\":\"n96\",\"b\":\"k\"}},"
+                      "{\"id\":\"out\",\"type\":\"surface_output\","
+                      "\"inputs\":{\"metallic\":\"m.value\"}}]}",
+                      (double)last);
+  assert(written > 0 && (uint64_t)written < capacity);
+}
+
+static void test_graph_custom_long_body(VkrAllocator *allocator) {
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  char *json = malloc(KB(16));
+  assert(graph && json);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  char first[VKR_MATERIAL_GRAPH_ID_CAPACITY] = {0};
+  for (uint32_t pass = 0u; pass < 2u; ++pass) {
+    graph_test_long_chain(json, KB(16), pass ? 0.75f : 0.5f);
+    assert(vkr_material_graph_read(graph_test_str(json), graph, error,
+                                   sizeof(error)));
+    VkrMaterialCustomBinding binding;
+    VkrMaterialLowering lowering;
+    String8 source = {0};
+    assert(vkr_material_codegen_msl(graph, allocator, &source, &binding,
+                                    &lowering));
+    assert(lowering.tier == VKR_MATERIAL_TIER_CUSTOM);
+    assert(source.length > 2048u);
+    assert(strstr((const char *)source.str, "    return out;\n  }\n};\n"));
+    if (pass == 0u) {
+      snprintf(first, sizeof(first), "%s", lowering.function);
+    } else {
+      assert(strcmp(first, lowering.function) != 0);
+    }
+  }
+  free(graph);
+  free(json);
+  printf("  test_graph_custom_long_body PASSED\n");
+}
+
 /* Text fields round-trip through a document, escapes included, and a world
    size set on one axis is written so that reading it back refuses it. */
 static void test_graph_text_fields(VkrAllocator *allocator) {
@@ -1133,6 +1186,7 @@ bool32_t run_material_graph_tests(void) {
   test_graph_opacity_scale(&allocator);
   test_graph_bad_override(&allocator);
   test_graph_custom_settings(&allocator);
+  test_graph_custom_long_body(&allocator);
   test_graph_text_fields(&allocator);
   test_graph_round_trip(&allocator);
   arena_destroy(arena);

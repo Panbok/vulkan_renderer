@@ -32,20 +32,13 @@ typedef struct CodegenText {
   bool8_t failed;
 } CodegenText;
 
-static void codegen_append(CodegenText *text, const char *format, ...) {
+/* Appends `length` bytes of `data`, which may exceed one formatted line. */
+static void codegen_append_text(CodegenText *text, const char *data,
+                                uint64_t length) {
   if (text->failed) {
     return;
   }
-  char line[1024];
-  va_list args;
-  va_start(args, format);
-  const int written = string_format_v(line, sizeof(line), format, args);
-  va_end(args);
-  if (written < 0 || (uint64_t)written >= sizeof(line)) {
-    text->failed = true_v;
-    return;
-  }
-  const uint64_t needed = text->length + (uint64_t)written + 1u;
+  const uint64_t needed = text->length + length + 1u;
   if (needed > text->capacity) {
     const uint64_t next = Max(needed, Max(4096u, text->capacity * 2u));
     char *grown =
@@ -61,8 +54,25 @@ static void codegen_append(CodegenText *text, const char *format, ...) {
     text->data = grown;
     text->capacity = next;
   }
-  MemCopy(text->data + text->length, line, (uint64_t)written + 1u);
-  text->length += (uint64_t)written;
+  MemCopy(text->data + text->length, data, length);
+  text->length += length;
+  text->data[text->length] = '\0';
+}
+
+static void codegen_append(CodegenText *text, const char *format, ...) {
+  if (text->failed) {
+    return;
+  }
+  char line[1024];
+  va_list args;
+  va_start(args, format);
+  const int written = string_format_v(line, sizeof(line), format, args);
+  va_end(args);
+  if (written < 0 || (uint64_t)written >= sizeof(line)) {
+    text->failed = true_v;
+    return;
+  }
+  codegen_append_text(text, line, (uint64_t)written);
 }
 
 // =============================================================================
@@ -665,8 +675,11 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
 
   /* The function's name is the hash of what it computes. */
   CodegenText source = {.allocator = allocator};
-  codegen_append(&source, "%s%s", body.data ? body.data : "",
-                 writes.data ? writes.data : "");
+  codegen_append_text(&source, body.data ? body.data : "", body.length);
+  codegen_append_text(&source, writes.data ? writes.data : "", writes.length);
+  if (source.failed) {
+    return codegen_fail(&codegen, NULL, "Out of memory for the source");
+  }
   const uint64_t hash =
       codegen_hash(source.data ? source.data : "", source.length);
   string_format(out->function, sizeof(out->function), "vkr_custom_%016llx",
@@ -680,8 +693,8 @@ bool8_t vkr_material_codegen_msl(const VkrMaterialGraph *graph,
                  "&custom) {\n"
                  "    VkrMetalCustomOutput out = vkr_metal_custom_output();\n",
                  out->function);
-  codegen_append(&text, "%s", body.data ? body.data : "");
-  codegen_append(&text, "%s", writes.data ? writes.data : "");
+  codegen_append_text(&text, body.data ? body.data : "", body.length);
+  codegen_append_text(&text, writes.data ? writes.data : "", writes.length);
   codegen_append(&text, "    return out;\n  }\n};\n");
   if (text.failed) {
     return codegen_fail(&codegen, NULL, "Out of memory for the source");
