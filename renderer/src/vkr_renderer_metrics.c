@@ -702,6 +702,12 @@ vkr_internal bool8_t vkr_renderer_metrics_register_assets(
   VKR_REGISTER_U64(material_texture_stream_pressure_stalls,
                    "asset.material.texture_stream.pressure_stalls_total",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_mip_lowered_total,
+                   "asset.material.texture_stream.mip_lowered_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(material_texture_stream_mip_raised_total,
+                   "asset.material.texture_stream.mip_raised_total",
+                   VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(material_texture_stream_automatic_pressure_active,
                    "asset.material.texture_stream.automatic_pressure_active",
                    VKR_METRIC_DOMAIN_ASSET, VKR_METRIC_UNIT_COUNT);
@@ -1992,6 +1998,10 @@ vkr_internal void vkr_renderer_metrics_collect_assets(
               context->application.material_texture_stream_evicted_total);
   VKR_SET_U64(material_texture_stream_pressure_stalls,
               context->application.material_texture_stream_pressure_stalls);
+  VKR_SET_U64(material_texture_stream_mip_lowered_total,
+              context->application.material_texture_stream_mip_lowered_total);
+  VKR_SET_U64(material_texture_stream_mip_raised_total,
+              context->application.material_texture_stream_mip_raised_total);
   VKR_SET_U64(
       material_texture_stream_automatic_pressure_active,
       context->application.material_texture_stream_automatic_pressure_active);

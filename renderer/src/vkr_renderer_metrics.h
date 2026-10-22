@@ -250,6 +250,8 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId material_texture_stream_failed;
   VkrMetricId material_texture_stream_evicted_total;
   VkrMetricId material_texture_stream_pressure_stalls;
+  VkrMetricId material_texture_stream_mip_lowered_total;
+  VkrMetricId material_texture_stream_mip_raised_total;
   VkrMetricId material_texture_stream_automatic_pressure_active;
 
   VkrMetricId shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
@@ -572,6 +574,8 @@ typedef struct VkrApplicationMetricsSnapshot {
   uint64_t material_texture_stream_failed;
   uint64_t material_texture_stream_evicted_total;
   uint64_t material_texture_stream_pressure_stalls;
+  uint64_t material_texture_stream_mip_lowered_total;
+  uint64_t material_texture_stream_mip_raised_total;
   uint64_t material_texture_stream_automatic_pressure_active;
 } VkrApplicationMetricsSnapshot;
 

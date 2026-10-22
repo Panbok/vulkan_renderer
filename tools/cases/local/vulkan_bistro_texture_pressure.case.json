@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "local.win.bistro.texture_pressure",
   "suite": "local",
-  "description": "Vulkan Bistro plaza for the texture pressure policy; VKR_VULKAN_MEMORY_BUDGET_MB lowers the budget, and a pressured run ends at texture readiness.",
+  "description": "Vulkan Bistro plaza for the texture pressure policy; VKR_VULKAN_MEMORY_BUDGET_MB lowers the budget, and textures lose top mips to fit it.",
   "scene": "assets/scenes/bistro.scene.json",
   "seed": 20,
   "resolution": [

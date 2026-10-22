@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-07
+updated: 2026-10-22
 authority: adr
 ---
 # ADR-012: Host-native KTX2 texture artifacts
@@ -179,7 +179,10 @@ switch from Bistro (limit 1024) to Level Design Test (full) re-streamed
 Bistro's warm textures (ADR-089) from 0.6 to 3 GB while the new level loaded,
 and the Metal editor ran out of GPU memory. The slot keeps its texture until
 the reload binds, and then the replaced texture is released. Additive scenes
-follow the primary scene's limit.
+follow the primary scene's limit. Under a texture budget a slot's request
+carries a lower limit when the budget has capped that slot, and the same
+reloads shrink and grow its texture
+([ADR-024](024-shared-bindless-gpu-cores.md)).
 Bistro on the M1 Pro (Debug editor, headless, Graphics limit 2048, isolated
 settings, 2026-10-03): `stats.texture_mb` read 1099.55 MiB at full, 347.69 MiB
 45 s after `scene.textures 1024`, and 1099.55 MiB again 45 s after `undo`.

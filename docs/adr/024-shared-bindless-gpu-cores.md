@@ -191,14 +191,37 @@ Nothing rejects a Vulkan allocation, so its texture capacity is not capped
 capacity, each new texture block would raise the allowance with it, and a
 Bistro run at a 6000 MiB budget kept all 632 textures and 7.34 GB of
 device-local usage. Vulkan's allowance is therefore the 80% target alone, and
-the material system evicts least recently demanded textures to reach it.
+the material system lowers and, at the floor, evicts textures to reach it.
 Classifying non-asset storage by capacity keeps that target stable: a new or
 freed texture block changes usage and capacity together. By the owner's
-decision (2026-10-22), evicted textures show their neutral defaults until mip
-eviction exists; the backend adds no allocation cap.
+decision (2026-10-22) the backend adds no allocation cap.
 `VKR_VULKAN_MEMORY_BUDGET_MB` lowers the reported device-local budget so a large
 GPU can run the policy under pressure; nothing rejects an allocation against it,
 and the driver can still oversubscribe video memory.
+
+Under any texture budget the material system lowers mips before it evicts
+textures. Each stream carries `extent_cap`, the budget's cap on its slot,
+which lowers its requests' load limit (`max_extent`,
+[ADR-012](012-texture-compression-pipeline.md)) below the material limit.
+`vkr_material_system_evict_to_fit` projects the resident bytes once pending
+cap changes have reloaded. While they exceed the budget it halves caps: the
+oldest demand epoch first, and within an epoch every texture loses one mip,
+largest first, before any loses two, down to
+`VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR` (128), so every loaded texture keeps its
+mips at or below 128x128. Only when every texture is at that floor does it
+evict whole textures, which then show neutral defaults. A cap reaches every
+stream resident on a shared texture and the reloads that replace it, so the
+slots keep sharing one texture. The limit's reload loads the smaller chain,
+binds it and releases the larger one; until it binds the resident bytes exceed
+the budget, and over the budget only reloads that shrink may start. A raise
+scan, at most once per 16 epochs, doubles the caps of drawn textures, newest
+demand and smallest first, while the projected bytes stay under 7/8 of the
+budget, and clears a cap that reaches the source extent or the material limit.
+Reloads read the whole file and reallocate the image. The order follows the
+material's draw epoch, not the mip a view needs; GPU feedback (the
+[texture streaming proposal](../proposals/texture-streaming.md)) would replace
+it. `asset.material.texture_stream.mip_lowered_total` and `mip_raised_total`
+count the steps.
 
 An evicted texture is destroyed at once, and the texture system can reuse its
 id while material rows that sampled it still await retirement. Vulkan keeps
@@ -212,12 +235,18 @@ Evidence (2026-10-22, RX 6700 XT 12 GB, Windows 10, Release,
 --profile tools/profiles/local-offscreen-gpu-single.json`): with the driver's
 budget the run passed with 632 of 632 textures resident, pressure off,
 `memory.gpu.heap_usage_valid` 1, 3.36 GB of texture capacity and 7.09 GB of
-11.78 GB used on the main device-local heap. With
-`VKR_VULKAN_MEMORY_BUDGET_MB=6000` residency settled at 1.105 GB against a
-1.106 GB allowance, 218 of 632 textures, each of the 414 evictions once; the
-run stops at `scene.texture_ready_timeout` because demanded textures stay
-missing. The same run with `VK_LAYER_KHRONOS_validation` and synchronization
-validation reported no message.
+11.78 GB used on the main device-local heap, and no mip step. With
+`VKR_VULKAN_MEMORY_BUDGET_MB=6000` and whole-texture eviction only, residency
+settled at 1.105 GB against a 1.106 GB allowance with 218 of 632 textures, and
+the run stopped at `scene.texture_ready_timeout` because demanded textures
+stayed missing. With mip-level eviction the same budget passed: all 632
+textures resident, none evicted, 1.125 GB against a 1.125 GB allowance after
+300 lowering steps, and 5.07 GB used on the main device-local heap of a
+6.04 GB budget (7.09 GB before). The same run with `VK_LAYER_KHRONOS_validation`
+and synchronization validation passed with 310 steps and reported no message.
+Texture block capacity was 1.41 to 1.74 GB for 1.1 GB of textures: blocks that
+held larger chains stay while any placement in them lives. Image quality and
+frame time under pressure were not measured.
 
 Capacity-based retries use a finite high-water allowance for the current set of
 texture streams. Returning from a lower allowance or toggling the unlimited

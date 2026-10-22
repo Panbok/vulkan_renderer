@@ -265,6 +265,15 @@ bool8_t vkr_texture_system_publication_confirmed(VkrTextureSystem *system,
                                                  VkrTextureHandle handle);
 
 /**
+ * @brief The mip levels loading a live texture's source again with the
+ * request load limit `max_extent` (`max_extent=N`; zero for none) would
+ * store; zero for a texture no limit can shorten.
+ */
+uint32_t vkr_texture_system_load_limit_mip_levels(VkrTextureSystem *system,
+                                                  VkrTextureHandle handle,
+                                                  uint32_t max_extent);
+
+/**
  * @brief True when loading a live texture's source again with the request
  * load limit `max_extent` (`max_extent=N`; zero for none) would store a
  * different mip chain than the texture holds.

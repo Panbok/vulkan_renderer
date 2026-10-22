@@ -2591,32 +2591,36 @@ vkr_internal void vkr_texture_decode_result_cap_extent(
   }
 }
 
+uint32_t vkr_texture_system_load_limit_mip_levels(VkrTextureSystem *system,
+                                                  VkrTextureHandle handle,
+                                                  uint32_t max_extent) {
+  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || texture->limit_source_mip_levels == 0u) {
+    return 0u;
+  }
+  return texture->limit_source_mip_levels -
+         vkr_texture_limit_skip(texture->limit_source_extent,
+                                texture->limit_source_mip_levels, max_extent);
+}
+
 bool8_t vkr_texture_system_load_limit_changes(VkrTextureSystem *system,
                                               VkrTextureHandle handle,
                                               uint32_t max_extent) {
-  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
-  if (!texture || texture->limit_source_mip_levels == 0u) {
-    return false_v;
-  }
-  const uint32_t skip =
-      vkr_texture_limit_skip(texture->limit_source_extent,
-                             texture->limit_source_mip_levels, max_extent);
-  return skip + texture->description.mip_levels !=
-         texture->limit_source_mip_levels;
+  const uint32_t levels =
+      vkr_texture_system_load_limit_mip_levels(system, handle, max_extent);
+  return levels != 0u &&
+         levels != vkr_texture_system_get_by_handle(system, handle)
+                       ->description.mip_levels;
 }
 
 bool8_t vkr_texture_system_load_limit_grows(VkrTextureSystem *system,
                                             VkrTextureHandle handle,
                                             uint32_t max_extent) {
-  const VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
-  if (!texture || texture->limit_source_mip_levels == 0u) {
-    return false_v;
-  }
-  const uint32_t skip =
-      vkr_texture_limit_skip(texture->limit_source_extent,
-                             texture->limit_source_mip_levels, max_extent);
-  return skip + texture->description.mip_levels <
-         texture->limit_source_mip_levels;
+  const uint32_t levels =
+      vkr_texture_system_load_limit_mip_levels(system, handle, max_extent);
+  return levels != 0u &&
+         levels > vkr_texture_system_get_by_handle(system, handle)
+                      ->description.mip_levels;
 }
 
 /* The `.vkt` a texture's name resolves to, allocated from `allocator`;

@@ -44,6 +44,9 @@ VkrHashTable(VkrMaterialEntry);
 #define VKR_MATERIAL_REPLACEMENT_CAPACITY 512u
 /* Reloads toward a changed texture load limit queued or loading at once. */
 #define VKR_MATERIAL_TEXTURE_RELOAD_MAX 32u
+/* Budget pressure never caps a texture below this extent, so its mips at or
+   below 128x128 stay resident and its material keeps its texture. */
+#define VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR 128u
 
 typedef enum VkrMaterialTextureResidencyState {
   VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED = 0,
@@ -68,6 +71,11 @@ typedef struct VkrMaterialTextureStream {
   bool8_t reload;
   /* This resident stream has such a reload in progress. */
   bool8_t reloading;
+  /* The texture budget's cap on this slot's extent, zero for none. It lowers
+     the load limit of the slot's requests, so the limit's reloads shrink
+     the texture under pressure and grow it back; every stream resident on
+     one texture carries the same cap, so they keep sharing it. */
+  uint32_t extent_cap;
   /* A reload's slot texture when it was queued; while that is a preview
      (vkr_texture_system_full_file_ready), the reload waits for its file. */
   VkrTextureHandle replaces;
@@ -80,6 +88,28 @@ typedef struct VkrMaterialTextureStream {
    * that binds on its own when it loads. */
   uint32_t replacement;
 } VkrMaterialTextureStream;
+
+/* One resident texture as the budget sees it: built per pass over the
+ * streams, one entry per shared texture. */
+typedef struct VkrMaterialTextureCandidate {
+  VkrTextureHandle texture;
+  /* Newest demand epoch among the texture's streams. */
+  uint64_t last_used;
+  uint64_t bytes;
+  /* Bytes once a pending cap change has reloaded: below `bytes` while a
+     shrink is on its way, above it while a growth is. */
+  uint64_t projected_bytes;
+  uint32_t extent_cap;
+  /* Mip levels held, levels at the streams' limit, and levels of the
+     source; the last zero for a texture no limit can shorten. */
+  uint32_t mip_levels;
+  uint32_t target_mip_levels;
+  uint32_t source_mip_levels;
+  uint32_t source_extent;
+  /* Every stream on the texture carries the load limit's query outside a
+     replacement, so a cap can reload it. */
+  bool8_t limitable;
+} VkrMaterialTextureCandidate;
 
 /* A live material's next definition. Its textures stream as a group, and the
  * definition and every texture publish in one republication once all of them
@@ -170,6 +200,18 @@ typedef struct VkrMaterialSystem {
   uint64_t texture_stream_failed_total;
   uint64_t texture_stream_evicted_total;
   uint64_t texture_stream_pressure_stalls_total;
+  /* Textures whose cap the budget lowered or raised by one step. */
+  uint64_t texture_stream_mip_lowered_total;
+  uint64_t texture_stream_mip_raised_total;
+  /* Some stream may carry an extent cap; cleared by a raise scan that finds
+     none. */
+  bool8_t texture_stream_caps_present;
+  /* Epoch of the last raise scan, which runs at most once per
+     VKR_MATERIAL_TEXTURE_RAISE_EPOCHS. */
+  uint64_t texture_stream_raise_epoch;
+  /* Scratch for the budget's passes, VKR_MATERIAL_TEXTURE_STREAM_CAPACITY
+     entries from the persistent arena. */
+  VkrMaterialTextureCandidate *texture_candidates;
 
   VkrMaterialReplacement *replacements; /* VKR_MATERIAL_REPLACEMENT_CAPACITY */
   uint32_t replacement_count;           /* Entries in use. */

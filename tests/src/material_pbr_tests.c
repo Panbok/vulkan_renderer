@@ -1250,6 +1250,127 @@ test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_residency_evicts_to_budget PASSED\n");
 }
 
+/* The budget lowers a texture's top mip, one halving of its cap at a time,
+   before it evicts the texture; the 128 floor stays resident until nothing
+   else is left, and a raised budget grows the cap back. Reloads stay queued
+   (the in-flight count is held full), so the caps are visible on both the
+   resident stream and its reload. */
+vkr_internal void test_material_texture_residency_lowers_mips_before_evicting(
+    MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  const VkrMaterialHandle material = vkr_material_system_create_colored(
+      system, "texture_mip_lowering_material", vec4_one(), &error);
+  assert(material.id != 0u);
+  const VkrTextureDescription description = {
+      .width = 8u,
+      .height = 8u,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = {0},
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+  };
+  VkrTextureHandle texture = VKR_TEXTURE_HANDLE_INVALID;
+  assert(vkr_texture_system_create_writable(
+             &ctx->texture_system, string8_lit("texture_mip_lowering"),
+             &description, &texture, &error) == true_v);
+  /* Model a loaded 1024x1024 chain of 11 mips. */
+  VkrTexture *resident =
+      vkr_texture_system_get_by_handle(&ctx->texture_system, texture);
+  assert(resident != NULL);
+  resident->resident_bytes = 4096u;
+  resident->description.mip_levels = 11u;
+  resident->limit_source_extent = 1024u;
+  resident->limit_source_mip_levels = 11u;
+  VkrTextureEntry *resident_entry = vkr_hash_table_get_VkrTextureEntry(
+      &ctx->texture_system.texture_map, "texture_mip_lowering");
+  assert(resident_entry != NULL);
+  resident_entry->auto_release = false_v;
+
+  VkrMaterial *loaded = vkr_material_system_get_by_handle(system, material);
+  assert(loaded != NULL);
+  loaded->textures[VKR_TEXTURE_SLOT_EMISSION] = (VkrMaterialTexture){
+      .handle = texture,
+      .slot = VKR_TEXTURE_SLOT_EMISSION,
+      .enabled = true_v,
+  };
+  assert(vkr_material_system_stream_texture(system, material,
+                                            VKR_TEXTURE_SLOT_EMISSION,
+                                            "textures/lowered.vkt") == true_v);
+  const uint32_t stream_index = system->texture_stream_count - 1u;
+  VkrMaterialTextureStream *stream = &system->texture_streams[stream_index];
+  system->texture_stream_queued_count--;
+  system->texture_stream_resident_count++;
+  system->texture_stream_resident_bytes += resident->resident_bytes;
+  stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+  stream->resident_texture = texture;
+  stream->resident_bytes = resident->resident_bytes;
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+  const uint64_t lowered = system->texture_stream_mip_lowered_total;
+  const uint64_t evicted = system->texture_stream_evicted_total;
+
+  /* One halving (1024 to 512) quarters the projected 4096 bytes to 1024. */
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, material);
+  vkr_material_system_set_texture_residency_budget(system, 2048u);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT);
+  assert(stream->extent_cap == 512u);
+  assert(system->texture_stream_mip_lowered_total == lowered + 1u);
+  assert(system->texture_stream_evicted_total == evicted);
+  assert(system->texture_stream_count == stream_index + 2u);
+  const VkrMaterialTextureStream *reload =
+      &system->texture_streams[stream_index + 1u];
+  assert(reload->reload && reload->extent_cap == 512u);
+  assert(reload->replaces.id == texture.id &&
+         reload->replaces.generation == texture.generation);
+
+  /* The pending reload's bytes count: an unchanged budget lowers nothing
+     more. A tighter one halves down to the floor, never past it. */
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(system->texture_stream_mip_lowered_total == lowered + 1u);
+  vkr_material_system_set_texture_residency_budget(system, 100u);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT);
+  assert(stream->extent_cap == VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
+  assert(reload->extent_cap == VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
+  assert(system->texture_stream_mip_lowered_total == lowered + 3u);
+  assert(system->texture_stream_evicted_total == evicted);
+
+  /* Room again: a drawn texture's cap grows one step per raise scan. */
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(stream->extent_cap == 256u);
+  assert(system->texture_stream_mip_raised_total >= 1u);
+
+  /* Below what the floor holds, the texture goes whole. */
+  vkr_material_system_set_texture_residency_budget(system, 10u);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED);
+  assert(system->texture_stream_evicted_total == evicted + 1u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  resident = vkr_texture_system_get_by_handle(&ctx->texture_system, texture);
+  if (resident) {
+    resident->description.mip_levels = 1u;
+    resident->limit_source_extent = 0u;
+    resident->limit_source_mip_levels = 0u;
+  }
+  printf("  test_material_texture_residency_lowers_mips_before_evicting "
+         "PASSED\n");
+}
+
 vkr_internal void
 test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
@@ -2541,6 +2662,7 @@ bool32_t run_material_pbr_tests(void) {
   test_async_emissive_texture_uses_black_pending_fallback(&context);
   test_material_texture_stream_queue_is_bounded(&context);
   test_material_texture_residency_evicts_to_budget(&context);
+  test_material_texture_residency_lowers_mips_before_evicting(&context);
   test_texture_capacity_retry_high_water();
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_shared_texture_eviction_republishes_all_materials(&context);

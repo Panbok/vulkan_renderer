@@ -394,14 +394,33 @@ vkr_material_stream_carries_limit(const VkrMaterialTextureStream *stream) {
          VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX;
 }
 
+/* The load limit under the budget's extent cap `cap`: the material limit,
+ * lowered by the cap. Zero for none. */
+static uint32_t vkr_material_cap_limit(const VkrMaterialSystem *system,
+                                       uint32_t cap) {
+  const uint32_t limit = system->texture_extent_limit;
+  if (!cap) {
+    return limit;
+  }
+  return limit ? Min(limit, cap) : cap;
+}
+
+/* The load limit of a stream's requests. */
+static uint32_t
+vkr_material_stream_limit(const VkrMaterialSystem *system,
+                          const VkrMaterialTextureStream *stream) {
+  return vkr_material_cap_limit(system, stream->extent_cap);
+}
+
 /* Whether `texture`, bound through `stream`, holds a different mip chain
- * than a request at the current limit would load. */
+ * than a request at the stream's limit would load. */
 static bool8_t vkr_material_stream_stale(VkrMaterialSystem *system,
                                          const VkrMaterialTextureStream *stream,
                                          VkrTextureHandle texture) {
   return vkr_material_stream_carries_limit(stream) &&
-         vkr_texture_system_load_limit_changes(system->texture_system, texture,
-                                               system->texture_extent_limit);
+         vkr_texture_system_load_limit_changes(
+             system->texture_system, texture,
+             vkr_material_stream_limit(system, stream));
 }
 
 /* Writes the stream's next request into `path`: the material's request and
@@ -422,7 +441,7 @@ static String8 vkr_material_stream_request(const VkrMaterialSystem *system,
     length += (uint32_t)string_format(
         stream->path + length, VKR_MATERIAL_TEXTURE_STREAM_PATH_MAX - length,
         "%cmax_extent=%u%s", has_query ? '&' : '?',
-        system->texture_extent_limit, preview ? "&preview=1" : "");
+        vkr_material_stream_limit(system, stream), preview ? "&preview=1" : "");
   }
   stream->path[length] = '\0';
   return string8_create((uint8_t *)stream->path, length);
@@ -671,32 +690,279 @@ rollback:
   return false_v;
 }
 
-typedef struct VkrMaterialTextureEvictionCandidate {
-  VkrTextureHandle texture;
-  uint64_t last_used;
-} VkrMaterialTextureEvictionCandidate;
+/* Epochs between scans that raise capped textures back. */
+#define VKR_MATERIAL_TEXTURE_RAISE_EPOCHS 16u
 
-static int32_t vkr_material_system_eviction_compare_texture(const void *a,
-                                                            const void *b) {
-  const VkrTextureHandle x =
-      ((const VkrMaterialTextureEvictionCandidate *)a)->texture;
-  const VkrTextureHandle y =
-      ((const VkrMaterialTextureEvictionCandidate *)b)->texture;
+static int32_t vkr_material_system_candidate_compare_texture(const void *a,
+                                                             const void *b) {
+  const VkrTextureHandle x = ((const VkrMaterialTextureCandidate *)a)->texture;
+  const VkrTextureHandle y = ((const VkrMaterialTextureCandidate *)b)->texture;
   if (x.id != y.id)
     return x.id < y.id ? -1 : 1;
   return x.generation < y.generation ? -1 : x.generation > y.generation;
 }
 
-static int32_t vkr_material_system_eviction_compare_age(const void *a,
-                                                        const void *b) {
-  const uint64_t x =
-      ((const VkrMaterialTextureEvictionCandidate *)a)->last_used;
-  const uint64_t y =
-      ((const VkrMaterialTextureEvictionCandidate *)b)->last_used;
-  return x != y ? (x < y ? -1 : 1)
-                : vkr_material_system_eviction_compare_texture(a, b);
+/* Oldest demand first; within one epoch the largest first, so the budget
+   halves the biggest textures of a view before smaller ones. */
+static int32_t vkr_material_system_candidate_compare_shrink(const void *a,
+                                                            const void *b) {
+  const VkrMaterialTextureCandidate *x = a;
+  const VkrMaterialTextureCandidate *y = b;
+  if (x->last_used != y->last_used)
+    return x->last_used < y->last_used ? -1 : 1;
+  if (x->projected_bytes != y->projected_bytes)
+    return x->projected_bytes > y->projected_bytes ? -1 : 1;
+  return vkr_material_system_candidate_compare_texture(a, b);
 }
 
+/* Newest demand first; within one epoch the smallest first. */
+static int32_t vkr_material_system_candidate_compare_raise(const void *a,
+                                                           const void *b) {
+  const VkrMaterialTextureCandidate *x = a;
+  const VkrMaterialTextureCandidate *y = b;
+  if (x->last_used != y->last_used)
+    return x->last_used > y->last_used ? -1 : 1;
+  if (x->projected_bytes != y->projected_bytes)
+    return x->projected_bytes < y->projected_bytes ? -1 : 1;
+  return vkr_material_system_candidate_compare_texture(a, b);
+}
+
+/* `bytes` of a chain of `levels` mips scaled to `target` levels: each top
+   mip removed quarters a chain, each one added quadruples it. */
+static uint64_t vkr_material_texture_bytes_at(uint64_t bytes, uint32_t levels,
+                                              uint32_t target) {
+  if (target <= levels) {
+    const uint32_t shift = 2u * (levels - target);
+    return shift < 64u ? bytes >> shift : 0u;
+  }
+  const uint32_t shift = 2u * (target - levels);
+  return shift < 64u && bytes <= (UINT64_MAX >> shift) ? bytes << shift
+                                                       : UINT64_MAX;
+}
+
+/* The larger side of a candidate's mip `levels` from the top of its
+   source. */
+static uint32_t
+vkr_material_candidate_extent(const VkrMaterialTextureCandidate *candidate,
+                              uint32_t levels) {
+  return Max(1u, candidate->source_extent >>
+                     (candidate->source_mip_levels - levels));
+}
+
+/* Fills texture_candidates with each resident texture except
+ * `protected_texture`, one entry per shared texture, and returns their count.
+ * `out_projected` receives the resident bytes once every pending cap change
+ * has reloaded; `out_caps` whether any stream carries a cap. */
+static uint32_t vkr_material_system_texture_candidates(
+    VkrMaterialSystem *system, VkrTextureHandle protected_texture,
+    uint64_t *out_projected, bool8_t *out_caps) {
+  VkrMaterialTextureCandidate *candidates = system->texture_candidates;
+  uint32_t candidate_count = 0u;
+  bool8_t caps = false_v;
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    const VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    caps = caps || stream->extent_cap != 0u;
+    if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT ||
+        vkr_material_system_texture_handle_equal(stream->resident_texture,
+                                                 protected_texture)) {
+      continue;
+    }
+    candidates[candidate_count++] = (VkrMaterialTextureCandidate){
+        .texture = stream->resident_texture,
+        .last_used = vkr_material_system_stream_last_used(system, stream),
+        .bytes = stream->resident_bytes,
+        .extent_cap = stream->extent_cap,
+        .limitable =
+            vkr_material_stream_carries_limit(stream) && !stream->replacement,
+    };
+  }
+  *out_caps = caps;
+
+  vkr_sort(candidates, candidate_count, sizeof(*candidates),
+           vkr_material_system_candidate_compare_texture);
+  uint32_t texture_count = 0u;
+  for (uint32_t i = 0u; i < candidate_count; ++i) {
+    const VkrMaterialTextureCandidate candidate = candidates[i];
+    VkrMaterialTextureCandidate *last =
+        texture_count ? &candidates[texture_count - 1u] : NULL;
+    if (last && vkr_material_system_texture_handle_equal(last->texture,
+                                                         candidate.texture)) {
+      last->last_used = Max(last->last_used, candidate.last_used);
+      last->limitable = last->limitable && candidate.limitable;
+    } else {
+      candidates[texture_count++] = candidate;
+    }
+  }
+
+  /* The protected texture and any other bytes outside the candidates stay
+     as they are. */
+  uint64_t projected = system->texture_stream_resident_bytes;
+  for (uint32_t i = 0u; i < texture_count; ++i) {
+    VkrMaterialTextureCandidate *candidate = &candidates[i];
+    const VkrTexture *texture = vkr_texture_system_get_by_handle(
+        system->texture_system, candidate->texture);
+    candidate->mip_levels = texture ? texture->description.mip_levels : 0u;
+    candidate->source_extent = texture ? texture->limit_source_extent : 0u;
+    candidate->source_mip_levels =
+        candidate->limitable
+            ? vkr_texture_system_load_limit_mip_levels(system->texture_system,
+                                                       candidate->texture, 0u)
+            : 0u;
+    candidate->target_mip_levels =
+        candidate->source_mip_levels
+            ? vkr_texture_system_load_limit_mip_levels(
+                  system->texture_system, candidate->texture,
+                  vkr_material_cap_limit(system, candidate->extent_cap))
+            : candidate->mip_levels;
+    candidate->projected_bytes = vkr_material_texture_bytes_at(
+        candidate->bytes, candidate->mip_levels, candidate->target_mip_levels);
+    projected =
+        projected >= candidate->bytes ? projected - candidate->bytes : 0u;
+    projected = UINT64_MAX - projected > candidate->projected_bytes
+                    ? projected + candidate->projected_bytes
+                    : UINT64_MAX;
+  }
+  *out_projected = projected;
+  return texture_count;
+}
+
+/* Gives `cap` to every stream resident on `texture` and to the reloads that
+ * replace it, so their slots keep sharing one texture, and lets the next
+ * pump queue the reloads that bring the texture to it. */
+static void vkr_material_system_cap_texture(VkrMaterialSystem *system,
+                                            VkrTextureHandle texture,
+                                            uint32_t cap) {
+  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
+    VkrMaterialTextureStream *stream = &system->texture_streams[i];
+    const bool8_t resident =
+        stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT &&
+        vkr_material_system_texture_handle_equal(stream->resident_texture,
+                                                 texture);
+    const bool8_t reload =
+        stream->reload &&
+        vkr_material_system_texture_handle_equal(stream->replaces, texture);
+    if (resident || reload) {
+      stream->extent_cap = cap;
+    }
+  }
+  system->texture_reload_pending = true_v;
+  system->texture_stream_caps_present =
+      system->texture_stream_caps_present || cap != 0u;
+}
+
+/* Halves the caps of `candidates`, sorted for shrinking, down to the floor
+ * until `projected` fits `limit`: the oldest demand epoch goes to the floor
+ * before a newer one is touched, and within an epoch every texture loses one
+ * mip before any loses two. */
+static void vkr_material_system_shrink_textures(
+    VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
+    uint32_t candidate_count, uint64_t limit, uint64_t *projected) {
+  for (uint32_t begin = 0u; begin < candidate_count && *projected > limit;) {
+    uint32_t end = begin + 1u;
+    while (end < candidate_count &&
+           candidates[end].last_used == candidates[begin].last_used) {
+      ++end;
+    }
+    bool8_t lowered = true_v;
+    while (lowered && *projected > limit) {
+      lowered = false_v;
+      for (uint32_t i = begin; i < end && *projected > limit; ++i) {
+        VkrMaterialTextureCandidate *candidate = &candidates[i];
+        if (!candidate->source_mip_levels) {
+          continue;
+        }
+        const uint32_t extent = vkr_material_candidate_extent(
+            candidate, candidate->target_mip_levels);
+        if (extent <= VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR) {
+          continue;
+        }
+        const uint32_t cap =
+            Max(extent / 2u, (uint32_t)VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
+        const uint32_t levels = vkr_texture_system_load_limit_mip_levels(
+            system->texture_system, candidate->texture,
+            vkr_material_cap_limit(system, cap));
+        if (levels == 0u || levels >= candidate->target_mip_levels) {
+          continue;
+        }
+        const uint64_t bytes = vkr_material_texture_bytes_at(
+            candidate->bytes, candidate->mip_levels, levels);
+        *projected = *projected - candidate->projected_bytes + bytes;
+        candidate->projected_bytes = bytes;
+        candidate->target_mip_levels = levels;
+        candidate->extent_cap = cap;
+        vkr_material_system_cap_texture(system, candidate->texture, cap);
+        system->texture_stream_mip_lowered_total++;
+        lowered = true_v;
+      }
+    }
+    begin = end;
+  }
+}
+
+/* Raises the caps of drawn textures one step, newest demand and smallest
+ * first, while the projected bytes stay under 7/8 of the budget, so a raise
+ * does not bring back the pressure that lowered it. A cap that reaches the
+ * source extent or the material limit is cleared. Scans at most once per
+ * VKR_MATERIAL_TEXTURE_RAISE_EPOCHS. */
+static void vkr_material_system_raise_textures(VkrMaterialSystem *system) {
+  const uint64_t budget = system->texture_stream_budget_bytes;
+  const uint64_t ceiling = budget - budget / 8u;
+  if (!system->texture_stream_caps_present ||
+      system->texture_stream_resident_bytes >= ceiling ||
+      (system->texture_stream_raise_epoch != 0u &&
+       system->texture_stream_epoch - system->texture_stream_raise_epoch <
+           VKR_MATERIAL_TEXTURE_RAISE_EPOCHS)) {
+    return;
+  }
+  system->texture_stream_raise_epoch = system->texture_stream_epoch;
+  uint64_t projected = 0u;
+  bool8_t caps = false_v;
+  VkrMaterialTextureCandidate *candidates = system->texture_candidates;
+  const uint32_t candidate_count = vkr_material_system_texture_candidates(
+      system, VKR_TEXTURE_HANDLE_INVALID, &projected, &caps);
+  system->texture_stream_caps_present = caps;
+  vkr_sort(candidates, candidate_count, sizeof(*candidates),
+           vkr_material_system_candidate_compare_raise);
+  for (uint32_t i = 0u; i < candidate_count && projected < ceiling; ++i) {
+    VkrMaterialTextureCandidate *candidate = &candidates[i];
+    if (!candidate->extent_cap || !candidate->source_mip_levels ||
+        candidate->last_used != system->texture_stream_epoch) {
+      continue;
+    }
+    const uint32_t doubled = candidate->extent_cap * 2u;
+    const uint32_t limit = system->texture_extent_limit;
+    const uint32_t cap =
+        doubled >= candidate->source_extent || (limit != 0u && doubled >= limit)
+            ? 0u
+            : doubled;
+    const uint32_t levels = vkr_texture_system_load_limit_mip_levels(
+        system->texture_system, candidate->texture,
+        vkr_material_cap_limit(system, cap));
+    const uint64_t bytes = vkr_material_texture_bytes_at(
+        candidate->bytes, candidate->mip_levels, levels);
+    if (levels <= candidate->target_mip_levels) {
+      /* The material limit already holds the texture below the cap. */
+      if (!cap) {
+        vkr_material_system_cap_texture(system, candidate->texture, 0u);
+      }
+      continue;
+    }
+    if (bytes >= ceiling ||
+        projected - candidate->projected_bytes + bytes > ceiling) {
+      continue;
+    }
+    projected = projected - candidate->projected_bytes + bytes;
+    vkr_material_system_cap_texture(system, candidate->texture, cap);
+    system->texture_stream_mip_raised_total++;
+  }
+}
+
+/* Brings the resident bytes, once pending cap changes reload, within the
+ * budget less `incoming_bytes`. Textures first lose top mips down to the
+ * resident floor (vkr_material_system_shrink_textures); only when every one
+ * is at the floor do whole textures go, oldest demand first, and their
+ * materials show neutral defaults. A shrink takes effect when its reload
+ * binds, so the resident bytes exceed the budget until then. */
 static bool8_t
 vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
                                  uint64_t incoming_bytes,
@@ -707,46 +973,24 @@ vkr_material_system_evict_to_fit(VkrMaterialSystem *system,
   if (system->texture_stream_resident_bytes <= limit)
     return true_v;
 
-  /* The fixed stream capacity bounds this cold-path scratch to 64 KiB.
-   * Eviction removes a whole shared texture, so its newest user owns priority.
-   */
-  VkrMaterialTextureEvictionCandidate
-      candidates[VKR_MATERIAL_TEXTURE_STREAM_CAPACITY];
-  uint32_t candidate_count = 0u;
-  for (uint32_t i = 0u; i < system->texture_stream_count; ++i) {
-    const VkrMaterialTextureStream *stream = &system->texture_streams[i];
-    if (stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT &&
-        !vkr_material_system_texture_handle_equal(stream->resident_texture,
-                                                  protected_texture)) {
-      candidates[candidate_count++] = (VkrMaterialTextureEvictionCandidate){
-          stream->resident_texture,
-          vkr_material_system_stream_last_used(system, stream)};
-    }
-  }
+  uint64_t projected = 0u;
+  bool8_t caps = false_v;
+  VkrMaterialTextureCandidate *candidates = system->texture_candidates;
+  const uint32_t candidate_count = vkr_material_system_texture_candidates(
+      system, protected_texture, &projected, &caps);
+  if (projected <= limit)
+    return true_v;
   vkr_sort(candidates, candidate_count, sizeof(*candidates),
-           vkr_material_system_eviction_compare_texture);
-  uint32_t texture_count = 0u;
-  for (uint32_t i = 0u; i < candidate_count; ++i) {
-    const VkrMaterialTextureEvictionCandidate candidate = candidates[i];
-    if (texture_count &&
-        vkr_material_system_texture_handle_equal(
-            candidates[texture_count - 1u].texture, candidate.texture)) {
-      candidates[texture_count - 1u].last_used =
-          Max(candidates[texture_count - 1u].last_used, candidate.last_used);
-    } else {
-      candidates[texture_count++] = candidate;
-    }
-  }
-  vkr_sort(candidates, texture_count, sizeof(*candidates),
-           vkr_material_system_eviction_compare_age);
-  for (uint32_t i = 0u;
-       i < texture_count && system->texture_stream_resident_bytes > limit;
-       ++i) {
+           vkr_material_system_candidate_compare_shrink);
+  vkr_material_system_shrink_textures(system, candidates, candidate_count,
+                                      limit, &projected);
+  for (uint32_t i = 0u; i < candidate_count && projected > limit; ++i) {
     if (!vkr_material_system_evict_resident_texture(system,
                                                     candidates[i].texture))
       return false_v;
+    projected -= Min(projected, candidates[i].projected_bytes);
   }
-  return system->texture_stream_resident_bytes <= limit;
+  return projected <= limit;
 }
 
 // =============================================================================
@@ -1182,7 +1426,7 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
       }
       if (!drawn && vkr_texture_system_load_limit_grows(
                         system->texture_system, stream->resident_texture,
-                        system->texture_extent_limit)) {
+                        vkr_material_stream_limit(system, stream))) {
         system->texture_reload_deferred = true_v;
         continue;
       }
@@ -1198,6 +1442,7 @@ vkr_material_system_queue_texture_reloads(VkrMaterialSystem *system) {
           .slot = stream->slot,
           .path_length = stream->path_length,
           .reload = true_v,
+          .extent_cap = stream->extent_cap,
           .state = VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED,
           .resident_texture = VKR_TEXTURE_HANDLE_INVALID,
           .replaces = stream->resident_texture,
@@ -1383,6 +1628,7 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
   }
   (void)vkr_material_system_evict_to_fit(system, 0u,
                                          VKR_TEXTURE_HANDLE_INVALID);
+  vkr_material_system_raise_textures(system);
 
   uint32_t updates = 0u;
   for (uint32_t i = 0;
@@ -1532,11 +1778,19 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
   for (uint32_t i = 0; i < system->texture_stream_count &&
                        updates < max_updates &&
                        system->texture_stream_active_count <
-                           VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX &&
-                       system->texture_stream_resident_bytes <
-                           system->texture_stream_budget_bytes;) {
+                           VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;) {
     VkrMaterialTextureStream *stream = &system->texture_streams[i];
     if (stream->state != VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED) {
+      ++i;
+      continue;
+    }
+    /* Over the budget only reloads that shrink their texture start: they
+       are how the budget is met. */
+    if (system->texture_stream_resident_bytes >=
+            system->texture_stream_budget_bytes &&
+        (!stream->reload || vkr_texture_system_load_limit_grows(
+                                system->texture_system, stream->replaces,
+                                vkr_material_stream_limit(system, stream)))) {
       ++i;
       continue;
     }
@@ -1545,9 +1799,9 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
        previews reach no reload (queue_texture_reloads), so only drawn ones
        download whole. A reload that shrinks one loads from its mips. */
     if (stream->reload &&
-        vkr_texture_system_load_limit_grows(system->texture_system,
-                                            stream->replaces,
-                                            system->texture_extent_limit) &&
+        vkr_texture_system_load_limit_grows(
+            system->texture_system, stream->replaces,
+            vkr_material_stream_limit(system, stream)) &&
         !vkr_texture_system_full_file_ready(system->texture_system,
                                             stream->replaces)) {
       if (vkr_material_system_stream_last_used(system, stream) +
@@ -1741,8 +1995,14 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                           (uint64_t)system->texture_stream_capacity *
                               sizeof(VkrMaterialTextureStream),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->texture_candidates =
+      vkr_allocator_alloc(&system->allocator,
+                          (uint64_t)VKR_MATERIAL_TEXTURE_STREAM_CAPACITY *
+                              sizeof(*system->texture_candidates),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!system->texture_streams || !system->texture_material_last_used_epochs ||
-      !system->publications || !system->replacements) {
+      !system->publications || !system->replacements ||
+      !system->texture_candidates) {
     vkr_material_system_shutdown(system);
     return false_v;
   }

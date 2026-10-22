@@ -46,15 +46,18 @@ owns fetching bytes from a remote depot and their transport order, and
   [vkr_scene_frame.c](../../runtime/src/renderer/systems/vkr_scene_frame.c)).
   Demand means "published to the world", not "seen by the camera": a texture
   behind the camera has the same demand epoch as one in front of it.
-- **Eviction.** Under a residency budget the material system evicts whole
-  shared textures, least recently demanded first, and puts the neutral
-  default back in the slot (`vkr_material_system_evict_resident_texture`,
-  `vkr_material_system_evict_to_fit` in
+- **Eviction.** Under a residency budget the material system first lowers
+  textures' top mips by halving a per-slot extent cap, oldest demand epoch
+  first and largest first within an epoch, down to a 128 floor, through the
+  load limit's reloads; it evicts whole shared textures, which show their
+  neutral defaults, only when every texture is at the floor
+  (`vkr_material_system_evict_to_fit` in
   [vkr_material_system.c](../../runtime/src/renderer/systems/vkr_material_system.c)).
-  A demanded eviction requeues after a real budget increase or a Scene
-  memory-relief generation
-  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). Nothing lowers a
-  resident texture to fewer mips.
+  Caps grow back when the budget allows. A demanded eviction requeues after a
+  real budget increase or a Scene memory-relief generation
+  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). The order follows
+  demand epochs, not the mip a view needs, and each step reloads the whole
+  file.
 - **Budget owner.** The automatic policy derives the texture allowance from
   the heaps' usage and budget: pressure starts at 90% of the budget, ends below
   75% and targets 80%; under Metal's cap the allowance never drops below the
@@ -114,10 +117,9 @@ every material sample for a workflow id itself abandoned.
    the CPU reads one or two frames later. Passes outside the camera view
    (shadows, probe captures, planar reflections, bakes) add their own demand
    or read the resident floor.
-2. **Mip-level eviction.** Under the budget, lower the top mip of the
-   textures whose resident mip exceeds the required mip by the most, before
-   any whole-texture eviction. Every loaded texture keeps a resident floor,
-   so no material returns to the neutral default.
+2. **Eviction by required mip.** Order the existing mip-level eviction
+   (ADR-024) by how far each texture's resident mip exceeds its required mip
+   from item 1, instead of demand epoch and size.
 3. **Ranged loads.** Read only the levels needed, from the KTX2 level index,
    with `file_seek` and `file_read_into` or `file_map_readonly`
    ([filesystem.h](../../lib/src/filesystem/filesystem.h)). Load the floor
