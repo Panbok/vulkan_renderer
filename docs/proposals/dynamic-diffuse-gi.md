@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-20
+updated: 2026-10-22
 authority: proposal
 ---
 
@@ -109,8 +109,8 @@ A Doom Eternal path-traced lightmap bake took 4 to 10 h per map and about
    from whichever source lit it, and re-fit by the current runtime
    irradiance at its origin, as the baked ratio does today.
 6. **Budget.** Keep the adaptive probe budget, extended to cascades and the
-   cache, within a GPU share the owner sets after
-   [Desktop frame budget](desktop-frame-budget.md).
+   cache, within a GPU share the owner grants from the desktop budget's
+   reserve ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#desktop-budget-lines)).
 
 ## Owner decisions (2026-10-20)
 

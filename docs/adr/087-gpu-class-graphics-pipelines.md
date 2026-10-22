@@ -24,9 +24,11 @@ levels, 17.1 to 17.5 ms at the lowest scale (see
 The remaining design is in
 [Tiled graphics pipeline](../proposals/tiled-pipeline.md). The desktop
 pipeline meets its budget (decision 4): with Bistro's static lamps baked, the
-baseline accepted on 2026-10-22 takes 15.79 ms p95 on the orbit and 15.08 ms
+baseline accepted on 2026-10-22 takes 13.98 ms p95 on the orbit and 13.94 ms
 on the street walk
-([Desktop pipeline baseline](#desktop-pipeline-baseline)).
+([Desktop pipeline baseline](#desktop-pipeline-baseline)). Its 120 Hz line,
+High at 1920×1080, is met on the GPU and missed by `frame.wall` by up to
+0.35 ms ([Desktop 120 Hz line](#desktop-120-hz-line)).
 
 ## Context
 
@@ -117,12 +119,16 @@ pipeline rather than a backend mechanism.
    cases, and baking them softens their shadows. The owner kept every High
    gate and FSR over the cheaper SMAA T2x on the same day.
    Dynamic resolution comes last, since a changing resolution blurs the
-   image in motion. Epic has no budget. The cases, profile and
-   budget lines are in
-   [Desktop frame budget](../proposals/desktop-frame-budget.md). The
-   baked-lamp baseline, accepted on 2026-10-22, meets the budget by 0.91 ms
-   (orbit) and 1.62 ms (street walk) at p95; the first baseline, accepted on
-   2026-10-20 with runtime lamps, missed it by 7.1 and 10.0 ms
+   image in motion. Epic has no budget. Each budget line has a p95 target,
+   and the frame's margin below the budget is a reserve that features claim
+   by the owner's decision. The 120 Hz line is High at 1920×1080: 8.3 ms
+   p95 `gpu.submission` and `frame.wall`. The cases, profiles, line targets
+   and the measured levers are in
+   [Desktop budget measurement](#desktop-budget-measurement) and the
+   sections after it. The baseline accepted on 2026-10-22 after the deferred
+   lighting kernel change meets the budget by 2.72 ms (orbit) and 2.76 ms
+   (street walk) at p95; the first baseline, accepted on 2026-10-20 with
+   runtime lamps, missed it by 7.1 and 10.0 ms
    ([Desktop pipeline baseline](#desktop-pipeline-baseline)).
 5. The tiled pipeline shades opaque surfaces forward in one multisampled
    render pass (owner decision 2026-10-05). On Bistro, with a depth pre-pass
@@ -548,7 +554,7 @@ one lacks lamp light, glass and ambient occlusion.
 ### Desktop pipeline baseline
 
 The owner accepted this measurement of decision 4's desktop budget on
-2026-10-22. Release, commit `e7caca25` in a clean worktree (`dirty: false`),
+2026-10-22. Release, commit `a83cc070` in a clean worktree (`dirty: false`),
 RX 6700 XT with driver 26.10.1, Windows 10, Ryzen 5 2600; Bistro with its
 static lamps baked ([ADR-104](104-desktop-baked-lamps.md)) and the High preset
 at 2560×1440 physical pixels in a hidden window with immediate presentation.
@@ -578,57 +584,207 @@ the budget lines `performance-windowed-gpu.json` with
 
 | Case | `gpu.submission` median / p95 / max | Child medians / p95s | `frame.wall` p95 | Report |
 |---|---|---|---|---|
-| Orbit | 14.22 / 15.79 / 22.62 ms | 14.19–14.23 / 15.67–15.80 ms | 16.15 ms | `sha256:7d3ed3c80add8a94457081ace595ef626887e465e7a6c393970685877d32ae93` |
-| Street walk | 14.21 / 15.08 / 23.81 ms | 14.20–14.22 / 15.07–15.08 ms | 15.47 ms | `sha256:cfabf0a8fcf14a3323399b7b8c1f508fcbe3154a5ebdf6b06c7b43d27d09a534` |
+| Orbit | 12.72 / 13.98 / 22.34 ms | 12.71–12.72 / 13.93–13.98 ms | 14.47 ms | `sha256:8f165e2a0d7352a733b47df344e9f1aafa1e68c7596eb6f382f8f58955f979d0` |
+| Street walk | 13.08 / 13.94 / 24.07 ms | 13.05–13.12 / 13.88–14.03 ms | 14.36 ms | `sha256:bcff49a9bf8874f85287a0de4ea6d72dd6a4512486e4c641c2053325790dc2a5` |
 
-Both cases meet 16.7 ms p95 `gpu.submission`, the orbit by 0.91 ms and the
-walk by 1.62 ms, and `frame.wall` p95 stays under 16.7 ms. The budget is on
-p95: the walk's worst frame takes 23.81 ms.
+Both cases meet 16.7 ms p95 `gpu.submission`, the orbit by 2.72 ms and the
+walk by 2.76 ms, and `frame.wall` p95 stays under 16.7 ms. The budget is on
+p95: the walk's worst frame takes 24.07 ms.
 
 Budget lines, median / p95 in ms, from per-pass timestamps (orbit
-`sha256:b6bc2a7cb7f9aefd3e5ab513ed7fa88f3624feb88c2d85413a154d887a25631c`,
+`sha256:91bb52e269084c9290bfe452d62609e9dddb98205c8c206dad7c08fa74c7b7e9`,
 walk
-`sha256:d4aa7864e27c40130b0efaa63ee1c7face24491c8f27a6756a94efbfd44225e6`),
-with the medians of the first, runtime-lamp baseline:
+`sha256:a5abb42ce71c5bb1f82f490010d4f62ae37455dc85f2c27ea9bcc4abad0ccbbb`),
+with each line's p95 target ([Desktop budget lines](#desktop-budget-lines)):
 
-| Line | Orbit | Street walk | Runtime lamps, orbit / walk median |
+| Line | Orbit | Street walk | p95 target |
 |---|---|---|---|
-| Culling | 0.03 / 0.03 | 0.03 / 0.03 | 0.04 / 0.04 |
-| Shadows | 0.07 / 0.74 | 0.00 / 0.49 | 0.23 / 0.00 |
-| Visibility | 0.64 / 0.76 | 0.72 / 0.93 | 0.58 / 0.65 |
-| Surface | 2.79 / 2.89 | 2.84 / 2.95 | 2.67 / 2.69 |
-| Lighting | 4.78 / 5.05 | 4.93 / 5.15 | 8.80 / 12.28 |
-| Media | 0.51 / 0.61 | 0.54 / 0.73 | 0.54 / 0.57 |
-| Glass and blend | 2.02 / 2.91 | 2.31 / 2.66 | 2.44 / 2.93 |
-| Reconstruction and post | 2.80 / 2.86 | 2.87 / 3.14 | 2.86 / 2.94 |
-| Editor and debug | 0 / 0 | 0 / 0 | 0 / 0 |
+| Culling | 0.03 / 0.03 | 0.03 / 0.03 | 0.1 |
+| Shadows | 0.07 / 0.72 | 0.00 / 0.49 | 0.8 |
+| Visibility | 0.64 / 0.77 | 0.72 / 0.93 | 1.0 |
+| Surface | 2.80 / 2.90 | 2.83 / 2.94 | 3.0 |
+| Lighting | 3.65 / 3.83 | 3.74 / 3.90 | 4.0 |
+| Media | 0.51 / 0.63 | 0.53 / 0.60 | 0.8 |
+| Glass and blend | 2.04 / 2.99 | 2.32 / 2.63 | 3.0 |
+| Reconstruction and post | 2.81 / 2.99 | 2.86 / 3.03 | 3.2 |
+| Editor and debug | 0 / 0 | 0 / 0 | 0 |
 
-Lighting is still the largest line, now only `Lighting.Deferred.Fullscreen`
-(4.78 and 4.93 ms median): `Shadow.LocalMask` no longer runs. Next come
-`FSR31.Upscale` (1.83 and 1.90 ms), `GBuffer.Resolve.Fullscreen` (1.25 and
-1.32 ms, which now also reads the lightmaps) and `AO.Evaluate` (1.01 and
-0.99 ms). Bistro has no froxel fog volume, so the Media line holds no
-`Froxel.*` pass. Passes can overlap, so the lines are not a partition of
-`gpu.submission`; the orbit's medians sum to 13.6 ms.
+Lighting is still the largest line, all of it `Lighting.Deferred.Fullscreen`
+(3.65 and 3.74 ms median). Next come `FSR31.Upscale` (1.85 and 1.90 ms),
+`GBuffer.Resolve.Fullscreen` (about 1.3 ms, which also reads the lightmaps)
+and `AO.Evaluate` (1.0 ms). Bistro has no froxel fog volume, so the Media
+line holds no `Froxel.*` pass. Passes can overlap, so the lines are not a
+partition of `gpu.submission`; the orbit's medians sum to 12.6 ms.
 
-Controls at the same commit, host and hour, with the runtime lamps of the
-tracked `bistro.scene.json`, gave 18.42 / 23.82 ms on the orbit
-(`sha256:84c0bc0b53ae27f7ad1a6c8d452e8ed7d5c61aa353fc4ab2baff1e5acf264ad1`)
-and 22.26 / 26.50 ms on the walk
-(`sha256:44f1909d6857ef9f5b1d2161d1002b7ca2bafca101a3f9a9d4940a91091ab5ce`),
-within 0.2 ms of the first baseline. The commits and the driver between the
-two baselines therefore do not move the frame; the baked lamps do. That first
-baseline, accepted on 2026-10-20 at `117122e6` on driver 26.6.3 with runtime
-lamps, took 18.31 / 23.76 / 25.37 ms on the orbit
+The same session's runs of `425d514d`, the commit before the deferred
+kernel change, gave 13.86 / 15.13 ms on the orbit
+(`sha256:e90b9d30aceee3e687d4476c710ef448609b42f3c30f2a6ea29eba285c95e5ee`)
+and 14.21 / 15.08 ms on the walk
+(`sha256:85ebfe11205dba1dc3d2bb8445ebe5d68a0c1acc7fe7be6c16d1948ce7aa037b`);
+`vkr_harness perf-compare` finds both faster after it, by 1.14 and 1.13 ms
+of `gpu.submission` at the median, with no work-volume change
+([ADR-019](019-bounded-forward-spatial-lighting.md)). Two earlier baselines
+were accepted. The first baked-lamp one, on 2026-10-22 at `e7caca25` (the
+same renderer as `425d514d`), took 14.22 / 15.79 ms on the orbit
+(`sha256:7d3ed3c80add8a94457081ace595ef626887e465e7a6c393970685877d32ae93`)
+and 14.21 / 15.08 ms on the walk
+(`sha256:cfabf0a8fcf14a3323399b7b8c1f508fcbe3154a5ebdf6b06c7b43d27d09a534`);
+its orbit is 0.36 / 0.66 ms slower than the same code later that day, the
+spread between sessions. Runtime-lamp controls beside it, on the tracked
+`bistro.scene.json`, gave 18.42 / 23.82 ms and 22.26 / 26.50 ms, within
+0.2 ms of the first baseline, accepted on 2026-10-20 at `117122e6` on driver
+26.6.3 with runtime lamps: 18.31 / 23.76 / 25.37 ms on the orbit
 (`sha256:8c08b1eaef80a96fb1d2b8d625847bf7ed589cd5729b896751325a87864d09dc`)
 and 22.43 / 26.68 / 35.49 ms on the walk
 (`sha256:90b9cb9a0c9f5bf0157ddef60d7cf289fafed44c7ed669fda45662c8725f216d`),
 with `Shadow.LocalMask` at 2.05 and 4.24 ms median and
-`Lighting.Deferred.Fullscreen` at 6.74 and 8.14 ms (budget lines
-`sha256:31a25ff104a6a72ae2d458baca00bf1bf4faf2dc94163ff74716d52c37acb1b0`
-and `sha256:00aecef575851cc79ad6da6ea26aa5fe722e6287fb519e92b31e6212af4aea30`).
-A speed claim against this baseline still needs its own matched before and
-after reports.
+`Lighting.Deferred.Fullscreen` at 6.74 and 8.14 ms. A speed claim against
+this baseline still needs its own matched before and after reports.
+
+### Desktop budget measurement
+
+- **Cases.** [`bistro_vulkan_high_orbit_1440`](../../tools/cases/performance/bistro_vulkan_high_orbit_1440.case.json)
+  measures steady cost and
+  [`bistro_vulkan_high_street_walk_1440`](../../tools/cases/performance/bistro_vulkan_high_street_walk_1440.case.json)
+  the tails: Vulkan, 2560×1440 physical pixels, a hidden window with
+  immediate presentation and the High preset. Since 2026-10-21 both load
+  [`bistro_desktop_lamps_local.scene.json`](../../assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json),
+  Bistro with its static lamps baked; a host bakes the set before it runs
+  them, and a report whose `lighting.point.selected` is not 0 ran runtime
+  lamps.
+- **Profiles.** [`performance-windowed-gpu-submission-vulkan.json`](../../tools/profiles/performance-windowed-gpu-submission-vulkan.json)
+  measures `gpu.submission` with five children on a clean tree, pinned to the
+  RX 6700 XT; `performance-windowed-gpu.json` with `--pass-groups`
+  [`desktop.pass_groups.json`](../../tools/budgets/desktop.pass_groups.json)
+  reports the budget lines
+  ([ADR-051](051-renderer-harness-and-evidence.md)).
+- **Cases carry the preset.** A harness case reads no Graphics settings and
+  has no preset field (`vkr_harness_child_apply_renderer` in
+  [`vkr_harness_child.c`](../../tools/harness/vkr_harness_child.c)), and it
+  leaves bloom and GTAO off unless it turns them on. The two cases spell out
+  High gate by gate, so when `graphics_preset_gates` in
+  [`vkr_graphics_settings.c`](../../runtime/src/vkr_graphics_settings.c)
+  changes High, they change with it. Soft and local shadows, the draw
+  distance, reflection probes and filtered far shadows default to High's
+  values; fog, volumetric fog and subsurface scattering have no case field
+  and do no work in Bistro. `VKR_SUN_RAY_SHADOWS`, `VKR_SUN_CONTACT_SHADOWS`,
+  `VKR_BLOOM_DISABLED`, `VKR_GTAO_DISABLED`, `VKR_DRAW_DISTANCE`,
+  `VKR_SHADOW_FAR_DISABLED`, `VKR_LOCAL_SHADOW_FADE_DISTANCE`,
+  `VKR_LOCAL_SHADOW_ATLAS_LAYERS` and `VKR_RAY_QUERY_DISABLED` change gates
+  without changing the workload fingerprint, which records only
+  `VKR_SHADOW_EVSM` and `VKR_POST_TRANSFORM_CACHE`; budget runs leave them
+  unset.
+- **Host.** The Windows host's only display is 1920×1080; a hidden window
+  takes the size it asks for
+  ([`vkr_window_windows.c`](../../runtime/src/platform/vkr_window_windows.c)).
+  Peer sessions keep the checkout dirty, so authoritative runs come from a
+  separate worktree at the commit under test with Bistro's untracked assets
+  linked in. They start on an idle GPU: a browser left rendering at 2 to 3%
+  of an engine, under the harness's 10% authority limit, slowed a 14 ms frame
+  by about 0.6 ms. One commit measured up to 0.7 ms apart between sessions on
+  2026-10-22, so a speed claim pairs before and after reports from one
+  session.
+- **Limits.** One device sets the budget; RDNA 3, Ampere and newer GPUs have
+  no native evidence ([ADR-083](083-supported-hardware-matrix.md)). The orbit
+  and walk can miss content-driven peaks, such as many lights in view. A
+  hidden window never presents, so a visible full-screen window's
+  presentation cost is not in the measurement.
+
+### Desktop budget lines
+
+Each line of [`desktop.pass_groups.json`](../../tools/budgets/desktop.pass_groups.json)
+carries a p95 target (owner decisions, 2026-10-22): the worse case's p95 in
+the first baked-lamp baseline, rounded up to 0.1 ms. With the deferred kernel
+change the owner lowered the Lighting target from 5.2 to 4.0 ms by the same
+rule and kept the others. The lines overlap and peak in different frames, so
+the targets do not partition the budget. The frame's margin to 16.7 ms p95,
+2.7 ms on the orbit and 2.8 ms on the walk in the current baseline, is a
+reserve that a feature claims only by the owner's decision.
+`profile --pass-groups` writes each line's `p95_target_ms` and
+`p95_margin_ms`, negative over its target; no verdict reads them.
+
+| Line | Passes | p95 target |
+|---|---|---|
+| Culling | `Cull.*`, `Transmission.Cull.*`, skinning | 0.1 ms |
+| Shadows | cascade, far, local and moments redraws | 0.8 ms |
+| Visibility | `VBuffer.*`, `HZB.*`, `SDSM.Reduce` | 1.0 ms |
+| Surface | `GBuffer.Resolve.*`, `AO.*`, subsurface gather | 3.0 ms |
+| Lighting | `Shadow.LocalMask`, sun shadows, volumes, IBL, reflections, `Lighting.Deferred.*` | 4.0 ms |
+| Media | sky, clouds, froxels, fog | 0.8 ms |
+| Glass and blend | `Transmission.*`, blend, feedback copy | 3.0 ms |
+| Reconstruction and post | `FSR31.*`, `Temporal.*`, `Post.*`, UI | 3.2 ms |
+| Editor and debug | editor, picking, previews | 0 ms |
+
+### Desktop budget levers
+
+The owner ordered the levers: preset gates, then work inside the largest
+line, then antialiasing, and dynamic resolution only if a fixed resolution
+cannot meet the budget, since a changing resolution blurs the image in
+motion. Measured 2026-10-21 against the runtime-lamp High cases (orbit
+18.15 / 23.50 ms, walk 22.06 / 26.25 ms median / p95, the mean of two High
+runs bracketing the variants, 0.1 ms apart or less), each variant a copy of a
+case with one renderer field changed, all authoritative:
+
+| Change from High | Orbit median / p95 | Walk median / p95 |
+|---|---|---|
+| Local shadows off (`shadow_local: false`) | −3.01 / −6.56 ms | −5.98 / −8.24 ms |
+| Ambient occlusion off | −1.52 / −1.52 ms | −1.32 / −1.29 ms |
+| Soft shadows off | −0.41 / −0.64 ms | −0.56 / −0.48 ms |
+| Shadow quality Medium, filtered far shadows kept | −0.03 / −0.78 ms | −0.56 / −0.76 ms |
+| Bloom off | −0.16 / −0.17 ms | −0.06 / −0.01 ms |
+| Reflection probe off | −0.05 / −0.13 ms | +0.05 / +0.01 ms |
+| Filtered far shadows off (`VKR_SHADOW_EVSM=0`) | +0.04 / +0.07 ms | +0.15 / +0.20 ms |
+| View distance Medium (`draw_distance_scale: 0.75`) | +0.04 / 0.00 ms | +0.11 / +0.14 ms |
+| SMAA T2x instead of FSR | −0.68 / −0.75 ms | −0.69 / −0.63 ms |
+
+Each variant has its own workload fingerprint, so the changes are read from
+the reports. No gate alone met the budget; local shadows off came closest,
+at 16.95 ms p95 on the orbit and 18.01 ms on the walk, and took the shadows
+of Bistro's lamps. Gates that cost 0.2 ms or less save nothing. On
+2026-10-21 the owner kept every High gate and FSR over SMAA T2x
+([ADR-052](052-vulkan-fsr31-upscaling.md)), and chose Bistro's static
+lamps baked for the budget cases, which removes 4.0 and 7.6 ms at the median
+and softens the lamps' shadows
+([ADR-104](104-desktop-baked-lamps.md#desktop-budget)). On 2026-10-22 the
+deferred lighting base kernel stopped carrying the local shadow inline
+filter, which took 1.14 and 1.13 ms more off the baked cases' median and
+0.86 and 0.80 ms off the runtime-lamp ones
+([ADR-019](019-bounded-forward-spatial-lighting.md)). Lamps that move or
+switch stay runtime lights; their remaining cost, mostly `Shadow.LocalMask`
+filtering at 4.2 ms median on the runtime-lamp walk, belongs to
+[local shadow architecture](../proposals/local-shadow-architecture.md) and
+[lighting efficiency](../proposals/lighting-efficiency.md). Speed features
+([asynchronous compute](../proposals/async-compute.md),
+[variable-rate shading](../proposals/variable-rate-shading.md),
+[GPU light binning](../proposals/clustered-light-and-decal-binning.md)) each
+claim their gain against the baseline with matched reports, and a change to
+the High preset's look is the owner's decision.
+
+### Desktop 120 Hz line
+
+The 120 Hz line (owner decision, 2026-10-22) is High at 1920×1080 physical
+pixels on the RX 6700 XT: 8.3 ms p95 `gpu.submission` and `frame.wall`,
+measured by copies of the two budget cases with only `resolution` set to
+1920×1080. Measured at `a83cc070`
+the same evening (authoritative, five children each), the GPU meets it by
+less than 0.1 ms and `frame.wall` misses it by 0.2 to 0.35 ms, the open
+gap; at 2560×1440 no preset comes near it without upscaling, which the
+Vulkan pipeline does not yet have:
+
+| Configuration | Orbit median / p95 | Walk median / p95 | `frame.wall` p95, orbit / walk |
+|---|---|---|---|
+| High, 1920×1080 | 7.40 / 8.27 ms | 7.55 / 8.24 ms | 8.68 / 8.56 ms |
+| Medium, 2560×1440 | 12.81 / 14.09 ms | 13.13 / 14.02 ms | 14.45 / 14.36 ms |
+| Low, 2560×1440 | 11.23 / 12.51 ms | 11.59 / 12.38 ms | 12.83 / 12.72 ms |
+
+Values are `gpu.submission` (reports `802f79b3`, `1ca599b3`; `8df05b8d`,
+`d3c41147`; `7fed5af8`, `89abad90`, digest prefixes); Medium and Low set
+their gates as `graphics_preset_gates` does, with `VKR_SHADOW_EVSM=0`.
+With baked lamps, Medium costs the same as High at 1440 within 0.1 ms. The
+walk at 1920×1080 fails its `visibility.gbuffer.resolve_invalid` assertion
+with one invalid pixel, before the deferred kernel change as well
+(`425d514d`, 8.27 / 8.99 ms), an open defect; the 2560×1440 cases pass
+it.
 
 ### Glass evidence
 
@@ -1474,9 +1630,12 @@ multisampled target.
   techniques.
 - A desktop budget case misses the budget again, or lamps that must stay
   runtime lights, because they move or switch, take a Bistro case over it,
-  and the fixed-resolution levers of the desktop frame budget proposal do not
-  bring it back; dynamic resolution then reopens
+  and the fixed-resolution [levers](#desktop-budget-levers) do not bring it
+  back; dynamic resolution then reopens
   [ADR-052](052-vulkan-fsr31-upscaling.md).
+- A budget line goes over its p95 target, or a feature asks for the reserve.
+- The 120 Hz line's `frame.wall` gap closes, or the owner wants a 120 Hz
+  line at 2560×1440, which needs a Vulkan render scale with FSR upscaling.
 - Apple9 dynamic register allocation changes the measured cost structure on M3
   or M4 ([ADR-083](083-supported-hardware-matrix.md)).
 - An opaque fragment variant must discard or write depth: hidden-surface

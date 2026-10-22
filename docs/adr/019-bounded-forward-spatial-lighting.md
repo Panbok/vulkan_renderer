@@ -726,12 +726,25 @@ deferred lighting gives its 8×8 tile to a fallback kernel (or the layered
 kernel, ADR-062), which filters inline, without contact shadows, a light past
 the eighth or whose layer tag names another light because a boundary test
 differed between the passes. The base kernel, which shades every other tile,
-compiles that filter out: its presence alone raised the kernel's registers
-enough to cost 1.2 ms of Bistro's 4.9 ms deferred lighting with baked lamps,
-and 2.1 ms of 8.0 ms with runtime lamps. It reads the slot that carries the
-light's tag instead, and shades a light no slot holds unshadowed; only a
-boundary test that differed leaves such a light, whose contribution there is
-near the cutoff. Eight slots therefore bound the shadowed lights the base
+compiles that filter out: in single-child ablations its presence alone,
+unexecuted, raised the kernel's registers enough to cost 1.2 ms of Bistro's
+4.9 ms deferred lighting with baked lamps, and 2.1 ms of 8.0 ms with runtime
+lamps. It reads the slot that carries the light's tag instead, and shades a
+light no slot holds unshadowed; only a boundary test that differed leaves
+such a light, whose contribution there is near the cutoff. In matched
+authoritative runs on the RX 6700 XT (2026-10-22, `425d514d` against
+`a83cc070`, `performance-windowed-gpu-submission-vulkan`, Bistro High at
+2560×1440), `gpu.submission` fell by 1.14 ms at the median on the baked-lamp
+orbit (13.86 to 12.72 ms) and 1.13 ms on the street walk (14.21 to
+13.08 ms), and by 0.86 and 0.80 ms with runtime lamps (17.98 to 17.12 ms,
+21.85 to 21.06 ms), where about 30% of tiles overflow and the walk's p95
+gains only 0.31 ms. `vkr_harness perf-compare` reports `frame.wall` faster
+in all four with no work-volume change; with runtime lamps recording the
+fallback dispatch adds 0.06 to 0.07 ms of `cpu.render_submit`. Captures of
+the runtime-lamp walk at frames 0, 540 and 1085 differ on at most 47 of 3.7
+million pixels by more than 1 of 255 (at most 8), against 1 between two runs
+of one build. A Debug run of the runtime-lamp walk under
+`VK_LAYER_KHRONOS_validation` with synchronization checks reports no message. Eight slots therefore bound the shadowed lights the base
 kernel reads at a pixel, not the shadowed lights in the frame. The clearcoat's second visibility query for a
 differing coat normal, forward shading, and transmission shading still filter
 inline. On the Metal desktop implementation, removed on 2026-10-06 (M1 host,

@@ -42,7 +42,7 @@
     },
     {
       "name": "Lighting",
-      "p95_target_ms": 5.2,
+      "p95_target_ms": 4.0,
       "passes": [
         "Shadow.LocalMask",
         "Shadow.Sun*",

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -15,8 +15,10 @@ transmissive surfaces. Moving receivers take lamp light from the sparse
 volume, and moving casters shadow at most four baked lamps (two on the
 tiled pipeline), selected by their light at the moving casters the camera
 may see. The tiled pipeline (Metal) runs the shared payload, validation and
-atlas changes with native evidence since 2026-10-10. No timing here is
-authoritative. Of the 2026-10-11 changes, native Vulkan runs on 2026-10-12
+atlas changes with native evidence since 2026-10-10. Only the
+[desktop budget](#desktop-budget) measurement, with which the owner chose
+baked lamps for ADR-087's budget cases, is authoritative. Of the 2026-10-11
+changes, native Vulkan runs on 2026-10-12
 show a Bistro set named under `lightmaps.desktop` baking the static lamps,
 and the lamp band's indirect diffuse and cost
 ([ADR-054](054-baked-diffuse-volumes.md#evidence-and-remaining-checks)).
@@ -379,6 +381,46 @@ change: a caster test before the weight drops the crane there, so this
 weight does not decide its shadow from that view. That view was not
 measured before the change. `run_shadow_system_tests`, `run_local_shadow_tests`,
 `run_lighting_system_tests` and `run_scene_loader_tests` pass (Release).
+
+### Desktop budget
+
+Release, RX 6700 XT, Vulkan, 2026-10-21, authoritative: the two desktop
+budget cases of ADR-087 (Bistro High at 2560×1440), each in the tracked
+scene with runtime lamps and in `bistro_desktop_lamps_local.scene.json`
+with them baked, from a clean worktree at `3a354239`, under
+`performance-windowed-gpu-submission-vulkan` (five children). The set was
+baked with `vkr_bakery bake lightmap --scene
+assets/scenes/fixtures/bistro_desktop_lamps_local.scene.json --output
+assets/textures/bistro_lamps_local.vklm` and its defaults (64 samples, 8
+texels per metre, 16 for direct light) in 445 s: VKLM version 6,
+`sha256:0de54f87bcec0c767f209eec67cfdea0a02a5c648ff963cd129684123910c056`.
+
+| Case | Runtime lamps, median / p95 | Baked lamps, median / p95 | Change |
+|---|---|---|---|
+| Orbit | 18.07 / 23.45 ms | 14.06 / 15.42 ms | −4.01 / −8.02 ms |
+| Street walk | 22.11 / 26.31 ms | 14.48 / 15.47 ms | −7.63 / −10.85 ms |
+
+The runtime values are the mean of the two runs that bracket the baked run,
+0.05 ms apart or less (reports `97bc9a07`, `847c9f6d`, `b66f2cd2`;
+`2974eba5`, `27f08975`, `9c48fd91`, digest prefixes). Per pass, the
+`Shadow.LocalMask` pass (2.04 and 4.19 ms median) goes and
+`Lighting.Deferred` loses 1.91 and 3.17 ms; `GBuffer.Resolve` takes 0.17 to
+0.19 ms more to read the lightmaps, and the lightmapped lamp model, with 24%
+more vertices split at its lightmap seams and 5% fewer indices, adds 0.07 ms
+to `VBuffer.Opaque`, 0.31 ms to the four sun cascades and 0.06 ms to the far
+level. Runtime point lights and local shadows fall from 72 to 0 and render
+graph images from 3.63 to 2.78 GB; draws and visible instances do not
+change. On 2026-10-21 the owner chose baked lamps for the budget cases.
+
+The look changes. `final_color` captures at the first and last measured
+frame differ little on the orbit, whose camera stays near walls the lamps
+barely reach (mean absolute difference 1.5 and 4.0 of 255), and by 11.3 and
+15.4 of 255 on the walk, where 62% and 67% of pixels move by more than 8.
+The lamps lose the hard shadows of their brackets and lanterns, their light
+spreads in softer pools with bounce, and the colored string lights lose the
+blocky shadow-map edges of their pools, a consequence of 8 texels per
+metre. Limits: one host and one bake at the default recipe, and static lamps
+only.
 
 ## Revisit when
 

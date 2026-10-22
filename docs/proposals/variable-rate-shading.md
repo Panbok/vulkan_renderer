@@ -10,8 +10,9 @@ An optional setting that shades smooth, dark or low-contrast screen regions
 at a coarser rate in the passes that dominate per-pixel cost. The owner
 decided on 2026-10-20 that the setting stays optional: it is off by default,
 and no preset turns it on until the evidence below exists. Work starts only
-after the [desktop frame budget](desktop-frame-budget.md) shows a Bistro frame
-limited by per-pixel shading.
+after a desktop budget case
+([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#desktop-budget-measurement))
+shows a Bistro frame limited by per-pixel shading.
 
 ## Current baseline
 
@@ -126,7 +127,8 @@ The owner accepted each recommendation below on 2026-10-20.
 
 ## Evidence needed
 
-- The [desktop frame budget](desktop-frame-budget.md) report shows
+- A desktop budget per-pass report
+  ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#desktop-budget-lines)) shows
   `Lighting.Deferred` or `GBuffer.Resolve` as the largest per-pixel cost on
   Bistro at the target resolution.
 - Matched capture-free Release before/after reports on Windows Vulkan for

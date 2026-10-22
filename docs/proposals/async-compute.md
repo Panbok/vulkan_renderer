@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-20
+updated: 2026-10-22
 authority: proposal
 ---
 # Asynchronous compute
@@ -33,8 +33,8 @@ authority: proposal
   composites on a second queue ([ADR-111](../adr/111-editor-presenter.md));
   no graph pass runs there.
 - Uploads are out of scope; [Dedicated transfer queue](dedicated-transfer-queue.md)
-  owns them. The baseline frame cost comes from
-  [Desktop frame budget](desktop-frame-budget.md).
+  owns them. The baseline frame cost comes from the
+  [desktop pipeline baseline](../adr/087-gpu-class-graphics-pipelines.md#desktop-pipeline-baseline).
 
 ## Reference: idTech
 
