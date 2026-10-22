@@ -113,6 +113,11 @@ bool8_t vkr_render_assets_asset_ref_known(VkrRenderAssets *assets, String8 ref);
 bool8_t vkr_render_assets_resolve_asset_ref(VkrRenderAssets *assets,
                                             String8 ref, char *out,
                                             uint64_t capacity);
+/* Writes the reference whose current path is `path` with a terminator into
+ * `out`; false when no published reference names it, or `capacity` cannot
+ * hold it. A linear search over the published references. */
+bool8_t vkr_render_assets_find_asset_ref(VkrRenderAssets *assets, String8 path,
+                                         char *out, uint64_t capacity);
 
 /* On failure, partial ownership remains in assets for shutdown after the caller
  * joins workers and proves GPU idle. The native publisher stays alive

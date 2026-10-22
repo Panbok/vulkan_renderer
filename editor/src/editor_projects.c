@@ -8472,6 +8472,37 @@ bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
   return true_v;
 }
 
+bool8_t vkr_editor_projects_reimport_asset(VkrEditorProjects *projects,
+                                           VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           const char *scope,
+                                           const char *asset_id,
+                                           const char *source) {
+  if (!vkr_editor_projects_switch_ready(projects) || projects->job_id ||
+      projects->read_only || !projects->project ||
+      projects->active_scene >= projects->project->scene_count) {
+    string_format(projects->message, sizeof(projects->message),
+                  "Open a writable project scene, and wait for its jobs, to "
+                  "reimport an asset.");
+    return false_v;
+  }
+  /* As Content's Reimport: the job edits the asset's record and the open
+     scene swaps the result in without a reload. */
+  projects->pending_scene = projects->active_scene;
+  string_format(projects->operation, sizeof(projects->operation),
+                "reimport_asset");
+  string_format(projects->action_asset, sizeof(projects->action_asset), "%s",
+                asset_id);
+  string_format(projects->action_scope, sizeof(projects->action_scope), "%s",
+                scope);
+  string_format(projects->action_source, sizeof(projects->action_source), "%s",
+                source);
+  string_format(projects->action_name, sizeof(projects->action_name), "%s",
+                asset_id);
+  project_start_job(projects, editor, frame, false_v);
+  return projects->job_id != 0;
+}
+
 bool8_t vkr_editor_projects_instantiate_scene(VkrEditorProjects *projects,
                                               VkrEditorUi *editor,
                                               const VkrSampleUiFrame *frame,

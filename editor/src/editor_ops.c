@@ -6643,6 +6643,25 @@ static VkrEditorOpStatus ops_run_get(OpsContext *ctx) {
     }
   }
   ops_set(ctx, result, "components", components);
+  /* A mesh names its artifact and, for a model a scene or the project
+     imported, the asset reference model.place and model.reimport take. */
+  SceneMeshInfo mesh_info;
+  if (vkr_scene_mesh_info(scene, ref.entity, &mesh_info) &&
+      mesh_info.asset[0]) {
+    VkrBakeryJson *mesh = vkr_bakery_json_object(arena);
+    ops_set(ctx, mesh, "path", vkr_bakery_json_cstr(arena, mesh_info.asset));
+    char asset_ref[VKR_ASSET_REF_CAPACITY];
+    if (vkr_render_assets_find_asset_ref(
+            ctx->frame->assets,
+            string8_create_from_cstr((const uint8_t *)mesh_info.asset,
+                                     string_length(mesh_info.asset)),
+            asset_ref, sizeof(asset_ref))) {
+      ops_set(ctx, mesh, "asset", vkr_bakery_json_cstr(arena, asset_ref));
+    }
+    ops_set(ctx, mesh, "submeshes",
+            vkr_bakery_json_int(arena, mesh_info.submeshes));
+    ops_set(ctx, result, "mesh", mesh);
+  }
   ops_set(ctx, result, "tags",
           ops_tags_json(ctx, vkr_scene_get_typed(scene, ref.entity,
                                                  &vkr_scene_tags_type)));
@@ -13592,6 +13611,27 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
     string_format(key, sizeof(key), "material_%u", i);
     ops_set(ctx, values, key, vkr_bakery_json_cstr(arena, material));
   }
+  /* Each edit writes the whole component, so slots an earlier operation of
+     the batch assigned on this mesh join that edit; a second edit would
+     write the slots as they were before the batch over them. */
+  for (uint32_t i = 0u; ref.item < 0 && i < batch->count; ++i) {
+    VkrSampleEditBatchItem *earlier = &ctx->ops->items[i];
+    if (earlier->entity_ref >= 0 ||
+        earlier->request.entity.u64 != ref.entity.u64 ||
+        earlier->request.container != ref.container ||
+        earlier->request.values.component_type !=
+            &vkr_scene_material_override_type ||
+        (earlier->request.action != VKR_SCENE_EDIT_ADD_COMPONENT &&
+         earlier->request.action != VKR_SCENE_EDIT_APPLY)) {
+      continue;
+    }
+    if (!ops_component_read(ctx, &vkr_scene_material_override_type, values,
+                            earlier->request.values.component)) {
+      return false_v;
+    }
+    batch->op_target[batch->op_count] = ref.entity;
+    return true_v;
+  }
   VkrBakeryJson *component = vkr_bakery_json_object(arena);
   ops_set(ctx, component, "entity",
           vkr_bakery_json_clone(arena, vkr_bakery_json_get(args, "entity")));
@@ -14600,6 +14640,31 @@ static VkrEditorOpStatus ops_run_lighting_bake(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Splits asset:<scope>/<id> (a project, scene or editor scope) into
+   terminated parts; false when `asset` is not one or a part does not fit. */
+static bool8_t ops_asset_ref_split(String8 asset, char *scope,
+                                   uint64_t scope_capacity, char *id,
+                                   uint64_t id_capacity) {
+  const String8 prefix = string8_lit("asset:");
+  uint64_t slash = prefix.length;
+  while (slash < asset.length && asset.str[slash] != '/') {
+    slash++;
+  }
+  const uint64_t scope_length = slash - prefix.length;
+  const uint64_t id_length =
+      slash < asset.length ? asset.length - slash - 1u : 0u;
+  if (!vkr_asset_ref_is(asset) || scope_length == 0u ||
+      scope_length >= scope_capacity || id_length == 0u ||
+      id_length >= id_capacity) {
+    return false_v;
+  }
+  MemCopy(scope, asset.str + prefix.length, scope_length);
+  scope[scope_length] = '\0';
+  MemCopy(id, asset.str + slash + 1u, id_length);
+  id[id_length] = '\0';
+  return true_v;
+}
+
 /* model.place: adds models to the open project scene in one add_entities
    job (ADR-076 placement), each a model file the job imports once or an
    existing mesh asset ("asset:<scope>/<id>"), with a pose, scale and tags.
@@ -14657,27 +14722,13 @@ static VkrEditorOpStatus ops_run_model_place(OpsContext *ctx) {
       }
       string_format(model->source, sizeof(model->source), "%.*s",
                     (int)file.path.length, (const char *)file.path.str);
-    } else {
-      /* asset:<scope>/<id> with a project, scene or editor scope. */
-      const String8 prefix = string8_lit("asset:");
-      uint64_t slash = prefix.length;
-      while (slash < asset.length && asset.str[slash] != '/') {
-        slash++;
-      }
-      const uint64_t scope_length = slash - prefix.length;
-      const uint64_t id_length =
-          slash < asset.length ? asset.length - slash - 1u : 0u;
-      if (!vkr_asset_ref_is(asset) || scope_length == 0u ||
-          scope_length >= sizeof(model->scope) || id_length == 0u ||
-          id_length >= sizeof(model->asset)) {
-        ops_fail(ctx, OPS_INVALID,
-                 "models[%u].asset is asset:<scope>/<id>, as entity.get "
-                 "shows a placed model's mesh",
-                 index);
-        return VKR_EDITOR_OP_DONE;
-      }
-      MemCopy(model->scope, asset.str + prefix.length, scope_length);
-      MemCopy(model->asset, asset.str + slash + 1u, id_length);
+    } else if (!ops_asset_ref_split(asset, model->scope, sizeof(model->scope),
+                                    model->asset, sizeof(model->asset))) {
+      ops_fail(ctx, OPS_INVALID,
+               "models[%u].asset is asset:<scope>/<id>, as entity.get "
+               "shows a placed model's mesh",
+               index);
+      return VKR_EDITOR_OP_DONE;
     }
     VkrSceneEditValues pose = {.rotation = vkr_quat_identity(),
                                .scale = vec3_one()};
@@ -14717,6 +14768,105 @@ static VkrEditorOpStatus ops_run_model_place(OpsContext *ctx) {
           vkr_bakery_json_bool(ops_arena(ctx), true_v));
   ops_set(ctx, ctx->call->result, "models",
           vkr_bakery_json_int(ops_arena(ctx), index));
+  return VKR_EDITOR_OP_DONE;
+}
+
+/* The managed reference of `entity`'s mesh, or of the first child's mesh a
+   placed model's source nodes carry, into `out`. */
+static bool8_t ops_entity_asset_ref(OpsContext *ctx, const VkrScene *scene,
+                                    VkrEntityId entity, char *out,
+                                    uint64_t capacity) {
+  SceneMeshInfo info;
+  if (vkr_scene_mesh_info(scene, entity, &info) && info.asset[0]) {
+    return vkr_render_assets_find_asset_ref(
+        ctx->frame->assets,
+        string8_create_from_cstr((const uint8_t *)info.asset,
+                                 string_length(info.asset)),
+        out, capacity);
+  }
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
+    if (vkr_scene_entity_alive(scene, child) &&
+        ops_parent(scene, child).u64 == entity.u64 &&
+        vkr_scene_mesh_info(scene, child, &info) && info.asset[0] &&
+        vkr_render_assets_find_asset_ref(
+            ctx->frame->assets,
+            string8_create_from_cstr((const uint8_t *)info.asset,
+                                     string_length(info.asset)),
+            out, capacity)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* model.reimport: imports a model file again over one scene or project
+   asset, named by `asset` or by an `entity` that draws it, as Content's
+   Reimport does. Every entity that draws the asset keeps its pose and
+   material overrides. */
+static VkrEditorOpStatus ops_run_model_reimport(OpsContext *ctx) {
+  const VkrBakeryJson *args = ctx->call->args;
+  String8 source = {0};
+  if (!vkr_bakery_json_get_string(args, "source", &source) || !source.length) {
+    ops_fail(ctx, OPS_INVALID, "'source' names the model file to import");
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  const FilePath file = vkr_asset_path_file(&allocator, source);
+  char path[1024];
+  if (!file.path.length || file.path.length >= sizeof(path) ||
+      !file_exists(&file)) {
+    ops_fail(ctx, OPS_NOT_FOUND, "'source' '%.*s' does not open",
+             (int)Min(source.length, 200u), (const char *)source.str);
+    return VKR_EDITOR_OP_DONE;
+  }
+  string_format(path, sizeof(path), "%.*s", (int)file.path.length,
+                (const char *)file.path.str);
+  char ref[VKR_ASSET_REF_CAPACITY] = "";
+  String8 asset = {0};
+  if (vkr_bakery_json_get_string(args, "asset", &asset) && asset.length) {
+    string_format(ref, sizeof(ref), "%.*s",
+                  (int)Min(asset.length, (uint64_t)sizeof(ref) - 1u),
+                  (const char *)asset.str);
+  } else {
+    OpsRef entity;
+    if (!ops_ref(ctx, NULL, vkr_bakery_json_get(args, "entity"), "entity",
+                 &entity)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    const VkrScene *scene = ops_scene(ctx->frame, entity.container);
+    if (!scene ||
+        !ops_entity_asset_ref(ctx, scene, entity.entity, ref, sizeof(ref))) {
+      ops_fail(ctx, OPS_NOT_FOUND,
+               "The entity draws no imported model; name its 'asset'");
+      return VKR_EDITOR_OP_DONE;
+    }
+  }
+  char scope[8];
+  char id[37];
+  if (!ops_asset_ref_split(
+          string8_create_from_cstr((const uint8_t *)ref, string_length(ref)),
+          scope, sizeof(scope), id, sizeof(id)) ||
+      (!string_equals(scope, "scene") && !string_equals(scope, "project"))) {
+    ops_fail(ctx, OPS_INVALID,
+             "'asset' is asset:scene/<id> or asset:project/<id>, as "
+             "entity.get shows a placed model's mesh");
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!vkr_editor_projects_reimport_asset(ctx->editor->projects, ctx->editor,
+                                          ctx->frame, scope, id, path)) {
+    ops_fail(ctx, OPS_REJECTED, "%s",
+             vkr_editor_projects_message(ctx->editor->projects));
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "started",
+          vkr_bakery_json_bool(ops_arena(ctx), true_v));
+  ops_set(ctx, ctx->call->result, "asset",
+          vkr_bakery_json_cstr(ops_arena(ctx), ref));
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -19963,6 +20113,17 @@ static const OpsDef s_ops[] = {
      "\"string\"},{\"type\":\"array\",\"items\":{\"type\":"
      "\"string\"}}]}}}}},\"required\":[\"models\"]}",
      ops_run_model_place, NULL},
+    {"model.reimport",
+     "Import a model 'source' file (relative paths are content paths) again "
+     "over one scene or project mesh: its 'asset' (asset:<scope>/<id>), or "
+     "an 'entity' that draws it, as entity.get's 'mesh' shows. Every entity "
+     "that draws the asset keeps its pose and material overrides; the open "
+     "scene swaps the rebuilt mesh in without a reload. Wait for the job "
+     "(Cmd wait.scene) before reading the result.",
+     "{\"type\":\"object\",\"properties\":{\"source\":{\"type\":"
+     "\"string\"},\"asset\":{\"type\":\"string\"},\"entity\":" OPS_ENTITY_SCHEMA
+     "},\"required\":[\"source\"]}",
+     ops_run_model_reimport, NULL},
     {"lighting.bake",
      "Start the open project scene's Bake lighting job: reflection probes, "
      "the diffuse volume and, with 'lightmap' (default the Bakery panel's "

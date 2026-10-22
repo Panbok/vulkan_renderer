@@ -340,6 +340,31 @@ bool8_t vkr_render_assets_resolve_asset_ref(VkrRenderAssets *assets,
   return fits;
 }
 
+bool8_t vkr_render_assets_find_asset_ref(VkrRenderAssets *assets, String8 path,
+                                         char *out, uint64_t capacity) {
+  if (!assets || !path.length || !out || !capacity) {
+    return false_v;
+  }
+  bool8_t found = false_v;
+  vkr_mutex_lock(assets->asset_ref_mutex);
+  const VkrHashTable_VkrAssetRefPath *table = &assets->asset_refs;
+  for (uint64_t i = 0; !found && i < table->capacity; ++i) {
+    const VkrHashEntry_VkrAssetRefPath *entry = &table->entries[i];
+    if (entry->occupied != VKR_OCCUPIED ||
+        entry->value.size != path.length + 1u ||
+        MemCompare(entry->value.path, path.str, path.length) != 0) {
+      continue;
+    }
+    const uint64_t length = string_length(entry->key);
+    if (length < capacity) {
+      MemCopy(out, entry->key, length + 1u);
+      found = true_v;
+    }
+  }
+  vkr_mutex_unlock(assets->asset_ref_mutex);
+  return found;
+}
+
 void vkr_render_assets_shutdown(VkrRenderAssets *assets) {
   if (!assets)
     return;

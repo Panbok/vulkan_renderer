@@ -662,16 +662,23 @@ Implemented on the tiled pipeline in ADR-099; the desktop column remains.
   paints a scatter's areas onto surfaces with a density and a radius.
   Splines, spline meshes and `terrain.road` stay in the level toolkit,
   because they define layout. Clutter scatter is art.
-- **Vertex paint.** Later work. Layered Standard materials on meshes need
-  painted weights. Brush faces use mask, height, slope and world-height
-  sources instead.
-- **Placing models.** `model.place` is implemented (ADR-076): it batches
-  placements of model files or mesh assets, with poses and tags, into one
-  `add_entities` job and one scene reload. Remaining: mesh records in the
-  edit journal, so a placement undoes, shows in review and deletes
-  (`entity.delete` refuses meshes today); a `fit` argument that scales a
-  model into a brush prototype's box; and a reimport operation that rebuilds
-  an asset from its edited source for every placed copy.
+- **Vertex paint.** Painting weights in the editor is later work. An
+  imported mesh's glTF `COLOR_0` already drives a layered material's
+  `vertex_color` mask: RGBA weigh layers 0 to 3, and a layered material
+  does not tint by the vertex colour, while a plain one still multiplies
+  its base colour by it (the glTF meaning). A model whose plain surfaces
+  keep white vertex colours can carry weights for its layered ones. Brush
+  faces use mask, height, slope and world-height sources instead.
+- **Placing models.** `model.place` and `model.reimport` are implemented
+  (ADR-076): one batches placements of model files or mesh assets, with
+  poses and tags, into one `add_entities` job and one scene reload; the
+  other rebuilds an asset from its edited source for every placed copy
+  without a reload. Remaining: mesh records in the edit journal, so a
+  placement undoes, shows in review and deletes (`entity.delete` refuses
+  meshes today); a `fit` argument that scales a model into a brush
+  prototype's box; and new source identities for the overrides on a
+  reimported model's nodes, which a bake refuses until the scene reopens
+  and saves.
 
 ## Agent operations
 
@@ -687,7 +694,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `look.*` | `volume` is implemented (ADR-097) | Scene |
 | `decal.*` | `place` is implemented (ADR-101) | Scene |
 | `scatter.*` | `paint` is implemented (ADR-102) | Scene |
-| `model.*` | `place` is implemented (ADR-076); journal records, `fit` and reimport remain (Part 8) | Scene |
+| `model.*` | `place` and `reimport` are implemented (ADR-076); journal records and `fit` remain (Part 8) | Scene |
 | `env.*` | `describe`, `preset.save` and `preset.apply` are implemented (ADR-098) | Scene and documents |
 | `lighting.*` | `list`, `group`, `time` and `bake` with settings are implemented (ADR-100) | Live state and bake jobs |
 | `probe.*` | `create` is implemented (ADR-103) | Scene and its document |

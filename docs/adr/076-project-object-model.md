@@ -436,6 +436,16 @@ answers that the job started; the new entities exist after the reload. The
 journal still cannot delete a mesh entity (`vkr_scene_edit_can_delete`), so
 a placed model is removed from the document with the editor closed.
 
+`model.reimport` (2026-10-22) imports a model file again over one scene or
+project asset, named by its `asset` reference or by an entity that draws
+it, through the `reimport_asset` job that Content's Reimport runs. The open
+scene swaps the rebuilt mesh in without a reload, so every placed copy keeps
+its pose and material overrides. `entity.get` answers a mesh entity's
+`mesh`: its artifact `path`, the `asset` reference the scene published for
+that path, and its submesh count. Overrides on a reimported model's nodes
+keep the source identity they were saved with until the scene reopens and
+saves again; until then a bake refuses them as conflicting with the scene.
+
 While a background finalize encodes a model's final textures (ADR-077), a
 viewport chip names the model and the materials already applied. Its Content
 items (the mesh and the materials sharing its build revision) show a lock and

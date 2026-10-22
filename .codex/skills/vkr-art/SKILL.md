@@ -210,7 +210,19 @@ level):
   or later copies by `asset`, so the file imports once.
 - The mesh hangs on a child node of the placed root: `material.assign`
   that child (or `dry_run` to find it) with `slot` to give one surface a
-  library material.
+  library material. Slots follow the glTF's primitive order. Assign every
+  slot of a mesh in one batch: the edits merge into one override.
+- `entity.get` on that child answers `mesh` with its `asset` reference.
+  After editing the source (in Blender, say), `model.reimport` with the
+  `source` and the `asset` or a placed `entity` rebuilds the asset for
+  every copy without a reload; wait for the job before the next one. Close
+  and reopen the scene, then save after any edit, before a bake: until
+  then the bake refuses the overrides on the reimported nodes.
+- Export from Blender with the model's front at -Y (the engine's +Z), its
+  origin on the floor, metric UVs and one material per surface. A glTF
+  `COLOR_0` multiplies a plain material's base colour, so keep it white
+  there; on surfaces that take a layered material with the `vertex_color`
+  mask, RGBA weigh its layers 0 to 3 (paint, chipped metal, grime).
 - The journal cannot delete or undo a placed mesh yet; place test copies in
   a scratch scene, not in the level.
 

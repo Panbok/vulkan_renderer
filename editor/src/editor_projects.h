@@ -205,6 +205,18 @@ bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
                                          const VkrEditorModelPlacement *models,
                                          uint32_t count);
 
+/* Reimports scene or project asset `asset_id` (`scope` "scene" or
+   "project") from the model file `source` in one reimport_asset job; the
+   open scene stays loaded and swaps the rebuilt mesh in, so entities keep
+   their poses and material overrides. False, with vkr_editor_projects_message
+   saying why, when no writable project scene is open or another job runs. */
+bool8_t vkr_editor_projects_reimport_asset(VkrEditorProjects *projects,
+                                           VkrEditorUi *editor,
+                                           const VkrSampleUiFrame *frame,
+                                           const char *scope,
+                                           const char *asset_id,
+                                           const char *source);
+
 /* Prefab instance (ADR-076): copy the project scene named `name` into the
    open scene under one new root at `position`. The copy keeps no link to
    its source and reloads the scene; unsaved edits ask first. */
