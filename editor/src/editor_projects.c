@@ -293,6 +293,9 @@ struct VkrEditorProjects {
   VkrEditorBakeSettings bake_settings;
   /* Model imports and rebuilds cook lightmap UVs (the Bakery setting). */
   bool8_t lightmap_uvs;
+  /* An agent's placement or reimport asks for lightmap UVs for its next
+     job whatever the Bakery panel says. */
+  bool8_t force_lightmap_uvs;
   bool8_t prepare_assets;
   ProjectProbeDraft probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t probe_count;
@@ -2769,7 +2772,9 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
     return;
   }
   projects->message[0] = '\0';
-  projects->lightmap_uvs = vkr_editor_bakery_lightmap_uvs(editor->bakery);
+  projects->lightmap_uvs = vkr_editor_bakery_lightmap_uvs(editor->bakery) ||
+                           projects->force_lightmap_uvs;
+  projects->force_lightmap_uvs = false_v;
   if (!project_write_job(projects, frame, create)) {
     return;
   }
@@ -8428,7 +8433,7 @@ bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
                                          VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrEditorModelPlacement *models,
-                                         uint32_t count) {
+                                         uint32_t count, bool8_t lightmap_uvs) {
   if (!count || count > VKR_EDITOR_MODEL_PLACE_MAX) {
     string_format(projects->message, sizeof(projects->message),
                   "Place 1 to %u models at a time.",
@@ -8468,16 +8473,15 @@ bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
   projects->pending_scene = projects->active_scene;
   string_format(projects->operation, sizeof(projects->operation),
                 "add_entities");
+  projects->force_lightmap_uvs = lightmap_uvs;
   project_start_job(projects, editor, frame, false_v);
   return true_v;
 }
 
-bool8_t vkr_editor_projects_reimport_asset(VkrEditorProjects *projects,
-                                           VkrEditorUi *editor,
-                                           const VkrSampleUiFrame *frame,
-                                           const char *scope,
-                                           const char *asset_id,
-                                           const char *source) {
+bool8_t vkr_editor_projects_reimport_asset(
+    VkrEditorProjects *projects, VkrEditorUi *editor,
+    const VkrSampleUiFrame *frame, const char *scope, const char *asset_id,
+    const char *source, bool8_t lightmap_uvs) {
   if (!vkr_editor_projects_switch_ready(projects) || projects->job_id ||
       projects->read_only || !projects->project ||
       projects->active_scene >= projects->project->scene_count) {
@@ -8499,6 +8503,7 @@ bool8_t vkr_editor_projects_reimport_asset(VkrEditorProjects *projects,
                 source);
   string_format(projects->action_name, sizeof(projects->action_name), "%s",
                 asset_id);
+  projects->force_lightmap_uvs = lightmap_uvs;
   project_start_job(projects, editor, frame, false_v);
   return projects->job_id != 0;
 }

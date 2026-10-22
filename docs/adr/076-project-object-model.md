@@ -432,13 +432,28 @@ a model file (content path or absolute) or an existing mesh asset
 tags as a `tags` component. A file repeated in one call imports once and
 its copies share the asset. The operation refuses while the scene has
 unsaved edits, since the job rewrites the document and reloads it, and
-answers that the job started; the new entities exist after the reload. The
-journal still cannot delete a mesh entity (`vkr_scene_edit_can_delete`), so
-a placed model is removed from the document with the editor closed.
+answers that the job started; the new entities exist after the reload.
+The placement itself has no journal record, so it does not undo.
+
+The journal deletes a placed model whole (2026-10-22). Deleting its root
+deletes its source nodes with it as one undo step, leaves first; with
+`recursive: true`, `entity.delete` deletes them one by one before the
+root. Each mesh instance leaves with its entity
+(`vkr_scene_destroy_entity`), and the backends release its GPU memory after
+the last submission that used it. Save writes one deletion record per
+entity by source identity, the record a deleted light already uses, so a
+reload removes them again and a bake leaves them out. Undo creates the
+entities again with their components, such as material overrides, and
+requests each mesh from its file (`vkr_scene_request_mesh`); the mesh
+draws again when the load is ready. Skinned meshes, the nodes of spawned
+models and physics bodies still cannot be deleted.
 
 `model.reimport` (2026-10-22) imports a model file again over one scene or
 project asset, named by its `asset` reference or by an entity that draws
-it, through the `reimport_asset` job that Content's Reimport runs. The open
+it, through the `reimport_asset` job that Content's Reimport runs. Both
+operations take `lightmap_uvs`, which cooks the files with lightmap UVs as
+the Bakery panel's setting does; a reimport without it or the setting
+rebuilds the mesh without them. The open
 scene swaps the rebuilt mesh in without a reload, so every placed copy keeps
 its pose and material overrides. `entity.get` answers a mesh entity's
 `mesh`: its artifact `path`, the `asset` reference the scene published for

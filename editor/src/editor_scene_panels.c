@@ -6,6 +6,7 @@
 #include "editor_details.h"
 #include "editor_internal.h"
 #include "editor_io.h"
+#include "editor_material.h"
 #include "editor_project_store.h"
 #include "editor_projects.h"
 #include "editor_scripts.h"
@@ -83,6 +84,11 @@ struct VkrEditorScenePanels {
   const VkrTypeDesc *preset_menu;
   /* The script slot's picker was pressed this build, below this point. */
   bool8_t script_menu;
+  /* The mesh whose submesh slots the Materials section shows: the
+     selection, or for a placed model's root its first child that draws one;
+     found again when the selection changes. */
+  VkrEntityId slots_selected;
+  VkrEntityId slots_mesh;
   Vec2 script_menu_pt;
   /* The Details name field takes focus on its next build. */
   bool8_t rename_request;
@@ -4008,6 +4014,7 @@ typedef enum InspectorSection {
   INSPECTOR_SECTION_PHYSICS,
   INSPECTOR_SECTION_DEBUG,
   INSPECTOR_SECTION_MESH,
+  INSPECTOR_SECTION_MATERIALS,
 } InspectorSection;
 
 /* Collapsible section header; returns true while the section is expanded. */
@@ -4375,6 +4382,179 @@ static void inspector_mesh_section(VkrEditorScenePanels *p,
                                 &vkr_scene_mesh_info_type, &info, NULL, true_v);
 }
 
+/* The entity whose mesh slots the selection shows: itself, or the first
+   child that draws a mesh, as a placed model's root holds its mesh on a
+   source node. */
+static VkrEntityId inspector_slots_mesh(VkrEditorScenePanels *p,
+                                        const VkrScene *scene,
+                                        VkrEntityId selected) {
+  SceneMeshInfo info;
+  if (p->slots_selected.u64 == selected.u64 &&
+      vkr_scene_entity_alive(scene, p->slots_mesh)) {
+    return p->slots_mesh;
+  }
+  p->slots_selected = selected;
+  p->slots_mesh = VKR_ENTITY_ID_INVALID;
+  if (vkr_scene_mesh_info(scene, selected, &info)) {
+    p->slots_mesh = selected;
+    return selected;
+  }
+  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
+    const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
+    const SceneTransform *transform =
+        vkr_scene_entity_alive(scene, child)
+            ? vkr_entity_get_component(scene->world, child,
+                                       scene->comp_transform)
+            : NULL;
+    if (transform && transform->parent.u64 == selected.u64 &&
+        vkr_scene_mesh_info(scene, child, &info)) {
+      p->slots_mesh = child;
+      break;
+    }
+  }
+  return p->slots_mesh;
+}
+
+/* The last path component of `path`, for a compact slot label. */
+static const char *inspector_file_name(const char *path) {
+  const char *slash = string_get_last_char_occurrence(path, '/');
+  return slash ? slash + 1 : path;
+}
+
+/* Materials (artist toolkit): one row per submesh slot of the mesh the
+   selection draws, naming the model's own material or the override. A
+   material dragged from Content onto a row assigns that slot; the row opens
+   its material in the Material panel; the clear button returns the slot to
+   the model's own material. */
+static void inspector_materials_section(VkrEditorUi *editor,
+                                        VkrEditorScenePanels *p,
+                                        const VkrSampleUiFrame *f, float32_t w,
+                                        float32_t *y, VkrFontHandle heading) {
+  const VkrScene *scene = vkr_editor_entity_scene(f, f->selected_entity);
+  if (!scene) {
+    return;
+  }
+  const VkrEntityId mesh = inspector_slots_mesh(p, scene, f->selected_entity);
+  SceneMeshInfo info;
+  if (!mesh.u64 || !vkr_scene_mesh_info(scene, mesh, &info) ||
+      !info.submeshes ||
+      !inspector_section(
+          p, f->ui, w, y, INSPECTOR_SECTION_MATERIALS, VKR_UI_ICON_MATERIAL,
+          (Vec4){0.98f, 0.62f, 0.78f, 1.0f}, "Materials", heading)) {
+    return;
+  }
+  const VkrUiTheme *theme = vkr_ui_theme();
+  VkrUiSystem *ui = f->ui;
+  const SceneMaterialOverride *overrides =
+      vkr_scene_get_typed(scene, mesh, &vkr_scene_material_override_type);
+  char dragged[SCENE_MATERIAL_OVERRIDE_PATH_CAPACITY];
+  const bool8_t dragging = vkr_editor_content_dragged_material(
+      editor->content, dragged, sizeof(dragged));
+  const uint32_t slots =
+      Min(info.submeshes, (uint32_t)VKR_MESH_MATERIAL_OVERRIDE_MAX);
+  const float32_t label_w = vkr_editor_details_label_width(w);
+  (void)vkr_ui_push_id_label(ui, string8_lit("materials"));
+  for (uint32_t slot = 0; slot < slots; ++slot) {
+    (void)vkr_ui_push_id_u64(ui, slot);
+    char own[128] = "";
+    (void)vkr_scene_mesh_slot_material(scene, mesh, slot, own, sizeof(own));
+    const char *assigned = overrides && overrides->materials[slot][0]
+                               ? overrides->materials[slot]
+                               : NULL;
+    /* A dragged material lights the row it would land on. */
+    VkrUiRect row_rect = {0};
+    const bool8_t over =
+        dragging &&
+        vkr_ui_widget_rect(
+            ui,
+            vkr_ui_id_stack_widget_label(&ui->id_stack, string8_lit("slot")),
+            &row_rect) &&
+        in_rect(ui, row_rect);
+    if (over && ui->mouse_released) {
+      vkr_editor_content_end_drag(editor->content);
+      vkr_editor_material_assign_slot(editor, mesh, slot, dragged);
+    }
+
+    VkrUiWidgetConfig label =
+        widget_at(INSPECTOR_PAD_PT, *y + 4.0f, label_w - 4.0f, 26.0f);
+    label.placement.align = VKR_UI_ALIGN_START;
+    label.style.font_size_pt = theme->font_body;
+    label.style.text_color = theme->text_secondary;
+    label.style.padding_pt = (VkrUiEdges){5, 2, 5, 2};
+    /* Text the UI draws after this build lives in its frame allocator. */
+    vkr_ui_label(ui, string8_lit("label"),
+                 string8_create_formatted(ui->frame_allocator, "Slot %u", slot),
+                 &label);
+    const float32_t field_x = INSPECTOR_PAD_PT + label_w;
+    const float32_t field_w =
+        Max(40.0f, w - field_x - INSPECTOR_PAD_PT - (assigned ? 32.0f : 0.0f));
+    VkrUiWidgetConfig field = widget_at(field_x, *y + 4.0f, field_w, 26.0f);
+    vkr_editor_field_style(&field);
+    field.placement.align = VKR_UI_ALIGN_START;
+    field.style.padding_pt = (VkrUiEdges){4, 8, 4, 8};
+    field.style.text_color = assigned ? theme->text : theme->text_secondary;
+    if (over) {
+      field.style.background_color = vkr_ui_color_alpha(theme->accent, 0.35f);
+    }
+    field.icon = VKR_UI_ICON_MATERIAL;
+    field.icon_size_pt = 13.0f;
+    field.icon_color =
+        assigned ? (Vec4){0.98f, 0.62f, 0.78f, 1.0f} : theme->text_secondary;
+    field.tooltip = string8_create_formatted(
+        ui->frame_allocator,
+        "%s%s%sModel material: %s. Drag a material from Content here to "
+        "assign this slot.",
+        assigned ? "Assigned: " : "", assigned ? assigned : "",
+        assigned ? ". Click to open it in the Material panel. " : "",
+        own[0] ? own : "none");
+    const char *shown = assigned ? inspector_file_name(assigned)
+                        : own[0] ? own
+                                 : "Model material";
+    if (vkr_ui_button(
+            ui, string8_lit("slot"),
+            string8_create_formatted(ui->frame_allocator, "%s", shown),
+            &field) &&
+        assigned &&
+        !vkr_asset_ref_is(string8_create_from_cstr((const uint8_t *)assigned,
+                                                   string_length(assigned)))) {
+      if (vkr_editor_material_open(editor->materials, f, assigned)) {
+        vkr_editor_view_show(editor, f, editor->workbenches.active,
+                             VKR_EDITOR_VIEW_GRAPH);
+      }
+    }
+    if (assigned) {
+      VkrUiWidgetConfig clear = vkr_editor_icon_button_config(
+          0, 0, VKR_UI_ICON_CLOSE,
+          string8_lit("Return this slot to the model's own material"));
+      clear.placement =
+          widget_at(w - INSPECTOR_PAD_PT - 26.0f, *y + 4.0f, 26.0f, 26.0f)
+              .placement;
+      if (vkr_ui_button(ui, string8_lit("clear"), (String8){0}, &clear)) {
+        vkr_editor_material_assign_slot(editor, mesh, slot, "");
+      }
+    }
+    (void)vkr_ui_pop_id(ui);
+    *y += 32.0f;
+  }
+  (void)vkr_ui_pop_id(ui);
+  VkrUiWidgetConfig hint =
+      vkr_editor_text_config(theme->font_caption, theme->text_disabled);
+  hint.placement =
+      widget_at(INSPECTOR_PAD_PT, *y, w - INSPECTOR_PAD_PT * 2, 30.0f)
+          .placement;
+  hint.placement.align = VKR_UI_ALIGN_START;
+  hint.text.layout.word_wrap = true_v;
+  hint.text.layout.max_width = Max(1.0f, w - INSPECTOR_PAD_PT * 2);
+  vkr_ui_label(ui, string8_lit("materials.hint"),
+               mesh.u64 == f->selected_entity.u64
+                   ? string8_lit("A drop on the object in the viewport sets "
+                                 "every slot.")
+                   : string8_lit("Slots of the model's mesh node; a drop on "
+                                 "the model in the viewport sets every slot."),
+               &hint);
+  *y += 34.0f;
+}
+
 /* Details edits of a blockout shape: the draft shows in Details and as the
    shape it would build while a drag lasts, and builds through
    blockout.build when the edit ends. */
@@ -4430,9 +4610,13 @@ static bool8_t inspector_world_sections(VkrEditorScenePanels *p,
   for (uint32_t i = 0; (type = vkr_scene_world_type(i)); ++i) {
     const void *current =
         vkr_scene_get_typed(f->scene, f->selected_entity, type);
-    /* The Tags row edits tags. */
+    /* The Tags row edits tags; the Materials section edits a mesh's
+       material overrides slot by slot. */
+    SceneMeshInfo mesh;
     if (!current || i >= ArrayCount(p->world_collapsed) ||
-        type == &vkr_scene_tags_type) {
+        type == &vkr_scene_tags_type ||
+        (type == &vkr_scene_material_override_type &&
+         vkr_scene_mesh_info(f->scene, f->selected_entity, &mesh))) {
       continue;
     }
     (void)vkr_ui_push_id_u64(ui, 0x3b7d0000u + i);
@@ -4886,6 +5070,8 @@ void vkr_editor_inspector_build(VkrEditorUi *editor,
         p, f, frame->scene ? frame->scene : frame->world, w, &y, heading,
         &lights, &component_edit);
   inspector_mesh_section(p, f, w, &y, heading);
+  if (!part)
+    inspector_materials_section(editor, p, f, w, &y, heading);
   /* Placed objects carry a script slot above the script's own section;
      world settings do not. */
   if (tr && !part)

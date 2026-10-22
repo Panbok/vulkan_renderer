@@ -1,6 +1,6 @@
 ---
 name: vkr-art
-description: Author VKR materials and do the art pass through the editor's agent channel - material graphs (.mtg), instances and plain .mt files, surface themes that bind tags to materials, assigning materials to brush faces and meshes, and checking the result with art.lint, lowering reports and captures. Use for material and look work in a level; use vkr-level-design for layout, surfaces and marks, and vkr-editor-cmd to start or drive the editor.
+description: Author VKR materials and do the art pass through the editor's agent channel - material graphs (.mtg), instances and plain .mt files, surface themes that bind tags to materials, assigning materials to brush faces and meshes, modelling props in Blender and placing, reimporting and dressing them as models, and checking the result with art.lint, lowering reports and captures. Use for material and look work in a level; use vkr-level-design for layout, surfaces and marks, and vkr-editor-cmd to start or drive the editor.
 ---
 
 # VKR art pass through the agent channel
@@ -39,7 +39,10 @@ operation's schema. This skill sets the order of work and the checks.
   metal) and an instance per variant; never copy a graph to change a colour.
 - Create with `material.create`: `kind` graph (a template, or `from` a PBR
   `.mt`, whose texture paths become content-root relative), instance
-  (`graph`, `params`, `name`) or definition. Paths are content-root relative
+  (`graph`, `params`, `name`) or definition (`from` another, or `name` and
+  `params` naming definition keys: `base_color` [r, g, b, a],
+  `emissive_factor`, `roughness`, `surface`, texture paths; a definition
+  that does not read is refused). Paths are content-root relative
   (`assets/materials/...`); an existing file needs `"overwrite": true`.
 - Texture paths inside a graph resolve against the graph with `./` or `../`,
   else against the content root. A texture path given as an instance
@@ -201,30 +204,58 @@ level):
 
 ## Models
 
-- `model.place` adds models to the open project scene in one job: each of
-  `models` names a `source` file (glTF from Blender, GLB, OBJ or cooked
-  VKB; content paths) or an `asset` (`asset:<scope>/<id>` from `entity.get`
-  on a placed copy), with `name`, `position`, `rotation`, `scale` and
-  `tags`. Save first; the job reloads the scene, so wait (`wait.scene`)
-  before reading the new entities. Place every copy of a model in one call,
-  or later copies by `asset`, so the file imports once.
+Replace a level's brush prototypes with modelled props in this order; the
+Blender side is in [references/blender-models.md](references/blender-models.md).
+
+1. Measure each prototype from `scene.describe` (parts, bounds, tags): its
+   footprint, height and front (the side its user stands at: a desk's edge
+   band, a locker's door, a chair's seat away from its back). Group parts by
+   name prefix; write the frames to a file a script reads.
+2. Model each family once at its typical size, front at Blender -Y, origin
+   on the floor at the footprint centre, and export glTF.
+3. `model.place` every copy in one call (at most 512): `rotation` [0, yaw,
+   0] turns the model's +Z to the prototype's front, `scale` fits its box
+   (keep chairs, monitors and small items uniform), `position` puts the
+   model's bounds centre on the footprint centre, `tags` the prototype's.
+   Pass `lightmap_uvs` true when the level is baked, or the models take
+   only the diffuse volume. Save first; the job reloads the scene, so wait
+   (`wait.scene`) and read entities again: ids change on every reload.
+4. Delete the prototype brushes and add one `clip` `brush.box` per prop over
+   its footprint, so the player still collides. Send at most about 100
+   deletes per batch: a larger one runs out of undo memory and rolls back,
+   and a rolled-back batch gives the restored brushes new ids.
+5. Give each slot a library material (below), then rebake.
+
 - The mesh hangs on a child node of the placed root: `material.assign`
-  that child (or `dry_run` to find it) with `slot` to give one surface a
-  library material. Slots follow the glTF's primitive order. Assign every
-  slot of a mesh in one batch: the edits merge into one override.
+  that child with `slot` to give one surface a library material. Slots
+  follow the glTF's primitive order, and only slots 0 to 7 take an
+  override: give a model at most eight. Assign every slot of a mesh in one
+  batch: the edits merge into one override. Pass `select` false on batches
+  that should leave the designer's selection alone.
+- In the editor, the Details panel's Materials section lists the slots of
+  the selected mesh (or of a placed model's mesh node): drag a material
+  from Content onto a slot, click it to open the material, clear it to
+  return to the model's own.
 - `entity.get` on that child answers `mesh` with its `asset` reference.
-  After editing the source (in Blender, say), `model.reimport` with the
-  `source` and the `asset` or a placed `entity` rebuilds the asset for
-  every copy without a reload; wait for the job before the next one. Close
-  and reopen the scene, then save after any edit, before a bake: until
-  then the bake refuses the overrides on the reimported nodes.
-- Export from Blender with the model's front at -Y (the engine's +Z), its
-  origin on the floor, metric UVs and one material per surface. A glTF
-  `COLOR_0` multiplies a plain material's base colour, so keep it white
-  there; on surfaces that take a layered material with the `vertex_color`
-  mask, RGBA weigh its layers 0 to 3 (paint, chipped metal, grime).
-- The journal cannot delete or undo a placed mesh yet; place test copies in
-  a scratch scene, not in the level.
+  After editing the source, `model.reimport` with the `source` and the
+  `asset` or a placed `entity` rebuilds the asset for every copy without a
+  reload; wait for the job before the next one, and pass `lightmap_uvs`
+  again or the rebuilt mesh loses them. Close and reopen the scene, then
+  save after any edit, before a bake: until then the bake refuses the
+  overrides on the reimported nodes.
+- A glTF `COLOR_0` multiplies a plain material's base colour, so keep it
+  white there; on surfaces that take a layered material with the
+  `vertex_color` mask, RGBA weigh its layers 0 to 3. A painted-metal graph
+  whose layer 1 is chipped steel and layer 2 grime, with the weights baked
+  in Blender (edges and floor height), wears every prop without textures
+  of its own.
+- A screen or sign that shows an image: give its face 0..1 UVs in Blender,
+  or fit its metric UVs in a Custom graph with `tile_offset` (scale 1/size,
+  offset -min/size); `world_position` Y drives scanlines, `time` a crawl.
+  One graph, one instance per image.
+- `entity.delete` on a placed model's root deletes it with its nodes, and
+  undo restores it, but `model.place` itself does not undo: delete the test
+  copies you place.
 
 ## Lights and bakes
 
@@ -244,6 +275,16 @@ level):
   it later with `component.set` on `reflection_probe`. A scene holds 16.
 - `diffuse_settings` `bounds_min` and `bounds_max` limit the diffuse volume
   to a box around the interior; both zero bake the whole scene.
+- A lightmap bake of a large level (the 50,000-object Level Design Test:
+  28 minutes, 4 GB) can be killed for memory beside a running editor (the
+  job reports "Bake cancelled"). Save, quit the editor, and run the job's
+  request alone: copy `.vkreditor/jobs/<id>/request.json` to a new folder,
+  set its `runtime_directory` to that folder, and run `vkr_bakery project
+  --request <it> --result <folder>/result.json`. The scene loads the new
+  lightmaps when it next opens.
+- Models placed without lightmap UVs draw with the diffuse volume and
+  reflection probes instead of a lightmap. Rebake after replacing or
+  deleting props: the old lightmaps keep the shadows of what was there.
 - `lighting.time` (`hour`) and `lighting.group` (`group`, `intensity`)
   change the live clock and a group's level until the simulation resets.
   Use them to preview and capture a mood. To keep an hour, set the World's

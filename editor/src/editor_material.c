@@ -2366,6 +2366,21 @@ void vkr_editor_material_assign(VkrEditorUi *editor,
   (void)vkr_editor_agent_submit(editor->agent, line);
 }
 
+void vkr_editor_material_assign_slot(VkrEditorUi *editor, VkrEntityId entity,
+                                     uint32_t slot, const char *material) {
+  if (!editor->agent || !entity.u64) {
+    return;
+  }
+  char line[640];
+  string_format(line, sizeof(line),
+                "{\"v\":1,\"id\":\"assign\",\"op\":\"material.assign\","
+                "\"args\":{\"entity\":\"%u:%u:%u\",\"slot\":%u,"
+                "\"material\":\"%s\",\"review\":false}}",
+                (unsigned)entity.parts.world, (unsigned)entity.parts.index,
+                (unsigned)entity.parts.generation, slot, material);
+  (void)vkr_editor_agent_submit(editor->agent, line);
+}
+
 void vkr_editor_material_drop(VkrEditorMaterials *materials,
                               const VkrSampleUiFrame *frame, const char *path,
                               Vec2 drop_px) {

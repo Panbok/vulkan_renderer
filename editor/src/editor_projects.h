@@ -203,19 +203,20 @@ bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
                                          VkrEditorUi *editor,
                                          const VkrSampleUiFrame *frame,
                                          const VkrEditorModelPlacement *models,
-                                         uint32_t count);
+                                         uint32_t count, bool8_t lightmap_uvs);
 
 /* Reimports scene or project asset `asset_id` (`scope` "scene" or
    "project") from the model file `source` in one reimport_asset job; the
    open scene stays loaded and swaps the rebuilt mesh in, so entities keep
    their poses and material overrides. False, with vkr_editor_projects_message
-   saying why, when no writable project scene is open or another job runs. */
-bool8_t vkr_editor_projects_reimport_asset(VkrEditorProjects *projects,
-                                           VkrEditorUi *editor,
-                                           const VkrSampleUiFrame *frame,
-                                           const char *scope,
-                                           const char *asset_id,
-                                           const char *source);
+   saying why, when no writable project scene is open or another job runs.
+   For both jobs, `lightmap_uvs` cooks the models with lightmap UVs, as the
+   Bakery panel's setting does when it is on; a reimport without either
+   cooks them without. */
+bool8_t vkr_editor_projects_reimport_asset(
+    VkrEditorProjects *projects, VkrEditorUi *editor,
+    const VkrSampleUiFrame *frame, const char *scope, const char *asset_id,
+    const char *source, bool8_t lightmap_uvs);
 
 /* Prefab instance (ADR-076): copy the project scene named `name` into the
    open scene under one new root at `position`. The copy keeps no link to

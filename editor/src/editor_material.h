@@ -138,6 +138,11 @@ void vkr_editor_material_finish_drop(struct VkrEditorUi *editor,
 void vkr_editor_material_assign(struct VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame,
                                 VkrEntityId entity, const char *material);
+/* `material.assign` of `material` to submesh `slot` of the mesh `entity`
+   draws; an empty material returns the slot to the model's own. */
+void vkr_editor_material_assign_slot(struct VkrEditorUi *editor,
+                                     VkrEntityId entity, uint32_t slot,
+                                     const char *material);
 /* A new empty surface theme, assets/surfaces/theme_<n>.surfaces, that
    `container` (the agent channel's "primary", "world" or a slot) then
    takes, opened in the panel. */

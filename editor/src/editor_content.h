@@ -218,6 +218,10 @@ bool8_t vkr_editor_content_take_menu(VkrEditorContent *content,
 /** While a Script asset is dragged: true, with its module name. */
 bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
                                           char *module, uint32_t capacity);
+/** While a Material asset (or a texture, which draws as a material of its
+ * own) is dragged: true, with the path or asset reference to assign. */
+bool8_t vkr_editor_content_dragged_material(const VkrEditorContent *content,
+                                            char *path, uint32_t capacity);
 /** Ends a drag another panel accepted. */
 void vkr_editor_content_end_drag(VkrEditorContent *content);
 /** The loaded object the open item menu acts on, or invalid. */

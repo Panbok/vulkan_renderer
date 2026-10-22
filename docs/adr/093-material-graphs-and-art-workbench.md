@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-12
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -122,8 +122,17 @@ consumer that chose a shader or pipeline.
    records a static content change bounded by the instance for a static
    caster, so retained static draws repack; a dynamic caster's moves only
    the dynamic generation.
+   Details shows a Materials section for the selected mesh, or for a placed
+   model's root the first child node that draws one: a row per submesh with
+   the model's own material or the override. A material dragged from
+   Content onto a row assigns that slot through `material.assign` `slot`;
+   the row opens its material in the Material panel, and its clear button
+   returns the slot to the model's own. Several `material.assign` slots of
+   one mesh in one agent batch merge into one override edit (2026-10-22).
 10. **Operations.** `material.list`, `material.describe` (nodes as text,
-   parameters, lowering, instances), `material.create`, `material.patch`
+   parameters, lowering, instances), `material.create` (a definition from
+   a `name` and definition-key `params`, refused unless it reads, since
+   2026-10-22), `material.patch`
    (`add`, `remove`, `connect`, `disconnect`, `set`, `settings`, all or
    nothing), `material.set_param`, `material.compile`, `material.open` and
    `material.assign` (a face, a brush's faces or a mesh's submeshes; an

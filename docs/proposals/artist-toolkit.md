@@ -673,12 +673,18 @@ Implemented on the tiled pipeline in ADR-099; the desktop column remains.
   (ADR-076): one batches placements of model files or mesh assets, with
   poses and tags, into one `add_entities` job and one scene reload; the
   other rebuilds an asset from its edited source for every placed copy
-  without a reload. Remaining: mesh records in the edit journal, so a
-  placement undoes, shows in review and deletes (`entity.delete` refuses
-  meshes today); a `fit` argument that scales a model into a brush
-  prototype's box; and new source identities for the overrides on a
+  without a reload. The journal deletes a placed model and undo restores
+  it (ADR-076). Remaining: a journal record for the placement, so it
+  undoes and shows in review; a `fit` argument that scales a model into a
+  brush prototype's box; and new source identities for the overrides on a
   reimported model's nodes, which a bake refuses until the scene reopens
   and saves.
+
+- **Reimport from the source file.** An import keeps a snapshot of its
+  source, not where it came from, so Content's Reimport asks for the file
+  each time and `model.reimport` needs its `source`. Recording the original
+  file's content path in the asset record would make an edit in Blender a
+  one-click update.
 
 ## Agent operations
 

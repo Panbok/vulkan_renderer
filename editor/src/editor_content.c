@@ -5453,6 +5453,19 @@ bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
   return true_v;
 }
 
+bool8_t vkr_editor_content_dragged_material(const VkrEditorContent *content,
+                                            char *path, uint32_t capacity) {
+  if (!content || !content->dragging ||
+      content_shown_folder(content->drag_asset) ||
+      content->drag_asset >= content->count) {
+    return false_v;
+  }
+  const ContentAsset *entry = &content->entries[content->drag_asset];
+  /* The path a viewport drop assigns (content_drag_update). */
+  return (entry->kind == CONTENT_MATERIAL || entry->kind == CONTENT_TEXTURE) &&
+         content_scene_reference(entry, path, capacity);
+}
+
 void vkr_editor_content_end_drag(VkrEditorContent *content) {
   if (content) {
     content->dragging = false_v;

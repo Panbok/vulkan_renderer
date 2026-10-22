@@ -12808,6 +12808,108 @@ static void ops_material_template(VkrMaterialGraph *graph) {
                                    sizeof(error));
 }
 
+/* A new plain definition: `name` and each of `params` as a key=value line
+   over the defaults (a number, [r, g, b] or [r, g, b, a], true or false, or
+   text such as a texture path or `surface`), refused unless it reads as a
+   PBR definition. */
+static bool8_t ops_material_definition_text(OpsContext *ctx,
+                                            const VkrBakeryJson *args,
+                                            VkrAllocator *allocator,
+                                            String8 *out) {
+  static const char *const defaults[][2] = {{"type", "pbr"},
+                                            {"base_color", "0.8,0.8,0.8,1"},
+                                            {"metallic", "0"},
+                                            {"roughness", "0.5"}};
+  Arena *arena = ops_arena(ctx);
+  char *text = arena_alloc(arena, KB(8), ARENA_MEMORY_TAG_STRING);
+  if (!text) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  uint64_t length = 0u;
+  char name[128] = "";
+  if (vkr_bakery_json_get(args, "name") &&
+      !ops_arg_string(ctx, args, "name", name, sizeof(name))) {
+    return false_v;
+  }
+  if (name[0]) {
+    length += (uint64_t)string_format(text + length, KB(8) - length,
+                                      "name=%s\n", name);
+  }
+  const VkrBakeryJson *params = vkr_bakery_json_get(args, "params");
+  if (params && params->type != VKR_BAKERY_JSON_OBJECT) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "'params' maps definition keys to "
+                    "values");
+  }
+  for (uint32_t i = 0; i < ArrayCount(defaults); ++i) {
+    if (!params || !vkr_bakery_json_get(params, defaults[i][0])) {
+      length +=
+          (uint64_t)string_format(text + length, KB(8) - length, "%s=%s\n",
+                                  defaults[i][0], defaults[i][1]);
+    }
+  }
+  for (const VkrBakeryJson *item = params ? params->first : NULL; item;
+       item = item->next) {
+    char value[256] = "";
+    if (item->type == VKR_BAKERY_JSON_ARRAY) {
+      uint64_t used = 0u;
+      for (const VkrBakeryJson *part = item->first; part; part = part->next) {
+        const float64_t number = part->type == VKR_BAKERY_JSON_INT
+                                     ? (float64_t)part->integer
+                                     : part->number;
+        if ((part->type != VKR_BAKERY_JSON_INT &&
+             part->type != VKR_BAKERY_JSON_FLOAT) ||
+            !vkr_is_finite_f64(number)) {
+          return ops_fail(ctx, OPS_INVALID, "params.%.*s lists numbers",
+                          (int)item->key.length, (const char *)item->key.str);
+        }
+        used += (uint64_t)string_format(value + used, sizeof(value) - used,
+                                        "%s%g", used ? "," : "", number);
+      }
+    } else if (item->type == VKR_BAKERY_JSON_STRING) {
+      string_format(value, sizeof(value), "%.*s",
+                    (int)Min(item->string.length, (uint64_t)sizeof(value) - 1u),
+                    (const char *)item->string.str);
+    } else if (item->type == VKR_BAKERY_JSON_BOOL) {
+      string_format(value, sizeof(value), "%s",
+                    item->boolean ? "true" : "false");
+    } else {
+      const float64_t number = item->type == VKR_BAKERY_JSON_INT
+                                   ? (float64_t)item->integer
+                                   : item->number;
+      if ((item->type != VKR_BAKERY_JSON_INT &&
+           item->type != VKR_BAKERY_JSON_FLOAT) ||
+          !vkr_is_finite_f64(number)) {
+        return ops_fail(ctx, OPS_INVALID,
+                        "params.%.*s is a number, a list of numbers, true, "
+                        "false or text",
+                        (int)item->key.length, (const char *)item->key.str);
+      }
+      string_format(value, sizeof(value), "%g", number);
+    }
+    if (string_find_char(value, '\n') || length + 300u > KB(8)) {
+      return ops_fail(ctx, OPS_INVALID, "params.%.*s does not fit a line",
+                      (int)item->key.length, (const char *)item->key.str);
+    }
+    length += (uint64_t)string_format(text + length, KB(8) - length,
+                                      "%.*s=%s\n", (int)item->key.length,
+                                      (const char *)item->key.str, value);
+  }
+  *out = (String8){.str = (uint8_t *)text, .length = length};
+  /* The graph form reads exactly the definitions the loader takes. */
+  VkrMaterialGraph *graph = ops_material_graph_alloc(ctx);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  (void)allocator;
+  if (!graph) {
+    return false_v;
+  }
+  if (!vkr_material_graph_from_definition(*out, graph, error, sizeof(error))) {
+    return ops_fail(ctx, OPS_INVALID, "The definition does not read: %s",
+                    error);
+  }
+  return true_v;
+}
+
 static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   char path[VKR_EDITOR_MATERIAL_PATH];
@@ -12923,9 +13025,8 @@ static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
     if (!ops_material_rebase(ctx, &allocator, from, source, &text)) {
       return VKR_EDITOR_OP_DONE;
     }
-  } else {
-    text = string8_lit("type=pbr\nbase_color=0.8,0.8,0.8,1\nmetallic=0\n"
-                       "roughness=0.5\n");
+  } else if (!ops_material_definition_text(ctx, args, &allocator, &text)) {
+    return VKR_EDITOR_OP_DONE;
   }
   char label[96];
   string_format(label, sizeof(label), "Create %.80s", path);
@@ -14757,8 +14858,9 @@ static VkrEditorOpStatus ops_run_model_place(OpsContext *ctx) {
       string_format(model->tags, sizeof(model->tags), "%s", parsed.text);
     }
   }
-  if (!vkr_editor_projects_place_models(ctx->editor->projects, ctx->editor,
-                                        ctx->frame, models, index)) {
+  if (!vkr_editor_projects_place_models(
+          ctx->editor->projects, ctx->editor, ctx->frame, models, index,
+          ops_arg_bool(ctx->call->args, "lightmap_uvs", false_v))) {
     ops_fail(ctx, OPS_REJECTED, "%s",
              vkr_editor_projects_message(ctx->editor->projects));
     return VKR_EDITOR_OP_DONE;
@@ -14856,8 +14958,9 @@ static VkrEditorOpStatus ops_run_model_reimport(OpsContext *ctx) {
              "entity.get shows a placed model's mesh");
     return VKR_EDITOR_OP_DONE;
   }
-  if (!vkr_editor_projects_reimport_asset(ctx->editor->projects, ctx->editor,
-                                          ctx->frame, scope, id, path)) {
+  if (!vkr_editor_projects_reimport_asset(
+          ctx->editor->projects, ctx->editor, ctx->frame, scope, id, path,
+          ops_arg_bool(args, "lightmap_uvs", false_v))) {
     ops_fail(ctx, OPS_REJECTED, "%s",
              vkr_editor_projects_message(ctx->editor->projects));
     return VKR_EDITOR_OP_DONE;
@@ -19950,7 +20053,10 @@ static const OpsDef s_ops[] = {
      "Create a material document at a content path: a 'graph' (.mtg) from a "
      "starting template or 'from' a PBR .mt; an 'instance' (.mt) of a "
      "'graph' with 'params' overrides and a 'name'; or a 'definition' (.mt), "
-     "copied 'from' another. Fails on an existing file unless 'overwrite'.",
+     "copied 'from' another or written from a 'name' and 'params' that map "
+     "definition keys (base_color, metallic, roughness, emissive_factor, "
+     "surface, texture paths...) to values. Fails on an existing file "
+     "unless 'overwrite'.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
      "\"string\"},\"kind\":{\"type\":\"string\",\"enum\":[\"graph\","
      "\"instance\",\"definition\"]},\"from\":{\"type\":\"string\"},"
@@ -20099,6 +20205,8 @@ static const OpsDef s_ops[] = {
      "existing mesh 'asset' "
      "(asset:<scope>/<id>, as entity.get shows a placed model's mesh), with "
      "a 'name', 'position', 'rotation' (degrees XYZ), 'scale' and 'tags'. "
+     "'lightmap_uvs' true cooks the imported files with lightmap UVs so a "
+     "bake lights them (default the Bakery panel's setting). "
      "The job rewrites the scene document and reloads the scene, so save "
      "first and wait (Cmd wait.scene) before reading the new entities.",
      "{\"type\":\"object\",\"properties\":{\"models\":{\"type\":"
@@ -20111,18 +20219,21 @@ static const OpsDef s_ops[] = {
      "\"scale\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},"
      "\"minItems\":3,\"maxItems\":3},\"tags\":{\"oneOf\":[{\"type\":"
      "\"string\"},{\"type\":\"array\",\"items\":{\"type\":"
-     "\"string\"}}]}}}}},\"required\":[\"models\"]}",
+     "\"string\"}}]}}}},\"lightmap_uvs\":{\"type\":\"boolean\"}},"
+     "\"required\":[\"models\"]}",
      ops_run_model_place, NULL},
     {"model.reimport",
      "Import a model 'source' file (relative paths are content paths) again "
      "over one scene or project mesh: its 'asset' (asset:<scope>/<id>), or "
      "an 'entity' that draws it, as entity.get's 'mesh' shows. Every entity "
      "that draws the asset keeps its pose and material overrides; the open "
-     "scene swaps the rebuilt mesh in without a reload. Wait for the job "
-     "(Cmd wait.scene) before reading the result.",
+     "scene swaps the rebuilt mesh in without a reload. 'lightmap_uvs' true "
+     "cooks it with lightmap UVs; without it or the Bakery panel's setting "
+     "the rebuilt mesh has none. Wait for the job (Cmd wait.scene) before "
+     "reading the result.",
      "{\"type\":\"object\",\"properties\":{\"source\":{\"type\":"
      "\"string\"},\"asset\":{\"type\":\"string\"},\"entity\":" OPS_ENTITY_SCHEMA
-     "},\"required\":[\"source\"]}",
+     ",\"lightmap_uvs\":{\"type\":\"boolean\"}},\"required\":[\"source\"]}",
      ops_run_model_reimport, NULL},
     {"lighting.bake",
      "Start the open project scene's Bake lighting job: reflection probes, "
