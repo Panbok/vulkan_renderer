@@ -476,8 +476,8 @@ Save only when the task keeps the level. Run Cmd `scene.save`, then confirm
 `editor.status` answers `scene.unsaved` false before your last client
 disconnects: a headless editor quits once its `--exec` script has ended and
 no client is connected, discarding unsaved edits. A scene file holds at most
-65,536 created objects (a box brush is 7) and 64 MiB (about 450 bytes an
-object), and a save over either is refused; build a larger level in world
+131,072 created objects (a box brush is 7) and 128 MiB (about 450 bytes
+an object), and a save over either is refused; build a larger level in world
 partition cells.
 
 ## Done when

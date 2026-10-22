@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-22
 authority: adr
 ---
 # ADR-076: Project object model: descriptors, containers, entities and components
@@ -150,7 +150,7 @@ bodies cannot be duplicated yet. With several objects selected
 batch and one undo step. The edit overlay (version 4)
 records authoritative `components`, created entities, deleted records and
 parents, and per-scene settings. It holds at most
-`VKR_SCENE_EDIT_CREATED_MAX` (65,536) created entities: load rejects a larger
+`VKR_SCENE_EDIT_CREATED_MAX` (131,072) created entities: load rejects a larger
 one with that reason, and save refuses to write one, since a brush and its six
 faces are seven entities. Saves had written any count while load stopped at
 1,024, so a level of a few hundred brushes saved and then loaded empty. Load
@@ -160,12 +160,15 @@ components' own bytes, where a record with eight 1 KiB component slots took
 records, 306 MB. Parent links then find created ids in a copy sorted once:
 a scan per link held the Debug scene edit suite, which loads a 65,536-object
 document, at 19 s, and the sorted copy brought it to 2.6 s. The overlay's
-bytes share one bound, `VKR_SCENE_EDIT_OVERLAY_BYTES` (64 MiB): load and the
+bytes share one bound, `VKR_SCENE_EDIT_OVERLAY_BYTES` (128 MiB): load and the
 project jobs read up to it, and save refuses to write past it and keeps the
 last overlay. Load and the jobs had stopped at 16 MiB while save wrote any
 size, so a level of about 37,600 created objects (a brush face's record is
 about 450 bytes) saved a 16.9 MB overlay and then would not open
-(2026-10-11).
+(2026-10-11). Both bounds doubled on 2026-10-22 (from 65,536 objects and
+64 MiB), when the Level Design Test's detailed brush props passed 67,000
+objects; its 54,143-object overlay was 20.8 MB, about 385 bytes an object,
+so 131,072 objects stay near 50 MB.
 
 The primary scene's overlay loads in parts (2026-10-11). A job worker reads
 the file in 4 MiB parts and parses it while the scene loads

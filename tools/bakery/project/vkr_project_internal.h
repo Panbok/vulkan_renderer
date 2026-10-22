@@ -16,7 +16,7 @@
 #define VKR_PROJECT_MAX_JSON_BYTES (16ull * 1024ull * 1024ull)
 /* Edit overlays (scene and World) are read up to the runtime's
    VKR_SCENE_EDIT_OVERLAY_BYTES, which an editor save never exceeds. */
-#define VKR_PROJECT_MAX_OVERLAY_BYTES (64ull * 1024ull * 1024ull)
+#define VKR_PROJECT_MAX_OVERLAY_BYTES (128ull * 1024ull * 1024ull)
 #define VKR_PROJECT_MAX_DOCUMENT_BYTES (1024ull * 1024ull)
 #define VKR_PROJECT_SCENE_VERSION 5
 #define VKR_PROJECT_MAX_INVENTORY_BYTES (16ull * 1024ull * 1024ull)

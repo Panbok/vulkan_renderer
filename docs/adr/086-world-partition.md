@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-18
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -108,7 +108,7 @@ A partitioned scene `<scene>.json` keeps its cells in `<scene>.cells/`
 ([vkr_scene_edit.c](../../runtime/src/renderer/systems/vkr_scene_edit.c)):
 
 - `<x>_<z>.json` holds `{"version":1,"cell":[x,z],"created":[...]}` with the
-  overlay's created-record schema and its limit of 65,536 objects, which a
+  overlay's created-record schema and its limit of 131,072 objects, which a
   save checks per cell. The overlay keeps the persistent layer.
 - `index.json` lists the documents, their cell size and the next overlay id,
   so new objects never take an id an unloaded cell uses. A loaded object
