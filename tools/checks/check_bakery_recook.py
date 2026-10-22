@@ -298,9 +298,10 @@ def main():
         migrated = run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
                        'recook-migrated')
         assert migrated['needs_rebuild'] == [] and migrated['recooked'] == 0, migrated
-        # The replaced revision is unreferenced: workspace cleanup keeps it for
-        # its grace period, and a cleanup with no grace, as a new shared
-        # workspace asks for, removes it and nothing live.
+        # The replaced revision is the record's previous build (ADR-088): it
+        # stays through workspace cleanup, also one with no grace, as a new
+        # shared workspace asks for. A second rebuild supersedes it, and the
+        # cleanup after that job removes it and nothing live.
         document = json.loads(manifest.read_text())
         document['scenes'] = [{'id': result['scene_id'], 'name': name,
                                'path': f'scenes/{result["scene_id"]}/scene.json'}
@@ -308,9 +309,16 @@ def main():
         manifest.write_text(json.dumps(document))
         kept = run({'operation': 'collect_garbage'}, 'collect-kept')
         assert old_build.is_dir() and kept['removed'] == 0, kept
-        collected = run({'operation': 'collect_garbage', 'grace_seconds': 0}, 'collect-now')
-        assert not old_build.exists() and collected['freed_bytes'] > 0, collected
-        assert new_build.is_dir() and build.is_dir()
+        run({'operation': 'collect_garbage', 'grace_seconds': 0}, 'collect-now')
+        mesh = next(asset for asset in jobs.read_managed_scene(again_path)['assets']
+                    if asset['kind'] == 'mesh')
+        assert mesh['previous_build'].startswith(f'builds/{old_build.name}/'), mesh
+        assert old_build.is_dir() and new_build.is_dir() and build.is_dir()
+        run({'operation': 'rebuild_asset', 'scene_id': again['scene_id'],
+             'scene_path': again['scene_path'], 'asset_id': mesh_id}, 'rebuild-again')
+        newest = build_textures(again_path)[0]
+        assert newest != new_build and not old_build.exists()
+        assert newest.is_dir() and new_build.is_dir() and build.is_dir()
         assert run(dict(recook, scene_id=again['scene_id'], scene_path=again['scene_path']),
                    'recook-collected')['current'] == len(textures)
         run({'operation': 'collect_garbage', 'grace_seconds': -1}, 'collect-refused', code=1)

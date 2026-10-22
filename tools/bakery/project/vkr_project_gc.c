@@ -103,10 +103,13 @@ vkr_internal bool8_t vkr_project_scene_references(VkrProjectCleanup *cleanup,
       vkr_project_list(job, builds, &names)) {
     for (uint32_t i = 0u; i < names.count; ++i) {
       char revision[VKR_PROJECT_PATH];
+      /* A revision this job superseded goes now: its asset keeps its
+         current and previous revisions, which the documents reference. */
       if (vkr_project_child_path(builds, names.items[i], revision) &&
           !vkr_project_set_has(&revisions, names.items[i]) &&
-          vkr_project_older_than(revision, cleanup->unreferenced_grace,
-                                 cleanup->now)) {
+          (vkr_project_set_has(&job->superseded_builds, names.items[i]) ||
+           vkr_project_older_than(revision, cleanup->unreferenced_grace,
+                                  cleanup->now))) {
         vkr_project_drop(cleanup, revision);
       }
     }

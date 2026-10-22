@@ -25,6 +25,13 @@ namespace {
    same GPU (2026-10-06). */
 constexpr uint32_t kTexelsPerDispatch = 16384u;
 constexpr uint32_t kSamplesPerDispatch = 8u;
+/* Texel-gather command buffers committed ahead of the one the host waits
+   for, so the GPU starts the next buffer while the host encodes the one
+   after it instead of idling through each commit and wait. Each buffer
+   stays as short as above; buffers on one queue run in commit order, and
+   the gather's buffers, which the runs of one batch accumulate into, are
+   tracked resources, so no two buffers overlap on the GPU. */
+constexpr uint32_t kGatherBuffersInFlight = 3u;
 /* Paths per probe-gather command buffer: the texel gather's budget. Like the
    texel gather, the probe gather takes its samples in runs, one sample of
    each pixel per buffer: a path evaluates every layer light at every bounce,
@@ -109,11 +116,13 @@ kernel void lightmap_trace_benchmark(
   }
   uint texel = args.first_texel + id;
   float3 normal = normals[texel].xyz;
-  float3 origin = positions[texel].xyz + normal * 1.0e-3f;
+  float4 position_seed = positions[texel];
+  float3 origin = position_seed.xyz + normal * 1.0e-3f;
   intersector<triangle_data> query;
   /* Closest hits as the CPU BVH finds them: every triangle is solid. */
   query.force_opacity(forced_opacity::opaque);
-  uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
+  /* w carries the texel's seed key bits (vkr_bake_lightmap_texel_seed). */
+  uint texel_seed = mix_seed(args.seed ^ as_type<uint>(position_seed.w));
   uint hits = 0u;
   for (uint s = 0u; s < args.samples; ++s) {
     uint seed = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
@@ -931,7 +940,8 @@ kernel void lightmap_gather(
                  {args.geometry_first[0], args.geometry_first[1]}};
   uint texel = args.first_texel + id;
   float3 texel_normal = texel_normals[texel].xyz;
-  float3 texel_position = texel_positions[texel].xyz;
+  float4 position_seed = texel_positions[texel];
+  float3 texel_position = position_seed.xyz;
   float3 step_x = texel_footprints[2u * texel + 0u].xyz;
   float3 step_y = texel_footprints[2u * texel + 1u].xyz;
   float3 origin = texel_position + texel_normal * 1.0e-3f;
@@ -952,7 +962,10 @@ kernel void lightmap_gather(
   bool direct_only = (args.flags & 64u) != 0u;
   bool first_run = args.first_sample == 0u;
   float4 direction_sum = float4(0.0f);
-  uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
+  /* The texel's samples follow its place in its instance's rectangle, which
+     w carries as seed key bits (vkr_bake_lightmap_texel_seed), so they do
+     not depend on packing or on which texels a gather takes. */
+  uint texel_seed = mix_seed(args.seed ^ as_type<uint>(position_seed.w));
   float inverse_samples = 1.0f / float(args.samples);
 
   float3 direct_total = float3(0.0f);
@@ -1014,11 +1027,19 @@ kernel void lightmap_gather(
     }
     float3 direction = cosine_direction(texel_normal, rng.next(), rng.next());
     if (direct_only) {
-      /* A direct-only gather still finds buried texels by their first
-         hits. */
-      if (use_backface) {
+      /* A direct-only gather still finds buried texels and, for a texel an
+         incremental bake relights in some layers only, ambient occlusion by
+         their first hits: the hits a full gather's paths take first, from
+         the same random numbers, so both match it. */
+      if (use_backface || use_occlusion) {
         Hit hit = trace_surface(scene, origin, direction, rng);
         backface_hits += hit.found && hit.back_face ? 1.0f : 0.0f;
+        if (hit.found && use_occlusion) {
+          float opacity = 1.0f - (1.0f - saturate(hit.material.metallic)) *
+                                     saturate(hit.material.transmission);
+          occluded += opacity * saturate(1.0f - distance(hit.position, origin) /
+                                                    args.occlusion_radius);
+        }
       }
       continue;
     }
@@ -1772,7 +1793,9 @@ bool upload_texels(id<MTLDevice> device,
     p[4u * i + 0u] = texel.position.x;
     p[4u * i + 1u] = texel.position.y;
     p[4u * i + 2u] = texel.position.z;
-    p[4u * i + 3u] = 1.0f;
+    /* w carries the seed key's bits; the kernels never read it as a
+       number. */
+    std::memcpy(&p[4u * i + 3u], &texel.seed, sizeof(texel.seed));
     n[4u * i + 0u] = texel.normal.x;
     n[4u * i + 1u] = texel.normal.y;
     n[4u * i + 2u] = texel.normal.z;
@@ -1781,8 +1804,8 @@ bool upload_texels(id<MTLDevice> device,
   return true;
 }
 
-bool finish(id<MTLCommandBuffer> command, double *in_out_seconds) {
-  [command commit];
+/* Waits for a committed command buffer and adds its GPU time. */
+bool complete(id<MTLCommandBuffer> command, double *in_out_seconds) {
   [command waitUntilCompleted];
   if (command.status != MTLCommandBufferStatusCompleted) {
     std::fprintf(stderr, "Lightmap dispatch failed: %s\n",
@@ -1791,6 +1814,51 @@ bool finish(id<MTLCommandBuffer> command, double *in_out_seconds) {
   }
   *in_out_seconds += command.GPUEndTime - command.GPUStartTime;
   return true;
+}
+
+bool finish(id<MTLCommandBuffer> command, double *in_out_seconds) {
+  [command commit];
+  return complete(command, in_out_seconds);
+}
+
+/* Command buffers committed and not yet waited for, oldest first. */
+struct InFlight {
+  id<MTLCommandBuffer> commands[kGatherBuffersInFlight];
+  uint32_t first = 0u;
+  uint32_t count = 0u;
+};
+
+/* Waits for the oldest command buffer in flight. */
+bool retire_oldest(InFlight *flight, double *in_out_seconds) {
+  id<MTLCommandBuffer> oldest = flight->commands[flight->first];
+  flight->commands[flight->first] = nil;
+  flight->first = (flight->first + 1u) % kGatherBuffersInFlight;
+  flight->count -= 1u;
+  return complete(oldest, in_out_seconds);
+}
+
+/* Commits `command`, first waiting for the oldest buffer when the queue
+   already holds kGatherBuffersInFlight. */
+bool commit_in_flight(InFlight *flight, id<MTLCommandBuffer> command,
+                      double *in_out_seconds) {
+  if (flight->count == kGatherBuffersInFlight &&
+      !retire_oldest(flight, in_out_seconds)) {
+    return false;
+  }
+  [command commit];
+  flight->commands[(flight->first + flight->count) % kGatherBuffersInFlight] =
+      command;
+  flight->count += 1u;
+  return true;
+}
+
+/* Waits for every buffer in flight; false when any failed. */
+bool drain_in_flight(InFlight *flight, double *in_out_seconds) {
+  bool ok = true;
+  while (flight->count != 0u) {
+    ok = retire_oldest(flight, in_out_seconds) && ok;
+  }
+  return ok;
 }
 
 } // namespace
@@ -1923,7 +1991,10 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
         (settings.samples + kSamplesPerDispatch - 1u) / kSamplesPerDispatch;
     const NSUInteger batches =
         (count + kTexelsPerDispatch - 1u) / kTexelsPerDispatch;
-    for (NSUInteger dispatch = 0u; dispatch < batches * runs; ++dispatch) {
+    InFlight flight;
+    bool committed = true;
+    for (NSUInteger dispatch = 0u; committed && dispatch < batches * runs;
+         ++dispatch) {
       const NSUInteger first = (dispatch / runs) * kTexelsPerDispatch;
       const uint32_t first_sample =
           (uint32_t)(dispatch % runs) * kSamplesPerDispatch;
@@ -1972,9 +2043,12 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
       [encoder dispatchThreads:MTLSizeMake(args.texel_count, 1u, 1u)
           threadsPerThreadgroup:MTLSizeMake(width, 1u, 1u)];
       [encoder endEncoding];
-      if (!finish(command, &result.gpu_seconds)) {
-        return false;
-      }
+      committed = commit_in_flight(&flight, command, &result.gpu_seconds);
+    }
+    /* Every buffer completes before the host reads the results, also after
+       a failure, so none still writes them when they are released. */
+    if (!drain_in_flight(&flight, &result.gpu_seconds) || !committed) {
+      return false;
     }
     const float *indirect_values = static_cast<const float *>(indirect.contents);
     const float *direct_values = static_cast<const float *>(direct.contents);

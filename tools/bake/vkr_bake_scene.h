@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -80,6 +81,26 @@ enum class VkrBakeSceneError : uint8_t {
   OutOfMemory,
 };
 
+/* What made a source instance, part of the key an incremental lightmap bake
+   matches instances by across bakes. */
+enum class VkrBakeSceneInstanceKind : uint8_t {
+  Mesh,
+  Cube,
+  Brush,
+  Blockout,
+};
+
+/* The key of one source instance: its entity's document id when it has one,
+   else its entity index, its source-node index in the entity's cooked model
+   (zero for other kinds) and its kind. */
+struct VkrBakeSceneInstance {
+  std::array<uint8_t, 16> document_id = {};
+  bool has_document_id = false;
+  uint32_t entity_index = 0u;
+  uint32_t source_node_index = 0u;
+  VkrBakeSceneInstanceKind kind = VkrBakeSceneInstanceKind::Mesh;
+};
+
 /*
  * Cold, single-owner scene record. `triangles` may be partitioned once by the
  * BVH builder after a successful load; workers then borrow the complete record
@@ -98,6 +119,9 @@ struct VkrBakeScene {
   std::vector<VkrBakeSceneLight> lights;
   /* Instances of cooked meshes that carry a lightmap UV set (ADR-087). */
   std::vector<VkrBakeLightmapInstance> lightmap_instances;
+  /* Every source instance's key, lightmapped or not, by source instance
+     index (VkrBakeTriangle::source_instance_index). */
+  std::vector<VkrBakeSceneInstance> instances;
   std::vector<std::string> dependency_paths;
   VkrBakeSceneEnvironment environment;
   VkrBakeAtmosphere atmosphere;

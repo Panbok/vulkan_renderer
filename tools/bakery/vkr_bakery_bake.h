@@ -21,6 +21,12 @@
  * spacing; nothing is published (ADR-054). */
 #define VKR_BAKERY_BAKE_VOLUME_TOO_LARGE 5
 
+/** Exit status of `bake lightmap` when the set named by --previous was
+ * baked from inputs with the same content fingerprint and is current, so the
+ * bake keeps it and writes nothing at --output. A bake whose output is that
+ * set exits 0 instead. */
+#define VKR_BAKERY_BAKE_LIGHTMAP_UNCHANGED 6
+
 /** `argv[0]` is "diffuse", "probe", "lightmap" or "proxies"; the remaining
  * entries are its options. */
 int vkr_bakery_bake_main(const VkrBakeryConfig *config, int argc, char **argv);

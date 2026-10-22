@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "assets/vkr_lightmap_set.h"
+
 extern "C" {
 #include "math/mat.h"
 #include "vkr_bake_geometry.h"
@@ -32,6 +34,36 @@ struct VkrBakeLightmapInstance {
   float32_t texels_per_unit = 0.0f;
 };
 
+/*
+ * The bake's random sequences follow each texel's place within its instance
+ * (owner decision 2026-10-23): a texel's seed key mixes its instance's key
+ * (vkr_bake_lightmap_instance_seed) with its offset inside the instance's
+ * rectangle, so a texel draws the same samples wherever the packer puts the
+ * rectangle and an incremental bake's dirty instance matches a full bake.
+ * The GPU kernels mix the bake's --seed into the key.
+ */
+inline uint32_t vkr_bake_lightmap_mix_seed(uint32_t x) {
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  return x ^ (x >> 16);
+}
+
+/* An instance's seed: its entity's document id when it has one, else its
+   entity index, and its source-node index. */
+uint32_t
+vkr_bake_lightmap_instance_seed(const VkrBakeLightmapInstance &instance);
+
+/* The seed key of the texel at (local_x, local_y) inside a rectangle whose
+   instance seed is `instance_seed`. */
+inline uint32_t vkr_bake_lightmap_texel_seed(uint32_t instance_seed,
+                                             uint32_t local_x,
+                                             uint32_t local_y) {
+  return vkr_bake_lightmap_mix_seed(
+      instance_seed ^ vkr_bake_lightmap_mix_seed(local_x | (local_y << 16)));
+}
+
 /* An instance's rectangle in texels on one page. */
 struct VkrBakeLightmapRect {
   uint32_t source_instance_index = 0u;
@@ -40,6 +72,8 @@ struct VkrBakeLightmapRect {
   uint32_t y = 0u;
   uint32_t width = 0u;
   uint32_t height = 0u;
+  /* vkr_bake_lightmap_instance_seed of the rectangle's instance. */
+  uint32_t seed = 0u;
 };
 
 struct VkrBakeLightmapLayout {
@@ -64,6 +98,8 @@ struct VkrBakeLightmapTexel {
   uint32_t triangle_index = 0u;
   /* The lightmapped instance whose rectangle holds the texel. */
   uint32_t source_instance_index = 0u;
+  /* vkr_bake_lightmap_texel_seed of the texel's place in its rectangle. */
+  uint32_t seed = 0u;
 };
 
 /*
@@ -92,7 +128,9 @@ bool vkr_bake_lightmap_pack_fitted(
 /*
  * Collects every texel center of `page` that lies inside a triangle of a
  * lightmapped instance, in row-major order. A texel claimed by one triangle
- * is not claimed again by a neighbor sharing its edge.
+ * is not claimed again by a neighbor sharing its edge. Triangles are
+ * rasterized in their rectangle's own coordinates, so a texel's position,
+ * normal and footprint do not depend on where the rectangle lies.
  */
 bool vkr_bake_lightmap_rasterize_page(
     const VkrBakeTriangle *triangles, uint32_t triangle_count,
@@ -118,6 +156,62 @@ bool vkr_bake_lightmap_compose_page(
     uint32_t dilation_passes, std::vector<float32_t> *out_rgba);
 
 /*
+ * Composes one rectangle as vkr_bake_lightmap_compose_page composes each
+ * rectangle of its page, into `out_rgba`, width x height RGBA floats:
+ * `members` lists the indices of `texels` inside it. With `direction`,
+ * `values` are mean incident directions encoded as
+ * vkr_bake_lightmap_compose_direction_page encodes them, and a rectangle no
+ * texel covers is neutral; `occlusion` is then null. A rectangle's result
+ * depends on its own texels alone, so an incremental bake composes only the
+ * rectangles it relights.
+ */
+bool vkr_bake_lightmap_compose_rect(
+    const VkrBakeLightmapRect &rect,
+    const std::vector<VkrBakeLightmapTexel> &texels,
+    const std::vector<uint32_t> &members, const std::vector<Vec3> &values,
+    const std::vector<float32_t> *occlusion, uint32_t dilation_passes,
+    bool direction, std::vector<float32_t> *out_rgba);
+
+/*
+ * Encoded pages in 4x4 tiles. Every rectangle lies on whole tiles, and an
+ * encoded tile depends on its own texels alone in every plane format, so a
+ * set's pages can be assembled from tiles encoded apart, copied from another
+ * set, or encoded once for the empty area. A tile is a 16-byte block of a
+ * block format (ASTC, BC6H, BC7), or for RGB9E5 and RGBA8 its 4 rows of 4
+ * texels, 64 bytes. Tiles to encode go into a strip image of whole tiles,
+ * row-major by tile.
+ */
+uint32_t vkr_bake_lightmap_tile_bytes(VkrLightmapPlaneFormat format);
+
+/* The texel size of a strip holding `tiles` tiles. */
+void vkr_bake_lightmap_strip_size(uint64_t tiles, uint32_t *out_width,
+                                  uint32_t *out_height);
+
+/* Copies the 4x4 RGBA floats at `rgba` (`stride` texels per row) into
+   strip tile `tile`. */
+void vkr_bake_lightmap_strip_put(const float32_t *rgba, size_t stride,
+                                 uint64_t tile, uint32_t strip_width,
+                                 std::vector<float32_t> *strip);
+
+/* Extracts strip tile `tile` of an encoded strip into `out_tile`. */
+void vkr_bake_lightmap_strip_take(const std::vector<uint8_t> &encoded,
+                                  VkrLightmapPlaneFormat format, uint64_t tile,
+                                  uint32_t strip_width, uint8_t *out_tile);
+
+/* Writes or reads the tile at tile coordinates (tile_x, tile_y) of an
+   encoded page of `page_size` texels. */
+void vkr_bake_lightmap_page_put_tile(std::vector<uint8_t> *page,
+                                     uint32_t page_size,
+                                     VkrLightmapPlaneFormat format,
+                                     uint32_t tile_x, uint32_t tile_y,
+                                     const uint8_t *tile);
+
+void vkr_bake_lightmap_page_get_tile(const uint8_t *page, uint32_t page_size,
+                                     VkrLightmapPlaneFormat format,
+                                     uint32_t tile_x, uint32_t tile_y,
+                                     uint8_t *out_tile);
+
+/*
  * Writes a lamp layer's direction page (ADR-104) into
  * `out_rgba` as vkr_bake_lightmap_compose_page lays a page out: each texel's
  * world-space mean incident direction d from `directions` becomes
@@ -135,11 +229,12 @@ bool vkr_bake_lightmap_compose_direction_page(
 
 /*
  * Same-surface neighbors of a page's texels: for texel i, the entries
- * [first[i], first[i + 1]) of `indices` name the covered texels among its
- * eight around it on the page whose positions lie within `max_distance`
- * world units of its own and whose normals lie within about 37 degrees of
- * its own, so a chart seam or an unrelated chart next to it in the atlas is
- * not a neighbor.
+ * [first[i], first[i + 1]) of `indices` name the covered texels of the same
+ * instance among its eight around it on the page whose positions lie within
+ * `max_distance` world units of its own and whose normals lie within about
+ * 37 degrees of its own, so a chart seam or another instance's chart packed
+ * beside it is not a neighbor and each instance's fill and smoothing depend
+ * on the instance alone.
  */
 struct VkrBakeLightmapNeighbors {
   std::vector<uint32_t> first;
@@ -252,11 +347,23 @@ bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
                                        uint32_t threads,
                                        std::vector<uint8_t> *out_blocks);
 
+/* As vkr_bake_lightmap_encode_astc_hdr for a width x height image, such as
+   a strip of tiles; both are multiples of four. */
+bool vkr_bake_lightmap_encode_astc_hdr_image(const std::vector<float32_t> &rgba,
+                                             uint32_t width, uint32_t height,
+                                             float32_t effort, uint32_t threads,
+                                             std::vector<uint8_t> *out_blocks);
+
 /* Decodes blocks written by vkr_bake_lightmap_encode_astc_hdr to RGBA floats,
    to measure the encoding error. */
 bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
                                        uint32_t size,
                                        std::vector<float32_t> *out_rgba);
+
+/* As vkr_bake_lightmap_decode_astc_hdr for a width x height image. */
+bool vkr_bake_lightmap_decode_astc_hdr_image(const std::vector<uint8_t> &blocks,
+                                             uint32_t width, uint32_t height,
+                                             std::vector<float32_t> *out_rgba);
 
 /* As vkr_bake_lightmap_encode_astc_hdr in the linear LDR profile: every
    channel in [0, 1], for direction pages. */

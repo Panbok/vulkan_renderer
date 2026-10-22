@@ -5,6 +5,7 @@ extern "C" {
 #include "core/logger.h"
 #include "core/vkr_byte_io.h"
 #include "core/vkr_hash.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 }
 #include "bake/vkr_bake_atmosphere.h"
@@ -13,6 +14,7 @@ extern "C" {
 #include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_layers.h"
 #include "bake/vkr_bake_lightmap.h"
+#include "bake/vkr_bake_lightmap_inputs.h"
 #include "bake/vkr_bake_scene.h"
 #include "filesystem/vkr_filesystem_cpp.h"
 #include "vkr_ibl_math.h"
@@ -26,6 +28,7 @@ extern "C" {
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <new>
 #include <sstream>
@@ -77,6 +80,12 @@ constexpr uint32_t kDirectSamples = 8u;
 /* World distance within which a first bounce occludes for the ambient
    occlusion every tiled layer's alpha carries (ADR-088). */
 constexpr float32_t kOcclusionRadius = 1.0f;
+/* World distance within which an incremental bake relights indirect light
+   around a changed instance or past a changed lamp's range
+   (vkr_bake_lightmap_plan_incremental); see ADR-088 for the error it
+   leaves. At least the occlusion radius, so ambient occlusion and buried
+   texels always relight with the geometry that changes them. */
+constexpr float32_t kIncrementalReach = 4.0f;
 
 enum class GpuMode : uint8_t {
   Off,
@@ -170,6 +179,16 @@ struct Options {
   float32_t buried_backface = kBuriedBackfaceFraction;
   /* Diagnostic CSV of every published texel's light before encoding. */
   const char *dump_texels = nullptr;
+  /* The input index the bake writes for its set, and the previous set and
+     its index an incremental bake builds on (vkr_bake_lightmap_inputs.h). */
+  const char *index = nullptr;
+  const char *previous_set = nullptr;
+  const char *previous_index = nullptr;
+  float32_t reach = kIncrementalReach;
+  /* JSON report of how the set was produced. */
+  const char *report = nullptr;
+  /* Two sets whose matching instances' irradiance --compare measures. */
+  const char *compare[2] = {nullptr, nullptr};
 };
 
 void usage() {
@@ -189,7 +208,10 @@ void usage() {
       "[--denoise <0|1>] [--denoise-iterations <n>] "
       "[--denoise-sigma <noise deviations, 0 geometry only>] "
       "[--indirect-clamp <luminance, 0 off>] [--rr-start <depth, 0 off>] "
-      "[--buried-backface <fraction, 0 off>] [--dump-texels <csv>]\n");
+      "[--buried-backface <fraction, 0 off>] [--dump-texels <csv>] "
+      "[--index <inputs.vkli>] [--previous-set <set.vklm> --previous-index "
+      "<inputs.vkli>] [--reach <world units>] [--report <json>]\n"
+      "Set comparison: --compare <a.vklm> <b.vklm>\n");
 }
 
 /* Parses a finite non-negative float that fills `text`. */
@@ -219,6 +241,14 @@ bool parse(int argc, char **argv, Options *options) {
     const char *flag = argv[i];
     if (std::strcmp(flag, "--inspect") == 0) {
       options->inspect = true;
+      continue;
+    }
+    if (std::strcmp(flag, "--compare") == 0) {
+      if (i + 2 >= argc) {
+        return false;
+      }
+      options->compare[0] = argv[++i];
+      options->compare[1] = argv[++i];
       continue;
     }
     if (i + 1 >= argc) {
@@ -339,6 +369,18 @@ bool parse(int argc, char **argv, Options *options) {
       }
     } else if (std::strcmp(flag, "--dump-texels") == 0) {
       options->dump_texels = value;
+    } else if (std::strcmp(flag, "--index") == 0) {
+      options->index = value;
+    } else if (std::strcmp(flag, "--previous-set") == 0) {
+      options->previous_set = value;
+    } else if (std::strcmp(flag, "--previous-index") == 0) {
+      options->previous_index = value;
+    } else if (std::strcmp(flag, "--reach") == 0) {
+      if (!parse_nonnegative(value, &options->reach)) {
+        return false;
+      }
+    } else if (std::strcmp(flag, "--report") == 0) {
+      options->report = value;
     } else if (std::strcmp(flag, "--check-transport") == 0) {
       if (std::strcmp(value, "all") == 0) {
         options->check_transport = CheckTransport::All;
@@ -363,12 +405,22 @@ bool parse(int argc, char **argv, Options *options) {
       return false;
     }
   }
+  if (options->compare[0]) {
+    return !options->scene && !options->output;
+  }
   if (options->inspect && (!options->manifest || options->output)) {
     return false;
   }
   if (options->output && options->gpu != GpuMode::Off) {
     return false;
   }
+  /* A previous set comes with its index, and both with an output. */
+  if ((options->previous_set != nullptr) !=
+          (options->previous_index != nullptr) ||
+      (options->previous_set && !options->output)) {
+    return false;
+  }
+  options->reach = std::max(options->reach, options->ao_radius);
   /* A tiled set has no desktop planes to encode. */
   if (options->pipeline == PipelineClass::Tiled &&
       options->desktop_encoding != DesktopEncoding::Automatic) {
@@ -383,16 +435,9 @@ bool parse(int argc, char **argv, Options *options) {
          options->direct_texels_per_unit <= 1024.0f;
 }
 
-uint32_t mix_seed(uint32_t x) {
-  x ^= x >> 16;
-  x *= 0x7feb352du;
-  x ^= x >> 15;
-  x *= 0x846ca68bu;
-  return x ^ (x >> 16);
-}
-
 float32_t random_unit(uint32_t seed) {
-  return (float32_t)(mix_seed(seed) >> 8) * (1.0f / 16777216.0f);
+  return (float32_t)(vkr_bake_lightmap_mix_seed(seed) >> 8) *
+         (1.0f / 16777216.0f);
 }
 
 Vec3 scene_environment(void *scene, Vec3 direction) {
@@ -473,10 +518,14 @@ int run_gpu_benchmark(const Options &options, VkrBakeScene &scene,
       const VkrBakeLightmapTexel &texel = texels[t];
       const Vec3 origin =
           vec3_add(texel.position, vec3_scale(texel.normal, 1.0e-3f));
-      const uint32_t texel_seed = mix_seed(options.seed ^ mix_seed(t));
+      /* The GPU kernel's seed for the texel: the bake's seed mixed with the
+         texel's seed key. */
+      const uint32_t texel_seed =
+          vkr_bake_lightmap_mix_seed(options.seed ^ texel.seed);
       uint32_t hits = 0u;
       for (uint32_t s = 0u; s < options.samples; ++s) {
-        const uint32_t seed = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
+        const uint32_t seed =
+            vkr_bake_lightmap_mix_seed(texel_seed ^ (s * 0x85ebca6bu));
         VkrBakeRay ray = {};
         ray.origin = origin;
         ray.direction = cosine_direction(texel.normal, random_unit(seed),
@@ -556,13 +605,15 @@ bool cpu_reference(const Options &options, const VkrBakeIntegrator &integrator,
       const VkrBakeLightmapTexel &texel = texels[t];
       const Vec3 origin =
           vec3_add(texel.position, vec3_scale(texel.normal, 1.0e-3f));
+      /* Samples independent of the GPU's, from the same texel seed key. */
       const uint32_t texel_seed =
-          mix_seed((options.seed + 0x51ed27u) ^ mix_seed((uint32_t)t));
+          vkr_bake_lightmap_mix_seed((options.seed + 0x51ed27u) ^ texel.seed);
       Vec3 sum = vec3_zero();
       float64_t sum_y = 0.0;
       float64_t sum_y2 = 0.0;
       for (uint32_t s = 0u; s < options.check_samples; ++s) {
-        const uint32_t seed = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
+        const uint32_t seed =
+            vkr_bake_lightmap_mix_seed(texel_seed ^ (s * 0x85ebca6bu));
         const Vec3 direction = cosine_direction(
             texel.normal, random_unit(seed), random_unit(seed ^ 0x68bc21ebu));
         VkrBakeIntegratorResult result = {};
@@ -979,28 +1030,13 @@ bool host_bakes_layer(const VkrBakeScene &scene, const VkrBakeLayerPlan &plan,
   return false;
 }
 
+/* The manifest also names the host class's layer count and the digest of
+   the bake's inputs (vkr_bake_lightmap_inputs.h), from which `vkr_bakery
+   bake lightmap` tells whether a previous set is current. */
 bool write_manifest(const Options &options, const VkrBakeScene &scene,
-                    const VkrBakeLightmapLayout &layout) {
-  /* The layers this host's pipeline class bakes: every layer on the tiled
-     class, the lamp groups on the desktop class. */
-  std::vector<Vec3> sun_keys;
-  if (scene.atmosphere.enabled &&
-      scene.atmosphere_light < scene.lights.size()) {
-    sun_keys = vkr_bake_sun_key_directions(scene);
-  }
-  std::vector<VkrBakeLayerPlan> plans;
-  std::string plan_error;
-  if (!vkr_bake_plan_layers(scene, sun_keys, &plans, &plan_error)) {
-    std::fprintf(stderr, "%s\n", plan_error.c_str());
-    return false;
-  }
+                    const VkrBakeLightmapLayout &layout, size_t baked_layers,
+                    const std::string &content_digest) {
   const bool desktop = options.pipeline == PipelineClass::Desktop;
-  size_t baked_layers = 0u;
-  for (const VkrBakeLayerPlan &plan : plans) {
-    if (host_bakes_layer(scene, plan, desktop)) {
-      ++baked_layers;
-    }
-  }
   std::ostringstream manifest;
   manifest << "{\"version\":1,\"dependencies\":[";
   for (size_t i = 0u; i < scene.dependency_paths.size(); ++i) {
@@ -1024,6 +1060,7 @@ bool write_manifest(const Options &options, const VkrBakeScene &scene,
            << ",\"lightmap_instances\":" << layout.rects.size()
            << ",\"pipeline\":\"" << (desktop ? "desktop" : "tiled") << '"'
            << ",\"baked_layers\":" << baked_layers
+           << ",\"content_digest\":" << json_string(content_digest)
            << ",\"pages\":" << layout.page_count
            << ",\"page_size\":" << layout.page_size << "}\n";
   return write_atomic(options.manifest, manifest.str());
@@ -1118,101 +1155,6 @@ lamp_lit_instances(const VkrBakeScene &scene,
     }
   }
   return lit;
-}
-
-/*
- * Bakes and streams the lamp-direct pages (ADR-108): per page, each lamp
- * group's direct light at the texels of the lamp-direct layout, gathered
- * without indirect light. Buried texels, found by the first group's
- * first-hit back faces, take their neighbors' light; nothing is smoothed,
- * so shadow edges keep the footprint grid's and the emitter's own softness.
- */
-bool bake_direct_pages(const Options &options, VkrBakeScene &scene,
-                       VkrBakeGpuContext *gpu,
-                       const std::vector<BakeLayer> &layers,
-                       const std::vector<uint8_t> &lamp_direct,
-                       const VkrBakeLightmapLayout &direct_layout,
-                       uint32_t threads, std::ofstream *stream,
-                       uint32_t *payload_crc, double *out_gpu_seconds) {
-  (void)scene;
-  VkrBakeGpuGatherSettings settings;
-  /* Rectangle lights take one footprint point per sample. */
-  settings.samples = kDirectSamples;
-  settings.max_depth = 1u;
-  settings.rr_start_depth = 0u;
-  settings.seed = options.seed;
-  settings.direct_only = true;
-  std::vector<float32_t> rgba;
-  std::vector<uint8_t> blocks;
-  for (uint32_t page = 0u; page < direct_layout.page_count; ++page) {
-    std::vector<VkrBakeLightmapTexel> texels;
-    VkrBakeLightmapNeighbors neighbors;
-    if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
-                                          (uint32_t)scene.triangles.size(),
-                                          direct_layout, page, &texels) ||
-        !vkr_bake_lightmap_neighbors(direct_layout.page_size, texels,
-                                     kOutlierNeighborTexels /
-                                         options.direct_texels_per_unit,
-                                     &neighbors)) {
-      return false;
-    }
-    std::vector<uint8_t> valid(texels.size(), 1u);
-    VkrBakeLightmapFill fill;
-    bool planned = false;
-    for (size_t l = 0u; l < layers.size(); ++l) {
-      if (!lamp_direct[l]) {
-        continue;
-      }
-      VkrBakeGpuLayer transport = layers[l].transport;
-      transport.texel_direct = true;
-      transport.sky = false;
-      transport.emission = false;
-      settings.backface = !planned && options.buried_backface > 0.0f;
-      VkrBakeGpuGatherResult gathered;
-      if (!vkr_bake_gpu_gather(gpu, texels, transport, settings, &gathered)) {
-        return false;
-      }
-      *out_gpu_seconds += gathered.gpu_seconds;
-      if (!planned) {
-        for (size_t i = 0u; settings.backface && i < texels.size(); ++i) {
-          if (gathered.backface[i] > options.buried_backface) {
-            valid[i] = 0u;
-          }
-        }
-        if (!vkr_bake_lightmap_plan_fill(neighbors, valid, &fill)) {
-          return false;
-        }
-        planned = true;
-      }
-      vkr_bake_lightmap_apply_fill(fill, &gathered.direct);
-      if (!vkr_bake_lightmap_compose_page(direct_layout, page, texels,
-                                          gathered.direct, nullptr,
-                                          options.dilation_passes, &rgba) ||
-          !vkr_bake_lightmap_encode_astc_hdr(rgba, direct_layout.page_size,
-                                             options.astc_effort, threads,
-                                             &blocks)) {
-        return false;
-      }
-      *payload_crc = vkr_crc32_update(*payload_crc, blocks.data(),
-                                      (uint64_t)blocks.size());
-      stream->write((const char *)blocks.data(),
-                    (std::streamsize)blocks.size());
-      if (!*stream) {
-        return false;
-      }
-      float64_t luminance_sum = 0.0;
-      for (const Vec3 &value : gathered.direct) {
-        luminance_sum += luminance(value);
-      }
-      std::printf("direct page=%u/%u lamp_group=%s texels=%zu gpu_s=%.2f "
-                  "mean_luminance=%.5g\n",
-                  page + 1u, direct_layout.page_count, layers[l].record.name,
-                  texels.size(), gathered.gpu_seconds,
-                  texels.empty() ? 0.0 : luminance_sum / texels.size());
-      std::fflush(stdout);
-    }
-  }
-  return true;
 }
 
 /*
@@ -1328,18 +1270,17 @@ struct BcReport {
 /* Packs a composed float RGBA page into BC6H blocks on the GPU; alpha, the
    ambient visibility, is not encoded. */
 bool encode_bc6h(VkrBakeGpuContext *gpu, const std::vector<float32_t> &rgba,
-                 uint32_t page_size, std::vector<uint8_t> *out_blocks,
-                 BcReport *out_report) {
+                 uint32_t width, uint32_t height,
+                 std::vector<uint8_t> *out_blocks, BcReport *out_report) {
   const auto start = std::chrono::steady_clock::now();
-  if (!vkr_bake_gpu_encode_bc6h(gpu, rgba.data(), page_size, page_size,
-                                out_blocks, &out_report->gpu_seconds)) {
+  if (!vkr_bake_gpu_encode_bc6h(gpu, rgba.data(), width, height, out_blocks,
+                                &out_report->gpu_seconds)) {
     return false;
   }
   out_report->encode_seconds = seconds_since(start);
   std::vector<float32_t> decoded;
   if (!vkr_bake_gpu_decode_bc(gpu, VkrBakeGpuBcFormat::Bc6hUfloat,
-                              out_blocks->data(), page_size, page_size,
-                              &decoded)) {
+                              out_blocks->data(), width, height, &decoded)) {
     return false;
   }
   /* Against the values the encoder takes: negative and NaN as zero, the
@@ -1363,17 +1304,17 @@ bool encode_bc6h(VkrBakeGpuContext *gpu, const std::vector<float32_t> &rgba,
 
 /* Packs an RGBA8 page into BC7 blocks on the GPU. */
 bool encode_bc7(VkrBakeGpuContext *gpu, const std::vector<uint8_t> &rgba8,
-                uint32_t page_size, std::vector<uint8_t> *out_blocks,
-                BcReport *out_report) {
+                uint32_t width, uint32_t height,
+                std::vector<uint8_t> *out_blocks, BcReport *out_report) {
   const auto start = std::chrono::steady_clock::now();
-  if (!vkr_bake_gpu_encode_bc7(gpu, rgba8.data(), page_size, page_size,
-                               out_blocks, &out_report->gpu_seconds)) {
+  if (!vkr_bake_gpu_encode_bc7(gpu, rgba8.data(), width, height, out_blocks,
+                               &out_report->gpu_seconds)) {
     return false;
   }
   out_report->encode_seconds = seconds_since(start);
   std::vector<float32_t> decoded;
   if (!vkr_bake_gpu_decode_bc(gpu, VkrBakeGpuBcFormat::Bc7, out_blocks->data(),
-                              page_size, page_size, &decoded)) {
+                              width, height, &decoded)) {
     return false;
   }
   float64_t error = 0.0;
@@ -1590,17 +1531,259 @@ set_planes(const std::vector<VkrLightLayer> &layer_records,
 }
 
 /*
- * What every page of a set bake reads, and what the pages accumulate: the
- * payload stream and its checksum, the diagnostic dump, the timings and the
- * page buffers reused across layers.
+ * The set an incremental bake builds on (ADR-088): the previous set, mapped
+ * read-only for as long as the bake copies its tiles, its decoded tables
+ * and the input index written beside it. `usable` is false, with `reason`,
+ * when the bake must bake every instance instead.
  */
+struct PreviousSet {
+  FileMapping mapping = {};
+  VkrLightmapSet set = {};
+  VkrBakeLightmapInputs inputs;
+  bool usable = false;
+  std::string reason = "no previous set";
+
+  PreviousSet() = default;
+  PreviousSet(const PreviousSet &) = delete;
+  PreviousSet &operator=(const PreviousSet &) = delete;
+
+  ~PreviousSet() {
+    if (mapping.data) {
+      file_unmap(&mapping);
+    }
+  }
+};
+
+/* Where a current instance's tiles lie in the previous set; `found` false
+   when that set has no rectangle of its size for it. */
+struct PreviousRect {
+  bool found = false;
+  uint32_t page = 0u;
+  uint32_t x = 0u;
+  uint32_t y = 0u;
+  bool direct_found = false;
+  uint32_t direct_page = 0u;
+  uint32_t direct_x = 0u;
+  uint32_t direct_y = 0u;
+};
+
+/* What a set bake bakes: the sun keys, the host class's layers and their
+   records, which lamp groups take lamp-direct pages, and those pages'
+   layout. */
+struct SetPlan {
+  std::vector<Vec3> sun_keys;
+  std::vector<BakeLayer> layers;
+  std::vector<VkrLightLayer> records;
+  std::vector<uint8_t> lamp_direct;
+  bool any_lamp_direct = false;
+  VkrBakeLightmapLayout direct_layout;
+};
+
+/* Plans the set's layers; returns the tool's exit status on failure (3 when
+   the host's class has nothing to bake), zero on success. */
+int plan_set(const Options &options, const VkrBakeScene &scene,
+             const VkrBakeLightmapLayout &layout, SetPlan *out_plan) {
+  const bool desktop = options.pipeline == PipelineClass::Desktop;
+  /* The keys' directions decide which lights the lamp groups hold, so both
+     classes plan with them; only the tiled class bakes the keys. */
+  if (scene.atmosphere.enabled &&
+      scene.atmosphere_light < scene.lights.size()) {
+    out_plan->sun_keys = vkr_bake_sun_key_directions(scene);
+  }
+  std::vector<VkrBakeLayerPlan> plans;
+  std::string plan_error;
+  if (!vkr_bake_plan_layers(scene, out_plan->sun_keys, &plans, &plan_error)) {
+    std::fprintf(stderr, "%s\n", plan_error.c_str());
+    return 1;
+  }
+  for (const VkrBakeLayerPlan &plan : plans) {
+    if (host_bakes_layer(scene, plan, desktop)) {
+      out_plan->layers.push_back(gpu_layer(plan));
+    }
+  }
+  if (out_plan->layers.empty()) {
+    return 3;
+  }
+  for (const BakeLayer &layer : out_plan->layers) {
+    out_plan->records.push_back(layer.record);
+  }
+  /* On the tiled class, a lamp group with lights takes its direct light on
+     the lamp-direct pages and keeps bounce, sky and emission in its
+     irradiance (ADR-108). */
+  out_plan->lamp_direct.assign(out_plan->layers.size(), 0u);
+  if (!plan_lamp_direct(options, scene, layout, desktop, &out_plan->layers,
+                        &out_plan->lamp_direct, &out_plan->direct_layout,
+                        &out_plan->any_lamp_direct)) {
+    return 1;
+  }
+  return 0;
+}
+
+/* Every bake option that changes a set's bytes, in a fixed order, for its
+   input index. */
+std::string settings_text(const Options &options) {
+  char text[768];
+  std::snprintf(
+      text, sizeof(text),
+      "page_size=%u texels_per_unit=%.9g direct_texels_per_unit=%.9g "
+      "samples=%u max_depth=%u seed=%u astc_effort=%.9g "
+      "desktop_encoding=%u pipeline=%u dilation=%u outlier_ratio=%.9g "
+      "smooth=%u ao_radius=%.9g denoise=%u denoise_iterations=%u "
+      "denoise_sigma=%.9g indirect_clamp=%.9g rr_start=%u "
+      "buried_backface=%.9g",
+      options.page_size, options.texels_per_unit,
+      options.direct_texels_per_unit, options.samples, options.max_depth,
+      options.seed, options.astc_effort, (uint32_t)options.desktop_encoding,
+      (uint32_t)options.pipeline, options.dilation_passes,
+      options.outlier_ratio, options.smooth_passes, options.ao_radius,
+      options.denoise ? 1u : 0u, options.denoise_iterations,
+      options.denoise_sigma, options.indirect_clamp, options.rr_start_depth,
+      options.buried_backface);
+  return std::string(text);
+}
+
+/* The instances of the set's instance table by key: the document id when
+   the entity has one, else its index, and the node. */
+std::string set_instance_key(const VkrLightmapInstance &instance) {
+  static const uint8_t zero[16] = {};
+  std::string key;
+  if (std::memcmp(instance.document_id, zero, sizeof(zero)) != 0) {
+    key.assign("d");
+    key.append(reinterpret_cast<const char *>(instance.document_id), 16u);
+  } else {
+    key.assign("i");
+    key.append(reinterpret_cast<const char *>(&instance.entity_index), 4u);
+  }
+  key.append(reinterpret_cast<const char *>(&instance.instance_index), 4u);
+  return key;
+}
+
+/*
+ * Opens the previous set and its index, and when both describe one set of
+ * this bake's settings, planes and page size, finds each current instance's
+ * rectangles in it. Any doubt leaves `previous->usable` false.
+ */
+void open_previous_set(const Options &options, Arena *arena,
+                       const VkrBakeLightmapInputs &inputs,
+                       const VkrBakeLightmapLayout &layout,
+                       const std::vector<VkrLightmapPlane> &planes,
+                       const VkrBakeScene &scene, PreviousSet *previous,
+                       std::vector<PreviousRect> *out_rects) {
+  out_rects->assign(inputs.instances.size(), PreviousRect{});
+  if (!options.previous_set || !options.previous_index) {
+    return;
+  }
+  uint32_t index_crc = 0u;
+  uint64_t index_bytes = 0u;
+  if (!vkr_bake_lightmap_index_read(options.previous_index, &previous->inputs,
+                                    &index_crc, &index_bytes)) {
+    previous->reason = "the previous set's input index does not read";
+    return;
+  }
+  if (previous->inputs.globals != inputs.globals) {
+    previous->reason = "settings, sky, sun keys, directional lights or "
+                       "layers changed";
+    return;
+  }
+  const FilePath path = file_path_view(options.previous_set);
+  if (file_map_readonly(&path, &previous->mapping) != FILE_ERROR_NONE ||
+      previous->mapping.size != index_bytes ||
+      !vkr_lightmap_set_decode(previous->mapping.data, previous->mapping.size,
+                               arena, &previous->set)) {
+    previous->reason = "the previous set does not map, decode or match its "
+                       "index";
+    return;
+  }
+  /* The payload checksum names the set the index was written with. */
+  if (previous->set.payload_crc != index_crc) {
+    previous->reason = "the previous set is not the one its index describes";
+    return;
+  }
+  bool same_planes = previous->set.plane_count == planes.size() &&
+                     previous->set.page_size == layout.page_size &&
+                     previous->set.shape_charts_current;
+  for (uint32_t p = 0u; same_planes && p < planes.size(); ++p) {
+    const VkrLightmapPlane &a = previous->set.planes[p];
+    same_planes = a.layer == planes[p].layer && a.kind == planes[p].kind &&
+                  a.format == planes[p].format;
+  }
+  if (!same_planes ||
+      previous->set.direct_texels_per_unit != options.direct_texels_per_unit) {
+    previous->reason = "the previous set's planes or page size differ";
+    return;
+  }
+  std::map<std::string, uint32_t> by_key;
+  std::vector<std::string> duplicates;
+  for (uint32_t i = 0u; i < previous->set.instance_count; ++i) {
+    const std::string key = set_instance_key(previous->set.instances[i]);
+    if (!by_key.emplace(key, i).second) {
+      duplicates.push_back(key);
+    }
+  }
+  for (const std::string &key : duplicates) {
+    by_key.erase(key);
+  }
+  for (uint32_t i = 0u; i < inputs.instances.size(); ++i) {
+    const VkrBakeLightmapInputInstance &instance = inputs.instances[i];
+    if (instance.width == 0u) {
+      continue;
+    }
+    VkrLightmapInstance probe = {};
+    if (scene.instances[i].has_document_id) {
+      std::memcpy(probe.document_id, scene.instances[i].document_id.data(),
+                  16u);
+    }
+    probe.entity_index = scene.instances[i].entity_index;
+    probe.instance_index = scene.instances[i].source_node_index;
+    const auto found = by_key.find(set_instance_key(probe));
+    if (found == by_key.end()) {
+      continue;
+    }
+    const VkrLightmapInstance &old = previous->set.instances[found->second];
+    PreviousRect &rect = (*out_rects)[i];
+    rect.found = old.width == instance.width && old.height == instance.height;
+    rect.page = old.page;
+    rect.x = old.x;
+    rect.y = old.y;
+    if (previous->set.direct_page_count != 0u) {
+      const VkrLightmapDirectRect &direct =
+          previous->set.direct_rects[found->second];
+      rect.direct_found = direct.width == instance.direct_width &&
+                          direct.height == instance.direct_height &&
+                          direct.width != 0u;
+      rect.direct_page = direct.page;
+      rect.direct_x = direct.x;
+      rect.direct_y = direct.y;
+    }
+  }
+  previous->usable = true;
+  previous->reason.clear();
+}
+
+/* One plane's page as it is assembled: the encoded bytes, every tile the
+   empty tile until a rectangle's tiles replace it. */
+struct PageImage {
+  VkrLightmapPlaneFormat format = VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR;
+  uint32_t page_size = 0u;
+  std::vector<uint8_t> bytes;
+};
+
+/* What every page of a set bake reads and accumulates: the payload stream
+   and its checksum, the diagnostic dump, the timings and, for an
+   incremental bake, the previous set and which instances each layer
+   relights. */
 struct SetPageBake {
   const Options *options = nullptr;
   VkrBakeScene *scene = nullptr;
   const VkrBakeLightmapLayout *layout = nullptr;
   VkrBakeGpuContext *gpu = nullptr;
   const std::vector<BakeLayer> *layers = nullptr;
+  const std::vector<VkrLightmapPlane> *planes = nullptr;
   const std::vector<VkrBakeAtmosphere> *key_atmospheres = nullptr;
+  const PreviousSet *previous = nullptr;
+  const std::vector<PreviousRect> *previous_rects = nullptr;
+  /* Null for a full bake: every instance relights in every layer. */
+  const VkrBakeLightmapIncrementalPlan *plan = nullptr;
   bool desktop = false;
   bool desktop_bc = false;
   uint32_t threads = 0u;
@@ -1611,9 +1794,248 @@ struct SetPageBake {
   double gpu_seconds = 0.0;
   double encode_seconds = 0.0;
   double cleanup_seconds = 0.0;
-  std::vector<float32_t> rgba;
-  std::vector<uint8_t> blocks;
+  /* Texels gathered and rectangles relit or copied, over every plane. */
+  uint64_t gathered_texels = 0u;
+  uint64_t total_texels = 0u;
+  uint64_t relit_rects = 0u;
+  uint64_t copied_rects = 0u;
+  /* The empty tile of each plane format, encoded once. */
+  std::map<uint32_t, std::vector<uint8_t>> empty_tiles;
 };
+
+/* Whether layer `l` relights source instance `instance`. */
+bool layer_relights(const SetPageBake &bake, size_t l, uint32_t instance) {
+  return !bake.plan || bake.plan->layer_dirty[l][instance] != 0u;
+}
+
+bool direct_relights(const SetPageBake &bake, size_t l, uint32_t instance) {
+  return !bake.plan || bake.plan->direct_dirty[l][instance] != 0u;
+}
+
+/* Encodes the RGBA floats of `strip`, `width` x `height` texels of whole
+   tiles, in `format`. */
+bool encode_strip(SetPageBake *bake, VkrLightmapPlaneFormat format,
+                  const std::vector<float32_t> &strip, uint32_t width,
+                  uint32_t height, std::vector<uint8_t> *out_encoded) {
+  const Options &options = *bake->options;
+  BcReport report;
+  switch (format) {
+  case VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR:
+    return vkr_bake_lightmap_encode_astc_hdr_image(
+        strip, width, height, options.astc_effort, bake->threads, out_encoded);
+  case VKR_LIGHTMAP_FORMAT_BC6H:
+    return encode_bc6h(bake->gpu, strip, width, height, out_encoded, &report);
+  case VKR_LIGHTMAP_FORMAT_RGB9E5:
+    encode_rgb9e5(strip, out_encoded);
+    return true;
+  case VKR_LIGHTMAP_FORMAT_RGBA8:
+    encode_rgba8(strip, out_encoded);
+    return true;
+  case VKR_LIGHTMAP_FORMAT_BC7: {
+    std::vector<uint8_t> rgba8;
+    encode_rgba8(strip, &rgba8);
+    return encode_bc7(bake->gpu, rgba8, width, height, out_encoded, &report);
+  }
+  default:
+    return false;
+  }
+}
+
+/* The encoded empty tile of a plane format: zero with alpha one outside an
+   irradiance plane's rectangles, the neutral direction outside a direction
+   plane's. */
+bool empty_tile(SetPageBake *bake, VkrLightmapPlaneFormat format,
+                bool direction, const std::vector<uint8_t> **out_tile) {
+  const uint32_t key = (uint32_t)format | (direction ? 0x100u : 0u);
+  const auto found = bake->empty_tiles.find(key);
+  if (found != bake->empty_tiles.end()) {
+    *out_tile = &found->second;
+    return true;
+  }
+  std::vector<float32_t> texels(16u * 4u);
+  for (uint32_t i = 0u; i < 16u; ++i) {
+    texels[4u * i + 0u] = direction ? 0.5f : 0.0f;
+    texels[4u * i + 1u] = direction ? 0.5f : 0.0f;
+    texels[4u * i + 2u] = direction ? 0.5f : 0.0f;
+    texels[4u * i + 3u] = direction ? 0.0f : 1.0f;
+  }
+  std::vector<uint8_t> encoded;
+  if (!encode_strip(bake, format, texels, 4u, 4u, &encoded)) {
+    return false;
+  }
+  std::vector<uint8_t> tile(vkr_bake_lightmap_tile_bytes(format));
+  vkr_bake_lightmap_strip_take(encoded, format, 0u, 4u, tile.data());
+  *out_tile = &bake->empty_tiles.emplace(key, std::move(tile)).first->second;
+  return true;
+}
+
+/* One rectangle of a page plane: relit from composed RGBA floats, or
+   copied from the previous set's page image of the same plane. */
+struct PlaneRect {
+  const VkrBakeLightmapRect *rect = nullptr;
+  bool relit = false;
+  std::vector<float32_t> rgba;
+  const uint8_t *previous_page = nullptr;
+  uint32_t previous_x = 0u;
+  uint32_t previous_y = 0u;
+};
+
+/*
+ * Assembles one plane's page from its rectangles, encoding every relit
+ * rectangle's tiles in one strip, and appends it to the payload.
+ */
+bool write_plane_page(SetPageBake *bake, VkrLightmapPlaneFormat format,
+                      bool direction, uint32_t page_size,
+                      const std::vector<PlaneRect> &rects) {
+  const auto encode_start = std::chrono::steady_clock::now();
+  const std::vector<uint8_t> *empty = nullptr;
+  if (!empty_tile(bake, format, direction, &empty)) {
+    return false;
+  }
+  const uint32_t tile_bytes = vkr_bake_lightmap_tile_bytes(format);
+  const uint32_t tiles_per_row = page_size / 4u;
+  PageImage image;
+  image.format = format;
+  image.page_size = page_size;
+  image.bytes.resize((size_t)tiles_per_row * tiles_per_row * tile_bytes);
+  for (size_t t = 0u; t < (size_t)tiles_per_row * tiles_per_row; ++t) {
+    std::memcpy(image.bytes.data() + t * tile_bytes, empty->data(), tile_bytes);
+  }
+  uint64_t relit_tiles = 0u;
+  for (const PlaneRect &plane_rect : rects) {
+    if (plane_rect.relit) {
+      relit_tiles += (uint64_t)(plane_rect.rect->width / 4u) *
+                     (plane_rect.rect->height / 4u);
+    }
+  }
+  if (relit_tiles != 0u) {
+    uint32_t strip_width = 0u;
+    uint32_t strip_height = 0u;
+    vkr_bake_lightmap_strip_size(relit_tiles, &strip_width, &strip_height);
+    std::vector<float32_t> strip((size_t)strip_width * strip_height * 4u, 0.0f);
+    uint64_t tile = 0u;
+    for (const PlaneRect &plane_rect : rects) {
+      if (!plane_rect.relit) {
+        continue;
+      }
+      const uint32_t width = plane_rect.rect->width;
+      for (uint32_t ty = 0u; ty < plane_rect.rect->height / 4u; ++ty) {
+        for (uint32_t tx = 0u; tx < width / 4u; ++tx) {
+          vkr_bake_lightmap_strip_put(
+              plane_rect.rgba.data() + 4u * ((size_t)ty * 4u * width + tx * 4u),
+              width, tile++, strip_width, &strip);
+        }
+      }
+    }
+    std::vector<uint8_t> encoded;
+    if (!encode_strip(bake, format, strip, strip_width, strip_height,
+                      &encoded)) {
+      return false;
+    }
+    tile = 0u;
+    std::vector<uint8_t> bytes(tile_bytes);
+    for (const PlaneRect &plane_rect : rects) {
+      if (!plane_rect.relit) {
+        continue;
+      }
+      const VkrBakeLightmapRect &rect = *plane_rect.rect;
+      for (uint32_t ty = 0u; ty < rect.height / 4u; ++ty) {
+        for (uint32_t tx = 0u; tx < rect.width / 4u; ++tx) {
+          vkr_bake_lightmap_strip_take(encoded, format, tile++, strip_width,
+                                       bytes.data());
+          vkr_bake_lightmap_page_put_tile(&image.bytes, page_size, format,
+                                          rect.x / 4u + tx, rect.y / 4u + ty,
+                                          bytes.data());
+        }
+      }
+    }
+  }
+  std::vector<uint8_t> bytes(tile_bytes);
+  for (const PlaneRect &plane_rect : rects) {
+    if (plane_rect.relit) {
+      bake->relit_rects += 1u;
+      continue;
+    }
+    const VkrBakeLightmapRect &rect = *plane_rect.rect;
+    for (uint32_t ty = 0u; ty < rect.height / 4u; ++ty) {
+      for (uint32_t tx = 0u; tx < rect.width / 4u; ++tx) {
+        vkr_bake_lightmap_page_get_tile(plane_rect.previous_page, page_size,
+                                        format, plane_rect.previous_x / 4u + tx,
+                                        plane_rect.previous_y / 4u + ty,
+                                        bytes.data());
+        vkr_bake_lightmap_page_put_tile(&image.bytes, page_size, format,
+                                        rect.x / 4u + tx, rect.y / 4u + ty,
+                                        bytes.data());
+      }
+    }
+    bake->copied_rects += 1u;
+  }
+  bake->encode_seconds += seconds_since(encode_start);
+  bake->payload_crc = vkr_crc32_update(bake->payload_crc, image.bytes.data(),
+                                       (uint64_t)image.bytes.size());
+  bake->stream->write((const char *)image.bytes.data(),
+                      (std::streamsize)image.bytes.size());
+  return (bool)*bake->stream;
+}
+
+/* The texels of `texels` whose source instance `keep` selects, with their
+   indices in `texels`. */
+template <typename Keep>
+void select_texels(const std::vector<VkrBakeLightmapTexel> &texels, Keep keep,
+                   std::vector<VkrBakeLightmapTexel> *out_texels,
+                   std::vector<uint32_t> *out_indices) {
+  out_texels->clear();
+  out_indices->clear();
+  for (uint32_t i = 0u; i < texels.size(); ++i) {
+    if (keep(texels[i].source_instance_index)) {
+      out_texels->push_back(texels[i]);
+      out_indices->push_back(i);
+    }
+  }
+}
+
+/* Texels one gather or cleanup works on, with their same-surface neighbors,
+   validity, fill and ambient occlusion (empty without). Neighbors and fill
+   stay within an instance, so the texels of whole instances plan what their
+   page would plan for them. */
+struct TexelSet {
+  std::vector<VkrBakeLightmapTexel> texels;
+  /* Index of each texel in the set it was selected from. */
+  std::vector<uint32_t> source_index;
+  VkrBakeLightmapNeighbors neighbors;
+  std::vector<uint8_t> valid;
+  VkrBakeLightmapFill fill;
+  std::vector<float32_t> occlusion;
+};
+
+/* The texels of `from` whose instance `relit` marks, with their validity
+   and occlusion from `from` and their own neighbors and fill; all of
+   `from` when every texel's instance is marked. */
+bool subset_texels(const TexelSet &from, const std::vector<uint8_t> &relit,
+                   uint32_t page_size, float32_t neighbor_distance,
+                   TexelSet *out) {
+  select_texels(
+      from.texels, [&](uint32_t instance) { return relit[instance] != 0u; },
+      &out->texels, &out->source_index);
+  if (out->texels.size() == from.texels.size()) {
+    out->neighbors = from.neighbors;
+    out->valid = from.valid;
+    out->fill = from.fill;
+    out->occlusion = from.occlusion;
+    return true;
+  }
+  out->valid.resize(out->texels.size());
+  out->occlusion.resize(from.occlusion.empty() ? 0u : out->texels.size());
+  for (size_t i = 0u; i < out->texels.size(); ++i) {
+    out->valid[i] = from.valid[out->source_index[i]];
+    if (!from.occlusion.empty()) {
+      out->occlusion[i] = from.occlusion[out->source_index[i]];
+    }
+  }
+  return vkr_bake_lightmap_neighbors(page_size, out->texels, neighbor_distance,
+                                     &out->neighbors) &&
+         vkr_bake_lightmap_plan_fill(out->neighbors, out->valid, &out->fill);
+}
 
 /*
  * The page's buried texels and their fill, and with `bake_occlusion` its
@@ -1657,55 +2079,209 @@ bool plan_page_fill(const Options &options, uint32_t page, uint32_t page_count,
 }
 
 /*
- * Composes, encodes and appends a desktop layer's incident direction plane.
- * False when a stage fails, before anything is appended.
+ * The page surface: the texels of every instance some layer relights, and
+ * from the first layer's first-bounce rays their buried texels, fill and
+ * smoothed ambient occlusion. The first layer's own gather supplies them
+ * for the instances it relights, and a direct-only gather of the first
+ * layer's transport, whose first hits match it, for the rest
+ * (VkrBakeGpuGatherSettings::direct_only). `first_layer` takes the first
+ * layer's texels and its gather.
  */
-bool write_direction_page(SetPageBake *bake, uint32_t page,
-                          const std::vector<VkrBakeLightmapTexel> &texels,
-                          const VkrBakeLightmapNeighbors &neighbors,
-                          const VkrBakeLightmapFill &fill,
-                          const VkrBakeGpuGatherResult &gathered,
-                          std::vector<Vec3> *directions,
-                          float64_t *mean_directionality,
-                          BcReport *direction_bc) {
+bool plan_page_surface(SetPageBake *bake, uint32_t page,
+                       const std::vector<VkrBakeLightmapTexel> &all,
+                       const std::vector<uint8_t> &relit_any,
+                       TexelSet *out_surface, TexelSet *out_first,
+                       VkrBakeGpuGatherResult *out_first_gathered) {
   const Options &options = *bake->options;
-  const VkrBakeLightmapLayout &layout = *bake->layout;
-  const auto direction_start = std::chrono::steady_clock::now();
-  std::vector<uint8_t> rgba8;
-  bool ok = finish_directions(options, texels, neighbors, fill, gathered,
-                              directions, mean_directionality) &&
-            vkr_bake_lightmap_compose_direction_page(
-                layout, page, texels, *directions, options.dilation_passes,
-                &bake->rgba);
-  if (ok) {
-    encode_rgba8(bake->rgba, &rgba8);
-  }
-  if (ok && bake->desktop_bc) {
-    ok = encode_bc7(bake->gpu, rgba8, layout.page_size, &bake->blocks,
-                    direction_bc);
-    rgba8.swap(bake->blocks);
-  }
-  bake->encode_seconds += seconds_since(direction_start);
-  if (!ok) {
+  const std::vector<BakeLayer> &layers = *bake->layers;
+  const float32_t neighbor_distance =
+      kOutlierNeighborTexels / options.texels_per_unit;
+  const bool bake_occlusion = !bake->desktop && options.ao_radius > 0.0f;
+  const bool find_buried = options.buried_backface > 0.0f;
+  std::vector<uint32_t> unused;
+  select_texels(
+      all, [&](uint32_t instance) { return relit_any[instance] != 0u; },
+      &out_surface->texels, &unused);
+  out_surface->valid.assign(out_surface->texels.size(), 1u);
+  if (!vkr_bake_lightmap_neighbors(bake->layout->page_size, out_surface->texels,
+                                   neighbor_distance,
+                                   &out_surface->neighbors)) {
     return false;
   }
-  bake->payload_crc =
-      vkr_crc32_update(bake->payload_crc, rgba8.data(), (uint64_t)rgba8.size());
-  bake->stream->write((const char *)rgba8.data(),
-                      (std::streamsize)rgba8.size());
+  std::vector<uint8_t> first_relit(relit_any.size(), 0u);
+  for (uint32_t i = 0u; i < relit_any.size(); ++i) {
+    first_relit[i] = relit_any[i] && layer_relights(*bake, 0u, i) ? 1u : 0u;
+  }
+  select_texels(
+      out_surface->texels,
+      [&](uint32_t instance) { return first_relit[instance] != 0u; },
+      &out_first->texels, &out_first->source_index);
+  std::vector<float32_t> backface(out_surface->texels.size(), 0.0f);
+  std::vector<float32_t> occlusion(out_surface->texels.size(), 1.0f);
+  /* Only first hits need no atmosphere, which an incremental bake that
+     relights no sun key never builds. */
+  if (layers[0].sun_key >= 0 && !bake->key_atmospheres->empty()) {
+    vkr_bake_scene_use_atmosphere(
+        bake->scene, (*bake->key_atmospheres)[(size_t)layers[0].sun_key]);
+    if (!vkr_bake_gpu_update_lighting(bake->gpu, *bake->scene)) {
+      return false;
+    }
+  }
+  VkrBakeGpuGatherSettings settings = bake->settings;
+  settings.occlusion = bake_occlusion;
+  settings.backface = find_buried;
+  settings.direction = bake->desktop;
+  if (!vkr_bake_gpu_gather(bake->gpu, out_first->texels, layers[0].transport,
+                           settings, out_first_gathered)) {
+    return false;
+  }
+  bake->gpu_seconds += out_first_gathered->gpu_seconds;
+  for (size_t i = 0u; i < out_first->texels.size(); ++i) {
+    const uint32_t s = out_first->source_index[i];
+    if (find_buried) {
+      backface[s] = out_first_gathered->backface[i];
+    }
+    if (bake_occlusion) {
+      occlusion[s] = out_first_gathered->occlusion[i];
+    }
+  }
+  if (out_first->texels.size() != out_surface->texels.size() &&
+      (bake_occlusion || find_buried)) {
+    std::vector<VkrBakeLightmapTexel> rest;
+    std::vector<uint32_t> rest_index;
+    select_texels(
+        out_surface->texels,
+        [&](uint32_t instance) { return first_relit[instance] == 0u; }, &rest,
+        &rest_index);
+    VkrBakeGpuGatherSettings first_hits = settings;
+    first_hits.direct_only = true;
+    first_hits.direction = false;
+    VkrBakeGpuGatherResult hits;
+    if (!vkr_bake_gpu_gather(bake->gpu, rest, layers[0].transport, first_hits,
+                             &hits)) {
+      return false;
+    }
+    bake->gpu_seconds += hits.gpu_seconds;
+    for (size_t i = 0u; i < rest.size(); ++i) {
+      if (find_buried) {
+        backface[rest_index[i]] = hits.backface[i];
+      }
+      if (bake_occlusion) {
+        occlusion[rest_index[i]] = hits.occlusion[i];
+      }
+    }
+  }
+  VkrBakeGpuGatherResult surface_rays;
+  surface_rays.backface = std::move(backface);
+  surface_rays.occlusion = std::move(occlusion);
+  if (!plan_page_fill(
+          options, page, bake->layout->page_count, out_surface->texels,
+          out_surface->neighbors, bake_occlusion, find_buried, &surface_rays,
+          &out_surface->valid, &out_surface->fill, &out_surface->occlusion)) {
+    return false;
+  }
+  return subset_texels(*out_surface, first_relit, bake->layout->page_size,
+                       neighbor_distance, out_first);
+}
+
+/* The rectangles of `page` in layout order with, for a rectangle the layer
+   relights, its texels' indices in `texels`. */
+void page_rects(const VkrBakeLightmapLayout &layout, uint32_t page,
+                const std::vector<VkrBakeLightmapTexel> &texels,
+                std::vector<uint32_t> *out_rects,
+                std::vector<std::vector<uint32_t>> *out_members) {
+  out_rects->clear();
+  for (uint32_t r = 0u; r < layout.rects.size(); ++r) {
+    if (layout.rects[r].page == page) {
+      out_rects->push_back(r);
+    }
+  }
+  out_members->assign(layout.rects.size(), {});
+  for (uint32_t i = 0u; i < texels.size(); ++i) {
+    const uint32_t instance = texels[i].source_instance_index;
+    (*out_members)[layout.rect_by_instance[instance]].push_back(i);
+  }
+}
+
+/* The page image a copied rectangle of plane `plane` reads in the previous
+   set, on its page `previous_page` (a lamp-direct page for a lamp-direct
+   plane). */
+const uint8_t *previous_page_image(const SetPageBake &bake, uint32_t plane,
+                                   uint32_t previous_page) {
+  const VkrLightmapSet &set = bake.previous->set;
+  return set.payload +
+         vkr_lightmap_set_plane_offset(&set, previous_page, plane);
+}
+
+/* The plane rectangles of one layer's plane on `page`: relit rectangles
+   composed from `values` (or directions), the others copied. */
+bool plane_rects(const SetPageBake &bake, const VkrBakeLightmapLayout &layout,
+                 uint32_t page, uint32_t plane, bool lamp_direct_page,
+                 const TexelSet &texels, const std::vector<Vec3> &values,
+                 const std::vector<float32_t> *occlusion, bool direction,
+                 std::vector<PlaneRect> *out_rects) {
+  std::vector<uint32_t> rects;
+  std::vector<std::vector<uint32_t>> members;
+  page_rects(layout, page, texels.texels, &rects, &members);
+  std::vector<uint8_t> relit(layout.rects.size(), 0u);
+  for (const VkrBakeLightmapTexel &texel : texels.texels) {
+    relit[layout.rect_by_instance[texel.source_instance_index]] = 1u;
+  }
+  out_rects->clear();
+  out_rects->resize(rects.size());
+  for (size_t k = 0u; k < rects.size(); ++k) {
+    const uint32_t r = rects[k];
+    const VkrBakeLightmapRect &rect = layout.rects[r];
+    PlaneRect &plane_rect = (*out_rects)[k];
+    plane_rect.rect = &rect;
+    const PreviousRect *previous =
+        bake.previous_rects && bake.plan
+            ? &(*bake.previous_rects)[rect.source_instance_index]
+            : nullptr;
+    const bool found = previous && (lamp_direct_page ? previous->direct_found
+                                                     : previous->found);
+    /* A rectangle no texel covers composes the same in every bake; one
+       whose instance the plan relights but whose texels this set lacks is
+       relit too. */
+    plane_rect.relit = relit[r] != 0u || !found;
+    if (!plane_rect.relit) {
+      plane_rect.previous_page = previous_page_image(
+          bake, plane,
+          lamp_direct_page ? previous->direct_page : previous->page);
+      plane_rect.previous_x =
+          lamp_direct_page ? previous->direct_x : previous->x;
+      plane_rect.previous_y =
+          lamp_direct_page ? previous->direct_y : previous->y;
+      continue;
+    }
+    if (!vkr_bake_lightmap_compose_rect(
+            rect, texels.texels, members[r], values, occlusion,
+            bake.options->dilation_passes, direction, &plane_rect.rgba)) {
+      return false;
+    }
+  }
   return true;
 }
 
-/* Prints a baked layer's statistics, its direction and BC lines on the
+/* Index of the plane of `layer` and `kind` in the set's plane table. */
+uint32_t plane_index(const std::vector<VkrLightmapPlane> &planes,
+                     uint32_t layer, VkrLightmapPlaneKind kind) {
+  for (uint32_t p = 0u; p < planes.size(); ++p) {
+    if (planes[p].layer == layer && planes[p].kind == kind) {
+      return p;
+    }
+  }
+  return UINT32_MAX;
+}
+
+/* Prints a baked layer's statistics, with its direction line on the
    desktop class. */
 void print_layer_report(const SetPageBake &bake, uint32_t page, uint32_t l,
-                        const std::vector<VkrBakeLightmapTexel> &texels,
+                        const TexelSet &texels,
                         const VkrBakeGpuGatherResult &gathered,
                         const std::vector<Vec3> &irradiance,
                         const VkrBakeLightmapOutliers &outliers,
-                        float64_t mean_directionality,
-                        const BcReport &irradiance_bc,
-                        const BcReport &direction_bc) {
+                        float64_t mean_directionality) {
   const VkrBakeLightmapLayout &layout = *bake.layout;
   const std::vector<BakeLayer> &layers = *bake.layers;
   float64_t luminance_sum = 0.0;
@@ -1721,8 +2297,9 @@ void print_layer_report(const SetPageBake &bake, uint32_t page, uint32_t l,
               record.kind == VKR_LIGHT_LAYER_SUN_KEY
                   ? std::to_string(record.index).c_str()
                   : record.name,
-              texels.size(), gathered.gpu_seconds,
-              texels.empty() ? 0.0 : luminance_sum / texels.size(),
+              texels.texels.size(), gathered.gpu_seconds,
+              texels.texels.empty() ? 0.0
+                                    : luminance_sum / texels.texels.size(),
               (unsigned long long)outliers.texels, outliers.energy_fraction);
   if (bake.desktop) {
     std::printf("direction page=%u/%u layer=%u/%zu lamp_group=%s "
@@ -1730,132 +2307,334 @@ void print_layer_report(const SetPageBake &bake, uint32_t page, uint32_t l,
                 page + 1u, layout.page_count, l + 1u, layers.size(),
                 record.name, mean_directionality);
   }
-  if (bake.desktop_bc) {
-    std::printf("bc page=%u/%u layer=%u/%zu lamp_group=%s "
-                "bc6h_encode_s=%.2f bc6h_gpu_s=%.3f bc6h_rms=%.4g "
-                "bc6h_relative_rms=%.4f bc7_encode_s=%.2f "
-                "bc7_gpu_s=%.3f bc7_rms=%.4f bc7_max_steps=%u\n",
-                page + 1u, layout.page_count, l + 1u, layers.size(),
-                record.name, irradiance_bc.encode_seconds,
-                irradiance_bc.gpu_seconds, irradiance_bc.rms,
-                irradiance_bc.relative_rms, direction_bc.encode_seconds,
-                direction_bc.gpu_seconds, direction_bc.rms,
-                direction_bc.max_steps);
+}
+
+/*
+ * Bakes one layer of a page: gathers the texels it relights (the first
+ * layer's come gathered), cleans them up, and writes its planes with every
+ * other rectangle copied from the previous set.
+ */
+bool bake_page_layer(SetPageBake *bake, uint32_t page, uint32_t l,
+                     const TexelSet &surface, const TexelSet &first,
+                     VkrBakeGpuGatherResult *first_gathered) {
+  const Options &options = *bake->options;
+  const VkrBakeLightmapLayout &layout = *bake->layout;
+  const std::vector<BakeLayer> &layers = *bake->layers;
+  const float32_t neighbor_distance =
+      kOutlierNeighborTexels / options.texels_per_unit;
+  TexelSet own;
+  const TexelSet *texels = &first;
+  VkrBakeGpuGatherResult gathered;
+  VkrBakeGpuGatherResult *result = first_gathered;
+  if (l != 0u) {
+    std::vector<uint8_t> relit(bake->scene->instances.size(), 0u);
+    for (uint32_t i = 0u; i < relit.size(); ++i) {
+      relit[i] = layer_relights(*bake, l, i) ? 1u : 0u;
+    }
+    if (!subset_texels(surface, relit, layout.page_size, neighbor_distance,
+                       &own)) {
+      return false;
+    }
+    texels = &own;
+    result = &gathered;
+    if (!own.texels.empty()) {
+      if (layers[l].sun_key >= 0) {
+        vkr_bake_scene_use_atmosphere(
+            bake->scene, (*bake->key_atmospheres)[(size_t)layers[l].sun_key]);
+        if (!vkr_bake_gpu_update_lighting(bake->gpu, *bake->scene)) {
+          return false;
+        }
+      }
+      VkrBakeGpuGatherSettings settings = bake->settings;
+      settings.direction = bake->desktop;
+      if (!vkr_bake_gpu_gather(bake->gpu, own.texels, layers[l].transport,
+                               settings, &gathered)) {
+        return false;
+      }
+      bake->gpu_seconds += gathered.gpu_seconds;
+    }
   }
+  bake->gathered_texels += texels->texels.size();
+  const auto cleanup_start = std::chrono::steady_clock::now();
+  std::vector<Vec3> irradiance;
+  VkrBakeLightmapOutliers outliers = {};
+  if (!texels->texels.empty() &&
+      !finish_layer(options, layout.page_size, texels->texels,
+                    texels->neighbors, texels->valid, texels->fill, result,
+                    &irradiance, &outliers)) {
+    return false;
+  }
+  std::vector<Vec3> directions;
+  float64_t mean_directionality = 0.0;
+  if (bake->desktop && !texels->texels.empty() &&
+      !finish_directions(options, texels->texels, texels->neighbors,
+                         texels->fill, *result, &directions,
+                         &mean_directionality)) {
+    return false;
+  }
+  bake->cleanup_seconds += seconds_since(cleanup_start);
+  const bool bake_occlusion = !bake->desktop && options.ao_radius > 0.0f;
+  const uint32_t irradiance_plane =
+      plane_index(*bake->planes, l, VKR_LIGHTMAP_PLANE_IRRADIANCE);
+  std::vector<PlaneRect> rects;
+  if (!plane_rects(*bake, layout, page, irradiance_plane, false, *texels,
+                   irradiance, bake_occlusion ? &texels->occlusion : nullptr,
+                   false, &rects) ||
+      !write_plane_page(bake, (*bake->planes)[irradiance_plane].format, false,
+                        layout.page_size, rects)) {
+    return false;
+  }
+  if (bake->desktop) {
+    const uint32_t direction_plane =
+        plane_index(*bake->planes, l, VKR_LIGHTMAP_PLANE_DIRECTION);
+    if (!plane_rects(*bake, layout, page, direction_plane, false, *texels,
+                     directions, nullptr, true, &rects) ||
+        !write_plane_page(bake, (*bake->planes)[direction_plane].format, true,
+                          layout.page_size, rects)) {
+      return false;
+    }
+  }
+  if (options.dump_texels && !texels->texels.empty() &&
+      !dump_layer(bake->dump, page, l, texels->texels, texels->valid, *result,
+                  irradiance, bake->desktop ? &directions : nullptr)) {
+    return false;
+  }
+  print_layer_report(*bake, page, l, *texels, *result, irradiance, outliers,
+                     mean_directionality);
+  std::fflush(stdout);
+  return true;
 }
 
 /*
  * Bakes one page: rasterizes its texels, then gathers, finishes, encodes and
- * appends each layer's planes in set order. False when a stage fails.
+ * appends each layer's planes in set order. An incremental bake gathers
+ * only the instances each layer relights and copies the others' tiles.
  */
 bool bake_page(SetPageBake *bake, uint32_t page) {
-  const Options &options = *bake->options;
   VkrBakeScene &scene = *bake->scene;
   const VkrBakeLightmapLayout &layout = *bake->layout;
   const std::vector<BakeLayer> &layers = *bake->layers;
-  const bool desktop = bake->desktop;
-  std::vector<VkrBakeLightmapTexel> texels;
-  VkrBakeLightmapNeighbors neighbors;
-  bool ok = vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
-                                             (uint32_t)scene.triangles.size(),
-                                             layout, page, &texels) &&
-            vkr_bake_lightmap_neighbors(
-                layout.page_size, texels,
-                kOutlierNeighborTexels / options.texels_per_unit, &neighbors);
-  /* The page's ambient occlusion and buried texels come from its first
-     layer's first-bounce rays; occlusion goes into every layer's alpha, so
-     whichever layers a frame weighs carry it (ADR-088), and every layer
-     fills the same buried texels. */
-  std::vector<float32_t> occlusion;
-  std::vector<uint8_t> valid(texels.size(), 1u);
-  VkrBakeLightmapFill fill;
-  /* Occlusion rides in the ASTC planes' alpha; desktop planes have
-     none. */
-  const bool bake_occlusion = !desktop && options.ao_radius > 0.0f;
-  const bool find_buried = options.buried_backface > 0.0f;
-  for (uint32_t l = 0u; ok && l < layers.size(); ++l) {
-    if (layers[l].sun_key >= 0) {
-      vkr_bake_scene_use_atmosphere(
-          &scene, (*bake->key_atmospheres)[(size_t)layers[l].sun_key]);
-      ok = vkr_bake_gpu_update_lighting(bake->gpu, scene);
-      if (!ok) {
-        break;
-      }
-    }
-    bake->settings.occlusion = bake_occlusion && l == 0u;
-    bake->settings.backface = find_buried && l == 0u;
-    /* Every desktop layer is a lamp group with a direction plane. */
-    bake->settings.direction = desktop;
-    VkrBakeGpuGatherResult gathered;
-    ok = vkr_bake_gpu_gather(bake->gpu, texels, layers[l].transport,
-                             bake->settings, &gathered);
-    bake->gpu_seconds += gathered.gpu_seconds;
-    if (ok && l == 0u) {
-      ok = plan_page_fill(options, page, layout.page_count, texels, neighbors,
-                          bake_occlusion, find_buried, &gathered, &valid, &fill,
-                          &occlusion);
-    }
-    const auto cleanup_start = std::chrono::steady_clock::now();
-    std::vector<Vec3> irradiance;
-    VkrBakeLightmapOutliers outliers = {};
-    ok = ok && finish_layer(options, layout.page_size, texels, neighbors, valid,
-                            fill, &gathered, &irradiance, &outliers);
-    bake->cleanup_seconds += seconds_since(cleanup_start);
-    const auto encode_start = std::chrono::steady_clock::now();
-    BcReport irradiance_bc;
-    ok = ok &&
-         vkr_bake_lightmap_compose_page(layout, page, texels, irradiance,
-                                        bake_occlusion ? &occlusion : nullptr,
-                                        options.dilation_passes, &bake->rgba);
-    if (ok && !desktop) {
-      ok = vkr_bake_lightmap_encode_astc_hdr(bake->rgba, layout.page_size,
-                                             options.astc_effort, bake->threads,
-                                             &bake->blocks);
-    } else if (ok && bake->desktop_bc) {
-      ok = encode_bc6h(bake->gpu, bake->rgba, layout.page_size, &bake->blocks,
-                       &irradiance_bc);
-    } else if (ok) {
-      encode_rgb9e5(bake->rgba, &bake->blocks);
-    }
-    bake->encode_seconds += seconds_since(encode_start);
-    if (!ok) {
-      break;
-    }
-    bake->payload_crc = vkr_crc32_update(bake->payload_crc, bake->blocks.data(),
-                                         (uint64_t)bake->blocks.size());
-    bake->stream->write((const char *)bake->blocks.data(),
-                        (std::streamsize)bake->blocks.size());
-    std::vector<Vec3> directions;
-    float64_t mean_directionality = 0.0;
-    BcReport direction_bc;
-    if (desktop) {
-      ok = write_direction_page(bake, page, texels, neighbors, fill, gathered,
-                                &directions, &mean_directionality,
-                                &direction_bc);
-      if (!ok) {
-        break;
-      }
-    }
-    ok = (bool)*bake->stream;
-    if (ok && options.dump_texels) {
-      ok = dump_layer(bake->dump, page, l, texels, valid, gathered, irradiance,
-                      desktop ? &directions : nullptr);
-    }
-    print_layer_report(*bake, page, l, texels, gathered, irradiance, outliers,
-                       mean_directionality, irradiance_bc, direction_bc);
-    std::fflush(stdout);
+  std::vector<VkrBakeLightmapTexel> all;
+  if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
+                                        (uint32_t)scene.triangles.size(),
+                                        layout, page, &all)) {
+    return false;
   }
-  return ok;
+  bake->total_texels += (uint64_t)all.size() * layers.size();
+  std::vector<uint8_t> relit_any(scene.instances.size(), 0u);
+  for (uint32_t i = 0u; i < relit_any.size(); ++i) {
+    for (size_t l = 0u; l < layers.size() && !relit_any[i]; ++l) {
+      relit_any[i] = layer_relights(*bake, l, i) ? 1u : 0u;
+    }
+  }
+  TexelSet surface;
+  TexelSet first;
+  VkrBakeGpuGatherResult first_gathered;
+  bool any = false;
+  for (const VkrBakeLightmapTexel &texel : all) {
+    any = any || relit_any[texel.source_instance_index] != 0u;
+  }
+  if (any && !plan_page_surface(bake, page, all, relit_any, &surface, &first,
+                                &first_gathered)) {
+    return false;
+  }
+  for (uint32_t l = 0u; l < layers.size(); ++l) {
+    if (!bake_page_layer(bake, page, l, surface, first, &first_gathered)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/*
+ * Bakes and streams the lamp-direct pages (ADR-108): per page, each lamp
+ * group's direct light at the texels of the lamp-direct layout, gathered
+ * without indirect light. Buried texels, found by the first group's
+ * first-hit back faces, take their neighbors' light; nothing is smoothed,
+ * so shadow edges keep the footprint grid's and the emitter's own softness.
+ * An incremental bake gathers, for every lamp-direct group, the instances
+ * any of them relights, and copies the others' tiles.
+ */
+bool bake_direct_pages(SetPageBake *bake,
+                       const std::vector<uint8_t> &lamp_direct,
+                       const VkrBakeLightmapLayout &direct_layout) {
+  const Options &options = *bake->options;
+  VkrBakeScene &scene = *bake->scene;
+  const std::vector<BakeLayer> &layers = *bake->layers;
+  VkrBakeGpuGatherSettings settings;
+  /* Rectangle lights take one footprint point per sample. */
+  settings.samples = kDirectSamples;
+  settings.max_depth = 1u;
+  settings.rr_start_depth = 0u;
+  settings.seed = options.seed;
+  settings.direct_only = true;
+  std::vector<uint8_t> relit(scene.instances.size(), 0u);
+  for (uint32_t i = 0u; i < relit.size(); ++i) {
+    for (size_t l = 0u; l < layers.size() && !relit[i]; ++l) {
+      relit[i] = lamp_direct[l] && direct_relights(*bake, l, i) ? 1u : 0u;
+    }
+  }
+  for (uint32_t page = 0u; page < direct_layout.page_count; ++page) {
+    std::vector<VkrBakeLightmapTexel> all;
+    if (!vkr_bake_lightmap_rasterize_page(scene.triangles.data(),
+                                          (uint32_t)scene.triangles.size(),
+                                          direct_layout, page, &all)) {
+      return false;
+    }
+    TexelSet texels;
+    select_texels(
+        all, [&](uint32_t instance) { return relit[instance] != 0u; },
+        &texels.texels, &texels.source_index);
+    if (!vkr_bake_lightmap_neighbors(direct_layout.page_size, texels.texels,
+                                     kOutlierNeighborTexels /
+                                         options.direct_texels_per_unit,
+                                     &texels.neighbors)) {
+      return false;
+    }
+    texels.valid.assign(texels.texels.size(), 1u);
+    bool planned = false;
+    for (size_t l = 0u; l < layers.size(); ++l) {
+      if (!lamp_direct[l]) {
+        continue;
+      }
+      VkrBakeGpuLayer transport = layers[l].transport;
+      transport.texel_direct = true;
+      transport.sky = false;
+      transport.emission = false;
+      settings.backface = !planned && options.buried_backface > 0.0f;
+      VkrBakeGpuGatherResult gathered;
+      if (!vkr_bake_gpu_gather(bake->gpu, texels.texels, transport, settings,
+                               &gathered)) {
+        return false;
+      }
+      bake->gpu_seconds += gathered.gpu_seconds;
+      bake->gathered_texels += texels.texels.size();
+      bake->total_texels += all.size();
+      if (!planned) {
+        for (size_t i = 0u; settings.backface && i < texels.texels.size();
+             ++i) {
+          if (gathered.backface[i] > options.buried_backface) {
+            texels.valid[i] = 0u;
+          }
+        }
+        if (!vkr_bake_lightmap_plan_fill(texels.neighbors, texels.valid,
+                                         &texels.fill)) {
+          return false;
+        }
+        planned = true;
+      }
+      vkr_bake_lightmap_apply_fill(texels.fill, &gathered.direct);
+      const uint32_t plane = plane_index(*bake->planes, (uint32_t)l,
+                                         VKR_LIGHTMAP_PLANE_LAMP_DIRECT);
+      std::vector<PlaneRect> rects;
+      if (!plane_rects(*bake, direct_layout, page, plane, true, texels,
+                       gathered.direct, nullptr, false, &rects) ||
+          !write_plane_page(bake, (*bake->planes)[plane].format, false,
+                            direct_layout.page_size, rects)) {
+        return false;
+      }
+      float64_t luminance_sum = 0.0;
+      for (const Vec3 &value : gathered.direct) {
+        luminance_sum += luminance(value);
+      }
+      std::printf("direct page=%u/%u lamp_group=%s texels=%zu gpu_s=%.2f "
+                  "mean_luminance=%.5g\n",
+                  page + 1u, direct_layout.page_count, layers[l].record.name,
+                  texels.texels.size(), gathered.gpu_seconds,
+                  texels.texels.empty() ? 0.0
+                                        : luminance_sum / texels.texels.size());
+      std::fflush(stdout);
+    }
+  }
+  return true;
+}
+
+/*
+ * Plans which instances each layer relights over the previous set. A sun
+ * key's shadows run away from its key light, whose direction comes from the
+ * key's atmosphere when `key_atmospheres` holds them, else from the key's
+ * sun direction.
+ */
+bool plan_relight(const Options &options, const PreviousSet &previous,
+                  const VkrBakeLightmapInputs &inputs, const SetPlan &plan,
+                  const std::vector<PreviousRect> &previous_rects,
+                  const std::vector<VkrBakeAtmosphere> *key_atmospheres,
+                  VkrBakeLightmapIncrementalPlan *out_plan) {
+  std::vector<uint8_t> has_rect(inputs.instances.size(), 0u);
+  std::vector<uint8_t> has_direct_rect(inputs.instances.size(), 0u);
+  for (size_t i = 0u; i < previous_rects.size(); ++i) {
+    has_rect[i] = previous_rects[i].found ? 1u : 0u;
+    has_direct_rect[i] = previous_rects[i].direct_found ? 1u : 0u;
+  }
+  std::vector<VkrBakeLightmapPlanLayer> layers(plan.layers.size());
+  for (size_t l = 0u; l < plan.layers.size(); ++l) {
+    const BakeLayer &layer = plan.layers[l];
+    layers[l].kind = layer.record.kind;
+    layers[l].lights = layer.transport.lights;
+    layers[l].texel_direct = layer.transport.texel_direct;
+    layers[l].lamp_direct = plan.lamp_direct[l] != 0u;
+    layers[l].key_light_direction =
+        key_atmospheres && layer.sun_key >= 0
+            ? (*key_atmospheres)[(size_t)layer.sun_key].key_light_direction
+            : layer.record.sun_direction;
+  }
+  if (!vkr_bake_lightmap_plan_incremental(previous.inputs, inputs, layers,
+                                          has_rect, has_direct_rect,
+                                          options.reach, out_plan)) {
+    std::fprintf(stderr, "Planning the incremental bake failed\n");
+    return false;
+  }
+  return true;
+}
+
+/* Writes the bake's incremental report: how the set was produced, from
+   which previous set, and how much it gathered and copied. */
+bool write_report(const Options &options, const SetPageBake &bake,
+                  const PreviousSet &previous,
+                  const VkrBakeLightmapIncrementalPlan *plan,
+                  const std::vector<BakeLayer> &layers, double seconds) {
+  if (!options.report) {
+    return true;
+  }
+  std::ostringstream report;
+  report << "{\"version\":1,\"kind\":\"" << (plan ? "incremental" : "full")
+         << "\",\"full_reason\":"
+         << json_string(plan ? std::string() : previous.reason)
+         << ",\"reach\":" << options.reach
+         << ",\"changed_instances\":" << (plan ? plan->changed_instances : 0u)
+         << ",\"changed_lights\":" << (plan ? plan->changed_lights : 0u)
+         << ",\"gathered_texels\":" << bake.gathered_texels
+         << ",\"total_texels\":" << bake.total_texels
+         << ",\"relit_rects\":" << bake.relit_rects
+         << ",\"copied_rects\":" << bake.copied_rects << ",\"layers\":[";
+  for (size_t l = 0u; plan && l < layers.size(); ++l) {
+    uint32_t relit = 0u;
+    uint32_t direct = 0u;
+    for (size_t i = 0u; i < plan->layer_dirty[l].size(); ++i) {
+      relit += plan->layer_dirty[l][i] ? 1u : 0u;
+      direct += plan->direct_dirty[l][i] ? 1u : 0u;
+    }
+    report << (l ? "," : "") << "{\"relit_instances\":" << relit
+           << ",\"relit_direct_instances\":" << direct << "}";
+  }
+  report << "],\"seconds\":" << seconds << "}\n";
+  return write_atomic(options.report, report.str());
 }
 
 /*
  * Bakes the scene's lightmap set into `options.output`. Pages are baked one
  * at a time and each layer image is encoded and appended as soon as it is
  * gathered; the header and tables, which carry the payload checksum, are
- * written last. The file appears under its name only when complete.
+ * written last. The file appears under its name only when complete. With a
+ * previous set and its input index whose globals match, only what the
+ * incremental plan relights is gathered; every other rectangle's tiles are
+ * copied (vkr_bake_lightmap_inputs.h). `options.index` receives this set's
+ * input index.
  */
-int bake_set(const Options &options, VkrBakeScene &scene,
-             const VkrBakeLightmapLayout &layout) {
+int bake_set(const Options &options, VkrBakeScene &scene, Arena *arena,
+             const VkrBakeLightmapLayout &layout, SetPlan &plan,
+             const VkrBakeLightmapInputs &inputs) {
+  const auto bake_start = std::chrono::steady_clock::now();
   if (layout.rects.empty()) {
     std::fprintf(stderr, "The scene has no lightmapped instances\n");
     return 1;
@@ -1865,67 +2644,20 @@ int bake_set(const Options &options, VkrBakeScene &scene,
                          "host does not have\n");
     return 1;
   }
-
-  /* Each sun key's atmosphere is built once and made current before the key's
-     layer of every page. */
-  std::vector<Vec3> sun_keys;
-  std::vector<VkrBakeAtmosphere> key_atmospheres;
-  /* The keys' directions decide which lights the lamp groups hold, so both
-     classes plan with them; only the tiled class bakes the keys and needs
-     their atmospheres. */
   const bool desktop = options.pipeline == PipelineClass::Desktop;
-  if (scene.atmosphere.enabled &&
-      scene.atmosphere_light < scene.lights.size()) {
-    sun_keys = vkr_bake_sun_key_directions(scene);
-  }
-  if (!desktop && !sun_keys.empty() &&
-      !build_sun_key_atmospheres(&scene, sun_keys, &key_atmospheres)) {
-    return 1;
-  }
-  std::vector<VkrBakeLayerPlan> plans;
-  std::string plan_error;
-  if (!vkr_bake_plan_layers(scene, sun_keys, &plans, &plan_error)) {
-    std::fprintf(stderr, "%s\n", plan_error.c_str());
-    return 1;
-  }
-  std::vector<BakeLayer> layers;
-  for (const VkrBakeLayerPlan &plan : plans) {
-    if (host_bakes_layer(scene, plan, desktop)) {
-      layers.push_back(gpu_layer(plan));
-    }
-  }
-  if (layers.empty()) {
-    std::fprintf(stderr,
-                 "The scene has no static lamps or emission, so a desktop "
-                 "lightmap set has nothing to hold\n");
-    return 3;
-  }
-  std::vector<VkrLightLayer> layer_records;
-  for (const BakeLayer &layer : layers) {
-    layer_records.push_back(layer.record);
-  }
-  /* On the tiled class, a lamp group with lights takes its direct light on
-     the lamp-direct pages and keeps bounce, sky and emission in its
-     irradiance (ADR-108). */
-  std::vector<uint8_t> lamp_direct(layers.size(), 0u);
-  bool any_lamp_direct = false;
-  VkrBakeLightmapLayout direct_layout;
-  if (!plan_lamp_direct(options, scene, layout, desktop, &layers, &lamp_direct,
-                        &direct_layout, &any_lamp_direct)) {
-    return 1;
-  }
+  std::vector<BakeLayer> &layers = plan.layers;
   std::vector<VkrLightmapInstance> instances;
   std::vector<VkrLightmapDirectRect> direct_rects;
-  build_set_instances(scene, layout, any_lamp_direct, direct_layout, &instances,
-                      &direct_rects);
-  if (any_lamp_direct) {
+  build_set_instances(scene, layout, plan.any_lamp_direct, plan.direct_layout,
+                      &instances, &direct_rects);
+  if (plan.any_lamp_direct) {
     uint64_t direct_texels = 0u;
-    for (const VkrBakeLightmapRect &rect : direct_layout.rects) {
+    for (const VkrBakeLightmapRect &rect : plan.direct_layout.rects) {
       direct_texels += (uint64_t)rect.width * rect.height;
     }
     std::printf("direct_pages=%u direct_texels_per_unit=%g "
                 "direct_rect_texels=%llu\n",
-                direct_layout.page_count, options.direct_texels_per_unit,
+                plan.direct_layout.page_count, options.direct_texels_per_unit,
                 (unsigned long long)direct_texels);
   }
 
@@ -1954,20 +2686,61 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   std::printf("pipeline=%s desktop_encoding=%s\n",
               desktop ? "desktop" : "tiled",
               desktop ? (desktop_bc ? "bc" : "uncompressed") : "none");
-
   std::vector<VkrLightmapPlane> planes =
-      set_planes(layer_records, lamp_direct, desktop, desktop_bc);
+      set_planes(plan.records, plan.lamp_direct, desktop, desktop_bc);
+
+  /* The previous set, and which instances each layer relights. */
+  PreviousSet previous;
+  std::vector<PreviousRect> previous_rects;
+  open_previous_set(options, arena, inputs, layout, planes, scene, &previous,
+                    &previous_rects);
+  VkrBakeLightmapIncrementalPlan incremental;
+  const VkrBakeLightmapIncrementalPlan *relight = nullptr;
+  if (previous.usable) {
+    if (!plan_relight(options, previous, inputs, plan, previous_rects, nullptr,
+                      &incremental)) {
+      return 1;
+    }
+    relight = &incremental;
+  }
+  /* The sun keys relight only when an instance changed; then they need
+     their atmospheres, and the plan their key lights' directions: the sun,
+     or the moon while the sun is down. */
+  const bool sun_keys_relight = !relight ||
+                                incremental.changed_instances != 0u ||
+                                incremental.changed_boxes != 0u;
+  std::vector<VkrBakeAtmosphere> key_atmospheres;
+  if (!desktop && !plan.sun_keys.empty() && sun_keys_relight) {
+    if (!build_sun_key_atmospheres(&scene, plan.sun_keys, &key_atmospheres)) {
+      return 1;
+    }
+  }
+  if (relight && !key_atmospheres.empty() &&
+      !plan_relight(options, previous, inputs, plan, previous_rects,
+                    &key_atmospheres, &incremental)) {
+    return 1;
+  }
+  if (relight) {
+    std::printf("incremental base=%s changed_instances=%u changed_lights=%u "
+                "reach=%g\n",
+                options.previous_set, incremental.changed_instances,
+                incremental.changed_lights, options.reach);
+  } else {
+    std::printf("full reason=\"%s\"\n", previous.reason.c_str());
+  }
+
   VkrLightmapSet set = {};
   set.page_size = layout.page_size;
   set.page_count = layout.page_count;
-  set.layer_count = (uint32_t)layer_records.size();
+  set.layer_count = (uint32_t)plan.records.size();
   set.plane_count = (uint32_t)planes.size();
   set.instance_count = (uint32_t)instances.size();
   set.texels_per_unit = options.texels_per_unit;
-  set.layers = layer_records.data();
+  set.layers = plan.records.data();
   set.planes = planes.data();
   set.instances = instances.data();
-  set.direct_page_count = any_lamp_direct ? direct_layout.page_count : 0u;
+  set.direct_page_count =
+      plan.any_lamp_direct ? plan.direct_layout.page_count : 0u;
   set.direct_texels_per_unit = options.direct_texels_per_unit;
   set.direct_rects = direct_rects.data();
   uint64_t payload_offset = 0u;
@@ -1995,7 +2768,11 @@ int bake_set(const Options &options, VkrBakeScene &scene,
   pages.layout = &layout;
   pages.gpu = gpu.get();
   pages.layers = &layers;
+  pages.planes = &planes;
   pages.key_atmospheres = &key_atmospheres;
+  pages.previous = &previous;
+  pages.previous_rects = &previous_rects;
+  pages.plan = relight;
   pages.desktop = desktop;
   pages.desktop_bc = desktop_bc;
   pages.settings.samples = options.samples;
@@ -2023,15 +2800,12 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     ok = bake_page(&pages, page);
   }
   /* The lamp-direct pages follow every other page (ADR-108). */
-  if (ok && any_lamp_direct) {
+  if (ok && plan.any_lamp_direct) {
     const auto direct_start = std::chrono::steady_clock::now();
-    double direct_gpu_seconds = 0.0;
-    ok = bake_direct_pages(options, scene, gpu.get(), layers, lamp_direct,
-                           direct_layout, pages.threads, &stream,
-                           &pages.payload_crc, &direct_gpu_seconds);
-    pages.gpu_seconds += direct_gpu_seconds;
+    const double gpu_before = pages.gpu_seconds;
+    ok = bake_direct_pages(&pages, plan.lamp_direct, plan.direct_layout);
     std::printf("direct_s=%.2f direct_gpu_s=%.2f\n",
-                seconds_since(direct_start), direct_gpu_seconds);
+                seconds_since(direct_start), pages.gpu_seconds - gpu_before);
   }
   gpu.reset();
 
@@ -2043,6 +2817,9 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     stream.close();
     ok = !stream.fail();
   }
+  ok = ok && (!options.index ||
+              vkr_bake_lightmap_index_write(options.index, inputs,
+                                            ~pages.payload_crc, file_size));
   std::error_code error;
   if (ok) {
     std::filesystem::rename(temporary, target, error);
@@ -2054,15 +2831,183 @@ int bake_set(const Options &options, VkrBakeScene &scene,
     std::fprintf(stderr, "Lightmap bake failed\n");
     return 1;
   }
+  if (!write_report(options, pages, previous, relight, layers,
+                    seconds_since(bake_start))) {
+    std::fprintf(stderr, "Writing the bake report failed\n");
+    return 1;
+  }
   std::printf("saved=%s bytes=%llu pages=%u layers=%zu instances=%zu "
-              "gpu_s=%.2f cleanup_s=%.2f encode_s=%.2f\n",
+              "gpu_s=%.2f cleanup_s=%.2f encode_s=%.2f gathered_texels=%llu "
+              "total_texels=%llu relit_rects=%llu copied_rects=%llu\n",
               options.output, (unsigned long long)file_size, layout.page_count,
               layers.size(), instances.size(), pages.gpu_seconds,
-              pages.cleanup_seconds, pages.encode_seconds);
+              pages.cleanup_seconds, pages.encode_seconds,
+              (unsigned long long)pages.gathered_texels,
+              (unsigned long long)pages.total_texels,
+              (unsigned long long)pages.relit_rects,
+              (unsigned long long)pages.copied_rects);
   return 0;
 }
 
+/* One set's tiles of an instance's rectangle on plane `plane`, as the
+   blocks of a width x height image. */
+std::vector<uint8_t> rect_blocks(const VkrLightmapSet &set, uint32_t plane,
+                                 uint32_t page, uint32_t x, uint32_t y,
+                                 uint32_t width, uint32_t height) {
+  const uint8_t *image =
+      set.payload + vkr_lightmap_set_plane_offset(&set, page, plane);
+  std::vector<uint8_t> blocks((size_t)(width / 4u) * (height / 4u) * 16u);
+  size_t at = 0u;
+  for (uint32_t ty = 0u; ty < height / 4u; ++ty) {
+    for (uint32_t tx = 0u; tx < width / 4u; ++tx) {
+      vkr_bake_lightmap_page_get_tile(
+          image, set.page_size, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, x / 4u + tx,
+          y / 4u + ty, blocks.data() + at);
+      at += 16u;
+    }
+  }
+  return blocks;
+}
+
+/* The rectangle of instance `i` of `set` on a plane's pages. */
+VkrLightmapDirectRect instance_rect(const VkrLightmapSet &set, uint32_t i,
+                                    bool direct) {
+  if (direct) {
+    return set.direct_rects[i];
+  }
+  const VkrLightmapInstance &instance = set.instances[i];
+  return {instance.page, instance.x, instance.y, instance.width,
+          instance.height};
+}
+
+/* The mean relative luminance difference over one rectangle's texels of
+   `b` against `a`, scaled by the rectangle's mean luminance in `a`; false
+   when a rectangle does not decode. */
+bool rect_difference(const std::vector<uint8_t> &a,
+                     const std::vector<uint8_t> &b, uint32_t width,
+                     uint32_t height, float64_t *out_sum) {
+  std::vector<float32_t> da;
+  std::vector<float32_t> db;
+  if (!vkr_bake_lightmap_decode_astc_hdr_image(a, width, height, &da) ||
+      !vkr_bake_lightmap_decode_astc_hdr_image(b, width, height, &db)) {
+    return false;
+  }
+  const size_t count = (size_t)width * height;
+  float64_t mean = 0.0;
+  for (size_t t = 0u; t < count; ++t) {
+    mean += luminance(vec3_new(da[4u * t], da[4u * t + 1u], da[4u * t + 2u]));
+  }
+  mean = std::max(mean / (float64_t)count, 1.0e-6);
+  float64_t sum = 0.0;
+  for (size_t t = 0u; t < count; ++t) {
+    const float64_t la =
+        luminance(vec3_new(da[4u * t], da[4u * t + 1u], da[4u * t + 2u]));
+    const float64_t lb =
+        luminance(vec3_new(db[4u * t], db[4u * t + 1u], db[4u * t + 2u]));
+    sum += std::fabs(lb - la) / mean;
+  }
+  *out_sum = sum;
+  return true;
+}
+
+/*
+ * Compares two sets' ASTC HDR planes instance by instance (ADR-088
+ * incremental bakes): for every plane both hold and every instance both
+ * hold with one rectangle size, whether its tiles are identical, and over
+ * its texels the relative luminance difference of `b` against `a`, scaled
+ * by the instance's mean luminance in `a`. Prints one line per plane and
+ * the worst instance.
+ */
+int compare_sets(const Options &options, Arena *arena) {
+  FileMapping mappings[2] = {};
+  VkrLightmapSet sets[2] = {};
+  for (uint32_t k = 0u; k < 2u; ++k) {
+    const FilePath path = file_path_view(options.compare[k]);
+    if (file_map_readonly(&path, &mappings[k]) != FILE_ERROR_NONE ||
+        !vkr_lightmap_set_decode(mappings[k].data, mappings[k].size, arena,
+                                 &sets[k])) {
+      std::fprintf(stderr, "Cannot read the set %s\n", options.compare[k]);
+      for (uint32_t m = 0u; m <= k; ++m) {
+        if (mappings[m].data) {
+          file_unmap(&mappings[m]);
+        }
+      }
+      return 1;
+    }
+  }
+  std::map<std::string, uint32_t> b_by_key;
+  for (uint32_t i = 0u; i < sets[1].instance_count; ++i) {
+    b_by_key[set_instance_key(sets[1].instances[i])] = i;
+  }
+  int result = 0;
+  float64_t worst = 0.0;
+  for (uint32_t p = 0u; result == 0 && p < sets[0].plane_count; ++p) {
+    const VkrLightmapPlane &plane = sets[0].planes[p];
+    uint32_t q = UINT32_MAX;
+    for (uint32_t c = 0u; c < sets[1].plane_count; ++c) {
+      if (sets[1].planes[c].layer == plane.layer &&
+          sets[1].planes[c].kind == plane.kind &&
+          sets[1].planes[c].format == plane.format) {
+        q = c;
+      }
+    }
+    if (plane.format != VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR || q == UINT32_MAX) {
+      continue;
+    }
+    const bool direct = plane.kind == VKR_LIGHTMAP_PLANE_LAMP_DIRECT;
+    uint32_t compared = 0u;
+    uint32_t identical = 0u;
+    uint64_t texels = 0u;
+    float64_t error_sum = 0.0;
+    float64_t instance_worst = 0.0;
+    for (uint32_t i = 0u; i < sets[0].instance_count; ++i) {
+      const auto found = b_by_key.find(set_instance_key(sets[0].instances[i]));
+      if (found == b_by_key.end()) {
+        continue;
+      }
+      const VkrLightmapDirectRect ra = instance_rect(sets[0], i, direct);
+      const VkrLightmapDirectRect rb =
+          instance_rect(sets[1], found->second, direct);
+      if (ra.width == 0u || ra.width != rb.width || ra.height != rb.height) {
+        continue;
+      }
+      const std::vector<uint8_t> a =
+          rect_blocks(sets[0], p, ra.page, ra.x, ra.y, ra.width, ra.height);
+      const std::vector<uint8_t> b =
+          rect_blocks(sets[1], q, rb.page, rb.x, rb.y, rb.width, rb.height);
+      const size_t count = (size_t)ra.width * ra.height;
+      compared += 1u;
+      texels += count;
+      if (a == b) {
+        identical += 1u;
+        continue;
+      }
+      float64_t sum = 0.0;
+      if (!rect_difference(a, b, ra.width, ra.height, &sum)) {
+        result = 1;
+        break;
+      }
+      error_sum += sum;
+      instance_worst = std::max(instance_worst, sum / (float64_t)count);
+    }
+    worst = std::max(worst, instance_worst);
+    std::printf("compare plane=%u layer=%u kind=%s instances=%u identical=%u "
+                "mean_relative_luminance_error=%.6f "
+                "worst_instance_relative_error=%.6f\n",
+                p, plane.layer, direct ? "lamp_direct" : "irradiance", compared,
+                identical, texels ? error_sum / (float64_t)texels : 0.0,
+                instance_worst);
+  }
+  std::printf("compare worst_instance_relative_error=%.6f\n", worst);
+  file_unmap(&mappings[0]);
+  file_unmap(&mappings[1]);
+  return result;
+}
+
 int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
+  if (options.compare[0]) {
+    return compare_sets(options, arena);
+  }
   const auto load_start = std::chrono::steady_clock::now();
   VkrBakeScene scene(allocator);
   VkrBakeSceneError scene_error;
@@ -2077,20 +3022,26 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
                  scene.triangles.size(), VKR_BAKE_BVH_MAX_TRIANGLES);
     return 1;
   }
-  VkrBakeBvh bvh = {};
-  if (!vkr_bake_bvh_build(
-          {scene.triangles.data(), (uint32_t)scene.triangles.size()}, arena,
-          &bvh)) {
-    std::fprintf(stderr, "BVH construction failed\n");
-    return 1;
+  /* Bounds from the triangles, so inspections and GPU bakes, which never
+     trace the CPU BVH, skip building it. */
+  Vec3 bounds_min = vec3_new(INFINITY, INFINITY, INFINITY);
+  Vec3 bounds_max = vec3_new(-INFINITY, -INFINITY, -INFINITY);
+  for (const VkrBakeTriangle &triangle : scene.triangles) {
+    for (const VkrBakeVertex &vertex : triangle.vertex) {
+      bounds_min = vec3_new(std::min(bounds_min.x, vertex.position.x),
+                            std::min(bounds_min.y, vertex.position.y),
+                            std::min(bounds_min.z, vertex.position.z));
+      bounds_max = vec3_new(std::max(bounds_max.x, vertex.position.x),
+                            std::max(bounds_max.y, vertex.position.y),
+                            std::max(bounds_max.z, vertex.position.z));
+    }
   }
-  const VkrBakeAabb bounds = bvh.nodes[0].bounds;
-  std::printf("scene_load_bvh_s=%.2f triangles=%zu lights=%zu "
+  std::printf("scene_load_s=%.2f triangles=%zu lights=%zu "
               "lightmap_instances=%zu bounds=(%g %g %g)-(%g %g %g)\n",
               seconds_since(load_start), scene.triangles.size(),
               scene.lights.size(), scene.lightmap_instances.size(),
-              bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x,
-              bounds.max.y, bounds.max.z);
+              bounds_min.x, bounds_min.y, bounds_min.z, bounds_max.x,
+              bounds_max.y, bounds_max.z);
 
   VkrBakeLightmapLayout layout;
   if (!vkr_bake_lightmap_pack_fitted(scene.lightmap_instances,
@@ -2107,7 +3058,33 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
               layout.page_count, layout.page_size, layout.rects.size(),
               (unsigned long long)rect_texels);
 
-  if (options.manifest && !write_manifest(options, scene, layout)) {
+  /* What the set holds and the digest of its inputs, which an inspection
+     reports too. */
+  SetPlan plan;
+  const int planned = plan_set(options, scene, layout, &plan);
+  if (planned == 1) {
+    return 1;
+  }
+  VkrBakeLightmapInputs inputs;
+  if (planned == 0) {
+    const auto inputs_start = std::chrono::steady_clock::now();
+    if (!vkr_bake_lightmap_inputs_build(
+            scene, settings_text(options), plan.records, plan.sun_keys, layout,
+            plan.direct_layout,
+            options.threads ? options.threads
+                            : std::max(1u, std::thread::hardware_concurrency()),
+            &inputs)) {
+      std::fprintf(stderr, "Describing the bake's inputs failed\n");
+      return 1;
+    }
+    std::printf("inputs_s=%.2f content_digest=%s\n",
+                seconds_since(inputs_start),
+                vkr_bake_digest_hex(inputs.digest).c_str());
+  }
+  if (options.manifest &&
+      !write_manifest(
+          options, scene, layout, planned == 0 ? plan.layers.size() : 0u,
+          planned == 0 ? vkr_bake_digest_hex(inputs.digest) : std::string())) {
     std::fprintf(stderr, "Writing the bake manifest failed\n");
     return 1;
   }
@@ -2115,8 +3092,25 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
     return 0;
   }
   if (options.output) {
-    return bake_set(options, scene, layout);
+    if (planned == 3) {
+      std::fprintf(stderr,
+                   "The scene has no static lamps or emission, so a desktop "
+                   "lightmap set has nothing to hold\n");
+      return 3;
+    }
+    return bake_set(options, scene, arena, layout, plan, inputs);
   }
+
+  /* The CPU modes trace the CPU BVH; the GPU trace check compares with it. */
+  const auto bvh_start = std::chrono::steady_clock::now();
+  VkrBakeBvh bvh = {};
+  if (!vkr_bake_bvh_build(
+          {scene.triangles.data(), (uint32_t)scene.triangles.size()}, arena,
+          &bvh)) {
+    std::fprintf(stderr, "BVH construction failed\n");
+    return 1;
+  }
+  std::printf("bvh_s=%.2f\n", seconds_since(bvh_start));
 
   VkrBakeIntegratorSettings settings = {};
   settings.scene = {&bvh,
@@ -2188,10 +3182,11 @@ int run(const Options &options, VkrAllocator *allocator, Arena *arena) {
           const VkrBakeLightmapTexel &texel = texels[t];
           const Vec3 origin =
               vec3_add(texel.position, vec3_scale(texel.normal, 1.0e-3f));
-          const uint32_t texel_seed = mix_seed(
-              options.seed ^ mix_seed(page * 0x9e3779b9u ^ (uint32_t)t));
+          const uint32_t texel_seed =
+              vkr_bake_lightmap_mix_seed(options.seed ^ texel.seed);
           for (uint32_t s = 0u; s < options.samples; ++s) {
-            const uint32_t seed = mix_seed(texel_seed ^ (s * 0x85ebca6bu));
+            const uint32_t seed =
+                vkr_bake_lightmap_mix_seed(texel_seed ^ (s * 0x85ebca6bu));
             const Vec3 direction =
                 cosine_direction(texel.normal, random_unit(seed),
                                  random_unit(seed ^ 0x68bc21ebu));

@@ -5,11 +5,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <new>
 #include <system_error>
 #include <thread>
 
 namespace {
+
+/* Tiles per row of an encoding strip (vkr_bake_lightmap_strip_size). */
+constexpr uint64_t kStripTileColumns = 256u;
 
 uint32_t round_up_to_block(float32_t texels) {
   const uint32_t whole = static_cast<uint32_t>(std::ceil(texels));
@@ -114,6 +118,25 @@ void skyline_place(std::vector<SkylineSegment> *skyline, uint32_t x,
 
 } // namespace
 
+uint32_t
+vkr_bake_lightmap_instance_seed(const VkrBakeLightmapInstance &instance) {
+  uint32_t seed =
+      vkr_bake_lightmap_mix_seed(instance.source_node_index + 0x9e3779b9u);
+  if (instance.has_document_id) {
+    for (uint32_t i = 0u; i < 16u; i += 4u) {
+      const uint32_t word = (uint32_t)instance.document_id[i] |
+                            ((uint32_t)instance.document_id[i + 1u] << 8) |
+                            ((uint32_t)instance.document_id[i + 2u] << 16) |
+                            ((uint32_t)instance.document_id[i + 3u] << 24);
+      seed = vkr_bake_lightmap_mix_seed(seed ^ word);
+    }
+  } else {
+    seed =
+        vkr_bake_lightmap_mix_seed(seed ^ instance.entity_index ^ 0x85ebca6bu);
+  }
+  return seed;
+}
+
 bool vkr_bake_lightmap_pack(
     const std::vector<VkrBakeLightmapInstance> &instances, uint32_t page_size,
     float32_t texels_per_world_unit, VkrBakeLightmapLayout *out_layout) {
@@ -155,6 +178,7 @@ bool vkr_bake_lightmap_pack(
       }
       VkrBakeLightmapRect rect;
       rect.source_instance_index = instance.source_instance_index;
+      rect.seed = vkr_bake_lightmap_instance_seed(instance);
       rect.width = width;
       rect.height = height;
       layout.rects.push_back(rect);
@@ -264,27 +288,31 @@ bool vkr_bake_lightmap_rasterize_page(
       if (rect.page != page) {
         continue;
       }
+      /* Corners in the rectangle's own texel coordinates. */
       float32_t px[3];
       float32_t py[3];
       for (uint32_t c = 0; c < 3u; ++c) {
-        px[c] = (float32_t)rect.x +
-                triangle.vertex[c].lightmap_uv.x * (float32_t)rect.width;
-        py[c] = (float32_t)rect.y +
-                triangle.vertex[c].lightmap_uv.y * (float32_t)rect.height;
+        px[c] = triangle.vertex[c].lightmap_uv.x * (float32_t)rect.width;
+        py[c] = triangle.vertex[c].lightmap_uv.y * (float32_t)rect.height;
       }
       const float32_t area = edge(px[0], py[0], px[1], py[1], px[2], py[2]);
       if (!std::isfinite(area) || std::fabs(area) < 1.0e-8f) {
         continue;
       }
-      const uint32_t min_x = (uint32_t)std::max(
-          (float32_t)rect.x, std::floor(std::min({px[0], px[1], px[2]})));
-      const uint32_t min_y = (uint32_t)std::max(
-          (float32_t)rect.y, std::floor(std::min({py[0], py[1], py[2]})));
+      /* A triangle wholly outside the rectangle covers nothing in it. */
+      if (std::max({px[0], px[1], px[2]}) < 0.0f ||
+          std::max({py[0], py[1], py[2]}) < 0.0f) {
+        continue;
+      }
+      const uint32_t min_x =
+          (uint32_t)std::max(0.0f, std::floor(std::min({px[0], px[1], px[2]})));
+      const uint32_t min_y =
+          (uint32_t)std::max(0.0f, std::floor(std::min({py[0], py[1], py[2]})));
       const uint32_t max_x =
-          (uint32_t)std::min((float32_t)(rect.x + rect.width - 1u),
+          (uint32_t)std::min((float32_t)(rect.width - 1u),
                              std::ceil(std::max({px[0], px[1], px[2]})));
       const uint32_t max_y =
-          (uint32_t)std::min((float32_t)(rect.y + rect.height - 1u),
+          (uint32_t)std::min((float32_t)(rect.height - 1u),
                              std::ceil(std::max({py[0], py[1], py[2]})));
       const float32_t inverse_area = 1.0f / area;
       /* The barycentric weights change linearly across the page, so one
@@ -303,10 +331,10 @@ bool vkr_bake_lightmap_rasterize_page(
                                    vec3_scale(edge_2, -w0_dx - w1_dx));
       const Vec3 step_y = vec3_add(vec3_scale(edge_1, w1_dy),
                                    vec3_scale(edge_2, -w0_dy - w1_dy));
-      for (uint32_t y = min_y; y <= max_y; ++y) {
-        for (uint32_t x = min_x; x <= max_x; ++x) {
-          const float32_t cx = (float32_t)x + 0.5f;
-          const float32_t cy = (float32_t)y + 0.5f;
+      for (uint32_t local_y = min_y; local_y <= max_y; ++local_y) {
+        for (uint32_t local_x = min_x; local_x <= max_x; ++local_x) {
+          const float32_t cx = (float32_t)local_x + 0.5f;
+          const float32_t cy = (float32_t)local_y + 0.5f;
           const float32_t w0 =
               edge(px[1], py[1], px[2], py[2], cx, cy) * inverse_area;
           const float32_t w1 =
@@ -315,6 +343,8 @@ bool vkr_bake_lightmap_rasterize_page(
           if (w0 < -1.0e-6f || w1 < -1.0e-6f || w2 < -1.0e-6f) {
             continue;
           }
+          const uint32_t x = rect.x + local_x;
+          const uint32_t y = rect.y + local_y;
           uint8_t &owner = claimed[(size_t)y * size + x];
           if (owner) {
             continue;
@@ -335,6 +365,8 @@ bool vkr_bake_lightmap_rasterize_page(
           texel.step_y = step_y;
           texel.triangle_index = t;
           texel.source_instance_index = instance;
+          texel.seed =
+              vkr_bake_lightmap_texel_seed(rect.seed, local_x, local_y);
           texels.push_back(texel);
         }
       }
@@ -386,7 +418,8 @@ bool vkr_bake_lightmap_neighbors(
           }
           const VkrBakeLightmapTexel &other = texels[j];
           const Vec3 delta = vec3_sub(other.position, texel.position);
-          if (vec3_dot(delta, delta) > max_distance_squared ||
+          if (other.source_instance_index != texel.source_instance_index ||
+              vec3_dot(delta, delta) > max_distance_squared ||
               vec3_dot(other.normal, texel.normal) < kMinNormalCosine) {
             continue;
           }
@@ -827,6 +860,216 @@ bool vkr_bake_lightmap_denoise(uint32_t page_size,
   }
 }
 
+namespace {
+
+/* The texels of each rectangle of `page`: for rectangle r, the indices of
+   `texels` it holds, in their order. */
+std::vector<std::vector<uint32_t>>
+rect_members(const VkrBakeLightmapLayout &layout,
+             const std::vector<VkrBakeLightmapTexel> &texels) {
+  std::vector<std::vector<uint32_t>> members(layout.rects.size());
+  for (uint32_t i = 0u; i < texels.size(); ++i) {
+    const uint32_t instance = texels[i].source_instance_index;
+    if (instance < layout.rect_by_instance.size() &&
+        layout.rect_by_instance[instance] != UINT32_MAX) {
+      members[layout.rect_by_instance[instance]].push_back(i);
+    }
+  }
+  return members;
+}
+
+/* Composes one rectangle into `out`, RGBA floats `stride` texels per row
+   with the rectangle's first texel at `out`. */
+void compose_rect_into(const VkrBakeLightmapRect &rect,
+                       const std::vector<VkrBakeLightmapTexel> &texels,
+                       const std::vector<uint32_t> &members,
+                       const std::vector<Vec3> &values,
+                       const std::vector<float32_t> *occlusion,
+                       uint32_t dilation_passes, float32_t *out,
+                       size_t stride) {
+  const uint32_t width = rect.width;
+  const uint32_t height = rect.height;
+  /* Zero is empty, one covered, and 2 + pass a texel filled in that pass,
+     so a pass reads only texels filled before it. */
+  std::vector<uint8_t> state((size_t)width * height, 0u);
+  for (uint32_t y = 0u; y < height; ++y) {
+    for (uint32_t x = 0u; x < width; ++x) {
+      float32_t *texel = out + 4u * ((size_t)y * stride + x);
+      texel[0] = 0.0f;
+      texel[1] = 0.0f;
+      texel[2] = 0.0f;
+      texel[3] = 1.0f;
+    }
+  }
+  for (uint32_t i : members) {
+    const uint32_t x = texels[i].x - rect.x;
+    const uint32_t y = texels[i].y - rect.y;
+    float32_t *texel = out + 4u * ((size_t)y * stride + x);
+    texel[0] = values[i].x;
+    texel[1] = values[i].y;
+    texel[2] = values[i].z;
+    texel[3] = occlusion ? (*occlusion)[i] : 1.0f;
+    state[(size_t)y * width + x] = 1u;
+  }
+
+  const uint32_t passes = std::min(dilation_passes, 250u);
+  for (uint32_t pass = 0u; pass < passes; ++pass) {
+    const uint8_t filled_before = (uint8_t)(2u + pass);
+    bool filled_any = false;
+    for (uint32_t y = 0u; y < height; ++y) {
+      for (uint32_t x = 0u; x < width; ++x) {
+        if (state[(size_t)y * width + x] != 0u) {
+          continue;
+        }
+        float32_t sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        uint32_t count = 0u;
+        for (int32_t dy = -1; dy <= 1; ++dy) {
+          for (int32_t dx = -1; dx <= 1; ++dx) {
+            const int64_t nx = (int64_t)x + dx;
+            const int64_t ny = (int64_t)y + dy;
+            if (nx < 0 || ny < 0 || nx >= (int64_t)width ||
+                ny >= (int64_t)height) {
+              continue;
+            }
+            const uint8_t neighbor_state =
+                state[(size_t)ny * width + (size_t)nx];
+            if (neighbor_state == 0u || neighbor_state >= filled_before) {
+              continue;
+            }
+            const float32_t *neighbor =
+                out + 4u * ((size_t)ny * stride + (size_t)nx);
+            for (uint32_t c = 0u; c < 4u; ++c) {
+              sum[c] += neighbor[c];
+            }
+            ++count;
+          }
+        }
+        if (count == 0u) {
+          continue;
+        }
+        const float32_t scale = 1.0f / (float32_t)count;
+        float32_t *texel = out + 4u * ((size_t)y * stride + x);
+        for (uint32_t c = 0u; c < 4u; ++c) {
+          texel[c] = sum[c] * scale;
+        }
+        state[(size_t)y * width + x] = filled_before;
+        filled_any = true;
+      }
+    }
+    if (!filled_any) {
+      break;
+    }
+  }
+
+  float64_t mean[4] = {0.0, 0.0, 0.0, 0.0};
+  uint64_t covered = 0u;
+  for (uint32_t y = 0u; y < height; ++y) {
+    for (uint32_t x = 0u; x < width; ++x) {
+      if (state[(size_t)y * width + x] == 1u) {
+        const float32_t *texel = out + 4u * ((size_t)y * stride + x);
+        for (uint32_t c = 0u; c < 4u; ++c) {
+          mean[c] += texel[c];
+        }
+        ++covered;
+      }
+    }
+  }
+  if (covered != 0u) {
+    for (uint32_t c = 0u; c < 4u; ++c) {
+      mean[c] /= (float64_t)covered;
+    }
+  } else {
+    mean[3] = 1.0;
+  }
+  for (uint32_t y = 0u; y < height; ++y) {
+    for (uint32_t x = 0u; x < width; ++x) {
+      if (state[(size_t)y * width + x] == 0u) {
+        float32_t *texel = out + 4u * ((size_t)y * stride + x);
+        for (uint32_t c = 0u; c < 4u; ++c) {
+          texel[c] = (float32_t)mean[c];
+        }
+      }
+    }
+  }
+}
+
+/* The direction plane's encoding of a texel's mean incident direction:
+   0.5 * unit + 0.5 in RGB and its length, the directionality, in alpha;
+   neutral without a direction. */
+void encode_directions(const std::vector<Vec3> &directions,
+                       std::vector<Vec3> *out_encoded,
+                       std::vector<float32_t> *out_directionality) {
+  out_encoded->assign(directions.size(), vec3_new(0.5f, 0.5f, 0.5f));
+  out_directionality->assign(directions.size(), 0.0f);
+  for (size_t i = 0u; i < directions.size(); ++i) {
+    const Vec3 d = directions[i];
+    const float32_t length = vec3_length(d);
+    if (!(length > 1.0e-6f) || !std::isfinite(length)) {
+      continue;
+    }
+    const Vec3 unit = vec3_scale(d, 1.0f / length);
+    (*out_encoded)[i] = vec3_new(0.5f * unit.x + 0.5f, 0.5f * unit.y + 0.5f,
+                                 0.5f * unit.z + 0.5f);
+    (*out_directionality)[i] = std::fmin(length, 1.0f);
+  }
+}
+
+/* Fills a rectangle no texel covers with the neutral direction. */
+void neutral_rect_into(uint32_t width, uint32_t height, float32_t *out,
+                       size_t stride) {
+  for (uint32_t y = 0u; y < height; ++y) {
+    for (uint32_t x = 0u; x < width; ++x) {
+      float32_t *texel = out + 4u * ((size_t)y * stride + x);
+      texel[0] = 0.5f;
+      texel[1] = 0.5f;
+      texel[2] = 0.5f;
+      texel[3] = 0.0f;
+    }
+  }
+}
+
+} // namespace
+
+bool vkr_bake_lightmap_compose_rect(
+    const VkrBakeLightmapRect &rect,
+    const std::vector<VkrBakeLightmapTexel> &texels,
+    const std::vector<uint32_t> &members, const std::vector<Vec3> &values,
+    const std::vector<float32_t> *occlusion, uint32_t dilation_passes,
+    bool direction, std::vector<float32_t> *out_rgba) {
+  if (!out_rgba || texels.size() != values.size() ||
+      (occlusion && occlusion->size() != texels.size()) ||
+      (direction && occlusion)) {
+    return false;
+  }
+  for (uint32_t i : members) {
+    if (i >= texels.size() || texels[i].x < rect.x || texels[i].y < rect.y ||
+        texels[i].x >= rect.x + rect.width ||
+        texels[i].y >= rect.y + rect.height) {
+      return false;
+    }
+  }
+  try {
+    out_rgba->assign((size_t)rect.width * rect.height * 4u, 0.0f);
+    if (direction && members.empty()) {
+      neutral_rect_into(rect.width, rect.height, out_rgba->data(), rect.width);
+      return true;
+    }
+    if (direction) {
+      std::vector<Vec3> encoded;
+      std::vector<float32_t> directionality;
+      encode_directions(values, &encoded, &directionality);
+      compose_rect_into(rect, texels, members, encoded, &directionality,
+                        dilation_passes, out_rgba->data(), rect.width);
+      return true;
+    }
+    compose_rect_into(rect, texels, members, values, occlusion, dilation_passes,
+                      out_rgba->data(), rect.width);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
 bool vkr_bake_lightmap_compose_direction_page(
     const VkrBakeLightmapLayout &layout, uint32_t page,
     const std::vector<VkrBakeLightmapTexel> &texels,
@@ -837,61 +1080,25 @@ bool vkr_bake_lightmap_compose_direction_page(
     return false;
   }
   try {
-    std::vector<Vec3> encoded(texels.size());
-    std::vector<float32_t> directionality(texels.size(), 0.0f);
-    for (size_t i = 0u; i < texels.size(); ++i) {
-      const Vec3 d = directions[i];
-      const float32_t length = vec3_length(d);
-      if (!(length > 1.0e-6f) || !std::isfinite(length)) {
-        encoded[i] = vec3_new(0.5f, 0.5f, 0.5f);
-        continue;
-      }
-      const Vec3 unit = vec3_scale(d, 1.0f / length);
-      encoded[i] = vec3_new(0.5f * unit.x + 0.5f, 0.5f * unit.y + 0.5f,
-                            0.5f * unit.z + 0.5f);
-      directionality[i] = std::fmin(length, 1.0f);
-    }
-    if (!vkr_bake_lightmap_compose_page(layout, page, texels, encoded,
-                                        &directionality, dilation_passes,
-                                        out_rgba)) {
-      return false;
-    }
-    /* compose_page leaves texels outside every rectangle black with alpha
-       one, and a rectangle no triangle covers black with alpha one; a
-       direction page holds no direction there. */
+    std::vector<Vec3> encoded;
+    std::vector<float32_t> directionality;
+    encode_directions(directions, &encoded, &directionality);
     const size_t size = layout.page_size;
-    std::vector<uint8_t> covered(size * size, 0u);
-    for (const VkrBakeLightmapTexel &texel : texels) {
-      covered[(size_t)texel.y * size + texel.x] = 1u;
-    }
-    std::vector<uint8_t> inside(size * size, 0u);
-    for (const VkrBakeLightmapRect &rect : layout.rects) {
-      if (rect.page != page) {
+    /* Texels outside every rectangle, and rectangles no texel covers, hold
+       no direction. */
+    out_rgba->assign(size * size * 4u, 0.0f);
+    neutral_rect_into(layout.page_size, layout.page_size, out_rgba->data(),
+                      size);
+    const std::vector<std::vector<uint32_t>> members =
+        rect_members(layout, texels);
+    for (size_t r = 0u; r < layout.rects.size(); ++r) {
+      const VkrBakeLightmapRect &rect = layout.rects[r];
+      if (rect.page != page || members[r].empty()) {
         continue;
       }
-      bool any_covered = false;
-      for (uint32_t y = rect.y; !any_covered && y < rect.y + rect.height; ++y) {
-        const auto row = covered.begin() + (ptrdiff_t)(y * size + rect.x);
-        any_covered =
-            std::find(row, row + rect.width, (uint8_t)1u) != row + rect.width;
-      }
-      if (!any_covered) {
-        continue;
-      }
-      for (uint32_t y = rect.y; y < rect.y + rect.height; ++y) {
-        std::fill_n(inside.begin() + (ptrdiff_t)(y * size + rect.x), rect.width,
-                    (uint8_t)1u);
-      }
-    }
-    float32_t *rgba = out_rgba->data();
-    for (size_t i = 0u; i < size * size; ++i) {
-      if (inside[i]) {
-        continue;
-      }
-      rgba[4u * i + 0u] = 0.5f;
-      rgba[4u * i + 1u] = 0.5f;
-      rgba[4u * i + 2u] = 0.5f;
-      rgba[4u * i + 3u] = 0.0f;
+      compose_rect_into(
+          rect, texels, members[r], encoded, &directionality, dilation_passes,
+          out_rgba->data() + 4u * ((size_t)rect.y * size + rect.x), size);
     }
     return true;
   } catch (const std::bad_alloc &) {
@@ -916,105 +1123,110 @@ bool vkr_bake_lightmap_compose_page(
     for (size_t i = 0u; i < size * size; ++i) {
       rgba[4u * i + 3u] = 1.0f;
     }
-    /* Zero is empty, one covered, and 2 + pass a texel filled in that pass,
-       so a pass reads only texels filled before it. */
-    std::vector<uint8_t> state(size * size, 0u);
-    for (size_t i = 0u; i < texels.size(); ++i) {
-      const size_t index = (size_t)texels[i].y * size + texels[i].x;
-      rgba[4u * index + 0u] = values[i].x;
-      rgba[4u * index + 1u] = values[i].y;
-      rgba[4u * index + 2u] = values[i].z;
-      rgba[4u * index + 3u] = occlusion ? (*occlusion)[i] : 1.0f;
-      state[index] = 1u;
-    }
-
-    const uint32_t passes = std::min(dilation_passes, 250u);
-    for (const VkrBakeLightmapRect &rect : layout.rects) {
+    const std::vector<std::vector<uint32_t>> members =
+        rect_members(layout, texels);
+    for (size_t r = 0u; r < layout.rects.size(); ++r) {
+      const VkrBakeLightmapRect &rect = layout.rects[r];
       if (rect.page != page) {
         continue;
       }
-      const uint32_t x_end = rect.x + rect.width;
-      const uint32_t y_end = rect.y + rect.height;
-
-      for (uint32_t pass = 0u; pass < passes; ++pass) {
-        const uint8_t filled_before = (uint8_t)(2u + pass);
-        bool filled_any = false;
-        for (uint32_t y = rect.y; y < y_end; ++y) {
-          for (uint32_t x = rect.x; x < x_end; ++x) {
-            const size_t index = (size_t)y * size + x;
-            if (state[index] != 0u) {
-              continue;
-            }
-            float32_t sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            uint32_t count = 0u;
-            for (int32_t dy = -1; dy <= 1; ++dy) {
-              for (int32_t dx = -1; dx <= 1; ++dx) {
-                const int64_t nx = (int64_t)x + dx;
-                const int64_t ny = (int64_t)y + dy;
-                if (nx < rect.x || ny < rect.y || nx >= x_end || ny >= y_end) {
-                  continue;
-                }
-                const size_t neighbor = (size_t)ny * size + (size_t)nx;
-                const uint8_t neighbor_state = state[neighbor];
-                if (neighbor_state == 0u || neighbor_state >= filled_before) {
-                  continue;
-                }
-                for (uint32_t c = 0u; c < 4u; ++c) {
-                  sum[c] += rgba[4u * neighbor + c];
-                }
-                ++count;
-              }
-            }
-            if (count == 0u) {
-              continue;
-            }
-            const float32_t scale = 1.0f / (float32_t)count;
-            for (uint32_t c = 0u; c < 4u; ++c) {
-              rgba[4u * index + c] = sum[c] * scale;
-            }
-            state[index] = filled_before;
-            filled_any = true;
-          }
-        }
-        if (!filled_any) {
-          break;
-        }
-      }
-
-      float64_t mean[4] = {0.0, 0.0, 0.0, 0.0};
-      uint64_t covered = 0u;
-      for (uint32_t y = rect.y; y < y_end; ++y) {
-        for (uint32_t x = rect.x; x < x_end; ++x) {
-          const size_t index = (size_t)y * size + x;
-          if (state[index] == 1u) {
-            for (uint32_t c = 0u; c < 4u; ++c) {
-              mean[c] += rgba[4u * index + c];
-            }
-            ++covered;
-          }
-        }
-      }
-      if (covered != 0u) {
-        for (uint32_t c = 0u; c < 4u; ++c) {
-          mean[c] /= (float64_t)covered;
-        }
-      } else {
-        mean[3] = 1.0;
-      }
-      for (uint32_t y = rect.y; y < y_end; ++y) {
-        for (uint32_t x = rect.x; x < x_end; ++x) {
-          const size_t index = (size_t)y * size + x;
-          if (state[index] == 0u) {
-            for (uint32_t c = 0u; c < 4u; ++c) {
-              rgba[4u * index + c] = (float32_t)mean[c];
-            }
-          }
-        }
-      }
+      compose_rect_into(rect, texels, members[r], values, occlusion,
+                        dilation_passes,
+                        rgba + 4u * ((size_t)rect.y * size + rect.x), size);
     }
     return true;
   } catch (const std::bad_alloc &) {
     return false;
+  }
+}
+
+uint32_t vkr_bake_lightmap_tile_bytes(VkrLightmapPlaneFormat format) {
+  switch (format) {
+  case VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR:
+  case VKR_LIGHTMAP_FORMAT_ASTC_4X4_LDR:
+  case VKR_LIGHTMAP_FORMAT_BC6H:
+  case VKR_LIGHTMAP_FORMAT_BC7:
+    return 16u;
+  case VKR_LIGHTMAP_FORMAT_RGB9E5:
+  case VKR_LIGHTMAP_FORMAT_RGBA8:
+    return 64u;
+  default:
+    return 0u;
+  }
+}
+
+void vkr_bake_lightmap_strip_size(uint64_t tiles, uint32_t *out_width,
+                                  uint32_t *out_height) {
+  const uint64_t columns =
+      std::max<uint64_t>(1u, std::min<uint64_t>(tiles, kStripTileColumns));
+  const uint64_t rows =
+      std::max<uint64_t>(1u, (tiles + columns - 1u) / columns);
+  *out_width = (uint32_t)(4u * columns);
+  *out_height = (uint32_t)(4u * rows);
+}
+
+void vkr_bake_lightmap_strip_put(const float32_t *rgba, size_t stride,
+                                 uint64_t tile, uint32_t strip_width,
+                                 std::vector<float32_t> *strip) {
+  const uint64_t columns = strip_width / 4u;
+  const size_t x0 = (size_t)(tile % columns) * 4u;
+  const size_t y0 = (size_t)(tile / columns) * 4u;
+  for (uint32_t y = 0u; y < 4u; ++y) {
+    std::memcpy(strip->data() + 4u * ((y0 + y) * strip_width + x0),
+                rgba + 4u * ((size_t)y * stride), 16u * sizeof(float32_t));
+  }
+}
+
+void vkr_bake_lightmap_strip_take(const std::vector<uint8_t> &encoded,
+                                  VkrLightmapPlaneFormat format, uint64_t tile,
+                                  uint32_t strip_width, uint8_t *out_tile) {
+  const uint32_t bytes = vkr_bake_lightmap_tile_bytes(format);
+  if (bytes == 16u) {
+    std::memcpy(out_tile, encoded.data() + 16u * tile, 16u);
+    return;
+  }
+  const uint64_t columns = strip_width / 4u;
+  const size_t x0 = (size_t)(tile % columns) * 4u;
+  const size_t y0 = (size_t)(tile / columns) * 4u;
+  for (uint32_t y = 0u; y < 4u; ++y) {
+    std::memcpy(out_tile + 16u * y,
+                encoded.data() + 4u * ((y0 + y) * strip_width + x0), 16u);
+  }
+}
+
+void vkr_bake_lightmap_page_put_tile(std::vector<uint8_t> *page,
+                                     uint32_t page_size,
+                                     VkrLightmapPlaneFormat format,
+                                     uint32_t tile_x, uint32_t tile_y,
+                                     const uint8_t *tile) {
+  const uint32_t bytes = vkr_bake_lightmap_tile_bytes(format);
+  if (bytes == 16u) {
+    std::memcpy(page->data() +
+                    16u * ((size_t)tile_y * (page_size / 4u) + tile_x),
+                tile, 16u);
+    return;
+  }
+  for (uint32_t y = 0u; y < 4u; ++y) {
+    std::memcpy(page->data() +
+                    4u * (((size_t)tile_y * 4u + y) * page_size + tile_x * 4u),
+                tile + 16u * y, 16u);
+  }
+}
+
+void vkr_bake_lightmap_page_get_tile(const uint8_t *page, uint32_t page_size,
+                                     VkrLightmapPlaneFormat format,
+                                     uint32_t tile_x, uint32_t tile_y,
+                                     uint8_t *out_tile) {
+  const uint32_t bytes = vkr_bake_lightmap_tile_bytes(format);
+  if (bytes == 16u) {
+    std::memcpy(out_tile,
+                page + 16u * ((size_t)tile_y * (page_size / 4u) + tile_x), 16u);
+    return;
+  }
+  for (uint32_t y = 0u; y < 4u; ++y) {
+    std::memcpy(
+        out_tile + 16u * y,
+        page + 4u * (((size_t)tile_y * 4u + y) * page_size + tile_x * 4u), 16u);
   }
 }
 
@@ -1044,13 +1256,15 @@ bool run_astc_workers(astcenc_context *context, uint32_t threads, Work work) {
 
 namespace {
 
-/* Encodes a page of RGBA floats to ASTC 4x4 blocks in `profile`. */
-bool encode_astc(const std::vector<float32_t> &rgba, uint32_t size,
-                 float32_t effort, uint32_t threads, astcenc_profile profile,
-                 std::vector<uint8_t> *out_blocks) {
-  if (!out_blocks || size == 0u || size % 4u != 0u ||
-      rgba.size() != (size_t)size * size * 4u || !(effort >= 0.0f) ||
-      effort > 100.0f) {
+/* Encodes an image of RGBA floats to ASTC 4x4 blocks in `profile`. Each
+   block's encoding depends on its own texels alone, so blocks gathered into
+   a strip encode as they would on their page. */
+bool encode_astc(const std::vector<float32_t> &rgba, uint32_t width,
+                 uint32_t height, float32_t effort, uint32_t threads,
+                 astcenc_profile profile, std::vector<uint8_t> *out_blocks) {
+  if (!out_blocks || width == 0u || height == 0u || width % 4u != 0u ||
+      height % 4u != 0u || rgba.size() != (size_t)width * height * 4u ||
+      !(effort >= 0.0f) || effort > 100.0f) {
     return false;
   }
   astcenc_config config;
@@ -1065,10 +1279,10 @@ bool encode_astc(const std::vector<float32_t> &rgba, uint32_t size,
   }
   bool encoded = false;
   try {
-    const size_t blocks = (size_t)(size / 4u) * (size / 4u);
+    const size_t blocks = (size_t)(width / 4u) * (height / 4u);
     out_blocks->assign(blocks * 16u, 0u);
     void *slice = const_cast<float32_t *>(rgba.data());
-    astcenc_image image = {size, size, 1u, ASTCENC_TYPE_F32, &slice};
+    astcenc_image image = {width, height, 1u, ASTCENC_TYPE_F32, &slice};
     const astcenc_swizzle swizzle = {ASTCENC_SWZ_R, ASTCENC_SWZ_G,
                                      ASTCENC_SWZ_B, ASTCENC_SWZ_A};
     encoded = run_astc_workers(context, workers, [&](uint32_t thread) {
@@ -1083,11 +1297,14 @@ bool encode_astc(const std::vector<float32_t> &rgba, uint32_t size,
   return encoded;
 }
 
-/* Decodes ASTC 4x4 blocks in `profile` to RGBA floats. */
-bool decode_astc(const std::vector<uint8_t> &blocks, uint32_t size,
-                 astcenc_profile profile, std::vector<float32_t> *out_rgba) {
-  if (!out_rgba || size == 0u || size % 4u != 0u ||
-      blocks.size() != (size_t)(size / 4u) * (size / 4u) * 16u) {
+/* Decodes ASTC 4x4 blocks of a width x height image in `profile` to RGBA
+   floats. */
+bool decode_astc(const std::vector<uint8_t> &blocks, uint32_t width,
+                 uint32_t height, astcenc_profile profile,
+                 std::vector<float32_t> *out_rgba) {
+  if (!out_rgba || width == 0u || height == 0u || width % 4u != 0u ||
+      height % 4u != 0u ||
+      blocks.size() != (size_t)(width / 4u) * (height / 4u) * 16u) {
     return false;
   }
   astcenc_config config;
@@ -1102,9 +1319,9 @@ bool decode_astc(const std::vector<uint8_t> &blocks, uint32_t size,
   }
   bool decoded = false;
   try {
-    out_rgba->assign((size_t)size * size * 4u, 0.0f);
+    out_rgba->assign((size_t)width * height * 4u, 0.0f);
     void *slice = out_rgba->data();
-    astcenc_image image = {size, size, 1u, ASTCENC_TYPE_F32, &slice};
+    astcenc_image image = {width, height, 1u, ASTCENC_TYPE_F32, &slice};
     const astcenc_swizzle swizzle = {ASTCENC_SWZ_R, ASTCENC_SWZ_G,
                                      ASTCENC_SWZ_B, ASTCENC_SWZ_A};
     decoded = astcenc_decompress_image(context, blocks.data(), blocks.size(),
@@ -1122,25 +1339,41 @@ bool vkr_bake_lightmap_encode_astc_hdr(const std::vector<float32_t> &rgba,
                                        uint32_t size, float32_t effort,
                                        uint32_t threads,
                                        std::vector<uint8_t> *out_blocks) {
-  return encode_astc(rgba, size, effort, threads, ASTCENC_PRF_HDR_RGB_LDR_A,
-                     out_blocks);
+  return encode_astc(rgba, size, size, effort, threads,
+                     ASTCENC_PRF_HDR_RGB_LDR_A, out_blocks);
+}
+
+bool vkr_bake_lightmap_encode_astc_hdr_image(const std::vector<float32_t> &rgba,
+                                             uint32_t width, uint32_t height,
+                                             float32_t effort, uint32_t threads,
+                                             std::vector<uint8_t> *out_blocks) {
+  return encode_astc(rgba, width, height, effort, threads,
+                     ASTCENC_PRF_HDR_RGB_LDR_A, out_blocks);
 }
 
 bool vkr_bake_lightmap_decode_astc_hdr(const std::vector<uint8_t> &blocks,
                                        uint32_t size,
                                        std::vector<float32_t> *out_rgba) {
-  return decode_astc(blocks, size, ASTCENC_PRF_HDR_RGB_LDR_A, out_rgba);
+  return decode_astc(blocks, size, size, ASTCENC_PRF_HDR_RGB_LDR_A, out_rgba);
+}
+
+bool vkr_bake_lightmap_decode_astc_hdr_image(const std::vector<uint8_t> &blocks,
+                                             uint32_t width, uint32_t height,
+                                             std::vector<float32_t> *out_rgba) {
+  return decode_astc(blocks, width, height, ASTCENC_PRF_HDR_RGB_LDR_A,
+                     out_rgba);
 }
 
 bool vkr_bake_lightmap_encode_astc_ldr(const std::vector<float32_t> &rgba,
                                        uint32_t size, float32_t effort,
                                        uint32_t threads,
                                        std::vector<uint8_t> *out_blocks) {
-  return encode_astc(rgba, size, effort, threads, ASTCENC_PRF_LDR, out_blocks);
+  return encode_astc(rgba, size, size, effort, threads, ASTCENC_PRF_LDR,
+                     out_blocks);
 }
 
 bool vkr_bake_lightmap_decode_astc_ldr(const std::vector<uint8_t> &blocks,
                                        uint32_t size,
                                        std::vector<float32_t> *out_rgba) {
-  return decode_astc(blocks, size, ASTCENC_PRF_LDR, out_rgba);
+  return decode_astc(blocks, size, size, ASTCENC_PRF_LDR, out_rgba);
 }

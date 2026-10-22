@@ -14,6 +14,7 @@ extern "C" {
 #include "bake/vkr_bake_bvh.h"
 #include "bake/vkr_bake_integrator.h"
 #include "bake/vkr_bake_lightmap.h"
+#include "bake/vkr_bake_lightmap_inputs.h"
 #include "bake/vkr_bake_material.h"
 #include "bake/vkr_bake_mesh_decode.h"
 #include "bake/vkr_bake_scene.h"
@@ -183,6 +184,284 @@ void test_rasterize_covers_a_quad_once() {
   printf("  test_rasterize_covers_a_quad_once PASSED\n");
 }
 
+/* The quad of test_rasterize_covers_a_quad_once as instance `instance`. */
+void quad_triangles(uint32_t instance, VkrBakeTriangle *out) {
+  out[0] = {};
+  out[1] = {};
+  out[0].vertex[0] = quad_vertex(0.0f, 0.0f);
+  out[0].vertex[1] = quad_vertex(1.0f, 0.0f);
+  out[0].vertex[2] = quad_vertex(1.0f, 1.0f);
+  out[1].vertex[0] = quad_vertex(0.0f, 0.0f);
+  out[1].vertex[1] = quad_vertex(1.0f, 1.0f);
+  out[1].vertex[2] = quad_vertex(0.0f, 1.0f);
+  out[0].source_instance_index = instance;
+  out[1].source_instance_index = instance;
+}
+
+/* A texel's position, footprint and seed follow its place in its instance's
+   rectangle, not where the packer puts the rectangle (owner decision
+   2026-10-23), and same-surface neighbors never cross into another
+   instance's rectangle. Catches a seed or rasterization keyed to page
+   coordinates or the gathered-list index, which made an incremental bake's
+   relit instance differ from a full bake, and fill or smoothing that mixed
+   an instance packed beside another. */
+void test_texels_follow_their_instance() {
+  printf("  test_texels_follow_their_instance...\n");
+  VkrBakeTriangle alone[2];
+  quad_triangles(0u, alone);
+  std::vector<VkrBakeLightmapInstance> first = {make_instance(0u, 8u, 8u, 1.0f)};
+  VkrBakeLightmapLayout single;
+  assert(vkr_bake_lightmap_pack(first, 64u, 8.0f, &single));
+  std::vector<VkrBakeLightmapTexel> lone;
+  assert(vkr_bake_lightmap_rasterize_page(alone, 2u, single, 0u, &lone));
+
+  /* A taller instance packed first moves instance 0 off the origin; both
+     cover the same world quad, so only the instance rule keeps them apart. */
+  VkrBakeTriangle both[4];
+  quad_triangles(1u, both);
+  quad_triangles(0u, both + 2);
+  std::vector<VkrBakeLightmapInstance> second = {
+      make_instance(1u, 8u, 16u, 1.0f), make_instance(0u, 8u, 8u, 1.0f)};
+  VkrBakeLightmapLayout shared;
+  assert(vkr_bake_lightmap_pack(second, 64u, 8.0f, &shared));
+  const VkrBakeLightmapRect &moved = shared.rects[shared.rect_by_instance[0]];
+  const VkrBakeLightmapRect &origin = single.rects[single.rect_by_instance[0]];
+  assert(moved.x != origin.x || moved.y != origin.y);
+  assert(moved.seed == origin.seed);
+  std::vector<VkrBakeLightmapTexel> packed;
+  assert(vkr_bake_lightmap_rasterize_page(both, 4u, shared, 0u, &packed));
+  std::vector<VkrBakeLightmapTexel> own;
+  for (const VkrBakeLightmapTexel &texel : packed) {
+    if (texel.source_instance_index == 0u) {
+      own.push_back(texel);
+    }
+  }
+  assert(own.size() == lone.size() && !lone.empty());
+  for (size_t i = 0u; i < lone.size(); ++i) {
+    assert(own[i].x - moved.x == lone[i].x - origin.x);
+    assert(own[i].y - moved.y == lone[i].y - origin.y);
+    assert(memcmp(&own[i].position, &lone[i].position, 3u * sizeof(float)) == 0);
+    assert(memcmp(&own[i].step_x, &lone[i].step_x, 3u * sizeof(float)) == 0);
+    assert(memcmp(&own[i].step_y, &lone[i].step_y, 3u * sizeof(float)) == 0);
+    assert(own[i].seed == lone[i].seed);
+  }
+  VkrBakeLightmapNeighbors neighbors;
+  assert(vkr_bake_lightmap_neighbors(64u, packed, 10.0f, &neighbors));
+  uint32_t edge_texels = 0u;
+  for (size_t i = 0u; i < packed.size(); ++i) {
+    for (uint32_t n = neighbors.first[i]; n < neighbors.first[i + 1u]; ++n) {
+      assert(packed[neighbors.indices[n]].source_instance_index ==
+             packed[i].source_instance_index);
+    }
+    const VkrBakeLightmapRect &rect =
+        shared.rects[shared.rect_by_instance[packed[i].source_instance_index]];
+    edge_texels += packed[i].x == rect.x || packed[i].x + 1u == rect.x + 8u;
+  }
+  assert(edge_texels != 0u);
+  printf("  test_texels_follow_their_instance PASSED\n");
+}
+
+/* A page's tiles encode to the same ASTC blocks when gathered into a strip
+   in another order as on the page, so an incremental bake may copy a
+   rectangle's blocks from the previous set and encode only the relit ones.
+   Catches an encoder whose blocks depend on their neighbors or position. */
+void test_astc_tiles_encode_alone() {
+  printf("  test_astc_tiles_encode_alone...\n");
+  const uint32_t size = 32u;
+  std::vector<float32_t> page((size_t)size * size * 4u);
+  for (uint32_t y = 0u; y < size; ++y) {
+    for (uint32_t x = 0u; x < size; ++x) {
+      const uint32_t hash = (x * 73856093u) ^ (y * 19349663u);
+      float32_t *texel = &page[4u * ((size_t)y * size + x)];
+      texel[0] = 0.25f + 12.0f * (float32_t)(hash % 97u) / 97.0f;
+      texel[1] = 0.1f + (float32_t)x / (float32_t)size;
+      texel[2] = 3.0f * (float32_t)y / (float32_t)size;
+      texel[3] = (float32_t)((hash >> 7) % 255u) / 255.0f;
+    }
+  }
+  std::vector<uint8_t> blocks;
+  assert(vkr_bake_lightmap_encode_astc_hdr(page, size, 10.0f, 2u, &blocks));
+  const uint32_t tiles = (size / 4u) * (size / 4u);
+  uint32_t strip_width = 0u;
+  uint32_t strip_height = 0u;
+  vkr_bake_lightmap_strip_size(tiles, &strip_width, &strip_height);
+  std::vector<float32_t> strip((size_t)strip_width * strip_height * 4u, 0.0f);
+  /* Last tile first. */
+  for (uint32_t t = 0u; t < tiles; ++t) {
+    const uint32_t source = tiles - 1u - t;
+    const uint32_t tx = source % (size / 4u);
+    const uint32_t ty = source / (size / 4u);
+    vkr_bake_lightmap_strip_put(&page[4u * ((size_t)ty * 4u * size + tx * 4u)],
+                                size, t, strip_width, &strip);
+  }
+  std::vector<uint8_t> encoded;
+  assert(vkr_bake_lightmap_encode_astc_hdr_image(strip, strip_width,
+                                                 strip_height, 10.0f, 2u,
+                                                 &encoded));
+  for (uint32_t t = 0u; t < tiles; ++t) {
+    const uint32_t source = tiles - 1u - t;
+    uint8_t tile[16];
+    uint8_t original[16];
+    vkr_bake_lightmap_strip_take(encoded, VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR, t,
+                                 strip_width, tile);
+    vkr_bake_lightmap_page_get_tile(blocks.data(), size,
+                                    VKR_LIGHTMAP_FORMAT_ASTC_4X4_HDR,
+                                    source % (size / 4u), source / (size / 4u),
+                                    original);
+    assert(memcmp(tile, original, sizeof(tile)) == 0);
+  }
+  printf("  test_astc_tiles_encode_alone PASSED (%u tiles)\n", tiles);
+}
+
+/* A lightmapped 1 m box at (x, 0, 0), or an occluder 2 m up with no
+   rectangle, keyed by its entity index. */
+VkrBakeLightmapInputInstance input_box(uint32_t entity, float32_t x,
+                                       float32_t y, bool lightmapped) {
+  VkrBakeLightmapInputInstance instance;
+  instance.key.entity_index = entity;
+  instance.key.kind = VkrBakeSceneInstanceKind::Brush;
+  instance.digest[0] = (uint8_t)entity;
+  instance.bounds_min = vec3_new(x - 0.5f, y - 0.5f, -0.5f);
+  instance.bounds_max = vec3_new(x + 0.5f, y + 0.5f, 0.5f);
+  instance.width = lightmapped ? 8u : 0u;
+  instance.height = lightmapped ? 8u : 0u;
+  instance.direct_width = lightmapped ? 8u : 0u;
+  instance.direct_height = lightmapped ? 8u : 0u;
+  return instance;
+}
+
+/* The incremental plan relights what an edit reaches and nothing else:
+   moving an occluder relights the sun key's instances its shadow and
+   bounce reach and the lamp layer's within the reach, and no lamp-direct
+   texel of a lamp it does not shadow; editing a lamp relights its layer
+   within its range plus the reach and its direct texels within its range,
+   and no sun key. Catches dirty rules that miss a shadow or relight the
+   whole scene. */
+void test_incremental_plan_relights_what_edits_reach() {
+  printf("  test_incremental_plan_relights_what_edits_reach...\n");
+  VkrBakeLightmapInputs previous;
+  for (uint32_t i = 0u; i < 6u; ++i) {
+    previous.instances.push_back(input_box(i, 10.0f * (float32_t)i, 0.0f, true));
+  }
+  previous.instances.push_back(input_box(6u, 20.0f, 2.0f, false));
+  VkrBakeLightmapInputLight lamp;
+  lamp.lamp = true;
+  lamp.position = vec3_new(50.0f, 1.0f, 0.0f);
+  lamp.range = 3.0f;
+  lamp.digest[0] = 1u;
+  snprintf(lamp.group, sizeof(lamp.group), "%s", "default");
+  previous.lights.push_back(lamp);
+  std::vector<VkrBakeLightmapPlanLayer> layers(2u);
+  layers[0].kind = VKR_LIGHT_LAYER_SUN_KEY;
+  layers[0].key_light_direction = vec3_new(0.0f, 1.0f, 0.0f);
+  layers[1].kind = VKR_LIGHT_LAYER_LAMP_GROUP;
+  layers[1].lights = {0u};
+  layers[1].lamp_direct = true;
+  const std::vector<uint8_t> found(7u, 1u);
+
+  /* The occluder above the box at x = 20 moves one meter along x. */
+  VkrBakeLightmapInputs moved = previous;
+  moved.instances[6] = input_box(6u, 21.0f, 2.0f, false);
+  moved.instances[6].digest[1] = 1u;
+  VkrBakeLightmapIncrementalPlan plan;
+  assert(vkr_bake_lightmap_plan_incremental(previous, moved, layers, found,
+                                            found, 4.0f, &plan));
+  assert(plan.changed_instances == 0u && plan.changed_lights == 0u &&
+         plan.changed_boxes == 2u);
+  for (uint32_t i = 0u; i < 6u; ++i) {
+    const uint8_t near = i == 2u ? 1u : 0u;
+    assert(plan.layer_dirty[0][i] == near);
+    assert(plan.layer_dirty[1][i] == near);
+    assert(plan.direct_dirty[1][i] == 0u);
+  }
+
+  /* The lamp's light changes: its layer relights the box beside it. */
+  VkrBakeLightmapInputs relit = previous;
+  relit.lights[0].digest[1] = 1u;
+  assert(vkr_bake_lightmap_plan_incremental(previous, relit, layers, found,
+                                            found, 4.0f, &plan));
+  assert(plan.changed_lights == 2u && plan.changed_boxes == 0u);
+  for (uint32_t i = 0u; i < 6u; ++i) {
+    const uint8_t near = i == 5u ? 1u : 0u;
+    assert(plan.layer_dirty[0][i] == 0u);
+    assert(plan.layer_dirty[1][i] == near);
+    assert(plan.direct_dirty[1][i] == near);
+  }
+
+  /* An instance the previous set lacks relights everywhere. */
+  std::vector<uint8_t> missing = found;
+  missing[0] = 0u;
+  assert(vkr_bake_lightmap_plan_incremental(previous, previous, layers,
+                                            missing, found, 4.0f, &plan));
+  assert(plan.layer_dirty[0][0] && plan.layer_dirty[1][0] &&
+         plan.direct_dirty[1][0] && !plan.layer_dirty[0][1]);
+
+  /* Plans need equal globals. */
+  relit.globals[0] = 1u;
+  assert(!vkr_bake_lightmap_plan_incremental(previous, relit, layers, found,
+                                             found, 4.0f, &plan));
+  printf("  test_incremental_plan_relights_what_edits_reach PASSED\n");
+}
+
+/* An input index round-trips, and a changed byte fails its checksum.
+   Catches an index that reads back other inputs, which would make the next
+   incremental bake copy rectangles that changed. */
+void test_lightmap_index_round_trip() {
+  printf("  test_lightmap_index_round_trip...\n");
+  FilePath directory = {};
+  directory.path = string8_lit(PROJECT_SOURCE_DIR "tests/tmp");
+  directory.type = FILE_PATH_TYPE_ABSOLUTE;
+  assert(file_create_directory(&directory));
+  const char *path = PROJECT_SOURCE_DIR "tests/tmp/lightmap_index.vkli";
+  VkrBakeLightmapInputs inputs;
+  inputs.globals[3] = 7u;
+  inputs.digest[5] = 9u;
+  inputs.instances.push_back(input_box(4u, 1.5f, 0.0f, true));
+  inputs.instances.back().key.has_document_id = true;
+  inputs.instances.back().key.document_id[2] = 0xabu;
+  inputs.instances.push_back(input_box(5u, -2.0f, 2.0f, false));
+  VkrBakeLightmapInputLight light;
+  light.lamp = true;
+  light.unbounded = true;
+  light.position = vec3_new(1.0f, 2.0f, 3.0f);
+  light.range = 6.0f;
+  light.source_radius = 0.25f;
+  snprintf(light.group, sizeof(light.group), "%s", "street");
+  inputs.lights.push_back(light);
+  inputs.lights.push_back(VkrBakeLightmapInputLight{});
+  assert(vkr_bake_lightmap_index_write(path, inputs, 0x12345678u, 4096u));
+  VkrBakeLightmapInputs read;
+  uint32_t crc = 0u;
+  uint64_t bytes = 0u;
+  assert(vkr_bake_lightmap_index_read(path, &read, &crc, &bytes));
+  assert(crc == 0x12345678u && bytes == 4096u);
+  assert(read.globals == inputs.globals && read.digest == inputs.digest);
+  assert(read.instances.size() == 2u && read.lights.size() == 2u);
+  for (size_t i = 0u; i < 2u; ++i) {
+    const VkrBakeLightmapInputInstance &a = inputs.instances[i];
+    const VkrBakeLightmapInputInstance &b = read.instances[i];
+    assert(a.key.document_id == b.key.document_id &&
+           a.key.has_document_id == b.key.has_document_id &&
+           a.key.entity_index == b.key.entity_index &&
+           a.key.kind == b.key.kind && a.digest == b.digest &&
+           a.bounds_max.y == b.bounds_max.y && a.width == b.width &&
+           a.direct_height == b.direct_height);
+  }
+  assert(read.lights[0].unbounded && read.lights[0].lamp &&
+         read.lights[0].source_radius == 0.25f &&
+         strcmp(read.lights[0].group, "street") == 0 && !read.lights[1].lamp);
+  FILE *file = fopen(path, "r+b");
+  assert(file);
+  assert(fseek(file, 120, SEEK_SET) == 0);
+  const int byte = fgetc(file);
+  assert(fseek(file, 120, SEEK_SET) == 0);
+  assert(fputc(byte ^ 0x40, file) != EOF);
+  fclose(file);
+  assert(!vkr_bake_lightmap_index_read(path, &read, &crc, &bytes));
+  remove(path);
+  printf("  test_lightmap_index_round_trip PASSED\n");
+}
+
 struct DecodedCube {
   std::vector<VkrBakeTriangle> triangles;
   std::vector<VkrBakeLightmapInstance> instances;
@@ -300,6 +579,7 @@ void test_compose_fills_each_rect_alone() {
   VkrBakeLightmapTexel right;
   right.x = 6u;
   right.y = 2u;
+  right.source_instance_index = 1u;
   const std::vector<VkrBakeLightmapTexel> texels = {left, right};
   const std::vector<Vec3> values = {vec3_new(2.0f, 0.0f, 0.0f),
                                     vec3_new(0.0f, 0.0f, 3.0f)};
@@ -2026,11 +2306,15 @@ bool32_t run_lightmap_bake_tests(void) {
   printf("--- Starting Lightmap Bake Tests ---\n");
   test_pack_sizes_and_places_rects();
   test_rasterize_covers_a_quad_once();
+  test_texels_follow_their_instance();
   test_cooked_cube_texels_lie_on_its_faces();
   test_pack_fitted_shrinks_small_scenes();
   test_pack_fills_room_beside_tall_rects();
   test_compose_fills_each_rect_alone();
   test_astc_hdr_round_trip_keeps_range();
+  test_astc_tiles_encode_alone();
+  test_incremental_plan_relights_what_edits_reach();
+  test_lightmap_index_round_trip();
   test_lightmap_set_round_trip_and_rejects();
   test_lightmap_set_lamp_direct_round_trip_and_rejects();
   test_lightmap_set_class_planes_from_prefix();

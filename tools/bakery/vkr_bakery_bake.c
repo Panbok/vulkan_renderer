@@ -14,6 +14,7 @@
 #include "meshoptimizer.h"
 #include "platform/vkr_platform.h"
 #include "vkr_bakery_buffer.h"
+#include "vkr_bakery_identity.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -968,6 +969,11 @@ typedef struct VkrBakePublication {
   const char *bake_manifest;
   const char *manifest_destination;
   const char *job;
+  /* Lightmap bakes: the content fingerprint of their inputs
+     (vkr_bake_lightmap_fingerprint) and how the set was produced; NULL for
+     other bakes. */
+  const char *input_fingerprint;
+  VkrBakeryJson *production;
 } VkrBakePublication;
 
 /* Publishes a verified temporary output under its name, then writes the
@@ -998,6 +1004,14 @@ vkr_internal bool8_t vkr_bake_publish(VkrBake *bake,
       vkr_bakery_json_clone(
           arena, vkr_bakery_json_get(publication->baked, "atmosphere")));
   vkr_bakery_json_set(arena, metadata, "output", publication->output_record);
+  if (publication->input_fingerprint) {
+    vkr_bakery_json_set(
+        arena, metadata, "input_fingerprint",
+        vkr_bakery_json_cstr(arena, publication->input_fingerprint));
+  }
+  if (publication->production) {
+    vkr_bakery_json_set(arena, metadata, "production", publication->production);
+  }
   const char *sha256 = vkr_bake_text(publication->output_record, "sha256");
   vkr_bakery_json_set(arena, metadata, "output_sha256",
                       vkr_bakery_json_cstr(arena, sha256));
@@ -1456,6 +1470,14 @@ typedef struct VkrBakeLightmap {
   int64_t denoise;
   int64_t denoise_iterations;
   float64_t indirect_clamp;
+  /* A set baked before whose sidecar may show that it is current; the
+     output itself when it exists and none is named. `full` bakes again
+     whatever the previous set shows. */
+  const char *previous;
+  bool8_t full;
+  /* How far around a change an incremental bake relights indirect light,
+     in world units; negative keeps the baker's default. */
+  float64_t reach;
 } VkrBakeLightmap;
 
 vkr_internal bool8_t vkr_bake_lightmap_validate(VkrBake *bake,
@@ -1598,11 +1620,112 @@ cleanup:
   return result;
 }
 
+/* Version of the lightmap input fingerprint's own layout. */
+#define VKR_BAKE_LIGHTMAP_FINGERPRINT_VERSION 1
+
+/*
+ * The content fingerprint of a lightmap bake's inputs: the lightmap baker's
+ * identity (its sources and codecs, VKR_BAKERY_IDENTITY_LIGHTMAP), the
+ * recipe, and the digest the baker's inspection reports of everything it
+ * read (`content_digest`, vkr_bake_lightmap_inputs.h): geometry, materials
+ * and their textures' content, lights, sky and layers, never a path, so a
+ * project bake's effective scene, written to a new job directory each time,
+ * and edits the bake does not read leave it unchanged. Two bakes with one
+ * fingerprint publish the same set, so a later bake with the previous set's
+ * fingerprint keeps that set.
+ */
+vkr_internal bool8_t
+vkr_bake_lightmap_fingerprint(VkrBake *bake, const VkrBakeryJson *recipe,
+                              const VkrBakeryJson *manifest, char out[72]) {
+  const char *content = vkr_bake_text(manifest, "content_digest");
+  if (!content || !content[0]) {
+    return vkr_bake_fail(bake, "Lightmap inspect manifest lacks the content "
+                               "digest of its inputs");
+  }
+  String8 recipe_text = {0};
+  if (!vkr_bakery_json_write(bake->arena, vkr_bake_sorted(bake->arena, recipe),
+                             VKR_BAKERY_JSON_COMPACT, &recipe_text)) {
+    return vkr_bake_fail(bake, "Cannot write the lightmap recipe");
+  }
+  VkrSha256 hash;
+  vkr_sha256_init(&hash);
+  const char *head = vkr_bake_printf(
+      bake, "vkr-lightmap-inputs %d\nbaker %s\nformat %u\ncontent %s\nrecipe ",
+      VKR_BAKE_LIGHTMAP_FINGERPRINT_VERSION, VKR_BAKERY_IDENTITY_LIGHTMAP,
+      VKR_LIGHTMAP_SET_VERSION, content);
+  vkr_sha256_update(&hash, head, strlen(head));
+  vkr_sha256_update(&hash, recipe_text.str, recipe_text.length);
+  uint8_t digest[VKR_SHA256_DIGEST_SIZE];
+  vkr_sha256_final(&hash, digest);
+  char hex[VKR_SHA256_HEX_SIZE];
+  vkr_sha256_hex(digest, hex);
+  (void)snprintf(out, 72, "sha256:%s", hex);
+  return true_v;
+}
+
+/* Whether every closure file still has the size and digest recorded before
+   the bake, so the published set describes the files it read. Hashing the
+   recorded closure replaces a second scene load. */
+vkr_internal bool8_t vkr_bake_closure_unchanged(VkrBake *bake,
+                                                const VkrBakeryJson *records) {
+  for (const VkrBakeryJson *record = records->first; record;
+       record = record->next) {
+    const char *path = vkr_bake_text(record, "path");
+    int64_t bytes = -1;
+    VkrBakeryStat info;
+    char digest[72];
+    if (!path || !vkr_bakery_stat(path, &info) || !info.exists ||
+        !vkr_bake_int(vkr_bakery_json_get(record, "bytes"), &bytes) ||
+        bytes != (int64_t)info.size || !vkr_bake_digest(bake, path, digest) ||
+        !vkr_bakery_json_is_string(vkr_bakery_json_get(record, "sha256"),
+                                   digest)) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Whether `previous`, a set baked before, was baked from inputs with this
+   fingerprint and is still the file its sidecar describes. Reads nothing
+   but the sidecar and the set; any doubt means it is not current. */
+vkr_internal bool8_t vkr_bake_lightmap_previous_current(VkrBake *bake,
+                                                        const char *previous,
+                                                        const char *fingerprint,
+                                                        char out_sha256[72]) {
+  char sidecar[VKR_BAKE_PATH];
+  (void)snprintf(sidecar, sizeof(sidecar), "%s.bake.json", previous);
+  if (!vkr_bakery_is_file(previous) || !vkr_bakery_is_file(sidecar)) {
+    return false_v;
+  }
+  const bool8_t failed_before = bake->failed;
+  VkrBakeryJson *metadata = vkr_bake_load(bake, sidecar, "metadata");
+  bool8_t current =
+      metadata &&
+      vkr_bakery_json_is_string(
+          vkr_bakery_json_get(metadata, "input_fingerprint"), fingerprint) &&
+      vkr_bake_digest(bake, previous, out_sha256) &&
+      vkr_bakery_json_is_string(vkr_bakery_json_get(metadata, "output_sha256"),
+                                out_sha256);
+  bake->failed = failed_before;
+  return current;
+}
+
+/* The input index beside a set: `<name>.vkli` for `<name>.vklm`. */
+vkr_internal const char *vkr_bake_lightmap_index_path(VkrBake *bake,
+                                                      const char *set) {
+  const uint64_t length = strlen(set);
+  const uint64_t stem = length >= 5u && strcmp(set + length - 5u, ".vklm") == 0
+                            ? length - 5u
+                            : length;
+  return vkr_bake_printf(bake, "%.*s.vkli", (int)stem, set);
+}
+
 vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                                        const VkrBakeLightmap *args,
                                        const char *output, const char *sidecar,
                                        const char *manifest_destination,
-                                       bool8_t *out_nothing) {
+                                       bool8_t *out_nothing,
+                                       bool8_t *out_unchanged) {
   char scene[VKR_BAKE_PATH];
   char job[VKR_BAKE_PATH];
   char inspect_path[VKR_BAKE_PATH];
@@ -1658,6 +1781,29 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                          job);
   }
 
+  /* A previous set baked from inputs with this fingerprint is current: the
+     bake would publish it again. */
+  VkrBakeryJson *recipe_record = vkr_bake_lightmap_recipe(bake, args);
+  char fingerprint[72];
+  VKR_BAKE_TRY(
+      vkr_bake_lightmap_fingerprint(bake, recipe_record, inspect, fingerprint));
+  char previous[VKR_BAKE_PATH] = {0};
+  if (args->previous) {
+    (void)vkr_bake_resolve(args->previous, previous);
+  } else if (vkr_bakery_is_file(output)) {
+    (void)snprintf(previous, sizeof(previous), "%s", output);
+  }
+  char previous_sha256[72];
+  if (!args->full && previous[0] &&
+      vkr_bake_lightmap_previous_current(bake, previous, fingerprint,
+                                         previous_sha256)) {
+    *out_unchanged = strcmp(previous, output) != 0;
+    printf("{\"status\":\"unchanged\",\"output\":\"%s\",\"sha256\":\"%s\","
+           "\"input_fingerprint\":\"%s\",\"evidence\":\"%s\"}\n",
+           previous, previous_sha256, fingerprint, job);
+    return true_v;
+  }
+
   char output_directory[VKR_BAKE_PATH];
   vkr_bakery_path_parent(output_directory, sizeof(output_directory), output);
   if (!vkr_bakery_make_directories(output_directory)) {
@@ -1666,13 +1812,38 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
   char id[33];
   vkr_bake_hex_id(id);
   const char *temporary = vkr_bake_printf(bake, "%s.%.8s.vklm", output, id);
+  const char *index = vkr_bake_lightmap_index_path(bake, output);
+  const char *temporary_index =
+      vkr_bake_printf(bake, "%s.%.8s.vkli", index, id);
   const char *bake_manifest =
       vkr_bake_printf(bake, "%s/bake.manifest.json", job);
+  const char *report = vkr_bake_printf(bake, "%s/bake.report.json", job);
   VkrBakeArguments arguments = recipe;
   vkr_bake_push(&arguments, "--output");
   vkr_bake_push(&arguments, temporary);
   vkr_bake_push(&arguments, "--manifest");
   vkr_bake_push(&arguments, bake_manifest);
+  vkr_bake_push(&arguments, "--index");
+  vkr_bake_push(&arguments, temporary_index);
+  vkr_bake_push(&arguments, "--report");
+  vkr_bake_push(&arguments, report);
+  /* Incremental by default: the previous set and its index let the baker
+     relight only what the edits reach (vkr_bake_lightmap_inputs.h). */
+  const char *previous_index =
+      previous[0] ? vkr_bake_lightmap_index_path(bake, previous) : NULL;
+  const bool8_t incremental = !args->full && previous_index &&
+                              vkr_bakery_is_file(previous) &&
+                              vkr_bakery_is_file(previous_index);
+  if (incremental) {
+    vkr_bake_push(&arguments, "--previous-set");
+    vkr_bake_push(&arguments, vkr_bake_printf(bake, "%s", previous));
+    vkr_bake_push(&arguments, "--previous-index");
+    vkr_bake_push(&arguments, previous_index);
+  }
+  if (args->reach >= 0.0) {
+    vkr_bake_push(&arguments, "--reach");
+    vkr_bake_push(&arguments, vkr_bake_printf(bake, "%.9g", args->reach));
+  }
   VKR_BAKE_TRY(vkr_bake_write_command(
       bake, vkr_bake_printf(bake, "%s/bake.command.json", job), &arguments));
   bool8_t ok = vkr_bake_run_baker(bake, &arguments,
@@ -1687,22 +1858,32 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
                              "were prepared");
   }
   ok = ok && (vklm = vkr_bake_verify_vklm(bake, temporary)) != NULL;
-  char final_inspect[VKR_BAKE_PATH];
-  VkrBakeryJson *final_manifest = NULL;
-  VkrBakeryJson *final_dependencies = NULL;
-  ok = ok &&
-       vkr_bake_run_recipe_inspect(bake, &recipe, job, "inspect_after",
-                                   final_inspect) &&
-       vkr_bake_inspect_manifest(bake, &vkr_bake_lightmap_kind, final_inspect,
-                                 scene, &final_manifest, &final_dependencies);
-  if (ok && !vkr_bakery_json_equal(dependencies, final_dependencies)) {
+  if (ok && !vkr_bake_closure_unchanged(bake, dependencies)) {
     ok = vkr_bake_fail(bake, "Bake source closure changed before publication");
   }
+  if (ok && !vkr_bakery_is_file(temporary_index)) {
+    ok = vkr_bake_fail(bake, "The lightmap baker wrote no input index");
+  }
   if (ok) {
+    /* How the set was made: the baker's report, and for an incremental set
+       the set it built on. Packaging and baselines read the kind. */
+    VkrBakeryJson *production = vkr_bake_load(bake, report, "bake report");
+    ok = production != NULL;
+    const char *kind = ok ? vkr_bake_text(production, "kind") : NULL;
+    if (ok && kind && strcmp(kind, "incremental") == 0) {
+      char base_sha256[72];
+      ok = vkr_bake_digest(bake, previous, base_sha256);
+      VkrBakeryJson *base = vkr_bakery_json_object(bake->arena);
+      vkr_bakery_json_set(bake->arena, base, "path",
+                          vkr_bakery_json_cstr(bake->arena, previous));
+      vkr_bakery_json_set(bake->arena, base, "sha256",
+                          vkr_bakery_json_cstr(bake->arena, base_sha256));
+      vkr_bakery_json_set(bake->arena, production, "base", base);
+    }
     const VkrBakePublication publication = {
         .scene_source = args->scene,
         .scene = scene,
-        .recipe = vkr_bake_lightmap_recipe(bake, args),
+        .recipe = recipe_record,
         .dependencies = dependencies,
         .baked = baked,
         .output_record = vklm,
@@ -1712,10 +1893,16 @@ vkr_internal bool8_t vkr_bake_lightmap(VkrBake *bake,
         .bake_manifest = bake_manifest,
         .manifest_destination = manifest_destination,
         .job = job,
+        .input_fingerprint = fingerprint,
+        .production = production,
     };
-    ok = vkr_bake_publish(bake, &publication);
+    /* The index goes into place first: a set without its index bakes in
+       full next time, never the other way round. */
+    ok = ok && vkr_bakery_rename(temporary_index, index, true_v);
+    ok = ok && vkr_bake_publish(bake, &publication);
   }
   (void)vkr_bakery_remove_file(temporary);
+  (void)vkr_bakery_remove_file(temporary_index);
   return ok;
 }
 
@@ -1758,7 +1945,8 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
                           .direct_texels_per_unit = 16.0,
                           .denoise = 1,
                           .denoise_iterations = 4,
-                          .indirect_clamp = 0.0};
+                          .indirect_clamp = 0.0,
+                          .reach = -1.0};
   for (int i = 1; i < argc; ++i) {
     const char *flag = argv[i];
     bool8_t ok = true_v;
@@ -1793,6 +1981,13 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
       ok = vkr_bake_parse_integer(argv, argc, &i, &args.denoise_iterations);
     } else if (!strcmp(flag, "--indirect-clamp")) {
       ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.indirect_clamp);
+    } else if (!strcmp(flag, "--previous")) {
+      ok = (args.previous = vkr_bake_value(argv, argc, &i)) != NULL;
+    } else if (!strcmp(flag, "--full")) {
+      args.full = true_v;
+    } else if (!strcmp(flag, "--reach")) {
+      ok = vkr_bake_parse_numbers(argv, argc, &i, 1u, &args.reach) &&
+           isfinite(args.reach) && args.reach >= 0.0;
     } else {
       ok = false_v;
     }
@@ -1832,8 +2027,17 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
     (void)snprintf(sidecar, sizeof(sidecar), "%s.bake.json", output);
   }
   if (args.check) {
-    const bool8_t current =
+    /* Current means the closure is unchanged and the sidecar's recipe is
+       the one these options ask for, so a bake with them would publish
+       the same set. */
+    bool8_t current =
         vkr_bake_current(bake, output, sidecar, vkr_bake_verify_vklm);
+    if (current) {
+      VkrBakeryJson *metadata = vkr_bake_load(bake, sidecar, "metadata");
+      current = metadata &&
+                vkr_bakery_json_equal(vkr_bakery_json_get(metadata, "recipe"),
+                                      vkr_bake_lightmap_recipe(bake, &args));
+    }
     printf("%s\n", current ? "current" : "stale");
     return current ? 0 : 1;
   }
@@ -1846,12 +2050,13 @@ vkr_internal int vkr_bake_lightmap_main(VkrBake *bake, int argc, char **argv) {
     (void)vkr_bake_resolve(joined, manifest);
   }
   bool8_t nothing = false_v;
-  const bool8_t ok =
-      args.inspect
-          ? vkr_bake_lightmap_inspect(bake, &args, manifest)
-          : vkr_bake_lightmap(bake, &args, output, sidecar, manifest, &nothing);
+  bool8_t unchanged = false_v;
+  const bool8_t ok = args.inspect
+                         ? vkr_bake_lightmap_inspect(bake, &args, manifest)
+                         : vkr_bake_lightmap(bake, &args, output, sidecar,
+                                             manifest, &nothing, &unchanged);
   if (ok) {
-    return 0;
+    return unchanged ? VKR_BAKERY_BAKE_LIGHTMAP_UNCHANGED : 0;
   }
   if (nothing) {
     fprintf(stderr, "Lightmap bake skipped: %s\n", bake->error);

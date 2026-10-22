@@ -600,8 +600,8 @@ bool8_t vkr_lightmap_set_decode(const uint8_t *bytes, uint64_t size,
     }
   }
   const uint8_t *payload = bytes + layout.payload_offset;
-  if (vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_PAYLOAD_CRC) !=
-      vkr_crc32(payload, layout.payload_bytes)) {
+  set.payload_crc = vkr_load_le_u32(header + VKR_LIGHTMAP_SET_H_PAYLOAD_CRC);
+  if (set.payload_crc != vkr_crc32(payload, layout.payload_bytes)) {
     return false_v;
   }
 

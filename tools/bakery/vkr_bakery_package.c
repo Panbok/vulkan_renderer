@@ -1113,6 +1113,35 @@ vkr_internal void vkr_package_collect_text_fonts(VkrPackage *package,
 
 /* Portable lowering of one included scene; its runtime document and overlay
    take their identities below the staged content. */
+/* Warns when the lowered scene's lightmap set was baked incrementally
+   (ADR-088): its sidecar names an incremental production, which keeps the
+   light earlier sets left beyond the edits' reach, so a shipped package
+   should carry a full bake. */
+vkr_internal void
+vkr_package_warn_incremental_lightmaps(VkrPackage *package,
+                                       const VkrPackageScene *scene,
+                                       const VkrBakeryJson *document) {
+  const VkrBakeryJson *lightmaps = vkr_bakery_json_get(document, "lightmaps");
+  for (const VkrBakeryJson *block = lightmaps ? lightmaps->first : NULL; block;
+       block = block->next) {
+    const char *set = vkr_package_text(package, block, "path");
+    if (!set) {
+      continue;
+    }
+    const VkrBakeryJson *metadata = vkr_package_read_json(
+        package, vkr_package_printf(package, "%s.bake.json", set), false_v);
+    const char *kind = vkr_package_text(
+        package, vkr_bakery_json_get(metadata, "production"), "kind");
+    if (kind && strcmp(kind, "incremental") == 0) {
+      vkr_package_warn(package,
+                       "Scene %s ships lightmaps baked incrementally; bake "
+                       "them in full (Full rebake in Bake settings, or "
+                       "lighting.bake with full: true) before shipping",
+                       scene->name ? scene->name : scene->id);
+    }
+  }
+}
+
 vkr_internal bool8_t vkr_package_lower_scene(VkrPackage *package,
                                              VkrPackageScene *scene) {
   VkrBakeryJson *request =
@@ -1138,6 +1167,7 @@ vkr_internal bool8_t vkr_package_lower_scene(VkrPackage *package,
     return vkr_package_fail(package, scene->manifest,
                             "lowering %s produced no runtime scene", scene->id);
   }
+  vkr_package_warn_incremental_lightmaps(package, scene, document);
   scene->has_player = vkr_package_has_player(document);
   (void)vkr_bakery_json_get_int(result, "preview_assets",
                                 &scene->preview_assets);

@@ -139,7 +139,7 @@ struct GatherArgs
        sample; the lights before it are evaluated once per texel. */
     uint rectangle_first;
     /* bit 0 sky, bit 1 emission, bit 2 texel direct, bit 3 occlusion, bit 4
-       back-face fraction, bit 5 incident direction. */
+       back-face fraction, bit 5 incident direction, bit 6 direct only. */
     uint flags;
     /* First triangle of each geometry in the acceleration structure's index
        buffer: opaque triangles, then cutout and blended ones. */
@@ -203,8 +203,10 @@ void lightmap_trace_benchmark(uint3 thread_id: SV_DispatchThreadID,
     }
     uint texel = args.first_texel + id;
     float3 normal = texel_normals[texel].xyz;
-    float3 origin = texel_positions[texel].xyz + normal * 1.0e-3f;
-    uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
+    float4 position_seed = texel_positions[texel];
+    float3 origin = position_seed.xyz + normal * 1.0e-3f;
+    /* w carries the texel's seed key bits (vkr_bake_lightmap_texel_seed). */
+    uint texel_seed = mix_seed(args.seed ^ asuint(position_seed.w));
     uint hits = 0u;
     for (uint s = 0u; s < args.samples; ++s)
     {
@@ -1013,7 +1015,8 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
     }
     uint texel = args.first_texel + id;
     float3 texel_normal = texel_normals[texel].xyz;
-    float3 texel_position = texel_positions[texel].xyz;
+    float4 position_seed = texel_positions[texel];
+    float3 texel_position = position_seed.xyz;
     float3 step_x = texel_footprints[2u * texel + 0u].xyz;
     float3 step_y = texel_footprints[2u * texel + 1u].xyz;
     float3 origin = texel_position + texel_normal * 1.0e-3f;
@@ -1032,7 +1035,10 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
     bool direct_only = (args.flags & 64u) != 0u;
     bool first_run = args.first_sample == 0u;
     float4 direction_sum = float4(0.0f);
-    uint texel_seed = mix_seed(args.seed ^ mix_seed(texel));
+    /* The texel's samples follow its place in its instance's rectangle, which
+       w carries as seed key bits (vkr_bake_lightmap_texel_seed), so they do
+       not depend on packing or on which texels a gather takes. */
+    uint texel_seed = mix_seed(args.seed ^ asuint(position_seed.w));
     float inverse_samples = 1.0f / float(args.samples);
 
     float3 direct_total = float3(0.0f);
@@ -1110,12 +1116,23 @@ void lightmap_gather(uint3 thread_id: SV_DispatchThreadID,
             cosine_direction(texel_normal, first_draw, second_draw);
         if (direct_only)
         {
-            /* A direct-only gather still finds buried texels by their first
-               hits. */
-            if (use_backface)
+            /* A direct-only gather still finds buried texels and, for a texel
+               an incremental bake relights in some layers only, ambient
+               occlusion by their first hits: the hits a full gather's paths
+               take first, from the same random numbers, so both match it. */
+            if (use_backface || use_occlusion)
             {
                 Hit hit = trace_surface(transport, origin, direction, rng);
                 backface_hits += hit.found && hit.back_face ? 1.0f : 0.0f;
+                if (hit.found && use_occlusion)
+                {
+                    float opacity =
+                        1.0f - (1.0f - saturate(hit.material.metallic)) *
+                                   saturate(hit.material.transmission);
+                    occluded += opacity *
+                                saturate(1.0f - distance(hit.position, origin) /
+                                                    args.occlusion_radius);
+                }
             }
             continue;
         }

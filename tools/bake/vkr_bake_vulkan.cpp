@@ -46,6 +46,16 @@ namespace {
    that drives the desktop. */
 constexpr uint32_t kTexelsPerDispatch = 16384u;
 constexpr uint32_t kSamplesPerDispatch = 8u;
+/* Texel-gather submissions made ahead of the one the host waits for, as on
+   Metal, so the GPU starts the next submission while the host records the
+   one after it instead of idling through each submit and wait. Each
+   submission stays as short as above; submissions on one queue start in
+   order, and the barrier each opens with makes it see the earlier ones'
+   writes, so the runs of one batch accumulate in order. */
+constexpr uint32_t kGatherSubmissionsInFlight = 3u;
+/* The texel gather's timestamp pairs follow the synchronous pair (queries 0
+   and 1) in the context's query pool. */
+constexpr uint32_t kTimestampQueryCount = 2u + 2u * kGatherSubmissionsInFlight;
 /* Paths per probe-gather submission, as a texel-gather submission takes
    (kTexelsPerDispatch * kSamplesPerDispatch); a probe takes
    6 * face_size^2 * samples of them, so a submission holds as many whole
@@ -572,12 +582,19 @@ struct VkrBakeGpuContext {
   double timestamp_period = 1.0;
   uint64_t timestamp_mask = ~0ull;
   VkDeviceSize scratch_alignment = 1u;
-  /* One command buffer, fence and timestamp pair, reused by every
-     submission: each submission is waited for before the next records. */
+  /* One command buffer, fence and timestamp pair (queries 0 and 1), reused
+     by every synchronous submission: each is waited for before the next
+     records. */
   VkCommandPool command_pool = VK_NULL_HANDLE;
   VkCommandBuffer command_buffer = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   VkQueryPool timestamps = VK_NULL_HANDLE;
+  /* The texel gather's ring of submissions in flight: a command buffer, a
+     fence and the timestamp pair from query 2 + 2 * slot each. Only
+     vkr_bake_gpu_gather records into them, and it waits for every one before
+     it returns. */
+  VkCommandBuffer gather_commands[kGatherSubmissionsInFlight] = {};
+  VkFence gather_fences[kGatherSubmissionsInFlight] = {};
   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
   VkPipeline benchmark = VK_NULL_HANDLE;
@@ -750,15 +767,15 @@ void destroy_image(VkrBakeGpuContext *context, Image *image) {
   *image = Image{};
 }
 
-bool begin_commands(VkrBakeGpuContext *context) {
+/* Resets `command`, which no pending submission holds, and begins it. */
+bool begin_commands(const VkrBakeGpuContext *context, VkCommandBuffer command) {
   const VulkanApi &api = context->vulkan.api;
   const VkCommandBufferBeginInfo begin = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
-  return vk_ok(api.vkResetCommandBuffer(context->command_buffer, 0u),
-               "command buffer reset") &&
-         vk_ok(api.vkBeginCommandBuffer(context->command_buffer, &begin),
+  return vk_ok(api.vkResetCommandBuffer(command, 0u), "command buffer reset") &&
+         vk_ok(api.vkBeginCommandBuffer(command, &begin),
                "command buffer begin");
 }
 
@@ -777,27 +794,34 @@ void end_timing(VkrBakeGpuContext *context) {
                                           context->timestamps, 1u);
 }
 
-/* Submits the recorded commands and waits for them. With
-   `in_out_gpu_seconds`, the commands wrote the timestamp pair and its
-   interval is added. A lost device (a GPU reset) fails the call. */
-bool finish_commands(VkrBakeGpuContext *context, double *in_out_gpu_seconds) {
+/* Ends the recorded `command` and submits it, signalling `fence` when it
+   completes. */
+bool submit_commands(VkrBakeGpuContext *context, VkCommandBuffer command,
+                     VkFence fence) {
   const VulkanApi &api = context->vulkan.api;
-  if (!vk_ok(api.vkEndCommandBuffer(context->command_buffer),
-             "command buffer end")) {
+  if (!vk_ok(api.vkEndCommandBuffer(command), "command buffer end")) {
     return false;
   }
   const VkSubmitInfo submit = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .commandBufferCount = 1u,
-      .pCommandBuffers = &context->command_buffer,
+      .pCommandBuffers = &command,
   };
-  if (!vk_ok(api.vkQueueSubmit(context->queue, 1u, &submit, context->fence),
-             "submission") ||
-      !vk_ok(api.vkWaitForFences(context->device, 1u, &context->fence, VK_TRUE,
-                                 UINT64_MAX),
-             "dispatch") ||
-      !vk_ok(api.vkResetFences(context->device, 1u, &context->fence),
-             "fence reset")) {
+  return vk_ok(api.vkQueueSubmit(context->queue, 1u, &submit, fence),
+               "submission");
+}
+
+/* Waits for the submission that signals `fence` and resets the fence. With
+   `in_out_gpu_seconds`, the submission wrote the timestamp pair from
+   `first_query` and its interval is added. A lost device (a GPU reset) fails
+   the call. */
+bool complete_commands(VkrBakeGpuContext *context, VkFence fence,
+                       uint32_t first_query, double *in_out_gpu_seconds) {
+  const VulkanApi &api = context->vulkan.api;
+  if (!vk_ok(
+          api.vkWaitForFences(context->device, 1u, &fence, VK_TRUE, UINT64_MAX),
+          "dispatch") ||
+      !vk_ok(api.vkResetFences(context->device, 1u, &fence), "fence reset")) {
     return false;
   }
   if (!in_out_gpu_seconds) {
@@ -805,8 +829,8 @@ bool finish_commands(VkrBakeGpuContext *context, double *in_out_gpu_seconds) {
   }
   uint64_t ticks[2] = {0u, 0u};
   if (!vk_ok(api.vkGetQueryPoolResults(
-                 context->device, context->timestamps, 0u, 2u, sizeof(ticks),
-                 ticks, sizeof(uint64_t),
+                 context->device, context->timestamps, first_query, 2u,
+                 sizeof(ticks), ticks, sizeof(uint64_t),
                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
              "timestamp query")) {
     return false;
@@ -816,6 +840,14 @@ bool finish_commands(VkrBakeGpuContext *context, double *in_out_gpu_seconds) {
                            context->timestamp_mask;
   *in_out_gpu_seconds += (double)elapsed * context->timestamp_period * 1.0e-9;
   return true;
+}
+
+/* Submits the commands recorded into the context's command buffer and waits
+   for them. With `in_out_gpu_seconds`, the commands wrote the timestamp pair
+   and its interval is added. */
+bool finish_commands(VkrBakeGpuContext *context, double *in_out_gpu_seconds) {
+  return submit_commands(context, context->command_buffer, context->fence) &&
+         complete_commands(context, context->fence, 0u, in_out_gpu_seconds);
 }
 
 /* A device-local buffer filled from `data` through a staging copy. */
@@ -833,7 +865,7 @@ bool upload_buffer(VkrBakeGpuContext *context, const void *data,
   bool ok =
       create_buffer(context, size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                     false, out_buffer) &&
-      begin_commands(context);
+      begin_commands(context, context->command_buffer);
   if (ok) {
     const VkBufferCopy region = {.size = staging.size};
     context->vulkan.api.vkCmdCopyBuffer(context->command_buffer, staging.buffer,
@@ -910,7 +942,7 @@ bool upload_image(VkrBakeGpuContext *context, VkFormat format, uint32_t width,
                   "image view creation") &&
             create_buffer(context, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true,
                           &staging) &&
-            begin_commands(context);
+            begin_commands(context, context->command_buffer);
   if (ok) {
     std::memcpy(staging.mapped, data, (size_t)size);
     VkImageMemoryBarrier barrier = {
@@ -1155,7 +1187,7 @@ bool build_acceleration_structure(VkrBakeGpuContext *context,
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                           false, &scratch) &&
-            begin_commands(context);
+            begin_commands(context, context->command_buffer);
   double build_seconds = 0.0;
   if (ok) {
     const VkDeviceAddress scratch_address =
@@ -1606,13 +1638,19 @@ bool create_device_objects(VkrBakeGpuContext *context,
       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
       .commandBufferCount = 1u,
   };
+  const VkCommandBufferAllocateInfo gather_allocate = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = context->command_pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = kGatherSubmissionsInFlight,
+  };
   const VkFenceCreateInfo fence_create = {
       .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
   };
   const VkQueryPoolCreateInfo query_create = {
       .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
       .queryType = VK_QUERY_TYPE_TIMESTAMP,
-      .queryCount = 2u,
+      .queryCount = kTimestampQueryCount,
   };
   if (!vk_ok(api.vkAllocateCommandBuffers(context->device, &command_allocate,
                                           &context->command_buffer),
@@ -1622,8 +1660,19 @@ bool create_device_objects(VkrBakeGpuContext *context,
              "fence creation") ||
       !vk_ok(api.vkCreateQueryPool(context->device, &query_create, nullptr,
                                    &context->timestamps),
-             "query pool creation")) {
+             "query pool creation") ||
+      !vk_ok(api.vkAllocateCommandBuffers(context->device, &gather_allocate,
+                                          context->gather_commands),
+             "command buffer allocation")) {
     return false;
+  }
+  for (VkFence &fence : context->gather_fences) {
+    if (!vk_ok(
+            api.vkCreateFence(context->device, &fence_create, nullptr, &fence),
+            "fence creation")) {
+      fence = VK_NULL_HANDLE;
+      return false;
+    }
   }
 
   VkDescriptorSetLayoutBinding bindings[kBindingCount] = {};
@@ -1802,6 +1851,11 @@ void release_context(VkrBakeGpuContext *context) {
     if (context->fence != VK_NULL_HANDLE) {
       api.vkDestroyFence(context->device, context->fence, nullptr);
     }
+    for (VkFence fence : context->gather_fences) {
+      if (fence != VK_NULL_HANDLE) {
+        api.vkDestroyFence(context->device, fence, nullptr);
+      }
+    }
     if (context->command_pool != VK_NULL_HANDLE) {
       api.vkDestroyCommandPool(context->device, context->command_pool, nullptr);
     }
@@ -1936,7 +1990,9 @@ bool upload_texels(CallBuffers *call,
     p[4u * i + 0u] = texel.position.x;
     p[4u * i + 1u] = texel.position.y;
     p[4u * i + 2u] = texel.position.z;
-    p[4u * i + 3u] = 1.0f;
+    /* w carries the seed key's bits; the kernels never read it as a
+       number. */
+    std::memcpy(&p[4u * i + 3u], &texel.seed, sizeof(texel.seed));
     n[4u * i + 0u] = texel.normal.x;
     n[4u * i + 1u] = texel.normal.y;
     n[4u * i + 2u] = texel.normal.z;
@@ -2012,17 +2068,20 @@ void write_scene(DescriptorWrites *writes, const VkrBakeGpuContext *context) {
   };
 }
 
-/* Records, submits and waits for one dispatch of `texel_count` threads with
-   these push constants, adding its GPU time. The dispatch first sees the
-   previous submission's writes, and the host sees its own afterwards. */
-bool dispatch(VkrBakeGpuContext *context, VkPipeline pipeline,
-              const void *arguments, uint32_t argument_size,
-              uint32_t texel_count, double *in_out_gpu_seconds) {
+/* Records into `command` one dispatch of `texel_count` threads with these
+   push constants between the timestamp pair from `first_query`. The dispatch
+   first sees the writes of every earlier submission on the queue, and the
+   host sees its own once its submission completes. The start timestamp
+   waits for earlier compute work, so the intervals of submissions in flight
+   together do not overlap. */
+bool record_dispatch(VkrBakeGpuContext *context, VkCommandBuffer command,
+                     uint32_t first_query, VkPipeline pipeline,
+                     const void *arguments, uint32_t argument_size,
+                     uint32_t texel_count) {
   const VulkanApi &api = context->vulkan.api;
-  if (!begin_commands(context)) {
+  if (!begin_commands(context, command)) {
     return false;
   }
-  const VkCommandBuffer command = context->command_buffer;
   const VkMemoryBarrier previous = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
       .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -2031,7 +2090,9 @@ bool dispatch(VkrBakeGpuContext *context, VkPipeline pipeline,
   api.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0u, 1u,
                            &previous, 0u, nullptr, 0u, nullptr);
-  begin_timing(context);
+  api.vkCmdResetQueryPool(command, context->timestamps, first_query, 2u);
+  api.vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                          context->timestamps, first_query);
   api.vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   api.vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
                               context->pipeline_layout, 0u, 1u,
@@ -2041,7 +2102,8 @@ bool dispatch(VkrBakeGpuContext *context, VkPipeline pipeline,
                          arguments);
   api.vkCmdDispatch(
       command, (texel_count + kWorkgroupSize - 1u) / kWorkgroupSize, 1u, 1u);
-  end_timing(context);
+  api.vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                          context->timestamps, first_query + 1u);
   const VkMemoryBarrier readback = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
       .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -2050,7 +2112,68 @@ bool dispatch(VkrBakeGpuContext *context, VkPipeline pipeline,
   api.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_PIPELINE_STAGE_HOST_BIT, 0u, 1u, &readback, 0u,
                            nullptr, 0u, nullptr);
-  return finish_commands(context, in_out_gpu_seconds);
+  return true;
+}
+
+/* Records, submits and waits for one dispatch of `texel_count` threads with
+   these push constants, adding its GPU time. */
+bool dispatch(VkrBakeGpuContext *context, VkPipeline pipeline,
+              const void *arguments, uint32_t argument_size,
+              uint32_t texel_count, double *in_out_gpu_seconds) {
+  return record_dispatch(context, context->command_buffer, 0u, pipeline,
+                         arguments, argument_size, texel_count) &&
+         finish_commands(context, in_out_gpu_seconds);
+}
+
+/* The texel gather's submissions in flight: ring slots first, first + 1, ...
+   (modulo kGatherSubmissionsInFlight), oldest first. */
+struct InFlight {
+  uint32_t first = 0u;
+  uint32_t count = 0u;
+};
+
+/* The first timestamp query of ring slot `slot`. */
+uint32_t gather_first_query(uint32_t slot) { return 2u + 2u * slot; }
+
+/* Waits for the oldest submission in flight and adds its GPU time. */
+bool retire_oldest(VkrBakeGpuContext *context, InFlight *flight,
+                   double *in_out_gpu_seconds) {
+  const uint32_t slot = flight->first;
+  flight->first = (flight->first + 1u) % kGatherSubmissionsInFlight;
+  flight->count -= 1u;
+  return complete_commands(context, context->gather_fences[slot],
+                           gather_first_query(slot), in_out_gpu_seconds);
+}
+
+/* Records and submits one gather dispatch into the next ring slot, first
+   waiting for the oldest submission when the ring is full. */
+bool submit_in_flight(VkrBakeGpuContext *context, InFlight *flight,
+                      const GatherArgs &args, double *in_out_gpu_seconds) {
+  if (flight->count == kGatherSubmissionsInFlight &&
+      !retire_oldest(context, flight, in_out_gpu_seconds)) {
+    return false;
+  }
+  const uint32_t slot =
+      (flight->first + flight->count) % kGatherSubmissionsInFlight;
+  const VkCommandBuffer command = context->gather_commands[slot];
+  if (!record_dispatch(context, command, gather_first_query(slot),
+                       context->gather, &args, sizeof(args),
+                       args.texel_count) ||
+      !submit_commands(context, command, context->gather_fences[slot])) {
+    return false;
+  }
+  flight->count += 1u;
+  return true;
+}
+
+/* Waits for every submission in flight; false when any failed. */
+bool drain_in_flight(VkrBakeGpuContext *context, InFlight *flight,
+                     double *in_out_gpu_seconds) {
+  bool ok = true;
+  while (flight->count != 0u) {
+    ok = retire_oldest(context, flight, in_out_gpu_seconds) && ok;
+  }
+  return ok;
 }
 
 } // namespace
@@ -2200,7 +2323,11 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
   const uint32_t runs =
       (settings.samples + kSamplesPerDispatch - 1u) / kSamplesPerDispatch;
   const size_t batches = (count + kTexelsPerDispatch - 1u) / kTexelsPerDispatch;
-  for (size_t index = 0u; index < batches * runs; ++index) {
+  /* Nothing updates the descriptor set while these submissions are in
+     flight: the loop records gather dispatches only. */
+  InFlight flight;
+  bool submitted = true;
+  for (size_t index = 0u; submitted && index < batches * runs; ++index) {
     const size_t first = (index / runs) * kTexelsPerDispatch;
     const uint32_t first_sample =
         (uint32_t)(index % runs) * kSamplesPerDispatch;
@@ -2220,10 +2347,13 @@ bool vkr_bake_gpu_gather(VkrBakeGpuContext *context,
         context->geometry_first[1],
         settings.occlusion_radius,
         settings.indirect_clamp};
-    if (!dispatch(context, context->gather, &args, sizeof(args),
-                  args.texel_count, &result.gpu_seconds)) {
-      return false;
-    }
+    submitted = submit_in_flight(context, &flight, args, &result.gpu_seconds);
+  }
+  /* Every submission completes before the host reads the results, also
+     after a failure, so none still writes the call's buffers when they are
+     released. */
+  if (!drain_in_flight(context, &flight, &result.gpu_seconds) || !submitted) {
+    return false;
   }
   const float *indirect_values =
       static_cast<const float *>(call.indirect.mapped);
@@ -2714,7 +2844,7 @@ bool encode_bc(VkrBakeGpuContext *context, VkFormat source_format,
       std::memcpy(static_cast<uint8_t *>(constants.mapped) + p * slot, &values,
                   sizeof(values));
     }
-    ok = begin_commands(context);
+    ok = begin_commands(context, context->command_buffer);
     if (!ok) {
       break;
     }
@@ -2832,7 +2962,7 @@ bool vkr_bake_gpu_decode_bc(VkrBakeGpuContext *context,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, &decoded) &&
       create_buffer(context, sizeof(BcConstants),
                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true, &constants) &&
-      begin_commands(context);
+      begin_commands(context, context->command_buffer);
   if (ok) {
     write_bc_set(context, kBcDecodeSet, constants, image.view, nullptr,
                  decoded);

@@ -154,6 +154,10 @@ typedef struct VkrLightmapSet {
       former charts, so brushes and shapes do not sample it. */
   bool8_t shape_charts_current;
   const uint8_t *payload;
+  /** The payload's CRC-32 from a decoded header, which tells one set's
+      bytes from another's; producers pass theirs to
+      vkr_lightmap_set_write_prefix instead. */
+  uint32_t payload_crc;
 } VkrLightmapSet;
 
 /* Whether the desktop pipeline samples a plane encoding; the tiled pipeline

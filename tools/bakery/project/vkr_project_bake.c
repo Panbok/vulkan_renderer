@@ -1149,6 +1149,13 @@ typedef struct VkrProjectBakeArtifact {
   /* The record the scene block referenced before this bake, if any; the
      new record keeps its id and replaces it. */
   VkrBakeryJson *previous;
+  /* A lightmap set's input index (role `lightmap_index`), which travels
+     with the set so a later bake on any machine relights only what changed;
+     NULL for other bakes. */
+  const char *index;
+  /* How the bake produced the artifact (its sidecar's `production`), NULL
+     when it does not say. */
+  VkrBakeryJson *production;
 } VkrProjectBakeArtifact;
 
 /* Records a published bake artifact in the scene's assets and points the
@@ -1181,10 +1188,31 @@ vkr_project_record_bake_artifact(VkrProjectJob *job, const char *asset_root,
                       vkr_bakery_json_cstr(arena, path_reference));
   vkr_bakery_json_set(arena, product, "version", vkr_bakery_json_int(arena, 1));
   vkr_bakery_json_append(artifacts, product);
+  if (artifact->index) {
+    const char *index_reference = NULL;
+    char index_hash[VKR_BAKERY_SHA256_HEX];
+    VKR_PROJECT_TRY(vkr_project_managed_reference(
+        job, artifact->index, asset_root, &index_reference));
+    VKR_PROJECT_TRY(vkr_project_digest(job, artifact->index, index_hash));
+    VkrBakeryJson *index = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, index, "role",
+                        vkr_bakery_json_cstr(arena, "lightmap_index"));
+    vkr_bakery_json_set(arena, index, "path",
+                        vkr_bakery_json_cstr(arena, index_reference));
+    vkr_bakery_json_set(arena, index, "version", vkr_bakery_json_int(arena, 1));
+    vkr_bakery_json_set(
+        arena, index, "fingerprint",
+        vkr_bakery_json_cstr(arena,
+                             vkr_project_printf(job, "sha256:%s", index_hash)));
+    vkr_bakery_json_append(artifacts, index);
+  }
   vkr_bakery_json_set(arena, record, "artifacts", artifacts);
   vkr_bakery_json_set(
       arena, record, "fingerprint",
       vkr_bakery_json_cstr(arena, vkr_project_printf(job, "sha256:%s", hash)));
+  if (artifact->production) {
+    vkr_bakery_json_set(arena, record, "production", artifact->production);
+  }
   VkrBakeryJson *recipe = vkr_bakery_json_object(arena);
   vkr_bakery_json_set(arena, recipe, "tool",
                       vkr_bakery_json_cstr(arena, artifact->tool));
@@ -1196,6 +1224,7 @@ vkr_project_record_bake_artifact(VkrProjectJob *job, const char *asset_root,
         arena, record, "id",
         vkr_bakery_json_clone(arena,
                               vkr_bakery_json_get(artifact->previous, "id")));
+    vkr_project_supersede_build(job, artifact->previous, record);
     vkr_project_remove_record(job->assets, artifact->previous);
   }
   vkr_bakery_json_append(job->assets, record);
@@ -1378,6 +1407,67 @@ vkr_internal bool8_t vkr_project_check_lightmap_class(VkrProjectJob *job,
   return true_v;
 }
 
+/* The file of a record's artifact with `role` below `owner`, or NULL when
+   the record has none or it is not a regular file; a missing artifact is no
+   error here. */
+vkr_internal const char *
+vkr_project_record_artifact_file(VkrProjectJob *job,
+                                 const VkrBakeryJson *record, const char *role,
+                                 const char *owner) {
+  const VkrBakeryJson *artifacts = vkr_bakery_json_get(record, "artifacts");
+  for (const VkrBakeryJson *product = artifacts ? artifacts->first : NULL;
+       product; product = product->next) {
+    if (!vkr_bakery_json_is_string(vkr_bakery_json_get(product, "role"),
+                                   role)) {
+      continue;
+    }
+    char path[VKR_PROJECT_PATH];
+    const bool8_t failed_before = job->failed;
+    const bool8_t contained = vkr_project_contained(
+        job, owner, vkr_project_json_text(product, "path"), true_v, path);
+    vkr_project_forgive(job, failed_before);
+    if (contained && vkr_bakery_is_file(path)) {
+      return vkr_project_strdup(job, path);
+    }
+  }
+  return NULL;
+}
+
+/* The record's account of how `bake lightmap` produced a set, from its
+   sidecar: the kind (`full` or `incremental`), for an incremental set the
+   digest of the set it built on, and the share of texels it gathered. NULL
+   when the sidecar does not read. */
+vkr_internal VkrBakeryJson *
+vkr_project_lightmap_production(VkrProjectJob *job, const char *sidecar) {
+  Arena *arena = job->arena;
+  const bool8_t failed_before = job->failed;
+  VkrBakeryJson *metadata =
+      vkr_project_load_json(job, sidecar, VKR_PROJECT_MAX_JSON_BYTES);
+  vkr_project_forgive(job, failed_before);
+  const VkrBakeryJson *production = vkr_bakery_json_get(metadata, "production");
+  const char *kind = vkr_project_json_text(production, "kind");
+  if (!kind) {
+    return NULL;
+  }
+  VkrBakeryJson *record = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, record, "kind", vkr_bakery_json_cstr(arena, kind));
+  const char *base =
+      vkr_project_json_text(vkr_bakery_json_get(production, "base"), "sha256");
+  if (base) {
+    vkr_bakery_json_set(arena, record, "base_sha256",
+                        vkr_bakery_json_cstr(arena, base));
+  }
+  static const char *const counts[] = {"gathered_texels", "total_texels"};
+  for (uint32_t i = 0u; i < ArrayCount(counts); ++i) {
+    const VkrBakeryJson *value = vkr_bakery_json_get(production, counts[i]);
+    if (value) {
+      vkr_bakery_json_set(arena, record, counts[i],
+                          vkr_bakery_json_clone(arena, value));
+    }
+  }
+  return record;
+}
+
 /* Bakes the lightmap set of this host's pipeline class (ADR-088) from the
    effective runtime scene into a new build revision and points the scene's
    `lightmaps.<class>` reference at it. The other class's reference and set
@@ -1451,10 +1541,6 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
     VKR_PROJECT_TRY(vkr_project_argument_push(
         job, &arguments, vkr_project_truthy(denoise) ? "1" : "0"));
   }
-  int32_t code = 0;
-  VKR_PROJECT_TRY(vkr_project_run_bakery(
-      job, arguments.items, arguments.count, "Baking lightmaps", "lightmap",
-      VKR_PROJECT_LIGHTMAP_NO_INSTANCES, &code));
   /* Validation admits only null or an object here. */
   VkrBakeryJson *lightmaps = vkr_bakery_json_get(scene, "lightmaps");
   const VkrBakeryJson *previous_reference = vkr_bakery_json_get(
@@ -1473,7 +1559,30 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
       strcmp(vkr_project_json_text(previous, "id"), other_id) == 0) {
     previous = NULL;
   }
-  if (code == VKR_PROJECT_LIGHTMAP_NO_INSTANCES) {
+  /* The previous set lets the bake keep it when nothing it was baked from
+     changed; `lightmap_full` bakes again regardless. */
+  const char *previous_set =
+      vkr_project_record_artifact_file(job, previous, "lightmap", asset_root);
+  if (previous_set) {
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--previous"));
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, previous_set));
+  }
+  if (vkr_project_truthy(vkr_bakery_json_get(job->request, "lightmap_full"))) {
+    VKR_PROJECT_TRY(vkr_project_argument_push(job, &arguments, "--full"));
+  }
+  int32_t code = 0;
+  VKR_PROJECT_TRY(vkr_project_run_bakery(
+      job, arguments.items, arguments.count, "Baking lightmaps", "lightmap",
+      VKR_PROJECT_ACCEPT(VKR_PROJECT_LIGHTMAP_NO_INSTANCES) |
+          VKR_PROJECT_ACCEPT(VKR_PROJECT_LIGHTMAP_UNCHANGED),
+      &code));
+  if (code == VKR_PROJECT_LIGHTMAP_UNCHANGED) {
+    /* The record, its revision and the scene's reference stay. */
+    (void)vkr_project_remove_tree(directory);
+    printf("Lightmaps unchanged for the %s pipeline: kept the previous set\n",
+           VKR_PROJECT_LIGHTMAP_CLASS);
+    fflush(stdout);
+  } else if (code == VKR_PROJECT_LIGHTMAP_NO_INSTANCES) {
     (void)vkr_project_remove_tree(directory);
     if (previous) {
       vkr_project_remove_record(job->assets, previous);
@@ -1495,6 +1604,12 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
     fflush(stdout);
   } else {
     VKR_PROJECT_TRY(vkr_project_check_lightmap_class(job, destination));
+    /* The sidecar says whether the set was baked whole or built on the
+       previous one; the record keeps that, which packaging and baselines
+       read. */
+    const char *index = vkr_project_printf(job, "%s/lightmaps.vkli", directory);
+    VkrBakeryJson *production = vkr_project_lightmap_production(
+        job, vkr_project_printf(job, "%s.bake.json", destination));
     if (!lightmaps || lightmaps->type != VKR_BAKERY_JSON_OBJECT) {
       lightmaps = vkr_bakery_json_object(arena);
       vkr_bakery_json_set(arena, scene, "lightmaps", lightmaps);
@@ -1511,10 +1626,18 @@ vkr_internal bool8_t vkr_project_bake_lightmaps(VkrProjectJob *job,
         .revision = revision,
         .settings = settings,
         .previous = previous,
+        .index = vkr_bakery_is_file(index) ? index : NULL,
+        .production = production,
     };
     VKR_PROJECT_TRY(
         vkr_project_record_bake_artifact(job, asset_root, &artifact));
-    printf("Lightmaps baked for the %s pipeline\n", VKR_PROJECT_LIGHTMAP_CLASS);
+    const char *kind = vkr_project_json_text(production, "kind");
+    printf("Lightmaps baked for the %s pipeline (%s)\n",
+           VKR_PROJECT_LIGHTMAP_CLASS,
+           kind && strcmp(kind, "incremental") == 0
+               ? "incremental: relit what the edits reach and kept the rest of "
+                 "the previous set"
+               : "full");
     fflush(stdout);
   }
   vkr_bakery_json_set(arena, scene, "assets", job->assets);

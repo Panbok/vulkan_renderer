@@ -200,6 +200,62 @@ static bool8_t vkr_harness_baseline_barred(const uint8_t *report, uint64_t size,
   }
 }
 
+/* Finds a lightmap set of the snapshot's scene that was baked
+   incrementally (ADR-088): one whose `.bake.json` sidecar names an
+   incremental production. A baseline must show what a full bake produces,
+   since an incremental set keeps the light earlier sets left beyond the
+   edits' reach. The run's scene content manifest lists the sets; the
+   sidecars are small, so both are scanned as text. Writes the set's
+   path into `out_path`. */
+static bool8_t vkr_harness_baseline_incremental_lightmap(const char *repo_root,
+                                                         const char *source_run,
+                                                         Arena *arena,
+                                                         char *out_path,
+                                                         uint32_t capacity) {
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  string_format(manifest_path, sizeof(manifest_path),
+                "%s/scene-content-manifest.json", source_run);
+  uint8_t *manifest = NULL;
+  uint64_t size = 0u;
+  if (!vkr_harness_read_file(manifest_path, arena, &manifest, &size)) {
+    return false_v;
+  }
+  static const char key[] = "\"path\":";
+  for (uint64_t at = 0u;;) {
+    const uint64_t found = vkr_harness_baseline_find(manifest, size, at, key);
+    const uint64_t open = vkr_harness_baseline_find(
+        manifest, size, found + sizeof(key) - 1u, "\"");
+    const uint64_t close =
+        vkr_harness_baseline_find(manifest, size, open + 1u, "\"");
+    if (found >= size || close >= size) {
+      return false_v;
+    }
+    at = close + 1u;
+    const uint64_t length = close - open - 1u;
+    if (length < 5u || length >= VKR_HARNESS_PATH_MAX ||
+        MemCompare(manifest + close - 5u, ".vklm", 5u) != 0) {
+      continue;
+    }
+    char sidecar[VKR_HARNESS_PATH_MAX];
+    string_format(sidecar, sizeof(sidecar), "%s/%.*s.bake.json", repo_root,
+                  (int)length, (const char *)manifest + open + 1u);
+    uint8_t *metadata = NULL;
+    uint64_t metadata_size = 0u;
+    if (!vkr_harness_read_file(sidecar, arena, &metadata, &metadata_size)) {
+      continue;
+    }
+    const uint64_t production = vkr_harness_baseline_find(
+        metadata, metadata_size, 0u, "\"production\"");
+    if (production < metadata_size &&
+        vkr_harness_baseline_find(metadata, metadata_size, production,
+                                  "\"incremental\"") < metadata_size) {
+      string_format(out_path, capacity, "%.*s", (int)length,
+                    (const char *)manifest + open + 1u);
+      return true_v;
+    }
+  }
+}
+
 static bool8_t vkr_harness_baseline_append_entry(
     char *entries, uint64_t capacity, uint64_t *used, const char *source_run,
     const char *source_relative, const char *destination, const char *digest,
@@ -269,6 +325,17 @@ int vkr_harness_baseline_propose(const char *repo_root, const char *from_run,
     vkr_harness_stderr("Snapshot lost authority to %s; fix the run before "
                        "proposing it as a baseline\n",
                        barred_reason);
+    result = VKR_HARNESS_EXIT_FAIL;
+    goto cleanup;
+  }
+  char incremental[VKR_HARNESS_PATH_MAX];
+  if (vkr_harness_baseline_incremental_lightmap(
+          repo_root, source_run, arena, incremental, sizeof(incremental))) {
+    vkr_harness_stderr("Snapshot renders %s, a lightmap set baked "
+                       "incrementally; bake its scene's lightmaps in full "
+                       "(Full rebake, lighting.bake full: true, or bake "
+                       "lightmap --full) before proposing a baseline\n",
+                       incremental);
     result = VKR_HARNESS_EXIT_FAIL;
     goto cleanup;
   }

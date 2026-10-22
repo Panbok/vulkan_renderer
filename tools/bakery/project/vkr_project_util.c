@@ -2149,6 +2149,63 @@ void vkr_project_document_references(const VkrBakeryJson *value,
   }
 }
 
+bool8_t vkr_project_build_revision(const char *path, char *out,
+                                   uint32_t capacity) {
+  if (!path) {
+    return false_v;
+  }
+  const char *start = strncmp(path, "./", 2u) == 0 ? path + 2 : path;
+  if (strncmp(start, "builds/", 7u) != 0) {
+    const char *nested = strstr(start, "/builds/");
+    if (!nested) {
+      return false_v;
+    }
+    start = nested + 1;
+  }
+  const char *revision = start + 7;
+  const char *end = strchr(revision, '/');
+  const uint64_t length = end ? (uint64_t)(end - revision) : strlen(revision);
+  if (length == 0u || length + 1u > capacity) {
+    return false_v;
+  }
+  MemCopy(out, revision, length);
+  out[length] = '\0';
+  return true_v;
+}
+
+void vkr_project_supersede_build(VkrProjectJob *job,
+                                 const VkrBakeryJson *before,
+                                 VkrBakeryJson *after) {
+  const VkrBakeryJson *before_artifacts =
+      vkr_bakery_json_get(before, "artifacts");
+  const VkrBakeryJson *after_artifacts =
+      vkr_bakery_json_get(after, "artifacts");
+  const char *previous_path =
+      before_artifacts && before_artifacts->first
+          ? vkr_project_json_text(before_artifacts->first, "path")
+          : NULL;
+  const char *current_path =
+      after_artifacts && after_artifacts->first
+          ? vkr_project_json_text(after_artifacts->first, "path")
+          : NULL;
+  char previous[256];
+  char current[256];
+  if (!vkr_project_build_revision(previous_path, previous, sizeof(previous)) ||
+      !vkr_project_build_revision(current_path, current, sizeof(current)) ||
+      strcmp(previous, current) == 0) {
+    return;
+  }
+  char older[256];
+  if (vkr_project_build_revision(
+          vkr_project_json_text(before, "previous_build"), older,
+          sizeof(older)) &&
+      strcmp(older, previous) != 0 && strcmp(older, current) != 0) {
+    (void)vkr_project_set_add(&job->superseded_builds, older, NULL);
+  }
+  vkr_bakery_json_set(job->arena, after, "previous_build",
+                      vkr_bakery_json_cstr(job->arena, previous_path));
+}
+
 vkr_internal bool8_t vkr_project_migrate_source(VkrProjectJob *job,
                                                 VkrBakeryJson *record,
                                                 const char *label,
@@ -2317,7 +2374,7 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
 
 bool8_t vkr_project_run_bakery(VkrProjectJob *job, const char *const *arguments,
                                uint32_t count, const char *label,
-                               const char *fallback_detail, int32_t accepted,
+                               const char *fallback_detail, uint32_t accepted,
                                int32_t *out_code) {
   const char *detail = fallback_detail;
   static const char *const flags[] = {"--input", "--layer", "--config",
@@ -2339,7 +2396,9 @@ bool8_t vkr_project_run_bakery(VkrProjectJob *job, const char *const *arguments,
   if (out_code) {
     *out_code = code;
   }
-  if (code != 0 && code != accepted) {
+  const bool8_t accepted_code =
+      code > 0 && code < 32 && (accepted & VKR_PROJECT_ACCEPT(code)) != 0u;
+  if (code != 0 && !accepted_code) {
     return vkr_project_fail(job, "%s failed (exit %d); see the job log", label,
                             code);
   }
@@ -2348,7 +2407,7 @@ bool8_t vkr_project_run_bakery(VkrProjectJob *job, const char *const *arguments,
 
 bool8_t vkr_project_run_tool(VkrProjectJob *job, const char *tool,
                              const char *const *arguments, uint32_t count,
-                             const char *label, int32_t accepted,
+                             const char *label, uint32_t accepted,
                              int32_t *out_code) {
   const char *argv[64];
   if (count + 2u > ArrayCount(argv)) {

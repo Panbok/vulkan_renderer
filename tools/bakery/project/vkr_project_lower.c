@@ -2093,6 +2093,9 @@ vkr_internal bool8_t vkr_project_rebuild_asset(VkrProjectJob *job,
                                                VkrBakeryJson *record,
                                                const char *scene_root) {
   Arena *arena = job->arena;
+  /* The record before the rebuild, whose revision becomes the previous
+     one (vkr_project_supersede_build). */
+  const VkrBakeryJson *before = vkr_bakery_json_clone(arena, record);
   const char *asset_id =
       vkr_project_strdup(job, vkr_project_json_text(record, "id"));
   const char *import_id = vkr_project_json_text(record, "import_id");
@@ -2240,6 +2243,7 @@ vkr_internal bool8_t vkr_project_rebuild_asset(VkrProjectJob *job,
   vkr_bakery_json_set(arena, record, "reimport_status",
                       vkr_bakery_json_cstr(arena, "source_snapshot"));
   vkr_bakery_json_set(arena, record, "artifacts", products);
+  vkr_project_supersede_build(job, before, record);
   vkr_bakery_json_set(
       arena, record, "fingerprint",
       vkr_bakery_json_cstr(arena, vkr_project_printf(job, "sha256:%s", hash)));

@@ -121,6 +121,7 @@ void reset_scene(VkrBakeScene *scene) {
   scene->zero_area_triangle_count = 0u;
   scene->lights.clear();
   scene->lightmap_instances.clear();
+  scene->instances.clear();
   scene->dependency_paths.clear();
   scene->environment = {};
   scene->atmosphere = {};
@@ -1435,8 +1436,36 @@ bool8_t append_mesh_light(void *user, const VkrBakeMeshLight *source) {
   }
 }
 
+/* Records the key of the source instance `index`, which the instances
+   before it already have. */
+bool record_instance(VkrBakeScene *scene, const EntityImport &entity,
+                     uint32_t entity_index, uint32_t source_node_index,
+                     VkrBakeSceneInstanceKind kind, uint32_t index) {
+  if (index != scene->instances.size()) {
+    return false;
+  }
+  VkrBakeSceneInstance key;
+  key.document_id = entity.document_id;
+  key.has_document_id = entity.has_document_id;
+  key.entity_index = entity_index;
+  key.source_node_index = source_node_index;
+  key.kind = kind;
+  scene->instances.push_back(key);
+  return true;
+}
+
 bool8_t append_mesh_instance(void *user, const VkrBakeMeshInstance *instance) {
   MeshAppendContext *context = static_cast<MeshAppendContext *>(user);
+  try {
+    if (!record_instance(context->scene, *context->entity,
+                         context->entity_index, instance->source_node_index,
+                         VkrBakeSceneInstanceKind::Mesh,
+                         instance->source_instance_index)) {
+      return false_v;
+    }
+  } catch (const std::bad_alloc &) {
+    return false_v;
+  }
   if (instance->atlas_width == 0u || instance->atlas_height == 0u)
     return true_v;
   try {
@@ -2035,7 +2064,9 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       }
       if (entity.shape == ShapeKind::Unsupported ||
           (entity.shape == ShapeKind::Cube && !moves &&
-           !append_cube(scene, entity, worlds[i], next_instance++))) {
+           (!record_instance(scene, entity, i, 0u,
+                             VkrBakeSceneInstanceKind::Cube, next_instance) ||
+            !append_cube(scene, entity, worlds[i], next_instance++)))) {
         return fail(VkrBakeSceneError::Unsupported,
                     describe_entity(entity, i) +
                         ": its cube shape's material does not load or its "
@@ -2043,11 +2074,23 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       }
       AppendFailure failure;
       if (entity.brush && entity.brush_draws && !moves &&
+          !record_instance(scene, entity, i, 0u,
+                           VkrBakeSceneInstanceKind::Brush, next_instance)) {
+        return fail(VkrBakeSceneError::OutOfMemory,
+                    describe_entity(entity, i) + ": brush instance key");
+      }
+      if (entity.brush && entity.brush_draws && !moves &&
           !append_brush(scene, entities, brush_faces[i], i, worlds[i],
                         next_instance++, &surface_theme, &brush_materials,
                         &failure)) {
         return fail(failure.error,
                     describe_entity(entity, i) + ": brush: " + failure.reason);
+      }
+      if (entity.blockout && !moves &&
+          !record_instance(scene, entity, i, 0u,
+                           VkrBakeSceneInstanceKind::Blockout, next_instance)) {
+        return fail(VkrBakeSceneError::OutOfMemory,
+                    describe_entity(entity, i) + ": blockout instance key");
       }
       if (entity.blockout && !moves &&
           !append_blockout(scene, entities, i, *entity.blockout, worlds[i],

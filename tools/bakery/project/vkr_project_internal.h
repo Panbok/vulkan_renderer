@@ -37,6 +37,12 @@
    lightmap UVs (ADR-087) or a desktop host's scene has no static lamps
    (ADR-104). */
 #define VKR_PROJECT_LIGHTMAP_NO_INSTANCES 4
+/* bake lightmap status: the previous set is current (its inputs have the
+   same content fingerprint), so the bake kept it and wrote nothing. */
+#define VKR_PROJECT_LIGHTMAP_UNCHANGED 6
+/* An exit code a tool run accepts besides zero, as a bit of the `accepted`
+   mask of vkr_project_run_tool and vkr_project_run_bakery. */
+#define VKR_PROJECT_ACCEPT(code) (1u << (uint32_t)(code))
 /* The pipeline class whose lightmap set this host bakes, lowers and packages
    (ADR-087, ADR-088): the tiled class on Apple hosts, which render with
    Metal, and the desktop class elsewhere, which render with Vulkan, as the
@@ -121,6 +127,10 @@ typedef struct VkrProjectJob {
   VkrBakeryJson *sources;  /* import_id -> source manifest. */
   VkrBakeryJson *pending_project_assets;
   VkrBakeryJson *pending_default_font;
+  /* Build revisions this job's records stopped naming as current or
+     previous (vkr_project_supersede_build); the cleanup after a successful
+     job removes those nothing references, whatever their age. */
+  VkrProjectSet superseded_builds;
   VkrProjectStrings published_builds;
   VkrProjectStrings project_builds;
   VkrBakeryJson *inspections;    /* mesh content digest -> inspection. */
@@ -194,6 +204,20 @@ bool8_t vkr_project_set_add(VkrProjectSet *set, const char *key,
                             const char *value);
 const char *vkr_project_set_get(const VkrProjectSet *set, const char *key);
 bool8_t vkr_project_set_has(const VkrProjectSet *set, const char *key);
+/** The build revision a managed path names: `<name>` of its `builds/<name>/`
+ * segment. False when it names none. */
+bool8_t vkr_project_build_revision(const char *path, char *out,
+                                   uint32_t capacity);
+/**
+ * Keeps an asset's current and previous build revisions (owner decision
+ * 2026-10-23): `after`, the record that replaces `before` with artifacts in
+ * a new revision, names `before`'s first artifact as its `previous_build`,
+ * and the revision `before` named that way is superseded, so the cleanup
+ * after the job removes it unless a document still references it.
+ */
+void vkr_project_supersede_build(VkrProjectJob *job,
+                                 const VkrBakeryJson *before,
+                                 VkrBakeryJson *after);
 void vkr_project_set_free(VkrProjectSet *set);
 /** Collects sorted child names of `directory` into the job arena. */
 bool8_t vkr_project_list(VkrProjectJob *job, const char *directory,
@@ -402,17 +426,18 @@ VkrBakeryJson *vkr_project_identity_transform(VkrProjectJob *job);
 // Tools and producers
 // =============================================================================
 
-/** Runs `vkr_bakery tool <tool> arguments`; nonzero exits outside `accepted`
- * fail with "<label> failed (exit N); see the job log". */
+/** Runs `vkr_bakery tool <tool> arguments`; nonzero exits outside the
+ * `accepted` mask (VKR_PROJECT_ACCEPT) fail with "<label> failed (exit N);
+ * see the job log". */
 bool8_t vkr_project_run_tool(VkrProjectJob *job, const char *tool,
                              const char *const *arguments, uint32_t count,
-                             const char *label, int32_t accepted,
+                             const char *label, uint32_t accepted,
                              int32_t *out_code);
 /** Runs this vkr_bakery with `arguments` (for example `bake diffuse ...`),
  * reporting progress with the named input as detail. */
 bool8_t vkr_project_run_bakery(VkrProjectJob *job, const char *const *arguments,
                                uint32_t count, const char *label,
-                               const char *fallback_detail, int32_t accepted,
+                               const char *fallback_detail, uint32_t accepted,
                                int32_t *out_code);
 /** Runs an external program (the harness) under the same cancellation. */
 bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,

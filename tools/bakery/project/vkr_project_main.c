@@ -463,6 +463,7 @@ vkr_internal void vkr_project_release(VkrProjectJob *job) {
       (void)vkr_project_remove_tree(lists[l]->items[i]);
     }
   }
+  vkr_project_set_free(&job->superseded_builds);
 }
 
 vkr_internal void vkr_project_write_failure(VkrProjectJob *job,

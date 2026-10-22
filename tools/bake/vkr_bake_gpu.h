@@ -12,8 +12,11 @@
  * 2026-10-05: a GPU baker for M-series), other hosts with Vulkan ray queries
  * (vkr_bake_vulkan.cpp, owner decision 2026-10-09: a Windows host bakes on
  * its desktop GPU). Both run the same kernel contract with the same per-texel
- * and per-sample seeds. The CPU integrator remains the reference and the path
- * on hosts without GPU ray tracing.
+ * and per-sample seeds: a texel's samples follow its seed key
+ * (VkrBakeLightmapTexel::seed, its place in its instance's rectangle) mixed
+ * with the settings' seed, never its index in the gathered list. The CPU
+ * integrator remains the reference and the path on hosts without GPU ray
+ * tracing.
  *
  * The GPU transport is a lightmap subset of the ADR-054 integrator: paths
  * scatter through one cosine lobe whose albedo is the CPU BSDF's total opaque
@@ -68,8 +71,12 @@ struct VkrBakeGpuGatherSettings {
      direction (ADR-104). */
   bool direction = false;
   /* Whether the gather takes only the texel direct term (and, with
-     `backface`, the first hits' back-face fraction), for lamp-direct pages
-     (ADR-108); indirect light stays zero. */
+     `backface` or `occlusion`, the first hits' back-face fraction and
+     ambient occlusion), for lamp-direct pages (ADR-108) and for the texels
+     an incremental bake relights in some layers only; indirect light stays
+     zero. With the transport of a layer whose full gather returned them,
+     the back-face fraction and occlusion equal that gather's, since the
+     samples take the same first hits from the same random numbers. */
   bool direct_only = false;
 };
 
