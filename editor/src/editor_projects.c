@@ -7,6 +7,7 @@
 #include "editor_internal.h"
 #include "editor_lighting.h"
 #include "editor_material.h"
+#include "editor_ops.h"
 #include "editor_project_store.h"
 #include "editor_scene_panels.h"
 
@@ -328,6 +329,20 @@ struct VkrEditorProjects {
   uint32_t placement_count;
   uint32_t added_scene_entity;
   bool8_t select_added_entity;
+  /* A finished add_entities job's placement becomes one journal step of
+     the primary scene once its reload activates (project_record_placement):
+     `placement_load` from the job's end to the activation, then
+     `placement_record` until the batch goes out, `placement_token` until
+     its result arrives, and `placement_step` until the caller takes it. */
+  bool8_t placement_load;
+  bool8_t placement_record;
+  uint32_t placement_first;
+  uint64_t placement_token;
+  uint64_t placement_tokens;
+  VkrSampleEditBatchItem placement_item;
+  char placement_author[VKR_EDITOR_PLACEMENT_AUTHOR_CAPACITY];
+  VkrEditorPlacementStep placement_step;
+  bool8_t placement_step_ready;
   uint32_t active_scene;
   uint32_t pending_scene;
   char scene_id[37];
@@ -3711,7 +3726,30 @@ static void project_job_complete(VkrEditorProjects *projects,
     if (vkr_json_get_int(&reader, "added_scene_entity", &index) && index >= 0) {
       projects->added_scene_entity = (uint32_t)index;
       projects->select_added_entity = true_v;
+      /* The reload brings the placement in; it becomes an undo step once
+         the scene activates. */
+      projects->placement_load = true_v;
+      projects->placement_first = (uint32_t)index;
+      projects->placement_record = false_v;
+      projects->placement_step_ready = false_v;
+      projects->placement_step = (VkrEditorPlacementStep){0};
+      if (projects->placement_count) {
+        string_format(projects->placement_step.label,
+                      sizeof(projects->placement_step.label),
+                      "Place %u model%s", projects->placement_count,
+                      projects->placement_count == 1u ? "" : "s");
+      } else {
+        string_format(projects->placement_step.label,
+                      sizeof(projects->placement_step.label), "%s",
+                      projects->adding_model || projects->placing_asset
+                          ? "Place model"
+                          : "Add entities");
+      }
+      string_format(projects->placement_step.author,
+                    sizeof(projects->placement_step.author), "%s",
+                    projects->placement_author);
     }
+    projects->placement_author[0] = '\0';
   }
   if (string_equals(projects->operation, "delete_scene")) {
     projects->job_id = 0;
@@ -4547,7 +4585,12 @@ static void project_content_action(VkrEditorProjects *projects,
                 action->name);
   const bool8_t sourced = action->kind == VKR_EDITOR_CONTENT_ACTION_IMPORT ||
                           action->kind == VKR_EDITOR_CONTENT_ACTION_REIMPORT;
-  if (sourced) {
+  /* A model whose record names the file it came from reimports it at once;
+     the browser asks only for an asset without one. */
+  if (action->kind == VKR_EDITOR_CONTENT_ACTION_REIMPORT && action->origin[0]) {
+    string_format(projects->action_source, sizeof(projects->action_source),
+                  "%s", action->origin);
+  } else if (sourced) {
     static const char *const extensions[] = {"gltf", "glb", "obj", "png", "jpg",
                                              "jpeg", "ttf", "otf", "mt"};
     project_browse(projects, frame, "Choose an asset to copy into the scene",
@@ -4947,6 +4990,72 @@ static void project_scan_next_card(VkrEditorProjects *projects,
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
+_Static_assert(VKR_EDITOR_PLACEMENT_AUTHOR_CAPACITY ==
+                   VKR_EDITOR_AUTHOR_CAPACITY,
+               "A placement step names its author as an agent call does");
+
+/* Turns an activated placement into one journal step of the primary scene:
+   a batch whose one edit records the document entities the job appended
+   (vkr_scene_edit_record_placement), sent in a build whose batch slot is
+   free, then its group from the result. Tokens carry their own high bit so
+   no other batch's result matches. */
+static void project_record_placement(VkrEditorProjects *projects,
+                                     const VkrSampleUiFrame *frame) {
+  if (projects->placement_token) {
+    const VkrSampleEditBatchResult *result = frame->edit_batch_result;
+    if (!result || result->token != projects->placement_token) {
+      return;
+    }
+    projects->placement_token = 0u;
+    if (result->ok) {
+      projects->placement_step.group = result->group;
+      projects->placement_step.container = 0u;
+      projects->placement_step_ready = true_v;
+      log_info("Content: %s is one undo step", projects->placement_step.label);
+    } else {
+      log_warn("Content: %s cannot be undone: %s",
+               projects->placement_step.label, result->message);
+    }
+    return;
+  }
+  if (!projects->placement_record || projects->waiting_activation ||
+      !frame->scene || frame->scene_loading || frame->simulation_running ||
+      !frame->edit_batch || frame->edit_batch->token) {
+    return;
+  }
+  projects->placement_record = false_v;
+  projects->placement_item = (VkrSampleEditBatchItem){
+      .request = {.action = VKR_SCENE_EDIT_RECORD_PLACEMENT,
+                  .placement_first = projects->placement_first},
+      .entity_ref = -1,
+      .parent_ref = -1,
+  };
+  projects->placement_token =
+      (UINT64_C(1) << 62u) | ++projects->placement_tokens;
+  *frame->edit_batch = (VkrSampleEditBatchRequest){
+      .token = projects->placement_token,
+      .items = &projects->placement_item,
+      .count = 1u,
+      .container = 0u,
+  };
+}
+
+void vkr_editor_projects_set_placement_author(VkrEditorProjects *projects,
+                                              const char *author) {
+  string_format(projects->placement_author, sizeof(projects->placement_author),
+                "%s", author ? author : "");
+}
+
+bool8_t vkr_editor_projects_take_placement_step(VkrEditorProjects *projects,
+                                                VkrEditorPlacementStep *out) {
+  if (!projects || !projects->placement_step_ready) {
+    return false_v;
+  }
+  *out = projects->placement_step;
+  projects->placement_step_ready = false_v;
+  return true_v;
+}
+
 void vkr_editor_projects_update(VkrEditorProjects *projects,
                                 VkrEditorUi *editor,
                                 const VkrSampleUiFrame *frame) {
@@ -5172,6 +5281,15 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
         }
         projects->select_added_entity = false_v;
       }
+      /* Saved edits the overlay could not apply stay in it; the designer
+         and agents see why (VkrSceneEditState.overlay_problem). */
+      if (frame->edits && frame->edits->overlay_problem[0]) {
+        vkr_editor_toast(editor, VKR_UI_ICON_LOG_WARNING,
+                         vkr_ui_theme()->warning,
+                         frame->edits->overlay_problem);
+      }
+      projects->placement_record = projects->placement_load;
+      projects->placement_load = false_v;
       projects->waiting_activation = false_v;
       projects->view = PROJECT_VIEW_EDITOR;
       /* Its brushes, terrain and scatter copies build from the next frame
@@ -5189,10 +5307,12 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       string_format(projects->message, sizeof(projects->message),
                     "Project saved; scene could not open: %.*s",
                     (int)frame->scene_status.length, frame->scene_status.str);
+      projects->placement_load = false_v;
       projects->waiting_activation = false_v;
       projects->view = PROJECT_VIEW_PROGRESS;
     }
   }
+  project_record_placement(projects, frame);
   if (projects->settings_restored &&
       !frame->editor_state_request->apply_preferences) {
     projects->runtime_preferences = frame->runtime_preferences;

@@ -217,9 +217,13 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
    0] turns the model's +Z to the prototype's front, `scale` fits its box
    (keep chairs, monitors and small items uniform), `position` puts the
    model's bounds centre on the footprint centre, `tags` the prototype's.
-   Pass `lightmap_uvs` true when the level is baked, or the models take
-   only the diffuse volume. Save first; the job reloads the scene, so wait
-   (`wait.scene`) and read entities again: ids change on every reload.
+   Or give a model `fit` {`min`, `max`, `mode`}: the editor measures the
+   glTF and puts it into that world box (`stretch` per axis at yaws that
+   are multiples of 90, `uniform` keeps proportions), standing on its
+   floor. Pass `lightmap_uvs` true for large props when the level is
+   baked; small items draw well with the diffuse volume. Save first; the
+   job reloads the scene, so wait (`wait.scene`) and read entities again:
+   ids change on every reload. The placement is one undo step.
 4. Delete the prototype brushes and add one `clip` `brush.box` per prop over
    its footprint, so the player still collides. Send at most about 100
    deletes per batch: a larger one runs out of undo memory and rolls back,
@@ -237,25 +241,35 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   from Content onto a slot, click it to open the material, clear it to
   return to the model's own.
 - `entity.get` on that child answers `mesh` with its `asset` reference.
-  After editing the source, `model.reimport` with the `source` and the
-  `asset` or a placed `entity` rebuilds the asset for every copy without a
-  reload; wait for the job before the next one, and pass `lightmap_uvs`
-  again or the rebuilt mesh loses them. Close and reopen the scene, then
-  save after any edit, before a bake: until then the bake refuses the
-  overrides on the reimported nodes.
+  After editing the source, `model.reimport` with the `asset` or a placed
+  `entity` rebuilds the asset for every copy without a reload, from the
+  file it was imported from (or a new `source`); wait for the job before
+  the next one, and pass `lightmap_uvs` again or the rebuilt mesh loses
+  them. The saved edits on its nodes follow the new mesh, and the scene
+  shows unsaved: save before a bake. A mesh with lightmap UVs keeps its
+  old lightmap until the next bake, which draws a changed model dark or
+  blotched: rebake after reimporting lit props. Reimporting from a
+  different model keeps the slots by primitive order, so assign them
+  again from the new file's slot names.
 - A glTF `COLOR_0` multiplies a plain material's base colour, so keep it
   white there; on surfaces that take a layered material with the
   `vertex_color` mask, RGBA weigh its layers 0 to 3. A painted-metal graph
   whose layer 1 is chipped steel and layer 2 grime, with the weights baked
   in Blender (edges and floor height), wears every prop without textures
   of its own.
-- A screen or sign that shows an image: give its face 0..1 UVs in Blender,
-  or fit its metric UVs in a Custom graph with `tile_offset` (scale 1/size,
-  offset -min/size); `world_position` Y drives scanlines, `time` a crawl.
-  One graph, one instance per image.
+- A screen or sign that shows an image: give its face 0..1 UVs in Blender
+  and a Standard graph whose emissive is a glow colour times an exposed
+  `screen` texture (no pipeline), one instance per image, chosen per
+  object by room. Only animation (scanlines over `world_position`, a crawl
+  over `time`) needs a Custom graph; one with `tile_offset` (scale 1/size,
+  offset -min/size) can fit a face's metric UVs instead.
 - `entity.delete` on a placed model's root deletes it with its nodes, and
-  undo restores it, but `model.place` itself does not undo: delete the test
-  copies you place.
+  undo restores it; `undo` after `model.place` removes the whole placement.
+- To replace a family that is already modelled (a refit), re-export to the
+  same file and `model.reimport`; to replace brush props, script the
+  frames as above with raycasts (`query.raycast` at wall height, rays
+  above table tops) to put wall items such as clocks, displays and badge
+  readers on the wall face, back to the wall.
 
 ## Lights and bakes
 

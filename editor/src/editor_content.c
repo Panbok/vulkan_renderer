@@ -82,6 +82,9 @@ typedef struct ContentAsset {
   char name[513];
   char path[CONTENT_PATH];
   char source[CONTENT_PATH];
+  /* A model's source file as a content path (the record's `origin`), which
+     Reimport imports again; empty when the import did not record one. */
+  char origin[CONTENT_PATH];
   char role[64];
   char fingerprint[96];
   char diagnostic[256];
@@ -866,6 +869,8 @@ static void content_read_inventory(VkrEditorContent *content, const char *root,
       (void)vkr_editor_project_resolve_within(resolved_root, relative,
                                               entry.source, &error);
     }
+    (void)vkr_editor_project_json_string(record, "origin", entry.origin,
+                                         sizeof(entry.origin), NULL);
     String8 artifacts = {0};
     if (vkr_editor_project_json_member(record, "artifacts", &artifacts,
                                        &error) &&
@@ -3087,6 +3092,28 @@ static bool8_t content_start_button(VkrUiSystem *ui, String8 id, String8 text,
   return clicked;
 }
 
+/* The absolute path of `entry`'s recorded origin, when the file exists. */
+static bool8_t content_origin_file(const ContentAsset *entry, char *out,
+                                   uint32_t capacity) {
+  out[0] = '\0';
+  const char *root = vkr_content_root();
+  if (!entry->origin[0] || !root) {
+    return false_v;
+  }
+  const uint64_t root_length = string_length(root);
+  const bool8_t slash = root_length && root[root_length - 1u] == '/';
+  const int32_t length = string_format(out, capacity, "%s%s%s", root,
+                                       slash ? "" : "/", entry->origin);
+  const FilePath file = {.path = string8_create_from_cstr((const uint8_t *)out,
+                                                          string_length(out)),
+                         .type = FILE_PATH_TYPE_ABSOLUTE};
+  if (length <= 0 || (uint32_t)length >= capacity || !file_exists(&file)) {
+    out[0] = '\0';
+    return false_v;
+  }
+  return true_v;
+}
+
 static void content_action(VkrEditorContent *content,
                            VkrEditorContentActionKind kind) {
   /* A read-only workspace still opens scenes and edits loaded objects; it
@@ -3120,6 +3147,10 @@ static void content_action(VkrEditorContent *content,
     content_copy(content->action.name, sizeof(content->action.name),
                  asset->name);
     content->action.entity = asset->entity;
+    if (kind == VKR_EDITOR_CONTENT_ACTION_REIMPORT) {
+      (void)content_origin_file(asset, content->action.origin,
+                                sizeof(content->action.origin));
+    }
   }
 }
 
@@ -4741,6 +4772,12 @@ static void content_build_asset_actions(VkrEditorContent *content,
                               content_worker, content);
     }
     VkrUiWidgetConfig reimport = content_widget(0, 1);
+    reimport.tooltip =
+        entry->origin[0]
+            ? string8_create_formatted(ui->frame_allocator,
+                                       "Import %s again over this asset",
+                                       entry->origin)
+            : string8_lit("Choose a file to import over this asset");
     /* Reimport and rebuild run as jobs on the open scene's or the project's
        records, and swap the result into the open scene. */
     reimport.disabled = content->read_only || !entry->source[0] ||
@@ -5235,12 +5272,13 @@ static void content_build_inspector(VkrEditorContent *content, VkrUiSystem *ui,
                        : "";
       /* Cooked-only imports keep no source, so they cannot be reimported. */
       String8 details = string8_create_formatted(
-          ui->frame_allocator, "%s%s%s%s%s",
+          ui->frame_allocator, "%s%s%s%s%s%s%s",
           diagnostic[0]      ? diagnostic
           : entry->source[0] ? entry->source
           : entry->scope < 2u && entry->kind != CONTENT_SCENE
               ? "Source unavailable: reimport disabled"
               : entry->path,
+          entry->origin[0] ? "\nImported from: " : "", entry->origin,
           entry->recipe[0] ? "\nRecipe: " : "", entry->recipe,
           entry->dependencies
               ? (const char *)string8_create_formatted(
@@ -5464,6 +5502,34 @@ bool8_t vkr_editor_content_dragged_material(const VkrEditorContent *content,
   /* The path a viewport drop assigns (content_drag_update). */
   return (entry->kind == CONTENT_MATERIAL || entry->kind == CONTENT_TEXTURE) &&
          content_scene_reference(entry, path, capacity);
+}
+
+bool8_t vkr_editor_content_asset_for_path(const VkrEditorContent *content,
+                                          const char *path, char *out,
+                                          uint32_t capacity) {
+  static const char *const owners[] = {"scene", "project", "editor"};
+  for (uint32_t i = 0; content && path[0] && i < content->count; ++i) {
+    const ContentAsset *entry = &content->entries[i];
+    if (entry->scope < ArrayCount(owners) && entry->id[0] &&
+        file_path_equals(entry->path, path)) {
+      const int32_t length =
+          string_format(out, capacity, VKR_ASSET_REF_PREFIX "%s/%s",
+                        owners[entry->scope], entry->id);
+      return length > 0 && (uint32_t)length < capacity;
+    }
+  }
+  return false_v;
+}
+
+bool8_t vkr_editor_content_asset_origin(const VkrEditorContent *content,
+                                        const char *id, char *out,
+                                        uint32_t capacity) {
+  for (uint32_t i = 0; content && i < content->count; ++i) {
+    if (string_equals(content->entries[i].id, id)) {
+      return content_origin_file(&content->entries[i], out, capacity);
+    }
+  }
+  return false_v;
 }
 
 void vkr_editor_content_end_drag(VkrEditorContent *content) {

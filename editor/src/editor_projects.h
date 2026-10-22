@@ -205,6 +205,33 @@ bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
                                          const VkrEditorModelPlacement *models,
                                          uint32_t count, bool8_t lightmap_uvs);
 
+/* Bytes of a placement step's author, VKR_EDITOR_AUTHOR_CAPACITY. */
+#define VKR_EDITOR_PLACEMENT_AUTHOR_CAPACITY 80u
+
+/* A finished placement as one undo step of the primary scene: an
+   add_entities job (model.place or the Add entity form) appended document
+   entities and reloaded the scene, and the journal group `group` of
+   container `container` now undoes them (vkr_scene_edit_record_placement).
+   `author` is the agent that asked, empty for the designer; `label` reads
+   "Place N models". */
+typedef struct VkrEditorPlacementStep {
+  uint64_t group;
+  uint16_t container;
+  char author[VKR_EDITOR_PLACEMENT_AUTHOR_CAPACITY];
+  char label[96];
+} VkrEditorPlacementStep;
+
+/* Names the agent the next placement job's step belongs to; call after
+   vkr_editor_projects_place_models started it. */
+void vkr_editor_projects_set_placement_author(VkrEditorProjects *projects,
+                                              const char *author);
+
+/* Takes the step of a placement whose reload activated, once; false while
+   none waits. The caller attributes the group to its author, as an agent
+   batch's group is. */
+bool8_t vkr_editor_projects_take_placement_step(VkrEditorProjects *projects,
+                                                VkrEditorPlacementStep *out);
+
 /* Reimports scene or project asset `asset_id` (`scope` "scene" or
    "project") from the model file `source` in one reimport_asset job; the
    open scene stays loaded and swaps the rebuilt mesh in, so entities keep

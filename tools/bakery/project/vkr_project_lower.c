@@ -2132,6 +2132,7 @@ vkr_internal bool8_t vkr_project_rebuild_asset(VkrProjectJob *job,
   if (kind && strcmp(kind, "mesh") == 0) {
     if (reimport) {
       char snapshot[VKR_PROJECT_PATH];
+      vkr_project_set_origin(job, record, source);
       VKR_PROJECT_TRY(
           vkr_project_snapshot_model(job, source, revision, snapshot));
       (void)snprintf(source, sizeof(source), "%s", snapshot);

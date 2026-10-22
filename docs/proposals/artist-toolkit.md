@@ -673,18 +673,12 @@ Implemented on the tiled pipeline in ADR-099; the desktop column remains.
   (ADR-076): one batches placements of model files or mesh assets, with
   poses and tags, into one `add_entities` job and one scene reload; the
   other rebuilds an asset from its edited source for every placed copy
-  without a reload. The journal deletes a placed model and undo restores
-  it (ADR-076). Remaining: a journal record for the placement, so it
-  undoes and shows in review; a `fit` argument that scales a model into a
-  brush prototype's box; and new source identities for the overrides on a
-  reimported model's nodes, which a bake refuses until the scene reopens
-  and saves.
-
-- **Reimport from the source file.** An import keeps a snapshot of its
-  source, not where it came from, so Content's Reimport asks for the file
-  each time and `model.reimport` needs its `source`. Recording the original
-  file's content path in the asset record would make an edit in Blender a
-  one-click update.
+  without a reload. Placements undo as one step, a placed model deletes
+  and restores, `fit` sizes a model into a box, a reimport keeps the saved
+  edits' source identities current and imports the recorded `origin` file
+  when no `source` is given (ADR-076). Remaining: placements in review
+  (accept or reject a placement as a pending change), and a `fit` that
+  stretches at any yaw.
 
 ## Agent operations
 
@@ -700,7 +694,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `look.*` | `volume` is implemented (ADR-097) | Scene |
 | `decal.*` | `place` is implemented (ADR-101) | Scene |
 | `scatter.*` | `paint` is implemented (ADR-102) | Scene |
-| `model.*` | `place` and `reimport` are implemented (ADR-076); journal records and `fit` remain (Part 8) | Scene |
+| `model.*` | `place` (with `fit` and an undo step) and `reimport` (from the recorded origin by default) are implemented (ADR-076); placements in review remain (Part 8) | Scene |
 | `env.*` | `describe`, `preset.save` and `preset.apply` are implemented (ADR-098) | Scene and documents |
 | `lighting.*` | `list`, `group`, `time` and `bake` with settings are implemented (ADR-100) | Live state and bake jobs |
 | `probe.*` | `create` is implemented (ADR-103) | Scene and its document |

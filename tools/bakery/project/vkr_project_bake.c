@@ -487,28 +487,16 @@ vkr_internal bool8_t vkr_project_collect_bake_edits(
   char seed[17];
   vkr_project_fingerprint((const uint8_t *)job->scene_id, strlen(job->scene_id),
                           seed);
+  /* With document ids the editor binds a record whose source changed by its
+     document entity and node index, and keeps a record it cannot bind
+     without applying it (vkr_scene_edit.c); the bake does the same, so a
+     scene the editor opens bakes with the edits the editor shows. */
+  const bool8_t document_ids =
+      vkr_bakery_json_get(journal, "document_ids") != NULL;
+  uint32_t skipped = 0u;
   const VkrBakeryJson *overrides = vkr_bakery_json_get(journal, "overrides");
   for (VkrBakeryJson *edit = overrides ? overrides->first : NULL; edit;
        edit = edit->next) {
-    VkrProjectOverlayReference references[20];
-    uint32_t count = 0u;
-    VKR_PROJECT_TRY(vkr_project_overlay_references(
-        job, edit, references, ArrayCount(references), &count));
-    for (uint32_t r = 0u; r < count; ++r) {
-      const VkrBakeryJson *value =
-          vkr_bakery_json_get(references[r].reference, references[r].field);
-      if (!references[r].required &&
-          vkr_bakery_json_is_string(value, "0000000000000000")) {
-        continue;
-      }
-      char expected[17];
-      VKR_PROJECT_TRY(vkr_project_overlay_identity(
-          job, references[r].reference, seed, runtime, root, expected));
-      if (!vkr_bakery_json_is_string(value, expected)) {
-        return vkr_project_fail(
-            job, "Authored physics/source identity conflicts with scene");
-      }
-    }
     int64_t index = 0;
     int64_t node = 0;
     if (!vkr_project_integer(vkr_bakery_json_get(edit, "scene_entity"),
@@ -516,30 +504,37 @@ vkr_internal bool8_t vkr_project_collect_bake_edits(
         index < 0 || index >= (int64_t)edits->count ||
         !vkr_project_integer(vkr_bakery_json_get(edit, "gltf_node"), &node) ||
         node < -1) {
-      return vkr_project_fail(job,
-                              "Authored override target is unavailable for "
-                              "baking");
+      ++skipped;
+      continue;
     }
-    if (node == -1) {
-      if (edits->wrapper_edits[index]) {
-        return vkr_project_fail(job, "Duplicate authored override target");
+    VkrProjectOverlayReference references[20];
+    uint32_t count = 0u;
+    VKR_PROJECT_TRY(vkr_project_overlay_references(
+        job, edit, references, ArrayCount(references), &count));
+    bool8_t bound = true_v;
+    for (uint32_t r = 0u; bound && r < count; ++r) {
+      const VkrBakeryJson *value =
+          vkr_bakery_json_get(references[r].reference, references[r].field);
+      if (!references[r].required &&
+          vkr_bakery_json_is_string(value, "0000000000000000")) {
+        continue;
       }
-      edits->wrapper_edits[index] = edit;
-    } else {
-      if (!node_edits[index]) {
-        node_edits[index] = vkr_bakery_json_object(arena);
+      char expected[17];
+      if (!vkr_project_overlay_identity(job, references[r].reference, seed,
+                                        runtime, root, expected)) {
+        /* A reference that no longer resolves leaves the record unbound. */
+        job->failed = false_v;
+        job->error[0] = '\0';
+        bound = false_v;
+        break;
       }
-      const char *key = vkr_project_printf(job, "%lld", (long long)node);
-      if (vkr_bakery_json_get(node_edits[index], key)) {
-        return vkr_project_fail(job, "Duplicate authored override target");
-      }
-      vkr_bakery_json_set(arena, node_edits[index], key, edit);
+      bound = vkr_bakery_json_is_string(value, expected) || document_ids;
     }
     char expected[17];
     (void)snprintf(expected, sizeof(expected), "%s", seed);
     const VkrBakeryJson *mesh = vkr_bakery_json_get(
         vkr_bakery_json_at(edits->entities, (uint32_t)index), "mesh");
-    if (vkr_project_truthy(mesh)) {
+    if (bound && vkr_project_truthy(mesh)) {
       VkrBakeryJson *info =
           vkr_project_inspect_mesh(job, vkr_project_json_text(mesh, "path"));
       VKR_PROJECT_TRY(info);
@@ -549,11 +544,37 @@ vkr_internal bool8_t vkr_project_collect_bake_edits(
                                   expected);
       }
     }
-    if (!vkr_bakery_json_is_string(
-            vkr_bakery_json_get(edit, "source_fingerprint"), expected)) {
-      return vkr_project_fail(
-          job, "Authored override source identity conflicts with scene");
+    bound = bound &&
+            (document_ids ||
+             vkr_bakery_json_is_string(
+                 vkr_bakery_json_get(edit, "source_fingerprint"), expected));
+    const char *key = vkr_project_printf(job, "%lld", (long long)node);
+    if (bound && node == -1 && edits->wrapper_edits[index]) {
+      bound = false_v;
     }
+    if (bound && node != -1 && node_edits[index] &&
+        vkr_bakery_json_get(node_edits[index], key)) {
+      bound = false_v;
+    }
+    if (!bound) {
+      ++skipped;
+      continue;
+    }
+    if (node == -1) {
+      edits->wrapper_edits[index] = edit;
+    } else {
+      if (!node_edits[index]) {
+        node_edits[index] = vkr_bakery_json_object(arena);
+      }
+      vkr_bakery_json_set(arena, node_edits[index], key, edit);
+    }
+  }
+  if (skipped) {
+    vkr_project_warn(
+        job,
+        "%u authored overrides bind to nothing in this scene and "
+        "do not reach the bake, as the editor keeps them unapplied",
+        skipped);
   }
   return true_v;
 }

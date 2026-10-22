@@ -1,6 +1,7 @@
 #include "editor_ops.h"
 
 #include "editor_agent.h"
+#include "editor_content.h"
 #include "editor_depot.h"
 #include "editor_environment.h"
 #include "editor_internal.h"
@@ -6057,6 +6058,18 @@ static VkrEditorOpStatus ops_run_status(OpsContext *ctx) {
          someone changed the scene. */
       ops_set(ctx, container, "revision",
               vkr_bakery_json_int(arena, edits ? (int64_t)edits->revision : 0));
+      /* What the overlay load could not apply: saved edits kept unapplied
+         (and written back on save), or a file that did not load, which
+         blocks saving. */
+      if (edits && (edits->overlay_problem[0] || edits->kept.count ||
+                    edits->sidecar_conflict)) {
+        ops_set(ctx, container, "overlay_problem",
+                vkr_bakery_json_cstr(arena, edits->overlay_problem));
+        ops_set(ctx, container, "kept_edits",
+                vkr_bakery_json_int(arena, edits->kept.count));
+        ops_set(ctx, container, "save_blocked",
+                vkr_bakery_json_bool(arena, edits->sidecar_conflict));
+      }
     }
     ops_set(ctx, result, keys[i], container);
   }
@@ -6577,6 +6590,20 @@ static VkrEditorOpStatus ops_run_describe(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* The managed reference of the mesh file `path` an entity draws: the one
+   the scene published for it, else the Content asset whose artifact it is,
+   which follows a reimport's new revision once the swap lands. */
+static bool8_t ops_mesh_asset_ref(OpsContext *ctx, const char *path, char *out,
+                                  uint64_t capacity) {
+  return vkr_render_assets_find_asset_ref(
+             ctx->frame->assets,
+             string8_create_from_cstr((const uint8_t *)path,
+                                      string_length(path)),
+             out, capacity) ||
+         vkr_editor_content_asset_for_path(ctx->editor->content, path, out,
+                                           (uint32_t)capacity);
+}
+
 static VkrEditorOpStatus ops_run_get(OpsContext *ctx) {
   OpsRef ref;
   if (!ops_ref(ctx, NULL, vkr_bakery_json_get(ctx->call->args, "entity"),
@@ -6651,11 +6678,8 @@ static VkrEditorOpStatus ops_run_get(OpsContext *ctx) {
     VkrBakeryJson *mesh = vkr_bakery_json_object(arena);
     ops_set(ctx, mesh, "path", vkr_bakery_json_cstr(arena, mesh_info.asset));
     char asset_ref[VKR_ASSET_REF_CAPACITY];
-    if (vkr_render_assets_find_asset_ref(
-            ctx->frame->assets,
-            string8_create_from_cstr((const uint8_t *)mesh_info.asset,
-                                     string_length(mesh_info.asset)),
-            asset_ref, sizeof(asset_ref))) {
+    if (ops_mesh_asset_ref(ctx, mesh_info.asset, asset_ref,
+                           sizeof(asset_ref))) {
       ops_set(ctx, mesh, "asset", vkr_bakery_json_cstr(arena, asset_ref));
     }
     ops_set(ctx, mesh, "submeshes",
@@ -14766,6 +14790,236 @@ static bool8_t ops_asset_ref_split(String8 asset, char *scope,
   return true_v;
 }
 
+/* A glTF node's transform applied to `p`: its matrix (column-major), or
+   translation, rotation and scale. */
+static Vec3 ops_gltf_node_point(const VkrBakeryJson *node, Vec3 p) {
+  const VkrBakeryJson *matrix = vkr_bakery_json_get(node, "matrix");
+  float32_t m[16] = {0};
+  if (matrix && matrix->type == VKR_BAKERY_JSON_ARRAY && matrix->count == 16u) {
+    uint32_t i = 0u;
+    for (const VkrBakeryJson *v = matrix->first; v && i < 16u;
+         v = v->next, ++i) {
+      m[i] = (float32_t)(v->type == VKR_BAKERY_JSON_INT ? (float64_t)v->integer
+                                                        : v->number);
+    }
+    return vec3_new(m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12],
+                    m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13],
+                    m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14]);
+  }
+  float32_t t[3] = {0.0f, 0.0f, 0.0f};
+  float32_t r[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  float32_t sc[3] = {1.0f, 1.0f, 1.0f};
+  const char *keys[3] = {"translation", "rotation", "scale"};
+  float32_t *outs[3] = {t, r, sc};
+  const uint32_t counts[3] = {3u, 4u, 3u};
+  for (uint32_t k = 0; k < 3u; ++k) {
+    const VkrBakeryJson *list = vkr_bakery_json_get(node, keys[k]);
+    uint32_t i = 0u;
+    for (const VkrBakeryJson *v = list ? list->first : NULL; v && i < counts[k];
+         v = v->next, ++i) {
+      outs[k][i] =
+          (float32_t)(v->type == VKR_BAKERY_JSON_INT ? (float64_t)v->integer
+                                                     : v->number);
+    }
+  }
+  const VkrQuat q = {r[0], r[1], r[2], r[3]};
+  const Vec3 rotated =
+      vkr_quat_rotate_vec3(q, vec3_new(p.x * sc[0], p.y * sc[1], p.z * sc[2]));
+  return vec3_new(rotated.x + t[0], rotated.y + t[1], rotated.z + t[2]);
+}
+
+/* Grows `lo`/`hi` by the POSITION boxes of the meshes under node `index`,
+   transformed through the `depth` ancestors in `chain`. */
+static void ops_gltf_node_bounds(const VkrBakeryJson *root, int64_t index,
+                                 int64_t *chain, uint32_t depth, Vec3 *lo,
+                                 Vec3 *hi, bool8_t *found) {
+  const VkrBakeryJson *nodes = vkr_bakery_json_get(root, "nodes");
+  const VkrBakeryJson *node =
+      nodes && index >= 0 ? vkr_bakery_json_at(nodes, (uint32_t)index) : NULL;
+  if (!node || depth >= 32u) {
+    return;
+  }
+  chain[depth] = index;
+  int64_t mesh_index = -1;
+  if (vkr_bakery_json_get_int(node, "mesh", &mesh_index)) {
+    const VkrBakeryJson *mesh = vkr_bakery_json_at(
+        vkr_bakery_json_get(root, "meshes"), (uint32_t)mesh_index);
+    const VkrBakeryJson *primitives = vkr_bakery_json_get(mesh, "primitives");
+    for (const VkrBakeryJson *primitive = primitives ? primitives->first : NULL;
+         primitive; primitive = primitive->next) {
+      int64_t accessor_index = -1;
+      if (!vkr_bakery_json_get_int(vkr_bakery_json_get(primitive, "attributes"),
+                                   "POSITION", &accessor_index)) {
+        continue;
+      }
+      const VkrBakeryJson *accessor = vkr_bakery_json_at(
+          vkr_bakery_json_get(root, "accessors"), (uint32_t)accessor_index);
+      float32_t mn[3] = {0};
+      float32_t mx[3] = {0};
+      const VkrBakeryJson *amin = vkr_bakery_json_get(accessor, "min");
+      const VkrBakeryJson *amax = vkr_bakery_json_get(accessor, "max");
+      if (!amin || !amax || amin->count != 3u || amax->count != 3u) {
+        continue;
+      }
+      uint32_t i = 0u;
+      for (const VkrBakeryJson *a = amin->first, *b = amax->first; a && b;
+           a = a->next, b = b->next, ++i) {
+        mn[i] =
+            (float32_t)(a->type == VKR_BAKERY_JSON_INT ? (float64_t)a->integer
+                                                       : a->number);
+        mx[i] =
+            (float32_t)(b->type == VKR_BAKERY_JSON_INT ? (float64_t)b->integer
+                                                       : b->number);
+      }
+      for (uint32_t corner = 0; corner < 8u; ++corner) {
+        Vec3 p =
+            vec3_new(corner & 1u ? mx[0] : mn[0], corner & 2u ? mx[1] : mn[1],
+                     corner & 4u ? mx[2] : mn[2]);
+        for (uint32_t k = depth + 1u; k-- > 0u;) {
+          p = ops_gltf_node_point(vkr_bakery_json_at(nodes, (uint32_t)chain[k]),
+                                  p);
+        }
+        *lo = *found
+                  ? vec3_new(Min(lo->x, p.x), Min(lo->y, p.y), Min(lo->z, p.z))
+                  : p;
+        *hi = *found
+                  ? vec3_new(Max(hi->x, p.x), Max(hi->y, p.y), Max(hi->z, p.z))
+                  : p;
+        *found = true_v;
+      }
+    }
+  }
+  const VkrBakeryJson *children = vkr_bakery_json_get(node, "children");
+  for (const VkrBakeryJson *child = children ? children->first : NULL; child;
+       child = child->next) {
+    if (child->type == VKR_BAKERY_JSON_INT) {
+      ops_gltf_node_bounds(root, child->integer, chain, depth + 1u, lo, hi,
+                           found);
+    }
+  }
+}
+
+/* The bounds of a glTF or GLB model's default scene in its own space, from
+   the POSITION accessors' min and max that glTF requires. */
+static bool8_t ops_gltf_bounds(OpsContext *ctx, const char *path, Vec3 *lo,
+                               Vec3 *hi) {
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  const FilePath file_path = {.path = string8_create_from_cstr(
+                                  (const uint8_t *)path, string_length(path)),
+                              .type = FILE_PATH_TYPE_ABSOLUTE};
+  FileHandle file = {0};
+  uint8_t *data = NULL;
+  uint64_t size = 0u;
+  if (file_open(&file_path,
+                (FileMode){.set = FILE_MODE_READ | FILE_MODE_BINARY},
+                &file) != FILE_ERROR_NONE) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", path);
+  }
+  const bool8_t read =
+      file_read_all(&file, &allocator, &data, &size) == FILE_ERROR_NONE;
+  file_close(&file);
+  if (!read) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not read", path);
+  }
+  /* A GLB holds its JSON in the first chunk after the 12-byte header. */
+  uint64_t offset = 0u;
+  uint64_t length = size;
+  if (size >= 20u && MemCompare(data, "glTF", 4u) == 0) {
+    length = (uint64_t)data[12] | ((uint64_t)data[13] << 8u) |
+             ((uint64_t)data[14] << 16u) | ((uint64_t)data[15] << 24u);
+    offset = 20u;
+    if (offset + length > size) {
+      return ops_fail(ctx, OPS_INVALID, "'%s' is a damaged GLB", path);
+    }
+  }
+  const VkrBakeryJson *root =
+      vkr_bakery_json_parse(ops_arena(ctx), data + offset, length, 64u, NULL);
+  if (!root) {
+    return ops_fail(ctx, OPS_INVALID, "'%s' is not glTF JSON", path);
+  }
+  int64_t scene_index = 0;
+  (void)vkr_bakery_json_get_int(root, "scene", &scene_index);
+  const VkrBakeryJson *scene = vkr_bakery_json_at(
+      vkr_bakery_json_get(root, "scenes"), (uint32_t)scene_index);
+  const VkrBakeryJson *roots = vkr_bakery_json_get(scene, "nodes");
+  int64_t chain[32];
+  bool8_t found = false_v;
+  for (const VkrBakeryJson *node = roots ? roots->first : NULL; node;
+       node = node->next) {
+    if (node->type == VKR_BAKERY_JSON_INT) {
+      ops_gltf_node_bounds(root, node->integer, chain, 0u, lo, hi, &found);
+    }
+  }
+  return found ||
+         ops_fail(ctx, OPS_INVALID, "'%s' has no mesh with bounds", path);
+}
+
+/* `fit` of a model entry: scale and position that put the model's bounds,
+   turned by `yaw` degrees, into the world box `fit.min`..`fit.max`: per axis
+   (`stretch`, the default; yaw a multiple of 90) or by the smallest ratio
+   (`uniform`), centred over the box and standing on its floor. */
+static bool8_t ops_model_fit(OpsContext *ctx, const VkrBakeryJson *fit,
+                             const char *source, VkrEditorModelPlacement *model,
+                             uint32_t index) {
+  float32_t box_min[3];
+  float32_t box_max[3];
+  if (!ops_arg_floats(ctx, fit, "min", box_min, 3u, NULL) ||
+      !ops_arg_floats(ctx, fit, "max", box_max, 3u, NULL)) {
+    return false_v;
+  }
+  String8 mode = {0};
+  const bool8_t uniform = vkr_bakery_json_get_string(fit, "mode", &mode) &&
+                          ops_equals(mode, "uniform");
+  float32_t euler[3];
+  vkr_property_quat_euler(model->rotation, euler);
+  const float32_t yaw = euler[1];
+  const float32_t quarter = yaw / 90.0f;
+  const bool8_t square = vkr_abs_f32(quarter - vkr_round_f32(quarter)) < 0.01f;
+  if (vkr_abs_f32(euler[0]) > 0.01f || vkr_abs_f32(euler[2]) > 0.01f ||
+      (!uniform && !square)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "models[%u].fit turns models about Y only, and stretches "
+                    "them only at multiples of 90 degrees",
+                    index);
+  }
+  Vec3 lo;
+  Vec3 hi;
+  if (!ops_gltf_bounds(ctx, source, &lo, &hi)) {
+    return false_v;
+  }
+  const Vec3 size = vec3_new(Max(hi.x - lo.x, 1e-4f), Max(hi.y - lo.y, 1e-4f),
+                             Max(hi.z - lo.z, 1e-4f));
+  const float32_t c = vkr_cos_f32(vkr_to_radians(yaw));
+  const float32_t sn = vkr_sin_f32(vkr_to_radians(yaw));
+  /* The model's turned footprint along world X and Z. */
+  const float32_t world_x = vkr_abs_f32(c) * size.x + vkr_abs_f32(sn) * size.z;
+  const float32_t world_z = vkr_abs_f32(sn) * size.x + vkr_abs_f32(c) * size.z;
+  const Vec3 box = vec3_new(Max(box_max[0] - box_min[0], 1e-4f),
+                            Max(box_max[1] - box_min[1], 1e-4f),
+                            Max(box_max[2] - box_min[2], 1e-4f));
+  Vec3 scale;
+  if (uniform) {
+    const float32_t k =
+        Min(Min(box.x / world_x, box.y / size.y), box.z / world_z);
+    scale = vec3_new(k, k, k);
+  } else {
+    const bool8_t along_x = vkr_abs_f32(c) > 0.5f;
+    scale = vec3_new((along_x ? box.x : box.z) / size.x, box.y / size.y,
+                     (along_x ? box.z : box.x) / size.z);
+  }
+  const Vec3 centre = vec3_new((lo.x + hi.x) * 0.5f * scale.x, 0.0f,
+                               (lo.z + hi.z) * 0.5f * scale.z);
+  const Vec3 turned = vkr_quat_rotate_vec3(model->rotation, centre);
+  model->scale = scale;
+  model->position = vec3_new((box_min[0] + box_max[0]) * 0.5f - turned.x,
+                             box_min[1] - lo.y * scale.y,
+                             (box_min[2] + box_max[2]) * 0.5f - turned.z);
+  return true_v;
+}
+
 /* model.place: adds models to the open project scene in one add_entities
    job (ADR-076 placement), each a model file the job imports once or an
    existing mesh asset ("asset:<scope>/<id>"), with a pose, scale and tags.
@@ -14843,6 +15097,18 @@ static VkrEditorOpStatus ops_run_model_place(OpsContext *ctx) {
     model->position = pose.position;
     model->rotation = pose.rotation;
     model->scale = pose.scale;
+    const VkrBakeryJson *fit = vkr_bakery_json_get(item, "fit");
+    if (fit) {
+      if (!model->source[0]) {
+        ops_fail(ctx, OPS_INVALID,
+                 "models[%u].fit needs a glTF or GLB 'source' to measure",
+                 index);
+        return VKR_EDITOR_OP_DONE;
+      }
+      if (!ops_model_fit(ctx, fit, model->source, model, index)) {
+        return VKR_EDITOR_OP_DONE;
+      }
+    }
     if (pose.fields & VKR_SCENE_EDIT_NAME) {
       string_format(model->name, sizeof(model->name), "%.*s",
                     (int)Min(string_length(pose.name),
@@ -14865,6 +15131,8 @@ static VkrEditorOpStatus ops_run_model_place(OpsContext *ctx) {
              vkr_editor_projects_message(ctx->editor->projects));
     return VKR_EDITOR_OP_DONE;
   }
+  vkr_editor_projects_set_placement_author(ctx->editor->projects,
+                                           ctx->call->author);
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "started",
           vkr_bakery_json_bool(ops_arena(ctx), true_v));
@@ -14880,22 +15148,14 @@ static bool8_t ops_entity_asset_ref(OpsContext *ctx, const VkrScene *scene,
                                     uint64_t capacity) {
   SceneMeshInfo info;
   if (vkr_scene_mesh_info(scene, entity, &info) && info.asset[0]) {
-    return vkr_render_assets_find_asset_ref(
-        ctx->frame->assets,
-        string8_create_from_cstr((const uint8_t *)info.asset,
-                                 string_length(info.asset)),
-        out, capacity);
+    return ops_mesh_asset_ref(ctx, info.asset, out, capacity);
   }
   for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
     const VkrEntityId child = vkr_entity_id_from_index(scene->world, i);
     if (vkr_scene_entity_alive(scene, child) &&
         ops_parent(scene, child).u64 == entity.u64 &&
         vkr_scene_mesh_info(scene, child, &info) && info.asset[0] &&
-        vkr_render_assets_find_asset_ref(
-            ctx->frame->assets,
-            string8_create_from_cstr((const uint8_t *)info.asset,
-                                     string_length(info.asset)),
-            out, capacity)) {
+        ops_mesh_asset_ref(ctx, info.asset, out, capacity)) {
       return true_v;
     }
   }
@@ -14908,25 +15168,6 @@ static bool8_t ops_entity_asset_ref(OpsContext *ctx, const VkrScene *scene,
    material overrides. */
 static VkrEditorOpStatus ops_run_model_reimport(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
-  String8 source = {0};
-  if (!vkr_bakery_json_get_string(args, "source", &source) || !source.length) {
-    ops_fail(ctx, OPS_INVALID, "'source' names the model file to import");
-    return VKR_EDITOR_OP_DONE;
-  }
-  VkrAllocator allocator;
-  if (!ops_allocator(ctx, &allocator)) {
-    return VKR_EDITOR_OP_DONE;
-  }
-  const FilePath file = vkr_asset_path_file(&allocator, source);
-  char path[1024];
-  if (!file.path.length || file.path.length >= sizeof(path) ||
-      !file_exists(&file)) {
-    ops_fail(ctx, OPS_NOT_FOUND, "'source' '%.*s' does not open",
-             (int)Min(source.length, 200u), (const char *)source.str);
-    return VKR_EDITOR_OP_DONE;
-  }
-  string_format(path, sizeof(path), "%.*s", (int)file.path.length,
-                (const char *)file.path.str);
   char ref[VKR_ASSET_REF_CAPACITY] = "";
   String8 asset = {0};
   if (vkr_bakery_json_get_string(args, "asset", &asset) && asset.length) {
@@ -14956,6 +15197,32 @@ static VkrEditorOpStatus ops_run_model_reimport(OpsContext *ctx) {
     ops_fail(ctx, OPS_INVALID,
              "'asset' is asset:scene/<id> or asset:project/<id>, as "
              "entity.get shows a placed model's mesh");
+    return VKR_EDITOR_OP_DONE;
+  }
+  /* Without `source`, the file the asset was imported from, as its record
+     names it, imports again. */
+  char path[1024];
+  String8 source = {0};
+  if (vkr_bakery_json_get_string(args, "source", &source) && source.length) {
+    VkrAllocator allocator;
+    if (!ops_allocator(ctx, &allocator)) {
+      return VKR_EDITOR_OP_DONE;
+    }
+    const FilePath file = vkr_asset_path_file(&allocator, source);
+    if (!file.path.length || file.path.length >= sizeof(path) ||
+        !file_exists(&file)) {
+      ops_fail(ctx, OPS_NOT_FOUND, "'source' '%.*s' does not open",
+               (int)Min(source.length, 200u), (const char *)source.str);
+      return VKR_EDITOR_OP_DONE;
+    }
+    string_format(path, sizeof(path), "%.*s", (int)file.path.length,
+                  (const char *)file.path.str);
+  } else if (!vkr_editor_content_asset_origin(ctx->editor->content, id, path,
+                                              sizeof(path))) {
+    ops_fail(ctx, OPS_NOT_FOUND,
+             "%s records no source file that still exists; name the "
+             "'source' to import",
+             ref);
     return VKR_EDITOR_OP_DONE;
   }
   if (!vkr_editor_projects_reimport_asset(
@@ -20205,6 +20472,9 @@ static const OpsDef s_ops[] = {
      "existing mesh 'asset' "
      "(asset:<scope>/<id>, as entity.get shows a placed model's mesh), with "
      "a 'name', 'position', 'rotation' (degrees XYZ), 'scale' and 'tags'. "
+     "'fit' {min, max, mode stretch|uniform} sizes a model from a glTF or "
+     "GLB 'source' into a world box instead of 'position' and 'scale', "
+     "standing on its floor (stretch needs a yaw that is a multiple of 90). "
      "'lightmap_uvs' true cooks the imported files with lightmap UVs so a "
      "bake lights them (default the Bakery panel's setting). "
      "The job rewrites the scene document and reloads the scene, so save "
@@ -20219,12 +20489,17 @@ static const OpsDef s_ops[] = {
      "\"scale\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},"
      "\"minItems\":3,\"maxItems\":3},\"tags\":{\"oneOf\":[{\"type\":"
      "\"string\"},{\"type\":\"array\",\"items\":{\"type\":"
-     "\"string\"}}]}}}},\"lightmap_uvs\":{\"type\":\"boolean\"}},"
+     "\"string\"}}]},\"fit\":{\"type\":\"object\",\"properties\":{"
+     "\"min\":{\"type\":\"array\"},\"max\":{\"type\":\"array\"},"
+     "\"mode\":{\"type\":\"string\",\"enum\":[\"stretch\","
+     "\"uniform\"]}}}}}},\"lightmap_uvs\":{\"type\":\"boolean\"}},"
      "\"required\":[\"models\"]}",
      ops_run_model_place, NULL},
     {"model.reimport",
-     "Import a model 'source' file (relative paths are content paths) again "
-     "over one scene or project mesh: its 'asset' (asset:<scope>/<id>), or "
+     "Import a model 'source' file (relative paths are content paths; "
+     "default the file the asset was imported from, when its record names "
+     "one that exists) again over one scene or project mesh: its 'asset' "
+     "(asset:<scope>/<id>), or "
      "an 'entity' that draws it, as entity.get's 'mesh' shows. Every entity "
      "that draws the asset keeps its pose and material overrides; the open "
      "scene swaps the rebuilt mesh in without a reload. 'lightmap_uvs' true "
@@ -20233,7 +20508,7 @@ static const OpsDef s_ops[] = {
      "reading the result.",
      "{\"type\":\"object\",\"properties\":{\"source\":{\"type\":"
      "\"string\"},\"asset\":{\"type\":\"string\"},\"entity\":" OPS_ENTITY_SCHEMA
-     ",\"lightmap_uvs\":{\"type\":\"boolean\"}},\"required\":[\"source\"]}",
+     ",\"lightmap_uvs\":{\"type\":\"boolean\"}}}",
      ops_run_model_reimport, NULL},
     {"lighting.bake",
      "Start the open project scene's Bake lighting job: reflection probes, "
@@ -21109,6 +21384,18 @@ void vkr_editor_ops_update(VkrEditorOps *ops, const VkrEditorUi *editor,
     ops_claims_load(ops, frame);
   }
   ops_resolve_auto(ops, editor, frame);
+  /* A finished placement is one undo step; an agent's undo takes it when
+     the agent asked for it. */
+  VkrEditorPlacementStep placement;
+  if (ops && editor &&
+      vkr_editor_projects_take_placement_step(editor->projects, &placement)) {
+    if (placement.author[0]) {
+      ops_authored_add(ops, placement.group, placement.container,
+                       placement.author);
+    }
+    (void)ops_feed_add(ops, OPS_FEED_APPLIED, placement.container,
+                       placement.author, placement.label);
+  }
   for (uint32_t i = 0; ops && i < ops->change_count;) {
     const VkrEditorChange *change = &ops->changes[i];
     const VkrSceneEditState *journal = ops_journal(frame, change->container);

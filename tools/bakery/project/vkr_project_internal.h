@@ -265,6 +265,12 @@ bool8_t vkr_project_contained(VkrProjectJob *job, const char *root,
  * else cannot be packaged and fails the job. */
 bool8_t vkr_project_portable_identity(VkrProjectJob *job, const char *path,
                                       char *out);
+/* Records in `record` (a model's mesh record) where its source came from:
+   `origin`, a content path, when `source` lies under the content root;
+   otherwise it drops the field. Content's Reimport and model.reimport read
+   it to import the file again without asking for it. */
+void vkr_project_set_origin(VkrProjectJob *job, VkrBakeryJson *record,
+                            const char *source);
 bool8_t vkr_project_source_file(VkrProjectJob *job, const char *value,
                                 char *out);
 bool8_t vkr_project_legacy_source(VkrProjectJob *job, const char *value,

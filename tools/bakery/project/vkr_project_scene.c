@@ -280,6 +280,11 @@ bool8_t vkr_project_remap_overlay(VkrProjectJob *job, const char *path,
         !vkr_project_integer(vkr_bakery_json_get(record, "gltf_node"), &node)) {
       return vkr_project_fail(job, "Invalid authored override source identity");
     }
+    /* A record the editor keeps unapplied names a document entity this
+       scene no longer has; it travels unchanged. */
+    if (entity < 0) {
+      continue;
+    }
     const char *key = vkr_project_printf(job, "%lld|%lld", (long long)entity,
                                          (long long)node);
     if (vkr_bakery_json_get(seen, key)) {

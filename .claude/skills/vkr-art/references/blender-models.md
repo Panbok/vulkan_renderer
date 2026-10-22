@@ -47,8 +47,13 @@ owns placement, materials and bakes.
   `baseColorFactor`. Split the ORM texture so G drives Roughness and B
   Metallic; the exporter writes them as one `metallicRoughnessTexture`.
   Turn on backface culling; it exports single-sided.
-- Faces that show an image (screens, signs) need 0..1 UVs, or a Custom
-  graph that fits their metric UVs (the parent skill).
+- Faces that show an image (screens, signs) need 0..1 UVs: give them a
+  material of their own (`display`) and normalize each face's projected
+  coordinates to its bounds when building UVs, U along the face's width as
+  seen from the front and V up. A second screen material (`display_b`)
+  lets one model show two images. Image textures of 16:9 suit a display's
+  glass; draw them with a script (dark UI, cyan and orange accents) and
+  cook them like any texture.
 
 ## Wear in vertex colours
 

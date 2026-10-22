@@ -1160,6 +1160,25 @@ bool8_t vkr_project_cook_model_animation(VkrProjectJob *job,
   return true_v;
 }
 
+void vkr_project_set_origin(VkrProjectJob *job, VkrBakeryJson *record,
+                            const char *source) {
+  char resolved[VKR_PROJECT_PATH];
+  char root[VKR_PROJECT_PATH];
+  vkr_bakery_json_remove(record, "origin");
+  if (!job->legacy_root[0] ||
+      !vkr_project_resolve(source, true_v, resolved, sizeof(resolved)) ||
+      !vkr_project_resolve(job->legacy_root, true_v, root, sizeof(root))) {
+    return;
+  }
+  const size_t length = strlen(root);
+  if (length && strncmp(resolved, root, length) == 0 &&
+      resolved[length] == '/' && resolved[length + 1]) {
+    vkr_bakery_json_set(
+        job->arena, record, "origin",
+        vkr_bakery_json_cstr(job->arena, resolved + length + 1));
+  }
+}
+
 VkrBakeryJson *vkr_project_import_model(VkrProjectJob *job,
                                         const char *source) {
   Arena *arena = job->arena;
@@ -1196,6 +1215,7 @@ VkrBakeryJson *vkr_project_import_model(VkrProjectJob *job,
                         vkr_bakery_json_cstr(arena, "mesh"));
     vkr_bakery_json_set(arena, record, "name",
                         vkr_bakery_json_cstr(arena, stem));
+    vkr_project_set_origin(job, record, source);
     vkr_bakery_json_set(arena, record, "import_id",
                         vkr_bakery_json_cstr(arena, import_id));
     vkr_bakery_json_set(arena, record, "source",
@@ -1228,6 +1248,7 @@ VkrBakeryJson *vkr_project_import_model(VkrProjectJob *job,
   if (reference) {
     vkr_project_mark_tier(job, job->assets->last);
     vkr_project_set_mesh_recipe(job, job->assets->last, lightmap_density);
+    vkr_project_set_origin(job, job->assets->last, source);
   }
   if (!reference ||
       !vkr_project_cook_model_animation(job, job->assets->last, snapshot,

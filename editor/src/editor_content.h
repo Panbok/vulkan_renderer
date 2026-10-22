@@ -83,6 +83,9 @@ typedef struct VkrEditorContentAction {
   /* A SELECT_ENTITY from a double-click or Enter, which also opens the
      object's script. */
   bool8_t activated;
+  /* A REIMPORT's model file: the absolute path of the asset's recorded
+     origin when it still exists; empty to ask for a file. */
+  char origin[1024];
 } VkrEditorContentAction;
 
 /** UI/render-thread owner. Freeable allocator and assets must outlive it.
@@ -222,6 +225,16 @@ bool8_t vkr_editor_content_dragged_script(const VkrEditorContent *content,
  * own) is dragged: true, with the path or asset reference to assign. */
 bool8_t vkr_editor_content_dragged_material(const VkrEditorContent *content,
                                             char *path, uint32_t capacity);
+/** The absolute path of the model file a listed asset, by id, was imported
+ * from (its record's `origin`, a content path), when that file exists. */
+bool8_t vkr_editor_content_asset_origin(const VkrEditorContent *content,
+                                        const char *id, char *out,
+                                        uint32_t capacity);
+/** The managed reference (asset:<scope>/<id>) of the listed asset whose
+ * artifact is the file `path`, for a mesh an entity draws. */
+bool8_t vkr_editor_content_asset_for_path(const VkrEditorContent *content,
+                                          const char *path, char *out,
+                                          uint32_t capacity);
 /** Ends a drag another panel accepted. */
 void vkr_editor_content_end_drag(VkrEditorContent *content);
 /** The loaded object the open item menu acts on, or invalid. */

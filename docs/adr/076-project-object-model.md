@@ -433,7 +433,15 @@ tags as a `tags` component. A file repeated in one call imports once and
 its copies share the asset. The operation refuses while the scene has
 unsaved edits, since the job rewrites the document and reloads it, and
 answers that the job started; the new entities exist after the reload.
-The placement itself has no journal record, so it does not undo.
+A model's `fit` (`min`, `max`, `mode` `stretch` or `uniform`) replaces its
+position and scale: the editor reads the glTF or GLB source's POSITION
+bounds through its node transforms and puts the turned model into that
+world box, standing on its floor; stretch needs a yaw that is a multiple of
+90 degrees. A finished placement is one undo step ("Place N models"), from
+`model.place` or the Add entity form alike: once the reload activates, the
+editor records every document entity the job appended
+(`vkr_scene_edit_record_placement`), whose undo deletes them as below and
+whose redo restores them; the step belongs to the agent that placed.
 
 The journal deletes a placed model whole (2026-10-22). Deleting its root
 deletes its source nodes with it as one undo step, leaves first; with
@@ -450,16 +458,24 @@ models and physics bodies still cannot be deleted.
 
 `model.reimport` (2026-10-22) imports a model file again over one scene or
 project asset, named by its `asset` reference or by an entity that draws
-it, through the `reimport_asset` job that Content's Reimport runs. Both
+it, through the `reimport_asset` job that Content's Reimport runs. An
+import records the model file's content path as the mesh record's
+`origin` when the file lies under the content root, so Content's Reimport
+and a `model.reimport` without `source` import that file again without
+asking; the Content details show it as "Imported from". Both
 operations take `lightmap_uvs`, which cooks the files with lightmap UVs as
 the Bakery panel's setting does; a reimport without it or the setting
 rebuilds the mesh without them. The open
 scene swaps the rebuilt mesh in without a reload, so every placed copy keeps
 its pose and material overrides. `entity.get` answers a mesh entity's
 `mesh`: its artifact `path`, the `asset` reference the scene published for
-that path, and its submesh count. Overrides on a reimported model's nodes
-keep the source identity they were saved with until the scene reopens and
-saves again; until then a bake refuses them as conflicting with the scene.
+that path (else the Content asset whose artifact it is), and its submesh
+count. When a swap lands, the scene moves the source identity of every
+node drawing the swapped mesh, the deletion records and the undo
+snapshots to the value a fresh load computes
+(`vkr_scene_refresh_source_fingerprints`, `vkr_scene_edit_follow_sources`)
+and marks the journal unsaved, so the next save writes overrides a bake
+accepts without reopening the scene.
 
 While a background finalize encodes a model's final textures (ADR-077), a
 viewport chip names the model and the materials already applied. Its Content
