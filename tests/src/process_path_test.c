@@ -1,7 +1,9 @@
 #include "filesystem/filesystem.h"
 #include "platform/vkr_platform.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 #if defined(PLATFORM_WINDOWS)
 #include <windows.h>
@@ -152,8 +154,33 @@ static void process_path_test_contents(const char *path, const char *expected) {
 }
 #endif
 
+/* A child that cannot be started is a false return that names the failed
+   step and its OS error, never an exit code. Catches a launcher that reports
+   a failed exec as the child's exit status 127, which a caller cannot tell
+   from the tool's own result or retry safely. */
+static void process_start_failure_test(void) {
+  printf("  Running process_start_failure_test...\n");
+  VkrPlatformProcessError error = {.step = "unset", .code = -1};
+  const VkrPlatformProcessConfig config = {
+      .executable = PROJECT_SOURCE_DIR "tests/tmp/no_such_tool/vkr_missing",
+      .termination_grace_ms = 1000u,
+      .terminate_process_tree = true_v,
+      .hidden = true_v,
+      .out_error = &error,
+  };
+  int32_t exit_code = 0;
+  bool8_t timed_out = false_v;
+  assert(!vkr_platform_process_run(&config, &exit_code, &timed_out));
+  assert(error.step && error.code != 0 && !error.started && !timed_out);
+#if !defined(PLATFORM_WINDOWS)
+  assert(strcmp(error.step, "exec") == 0 && error.code == ENOENT);
+#endif
+  printf("  process_start_failure_test PASSED\n");
+}
+
 bool32_t run_process_path_tests(void) {
   process_stream_test();
+  process_start_failure_test();
 #if defined(PLATFORM_WINDOWS)
   printf("--- Starting Windows Process Path Tests ---\n");
   char directories[7][1024];

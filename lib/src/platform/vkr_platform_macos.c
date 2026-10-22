@@ -21,6 +21,7 @@
 #include <os/log.h>
 #include <os/signpost.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -583,13 +584,67 @@ vkr_internal float64_t vkr_platform_monotonic_seconds(void) {
   return (float64_t)now.tv_sec + (float64_t)now.tv_nsec / 1000000000.0;
 }
 
+/* The step of a child's setup that failed, reported to the parent through
+   the start pipe with its errno. */
+typedef enum VkrPlatformChildStep {
+  VKR_PLATFORM_CHILD_PROCESS_GROUP = 1,
+  VKR_PLATFORM_CHILD_WORKING_DIRECTORY = 2,
+  VKR_PLATFORM_CHILD_OUTPUT = 3,
+  VKR_PLATFORM_CHILD_ENVIRONMENT = 4,
+  VKR_PLATFORM_CHILD_STREAM = 5,
+  VKR_PLATFORM_CHILD_EXEC = 6,
+} VkrPlatformChildStep;
+
+vkr_internal const char *vkr_platform_child_step_name(int32_t step) {
+  switch (step) {
+  case VKR_PLATFORM_CHILD_PROCESS_GROUP:
+    return "child process group";
+  case VKR_PLATFORM_CHILD_WORKING_DIRECTORY:
+    return "child working directory";
+  case VKR_PLATFORM_CHILD_OUTPUT:
+    return "child output redirection";
+  case VKR_PLATFORM_CHILD_ENVIRONMENT:
+    return "child environment";
+  case VKR_PLATFORM_CHILD_STREAM:
+    return "child output stream";
+  case VKR_PLATFORM_CHILD_EXEC:
+    return "exec";
+  default:
+    return "child start report";
+  }
+}
+
+/* Records why process_run fails, when the caller asks. */
+vkr_internal bool8_t
+vkr_platform_process_failed(const VkrPlatformProcessConfig *config,
+                            const char *step, int32_t code, bool8_t started) {
+  if (config->out_error) {
+    *config->out_error = (VkrPlatformProcessError){
+        .step = step, .code = code, .started = started};
+  }
+  return false_v;
+}
+
+/* Ends a child whose setup or exec failed: hands the step and errno to the
+   parent through the close-on-exec start pipe, so the parent reports a start
+   failure instead of an exit status, and exits 127. Only async-signal-safe
+   calls run here. */
+vkr_internal void vkr_platform_process_child_fail(int report,
+                                                  VkrPlatformChildStep step) {
+  const int32_t failure[2] = {(int32_t)step, (int32_t)errno};
+  (void)write(report, failure, sizeof(failure));
+  _exit(127);
+}
+
 vkr_internal void
-vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config) {
+vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config,
+                                 int report) {
   if (config->terminate_process_tree && setpgid(0, 0) != 0) {
-    _exit(127);
+    vkr_platform_process_child_fail(report, VKR_PLATFORM_CHILD_PROCESS_GROUP);
   }
   if (config->working_directory && chdir(config->working_directory) != 0) {
-    _exit(127);
+    vkr_platform_process_child_fail(report,
+                                    VKR_PLATFORM_CHILD_WORKING_DIRECTORY);
   }
   const char *const paths[2] = {config->stdout_path, config->stderr_path};
   const int streams[2] = {STDOUT_FILENO, STDERR_FILENO};
@@ -602,10 +657,7 @@ vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config) {
              O_CREAT | O_WRONLY | (config->append_output ? O_APPEND : O_TRUNC),
              0644);
     if (descriptor < 0 || dup2(descriptor, streams[i]) < 0) {
-      if (descriptor >= 0) {
-        close(descriptor);
-      }
-      _exit(127);
+      vkr_platform_process_child_fail(report, VKR_PLATFORM_CHILD_OUTPUT);
     }
     close(descriptor);
   }
@@ -614,9 +666,56 @@ vkr_platform_process_child_setup(const VkrPlatformProcessConfig *config) {
     if (!variable->name ||
         (variable->value ? setenv(variable->name, variable->value, 1)
                          : unsetenv(variable->name)) != 0) {
-      _exit(127);
+      vkr_platform_process_child_fail(report, VKR_PLATFORM_CHILD_ENVIRONMENT);
     }
   }
+}
+
+/* Serializes a launch's pipe creation with every launch's fork, so a child
+   another thread forks between a pipe's creation and its close-on-exec flag
+   never inherits this launch's ends: a write end held open by an unrelated
+   child would leave the start pipe, or a streamed stdout, unfinished until
+   that child exits. */
+vkr_global pthread_mutex_t g_process_launch_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A pipe whose ends close on exec. */
+vkr_internal bool8_t vkr_platform_cloexec_pipe(int descriptors[2]) {
+  if (pipe(descriptors) != 0) {
+    return false_v;
+  }
+  if (fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) != 0 ||
+      fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) != 0) {
+    const int error = errno;
+    close(descriptors[0]);
+    close(descriptors[1]);
+    errno = error;
+    return false_v;
+  }
+  return true_v;
+}
+
+/* Reads a child's start report: false once the child exec'd (the pipe
+   closed without data), true with the failed step and its errno. */
+vkr_internal bool8_t vkr_platform_process_start_failed(int descriptor,
+                                                       int32_t *out_step,
+                                                       int32_t *out_error) {
+  int32_t failure[2] = {0, 0};
+  uint64_t received = 0u;
+  while (received < sizeof(failure)) {
+    const ssize_t count = read(descriptor, (uint8_t *)failure + received,
+                               sizeof(failure) - (size_t)received);
+    if (count > 0) {
+      received += (uint64_t)count;
+      continue;
+    }
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    break;
+  }
+  *out_step = failure[0];
+  *out_error = failure[1];
+  return received != 0u;
 }
 
 vkr_internal bool8_t vkr_platform_process_wait_nonblocking(
@@ -653,8 +752,13 @@ vkr_internal bool8_t vkr_platform_process_wait_blocking(pid_t pid, int *status,
   return true_v;
 }
 
+/* Whether the process group still holds a process this one may signal. A
+   group that answers only EPERM holds nothing the caller launched, whose
+   descendants share its user: once the leader is reaped, XNU can briefly
+   answer EPERM for the leader's former group, and treating that as a live
+   tree failed one project-job child launch in tens (2026-10-23). */
 vkr_internal bool8_t vkr_platform_process_group_exists(pid_t group) {
-  return kill(-group, 0) == 0 || errno == EPERM;
+  return kill(-group, 0) == 0;
 }
 
 vkr_internal bool8_t vkr_platform_process_signal(pid_t pid,
@@ -677,6 +781,8 @@ vkr_internal void vkr_platform_poll_sleep(uint64_t ms) {
   nanosleep(&duration, NULL);
 }
 
+/* Stops the child, and with `process_tree` its group, first with SIGTERM and
+   after `grace_ms` with SIGKILL, and reaps the child. */
 vkr_internal bool8_t vkr_platform_process_stop(pid_t pid, bool8_t process_tree,
                                                uint32_t grace_ms, int *status,
                                                bool8_t *out_reaped) {
@@ -689,8 +795,11 @@ vkr_internal bool8_t vkr_platform_process_stop(pid_t pid, bool8_t process_tree,
     if (!vkr_platform_process_wait_nonblocking(pid, status, out_reaped)) {
       return false_v;
     }
-    if ((process_tree && !vkr_platform_process_group_exists(pid)) ||
-        (!process_tree && *out_reaped)) {
+    /* The group can empty before its leader's exit status is collected. */
+    if (process_tree && !vkr_platform_process_group_exists(pid)) {
+      return vkr_platform_process_wait_blocking(pid, status, out_reaped);
+    }
+    if (!process_tree && *out_reaped) {
       return true_v;
     }
     if (vkr_platform_monotonic_seconds() >= deadline) {
@@ -736,36 +845,33 @@ vkr_internal bool8_t vkr_platform_process_drain(
   }
 }
 
-bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
-                                 int32_t *out_exit_code,
-                                 bool8_t *out_timed_out) {
-  if (!config || !config->executable || !out_exit_code || !out_timed_out ||
-      config->argument_count > 63u ||
-      (config->argument_count > 0u && !config->arguments) ||
-      (config->environment_count > 0u && !config->environment) ||
-      (config->on_stdout && config->stdout_path)) {
-    return false_v;
+/* Forks the child with its pipes: the start pipe, whose write end the child
+   holds until exec, and with `on_stdout` the stream pipe. Returns the
+   child's pid, or -1 after recording the failure. */
+vkr_internal pid_t vkr_platform_process_launch(
+    const VkrPlatformProcessConfig *config, int start[2], int stream[2]) {
+  pthread_mutex_lock(&g_process_launch_lock);
+  if (!vkr_platform_cloexec_pipe(start)) {
+    const int error = errno;
+    pthread_mutex_unlock(&g_process_launch_lock);
+    (void)vkr_platform_process_failed(config, "start pipe", error, false_v);
+    return -1;
   }
-  *out_exit_code = -1;
-  *out_timed_out = false_v;
-  /* Streamed stdout comes through a pipe the waiting loop reads. */
-  int stream[2] = {-1, -1};
-  if (config->on_stdout && pipe(stream) != 0) {
-    return false_v;
+  if (config->on_stdout && !vkr_platform_cloexec_pipe(stream)) {
+    const int error = errno;
+    pthread_mutex_unlock(&g_process_launch_lock);
+    close(start[0]);
+    close(start[1]);
+    (void)vkr_platform_process_failed(config, "stream pipe", error, false_v);
+    return -1;
   }
   const pid_t pid = fork();
-  if (pid < 0) {
-    if (config->on_stdout) {
-      close(stream[0]);
-      close(stream[1]);
-    }
-    return false_v;
-  }
   if (pid == 0) {
-    vkr_platform_process_child_setup(config);
+    close(start[0]);
+    vkr_platform_process_child_setup(config, start[1]);
     if (config->on_stdout) {
       if (dup2(stream[1], STDOUT_FILENO) < 0) {
-        _exit(127);
+        vkr_platform_process_child_fail(start[1], VKR_PLATFORM_CHILD_STREAM);
       }
       close(stream[0]);
       close(stream[1]);
@@ -777,25 +883,73 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     }
     arguments[config->argument_count + 1u] = NULL;
     execvp(config->executable, arguments);
-    _exit(127);
+    vkr_platform_process_child_fail(start[1], VKR_PLATFORM_CHILD_EXEC);
   }
-
-  bool8_t stream_open = config->on_stdout != NULL;
-  if (stream_open) {
-    close(stream[1]);
-    (void)fcntl(stream[0], F_SETFL, fcntl(stream[0], F_GETFL) | O_NONBLOCK);
+  const int fork_error = errno;
+  pthread_mutex_unlock(&g_process_launch_lock);
+  close(start[1]);
+  if (pid < 0) {
+    close(start[0]);
+    if (config->on_stdout) {
+      close(stream[0]);
+      close(stream[1]);
+    }
+    (void)vkr_platform_process_failed(config, "fork", fork_error, false_v);
+    return -1;
   }
-  if (config->terminate_process_tree && setpgid(pid, pid) != 0 &&
-      getpgid(pid) != pid) {
-    (void)vkr_platform_process_signal(pid, false_v, SIGKILL);
+  /* Nothing arrives once the child exec'd; a child whose setup or exec
+     failed reports the step and errno, then exits 127. */
+  int32_t step = 0;
+  int32_t error = 0;
+  const bool8_t failed =
+      vkr_platform_process_start_failed(start[0], &step, &error);
+  close(start[0]);
+  if (failed) {
     int failed_status = 0;
     bool8_t failed_reaped = false_v;
     (void)vkr_platform_process_wait_blocking(pid, &failed_status,
                                              &failed_reaped);
     if (config->on_stdout) {
       close(stream[0]);
+      close(stream[1]);
     }
+    (void)vkr_platform_process_failed(
+        config, vkr_platform_child_step_name(step), error, false_v);
+    return -1;
+  }
+  return pid;
+}
+
+bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
+                                 int32_t *out_exit_code,
+                                 bool8_t *out_timed_out) {
+  if (!config || !config->executable || !out_exit_code || !out_timed_out ||
+      config->argument_count > 63u ||
+      (config->argument_count > 0u && !config->arguments) ||
+      (config->environment_count > 0u && !config->environment) ||
+      (config->on_stdout && config->stdout_path)) {
+    return config ? vkr_platform_process_failed(config, "arguments", EINVAL,
+                                                false_v)
+                  : false_v;
+  }
+  *out_exit_code = -1;
+  *out_timed_out = false_v;
+  if (config->out_error) {
+    *config->out_error = (VkrPlatformProcessError){0};
+  }
+  /* Streamed stdout comes through a pipe the waiting loop reads. The child
+     joins its own process group before exec, which the start pipe confirms,
+     so the group exists for as long as the child runs. */
+  int stream[2] = {-1, -1};
+  int start[2] = {-1, -1};
+  const pid_t pid = vkr_platform_process_launch(config, start, stream);
+  if (pid < 0) {
     return false_v;
+  }
+  bool8_t stream_open = config->on_stdout != NULL;
+  if (stream_open) {
+    close(stream[1]);
+    (void)fcntl(stream[0], F_SETFL, fcntl(stream[0], F_GETFL) | O_NONBLOCK);
   }
 
   int status = 0;
@@ -803,16 +957,17 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   bool8_t refused = false_v;
   if (config->timeout_ms == 0u && !config->is_cancelled && !config->on_stdout) {
     if (!vkr_platform_process_wait_blocking(pid, &status, &reaped)) {
-      return false_v;
+      return vkr_platform_process_failed(config, "wait", errno, true_v);
     }
   } else {
     const float64_t started = vkr_platform_monotonic_seconds();
     for (;;) {
       if (!vkr_platform_process_wait_nonblocking(pid, &status, &reaped)) {
+        const int error = errno;
         if (config->on_stdout) {
           close(stream[0]);
         }
-        return false_v;
+        return vkr_platform_process_failed(config, "wait", error, true_v);
       }
       if (reaped) {
         break;
@@ -833,7 +988,11 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
         if (!vkr_platform_process_stop(pid, config->terminate_process_tree,
                                        config->termination_grace_ms, &status,
                                        &reaped)) {
-          return false_v;
+          const int error = errno;
+          if (config->on_stdout) {
+            close(stream[0]);
+          }
+          return vkr_platform_process_failed(config, "stop", error, true_v);
         }
         break;
       }
@@ -861,7 +1020,8 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       vkr_platform_process_group_exists(pid) &&
       !vkr_platform_process_stop(pid, true_v, config->termination_grace_ms,
                                  &status, &reaped)) {
-    return false_v;
+    return vkr_platform_process_failed(config, "stop descendants", errno,
+                                       true_v);
   }
   if (WIFEXITED(status)) {
     *out_exit_code = WEXITSTATUS(status);
@@ -882,11 +1042,19 @@ bool8_t vkr_platform_process_capture(const char *executable,
       (argument_count > 0u && !arguments)) {
     return false_v;
   }
+  /* As in vkr_platform_process_launch: no other launch's child inherits
+     this pipe. dup2 gives the child's stdout its own descriptor, which stays
+     open across exec. */
   int descriptors[2];
-  if (pipe(descriptors) != 0) {
+  pthread_mutex_lock(&g_process_launch_lock);
+  if (!vkr_platform_cloexec_pipe(descriptors)) {
+    pthread_mutex_unlock(&g_process_launch_lock);
     return false_v;
   }
   const pid_t pid = fork();
+  if (pid != 0) {
+    pthread_mutex_unlock(&g_process_launch_lock);
+  }
   if (pid < 0) {
     close(descriptors[0]);
     close(descriptors[1]);

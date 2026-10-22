@@ -2225,6 +2225,22 @@ vkr_internal bool8_t vkr_project_is_cancelled(void *context) {
              : false_v;
 }
 
+/* Attempts at starting one child before a job gives up on it: a launch
+   that fails before the child runs (a pipe, the fork, the child's setup or
+   its exec) repeats no work, and such failures came in bursts while the
+   machine was loaded. */
+#define VKR_PROJECT_START_ATTEMPTS 3u
+
+/* The OS's text for a launch error: errno on POSIX; Windows reports
+   GetLastError codes, whose text the code alone names. */
+vkr_internal const char *vkr_project_launch_error_text(int32_t code) {
+#if defined(_WIN32)
+  return code ? "Windows error" : "no error code";
+#else
+  return code ? strerror(code) : "no error code";
+#endif
+}
+
 bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
                                 const char *const *arguments, uint32_t count,
                                 const char *label, const char *stdout_path,
@@ -2233,6 +2249,7 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
   const VkrPlatformEnvironmentVariable overlay[] = {
       {VKR_VFS_ASSET_OVERLAY_VARIABLE, job->asset_overlay}};
   const bool8_t overlaid = job->asset_overlay[0] != '\0';
+  VkrPlatformProcessError error = {0};
   const VkrPlatformProcessConfig config = {
       .executable = executable,
       .arguments = arguments,
@@ -2247,31 +2264,53 @@ bool8_t vkr_project_run_program(VkrProjectJob *job, const char *executable,
       .terminate_process_tree = true_v,
       .hidden = true_v,
       .is_cancelled = vkr_project_is_cancelled,
+      .out_error = &error,
   };
-  bool8_t timed_out = false_v;
-  const float64_t started = vkr_bakery_monotonic_seconds();
-  uint64_t cpu_before = 0u;
-  uint64_t peak = 0u;
-  (void)vkr_bakery_children_usage(&cpu_before, &peak);
-  *out_code = -1;
-  const bool8_t ran = vkr_platform_process_run(&config, out_code, &timed_out);
-  uint64_t cpu_after = 0u;
-  (void)vkr_bakery_children_usage(&cpu_after, &peak);
-  printf(
-      "timing: stage='%s' detail='%s' exit=%d wall_ms=%llu cpu_ms=%llu "
-      "peak_rss_mib=%llu\n",
-      label, vkr_bakery_path_name(executable), *out_code,
-      (unsigned long long)((vkr_bakery_monotonic_seconds() - started) * 1000.0),
-      (unsigned long long)(cpu_after - cpu_before),
-      (unsigned long long)(peak / (1024u * 1024u)));
-  fflush(stdout);
+  bool8_t ran = false_v;
+  for (uint32_t attempt = 1u; attempt <= VKR_PROJECT_START_ATTEMPTS;
+       ++attempt) {
+    bool8_t timed_out = false_v;
+    const float64_t started = vkr_bakery_monotonic_seconds();
+    uint64_t cpu_before = 0u;
+    uint64_t peak = 0u;
+    (void)vkr_bakery_children_usage(&cpu_before, &peak);
+    *out_code = -1;
+    ran = vkr_platform_process_run(&config, out_code, &timed_out);
+    uint64_t cpu_after = 0u;
+    (void)vkr_bakery_children_usage(&cpu_after, &peak);
+    printf("timing: stage='%s' detail='%s' exit=%d wall_ms=%llu cpu_ms=%llu "
+           "peak_rss_mib=%llu\n",
+           label, vkr_bakery_path_name(executable), *out_code,
+           (unsigned long long)((vkr_bakery_monotonic_seconds() - started) *
+                                1000.0),
+           (unsigned long long)(cpu_after - cpu_before),
+           (unsigned long long)(peak / (1024u * 1024u)));
+    if (!ran) {
+      printf("Warning: %s could not run %s (attempt %u of %u): %s failed "
+             "with error %d (%s)%s\n",
+             label, vkr_bakery_path_name(executable), attempt,
+             VKR_PROJECT_START_ATTEMPTS, error.step ? error.step : "launch",
+             error.code, vkr_project_launch_error_text(error.code),
+             error.started ? " after the child started" : "");
+    }
+    fflush(stdout);
+    if (ran || error.started || vkr_project_is_cancelled(NULL) ||
+        attempt == VKR_PROJECT_START_ATTEMPTS) {
+      break;
+    }
+    vkr_platform_sleep(attempt == 1u ? 100u : 400u);
+  }
   if (vkr_project_is_cancelled(NULL)) {
     job->cancelled = true_v;
     return vkr_project_fail(job, "Project preparation cancelled");
   }
   if (!ran) {
-    return vkr_project_fail(job, "%s requires the installed %s tool", label,
-                            vkr_bakery_path_name(executable));
+    return vkr_project_fail(job,
+                            "%s could not run %s: %s failed with error %d "
+                            "(%s); see the job log",
+                            label, executable,
+                            error.step ? error.step : "launch", error.code,
+                            vkr_project_launch_error_text(error.code));
   }
   return true_v;
 }

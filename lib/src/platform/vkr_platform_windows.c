@@ -1050,6 +1050,9 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
       config->environment_count > 16u) {
     return false_v;
   }
+  if (config->out_error) {
+    *config->out_error = (VkrPlatformProcessError){0};
+  }
   char command[8192];
   if (!vkr_platform_build_command(config->executable, config->arguments,
                                   config->argument_count, command,
@@ -1159,6 +1162,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
   const bool8_t environment_applied = vkr_platform_environment_apply(
       config->environment, config->environment_count, saved);
   BOOL created = FALSE;
+  DWORD create_error = 0u;
   if (environment_applied) {
     DWORD creation_flags = config->hidden ? CREATE_NO_WINDOW : 0u;
     if (config->terminate_process_tree) {
@@ -1172,6 +1176,7 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                              child.inherited_count > 0u, creation_flags, NULL,
                              config->working_directory ? wide_directory : NULL,
                              &child.startup.StartupInfo, &process);
+    create_error = created ? 0u : GetLastError();
     vkr_platform_environment_restore(saved, config->environment_count);
   }
   vkr_platform_child_handles_release(&child);
@@ -1191,6 +1196,15 @@ bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
     }
     if (stream_read) {
       CloseHandle(stream_read);
+    }
+    if (config->out_error) {
+      *config->out_error = (VkrPlatformProcessError){
+          .step = environment_applied ? "create process" : "environment",
+          .code = (int32_t)create_error};
+    }
+    /* Callers that read the cause directly still see it. */
+    if (environment_applied) {
+      SetLastError(create_error);
     }
     return false_v;
   }

@@ -28,6 +28,18 @@ typedef struct VkrPlatformEnvironmentVariable {
   const char *value;
 } VkrPlatformEnvironmentVariable;
 
+/** Why vkr_platform_process_run returned false: the step that failed, a
+ * static string, and the OS error it reported (errno on POSIX, GetLastError
+ * on Windows), zero when the step sets none. `started` tells whether the
+ * child was running when the step failed; a failure before then (a pipe,
+ * the fork, the child's own setup or its exec) launched nothing the caller
+ * must account for, so a retry repeats no work. */
+typedef struct VkrPlatformProcessError {
+  const char *step;
+  int32_t code;
+  bool8_t started;
+} VkrPlatformProcessError;
+
 typedef struct VkrPlatformProcessConfig {
   const char *executable;
   /** Borrowed arguments excluding argv[0]; `executable` becomes argv[0]. */
@@ -62,6 +74,8 @@ typedef struct VkrPlatformProcessConfig {
    * false stops the child as a cancellation does. */
   bool8_t (*on_stdout)(void *context, const uint8_t *bytes, uint64_t size);
   void *stdout_context;
+  /** Optional: filled when process_run returns false, cleared otherwise. */
+  VkrPlatformProcessError *out_error;
 } VkrPlatformProcessConfig;
 
 /** Opaque storage for one non-recursive cross-process lock. */
@@ -421,7 +435,9 @@ void vkr_platform_stderr_writef(const char *format, ...)
  * launched process and descendants that remain in its process group or Job;
  * it stops remaining descendants before returning. POSIX first allows
  * `termination_grace_ms`; Windows termination is immediate. A null environment
- * value removes that variable in the child.
+ * value removes that variable in the child. A child that cannot be started,
+ * including one whose own setup or exec fails on POSIX, is a false return
+ * (`out_error`), never an exit code.
  */
 bool8_t vkr_platform_process_run(const VkrPlatformProcessConfig *config,
                                  int32_t *out_exit_code,
