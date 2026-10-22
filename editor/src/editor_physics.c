@@ -1250,8 +1250,9 @@ static void physics_decal_preview(VkrEditorUi *editor,
                    capacity);
     }
   }
+  /* The image's top is the box's local -Z (vkr_editor_decal_orientation). */
   physics_line(editor, frame, VKR_ENTITY_ID_INVALID, center,
-               vec3_add(center, half[2]), color, capacity);
+               vec3_sub(center, half[2]), color, capacity);
 }
 
 /* The scatter paint tool: the painted scatter's areas, the stroke's dabs

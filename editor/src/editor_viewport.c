@@ -3629,8 +3629,9 @@ VkrQuat vkr_editor_decal_orientation(Vec3 normal, Vec3 facing,
                                      float32_t angle) {
   const Vec3 n = vec3_length(normal) > 1.0e-4f ? vec3_normalize(normal)
                                                : vec3_new(0.0f, 1.0f, 0.0f);
-  /* The image's top (local +Z) points up a wall; on a floor or ceiling it
-     points along `facing`, else -Z. */
+  /* The image's top points up a wall; on a floor or ceiling it points along
+     `facing`, else -Z. The decal shaders sample v = 0.5 - z and v = 0 is an
+     image's bottom row (ADR-092), so the top is the box's local -Z. */
   Vec3 top = vkr_abs_f32(n.y) < 0.9f ? vec3_new(0.0f, 1.0f, 0.0f) : facing;
   top = vec3_sub(top, vec3_scale(n, vec3_dot(top, n)));
   if (vec3_length(top) < 1.0e-3f) {
@@ -3641,7 +3642,7 @@ VkrQuat vkr_editor_decal_orientation(Vec3 normal, Vec3 facing,
     top = vec3_new(1.0f, 0.0f, 0.0f);
   }
   /* look_at maps -Z to its forward and +Y to its up. */
-  const VkrQuat frame = vkr_quat_look_at(vec3_negate(top), n);
+  const VkrQuat frame = vkr_quat_look_at(top, n);
   return vkr_quat_normalize(
       vkr_quat_mul(vkr_quat_from_axis_angle(n, angle), frame));
 }

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -29,10 +29,11 @@ click-to-place decal tool.
    in [editor_viewport.c](../../editor/src/editor_viewport.c) turns the
    unit box so that:
    - +Y lies along the surface normal;
-   - local +Z, the image's top in the tiled shader's decal UV
-     (`v = 0.5 - z`), points up a wall;
-   - on a floor or ceiling (|normal.y| ≥ 0.9), local +Z points along
-     `facing` projected onto the surface, else along -Z;
+   - local -Z, the image's top, points up a wall: the decal shaders sample
+     `v = 0.5 - z`, and `v = 0` is an image's bottom row (ADR-092), so an
+     image reads upright and unmirrored seen from +Y with -Z up;
+   - on a floor or ceiling (|normal.y| ≥ 0.9), local -Z points along
+     `facing` projected onto the surface, else along world -Z;
    - the result is then turned by `angle` about the normal.
 2. **Box.** The box is centred on the surface point. Its scale is the width
    and height across the surface (X and Z) and the depth along the normal
@@ -104,10 +105,13 @@ On a headless Bistro editor (Release, Metal), on 2026-10-09
 - **Tool.** After `decal.tool on`, `ui.click` inside `view.image` created and
   selected a `Decal`. Moving the pointer showed the preview box on the
   surface.
-- **Not verified:** the image's upright orientation on a wall with an
-  asymmetric decal image (the default decal is round). No CPU test was
-  added. The orientation is three projections and a look-at, and the
-  captures check the placement.
+- **Upright images (2026-10-22).** The first rule put the image's top at
+  local +Z, which showed every asymmetric image turned 180 degrees: a room
+  number sign placed with `decal.place` on a wall of the Level Design Test
+  read upside down from right to left. With the top at local -Z, the same
+  signs, posters and floor arrows read upright in captures. No CPU test was
+  added; the orientation is three projections and a look-at, and captures
+  of lettered decals check it.
 
 ## Alternatives considered
 
