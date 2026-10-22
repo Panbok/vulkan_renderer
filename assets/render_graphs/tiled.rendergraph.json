@@ -112,6 +112,44 @@
       ]
     },
     {
+      "name": "tiled_sun_shafts",
+      "type": "image",
+      "condition": "scene_rendering && tiled_sun_shafts",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R16_SFLOAT",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
+      "name": "tiled_sun_shafts_source",
+      "type": "image",
+      "condition": "scene_rendering && tiled_sun_shafts",
+      "extent": {
+        "mode": "viewport",
+        "divisor": 2
+      },
+      "format": "R8_UNORM",
+      "usage": [
+        "STORAGE",
+        "SAMPLED"
+      ],
+      "flags": [
+        "TRANSIENT",
+        "RESIZABLE",
+        "PER_IMAGE"
+      ]
+    },
+    {
       "name": "tiled_sun_field_objects",
       "type": "buffer",
       "condition": "scene_rendering && tiled_sun_sdf",
@@ -1898,8 +1936,39 @@
       "execute": "pass.tiled.sun_shadow"
     },
     {
+      "name": "Tiled.SunShafts",
+      "type": "compute",
+      "condition": "scene_rendering && tiled_sun_shafts",
+      "reads": [
+        {
+          "image": "opaque_vbuffer_depth",
+          "access": "SAMPLED",
+          "binding": 1
+        },
+        {
+          "image": "cloud_shadow",
+          "access": "SAMPLED",
+          "binding": 33,
+          "when": "clouds_enabled"
+        }
+      ],
+      "writes": [
+        {
+          "image": "tiled_sun_shafts",
+          "access": "STORAGE_WRITE",
+          "binding": 0
+        },
+        {
+          "image": "tiled_sun_shafts_source",
+          "access": "STORAGE_READ_WRITE",
+          "binding": 2
+        }
+      ],
+      "execute": "pass.tiled.sun_shafts"
+    },
+    {
       "name": "Tiled.Atmosphere",
-      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled || tiled_sun_light)",
+      "condition": "scene_rendering && (clouds_enabled || fog_apply_enabled || tiled_sun_light || tiled_sun_shafts)",
       "type": "graphics",
       "domain": "WORLD",
       "reads": [
@@ -1943,6 +2012,12 @@
           "access": "SAMPLED",
           "binding": 38,
           "when": "tiled_sun_sdf"
+        },
+        {
+          "image": "tiled_sun_shafts",
+          "access": "SAMPLED",
+          "binding": 39,
+          "when": "tiled_sun_shafts"
         }
       ],
       "attachments": {

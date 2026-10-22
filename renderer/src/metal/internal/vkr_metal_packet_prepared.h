@@ -200,11 +200,13 @@ typedef struct VkrMetalPacketPreparedPass {
       bool8_t finish;
     } tiled;
     /* The tiled pipeline's atmosphere draw over the resolved image; `sun`
-       selects the pipeline that also corrects the sun's light. */
+       selects the pipeline that also corrects the sun's light, `shafts` the
+       one that adds sun shafts. */
     struct {
       uint64_t root;
       MTLViewport viewport;
       uint32_t sun;
+      uint32_t shafts;
     } tiled_atmosphere;
     /* MetalFX's inputs and output, the viewport the inputs hold and the
        frame's jitter in pixels (y down). */
@@ -247,6 +249,11 @@ typedef struct VkrMetalPacketPreparedPass {
          order command buffers. */
       bool8_t volumes_in_flight;
     } sun_shadow;
+    /* Tiled.SunShafts: the source, then the march that samples it. */
+    struct {
+      VkrMetalPacketDispatch source;
+      VkrMetalPacketDispatch march;
+    } sun_shafts;
     struct {
       id<MTLTexture> source;
       /* The picked pixel's resolved depth, copied after its object id. */

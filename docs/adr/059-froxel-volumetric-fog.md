@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -10,7 +10,9 @@ authority: adr
 
 Accepted. Froxel fog belongs to the desktop pipeline, and Vulkan is its only
 implementation; the tiled pipeline turns it off
-([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7). The graph and
+([ADR-087](087-gpu-class-graphics-pipelines.md), decision 7) and realizes
+the same component as screen-space sun shafts
+([ADR-132](132-tiled-sun-shafts.md)). The graph and
 scene authoring are integrated. The output evidence below comes from the Metal
 desktop implementation, removed on 2026-10-06. Native Vulkan ran on
 2026-10-11 after the fix under Verification.

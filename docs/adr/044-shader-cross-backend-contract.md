@@ -203,6 +203,22 @@ on Metal. It shares kernels and host records with the desktop pipeline:
     follows the sun. Native evidence:
     Metal Release Bistro captures and the forced-visibility comparison on
     2026-10-16; no Metal validation run.
+  - Sun shafts ([ADR-132](132-tiled-sun-shafts.md)) add the Metal-only
+    kernels `vkr_metal_tiled_sun_shafts_source` and
+    `vkr_metal_tiled_sun_shafts` (`world/sun_shafts.metal`), which share the
+    176-byte `VkrMetalTiledSunShaftsRoot` pinned in
+    `vkr_metal_packet_abi.c`, and grow `VkrMetalTiledSkyRoot` from 224 to
+    256 bytes (`sun_shafts` at 224, density 232, sky share 236, tint and
+    path cap 240). The atmosphere draw adds them only in its variant with
+    function constant 4 (`vkr_tiled_sun_shafts`). The march takes the shared
+    Henyey-Greenstein phase, `vkr_fog_phase_hg`, with the volumetric fog
+    component's anisotropy, as froxel fog does on the desktop pipeline, its
+    start offset from `vkr_local_shadow_contact_noise`, and the cloud shadow
+    from `vkr_metal_packet_sky_cloud_shadow`, which
+    `vkr_metal_packet_cloud_shadow` now calls with the frame's sky record.
+    Native evidence: Metal Release Bistro captures and timing on
+    2026-10-22, the fog-off capture identical to the one before the change;
+    no Metal validation run.
   - The tiled class draws no SMAA; its alpha-tested surfaces use alpha to
     coverage and its opaque pass a tone-mapped tile resolve
     (`vkr_metal_tiled_resolve_tile`), a class difference the owner accepted
@@ -952,6 +968,7 @@ domain under the [evidence rules](#evidence-rules).
 | Rectangle LTC | Shared | `shared/ltc_kernel.slangh` | `metal/msl/world/lighting.metalh`, `tiled.metal` | `vulkan/slang/world/default.slang`, `deferred.slang` |
 | Analytic fog | Shared | `shared/fog_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/world/tiled.metal` | `vulkan/slang/post/fog.slang`, `world/default.slang` |
 | Froxel volumetric fog | Desktop | `shared/froxel_fog_kernel.slangh`, `fog_kernel.slangh`, `punctual_light_kernel.slangh` | — | `vulkan/slang/post/froxel_fog.slang` |
+| Screen-space sun shafts, the tiled realization of volumetric fog ([ADR-132](132-tiled-sun-shafts.md)) | Tiled | `shared/fog_kernel.slangh` (`vkr_fog_phase_hg`), `local_shadow.slangh` (march offset) | `metal/msl/world/sun_shafts.metal`, `world/tiled.metal`, `shadow/sampling.metalh` | — |
 | IBL and SH | Shared | `shared/sh_l2_kernel.slangh`, `ggx_kernel.slangh` | `metal/msl/ibl/` | `vulkan/slang/ibl/` |
 | Sky atmosphere and aerial perspective | Shared | `shared/atmosphere_kernel.slangh` | `metal/msl/ibl/atmosphere.metal`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/atmosphere.slang`, `world/default.slang`, `deferred.slang`, `post/fog.slang`, `post/froxel_fog.slang` |
 | Volumetric clouds | Shared | `shared/cloud_kernel.slangh`, `sh_l2_kernel.slangh` | `metal/msl/ibl/clouds.metal`, `ibl/sh_projection.metal`, `shadow/sampling.metalh`, `world/lighting.metalh`, `world/tiled.metal` | `vulkan/slang/ibl/clouds.slang`, `ibl/default.slang`, `world/default.slang`, `deferred.slang`, `post/froxel_fog.slang` |

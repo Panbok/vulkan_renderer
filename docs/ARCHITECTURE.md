@@ -1196,6 +1196,11 @@ new local lobes over already-fogged ordered feedback, and blend retains alpha.
 Fog changes invalidate normal temporal content and request a scene-change
 reset. The tiled pipeline
 applies the same fog in `Tiled.Atmosphere` and its blend draws (ADR-087).
+It has no froxel fog; a scene's volumetric fog component draws screen-space
+sun shafts there instead: `Tiled.SunShafts` blurs the resolved depth's sky
+toward the sun at half resolution while the sun is in or near the view, and
+`Tiled.Atmosphere` scatters the sun's light by the component's density,
+colour and anisotropy ([ADR-132](adr/132-tiled-sun-shafts.md)).
 [ADR-057](adr/057-analytic-height-fog.md) owns the constants and composition;
 native Vulkan fog output is not recorded.
 

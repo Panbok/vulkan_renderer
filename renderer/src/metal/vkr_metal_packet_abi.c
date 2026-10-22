@@ -510,6 +510,33 @@ vkr_global const VkrMetalPacketAbiField vkr_tiled_sky_root_fields[] = {
                   216),
     VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sun_shadow_band, "sun_shadow_band",
                   220),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sun_shafts_texture_id, "sun_shafts",
+                  224),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sun_shafts_density,
+                  "sun_shafts_density", 232),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sun_shafts_sky_share,
+                  "sun_shafts_sky_share", 236),
+    VKR_ABI_FIELD(VkrMetalTiledSkyRoot, sun_shafts_tint, "sun_shafts_tint",
+                  240),
+};
+
+vkr_global const VkrMetalPacketAbiField vkr_tiled_sun_shafts_root_fields[] = {
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, depth_texture_id, "depth", 0),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, output_texture_id, "output", 8),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, source_output_texture_id,
+                  "source_output", 16),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, source_texture_id, "source", 24),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, sky, "sky", 32),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, noise_index, "noise_index", 40),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, aspect, "aspect", 44),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, view_rays, "view_rays", 48),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, sun_direction_anisotropy,
+                  "sun_direction_anisotropy", 112),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, camera_position,
+                  "camera_position", 128),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, sun_uv, "sun_uv", 144),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, depth_texel, "depth_texel", 152),
+    VKR_ABI_FIELD(VkrMetalTiledSunShaftsRoot, extent, "extent", 160),
 };
 
 vkr_global const VkrMetalPacketAbiField vkr_sdf_generate_root_fields[] = {
@@ -1043,8 +1070,11 @@ vkr_global const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrMetalPacketDecal, "VkrMetalPacketDecal", 80, 16,
                            vkr_decal_fields),
         [VKR_METAL_PACKET_ABI_TILED_SKY_ROOT] =
-            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 224,
+            VKR_ABI_RECORD(VkrMetalTiledSkyRoot, "VkrMetalTiledSkyRoot", 256,
                            16, vkr_tiled_sky_root_fields),
+        [VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT] = VKR_ABI_RECORD(
+            VkrMetalTiledSunShaftsRoot, "VkrMetalTiledSunShaftsRoot", 176, 16,
+            vkr_tiled_sun_shafts_root_fields),
         [VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT] =
             VKR_ABI_RECORD(VkrMetalSdfGenerateRoot, "VkrMetalSdfGenerateRoot",
                            96, 16, vkr_sdf_generate_root_fields),

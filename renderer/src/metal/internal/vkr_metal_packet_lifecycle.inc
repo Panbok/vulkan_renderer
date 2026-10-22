@@ -882,7 +882,8 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   for (uint32_t sun = 0; sun < 2u; ++sun) {
     [renderer->tiled_sky_pipelines[sun] release];
     [renderer->tiled_resolve_pipelines[sun] release];
-    [renderer->tiled_atmosphere_pipelines[sun] release];
+    [renderer->tiled_atmosphere_pipelines[sun][0] release];
+    [renderer->tiled_atmosphere_pipelines[sun][1] release];
     [renderer->tiled_overdraw_pipelines[sun] release];
   }
   [renderer->tiled_overdraw_blend_pipeline release];
@@ -901,6 +902,8 @@ vkr_metal_packet_release_pipelines(VkrMetalPacketRenderer *renderer)
   [renderer->tiled_object_motion_pipeline release];
   [renderer->temporal_transform_pipeline release];
   [renderer->tiled_stabilize_pipeline release];
+  [renderer->tiled_sun_shafts_source_pipeline release];
+  [renderer->tiled_sun_shafts_pipeline release];
   [renderer->tiled_temporal_scaler release];
   [renderer->tiled_temporal_fence release];
   [renderer->ui_pipeline release];

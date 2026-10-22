@@ -191,6 +191,9 @@ typedef enum VkrRgExecutorKind {
   /** The draw census: each camera candidate's culling state and object id
    * for a recording (VkrGpuDebugPayload.draw_census). */
   VKR_RG_EXECUTOR_GPU_DRAW_CENSUS,
+  /** The tiled pipeline's screen-space sun shafts: the sky's light near the
+   * sun blurred toward it over the resolved depth (ADR-132). */
+  VKR_RG_EXECUTOR_TILED_SUN_SHAFTS,
   VKR_RG_EXECUTOR_COUNT,
 } VkrRgExecutorKind;
 

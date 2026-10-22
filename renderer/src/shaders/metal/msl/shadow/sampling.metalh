@@ -24,16 +24,21 @@ constexpr sampler vkr_metal_packet_cloud_shadow_sampler(coord::normalized,
                                                         mip_filter::none);
 
 // Sun transmittance through the cloud layer above a world position (ADR-074).
-// One outside the sun-projected map or when the layer does not render.
-float vkr_metal_packet_cloud_shadow(constant VkrMetalPacketFrameRoot *frame,
-                                    float3 world_position) {
-  constant VkrMetalPacketSky *sky = frame->sky;
+// One without a sky, outside the sun-projected map or when the layer does
+// not render.
+float vkr_metal_packet_sky_cloud_shadow(constant VkrMetalPacketSky *sky,
+                                        float3 world_position) {
   if (sky == nullptr || sky->params.clouds.noise.w <= 0.0f)
     return 1.0f;
   float2 uv = vkr_cloud_shadow_uv(sky->params, world_position);
   if (any(uv < 0.0f) || any(uv > 1.0f))
     return 1.0f;
   return sky->cloud_shadow.sample(vkr_metal_packet_cloud_shadow_sampler, uv).r;
+}
+
+float vkr_metal_packet_cloud_shadow(constant VkrMetalPacketFrameRoot *frame,
+                                    float3 world_position) {
+  return vkr_metal_packet_sky_cloud_shadow(frame->sky, world_position);
 }
 
 // The tiled pipeline filters its cascades with a fixed grid of hardware

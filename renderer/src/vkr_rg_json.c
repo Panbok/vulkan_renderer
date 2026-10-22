@@ -168,10 +168,12 @@ vkr_global const VkrRgJsonConditionSpec vkr_rg_json_condition_specs[] = {
     {"picking_pending && !transmission_pending",
      VKR_RG_JSON_CONDITION_PICKING_PENDING_NO_TRANSMISSION},
     {"blend_pending", VKR_RG_JSON_CONDITION_BLEND_PENDING},
-    {"(clouds_enabled || fog_apply_enabled || tiled_sun_light)",
+    {"(clouds_enabled || fog_apply_enabled || tiled_sun_light || "
+     "tiled_sun_shafts)",
      VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE},
     {"tiled_sun_light", VKR_RG_JSON_CONDITION_TILED_SUN_LIGHT},
     {"tiled_sun_sdf", VKR_RG_JSON_CONDITION_TILED_SUN_SDF},
+    {"tiled_sun_shafts", VKR_RG_JSON_CONDITION_TILED_SUN_SHAFTS},
     {"tiled_refraction_pending",
      VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING},
     {"tiled_temporal_enabled", VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED},
@@ -2332,11 +2334,13 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->blend_pending;
   case VKR_RG_JSON_CONDITION_TILED_ATMOSPHERE_ACTIVE:
     return frame->clouds_enabled || frame->fog_apply_enabled ||
-           frame->tiled_sun_light;
+           frame->tiled_sun_light || frame->tiled_sun_shafts;
   case VKR_RG_JSON_CONDITION_TILED_SUN_LIGHT:
     return frame->tiled_sun_light;
   case VKR_RG_JSON_CONDITION_TILED_SUN_SDF:
     return frame->tiled_sun_sdf;
+  case VKR_RG_JSON_CONDITION_TILED_SUN_SHAFTS:
+    return frame->tiled_sun_shafts;
   case VKR_RG_JSON_CONDITION_TILED_REFRACTION_PENDING:
     return frame->tiled_refraction_pending;
   case VKR_RG_JSON_CONDITION_TILED_TEMPORAL_ENABLED:

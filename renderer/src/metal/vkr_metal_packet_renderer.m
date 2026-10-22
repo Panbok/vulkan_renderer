@@ -1068,7 +1068,7 @@ struct VkrMetalPacketRenderer {
      atmosphere draw corrects the sun's light. */
   id<MTLRenderPipelineState> tiled_sky_pipelines[2];
   id<MTLRenderPipelineState> tiled_resolve_pipelines[2];
-  id<MTLRenderPipelineState> tiled_atmosphere_pipelines[2];
+  id<MTLRenderPipelineState> tiled_atmosphere_pipelines[2][2];
   /* The overdraw view (ADR-127): every opaque and alpha-tested draw adds a
      layer in the opaque pass, by sun variant, and every blended draw one in
      the blend pass, with no depth test. */
@@ -1210,6 +1210,9 @@ struct VkrMetalPacketRenderer {
   id<MTLComputePipelineState> temporal_transform_pipeline;
   /* The still-camera running mean over MetalFX's output. */
   id<MTLComputePipelineState> tiled_stabilize_pipeline;
+  /* The sun shafts' source and their march toward the sun (ADR-132). */
+  id<MTLComputePipelineState> tiled_sun_shafts_source_pipeline;
+  id<MTLComputePipelineState> tiled_sun_shafts_pipeline;
   VkrRgBufferHandle transform_history_handle;
   /* The last submitted frame: its history instance, which holds its
      transforms and skinned vertices, its frame index and skinning layout,

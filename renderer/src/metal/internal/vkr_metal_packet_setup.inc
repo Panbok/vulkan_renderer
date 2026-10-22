@@ -158,6 +158,7 @@ vkr_metal_packet_abi_binding_index(VkrMetalPacketAbiRecordId record_id) {
   case VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT:
   case VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT:
   case VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT:
+  case VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT:
   case VKR_METAL_PACKET_ABI_SDF_GRID_ROOT:
   case VKR_METAL_PACKET_ABI_EXPOSURE_ROOT:
   case VKR_METAL_PACKET_ABI_BLOOM_ROOT:
@@ -1071,11 +1072,81 @@ vkr_internal bool8_t vkr_metal_packet_create_tiled_shading_pipelines(
   return complete;
 }
 
+/* Creates the atmosphere draw of frames without (`sun` 0) or with (1) the
+   sun's light correction and without (`shafts` 0) or with (1) sun shafts,
+   specialized from `constants`. Returns nil on failure. */
+vkr_internal id<MTLRenderPipelineState>
+vkr_metal_packet_create_tiled_atmosphere_pipeline(
+    VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment,
+    MTLFunctionConstantValues *constants, uint32_t sun, uint32_t shafts)
+    API_AVAILABLE(macos(26.0)) {
+  MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
+  vertex.library = fragment;
+  vertex.name = @"vkr_metal_tiled_sky_vertex";
+  MTL4LibraryFunctionDescriptor *clouds = [MTL4LibraryFunctionDescriptor new];
+  clouds.library = fragment;
+  clouds.name = @"vkr_metal_tiled_atmosphere_fragment";
+  MTL4SpecializedFunctionDescriptor *specialized =
+      [MTL4SpecializedFunctionDescriptor new];
+  specialized.functionDescriptor = clouds;
+  /* Sun shaft frames' variant (ADR-132) also sets function constant 4. */
+  MTLFunctionConstantValues *values = [constants copy];
+  const bool shafts_on = shafts != 0u;
+  [values setConstantValue:&shafts_on type:MTLDataTypeBool atIndex:4];
+  specialized.constantValues = values;
+  MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
+  vkr_local_persist NSString *const labels[2][2] = {
+      {@"VKR tiled atmosphere", @"VKR tiled atmosphere with sun shafts"},
+      {@"VKR tiled atmosphere with sun contact shadows",
+       @"VKR tiled atmosphere with sun contact shadows and sun shafts"},
+  };
+  descriptor.label = labels[sun][shafts];
+  descriptor.vertexFunctionDescriptor = vertex;
+  descriptor.fragmentFunctionDescriptor = specialized;
+  MTL4PipelineOptions *options = [MTL4PipelineOptions new];
+  options.shaderReflection =
+      MTL4ShaderReflectionBindingInfo | MTL4ShaderReflectionBufferTypeInfo;
+  descriptor.options = options;
+  [options release];
+  descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+  descriptor.rasterSampleCount = 1;
+  /* The fragment reads the destination through programmable blending and
+     writes the composed pixel, so it splits edge pixels by the surface share
+     the resolve left in alpha. */
+  descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+  descriptor.colorAttachments[0].blendingState = MTL4BlendStateDisabled;
+  NSError *error = nil;
+  const uint64_t start_ns = vkr_metal_packet_now_ns();
+  id<MTLRenderPipelineState> atmosphere = [renderer->compiler
+      newRenderPipelineStateWithDescriptor:descriptor
+                       compilerTaskOptions:renderer->compiler_options
+                                     error:&error];
+  if (!atmosphere) {
+    vkr_metal_packet_print_error("tiled_atmosphere_pipeline", error);
+  }
+  vkr_metal_packet_register_pipeline(renderer, descriptor.label,
+                                     VKR_PIPELINE_KIND_RENDER, start_ns,
+                                     atmosphere);
+  if (atmosphere &&
+      !vkr_metal_packet_validate_abi_binding(
+          descriptor.label, atmosphere.reflection.fragmentBindings,
+          VKR_METAL_PACKET_ABI_TILED_SKY_ROOT)) {
+    [atmosphere release];
+    atmosphere = nil;
+  }
+  [descriptor release];
+  [specialized release];
+  [values release];
+  [clouds release];
+  [vertex release];
+  return atmosphere;
+}
+
 /* Creates the sky draw, the tone-mapped multisample resolve and the
-   atmosphere draw of frames without (`sun` 0) or with (1) sun contact
-   shadows, whose opaque pass also has the sun's light target and whose
-   atmosphere draw removes the occluded part of that light. A failure leaves
-   nil. */
+   atmosphere draws, without and with sun shafts, of frames without (`sun`
+   0) or with (1) sun contact shadows, whose opaque pass also has the sun's
+   light target and whose atmosphere draw removes the occluded part of that
+   light. A failure leaves nil. */
 vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
     VkrMetalPacketRenderer *renderer, id<MTLLibrary> fragment, uint32_t sun)
     API_AVAILABLE(macos(26.0)) {
@@ -1140,56 +1211,11 @@ vkr_internal void vkr_metal_packet_create_tiled_pass_pipelines(
     [descriptor release];
     [function release];
   }
-  MTL4LibraryFunctionDescriptor *vertex = [MTL4LibraryFunctionDescriptor new];
-  vertex.library = fragment;
-  vertex.name = @"vkr_metal_tiled_sky_vertex";
-  MTL4LibraryFunctionDescriptor *clouds = [MTL4LibraryFunctionDescriptor new];
-  clouds.library = fragment;
-  clouds.name = @"vkr_metal_tiled_atmosphere_fragment";
-  MTL4SpecializedFunctionDescriptor *specialized =
-      [MTL4SpecializedFunctionDescriptor new];
-  specialized.functionDescriptor = clouds;
-  specialized.constantValues = constants;
-  MTL4RenderPipelineDescriptor *descriptor = [MTL4RenderPipelineDescriptor new];
-  descriptor.label = sun ? @"VKR tiled atmosphere with sun contact shadows"
-                         : @"VKR tiled atmosphere";
-  descriptor.vertexFunctionDescriptor = vertex;
-  descriptor.fragmentFunctionDescriptor = specialized;
-  MTL4PipelineOptions *options = [MTL4PipelineOptions new];
-  options.shaderReflection =
-      MTL4ShaderReflectionBindingInfo | MTL4ShaderReflectionBufferTypeInfo;
-  descriptor.options = options;
-  [options release];
-  descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
-  descriptor.rasterSampleCount = 1;
-  /* The fragment reads the destination through programmable blending and
-     writes the composed pixel, so it splits edge pixels by the surface share
-     the resolve left in alpha. */
-  descriptor.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-  descriptor.colorAttachments[0].blendingState = MTL4BlendStateDisabled;
-  NSError *error = nil;
-  const uint64_t start_ns = vkr_metal_packet_now_ns();
-  id<MTLRenderPipelineState> atmosphere = [renderer->compiler
-      newRenderPipelineStateWithDescriptor:descriptor
-                       compilerTaskOptions:renderer->compiler_options
-                                     error:&error];
-  if (!atmosphere)
-    vkr_metal_packet_print_error("tiled_atmosphere_pipeline", error);
-  vkr_metal_packet_register_pipeline(renderer, descriptor.label,
-                                     VKR_PIPELINE_KIND_RENDER, start_ns,
-                                     atmosphere);
-  if (atmosphere &&
-      !vkr_metal_packet_validate_abi_binding(
-          descriptor.label, atmosphere.reflection.fragmentBindings,
-          VKR_METAL_PACKET_ABI_TILED_SKY_ROOT)) {
-    [atmosphere release];
-    atmosphere = nil;
+  for (uint32_t shafts = 0u; shafts < 2u; ++shafts) {
+    renderer->tiled_atmosphere_pipelines[sun][shafts] =
+        vkr_metal_packet_create_tiled_atmosphere_pipeline(
+            renderer, fragment, constants, sun, shafts);
   }
-  renderer->tiled_atmosphere_pipelines[sun] = atmosphere;
-  [descriptor release];
-  [specialized release];
-  [clouds release];
-  [vertex release];
 }
 
 /* Creates the extended variant's tiled shading pipelines, then publishes
@@ -1257,7 +1283,8 @@ vkr_metal_packet_build_tiled_sun_pipelines(VkrMetalPacketRenderer *renderer)
     ok &= renderer->tiled_sky_pipelines[1] != nil &&
           renderer->tiled_overdraw_pipelines[1] != nil &&
           renderer->tiled_resolve_pipelines[1] != nil &&
-          renderer->tiled_atmosphere_pipelines[1] != nil;
+          renderer->tiled_atmosphere_pipelines[1][0] != nil &&
+          renderer->tiled_atmosphere_pipelines[1][1] != nil;
     if (ok)
       log_info("Metal: tiled sun contact pipelines ready in %.1f ms",
                (vkr_platform_get_absolute_time() - start) * 1.0e3);
@@ -1558,6 +1585,16 @@ vkr_internal void vkr_metal_packet_create_frame_compute_pipelines(
       renderer, fragment, "vkr_metal_tiled_stabilize",
       VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT, false_v,
       @"VKR tiled stabilize");
+  renderer->tiled_sun_shafts_source_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_tiled_sun_shafts_source",
+          VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT, false_v,
+          @"VKR tiled sun shafts source");
+  renderer->tiled_sun_shafts_pipeline =
+      vkr_metal_packet_create_compute_pipeline(
+          renderer, fragment, "vkr_metal_tiled_sun_shafts",
+          VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT, false_v,
+          @"VKR tiled sun shafts");
   renderer->temporal_transform_pipeline =
       vkr_metal_packet_create_compute_pipeline(
           renderer, fragment, "vkr_metal_packet_temporal_transform",
@@ -1724,6 +1761,9 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
       {renderer->temporal_transform_pipeline,
        "temporal transform history pipeline"},
       {renderer->tiled_stabilize_pipeline, "tiled stabilize pipeline"},
+      {renderer->tiled_sun_shafts_source_pipeline,
+       "tiled sun shafts source pipeline"},
+      {renderer->tiled_sun_shafts_pipeline, "tiled sun shafts pipeline"},
       {renderer->tiled_object_motion_pipeline,
        "tiled object motion pipeline"},
       {renderer->exposure_clear_pipeline, "exposure clear pipeline"},
@@ -1738,7 +1778,9 @@ vkr_internal bool8_t vkr_metal_packet_startup_objects_ready(
        "bloom box2 downsample pipeline"},
       {renderer->bloom_upsample_pipeline, "bloom upsample pipeline"},
       {renderer->tiled_sky_pipelines[0], "tiled sky pipeline"},
-      {renderer->tiled_atmosphere_pipelines[0], "tiled atmosphere pipeline"},
+      {renderer->tiled_atmosphere_pipelines[0][0], "tiled atmosphere pipeline"},
+      {renderer->tiled_atmosphere_pipelines[0][1],
+       "tiled atmosphere pipeline with sun shafts"},
       {renderer->tiled_resolve_pipelines[0], "tiled resolve pipeline"},
       {renderer->tiled_picking_pipeline, "tiled picking pipeline"},
       {renderer->tiled_overdraw_pipelines[0], "tiled overdraw pipeline"},

@@ -53,6 +53,13 @@ typedef struct VkrPreparedFrame {
   /** Signed-distance-field sun shadows on the tiled pipeline, under the same
       conditions, past the near cascades (VkrShadowSdfMode). */
   bool8_t tiled_sun_sdf;
+  /** Screen-space sun shafts on the tiled pipeline (ADR-132): the scene's
+      volumetric fog is on, a perspective frame in the default render mode
+      has a shining sun above the horizon, and the sun stands in or near the
+      view. `tiled_sun_shafts_fade`, in (0, 1], is their strength from the
+      sun's place. */
+  bool8_t tiled_sun_shafts;
+  float32_t tiled_sun_shafts_fade;
   bool8_t post_transform_cache_enabled;
   bool8_t editor_image_available;
   /** The presenter composites this frame's Scene image with the UI on its

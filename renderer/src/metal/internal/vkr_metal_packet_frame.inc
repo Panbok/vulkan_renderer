@@ -3046,13 +3046,107 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_temporal(
   return true_v;
 }
 
+/* The sun shafts (ADR-132): the resolved depth at binding 1, the cloud
+   shadow through the sky record, the half-resolution source at 2 and the
+   shafts at 0. The sun's place and the view rays come from the jittered
+   projection the depth was drawn with; frames that accumulate in MetalFX
+   step the march's start with the frame, others keep it fixed. */
+vkr_internal bool8_t vkr_metal_packet_prepare_tiled_sun_shafts(
+    VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
+    const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
+    VkrMetalPacketFrameUpload *upload) API_AVAILABLE(macos(26.0)) {
+  id<MTLTexture> depth = vkr_metal_packet_pass_texture(renderer, pass, 1u);
+  id<MTLTexture> output = vkr_metal_packet_pass_texture(renderer, pass, 0u);
+  id<MTLTexture> source = vkr_metal_packet_pass_texture(renderer, pass, 2u);
+  const VkrFrameLighting *lighting = packet->input.lighting;
+  if (!depth || !output || !source || !lighting ||
+      !renderer->tiled_sun_shafts_source_pipeline ||
+      !renderer->tiled_sun_shafts_pipeline || output.width == 0u ||
+      output.height == 0u || output.width > UINT32_MAX ||
+      output.height > UINT32_MAX || source.width != output.width ||
+      source.height != output.height) {
+    return false_v;
+  }
+  const uint32_t viewport_width = renderer->prepared_frame.viewport_width;
+  const uint32_t viewport_height = renderer->prepared_frame.viewport_height;
+  if (viewport_width == 0u || viewport_height == 0u) {
+    return false_v;
+  }
+
+  /* Frame preparation placed the sun in front of the camera. */
+  const Mat4 projection = vkr_metal_packet_clip_matrix(
+      renderer->convert_vulkan_clip_y, packet->temporal.jittered_projection);
+  const Mat4 view_projection = mat4_mul(projection, packet->input.globals.view);
+  const Vec3 light = lighting->directional_direction;
+  const Vec3 to_sun = vec3_normalize(vec3_new(-light.x, -light.y, -light.z));
+  const Vec4 clip = mat4_mul_vec4(view_projection,
+                                  vec4_new(to_sun.x, to_sun.y, to_sun.z, 0.0f));
+  if (!(clip.w > 0.0f)) {
+    return false_v;
+  }
+  /* The inverse of vkr_metal_packet_resolve_ndc: y runs down. */
+  const float32_t sun_u = clip.x / clip.w * 0.5f + 0.5f;
+  const float32_t sun_v = 0.5f - clip.y / clip.w * 0.5f;
+
+  uint64_t root_gpu = 0u;
+  VkrMetalTiledSunShaftsRoot *root =
+      vkr_metal_packet_next_root(upload, sizeof(*root), &root_gpu);
+  if (!root) {
+    return false_v;
+  }
+  const uint32_t width = (uint32_t)output.width;
+  const uint32_t height = (uint32_t)output.height;
+  const Vec3 camera = packet->input.globals.view_position;
+  *root = (VkrMetalTiledSunShaftsRoot){
+      .depth_texture_id = depth.gpuResourceID._impl,
+      .output_texture_id = output.gpuResourceID._impl,
+      .source_output_texture_id = source.gpuResourceID._impl,
+      .source_texture_id = source.gpuResourceID._impl,
+      .sky = upload->sky_gpu,
+      .noise_index = renderer->prepared_frame.tiled_temporal_enabled
+                         ? (uint32_t)packet->input.frame.frame_index
+                         : 0u,
+      .aspect = (float32_t)viewport_width / (float32_t)viewport_height,
+      .view_rays =
+          vkr_atmosphere_view_rays(projection, packet->input.globals.view),
+      .sun_direction_anisotropy =
+          vec4_new(to_sun.x, to_sun.y, to_sun.z,
+                   packet->input.globals.froxel_fog.anisotropy),
+      .camera_position = vec4_new(camera.x, camera.y, camera.z, 1.0f),
+      .sun_uv = {sun_u, sun_v},
+      .depth_texel = {1.0f / (float32_t)depth.width,
+                      1.0f / (float32_t)depth.height},
+      .extent = {width, height},
+  };
+  prepared->sun_shafts.source = (VkrMetalPacketDispatch){
+      .pipeline = renderer->tiled_sun_shafts_source_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(width, height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->sun_shafts.march = (VkrMetalPacketDispatch){
+      .pipeline = renderer->tiled_sun_shafts_pipeline,
+      .root = root_gpu,
+      .threads = MTLSizeMake(width, height, 1u),
+      .group_size = MTLSizeMake(8u, 8u, 1u),
+  };
+  prepared->active = true_v;
+  return true_v;
+}
+
+/* The longest stretch of a view ray, in metres, whose fog scatters the sun
+   shafts' light (ADR-132): the share 1 - exp(-density * metres) then runs
+   from about a tenth at density 0.01 to two fifths at 0.05. */
+#define VKR_METAL_SUN_SHAFTS_PATH_M 10.0f
+
 /* Prepares the atmosphere draw over the tiled pipeline's resolved image: it
    reads the resolved depth at binding 0 and the sky-view lookup at 15. A
    frame that corrects the sun's light also reads the opaque pass's sun light
    at 37 and, with SDF sun shadows, the trace at 38, which takes over from
    the cascades over a band from where the far level starts. The contact
    march's step pattern follows the frame while MetalFX accumulates frames
-   and is fixed otherwise. */
+   and is fixed otherwise. A frame with sun shafts reads them at 39 and
+   scatters the sun's light by the scene's volumetric fog. */
 vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
     VkrMetalPacketRenderer *renderer, const VkrRgPass *pass,
     const VkrPreparedFrame *packet, VkrMetalPacketPreparedPass *prepared,
@@ -3067,8 +3161,13 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
       sun_correction ? vkr_metal_packet_pass_texture(renderer, pass, 37u) : nil;
   id<MTLTexture> sun_shadow =
       sdf ? vkr_metal_packet_pass_texture(renderer, pass, 38u) : nil;
-  if ((sun_correction && !sun_light) || (sdf && !sun_shadow))
+  const bool8_t shafts = renderer->prepared_frame.tiled_sun_shafts;
+  id<MTLTexture> sun_shafts =
+      shafts ? vkr_metal_packet_pass_texture(renderer, pass, 39u) : nil;
+  if ((sun_correction && !sun_light) || (sdf && !sun_shadow) ||
+      (shafts && !sun_shafts)) {
     return false_v;
+  }
   const uint32_t width = (uint32_t)target.width;
   const uint32_t height = (uint32_t)target.height;
   VkrMetalTiledSkyRoot *root = NULL;
@@ -3100,9 +3199,30 @@ vkr_internal bool8_t vkr_metal_packet_prepare_tiled_atmosphere(
           VKR_METAL_SUN_SHADOW_BAND_SHARE * root->sun_shadow_start;
     }
   }
+  if (shafts) {
+    /* The sun's light, pre-exposed as the frame root's, times the fog's
+       colour and the shafts' fade; a surface's stretch of fog is its
+       distance along the camera axis. */
+    const VkrFroxelFogSettings *fog = &packet->input.globals.froxel_fog;
+    const VkrFrameLighting *lighting = packet->input.lighting;
+    const float32_t light = lighting->directional_intensity *
+                            packet->exposure.pre_exposure *
+                            packet->tiled_sun_shafts_fade;
+    const float32_t path = Min(fog->max_distance, VKR_METAL_SUN_SHAFTS_PATH_M);
+    root->depth_offset = packet->temporal.jittered_projection.m22;
+    root->depth_scale = packet->temporal.jittered_projection.m23;
+    root->sun_shafts_texture_id = sun_shafts.gpuResourceID._impl;
+    root->sun_shafts_density = fog->density;
+    root->sun_shafts_sky_share = 1.0f - vkr_exp_f32(-fog->density * path);
+    root->sun_shafts_tint =
+        vec4_new(lighting->directional_color.x * fog->color.x * light,
+                 lighting->directional_color.y * fog->color.y * light,
+                 lighting->directional_color.z * fog->color.z * light, path);
+  }
   prepared->tiled_atmosphere.viewport =
       (MTLViewport){0.0, 0.0, width, height, 0.0, 1.0};
   prepared->tiled_atmosphere.sun = sun_correction ? 1u : 0u;
+  prepared->tiled_atmosphere.shafts = shafts ? 1u : 0u;
   prepared->active = true_v;
   return true_v;
 }
@@ -3457,6 +3577,9 @@ vkr_internal bool8_t vkr_metal_packet_prepare_pass(
                                                     prepared, upload);
   case VKR_RG_EXECUTOR_TILED_SUN_SHADOW:
     return vkr_metal_packet_prepare_tiled_sun_shadow(renderer, pass, packet,
+                                                     prepared, upload);
+  case VKR_RG_EXECUTOR_TILED_SUN_SHAFTS:
+    return vkr_metal_packet_prepare_tiled_sun_shafts(renderer, pass, packet,
                                                      prepared, upload);
   case VKR_RG_EXECUTOR_BLOOM_PREFILTER:
   case VKR_RG_EXECUTOR_BLOOM_DOWNSAMPLE:

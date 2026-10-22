@@ -174,6 +174,11 @@ vkr_global const VkrPassOutputSource s_pass_output_sources[] = {
      {"motion_blur_neighbor_max", NULL},
      0u,
      VKR_PASS_OUTPUT_KIND_VECTOR},
+    {"sun-shafts",
+     "Sun shafts",
+     {NULL, "tiled_sun_shafts"},
+     0u,
+     VKR_PASS_OUTPUT_KIND_SCALAR},
 };
 
 uint32_t vkr_pass_output_source_count(void) {
@@ -1339,6 +1344,67 @@ vkr_internal void vkr_renderer_prepare_tiled_sun(VkrRenderer *rf,
 #endif
 }
 
+/* The sun's elevation sine above which its shafts take their full strength;
+   they fade to nothing at the horizon (ADR-132). */
+#define VKR_SUN_SHAFTS_HORIZON_FADE 0.05f
+/* How far past the view's edge, in normalized device units, the sun's screen
+   position takes its shafts' strength to zero. */
+#define VKR_SUN_SHAFTS_EDGE_FADE 0.5f
+
+/* Sets whether a tiled frame draws screen-space sun shafts (ADR-132), the
+   tiled class's realization of the scene's volumetric fog: a perspective
+   frame in the default render mode whose fog is on and whose sun shines
+   above the horizon, in front of the camera and in or near the view. Their
+   strength falls to zero at the horizon and as the sun's screen position
+   leaves the view, so a sun far off the screen adds nothing, and the frame
+   then has no shafts pass. */
+vkr_internal void
+vkr_renderer_prepare_tiled_sun_shafts(const VkrFrameInput *packet,
+                                      VkrPreparedFrame *frame,
+                                      bool8_t orthographic) {
+  frame->tiled_sun_shafts = false_v;
+  frame->tiled_sun_shafts_fade = 0.0f;
+  const VkrFroxelFogSettings *fog = &packet->globals.froxel_fog;
+  const VkrFrameLighting *lighting = packet->lighting;
+  if (!frame->tiled_pipeline || orthographic || !frame->scene_rendering ||
+      packet->globals.render_mode != VKR_RENDER_MODE_DEFAULT || !fog->enabled ||
+      fog->density <= 0.0f || !lighting || !lighting->directional_enabled ||
+      lighting->directional_intensity <= 0.0f) {
+    return;
+  }
+
+  /* The light travels along its direction, so the sun lies against it. */
+  const float32_t length = vec3_length(lighting->directional_direction);
+  if (!(length > 0.0f)) {
+    return;
+  }
+  const Vec3 to_sun =
+      vec3_scale(lighting->directional_direction, -1.0f / length);
+  const float32_t horizon =
+      Clamp(to_sun.y / VKR_SUN_SHAFTS_HORIZON_FADE, 0.0f, 1.0f);
+
+  /* The sun is a direction: its clip position has no translation. */
+  const Mat4 view_projection =
+      mat4_mul(packet->globals.projection, packet->globals.view);
+  const Vec4 clip = mat4_mul_vec4(view_projection,
+                                  vec4_new(to_sun.x, to_sun.y, to_sun.z, 0.0f));
+  if (!(clip.w > 0.0f)) {
+    return;
+  }
+  const float32_t edge =
+      Max(vkr_abs_f32(clip.x / clip.w), vkr_abs_f32(clip.y / clip.w));
+  const float32_t view =
+      Clamp((1.0f + VKR_SUN_SHAFTS_EDGE_FADE - edge) / VKR_SUN_SHAFTS_EDGE_FADE,
+            0.0f, 1.0f);
+
+  const float32_t fade = horizon * view;
+  if (!(fade > 0.0f)) {
+    return;
+  }
+  frame->tiled_sun_shafts = true_v;
+  frame->tiled_sun_shafts_fade = fade;
+}
+
 /* The editor's Scene image for a prepared frame: the image rectangle while
    the Scene renders, else the retained image fitted inside it. */
 vkr_internal void vkr_renderer_prepare_editor_image(VkrRenderer *rf,
@@ -1477,6 +1543,7 @@ vkr_renderer_prepare_frame_data(VkrRenderer *rf, const VkrFrameInput *packet,
       rf->tiled_temporal_enabled && tiled && !orthographic && default_output &&
       vkr_renderer_metal_tiled_temporal(rf);
   vkr_renderer_prepare_tiled_sun(rf, packet, &prepared->frame, orthographic);
+  vkr_renderer_prepare_tiled_sun_shafts(packet, &prepared->frame, orthographic);
   const bool8_t temporal_frame =
       prepared->frame.tiled_temporal_enabled ||
       (rf->temporal_enabled && !tiled && !orthographic &&

@@ -59,7 +59,8 @@ bool8_t vkr_vk_validate_graph(const VkrVulkanRenderer *renderer) {
         kind == VKR_RG_EXECUTOR_TILED_ATMOSPHERE ||
         kind == VKR_RG_EXECUTOR_TILED_PICKING ||
         kind == VKR_RG_EXECUTOR_TILED_BLEND ||
-        kind == VKR_RG_EXECUTOR_TILED_SUN_SHADOW) {
+        kind == VKR_RG_EXECUTOR_TILED_SUN_SHADOW ||
+        kind == VKR_RG_EXECUTOR_TILED_SUN_SHAFTS) {
       log_error("Vulkan graph pass '%.*s' requires the tiled pipeline, which "
                 "Vulkan does not implement",
                 (int)pass->desc.name.length, pass->desc.name.str);

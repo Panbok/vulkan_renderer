@@ -353,6 +353,7 @@ vkr_metal_packet_executor_supported(VkrRgExecutorKind kind) {
   case VKR_RG_EXECUTOR_TILED_TEMPORAL_STAGE:
   case VKR_RG_EXECUTOR_TILED_STABILIZE:
   case VKR_RG_EXECUTOR_TILED_SUN_SHADOW:
+  case VKR_RG_EXECUTOR_TILED_SUN_SHAFTS:
     return true_v;
   default:
     return false_v;

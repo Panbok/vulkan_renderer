@@ -742,6 +742,10 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t tiled_sun_light;
   /** `Tiled.SunShadow` traces SDF sun shadows into `tiled_sun_shadow`. */
   bool8_t tiled_sun_sdf;
+  /** `Tiled.SunShafts` blurs the sky toward the sun into `tiled_sun_shafts`,
+      which the atmosphere draw adds as in-scattered sun light
+      (VkrPreparedFrame). */
+  bool8_t tiled_sun_shafts;
   VkrTextureFormat target_color_format; /**< Present-target color format */
   VkrTextureFormat target_depth_format; /**< Present-target depth format */
   /** Access/layout each imported target attachment arrives in. */

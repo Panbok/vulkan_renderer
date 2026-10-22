@@ -19,6 +19,14 @@
 // entries specializes it.
 constant bool vkr_tiled_sun_output [[function_constant(1)]];
 
+// Sun shaft frames (VkrPreparedFrame.tiled_sun_shafts, ADR-132) take the
+// atmosphere variant with this constant set, which adds the shafts; other
+// pipelines leave it undefined or false, so their registers carry none of it.
+constant bool vkr_tiled_sun_shafts_constant [[function_constant(4)]];
+constant bool vkr_tiled_sun_shafts =
+    is_function_constant_defined(vkr_tiled_sun_shafts_constant) &&
+    vkr_tiled_sun_shafts_constant;
+
 // The Standard draw kinds' pipelines (ADR-129) set these: their draws
 // cannot be lightmapped, so they compile out the lightmap path, and a kind
 // without terrain materials also the terrain layers. The general pipelines'
@@ -123,8 +131,9 @@ vkr_metal_tiled_vertex(uint vertex_id [[vertex_id]],
 
 // The sky draws: the frame and the sky inputs of
 // vkr_metal_packet_sky_background. The atmosphere draw also reads the
-// resolved depth, and in sun contact frames the opaque pass's sun light and
-// the contact march's noise index. Mirrors VkrMetalTiledSkyRoot.
+// resolved depth, in sun contact frames the opaque pass's sun light and
+// the contact march's noise index, and in sun shaft frames the shafts and
+// the volumetric fog that scatters them. Mirrors VkrMetalTiledSkyRoot.
 struct VkrMetalTiledSkyRoot {
   constant VkrMetalPacketFrameRoot *frame;
   texture2d<float, access::sample> sky_view;
@@ -153,11 +162,23 @@ struct VkrMetalTiledSkyRoot {
   texture2d<float, access::sample> sun_shadow;
   float sun_shadow_start;
   float sun_shadow_band;
+  // The sun shafts at half resolution (world/sun_shafts.metal), the
+  // volumetric fog's density per metre, the share of their light that the
+  // fog in front of the sky scatters, and the sun's light times the fog's
+  // colour and the shafts' fade, with in w the longest stretch of a view
+  // ray whose fog scatters it.
+  texture2d<float, access::sample> sun_shafts;
+  float sun_shafts_density;
+  float sun_shafts_sky_share;
+  float4 sun_shafts_tint;
 };
 
 #define VKR_METAL_TILED_SUN_CONTACT 1u
 #define VKR_METAL_TILED_SUN_SDF 2u
 #define VKR_METAL_TILED_SUN_SDF_REPLACE 4u
+
+static_assert(sizeof(VkrMetalTiledSkyRoot) == 256,
+              "Metal tiled sky root ABI drift");
 
 struct VkrMetalTiledSkyOutput {
   float4 position [[position]];
@@ -345,6 +366,27 @@ static float vkr_metal_tiled_sun_contact(constant VkrMetalTiledSkyRoot &root,
          strength * (1.0f - vkr_local_shadow_contact_visibility(first_hit));
 }
 
+// The sun shafts' light at `pixel` before the fog's share (ADR-132):
+// Tiled.SunShafts already applied the phase and the cloud shadow, so it is
+// their bilinear sample times the sun's light. A part of the pixel whose
+// view ray crosses `path` metres of fog takes the share
+// vkr_metal_tiled_sun_shafts_share of it.
+static float3 vkr_metal_tiled_sun_shafts_light(
+    constant VkrMetalTiledSkyRoot &root, uint2 pixel) {
+  constexpr sampler shafts_sampler(coord::normalized, address::clamp_to_edge,
+                                   filter::linear);
+  const float2 uv = (float2(pixel) + 0.5f) / float2(root.extent);
+  return root.sun_shafts_tint.rgb *
+         root.sun_shafts.sample(shafts_sampler, uv).r;
+}
+
+// The share of the sun shafts' light that `path` metres of fog scatter.
+static float vkr_metal_tiled_sun_shafts_share(
+    constant VkrMetalTiledSkyRoot &root, float path) {
+  return 1.0f -
+         exp(-root.sun_shafts_density * min(path, root.sun_shafts_tint.w));
+}
+
 fragment float4 vkr_metal_tiled_atmosphere_fragment(
     VkrMetalTiledSkyOutput input [[stage_in]],
     constant VkrMetalTiledSkyRoot &root [[buffer(1)]],
@@ -358,9 +400,20 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   const float depth = root.depth.read(pixel);
   // Reversed depth 0 is the far plane: only sky reached the pixel.
   const float surface = depth <= 0.0f ? 0.0f : saturate(destination.a);
+  // The sun shafts add their light over every other medium; the sky's part
+  // of a pixel takes the longest stretch of fog.
+  const bool sun_shafts = vkr_tiled_sun_shafts;
+  float3 shafts = float3(0.0f);
+  if (sun_shafts) {
+    shafts = vkr_metal_tiled_sun_shafts_light(root, pixel);
+  }
   if (surface <= 0.0f) {
     const VkrMetalTiledMedia sky = vkr_metal_tiled_sky_media(root, pixel);
-    return float4(destination.rgb * sky.kept + sky.added, 1.0f);
+    float4 result = float4(destination.rgb * sky.kept + sky.added, 1.0f);
+    if (sun_shafts) {
+      result.rgb += shafts * root.sun_shafts_sky_share;
+    }
+    return result;
   }
   // Frames that correct the sun's light replace its cascades' visibility
   // before the media scale it: the opaque pass kept the sun's light without
@@ -412,16 +465,35 @@ fragment float4 vkr_metal_tiled_atmosphere_fragment(
   }
   const VkrMetalTiledMedia near =
       vkr_metal_tiled_surface_media(root, pixel, depth);
-  if (surface >= 1.0f)
-    return float4(lit * near.kept + near.added, 1.0f);
+  // The surfaces' part of a sun shaft pixel takes the fog in front of the
+  // nearest surface, over its distance along the camera axis.
+  float shafts_share = 0.0f;
+  if (sun_shafts) {
+    const float axis_distance = root.depth_scale / (depth + root.depth_offset);
+    shafts_share =
+        surface * vkr_metal_tiled_sun_shafts_share(root, axis_distance);
+  }
+  if (surface >= 1.0f) {
+    float4 result = float4(lit * near.kept + near.added, 1.0f);
+    if (sun_shafts) {
+      result.rgb += shafts * shafts_share;
+    }
+    return result;
+  }
   // The resolve averaged the sky's samples, all one clear-sky colour, with
   // the surfaces' by weight, so the surfaces' part is what remains.
   const VkrMetalTiledMedia sky = vkr_metal_tiled_sky_media(root, pixel);
   const float3 clear_sky = vkr_metal_tiled_sky_background(root, pixel);
   const float3 surfaces = max(lit - (1.0f - surface) * clear_sky, 0.0f);
-  return float4(surfaces * near.kept + surface * near.added +
-                    (1.0f - surface) * (clear_sky * sky.kept + sky.added),
-                1.0f);
+  float4 result =
+      float4(surfaces * near.kept + surface * near.added +
+                 (1.0f - surface) * (clear_sky * sky.kept + sky.added),
+             1.0f);
+  if (sun_shafts) {
+    shafts_share += (1.0f - surface) * root.sun_shafts_sky_share;
+    result.rgb += shafts * shafts_share;
+  }
+  return result;
 }
 
 // A lamp-direct page's light at `uv` (ADR-108): the cubic B-spline over the

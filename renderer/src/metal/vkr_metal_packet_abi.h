@@ -153,7 +153,16 @@ _Static_assert(sizeof(VkrMetalPacketDecals) == 48u,
     (VKR_METAL_TILED_SUN_*): the contact march, stepped by
     `contact_noise_index`, and the SDF trace `sun_shadow_texture_id`, which
     takes over from the cascades over the `sun_shadow_band` metres before
-    `sun_shadow_start`. All are zero otherwise. */
+    `sun_shadow_start`. All are zero otherwise. In frames with sun shafts
+    (the atmosphere variant with function constant 4, ADR-132) the draw adds
+    the sun's light that the scene's volumetric fog scatters toward the
+    camera: the shafts `sun_shafts_texture_id` (their lit share times the
+    phase and the cloud shadow) times `sun_shafts_tint.rgb`, the sun's
+    pre-exposed light times the fog's colour and the shafts' fade, times the
+    share 1 - exp(-`sun_shafts_density` * metres) of the view ray in front of
+    the surface, along the camera axis and at most `sun_shafts_tint.w`
+    metres, whose value for sky is `sun_shafts_sky_share`. Those frames also
+    set `depth_offset` and `depth_scale`. The sky draw leaves them zero. */
 typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint64_t frame;
   uint64_t sky_view_texture_id;
@@ -172,12 +181,49 @@ typedef struct VKR_SIMD_ALIGN VkrMetalTiledSkyRoot {
   uint64_t sun_shadow_texture_id;
   float32_t sun_shadow_start;
   float32_t sun_shadow_band;
+  uint64_t sun_shafts_texture_id;
+  float32_t sun_shafts_density;
+  float32_t sun_shafts_sky_share;
+  Vec4 sun_shafts_tint;
 } VkrMetalTiledSkyRoot;
 #define VKR_METAL_TILED_SUN_CONTACT 1u
 #define VKR_METAL_TILED_SUN_SDF 2u
 #define VKR_METAL_TILED_SUN_SDF_REPLACE 4u
-_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 224u,
+_Static_assert(sizeof(VkrMetalTiledSkyRoot) == 256u,
                "Metal tiled sky root ABI drift");
+
+/** The tiled pipeline's sun shafts (ADR-132); mirrors
+    VkrMetalTiledSunShaftsRoot in world/sun_shafts.metal. Both dispatches
+    cover `extent` half-resolution texels. The first writes each texel's
+    sky share over its 2x2 block of the resolved depth `depth_texture_id`,
+    whose texel size is `depth_texel`, scaled by its nearness to the sun at
+    `sun_uv` (texture coordinates, y down), to the source texture through
+    `source_output_texture_id`. The second samples it through
+    `source_texture_id` on the way toward the sun, starting at an offset
+    `noise_index` steps, and writes to `output_texture_id` the weighted
+    mean times the Henyey-Greenstein phase of `sun_direction_anisotropy.w`
+    between the texel's view ray (`view_rays`, vkr_atmosphere_view_rays) and
+    the direction to the sun in its xyz, times the cloud shadow of `sky`, null
+    without one, at `camera_position`. `aspect` is the depth's width over its
+    height. */
+typedef struct VKR_SIMD_ALIGN VkrMetalTiledSunShaftsRoot {
+  uint64_t depth_texture_id;
+  uint64_t output_texture_id;
+  uint64_t source_output_texture_id;
+  uint64_t source_texture_id;
+  uint64_t sky;
+  uint32_t noise_index;
+  float32_t aspect;
+  Mat4 view_rays;
+  Vec4 sun_direction_anisotropy;
+  Vec4 camera_position;
+  float32_t sun_uv[2];
+  float32_t depth_texel[2];
+  uint32_t extent[2];
+  uint32_t reserved[2];
+} VkrMetalTiledSunShaftsRoot;
+_Static_assert(sizeof(VkrMetalTiledSunShaftsRoot) == 176u,
+               "Metal tiled sun shafts root ABI drift");
 
 /** One distance volume's generation (vkr_metal_packet_sdf.inc); mirrors
     VkrMetalSdfGenerateRoot in world/sun_shadow.metal. The volume spans
@@ -1222,6 +1268,7 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_TILED_STABILIZE_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GENERATE_ROOT,
   VKR_METAL_PACKET_ABI_SUN_SHADOW_ROOT,
+  VKR_METAL_PACKET_ABI_TILED_SUN_SHAFTS_ROOT,
   VKR_METAL_PACKET_ABI_SDF_GRID_ROOT,
   VKR_METAL_PACKET_ABI_GPU_SPIKE_ROOT,
   VKR_METAL_PACKET_ABI_PASS_OUTPUT_ROOT,

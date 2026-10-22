@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-20
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -168,6 +168,12 @@ pipeline rather than a backend mechanism.
    (Bistro street and plaza). The variants are created in the background the
    first time a frame asks for them; frames go without the correction until
    then. See [Sun contact shadow measurement](#sun-contact-shadow-measurement).
+   The same draw adds the class's sun shafts, its realization of the
+   scene's volumetric fog component: `Tiled.SunShafts` blurs the resolved
+   depth's sky toward the sun at half resolution, and the draw scatters the
+   sun's light by the component's density, colour and anisotropy over every
+   pixel while the sun is in or near the view
+   ([ADR-132](132-tiled-sun-shafts.md)).
    The SDF trace replaces the far level for the casters it covers (owner
    decisions 2026-10-16 and 2026-10-17, `vkr_metal_packet_sdf.inc`): every
    opaque rigid sun caster from 0.25 to 120 m whose submesh's distance volume
@@ -219,7 +225,9 @@ pipeline rather than a backend mechanism.
    replay channel the tiled class does not draw fails on Metal
    (`vkr_graphics_pipeline_draws_render_mode`). The tiled class turns
    off the desktop temporal reconstruction (SMAA T2x, FSR 3.1), GTAO,
-   surface diffusion, depth of field, motion blur, froxel fog, the local
+   surface diffusion, depth of field, motion blur, froxel fog (its
+   volumetric fog component draws screen-space sun shafts instead,
+   [ADR-132](132-tiled-sun-shafts.md)), the local
    shadow mask, SDSM, the transmission passes, planar reflections and the
    diffuse volume's dynamic layer
    ([`vkr_renderer.c`](../../renderer/src/vkr_renderer.c),

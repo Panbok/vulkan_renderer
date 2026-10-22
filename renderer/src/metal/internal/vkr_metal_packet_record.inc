@@ -114,6 +114,19 @@ vkr_metal_packet_record_ibl_bakes(VkrMetalPacketRenderer *renderer,
               visibilityOptions:MTL4VisibilityOptionDevice];
 }
 
+/* Records Tiled.SunShafts (ADR-132): the march samples the source the first
+   dispatch writes. */
+vkr_internal void vkr_metal_packet_record_tiled_sun_shafts(
+    VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
+    const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
+  vkr_metal_packet_record_dispatch(renderer, encoder, &pass->sun_shafts.source);
+  vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_BARRIERS);
+  [encoder barrierAfterEncoderStages:MTLStageDispatch
+                 beforeEncoderStages:MTLStageDispatch
+                   visibilityOptions:MTL4VisibilityOptionDevice];
+  vkr_metal_packet_record_dispatch(renderer, encoder, &pass->sun_shafts.march);
+}
+
 vkr_internal void vkr_metal_packet_record_compute_pass(
     VkrMetalPacketRenderer *renderer, id<MTL4ComputeCommandEncoder> encoder,
     const VkrMetalPacketPreparedPass *pass) API_AVAILABLE(macos(26.0)) {
@@ -166,6 +179,9 @@ vkr_internal void vkr_metal_packet_record_compute_pass(
                                      &pass->sun_shadow.trace);
     break;
   }
+  case VKR_RG_EXECUTOR_TILED_SUN_SHAFTS:
+    vkr_metal_packet_record_tiled_sun_shafts(renderer, encoder, pass);
+    break;
   case VKR_RG_EXECUTOR_TILED_STABILIZE:
     /* The previous mean comes from an earlier command buffer, which Metal 4
        does not order. */
@@ -663,7 +679,8 @@ vkr_internal void vkr_metal_packet_record_tiled_atmosphere(
                    atStages:MTLRenderStageVertex | MTLRenderStageFragment];
   vkr_metal_packet_set_render_pipeline(
       renderer, encoder,
-      renderer->tiled_atmosphere_pipelines[pass->tiled_atmosphere.sun]);
+      renderer->tiled_atmosphere_pipelines[pass->tiled_atmosphere.sun]
+                                          [pass->tiled_atmosphere.shafts]);
   [encoder setCullMode:MTLCullModeNone];
   vkr_metal_packet_count(renderer, VKR_BACKEND_COUNTER_DRAWS_DIRECT);
   [encoder drawPrimitives:MTLPrimitiveTypeTriangle

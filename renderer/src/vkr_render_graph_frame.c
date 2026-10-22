@@ -181,6 +181,27 @@ vkr_render_graph_prepare_gpu_measurement(const VkrGpuDebugPayload *debug,
       debug && debug->capture_pass_pipeline_statistics;
 }
 
+/* The tiled pipeline's optional passes (ADR-087): MetalFX and its inputs,
+   the sun's light correction and the sun shafts. Reads the frame's viewport
+   and capacity extents. */
+vkr_internal void
+vkr_render_graph_prepare_tiled_passes(const VkrPreparedFrame *packet,
+                                      VkrRenderGraphFrameInfo *frame) {
+  frame->tiled_temporal_enabled = packet->tiled_temporal_enabled;
+  frame->tiled_temporal_still = packet->tiled_temporal_still;
+  frame->tiled_sun_light = packet->tiled_sun_contact || packet->tiled_sun_sdf;
+  frame->tiled_sun_sdf = packet->tiled_sun_sdf;
+  frame->tiled_sun_shafts = packet->tiled_sun_shafts;
+  frame->tiled_object_motion_pending =
+      frame->tiled_temporal_enabled && packet->input.world &&
+      packet->input.world->gpu_candidate_count >
+          packet->input.world->static_candidate_count;
+  frame->tiled_temporal_staged =
+      frame->tiled_temporal_enabled &&
+      (frame->viewport_capacity_width != frame->viewport_width ||
+       frame->viewport_capacity_height != frame->viewport_height);
+}
+
 void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                     const VkrBloomConfig *bloom_config,
                                     const VkrGtaoConfig *gtao_config,
@@ -307,18 +328,7 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->tiled_refraction_pending =
       packet->tiled_pipeline && frame->blend_pending &&
       packet->input.world->refractive_draw_count > 0u;
-  frame->tiled_temporal_enabled = packet->tiled_temporal_enabled;
-  frame->tiled_temporal_still = packet->tiled_temporal_still;
-  frame->tiled_sun_light = packet->tiled_sun_contact || packet->tiled_sun_sdf;
-  frame->tiled_sun_sdf = packet->tiled_sun_sdf;
-  frame->tiled_object_motion_pending =
-      frame->tiled_temporal_enabled && packet->input.world &&
-      packet->input.world->gpu_candidate_count >
-          packet->input.world->static_candidate_count;
-  frame->tiled_temporal_staged =
-      frame->tiled_temporal_enabled &&
-      (frame->viewport_capacity_width != frame->viewport_width ||
-       frame->viewport_capacity_height != frame->viewport_height);
+  vkr_render_graph_prepare_tiled_passes(packet, frame);
   /* The tiled pipeline draws glass with the blended surfaces, so it takes
      no transmission candidates (ADR-087). */
   frame->transmission_pending =
@@ -720,6 +730,8 @@ vkr_global const VkrRgExecutorSpec s_rg_executors[VKR_RG_EXECUTOR_COUNT] = {
     [VKR_RG_EXECUTOR_TILED_STABILIZE] = {"pass.tiled.stabilize",
                                          VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_TILED_SUN_SHADOW] = {"pass.tiled.sun_shadow",
+                                          VKR_RG_PASS_TYPE_COMPUTE},
+    [VKR_RG_EXECUTOR_TILED_SUN_SHAFTS] = {"pass.tiled.sun_shafts",
                                           VKR_RG_PASS_TYPE_COMPUTE},
     [VKR_RG_EXECUTOR_DEBUG_GPU_SPIKE] = {"pass.debug.gpu_spike",
                                          VKR_RG_PASS_TYPE_COMPUTE},
