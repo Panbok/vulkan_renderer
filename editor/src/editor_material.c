@@ -52,6 +52,10 @@ typedef struct MaterialPanel {
   bool8_t lowered;
   VkrMaterialLowering lowering;
   char problem[VKR_MATERIAL_GRAPH_ERROR_CAPACITY];
+  /* The last change that did not save (a graph that does not validate, an
+     undo that did not write), shown over the status until the next change
+     saves or another document opens. The shown document stays editable. */
+  char notice[VKR_MATERIAL_GRAPH_ERROR_CAPACITY + 64];
   /* A journal step rewrote the shown file; reopen before the next build. */
   bool8_t reload;
   VkrEditorGraphView view;
@@ -511,6 +515,32 @@ static void material_steps_remove(VkrEditorMaterials *materials, uint32_t first,
   }
 }
 
+void vkr_editor_material_reset(VkrEditorMaterials *materials) {
+  if (!materials) {
+    return;
+  }
+  /* The journal's paths name the old workspace's files: undoing one after
+     the switch would write its text into the new workspace's file. */
+  material_steps_remove(materials, 0u, materials->count);
+  vkr_editor_material_index_reset(materials);
+  MaterialPanel *panel = &materials->panel;
+  panel->path[0] = '\0';
+  panel->graph_path[0] = '\0';
+  panel->kind = VKR_EDITOR_MATERIAL_NONE;
+  panel->read_only = false_v;
+  panel->lowered = false_v;
+  panel->problem[0] = '\0';
+  panel->notice[0] = '\0';
+  panel->reload = false_v;
+  panel->framed = false_v;
+  panel->canvas_ready = false_v;
+  panel->drop[0] = '\0';
+  vkr_material_graph_init(panel->graph);
+  MemZero(panel->instance, sizeof(*panel->instance));
+  MemZero(panel->theme, sizeof(*panel->theme));
+  vkr_editor_graph_view_init(&panel->view);
+}
+
 static char *material_copy(VkrEditorMaterials *materials, String8 text) {
   char *copy =
       vkr_allocator_alloc(materials->allocator, text.length + 1u, MATERIAL_TAG);
@@ -632,6 +662,8 @@ static bool8_t material_step_apply(VkrEditorMaterials *materials,
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
   if (!ok) {
     log_warn("Materials: %s", error);
+    string_format(materials->panel.notice, sizeof(materials->panel.notice),
+                  "%s did not apply: %s", after ? "Redo" : "Undo", error);
     return false_v;
   }
   material_panel_touched(materials, step->path);
@@ -648,11 +680,15 @@ bool8_t vkr_editor_material_undo(VkrEditorMaterials *materials,
     if (materials->cursor == materials->count) {
       return false_v;
     }
+    /* A step that does not write keeps the cursor before it, so the
+       journal still matches the files; the panel shows why. */
     const uint64_t group = materials->steps[materials->cursor].group;
     while (materials->cursor < materials->count &&
            materials->steps[materials->cursor].group == group) {
-      (void)material_step_apply(materials, frame,
-                                &materials->steps[materials->cursor], true_v);
+      if (!material_step_apply(materials, frame,
+                               &materials->steps[materials->cursor], true_v)) {
+        return false_v;
+      }
       materials->cursor++;
     }
     return true_v;
@@ -663,9 +699,12 @@ bool8_t vkr_editor_material_undo(VkrEditorMaterials *materials,
   const uint64_t group = materials->steps[materials->cursor - 1u].group;
   while (materials->cursor > 0u &&
          materials->steps[materials->cursor - 1u].group == group) {
+    if (!material_step_apply(materials, frame,
+                             &materials->steps[materials->cursor - 1u],
+                             false_v)) {
+      return false_v;
+    }
     materials->cursor--;
-    (void)material_step_apply(materials, frame,
-                              &materials->steps[materials->cursor], false_v);
   }
   return true_v;
 }
@@ -719,8 +758,13 @@ bool8_t vkr_editor_material_group_revert(VkrEditorMaterials *materials,
                         materials->count - materials->cursor);
   for (uint32_t i = materials->cursor; i-- > first;) {
     if (materials->steps[i].group == group) {
-      (void)material_step_apply(materials, frame, &materials->steps[i],
-                                false_v);
+      /* A step whose file did not write stays journaled. */
+      if (!material_step_apply(materials, frame, &materials->steps[i],
+                               false_v)) {
+        string_format(problem, capacity, "'%s' could not be restored",
+                      materials->steps[i].path);
+        return false_v;
+      }
       material_steps_remove(materials, i, 1u);
     }
   }
@@ -765,7 +809,10 @@ bool8_t vkr_editor_material_open(VkrEditorMaterials *materials,
   VkrAllocator *scratch = frame->ui->frame_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   const bool8_t same = string_equals(panel->path, path);
-  string_format(panel->path, sizeof(panel->path), "%s", path);
+  if (!same) {
+    string_format(panel->path, sizeof(panel->path), "%s", path);
+    panel->notice[0] = '\0';
+  }
   panel->kind = vkr_editor_material_kind(scratch, path);
   panel->problem[0] = '\0';
   panel->reload = false_v;
@@ -823,6 +870,20 @@ const char *vkr_editor_material_open_path(const VkrEditorMaterials *materials) {
   return materials ? materials->panel.path : "";
 }
 
+/* Shows a save that failed as a toast and the panel's notice; a save that
+   wrote clears the notice. */
+static void panel_saved(VkrEditorUi *editor, bool8_t saved, const char *error) {
+  MaterialPanel *panel = &editor->materials->panel;
+  if (saved) {
+    panel->notice[0] = '\0';
+    return;
+  }
+  const char *reason = error[0] ? error : "The document could not be written";
+  string_format(panel->notice, sizeof(panel->notice), "Not saved: %s", reason);
+  vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
+                   reason);
+}
+
 /* Writes the shown graph as one journal step by the designer. */
 static void panel_save_graph(VkrEditorUi *editor,
                              const VkrSampleUiFrame *frame) {
@@ -830,21 +891,20 @@ static void panel_save_graph(VkrEditorUi *editor,
   MaterialPanel *panel = &materials->panel;
   char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
   if (!vkr_material_graph_validate(panel->graph, error, sizeof(error))) {
-    string_format(panel->problem, sizeof(panel->problem), "%s", error);
+    /* Reopening the file drops the edit; the notice, set after the reopen,
+       says why. */
     (void)vkr_editor_material_open(materials, frame, panel->path);
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
-                     error);
+    panel_saved(editor, false_v, error);
     return;
   }
   VkrAllocator *scratch = frame->ui->frame_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   String8 text = {0};
-  if (vkr_material_graph_write(panel->graph, scratch, &text) &&
-      !vkr_editor_material_write(materials, frame, panel->graph_path, text,
-                                 false_v, 0u, NULL, error, sizeof(error))) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
-                     error);
-  }
+  const bool8_t saved =
+      vkr_material_graph_write(panel->graph, scratch, &text) &&
+      vkr_editor_material_write(materials, frame, panel->graph_path, text,
+                                false_v, 0u, NULL, error, sizeof(error));
+  panel_saved(editor, saved, error);
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
 }
 
@@ -857,12 +917,11 @@ static void panel_save_instance(VkrEditorUi *editor,
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   String8 text = {0};
   char error[160] = {0};
-  if (vkr_material_instance_write(panel->instance, scratch, &text) &&
-      !vkr_editor_material_write(materials, frame, panel->path, text, false_v,
-                                 0u, NULL, error, sizeof(error))) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
-                     error);
-  }
+  const bool8_t saved =
+      vkr_material_instance_write(panel->instance, scratch, &text) &&
+      vkr_editor_material_write(materials, frame, panel->path, text, false_v,
+                                0u, NULL, error, sizeof(error));
+  panel_saved(editor, saved, error);
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
 }
 
@@ -924,26 +983,40 @@ static void panel_save_theme(VkrEditorUi *editor,
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
   String8 text = {0};
   char error[160] = {0};
-  if (vkr_surface_theme_write(panel->theme, scratch, &text) &&
-      !vkr_editor_material_write(materials, frame, panel->path, text, false_v,
-                                 0u, NULL, error, sizeof(error))) {
-    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
-                     error);
-  }
+  const bool8_t saved =
+      vkr_surface_theme_write(panel->theme, scratch, &text) &&
+      vkr_editor_material_write(materials, frame, panel->path, text, false_v,
+                                0u, NULL, error, sizeof(error));
+  panel_saved(editor, saved, error);
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
 }
 
-/* Turns the shown plain definition into a graph beside it, `<stem>.mtg`,
-   and the definition into an instance of it with the same name: one undo
-   step. */
+/* Turns the shown plain definition into a graph beside it, `<stem>.mtg` or
+   the first free `<stem>_<n>.mtg`, and the definition into an instance of it
+   with the same name: one undo step. An existing graph is never
+   overwritten, and a failed instance write removes the new graph again. */
 static void panel_convert(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   VkrEditorMaterials *materials = editor->materials;
   MaterialPanel *panel = &materials->panel;
-  char graph_path[VKR_EDITOR_MATERIAL_PATH];
-  string_format(graph_path, sizeof(graph_path), "%.*sg",
-                (int)string_length(panel->path), panel->path);
+  char path[VKR_EDITOR_MATERIAL_PATH];
+  string_format(path, sizeof(path), "%s", panel->path);
+  const int stem = (int)string_length(path) - (int)string_length(".mt");
   VkrAllocator *scratch = frame->ui->frame_allocator;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch);
+  char graph_path[VKR_EDITOR_MATERIAL_PATH];
+  String8 existing = {0};
+  string_format(graph_path, sizeof(graph_path), "%.*s.mtg", stem, path);
+  for (uint32_t n = 1u;
+       vkr_editor_material_read(scratch, graph_path, &existing) && n < 1000u;
+       ++n) {
+    string_format(graph_path, sizeof(graph_path), "%.*s_%u.mtg", stem, path, n);
+  }
+  if (vkr_editor_material_read(scratch, graph_path, &existing)) {
+    vkr_allocator_end_scope(&scope, MATERIAL_TAG);
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
+                     "No free graph name beside the material");
+    return;
+  }
   /* Texture paths were relative to the definition; the graph sits in the
      same folder, so they stay valid made content-root relative. */
   for (uint32_t i = 0; i < panel->graph->node_count; ++i) {
@@ -951,8 +1024,8 @@ static void panel_convert(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
     if (node->kind != VKR_MATERIAL_NODE_TEXTURE) {
       continue;
     }
-    const String8 resolved = vkr_asset_path_resolve(
-        scratch, material_str(panel->path), material_str(node->path));
+    const String8 resolved = vkr_asset_path_resolve(scratch, material_str(path),
+                                                    material_str(node->path));
     if (resolved.str && resolved.length < sizeof(node->path)) {
       string_format(node->path, sizeof(node->path), "%s",
                     (const char *)resolved.str);
@@ -965,18 +1038,31 @@ static void panel_convert(VkrEditorUi *editor, const VkrSampleUiFrame *frame) {
   const uint64_t group = vkr_editor_material_group();
   const int length = string_format(text, sizeof(text), "graph=./%s\n",
                                    slash ? slash + 1 : graph_path);
+  bool8_t converted = false_v;
   if (!vkr_material_graph_write(panel->graph, scratch, &graph_text) ||
       !vkr_editor_material_write(materials, frame, graph_path, graph_text,
-                                 false_v, group, NULL, error, sizeof(error)) ||
-      !vkr_editor_material_write(
-          materials, frame, panel->path,
-          (String8){.str = (uint8_t *)text, .length = (uint64_t)length},
-          false_v, group, NULL, error, sizeof(error))) {
+                                 false_v, group, NULL, error, sizeof(error))) {
     vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
                      error[0] ? error : "The graph could not be written");
+  } else if (!vkr_editor_material_write(
+                 materials, frame, path,
+                 (String8){.str = (uint8_t *)text, .length = (uint64_t)length},
+                 false_v, group, NULL, error, sizeof(error))) {
+    /* The material stays a plain definition: the new graph goes again. */
+    char problem[160] = {0};
+    if (!vkr_editor_material_group_revert(materials, frame, group, problem,
+                                          sizeof(problem))) {
+      log_warn("Materials: '%s' stays after a failed conversion: %s",
+               graph_path, problem);
+    }
+    vkr_editor_toast(editor, VKR_UI_ICON_WARNING_FILL, vkr_ui_theme()->error,
+                     error);
+  } else {
+    converted = true_v;
   }
   vkr_allocator_end_scope(&scope, MATERIAL_TAG);
-  (void)vkr_editor_material_open(materials, frame, graph_path);
+  (void)vkr_editor_material_open(materials, frame,
+                                 converted ? graph_path : path);
 }
 
 /* A new graph from the starting template at the first free
@@ -1333,6 +1419,34 @@ static void panel_label(VkrUiSystem *ui, String8 id, float32_t x, float32_t y,
       &label);
 }
 
+/* An edited world size as the loader takes it: both sizes from 0.01 to
+   1000 m, or zero (unset) when either is not positive. */
+static Vec2 panel_world_size(Vec2 size) {
+  if (!(size.x > 0.0f && size.y > 0.0f)) {
+    return vec2_new(0.0f, 0.0f);
+  }
+  return vec2_new(vkr_clamp_f32(size.x, 0.01f, 1000.0f),
+                  vkr_clamp_f32(size.y, 0.01f, 1000.0f));
+}
+
+/* Width an instance's parameter row leaves for its reset action. */
+#define PANEL_RESET_PT (VKR_EDITOR_DETAILS_ACTION_PT + 4.0f)
+
+/* A small icon button at (`x`, `y`) points, as the Details section actions
+   are drawn. */
+static bool8_t panel_icon_action(VkrUiSystem *ui, String8 id, float32_t x,
+                                 float32_t y, VkrUiIcon icon, String8 tooltip) {
+  const float32_t size = VKR_EDITOR_DETAILS_ACTION_PT;
+  VkrUiWidgetConfig action = vkr_editor_details_widget(x, y, size, size);
+  vkr_editor_ghost_style(&action);
+  action.style.padding_pt = (VkrUiEdges){4.0f, 4.0f, 4.0f, 4.0f};
+  action.icon = icon;
+  action.icon_size_pt = 13.0f;
+  action.icon_color = vkr_ui_theme()->text_secondary;
+  action.tooltip = tooltip;
+  return vkr_ui_button(ui, id, (String8){0}, &action);
+}
+
 static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                             float32_t x, float32_t top, float32_t width) {
   VkrEditorMaterials *materials = editor->materials;
@@ -1439,10 +1553,33 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
                                 .property_count = 1u,
                                 .size = sizeof(MaterialParamEdit),
                                 .align = _Alignof(MaterialParamEdit)};
+      /* Every row leaves room at its end for the reset action an override
+         shows, so the rows' label columns align. */
+      const float32_t row_y = y;
       (void)vkr_ui_push_id_u64(ui, i);
       const VkrEditorDetailsResult result = vkr_editor_details_type(
-          details, ui, frame->input, width, &y, &type, &edit, NULL, false_v);
+          details, ui, frame->input, width - PANEL_RESET_PT, &y, &type, &edit,
+          NULL, false_v);
+      const bool8_t reset =
+          override &&
+          panel_icon_action(
+              ui, string8_lit("reset"),
+              width - VKR_EDITOR_DETAILS_PAD_PT - VKR_EDITOR_DETAILS_ACTION_PT,
+              row_y +
+                  (VKR_EDITOR_DETAILS_ROW_PT - VKR_EDITOR_DETAILS_ACTION_PT) *
+                      0.5f,
+              VKR_UI_ICON_RESET,
+              string8_lit("Reset to the graph's default: this instance "
+                          "stops overriding it"));
       (void)vkr_ui_pop_id(ui);
+      if (reset) {
+        MemCopy(&instance->params[at], &instance->params[at + 1u],
+                (instance->param_count - at - 1u) *
+                    sizeof(instance->params[0]));
+        instance->param_count--;
+        panel_save_instance(editor, frame);
+        continue;
+      }
       if (!result.changed || result.gesture) {
         continue;
       }
@@ -1487,7 +1624,8 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         vkr_editor_details_type(details, ui, frame->input, width, &y,
                                 &s_art_edit_type, &art, NULL, false_v);
     if (art_result.changed && !art_result.gesture) {
-      if (art.world_size.x > 0.0f && art.world_size.y > 0.0f) {
+      art.world_size = panel_world_size(art.world_size);
+      if (art.world_size.x > 0.0f) {
         string_format(instance->world_size, sizeof(instance->world_size),
                       "%g,%g", (double)art.world_size.x,
                       (double)art.world_size.y);
@@ -1568,9 +1706,7 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
         vkr_editor_details_type(details, ui, frame->input, width, &y,
                                 &s_art_edit_type, &art, NULL, panel->read_only);
     if (art_result.changed && !art_result.gesture && !panel->read_only) {
-      settings->world_size = art.world_size.x > 0.0f && art.world_size.y > 0.0f
-                                 ? art.world_size
-                                 : vec2_new(0.0f, 0.0f);
+      settings->world_size = panel_world_size(art.world_size);
       string_format(settings->surface, sizeof(settings->surface), "%s",
                     art.surface ? vkr_surface_names[art.surface] : "");
       panel_save_graph(editor, frame);
@@ -1586,17 +1722,109 @@ static void panel_inspector(VkrEditorUi *editor, const VkrSampleUiFrame *frame,
 // Panel and canvas
 // -----------------------------------------------------------------------------
 
-static void panel_button(VkrEditorUi *editor, VkrUiSystem *ui, String8 id,
-                         const char *text, VkrUiIcon icon, float32_t x,
-                         float32_t y, float32_t width, bool8_t *out) {
-  VkrUiWidgetConfig button = vkr_editor_details_widget(x, y, width, 24.0f);
-  vkr_editor_action_style(&button, editor->heading_font);
-  button.icon = icon;
-  button.icon_size_pt = 13.0f;
-  *out = vkr_ui_button(
-      ui, id,
-      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
-      &button);
+/* The header's actions; each document kind shows some of them. */
+typedef enum PanelAction {
+  PANEL_ACTION_NEW_GRAPH = 0,
+  PANEL_ACTION_NEW_INSTANCE,
+  PANEL_ACTION_OPEN_GRAPH,
+  PANEL_ACTION_CONVERT,
+  PANEL_ACTION_THEME_SCENE,
+  PANEL_ACTION_THEME_WORLD,
+  PANEL_ACTION_FRAME,
+  PANEL_ACTION_COUNT,
+} PanelAction;
+
+static const struct {
+  const char *id;
+  const char *label;
+  VkrUiIcon icon;
+} s_panel_actions[PANEL_ACTION_COUNT] = {
+    [PANEL_ACTION_NEW_GRAPH] = {"material.new_graph", "New graph",
+                                VKR_UI_ICON_ADD},
+    [PANEL_ACTION_NEW_INSTANCE] = {"material.new_instance", "New instance",
+                                   VKR_UI_ICON_DUPLICATE},
+    [PANEL_ACTION_OPEN_GRAPH] = {"material.open_graph", "Open graph",
+                                 VKR_UI_ICON_GRAPH},
+    [PANEL_ACTION_CONVERT] = {"material.convert", "Convert to graph",
+                              VKR_UI_ICON_GRAPH},
+    [PANEL_ACTION_THEME_SCENE] = {"material.theme_scene", "Use in scene",
+                                  VKR_UI_ICON_SCENE},
+    [PANEL_ACTION_THEME_WORLD] = {"material.theme_world", "Use for World",
+                                  VKR_UI_ICON_WORLD},
+    [PANEL_ACTION_FRAME] = {"material.frame", "Frame", VKR_UI_ICON_ZOOM_IN},
+};
+
+/* One header cell of the title row. */
+static VkrUiPlacement panel_header_cell(uint32_t column) {
+  return (VkrUiPlacement){.column = column,
+                          .row = 0u,
+                          .column_span = 1u,
+                          .row_span = 1u,
+                          .justify = VKR_UI_ALIGN_START,
+                          .align = VKR_UI_ALIGN_CENTER};
+}
+
+/* The header's title row: the document's title, then its action buttons
+   sized to their labels. Returns the clicked action, or PANEL_ACTION_COUNT
+   for none. */
+static PanelAction panel_header(VkrEditorUi *editor, VkrUiSystem *ui,
+                                float32_t width, const char *title,
+                                const PanelAction *actions,
+                                uint32_t action_count) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  const VkrUiTrack fill = {.value = 1.0f, .unit = VKR_UI_TRACK_FR};
+  const VkrUiTrack auto_track = {.unit = VKR_UI_TRACK_AUTO};
+  VkrUiTrack columns[1u + PANEL_ACTION_COUNT];
+  columns[0] = fill;
+  for (uint32_t i = 0; i < action_count; ++i) {
+    columns[1u + i] = auto_track;
+  }
+  const float32_t row_height = theme->control_height + 4.0f;
+  VkrUiPanelConfig header = vkr_ui_panel_config_default();
+  header.placement = panel_header_cell(0u);
+  header.placement.align = VKR_UI_ALIGN_START;
+  header.columns = columns;
+  header.column_count = 1u + action_count;
+  header.rows = &fill;
+  header.row_count = 1u;
+  header.style.padding_pt = (VkrUiEdges){0};
+  header.style.gap_pt = theme->space_sm;
+  header.style.margin_pt = (VkrUiEdges){4.0f, 0.0f, 0.0f, 10.0f};
+  header.style.min_size_pt = (Vec2){Max(40.0f, width - 20.0f), row_height};
+  header.style.max_size_pt = header.style.min_size_pt;
+  header.clip_children = true_v;
+  if (!vkr_ui_panel_begin(ui, string8_lit("material.header"), &header)) {
+    return PANEL_ACTION_COUNT;
+  }
+  VkrUiWidgetConfig label =
+      vkr_editor_text_config(theme->font_body, theme->text);
+  label.placement = panel_header_cell(0u);
+  label.text.font = editor->heading_font;
+  vkr_ui_label(
+      ui, string8_lit("material.title"),
+      string8_create_from_cstr((const uint8_t *)title, string_length(title)),
+      &label);
+  PanelAction clicked = PANEL_ACTION_COUNT;
+  for (uint32_t i = 0; i < action_count; ++i) {
+    const PanelAction action = actions[i];
+    VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+    button.placement = panel_header_cell(1u + i);
+    vkr_editor_action_style(&button, editor->heading_font);
+    button.icon = s_panel_actions[action].icon;
+    vkr_editor_button_size(&button);
+    const char *id = s_panel_actions[action].id;
+    const char *text = s_panel_actions[action].label;
+    if (vkr_ui_button(
+            ui,
+            string8_create_from_cstr((const uint8_t *)id, string_length(id)),
+            string8_create_from_cstr((const uint8_t *)text,
+                                     string_length(text)),
+            &button)) {
+      clicked = action;
+    }
+  }
+  (void)vkr_ui_panel_end(ui);
+  return clicked;
 }
 
 void vkr_editor_material_panel_build(VkrEditorUi *editor,
@@ -1619,72 +1847,68 @@ void vkr_editor_material_panel_build(VkrEditorUi *editor,
   }
   const VkrUiTheme *theme = vkr_ui_theme();
   /* Header: the document, its tier and cost, and the panel's actions. */
-  bool8_t clicked = false_v;
-  const float32_t actions = 3.0f * 112.0f + 8.0f;
   char title[VKR_EDITOR_MATERIAL_PATH + 32];
   static const char *const kinds[] = {"", "Graph", "Instance", "Material",
                                       "Theme"};
   string_format(title, sizeof(title), "%s%s%s",
                 panel->path[0] ? kinds[panel->kind] : "No material open",
                 panel->path[0] ? "  " : "", panel->path);
-  panel_label(ui, string8_lit("material.title"), 10.0f, 6.0f,
-              Max(40.0f, width - actions - 16.0f), title, theme->text,
-              editor->heading_font);
-  panel_button(editor, ui, string8_lit("material.new_graph"), "New graph",
-               VKR_UI_ICON_ADD, width - actions, 4.0f, 108.0f, &clicked);
-  if (clicked) {
-    panel_new_graph(editor, frame);
-  }
+  PanelAction actions[PANEL_ACTION_COUNT];
+  uint32_t action_count = 0u;
+  actions[action_count++] = PANEL_ACTION_NEW_GRAPH;
   if (panel->kind == VKR_EDITOR_MATERIAL_GRAPH && !panel->problem[0]) {
-    panel_button(editor, ui, string8_lit("material.new_instance"),
-                 "New instance", VKR_UI_ICON_DUPLICATE,
-                 width - actions + 112.0f, 4.0f, 108.0f, &clicked);
-    if (clicked) {
-      panel_new_instance(editor, frame);
-    }
+    actions[action_count++] = PANEL_ACTION_NEW_INSTANCE;
   } else if (panel->kind == VKR_EDITOR_MATERIAL_INSTANCE) {
-    panel_button(editor, ui, string8_lit("material.open_graph"), "Open graph",
-                 VKR_UI_ICON_GRAPH, width - actions + 112.0f, 4.0f, 108.0f,
-                 &clicked);
-    if (clicked) {
-      char graph[VKR_EDITOR_MATERIAL_PATH];
-      string_format(graph, sizeof(graph), "%s", panel->graph_path);
-      (void)vkr_editor_material_open(materials, frame, graph);
-    }
+    actions[action_count++] = PANEL_ACTION_OPEN_GRAPH;
   } else if (panel->kind == VKR_EDITOR_MATERIAL_DEFINITION &&
              !panel->problem[0]) {
-    panel_button(editor, ui, string8_lit("material.convert"),
-                 "Convert to graph", VKR_UI_ICON_GRAPH,
-                 width - actions + 112.0f, 4.0f, 108.0f, &clicked);
-    if (clicked) {
-      panel_convert(editor, frame);
-    }
+    actions[action_count++] = PANEL_ACTION_CONVERT;
   }
-  bool8_t frame_requested = false_v;
   if (panel->kind == VKR_EDITOR_MATERIAL_THEME && !panel->problem[0]) {
     /* The scene's own theme, or the World's beneath every scene. */
-    panel_button(editor, ui, string8_lit("material.theme_scene"),
-                 "Use in scene", VKR_UI_ICON_SCENE, width - actions + 112.0f,
-                 4.0f, 108.0f, &clicked);
-    if (clicked) {
-      panel_select_theme(editor, panel->path, "primary");
-    }
-    panel_button(editor, ui, string8_lit("material.theme_world"),
-                 "Use for World", VKR_UI_ICON_WORLD, width - actions + 224.0f,
-                 4.0f, 108.0f, &clicked);
-    if (clicked) {
-      panel_select_theme(editor, panel->path, "world");
-    }
+    actions[action_count++] = PANEL_ACTION_THEME_SCENE;
+    actions[action_count++] = PANEL_ACTION_THEME_WORLD;
   } else {
-    panel_button(editor, ui, string8_lit("material.frame"), "Frame",
-                 VKR_UI_ICON_ZOOM_IN, width - actions + 224.0f, 4.0f, 108.0f,
-                 &clicked);
-    frame_requested = clicked;
+    actions[action_count++] = PANEL_ACTION_FRAME;
+  }
+  const PanelAction clicked =
+      panel_header(editor, ui, width, title, actions, action_count);
+  bool8_t frame_requested = false_v;
+  switch (clicked) {
+  case PANEL_ACTION_NEW_GRAPH:
+    panel_new_graph(editor, frame);
+    break;
+  case PANEL_ACTION_NEW_INSTANCE:
+    panel_new_instance(editor, frame);
+    break;
+  case PANEL_ACTION_OPEN_GRAPH: {
+    char graph[VKR_EDITOR_MATERIAL_PATH];
+    string_format(graph, sizeof(graph), "%s", panel->graph_path);
+    (void)vkr_editor_material_open(materials, frame, graph);
+    break;
+  }
+  case PANEL_ACTION_CONVERT:
+    panel_convert(editor, frame);
+    break;
+  case PANEL_ACTION_THEME_SCENE:
+    panel_select_theme(editor, panel->path, "primary");
+    break;
+  case PANEL_ACTION_THEME_WORLD:
+    panel_select_theme(editor, panel->path, "world");
+    break;
+  case PANEL_ACTION_FRAME:
+    frame_requested = true_v;
+    break;
+  default:
+    break;
   }
   char status[VKR_MATERIAL_GRAPH_ERROR_CAPACITY + 64];
   Vec4 status_color = theme->text_secondary;
   if (panel->problem[0]) {
     string_format(status, sizeof(status), "%s", panel->problem);
+    status_color = theme->error;
+  } else if (panel->notice[0]) {
+    string_format(status, sizeof(status), "%s", panel->notice);
     status_color = theme->error;
   } else if (!panel->path[0]) {
     string_format(status, sizeof(status),
@@ -1841,6 +2065,33 @@ static const VkrMaterialNodeKind s_choice_kinds[] = {
 _Static_assert(ArrayCount(s_choices) == ArrayCount(s_choice_kinds),
                "one node kind per add-node choice");
 
+/* A card's header colour by its node's category: inputs blue, textures
+   green, math violet, layers teal and the output amber. */
+static Vec4 panel_node_accent(VkrMaterialNodeKind kind) {
+  switch (kind) {
+  case VKR_MATERIAL_NODE_SCALAR:
+  case VKR_MATERIAL_NODE_COLOR:
+  case VKR_MATERIAL_NODE_UV:
+  case VKR_MATERIAL_NODE_VERTEX_COLOR:
+  case VKR_MATERIAL_NODE_WORLD_POSITION:
+  case VKR_MATERIAL_NODE_WORLD_NORMAL:
+  case VKR_MATERIAL_NODE_TIME:
+  case VKR_MATERIAL_NODE_CAMERA_DISTANCE:
+  case VKR_MATERIAL_NODE_WORLD_PLANAR:
+    return (Vec4){0.36f, 0.56f, 0.86f, 1.0f};
+  case VKR_MATERIAL_NODE_TEXTURE:
+    return (Vec4){0.38f, 0.72f, 0.46f, 1.0f};
+  case VKR_MATERIAL_NODE_LAYER:
+  case VKR_MATERIAL_NODE_LAYER_BLEND:
+    return (Vec4){0.30f, 0.68f, 0.70f, 1.0f};
+  case VKR_MATERIAL_NODE_SURFACE_OUTPUT:
+    return (Vec4){0.92f, 0.66f, 0.30f, 1.0f};
+  default:
+    /* Multiply, normal map, the Custom math and tile and offset. */
+    return (Vec4){0.62f, 0.46f, 0.86f, 1.0f};
+  }
+}
+
 /* The canvas port type of a value type; a multiply's inputs take any. */
 static uint32_t panel_port_type(VkrMaterialNodeKind kind, bool8_t input,
                                 VkrMaterialValueType type) {
@@ -1957,6 +2208,40 @@ static bool8_t panel_event(VkrEditorUi *editor, MaterialPanel *panel,
   }
 }
 
+/* The read-only canvas's banner at its top-left corner: what the graph
+   belongs to and where it is edited. */
+static void panel_locked_banner(VkrEditorUi *editor, VkrUiSystem *ui,
+                                const MaterialPanel *panel) {
+  const VkrUiTheme *theme = vkr_ui_theme();
+  char text[VKR_EDITOR_MATERIAL_PATH + 96];
+  if (panel->kind == VKR_EDITOR_MATERIAL_INSTANCE) {
+    string_format(text, sizeof(text),
+                  "Read-only: instance of %s; edit parameters on the right",
+                  panel->graph_path);
+  } else {
+    string_format(text, sizeof(text),
+                  "Read-only: a plain material shown as a graph; Convert to "
+                  "graph to edit it");
+  }
+  const float32_t inset = theme->space_md;
+  VkrUiWidgetConfig banner = vkr_editor_details_widget(
+      panel->canvas.x + inset, panel->canvas.y + inset,
+      Max(40.0f, Min(panel->canvas.width - inset * 2.0f, 520.0f)), 26.0f);
+  banner.style.background_color = vkr_ui_color_alpha(theme->popup, 0.92f);
+  banner.style.corner_radius_pt =
+      (Vec4){theme->radius, theme->radius, theme->radius, theme->radius};
+  banner.style.padding_pt = (VkrUiEdges){4.0f, 8.0f, 4.0f, 8.0f};
+  banner.style.text_color = theme->text_secondary;
+  banner.style.font_size_pt = theme->font_caption;
+  banner.icon = VKR_UI_ICON_LOCK;
+  banner.icon_size_pt = 12.0f;
+  banner.text.font = editor->heading_font;
+  vkr_ui_label(
+      ui, string8_lit("material.locked"),
+      string8_create_from_cstr((const uint8_t *)text, string_length(text)),
+      &banner);
+}
+
 void vkr_editor_material_canvas_build(VkrEditorUi *editor,
                                       const VkrSampleUiFrame *frame) {
   VkrEditorMaterials *materials = editor->materials;
@@ -1991,13 +2276,6 @@ void vkr_editor_material_canvas_build(VkrEditorUi *editor,
                                   desc->outputs[port].type)};
     }
   }
-  /* Category colours: constants blue, textures green, math violet, the
-     output amber. */
-  static const Vec4 accents[VKR_MATERIAL_NODE_KIND_COUNT] = {
-      {0.36f, 0.56f, 0.86f, 1.0f}, {0.36f, 0.56f, 0.86f, 1.0f},
-      {0.38f, 0.72f, 0.46f, 1.0f}, {0.62f, 0.46f, 0.86f, 1.0f},
-      {0.62f, 0.46f, 0.86f, 1.0f}, {0.92f, 0.66f, 0.30f, 1.0f},
-  };
   uint32_t wire_count = 0u;
   for (uint32_t i = 0; i < graph->node_count; ++i) {
     const VkrMaterialNode *node = &graph->nodes[i];
@@ -2029,7 +2307,7 @@ void vkr_editor_material_canvas_build(VkrEditorUi *editor,
         .position = node->position,
         .title = node->id,
         .detail = detail[0] ? detail : NULL,
-        .accent = accents[node->kind],
+        .accent = panel_node_accent(node->kind),
         .inputs = inputs[node->kind],
         .input_count = desc->input_count,
         .outputs = outputs[node->kind],
@@ -2049,10 +2327,14 @@ void vkr_editor_material_canvas_build(VkrEditorUi *editor,
   }
   VkrEditorGraphEvent events[VKR_EDITOR_GRAPH_EVENT_MAX];
   (void)vkr_ui_input_layer_set(frame->ui, 0u);
+  /* A read-only graph offers no nodes to add; its other events apply to
+     nothing, and a banner says where it is edited. */
   const uint32_t event_count = vkr_editor_graph_build(
       frame, &panel->view, panel->canvas, 0u, nodes, graph->node_count, wires,
-      wire_count, s_choices, ArrayCount(s_choices), events, ArrayCount(events));
+      wire_count, s_choices, panel->read_only ? 0u : ArrayCount(s_choices),
+      events, ArrayCount(events));
   if (panel->read_only) {
+    panel_locked_banner(editor, frame->ui, panel);
     return;
   }
   bool8_t changed = false_v;

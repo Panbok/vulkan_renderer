@@ -70,7 +70,9 @@ uint64_t vkr_editor_material_next_sequence(const VkrEditorMaterials *materials,
    designer. */
 const char *vkr_editor_material_next_author(const VkrEditorMaterials *materials,
                                             bool8_t redo);
-/* Undoes (or redoes) the newest whole group. */
+/* Undoes (or redoes) the newest whole group. False when there is none, or
+   when a step's file did not write: the journal stops before that step and
+   the Material panel shows why. */
 bool8_t vkr_editor_material_undo(VkrEditorMaterials *materials,
                                  const VkrSampleUiFrame *frame, bool8_t redo);
 
@@ -104,6 +106,10 @@ uint32_t vkr_editor_material_index(VkrEditorMaterials *materials,
 /* Drops the index so the next use scans again, after the workspace changed
    or a pull brought other files. */
 void vkr_editor_material_index_reset(VkrEditorMaterials *materials);
+/* Forgets everything the open workspace owns, after a workspace switch: the
+   journal (its paths name the old workspace's files), the index and the
+   panel's document. */
+void vkr_editor_material_reset(VkrEditorMaterials *materials);
 
 /* The Material panel (Art workbench): the open document's graph on a node
    canvas, how it lowers, and an inspector for the selected node, the graph's

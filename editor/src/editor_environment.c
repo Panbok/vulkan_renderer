@@ -105,6 +105,18 @@ static VkrEntityId environment_winner(const VkrScene *scene,
   }
 }
 
+/* The values a new part starts from: its type's defaults, and for the moon
+   a directional light that drives the atmosphere's moon, as
+   environment_light finds it, rather than another sun. */
+static void environment_defaults(VkrEditorEnvironmentPart part, void *out) {
+  vkr_type_defaults(vkr_editor_environment_type(part), out);
+  if (part == VKR_EDITOR_ENVIRONMENT_MOON) {
+    SceneDirectionalLight *light = out;
+    light->atmosphere_moon = true_v;
+    light->atmosphere_sun = false_v;
+  }
+}
+
 /* The first enabled directional light of `scene` that drives the
    atmosphere's sun, or with `moon` its moon. */
 static VkrEntityId environment_light(const VkrScene *scene, bool8_t moon) {
@@ -157,7 +169,7 @@ bool8_t vkr_editor_environment_resolve(
     const VkrTypeDesc *type = vkr_editor_environment_type(part);
     VkrEditorEnvironmentSource *source = &out[i];
     MemZero(source, sizeof(*source));
-    vkr_type_defaults(type, source->value);
+    environment_defaults(part, source->value);
     VkrEntityId entity = VKR_ENTITY_ID_INVALID;
     const VkrScene *owner = scene;
     if (environment_light_part(part)) {
@@ -179,7 +191,7 @@ bool8_t vkr_editor_environment_resolve(
       source->owner = owner;
       source->from_world = !world_container && owner == frame->world;
     } else {
-      vkr_type_defaults(type, source->value);
+      environment_defaults(part, source->value);
     }
   }
   return true_v;
@@ -302,7 +314,7 @@ bool8_t vkr_editor_environment_read(String8 text, Arena *arena,
     }
     const VkrTypeDesc *type =
         vkr_editor_environment_type((VkrEditorEnvironmentPart)index);
-    vkr_type_defaults(type, out->values[index]);
+    environment_defaults((VkrEditorEnvironmentPart)index, out->values[index]);
     char message[128] = {0};
     if (!vkr_type_read_json_document(values, type, out->values[index], &scratch,
                                      message, sizeof(message))) {
@@ -559,14 +571,28 @@ static float32_t environment_note(VkrUiSystem *ui, String8 id, float32_t y,
   return y + 22.0f;
 }
 
+/* Rows that hold an action button: the editor's button height and a gap. */
+#define ENVIRONMENT_BUTTON_ROW_PT 32.0f
+
+/* An action button sized to its label, `inset` points from the window's
+   left edge, or with `end` from its right edge, at `y`. */
 static bool8_t environment_button(VkrEditorUi *editor, VkrUiSystem *ui,
                                   String8 id, String8 label, VkrUiIcon icon,
-                                  float32_t x, float32_t y, float32_t width,
+                                  float32_t inset, float32_t y, bool8_t end,
                                   String8 tooltip) {
-  VkrUiWidgetConfig button = vkr_editor_details_widget(x, y, width, 24.0f);
+  VkrUiWidgetConfig button = vkr_ui_widget_config_default();
+  button.placement =
+      (VkrUiPlacement){.column = 0u,
+                       .row = 0u,
+                       .column_span = 1u,
+                       .row_span = 1u,
+                       .justify = end ? VKR_UI_ALIGN_END : VKR_UI_ALIGN_START,
+                       .align = VKR_UI_ALIGN_START,
+                       .margin_pt = end ? (VkrUiEdges){y, inset, 0.0f, 0.0f}
+                                        : (VkrUiEdges){y, 0.0f, 0.0f, inset}};
   vkr_editor_action_style(&button, editor->heading_font);
   button.icon = icon;
-  button.icon_size_pt = 13.0f;
+  vkr_editor_button_size(&button);
   button.tooltip = tooltip;
   return vkr_ui_button(ui, id, label, &button);
 }
@@ -612,11 +638,10 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
       theme->text_secondary);
 
   /* Presets: save this environment, or copy one in. */
-  const float32_t half = (width - VKR_EDITOR_DETAILS_PAD_PT * 3.0f) * 0.5f;
   if (environment_button(
           editor, ui, string8_lit("environment.save"),
           string8_lit("Save preset"), VKR_UI_ICON_SAVE,
-          VKR_EDITOR_DETAILS_PAD_PT, y, half,
+          VKR_EDITOR_DETAILS_PAD_PT, y, false_v,
           string8_lit("Save every part shown here as an environment "
                       "preset named after the scene"))) {
     const String8 scene_path = frame->scene_path;
@@ -646,12 +671,13 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
                   VKR_EDITOR_ENVIRONMENT_EXTENSION);
     environment_save(editor, frame, sources, path);
   }
-  y += 30.0f;
+  y += ENVIRONMENT_BUTTON_ROW_PT;
   for (uint32_t i = 0; i < editor->environment_preset_count; ++i) {
     (void)vkr_ui_push_id_u64(ui, 0x5e7e0000u + i);
     const char *path = editor->environment_presets[i];
+    /* The path, centred on the row beside its Apply button. */
     VkrUiWidgetConfig label = vkr_editor_details_widget(
-        VKR_EDITOR_DETAILS_PAD_PT, y, width - 110.0f, 24.0f);
+        VKR_EDITOR_DETAILS_PAD_PT, y + 2.0f, width - 110.0f, 24.0f);
     label.icon = VKR_UI_ICON_PALETTE;
     label.icon_size_pt = 12.0f;
     vkr_ui_label(
@@ -660,13 +686,13 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
         &label);
     if (environment_button(editor, ui, string8_lit("apply"),
                            string8_lit("Apply"), VKR_UI_ICON_CHECK,
-                           width - 96.0f, y, 86.0f,
+                           VKR_EDITOR_DETAILS_PAD_PT, y, true_v,
                            string8_lit("Copy this preset's values into the "
                                        "scene (undoable)"))) {
       environment_apply(editor, frame, container, path);
     }
     (void)vkr_ui_pop_id(ui);
-    y += 28.0f;
+    y += ENVIRONMENT_BUTTON_ROW_PT;
   }
   if (editor->environment_message[0]) {
     y = environment_note(
@@ -714,12 +740,12 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
                                theme->text_secondary);
         } else if (environment_button(editor, ui, string8_lit("add"),
                                       string8_lit("Add"), VKR_UI_ICON_ADD,
-                                      VKR_EDITOR_DETAILS_PAD_PT, y, 120.0f,
+                                      VKR_EDITOR_DETAILS_PAD_PT, y, false_v,
                                       string8_lit("Add this part with its "
                                                   "defaults"))) {
           environment_create(frame, container, part, source->value);
         }
-        y += source->entity.u64 ? 0.0f : 30.0f;
+        y += source->entity.u64 ? 0.0f : ENVIRONMENT_BUTTON_ROW_PT;
       } else {
         if (source->from_world) {
           y = environment_note(ui, string8_lit("shared"), y, width,
@@ -730,12 +756,12 @@ void vkr_editor_environment_window_build(VkrEditorUi *editor,
               environment_button(editor, ui, string8_lit("override"),
                                  string8_lit("Override in scene"),
                                  VKR_UI_ICON_COPY, VKR_EDITOR_DETAILS_PAD_PT, y,
-                                 170.0f,
+                                 false_v,
                                  string8_lit("Copy the World's values into "
                                              "this scene"))) {
             environment_create(frame, container, part, source->value);
           }
-          y += world_only ? 0.0f : 30.0f;
+          y += world_only ? 0.0f : ENVIRONMENT_BUTTON_ROW_PT;
         }
         const VkrEditorDetailsResult result =
             vkr_editor_details_type(details, ui, frame->input, width, &y, type,

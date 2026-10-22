@@ -3887,7 +3887,8 @@ static bool8_t project_switch_workspace(VkrEditorProjects *projects,
   vkr_editor_workspace_lease_release(&projects->lease);
   projects->workspace = workspace;
   project_overlay_workspace(selected);
-  vkr_editor_material_index_reset(editor->materials);
+  /* The material journal, index and panel name the old workspace's files. */
+  vkr_editor_material_reset(editor->materials);
   projects->read_only = false_v;
   projects->message[0] = '\0';
   if (workspace.initialized && !vkr_editor_workspace_lease_acquire(

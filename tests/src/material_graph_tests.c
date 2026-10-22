@@ -337,6 +337,20 @@ static void test_graph_validation(void) {
       {"{\"version\":1,\"nodes\":[{\"id\":\"a\",\"type\":\"surface_output\"},"
        "{\"id\":\"b\",\"type\":\"surface_output\"}]}",
        "one surface output"},
+      /* A misspelled input would load without its link. */
+      {"{\"version\":1,\"nodes\":[{\"id\":\"c\",\"type\":\"color\"},"
+       "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+       "{\"base_colour\":\"c\"}}]}",
+       "no input 'base_colour'"},
+      /* A world size the loader rejects (0.01 to 1000 m), on either axis. */
+      {"{\"version\":1,\"settings\":{\"world_size\":[2,0]},\"nodes\":[]}",
+       "world_size"},
+      {"{\"version\":1,\"settings\":{\"world_size\":[0,2]},\"nodes\":[]}",
+       "world_size"},
+      /* \q is no JSON escape; the error names the field. */
+      {"{\"version\":1,\"nodes\":[{\"id\":\"t\",\"type\":\"texture\","
+       "\"path\":\"a\\q.png\"}]}",
+       "\"path\""},
   };
   VkrMaterialGraph *graph = malloc(sizeof(*graph));
   assert(graph);
@@ -774,6 +788,230 @@ static void graph_test_sweep(VkrAllocator *allocator, const char *directory,
 }
 #endif
 
+/* Lowers graph document `json` at assets/materials/graphs/test.mtg and
+   checks it parses as definition `expected`, written beside it. */
+static void graph_test_lowers_to(VkrAllocator *allocator, const char *json,
+                                 const char *expected) {
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrParsedMaterialData *lowered = malloc(sizeof(*lowered));
+  VkrParsedMaterialData *wanted = malloc(sizeof(*wanted));
+  assert(graph && lowered && wanted);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  if (!vkr_material_graph_read(graph_test_str(json), graph, error,
+                               sizeof(error))) {
+    printf("    graph: %s\n", error);
+    assert(false);
+  }
+  VkrMaterialLowering lowering;
+  String8 definition = {0};
+  assert(vkr_material_graph_lower(
+      graph, graph_test_str("assets/materials/graphs/test.mtg"), NULL, 0u,
+      allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_STANDARD);
+  graph_test_parse(allocator, "assets/materials/graphs/instance.mt", definition,
+                   lowered);
+  graph_test_parse(allocator, "assets/materials/graphs/instance.mt",
+                   graph_test_str(expected), wanted);
+  char why[256] = {0};
+  if (!graph_test_same(lowered, wanted, why, sizeof(why))) {
+    printf("    lowered graph differs in %s:\n%.*s", why,
+           (int)definition.length, definition.str);
+    assert(false);
+  }
+  free(graph);
+  free(lowered);
+  free(wanted);
+}
+
+/* Whether surface input `input` of `graph`'s output reads output `port` of
+   a texture node, alone or times a constant. */
+static bool8_t graph_test_reads_texture(const VkrMaterialGraph *graph,
+                                        const char *input, const char *port) {
+  const VkrMaterialNode *output = NULL;
+  for (uint32_t i = 0; i < graph->node_count; ++i) {
+    if (graph->nodes[i].kind == VKR_MATERIAL_NODE_SURFACE_OUTPUT) {
+      output = &graph->nodes[i];
+    }
+  }
+  const uint32_t at = vkr_material_node_input(VKR_MATERIAL_NODE_SURFACE_OUTPUT,
+                                              graph_test_str(input));
+  const uint32_t wanted =
+      vkr_material_node_output(VKR_MATERIAL_NODE_TEXTURE, graph_test_str(port));
+  if (!output || at == UINT32_MAX || !output->inputs[at].node) {
+    return false_v;
+  }
+  VkrMaterialLink links[2] = {output->inputs[at], {0}};
+  const VkrMaterialNode *source = &graph->nodes[links[0].node - 1u];
+  if (source->kind == VKR_MATERIAL_NODE_MULTIPLY) {
+    links[0] = source->inputs[0];
+    links[1] = source->inputs[1];
+  }
+  for (uint32_t i = 0; i < ArrayCount(links); ++i) {
+    if (links[i].node &&
+        graph->nodes[links[i].node - 1u].kind == VKR_MATERIAL_NODE_TEXTURE &&
+        links[i].port == wanted) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* A texture alone on an input whose loader factor defaults to zero still
+   shows: emission and clearcoat read their maps at full strength. A
+   definition with such a map and no factor stays dark through a graph. */
+static void test_graph_texture_factors(VkrAllocator *allocator) {
+  graph_test_lowers_to(
+      allocator,
+      "{\"version\":1,\"nodes\":["
+      "{\"id\":\"glow\",\"type\":\"texture\",\"path\":\"./e.png\"},"
+      "{\"id\":\"coat\",\"type\":\"texture\",\"path\":\"./c.png\"},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+      "{\"emissive\":\"glow.rgb\",\"clearcoat\":\"coat.r\"}}]}",
+      "type=pbr\n"
+      "emissive_texture=./e.png\n"
+      "emissive_colorspace=srgb\n"
+      "emissive_factor=1,1,1\n"
+      "clearcoat_texture=./c.png\n"
+      "clearcoat_factor=1\n");
+
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrParsedMaterialData *direct = malloc(sizeof(*direct));
+  VkrParsedMaterialData *lowered = malloc(sizeof(*lowered));
+  assert(graph && direct && lowered);
+  uint32_t skipped = 0u;
+  assert(graph_test_round_trip(
+      allocator, "assets/materials/fixture/dark.mt",
+      graph_test_str("type=pbr\nemissive_texture=./e.png\n"
+                     "clearcoat_texture=./c.png\n"),
+      graph, direct, lowered, &skipped));
+  assert(skipped == 0u);
+
+  /* Metallic and roughness both read the one metallic-roughness map, so
+     the graph wires roughness to its green channel, not a constant. */
+  static const char shared[] = "type=pbr\nmetallic=0.5\nroughness=0.25\n"
+                               "metallic_roughness_texture=./orm.png\n";
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_from_definition(graph_test_str(shared), graph,
+                                            error, sizeof(error)));
+  assert(graph_test_reads_texture(graph, "metallic", "b"));
+  assert(graph_test_reads_texture(graph, "roughness", "g"));
+  assert(graph_test_round_trip(allocator, "assets/materials/fixture/orm.mt",
+                               graph_test_str(shared), graph, direct, lowered,
+                               &skipped));
+  assert(skipped == 0u);
+  free(graph);
+  free(direct);
+  free(lowered);
+  printf("  test_graph_texture_factors PASSED\n");
+}
+
+/* An opacity read from the base colour texture's alpha keeps its scale. */
+static void test_graph_opacity_scale(VkrAllocator *allocator) {
+  graph_test_lowers_to(
+      allocator,
+      "{\"version\":1,\"nodes\":["
+      "{\"id\":\"t\",\"type\":\"texture\",\"path\":\"./a.png\"},"
+      "{\"id\":\"half\",\"type\":\"scalar\",\"value\":0.5},"
+      "{\"id\":\"fade\",\"type\":\"multiply\",\"inputs\":"
+      "{\"a\":\"t.a\",\"b\":\"half\"}},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+      "{\"base_color\":\"t.rgb\",\"opacity\":\"fade\"}}]}",
+      "type=pbr\n"
+      "base_color=1,1,1,0.5\n"
+      "base_color_texture=./a.png\n"
+      "base_color_colorspace=srgb\n");
+  printf("  test_graph_opacity_scale PASSED\n");
+}
+
+/* An instance override that is not a value fails with the parameter's
+   name, also on an input the Custom tier would take the value of. */
+static void test_graph_bad_override(VkrAllocator *allocator) {
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  assert(graph);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_read(
+      graph_test_str("{\"version\":1,\"nodes\":["
+                     "{\"id\":\"tint\",\"type\":\"color\",\"parameter\":"
+                     "\"tint\",\"value\":[0.5,0.5,0.5]},"
+                     "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+                     "{\"specular_f82_tint\":\"tint\"}}]}"),
+      graph, error, sizeof(error)));
+  const VkrMaterialParam bad = {.name = "tint", .value = "red"};
+  VkrMaterialLowering lowering;
+  String8 definition = {0};
+  assert(!vkr_material_graph_lower(graph, graph_test_str("g.mtg"), &bad, 1u,
+                                   allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_UNSUPPORTED);
+  assert(strstr(lowering.reason, "tint"));
+  free(graph);
+  printf("  test_graph_bad_override PASSED\n");
+}
+
+/* A Custom graph's surface state reaches its definition as a Standard
+   graph's does. */
+static void test_graph_custom_settings(VkrAllocator *allocator) {
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrParsedMaterialData *parsed = malloc(sizeof(*parsed));
+  assert(graph && parsed);
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_read(
+      graph_test_str("{\"version\":1,\"settings\":{\"subsurface_profile\":2,"
+                     "\"temporal_reactivity\":0.5,\"roughness_max\":0.75},"
+                     "\"nodes\":[{\"id\":\"clock\",\"type\":\"time\"},"
+                     "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":"
+                     "{\"metallic\":\"clock.seconds\"}}]}"),
+      graph, error, sizeof(error)));
+  VkrMaterialLowering lowering;
+  String8 definition = {0};
+  assert(vkr_material_graph_lower(graph, graph_test_str("x.mtg"), NULL, 0u,
+                                  allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_CUSTOM);
+  graph_test_parse(allocator, "assets/materials/c/settings.mt", definition,
+                   parsed);
+  assert(parsed->pbr.subsurface_profile == 2u);
+  assert(parsed->pbr.temporal_reactivity == 0.5f);
+  assert(parsed->roughness_max_set && parsed->roughness_max == 0.75f);
+  free(graph);
+  free(parsed);
+  printf("  test_graph_custom_settings PASSED\n");
+}
+
+/* Text fields round-trip through a document, escapes included, and a world
+   size set on one axis is written so that reading it back refuses it. */
+static void test_graph_text_fields(VkrAllocator *allocator) {
+  VkrMaterialGraph *graph = malloc(sizeof(*graph));
+  VkrMaterialGraph *again = malloc(sizeof(*again));
+  assert(graph && again);
+  vkr_material_graph_init(graph);
+  const uint32_t texture =
+      vkr_material_graph_add(graph, VKR_MATERIAL_NODE_TEXTURE, "t");
+  assert(texture != UINT32_MAX);
+  static const char path[] = "maps\\old \"brick\".png";
+  snprintf(graph->nodes[texture].path, sizeof(graph->nodes[texture].path), "%s",
+           path);
+  String8 json = {0};
+  char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  if (!vkr_material_graph_read(json, again, error, sizeof(error))) {
+    printf("    escaped path: %s\n", error);
+    assert(false);
+  }
+  assert(strcmp(again->nodes[texture].path, path) == 0);
+
+  graph->settings.world_size = vec2_new(0.0f, 2.0f);
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  assert(!vkr_material_graph_read(json, again, error, sizeof(error)));
+  assert(strstr(error, "world_size"));
+  graph->settings.world_size = vec2_new(2.0f, 3.0f);
+  assert(vkr_material_graph_write(graph, allocator, &json));
+  assert(vkr_material_graph_read(json, again, error, sizeof(error)));
+  assert(again->settings.world_size.x == 2.0f &&
+         again->settings.world_size.y == 3.0f);
+  free(graph);
+  free(again);
+  printf("  test_graph_text_fields PASSED\n");
+}
+
 static void test_graph_round_trip(VkrAllocator *allocator) {
   static const char full[] =
       "name=full\ntype=pbr\nbase_color_colorspace=srgb\n"
@@ -847,6 +1085,11 @@ bool32_t run_material_graph_tests(void) {
   test_graph_art_metadata(&allocator);
   test_graph_layers(&allocator);
   test_graph_custom(&allocator);
+  test_graph_texture_factors(&allocator);
+  test_graph_opacity_scale(&allocator);
+  test_graph_bad_override(&allocator);
+  test_graph_custom_settings(&allocator);
+  test_graph_text_fields(&allocator);
   test_graph_round_trip(&allocator);
   arena_destroy(arena);
   printf("--- Material Graph Tests Completed ---\n");
