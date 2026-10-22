@@ -189,6 +189,10 @@ bool8_t vkr_harness_compute_pass_group_results(
     string_format(result->name, sizeof(result->name), "%s",
                   group < unassigned ? groups->groups[group].name
                                      : "unassigned");
+    if (group < unassigned) {
+      result->p95_target_ms = groups->groups[group].p95_target_ms;
+      result->has_p95_target = groups->groups[group].has_p95_target;
+    }
     result->passes = members ? members + first_member : NULL;
     result->pass_count = member_count - first_member;
 

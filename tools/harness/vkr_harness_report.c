@@ -1186,8 +1186,18 @@ vkr_internal bool8_t vkr_harness_report_write_pass_groups(
          vkr_harness_report_write_statistics_reason(
              writer, &gpu,
              vkr_harness_report_gpu_unavailable_reason(
-                 report, gpu.statistics.sample_count, unsupported_scope)) &&
-         vkr_json_writer_end_object(writer);
+                 report, gpu.statistics.sample_count, unsupported_scope));
+    /* The margin is the target less the measured p95: negative over it.
+       Without valid samples the line has no p95, so only the target shows. */
+    if (ok && group->has_p95_target) {
+      ok = vkr_harness_json_emit_f64(writer, "p95_target_ms",
+                                     group->p95_target_ms) &&
+           (gpu.statistics.sample_count == 0u ||
+            vkr_harness_json_emit_f64(writer, "p95_margin_ms",
+                                      group->p95_target_ms -
+                                          gpu.statistics.p95));
+    }
+    ok = ok && vkr_json_writer_end_object(writer);
   }
   const VkrHarnessPassGroups *source = report->pass_groups_source;
   return ok && vkr_json_writer_end_array(writer) &&

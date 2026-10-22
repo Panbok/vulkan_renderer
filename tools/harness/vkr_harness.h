@@ -593,11 +593,14 @@ typedef struct VkrHarnessPassGroup {
   char patterns[VKR_HARNESS_MAX_PASS_GROUP_PATTERNS]
                [VKR_HARNESS_PASS_GROUP_PATTERN_MAX];
   uint32_t pattern_count;
+  /* The line's optional p95 target in milliseconds (`p95_target_ms`). */
+  float64_t p95_target_ms;
+  bool8_t has_p95_target;
 } VkrHarnessPassGroup;
 
 /**
  * A parsed pass-groups file. It is reporting only: no fingerprint, policy, or
- * verdict reads it.
+ * verdict reads it, including a line's p95 target.
  */
 typedef struct VkrHarnessPassGroups {
   /* The repository-relative path as given, and the digest of its bytes. */
@@ -619,6 +622,9 @@ typedef struct VkrHarnessPassGroupResult {
   const uint32_t *passes;
   uint32_t pass_count;
   VkrHarnessStatistics gpu_ms;
+  /* The group's p95 target, copied from the file; "unassigned" has none. */
+  float64_t p95_target_ms;
+  bool8_t has_p95_target;
 } VkrHarnessPassGroupResult;
 
 typedef struct VkrHarnessProvenance {

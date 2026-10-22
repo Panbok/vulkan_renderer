@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-20
+updated: 2026-10-22
 authority: adr
 ---
 # ADR-051: Isolated harness runs and reviewed capture baselines
@@ -41,8 +41,10 @@ digest and id): each group of pass-name patterns, where a trailing `*`
 matches a prefix and the most specific pattern takes a pass, reports
 statistics of its per-frame GPU sum. A culled, disabled or omitted pass adds
 zero; an unsupported or missing timestamp leaves that frame invalid for its
-group only; passes no pattern matches form `unassigned`. The file loads
-before any child runs and enters no fingerprint or verdict
+group only; passes no pattern matches form `unassigned`. A group's optional
+`p95_target_ms` is written with its line, with `p95_margin_ms`, the target
+less the measured p95, negative over it. The file loads before any child
+runs, and neither it nor a target enters a fingerprint or verdict
 ([desktop budget lines](../../tools/budgets/desktop.pass_groups.json)).
 Every run, auxiliary run and report carries `diagnostic_counts`:
 GPU error, validation and log counters summed over warmup and measured frames,

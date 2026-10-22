@@ -184,6 +184,8 @@ vkr_internal void test_harness_pass_groups(void) {
       "[{\"name\":\"A\",\"passes\":[\"A.*\"]},"
       "{\"name\":\"B\",\"passes\":[\"A.*\"]}]",
       "[{\"name\":\"A\",\"passes\":[\"A.*\"],\"budget_ms\":1}]",
+      "[{\"name\":\"A\",\"passes\":[\"A.*\"],\"p95_target_ms\":-1}]",
+      "[{\"name\":\"A\",\"passes\":[\"A.*\"],\"p95_target_ms\":\"1\"}]",
   };
   for (uint32_t i = 0; i < ArrayCount(invalid_groups); ++i) {
     char json[512];
@@ -199,7 +201,8 @@ vkr_internal void test_harness_pass_groups(void) {
      the Mips wildcard. */
   const char *groups_json =
       "{\"schema_version\":1,\"id\":\"budget.test\",\"groups\":["
-      "{\"name\":\"Culling\",\"passes\":[\"Cull.*\",\"Transmission.Cull.*\"]},"
+      "{\"name\":\"Culling\",\"passes\":[\"Cull.*\",\"Transmission.Cull.*\"],"
+      "\"p95_target_ms\":2.5},"
       "{\"name\":\"Glass\",\"passes\":[\"Transmission.*\","
       "\"VBuffer.Transmission.*\"]},"
       "{\"name\":\"Visibility\",\"passes\":[\"VBuffer.*\",\"HZB.Build\"]},"
@@ -290,6 +293,9 @@ vkr_internal void test_harness_pass_groups(void) {
     assert(result->gpu_ms.sample_count == expected[i].sample_count);
     assert(result->gpu_ms.invalid_count == expected[i].invalid_count);
     assert(result->gpu_ms.total == expected[i].total);
+    /* Only Culling's line carries a target. */
+    assert(result->has_p95_target == (i == 0u));
+    assert(result->p95_target_ms == (i == 0u ? 2.5 : 0.0));
   }
 
   /* With every pass assigned, no "unassigned" line is written. */

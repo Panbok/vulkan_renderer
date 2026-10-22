@@ -2471,19 +2471,40 @@ vkr_internal bool8_t vkr_harness_pass_groups_parse_groups(
                           VKR_HARNESS_MAX_PASS_GROUPS);
     return false_v;
   }
-  vkr_local_persist const char *const fields[] = {"name", "passes"};
+  vkr_local_persist const char *const allowed[] = {"name", "passes",
+                                                   "p95_target_ms"};
+  vkr_local_persist const char *const required[] = {"name", "passes"};
   int32_t item = token + 1;
   while (item >= 0 && groups->group_count < doc->tokens[token].child_count) {
     VkrHarnessPassGroup *group = &groups->groups[groups->group_count];
     int32_t patterns = -1;
-    if (!vkr_harness_json_object_validate(doc, item, fields, ArrayCount(fields),
-                                          fields, ArrayCount(fields),
-                                          "$.groups[]", error) ||
+    int32_t target = -1;
+    if (!vkr_harness_json_object_validate(
+            doc, item, allowed, ArrayCount(allowed), required,
+            ArrayCount(required), "$.groups[]", error) ||
         !vkr_harness_manifest_string(doc, item, "name", true_v, group->name,
                                      sizeof(group->name), error) ||
         !vkr_harness_manifest_field(doc, item, "passes", true_v, &patterns,
-                                    error)) {
+                                    error) ||
+        !vkr_harness_manifest_field(doc, item, "p95_target_ms", false_v,
+                                    &target, error)) {
       return false_v;
+    }
+    if (target >= 0) {
+      if (!vkr_harness_json_f64(doc, target, &group->p95_target_ms,
+                                "$.groups[].p95_target_ms", error)) {
+        return false_v;
+      }
+      /* The comparison also rejects an infinite value. */
+      if (!(group->p95_target_ms >= 0.0 && group->p95_target_ms < 1000.0)) {
+        vkr_harness_error_set(error, "pass_groups.p95_target",
+                              "$.groups[].p95_target_ms",
+                              "Group '%s' needs a p95 target of at least 0 "
+                              "and below 1000 ms",
+                              group->name);
+        return false_v;
+      }
+      group->has_p95_target = true_v;
     }
     if (group->name[0] == '\0') {
       vkr_harness_error_set(error, "pass_groups.group_name", "$.groups[].name",

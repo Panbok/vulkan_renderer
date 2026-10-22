@@ -1,10 +1,11 @@
 {
   "schema_version": 1,
   "id": "budget.desktop",
-  "description": "ADR-087 desktop budget lines: Vulkan graph passes grouped by frame stage.",
+  "description": "ADR-087 desktop budget lines: Vulkan graph passes grouped by frame stage, each with its p95 target from the accepted baseline.",
   "groups": [
     {
       "name": "Culling",
+      "p95_target_ms": 0.1,
       "passes": [
         "Cull.*",
         "Transmission.Cull.*",
@@ -13,6 +14,7 @@
     },
     {
       "name": "Shadows",
+      "p95_target_ms": 0.8,
       "passes": [
         "Shadow.Cascade.*",
         "Shadow.Far.*",
@@ -22,6 +24,7 @@
     },
     {
       "name": "Visibility",
+      "p95_target_ms": 1.0,
       "passes": [
         "VBuffer.*",
         "HZB.*",
@@ -30,6 +33,7 @@
     },
     {
       "name": "Surface",
+      "p95_target_ms": 3.0,
       "passes": [
         "GBuffer.Resolve.*",
         "AO.*",
@@ -38,6 +42,7 @@
     },
     {
       "name": "Lighting",
+      "p95_target_ms": 5.2,
       "passes": [
         "Shadow.LocalMask",
         "Shadow.Sun*",
@@ -50,6 +55,7 @@
     },
     {
       "name": "Media",
+      "p95_target_ms": 0.8,
       "passes": [
         "Sky.*",
         "Clouds.*",
@@ -59,6 +65,7 @@
     },
     {
       "name": "Glass and blend",
+      "p95_target_ms": 3.0,
       "passes": [
         "Transmission.*",
         "VBuffer.Transmission.*",
@@ -68,6 +75,7 @@
     },
     {
       "name": "Reconstruction and post",
+      "p95_target_ms": 3.2,
       "passes": [
         "FSR31.*",
         "Temporal.*",
@@ -78,6 +86,7 @@
     },
     {
       "name": "Editor and debug",
+      "p95_target_ms": 0.0,
       "passes": [
         "Editor.*",
         "Picking.*",
