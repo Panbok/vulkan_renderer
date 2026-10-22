@@ -22,7 +22,11 @@ owns placement, materials and bakes.
   into the engine's +Z, which `model.place`'s yaw then points.
 - Put the origin on the floor at the footprint centre. Put a monitor's or a
   lamp's origin under its base, so a placement on a desk top needs no
-  offset.
+  offset. Put a wall fixture's origin on the wall at floor height, its back
+  on the wall and its front toward -Y, with the fixture at its usual height
+  (a call point at 1.3 m): one ray to the wall and one to the floor place
+  it. A ceiling run (cable tray) hangs from an origin on the ceiling; a
+  wall run (pipes) runs along X so segments line up end to end.
 - Build from bevelled boxes, frustums and cylinders through `bmesh`; merge
   doubles, smooth by angle (about 35 degrees) and apply a Weighted Normal
   modifier so bevelled edges catch light without a normal map.

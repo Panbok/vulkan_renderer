@@ -1,6 +1,6 @@
 ---
 name: vkr-art
-description: Author VKR materials and do the art pass through the editor's agent channel - material graphs (.mtg), instances and plain .mt files, surface themes that bind tags to materials, assigning materials to brush faces and meshes, modelling props in Blender and placing, reimporting and dressing them as models, and checking the result with art.lint, lowering reports and captures. Use for material and look work in a level; use vkr-level-design for layout, surfaces and marks, and vkr-editor-cmd to start or drive the editor.
+description: Author VKR materials and do the art pass through the editor's agent channel - material graphs (.mtg), instances and plain .mt files, surface themes that bind tags to materials, assigning materials to brush faces and meshes, modelling props in Blender and placing, reimporting and dressing them as models, decals and the environment detail pass (signs, markings, wear, wall and ceiling fixtures), and checking the result with art.lint, lowering reports and captures. Use for material and look work in a level; use vkr-level-design for layout, surfaces and marks, and vkr-editor-cmd to start or drive the editor.
 ---
 
 # VKR art pass through the agent channel
@@ -186,7 +186,53 @@ level):
   `size` is the width and height across the surface, `depth` its reach
   along the normal, `angle` a turn in degrees, and `material` a `.mt` file.
 - The image's top points up a wall. On a floor it points along `facing`,
-  which defaults to the ray. Capture each decal to check it.
+  which defaults to the ray: an arrow decal points where `facing` points.
+  A long floor line is a thin decal (`size` [length, 0.14]) turned with
+  `angle` 90 across `facing`. Capture lettered decals to check them.
+- A decal lays only base colour, weighted by its texture's alpha, over every
+  opaque surface inside its box (ADR-092): no normal, roughness or glow. Draw
+  each image as an RGBA PNG with a transparent background (signs, stencils,
+  floor paint, grime), wear paint by multiplying alpha with noise, cook it
+  with `vkr_bakery cook`, and give it one plain definition through
+  `material.create` (`base_color_texture`, `base_color_colorspace` srgb,
+  white `base_color`). A hand-written `.mt` that does not parse draws nothing.
+  Keep the decal's `size` at the image's aspect.
+- Keep boxes thin (`depth` 0.15 to 0.2 on walls, 0.3 on floors) and off
+  props: the box paints desks, rails and monitors inside it too.
+- The frame draws the 64 decals nearest the camera; keep a space under about
+  40. On the tiled pipeline any decal in view costs about 0.5 ms of
+  `Tiled.Opaque` however small.
+
+## Environment detail
+
+A finished room reads as used: markings, signs and wear on its surfaces and
+fixtures on its walls and ceiling. Dress each space by script, after the
+models:
+
+1. Survey the spaces: from each lamp, `query.raycast` down to the floor, up
+   to the ceiling and out to the four walls. Rays stop at props' clip boxes
+   and door leaves; step past hits whose names are not structure.
+2. Read what is already there: `text` entities and sign brushes name rooms
+   and directions. Do not repeat or contradict them; wayfinding follows the
+   level's real routes and sits above wainscot and handrails.
+3. Place by ray, then check clearance. Placed models have no collision, so
+   test each wall decal's box against the bounds of models, fixtures and
+   text before placing it, and slide it along the wall or skip it. Check
+   that the wall stands behind both ends (no doorway) at the decal's height.
+4. Per space: wear along each wall's base, a few floor scuffs or stains,
+   streaks and damp in service areas; posters, noticeboards and whiteboards
+   where people work; hazard, lane and keep-clear markings where vehicles
+   run; exit signs over egress doors.
+5. Wall fixtures (alarms, first aid, cameras, panels) and runs (cable trays,
+   pipes) are Blender models ([references/blender-models.md](references/blender-models.md)).
+   Place small fixtures without `lightmap_uvs`, so no rebake is needed.
+   Validate each run segment: the wall behind its ends and middle, and the
+   room tall enough for it.
+6. Names repeat across runs and `entity.delete` by a repeated name fails:
+   delete by id, and keep each object under a prefix (`env/<space>/...`) so
+   a pass can be found and replaced.
+7. Capture every space after the pass, then save and reopen to check that
+   the pass persisted.
 
 ## Scatter
 

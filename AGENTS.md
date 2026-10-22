@@ -103,8 +103,9 @@ conditional references needed for the current step:
   channel, alone or beside other agents.
 - `vkr-landscape` to generate, sculpt, paint and dress terrains, set rooms
   into ground, and scatter foliage through the editor's agent channel.
-- `vkr-art` for material graphs, instances, the art pass and Blender-made
-  props placed as models through the editor's agent channel.
+- `vkr-art` for material graphs, instances, the art pass, decals, the
+  environment detail pass and Blender-made props placed as models through
+  the editor's agent channel.
 - `vkr-cross-machine` for any work that spans two machines: depot servers,
   discovery, mirroring, moving scenes, and the other machine's session.
 - `vkr-harness` for cases, profiles, captures, reports, and baselines; add
