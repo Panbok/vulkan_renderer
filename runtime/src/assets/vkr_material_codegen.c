@@ -86,6 +86,9 @@ typedef struct Codegen {
   /* Where each texture node's RGB or channels go, for its class. */
   bool8_t feeds_normal[VKR_MATERIAL_GRAPH_NODE_MAX];
   bool8_t feeds_color[VKR_MATERIAL_GRAPH_NODE_MAX];
+  /* Set while a normal map's input expression emits: the texture RGB it
+     reads are normal textures, not colours. */
+  bool8_t normal_input;
 } Codegen;
 
 static bool8_t codegen_fail(Codegen *codegen, const VkrMaterialNode *node,
@@ -267,15 +270,36 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
     return true_v;
   }
   case VKR_MATERIAL_NODE_NORMAL_MAP: {
+    /* A texture's RGB, or math over normal textures' RGB, as a blend of two
+       scrolling ripple layers: the decode rebuilds z from the mixed x and
+       y, so a weighted sum of encoded normals stays a valid encoding. */
     const VkrMaterialLink texture = node->inputs[0];
-    if (!texture.node ||
-        graph->nodes[texture.node - 1u].kind != VKR_MATERIAL_NODE_TEXTURE ||
-        texture.port != 0u) {
+    if (!texture.node) {
       return codegen_fail(codegen, node, "A normal map reads a texture's RGB");
     }
-    codegen->feeds_normal[texture.node - 1u] = true_v;
-    if (!codegen_node(codegen, texture.node - 1u)) {
-      return false_v;
+    const bool8_t direct =
+        graph->nodes[texture.node - 1u].kind == VKR_MATERIAL_NODE_TEXTURE &&
+        texture.port == 0u;
+    char encoded[256];
+    if (direct) {
+      codegen->feeds_normal[texture.node - 1u] = true_v;
+      if (!codegen_node(codegen, texture.node - 1u)) {
+        return false_v;
+      }
+      string_format(encoded, sizeof(encoded), "n%u.xyz", texture.node - 1u);
+    } else {
+      codegen->normal_input = true_v;
+      const bool8_t read = codegen_input(codegen, node, 0u, &a);
+      codegen->normal_input = false_v;
+      if (!read) {
+        return false_v;
+      }
+      if (a.components != 3u) {
+        return codegen_fail(codegen, node,
+                            "A normal map reads a texture's RGB or a "
+                            "three-component mix of normal textures");
+      }
+      string_format(encoded, sizeof(encoded), "%s", a.text);
     }
     char strength[192] = "1.0f";
     if (node->inputs[1].node) {
@@ -284,9 +308,9 @@ static bool8_t codegen_node(Codegen *codegen, uint32_t index) {
       }
       string_format(strength, sizeof(strength), "%s", b.text);
     }
-    codegen_append(
-        body, "    const float3 n%u = vkr_normal_map_decode(n%u.xyz, %s);\n",
-        index, texture.node - 1u, strength);
+    codegen_append(body,
+                   "    const float3 n%u = vkr_normal_map_decode(%s, %s);\n",
+                   index, encoded, strength);
     return true_v;
   }
   case VKR_MATERIAL_NODE_UV:
@@ -436,7 +460,11 @@ static bool8_t codegen_link(Codegen *codegen, VkrMaterialLink link,
   switch (node->kind) {
   case VKR_MATERIAL_NODE_TEXTURE:
     if (link.port == 0u) {
-      codegen->feeds_color[index] = true_v;
+      if (codegen->normal_input) {
+        codegen->feeds_normal[index] = true_v;
+      } else {
+        codegen->feeds_color[index] = true_v;
+      }
       string_format(out->text, sizeof(out->text), "n%u.rgb", index);
       out->components = 3u;
     } else {

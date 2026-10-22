@@ -99,7 +99,12 @@ the project budget of 32 and takes seconds to compile, so:
   and emissive. Clearcoat, sheen, anisotropy and transmission stay
   Standard. There is no vertex offset and no code node.
 - After a write, Bakery recompiles the project library and the renderer
-  reloads it; the material shows its fallback meanwhile. Wait with
+  reloads it; the material shows its fallback meanwhile. On a Mac without
+  the Metal Toolchain the renderer compiles the library's source itself,
+  which takes about 5 s more; the log reads "compiling project materials".
+- A normal map may read math over normal textures, such as the mean of two
+  ripple layers scrolled against each other over `time`, which hides the
+  repeat of one texture on large water. Wait with
   `wait.scene` (it waits while `stats.pending_pipelines` is above zero)
   before captures. `stats.pipelines_late` counts camera draws that used a
   fallback.
@@ -239,7 +244,9 @@ level):
    `texel_density` (default 128 to 2048 px/m; pass the project's range) by
    `world_size`, and `base_color` or `metallic` values outside plausible
    PBR ranges.
-3. Capture the assigned surfaces (`view.capture` with `eye` and `target`);
+3. Capture the assigned surfaces (`view.capture` with `eye` and `target`)
+   after Cmd `grid off` and `view.tool_brushes off`, which hide the grid
+   and the clip and trigger brushes the game never draws;
    compare `view.greybox` on and off to confirm which faces carry art. A
    sheet of `views` with `mode` set to `base-color`, `roughness`,
    `metallic`, `normals`, `material-cost` or `texel-density` shows the

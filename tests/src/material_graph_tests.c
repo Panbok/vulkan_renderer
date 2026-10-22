@@ -641,6 +641,50 @@ static void test_graph_custom(VkrAllocator *allocator) {
                                   allocator, &definition, &lowering));
   assert(strcmp(lowering.function, function) != 0);
 
+  /* A normal map may read math over normal textures: two scrolled ripple
+     layers averaged bind as normal textures and decode once; a texture
+     that feeds both that mix and a colour is refused. */
+  const char *ripples =
+      "{\"version\":1,\"nodes\":[{\"id\":\"uv\",\"type\":\"uv\"},"
+      "{\"id\":\"clock\",\"type\":\"time\"},"
+      "{\"id\":\"flow\",\"type\":\"scalar\",\"value\":0.01},"
+      "{\"id\":\"shift\",\"type\":\"multiply\",\"inputs\":{\"a\":"
+      "\"clock.seconds\",\"b\":\"flow\"}},"
+      "{\"id\":\"moved\",\"type\":\"add\",\"inputs\":{\"a\":\"uv\","
+      "\"b\":\"shift\"}},"
+      "{\"id\":\"a\",\"type\":\"texture\",\"path\":\"./ripple.png\","
+      "\"inputs\":{\"uv\":\"moved\"}},"
+      "{\"id\":\"b\",\"type\":\"texture\",\"path\":\"./ripple_b.png\"},"
+      "{\"id\":\"sum\",\"type\":\"add\",\"inputs\":{\"a\":\"a.rgb\","
+      "\"b\":\"b.rgb\"}},"
+      "{\"id\":\"half\",\"type\":\"scalar\",\"value\":0.5},"
+      "{\"id\":\"mix\",\"type\":\"multiply\",\"inputs\":{\"a\":\"sum\","
+      "\"b\":\"half\"}},"
+      "{\"id\":\"normal\",\"type\":\"normal_map\",\"inputs\":{"
+      "\"texture\":\"mix\"}},"
+      "{\"id\":\"out\",\"type\":\"surface_output\",\"inputs\":{"
+      "\"normal\":\"normal\"%s}}]}";
+  char ripple_json[2048];
+  snprintf(ripple_json, sizeof(ripple_json), ripples, "");
+  assert(vkr_material_graph_read(graph_test_str(ripple_json), again, error,
+                                 sizeof(error)));
+  assert(vkr_material_graph_lower(again,
+                                  graph_test_str("assets/materials/w/w.mtg"),
+                                  NULL, 0u, allocator, &definition, &lowering));
+  assert(lowering.tier == VKR_MATERIAL_TIER_CUSTOM && lowering.samples == 2u);
+  text = (const char *)definition.str;
+  assert(graph_test_custom_class(text, "assets/materials/w/ripple.png",
+                                 "normal=true"));
+  assert(graph_test_custom_class(text, "assets/materials/w/ripple_b.png",
+                                 "normal=true"));
+  snprintf(ripple_json, sizeof(ripple_json), ripples,
+           ",\"base_color\":\"b.rgb\"");
+  assert(vkr_material_graph_read(graph_test_str(ripple_json), again, error,
+                                 sizeof(error)));
+  assert(!vkr_material_graph_lower(again, graph_test_str("x.mtg"), NULL, 0u,
+                                   allocator, &definition, &lowering));
+  assert(strcmp(lowering.node, "b") == 0);
+
   /* UVs plus a colour mix two and three components. */
   const char *mixed =
       "{\"version\":1,\"nodes\":[{\"id\":\"uv\",\"type\":\"uv\"},"

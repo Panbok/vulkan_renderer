@@ -11,14 +11,130 @@
 // and a draw of another slot takes its material's Standard fallback and
 // counts as late.
 
-/* Opens the project library, when the catalog has one. */
+/* One compile of the project library's source on a job. */
+typedef struct VkrMetalCustomCompile {
+  VkrMetalPacketRenderer *renderer;
+  /* Retained for the job, which releases it. */
+  NSString *source;
+} VkrMetalCustomCompile;
+
+vkr_internal void vkr_metal_packet_custom_compile_run(
+    const VkrMetalCustomCompile *compile) API_AVAILABLE(macos(26.0)) {
+  VkrMetalPacketRenderer *renderer = compile->renderer;
+  @autoreleasepool {
+    NSError *error = nil;
+    const uint64_t start_ns = vkr_metal_packet_now_ns();
+    /* The engine library's own compiler, so the pipelines reflect the
+       bindings the ABI checks read (vkr_metal_packet_create_library). */
+    MTL4LibraryDescriptor *descriptor = [MTL4LibraryDescriptor new];
+    descriptor.name = @"project_materials";
+    descriptor.source = compile->source;
+    id<MTLLibrary> library =
+        [renderer->compiler newLibraryWithDescriptor:descriptor error:&error];
+    [descriptor release];
+    vkr_metal_packet_shader_event(renderer, "project_materials_source",
+                                  start_ns, library != nil);
+    if (library) {
+      log_info("Metal: project materials compiled from source in %.1f s",
+               (double)(vkr_metal_packet_now_ns() - start_ns) * 1.0e-9);
+    } else {
+      vkr_metal_packet_print_error("project_materials_source", error);
+    }
+    [renderer->custom_compiled release];
+    [renderer->custom_compiled_source release];
+    /* A failed compile keeps its text too, so the same source does not
+       compile again until it changes. */
+    renderer->custom_compiled = library;
+    renderer->custom_compiled_source = compile->source;
+  }
+  vkr_atomic_bool_store(&renderer->custom_compiling, false_v,
+                        VKR_MEMORY_ORDER_RELEASE);
+  vkr_atomic_uint32_fetch_sub(&renderer->background_builds, 1u,
+                              VKR_MEMORY_ORDER_RELEASE);
+  vkr_metal_packet_renderer_request_custom_reload(renderer);
+}
+
+vkr_internal bool8_t vkr_metal_packet_custom_compile_job(VkrJobContext *context,
+                                                         void *payload)
+    API_AVAILABLE(macos(26.0)) {
+  (void)context;
+  vkr_metal_packet_custom_compile_run(payload);
+  return true_v;
+}
+
+/* Takes the project library compiled from the source beside the missing
+   metallib `metallib`, or starts compiling that source when the last
+   compile was of other text; Custom materials draw their fallback until
+   the compile's reload. */
+vkr_internal void
+vkr_metal_packet_custom_open_source(VkrMetalPacketRenderer *renderer,
+                                    const char *metallib)
+    API_AVAILABLE(macos(26.0)) {
+  static const char suffix[] = ".metallib";
+  const uint64_t length = string_length(metallib);
+  char source_path[VKR_METAL_CUSTOM_LIBRARY_PATH];
+  if (length < sizeof(suffix) - 1u ||
+      !string_equals(metallib + length - (sizeof(suffix) - 1u), suffix) ||
+      length >= sizeof(source_path))
+    return;
+  string_format(source_path, sizeof(source_path), "%.*s.metal",
+                (int)(length - (sizeof(suffix) - 1u)), metallib);
+  const FilePath source_file = file_path_view(source_path);
+  if (!file_exists(&source_file) ||
+      vkr_atomic_bool_load(&renderer->custom_compiling,
+                           VKR_MEMORY_ORDER_ACQUIRE))
+    return;
+  NSError *error = nil;
+  NSString *source = [NSString
+      stringWithContentsOfFile:[NSString stringWithUTF8String:source_path]
+                      encoding:NSUTF8StringEncoding
+                         error:&error];
+  if (!source) {
+    vkr_metal_packet_print_error("project_materials_read", error);
+    return;
+  }
+  if (renderer->custom_compiled_source &&
+      [renderer->custom_compiled_source isEqualToString:source]) {
+    renderer->custom_library = [renderer->custom_compiled retain];
+    return;
+  }
+  const VkrMetalCustomCompile compile = {.renderer = renderer,
+                                         .source = [source retain]};
+  vkr_atomic_bool_store(&renderer->custom_compiling, true_v,
+                        VKR_MEMORY_ORDER_RELEASE);
+  vkr_atomic_uint32_fetch_add(&renderer->background_builds, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+  log_info("Metal: compiling project materials from %s", source_path);
+  renderer->custom_compile_job = (VkrJobHandle){0};
+  if (renderer->job_system) {
+    Bitset8 type_mask = bitset8_create();
+    bitset8_set(&type_mask, VKR_JOB_TYPE_GENERAL);
+    const VkrJobDesc desc = {
+        .priority = VKR_JOB_PRIORITY_NORMAL,
+        .type_mask = type_mask,
+        .run = vkr_metal_packet_custom_compile_job,
+        .payload = &compile,
+        .payload_size = sizeof(compile),
+    };
+    if (vkr_job_try_submit(renderer->job_system, &desc,
+                           &renderer->custom_compile_job))
+      return;
+  }
+  /* No job system, or no free job slot: compile here. */
+  vkr_metal_packet_custom_compile_run(&compile);
+}
+
+/* Opens the project library, when the catalog has one, else its source. */
 vkr_internal void vkr_metal_packet_custom_open(VkrMetalPacketRenderer *renderer)
     API_AVAILABLE(macos(26.0)) {
   if (!renderer->custom_library_path[0])
     return;
   const FilePath library_file = file_path_view(renderer->custom_library_path);
-  if (!file_exists(&library_file))
+  if (!file_exists(&library_file)) {
+    vkr_metal_packet_custom_open_source(renderer,
+                                        renderer->custom_library_path);
     return;
+  }
   NSString *file =
       [NSString stringWithUTF8String:renderer->custom_library_path];
   NSError *error = nil;
@@ -64,6 +180,11 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
     const float64_t start = vkr_platform_get_absolute_time();
     bool8_t ok = renderer->custom_library != nil;
     NSString *label = [NSString stringWithUTF8String:graph->function];
+    /* Metal 4 reflects no fragment bindings for a Custom graph's entries,
+       though they read the draw root at buffer 1 (seen 2026-10-22), so
+       their fragment ABI is not checked: the entries wrap the engine's
+       forward template over the same source, whose Standard pipelines
+       check that root, and the vertex check still runs. */
     for (uint32_t decals = 0;
          ok && decals < VKR_METAL_TILED_DECAL_VARIANT_COUNT; ++decals) {
       for (uint32_t probes = 0;
@@ -78,7 +199,7 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
                   renderer->custom_library, name, MTLPixelFormatRGBA16Float,
                   sun_format, VKR_METAL_PACKET_BLEND_NONE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-                  VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                  VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
                   renderer->tiled_sample_count, constants, label);
           string_format(name, sizeof(name), "%s_%s", graph->function,
                         tiled_lighting[i].coverage[decals][probes]);
@@ -88,7 +209,7 @@ vkr_metal_packet_custom_create(VkrMetalPacketRenderer *renderer, uint32_t slot,
                   renderer->custom_library, name, MTLPixelFormatRGBA16Float,
                   sun_format, VKR_METAL_PACKET_BLEND_COVERAGE,
                   VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT,
-                  VKR_METAL_PACKET_ABI_DRAW_ROOT, true_v,
+                  VKR_METAL_PACKET_ABI_RECORD_COUNT, true_v,
                   renderer->tiled_sample_count, constants, label);
           ok = graph->forward[variant][decals][probes][i] != nil &&
                graph->coverage[variant][decals][probes][i] != nil;
@@ -309,6 +430,7 @@ vkr_metal_packet_background_wait(VkrMetalPacketRenderer *renderer)
   }
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_brdf_job);
   (void)vkr_job_wait(renderer->job_system, renderer->tiled_sun_job);
+  (void)vkr_job_wait(renderer->job_system, renderer->custom_compile_job);
 }
 
 /* This frame's ready Standard kinds (ADR-129), bit
@@ -569,6 +691,10 @@ vkr_metal_packet_custom_release(VkrMetalPacketRenderer *renderer)
   }
   [renderer->custom_library release];
   renderer->custom_library = nil;
+  [renderer->custom_compiled release];
+  renderer->custom_compiled = nil;
+  [renderer->custom_compiled_source release];
+  renderer->custom_compiled_source = nil;
 }
 
 void vkr_metal_packet_renderer_request_custom_reload(

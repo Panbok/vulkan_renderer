@@ -1105,6 +1105,16 @@ struct VkrMetalPacketRenderer {
      frame preparation reloads it. */
   char custom_library_path[VKR_METAL_CUSTOM_LIBRARY_PATH];
   VkrAtomicBool custom_reload_requested;
+  /* Without an offline compile (no Metal Toolchain), `vkr_bakery
+     materials` leaves the library's source beside the missing metallib
+     and a job compiles it: the library it gave and the text it compiled,
+     which a reload takes while that text is still the file's. Written by
+     the job before `custom_compiling` clears, read on the render thread
+     after it does. */
+  id<MTLLibrary> custom_compiled;
+  NSString *custom_compiled_source;
+  VkrAtomicBool custom_compiling;
+  VkrJobHandle custom_compile_job;
   /* Borrowed job system for background pipeline creation; NULL creates
      pipelines on the requesting thread. Detached before its owner shuts it
      down (vkr_metal_packet_renderer_detach_jobs). */

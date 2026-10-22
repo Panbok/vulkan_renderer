@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-20
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -54,6 +54,12 @@ The owner settled three points on 2026-10-09:
    - vector nodes: split and combine;
    - UV nodes: tile and offset, and world planar.
 
+   A normal map reads a texture's RGB or math over normal textures' RGB,
+   such as the mean of two scrolled ripple layers: the decode rebuilds z
+   from the mixed x and y, and each texture in the expression binds as a
+   normal texture. A texture that feeds both a normal map and a colour is
+   refused.
+
    A Custom graph writes base colour, opacity, metallic, roughness,
    occlusion, normal and emissive, and takes the BRDF extension values
    from constants ([ADR-113](113-brdf-material-extensions.md)). Clearcoat,
@@ -80,6 +86,14 @@ The owner settled three points on 2026-10-09:
    - More graphs than the budget reports `VKR-MAT-0002`.
    - The summary event counts a compile as work, so the editor can tell a
      rebuild from an up-to-date library.
+   - Without the offline compiler (Xcode installs the Metal Toolchain as a
+     separate component), Bakery writes the source, removes the stale
+     metallib and succeeds. The renderer then compiles
+     `project_materials.metal` with the engine library's Metal 4 compiler
+     on a job (about 4 to 5 s on an M1 Pro for 2 graphs over the engine
+     source, 2026-10-22). Custom materials draw their fallback until that
+     job's reload; a reload while its text is unchanged reuses the
+     library, and changed text compiles again.
 5. **Rows.** Each Metal material row gains a 256-byte Custom segment,
    `VkrMetalPacketCustomMaterial`: 8 texture references, 8 samplers and 8
    `float4` parameters. The frame root reaches it through `custom_materials`
@@ -97,6 +111,12 @@ The owner settled three points on 2026-10-09:
    calls `vkr_renderer_detach_jobs` before it shuts the job system down
    ([ADR-118](118-renderer-libc-boundary.md)).
    `vkr_renderer_get_pipeline_stats` reports the graphs still pending.
+   The vertex ABI check runs; the fragment one does not, because Metal 4
+   reflects no fragment bindings for the generated entries though they
+   read the draw root at buffer 1 (seen 2026-10-22, after the 2026-10-09
+   evidence below passed it). The entries instantiate the engine's forward
+   template over the same source, whose Standard pipelines check that
+   root.
 7. **Drawing.** Each frame takes a ready mask of the slots whose pipelines
    exist and allocates one `VkrMetalCustomCompaction` table (8,992 bytes)
    in its upload ring. Its second plane holds the draws whose material
@@ -248,6 +268,17 @@ streets were bound by a surface theme to Custom graph instances
   - Vulkan native execution: Vulkan draws the fallback.
   - Register counts of the Custom variants.
   - A world-partition cell with Custom graphs.
+
+- On 2026-10-22 (Release, Apple M1 Pro, macOS 26 without the Metal
+  Toolchain, headless Level Design Test editor): `xcrun metal` failed, so
+  every Custom material drew its fallback; the pipelines also failed the
+  fragment ABI check with "root binding 1 missing". After the source
+  fallback and the check change, a two-layer ripple water graph (2
+  samples, 40 pipelines) compiled from source in 4.3 to 5.0 s, its
+  pipelines were ready in 6.5 s, and the lake showed both scrolling
+  layers. `run_material_graph_tests` covers the blended normal map: both
+  textures bind as normal textures, and one that also feeds a colour is
+  refused.
 
 ## Alternatives considered
 

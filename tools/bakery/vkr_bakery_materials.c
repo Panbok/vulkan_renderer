@@ -73,6 +73,18 @@ static int materials_compare(const void *a, const void *b) {
   return strcmp((const char *)a, (const char *)b);
 }
 
+/* Whether the offline Metal compiler runs: Xcode installs the Metal
+   Toolchain as a separate component, and without it `xcrun metal` fails
+   before it reads any source. */
+static bool8_t materials_offline_compiler(void) {
+  static const char *const probe[] = {"-sdk", "macosx", "metal", "--version"};
+  char output[4096];
+  int32_t exit_code = -1;
+  return vkr_platform_process_capture("xcrun", probe, ArrayCount(probe), NULL,
+                                      output, sizeof(output), &exit_code) &&
+         exit_code == 0;
+}
+
 /* Runs `xcrun` with `arguments`, printing its output on failure. */
 static bool8_t materials_xcrun(const char *const *arguments, uint32_t count) {
   char output[16384];
@@ -245,16 +257,30 @@ int vkr_bakery_cmd_materials(VkrBakeryCli *cli) {
       (uint64_t)header + library_length + generated_length;
   free(library);
 
-  /* An unchanged source with its library in place needs no compile. */
+  /* An unchanged source with its library in place needs no compile; so
+     does one the renderer compiles, which has no library. */
+  const bool8_t offline = materials_offline_compiler();
   uint8_t *previous = NULL;
   uint64_t previous_length = 0u;
   const bool8_t unchanged =
       vkr_bakery_read_file(paths[1], 0u, &previous, &previous_length) &&
       previous_length == text_length &&
       MemCompare(previous, text, text_length) == 0 &&
-      vkr_bakery_is_file(paths[3]);
+      (vkr_bakery_is_file(paths[3]) || !offline);
   free(previous);
-  if (!unchanged) {
+  /* Without the offline compiler the renderer compiles the source when it
+     finds no metallib (vkr_metal_packet_custom.inc): keep the source, drop
+     a library that would no longer match it. */
+  bool8_t runtime_compile = false_v;
+  if (!unchanged && !offline) {
+    runtime_compile = true_v;
+    if (!vkr_bakery_write_file_atomic(paths[1], text, text_length)) {
+      free(text);
+      code = VKR_BAKERY_EXIT_FAILED;
+      goto cleanup;
+    }
+    (void)vkr_bakery_remove_file(paths[3]);
+  } else if (!unchanged) {
     /* The library repeats the engine's source, whose helpers serve entries
        it leaves out. The new library replaces the old one only once it
        linked, so a renderer never loads a partial file and a failed compile
@@ -312,7 +338,10 @@ int vkr_bakery_cmd_materials(VkrBakeryCli *cli) {
   vkr_bakery_print(
       "vkr_bakery materials: %u Custom graphs%s, %s%s\n", function_count,
       function_count > VKR_MATERIAL_CUSTOM_BUDGET ? " (over the budget)" : "",
-      unchanged ? "up to date: " : "compiled ", paths[3]);
+      unchanged         ? "up to date: "
+      : runtime_compile ? "no offline Metal compiler; the renderer compiles "
+                        : "compiled ",
+      runtime_compile ? paths[1] : paths[3]);
   vkr_bakery_event_summary(1u, 0u, 0u, unchanged ? 1u : 0u,
                            vkr_bakery_events_elapsed_ms());
   if (function_count > VKR_MATERIAL_CUSTOM_BUDGET || failed) {
