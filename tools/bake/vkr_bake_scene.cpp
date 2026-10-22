@@ -25,7 +25,9 @@ extern "C" {
 
 namespace {
 
-constexpr uint32_t k_max_scene_entities = 65536u;
+/* Room for a scene file's VKR_SCENE_EDIT_CREATED_MAX (131,072) created
+   objects over its base document, which the effective bake scene merges. */
+constexpr uint32_t k_max_scene_entities = 262144u;
 constexpr uint32_t k_max_transform_depth = 256u;
 /* The runtime's BRUSH_MOVER_DEPTH_MAX: a brush deeper than this below its
    mover finds none and stays static there. */
