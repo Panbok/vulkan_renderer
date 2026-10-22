@@ -361,8 +361,9 @@ Put the checks in the same `level_run.py` plan as the writes, each with
    `hidden` (collision between the camera and the point); judge look and
    scale from the picture, not positions. In the designer's windowed
    editor a capture waits until they stop working; capture-heavy work
-   belongs in a headless editor. Cmd `grid off` before judging scenery;
-   a headless editor starts with the grid on.
+   belongs in a headless editor. Cmd `grid off` and `view.tool_brushes
+   off` (clip and trigger brushes) before judging scenery; a headless
+   editor starts with the grid on.
 
 6. Walk the routes with the player (`vkr-editor-cmd`, Drive the player):
    steer toward points from `query.reachable` paths, or your own where it

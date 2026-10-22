@@ -1418,9 +1418,11 @@ bool8_t vkr_scene_texture_extent_valid(uint32_t extent);
 #define VKR_SCENE_SHOW_HIDE_STATIC_MESHES (1u << 0)
 #define VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES (1u << 1)
 #define VKR_SCENE_SHOW_HIDE_SHAPES (1u << 2)
+/* Clip and trigger brushes, which only the editor draws (ADR-084). */
+#define VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES (1u << 3)
 #define VKR_SCENE_SHOW_HIDE_ALL                                                \
   (VKR_SCENE_SHOW_HIDE_STATIC_MESHES | VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES |   \
-   VKR_SCENE_SHOW_HIDE_SHAPES)
+   VKR_SCENE_SHOW_HIDE_SHAPES | VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES)
 
 /* Streaming sources one scene follows. */
 #define VKR_SCENE_STREAM_SOURCES_MAX 4u

@@ -967,6 +967,16 @@ static bool8_t cmd_run_view(CmdContext *ctx, const CmdDef *def, String8 arg) {
       }
       string_format(ctx->message, sizeof(ctx->message), "Freeze culling %s",
                     next.freeze_culling ? "on" : "off");
+    } else if (def->value == 6u) {
+      bool8_t shown = !(next.hidden_kinds & VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES);
+      if (!cmd_switch(ctx, word, shown, &shown)) {
+        return false_v;
+      }
+      next.hidden_kinds =
+          shown ? next.hidden_kinds & ~VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES
+                : next.hidden_kinds | VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES;
+      string_format(ctx->message, sizeof(ctx->message),
+                    "Clip and trigger brushes %s", shown ? "shown" : "hidden");
     } else if (!cmd_switch(ctx, word, next.grid_enabled, &next.grid_enabled))
       return false_v;
   } else {
@@ -2610,6 +2620,10 @@ static const CmdDef cmd_defs[] = {
      "Apply the game's draw distances in the Scene, or draw every object at "
      "any distance",
      cmd_run_view, CMD_COUNT, 4u},
+    {"view.tool_brushes", CMD_ARG_SWITCH, "[on|off|toggle]",
+     "Show or hide clip and trigger brushes in the Scene, to see the level "
+     "as the game draws it",
+     cmd_run_view, CMD_COUNT, 6u},
     {"view.freeze_culling", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Keep culling from where the camera stands now, with its frustum drawn, "
      "while the camera moves on",

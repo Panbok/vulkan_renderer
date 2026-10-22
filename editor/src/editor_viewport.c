@@ -154,6 +154,8 @@ static const struct {
     {"Static meshes", VIEW_SHOW_KIND, VKR_SCENE_SHOW_HIDE_STATIC_MESHES},
     {"Animated meshes", VIEW_SHOW_KIND, VKR_SCENE_SHOW_HIDE_ANIMATED_MESHES},
     {"Shapes", VIEW_SHOW_KIND, VKR_SCENE_SHOW_HIDE_SHAPES},
+    {"Clip and trigger brushes", VIEW_SHOW_KIND,
+     VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES},
     {"Object icons", VIEW_SHOW_HEADER, 0},
     {"All icons", VIEW_SHOW_ICONS, 0},
     {"Directional lights", VIEW_SHOW_ICON_KIND,

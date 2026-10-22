@@ -5615,10 +5615,13 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   const uint32_t hidden = state->view_state.hidden_kinds;
   const bool8_t replaying_play = sample_replaying_play(application);
   /* Clip and trigger brushes draw while the editor edits, not during Play,
-     its playback or in a game (ADR-084). */
+     its playback or in a game (ADR-084), and not while the Show filter
+     hides them. */
   const bool8_t volumes = application->editor_viewport.enabled &&
                           !application->editor_viewport.simulation_running &&
                           !replaying_play;
+  const bool8_t tool_brushes =
+      volumes && !(hidden & VKR_SCENE_SHOW_HIDE_TOOL_BRUSHES);
   /* The Scene's draw distance switch likewise applies only while the editor
      edits: Play draws what the game draws. */
   application->draw_distance_off =
@@ -5639,7 +5642,7 @@ static void sample_show_filter_apply(VkrStandardSceneRuntime *application) {
   for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
     vkr_scene_brush_set_greybox_view(scenes[i], state->view_state.greybox_view);
     vkr_scene_set_editor_hidden_kinds(scenes[i], hidden);
-    vkr_scene_set_editor_volumes(scenes[i], volumes);
+    vkr_scene_set_editor_volumes(scenes[i], tool_brushes);
     (void)vkr_scene_set_editor_hidden(
         scenes[i], staged ? &stage_isolate : state->hidden.entities,
         staged ? 1u : hidden_count, staged || state->hidden.isolate);
