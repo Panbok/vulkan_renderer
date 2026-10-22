@@ -354,16 +354,34 @@ void vkr_editor_bake_settings_window_build(VkrEditorUi *editor,
     settings->diffuse.bounds_max = vec3_zero();
   }
   y += 36.0f;
-  VkrUiWidgetConfig bake = vkr_editor_details_widget(
-      VKR_EDITOR_DETAILS_PAD_PT, y, Min(200.0f, width - 20.0f), 26.0f);
+
+  /* Bake lighting relights only what edits reach; Full rebake beside it
+     starts the same bake with every lightmap baked again. */
+  const float32_t bake_width = Min(200.0f, half);
+  VkrUiWidgetConfig bake = vkr_editor_details_widget(VKR_EDITOR_DETAILS_PAD_PT,
+                                                     y, bake_width, 26.0f);
   vkr_editor_action_style(&bake, editor->heading_font);
   bake.icon = VKR_UI_ICON_BAKERY;
   bake.icon_size_pt = 13.0f;
+  vkr_editor_button_size(&bake);
   bake.tooltip = string8_lit("Bake the open project scene's lighting with "
-                             "these settings");
+                             "these settings, relighting only what changed");
   if (vkr_ui_button(ui, string8_lit("bake.run"), string8_lit("Bake lighting"),
                     &bake)) {
     vkr_editor_command_execute(CMD_SCENE_BAKE, editor, frame);
+  }
+  VkrUiWidgetConfig full = vkr_editor_details_widget(
+      VKR_EDITOR_DETAILS_PAD_PT * 2.0f + bake_width, y, bake_width, 26.0f);
+  vkr_editor_action_style(&full, editor->heading_font);
+  full.icon = VKR_UI_ICON_REFRESH;
+  full.icon_size_pt = 13.0f;
+  vkr_editor_button_size(&full);
+  full.tooltip = string8_lit("Bake lightmaps again from scratch instead of "
+                             "relighting only what changed");
+  if (vkr_ui_button(ui, string8_lit("bake.run_full"),
+                    string8_lit("Full rebake"), &full)) {
+    (void)vkr_editor_bakery_request_scene_bake(editor->bakery, true_v, true_v,
+                                               true_v);
   }
 }
 

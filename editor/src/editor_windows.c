@@ -1056,7 +1056,8 @@ void vkr_editor_command_execute(EditorCommand command, VkrEditorUi *editor,
     vkr_editor_dock_toggle(frame->dock, VKR_UI_DOCK_PANEL_BUILD);
     break;
   case CMD_SCENE_BAKE:
-    (void)vkr_editor_bakery_request_scene_bake(editor->bakery, true_v, true_v);
+    (void)vkr_editor_bakery_request_scene_bake(editor->bakery, true_v, true_v,
+                                               false_v);
     break;
   default:
     break;

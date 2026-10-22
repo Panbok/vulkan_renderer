@@ -102,6 +102,9 @@ struct VkrEditorBakery {
   bool8_t reflection;
   bool8_t diffuse;
   bool8_t lightmap;
+  /* The requested scene bake rebakes every lightmap instead of relighting
+     only what edits reach; one request only. */
+  bool8_t lightmap_full;
   bool8_t lightmap_uvs;
   uint8_t source_paths[EDITOR_BAKE_KIND_COUNT][EDITOR_BAKERY_PATH_CAPACITY];
   uint32_t source_lengths[EDITOR_BAKE_KIND_COUNT];
@@ -1800,6 +1803,7 @@ static void editor_bakery_managed_setup(VkrEditorBakery *bakery,
   editor_bakery_tab_style(&widget, heading, true_v);
   if (vkr_ui_button(ui, string8_lit("prepare"),
                     string8_lit("Prepare selected scene outputs"), &widget)) {
+    bakery->lightmap_full = false_v;
     bakery->scene_bake_requested = true_v;
   }
   widget = editor_bakery_widget(7, 0);
@@ -1832,12 +1836,14 @@ void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
 
 bool8_t vkr_editor_bakery_request_scene_bake(VkrEditorBakery *bakery,
                                              bool8_t reflection,
-                                             bool8_t diffuse) {
+                                             bool8_t diffuse,
+                                             bool8_t lightmap_full) {
   if (!vkr_editor_bakery_scene_bake_available(bakery)) {
     return false_v;
   }
   bakery->reflection = reflection;
   bakery->diffuse = diffuse;
+  bakery->lightmap_full = lightmap_full;
   bakery->scene_bake_requested = true_v;
   return true_v;
 }
@@ -1849,14 +1855,18 @@ bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery) {
 
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
                                           bool8_t *reflection, bool8_t *diffuse,
-                                          bool8_t *lightmap) {
+                                          bool8_t *lightmap,
+                                          bool8_t *lightmap_full) {
   if (!bakery || !bakery->scene_bake_requested) {
     return false_v;
   }
   bakery->scene_bake_requested = false_v;
   *reflection = bakery->reflection;
   *diffuse = bakery->diffuse;
-  *lightmap = bakery->lightmap;
+  /* A full rebake bakes lightmaps whatever the panel's option. */
+  *lightmap = bakery->lightmap || bakery->lightmap_full;
+  *lightmap_full = bakery->lightmap_full;
+  bakery->lightmap_full = false_v;
   return true_v;
 }
 

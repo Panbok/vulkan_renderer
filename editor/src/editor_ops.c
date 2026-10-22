@@ -14743,12 +14743,19 @@ static VkrEditorOpStatus ops_run_lighting_bake(OpsContext *ctx) {
                           &next.diffuse)) {
     return VKR_EDITOR_OP_DONE;
   }
+  /* A full rebake bakes every lightmap again, so it implies 'lightmap'. */
+  const bool8_t full = ops_arg_bool(args, "full", false_v);
+  const bool8_t lightmap =
+      ops_arg_bool(args, "lightmap",
+                   full || vkr_editor_bakery_lightmap(ctx->editor->bakery));
+  if (full && !lightmap) {
+    ops_fail(ctx, OPS_INVALID,
+             "'full' rebakes lightmaps, so 'lightmap' cannot be false");
+    return VKR_EDITOR_OP_DONE;
+  }
   *settings = next;
-  if (!vkr_editor_projects_bake_lighting(
-          ctx->editor->projects, ctx->editor, ctx->frame,
-          ops_arg_bool(args, "lightmap",
-                       vkr_editor_bakery_lightmap(ctx->editor->bakery)),
-          0u)) {
+  if (!vkr_editor_projects_bake_lighting(ctx->editor->projects, ctx->editor,
+                                         ctx->frame, lightmap, 0u, full)) {
     ops_fail(ctx, OPS_REJECTED, "%s",
              vkr_editor_projects_message(ctx->editor->projects));
     return VKR_EDITOR_OP_DONE;
@@ -14756,6 +14763,8 @@ static VkrEditorOpStatus ops_run_lighting_bake(OpsContext *ctx) {
   ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
   ops_set(ctx, ctx->call->result, "started",
           vkr_bakery_json_bool(ops_arena(ctx), true_v));
+  ops_set(ctx, ctx->call->result, "full",
+          vkr_bakery_json_bool(ops_arena(ctx), full));
   ops_set(ctx, ctx->call->result, "lightmap_settings",
           ops_component_json(ctx, &vkr_editor_lightmap_settings_type,
                              &settings->lightmap));
@@ -20513,7 +20522,10 @@ static const OpsDef s_ops[] = {
     {"lighting.bake",
      "Start the open project scene's Bake lighting job: reflection probes, "
      "the diffuse volume and, with 'lightmap' (default the Bakery panel's "
-     "option), lightmaps. 'lightmap_settings' (samples, max_depth, seed, "
+     "option), lightmaps. Lightmaps relight only what edits reach and "
+     "reuse the last set when nothing changed; 'full' true rebakes every "
+     "lightmap (and implies 'lightmap'). 'lightmap_settings' (samples, "
+     "max_depth, seed, "
      "page_size, texels_per_unit, direct_texels_per_unit, denoise "
      "default|on|off, "
      "denoise_iterations, indirect_clamp) and 'diffuse_settings' "
@@ -20521,7 +20533,8 @@ static const OpsDef s_ops[] = {
      "photon_radius) replace the Bake settings window's values; 0 keeps "
      "Bakery's default.",
      "{\"type\":\"object\",\"properties\":{\"lightmap\":{\"type\":"
-     "\"boolean\"},\"lightmap_settings\":{\"type\":\"object\"},"
+     "\"boolean\"},\"full\":{\"type\":\"boolean\"},"
+     "\"lightmap_settings\":{\"type\":\"object\"},"
      "\"diffuse_settings\":{\"type\":\"object\"}}}",
      ops_run_lighting_bake, NULL},
     {"env.describe",

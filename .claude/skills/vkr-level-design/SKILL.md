@@ -223,7 +223,9 @@ structures, and put a cutout around a room before the ground reaches it.
   `scene.bake lightmaps 64`, which holds until the bake ends and the scene
   reopens (about 3 minutes for 3,200 brushes and 155 lamps on an M1) and
   answers `error:` when it fails. Baked lights always cast shadows, so they
-  do not leak through walls; brushes under a mover are not baked.
+  do not leak through walls; brushes under a mover are not baked. A rebake
+  relights only what edits reach; `scene.bake lightmaps 64 full` bakes every
+  lightmap again.
 - Brushes added after a bake have no lightmap and draw unlit until the next
   one: rebake after geometry edits before judging how a space looks.
 - Bakes leave terrain out; every brush and mesh widens the diffuse volume's

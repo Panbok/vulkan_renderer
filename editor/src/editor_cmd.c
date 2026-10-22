@@ -1719,15 +1719,31 @@ static bool8_t cmd_run_scene_create(CmdContext *ctx, const CmdDef *def,
   return true_v;
 }
 
-/* `scene.bake [lightmaps]`: the Bake lighting job for the open project scene
-   (ADR-088). Lightmaps follow the Bakery panel's option unless `lightmaps`
-   asks for them; a bake writes only the set of this machine's pipeline
-   class. The queue holds until the bake and the scene reload after it
-   settle, then reports the outcome. */
+/* `scene.bake [lightmaps [samples]] [full]`: the Bake lighting job for the
+   open project scene (ADR-088). Lightmaps follow the Bakery panel's option
+   unless `lightmaps` or `full` asks for them; a bake writes only the set of
+   this machine's pipeline class and relights only what edits reach unless
+   `full` rebakes every lightmap. The queue holds until the bake and the
+   scene reload after it settle, then reports the outcome. */
 static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
                                   String8 arg) {
-  /* "lightmaps" and an optional sample count per texel. */
-  const String8 text = cmd_trim(arg);
+  /* A trailing "full" word, then "lightmaps" and an optional sample count
+     per texel. */
+  String8 text = cmd_trim(arg);
+  bool8_t full = false_v;
+  const uint64_t full_length = 4u;
+  if (text.length >= full_length) {
+    const String8 tail = {.str = text.str + text.length - full_length,
+                          .length = full_length};
+    const bool8_t separated =
+        text.length == full_length ||
+        cmd_space(text.str[text.length - full_length - 1u]);
+    if (separated && vkr_string8_equals_cstr(&tail, "full")) {
+      full = true_v;
+      text = cmd_trim(
+          (String8){.str = text.str, .length = text.length - full_length});
+    }
+  }
   uint64_t split = 0u;
   while (split < text.length && text.str[split] != ' ') {
     ++split;
@@ -1746,10 +1762,10 @@ static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
                   def->usage);
     return false_v;
   }
-  const bool8_t lightmap =
-      word.length != 0u || vkr_editor_bakery_lightmap(ctx->editor->bakery);
+  const bool8_t lightmap = word.length != 0u || full ||
+                           vkr_editor_bakery_lightmap(ctx->editor->bakery);
   if (!vkr_editor_projects_bake_lighting(ctx->editor->projects, ctx->editor,
-                                         ctx->frame, lightmap, samples)) {
+                                         ctx->frame, lightmap, samples, full)) {
     string_format(ctx->message, sizeof(ctx->message), "%s",
                   vkr_editor_projects_message(ctx->editor->projects));
     return false_v;
@@ -1757,7 +1773,9 @@ static bool8_t cmd_run_scene_bake(CmdContext *ctx, const CmdDef *def,
   ctx->editor->cmd_holding_bake = true_v;
   string_format(ctx->message, sizeof(ctx->message),
                 "Baking the diffuse volume%s, then reflection probes",
-                lightmap ? ", this machine's pipeline's lightmaps" : "");
+                full       ? ", every lightmap of this machine's pipeline"
+                : lightmap ? ", this machine's pipeline's lightmaps"
+                           : "");
   return true_v;
 }
 
@@ -2760,11 +2778,13 @@ static const CmdDef cmd_defs[] = {
     {"scene.create", CMD_ARG_TEXT, "<name>",
      "Create an empty scene in the project and open it", cmd_run_scene_create,
      CMD_COUNT, 0u, .holds = true_v},
-    {"scene.bake", CMD_ARG_TEXT, "[lightmaps [samples]]",
+    {"scene.bake", CMD_ARG_TEXT, "[lightmaps [samples]] [full]",
      "Bake the open project scene's lighting as Bake lighting does; "
      "lightmaps adds the lightmaps of this machine's pipeline class, "
      "keeping the other class's set, whatever the Bakery option, traced with "
-     "samples per texel (1-4096; the baker's default is 16)",
+     "samples per texel (1-4096; the baker's default is 64). Lightmaps "
+     "relight only what edits reach; full rebakes every one (and adds "
+     "lightmaps)",
      cmd_run_scene_bake, CMD_COUNT, 0u, .holds = true_v},
     {"scene.inherit", CMD_ARG_SWITCH, "[on|off|toggle]",
      "Whether the open scene uses the World's objects where it has none",

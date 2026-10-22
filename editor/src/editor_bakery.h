@@ -53,14 +53,17 @@ void vkr_editor_bakery_set_managed(VkrEditorBakery *bakery, bool8_t enabled,
                                    const char *workspace);
 /** Asks the open writable scene to bake its lighting, as the panel's Prepare
  * does; the Scene menu offers it once Bakery leaves the main navigation.
- * Lightmaps (ADR-087) follow the panel's setting. */
+ * Lightmaps (ADR-087) follow the panel's setting; `lightmap_full` adds them
+ * and rebakes every one instead of relighting only what edits reach. */
 bool8_t vkr_editor_bakery_request_scene_bake(VkrEditorBakery *bakery,
                                              bool8_t reflection,
-                                             bool8_t diffuse);
+                                             bool8_t diffuse,
+                                             bool8_t lightmap_full);
 bool8_t vkr_editor_bakery_scene_bake_available(const VkrEditorBakery *bakery);
 bool8_t vkr_editor_bakery_take_scene_bake(VkrEditorBakery *bakery,
                                           bool8_t *reflection, bool8_t *diffuse,
-                                          bool8_t *lightmap);
+                                          bool8_t *lightmap,
+                                          bool8_t *lightmap_full);
 /** Whether scene bakes add lightmaps (ADR-088), as the managed panel's
  * "Scene lightmaps" option sets it. */
 bool8_t vkr_editor_bakery_lightmap(const VkrEditorBakery *bakery);

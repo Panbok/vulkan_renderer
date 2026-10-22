@@ -290,6 +290,9 @@ struct VkrEditorProjects {
   /* Lightmap samples per texel a Cmd bake asks for; zero keeps the
      settings' count. */
   uint32_t bake_lightmap_samples;
+  /* The next bake_scene job rebakes every lightmap instead of relighting
+     only what edits reach; one job only, never saved. */
+  bool8_t bake_lightmap_full;
   /* The Bake settings window's values every bake sends (ADR-100). */
   VkrEditorBakeSettings bake_settings;
   /* Model imports and rebuilds cook lightmap UVs (the Bakery setting). */
@@ -1697,6 +1700,7 @@ static void project_reset_scene_draft(VkrEditorProjects *projects) {
   projects->bake_reflection = false_v;
   projects->bake_diffuse = false_v;
   projects->bake_lightmap = false_v;
+  projects->bake_lightmap_full = false_v;
   projects->prepare_assets = true_v;
   projects->include_scene = true_v;
   projects->operation[0] = '\0';
@@ -2035,6 +2039,9 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
          vkr_json_writer_end_object(writer);
     ok = ok && vkr_editor_bake_settings_write(writer, &projects->bake_settings,
                                               projects->bake_lightmap_samples);
+    if (projects->bake_lightmap_full) {
+      ok = ok && project_json_bool(writer, "lightmap_full", true_v);
+    }
   }
   if (projects->operation[0]) {
     ok = ok && project_json_text(writer, "name", projects->action_name) &&
@@ -2790,7 +2797,11 @@ static void project_start_job(VkrEditorProjects *projects, VkrEditorUi *editor,
   projects->lightmap_uvs = vkr_editor_bakery_lightmap_uvs(editor->bakery) ||
                            projects->force_lightmap_uvs;
   projects->force_lightmap_uvs = false_v;
-  if (!project_write_job(projects, frame, create)) {
+  const bool8_t written = project_write_job(projects, frame, create);
+  /* Only the request written now asks for a full lightmap rebake; Retry
+     resubmits that request as written. */
+  projects->bake_lightmap_full = false_v;
+  if (!written) {
     return;
   }
   project_yield_finalize(projects, editor);
@@ -5325,7 +5336,7 @@ void vkr_editor_projects_update(VkrEditorProjects *projects,
       !string_equals(projects->operation, "delete_scene") &&
       vkr_editor_bakery_take_scene_bake(
           editor->bakery, &projects->bake_reflection, &projects->bake_diffuse,
-          &projects->bake_lightmap) &&
+          &projects->bake_lightmap, &projects->bake_lightmap_full) &&
       projects->project &&
       projects->active_scene < projects->project->scene_count) {
     projects->pending_scene = projects->active_scene;
@@ -8327,7 +8338,8 @@ vkr_editor_projects_bake_settings(VkrEditorProjects *projects) {
 bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
                                           VkrEditorUi *editor,
                                           const VkrSampleUiFrame *frame,
-                                          bool8_t lightmap, uint32_t samples) {
+                                          bool8_t lightmap, uint32_t samples,
+                                          bool8_t full) {
   if (!projects) {
     return false_v;
   }
@@ -8363,6 +8375,7 @@ bool8_t vkr_editor_projects_bake_lighting(VkrEditorProjects *projects,
   projects->bake_diffuse = true_v;
   projects->bake_lightmap = lightmap;
   projects->bake_lightmap_samples = samples;
+  projects->bake_lightmap_full = full;
   projects->pending_scene = projects->active_scene;
   string_format(projects->operation, sizeof(projects->operation), "bake_scene");
   project_start_job(projects, editor, frame, false_v);
