@@ -222,9 +222,14 @@ models:
 4. Per space: wear along each wall's base, a few floor scuffs or stains,
    streaks and damp in service areas; posters, noticeboards and whiteboards
    where people work; hazard, lane and keep-clear markings where vehicles
-   run; exit signs over egress doors.
-5. Wall fixtures (alarms, first aid, cameras, panels) and runs (cable trays,
-   pipes) are Blender models ([references/blender-models.md](references/blender-models.md)).
+   run; exit signs over egress doors. Then a functional layer keyed to the
+   fixtures' poses: keep-clear zones in front of electrical panels, red
+   zones under extinguishers, dock boxes in front of chargers, flow labels
+   on each pipe's front (its offset plus radius from the wall), hand marks
+   beside door handles and drains in wet rooms (never on carpet).
+5. Wall fixtures (alarms, first aid, cameras, panels), ceiling services
+   (detectors, sprinklers, speakers, one model per 3 m strip, offset from
+   the light panels) and runs (cable trays, pipes) are Blender models ([references/blender-models.md](references/blender-models.md)).
    Place small fixtures without `lightmap_uvs`, so no rebake is needed.
    Validate each run segment: the wall behind its ends and middle, and the
    room tall enough for it.
@@ -321,6 +326,23 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   frames as above with raycasts (`query.raycast` at wall height, rays
   above table tops) to put wall items such as clocks, displays and badge
   readers on the wall face, back to the wall.
+- Delete a brush prop by its group root's id: its child brushes go with it.
+  Then `scene.describe` the prop's region again; pieces that were never
+  parented (a rack's light strip) stay behind. Removed brushes leave
+  their baked shadows on walls and floors until the next bake.
+- One model can take a colour per placement: assign a different library
+  instance to its colour slot on each copy (drums in worn blue, grey and
+  beige). A model with more than eight materials keeps its own glTF
+  materials past slot 7: build library surfaces first and leave the extra
+  slots to colours no library material needs (food in a servery's pans).
+- Mount wall screens 1 to 2 cm proud of the wall. Three 1.9 m menu screens
+  placed flush on the cafeteria wall did not draw, and 1 cm off they did
+  (the cause is not yet found).
+- If a placement job fails, the Scene shows "Preparation failed" and
+  `editor.status` answers `scene.loaded` false: do not save. Reopen the
+  scene, check the entity count and the edits that ran before the job, and
+  place again; one such failure (a validation child exiting 127) passed on
+  the retry.
 
 ## Lights and bakes
 

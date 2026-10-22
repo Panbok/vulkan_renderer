@@ -99,6 +99,9 @@ owns placement, materials and bakes.
   (`bm.faces.layers.int["cell"]`): `from_mesh` can add layers and a handle
   kept from before then reads another layer, so labels added before a
   cable showed the wrong cell.
+- Figures and displays inside enclosures: leave the front open or keep
+  glass to a thin band, because tinted glass hides what the enclosure is
+  for (an HEV suit in its pod). `Builder.sphere` makes helmets and domes.
 - Soft furnishings are boxes bevelled by 40 to 50% of their smallest size
   in six segments, in a fabric material; cables and hoses are bezier
   curves with a bevel depth, converted to mesh (`new_from_object` on the
