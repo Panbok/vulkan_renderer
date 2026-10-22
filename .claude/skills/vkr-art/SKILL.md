@@ -255,8 +255,9 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   saved edits that bind to nothing (kept and written back unchanged), and
   `save_blocked` with `overlay_problem` means the edit file did not load;
   the editor then refuses to save, so fix the file before editing more.
-- A glTF `COLOR_0` multiplies a plain material's base colour, so keep it
-  white there; on surfaces that take a layered material with the
+- A glTF `COLOR_0` multiplies a plain material's base colour, so bake
+  ambient occlusion into it there (white where nothing should darken); on
+  surfaces that take a layered material with the
   `vertex_color` mask, RGBA weigh its layers 0 to 3. A painted-metal graph
   whose layer 1 is chipped steel and layer 2 grime, with the weights baked
   in Blender (edges and floor height), wears every prop without textures

@@ -64,18 +64,51 @@ owns placement, materials and bakes.
 - Put chips on bevel strips only (faces whose shortest edge is under about
   9 mm), scaled by a cheap position noise; put grime on corners below
   0.5 m, falling to zero at that height.
-- Give every face of a plain material white (1, 1, 1, 1): a plain material
-  multiplies its base colour by COLOR_0.
+- A plain material multiplies its base colour by COLOR_0, so its faces
+  carry baked ambient occlusion there (next section), or white
+  (1, 1, 1, 1) where they should stay unchanged.
 - Remove other colour attributes, make the attribute active and the render
   colour, and export with `export_vertex_color="ACTIVE"`. Check the glTF:
   a VEC4 COLOR_0 of 16-bit normalized values, read with the accessor's
   component type.
 
+## Ambient occlusion, labels and soft parts
+
+- Bake ambient occlusion into the plain faces' COLOR_0 with Cycles:
+  `bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")` into a
+  temporary corner attribute, with a large plane just under the origin so
+  feet and plinths darken where they meet the floor, and the world's AO
+  distance about 0.3 m. Store `floor + (1 - floor) * ao` with a floor near
+  0.4, keep layered faces' weights, and keep emissive, screen and label
+  faces white. Remove the temporary attribute before export. The bake
+  takes well under a second per prop. Lightmaps still add the room's
+  occlusion; the vertex term adds the contact shadows a lightmap texel is
+  too coarse for.
+- Printed stickers and plates come from one atlas texture of square cells
+  (logo, hazard signs, barcodes, rack and room plates, serial plates): a
+  thin box of a `labels` material per sticker, a face integer attribute
+  naming its cell, and UVs normalized over each face into that cell with
+  a 2% inset. Make the sticker's aspect match the cell's, stand it 1 to
+  2 mm proud of the surface, and give the material a semi-gloss plain
+  definition with the atlas as `base_color_texture`.
+- Look up `bmesh` custom layers by name after every merge
+  (`bm.faces.layers.int["cell"]`): `from_mesh` can add layers and a handle
+  kept from before then reads another layer, so labels added before a
+  cable showed the wrong cell.
+- Soft furnishings are boxes bevelled by 40 to 50% of their smallest size
+  in six segments, in a fabric material; cables and hoses are bezier
+  curves with a bevel depth, converted to mesh (`new_from_object` on the
+  evaluated object) and merged. Route cables clear of other parts, end
+  them inside what they plug into, and keep them inside the footprint so
+  a placement against a wall does not push them through it.
+
 ## Review before placing
 
 - Render a Workbench preview of each asset (material colour, cavity,
   studio light) and put the previews on one contact sheet; judge shape and
-  proportion there before importing anything.
+  proportion there before importing anything. Material colour shows labels
+  and screens blank: render a second sheet with `color_type` `TEXTURE` to
+  check every label's cell and orientation.
 - After placing, capture the level's rooms with `view.capture` and compare
   each model with its prototype's footprint; fix the model and
   `model.reimport` it rather than moving placements by hand.
