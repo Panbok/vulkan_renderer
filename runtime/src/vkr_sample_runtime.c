@@ -36,6 +36,7 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_animation.h"
 #include "renderer/systems/vkr_scene_brush.h"
+#include "renderer/systems/vkr_scene_material_override.h"
 #include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
@@ -7643,6 +7644,7 @@ vkr_standard_scene_runtime_update_ui(VkrStandardSceneRuntime *application,
     }
     for (uint32_t i = 0; i < ArrayCount(scenes); ++i) {
       vkr_scene_brush_refresh_looks(scenes[i]);
+      vkr_scene_material_override_refresh(scenes[i]);
     }
   }
   if (requests.custom_materials_reload)

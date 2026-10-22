@@ -25,4 +25,7 @@ void vkr_scene_material_override_entity_destroying(VkrScene *scene,
 /* Applies the overrides of changed components and of entities whose mesh
    instance changed. Call after models load. */
 void vkr_scene_material_override_update(VkrScene *scene);
+/* Loads again the overrides that fell back to the default material, as
+   after a material file was written or fixed. */
+void vkr_scene_material_override_refresh(VkrScene *scene);
 void vkr_scene_material_override_shutdown(VkrScene *scene);

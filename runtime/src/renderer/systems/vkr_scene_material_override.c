@@ -23,6 +23,9 @@ typedef struct MaterialOverrideRecord {
   bool8_t loading;
   /* The component changed since its materials reached the instance. */
   bool8_t dirty;
+  /* A named material did not load or publish, so its submesh draws the
+     default material until a refresh loads the file again. */
+  bool8_t fallback;
 } MaterialOverrideRecord;
 
 struct s_VkrSceneMaterialOverrides {
@@ -165,12 +168,16 @@ void vkr_scene_material_override_shutdown(VkrScene *scene) {
 static void override_load(VkrScene *scene, MaterialOverrideRecord *record,
                           const SceneMaterialOverride *value) {
   override_release_loaded(scene, record);
+  record->fallback = false_v;
   for (uint32_t i = 0u; i < VKR_MESH_MATERIAL_OVERRIDE_MAX; ++i) {
     if (value->materials[i][0] == '\0') {
       continue;
     }
     record->loaded[i] =
         vkr_scene_material_load(scene, value->materials[i], &record->owned[i]);
+    if (!record->owned[i]) {
+      record->fallback = true_v;
+    }
   }
   record->loading = true_v;
 }
@@ -202,9 +209,23 @@ static bool8_t override_published(VkrScene *scene,
       }
       record->owned[i] = false_v;
       record->loaded[i] = materials->default_material;
+      record->fallback = true_v;
     }
   }
   return true_v;
+}
+
+void vkr_scene_material_override_refresh(VkrScene *scene) {
+  VkrSceneMaterialOverrides *state =
+      scene ? override_state(scene, false_v) : NULL;
+  if (!state) {
+    return;
+  }
+  for (uint32_t i = 0u; i < state->count; ++i) {
+    if (state->records[i].fallback) {
+      state->records[i].dirty = true_v;
+    }
+  }
 }
 
 void vkr_scene_material_override_update(VkrScene *scene) {

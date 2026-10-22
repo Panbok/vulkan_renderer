@@ -118,7 +118,12 @@ consumer that chose a shader or pipeline.
    [vkr_scene_material_override.c](../../runtime/src/renderer/systems/vkr_scene_material_override.c)
    applies the component once the instance has loaded and its materials
    have published, at most 32 entities an update, and releases the
-   references when the component, the entity or the scene goes. A change
+   references when the component, the entity or the scene goes. A path
+   that does not load or publish draws the default material; a later
+   material write (Details, `material.create`, any document step) loads
+   those components again (`vkr_scene_material_override_refresh`, as
+   brushes forget their fallen-back paths), so a fixed file shows without
+   reopening the scene. A change
    records a static content change bounded by the instance for a static
    caster, so retained static draws repack; a dynamic caster's moves only
    the dynamic generation.
