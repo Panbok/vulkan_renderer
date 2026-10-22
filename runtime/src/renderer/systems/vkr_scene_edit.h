@@ -356,11 +356,19 @@ bool8_t vkr_scene_edit_replace_component(VkrSceneEditState *state,
 VkrEntityId vkr_scene_edit_create(VkrSceneEditState *state, VkrScene *scene,
                                   VkrEntityId parent,
                                   const VkrSceneEditValues *values);
-/** Whether delete can snapshot and restore the entity exactly: it has no
- * children and only identity, name, transform, visibility, light and world
- * components. `reason` receives a static message when it cannot. */
+/** Whether delete can snapshot and restore the entity exactly: it has only
+ * identity, name, transform, visibility, light, world and generated shape
+ * or text components and a mesh instance undo can load again from its file
+ * (not skinned, not of a spawned model), and its only children are its
+ * parts and, for a placed model, its own source nodes, which delete with
+ * it. `reason` receives a static message when it cannot. */
 bool8_t vkr_scene_edit_can_delete(const VkrScene *scene, VkrEntityId entity,
                                   const char **reason);
+/** Delete `entity` with its parts and source nodes as one undo step,
+ * leaves first. A document entity's deletion is saved by source identity,
+ * so the next load removes it again; undo recreates the entities and
+ * requests each mesh from its file (vkr_scene_request_mesh), so it draws
+ * again once the load is ready. */
 bool8_t vkr_scene_edit_delete(VkrSceneEditState *state, VkrScene *scene,
                               VkrEntityId entity);
 /** Whether `entity` is placed and it and its descendants are made only of

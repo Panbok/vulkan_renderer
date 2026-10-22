@@ -187,6 +187,13 @@ vkr_internal void vkr_project_apply_wrapper(VkrProjectJob *job,
 // Effective bake runtime
 // =============================================================================
 
+/* An overlay record that deletes its entity or source node: the editor
+   removed it, so the bake neither draws nor lights with it. */
+vkr_internal bool8_t vkr_project_edit_deleted(const VkrBakeryJson *edit) {
+  bool8_t deleted = false_v;
+  return edit && vkr_bakery_json_get_bool(edit, "deleted", &deleted) && deleted;
+}
+
 /* Visibility state shared by the entity and source-node walks. */
 typedef struct VkrProjectBakeEdits {
   VkrProjectJob *job;
@@ -211,6 +218,7 @@ vkr_internal bool8_t vkr_project_entity_visible(VkrProjectBakeEdits *edits,
   const VkrBakeryJson *edit = edits->wrapper_edits[index];
   const VkrBakeryJson *visible_value = vkr_bakery_json_get(edit, "visible");
   bool8_t local = visible_value ? vkr_project_truthy(visible_value) : true_v;
+  local = local && !vkr_project_edit_deleted(edit);
   const VkrBakeryJson *parent =
       vkr_bakery_json_get(vkr_bakery_json_at(edits->entities, index), "parent");
   const VkrBakeryJson *inherit = vkr_bakery_json_get(edit, "inherit");
@@ -286,6 +294,7 @@ vkr_internal bool8_t vkr_project_node_visible(VkrProjectNodeWalk *walk,
   const VkrBakeryJson *inherit = vkr_bakery_json_get(edit, "inherit");
   const bool8_t visible =
       (visible_value ? vkr_project_truthy(visible_value) : true_v) &&
+      !vkr_project_edit_deleted(edit) &&
       ((!inherit || vkr_project_truthy(inherit)) ? inherited : true_v);
   vkr_bakery_json_set(job->arena, walk->node_visible, key,
                       vkr_bakery_json_bool(job->arena, visible));
@@ -890,6 +899,10 @@ VkrBakeryJson *vkr_project_effective_bake_runtime(VkrProjectJob *job,
   for (uint32_t index = 0u; index < count; ++index, entity = entity->next) {
     if (edits.wrapper_edits[index]) {
       vkr_project_apply_wrapper(job, entity, edits.wrapper_edits[index]);
+    }
+    /* A deleted model leaves the bake whole, with no variant to build. */
+    if (vkr_project_edit_deleted(edits.wrapper_edits[index])) {
+      vkr_bakery_json_remove(entity, "mesh");
     }
     bool8_t wrapper_visible = false_v;
     if (!vkr_project_entity_visible(&edits, index, &wrapper_visible)) {

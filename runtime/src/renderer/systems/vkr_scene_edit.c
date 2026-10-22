@@ -1,5 +1,8 @@
 #include "vkr_scene_edit.h"
 #include "filesystem/filesystem.h"
+#include "renderer/systems/vkr_render_assets.h"
+#include "renderer/systems/vkr_scene_animation.h"
+#include "renderer/systems/vkr_scene_model.h"
 #include "renderer/systems/vkr_scene_partition.h"
 #include "renderer/systems/vkr_scene_physics.h"
 #include "renderer/systems/vkr_scene_terrain.h"
@@ -18,6 +21,12 @@
 #define EDIT_TAG VKR_ALLOCATOR_MEMORY_TAG_ARRAY
 /* World components one object or overlay record carries. */
 #define EDIT_COMPONENT_MAX 8u
+/* Bytes of the mesh path and shader override a deleted mesh keeps for
+   undo; a longer one cannot be deleted. */
+#define EDIT_MESH_PATH_CAPACITY 1024u
+#define EDIT_MESH_SHADER_CAPACITY 256u
+/* Levels of a model's source-node hierarchy one delete takes along. */
+#define EDIT_DELETE_DEPTH_MAX 64u
 
 static bool8_t finite_vector(const float32_t *v, uint32_t count) {
   for (uint32_t i = 0; i < count; ++i)
@@ -1024,6 +1033,8 @@ typedef enum EditObjectPart {
   EDIT_OBJECT_RECTANGLE_LIGHT = 1u << 6,
   /* The document-stable id the editor gave a created entity. */
   EDIT_OBJECT_REF = 1u << 7,
+  /* The mesh instance it drew, which restore requests from its file. */
+  EDIT_OBJECT_MESH = 1u << 8,
 } EditObjectPart;
 
 /* Everything delete removes and undo restores. Only entities made of these
@@ -1039,6 +1050,13 @@ typedef struct EditObject {
   SceneDirectionalLight directional_light;
   SceneRectangleLight rectangle_light;
   VkrEntityRef ref;
+  /* EDIT_OBJECT_MESH: the mesh file, its source mesh, pipeline domain and
+     shader override, and the instance's caster mobility. */
+  char mesh_path[EDIT_MESH_PATH_CAPACITY];
+  char mesh_shader[EDIT_MESH_SHADER_CAPACITY];
+  uint32_t mesh_source_plus_one;
+  VkrPipelineDomain mesh_domain;
+  VkrShadowCasterMobility mesh_mobility;
   /* Overlay id when the editor created the entity, else zero. */
   uint32_t created_id;
   uint32_t component_count;
@@ -1125,32 +1143,137 @@ static bool8_t edit_world_type(const VkrTypeDesc *type) {
   return vkr_scene_world_type_live(type);
 }
 
-/* Whether `entity` has a child; a brush's faces do not count when
-   `brush_faces` is false, because deleting the brush deletes them. */
-/* Whether `entity` has children; without `parts`, only children that are
-   objects of their own (vkr_scene_entity_is_part) count. */
-static bool8_t edit_has_children_except(const VkrScene *scene,
-                                        VkrEntityId entity, bool8_t parts) {
-  for (uint32_t i = 0; i < scene->world->dir.living; ++i) {
-    const VkrEntityId other = vkr_entity_id_from_index(scene->world, i);
+/* The next child of `entity` after `*cursor`, from the hierarchy index when
+   it is built and else by a scan of the world; invalid past the last. A
+   destroy or reparent between calls invalidates the cursor. */
+static VkrEntityId edit_next_child(const VkrScene *scene, VkrEntityId entity,
+                                   uint32_t *cursor) {
+  uint32_t count = 0u;
+  const VkrEntityId *children = vkr_scene_get_children(scene, entity, &count);
+  if (scene->child_index_valid) {
+    while (*cursor < count) {
+      const VkrEntityId child = children[(*cursor)++];
+      const SceneTransform *transform =
+          vkr_scene_entity_alive(scene, child)
+              ? vkr_entity_get_component(scene->world, child,
+                                         scene->comp_transform)
+              : NULL;
+      if (transform && transform->parent.u64 == entity.u64) {
+        return child;
+      }
+    }
+    return VKR_ENTITY_ID_INVALID;
+  }
+  while (*cursor < scene->world->dir.living) {
+    const VkrEntityId child =
+        vkr_entity_id_from_index(scene->world, (*cursor)++);
     const SceneTransform *transform =
-        vkr_entity_get_component(scene->world, other, scene->comp_transform);
+        vkr_entity_get_component(scene->world, child, scene->comp_transform);
     if (transform && transform->parent.u64 == entity.u64 &&
-        vkr_scene_entity_alive(scene, other) &&
-        (parts || !vkr_scene_entity_is_part(scene, other))) {
+        vkr_scene_entity_alive(scene, child)) {
+      return child;
+    }
+  }
+  return VKR_ENTITY_ID_INVALID;
+}
+
+static bool8_t edit_has_children(const VkrScene *scene, VkrEntityId entity) {
+  uint32_t cursor = 0u;
+  return edit_next_child(scene, entity, &cursor).u64 != 0u;
+}
+
+/* Whether `child` is a source node the scene loader made for the document
+   entity `entity` belongs to, under its wrapper or a node above it
+   (vkr_scene_instantiate_source_nodes). Spawned models carry no document
+   index, so their nodes are no source nodes here. */
+static bool8_t edit_own_source_node(const VkrScene *scene, VkrEntityId entity,
+                                    VkrEntityId child) {
+  const SceneSourceIdentity *owner = vkr_entity_get_component(
+      scene->world, entity, scene->comp_source_identity);
+  const SceneSourceIdentity *node = vkr_entity_get_component(
+      scene->world, child, scene->comp_source_identity);
+  return owner && node && node->scene_entity_index != UINT32_MAX &&
+         node->gltf_node_index != UINT32_MAX &&
+         node->scene_entity_index == owner->scene_entity_index;
+}
+
+/* Children that leave with `entity`: its parts (brush faces, connections)
+   and its own source nodes, so a placed model deletes whole. */
+static bool8_t edit_child_goes_along(const VkrScene *scene, VkrEntityId entity,
+                                     VkrEntityId child) {
+  return vkr_scene_entity_is_part(scene, child) ||
+         edit_own_source_node(scene, entity, child);
+}
+
+/* Whether `entity` or an ancestor owns its mesh some other way: an
+   animation binding skins it and a spawned model releases it, and neither
+   comes back with an undo. */
+static bool8_t edit_mesh_held_elsewhere(const VkrScene *scene,
+                                        VkrEntityId entity) {
+  for (uint32_t depth = 0u; entity.u64 && depth < EDIT_DELETE_DEPTH_MAX;
+       ++depth) {
+    if (vkr_scene_animation_get_player(scene, entity) ||
+        vkr_scene_model_status(scene, entity, NULL) != VKR_SCENE_MODEL_NONE) {
       return true_v;
     }
+    const SceneTransform *transform =
+        vkr_entity_get_component(scene->world, entity, scene->comp_transform);
+    entity = transform ? transform->parent : VKR_ENTITY_ID_INVALID;
   }
   return false_v;
 }
 
-static bool8_t edit_has_children(const VkrScene *scene, VkrEntityId entity) {
-  return edit_has_children_except(scene, entity, true_v);
+/* The mesh `entity` draws, or waits for after an undo
+   (vkr_scene_request_mesh), as its load description and caster mobility.
+   The strings are borrowed from the mesh manager or the request until the
+   scene changes. False when it has none or it is skinned. */
+static bool8_t edit_mesh_desc(const VkrScene *scene, VkrEntityId entity,
+                              VkrMeshLoadDesc *out,
+                              VkrShadowCasterMobility *out_mobility) {
+  if (vkr_scene_mesh_request(scene, entity, out, out_mobility)) {
+    return true_v;
+  }
+  const SceneMeshRenderer *renderer =
+      vkr_entity_get_component(scene->world, entity, scene->comp_mesh_renderer);
+  if (!renderer || !scene->assets) {
+    return false_v;
+  }
+  VkrMeshManager *meshes = &scene->assets->mesh_manager;
+  VkrMeshInstance *instance =
+      vkr_mesh_manager_get_instance(meshes, renderer->instance);
+  VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+               : NULL;
+  if (!asset || !asset->mesh_path.length || instance->skinning) {
+    return false_v;
+  }
+  *out = (VkrMeshLoadDesc){
+      .source_mesh_index_plus_one = asset->source_mesh_index_plus_one,
+      .mesh_path = asset->mesh_path,
+      .transform = vkr_transform_identity(),
+      .pipeline_domain = asset->domain,
+      .shader_override = asset->shader_override,
+  };
+  *out_mobility = instance->shadow_mobility;
+  return true_v;
 }
 
-/* The entity is made only of parts an EditObject snapshot restores. */
-static bool8_t edit_deletable_parts(const VkrScene *scene, VkrEntityId entity,
-                                    const char **reason) {
+/* Whether delete can snapshot the mesh `entity` draws and undo can load it
+   again. */
+static bool8_t edit_mesh_restorable(const VkrScene *scene, VkrEntityId entity) {
+  VkrMeshLoadDesc desc;
+  VkrShadowCasterMobility mobility = VKR_SHADOW_CASTER_MOBILITY_DYNAMIC;
+  return edit_mesh_desc(scene, entity, &desc, &mobility) &&
+         desc.mesh_path.length < EDIT_MESH_PATH_CAPACITY &&
+         desc.shader_override.length < EDIT_MESH_SHADER_CAPACITY &&
+         !edit_mesh_held_elsewhere(scene, entity);
+}
+
+/* The entity is made only of parts an EditObject snapshot restores. An
+   overlay's deletion at load restores nothing, so with `restore` false a
+   mesh only needs to be its own (edit_mesh_held_elsewhere). */
+static bool8_t edit_deletable_as(const VkrScene *scene, VkrEntityId entity,
+                                 bool8_t restore, const char **reason) {
   const char *unused = NULL;
   reason = reason ? reason : &unused;
   if (!scene || !vkr_scene_entity_alive(scene, entity)) {
@@ -1177,16 +1300,52 @@ static bool8_t edit_deletable_parts(const VkrScene *scene, VkrEntityId entity,
               scene->types[t].type != &vkr_scene_animation_type;
     }
     /* Generated shape, brush, blockout and text state is rebuilt from its
-       typed component. */
+       typed component, and a mesh instance from its file. */
     known |= (id == scene->comp_shape &&
               (vkr_scene_get_typed(scene, entity, &vkr_scene_shape_type) ||
                vkr_scene_get_typed(scene, entity, &vkr_scene_brush_type) ||
                vkr_scene_get_typed(scene, entity, &vkr_scene_blockout_type))) ||
              (id == scene->comp_text3d &&
-              vkr_scene_get_typed(scene, entity, &vkr_scene_text_type));
+              vkr_scene_get_typed(scene, entity, &vkr_scene_text_type)) ||
+             (id == scene->comp_mesh_renderer &&
+              (restore ? edit_mesh_restorable(scene, entity)
+                       : !edit_mesh_held_elsewhere(scene, entity)));
     if (!known) {
-      *reason = "Only lights, shapes, text and world objects can be deleted; "
-                "meshes and physics bodies cannot yet.";
+      *reason = "Only lights, shapes, text, meshes and world objects can be "
+                "deleted; physics bodies and animated or spawned models "
+                "cannot yet.";
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+static bool8_t edit_deletable_parts(const VkrScene *scene, VkrEntityId entity,
+                                    const char **reason) {
+  return edit_deletable_as(scene, entity, true_v, reason);
+}
+
+/* Whether `entity` and the children that go along with it can be deleted
+   and restored: any other child refuses. */
+static bool8_t edit_tree_deletable(const VkrScene *scene, VkrEntityId entity,
+                                   uint32_t depth, const char **reason) {
+  if (depth >= EDIT_DELETE_DEPTH_MAX) {
+    *reason = "The hierarchy is too deep to delete.";
+    return false_v;
+  }
+  if (!edit_deletable_parts(scene, entity, reason)) {
+    return false_v;
+  }
+  uint32_t cursor = 0u;
+  for (VkrEntityId child = edit_next_child(scene, entity, &cursor); child.u64;
+       child = edit_next_child(scene, entity, &cursor)) {
+    if (!edit_child_goes_along(scene, entity, child)) {
+      *reason = "Delete or move its children first.";
+      return false_v;
+    }
+    /* Parts are rebuilt state of their object and go as they are. */
+    if (!vkr_scene_entity_is_part(scene, child) &&
+        !edit_tree_deletable(scene, child, depth + 1u, reason)) {
       return false_v;
     }
   }
@@ -1197,14 +1356,7 @@ bool8_t vkr_scene_edit_can_delete(const VkrScene *scene, VkrEntityId entity,
                                   const char **reason) {
   const char *unused = NULL;
   reason = reason ? reason : &unused;
-  if (!edit_deletable_parts(scene, entity, reason)) {
-    return false_v;
-  }
-  if (edit_has_children_except(scene, entity, false_v)) {
-    *reason = "Delete or move its children first.";
-    return false_v;
-  }
-  return true_v;
+  return edit_tree_deletable(scene, entity, 0u, reason);
 }
 
 static uint32_t edit_created_id(const VkrSceneEditState *s,
@@ -1269,6 +1421,21 @@ static void edit_object_capture(const VkrSceneEditState *s,
   if (ref) {
     o->ref = *ref;
     o->parts |= EDIT_OBJECT_REF;
+  }
+  VkrMeshLoadDesc mesh;
+  VkrShadowCasterMobility mobility = VKR_SHADOW_CASTER_MOBILITY_DYNAMIC;
+  if (edit_mesh_desc(scene, entity, &mesh, &mobility) &&
+      mesh.mesh_path.length < sizeof(o->mesh_path) &&
+      mesh.shader_override.length < sizeof(o->mesh_shader)) {
+    MemCopy(o->mesh_path, mesh.mesh_path.str, mesh.mesh_path.length);
+    if (mesh.shader_override.length) {
+      MemCopy(o->mesh_shader, mesh.shader_override.str,
+              mesh.shader_override.length);
+    }
+    o->mesh_source_plus_one = mesh.source_mesh_index_plus_one;
+    o->mesh_domain = mesh.pipeline_domain;
+    o->mesh_mobility = mobility;
+    o->parts |= EDIT_OBJECT_MESH;
   }
   for (uint32_t i = 0;
        i < scene->type_count && o->component_count < EDIT_COMPONENT_MAX; ++i) {
@@ -1338,6 +1505,26 @@ static VkrEntityId edit_object_restore(VkrScene *scene, const EditObject *o,
   }
   if (parent.u64 && (o->parts & EDIT_OBJECT_TRANSFORM)) {
     vkr_scene_set_parent(scene, entity, parent);
+  }
+  /* The mesh draws again once its file loads; until then the entity is
+     in place without it. */
+  if (o->parts & EDIT_OBJECT_MESH) {
+    const VkrMeshLoadDesc mesh = {
+        .source_mesh_index_plus_one = o->mesh_source_plus_one,
+        .mesh_path = string8_create_from_cstr((const uint8_t *)o->mesh_path,
+                                              string_length(o->mesh_path)),
+        .pipeline_domain = o->mesh_domain,
+        .shader_override = string8_create_from_cstr(
+            (const uint8_t *)o->mesh_shader, string_length(o->mesh_shader)),
+    };
+    const char *error = NULL;
+    if (!vkr_scene_request_mesh(scene, entity, &mesh, o->mesh_mobility,
+                                &error)) {
+      log_warn("Undo could not load the mesh '%s' again: %s", o->mesh_path,
+               error ? error : "unknown error");
+      vkr_scene_destroy_entity(scene, entity);
+      return VKR_ENTITY_ID_INVALID;
+    }
   }
   scene->structure_revision++;
   return entity;
@@ -1715,7 +1902,11 @@ static bool8_t edit_duplicable(const VkrScene *scene, VkrEntityId entity,
     *reason = "The hierarchy is too deep to duplicate.";
     return false_v;
   }
-  if (!edit_deletable_parts(scene, entity, NULL)) {
+  /* A created object cannot save a mesh, so a copy cannot hold one. */
+  if (vkr_entity_has_component(scene->world, entity,
+                               scene->comp_mesh_renderer) ||
+      vkr_scene_mesh_request(scene, entity, NULL, NULL) ||
+      !edit_deletable_parts(scene, entity, NULL)) {
     *reason = "Only lights, shapes, brushes, text and world objects can be "
               "duplicated; meshes and physics bodies cannot yet.";
     return false_v;
@@ -1906,6 +2097,28 @@ VkrEntityId vkr_scene_edit_duplicate(VkrSceneEditState *s, VkrScene *scene,
 static bool8_t edit_delete_one(VkrSceneEditState *s, VkrScene *scene,
                                VkrEntityId entity);
 
+/* Deletes the children of `entity` that go along with it, each with its own
+   subtree, then `entity`: leaves first, so undo restores parents before
+   their children. vkr_scene_edit_can_delete proved the tree and its depth. */
+static bool8_t edit_delete_tree(VkrSceneEditState *s, VkrScene *scene,
+                                VkrEntityId entity) {
+  for (;;) {
+    /* Each delete changes the children, so the search starts again. */
+    uint32_t cursor = 0u;
+    VkrEntityId child = edit_next_child(scene, entity, &cursor);
+    while (child.u64 && !edit_child_goes_along(scene, entity, child)) {
+      child = edit_next_child(scene, entity, &cursor);
+    }
+    if (!child.u64) {
+      break;
+    }
+    if (!edit_delete_tree(s, scene, child)) {
+      return false_v;
+    }
+  }
+  return edit_delete_one(s, scene, entity);
+}
+
 bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
                               VkrEntityId entity) {
   const char *reason = NULL;
@@ -1916,23 +2129,13 @@ bool8_t vkr_scene_edit_delete(VkrSceneEditState *s, VkrScene *scene,
   if (!edit_has_children(scene, entity)) {
     return edit_delete_one(s, scene, entity);
   }
-  /* An object leaves with its parts (brush faces, connections) as one
-     step: parts first, so undo restores the object before them. */
+  /* An object leaves with its parts (brush faces, connections) and a
+     placed model with its source nodes, as one step. */
   const bool8_t own_group = !s->group_open;
   if (own_group) {
     (void)vkr_scene_edit_group_begin(s);
   }
-  bool8_t ok = true_v;
-  for (uint32_t i = 0; ok && i < scene->world->dir.living; ++i) {
-    const VkrEntityId face = vkr_entity_id_from_index(scene->world, i);
-    const SceneTransform *transform =
-        vkr_entity_get_component(scene->world, face, scene->comp_transform);
-    if (transform && transform->parent.u64 == entity.u64 &&
-        vkr_scene_entity_alive(scene, face)) {
-      ok = edit_delete_one(s, scene, face);
-    }
-  }
-  ok = ok && edit_delete_one(s, scene, entity);
+  const bool8_t ok = edit_delete_tree(s, scene, entity);
   if (own_group) {
     if (ok) {
       vkr_scene_edit_group_end(s);
@@ -4105,7 +4308,7 @@ static bool8_t edit_load_prepare_record(
   }
   if (extra->deleted) {
     /* Children were deleted first, so only the parts are checked here. */
-    if (!edit_deletable_parts(scene, source->entity, NULL)) {
+    if (!edit_deletable_as(scene, source->entity, false_v, NULL)) {
       *failure = EDIT_SIDECAR_FAILURE_FIELDS;
       return false_v;
     }

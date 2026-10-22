@@ -9,10 +9,13 @@
  * ready. The scene owns what a spawn created (the source-node entities,
  * their mesh instances and the resource requests) until
  * vkr_scene_despawn_model or scene shutdown. Spawned nodes carry no document
- * index, so edit overlays and saves never bind to them.
+ * index, so edit overlays and saves never bind to them. A mesh request
+ * (vkr_scene_request_mesh) instead gives an existing entity, such as one
+ * undo restored, the mesh it drew; it is no spawned model.
  */
 #pragma once
 
+#include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_scene_animation.h"
 
 /* Where a wrapper's spawned model stands. */
@@ -58,9 +61,33 @@ bool8_t vkr_scene_request_model(VkrScene *scene, struct VkrRenderAssets *assets,
                                 const VkrSceneModelDesc *desc,
                                 const char **error);
 
+/**
+ * Starts loading the mesh file `desc` names so that `entity`, which must be
+ * alive, carry a transform and hold no mesh, animation or spawned model,
+ * draws it again the way the scene loader attached it: once the load is
+ * ready, vkr_scene_models_update gives the entity a tracked instance of
+ * `desc`'s source mesh with `mobility` (dynamic when the entity moves),
+ * and the request ends. Undo uses it to restore a deleted mesh entity. The
+ * entity's destruction drops the load; a failed load leaves the entity
+ * without a mesh and logs a warning. `desc->transform` is ignored: the
+ * scene's render sync places the instance at the entity's world matrix.
+ * False with `*error` when the request cannot start.
+ */
+bool8_t vkr_scene_request_mesh(VkrScene *scene, VkrEntityId entity,
+                               const VkrMeshLoadDesc *desc,
+                               VkrShadowCasterMobility mobility,
+                               const char **error);
+
+/** Whether `entity` waits for a vkr_scene_request_mesh load; `out_desc`
+ * and `out_mobility`, when given, receive the request, its strings
+ * borrowed until the request ends. */
+bool8_t vkr_scene_mesh_request(const VkrScene *scene, VkrEntityId entity,
+                               VkrMeshLoadDesc *out_desc,
+                               VkrShadowCasterMobility *out_mobility);
+
 /** Instantiates requested models whose loads finished and the scene's
- * join hooks admit, and records failed ones. Structural edits must be
- * allowed. */
+ * join hooks admit, attaches requested meshes whose loads finished, and
+ * records failed models. Structural edits must be allowed. */
 void vkr_scene_models_update(VkrScene *scene);
 
 /** Writes up to `capacity` wrappers whose requested models still wait for

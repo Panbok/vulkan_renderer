@@ -28,6 +28,13 @@ struct VkrSceneModel {
   VkrSceneAnimationConfig animation;
   /* Why a requested model failed; static text. */
   const char *error;
+  /* A mesh request (vkr_scene_request_mesh): the wrapper itself draws one
+     source mesh of `mesh_path`, and the record leaves once the load ends. */
+  bool8_t mesh_only;
+  uint32_t source_mesh_index_plus_one;
+  VkrPipelineDomain pipeline_domain;
+  String8 shader_override;
+  VkrShadowCasterMobility mobility;
 };
 
 vkr_internal bool8_t scene_model_copy_path(VkrScene *scene, String8 path,
@@ -42,6 +49,13 @@ vkr_internal struct VkrSceneModel *scene_model_find(const VkrScene *scene,
     }
   }
   return NULL;
+}
+
+/* The spawned model `wrapper` holds; a mesh request is not one. */
+vkr_internal struct VkrSceneModel *scene_model_spawned(const VkrScene *scene,
+                                                       VkrEntityId wrapper) {
+  struct VkrSceneModel *model = scene_model_find(scene, wrapper);
+  return model && !model->mesh_only ? model : NULL;
 }
 
 /* Drops a requested model's loads: a pending request is cancelled, a ready
@@ -72,6 +86,11 @@ vkr_internal void scene_model_free(VkrScene *scene,
   if (model->animation_path.str) {
     vkr_allocator_free(scene->alloc, model->animation_path.str,
                        model->animation_path.length + 1u,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  if (model->shader_override.str) {
+    vkr_allocator_free(scene->alloc, model->shader_override.str,
+                       model->shader_override.length + 1u,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
   if (model->nodes) {
@@ -374,6 +393,120 @@ bool8_t vkr_scene_request_model(VkrScene *scene, struct VkrRenderAssets *assets,
   return true_v;
 }
 
+bool8_t vkr_scene_request_mesh(VkrScene *scene, VkrEntityId entity,
+                               const VkrMeshLoadDesc *desc,
+                               VkrShadowCasterMobility mobility,
+                               const char **error) {
+  *error = NULL;
+  struct VkrRenderAssets *assets = scene ? scene->assets : NULL;
+  const VkrSceneModelDesc check = {
+      .mesh_path = desc ? desc->mesh_path : (String8){0},
+  };
+  if (!scene_model_check(scene, assets, entity, &check, error)) {
+    return false_v;
+  }
+  struct VkrSceneModel *model = scene_model_new(scene, entity);
+  if (!model ||
+      !scene_model_copy_path(scene, desc->mesh_path, &model->mesh_path) ||
+      !scene_model_copy_path(scene, desc->shader_override,
+                             &model->shader_override)) {
+    if (model) {
+      scene_model_free(scene, model);
+    }
+    *error = "Mesh request allocation failed";
+    return false_v;
+  }
+  model->assets = assets;
+  model->mesh_only = true_v;
+  model->source_mesh_index_plus_one = desc->source_mesh_index_plus_one;
+  model->pipeline_domain = desc->pipeline_domain;
+  model->mobility = mobility;
+  model->status = VKR_SCENE_MODEL_LOADING;
+  VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, model->mesh_path,
+                                &assets->scratch_allocator,
+                                &model->mesh_request, &load_error)) {
+    *error = "Mesh failed to load";
+    scene_model_free(scene, model);
+    return false_v;
+  }
+  model->next = scene->models;
+  scene->models = model;
+  return true_v;
+}
+
+bool8_t vkr_scene_mesh_request(const VkrScene *scene, VkrEntityId entity,
+                               VkrMeshLoadDesc *out_desc,
+                               VkrShadowCasterMobility *out_mobility) {
+  const struct VkrSceneModel *model =
+      scene ? scene_model_find(scene, entity) : NULL;
+  if (!model || !model->mesh_only || model->status != VKR_SCENE_MODEL_LOADING) {
+    return false_v;
+  }
+  if (out_desc) {
+    *out_desc = (VkrMeshLoadDesc){
+        .source_mesh_index_plus_one = model->source_mesh_index_plus_one,
+        .mesh_path = model->mesh_path,
+        .transform = vkr_transform_identity(),
+        .pipeline_domain = model->pipeline_domain,
+        .shader_override = model->shader_override,
+    };
+  }
+  if (out_mobility) {
+    *out_mobility = model->mobility;
+  }
+  return true_v;
+}
+
+/* Gives a mesh request's entity its instance from the loaded file, as the
+   scene loader attaches a document mesh. Returns why it failed, or NULL;
+   on failure nothing it created remains. */
+vkr_internal const char *scene_model_attach_mesh(VkrScene *scene,
+                                                 struct VkrSceneModel *model) {
+  VkrResourceHandleInfo resolved = {0};
+  if (!vkr_resource_system_try_get_resolved(&model->mesh_request, &resolved) ||
+      !resolved.as.mesh) {
+    return "Mesh failed to load";
+  }
+  if (vkr_entity_has_component(scene->world, model->wrapper,
+                               scene->comp_mesh_renderer)) {
+    return "The entity already draws a mesh";
+  }
+  VkrMeshManager *meshes = &model->assets->mesh_manager;
+  const VkrMeshLoadDesc desc = {
+      .source_mesh_index_plus_one = model->source_mesh_index_plus_one,
+      .mesh_path = model->mesh_path,
+      .transform = vkr_transform_identity(),
+      .pipeline_domain = model->pipeline_domain,
+      .shader_override = model->shader_override,
+  };
+  VkrRendererError load_error = VKR_RENDERER_ERROR_NONE;
+  const VkrMeshInstanceHandle instance =
+      vkr_mesh_manager_create_instance_from_resource(meshes, &desc, &resolved,
+                                                     0u, true_v, &load_error);
+  if (!instance.id) {
+    return "Mesh instance creation failed";
+  }
+  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+  if (!vkr_scene_track_instance(scene, instance, &scene_error)) {
+    (void)vkr_mesh_manager_destroy_instance(meshes, instance);
+    return "Mesh instance could not be tracked";
+  }
+  if (!vkr_scene_set_mesh_renderer(scene, model->wrapper, instance)) {
+    (void)vkr_scene_untrack_instance(scene, instance);
+    (void)vkr_mesh_manager_destroy_instance(meshes, instance);
+    return "Mesh renderer could not be attached";
+  }
+  /* A mesh whose entity moves casts as a moving object, as at load. */
+  (void)vkr_mesh_manager_instance_set_shadow_mobility(
+      meshes, instance,
+      model->mobility == VKR_SHADOW_CASTER_MOBILITY_STATIC &&
+              !vkr_scene_entity_moves(scene, model->wrapper)
+          ? VKR_SHADOW_CASTER_MOBILITY_STATIC
+          : VKR_SHADOW_CASTER_MOBILITY_DYNAMIC);
+  return NULL;
+}
+
 /* Where one request stands: ready, still loading or failed. */
 vkr_internal VkrSceneModelStatus
 scene_model_request_status(const VkrResourceHandleInfo *request) {
@@ -414,7 +547,10 @@ void vkr_scene_models_update(VkrScene *scene) {
         animation == VKR_SCENE_MODEL_LOADING) {
       continue;
     }
-    const VkrSceneJoinHooks *hooks = &scene->join_hooks;
+    /* A mesh request restores an edit, never a recorded join. */
+    const VkrSceneJoinHooks no_hooks = {0};
+    const VkrSceneJoinHooks *hooks =
+        model->mesh_only ? &no_hooks : &scene->join_hooks;
     if (hooks->may_join &&
         !hooks->may_join(hooks->user, scene, VKR_SCENE_JOIN_MODEL,
                          model->wrapper)) {
@@ -422,12 +558,15 @@ void vkr_scene_models_update(VkrScene *scene) {
     }
     const char *error = NULL;
     if (mesh == VKR_SCENE_MODEL_FAILED) {
-      error = "Model mesh failed to load";
+      error = model->mesh_only ? "Mesh failed to load"
+                               : "Model mesh failed to load";
     } else if (animation == VKR_SCENE_MODEL_FAILED) {
       error = "Model animation bank failed to load";
     } else if (!vkr_scene_entity_alive(scene, model->wrapper) ||
                !vkr_scene_get_transform(scene, model->wrapper)) {
       error = "The model wrapper lost its transform while loading";
+    } else if (model->mesh_only) {
+      error = scene_model_attach_mesh(scene, model);
     } else if (!scene_model_instantiate(scene, model->assets, model,
                                         model->mesh_path, &model->mesh_request,
                                         &model->animation_request,
@@ -455,12 +594,24 @@ void vkr_scene_models_update(VkrScene *scene) {
     model->status = error ? VKR_SCENE_MODEL_FAILED : VKR_SCENE_MODEL_READY;
     model->error = error;
     if (error) {
-      log_warn("Spawned model %.*s failed: %s", (int)model->mesh_path.length,
-               model->mesh_path.str, error);
+      log_warn("%s %.*s failed: %s",
+               model->mesh_only ? "Requested mesh" : "Spawned model",
+               (int)model->mesh_path.length, model->mesh_path.str, error);
     }
     if (hooks->joined) {
       hooks->joined(hooks->user, scene, VKR_SCENE_JOIN_MODEL, model->wrapper,
                     error != NULL);
+    }
+  }
+  /* An ended mesh request leaves: its entity owns the instance now, like a
+     mesh the scene loader attached. */
+  for (struct VkrSceneModel **cursor = &scene->models; *cursor;) {
+    struct VkrSceneModel *model = *cursor;
+    if (model->mesh_only && model->status != VKR_SCENE_MODEL_LOADING) {
+      *cursor = model->next;
+      scene_model_free(scene, model);
+    } else {
+      cursor = &model->next;
     }
   }
 }
@@ -470,7 +621,7 @@ uint32_t vkr_scene_models_loading(const VkrScene *scene, VkrEntityId *out,
   uint32_t count = 0u;
   for (const struct VkrSceneModel *model = scene ? scene->models : NULL; model;
        model = model->next) {
-    if (model->status != VKR_SCENE_MODEL_LOADING ||
+    if (model->mesh_only || model->status != VKR_SCENE_MODEL_LOADING ||
         (scene_model_request_status(&model->mesh_request) !=
              VKR_SCENE_MODEL_LOADING &&
          (!model->animation_path.length ||
@@ -489,7 +640,7 @@ uint32_t vkr_scene_models_loading(const VkrScene *scene, VkrEntityId *out,
 VkrSceneModelStatus vkr_scene_model_status(const VkrScene *scene,
                                            VkrEntityId wrapper,
                                            const char **error) {
-  const struct VkrSceneModel *model = scene_model_find(scene, wrapper);
+  const struct VkrSceneModel *model = scene_model_spawned(scene, wrapper);
   if (error) {
     *error = model ? model->error : NULL;
   }
@@ -531,7 +682,7 @@ void vkr_scene_models_shutdown(VkrScene *scene) {
 bool8_t vkr_scene_model_paths(const VkrScene *scene, VkrEntityId wrapper,
                               String8 *out_mesh, String8 *out_animation) {
   const struct VkrSceneModel *model =
-      scene ? scene_model_find(scene, wrapper) : NULL;
+      scene ? scene_model_spawned(scene, wrapper) : NULL;
   if (!model || model->status == VKR_SCENE_MODEL_FAILED ||
       !model->mesh_path.length) {
     return false_v;
@@ -544,7 +695,7 @@ bool8_t vkr_scene_model_paths(const VkrScene *scene, VkrEntityId wrapper,
 VkrEntityId vkr_scene_model_node(const VkrScene *scene, VkrEntityId wrapper,
                                  uint32_t node) {
   const struct VkrSceneModel *model =
-      scene ? scene_model_find(scene, wrapper) : NULL;
+      scene ? scene_model_spawned(scene, wrapper) : NULL;
   if (!model || model->status != VKR_SCENE_MODEL_READY ||
       node >= model->node_count) {
     return VKR_ENTITY_ID_INVALID;

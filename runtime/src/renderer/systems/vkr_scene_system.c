@@ -886,6 +886,31 @@ bool8_t vkr_scene_mesh_info(const VkrScene *scene, VkrEntityId entity,
   return true_v;
 }
 
+bool8_t vkr_scene_mesh_slot_material(const VkrScene *scene, VkrEntityId entity,
+                                     uint32_t slot, char *out,
+                                     uint64_t capacity) {
+  const SceneMeshRenderer *renderer =
+      scene && scene->assets && vkr_entity_is_alive(scene->world, entity)
+          ? vkr_entity_get_component(scene->world, entity,
+                                     scene->comp_mesh_renderer)
+          : NULL;
+  VkrMeshManager *manager = renderer ? &scene->assets->mesh_manager : NULL;
+  const VkrMeshInstance *instance =
+      manager ? vkr_mesh_manager_get_instance(manager, renderer->instance)
+              : NULL;
+  const VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(manager, instance->asset)
+               : NULL;
+  if (!asset || slot >= (uint32_t)asset->submeshes.length || !capacity) {
+    return false_v;
+  }
+  const VkrMaterial *material = vkr_material_system_get_live(
+      &scene->assets->material_system, asset->submeshes.data[slot].material);
+  string_format(out, capacity, "%s",
+                material && material->name ? material->name : "");
+  return true_v;
+}
+
 Vec3 vkr_scene_gravity(const VkrScene *scene) {
   if (!scene || !scene->world_state.revision) {
     ScenePhysicsSettings settings;
@@ -3529,6 +3554,19 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
   /* Generated shape meshes and text slots belong to the entity. */
   scene_shape_release(scene, entity);
   scene_text_release(scene, entity);
+  /* So does a mesh instance the scene tracks: left alive, it would keep
+     drawing where the entity was. The mesh manager drops its asset
+     references and the backends retire the GPU memory only after the last
+     submission that used it (vkr_mesh_manager_destroy_instance), as at
+     scene unload. */
+  if (had_mesh && scene->assets) {
+    const SceneMeshRenderer *renderer = vkr_entity_get_component(
+        scene->world, entity, scene->comp_mesh_renderer);
+    if (renderer && vkr_scene_untrack_instance(scene, renderer->instance)) {
+      (void)vkr_mesh_manager_destroy_instance(&scene->assets->mesh_manager,
+                                              renderer->instance);
+    }
+  }
   for (uint32_t i = 0; i < scene->type_count; ++i) {
     if (vkr_entity_has_component(scene->world, entity, scene->types[i].id)) {
       scene->world_revision++;

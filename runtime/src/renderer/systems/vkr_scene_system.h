@@ -1773,6 +1773,12 @@ bool8_t vkr_scene_type_allowed(const VkrScene *scene,
 /** Mesh renderer facts of an entity; false when it has no live instance. */
 bool8_t vkr_scene_mesh_info(const VkrScene *scene, VkrEntityId entity,
                             SceneMeshInfo *out);
+/** The name of the material submesh `slot` of an entity's mesh draws with by
+ * its asset, before any override, into `out` ("" when it has none); false
+ * when the entity has no live instance or no such slot. */
+bool8_t vkr_scene_mesh_slot_material(const VkrScene *scene, VkrEntityId entity,
+                                     uint32_t slot, char *out,
+                                     uint64_t capacity);
 /** Set the root World consulted after this scene's own singletons; ignored
     while the scene's settings do not inherit the World, except for World-only
     types, which always resolve from it. */

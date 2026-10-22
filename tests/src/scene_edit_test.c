@@ -1,11 +1,15 @@
 #include "scene_edit_test.h"
 
+#include "assets/vkr_mesh_encode.h"
 #include "filesystem/filesystem.h"
 #include "level/vkr_brush.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_arena_pool.h"
 #include "memory/vkr_dmemory.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/resources/loaders/mesh_loader.h"
+#include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/systems/vkr_render_assets.h"
 #include "renderer/systems/vkr_scene_brush.h"
 #include "renderer/systems/vkr_scene_edit.h"
@@ -744,6 +748,349 @@ static void edit_test_brush_first_meshes(void) {
   arena_destroy(scratch_arena);
   arena_destroy(system_arena);
   vkr_dmemory_destroy(&memory);
+}
+
+static size_t edit_test_read(const char *path, char *out, size_t capacity);
+
+/* Two flat quads cooked as one model file whose second node is a child of
+   the first, so a placed model has a source-node hierarchy to delete. */
+typedef struct EditTestModel {
+  VkrVertex3d vertices[8];
+  uint32_t indices[12];
+  VkrGeometryUploadRange ranges[2];
+  VkrMeshSourceMesh source_meshes[2];
+  VkrMeshSourceNode nodes[2];
+} EditTestModel;
+
+static void edit_test_model_cook(const char *dependency_path,
+                                 const char *cooked_path) {
+  static EditTestModel model;
+  MemZero(&model, sizeof(model));
+  const float32_t corners[4][2] = {
+      {-1.0f, -1.0f}, {1.0f, -1.0f}, {1.0f, 1.0f}, {-1.0f, 1.0f}};
+  static const char *const names[2] = {"Base", "Top"};
+  for (uint32_t mesh = 0u; mesh < 2u; ++mesh) {
+    const float32_t z = 2.0f * (float32_t)mesh;
+    for (uint32_t corner = 0u; corner < 4u; ++corner) {
+      model.vertices[mesh * 4u + corner] = (VkrVertex3d){
+          .position = {corners[corner][0], corners[corner][1], z},
+          .normal = {0.0f, 0.0f, 1.0f},
+          .texcoord = {0.5f * (corners[corner][0] + 1.0f),
+                       0.5f * (corners[corner][1] + 1.0f)},
+          .colour = {1.0f, 1.0f, 1.0f, 1.0f},
+          .tangent = {1.0f, 0.0f, 0.0f, 1.0f},
+      };
+    }
+    const uint32_t base = mesh * 4u;
+    const uint32_t quad[6] = {base, base + 1u, base + 2u,
+                              base, base + 2u, base + 3u};
+    MemCopy(&model.indices[mesh * 6u], quad, sizeof(quad));
+    model.ranges[mesh] = (VkrGeometryUploadRange){
+        .range_id = mesh,
+        .first_index = 6u * mesh,
+        .index_count = 6u,
+        .center = vec3_new(0.0f, 0.0f, z),
+        .min_extents = vec3_new(-1.0f, -1.0f, 0.0f),
+        .max_extents = vec3_new(1.0f, 1.0f, 0.0f),
+        .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+    };
+    model.source_meshes[mesh] = (VkrMeshSourceMesh){
+        .source_mesh_index = mesh,
+        .first_range = mesh,
+        .range_count = 1u,
+    };
+    model.nodes[mesh] = (VkrMeshSourceNode){
+        .name = string8_create_from_cstr((const uint8_t *)names[mesh],
+                                         strlen(names[mesh])),
+        .local = mat4_identity(),
+        .parent = mesh == 0u ? UINT32_MAX : 0u,
+        .mesh = mesh,
+        .mesh_variant = mesh,
+        .camera = UINT32_MAX,
+        .skin = UINT32_MAX,
+        .light = UINT32_MAX,
+        .in_scene = true_v,
+    };
+  }
+  edit_test_write(dependency_path, "model\n", 6u);
+  Arena *arena = arena_create(MB(4), MB(1));
+  assert(arena);
+  VkrAllocator scratch = {.ctx = arena};
+  assert(vkr_allocator_arena(&scratch));
+  const String8 dependency = string8_create_from_cstr(
+      (const uint8_t *)dependency_path, strlen(dependency_path));
+  const VkrMeshCookedEncodeInfo info = {
+      .source = {.nodes = {.data = model.nodes, .length = 2u},
+                 .meshes = {.data = model.source_meshes, .length = 2u}},
+      .source_path = dependency,
+      .dependency_paths = &dependency,
+      .dependency_count = 1u,
+      .mesh_buffer = {.vertex_size = sizeof(VkrVertex3d),
+                      .vertex_count = 8u,
+                      .vertices = model.vertices,
+                      .index_size = sizeof(uint32_t),
+                      .index_count = 12u,
+                      .indices = model.indices},
+      .ranges = model.ranges,
+      .range_count = 2u,
+      .budgets = vkr_packed_geometry_default_budgets(),
+  };
+  uint8_t *cooked = NULL;
+  uint64_t cooked_size = 0u;
+  assert(vkr_mesh_cooked_encode(&scratch, &info, &cooked, &cooked_size));
+  edit_test_write(cooked_path, (const char *)cooked, (size_t)cooked_size);
+  vkr_allocator_release_global_accounting(&scratch);
+  arena_destroy(arena);
+}
+
+/* A placed model as a project scene loads it: a document root entity whose
+   source nodes each draw their source mesh of `path`, tracked by the
+   scene (scene_loader_attach_mesh_for_entity). */
+static VkrEntityId edit_test_model_place(VkrScene *scene, const char *path) {
+  VkrRenderAssets *assets = scene->assets;
+  const String8 mesh_path =
+      string8_create_from_cstr((const uint8_t *)path, strlen(path));
+  VkrResourceHandleInfo request = {0};
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_MESH, mesh_path,
+                                       &assets->scratch_allocator, &request,
+                                       &error));
+  VkrResourceHandleInfo resolved = {0};
+  assert(vkr_resource_system_try_get_resolved(&request, &resolved));
+  const VkrMeshSource *source = &resolved.as.mesh->source;
+  assert(source->nodes.length == 2u);
+  const VkrEntityId root = edit_test_document_entity(scene, 0u, "Placed");
+  VkrEntityId nodes[2];
+  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_instantiate_source_nodes(scene, source, root, 0u, nodes,
+                                            &scene_error));
+  for (uint32_t n = 0u; n < 2u; ++n) {
+    const VkrMeshLoadDesc desc = {
+        .mesh_path = mesh_path,
+        .source_mesh_index_plus_one = source->nodes.data[n].mesh_variant + 1u,
+        .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+        .transform = vkr_transform_identity(),
+    };
+    const VkrMeshInstanceHandle instance =
+        vkr_mesh_manager_create_instance_from_resource(
+            &assets->mesh_manager, &desc, &resolved, 0u, true_v, &error);
+    assert(instance.id != 0u);
+    assert(vkr_scene_track_instance(scene, instance, &scene_error));
+    assert(vkr_scene_set_mesh_renderer(scene, nodes[n], instance));
+  }
+  vkr_resource_system_unload(&request, mesh_path);
+  return root;
+}
+
+/* The source mesh `entity`'s live instance draws, plus one; zero when it
+   draws none. */
+static uint32_t edit_test_drawn_source(VkrScene *scene, VkrEntityId entity) {
+  const SceneMeshRenderer *renderer =
+      vkr_entity_get_component(scene->world, entity, scene->comp_mesh_renderer);
+  VkrMeshManager *meshes = &scene->assets->mesh_manager;
+  const VkrMeshInstance *instance =
+      renderer ? vkr_mesh_manager_get_instance(meshes, renderer->instance)
+               : NULL;
+  const VkrMeshAsset *asset =
+      instance ? vkr_mesh_manager_get_live_asset(meshes, instance->asset)
+               : NULL;
+  return asset ? asset->source_mesh_index_plus_one : 0u;
+}
+
+static uint32_t edit_test_count(const char *text, const char *needle) {
+  uint32_t count = 0u;
+  for (const char *at = strstr(text, needle); at; at = strstr(at + 1, needle)) {
+    count++;
+  }
+  return count;
+}
+
+/* A placed model deletes whole through the journal (ADR-076): its root and
+   source nodes leave with their mesh instances, so nothing keeps drawing;
+   the overlay records each deletion by source identity, so a reload
+   removes them again; undo brings back the hierarchy, each node's material
+   override and, once the file loads again, each node's own source mesh;
+   redo removes them again. A copy still refuses meshes. */
+static void edit_test_mesh_delete(void) {
+  static const char dependency_path[] = "build/vkr_scene_edit_model.bin";
+  static const char cooked_path[] = "build/vkr_scene_edit_model.vkb";
+  edit_test_model_cook(dependency_path, cooked_path);
+
+  VkrDMemory memory;
+  assert(vkr_dmemory_create(MB(16), MB(256), &memory));
+  VkrAllocator allocator = {.ctx = &memory};
+  vkr_dmemory_allocator_create(&allocator);
+  Arena *system_arena = arena_create(MB(8), MB(8));
+  Arena *scratch_arena = arena_create(MB(8), MB(8));
+  assert(system_arena && scratch_arena);
+  const VkrAssetPublisher publisher = {
+      .publish_geometry = edit_test_publish_geometry,
+      .unpublish_geometry = edit_test_unpublish_geometry,
+      .publish_texture = edit_test_publish_texture,
+      .unpublish_texture = edit_test_unpublish_texture,
+      .publish_material = edit_test_publish_material,
+      .unpublish_material = edit_test_unpublish_material,
+  };
+  VkrRenderAssets assets;
+  MemZero(&assets, sizeof(assets));
+  assets.asset_publisher = &publisher;
+  assets.scratch_arena = scratch_arena;
+  assets.scratch_allocator = (VkrAllocator){.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&assets.scratch_allocator));
+  const VkrDeviceInformation device_info = {0};
+  const VkrTextureSystemConfig texture_config = {
+      .max_texture_count = 64,
+      .asset_publisher = &publisher,
+  };
+  assert(vkr_texture_system_init(&device_info, &texture_config, NULL,
+                                 &assets.texture_system));
+  const VkrMaterialSystemConfig material_config = {
+      .max_material_count = 64,
+      .asset_publisher = &publisher,
+  };
+  assert(vkr_material_system_init(&assets.material_system, system_arena,
+                                  &assets.texture_system, &material_config));
+  const VkrGeometrySystemConfig geometry_config = {
+      .max_geometries = 64,
+      .asset_publisher = &publisher,
+  };
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  assert(vkr_geometry_system_init(&assets.geometry_system, &geometry_config,
+                                  &renderer_error));
+  const VkrMeshManagerConfig mesh_config = {.max_mesh_count = 16u};
+  assert(vkr_mesh_manager_init(&assets.mesh_manager, &assets.geometry_system,
+                               &assets.material_system, &mesh_config));
+  VkrArenaPool pool = {0};
+  assert(vkr_arena_pool_create(MB(1), 4u, &allocator, &pool));
+  VkrMeshLoaderContext mesh_context = {
+      .arena_pool = &pool,
+      .geometry_system = &assets.geometry_system,
+      .material_system = &assets.material_system,
+  };
+  /* Without workers a requested load completes inside the request. */
+  assert(vkr_resource_system_init(&allocator, NULL, NULL));
+  assert(vkr_resource_system_register_loader(
+      &mesh_context, vkr_mesh_loader_create(&mesh_context)));
+
+  VkrScene scene;
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_init(&scene, &allocator, 0, 64, &error));
+  scene.assets = &assets;
+  const VkrEntityId root = edit_test_model_place(&scene, cooked_path);
+  VkrEntityId base = VKR_ENTITY_ID_INVALID;
+  VkrEntityId top = VKR_ENTITY_ID_INVALID;
+  assert(edit_test_alive_named(&scene, "Base", &base) == 1u);
+  assert(edit_test_alive_named(&scene, "Top", &top) == 1u);
+  SceneMaterialOverride override;
+  vkr_type_defaults(&vkr_scene_material_override_type, &override);
+  string_format(override.materials[0], sizeof(override.materials[0]), "%s",
+                "materials/edit_test_missing.mt");
+  assert(vkr_scene_set_typed(&scene, top, &vkr_scene_material_override_type,
+                             &override));
+  vkr_scene_update(&scene, 0.0);
+  assert(vkr_mesh_manager_instance_count(&assets.mesh_manager) == 2u);
+  assert(edit_test_drawn_source(&scene, base) == 1u);
+  assert(edit_test_drawn_source(&scene, top) == 2u);
+
+  /* The root's only children are its own nodes, so it deletes alone. */
+  const char *reason = NULL;
+  assert(vkr_scene_edit_can_delete(&scene, root, &reason));
+  assert(!vkr_scene_edit_can_duplicate(&scene, root, &reason));
+  VkrSceneEditState state = {0};
+  vkr_scene_edit_reset(&state, &allocator, 1);
+  assert(vkr_scene_edit_delete(&state, &scene, root));
+  VkrEntityId found = VKR_ENTITY_ID_INVALID;
+  assert(edit_test_alive_named(&scene, "Placed", &found) == 0u);
+  assert(edit_test_alive_named(&scene, "Base", &found) == 0u);
+  assert(edit_test_alive_named(&scene, "Top", &found) == 0u);
+  assert(vkr_mesh_manager_instance_count(&assets.mesh_manager) == 0u);
+  assert(scene.owned_instance_count == 0u);
+
+  char deleted_path[256];
+  char restored_path[256];
+  snprintf(deleted_path, sizeof(deleted_path),
+           "build/vkr_scene_edit_model_%u.editor.json",
+           vkr_platform_get_process_id());
+  snprintf(restored_path, sizeof(restored_path),
+           "build/vkr_scene_edit_model_restored_%u.editor.json",
+           vkr_platform_get_process_id());
+  const String8 deleted_file =
+      string8_create((uint8_t *)deleted_path, strlen(deleted_path));
+  assert(vkr_scene_edit_save(&state, &scene, deleted_file));
+  static char saved[16384];
+  assert(edit_test_read(deleted_path, saved, sizeof(saved)) > 0u);
+  assert(edit_test_count(saved, "\"deleted\"") == 3u);
+
+  /* Undo restores parents first; the meshes follow their file's load. */
+  assert(vkr_scene_edit_undo(&state, &scene, false_v));
+  VkrEntityId placed = VKR_ENTITY_ID_INVALID;
+  assert(edit_test_alive_named(&scene, "Placed", &placed) == 1u);
+  assert(edit_test_alive_named(&scene, "Base", &base) == 1u);
+  assert(edit_test_alive_named(&scene, "Top", &top) == 1u);
+  assert(vkr_scene_get_transform(&scene, base)->parent.u64 == placed.u64);
+  assert(vkr_scene_get_transform(&scene, top)->parent.u64 == base.u64);
+  const SceneMaterialOverride *restored =
+      vkr_scene_get_typed(&scene, top, &vkr_scene_material_override_type);
+  assert(restored &&
+         strcmp(restored->materials[0], override.materials[0]) == 0);
+  vkr_scene_update(&scene, 0.0);
+  assert(vkr_mesh_manager_instance_count(&assets.mesh_manager) == 2u);
+  assert(edit_test_drawn_source(&scene, base) == 1u);
+  assert(edit_test_drawn_source(&scene, top) == 2u);
+  /* The override reaches the new instance; its missing file draws the
+     default material. */
+  vkr_scene_update(&scene, 0.0);
+  const SceneMeshRenderer *renderer =
+      vkr_entity_get_component(scene.world, top, scene.comp_mesh_renderer);
+  assert(renderer &&
+         vkr_mesh_manager_get_instance(&assets.mesh_manager, renderer->instance)
+                 ->material_override_count > 0u);
+  const String8 restored_file =
+      string8_create((uint8_t *)restored_path, strlen(restored_path));
+  assert(vkr_scene_edit_save(&state, &scene, restored_file));
+  assert(edit_test_read(restored_path, saved, sizeof(saved)) > 0u);
+  assert(edit_test_count(saved, "\"deleted\"") == 0u);
+
+  /* Redo removes the model again, instances and all. */
+  assert(vkr_scene_edit_undo(&state, &scene, true_v));
+  assert(edit_test_alive_named(&scene, "Placed", &found) == 0u);
+  assert(edit_test_alive_named(&scene, "Top", &found) == 0u);
+  assert(vkr_mesh_manager_instance_count(&assets.mesh_manager) == 0u);
+
+  /* A reload of the same document applies the saved deletions. */
+  VkrScene reloaded;
+  assert(vkr_scene_init(&reloaded, &allocator, 0, 64, &error));
+  reloaded.assets = &assets;
+  (void)edit_test_model_place(&reloaded, cooked_path);
+  vkr_scene_update(&reloaded, 0.0);
+  assert(vkr_mesh_manager_instance_count(&assets.mesh_manager) == 2u);
+  VkrSceneEditState reload_state = {0};
+  vkr_scene_edit_reset(&reload_state, &allocator, 1);
+  assert(vkr_scene_edit_load(&reload_state, &reloaded, deleted_file));
+  assert(edit_test_alive_named(&reloaded, "Placed", &found) == 0u);
+  assert(edit_test_alive_named(&reloaded, "Base", &found) == 0u);
+  assert(edit_test_alive_named(&reloaded, "Top", &found) == 0u);
+  assert(vkr_mesh_manager_instance_count(&assets.mesh_manager) == 0u);
+  assert(reload_state.deleted_count == 3u);
+
+  vkr_scene_edit_reset(&reload_state, &allocator, 0);
+  vkr_scene_edit_reset(&state, &allocator, 0);
+  vkr_scene_shutdown(&reloaded, &assets);
+  vkr_scene_shutdown(&scene, &assets);
+  vkr_resource_system_shutdown();
+  vkr_mesh_manager_shutdown(&assets.mesh_manager);
+  vkr_geometry_system_shutdown(&assets.geometry_system);
+  vkr_material_system_shutdown(&assets.material_system);
+  vkr_texture_system_shutdown(&assets.texture_system);
+  assert(pool.pool.allocated == 0u);
+  vkr_arena_pool_destroy(&allocator, &pool);
+  arena_destroy(scratch_arena);
+  arena_destroy(system_arena);
+  vkr_dmemory_destroy(&memory);
+  assert(remove(deleted_path) == 0);
+  assert(remove(restored_path) == 0);
+  assert(remove(cooked_path) == 0);
+  assert(remove(dependency_path) == 0);
 }
 
 /* The editor's Hide and Isolate: a hidden parent hides what is under it,
@@ -2069,6 +2416,7 @@ bool32_t run_scene_edit_tests(void) {
   edit_test_brush_faces();
   edit_test_brush_records();
   edit_test_brush_first_meshes();
+  edit_test_mesh_delete();
   edit_test_editor_hidden();
   edit_test_large();
   edit_test_created_order();
