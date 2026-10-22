@@ -231,6 +231,11 @@ models:
    (detectors, sprinklers, speakers, one model per 3 m strip, offset from
    the light panels) and runs (cable trays, pipes) are Blender models ([references/blender-models.md](references/blender-models.md)).
    Place small fixtures without `lightmap_uvs`, so no rebake is needed.
+   Hide blockout shapes the same way: a louvred troffer just under each
+   flat emissive light panel (the panel keeps glowing and stays in the
+   bake), a round casing over an octagonal or square column, and cove
+   skirting runs along corridor walls (2 m segments, skipped where a
+   doorway opens).
    Validate each run segment: the wall behind its ends and middle, and the
    room tall enough for it.
 6. Names repeat across runs and `entity.delete` by a repeated name fails:

@@ -30,6 +30,22 @@ owns placement, materials and bakes.
 - Build from bevelled boxes, frustums and cylinders through `bmesh`; merge
   doubles, smooth by angle (about 35 degrees) and apply a Weighted Normal
   modifier so bevelled edges catch light without a normal map.
+- Avoid the boxy, low-poly look: no hard box edge on any part thicker than
+  about 12 mm (a 3 to 4 mm bevel at least), cylinders at about 1.5 cm per
+  side, and real curves where furniture has them. In `bm_blender.Builder`:
+  `soft_box` (support loops plus one subdivision level: cushions, casings,
+  rounded tops), `shell` (a bent, bulged and subdivided panel: chair seats
+  and backs, moulded shells), `limb` (tapered capsules: legs, tube frames,
+  arms), `blade` (pointed, curving leaves) and `sphere`. Square legs and
+  flat slab seats read as prototypes; round tubes and curved shells read
+  as products.
+- Keep triangles where they show: subdivide only parts over about 8 cm
+  (smaller ones take a plain bevel), and profile a model's triangles per
+  call before export. A task chair of curved shells costs about 19,000
+  triangles and a full HEV suit about 23,000; most furniture stays under
+  10,000.
+- Light-grey plastics read near white under bright overhead light: give
+  chair frames and seat pans a black or dark material.
 - Budget: a few hundred to 4,000 triangles for furniture; a keyboard's
   keycaps reach 9,000. Several hundred copies of 2,000 to 6,000 triangles
   cost the Level Design Test nothing measurable.
@@ -115,7 +131,9 @@ owns placement, materials and bakes.
   studio light) and put the previews on one contact sheet; judge shape and
   proportion there before importing anything. Material colour shows labels
   and screens blank: render a second sheet with `color_type` `TEXTURE` to
-  check every label's cell and orientation.
+  check every label's cell and orientation. Render with backface culling on
+  (`BM_PREVIEW_CULL=1` in `preview`) to catch flipped faces, which the
+  engine culls.
 - After placing, capture the level's rooms with `view.capture` and compare
   each model with its prototype's footprint; fix the model and
   `model.reimport` it rather than moving placements by hand.
