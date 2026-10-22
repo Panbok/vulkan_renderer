@@ -422,12 +422,15 @@ bool8_t vkr_render_assets_texture_pressure_budget(
     const VkrDeviceMemoryStats *stats, bool8_t pressure_active,
     uint64_t *out_budget, bool8_t *out_pressure_active) {
   if (!stats || !out_budget || !out_pressure_active ||
-      !stats->heap_usage_valid || stats->heap_count == 0u) {
+      !stats->heap_usage_valid || !stats->texture_heap_capacity_valid ||
+      stats->heap_count == 0u) {
     return false_v;
   }
   uint64_t usage = 0u;
   uint64_t budget = 0u;
   for (uint32_t i = 0u; i < stats->heap_count; ++i) {
+    if (!(stats->texture_heap_mask & (1u << i)))
+      continue;
     if (UINT64_MAX - usage < stats->heap_usage_bytes[i] ||
         UINT64_MAX - budget < stats->heap_budget_bytes[i]) {
       return false_v;
@@ -442,62 +445,39 @@ bool8_t vkr_render_assets_texture_pressure_budget(
       stats->pending_texture_upload_bytes > budget - Min(usage, budget)
           ? budget
           : usage + stats->pending_texture_upload_bytes;
-  if (stats->texture_heap_capacity_valid) {
-    const uint64_t asset_capacity = stats->texture_heap_capacity_bytes;
-    if (asset_capacity > usage)
-      return false_v;
-    const uint64_t non_asset_bytes = usage - asset_capacity;
-    const uint64_t target_usage = budget - budget / 5u;
-    const uint64_t target_asset_bytes =
-        target_usage > non_asset_bytes ? target_usage - non_asset_bytes : 0u;
-    /* Reusing charged asset heaps needs no new managed allocation. Pending
-     * publication and completed retirement do not change this allowance. */
-    *out_budget = Max(asset_capacity, target_asset_bytes);
-    *out_pressure_active = projected_usage >= budget - budget / 10u ||
-                           (pressure_active && usage > budget - budget / 4u);
-    return true_v;
-  }
-  if (projected_usage >= budget - budget / 10u ||
-      (pressure_active && usage > budget - budget / 4u)) {
-    const uint64_t texture_bytes =
-        stats->owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes;
-    const uint64_t non_texture_bytes =
-        usage > texture_bytes ? usage - texture_bytes : 0u;
-    const uint64_t target_usage = budget - budget / 5u;
-    *out_budget = target_usage > non_texture_bytes
-                      ? target_usage - non_texture_bytes
-                      : 0u;
-    *out_pressure_active = true_v;
-    return true_v;
-  }
-  if (pressure_active && usage <= budget - budget / 4u) {
-    *out_budget = UINT64_MAX;
-    *out_pressure_active = false_v;
-    return true_v;
-  }
-  return false_v;
+  /* Charged texture capacity classifies non-asset storage: publication,
+   * eviction and retirement inside the texture heaps cannot change it. */
+  const uint64_t asset_capacity = stats->texture_heap_capacity_bytes;
+  if (asset_capacity > usage)
+    return false_v;
+  const uint64_t non_asset_bytes = usage - asset_capacity;
+  const uint64_t target_usage = budget - budget / 5u;
+  const uint64_t target_asset_bytes =
+      target_usage > non_asset_bytes ? target_usage - non_asset_bytes : 0u;
+  /* Under a cap, reusing charged asset heaps needs no new managed
+   * allocation. Pending publication and completed retirement do not change
+   * this allowance. Without a cap a new block would raise the floor with
+   * every texture, so the target alone bounds the allowance; eviction then
+   * frees whole blocks, which lowers usage and capacity together. */
+  *out_budget = stats->texture_heap_capacity_capped
+                    ? Max(asset_capacity, target_asset_bytes)
+                    : target_asset_bytes;
+  *out_pressure_active = projected_usage >= budget - budget / 10u ||
+                         (pressure_active && usage > budget - budget / 4u);
+  return true_v;
 }
 
 void vkr_render_assets_refresh_texture_residency_budget(
     VkrRenderAssets *assets, const VkrDeviceMemoryStats *device_memory) {
   if (!assets->material_system.texture_stream_budget_user_configured) {
-    VkrDeviceMemoryStats stats = *device_memory;
-    if (!stats.texture_heap_capacity_valid)
-      stats.owners[VKR_GPU_ALLOCATION_OWNER_TEXTURE].live_bytes =
-          assets->material_system.texture_stream_resident_bytes;
     uint64_t texture_budget = 0u;
     bool8_t pressure_active = assets->texture_pressure_active;
     if (vkr_render_assets_texture_pressure_budget(
-            &stats, assets->texture_pressure_active, &texture_budget,
+            device_memory, assets->texture_pressure_active, &texture_budget,
             &pressure_active)) {
-      if (stats.texture_heap_capacity_valid) {
-        vkr_material_system_set_texture_capacity_budget(
-            &assets->material_system,
-            pressure_active ? texture_budget : UINT64_MAX, texture_budget);
-      } else {
-        vkr_material_system_set_automatic_texture_residency_budget(
-            &assets->material_system, texture_budget);
-      }
+      vkr_material_system_set_texture_capacity_budget(
+          &assets->material_system,
+          pressure_active ? texture_budget : UINT64_MAX, texture_budget);
       assets->texture_pressure_active = pressure_active;
     }
   }

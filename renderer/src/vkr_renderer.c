@@ -653,6 +653,21 @@ vkr_internal void vkr_renderer_reject_view_export(const VkrFrameInput *packet) {
   }
 }
 
+/* Reads a positive memory budget in MiB from `name`; an unset or empty
+   variable leaves zero. False, with the error logged, for any other value. */
+vkr_internal bool8_t vkr_renderer_budget_env_mb(const char *name,
+                                                uint64_t *out_mb) {
+  *out_mb = 0u;
+  char value[32];
+  if (!vkr_platform_environment_variable(name, value, sizeof(value)) ||
+      (value[0] != '\0' && (!string_to_u64(value, out_mb) || *out_mb == 0u ||
+                            *out_mb > UINT64_MAX / MB(1)))) {
+    log_error("%s must be a positive integer in MiB", name);
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal bool32_t vkr_renderer_backend_initialize(
     VkrRenderer *renderer, const VkrNativeSurface *surface, uint32_t width,
     uint32_t height, VkrDeviceRequirements *device_requirements,
@@ -665,14 +680,8 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   const uint32_t frame_slot_count = 2u;
   /* Zero lets the Metal renderer size the cap from its device. */
   uint64_t managed_budget_mb = 0u;
-  char budget_env[32];
-  const bool8_t budget_read = vkr_platform_environment_variable(
-      "VKR_METAL_MEMORY_BUDGET_MB", budget_env, sizeof(budget_env));
-  if (!budget_read ||
-      (budget_env[0] != '\0' &&
-       (!string_to_u64(budget_env, &managed_budget_mb) ||
-        managed_budget_mb == 0u || managed_budget_mb > UINT64_MAX / MB(1)))) {
-    log_error("VKR_METAL_MEMORY_BUDGET_MB must be a positive integer in MiB");
+  if (!vkr_renderer_budget_env_mb("VKR_METAL_MEMORY_BUDGET_MB",
+                                  &managed_budget_mb)) {
     if (out_error)
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
@@ -796,6 +805,14 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
   return true_v;
 #else
   (void)device_requirements;
+  /* Zero keeps the driver's VK_EXT_memory_budget budget. */
+  uint64_t device_budget_mb = 0u;
+  if (!vkr_renderer_budget_env_mb("VKR_VULKAN_MEMORY_BUDGET_MB",
+                                  &device_budget_mb)) {
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
   char graph_path[4096];
   VkrVulkanRendererConfig config = {
       .allocator = &renderer->render_graph_allocator,
@@ -854,6 +871,7 @@ vkr_internal bool32_t vkr_renderer_backend_initialize(
       .memory_block_allocation_capacity = 512u,
       .publication_staging_capacity = 256u,
       .max_pending_texture_upload_bytes = MB(256),
+      .device_memory_budget_bytes = device_budget_mb * MB(1),
       .max_graph_images = 128u,
       .max_graph_buffers = 128u,
       .max_graph_passes = VKR_RENDERER_IMPL_MAX_GRAPH_PASSES,
@@ -2081,11 +2099,13 @@ vkr_internal bool8_t vkr_renderer_backend_device_memory_stats(
   out_stats->live_count_by_type[0] = out_stats->live_allocation_count;
   out_stats->heap_index_by_type[0] = 0;
   out_stats->heap_count = 1;
+  out_stats->texture_heap_mask = 1u;
   out_stats->heap_size_bytes[0] = metrics.managed_budget_size;
   out_stats->heap_usage_bytes[0] = metrics.managed_allocated_size;
   out_stats->heap_budget_bytes[0] = metrics.managed_budget_size;
   out_stats->texture_heap_capacity_bytes = metrics.texture_heap_capacity_bytes;
   out_stats->texture_heap_capacity_valid = true_v;
+  out_stats->texture_heap_capacity_capped = true_v;
   out_stats->heap_usage_valid = metrics.managed_budget_size > 0u;
   out_stats->driver_usage_bytes = metrics.driver_current_allocated_size;
   out_stats->driver_budget_bytes = metrics.driver_recommended_working_set_size;

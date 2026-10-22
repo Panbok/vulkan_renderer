@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-18
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -160,8 +160,9 @@ READY; READY-only material pinning did not cover that interval.
 Metal reports the charged capacity of asset-texture heaps separately from live
 texture bytes. The automatic policy subtracts that capacity from managed usage
 to identify non-asset storage; publication, eviction and retirement inside the
-same heaps cannot change that classification. Its allowance is the greater of
-already charged asset capacity and the space left below the existing 80% target.
+same heaps cannot change that classification. Under Metal's cap the allowance is
+the greater of already charged asset capacity and the space left below the
+existing 80% target.
 The 90% pressure-entry and 75% exit thresholds remain unchanged. Reusing capacity
 already charged to the managed cap does not require eviction to reach that target.
 Native placement still enforces the cap, alignment and fragmentation constraints.
@@ -170,12 +171,60 @@ applying material textures. Active texture loads sample every frame; idle sampli
 keeps its 60-frame cadence. Newly charged texture heaps must be included before
 material application decides whether to evict against a finite allowance.
 
+Vulkan runs the same policy from `VK_EXT_memory_budget`. Each submission samples
+the usage and budget of every heap
+(`vkr_vulkan_device_memory_budget`); device memory stats report them as heap
+rows, and `texture_heap_mask` limits the policy to the device-local heaps, so
+the host heap does not dilute pressure. Images owned by
+`VKR_GPU_ALLOCATION_OWNER_TEXTURE` take blocks of their own pool
+(`asset_textures` in `VkrVulkanMemoryPoolKey`). Release frees such a block when
+it holds no live or retired placement, and the pool reports those blocks plus
+dedicated asset images as the texture capacity. The separation is required:
+other pool blocks are kept until shutdown, so evicting a texture placed in a
+shared block would not lower the driver's usage, and a policy that counted
+live texture bytes instead of capacity would then evict every texture. The
+policy therefore runs only on stats with texture heap capacity. Without the
+extension it does not run.
+
+Nothing rejects a Vulkan allocation, so its texture capacity is not capped
+(`texture_heap_capacity_capped` is false). With Metal's floor at charged
+capacity, each new texture block would raise the allowance with it, and a
+Bistro run at a 6000 MiB budget kept all 632 textures and 7.34 GB of
+device-local usage. Vulkan's allowance is therefore the 80% target alone, and
+the material system evicts least recently demanded textures to reach it.
+Classifying non-asset storage by capacity keeps that target stable: a new or
+freed texture block changes usage and capacity together. By the owner's
+decision (2026-10-22), evicted textures show their neutral defaults until mip
+eviction exists; the backend adds no allocation cap.
+`VKR_VULKAN_MEMORY_BUDGET_MB` lowers the reported device-local budget so a large
+GPU can run the policy under pressure; nothing rejects an allocation against it,
+and the driver can still oversubscribe video memory.
+
+An evicted texture is destroyed at once, and the texture system can reuse its
+id while material rows that sampled it still await retirement. Vulkan keeps
+that texture's publication record in place until those rows retire, because
+retired materials release texture references by record index. Publishing a
+new generation into such a record returns `VKR_RENDERER_ERROR_RESOURCE_BUSY`,
+and the texture load retries on a later frame.
+
+Evidence (2026-10-22, RX 6700 XT 12 GB, Windows 10, Release,
+`vkr_harness profile --case tools/cases/local/vulkan_bistro_texture_pressure.case.json
+--profile tools/profiles/local-offscreen-gpu-single.json`): with the driver's
+budget the run passed with 632 of 632 textures resident, pressure off,
+`memory.gpu.heap_usage_valid` 1, 3.36 GB of texture capacity and 7.09 GB of
+11.78 GB used on the main device-local heap. With
+`VKR_VULKAN_MEMORY_BUDGET_MB=6000` residency settled at 1.105 GB against a
+1.106 GB allowance, 218 of 632 textures, each of the 414 evictions once; the
+run stops at `scene.texture_ready_timeout` because demanded textures stay
+missing. The same run with `VK_LAYER_KHRONOS_validation` and synchronization
+validation reported no message.
+
 Capacity-based retries use a finite high-water allowance for the current set of
 texture streams. Returning from a lower allowance or toggling the unlimited
 policy sentinel cannot trigger another retry. A committed Scene reduction still
 provides its own generation-bounded retry; removing the final stream resets the
-high-water mark. Explicit user texture budgets and backends without dedicated
-texture-capacity accounting retain their logical residency policy. Metal
+high-water mark. Explicit user texture budgets retain their logical residency
+policy. Metal
 allocation failures continue through the approved bounded Scene-relief path.
 
 

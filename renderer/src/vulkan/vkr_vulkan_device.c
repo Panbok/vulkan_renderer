@@ -2068,12 +2068,13 @@ vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device) {
                                     : NULL;
 }
 
-bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
-                                        uint64_t *out_usage_bytes,
-                                        uint64_t *out_budget_bytes) {
-  vkr_assert(out_usage_bytes != NULL && out_budget_bytes != NULL);
-  *out_usage_bytes = 0u;
-  *out_budget_bytes = 0u;
+bool8_t
+vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
+                                uint64_t out_heap_usage[VK_MAX_MEMORY_HEAPS],
+                                uint64_t out_heap_budget[VK_MAX_MEMORY_HEAPS]) {
+  vkr_assert(out_heap_usage != NULL && out_heap_budget != NULL);
+  MemZero(out_heap_usage, sizeof(uint64_t) * VK_MAX_MEMORY_HEAPS);
+  MemZero(out_heap_budget, sizeof(uint64_t) * VK_MAX_MEMORY_HEAPS);
   if (!device || !device->selected || !device->memory_budget_enabled)
     return false_v;
   VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
@@ -2086,10 +2087,8 @@ bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
   vkGetPhysicalDeviceMemoryProperties2(device->selected->physical, &properties);
   const VkPhysicalDeviceMemoryProperties *memory = &properties.memoryProperties;
   for (uint32_t i = 0u; i < memory->memoryHeapCount; ++i) {
-    if (memory->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-      *out_usage_bytes += budget.heapUsage[i];
-      *out_budget_bytes += budget.heapBudget[i];
-    }
+    out_heap_usage[i] = budget.heapUsage[i];
+    out_heap_budget[i] = budget.heapBudget[i];
   }
   return true_v;
 }

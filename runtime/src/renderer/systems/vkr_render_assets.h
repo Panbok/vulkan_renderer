@@ -146,9 +146,10 @@ vkr_render_assets_pump_publications(VkrRenderAssets *assets,
 uint32_t vkr_render_assets_ibl_sh_slot(const VkrRenderAssets *assets,
                                        VkrTextureHandle source);
 
-/* Pure pressure/hysteresis policy; false means keep the current budget.
- * With texture heap accounting, out_budget is always the finite capacity
- * allowance; out_pressure_active selects whether it is enforced. */
+/* Pure pressure/hysteresis policy over the backend's texture heaps; false
+ * means keep the current budget, and stats without texture heap capacity
+ * never change it. out_budget is always the finite capacity allowance;
+ * out_pressure_active selects whether it is enforced. */
 bool8_t vkr_render_assets_texture_pressure_budget(
     const VkrDeviceMemoryStats *stats, bool8_t pressure_active,
     uint64_t *out_budget, bool8_t *out_pressure_active);

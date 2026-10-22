@@ -39,6 +39,10 @@ typedef struct VkrVulkanMemoryPoolKey {
   VkrVulkanMemoryKind kind;
   uint32_t memory_type_index;
   bool8_t device_address_required;
+  /** Images owned by VKR_GPU_ALLOCATION_OWNER_TEXTURE: their blocks hold no
+      other owner, so their bytes are the texture capacity the pressure policy
+      reads, and an empty block is freed once its placements complete. */
+  bool8_t asset_textures;
 } VkrVulkanMemoryPoolKey;
 
 typedef struct VkrVulkanMemoryPoolConfig {
@@ -74,6 +78,9 @@ typedef struct VkrVulkanMemoryPoolMetrics {
   uint64_t physical_allocated_bytes;
   uint64_t physical_allocated_bytes_peak;
   uint64_t block_capacity_failures;
+  /** Asset texture blocks and dedicated asset texture allocations, including
+      spare block space and placements awaiting completion. */
+  uint64_t asset_texture_capacity_bytes;
   VkrGpuMemoryMetrics aggregate;
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
   uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
@@ -117,7 +124,8 @@ bool8_t vkr_vulkan_memory_pool_allocate(
     VkMemoryPropertyFlags properties, VkDeviceSize size, VkDeviceSize alignment,
     VkrGpuAllocationOwner owner, VkrVulkanPooledAllocation *out_allocation);
 
-/** Releases a placement only after its submit value is proven complete. */
+/** Releases a placement only after its submit value is proven complete. An
+    asset texture block left with no live or retired placement is freed. */
 bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
                                        VkrVulkanPooledAllocation *allocation,
                                        uint64_t last_use_submit_value,

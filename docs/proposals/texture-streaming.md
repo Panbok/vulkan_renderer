@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-21
+updated: 2026-10-22
 authority: proposal
 ---
 # Texture streaming
@@ -55,16 +55,15 @@ owns fetching bytes from a remote depot and their transport order, and
   memory-relief generation
   ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). Nothing lowers a
   resident texture to fewer mips.
-- **Budget owner.** On Metal the automatic policy derives the texture
-  allowance from the managed allocation cap: pressure starts at 90% of the
-  cap, ends below 75% and targets 80%
+- **Budget owner.** The automatic policy derives the texture allowance from
+  the heaps' usage and budget: pressure starts at 90% of the budget, ends below
+  75% and targets 80%; under Metal's cap the allowance never drops below the
+  capacity already charged to asset textures
   (`vkr_render_assets_texture_pressure_budget` in
   [vkr_render_assets.c](../../runtime/src/renderer/systems/vkr_render_assets.c)).
-  On Vulkan, `vkr_vulkan_renderer_device_memory_stats`
-  ([vkr_vulkan_renderer.c](../../renderer/src/vulkan/vkr_vulkan_renderer.c))
-  leaves `heap_usage_valid` false, so the policy never starts and Vulkan has
-  no texture budget. [ADR-083](../adr/083-supported-hardware-matrix.md) says
-  Vulkan relies on this policy; the source does not support that statement.
+  Metal's budget is the managed allocation cap; Vulkan's is the device-local
+  heaps' `VK_EXT_memory_budget` budget, with asset textures in blocks of their
+  own, and Vulkan evicts whole textures to reach the target (ADR-024).
 - **Publication.** Vulkan writes each image into a slot of the sampled-image
   descriptor buffer, and material rows hold the 32-bit slot
   (`VkrVulkanMaterialGpuRow`). Metal material rows hold a 64-bit resource ID.
@@ -128,10 +127,7 @@ every material sample for a workflow id itself abandoned.
    slot or resource ID after the copy completes and retires the old image
    after its last submission (ADR-024). Material rows change through the
    existing publication; per-draw work does not change.
-5. **Vulkan budget.** Fill the heap usage and budget from
-   `VK_EXT_memory_budget` over the device-local heaps, so the same policy
-   runs on Vulkan.
-6. **One priority for local and remote loads.** The network protocol's
+5. **One priority for local and remote loads.** The network protocol's
    progressive phase requests remote mips smallest first by streaming source
    and screen size. It consumes the required mips from item 1 instead of a
    second estimate.

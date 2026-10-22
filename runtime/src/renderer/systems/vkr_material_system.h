@@ -272,8 +272,6 @@ void vkr_material_system_touch_texture_residency(VkrMaterialSystem *system,
 /** Changes the hard logical-byte budget; the next pump evicts to fit. */
 void vkr_material_system_set_texture_residency_budget(VkrMaterialSystem *system,
                                                       uint64_t budget_bytes);
-void vkr_material_system_set_automatic_texture_residency_budget(
-    VkrMaterialSystem *system, uint64_t budget_bytes);
 /** Capacity retries use a finite high-water value even while budget is
  * unlimited. */
 void vkr_material_system_set_texture_capacity_budget(

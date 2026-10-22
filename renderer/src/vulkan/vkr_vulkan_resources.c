@@ -707,6 +707,7 @@ bool8_t vkr_vk_create_image_ex(
       .memory_class = VKR_VULKAN_MEMORY_CLASS_DEVICE,
       .kind = VKR_VULKAN_MEMORY_KIND_IMAGE,
       .memory_type_index = allocation->memory_type_index,
+      .asset_textures = allocation->owner == VKR_GPU_ALLOCATION_OWNER_TEXTURE,
   };
   const bool8_t dedicated =
       dedicated_requirements.requiresDedicatedAllocation ||

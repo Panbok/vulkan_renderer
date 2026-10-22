@@ -1212,10 +1212,10 @@ test_material_texture_residency_evicts_to_budget(MaterialPbrTestContext *ctx) {
 
   /* Continuous demand can recover after real capacity relief, without a
    * visibility gap. Repeating the same budget must not queue a second retry. */
-  vkr_material_system_set_automatic_texture_residency_budget(system, 256u);
+  vkr_material_system_set_texture_capacity_budget(system, 256u, 256u);
   assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_EVICTED);
   system->texture_stream_budget_user_configured = false_v;
-  vkr_material_system_set_automatic_texture_residency_budget(system, 256u);
+  vkr_material_system_set_texture_capacity_budget(system, 256u, 256u);
   assert(stream->state == VKR_MATERIAL_TEXTURE_RESIDENCY_QUEUED);
   vkr_material_system_set_texture_residency_budget(system, 256u);
   stats = vkr_material_system_get_texture_stream_stats(system);

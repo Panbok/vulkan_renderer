@@ -1398,7 +1398,9 @@ groups keep asset textures from pinning retired Scene heaps. Transfer buffers gr
 on demand after their GPU and CPU consumers finish. Graph draw tables use scene
 candidate capacities on both backends; native caches retain sufficient backing
 and wait for submitted users before replacing undersized buffers. Automatic texture pressure
-accounts charged asset-heap capacity separately, and capacity retries require a
+accounts charged asset-heap capacity separately on both backends (Vulkan keeps
+asset textures in blocks of their own and reads the device-local heaps from
+`VK_EXT_memory_budget`), and capacity retries require a
 new finite high-water allowance or committed Scene reduction. Application owns
 bounded Scene-output recovery for the paneled editor and standalone Metal app;
 failed texture payloads are released, while their paths wait for a successfully

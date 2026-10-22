@@ -1312,6 +1312,14 @@ typedef struct VkrDeviceMemoryStats {
    * resources awaiting completion. Comparable to heap_usage_bytes when valid.
    */
   uint64_t texture_heap_capacity_bytes;
+  /** Native placement rejects allocations past the budget (Metal's managed
+   * cap), so charged texture capacity cannot grow under pressure and the
+   * pressure policy never lowers the allowance below it. Without a cap
+   * (Vulkan) the policy enforces its target and evicts to reach it. */
+  bool8_t texture_heap_capacity_capped;
+  /** Bit per heap that asset textures occupy; the texture pressure policy
+   * sums usage and budget over these heaps only. */
+  uint32_t texture_heap_mask;
   bool8_t texture_heap_capacity_valid;
   bool8_t heap_usage_valid;
   /** The driver's view of this process's GPU memory: what it has placed and

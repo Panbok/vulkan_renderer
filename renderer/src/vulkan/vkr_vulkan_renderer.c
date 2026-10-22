@@ -1807,8 +1807,8 @@ bool8_t vkr_vulkan_renderer_submit_packet(VkrVulkanRenderer *renderer,
   renderer->frame_active = false_v;
   vkr_rg_end_frame(renderer->graph);
   renderer->driver_memory_valid = vkr_vulkan_device_memory_budget(
-      renderer->device, &renderer->driver_memory_usage_bytes,
-      &renderer->driver_memory_budget_bytes);
+      renderer->device, renderer->driver_heap_usage_bytes,
+      renderer->driver_heap_budget_bytes);
   if (out_result) {
     *out_result = (VkrVulkanResult){
         .submit_value = signal_value,
@@ -2233,6 +2233,63 @@ void vkr_vulkan_renderer_get_health(const VkrVulkanRenderer *renderer,
   vkr_vulkan_device_get_health(renderer ? renderer->device : NULL, out_health);
 }
 
+/* The device-local heaps: where device images live, and the heaps the driver
+   totals and the texture pressure policy sum. */
+vkr_internal uint32_t
+vkr_vk_device_local_heap_mask(const VkrVulkanRenderer *renderer) {
+  const VkPhysicalDeviceMemoryProperties *memory =
+      vkr_vulkan_device_memory_properties(renderer->device);
+  uint32_t mask = 0u;
+  for (uint32_t heap = 0u; heap < memory->memoryHeapCount; ++heap) {
+    if (memory->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+      mask |= 1u << heap;
+  }
+  return mask;
+}
+
+vkr_internal void vkr_vk_driver_memory_totals(const VkrVulkanRenderer *renderer,
+                                              uint64_t *out_usage_bytes,
+                                              uint64_t *out_budget_bytes) {
+  *out_usage_bytes = 0u;
+  *out_budget_bytes = 0u;
+  if (!renderer->driver_memory_valid)
+    return;
+  const uint32_t mask = vkr_vk_device_local_heap_mask(renderer);
+  for (uint32_t heap = 0u; heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+    if (mask & (1u << heap)) {
+      *out_usage_bytes += renderer->driver_heap_usage_bytes[heap];
+      *out_budget_bytes += renderer->driver_heap_budget_bytes[heap];
+    }
+  }
+}
+
+/* Lowers the device-local budgets to the configured cap, largest heap first,
+   so their sum is at most the cap. */
+vkr_internal void vkr_vk_cap_device_local_budget(
+    const VkrVulkanRenderer *renderer, uint32_t heap_mask,
+    uint64_t heap_budget[VKR_DEVICE_MEMORY_HEAP_MAX]) {
+  const uint64_t cap = renderer->config.device_memory_budget_bytes;
+  uint64_t total = 0u;
+  for (uint32_t heap = 0u; heap < VKR_DEVICE_MEMORY_HEAP_MAX; ++heap) {
+    if (heap_mask & (1u << heap))
+      total += heap_budget[heap];
+  }
+  if (!cap || total <= cap)
+    return;
+  uint64_t excess = total - cap;
+  while (excess) {
+    uint32_t largest = UINT32_MAX;
+    for (uint32_t heap = 0u; heap < VKR_DEVICE_MEMORY_HEAP_MAX; ++heap) {
+      if ((heap_mask & (1u << heap)) && heap_budget[heap] &&
+          (largest == UINT32_MAX || heap_budget[heap] > heap_budget[largest]))
+        largest = heap;
+    }
+    const uint64_t cut = Min(excess, heap_budget[largest]);
+    heap_budget[largest] -= cut;
+    excess -= cut;
+  }
+}
+
 void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,
                                         VkrVulkanMemoryMetrics *out_metrics) {
   if (!out_metrics)
@@ -2250,14 +2307,16 @@ void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,
   out_metrics->physical_allocated_bytes_peak =
       metrics.physical_allocated_bytes_peak;
   out_metrics->block_capacity_failures = metrics.block_capacity_failures;
+  out_metrics->asset_texture_capacity_bytes =
+      metrics.asset_texture_capacity_bytes;
   out_metrics->aggregate = metrics.aggregate;
   MemCopy(out_metrics->owners, metrics.owners, sizeof(out_metrics->owners));
   MemCopy(out_metrics->live_bytes_by_type, metrics.live_bytes_by_type,
           sizeof(out_metrics->live_bytes_by_type));
   MemCopy(out_metrics->live_count_by_type, metrics.live_count_by_type,
           sizeof(out_metrics->live_count_by_type));
-  out_metrics->driver_usage_bytes = renderer->driver_memory_usage_bytes;
-  out_metrics->driver_budget_bytes = renderer->driver_memory_budget_bytes;
+  vkr_vk_driver_memory_totals(renderer, &out_metrics->driver_usage_bytes,
+                              &out_metrics->driver_budget_bytes);
   out_metrics->driver_metrics_valid = renderer->driver_memory_valid;
 }
 
@@ -2310,8 +2369,26 @@ void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
       Min(memory->memoryHeapCount, (uint32_t)VKR_DEVICE_MEMORY_HEAP_MAX);
   for (uint32_t heap = 0; heap < out_stats->heap_count; ++heap)
     out_stats->heap_size_bytes[heap] = memory->memoryHeaps[heap].size;
-  out_stats->driver_usage_bytes = renderer->driver_memory_usage_bytes;
-  out_stats->driver_budget_bytes = renderer->driver_memory_budget_bytes;
+  /* The driver's usage and budget drive the texture pressure policy over the
+     device-local heaps. Asset texture capacity is the pool's own blocks and
+     dedicated images, which leave the driver's usage when freed. Nothing
+     rejects a new block, so the capacity is not capped. */
+  out_stats->texture_heap_mask = vkr_vk_device_local_heap_mask(renderer);
+  out_stats->texture_heap_capacity_bytes = metrics.asset_texture_capacity_bytes;
+  out_stats->texture_heap_capacity_valid = true_v;
+  if (renderer->driver_memory_valid) {
+    for (uint32_t heap = 0; heap < out_stats->heap_count; ++heap) {
+      out_stats->heap_usage_bytes[heap] =
+          renderer->driver_heap_usage_bytes[heap];
+      out_stats->heap_budget_bytes[heap] =
+          renderer->driver_heap_budget_bytes[heap];
+    }
+    vkr_vk_cap_device_local_budget(renderer, out_stats->texture_heap_mask,
+                                   out_stats->heap_budget_bytes);
+    out_stats->heap_usage_valid = true_v;
+  }
+  vkr_vk_driver_memory_totals(renderer, &out_stats->driver_usage_bytes,
+                              &out_stats->driver_budget_bytes);
   out_stats->driver_memory_valid = renderer->driver_memory_valid;
 }
 

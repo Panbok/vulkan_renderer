@@ -3951,10 +3951,10 @@ struct VkrVulkanRenderer {
   uint64_t completed_value;
   /* Source frame of the prepared frame; its slot takes it at submission. */
   uint64_t prepared_source_frame_index;
-  /* VK_EXT_memory_budget totals over the device-local heaps, sampled at
-     each submission; invalid without the extension. */
-  uint64_t driver_memory_usage_bytes;
-  uint64_t driver_memory_budget_bytes;
+  /* VK_EXT_memory_budget usage and budget of each heap, sampled at each
+     submission; invalid without the extension. */
+  uint64_t driver_heap_usage_bytes[VK_MAX_MEMORY_HEAPS];
+  uint64_t driver_heap_budget_bytes[VK_MAX_MEMORY_HEAPS];
   bool8_t driver_memory_valid;
   /* One device timestamp and the host time it was read at, from calibrated
      timestamps; render thread only. Refreshed at most once a second, which

@@ -1320,16 +1320,6 @@ void vkr_material_system_set_texture_residency_budget(VkrMaterialSystem *system,
   }
 }
 
-void vkr_material_system_set_automatic_texture_residency_budget(
-    VkrMaterialSystem *system, uint64_t budget_bytes) {
-  if (system && !system->texture_stream_budget_user_configured) {
-    if (budget_bytes > system->texture_stream_budget_bytes)
-      vkr_material_system_requeue_demanded_evictions(system);
-    system->texture_stream_budget_bytes = budget_bytes;
-    vkr_material_system_refresh_texture_stream_demand(system);
-  }
-}
-
 void vkr_material_system_set_texture_capacity_budget(
     VkrMaterialSystem *system, uint64_t budget_bytes,
     uint64_t capacity_allowance) {

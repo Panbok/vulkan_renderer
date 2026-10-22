@@ -876,6 +876,17 @@ vkr_harness_child_texture_streams_ready(VkrStandardSceneRuntime *application) {
   const float64_t elapsed =
       vkr_platform_get_absolute_time() - child->load_started;
   if (elapsed * 1000.0 > child->case_manifest->asset_ready_timeout_ms) {
+    const VkrMaterialSystem *materials = &application->assets.material_system;
+    vkr_harness_stderr(
+        "Scene textures not ready: resident=%u pending=%u in_flight=%u "
+        "demanded_missing=%u demanded_evicted=%u evicted_total=%llu "
+        "resident_bytes=%llu budget_bytes=%llu pressure=%u\n",
+        stats.resident_count, stats.pending_count, stats.in_flight_count,
+        stats.demanded_missing_count, stats.demanded_evicted_count,
+        (unsigned long long)materials->texture_stream_evicted_total,
+        (unsigned long long)materials->texture_stream_resident_bytes,
+        (unsigned long long)materials->texture_stream_budget_bytes,
+        application->assets.texture_pressure_active ? 1u : 0u);
     vkr_harness_child_fail(application, "scene.texture_ready_timeout");
   }
   return false_v;

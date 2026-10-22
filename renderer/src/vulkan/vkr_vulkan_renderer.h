@@ -91,6 +91,10 @@ typedef struct VkrVulkanRendererConfig {
   uint32_t publication_staging_capacity;
   /** Retained decoded texture bytes awaiting bounded staging. */
   uint64_t max_pending_texture_upload_bytes;
+  /** Caps the device-local budget the texture pressure policy reads; zero
+      keeps the driver's. Nothing allocates against it: it lets a large GPU
+      run the policy under pressure (VKR_VULKAN_MEMORY_BUDGET_MB). */
+  uint64_t device_memory_budget_bytes;
   uint32_t max_graph_images;
   uint32_t max_graph_buffers;
   uint32_t max_graph_passes;
@@ -188,6 +192,8 @@ typedef struct VkrVulkanMemoryMetrics {
   uint64_t physical_allocated_bytes;
   uint64_t physical_allocated_bytes_peak;
   uint64_t block_capacity_failures;
+  /** Asset texture blocks and dedicated images (VkrVulkanMemoryPoolMetrics). */
+  uint64_t asset_texture_capacity_bytes;
   VkrGpuMemoryMetrics aggregate;
   VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
   uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];

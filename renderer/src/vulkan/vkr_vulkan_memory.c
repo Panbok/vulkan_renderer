@@ -17,13 +17,19 @@ struct VkrVulkanMemoryPoolManager {
   VkrVulkanMemoryPoolConfig config;
   VkrVulkanMemoryBlock *blocks;
   uint64_t blocks_size;
+  /* Slots in use, including freed asset texture blocks: a freed block leaves
+     a zeroed slot (null memory) that the next block takes, because live
+     placements address their block by index. */
   uint32_t block_count;
+  uint32_t live_block_count;
   uint64_t physical_allocations_peak;
   uint64_t physical_allocations_created;
   uint64_t block_bytes;
   uint64_t physical_allocated_bytes_peak;
   uint64_t dedicated_live;
   uint64_t dedicated_bytes;
+  uint64_t asset_texture_block_bytes;
+  uint64_t asset_texture_dedicated_bytes;
   uint64_t block_capacity_failures;
   uint64_t native_allocation_failures;
   VkrGpuMemoryMetrics dedicated_metrics;
@@ -109,7 +115,8 @@ bool8_t vkr_vulkan_memory_pool_key_equal(VkrVulkanMemoryPoolKey left,
                                          VkrVulkanMemoryPoolKey right) {
   return left.memory_class == right.memory_class && left.kind == right.kind &&
          left.memory_type_index == right.memory_type_index &&
-         left.device_address_required == right.device_address_required;
+         left.device_address_required == right.device_address_required &&
+         left.asset_textures == right.asset_textures;
 }
 
 bool8_t vkr_vulkan_memory_block_size(uint64_t configured_size,
@@ -174,6 +181,29 @@ vkr_vk_memory_destroy_block(VkrVulkanMemoryPoolManager *manager,
   MemZero(block, sizeof(*block));
 }
 
+/* Frees an asset texture block whose placements have all completed. Its slot
+   stays as a hole; the high-water count shrinks past trailing holes. */
+vkr_internal void
+vkr_vk_memory_free_empty_block(VkrVulkanMemoryPoolManager *manager,
+                               uint32_t block_index) {
+  VkrVulkanMemoryBlock *block = &manager->blocks[block_index];
+  VkrGpuMemoryMetrics metrics = {0};
+  vkr_gpu_memory_get_metrics(block->core, &metrics);
+  if (!block->key.asset_textures || metrics.live_allocations ||
+      metrics.retired_allocations)
+    return;
+  const uint32_t memory_type_index = block->key.memory_type_index;
+  manager->block_bytes -= block->size;
+  manager->asset_texture_block_bytes -= block->size;
+  manager->live_bytes_by_type[memory_type_index] -= block->size;
+  manager->live_count_by_type[memory_type_index]--;
+  manager->live_block_count--;
+  vkr_vk_memory_destroy_block(manager, block);
+  while (manager->block_count &&
+         !manager->blocks[manager->block_count - 1u].memory)
+    manager->block_count--;
+}
+
 void vkr_vulkan_memory_pool_destroy(VkrVulkanMemoryPoolManager *manager) {
   if (!manager)
     return;
@@ -200,11 +230,16 @@ vkr_internal VkrVulkanMemoryBlock *vkr_vk_memory_create_block(
     VkMemoryPropertyFlags properties, uint64_t resource_size,
     uint64_t alignment, uint32_t *out_block_index) {
   uint32_t pool_block_count = 0u;
+  uint32_t block_index = manager->block_count;
   for (uint32_t i = 0; i < manager->block_count; ++i) {
+    if (!manager->blocks[i].memory) {
+      block_index = Min(block_index, i);
+      continue;
+    }
     if (vkr_vulkan_memory_pool_key_equal(manager->blocks[i].key, key))
       pool_block_count++;
   }
-  if (manager->block_count == manager->config.max_blocks ||
+  if (manager->live_block_count == manager->config.max_blocks ||
       pool_block_count == manager->config.max_blocks_per_pool) {
     manager->block_capacity_failures++;
     return NULL;
@@ -260,10 +295,13 @@ vkr_internal VkrVulkanMemoryBlock *vkr_vk_memory_create_block(
     vkr_vk_memory_destroy_block(manager, &pending);
     return NULL;
   }
-  const uint32_t block_index = manager->block_count++;
   manager->blocks[block_index] = pending;
+  manager->block_count = Max(manager->block_count, block_index + 1u);
+  manager->live_block_count++;
   manager->physical_allocations_created++;
   manager->block_bytes += block_size;
+  if (key.asset_textures)
+    manager->asset_texture_block_bytes += block_size;
   manager->live_bytes_by_type[key.memory_type_index] += block_size;
   manager->live_count_by_type[key.memory_type_index]++;
   manager->physical_allocated_bytes_peak =
@@ -271,7 +309,7 @@ vkr_internal VkrVulkanMemoryBlock *vkr_vk_memory_create_block(
           manager->block_bytes + manager->dedicated_bytes);
   manager->physical_allocations_peak =
       Max(manager->physical_allocations_peak,
-          (uint64_t)manager->block_count + manager->dedicated_live);
+          (uint64_t)manager->live_block_count + manager->dedicated_live);
   *out_block_index = block_index;
   return &manager->blocks[block_index];
 }
@@ -292,7 +330,8 @@ bool8_t vkr_vulkan_memory_pool_allocate(
                                 : VKR_GPU_MEMORY_CLASS_BUFFER;
   for (uint32_t i = 0; i < manager->block_count; ++i) {
     VkrVulkanMemoryBlock *candidate = &manager->blocks[i];
-    if (!vkr_vulkan_memory_pool_key_equal(candidate->key, key))
+    if (!candidate->memory ||
+        !vkr_vulkan_memory_pool_key_equal(candidate->key, key))
       continue;
     VkrGpuMemoryMetrics metrics = {0};
     vkr_gpu_memory_get_metrics(candidate->core, &metrics);
@@ -335,8 +374,10 @@ bool8_t vkr_vulkan_memory_pool_allocate(
   VkrGpuAllocationHandle handle = {0};
   VkrGpuPlacement placement = {0};
   if (vkr_gpu_memory_allocate(block->core, size, alignment, gpu_kind, &handle,
-                              &placement) != VKR_GPU_MEMORY_STATUS_OK)
+                              &placement) != VKR_GPU_MEMORY_STATUS_OK) {
+    vkr_vk_memory_free_empty_block(manager, block_index);
     return false_v;
+  }
   *out_allocation = (VkrVulkanPooledAllocation){
       .memory = block->memory,
       .memory_size = block->size,
@@ -362,7 +403,7 @@ bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
                                        uint64_t last_use_submit_value,
                                        uint64_t completed_submit_value) {
   if (!manager || !allocation || !allocation->valid ||
-      allocation->block_index >= manager->block_count ||
+      allocation->block_index >= manager->config.max_blocks ||
       last_use_submit_value > completed_submit_value ||
       (allocation->retired &&
        allocation->retire_value > completed_submit_value))
@@ -371,7 +412,15 @@ bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
   const bool8_t was_retired = allocation->retired;
   const VkrGpuAllocationOwner owner = allocation->owner;
   const uint64_t requested_size = allocation->requested_size;
-  if (!vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
+  const uint32_t block_index = allocation->block_index;
+  /* A completed retired placement was collected with its block, which an
+     emptied asset texture pool then freed. */
+  if (was_retired && !block->memory && allocation->key.asset_textures) {
+    MemZero(allocation, sizeof(*allocation));
+    return true_v;
+  }
+  if (!block->memory ||
+      !vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
       vkr_gpu_memory_collect(block->core, completed_submit_value, NULL, NULL,
                              NULL) != VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
@@ -388,6 +437,7 @@ bool8_t vkr_vulkan_memory_pool_release(VkrVulkanMemoryPoolManager *manager,
     assert_log(owner_released, "Vulkan pooled owner accounting underflow");
   }
   MemZero(allocation, sizeof(*allocation));
+  vkr_vk_memory_free_empty_block(manager, block_index);
   return true_v;
 }
 
@@ -398,7 +448,8 @@ bool8_t vkr_vulkan_memory_pool_retire(VkrVulkanMemoryPoolManager *manager,
       allocation->block_index >= manager->block_count)
     return false_v;
   VkrVulkanMemoryBlock *block = &manager->blocks[allocation->block_index];
-  if (!vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
+  if (!block->memory ||
+      !vkr_vulkan_memory_pool_key_equal(block->key, allocation->key) ||
       vkr_gpu_memory_retire(block->core, allocation->handle, retire_value) !=
           VKR_GPU_MEMORY_STATUS_OK)
     return false_v;
@@ -449,6 +500,8 @@ void vkr_vulkan_memory_pool_record_dedicated_allocate(
                                            class_metrics->live_reserved_bytes);
   manager->dedicated_live++;
   manager->dedicated_bytes += size;
+  if (key.asset_textures)
+    manager->asset_texture_dedicated_bytes += size;
   manager->physical_allocations_created++;
   manager->live_bytes_by_type[key.memory_type_index] += size;
   manager->live_count_by_type[key.memory_type_index]++;
@@ -458,7 +511,7 @@ void vkr_vulkan_memory_pool_record_dedicated_allocate(
           manager->block_bytes + manager->dedicated_bytes);
   manager->physical_allocations_peak =
       Max(manager->physical_allocations_peak,
-          (uint64_t)manager->block_count + manager->dedicated_live);
+          (uint64_t)manager->live_block_count + manager->dedicated_live);
 }
 
 void vkr_vulkan_memory_pool_record_dedicated_release(
@@ -497,6 +550,8 @@ void vkr_vulkan_memory_pool_record_dedicated_release(
   *class_reserved -= size;
   manager->dedicated_live--;
   manager->dedicated_bytes -= size;
+  if (key.asset_textures)
+    manager->asset_texture_dedicated_bytes -= size;
   manager->live_count_by_type[key.memory_type_index]--;
   manager->live_bytes_by_type[key.memory_type_index] -= size;
   if (!retired) {
@@ -552,7 +607,7 @@ void vkr_vulkan_memory_pool_get_metrics(
   if (!manager)
     return;
   out_metrics->physical_allocations_live =
-      manager->block_count + manager->dedicated_live;
+      manager->live_block_count + manager->dedicated_live;
   out_metrics->physical_allocations_peak = manager->physical_allocations_peak;
   out_metrics->physical_allocations_created =
       manager->physical_allocations_created;
@@ -561,12 +616,17 @@ void vkr_vulkan_memory_pool_get_metrics(
   out_metrics->physical_allocated_bytes_peak =
       manager->physical_allocated_bytes_peak;
   out_metrics->block_capacity_failures = manager->block_capacity_failures;
+  out_metrics->asset_texture_capacity_bytes =
+      manager->asset_texture_block_bytes +
+      manager->asset_texture_dedicated_bytes;
   MemCopy(out_metrics->owners, manager->owners, sizeof(out_metrics->owners));
   MemCopy(out_metrics->live_bytes_by_type, manager->live_bytes_by_type,
           sizeof(out_metrics->live_bytes_by_type));
   MemCopy(out_metrics->live_count_by_type, manager->live_count_by_type,
           sizeof(out_metrics->live_count_by_type));
   for (uint32_t i = 0; i < manager->block_count; ++i) {
+    if (!manager->blocks[i].memory)
+      continue;
     VkrGpuMemoryMetrics block_metrics = {0};
     vkr_gpu_memory_get_metrics(manager->blocks[i].core, &block_metrics);
     vkr_gpu_memory_metrics_accumulate(&out_metrics->aggregate, &block_metrics);

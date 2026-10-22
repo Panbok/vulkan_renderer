@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-17
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -8,9 +8,9 @@ authority: adr
 
 ## Status
 
-Accepted (partial). Vulkan reports the driver's memory usage and budget but
-does not enforce a device-memory budget, and no device below the memory floor
-has a Bistro measurement. Only the two reference devices have native evidence.
+Accepted (partial). Vulkan runs the texture pressure policy from the driver's
+memory usage and budget but does not enforce a device-memory budget, and no
+device below the memory floor has a Bistro measurement. Only the two reference devices have native evidence.
 
 ## Context
 
@@ -79,7 +79,7 @@ path depends on the capability.
 | Lossy render-target compression | No | Yes | Yes | Not exposed | Not exposed | Not used |
 | Samplers per stage in argument buffers | 996 | 996 | 500,000 | Not applicable | Not applicable | The Metal sampler cache holds at most 932 states below Apple9, keeping 64 for inline MSL samplers, and reuses the closest cached state beyond that |
 | Scene scaling | Spatial upscale with adaptive quality | Same | Same | None; unit scale | None; unit scale | ADR-087 (decision 12); Vulkan FSR 3.1 was removed (ADR-052) |
-| Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, enabled when present | Same | Metal enforces it; Vulkan reports device-local usage and budget as `memory.gpu.driver.*` metrics |
+| Memory budget source | `recommendedMaxWorkingSetSize` | Same | Same | `VK_EXT_memory_budget`, enabled when present | Same | Metal enforces it; Vulkan feeds the texture pressure policy from the device-local heaps and enforces no cap |
 | `VK_EXT_descriptor_heap` | Not applicable | Not applicable | Not applicable | Missing on Windows drivers | Present | Not used; adopting it drops Windows RDNA 2 |
 
 Apple9 GPUs allocate registers dynamically (Apple's Dynamic Caching). Occupancy
@@ -103,12 +103,13 @@ The Metal managed allocation cap is two thirds of `recommendedMaxWorkingSetSize`
 8,082 MiB; the editor log records both values at startup. The ratio for an 8 GB
 Mac is not measured. The cap also holds render targets, geometry, and transfer
 rings, so textures receive less than the full cap. Vulkan has no device-memory
-cap. It relies on the texture pressure policy (ADR-024), and a 12 GB RX 6700 XT
-holds Bistro. Release `win_bistro_production` with
+cap. It relies on the texture pressure policy (ADR-024), which reads the
+device-local heaps' usage and budget from `VK_EXT_memory_budget`, and a 12 GB
+RX 6700 XT holds Bistro. Release `win_bistro_production` with
 `local-offscreen-gpu-single.json` on that GPU (driver 26.6.3, `b7fd519f`, BC
 textures) measured the M1 Pro's texture totals: 3.176 GB at full resolution, the
 Vulkan default, and 1.995 GB at a 2048 limit. `memory.gpu.bytes.peak` was 4.84
-and 3.56 GB; the driver reported no heap usage (`memory.gpu.heap_usage_valid`
+and 3.56 GB; Vulkan did not report heap usage then (`memory.gpu.heap_usage_valid`
 0). At about 4.5 GiB, the full-resolution peak does not need Vulkan to default
 to 2048. No 8 GB discrete GPU has run Bistro.
 
@@ -171,6 +172,6 @@ tier or an enforced Vulkan memory budget ships.
 - [Metal managed budget](../../renderer/src/metal/internal/vkr_metal_packet_setup.inc)
   (`vkr_metal_packet_managed_budget`)
 - [Vulkan device floor](../../renderer/src/vulkan/vkr_vulkan_device.c)
-  (`vkr_vulkan_device_memory_budget` reads the driver's usage and budget)
+  (`vkr_vulkan_device_memory_budget` reads each heap's usage and budget)
 - [Texture pressure budget](../../runtime/src/renderer/systems/vkr_render_assets.c)
 - [Texture format selection](../../runtime/src/renderer/systems/vkr_texture_system.c)

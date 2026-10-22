@@ -2575,6 +2575,14 @@ vkr_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   VkrVulkanPublishedTexture *record =
       &renderer->published_textures[handle.id - 1u];
+  /* An unpublished texture that material rows still reference keeps this
+     record until those rows retire, because retired materials release their
+     texture references by record index. The texture system can reuse the id
+     sooner (an evicted texture is destroyed at once), so its next texture
+     waits for the old record's retirement. */
+  if (!record->live && record->pending_retire &&
+      record->handle.generation != handle.generation)
+    return VKR_RENDERER_ERROR_RESOURCE_BUSY;
   if (record->live || record->pending_retire) {
     log_error("Vulkan texture %u:%u is already published", handle.id,
               handle.generation);

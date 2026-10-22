@@ -140,11 +140,13 @@ bool8_t vkr_vulkan_device_pipeline_statistics(const VkrVulkanDevice *device);
 float32_t vkr_vulkan_device_max_anisotropy(const VkrVulkanDevice *device);
 const VkPhysicalDeviceMemoryProperties *
 vkr_vulkan_device_memory_properties(const VkrVulkanDevice *device);
-/** The driver's current usage and budget summed over the device-local heaps,
-    from VK_EXT_memory_budget; false when the device did not enable it. */
-bool8_t vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
-                                        uint64_t *out_usage_bytes,
-                                        uint64_t *out_budget_bytes);
+/** The driver's current usage and budget of each memory heap, from
+    VK_EXT_memory_budget; rows past the heap count are zero. False, with every
+    row zero, when the device did not enable the extension. */
+bool8_t
+vkr_vulkan_device_memory_budget(const VkrVulkanDevice *device,
+                                uint64_t out_heap_usage[VK_MAX_MEMORY_HEAPS],
+                                uint64_t out_heap_budget[VK_MAX_MEMORY_HEAPS]);
 /** Reads the device's timestamp counter and QueryPerformanceCounter at one
     moment (VK_KHR_calibrated_timestamps); the host value converts with
     vkr_platform_monotonic_ns_from_counter. False when the device has no such
