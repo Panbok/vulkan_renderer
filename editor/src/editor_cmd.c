@@ -641,6 +641,15 @@ static bool8_t cmd_run_select(CmdContext *ctx, const CmdDef *def, String8 arg) {
     return false_v;
   const String8 name = cmd_unquote(arg);
   const VkrEntityId entity = cmd_find_any(ctx->frame, name);
+  /* No name, or "none" when no object has that name, clears the
+     selection, so scripted captures show no outlines. */
+  if (!entity.u64 && (!name.length || vkr_string8_equals_cstr(&name, "none"))) {
+    vkr_editor_selection_clear_extra(ctx->editor);
+    *ctx->frame->scene_edit = (VkrSceneEditRequest){
+        .action = VKR_SCENE_EDIT_SELECT, .entity = VKR_ENTITY_ID_INVALID};
+    string_format(ctx->message, sizeof(ctx->message), "Selection cleared");
+    return true_v;
+  }
   if (!entity.u64) {
     string_format(ctx->message, sizeof(ctx->message), "No entity named '%.*s'",
                   (int)name.length, name.str);
@@ -2493,9 +2502,10 @@ static const CmdDef cmd_defs[] = {
     CMD_SIMPLE_HOLDS("scene.save", "Save scene edits", CMD_SAVE),
     CMD_SIMPLE("undo", "Undo the last edit", CMD_UNDO),
     CMD_SIMPLE("redo", "Redo the last undone edit", CMD_REDO),
-    {"select", CMD_ARG_ENTITY, "<name>",
-     "Select an entity by name (exact, else first containing)", cmd_run_select,
-     CMD_COUNT, 0u},
+    {"select", CMD_ARG_ENTITY, "<name>|none",
+     "Select an entity by name (exact, else first containing); none or no "
+     "name clears the selection",
+     cmd_run_select, CMD_COUNT, 0u},
     CMD_SIMPLE("frame", "Frame the selection in the Scene", CMD_FRAME),
     {"visibility.toggle", CMD_ARG_NONE, "",
      "Hide or show the selection in the game too (its saved Visibility)",

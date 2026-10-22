@@ -7246,7 +7246,10 @@ vkr_internal void vkr_standard_scene_runtime_apply_scene_edit(
   if (scene) {
     switch (scene_edit->action) {
     case VKR_SCENE_EDIT_SELECT:
-      if (vkr_scene_entity_alive(scene, scene_edit->entity)) {
+      /* Selecting no entity clears the selection. */
+      if (!scene_edit->entity.u64) {
+        vkr_standard_scene_runtime_clear_gizmo_selection(application);
+      } else if (vkr_scene_entity_alive(scene, scene_edit->entity)) {
         vkr_standard_scene_runtime_cancel_gizmo_pick(application);
         vkr_standard_scene_runtime_clear_gizmo_handles(application);
         state->gizmo_drag.active = false_v;
