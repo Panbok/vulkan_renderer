@@ -251,6 +251,10 @@ Blender side is in [references/blender-models.md](references/blender-models.md).
   blotched: rebake after reimporting lit props. Reimporting from a
   different model keeps the slots by primitive order, so assign them
   again from the new file's slot names.
+- After any reload, check `editor.status` `scene`: `kept_edits` counts
+  saved edits that bind to nothing (kept and written back unchanged), and
+  `save_blocked` with `overlay_problem` means the edit file did not load;
+  the editor then refuses to save, so fix the file before editing more.
 - A glTF `COLOR_0` multiplies a plain material's base colour, so keep it
   white there; on surfaces that take a layered material with the
   `vertex_color` mask, RGBA weigh its layers 0 to 3. A painted-metal graph
