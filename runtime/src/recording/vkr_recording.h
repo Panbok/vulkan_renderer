@@ -178,9 +178,11 @@
 /* Longest tag key or value and event name; longest event payload. */
 #define VKR_RECORDING_TEXT_MAX 63u
 #define VKR_RECORDING_EVENT_PAYLOAD_MAX 256u
-/* Recent recorded frames whose renderer frame index pass rows can name;
-   rows arrive a few frames after their frame. */
-#define VKR_RECORDING_FRAME_INDEX_HISTORY 32u
+/* Recent recorded frames whose renderer frame index pass rows and GPU
+   counter sessions can name. Rows arrive a few frames after their frame; a
+   counter session names its first frame once its up to 30 frames finished
+   on the GPU and were read, a batch a frame, about 40 frames later. */
+#define VKR_RECORDING_FRAME_INDEX_HISTORY 128u
 
 /* VkrRecordingFrame.flags */
 #define VKR_RECORDING_FRAME_SIMULATING 1u

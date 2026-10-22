@@ -1381,7 +1381,11 @@ static void test_recording_sampled_gpu_counters(void) {
   static VkrRecording recording;
   static VkrRendererImplGpuCounters session;
   assert(vkr_recording_start(&recording, &config));
-  for (uint64_t f = 0u; f < 4u; ++f) {
+  /* Session B spans 40 frames and arrives 18 frames after its last, as a
+     long session the GPU finished and the renderer read does. */
+  const uint64_t frames = 60u;
+  const uint64_t b_last = 41u;
+  for (uint64_t f = 0u; f < frames; ++f) {
     const VkrRecordingFrame frame = {.display_dt = 1.0 / 60.0};
     const VkrRecordingCamera camera = {.fov = 60.0f};
     vkr_recording_frame(&recording, &frame, &camera);
@@ -1399,11 +1403,11 @@ static void test_recording_sampled_gpu_counters(void) {
     };
     vkr_recording_passes(&recording, f, index, &table);
     /* Session A over frames 0 and 1: a percent and a count. Session B over
-       frames 2 and 3 samples another counter, which Shadow lacks. */
-    if (f == 1u || f == 3u) {
+       frames 2 to 41 samples another counter, which Shadow lacks. */
+    if (f == 1u || f == frames - 1u) {
       MemZero(&session, sizeof(session));
-      session.first_frame_index = index - 1u;
-      session.last_frame_index = index;
+      session.first_frame_index = f == 1u ? index - 1u : 100u + 2u;
+      session.last_frame_index = f == 1u ? index : 100u + b_last;
       session.pass_count = 2u;
       string_format(session.pass_names[0], sizeof(session.pass_names[0]),
                     "Shadow");
@@ -1447,9 +1451,9 @@ static void test_recording_sampled_gpu_counters(void) {
   assert(string_equals(data.gpu_counters[1].name, "Waves"));
   assert(data.gpu_counters[1].unit == VKR_RECORDING_GPU_COUNTER_COUNT);
   assert(string_equals(data.gpu_counters[2].name, "MemUnitBusy"));
-  assert(data.gpu_counter_frame_count == 4u);
+  assert(data.gpu_counter_frame_count == b_last + 1u);
   assert(data.gpu_counter_first_frame == 0u &&
-         data.gpu_counter_last_frame == 3u);
+         data.gpu_counter_last_frame == b_last);
   float32_t value = 0.0f;
   /* A frame's percent weighs each pass by its GPU time: (20 + 3 * 60) / 4;
      a count sums the passes. */
@@ -1460,11 +1464,12 @@ static void test_recording_sampled_gpu_counters(void) {
            value == 40.0f);
     assert(!vkr_recording_data_gpu_counter(&data, 2u, f, &value));
   }
-  for (uint64_t f = 2u; f < 4u; ++f) {
+  for (uint64_t f = 2u; f <= b_last; ++f) {
     assert(!vkr_recording_data_gpu_counter(&data, 0u, f, &value));
     assert(vkr_recording_data_gpu_counter(&data, 2u, f, &value) &&
            value == 40.0f);
   }
+  assert(!vkr_recording_data_gpu_counter(&data, 2u, b_last + 1u, &value));
   const uint32_t shadow = vkr_recording_data_find_pass(&data, "Shadow");
   const uint32_t lighting = vkr_recording_data_find_pass(&data, "Lighting");
   assert(shadow != UINT32_MAX && lighting != UINT32_MAX);

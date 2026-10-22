@@ -15,8 +15,8 @@ AMD GPUs on Vulkan sample per-pass hardware counters into Tier 1
 recordings through GPUPerfAPI. Metal evidence is on this Mac, and the HW
 tab's Vulkan pipeline statistics ran on an RX 6700 XT; the Vulkan backend's
 census pass, readback and command counters have no native run yet (Windows
-machine), and the AMD counters' multi-frame sessions have no native run
-yet: the one-frame sessions before them hung the GPU on Adrenalin 26.6.3.
+machine). The AMD counters ran natively on Bistro with Adrenalin 26.10.1;
+the one-frame sessions before them hung the GPU on Adrenalin 26.6.3.
 
 ## Context
 
@@ -265,7 +265,10 @@ needed a live editor, a GPU capture or a debugger.
    While a Tier 1 recording runs, the runtime writes each published
    session into the `gpu_counter_name` and `gpu_counters` streams
    ([`vkr_recording_format.h`](../../runtime/src/assets/vkr_recording_format.h))
-   and the device's vendor into a `Vendor` fact. The Recordings window's
+   and the device's vendor into a `Vendor` fact. It places a session's
+   first and last frame through the renderer frame indices of the last 128
+   recorded frames, since a session arrives about 40 frames after its
+   first. The Recordings window's
    GPU counters checkbox (on an AMD GPU), `rec.start {gpu_counters:
    seconds}` and `rec.counters {seconds}` request sampling for 1 to 10 s;
    `rec.status` reports `gpu_counter_sessions`. The loader packs the
@@ -371,9 +374,24 @@ deletion replaced both. One-frame sessions then hung the GPU three times
 run all 66 passes and the next three never start their first, about 28
 sessions in, inside `GpaBeginCommandList`'s commands. GPUPerfAPI lists a
 hang after a few dozen consecutive sessions on AMD's Windows driver before
-Adrenalin 26.7.1, so sessions span up to 30 frames. Unavailable: a native
-run of the multi-frame sessions, which waits for that driver, and a check
-on a non-AMD desktop GPU, where only reasoning shows the view hidden.
+Adrenalin 26.7.1, so sessions span up to 30 frames.
+
+On Adrenalin 26.10.1 a headless Release editor on Bistro recorded at
+Tier 1 with `rec.start {gpu_counters: 3}` and then `rec.counters
+{seconds: 2}`: GPUPerfAPI found 14 of the 16 counters and split them into
+5 one-replay groups, and seven 22- to 30-frame sessions ran and were read
+without a hang (201 to 203 passes while the scene still loaded, then 76 to
+79). The first run recorded none of them: the recording placed a
+session's first frame through only its last 32 frames, and a 30-frame
+session arrives later than that. The history now holds 128 frames,
+`test_recording_sampled_gpu_counters` writes a 40-frame session 18 frames
+after its last, and the rerun recorded all seven (`rec.status`
+`gpu_counter_sessions` 3, then 7). `rec.analyze {tab: "hw"}` opened GPU
+counters with 202 traced frames, `Lighting.Deferred` bound by CS (100 %),
+the shadow cascades by VsGs (99 %) and `UI.Editor` by DepthStencilTest.
+`TexUnitBusy` and `MemUnitBusy` read the same on every pass on this
+RDNA 2 GPU. Unavailable: a check on a non-AMD desktop GPU, where only
+reasoning shows the view hidden.
 
 `test_recording_counter_import` feeds a synthetic three-table export in
 7-byte pieces through a source callback and checks the file byte for byte;
@@ -481,8 +499,7 @@ change keep overlay-only world draw counts.
 ## Revisit when
 
 The Vulkan census, counters, readback and pipeline statistics get their
-native run; the AMD multi-frame sessions run natively on Adrenalin 26.7.1 or
-later; GPUPerfAPI's Vulkan backend offers streaming counters, or NVIDIA or
+native run; GPUPerfAPI's Vulkan backend offers streaming counters, or NVIDIA or
 Intel counters are wanted; Instruments exports counters faster or another
 platform gets a counter trace; a recording's size or the census pass's cost fails the
 Tier 1 budget; or the map needs entity names, which needs picking ids joined

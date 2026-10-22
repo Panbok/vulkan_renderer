@@ -220,7 +220,10 @@ cleanup:
 
 /* Keeps a session whose frame recorded GPUPerfAPI's commands until the GPU
    is past that frame. */
-vkr_internal void vkr_amd_counters_retire(VkrVulkanAmdCounters *c) {
+vkr_internal void vkr_amd_counters_retire(VkrVulkanAmdCounters *c,
+                                          const char *reason) {
+  log_warn("AMD GPU counters: dropped a session of %u frames: %s",
+           c->frame_count, reason);
   if (c->session && c->retired_count < VKR_AMD_COUNTERS_RETIRED_MAX) {
     c->retired[c->retired_count] = c->session;
     c->retired_frames[c->retired_count] = 0u;
@@ -277,6 +280,7 @@ void vkr_vulkan_amd_counters_request(VkrVulkanAmdCounters *counters,
   const uint64_t now = vkr_platform_get_monotonic_ns();
   const uint64_t deadline =
       seconds > 0.0 ? now + (uint64_t)(seconds * 1.0e9) : 0u;
+  log_info("AMD GPU counters: sampling for %.1f s", seconds);
   vkr_atomic_uint64_store(&counters->deadline_ns, deadline,
                           VKR_MEMORY_ORDER_RELEASE);
 }
@@ -372,6 +376,8 @@ vkr_internal bool8_t vkr_amd_counters_start_session(VkrVulkanAmdCounters *c,
   GpaStatus status = c->gpa.GpaCreateSession(
       c->context, kGpaSessionSampleTypeDiscreteCounter, &c->session);
   if (status != kGpaStatusOk) {
+    log_warn("AMD GPU counters: GpaCreateSession failed (%s)",
+             vkr_amd_counters_status(c, status));
     c->session = NULL;
     return false_v;
   }
@@ -413,6 +419,8 @@ vkr_internal bool8_t vkr_amd_counters_start_session(VkrVulkanAmdCounters *c,
     status = c->gpa.GpaBeginSession(c->session);
   }
   if (status != kGpaStatusOk) {
+    log_warn("AMD GPU counters: counter group %u did not begin (%s)", group,
+             vkr_amd_counters_status(c, status));
     (void)c->gpa.GpaDeleteSession(c->session);
     c->session = NULL;
     return false_v;
@@ -427,9 +435,13 @@ vkr_internal bool8_t vkr_amd_counters_start_session(VkrVulkanAmdCounters *c,
 /* Ends the session after its last sampled frame; the GPU then finishes
    the frames in flight. */
 vkr_internal void vkr_amd_counters_end_session(VkrVulkanAmdCounters *c) {
-  if (c->frame_count == 0u ||
-      c->gpa.GpaEndSession(c->session) != kGpaStatusOk) {
-    vkr_amd_counters_retire(c);
+  if (c->frame_count == 0u) {
+    vkr_amd_counters_retire(c, "no frame was sampled");
+    return;
+  }
+  const GpaStatus status = c->gpa.GpaEndSession(c->session);
+  if (status != kGpaStatusOk) {
+    vkr_amd_counters_retire(c, vkr_amd_counters_status(c, status));
     return;
   }
   c->state = VKR_AMD_COUNTERS_WAITING;
@@ -496,9 +508,14 @@ void vkr_vulkan_amd_counters_begin_frame(
         c->disabled = true_v;
         return;
       }
+      log_info("AMD GPU counters: %u counters in %u groups of one replay",
+               c->group_start[c->group_count - 1u] +
+                   c->group_size[c->group_count - 1u],
+               c->group_count);
     }
     const uint32_t group = c->next_group;
     if (!vkr_amd_counters_start_session(c, group)) {
+      c->disabled = true_v;
       return;
     }
     c->next_group = (group + 1u) % c->group_count;
@@ -562,7 +579,7 @@ void vkr_vulkan_amd_counters_end_frame(VkrVulkanAmdCounters *counters) {
   const GpaStatus status = c->gpa.GpaEndCommandList(c->command_list);
   c->command_list = NULL;
   if (status != kGpaStatusOk) {
-    vkr_amd_counters_retire(c);
+    vkr_amd_counters_retire(c, vkr_amd_counters_status(c, status));
     return;
   }
   c->last_frame_index = c->frame_index;
@@ -646,13 +663,12 @@ void vkr_vulkan_amd_counters_collect(VkrVulkanAmdCounters *counters) {
     if (status == kGpaStatusResultNotReady) {
       if (vkr_platform_get_monotonic_ns() - c->waiting_since_ns >
           VKR_AMD_COUNTERS_WAIT_NS) {
-        log_warn("AMD GPU counters: a session's frames never finished");
-        vkr_amd_counters_retire(c);
+        vkr_amd_counters_retire(c, "its frames never finished");
       }
       return;
     }
     if (status != kGpaStatusOk) {
-      vkr_amd_counters_retire(c);
+      vkr_amd_counters_retire(c, vkr_amd_counters_status(c, status));
       return;
     }
     c->state = VKR_AMD_COUNTERS_READING;
@@ -689,6 +705,11 @@ void vkr_vulkan_amd_counters_collect(VkrVulkanAmdCounters *counters) {
   if (c->read_frame < c->frame_count) {
     return;
   }
+  log_info("AMD GPU counters: read frames %llu to %llu, %u passes, %u "
+           "counters",
+           (unsigned long long)c->first_frame_index,
+           (unsigned long long)c->last_frame_index, c->pass_count,
+           c->counter_count);
   vkr_amd_counters_publish(c);
   (void)c->gpa.GpaDeleteSession(c->session);
   c->session = NULL;
