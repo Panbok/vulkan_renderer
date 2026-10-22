@@ -463,6 +463,33 @@ static void brush_mark_mover_changes(VkrScene *scene, VkrEntityId root) {
   }
 }
 
+/* Marks the brushes whose theme rules may follow `entity`'s tags: the
+   entity when it is built here, else the brushes below it that inherit
+   them. Nothing to do while neither theme has rules. */
+static void brush_mark_retagged(VkrScene *scene, VkrEntityId entity) {
+  VkrSceneBrushes *state = brush_state(scene, false_v);
+  if (!state ||
+      (!state->themes[0].rule_count && !state->themes[1].rule_count)) {
+    return;
+  }
+  if (brush_built_here(scene, entity)) {
+    brush_mark(scene, entity);
+    return;
+  }
+  for (uint32_t i = 0; i < state->record_count; ++i) {
+    VkrEntityId at = brush_parent(scene, state->records[i].entity);
+    for (uint32_t depth = 0;
+         at.u64 && at.u64 != entity.u64 && depth < BRUSH_MOVER_DEPTH_MAX;
+         ++depth) {
+      at = brush_parent(scene, at);
+    }
+    if (at.u64 == entity.u64) {
+      brush_set_dirty(state, &state->records[i], true_v);
+      state->records[i].settle = BRUSH_SETTLE_UPDATES;
+    }
+  }
+}
+
 void vkr_scene_brush_changed(VkrScene *scene, VkrEntityId entity,
                              const VkrTypeDesc *type) {
   if (!scene || !entity.u64) {
@@ -483,6 +510,9 @@ void vkr_scene_brush_changed(VkrScene *scene, VkrEntityId entity,
   if (type == &vkr_scene_brush_face_type) {
     brush_mark(scene, brush_parent(scene, entity));
   }
+  if (type == &vkr_scene_tags_type) {
+    brush_mark_retagged(scene, entity);
+  }
   if (type == &vkr_scene_mover_type) {
     brush_mark_mover_changes(scene, entity);
     /* Its lighting offset may have changed. */
@@ -499,6 +529,10 @@ void vkr_scene_brush_parent_changed(VkrScene *scene, VkrEntityId entity,
   if (scene && vkr_scene_get_typed(scene, entity, &vkr_scene_brush_face_type)) {
     brush_mark(scene, old_parent);
     brush_mark(scene, new_parent);
+  }
+  /* A brush under another group may inherit other tags. */
+  if (scene && scene->brushes) {
+    brush_mark_retagged(scene, entity);
   }
   /* Brushes under `entity` change mover only when no mover at or below it
      keeps them and the ones above its old and new parents differ, which
@@ -572,27 +606,64 @@ static const SceneBrushFace s_greybox_uv = {
     .uv_world = true_v,
 };
 
+/* UVs of a blockout shape's art material: world space, one repeat per its
+   world size, so pieces line up as neighbouring brushes do. */
+static const SceneBrushFace s_shape_art_uv = {
+    .uv_scale = {1.0f, 1.0f},
+    .uv_world = true_v,
+};
+
 /* The material a face of a `role` brush draws, facing `normal_y` in world
-   space; `*out_greybox` is true for a greybox look, which projects with
-   s_greybox_uv instead of the face's UVs. Clip and trigger brushes always
-   show their role's look. */
-static const char *brush_face_look(const VkrSceneBrushes *state,
-                                   SceneBrushRole role,
-                                   const SceneBrushFace *face,
-                                   float32_t normal_y, bool8_t *out_greybox) {
+   space, with `matched` the theme rules its brush's tags satisfy (NULL for
+   an untagged brush); `*out_greybox` is true for a greybox look, which
+   projects with s_greybox_uv instead of the face's UVs. Clip and trigger
+   brushes always show their role's look. */
+static const char *
+brush_face_look(const VkrSceneBrushes *state, SceneBrushRole role,
+                const SceneBrushFace *face, float32_t normal_y,
+                const VkrSurfaceRuleSet *matched, bool8_t *out_greybox) {
   if (role == SCENE_BRUSH_ROLE_CLIP || role == SCENE_BRUSH_ROLE_TRIGGER) {
     *out_greybox = true_v;
     return role == SCENE_BRUSH_ROLE_CLIP ? VKR_SURFACE_CLIP_MATERIAL
                                          : VKR_SURFACE_TRIGGER_MATERIAL;
   }
-  const char *path = vkr_surface_face_material(
+  return vkr_surface_face_material(
       face->surface, face->mark, face->material, &state->themes[0],
-      &state->themes[1], normal_y, state->greybox_view);
-  *out_greybox =
-      path != face->material &&
-      path != vkr_surface_theme_material(&state->themes[0], &state->themes[1],
-                                         (VkrSurface)face->surface);
-  return path;
+      &state->themes[1], matched, normal_y, state->greybox_view, out_greybox);
+}
+
+/* The canonical tags of `entity`, else of its nearest tagged ancestor: a
+   group's tags dress the brushes under it that carry none. Empty for none. */
+static String8 brush_tags(const VkrScene *scene, VkrEntityId entity) {
+  for (uint32_t depth = 0; entity.u64 && depth < BRUSH_MOVER_DEPTH_MAX;
+       ++depth) {
+    const SceneTags *tags =
+        vkr_scene_get_typed(scene, entity, &vkr_scene_tags_type);
+    if (tags && tags->text[0]) {
+      return string8_create_from_cstr((const uint8_t *)tags->text,
+                                      string_length(tags->text));
+    }
+    entity = brush_parent(scene, entity);
+  }
+  return (String8){0};
+}
+
+/* The rules of both themes that `entity`'s tags satisfy, into `out` (two
+   sets); NULL when neither theme has rules or the brush has no tags. */
+static const VkrSurfaceRuleSet *brush_match_rules(const VkrScene *scene,
+                                                  const VkrSceneBrushes *state,
+                                                  VkrEntityId entity,
+                                                  VkrSurfaceRuleSet *out) {
+  if (!state->themes[0].rule_count && !state->themes[1].rule_count) {
+    return NULL;
+  }
+  const String8 tags = brush_tags(scene, entity);
+  if (!tags.length) {
+    return NULL;
+  }
+  vkr_surface_theme_match_tags(&state->themes[0], tags, &out[0]);
+  vkr_surface_theme_match_tags(&state->themes[1], tags, &out[1]);
+  return out;
 }
 
 // =============================================================================
@@ -805,12 +876,15 @@ static bool8_t brush_build_mesh(VkrScene *scene, VkrSceneBrushes *state,
   uint32_t group_count = 0u;
   uint32_t face_group[VKR_BRUSH_FACE_MAX];
   const SceneBrushFace *face_uvs[VKR_BRUSH_FACE_MAX];
+  VkrSurfaceRuleSet rule_sets[2];
+  const VkrSurfaceRuleSet *matched =
+      brush_match_rules(scene, state, record->entity, rule_sets);
   for (uint32_t face = 0; face < geometry->face_count; ++face) {
     const Vec3 normal =
         brush_normal_to_world(&world_inverse, geometry->normals[face]);
     bool8_t greybox = false_v;
     const char *path =
-        brush_face_look(state, role, faces[face], normal.y, &greybox);
+        brush_face_look(state, role, faces[face], normal.y, matched, &greybox);
     face_uvs[face] = greybox ? &s_greybox_uv : faces[face];
     uint32_t group = 0u;
     while (group < group_count && !string_equals(group_paths[group], path)) {
@@ -1141,12 +1215,31 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
   const VkrSurface floor_surface = shape->floor_surface != VKR_SURFACE_NONE
                                        ? shape->floor_surface
                                        : shape->surface;
+  /* Walls and floors resolve as a brush's faces of that orientation do:
+     an art material projects in world space at its world size, a greybox
+     look on the greybox grid. */
+  VkrSurfaceRuleSet rule_sets[2];
+  const VkrSurfaceRuleSet *matched =
+      brush_match_rules(scene, state, record->entity, rule_sets);
+  bool8_t greybox[2] = {true_v, true_v};
   const char *looks[2] = {
-      vkr_surface_greybox_material(shape->surface, shape->mark,
-                                   VKR_SURFACE_WALL),
-      vkr_surface_greybox_material(floor_surface, shape->mark,
-                                   VKR_SURFACE_FLOOR),
+      vkr_surface_face_material(shape->surface, shape->mark, NULL,
+                                &state->themes[0], &state->themes[1], matched,
+                                0.0f, state->greybox_view, &greybox[0]),
+      vkr_surface_face_material(floor_surface, shape->mark, NULL,
+                                &state->themes[0], &state->themes[1], matched,
+                                1.0f, state->greybox_view, &greybox[1]),
   };
+  VkrMaterialHandle look_handles[2];
+  bool8_t look_owned[2];
+  Vec2 look_sizes[2];
+  for (uint32_t i = 0; i < 2u; ++i) {
+    look_handles[i] =
+        brush_material(scene, state, looks[i], &look_owned[i], &look_sizes[i]);
+    if (greybox[i]) {
+      look_sizes[i] = vec2_new(1.0f, 1.0f);
+    }
+  }
   const Mat4 world_inverse = mat4_inverse_affine(*world);
   VkrSubMeshDesc submeshes[BRUSH_MATERIAL_GROUPS];
   uint32_t submesh_count = 0u;
@@ -1208,10 +1301,11 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         const VkrBrushLightmapChart *piece_charts =
             lightmapped ? &charts[piece_first_chart[i]] : NULL;
         for (uint32_t f = 0; f < geometry->face_count; ++f) {
-          brush_write_face(geometry, f, &s_greybox_uv, vec2_new(1.0f, 1.0f),
-                           world, &world_inverse, lightmapped ? &atlas : NULL,
-                           piece_charts, vertices, lightmap_uvs, &vertex_count,
-                           indices, &index_count);
+          brush_write_face(geometry, f,
+                           greybox[material] ? &s_greybox_uv : &s_shape_art_uv,
+                           look_sizes[material], world, &world_inverse,
+                           lightmapped ? &atlas : NULL, piece_charts, vertices,
+                           lightmap_uvs, &vertex_count, indices, &index_count);
         }
         lo = vec3_new(Min(lo.x, geometry->min.x), Min(lo.y, geometry->min.y),
                       Min(lo.z, geometry->min.z));
@@ -1245,16 +1339,12 @@ static void brush_rebuild_shape(VkrScene *scene, VkrSceneBrushes *state,
         ok = false_v;
         break;
       }
-      bool8_t owned = false_v;
-      Vec2 world_size = vec2_new(1.0f, 1.0f);
-      const VkrMaterialHandle handle_material =
-          brush_material(scene, state, looks[material], &owned, &world_size);
       submeshes[submesh_count++] = (VkrSubMeshDesc){
           .geometry = handle,
-          .material = handle_material,
+          .material = look_handles[material],
           .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
           .owns_geometry = true_v,
-          .owns_material = owned,
+          .owns_material = look_owned[material],
       };
     }
   }
@@ -1689,7 +1779,8 @@ static bool8_t brush_simulated(const VkrScene *scene, VkrEntityId entity) {
 static void brush_dirty_all(VkrScene *scene, VkrSceneBrushes *state) {
   for (uint32_t i = 0; i < state->record_count; ++i) {
     BrushRecord *record = &state->records[i];
-    if (vkr_scene_get_typed(scene, record->entity, &vkr_scene_brush_type)) {
+    /* Blockout shapes resolve their looks through the themes too. */
+    if (brush_built_here(scene, record->entity)) {
       brush_set_dirty(state, record, true_v);
       record->settle = BRUSH_SETTLE_UPDATES;
     }
@@ -1941,6 +2032,16 @@ void vkr_scene_brush_refresh_looks(VkrScene *scene) {
   }
   state->theme_reload = true_v;
   state->sizes_pending = true_v;
+  /* A path that fell back to the default material may load now that its
+     file was written or fixed; forget it so the rebuild the theme reload
+     starts loads it again. */
+  uint32_t kept = 0u;
+  for (uint32_t i = 0; i < state->material_count; ++i) {
+    if (state->materials[i].owned) {
+      state->materials[kept++] = state->materials[i];
+    }
+  }
+  state->material_count = kept;
 }
 
 bool8_t vkr_scene_brush_greybox_view(const VkrScene *scene) {

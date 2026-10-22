@@ -5454,7 +5454,8 @@ vkr_internal void scene_text_rebuild(VkrScene *scene, VkrEntityId entity) {
 vkr_internal void scene_typed_changed(VkrScene *scene, VkrEntityId entity,
                                       const VkrTypeDesc *type) {
   if (type == &vkr_scene_brush_type || type == &vkr_scene_brush_face_type ||
-      type == &vkr_scene_blockout_type || type == &vkr_scene_mover_type) {
+      type == &vkr_scene_blockout_type || type == &vkr_scene_mover_type ||
+      type == &vkr_scene_tags_type) {
     vkr_scene_brush_changed(scene, entity, type);
   } else if (type == &vkr_scene_terrain_type) {
     vkr_scene_terrain_changed(scene, entity);

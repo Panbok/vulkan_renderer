@@ -1034,6 +1034,201 @@ static void brush_test_coplanar(VkrBrushGeometry *geometry) {
   assert(found == 0u);
 }
 
+static VkrSurfaceTheme brush_test_theme(const char *json) {
+  VkrSurfaceTheme theme = {0};
+  char error[160] = {0};
+  const bool8_t read = vkr_surface_theme_read(
+      string8_create_from_cstr((const uint8_t *)json, strlen(json)), &theme,
+      error, sizeof(error));
+  if (!read) {
+    fprintf(stderr, "theme read failed: %s\n", error);
+  }
+  assert(read);
+  return theme;
+}
+
+static bool8_t brush_test_theme_fails(const char *json, const char *needle) {
+  static VkrSurfaceTheme theme;
+  char error[160] = {0};
+  const bool8_t read = vkr_surface_theme_read(
+      string8_create_from_cstr((const uint8_t *)json, strlen(json)), &theme,
+      error, sizeof(error));
+  return !read && strstr(error, needle) != NULL;
+}
+
+/* The face look under theme rules, for a brush tagged `tags`. */
+static const char *brush_test_rule_look(const VkrSurfaceTheme *theme,
+                                        const VkrSurfaceTheme *world,
+                                        const char *tags, VkrSurface surface,
+                                        VkrSurfaceMark mark, float32_t normal_y,
+                                        bool8_t *out_greybox) {
+  VkrSurfaceRuleSet matched[2];
+  const String8 text =
+      string8_create_from_cstr((const uint8_t *)tags, strlen(tags));
+  vkr_surface_theme_match_tags(theme, text, &matched[0]);
+  vkr_surface_theme_match_tags(world, text, &matched[1]);
+  return vkr_surface_face_material(surface, mark, "", theme, world,
+                                   tags[0] ? matched : NULL, normal_y, false_v,
+                                   out_greybox);
+}
+
+/* Theme rules (vkr_surface.h): faces take a material by their brush's
+   design tags, the most specific rule winning, the container's rules over
+   the World's and every rule over a plain tag binding; documents round
+   trip and reject what would silently bind nothing. */
+static void brush_test_theme_rules(void) {
+  static VkrSurfaceTheme theme;
+  static VkrSurfaceTheme world;
+  theme = brush_test_theme(
+      "{\"version\": 2, \"materials\": {\"plaster\": \"a/plaster.mt\"},"
+      " \"rules\": ["
+      "{\"tags\": [\"#lab\"], \"material\": \"a/lab.mt\"},"
+      "{\"tags\": [\"#lab\", \"#wall\"], \"material\": \"a/lab_wall.mt\"},"
+      "{\"tags\": [\"lab\"], \"faces\": \"floor\", \"material\": "
+      "\"a/lab_floor.mt\"},"
+      "{\"tags\": [\"#office\"], \"surface\": \"fabric\", \"material\": "
+      "\"a/carpet.mt\"},"
+      "{\"tags\": [\"#painted_metal\"], \"mark\": \"hazard\", \"material\": "
+      "\"a/stripes.mt\"},"
+      "{\"tags\": [\"#painted_metal\"], \"material\": \"a/paint.mt\"},"
+      "{\"tags\": [\"#painted_metal\"], \"material\": \"a/paint_late.mt\"}]}");
+  world = brush_test_theme(
+      "{\"version\": 2, \"materials\": {\"concrete\": \"w/concrete.mt\"},"
+      " \"rules\": ["
+      "{\"tags\": [\"#lab\"], \"material\": \"w/lab.mt\"},"
+      "{\"tags\": [\"#station\", \"#wall\"], \"material\": "
+      "\"w/station_wall.mt\"}]}");
+  assert(theme.rule_count == 7u && world.rule_count == 2u);
+  assert(theme.rules[2].orientation == VKR_SURFACE_FLOOR);
+  assert(strcmp(theme.rules[2].tags[0], "#lab") == 0);
+
+  bool8_t greybox = true_v;
+  /* Two matching tags beat one; a face condition beats a bare tag. */
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#lab #wall #plaster",
+                                     VKR_SURFACE_PLASTER, VKR_SURFACE_MARK_NONE,
+                                     0.0f, &greybox),
+                "a/lab_wall.mt") == 0);
+  assert(!greybox);
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#lab #desk",
+                                     VKR_SURFACE_NONE, VKR_SURFACE_MARK_NONE,
+                                     1.0f, &greybox),
+                "a/lab_floor.mt") == 0);
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#lab #desk",
+                                     VKR_SURFACE_NONE, VKR_SURFACE_MARK_NONE,
+                                     0.0f, &greybox),
+                "a/lab.mt") == 0);
+  /* Tags match whole words only. */
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#labs #wall",
+                                     VKR_SURFACE_PLASTER, VKR_SURFACE_MARK_NONE,
+                                     0.0f, &greybox),
+                "a/plaster.mt") == 0);
+  /* A surface condition must hold. */
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#office #floor",
+                                     VKR_SURFACE_FABRIC, VKR_SURFACE_MARK_NONE,
+                                     1.0f, &greybox),
+                "a/carpet.mt") == 0);
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#office #floor",
+                                     VKR_SURFACE_TILE, VKR_SURFACE_MARK_NONE,
+                                     1.0f, &greybox),
+                "assets/materials/greybox/tile_floor.mt") == 0);
+  assert(greybox);
+  /* A mark condition dresses marked faces; a tie keeps the earlier rule. */
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#painted_metal",
+                                     VKR_SURFACE_METAL, VKR_SURFACE_MARK_HAZARD,
+                                     0.0f, &greybox),
+                "a/stripes.mt") == 0);
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#painted_metal",
+                                     VKR_SURFACE_METAL, VKR_SURFACE_MARK_NONE,
+                                     0.0f, &greybox),
+                "a/paint.mt") == 0);
+  /* The container's rules before the World's, and the World's rules before
+     any plain binding. */
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#lab", VKR_SURFACE_NONE,
+                                     VKR_SURFACE_MARK_NONE, -1.0f, &greybox),
+                "a/lab.mt") == 0);
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#station #wall",
+                                     VKR_SURFACE_PLASTER, VKR_SURFACE_MARK_NONE,
+                                     0.0f, &greybox),
+                "w/station_wall.mt") == 0);
+  /* Untagged brushes take bindings; untagged surfaces without a rule stay
+     greybox. */
+  assert(strcmp(brush_test_rule_look(&theme, &world, "", VKR_SURFACE_CONCRETE,
+                                     VKR_SURFACE_MARK_NONE, 0.0f, &greybox),
+                "w/concrete.mt") == 0);
+  assert(strcmp(brush_test_rule_look(&theme, &world, "#warehouse",
+                                     VKR_SURFACE_NONE, VKR_SURFACE_MARK_NONE,
+                                     0.0f, &greybox),
+                "assets/materials/greybox/none_wall.mt") == 0);
+  assert(greybox);
+  /* A face's own material and the greybox view still come first. */
+  VkrSurfaceRuleSet matched[2];
+  const char *tags = "#lab #wall";
+  vkr_surface_theme_match_tags(
+      &theme, string8_create_from_cstr((const uint8_t *)tags, strlen(tags)),
+      &matched[0]);
+  MemZero(&matched[1], sizeof(matched[1]));
+  const char *own = "a/own.mt";
+  assert(vkr_surface_face_material(VKR_SURFACE_PLASTER, VKR_SURFACE_MARK_NONE,
+                                   own, &theme, &world, matched, 0.0f, false_v,
+                                   &greybox) == own);
+  assert(!greybox);
+  assert(strcmp(vkr_surface_face_material(
+                    VKR_SURFACE_PLASTER, VKR_SURFACE_MARK_NONE, own, &theme,
+                    &world, matched, 0.0f, true_v, &greybox),
+                "assets/materials/greybox/plaster_wall.mt") == 0);
+  assert(greybox);
+
+  /* A written theme reads back the same, rules and their order included;
+     one without rules stays version 1. */
+  Arena *arena = arena_create(KB(256), KB(64));
+  assert(arena);
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  String8 written = {0};
+  static VkrSurfaceTheme read_back;
+  char error[160] = {0};
+  assert(vkr_surface_theme_write(&theme, &allocator, &written));
+  assert(vkr_surface_theme_read(written, &read_back, error, sizeof(error)));
+  assert(MemCompare(&read_back, &theme, sizeof(theme)) == 0);
+  static VkrSurfaceTheme plain;
+  plain = brush_test_theme(
+      "{\"version\": 1, \"materials\": {\"wood\": \"a/oak.mt\"}}");
+  assert(vkr_surface_theme_write(&plain, &allocator, &written));
+  assert(written.length > 0u &&
+         strstr((const char *)written.str, "\"version\": 1") != NULL &&
+         strstr((const char *)written.str, "rules") == NULL);
+  arena_destroy(arena);
+
+  /* Documents that would silently bind nothing fail with the reason. */
+  assert(brush_test_theme_fails(
+      "{\"version\": 1, \"rules\": [{\"tags\": [\"#a\"], \"material\": "
+      "\"a.mt\"}]}",
+      "version 2"));
+  assert(brush_test_theme_fails(
+      "{\"version\": 2, \"rules\": [{\"tags\": [], \"material\": \"a.mt\"}]}",
+      "rules[0].tags"));
+  assert(brush_test_theme_fails(
+      "{\"version\": 2, \"rules\": [{\"tags\": [\"#Lab\"], \"material\": "
+      "\"a.mt\"}]}",
+      "rules[0].tags"));
+  assert(brush_test_theme_fails(
+      "{\"version\": 2, \"rules\": [{\"tags\": [\"#a\", \"#b\", \"#c\", "
+      "\"#d\", \"#e\"], \"material\": \"a.mt\"}]}",
+      "rules[0].tags"));
+  assert(brush_test_theme_fails(
+      "{\"version\": 2, \"rules\": [{\"tags\": [\"#a\"], \"material\": "
+      "\"a.mt\"}, {\"tags\": [\"#a\"], \"surface\": \"metl\", \"material\": "
+      "\"a.mt\"}]}",
+      "rules[1].surface"));
+  assert(brush_test_theme_fails(
+      "{\"version\": 2, \"rules\": [{\"tags\": [\"#a\"], \"faces\": "
+      "\"floors\", \"material\": \"a.mt\"}]}",
+      "rules[0].faces"));
+  assert(brush_test_theme_fails(
+      "{\"version\": 2, \"rules\": [{\"tags\": [\"#a\"]}]}",
+      "rules[0].material"));
+}
+
 /* Surface tags (vkr_surface.h): orientations, which look a face shows,
    the retired dev palette's replacements, and that every greybox look the
    table names is on disk, so a tag cannot point at a missing file. */
@@ -1044,21 +1239,22 @@ static void brush_test_surfaces(void) {
   assert(vkr_surface_orientation(-0.69f) == VKR_SURFACE_WALL);
   assert(vkr_surface_orientation(-1.0f) == VKR_SURFACE_CEILING);
 
-  assert(
-      strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD, VKR_SURFACE_MARK_NONE,
-                                       "", NULL, NULL, 0.0f, false_v),
-             "assets/materials/greybox/wood_wall.mt") == 0);
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD,
+                                          VKR_SURFACE_MARK_NONE, "", NULL, NULL,
+                                          NULL, 0.0f, false_v, NULL),
+                "assets/materials/greybox/wood_wall.mt") == 0);
   assert(strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD,
                                           VKR_SURFACE_MARK_HAZARD, NULL, NULL,
-                                          NULL, 1.0f, false_v),
+                                          NULL, NULL, 1.0f, false_v, NULL),
                 "assets/materials/greybox/mark_hazard_floor.mt") == 0);
   const char *art = "assets/materials/bistro/wall.mt";
   assert(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
-                                   art, NULL, NULL, 0.0f, false_v) == art);
-  assert(
-      strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
-                                       art, NULL, NULL, -1.0f, true_v),
-             "assets/materials/greybox/brick_ceiling.mt") == 0);
+                                   art, NULL, NULL, NULL, 0.0f, false_v,
+                                   NULL) == art);
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK,
+                                          VKR_SURFACE_MARK_NONE, art, NULL,
+                                          NULL, NULL, -1.0f, true_v, NULL),
+                "assets/materials/greybox/brick_ceiling.mt") == 0);
 
   /* Themes: a container's binding over the World's, the face's own
      material over both, marks ignored, and the greybox view over all. */
@@ -1079,22 +1275,23 @@ static void brush_test_surfaces(void) {
       &world, error, sizeof(error)));
   assert(strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK,
                                           VKR_SURFACE_MARK_HAZARD, "", &theme,
-                                          &world, 0.0f, false_v),
+                                          &world, NULL, 0.0f, false_v, NULL),
                 "assets/materials/art/brick.mt") == 0);
-  assert(
-      strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD, VKR_SURFACE_MARK_NONE,
-                                       "", &theme, &world, 0.0f, false_v),
-             "assets/materials/art/oak.mt") == 0);
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_WOOD,
+                                          VKR_SURFACE_MARK_NONE, "", &theme,
+                                          &world, NULL, 0.0f, false_v, NULL),
+                "assets/materials/art/oak.mt") == 0);
   assert(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
-                                   art, &theme, &world, 0.0f, false_v) == art);
-  assert(
-      strcmp(vkr_surface_face_material(VKR_SURFACE_METAL, VKR_SURFACE_MARK_NONE,
-                                       "", &theme, &world, 1.0f, false_v),
-             "assets/materials/greybox/metal_floor.mt") == 0);
-  assert(
-      strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK, VKR_SURFACE_MARK_NONE,
-                                       "", &theme, &world, 0.0f, true_v),
-             "assets/materials/greybox/brick_wall.mt") == 0);
+                                   art, &theme, &world, NULL, 0.0f, false_v,
+                                   NULL) == art);
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_METAL,
+                                          VKR_SURFACE_MARK_NONE, "", &theme,
+                                          &world, NULL, 1.0f, false_v, NULL),
+                "assets/materials/greybox/metal_floor.mt") == 0);
+  assert(strcmp(vkr_surface_face_material(VKR_SURFACE_BRICK,
+                                          VKR_SURFACE_MARK_NONE, "", &theme,
+                                          &world, NULL, 0.0f, true_v, NULL),
+                "assets/materials/greybox/brick_wall.mt") == 0);
   assert(vkr_surface_theme_material(&theme, &world, VKR_SURFACE_NONE) == NULL);
 
   /* A written theme reads back the same; an unknown tag fails. */
@@ -1172,6 +1369,7 @@ bool32_t run_brush_tests(void) {
   brush_test_blockout_lightmap(geometry);
   brush_test_coplanar(geometry);
   brush_test_surfaces();
+  brush_test_theme_rules();
   free(geometry);
   printf("--- Brush Tests Completed ---\n");
   return true_v;

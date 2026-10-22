@@ -3368,6 +3368,24 @@ vkr_internal Vec2 vkr_proxy_world_size(VkrBake *bake, const char *path) {
   return size.x >= 0.01f && size.y >= 0.01f ? size : vec2_new(1.0f, 1.0f);
 }
 
+/* The canonical tags of `record`, else of its nearest tagged ancestor, as
+   the runtime's theme rules read them (vkr_scene_brush.c). */
+vkr_internal String8 vkr_proxy_tags(const VkrProxyRecord *records,
+                                    uint32_t count,
+                                    const VkrProxyRecord *record) {
+  for (uint32_t depth = 0u; record && depth < 64u; ++depth) {
+    String8 tags = {0};
+    if (vkr_bakery_json_get_string(
+            vkr_bakery_json_get(record->components, "tags"), "tags", &tags) &&
+        tags.length) {
+      return tags;
+    }
+    record =
+        record->parent ? vkr_proxy_find(records, count, record->parent) : NULL;
+  }
+  return (String8){0};
+}
+
 /* Adds brush `brush`'s faces, built from its `brush_face` children, in
    cell space. Clip and trigger brushes draw nothing in a game. */
 vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
@@ -3412,6 +3430,9 @@ vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
     return true_v;
   }
   const Mat4 world = vkr_proxy_world(records, count, brush);
+  VkrSurfaceRuleSet matched[2] = {0};
+  const String8 tags = vkr_proxy_tags(records, count, brush);
+  vkr_surface_theme_match_tags(theme, tags, &matched[0]);
   for (uint32_t f = 0u; f < geometry->face_count; ++f) {
     const VkrBrushPolygon polygon = geometry->polygons[f];
     if (polygon.count < 3u) {
@@ -3422,9 +3443,10 @@ vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
       corners[i] = vec3_sub(
           mat4_mul_vec3(world, geometry->vertices[polygon.first + i]), origin);
     }
-    /* The face's art-owned material or its tag's theme binding, at its
-       world size, or its surface's greybox look with the greybox repeat,
-       as the runtime picks it (vkr_scene_brush.c). */
+    /* The face's art-owned material, its brush tags' theme rule or its
+       tag's theme binding, at its world size, or its surface's greybox look
+       with the greybox repeat, as the runtime picks it
+       (vkr_scene_brush.c). */
     const Vec3 normal = vec3_normalize(vec3_cross(
         vec3_sub(corners[1], corners[0]), vec3_sub(corners[2], corners[0])));
     float32_t uv_scale[2] = {1.0f, 1.0f};
@@ -3449,11 +3471,10 @@ vkr_internal bool8_t vkr_proxy_brush(VkrBake *bake, VkrProxyMesh *mesh,
     if (vkr_surface_from_legacy_material(material, &surface, &mark)) {
       material = "";
     }
-    const char *look = vkr_surface_face_material(surface, mark, material, theme,
-                                                 NULL, normal.y, false_v);
-    const bool8_t greybox =
-        look != material &&
-        look != vkr_surface_theme_material(theme, NULL, surface);
+    bool8_t greybox = false_v;
+    const char *look = vkr_surface_face_material(
+        surface, mark, material, theme, NULL, tags.length ? matched : NULL,
+        normal.y, false_v, &greybox);
     if (greybox) {
       uv_scale[0] = VKR_SURFACE_GREYBOX_REPEAT;
       uv_scale[1] = VKR_SURFACE_GREYBOX_REPEAT;

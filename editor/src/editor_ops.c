@@ -12684,6 +12684,79 @@ static VkrEditorOpStatus ops_run_material_describe(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Definition `source`, read from `from`, with every path value that starts
+   with "./" or "../" (textures, a graph or a layer) made content-root
+   relative, so a copy elsewhere still finds them; a value's "?" options
+   stay. */
+static bool8_t ops_material_rebase(OpsContext *ctx, VkrAllocator *allocator,
+                                   const char *from, String8 source,
+                                   String8 *out) {
+  const String8 base =
+      string8_create_from_cstr((const uint8_t *)from, string_length(from));
+  uint64_t capacity = source.length + 1u;
+  uint64_t line = 0u;
+  /* Each rebased value can grow by the length of `from`. */
+  while (line < source.length) {
+    uint64_t end = line;
+    while (end < source.length && source.str[end] != '\n') {
+      end++;
+    }
+    capacity += base.length + 2u;
+    line = end + 1u;
+  }
+  char *text =
+      vkr_allocator_alloc(allocator, capacity, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!text) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  uint64_t length = 0u;
+  line = 0u;
+  while (line < source.length) {
+    uint64_t end = line;
+    while (end < source.length && source.str[end] != '\n') {
+      end++;
+    }
+    uint64_t equals = line;
+    while (equals < end && source.str[equals] != '=') {
+      equals++;
+    }
+    const uint64_t value = equals + 1u;
+    const bool8_t relative =
+        equals < end && source.str[line] != '#' &&
+        ((end - value >= 2u && source.str[value] == '.' &&
+          source.str[value + 1u] == '/') ||
+         (end - value >= 3u && source.str[value] == '.' &&
+          source.str[value + 1u] == '.' && source.str[value + 2u] == '/'));
+    if (relative) {
+      uint64_t query = value;
+      while (query < end && source.str[query] != '?') {
+        query++;
+      }
+      const String8 resolved = vkr_asset_path_resolve(
+          allocator, base,
+          (String8){.str = source.str + value, .length = query - value});
+      if (!resolved.str) {
+        return ops_fail(ctx, OPS_INVALID,
+                        "'%s' names a path outside the "
+                        "content root",
+                        from);
+      }
+      length += (uint64_t)string_format(
+          text + length, capacity - length, "%.*s%.*s%.*s\n",
+          (int)(value - line), (const char *)source.str + line,
+          (int)resolved.length, (const char *)resolved.str, (int)(end - query),
+          (const char *)source.str + query);
+    } else {
+      length += (uint64_t)string_format(text + length, capacity - length,
+                                        "%.*s\n", (int)(end - line),
+                                        (const char *)source.str + line);
+    }
+    line = end + 1u;
+  }
+  *out = (String8){.str = (uint8_t *)text, .length = length};
+  return true_v;
+}
+
 /* A new graph's starting nodes: a grey base colour, metallic 0 and
    roughness 0.5 into the surface output. */
 static void ops_material_template(VkrMaterialGraph *graph) {
@@ -12823,8 +12896,12 @@ static VkrEditorOpStatus ops_run_material_create(OpsContext *ctx) {
       return VKR_EDITOR_OP_DONE;
     }
   } else if (from[0]) {
-    if (!vkr_editor_material_read(&allocator, from, &text)) {
+    String8 source = {0};
+    if (!vkr_editor_material_read(&allocator, from, &source)) {
       ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open", from);
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (!ops_material_rebase(ctx, &allocator, from, source, &text)) {
       return VKR_EDITOR_OP_DONE;
     }
   } else {
@@ -13158,6 +13235,73 @@ static bool8_t ops_material_edit(OpsContext *ctx, VkrMaterialGraph *graph,
                   (int)op.length, (const char *)op.str);
 }
 
+/* Whether edited `graph` (at `path`) still lowers, alone and with the
+   overrides of every instance of it the material index knows: an edit that
+   removes or renames a parameter an instance overrides would leave that
+   instance drawing the default material. */
+static bool8_t ops_material_patch_lowers(OpsContext *ctx,
+                                         const VkrMaterialGraph *graph,
+                                         const char *path) {
+  VkrAllocator allocator;
+  if (!ops_allocator(ctx, &allocator)) {
+    return false_v;
+  }
+  const String8 graph_path =
+      string8_create_from_cstr((const uint8_t *)path, string_length(path));
+  VkrMaterialLowering lowering = {0};
+  String8 definition = {0};
+  if (!vkr_material_graph_lower(graph, graph_path, NULL, 0u, &allocator,
+                                &definition, &lowering)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "The graph does not lower: %s%s%s; "
+                    "nothing changed",
+                    lowering.reason, lowering.node[0] ? ", node " : "",
+                    lowering.node);
+  }
+  const char **paths = arena_alloc(
+      ops_arena(ctx), 2u * VKR_EDITOR_MATERIAL_INDEX_MAX * sizeof(*paths),
+      ARENA_MEMORY_TAG_ARRAY);
+  VkrMaterialInstance *instance =
+      arena_alloc(ops_arena(ctx), sizeof(*instance), ARENA_MEMORY_TAG_STRUCT);
+  if (!paths || !instance) {
+    return ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+  }
+  const char **graphs = paths + VKR_EDITOR_MATERIAL_INDEX_MAX;
+  const uint32_t count =
+      Min(vkr_editor_material_index(ctx->editor->materials,
+                                    ctx->frame->ui->frame_allocator, paths,
+                                    graphs, VKR_EDITOR_MATERIAL_INDEX_MAX),
+          VKR_EDITOR_MATERIAL_INDEX_MAX);
+  for (uint32_t i = 0; i < count; ++i) {
+    String8 text = {0};
+    char error[VKR_MATERIAL_GRAPH_ERROR_CAPACITY] = {0};
+    if (!graphs[i][0] ||
+        !vkr_editor_material_read(&allocator, paths[i], &text) ||
+        !vkr_material_instance_read(text, instance, error, sizeof(error))) {
+      continue;
+    }
+    const String8 resolved = vkr_asset_path_resolve(
+        &allocator,
+        string8_create_from_cstr((const uint8_t *)paths[i],
+                                 string_length(paths[i])),
+        string8_create_from_cstr((const uint8_t *)instance->graph,
+                                 string_length(instance->graph)));
+    if (!resolved.str || !string_equals((const char *)resolved.str, path)) {
+      continue;
+    }
+    if (!vkr_material_graph_lower(graph, graph_path, instance->params,
+                                  instance->param_count, &allocator,
+                                  &definition, &lowering)) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "Instance '%s' would not lower: %s%s%s; nothing "
+                      "changed (change its overrides first)",
+                      paths[i], lowering.reason,
+                      lowering.node[0] ? ", node " : "", lowering.node);
+    }
+  }
+  return true_v;
+}
+
 static VkrEditorOpStatus ops_run_material_patch(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
   char path[VKR_EDITOR_MATERIAL_PATH];
@@ -13193,6 +13337,9 @@ static VkrEditorOpStatus ops_run_material_patch(OpsContext *ctx) {
   String8 text = {0};
   if (!ops_allocator(ctx, &allocator) ||
       !vkr_material_graph_write(graph, &allocator, &text)) {
+    return VKR_EDITOR_OP_DONE;
+  }
+  if (!ops_material_patch_lowers(ctx, graph, path)) {
     return VKR_EDITOR_OP_DONE;
   }
   /* The change reads as the agent's label, else as the graph's name. */
@@ -13342,6 +13489,15 @@ static VkrEditorOpStatus ops_run_material_compile(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* Whether material `path` reads, so a binding or an assignment never names a
+   file that would draw the default material. */
+static bool8_t ops_theme_material_opens(OpsContext *ctx, const char *path) {
+  VkrAllocator allocator;
+  String8 text = {0};
+  return ops_allocator(ctx, &allocator) &&
+         vkr_editor_material_read(&allocator, path, &text);
+}
+
 /* material.assign: `material` on one `face`, on a `brush`'s faces (all or
    those `faces` selects), or on an `entity`: a brush's faces, else a mesh's
    submesh `slot` or every submesh through its `material_override`. An
@@ -13364,6 +13520,10 @@ static bool8_t ops_build_material_assign(OpsContext *ctx,
     return ops_fail(ctx, OPS_INVALID,
                     "'material' is a content-root relative .mt, an "
                     "asset:<scope>/<id> reference, or empty to clear");
+  }
+  if (material[0] && !reference && !ops_theme_material_opens(ctx, material)) {
+    return ops_fail(ctx, OPS_NOT_FOUND, "'%s' does not open; create it first",
+                    material);
   }
   if (reference) {
     /* A reference draws as a material only when it names a material file
@@ -13603,6 +13763,11 @@ static bool8_t ops_theme_apply(OpsContext *ctx, const VkrBakeryJson *materials,
                         "%u bytes",
                         tag_name, VKR_SURFACE_THEME_PATH_CAPACITY);
       }
+      if (!ops_theme_material_opens(ctx, path)) {
+        return ops_fail(ctx, OPS_NOT_FOUND,
+                        "materials.%s: '%s' does not open; create it first",
+                        tag_name, path);
+      }
     }
     string_format(theme->materials[tag], sizeof(theme->materials[tag]), "%s",
                   path);
@@ -13638,6 +13803,333 @@ static VkrBakeryJson *ops_theme_json(OpsContext *ctx,
   return object;
 }
 
+/* The index of `text` in NULL-terminated `names`, or `count` when absent;
+   false for a string that names none of them. */
+static bool8_t ops_theme_rule_name(const VkrBakeryJson *value,
+                                   const char *const *names, uint8_t count,
+                                   uint8_t *out) {
+  *out = count;
+  if (!value || value->type == VKR_BAKERY_JSON_NULL) {
+    return true_v;
+  }
+  if (value->type != VKR_BAKERY_JSON_STRING) {
+    return false_v;
+  }
+  for (uint8_t i = 0; names[i]; ++i) {
+    if (ops_equals(value->string, names[i])) {
+      *out = i;
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+/* Reads rule object `item` (`key`[`index`]) into `out`: `tags` (a list, or
+   one string of tags split at spaces), optional `surface`, `mark` and
+   `faces`, and `material` unless `conditions_only`. */
+static bool8_t ops_theme_rule(OpsContext *ctx, const VkrBakeryJson *item,
+                              const char *key, uint32_t index,
+                              bool8_t conditions_only,
+                              VkrSurfaceThemeRule *out) {
+  MemZero(out, sizeof(*out));
+  if (!item || item->type != VKR_BAKERY_JSON_OBJECT) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "%s[%u] is an object: tags, surface?, mark?, faces?, "
+                    "material",
+                    key, index);
+  }
+  /* Tags: each a vocabulary tag, '#' optional, compared lowercased. */
+  const VkrBakeryJson *tags = vkr_bakery_json_get(item, "tags");
+  String8 words[VKR_SURFACE_THEME_RULE_TAGS + 1u];
+  uint32_t word_count = 0u;
+  if (tags && tags->type == VKR_BAKERY_JSON_ARRAY) {
+    for (uint32_t i = 0; i < tags->count; ++i) {
+      const VkrBakeryJson *tag = vkr_bakery_json_at(tags, i);
+      if (!tag || tag->type != VKR_BAKERY_JSON_STRING ||
+          word_count > VKR_SURFACE_THEME_RULE_TAGS) {
+        word_count = VKR_SURFACE_THEME_RULE_TAGS + 1u;
+        break;
+      }
+      words[word_count++] = tag->string;
+    }
+  } else if (tags && tags->type == VKR_BAKERY_JSON_STRING) {
+    uint64_t at = 0u;
+    while (at < tags->string.length &&
+           word_count <= VKR_SURFACE_THEME_RULE_TAGS) {
+      while (at < tags->string.length &&
+             (tags->string.str[at] == ' ' || tags->string.str[at] == ',')) {
+        at++;
+      }
+      uint64_t end = at;
+      while (end < tags->string.length && tags->string.str[end] != ' ' &&
+             tags->string.str[end] != ',') {
+        end++;
+      }
+      if (end > at) {
+        words[word_count++] =
+            (String8){.str = tags->string.str + at, .length = end - at};
+      }
+      at = end;
+    }
+  }
+  if (word_count == 0u || word_count > VKR_SURFACE_THEME_RULE_TAGS) {
+    return ops_fail(ctx, OPS_INVALID, "%s[%u].tags lists 1 to %u tags", key,
+                    index, VKR_SURFACE_THEME_RULE_TAGS);
+  }
+  for (uint32_t i = 0; i < word_count; ++i) {
+    char lower[VKR_SURFACE_THEME_TAG_CAPACITY + 1u];
+    const uint64_t length =
+        Min(words[i].length, (uint64_t)VKR_SURFACE_THEME_TAG_CAPACITY);
+    for (uint64_t c = 0; c < length; ++c) {
+      const uint8_t ch = words[i].str[c];
+      lower[c] = (char)(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
+    }
+    lower[length] = '\0';
+    if (words[i].length > VKR_SURFACE_THEME_TAG_CAPACITY ||
+        !vkr_surface_rule_tag(
+            (String8){.str = (uint8_t *)lower, .length = length},
+            out->tags[out->tag_count])) {
+      return ops_fail(ctx, OPS_INVALID,
+                      "%s[%u].tags: '%.*s' is no tag ('#' and 1 to 32 of "
+                      "a-z, 0-9, _ and -)",
+                      key, index, (int)Min(words[i].length, 40u),
+                      (const char *)words[i].str);
+    }
+    out->tag_count++;
+  }
+  if (!ops_theme_rule_name(vkr_bakery_json_get(item, "surface"),
+                           vkr_surface_names, VKR_SURFACE_COUNT,
+                           &out->surface)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "%s[%u].surface is a surface tag; surface.list names "
+                    "them",
+                    key, index);
+  }
+  if (!ops_theme_rule_name(vkr_bakery_json_get(item, "mark"),
+                           vkr_surface_mark_names, VKR_SURFACE_MARK_COUNT,
+                           &out->mark)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "%s[%u].mark is none, hazard, orange, blue, red, green "
+                    "or dark",
+                    key, index);
+  }
+  if (!ops_theme_rule_name(vkr_bakery_json_get(item, "faces"),
+                           vkr_surface_orientation_names,
+                           VKR_SURFACE_ORIENTATION_COUNT, &out->orientation)) {
+    return ops_fail(ctx, OPS_INVALID, "%s[%u].faces is floor, wall or ceiling",
+                    key, index);
+  }
+  if (conditions_only) {
+    return true_v;
+  }
+  String8 material = {0};
+  if (!vkr_bakery_json_get_string(item, "material", &material) ||
+      !material.length || material.length >= sizeof(out->material)) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "%s[%u].material is a content-root relative .mt under "
+                    "%u bytes",
+                    key, index, VKR_SURFACE_THEME_PATH_CAPACITY);
+  }
+  string_format(out->material, sizeof(out->material), "%.*s",
+                (int)material.length, (const char *)material.str);
+  if (!ops_content_path(out->material, ".mt", sizeof(out->material))) {
+    return ops_fail(ctx, OPS_INVALID,
+                    "%s[%u].material is a content-root relative .mt under "
+                    "%u bytes",
+                    key, index, VKR_SURFACE_THEME_PATH_CAPACITY);
+  }
+  if (!ops_theme_material_opens(ctx, out->material)) {
+    return ops_fail(ctx, OPS_NOT_FOUND,
+                    "%s[%u].material '%s' does not open; create it first", key,
+                    index, out->material);
+  }
+  return true_v;
+}
+
+/* Whether rules `a` and `b` test the same tags, in any order, and the same
+   surface, mark and faces. */
+static bool8_t ops_theme_rule_same(const VkrSurfaceThemeRule *a,
+                                   const VkrSurfaceThemeRule *b) {
+  if (a->tag_count != b->tag_count || a->surface != b->surface ||
+      a->mark != b->mark || a->orientation != b->orientation) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < a->tag_count; ++i) {
+    bool8_t found = false_v;
+    for (uint32_t j = 0; j < b->tag_count && !found; ++j) {
+      found = string_equals(a->tags[i], b->tags[j]);
+    }
+    if (!found) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/* Applies the rule arguments over `theme`: `rules` replaces every rule,
+   `rules_add` adds rules or replaces the material of a rule with the same
+   conditions, and `rules_remove` drops the rules with the conditions it
+   lists. */
+static bool8_t ops_theme_apply_rules(OpsContext *ctx, const VkrBakeryJson *args,
+                                     VkrSurfaceTheme *theme) {
+  static const char *const keys[] = {"rules", "rules_add", "rules_remove"};
+  for (uint32_t k = 0; k < ArrayCount(keys); ++k) {
+    const VkrBakeryJson *list = vkr_bakery_json_get(args, keys[k]);
+    if (!list) {
+      continue;
+    }
+    if (list->type != VKR_BAKERY_JSON_ARRAY) {
+      return ops_fail(ctx, OPS_INVALID, "'%s' is a list of rule objects",
+                      keys[k]);
+    }
+    if (k == 0u) {
+      theme->rule_count = 0u;
+    }
+    for (uint32_t i = 0; i < list->count; ++i) {
+      VkrSurfaceThemeRule rule;
+      if (!ops_theme_rule(ctx, vkr_bakery_json_at(list, i), keys[k], i, k == 2u,
+                          &rule)) {
+        return false_v;
+      }
+      uint32_t at = 0u;
+      while (at < theme->rule_count &&
+             !ops_theme_rule_same(&theme->rules[at], &rule)) {
+        at++;
+      }
+      if (k == 2u) {
+        if (at < theme->rule_count) {
+          MemCopy(&theme->rules[at], &theme->rules[at + 1u],
+                  (uint64_t)(theme->rule_count - at - 1u) * sizeof(rule));
+          theme->rule_count--;
+        }
+        continue;
+      }
+      if (at == theme->rule_count) {
+        if (theme->rule_count == VKR_SURFACE_THEME_RULE_MAX) {
+          return ops_fail(ctx, OPS_LIMIT, "A theme holds at most %u rules",
+                          VKR_SURFACE_THEME_RULE_MAX);
+        }
+        theme->rule_count++;
+      }
+      theme->rules[at] = rule;
+    }
+  }
+  return true_v;
+}
+
+/* A rule as the operations answer it. */
+static VkrBakeryJson *ops_theme_rule_json(OpsContext *ctx,
+                                          const VkrSurfaceThemeRule *rule) {
+  Arena *arena = ops_arena(ctx);
+  VkrBakeryJson *object = vkr_bakery_json_object(arena);
+  VkrBakeryJson *tags = vkr_bakery_json_array(arena);
+  for (uint32_t t = 0; t < rule->tag_count; ++t) {
+    vkr_bakery_json_append(tags, vkr_bakery_json_cstr(arena, rule->tags[t]));
+  }
+  ops_set(ctx, object, "tags", tags);
+  if (rule->surface < VKR_SURFACE_COUNT) {
+    ops_set(ctx, object, "surface",
+            vkr_bakery_json_cstr(arena, vkr_surface_names[rule->surface]));
+  }
+  if (rule->mark < VKR_SURFACE_MARK_COUNT) {
+    ops_set(ctx, object, "mark",
+            vkr_bakery_json_cstr(arena, vkr_surface_mark_names[rule->mark]));
+  }
+  if (rule->orientation < VKR_SURFACE_ORIENTATION_COUNT) {
+    ops_set(ctx, object, "faces",
+            vkr_bakery_json_cstr(
+                arena, vkr_surface_orientation_names[rule->orientation]));
+  }
+  ops_set(ctx, object, "material", vkr_bakery_json_cstr(arena, rule->material));
+  return object;
+}
+
+static VkrBakeryJson *ops_theme_rules_json(OpsContext *ctx,
+                                           const VkrSurfaceTheme *theme) {
+  VkrBakeryJson *list = vkr_bakery_json_array(ops_arena(ctx));
+  for (uint32_t i = 0; i < theme->rule_count; ++i) {
+    vkr_bakery_json_append(list, ops_theme_rule_json(ctx, &theme->rules[i]));
+  }
+  return list;
+}
+
+/* The theme rules a brush's tags satisfy, remembered for its next faces. */
+typedef struct OpsRuleCache {
+  VkrEntityId brush;
+  bool8_t tagged;
+  VkrSurfaceRuleSet sets[2];
+} OpsRuleCache;
+
+/* The two themes' rule sets for `brush`, from its own tags or else its
+   nearest tagged ancestor's, as the brushes read them
+   (vkr_scene_brush.c); NULL when neither theme has rules or it has no
+   tags. */
+static const VkrSurfaceRuleSet *ops_brush_rules(const VkrScene *scene,
+                                                const VkrSurfaceTheme *themes,
+                                                VkrEntityId brush,
+                                                OpsRuleCache *cache) {
+  if (!themes[0].rule_count && !themes[1].rule_count) {
+    return NULL;
+  }
+  if (cache->brush.u64 != brush.u64) {
+    cache->brush = brush;
+    cache->tagged = false_v;
+    VkrEntityId at = brush;
+    for (uint32_t depth = 0; at.u64 && depth < 64u; ++depth) {
+      const SceneTags *tags =
+          vkr_scene_get_typed(scene, at, &vkr_scene_tags_type);
+      if (tags && tags->text[0]) {
+        const String8 text = string8_create_from_cstr(
+            (const uint8_t *)tags->text, string_length(tags->text));
+        vkr_surface_theme_match_tags(&themes[0], text, &cache->sets[0]);
+        vkr_surface_theme_match_tags(&themes[1], text, &cache->sets[1]);
+        cache->tagged = true_v;
+        break;
+      }
+      at = ops_parent(scene, at);
+    }
+  }
+  return cache->tagged ? cache->sets : NULL;
+}
+
+/* The look face `face` of `brush` shows, as the brushes resolve it:
+   `*out_greybox` for a greybox look, and `*out_rule` (may be NULL) the
+   theme rule that chose it, with `*out_theme` its theme (0 own, 1 World). */
+static const char *ops_face_art(const VkrScene *scene,
+                                const VkrSurfaceTheme *themes,
+                                VkrEntityId brush, const SceneBrushFace *face,
+                                OpsRuleCache *cache, bool8_t *out_greybox,
+                                const VkrSurfaceThemeRule **out_rule,
+                                uint32_t *out_theme) {
+  const SceneTransform *transform = ops_transform(scene, brush);
+  Vec3 normal = vec3_normalize(face->normal);
+  if (transform) {
+    const Vec4 world =
+        mat4_mul_vec4(mat4_transpose(mat4_inverse_affine(transform->world)),
+                      vec3_to_vec4(normal, 0.0f));
+    normal = vec3_normalize(vec3_new(world.x, world.y, world.z));
+  }
+  const VkrSurfaceRuleSet *matched =
+      ops_brush_rules(scene, themes, brush, cache);
+  const char *look = vkr_surface_face_material(
+      face->surface, face->mark, face->material, &themes[0], &themes[1],
+      matched, normal.y, false_v, out_greybox);
+  if (out_rule) {
+    *out_rule = NULL;
+    *out_theme = 0u;
+    if (matched && !face->material[0]) {
+      const VkrSurfaceOrientation orientation =
+          vkr_surface_orientation(normal.y);
+      for (uint32_t t = 0; t < 2u && !*out_rule; ++t) {
+        *out_rule = vkr_surface_theme_rule(
+            &themes[t], &matched[t], face->surface, face->mark, orientation);
+        *out_theme = t;
+      }
+    }
+  }
+  return look;
+}
+
 /* surface.list: the tags and marks, the container's themes, and per tag
    its faces and the material bound to it. */
 static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
@@ -13661,9 +14153,22 @@ static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
     return VKR_EDITOR_OP_DONE;
   }
 
-  /* Faces per tag, and those with an art-owned material of their own. */
+  /* Faces of solid and visual brushes per tag, those with an art-owned
+     material of their own, those each rule dresses and those still in
+     greybox, as the brushes resolve them. */
   uint32_t faces[VKR_SURFACE_COUNT] = {0};
+  uint32_t greybox_faces[VKR_SURFACE_COUNT] = {0};
+  uint32_t *rule_faces = arena_alloc(
+      ops_arena(ctx), 2u * VKR_SURFACE_THEME_RULE_MAX * sizeof(*rule_faces),
+      ARENA_MEMORY_TAG_ARRAY);
+  if (!rule_faces) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(rule_faces, 2u * VKR_SURFACE_THEME_RULE_MAX * sizeof(*rule_faces));
   uint32_t owned = 0u;
+  uint32_t greybox_total = 0u;
+  OpsRuleCache cache = {0};
   const VkrWorld *world = scene->world;
   for (uint32_t i = 0; i < world->dir.capacity; ++i) {
     if (!world->dir.records[i].chunk) {
@@ -13675,10 +14180,34 @@ static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
     if (!face) {
       continue;
     }
+    const VkrEntityId brush_entity = ops_parent(scene, entity);
+    const SceneBrushSettings *brush =
+        vkr_scene_get_typed(scene, brush_entity, &vkr_scene_brush_type);
+    if (!brush || brush->role == SCENE_BRUSH_ROLE_CLIP ||
+        brush->role == SCENE_BRUSH_ROLE_TRIGGER) {
+      continue;
+    }
     if (face->material[0]) {
       owned++;
-    } else if ((uint32_t)face->surface < VKR_SURFACE_COUNT) {
+      continue;
+    }
+    if ((uint32_t)face->surface < VKR_SURFACE_COUNT) {
       faces[face->surface]++;
+    }
+    bool8_t greybox = false_v;
+    const VkrSurfaceThemeRule *rule = NULL;
+    uint32_t rule_theme = 0u;
+    (void)ops_face_art(scene, themes, brush_entity, face, &cache, &greybox,
+                       &rule, &rule_theme);
+    if (rule) {
+      rule_faces[rule_theme * VKR_SURFACE_THEME_RULE_MAX +
+                 (uint32_t)(rule - themes[rule_theme].rules)]++;
+    }
+    if (greybox) {
+      greybox_total++;
+      if ((uint32_t)face->surface < VKR_SURFACE_COUNT) {
+        greybox_faces[face->surface]++;
+      }
     }
   }
 
@@ -13691,6 +14220,8 @@ static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
     ops_set(ctx, entry, "label",
             vkr_bakery_json_cstr(arena, vkr_surface_labels[tag]));
     ops_set(ctx, entry, "faces", vkr_bakery_json_int(arena, faces[tag]));
+    ops_set(ctx, entry, "greybox_faces",
+            vkr_bakery_json_int(arena, greybox_faces[tag]));
     const char *bound =
         vkr_surface_theme_material(&themes[0], &themes[1], (VkrSurface)tag);
     if (bound) {
@@ -13718,6 +14249,22 @@ static VkrEditorOpStatus ops_run_surface_list(OpsContext *ctx) {
   ops_set(ctx, ctx->call->result, "marks", marks);
   ops_set(ctx, ctx->call->result, "own_material_faces",
           vkr_bakery_json_int(arena, owned));
+  ops_set(ctx, ctx->call->result, "greybox_faces",
+          vkr_bakery_json_int(arena, greybox_total));
+  /* Each theme's rules in order, with the faces each dresses. */
+  VkrBakeryJson *rules = vkr_bakery_json_array(arena);
+  for (uint32_t t = 0; t < 2u; ++t) {
+    for (uint32_t i = 0; i < themes[t].rule_count; ++i) {
+      VkrBakeryJson *row = ops_theme_rule_json(ctx, &themes[t].rules[i]);
+      ops_set(ctx, row, "from",
+              vkr_bakery_json_cstr(arena, t ? "world" : "container"));
+      ops_set(ctx, row, "dressed",
+              vkr_bakery_json_int(
+                  arena, rule_faces[t * VKR_SURFACE_THEME_RULE_MAX + i]));
+      vkr_bakery_json_append(rules, row);
+    }
+  }
+  ops_set(ctx, ctx->call->result, "rules", rules);
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -14084,6 +14631,7 @@ static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
   char label[96];
   string_format(label, sizeof(label), "Create theme %.70s", path);
   if (!ops_theme_apply(ctx, vkr_bakery_json_get(args, "materials"), theme) ||
+      !ops_theme_apply_rules(ctx, args, theme) ||
       !ops_theme_write(ctx, path, theme, label)) {
     return VKR_EDITOR_OP_DONE;
   }
@@ -14093,6 +14641,7 @@ static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
   ops_set(ctx, ctx->call->result, "path",
           vkr_bakery_json_cstr(ops_arena(ctx), path));
   ops_set(ctx, ctx->call->result, "materials", ops_theme_json(ctx, theme));
+  ops_set(ctx, ctx->call->result, "rules", ops_theme_rules_json(ctx, theme));
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -14126,9 +14675,17 @@ static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
     }
     return VKR_EDITOR_OP_DONE;
   }
-  /* `tag` and `material` bind one tag; `materials` binds several. */
+  /* `tag` and `material` bind one tag; `materials` binds several; the
+     rule arguments edit rules. */
   String8 tag = {0};
   const VkrBakeryJson *materials = vkr_bakery_json_get(args, "materials");
+  const bool8_t rule_edit = vkr_bakery_json_get(args, "rules") ||
+                            vkr_bakery_json_get(args, "rules_add") ||
+                            vkr_bakery_json_get(args, "rules_remove");
+  if (vkr_bakery_json_get_string(args, "tag", &tag) && materials) {
+    ops_fail(ctx, OPS_INVALID, "Give 'tag' and 'material', or 'materials'");
+    return VKR_EDITOR_OP_DONE;
+  }
   if (vkr_bakery_json_get_string(args, "tag", &tag)) {
     VkrBakeryJson *one = vkr_bakery_json_object(ops_arena(ctx));
     const VkrBakeryJson *material = vkr_bakery_json_get(args, "material");
@@ -14142,13 +14699,16 @@ static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
                   (const char *)tag.str);
     ops_set(ctx, one, key, vkr_bakery_json_clone(ops_arena(ctx), material));
     materials = one;
-  } else if (!materials) {
-    ops_fail(ctx, OPS_INVALID, "Give 'tag' and 'material', or 'materials'");
+  } else if (!materials && !rule_edit) {
+    ops_fail(ctx, OPS_INVALID,
+             "Give 'tag' and 'material', 'materials', 'rules', 'rules_add' "
+             "or 'rules_remove'");
     return VKR_EDITOR_OP_DONE;
   }
   char label[96];
   string_format(label, sizeof(label), "Bind tags in %.70s", path);
   if (!ops_theme_apply(ctx, materials, theme) ||
+      !ops_theme_apply_rules(ctx, args, theme) ||
       !ops_theme_write(ctx, path, theme, label)) {
     return VKR_EDITOR_OP_DONE;
   }
@@ -14158,6 +14718,7 @@ static VkrEditorOpStatus ops_run_theme_bind(OpsContext *ctx) {
   ops_set(ctx, ctx->call->result, "path",
           vkr_bakery_json_cstr(ops_arena(ctx), path));
   ops_set(ctx, ctx->call->result, "materials", ops_theme_json(ctx, theme));
+  ops_set(ctx, ctx->call->result, "rules", ops_theme_rules_json(ctx, theme));
   return VKR_EDITOR_OP_DONE;
 }
 
@@ -14224,6 +14785,12 @@ typedef struct OpsArtMaterial {
   bool8_t textured_metallic;
   Vec4 base_color;
   float32_t metallic;
+  /* Faces outside the texel density range, the worst one and its value. */
+  uint32_t density_faces;
+  float64_t density_worst;
+  float64_t density_miss;
+  VkrEntityId density_entity;
+  Vec2 density_uv_scale;
 } OpsArtMaterial;
 
 /* The pixel width a texture's cooked `.vkt` (KTX2) or PNG source records;
@@ -14254,13 +14821,14 @@ static uint32_t ops_art_texture_width(VkrAllocator *allocator,
     if (!ok) {
       continue;
     }
-    /* KTX2: identifier, vkFormat, typeSize, then pixelWidth (LE). */
-    if (i == 0u && header[0] == 0xABu && header[1] == 'K') {
+    /* KTX2: identifier, vkFormat, typeSize, then pixelWidth (LE); a
+       material may name the cooked file itself. */
+    if (header[0] == 0xABu && header[1] == 'K') {
       return (uint32_t)header[20] | (uint32_t)header[21] << 8u |
              (uint32_t)header[22] << 16u | (uint32_t)header[23] << 24u;
     }
     /* PNG: signature, then the IHDR chunk's width (BE). */
-    if (i == 1u && header[0] == 0x89u && header[1] == 'P') {
+    if (header[0] == 0x89u && header[1] == 'P') {
       return (uint32_t)header[16] << 24u | (uint32_t)header[17] << 16u |
              (uint32_t)header[18] << 8u | (uint32_t)header[19];
     }
@@ -14465,12 +15033,18 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
          kind_list->type == VKR_BAKERY_JSON_ARRAY && i < kind_list->count;
          ++i) {
       const VkrBakeryJson *name = vkr_bakery_json_at(kind_list, i);
+      uint32_t known = 0u;
       for (uint32_t k = 0; k < OPS_ART_ISSUE_COUNT; ++k) {
         if (name->type == VKR_BAKERY_JSON_STRING &&
             ops_equals(name->string, s_art_issue_names[k])) {
-          kinds |= 1u << k;
+          known = 1u << k;
         }
       }
+      if (!known) {
+        kinds = 0u;
+        break;
+      }
+      kinds |= known;
     }
     if (!kinds) {
       ops_fail(ctx, OPS_INVALID,
@@ -14487,7 +15061,7 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
   ops_theme_paths(ctx->frame, container, &own_path, &world_path);
   VkrSurfaceTheme *themes = arena_alloc(ops_arena(ctx), 2u * sizeof(*themes),
                                         ARENA_MEMORY_TAG_STRUCT);
-  enum { ART_MATERIALS = 256 };
+  enum { ART_MATERIALS = 1024 };
   OpsArtMaterial *materials =
       arena_alloc(ops_arena(ctx), ART_MATERIALS * sizeof(*materials),
                   ARENA_MEMORY_TAG_ARRAY);
@@ -14506,9 +15080,12 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
                      .limit = (uint32_t)limit,
                      .kinds = kinds};
   uint32_t material_count = 0u;
+  bool8_t truncated = false_v;
   uint32_t unbound[VKR_SURFACE_COUNT] = {0};
   VkrEntityId unbound_face[VKR_SURFACE_COUNT] = {0};
   uint32_t faces = 0u;
+  OpsRuleCache cache = {0};
+  const bool8_t rules = themes[0].rule_count || themes[1].rule_count;
 
   /* Faces of solid and visual brushes, with the material each shows. */
   const VkrWorld *world = scene->world;
@@ -14523,29 +15100,46 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
         vkr_scene_get_typed(scene, entity, &vkr_scene_material_override_type);
     const char *paths[VKR_MESH_MATERIAL_OVERRIDE_MAX] = {0};
     uint32_t path_count = 0u;
-    Vec2 uv_scale = vec2_new(1.0f, 1.0f);
+    /* Meters one texture repeat covers on the face, per axis, before the
+       material's world size: its UV scale, times the brush's scale when it
+       projects in brush space. */
+    Vec2 repeat = vec2_new(1.0f, 1.0f);
     if (face) {
-      const SceneBrushSettings *brush = vkr_scene_get_typed(
-          scene, ops_parent(scene, entity), &vkr_scene_brush_type);
+      const VkrEntityId brush_entity = ops_parent(scene, entity);
+      const SceneBrushSettings *brush =
+          vkr_scene_get_typed(scene, brush_entity, &vkr_scene_brush_type);
       if (!brush || brush->role == SCENE_BRUSH_ROLE_CLIP ||
           brush->role == SCENE_BRUSH_ROLE_TRIGGER) {
         continue;
       }
       faces++;
-      const char *look =
-          face->material[0] ? face->material
-                            : vkr_surface_theme_material(&themes[0], &themes[1],
-                                                         face->surface);
-      if (!look) {
-        if (face->surface != VKR_SURFACE_NONE &&
-            (uint32_t)face->surface < VKR_SURFACE_COUNT &&
+      bool8_t greybox = false_v;
+      const char *look = ops_face_art(scene, themes, brush_entity, face, &cache,
+                                      &greybox, NULL, NULL);
+      if (greybox) {
+        /* Untagged faces count once rules can dress them. */
+        if ((uint32_t)face->surface < VKR_SURFACE_COUNT &&
+            (face->surface != VKR_SURFACE_NONE || rules) &&
             !unbound[face->surface]++) {
           unbound_face[face->surface] = entity;
         }
         continue;
       }
       paths[path_count++] = look;
-      uv_scale = face->uv_scale;
+      /* vkr_brush_uv takes a scale under 1e-6 as 1. */
+      repeat = vec2_new(vkr_abs_f32(face->uv_scale.x) < 1e-6f
+                            ? 1.0f
+                            : vkr_abs_f32(face->uv_scale.x),
+                        vkr_abs_f32(face->uv_scale.y) < 1e-6f
+                            ? 1.0f
+                            : vkr_abs_f32(face->uv_scale.y));
+      const SceneTransform *transform = ops_transform(scene, brush_entity);
+      if (!face->uv_world && transform) {
+        const float32_t scale = Max(vkr_abs_f32(transform->scale.x),
+                                    Max(vkr_abs_f32(transform->scale.y),
+                                        vkr_abs_f32(transform->scale.z)));
+        repeat = vec2_scale(repeat, scale > 0.0f ? scale : 1.0f);
+      }
     } else if (override_paths) {
       for (uint32_t slot = 0; slot < VKR_MESH_MATERIAL_OVERRIDE_MAX; ++slot) {
         if (override_paths->materials[slot][0]) {
@@ -14561,6 +15155,7 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
       }
       if (at == material_count) {
         if (material_count == ART_MATERIALS) {
+          truncated = true_v;
           continue;
         }
         MemZero(&materials[at], sizeof(materials[at]));
@@ -14573,25 +15168,71 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
                                      : "material_override",
                                 entity);
       }
-      /* Texel density: pixels per meter along the texture's width. */
-      const OpsArtMaterial *material = &materials[at];
-      VkrBakeryJson *issue = NULL;
-      if (face && material->texture_width) {
+      /* Texel density: pixels per meter along each texture axis, the
+         texture taken square from its width. The material's issue names
+         its worst face. */
+      OpsArtMaterial *material = &materials[at];
+      if (!face || !material->texture_width) {
+        continue;
+      }
+      float64_t worst = 0.0;
+      float64_t miss = 0.0;
+      for (uint32_t axis = 0; axis < 2u; ++axis) {
         const float32_t meters =
-            vkr_abs_f32(uv_scale.x) * material->world_size.x;
+            (axis ? repeat.y : repeat.x) *
+            (axis ? material->world_size.y : material->world_size.x);
+        if (meters <= 0.0f) {
+          continue;
+        }
         const float64_t density =
-            meters > 0.0f ? (float64_t)material->texture_width / meters : 0.0;
-        if ((density < texel_min || density > texel_max) &&
-            (issue = ops_art_issue(&lint, OPS_ART_TEXEL_DENSITY))) {
-          ops_set(ctx, issue, "entity", ops_entity(ctx, scene, entity));
-          ops_set(ctx, issue, "material",
-                  vkr_bakery_json_cstr(ops_arena(ctx), material->path));
-          ops_set(ctx, issue, "value", ops_number(ctx, density));
+            (float64_t)material->texture_width / (float64_t)meters;
+        const float64_t axis_miss = density < texel_min   ? texel_min / density
+                                    : density > texel_max ? density / texel_max
+                                                          : 0.0;
+        if (axis_miss > miss) {
+          miss = axis_miss;
+          worst = density;
+        }
+      }
+      if (miss > 0.0) {
+        material->density_faces++;
+        if (miss > material->density_miss) {
+          material->density_miss = miss;
+          material->density_worst = worst;
+          material->density_entity = entity;
+          material->density_uv_scale = face->uv_scale;
         }
       }
     }
   }
-  for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
+  for (uint32_t m = 0; m < material_count; ++m) {
+    const OpsArtMaterial *material = &materials[m];
+    VkrBakeryJson *issue = NULL;
+    if (material->density_faces &&
+        (issue = ops_art_issue(&lint, OPS_ART_TEXEL_DENSITY))) {
+      Arena *arena = ops_arena(ctx);
+      ops_set(ctx, issue, "entity",
+              ops_entity(ctx, scene, material->density_entity));
+      ops_set(ctx, issue, "material",
+              vkr_bakery_json_cstr(arena, material->path));
+      ops_set(ctx, issue, "value", ops_number(ctx, material->density_worst));
+      ops_set(ctx, issue, "faces",
+              vkr_bakery_json_int(arena, material->density_faces));
+      ops_set(ctx, issue, "texture_width",
+              vkr_bakery_json_int(arena, material->texture_width));
+      VkrBakeryJson *size = vkr_bakery_json_array(arena);
+      vkr_bakery_json_append(size, ops_number(ctx, material->world_size.x));
+      vkr_bakery_json_append(size, ops_number(ctx, material->world_size.y));
+      ops_set(ctx, issue, "world_size", size);
+      VkrBakeryJson *scale = vkr_bakery_json_array(arena);
+      vkr_bakery_json_append(scale,
+                             ops_number(ctx, material->density_uv_scale.x));
+      vkr_bakery_json_append(scale,
+                             ops_number(ctx, material->density_uv_scale.y));
+      ops_set(ctx, issue, "uv_scale", scale);
+    }
+  }
+  for (uint32_t tag = 0; tag < VKR_SURFACE_COUNT; ++tag) {
     VkrBakeryJson *issue = NULL;
     if (unbound[tag] && (issue = ops_art_issue(&lint, OPS_ART_UNBOUND_TAG))) {
       ops_set(ctx, issue, "tag",
@@ -14601,17 +15242,24 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
       ops_set(ctx, issue, "entity", ops_entity(ctx, scene, unbound_face[tag]));
     }
   }
-  /* Theme bindings that name a material no face uses yet still must
-     load. */
+  /* Theme bindings and rules that name a material no face uses yet still
+     must load. */
   for (uint32_t t = 0; t < 2u; ++t) {
-    for (uint32_t tag = 1; tag < VKR_SURFACE_COUNT; ++tag) {
-      const char *path = themes[t].materials[tag];
+    const uint32_t count = VKR_SURFACE_COUNT + themes[t].rule_count;
+    for (uint32_t b = 1; b < count; ++b) {
+      const char *path = b < VKR_SURFACE_COUNT
+                             ? themes[t].materials[b]
+                             : themes[t].rules[b - VKR_SURFACE_COUNT].material;
       uint32_t at = 0u;
       while (path[0] && at < material_count &&
              !string_equals(materials[at].path, path)) {
         at++;
       }
-      if (!path[0] || at < material_count || material_count == ART_MATERIALS) {
+      if (!path[0] || at < material_count) {
+        continue;
+      }
+      if (material_count == ART_MATERIALS) {
+        truncated = true_v;
         continue;
       }
       MemZero(&materials[at], sizeof(materials[at]));
@@ -14634,6 +15282,9 @@ static VkrEditorOpStatus ops_run_art_lint(OpsContext *ctx) {
   ops_set(ctx, ctx->call->result, "faces", vkr_bakery_json_int(arena, faces));
   ops_set(ctx, ctx->call->result, "materials",
           vkr_bakery_json_int(arena, material_count));
+  /* More than ART_MATERIALS materials: the rest went unchecked. */
+  ops_set(ctx, ctx->call->result, "truncated",
+          vkr_bakery_json_bool(arena, truncated));
   ops_set(ctx, ctx->call->result, "found",
           vkr_bakery_json_int(arena, lint.found));
   ops_set(ctx, ctx->call->result, "issues", lint.issues);
@@ -17877,6 +18528,14 @@ static VkrEditorOpStatus ops_run_rec_list(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+#define OPS_THEME_RULES_SCHEMA                                                 \
+  "{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"        \
+  "\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"              \
+  "\"minItems\":1,\"maxItems\":4},\"surface\":{\"type\":\"string\"},"          \
+  "\"mark\":{\"type\":\"string\"},\"faces\":{\"type\":\"string\","             \
+  "\"enum\":[\"floor\",\"wall\",\"ceiling\"]},\"material\":{\"type\":"         \
+  "\"string\"}},\"required\":[\"tags\"]}}"
+
 static const OpsDef s_ops[] = {
     {"rec.status",
      "The recording in progress, the open playback with its markers, and "
@@ -19092,17 +19751,24 @@ static const OpsDef s_ops[] = {
      "\"required\":[\"path\"]}",
      ops_run_material_open, NULL},
     {"surface.list",
-     "The surface tags (name, label, faces in the container and the material "
-     "its theme binds, from the container's theme or the World's) and marks, "
-     "with the container's 'theme' and the 'world_theme' beneath it.",
+     "The surface tags (name, label, faces of solid and visual brushes in the "
+     "container, 'greybox_faces' that still show greybox and the material its "
+     "theme binds, from the container's theme or the World's) and marks, "
+     "with the container's 'theme', the 'world_theme' beneath it, every "
+     "theme 'rules' entry with the brush faces it 'dressed', and the "
+     "container's "
+     "'greybox_faces'.",
      "{\"type\":\"object\",\"properties\":{\"container\":" OPS_CONTAINER_SCHEMA
      "}}",
      ops_run_surface_list, NULL, OPS_QUICK},
     {"surface.theme.create",
      "Create a theme (.surfaces) at a content path: 'materials' maps surface "
-     "tags to .mt paths. Fails on an existing file unless 'overwrite'.",
+     "tags to .mt paths, and 'rules' bind faces by their brush's design tags "
+     "(see surface.theme.bind). Fails on an existing file unless "
+     "'overwrite', and on a material that does not open.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
-     "\"string\"},\"materials\":{\"type\":\"object\"},\"overwrite\":{"
+     "\"string\"},\"materials\":{\"type\":\"object\"},"
+     "\"rules\":" OPS_THEME_RULES_SCHEMA ",\"overwrite\":{"
      "\"type\":\"boolean\"}," OPS_REVIEW_SCHEMA "},\"required\":["
      "\"path\"]}",
      ops_run_theme_create, NULL},
@@ -19110,11 +19776,20 @@ static const OpsDef s_ops[] = {
      "Bind surface tags to materials in a theme ('path', else the "
      "container's own): 'tag' and 'material', or 'materials' mapping tags to "
      ".mt paths; an empty or null material unbinds. Every face of a bound tag "
-     "without its own material shows it.",
+     "without its own material shows it. Rules bind by the design tags of a "
+     "face's brush (its own, else its nearest tagged ancestor's): each has "
+     "1 to 4 'tags' and optional 'surface', 'mark' and 'faces' (floor, wall, "
+     "ceiling) conditions; the rule with the most conditions wins, the "
+     "earlier on a tie, the container's before the World's and every rule "
+     "before a plain binding. 'rules' replaces the theme's rules, "
+     "'rules_add' adds or replaces rules with the same conditions, "
+     "'rules_remove' drops them. A material must open.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":"
      "\"string\"},\"container\":" OPS_CONTAINER_SCHEMA ",\"tag\":{"
-     "\"type\":\"string\"},\"material\":{\"type\":\"string\"},"
-     "\"materials\":{\"type\":\"object\"}," OPS_REVIEW_SCHEMA "}}",
+     "\"type\":\"string\"},\"material\":{\"type\":[\"string\",\"null\"]},"
+     "\"materials\":{\"type\":\"object\"},\"rules\":" OPS_THEME_RULES_SCHEMA
+     ",\"rules_add\":" OPS_THEME_RULES_SCHEMA
+     ",\"rules_remove\":" OPS_THEME_RULES_SCHEMA "," OPS_REVIEW_SCHEMA "}}",
      ops_run_theme_bind, NULL},
     {"surface.theme.select",
      "Make a container's brush faces take 'theme' (.surfaces; empty clears): "
@@ -19186,12 +19861,15 @@ static const OpsDef s_ops[] = {
      "},\"required\":[\"path\"]}",
      NULL, ops_build_env_preset_apply},
     {"art.lint",
-     "The art pass's problems in a container: tags no theme binds, "
-     "materials that do not open or parse, missing or uncooked textures, "
-     "texel density outside 'texel_min' to 'texel_max' px/m (128 and 2048) "
-     "on faces, implausible untextured non-metal base colours (sRGB 30 to "
-     "240) and metallic between 0.1 and 0.9; 'kinds' filters, 'limit' caps "
-     "(100).",
+     "The art pass's problems in a container: surface tags whose faces still "
+     "show greybox (untagged faces too once a theme has rules), materials "
+     "that do not open or parse, missing or uncooked textures, texel density "
+     "outside 'texel_min' to 'texel_max' px/m (128 and 2048), one issue per "
+     "material with its worst face, 'faces' outside, 'uv_scale' and "
+     "'world_size', implausible untextured non-metal base colours (sRGB 30 "
+     "to 240) and metallic between 0.1 and 0.9; 'kinds' filters, 'limit' "
+     "caps (100); 'truncated' when more than 1,024 materials went "
+     "unchecked.",
      "{\"type\":\"object\",\"properties\":{\"container\":" OPS_CONTAINER_SCHEMA
      ",\"kinds\":{\"type\":\"array\",\"items\":{"
      "\"type\":\"string\"}},\"limit\":{\"type\":\"integer\"},"

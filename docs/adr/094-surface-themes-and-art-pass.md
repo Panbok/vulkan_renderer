@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-10-09
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -9,7 +9,8 @@ authority: adr
 ## Status
 
 Accepted (partial). A surface theme binds surface tags to materials for a
-container's brush faces. A material's `world_size` sets how large its
+container's brush faces and blockout shapes, and its rules bind faces by
+their brush's design tags (2026-10-22). A material's `world_size` sets how large its
 texture lies on those faces. `art.lint` reports what the art pass still
 lacks. Layered Standard materials followed in
 [ADR-095](095-layered-standard-materials.md); project tags and per-region
@@ -34,7 +35,16 @@ container; world-partition cells may add regions later.
 
 1. **Theme documents.** A `.surfaces` file is JSON:
    `{"version": 1, "materials": {"<tag>": "<.mt path>", ...}}`, with paths
-   content-root relative.
+   content-root relative. Version 2 adds `"rules"`: up to 128 objects
+   `{"tags": [...], "surface", "mark", "faces", "material"}` with 1 to 4
+   design tags ([ADR-084](084-agent-channel-and-level-design-toolkit.md))
+   and optional surface, mark and orientation (`floor`, `wall`, `ceiling`)
+   conditions. A rule dresses a face when its brush, or for a brush without
+   tags its nearest tagged ancestor, carries every tag and each condition
+   holds. The rule with the most conditions wins, the earlier on a tie. A
+   theme without rules writes version 1. Unknown tags, surfaces, marks or
+   orientations, a rule without tags or material, and rules in a version 1
+   document fail the read.
    [vkr_surface.h](../../runtime/src/level/vkr_surface.h) owns reading,
    writing and resolution (`VkrSurfaceTheme`). A key that names no tag fails
    the read, so a typo does not unbind a tag silently. The runtime, Bakery's
@@ -45,12 +55,20 @@ container; world-partition cells may add regions later.
 3. **Look order.** A face shows the first that applies:
    1. the greybox view, which shows every face's greybox look;
    2. the face's own `material`;
-   3. the material the container's theme binds to its tag;
-   4. the World theme's binding for the tag;
-   5. the tag's greybox look.
+   3. the best rule of the container's theme for its brush's tags;
+   4. the best rule of the World's theme;
+   5. the material the container's theme binds to its tag;
+   6. the World theme's binding for the tag;
+   7. the tag's greybox look.
 
-   Marks and the clip and trigger roles keep their fixed looks.
-   `vkr_surface_face_material` encodes the order.
+   Rules come before plain bindings because tags are more specific than a
+   surface tag. Clip and trigger roles keep their fixed looks.
+   `vkr_surface_face_material` encodes the order; the brush system matches
+   a brush's tags against the rules once per rebuild
+   (`vkr_surface_theme_match_tags`), so faces test only their conditions.
+   A blockout shape resolves its walls and floors the same way, with world
+   UVs at the material's world size. A change of an entity's tags or parent
+   rebuilds the brushes that inherit them while a theme has rules.
 4. **World size.** `.mt` files take `world_size=` (one or two sizes, 0.01 to
    1000 m) and `surface=` (a tag). Graph settings carry both, and an
    instance's own lines replace its graph's. A face that shows a material
@@ -65,7 +83,9 @@ container; world-partition cells may add regions later.
    live replacement publishes. The material system's replacement copies
    `world_size` and `surface` with the other fields.
 6. **Bakes.** The lightmap baker and Bakery's brush proxies read the
-   scene's own theme and the materials' world sizes, as the runtime does.
+   scene's own theme, its rules against each brush's tags, and the
+   materials' world sizes, as the runtime does; the baker dresses blockout
+   shapes too.
    The World's theme reaches neither, as the World's sun and sky do not.
 7. **Editor.** The Material panel shows a theme as a table with a material
    path per tag. **Use in scene** and **Use for World** select it. Graph
@@ -81,17 +101,24 @@ container; world-partition cells may add regions later.
    ([ADR-093](093-material-graphs-and-art-workbench.md)), so they undo in
    order with scene edits and agents' writes are reviewed.
 8. **Operations.**
-   - `surface.list`: the tags with their face counts and bindings, and the
-     marks.
-   - `surface.theme.create`.
-   - `surface.theme.bind`: `tag` and `material`, or `materials`; the
-     default theme is the container's own.
+   - `surface.list`: the tags with their face counts, greybox faces and
+     bindings, the marks, and every rule with the faces it dressed.
+   - `surface.theme.create`, with `materials` and `rules`.
+   - `surface.theme.bind`: `tag` and `material`, or `materials`; `rules`
+     replaces the rules, `rules_add` adds or replaces rules with the same
+     conditions and `rules_remove` drops them; the default theme is the
+     container's own. Bindings, rules and `material.assign` refuse a
+     material that does not open.
    - `surface.theme.select`: a scene edit.
    - `art.lint` reports:
-     - unbound tags;
+     - surface tags whose faces still show greybox, untagged faces too once
+       a theme has rules;
      - materials that do not open or parse;
      - missing or uncooked textures;
-     - texel density outside a range given in px/m (default 128 to 2048);
+     - texel density outside a range given in px/m (default 128 to 2048),
+       on both texture axes with the brush scale for brush-space UVs, one
+       issue per material naming its worst face, the faces outside, the
+       UV scale and the world size;
      - an untextured non-metal base colour outside sRGB 30 to 240 in its
        brightest channel;
      - an untextured metallic factor between 0.1 and 0.9.
@@ -148,6 +175,17 @@ container; world-partition cells may add regions later.
   Their theme and `world_size` reading builds, and the lightmap suites
   pass without a theme.
 
+- On 2026-10-22, `run_brush_tests` added theme rules: specificity, the
+  face, surface and mark conditions, whole-word tag matching, the
+  container's rules over the World's and rules over bindings, the face's own
+  material and the greybox view first, the round trip with version 1 kept
+  for themes without rules, and the read errors. On a headless Level Design
+  Test editor (Release, Metal), one theme of 13 bindings and 112 rules left
+  0 of 44,396 solid and visual brush faces in greybox (`surface.list`), and
+  blockout corridors and stairs showed their materials. Not run: a lightmap
+  bake or a Bakery cell proxy with rules; their resolution shares
+  `vkr_surface_face_material` and builds.
+
 ## Alternatives considered
 
 - **Bindings per face.** Rejected: faces added after the art pass would
@@ -155,6 +193,9 @@ container; world-partition cells may add regions later.
 - **A theme reference on each brush.** Rejected: districts take themes by
   container (owner, 2026-10-09). A brush that needs a unique material sets
   its faces' own material.
+- **Assigning materials by tag in one bulk operation.** Rejected for
+  rules: assigned materials are per-face copies, so a brush added or
+  retagged later would stay greybox, as with bindings per face.
 - **`world_size` replacing the face's UV scale.** Rejected: a face's scale
   would stop meaning anything once a material has a size. As a multiplier
   it keeps its meaning: repeats of the material.

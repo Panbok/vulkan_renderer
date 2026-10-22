@@ -120,6 +120,23 @@ unique look.
 - `surface.theme.bind` changes bindings: `tag` and `material`, or
   `materials`; an empty material unbinds. Without `path` it edits the
   container's own theme.
+- Most levels need more looks than the 13 surface tags: a lab wall and a
+  station wall are both `plaster` or `none`. Bind those by the objects'
+  design tags with rules: `rules` (replace all), `rules_add` or
+  `rules_remove`, each `{"tags": ["#lab", "#wall"], "material": ...}` with
+  optional `surface`, `mark` and `faces` (`floor`, `wall`, `ceiling`). A
+  brush without tags takes its nearest tagged ancestor's. The rule with the
+  most conditions wins, the earlier on a tie, and every rule beats a plain
+  binding. Write rules as data in a script: one per material tag, then
+  colour, condition and object pairs, then space triples; `faces` splits a
+  blockout room's walls from its floor and ceiling. Pair an orientation
+  only with an object tag (`#wall`, `#stairs`): `#lab` with `floor` would
+  tile every desk top.
+- `surface.list` answers `greybox_faces` per tag and in total, and each
+  rule's `dressed` face count: drive `greybox_faces` to 0 and read rules
+  with 0 as shadowed by an earlier rule of the same score.
+- Bindings, rules and `material.assign` refuse a material that does not
+  open: create materials first.
 - Size textures in meters, not per face: give each material a `world_size`
   (meters one texture repeat covers) with `material.set_param` on an
   instance or `material.patch` settings on a graph. A face's `uv_scale` then

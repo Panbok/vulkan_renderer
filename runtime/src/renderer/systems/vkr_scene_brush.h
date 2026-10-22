@@ -37,8 +37,8 @@
    the brushes it rebuilt. */
 #define VKR_SCENE_BRUSH_REBUILD_BUDGET_MS 6.0
 
-/* A `brush`, `brush_face` or `blockout` component of `entity` changed,
-   appeared or left. */
+/* A `brush`, `brush_face`, `blockout`, `mover` or `tags` component of
+   `entity` changed, appeared or left; tags matter to theme rules. */
 void vkr_scene_brush_changed(VkrScene *scene, VkrEntityId entity,
                              const VkrTypeDesc *type);
 /* `entity` moved from `old_parent` to `new_parent`. */

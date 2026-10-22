@@ -59,6 +59,8 @@ struct EntityImport {
   bool brush_face = false;
   /* A `surface_theme` component's theme file; empty without one. */
   std::string surface_theme;
+  /* The `tags` component's canonical text, which theme rules match. */
+  std::string tags;
   VkrBrushPlane face_plane = {};
   BrushFaceStyle face;
   /* A blockout shape's settings (ADR-084); null when it has none. */
@@ -714,6 +716,19 @@ bool parse_surface_theme(const VkrJsonReader *entity, EntityImport *out) {
   return true;
 }
 
+/* A `tags` component: the design tags theme rules match. */
+bool parse_tags(const VkrJsonReader *entity, EntityImport *out) {
+  VkrJsonReader reader = {};
+  if (find_block(entity, "tags", &reader) && !parse_null(&reader)) {
+    VkrJsonReader object = {};
+    if (!vkr_json_enter_object(&reader, &object)) {
+      return false;
+    }
+    (void)read_string(&object, "tags", &out->tags);
+  }
+  return true;
+}
+
 /* A `mover` component: only its presence matters to the bake, which leaves
    the brushes it moves out. */
 bool parse_mover(const VkrJsonReader *entity, EntityImport *out) {
@@ -900,6 +915,7 @@ constexpr BlockParser k_block_parsers[] = {
     {"brush", parse_brush},
     {"brush_face", parse_brush_face},
     {"surface_theme", parse_surface_theme},
+    {"tags", parse_tags},
     {"blockout", parse_blockout},
     {"mover", parse_mover},
     {"physics_body", parse_physics_body},
@@ -1448,6 +1464,30 @@ struct AppendFailure {
 /* The UVs of every greybox look, as the runtime projects them
    (s_greybox_uv): the metric grid in world space, one repeat per
    VKR_SURFACE_GREYBOX_REPEAT meters. */
+/* The theme rules entity `index`'s tags satisfy, its own tags or else its
+   nearest tagged ancestor's, as the runtime matches them
+   (vkr_scene_brush.c); null when it has none. */
+const VkrSurfaceRuleSet *match_rules(const std::vector<EntityImport> &entities,
+                                     uint32_t index,
+                                     const VkrSurfaceTheme *theme,
+                                     VkrSurfaceRuleSet *out) {
+  int32_t at = (int32_t)index;
+  for (uint32_t depth = 0u; at >= 0 && depth < 64u; ++depth) {
+    const EntityImport &entity = entities[(size_t)at];
+    if (!entity.tags.empty()) {
+      vkr_surface_theme_match_tags(
+          theme,
+          string8_create_from_cstr((const uint8_t *)entity.tags.data(),
+                                   entity.tags.size()),
+          &out[0]);
+      out[1] = {};
+      return out;
+    }
+    at = entity.parent;
+  }
+  return nullptr;
+}
+
 BrushFaceStyle greybox_style(const char *material) {
   BrushFaceStyle style;
   style.material = material;
@@ -1575,6 +1615,9 @@ bool append_brush(VkrBakeScene *scene,
     out_failure->reason = "its world transform is singular";
     return false;
   }
+  VkrSurfaceRuleSet rule_sets[2] = {};
+  const VkrSurfaceRuleSet *matched =
+      match_rules(entities, entity_index, theme, rule_sets);
   for (uint32_t f = 0u; f < geometry->face_count; ++f) {
     const BrushFaceStyle &face = entities[faces[f]].face;
     const Vec3 local_normal = geometry->normals[f];
@@ -1583,12 +1626,12 @@ bool append_brush(VkrBakeScene *scene,
                                              local_normal.z, 0.0f));
     const Vec3 world_normal =
         vec3_normalize(vec3_new(normal.x, normal.y, normal.z));
+    bool8_t greybox = false_v;
     const char *look = vkr_surface_face_material(
         (VkrSurface)face.surface, (VkrSurfaceMark)face.mark,
-        face.material.c_str(), theme, nullptr, world_normal.y, false_v);
-    const bool art = look == face.material.c_str() ||
-                     look == vkr_surface_theme_material(
-                                 theme, nullptr, (VkrSurface)face.surface);
+        face.material.c_str(), theme, nullptr, matched, world_normal.y, false_v,
+        &greybox);
+    const bool art = !greybox;
     BrushFaceStyle style = art ? face : greybox_style(look);
     style.material = look;
     uint32_t material_index = 0u;
@@ -1638,6 +1681,7 @@ bool append_blockout(VkrBakeScene *scene,
                      const std::vector<EntityImport> &entities,
                      uint32_t entity_index, const SceneBlockout &shape,
                      Mat4 world, uint32_t source_instance_index,
+                     const VkrSurfaceTheme *theme,
                      std::map<std::string, uint32_t> *materials,
                      AppendFailure *out_failure) {
   std::vector<VkrBlockoutPiece> pieces(vkr_blockout_piece_capacity(&shape));
@@ -1656,22 +1700,35 @@ bool append_blockout(VkrBakeScene *scene,
   const VkrSurface floor_surface = shape.floor_surface != VKR_SURFACE_NONE
                                        ? shape.floor_surface
                                        : shape.surface;
-  const BrushFaceStyle styles[2] = {
-      greybox_style(vkr_surface_greybox_material(shape.surface, shape.mark,
-                                                 VKR_SURFACE_WALL)),
-      greybox_style(vkr_surface_greybox_material(floor_surface, shape.mark,
-                                                 VKR_SURFACE_FLOOR)),
-  };
+  /* Walls and floors in the looks the runtime resolves for them: an art
+     material in world-space UVs at its world size, else the greybox look. */
+  VkrSurfaceRuleSet rule_sets[2] = {};
+  const VkrSurfaceRuleSet *matched =
+      match_rules(entities, entity_index, theme, rule_sets);
+  const VkrSurface surfaces[2] = {shape.surface, floor_surface};
+  BrushFaceStyle styles[2];
   uint32_t material_indices[2] = {};
   for (uint32_t i = 0u; i < 2u; ++i) {
+    bool8_t greybox = false_v;
+    const char *look = vkr_surface_face_material(
+        surfaces[i], shape.mark, nullptr, theme, nullptr, matched,
+        i ? 1.0f : 0.0f, false_v, &greybox);
+    styles[i] = greybox_style(look);
+    if (!greybox) {
+      styles[i].uv_scale = vec2_new(1.0f, 1.0f);
+    }
     if (!brush_material(scene, styles[i].material, materials,
                         &material_indices[i], out_failure)) {
       return false;
     }
+    const Vec2 world_size = scene->materials[material_indices[i]].world_size;
+    if (!greybox && world_size.x > 0.0f && world_size.y > 0.0f) {
+      styles[i].uv_scale = world_size;
+    }
   }
   std::unique_ptr<VkrBrushGeometry> geometry(new VkrBrushGeometry());
-  std::vector<VkrBrushLightmapChart> charts(vkr_blockout_lightmap_chart_count(
-      pieces.data(), count, geometry.get()));
+  std::vector<VkrBrushLightmapChart> charts(
+      vkr_blockout_lightmap_chart_count(pieces.data(), count, geometry.get()));
   std::vector<uint32_t> chart_order(charts.size());
   std::vector<uint32_t> piece_first_chart(count);
   VkrBrushLightmapAtlas atlas = {};
@@ -1679,8 +1736,7 @@ bool append_blockout(VkrBakeScene *scene,
       !charts.empty() &&
       vkr_blockout_lightmap_layout(pieces.data(), count, geometry.get(),
                                    charts.data(), chart_order.data(),
-                                   piece_first_chart.data(),
-                                   &atlas) != false_v;
+                                   piece_first_chart.data(), &atlas) != false_v;
   for (uint32_t i = 0u; i < count; ++i) {
     const VkrBlockoutPiece &piece = pieces[i];
     if (!vkr_blockout_piece_build(&piece, geometry.get())) {
@@ -1993,7 +2049,8 @@ bool vkr_bake_scene_load(VkrBakeScene *scene, const char *scene_path,
       }
       if (entity.blockout && !moves &&
           !append_blockout(scene, entities, i, *entity.blockout, worlds[i],
-                           next_instance++, &brush_materials, &failure)) {
+                           next_instance++, &surface_theme, &brush_materials,
+                           &failure)) {
         return fail(failure.error, describe_entity(entity, i) +
                                        ": blockout: " + failure.reason);
       }
