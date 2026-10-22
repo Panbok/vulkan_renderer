@@ -96,6 +96,8 @@ vkr_render_graph_prepare_local_shadow(const VkrPreparedFrame *packet,
   frame->local_shadow_mask_active =
       frame->local_shadow_view_count > 0u &&
       (mask_lights || frame->local_shadow_baked_lamp_count > 0u);
+  frame->local_shadow_mask_overflow =
+      frame->local_shadow_view_count > 0u && mask_lights;
   frame->local_shadow_static_render_count =
       frame->local_shadow_render_count -
       frame->local_shadow_dynamic_render_count;
@@ -283,9 +285,6 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
   frame->brdf_extensions_enabled =
       packet->scene_rendering &&
       (material_features & VKR_WORLD_MATERIAL_FEATURE_BRDF_EXTENSION) != 0u;
-  frame->lighting_layers_enabled =
-      frame->clearcoat_enabled || frame->sheen_enabled ||
-      frame->anisotropy_enabled || frame->brdf_extensions_enabled;
   frame->editor_image_available = packet->editor_image_available;
   frame->editor_presenter = packet->editor_presenter;
   frame->editor_overlay_enabled = packet->scene_rendering &&
@@ -376,6 +375,12 @@ void vkr_render_graph_prepare_frame(const VkrPreparedFrame *packet,
                                           VKR_SHADOW_CASCADE_COUNT_MAX)
                                     : 0u;
   vkr_render_graph_prepare_local_shadow(packet, frame);
+  /* The layered pass also shades the tiles where Shadow.LocalMask ran out of
+     slots, since only its kernels filter the lights past the last slot. */
+  frame->lighting_layers_enabled =
+      frame->clearcoat_enabled || frame->sheen_enabled ||
+      frame->anisotropy_enabled || frame->brdf_extensions_enabled ||
+      frame->local_shadow_mask_overflow;
   const VkrShadowPassPayload *shadow = packet->input.shadow;
   frame->shadow_cascade_render_mask = shadow ? shadow->cascade_render_mask : 0u;
   frame->shadow_cascade_static_active = shadow && shadow->static_active;

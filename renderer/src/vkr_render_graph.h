@@ -596,9 +596,10 @@ typedef struct VkrRenderGraphFrameInfo {
   /** A scene material uses a BRDF extension (ADR-113): the frame takes the
    * extension shading variants. */
   bool8_t brdf_extensions_enabled;
-  /** Any of clearcoat, sheen, anisotropy or a BRDF extension: deferred
-   * lighting splits its tiles between a base kernel and the layered kernel.
-   */
+  /** Any of clearcoat, sheen, anisotropy, a BRDF extension or
+   * `local_shadow_mask_overflow`: deferred lighting splits its tiles between a
+   * base kernel and the layered pass, which runs the layered kernel for layer
+   * data and the fallback kernel for mask overflows. */
   bool8_t lighting_layers_enabled;
   bool8_t editor_image_available;
   bool8_t editor_overlay_enabled;
@@ -810,6 +811,11 @@ typedef struct VkrRenderGraphFrameInfo {
   /** Shadow.LocalMask runs: a light of `local_shadow_mask_lights` or a
    * baked lamp of `local_shadow_baked_lamp_count` needs it. */
   bool8_t local_shadow_mask_active;
+  /** A light of `local_shadow_mask_lights` can leave a pixel more shadowed
+   * lights than mask slots. The fallback or layered lighting kernel then
+   * shades the tiles Shadow.LocalMask marks, since only they filter the
+   * lights past the last slot inline. */
+  bool8_t local_shadow_mask_overflow;
   /** Faces drawn this frame, one opaque culling view and pass each. */
   uint32_t local_shadow_render_count;
   /** The first render slots also draw transmission layers, with one

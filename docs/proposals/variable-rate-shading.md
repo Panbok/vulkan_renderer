@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-10-20
+updated: 2026-10-22
 authority: proposal
 ---
 
@@ -21,9 +21,10 @@ limited by per-pixel shading.
   ([`deferred.slang`](../../renderer/src/shaders/vulkan/slang/world/deferred.slang),
   [`main.rendergraph.json`](../../assets/render_graphs/main.rendergraph.json)).
   Hardware fragment shading rate cannot reach these passes.
-- Lighting splits its tiles between a base kernel and a layered kernel. Both
-  kernels dispatch every 8x8 group. Each group votes in group-shared memory
-  (`vk_deferred_tile_layered`), and the kernel that does not own the tile
+- Lighting splits its tiles between a base kernel, a layered kernel and a
+  fallback kernel for local shadow mask overflows. Each kernel dispatches
+  every 8x8 group. Each group votes in group-shared memory
+  (`vk_deferred_tile_class`), and a kernel that does not own the tile
   returns early. The host sets `layered_tiles`
   ([`vkr_vulkan_deferred.c`](../../renderer/src/vulkan/vkr_vulkan_deferred.c)).
   No pass builds an indirect list of lighting tiles or pixels.

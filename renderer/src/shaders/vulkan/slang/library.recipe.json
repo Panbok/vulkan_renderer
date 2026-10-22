@@ -372,6 +372,16 @@
       "stage": "compute"
     },
     {
+      "name": "packet.deferred_lighting_sample1.comp",
+      "entry": "vk_deferred_lighting_sample1",
+      "stage": "compute"
+    },
+    {
+      "name": "packet.deferred_lighting_fallback.comp",
+      "entry": "vk_deferred_lighting_fallback",
+      "stage": "compute"
+    },
+    {
       "name": "packet.temporal_resolve.comp",
       "entry": "vk_temporal_resolve",
       "stage": "compute"

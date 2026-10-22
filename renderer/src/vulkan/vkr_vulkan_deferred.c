@@ -1522,6 +1522,14 @@ bool8_t vkr_vk_prepare_diffuse_volume_sample(
   return true_v;
 }
 
+/* The tag Shadow.LocalMask writes to the overflow layer of a pixel with more
+   shadowed lights than slots, and deferred lighting looks for: 1 to 255 by
+   frame, so a mark an earlier frame left behind names another tag. */
+vkr_internal uint32_t
+vkr_vk_local_shadow_overflow_tag(const VkrPreparedFrame *packet) {
+  return (uint32_t)(packet->input.frame.frame_index % 255u) + 1u;
+}
+
 bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
                                          VkrVulkanPreparedCompute *prepared,
                                          const VkrRgPass *pass) {
@@ -1606,6 +1614,7 @@ bool8_t vkr_vk_prepare_local_shadow_mask(VkrVulkanRenderer *renderer,
       .baked_lamp_count = baked_lamp_count,
       .baked_lamps = baked_lamps_address,
       .baked_lamps_texture = baked_lamps_texture,
+      .overflow_tag = vkr_vk_local_shadow_overflow_tag(packet),
       .mask_lights = renderer->prepared_frame.local_shadow_mask_lights,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
@@ -2066,22 +2075,43 @@ bool8_t vkr_vk_prepare_deferred_lighting(VkrVulkanRenderer *renderer,
       .sun_contact_extent =
           {vkr_vk_sun_contact_extent(renderer->prepared_frame.viewport_width),
            vkr_vk_sun_contact_extent(renderer->prepared_frame.viewport_height)},
+      .local_shadow_overflow_tag =
+          renderer->prepared_frame.local_shadow_mask_overflow && !sample_one
+              ? vkr_vk_local_shadow_overflow_tag(packet)
+              : 0u,
   };
   if (!vkr_vk_deferred_push_root(renderer, &root, sizeof(root),
                                  _Alignof(VkrVulkanLightingRoot),
                                  &prepared->root_address))
     return false_v;
-  prepared->pipelines[prepared->dispatch_count] =
-      renderer->deferred_pipelines
-          [layered ? VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED
-                   : VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING];
   if (sample1_arguments) {
+    prepared->pipelines[0] =
+        renderer
+            ->deferred_pipelines[VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1];
     prepared->indirect_buffer = sample1_arguments->buffer.handle;
     prepared->indirect_offset = pass->desc.dispatch.indirect_offset;
     prepared->dispatch_count = 1u;
     return true_v;
   }
-  {
+  /* The layered pass runs the layered kernel over the tiles with layer data
+     and the fallback kernel over the tiles whose mask overflowed without
+     any; each kernel classifies every tile and shades only its own. */
+  VkrVulkanDeferredPipeline kernels[2];
+  uint32_t kernel_count = 0u;
+  if (!layered) {
+    kernels[kernel_count++] = VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING;
+  } else {
+    if (frame_info->clearcoat_enabled || frame_info->sheen_enabled ||
+        frame_info->anisotropy_enabled || frame_info->brdf_extensions_enabled) {
+      kernels[kernel_count++] = VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED;
+    }
+    if (frame_info->local_shadow_mask_overflow) {
+      kernels[kernel_count++] = VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK;
+    }
+  }
+  for (uint32_t i = 0u; i < kernel_count; ++i) {
+    prepared->pipelines[prepared->dispatch_count] =
+        renderer->deferred_pipelines[kernels[i]];
     prepared->groups[prepared->dispatch_count][0] = (root.extent[0] + 7u) / 8u;
     prepared->groups[prepared->dispatch_count][1] = (root.extent[1] + 7u) / 8u;
     prepared->groups[prepared->dispatch_count][2] = 1u;

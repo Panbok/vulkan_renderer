@@ -493,6 +493,9 @@ vkr_internal void test_local_shadow_mask_gate(void) {
   assert(frame.local_shadow_mask_lights.words[0] == 0x15u);
   assert(frame.local_shadow_mask_lights.words[1] == 0u);
   assert(frame.local_shadow_mask_active);
+  /* Mask lights can outnumber a pixel's slots, so the layered pass runs to
+     shade the tiles the mask marks. */
+  assert(frame.local_shadow_mask_overflow && frame.lighting_layers_enabled);
 
   /* Only the light behind the camera is shadowed: no pixel needs the mask. */
   const uint32_t behind_only[] = {0u, 2u, 0u, 0u, 0u, 0u};
@@ -500,11 +503,14 @@ vkr_internal void test_local_shadow_mask_gate(void) {
   vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
   assert(frame.local_shadow_mask_lights.words[0] == 0u);
   assert(!frame.local_shadow_mask_active);
+  assert(!frame.local_shadow_mask_overflow && !frame.lighting_layers_enabled);
 
-  /* A selected baked lamp still needs the pass for its hidden light. */
+  /* A selected baked lamp still needs the pass for its hidden light. It takes
+     no mask slot, so no tile overflows. */
   local_shadow.baked_lamp_count = 1u;
   vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
   assert(frame.local_shadow_mask_active);
+  assert(!frame.local_shadow_mask_overflow && !frame.lighting_layers_enabled);
 
   /* The tiled pipeline has no mask pass. */
   MemCopy(local_shadow.light_first_view, first_views, sizeof(first_views));
@@ -512,6 +518,7 @@ vkr_internal void test_local_shadow_mask_gate(void) {
   vkr_render_graph_prepare_frame(&packet, NULL, NULL, &frame, &gtao);
   assert(frame.local_shadow_mask_lights.words[0] == 0u);
   assert(!frame.local_shadow_mask_active);
+  assert(!frame.local_shadow_mask_overflow);
   printf("  test_local_shadow_mask_gate PASSED\n");
 }
 

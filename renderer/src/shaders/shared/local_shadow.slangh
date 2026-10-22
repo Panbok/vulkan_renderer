@@ -90,15 +90,18 @@ float3 vkr_local_shadow_direction(uint face, float2 uv) {
 }
 
 // Shadow.LocalMask stores the k-th shadowed, in-range light of a pixel, in
-// light traversal order, in layer k, so the layer count bounds the shadowed
+// light traversal order, in layer k, so the slot count bounds the shadowed
 // lights overlapping one pixel rather than the shadowed lights in the frame.
-// Matches VKR_LOCAL_SHADOW_MASK_LAYER_COUNT and the graph's mask layers.
+// The layer past the slots marks the pixels that had more such lights than
+// slots. Matches VKR_LOCAL_SHADOW_MASK_SLOT_COUNT and
+// VKR_LOCAL_SHADOW_MASK_LAYER_COUNT and the graph's mask layers.
 #define VKR_LOCAL_SHADOW_MASK_SLOT_COUNT 8u
+#define VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER VKR_LOCAL_SHADOW_MASK_SLOT_COUNT
 
 // Alpha tags each stored slot with its light, index plus one over 255, which
-// RGBA8 unorm stores exactly for the 128-light table. A receiver whose slot
-// tag names another light, because the slot overflowed or a range or cone
-// test differed at a boundary, filters that light inline instead.
+// RGBA8 unorm stores exactly for the 128-light table. A slot that names
+// another light, because a range or cone test differed at a boundary, makes
+// the receiver look for the light's tag in the other slots.
 float vkr_local_shadow_mask_tag(uint light_index)
 {
     return float(light_index + 1u) / 255.0f;
@@ -107,6 +110,19 @@ float vkr_local_shadow_mask_tag(uint light_index)
 bool vkr_local_shadow_mask_tag_matches(float tag, uint light_index)
 {
     return uint(tag * 255.0f + 0.5f) == light_index + 1u;
+}
+
+// The overflow layer's alpha holds the frame's overflow tag, 1 to 255, over
+// 255 at a pixel whose shadowed lights outnumbered the slots. The tag cycles,
+// so a mark another frame left behind names another tag.
+float vkr_local_shadow_mask_overflow_mark(uint overflow_tag)
+{
+    return float(overflow_tag) / 255.0f;
+}
+
+bool vkr_local_shadow_mask_overflowed(float mark, uint overflow_tag)
+{
+    return uint(mark * 255.0f + 0.5f) == overflow_tag;
 }
 
 // Fully filtered lights take the first VKR_LOCAL_SHADOW_FILTER_TAP_COUNT

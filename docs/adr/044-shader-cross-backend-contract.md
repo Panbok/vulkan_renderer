@@ -769,23 +769,33 @@ Vulkan runs the `Shadow.LocalMask` compute pass (`pass.local_shadow.mask`)
 with its own 160-byte root: frame, G-buffer inputs, visible rows, inverse
 view-projection, extent, the contact-shadow noise index at byte 112, the
 temporal filter flag at byte 116 (nonzero under temporal reconstruction),
-the baked-lamp shadow fields from byte 120 (ADR-104) and, at byte 144,
-`mask_lights`: bit i set for table light i when it is shadowed and its range
-reaches the camera frustum (2026-10-11, ADR-019). The kernel intersects each
-pixel's grid-cell mask with it, so only those lights take slots, and a pixel
-with none returns before its surface loads unless the baked-lamp variant
-needs them. The
-208-byte deferred-lighting root reads the mask array at byte 168 and appends
-the per-light contribution counters at byte 192 (null when not measured), into
-which the deferred punctual loop adds, per wave and light, the pixels'
-unshadowed contribution from the shared `vkr_local_light_contribution` for
-local-shadow priority (ADR-019). Mask layers are per-pixel slots: the k-th
-shadowed light in range of a pixel, in light traversal order, writes layer k
-with alpha tagging its light index through the shared
-`vkr_local_shadow_mask_tag`. The deferred-lighting kernels skip the lights
-below the shared `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask gives no
-slot, and filter inline when the slot is past `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT`
-or its tag names another light. Vulkan builds the mask kernel with and without
+the baked-lamp shadow fields from byte 120 (ADR-104), the frame's overflow
+tag at byte 140 and, at byte 144, `mask_lights`: bit i set for table light i
+when it is shadowed and its range reaches the camera frustum (2026-10-11,
+ADR-019). The kernel intersects each pixel's grid-cell mask with it, so only
+those lights take slots, and a pixel with none returns before its surface
+loads unless the baked-lamp variant needs them. The 368-byte deferred-lighting
+root reads the mask array at byte 160, the per-light contribution counters at
+byte 184 (null when not measured), into which the deferred punctual loop adds,
+per wave and light, the pixels' unshadowed contribution from the shared
+`vkr_local_light_contribution` for local-shadow priority (ADR-019), and the
+overflow tag at byte 352. Mask layers are per-pixel slots: the k-th shadowed
+light in range of a pixel, in light traversal order, writes layer k with alpha
+tagging its light index through the shared `vkr_local_shadow_mask_tag`. A
+pixel with more such lights than the `VKR_LOCAL_SHADOW_MASK_SLOT_COUNT` slots
+writes the frame's tag, 1 to 255 by frame, to the overflow layer past them
+(`vkr_local_shadow_mask_overflow_mark`). The deferred-lighting kernels skip the
+lights below the shared `VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF` that the mask
+gives no slot, and classify each 8×8 tile (2026-10-22): a tile with layer data
+takes the layered kernel, one with an overflow mark but no layer data the
+fallback kernel, both of which filter inline a light whose slot is past the
+last or names another light, and every other tile the base kernel. The base
+kernel compiles that inline filter out, since its registers alone cost 1.2 ms
+of the 4.9 ms Bistro frame's lighting; it takes the slot that carries the
+light's tag and shades a light no slot holds unshadowed, which only a range,
+cone or cutoff test that differed at a boundary leaves. SMAA S2x's second
+sample lights its listed pixels with the fallback filter in its own kernel.
+Vulkan builds the mask kernel with and without
 contact shadows and selects the variant from the payload's `contact_shadows`
 (Ultra only). The shared `local_shadow.slangh` owns the contact-shadow step
 count, length, noise, start offset, occlusion test and fade, the full and

@@ -242,6 +242,10 @@ static INLINE void vkr_vk_cmd_dispatch_indirect(VkCommandBuffer command,
   "packet.deferred_lighting.comp.spv"
 #define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV                   \
   "packet.deferred_lighting_layered.comp.spv"
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SAMPLE1_COMP_SPV                   \
+  "packet.deferred_lighting_sample1.comp.spv"
+#define VKR_VULKAN_PACKET_DEFERRED_LIGHTING_FALLBACK_COMP_SPV                  \
+  "packet.deferred_lighting_fallback.comp.spv"
 #define VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV                            \
   "packet.temporal_resolve.comp.spv"
 #define VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV "packet.hzb_build.comp.spv"
@@ -534,6 +538,8 @@ typedef enum VkrVulkanDeferredPipeline {
   VKR_VULKAN_DEFERRED_PIPELINE_SUN_CONTACT,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING,
   VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_LAYERED,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_SAMPLE1,
+  VKR_VULKAN_DEFERRED_PIPELINE_LIGHTING_FALLBACK,
   VKR_VULKAN_DEFERRED_PIPELINE_TEMPORAL_RESOLVE,
   VKR_VULKAN_DEFERRED_PIPELINE_HZB,
   VKR_VULKAN_DEFERRED_PIPELINE_SHADOW_MOMENTS,
@@ -967,8 +973,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
   uint32_t clearcoat_texture;
   uint32_t sheen_texture;
   uint32_t anisotropy_texture;
-  /* Nonzero when the layered kernel also runs and owns layered tiles. Bit 1
-     also classifies pixels whose material uses a BRDF extension (ADR-113). */
+  /* Nonzero when the layered pass also runs and owns the tiles with layer
+     data or a mask overflow. Bit 1 also counts as layer data a pixel whose
+     material uses a BRDF extension (ADR-113). */
   uint32_t layered_tiles;
   /* Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot. */
   uint32_t local_shadow_mask_texture;
@@ -1030,6 +1037,10 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLightingRoot {
       `shadow_moments_texture`; the far level filters with PCF. */
   uint32_t shadow_moments_cascade_end;
   uint32_t sun_contact_extent[2];
+  /** Shadow.LocalMask's overflow tag this frame: the tiles holding a pixel
+      whose overflow layer carries it go to the fallback or layered kernel.
+      Zero when no mask light can overflow. */
+  uint32_t local_shadow_overflow_tag;
 } VkrVulkanLightingRoot;
 _Static_assert(offsetof(VkrVulkanLightingRoot, subsurface_source_texture) ==
                        176u &&
@@ -1104,7 +1115,7 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   uint32_t vbuffer_texture;
   uint32_t depth_texture;
   uint32_t normal_texture;
-  /* One RGBA8 layer of visibility per shadowed light. */
+  /* One RGBA8 layer of visibility per mask slot, then the overflow layer. */
   uint32_t mask_texture;
   uint32_t extent[2];
   /* Zero without temporal reconstruction, so the march and tap patterns stay
@@ -1122,7 +1133,9 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanLocalShadowMaskRoot {
   /* The G-buffer resolve's baked lamp irradiance, whose alpha marks the
    * lightmapped pixels that alone take the baked lamps' work. */
   uint32_t baked_lamps_texture;
-  uint32_t baked_reserved;
+  /* The frame's overflow tag, 1 to 255, which a pixel with more shadowed
+   * lights than mask slots writes to the mask's overflow layer. */
+  uint32_t overflow_tag;
   /* Bit i: light i of the table is shadowed and its range reaches the camera
    * frustum (VkrRenderGraphFrameInfo.local_shadow_mask_lights). Only these
    * take mask slots, so a pixel outside all of their grid cells returns
@@ -2215,14 +2228,14 @@ _Static_assert(offsetof(VkrVulkanTemporalResolveRoot, extent) == 68u &&
                             transmission_visible_rows) == 88u &&
                    offsetof(VkrVulkanTemporalResolveRoot, reserved) == 116u,
                "Temporal resolve-root ABI offset drift");
-_Static_assert(sizeof(VkrVulkanLightingRoot) == 352u &&
-                   offsetof(VkrVulkanLightingRoot, view_rays) == 256u &&
-                   offsetof(VkrVulkanLightingRoot, sample1_pixels) == 320u &&
-                   offsetof(VkrVulkanLightingRoot, planar_reflection_texture) ==
-                       216u &&
-                   offsetof(VkrVulkanLightingRoot, planar_reflection_plane) ==
-                       224u,
-               "Deferred lighting-root ABI size drift");
+_Static_assert(
+    sizeof(VkrVulkanLightingRoot) == 368u &&
+        offsetof(VkrVulkanLightingRoot, view_rays) == 256u &&
+        offsetof(VkrVulkanLightingRoot, local_shadow_overflow_tag) == 352u &&
+        offsetof(VkrVulkanLightingRoot, sample1_pixels) == 320u &&
+        offsetof(VkrVulkanLightingRoot, planar_reflection_texture) == 216u &&
+        offsetof(VkrVulkanLightingRoot, planar_reflection_plane) == 224u,
+    "Deferred lighting-root ABI size drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, light_contribution) == 184u,
                "Deferred lighting-root contribution ABI drift");
 _Static_assert(offsetof(VkrVulkanLightingRoot, inverse_view_projection) == 16u,
@@ -2243,7 +2256,7 @@ _Static_assert(offsetof(VkrVulkanLightingRoot, shadow_moments_texture) ==
                        164u &&
                    offsetof(VkrVulkanLightingRoot, shadow_moments_sampler) ==
                        192u &&
-                   sizeof(VkrVulkanLightingRoot) == 352u,
+                   sizeof(VkrVulkanLightingRoot) == 368u,
                "Deferred lighting-root EVSM moments ABI drift");
 _Static_assert(sizeof(VkrVulkanHzbRoot) == 48u,
                "Deferred HZB-root ABI size drift");

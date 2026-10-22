@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-12
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -100,7 +100,10 @@ kernel over the viewport. When any plane exists, the graph also runs
 same 8x8 groups, OR in group memory whether any geometry pixel holds a nonzero
 plane value, and shade only their own class of tiles, so every tile is shaded
 exactly once. A pixel whose planes are all zero shades identically in either
-kernel. On the Metal desktop implementation, removed on 2026-10-06 (M1
+kernel. Since 2026-10-22 the layered pass also runs a fallback kernel, the
+base kernel with the inline filtering of lights past the last local shadow
+mask slot, over the tiles whose mask overflowed and that hold no plane; the
+three kernels share the vote (ADR-019). On the Metal desktop implementation, removed on 2026-10-06 (M1
 development host, Release, 1280x720, Bistro street view, no planes),
 `Lighting.Deferred` fell from 9.71 ms to 7.09 ms. In a Bistro fixture with a
 layered cube, split output matched a build that sent every tile to the layered

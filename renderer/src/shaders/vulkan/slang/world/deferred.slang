@@ -273,11 +273,13 @@ struct VkrVkLightingRoot
     uint clearcoat_texture;
     uint sheen_texture;
     uint anisotropy_texture;
-    // Nonzero when the layered kernel also runs and owns tiles with layer
-    // data. Bit 1 also gives it pixels whose material uses a BRDF extension
-    // (ADR-113).
+    // Nonzero when the layered or fallback kernel also runs: the base kernel
+    // leaves them the tiles with layer data or a local shadow mask overflow.
+    // Bit 1 also counts as layer data a pixel whose material uses a BRDF
+    // extension (ADR-113).
     uint layered_tiles;
-    // Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot.
+    // Shadow.LocalMask output: one RGBA8 layer per per-pixel overlap slot,
+    // then the overflow layer.
     uint local_shadow_mask_texture;
     // Far-cascade EVSM moments array, or VKR_VK_SHADOW_MOMENTS_NONE.
     uint shadow_moments_texture;
@@ -334,6 +336,11 @@ struct VkrVkLightingRoot
     // shadow_moments_texture; the far level filters with PCF.
     uint shadow_moments_cascade_end;
     uint2 sun_contact_extent;
+    // Shadow.LocalMask's overflow tag this frame: a pixel whose overflow
+    // layer holds it had more shadowed lights than slots, and its tile goes
+    // to the fallback or layered kernel. Zero when no mask light can
+    // overflow.
+    uint local_shadow_overflow_tag;
 };
 
 // DiffuseVolume.Sample and DiffuseVolume.Upsample inputs: the G-buffer
@@ -410,7 +417,9 @@ struct VkrVkLocalShadowMaskRoot
     // The G-buffer resolve's baked lamp irradiance: its alpha marks the
     // lightmapped pixels, the only ones deferred lighting subtracts from.
     uint baked_lamps_texture;
-    uint baked_reserved;
+    // The frame's overflow tag, 1 to 255, which a pixel with more shadowed
+    // lights than slots writes to the overflow layer.
+    uint overflow_tag;
     // Bit i: light i is shadowed and its range reaches the camera frustum.
     // No other light is in range of a visible pixel with a shadow view.
     uint4 mask_lights;
@@ -3024,6 +3033,9 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
     // Slot of the next shadowed light this pixel stores; lighting counts the
     // same lights in the same order.
     uint slot = 0u;
+    // A light past the last slot marks the pixel, whose tile the fallback
+    // or layered lighting kernel then shades.
+    bool overflow = false;
     for (uint word = 0u; word < 4u; ++word)
     {
         uint remaining = WaveActiveBitOr(point_mask[word]);
@@ -3050,11 +3062,16 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
                     dot(shadow_normal, term.direction), frame.pre_exposure) <
                 VKR_LOCAL_LIGHT_CONTRIBUTION_CUTOFF)
                 continue;
-            // A light that cannot light the pixel takes no slot, and lighting
-            // filters lights past the last slot inline.
-            if (!vkr_local_shadow_light_faces(shadow_normal, term.direction) ||
-                slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+            // A light that cannot light the pixel takes no slot, and the
+            // fallback and layered lighting kernels filter lights past the
+            // last slot inline.
+            if (!vkr_local_shadow_light_faces(shadow_normal, term.direction))
                 continue;
+            if (slot >= VKR_LOCAL_SHADOW_MASK_SLOT_COUNT)
+            {
+                overflow = true;
+                continue;
+            }
             float3 visibility = packet_local_shadow(
                 frame, light, term.kind, world, shadow_normal, tap_rotation,
                 tap_count, blocker_count);
@@ -3080,6 +3097,14 @@ void vk_local_shadow_mask_impl<let ContactShadows : bool,
                 float4(visibility, vkr_local_shadow_mask_tag(light_index));
             ++slot;
         }
+    }
+    if (overflow)
+    {
+        g_storage_images[root.mask_texture]
+                        [uint3(thread_id.xy,
+                               VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER)] =
+            float4(0.0f, 0.0f, 0.0f,
+                   vkr_local_shadow_mask_overflow_mark(root.overflow_tag));
     }
     // The baked-lamp variants alone carry this work, so the default kernels
     // keep their registers.
@@ -3391,42 +3416,60 @@ void vk_diffuse_volume_fallback(uint3 thread_id : SV_DispatchThreadID)
     g_storage_2d[root.output_texture][pixel] = result;
 }
 
-groupshared uint g_deferred_tile_layered;
+groupshared uint g_deferred_tile_class;
+
+// Tile classes of the lighting kernels: a tile with layer data takes the
+// layered kernel, one with a mask overflow but no layer data the fallback
+// kernel, and any other the base kernel.
+#define VK_DEFERRED_TILE_LAYERS 1u
+#define VK_DEFERRED_TILE_MASK_OVERFLOW 2u
 
 // A pixel with no clearcoat, sheen or anisotropy G-buffer data and no BRDF
-// extension shades identically in the base kernel, which compiles those
-// layers and extensions out.
-bool vk_deferred_pixel_layered(VkrVkLightingRoot root, uint2 pixel)
+// extension shades identically without the layered kernel's layers and
+// extensions, and one with no more shadowed lights than mask slots without
+// the inline filtering of lights past the last slot.
+uint vk_deferred_pixel_class(VkrVkLightingRoot root, uint2 pixel)
 {
     if (any(pixel >= root.extent))
-        return false;
+        return 0u;
     uint visible = g_storage_uint2_2d[root.vbuffer_texture][pixel].x;
     if (visible == 0u)
-        return false;
-    return ((root.layered_tiles & 2u) != 0u &&
-            vkr_brdf_extension_active(packet_material_brdf_extension(
-                root.frame.materials[root.visible_rows[visible - 1u]
-                                         .material_index]))) ||
-           (root.clearcoat_texture != 0u &&
-            any(g_storage_2d[root.clearcoat_texture][pixel] != 0.0f)) ||
-           (root.sheen_texture != 0u &&
-            any(g_storage_2d[root.sheen_texture][pixel] != 0.0f)) ||
-           (root.anisotropy_texture != 0u &&
-            any(g_storage_2d[root.anisotropy_texture][pixel] != 0.0f));
+        return 0u;
+    bool layers =
+        ((root.layered_tiles & 2u) != 0u &&
+         vkr_brdf_extension_active(packet_material_brdf_extension(
+             root.frame.materials[root.visible_rows[visible - 1u]
+                                      .material_index]))) ||
+        (root.clearcoat_texture != 0u &&
+         any(g_storage_2d[root.clearcoat_texture][pixel] != 0.0f)) ||
+        (root.sheen_texture != 0u &&
+         any(g_storage_2d[root.sheen_texture][pixel] != 0.0f)) ||
+        (root.anisotropy_texture != 0u &&
+         any(g_storage_2d[root.anisotropy_texture][pixel] != 0.0f));
+    bool overflow =
+        root.local_shadow_overflow_tag != 0u &&
+        vkr_local_shadow_mask_overflowed(
+            g_storage_images[root.local_shadow_mask_texture]
+                            [uint3(pixel, VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER)]
+                                .a,
+            root.local_shadow_overflow_tag);
+    return (layers ? VK_DEFERRED_TILE_LAYERS : 0u) |
+           (overflow ? VK_DEFERRED_TILE_MASK_OVERFLOW : 0u);
 }
 
-// Both lighting kernels classify the same 8x8 group, so each tile is shaded
-// by exactly one of them. Every invocation reaches both barriers.
-bool vk_deferred_tile_layered(VkrVkLightingRoot root, uint2 pixel,
-                              uint group_index)
+// Every lighting kernel classifies the same 8x8 group, so each tile is
+// shaded by exactly one of them. Every invocation reaches both barriers.
+uint vk_deferred_tile_class(VkrVkLightingRoot root, uint2 pixel,
+                            uint group_index)
 {
     if (group_index == 0u)
-        g_deferred_tile_layered = 0u;
+        g_deferred_tile_class = 0u;
     GroupMemoryBarrierWithGroupSync();
-    if (vk_deferred_pixel_layered(root, pixel))
-        InterlockedOr(g_deferred_tile_layered, 1u);
+    uint pixel_class = vk_deferred_pixel_class(root, pixel);
+    if (pixel_class != 0u)
+        InterlockedOr(g_deferred_tile_class, pixel_class);
     GroupMemoryBarrierWithGroupSync();
-    return g_deferred_tile_layered != 0u;
+    return g_deferred_tile_class;
 }
 
 // SMAA S2x's second sample takes its per-pixel lighting inputs (GTAO, the
@@ -3468,8 +3511,14 @@ float vk_deferred_sun_shadow(VkrVulkanPacketFrameRoot *frame, float3 world,
 }
 
 // Layered selects the clearcoat, sheen and anisotropy paths at compile time;
-// without them the kernel needs fewer registers.
-void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
+// without them the kernel needs fewer registers. MaskFallback compiles the
+// inline filtering of a light whose mask slot names another light, which
+// alone raised the base kernel's registers enough to cost 1.2 ms in Bistro.
+// Without it the light takes the slot that carries its tag, and shades
+// unshadowed when none does; the fallback and layered kernels own the tiles
+// whose mask ran out of slots.
+void vk_deferred_shade<let Layered : bool, let MaskFallback : bool>(
+    uint3 thread_id)
 {
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
     if (any(thread_id.xy >= root.extent))
@@ -3685,7 +3734,7 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
                     frame.directional_color_intensity.w * directional_shadow,
                 sheen, sheen_ltc.energy_normalization);
     }
-    VkrVulkanDirectResult punctual = packet_punctual_layered<true>(
+    VkrVulkanDirectResult punctual = packet_punctual_layered<true, MaskFallback>(
         frame, world, normal, view, diffuse_albedo, 0.0f, roughness, f0, energy,
         true, clearcoat_active, clearcoat, sheen_active, sheen,
         sheen_ltc.energy_normalization, clearcoat_direct, sheen_direct,
@@ -3880,22 +3929,14 @@ void vk_deferred_shade<let Layered : bool>(uint3 thread_id)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void vk_deferred_lighting(uint3 dispatch_id : SV_DispatchThreadID,
-                          uint3 group_id : SV_GroupID,
+void vk_deferred_lighting(uint3 thread_id : SV_DispatchThreadID,
                           uint group_index : SV_GroupIndex)
 {
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
-    if (root.sample1_pixels != nullptr)
-    {
-        vk_deferred_shade<false>(
-            vk_msaa_sample1_pixel(root.sample1_pixels, group_id, group_index));
-        return;
-    }
-    uint3 thread_id = dispatch_id;
     if (root.layered_tiles != 0u &&
-        vk_deferred_tile_layered(root, thread_id.xy, group_index))
+        vk_deferred_tile_class(root, thread_id.xy, group_index) != 0u)
         return;
-    vk_deferred_shade<false>(thread_id);
+    vk_deferred_shade<false, false>(thread_id);
 }
 
 [shader("compute")]
@@ -3904,9 +3945,37 @@ void vk_deferred_lighting_layered(uint3 thread_id : SV_DispatchThreadID,
                                   uint group_index : SV_GroupIndex)
 {
     VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
-    if (!vk_deferred_tile_layered(root, thread_id.xy, group_index))
+    if ((vk_deferred_tile_class(root, thread_id.xy, group_index) &
+         VK_DEFERRED_TILE_LAYERS) == 0u)
         return;
-    vk_deferred_shade<true>(thread_id);
+    vk_deferred_shade<true, true>(thread_id);
+}
+
+// The base kernel with the inline filtering of lights past the last mask
+// slot, for the tiles whose mask overflowed and that hold no layer data. The
+// layered kernel, which also filters them, costs about twice as much there.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_fallback(uint3 thread_id : SV_DispatchThreadID,
+                                   uint group_index : SV_GroupIndex)
+{
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
+    if (vk_deferred_tile_class(root, thread_id.xy, group_index) !=
+        VK_DEFERRED_TILE_MASK_OVERFLOW)
+        return;
+    vk_deferred_shade<false, true>(thread_id);
+}
+
+// SMAA S2x's second sample lights its listed pixels without tiles, so its
+// kernel keeps the inline filtering of lights past the last mask slot.
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void vk_deferred_lighting_sample1(uint3 group_id : SV_GroupID,
+                                  uint group_index : SV_GroupIndex)
+{
+    VkrVkLightingRoot root = vkr_vk_uniform_root(*g_lighting_push.root);
+    vk_deferred_shade<false, true>(
+        vk_msaa_sample1_pixel(root.sample1_pixels, group_id, group_index));
 }
 
 // Relative device-depth difference within which last frame's sample shows the
@@ -4694,7 +4763,7 @@ void vkr_vk_transmission_shade_impl(uint3 thread_id, uint partition,
         }
         // Each light list is traversed once for the base, coat and sheen
         // lobes; a fully transmissive base contributes specular only.
-        VkrVulkanDirectResult punctual = packet_punctual_layered<false>(
+        VkrVulkanDirectResult punctual = packet_punctual_layered<false, true>(
             frame, world, surface.normal, view, surface.base.rgb,
             surface.metallic, surface.roughness, f0, energy, diffuse_enabled,
             clearcoat_active, clearcoat, sheen_active, sheen,

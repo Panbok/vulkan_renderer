@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-17
+updated: 2026-10-22
 authority: adr
 ---
 
@@ -711,7 +711,7 @@ returns before its normal, noise and material loads, and the baked-lamp
 kernels skip only the material load. For every other opaque pixel the pass
 stores the filtered RGB visibility, with strength
 applied, of the k-th shadowed light in range of the pixel that can light it, in
-light traversal order, in layer k of an eight-layer full-resolution RGBA8
+light traversal order, in slot layer k of a nine-layer full-resolution RGBA8
 array. A light can light the pixel when it lies in front of the shadow normal,
 which back-lit diffuse transmission flips toward it
 (`vkr_local_shadow_light_faces`); otherwise every lobe that uses the base
@@ -720,11 +720,19 @@ coat whose normal differs keeps its own inline lookup. Alpha tags the layer
 with the light index plus one over 255. The pass repeats deferred lighting's
 world-position reconstruction, light traversal, range and cone tests, back-lit
 normal choice and facing test, so lighting counts the same lights in the same
-order and reads layer k for its k-th shadowed light. A light past the eighth,
-or whose layer tag names another light because a boundary test differed between
-the passes, is filtered inline by lighting without contact shadows. Eight
-layers therefore bound the shadowed lights overlapping a pixel, not the
-shadowed lights in the frame. The clearcoat's second visibility query for a
+order and reads layer k for its k-th shadowed light. A pixel with more than
+eight such lights writes the frame's overflow tag to a ninth layer, and
+deferred lighting gives its 8×8 tile to a fallback kernel (or the layered
+kernel, ADR-062), which filters inline, without contact shadows, a light past
+the eighth or whose layer tag names another light because a boundary test
+differed between the passes. The base kernel, which shades every other tile,
+compiles that filter out: its presence alone raised the kernel's registers
+enough to cost 1.2 ms of Bistro's 4.9 ms deferred lighting with baked lamps,
+and 2.1 ms of 8.0 ms with runtime lamps. It reads the slot that carries the
+light's tag instead, and shades a light no slot holds unshadowed; only a
+boundary test that differed leaves such a light, whose contribution there is
+near the cutoff. Eight slots therefore bound the shadowed lights the base
+kernel reads at a pixel, not the shadowed lights in the frame. The clearcoat's second visibility query for a
 differing coat normal, forward shading, and transmission shading still filter
 inline. On the Metal desktop implementation, removed on 2026-10-06 (M1 host,
 Bistro street view), the mask pass cost about 2.3 ms and lowered

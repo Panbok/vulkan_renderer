@@ -1468,7 +1468,7 @@ vkr_global const VkrVulkanReflectedField s_vk_local_shadow_mask_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, baked_lamps),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot,
                                baked_lamps_texture),
-    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, baked_reserved),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, overflow_tag),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLocalShadowMaskRoot, mask_lights),
 };
 
@@ -1526,6 +1526,8 @@ vkr_global const VkrVulkanReflectedField s_vk_lighting_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
                                shadow_moments_cascade_end),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot, sun_contact_extent),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanLightingRoot,
+                               local_shadow_overflow_tag),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_sun_ray_shadow_fields[] = {
@@ -1825,6 +1827,14 @@ vkr_global const VkrVulkanReflectedRoot s_vk_deferred_roots[] = {
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV,
         "vk_deferred_lighting_layered", s_vk_lighting_fields,
+        VkrVulkanLightingRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SAMPLE1_COMP_SPV,
+        "vk_deferred_lighting_sample1", s_vk_lighting_fields,
+        VkrVulkanLightingRoot),
+    VKR_VULKAN_REFLECTED_ROOT(
+        VKR_VULKAN_PACKET_DEFERRED_LIGHTING_FALLBACK_COMP_SPV,
+        "vk_deferred_lighting_fallback", s_vk_lighting_fields,
         VkrVulkanLightingRoot),
     VKR_VULKAN_REFLECTED_ROOT(
         VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV, "vk_temporal_resolve",
@@ -3139,6 +3149,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       VKR_VULKAN_PACKET_SUN_CONTACT_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_COMP_SPV,
       VKR_VULKAN_PACKET_DEFERRED_LIGHTING_LAYERED_COMP_SPV,
+      VKR_VULKAN_PACKET_DEFERRED_LIGHTING_SAMPLE1_COMP_SPV,
+      VKR_VULKAN_PACKET_DEFERRED_LIGHTING_FALLBACK_COMP_SPV,
       VKR_VULKAN_PACKET_TEMPORAL_RESOLVE_COMP_SPV,
       VKR_VULKAN_PACKET_HZB_BUILD_COMP_SPV,
       VKR_VULKAN_PACKET_SHADOW_MOMENTS_COMP_SPV,
@@ -3222,6 +3234,8 @@ vkr_vk_create_deferred_pipelines(VkrVulkanRenderer *renderer) {
       "vk_sun_contact",
       "vk_deferred_lighting",
       "vk_deferred_lighting_layered",
+      "vk_deferred_lighting_sample1",
+      "vk_deferred_lighting_fallback",
       "vk_temporal_resolve",
       "vk_hzb_build",
       "vk_shadow_moments",

@@ -1182,13 +1182,16 @@ float3 packet_local_shadow_one_tap(VkrVulkanPacketFrameRoot *frame,
 // contributes specular only, as for fully transmissive surfaces.
 // Visibility Shadow.LocalMask stored for one shadowed light at this pixel.
 // `slot` counts the pixel's shadowed, in-range lights in traversal order, as
-// the mask pass does; a slot past the mask or tagged for another light falls
-// back to inline filtering with `shadow_normal`.
-float3 packet_local_shadow_mask(VkrVulkanPacketFrameRoot *frame,
-                                VkrGpuPointLightRow light, uint light_index,
-                                uint kind, float3 world_position,
-                                float3 shadow_normal, uint mask_texture,
-                                uint2 pixel, inout uint slot)
+// the mask pass does. With Fallback, a slot past the mask or tagged for
+// another light falls back to inline filtering with `shadow_normal`. Without
+// it, which only a pixel the mask did not mark for overflow takes, the light
+// takes the slot that carries its tag: a range, cone or cutoff test that
+// differed at a boundary shifts the slots. A light no slot holds is one the
+// mask found to give the pixel no light, and shades unshadowed.
+float3 packet_local_shadow_mask<let Fallback : bool>(
+    VkrVulkanPacketFrameRoot *frame, VkrGpuPointLightRow light,
+    uint light_index, uint kind, float3 world_position, float3 shadow_normal,
+    uint mask_texture, uint2 pixel, inout uint slot)
 {
     if (uint(light.p3.w) == 0u)
         return 1.0f;
@@ -1200,16 +1203,28 @@ float3 packet_local_shadow_mask(VkrVulkanPacketFrameRoot *frame,
         if (vkr_local_shadow_mask_tag_matches(stored.a, light_index))
             return stored.rgb;
     }
-    return packet_local_shadow(frame, light, kind, world_position,
-                               shadow_normal);
+    if (Fallback)
+    {
+        return packet_local_shadow(frame, light, kind, world_position,
+                                   shadow_normal);
+    }
+    for (uint other = 0u; other < VKR_LOCAL_SHADOW_MASK_SLOT_COUNT; ++other)
+    {
+        float4 stored = g_storage_images[mask_texture][uint3(pixel, other)];
+        if (vkr_local_shadow_mask_tag_matches(stored.a, light_index))
+            return stored.rgb;
+    }
+    return 1.0f;
 }
 
 // UseMask selects the base visibility source at compile time: forward and
 // transmission shading filter the shadow maps inline, while deferred lighting
-// reads the mask for `pixel` from `mask_texture`. Deferred lighting also adds
-// each light's visible contribution to `light_contribution` when it is not
-// null (VkrLocalLightContributionSample).
-VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
+// reads the mask for `pixel` from `mask_texture`, with MaskFallback as
+// packet_local_shadow_mask's Fallback. Deferred lighting also adds each
+// light's visible contribution to `light_contribution` when it is not null
+// (VkrLocalLightContributionSample).
+VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool,
+                                              let MaskFallback : bool>(
                                       VkrVulkanPacketFrameRoot *frame,
                                       float3 world_position, float3 normal,
                                       float3 view, float3 albedo,
@@ -1297,7 +1312,7 @@ VkrVulkanDirectResult packet_punctual_layered<let UseMask : bool>(
             if (vkr_local_shadow_light_faces(shadow_normal, light_direction))
             {
                 if (UseMask)
-                    visibility = packet_local_shadow_mask(
+                    visibility = packet_local_shadow_mask<MaskFallback>(
                         frame, light, light_index, kind, world_position,
                         shadow_normal, mask_texture, pixel, mask_slot);
                 else
@@ -2193,7 +2208,7 @@ float4 packet_world_shade_surface(VkrVulkanPacketFrameRoot *frame,
                 sheen, sheen_ltc.energy_normalization);
     }
     // Each light list is traversed once for the base, coat and sheen lobes.
-    VkrVulkanDirectResult punctual = packet_punctual_layered<false>(
+    VkrVulkanDirectResult punctual = packet_punctual_layered<false, true>(
         frame, input.world_position, normal, view, base.rgb, metallic,
         roughness, f0, energy, true, clearcoat_active, clearcoat,
         sheen_active, sheen, sheen_ltc.energy_normalization,

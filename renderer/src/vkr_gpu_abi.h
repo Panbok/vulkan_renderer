@@ -637,10 +637,15 @@ typedef struct VkrGpuVisibleDrawRow {
  * with the budget. */
 #define VKR_LOCAL_SHADOW_TRANSMISSION_TEXEL_BUDGET (32u * 512u * 512u)
 /* Layers of the screen-space shadow mask: the k-th shadowed light in range of
- * a pixel, in light order, stores its visibility in layer k. Receivers filter
- * lights past the last layer inline. Matches the shaders'
- * VKR_LOCAL_SHADOW_MASK_SLOT_COUNT and the render graph's mask layers. */
-#define VKR_LOCAL_SHADOW_MASK_LAYER_COUNT 8u
+ * a pixel, in light order, stores its visibility in slot layer k, and the
+ * layer past the slots marks the pixels with more such lights than slots,
+ * whose tiles the fallback or layered lighting kernel shades, filtering the
+ * lights past the last slot inline. Matches the shaders'
+ * VKR_LOCAL_SHADOW_MASK_SLOT_COUNT and VKR_LOCAL_SHADOW_MASK_OVERFLOW_LAYER
+ * and the render graph's mask layers. */
+#define VKR_LOCAL_SHADOW_MASK_SLOT_COUNT 8u
+#define VKR_LOCAL_SHADOW_MASK_LAYER_COUNT                                      \
+  (VKR_LOCAL_SHADOW_MASK_SLOT_COUNT + 1u)
 
 _Static_assert(VKR_LOCAL_SHADOW_RENDER_SLOT_COUNT_MAX <= 64u,
                "local shadow render slot and transmission layer masks are "
