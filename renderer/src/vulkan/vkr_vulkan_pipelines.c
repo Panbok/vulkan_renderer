@@ -1362,6 +1362,8 @@ vkr_global const VkrVulkanReflectedField s_vk_resolve_fields[] = {
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, baked_direction_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, edge_mask_texture),
     VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, sample1_pixels),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, texture_feedback),
+    VKR_VULKAN_REFLECTED_FIELD(VkrVulkanResolveRoot, texture_feedback_phase),
 };
 
 vkr_global const VkrVulkanReflectedField s_vk_temporal_resolve_fields[] = {

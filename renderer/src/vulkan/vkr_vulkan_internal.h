@@ -921,6 +921,11 @@ typedef struct VKR_SIMD_ALIGN VkrVulkanResolveRoot {
   /** SMAA S2x's listed pixels (x | y << 16), one per thread of the second
       sample's indirect dispatch; zero otherwise. */
   uint64_t sample1_pixels;
+  /** The frame slot's texture demand words, one per material slot
+      (texture_demand_kernel.slangh); zero when the frame records none. */
+  uint64_t texture_feedback;
+  /** The pixel of each 4x4 block that writes demand this frame. */
+  uint32_t texture_feedback_phase;
 } VkrVulkanResolveRoot;
 
 typedef struct VKR_SIMD_ALIGN VkrVulkanTemporalResolveRoot {
@@ -2192,8 +2197,12 @@ _Static_assert(
     "Local shadow transmission sampling ABI drift");
 _Static_assert(sizeof(VkrVulkanTemporalTransformRoot) == 32u,
                "Temporal transform-root ABI size drift");
-_Static_assert(sizeof(VkrVulkanResolveRoot) == 592u,
+_Static_assert(sizeof(VkrVulkanResolveRoot) == 608u,
                "Deferred resolve-root ABI size drift");
+_Static_assert(offsetof(VkrVulkanResolveRoot, texture_feedback) == 584u &&
+                   offsetof(VkrVulkanResolveRoot, texture_feedback_phase) ==
+                       592u,
+               "Deferred resolve-root texture demand ABI drift");
 _Static_assert(
     offsetof(VkrVulkanResolveRoot, lightmap_rects) == 464u &&
         offsetof(VkrVulkanResolveRoot, lightmap_texture) == 472u &&
@@ -2744,6 +2753,8 @@ typedef struct VkrVulkanPreparedUpload {
   VkBuffer sdsm;
   /** Cleared before deferred lighting accumulates into it, or null. */
   VkBuffer light_contribution;
+  /** Cleared before the G-buffer resolve maxes texture demand into it. */
+  VkBuffer texture_feedback;
   VkBufferCopy candidate_copies[2];
   VkBufferCopy instance_copies[2];
   uint32_t copy_count;
@@ -3160,6 +3171,14 @@ typedef struct VkrVulkanFrameSlot {
   bool8_t light_contribution_requested;
   /** Deferred lighting bound the counters, so zero means unlit. */
   bool8_t light_contribution_written;
+  /** Device-local texture demand words, one per material slot
+   * (texture_demand_kernel.slangh). The upload pass clears them, the
+   * G-buffer resolve maxes into them, and the deferred readback copies them
+   * into texture_feedback_readback after this slot's submission. */
+  VkrVulkanBuffer texture_feedback;
+  VkrVulkanBuffer texture_feedback_readback;
+  /** The resolve bound the words, so the readback carries this frame's. */
+  bool8_t texture_feedback_written;
   bool8_t acquired_window_image;
   bool8_t reacquired_presented_image;
   uint64_t frame_upload_cursor;
@@ -3804,6 +3823,12 @@ struct VkrVulkanRenderer {
   uint64_t retired_textures_size;
   uint64_t published_samplers_size;
   uint64_t published_materials_size;
+  /** The newest completed frame's texture demand, one entry per live material
+   * that drew, until vkr_vulkan_renderer_take_texture_demand takes it;
+   * material_record_capacity entries. */
+  VkrTextureDemand *texture_demand;
+  uint64_t texture_demand_size;
+  uint32_t texture_demand_count;
   uint64_t retired_materials_size;
   uint64_t pending_texture_initializations_size;
   uint64_t pending_buffer_initializations_size;
@@ -4330,6 +4355,10 @@ bool8_t vkr_vk_prepare_gpu_draw_census(VkrVulkanRenderer *renderer,
 bool8_t vkr_vk_decode_census_readback(VkrVulkanRenderer *renderer,
                                       const VkrVulkanFrameSlot *slot,
                                       uint32_t overflow_count);
+/** Replaces renderer->texture_demand with a completed slot's texture demand,
+ * if its resolve wrote any. */
+bool8_t vkr_vk_decode_texture_feedback(VkrVulkanRenderer *renderer,
+                                       const VkrVulkanFrameSlot *slot);
 bool8_t vkr_vk_prepare_exposure_resolve(VkrVulkanRenderer *renderer,
                                         VkrVulkanPreparedCompute *prepared,
                                         const VkrRgPass *pass);

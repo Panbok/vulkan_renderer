@@ -223,6 +223,27 @@ material's draw epoch, not the mip a view needs; GPU feedback (the
 it. `asset.material.texture_stream.mip_lowered_total` and `mip_raised_total`
 count the steps.
 
+On the desktop pipeline the GPU measures what each material needs
+([ADR-044](044-shader-cross-backend-contract.md), texture demand). Each frame
+one pixel of every 4x4 block, at a rotating phase, computes the texture extent
+at which one texel of its material's UV space covers it under anisotropic
+filtering of up to 16 samples and the material samplers' -0.5 LOD bias
+(`texture_demand_kernel.slangh`), and the G-buffer resolve maxes it, as log2
+plus one, into a word per material slot. The upload pass clears the frame
+slot's words, the deferred readback copies them out, and the completed slot's
+decode turns them into one `VkrTextureDemand` per live material, which
+`vkr_renderer_take_texture_demand` hands to the runtime when no frame renders.
+The material system keeps the larger of two 16-epoch windows per material, so
+the rotating sample covers every pixel. A texture needs the mips its source
+holds at or below the largest extent its materials measured. Within a demand
+epoch the budget first lowers mips beyond that need, the largest surplus
+first, and only then every texture by size; a raise stops at the need, and
+without pressure nothing changes (owner decisions, 2026-10-22). Materials no
+frame measured recently, such as those only shadows, reflections or probes
+draw, keep the epoch and size order. The tiled pipeline measures no demand
+yet. `asset.material.texture_demand.materials` counts the materials the last
+folded frame measured.
+
 An evicted texture is destroyed at once, and the texture system can reuse its
 id while material rows that sampled it still await retirement. Vulkan keeps
 that texture's publication record in place until those rows retire, because

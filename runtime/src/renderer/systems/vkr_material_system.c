@@ -702,14 +702,39 @@ static int32_t vkr_material_system_candidate_compare_texture(const void *a,
   return x.generation < y.generation ? -1 : x.generation > y.generation;
 }
 
-/* Oldest demand first; within one epoch the largest first, so the budget
-   halves the biggest textures of a view before smaller ones. */
+/* Mip levels a candidate's pending target holds beyond what the GPU
+   measured its materials need; zero without a measurement. */
+static uint32_t
+vkr_material_candidate_surplus(const VkrMaterialTextureCandidate *candidate) {
+  return candidate->required_mip_levels &&
+                 candidate->target_mip_levels > candidate->required_mip_levels
+             ? candidate->target_mip_levels - candidate->required_mip_levels
+             : 0u;
+}
+
+/* Oldest demand first; within one epoch the most surplus over the measured
+   need first, then the largest, so the budget halves the biggest textures of
+   a view before smaller ones. */
 static int32_t vkr_material_system_candidate_compare_shrink(const void *a,
                                                             const void *b) {
   const VkrMaterialTextureCandidate *x = a;
   const VkrMaterialTextureCandidate *y = b;
   if (x->last_used != y->last_used)
     return x->last_used < y->last_used ? -1 : 1;
+  const uint32_t surplus_x = vkr_material_candidate_surplus(x);
+  const uint32_t surplus_y = vkr_material_candidate_surplus(y);
+  if (surplus_x != surplus_y)
+    return surplus_x > surplus_y ? -1 : 1;
+  if (x->projected_bytes != y->projected_bytes)
+    return x->projected_bytes > y->projected_bytes ? -1 : 1;
+  return vkr_material_system_candidate_compare_texture(a, b);
+}
+
+/* The largest projected bytes first. */
+static int32_t vkr_material_system_candidate_compare_size(const void *a,
+                                                          const void *b) {
+  const VkrMaterialTextureCandidate *x = a;
+  const VkrMaterialTextureCandidate *y = b;
   if (x->projected_bytes != y->projected_bytes)
     return x->projected_bytes > y->projected_bytes ? -1 : 1;
   return vkr_material_system_candidate_compare_texture(a, b);
@@ -749,6 +774,62 @@ vkr_material_candidate_extent(const VkrMaterialTextureCandidate *candidate,
                      (candidate->source_mip_levels - levels));
 }
 
+/* Folds the newest completed frame's GPU texture demand into each
+ * material's window. An entry for a material id since reused names an old
+ * generation and drops. */
+static void
+vkr_material_system_apply_texture_demand(VkrMaterialSystem *system) {
+  if (!system->texture_demand_pending_count) {
+    return;
+  }
+  const uint64_t window =
+      system->texture_stream_epoch / VKR_MATERIAL_TEXTURE_DEMAND_WINDOW;
+  uint32_t measured = 0u;
+  for (uint32_t i = 0u; i < system->texture_demand_pending_count; ++i) {
+    const VkrTextureDemand *demand = &system->texture_demand_pending[i];
+    if (!vkr_material_system_get_by_handle(
+            system,
+            (VkrMaterialHandle){.id = demand->material_id,
+                                .generation = demand->material_generation})) {
+      continue;
+    }
+    VkrMaterialTextureDemand *entry =
+        &system->texture_demand[demand->material_id - 1u];
+    if (entry->window != window) {
+      entry->previous = entry->window + 1u == window ? entry->current : 0u;
+      entry->current = 0u;
+      entry->window = window;
+    }
+    entry->current =
+        Max(entry->current, (uint8_t)(Min(demand->extent_log2, 30u) + 1u));
+    measured++;
+  }
+  system->texture_demand_material_count = measured;
+  system->texture_demand_pending_count = 0u;
+}
+
+/* The extent a material's textures need from its demand window, zero when
+ * no frame measured it in this window or the one before. */
+static uint32_t
+vkr_material_system_required_extent(const VkrMaterialSystem *system,
+                                    VkrMaterialHandle material) {
+  if (!system->texture_demand || material.id == 0u ||
+      material.id > system->config.max_material_count) {
+    return 0u;
+  }
+  const VkrMaterialTextureDemand *entry =
+      &system->texture_demand[material.id - 1u];
+  const uint64_t window =
+      system->texture_stream_epoch / VKR_MATERIAL_TEXTURE_DEMAND_WINDOW;
+  uint32_t value = 0u;
+  if (entry->window == window) {
+    value = Max(entry->current, entry->previous);
+  } else if (entry->window + 1u == window) {
+    value = entry->current;
+  }
+  return value ? 1u << (value - 1u) : 0u;
+}
+
 /* Fills texture_candidates with each resident texture except
  * `protected_texture`, one entry per shared texture, and returns their count.
  * `out_projected` receives the resident bytes once every pending cap change
@@ -774,6 +855,8 @@ static uint32_t vkr_material_system_texture_candidates(
         .extent_cap = stream->extent_cap,
         .limitable =
             vkr_material_stream_carries_limit(stream) && !stream->replacement,
+        .required_extent =
+            vkr_material_system_required_extent(system, stream->material),
     };
   }
   *out_caps = caps;
@@ -789,6 +872,8 @@ static uint32_t vkr_material_system_texture_candidates(
                                                          candidate.texture)) {
       last->last_used = Max(last->last_used, candidate.last_used);
       last->limitable = last->limitable && candidate.limitable;
+      last->required_extent =
+          Max(last->required_extent, candidate.required_extent);
     } else {
       candidates[texture_count++] = candidate;
     }
@@ -814,6 +899,12 @@ static uint32_t vkr_material_system_texture_candidates(
                   system->texture_system, candidate->texture,
                   vkr_material_cap_limit(system, candidate->extent_cap))
             : candidate->mip_levels;
+    candidate->required_mip_levels =
+        candidate->source_mip_levels && candidate->required_extent
+            ? vkr_texture_system_load_limit_mip_levels(
+                  system->texture_system, candidate->texture,
+                  candidate->required_extent)
+            : 0u;
     candidate->projected_bytes = vkr_material_texture_bytes_at(
         candidate->bytes, candidate->mip_levels, candidate->target_mip_levels);
     projected =
@@ -852,8 +943,9 @@ static void vkr_material_system_cap_texture(VkrMaterialSystem *system,
 
 /* Halves the caps of `candidates`, sorted for shrinking, down to the floor
  * until `projected` fits `limit`: the oldest demand epoch goes to the floor
- * before a newer one is touched, and within an epoch every texture loses one
- * mip before any loses two. */
+ * before a newer one is touched. Within an epoch, textures first lose the
+ * mips the GPU measured their materials do not need, then every texture
+ * loses one mip before any loses two. */
 static void vkr_material_system_shrink_textures(
     VkrMaterialSystem *system, VkrMaterialTextureCandidate *candidates,
     uint32_t candidate_count, uint64_t limit, uint64_t *projected) {
@@ -863,36 +955,47 @@ static void vkr_material_system_shrink_textures(
            candidates[end].last_used == candidates[begin].last_used) {
       ++end;
     }
-    bool8_t lowered = true_v;
-    while (lowered && *projected > limit) {
-      lowered = false_v;
-      for (uint32_t i = begin; i < end && *projected > limit; ++i) {
-        VkrMaterialTextureCandidate *candidate = &candidates[i];
-        if (!candidate->source_mip_levels) {
-          continue;
+    /* Phase 0 lowers only surplus mips; phase 1 every texture. */
+    for (uint32_t phase = 0u; phase < 2u && *projected > limit; ++phase) {
+      const bool8_t surplus_only = phase == 0u;
+      if (!surplus_only) {
+        /* Past their measured need, the largest textures go first. */
+        vkr_sort(candidates + begin, end - begin, sizeof(*candidates),
+                 vkr_material_system_candidate_compare_size);
+      }
+      bool8_t lowered = true_v;
+      while (lowered && *projected > limit) {
+        lowered = false_v;
+        for (uint32_t i = begin; i < end && *projected > limit; ++i) {
+          VkrMaterialTextureCandidate *candidate = &candidates[i];
+          if (!candidate->source_mip_levels) {
+            continue;
+          }
+          const uint32_t extent = vkr_material_candidate_extent(
+              candidate, candidate->target_mip_levels);
+          if (extent <= VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR) {
+            continue;
+          }
+          const uint32_t cap =
+              Max(extent / 2u, (uint32_t)VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
+          const uint32_t levels = vkr_texture_system_load_limit_mip_levels(
+              system->texture_system, candidate->texture,
+              vkr_material_cap_limit(system, cap));
+          if (levels == 0u || levels >= candidate->target_mip_levels ||
+              (surplus_only && (!candidate->required_mip_levels ||
+                                levels < candidate->required_mip_levels))) {
+            continue;
+          }
+          const uint64_t bytes = vkr_material_texture_bytes_at(
+              candidate->bytes, candidate->mip_levels, levels);
+          *projected = *projected - candidate->projected_bytes + bytes;
+          candidate->projected_bytes = bytes;
+          candidate->target_mip_levels = levels;
+          candidate->extent_cap = cap;
+          vkr_material_system_cap_texture(system, candidate->texture, cap);
+          system->texture_stream_mip_lowered_total++;
+          lowered = true_v;
         }
-        const uint32_t extent = vkr_material_candidate_extent(
-            candidate, candidate->target_mip_levels);
-        if (extent <= VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR) {
-          continue;
-        }
-        const uint32_t cap =
-            Max(extent / 2u, (uint32_t)VKR_MATERIAL_TEXTURE_RESIDENT_FLOOR);
-        const uint32_t levels = vkr_texture_system_load_limit_mip_levels(
-            system->texture_system, candidate->texture,
-            vkr_material_cap_limit(system, cap));
-        if (levels == 0u || levels >= candidate->target_mip_levels) {
-          continue;
-        }
-        const uint64_t bytes = vkr_material_texture_bytes_at(
-            candidate->bytes, candidate->mip_levels, levels);
-        *projected = *projected - candidate->projected_bytes + bytes;
-        candidate->projected_bytes = bytes;
-        candidate->target_mip_levels = levels;
-        candidate->extent_cap = cap;
-        vkr_material_system_cap_texture(system, candidate->texture, cap);
-        system->texture_stream_mip_lowered_total++;
-        lowered = true_v;
       }
     }
     begin = end;
@@ -926,7 +1029,9 @@ static void vkr_material_system_raise_textures(VkrMaterialSystem *system) {
   for (uint32_t i = 0u; i < candidate_count && projected < ceiling; ++i) {
     VkrMaterialTextureCandidate *candidate = &candidates[i];
     if (!candidate->extent_cap || !candidate->source_mip_levels ||
-        candidate->last_used != system->texture_stream_epoch) {
+        candidate->last_used != system->texture_stream_epoch ||
+        (candidate->required_mip_levels &&
+         candidate->target_mip_levels >= candidate->required_mip_levels)) {
       continue;
     }
     const uint32_t doubled = candidate->extent_cap * 2u;
@@ -1626,6 +1731,7 @@ void vkr_material_system_pump_texture_streams(VkrMaterialSystem *system,
   if (!system || !system->texture_streams || max_updates == 0u) {
     return;
   }
+  vkr_material_system_apply_texture_demand(system);
   (void)vkr_material_system_evict_to_fit(system, 0u,
                                          VKR_TEXTURE_HANDLE_INVALID);
   vkr_material_system_raise_textures(system);
@@ -2000,9 +2106,19 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                           (uint64_t)VKR_MATERIAL_TEXTURE_STREAM_CAPACITY *
                               sizeof(*system->texture_candidates),
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->texture_demand = vkr_allocator_alloc(
+      &system->allocator,
+      (uint64_t)config->max_material_count * sizeof(*system->texture_demand),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  system->texture_demand_pending =
+      vkr_allocator_alloc(&system->allocator,
+                          (uint64_t)config->max_material_count *
+                              sizeof(*system->texture_demand_pending),
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!system->texture_streams || !system->texture_material_last_used_epochs ||
       !system->publications || !system->replacements ||
-      !system->texture_candidates) {
+      !system->texture_candidates || !system->texture_demand ||
+      !system->texture_demand_pending) {
     vkr_material_system_shutdown(system);
     return false_v;
   }
@@ -2015,6 +2131,8 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
               sizeof(*system->texture_material_last_used_epochs));
   MemZero(system->publications,
           (uint64_t)config->max_material_count * sizeof(*system->publications));
+  MemZero(system->texture_demand, (uint64_t)config->max_material_count *
+                                      sizeof(*system->texture_demand));
   if (system->texture_stream_budget_bytes == UINT64_MAX) {
     log_info("Material texture residency budget: unlimited, %u in flight",
              VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX);

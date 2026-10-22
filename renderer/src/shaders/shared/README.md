@@ -21,6 +21,11 @@ it.
 bits; `gpu_draw.slangh` selects a candidate's level from its LOD row and morphs
 terrain vertices, and `draw.metalh` mirrors both for the native Metal library.
 
+`texture_demand_kernel.slangh` owns the texture extent a material's pixel
+needs from its UV derivatives and the rotating one-in-sixteen pixel sample
+(ADR-024). The Vulkan G-buffer resolve consumes it; the Metal tiled fragment
+path does not report demand yet.
+
 `sharpen_kernel.slangh` owns neighborhood-limited detail recovery in post-tonemap
 linear RGB. Both final presentation shaders consume it after optional SMAA;
 native code owns sampling, frame strength and UI/composite bypasses.

@@ -2784,6 +2784,23 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
   return vkr_renderer_backend_device_memory_stats(renderer, out_stats);
 }
 
+uint32_t vkr_renderer_take_texture_demand(VkrRenderer *renderer,
+                                          VkrTextureDemand *out,
+                                          uint32_t capacity) {
+#if defined(PLATFORM_APPLE)
+  (void)renderer;
+  (void)out;
+  (void)capacity;
+  return 0u;
+#else
+  if (!renderer || !renderer->vulkan_renderer || !out)
+    return 0u;
+  vkr_renderer_join_render_thread(renderer);
+  return vkr_vulkan_renderer_take_texture_demand(renderer->vulkan_renderer, out,
+                                                 capacity);
+#endif
+}
+
 void vkr_renderer_present_target_extent(VkrRenderer *renderer,
                                         uint32_t *out_width,
                                         uint32_t *out_height) {

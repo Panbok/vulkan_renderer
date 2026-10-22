@@ -1547,6 +1547,23 @@ vkr_renderer_get_and_reset_command_slot_wait_count(VkrRenderer *renderer,
 /** @brief Snapshots device-memory allocation telemetry. Non-resetting. */
 bool8_t vkr_renderer_get_device_memory_stats(VkrRenderer *renderer,
                                              VkrDeviceMemoryStats *out_stats);
+
+/** One material's texture demand measured by the GPU (ADR-024): the texture
+ * extent, as log2, at which one texel of the material's UV space covers one
+ * pixel where a completed frame drew it, from one pixel of each 4x4 block. */
+typedef struct VkrTextureDemand {
+  uint32_t material_id;
+  uint32_t material_generation;
+  uint32_t extent_log2;
+} VkrTextureDemand;
+
+/** Copies the texture demand of the newest completed frame not yet taken, at
+ * most `capacity` entries, and returns their count. Zero when no frame
+ * completed since the last call or the backend measures none (the tiled
+ * pipeline). */
+uint32_t vkr_renderer_take_texture_demand(VkrRenderer *renderer,
+                                          VkrTextureDemand *out,
+                                          uint32_t capacity);
 // --- END Utility ---
 
 /**

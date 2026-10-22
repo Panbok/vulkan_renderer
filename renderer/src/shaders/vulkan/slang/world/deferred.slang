@@ -213,6 +213,12 @@ struct VkrVkResolveRoot
     // SMAA S2x's listed pixels (x | y << 16) for the second sample's
     // resolve, one per thread of the indirect dispatch; null otherwise.
     uint *sample1_pixels;
+    // Texture demand (texture_demand_kernel.slangh), one word per material
+    // slot, indexed like `materials`: the largest encoded demand of the
+    // slot's pixels at `texture_feedback_phase` this frame. Null when the
+    // frame records none.
+    uint *texture_feedback;
+    uint texture_feedback_phase;
 };
 
 #ifndef VKR_VULKAN_GBUFFER_WRITE_EMISSIVE
@@ -1844,6 +1850,8 @@ VkrTerrainSurface vkr_vk_terrain_surface(VkrTerrainSurface layer0,
 // pixel footprint holds, so their fetches scale the gradients by sqrt(2):
 // +0.5 LOD cancels the bias.
 #define VKR_VK_SPECULAR_FOOTPRINT_SCALE 1.41421356f
+// That bias, VKR_VULKAN_MATERIAL_LOD_BIAS on the host.
+#define VKR_VK_MATERIAL_LOD_BIAS -0.5f
 
 // Returns false for a row this pass must not shade, counting it as an invalid
 // resolve first. The caller owns the fallback, because the G-buffer writes
@@ -2377,6 +2385,20 @@ void vk_gbuffer_resolve(uint3 dispatch_id : SV_DispatchThreadID,
         vkr_vk_resolve_defaults(root, thread_id.xy, 0.0f);
         g_storage_2d[root.scene_texture][thread_id.xy] = float4(surface.wire_color, 0.0f);
         return;
+    }
+    // Texture demand from one pixel of each 4x4 block, first sample only. The
+    // load skips the atomic where the slot already holds as much.
+    if (first_sample && root.texture_feedback != nullptr &&
+        vkr_texture_demand_pixel(thread_id.xy, root.texture_feedback_phase))
+    {
+        uint demand = vkr_texture_demand_encode(surface.uv_dx, surface.uv_dy,
+                                                VKR_VK_MATERIAL_LOD_BIAS);
+        if (demand > root.texture_feedback[surface.material_index])
+        {
+            uint previous_demand;
+            InterlockedMax(root.texture_feedback[surface.material_index],
+                           demand, previous_demand);
+        }
     }
     bool neutral_lighting = vkr_editor_neutral_lighting(root.render_mode);
     VkrVulkanInstance instance = source.instances[surface.instance_index];

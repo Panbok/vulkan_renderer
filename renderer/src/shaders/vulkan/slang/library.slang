@@ -28,6 +28,7 @@
 #include "../../shared/pass_output_kernel.slangh"
 #include "../../shared/normal_map_kernel.slangh"
 #include "../../shared/terrain_kernel.slangh"
+#include "../../shared/texture_demand_kernel.slangh"
 #include "../../shared/transmission_kernel.slangh"
 #include "../../shared/punctual_light_kernel.slangh"
 // VkrShL2Packed is referenced by the IBL projection kernel and by deferred

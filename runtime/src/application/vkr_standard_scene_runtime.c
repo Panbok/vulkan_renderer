@@ -3227,6 +3227,7 @@ vkr_internal void vkr_standard_scene_runtime_sync_submission_state(
       vkr_renderer_get_completed_submit_serial(renderer);
   application->device_memory_seen_valid = vkr_renderer_get_device_memory_stats(
       renderer, &application->device_memory_seen);
+  vkr_render_assets_take_texture_demand(&application->assets, renderer);
 }
 
 /* Takes the renderer values the frame-loop thread reads while a frame may be

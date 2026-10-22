@@ -1,0 +1,51 @@
+// Shared texture demand (ADR-024): the texture extent a material's pixel needs
+// from its UV derivatives. One texel of the material's UV space covers one
+// pixel at that extent, under anisotropic filtering of up to
+// VKR_TEXTURE_DEMAND_MAX_ANISOTROPY samples along the footprint's long axis,
+// the selection a sampler with that anisotropy makes. A sampler with less
+// selects a coarser level, so the demand never asks for less than it samples.
+// The host turns the extent into a mip level of each of the material's
+// textures from that texture's own source extent, and its mirror is
+// VKR_TEXTURE_DEMAND_* in renderer/src/vkr_renderer.h.
+#ifndef VKR_TEXTURE_DEMAND_KERNEL_SLANGH
+#define VKR_TEXTURE_DEMAND_KERNEL_SLANGH
+
+#define VKR_TEXTURE_DEMAND_MAX_ANISOTROPY 16.0f
+// 65536 texels per UV unit; a finer footprint reports this.
+#define VKR_TEXTURE_DEMAND_MAX_EXTENT_LOG2 16.0f
+// One pixel of each 4x4 block writes demand per frame (the block side), at a
+// phase the host rotates.
+#define VKR_TEXTURE_DEMAND_BLOCK 4u
+
+// The demand of a footprint sampled with `lod_bias` (a negative bias selects
+// finer levels, which raises the demand), encoded as the required extent's
+// log2 rounded up plus one, so zero means no demand: a degenerate or
+// non-finite footprint.
+uint vkr_texture_demand_encode(float2 uv_dx, float2 uv_dy, float lod_bias)
+{
+    float footprint_x = length(uv_dx);
+    float footprint_y = length(uv_dy);
+    float footprint_major = max(footprint_x, footprint_y);
+    float footprint_minor = min(footprint_x, footprint_y);
+    if (!(footprint_major > 0.0f) || isinf(footprint_major))
+        return 0u;
+    float samples = min(
+        ceil(footprint_major /
+             max(footprint_minor,
+                 footprint_major / VKR_TEXTURE_DEMAND_MAX_ANISOTROPY)),
+        VKR_TEXTURE_DEMAND_MAX_ANISOTROPY);
+    float extent_log2 =
+        clamp(ceil(log2(samples / footprint_major) - lod_bias), 0.0f,
+              VKR_TEXTURE_DEMAND_MAX_EXTENT_LOG2);
+    return uint(extent_log2) + 1u;
+}
+
+// Whether `pixel` writes demand this frame: the one of its 4x4 block at
+// `phase` (0 to 15, x in the low two bits).
+bool vkr_texture_demand_pixel(uint2 pixel, uint phase)
+{
+    uint2 cell = pixel % VKR_TEXTURE_DEMAND_BLOCK;
+    return cell.x + cell.y * VKR_TEXTURE_DEMAND_BLOCK == phase;
+}
+
+#endif

@@ -322,6 +322,11 @@ void vkr_vulkan_renderer_memory_metrics(const VkrVulkanRenderer *renderer,
                                         VkrVulkanMemoryMetrics *out_metrics);
 void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
                                              VkrDeviceMemoryStats *out_stats);
+/** Moves the newest completed frame's texture demand into `out`
+ * (vkr_renderer_take_texture_demand). */
+uint32_t vkr_vulkan_renderer_take_texture_demand(VkrVulkanRenderer *renderer,
+                                                 VkrTextureDemand *out,
+                                                 uint32_t capacity);
 void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
                                       VkrVulkanHeapMetrics *out_metrics);
 bool8_t

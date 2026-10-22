@@ -1225,6 +1225,7 @@ vkr_internal void vkr_vk_reset_slot_requests(VkrVulkanRenderer *renderer,
   slot->light_contribution_requested =
       renderer->prepared_frame.light_contribution_enabled;
   slot->light_contribution_written = false_v;
+  slot->texture_feedback_written = false_v;
   slot->light_contribution_source = (VkrLocalLightContributionSample){0};
   slot->transmission_coverage_requested =
       renderer->prepared_frame.transmission_pending &&
@@ -1928,6 +1929,7 @@ vkr_internal bool8_t vkr_vk_slot_result(VkrVulkanRenderer *renderer,
   /* A failed census copy leaves the census invalid; the frame's other
      results stand. */
   (void)vkr_vk_decode_census_readback(renderer, best, opaque[0].overflow_count);
+  (void)vkr_vk_decode_texture_feedback(renderer, best);
   vkr_vk_decode_sdsm_result(best, color, &out_result->shadow_depth_range);
   vkr_vk_decode_light_contribution(best, color,
                                    &out_result->local_light_contribution);
@@ -2392,6 +2394,17 @@ void vkr_vulkan_renderer_device_memory_stats(const VkrVulkanRenderer *renderer,
   out_stats->driver_memory_valid = renderer->driver_memory_valid;
 }
 
+uint32_t vkr_vulkan_renderer_take_texture_demand(VkrVulkanRenderer *renderer,
+                                                 VkrTextureDemand *out,
+                                                 uint32_t capacity) {
+  if (!renderer || !out || !renderer->texture_demand)
+    return 0u;
+  const uint32_t count = Min(renderer->texture_demand_count, capacity);
+  MemCopy(out, renderer->texture_demand, (uint64_t)count * sizeof(*out));
+  renderer->texture_demand_count = 0u;
+  return count;
+}
+
 void vkr_vulkan_renderer_heap_metrics(const VkrVulkanRenderer *renderer,
                                       VkrVulkanHeapMetrics *out_metrics) {
   if (!out_metrics)
@@ -2765,6 +2778,11 @@ vkr_vk_free_descriptor_slot_tables(VkrVulkanRenderer *renderer,
   if (renderer->published_materials) {
     vkr_allocator_free(allocator, renderer->published_materials,
                        renderer->published_materials_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  if (renderer->texture_demand) {
+    vkr_allocator_free(allocator, renderer->texture_demand,
+                       renderer->texture_demand_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   if (renderer->published_textures) {

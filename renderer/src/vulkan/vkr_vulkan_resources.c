@@ -1744,6 +1744,23 @@ vkr_internal bool8_t vkr_vk_create_frame_slots(VkrVulkanRenderer *renderer) {
                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                               &slot->light_contribution) ||
+        !vkr_vk_create_buffer(
+            renderer, VKR_VULKAN_MEMORY_CLASS_DEVICE,
+            VKR_GPU_ALLOCATION_OWNER_READBACK,
+            (uint64_t)renderer->config.material_slot_capacity *
+                sizeof(uint32_t),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            &slot->texture_feedback) ||
+        !vkr_vk_create_buffer(
+            renderer, VKR_VULKAN_MEMORY_CLASS_READBACK,
+            VKR_GPU_ALLOCATION_OWNER_READBACK,
+            (uint64_t)renderer->config.material_slot_capacity *
+                sizeof(uint32_t),
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            &slot->texture_feedback_readback) ||
         !vkr_vk_create_buffer(renderer, VKR_VULKAN_MEMORY_CLASS_UPLOAD,
                               VKR_GPU_ALLOCATION_OWNER_STAGING,
                               VKR_VULKAN_FRAME_UPLOAD_INITIAL_SIZE,
@@ -1772,6 +1789,8 @@ void vkr_vk_destroy_frame_slots(VkrVulkanRenderer *renderer) {
     vkr_vk_destroy_buffer(renderer, &slot->capture_readback);
     vkr_vk_destroy_buffer(renderer, &slot->census_readback);
     vkr_vk_destroy_buffer(renderer, &slot->light_contribution);
+    vkr_vk_destroy_buffer(renderer, &slot->texture_feedback);
+    vkr_vk_destroy_buffer(renderer, &slot->texture_feedback_readback);
     vkr_vk_destroy_buffer(renderer, &slot->readback);
     if (slot->timestamp_pool)
       vkDestroyQueryPool(device, slot->timestamp_pool, NULL);
@@ -1933,6 +1952,9 @@ vkr_internal void vkr_vk_size_publication_records(
   renderer->retired_materials_size =
       (uint64_t)renderer->config.material_record_capacity *
       sizeof(*renderer->retired_materials);
+  renderer->texture_demand_size =
+      (uint64_t)renderer->config.material_record_capacity *
+      sizeof(*renderer->texture_demand);
   renderer->pending_texture_initializations_size =
       (uint64_t)renderer->config.texture_capacity *
       sizeof(*renderer->pending_texture_initializations);
@@ -2000,6 +2022,9 @@ vkr_vk_allocate_publication_storage(VkrVulkanRenderer *renderer) {
   renderer->retired_materials =
       vkr_allocator_alloc(renderer->allocator, renderer->retired_materials_size,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->texture_demand =
+      vkr_allocator_alloc(renderer->allocator, renderer->texture_demand_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->pending_texture_initializations = vkr_allocator_alloc(
       renderer->allocator, renderer->pending_texture_initializations_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -2016,7 +2041,7 @@ vkr_vk_allocate_publication_storage(VkrVulkanRenderer *renderer) {
       !renderer->geometry_table_rows || !renderer->retired_geometries ||
       !renderer->published_textures || !renderer->retired_textures ||
       !renderer->published_samplers || !renderer->published_materials ||
-      !renderer->retired_materials ||
+      !renderer->retired_materials || !renderer->texture_demand ||
       !renderer->pending_texture_initializations ||
       !renderer->pending_buffer_initializations ||
       !renderer->retired_staging_buffers) {

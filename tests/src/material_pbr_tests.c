@@ -1371,6 +1371,151 @@ vkr_internal void test_material_texture_residency_lowers_mips_before_evicting(
          "PASSED\n");
 }
 
+/* One resident stream on a modeled 2D chain: `extent` square with its full
+   mip count and `bytes` resident. */
+vkr_internal VkrMaterialTextureStream *
+test_demand_resident_stream(MaterialPbrTestContext *ctx, const char *name,
+                            uint32_t extent, uint32_t mip_levels,
+                            uint64_t bytes, VkrMaterialHandle *out_material,
+                            VkrTextureHandle *out_texture) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  *out_material =
+      vkr_material_system_create_colored(system, name, vec4_one(), &error);
+  assert(out_material->id != 0u);
+  const VkrTextureDescription description = {
+      .width = 8u,
+      .height = 8u,
+      .channels = 4u,
+      .mip_levels = 1u,
+      .array_layers = 1u,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = {0},
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+  };
+  assert(vkr_texture_system_create_writable(
+             &ctx->texture_system,
+             string8_create_from_cstr((const uint8_t *)name, strlen(name)),
+             &description, out_texture, &error) == true_v);
+  VkrTexture *texture =
+      vkr_texture_system_get_by_handle(&ctx->texture_system, *out_texture);
+  assert(texture != NULL);
+  texture->resident_bytes = bytes;
+  texture->description.mip_levels = mip_levels;
+  texture->limit_source_extent = extent;
+  texture->limit_source_mip_levels = mip_levels;
+  VkrTextureEntry *entry = vkr_hash_table_get_VkrTextureEntry(
+      &ctx->texture_system.texture_map, name);
+  assert(entry != NULL);
+  entry->auto_release = false_v;
+  VkrMaterial *material =
+      vkr_material_system_get_by_handle(system, *out_material);
+  assert(material != NULL);
+  material->textures[VKR_TEXTURE_SLOT_EMISSION] = (VkrMaterialTexture){
+      .handle = *out_texture,
+      .slot = VKR_TEXTURE_SLOT_EMISSION,
+      .enabled = true_v,
+  };
+  assert(vkr_material_system_stream_texture(system, *out_material,
+                                            VKR_TEXTURE_SLOT_EMISSION,
+                                            "textures/demand.vkt") == true_v);
+  VkrMaterialTextureStream *stream =
+      &system->texture_streams[system->texture_stream_count - 1u];
+  system->texture_stream_queued_count--;
+  system->texture_stream_resident_count++;
+  system->texture_stream_resident_bytes += bytes;
+  stream->state = VKR_MATERIAL_TEXTURE_RESIDENCY_RESIDENT;
+  stream->resident_texture = *out_texture;
+  stream->resident_bytes = bytes;
+  return stream;
+}
+
+/* The GPU's measured need orders mip lowering: a texture holding mips its
+   material does not need loses them before a larger unmeasured texture
+   loses any, stops at the need while others still have mips to give, and
+   does not grow back past it. */
+vkr_internal void
+test_material_texture_demand_orders_mip_lowering(MaterialPbrTestContext *ctx) {
+  VkrMaterialSystem *system = &ctx->material_system;
+  VkrMaterialHandle measured_material = {0};
+  VkrMaterialHandle unmeasured_material = {0};
+  VkrTextureHandle measured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  VkrTextureHandle unmeasured_texture = VKR_TEXTURE_HANDLE_INVALID;
+  /* Measured: 1024 and 11 mips, needing 256 (9 mips). Unmeasured: 2048
+     and 12 mips, twice the bytes. */
+  VkrMaterialTextureStream *measured =
+      test_demand_resident_stream(ctx, "texture_demand_measured", 1024u, 11u,
+                                  4096u, &measured_material, &measured_texture);
+  const uint32_t measured_index =
+      (uint32_t)(measured - system->texture_streams);
+  VkrMaterialTextureStream *unmeasured = test_demand_resident_stream(
+      ctx, "texture_demand_unmeasured", 2048u, 12u, 8192u, &unmeasured_material,
+      &unmeasured_texture);
+  measured = &system->texture_streams[measured_index];
+  const uint32_t active = system->texture_stream_active_count;
+  system->texture_stream_active_count =
+      VKR_MATERIAL_TEXTURE_STREAM_IN_FLIGHT_MAX;
+
+  vkr_material_system_begin_texture_residency_frame(system);
+  vkr_material_system_touch_texture_residency(system, measured_material);
+  vkr_material_system_touch_texture_residency(system, unmeasured_material);
+  system->texture_demand_pending[0] = (VkrTextureDemand){
+      .material_id = measured_material.id,
+      .material_generation = measured_material.generation,
+      .extent_log2 = 8u,
+  };
+  system->texture_demand_pending_count = 1u;
+
+  /* 12288 bytes over 10000: the measured surplus goes first, and one mip of
+     it fits. Size alone would have halved the unmeasured texture. */
+  vkr_material_system_set_texture_residency_budget(system, 10000u);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(system->texture_demand_material_count == 1u);
+  assert(measured->extent_cap == 512u);
+  assert(unmeasured->extent_cap == 0u);
+
+  /* Over 8000 the measured texture stops at its need (256); the unmeasured
+     one gives the rest. */
+  vkr_material_system_set_texture_residency_budget(system, 8000u);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(measured->extent_cap == 256u);
+  assert(unmeasured->extent_cap == 1024u);
+
+  /* With room again, the unmeasured texture grows back and the measured one
+     stays at its need. */
+  for (uint32_t i = 0u; i < VKR_MATERIAL_TEXTURE_DEMAND_WINDOW; ++i) {
+    vkr_material_system_begin_texture_residency_frame(system);
+  }
+  vkr_material_system_touch_texture_residency(system, measured_material);
+  vkr_material_system_touch_texture_residency(system, unmeasured_material);
+  system->texture_demand_pending_count = 1u;
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  vkr_material_system_pump_texture_streams(system, 1u);
+  assert(measured->extent_cap == 256u);
+  assert(unmeasured->extent_cap == 0u);
+
+  system->texture_stream_active_count = active;
+  vkr_material_system_cancel_texture_streams(system, measured_material);
+  vkr_material_system_cancel_texture_streams(system, unmeasured_material);
+  vkr_material_system_set_texture_residency_budget(system, UINT64_MAX);
+  const VkrTextureHandle textures[] = {measured_texture, unmeasured_texture};
+  for (uint32_t i = 0u; i < ArrayCount(textures); ++i) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&ctx->texture_system, textures[i]);
+    if (texture) {
+      texture->description.mip_levels = 1u;
+      texture->limit_source_extent = 0u;
+      texture->limit_source_mip_levels = 0u;
+    }
+  }
+  printf("  test_material_texture_demand_orders_mip_lowering PASSED\n");
+}
+
 vkr_internal void
 test_shared_texture_eviction_tracks_unique_bytes(MaterialPbrTestContext *ctx) {
   VkrMaterialSystem *system = &ctx->material_system;
@@ -2663,6 +2808,7 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_stream_queue_is_bounded(&context);
   test_material_texture_residency_evicts_to_budget(&context);
   test_material_texture_residency_lowers_mips_before_evicting(&context);
+  test_material_texture_demand_orders_mip_lowering(&context);
   test_texture_capacity_retry_high_water();
   test_shared_texture_eviction_tracks_unique_bytes(&context);
   test_shared_texture_eviction_republishes_all_materials(&context);

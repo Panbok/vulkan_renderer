@@ -146,6 +146,11 @@ vkr_render_assets_pump_publications(VkrRenderAssets *assets,
 uint32_t vkr_render_assets_ibl_sh_slot(const VkrRenderAssets *assets,
                                        VkrTextureHandle source);
 
+/* Takes the newest completed frame's GPU texture demand for the next
+ * texture pump to fold in. Call only when no frame is rendering. */
+void vkr_render_assets_take_texture_demand(VkrRenderAssets *assets,
+                                           VkrRenderer *renderer);
+
 /* Pure pressure/hysteresis policy over the backend's texture heaps; false
  * means keep the current budget, and stats without texture heap capacity
  * never change it. out_budget is always the finite capacity allowance;

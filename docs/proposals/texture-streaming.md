@@ -44,8 +44,11 @@ owns fetching bytes from a remote depot and their transport order, and
 - **Demand.** Each frame, every loaded and visible world source touches its
   material (`vkr_material_system_touch_texture_residency` in
   [vkr_scene_frame.c](../../runtime/src/renderer/systems/vkr_scene_frame.c)).
-  Demand means "published to the world", not "seen by the camera": a texture
-  behind the camera has the same demand epoch as one in front of it.
+  That epoch means "published to the world", not "seen by the camera": a
+  texture behind the camera has the same epoch as one in front of it. The
+  desktop G-buffer resolve also measures the extent each material's pixels
+  need ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)); the tiled
+  pipeline measures nothing.
 - **Eviction.** Under a residency budget the material system first lowers
   textures' top mips by halving a per-slot extent cap, oldest demand epoch
   first and largest first within an epoch, down to a 128 floor, through the
@@ -55,9 +58,10 @@ owns fetching bytes from a remote depot and their transport order, and
   [vkr_material_system.c](../../runtime/src/renderer/systems/vkr_material_system.c)).
   Caps grow back when the budget allows. A demanded eviction requeues after a
   real budget increase or a Scene memory-relief generation
-  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). The order follows
-  demand epochs, not the mip a view needs, and each step reloads the whole
-  file.
+  ([ADR-024](../adr/024-shared-bindless-gpu-cores.md)). On Vulkan the
+  G-buffer resolve measures each material's required extent and the budget
+  lowers mips beyond it first; Metal orders by demand epoch and size. Each
+  step reloads the whole file.
 - **Budget owner.** The automatic policy derives the texture allowance from
   the heaps' usage and budget: pressure starts at 90% of the budget, ends below
   75% and targets 80%; under Metal's cap the allowance never drops below the
@@ -110,16 +114,17 @@ every material sample for a workflow id itself abandoned.
 
 ## Proposed work
 
-1. **Demand by footprint.** Replace world demand with a required top mip per
-   texture. Take it from GPU feedback: the desktop resolve already computes
-   gradients for every pixel, and the tiled fragment shader has derivatives.
-   One atomic minimum per wave and texture writes into a small buffer that
-   the CPU reads one or two frames later. Passes outside the camera view
-   (shadows, probe captures, planar reflections, bakes) add their own demand
-   or read the resident floor.
-2. **Eviction by required mip.** Order the existing mip-level eviction
-   (ADR-024) by how far each texture's resident mip exceeds its required mip
-   from item 1, instead of demand epoch and size.
+1. **Tiled demand.** The desktop G-buffer resolve measures each material's
+   required texture extent and the budget lowers surplus mips first
+   (ADR-024). Report the same `texture_demand_kernel.slangh` value from the
+   tiled pipeline's fragment shaders, which have the derivatives, so Metal
+   orders lowering by need instead of draw epoch and size. Passes outside the
+   camera view (shadows, probe captures, planar reflections, bakes) still
+   read what the camera's demand keeps resident.
+2. **Trim without pressure.** Once ranged loads (item 3) make a reload
+   cheap, lower textures to their measured need with no budget pressure, so
+   only the mips the camera needs stay resident (deferred by the owner on
+   2026-10-22 because each step now reloads the whole file).
 3. **Ranged loads.** Read only the levels needed, from the KTX2 level index,
    with `file_seek` and `file_read_into` or `file_map_readonly`
    ([filesystem.h](../../lib/src/filesystem/filesystem.h)). Load the floor

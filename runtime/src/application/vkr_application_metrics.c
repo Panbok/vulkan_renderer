@@ -87,6 +87,8 @@ VkrApplicationMetricsSnapshot vkr_application_metrics_snapshot(
           assets->material_system.texture_stream_mip_lowered_total,
       .material_texture_stream_mip_raised_total =
           assets->material_system.texture_stream_mip_raised_total,
+      .material_texture_demand_materials =
+          assets->material_system.texture_demand_material_count,
       .material_texture_stream_automatic_pressure_active =
           assets->texture_pressure_active ? 1u : 0u,
   };

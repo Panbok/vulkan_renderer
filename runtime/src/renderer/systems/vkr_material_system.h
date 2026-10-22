@@ -109,7 +109,24 @@ typedef struct VkrMaterialTextureCandidate {
   /* Every stream on the texture carries the load limit's query outside a
      replacement, so a cap can reload it. */
   bool8_t limitable;
+  /* The largest extent the GPU measured for the texture's materials, and the
+     mip levels that extent needs; zero when none was measured recently. */
+  uint32_t required_extent;
+  uint32_t required_mip_levels;
 } VkrMaterialTextureCandidate;
+
+/* Epochs over which a material's GPU texture demand holds. Its required
+   extent is the largest of the current window and the one before, so the
+   resolve's rotating one-in-sixteen pixel sample covers every pixel. */
+#define VKR_MATERIAL_TEXTURE_DEMAND_WINDOW 16u
+
+/* One material's GPU texture demand: the required extent's log2 plus one
+   (zero for none) in its window of epochs and in the window before. */
+typedef struct VkrMaterialTextureDemand {
+  uint64_t window;
+  uint8_t current;
+  uint8_t previous;
+} VkrMaterialTextureDemand;
 
 /* A live material's next definition. Its textures stream as a group, and the
  * definition and every texture publish in one republication once all of them
@@ -212,6 +229,14 @@ typedef struct VkrMaterialSystem {
   /* Scratch for the budget's passes, VKR_MATERIAL_TEXTURE_STREAM_CAPACITY
      entries from the persistent arena. */
   VkrMaterialTextureCandidate *texture_candidates;
+  /* GPU texture demand (ADR-024) by material id, and the newest completed
+     frame's entries, which the next pump folds in; max_material_count
+     each. */
+  VkrMaterialTextureDemand *texture_demand;
+  VkrTextureDemand *texture_demand_pending;
+  uint32_t texture_demand_pending_count;
+  /* Materials the last folded frame measured. */
+  uint32_t texture_demand_material_count;
 
   VkrMaterialReplacement *replacements; /* VKR_MATERIAL_REPLACEMENT_CAPACITY */
   uint32_t replacement_count;           /* Entries in use. */

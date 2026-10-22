@@ -467,6 +467,21 @@ bool8_t vkr_render_assets_texture_pressure_budget(
   return true_v;
 }
 
+void vkr_render_assets_take_texture_demand(VkrRenderAssets *assets,
+                                           VkrRenderer *renderer) {
+  VkrMaterialSystem *materials = &assets->material_system;
+  if (!materials->texture_demand_pending) {
+    return;
+  }
+  /* A frame the pump has not folded in yet gives way to a newer one. */
+  const uint32_t taken = vkr_renderer_take_texture_demand(
+      renderer, materials->texture_demand_pending,
+      materials->config.max_material_count);
+  if (taken) {
+    materials->texture_demand_pending_count = taken;
+  }
+}
+
 void vkr_render_assets_refresh_texture_residency_budget(
     VkrRenderAssets *assets, const VkrDeviceMemoryStats *device_memory) {
   if (!assets->material_system.texture_stream_budget_user_configured) {

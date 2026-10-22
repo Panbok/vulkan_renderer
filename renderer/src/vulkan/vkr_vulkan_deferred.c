@@ -146,6 +146,8 @@ bool8_t vkr_vk_prepare_deferred_upload(VkrVulkanRenderer *renderer,
       !transmission && slot->light_contribution_requested
           ? slot->light_contribution.handle
           : VK_NULL_HANDLE;
+  prepared->texture_feedback =
+      !transmission ? slot->texture_feedback.handle : VK_NULL_HANDLE;
   if (transmission) {
     slot->transmission_gpu_compaction_state = state;
     slot->transmission_gpu_candidate_instances = instances->buffer.address;
@@ -280,6 +282,88 @@ bool8_t vkr_vk_prepare_deferred_readback(VkrVulkanRenderer *renderer) {
 vkr_internal void vkr_vk_record_census_readback(VkrVulkanRenderer *renderer,
                                                 VkCommandBuffer command);
 
+/* Copies the frame's texture demand words into its slot's readback, after
+   the G-buffer resolve. */
+vkr_internal void
+vkr_vk_record_texture_feedback_readback(VkrVulkanRenderer *renderer,
+                                        VkCommandBuffer command) {
+  VkrVulkanFrameSlot *slot =
+      &renderer->frame_slots[renderer->active_frame_slot];
+  if (!slot->texture_feedback_written)
+    return;
+  const VkBufferMemoryBarrier2 source_barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+      .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = slot->texture_feedback.handle,
+      .size = VK_WHOLE_SIZE,
+  };
+  const VkDependencyInfo source_dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1u,
+      .pBufferMemoryBarriers = &source_barrier,
+  };
+  vkr_vk_cmd_pipeline_barrier2(command, &source_dependency);
+  const VkBufferCopy copy = {
+      .size =
+          (uint64_t)renderer->config.material_slot_capacity * sizeof(uint32_t),
+  };
+  vkCmdCopyBuffer(command, slot->texture_feedback.handle,
+                  slot->texture_feedback_readback.handle, 1u, &copy);
+  const VkBufferMemoryBarrier2 host_barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+      .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = slot->texture_feedback_readback.handle,
+      .size = VK_WHOLE_SIZE,
+  };
+  const VkDependencyInfo host_dependency = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1u,
+      .pBufferMemoryBarriers = &host_barrier,
+  };
+  vkr_vk_cmd_pipeline_barrier2(command, &host_dependency);
+}
+
+/* A material republished since the frame may read the word of its former
+   slot, or of a slot another material took: demand is a hint the next frames
+   correct. */
+bool8_t vkr_vk_decode_texture_feedback(VkrVulkanRenderer *renderer,
+                                       const VkrVulkanFrameSlot *slot) {
+  if (!slot->texture_feedback_written)
+    return true_v;
+  const uint32_t slot_capacity = renderer->config.material_slot_capacity;
+  if (!vkr_vk_invalidate(renderer, &slot->texture_feedback_readback.allocation,
+                         0u, (uint64_t)slot_capacity * sizeof(uint32_t)))
+    return false_v;
+  const uint32_t *words = slot->texture_feedback_readback.allocation.mapped;
+  uint32_t count = 0u;
+  for (uint32_t i = 0u; i < renderer->config.material_record_capacity; ++i) {
+    const VkrVulkanPublishedMaterial *material =
+        &renderer->published_materials[i];
+    if (!material->live || material->slot.index >= slot_capacity)
+      continue;
+    const uint32_t word = words[material->slot.index];
+    if (word == 0u)
+      continue;
+    renderer->texture_demand[count++] = (VkrTextureDemand){
+        .material_id = material->handle.id,
+        .material_generation = material->handle.generation,
+        .extent_log2 = word - 1u,
+    };
+  }
+  renderer->texture_demand_count = count;
+  return true_v;
+}
+
 void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
                                      VkCommandBuffer command) {
   VkrVulkanFrameSlot *slot =
@@ -316,6 +400,7 @@ void vkr_vk_record_deferred_readback(VkrVulkanRenderer *renderer,
     vkCmdCopyBuffer(command, prepared->barriers[i].buffer,
                     slot->readback.handle, 1u, &prepared->copies[i]);
   vkr_vk_record_census_readback(renderer, command);
+  vkr_vk_record_texture_feedback_readback(renderer, command);
 }
 
 /* The mirrored view-projection cropped to the reflector's screen rectangle,
@@ -1341,7 +1426,12 @@ bool8_t vkr_vk_prepare_deferred_gbuffer(VkrVulkanRenderer *renderer,
                               : mat4_identity(),
       .decals = slot->decals,
       .decal_masks = slot->decal_masks,
+      .texture_feedback = slot->texture_feedback.address,
+      /* One pixel of each 4x4 block, visiting all 16 every 16 frames. */
+      .texture_feedback_phase =
+          (uint32_t)(packet->input.frame.frame_index % 16u),
   };
+  slot->texture_feedback_written = true_v;
   /* Baked lamps (ADR-104): the resolve sums the
      active lamp layers of each lightmapped draw's rectangle. */
   root.baked_lamps_texture = VKR_VULKAN_SENTINEL_SLOT_INDEX;
@@ -4789,6 +4879,29 @@ void vkr_vk_record_prepared_upload(VkCommandBuffer command,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .buffer = prepared->light_contribution,
         .size = VKR_VULKAN_LIGHT_CONTRIBUTION_SIZE,
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1u,
+        .pBufferMemoryBarriers = &barrier,
+    };
+    vkr_vk_cmd_pipeline_barrier2(command, &dependency);
+  }
+  if (prepared->texture_feedback) {
+    /* Slot-owned like the counters above: the clear orders itself before
+     * the G-buffer resolve's atomics. */
+    vkCmdFillBuffer(command, prepared->texture_feedback, 0u, VK_WHOLE_SIZE, 0u);
+    const VkBufferMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = prepared->texture_feedback,
+        .size = VK_WHOLE_SIZE,
     };
     const VkDependencyInfo dependency = {
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
