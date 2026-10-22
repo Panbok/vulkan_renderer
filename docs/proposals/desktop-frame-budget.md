@@ -7,16 +7,16 @@ authority: proposal
 # Desktop frame budget
 
 The desktop pipeline, which Vulkan runs, has a frame budget and an accepted
-first baseline ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
+baseline ([ADR-087](../adr/087-gpu-class-graphics-pipelines.md),
 decision 4 and
 [Desktop pipeline baseline](../adr/087-gpu-class-graphics-pipelines.md#desktop-pipeline-baseline)):
 Bistro with the High preset at 2560×1440 on the RX 6700 XT, 16.7 ms p95
-`gpu.submission`. The baseline misses it, at 23.76 ms p95 on the orbit and
-26.68 ms on the street walk. With Bistro's static lamps baked, a
-[proposed baseline](#proposed-baked-lamp-baseline) meets it, at 15.79 and
-15.08 ms p95, and awaits the owner's acceptance. This proposal holds the work that remains:
-targets per budget line and the levers that bring the frame under the
-budget. [Asynchronous compute](async-compute.md),
+`gpu.submission`. With Bistro's static lamps baked, the baseline accepted on
+2026-10-22 meets it, at 15.79 ms p95 on the orbit and 15.08 ms on the street
+walk; the first baseline, with runtime lamps, missed it at 23.76 and
+26.68 ms. This proposal holds the work that remains: targets per budget
+line, the levers that keep the frame under the budget where lamps stay
+runtime lights, and a 120 Hz line. [Asynchronous compute](async-compute.md),
 [variable-rate shading](variable-rate-shading.md) and
 [GPU light binning](clustered-light-and-decal-binning.md) are speed
 features; each claims its gain against the baseline with its own matched
@@ -41,12 +41,13 @@ reports.
   [`desktop.pass_groups.json`](../../tools/budgets/desktop.pass_groups.json)
   reports the budget lines
   ([ADR-051](../adr/051-renderer-harness-and-evidence.md)).
-- **Where the time goes.** At the median, Lighting takes 8.8 ms on the orbit
-  and 12.3 ms on the walk: `Lighting.Deferred` 6.7 and 8.1 ms,
-  `Shadow.LocalMask` 2.1 and 4.2 ms. Reconstruction and post take 2.9 ms
-  (`FSR31.Upscale` 1.9), Surface 2.7 (`GBuffer.Resolve` 1.1, `AO.Evaluate`
-  1.0), Glass and blend 2.4 and 2.9. The shadow-map redraws stay at 0.23 ms
-  or less (ADR-087).
+- **Where the time goes.** At the median, Lighting takes 4.8 ms on the orbit
+  and 4.9 ms on the walk, all in `Lighting.Deferred`. Reconstruction and
+  post take 2.8 and 2.9 ms (`FSR31.Upscale` 1.8 and 1.9), Surface 2.8
+  (`GBuffer.Resolve` 1.3, `AO.Evaluate` 1.0), Glass and blend 2.0 and 2.3.
+  The shadow-map redraws stay at 0.07 ms or less (ADR-087). With runtime
+  lamps, Lighting took 8.8 and 12.3 ms: `Lighting.Deferred` 6.7 and 8.1 ms,
+  `Shadow.LocalMask` 2.1 and 4.2 ms.
 - **Cases carry the preset.** A harness case reads no Graphics settings and
   has no preset field (`vkr_harness_child_apply_renderer` in
   [`vkr_harness_child.c`](../../tools/harness/vkr_harness_child.c)), and it
@@ -67,8 +68,9 @@ reports.
   ([ADR-119](../adr/119-dynamic-diffuse-volume-layer.md)). The
   [shadow quality](shadow-quality.md#budgets) targets for Bistro High at
   1440p are sun 2.0 ms median, 0.5 ms extra in any one frame and local
-  shadows 3.0 ms median against an estimated 6.3 ms; the baseline measures
-  `Shadow.LocalMask` at 2.1 to 4.2 ms and the redraws at 0.23 ms or less,
+  shadows 3.0 ms median against an estimated 6.3 ms; the runtime-lamp
+  baseline measured `Shadow.LocalMask` at 2.1 to 4.2 ms and the redraws at
+  0.23 ms or less,
   and local shadows cost 3.0 and 6.0 ms in all
   ([High gate costs](#high-gate-costs)).
   Ray-traced sun shadows join High at 1.5 ms or less, and 3 ms is the limit
@@ -214,68 +216,12 @@ cooked three days after the runtime one; static lamps only, since a lamp
 that moves or switches stays a runtime light; and each platform bakes its
 own set (ADR-104).
 
-## Proposed baked-lamp baseline
-
-This measurement awaits the owner's acceptance; until then ADR-087's
-runtime-lamp baseline stays in force. Release, commit `e7caca25` in a clean
-worktree (`dirty: false`), RX 6700 XT with driver 26.10.1, Windows 10,
-Ryzen 5 2600, on 2026-10-22, with the set baked as in
-[Baked lamps](#baked-lamps) (`sha256:0de54f87…`). The tracked cases and
-profiles are unchanged from the first baseline. Each report has five
-children and is authoritative with no authority reason; before each run the
-host's GPU was idle (2% or less of any engine), and no other process used
-more than 1% of an engine during any run. Every frame has 0 runtime point
-lights (`lighting.point.selected`).
-
-| Case | `gpu.submission` median / p95 / max | Child medians / p95s | `frame.wall` p95 | Report |
-|---|---|---|---|---|
-| Orbit | 14.22 / 15.79 / 22.62 ms | 14.19–14.23 / 15.67–15.80 ms | 16.15 ms | `sha256:7d3ed3c80add8a94457081ace595ef626887e465e7a6c393970685877d32ae93` |
-| Street walk | 14.21 / 15.08 / 23.81 ms | 14.20–14.22 / 15.07–15.08 ms | 15.47 ms | `sha256:cfabf0a8fcf14a3323399b7b8c1f508fcbe3154a5ebdf6b06c7b43d27d09a534` |
-
-Both cases meet 16.7 ms p95: the orbit by 0.91 ms and the walk by 1.62 ms.
-Controls at the same commit, host and hour, with the runtime lamps of the
-tracked Bistro scene, give 18.42 / 23.82 ms on the orbit
-(`sha256:84c0bc0b53ae27f7ad1a6c8d452e8ed7d5c61aa353fc4ab2baff1e5acf264ad1`)
-and 22.26 / 26.50 ms on the walk
-(`sha256:44f1909d6857ef9f5b1d2161d1002b7ca2bafca101a3f9a9d4940a91091ab5ce`),
-within 0.2 ms of the accepted baseline at `117122e6` on driver 26.6.3. The
-commits and the driver between the two baselines therefore do not move the
-frame, and the change is the baked lamps. The orbit is 0.16 / 0.37 ms slower
-and the walk 0.27 / 0.39 ms faster than the first baked measurement of
-2026-10-21; that measurement had no same-hour control.
-
-Budget lines, median / p95 in ms, from per-pass timestamps (orbit
-`sha256:b6bc2a7cb7f9aefd3e5ab513ed7fa88f3624feb88c2d85413a154d887a25631c`,
-walk
-`sha256:d4aa7864e27c40130b0efaa63ee1c7face24491c8f27a6756a94efbfd44225e6`),
-with the accepted runtime-lamp baseline's medians for comparison:
-
-| Line | Orbit | Street walk | Runtime-lamp medians, orbit / walk |
-|---|---|---|---|
-| Culling | 0.03 / 0.03 | 0.03 / 0.03 | 0.04 / 0.04 |
-| Shadows | 0.07 / 0.74 | 0.00 / 0.49 | 0.23 / 0.00 |
-| Visibility | 0.64 / 0.76 | 0.72 / 0.93 | 0.58 / 0.65 |
-| Surface | 2.79 / 2.89 | 2.84 / 2.95 | 2.67 / 2.69 |
-| Lighting | 4.78 / 5.05 | 4.93 / 5.15 | 8.80 / 12.28 |
-| Media | 0.51 / 0.61 | 0.54 / 0.73 | 0.54 / 0.57 |
-| Glass and blend | 2.02 / 2.91 | 2.31 / 2.66 | 2.44 / 2.93 |
-| Reconstruction and post | 2.80 / 2.86 | 2.87 / 3.14 | 2.86 / 2.94 |
-| Editor and debug | 0 / 0 | 0 / 0 | 0 / 0 |
-
-Lighting is still the largest line, now only `Lighting.Deferred.Fullscreen`
-(4.78 and 4.93 ms median); `Shadow.LocalMask` no longer runs. Next come
-`FSR31.Upscale` (1.83 and 1.90 ms), `GBuffer.Resolve.Fullscreen` (1.25 and
-1.32 ms, which now reads the lightmaps) and `AO.Evaluate` (1.01 and
-0.99 ms). The commands are the first baseline's
-([ADR-087](../adr/087-gpu-class-graphics-pipelines.md#desktop-pipeline-baseline)),
-after `vkr_bakery bake lightmap` writes the set. The walk's worst frame,
-23.81 ms, is above the budget; the budget is on p95.
-
 ## Proposed work
 
-1. **Line targets.** Set a p95 target for each budget line once the first
-   lever has moved the frame. Until then the baseline values are the
-   reference, and each lever reports every line before and after it.
+1. **Line targets.** Set a p95 target for each budget line from the
+   baked-lamp baseline, which has moved the frame under the budget. Until
+   then its values are the reference, and each lever reports every line
+   before and after it.
 2. **Levers in order.** (a) Move or retune preset gates, using the
    [measured cost of each gate](#high-gate-costs). No single move meets the
    budget, and on 2026-10-21 the owner kept every gate in High: the one move
@@ -292,8 +238,10 @@ after `vkr_bakery bake lightmap` writes the set. The walk's worst frame,
    deferred lighting's reads of it. Baking Bistro's static lamps
    ([Baked lamps](#baked-lamps)) removes that work and brings both cases
    under the budget, at 15.42 and 15.47 ms p95, and softens the lamps'
-   shadows; on 2026-10-21 the owner chose baked lamps for the budget cases.
-   Runtime lamps keep this cost where a lamp moves or switches. (c) SMAA T2x instead of FSR's
+   shadows; on 2026-10-21 the owner chose baked lamps for the budget cases,
+   and on 2026-10-22 accepted their baseline at 15.79 and 15.08 ms p95.
+   Runtime lamps keep this cost where a lamp moves or switches, which lever
+   (b) still serves. (c) SMAA T2x instead of FSR's
    antialiasing measures 0.7 ms cheaper on both cases, but on 2026-10-21 the
    owner kept FSR for its image quality
    ([ADR-052](../adr/052-vulkan-fsr31-upscaling.md)); lever (c) is closed
