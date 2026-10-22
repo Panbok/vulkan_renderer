@@ -665,33 +665,13 @@ Implemented on the tiled pipeline in ADR-099; the desktop column remains.
 - **Vertex paint.** Later work. Layered Standard materials on meshes need
   painted weights. Brush faces use mask, height, slope and world-height
   sources instead.
-- **Placing models.** Agents cannot place a mesh model today, which blocks
-  dressing a brush level with real props. `entity.create` refuses `mesh`,
-  because the edit journal (undo, overlay, review) holds typed world
-  components and lights, and a mesh renderer is neither. The Content
-  panel's placement runs an `add_entities` project job that rewrites the
-  scene document and reopens the scene, about 40 s a model on the Level
-  Design Test's 72,000 objects (2026-10-22). Runtime spawns
-  (`vkr_scene_spawn_model`) never reach a save. The art pass of 2026-10-22
-  therefore rebuilt the level's props as detailed brushes, and the 37 CC0
-  Poly Haven models it cooked under `assets/models/bm/` wait unused.
-  Proposed:
-  - a `mesh` record in the edit overlay (a cooked `.vkb` path or an asset
-    reference, its submesh material overrides) that create, delete, undo,
-    review and save carry like a typed component, loaded through the scene
-    loader's mesh path;
-  - `model.place`: `path`, `position` or `on` (a ray onto collision),
-    `rotation`, `scale`, `fit` (a box the model scales into, for
-    replacing a brush prop by its bounds), `name`, `parent` and `tags`,
-    batched like brushes;
-  - collision: a `collider` box child by default, as physics props have.
-
-  Open choice: whether a placed model references a cooked file in the
-  repository content root or must become a project asset first (ADR-069);
-  the recommendation is both, as `material.assign` accepts both.
-  Evidence: a Bistro scene saves, reopens and undoes a placed model, and a
-  batch of 200 placements in the Level Design Test applies without a scene
-  reload.
+- **Placing models.** `model.place` is implemented (ADR-076): it batches
+  placements of model files or mesh assets, with poses and tags, into one
+  `add_entities` job and one scene reload. Remaining: mesh records in the
+  edit journal, so a placement undoes, shows in review and deletes
+  (`entity.delete` refuses meshes today); a `fit` argument that scales a
+  model into a brush prototype's box; and a reimport operation that rebuilds
+  an asset from its edited source for every placed copy.
 
 ## Agent operations
 
@@ -707,7 +687,7 @@ Every tool above is an operation in the ADR-084 table with a JSON Schema.
 | `look.*` | `volume` is implemented (ADR-097) | Scene |
 | `decal.*` | `place` is implemented (ADR-101) | Scene |
 | `scatter.*` | `paint` is implemented (ADR-102) | Scene |
-| `model.*` | `place` is proposed (Part 8, Placing models) | Scene |
+| `model.*` | `place` is implemented (ADR-076); journal records, `fit` and reimport remain (Part 8) | Scene |
 | `env.*` | `describe`, `preset.save` and `preset.apply` are implemented (ADR-098) | Scene and documents |
 | `lighting.*` | `list`, `group`, `time` and `bake` with settings are implemented (ADR-100) | Live state and bake jobs |
 | `probe.*` | `create` is implemented (ADR-103) | Scene and its document |

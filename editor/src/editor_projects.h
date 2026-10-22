@@ -178,6 +178,33 @@ bool8_t vkr_editor_projects_set_primary(VkrEditorProjects *projects,
                                         VkrEditorUi *editor,
                                         const VkrSampleUiFrame *frame,
                                         uint16_t container);
+/* One model a placement job adds to the open scene (model.place): a model
+   file the job imports (glTF, GLB, OBJ or cooked VKB, absolute or relative
+   to the workspace), else an existing mesh asset, with its name, pose,
+   scale and canonical tags. */
+#define VKR_EDITOR_MODEL_PLACE_MAX 512u
+typedef struct VkrEditorModelPlacement {
+  char source[1024];
+  char scope[8];
+  char asset[37];
+  char name[128];
+  Vec3 position;
+  VkrQuat rotation;
+  Vec3 scale;
+  char tags[SCENE_TAGS_CAPACITY];
+} VkrEditorModelPlacement;
+
+/* Adds `count` models to the open project scene in one add_entities job,
+   which imports each source file once and reloads the scene. False, with
+   vkr_editor_projects_message saying why, when no job could start: no
+   project scene, another job running, or unsaved edits the reload would
+   lose. */
+bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
+                                         VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrEditorModelPlacement *models,
+                                         uint32_t count);
+
 /* Prefab instance (ADR-076): copy the project scene named `name` into the
    open scene under one new root at `position`. The copy keeps no link to
    its source and reloads the scene; unsaved edits ask first. */

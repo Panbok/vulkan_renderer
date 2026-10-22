@@ -319,6 +319,10 @@ struct VkrEditorProjects {
   char place_name[128];
   Vec3 place_position;
   VkrQuat place_rotation;
+  /* model.place: the models the running add_entities job adds, owned
+     until the job ends (project_clear_placements). */
+  VkrEditorModelPlacement *placements;
+  uint32_t placement_count;
   uint32_t added_scene_entity;
   bool8_t select_added_entity;
   uint32_t active_scene;
@@ -1718,6 +1722,54 @@ static bool8_t project_write_placed_asset(const VkrEditorProjects *projects,
          vkr_json_writer_end_object(writer);
 }
 
+/* The model.place list as the job's `models` entries. */
+static bool8_t project_write_placements(const VkrEditorProjects *projects,
+                                        VkrJsonWriter *writer) {
+  bool8_t ok = true_v;
+  for (uint32_t i = 0; ok && i < projects->placement_count; ++i) {
+    const VkrEditorModelPlacement *model = &projects->placements[i];
+    ok = vkr_json_writer_begin_object(writer);
+    if (model->source[0]) {
+      ok = ok && project_json_text(writer, "source", model->source);
+    } else {
+      ok = ok && vkr_json_writer_name(writer, string8_lit("asset")) &&
+           vkr_json_writer_begin_object(writer) &&
+           project_json_text(writer, "scope", model->scope) &&
+           project_json_text(writer, "id", model->asset) &&
+           vkr_json_writer_end_object(writer);
+    }
+    ok = ok &&
+         (!model->name[0] || project_json_text(writer, "name", model->name)) &&
+         (!model->tags[0] || project_json_text(writer, "tags", model->tags)) &&
+         vkr_json_writer_name(writer, string8_lit("transform")) &&
+         vkr_json_writer_begin_object(writer) &&
+         project_json_vec3(writer, "pos", model->position) &&
+         vkr_json_writer_name(writer, string8_lit("rot")) &&
+         vkr_json_writer_begin_array(writer) &&
+         vkr_json_writer_f64(writer, model->rotation.x) &&
+         vkr_json_writer_f64(writer, model->rotation.y) &&
+         vkr_json_writer_f64(writer, model->rotation.z) &&
+         vkr_json_writer_f64(writer, model->rotation.w) &&
+         vkr_json_writer_end_array(writer) &&
+         project_json_vec3(writer, "scale", model->scale) &&
+         vkr_json_writer_end_object(writer) &&
+         vkr_json_writer_end_object(writer);
+  }
+  return ok;
+}
+
+/* Releases the model.place list once its job ended or failed to start. */
+static void project_clear_placements(VkrEditorProjects *projects) {
+  if (projects->placements) {
+    vkr_allocator_free(projects->allocator, projects->placements,
+                       (uint64_t)VKR_EDITOR_MODEL_PLACE_MAX *
+                           sizeof(*projects->placements),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  projects->placements = NULL;
+  projects->placement_count = 0u;
+}
+
 static bool8_t project_write_lights(VkrEditorProjects *projects,
                                     VkrJsonWriter *writer) {
   bool8_t ok = vkr_json_writer_begin_array(writer);
@@ -1933,7 +1985,9 @@ static bool8_t project_write_job(VkrEditorProjects *projects,
   if (string_equals(projects->operation, "add_entities")) {
     ok = ok && vkr_json_writer_name(writer, string8_lit("models")) &&
          vkr_json_writer_begin_array(writer);
-    if (projects->placing_asset && !projects->place_prefab) {
+    if (projects->placement_count) {
+      ok = ok && project_write_placements(projects, writer);
+    } else if (projects->placing_asset && !projects->place_prefab) {
       ok = ok && project_write_placed_asset(projects, writer);
     } else if (projects->adding_model) {
       /* The Add entity form names one model; an import names each file. */
@@ -3832,6 +3886,7 @@ static void project_job_complete(VkrEditorProjects *projects,
     /* A load retry must prepare the published scene, never append twice. */
     projects->operation[0] = '\0';
     projects->placing_asset = false_v;
+    project_clear_placements(projects);
   }
   projects->view = PROJECT_VIEW_EDITOR;
   (void)vkr_ui_keyboard_layer_set(frame->ui, 0);
@@ -4045,6 +4100,7 @@ bool8_t vkr_editor_projects_destroy(VkrEditorProjects *projects,
   if (!projects) {
     return true_v;
   }
+  project_clear_placements(projects);
   const bool8_t saved = project_save_settings(projects, editor, dock);
   if (projects->settings_save && projects->settings_save->worker) {
     /* A failed join leaves worker ownership and its workspace lease intact. */
@@ -4629,7 +4685,14 @@ static bool8_t project_job_failed(VkrEditorProjects *projects,
     return true_v;
   }
   if (string_equals(projects->operation, "add_entities") &&
-      projects->placing_asset) {
+      projects->placement_count) {
+    projects->job_id = 0;
+    project_clear_placements(projects);
+    projects->operation[0] = '\0';
+    string_format(projects->message, sizeof(projects->message),
+                  "Nothing was placed; see Bakery for details.");
+  } else if (string_equals(projects->operation, "add_entities") &&
+             projects->placing_asset) {
     projects->job_id = 0;
     projects->placing_asset = false_v;
     projects->operation[0] = '\0';
@@ -8359,6 +8422,54 @@ bool8_t vkr_editor_projects_add_scene(VkrEditorProjects *projects,
     }
   }
   return false_v;
+}
+
+bool8_t vkr_editor_projects_place_models(VkrEditorProjects *projects,
+                                         VkrEditorUi *editor,
+                                         const VkrSampleUiFrame *frame,
+                                         const VkrEditorModelPlacement *models,
+                                         uint32_t count) {
+  if (!count || count > VKR_EDITOR_MODEL_PLACE_MAX) {
+    string_format(projects->message, sizeof(projects->message),
+                  "Place 1 to %u models at a time.",
+                  VKR_EDITOR_MODEL_PLACE_MAX);
+    return false_v;
+  }
+  if (!vkr_editor_projects_switch_ready(projects) || projects->job_id ||
+      !vkr_editor_projects_can_add_entity(projects, editor, frame)) {
+    string_format(projects->message, sizeof(projects->message),
+                  "Open a project scene, and wait for its jobs, to place "
+                  "models.");
+    return false_v;
+  }
+  /* The job rewrites the scene document and reloads it. */
+  if (project_scene_dirty(frame)) {
+    string_format(projects->message, sizeof(projects->message),
+                  "Save the scene first: placing models reloads it.");
+    return false_v;
+  }
+  project_clear_placements(projects);
+  projects->placements = vkr_allocator_alloc(
+      projects->allocator,
+      (uint64_t)VKR_EDITOR_MODEL_PLACE_MAX * sizeof(*projects->placements),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!projects->placements) {
+    string_format(projects->message, sizeof(projects->message),
+                  "Out of memory for the placement list.");
+    return false_v;
+  }
+  MemCopy(projects->placements, models, (uint64_t)count * sizeof(*models));
+  projects->placement_count = count;
+  project_reset_scene_draft(projects);
+  projects->adding_model = false_v;
+  projects->placing_asset = false_v;
+  projects->place_prefab = false_v;
+  projects->light_count = 0;
+  projects->pending_scene = projects->active_scene;
+  string_format(projects->operation, sizeof(projects->operation),
+                "add_entities");
+  project_start_job(projects, editor, frame, false_v);
+  return true_v;
 }
 
 bool8_t vkr_editor_projects_instantiate_scene(VkrEditorProjects *projects,

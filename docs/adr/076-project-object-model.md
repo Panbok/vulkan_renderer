@@ -425,6 +425,17 @@ under the pointer. When every file is a model, the step places it too:
 Edits the placement reloads ask to be saved or discarded first. A failed
 placement reopens the scene that was open.
 
+Agents place models with `model.place` (2026-10-22): one `add_entities`
+job adds up to 512 root mesh entities to the open project scene, each from
+a model file (content path or absolute) or an existing mesh asset
+(`asset:<scope>/<id>`), with its name, pose, scale and canonical design
+tags as a `tags` component. A file repeated in one call imports once and
+its copies share the asset. The operation refuses while the scene has
+unsaved edits, since the job rewrites the document and reloads it, and
+answers that the job started; the new entities exist after the reload. The
+journal still cannot delete a mesh entity (`vkr_scene_edit_can_delete`), so
+a placed model is removed from the document with the editor closed.
+
 While a background finalize encodes a model's final textures (ADR-077), a
 viewport chip names the model and the materials already applied. Its Content
 items (the mesh and the materials sharing its build revision) show a lock and

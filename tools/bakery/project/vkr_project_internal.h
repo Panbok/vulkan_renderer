@@ -27,6 +27,9 @@
 #define VKR_PROJECT_MAX_IMPORT_FILES 16384u
 #define VKR_PROJECT_MAX_MODEL_BYTES (256ull * 1024ull * 1024ull)
 #define VKR_PROJECT_MAX_ENTITIES 65536u
+/* A canonical tags component's text (SceneTags): 16 tags of 32 characters,
+   each with its '#' and separator. */
+#define VKR_PROJECT_MAX_TAG_TEXT 544u
 /* bake_diffuse_volume status: no closed-room cell, so no volume published. */
 #define VKR_PROJECT_DIFFUSE_NO_VOLUME 3
 #define VKR_PROJECT_DIFFUSE_TOO_LARGE 5

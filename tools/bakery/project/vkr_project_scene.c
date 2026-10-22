@@ -965,6 +965,33 @@ const char *vkr_project_strip_text(VkrProjectJob *job, const char *text) {
   return vkr_project_printf(job, "%.*s", (int)(end - start), start);
 }
 
+/* Gives a placed model's entity the canonical design tags its request
+   names (model.place), so theme rules and tag searches find it. */
+vkr_internal bool8_t vkr_project_model_tags(VkrProjectJob *job,
+                                            const VkrBakeryJson *model,
+                                            VkrBakeryJson *entity) {
+  const char *tags = vkr_project_json_text(model, "tags");
+  if (!tags || !tags[0]) {
+    return true_v;
+  }
+  if (strlen(tags) > VKR_PROJECT_MAX_TAG_TEXT) {
+    return vkr_project_fail(job, "A placed model's tags are too long");
+  }
+  /* A typed world component lives under `components`, which the document
+     form keeps beside the mesh and transform blocks. */
+  Arena *arena = job->arena;
+  VkrBakeryJson *component = vkr_bakery_json_object(arena);
+  vkr_bakery_json_set(arena, component, "tags",
+                      vkr_bakery_json_cstr(arena, tags));
+  VkrBakeryJson *components = vkr_bakery_json_get(entity, "components");
+  if (!components) {
+    components = vkr_bakery_json_object(arena);
+    vkr_bakery_json_set(arena, entity, "components", components);
+  }
+  vkr_bakery_json_set(arena, components, "tags", component);
+  return true_v;
+}
+
 bool8_t vkr_project_append_entities(VkrProjectJob *job, VkrBakeryJson *scene,
                                     int64_t *out_first) {
   Arena *arena = job->arena;
@@ -992,6 +1019,11 @@ bool8_t vkr_project_append_entities(VkrProjectJob *job, VkrBakeryJson *scene,
        prefab = prefab->next) {
     VKR_PROJECT_TRY(vkr_project_instantiate_prefab(job, scene, prefab));
   }
+  struct {
+    const char *source;
+    VkrBakeryJson *reference;
+  } imported[64];
+  uint32_t imported_count = 0u;
   for (const VkrBakeryJson *model = models ? models->first : NULL; model;
        model = model->next) {
     const bool8_t object = model->type == VKR_BAKERY_JSON_OBJECT;
@@ -1028,6 +1060,7 @@ bool8_t vkr_project_append_entities(VkrProjectJob *job, VkrBakeryJson *scene,
         vkr_bakery_json_set(arena, entity, "transform",
                             vkr_bakery_json_clone(arena, transform));
       }
+      VKR_PROJECT_TRY(vkr_project_model_tags(job, model, entity));
       vkr_bakery_json_append(entities, entity);
       continue;
     }
@@ -1037,27 +1070,50 @@ bool8_t vkr_project_append_entities(VkrProjectJob *job, VkrBakeryJson *scene,
                                       : NULL);
     char source[VKR_PROJECT_PATH];
     VKR_PROJECT_TRY(vkr_project_source_file(job, value, source));
-    char suffix[16];
-    vkr_project_suffix_lower(source, suffix, sizeof(suffix));
+    /* A source placed several times in one request imports once; the
+       copies share its asset. */
     VkrBakeryJson *reference = NULL;
-    if (strcmp(suffix, ".vkb") == 0) {
-      reference = vkr_project_import_cooked_mesh(job, source);
-    } else if (!strcmp(suffix, ".obj") || !strcmp(suffix, ".gltf") ||
-               !strcmp(suffix, ".glb")) {
-      reference = vkr_project_import_model(job, source);
-    } else {
-      return vkr_project_fail(
-          job, "Models must be OBJ, glTF, GLB or cooked VKB files");
+    for (uint32_t i = 0; i < imported_count && !reference; ++i) {
+      if (strcmp(imported[i].source, source) == 0) {
+        reference = vkr_bakery_json_clone(arena, imported[i].reference);
+      }
     }
-    VKR_PROJECT_TRY(reference);
+    if (!reference) {
+      char suffix[16];
+      vkr_project_suffix_lower(source, suffix, sizeof(suffix));
+      if (strcmp(suffix, ".vkb") == 0) {
+        reference = vkr_project_import_cooked_mesh(job, source);
+      } else if (!strcmp(suffix, ".obj") || !strcmp(suffix, ".gltf") ||
+                 !strcmp(suffix, ".glb")) {
+        reference = vkr_project_import_model(job, source);
+      } else {
+        return vkr_project_fail(
+            job, "Models must be OBJ, glTF, GLB or cooked VKB files");
+      }
+      VKR_PROJECT_TRY(reference);
+      if (imported_count < ArrayCount(imported)) {
+        imported[imported_count].source = vkr_project_printf(job, "%s", source);
+        imported[imported_count].reference =
+            vkr_bakery_json_clone(arena, reference);
+        imported_count++;
+      }
+    }
     char stem[512];
     vkr_project_stem(source, stem, sizeof(stem));
-    VkrBakeryJson *entity = vkr_project_new_mesh_entity(job, stem, reference);
+    const char *name = object ? vkr_project_json_text(model, "name") : NULL;
+    if (!name || !vkr_project_strip_text(job, name)[0] || strlen(name) > 512u) {
+      name = stem;
+    }
+    VkrBakeryJson *entity = vkr_project_new_mesh_entity(
+        job, vkr_project_strip_text(job, name), reference);
     const VkrBakeryJson *transform =
         object ? vkr_bakery_json_get(model, "transform") : NULL;
     if (vkr_project_truthy(transform)) {
       vkr_bakery_json_set(arena, entity, "transform",
                           vkr_bakery_json_clone(arena, transform));
+    }
+    if (object) {
+      VKR_PROJECT_TRY(vkr_project_model_tags(job, model, entity));
     }
     vkr_bakery_json_append(entities, entity);
   }

@@ -14600,6 +14600,126 @@ static VkrEditorOpStatus ops_run_lighting_bake(OpsContext *ctx) {
   return VKR_EDITOR_OP_DONE;
 }
 
+/* model.place: adds models to the open project scene in one add_entities
+   job (ADR-076 placement), each a model file the job imports once or an
+   existing mesh asset ("asset:<scope>/<id>"), with a pose, scale and tags.
+   The job reloads the scene, so the answer only says it started. */
+static VkrEditorOpStatus ops_run_model_place(OpsContext *ctx) {
+  const VkrBakeryJson *list = vkr_bakery_json_get(ctx->call->args, "models");
+  if (!list || list->type != VKR_BAKERY_JSON_ARRAY || !list->count ||
+      list->count > VKR_EDITOR_MODEL_PLACE_MAX) {
+    ops_fail(ctx, OPS_INVALID, "'models' lists 1 to %u models",
+             VKR_EDITOR_MODEL_PLACE_MAX);
+    return VKR_EDITOR_OP_DONE;
+  }
+  VkrEditorModelPlacement *models = arena_alloc(
+      ops_arena(ctx), list->count * sizeof(*models), ARENA_MEMORY_TAG_ARRAY);
+  if (!models) {
+    ops_fail(ctx, OPS_LIMIT, "Out of request memory");
+    return VKR_EDITOR_OP_DONE;
+  }
+  MemZero(models, list->count * sizeof(*models));
+  uint32_t index = 0u;
+  for (const VkrBakeryJson *item = list->first; item;
+       item = item->next, ++index) {
+    VkrEditorModelPlacement *model = &models[index];
+    if (item->type != VKR_BAKERY_JSON_OBJECT) {
+      ops_fail(ctx, OPS_INVALID, "models[%u] is an object", index);
+      return VKR_EDITOR_OP_DONE;
+    }
+    String8 source = {0};
+    String8 asset = {0};
+    const bool8_t has_source =
+        vkr_bakery_json_get_string(item, "source", &source) && source.length;
+    const bool8_t has_asset =
+        vkr_bakery_json_get_string(item, "asset", &asset) && asset.length;
+    if (has_source == has_asset) {
+      ops_fail(ctx, OPS_INVALID,
+               "models[%u] names one 'source' model file or one 'asset' "
+               "(asset:<scope>/<id>)",
+               index);
+      return VKR_EDITOR_OP_DONE;
+    }
+    if (has_source) {
+      /* A relative path is a content path, as materials and textures are;
+         the job reads the absolute file. */
+      VkrAllocator allocator;
+      if (!ops_allocator(ctx, &allocator)) {
+        return VKR_EDITOR_OP_DONE;
+      }
+      const FilePath file = vkr_asset_path_file(&allocator, source);
+      if (!file.path.length || file.path.length >= sizeof(model->source) ||
+          !file_exists(&file)) {
+        ops_fail(ctx, OPS_NOT_FOUND, "models[%u].source '%.*s' does not open",
+                 index, (int)Min(source.length, 200u),
+                 (const char *)source.str);
+        return VKR_EDITOR_OP_DONE;
+      }
+      string_format(model->source, sizeof(model->source), "%.*s",
+                    (int)file.path.length, (const char *)file.path.str);
+    } else {
+      /* asset:<scope>/<id> with a project, scene or editor scope. */
+      const String8 prefix = string8_lit("asset:");
+      uint64_t slash = prefix.length;
+      while (slash < asset.length && asset.str[slash] != '/') {
+        slash++;
+      }
+      const uint64_t scope_length = slash - prefix.length;
+      const uint64_t id_length =
+          slash < asset.length ? asset.length - slash - 1u : 0u;
+      if (!vkr_asset_ref_is(asset) || scope_length == 0u ||
+          scope_length >= sizeof(model->scope) || id_length == 0u ||
+          id_length >= sizeof(model->asset)) {
+        ops_fail(ctx, OPS_INVALID,
+                 "models[%u].asset is asset:<scope>/<id>, as entity.get "
+                 "shows a placed model's mesh",
+                 index);
+        return VKR_EDITOR_OP_DONE;
+      }
+      MemCopy(model->scope, asset.str + prefix.length, scope_length);
+      MemCopy(model->asset, asset.str + slash + 1u, id_length);
+    }
+    VkrSceneEditValues pose = {.rotation = vkr_quat_identity(),
+                               .scale = vec3_one()};
+    if (!ops_read_pose(ctx, item, &pose)) {
+      char message[256];
+      string_format(message, sizeof(message), "models[%u]: %s", index,
+                    ctx->call->error);
+      string_format(ctx->call->error, sizeof(ctx->call->error), "%s", message);
+      return VKR_EDITOR_OP_DONE;
+    }
+    model->position = pose.position;
+    model->rotation = pose.rotation;
+    model->scale = pose.scale;
+    if (pose.fields & VKR_SCENE_EDIT_NAME) {
+      string_format(model->name, sizeof(model->name), "%.*s",
+                    (int)Min(string_length(pose.name),
+                             (uint64_t)sizeof(model->name) - 1u),
+                    pose.name);
+    }
+    const VkrBakeryJson *tags = vkr_bakery_json_get(item, "tags");
+    if (tags) {
+      SceneTags parsed = {0};
+      if (!ops_tags_arg(ctx, tags, "tags", &parsed)) {
+        return VKR_EDITOR_OP_DONE;
+      }
+      string_format(model->tags, sizeof(model->tags), "%s", parsed.text);
+    }
+  }
+  if (!vkr_editor_projects_place_models(ctx->editor->projects, ctx->editor,
+                                        ctx->frame, models, index)) {
+    ops_fail(ctx, OPS_REJECTED, "%s",
+             vkr_editor_projects_message(ctx->editor->projects));
+    return VKR_EDITOR_OP_DONE;
+  }
+  ctx->call->result = vkr_bakery_json_object(ops_arena(ctx));
+  ops_set(ctx, ctx->call->result, "started",
+          vkr_bakery_json_bool(ops_arena(ctx), true_v));
+  ops_set(ctx, ctx->call->result, "models",
+          vkr_bakery_json_int(ops_arena(ctx), index));
+  return VKR_EDITOR_OP_DONE;
+}
+
 /* surface.theme.create: a new theme document. */
 static VkrEditorOpStatus ops_run_theme_create(OpsContext *ctx) {
   const VkrBakeryJson *args = ctx->call->args;
@@ -19821,6 +19941,28 @@ static const OpsDef s_ops[] = {
      "\"string\"},\"intensity\":{\"type\":\"number\"}},"
      "\"required\":[\"group\",\"intensity\"]}",
      ops_run_lighting_group, NULL, OPS_QUICK},
+    {"model.place",
+     "Add models to the open project scene in one placement job: each of "
+     "'models' (1 to 512) names a model 'source' file (glTF, GLB, OBJ or "
+     "cooked VKB), imported once per "
+     "call however often it repeats (relative paths are content paths), or an "
+     "existing mesh 'asset' "
+     "(asset:<scope>/<id>, as entity.get shows a placed model's mesh), with "
+     "a 'name', 'position', 'rotation' (degrees XYZ), 'scale' and 'tags'. "
+     "The job rewrites the scene document and reloads the scene, so save "
+     "first and wait (Cmd wait.scene) before reading the new entities.",
+     "{\"type\":\"object\",\"properties\":{\"models\":{\"type\":"
+     "\"array\",\"minItems\":1,\"maxItems\":512,\"items\":{\"type\":"
+     "\"object\",\"properties\":{\"source\":{\"type\":\"string\"},"
+     "\"asset\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},"
+     "\"position\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},"
+     "\"minItems\":3,\"maxItems\":3},\"rotation\":{\"type\":\"array\","
+     "\"items\":{\"type\":\"number\"},\"minItems\":3,\"maxItems\":3},"
+     "\"scale\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},"
+     "\"minItems\":3,\"maxItems\":3},\"tags\":{\"oneOf\":[{\"type\":"
+     "\"string\"},{\"type\":\"array\",\"items\":{\"type\":"
+     "\"string\"}}]}}}}},\"required\":[\"models\"]}",
+     ops_run_model_place, NULL},
     {"lighting.bake",
      "Start the open project scene's Bake lighting job: reflection probes, "
      "the diffuse volume and, with 'lightmap' (default the Bakery panel's "

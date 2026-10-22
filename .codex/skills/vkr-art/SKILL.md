@@ -199,6 +199,21 @@ level):
   answers `copies` and a `status` that says how many found no ground or no
   room. A scene holds at most 4,096 copies, and a scatter 2,048.
 
+## Models
+
+- `model.place` adds models to the open project scene in one job: each of
+  `models` names a `source` file (glTF from Blender, GLB, OBJ or cooked
+  VKB; content paths) or an `asset` (`asset:<scope>/<id>` from `entity.get`
+  on a placed copy), with `name`, `position`, `rotation`, `scale` and
+  `tags`. Save first; the job reloads the scene, so wait (`wait.scene`)
+  before reading the new entities. Place every copy of a model in one call,
+  or later copies by `asset`, so the file imports once.
+- The mesh hangs on a child node of the placed root: `material.assign`
+  that child (or `dry_run` to find it) with `slot` to give one surface a
+  library material.
+- The journal cannot delete or undo a placed mesh yet; place test copies in
+  a scratch scene, not in the level.
+
 ## Lights and bakes
 
 - `lighting.list` returns the scene's and the World's lights (`kind`,
