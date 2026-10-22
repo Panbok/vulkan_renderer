@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-19
+updated: 2026-10-23
 authority: adr
 ---
 # ADR-075: Editor Cmd bar and expression evaluator
@@ -157,7 +157,7 @@ dependable channel for scripts.
 | `physics.motion` | `<static\|kinematic\|dynamic>` | Set the selection's physics body motion (undoable) |
 | `parent` | `<name\|none>` | Reparent the selection within its container, keeping its world pose |
 | `scene.open`, `scene.create` | `<name>` | Open a project scene (the scene already loading or open stays as it is), or create an empty one and open it |
-| `scene.bake` | `[lightmaps [samples]]` | Bake the open project scene's lighting as Bake lighting does: the diffuse volume, then, when the Bakery option is on or `lightmaps` is given, its lightmaps traced with `samples` per texel (1 to 4,096; the baker's default is 16) ([ADR-088](088-baked-lightmap-sets.md)), then reflection probes, which capture that light ([ADR-019](019-bounded-forward-spatial-lighting.md)); refused with unsaved edits, outside a writable project scene or while a job runs; a failed bake reopens the scene before it reports |
+| `scene.bake` | `[lightmaps [samples]] [full]` | Bake the open project scene's lighting as Bake lighting does: the diffuse volume, then, when the Bakery option is on or `lightmaps` or `full` is given, its lightmaps traced with `samples` per texel (1 to 4,096; the baker's default is 64), incrementally unless `full` asks for a full rebake ([ADR-088](088-baked-lightmap-sets.md)), then reflection probes, which capture that light ([ADR-019](019-bounded-forward-spatial-lighting.md)); refused with unsaved edits, outside a writable project scene or while a job runs; a failed bake reopens the scene before it reports |
 | `scene.add`, `scene.remove` | `<name\|path>`, `<slot\|name> [discard]` | Load a project scene or scene file beside the primary one, or unload it |
 | `scene.primary` | `<slot\|name>` | Make an added project scene the primary scene, adding the previous primary back beside it |
 | `scene.instantiate` | `<name>` | Copy another project scene into the open one under a new root at the origin, as an unlinked prefab instance |

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-10-10
+updated: 2026-10-23
 authority: adr
 ---
 
@@ -89,9 +89,14 @@ Lights and bakes) found these gaps:
    - `lighting.group`: `group` and `intensity`, live.
    - `lighting.time`: `hour`, live; keeping an hour is a `time_of_day`
      component edit.
-   - `lighting.bake`: `lightmap` and the two settings groups. The values
-     are read through the type descriptors, so an unknown key or an invalid
-     value fails. They become the window's values. The job then starts.
+   - `lighting.bake`: `lightmap`, `full` and the two settings groups. The
+     values are read through the type descriptors, so an unknown key or an
+     invalid value fails. They become the window's values. The job then
+     starts. Lightmap bakes are incremental; `full: true` bakes them again
+     from scratch and turns lightmaps on, so it refuses `lightmap: false`
+     ([ADR-088](088-baked-lightmap-sets.md), Rebakes). The Bake settings
+     window's "Full rebake" button does the same as "Bake lighting" with
+     `full`.
 
 ## Consequences
 
