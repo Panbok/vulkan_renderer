@@ -244,6 +244,19 @@ draw, keep the epoch and size order. The tiled pipeline measures no demand
 yet. `asset.material.texture_demand.materials` counts the materials the last
 folded frame measured.
 
+Evidence for measured demand (2026-10-22, RX 6700 XT, Release): the texture
+pressure case measured 48 to 50 materials a frame. At
+`VKR_VULKAN_MEMORY_BUDGET_MB=6000` it passed with all 632 textures resident,
+none evicted, 1.103 GB against a 1.106 GB allowance after 635 lowering steps;
+with the driver's budget it lowered nothing. On
+`bistro_vulkan_high_orbit_1440` with `performance-windowed-gpu.json` and the
+desktop pass groups, the `GBuffer.Resolve.Fullscreen` pass went from 1.287 to
+1.307 ms at the median and 1.406 to 1.416 ms at p95, and the Surface line's
+p95 stayed at 2.98 ms of its 3.0 ms target. The two runs came from one
+session in the shared checkout with a browser open, so they bound the cost
+but are not authoritative budget evidence. Image quality under pressure was
+not measured.
+
 An evicted texture is destroyed at once, and the texture system can reuse its
 id while material rows that sampled it still await retirement. Vulkan keeps
 that texture's publication record in place until those rows retire, because
