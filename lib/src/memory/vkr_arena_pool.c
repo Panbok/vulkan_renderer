@@ -77,6 +77,20 @@ void *vkr_arena_pool_acquire(VkrArenaPool *pool) {
   return chunk;
 }
 
+void *vkr_arena_pool_try_acquire(VkrArenaPool *pool) {
+  assert_log(pool != NULL, "pool must not be NULL");
+  assert_log(pool->initialized, "pool must be initialized");
+
+  vkr_mutex_lock(pool->mutex);
+  void *chunk = NULL;
+  if (vkr_pool_free_chunks(&pool->pool) != 0) {
+    chunk = vkr_pool_alloc(&pool->pool);
+  }
+  vkr_mutex_unlock(pool->mutex);
+
+  return chunk;
+}
+
 void vkr_arena_pool_release(VkrArenaPool *pool, void *chunk) {
   assert_log(pool != NULL, "pool must not be NULL");
   assert_log(pool->initialized, "pool must be initialized");
@@ -93,21 +107,11 @@ void vkr_arena_pool_release(VkrArenaPool *pool, void *chunk) {
   vkr_mutex_unlock(pool->mutex);
 }
 
-bool8_t vkr_arena_pool_acquire_arena(VkrArenaPool *pool, void **out_chunk,
-                                     Arena **out_arena,
-                                     VkrAllocator *out_allocator) {
-  assert_log(out_chunk != NULL, "out_chunk must not be NULL");
-  assert_log(out_arena != NULL, "out_arena must not be NULL");
-  assert_log(out_allocator != NULL, "out_allocator must not be NULL");
-
-  *out_chunk = NULL;
-  *out_arena = NULL;
-  MemZero(out_allocator, sizeof(*out_allocator));
-  if (!pool || !pool->initialized) {
-    return false_v;
-  }
-
-  void *chunk = vkr_arena_pool_acquire(pool);
+/* Builds an arena allocator over an acquired chunk, or returns the chunk
+   when that fails. */
+vkr_internal bool8_t arena_pool_wrap_chunk(VkrArenaPool *pool, void *chunk,
+                                           void **out_chunk, Arena **out_arena,
+                                           VkrAllocator *out_allocator) {
   if (!chunk) {
     return false_v;
   }
@@ -127,6 +131,42 @@ bool8_t vkr_arena_pool_acquire_arena(VkrArenaPool *pool, void **out_chunk,
   *out_arena = arena;
   *out_allocator = allocator;
   return true_v;
+}
+
+bool8_t vkr_arena_pool_acquire_arena(VkrArenaPool *pool, void **out_chunk,
+                                     Arena **out_arena,
+                                     VkrAllocator *out_allocator) {
+  assert_log(out_chunk != NULL, "out_chunk must not be NULL");
+  assert_log(out_arena != NULL, "out_arena must not be NULL");
+  assert_log(out_allocator != NULL, "out_allocator must not be NULL");
+
+  *out_chunk = NULL;
+  *out_arena = NULL;
+  MemZero(out_allocator, sizeof(*out_allocator));
+  if (!pool || !pool->initialized) {
+    return false_v;
+  }
+
+  return arena_pool_wrap_chunk(pool, vkr_arena_pool_acquire(pool), out_chunk,
+                               out_arena, out_allocator);
+}
+
+bool8_t vkr_arena_pool_try_acquire_arena(VkrArenaPool *pool, void **out_chunk,
+                                         Arena **out_arena,
+                                         VkrAllocator *out_allocator) {
+  assert_log(out_chunk != NULL, "out_chunk must not be NULL");
+  assert_log(out_arena != NULL, "out_arena must not be NULL");
+  assert_log(out_allocator != NULL, "out_allocator must not be NULL");
+
+  *out_chunk = NULL;
+  *out_arena = NULL;
+  MemZero(out_allocator, sizeof(*out_allocator));
+  if (!pool || !pool->initialized) {
+    return false_v;
+  }
+
+  return arena_pool_wrap_chunk(pool, vkr_arena_pool_try_acquire(pool),
+                               out_chunk, out_arena, out_allocator);
 }
 
 void vkr_arena_pool_release_arena(VkrArenaPool *pool, void *chunk, Arena *arena,

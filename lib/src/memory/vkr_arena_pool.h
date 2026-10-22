@@ -46,6 +46,13 @@ void vkr_arena_pool_destroy(VkrAllocator *allocator, VkrArenaPool *pool);
 void *vkr_arena_pool_acquire(VkrArenaPool *pool);
 
 /**
+ * @brief Acquires a memory chunk without waiting (thread-safe).
+ * @param pool Pool to acquire from.
+ * @return Pointer to the chunk, or NULL while every chunk is in use.
+ */
+void *vkr_arena_pool_try_acquire(VkrArenaPool *pool);
+
+/**
  * @brief Releases a memory chunk back to the pool (thread-safe).
  * @param pool Pool to release to.
  * @param chunk Chunk pointer previously returned by vkr_arena_pool_acquire.
@@ -68,6 +75,23 @@ void vkr_arena_pool_release(VkrArenaPool *pool, void *chunk);
 bool8_t vkr_arena_pool_acquire_arena(VkrArenaPool *pool, void **out_chunk,
                                      Arena **out_arena,
                                      VkrAllocator *out_allocator);
+
+/**
+ * @brief Acquires a chunk as an arena allocator without waiting.
+ *
+ * Like vkr_arena_pool_acquire_arena(), but fails at once while every chunk is
+ * in use. A job-system worker uses it: a worker that waits for a chunk can
+ * hold back the queued jobs whose completion returns one.
+ * @param pool Pool to acquire from.
+ * @param out_chunk Receives the pooled chunk.
+ * @param out_arena Receives the arena built over the chunk.
+ * @param out_allocator Receives an arena allocator over `out_arena`.
+ * @return true on success, false when no chunk is free or no arena could be
+ * prepared.
+ */
+bool8_t vkr_arena_pool_try_acquire_arena(VkrArenaPool *pool, void **out_chunk,
+                                         Arena **out_arena,
+                                         VkrAllocator *out_allocator);
 
 /**
  * @brief Returns storage from vkr_arena_pool_acquire_arena().

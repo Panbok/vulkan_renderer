@@ -1889,6 +1889,11 @@ vkr_internal bool8_t vkr_resource_system_pump_completion_locked(
       // responsibilities.
       request->gpu_submit_serial = 0;
       request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_GPU;
+    } else if (completion->load_error == VKR_RENDERER_ERROR_RESOURCE_BUSY) {
+      /* The loader lacked transient storage that other requests hold; the
+         pump submits the job again once they finalize. */
+      request->last_error = VKR_RENDERER_ERROR_NONE;
+      request->load_state = VKR_RESOURCE_LOAD_STATE_PENDING_CPU;
     } else {
       request->last_error = completion->load_error;
       request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;

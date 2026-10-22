@@ -323,6 +323,8 @@ typedef struct VkrSceneLoaderAsyncPayload {
   bool8_t reflection_probes_applied;
   SceneAsyncFinalizeStage stage;
   uint32_t stage_cursor;
+  /* The attach pass passed over an entity whose mesh was not ready. */
+  bool8_t attach_deferred;
   VkrSceneLoadResult load_result;
   VkrSceneHandle scene_handle;
   bool8_t ownership_transferred;
@@ -4904,6 +4906,23 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
   return true_v;
 }
 
+/* Drops an attached entity's hold on its loaded mesh. The mesh manager built
+ * its asset from the result, and a loaded mesh keeps a loader arena until
+ * every hold on it goes, so ready meshes return theirs while other entities
+ * still wait. */
+vkr_internal void
+scene_loader_release_attached_mesh(VkrSceneLoaderAsyncPayload *payload,
+                                   uint32_t entity_index) {
+  SceneMeshAsyncState *mesh_state = &payload->mesh_states[entity_index];
+  if (mesh_state->request_info.request_id != 0) {
+    vkr_resource_system_unload(&mesh_state->request_info,
+                               payload->imports[entity_index].mesh_path);
+    scene_loader_init_request_info(&mesh_state->request_info,
+                                   VKR_RESOURCE_TYPE_MESH);
+  }
+  mesh_state->completed = true_v;
+}
+
 vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
     VkrSceneLoaderAsyncPayload *payload, uint32_t entity_index,
     VkrRendererError *out_error) {
@@ -5053,6 +5072,8 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
         return false_v;
       }
       mesh_state->completed = true_v;
+    } else if (end == mesh_state->source_node_count) {
+      scene_loader_release_attached_mesh(payload, entity_index);
     }
     mesh_state->attached = end == mesh_state->source_node_count;
     *out_error = mesh_state->attached ? VKR_RENDERER_ERROR_NONE
@@ -5113,6 +5134,7 @@ vkr_internal bool8_t scene_loader_attach_mesh_for_entity(
 
   payload->load_result.mesh_count++;
   mesh_state->attached = true_v;
+  scene_loader_release_attached_mesh(payload, entity_index);
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
@@ -6060,22 +6082,38 @@ vkr_internal bool8_t scene_loader_finalize_step(
   }
 
   if (async_payload->stage == SCENE_ASYNC_STAGE_ATTACH_MESHES) {
+    /* Each pass attaches the entities whose meshes are ready and passes
+       over the rest, then starts again while any were passed over. Waiting
+       in entity order would let ready meshes, which keep their loader
+       arenas until their entities attach, starve a later mesh of one. */
     uint32_t processed = 0;
     while (async_payload->stage_cursor < async_payload->entity_count &&
            processed < SCENE_ASYNC_MESH_CHUNK) {
-      if (!scene_loader_attach_mesh_for_entity(
-              async_payload, async_payload->stage_cursor, out_error)) {
-        if (*out_error == VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-          scene_loader_sync_partial(async_payload);
-        }
-        return false_v;
+      const uint32_t entity_index = async_payload->stage_cursor++;
+      const SceneMeshAsyncState *mesh_state =
+          &async_payload->mesh_states[entity_index];
+      if (!async_payload->imports[entity_index].has_mesh ||
+          mesh_state->completed || mesh_state->attached) {
+        continue;
       }
-      async_payload->stage_cursor++;
       processed++;
+      if (!scene_loader_attach_mesh_for_entity(async_payload, entity_index,
+                                               out_error)) {
+        if (*out_error != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+          return false_v;
+        }
+        async_payload->attach_deferred = true_v;
+      }
     }
 
     scene_loader_sync_partial(async_payload);
     if (async_payload->stage_cursor < async_payload->entity_count) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+      return false_v;
+    }
+    if (async_payload->attach_deferred) {
+      async_payload->attach_deferred = false_v;
+      async_payload->stage_cursor = 0;
       *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
       return false_v;
     }

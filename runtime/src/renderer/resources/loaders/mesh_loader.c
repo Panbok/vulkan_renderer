@@ -135,22 +135,11 @@ vkr_internal void vkr_mesh_loader_destroy_result(VkrMeshLoaderContext *context,
                                result->arena, &result->allocator);
 }
 
-vkr_internal bool8_t vkr_mesh_loader_create_result(
-    VkrMeshLoaderContext *context, VkrMeshLoaderResult **out_result,
+/* Wraps acquired arena storage as an empty result. */
+vkr_internal bool8_t vkr_mesh_loader_wrap_result(
+    VkrMeshLoaderContext *context, void *pool_chunk, Arena *arena,
+    VkrAllocator allocator, VkrMeshLoaderResult **out_result,
     VkrRendererError *out_error) {
-  *out_result = NULL;
-  if (!context || !context->arena_pool || !context->arena_pool->initialized) {
-    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
-    return false_v;
-  }
-  void *pool_chunk = NULL;
-  Arena *arena = NULL;
-  VkrAllocator allocator = {0};
-  if (!vkr_arena_pool_acquire_arena(context->arena_pool, &pool_chunk, &arena,
-                                    &allocator)) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
   VkrMeshLoaderResult *result = vkr_allocator_alloc(
       &allocator, sizeof(*result), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!result) {
@@ -167,17 +156,61 @@ vkr_internal bool8_t vkr_mesh_loader_create_result(
   return true_v;
 }
 
-vkr_internal bool8_t vkr_mesh_loader_read_cooked(
-    VkrMeshLoaderContext *context, String8 name,
-    VkrAllocator *scratch_allocator, VkrMeshLoaderResult **out_result,
+/* A result for a synchronous load, which waits for a free pool chunk. */
+vkr_internal bool8_t vkr_mesh_loader_create_result(
+    VkrMeshLoaderContext *context, VkrMeshLoaderResult **out_result,
     VkrRendererError *out_error) {
   *out_result = NULL;
-  if (!vkr_mesh_loader_has_vkb_extension(name)) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (!context || !context->arena_pool || !context->arena_pool->initialized) {
+    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     return false_v;
   }
-  VkrMeshLoaderResult *result = NULL;
-  if (!vkr_mesh_loader_create_result(context, &result, out_error)) {
+  void *pool_chunk = NULL;
+  Arena *arena = NULL;
+  VkrAllocator allocator = {0};
+  if (!vkr_arena_pool_acquire_arena(context->arena_pool, &pool_chunk, &arena,
+                                    &allocator)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  return vkr_mesh_loader_wrap_result(context, pool_chunk, arena, allocator,
+                                     out_result, out_error);
+}
+
+/* A result for a job-system preparation. Every pool chunk can belong to a
+   prepared mesh that waits for its materials, whose jobs queue behind this
+   one: waiting here would stall every worker, so a full pool answers
+   RESOURCE_BUSY and the resource system submits the job again. */
+vkr_internal bool8_t vkr_mesh_loader_try_create_result(
+    VkrMeshLoaderContext *context, VkrMeshLoaderResult **out_result,
+    VkrRendererError *out_error) {
+  *out_result = NULL;
+  if (!context || !context->arena_pool || !context->arena_pool->initialized) {
+    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+    return false_v;
+  }
+  void *pool_chunk = NULL;
+  Arena *arena = NULL;
+  VkrAllocator allocator = {0};
+  if (!vkr_arena_pool_try_acquire_arena(context->arena_pool, &pool_chunk,
+                                        &arena, &allocator)) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_BUSY;
+    return false_v;
+  }
+  return vkr_mesh_loader_wrap_result(context, pool_chunk, arena, allocator,
+                                     out_result, out_error);
+}
+
+/* Reads the cooked mesh `name` into `result`, which it owns from here: a
+   failure destroys it. */
+vkr_internal bool8_t vkr_mesh_loader_read_cooked(
+    VkrMeshLoaderContext *context, String8 name,
+    VkrAllocator *scratch_allocator, VkrMeshLoaderResult *result,
+    VkrMeshLoaderResult **out_result, VkrRendererError *out_error) {
+  *out_result = NULL;
+  if (!vkr_mesh_loader_has_vkb_extension(name)) {
+    vkr_mesh_loader_destroy_result(context, result);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
   FilePath path = vkr_asset_path_file(scratch_allocator, name);
@@ -328,8 +361,9 @@ vkr_internal bool8_t vkr_mesh_loader_load(VkrResourceLoader *self, String8 name,
   VkrMeshLoaderContext *context = (VkrMeshLoaderContext *)self->resource_system;
   VkrMeshLoaderResult *result = NULL;
   if (!context || !scratch_allocator || !out_handle || !out_error ||
-      !vkr_mesh_loader_read_cooked(context, name, scratch_allocator, &result,
-                                   out_error) ||
+      !vkr_mesh_loader_create_result(context, &result, out_error) ||
+      !vkr_mesh_loader_read_cooked(context, name, scratch_allocator, result,
+                                   &result, out_error) ||
       !vkr_mesh_loader_resolve_materials(context, result, scratch_allocator,
                                          out_error)) {
     if (result) {
@@ -364,7 +398,9 @@ vkr_internal bool8_t vkr_mesh_loader_prepare_async(
   }
   MemZero(payload, sizeof(*payload));
   payload->context = context;
-  if (!vkr_mesh_loader_read_cooked(context, name, scratch_allocator,
+  VkrMeshLoaderResult *result = NULL;
+  if (!vkr_mesh_loader_try_create_result(context, &result, out_error) ||
+      !vkr_mesh_loader_read_cooked(context, name, scratch_allocator, result,
                                    &payload->result, out_error)) {
     vkr_allocator_free_ts(&context->async_allocator, payload, sizeof(*payload),
                           VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
